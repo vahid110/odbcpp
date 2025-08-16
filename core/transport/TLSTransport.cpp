@@ -1,6 +1,7 @@
 #include "TLSTransport.h"
 #include <stdexcept>
 #include <vector>
+#include <openssl/err.h> // Include for OpenSSL error functions
 
 using rs::util::Deadline;
 using rs::util::IOError;
@@ -45,6 +46,8 @@ void TLSTransport::connect(std::string_view host, uint16_t port, Deadline deadli
   int rc = SSL_connect(ssl_);
   if (rc != 1) {
     int err = SSL_get_error(ssl_, rc);
+    // Print more detailed OpenSSL errors
+    ERR_print_errors_fp(stderr);
     throw TLSError(std::string("SSL_connect failed: ") + std::to_string(err));
   }
 
@@ -73,6 +76,8 @@ void TLSTransport::verify_hostname(X509* cert) {
 
 void TLSTransport::close() noexcept {
   if (ssl_) {
+    // Note: SSL_shutdown is not reliable on non-blocking sockets.
+    // For this example, we assume blocking behavior for send/recv.
     SSL_shutdown(ssl_);
     SSL_free(ssl_); ssl_ = nullptr;
   }
@@ -81,16 +86,28 @@ void TLSTransport::close() noexcept {
 
 IOResult TLSTransport::send(std::span<const std::byte> buf, Deadline) {
   if (!ssl_) throw TLSError("TLS not connected");
+  // Note: For non-blocking sockets, a robust implementation would handle
+  // SSL_ERROR_WANT_READ and SSL_ERROR_WANT_WRITE and re-poll.
+  // This simple example assumes blocking I/O for send/recv.
   int n = SSL_write(ssl_, buf.data(), (int)buf.size());
-  if (n <= 0) throw TLSError("SSL_write failed");
+  if (n <= 0) {
+    ERR_print_errors_fp(stderr);
+    throw TLSError("SSL_write failed");
+  }
   return IOResult{ (std::size_t)n, false };
 }
 
 IOResult TLSTransport::recv(std::span<std::byte> buf, Deadline) {
   if (!ssl_) throw TLSError("TLS not connected");
+  // Note: For non-blocking sockets, a robust implementation would handle
+  // SSL_ERROR_WANT_READ and SSL_ERROR_WANT_WRITE and re-poll.
+  // This simple example assumes blocking I/O for send/recv.
   int n = SSL_read(ssl_, buf.data(), (int)buf.size());
   if (n == 0) return IOResult{0, true};
-  if (n < 0) throw TLSError("SSL_read failed");
+  if (n < 0) {
+    ERR_print_errors_fp(stderr);
+    throw TLSError("SSL_read failed");
+  }
   return IOResult{ (std::size_t)n, false };
 }
 

@@ -8,9 +8,8 @@
 #include <string_view>
 #include <vector>
 #include <map>
-
-// For OpenSSL version constants
 #include <openssl/ssl.h>
+#include <openssl/err.h>
 
 using rs::core::transport::TLSTransport;
 using rs::core::transport::SocketTransport;
@@ -43,6 +42,14 @@ Example:
 ./connect_example plain example.com 80 5000
 */
 int main(int argc, char** argv) {
+  // Initialize OpenSSL library
+  // Note: These functions are deprecated in OpenSSL 1.1.0+ but are
+  // retained for compatibility with older versions.
+  // In modern OpenSSL, library initialization is handled automatically.
+  SSL_library_init();
+  SSL_load_error_strings();
+  ERR_load_crypto_strings();
+
   try {
     // Defaults
     std::string mode = "tls";
@@ -119,6 +126,8 @@ int main(int argc, char** argv) {
     return 0;
   } catch (const std::exception& e) {
     std::cerr << "ERROR: " << e.what() << "\n";
+    // Also print OpenSSL errors for TLS connections
+    ERR_print_errors_fp(stderr);
     return 1;
   }
 }
