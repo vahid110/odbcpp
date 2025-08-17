@@ -1,5 +1,6 @@
+// core/engine/PgConnection.cpp
+
 #include "PgConnection.h"
-#include <iostream>
 #include <cassert>
 #include <cstring>
 #include <stdexcept>
@@ -64,7 +65,6 @@ static std::filesystem::path current_module_dir() {
 
 PgConnection::PgConnection() = default;
 PgConnection::PgConnection(std::unique_ptr<ITransport> t) : tr_(std::move(t)) {}
-PgConnection::~PgConnection() = default;
 
 void PgConnection::connect(const Settings& s) {
   settings_ = s;
@@ -87,7 +87,6 @@ void PgConnection::connect(const Settings& s) {
     req.len  = to_be32(8);
     req.code = to_be32(80877103u);
     {
-    //   auto r = sock.send(std::as_bytes(std::span{&req, sizeof(req)}), dl);
       auto r = sock.send(std::as_bytes(std::span{&req, 1}), dl);
       if (r.n != sizeof(req)) throw rs::util::IOError("short write for SSLRequest");
     }
@@ -191,17 +190,18 @@ std::vector<std::byte> PgConnection::read_message(Deadline dl, char& tag_out) {
 
 // ---- encoders ----
 
+// StartupMessage: length(int32) + protocol(int32=196608) + key\0val\0 ... \0
 void PgConnection::send_startup_frame(const std::vector<std::pair<std::string,std::string>>& kv, Deadline dl) {
-  // length(int32) + protocol(196608) + key\0val\0... \0
+  // compute length
   size_t bytes = 4 /*len*/ + 4 /*protocol*/ + 1 /*terminator*/;
   for (auto& p : kv) bytes += p.first.size()+1 + p.second.size()+1;
 
   std::vector<unsigned char> buf(bytes);
-
+  // write len
   uint32_t bl = (uint32_t)bytes;
   uint32_t nbl = be32(bl);
   std::memcpy(buf.data(), &nbl, 4);
-
+  // protocol 3.0 (196608)
   uint32_t proto = be32(196608u);
   std::memcpy(buf.data()+4, &proto, 4);
 
@@ -212,12 +212,13 @@ void PgConnection::send_startup_frame(const std::vector<std::pair<std::string,st
     buf[off++] = 0;
   };
   for (auto& p : kv) { putz(p.first); putz(p.second); }
-  buf[off++] = 0;
+  buf[off++] = 0; // terminator
 
   write_all(buf.data(), buf.size(), dl);
 }
 
 void PgConnection::send_simple_password(std::string_view pw, Deadline dl) {
+  // Tag 'p' + len(int32) + password\0
   const char tag = 'p';
   uint32_t len = (uint32_t)(4 + pw.size() + 1);
   uint32_t bl = be32(len);
@@ -250,6 +251,7 @@ rs::pg::ErrorResponse PgConnection::decode_error(const std::vector<std::byte>& p
   size_t i = 0, n = payload.size();
   while (i < n && p[i] != 0) {
     char code = (char)p[i++];
+    // read cstring
     size_t start = i;
     while (i < n && p[i] != 0) ++i;
     std::string val((const char*)p+start, (i-start));
@@ -263,7 +265,9 @@ void PgConnection::decode_param_status(const std::vector<std::byte>& payload, st
   const char* p = reinterpret_cast<const char*>(payload.data());
   size_t n = payload.size();
   size_t i = 0;
+  // key
   size_t s = i; while (i<n && p[i]!=0) ++i; k.assign(p+s, i-s); if (i<n && p[i]==0) ++i;
+  // val
   s = i; while (i<n && p[i]!=0) ++i; v.assign(p+s, i-s);
 }
 
@@ -330,35 +334,35 @@ void PgConnection::run_until_ready(Deadline dl) {
     char tag=0;
     auto payload = read_message(dl, tag);
     switch (tag) {
-      case 'R': {
+      case 'R': { // Authentication*
         auto a = decode_auth(payload);
         handle_auth(a, dl);
         break;
       }
-      case 'S': {
+      case 'S': { // ParameterStatus
         std::string k,v; decode_param_status(payload, k, v);
         params_[k] = v;
         break;
       }
-      case 'K': {
+      case 'K': { // BackendKeyData
         bk_ = decode_bk(payload);
         break;
       }
-      case 'E': {
+      case 'E': { // ErrorResponse
         last_error_ = decode_error(payload);
         throw util::IOError("server error: " + last_error_.message() + " (SQLSTATE " + last_error_.code() + ")");
       }
-      case 'N': {
-        // notice: ignore for now
+      case 'N': { // NoticeResponse
+        // ignore for now
         break;
       }
-      case 'Z': {
+      case 'Z': { // ReadyForQuery
         if (payload.size()!=1) throw util::IOError("invalid ReadyForQuery");
         tx_status_ = (rs::pg::TxStatus)payload[0];
         return;
       }
       default:
-        // ignore
+        // ignore unexpected
         break;
     }
   }
@@ -367,6 +371,77 @@ void PgConnection::run_until_ready(Deadline dl) {
 std::string PgConnection::parameterStatus(std::string_view k) const {
   auto it = params_.find(std::string(k));
   return (it==params_.end()) ? std::string{} : it->second;
+}
+
+// ---- simpleQuery (text protocol) ----
+// Minimal implementation: handles RowDescription('T'), DataRow('D'), CommandComplete('C'), ReadyForQuery('Z').
+// Treats all columns as text and returns strings.
+std::vector<std::vector<std::string>>
+PgConnection::simpleQuery(std::string_view sql, rs::util::Deadline dl) {
+  // Send 'Q' message
+  const char tag = 'Q';
+  uint32_t len = (uint32_t)(4 + sql.size() + 1); // length of payload (len+sql+'\0')
+  uint32_t bl = be32(len);
+  write_all(&tag, 1, dl);
+  write_all(&bl,  4, dl);
+  write_all(sql.data(), sql.size(), dl);
+  const char z = 0; write_all(&z, 1, dl);
+
+  std::vector<std::vector<std::string>> rows;
+
+  for (;;) {
+    char mtag = 0;
+    auto payload = read_message(dl, mtag);
+
+    switch (mtag) {
+      case 'T': {
+        // RowDescription (we can ignore details for simple text extraction)
+        // payload: int16 field_count ... per-field metadata
+        // We don't need field metadata for DataRow parsing if we just read text.
+        break;
+      }
+      case 'D': {
+        // DataRow: int16 column_count; per column: int32 len (>=0) + bytes (no trailing '\0')
+        const unsigned char* p = reinterpret_cast<const unsigned char*>(payload.data());
+        size_t n = payload.size();
+        if (n < 2) throw util::IOError("DataRow too short");
+        uint16_t ncols = (uint16_t)((p[0] << 8) | p[1]);
+        size_t off = 2;
+        std::vector<std::string> row;
+        row.reserve(ncols);
+        for (uint16_t i = 0; i < ncols; ++i) {
+          if (off + 4 > n) throw util::IOError("DataRow column header truncated");
+          int32_t clen = (int32_t)((p[off] << 24) | (p[off+1] << 16) | (p[off+2] << 8) | p[off+3]);
+          off += 4;
+          if (clen < 0) {
+            row.emplace_back(); // NULL
+          } else {
+            if (off + (size_t)clen > n) throw util::IOError("DataRow column truncated");
+            row.emplace_back(reinterpret_cast<const char*>(p + off), (size_t)clen);
+            off += (size_t)clen;
+          }
+        }
+        rows.emplace_back(std::move(row));
+        break;
+      }
+      case 'C': {
+        // CommandComplete: ignore for now (e.g., "SELECT 1")
+        break;
+      }
+      case 'E': {
+        auto err = decode_error(payload);
+        throw util::IOError("server error: " + err.message() + " (SQLSTATE " + err.code() + ")");
+      }
+      case 'Z': {
+        // ReadyForQuery
+        if (payload.size() == 1) tx_status_ = (rs::pg::TxStatus)payload[0];
+        return rows;
+      }
+      default:
+        // ignore others (ParameterStatus, etc.)
+        break;
+    }
+  }
 }
 
 } // namespace rs::core::engine

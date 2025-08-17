@@ -1,3 +1,5 @@
+// core/engine/PgConnection.h
+
 #pragma once
 #include <cstdint>
 #include <map>
@@ -20,28 +22,33 @@ public:
   struct Settings {
     std::string host, user, password, db;
     uint16_t port = 5439;
-    bool ssl = true; // (not used now; sslmode drives behavior)
+    bool ssl = true; // not used; sslmode drives behavior
     std::chrono::milliseconds timeout{15000};
     SslMode sslmode = SslMode::VerifyFull;
     std::string ssl_ca_file;   // optional: path to CA bundle (PEM)
     std::string ssl_ca_dir;    // optional: path to CA directory (hash-based)
-    std::map<std::string,std::string> extras; // application_name, client_protocol_version, etc.
+    std::map<std::string,std::string> extras; // application_name, etc.
   };
 
-  // NEW: default ctor so examples can do PgConnection conn;
   PgConnection();
-  explicit PgConnection(std::unique_ptr<transport::ITransport> t);
-  ~PgConnection();
+  explicit PgConnection(std::unique_ptr<rs::core::transport::ITransport> t);
+  ~PgConnection() = default;
 
-  void connect(const Settings& s);  // startup + auth -> ReadyForQuery
+  // Establish connection (TCP -> SSLRequest -> [TLS] -> Startup -> Auth -> Ready)
+  void connect(const Settings& s);
 
   std::string parameterStatus(std::string_view k) const;
   rs::pg::TxStatus txStatus() const { return tx_status_; }
   const rs::pg::BackendKeyData& backendKey() const { return bk_; }
   const rs::pg::ErrorResponse& lastError() const { return last_error_; }
 
+  // Simple query (text protocol): returns rows as strings
+  std::vector<std::vector<std::string>>
+  simpleQuery(std::string_view sql, rs::util::Deadline dl);
+
 private:
-  std::unique_ptr<transport::ITransport> tr_;
+  // transport + session state
+  std::unique_ptr<rs::core::transport::ITransport> tr_;
   Settings settings_;
   std::map<std::string,std::string> params_;
   rs::pg::BackendKeyData bk_{};
@@ -69,7 +76,7 @@ private:
   static void decode_param_status(const std::vector<std::byte>& payload, std::string& k, std::string& v);
   static rs::pg::BackendKeyData decode_bk(const std::vector<std::byte>& payload);
 
-  // md5
+  // util (MD5 for pg-md5 auth)
   static std::string md5_hex(const void* data, size_t n);
 };
 
