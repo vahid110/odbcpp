@@ -58,6 +58,9 @@ add_library(rs_core STATIC
   core/util/Deadline.h
   core/util/Errors.h
   core/util/Platform.h
+  core/pgwire/Messages.h
+  core/engine/PgConnection.h
+  core/engine/PgConnection.cpp
 )
 
 if (MSVC)
@@ -82,4 +85,6 @@ target_include_directories(rs_core
 if (BUILD_EXAMPLES)
   add_executable(connect_example examples/connect_example.cpp)
   target_link_libraries(connect_example PRIVATE rs_core)
+  add_executable(pg_handshake_example examples/pg_handshake_example.cpp)
+  target_link_libraries(pg_handshake_example PRIVATE rs_core)
 endif()

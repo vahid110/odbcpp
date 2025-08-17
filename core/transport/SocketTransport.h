@@ -23,6 +23,11 @@ public:
   using socket_t = int;
 #endif
   socket_t native() const { return sock_; }
+  socket_t release() {
+    socket_t tmp = sock_;
+    sock_ = invalid_socket();
+    return tmp;
+  }
 
 private:
   socket_t sock_ { invalid_socket() };
