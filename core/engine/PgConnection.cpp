@@ -1,5 +1,3 @@
-// core/engine/PgConnection.cpp
-
 #include "PgConnection.h"
 #include <cassert>
 #include <cstring>
@@ -7,6 +5,7 @@
 #include <vector>
 #include <algorithm>
 #include <filesystem>
+#include <span>
 #include <openssl/evp.h>
 
 #if defined(_WIN32)
@@ -22,6 +21,7 @@
 using rs::util::Deadline;
 using rs::util::make_deadline;
 using rs::core::transport::ITransport;
+using rs::pg::TxStatus;
 
 namespace rs::core::engine {
 
@@ -65,6 +65,8 @@ static std::filesystem::path current_module_dir() {
 
 PgConnection::PgConnection() = default;
 PgConnection::PgConnection(std::unique_ptr<ITransport> t) : tr_(std::move(t)) {}
+
+// ======================= Connect / Startup / Auth =======================
 
 void PgConnection::connect(const Settings& s) {
   settings_ = s;
@@ -190,7 +192,7 @@ std::vector<std::byte> PgConnection::read_message(Deadline dl, char& tag_out) {
 
 // ---- encoders ----
 
-// StartupMessage: length(int32) + protocol(int32=196608) + key\0val\0 ... \0
+// StartupMessage: length(int32) + protocol(196608) + key\0val\0... \0
 void PgConnection::send_startup_frame(const std::vector<std::pair<std::string,std::string>>& kv, Deadline dl) {
   // compute length
   size_t bytes = 4 /*len*/ + 4 /*protocol*/ + 1 /*terminator*/;
@@ -358,7 +360,7 @@ void PgConnection::run_until_ready(Deadline dl) {
       }
       case 'Z': { // ReadyForQuery
         if (payload.size()!=1) throw util::IOError("invalid ReadyForQuery");
-        tx_status_ = (rs::pg::TxStatus)payload[0];
+        tx_status_ = static_cast<TxStatus>(static_cast<unsigned char>(payload[0]));
         return;
       }
       default:
@@ -373,9 +375,8 @@ std::string PgConnection::parameterStatus(std::string_view k) const {
   return (it==params_.end()) ? std::string{} : it->second;
 }
 
-// ---- simpleQuery (text protocol) ----
-// Minimal implementation: handles RowDescription('T'), DataRow('D'), CommandComplete('C'), ReadyForQuery('Z').
-// Treats all columns as text and returns strings.
+// ======================= Simple Query (text) =======================
+
 std::vector<std::vector<std::string>>
 PgConnection::simpleQuery(std::string_view sql, rs::util::Deadline dl) {
   // Send 'Q' message
@@ -395,13 +396,11 @@ PgConnection::simpleQuery(std::string_view sql, rs::util::Deadline dl) {
 
     switch (mtag) {
       case 'T': {
-        // RowDescription (we can ignore details for simple text extraction)
-        // payload: int16 field_count ... per-field metadata
-        // We don't need field metadata for DataRow parsing if we just read text.
+        // RowDescription – ignored for simple text extraction
         break;
       }
       case 'D': {
-        // DataRow: int16 column_count; per column: int32 len (>=0) + bytes (no trailing '\0')
+        // DataRow: int16 column_count; per column: int32 len (>=0) + bytes
         const unsigned char* p = reinterpret_cast<const unsigned char*>(payload.data());
         size_t n = payload.size();
         if (n < 2) throw util::IOError("DataRow too short");
@@ -425,7 +424,7 @@ PgConnection::simpleQuery(std::string_view sql, rs::util::Deadline dl) {
         break;
       }
       case 'C': {
-        // CommandComplete: ignore for now (e.g., "SELECT 1")
+        // CommandComplete
         break;
       }
       case 'E': {
@@ -434,11 +433,235 @@ PgConnection::simpleQuery(std::string_view sql, rs::util::Deadline dl) {
       }
       case 'Z': {
         // ReadyForQuery
-        if (payload.size() == 1) tx_status_ = (rs::pg::TxStatus)payload[0];
+        if (payload.size() == 1) tx_status_ = static_cast<TxStatus>(static_cast<unsigned char>(payload[0]));
         return rows;
       }
       default:
         // ignore others (ParameterStatus, etc.)
+        break;
+    }
+  }
+}
+
+// ======================= Extended Query (unnamed) =======================
+
+// --- client encoders ---
+
+void PgConnection::send_Parse(std::string_view statement_name,
+                              std::string_view sql,
+                              std::span<const uint32_t> param_type_oids,
+                              rs::util::Deadline dl) {
+  // 'P' + len + stmt_name\0 + query\0 + int16 nparams + n*int32 param_oids
+  const char tag = 'P';
+  uint16_t nparams16 = static_cast<uint16_t>(param_type_oids.size());
+
+  size_t bytes = 4 /*len*/ + (statement_name.size()+1) + (sql.size()+1)
+               + 2 /*nparams*/ + 4 * param_type_oids.size();
+
+  uint32_t bl = be32((uint32_t)bytes);
+  write_all(&tag, 1, dl);
+  write_all(&bl,  4, dl);
+  write_all(statement_name.data(), statement_name.size(), dl);
+  const char z=0; write_all(&z,1,dl);
+  write_all(sql.data(), sql.size(), dl);
+  write_all(&z,1,dl);
+  unsigned char np[2]{ (unsigned char)(nparams16>>8), (unsigned char)(nparams16&0xFF) };
+  write_all(np, 2, dl);
+  for (uint32_t oid : param_type_oids) {
+    uint32_t boid = be32(oid);
+    write_all(&boid, 4, dl);
+  }
+}
+
+void PgConnection::send_Bind(std::string_view portal_name,
+                             std::string_view statement_name,
+                             std::span<const uint16_t> param_formats,
+                             std::span<const std::string> param_values,
+                             std::span<const uint16_t> result_formats,
+                             rs::util::Deadline dl) {
+  // 'B' + len +
+  // portal\0 + statement\0 +
+  // int16 num_format_codes + (num_format_codes * int16)
+  // int16 num_params + per param: int32 len ( -1 for NULL ) + bytes
+  // int16 num_result_codes + (num_result_codes * int16)
+  const char tag = 'B';
+
+  uint16_t nf = static_cast<uint16_t>(param_formats.size());
+  uint16_t np = static_cast<uint16_t>(param_values.size());
+  uint16_t nr = static_cast<uint16_t>(result_formats.size());
+
+  size_t bytes = 4 /*len*/ +
+                 (portal_name.size()+1) + (statement_name.size()+1) +
+                 2 + 2*nf + // param format codes
+                 2;         // num params
+
+  // param values lengths
+  for (const auto& v : param_values) {
+    if (v.data() == nullptr) { // shouldn't happen with std::string
+      bytes += 4; // -1
+    } else {
+      bytes += 4 + v.size();
+    }
+  }
+
+  bytes += 2 + 2*nr; // result format codes
+
+  uint32_t bl = be32((uint32_t)bytes);
+  write_all(&tag, 1, dl);
+  write_all(&bl,  4, dl);
+
+  write_all(portal_name.data(), portal_name.size(), dl);
+  const char z=0; write_all(&z,1,dl);
+  write_all(statement_name.data(), statement_name.size(), dl);
+  write_all(&z,1,dl);
+
+  // param format codes
+  unsigned char nf_be[2]{ (unsigned char)(nf>>8), (unsigned char)(nf&0xFF) };
+  write_all(nf_be, 2, dl);
+  for (uint16_t f : param_formats) {
+    unsigned char be2[2]{ (unsigned char)(f>>8), (unsigned char)(f&0xFF) };
+    write_all(be2, 2, dl);
+  }
+
+  // params
+  unsigned char np_be[2]{ (unsigned char)(np>>8), (unsigned char)(np&0xFF) };
+  write_all(np_be, 2, dl);
+  for (const auto& v : param_values) {
+    if (v.size() == (size_t)-1) { // (we won't hit this with std::string)
+      int32_t m1 = -1; uint32_t bm1 = be32((uint32_t)m1);
+      write_all(&bm1, 4, dl);
+    } else {
+      uint32_t l = be32((uint32_t)v.size());
+      write_all(&l, 4, dl);
+      if (!v.empty()) write_all(v.data(), v.size(), dl);
+    }
+  }
+
+  // result formats
+  unsigned char nr_be[2]{ (unsigned char)(nr>>8), (unsigned char)(nr&0xFF) };
+  write_all(nr_be, 2, dl);
+  for (uint16_t f : result_formats) {
+    unsigned char be2[2]{ (unsigned char)(f>>8), (unsigned char)(f&0xFF) };
+    write_all(be2, 2, dl);
+  }
+}
+
+void PgConnection::send_Describe(char what, std::string_view name, rs::util::Deadline dl) {
+  // 'D' + len + what('S' or 'P') + name\0
+  const char tag = 'D';
+  size_t bytes = 4 + 1 + (name.size()+1);
+  uint32_t bl = be32((uint32_t)bytes);
+  write_all(&tag, 1, dl);
+  write_all(&bl,  4, dl);
+  write_all(&what, 1, dl);
+  write_all(name.data(), name.size(), dl);
+  const char z=0; write_all(&z,1,dl);
+}
+
+void PgConnection::send_Execute(std::string_view portal_name, int max_rows, rs::util::Deadline dl) {
+  // 'E' + len + portal\0 + int32 max_rows
+  const char tag = 'E';
+  size_t bytes = 4 + (portal_name.size()+1) + 4;
+  uint32_t bl = be32((uint32_t)bytes);
+  int32_t mx = max_rows; uint32_t bmx = be32((uint32_t)mx);
+  write_all(&tag, 1, dl);
+  write_all(&bl,  4, dl);
+  write_all(portal_name.data(), portal_name.size(), dl);
+  const char z=0; write_all(&z,1,dl);
+  write_all(&bmx, 4, dl);
+}
+
+void PgConnection::send_Sync(rs::util::Deadline dl) {
+  const char tag = 'S';
+  uint32_t bl = be32(4);
+  write_all(&tag, 1, dl);
+  write_all(&bl,  4, dl);
+}
+
+// --- exec_params (unnamed stmt/portal, text formats) ---
+
+std::vector<std::vector<std::string>>
+PgConnection::exec_params(std::string_view sql,
+                          std::span<const std::string> param_text,
+                          rs::util::Deadline dl,
+                          int max_rows) {
+  // Text formats: 0 = text
+  std::vector<uint16_t> param_formats(param_text.size(), 0);
+  std::vector<uint16_t> result_formats(1, 0); // all columns as text
+  std::vector<uint32_t> param_oids; // empty => infer/any (server-side)
+
+  // Send pipeline: Parse(unnamed) + Bind(unnamed portal->unnamed stmt) + Describe(Portal) + Execute + Sync
+  send_Parse("" /*unnamed*/, sql, param_oids, dl);
+  send_Bind("" /*portal*/, "" /*stmt*/,
+            param_formats, param_text,
+            result_formats, dl);
+  send_Describe('P', "" /*portal*/, dl);
+  send_Execute("" /*portal*/, max_rows, dl);
+  send_Sync(dl);
+
+  // Receive until ReadyForQuery; collect rows
+  std::vector<std::vector<std::string>> rows;
+
+  for (;;) {
+    char tag=0;
+    auto payload = read_message(dl, tag);
+    switch (tag) {
+      case '1': // ParseComplete
+      case '2': // BindComplete
+      case '3': // CloseComplete
+        break;
+
+      case 't': // ParameterDescription
+        // int16 count + count*int32 oids (we ignore for now)
+        break;
+
+      case 'T': // RowDescription
+        // we ignore metadata here; DataRow is self-delimiting in text mode
+        break;
+
+      case 'D': { // DataRow
+        const unsigned char* p = reinterpret_cast<const unsigned char*>(payload.data());
+        size_t n = payload.size();
+        if (n < 2) throw util::IOError("DataRow too short");
+        uint16_t ncols = (uint16_t)((p[0] << 8) | p[1]);
+        size_t off = 2;
+        std::vector<std::string> row;
+        row.reserve(ncols);
+        for (uint16_t i = 0; i < ncols; ++i) {
+          if (off + 4 > n) throw util::IOError("DataRow column header truncated");
+          int32_t clen = (int32_t)((p[off] << 24) | (p[off+1] << 16) | (p[off+2] << 8) | p[off+3]);
+          off += 4;
+          if (clen < 0) {
+            row.emplace_back(); // NULL
+          } else {
+            if (off + (size_t)clen > n) throw util::IOError("DataRow column truncated");
+            row.emplace_back(reinterpret_cast<const char*>(p + off), (size_t)clen);
+            off += (size_t)clen;
+          }
+        }
+        rows.emplace_back(std::move(row));
+        break;
+      }
+
+      case 'C': // CommandComplete
+        break;
+
+      case 's': // PortalSuspended (when max_rows > 0 and more rows exist)
+        // For this minimal helper, we just continue; caller can set max_rows=0 to consume all.
+        break;
+
+      case 'E': { // ErrorResponse
+        auto err = decode_error(payload);
+        throw util::IOError("server error: " + err.message() + " (SQLSTATE " + err.code() + ")");
+      }
+
+      case 'Z': { // ReadyForQuery
+        if (payload.size()==1) tx_status_ = static_cast<TxStatus>(static_cast<unsigned char>(payload[0]));
+        return rows;
+      }
+
+      default:
+        // ignore notices, params, etc.
         break;
     }
   }

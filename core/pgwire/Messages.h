@@ -10,6 +10,25 @@ namespace rs::pg {
 
 // Transaction status from ReadyForQuery
 enum class TxStatus : char { Idle='I', InTx='T', InFailedTx='E' };
+inline const char *to_string(TxStatus s)
+{
+  switch (s)
+  {
+  case TxStatus::Idle:
+    return "Idle";
+  case TxStatus::InTx:
+    return "InTx";
+  case TxStatus::InFailedTx:
+    return "InFailedTx";
+      default:
+    return "Unknown";
+  }
+}
+
+inline std::ostream &operator<<(std::ostream &os, TxStatus s)
+{
+  return os << to_string(s);
+}
 
 // Authentication message
 struct Authentication {
