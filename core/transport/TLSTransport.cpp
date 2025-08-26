@@ -1,18 +1,30 @@
 #include "TLSTransport.h"
+#include "core/transport/tls_io.h"
+
 #include <stdexcept>
 #include <vector>
-#include <openssl/err.h> // Include for OpenSSL error functions
+#include <cassert>
+
+#include <openssl/err.h>
 
 using rs::util::Deadline;
 using rs::util::IOError;
 using rs::util::TLSError;
-using namespace rs::core::transport;
+using rs::util::TimeoutError;
+
+namespace rs::core::transport {
 
 TLSTransport::TLSTransport() {
   // Lazy SSL_CTX creation in ensure_ctx()
 }
 
-TLSTransport::~TLSTransport() { close(); if (ctx_) { SSL_CTX_free(ctx_); ctx_ = nullptr; } }
+TLSTransport::~TLSTransport() {
+  close();
+  if (ctx_) {
+    SSL_CTX_free(ctx_);
+    ctx_ = nullptr;
+  }
+}
 
 void TLSTransport::ensure_ctx() {
   if (ctx_) return;
@@ -25,15 +37,15 @@ void TLSTransport::ensure_ctx() {
   }
 
   // Protocol bounds
-  SSL_CTX_set_min_proto_version(ctx_, (int)min_version_);
+  SSL_CTX_set_min_proto_version(ctx_, static_cast<int>(min_version_));
 #ifdef TLS1_3_VERSION
   SSL_CTX_set_max_proto_version(ctx_, TLS1_3_VERSION);
 #endif
 
-  // Explicit verify mode (chain verification on/off)
+  // Chain verification on/off
   SSL_CTX_set_verify(ctx_, verify_ ? SSL_VERIFY_PEER : SSL_VERIFY_NONE, nullptr);
 
-  // Load CA trust in the chosen order (file -> dir -> defaults)
+  // Load CA trust (file -> dir -> defaults)
   if (!ca_file_.empty()) {
     if (SSL_CTX_load_verify_locations(ctx_, ca_file_.c_str(), nullptr) != 1) {
       ERR_print_errors_fp(stderr);
@@ -51,22 +63,22 @@ void TLSTransport::ensure_ctx() {
     }
   }
 
-  // Optional but harmless: allow automatic retry on read after write
 #ifdef SSL_MODE_AUTO_RETRY
+  // Avoid spurious SSL_ERROR_WANT_READ after writes on some stacks.
   SSL_CTX_set_mode(ctx_, SSL_MODE_AUTO_RETRY);
 #endif
 }
 
-
 void TLSTransport::connect(std::string_view host, uint16_t port, Deadline deadline) {
   ensure_ctx();
   sni_host_ = std::string(host);
-  tcp_.connect(host, port, deadline);
 
+  tcp_.connect(host, port, deadline);
   upgrade_from(tcp_.native(), host, deadline);
 }
 
-void TLSTransport::upgrade_from(socket_t s, std::string_view host, rs::util::Deadline /*deadline*/) {
+void TLSTransport::upgrade_from(socket_t s, std::string_view host, Deadline deadline) {
+  (void)s; // We use tcp_.native(); keep signature for external callers.
   ensure_ctx();
   sni_host_ = std::string(host);
 
@@ -77,9 +89,9 @@ void TLSTransport::upgrade_from(socket_t s, std::string_view host, rs::util::Dea
   }
 
 #ifdef _WIN32
-  if (SSL_set_fd(ssl_, (int)s) != 1)
+  if (SSL_set_fd(ssl_, static_cast<int>(tcp_.native())) != 1)
 #else
-  if (SSL_set_fd(ssl_, s) != 1)
+  if (SSL_set_fd(ssl_, tcp_.native()) != 1)
 #endif
   {
     ERR_print_errors_fp(stderr);
@@ -95,30 +107,28 @@ void TLSTransport::upgrade_from(socket_t s, std::string_view host, rs::util::Dea
     }
   }
 
-  // Handshake loop (WANT_READ/WRITE)
-  for (;;) {
-    int rc = SSL_connect(ssl_);
-    if (rc == 1) break;
-    int err = SSL_get_error(ssl_, rc);
-    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-      // With SO_RCVTIMEO/SO_SNDTIMEO set, just retry; or add select() here if you prefer.
-      continue;
-    }
-    ERR_print_errors_fp(stderr);
+  // Deadline-aware TLS handshake with WANT_{READ,WRITE} handling
+  if (auto e = tls_handshake_with_deadline(ssl_, tcp_.native(), deadline);
+      e.code != Errc::Ok) {
     SSL_free(ssl_); ssl_ = nullptr;
-    throw TLSError(std::string("SSL_connect fatal error: ") + std::to_string(err));
+    if (e.code == Errc::Timeout) throw TimeoutError("TLS handshake timeout");
+    if (e.code == Errc::HandshakeFailed) throw TLSError("TLS handshake failed");
+    throw IOError("TLS handshake I/O error");
   }
 
   if (verify_) {
     X509* cert = SSL_get1_peer_certificate(ssl_);
     if (!cert) throw TLSError("No peer certificate");
+
     long v = SSL_get_verify_result(ssl_);
     if (v != X509_V_OK) {
       X509_free(cert);
       throw TLSError("Certificate verify failed: " + std::to_string(v));
     }
+
     if (verify_host_) {
-      try { verify_hostname(cert); } catch (...) { X509_free(cert); throw; }
+      try { verify_hostname(cert); }
+      catch (...) { X509_free(cert); throw; }
     }
     X509_free(cert);
   }
@@ -130,45 +140,63 @@ void TLSTransport::verify_hostname(X509* cert) {
     throw TLSError("Hostname verification failed for " + sni_host_);
   }
 #else
-  // Older OpenSSL: TODO parse SAN/CN manually if you need pre-1.1.0
+  // TODO: For OpenSSL < 1.1.0 parse SAN/CN manually if you need legacy support.
 #endif
 }
 
 void TLSTransport::close() noexcept {
   if (ssl_) {
-    // Note: SSL_shutdown is not reliable on non-blocking sockets.
-    // For this example, we assume blocking behavior for send/recv.
+    // Best-effort shutdown; on non-blocking it may need a loop,
+    // but we keep it simple and robust.
     SSL_shutdown(ssl_);
-    SSL_free(ssl_); ssl_ = nullptr;
+    SSL_free(ssl_);
+    ssl_ = nullptr;
   }
   tcp_.close();
 }
 
-IOResult TLSTransport::send(std::span<const std::byte> buf, Deadline) {
+IOResult TLSTransport::send(std::span<const std::byte> buf, Deadline dl) {
   if (!ssl_) throw TLSError("TLS not connected");
-  // Note: For non-blocking sockets, a robust implementation would handle
-  // SSL_ERROR_WANT_READ and SSL_ERROR_WANT_WRITE and re-poll.
-  // This simple example assumes blocking I/O for send/recv.
-  int n = SSL_write(ssl_, buf.data(), (int)buf.size());
-  if (n <= 0) {
-    ERR_print_errors_fp(stderr);
-    throw TLSError("SSL_write failed");
+
+  size_t n = 0;
+  auto e = tls_write_all(
+      ssl_, tcp_.native(),
+      reinterpret_cast<const uint8_t*>(buf.data()),
+      buf.size(),
+      dl,
+      n);
+
+  if (e.code != Errc::Ok) {
+    if (e.code == Errc::Timeout) throw TimeoutError("TLS send timeout");
+    throw IOError("TLS send failed");
   }
-  return IOResult{ (std::size_t)n, false };
+
+  return IOResult{ n, false };
 }
 
-IOResult TLSTransport::recv(std::span<std::byte> buf, Deadline) {
+IOResult TLSTransport::recv(std::span<std::byte> buf, Deadline dl) {
   if (!ssl_) throw TLSError("TLS not connected");
-  // Note: For non-blocking sockets, a robust implementation would handle
-  // SSL_ERROR_WANT_READ and SSL_ERROR_WANT_WRITE and re-poll.
-  // This simple example assumes blocking I/O for send/recv.
-  int n = SSL_read(ssl_, buf.data(), (int)buf.size());
-  if (n == 0) return IOResult{0, true};
-  if (n < 0) {
-    ERR_print_errors_fp(stderr);
-    throw TLSError("SSL_read failed");
+
+  size_t got = 0;
+  bool eof = false;
+  auto e = tls_read_some(
+      ssl_, tcp_.native(),
+      reinterpret_cast<uint8_t*>(buf.data()),
+      buf.size(),
+      dl,
+      got,
+      eof);
+
+  if (e.code != Errc::Ok) {
+    if (e.code == Errc::Timeout) throw TimeoutError("TLS recv timeout");
+    throw IOError("TLS recv failed");
   }
-  return IOResult{ (std::size_t)n, false };
+
+  return IOResult{ got, eof };
 }
 
-void TLSTransport::set_min_tls_version(long v) { min_version_ = v; }
+void TLSTransport::set_min_tls_version(long v) {
+  min_version_ = v;
+}
+
+} // namespace rs::core::transport

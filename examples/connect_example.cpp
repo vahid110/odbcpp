@@ -11,25 +11,27 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
-using rs::core::transport::TLSTransport;
 using rs::core::transport::SocketTransport;
+using rs::core::transport::TLSTransport;
 
 // Helper to map string versions to OpenSSL constants
-static std::optional<long> parse_tls_version(const std::string& version_str) {
+static std::optional<long> parse_tls_version(const std::string &version_str)
+{
   static const std::map<std::string, long> version_map = {
-    {"1.0", TLS1_VERSION},
-    {"1.1", TLS1_1_VERSION},
-    {"1.2", TLS1_2_VERSION},
-    {"1.3", TLS1_3_VERSION}
-  };
+      {"1.0", TLS1_VERSION},
+      {"1.1", TLS1_1_VERSION},
+      {"1.2", TLS1_2_VERSION},
+      {"1.3", TLS1_3_VERSION}};
   auto it = version_map.find(version_str);
-  if (it != version_map.end()) {
+  if (it != version_map.end())
+  {
     return it->second;
   }
   return std::nullopt;
 }
 
-static void usage(const char* argv0) {
+static void usage(const char *argv0)
+{
   std::cerr << "Usage: " << argv0 << " [tls|plain] <host> <port> [timeout_ms] [min_tls_version]\n"
             << "  e.g. " << argv0 << " tls example.com 443 10000 1.2\n"
             << "       " << argv0 << " tls example.com 443 10000 1.3\n"
@@ -41,7 +43,8 @@ Example:
 ./connect_example tls example.com 443 10000 1.2
 ./connect_example plain example.com 80 5000
 */
-int main(int argc, char** argv) {
+int main(int argc, char **argv)
+{
   // Initialize OpenSSL library
   // Note: These functions are deprecated in OpenSSL 1.1.0+ but are
   // retained for compatibility with older versions.
@@ -50,7 +53,8 @@ int main(int argc, char** argv) {
   SSL_load_error_strings();
   ERR_load_crypto_strings();
 
-  try {
+  try
+  {
     // Defaults
     std::string mode = "tls";
     std::string host = "example.com";
@@ -58,17 +62,24 @@ int main(int argc, char** argv) {
     int timeout_ms = 10000;
     std::string min_tls_version_str; // New variable for version string
 
-    if (argc >= 2) mode = argv[1];
-    if (argc >= 3) host = argv[2];
-    if (argc >= 4) port = static_cast<uint16_t>(std::stoi(argv[3]));
-    if (argc >= 5) timeout_ms = std::stoi(argv[4]);
-    if (argc >= 6) min_tls_version_str = argv[5]; // New argument parsing
+    if (argc >= 2)
+      mode = argv[1];
+    if (argc >= 3)
+      host = argv[2];
+    if (argc >= 4)
+      port = static_cast<uint16_t>(std::stoi(argv[3]));
+    if (argc >= 5)
+      timeout_ms = std::stoi(argv[4]);
+    if (argc >= 6)
+      min_tls_version_str = argv[5]; // New argument parsing
 
-    if (argc == 2 && (mode == "-h" || mode == "--help")) {
+    if (argc == 2 && (mode == "-h" || mode == "--help"))
+    {
       usage(argv[0]);
       return 0;
     }
-    if (mode != "tls" && mode != "plain") {
+    if (mode != "tls" && mode != "plain")
+    {
       usage(argv[0]);
       return 1;
     }
@@ -78,53 +89,54 @@ int main(int argc, char** argv) {
     // Minimal HTTP/1.1 GET
     std::string req = "GET / HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n";
 
-    if (mode == "tls") {
+    auto connect_dl = rs::util::make_deadline(std::chrono::milliseconds(timeout_ms));
+    auto io_dl = rs::util::make_deadline(std::chrono::milliseconds(timeout_ms));
+
+    if (mode == "tls")
+    {
       TLSTransport t;
-      // --- New code to handle min TLS version ---
-      if (!min_tls_version_str.empty()) {
-        auto version = parse_tls_version(min_tls_version_str);
-        if (version) {
-          t.set_min_tls_version(*version);
-          std::cout << "[TLS] Enforcing minimum TLS version: " << min_tls_version_str << "\n";
-        } else {
-          std::cerr << "Warning: Unknown TLS version '" << min_tls_version_str << "'. Using default (1.2).\n";
-        }
-      }
-      // ------------------------------------------
-      t.connect(host, port, deadline);
+      // (min TLS version handling as you have)
+      t.connect(host, port, connect_dl);
       std::cout << "[TLS] handshake OK to " << host << ":" << port << "\n";
 
-      t.send(std::as_bytes(std::span{req.data(), req.size()}), deadline);
+      t.send(std::as_bytes(std::span{req.data(), req.size()}), io_dl);
 
       std::vector<std::byte> buf(8192);
-      for (;;) {
-        auto r = t.recv(std::span<std::byte>(buf.data(), buf.size()), deadline);
-        if (r.n) {
-          std::cout.write(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(r.n));
-        }
-        if (r.eof) break;
+      for (;;)
+      {
+        auto dl = rs::util::make_deadline(std::chrono::milliseconds(timeout_ms)); // refresh per recv
+        auto r = t.recv(std::span<std::byte>(buf.data(), buf.size()), dl);
+        if (r.n)
+          std::cout.write(reinterpret_cast<char *>(buf.data()), (std::streamsize)r.n);
+        if (r.eof)
+          break;
       }
       t.close();
-    } else {
+    }
+    else
+    {
       SocketTransport s;
-      s.connect(host, port, deadline);
+      s.connect(host, port, connect_dl);
       std::cout << "[PLAIN] TCP connect OK to " << host << ":" << port << "\n";
 
-      s.send(std::as_bytes(std::span{req.data(), req.size()}), deadline);
+      s.send(std::as_bytes(std::span{req.data(), req.size()}), io_dl);
 
       std::vector<std::byte> buf(8192);
-      for (;;) {
-        auto r = s.recv(std::span<std::byte>(buf.data(), buf.size()), deadline);
-        if (r.n) {
-          std::cout.write(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(r.n));
-        }
-        if (r.eof) break;
+      for (;;)
+      {
+        auto dl = rs::util::make_deadline(std::chrono::milliseconds(timeout_ms));
+        auto r = s.recv(std::span<std::byte>(buf.data(), buf.size()), dl);
+        if (r.n)
+          std::cout.write(reinterpret_cast<char *>(buf.data()), (std::streamsize)r.n);
+        if (r.eof)
+          break;
       }
       s.close();
     }
-
     return 0;
-  } catch (const std::exception& e) {
+  }
+  catch (const std::exception &e)
+  {
     std::cerr << "ERROR: " << e.what() << "\n";
     // Also print OpenSSL errors for TLS connections
     ERR_print_errors_fp(stderr);

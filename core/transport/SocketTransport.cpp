@@ -7,17 +7,21 @@ using rs::util::Deadline;
 using rs::util::remaining;
 using rs::util::IOError;
 using rs::util::TimeoutError;
-using namespace rs::core::transport;
+
+namespace rs::core::transport {
 
 #ifdef _WIN32
-static int poll_connect(rs::core::transport::SocketTransport::socket_t s, int timeout_ms) {
+// Wait for connect completion with a timeout (Windows)
+static int poll_connect(SocketTransport::socket_t s, int timeout_ms) {
   fd_set wfds; FD_ZERO(&wfds); FD_SET(s, &wfds);
   TIMEVAL tv{ timeout_ms/1000, (timeout_ms%1000)*1000 };
   return select(0, nullptr, &wfds, nullptr, &tv);
 }
 #else
+// Wait for connect completion with a timeout (POSIX)
 static int poll_connect(int s, int timeout_ms) {
-  struct pollfd p{ s, POLLOUT, 0 }; return ::poll(&p, 1, timeout_ms);
+  struct pollfd p{ s, POLLOUT, 0 };
+  return ::poll(&p, 1, timeout_ms);
 }
 #endif
 
@@ -47,9 +51,11 @@ void SocketTransport::do_close(socket_t s) noexcept {
 
 void SocketTransport::set_nonblocking(socket_t s, bool nb) {
 #ifdef _WIN32
-  u_long mode = nb ? 1UL : 0UL; ioctlsocket(s, FIONBIO, &mode);
+  u_long mode = nb ? 1UL : 0UL;
+  ioctlsocket(s, FIONBIO, &mode);
 #else
-  int flags = fcntl(s, F_GETFL, 0); if (flags < 0) flags = 0;
+  int flags = fcntl(s, F_GETFL, 0);
+  if (flags < 0) flags = 0;
   fcntl(s, F_SETFL, nb ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK));
 #endif
 }
@@ -71,6 +77,7 @@ SocketTransport::~SocketTransport() { close(); }
 
 void SocketTransport::connect(std::string_view host, uint16_t port, Deadline deadline) {
   close();
+
   // Resolve
   addrinfo hints{}; hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
   addrinfo* res = nullptr; std::string port_str = std::to_string(port);
@@ -89,13 +96,27 @@ void SocketTransport::connect(std::string_view host, uint16_t port, Deadline dea
 
     set_nonblocking(sock_, true);
 
-    int rc = ::connect(sock_, ai->ai_addr, (int)ai->ai_addrlen);
-    if (rc == 0) { set_nonblocking(sock_, false); set_timeouts(sock_, remaining(deadline)); return; }
+    int rc = ::connect(sock_, ai->ai_addr,
+#ifdef _WIN32
+                       (int)ai->ai_addrlen
+#else
+                       (int)ai->ai_addrlen
+#endif
+    );
+    if (rc == 0) {
+      set_nonblocking(sock_, false);
+      set_timeouts(sock_, remaining(deadline));
+      return;
+    }
 #ifdef _WIN32
     int werr = WSAGetLastError();
-    if (werr != WSAEWOULDBLOCK && werr != WSAEINPROGRESS) { do_close(sock_); sock_ = invalid_socket(); continue; }
+    if (werr != WSAEWOULDBLOCK && werr != WSAEINPROGRESS) {
+      do_close(sock_); sock_ = invalid_socket(); continue;
+    }
 #else
-    if (errno != EINPROGRESS) { do_close(sock_); sock_ = invalid_socket(); continue; }
+    if (errno != EINPROGRESS) {
+      do_close(sock_); sock_ = invalid_socket(); continue;
+    }
 #endif
     // Wait for connect or timeout
     int wait = poll_connect(sock_, (int)remaining(deadline).count());
@@ -103,7 +124,11 @@ void SocketTransport::connect(std::string_view host, uint16_t port, Deadline dea
       // Check for connect success
       int err = 0; socklen_t len = sizeof(err);
       getsockopt(sock_, SOL_SOCKET, SO_ERROR, (char*)&err, &len);
-      if (err == 0) { set_nonblocking(sock_, false); set_timeouts(sock_, remaining(deadline)); return; }
+      if (err == 0) {
+        set_nonblocking(sock_, false);
+        set_timeouts(sock_, remaining(deadline));
+        return;
+      }
     }
     do_close(sock_); sock_ = invalid_socket();
   }
@@ -140,3 +165,5 @@ IOResult SocketTransport::recv(std::span<std::byte> buf, Deadline /*deadline*/) 
 void SocketTransport::close() noexcept {
   if (!is_invalid(sock_)) { do_close(sock_); sock_ = invalid_socket(); }
 }
+
+} // namespace rs::core::transport
