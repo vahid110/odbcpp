@@ -92,3 +92,30 @@ if (BUILD_EXAMPLES)
   add_executable(extended_query_example examples/extended_query_example.cpp)
   target_link_libraries(extended_query_example PRIVATE rs_core)
 endif()
+
+# ---- Tests ----
+option(BUILD_TESTING "Build tests" ON)
+include(CTest)
+
+if (BUILD_TESTING)
+  include(FetchContent)
+  FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+  )
+  # For MSVC: avoid overriding parent’s warning settings
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(googletest)
+
+  # ---- Unit tests ----
+  add_executable(test_datarow tests/unit/test_datarow.cpp)
+  target_link_libraries(test_datarow PRIVATE rs_core GTest::gtest_main)
+  add_test(NAME unit_datarow COMMAND test_datarow)
+  set_tests_properties(unit_datarow PROPERTIES LABELS "unit")
+
+  # ---- Integration tests ----
+  add_executable(it_simple_query tests/integration/it_simple_query.cpp)
+  target_link_libraries(it_simple_query PRIVATE rs_core GTest::gtest_main)
+  add_test(NAME integration_simple_query COMMAND it_simple_query)
+  set_tests_properties(integration_simple_query PROPERTIES LABELS "integration")
+endif()
