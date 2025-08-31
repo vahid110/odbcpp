@@ -25,8 +25,7 @@ int main(int argc, char** argv) {
   std::string cafile = (argc >= 9) ? argv[8] : "";
 
   try {
-    auto type = DatabaseFactory::detect_from_port(port);
-    auto conn = DatabaseFactory::create_connection(type);
+    auto conn = DatabaseFactory::create_connection();
 
     ConnectionSettings settings;
     settings.host = host;

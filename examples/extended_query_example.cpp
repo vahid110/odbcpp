@@ -42,8 +42,7 @@ int main(int argc, char** argv) {
   const std::string cap  = (argc >= 10) ? argv[9] : "";
 
   try {
-    auto type = DatabaseFactory::detect_from_port(port);
-    auto conn = DatabaseFactory::create_connection(type);
+    auto conn = DatabaseFactory::create_connection();
     
     ConnectionSettings settings;
     settings.host = host;

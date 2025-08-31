@@ -6,6 +6,12 @@ option(BUILD_EXAMPLES "Build examples" ON)
 option(BUILD_TESTING "Build tests" ON)
 option(OPENSSL_USE_STATIC_LIBS "Link OpenSSL statically when available" OFF)
 
+# ---- Database Selection (Single Database Per Build) ----
+set(TARGET_DATABASE "REDSHIFT" CACHE STRING "Target database for this build")
+set_property(CACHE TARGET_DATABASE PROPERTY STRINGS "POSTGRESQL" "REDSHIFT" "MYSQL" "SQLSERVER")
+
+message(STATUS "Building ODBC driver for: ${TARGET_DATABASE}")
+
 # ---- Global Settings ----
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,10 +26,30 @@ endif()
 include(cmake/FindDependencies.cmake)
 
 # ---- Core Library ----
-file(GLOB_RECURSE CORE_SOURCES 
-  "core/*.cpp"
-  "core/*.h"
+# Base sources (always included)
+file(GLOB CORE_BASE_SOURCES
+  "core/database/*.cpp"
+  "core/database/*.h"
+  "core/transport/*.cpp"
+  "core/transport/*.h"
+  "core/util/*.h"
 )
+
+set(CORE_SOURCES ${CORE_BASE_SOURCES})
+
+# Add database-specific sources based on TARGET_DATABASE
+if(TARGET_DATABASE STREQUAL "POSTGRESQL" OR TARGET_DATABASE STREQUAL "REDSHIFT")
+  file(GLOB DB_SOURCES "core/database/postgres/*.cpp" "core/database/postgres/*.h")
+  list(APPEND CORE_SOURCES ${DB_SOURCES})
+elseif(TARGET_DATABASE STREQUAL "MYSQL")
+  file(GLOB DB_SOURCES "core/database/mysql/*.cpp" "core/database/mysql/*.h")
+  list(APPEND CORE_SOURCES ${DB_SOURCES})
+elseif(TARGET_DATABASE STREQUAL "SQLSERVER")
+  file(GLOB DB_SOURCES "core/database/sqlserver/*.cpp" "core/database/sqlserver/*.h")
+  list(APPEND CORE_SOURCES ${DB_SOURCES})
+else()
+  message(FATAL_ERROR "Unknown TARGET_DATABASE: ${TARGET_DATABASE}")
+endif()
 
 add_library(${PROJECT_NAME}_core STATIC ${CORE_SOURCES})
 add_library(${PROJECT_NAME}::core ALIAS ${PROJECT_NAME}_core)
@@ -38,6 +64,12 @@ target_link_libraries(${PROJECT_NAME}_core
   PUBLIC 
     OpenSSL::SSL 
     OpenSSL::Crypto
+)
+
+# Define target database
+target_compile_definitions(${PROJECT_NAME}_core PUBLIC 
+  ODBCPP_TARGET_DATABASE="${TARGET_DATABASE}"
+  ODBCPP_ENABLE_${TARGET_DATABASE}=1
 )
 
 if(WIN32)

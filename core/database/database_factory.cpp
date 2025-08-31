@@ -1,29 +1,68 @@
 #include "database_factory.h"
 #include "generic_database_connection.h"
+
+#if defined(ODBCPP_ENABLE_POSTGRESQL) || defined(ODBCPP_ENABLE_REDSHIFT)
 #include "postgres/pg_protocol_parser.h"
-#include "core/transport/socket_transport.h"
-#include "core/transport/tls_transport.h"
+#endif
+
+#ifdef ODBCPP_ENABLE_MYSQL
+#include "mysql/mysql_protocol_parser.h"
+#endif
+
+#ifdef ODBCPP_ENABLE_SQLSERVER
+#include "sqlserver/sqlserver_protocol_parser.h"
+#endif
 
 namespace rs::core::database {
 
 std::unique_ptr<IDatabaseConnection> DatabaseFactory::create_connection(DatabaseType type) {
-  switch (type) {
-    case DatabaseType::PostgreSQL:
-    case DatabaseType::Redshift:
-      return std::make_unique<GenericDatabaseConnection>(
-        std::make_unique<postgres::PgProtocolParser>());
-    
-    case DatabaseType::MySQL:
-      // Future: return MySQL-specific parser
-      throw std::runtime_error("MySQL support not implemented yet");
-    
-    case DatabaseType::SQLServer:
-      // Future: return SQL Server-specific parser  
-      throw std::runtime_error("SQL Server support not implemented yet");
-    
-    default:
-      throw std::runtime_error("Unknown database type");
+#ifdef ODBCPP_ENABLE_POSTGRESQL
+  if (type == DatabaseType::PostgreSQL) {
+    return std::make_unique<GenericDatabaseConnection>(
+      std::make_unique<postgres::PgProtocolParser>());
   }
+#endif
+
+#ifdef ODBCPP_ENABLE_REDSHIFT
+  if (type == DatabaseType::Redshift) {
+    return std::make_unique<GenericDatabaseConnection>(
+      std::make_unique<postgres::PgProtocolParser>());
+  }
+#endif
+
+#ifdef ODBCPP_ENABLE_MYSQL
+  if (type == DatabaseType::MySQL) {
+    return std::make_unique<GenericDatabaseConnection>(
+      std::make_unique<mysql::MySQLProtocolParser>());
+  }
+#endif
+
+#ifdef ODBCPP_ENABLE_SQLSERVER
+  if (type == DatabaseType::SQLServer) {
+    return std::make_unique<GenericDatabaseConnection>(
+      std::make_unique<sqlserver::SQLServerProtocolParser>());
+  }
+#endif
+
+  throw std::runtime_error("Database type not supported in this build");
+}
+
+std::unique_ptr<IDatabaseConnection> DatabaseFactory::create_connection() {
+  return create_connection(get_compiled_database_type());
+}
+
+DatabaseType DatabaseFactory::get_compiled_database_type() {
+#ifdef ODBCPP_ENABLE_POSTGRESQL
+  return DatabaseType::PostgreSQL;
+#elif defined(ODBCPP_ENABLE_REDSHIFT)
+  return DatabaseType::Redshift;
+#elif defined(ODBCPP_ENABLE_MYSQL)
+  return DatabaseType::MySQL;
+#elif defined(ODBCPP_ENABLE_SQLSERVER)
+  return DatabaseType::SQLServer;
+#else
+  #error "No database type enabled"
+#endif
 }
 
 DatabaseType DatabaseFactory::detect_from_port(uint16_t port) {

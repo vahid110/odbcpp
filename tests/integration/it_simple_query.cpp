@@ -13,7 +13,7 @@ static std::string env_or(const char* k, const char* defv) {
 }
 
 TEST(Integration, ConnectAndSelect1) {
-  auto conn = DatabaseFactory::create_connection(DatabaseType::PostgreSQL);
+  auto conn = DatabaseFactory::create_connection();
   
   ConnectionSettings settings;
   settings.host = env_or("PGHOST","127.0.0.1");

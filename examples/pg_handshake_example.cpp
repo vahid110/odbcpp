@@ -24,8 +24,7 @@ int main(int argc, char** argv) {
   std::string sslmode = (argc >= 8) ? argv[7] : "verify-full";
 
   try {
-    auto type = DatabaseFactory::detect_from_port(port);
-    auto conn = DatabaseFactory::create_connection(type);
+    auto conn = DatabaseFactory::create_connection();
     
     ConnectionSettings settings;
     settings.host = host;
