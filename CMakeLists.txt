@@ -4,7 +4,13 @@ project(odbcpp VERSION 1.0.0 LANGUAGES CXX)
 # ---- Project Options ----
 option(BUILD_EXAMPLES "Build examples" ON)
 option(BUILD_TESTING "Build tests" ON)
-option(OPENSSL_USE_STATIC_LIBS "Link OpenSSL statically when available" OFF)
+option(OPENSSL_USE_STATIC_LIBS "Link OpenSSL statically when available" ON)
+
+# ---- Build Configuration Info ----
+message(STATUS "Build Configuration:")
+message(STATUS "  Static OpenSSL: ${OPENSSL_USE_STATIC_LIBS}")
+message(STATUS "  Examples: ${BUILD_EXAMPLES}")
+message(STATUS "  Testing: ${BUILD_TESTING}")
 
 # ---- Database Selection (Single Database Per Build) ----
 set(TARGET_DATABASE "REDSHIFT" CACHE STRING "Target database for this build")
