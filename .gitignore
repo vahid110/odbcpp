@@ -1,2 +1,25 @@
-build
-settings.json
+# Build directories
+build/
+cmake-build-*/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Credentials and sensitive files
+odbcpp.dsn
+*.dsn
+.env
+.env.local
+
+# Test databases
+*.db
+*.sqlite
+*.sqlite3
