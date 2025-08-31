@@ -143,28 +143,40 @@ rs::util::Result<QueryResult> AsyncDatabaseConnection::execute_query(std::string
     std::vector<Message> messages;
     std::vector<std::byte> buffer(8192);
     
-    while (true) {
-      auto recv_result = transport_->recv(buffer, deadline);
-      if (recv_result.has_error()) {
-        return rs::util::Result<QueryResult>(rs::util::DbErrorCode::NetworkError, recv_result.error_message());
-      }
+    auto recv_result = transport_->recv(buffer, deadline);
+    if (recv_result.has_error()) {
+      return rs::util::Result<QueryResult>(rs::util::DbErrorCode::NetworkError, recv_result.error_message());
+    }
+    
+    // Parse all messages in the response
+    std::vector<std::byte> all_data(buffer.begin(), buffer.begin() + recv_result->n);
+    size_t offset = 0;
+    bool ready = false;
+    
+    while (offset < all_data.size() && !ready) {
+      if (offset + 5 > all_data.size()) break;
       
-      if (recv_result->n == 0) break;
+      char tag = static_cast<char>(all_data[offset]);
+      uint32_t length = (static_cast<uint32_t>(all_data[offset+1]) << 24) |
+                       (static_cast<uint32_t>(all_data[offset+2]) << 16) |
+                       (static_cast<uint32_t>(all_data[offset+3]) << 8) |
+                       static_cast<uint32_t>(all_data[offset+4]);
       
-      // Parse received data into messages
-      std::vector<std::byte> data(buffer.begin(), buffer.begin() + recv_result->n);
-      auto msg = parser_->parse_message(data);
+      if (offset + 1 + length > all_data.size()) break;
+      
+      std::vector<std::byte> msg_data(all_data.begin() + offset, all_data.begin() + offset + 1 + length);
+      auto msg = parser_->parse_message(msg_data);
       messages.push_back(msg);
       
-      // Check if we're done (ReadyForQuery message)
-      if (parser_->is_ready_for_query(msg)) {
-        break;
-      }
-      
-      // Check for errors
       if (parser_->is_error_response(msg)) {
         return rs::util::Result<QueryResult>(rs::util::DbErrorCode::QueryFailed, parser_->extract_error_message(msg));
       }
+      
+      if (parser_->is_ready_for_query(msg)) {
+        ready = true;
+      }
+      
+      offset += 1 + length;
     }
     
     // Extract results from messages

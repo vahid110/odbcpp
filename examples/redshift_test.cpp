@@ -130,7 +130,7 @@ int main(int argc, char** argv) {
     // 6. Test queries
     std::vector<std::string> test_queries = {
       "SELECT version()",
-      "SELECT current_database(), current_user()",
+      "SELECT current_database(), current_user",
       "SELECT COUNT(*) as table_count FROM information_schema.tables WHERE table_schema = 'public'",
       "SELECT 'Hello Redshift!' as greeting, 42 as answer, NOW() as current_time"
     };

@@ -105,6 +105,58 @@ int main() {
           std::cout << "❌ Auth failed: " << parser.extract_error_message(auth_msg) << "\n";
         } else {
           std::cout << "✅ Authentication successful!\n";
+          
+          // Test simple query
+          std::cout << "\n📊 Testing query: SELECT 1\n";
+          auto query_msg = parser.create_simple_query("SELECT 1");
+          print_bytes(query_msg, "Query message");
+          
+          auto query_send = transport.send(query_msg, deadline);
+          if (query_send.has_error()) {
+            std::cout << "❌ Query send failed: " << query_send.error_message() << "\n";
+          } else {
+            std::cout << "✅ Query sent (" << query_send->n << " bytes)\n";
+            
+            // Receive query response
+            std::vector<std::byte> query_buffer(4096);
+            auto query_recv = transport.recv(query_buffer, deadline);
+            if (query_recv.has_error()) {
+              std::cout << "❌ Query receive failed: " << query_recv.error_message() << "\n";
+            } else {
+              std::vector<std::byte> query_result(query_buffer.begin(), query_buffer.begin() + query_recv->n);
+              print_bytes(query_result, "Query response");
+              
+              // Parse query response messages
+              size_t offset = 0;
+              while (offset < query_result.size()) {
+                if (offset + 5 > query_result.size()) break;
+                
+                char tag = static_cast<char>(query_result[offset]);
+                uint32_t length = (static_cast<uint32_t>(query_result[offset+1]) << 24) |
+                                 (static_cast<uint32_t>(query_result[offset+2]) << 16) |
+                                 (static_cast<uint32_t>(query_result[offset+3]) << 8) |
+                                 static_cast<uint32_t>(query_result[offset+4]);
+                
+                if (offset + 1 + length > query_result.size()) break;
+                
+                std::vector<std::byte> msg_data(query_result.begin() + offset, query_result.begin() + offset + 1 + length);
+                auto qmsg = parser.parse_message(msg_data);
+                
+                std::cout << "📨 Query msg tag: '" << qmsg.tag << "' (" << static_cast<int>(qmsg.tag) << ") len=" << length << "\n";
+                
+                if (parser.is_error_response(qmsg)) {
+                  std::cout << "❌ Query error: " << parser.extract_error_message(qmsg) << "\n";
+                }
+                
+                if (parser.is_ready_for_query(qmsg)) {
+                  std::cout << "✅ Query completed successfully\n";
+                  break;
+                }
+                
+                offset += 1 + length;
+              }
+            }
+          }
         }
       }
     }
