@@ -61,6 +61,7 @@ list(APPEND CORE_SOURCES
   "core/transport/thread_pool_transport.cpp"
   "core/database/async_database_connection.h"
   "core/database/async_database_connection.cpp"
+  "core/database/mock_protocol_parser.h"
 )
 
 add_library(${PROJECT_NAME}_core STATIC ${CORE_SOURCES})

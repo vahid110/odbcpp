@@ -1,5 +1,6 @@
 #include "async_database_connection.h"
 #include "core/transport/thread_pool_transport.h"
+#include "mock_protocol_parser.h"
 
 namespace rs::core::database {
 
@@ -10,6 +11,11 @@ AsyncDatabaseConnection::AsyncDatabaseConnection(
   
   if (!transport_) {
     transport_ = std::make_unique<rs::core::transport::ThreadPoolTransport>();
+  }
+  
+  // Create a mock parser if none provided (for testing)
+  if (!parser_) {
+    parser_ = std::make_unique<MockProtocolParser>();
   }
 }
 

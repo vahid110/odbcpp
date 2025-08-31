@@ -9,7 +9,9 @@ public:
   
   void cancel() override {
     std::lock_guard lock(mutex_);
-    cancelled_ = true;
+    if (!complete_) {
+      cancelled_ = true;
+    }
   }
   
   bool is_complete() const override {
@@ -24,7 +26,14 @@ public:
   
   void set_complete() {
     std::lock_guard lock(mutex_);
-    complete_ = true;
+    if (!cancelled_) {
+      complete_ = true;
+    }
+  }
+  
+  bool should_execute() const {
+    std::lock_guard lock(mutex_);
+    return !cancelled_ && !complete_;
   }
 
 private:
@@ -43,12 +52,24 @@ ThreadPoolTransport::ThreadPoolTransport(size_t thread_count) {
 
 ThreadPoolTransport::~ThreadPoolTransport() {
   shutdown_.store(true);
-  cv_.notify_all();
   
+  // Wake up all workers
+  {
+    std::lock_guard lock(queue_mutex_);
+    cv_.notify_all();
+  }
+  
+  // Wait for all workers to finish
   for (auto& worker : workers_) {
     if (worker.joinable()) {
       worker.join();
     }
+  }
+  
+  // Clear any remaining tasks
+  std::lock_guard lock(queue_mutex_);
+  while (!tasks_.empty()) {
+    tasks_.pop();
   }
 }
 
@@ -79,11 +100,13 @@ std::unique_ptr<AsyncOperation> ThreadPoolTransport::connect_async(
   
   Task task{
     [this, host_str, port, deadline, callback, op_ptr]() {
-      if (op_ptr->is_cancelled()) return;
+      if (!op_ptr->should_execute()) return;
       
       auto result = socket_.connect(host_str, port, deadline);
-      op_ptr->set_complete();
-      callback(std::move(result));
+      if (op_ptr->should_execute()) {
+        op_ptr->set_complete();
+        callback(std::move(result));
+      }
     },
     deadline
   };
@@ -104,11 +127,13 @@ std::unique_ptr<AsyncOperation> ThreadPoolTransport::send_async(
   
   Task task{
     [this, buffer_copy = std::move(buffer_copy), deadline, callback, op_ptr]() {
-      if (op_ptr->is_cancelled()) return;
+      if (!op_ptr->should_execute()) return;
       
       auto result = socket_.send(buffer_copy, deadline);
-      op_ptr->set_complete();
-      callback(std::move(result));
+      if (op_ptr->should_execute()) {
+        op_ptr->set_complete();
+        callback(std::move(result));
+      }
     },
     deadline
   };
@@ -126,11 +151,13 @@ std::unique_ptr<AsyncOperation> ThreadPoolTransport::recv_async(
   
   Task task{
     [this, buf, deadline, callback, op_ptr]() {
-      if (op_ptr->is_cancelled()) return;
+      if (!op_ptr->should_execute()) return;
       
       auto result = socket_.recv(buf, deadline);
-      op_ptr->set_complete();
-      callback(std::move(result));
+      if (op_ptr->should_execute()) {
+        op_ptr->set_complete();
+        callback(std::move(result));
+      }
     },
     deadline
   };
@@ -145,10 +172,22 @@ std::future<rs::util::Result<void>> ThreadPoolTransport::connect_future(
   auto promise = std::make_shared<std::promise<rs::util::Result<void>>>();
   auto future = promise->get_future();
   
-  connect_async(host, port, deadline, 
+  auto op = connect_async(host, port, deadline, 
     [promise](rs::util::Result<void> result) {
-      promise->set_value(std::move(result));
+      try {
+        promise->set_value(std::move(result));
+      } catch (...) {
+        // Promise may be destroyed, ignore
+      }
     });
+  
+  // Keep operation alive until future is ready
+  std::thread([op = std::move(op)]() mutable {
+    // Just hold the operation until it completes
+    while (!op->is_complete() && !op->is_cancelled()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }).detach();
   
   return future;
 }
@@ -159,10 +198,21 @@ std::future<rs::util::Result<IOResult>> ThreadPoolTransport::send_future(
   auto promise = std::make_shared<std::promise<rs::util::Result<IOResult>>>();
   auto future = promise->get_future();
   
-  send_async(buf, deadline,
+  auto op = send_async(buf, deadline,
     [promise](rs::util::Result<IOResult> result) {
-      promise->set_value(std::move(result));
+      try {
+        promise->set_value(std::move(result));
+      } catch (...) {
+        // Promise may be destroyed, ignore
+      }
     });
+  
+  // Keep operation alive
+  std::thread([op = std::move(op)]() mutable {
+    while (!op->is_complete() && !op->is_cancelled()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }).detach();
   
   return future;
 }
@@ -173,10 +223,21 @@ std::future<rs::util::Result<IOResult>> ThreadPoolTransport::recv_future(
   auto promise = std::make_shared<std::promise<rs::util::Result<IOResult>>>();
   auto future = promise->get_future();
   
-  recv_async(buf, deadline,
+  auto op = recv_async(buf, deadline,
     [promise](rs::util::Result<IOResult> result) {
-      promise->set_value(std::move(result));
+      try {
+        promise->set_value(std::move(result));
+      } catch (...) {
+        // Promise may be destroyed, ignore
+      }
     });
+  
+  // Keep operation alive
+  std::thread([op = std::move(op)]() mutable {
+    while (!op->is_complete() && !op->is_cancelled()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }).detach();
   
   return future;
 }
