@@ -35,7 +35,7 @@ private:
   void write_all(const std::vector<std::byte>& data, rs::util::Deadline deadline);
   std::vector<std::byte> read_message(rs::util::Deadline deadline);
   void perform_authentication(rs::util::Deadline deadline);
-  void setup_ssl_if_needed(rs::util::Deadline deadline);
+  void write_message_to_transport(rs::core::transport::ITransport& transport, const std::vector<std::byte>& data, rs::util::Deadline deadline);
 };
 
 } // namespace rs::core::database

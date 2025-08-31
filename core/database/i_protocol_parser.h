@@ -4,6 +4,7 @@
 #include <string_view>
 #include <span>
 #include <cstddef>
+#include <map>
 #include "core/util/deadline.h"
 
 namespace rs::core::database {

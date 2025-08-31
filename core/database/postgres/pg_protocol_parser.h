@@ -2,6 +2,7 @@
 #include "core/database/i_protocol_parser.h"
 #include "core/pgwire/messages.h"
 #include <map>
+#include <stdexcept>
 
 namespace rs::core::database::postgres {
 
