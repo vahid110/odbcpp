@@ -1,6 +1,6 @@
 #pragma once
 #include "core/database/i_protocol_parser.h"
-#include "core/pgwire/messages.h"
+#include "pg_messages.h"
 #include <map>
 #include <stdexcept>
 

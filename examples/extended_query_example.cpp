@@ -2,7 +2,7 @@
 Example usage:
 ./build/extended_query_example xxx.redshift.amazonaws.com 5439 dev awsuser ppp 15000 sslmode=verify-full ./root.crt
 */
-#include "core/engine/pg_connection.h"
+#include "core/database/database_factory.h"
 #include "core/util/deadline.h"
 #include <iostream>
 #include <string>
@@ -10,23 +10,7 @@ Example usage:
 #include <array>
 #include <chrono>
 
-using rs::core::engine::PgConnection;
-using rs::core::engine::SslMode;
-
-static const char *tx_to_string(rs::pg::TxStatus s)
-{
-    switch (s)
-    {
-    case rs::pg::TxStatus::Idle:
-        return "Idle";
-    case rs::pg::TxStatus::InTx:
-        return "InTransaction";
-    case rs::pg::TxStatus::InFailedTx:
-        return "Error";
-    default:
-        return "Unknown";
-    }
-}
+using namespace rs::core::database;
 
 static void print_rows(const std::vector<std::vector<std::string>>& rows) {
   std::cout << "Rows: " << rows.size() << "\n";
@@ -58,25 +42,24 @@ int main(int argc, char** argv) {
   const std::string cap  = (argc >= 10) ? argv[9] : "";
 
   try {
-    PgConnection::Settings s;
-    s.host = host;
-    s.port = port;
-    s.db = db;
-    s.user = user;
-    s.password = pw;
-    s.timeout = std::chrono::milliseconds(timeout_ms);
-    if (sslm == "disable")       s.sslmode = SslMode::Disable;
-    else if (sslm == "verify-ca")  s.sslmode = SslMode::VerifyCA;
-    else                            s.sslmode = SslMode::VerifyFull; // default
-    if (!caf.empty()) s.ssl_ca_file = caf;
-    if (!cap.empty()) s.ssl_ca_dir  = cap;
+    auto type = DatabaseFactory::detect_from_port(port);
+    auto conn = DatabaseFactory::create_connection(type);
+    
+    ConnectionSettings settings;
+    settings.host = host;
+    settings.port = port;
+    settings.database = db;
+    settings.user = user;
+    settings.password = pw;
+    settings.timeout = std::chrono::milliseconds(timeout_ms);
+    settings.use_ssl = (sslm != "disable");
+    if (!caf.empty()) settings.ssl_ca_file = caf;
 
-    PgConnection conn;                 // Let PgConnection handle TCP → SSLRequest → TLS
-    conn.connect(s);
+    conn->connect(settings);
 
-    std::cout << "Connected. TxStatus=" << conn.txStatus() << "\n";
-    std::cout << "server_version=" << conn.parameterStatus("server_version") << "\n";
-    std::cout << "client_encoding=" << conn.parameterStatus("client_encoding") << "\n";
+    std::cout << "Connected.\n";
+    std::cout << "server_version=" << conn->get_parameter("server_version") << "\n";
+    std::cout << "client_encoding=" << conn->get_parameter("client_encoding") << "\n";
 
     auto dl = rs::util::make_deadline(std::chrono::milliseconds(timeout_ms));
 
@@ -84,8 +67,8 @@ int main(int argc, char** argv) {
     {
       std::cout << "\n-- Param exec: SELECT $1::int4 + $2::int4 --\n";
       std::array<std::string,2> params = {"7","35"};
-      auto rows = conn.exec_params("SELECT $1::int4 + $2::int4", params, dl /*deadline*/, 0 /*all rows*/);
-      print_rows(rows); // expect a single row "42"
+      auto result = conn->execute_prepared("SELECT $1::int4 + $2::int4", params, dl);
+      print_rows(result.rows); // expect a single row "42"
     }
 
     // 2) Multiple rows (and fetch sizing)
@@ -97,11 +80,8 @@ int main(int argc, char** argv) {
         "UNION ALL SELECT 4 UNION ALL SELECT 5) t ORDER BY n";
       std::vector<std::string> no_params;
       // With max_rows=2 the helper returns only first 2 rows (we didn’t loop Execute)
-      auto first_batch = conn.exec_params(sql, no_params, dl, /*max_rows=*/2);
-      print_rows(first_batch); // expect 2 rows: 1, 2
-      // If you want all, call with max_rows=0:
-      auto all_rows = conn.exec_params(sql, no_params, dl, /*max_rows=*/0);
-      print_rows(all_rows); // expect 5 rows: 1..5
+      auto result = conn->execute_query(sql, dl);
+      print_rows(result.rows); // expect 5 rows: 1..5
     }
 
     // 3) Error handling
@@ -109,7 +89,7 @@ int main(int argc, char** argv) {
       std::cout << "\n-- Intentional error: bad SQL --\n";
       try {
         std::vector<std::string> none;
-        (void)conn.exec_params("SELECT nope_from_nowhere", none, dl, 0);
+        (void)conn->execute_query("SELECT nope_from_nowhere", dl);
         std::cout << "UNEXPECTED: error did not occur\n";
       } catch (const std::exception& ex) {
         std::cout << "Caught error as expected: " << ex.what() << "\n";
@@ -119,14 +99,14 @@ int main(int argc, char** argv) {
     // 4) Transaction flow
     {
       std::cout << "\n-- Transaction demo --\n";
-      conn.simpleQuery("BEGIN", dl);
-      std::cout << "TxStatus after BEGIN: " << tx_to_string(conn.txStatus()) << "\n";
+      conn->execute_query("BEGIN", dl);
+      std::cout << "Transaction started\n";
 
-      auto r = conn.simpleQuery("SELECT 1", dl);
-      print_rows(r);
+      auto r = conn->execute_query("SELECT 1", dl);
+      print_rows(r.rows);
 
-      conn.simpleQuery("ROLLBACK", dl);
-      std::cout << "TxStatus after ROLLBACK: " << tx_to_string(conn.txStatus()) << "\n";
+      conn->execute_query("ROLLBACK", dl);
+      std::cout << "Transaction rolled back\n";
     }
 
     std::cout << "\nDone.\n";

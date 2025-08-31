@@ -2,12 +2,11 @@
 Example usage :
 ./build/pg_handshake_example xxx.redshift.amazonaws.com 5439 dev awsuser ppp 15000 ./root.crt
 */
-#include "core/engine/pg_connection.h"
+#include "core/database/database_factory.h"
 #include "core/util/deadline.h"
 #include <iostream>
 
-using rs::core::engine::PgConnection;
-using rs::core::engine::SslMode;
+using namespace rs::core::database;
 
 int main(int argc, char** argv) {
   if (argc < 5) {
@@ -25,35 +24,24 @@ int main(int argc, char** argv) {
   std::string sslmode = (argc >= 8) ? argv[7] : "verify-full";
 
   try {
-    PgConnection conn;
-    PgConnection::Settings s;
-    s.host = host;
-    s.port = port;
-    s.db = db;
-    s.user = user;
-    s.password = pw;
-    s.timeout = std::chrono::milliseconds(timeout_ms);
+    auto type = DatabaseFactory::detect_from_port(port);
+    auto conn = DatabaseFactory::create_connection(type);
+    
+    ConnectionSettings settings;
+    settings.host = host;
+    settings.port = port;
+    settings.database = db;
+    settings.user = user;
+    settings.password = pw;
+    settings.timeout = std::chrono::milliseconds(timeout_ms);
+    settings.use_ssl = (sslmode != "disable");
 
-    if (sslmode == "disable") {
-      s.sslmode = SslMode::Disable;
-    } else if (sslmode == "verify-ca") {
-      s.sslmode = SslMode::VerifyCA;
-    } else { // default to verify-full
-      s.sslmode = SslMode::VerifyFull;
-    }
+    conn->connect(settings);
 
-    // Optional: set these from env/flags if you want to test explicit CA locations
-    // s.ssl_ca_file = "path/to/root.crt";
-    // s.ssl_ca_dir  = "/etc/ssl/certs";
-
-    s.extras["application_name"] = "odbc++-handshake";
-
-    conn.connect(s);
-
-    std::cout << "Connected OK. tx=" << (char)conn.txStatus() << "\n";
-    std::cout << "server_version=" << conn.parameterStatus("server_version") << "\n";
-    std::cout << "client_encoding=" << conn.parameterStatus("client_encoding") << "\n";
-    std::cout << "DateStyle=" << conn.parameterStatus("DateStyle") << "\n";
+    std::cout << "Connected OK.\n";
+    std::cout << "server_version=" << conn->get_parameter("server_version") << "\n";
+    std::cout << "client_encoding=" << conn->get_parameter("client_encoding") << "\n";
+    std::cout << "DateStyle=" << conn->get_parameter("DateStyle") << "\n";
     return 0;
   } catch (const std::exception& e) {
     std::cerr << "ERROR: " << e.what() << "\n";
