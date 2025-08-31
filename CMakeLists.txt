@@ -54,6 +54,15 @@ endif()
 # Add connection pool
 list(APPEND CORE_SOURCES "core/database/connection_pool.cpp" "core/database/connection_pool.h")
 
+# Add async transport
+list(APPEND CORE_SOURCES 
+  "core/transport/async_transport.h"
+  "core/transport/thread_pool_transport.h"
+  "core/transport/thread_pool_transport.cpp"
+  "core/database/async_database_connection.h"
+  "core/database/async_database_connection.cpp"
+)
+
 add_library(${PROJECT_NAME}_core STATIC ${CORE_SOURCES})
 add_library(${PROJECT_NAME}::core ALIAS ${PROJECT_NAME}_core)
 
