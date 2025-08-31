@@ -51,6 +51,9 @@ else()
   message(FATAL_ERROR "Unknown TARGET_DATABASE: ${TARGET_DATABASE}")
 endif()
 
+# Add connection pool
+list(APPEND CORE_SOURCES "core/database/connection_pool.cpp" "core/database/connection_pool.h")
+
 add_library(${PROJECT_NAME}_core STATIC ${CORE_SOURCES})
 add_library(${PROJECT_NAME}::core ALIAS ${PROJECT_NAME}_core)
 
