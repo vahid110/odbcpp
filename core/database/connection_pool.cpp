@@ -47,6 +47,14 @@ std::string ThreadSafeConnection::get_last_error() const {
 
 // ConnectionPool implementation
 ConnectionPool::ConnectionPool(Config config) : config_(std::move(config)) {
+  // Validate configuration
+  if (config_.max_connections == 0) {
+    throw std::invalid_argument("max_connections must be greater than 0");
+  }
+  if (config_.min_connections > config_.max_connections) {
+    throw std::invalid_argument("min_connections cannot exceed max_connections");
+  }
+  
   // Create minimum connections
   for (size_t i = 0; i < config_.min_connections; ++i) {
     auto conn_result = create_connection();
