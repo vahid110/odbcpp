@@ -1,0 +1,32 @@
+# ODBCPP DSN Examples
+# Add these sections to your system's odbc.ini or ~/.odbc.ini file
+
+[RedshiftProd]
+Driver=ODBCPP Redshift
+Server=your-cluster.redshift.amazonaws.com
+Port=5439
+Database=analytics
+UID=your-username
+PWD=your-password
+SSL=1
+Description=Production Redshift cluster
+
+[RedshiftDev]
+Driver=ODBCPP Redshift
+Server=dev-cluster.redshift.amazonaws.com
+Port=5439
+Database=dev
+UID=dev-user
+PWD=dev-password
+SSL=1
+Description=Development Redshift cluster
+
+[PostgreSQLLocal]
+Driver=ODBCPP PostgreSQL
+Server=localhost
+Port=5432
+Database=postgres
+UID=postgres
+PWD=postgres
+SSL=0
+Description=Local PostgreSQL database

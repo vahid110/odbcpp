@@ -3,38 +3,37 @@
 ## Static vs Dynamic Linking
 
 ### Current Configuration (Default)
-- **Core Library**: ✅ **STATIC** (`libodbcpp_core.a`)
+- **ODBC Driver**: ✅ **SHARED** (`libodbcpp.dylib` - for ODBC Driver Manager)
+- **Core Library**: ✅ **STATIC** (`libodbcpp_core.a` - for examples/tests)
 - **OpenSSL**: ✅ **STATIC** (default: `OPENSSL_USE_STATIC_LIBS=ON`)
 - **System Libraries**: Dynamic (libc++, libSystem - required by OS)
 
 ### Build Outputs
 
-#### Static Build (Default)
+#### Default Build
 ```bash
 cmake -B build
 cmake --build build
 ```
 
-**Dependencies:**
+**Produces:**
+- `libodbcpp.dylib` (5.3MB) - **ODBC Driver** for system integration
+- `libodbcpp_core.a` (455KB) - Static library for development
+
+**ODBC Driver Dependencies:**
 - `libc++.1.dylib` (system C++ runtime)
 - `libSystem.B.dylib` (system library)
-- **OpenSSL**: Statically linked (no external .dylib dependencies)
+- **OpenSSL**: Statically linked (no external dependencies)
 
-**File Size:** ~5.3MB (includes OpenSSL)
-
-#### Dynamic Build (Optional)
+#### Dynamic OpenSSL Build (Optional)
 ```bash
 cmake -DOPENSSL_USE_STATIC_LIBS=OFF -B build-dynamic
 cmake --build build-dynamic
 ```
 
-**Dependencies:**
-- `libc++.1.dylib` (system C++ runtime)
-- `libSystem.B.dylib` (system library)
+**Additional Dependencies:**
 - `libssl.3.dylib` (OpenSSL SSL)
 - `libcrypto.3.dylib` (OpenSSL Crypto)
-
-**File Size:** ~1.3MB (requires OpenSSL installed on target system)
 
 ## Build Options
 
@@ -44,6 +43,8 @@ cmake --build build-dynamic
 | `BUILD_EXAMPLES` | `ON` | Build example applications |
 | `BUILD_TESTING` | `ON` | Build unit and integration tests |
 | `TARGET_DATABASE` | `REDSHIFT` | Target database (REDSHIFT/POSTGRESQL/MYSQL/SQLSERVER) |
+
+**Note**: ODBC drivers are always built as shared libraries (.dylib/.so/.dll) as required by the ODBC specification.
 
 ## Deployment Considerations
 
@@ -71,20 +72,22 @@ cmake --build build-dynamic
 ## Library Structure
 
 ```
-libodbcpp_core.a (3.0MB)
+libodbcpp.dylib (5.3MB) - ODBC Driver
 ├── ODBC API Layer
-│   ├── odbc_api.cpp.o
-│   ├── odbc_handles.cpp.o
-│   └── connection_string.cpp.o
+│   ├── SQLConnect, SQLExecDirect, SQLFetch
+│   ├── Handle management (ENV/DBC/STMT)
+│   └── DSN and connection string parsing
 ├── Database Layer
-│   ├── async_database_connection.cpp.o
-│   ├── connection_pool.cpp.o
-│   ├── database_factory.cpp.o
-│   └── postgres/pg_protocol_parser.cpp.o
+│   ├── PostgreSQL wire protocol
+│   ├── Async connection management
+│   └── Connection pooling
 └── Transport Layer
-    ├── socket_transport.cpp.o
-    ├── thread_pool_transport.cpp.o
-    └── tls_transport.cpp.o
+    ├── TCP sockets with TLS
+    └── Thread pool for async I/O
+
+libodbcpp_core.a (455KB) - Development Library
+└── Same components as shared library
+    (for linking examples and tests)
 ```
 
 ## Cross-Platform Support
@@ -124,4 +127,18 @@ cmake -DCMAKE_BUILD_TYPE=Release -DOPENSSL_USE_STATIC_LIBS=ON -DBUILD_TESTING=OF
 cmake --build build-dist --config Release
 ```
 
-The build system is optimized for **static linking by default** to ensure maximum portability and ease of deployment.
+### ODBC Driver Installation
+```bash
+# Build the driver
+cmake -DCMAKE_BUILD_TYPE=Release -B build
+cmake --build build
+
+# Install system-wide (requires sudo)
+cd build
+sudo ../install/install-driver.sh
+
+# Test installation
+isql -v YourDSNName username password
+```
+
+The build system produces both a **shared ODBC driver** for system integration and a **static library** for development, with OpenSSL statically linked by default for maximum portability.

@@ -28,26 +28,75 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 - C++20 compiler (GCC 10+, Clang 12+, MSVC 2019+)
 - OpenSSL 3.0+
 
-### Build for Redshift
+### Build ODBC Driver
 
 ```bash
-# Using CMake directly
+# Build both static library and ODBC driver
+cmake -B build
+cmake --build build
+
+# Install as system ODBC driver (optional)
+cd build
+sudo ../install/install-driver.sh
+```
+
+### Build for Specific Database
+
+```bash
+# Redshift (default)
 cmake -DTARGET_DATABASE=REDSHIFT -B build-redshift
 cmake --build build-redshift
 
-# Using build script
-./build-database.sh redshift
-```
-
-### Build for PostgreSQL
-
-```bash
+# PostgreSQL
 cmake -DTARGET_DATABASE=POSTGRESQL -B build-postgresql
 cmake --build build-postgresql
 ```
 
 ### Usage
 
+#### Standard ODBC (Recommended)
+```cpp
+#include <sql.h>
+#include <sqlext.h>
+
+int main() {
+    SQLHENV henv;
+    SQLHDBC hdbc;
+    SQLHSTMT hstmt;
+    
+    // Allocate handles
+    SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &henv);
+    SQLSetEnvAttr(henv, SQL_ATTR_ODBC_VERSION, (void*)SQL_OV_ODBC3, 0);
+    SQLAllocHandle(SQL_HANDLE_DBC, henv, &hdbc);
+    
+    // Connect using DSN or connection string
+    SQLConnect(hdbc, 
+        (SQLCHAR*)"DSN=RedshiftProd", SQL_NTS,
+        (SQLCHAR*)"username", SQL_NTS,
+        (SQLCHAR*)"password", SQL_NTS);
+    
+    // Execute query
+    SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
+    SQLExecDirect(hstmt, (SQLCHAR*)"SELECT version()", SQL_NTS);
+    
+    // Fetch results
+    char version[512];
+    while (SQLFetch(hstmt) == SQL_SUCCESS) {
+        SQLGetData(hstmt, 1, SQL_C_CHAR, version, sizeof(version), nullptr);
+        printf("Version: %s\n", version);
+    }
+    
+    // Cleanup
+    SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+    SQLDisconnect(hdbc);
+    SQLFreeHandle(SQL_HANDLE_DBC, hdbc);
+    SQLFreeHandle(SQL_HANDLE_ENV, henv);
+    
+    return 0;
+}
+```
+
+#### Direct Library Usage
 ```cpp
 #include "core/database/database_factory.h"
 

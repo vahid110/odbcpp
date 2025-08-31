@@ -96,9 +96,18 @@ list(APPEND CORE_SOURCES
   "odbc/connection_string.cpp"
 )
 
+# Build static library for linking examples/tests
 add_library(${PROJECT_NAME}_core STATIC ${CORE_SOURCES})
 add_library(${PROJECT_NAME}::core ALIAS ${PROJECT_NAME}_core)
 
+# Build shared library for ODBC Driver Manager
+add_library(${PROJECT_NAME}_driver SHARED ${CORE_SOURCES})
+set_target_properties(${PROJECT_NAME}_driver PROPERTIES
+  OUTPUT_NAME "odbcpp"
+  VERSION ${PROJECT_VERSION}
+  SOVERSION 1
+)
+# Configure static library
 target_include_directories(${PROJECT_NAME}_core
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
@@ -112,19 +121,39 @@ target_link_libraries(${PROJECT_NAME}_core
     OpenSSL::Crypto
 )
 
-# Define target database
 target_compile_definitions(${PROJECT_NAME}_core PUBLIC 
+  ODBCPP_TARGET_DATABASE="${TARGET_DATABASE}"
+  ODBCPP_ENABLE_${TARGET_DATABASE}=1
+)
+
+# Configure shared library (ODBC driver)
+target_include_directories(${PROJECT_NAME}_driver
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:include>
+    ${ODBC_INCLUDE_DIR}
+)
+
+target_link_libraries(${PROJECT_NAME}_driver 
+  PUBLIC 
+    OpenSSL::SSL 
+    OpenSSL::Crypto
+)
+
+target_compile_definitions(${PROJECT_NAME}_driver PUBLIC 
   ODBCPP_TARGET_DATABASE="${TARGET_DATABASE}"
   ODBCPP_ENABLE_${TARGET_DATABASE}=1
 )
 
 if(WIN32)
   target_link_libraries(${PROJECT_NAME}_core PRIVATE ws2_32 crypt32)
+  target_link_libraries(${PROJECT_NAME}_driver PRIVATE ws2_32 crypt32)
 endif()
 
 # ---- Compiler Settings ----
 include(cmake/CompilerSettings.cmake)
 apply_compiler_settings(${PROJECT_NAME}_core)
+apply_compiler_settings(${PROJECT_NAME}_driver)
 
 # ---- Examples ----
 if(BUILD_EXAMPLES)

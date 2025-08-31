@@ -1,0 +1,18 @@
+# ODBCPP Driver Registration Template
+# Add this section to your system's odbcinst.ini file
+
+[ODBCPP Redshift]
+Description=ODBCPP Driver for Amazon Redshift
+Driver=@DRIVER_PATH@/libodbcpp.so
+Setup=@DRIVER_PATH@/libodbcpp.so
+FileUsage=1
+CPTimeout=
+CPReuse=
+
+[ODBCPP PostgreSQL]
+Description=ODBCPP Driver for PostgreSQL
+Driver=@DRIVER_PATH@/libodbcpp.so
+Setup=@DRIVER_PATH@/libodbcpp.so
+FileUsage=1
+CPTimeout=
+CPReuse=
