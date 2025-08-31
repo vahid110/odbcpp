@@ -32,10 +32,17 @@ private:
   std::string last_error_;
   bool connected_ = false;
   
+  // Exception-based methods (for backward compatibility)
   void write_all(const std::vector<std::byte>& data, rs::util::Deadline deadline);
   std::vector<std::byte> read_message(rs::util::Deadline deadline);
   void perform_authentication(rs::util::Deadline deadline);
   void write_message_to_transport(rs::core::transport::ITransport& transport, const std::vector<std::byte>& data, rs::util::Deadline deadline);
+  
+  // Result-based methods (internal implementation)
+  rs::util::Result<void> write_all_result(const std::vector<std::byte>& data, rs::util::Deadline deadline);
+  rs::util::Result<std::vector<std::byte>> read_message_result(rs::util::Deadline deadline);
+  rs::util::Result<void> perform_authentication_result(rs::util::Deadline deadline);
+  rs::util::Result<void> write_message_to_transport_result(rs::core::transport::ITransport& transport, const std::vector<std::byte>& data, rs::util::Deadline deadline);
 };
 
 } // namespace rs::core::database

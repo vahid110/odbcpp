@@ -11,7 +11,6 @@ GenericDatabaseConnection::GenericDatabaseConnection(
   : parser_(std::move(parser)), transport_(std::move(transport)) {}
 
 rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettings& settings) {
-  return rs::util::try_catch([&]() {
   settings_ = settings;
   
   if (!transport_) {
@@ -29,37 +28,57 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
   if (settings.use_ssl) {
     // For PostgreSQL/Redshift: plain connect + SSL request + upgrade
     auto plain_transport = std::make_unique<rs::core::transport::SocketTransport>();
-    rs::util::unwrap_or_throw(plain_transport->connect(settings.host, settings.port, deadline));
+    
+    auto connect_result = plain_transport->connect(settings.host, settings.port, deadline);
+    if (connect_result.has_error()) {
+      return rs::util::Result<void>{rs::util::DbErrorCode::ConnectionFailed, connect_result.error_message()};
+    }
     
     // Send SSL request
     auto ssl_req = parser_->create_ssl_request();
-    write_message_to_transport(*plain_transport, ssl_req, deadline);
+    auto write_result = write_message_to_transport_result(*plain_transport, ssl_req, deadline);
+    if (write_result.has_error()) {
+      return write_result;
+    }
     
     // Read SSL response
     std::vector<std::byte> response(1);
-    auto result = rs::util::unwrap_or_throw(plain_transport->recv(response, deadline));
-    if (result.n != 1 || response[0] != std::byte{'S'}) {
-      throw std::runtime_error("SSL not supported by server");
+    auto recv_result = plain_transport->recv(response, deadline);
+    if (recv_result.has_error()) {
+      return rs::util::Result<void>{rs::util::DbErrorCode::NetworkError, "Failed to read SSL response"};
+    }
+    
+    if (recv_result->n != 1 || response[0] != std::byte{'S'}) {
+      return rs::util::Result<void>{rs::util::DbErrorCode::TLSError, "SSL not supported by server"};
     }
     
     // Upgrade to TLS
     auto* tls_transport = static_cast<rs::core::transport::TLSTransport*>(transport_.get());
     tls_transport->upgrade_from(plain_transport->release(), settings.host, deadline);
   } else {
-    rs::util::unwrap_or_throw(transport_->connect(settings.host, settings.port, deadline));
+    auto connect_result = transport_->connect(settings.host, settings.port, deadline);
+    if (connect_result.has_error()) {
+      return rs::util::Result<void>{rs::util::DbErrorCode::ConnectionFailed, connect_result.error_message()};
+    }
   }
   
   // Send startup message
   std::map<std::string, std::string> params;
   params["application_name"] = "odbcpp";
   auto startup = parser_->create_startup_message(settings.user, settings.database, params);
-  write_all(startup, deadline);
+  auto write_result = write_all_result(startup, deadline);
+  if (write_result.has_error()) {
+    return write_result;
+  }
   
   // Handle authentication
-  perform_authentication(deadline);
+  auto auth_result = perform_authentication_result(deadline);
+  if (auth_result.has_error()) {
+    return auth_result;
+  }
   
-    connected_ = true;
-  });
+  connected_ = true;
+  return rs::util::Result<void>{};
 }
 
 void GenericDatabaseConnection::disconnect() {
@@ -74,67 +93,81 @@ bool GenericDatabaseConnection::is_connected() const {
 }
 
 rs::util::Result<QueryResult> GenericDatabaseConnection::execute_query(std::string_view sql, rs::util::Deadline deadline) {
-  return rs::util::try_catch([&]() {
-    if (!connected_) throw std::runtime_error("Not connected");
-    
-    auto query_msg = parser_->create_simple_query(sql);
-    write_all(query_msg, deadline);
-    
-    std::vector<Message> messages;
-    
-    while (true) {
-      auto raw_msg = read_message(deadline);
-      auto msg = parser_->parse_message(raw_msg);
-      
-      if (parser_->is_error_response(msg)) {
-        last_error_ = parser_->extract_error_message(msg);
-        throw std::runtime_error("Query error: " + last_error_);
-      }
-      
-      messages.push_back(msg);
-      
-      if (parser_->is_ready_for_query(msg)) {
-        break;
-      }
+  if (!connected_) {
+    return rs::util::Result<QueryResult>{rs::util::DbErrorCode::NotConnected, "Not connected"};
+  }
+  
+  auto query_msg = parser_->create_simple_query(sql);
+  auto write_result = write_all_result(query_msg, deadline);
+  if (write_result.has_error()) {
+    return rs::util::Result<QueryResult>{write_result.error(), write_result.error_message()};
+  }
+  
+  std::vector<Message> messages;
+  
+  while (true) {
+    auto msg_result = read_message_result(deadline);
+    if (msg_result.has_error()) {
+      return rs::util::Result<QueryResult>{msg_result.error(), msg_result.error_message()};
     }
     
-    QueryResult result;
-    result.rows = parser_->extract_query_results(messages);
-    return result;
-  });
+    auto msg = parser_->parse_message(*msg_result);
+    
+    if (parser_->is_error_response(msg)) {
+      last_error_ = parser_->extract_error_message(msg);
+      return rs::util::Result<QueryResult>{rs::util::DbErrorCode::QueryFailed, "Query error: " + last_error_};
+    }
+    
+    messages.push_back(msg);
+    
+    if (parser_->is_ready_for_query(msg)) {
+      break;
+    }
+  }
+  
+  QueryResult result;
+  result.rows = parser_->extract_query_results(messages);
+  return rs::util::Result<QueryResult>{std::move(result)};
 }
 
 rs::util::Result<QueryResult> GenericDatabaseConnection::execute_prepared(std::string_view sql, 
                                                                             std::span<const std::string> params,
                                                                             rs::util::Deadline deadline) {
-  return rs::util::try_catch([&]() {
-    if (!connected_) throw std::runtime_error("Not connected");
-    
-    auto query_msg = parser_->create_prepared_query(sql, params);
-    write_all(query_msg, deadline);
-    
-    std::vector<Message> messages;
-    
-    while (true) {
-      auto raw_msg = read_message(deadline);
-      auto msg = parser_->parse_message(raw_msg);
-      
-      if (parser_->is_error_response(msg)) {
-        last_error_ = parser_->extract_error_message(msg);
-        throw std::runtime_error("Query error: " + last_error_);
-      }
-      
-      messages.push_back(msg);
-      
-      if (parser_->is_ready_for_query(msg)) {
-        break;
-      }
+  if (!connected_) {
+    return rs::util::Result<QueryResult>{rs::util::DbErrorCode::NotConnected, "Not connected"};
+  }
+  
+  auto query_msg = parser_->create_prepared_query(sql, params);
+  auto write_result = write_all_result(query_msg, deadline);
+  if (write_result.has_error()) {
+    return rs::util::Result<QueryResult>{write_result.error(), write_result.error_message()};
+  }
+  
+  std::vector<Message> messages;
+  
+  while (true) {
+    auto msg_result = read_message_result(deadline);
+    if (msg_result.has_error()) {
+      return rs::util::Result<QueryResult>{msg_result.error(), msg_result.error_message()};
     }
     
-    QueryResult result;
-    result.rows = parser_->extract_query_results(messages);
-    return result;
-  });
+    auto msg = parser_->parse_message(*msg_result);
+    
+    if (parser_->is_error_response(msg)) {
+      last_error_ = parser_->extract_error_message(msg);
+      return rs::util::Result<QueryResult>{rs::util::DbErrorCode::QueryFailed, "Query error: " + last_error_};
+    }
+    
+    messages.push_back(msg);
+    
+    if (parser_->is_ready_for_query(msg)) {
+      break;
+    }
+  }
+  
+  QueryResult result;
+  result.rows = parser_->extract_query_results(messages);
+  return rs::util::Result<QueryResult>{std::move(result)};
 }
 
 std::string GenericDatabaseConnection::get_parameter(std::string_view key) const {
@@ -147,54 +180,97 @@ std::string GenericDatabaseConnection::get_last_error() const {
 }
 
 void GenericDatabaseConnection::write_all(const std::vector<std::byte>& data, rs::util::Deadline deadline) {
-  size_t offset = 0;
-  while (offset < data.size()) {
-    auto result = rs::util::unwrap_or_throw(transport_->send(std::span<const std::byte>(data.data() + offset, data.size() - offset), deadline));
-    if (result.n == 0) throw std::runtime_error("Write failed");
-    offset += result.n;
+  auto result = write_all_result(data, deadline);
+  if (result.has_error()) {
+    rs::util::unwrap_or_throw(std::move(result));
   }
 }
 
+rs::util::Result<void> GenericDatabaseConnection::write_all_result(const std::vector<std::byte>& data, rs::util::Deadline deadline) {
+  size_t offset = 0;
+  while (offset < data.size()) {
+    auto result = transport_->send(std::span<const std::byte>(data.data() + offset, data.size() - offset), deadline);
+    if (result.has_error()) {
+      return rs::util::Result<void>{rs::util::DbErrorCode::NetworkError, result.error_message()};
+    }
+    if (result->n == 0) {
+      return rs::util::Result<void>{rs::util::DbErrorCode::NetworkError, "Write failed"};
+    }
+    offset += result->n;
+  }
+  return rs::util::Result<void>{};
+}
+
 std::vector<std::byte> GenericDatabaseConnection::read_message(rs::util::Deadline deadline) {
+  auto result = read_message_result(deadline);
+  if (result.has_error()) {
+    rs::util::unwrap_or_throw(std::move(result));
+  }
+  return std::move(*result);
+}
+
+rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message_result(rs::util::Deadline deadline) {
   // Read message header (1 byte tag + 4 bytes length)
   std::vector<std::byte> header(5);
   size_t offset = 0;
   
   while (offset < 5) {
-    auto result = rs::util::unwrap_or_throw(transport_->recv(std::span<std::byte>(header.data() + offset, 5 - offset), deadline));
-    if (result.eof) throw std::runtime_error("Unexpected EOF");
-    if (result.n == 0) continue;
-    offset += result.n;
+    auto result = transport_->recv(std::span<std::byte>(header.data() + offset, 5 - offset), deadline);
+    if (result.has_error()) {
+      return rs::util::Result<std::vector<std::byte>>{rs::util::DbErrorCode::NetworkError, result.error_message()};
+    }
+    if (result->eof) {
+      return rs::util::Result<std::vector<std::byte>>{rs::util::DbErrorCode::NetworkError, "Unexpected EOF"};
+    }
+    if (result->n == 0) continue;
+    offset += result->n;
   }
   
   // Extract length
   const auto* p = reinterpret_cast<const unsigned char*>(header.data());
   uint32_t len = (p[1] << 24) | (p[2] << 16) | (p[3] << 8) | p[4];
   
-  if (len < 4) throw std::runtime_error("Invalid message length");
+  if (len < 4) {
+    return rs::util::Result<std::vector<std::byte>>{rs::util::DbErrorCode::ProtocolError, "Invalid message length"};
+  }
   
   // Read payload
   std::vector<std::byte> message(1 + len);
   message[0] = header[0]; // tag
   std::memcpy(message.data() + 1, header.data() + 1, 4); // length
   
-  size_t payload_len = len - 4;
   offset = 5;
   
   while (offset < message.size()) {
-    auto result = rs::util::unwrap_or_throw(transport_->recv(std::span<std::byte>(message.data() + offset, message.size() - offset), deadline));
-    if (result.eof) throw std::runtime_error("Unexpected EOF");
-    if (result.n == 0) continue;
-    offset += result.n;
+    auto result = transport_->recv(std::span<std::byte>(message.data() + offset, message.size() - offset), deadline);
+    if (result.has_error()) {
+      return rs::util::Result<std::vector<std::byte>>{rs::util::DbErrorCode::NetworkError, result.error_message()};
+    }
+    if (result->eof) {
+      return rs::util::Result<std::vector<std::byte>>{rs::util::DbErrorCode::NetworkError, "Unexpected EOF"};
+    }
+    if (result->n == 0) continue;
+    offset += result->n;
   }
   
-  return message;
+  return rs::util::Result<std::vector<std::byte>>{std::move(message)};
 }
 
 void GenericDatabaseConnection::perform_authentication(rs::util::Deadline deadline) {
+  auto result = perform_authentication_result(deadline);
+  if (result.has_error()) {
+    rs::util::unwrap_or_throw(std::move(result));
+  }
+}
+
+rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(rs::util::Deadline deadline) {
   while (true) {
-    auto raw_msg = read_message(deadline);
-    auto msg = parser_->parse_message(raw_msg);
+    auto msg_result = read_message_result(deadline);
+    if (msg_result.has_error()) {
+      return rs::util::Result<void>{msg_result.error(), msg_result.error_message()};
+    }
+    
+    auto msg = parser_->parse_message(*msg_result);
     
     if (msg.tag == 'R') { // Authentication
       auto auth_req = parser_->parse_auth_request(msg.payload);
@@ -205,7 +281,10 @@ void GenericDatabaseConnection::perform_authentication(rs::util::Deadline deadli
       
       auto auth_response = parser_->create_auth_response(auth_req, settings_.password, settings_.user);
       if (!auth_response.empty()) {
-        write_all(auth_response, deadline);
+        auto write_result = write_all_result(auth_response, deadline);
+        if (write_result.has_error()) {
+          return write_result;
+        }
       }
     }
     else if (msg.tag == 'S') { // ParameterStatus
@@ -217,25 +296,42 @@ void GenericDatabaseConnection::perform_authentication(rs::util::Deadline deadli
     }
     else if (parser_->is_error_response(msg)) {
       last_error_ = parser_->extract_error_message(msg);
-      throw std::runtime_error("Authentication failed: " + last_error_);
+      return rs::util::Result<void>{rs::util::DbErrorCode::AuthenticationFailed, "Authentication failed: " + last_error_};
     }
     else if (parser_->is_ready_for_query(msg)) {
       break; // Ready for queries
     }
   }
+  return rs::util::Result<void>{};
 }
 
 void GenericDatabaseConnection::write_message_to_transport(
     rs::core::transport::ITransport& transport,
     const std::vector<std::byte>& data, 
     rs::util::Deadline deadline) {
+  auto result = write_message_to_transport_result(transport, data, deadline);
+  if (result.has_error()) {
+    rs::util::unwrap_or_throw(std::move(result));
+  }
+}
+
+rs::util::Result<void> GenericDatabaseConnection::write_message_to_transport_result(
+    rs::core::transport::ITransport& transport,
+    const std::vector<std::byte>& data, 
+    rs::util::Deadline deadline) {
   
   size_t offset = 0;
   while (offset < data.size()) {
-    auto result = rs::util::unwrap_or_throw(transport.send(std::span<const std::byte>(data.data() + offset, data.size() - offset), deadline));
-    if (result.n == 0) throw std::runtime_error("Write failed");
-    offset += result.n;
+    auto result = transport.send(std::span<const std::byte>(data.data() + offset, data.size() - offset), deadline);
+    if (result.has_error()) {
+      return rs::util::Result<void>{rs::util::DbErrorCode::NetworkError, result.error_message()};
+    }
+    if (result->n == 0) {
+      return rs::util::Result<void>{rs::util::DbErrorCode::NetworkError, "Write failed"};
+    }
+    offset += result->n;
   }
+  return rs::util::Result<void>{};
 }
 
 } // namespace rs::core::database
