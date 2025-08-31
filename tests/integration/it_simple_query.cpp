@@ -1,6 +1,8 @@
 // tests/integration/it_simple_query.cpp
 #include <gtest/gtest.h>
-#include "core/database/database_factory.h"
+#include "core/database/async_database_connection.h"
+#include "core/database/postgres/pg_protocol_parser.h"
+#include "core/transport/thread_pool_transport.h"
 #include "core/util/deadline.h"
 #include "core/util/exception_adapter.h"
 #include <cstdlib>
@@ -14,7 +16,15 @@ static std::string env_or(const char* k, const char* defv) {
 }
 
 TEST(Integration, ConnectAndSelect1) {
-  auto conn = DatabaseFactory::create_connection();
+  // Skip if no local database available
+  const char* host = getenv("PGHOST");
+  if (!host) {
+    GTEST_SKIP() << "No PGHOST environment variable set - skipping local database test";
+  }
+  
+  auto transport = std::make_unique<rs::core::transport::ThreadPoolTransport>(4);
+  auto parser = std::make_unique<rs::core::database::postgres::PgProtocolParser>();
+  auto conn = std::make_unique<rs::core::database::AsyncDatabaseConnection>(std::move(parser), std::move(transport));
   
   ConnectionSettings settings;
   settings.host = env_or("PGHOST","127.0.0.1");
@@ -22,7 +32,7 @@ TEST(Integration, ConnectAndSelect1) {
   settings.database = env_or("PGDATABASE","postgres");
   settings.user = env_or("PGUSER","postgres");
   settings.password = env_or("PGPASSWORD","postgres");
-  settings.use_ssl = false; // local Postgres in CI: plain
+  settings.use_ssl = false;
   settings.timeout = std::chrono::seconds(10);
 
   rs::util::unwrap_or_throw(conn->connect(settings));
