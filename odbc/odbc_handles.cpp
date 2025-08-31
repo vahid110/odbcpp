@@ -155,18 +155,63 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
   
   const std::string& value = row[col - 1];
   
-  // Simple string conversion for now
-  if (target_type == SQL_C_CHAR) {
-    size_t copy_len = std::min(static_cast<size_t>(buffer_length - 1), value.length());
-    std::memcpy(buffer, value.c_str(), copy_len);
-    static_cast<char*>(buffer)[copy_len] = '\0';
-    
-    if (indicator) {
-      *indicator = static_cast<SQLLEN>(value.length());
+  // Essential Redshift data type conversions
+  switch (target_type) {
+    case SQL_C_CHAR: {
+      size_t copy_len = std::min(static_cast<size_t>(buffer_length - 1), value.length());
+      std::memcpy(buffer, value.c_str(), copy_len);
+      static_cast<char*>(buffer)[copy_len] = '\0';
+      if (indicator) *indicator = static_cast<SQLLEN>(value.length());
+      return SQL_SUCCESS;
     }
+    
+    case SQL_C_SLONG: {
+      try {
+        SQLINTEGER result = static_cast<SQLINTEGER>(std::stol(value));
+        *static_cast<SQLINTEGER*>(buffer) = result;
+        if (indicator) *indicator = sizeof(SQLINTEGER);
+        return SQL_SUCCESS;
+      } catch (...) {
+        set_error(SQLSTATE_GENERAL_ERROR, "Invalid integer value");
+        return SQL_ERROR;
+      }
+    }
+    
+    case SQL_C_SBIGINT: {
+      try {
+        SQLBIGINT result = static_cast<SQLBIGINT>(std::stoll(value));
+        *static_cast<SQLBIGINT*>(buffer) = result;
+        if (indicator) *indicator = sizeof(SQLBIGINT);
+        return SQL_SUCCESS;
+      } catch (...) {
+        set_error(SQLSTATE_GENERAL_ERROR, "Invalid bigint value");
+        return SQL_ERROR;
+      }
+    }
+    
+    case SQL_C_DOUBLE: {
+      try {
+        SQLDOUBLE result = std::stod(value);
+        *static_cast<SQLDOUBLE*>(buffer) = result;
+        if (indicator) *indicator = sizeof(SQLDOUBLE);
+        return SQL_SUCCESS;
+      } catch (...) {
+        set_error(SQLSTATE_GENERAL_ERROR, "Invalid double value");
+        return SQL_ERROR;
+      }
+    }
+    
+    case SQL_C_BIT: {
+      SQLCHAR result = (value == "t" || value == "true" || value == "1") ? 1 : 0;
+      *static_cast<SQLCHAR*>(buffer) = result;
+      if (indicator) *indicator = sizeof(SQLCHAR);
+      return SQL_SUCCESS;
+    }
+    
+    default:
+      set_error(SQLSTATE_GENERAL_ERROR, "Unsupported data type conversion");
+      return SQL_ERROR;
   }
-  
-  return SQL_SUCCESS;
 }
 
 // Handle registry implementation
