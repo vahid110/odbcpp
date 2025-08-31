@@ -1,0 +1,137 @@
+#include "odbc_handles.h"
+#include "core/transport/thread_pool_transport.h"
+#include "core/util/deadline.h"
+#include <mutex>
+
+namespace rs::odbc {
+
+// Connection implementation
+SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& user, const std::string& password) {
+  try {
+    // Create async database connection
+    auto transport = std::make_unique<rs::core::transport::ThreadPoolTransport>(4);
+    db_conn_ = std::make_unique<rs::core::database::AsyncDatabaseConnection>(nullptr, std::move(transport));
+    
+    // Parse DSN or use defaults
+    rs::core::database::ConnectionSettings settings;
+    settings.host = "localhost"; // Parse from DSN in production
+    settings.port = 5432;
+    settings.database = dsn;
+    settings.user = user;
+    settings.password = password;
+    settings.use_ssl = false;
+    settings.timeout = std::chrono::seconds(30);
+    
+    // Connect synchronously for ODBC compatibility
+    auto result = db_conn_->connect(settings);
+    if (result.has_error()) {
+      set_error(SQLSTATE_CONNECTION_FAILURE, result.error_message());
+      return SQL_ERROR;
+    }
+    
+    connected_ = true;
+    return SQL_SUCCESS;
+    
+  } catch (const std::exception& e) {
+    set_error(SQLSTATE_GENERAL_ERROR, e.what());
+    return SQL_ERROR;
+  }
+}
+
+SQLRETURN ODBCConnection::disconnect() {
+  if (db_conn_) {
+    db_conn_->disconnect();
+    connected_ = false;
+  }
+  return SQL_SUCCESS;
+}
+
+// Statement implementation
+SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
+  if (!conn_->is_connected()) {
+    set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
+    return SQL_ERROR;
+  }
+  
+  try {
+    auto deadline = rs::util::make_deadline(std::chrono::seconds(30));
+    auto result = conn_->get_db_connection()->execute_query(sql, deadline);
+    
+    if (result.has_error()) {
+      set_error(SQLSTATE_SYNTAX_ERROR, result.error_message());
+      return SQL_ERROR;
+    }
+    
+    result_rows_ = result->rows;
+    current_row_ = 0;
+    executed_ = true;
+    
+    return SQL_SUCCESS;
+    
+  } catch (const std::exception& e) {
+    set_error(SQLSTATE_GENERAL_ERROR, e.what());
+    return SQL_ERROR;
+  }
+}
+
+SQLRETURN ODBCStatement::fetch() {
+  if (!executed_ || current_row_ >= result_rows_.size()) {
+    return SQL_NO_DATA;
+  }
+  
+  current_row_++;
+  return SQL_SUCCESS;
+}
+
+SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type, 
+                                 void* buffer, SQLLEN buffer_length, SQLLEN* indicator) {
+  if (!executed_ || current_row_ == 0 || current_row_ > result_rows_.size()) {
+    set_error(SQLSTATE_GENERAL_ERROR, "No current row");
+    return SQL_ERROR;
+  }
+  
+  const auto& row = result_rows_[current_row_ - 1];
+  if (col < 1 || col > row.size()) {
+    set_error(SQLSTATE_GENERAL_ERROR, "Invalid column number");
+    return SQL_ERROR;
+  }
+  
+  const std::string& value = row[col - 1];
+  
+  // Simple string conversion for now
+  if (target_type == SQL_C_CHAR) {
+    size_t copy_len = std::min(static_cast<size_t>(buffer_length - 1), value.length());
+    std::memcpy(buffer, value.c_str(), copy_len);
+    static_cast<char*>(buffer)[copy_len] = '\0';
+    
+    if (indicator) {
+      *indicator = static_cast<SQLLEN>(value.length());
+    }
+  }
+  
+  return SQL_SUCCESS;
+}
+
+// Handle registry implementation
+HandleRegistry& HandleRegistry::instance() {
+  static HandleRegistry registry;
+  return registry;
+}
+
+void HandleRegistry::register_handle(SQLHANDLE handle, std::unique_ptr<ODBCHandle> obj) {
+  std::lock_guard lock(mutex_);
+  handles_[handle] = std::move(obj);
+}
+
+void HandleRegistry::unregister_handle(SQLHANDLE handle) {
+  std::lock_guard lock(mutex_);
+  handles_.erase(handle);
+}
+
+ODBCHandle* HandleRegistry::get_handle(SQLHANDLE handle) {
+  std::lock_guard lock(mutex_);
+  auto it = handles_.find(handle);
+  return (it != handles_.end()) ? it->second.get() : nullptr;
+}
+
+} // namespace rs::odbc

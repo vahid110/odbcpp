@@ -25,6 +25,21 @@ endif()
 # ---- Dependencies ----
 include(cmake/FindDependencies.cmake)
 
+# Find ODBC headers
+if(APPLE)
+  find_path(ODBC_INCLUDE_DIR sql.h PATHS /opt/homebrew/include)
+  if(ODBC_INCLUDE_DIR)
+    message(STATUS "ODBC headers found: ${ODBC_INCLUDE_DIR}")
+  else()
+    message(FATAL_ERROR "ODBC headers not found. Install with: brew install unixodbc")
+  endif()
+elseif(UNIX)
+  find_path(ODBC_INCLUDE_DIR sql.h PATHS /usr/include)
+  if(NOT ODBC_INCLUDE_DIR)
+    message(FATAL_ERROR "ODBC headers not found. Install with: apt-get install unixodbc-dev")
+  endif()
+endif()
+
 # ---- Core Library ----
 # Base sources (always included)
 file(GLOB CORE_BASE_SOURCES
@@ -64,6 +79,15 @@ list(APPEND CORE_SOURCES
   "core/database/mock_protocol_parser.h"
 )
 
+# Add ODBC layer
+list(APPEND CORE_SOURCES
+  "odbc/odbc_types.h"
+  "odbc/odbc_handles.h"
+  "odbc/odbc_handles.cpp"
+  "odbc/odbc_api.h"
+  "odbc/odbc_api.cpp"
+)
+
 add_library(${PROJECT_NAME}_core STATIC ${CORE_SOURCES})
 add_library(${PROJECT_NAME}::core ALIAS ${PROJECT_NAME}_core)
 
@@ -71,6 +95,7 @@ target_include_directories(${PROJECT_NAME}_core
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
     $<INSTALL_INTERFACE:include>
+    ${ODBC_INCLUDE_DIR}
 )
 
 target_link_libraries(${PROJECT_NAME}_core 
