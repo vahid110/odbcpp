@@ -33,12 +33,17 @@ protected:
   }
   
   bool connect() {
-    std::string dsn = std::string(host_) + ":" + (port_ ? port_ : "5439") + "/" + database_;
+    std::string conn_str = "SERVER=" + std::string(host_) + 
+                          ";PORT=" + (port_ ? port_ : "5439") +
+                          ";DATABASE=" + database_ +
+                          ";UID=" + user_ +
+                          ";PWD=" + password_ +
+                          ";SSL=0";
     
     SQLRETURN ret = SQLConnect(hdbc_,
-                              reinterpret_cast<SQLCHAR*>(const_cast<char*>(dsn.c_str())), SQL_NTS,
-                              reinterpret_cast<SQLCHAR*>(const_cast<char*>(user_)), SQL_NTS,
-                              reinterpret_cast<SQLCHAR*>(const_cast<char*>(password_)), SQL_NTS);
+                              reinterpret_cast<SQLCHAR*>(const_cast<char*>(conn_str.c_str())), SQL_NTS,
+                              nullptr, 0,
+                              nullptr, 0);
     
     if (ret == SQL_SUCCESS || ret == SQL_SUCCESS_WITH_INFO) {
       EXPECT_EQ(SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt_), SQL_SUCCESS);
@@ -100,7 +105,7 @@ TEST_F(RedshiftRealTest, CurrentUserQuery) {
   ASSERT_TRUE(connect());
   
   SQLRETURN ret = SQLExecDirect(hstmt_, 
-                               reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT current_user()")), 
+                               reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT current_user")), 
                                SQL_NTS);
   ASSERT_EQ(ret, SQL_SUCCESS);
   
@@ -120,7 +125,7 @@ TEST_F(RedshiftRealTest, MultipleRowQuery) {
   ASSERT_TRUE(connect());
   
   SQLRETURN ret = SQLExecDirect(hstmt_, 
-                               reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT generate_series(1, 5) as num")), 
+                               reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 1 as num UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5")), 
                                SQL_NTS);
   ASSERT_EQ(ret, SQL_SUCCESS);
   
