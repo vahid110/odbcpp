@@ -1,6 +1,7 @@
 #include "generic_database_connection.h"
 #include "core/transport/socket_transport.h"
 #include "core/transport/tls_transport.h"
+#include "core/util/exception_adapter.h"
 
 namespace rs::core::database {
 
@@ -9,7 +10,8 @@ GenericDatabaseConnection::GenericDatabaseConnection(
     std::unique_ptr<rs::core::transport::ITransport> transport)
   : parser_(std::move(parser)), transport_(std::move(transport)) {}
 
-void GenericDatabaseConnection::connect(const ConnectionSettings& settings) {
+rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettings& settings) {
+  return rs::util::try_catch([&]() {
   settings_ = settings;
   
   if (!transport_) {
@@ -56,7 +58,8 @@ void GenericDatabaseConnection::connect(const ConnectionSettings& settings) {
   // Handle authentication
   perform_authentication(deadline);
   
-  connected_ = true;
+    connected_ = true;
+  });
 }
 
 void GenericDatabaseConnection::disconnect() {
@@ -70,64 +73,68 @@ bool GenericDatabaseConnection::is_connected() const {
   return connected_;
 }
 
-QueryResult GenericDatabaseConnection::execute_query(std::string_view sql, rs::util::Deadline deadline) {
-  if (!connected_) throw std::runtime_error("Not connected");
-  
-  auto query_msg = parser_->create_simple_query(sql);
-  write_all(query_msg, deadline);
-  
-  std::vector<Message> messages;
-  
-  while (true) {
-    auto raw_msg = read_message(deadline);
-    auto msg = parser_->parse_message(raw_msg);
+rs::util::Result<QueryResult> GenericDatabaseConnection::execute_query(std::string_view sql, rs::util::Deadline deadline) {
+  return rs::util::try_catch([&]() {
+    if (!connected_) throw std::runtime_error("Not connected");
     
-    if (parser_->is_error_response(msg)) {
-      last_error_ = parser_->extract_error_message(msg);
-      throw std::runtime_error("Query error: " + last_error_);
+    auto query_msg = parser_->create_simple_query(sql);
+    write_all(query_msg, deadline);
+    
+    std::vector<Message> messages;
+    
+    while (true) {
+      auto raw_msg = read_message(deadline);
+      auto msg = parser_->parse_message(raw_msg);
+      
+      if (parser_->is_error_response(msg)) {
+        last_error_ = parser_->extract_error_message(msg);
+        throw std::runtime_error("Query error: " + last_error_);
+      }
+      
+      messages.push_back(msg);
+      
+      if (parser_->is_ready_for_query(msg)) {
+        break;
+      }
     }
     
-    messages.push_back(msg);
-    
-    if (parser_->is_ready_for_query(msg)) {
-      break;
-    }
-  }
-  
-  QueryResult result;
-  result.rows = parser_->extract_query_results(messages);
-  return result;
+    QueryResult result;
+    result.rows = parser_->extract_query_results(messages);
+    return result;
+  });
 }
 
-QueryResult GenericDatabaseConnection::execute_prepared(std::string_view sql, 
-                                                      std::span<const std::string> params,
-                                                      rs::util::Deadline deadline) {
-  if (!connected_) throw std::runtime_error("Not connected");
-  
-  auto query_msg = parser_->create_prepared_query(sql, params);
-  write_all(query_msg, deadline);
-  
-  std::vector<Message> messages;
-  
-  while (true) {
-    auto raw_msg = read_message(deadline);
-    auto msg = parser_->parse_message(raw_msg);
+rs::util::Result<QueryResult> GenericDatabaseConnection::execute_prepared(std::string_view sql, 
+                                                                            std::span<const std::string> params,
+                                                                            rs::util::Deadline deadline) {
+  return rs::util::try_catch([&]() {
+    if (!connected_) throw std::runtime_error("Not connected");
     
-    if (parser_->is_error_response(msg)) {
-      last_error_ = parser_->extract_error_message(msg);
-      throw std::runtime_error("Query error: " + last_error_);
+    auto query_msg = parser_->create_prepared_query(sql, params);
+    write_all(query_msg, deadline);
+    
+    std::vector<Message> messages;
+    
+    while (true) {
+      auto raw_msg = read_message(deadline);
+      auto msg = parser_->parse_message(raw_msg);
+      
+      if (parser_->is_error_response(msg)) {
+        last_error_ = parser_->extract_error_message(msg);
+        throw std::runtime_error("Query error: " + last_error_);
+      }
+      
+      messages.push_back(msg);
+      
+      if (parser_->is_ready_for_query(msg)) {
+        break;
+      }
     }
     
-    messages.push_back(msg);
-    
-    if (parser_->is_ready_for_query(msg)) {
-      break;
-    }
-  }
-  
-  QueryResult result;
-  result.rows = parser_->extract_query_results(messages);
-  return result;
+    QueryResult result;
+    result.rows = parser_->extract_query_results(messages);
+    return result;
+  });
 }
 
 std::string GenericDatabaseConnection::get_parameter(std::string_view key) const {

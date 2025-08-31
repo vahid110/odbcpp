@@ -11,9 +11,9 @@ public:
   SocketTransport();
   ~SocketTransport() override;
 
-  void connect(std::string_view host, uint16_t port, rs::util::Deadline deadline) override;
-  IOResult send(std::span<const std::byte> buf, rs::util::Deadline deadline) override;
-  IOResult recv(std::span<std::byte> buf, rs::util::Deadline deadline) override;
+  rs::util::Result<void> connect(std::string_view host, uint16_t port, rs::util::Deadline deadline) override;
+  rs::util::Result<IOResult> send(std::span<const std::byte> buf, rs::util::Deadline deadline) override;
+  rs::util::Result<IOResult> recv(std::span<std::byte> buf, rs::util::Deadline deadline) override;
   void close() noexcept override;
 
   // Access raw socket for TLS wrapper

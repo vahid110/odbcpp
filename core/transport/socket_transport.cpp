@@ -1,4 +1,5 @@
 #include "socket_transport.h"
+#include "core/util/exception_adapter.h"
 #include <cassert>
 #include <cstring>
 #include <string>
@@ -75,7 +76,8 @@ void SocketTransport::set_timeouts(socket_t s, std::chrono::milliseconds rw) {
 SocketTransport::SocketTransport() = default;
 SocketTransport::~SocketTransport() { close(); }
 
-void SocketTransport::connect(std::string_view host, uint16_t port, Deadline deadline) {
+rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t port, Deadline deadline) {
+  return rs::util::try_catch([&]() {
   close();
 
   // Resolve
@@ -133,33 +135,38 @@ void SocketTransport::connect(std::string_view host, uint16_t port, Deadline dea
     do_close(sock_); sock_ = invalid_socket();
   }
 
-  throw TimeoutError("connect timeout or no route to host");
+    throw TimeoutError("connect timeout or no route to host");
+  });
 }
 
-IOResult SocketTransport::send(std::span<const std::byte> buf, Deadline /*deadline*/) {
-  if (is_invalid(sock_)) throw IOError("send on closed socket");
+rs::util::Result<IOResult> SocketTransport::send(std::span<const std::byte> buf, Deadline /*deadline*/) {
+  return rs::util::try_catch([&]() {
+    if (is_invalid(sock_)) throw IOError("send on closed socket");
 #ifdef _WIN32
-  int n = ::send(sock_, reinterpret_cast<const char*>(buf.data()), (int)buf.size(), 0);
-  if (n == SOCKET_ERROR) throw IOError(platform::last_error_text("send"));
+    int n = ::send(sock_, reinterpret_cast<const char*>(buf.data()), (int)buf.size(), 0);
+    if (n == SOCKET_ERROR) throw IOError(platform::last_error_text("send"));
 #else
-  ssize_t n = ::send(sock_, buf.data(), buf.size(), 0);
-  if (n < 0) throw IOError(platform::last_error_text("send"));
+    ssize_t n = ::send(sock_, buf.data(), buf.size(), 0);
+    if (n < 0) throw IOError(platform::last_error_text("send"));
 #endif
-  return IOResult{ static_cast<std::size_t>(n), false };
+    return IOResult{ static_cast<std::size_t>(n), false };
+  });
 }
 
-IOResult SocketTransport::recv(std::span<std::byte> buf, Deadline /*deadline*/) {
-  if (is_invalid(sock_)) throw IOError("recv on closed socket");
+rs::util::Result<IOResult> SocketTransport::recv(std::span<std::byte> buf, Deadline /*deadline*/) {
+  return rs::util::try_catch([&]() {
+    if (is_invalid(sock_)) throw IOError("recv on closed socket");
 #ifdef _WIN32
-  int n = ::recv(sock_, reinterpret_cast<char*>(buf.data()), (int)buf.size(), 0);
-  if (n == 0) return IOResult{0, true};
-  if (n == SOCKET_ERROR) throw IOError(platform::last_error_text("recv"));
+    int n = ::recv(sock_, reinterpret_cast<char*>(buf.data()), (int)buf.size(), 0);
+    if (n == 0) return IOResult{0, true};
+    if (n == SOCKET_ERROR) throw IOError(platform::last_error_text("recv"));
 #else
-  ssize_t n = ::recv(sock_, buf.data(), buf.size(), 0);
-  if (n == 0) return IOResult{0, true};
-  if (n < 0) throw IOError(platform::last_error_text("recv"));
+    ssize_t n = ::recv(sock_, buf.data(), buf.size(), 0);
+    if (n == 0) return IOResult{0, true};
+    if (n < 0) throw IOError(platform::last_error_text("recv"));
 #endif
-  return IOResult{ static_cast<std::size_t>(n), false };
+    return IOResult{ static_cast<std::size_t>(n), false };
+  });
 }
 
 void SocketTransport::close() noexcept {

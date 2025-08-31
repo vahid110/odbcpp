@@ -6,6 +6,7 @@
 #include <memory>
 #include <chrono>
 #include "core/util/deadline.h"
+#include "core/util/result.h"
 
 namespace rs::core::database {
 
@@ -31,14 +32,14 @@ class IDatabaseConnection {
 public:
   virtual ~IDatabaseConnection() = default;
   
-  virtual void connect(const ConnectionSettings& settings) = 0;
+  virtual rs::util::Result<void> connect(const ConnectionSettings& settings) = 0;
   virtual void disconnect() = 0;
   virtual bool is_connected() const = 0;
   
-  virtual QueryResult execute_query(std::string_view sql, rs::util::Deadline deadline) = 0;
-  virtual QueryResult execute_prepared(std::string_view sql, 
-                                     std::span<const std::string> params,
-                                     rs::util::Deadline deadline) = 0;
+  virtual rs::util::Result<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline) = 0;
+  virtual rs::util::Result<QueryResult> execute_prepared(std::string_view sql, 
+                                                       std::span<const std::string> params,
+                                                       rs::util::Deadline deadline) = 0;
   
   virtual std::string get_parameter(std::string_view key) const = 0;
   virtual std::string get_last_error() const = 0;

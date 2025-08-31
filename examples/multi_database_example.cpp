@@ -1,5 +1,6 @@
 #include "core/database/database_factory.h"
 #include "core/util/deadline.h"
+#include "core/util/exception_adapter.h"
 #include <iostream>
 #include <string>
 
@@ -29,10 +30,10 @@ int main() {
     settings.password = "password";
     settings.database = "dev";
     
-    conn->connect(settings);
+    rs::util::unwrap_or_throw(conn->connect(settings));
     
     auto deadline = rs::util::make_deadline(std::chrono::seconds(30));
-    auto result = conn->execute_query("SELECT version()", deadline);
+    auto result = rs::util::unwrap_or_throw(conn->execute_query("SELECT version()", deadline));
     
     std::cout << "Database version: " << result.rows[0][0] << std::endl;
     
