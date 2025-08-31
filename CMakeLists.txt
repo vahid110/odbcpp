@@ -55,18 +55,18 @@ endif()
 
 # --- Core library ---
 add_library(rs_core STATIC
-  core/transport/ITransport.h
-  core/transport/SocketTransport.h
-  core/transport/SocketTransport.cpp
-  core/transport/TLSTransport.h
-  core/transport/TLSTransport.cpp
+  core/transport/i_transport.h
+  core/transport/socket_transport.h
+  core/transport/socket_transport.cpp
+  core/transport/tls_transport.h
+  core/transport/tls_transport.cpp
   core/transport/tls_io.h         # header-only, for IDE visibility
-  core/util/Deadline.h
-  core/util/Errors.h
-  core/util/Platform.h
-  core/pgwire/Messages.h
-  core/engine/PgConnection.h
-  core/engine/PgConnection.cpp
+  core/util/deadline.h
+  core/util/errors.h
+  core/util/platform.h
+  core/pgwire/messages.h
+  core/engine/pg_connection.h
+  core/engine/pg_connection.cpp
 )
 
 if (MSVC)

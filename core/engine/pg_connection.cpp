@@ -1,4 +1,4 @@
-#include "PgConnection.h"
+#include "pg_connection.h"
 #include <cassert>
 #include <cstring>
 #include <stdexcept>
@@ -14,9 +14,9 @@
   #include <dlfcn.h>
 #endif
 
-#include "core/util/Errors.h"
-#include "core/transport/SocketTransport.h"
-#include "core/transport/TLSTransport.h"
+#include "core/util/errors.h"
+#include "core/transport/socket_transport.h"
+#include "core/transport/tls_transport.h"
 
 using rs::util::Deadline;
 using rs::util::make_deadline;

@@ -1,6 +1,6 @@
-#include "core/transport/TLSTransport.h"
-#include "core/transport/SocketTransport.h"
-#include "core/util/Deadline.h"
+#include "core/transport/tls_transport.h"
+#include "core/transport/socket_transport.h"
+#include "core/util/deadline.h"
 
 #include <chrono>
 #include <iostream>

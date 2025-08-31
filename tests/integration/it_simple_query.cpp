@@ -1,7 +1,7 @@
 // tests/integration/it_simple_query.cpp
 #include <gtest/gtest.h>
-#include "core/engine/PgConnection.h"
-#include "core/util/Deadline.h"
+#include "core/engine/pg_connection.h"
+#include "core/util/deadline.h"
 #include <cstdlib>
 #include <string>
 

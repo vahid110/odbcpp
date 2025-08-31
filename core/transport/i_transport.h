@@ -6,7 +6,7 @@
 #include <string_view>
 #include <vector>
 #include <chrono>
-#include "core/util/Deadline.h"
+#include "core/util/deadline.h"
 
 namespace rs::core::transport {
 

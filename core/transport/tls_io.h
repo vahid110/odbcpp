@@ -17,7 +17,7 @@
   #include <errno.h>
 #endif
 
-#include "core/util/Deadline.h" // rs::util::Deadline + rs::util::remaining
+#include "core/util/deadline.h" // rs::util::Deadline + rs::util::remaining
 
 namespace rs::core::transport {
 

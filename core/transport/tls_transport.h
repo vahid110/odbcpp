@@ -1,7 +1,7 @@
 #pragma once
-#include "ITransport.h"
-#include "SocketTransport.h"
-#include "core/util/Errors.h"
+#include "i_transport.h"
+#include "socket_transport.h"
+#include "core/util/errors.h"
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 #include <memory>

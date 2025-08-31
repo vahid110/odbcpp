@@ -2,8 +2,8 @@
 Example usage:
 ./build/query_example xxx.redshift.amazonaws.com 5439 dev awsuser yyy 15000 verify-full  ./root.crt
 */
-#include "core/engine/PgConnection.h"
-#include "core/util/Deadline.h"
+#include "core/engine/pg_connection.h"
+#include "core/util/deadline.h"
 #include <iostream>
 
 using rs::core::engine::PgConnection;

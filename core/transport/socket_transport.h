@@ -1,7 +1,7 @@
 #pragma once
-#include "ITransport.h"
-#include "core/util/Errors.h"
-#include "core/util/Platform.h"
+#include "i_transport.h"
+#include "core/util/errors.h"
+#include "core/util/platform.h"
 #include <optional>
 
 namespace rs::core::transport {

@@ -8,9 +8,9 @@
 #include <vector>
 #include <span>
 
-#include "core/transport/ITransport.h"
-#include "core/util/Deadline.h"
-#include "core/pgwire/Messages.h"
+#include "core/transport/i_transport.h"
+#include "core/util/deadline.h"
+#include "core/pgwire/messages.h"
 
 namespace rs::core::engine {
 

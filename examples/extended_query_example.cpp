@@ -2,8 +2,8 @@
 Example usage:
 ./build/extended_query_example xxx.redshift.amazonaws.com 5439 dev awsuser ppp 15000 sslmode=verify-full ./root.crt
 */
-#include "core/engine/PgConnection.h"
-#include "core/util/Deadline.h"
+#include "core/engine/pg_connection.h"
+#include "core/util/deadline.h"
 #include <iostream>
 #include <string>
 #include <vector>
