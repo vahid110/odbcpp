@@ -1,6 +1,7 @@
 #include "core/transport/tls_transport.h"
 #include "core/transport/socket_transport.h"
 #include "core/util/deadline.h"
+#include "core/util/exception_adapter.h"
 
 #include <chrono>
 #include <iostream>
@@ -96,16 +97,16 @@ int main(int argc, char **argv)
     {
       TLSTransport t;
       // (min TLS version handling as you have)
-      t.connect(host, port, connect_dl);
+      rs::util::unwrap_or_throw(t.connect(host, port, connect_dl));
       std::cout << "[TLS] handshake OK to " << host << ":" << port << "\n";
 
-      t.send(std::as_bytes(std::span{req.data(), req.size()}), io_dl);
+      rs::util::unwrap_or_throw(t.send(std::as_bytes(std::span{req.data(), req.size()}), io_dl));
 
       std::vector<std::byte> buf(8192);
       for (;;)
       {
         auto dl = rs::util::make_deadline(std::chrono::milliseconds(timeout_ms)); // refresh per recv
-        auto r = t.recv(std::span<std::byte>(buf.data(), buf.size()), dl);
+        auto r = rs::util::unwrap_or_throw(t.recv(std::span<std::byte>(buf.data(), buf.size()), dl));
         if (r.n)
           std::cout.write(reinterpret_cast<char *>(buf.data()), (std::streamsize)r.n);
         if (r.eof)
@@ -116,16 +117,16 @@ int main(int argc, char **argv)
     else
     {
       SocketTransport s;
-      s.connect(host, port, connect_dl);
+      rs::util::unwrap_or_throw(s.connect(host, port, connect_dl));
       std::cout << "[PLAIN] TCP connect OK to " << host << ":" << port << "\n";
 
-      s.send(std::as_bytes(std::span{req.data(), req.size()}), io_dl);
+      rs::util::unwrap_or_throw(s.send(std::as_bytes(std::span{req.data(), req.size()}), io_dl));
 
       std::vector<std::byte> buf(8192);
       for (;;)
       {
         auto dl = rs::util::make_deadline(std::chrono::milliseconds(timeout_ms));
-        auto r = s.recv(std::span<std::byte>(buf.data(), buf.size()), dl);
+        auto r = rs::util::unwrap_or_throw(s.recv(std::span<std::byte>(buf.data(), buf.size()), dl));
         if (r.n)
           std::cout.write(reinterpret_cast<char *>(buf.data()), (std::streamsize)r.n);
         if (r.eof)

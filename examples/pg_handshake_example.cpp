@@ -4,6 +4,7 @@ Example usage :
 */
 #include "core/database/database_factory.h"
 #include "core/util/deadline.h"
+#include "core/util/exception_adapter.h"
 #include <iostream>
 
 using namespace rs::core::database;
@@ -35,7 +36,7 @@ int main(int argc, char** argv) {
     settings.timeout = std::chrono::milliseconds(timeout_ms);
     settings.use_ssl = (sslmode != "disable");
 
-    conn->connect(settings);
+    rs::util::unwrap_or_throw(conn->connect(settings));
 
     std::cout << "Connected OK.\n";
     std::cout << "server_version=" << conn->get_parameter("server_version") << "\n";

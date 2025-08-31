@@ -1,5 +1,6 @@
 #include "tls_transport.h"
 #include "core/transport/tls_io.h"
+#include "core/util/exception_adapter.h"
 
 #include <stdexcept>
 #include <vector>
@@ -69,12 +70,14 @@ void TLSTransport::ensure_ctx() {
 #endif
 }
 
-void TLSTransport::connect(std::string_view host, uint16_t port, Deadline deadline) {
+rs::util::Result<void> TLSTransport::connect(std::string_view host, uint16_t port, Deadline deadline) {
+  return rs::util::try_catch([&]() {
   ensure_ctx();
   sni_host_ = std::string(host);
 
   tcp_.connect(host, port, deadline);
-  upgrade_from(tcp_.native(), host, deadline);
+    upgrade_from(tcp_.native(), host, deadline);
+  });
 }
 
 void TLSTransport::upgrade_from(socket_t s, std::string_view host, Deadline deadline) {
@@ -155,7 +158,8 @@ void TLSTransport::close() noexcept {
   tcp_.close();
 }
 
-IOResult TLSTransport::send(std::span<const std::byte> buf, Deadline dl) {
+rs::util::Result<IOResult> TLSTransport::send(std::span<const std::byte> buf, Deadline dl) {
+  return rs::util::try_catch([&]() {
   if (!ssl_) throw TLSError("TLS not connected");
 
   size_t n = 0;
@@ -171,10 +175,12 @@ IOResult TLSTransport::send(std::span<const std::byte> buf, Deadline dl) {
     throw IOError("TLS send failed");
   }
 
-  return IOResult{ n, false };
+    return IOResult{ n, false };
+  });
 }
 
-IOResult TLSTransport::recv(std::span<std::byte> buf, Deadline dl) {
+rs::util::Result<IOResult> TLSTransport::recv(std::span<std::byte> buf, Deadline dl) {
+  return rs::util::try_catch([&]() {
   if (!ssl_) throw TLSError("TLS not connected");
 
   size_t got = 0;
@@ -192,7 +198,8 @@ IOResult TLSTransport::recv(std::span<std::byte> buf, Deadline dl) {
     throw IOError("TLS recv failed");
   }
 
-  return IOResult{ got, eof };
+    return IOResult{ got, eof };
+  });
 }
 
 void TLSTransport::set_min_tls_version(long v) {

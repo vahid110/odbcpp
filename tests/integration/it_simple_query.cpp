@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include "core/database/database_factory.h"
 #include "core/util/deadline.h"
+#include "core/util/exception_adapter.h"
 #include <cstdlib>
 #include <string>
 
@@ -24,10 +25,10 @@ TEST(Integration, ConnectAndSelect1) {
   settings.use_ssl = false; // local Postgres in CI: plain
   settings.timeout = std::chrono::seconds(10);
 
-  conn->connect(settings);
+  rs::util::unwrap_or_throw(conn->connect(settings));
 
   auto dl = rs::util::make_deadline(std::chrono::seconds(5));
-  auto result = conn->execute_query("SELECT 1", dl);
+  auto result = rs::util::unwrap_or_throw(conn->execute_query("SELECT 1", dl));
 
   ASSERT_EQ(result.rows.size(), 1u);
   ASSERT_EQ(result.rows[0].size(), 1u);

@@ -29,7 +29,7 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
   if (settings.use_ssl) {
     // For PostgreSQL/Redshift: plain connect + SSL request + upgrade
     auto plain_transport = std::make_unique<rs::core::transport::SocketTransport>();
-    plain_transport->connect(settings.host, settings.port, deadline);
+    rs::util::unwrap_or_throw(plain_transport->connect(settings.host, settings.port, deadline));
     
     // Send SSL request
     auto ssl_req = parser_->create_ssl_request();
@@ -37,7 +37,7 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
     
     // Read SSL response
     std::vector<std::byte> response(1);
-    auto result = plain_transport->recv(response, deadline);
+    auto result = rs::util::unwrap_or_throw(plain_transport->recv(response, deadline));
     if (result.n != 1 || response[0] != std::byte{'S'}) {
       throw std::runtime_error("SSL not supported by server");
     }
@@ -46,7 +46,7 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
     auto* tls_transport = static_cast<rs::core::transport::TLSTransport*>(transport_.get());
     tls_transport->upgrade_from(plain_transport->release(), settings.host, deadline);
   } else {
-    transport_->connect(settings.host, settings.port, deadline);
+    rs::util::unwrap_or_throw(transport_->connect(settings.host, settings.port, deadline));
   }
   
   // Send startup message
@@ -149,7 +149,7 @@ std::string GenericDatabaseConnection::get_last_error() const {
 void GenericDatabaseConnection::write_all(const std::vector<std::byte>& data, rs::util::Deadline deadline) {
   size_t offset = 0;
   while (offset < data.size()) {
-    auto result = transport_->send(std::span<const std::byte>(data.data() + offset, data.size() - offset), deadline);
+    auto result = rs::util::unwrap_or_throw(transport_->send(std::span<const std::byte>(data.data() + offset, data.size() - offset), deadline));
     if (result.n == 0) throw std::runtime_error("Write failed");
     offset += result.n;
   }
@@ -161,7 +161,7 @@ std::vector<std::byte> GenericDatabaseConnection::read_message(rs::util::Deadlin
   size_t offset = 0;
   
   while (offset < 5) {
-    auto result = transport_->recv(std::span<std::byte>(header.data() + offset, 5 - offset), deadline);
+    auto result = rs::util::unwrap_or_throw(transport_->recv(std::span<std::byte>(header.data() + offset, 5 - offset), deadline));
     if (result.eof) throw std::runtime_error("Unexpected EOF");
     if (result.n == 0) continue;
     offset += result.n;
@@ -182,7 +182,7 @@ std::vector<std::byte> GenericDatabaseConnection::read_message(rs::util::Deadlin
   offset = 5;
   
   while (offset < message.size()) {
-    auto result = transport_->recv(std::span<std::byte>(message.data() + offset, message.size() - offset), deadline);
+    auto result = rs::util::unwrap_or_throw(transport_->recv(std::span<std::byte>(message.data() + offset, message.size() - offset), deadline));
     if (result.eof) throw std::runtime_error("Unexpected EOF");
     if (result.n == 0) continue;
     offset += result.n;
@@ -232,7 +232,7 @@ void GenericDatabaseConnection::write_message_to_transport(
   
   size_t offset = 0;
   while (offset < data.size()) {
-    auto result = transport.send(std::span<const std::byte>(data.data() + offset, data.size() - offset), deadline);
+    auto result = rs::util::unwrap_or_throw(transport.send(std::span<const std::byte>(data.data() + offset, data.size() - offset), deadline));
     if (result.n == 0) throw std::runtime_error("Write failed");
     offset += result.n;
   }

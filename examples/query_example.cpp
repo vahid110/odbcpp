@@ -4,6 +4,7 @@ Example usage:
 */
 #include "core/database/database_factory.h"
 #include "core/util/deadline.h"
+#include "core/util/exception_adapter.h"
 #include <iostream>
 
 using namespace rs::core::database;
@@ -37,10 +38,10 @@ int main(int argc, char** argv) {
     settings.use_ssl = (sslmode != "disable");
     if (!cafile.empty()) settings.ssl_ca_file = cafile;
 
-    conn->connect(settings);
+    rs::util::unwrap_or_throw(conn->connect(settings));
 
     auto dl = rs::util::make_deadline(std::chrono::milliseconds(timeout_ms));
-    auto result = conn->execute_query("SELECT version(), current_date;", dl);
+    auto result = rs::util::unwrap_or_throw(conn->execute_query("SELECT version(), current_date;", dl));
 
     for (const auto& row : result.rows) {
       for (size_t i = 0; i < row.size(); ++i) {
