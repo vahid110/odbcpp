@@ -1,0 +1,47 @@
+#pragma once
+#include <string>
+#include <string_view>
+#include <vector>
+#include <span>
+#include <memory>
+#include <chrono>
+#include "core/util/deadline.h"
+
+namespace rs::core::database {
+
+struct ConnectionSettings {
+  std::string host;
+  std::string user;
+  std::string password;
+  std::string database;
+  uint16_t port = 5432;
+  std::chrono::milliseconds timeout{15000};
+  bool use_ssl = true;
+  std::string ssl_ca_file;
+  std::string ssl_ca_dir;
+};
+
+struct QueryResult {
+  std::vector<std::vector<std::string>> rows;
+  std::vector<std::string> column_names;
+  size_t affected_rows = 0;
+};
+
+class IDatabaseConnection {
+public:
+  virtual ~IDatabaseConnection() = default;
+  
+  virtual void connect(const ConnectionSettings& settings) = 0;
+  virtual void disconnect() = 0;
+  virtual bool is_connected() const = 0;
+  
+  virtual QueryResult execute_query(std::string_view sql, rs::util::Deadline deadline) = 0;
+  virtual QueryResult execute_prepared(std::string_view sql, 
+                                     std::span<const std::string> params,
+                                     rs::util::Deadline deadline) = 0;
+  
+  virtual std::string get_parameter(std::string_view key) const = 0;
+  virtual std::string get_last_error() const = 0;
+};
+
+} // namespace rs::core::database
