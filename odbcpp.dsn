@@ -23,10 +23,10 @@ Description=Local PostgreSQL test connection
 
 [RedshiftProd]
 Driver=ODBCPP
-Server=prod-cluster.redshift.amazonaws.com
+Server=vahidsbr-redshift-cluster.cxzokcavspmr.us-east-1.redshift.amazonaws.com
 Port=5439
-Database=analytics
-UID=analytics_user
-PWD=your-prod-password
+Database=dev
+UID=awsuser
+PWD=Testing1234
 SSL=1
 Description=Production Redshift connection

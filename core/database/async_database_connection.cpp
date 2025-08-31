@@ -22,7 +22,14 @@ AsyncDatabaseConnection::AsyncDatabaseConnection(
 // Sync interface implementations (delegate to transport)
 rs::util::Result<void> AsyncDatabaseConnection::connect(const ConnectionSettings& settings) {
   auto deadline = rs::util::make_deadline(settings.timeout);
-  return transport_->connect(settings.host, settings.port, deadline);
+  auto result = transport_->connect(settings.host, settings.port, deadline);
+  
+  if (result.has_value()) {
+    connected_.store(true);
+    settings_ = settings;
+  }
+  
+  return result;
 }
 
 void AsyncDatabaseConnection::disconnect() {
@@ -35,10 +42,57 @@ bool AsyncDatabaseConnection::is_connected() const {
 }
 
 rs::util::Result<QueryResult> AsyncDatabaseConnection::execute_query(std::string_view sql, rs::util::Deadline deadline) {
-  // Simplified implementation - in production would use protocol parser
-  QueryResult result;
-  result.rows = {{"async_result"}};
-  return rs::util::Result<QueryResult>{std::move(result)};
+  if (!is_connected()) {
+    return rs::util::Result<QueryResult>(rs::util::DbErrorCode::NotConnected, "Not connected to database");
+  }
+  
+  try {
+    // Create query message using protocol parser
+    auto query_msg = parser_->create_simple_query(sql);
+    
+    // Send query via transport
+    auto send_result = transport_->send(query_msg, deadline);
+    if (send_result.has_error()) {
+      return rs::util::Result<QueryResult>(rs::util::DbErrorCode::NetworkError, send_result.error_message());
+    }
+    
+    // Receive response messages
+    std::vector<Message> messages;
+    std::vector<std::byte> buffer(8192);
+    
+    while (true) {
+      auto recv_result = transport_->recv(buffer, deadline);
+      if (recv_result.has_error()) {
+        return rs::util::Result<QueryResult>(rs::util::DbErrorCode::NetworkError, recv_result.error_message());
+      }
+      
+      if (recv_result->n == 0) break;
+      
+      // Parse received data into messages
+      std::vector<std::byte> data(buffer.begin(), buffer.begin() + recv_result->n);
+      auto msg = parser_->parse_message(data);
+      messages.push_back(msg);
+      
+      // Check if we're done (ReadyForQuery message)
+      if (parser_->is_ready_for_query(msg)) {
+        break;
+      }
+      
+      // Check for errors
+      if (parser_->is_error_response(msg)) {
+        return rs::util::Result<QueryResult>(rs::util::DbErrorCode::QueryFailed, parser_->extract_error_message(msg));
+      }
+    }
+    
+    // Extract results from messages
+    QueryResult result;
+    result.rows = parser_->extract_query_results(messages);
+    
+    return rs::util::Result<QueryResult>{std::move(result)};
+    
+  } catch (const std::exception& e) {
+    return rs::util::Result<QueryResult>(rs::util::DbErrorCode::ProtocolError, e.what());
+  }
 }
 
 rs::util::Result<QueryResult> AsyncDatabaseConnection::execute_prepared(std::string_view sql, 
