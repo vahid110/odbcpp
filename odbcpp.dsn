@@ -1,0 +1,32 @@
+# ODBCPP Sample DSN Configuration
+# Copy your Redshift connection details here
+
+[RedshiftTest]
+Driver=ODBCPP
+Server=your-cluster.redshift.amazonaws.com
+Port=5439
+Database=dev
+UID=your-username
+PWD=your-password
+SSL=1
+Description=Redshift test connection
+
+[PostgreSQLTest]
+Driver=ODBCPP
+Server=localhost
+Port=5432
+Database=postgres
+UID=postgres
+PWD=postgres
+SSL=0
+Description=Local PostgreSQL test connection
+
+[RedshiftProd]
+Driver=ODBCPP
+Server=prod-cluster.redshift.amazonaws.com
+Port=5439
+Database=analytics
+UID=analytics_user
+PWD=your-prod-password
+SSL=1
+Description=Production Redshift connection

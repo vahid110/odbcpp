@@ -86,6 +86,8 @@ list(APPEND CORE_SOURCES
   "odbc/odbc_handles.cpp"
   "odbc/odbc_api.h"
   "odbc/odbc_api.cpp"
+  "odbc/connection_string.h"
+  "odbc/connection_string.cpp"
 )
 
 add_library(${PROJECT_NAME}_core STATIC ${CORE_SOURCES})

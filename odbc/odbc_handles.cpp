@@ -1,4 +1,5 @@
 #include "odbc_handles.h"
+#include "connection_string.h"
 #include "core/transport/thread_pool_transport.h"
 #include "core/util/deadline.h"
 #include <mutex>
@@ -12,14 +13,47 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
     auto transport = std::make_unique<rs::core::transport::ThreadPoolTransport>(4);
     db_conn_ = std::make_unique<rs::core::database::AsyncDatabaseConnection>(nullptr, std::move(transport));
     
-    // Parse DSN or use defaults
     rs::core::database::ConnectionSettings settings;
-    settings.host = "localhost"; // Parse from DSN in production
-    settings.port = 5432;
-    settings.database = dsn;
-    settings.user = user;
-    settings.password = password;
-    settings.use_ssl = false;
+    
+    // Check if dsn is a connection string or DSN name
+    if (dsn.find('=') != std::string::npos) {
+      // Connection string format: "SERVER=host;PORT=5439;DATABASE=dev;UID=user;PWD=pass"
+      auto params = ConnectionString::parse(dsn);
+      
+      settings.host = params.count("SERVER") ? params["SERVER"] : 
+                     (params.count("HOST") ? params["HOST"] : "localhost");
+      settings.port = params.count("PORT") ? std::stoi(params["PORT"]) : 5432;
+      settings.database = params.count("DATABASE") ? params["DATABASE"] : 
+                         (params.count("DB") ? params["DB"] : "postgres");
+      settings.user = params.count("UID") ? params["UID"] : 
+                     (params.count("USER") ? params["USER"] : user);
+      settings.password = params.count("PWD") ? params["PWD"] : 
+                         (params.count("PASSWORD") ? params["PASSWORD"] : password);
+      settings.use_ssl = params.count("SSL") ? (params["SSL"] == "1" || params["SSL"] == "true") : false;
+      
+    } else {
+      // DSN name - load from DSN files
+      auto dsn_params = ConnectionString::load_dsn(dsn);
+      
+      if (dsn_params.empty()) {
+        // Fallback: treat as database name
+        settings.host = "localhost";
+        settings.port = 5432;
+        settings.database = dsn;
+        settings.user = user;
+        settings.password = password;
+        settings.use_ssl = false;
+      } else {
+        // Use DSN parameters
+        settings.host = dsn_params.count("SERVER") ? dsn_params["SERVER"] : "localhost";
+        settings.port = dsn_params.count("PORT") ? std::stoi(dsn_params["PORT"]) : 5432;
+        settings.database = dsn_params.count("DATABASE") ? dsn_params["DATABASE"] : dsn;
+        settings.user = dsn_params.count("UID") ? dsn_params["UID"] : user;
+        settings.password = dsn_params.count("PWD") ? dsn_params["PWD"] : password;
+        settings.use_ssl = dsn_params.count("SSL") ? (dsn_params["SSL"] == "1") : false;
+      }
+    }
+    
     settings.timeout = std::chrono::seconds(30);
     
     // Connect synchronously for ODBC compatibility
