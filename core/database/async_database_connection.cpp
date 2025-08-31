@@ -22,14 +22,97 @@ AsyncDatabaseConnection::AsyncDatabaseConnection(
 // Sync interface implementations (delegate to transport)
 rs::util::Result<void> AsyncDatabaseConnection::connect(const ConnectionSettings& settings) {
   auto deadline = rs::util::make_deadline(settings.timeout);
-  auto result = transport_->connect(settings.host, settings.port, deadline);
   
-  if (result.has_value()) {
-    connected_.store(true);
-    settings_ = settings;
+  // 1. Connect to server
+  auto connect_result = transport_->connect(settings.host, settings.port, deadline);
+  if (connect_result.has_error()) {
+    return connect_result;
   }
   
-  return result;
+  try {
+    // 2. Send startup message
+    std::map<std::string, std::string> params;
+    params["user"] = settings.user;
+    params["database"] = settings.database;
+    
+    auto startup_msg = parser_->create_startup_message(settings.user, settings.database, params);
+    auto send_result = transport_->send(startup_msg, deadline);
+    if (send_result.has_error()) {
+      return rs::util::Result<void>(rs::util::DbErrorCode::NetworkError, send_result.error_message());
+    }
+    
+    // 3. Handle authentication
+    std::vector<std::byte> buffer(8192);
+    auto recv_result = transport_->recv(buffer, deadline);
+    if (recv_result.has_error()) {
+      return rs::util::Result<void>(rs::util::DbErrorCode::NetworkError, recv_result.error_message());
+    }
+    
+    std::vector<std::byte> auth_data(buffer.begin(), buffer.begin() + recv_result->n);
+    auto auth_msg = parser_->parse_message(auth_data);
+    
+    if (parser_->is_error_response(auth_msg)) {
+      return rs::util::Result<void>(rs::util::DbErrorCode::AuthenticationFailed, parser_->extract_error_message(auth_msg));
+    }
+    
+    auto auth_req = parser_->parse_auth_request(auth_msg.payload);
+    if (auth_req.type != rs::core::database::AuthenticationRequest::Type::None) {
+      auto auth_response = parser_->create_auth_response(auth_req, settings.password, settings.user);
+      if (!auth_response.empty()) {
+        auto auth_send = transport_->send(auth_response, deadline);
+        if (auth_send.has_error()) {
+          return rs::util::Result<void>(rs::util::DbErrorCode::NetworkError, auth_send.error_message());
+        }
+      }
+    }
+    
+    // 4. Handle authentication response and server parameters
+    auto auth_recv = transport_->recv(buffer, deadline);
+    if (auth_recv.has_error()) {
+      return rs::util::Result<void>(rs::util::DbErrorCode::NetworkError, auth_recv.error_message());
+    }
+    
+    // Parse all messages in the response (multiple S, K, Z messages)
+    std::vector<std::byte> all_data(buffer.begin(), buffer.begin() + auth_recv->n);
+    size_t offset = 0;
+    bool ready = false;
+    
+    while (offset < all_data.size() && !ready) {
+      if (offset + 5 > all_data.size()) break; // Need at least tag + length
+      
+      char tag = static_cast<char>(all_data[offset]);
+      uint32_t length = (static_cast<uint32_t>(all_data[offset+1]) << 24) |
+                       (static_cast<uint32_t>(all_data[offset+2]) << 16) |
+                       (static_cast<uint32_t>(all_data[offset+3]) << 8) |
+                       static_cast<uint32_t>(all_data[offset+4]);
+      
+      if (offset + 1 + length > all_data.size()) break; // Incomplete message
+      
+      std::vector<std::byte> msg_data(all_data.begin() + offset, all_data.begin() + offset + 1 + length);
+      auto msg = parser_->parse_message(msg_data);
+      
+      if (parser_->is_error_response(msg)) {
+        return rs::util::Result<void>(rs::util::DbErrorCode::ConnectionFailed, parser_->extract_error_message(msg));
+      }
+      
+      if (parser_->is_ready_for_query(msg)) {
+        ready = true;
+      }
+      
+      offset += 1 + length;
+    }
+    
+    if (!ready) {
+      return rs::util::Result<void>(rs::util::DbErrorCode::ProtocolError, "Did not receive ReadyForQuery message");
+    }
+    
+    connected_.store(true);
+    settings_ = settings;
+    return rs::util::Result<void>();
+    
+  } catch (const std::exception& e) {
+    return rs::util::Result<void>(rs::util::DbErrorCode::ProtocolError, e.what());
+  }
 }
 
 void AsyncDatabaseConnection::disconnect() {
