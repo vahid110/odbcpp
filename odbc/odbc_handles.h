@@ -7,10 +7,28 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <mutex>
 
 namespace rs::odbc {
 
-// Base ODBC handle
+// Diagnostic record for ODBC error handling
+struct DiagnosticRecord {
+  std::string sqlstate;
+  SQLINTEGER native_error;
+  std::string message_text;
+  std::string class_origin;
+  std::string subclass_origin;
+  std::string connection_name;
+  std::string server_name;
+  
+  DiagnosticRecord(const std::string& state = SQLSTATE_SUCCESS, 
+                   SQLINTEGER native = 0,
+                   const std::string& message = "")
+    : sqlstate(state), native_error(native), message_text(message),
+      class_origin("ISO 9075"), subclass_origin("ODBCPP 1.0") {}
+};
+
+// Base ODBC handle with comprehensive diagnostics
 class ODBCHandle {
 public:
   explicit ODBCHandle(HandleType type) : type_(type) {}
@@ -18,18 +36,42 @@ public:
   
   HandleType get_type() const { return type_; }
   
-  void set_error(const std::string& sqlstate, const std::string& message) {
-    sqlstate_ = sqlstate;
-    error_message_ = message;
+  // Enhanced error handling with multiple records
+  void clear_diagnostics() {
+    diagnostic_records_.clear();
   }
   
-  const std::string& get_sqlstate() const { return sqlstate_; }
-  const std::string& get_error_message() const { return error_message_; }
+  void add_diagnostic(const std::string& sqlstate, SQLINTEGER native_error, const std::string& message) {
+    diagnostic_records_.emplace_back(sqlstate, native_error, message);
+  }
+  
+  void set_error(const std::string& sqlstate, const std::string& message, SQLINTEGER native_error = 0) {
+    clear_diagnostics();
+    add_diagnostic(sqlstate, native_error, message);
+  }
+  
+  // Legacy compatibility
+  std::string get_sqlstate() const { 
+    return diagnostic_records_.empty() ? std::string(SQLSTATE_SUCCESS) : diagnostic_records_[0].sqlstate;
+  }
+  
+  std::string get_error_message() const {
+    return diagnostic_records_.empty() ? std::string() : diagnostic_records_[0].message_text;
+  }
+  
+  // New diagnostic access
+  size_t get_diagnostic_count() const { return diagnostic_records_.size(); }
+  
+  const DiagnosticRecord* get_diagnostic_record(SQLSMALLINT record_number) const {
+    if (record_number < 1 || record_number > static_cast<SQLSMALLINT>(diagnostic_records_.size())) {
+      return nullptr;
+    }
+    return &diagnostic_records_[record_number - 1];
+  }
 
 private:
   HandleType type_;
-  std::string sqlstate_ = SQLSTATE_SUCCESS;
-  std::string error_message_;
+  std::vector<DiagnosticRecord> diagnostic_records_;
 };
 
 // Environment handle

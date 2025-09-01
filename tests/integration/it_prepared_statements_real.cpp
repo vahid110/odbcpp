@@ -205,3 +205,48 @@ TEST_F(PreparedStatementIntegrationTest, EdgeCasesReal) {
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR, result, sizeof(result), nullptr));
     EXPECT_STREQ("9223372036854775807", result);
 }
+
+TEST_F(PreparedStatementIntegrationTest, NegativeTests) {
+    // Test SQLPrepare without connection
+    SQLHSTMT disconnected_stmt;
+    SQLHDBC disconnected_conn;
+    SQLAllocHandle(SQL_HANDLE_DBC, henv, &disconnected_conn);
+    SQLAllocHandle(SQL_HANDLE_STMT, disconnected_conn, &disconnected_stmt);
+    
+    SQLRETURN ret = SQLPrepare(disconnected_stmt, (SQLCHAR*)"SELECT 1", SQL_NTS);
+    EXPECT_EQ(SQL_ERROR, ret);
+    
+    // Verify diagnostic
+    SQLCHAR sqlstate[6], message[256];
+    ret = SQLGetDiagRec(SQL_HANDLE_STMT, disconnected_stmt, 1, sqlstate, nullptr, message, sizeof(message), nullptr);
+    EXPECT_EQ(SQL_SUCCESS, ret);
+    EXPECT_STREQ("08001", (char*)sqlstate);
+    
+    SQLFreeHandle(SQL_HANDLE_STMT, disconnected_stmt);
+    SQLFreeHandle(SQL_HANDLE_DBC, disconnected_conn);
+    
+    // Test SQLExecute without prepare
+    ret = SQLExecute(hstmt);
+    EXPECT_EQ(SQL_ERROR, ret);
+    
+    // Test SQLBindParameter with invalid parameter number
+    SQLINTEGER param = 123;
+    ret = SQLBindParameter(hstmt, 0, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &param, 0, nullptr);
+    EXPECT_EQ(SQL_ERROR, ret);
+    
+    // Test SQLDescribeParam without prepare
+    SQLSMALLINT data_type;
+    SQLULEN param_size;
+    ret = SQLDescribeParam(hstmt, 1, &data_type, &param_size, nullptr, nullptr);
+    EXPECT_EQ(SQL_ERROR, ret);
+    
+    // Test with invalid handles
+    ret = SQLPrepare(nullptr, (SQLCHAR*)"SELECT 1", SQL_NTS);
+    EXPECT_EQ(SQL_INVALID_HANDLE, ret);
+    
+    ret = SQLExecute(nullptr);
+    EXPECT_EQ(SQL_INVALID_HANDLE, ret);
+    
+    ret = SQLBindParameter(nullptr, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &param, 0, nullptr);
+    EXPECT_EQ(SQL_INVALID_HANDLE, ret);
+}

@@ -184,8 +184,13 @@ SQLRETURN ODBCStatement::fetch() {
         SQLRETURN result = db_converter::RedshiftDataConverter::convert_data(
           value, binding.target_type, binding.target_value, binding.buffer_length, binding.strlen_or_indicator);
         
-        // If conversion fails, set error indicator
-        if (result != SQL_SUCCESS && binding.strlen_or_indicator) {
+        // If conversion fails, set error indicator but don't fail the entire fetch
+        if (result == SQL_ERROR && binding.strlen_or_indicator) {
+          *binding.strlen_or_indicator = SQL_NULL_DATA;
+        }
+      } else {
+        // Unsupported conversion - set NULL indicator
+        if (binding.strlen_or_indicator) {
           *binding.strlen_or_indicator = SQL_NULL_DATA;
         }
       }
@@ -370,7 +375,10 @@ SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target
 
 // Metadata functions implementation
 SQLRETURN ODBCStatement::get_num_result_cols(SQLSMALLINT* column_count) {
-  if (!column_count) return SQL_ERROR;
+  if (!column_count) {
+    set_error(SQLSTATE_GENERAL_ERROR, "Null pointer for column count");
+    return SQL_ERROR;
+  }
   
   if (!executed_) {
     set_error(SQLSTATE_GENERAL_ERROR, "No query executed");

@@ -21,11 +21,17 @@ enum class HandleType {
   Statement = SQL_HANDLE_STMT
 };
 
-// SQLSTATE error codes
+// SQLSTATE error codes (standard ODBC error states)
 constexpr const char* SQLSTATE_SUCCESS = "00000";
 constexpr const char* SQLSTATE_CONNECTION_FAILURE = "08001";
 constexpr const char* SQLSTATE_SYNTAX_ERROR = "42000";
 constexpr const char* SQLSTATE_TIMEOUT = "HYT00";
 constexpr const char* SQLSTATE_GENERAL_ERROR = "HY000";
+constexpr const char* SQLSTATE_INVALID_HANDLE = "HY092";
+constexpr const char* SQLSTATE_FUNCTION_SEQUENCE_ERROR = "HY010";
+constexpr const char* SQLSTATE_INVALID_PARAMETER_NUMBER = "07009";
+
+// Note: All SQL_DIAG_* constants are already defined in system ODBC headers (sql.h, sqlext.h)
+// No need to redefine them here
 
 } // namespace rs::odbc

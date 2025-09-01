@@ -98,3 +98,54 @@ TEST_F(MetadataIntegrationTest, ErrorCases) {
                         nullptr, nullptr, nullptr, nullptr);
     EXPECT_EQ(SQL_ERROR, ret);
 }
+
+TEST_F(MetadataIntegrationTest, NegativeTests) {
+    // Test SQLNumResultCols without execution
+    SQLSMALLINT num_cols;
+    SQLRETURN ret = SQLNumResultCols(hstmt, &num_cols);
+    EXPECT_EQ(SQL_ERROR, ret);
+    
+    // Verify diagnostic is set
+    SQLCHAR sqlstate[6], message[256];
+    ret = SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, message, sizeof(message), nullptr);
+    EXPECT_EQ(SQL_SUCCESS, ret);
+    EXPECT_STREQ("HY000", (char*)sqlstate);
+    
+    // Test SQLNumResultCols with null pointer
+    ret = SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS);
+    ASSERT_EQ(SQL_SUCCESS, ret);
+    
+    ret = SQLNumResultCols(hstmt, nullptr);
+    EXPECT_EQ(SQL_ERROR, ret);
+    
+    // Test SQLDescribeCol with invalid parameters
+    ret = SQLDescribeCol(hstmt, 0, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr);
+    EXPECT_EQ(SQL_ERROR, ret);
+    
+    // Test SQLColAttribute with invalid column
+    SQLLEN numeric_attr;
+    ret = SQLColAttribute(hstmt, 999, SQL_DESC_TYPE, nullptr, 0, nullptr, &numeric_attr);
+    EXPECT_EQ(SQL_ERROR, ret);
+    
+    // Test SQLColAttribute with invalid field identifier
+    ret = SQLColAttribute(hstmt, 1, 9999, nullptr, 0, nullptr, &numeric_attr);
+    EXPECT_EQ(SQL_ERROR, ret);
+}
+
+TEST_F(MetadataIntegrationTest, InvalidHandleTests) {
+    // Test with invalid statement handle
+    SQLSMALLINT num_cols;
+    SQLRETURN ret = SQLNumResultCols(nullptr, &num_cols);
+    EXPECT_EQ(SQL_INVALID_HANDLE, ret);
+    
+    // Test SQLDescribeCol with invalid handle
+    SQLCHAR column_name[256];
+    ret = SQLDescribeCol(nullptr, 1, column_name, sizeof(column_name), nullptr,
+                        nullptr, nullptr, nullptr, nullptr);
+    EXPECT_EQ(SQL_INVALID_HANDLE, ret);
+    
+    // Test SQLColAttribute with invalid handle
+    SQLLEN numeric_attr;
+    ret = SQLColAttribute(nullptr, 1, SQL_DESC_TYPE, nullptr, 0, nullptr, &numeric_attr);
+    EXPECT_EQ(SQL_INVALID_HANDLE, ret);
+}

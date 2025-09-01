@@ -186,3 +186,50 @@ TEST_F(BindColIntegrationTest, ErrorConditions) {
     // Valid binding should still work
     EXPECT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_CHAR, buffer, sizeof(buffer), &len));
 }
+
+TEST_F(BindColIntegrationTest, NegativeTests) {
+    // Test SQLBindCol with invalid handle
+    char buffer[256];
+    SQLLEN len;
+    SQLRETURN ret = SQLBindCol(nullptr, 1, SQL_C_CHAR, buffer, sizeof(buffer), &len);
+    EXPECT_EQ(SQL_INVALID_HANDLE, ret);
+    
+    // Test SQLBindCol with invalid column number
+    ret = SQLBindCol(hstmt, 0, SQL_C_CHAR, buffer, sizeof(buffer), &len);
+    EXPECT_EQ(SQL_ERROR, ret);
+    
+    // Verify diagnostic is set
+    SQLCHAR sqlstate[6], message[256];
+    ret = SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, message, sizeof(message), nullptr);
+    EXPECT_EQ(SQL_SUCCESS, ret);
+    EXPECT_STREQ("HY000", (char*)sqlstate);
+    EXPECT_TRUE(strstr((char*)message, "column number") != nullptr);
+    
+    // Test SQLFetch without execution
+    SQLHSTMT new_stmt;
+    SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &new_stmt);
+    ret = SQLFetch(new_stmt);
+    EXPECT_EQ(SQL_NO_DATA, ret);
+    SQLFreeHandle(SQL_HANDLE_STMT, new_stmt);
+    
+    // Test SQLGetData without execution
+    SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &new_stmt);
+    ret = SQLGetData(new_stmt, 1, SQL_C_CHAR, buffer, sizeof(buffer), &len);
+    EXPECT_EQ(SQL_ERROR, ret);
+    
+    // Verify diagnostic
+    ret = SQLGetDiagRec(SQL_HANDLE_STMT, new_stmt, 1, sqlstate, nullptr, message, sizeof(message), nullptr);
+    EXPECT_EQ(SQL_SUCCESS, ret);
+    EXPECT_STREQ("HY000", (char*)sqlstate);
+    SQLFreeHandle(SQL_HANDLE_STMT, new_stmt);
+    
+    // Test SQLGetData with invalid column
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    
+    ret = SQLGetData(hstmt, 0, SQL_C_CHAR, buffer, sizeof(buffer), &len);
+    EXPECT_EQ(SQL_ERROR, ret);
+    
+    ret = SQLGetData(hstmt, 999, SQL_C_CHAR, buffer, sizeof(buffer), &len);
+    EXPECT_EQ(SQL_ERROR, ret);
+}

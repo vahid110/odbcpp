@@ -28,6 +28,14 @@ SQLRETURN SQLGetDiagRec(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT r
                        SQLCHAR* sqlstate, SQLINTEGER* native_error, SQLCHAR* message_text,
                        SQLSMALLINT buffer_length, SQLSMALLINT* text_length);
 
+SQLRETURN SQLGetDiagField(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,
+                         SQLSMALLINT diag_identifier, SQLPOINTER diag_info_ptr, SQLSMALLINT buffer_length,
+                         SQLSMALLINT* string_length_ptr);
+
+SQLRETURN SQLError(SQLHENV environment_handle, SQLHDBC connection_handle, SQLHSTMT statement_handle,
+                  SQLCHAR* sqlstate, SQLINTEGER* native_error, SQLCHAR* message_text,
+                  SQLSMALLINT buffer_length, SQLSMALLINT* text_length);
+
 // Driver information
 SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type, 
                     void* info_value, SQLSMALLINT buffer_length, SQLSMALLINT* string_length);

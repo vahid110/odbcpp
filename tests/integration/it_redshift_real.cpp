@@ -193,3 +193,49 @@ TEST_F(RedshiftRealTest, DataTypes) {
   ASSERT_EQ(ret, SQL_SUCCESS);
   EXPECT_TRUE(strstr(float_val, "3.14") != nullptr);
 }
+
+TEST_F(RedshiftRealTest, NegativeTests) {
+  // Test connection with invalid credentials
+  SQLHDBC bad_conn;
+  ASSERT_EQ(SQLAllocHandle(SQL_HANDLE_DBC, henv_, &bad_conn), SQL_SUCCESS);
+  
+  SQLRETURN ret = SQLConnect(bad_conn, (SQLCHAR*)"SERVER=invalid.host;DATABASE=invalid;UID=invalid;PWD=invalid", SQL_NTS, nullptr, 0, nullptr, 0);
+  EXPECT_EQ(SQL_ERROR, ret);
+  
+  // Verify diagnostic is set
+  SQLCHAR sqlstate[6], message[256];
+  ret = SQLGetDiagRec(SQL_HANDLE_DBC, bad_conn, 1, sqlstate, nullptr, message, sizeof(message), nullptr);
+  EXPECT_EQ(SQL_SUCCESS, ret);
+  EXPECT_STREQ("08001", (char*)sqlstate);
+  
+  SQLFreeHandle(SQL_HANDLE_DBC, bad_conn);
+  
+  // Test operations without connection
+  SQLHSTMT disconnected_stmt;
+  SQLHDBC disconnected_conn;
+  ASSERT_EQ(SQLAllocHandle(SQL_HANDLE_DBC, henv_, &disconnected_conn), SQL_SUCCESS);
+  ASSERT_EQ(SQLAllocHandle(SQL_HANDLE_STMT, disconnected_conn, &disconnected_stmt), SQL_SUCCESS);
+  
+  ret = SQLExecDirect(disconnected_stmt, (SQLCHAR*)"SELECT 1", SQL_NTS);
+  EXPECT_EQ(SQL_ERROR, ret);
+  
+  // Verify diagnostic
+  ret = SQLGetDiagRec(SQL_HANDLE_STMT, disconnected_stmt, 1, sqlstate, nullptr, message, sizeof(message), nullptr);
+  EXPECT_EQ(SQL_SUCCESS, ret);
+  EXPECT_STREQ("08001", (char*)sqlstate);
+  
+  SQLFreeHandle(SQL_HANDLE_STMT, disconnected_stmt);
+  SQLFreeHandle(SQL_HANDLE_DBC, disconnected_conn);
+  
+  // Test with invalid handles
+  ret = SQLExecDirect(nullptr, (SQLCHAR*)"SELECT 1", SQL_NTS);
+  EXPECT_EQ(SQL_INVALID_HANDLE, ret);
+  
+  ret = SQLFetch(nullptr);
+  EXPECT_EQ(SQL_INVALID_HANDLE, ret);
+  
+  char buffer[256];
+  SQLLEN len;
+  ret = SQLGetData(nullptr, 1, SQL_C_CHAR, buffer, sizeof(buffer), &len);
+  EXPECT_EQ(SQL_INVALID_HANDLE, ret);
+}
