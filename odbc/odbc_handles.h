@@ -65,13 +65,13 @@ private:
   void suppress_unused_warning() { (void)env_; }
 };
 
-// Column metadata structure
+// IRD (Implementation Row Descriptor) - ODBC result column metadata
 struct ColumnInfo {
-  std::string name;
-  SQLSMALLINT sql_type;
-  SQLULEN column_size;
-  SQLSMALLINT decimal_digits;
-  SQLSMALLINT nullable;
+  std::string name;           // SQL_DESC_NAME
+  SQLSMALLINT sql_type;       // SQL_DESC_TYPE
+  SQLULEN column_size;        // SQL_DESC_LENGTH
+  SQLSMALLINT decimal_digits; // SQL_DESC_PRECISION
+  SQLSMALLINT nullable;       // SQL_DESC_NULLABLE
 };
 
 // Statement handle
@@ -100,7 +100,7 @@ public:
 private:
   ODBCConnection* conn_;
   std::vector<std::vector<std::string>> result_rows_;
-  std::vector<ColumnInfo> column_info_;
+  std::vector<ColumnInfo> column_info_;  // IRD storage
   size_t current_row_ = 0;
   bool executed_ = false;
 };

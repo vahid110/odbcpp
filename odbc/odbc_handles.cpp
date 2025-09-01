@@ -139,7 +139,8 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
     current_row_ = 0;
     executed_ = true;
     
-    // Create basic column metadata (TODO: get from PostgreSQL RowDescription)
+    // Populate IRD (Implementation Row Descriptor) with column metadata
+    // TODO: Extract from PostgreSQL RowDescription message
     column_info_.clear();
     if (!result_rows_.empty()) {
       for (size_t i = 0; i < result_rows_[0].size(); ++i) {
