@@ -36,6 +36,16 @@ SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type,
 SQLRETURN SQLSetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute, 
                        void* value, SQLINTEGER string_length);
 
+// Result set metadata
+SQLRETURN SQLNumResultCols(SQLHSTMT statement_handle, SQLSMALLINT* column_count);
+SQLRETURN SQLDescribeCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number,
+                        SQLCHAR* column_name, SQLSMALLINT name_buffer_length, SQLSMALLINT* name_length,
+                        SQLSMALLINT* data_type, SQLULEN* column_size, SQLSMALLINT* decimal_digits,
+                        SQLSMALLINT* nullable);
+SQLRETURN SQLColAttribute(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
+                         SQLPOINTER character_attribute, SQLSMALLINT buffer_length, SQLSMALLINT* string_length,
+                         SQLLEN* numeric_attribute);
+
 // Wide character versions (reserved for future implementation)
 // These ensure our architecture can support Unicode without breaking changes
 #ifdef ODBCPP_ENABLE_WIDE_FUNCTIONS

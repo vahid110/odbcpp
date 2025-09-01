@@ -191,4 +191,32 @@ SQLRETURN SQLSetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute,
   }
 }
 
+SQLRETURN SQLNumResultCols(SQLHSTMT statement_handle, SQLSMALLINT* column_count) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  
+  return stmt->get_num_result_cols(column_count);
+}
+
+SQLRETURN SQLDescribeCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number,
+                        SQLCHAR* column_name, SQLSMALLINT name_buffer_length, SQLSMALLINT* name_length,
+                        SQLSMALLINT* data_type, SQLULEN* column_size, SQLSMALLINT* decimal_digits,
+                        SQLSMALLINT* nullable) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  
+  return stmt->describe_col(column_number, column_name, name_buffer_length, name_length,
+                           data_type, column_size, decimal_digits, nullable);
+}
+
+SQLRETURN SQLColAttribute(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
+                         SQLPOINTER character_attribute, SQLSMALLINT buffer_length, SQLSMALLINT* string_length,
+                         SQLLEN* numeric_attribute) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  
+  return stmt->col_attribute(column_number, field_identifier, character_attribute,
+                            buffer_length, string_length, numeric_attribute);
+}
+
 } // extern "C"

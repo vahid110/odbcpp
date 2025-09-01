@@ -65,6 +65,15 @@ private:
   void suppress_unused_warning() { (void)env_; }
 };
 
+// Column metadata structure
+struct ColumnInfo {
+  std::string name;
+  SQLSMALLINT sql_type;
+  SQLULEN column_size;
+  SQLSMALLINT decimal_digits;
+  SQLSMALLINT nullable;
+};
+
 // Statement handle
 class ODBCStatement : public ODBCHandle {
 public:
@@ -76,12 +85,22 @@ public:
   SQLRETURN get_data(SQLUSMALLINT col, SQLSMALLINT target_type, 
                      void* buffer, SQLLEN buffer_length, SQLLEN* indicator);
   
+  // Metadata functions
+  SQLRETURN get_num_result_cols(SQLSMALLINT* column_count);
+  SQLRETURN describe_col(SQLUSMALLINT column_number, SQLCHAR* column_name, SQLSMALLINT name_buffer_length,
+                        SQLSMALLINT* name_length, SQLSMALLINT* data_type, SQLULEN* column_size,
+                        SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable);
+  SQLRETURN col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
+                         SQLPOINTER character_attribute, SQLSMALLINT buffer_length,
+                         SQLSMALLINT* string_length, SQLLEN* numeric_attribute);
+  
   bool has_results() const { return !result_rows_.empty(); }
   size_t get_column_count() const { return result_rows_.empty() ? 0 : result_rows_[0].size(); }
 
 private:
   ODBCConnection* conn_;
   std::vector<std::vector<std::string>> result_rows_;
+  std::vector<ColumnInfo> column_info_;
   size_t current_row_ = 0;
   bool executed_ = false;
 };

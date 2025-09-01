@@ -60,14 +60,29 @@ set(CORE_SOURCES ${CORE_BASE_SOURCES})
 
 # Add database-specific sources based on TARGET_DATABASE
 if(TARGET_DATABASE STREQUAL "POSTGRESQL" OR TARGET_DATABASE STREQUAL "REDSHIFT")
+  # Core database protocol
   file(GLOB DB_SOURCES "core/database/postgres/*.cpp" "core/database/postgres/*.h")
   list(APPEND CORE_SOURCES ${DB_SOURCES})
+  
+  # Database-specific ODBC layer
+  if(TARGET_DATABASE STREQUAL "REDSHIFT")
+    file(GLOB ODBC_DB_SOURCES "odbc/redshift/*.cpp" "odbc/redshift/*.h")
+    list(APPEND CORE_SOURCES ${ODBC_DB_SOURCES})
+  else()
+    file(GLOB ODBC_DB_SOURCES "odbc/postgresql/*.cpp" "odbc/postgresql/*.h")
+    list(APPEND CORE_SOURCES ${ODBC_DB_SOURCES})
+  endif()
+  
 elseif(TARGET_DATABASE STREQUAL "MYSQL")
   file(GLOB DB_SOURCES "core/database/mysql/*.cpp" "core/database/mysql/*.h")
-  list(APPEND CORE_SOURCES ${DB_SOURCES})
+  file(GLOB ODBC_DB_SOURCES "odbc/mysql/*.cpp" "odbc/mysql/*.h")
+  list(APPEND CORE_SOURCES ${DB_SOURCES} ${ODBC_DB_SOURCES})
+  
 elseif(TARGET_DATABASE STREQUAL "SQLSERVER")
   file(GLOB DB_SOURCES "core/database/sqlserver/*.cpp" "core/database/sqlserver/*.h")
-  list(APPEND CORE_SOURCES ${DB_SOURCES})
+  file(GLOB ODBC_DB_SOURCES "odbc/sqlserver/*.cpp" "odbc/sqlserver/*.h")
+  list(APPEND CORE_SOURCES ${DB_SOURCES} ${ODBC_DB_SOURCES})
+  
 else()
   message(FATAL_ERROR "Unknown TARGET_DATABASE: ${TARGET_DATABASE}")
 endif()

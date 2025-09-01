@@ -5,6 +5,22 @@
 #include "core/util/deadline.h"
 #include <mutex>
 
+// Include database-specific converter based on build target
+#ifdef ODBCPP_ENABLE_REDSHIFT
+#include "redshift/redshift_data_converter.h"
+#include "redshift/redshift_types.h"
+namespace db_converter = rs::odbc::redshift;
+#elif defined(ODBCPP_ENABLE_POSTGRESQL)
+#include "postgresql/postgresql_data_converter.h"
+namespace db_converter = rs::odbc::postgresql;
+#elif defined(ODBCPP_ENABLE_MYSQL)
+#include "mysql/mysql_data_converter.h"
+namespace db_converter = rs::odbc::mysql;
+#elif defined(ODBCPP_ENABLE_SQLSERVER)
+#include "sqlserver/sqlserver_data_converter.h"
+namespace db_converter = rs::odbc::sqlserver;
+#endif
+
 namespace rs::odbc {
 
 // Connection implementation
@@ -123,6 +139,20 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
     current_row_ = 0;
     executed_ = true;
     
+    // Create basic column metadata (TODO: get from PostgreSQL RowDescription)
+    column_info_.clear();
+    if (!result_rows_.empty()) {
+      for (size_t i = 0; i < result_rows_[0].size(); ++i) {
+        ColumnInfo col;
+        col.name = "column" + std::to_string(i + 1);  // Generic names for now
+        col.sql_type = SQL_VARCHAR;  // Assume all strings for now
+        col.column_size = 255;       // Default size
+        col.decimal_digits = 0;
+        col.nullable = SQL_NULLABLE;
+        column_info_.push_back(col);
+      }
+    }
+    
     return SQL_SUCCESS;
     
   } catch (const std::exception& e) {
@@ -155,61 +185,96 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
   
   const std::string& value = row[col - 1];
   
-  // Essential Redshift data type conversions
-  switch (target_type) {
-    case SQL_C_CHAR: {
-      size_t copy_len = std::min(static_cast<size_t>(buffer_length - 1), value.length());
-      std::memcpy(buffer, value.c_str(), copy_len);
-      static_cast<char*>(buffer)[copy_len] = '\0';
-      if (indicator) *indicator = static_cast<SQLLEN>(value.length());
+  // TODO: Get actual SQL type from column metadata (Milestone 2)
+  // For now, assume all data comes as VARCHAR from database
+  SQLSMALLINT sql_type = SQL_VARCHAR;
+  
+  // Validate conversion is supported
+  if (!db_converter::RedshiftTypes::is_conversion_supported(sql_type, target_type)) {
+    set_error(SQLSTATE_GENERAL_ERROR, "Unsupported data type conversion");
+    return SQL_ERROR;
+  }
+  
+  // Use database-specific data converter
+  SQLRETURN result = db_converter::RedshiftDataConverter::convert_data(
+    value, target_type, buffer, buffer_length, indicator);
+  
+  if (result == SQL_ERROR) {
+    set_error(SQLSTATE_GENERAL_ERROR, "Data type conversion failed");
+  }
+  
+  return result;
+}
+
+// Metadata functions implementation
+SQLRETURN ODBCStatement::get_num_result_cols(SQLSMALLINT* column_count) {
+  if (!column_count) return SQL_ERROR;
+  
+  if (!executed_) {
+    set_error(SQLSTATE_GENERAL_ERROR, "No query executed");
+    return SQL_ERROR;
+  }
+  
+  *column_count = static_cast<SQLSMALLINT>(column_info_.size());
+  return SQL_SUCCESS;
+}
+
+SQLRETURN ODBCStatement::describe_col(SQLUSMALLINT column_number, SQLCHAR* column_name, SQLSMALLINT name_buffer_length,
+                                     SQLSMALLINT* name_length, SQLSMALLINT* data_type, SQLULEN* column_size,
+                                     SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable) {
+  if (column_number < 1 || column_number > column_info_.size()) {
+    set_error(SQLSTATE_GENERAL_ERROR, "Invalid column number");
+    return SQL_ERROR;
+  }
+  
+  const auto& col = column_info_[column_number - 1];
+  
+  // Copy column name
+  if (column_name && name_buffer_length > 0) {
+    size_t copy_len = std::min(static_cast<size_t>(name_buffer_length - 1), col.name.length());
+    std::memcpy(column_name, col.name.c_str(), copy_len);
+    column_name[copy_len] = '\0';
+  }
+  
+  if (name_length) *name_length = static_cast<SQLSMALLINT>(col.name.length());
+  if (data_type) *data_type = col.sql_type;
+  if (column_size) *column_size = col.column_size;
+  if (decimal_digits) *decimal_digits = col.decimal_digits;
+  if (nullable) *nullable = col.nullable;
+  
+  return SQL_SUCCESS;
+}
+
+SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
+                                      SQLPOINTER character_attribute, SQLSMALLINT buffer_length,
+                                      SQLSMALLINT* string_length, SQLLEN* numeric_attribute) {
+  if (column_number < 1 || column_number > column_info_.size()) {
+    set_error(SQLSTATE_GENERAL_ERROR, "Invalid column number");
+    return SQL_ERROR;
+  }
+  
+  const auto& col = column_info_[column_number - 1];
+  
+  switch (field_identifier) {
+    case SQL_DESC_NAME:
+      if (character_attribute && buffer_length > 0) {
+        size_t copy_len = std::min(static_cast<size_t>(buffer_length - 1), col.name.length());
+        std::memcpy(character_attribute, col.name.c_str(), copy_len);
+        static_cast<char*>(character_attribute)[copy_len] = '\0';
+      }
+      if (string_length) *string_length = static_cast<SQLSMALLINT>(col.name.length());
       return SQL_SUCCESS;
-    }
-    
-    case SQL_C_SLONG: {
-      try {
-        SQLINTEGER result = static_cast<SQLINTEGER>(std::stol(value));
-        *static_cast<SQLINTEGER*>(buffer) = result;
-        if (indicator) *indicator = sizeof(SQLINTEGER);
-        return SQL_SUCCESS;
-      } catch (...) {
-        set_error(SQLSTATE_GENERAL_ERROR, "Invalid integer value");
-        return SQL_ERROR;
-      }
-    }
-    
-    case SQL_C_SBIGINT: {
-      try {
-        SQLBIGINT result = static_cast<SQLBIGINT>(std::stoll(value));
-        *static_cast<SQLBIGINT*>(buffer) = result;
-        if (indicator) *indicator = sizeof(SQLBIGINT);
-        return SQL_SUCCESS;
-      } catch (...) {
-        set_error(SQLSTATE_GENERAL_ERROR, "Invalid bigint value");
-        return SQL_ERROR;
-      }
-    }
-    
-    case SQL_C_DOUBLE: {
-      try {
-        SQLDOUBLE result = std::stod(value);
-        *static_cast<SQLDOUBLE*>(buffer) = result;
-        if (indicator) *indicator = sizeof(SQLDOUBLE);
-        return SQL_SUCCESS;
-      } catch (...) {
-        set_error(SQLSTATE_GENERAL_ERROR, "Invalid double value");
-        return SQL_ERROR;
-      }
-    }
-    
-    case SQL_C_BIT: {
-      SQLCHAR result = (value == "t" || value == "true" || value == "1") ? 1 : 0;
-      *static_cast<SQLCHAR*>(buffer) = result;
-      if (indicator) *indicator = sizeof(SQLCHAR);
+      
+    case SQL_DESC_TYPE:
+      if (numeric_attribute) *numeric_attribute = col.sql_type;
       return SQL_SUCCESS;
-    }
-    
+      
+    case SQL_DESC_LENGTH:
+      if (numeric_attribute) *numeric_attribute = col.column_size;
+      return SQL_SUCCESS;
+      
     default:
-      set_error(SQLSTATE_GENERAL_ERROR, "Unsupported data type conversion");
+      set_error(SQLSTATE_GENERAL_ERROR, "Unsupported column attribute");
       return SQL_ERROR;
   }
 }
