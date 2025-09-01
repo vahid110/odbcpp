@@ -190,7 +190,32 @@
 
 **Current Gap**: Only column-wise binding implemented via SQLBindCol. Missing row-wise binding for structured data and array binding for bulk operations.
 
-### Milestone 13: Redshift Authentication Plugins (PRIORITY: MEDIUM)
+### Milestone 13: Windows DSN GUI Support (PRIORITY: MEDIUM)
+**Timeline**: 1 week
+- [ ] **ConfigDSN Implementation** - SQLConfigDataSource for DSN management
+- [ ] **Windows Setup DLL** - Configuration dialog for ODBC Administrator
+- [ ] **GUI Dialog** - User-friendly connection configuration interface
+- [ ] **Connection Parameters**:
+  - [ ] Server/Host, Port, Database, Username fields
+  - [ ] SSL/TLS options with certificate validation
+  - [ ] Authentication method selection (Database, IAM, SAML)
+  - [ ] Advanced options (timeouts, logging, performance)
+- [ ] **Test Connection** - Built-in connection testing from GUI
+- [ ] **Registry Integration** - Proper Windows registry DSN storage
+- [ ] **Driver Installation** - Windows installer with ODBC registration
+- [ ] **64-bit Architecture** - Native 64-bit driver for modern systems
+
+**Success Criteria**:
+- Full integration with Windows ODBC Administrator
+- User-friendly GUI for non-technical users
+- Proper DSN creation, editing, and deletion
+- Test connection functionality from GUI
+- Windows installer package (.msi)
+- Native 64-bit Windows support for modern systems
+
+**Rationale**: Windows DSN GUI is essential for enterprise Windows deployments. Most Windows users expect to configure ODBC drivers through the familiar ODBC Administrator interface rather than manual connection strings.
+
+### Milestone 14: Redshift Authentication Plugins (PRIORITY: MEDIUM)
 **Timeline**: 1-2 weeks
 - [ ] **IAM Authentication** - AWS IAM roles, users, temporary credentials
 - [ ] **SAML 2.0 SSO** - Enterprise SSO integration with SAML providers
@@ -216,32 +241,27 @@
 
 **Rationale**: Authentication plugins are essential for enterprise Redshift deployments but are database-specific. Should be implemented after core ODBC features are complete but before adding other database protocols.
 
-### Milestone 13.5: Windows DSN GUI Support (PRIORITY: MEDIUM)
-**Timeline**: 1 week
-- [ ] **ConfigDSN Implementation** - SQLConfigDataSource for DSN management
-- [ ] **Windows Setup DLL** - Configuration dialog for ODBC Administrator
-- [ ] **GUI Dialog** - User-friendly connection configuration interface
-- [ ] **Connection Parameters**:
-  - [ ] Server/Host, Port, Database, Username fields
-  - [ ] SSL/TLS options with certificate validation
-  - [ ] Authentication method selection (Database, IAM, SAML)
-  - [ ] Advanced options (timeouts, logging, performance)
-- [ ] **Test Connection** - Built-in connection testing from GUI
-- [ ] **Registry Integration** - Proper Windows registry DSN storage
-- [ ] **Driver Installation** - Windows installer with ODBC registration
-- [ ] **64-bit Architecture** - Native 64-bit driver for modern systems
+### Milestone 15: Binary Protocol Support (PRIORITY: LOW-MEDIUM)
+**Timeline**: 1-2 weeks
+- [ ] **PostgreSQL Binary Format** - Support format=1 in protocol messages
+- [ ] **Binary Data Parsing** - Native binary parsing for integers, floats, timestamps
+- [ ] **Endianness Handling** - Cross-platform byte order compatibility
+- [ ] **Type-Specific Parsers** - Binary parsers for all PostgreSQL data types
+- [ ] **Performance Benchmarks** - Compare binary vs text format performance
+- [ ] **Connection String Parameter** - `BinaryFormat=true/false` option
+- [ ] **Fallback Support** - Graceful fallback to text format on errors
+- [ ] **NULL Handling** - Proper NULL indicators in binary format
 
 **Success Criteria**:
-- Full integration with Windows ODBC Administrator
-- User-friendly GUI for non-technical users
-- Proper DSN creation, editing, and deletion
-- Test connection functionality from GUI
-- Windows installer package (.msi)
-- Native 64-bit Windows support for modern systems
+- 20-50% performance improvement for large result sets
+- Support for all PostgreSQL/Redshift data types in binary format
+- Seamless fallback to text format when needed
+- Cross-platform compatibility (Windows, Linux, macOS)
+- Configurable via connection string
 
-**Rationale**: Windows DSN GUI is essential for enterprise Windows deployments. Most Windows users expect to configure ODBC drivers through the familiar ODBC Administrator interface rather than manual connection strings.
+**Rationale**: Binary format provides significant performance improvements for large datasets but is not critical for functionality. Should be implemented after core ODBC compliance and Windows support are complete.
 
-### Milestone 14: Multi-Database Support (PRIORITY: LOW)
+### Milestone 16: Multi-Database Support (PRIORITY: LOW)
 **Timeline**: 3-4 weeks
 - [ ] MySQL protocol implementation
 - [ ] SQL Server TDS protocol implementation
