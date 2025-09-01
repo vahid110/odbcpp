@@ -86,6 +86,24 @@ struct ParameterInfo {
   SQLLEN* strlen_or_indicator;
 };
 
+// ARD (Application Row Descriptor) - ODBC result column binding info
+struct ColumnBinding {
+  SQLSMALLINT target_type;        // SQL_C_CHAR, SQL_C_LONG, etc.
+  SQLPOINTER target_value;        // Application buffer
+  SQLLEN buffer_length;
+  SQLLEN* strlen_or_indicator;
+  bool bound = false;
+};
+
+// IPD (Implementation Parameter Descriptor) - ODBC parameter metadata
+struct ParameterMetadata {
+  SQLSMALLINT sql_type;           // SQL_VARCHAR, SQL_INTEGER, etc.
+  SQLULEN column_size;
+  SQLSMALLINT decimal_digits;
+  SQLSMALLINT nullable;
+  std::string name;               // Parameter name (if available)
+};
+
 // Statement handle
 class ODBCStatement : public ODBCHandle {
 public:
@@ -120,8 +138,10 @@ public:
 private:
   ODBCConnection* conn_;
   std::vector<std::vector<std::string>> result_rows_;
-  std::vector<ColumnInfo> column_info_;  // IRD storage
+  std::vector<ColumnInfo> column_info_;        // IRD storage
   std::vector<ParameterInfo> parameter_info_;  // APD storage
+  std::vector<ColumnBinding> column_bindings_; // ARD storage
+  std::vector<ParameterMetadata> param_metadata_; // IPD storage
   std::string prepared_sql_;
   size_t current_row_ = 0;
   bool executed_ = false;
