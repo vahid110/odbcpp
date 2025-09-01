@@ -168,6 +168,30 @@ SQLRETURN ODBCStatement::fetch() {
   }
   
   current_row_++;
+  
+  // Auto-populate bound columns from ARD
+  const auto& row = result_rows_[current_row_ - 1];
+  for (size_t i = 0; i < column_bindings_.size() && i < row.size(); ++i) {
+    const auto& binding = column_bindings_[i];
+    if (binding.bound && binding.target_value) {
+      // Convert and copy data to bound buffer
+      const std::string& value = row[i];
+      
+      // Use existing data converter with VARCHAR as default SQL type
+      SQLSMALLINT sql_type = SQL_VARCHAR;
+      
+      if (db_converter::RedshiftTypes::is_conversion_supported(sql_type, binding.target_type)) {
+        SQLRETURN result = db_converter::RedshiftDataConverter::convert_data(
+          value, binding.target_type, binding.target_value, binding.buffer_length, binding.strlen_or_indicator);
+        
+        // If conversion fails, set error indicator
+        if (result != SQL_SUCCESS && binding.strlen_or_indicator) {
+          *binding.strlen_or_indicator = SQL_NULL_DATA;
+        }
+      }
+    }
+  }
+  
   return SQL_SUCCESS;
 }
 
@@ -320,6 +344,30 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
   return SQL_SUCCESS;
 }
 
+// Column binding implementation
+SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target_type,
+                                  SQLPOINTER target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator) {
+  if (column_number < 1) {
+    set_error(SQLSTATE_GENERAL_ERROR, "Invalid column number");
+    return SQL_ERROR;
+  }
+  
+  // Resize binding array if needed
+  if (column_number > column_bindings_.size()) {
+    column_bindings_.resize(column_number);
+  }
+  
+  // Store binding info in ARD
+  auto& binding = column_bindings_[column_number - 1];
+  binding.target_type = target_type;
+  binding.target_value = target_value;
+  binding.buffer_length = buffer_length;
+  binding.strlen_or_indicator = strlen_or_indicator;
+  binding.bound = true;
+  
+  return SQL_SUCCESS;
+}
+
 // Metadata functions implementation
 SQLRETURN ODBCStatement::get_num_result_cols(SQLSMALLINT* column_count) {
   if (!column_count) return SQL_ERROR;
@@ -391,6 +439,38 @@ SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT 
       set_error(SQLSTATE_GENERAL_ERROR, "Unsupported column attribute");
       return SQL_ERROR;
   }
+}
+
+// Parameter metadata implementation
+SQLRETURN ODBCStatement::describe_param(SQLUSMALLINT parameter_number, SQLSMALLINT* data_type,
+                                        SQLULEN* parameter_size, SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable) {
+  if (parameter_number < 1 || parameter_number > param_metadata_.size()) {
+    set_error(SQLSTATE_GENERAL_ERROR, "Invalid parameter number");
+    return SQL_ERROR;
+  }
+  
+  const auto& meta = param_metadata_[parameter_number - 1];
+  if (data_type) *data_type = meta.sql_type;
+  if (parameter_size) *parameter_size = meta.column_size;
+  if (decimal_digits) *decimal_digits = meta.decimal_digits;
+  if (nullable) *nullable = meta.nullable;
+  
+  return SQL_SUCCESS;
+}
+
+// Descriptor field access implementation
+SQLRETURN ODBCStatement::get_desc_field(SQLSMALLINT descriptor_type, SQLSMALLINT record_number, SQLSMALLINT field_identifier,
+                                        SQLPOINTER value, SQLLEN buffer_length, SQLLEN* string_length) {
+  // Simplified implementation - would need full descriptor type handling
+  set_error(SQLSTATE_GENERAL_ERROR, "SQLGetDescField not fully implemented");
+  return SQL_ERROR;
+}
+
+SQLRETURN ODBCStatement::set_desc_field(SQLSMALLINT descriptor_type, SQLSMALLINT record_number, SQLSMALLINT field_identifier,
+                                        SQLPOINTER value, SQLLEN string_length) {
+  // Simplified implementation - would need full descriptor type handling
+  set_error(SQLSTATE_GENERAL_ERROR, "SQLSetDescField not fully implemented");
+  return SQL_ERROR;
 }
 
 // Handle registry implementation

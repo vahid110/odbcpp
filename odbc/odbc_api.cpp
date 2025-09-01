@@ -245,4 +245,25 @@ SQLRETURN SQLBindParameter(SQLHSTMT statement_handle, SQLUSMALLINT parameter_num
                              column_size, decimal_digits, parameter_value, buffer_length, strlen_or_indicator);
 }
 
+// Column binding
+SQLRETURN SQLBindCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLSMALLINT target_type,
+                    SQLPOINTER target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  
+  return stmt->bind_col(column_number, target_type, target_value, buffer_length, strlen_or_indicator);
+}
+
+// Parameter metadata
+SQLRETURN SQLDescribeParam(SQLHSTMT statement_handle, SQLUSMALLINT parameter_number, SQLSMALLINT* data_type,
+                          SQLULEN* parameter_size, SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  
+  return stmt->describe_param(parameter_number, data_type, parameter_size, decimal_digits, nullable);
+}
+
+// Note: SQLGetDescField and SQLSetDescField implementations would go here
+// Currently using system declarations from sql.h
+
 } // extern "C"

@@ -123,6 +123,10 @@ public:
                           SQLSMALLINT decimal_digits, SQLPOINTER parameter_value, SQLLEN buffer_length,
                           SQLLEN* strlen_or_indicator);
   
+  // Column binding (ARD)
+  SQLRETURN bind_col(SQLUSMALLINT column_number, SQLSMALLINT target_type,
+                     SQLPOINTER target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator);
+  
   // Metadata functions
   SQLRETURN get_num_result_cols(SQLSMALLINT* column_count);
   SQLRETURN describe_col(SQLUSMALLINT column_number, SQLCHAR* column_name, SQLSMALLINT name_buffer_length,
@@ -131,6 +135,16 @@ public:
   SQLRETURN col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
                          SQLPOINTER character_attribute, SQLSMALLINT buffer_length,
                          SQLSMALLINT* string_length, SQLLEN* numeric_attribute);
+  
+  // Parameter metadata (IPD)
+  SQLRETURN describe_param(SQLUSMALLINT parameter_number, SQLSMALLINT* data_type,
+                          SQLULEN* parameter_size, SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable);
+  
+  // Descriptor field access
+  SQLRETURN get_desc_field(SQLSMALLINT descriptor_type, SQLSMALLINT record_number, SQLSMALLINT field_identifier,
+                           SQLPOINTER value, SQLLEN buffer_length, SQLLEN* string_length);
+  SQLRETURN set_desc_field(SQLSMALLINT descriptor_type, SQLSMALLINT record_number, SQLSMALLINT field_identifier,
+                           SQLPOINTER value, SQLLEN string_length);
   
   bool has_results() const { return !result_rows_.empty(); }
   size_t get_column_count() const { return result_rows_.empty() ? 0 : result_rows_[0].size(); }

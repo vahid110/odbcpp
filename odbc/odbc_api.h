@@ -44,6 +44,10 @@ SQLRETURN SQLBindParameter(SQLHSTMT statement_handle, SQLUSMALLINT parameter_num
                           SQLSMALLINT decimal_digits, SQLPOINTER parameter_value, SQLLEN buffer_length,
                           SQLLEN* strlen_or_indicator);
 
+// Column binding
+SQLRETURN SQLBindCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLSMALLINT target_type,
+                    SQLPOINTER target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator);
+
 // Result set metadata
 SQLRETURN SQLNumResultCols(SQLHSTMT statement_handle, SQLSMALLINT* column_count);
 SQLRETURN SQLDescribeCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number,
@@ -53,6 +57,12 @@ SQLRETURN SQLDescribeCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number,
 SQLRETURN SQLColAttribute(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
                          SQLPOINTER character_attribute, SQLSMALLINT buffer_length, SQLSMALLINT* string_length,
                          SQLLEN* numeric_attribute);
+
+// Parameter metadata
+SQLRETURN SQLDescribeParam(SQLHSTMT statement_handle, SQLUSMALLINT parameter_number, SQLSMALLINT* data_type,
+                          SQLULEN* parameter_size, SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable);
+
+// Note: SQLGetDescField and SQLSetDescField are declared in system sql.h
 
 // Wide character versions (reserved for future implementation)
 // These ensure our architecture can support Unicode without breaking changes
