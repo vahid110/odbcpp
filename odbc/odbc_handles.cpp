@@ -207,6 +207,119 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
   return result;
 }
 
+// Prepared statement implementation
+SQLRETURN ODBCStatement::prepare(const std::string& sql) {
+  if (!conn_->is_connected()) {
+    set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
+    return SQL_ERROR;
+  }
+  
+  prepared_sql_ = sql;
+  parameter_info_.clear();
+  prepared_ = true;
+  executed_ = false;
+  
+  return SQL_SUCCESS;
+}
+
+SQLRETURN ODBCStatement::execute() {
+  if (!prepared_) {
+    set_error(SQLSTATE_GENERAL_ERROR, "Statement not prepared");
+    return SQL_ERROR;
+  }
+  
+  if (!conn_->is_connected()) {
+    set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
+    return SQL_ERROR;
+  }
+  
+  try {
+    // Convert bound parameters to string format for PostgreSQL
+    std::vector<std::string> param_values;
+    param_values.reserve(parameter_info_.size());
+    
+    for (const auto& param : parameter_info_) {
+      std::string value;
+      
+      // Convert parameter value to string based on C type
+      if (param.value_type == SQL_C_CHAR) {
+        value = std::string(static_cast<char*>(param.parameter_value));
+      } else if (param.value_type == SQL_C_SLONG) {
+        value = std::to_string(*static_cast<SQLINTEGER*>(param.parameter_value));
+      } else if (param.value_type == SQL_C_SBIGINT) {
+        value = std::to_string(*static_cast<SQLBIGINT*>(param.parameter_value));
+      } else if (param.value_type == SQL_C_DOUBLE) {
+        value = std::to_string(*static_cast<SQLDOUBLE*>(param.parameter_value));
+      } else {
+        value = "";
+      }
+      
+      param_values.push_back(value);
+    }
+    
+    // Use PostgreSQL Parse/Bind/Execute protocol
+    auto deadline = rs::util::make_deadline(std::chrono::seconds(30));
+    auto result = conn_->get_db_connection()->execute_prepared(prepared_sql_, param_values, deadline);
+    
+    if (result.has_error()) {
+      set_error(SQLSTATE_SYNTAX_ERROR, result.error_message());
+      return SQL_ERROR;
+    }
+    
+    result_rows_ = result->rows;
+    current_row_ = 0;
+    executed_ = true;
+    
+    // Update IRD with column metadata
+    column_info_.clear();
+    if (!result_rows_.empty()) {
+      for (size_t i = 0; i < result_rows_[0].size(); ++i) {
+        ColumnInfo col;
+        col.name = "column" + std::to_string(i + 1);
+        col.sql_type = SQL_VARCHAR;
+        col.column_size = 255;
+        col.decimal_digits = 0;
+        col.nullable = SQL_NULLABLE;
+        column_info_.push_back(col);
+      }
+    }
+    
+    return SQL_SUCCESS;
+    
+  } catch (const std::exception& e) {
+    set_error(SQLSTATE_GENERAL_ERROR, e.what());
+    return SQL_ERROR;
+  }
+}
+
+SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLINT input_output_type,
+                                       SQLSMALLINT value_type, SQLSMALLINT parameter_type, SQLULEN column_size,
+                                       SQLSMALLINT decimal_digits, SQLPOINTER parameter_value, SQLLEN buffer_length,
+                                       SQLLEN* strlen_or_indicator) {
+  if (parameter_number < 1) {
+    set_error(SQLSTATE_GENERAL_ERROR, "Invalid parameter number");
+    return SQL_ERROR;
+  }
+  
+  // Resize parameter array if needed
+  if (parameter_number > parameter_info_.size()) {
+    parameter_info_.resize(parameter_number);
+  }
+  
+  // Store parameter info in APD
+  auto& param = parameter_info_[parameter_number - 1];
+  param.input_output_type = input_output_type;
+  param.value_type = value_type;
+  param.parameter_type = parameter_type;
+  param.column_size = column_size;
+  param.decimal_digits = decimal_digits;
+  param.parameter_value = parameter_value;
+  param.buffer_length = buffer_length;
+  param.strlen_or_indicator = strlen_or_indicator;
+  
+  return SQL_SUCCESS;
+}
+
 // Metadata functions implementation
 SQLRETURN ODBCStatement::get_num_result_cols(SQLSMALLINT* column_count) {
   if (!column_count) return SQL_ERROR;

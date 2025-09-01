@@ -219,4 +219,30 @@ SQLRETURN SQLColAttribute(SQLHSTMT statement_handle, SQLUSMALLINT column_number,
                             buffer_length, string_length, numeric_attribute);
 }
 
+SQLRETURN SQLPrepare(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  
+  std::string sql = sqlchar_to_string(statement_text, text_length);
+  return stmt->prepare(sql);
+}
+
+SQLRETURN SQLExecute(SQLHSTMT statement_handle) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  
+  return stmt->execute();
+}
+
+SQLRETURN SQLBindParameter(SQLHSTMT statement_handle, SQLUSMALLINT parameter_number, SQLSMALLINT input_output_type,
+                          SQLSMALLINT value_type, SQLSMALLINT parameter_type, SQLULEN column_size,
+                          SQLSMALLINT decimal_digits, SQLPOINTER parameter_value, SQLLEN buffer_length,
+                          SQLLEN* strlen_or_indicator) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  
+  return stmt->bind_parameter(parameter_number, input_output_type, value_type, parameter_type,
+                             column_size, decimal_digits, parameter_value, buffer_length, strlen_or_indicator);
+}
+
 } // extern "C"

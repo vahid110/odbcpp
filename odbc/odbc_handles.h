@@ -74,6 +74,18 @@ struct ColumnInfo {
   SQLSMALLINT nullable;       // SQL_DESC_NULLABLE
 };
 
+// APD (Application Parameter Descriptor) - ODBC parameter binding info
+struct ParameterInfo {
+  SQLSMALLINT input_output_type;  // SQL_PARAM_INPUT, etc.
+  SQLSMALLINT value_type;         // SQL_C_CHAR, SQL_C_LONG, etc.
+  SQLSMALLINT parameter_type;     // SQL_VARCHAR, SQL_INTEGER, etc.
+  SQLULEN column_size;
+  SQLSMALLINT decimal_digits;
+  SQLPOINTER parameter_value;     // Application buffer
+  SQLLEN buffer_length;
+  SQLLEN* strlen_or_indicator;
+};
+
 // Statement handle
 class ODBCStatement : public ODBCHandle {
 public:
@@ -84,6 +96,14 @@ public:
   SQLRETURN fetch();
   SQLRETURN get_data(SQLUSMALLINT col, SQLSMALLINT target_type, 
                      void* buffer, SQLLEN buffer_length, SQLLEN* indicator);
+  
+  // Prepared statements
+  SQLRETURN prepare(const std::string& sql);
+  SQLRETURN execute();
+  SQLRETURN bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLINT input_output_type,
+                          SQLSMALLINT value_type, SQLSMALLINT parameter_type, SQLULEN column_size,
+                          SQLSMALLINT decimal_digits, SQLPOINTER parameter_value, SQLLEN buffer_length,
+                          SQLLEN* strlen_or_indicator);
   
   // Metadata functions
   SQLRETURN get_num_result_cols(SQLSMALLINT* column_count);
@@ -101,8 +121,11 @@ private:
   ODBCConnection* conn_;
   std::vector<std::vector<std::string>> result_rows_;
   std::vector<ColumnInfo> column_info_;  // IRD storage
+  std::vector<ParameterInfo> parameter_info_;  // APD storage
+  std::string prepared_sql_;
   size_t current_row_ = 0;
   bool executed_ = false;
+  bool prepared_ = false;
 };
 
 // Handle registry for validation

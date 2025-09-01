@@ -36,6 +36,14 @@ SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type,
 SQLRETURN SQLSetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute, 
                        void* value, SQLINTEGER string_length);
 
+// Prepared statements
+SQLRETURN SQLPrepare(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length);
+SQLRETURN SQLExecute(SQLHSTMT statement_handle);
+SQLRETURN SQLBindParameter(SQLHSTMT statement_handle, SQLUSMALLINT parameter_number, SQLSMALLINT input_output_type,
+                          SQLSMALLINT value_type, SQLSMALLINT parameter_type, SQLULEN column_size,
+                          SQLSMALLINT decimal_digits, SQLPOINTER parameter_value, SQLLEN buffer_length,
+                          SQLLEN* strlen_or_indicator);
+
 // Result set metadata
 SQLRETURN SQLNumResultCols(SQLHSTMT statement_handle, SQLSMALLINT* column_count);
 SQLRETURN SQLDescribeCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number,

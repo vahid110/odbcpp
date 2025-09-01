@@ -193,7 +193,69 @@ rs::util::Result<QueryResult> AsyncDatabaseConnection::execute_query(std::string
 rs::util::Result<QueryResult> AsyncDatabaseConnection::execute_prepared(std::string_view sql, 
                                                                        std::span<const std::string> params,
                                                                        rs::util::Deadline deadline) {
-  return execute_query(sql, deadline);
+  if (!is_connected()) {
+    return rs::util::Result<QueryResult>(rs::util::DbErrorCode::NotConnected, "Not connected to database");
+  }
+  
+  try {
+    // Create prepared query message using Parse/Bind/Execute protocol
+    auto prepared_msg = parser_->create_prepared_query(sql, params);
+    
+    // Send prepared query via transport
+    auto send_result = transport_->send(prepared_msg, deadline);
+    if (send_result.has_error()) {
+      return rs::util::Result<QueryResult>(rs::util::DbErrorCode::NetworkError, send_result.error_message());
+    }
+    
+    // Receive response messages
+    std::vector<Message> messages;
+    std::vector<std::byte> buffer(8192);
+    
+    auto recv_result = transport_->recv(buffer, deadline);
+    if (recv_result.has_error()) {
+      return rs::util::Result<QueryResult>(rs::util::DbErrorCode::NetworkError, recv_result.error_message());
+    }
+    
+    // Parse all messages in the response
+    std::vector<std::byte> all_data(buffer.begin(), buffer.begin() + recv_result->n);
+    size_t offset = 0;
+    bool ready = false;
+    
+    while (offset < all_data.size() && !ready) {
+      if (offset + 5 > all_data.size()) break;
+      
+      char tag = static_cast<char>(all_data[offset]);
+      uint32_t length = (static_cast<uint32_t>(all_data[offset+1]) << 24) |
+                       (static_cast<uint32_t>(all_data[offset+2]) << 16) |
+                       (static_cast<uint32_t>(all_data[offset+3]) << 8) |
+                       static_cast<uint32_t>(all_data[offset+4]);
+      
+      if (offset + 1 + length > all_data.size()) break;
+      
+      std::vector<std::byte> msg_data(all_data.begin() + offset, all_data.begin() + offset + 1 + length);
+      auto msg = parser_->parse_message(msg_data);
+      messages.push_back(msg);
+      
+      if (parser_->is_error_response(msg)) {
+        return rs::util::Result<QueryResult>(rs::util::DbErrorCode::QueryFailed, parser_->extract_error_message(msg));
+      }
+      
+      if (parser_->is_ready_for_query(msg)) {
+        ready = true;
+      }
+      
+      offset += 1 + length;
+    }
+    
+    // Extract results from messages
+    QueryResult result;
+    result.rows = parser_->extract_query_results(messages);
+    
+    return rs::util::Result<QueryResult>{std::move(result)};
+    
+  } catch (const std::exception& e) {
+    return rs::util::Result<QueryResult>(rs::util::DbErrorCode::ProtocolError, e.what());
+  }
 }
 
 std::string AsyncDatabaseConnection::get_parameter(std::string_view key) const {
