@@ -157,119 +157,34 @@ std::vector<std::byte> PgProtocolParser::create_prepared_query(
     std::string_view sql,
     std::span<const std::string> params) {
   
-  // PostgreSQL Parse/Bind/Execute protocol
-  std::vector<std::byte> messages;
+  // Fallback: Use simple query with parameter substitution
+  // TODO: Implement full Parse/Bind/Execute protocol
+  std::string substituted_sql(sql);
   
-  // 1. Parse message: 'P' + len + stmt_name + sql + param_types
-  std::string stmt_name = "stmt1";  // Simple statement name
-  size_t parse_len = 1 + 4 + stmt_name.size() + 1 + sql.size() + 1 + 2; // +2 for param count
-  
-  std::vector<std::byte> parse_msg(parse_len);
-  auto* data = reinterpret_cast<unsigned char*>(parse_msg.data());
-  
-  data[0] = 'P';  // Parse
-  uint32_t len = static_cast<uint32_t>(parse_len - 1);
-  data[1] = (len >> 24) & 0xFF;
-  data[2] = (len >> 16) & 0xFF;
-  data[3] = (len >> 8) & 0xFF;
-  data[4] = len & 0xFF;
-  
-  size_t off = 5;
-  // Statement name
-  std::memcpy(data + off, stmt_name.data(), stmt_name.size());
-  off += stmt_name.size();
-  data[off++] = 0;
-  
-  // SQL query
-  std::memcpy(data + off, sql.data(), sql.size());
-  off += sql.size();
-  data[off++] = 0;
-  
-  // Parameter type count (0 = let server infer)
-  data[off++] = 0;
-  data[off++] = 0;
-  
-  messages.insert(messages.end(), parse_msg.begin(), parse_msg.end());
-  
-  // 2. Bind message: 'B' + len + portal + stmt + param_formats + params + result_formats
-  size_t bind_base = 1 + 4 + 1 + stmt_name.size() + 1 + 2 + 2; // Basic structure
-  size_t param_data_size = 0;
-  for (const auto& param : params) {
-    param_data_size += 4 + param.size(); // length + data
-  }
-  
-  size_t bind_len = bind_base + param_data_size + 2; // +2 for result format count
-  std::vector<std::byte> bind_msg(bind_len);
-  data = reinterpret_cast<unsigned char*>(bind_msg.data());
-  
-  data[0] = 'B';  // Bind
-  len = static_cast<uint32_t>(bind_len - 1);
-  data[1] = (len >> 24) & 0xFF;
-  data[2] = (len >> 16) & 0xFF;
-  data[3] = (len >> 8) & 0xFF;
-  data[4] = len & 0xFF;
-  
-  off = 5;
-  // Portal name (empty)
-  data[off++] = 0;
-  
-  // Statement name
-  std::memcpy(data + off, stmt_name.data(), stmt_name.size());
-  off += stmt_name.size();
-  data[off++] = 0;
-  
-  // Parameter format codes (0 = text)
-  uint16_t param_count = static_cast<uint16_t>(params.size());
-  data[off++] = (param_count >> 8) & 0xFF;
-  data[off++] = param_count & 0xFF;
+  // Replace $1, $2, etc. with actual parameter values
   for (size_t i = 0; i < params.size(); ++i) {
-    data[off++] = 0; // Format = text
-    data[off++] = 0;
-  }
-  
-  // Parameter count
-  data[off++] = (param_count >> 8) & 0xFF;
-  data[off++] = param_count & 0xFF;
-  
-  // Parameter values
-  for (const auto& param : params) {
-    uint32_t param_len = static_cast<uint32_t>(param.size());
-    data[off++] = (param_len >> 24) & 0xFF;
-    data[off++] = (param_len >> 16) & 0xFF;
-    data[off++] = (param_len >> 8) & 0xFF;
-    data[off++] = param_len & 0xFF;
+    std::string placeholder = "$" + std::to_string(i + 1);
+    std::string value;
     
-    std::memcpy(data + off, param.data(), param.size());
-    off += param.size();
+    // Check if parameter is numeric (simple heuristic)
+    bool is_numeric = !params[i].empty() && 
+                     (std::isdigit(params[i][0]) || params[i][0] == '-');
+    
+    if (is_numeric) {
+      value = params[i];  // Don't quote numbers
+    } else {
+      value = "'" + params[i] + "'";  // Quote string values
+    }
+    
+    size_t pos = 0;
+    while ((pos = substituted_sql.find(placeholder, pos)) != std::string::npos) {
+      substituted_sql.replace(pos, placeholder.length(), value);
+      pos += value.length();
+    }
   }
   
-  // Result format codes (0 = text)
-  data[off++] = 0;
-  data[off++] = 0;
-  
-  messages.insert(messages.end(), bind_msg.begin(), bind_msg.end());
-  
-  // 3. Execute message: 'E' + len + portal + max_rows
-  std::vector<std::byte> exec_msg(10);
-  data = reinterpret_cast<unsigned char*>(exec_msg.data());
-  
-  data[0] = 'E';  // Execute
-  data[1] = 0; data[2] = 0; data[3] = 0; data[4] = 9; // Length = 9
-  data[5] = 0;  // Portal name (empty)
-  data[6] = 0; data[7] = 0; data[8] = 0; data[9] = 0; // Max rows = 0 (all)
-  
-  messages.insert(messages.end(), exec_msg.begin(), exec_msg.end());
-  
-  // 4. Sync message: 'S' + len
-  std::vector<std::byte> sync_msg(5);
-  data = reinterpret_cast<unsigned char*>(sync_msg.data());
-  
-  data[0] = 'S';  // Sync
-  data[1] = 0; data[2] = 0; data[3] = 0; data[4] = 4; // Length = 4
-  
-  messages.insert(messages.end(), sync_msg.begin(), sync_msg.end());
-  
-  return messages;
+  // Use simple query protocol
+  return create_simple_query(substituted_sql);
 }
 
 Message PgProtocolParser::parse_message(const std::vector<std::byte>& data) {

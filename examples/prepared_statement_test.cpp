@@ -16,7 +16,7 @@ int main() {
     SQLAllocHandle(SQL_HANDLE_DBC, henv, &hdbc);
     
     // Connect
-    SQLRETURN ret = SQLConnect(hdbc, (SQLCHAR*)"DSN=RedshiftTest", SQL_NTS, nullptr, 0, nullptr, 0);
+    SQLRETURN ret = SQLConnect(hdbc, (SQLCHAR*)"DSN=RedshiftProd", SQL_NTS, nullptr, 0, nullptr, 0);
     if (ret != SQL_SUCCESS) {
         std::cout << "❌ Connection failed\n";
         return 1;

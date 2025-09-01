@@ -64,6 +64,7 @@ std::vector<std::string> ConnectionString::get_dsn_file_paths() {
   
   // Local DSN file
   paths.push_back("odbcpp.dsn");
+  paths.push_back("../odbcpp.dsn"); // From build directory
 #endif
   
   return paths;
