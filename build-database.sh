@@ -1,5 +1,33 @@
 #!/bin/bash
-# Build script for database-specific ODBC drivers
+#
+# Database-Specific ODBC Driver Build Script
+#
+# This script builds the ODBCPP driver for specific database targets.
+# Each build produces a single-database ODBC driver optimized for size
+# and performance by including only the necessary protocol implementation.
+#
+# ARCHITECTURE:
+#   The ODBCPP framework uses conditional compilation to build database-specific
+#   drivers. Each driver contains:
+#   - Complete ODBC API implementation (23 functions)
+#   - Database-specific protocol parser (PostgreSQL wire, MySQL, etc.)
+#   - Optimized for single database type
+#
+# OUTPUT:
+#   - Static library: build-{database}/libodbcpp_core.a
+#   - ODBC driver: build-{database}/libodbcpp.so (or .dylib on macOS)
+#   - Examples: build-{database}/examples/ (if enabled)
+#   - Tests: build-{database}/tests/ (if enabled)
+#
+# SUPPORTED DATABASES:
+#   - Redshift: Uses PostgreSQL wire protocol
+#   - PostgreSQL: Native PostgreSQL wire protocol
+#   - MySQL: MySQL protocol (planned)
+#
+# REQUIREMENTS:
+#   - CMake 3.20+
+#   - C++20 compiler
+#   - OpenSSL 3.0+
 
 set -e
 

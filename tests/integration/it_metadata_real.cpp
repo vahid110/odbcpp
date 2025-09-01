@@ -10,7 +10,7 @@ protected:
         SQLAllocHandle(SQL_HANDLE_DBC, henv, &hdbc);
         
         // Connect to test database
-        SQLRETURN ret = SQLConnect(hdbc, (SQLCHAR*)"DSN=RedshiftTest", SQL_NTS, nullptr, 0, nullptr, 0);
+        SQLRETURN ret = SQLConnect(hdbc, (SQLCHAR*)"DSN=RedshiftProd", SQL_NTS, nullptr, 0, nullptr, 0);
         ASSERT_EQ(SQL_SUCCESS, ret) << "Failed to connect to test database";
         
         SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);

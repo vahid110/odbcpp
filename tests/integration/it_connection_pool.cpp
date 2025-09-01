@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "core/database/connection_pool.h"
 #include "core/util/exception_adapter.h"
+#include "odbc/connection_string.h"
 #include <thread>
 #include <vector>
 #include <chrono>
@@ -15,13 +16,16 @@ protected:
     config_.max_connections = 3;
     config_.acquire_timeout = std::chrono::seconds(5);
     
-    // Use connection settings from DSN configuration
-    config_.connection_settings.host = "vahidsbr-redshift-cluster.cxzokcavspmr.us-east-1.redshift.amazonaws.com";
-    config_.connection_settings.port = 5439;
-    config_.connection_settings.database = "dev";
-    config_.connection_settings.user = "awsuser";
-    config_.connection_settings.password = "Testing1234";
-    config_.connection_settings.use_ssl = false;
+    // Load connection settings from DSN
+    auto dsn_params = rs::odbc::ConnectionString::load_dsn("RedshiftProd");
+    ASSERT_FALSE(dsn_params.empty()) << "DSN 'RedshiftProd' not found in odbc.ini";
+    
+    config_.connection_settings.host = dsn_params["SERVER"];
+    config_.connection_settings.port = std::stoi(dsn_params["PORT"]);
+    config_.connection_settings.database = dsn_params["DATABASE"];
+    config_.connection_settings.user = dsn_params["UID"];
+    config_.connection_settings.password = dsn_params["PWD"];
+    config_.connection_settings.use_ssl = (dsn_params["SSL"] == "1");
     config_.connection_settings.timeout = std::chrono::seconds(10);
   }
   
@@ -29,7 +33,6 @@ protected:
 };
 
 TEST_F(ConnectionPoolIntegrationTest, RealDatabaseConnections) {
-  
   ConnectionPool pool(config_);
   
   auto conn = pool.acquire();
@@ -57,7 +60,7 @@ TEST_F(ConnectionPoolIntegrationTest, RealDatabaseConnections) {
 }
 
 TEST_F(ConnectionPoolIntegrationTest, ErrorHandlingWithRealDatabase) {
-  // Test with intentionally bad connection settings
+  // Test with intentionally bad connection settings (no skip needed for error test)
   config_.connection_settings.host = "nonexistent-host-12345";
   config_.connection_settings.port = 65000;
   

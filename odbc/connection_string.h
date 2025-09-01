@@ -16,6 +16,9 @@ public:
   
   // Get DSN file paths for current platform
   static std::vector<std::string> get_dsn_file_paths();
+  
+  // Get driver configuration file paths
+  static std::vector<std::string> get_driver_file_paths();
 
   // Utility functions (public for DSNReader)
   static std::string trim(const std::string& str);
@@ -30,6 +33,12 @@ public:
   
   // Check if DSN exists in system
   static bool dsn_exists(const std::string& dsn_name);
+  
+  // Read driver configuration from odbcinst.ini
+  static std::map<std::string, std::string> read_driver_config(const std::string& driver_name);
+  
+  // Check if driver exists in system
+  static bool driver_exists(const std::string& driver_name);
 
 private:
   static std::map<std::string, std::string> parse_ini_section(std::ifstream& file, const std::string& section_name);

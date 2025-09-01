@@ -174,8 +174,14 @@ SQLRETURN ODBCStatement::fetch() {
   for (size_t i = 0; i < column_bindings_.size() && i < row.size(); ++i) {
     const auto& binding = column_bindings_[i];
     if (binding.bound && binding.target_value) {
-      // Convert and copy data to bound buffer
       const std::string& value = row[i];
+      
+      // Simple NULL detection: if value is empty, treat as NULL for bound columns
+      // This is a simplified approach - proper implementation would use protocol-level NULL indicators
+      if (value.empty() && binding.strlen_or_indicator) {
+        *binding.strlen_or_indicator = SQL_NULL_DATA;
+        continue;
+      }
       
       // Use database-specific data converter
       SQLRETURN conv_result = db_converter::RedshiftDataConverter::convert_data(
@@ -205,6 +211,10 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
   }
   
   const std::string& value = row[col - 1];
+  
+  // Note: NULL detection should be done at protocol level
+  // For now, we don't treat empty strings as NULL in get_data
+  // NULL handling is done in fetch() for bound columns only
   
   // TODO: Get actual SQL type from column metadata (Milestone 2)
   // For now, assume all data comes as VARCHAR from database

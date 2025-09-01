@@ -53,29 +53,44 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 - CMake 3.20+
 - C++20 compiler (GCC 10+, Clang 12+, MSVC 2019+)
 - OpenSSL 3.0+
+- unixODBC (for system integration)
 
 ### Build ODBC Driver
 
 ```bash
-# Build both static library and ODBC driver
-cmake -B build
-cmake --build build
+# Build database-specific driver (recommended)
+./build-database.sh redshift
 
-# Install as system ODBC driver (optional)
-cd build
-sudo ../install/install-driver.sh
+# Or build manually
+cmake -DTARGET_DATABASE=REDSHIFT -B build-redshift
+cmake --build build-redshift
+```
+
+### ODBC Configuration Setup
+
+```bash
+# Setup test environment with local ODBC configuration
+source ./setup-test-env.sh
+
+# Verify configuration
+echo $ODBCINI    # Should point to ./odbc.ini
+echo $ODBCSYSINI # Should point to current directory
 ```
 
 ### Build for Specific Database
 
 ```bash
-# Redshift (default)
-cmake -DTARGET_DATABASE=REDSHIFT -B build-redshift
-cmake --build build-redshift
+# Redshift ODBC driver
+./build-database.sh redshift
 
-# PostgreSQL
-cmake -DTARGET_DATABASE=POSTGRESQL -B build-postgresql
-cmake --build build-postgresql
+# PostgreSQL ODBC driver  
+./build-database.sh postgresql
+
+# Minimal build (no examples/tests)
+./build-database.sh minimal
+
+# Debug build
+./build-database.sh redshift --debug
 ```
 
 ### Usage
@@ -217,7 +232,33 @@ int main() {
 | `BUILD_TESTING` | ON | Build unit and integration tests |
 | `OPENSSL_USE_STATIC_LIBS` | OFF | Link OpenSSL statically |
 
-### CMake Presets
+### Build Scripts
+
+**build-database.sh** - Database-specific builds:
+```bash
+# Show all options
+./build-database.sh --help
+
+# Build specific database drivers
+./build-database.sh redshift     # Redshift-only driver
+./build-database.sh postgresql   # PostgreSQL-only driver
+./build-database.sh minimal      # Minimal Redshift (no examples/tests)
+
+# Build options
+./build-database.sh redshift --debug  # Debug build
+./build-database.sh redshift --clean  # Clean first
+```
+
+**setup-test-env.sh** - ODBC environment setup:
+```bash
+# Source to set environment variables
+source ./setup-test-env.sh
+
+# Or run to check configuration
+./setup-test-env.sh
+```
+
+### CMake Presets (Alternative)
 
 ```bash
 # List available presets
@@ -243,27 +284,94 @@ Run examples:
 ./build-redshift/examples/query_example your-host.com 5439 mydb user pass
 ```
 
+## ODBC Configuration
+
+### Local Configuration (Recommended for Development)
+
+The project includes local ODBC configuration files for development and testing:
+
+```bash
+# Setup local ODBC environment
+source ./setup-test-env.sh
+
+# This sets:
+# ODBCINI=./odbc.ini          # Data source definitions
+# ODBCSYSINI=./               # Driver definitions (odbcinst.ini)
+```
+
+### Configuration Files
+
+**odbc.ini** - Data Source Names (DSNs):
+```ini
+[RedshiftTest]
+Driver = ODBCPP
+Description = Redshift Test Database
+Server = your-cluster.redshift.amazonaws.com
+Port = 5439
+Database = dev
+SSL = true
+
+[PostgreSQLTest] 
+Driver = ODBCPP
+Description = PostgreSQL Test Database
+Server = localhost
+Port = 5432
+Database = testdb
+SSL = false
+```
+
+**odbcinst.ini** - Driver Definitions:
+```ini
+[ODBCPP]
+Description = ODBCPP Multi-Database Driver
+Driver64 = /path/to/build-redshift/libodbcpp.dylib
+Setup64 = /path/to/build-redshift/libodbcpp.dylib
+FileUsage = 1
+```
+
+### System Installation (Optional)
+
+```bash
+# Install driver system-wide
+sudo cp build-redshift/libodbcpp.dylib /usr/local/lib/
+sudo odbcinst -i -d -f odbcinst.ini
+
+# Add DSNs system-wide
+sudo odbcinst -i -s -f odbc.ini
+```
+
 ## Testing
 
 ### Test Coverage
 - **Total Tests**: 17 (10 unit + 7 integration)
-- **Success Rate**: 100% (all unit tests pass)
+- **Success Rate**: 100% (17/17 unit tests, 39/39 integration tests)
 - **Coverage**: All ODBC APIs, descriptors, prepared statements, column binding
 
+### Running Tests
+
 ```bash
-# Run all tests
-cmake --build build-redshift
+# Setup test environment first
+source ./setup-test-env.sh
+
+# Build and run all tests
+./build-database.sh redshift
 ctest --test-dir build-redshift
 
 # Run specific test categories
-ctest --test-dir build-redshift -L unit      # 10 unit tests
-ctest --test-dir build-redshift -L integration  # 7 integration tests
+ctest --test-dir build-redshift -L unit         # 10 unit tests
+ctest --test-dir build-redshift -L integration  # 8 integration test suites
 
 # Test specific functionality
 ctest --test-dir build-redshift -R prepared_statements
 ctest --test-dir build-redshift -R descriptor_apis
 ctest --test-dir build-redshift -R bind_col
 ```
+
+### Test Requirements
+
+- **Unit Tests**: No external dependencies
+- **Integration Tests**: Require valid DSN configuration in odbc.ini
+- **Database Access**: Integration tests need actual Redshift/PostgreSQL connection
 
 ## Architecture
 

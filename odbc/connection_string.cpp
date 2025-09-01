@@ -53,6 +53,20 @@ std::vector<std::string> ConnectionString::get_dsn_file_paths() {
   paths.push_back("odbcpp.dsn"); // Local DSN file
 #else
   // Unix/Linux/macOS: unixODBC standard locations
+  
+  // Check ODBCINI environment variable first (user DSNs)
+  const char* odbcini = getenv("ODBCINI");
+  if (odbcini) {
+    paths.push_back(odbcini);
+  }
+  
+  // Check ODBCSYSINI environment variable (system DSNs)
+  const char* odbcsysini = getenv("ODBCSYSINI");
+  if (odbcsysini) {
+    paths.push_back(std::string(odbcsysini) + "/odbc.ini");
+  }
+  
+  // Standard unixODBC locations
   paths.push_back("/etc/odbc.ini");           // System DSNs
   paths.push_back("/usr/local/etc/odbc.ini"); // Homebrew location
   
@@ -62,9 +76,38 @@ std::vector<std::string> ConnectionString::get_dsn_file_paths() {
     paths.push_back(std::string(home) + "/.odbc.ini");
   }
   
-  // Local DSN file
-  paths.push_back("odbcpp.dsn");
-  paths.push_back("../odbcpp.dsn"); // From build directory
+  // Local project files (for testing)
+  paths.push_back("odbc.ini");        // Current directory
+  paths.push_back("../odbc.ini");     // From build directory
+  paths.push_back("odbcpp.dsn");      // Legacy file
+  paths.push_back("../odbcpp.dsn");   // Legacy from build directory
+#endif
+  
+  return paths;
+}
+
+std::vector<std::string> ConnectionString::get_driver_file_paths() {
+  std::vector<std::string> paths;
+  
+#ifdef _WIN32
+  // Windows: Registry-based drivers (simplified file-based approach for now)
+  paths.push_back("C:\\Windows\\odbcinst.ini");
+#else
+  // Unix/Linux/macOS: unixODBC standard locations
+  
+  // Check ODBCSYSINI environment variable first
+  const char* odbcsysini = getenv("ODBCSYSINI");
+  if (odbcsysini) {
+    paths.push_back(std::string(odbcsysini) + "/odbcinst.ini");
+  }
+  
+  // Standard unixODBC locations
+  paths.push_back("/etc/odbcinst.ini");           // System drivers
+  paths.push_back("/usr/local/etc/odbcinst.ini"); // Homebrew location
+  
+  // Local project files (for testing)
+  paths.push_back("odbcinst.ini");     // Current directory
+  paths.push_back("../odbcinst.ini");  // From build directory
 #endif
   
   return paths;
@@ -105,6 +148,29 @@ bool DSNReader::dsn_exists(const std::string& dsn_name) {
   }
   
   return false;
+}
+
+std::map<std::string, std::string> DSNReader::read_driver_config(const std::string& driver_name) {
+  auto paths = ConnectionString::get_driver_file_paths();
+  
+  for (const auto& path : paths) {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+      continue;
+    }
+    
+    auto params = parse_ini_section(file, driver_name);
+    if (!params.empty()) {
+      return params;
+    }
+  }
+  
+  return {}; // Driver not found
+}
+
+bool DSNReader::driver_exists(const std::string& driver_name) {
+  auto config = read_driver_config(driver_name);
+  return !config.empty();
 }
 
 std::map<std::string, std::string> DSNReader::parse_ini_section(std::ifstream& file, const std::string& section_name) {
