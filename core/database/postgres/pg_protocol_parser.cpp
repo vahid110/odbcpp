@@ -1,6 +1,7 @@
 #include "pg_protocol_parser.h"
 #include <cstring>
 #include <openssl/evp.h>
+#include <iostream>
 
 namespace rs::core::database::postgres {
 
@@ -161,9 +162,8 @@ std::vector<std::byte> PgProtocolParser::create_prepared_query(
   // TODO: Implement full Parse/Bind/Execute protocol
   std::string substituted_sql(sql);
   
-  // Replace $1, $2, etc. with actual parameter values
+  // Replace both ? and $1, $2, etc. with actual parameter values
   for (size_t i = 0; i < params.size(); ++i) {
-    std::string placeholder = "$" + std::to_string(i + 1);
     std::string value;
     
     // Check if parameter is numeric (simple heuristic)
@@ -176,10 +176,32 @@ std::vector<std::byte> PgProtocolParser::create_prepared_query(
       value = "'" + params[i] + "'";  // Quote string values
     }
     
+    // Replace $n placeholders
+    std::string dollar_placeholder = "$" + std::to_string(i + 1);
     size_t pos = 0;
-    while ((pos = substituted_sql.find(placeholder, pos)) != std::string::npos) {
-      substituted_sql.replace(pos, placeholder.length(), value);
+    while ((pos = substituted_sql.find(dollar_placeholder, pos)) != std::string::npos) {
+      substituted_sql.replace(pos, dollar_placeholder.length(), value);
       pos += value.length();
+    }
+  }
+  
+  // Replace ? placeholders (ODBC style) with parameter values in order
+  for (size_t i = 0; i < params.size(); ++i) {
+    size_t pos = substituted_sql.find('?');
+    if (pos != std::string::npos) {
+      std::string value;
+      
+      // Check if parameter is numeric
+      bool is_numeric = !params[i].empty() && 
+                       (std::isdigit(params[i][0]) || params[i][0] == '-');
+      
+      if (is_numeric) {
+        value = params[i];
+      } else {
+        value = "'" + params[i] + "'";
+      }
+      
+      substituted_sql.replace(pos, 1, value);
     }
   }
   
