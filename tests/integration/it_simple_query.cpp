@@ -16,22 +16,16 @@ static std::string env_or(const char* k, const char* defv) {
 }
 
 TEST(Integration, ConnectAndSelect1) {
-  // Skip if no local database available
-  const char* host = getenv("PGHOST");
-  if (!host) {
-    GTEST_SKIP() << "No PGHOST environment variable set - skipping local database test";
-  }
-  
   auto transport = std::make_unique<rs::core::transport::ThreadPoolTransport>(4);
   auto parser = std::make_unique<rs::core::database::postgres::PgProtocolParser>();
   auto conn = std::make_unique<rs::core::database::AsyncDatabaseConnection>(std::move(parser), std::move(transport));
   
   ConnectionSettings settings;
-  settings.host = env_or("PGHOST","127.0.0.1");
-  settings.port = static_cast<uint16_t>(std::stoi(env_or("PGPORT","5432")));
-  settings.database = env_or("PGDATABASE","postgres");
-  settings.user = env_or("PGUSER","postgres");
-  settings.password = env_or("PGPASSWORD","postgres");
+  settings.host = "vahidsbr-redshift-cluster.cxzokcavspmr.us-east-1.redshift.amazonaws.com";
+  settings.port = 5439;
+  settings.database = "dev";
+  settings.user = "awsuser";
+  settings.password = "Testing1234";
   settings.use_ssl = false;
   settings.timeout = std::chrono::seconds(10);
 

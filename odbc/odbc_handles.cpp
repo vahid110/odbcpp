@@ -177,22 +177,13 @@ SQLRETURN ODBCStatement::fetch() {
       // Convert and copy data to bound buffer
       const std::string& value = row[i];
       
-      // Use existing data converter with VARCHAR as default SQL type
-      SQLSMALLINT sql_type = SQL_VARCHAR;
+      // Use database-specific data converter
+      SQLRETURN conv_result = db_converter::RedshiftDataConverter::convert_data(
+        value, binding.target_type, binding.target_value, binding.buffer_length, binding.strlen_or_indicator);
       
-      if (db_converter::RedshiftTypes::is_conversion_supported(sql_type, binding.target_type)) {
-        SQLRETURN result = db_converter::RedshiftDataConverter::convert_data(
-          value, binding.target_type, binding.target_value, binding.buffer_length, binding.strlen_or_indicator);
-        
-        // If conversion fails, set error indicator but don't fail the entire fetch
-        if (result == SQL_ERROR && binding.strlen_or_indicator) {
-          *binding.strlen_or_indicator = SQL_NULL_DATA;
-        }
-      } else {
-        // Unsupported conversion - set NULL indicator
-        if (binding.strlen_or_indicator) {
-          *binding.strlen_or_indicator = SQL_NULL_DATA;
-        }
+      // If conversion fails, set error indicator but don't fail the entire fetch
+      if (conv_result == SQL_ERROR && binding.strlen_or_indicator) {
+        *binding.strlen_or_indicator = SQL_NULL_DATA;
       }
     }
   }
@@ -354,6 +345,12 @@ SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target
                                   SQLPOINTER target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator) {
   if (column_number < 1) {
     set_error(SQLSTATE_GENERAL_ERROR, "Invalid column number");
+    return SQL_ERROR;
+  }
+  
+  // Check if column number is valid (after execution)
+  if (executed_ && column_number > column_info_.size()) {
+    set_error(SQLSTATE_GENERAL_ERROR, "Column number out of range");
     return SQL_ERROR;
   }
   

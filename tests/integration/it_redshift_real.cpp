@@ -6,16 +6,8 @@
 class RedshiftRealTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    // Check if Redshift credentials are available
-    host_ = getenv("REDSHIFT_HOST");
-    port_ = getenv("REDSHIFT_PORT");
-    database_ = getenv("REDSHIFT_DATABASE");
-    user_ = getenv("REDSHIFT_USER");
-    password_ = getenv("REDSHIFT_PASSWORD");
-    
-    if (!host_ || !database_ || !user_ || !password_) {
-      GTEST_SKIP() << "Redshift credentials not provided. Set REDSHIFT_* environment variables.";
-    }
+    // Try to connect using DSN configuration
+    use_dsn_ = true;
     
     // Allocate handles
     ASSERT_EQ(SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &henv_), SQL_SUCCESS);
@@ -33,17 +25,7 @@ protected:
   }
   
   bool connect() {
-    std::string conn_str = "SERVER=" + std::string(host_) + 
-                          ";PORT=" + (port_ ? port_ : "5439") +
-                          ";DATABASE=" + database_ +
-                          ";UID=" + user_ +
-                          ";PWD=" + password_ +
-                          ";SSL=0";
-    
-    SQLRETURN ret = SQLConnect(hdbc_,
-                              reinterpret_cast<SQLCHAR*>(const_cast<char*>(conn_str.c_str())), SQL_NTS,
-                              nullptr, 0,
-                              nullptr, 0);
+    SQLRETURN ret = SQLConnect(hdbc_, (SQLCHAR*)"DSN=RedshiftProd", SQL_NTS, nullptr, 0, nullptr, 0);
     
     if (ret == SQL_SUCCESS || ret == SQL_SUCCESS_WITH_INFO) {
       EXPECT_EQ(SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt_), SQL_SUCCESS);
@@ -70,11 +52,7 @@ protected:
   SQLHDBC hdbc_ = nullptr;
   SQLHSTMT hstmt_ = nullptr;
   
-  const char* host_ = nullptr;
-  const char* port_ = nullptr;
-  const char* database_ = nullptr;
-  const char* user_ = nullptr;
-  const char* password_ = nullptr;
+  bool use_dsn_ = false;
 };
 
 TEST_F(RedshiftRealTest, ConnectionTest) {

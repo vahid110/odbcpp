@@ -15,12 +15,12 @@ protected:
     config_.max_connections = 3;
     config_.acquire_timeout = std::chrono::seconds(5);
     
-    // Use environment variables or defaults for real database connection
-    config_.connection_settings.host = getenv("PGHOST") ? getenv("PGHOST") : "127.0.0.1";
-    config_.connection_settings.port = getenv("PGPORT") ? std::stoi(getenv("PGPORT")) : 5432;
-    config_.connection_settings.database = getenv("PGDATABASE") ? getenv("PGDATABASE") : "postgres";
-    config_.connection_settings.user = getenv("PGUSER") ? getenv("PGUSER") : "postgres";
-    config_.connection_settings.password = getenv("PGPASSWORD") ? getenv("PGPASSWORD") : "postgres";
+    // Use connection settings from DSN configuration
+    config_.connection_settings.host = "vahidsbr-redshift-cluster.cxzokcavspmr.us-east-1.redshift.amazonaws.com";
+    config_.connection_settings.port = 5439;
+    config_.connection_settings.database = "dev";
+    config_.connection_settings.user = "awsuser";
+    config_.connection_settings.password = "Testing1234";
     config_.connection_settings.use_ssl = false;
     config_.connection_settings.timeout = std::chrono::seconds(10);
   }
@@ -29,10 +29,6 @@ protected:
 };
 
 TEST_F(ConnectionPoolIntegrationTest, RealDatabaseConnections) {
-  // Skip if no database available
-  if (!getenv("PGHOST") && !getenv("PGDATABASE")) {
-    GTEST_SKIP() << "No database configuration found";
-  }
   
   ConnectionPool pool(config_);
   
