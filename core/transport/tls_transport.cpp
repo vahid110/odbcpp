@@ -46,21 +46,25 @@ void TLSTransport::ensure_ctx() {
   // Chain verification on/off
   SSL_CTX_set_verify(ctx_, verify_ ? SSL_VERIFY_PEER : SSL_VERIFY_NONE, nullptr);
 
-  // Load CA trust (file -> dir -> defaults)
-  if (!ca_file_.empty()) {
-    if (SSL_CTX_load_verify_locations(ctx_, ca_file_.c_str(), nullptr) != 1) {
-      ERR_print_errors_fp(stderr);
-      throw TLSError("Failed to load CA file: " + ca_file_);
-    }
-  } else if (!ca_dir_.empty()) {
-    if (SSL_CTX_load_verify_locations(ctx_, nullptr, ca_dir_.c_str()) != 1) {
-      ERR_print_errors_fp(stderr);
-      throw TLSError("Failed to load CA directory: " + ca_dir_);
-    }
-  } else {
-    if (SSL_CTX_set_default_verify_paths(ctx_) != 1) {
-      ERR_print_errors_fp(stderr);
-      throw TLSError("Failed to load default CA paths");
+  if (verify_) {
+    // Load CA trust (file -> dir -> defaults) only when the connection will
+    // actually verify its peer. This can involve filesystem or platform trust
+    // store I/O, especially on Windows.
+    if (!ca_file_.empty()) {
+      if (SSL_CTX_load_verify_locations(ctx_, ca_file_.c_str(), nullptr) != 1) {
+        ERR_print_errors_fp(stderr);
+        throw TLSError("Failed to load CA file: " + ca_file_);
+      }
+    } else if (!ca_dir_.empty()) {
+      if (SSL_CTX_load_verify_locations(ctx_, nullptr, ca_dir_.c_str()) != 1) {
+        ERR_print_errors_fp(stderr);
+        throw TLSError("Failed to load CA directory: " + ca_dir_);
+      }
+    } else {
+      if (SSL_CTX_set_default_verify_paths(ctx_) != 1) {
+        ERR_print_errors_fp(stderr);
+        throw TLSError("Failed to load default CA paths");
+      }
     }
   }
 
