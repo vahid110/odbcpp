@@ -14,8 +14,8 @@ protected:
     config_.acquire_timeout = std::chrono::milliseconds(100); // Shorter timeout for tests
     
     // Use invalid settings that will fail connection but allow pool creation
-    config_.connection_settings.host = "invalid-test-host";
-    config_.connection_settings.port = 65000;
+    config_.connection_settings.host = "127.0.0.1";
+    config_.connection_settings.port = 1;
     config_.connection_settings.database = "test";
     config_.connection_settings.user = "test";
     config_.connection_settings.password = "test";
@@ -144,8 +144,8 @@ TEST_F(ConnectionPoolTest, ErrorReporting) {
 }
 
 TEST_F(ConnectionPoolTest, ConnectionFailureHandling) {
-  config_.connection_settings.host = "invalid-host-12345";
-  config_.connection_settings.port = 65000;
+  config_.connection_settings.host = "127.0.0.1";
+  config_.connection_settings.port = 1;
   
   // Pool creation should succeed even with bad settings
   ConnectionPool pool(config_);

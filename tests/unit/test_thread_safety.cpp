@@ -66,11 +66,13 @@ TEST_F(ThreadSafetyTest, ConcurrentWrites) {
         try {
           // These operations require exclusive access
           ConnectionSettings settings;
-          settings.host = "localhost";
-          settings.port = 5432;
+          settings.host = "127.0.0.1";
+          settings.port = 1;
           settings.database = "test";
           settings.user = "test";
           settings.password = "test";
+          settings.timeout = std::chrono::milliseconds(100);
+          settings.use_ssl = false;
           
           auto result = thread_safe_conn_->connect(settings);
           if (result.has_value()) {

@@ -2,6 +2,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 
 namespace rs::odbc {
 namespace {
@@ -9,6 +10,20 @@ namespace {
 void overlay(std::map<std::string, std::string>& target,
              const std::map<std::string, std::string>& source) {
   for (const auto& [key, value] : source) target[key] = value;
+}
+
+std::string environment_value(const char* name) {
+#ifdef _WIN32
+  char* value = nullptr;
+  std::size_t length = 0;
+  if (_dupenv_s(&value, &length, name) != 0 || value == nullptr) return {};
+  std::string result(value);
+  std::free(value);
+  return result;
+#else
+  const char* value = std::getenv(name);
+  return value == nullptr ? std::string{} : std::string(value);
+#endif
 }
 
 } // namespace
@@ -90,35 +105,26 @@ ResolvedConnectionParameters ConnectionString::resolve(
 
 std::vector<std::string> ConnectionString::get_dsn_file_paths() {
   std::vector<std::string> paths;
-  
+
+  const auto odbcini = environment_value("ODBCINI");
+  if (!odbcini.empty()) paths.push_back(odbcini);
+
+  const auto odbcsysini = environment_value("ODBCSYSINI");
+  if (!odbcsysini.empty()) paths.push_back(odbcsysini + "/odbc.ini");
+
 #ifdef _WIN32
   // Windows: Registry-based DSNs (simplified file-based approach for now)
   paths.push_back("C:\\Windows\\odbc.ini");
   paths.push_back("odbcpp.dsn"); // Local DSN file
 #else
   // Unix/Linux/macOS: unixODBC standard locations
-  
-  // Check ODBCINI environment variable first (user DSNs)
-  const char* odbcini = getenv("ODBCINI");
-  if (odbcini) {
-    paths.push_back(odbcini);
-  }
-  
-  // Check ODBCSYSINI environment variable (system DSNs)
-  const char* odbcsysini = getenv("ODBCSYSINI");
-  if (odbcsysini) {
-    paths.push_back(std::string(odbcsysini) + "/odbc.ini");
-  }
-  
   // Standard unixODBC locations
   paths.push_back("/etc/odbc.ini");           // System DSNs
   paths.push_back("/usr/local/etc/odbc.ini"); // Homebrew location
   
   // User DSNs
-  const char* home = getenv("HOME");
-  if (home) {
-    paths.push_back(std::string(home) + "/.odbc.ini");
-  }
+  const auto home = environment_value("HOME");
+  if (!home.empty()) paths.push_back(home + "/.odbc.ini");
   
   // Local project files (for testing)
   paths.push_back("odbc.ini");        // Current directory
@@ -132,19 +138,15 @@ std::vector<std::string> ConnectionString::get_dsn_file_paths() {
 
 std::vector<std::string> ConnectionString::get_driver_file_paths() {
   std::vector<std::string> paths;
-  
+
+  const auto odbcsysini = environment_value("ODBCSYSINI");
+  if (!odbcsysini.empty()) paths.push_back(odbcsysini + "/odbcinst.ini");
+
 #ifdef _WIN32
   // Windows: Registry-based drivers (simplified file-based approach for now)
   paths.push_back("C:\\Windows\\odbcinst.ini");
 #else
   // Unix/Linux/macOS: unixODBC standard locations
-  
-  // Check ODBCSYSINI environment variable first
-  const char* odbcsysini = getenv("ODBCSYSINI");
-  if (odbcsysini) {
-    paths.push_back(std::string(odbcsysini) + "/odbcinst.ini");
-  }
-  
   // Standard unixODBC locations
   paths.push_back("/etc/odbcinst.ini");           // System drivers
   paths.push_back("/usr/local/etc/odbcinst.ini"); // Homebrew location

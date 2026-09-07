@@ -54,8 +54,7 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
   try {
     const auto resolved = ConnectionString::resolve(dsn, default_driver_name());
     const auto& params = resolved.effective_parameters;
-    if (resolved.connection_parameters.count("DSN") &&
-        resolved.dsn_parameters.empty()) {
+    if (!resolved.dsn_name.empty() && resolved.dsn_parameters.empty()) {
       set_error(SQLSTATE_CONNECTION_FAILURE,
                 "DSN '" + resolved.dsn_name + "' not found");
       return SQL_ERROR;
