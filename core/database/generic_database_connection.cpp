@@ -3,6 +3,8 @@
 #include "core/transport/tls_transport.h"
 #include "core/util/exception_adapter.h"
 
+#include <cstring>
+
 namespace rs::core::database {
 
 GenericDatabaseConnection::GenericDatabaseConnection(

@@ -54,6 +54,8 @@ TEST_F(RedshiftDataConverterTest, ConvertDataDate) {
     EXPECT_EQ(2025, result.year);
     EXPECT_EQ(8, result.month);
     EXPECT_EQ(31, result.day);
+
+    EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data("2025-13-31", SQL_C_DATE, &result, 0, &indicator));
     
     // Invalid date
     EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data("invalid-date", SQL_C_DATE, &result, 0, &indicator));
@@ -66,6 +68,10 @@ TEST_F(RedshiftDataConverterTest, ConvertDataTimestamp) {
     EXPECT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data("2025-08-31 23:45:30", SQL_C_TIMESTAMP, &result, 0, &indicator));
     EXPECT_EQ(2025, result.year);
     EXPECT_EQ(23, result.hour);
+
+    EXPECT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "2025-08-31 23:45:30.020257+00", SQL_C_TIMESTAMP, &result, 0, &indicator));
+    EXPECT_EQ(20257000u, result.fraction);
     
     // Invalid timestamp
     EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data("invalid", SQL_C_TIMESTAMP, &result, 0, &indicator));

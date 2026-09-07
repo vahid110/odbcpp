@@ -317,7 +317,7 @@ SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type,
       if (info_value && buffer_length > 0) {
         const char* name = "ODBCPP Driver";
         size_t len = std::min(static_cast<size_t>(buffer_length - 1), std::strlen(name));
-        std::strncpy(static_cast<char*>(info_value), name, len);
+        std::memcpy(info_value, name, len);
         static_cast<char*>(info_value)[len] = '\0';
         if (string_length) *string_length = static_cast<SQLSMALLINT>(std::strlen(name));
       }

@@ -5,6 +5,7 @@
 #include "core/transport/transport_factory.h"
 #include "core/transport/transport_options.h"
 #include "core/util/deadline.h"
+#include <cstring>
 #include <mutex>
 
 // Include database-specific converter based on build target

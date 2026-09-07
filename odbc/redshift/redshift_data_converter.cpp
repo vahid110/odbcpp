@@ -1,6 +1,8 @@
 #include "redshift_data_converter.h"
+#include <algorithm>
 #include <cstring>
 #include <cstdio>
+#include <limits>
 #include <stdexcept>
 
 namespace rs::odbc::redshift {
@@ -90,8 +92,16 @@ SQLRETURN RedshiftDataConverter::convert_to_boolean(const std::string& value, vo
 SQLRETURN RedshiftDataConverter::convert_to_date(const std::string& value, void* buffer, SQLLEN* indicator) {
     // Parse Redshift date format: "2025-08-31"
     SQL_DATE_STRUCT* date = static_cast<SQL_DATE_STRUCT*>(buffer);
-    
-    if (sscanf(value.c_str(), "%hd-%hd-%hd", &date->year, &date->month, &date->day) == 3) {
+
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    if (std::sscanf(value.c_str(), "%d-%d-%d", &year, &month, &day) == 3 &&
+        year >= 0 && year <= std::numeric_limits<SQLSMALLINT>::max() &&
+        month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+        date->year = static_cast<SQLSMALLINT>(year);
+        date->month = static_cast<SQLUSMALLINT>(month);
+        date->day = static_cast<SQLUSMALLINT>(day);
         if (indicator) *indicator = sizeof(SQL_DATE_STRUCT);
         return SQL_SUCCESS;
     }
@@ -102,19 +112,41 @@ SQLRETURN RedshiftDataConverter::convert_to_date(const std::string& value, void*
 SQLRETURN RedshiftDataConverter::convert_to_timestamp(const std::string& value, void* buffer, SQLLEN* indicator) {
     // Parse Redshift timestamp format: "2025-08-31 23:39:29.020257+00"
     SQL_TIMESTAMP_STRUCT* ts = static_cast<SQL_TIMESTAMP_STRUCT*>(buffer);
-    
+
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+
     // Parse basic timestamp: YYYY-MM-DD HH:MM:SS
-    if (sscanf(value.c_str(), "%hd-%hd-%hd %hd:%hd:%hd", 
-               &ts->year, &ts->month, &ts->day, 
-               &ts->hour, &ts->minute, &ts->second) == 6) {
+    if (std::sscanf(value.c_str(), "%d-%d-%d %d:%d:%d",
+                    &year, &month, &day, &hour, &minute, &second) == 6 &&
+        year >= 0 && year <= std::numeric_limits<SQLSMALLINT>::max() &&
+        month >= 1 && month <= 12 && day >= 1 && day <= 31 &&
+        hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 &&
+        second >= 0 && second <= 60) {
+        ts->year = static_cast<SQLSMALLINT>(year);
+        ts->month = static_cast<SQLUSMALLINT>(month);
+        ts->day = static_cast<SQLUSMALLINT>(day);
+        ts->hour = static_cast<SQLUSMALLINT>(hour);
+        ts->minute = static_cast<SQLUSMALLINT>(minute);
+        ts->second = static_cast<SQLUSMALLINT>(second);
         
         // Parse fractional seconds if present
-        const char* dot = strchr(value.c_str(), '.');
+        const char* dot = std::strchr(value.c_str(), '.');
         if (dot) {
-            // Convert microseconds to nanoseconds
-            int microseconds = 0;
-            sscanf(dot + 1, "%d", &microseconds);
-            ts->fraction = microseconds * 1000; // Convert to nanoseconds
+            SQLUINTEGER nanoseconds = 0;
+            int digits = 0;
+            for (const char* cursor = dot + 1;
+                 digits < 9 && *cursor >= '0' && *cursor <= '9';
+                 ++cursor, ++digits) {
+                nanoseconds = nanoseconds * 10u +
+                    static_cast<SQLUINTEGER>(*cursor - '0');
+            }
+            while (digits++ < 9) nanoseconds *= 10u;
+            ts->fraction = nanoseconds;
         } else {
             ts->fraction = 0;
         }
