@@ -57,13 +57,8 @@ void SocketTransport::set_nonblocking(socket_t s, bool nb) {
 void SocketTransport::set_timeouts(socket_t s, std::chrono::milliseconds rw) {
   const auto count = std::max<std::chrono::milliseconds::rep>(1, rw.count());
 #ifdef _WIN32
-  // Winsock may quantize sub-500 ms socket timeouts down to zero (meaning no
-  // timeout), so retain SocketTimeout semantics by clamping to its practical
-  // timer granularity. Strict deadlines use WSAPoll and are not clamped.
-  constexpr std::chrono::milliseconds::rep windows_timeout_floor = 500;
-  const auto windows_count = (std::max)(count, windows_timeout_floor);
   DWORD ms = static_cast<DWORD>((std::min<std::chrono::milliseconds::rep>)(
-      windows_count, std::numeric_limits<DWORD>::max()));
+      count, std::numeric_limits<DWORD>::max()));
   if (setsockopt(s, SOL_SOCKET, SO_RCVTIMEO,
                  reinterpret_cast<const char*>(&ms), sizeof(ms)) != 0 ||
       setsockopt(s, SOL_SOCKET, SO_SNDTIMEO,
@@ -131,7 +126,7 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
   for (addrinfo* ai = res; ai; ai = ai->ai_next) {
 #ifdef _WIN32
     sock_ = ::WSASocketW(ai->ai_family, ai->ai_socktype, ai->ai_protocol,
-                         nullptr, 0, 0);
+                         nullptr, 0, WSA_FLAG_OVERLAPPED);
 #else
     sock_ = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
 #endif

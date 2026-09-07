@@ -200,13 +200,7 @@ private:
 };
 
 void expect_receive_timeout(DeadlineModel model) {
-#ifdef _WIN32
-  const auto server_delay = model == DeadlineModel::SocketTimeout
-      ? 1200ms : 250ms;
-#else
-  const auto server_delay = 250ms;
-#endif
-  SleepingServer server(server_delay);
+  SleepingServer server(250ms);
   SocketTransport transport(model);
 
   auto connected = transport.connect(
@@ -221,11 +215,7 @@ void expect_receive_timeout(DeadlineModel model) {
   ASSERT_TRUE(result.has_error());
   EXPECT_EQ(result.error(), rs::util::make_error_code(rs::util::DbErrorCode::Timeout));
   EXPECT_GE(elapsed, 30ms);
-#ifdef _WIN32
-  EXPECT_LT(elapsed, 1100ms);
-#else
   EXPECT_LT(elapsed, 500ms);
-#endif
 }
 
 TEST(SocketTransportDeadlineTest, StrictReceiveHonorsAbsoluteDeadline) {
