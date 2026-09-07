@@ -49,8 +49,8 @@ public:
 
 // Platform-specific async transport implementations
 #ifdef __linux__
-class IoUringTransport;
-using PlatformAsyncTransport = IoUringTransport;
+class EpollTransport;
+using PlatformAsyncTransport = EpollTransport;
 #elif defined(_WIN32)
 class IocpTransport;
 using PlatformAsyncTransport = IocpTransport;

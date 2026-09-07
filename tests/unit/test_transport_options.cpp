@@ -4,6 +4,9 @@
 #include "core/transport/tls_transport.h"
 #include "core/transport/transport_factory.h"
 #include "core/transport/transport_options.h"
+#ifdef __linux__
+#include "core/transport/epoll_transport.h"
+#endif
 #include "odbc/connection_string.h"
 #include "odbc/odbc_handles.h"
 
@@ -94,19 +97,35 @@ TEST(TransportFactoryTest, CreatesTlsWithSelectedDeadlineModel) {
   EXPECT_EQ(tls->deadline_model(), DeadlineModel::SocketTimeout);
 }
 
-TEST(TransportFactoryTest, RejectsAsyncUntilNativeBackendIsAvailable) {
+TEST(TransportFactoryTest, CreatesAvailablePlatformAsyncBackend) {
   TransportOptions options;
   options.mode = TransportMode::Async;
+#ifdef __linux__
+  auto transport = TransportFactory::create(options, false);
+  auto* epoll = dynamic_cast<rs::core::transport::EpollTransport*>(
+      transport.get());
+  ASSERT_NE(epoll, nullptr);
+  EXPECT_EQ(epoll->max_inflight(), 64u);
+  EXPECT_EQ(epoll->queue_depth(), 256u);
+#else
   EXPECT_THROW(TransportFactory::create(options, false), std::invalid_argument);
+#endif
 }
 
-TEST(ODBCTransportSelectionTest, ReportsUnavailableExplicitAsyncMode) {
+TEST(ODBCTransportSelectionTest, ReportsUnavailablePlatformAsyncEngine) {
   rs::odbc::ODBCConnection connection(nullptr);
+#ifdef __linux__
   const auto result = connection.connect(
-      "SERVER=127.0.0.1;PORT=1;TransportMode=Async", "", "");
+      "SERVER=127.0.0.1;PORT=1;TransportMode=Async;AsyncEngine=IOCP",
+      "", "");
+#else
+  const auto result = connection.connect(
+      "SERVER=127.0.0.1;PORT=1;TransportMode=Async;AsyncEngine=Epoll",
+      "", "");
+#endif
 
   EXPECT_EQ(result, SQL_ERROR);
-  EXPECT_NE(connection.get_error_message().find("TransportMode=Async"),
+  EXPECT_NE(connection.get_error_message().find("AsyncEngine"),
             std::string::npos);
 }
 

@@ -9,8 +9,8 @@ namespace rs::core::transport {
 
 class TransportFactory {
 public:
-  // Auto currently selects Sync. It will prefer the native async backend once
-  // the matching IOCP/epoll implementation is available and validated.
+  // Auto remains on the synchronous path until native TLS and Windows async
+  // support have the same coverage as the synchronous implementation.
   static TransportMode resolve_mode(const TransportOptions& options) noexcept;
 
   static std::unique_ptr<ITransport> create(const TransportOptions& options,

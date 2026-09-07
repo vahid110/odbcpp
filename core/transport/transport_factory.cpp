@@ -1,5 +1,8 @@
 #include "transport_factory.h"
 
+#ifdef __linux__
+#include "epoll_transport.h"
+#endif
 #include "socket_transport.h"
 #include "tls_transport.h"
 
@@ -15,9 +18,27 @@ TransportMode TransportFactory::resolve_mode(const TransportOptions& options) no
 std::unique_ptr<ITransport> TransportFactory::create(
     const TransportOptions& options, bool use_tls) {
   if (resolve_mode(options) == TransportMode::Async) {
+#ifdef __linux__
+    if (options.async_engine == AsyncEngine::IOCP) {
+      throw std::invalid_argument(
+          "AsyncEngine=IOCP is only available on Windows");
+    }
+    if (use_tls) {
+      throw std::invalid_argument(
+          "TransportMode=Async with TLS is not available yet; use Auto or "
+          "Sync until native asynchronous TLS is enabled");
+    }
+    if (options.deadline_model != DeadlineModel::Strict) {
+      throw std::invalid_argument(
+          "AsyncEngine=Epoll requires DeadlineModel=Strict");
+    }
+    return std::make_unique<EpollTransport>(options.async_max_inflight,
+                                            options.async_queue_depth);
+#else
     throw std::invalid_argument(
-        "TransportMode=Async is not available yet; use Auto or Sync until "
-        "the native IOCP/epoll backend is enabled");
+        "AsyncEngine=" + std::string(to_string(options.async_engine)) +
+        " is not available on this platform; use TransportMode=Auto or Sync");
+#endif
   }
 
   if (use_tls) {

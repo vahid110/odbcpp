@@ -341,8 +341,10 @@ DeadlineModel = Strict
 Transport settings use the following precedence, from highest to lowest:
 connection string, DSN, driver section in `odbcinst.ini`, built-in defaults.
 `TransportMode=Auto` currently selects the stable synchronous implementation;
-explicit `Async` selection will be enabled as the native IOCP and epoll engines
-land.
+on Linux, non-TLS connections can explicitly select the native epoll reactor
+with `TransportMode=Async`, `AsyncEngine=Epoll` (or `Auto`), and
+`DeadlineModel=Strict`. Async TLS and the Windows IOCP engine remain under
+development, so use `Auto` or `Sync` for those paths.
 
 ### System Installation (Optional)
 
