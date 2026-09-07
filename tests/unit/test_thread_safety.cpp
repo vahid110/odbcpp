@@ -71,7 +71,7 @@ TEST_F(ThreadSafetyTest, ConcurrentWrites) {
           settings.database = "test";
           settings.user = "test";
           settings.password = "test";
-          settings.timeout = std::chrono::milliseconds(100);
+          settings.timeout = std::chrono::milliseconds(5);
           settings.use_ssl = false;
           
           auto result = thread_safe_conn_->connect(settings);

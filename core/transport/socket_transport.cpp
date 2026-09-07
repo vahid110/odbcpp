@@ -57,8 +57,13 @@ void SocketTransport::set_nonblocking(socket_t s, bool nb) {
 void SocketTransport::set_timeouts(socket_t s, std::chrono::milliseconds rw) {
   const auto count = std::max<std::chrono::milliseconds::rep>(1, rw.count());
 #ifdef _WIN32
-  DWORD ms = static_cast<DWORD>(std::min<std::chrono::milliseconds::rep>(
-      count, std::numeric_limits<DWORD>::max()));
+  // Winsock may quantize sub-500 ms socket timeouts down to zero (meaning no
+  // timeout), so retain SocketTimeout semantics by clamping to its practical
+  // timer granularity. Strict deadlines use WSAPoll and are not clamped.
+  constexpr std::chrono::milliseconds::rep windows_timeout_floor = 500;
+  const auto windows_count = (std::max)(count, windows_timeout_floor);
+  DWORD ms = static_cast<DWORD>((std::min<std::chrono::milliseconds::rep>)(
+      windows_count, std::numeric_limits<DWORD>::max()));
   if (setsockopt(s, SOL_SOCKET, SO_RCVTIMEO,
                  reinterpret_cast<const char*>(&ms), sizeof(ms)) != 0 ||
       setsockopt(s, SOL_SOCKET, SO_SNDTIMEO,

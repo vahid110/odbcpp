@@ -11,7 +11,7 @@ protected:
   void SetUp() override {
     config_.min_connections = 1;
     config_.max_connections = 3;
-    config_.acquire_timeout = std::chrono::milliseconds(100); // Shorter timeout for tests
+    config_.acquire_timeout = std::chrono::milliseconds(5);
     
     // Use invalid settings that will fail connection but allow pool creation
     config_.connection_settings.host = "127.0.0.1";
@@ -20,7 +20,7 @@ protected:
     config_.connection_settings.user = "test";
     config_.connection_settings.password = "test";
     config_.connection_settings.use_ssl = false;
-    config_.connection_settings.timeout = std::chrono::milliseconds(100);
+    config_.connection_settings.timeout = std::chrono::milliseconds(5);
   }
   
   ConnectionPool::Config config_;
