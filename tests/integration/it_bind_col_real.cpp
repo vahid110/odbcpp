@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
-#include <sql.h>
-#include <sqlext.h>
+#include "odbc/odbc_types.h"
 
 class BindColIntegrationTest : public ::testing::Test {
 protected:

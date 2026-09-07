@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
-#include <sql.h>
-#include <sqlext.h>
+#include "odbc/odbc_types.h"
 #include "core/database/database_factory.h"
 #include "core/database/async_database_connection.h"
 

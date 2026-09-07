@@ -1,7 +1,5 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
-#include <sql.h>
-#include <sqlext.h>
 
 class DiagnosticsIntegrationTest : public ::testing::Test {
 protected:
