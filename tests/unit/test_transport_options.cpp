@@ -6,6 +6,8 @@
 #include "core/transport/transport_options.h"
 #ifdef __linux__
 #include "core/transport/epoll_transport.h"
+#elif defined(_WIN32)
+#include "core/transport/iocp_transport.h"
 #endif
 #include "odbc/connection_string.h"
 #include "odbc/odbc_handles.h"
@@ -107,6 +109,13 @@ TEST(TransportFactoryTest, CreatesAvailablePlatformAsyncBackend) {
   ASSERT_NE(epoll, nullptr);
   EXPECT_EQ(epoll->max_inflight(), 64u);
   EXPECT_EQ(epoll->queue_depth(), 256u);
+#elif defined(_WIN32)
+  auto transport = TransportFactory::create(options, false);
+  auto* iocp = dynamic_cast<rs::core::transport::IocpTransport*>(
+      transport.get());
+  ASSERT_NE(iocp, nullptr);
+  EXPECT_EQ(iocp->max_inflight(), 64u);
+  EXPECT_EQ(iocp->queue_depth(), 256u);
 #else
   EXPECT_THROW(TransportFactory::create(options, false), std::invalid_argument);
 #endif
