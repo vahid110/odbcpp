@@ -115,6 +115,51 @@ TEST(EpollTransportTest, SupportsSynchronousRoundTripThroughReactor) {
   EXPECT_EQ(std::memcmp(response.data(), "pong", response.size()), 0);
 }
 
+TEST(EpollTransportTest, RunsSendAndReceiveConcurrently) {
+  LoopbackServer server(LoopbackServer::Behavior::Echo);
+  EpollTransport transport(2, 8);
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  std::array<std::byte, 4> response{};
+  std::mutex mutex;
+  std::condition_variable ready;
+  std::atomic<int> callback_count{0};
+  std::atomic<bool> send_succeeded{false};
+  std::atomic<bool> recv_succeeded{false};
+
+  auto receive = transport.recv_async(
+      response, rs::util::make_deadline(1s),
+      [&](rs::util::Result<IOResult> result) {
+        recv_succeeded.store(result.has_value() && result->n == response.size());
+        callback_count.fetch_add(1);
+        ready.notify_one();
+      });
+
+  constexpr std::string_view request = "ping";
+  const auto request_bytes = std::as_bytes(
+      std::span<const char>(request.data(), request.size()));
+  auto send = transport.send_async(
+      request_bytes, rs::util::make_deadline(1s),
+      [&](rs::util::Result<IOResult> result) {
+        send_succeeded.store(result.has_value() && result->n == request.size());
+        callback_count.fetch_add(1);
+        ready.notify_one();
+      });
+
+  std::unique_lock lock(mutex);
+  ASSERT_TRUE(ready.wait_for(lock, 2s, [&] {
+    return callback_count.load() == 2;
+  }));
+  lock.unlock();
+  EXPECT_TRUE(send_succeeded.load());
+  EXPECT_TRUE(recv_succeeded.load());
+  EXPECT_EQ(std::memcmp(response.data(), "pong", response.size()), 0);
+  EXPECT_TRUE(send->is_complete());
+  EXPECT_TRUE(receive->is_complete());
+}
+
 TEST(EpollTransportTest, ReceiveDeadlineCompletesExactlyOnce) {
   LoopbackServer server(LoopbackServer::Behavior::Silent);
   EpollTransport transport;
