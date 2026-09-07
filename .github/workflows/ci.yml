@@ -120,4 +120,6 @@ jobs:
 
       - name: Run unit tests
         shell: pwsh
-        run: ctest --test-dir build-windows -C Release -L unit --output-on-failure
+        run: >-
+          ctest --test-dir build-windows -C Release -L unit
+          --timeout 30 --output-on-failure
