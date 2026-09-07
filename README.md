@@ -387,6 +387,9 @@ ctest --test-dir build-redshift -R bind_col
 - **Unit Tests**: No external dependencies
 - **Integration Tests**: Require valid DSN configuration in odbc.ini
 - **Database Access**: Integration tests need actual Redshift/PostgreSQL connection
+- **PostgreSQL Authentication**: The protocol layer currently supports MD5 password
+  authentication. CI uses PostgreSQL 13 with `POSTGRES_HOST_AUTH_METHOD=md5` until
+  SCRAM-SHA-256 support is implemented.
 
 ## Architecture
 
