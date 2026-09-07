@@ -94,3 +94,31 @@ jobs:
         run: |
           sed -i '/^TransportMode=Sync$/c\TransportMode=Async\nAsyncEngine=Epoll' "$ODBCINI"
           ctest --test-dir build -L integration --output-on-failure
+
+  windows-unit:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install OpenSSL
+        shell: pwsh
+        run: vcpkg install openssl:x64-windows
+
+      - name: Configure
+        shell: pwsh
+        run: >-
+          cmake -S . -B build-windows -A x64
+          -DBUILD_EXAMPLES=OFF
+          -DBUILD_TESTING=ON
+          -DOPENSSL_USE_STATIC_LIBS=OFF
+          -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
+          -DVCPKG_TARGET_TRIPLET=x64-windows
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build-windows --config Release --parallel
+
+      - name: Run unit tests
+        shell: pwsh
+        run: ctest --test-dir build-windows -C Release -L unit --output-on-failure
