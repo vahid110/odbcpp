@@ -2,6 +2,9 @@
 
 // Use system ODBC headers for ABI compatibility
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #include <sql.h>
 #include <sqlext.h>

@@ -125,7 +125,8 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
 
   for (addrinfo* ai = res; ai; ai = ai->ai_next) {
 #ifdef _WIN32
-    sock_ = ::WSASocket(ai->ai_family, ai->ai_socktype, ai->ai_protocol, nullptr, 0, 0);
+    sock_ = ::WSASocketW(ai->ai_family, ai->ai_socktype, ai->ai_protocol,
+                         nullptr, 0, 0);
 #else
     sock_ = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
 #endif

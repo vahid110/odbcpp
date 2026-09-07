@@ -7,7 +7,7 @@ using namespace rs::odbc;
 // String conversion helpers (Unicode-ready architecture)
 namespace {
   // ANSI string conversion
-  std::string sqlchar_to_string(SQLCHAR* str, SQLSMALLINT length) {
+  std::string sqlchar_to_string(SQLCHAR* str, SQLINTEGER length) {
     if (!str) return "";
     if (length == SQL_NTS) return reinterpret_cast<char*>(str);
     return std::string(reinterpret_cast<char*>(str), length);
@@ -168,8 +168,9 @@ SQLRETURN SQLGetDiagRec(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT r
   
   // Copy SQLSTATE (always 5 characters + null terminator)
   if (sqlstate) {
-    std::strncpy(reinterpret_cast<char*>(sqlstate), record->sqlstate.c_str(), 6);
-    sqlstate[5] = '\0'; // Ensure null termination
+    const auto state_length = std::min<std::size_t>(5, record->sqlstate.size());
+    std::memcpy(sqlstate, record->sqlstate.data(), state_length);
+    sqlstate[state_length] = '\0';
   }
   
   // Set native error code
@@ -182,7 +183,7 @@ SQLRETURN SQLGetDiagRec(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT r
     size_t msg_len = record->message_text.length();
     size_t copy_len = std::min(static_cast<size_t>(buffer_length - 1), msg_len);
     
-    std::strncpy(reinterpret_cast<char*>(message_text), record->message_text.c_str(), copy_len);
+    std::memcpy(message_text, record->message_text.data(), copy_len);
     message_text[copy_len] = '\0';
     
     if (text_length) {
@@ -239,7 +240,7 @@ SQLRETURN SQLGetDiagField(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT
     
     if (diag_info_ptr && buffer_length > 0) {
       size_t copy_len = std::min(static_cast<size_t>(buffer_length - 1), str.length());
-      std::strncpy(static_cast<char*>(diag_info_ptr), str.c_str(), copy_len);
+      std::memcpy(diag_info_ptr, str.data(), copy_len);
       static_cast<char*>(diag_info_ptr)[copy_len] = '\0';
       
       return (copy_len < str.length()) ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS;
