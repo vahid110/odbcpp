@@ -53,11 +53,15 @@ TEST_F(AsyncTransportTest, FutureConnect) {
 
 TEST_F(AsyncTransportTest, OperationCancellation) {
   std::atomic<bool> callback_called{false};
+  std::atomic<int> callback_count{0};
+  std::atomic<bool> cancellation_reported{false};
   
-  auto deadline = rs::util::make_deadline(std::chrono::seconds(10));
+  auto deadline = rs::util::make_deadline(std::chrono::milliseconds(500));
   auto op = transport_->connect_async("192.0.2.1", 12345, deadline, // Non-routable IP
     [&](rs::util::Result<void> result) {
       callback_called.store(true);
+      callback_count.fetch_add(1);
+      cancellation_reported.store(result.has_error());
     });
   
   EXPECT_FALSE(op->is_complete());
@@ -66,9 +70,40 @@ TEST_F(AsyncTransportTest, OperationCancellation) {
   // Cancel operation
   op->cancel();
   EXPECT_TRUE(op->is_cancelled());
+  EXPECT_TRUE(op->is_complete());
+  EXPECT_TRUE(callback_called.load());
+  EXPECT_TRUE(cancellation_reported.load());
+
+  // Cancellation and its callback are idempotent.
+  op->cancel();
+  EXPECT_EQ(callback_count.load(), 1);
   
   // Give some time for cancellation to take effect
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
+}
+
+TEST_F(AsyncTransportTest, DestroyingOperationHandleDoesNotInvalidateQueuedWork) {
+  std::atomic<bool> callback_called{false};
+
+  {
+    auto deadline = rs::util::make_deadline(std::chrono::seconds(1));
+    auto op = transport_->connect_async("127.0.0.1", 9, deadline,
+      [&](rs::util::Result<void> result) {
+        EXPECT_TRUE(result.has_value() || result.has_error());
+        callback_called.store(true);
+      });
+  }
+
+  auto start = std::chrono::steady_clock::now();
+  while (!callback_called.load() &&
+         std::chrono::steady_clock::now() - start < std::chrono::seconds(2)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(callback_called.load());
+}
+
+TEST(ThreadPoolTransportConfigurationTest, RejectsZeroQueueDepth) {
+  EXPECT_THROW(ThreadPoolTransport(1, 0), std::invalid_argument);
 }
 
 TEST_F(AsyncTransportTest, ConcurrentOperations) {

@@ -1,7 +1,11 @@
 #include "socket_transport.h"
+#include "socket_wait.h"
 #include "core/util/exception_adapter.h"
+#include <algorithm>
 #include <cassert>
+#include <climits>
 #include <cstring>
+#include <limits>
 #include <string>
 
 using rs::util::Deadline;
@@ -10,21 +14,6 @@ using rs::util::IOError;
 using rs::util::TimeoutError;
 
 namespace rs::core::transport {
-
-#ifdef _WIN32
-// Wait for connect completion with a timeout (Windows)
-static int poll_connect(SocketTransport::socket_t s, int timeout_ms) {
-  fd_set wfds; FD_ZERO(&wfds); FD_SET(s, &wfds);
-  TIMEVAL tv{ timeout_ms/1000, (timeout_ms%1000)*1000 };
-  return select(0, nullptr, &wfds, nullptr, &tv);
-}
-#else
-// Wait for connect completion with a timeout (POSIX)
-static int poll_connect(int s, int timeout_ms) {
-  struct pollfd p{ s, POLLOUT, 0 };
-  return ::poll(&p, 1, timeout_ms);
-}
-#endif
 
 SocketTransport::socket_t SocketTransport::invalid_socket() {
 #ifdef _WIN32
@@ -53,32 +42,78 @@ void SocketTransport::do_close(socket_t s) noexcept {
 void SocketTransport::set_nonblocking(socket_t s, bool nb) {
 #ifdef _WIN32
   u_long mode = nb ? 1UL : 0UL;
-  ioctlsocket(s, FIONBIO, &mode);
+  if (ioctlsocket(s, FIONBIO, &mode) != 0) {
+    throw IOError(platform::last_error_text("ioctlsocket(FIONBIO)"));
+  }
 #else
   int flags = fcntl(s, F_GETFL, 0);
-  if (flags < 0) flags = 0;
-  fcntl(s, F_SETFL, nb ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK));
+  if (flags < 0 ||
+      fcntl(s, F_SETFL, nb ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK)) < 0) {
+    throw IOError(platform::last_error_text("fcntl(O_NONBLOCK)"));
+  }
 #endif
 }
 
 void SocketTransport::set_timeouts(socket_t s, std::chrono::milliseconds rw) {
+  const auto count = std::max<std::chrono::milliseconds::rep>(1, rw.count());
 #ifdef _WIN32
-  DWORD ms = static_cast<DWORD>(rw.count());
-  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&ms, sizeof(ms));
-  setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char*)&ms, sizeof(ms));
+  DWORD ms = static_cast<DWORD>(std::min<std::chrono::milliseconds::rep>(
+      count, std::numeric_limits<DWORD>::max()));
+  if (setsockopt(s, SOL_SOCKET, SO_RCVTIMEO,
+                 reinterpret_cast<const char*>(&ms), sizeof(ms)) != 0 ||
+      setsockopt(s, SOL_SOCKET, SO_SNDTIMEO,
+                 reinterpret_cast<const char*>(&ms), sizeof(ms)) != 0) {
+    throw IOError(platform::last_error_text("setsockopt(timeout)"));
+  }
 #else
-  timeval tv{ (long)(rw.count()/1000), (int)((rw.count()%1000)*1000) };
-  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+  timeval tv{static_cast<long>(count / 1000),
+             static_cast<suseconds_t>((count % 1000) * 1000)};
+  if (setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0 ||
+      setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) {
+    throw IOError(platform::last_error_text("setsockopt(timeout)"));
+  }
 #endif
 }
 
-SocketTransport::SocketTransport() = default;
+SocketTransport::SocketTransport(DeadlineModel deadline_model)
+    : deadline_model_(deadline_model) {}
 SocketTransport::~SocketTransport() { close(); }
+
+void SocketTransport::adopt(socket_t socket) {
+  if (socket == sock_) return;
+  close();
+  if (is_invalid(socket)) throw IOError("cannot adopt an invalid socket");
+  sock_ = socket;
+}
+
+void SocketTransport::set_deadline_model(DeadlineModel model) {
+  deadline_model_ = model;
+  if (!is_invalid(sock_)) {
+    set_nonblocking(sock_, model == DeadlineModel::Strict);
+  }
+}
+
+void SocketTransport::prepare_for_io(Deadline deadline) {
+  if (is_invalid(sock_)) throw IOError("operation on closed socket");
+  const auto left = remaining(deadline);
+  if (left <= std::chrono::milliseconds::zero()) {
+    throw TimeoutError("operation deadline expired");
+  }
+  if (deadline_model_ == DeadlineModel::Strict) {
+    set_nonblocking(sock_, true);
+  } else {
+    set_nonblocking(sock_, false);
+    set_timeouts(sock_, left);
+  }
+}
 
 rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t port, Deadline deadline) {
   return rs::util::try_catch([&]() {
   close();
+
+  if (remaining(deadline) <= std::chrono::milliseconds::zero()) {
+    throw TimeoutError("connect deadline expired");
+  }
 
   // Resolve
   addrinfo hints{}; hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
@@ -106,8 +141,7 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
 #endif
     );
     if (rc == 0) {
-      set_nonblocking(sock_, false);
-      set_timeouts(sock_, remaining(deadline));
+      prepare_for_io(deadline);
       return;
     }
 #ifdef _WIN32
@@ -121,51 +155,95 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
     }
 #endif
     // Wait for connect or timeout
-    int wait = poll_connect(sock_, (int)remaining(deadline).count());
-    if (wait > 0) {
+    const auto wait = wait_for_socket(sock_, false, true, deadline);
+    if (wait == SocketWaitResult::Ready) {
       // Check for connect success
-      int err = 0; socklen_t len = sizeof(err);
-      getsockopt(sock_, SOL_SOCKET, SO_ERROR, (char*)&err, &len);
+      int err = 0;
+#ifdef _WIN32
+      int len = sizeof(err);
+#else
+      socklen_t len = sizeof(err);
+#endif
+      getsockopt(sock_, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&err), &len);
       if (err == 0) {
-        set_nonblocking(sock_, false);
-        set_timeouts(sock_, remaining(deadline));
+        prepare_for_io(deadline);
         return;
       }
     }
     do_close(sock_); sock_ = invalid_socket();
+    if (wait == SocketWaitResult::Timeout) break;
   }
 
-    throw TimeoutError("connect timeout or no route to host");
+    if (remaining(deadline) <= std::chrono::milliseconds::zero()) {
+      throw TimeoutError("connect timeout");
+    }
+    throw IOError("connect failed for all resolved addresses");
   });
 }
 
-rs::util::Result<IOResult> SocketTransport::send(std::span<const std::byte> buf, Deadline /*deadline*/) {
+rs::util::Result<IOResult> SocketTransport::send(std::span<const std::byte> buf, Deadline deadline) {
   return rs::util::try_catch([&]() {
-    if (is_invalid(sock_)) throw IOError("send on closed socket");
+    if (buf.empty()) return IOResult{0, false};
+    prepare_for_io(deadline);
+    for (;;) {
+      if (deadline_model_ == DeadlineModel::Strict) {
+        const auto wait = wait_for_socket(sock_, false, true, deadline);
+        if (wait == SocketWaitResult::Timeout) throw TimeoutError("send timeout");
+        if (wait == SocketWaitResult::Failed) {
+          throw IOError(platform::last_error_text("poll(send)"));
+        }
+      }
 #ifdef _WIN32
-    int n = ::send(sock_, reinterpret_cast<const char*>(buf.data()), (int)buf.size(), 0);
-    if (n == SOCKET_ERROR) throw IOError(platform::last_error_text("send"));
+      int n = ::send(sock_, reinterpret_cast<const char*>(buf.data()),
+                     static_cast<int>(std::min<std::size_t>(buf.size(), INT_MAX)), 0);
+      if (n != SOCKET_ERROR) return IOResult{static_cast<std::size_t>(n), false};
 #else
-    ssize_t n = ::send(sock_, buf.data(), buf.size(), 0);
-    if (n < 0) throw IOError(platform::last_error_text("send"));
+      int flags = 0;
+#ifdef MSG_NOSIGNAL
+      flags = MSG_NOSIGNAL;
 #endif
-    return IOResult{ static_cast<std::size_t>(n), false };
+      ssize_t n = ::send(sock_, buf.data(), buf.size(), flags);
+      if (n >= 0) return IOResult{static_cast<std::size_t>(n), false};
+#endif
+      const int error = last_socket_error();
+      if (deadline_model_ == DeadlineModel::Strict && socket_error_would_block(error)) {
+        continue;
+      }
+      if (socket_error_is_timeout(error)) throw TimeoutError("send timeout");
+      throw IOError(platform::last_error_text("send"));
+    }
   });
 }
 
-rs::util::Result<IOResult> SocketTransport::recv(std::span<std::byte> buf, Deadline /*deadline*/) {
+rs::util::Result<IOResult> SocketTransport::recv(std::span<std::byte> buf, Deadline deadline) {
   return rs::util::try_catch([&]() {
-    if (is_invalid(sock_)) throw IOError("recv on closed socket");
+    if (buf.empty()) return IOResult{0, false};
+    prepare_for_io(deadline);
+    for (;;) {
+      if (deadline_model_ == DeadlineModel::Strict) {
+        const auto wait = wait_for_socket(sock_, true, false, deadline);
+        if (wait == SocketWaitResult::Timeout) throw TimeoutError("recv timeout");
+        if (wait == SocketWaitResult::Failed) {
+          throw IOError(platform::last_error_text("poll(recv)"));
+        }
+      }
 #ifdef _WIN32
-    int n = ::recv(sock_, reinterpret_cast<char*>(buf.data()), (int)buf.size(), 0);
-    if (n == 0) return IOResult{0, true};
-    if (n == SOCKET_ERROR) throw IOError(platform::last_error_text("recv"));
+      int n = ::recv(sock_, reinterpret_cast<char*>(buf.data()),
+                     static_cast<int>(std::min<std::size_t>(buf.size(), INT_MAX)), 0);
+      if (n > 0) return IOResult{static_cast<std::size_t>(n), false};
+      if (n == 0) return IOResult{0, true};
 #else
-    ssize_t n = ::recv(sock_, buf.data(), buf.size(), 0);
-    if (n == 0) return IOResult{0, true};
-    if (n < 0) throw IOError(platform::last_error_text("recv"));
+      ssize_t n = ::recv(sock_, buf.data(), buf.size(), 0);
+      if (n > 0) return IOResult{static_cast<std::size_t>(n), false};
+      if (n == 0) return IOResult{0, true};
 #endif
-    return IOResult{ static_cast<std::size_t>(n), false };
+      const int error = last_socket_error();
+      if (deadline_model_ == DeadlineModel::Strict && socket_error_would_block(error)) {
+        continue;
+      }
+      if (socket_error_is_timeout(error)) throw TimeoutError("recv timeout");
+      throw IOError(platform::last_error_text("recv"));
+    }
   });
 }
 

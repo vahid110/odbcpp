@@ -4,6 +4,13 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -29,6 +36,8 @@ jobs:
       PGDATABASE: postgres
       PGUSER: postgres
       PGPASSWORD: postgres
+      ODBCSYSINI: ${{ github.workspace }}/.ci-odbc
+      ODBCINI: ${{ github.workspace }}/.ci-odbc/odbc.ini
 
     steps:
       - uses: actions/checkout@v4
@@ -36,10 +45,39 @@ jobs:
       - name: Install deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential libssl-dev
+          sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev
+
+      - name: Configure test DSN
+        run: |
+          mkdir -p "$ODBCSYSINI"
+          cat > "$ODBCINI" <<'EOF'
+          [RedshiftProd]
+          Driver=ODBCPP Redshift
+          Server=127.0.0.1
+          Port=5432
+          Database=postgres
+          UID=postgres
+          PWD=postgres
+          SSL=0
+          TransportMode=Sync
+          DeadlineModel=Strict
+          EOF
+          cat > "$ODBCSYSINI/odbcinst.ini" <<'EOF'
+          [ODBCPP Redshift]
+          TransportMode=Auto
+          AsyncMaxInflight=64
+          AsyncQueueDepth=256
+          AsyncEngine=Auto
+          DeadlineModel=Strict
+          EOF
 
       - name: Configure
-        run: cmake -S . -B build -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release
+        run: >-
+          cmake -S . -B build
+          -DBUILD_EXAMPLES=OFF
+          -DBUILD_TESTING=ON
+          -DOPENSSL_USE_STATIC_LIBS=OFF
+          -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: cmake --build build -- -j

@@ -2,8 +2,18 @@
 #include <string>
 #include <map>
 #include <fstream>
+#include <vector>
 
 namespace rs::odbc {
+
+struct ResolvedConnectionParameters {
+  std::map<std::string, std::string> driver_parameters;
+  std::map<std::string, std::string> dsn_parameters;
+  std::map<std::string, std::string> connection_parameters;
+  std::map<std::string, std::string> effective_parameters;
+  std::string dsn_name;
+  std::string driver_name;
+};
 
 // Connection string parser for ODBC standard formats
 class ConnectionString {
@@ -13,6 +23,12 @@ public:
   
   // Load DSN from system DSN files
   static std::map<std::string, std::string> load_dsn(const std::string& dsn_name);
+
+  // Resolve a DSN name or connection string without losing the individual
+  // precedence layers: driver < DSN < connection string.
+  static ResolvedConnectionParameters resolve(
+      const std::string& dsn_or_connection_string,
+      const std::string& default_driver_name);
   
   // Get DSN file paths for current platform
   static std::vector<std::string> get_dsn_file_paths();

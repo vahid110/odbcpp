@@ -310,6 +310,8 @@ Server = your-cluster.redshift.amazonaws.com
 Port = 5439
 Database = dev
 SSL = true
+TransportMode = Auto
+DeadlineModel = Strict
 
 [PostgreSQLTest] 
 Driver = ODBCPP
@@ -318,6 +320,8 @@ Server = localhost
 Port = 5432
 Database = testdb
 SSL = false
+TransportMode = Sync
+DeadlineModel = SocketTimeout
 ```
 
 **odbcinst.ini** - Driver Definitions:
@@ -327,7 +331,18 @@ Description = ODBCPP Multi-Database Driver
 Driver64 = /path/to/build-redshift/libodbcpp.dylib
 Setup64 = /path/to/build-redshift/libodbcpp.dylib
 FileUsage = 1
+TransportMode = Auto
+AsyncMaxInflight = 64
+AsyncQueueDepth = 256
+AsyncEngine = Auto
+DeadlineModel = Strict
 ```
+
+Transport settings use the following precedence, from highest to lowest:
+connection string, DSN, driver section in `odbcinst.ini`, built-in defaults.
+`TransportMode=Auto` currently selects the stable synchronous implementation;
+explicit `Async` selection will be enabled as the native IOCP and epoll engines
+land.
 
 ### System Installation (Optional)
 

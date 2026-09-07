@@ -18,6 +18,7 @@
 #endif
 
 #include "core/util/deadline.h" // rs::util::Deadline + rs::util::remaining
+#include "core/transport/socket_wait.h"
 
 namespace rs::core::transport {
 
@@ -52,31 +53,11 @@ inline Errc wait_fd_ready(
   int events,
   rs::util::Deadline dl)
 {
-  using rs::util::remaining;
-  int timeout_ms = static_cast<int>(remaining(dl).count());
-  if (timeout_ms < 0) timeout_ms = 0;
-
-#if defined(_WIN32)
-  WSAPOLLFD p{};
-  p.fd = fd;
-  p.events = 0;
-  if (events & 0x01) p.events |= POLLRDNORM;
-  if (events & 0x02) p.events |= POLLWRNORM;
-  int r = WSAPoll(&p, 1, timeout_ms);
-  if (r == 0) return Errc::Timeout;
-  if (r < 0)  return Errc::SyscallFailed;
+  const auto result = wait_for_socket(fd, (events & 0x01) != 0,
+                                      (events & 0x02) != 0, dl);
+  if (result == SocketWaitResult::Timeout) return Errc::Timeout;
+  if (result == SocketWaitResult::Failed) return Errc::SyscallFailed;
   return Errc::Ok;
-#else
-  struct pollfd p{};
-  p.fd = fd;
-  p.events = 0;
-  if (events & 0x01) p.events |= POLLIN;
-  if (events & 0x02) p.events |= POLLOUT;
-  int r = ::poll(&p, 1, timeout_ms);
-  if (r == 0) return Errc::Timeout;
-  if (r < 0)  return (errno == EINTR) ? Errc::WantRetry : Errc::SyscallFailed;
-  return Errc::Ok;
-#endif
 }
 
 inline Error tls_handshake_with_deadline(SSL* ssl,
@@ -101,6 +82,9 @@ inline Error tls_handshake_with_deadline(SSL* ssl,
       auto ec = wait_fd_ready(fd, 0x02, dl);
       if (ec != Errc::Ok) return {ec, "handshake", "want_write"};
       continue;
+    }
+    if (e == SSL_ERROR_SYSCALL && socket_error_is_timeout(last_socket_error())) {
+      return {Errc::Timeout, "handshake", "socket_timeout"};
     }
     long serr = ::ERR_get_error();
     return {Errc::HandshakeFailed, "handshake", "SSL_connect", 0, serr};
@@ -130,6 +114,9 @@ inline Error tls_write_all(SSL* ssl,
       auto ec = wait_fd_ready(fd, 0x02, dl);
       if (ec != Errc::Ok) return {ec, "send", "want_write"};
       continue;
+    }
+    if (e == SSL_ERROR_SYSCALL && socket_error_is_timeout(last_socket_error())) {
+      return {Errc::Timeout, "send", "socket_timeout"};
     }
     long serr = ::ERR_get_error();
     return {Errc::SyscallFailed, "send", "SSL_write", 0, serr};
@@ -161,6 +148,9 @@ inline Error tls_read_some(SSL* ssl,
       auto ec = wait_fd_ready(fd, 0x02, dl);
       if (ec != Errc::Ok) return {ec, "recv", "want_write"};
       continue;
+    }
+    if (e == SSL_ERROR_SYSCALL && socket_error_is_timeout(last_socket_error())) {
+      return {Errc::Timeout, "recv", "socket_timeout"};
     }
     long serr = ::ERR_get_error();
     return {Errc::SyscallFailed, "recv", "SSL_read", 0, serr};

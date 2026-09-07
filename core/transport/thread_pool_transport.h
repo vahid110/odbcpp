@@ -13,7 +13,9 @@ namespace rs::core::transport {
 // Cross-platform async transport using thread pool
 class ThreadPoolTransport : public IAsyncTransport {
 public:
-  explicit ThreadPoolTransport(size_t thread_count = std::thread::hardware_concurrency());
+  explicit ThreadPoolTransport(
+      size_t thread_count = std::thread::hardware_concurrency(),
+      size_t queue_depth = 256);
   ~ThreadPoolTransport() override;
   
   // Sync interface (inherited)
@@ -50,7 +52,7 @@ private:
   
   struct Task {
     std::function<void()> work;
-    std::chrono::steady_clock::time_point deadline;
+    std::function<void()> cancel;
   };
   
   SocketTransport socket_;
@@ -59,9 +61,11 @@ private:
   std::mutex queue_mutex_;
   std::condition_variable cv_;
   std::atomic<bool> shutdown_{false};
+  size_t queue_depth_;
+  std::mutex socket_mutex_;
   
   void worker_thread();
-  void submit_task(Task task);
+  bool submit_task(Task task);
 };
 
 } // namespace rs::core::transport

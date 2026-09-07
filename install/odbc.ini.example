@@ -9,6 +9,11 @@ Database=analytics
 UID=your-username
 PWD=your-password
 SSL=1
+TransportMode=Auto
+AsyncMaxInflight=64
+AsyncQueueDepth=256
+AsyncEngine=Auto
+DeadlineModel=Strict
 Description=Production Redshift cluster
 
 [RedshiftDev]
@@ -19,6 +24,8 @@ Database=dev
 UID=dev-user
 PWD=dev-password
 SSL=1
+TransportMode=Sync
+DeadlineModel=Strict
 Description=Development Redshift cluster
 
 [PostgreSQLLocal]
@@ -29,4 +36,6 @@ Database=postgres
 UID=postgres
 PWD=postgres
 SSL=0
+TransportMode=Auto
+DeadlineModel=SocketTimeout
 Description=Local PostgreSQL database

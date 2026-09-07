@@ -10,7 +10,7 @@ namespace rs::core::transport {
 
 class TLSTransport : public ITransport {
 public:
-  TLSTransport();
+  explicit TLSTransport(DeadlineModel deadline_model = DeadlineModel::Strict);
   ~TLSTransport() override;
 
   rs::util::Result<void> connect(std::string_view host, uint16_t port, rs::util::Deadline deadline) override;
@@ -25,6 +25,8 @@ public:
   void set_ca_locations(const std::string& file, const std::string& dir) {
     ca_file_ = file; ca_dir_ = dir;
   }
+  void set_deadline_model(DeadlineModel model) { tcp_.set_deadline_model(model); }
+  DeadlineModel deadline_model() const noexcept { return tcp_.deadline_model(); }
 #ifdef _WIN32
   using socket_t = SOCKET;
 #else

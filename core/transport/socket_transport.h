@@ -1,5 +1,6 @@
 #pragma once
 #include "i_transport.h"
+#include "deadline_model.h"
 #include "core/util/errors.h"
 #include "core/util/platform.h"
 #include <optional>
@@ -8,7 +9,7 @@ namespace rs::core::transport {
 
 class SocketTransport : public ITransport {
 public:
-  SocketTransport();
+  explicit SocketTransport(DeadlineModel deadline_model = DeadlineModel::Strict);
   ~SocketTransport() override;
 
   rs::util::Result<void> connect(std::string_view host, uint16_t port, rs::util::Deadline deadline) override;
@@ -28,10 +29,15 @@ public:
     sock_ = invalid_socket();
     return tmp;
   }
+  void adopt(socket_t socket);
+  void prepare_for_io(rs::util::Deadline deadline);
+  void set_deadline_model(DeadlineModel model);
+  DeadlineModel deadline_model() const noexcept { return deadline_model_; }
 
 private:
   socket_t sock_ { invalid_socket() };
   platform::WSAInit wsa_init_{}; // ensures WSA on Windows
+  DeadlineModel deadline_model_;
 
   static socket_t invalid_socket();
   static bool is_invalid(socket_t s);

@@ -8,6 +8,11 @@ Setup=@DRIVER_PATH@/libodbcpp.so
 FileUsage=1
 CPTimeout=
 CPReuse=
+TransportMode=Auto
+AsyncMaxInflight=64
+AsyncQueueDepth=256
+AsyncEngine=Auto
+DeadlineModel=Strict
 
 [ODBCPP PostgreSQL]
 Description=ODBCPP Driver for PostgreSQL
@@ -16,3 +21,8 @@ Setup=@DRIVER_PATH@/libodbcpp.so
 FileUsage=1
 CPTimeout=
 CPReuse=
+TransportMode=Auto
+AsyncMaxInflight=64
+AsyncQueueDepth=256
+AsyncEngine=Auto
+DeadlineModel=Strict

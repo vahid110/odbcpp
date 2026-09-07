@@ -1,6 +1,6 @@
 #pragma once
 #include "odbc_types.h"
-#include "core/database/async_database_connection.h"
+#include "core/database/i_database_connection.h"
 #include "core/database/connection_pool.h"
 #include "core/util/result.h"
 #include <memory>
@@ -96,11 +96,11 @@ public:
   SQLRETURN disconnect();
   bool is_connected() const { return connected_; }
   
-  rs::core::database::AsyncDatabaseConnection* get_db_connection() { return db_conn_.get(); }
+  rs::core::database::IDatabaseConnection* get_db_connection() { return db_conn_.get(); }
 
 private:
   ODBCEnvironment* env_; // Reserved for environment-specific settings
-  std::unique_ptr<rs::core::database::AsyncDatabaseConnection> db_conn_;
+  std::unique_ptr<rs::core::database::IDatabaseConnection> db_conn_;
   bool connected_ = false;
   
   // Suppress unused warning - env_ will be used for ODBC compliance features

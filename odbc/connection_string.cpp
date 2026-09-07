@@ -4,6 +4,14 @@
 #include <cctype>
 
 namespace rs::odbc {
+namespace {
+
+void overlay(std::map<std::string, std::string>& target,
+             const std::map<std::string, std::string>& source) {
+  for (const auto& [key, value] : source) target[key] = value;
+}
+
+} // namespace
 
 std::map<std::string, std::string> ConnectionString::parse(const std::string& conn_str) {
   std::map<std::string, std::string> params;
@@ -21,7 +29,7 @@ std::map<std::string, std::string> ConnectionString::parse(const std::string& co
     std::string value = trim(pair.substr(eq_pos + 1));
     
     // Remove braces from values like {ODBCPP Driver}
-    if (value.front() == '{' && value.back() == '}') {
+    if (value.size() >= 2 && value.front() == '{' && value.back() == '}') {
       value = value.substr(1, value.length() - 2);
     }
     
@@ -42,6 +50,42 @@ std::map<std::string, std::string> ConnectionString::load_dsn(const std::string&
   }
   
   return {}; // DSN not found
+}
+
+ResolvedConnectionParameters ConnectionString::resolve(
+    const std::string& dsn_or_connection_string,
+    const std::string& default_driver_name) {
+  ResolvedConnectionParameters resolved;
+
+  if (dsn_or_connection_string.find('=') != std::string::npos) {
+    resolved.connection_parameters = parse(dsn_or_connection_string);
+    const auto dsn = resolved.connection_parameters.find("DSN");
+    if (dsn != resolved.connection_parameters.end()) {
+      resolved.dsn_name = dsn->second;
+      resolved.dsn_parameters = load_dsn(resolved.dsn_name);
+    }
+  } else {
+    resolved.dsn_name = dsn_or_connection_string;
+    resolved.dsn_parameters = load_dsn(resolved.dsn_name);
+  }
+
+  overlay(resolved.effective_parameters, resolved.dsn_parameters);
+  overlay(resolved.effective_parameters, resolved.connection_parameters);
+
+  const auto driver = resolved.effective_parameters.find("DRIVER");
+  resolved.driver_name = driver == resolved.effective_parameters.end()
+      ? default_driver_name
+      : driver->second;
+  if (!resolved.driver_name.empty()) {
+    resolved.driver_parameters =
+        DSNReader::read_driver_config(resolved.driver_name);
+  }
+  // Keep the generic legacy registration useful for direct connections.
+  if (resolved.driver_parameters.empty() && resolved.driver_name != "ODBCPP") {
+    resolved.driver_parameters = DSNReader::read_driver_config("ODBCPP");
+  }
+
+  return resolved;
 }
 
 std::vector<std::string> ConnectionString::get_dsn_file_paths() {
