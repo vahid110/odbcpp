@@ -102,8 +102,11 @@ TEST_F(RedshiftRealTest, CurrentUserQuery) {
 TEST_F(RedshiftRealTest, MultipleRowQuery) {
   ASSERT_TRUE(connect());
   
-  SQLRETURN ret = SQLExecDirect(hstmt_, 
-                               reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 1 as num UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5")), 
+  auto query = const_cast<char*>(
+      "SELECT num FROM (SELECT 1 AS num UNION SELECT 2 UNION SELECT 3 "
+      "UNION SELECT 4 UNION SELECT 5) AS rows ORDER BY num");
+  SQLRETURN ret = SQLExecDirect(hstmt_,
+                               reinterpret_cast<SQLCHAR*>(query),
                                SQL_NTS);
   ASSERT_EQ(ret, SQL_SUCCESS);
   
