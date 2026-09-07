@@ -6,6 +6,28 @@
 #include <stdexcept>
 
 namespace rs::odbc::redshift {
+namespace {
+
+int scan_date(const char* value, int* year, int* month, int* day) {
+#ifdef _WIN32
+    return ::sscanf_s(value, "%d-%d-%d", year, month, day);
+#else
+    return std::sscanf(value, "%d-%d-%d", year, month, day);
+#endif
+}
+
+int scan_timestamp(const char* value, int* year, int* month, int* day,
+                   int* hour, int* minute, int* second) {
+#ifdef _WIN32
+    return ::sscanf_s(value, "%d-%d-%d %d:%d:%d", year, month, day,
+                      hour, minute, second);
+#else
+    return std::sscanf(value, "%d-%d-%d %d:%d:%d", year, month, day,
+                       hour, minute, second);
+#endif
+}
+
+} // namespace
 
 SQLRETURN RedshiftDataConverter::convert_data(const std::string& redshift_value, 
                                              SQLSMALLINT target_c_type,
@@ -96,7 +118,7 @@ SQLRETURN RedshiftDataConverter::convert_to_date(const std::string& value, void*
     int year = 0;
     int month = 0;
     int day = 0;
-    if (std::sscanf(value.c_str(), "%d-%d-%d", &year, &month, &day) == 3 &&
+    if (scan_date(value.c_str(), &year, &month, &day) == 3 &&
         year >= 0 && year <= std::numeric_limits<SQLSMALLINT>::max() &&
         month >= 1 && month <= 12 && day >= 1 && day <= 31) {
         date->year = static_cast<SQLSMALLINT>(year);
@@ -121,8 +143,8 @@ SQLRETURN RedshiftDataConverter::convert_to_timestamp(const std::string& value, 
     int second = 0;
 
     // Parse basic timestamp: YYYY-MM-DD HH:MM:SS
-    if (std::sscanf(value.c_str(), "%d-%d-%d %d:%d:%d",
-                    &year, &month, &day, &hour, &minute, &second) == 6 &&
+    if (scan_timestamp(value.c_str(), &year, &month, &day,
+                       &hour, &minute, &second) == 6 &&
         year >= 0 && year <= std::numeric_limits<SQLSMALLINT>::max() &&
         month >= 1 && month <= 12 && day >= 1 && day <= 31 &&
         hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 &&
