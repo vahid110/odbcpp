@@ -114,7 +114,8 @@ TEST_F(AsyncTransportTest, ConcurrentOperations) {
   auto deadline = rs::util::make_deadline(std::chrono::seconds(2));
   
   for (int i = 0; i < num_operations; ++i) {
-    auto op = transport_->connect_async("127.0.0.1", 80 + i, deadline,
+    auto op = transport_->connect_async(
+      "127.0.0.1", static_cast<uint16_t>(80 + i), deadline,
       [&](rs::util::Result<void> result) {
         completed_operations++;
       });

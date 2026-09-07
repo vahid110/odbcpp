@@ -97,15 +97,13 @@ jobs:
 
   windows-unit:
     runs-on: windows-latest
-    env:
-      VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
 
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install OpenSSL
+      - name: Verify runner OpenSSL
         shell: pwsh
-        run: vcpkg install openssl:x64-windows
+        run: openssl version
 
       - name: Configure
         shell: pwsh
@@ -114,8 +112,7 @@ jobs:
           -DBUILD_EXAMPLES=OFF
           -DBUILD_TESTING=ON
           -DOPENSSL_USE_STATIC_LIBS=OFF
-          -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
-          -DVCPKG_TARGET_TRIPLET=x64-windows
+          -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL"
 
       - name: Build
         shell: pwsh

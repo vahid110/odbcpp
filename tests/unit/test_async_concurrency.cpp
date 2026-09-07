@@ -57,7 +57,8 @@ TEST_F(AsyncConcurrencyTest, MultipleConnectionsConcurrentQueries) {
   }
   
   // Wait for all queries to complete
-  const int expected_total = connections_.size() * queries_per_connection;
+  const int expected_total =
+      static_cast<int>(connections_.size()) * queries_per_connection;
   auto start = std::chrono::steady_clock::now();
   while (total_completed.load() < expected_total &&
          std::chrono::steady_clock::now() - start < std::chrono::seconds(10)) {
@@ -80,7 +81,8 @@ TEST_F(AsyncConcurrencyTest, ThreadSafetyStressTest) {
     threads.emplace_back([&, t]() {
       std::random_device rd;
       std::mt19937 gen(rd());
-      std::uniform_int_distribution<> conn_dist(0, connections_.size() - 1);
+      std::uniform_int_distribution<> conn_dist(
+          0, static_cast<int>(connections_.size() - 1));
       std::uniform_int_distribution<> delay_dist(1, 50);
       
       for (int i = 0; i < operations_per_thread; ++i) {
@@ -148,7 +150,7 @@ TEST_F(AsyncConcurrencyTest, ThreadSafetyStressTest) {
 TEST_F(AsyncConcurrencyTest, CallbackThreadSafety) {
   const int num_callbacks = 100;
   std::atomic<int> callback_count{0};
-  std::vector<int> callback_thread_ids;
+  std::vector<std::size_t> callback_thread_ids;
   std::mutex thread_ids_mutex;
   
   auto& conn = connections_[0];
@@ -181,7 +183,8 @@ TEST_F(AsyncConcurrencyTest, CallbackThreadSafety) {
   EXPECT_EQ(callback_thread_ids.size(), num_callbacks);
   
   // Should have used multiple threads from the pool
-  std::set<int> unique_thread_ids(callback_thread_ids.begin(), callback_thread_ids.end());
+  std::set<std::size_t> unique_thread_ids(callback_thread_ids.begin(),
+                                          callback_thread_ids.end());
   EXPECT_GT(unique_thread_ids.size(), 1); // At least 2 different threads
 }
 

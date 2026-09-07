@@ -6,15 +6,9 @@
 #include "core/util/deadline.h"
 #include "core/util/exception_adapter.h"
 #include "odbc/connection_string.h"
-#include <cstdlib>
 #include <string>
 
 using namespace rs::core::database;
-
-static std::string env_or(const char* k, const char* defv) {
-  const char* v = std::getenv(k);
-  return v ? v : defv;
-}
 
 TEST(Integration, ConnectAndSelect1) {
   auto transport = std::make_unique<rs::core::transport::ThreadPoolTransport>(4);
@@ -27,7 +21,7 @@ TEST(Integration, ConnectAndSelect1) {
   
   ConnectionSettings settings;
   settings.host = dsn_params["SERVER"];
-  settings.port = std::stoi(dsn_params["PORT"]);
+  settings.port = static_cast<uint16_t>(std::stoi(dsn_params["PORT"]));
   settings.database = dsn_params["DATABASE"];
   settings.user = dsn_params["UID"];
   settings.password = dsn_params["PWD"];

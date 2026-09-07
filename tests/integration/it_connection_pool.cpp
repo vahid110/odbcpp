@@ -21,7 +21,8 @@ protected:
     ASSERT_FALSE(dsn_params.empty()) << "DSN 'RedshiftProd' not found in odbc.ini";
     
     config_.connection_settings.host = dsn_params["SERVER"];
-    config_.connection_settings.port = std::stoi(dsn_params["PORT"]);
+    config_.connection_settings.port =
+        static_cast<uint16_t>(std::stoi(dsn_params["PORT"]));
     config_.connection_settings.database = dsn_params["DATABASE"];
     config_.connection_settings.user = dsn_params["UID"];
     config_.connection_settings.password = dsn_params["PWD"];
