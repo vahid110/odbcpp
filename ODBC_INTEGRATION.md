@@ -30,7 +30,7 @@
 
 ### ⚠️ Missing for Full ODBC Compliance
 - **Installer-managed registration**: Registration still uses an `odbcinst.ini` entry
-- **Capability discovery**: SQLGetFunctions and SQLGetTypeInfo remain incomplete
+- **Type discovery**: SQLGetTypeInfo remains incomplete
 
 ## Integration Paths
 

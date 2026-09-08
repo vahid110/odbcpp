@@ -57,6 +57,8 @@ SQLRETURN SQLError(SQLHENV environment_handle, SQLHDBC connection_handle, SQLHST
 // Driver information
 SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type, 
                     void* info_value, SQLSMALLINT buffer_length, SQLSMALLINT* string_length);
+SQLRETURN SQLGetFunctions(SQLHDBC connection_handle, SQLUSMALLINT function_id,
+                          SQLUSMALLINT* supported);
 
 // Environment attributes
 SQLRETURN SQLSetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute, 

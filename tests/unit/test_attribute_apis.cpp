@@ -133,6 +133,37 @@ TEST_F(AttributeApisTest, ReportsTransactionCapabilities) {
             integer_value);
 }
 
+TEST_F(AttributeApisTest, ReportsImplementedFunctions) {
+  SQLUSMALLINT supported = SQL_FALSE;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
+      connection_, SQL_API_SQLDRIVERCONNECT, &supported));
+  EXPECT_EQ(SQL_TRUE, supported);
+  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
+      connection_, SQL_API_SQLTABLES, &supported));
+  EXPECT_EQ(SQL_FALSE, supported);
+
+  SQLUSMALLINT odbc2_functions[100]{};
+  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
+      connection_, SQL_API_ALL_FUNCTIONS, odbc2_functions));
+  EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLCONNECT]);
+  EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLDRIVERCONNECT]);
+  EXPECT_EQ(SQL_FALSE, odbc2_functions[SQL_API_SQLTABLES]);
+
+  SQLUSMALLINT odbc3_functions[SQL_API_ODBC3_ALL_FUNCTIONS_SIZE]{};
+  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
+      connection_, SQL_API_ODBC3_ALL_FUNCTIONS, odbc3_functions));
+  EXPECT_EQ(SQL_TRUE,
+            SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLALLOCHANDLE));
+  EXPECT_EQ(SQL_TRUE,
+            SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLDRIVERCONNECT));
+  EXPECT_EQ(SQL_FALSE,
+            SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLTABLES));
+
+  EXPECT_EQ(SQL_ERROR, SQLGetFunctions(
+      connection_, SQL_API_SQLCONNECT, nullptr));
+  EXPECT_EQ("HY009", diagnostic_state(SQL_HANDLE_DBC, connection_));
+}
+
 TEST_F(AttributeApisTest, StoresQueryTimeoutAndAllowsZero) {
   SQLULEN value = 99;
   EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(

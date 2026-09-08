@@ -21,6 +21,42 @@ namespace {
     // Currently pass-through, but ready for UTF-8 validation/conversion
     return input;
   }
+
+  bool is_supported_function(SQLUSMALLINT function_id) {
+    switch (function_id) {
+      case SQL_API_SQLALLOCHANDLE:
+      case SQL_API_SQLBINDCOL:
+      case SQL_API_SQLBINDPARAMETER:
+      case SQL_API_SQLCOLATTRIBUTE:
+      case SQL_API_SQLCONNECT:
+      case SQL_API_SQLDESCRIBECOL:
+      case SQL_API_SQLDESCRIBEPARAM:
+      case SQL_API_SQLDISCONNECT:
+      case SQL_API_SQLDRIVERCONNECT:
+      case SQL_API_SQLENDTRAN:
+      case SQL_API_SQLERROR:
+      case SQL_API_SQLEXECDIRECT:
+      case SQL_API_SQLEXECUTE:
+      case SQL_API_SQLFETCH:
+      case SQL_API_SQLFREEHANDLE:
+      case SQL_API_SQLGETCONNECTATTR:
+      case SQL_API_SQLGETDATA:
+      case SQL_API_SQLGETDIAGFIELD:
+      case SQL_API_SQLGETDIAGREC:
+      case SQL_API_SQLGETFUNCTIONS:
+      case SQL_API_SQLGETINFO:
+      case SQL_API_SQLGETSTMTATTR:
+      case SQL_API_SQLNUMRESULTCOLS:
+      case SQL_API_SQLPREPARE:
+      case SQL_API_SQLROWCOUNT:
+      case SQL_API_SQLSETCONNECTATTR:
+      case SQL_API_SQLSETENVATTR:
+      case SQL_API_SQLSETSTMTATTR:
+        return true;
+      default:
+        return false;
+    }
+  }
 }
 
 // Helper to validate handle
@@ -497,6 +533,42 @@ SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type,
       conn->set_error(SQLSTATE_GENERAL_ERROR, "Unsupported SQLGetInfo type");
       return SQL_ERROR;
   }
+}
+
+SQLRETURN SQLGetFunctions(SQLHDBC connection_handle, SQLUSMALLINT function_id,
+                          SQLUSMALLINT* supported) {
+  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  if (!conn) return SQL_INVALID_HANDLE;
+  if (!supported) {
+    conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                    "Function support output pointer is null");
+    return SQL_ERROR;
+  }
+
+  if (function_id == SQL_API_ODBC3_ALL_FUNCTIONS) {
+    std::fill_n(supported, SQL_API_ODBC3_ALL_FUNCTIONS_SIZE,
+                static_cast<SQLUSMALLINT>(0));
+    for (SQLUSMALLINT id = 0; id < 4000; ++id) {
+      if (!is_supported_function(id)) continue;
+      supported[id >> 4] |= static_cast<SQLUSMALLINT>(
+          1u << (id & 0x000f));
+    }
+    return SQL_SUCCESS;
+  }
+  if (function_id == SQL_API_ALL_FUNCTIONS) {
+    constexpr std::size_t odbc2_function_count = 100;
+    std::fill_n(supported, odbc2_function_count,
+                static_cast<SQLUSMALLINT>(SQL_FALSE));
+    for (SQLUSMALLINT id = 0; id < odbc2_function_count; ++id) {
+      supported[id] = static_cast<SQLUSMALLINT>(
+          is_supported_function(id) ? SQL_TRUE : SQL_FALSE);
+    }
+    return SQL_SUCCESS;
+  }
+
+  *supported = static_cast<SQLUSMALLINT>(
+      is_supported_function(function_id) ? SQL_TRUE : SQL_FALSE);
+  return SQL_SUCCESS;
 }
 
 SQLRETURN SQLSetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute, 

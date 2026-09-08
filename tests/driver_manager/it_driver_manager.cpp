@@ -67,6 +67,16 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  SQLUSMALLINT function_supported = SQL_FALSE;
+  if (!succeeded(SQLGetFunctions(
+          connection, SQL_API_SQLEXECDIRECT, &function_supported)) ||
+      function_supported != SQL_TRUE) {
+    std::fprintf(stderr, "Driver did not report SQLExecDirect support\n");
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
   if (!succeeded(SQLAllocHandle(
           SQL_HANDLE_STMT, connection, &statement))) {
     print_diagnostic(SQL_HANDLE_DBC, connection);
