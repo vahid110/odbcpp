@@ -7,6 +7,7 @@
 #include "core/util/deadline.h"
 #include <cstring>
 #include <mutex>
+#include <optional>
 
 // Include database-specific converter based on build target
 #ifdef ODBCPP_ENABLE_REDSHIFT
@@ -45,6 +46,47 @@ bool enabled(const std::string& value) {
   const auto normalized = ConnectionString::to_upper(ConnectionString::trim(value));
   return normalized == "1" || normalized == "TRUE" || normalized == "YES" ||
          normalized == "ON";
+}
+
+rs::core::database::QueryParameterType parameter_type_for(
+    const ParameterInfo& parameter) {
+  using rs::core::database::QueryParameterType;
+  switch (parameter.parameter_type) {
+    case SQL_CHAR:
+    case SQL_VARCHAR:
+    case SQL_LONGVARCHAR:
+      return QueryParameterType::Text;
+    case SQL_TINYINT:
+    case SQL_SMALLINT:
+    case SQL_INTEGER:
+      return QueryParameterType::Int32;
+    case SQL_BIGINT:
+      return QueryParameterType::Int64;
+    case SQL_REAL:
+    case SQL_FLOAT:
+    case SQL_DOUBLE:
+      return QueryParameterType::Float64;
+    case SQL_DECIMAL:
+    case SQL_NUMERIC:
+      return QueryParameterType::Numeric;
+    case SQL_BIT:
+      return QueryParameterType::Boolean;
+    case SQL_BINARY:
+    case SQL_VARBINARY:
+    case SQL_LONGVARBINARY:
+      return QueryParameterType::Binary;
+    default:
+      break;
+  }
+
+  switch (parameter.value_type) {
+    case SQL_C_SLONG: return QueryParameterType::Int32;
+    case SQL_C_SBIGINT: return QueryParameterType::Int64;
+    case SQL_C_DOUBLE: return QueryParameterType::Float64;
+    case SQL_C_BIT: return QueryParameterType::Boolean;
+    case SQL_C_CHAR: return QueryParameterType::Text;
+    default: return QueryParameterType::Unspecified;
+  }
 }
 
 } // namespace
@@ -254,27 +296,64 @@ SQLRETURN ODBCStatement::execute() {
   }
   
   try {
-    // Convert bound parameters to string format for PostgreSQL
-    std::vector<std::string> param_values;
+    std::vector<rs::core::database::QueryParameter> param_values;
     param_values.reserve(parameter_info_.size());
     
     for (const auto& param : parameter_info_) {
+      if (!param.bound) {
+        set_error(SQLSTATE_INVALID_PARAMETER_NUMBER,
+                  "Not all statement parameters are bound");
+        return SQL_ERROR;
+      }
+      if (param.input_output_type != SQL_PARAM_INPUT) {
+        set_error(SQLSTATE_GENERAL_ERROR,
+                  "Only input parameters are currently supported");
+        return SQL_ERROR;
+      }
+
+      rs::core::database::QueryParameter query_param;
+      query_param.type = parameter_type_for(param);
+      if (param.strlen_or_indicator &&
+          *param.strlen_or_indicator == SQL_NULL_DATA) {
+        query_param.value = std::nullopt;
+        param_values.push_back(std::move(query_param));
+        continue;
+      }
+      if (!param.parameter_value) {
+        set_error(SQLSTATE_GENERAL_ERROR, "Bound parameter has no value buffer");
+        return SQL_ERROR;
+      }
+
       std::string value;
-      
-      // Convert parameter value to string based on C type
       if (param.value_type == SQL_C_CHAR) {
-        value = std::string(static_cast<char*>(param.parameter_value));
+        const auto* text = static_cast<const char*>(param.parameter_value);
+        SQLLEN length = param.buffer_length;
+        if (param.strlen_or_indicator) length = *param.strlen_or_indicator;
+        if (length == SQL_NTS || length == 0) {
+          value.assign(text);
+        } else if (length >= 0) {
+          value.assign(text, static_cast<std::size_t>(length));
+        } else {
+          set_error(SQLSTATE_GENERAL_ERROR,
+                    "Data-at-execution parameters are not supported yet");
+          return SQL_ERROR;
+        }
       } else if (param.value_type == SQL_C_SLONG) {
         value = std::to_string(*static_cast<SQLINTEGER*>(param.parameter_value));
       } else if (param.value_type == SQL_C_SBIGINT) {
         value = std::to_string(*static_cast<SQLBIGINT*>(param.parameter_value));
       } else if (param.value_type == SQL_C_DOUBLE) {
         value = std::to_string(*static_cast<SQLDOUBLE*>(param.parameter_value));
+      } else if (param.value_type == SQL_C_BIT) {
+        value = *static_cast<unsigned char*>(param.parameter_value) ? "1" : "0";
       } else {
-        value = "";
+        set_error(SQLSTATE_GENERAL_ERROR,
+                  "Unsupported C parameter type");
+        return SQL_ERROR;
       }
-      
-      param_values.push_back(value);
+
+      query_param.value = std::move(value);
+      param_values.push_back(std::move(query_param));
     }
     
     // Use PostgreSQL Parse/Bind/Execute protocol
@@ -336,6 +415,7 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
   param.parameter_value = parameter_value;
   param.buffer_length = buffer_length;
   param.strlen_or_indicator = strlen_or_indicator;
+  param.bound = true;
   
   return SQL_SUCCESS;
 }

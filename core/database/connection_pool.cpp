@@ -29,7 +29,7 @@ rs::util::Result<QueryResult> ThreadSafeConnection::execute_query(std::string_vi
 }
 
 rs::util::Result<QueryResult> ThreadSafeConnection::execute_prepared(std::string_view sql, 
-                                                                    std::span<const std::string> params,
+                                                                    std::span<const QueryParameter> params,
                                                                     rs::util::Deadline deadline) {
   std::shared_lock lock(mutex_);
   return conn_->execute_prepared(sql, params, deadline);

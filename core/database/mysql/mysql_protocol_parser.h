@@ -40,7 +40,7 @@ public:
   
   std::vector<std::byte> create_prepared_query(
     std::string_view sql,
-    std::span<const std::string> params) override {
+    std::span<const QueryParameter> params) override {
     // MySQL COM_STMT_PREPARE + COM_STMT_EXECUTE
     throw std::runtime_error("MySQL prepared statements not implemented yet");
   }

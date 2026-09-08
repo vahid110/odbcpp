@@ -113,49 +113,37 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::execute_query(std::stri
   if (write_result.has_error()) {
     return rs::util::Result<QueryResult>{write_result.error(), write_result.error_message()};
   }
-  
-  std::vector<Message> messages;
-  
-  while (true) {
-    auto msg_result = read_message_result(deadline);
-    if (msg_result.has_error()) {
-      return rs::util::Result<QueryResult>{msg_result.error(), msg_result.error_message()};
-    }
-    
-    auto msg = parser_->parse_message(*msg_result);
-    
-    if (parser_->is_error_response(msg)) {
-      last_error_ = parser_->extract_error_message(msg);
-      return rs::util::Result<QueryResult>{rs::util::DbErrorCode::QueryFailed, "Query error: " + last_error_};
-    }
-    
-    messages.push_back(msg);
-    
-    if (parser_->is_ready_for_query(msg)) {
-      break;
-    }
-  }
-  
-  QueryResult result;
-  result.rows = parser_->extract_query_results(messages);
-  return rs::util::Result<QueryResult>{std::move(result)};
+
+  return read_query_result(deadline);
 }
 
 rs::util::Result<QueryResult> GenericDatabaseConnection::execute_prepared(std::string_view sql, 
-                                                                            std::span<const std::string> params,
+                                                                            std::span<const QueryParameter> params,
                                                                             rs::util::Deadline deadline) {
   if (!connected_) {
     return rs::util::Result<QueryResult>{rs::util::DbErrorCode::NotConnected, "Not connected"};
   }
   
-  auto query_msg = parser_->create_prepared_query(sql, params);
+  std::vector<std::byte> query_msg;
+  try {
+    query_msg = parser_->create_prepared_query(sql, params);
+  } catch (const std::exception& error) {
+    return rs::util::Result<QueryResult>{
+        rs::util::DbErrorCode::InvalidParameter, error.what()};
+  }
   auto write_result = write_all_result(query_msg, deadline);
   if (write_result.has_error()) {
     return rs::util::Result<QueryResult>{write_result.error(), write_result.error_message()};
   }
   
+  return read_query_result(deadline);
+}
+
+rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
+    rs::util::Deadline deadline) {
   std::vector<Message> messages;
-  
+  std::string query_error;
+
   while (true) {
     auto msg_result = read_message_result(deadline);
     if (msg_result.has_error()) {
@@ -163,19 +151,23 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::execute_prepared(std::s
     }
     
     auto msg = parser_->parse_message(*msg_result);
-    
+
     if (parser_->is_error_response(msg)) {
-      last_error_ = parser_->extract_error_message(msg);
-      return rs::util::Result<QueryResult>{rs::util::DbErrorCode::QueryFailed, "Query error: " + last_error_};
+      if (query_error.empty()) query_error = parser_->extract_error_message(msg);
     }
-    
+
     messages.push_back(msg);
-    
     if (parser_->is_ready_for_query(msg)) {
       break;
     }
   }
-  
+
+  if (!query_error.empty()) {
+    last_error_ = query_error;
+    return rs::util::Result<QueryResult>{
+        rs::util::DbErrorCode::QueryFailed, "Query error: " + last_error_};
+  }
+
   QueryResult result;
   result.rows = parser_->extract_query_results(messages);
   return rs::util::Result<QueryResult>{std::move(result)};

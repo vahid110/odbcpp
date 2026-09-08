@@ -17,8 +17,9 @@ public:
   bool is_connected() const override;
   
   rs::util::Result<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline) override;
+  using IDatabaseConnection::execute_prepared;
   rs::util::Result<QueryResult> execute_prepared(std::string_view sql, 
-                                                std::span<const std::string> params,
+                                                std::span<const QueryParameter> params,
                                                 rs::util::Deadline deadline) override;
   
   std::string get_parameter(std::string_view key) const override;
@@ -42,6 +43,7 @@ private:
   rs::util::Result<void> write_all_result(const std::vector<std::byte>& data, rs::util::Deadline deadline);
   rs::util::Result<std::vector<std::byte>> read_message_result(rs::util::Deadline deadline);
   rs::util::Result<void> perform_authentication_result(rs::util::Deadline deadline);
+  rs::util::Result<QueryResult> read_query_result(rs::util::Deadline deadline);
   rs::util::Result<void> write_message_to_transport_result(rs::core::transport::ITransport& transport, const std::vector<std::byte>& data, rs::util::Deadline deadline);
 };
 

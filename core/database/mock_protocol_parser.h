@@ -17,7 +17,7 @@ public:
   }
   
   std::vector<std::byte> create_prepared_query(
-    std::string_view sql, std::span<const std::string> params) override {
+    std::string_view sql, std::span<const QueryParameter> params) override {
     return {std::byte{0x50}}; // 'P' for Parse
   }
   

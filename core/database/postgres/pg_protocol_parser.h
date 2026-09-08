@@ -27,7 +27,7 @@ public:
   std::vector<std::byte> create_simple_query(std::string_view sql) override;
   std::vector<std::byte> create_prepared_query(
     std::string_view sql,
-    std::span<const std::string> params) override;
+    std::span<const QueryParameter> params) override;
   
   // Message parsing
   Message parse_message(const std::vector<std::byte>& data) override;

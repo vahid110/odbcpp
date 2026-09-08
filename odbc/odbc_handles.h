@@ -118,14 +118,15 @@ struct ColumnInfo {
 
 // APD (Application Parameter Descriptor) - ODBC parameter binding info
 struct ParameterInfo {
-  SQLSMALLINT input_output_type;  // SQL_PARAM_INPUT, etc.
-  SQLSMALLINT value_type;         // SQL_C_CHAR, SQL_C_LONG, etc.
-  SQLSMALLINT parameter_type;     // SQL_VARCHAR, SQL_INTEGER, etc.
-  SQLULEN column_size;
-  SQLSMALLINT decimal_digits;
-  SQLPOINTER parameter_value;     // Application buffer
-  SQLLEN buffer_length;
-  SQLLEN* strlen_or_indicator;
+  SQLSMALLINT input_output_type{SQL_PARAM_INPUT};
+  SQLSMALLINT value_type{SQL_C_DEFAULT};
+  SQLSMALLINT parameter_type{SQL_UNKNOWN_TYPE};
+  SQLULEN column_size{0};
+  SQLSMALLINT decimal_digits{0};
+  SQLPOINTER parameter_value{nullptr};
+  SQLLEN buffer_length{0};
+  SQLLEN* strlen_or_indicator{nullptr};
+  bool bound{false};
 };
 
 // ARD (Application Row Descriptor) - ODBC result column binding info

@@ -191,7 +191,7 @@ rs::util::Result<QueryResult> AsyncDatabaseConnection::execute_query(std::string
 }
 
 rs::util::Result<QueryResult> AsyncDatabaseConnection::execute_prepared(std::string_view sql, 
-                                                                       std::span<const std::string> params,
+                                                                       std::span<const QueryParameter> params,
                                                                        rs::util::Deadline deadline) {
   if (!is_connected()) {
     return rs::util::Result<QueryResult>(rs::util::DbErrorCode::NotConnected, "Not connected to database");

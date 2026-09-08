@@ -1,7 +1,181 @@
 #include "pg_protocol_parser.h"
+#include <cctype>
 #include <cstring>
+#include <limits>
 #include <openssl/evp.h>
-#include <iostream>
+
+namespace {
+
+using rs::core::database::QueryParameterType;
+
+void append_u16(std::vector<std::byte>& out, std::uint16_t value) {
+  out.push_back(static_cast<std::byte>((value >> 8) & 0xff));
+  out.push_back(static_cast<std::byte>(value & 0xff));
+}
+
+void append_u32(std::vector<std::byte>& out, std::uint32_t value) {
+  out.push_back(static_cast<std::byte>((value >> 24) & 0xff));
+  out.push_back(static_cast<std::byte>((value >> 16) & 0xff));
+  out.push_back(static_cast<std::byte>((value >> 8) & 0xff));
+  out.push_back(static_cast<std::byte>(value & 0xff));
+}
+
+void append_cstring(std::vector<std::byte>& out, std::string_view value) {
+  if (!value.empty()) {
+    const auto* first = reinterpret_cast<const std::byte*>(value.data());
+    out.insert(out.end(), first, first + value.size());
+  }
+  out.push_back(std::byte{0});
+}
+
+std::size_t begin_message(std::vector<std::byte>& out, char tag) {
+  const auto start = out.size();
+  out.push_back(static_cast<std::byte>(tag));
+  append_u32(out, 0);
+  return start;
+}
+
+void finish_message(std::vector<std::byte>& out, std::size_t start) {
+  const auto length = out.size() - start - 1;
+  if (length > std::numeric_limits<std::uint32_t>::max()) {
+    throw std::length_error("PostgreSQL message is too large");
+  }
+  const auto value = static_cast<std::uint32_t>(length);
+  out[start + 1] = static_cast<std::byte>((value >> 24) & 0xff);
+  out[start + 2] = static_cast<std::byte>((value >> 16) & 0xff);
+  out[start + 3] = static_cast<std::byte>((value >> 8) & 0xff);
+  out[start + 4] = static_cast<std::byte>(value & 0xff);
+}
+
+std::uint32_t postgres_type_oid(QueryParameterType type) {
+  switch (type) {
+    case QueryParameterType::Unspecified: return 0;
+    case QueryParameterType::Boolean: return 16;
+    case QueryParameterType::Binary: return 17;
+    case QueryParameterType::Int64: return 20;
+    case QueryParameterType::Int32: return 23;
+    case QueryParameterType::Text: return 25;
+    case QueryParameterType::Float64: return 701;
+    case QueryParameterType::Numeric: return 1700;
+  }
+  return 0;
+}
+
+bool is_dollar_tag_start(char ch) {
+  return std::isalpha(static_cast<unsigned char>(ch)) != 0 || ch == '_';
+}
+
+bool is_dollar_tag_continue(char ch) {
+  return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
+}
+
+std::string replace_parameter_markers(std::string_view sql,
+                                      std::size_t parameter_count) {
+  enum class State { Normal, SingleQuote, DoubleQuote, LineComment, BlockComment };
+  State state = State::Normal;
+  std::size_t block_depth = 0;
+  std::size_t marker_count = 0;
+  std::string dollar_delimiter;
+  std::string out;
+  out.reserve(sql.size() + parameter_count * 2);
+
+  for (std::size_t i = 0; i < sql.size();) {
+    if (!dollar_delimiter.empty()) {
+      if (sql.substr(i).starts_with(dollar_delimiter)) {
+        out.append(dollar_delimiter);
+        i += dollar_delimiter.size();
+        dollar_delimiter.clear();
+      } else {
+        out.push_back(sql[i++]);
+      }
+      continue;
+    }
+
+    const char ch = sql[i];
+    const char next = i + 1 < sql.size() ? sql[i + 1] : '\0';
+
+    if (state == State::LineComment) {
+      out.push_back(ch);
+      ++i;
+      if (ch == '\n') state = State::Normal;
+      continue;
+    }
+    if (state == State::BlockComment) {
+      if (ch == '/' && next == '*') {
+        out.append("/*");
+        i += 2;
+        ++block_depth;
+      } else if (ch == '*' && next == '/') {
+        out.append("*/");
+        i += 2;
+        if (--block_depth == 0) state = State::Normal;
+      } else {
+        out.push_back(ch);
+        ++i;
+      }
+      continue;
+    }
+    if (state == State::SingleQuote || state == State::DoubleQuote) {
+      const char quote = state == State::SingleQuote ? '\'' : '"';
+      out.push_back(ch);
+      ++i;
+      if (ch == quote) {
+        if (i < sql.size() && sql[i] == quote) {
+          out.push_back(sql[i++]);
+        } else {
+          state = State::Normal;
+        }
+      } else if (ch == '\\' && i < sql.size()) {
+        out.push_back(sql[i++]);
+      }
+      continue;
+    }
+
+    if (ch == '\'' || ch == '"') {
+      state = ch == '\'' ? State::SingleQuote : State::DoubleQuote;
+      out.push_back(ch);
+      ++i;
+    } else if (ch == '-' && next == '-') {
+      state = State::LineComment;
+      out.append("--");
+      i += 2;
+    } else if (ch == '/' && next == '*') {
+      state = State::BlockComment;
+      block_depth = 1;
+      out.append("/*");
+      i += 2;
+    } else if (ch == '$') {
+      std::size_t end = i + 1;
+      if (end < sql.size() && is_dollar_tag_start(sql[end])) {
+        while (end < sql.size() && is_dollar_tag_continue(sql[end])) ++end;
+      }
+      if (end < sql.size() && sql[end] == '$') {
+        dollar_delimiter.assign(sql.substr(i, end - i + 1));
+        out.append(dollar_delimiter);
+        i = end + 1;
+      } else {
+        out.push_back(ch);
+        ++i;
+      }
+    } else if (ch == '?') {
+      ++marker_count;
+      out.push_back('$');
+      out.append(std::to_string(marker_count));
+      ++i;
+    } else {
+      out.push_back(ch);
+      ++i;
+    }
+  }
+
+  if (marker_count != 0 && marker_count != parameter_count) {
+    throw std::invalid_argument(
+        "parameter marker count does not match bound parameter count");
+  }
+  return out;
+}
+
+} // namespace
 
 namespace rs::core::database::postgres {
 
@@ -156,57 +330,60 @@ std::vector<std::byte> PgProtocolParser::create_simple_query(std::string_view sq
 
 std::vector<std::byte> PgProtocolParser::create_prepared_query(
     std::string_view sql,
-    std::span<const std::string> params) {
-  
-  // Fallback: Use simple query with parameter substitution
-  // TODO: Implement full Parse/Bind/Execute protocol
-  std::string substituted_sql(sql);
-  
-  // Replace both ? and $1, $2, etc. with actual parameter values
-  for (size_t i = 0; i < params.size(); ++i) {
-    std::string value;
-    
-    // Check if parameter is numeric (simple heuristic)
-    bool is_numeric = !params[i].empty() && 
-                     (std::isdigit(params[i][0]) || params[i][0] == '-');
-    
-    if (is_numeric) {
-      value = params[i];  // Don't quote numbers
-    } else {
-      value = "'" + params[i] + "'";  // Quote string values
+    std::span<const QueryParameter> params) {
+  if (params.size() > std::numeric_limits<std::uint16_t>::max()) {
+    throw std::length_error("too many PostgreSQL query parameters");
+  }
+
+  const std::string rewritten_sql = replace_parameter_markers(sql, params.size());
+  std::vector<std::byte> out;
+  out.reserve(rewritten_sql.size() + 64);
+
+  // Parse the unnamed statement and supply protocol-native type hints.
+  auto start = begin_message(out, 'P');
+  append_cstring(out, {});
+  append_cstring(out, rewritten_sql);
+  append_u16(out, static_cast<std::uint16_t>(params.size()));
+  for (const auto& param : params) append_u32(out, postgres_type_oid(param.type));
+  finish_message(out, start);
+
+  // Bind text-format values to the unnamed portal. A length of -1 is SQL NULL.
+  start = begin_message(out, 'B');
+  append_cstring(out, {});
+  append_cstring(out, {});
+  append_u16(out, 0); // all parameter values use text format
+  append_u16(out, static_cast<std::uint16_t>(params.size()));
+  for (const auto& param : params) {
+    if (!param.value.has_value()) {
+      append_u32(out, std::numeric_limits<std::uint32_t>::max());
+      continue;
     }
-    
-    // Replace $n placeholders
-    std::string dollar_placeholder = "$" + std::to_string(i + 1);
-    size_t pos = 0;
-    while ((pos = substituted_sql.find(dollar_placeholder, pos)) != std::string::npos) {
-      substituted_sql.replace(pos, dollar_placeholder.length(), value);
-      pos += value.length();
+    if (param.value->size() >
+        static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
+      throw std::length_error("PostgreSQL parameter value is too large");
+    }
+    append_u32(out, static_cast<std::uint32_t>(param.value->size()));
+    if (!param.value->empty()) {
+      const auto* first = reinterpret_cast<const std::byte*>(param.value->data());
+      out.insert(out.end(), first, first + param.value->size());
     }
   }
-  
-  // Replace ? placeholders (ODBC style) with parameter values in order
-  for (size_t i = 0; i < params.size(); ++i) {
-    size_t pos = substituted_sql.find('?');
-    if (pos != std::string::npos) {
-      std::string value;
-      
-      // Check if parameter is numeric
-      bool is_numeric = !params[i].empty() && 
-                       (std::isdigit(params[i][0]) || params[i][0] == '-');
-      
-      if (is_numeric) {
-        value = params[i];
-      } else {
-        value = "'" + params[i] + "'";
-      }
-      
-      substituted_sql.replace(pos, 1, value);
-    }
-  }
-  
-  // Use simple query protocol
-  return create_simple_query(substituted_sql);
+  append_u16(out, 0); // all result columns use text format
+  finish_message(out, start);
+
+  start = begin_message(out, 'D');
+  out.push_back(std::byte{'P'}); // describe the unnamed portal
+  append_cstring(out, {});
+  finish_message(out, start);
+
+  start = begin_message(out, 'E');
+  append_cstring(out, {});
+  append_u32(out, 0); // no row limit
+  finish_message(out, start);
+
+  start = begin_message(out, 'S');
+  finish_message(out, start);
+  return out;
 }
 
 Message PgProtocolParser::parse_message(const std::vector<std::byte>& data) {

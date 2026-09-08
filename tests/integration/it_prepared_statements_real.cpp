@@ -205,6 +205,44 @@ TEST_F(PreparedStatementIntegrationTest, EdgeCasesReal) {
     EXPECT_STREQ("9223372036854775807", result);
 }
 
+TEST_F(PreparedStatementIntegrationTest, NullParameterUsesProtocolNull) {
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?::text IS NULL", SQL_NTS));
+    SQLLEN indicator = SQL_NULL_DATA;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+                               SQL_VARCHAR, 0, 0, nullptr, 0, &indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    char result[8]{};
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetData(hstmt, 1, SQL_C_CHAR, result, sizeof(result), nullptr));
+    EXPECT_STREQ("t", result);
+}
+
+TEST_F(PreparedStatementIntegrationTest, ErrorLeavesConnectionSynchronized) {
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?::integer", SQL_NTS));
+    const char invalid[] = "not-an-integer";
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+                               SQL_VARCHAR, 0, 0, (SQLPOINTER)invalid,
+                               SQL_NTS, nullptr));
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+
+    SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+    hstmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 42", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    char result[8]{};
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetData(hstmt, 1, SQL_C_CHAR, result, sizeof(result), nullptr));
+    EXPECT_STREQ("42", result);
+}
+
 TEST_F(PreparedStatementIntegrationTest, NegativeTests) {
     // Test SQLPrepare without connection
     SQLHSTMT disconnected_stmt;

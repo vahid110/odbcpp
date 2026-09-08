@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <map>
 #include "core/util/deadline.h"
+#include "query_parameter.h"
 
 namespace rs::core::database {
 
@@ -42,7 +43,7 @@ public:
   virtual std::vector<std::byte> create_simple_query(std::string_view sql) = 0;
   virtual std::vector<std::byte> create_prepared_query(
     std::string_view sql,
-    std::span<const std::string> params) = 0;
+    std::span<const QueryParameter> params) = 0;
   
   // Message parsing
   virtual Message parse_message(const std::vector<std::byte>& data) = 0;

@@ -47,8 +47,9 @@ public:
   bool is_connected() const override;
   
   rs::util::Result<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline) override;
+  using IDatabaseConnection::execute_prepared;
   rs::util::Result<QueryResult> execute_prepared(std::string_view sql, 
-                                                std::span<const std::string> params,
+                                                std::span<const QueryParameter> params,
                                                 rs::util::Deadline deadline) override;
   
   std::string get_parameter(std::string_view key) const override;
