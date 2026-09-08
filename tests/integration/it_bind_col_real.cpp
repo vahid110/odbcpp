@@ -352,6 +352,45 @@ TEST_F(BindColIntegrationTest, MetadataDrivenDefaultConversions) {
     EXPECT_EQ(123456000u, timestamp_value.fraction);
 }
 
+TEST_F(BindColIntegrationTest, ByteaUsesBinaryDefaultAndSupportsChunks) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT decode('00017fff', 'hex')", SQL_NTS));
+
+    SQLSMALLINT sql_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+        hstmt, 1, nullptr, 0, nullptr, &sql_type, nullptr, nullptr, nullptr));
+    EXPECT_EQ(SQL_VARBINARY, sql_type);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    unsigned char first[2]{};
+    unsigned char second[2]{};
+    SQLLEN indicator = 0;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 1, SQL_C_DEFAULT, first, sizeof(first), &indicator));
+    EXPECT_EQ(4, indicator);
+    EXPECT_EQ(0x00, first[0]);
+    EXPECT_EQ(0x01, first[1]);
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_DEFAULT, second, sizeof(second), &indicator));
+    EXPECT_EQ(2, indicator);
+    EXPECT_EQ(0x7f, second[0]);
+    EXPECT_EQ(0xff, second[1]);
+    EXPECT_EQ(SQL_NO_DATA, SQLGetData(
+        hstmt, 1, SQL_C_DEFAULT, second, sizeof(second), &indicator));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT decode('10203040', 'hex')", SQL_NTS));
+    unsigned char bound[4]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(
+        hstmt, 1, SQL_C_DEFAULT, bound, sizeof(bound), &indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(4, indicator);
+    EXPECT_EQ(0x10, bound[0]);
+    EXPECT_EQ(0x20, bound[1]);
+    EXPECT_EQ(0x30, bound[2]);
+    EXPECT_EQ(0x40, bound[3]);
+}
+
 TEST_F(BindColIntegrationTest, BoundColumnsResolveSqlCDefault) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 42::integer, DATE '2024-02-29'", SQL_NTS));

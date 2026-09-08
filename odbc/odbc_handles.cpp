@@ -421,6 +421,35 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     return SQL_SUCCESS;
   }
 
+  if (effective_target_type == SQL_C_BINARY) {
+    const auto decoded = TextDataConverter::decode_binary(*cell);
+    if (!decoded) {
+      set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                "Binary result value has invalid PostgreSQL bytea encoding");
+      return SQL_ERROR;
+    }
+    if (offset > decoded->size()) {
+      set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
+                "SQLGetData target type changed during chunked retrieval");
+      return SQL_ERROR;
+    }
+    const auto remaining = decoded->size() - offset;
+    if (indicator) *indicator = static_cast<SQLLEN>(remaining);
+    const auto capacity = static_cast<std::size_t>(buffer_length);
+    const auto copy_length = std::min(capacity, remaining);
+    if (copy_length > 0) {
+      std::memcpy(buffer, decoded->data() + offset, copy_length);
+    }
+    offset += copy_length;
+    if (offset < decoded->size()) {
+      set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                "Binary result value was truncated to fit the application buffer");
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    offset = complete;
+    return SQL_SUCCESS;
+  }
+
   SQLRETURN result = TextDataConverter::convert_data(
       *cell, effective_target_type, buffer, buffer_length, indicator);
 

@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- PostgreSQL bytea decoding for SQL_C_BINARY and SQL_C_DEFAULT results
+- Chunked SQLGetData retrieval for binary values
 - SQLSetConnectAttr/SQLGetConnectAttr support for SQL_ATTR_LOGIN_TIMEOUT
 - SQLSetStmtAttr/SQLGetStmtAttr support for SQL_ATTR_QUERY_TIMEOUT
 - PostgreSQL SCRAM-SHA-256 authentication with server-signature verification

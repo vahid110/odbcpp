@@ -131,6 +131,33 @@ TEST_F(RedshiftDataConverterTest, ConvertDataBoolean) {
     EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data("maybe", SQL_C_BIT, &result, 0, &indicator));
 }
 
+TEST_F(RedshiftDataConverterTest, ConvertsPostgresqlByteaText) {
+    unsigned char binary[4]{};
+    EXPECT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "\\x00017fFF", SQL_C_BINARY, binary, sizeof(binary), &indicator));
+    EXPECT_EQ(4, indicator);
+    EXPECT_EQ(0x00, binary[0]);
+    EXPECT_EQ(0x01, binary[1]);
+    EXPECT_EQ(0x7f, binary[2]);
+    EXPECT_EQ(0xff, binary[3]);
+
+    unsigned char truncated[2]{};
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "\\x00017fff", SQL_C_BINARY, truncated, sizeof(truncated), &indicator));
+    EXPECT_EQ(4, indicator);
+    EXPECT_EQ(0x00, truncated[0]);
+    EXPECT_EQ(0x01, truncated[1]);
+
+    const auto escaped = RedshiftDataConverter::decode_binary("A\\\\B\\000");
+    ASSERT_TRUE(escaped.has_value());
+    ASSERT_EQ(4u, escaped->size());
+    EXPECT_EQ(std::byte{'A'}, (*escaped)[0]);
+    EXPECT_EQ(std::byte{'\\'}, (*escaped)[1]);
+    EXPECT_EQ(std::byte{'B'}, (*escaped)[2]);
+    EXPECT_EQ(std::byte{0}, (*escaped)[3]);
+    EXPECT_FALSE(RedshiftDataConverter::decode_binary("\\x123").has_value());
+}
+
 TEST(ResultTypesTest, ProvidesMetadataDrivenDefaults) {
     EXPECT_EQ(SQL_C_SSHORT, rs::odbc::ResultTypes::default_c_type(SQL_SMALLINT));
     EXPECT_EQ(SQL_C_SLONG, rs::odbc::ResultTypes::default_c_type(SQL_INTEGER));
@@ -138,11 +165,15 @@ TEST(ResultTypesTest, ProvidesMetadataDrivenDefaults) {
     EXPECT_EQ(SQL_C_FLOAT, rs::odbc::ResultTypes::default_c_type(SQL_REAL));
     EXPECT_EQ(SQL_C_DOUBLE, rs::odbc::ResultTypes::default_c_type(SQL_DOUBLE));
     EXPECT_EQ(SQL_C_DATE, rs::odbc::ResultTypes::default_c_type(SQL_TYPE_DATE));
+    EXPECT_EQ(SQL_C_BINARY,
+              rs::odbc::ResultTypes::default_c_type(SQL_VARBINARY));
     EXPECT_EQ(SQL_C_CHAR, rs::odbc::ResultTypes::default_c_type(SQL_NUMERIC));
     EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
         SQL_INTEGER, SQL_C_SLONG));
     EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(
         SQL_INTEGER, SQL_C_BINARY));
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
+        SQL_VARBINARY, SQL_C_BINARY));
 }
 
 TEST_F(RedshiftDataConverterTest, UnsupportedType) {

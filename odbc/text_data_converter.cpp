@@ -8,6 +8,7 @@
 #include <limits>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 namespace rs::odbc {
 namespace {
@@ -142,6 +143,13 @@ SQLRETURN convert_string(const std::string& value, void* buffer,
   return copy_length < value.size() ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS;
 }
 
+int hex_value(char ch) {
+  if (ch >= '0' && ch <= '9') return ch - '0';
+  if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+  if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+  return -1;
+}
+
 SQLRETURN convert_floating(const std::string& value, SQLSMALLINT target_type,
                            void* buffer, SQLLEN* indicator) {
   const auto parsed = parse_number(value);
@@ -263,9 +271,64 @@ SQLRETURN TextDataConverter::convert_data(const std::string& value,
       return convert_time(value, buffer, indicator);
     case SQL_C_TIMESTAMP:
       return convert_timestamp(value, buffer, indicator);
+    case SQL_C_BINARY: {
+      const auto decoded = decode_binary(value);
+      if (!decoded || buffer_length < 0) return SQL_ERROR;
+      const auto capacity = static_cast<std::size_t>(buffer_length);
+      const auto copy_length = std::min(capacity, decoded->size());
+      if (copy_length > 0) {
+        std::memcpy(buffer, decoded->data(), copy_length);
+      }
+      if (indicator) *indicator = static_cast<SQLLEN>(decoded->size());
+      return copy_length < decoded->size()
+          ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS;
+    }
     default:
       return SQL_ERROR;
   }
+}
+
+std::optional<std::vector<std::byte>> TextDataConverter::decode_binary(
+    std::string_view value) {
+  std::vector<std::byte> decoded;
+  if (value.starts_with("\\x")) {
+    value.remove_prefix(2);
+    if (value.size() % 2 != 0) return std::nullopt;
+    decoded.reserve(value.size() / 2);
+    for (std::size_t i = 0; i < value.size(); i += 2) {
+      const auto high = hex_value(value[i]);
+      const auto low = hex_value(value[i + 1]);
+      if (high < 0 || low < 0) return std::nullopt;
+      decoded.push_back(static_cast<std::byte>((high << 4) | low));
+    }
+    return decoded;
+  }
+
+  decoded.reserve(value.size());
+  for (std::size_t i = 0; i < value.size();) {
+    if (value[i] != '\\') {
+      decoded.push_back(static_cast<std::byte>(
+          static_cast<unsigned char>(value[i++])));
+      continue;
+    }
+    if (i + 1 < value.size() && value[i + 1] == '\\') {
+      decoded.push_back(std::byte{'\\'});
+      i += 2;
+      continue;
+    }
+    if (i + 3 >= value.size() || value[i + 1] < '0' ||
+        value[i + 1] > '3' || value[i + 2] < '0' ||
+        value[i + 2] > '7' || value[i + 3] < '0' ||
+        value[i + 3] > '7') {
+      return std::nullopt;
+    }
+    const auto octet = static_cast<unsigned char>(
+        (value[i + 1] - '0') * 64 + (value[i + 2] - '0') * 8 +
+        (value[i + 3] - '0'));
+    decoded.push_back(static_cast<std::byte>(octet));
+    i += 4;
+  }
+  return decoded;
 }
 
 } // namespace rs::odbc
