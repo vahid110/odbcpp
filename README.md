@@ -6,14 +6,14 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 
 - **Complete ODBC API**: 23 ODBC functions implemented with full descriptor support
 - **4 ODBC Descriptors**: IRD, APD, ARD, IPD fully implemented
-- **Prepared Statements**: Full SQLPrepare/SQLBindParameter/SQLExecute workflow
+- **Prepared Statements**: Typed/null-aware PostgreSQL Parse/Bind/Describe/Execute workflow
 - **Column Binding**: SQLBindCol with automatic data population during fetch
 - **Single Database Per Build**: Each build targets one specific database for optimal size and performance
 - **Pluggable Architecture**: Easy to add new database protocols
 - **Modern C++20**: Clean, type-safe interfaces
 - **Secure Transport**: Built-in TLS/SSL support via OpenSSL
 - **Cross-Platform**: macOS, Linux, Windows support
-- **Comprehensive Testing**: 17 unit and integration tests with 100% pass rate
+- **Comprehensive Testing**: Unit, PostgreSQL integration, sanitizer, and Windows CI coverage
 
 ## Implementation Status
 

@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Native PostgreSQL extended-query messages (Parse, Bind, Describe, Execute, Sync)
+- Typed and SQL NULL-aware parameter values from SQLBindParameter
+- Linux AddressSanitizer and UndefinedBehaviorSanitizer CI coverage
 - Complete ODBC descriptor API suite (SQLBindCol, SQLDescribeParam)
 - Enhanced SQLFetch with automatic bound column population
 - Comprehensive test coverage (17 unit and integration tests)
@@ -21,7 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - SQL injection test handling for malicious input
-- Parameter substitution for both ? and $n placeholders
+- Prepared-query SQL injection risk from client-side parameter substitution
+- Connection synchronization after PostgreSQL query errors
 - DSN loading from build directory
 
 ## [0.9.0] - 2024-12-XX
