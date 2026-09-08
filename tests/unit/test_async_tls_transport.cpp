@@ -218,7 +218,9 @@ private:
                           static_cast<int>(response.size()));
       }
     }
-    (void)::SSL_shutdown(ssl);
+    // The cancellation test deliberately closes the peer first. Avoid writing
+    // close_notify from this test server after that close, which can raise
+    // SIGPIPE on Unix and obscures the transport behavior under test.
     ::SSL_free(ssl);
     close_test_socket(client);
   }
