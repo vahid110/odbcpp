@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_types.h"
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <thread>
 
@@ -51,6 +52,49 @@ TEST_F(PreparedStatementIntegrationTest, BinaryParameterRoundTripsAsBytea) {
         hstmt, 1, SQL_C_BINARY, output, sizeof(output), &output_length));
     EXPECT_EQ(sizeof(input), static_cast<std::size_t>(output_length));
     EXPECT_EQ(0, std::memcmp(input, output, sizeof(input)));
+}
+
+TEST_F(PreparedStatementIntegrationTest, AutocommitOffSupportsCommitAndRollback) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_tx_test(value integer)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(
+        hdbc, SQL_ATTR_AUTOCOMMIT,
+        reinterpret_cast<SQLPOINTER>(
+            static_cast<std::uintptr_t>(SQL_AUTOCOMMIT_OFF)), 0));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"INSERT INTO odbcpp_tx_test VALUES (1)", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_ROLLBACK));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT count(*) FROM odbcpp_tx_test", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLINTEGER count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_SLONG, &count, 0, nullptr));
+    EXPECT_EQ(0, count);
+    ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_ROLLBACK));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"INSERT INTO odbcpp_tx_test VALUES (2)", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_COMMIT));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT count(*) FROM odbcpp_tx_test", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_SLONG, &count, 0, nullptr));
+    EXPECT_EQ(1, count);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(
+        hdbc, SQL_ATTR_AUTOCOMMIT,
+        reinterpret_cast<SQLPOINTER>(
+            static_cast<std::uintptr_t>(SQL_AUTOCOMMIT_ON)), 0));
+    SQLUINTEGER autocommit = SQL_AUTOCOMMIT_OFF;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(
+        hdbc, SQL_ATTR_AUTOCOMMIT, &autocommit, sizeof(autocommit), nullptr));
+    EXPECT_EQ(SQL_AUTOCOMMIT_ON, autocommit);
 }
 
 // Test all data type combinations with real database

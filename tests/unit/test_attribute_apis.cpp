@@ -57,6 +57,62 @@ TEST_F(AttributeApisTest, StoresLoginTimeout) {
   EXPECT_EQ(7u, value);
 }
 
+TEST_F(AttributeApisTest, StoresAutocommitMode) {
+  SQLUINTEGER value = 99;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(
+      connection_, SQL_ATTR_AUTOCOMMIT, &value, sizeof(value), nullptr));
+  EXPECT_EQ(SQL_AUTOCOMMIT_ON, value);
+
+  EXPECT_EQ(SQL_SUCCESS, SQLSetConnectAttr(
+      connection_, SQL_ATTR_AUTOCOMMIT,
+      integer_value(SQL_AUTOCOMMIT_OFF), 0));
+  EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(
+      connection_, SQL_ATTR_AUTOCOMMIT, &value, sizeof(value), nullptr));
+  EXPECT_EQ(SQL_AUTOCOMMIT_OFF, value);
+
+  EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(
+      connection_, SQL_ATTR_AUTOCOMMIT, integer_value(99), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_DBC, connection_));
+}
+
+TEST_F(AttributeApisTest, EndTransactionValidatesState) {
+  EXPECT_EQ(SQL_ERROR, SQLEndTran(SQL_HANDLE_DBC, connection_, SQL_COMMIT));
+  EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR, SQLEndTran(SQL_HANDLE_DBC, connection_, 99));
+  EXPECT_EQ("HY012", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR, SQLEndTran(SQL_HANDLE_ENV, environment_, SQL_COMMIT));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_ENV, environment_));
+}
+
+TEST_F(AttributeApisTest, ReportsTransactionCapabilities) {
+  SQLUSMALLINT small_value = 0;
+  SQLSMALLINT length = 0;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetInfo(
+      connection_, SQL_TXN_CAPABLE, &small_value, sizeof(small_value), &length));
+  EXPECT_EQ(SQL_TC_ALL, small_value);
+  EXPECT_EQ(sizeof(SQLUSMALLINT), static_cast<std::size_t>(length));
+
+  EXPECT_EQ(SQL_SUCCESS, SQLGetInfo(
+      connection_, SQL_CURSOR_COMMIT_BEHAVIOR, &small_value,
+      sizeof(small_value), nullptr));
+  EXPECT_EQ(SQL_CB_PRESERVE, small_value);
+  EXPECT_EQ(SQL_SUCCESS, SQLGetInfo(
+      connection_, SQL_CURSOR_ROLLBACK_BEHAVIOR, &small_value,
+      sizeof(small_value), nullptr));
+  EXPECT_EQ(SQL_CB_PRESERVE, small_value);
+
+  SQLUINTEGER integer_value = 0;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetInfo(
+      connection_, SQL_DEFAULT_TXN_ISOLATION, &integer_value,
+      sizeof(integer_value), &length));
+  EXPECT_EQ(SQL_TXN_READ_COMMITTED, integer_value);
+  EXPECT_EQ(sizeof(SQLUINTEGER), static_cast<std::size_t>(length));
+  EXPECT_EQ(SQL_SUCCESS, SQLGetInfo(
+      connection_, SQL_TXN_ISOLATION_OPTION, &integer_value,
+      sizeof(integer_value), nullptr));
+  EXPECT_EQ(SQL_TXN_READ_COMMITTED, integer_value);
+}
+
 TEST_F(AttributeApisTest, StoresQueryTimeoutAndAllowsZero) {
   SQLULEN value = 99;
   EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(

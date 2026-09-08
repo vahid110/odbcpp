@@ -21,6 +21,8 @@ SQLRETURN SQLSetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
 SQLRETURN SQLGetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
                             SQLPOINTER value, SQLINTEGER buffer_length,
                             SQLINTEGER* string_length);
+SQLRETURN SQLEndTran(SQLSMALLINT handle_type, SQLHANDLE handle,
+                     SQLSMALLINT completion_type);
 
 // Statement execution
 SQLRETURN SQLExecDirect(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length);

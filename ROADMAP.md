@@ -48,13 +48,13 @@
 
 ## 🚧 Current Status
 
-**Implementation**: 25 exported ANSI ODBC entry points
+**Implementation**: 26 exported ANSI ODBC entry points
 **Descriptors**: 4/4 ODBC Descriptors Complete
 **Diagnostics**: Complete ODBC diagnostics implementation
 **Test Coverage**: 19 tests (100% unit test pass rate)
 **Production Ready**: Core functionality validated with real Redshift database
 **Critical Gaps**:
-- Transaction and broader attribute processing remains incomplete
+- Broader statement and descriptor attribute processing remains incomplete
 
 ## 🎯 Next Milestones
 
@@ -86,7 +86,7 @@
 - [x] Implement SQLSetStmtAttr / SQLGetStmtAttr for query timeout
 - [x] Propagate ODBC timeout values into transport deadlines and SQLSTATEs
 - [ ] Complete SQLSetDescField / SQLGetDescField (descriptor attributes)
-- [ ] Add support for SQL_ATTR_AUTOCOMMIT and transaction completion
+- [x] Add support for SQL_ATTR_AUTOCOMMIT and transaction completion
 - [ ] Statement attributes (SQL_ATTR_CURSOR_TYPE, SQL_ATTR_ROW_ARRAY_SIZE)
 - [ ] Descriptor field manipulation for all 4 descriptors
 

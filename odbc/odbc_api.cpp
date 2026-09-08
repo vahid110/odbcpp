@@ -1,5 +1,6 @@
 #include "odbc_api.h"
 #include "odbc_handles.h"
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 
@@ -150,6 +151,24 @@ SQLRETURN SQLGetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
     *string_length = static_cast<SQLINTEGER>(sizeof(SQLUINTEGER));
   }
   return result;
+}
+
+SQLRETURN SQLEndTran(SQLSMALLINT handle_type, SQLHANDLE handle,
+                     SQLSMALLINT completion_type) {
+  if (handle_type == SQL_HANDLE_DBC) {
+    auto* conn = get_valid_handle<ODBCConnection>(handle);
+    if (!conn) return SQL_INVALID_HANDLE;
+    return conn->end_transaction(completion_type);
+  }
+  if (handle_type == SQL_HANDLE_ENV) {
+    auto* environment = get_valid_handle<ODBCEnvironment>(handle);
+    if (!environment) return SQL_INVALID_HANDLE;
+    environment->set_error(
+        SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+        "Environment-wide transaction completion is not implemented");
+    return SQL_ERROR;
+  }
+  return SQL_INVALID_HANDLE;
 }
 
 SQLRETURN SQLExecDirect(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length) {
@@ -364,10 +383,34 @@ SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type,
                     void* info_value, SQLSMALLINT buffer_length, SQLSMALLINT* string_length) {
   auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
+
+  const auto write_usmallint = [&](SQLUSMALLINT value) {
+    if (!info_value) {
+      conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                      "Information output pointer is null");
+      return SQL_ERROR;
+    }
+    *static_cast<SQLUSMALLINT*>(info_value) = value;
+    if (string_length) {
+      *string_length = static_cast<SQLSMALLINT>(sizeof(value));
+    }
+    return SQL_SUCCESS;
+  };
+  const auto write_uinteger = [&](SQLUINTEGER value) {
+    if (!info_value) {
+      conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                      "Information output pointer is null");
+      return SQL_ERROR;
+    }
+    *static_cast<SQLUINTEGER*>(info_value) = value;
+    if (string_length) {
+      *string_length = static_cast<SQLSMALLINT>(sizeof(value));
+    }
+    return SQL_SUCCESS;
+  };
   
-  // Return basic driver information
   switch (info_type) {
-    case 6: // SQL_DRIVER_NAME
+    case SQL_DRIVER_NAME:
       if (info_value && buffer_length > 0) {
         const char* name = "ODBCPP Driver";
         size_t len = std::min(static_cast<size_t>(buffer_length - 1), std::strlen(name));
@@ -376,6 +419,14 @@ SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type,
         if (string_length) *string_length = static_cast<SQLSMALLINT>(std::strlen(name));
       }
       return SQL_SUCCESS;
+    case SQL_TXN_CAPABLE:
+      return write_usmallint(SQL_TC_ALL);
+    case SQL_CURSOR_COMMIT_BEHAVIOR:
+    case SQL_CURSOR_ROLLBACK_BEHAVIOR:
+      return write_usmallint(SQL_CB_PRESERVE);
+    case SQL_DEFAULT_TXN_ISOLATION:
+    case SQL_TXN_ISOLATION_OPTION:
+      return write_uinteger(SQL_TXN_READ_COMMITTED);
     default:
       conn->set_error(SQLSTATE_GENERAL_ERROR, "Unsupported SQLGetInfo type");
       return SQL_ERROR;

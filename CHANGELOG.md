@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- SQL_ATTR_AUTOCOMMIT and connection-level SQLEndTran commit/rollback support
+- SQLGetInfo reporting for transaction capability, isolation, and cursor behavior
 - PostgreSQL bytea decoding for SQL_C_BINARY and SQL_C_DEFAULT results
 - Chunked SQLGetData retrieval for binary values
 - SQL_C_BINARY parameter encoding for PostgreSQL bytea prepared statements

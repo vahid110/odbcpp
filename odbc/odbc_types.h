@@ -43,6 +43,9 @@ constexpr const char* SQLSTATE_ATTRIBUTE_CANNOT_BE_SET = "HY011";
 constexpr const char* SQLSTATE_INVALID_ATTRIBUTE_VALUE = "HY024";
 constexpr const char* SQLSTATE_INVALID_ATTRIBUTE = "HY092";
 constexpr const char* SQLSTATE_CONNECTION_TIMEOUT = "HYT01";
+constexpr const char* SQLSTATE_CONNECTION_NOT_OPEN = "08003";
+constexpr const char* SQLSTATE_INVALID_TRANSACTION_OPERATION = "HY012";
+constexpr const char* SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED = "HYC00";
 
 // Note: All SQL_DIAG_* constants are already defined in system ODBC headers (sql.h, sqlext.h)
 // No need to redefine them here

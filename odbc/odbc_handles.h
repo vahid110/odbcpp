@@ -97,6 +97,9 @@ public:
   bool is_connected() const { return connected_; }
   SQLRETURN set_attribute(SQLINTEGER attribute, SQLULEN value);
   SQLRETURN get_attribute(SQLINTEGER attribute, SQLUINTEGER* value);
+  SQLRETURN end_transaction(SQLSMALLINT completion_type);
+  rs::util::Result<void> begin_transaction_if_needed(
+      rs::util::Deadline deadline);
   
   rs::core::database::IDatabaseConnection* get_db_connection() { return db_conn_.get(); }
 
@@ -105,6 +108,8 @@ private:
   std::unique_ptr<rs::core::database::IDatabaseConnection> db_conn_;
   bool connected_ = false;
   SQLUINTEGER login_timeout_seconds_ = 30;
+  SQLUINTEGER autocommit_ = SQL_AUTOCOMMIT_ON;
+  bool transaction_active_ = false;
   
   // Suppress unused warning - env_ will be used for ODBC compliance features
   void suppress_unused_warning() { (void)env_; }

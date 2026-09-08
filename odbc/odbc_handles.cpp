@@ -203,6 +203,7 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
     }
     
     connected_ = true;
+    transaction_active_ = false;
     return SQL_SUCCESS;
     
   } catch (const std::exception& e) {
@@ -212,6 +213,20 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
 }
 
 SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
+  if (attribute == SQL_ATTR_AUTOCOMMIT) {
+    if (value != SQL_AUTOCOMMIT_ON && value != SQL_AUTOCOMMIT_OFF) {
+      set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                "Autocommit must be SQL_AUTOCOMMIT_ON or SQL_AUTOCOMMIT_OFF");
+      return SQL_ERROR;
+    }
+    if (autocommit_ == value) return SQL_SUCCESS;
+    if (value == SQL_AUTOCOMMIT_ON && connected_ && transaction_active_) {
+      const auto result = end_transaction(SQL_COMMIT);
+      if (result != SQL_SUCCESS) return result;
+    }
+    autocommit_ = static_cast<SQLUINTEGER>(value);
+    return SQL_SUCCESS;
+  }
   if (attribute != SQL_ATTR_LOGIN_TIMEOUT) {
     set_error(SQLSTATE_INVALID_ATTRIBUTE,
               "Unsupported connection attribute");
@@ -233,11 +248,58 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
 
 SQLRETURN ODBCConnection::get_attribute(SQLINTEGER attribute,
                                         SQLUINTEGER* value) {
-  if (attribute != SQL_ATTR_LOGIN_TIMEOUT) {
-    set_error(SQLSTATE_INVALID_ATTRIBUTE, "Unsupported connection attribute");
+  switch (attribute) {
+    case SQL_ATTR_LOGIN_TIMEOUT:
+      *value = login_timeout_seconds_;
+      return SQL_SUCCESS;
+    case SQL_ATTR_AUTOCOMMIT:
+      *value = autocommit_;
+      return SQL_SUCCESS;
+    default:
+      set_error(SQLSTATE_INVALID_ATTRIBUTE,
+                "Unsupported connection attribute");
+      return SQL_ERROR;
+  }
+}
+
+rs::util::Result<void> ODBCConnection::begin_transaction_if_needed(
+    rs::util::Deadline deadline) {
+  if (autocommit_ == SQL_AUTOCOMMIT_ON || transaction_active_) {
+    return {};
+  }
+  auto result = db_conn_->execute_query("BEGIN", deadline);
+  if (result.has_error()) {
+    return {result.error(), result.error_message()};
+  }
+  transaction_active_ = true;
+  return {};
+}
+
+SQLRETURN ODBCConnection::end_transaction(SQLSMALLINT completion_type) {
+  if (completion_type != SQL_COMMIT && completion_type != SQL_ROLLBACK) {
+    set_error(SQLSTATE_INVALID_TRANSACTION_OPERATION,
+              "Completion type must be SQL_COMMIT or SQL_ROLLBACK");
     return SQL_ERROR;
   }
-  *value = login_timeout_seconds_;
+  if (!connected_) {
+    set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
+    return SQL_ERROR;
+  }
+  if (autocommit_ == SQL_AUTOCOMMIT_ON) return SQL_SUCCESS;
+  if (!transaction_active_) return SQL_SUCCESS;
+
+  const auto command = completion_type == SQL_COMMIT ? "COMMIT" : "ROLLBACK";
+  auto result = db_conn_->execute_query(
+      command, rs::util::make_deadline(std::chrono::seconds(30)));
+  if (result.has_error()) {
+    const auto timeout = result.error() ==
+        rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
+    set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_GENERAL_ERROR,
+              result.error_message());
+    if (timeout) disconnect();
+    return SQL_ERROR;
+  }
+  transaction_active_ = false;
   return SQL_SUCCESS;
 }
 
@@ -245,6 +307,7 @@ SQLRETURN ODBCConnection::disconnect() {
   if (db_conn_) {
     db_conn_->disconnect();
     connected_ = false;
+    transaction_active_ = false;
   }
   return SQL_SUCCESS;
 }
@@ -259,6 +322,15 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
   try {
     auto deadline = rs::util::make_deadline(
         timeout_duration(query_timeout_seconds_));
+    auto transaction = conn_->begin_transaction_if_needed(deadline);
+    if (transaction.has_error()) {
+      const auto timeout = transaction.error() ==
+          rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
+      set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_GENERAL_ERROR,
+                transaction.error_message());
+      if (timeout) conn_->disconnect();
+      return SQL_ERROR;
+    }
     auto result = conn_->get_db_connection()->execute_query(sql, deadline);
     
     if (result.has_error()) {
@@ -574,6 +646,15 @@ SQLRETURN ODBCStatement::execute() {
     // Use PostgreSQL Parse/Bind/Execute protocol
     auto deadline = rs::util::make_deadline(
         timeout_duration(query_timeout_seconds_));
+    auto transaction = conn_->begin_transaction_if_needed(deadline);
+    if (transaction.has_error()) {
+      const auto timeout = transaction.error() ==
+          rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
+      set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_GENERAL_ERROR,
+                transaction.error_message());
+      if (timeout) conn_->disconnect();
+      return SQL_ERROR;
+    }
     auto result = conn_->get_db_connection()->execute_prepared(prepared_sql_, param_values, deadline);
     
     if (result.has_error()) {
