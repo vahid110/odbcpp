@@ -1,5 +1,7 @@
 #include "odbc_handles.h"
 #include "connection_string.h"
+#include "result_types.h"
+#include "text_data_converter.h"
 #include "core/database/generic_database_connection.h"
 #include "core/database/postgres/pg_protocol_parser.h"
 #include "core/transport/transport_factory.h"
@@ -10,22 +12,6 @@
 #include <limits>
 #include <mutex>
 #include <optional>
-
-// Include database-specific converter based on build target
-#ifdef ODBCPP_ENABLE_REDSHIFT
-#include "redshift/redshift_data_converter.h"
-#include "redshift/redshift_types.h"
-namespace db_converter = rs::odbc::redshift;
-#elif defined(ODBCPP_ENABLE_POSTGRESQL)
-#include "postgresql/postgresql_data_converter.h"
-namespace db_converter = rs::odbc::postgresql;
-#elif defined(ODBCPP_ENABLE_MYSQL)
-#include "mysql/mysql_data_converter.h"
-namespace db_converter = rs::odbc::mysql;
-#elif defined(ODBCPP_ENABLE_SQLSERVER)
-#include "sqlserver/sqlserver_data_converter.h"
-namespace db_converter = rs::odbc::sqlserver;
-#endif
 
 namespace rs::odbc {
 namespace {
@@ -268,16 +254,27 @@ SQLRETURN ODBCStatement::fetch() {
         continue;
       }
 
-      // Use database-specific data converter
-      SQLRETURN conv_result = db_converter::RedshiftDataConverter::convert_data(
-        *cell, binding.target_type, binding.target_value, binding.buffer_length,
-        binding.strlen_or_indicator);
+      const auto sql_type = i < column_info_.size()
+          ? column_info_[i].sql_type : SQL_VARCHAR;
+      const auto target_type = binding.target_type == SQL_C_DEFAULT
+          ? ResultTypes::default_c_type(sql_type) : binding.target_type;
+      if (!ResultTypes::is_conversion_supported(sql_type, target_type)) {
+        set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
+                  "Unsupported result data type conversion");
+        return SQL_ERROR;
+      }
+      SQLRETURN conv_result = TextDataConverter::convert_data(
+          *cell, target_type, binding.target_value, binding.buffer_length,
+          binding.strlen_or_indicator);
 
       if (conv_result == SQL_ERROR) {
-        set_error(SQLSTATE_GENERAL_ERROR, "Data type conversion failed");
+        set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                  "Result value could not be converted to the requested C type");
         return SQL_ERROR;
       }
       if (conv_result == SQL_SUCCESS_WITH_INFO) {
+        set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                  "Result value was truncated to fit the application buffer");
         fetch_result = SQL_SUCCESS_WITH_INFO;
       }
     }
@@ -310,22 +307,26 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     return SQL_SUCCESS;
   }
   
-  // TODO: Get actual SQL type from column metadata (Milestone 2)
-  // For now, assume all data comes as VARCHAR from database
-  SQLSMALLINT sql_type = SQL_VARCHAR;
-  
-  // Validate conversion is supported
-  if (!db_converter::RedshiftTypes::is_conversion_supported(sql_type, target_type)) {
-    set_error(SQLSTATE_GENERAL_ERROR, "Unsupported data type conversion");
+  const auto sql_type = col <= column_info_.size()
+      ? column_info_[col - 1].sql_type : SQL_VARCHAR;
+  const auto effective_target_type = target_type == SQL_C_DEFAULT
+      ? ResultTypes::default_c_type(sql_type) : target_type;
+
+  if (!ResultTypes::is_conversion_supported(sql_type, effective_target_type)) {
+    set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
+              "Unsupported result data type conversion");
     return SQL_ERROR;
   }
-  
-  // Use database-specific data converter
-  SQLRETURN result = db_converter::RedshiftDataConverter::convert_data(
-    *cell, target_type, buffer, buffer_length, indicator);
-  
+
+  SQLRETURN result = TextDataConverter::convert_data(
+      *cell, effective_target_type, buffer, buffer_length, indicator);
+
   if (result == SQL_ERROR) {
-    set_error(SQLSTATE_GENERAL_ERROR, "Data type conversion failed");
+    set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+              "Result value could not be converted to the requested C type");
+  } else if (result == SQL_SUCCESS_WITH_INFO) {
+    set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+              "Result value was truncated to fit the application buffer");
   }
   
   return result;

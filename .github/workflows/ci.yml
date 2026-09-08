@@ -54,7 +54,7 @@ jobs:
           mkdir -p "$ODBCSYSINI"
           cat > "$ODBCINI" <<'EOF'
           [RedshiftProd]
-          Driver=ODBCPP Redshift
+          Driver=ODBCPP PostgreSQL
           Server=127.0.0.1
           Port=5432
           Database=postgres
@@ -65,7 +65,7 @@ jobs:
           DeadlineModel=Strict
           EOF
           cat > "$ODBCSYSINI/odbcinst.ini" <<'EOF'
-          [ODBCPP Redshift]
+          [ODBCPP PostgreSQL]
           TransportMode=Auto
           AsyncMaxInflight=64
           AsyncQueueDepth=256
@@ -78,6 +78,7 @@ jobs:
           cmake -S . -B build
           -DBUILD_EXAMPLES=OFF
           -DBUILD_TESTING=ON
+          -DTARGET_DATABASE=POSTGRESQL
           -DOPENSSL_USE_STATIC_LIBS=OFF
           -DCMAKE_BUILD_TYPE=Release
 
@@ -117,6 +118,7 @@ jobs:
           cmake -S . -B build-windows -A x64
           -DBUILD_EXAMPLES=OFF
           -DBUILD_TESTING=ON
+          -DTARGET_DATABASE=POSTGRESQL
           -DOPENSSL_USE_STATIC_LIBS=OFF
           -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL"
 
@@ -150,6 +152,7 @@ jobs:
           cmake -S . -B build-sanitize
           -DBUILD_EXAMPLES=OFF
           -DBUILD_TESTING=ON
+          -DTARGET_DATABASE=POSTGRESQL
           -DOPENSSL_USE_STATIC_LIBS=OFF
           -DCMAKE_BUILD_TYPE=Debug
           -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"

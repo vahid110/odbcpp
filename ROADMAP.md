@@ -15,6 +15,7 @@
 - [x] IRD (Implementation Row Descriptor) implementation
 - [x] Data type conversion framework
 - [x] Text-protocol NULL preservation with SQL_NULL_DATA indicators
+- [x] Metadata-driven SQL_C_DEFAULT conversion for core PostgreSQL scalar types
 - [x] Cross-platform build system
 
 ### Milestone 3: Prepared Statements (COMPLETE)

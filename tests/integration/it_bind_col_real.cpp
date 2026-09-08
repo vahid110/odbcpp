@@ -217,6 +217,105 @@ TEST_F(BindColIntegrationTest, DataTypeConversions) {
     EXPECT_EQ(78, double_as_int);  // Truncated
 }
 
+TEST_F(BindColIntegrationTest, MetadataDrivenDefaultConversions) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"SELECT 42::smallint, 1234567890123::bigint, "
+                  "1.25::real, 3.5::double precision, true, "
+                  "DATE '2024-02-29', TIME '23:45:30', "
+                  "TIMESTAMP '2024-02-29 12:34:56.123456'",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLSMALLINT small_value = 0;
+    SQLBIGINT big_value = 0;
+    SQLREAL real_value = 0;
+    SQLDOUBLE double_value = 0;
+    SQLCHAR bool_value = 0;
+    SQL_DATE_STRUCT date_value{};
+    SQL_TIME_STRUCT time_value{};
+    SQL_TIMESTAMP_STRUCT timestamp_value{};
+    SQLLEN indicator = 0;
+
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_DEFAULT,
+        &small_value, 0, &indicator));
+    EXPECT_EQ(42, small_value);
+    EXPECT_EQ(sizeof(SQLSMALLINT), indicator);
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 2, SQL_C_DEFAULT,
+        &big_value, 0, &indicator));
+    EXPECT_EQ(1234567890123LL, big_value);
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 3, SQL_C_DEFAULT,
+        &real_value, 0, &indicator));
+    EXPECT_FLOAT_EQ(1.25f, real_value);
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 4, SQL_C_DEFAULT,
+        &double_value, 0, &indicator));
+    EXPECT_DOUBLE_EQ(3.5, double_value);
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 5, SQL_C_DEFAULT,
+        &bool_value, 0, &indicator));
+    EXPECT_EQ(1, bool_value);
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 6, SQL_C_DEFAULT,
+        &date_value, 0, &indicator));
+    EXPECT_EQ(2024, date_value.year);
+    EXPECT_EQ(2, date_value.month);
+    EXPECT_EQ(29, date_value.day);
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 7, SQL_C_DEFAULT,
+        &time_value, 0, &indicator));
+    EXPECT_EQ(23, time_value.hour);
+    EXPECT_EQ(45, time_value.minute);
+    EXPECT_EQ(30, time_value.second);
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 8, SQL_C_DEFAULT,
+        &timestamp_value, 0, &indicator));
+    EXPECT_EQ(2024, timestamp_value.year);
+    EXPECT_EQ(12, timestamp_value.hour);
+    EXPECT_EQ(123456000u, timestamp_value.fraction);
+}
+
+TEST_F(BindColIntegrationTest, BoundColumnsResolveSqlCDefault) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 42::integer, DATE '2024-02-29'", SQL_NTS));
+
+    SQLINTEGER integer_value = 0;
+    SQL_DATE_STRUCT date_value{};
+    SQLLEN integer_indicator = 0;
+    SQLLEN date_indicator = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_DEFAULT,
+        &integer_value, 0, &integer_indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 2, SQL_C_DEFAULT,
+        &date_value, 0, &date_indicator));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(42, integer_value);
+    EXPECT_EQ(sizeof(SQLINTEGER), integer_indicator);
+    EXPECT_EQ(2024, date_value.year);
+    EXPECT_EQ(2, date_value.month);
+    EXPECT_EQ(29, date_value.day);
+    EXPECT_EQ(sizeof(SQL_DATE_STRUCT), date_indicator);
+}
+
+TEST_F(BindColIntegrationTest, ConversionFailuresUseSpecificSqlstates) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 'not-an-integer'::text", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLINTEGER integer_value = 0;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(
+        hstmt, 1, SQL_C_SLONG, &integer_value, 0, nullptr));
+    SQLCHAR sqlstate[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22018", reinterpret_cast<char*>(sqlstate));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 'binary-not-supported'::text", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    unsigned char binary_value[32]{};
+    EXPECT_EQ(SQL_ERROR, SQLGetData(
+        hstmt, 1, SQL_C_BINARY, binary_value, sizeof(binary_value), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("07006", reinterpret_cast<char*>(sqlstate));
+}
+
 // Test rebinding columns
 TEST_F(BindColIntegrationTest, ColumnRebinding) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 'Test' as col1, 789 as col2", SQL_NTS));

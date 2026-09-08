@@ -109,6 +109,10 @@ list(APPEND CORE_SOURCES
   "odbc/odbc_api.cpp"
   "odbc/connection_string.h"
   "odbc/connection_string.cpp"
+  "odbc/result_types.h"
+  "odbc/result_types.cpp"
+  "odbc/text_data_converter.h"
+  "odbc/text_data_converter.cpp"
 )
 
 # Build static library for linking examples/tests

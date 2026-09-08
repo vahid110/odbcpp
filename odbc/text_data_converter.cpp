@@ -1,0 +1,271 @@
+#include "text_data_converter.h"
+
+#include <algorithm>
+#include <cerrno>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <optional>
+#include <string_view>
+
+namespace rs::odbc {
+namespace {
+
+std::optional<long double> parse_number(const std::string& value) {
+  if (value.empty()) return std::nullopt;
+  char* end = nullptr;
+  errno = 0;
+  const auto parsed = std::strtold(value.c_str(), &end);
+  if (end != value.c_str() + value.size() || errno == ERANGE ||
+      !std::isfinite(parsed)) {
+    return std::nullopt;
+  }
+  return parsed;
+}
+
+template <typename T>
+SQLRETURN convert_integral(const std::string& value, void* buffer,
+                           SQLLEN* indicator) {
+  const auto parsed = parse_number(value);
+  if (!parsed) return SQL_ERROR;
+  const auto truncated = std::trunc(*parsed);
+  if (truncated < static_cast<long double>(std::numeric_limits<T>::lowest()) ||
+      truncated > static_cast<long double>(std::numeric_limits<T>::max())) {
+    return SQL_ERROR;
+  }
+  *static_cast<T*>(buffer) = static_cast<T>(truncated);
+  if (indicator) *indicator = sizeof(T);
+  return SQL_SUCCESS;
+}
+
+bool parse_digits(std::string_view value, std::size_t offset,
+                  std::size_t count, unsigned& result) {
+  if (offset + count > value.size()) return false;
+  result = 0;
+  for (std::size_t i = 0; i < count; ++i) {
+    const char ch = value[offset + i];
+    if (ch < '0' || ch > '9') return false;
+    result = result * 10u + static_cast<unsigned>(ch - '0');
+  }
+  return true;
+}
+
+bool leap_year(unsigned year) {
+  return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+}
+
+bool valid_date(unsigned year, unsigned month, unsigned day) {
+  static constexpr unsigned days_per_month[] = {
+      31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  if (year > static_cast<unsigned>(std::numeric_limits<SQLSMALLINT>::max()) ||
+      month < 1 || month > 12 || day < 1) {
+    return false;
+  }
+  const auto max_day = days_per_month[month - 1] +
+      (month == 2 && leap_year(year) ? 1u : 0u);
+  return day <= max_day;
+}
+
+bool parse_date(std::string_view value, unsigned& year, unsigned& month,
+                unsigned& day) {
+  return value.size() == 10 && value[4] == '-' && value[7] == '-' &&
+      parse_digits(value, 0, 4, year) &&
+      parse_digits(value, 5, 2, month) &&
+      parse_digits(value, 8, 2, day) && valid_date(year, month, day);
+}
+
+bool valid_time_suffix(std::string_view suffix) {
+  if (suffix.empty()) return true;
+  std::size_t offset = 0;
+  if (suffix[offset] == '.') {
+    ++offset;
+    const auto digits_start = offset;
+    while (offset < suffix.size() && suffix[offset] >= '0' &&
+           suffix[offset] <= '9') {
+      ++offset;
+    }
+    if (offset == digits_start) return false;
+  }
+  if (offset == suffix.size()) return true;
+  if (suffix[offset] != '+' && suffix[offset] != '-') return false;
+  ++offset;
+  const auto remaining = suffix.size() - offset;
+  if (remaining == 2) {
+    unsigned hours = 0;
+    return parse_digits(suffix, offset, 2, hours) && hours <= 15;
+  }
+  if (remaining == 5 && suffix[offset + 2] == ':') {
+    unsigned hours = 0;
+    unsigned minutes = 0;
+    return parse_digits(suffix, offset, 2, hours) &&
+        parse_digits(suffix, offset + 3, 2, minutes) &&
+        hours <= 15 && minutes <= 59;
+  }
+  return false;
+}
+
+bool parse_time(std::string_view value, unsigned& hour, unsigned& minute,
+                unsigned& second, SQLUINTEGER& fraction) {
+  if (value.size() < 8 || value[2] != ':' || value[5] != ':' ||
+      !parse_digits(value, 0, 2, hour) ||
+      !parse_digits(value, 3, 2, minute) ||
+      !parse_digits(value, 6, 2, second) ||
+      hour > 23 || minute > 59 || second > 60 ||
+      !valid_time_suffix(value.substr(8))) {
+    return false;
+  }
+
+  fraction = 0;
+  if (value.size() > 8 && value[8] == '.') {
+    std::size_t offset = 9;
+    unsigned digits = 0;
+    while (offset < value.size() && digits < 9 &&
+           value[offset] >= '0' && value[offset] <= '9') {
+      fraction = fraction * 10u + static_cast<SQLUINTEGER>(value[offset] - '0');
+      ++offset;
+      ++digits;
+    }
+    while (digits++ < 9) fraction *= 10u;
+  }
+  return true;
+}
+
+SQLRETURN convert_string(const std::string& value, void* buffer,
+                         SQLLEN buffer_length, SQLLEN* indicator) {
+  if (buffer_length <= 0) return SQL_ERROR;
+  const auto capacity = static_cast<std::size_t>(buffer_length - 1);
+  const auto copy_length = std::min(capacity, value.size());
+  std::memcpy(buffer, value.data(), copy_length);
+  static_cast<char*>(buffer)[copy_length] = '\0';
+  if (indicator) *indicator = static_cast<SQLLEN>(value.size());
+  return copy_length < value.size() ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS;
+}
+
+SQLRETURN convert_floating(const std::string& value, SQLSMALLINT target_type,
+                           void* buffer, SQLLEN* indicator) {
+  const auto parsed = parse_number(value);
+  if (!parsed) return SQL_ERROR;
+  if (target_type == SQL_C_FLOAT) {
+    if (*parsed < -std::numeric_limits<SQLREAL>::max() ||
+        *parsed > std::numeric_limits<SQLREAL>::max()) {
+      return SQL_ERROR;
+    }
+    *static_cast<SQLREAL*>(buffer) = static_cast<SQLREAL>(*parsed);
+    if (indicator) *indicator = sizeof(SQLREAL);
+  } else {
+    if (*parsed < -std::numeric_limits<SQLDOUBLE>::max() ||
+        *parsed > std::numeric_limits<SQLDOUBLE>::max()) {
+      return SQL_ERROR;
+    }
+    *static_cast<SQLDOUBLE*>(buffer) = static_cast<SQLDOUBLE>(*parsed);
+    if (indicator) *indicator = sizeof(SQLDOUBLE);
+  }
+  return SQL_SUCCESS;
+}
+
+SQLRETURN convert_boolean(const std::string& value, void* buffer,
+                          SQLLEN* indicator) {
+  SQLCHAR converted = 0;
+  if (value == "t" || value == "true" || value == "1") {
+    converted = 1;
+  } else if (value != "f" && value != "false" && value != "0") {
+    return SQL_ERROR;
+  }
+  *static_cast<SQLCHAR*>(buffer) = converted;
+  if (indicator) *indicator = sizeof(SQLCHAR);
+  return SQL_SUCCESS;
+}
+
+SQLRETURN convert_date(const std::string& value, void* buffer,
+                       SQLLEN* indicator) {
+  unsigned year = 0;
+  unsigned month = 0;
+  unsigned day = 0;
+  if (!parse_date(value, year, month, day)) return SQL_ERROR;
+  auto* date = static_cast<SQL_DATE_STRUCT*>(buffer);
+  date->year = static_cast<SQLSMALLINT>(year);
+  date->month = static_cast<SQLUSMALLINT>(month);
+  date->day = static_cast<SQLUSMALLINT>(day);
+  if (indicator) *indicator = sizeof(SQL_DATE_STRUCT);
+  return SQL_SUCCESS;
+}
+
+SQLRETURN convert_time(const std::string& value, void* buffer,
+                       SQLLEN* indicator) {
+  unsigned hour = 0;
+  unsigned minute = 0;
+  unsigned second = 0;
+  SQLUINTEGER fraction = 0;
+  if (!parse_time(value, hour, minute, second, fraction)) return SQL_ERROR;
+  auto* time = static_cast<SQL_TIME_STRUCT*>(buffer);
+  time->hour = static_cast<SQLUSMALLINT>(hour);
+  time->minute = static_cast<SQLUSMALLINT>(minute);
+  time->second = static_cast<SQLUSMALLINT>(second);
+  if (indicator) *indicator = sizeof(SQL_TIME_STRUCT);
+  return SQL_SUCCESS;
+}
+
+SQLRETURN convert_timestamp(const std::string& value, void* buffer,
+                            SQLLEN* indicator) {
+  if (value.size() < 19 || (value[10] != ' ' && value[10] != 'T')) {
+    return SQL_ERROR;
+  }
+  unsigned year = 0;
+  unsigned month = 0;
+  unsigned day = 0;
+  unsigned hour = 0;
+  unsigned minute = 0;
+  unsigned second = 0;
+  SQLUINTEGER fraction = 0;
+  if (!parse_date(std::string_view(value).substr(0, 10), year, month, day) ||
+      !parse_time(std::string_view(value).substr(11), hour, minute, second,
+                  fraction)) {
+    return SQL_ERROR;
+  }
+  auto* timestamp = static_cast<SQL_TIMESTAMP_STRUCT*>(buffer);
+  timestamp->year = static_cast<SQLSMALLINT>(year);
+  timestamp->month = static_cast<SQLUSMALLINT>(month);
+  timestamp->day = static_cast<SQLUSMALLINT>(day);
+  timestamp->hour = static_cast<SQLUSMALLINT>(hour);
+  timestamp->minute = static_cast<SQLUSMALLINT>(minute);
+  timestamp->second = static_cast<SQLUSMALLINT>(second);
+  timestamp->fraction = fraction;
+  if (indicator) *indicator = sizeof(SQL_TIMESTAMP_STRUCT);
+  return SQL_SUCCESS;
+}
+
+} // namespace
+
+SQLRETURN TextDataConverter::convert_data(const std::string& value,
+                                          SQLSMALLINT target_c_type,
+                                          void* buffer,
+                                          SQLLEN buffer_length,
+                                          SQLLEN* indicator) {
+  if (!buffer) return SQL_ERROR;
+  switch (target_c_type) {
+    case SQL_C_CHAR:
+      return convert_string(value, buffer, buffer_length, indicator);
+    case SQL_C_SSHORT:
+      return convert_integral<SQLSMALLINT>(value, buffer, indicator);
+    case SQL_C_SLONG:
+      return convert_integral<SQLINTEGER>(value, buffer, indicator);
+    case SQL_C_SBIGINT:
+      return convert_integral<SQLBIGINT>(value, buffer, indicator);
+    case SQL_C_FLOAT:
+    case SQL_C_DOUBLE:
+      return convert_floating(value, target_c_type, buffer, indicator);
+    case SQL_C_BIT:
+      return convert_boolean(value, buffer, indicator);
+    case SQL_C_DATE:
+      return convert_date(value, buffer, indicator);
+    case SQL_C_TIME:
+      return convert_time(value, buffer, indicator);
+    case SQL_C_TIMESTAMP:
+      return convert_timestamp(value, buffer, indicator);
+    default:
+      return SQL_ERROR;
+  }
+}
+
+} // namespace rs::odbc

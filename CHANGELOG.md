@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Shared text-result conversion for small integers, integers, big integers, floating-point values, booleans, dates, times, and timestamps
+- Metadata-driven SQL_C_DEFAULT handling for SQLGetData and bound columns
 - Null-aware result cells that preserve PostgreSQL NULL separately from empty strings
 - SQLSTATE 22002 reporting when a fetched NULL has no indicator variable
 - PostgreSQL RowDescription and ParameterDescription decoding with ODBC type mapping
@@ -22,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Development roadmap and changelog
 
 ### Changed
+- Continuous integration now builds the native POSTGRESQL target on Linux and Windows
+- Result conversions use PostgreSQL column metadata instead of assuming SQL_VARCHAR
 - SQLFetch and SQLGetData now propagate protocol-level NULL indicators without modifying application buffers
 - Asynchronous query extraction now preserves complete QueryResult metadata
 - Updated README with current implementation status
@@ -29,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved test matrix with descriptor API coverage
 
 ### Fixed
+- The declared POSTGRESQL build target no longer depends on missing database-specific converter files
+- Numeric and temporal conversion validation now rejects overflow, trailing characters, invalid booleans, and impossible dates
 - SQL injection test handling for malicious input
 - Prepared-query SQL injection risk from client-side parameter substitution
 - Connection synchronization after PostgreSQL query errors

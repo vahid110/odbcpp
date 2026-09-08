@@ -9,6 +9,7 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 - **Prepared Statements**: Typed/null-aware PostgreSQL Parse/Bind/Describe/Execute workflow
 - **Column Binding**: SQLBindCol with automatic data population during fetch
 - **Null-Aware Results**: PostgreSQL NULL values remain distinct from empty strings through SQLFetch and SQLGetData
+- **Typed Results**: PostgreSQL metadata drives SQL_C_DEFAULT and validated C-type conversions
 - **Single Database Per Build**: Each build targets one specific database for optimal size and performance
 - **Pluggable Architecture**: Easy to add new database protocols
 - **Modern C++20**: Clean, type-safe interfaces
