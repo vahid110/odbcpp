@@ -340,14 +340,12 @@ DeadlineModel = Strict
 
 Transport settings use the following precedence, from highest to lowest:
 connection string, DSN, driver section in `odbcinst.ini`, built-in defaults.
-`TransportMode=Auto` currently selects the stable synchronous implementation.
-Non-TLS connections can explicitly select the native reactor with
-`TransportMode=Async`, `DeadlineModel=Strict`, and `AsyncEngine=Epoll` on
-Linux or `AsyncEngine=IOCP` on Windows; `AsyncEngine=Auto` selects the native
-engine on either platform. Explicit asynchronous mode also supports TLS,
-including PostgreSQL's in-band SSL upgrade. `Auto` remains conservative and
-selects the synchronous implementation until broader TLS integration coverage
-is in place.
+With `DeadlineModel=Strict`, `TransportMode=Auto` selects the platform-native
+reactor: epoll on Linux and IOCP on Windows. `TransportMode=Async` selects the
+same path explicitly, and `AsyncEngine=Epoll|IOCP` can require a particular
+engine. Native asynchronous mode supports TLS, including PostgreSQL's in-band
+SSL upgrade. `Auto` falls back to the synchronous transport for
+`DeadlineModel=SocketTimeout` and on platforms without a native engine.
 
 ### System Installation (Optional)
 

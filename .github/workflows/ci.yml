@@ -95,6 +95,12 @@ jobs:
           sed -i '/^TransportMode=Sync$/c\TransportMode=Async\nAsyncEngine=Epoll' "$ODBCINI"
           ctest --test-dir build -L integration --output-on-failure
 
+      - name: Run integration tests with Auto-selected transport
+        run: |
+          sed -i 's/^TransportMode=Async$/TransportMode=Auto/' "$ODBCINI"
+          sed -i 's/^AsyncEngine=Epoll$/AsyncEngine=Auto/' "$ODBCINI"
+          ctest --test-dir build -L integration --output-on-failure
+
   windows-unit:
     runs-on: windows-latest
 

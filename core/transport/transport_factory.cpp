@@ -14,8 +14,22 @@
 namespace rs::core::transport {
 
 TransportMode TransportFactory::resolve_mode(const TransportOptions& options) noexcept {
-  if (options.mode == TransportMode::Auto) return TransportMode::Sync;
-  return options.mode;
+  if (options.mode != TransportMode::Auto) return options.mode;
+  if (options.deadline_model != DeadlineModel::Strict) {
+    return TransportMode::Sync;
+  }
+#ifdef __linux__
+  if (options.async_engine == AsyncEngine::Auto ||
+      options.async_engine == AsyncEngine::Epoll) {
+    return TransportMode::Async;
+  }
+#elif defined(_WIN32)
+  if (options.async_engine == AsyncEngine::Auto ||
+      options.async_engine == AsyncEngine::IOCP) {
+    return TransportMode::Async;
+  }
+#endif
+  return TransportMode::Sync;
 }
 
 std::unique_ptr<ITransport> TransportFactory::create(

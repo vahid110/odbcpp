@@ -79,14 +79,47 @@ TEST(TransportOptionsTest, RejectsInvalidKnownValues) {
       std::invalid_argument);
 }
 
-TEST(TransportFactoryTest, AutoUsesSafeSyncTransportUntilNativeAsyncExists) {
+TEST(TransportFactoryTest, AutoSelectsAvailableNativeTransport) {
   TransportOptions options;
+  auto transport = TransportFactory::create(options, false);
+
+#ifdef __linux__
+  EXPECT_EQ(TransportFactory::resolve_mode(options), TransportMode::Async);
+  EXPECT_NE(dynamic_cast<rs::core::transport::EpollTransport*>(transport.get()),
+            nullptr);
+#elif defined(_WIN32)
+  EXPECT_EQ(TransportFactory::resolve_mode(options), TransportMode::Async);
+  EXPECT_NE(dynamic_cast<rs::core::transport::IocpTransport*>(transport.get()),
+            nullptr);
+#else
+  EXPECT_EQ(TransportFactory::resolve_mode(options), TransportMode::Sync);
+  auto* socket = dynamic_cast<SocketTransport*>(transport.get());
+  ASSERT_NE(socket, nullptr);
+  EXPECT_EQ(socket->deadline_model(), DeadlineModel::Strict);
+#endif
+}
+
+TEST(TransportFactoryTest, AutoFallsBackForSocketTimeoutModel) {
+  TransportOptions options;
+  options.deadline_model = DeadlineModel::SocketTimeout;
   auto transport = TransportFactory::create(options, false);
 
   EXPECT_EQ(TransportFactory::resolve_mode(options), TransportMode::Sync);
   auto* socket = dynamic_cast<SocketTransport*>(transport.get());
   ASSERT_NE(socket, nullptr);
-  EXPECT_EQ(socket->deadline_model(), DeadlineModel::Strict);
+  EXPECT_EQ(socket->deadline_model(), DeadlineModel::SocketTimeout);
+}
+
+TEST(TransportFactoryTest, AutoSelectsNativeAsyncTls) {
+  TransportOptions options;
+  auto transport = TransportFactory::create(options, true);
+#if defined(__linux__) || defined(_WIN32)
+  EXPECT_NE(dynamic_cast<rs::core::transport::AsyncTlsTransport*>(
+                transport.get()),
+            nullptr);
+#else
+  EXPECT_NE(dynamic_cast<TLSTransport*>(transport.get()), nullptr);
+#endif
 }
 
 TEST(TransportFactoryTest, CreatesTlsWithSelectedDeadlineModel) {
