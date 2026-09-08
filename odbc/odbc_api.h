@@ -36,6 +36,12 @@ SQLRETURN SQLGetData(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLS
                     void* target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator);
 SQLRETURN SQLRowCount(SQLHSTMT statement_handle, SQLLEN* row_count);
 SQLRETURN SQLGetTypeInfo(SQLHSTMT statement_handle, SQLSMALLINT data_type);
+SQLRETURN SQLTables(
+    SQLHSTMT statement_handle, SQLCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLCHAR* table_name,
+    SQLSMALLINT name_length3, SQLCHAR* table_type,
+    SQLSMALLINT name_length4);
 SQLRETURN SQLSetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
                          SQLPOINTER value, SQLINTEGER string_length);
 SQLRETURN SQLGetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,

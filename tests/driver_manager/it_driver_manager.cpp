@@ -164,6 +164,20 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  SQLCHAR schema_pattern[] = "information_schema";
+  SQLCHAR table_pattern[] = "tables";
+  SQLCHAR table_type[] = "VIEW";
+  if (!succeeded(SQLTables(
+          statement, nullptr, 0, schema_pattern, SQL_NTS,
+          table_pattern, SQL_NTS, table_type, SQL_NTS)) ||
+      !succeeded(SQLFetch(statement))) {
+    print_diagnostic(SQL_HANDLE_STMT, statement);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
 
   SQLFreeHandle(SQL_HANDLE_STMT, statement);
   SQLDisconnect(connection);

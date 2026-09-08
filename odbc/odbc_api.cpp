@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <optional>
 
 using namespace rs::odbc;
 
@@ -58,6 +59,7 @@ namespace {
       case SQL_API_SQLSETCONNECTATTR:
       case SQL_API_SQLSETENVATTR:
       case SQL_API_SQLSETSTMTATTR:
+      case SQL_API_SQLTABLES:
         return true;
       default:
         return false;
@@ -717,6 +719,40 @@ SQLRETURN SQLGetTypeInfo(SQLHSTMT statement_handle, SQLSMALLINT data_type) {
   auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   return stmt->get_type_info(data_type);
+}
+
+SQLRETURN SQLTables(
+    SQLHSTMT statement_handle, SQLCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLCHAR* table_name,
+    SQLSMALLINT name_length3, SQLCHAR* table_type,
+    SQLSMALLINT name_length4) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+
+  const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
+                                 std::optional<std::string>& output) {
+    if (!value) {
+      output.reset();
+      return true;
+    }
+    if (length < 0 && length != SQL_NTS) return false;
+    output = normalize_string(sqlchar_to_string(value, length));
+    return true;
+  };
+  std::optional<std::string> catalog;
+  std::optional<std::string> schema;
+  std::optional<std::string> table;
+  std::optional<std::string> type;
+  if (!read_argument(catalog_name, name_length1, catalog) ||
+      !read_argument(schema_name, name_length2, schema) ||
+      !read_argument(table_name, name_length3, table) ||
+      !read_argument(table_type, name_length4, type)) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid SQLTables argument length");
+    return SQL_ERROR;
+  }
+  return stmt->tables(catalog, schema, table, type);
 }
 
 SQLRETURN SQLDescribeCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number,

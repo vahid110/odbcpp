@@ -36,6 +36,10 @@ TEST_F(MetadataAPITest, InvalidHandles) {
     EXPECT_EQ(SQL_INVALID_HANDLE, SQLRowCount(nullptr, &row_count));
     EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
     EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, nullptr));
+
+    SQLCHAR pattern[] = "%";
+    EXPECT_EQ(SQL_ERROR, SQLTables(
+        hstmt, nullptr, 0, nullptr, 0, pattern, -2, nullptr, 0));
 }
 
 TEST_F(MetadataAPITest, NoQueryExecuted) {

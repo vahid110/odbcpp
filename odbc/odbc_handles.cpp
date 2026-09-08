@@ -222,6 +222,38 @@ rs::core::database::ResultCell type_info_number(long long value) {
   return std::to_string(value);
 }
 
+std::string quote_catalog_literal(const std::string& value) {
+  std::string quoted{"'"};
+  quoted.reserve(value.size() + 2);
+  for (const char ch : value) {
+    if (ch == '\'') quoted.push_back('\'');
+    quoted.push_back(ch);
+  }
+  quoted.push_back('\'');
+  return quoted;
+}
+
+std::vector<std::string> parse_table_types(const std::string& value) {
+  std::vector<std::string> types;
+  std::size_t start = 0;
+  while (start <= value.size()) {
+    const auto comma = value.find(',', start);
+    auto type = ConnectionString::trim(value.substr(
+        start, comma == std::string::npos ? std::string::npos : comma - start));
+    if (type.size() >= 2 && type.front() == '\'' && type.back() == '\'') {
+      type = type.substr(1, type.size() - 2);
+    }
+    type = ConnectionString::to_upper(type);
+    if (type == "TABLE" || type == "VIEW" || type == "SYSTEM TABLE" ||
+        type == "FOREIGN TABLE") {
+      types.push_back(std::move(type));
+    }
+    if (comma == std::string::npos) break;
+    start = comma + 1;
+  }
+  return types;
+}
+
 } // namespace
 
 // Connection implementation
@@ -1033,6 +1065,73 @@ SQLRETURN ODBCStatement::get_type_info(SQLSMALLINT data_type) {
   result.affected_rows = result.rows.size();
   apply_query_result(std::move(result), false);
   return SQL_SUCCESS;
+}
+
+SQLRETURN ODBCStatement::tables(
+    const std::optional<std::string>& catalog_name,
+    const std::optional<std::string>& schema_name,
+    const std::optional<std::string>& table_name,
+    const std::optional<std::string>& table_type) {
+  const bool empty_schema = !schema_name || schema_name->empty();
+  const bool empty_table = !table_name || table_name->empty();
+  const bool empty_type = !table_type || table_type->empty();
+
+  if (catalog_name && *catalog_name == SQL_ALL_CATALOGS && empty_schema &&
+      empty_table && empty_type) {
+    return execute_direct(
+        "SELECT current_database()::text AS table_cat, NULL::text AS "
+        "table_schem, NULL::text AS table_name, NULL::text AS table_type, "
+        "NULL::text AS remarks");
+  }
+  if (schema_name && *schema_name == SQL_ALL_SCHEMAS &&
+      (!catalog_name || catalog_name->empty()) && empty_table && empty_type) {
+    return execute_direct(
+        "SELECT NULL::text AS table_cat, schema_name::text AS table_schem, "
+        "NULL::text AS table_name, NULL::text AS table_type, NULL::text AS "
+        "remarks FROM information_schema.schemata ORDER BY table_schem");
+  }
+  if (table_type && *table_type == SQL_ALL_TABLE_TYPES &&
+      (!catalog_name || catalog_name->empty()) && empty_schema && empty_table) {
+    return execute_direct(
+        "SELECT NULL::text AS table_cat, NULL::text AS table_schem, "
+        "NULL::text AS table_name, table_type, NULL::text AS remarks FROM "
+        "(VALUES ('TABLE'::text), ('VIEW'::text), ('SYSTEM TABLE'::text), "
+        "('FOREIGN TABLE'::text)) AS supported(table_type) ORDER BY table_type");
+  }
+
+  std::string query =
+      "SELECT table_cat, table_schem, table_name, table_type, NULL::text AS "
+      "remarks FROM (SELECT current_database()::text AS table_cat, "
+      "table_schema::text AS table_schem, table_name::text AS table_name, "
+      "CASE WHEN table_type = 'VIEW' THEN 'VIEW' WHEN table_schema IN "
+      "('pg_catalog', 'information_schema') THEN 'SYSTEM TABLE' WHEN "
+      "table_type IN ('BASE TABLE', 'LOCAL TEMPORARY') THEN 'TABLE' WHEN "
+      "table_type = 'FOREIGN' THEN 'FOREIGN TABLE' ELSE table_type END::text "
+      "AS table_type FROM information_schema.tables) AS odbcpp_tables WHERE 1=1";
+  if (catalog_name && !catalog_name->empty()) {
+    query += " AND table_cat LIKE " + quote_catalog_literal(*catalog_name);
+  }
+  if (schema_name && !schema_name->empty()) {
+    query += " AND table_schem LIKE " + quote_catalog_literal(*schema_name);
+  }
+  if (table_name && !table_name->empty()) {
+    query += " AND table_name LIKE " + quote_catalog_literal(*table_name);
+  }
+  if (table_type && !table_type->empty()) {
+    const auto types = parse_table_types(*table_type);
+    if (types.empty()) {
+      query += " AND FALSE";
+    } else {
+      query += " AND table_type IN (";
+      for (std::size_t i = 0; i < types.size(); ++i) {
+        if (i != 0) query += ',';
+        query += quote_catalog_literal(types[i]);
+      }
+      query += ')';
+    }
+  }
+  query += " ORDER BY table_type, table_cat, table_schem, table_name";
+  return execute_direct(query);
 }
 
 SQLRETURN ODBCStatement::row_count(SQLLEN* row_count_value) {

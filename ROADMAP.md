@@ -48,7 +48,7 @@
 
 ## 🚧 Current Status
 
-**Implementation**: 34 exported ANSI ODBC entry points
+**Implementation**: 35 exported ANSI ODBC entry points
 **Descriptors**: 4/4 ODBC Descriptors Complete
 **Diagnostics**: Complete ODBC diagnostics implementation
 **Test Coverage**: 19 tests (100% unit test pass rate)
@@ -143,7 +143,7 @@
 
 ### Milestone 10: Catalog Functions (PRIORITY: MEDIUM)
 **Timeline**: 1-2 weeks
-- [ ] Table metadata (SQLTables, SQLColumns)
+- [ ] Table metadata (SQLTables complete; SQLColumns pending)
 - [ ] Index information (SQLStatistics)
 - [ ] Primary/foreign keys (SQLPrimaryKeys, SQLForeignKeys)
 - [ ] Stored procedures (SQLProcedures, SQLProcedureColumns)

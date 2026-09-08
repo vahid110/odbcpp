@@ -132,6 +132,27 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, ListsPostgreSQLTables) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"CREATE TEMP TABLE odbcpp_catalog_test(value int)",
+        SQL_NTS));
+    SQLCHAR table_name[] = "odbcpp_catalog_test";
+    SQLCHAR table_type[] = "TABLE";
+    ASSERT_EQ(SQL_SUCCESS, SQLTables(
+        hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS,
+        table_type, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    char returned_name[64]{};
+    char returned_type[32]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 3, SQL_C_CHAR, returned_name, sizeof(returned_name), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 4, SQL_C_CHAR, returned_type, sizeof(returned_type), nullptr));
+    EXPECT_STREQ("odbcpp_catalog_test", returned_name);
+    EXPECT_STREQ("TABLE", returned_type);
+}
+
 TEST_F(MetadataIntegrationTest, ErrorCases) {
     // Execute query first
     SQLRETURN ret = SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS);
