@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- PostgreSQL RowDescription and ParameterDescription decoding with ODBC type mapping
+- SQLRowCount support backed by PostgreSQL CommandComplete row counts
 - Native PostgreSQL extended-query messages (Parse, Bind, Describe, Execute, Sync)
 - Typed and SQL NULL-aware parameter values from SQLBindParameter
 - Linux AddressSanitizer and UndefinedBehaviorSanitizer CI coverage

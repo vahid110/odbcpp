@@ -21,10 +21,10 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 | Component | Status | Functions |
 |-----------|--------|----------|
 | **Core APIs** | ✅ Complete | SQLAllocHandle, SQLFreeHandle, SQLConnect, SQLDisconnect |
-| **Statement Execution** | ✅ Complete | SQLExecDirect, SQLFetch, SQLGetData |
+| **Statement Execution** | ✅ Complete | SQLExecDirect, SQLFetch, SQLGetData, SQLRowCount |
 | **Prepared Statements** | ✅ Complete | SQLPrepare, SQLExecute, SQLBindParameter |
 | **Column Binding** | ✅ Complete | SQLBindCol with auto-population |
-| **Metadata** | ✅ Complete | SQLNumResultCols, SQLDescribeCol, SQLColAttribute |
+| **Metadata** | ✅ Complete | SQLNumResultCols, SQLDescribeCol, SQLColAttribute with PostgreSQL names and types |
 | **Parameter Metadata** | ✅ Complete | SQLDescribeParam |
 | **Error Handling** | ✅ Complete | SQLGetDiagRec |
 | **Driver Info** | ✅ Complete | SQLGetInfo, SQLSetEnvAttr |

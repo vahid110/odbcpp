@@ -10,7 +10,8 @@
 - [x] Driver information (SQLGetInfo, SQLSetEnvAttr)
 
 ### Milestone 2: Metadata & Result Processing (COMPLETE)
-- [x] Result set metadata (SQLNumResultCols, SQLDescribeCol, SQLColAttribute)
+- [x] PostgreSQL-backed result metadata (SQLNumResultCols, SQLDescribeCol, SQLColAttribute)
+- [x] Affected-row reporting (SQLRowCount)
 - [x] IRD (Implementation Row Descriptor) implementation
 - [x] Data type conversion framework
 - [x] Cross-platform build system
@@ -26,7 +27,7 @@
 - [x] Column binding (SQLBindCol)
 - [x] ARD (Application Row Descriptor) implementation
 - [x] IPD (Implementation Parameter Descriptor) implementation
-- [x] Parameter metadata (SQLDescribeParam)
+- [x] PostgreSQL ParameterDescription mapping (SQLDescribeParam after execution)
 - [x] Enhanced fetch with automatic bound column population
 - [x] Comprehensive descriptor API test coverage
 
