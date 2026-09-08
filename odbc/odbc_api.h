@@ -66,6 +66,9 @@ SQLRETURN SQLGetFunctions(SQLHDBC connection_handle, SQLUSMALLINT function_id,
 // Environment attributes
 SQLRETURN SQLSetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute, 
                        void* value, SQLINTEGER string_length);
+SQLRETURN SQLGetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute,
+                        SQLPOINTER value, SQLINTEGER buffer_length,
+                        SQLINTEGER* string_length);
 
 // Prepared statements
 SQLRETURN SQLPrepare(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length);

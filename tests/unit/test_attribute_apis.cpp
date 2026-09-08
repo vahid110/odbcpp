@@ -57,6 +57,25 @@ TEST_F(AttributeApisTest, StoresLoginTimeout) {
   EXPECT_EQ(7u, value);
 }
 
+TEST_F(AttributeApisTest, StoresEnvironmentVersion) {
+  SQLINTEGER version = 0;
+  SQLINTEGER length = 0;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetEnvAttr(
+      environment_, SQL_ATTR_ODBC_VERSION, &version, sizeof(version), &length));
+  EXPECT_EQ(SQL_OV_ODBC3, version);
+  EXPECT_EQ(sizeof(SQLINTEGER), static_cast<std::size_t>(length));
+
+  EXPECT_EQ(SQL_SUCCESS, SQLSetEnvAttr(
+      environment_, SQL_ATTR_ODBC_VERSION, integer_value(SQL_OV_ODBC3_80), 0));
+  EXPECT_EQ(SQL_SUCCESS, SQLGetEnvAttr(
+      environment_, SQL_ATTR_ODBC_VERSION, &version, sizeof(version), nullptr));
+  EXPECT_EQ(SQL_OV_ODBC3_80, version);
+
+  EXPECT_EQ(SQL_ERROR, SQLSetEnvAttr(
+      environment_, SQL_ATTR_ODBC_VERSION, integer_value(999), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_ENV, environment_));
+}
+
 TEST_F(AttributeApisTest, StoresAutocommitMode) {
   SQLUINTEGER value = 99;
   EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(

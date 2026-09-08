@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SQLCloseCursor and SQLFreeStmt lifecycle operations
 - SQLGetTypeInfo metadata for the supported PostgreSQL type set
 - SQLNumParams with quote- and comment-aware ODBC parameter marker counting
+- SQLGetEnvAttr and validated ODBC environment version selection
 - SQL_ATTR_AUTOCOMMIT and connection-level SQLEndTran commit/rollback support
 - SQL_ATTR_TXN_ISOLATION with PostgreSQL session-level isolation configuration
 - unixODBC end-to-end coverage that dynamically loads the shared driver

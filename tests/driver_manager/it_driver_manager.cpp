@@ -38,6 +38,15 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  SQLINTEGER odbc_version = 0;
+  if (!succeeded(SQLGetEnvAttr(
+          environment, SQL_ATTR_ODBC_VERSION, &odbc_version,
+          sizeof(odbc_version), nullptr)) ||
+      odbc_version != SQL_OV_ODBC3) {
+    print_diagnostic(SQL_HANDLE_ENV, environment);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
   if (!succeeded(SQLAllocHandle(
           SQL_HANDLE_DBC, environment, &connection))) {
     print_diagnostic(SQL_HANDLE_ENV, environment);

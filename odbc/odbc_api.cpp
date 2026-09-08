@@ -45,6 +45,7 @@ namespace {
       case SQL_API_SQLGETDATA:
       case SQL_API_SQLGETDIAGFIELD:
       case SQL_API_SQLGETDIAGREC:
+      case SQL_API_SQLGETENVATTR:
       case SQL_API_SQLGETFUNCTIONS:
       case SQL_API_SQLGETINFO:
       case SQL_API_SQLGETSTMTATTR:
@@ -609,13 +610,45 @@ SQLRETURN SQLSetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute,
   if (!env) return SQL_INVALID_HANDLE;
   
   switch (attribute) {
-    case 200: // SQL_ATTR_ODBC_VERSION
-      env->set_odbc_version(static_cast<SQLINTEGER>(reinterpret_cast<uintptr_t>(value)));
+    case SQL_ATTR_ODBC_VERSION: {
+      const auto version = static_cast<SQLINTEGER>(
+          reinterpret_cast<std::uintptr_t>(value));
+      if (version != SQL_OV_ODBC2 && version != SQL_OV_ODBC3 &&
+          version != SQL_OV_ODBC3_80) {
+        env->set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                       "Unsupported ODBC version");
+        return SQL_ERROR;
+      }
+      env->set_odbc_version(version);
       return SQL_SUCCESS;
+    }
     default:
-      env->set_error(SQLSTATE_GENERAL_ERROR, "Unsupported environment attribute");
+      env->set_error(SQLSTATE_INVALID_ATTRIBUTE,
+                     "Unsupported environment attribute");
       return SQL_ERROR;
   }
+}
+
+SQLRETURN SQLGetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute,
+                        SQLPOINTER value, SQLINTEGER,
+                        SQLINTEGER* string_length) {
+  auto* env = get_valid_handle<ODBCEnvironment>(environment_handle);
+  if (!env) return SQL_INVALID_HANDLE;
+  if (!value) {
+    env->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                   "Environment attribute output pointer is null");
+    return SQL_ERROR;
+  }
+  if (attribute != SQL_ATTR_ODBC_VERSION) {
+    env->set_error(SQLSTATE_INVALID_ATTRIBUTE,
+                   "Unsupported environment attribute");
+    return SQL_ERROR;
+  }
+  *static_cast<SQLINTEGER*>(value) = env->get_odbc_version();
+  if (string_length) {
+    *string_length = static_cast<SQLINTEGER>(sizeof(SQLINTEGER));
+  }
+  return SQL_SUCCESS;
 }
 
 SQLRETURN SQLNumResultCols(SQLHSTMT statement_handle, SQLSMALLINT* column_count) {
