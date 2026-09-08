@@ -35,7 +35,9 @@ int main() {
     auto deadline = rs::util::make_deadline(std::chrono::seconds(30));
     auto result = rs::util::unwrap_or_throw(conn->execute_query("SELECT version()", deadline));
     
-    std::cout << "Database version: " << result.rows[0][0] << std::endl;
+    const auto& version = result.rows[0][0];
+    std::cout << "Database version: " << (version ? *version : "NULL")
+              << std::endl;
     
   } catch (const std::exception& e) {
     std::cerr << "Error: " << e.what() << std::endl;

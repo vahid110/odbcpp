@@ -38,5 +38,6 @@ TEST(Integration, ConnectAndSelect1) {
 
   ASSERT_EQ(result.rows.size(), 1u);
   ASSERT_EQ(result.rows[0].size(), 1u);
-  EXPECT_EQ(result.rows[0][0], "1");
+  ASSERT_TRUE(result.rows[0][0].has_value());
+  EXPECT_EQ(*result.rows[0][0], "1");
 }

@@ -64,7 +64,7 @@ public:
     return "MySQL error extraction not implemented";
   }
   
-  std::vector<std::vector<std::string>> extract_query_results(
+  ResultRows extract_query_results(
     const std::vector<Message>& messages) override {
     // Parse MySQL result set packets
     return {};

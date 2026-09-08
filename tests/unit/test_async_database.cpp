@@ -121,9 +121,10 @@ TEST_F(AsyncDatabaseTest, ConcurrentQueries) {
     std::string sql = "SELECT " + std::to_string(i);
     async_conn_->execute_query_async(sql, deadline,
       [&](rs::util::Result<QueryResult> result) {
-        if (result.has_value() && !result->rows.empty()) {
+        if (result.has_value() && !result->rows.empty() &&
+            !result->rows[0].empty() && result->rows[0][0]) {
           std::lock_guard lock(results_mutex);
-          query_results.push_back(result->rows[0][0]);
+          query_results.push_back(*result->rows[0][0]);
         }
         completed_queries++;
       });

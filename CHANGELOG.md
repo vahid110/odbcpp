@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Null-aware result cells that preserve PostgreSQL NULL separately from empty strings
+- SQLSTATE 22002 reporting when a fetched NULL has no indicator variable
 - PostgreSQL RowDescription and ParameterDescription decoding with ODBC type mapping
 - SQLRowCount support backed by PostgreSQL CommandComplete row counts
 - Native PostgreSQL extended-query messages (Parse, Bind, Describe, Execute, Sync)
@@ -20,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Development roadmap and changelog
 
 ### Changed
+- SQLFetch and SQLGetData now propagate protocol-level NULL indicators without modifying application buffers
+- Asynchronous query extraction now preserves complete QueryResult metadata
 - Updated README with current implementation status
 - Enhanced fetch mechanism to support bound columns
 - Improved test matrix with descriptor API coverage

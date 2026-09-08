@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,8 +18,12 @@ struct ResultColumnMetadata {
   std::int16_t format_code{0};
 };
 
+using ResultCell = std::optional<std::string>;
+using ResultRow = std::vector<ResultCell>;
+using ResultRows = std::vector<ResultRow>;
+
 struct QueryResult {
-  std::vector<std::vector<std::string>> rows;
+  ResultRows rows;
   std::vector<ResultColumnMetadata> columns;
   std::vector<std::uint32_t> parameter_type_ids;
   std::string command_tag;

@@ -43,7 +43,8 @@ void callback_example() {
             if (query_result.has_value()) {
               std::cout << "✅ Query successful!\n";
               if (!query_result->rows.empty() && !query_result->rows[0].empty()) {
-                std::cout << "Version: " << query_result->rows[0][0] << "\n";
+                const auto& version = query_result->rows[0][0];
+                std::cout << "Version: " << (version ? *version : "NULL") << "\n";
               }
             } else {
               std::cout << "❌ Query failed: " << query_result.error_message() << "\n";
@@ -109,7 +110,9 @@ void future_example() {
     for (size_t i = 0; i < query_futures.size(); ++i) {
       auto result = query_futures[i].get();
       if (result.has_value()) {
-        std::cout << "✅ Query " << (i+1) << " result: " << result->rows[0][0] << "\n";
+        const auto& value = result->rows[0][0];
+        std::cout << "✅ Query " << (i+1) << " result: "
+                  << (value ? *value : "NULL") << "\n";
       } else {
         std::cout << "❌ Query " << (i+1) << " failed: " << result.error_message() << "\n";
       }

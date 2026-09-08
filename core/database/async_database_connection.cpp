@@ -180,10 +180,7 @@ rs::util::Result<QueryResult> AsyncDatabaseConnection::execute_query(std::string
     }
     
     // Extract results from messages
-    QueryResult result;
-    result.rows = parser_->extract_query_results(messages);
-    
-    return rs::util::Result<QueryResult>{std::move(result)};
+    return rs::util::Result<QueryResult>{parser_->extract_query_result(messages)};
     
   } catch (const std::exception& e) {
     return rs::util::Result<QueryResult>(rs::util::DbErrorCode::ProtocolError, e.what());
@@ -248,10 +245,7 @@ rs::util::Result<QueryResult> AsyncDatabaseConnection::execute_prepared(std::str
     }
     
     // Extract results from messages
-    QueryResult result;
-    result.rows = parser_->extract_query_results(messages);
-    
-    return rs::util::Result<QueryResult>{std::move(result)};
+    return rs::util::Result<QueryResult>{parser_->extract_query_result(messages)};
     
   } catch (const std::exception& e) {
     return rs::util::Result<QueryResult>(rs::util::DbErrorCode::ProtocolError, e.what());

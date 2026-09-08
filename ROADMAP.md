@@ -14,6 +14,7 @@
 - [x] Affected-row reporting (SQLRowCount)
 - [x] IRD (Implementation Row Descriptor) implementation
 - [x] Data type conversion framework
+- [x] Text-protocol NULL preservation with SQL_NULL_DATA indicators
 - [x] Cross-platform build system
 
 ### Milestone 3: Prepared Statements (COMPLETE)
@@ -108,7 +109,7 @@
 - [ ] **Array Types**: All array variants (INT[], VARCHAR[], etc. as SQL_C_CHAR)
 - [ ] **Interval Types**: INTERVAL YEAR TO MONTH, INTERVAL DAY TO SECOND
 - [ ] **Precision/Scale Handling**: Proper DECIMAL(38,18) support
-- [ ] **NULL Handling**: All types with proper SQL_NULL_DATA indicators
+- [x] **Text-Protocol NULL Handling**: All values preserve proper SQL_NULL_DATA indicators
 - [ ] **Type Conversion Matrix**: All Redshift SQL types → All ODBC C types
 
 **Success Criteria**:
@@ -126,7 +127,7 @@
 - [ ] Fix bound column data conversion in enhanced fetch
 - [ ] Improve type detection and conversion accuracy
 - [ ] Add support for more SQL data types (DATE, TIMESTAMP, DECIMAL)
-- [ ] Implement proper NULL handling in bound columns
+- [x] Implement proper NULL handling in bound columns
 - [ ] Add data conversion integration tests
 
 **Success Criteria**:

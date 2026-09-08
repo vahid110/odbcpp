@@ -64,7 +64,7 @@ std::uint32_t postgres_type_oid(QueryParameterType type) {
 
 std::uint16_t read_u16(std::span<const std::byte> data, std::size_t offset) {
   if (offset + 2 > data.size()) {
-    throw std::runtime_error("truncated PostgreSQL metadata message");
+    throw std::runtime_error("truncated PostgreSQL message");
   }
   return (static_cast<std::uint16_t>(data[offset]) << 8) |
          static_cast<std::uint16_t>(data[offset + 1]);
@@ -72,7 +72,7 @@ std::uint16_t read_u16(std::span<const std::byte> data, std::size_t offset) {
 
 std::uint32_t read_u32(std::span<const std::byte> data, std::size_t offset) {
   if (offset + 4 > data.size()) {
-    throw std::runtime_error("truncated PostgreSQL metadata message");
+    throw std::runtime_error("truncated PostgreSQL message");
   }
   return (static_cast<std::uint32_t>(data[offset]) << 24) |
          (static_cast<std::uint32_t>(data[offset + 1]) << 16) |
@@ -468,40 +468,43 @@ std::string PgProtocolParser::extract_error_message(const Message& msg) {
   return error.message();
 }
 
-std::vector<std::vector<std::string>> PgProtocolParser::extract_query_results(
+ResultRows PgProtocolParser::extract_query_results(
     const std::vector<Message>& messages) {
-  
-  std::vector<std::vector<std::string>> rows;
-  
+  ResultRows rows;
+
   for (const auto& msg : messages) {
     if (msg.tag == 'D') { // DataRow
-      const auto* p = reinterpret_cast<const unsigned char*>(msg.payload.data());
-      size_t n = msg.payload.size();
-      
-      if (n < 2) continue;
-      
-      uint16_t ncols = (p[0] << 8) | p[1];
-      size_t off = 2;
-      
-      std::vector<std::string> row;
-      row.reserve(ncols);
-      
-      for (uint16_t i = 0; i < ncols && off + 4 <= n; ++i) {
-        int32_t clen = (p[off] << 24) | (p[off+1] << 16) | (p[off+2] << 8) | p[off+3];
-        off += 4;
-        
-        if (clen < 0) {
-          row.emplace_back(); // NULL
-        } else if (off + clen <= n) {
-          row.emplace_back(reinterpret_cast<const char*>(p + off), clen);
-          off += clen;
+      const std::span<const std::byte> payload(msg.payload);
+      std::size_t offset = 0;
+      const auto column_count = read_u16(payload, offset);
+      offset += 2;
+
+      ResultRow row;
+      row.reserve(column_count);
+
+      for (std::uint16_t i = 0; i < column_count; ++i) {
+        const auto length = read_u32(payload, offset);
+        offset += 4;
+
+        if (length == 0xffffffffu) {
+          row.emplace_back(std::nullopt);
+          continue;
         }
+        if (length > 0x7fffffffu || length > payload.size() - offset) {
+          throw std::runtime_error("invalid PostgreSQL DataRow column length");
+        }
+        row.emplace_back(std::string(
+            reinterpret_cast<const char*>(payload.data() + offset), length));
+        offset += length;
       }
-      
+
+      if (offset != payload.size()) {
+        throw std::runtime_error("invalid PostgreSQL DataRow length");
+      }
       rows.emplace_back(std::move(row));
     }
   }
-  
+
   return rows;
 }
 

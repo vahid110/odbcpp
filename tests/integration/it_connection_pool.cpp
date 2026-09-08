@@ -48,7 +48,8 @@ TEST_F(ConnectionPoolIntegrationTest, RealDatabaseConnections) {
   if (result.has_value()) {
     EXPECT_EQ(result->rows.size(), 1);
     EXPECT_EQ(result->rows[0].size(), 1);
-    EXPECT_EQ(result->rows[0][0], "1");
+    ASSERT_TRUE(result->rows[0][0].has_value());
+    EXPECT_EQ(*result->rows[0][0], "1");
   } else {
     // Connection might fail in CI environment, that's ok
     EXPECT_EQ(result.error().value(), static_cast<int>(rs::util::DbErrorCode::QueryFailed));

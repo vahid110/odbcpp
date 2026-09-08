@@ -59,7 +59,7 @@ public:
     return "Mock error message";
   }
   
-  std::vector<std::vector<std::string>> extract_query_results(const std::vector<Message>& messages) override {
+  ResultRows extract_query_results(const std::vector<Message>& messages) override {
     // Return mock results
     return {{"mock_result"}};
   }

@@ -249,33 +249,41 @@ SQLRETURN ODBCStatement::fetch() {
   }
   
   current_row_++;
+  SQLRETURN fetch_result = SQL_SUCCESS;
   
   // Auto-populate bound columns from ARD
   const auto& row = result_rows_[current_row_ - 1];
   for (size_t i = 0; i < column_bindings_.size() && i < row.size(); ++i) {
     const auto& binding = column_bindings_[i];
     if (binding.bound && binding.target_value) {
-      const std::string& value = row[i];
-      
-      // Simple NULL detection: if value is empty, treat as NULL for bound columns
-      // This is a simplified approach - proper implementation would use protocol-level NULL indicators
-      if (value.empty() && binding.strlen_or_indicator) {
+      const auto& cell = row[i];
+
+      if (!cell) {
+        if (!binding.strlen_or_indicator) {
+          set_error(SQLSTATE_INDICATOR_VARIABLE_REQUIRED,
+                    "NULL column requires an indicator variable");
+          return SQL_ERROR;
+        }
         *binding.strlen_or_indicator = SQL_NULL_DATA;
         continue;
       }
-      
+
       // Use database-specific data converter
       SQLRETURN conv_result = db_converter::RedshiftDataConverter::convert_data(
-        value, binding.target_type, binding.target_value, binding.buffer_length, binding.strlen_or_indicator);
-      
-      // If conversion fails, set error indicator but don't fail the entire fetch
-      if (conv_result == SQL_ERROR && binding.strlen_or_indicator) {
-        *binding.strlen_or_indicator = SQL_NULL_DATA;
+        *cell, binding.target_type, binding.target_value, binding.buffer_length,
+        binding.strlen_or_indicator);
+
+      if (conv_result == SQL_ERROR) {
+        set_error(SQLSTATE_GENERAL_ERROR, "Data type conversion failed");
+        return SQL_ERROR;
+      }
+      if (conv_result == SQL_SUCCESS_WITH_INFO) {
+        fetch_result = SQL_SUCCESS_WITH_INFO;
       }
     }
   }
-  
-  return SQL_SUCCESS;
+
+  return fetch_result;
 }
 
 SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type, 
@@ -291,11 +299,16 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     return SQL_ERROR;
   }
   
-  const std::string& value = row[col - 1];
-  
-  // Note: NULL detection should be done at protocol level
-  // For now, we don't treat empty strings as NULL in get_data
-  // NULL handling is done in fetch() for bound columns only
+  const auto& cell = row[col - 1];
+  if (!cell) {
+    if (!indicator) {
+      set_error(SQLSTATE_INDICATOR_VARIABLE_REQUIRED,
+                "NULL column requires an indicator variable");
+      return SQL_ERROR;
+    }
+    *indicator = SQL_NULL_DATA;
+    return SQL_SUCCESS;
+  }
   
   // TODO: Get actual SQL type from column metadata (Milestone 2)
   // For now, assume all data comes as VARCHAR from database
@@ -309,7 +322,7 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
   
   // Use database-specific data converter
   SQLRETURN result = db_converter::RedshiftDataConverter::convert_data(
-    value, target_type, buffer, buffer_length, indicator);
+    *cell, target_type, buffer, buffer_length, indicator);
   
   if (result == SQL_ERROR) {
     set_error(SQLSTATE_GENERAL_ERROR, "Data type conversion failed");

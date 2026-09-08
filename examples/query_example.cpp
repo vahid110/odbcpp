@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
     for (const auto& row : result.rows) {
       for (size_t i = 0; i < row.size(); ++i) {
         if (i) std::cout << " | ";
-        std::cout << row[i];
+        std::cout << (row[i] ? *row[i] : "NULL");
       }
       std::cout << "\n";
     }

@@ -13,12 +13,12 @@ Example usage:
 
 using namespace rs::core::database;
 
-static void print_rows(const std::vector<std::vector<std::string>>& rows) {
+static void print_rows(const ResultRows& rows) {
   std::cout << "Rows: " << rows.size() << "\n";
   for (const auto& row : rows) {
     for (size_t i = 0; i < row.size(); ++i) {
       if (i) std::cout << " | ";
-      std::cout << (row[i].empty() ? "NULL" : row[i]);
+      std::cout << (row[i] ? *row[i] : "NULL");
     }
     std::cout << "\n";
   }

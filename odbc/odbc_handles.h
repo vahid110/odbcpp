@@ -195,7 +195,7 @@ public:
 
 private:
   ODBCConnection* conn_;
-  std::vector<std::vector<std::string>> result_rows_;
+  rs::core::database::ResultRows result_rows_;
   std::vector<ColumnInfo> column_info_;        // IRD storage
   std::vector<ParameterInfo> parameter_info_;  // APD storage
   std::vector<ColumnBinding> column_bindings_; // ARD storage

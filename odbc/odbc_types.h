@@ -33,6 +33,7 @@ constexpr const char* SQLSTATE_GENERAL_ERROR = "HY000";
 constexpr const char* SQLSTATE_INVALID_HANDLE = "HY092";
 constexpr const char* SQLSTATE_FUNCTION_SEQUENCE_ERROR = "HY010";
 constexpr const char* SQLSTATE_INVALID_PARAMETER_NUMBER = "07009";
+constexpr const char* SQLSTATE_INDICATOR_VARIABLE_REQUIRED = "22002";
 
 // Note: All SQL_DIAG_* constants are already defined in system ODBC headers (sql.h, sqlext.h)
 // No need to redefine them here

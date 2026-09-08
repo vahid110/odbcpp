@@ -72,6 +72,77 @@ TEST_F(BindColIntegrationTest, NullValueBinding) {
     EXPECT_STREQ("NotNull", str_val);
 }
 
+TEST_F(BindColIntegrationTest, BoundNullAndEmptyStringRemainDistinct) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT NULL::text, ''::text", SQL_NTS));
+
+    char null_value[16] = "unchanged";
+    char empty_value[16] = "unchanged";
+    SQLLEN null_indicator = 99;
+    SQLLEN empty_indicator = 99;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(
+        hstmt, 1, SQL_C_CHAR, null_value, sizeof(null_value), &null_indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(
+        hstmt, 2, SQL_C_CHAR, empty_value, sizeof(empty_value), &empty_indicator));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(SQL_NULL_DATA, null_indicator);
+    EXPECT_STREQ("unchanged", null_value);
+    EXPECT_EQ(0, empty_indicator);
+    EXPECT_STREQ("", empty_value);
+}
+
+TEST_F(BindColIntegrationTest, GetDataReportsNullWithoutTouchingBuffer) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT NULL::text, ''::text", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    char null_value[16] = "unchanged";
+    char empty_value[16] = "unchanged";
+    SQLLEN null_indicator = 99;
+    SQLLEN empty_indicator = 99;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, null_value, sizeof(null_value), &null_indicator));
+    EXPECT_EQ(SQL_NULL_DATA, null_indicator);
+    EXPECT_STREQ("unchanged", null_value);
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 2, SQL_C_CHAR, empty_value, sizeof(empty_value), &empty_indicator));
+    EXPECT_EQ(0, empty_indicator);
+    EXPECT_STREQ("", empty_value);
+}
+
+TEST_F(BindColIntegrationTest, NullWithoutIndicatorReturns22002) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT NULL::text", SQL_NTS));
+
+    char value[16] = "unchanged";
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(
+        hstmt, 1, SQL_C_CHAR, value, sizeof(value), nullptr));
+    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+    EXPECT_STREQ("unchanged", value);
+
+    SQLCHAR sqlstate[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22002", reinterpret_cast<char*>(sqlstate));
+}
+
+TEST_F(BindColIntegrationTest, GetDataNullWithoutIndicatorReturns22002) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT NULL::text", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    char value[16] = "unchanged";
+    EXPECT_EQ(SQL_ERROR, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, value, sizeof(value), nullptr));
+    EXPECT_STREQ("unchanged", value);
+
+    SQLCHAR sqlstate[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22002", reinterpret_cast<char*>(sqlstate));
+}
+
 // Test mixed binding (some bound, some unbound)
 TEST_F(BindColIntegrationTest, MixedBinding) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 'Bound' as col1, 'Unbound' as col2, 999 as col3", SQL_NTS));
