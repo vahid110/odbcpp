@@ -66,6 +66,12 @@ SQLRETURN SQLProcedures(
     SQLSMALLINT name_length1, SQLCHAR* schema_name,
     SQLSMALLINT name_length2, SQLCHAR* procedure_name,
     SQLSMALLINT name_length3);
+SQLRETURN SQLProcedureColumns(
+    SQLHSTMT statement_handle, SQLCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLCHAR* procedure_name,
+    SQLSMALLINT name_length3, SQLCHAR* column_name,
+    SQLSMALLINT name_length4);
 SQLRETURN SQLTables(
     SQLHSTMT statement_handle, SQLCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLCHAR* schema_name,

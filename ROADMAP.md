@@ -48,7 +48,7 @@
 
 ## 🚧 Current Status
 
-**Implementation**: 40 exported ANSI ODBC entry points
+**Implementation**: 41 exported ANSI ODBC entry points
 **Descriptors**: 4/4 ODBC Descriptors Complete
 **Diagnostics**: Complete ODBC diagnostics implementation
 **Test Coverage**: 19 tests (100% unit test pass rate)
@@ -146,7 +146,7 @@
 - [x] Table metadata (SQLTables, SQLColumns)
 - [x] Index information (SQLStatistics)
 - [x] Primary/foreign keys (SQLPrimaryKeys, SQLForeignKeys)
-- [ ] Stored procedures (SQLProcedures complete; SQLProcedureColumns pending)
+- [x] Stored procedures (SQLProcedures, SQLProcedureColumns)
 - [ ] Schema discovery functions
 
 **Success Criteria**:
@@ -303,7 +303,7 @@
 - **Binding Support**: Column-wise only (Row-wise missing)
 - **Diagnostics Coverage**: 1/3 functions (33% - critical gap)
 - **Attribute APIs**: 1/6 functions (17% - critical gap)
-- **Metadata APIs**: 6/8 functions (75% - routine discovery added)
+- **Metadata APIs**: 7/8 functions (88% - routine parameter discovery added)
 - **Wide APIs**: 0/15+ functions (0% - Unicode support missing)
 - **Test Success Rate**: 17/17 unit tests (100%)
 - **Integration Success**: 16/17 tests (94%)

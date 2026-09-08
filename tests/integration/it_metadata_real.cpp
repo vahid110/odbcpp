@@ -379,6 +379,44 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLRoutines) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, ListsPostgreSQLRoutineColumns) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_routine_column_anchor("
+                  "value integer)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE FUNCTION pg_temp.odbcpp_column_function("
+                  "first integer) RETURNS integer LANGUAGE SQL "
+                  "AS 'SELECT first'",
+        SQL_NTS));
+    SQLCHAR procedure_name[] = "odbcpp_column_function";
+    SQLCHAR column_name_pattern[] = "first";
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedureColumns(
+        hstmt, nullptr, 0, nullptr, 0, procedure_name, SQL_NTS,
+        column_name_pattern, SQL_NTS));
+
+    char returned_name[128]{};
+    SQLSMALLINT column_type = SQL_PARAM_TYPE_UNKNOWN;
+    SQLSMALLINT data_type = 0;
+    SQLINTEGER ordinal_position = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 4, SQL_C_CHAR, returned_name, sizeof(returned_name), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 5, SQL_C_SSHORT, &column_type, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 6, SQL_C_SSHORT, &data_type, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 18, SQL_C_SLONG, &ordinal_position, 0, nullptr));
+    EXPECT_STREQ("first", returned_name);
+    EXPECT_EQ(SQL_PARAM_INPUT, column_type);
+    EXPECT_EQ(SQL_INTEGER, data_type);
+    EXPECT_EQ(1, ordinal_position);
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, ErrorCases) {
     // Execute query first
     SQLRETURN ret = SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS);

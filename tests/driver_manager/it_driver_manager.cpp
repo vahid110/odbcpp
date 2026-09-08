@@ -256,6 +256,20 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  SQLCHAR catalog_function_parameter[] = "value";
+  if (!succeeded(SQLCloseCursor(statement)) ||
+      !succeeded(SQLProcedureColumns(
+          statement, nullptr, 0, nullptr, 0,
+          catalog_function, SQL_NTS,
+          catalog_function_parameter, SQL_NTS)) ||
+      !succeeded(SQLFetch(statement))) {
+    print_diagnostic(SQL_HANDLE_STMT, statement);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
 
   SQLFreeHandle(SQL_HANDLE_STMT, statement);
   SQLDisconnect(connection);

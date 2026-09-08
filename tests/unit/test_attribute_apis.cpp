@@ -174,6 +174,9 @@ TEST_F(AttributeApisTest, ReportsImplementedFunctions) {
   EXPECT_EQ(SQL_TRUE, supported);
   EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
       connection_, SQL_API_SQLPROCEDURECOLUMNS, &supported));
+  EXPECT_EQ(SQL_TRUE, supported);
+  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
+      connection_, SQL_API_SQLSPECIALCOLUMNS, &supported));
   EXPECT_EQ(SQL_FALSE, supported);
 
   SQLUSMALLINT odbc2_functions[100]{};
@@ -186,7 +189,8 @@ TEST_F(AttributeApisTest, ReportsImplementedFunctions) {
   EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLFOREIGNKEYS]);
   EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLSTATISTICS]);
   EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLPROCEDURES]);
-  EXPECT_EQ(SQL_FALSE, odbc2_functions[SQL_API_SQLPROCEDURECOLUMNS]);
+  EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLPROCEDURECOLUMNS]);
+  EXPECT_EQ(SQL_FALSE, odbc2_functions[SQL_API_SQLSPECIALCOLUMNS]);
 
   SQLUSMALLINT odbc3_functions[SQL_API_ODBC3_ALL_FUNCTIONS_SIZE]{};
   EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
@@ -205,8 +209,10 @@ TEST_F(AttributeApisTest, ReportsImplementedFunctions) {
             SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLSTATISTICS));
   EXPECT_EQ(SQL_TRUE,
             SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLPROCEDURES));
-  EXPECT_EQ(SQL_FALSE,
+  EXPECT_EQ(SQL_TRUE,
             SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLPROCEDURECOLUMNS));
+  EXPECT_EQ(SQL_FALSE,
+            SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLSPECIALCOLUMNS));
 
   EXPECT_EQ(SQL_ERROR, SQLGetFunctions(
       connection_, SQL_API_SQLCONNECT, nullptr));

@@ -1450,6 +1450,111 @@ SQLRETURN ODBCStatement::procedures(
   return execute_direct(query);
 }
 
+SQLRETURN ODBCStatement::procedure_columns(
+    const std::optional<std::string>& catalog_name,
+    const std::optional<std::string>& schema_name,
+    const std::optional<std::string>& procedure_name,
+    const std::optional<std::string>& column_name) {
+  std::string query =
+      "WITH routine_columns AS (SELECT current_database()::text "
+      "AS procedure_cat, namespaces.nspname::text AS procedure_schem, "
+      "procedures.proname::text AS procedure_name, "
+      "procedures.proargnames[arguments.ordinality]::text AS column_name, "
+      "CASE COALESCE(procedures.proargmodes[arguments.ordinality], 'i') "
+      "WHEN 'i' THEN 1 WHEN 'v' THEN 1 WHEN 'b' THEN 2 "
+      "WHEN 't' THEN 3 WHEN 'o' THEN 4 ELSE 0 END::smallint "
+      "AS column_type, arguments.type_oid::oid AS type_oid, "
+      "arguments.ordinality::integer AS ordinal_position "
+      "FROM pg_catalog.pg_proc AS procedures "
+      "JOIN pg_catalog.pg_namespace AS namespaces "
+      "ON namespaces.oid = procedures.pronamespace "
+      "CROSS JOIN LATERAL unnest(CASE WHEN procedures.proallargtypes "
+      "IS NOT NULL THEN procedures.proallargtypes "
+      "ELSE procedures.proargtypes::oid[] END) WITH ORDINALITY "
+      "AS arguments(type_oid, ordinality) "
+      "WHERE procedures.prokind IN ('f', 'p') UNION ALL "
+      "SELECT current_database()::text, namespaces.nspname::text, "
+      "procedures.proname::text, NULL::text, 5::smallint, "
+      "procedures.prorettype, 0::integer "
+      "FROM pg_catalog.pg_proc AS procedures "
+      "JOIN pg_catalog.pg_namespace AS namespaces "
+      "ON namespaces.oid = procedures.pronamespace "
+      "WHERE procedures.prokind = 'f' AND procedures.prorettype <> 2278 "
+      "AND (procedures.proargmodes IS NULL OR NOT EXISTS "
+      "(SELECT 1 FROM unnest(procedures.proargmodes) AS mode "
+      "WHERE mode::text IN ('o', 'b', 't')))) "
+      "SELECT columns.procedure_cat, columns.procedure_schem, "
+      "columns.procedure_name, columns.column_name, columns.column_type, "
+      "CASE types.oid WHEN 16 THEN -7 WHEN 17 THEN -3 WHEN 18 THEN 1 "
+      "WHEN 20 THEN -5 WHEN 21 THEN 5 WHEN 23 THEN 4 WHEN 25 THEN -1 "
+      "WHEN 700 THEN 7 WHEN 701 THEN 8 WHEN 1042 THEN 1 "
+      "WHEN 1043 THEN 12 WHEN 1082 THEN 91 "
+      "WHEN 1083 THEN 92 WHEN 1266 THEN 92 "
+      "WHEN 1114 THEN 93 WHEN 1184 THEN 93 "
+      "WHEN 1700 THEN 2 ELSE 12 END::smallint AS data_type, "
+      "CASE types.oid WHEN 16 THEN 'boolean' WHEN 17 THEN 'bytea' "
+      "WHEN 18 THEN 'char' WHEN 20 THEN 'bigint' WHEN 21 THEN 'smallint' "
+      "WHEN 23 THEN 'integer' WHEN 25 THEN 'text' WHEN 700 THEN 'real' "
+      "WHEN 701 THEN 'double precision' WHEN 1042 THEN 'character' "
+      "WHEN 1043 THEN 'character varying' WHEN 1082 THEN 'date' "
+      "WHEN 1083 THEN 'time' WHEN 1266 THEN 'time with time zone' "
+      "WHEN 1114 THEN 'timestamp' WHEN 1184 THEN 'timestamp with time zone' "
+      "WHEN 1700 THEN 'numeric' ELSE types.typname END::text AS type_name, "
+      "CASE types.oid WHEN 16 THEN 1 WHEN 17 THEN 1073741824 "
+      "WHEN 18 THEN 1 WHEN 20 THEN 19 WHEN 21 THEN 5 WHEN 23 THEN 10 "
+      "WHEN 25 THEN 1073741824 WHEN 700 THEN 7 WHEN 701 THEN 15 "
+      "WHEN 1042 THEN 0 WHEN 1043 THEN 0 WHEN 1082 THEN 10 "
+      "WHEN 1083 THEN 15 WHEN 1266 THEN 21 WHEN 1114 THEN 29 "
+      "WHEN 1184 THEN 35 WHEN 1700 THEN 0 ELSE 0 END::integer "
+      "AS column_size, CASE types.oid WHEN 16 THEN 1 WHEN 17 THEN 1073741824 "
+      "WHEN 18 THEN 1 WHEN 20 THEN 8 WHEN 21 THEN 2 WHEN 23 THEN 4 "
+      "WHEN 25 THEN 1073741824 WHEN 700 THEN 4 WHEN 701 THEN 8 "
+      "WHEN 1042 THEN 0 WHEN 1043 THEN 0 WHEN 1082 THEN 10 "
+      "WHEN 1083 THEN 15 WHEN 1266 THEN 21 WHEN 1114 THEN 29 "
+      "WHEN 1184 THEN 35 WHEN 1700 THEN 0 ELSE 0 END::integer "
+      "AS buffer_length, CASE types.oid WHEN 20 THEN 0 WHEN 21 THEN 0 "
+      "WHEN 23 THEN 0 WHEN 700 THEN 6 WHEN 701 THEN 15 "
+      "WHEN 1083 THEN 6 WHEN 1266 THEN 6 WHEN 1114 THEN 6 "
+      "WHEN 1184 THEN 6 ELSE NULL END::smallint AS decimal_digits, "
+      "CASE WHEN types.oid IN (20, 21, 23, 700, 701, 1700) THEN 10 "
+      "ELSE NULL END::smallint AS num_prec_radix, 2::smallint AS nullable, "
+      "NULL::text AS remarks, NULL::text AS column_def, "
+      "CASE WHEN types.oid IN (1082, 1083, 1266, 1114, 1184) THEN 9 "
+      "ELSE CASE types.oid WHEN 16 THEN -7 WHEN 17 THEN -3 "
+      "WHEN 18 THEN 1 WHEN 20 THEN -5 WHEN 21 THEN 5 WHEN 23 THEN 4 "
+      "WHEN 25 THEN -1 WHEN 700 THEN 7 WHEN 701 THEN 8 "
+      "WHEN 1042 THEN 1 WHEN 1043 THEN 12 WHEN 1700 THEN 2 "
+      "ELSE 12 END END::smallint AS sql_data_type, "
+      "CASE types.oid WHEN 1082 THEN 1 WHEN 1083 THEN 2 WHEN 1266 THEN 2 "
+      "WHEN 1114 THEN 3 WHEN 1184 THEN 3 ELSE NULL END::smallint "
+      "AS sql_datetime_sub, CASE types.oid WHEN 17 THEN 1073741824 "
+      "WHEN 18 THEN 1 WHEN 25 THEN 1073741824 WHEN 1042 THEN 0 "
+      "WHEN 1043 THEN 0 ELSE NULL END::integer AS char_octet_length, "
+      "columns.ordinal_position, ''::text AS is_nullable "
+      "FROM routine_columns AS columns JOIN pg_catalog.pg_type AS types "
+      "ON types.oid = columns.type_oid WHERE 1=1";
+  if (catalog_name && !catalog_name->empty()) {
+    query += " AND columns.procedure_cat LIKE " +
+        quote_catalog_literal(*catalog_name);
+  }
+  if (schema_name && !schema_name->empty()) {
+    query += " AND columns.procedure_schem LIKE " +
+        quote_catalog_literal(*schema_name);
+  }
+  if (procedure_name && !procedure_name->empty()) {
+    query += " AND columns.procedure_name LIKE " +
+        quote_catalog_literal(*procedure_name);
+  }
+  if (column_name && !column_name->empty()) {
+    query += " AND columns.column_name LIKE " +
+        quote_catalog_literal(*column_name);
+  }
+  query +=
+      " ORDER BY procedure_cat, procedure_schem, procedure_name, "
+      "ordinal_position";
+  return execute_direct(query);
+}
+
 SQLRETURN ODBCStatement::row_count(SQLLEN* row_count_value) {
   if (!row_count_value) {
     set_error(SQLSTATE_GENERAL_ERROR, "Null pointer for row count");

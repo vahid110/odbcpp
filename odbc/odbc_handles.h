@@ -210,6 +210,11 @@ public:
   SQLRETURN procedures(const std::optional<std::string>& catalog_name,
                        const std::optional<std::string>& schema_name,
                        const std::optional<std::string>& procedure_name);
+  SQLRETURN procedure_columns(
+      const std::optional<std::string>& catalog_name,
+      const std::optional<std::string>& schema_name,
+      const std::optional<std::string>& procedure_name,
+      const std::optional<std::string>& column_name);
   SQLRETURN tables(const std::optional<std::string>& catalog_name,
                    const std::optional<std::string>& schema_name,
                    const std::optional<std::string>& table_name,
