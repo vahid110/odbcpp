@@ -319,7 +319,7 @@ private:
         nearest = std::min(nearest, request->deadline);
       }
     }
-    if (nearest == rs::util::Clock::time_point::max()) return 0;
+    if (nearest == rs::util::Clock::time_point::max()) return -1;
     const auto now = rs::util::Clock::now();
     if (nearest <= now) return 0;
     const auto duration = nearest - now;

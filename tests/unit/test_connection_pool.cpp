@@ -153,7 +153,10 @@ TEST_F(ConnectionPoolTest, ConnectionFailureHandling) {
   // But connection acquisition should fail
   auto conn = pool.acquire();
   EXPECT_FALSE(conn.has_value());
-  EXPECT_EQ(conn.error().value(), static_cast<int>(rs::util::DbErrorCode::ConnectionFailed));
+  EXPECT_TRUE(
+      conn.error() == rs::util::make_error_code(
+                          rs::util::DbErrorCode::ConnectionFailed) ||
+      conn.error() == rs::util::make_error_code(rs::util::DbErrorCode::Timeout));
 }
 
 TEST_F(ConnectionPoolTest, ReleaseInvalidConnection) {

@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_types.h"
 
+#include <chrono>
+#include <cstdint>
+
 class BindColIntegrationTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -29,6 +32,23 @@ protected:
     SQLHDBC hdbc = nullptr;
     SQLHSTMT hstmt = nullptr;
 };
+
+TEST_F(BindColIntegrationTest, QueryTimeoutUsesTransportDeadline) {
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_QUERY_TIMEOUT,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(1)), 0));
+
+    const auto started = std::chrono::steady_clock::now();
+    EXPECT_EQ(SQL_ERROR, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT pg_sleep(3)", SQL_NTS));
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    EXPECT_LT(elapsed, std::chrono::seconds(3));
+
+    SQLCHAR sqlstate[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HYT00", reinterpret_cast<char*>(sqlstate));
+}
 
 // Test basic column binding with different data types
 TEST_F(BindColIntegrationTest, BasicColumnBinding) {

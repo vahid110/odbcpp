@@ -1,5 +1,6 @@
 #include "odbc_api.h"
 #include "odbc_handles.h"
+#include <cstdint>
 #include <cstring>
 
 using namespace rs::odbc;
@@ -125,6 +126,32 @@ SQLRETURN SQLDisconnect(SQLHDBC connection_handle) {
   return conn->disconnect();
 }
 
+SQLRETURN SQLSetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
+                            SQLPOINTER value, SQLINTEGER) {
+  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  if (!conn) return SQL_INVALID_HANDLE;
+  return conn->set_attribute(
+      attribute, static_cast<SQLULEN>(reinterpret_cast<std::uintptr_t>(value)));
+}
+
+SQLRETURN SQLGetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
+                            SQLPOINTER value, SQLINTEGER,
+                            SQLINTEGER* string_length) {
+  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  if (!conn) return SQL_INVALID_HANDLE;
+  if (!value) {
+    conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                    "Null connection attribute output pointer");
+    return SQL_ERROR;
+  }
+  const auto result = conn->get_attribute(
+      attribute, static_cast<SQLULEN*>(value));
+  if (result == SQL_SUCCESS && string_length) {
+    *string_length = static_cast<SQLINTEGER>(sizeof(SQLULEN));
+  }
+  return result;
+}
+
 SQLRETURN SQLExecDirect(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length) {
   auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
@@ -146,6 +173,32 @@ SQLRETURN SQLGetData(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLS
   if (!stmt) return SQL_INVALID_HANDLE;
   
   return stmt->get_data(column_number, target_type, target_value, buffer_length, strlen_or_indicator);
+}
+
+SQLRETURN SQLSetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
+                         SQLPOINTER value, SQLINTEGER) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  return stmt->set_attribute(
+      attribute, static_cast<SQLULEN>(reinterpret_cast<std::uintptr_t>(value)));
+}
+
+SQLRETURN SQLGetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
+                         SQLPOINTER value, SQLINTEGER,
+                         SQLINTEGER* string_length) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  if (!value) {
+    stmt->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                    "Null statement attribute output pointer");
+    return SQL_ERROR;
+  }
+  const auto result = stmt->get_attribute(
+      attribute, static_cast<SQLULEN*>(value));
+  if (result == SQL_SUCCESS && string_length) {
+    *string_length = static_cast<SQLINTEGER>(sizeof(SQLULEN));
+  }
+  return result;
 }
 
 SQLRETURN SQLGetDiagRec(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,

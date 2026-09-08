@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- SQLSetConnectAttr/SQLGetConnectAttr support for SQL_ATTR_LOGIN_TIMEOUT
+- SQLSetStmtAttr/SQLGetStmtAttr support for SQL_ATTR_QUERY_TIMEOUT
 - PostgreSQL SCRAM-SHA-256 authentication with server-signature verification
 - PostgreSQL 17 SCRAM-SHA-256 integration coverage across transport modes
 - Chunked SQLGetData retrieval for long character values across repeated calls
@@ -22,11 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Linux AddressSanitizer and UndefinedBehaviorSanitizer CI coverage
 - Complete ODBC descriptor API suite (SQLBindCol, SQLDescribeParam)
 - Enhanced SQLFetch with automatic bound column population
-- Comprehensive test coverage (18 unit and integration tests)
+- Comprehensive test coverage (19 unit and integration tests)
 - Column binding example and documentation
 - Development roadmap and changelog
 
 ### Changed
+- ODBC login and query timeouts now drive transport deadlines and report HYT01/HYT00
+- Timed-out queries close their connection to prevent reuse of an unsynchronized protocol stream
 - SQLGetData now reports the remaining length before each chunk and returns SQL_NO_DATA after exhaustion
 - Continuous integration now builds the native POSTGRESQL target on Linux and Windows
 - Result conversions use PostgreSQL column metadata instead of assuming SQL_VARCHAR

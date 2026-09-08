@@ -42,7 +42,12 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
     auto connect_result = start_tls->connect_plain(
         settings.host, settings.port, deadline);
     if (connect_result.has_error()) {
-      return rs::util::Result<void>{rs::util::DbErrorCode::ConnectionFailed, connect_result.error_message()};
+      const auto code = connect_result.error() ==
+              rs::util::make_error_code(rs::util::DbErrorCode::Timeout)
+          ? rs::util::DbErrorCode::Timeout
+          : rs::util::DbErrorCode::ConnectionFailed;
+      return rs::util::Result<void>{
+          code, connect_result.error_message()};
     }
     
     // Send SSL request
@@ -57,7 +62,8 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
     std::vector<std::byte> response(1);
     auto recv_result = transport_->recv(response, deadline);
     if (recv_result.has_error()) {
-      return rs::util::Result<void>{rs::util::DbErrorCode::NetworkError, "Failed to read SSL response"};
+      return rs::util::Result<void>{
+          recv_result.error(), recv_result.error_message()};
     }
     
     if (recv_result->n != 1 || response[0] != std::byte{'S'}) {
@@ -69,7 +75,12 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
   } else {
     auto connect_result = transport_->connect(settings.host, settings.port, deadline);
     if (connect_result.has_error()) {
-      return rs::util::Result<void>{rs::util::DbErrorCode::ConnectionFailed, connect_result.error_message()};
+      const auto code = connect_result.error() ==
+              rs::util::make_error_code(rs::util::DbErrorCode::Timeout)
+          ? rs::util::DbErrorCode::Timeout
+          : rs::util::DbErrorCode::ConnectionFailed;
+      return rs::util::Result<void>{
+          code, connect_result.error_message()};
     }
   }
   
@@ -197,7 +208,7 @@ rs::util::Result<void> GenericDatabaseConnection::write_all_result(const std::ve
   while (offset < data.size()) {
     auto result = transport_->send(std::span<const std::byte>(data.data() + offset, data.size() - offset), deadline);
     if (result.has_error()) {
-      return rs::util::Result<void>{rs::util::DbErrorCode::NetworkError, result.error_message()};
+      return rs::util::Result<void>{result.error(), result.error_message()};
     }
     if (result->n == 0) {
       return rs::util::Result<void>{rs::util::DbErrorCode::NetworkError, "Write failed"};
@@ -223,7 +234,8 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
   while (offset < 5) {
     auto result = transport_->recv(std::span<std::byte>(header.data() + offset, 5 - offset), deadline);
     if (result.has_error()) {
-      return rs::util::Result<std::vector<std::byte>>{rs::util::DbErrorCode::NetworkError, result.error_message()};
+      return rs::util::Result<std::vector<std::byte>>{
+          result.error(), result.error_message()};
     }
     if (result->eof) {
       return rs::util::Result<std::vector<std::byte>>{rs::util::DbErrorCode::NetworkError, "Unexpected EOF"};
@@ -250,7 +262,8 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
   while (offset < message.size()) {
     auto result = transport_->recv(std::span<std::byte>(message.data() + offset, message.size() - offset), deadline);
     if (result.has_error()) {
-      return rs::util::Result<std::vector<std::byte>>{rs::util::DbErrorCode::NetworkError, result.error_message()};
+      return rs::util::Result<std::vector<std::byte>>{
+          result.error(), result.error_message()};
     }
     if (result->eof) {
       return rs::util::Result<std::vector<std::byte>>{rs::util::DbErrorCode::NetworkError, "Unexpected EOF"};
@@ -340,7 +353,7 @@ rs::util::Result<void> GenericDatabaseConnection::write_message_to_transport_res
   while (offset < data.size()) {
     auto result = transport.send(std::span<const std::byte>(data.data() + offset, data.size() - offset), deadline);
     if (result.has_error()) {
-      return rs::util::Result<void>{rs::util::DbErrorCode::NetworkError, result.error_message()};
+      return rs::util::Result<void>{result.error(), result.error_message()};
     }
     if (result->n == 0) {
       return rs::util::Result<void>{rs::util::DbErrorCode::NetworkError, "Write failed"};

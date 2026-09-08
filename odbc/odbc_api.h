@@ -16,6 +16,11 @@ SQLRETURN SQLConnect(SQLHDBC connection_handle,
                     SQLCHAR* user_name, SQLSMALLINT name_length2, 
                     SQLCHAR* authentication, SQLSMALLINT name_length3);
 SQLRETURN SQLDisconnect(SQLHDBC connection_handle);
+SQLRETURN SQLSetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
+                            SQLPOINTER value, SQLINTEGER string_length);
+SQLRETURN SQLGetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
+                            SQLPOINTER value, SQLINTEGER buffer_length,
+                            SQLINTEGER* string_length);
 
 // Statement execution
 SQLRETURN SQLExecDirect(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length);
@@ -23,6 +28,11 @@ SQLRETURN SQLFetch(SQLHSTMT statement_handle);
 SQLRETURN SQLGetData(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLSMALLINT target_type,
                     void* target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator);
 SQLRETURN SQLRowCount(SQLHSTMT statement_handle, SQLLEN* row_count);
+SQLRETURN SQLSetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
+                         SQLPOINTER value, SQLINTEGER string_length);
+SQLRETURN SQLGetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
+                         SQLPOINTER value, SQLINTEGER buffer_length,
+                         SQLINTEGER* string_length);
 
 // Error handling
 SQLRETURN SQLGetDiagRec(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,

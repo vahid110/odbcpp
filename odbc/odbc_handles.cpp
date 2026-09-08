@@ -36,6 +36,18 @@ bool enabled(const std::string& value) {
          normalized == "ON";
 }
 
+std::chrono::milliseconds timeout_duration(SQLULEN seconds) {
+  if (seconds == 0) return std::chrono::milliseconds::max();
+  constexpr auto maximum = std::chrono::milliseconds::max().count();
+  constexpr auto scale = std::chrono::milliseconds::period::den /
+      std::chrono::seconds::period::den;
+  if (seconds > static_cast<SQLULEN>(maximum / scale)) {
+    return std::chrono::milliseconds::max();
+  }
+  return std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(
+      seconds * scale));
+}
+
 rs::core::database::QueryParameterType parameter_type_for(
     const ParameterInfo& parameter) {
   using rs::core::database::QueryParameterType;
@@ -168,7 +180,7 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
     settings.password = params.count("PWD") ? params.at("PWD") :
                         (params.count("PASSWORD") ? params.at("PASSWORD") : password);
     settings.use_ssl = params.count("SSL") && enabled(params.at("SSL"));
-    settings.timeout = std::chrono::seconds(30);
+    settings.timeout = timeout_duration(login_timeout_seconds_);
 
     const auto transport_options = rs::core::transport::TransportOptions::resolve(
         resolved.driver_parameters, resolved.dsn_parameters,
@@ -182,7 +194,10 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
     // Connect synchronously for ODBC compatibility
     auto result = db_conn_->connect(settings);
     if (result.has_error()) {
-      set_error(SQLSTATE_CONNECTION_FAILURE, result.error_message());
+      const auto timeout = result.error() ==
+          rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
+      set_error(timeout ? SQLSTATE_CONNECTION_TIMEOUT : SQLSTATE_CONNECTION_FAILURE,
+                result.error_message());
       return SQL_ERROR;
     }
     
@@ -193,6 +208,30 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
     set_error(SQLSTATE_GENERAL_ERROR, e.what());
     return SQL_ERROR;
   }
+}
+
+SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
+  if (attribute != SQL_ATTR_LOGIN_TIMEOUT) {
+    set_error(SQLSTATE_INVALID_ATTRIBUTE,
+              "Unsupported connection attribute");
+    return SQL_ERROR;
+  }
+  if (connected_) {
+    set_error(SQLSTATE_ATTRIBUTE_CANNOT_BE_SET,
+              "Login timeout cannot be changed while connected");
+    return SQL_ERROR;
+  }
+  login_timeout_seconds_ = value;
+  return SQL_SUCCESS;
+}
+
+SQLRETURN ODBCConnection::get_attribute(SQLINTEGER attribute, SQLULEN* value) {
+  if (attribute != SQL_ATTR_LOGIN_TIMEOUT) {
+    set_error(SQLSTATE_INVALID_ATTRIBUTE, "Unsupported connection attribute");
+    return SQL_ERROR;
+  }
+  *value = login_timeout_seconds_;
+  return SQL_SUCCESS;
 }
 
 SQLRETURN ODBCConnection::disconnect() {
@@ -211,11 +250,16 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
   }
   
   try {
-    auto deadline = rs::util::make_deadline(std::chrono::seconds(30));
+    auto deadline = rs::util::make_deadline(
+        timeout_duration(query_timeout_seconds_));
     auto result = conn_->get_db_connection()->execute_query(sql, deadline);
     
     if (result.has_error()) {
-      set_error(SQLSTATE_SYNTAX_ERROR, result.error_message());
+      const auto timeout = result.error() ==
+          rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
+      set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_SYNTAX_ERROR,
+                result.error_message());
+      if (timeout) conn_->disconnect();
       return SQL_ERROR;
     }
     
@@ -227,6 +271,25 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
     set_error(SQLSTATE_GENERAL_ERROR, e.what());
     return SQL_ERROR;
   }
+}
+
+SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLULEN value) {
+  if (attribute != SQL_ATTR_QUERY_TIMEOUT) {
+    set_error(SQLSTATE_INVALID_ATTRIBUTE,
+              "Unsupported statement attribute");
+    return SQL_ERROR;
+  }
+  query_timeout_seconds_ = value;
+  return SQL_SUCCESS;
+}
+
+SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLULEN* value) {
+  if (attribute != SQL_ATTR_QUERY_TIMEOUT) {
+    set_error(SQLSTATE_INVALID_ATTRIBUTE, "Unsupported statement attribute");
+    return SQL_ERROR;
+  }
+  *value = query_timeout_seconds_;
+  return SQL_SUCCESS;
 }
 
 SQLRETURN ODBCStatement::fetch() {
@@ -462,11 +525,16 @@ SQLRETURN ODBCStatement::execute() {
     }
     
     // Use PostgreSQL Parse/Bind/Execute protocol
-    auto deadline = rs::util::make_deadline(std::chrono::seconds(30));
+    auto deadline = rs::util::make_deadline(
+        timeout_duration(query_timeout_seconds_));
     auto result = conn_->get_db_connection()->execute_prepared(prepared_sql_, param_values, deadline);
     
     if (result.has_error()) {
-      set_error(SQLSTATE_SYNTAX_ERROR, result.error_message());
+      const auto timeout = result.error() ==
+          rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
+      set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_SYNTAX_ERROR,
+                result.error_message());
+      if (timeout) conn_->disconnect();
       return SQL_ERROR;
     }
     
