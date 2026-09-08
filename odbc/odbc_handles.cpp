@@ -1244,6 +1244,40 @@ SQLRETURN ODBCStatement::columns(
   return execute_direct(query);
 }
 
+SQLRETURN ODBCStatement::primary_keys(
+    const std::optional<std::string>& catalog_name,
+    const std::optional<std::string>& schema_name,
+    const std::string& table_name) {
+  std::string query =
+      "SELECT current_database()::text AS table_cat, "
+      "keys.table_schema::text AS table_schem, "
+      "keys.table_name::text AS table_name, "
+      "keys.column_name::text AS column_name, "
+      "keys.ordinal_position::smallint AS key_seq, "
+      "constraints.constraint_name::text AS pk_name "
+      "FROM information_schema.table_constraints AS constraints "
+      "JOIN information_schema.key_column_usage AS keys "
+      "ON constraints.constraint_catalog = keys.constraint_catalog "
+      "AND constraints.constraint_schema = keys.constraint_schema "
+      "AND constraints.constraint_name = keys.constraint_name "
+      "AND constraints.table_catalog = keys.table_catalog "
+      "AND constraints.table_schema = keys.table_schema "
+      "AND constraints.table_name = keys.table_name "
+      "WHERE constraints.constraint_type = 'PRIMARY KEY' "
+      "AND keys.table_name = " + quote_catalog_literal(table_name);
+  if (catalog_name && !catalog_name->empty()) {
+    query += " AND keys.table_catalog = " +
+        quote_catalog_literal(*catalog_name);
+  }
+  if (schema_name && !schema_name->empty()) {
+    query += " AND keys.table_schema = " +
+        quote_catalog_literal(*schema_name);
+  }
+  query +=
+      " ORDER BY table_cat, table_schem, table_name, key_seq";
+  return execute_direct(query);
+}
+
 SQLRETURN ODBCStatement::row_count(SQLLEN* row_count_value) {
   if (!row_count_value) {
     set_error(SQLSTATE_GENERAL_ERROR, "Null pointer for row count");

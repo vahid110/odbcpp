@@ -56,6 +56,7 @@ namespace {
       case SQL_API_SQLNUMPARAMS:
       case SQL_API_SQLNATIVESQL:
       case SQL_API_SQLPREPARE:
+      case SQL_API_SQLPRIMARYKEYS:
       case SQL_API_SQLROWCOUNT:
       case SQL_API_SQLSETCONNECTATTR:
       case SQL_API_SQLSETENVATTR:
@@ -754,6 +755,42 @@ SQLRETURN SQLColumns(
     return SQL_ERROR;
   }
   return stmt->columns(catalog, schema, table, column);
+}
+
+SQLRETURN SQLPrimaryKeys(
+    SQLHSTMT statement_handle, SQLCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLCHAR* table_name,
+    SQLSMALLINT name_length3) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+
+  const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
+                                 std::optional<std::string>& output) {
+    if (!value) {
+      output.reset();
+      return true;
+    }
+    if (length < 0 && length != SQL_NTS) return false;
+    output = normalize_string(sqlchar_to_string(value, length));
+    return true;
+  };
+  std::optional<std::string> catalog;
+  std::optional<std::string> schema;
+  std::optional<std::string> table;
+  if (!read_argument(catalog_name, name_length1, catalog) ||
+      !read_argument(schema_name, name_length2, schema) ||
+      !read_argument(table_name, name_length3, table)) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid SQLPrimaryKeys argument length");
+    return SQL_ERROR;
+  }
+  if (!table) {
+    stmt->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                    "SQLPrimaryKeys requires a table name");
+    return SQL_ERROR;
+  }
+  return stmt->primary_keys(catalog, schema, *table);
 }
 
 SQLRETURN SQLTables(

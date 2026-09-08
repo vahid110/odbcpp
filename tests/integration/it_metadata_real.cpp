@@ -200,6 +200,41 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLColumns) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, ListsPostgreSQLPrimaryKeys) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_primary_key_test("
+                  "tenant_id integer, item_id integer, "
+                  "PRIMARY KEY(tenant_id, item_id))",
+        SQL_NTS));
+    SQLCHAR table_name[] = "odbcpp_primary_key_test";
+    ASSERT_EQ(SQL_SUCCESS, SQLPrimaryKeys(
+        hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS));
+
+    char column_name[64]{};
+    char key_name[128]{};
+    SQLSMALLINT key_sequence = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 4, SQL_C_CHAR, column_name, sizeof(column_name), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 5, SQL_C_SSHORT, &key_sequence, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 6, SQL_C_CHAR, key_name, sizeof(key_name), nullptr));
+    EXPECT_STREQ("tenant_id", column_name);
+    EXPECT_EQ(1, key_sequence);
+    EXPECT_STREQ("odbcpp_primary_key_test_pkey", key_name);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 4, SQL_C_CHAR, column_name, sizeof(column_name), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 5, SQL_C_SSHORT, &key_sequence, 0, nullptr));
+    EXPECT_STREQ("item_id", column_name);
+    EXPECT_EQ(2, key_sequence);
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, ErrorCases) {
     // Execute query first
     SQLRETURN ret = SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS);

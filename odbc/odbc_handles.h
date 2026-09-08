@@ -193,6 +193,9 @@ public:
                     const std::optional<std::string>& schema_name,
                     const std::optional<std::string>& table_name,
                     const std::optional<std::string>& column_name);
+  SQLRETURN primary_keys(const std::optional<std::string>& catalog_name,
+                         const std::optional<std::string>& schema_name,
+                         const std::string& table_name);
   SQLRETURN tables(const std::optional<std::string>& catalog_name,
                    const std::optional<std::string>& schema_name,
                    const std::optional<std::string>& table_name,

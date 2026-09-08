@@ -42,6 +42,11 @@ SQLRETURN SQLColumns(
     SQLSMALLINT name_length2, SQLCHAR* table_name,
     SQLSMALLINT name_length3, SQLCHAR* column_name,
     SQLSMALLINT name_length4);
+SQLRETURN SQLPrimaryKeys(
+    SQLHSTMT statement_handle, SQLCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLCHAR* table_name,
+    SQLSMALLINT name_length3);
 SQLRETURN SQLTables(
     SQLHSTMT statement_handle, SQLCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLCHAR* schema_name,
