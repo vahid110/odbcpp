@@ -344,8 +344,10 @@ connection string, DSN, driver section in `odbcinst.ini`, built-in defaults.
 Non-TLS connections can explicitly select the native reactor with
 `TransportMode=Async`, `DeadlineModel=Strict`, and `AsyncEngine=Epoll` on
 Linux or `AsyncEngine=IOCP` on Windows; `AsyncEngine=Auto` selects the native
-engine on either platform. Async TLS remains under development, so use `Auto`
-or `Sync` when TLS is enabled.
+engine on either platform. Explicit asynchronous mode also supports TLS,
+including PostgreSQL's in-band SSL upgrade. `Auto` remains conservative and
+selects the synchronous implementation until broader TLS integration coverage
+is in place.
 
 ### System Installation (Optional)
 

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "core/transport/socket_transport.h"
+#include "core/transport/async_tls_transport.h"
 #include "core/transport/tls_transport.h"
 #include "core/transport/transport_factory.h"
 #include "core/transport/transport_options.h"
@@ -118,6 +119,22 @@ TEST(TransportFactoryTest, CreatesAvailablePlatformAsyncBackend) {
   EXPECT_EQ(iocp->queue_depth(), 256u);
 #else
   EXPECT_THROW(TransportFactory::create(options, false), std::invalid_argument);
+#endif
+}
+
+TEST(TransportFactoryTest, WrapsPlatformAsyncBackendWithTls) {
+  TransportOptions options;
+  options.mode = TransportMode::Async;
+#if defined(__linux__) || defined(_WIN32)
+  auto transport = TransportFactory::create(options, true);
+  auto* tls = dynamic_cast<rs::core::transport::AsyncTlsTransport*>(
+      transport.get());
+  ASSERT_NE(tls, nullptr);
+  EXPECT_EQ(tls->max_inflight(), 64u);
+  EXPECT_EQ(tls->queue_depth(), 256u);
+#else
+  EXPECT_THROW(TransportFactory::create(options, true),
+               std::invalid_argument);
 #endif
 }
 
