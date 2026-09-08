@@ -254,9 +254,9 @@ SQLRETURN ODBCStatement::fetch() {
         continue;
       }
 
-      const auto sql_type = i < column_info_.size()
-          ? column_info_[i].sql_type : SQL_VARCHAR;
-      const auto target_type = binding.target_type == SQL_C_DEFAULT
+      const SQLSMALLINT sql_type = i < column_info_.size()
+          ? column_info_[i].sql_type : static_cast<SQLSMALLINT>(SQL_VARCHAR);
+      const SQLSMALLINT target_type = binding.target_type == SQL_C_DEFAULT
           ? ResultTypes::default_c_type(sql_type) : binding.target_type;
       if (!ResultTypes::is_conversion_supported(sql_type, target_type)) {
         set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
@@ -307,9 +307,9 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     return SQL_SUCCESS;
   }
   
-  const auto sql_type = col <= column_info_.size()
-      ? column_info_[col - 1].sql_type : SQL_VARCHAR;
-  const auto effective_target_type = target_type == SQL_C_DEFAULT
+  const SQLSMALLINT sql_type = col <= column_info_.size()
+      ? column_info_[col - 1].sql_type : static_cast<SQLSMALLINT>(SQL_VARCHAR);
+  const SQLSMALLINT effective_target_type = target_type == SQL_C_DEFAULT
       ? ResultTypes::default_c_type(sql_type) : target_type;
 
   if (!ResultTypes::is_conversion_supported(sql_type, effective_target_type)) {
