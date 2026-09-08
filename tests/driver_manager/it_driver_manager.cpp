@@ -2,6 +2,7 @@
 #include <sqlext.h>
 
 #include <cstdio>
+#include <cstring>
 
 namespace {
 
@@ -71,6 +72,20 @@ int main() {
   }
   if (completed_length != sizeof(connection_string) - 1) {
     std::fprintf(stderr, "Unexpected completed connection string length\n");
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+  SQLCHAR input_sql[] = "SELECT 42";
+  SQLCHAR native_sql[sizeof(input_sql)]{};
+  SQLINTEGER native_sql_length = 0;
+  if (!succeeded(SQLNativeSql(
+          connection, input_sql, SQL_NTS, native_sql, sizeof(native_sql),
+          &native_sql_length)) ||
+      native_sql_length != sizeof(input_sql) - 1 ||
+      std::strcmp(reinterpret_cast<const char*>(native_sql), "SELECT 42") != 0) {
+    print_diagnostic(SQL_HANDLE_DBC, connection);
     SQLDisconnect(connection);
     SQLFreeHandle(SQL_HANDLE_DBC, connection);
     SQLFreeHandle(SQL_HANDLE_ENV, environment);

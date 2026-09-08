@@ -52,6 +52,7 @@ namespace {
       case SQL_API_SQLGETTYPEINFO:
       case SQL_API_SQLNUMRESULTCOLS:
       case SQL_API_SQLNUMPARAMS:
+      case SQL_API_SQLNATIVESQL:
       case SQL_API_SQLPREPARE:
       case SQL_API_SQLROWCOUNT:
       case SQL_API_SQLSETCONNECTATTR:
@@ -601,6 +602,53 @@ SQLRETURN SQLGetFunctions(SQLHDBC connection_handle, SQLUSMALLINT function_id,
 
   *supported = static_cast<SQLUSMALLINT>(
       is_supported_function(function_id) ? SQL_TRUE : SQL_FALSE);
+  return SQL_SUCCESS;
+}
+
+SQLRETURN SQLNativeSql(
+    SQLHDBC connection_handle, SQLCHAR* input_statement,
+    SQLINTEGER text_length1, SQLCHAR* output_statement,
+    SQLINTEGER buffer_length, SQLINTEGER* text_length2) {
+  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  if (!conn) return SQL_INVALID_HANDLE;
+  if (!input_statement) {
+    conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                    "Input SQL statement is null");
+    return SQL_ERROR;
+  }
+  if (text_length1 < 0 && text_length1 != SQL_NTS) {
+    conn->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid input SQL statement length");
+    return SQL_ERROR;
+  }
+  if (output_statement && buffer_length < 0) {
+    conn->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid output SQL buffer length");
+    return SQL_ERROR;
+  }
+  if (!conn->is_connected()) {
+    conn->set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
+    return SQL_ERROR;
+  }
+
+  const auto native_sql = normalize_string(
+      sqlchar_to_string(input_statement, text_length1));
+  if (text_length2) {
+    *text_length2 = static_cast<SQLINTEGER>(std::min(
+        native_sql.size(),
+        static_cast<std::size_t>(std::numeric_limits<SQLINTEGER>::max())));
+  }
+  if (!output_statement || buffer_length <= 0) return SQL_SUCCESS;
+
+  const auto copied_length = std::min(
+      native_sql.size(), static_cast<std::size_t>(buffer_length - 1));
+  std::memcpy(output_statement, native_sql.data(), copied_length);
+  output_statement[copied_length] = '\0';
+  if (copied_length < native_sql.size()) {
+    conn->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                    "Output SQL statement was truncated");
+    return SQL_SUCCESS_WITH_INFO;
+  }
   return SQL_SUCCESS;
 }
 

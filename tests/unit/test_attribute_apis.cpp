@@ -247,6 +247,17 @@ TEST_F(AttributeApisTest, DriverConnectValidatesArgumentsBeforeConnecting) {
   EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
+TEST_F(AttributeApisTest, NativeSqlValidatesInputAndConnectionState) {
+  EXPECT_EQ(SQL_ERROR, SQLNativeSql(
+      connection_, nullptr, 0, nullptr, 0, nullptr));
+  EXPECT_EQ("HY009", diagnostic_state(SQL_HANDLE_DBC, connection_));
+
+  SQLCHAR query[] = "SELECT 1";
+  EXPECT_EQ(SQL_ERROR, SQLNativeSql(
+      connection_, query, SQL_NTS, nullptr, 0, nullptr));
+  EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection_));
+}
+
 TEST(AttributeDeadlineTest, SaturatesUnlimitedTimeoutWithoutOverflow) {
   EXPECT_EQ(rs::util::Deadline::max(),
             rs::util::make_deadline(std::chrono::milliseconds::max()));

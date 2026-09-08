@@ -62,6 +62,10 @@ SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type,
                     void* info_value, SQLSMALLINT buffer_length, SQLSMALLINT* string_length);
 SQLRETURN SQLGetFunctions(SQLHDBC connection_handle, SQLUSMALLINT function_id,
                           SQLUSMALLINT* supported);
+SQLRETURN SQLNativeSql(
+    SQLHDBC connection_handle, SQLCHAR* input_statement,
+    SQLINTEGER text_length1, SQLCHAR* output_statement,
+    SQLINTEGER buffer_length, SQLINTEGER* text_length2);
 
 // Environment attributes
 SQLRETURN SQLSetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute, 
