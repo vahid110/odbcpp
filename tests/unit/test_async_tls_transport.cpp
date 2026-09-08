@@ -3,6 +3,8 @@
 #if defined(__linux__) || defined(_WIN32)
 
 #include "core/transport/async_tls_transport.h"
+#include "core/database/generic_database_connection.h"
+#include "core/database/postgres/pg_protocol_parser.h"
 #ifdef __linux__
 #include "core/transport/epoll_transport.h"
 #else
@@ -20,12 +22,14 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -61,8 +65,8 @@ std::unique_ptr<IAsyncTransport> make_native_transport(
 
 class TlsLoopbackServer {
 public:
-  enum class Behavior { DirectEcho, StartTlsEcho, SilentBeforeTls,
-                        SilentAfterTls };
+  enum class Behavior { DirectEcho, StartTlsEcho, PostgresStartup,
+                        SilentBeforeTls, SilentAfterTls };
 
   explicit TlsLoopbackServer(Behavior behavior) : behavior_(behavior) {
     if (behavior_ != Behavior::SilentBeforeTls) configure_tls();
@@ -181,7 +185,8 @@ private:
       close_test_socket(client);
       return;
     }
-    if (behavior_ == Behavior::StartTlsEcho) {
+    if (behavior_ == Behavior::StartTlsEcho ||
+        behavior_ == Behavior::PostgresStartup) {
       std::array<std::byte, 8> request{};
       if (!receive_exact(client, request.data(), request.size())) {
         close_test_socket(client);
@@ -209,6 +214,24 @@ private:
 
     if (behavior_ == Behavior::SilentAfterTls) {
       std::this_thread::sleep_for(300ms);
+    } else if (behavior_ == Behavior::PostgresStartup) {
+      std::array<unsigned char, 4> length_bytes{};
+      if (ssl_read_exact(ssl, length_bytes.data(), length_bytes.size())) {
+        const std::uint32_t length =
+            (static_cast<std::uint32_t>(length_bytes[0]) << 24) |
+            (static_cast<std::uint32_t>(length_bytes[1]) << 16) |
+            (static_cast<std::uint32_t>(length_bytes[2]) << 8) |
+            static_cast<std::uint32_t>(length_bytes[3]);
+        if (length >= 4) {
+          std::vector<std::byte> startup(length - 4);
+          if (ssl_read_exact(ssl, startup.data(), startup.size())) {
+            constexpr std::array<unsigned char, 15> ready{
+                'R', 0, 0, 0, 8, 0, 0, 0, 0,
+                'Z', 0, 0, 0, 5, 'I'};
+            (void)ssl_write_all(ssl, ready.data(), ready.size());
+          }
+        }
+      }
     } else {
       std::array<char, 4> request{};
       if (::SSL_read(ssl, request.data(),
@@ -223,6 +246,30 @@ private:
     // SIGPIPE on Unix and obscures the transport behavior under test.
     ::SSL_free(ssl);
     close_test_socket(client);
+  }
+
+  static bool ssl_read_exact(SSL* ssl, void* data, std::size_t size) {
+    std::size_t offset = 0;
+    auto* bytes = static_cast<unsigned char*>(data);
+    while (offset < size) {
+      const int count = ::SSL_read(
+          ssl, bytes + offset, static_cast<int>(size - offset));
+      if (count <= 0) return false;
+      offset += static_cast<std::size_t>(count);
+    }
+    return true;
+  }
+
+  static bool ssl_write_all(SSL* ssl, const void* data, std::size_t size) {
+    std::size_t offset = 0;
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    while (offset < size) {
+      const int count = ::SSL_write(
+          ssl, bytes + offset, static_cast<int>(size - offset));
+      if (count <= 0) return false;
+      offset += static_cast<std::size_t>(count);
+    }
+    return true;
   }
 
   rs::platform::WSAInit winsock_{};
@@ -302,6 +349,29 @@ TEST(AsyncTlsTransportTest, UpgradesExistingPlainConnection) {
   auto received = transport.recv(response, rs::util::make_deadline(1s));
   ASSERT_TRUE(received.has_value()) << received.error_message();
   EXPECT_EQ(std::memcmp(response.data(), "pong", response.size()), 0);
+}
+
+TEST(AsyncTlsTransportTest, SupportsPostgresStartTlsAndStartup) {
+  TlsLoopbackServer server(TlsLoopbackServer::Behavior::PostgresStartup);
+  auto tls = std::make_unique<AsyncTlsTransport>(make_native_transport());
+  tls->set_verify(false);
+  auto parser =
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>();
+  rs::core::database::GenericDatabaseConnection connection(
+      std::move(parser), std::move(tls));
+
+  rs::core::database::ConnectionSettings settings;
+  settings.host = "127.0.0.1";
+  settings.port = server.port();
+  settings.database = "test";
+  settings.user = "test";
+  settings.use_ssl = true;
+  settings.timeout = 2s;
+
+  auto connected = connection.connect(settings);
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+  EXPECT_TRUE(connection.is_connected());
+  connection.disconnect();
 }
 
 TEST(AsyncTlsTransportTest, HandshakeHonorsStrictDeadline) {
