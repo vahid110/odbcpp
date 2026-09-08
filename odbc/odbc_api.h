@@ -22,6 +22,7 @@ SQLRETURN SQLExecDirect(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLI
 SQLRETURN SQLFetch(SQLHSTMT statement_handle);
 SQLRETURN SQLGetData(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLSMALLINT target_type,
                     void* target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator);
+SQLRETURN SQLRowCount(SQLHSTMT statement_handle, SQLLEN* row_count);
 
 // Error handling
 SQLRETURN SQLGetDiagRec(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,

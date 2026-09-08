@@ -1,5 +1,6 @@
 #include "pg_protocol_parser.h"
 #include <cctype>
+#include <charconv>
 #include <cstring>
 #include <limits>
 #include <openssl/evp.h>
@@ -59,6 +60,49 @@ std::uint32_t postgres_type_oid(QueryParameterType type) {
     case QueryParameterType::Numeric: return 1700;
   }
   return 0;
+}
+
+std::uint16_t read_u16(std::span<const std::byte> data, std::size_t offset) {
+  if (offset + 2 > data.size()) {
+    throw std::runtime_error("truncated PostgreSQL metadata message");
+  }
+  return (static_cast<std::uint16_t>(data[offset]) << 8) |
+         static_cast<std::uint16_t>(data[offset + 1]);
+}
+
+std::uint32_t read_u32(std::span<const std::byte> data, std::size_t offset) {
+  if (offset + 4 > data.size()) {
+    throw std::runtime_error("truncated PostgreSQL metadata message");
+  }
+  return (static_cast<std::uint32_t>(data[offset]) << 24) |
+         (static_cast<std::uint32_t>(data[offset + 1]) << 16) |
+         (static_cast<std::uint32_t>(data[offset + 2]) << 8) |
+         static_cast<std::uint32_t>(data[offset + 3]);
+}
+
+std::string read_cstring(std::span<const std::byte> data, std::size_t& offset) {
+  const auto start = offset;
+  while (offset < data.size() && data[offset] != std::byte{0}) ++offset;
+  if (offset == data.size()) {
+    throw std::runtime_error("unterminated PostgreSQL metadata string");
+  }
+  std::string value(reinterpret_cast<const char*>(data.data() + start),
+                    offset - start);
+  ++offset;
+  return value;
+}
+
+std::size_t command_affected_rows(std::string_view command_tag) {
+  const auto separator = command_tag.find_last_of(' ');
+  const auto number = separator == std::string_view::npos
+      ? command_tag : command_tag.substr(separator + 1);
+  if (number.empty() || !std::isdigit(static_cast<unsigned char>(number[0]))) {
+    return 0;
+  }
+  std::size_t rows = 0;
+  const auto [end, error] = std::from_chars(
+      number.data(), number.data() + number.size(), rows);
+  return error == std::errc{} && end == number.data() + number.size() ? rows : 0;
 }
 
 bool is_dollar_tag_start(char ch) {
@@ -347,6 +391,12 @@ std::vector<std::byte> PgProtocolParser::create_prepared_query(
   for (const auto& param : params) append_u32(out, postgres_type_oid(param.type));
   finish_message(out, start);
 
+  // Describing the statement produces ParameterDescription before binding.
+  start = begin_message(out, 'D');
+  out.push_back(std::byte{'S'});
+  append_cstring(out, {});
+  finish_message(out, start);
+
   // Bind text-format values to the unnamed portal. A length of -1 is SQL NULL.
   start = begin_message(out, 'B');
   append_cstring(out, {});
@@ -453,6 +503,66 @@ std::vector<std::vector<std::string>> PgProtocolParser::extract_query_results(
   }
   
   return rows;
+}
+
+QueryResult PgProtocolParser::extract_query_result(
+    const std::vector<Message>& messages) {
+  QueryResult result;
+  result.rows = extract_query_results(messages);
+
+  for (const auto& message : messages) {
+    const std::span<const std::byte> payload(message.payload);
+    if (message.tag == 'T') { // RowDescription
+      std::size_t offset = 0;
+      const auto count = read_u16(payload, offset);
+      offset += 2;
+      std::vector<ResultColumnMetadata> columns;
+      columns.reserve(count);
+      for (std::uint16_t i = 0; i < count; ++i) {
+        ResultColumnMetadata column;
+        column.name = read_cstring(payload, offset);
+        column.table_id = read_u32(payload, offset);
+        offset += 4;
+        column.table_column = static_cast<std::int16_t>(read_u16(payload, offset));
+        offset += 2;
+        column.type_id = read_u32(payload, offset);
+        offset += 4;
+        column.type_size = static_cast<std::int16_t>(read_u16(payload, offset));
+        offset += 2;
+        column.type_modifier = static_cast<std::int32_t>(read_u32(payload, offset));
+        offset += 4;
+        column.format_code = static_cast<std::int16_t>(read_u16(payload, offset));
+        offset += 2;
+        columns.push_back(std::move(column));
+      }
+      if (offset != payload.size()) {
+        throw std::runtime_error("invalid PostgreSQL RowDescription length");
+      }
+      result.columns = std::move(columns);
+    } else if (message.tag == 't') { // ParameterDescription
+      std::size_t offset = 0;
+      const auto count = read_u16(payload, offset);
+      offset += 2;
+      std::vector<std::uint32_t> parameter_types;
+      parameter_types.reserve(count);
+      for (std::uint16_t i = 0; i < count; ++i) {
+        parameter_types.push_back(read_u32(payload, offset));
+        offset += 4;
+      }
+      if (offset != payload.size()) {
+        throw std::runtime_error("invalid PostgreSQL ParameterDescription length");
+      }
+      result.parameter_type_ids = std::move(parameter_types);
+    } else if (message.tag == 'C') { // CommandComplete
+      std::size_t offset = 0;
+      result.command_tag = read_cstring(payload, offset);
+      if (offset != payload.size()) {
+        throw std::runtime_error("invalid PostgreSQL CommandComplete length");
+      }
+      result.affected_rows = command_affected_rows(result.command_tag);
+    }
+  }
+  return result;
 }
 
 std::string PgProtocolParser::md5_hex(const void* data, size_t n) {

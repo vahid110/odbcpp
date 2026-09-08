@@ -8,6 +8,7 @@
 #include "core/util/deadline.h"
 #include "core/util/result.h"
 #include "query_parameter.h"
+#include "query_result.h"
 
 namespace rs::core::database {
 
@@ -21,12 +22,6 @@ struct ConnectionSettings {
   bool use_ssl = true;
   std::string ssl_ca_file;
   std::string ssl_ca_dir;
-};
-
-struct QueryResult {
-  std::vector<std::vector<std::string>> rows;
-  std::vector<std::string> column_names;
-  size_t affected_rows = 0;
 };
 
 class IDatabaseConnection {

@@ -172,6 +172,7 @@ public:
   
   // Metadata functions
   SQLRETURN get_num_result_cols(SQLSMALLINT* column_count);
+  SQLRETURN row_count(SQLLEN* row_count);
   SQLRETURN describe_col(SQLUSMALLINT column_number, SQLCHAR* column_name, SQLSMALLINT name_buffer_length,
                         SQLSMALLINT* name_length, SQLSMALLINT* data_type, SQLULEN* column_size,
                         SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable);
@@ -203,6 +204,10 @@ private:
   size_t current_row_ = 0;
   bool executed_ = false;
   bool prepared_ = false;
+  SQLLEN affected_rows_ = 0;
+
+  void apply_query_result(rs::core::database::QueryResult result,
+                          bool include_parameter_metadata);
 };
 
 // Handle registry for validation

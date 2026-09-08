@@ -168,9 +168,12 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
         rs::util::DbErrorCode::QueryFailed, "Query error: " + last_error_};
   }
 
-  QueryResult result;
-  result.rows = parser_->extract_query_results(messages);
-  return rs::util::Result<QueryResult>{std::move(result)};
+  try {
+    return rs::util::Result<QueryResult>{parser_->extract_query_result(messages)};
+  } catch (const std::exception& error) {
+    return rs::util::Result<QueryResult>{
+        rs::util::DbErrorCode::ProtocolError, error.what()};
+  }
 }
 
 std::string GenericDatabaseConnection::get_parameter(std::string_view key) const {

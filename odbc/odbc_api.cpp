@@ -351,6 +351,13 @@ SQLRETURN SQLNumResultCols(SQLHSTMT statement_handle, SQLSMALLINT* column_count)
   return stmt->get_num_result_cols(column_count);
 }
 
+SQLRETURN SQLRowCount(SQLHSTMT statement_handle, SQLLEN* row_count) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+
+  return stmt->row_count(row_count);
+}
+
 SQLRETURN SQLDescribeCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number,
                         SQLCHAR* column_name, SQLSMALLINT name_buffer_length, SQLSMALLINT* name_length,
                         SQLSMALLINT* data_type, SQLULEN* column_size, SQLSMALLINT* decimal_digits,

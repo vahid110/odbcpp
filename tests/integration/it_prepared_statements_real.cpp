@@ -129,6 +129,22 @@ TEST_F(PreparedStatementIntegrationTest, ComplexMultiParameterQuery) {
     EXPECT_STREQ("30", sum);      // 10 + 20
     EXPECT_STREQ("21", product);  // 3 * 7
     EXPECT_STREQ("Complex Query", result_text);
+
+    SQLSMALLINT parameter_type = 0;
+    SQLULEN parameter_size = 0;
+    SQLSMALLINT decimal_digits = -1;
+    SQLSMALLINT nullable = 0;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLDescribeParam(hstmt, 1, &parameter_type, &parameter_size,
+                               &decimal_digits, &nullable));
+    EXPECT_EQ(SQL_INTEGER, parameter_type);
+    EXPECT_EQ(10u, parameter_size);
+    EXPECT_EQ(SQL_NULLABLE_UNKNOWN, nullable);
+
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLDescribeParam(hstmt, 5, &parameter_type, &parameter_size,
+                               &decimal_digits, &nullable));
+    EXPECT_EQ(SQL_VARCHAR, parameter_type);
 }
 
 // Test prepared statement reuse

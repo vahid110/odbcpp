@@ -7,6 +7,7 @@
 #include <map>
 #include "core/util/deadline.h"
 #include "query_parameter.h"
+#include "query_result.h"
 
 namespace rs::core::database {
 
@@ -52,6 +53,11 @@ public:
   virtual std::string extract_error_message(const Message& msg) = 0;
   virtual std::vector<std::vector<std::string>> extract_query_results(
     const std::vector<Message>& messages) = 0;
+  virtual QueryResult extract_query_result(const std::vector<Message>& messages) {
+    QueryResult result;
+    result.rows = extract_query_results(messages);
+    return result;
+  }
 };
 
 } // namespace rs::core::database

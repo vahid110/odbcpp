@@ -51,7 +51,17 @@ TEST_F(MetadataIntegrationTest, BasicMetadata) {
     ret = SQLDescribeCol(hstmt, 1, column_name, sizeof(column_name), &name_length,
                         &data_type, &column_size, &decimal_digits, &nullable);
     EXPECT_EQ(SQL_SUCCESS, ret);
-    EXPECT_EQ(SQL_VARCHAR, data_type);  // Currently all columns are VARCHAR
+    EXPECT_STREQ("greeting", (char*)column_name);
+    EXPECT_EQ(8, name_length);
+    EXPECT_EQ(SQL_VARCHAR, data_type);
+    EXPECT_EQ(SQL_NULLABLE_UNKNOWN, nullable);
+
+    ret = SQLDescribeCol(hstmt, 2, column_name, sizeof(column_name), &name_length,
+                        &data_type, &column_size, &decimal_digits, &nullable);
+    EXPECT_EQ(SQL_SUCCESS, ret);
+    EXPECT_STREQ("answer", (char*)column_name);
+    EXPECT_EQ(SQL_INTEGER, data_type);
+    EXPECT_EQ(10u, column_size);
     
     // Test column attribute
     SQLLEN numeric_attr;
@@ -80,6 +90,28 @@ TEST_F(MetadataIntegrationTest, MultipleColumns) {
                             &data_type, nullptr, nullptr, nullptr);
         EXPECT_EQ(SQL_SUCCESS, ret) << "Failed to describe column " << i;
     }
+}
+
+TEST_F(MetadataIntegrationTest, ReportsAffectedRows) {
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLExecDirect(hstmt,
+                            (SQLCHAR*)"CREATE TEMP TABLE row_count_test(value int)",
+                            SQL_NTS));
+
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLExecDirect(hstmt,
+                            (SQLCHAR*)"INSERT INTO row_count_test VALUES (1), (2), (3)",
+                            SQL_NTS));
+    SQLLEN row_count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLRowCount(hstmt, &row_count));
+    EXPECT_EQ(3, row_count);
+
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLExecDirect(hstmt,
+                            (SQLCHAR*)"UPDATE row_count_test SET value = value + 1 WHERE value >= 2",
+                            SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLRowCount(hstmt, &row_count));
+    EXPECT_EQ(2, row_count);
 }
 
 TEST_F(MetadataIntegrationTest, ErrorCases) {

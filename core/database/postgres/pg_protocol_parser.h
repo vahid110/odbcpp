@@ -36,6 +36,7 @@ public:
   std::string extract_error_message(const Message& msg) override;
   std::vector<std::vector<std::string>> extract_query_results(
     const std::vector<Message>& messages) override;
+  QueryResult extract_query_result(const std::vector<Message>& messages) override;
 
 private:
   static std::string md5_hex(const void* data, size_t n);

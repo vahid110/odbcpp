@@ -5,7 +5,9 @@
 #include "core/transport/transport_factory.h"
 #include "core/transport/transport_options.h"
 #include "core/util/deadline.h"
+#include <algorithm>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <optional>
 
@@ -89,6 +91,70 @@ rs::core::database::QueryParameterType parameter_type_for(
   }
 }
 
+struct OdbcTypeInfo {
+  SQLSMALLINT sql_type{SQL_VARCHAR};
+  SQLULEN column_size{255};
+  SQLSMALLINT decimal_digits{0};
+};
+
+OdbcTypeInfo postgres_type_info(std::uint32_t oid, std::int16_t type_size,
+                                std::int32_t type_modifier) {
+  switch (oid) {
+    case 16: return {SQL_BIT, 1, 0};
+    case 17: return {SQL_VARBINARY, type_size > 0 ? static_cast<SQLULEN>(type_size) : 0, 0};
+    case 18: return {SQL_CHAR, 1, 0};
+    case 19: return {SQL_VARCHAR, 63, 0};
+    case 20: return {SQL_BIGINT, 19, 0};
+    case 21: return {SQL_SMALLINT, 5, 0};
+    case 23: return {SQL_INTEGER, 10, 0};
+    case 25: return {SQL_VARCHAR, 0, 0};
+    case 26: return {SQL_BIGINT, 10, 0};
+    case 700: return {SQL_REAL, 7, 6};
+    case 701: return {SQL_DOUBLE, 15, 15};
+    case 1042:
+    case 1043: {
+      const auto length = type_modifier >= 4
+          ? static_cast<SQLULEN>(type_modifier - 4) : 0;
+      return {static_cast<SQLSMALLINT>(
+                  oid == 1042 ? SQL_CHAR : SQL_VARCHAR), length, 0};
+    }
+    case 1082: return {SQL_TYPE_DATE, 10, 0};
+    case 1083:
+    case 1266: return {SQL_TYPE_TIME, 15,
+                       static_cast<SQLSMALLINT>(type_modifier >= 0 ? type_modifier : 6)};
+    case 1114:
+    case 1184: return {SQL_TYPE_TIMESTAMP, 29,
+                       static_cast<SQLSMALLINT>(type_modifier >= 0 ? type_modifier : 6)};
+    case 114:
+    case 2950:
+    case 3802: return {SQL_VARCHAR, 0, 0};
+    case 1700: {
+      if (type_modifier < 4) return {SQL_NUMERIC, 0, 0};
+      const auto modifier = static_cast<std::uint32_t>(type_modifier - 4);
+      const auto precision = static_cast<SQLULEN>((modifier >> 16) & 0xffff);
+      const auto scale = static_cast<SQLSMALLINT>(modifier & 0xffff);
+      return {SQL_NUMERIC, precision, scale};
+    }
+    default:
+      return {SQL_VARCHAR,
+              type_size > 0 ? static_cast<SQLULEN>(type_size) : 0, 0};
+  }
+}
+
+ColumnInfo column_info_for(
+    const rs::core::database::ResultColumnMetadata& metadata) {
+  const auto type = postgres_type_info(
+      metadata.type_id, metadata.type_size, metadata.type_modifier);
+  return ColumnInfo{metadata.name, type.sql_type, type.column_size,
+                    type.decimal_digits, SQL_NULLABLE_UNKNOWN};
+}
+
+ParameterMetadata parameter_metadata_for(std::uint32_t oid) {
+  const auto type = postgres_type_info(oid, -1, -1);
+  return ParameterMetadata{type.sql_type, type.column_size,
+                           type.decimal_digits, SQL_NULLABLE_UNKNOWN, {}};
+}
+
 } // namespace
 
 // Connection implementation
@@ -167,24 +233,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
       return SQL_ERROR;
     }
     
-    result_rows_ = result->rows;
-    current_row_ = 0;
-    executed_ = true;
-    
-    // Populate IRD (Implementation Row Descriptor) with column metadata
-    // TODO: Extract from PostgreSQL RowDescription message
-    column_info_.clear();
-    if (!result_rows_.empty()) {
-      for (size_t i = 0; i < result_rows_[0].size(); ++i) {
-        ColumnInfo col;
-        col.name = "column" + std::to_string(i + 1);  // Generic names for now
-        col.sql_type = SQL_VARCHAR;  // Assume all strings for now
-        col.column_size = 255;       // Default size
-        col.decimal_digits = 0;
-        col.nullable = SQL_NULLABLE;
-        column_info_.push_back(col);
-      }
-    }
+    apply_query_result(std::move(*result), false);
     
     return SQL_SUCCESS;
     
@@ -278,6 +327,7 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
   
   prepared_sql_ = sql;
   parameter_info_.clear();
+  param_metadata_.clear();
   prepared_ = true;
   executed_ = false;
   
@@ -365,23 +415,7 @@ SQLRETURN ODBCStatement::execute() {
       return SQL_ERROR;
     }
     
-    result_rows_ = result->rows;
-    current_row_ = 0;
-    executed_ = true;
-    
-    // Update IRD with column metadata
-    column_info_.clear();
-    if (!result_rows_.empty()) {
-      for (size_t i = 0; i < result_rows_[0].size(); ++i) {
-        ColumnInfo col;
-        col.name = "column" + std::to_string(i + 1);
-        col.sql_type = SQL_VARCHAR;
-        col.column_size = 255;
-        col.decimal_digits = 0;
-        col.nullable = SQL_NULLABLE;
-        column_info_.push_back(col);
-      }
-    }
+    apply_query_result(std::move(*result), true);
     
     return SQL_SUCCESS;
     
@@ -416,8 +450,57 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
   param.buffer_length = buffer_length;
   param.strlen_or_indicator = strlen_or_indicator;
   param.bound = true;
+
+  if (parameter_number > param_metadata_.size()) {
+    param_metadata_.resize(parameter_number);
+  }
+  auto& metadata = param_metadata_[parameter_number - 1];
+  metadata.sql_type = parameter_type;
+  metadata.column_size = column_size;
+  metadata.decimal_digits = decimal_digits;
+  metadata.nullable = SQL_NULLABLE_UNKNOWN;
   
   return SQL_SUCCESS;
+}
+
+void ODBCStatement::apply_query_result(
+    rs::core::database::QueryResult result,
+    bool include_parameter_metadata) {
+  result_rows_ = std::move(result.rows);
+  current_row_ = 0;
+  executed_ = true;
+
+  const auto max_rows = static_cast<std::size_t>(
+      std::numeric_limits<SQLLEN>::max());
+  affected_rows_ = result.affected_rows > max_rows
+      ? std::numeric_limits<SQLLEN>::max()
+      : static_cast<SQLLEN>(result.affected_rows);
+
+  column_info_.clear();
+  column_info_.reserve(result.columns.size());
+  for (const auto& column : result.columns) {
+    column_info_.push_back(column_info_for(column));
+  }
+  if (column_info_.empty() && !result_rows_.empty()) {
+    column_info_.reserve(result_rows_.front().size());
+    for (std::size_t i = 0; i < result_rows_.front().size(); ++i) {
+      column_info_.push_back(ColumnInfo{
+          "column" + std::to_string(i + 1), SQL_VARCHAR, 255, 0,
+          SQL_NULLABLE_UNKNOWN});
+    }
+  }
+
+  if (!include_parameter_metadata) {
+    param_metadata_.clear();
+    return;
+  }
+  if (!result.parameter_type_ids.empty()) {
+    param_metadata_.clear();
+    param_metadata_.reserve(result.parameter_type_ids.size());
+    for (const auto oid : result.parameter_type_ids) {
+      param_metadata_.push_back(parameter_metadata_for(oid));
+    }
+  }
 }
 
 // Column binding implementation
@@ -463,6 +546,19 @@ SQLRETURN ODBCStatement::get_num_result_cols(SQLSMALLINT* column_count) {
   }
   
   *column_count = static_cast<SQLSMALLINT>(column_info_.size());
+  return SQL_SUCCESS;
+}
+
+SQLRETURN ODBCStatement::row_count(SQLLEN* row_count_value) {
+  if (!row_count_value) {
+    set_error(SQLSTATE_GENERAL_ERROR, "Null pointer for row count");
+    return SQL_ERROR;
+  }
+  if (!executed_) {
+    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "No statement executed");
+    return SQL_ERROR;
+  }
+  *row_count_value = affected_rows_;
   return SQL_SUCCESS;
 }
 
