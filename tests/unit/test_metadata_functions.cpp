@@ -61,6 +61,8 @@ TEST_F(MetadataAPITest, InvalidHandles) {
     EXPECT_EQ(SQL_ERROR, SQLStatistics(
         hstmt, nullptr, 0, nullptr, 0, pattern, SQL_NTS,
         SQL_INDEX_ALL, 99));
+    EXPECT_EQ(SQL_ERROR, SQLProcedures(
+        hstmt, nullptr, 0, nullptr, 0, pattern, -2));
 }
 
 TEST_F(MetadataAPITest, NoQueryExecuted) {

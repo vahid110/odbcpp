@@ -61,6 +61,11 @@ SQLRETURN SQLStatistics(
     SQLSMALLINT name_length2, SQLCHAR* table_name,
     SQLSMALLINT name_length3, SQLUSMALLINT unique,
     SQLUSMALLINT reserved);
+SQLRETURN SQLProcedures(
+    SQLHSTMT statement_handle, SQLCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLCHAR* procedure_name,
+    SQLSMALLINT name_length3);
 SQLRETURN SQLTables(
     SQLHSTMT statement_handle, SQLCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLCHAR* schema_name,

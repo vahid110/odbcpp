@@ -344,6 +344,41 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLIndexes) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, ListsPostgreSQLRoutines) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_routine_anchor(value integer)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE FUNCTION pg_temp.odbcpp_catalog_function("
+                  "first integer) RETURNS integer LANGUAGE SQL "
+                  "AS 'SELECT first'",
+        SQL_NTS));
+    SQLCHAR procedure_name[] = "odbcpp_catalog_function";
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedures(
+        hstmt, nullptr, 0, nullptr, 0, procedure_name, SQL_NTS));
+
+    char returned_name[128]{};
+    SQLSMALLINT input_count = -1;
+    SQLSMALLINT output_count = -1;
+    SQLSMALLINT procedure_type = SQL_PT_UNKNOWN;
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 3, SQL_C_CHAR, returned_name, sizeof(returned_name), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 4, SQL_C_SSHORT, &input_count, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 5, SQL_C_SSHORT, &output_count, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 8, SQL_C_SSHORT, &procedure_type, 0, nullptr));
+    EXPECT_STREQ("odbcpp_catalog_function", returned_name);
+    EXPECT_EQ(1, input_count);
+    EXPECT_EQ(0, output_count);
+    EXPECT_EQ(SQL_PT_FUNCTION, procedure_type);
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, ErrorCases) {
     // Execute query first
     SQLRETURN ret = SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS);

@@ -238,6 +238,24 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  SQLCHAR create_catalog_function[] =
+      "CREATE FUNCTION pg_temp.odbcpp_dm_catalog_function(value integer) "
+      "RETURNS integer LANGUAGE SQL AS 'SELECT value'";
+  SQLCHAR catalog_function[] = "odbcpp_dm_catalog_function";
+  if (!succeeded(SQLCloseCursor(statement)) ||
+      !succeeded(SQLExecDirect(
+          statement, create_catalog_function, SQL_NTS)) ||
+      !succeeded(SQLProcedures(
+          statement, nullptr, 0, nullptr, 0,
+          catalog_function, SQL_NTS)) ||
+      !succeeded(SQLFetch(statement))) {
+    print_diagnostic(SQL_HANDLE_STMT, statement);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
 
   SQLFreeHandle(SQL_HANDLE_STMT, statement);
   SQLDisconnect(connection);

@@ -1411,6 +1411,45 @@ SQLRETURN ODBCStatement::statistics(
   return execute_direct(query);
 }
 
+SQLRETURN ODBCStatement::procedures(
+    const std::optional<std::string>& catalog_name,
+    const std::optional<std::string>& schema_name,
+    const std::optional<std::string>& procedure_name) {
+  std::string query =
+      "SELECT current_database()::text AS procedure_cat, "
+      "namespaces.nspname::text AS procedure_schem, "
+      "procedures.proname::text AS procedure_name, "
+      "CASE WHEN procedures.proargmodes IS NULL THEN procedures.pronargs "
+      "ELSE (SELECT count(*) FROM unnest(procedures.proargmodes) AS mode "
+      "WHERE mode::text IN ('i', 'b', 'v')) END::smallint "
+      "AS num_input_params, "
+      "CASE WHEN procedures.proargmodes IS NULL THEN 0 "
+      "ELSE (SELECT count(*) FROM unnest(procedures.proargmodes) AS mode "
+      "WHERE mode::text IN ('o', 'b', 't')) END::smallint "
+      "AS num_output_params, -1::smallint AS num_result_sets, "
+      "obj_description(procedures.oid, 'pg_proc')::text AS remarks, "
+      "CASE WHEN procedures.prokind = 'p' THEN 1 ELSE 2 END::smallint "
+      "AS procedure_type FROM pg_catalog.pg_proc AS procedures "
+      "JOIN pg_catalog.pg_namespace AS namespaces "
+      "ON namespaces.oid = procedures.pronamespace "
+      "WHERE procedures.prokind IN ('f', 'p')";
+  if (catalog_name && !catalog_name->empty()) {
+    query += " AND current_database() LIKE " +
+        quote_catalog_literal(*catalog_name);
+  }
+  if (schema_name && !schema_name->empty()) {
+    query += " AND namespaces.nspname LIKE " +
+        quote_catalog_literal(*schema_name);
+  }
+  if (procedure_name && !procedure_name->empty()) {
+    query += " AND procedures.proname LIKE " +
+        quote_catalog_literal(*procedure_name);
+  }
+  query +=
+      " ORDER BY procedure_cat, procedure_schem, procedure_name";
+  return execute_direct(query);
+}
+
 SQLRETURN ODBCStatement::row_count(SQLLEN* row_count_value) {
   if (!row_count_value) {
     set_error(SQLSTATE_GENERAL_ERROR, "Null pointer for row count");

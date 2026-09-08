@@ -58,6 +58,7 @@ namespace {
       case SQL_API_SQLNATIVESQL:
       case SQL_API_SQLPREPARE:
       case SQL_API_SQLPRIMARYKEYS:
+      case SQL_API_SQLPROCEDURES:
       case SQL_API_SQLROWCOUNT:
       case SQL_API_SQLSETCONNECTATTR:
       case SQL_API_SQLSETENVATTR:
@@ -887,6 +888,37 @@ SQLRETURN SQLStatistics(
   }
   return stmt->statistics(catalog, schema, *table,
                           unique == SQL_INDEX_UNIQUE);
+}
+
+SQLRETURN SQLProcedures(
+    SQLHSTMT statement_handle, SQLCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLCHAR* procedure_name,
+    SQLSMALLINT name_length3) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+
+  const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
+                                 std::optional<std::string>& output) {
+    if (!value) {
+      output.reset();
+      return true;
+    }
+    if (length < 0 && length != SQL_NTS) return false;
+    output = normalize_string(sqlchar_to_string(value, length));
+    return true;
+  };
+  std::optional<std::string> catalog;
+  std::optional<std::string> schema;
+  std::optional<std::string> procedure;
+  if (!read_argument(catalog_name, name_length1, catalog) ||
+      !read_argument(schema_name, name_length2, schema) ||
+      !read_argument(procedure_name, name_length3, procedure)) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid SQLProcedures argument length");
+    return SQL_ERROR;
+  }
+  return stmt->procedures(catalog, schema, procedure);
 }
 
 SQLRETURN SQLTables(
