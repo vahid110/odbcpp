@@ -1,6 +1,7 @@
 #pragma once
 #include "i_transport.h"
 #include "socket_transport.h"
+#include "start_tls_transport.h"
 #include "core/util/errors.h"
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
@@ -8,7 +9,7 @@
 
 namespace rs::core::transport {
 
-class TLSTransport : public ITransport {
+class TLSTransport : public ITransport, public IStartTlsTransport {
 public:
   explicit TLSTransport(DeadlineModel deadline_model = DeadlineModel::Strict);
   ~TLSTransport() override;
@@ -17,6 +18,12 @@ public:
   rs::util::Result<IOResult> send(std::span<const std::byte> buf, rs::util::Deadline) override;
   rs::util::Result<IOResult> recv(std::span<std::byte> buf, rs::util::Deadline) override;
   void close() noexcept override;
+
+  rs::util::Result<void> connect_plain(
+      std::string_view host, uint16_t port,
+      rs::util::Deadline deadline) override;
+  rs::util::Result<void> upgrade_to_tls(
+      std::string_view host, rs::util::Deadline deadline) override;
 
   // configuration
   void set_min_tls_version(long v); // e.g., TLS1_2_VERSION
@@ -32,7 +39,8 @@ public:
 #else
   using socket_t = int;
 #endif
-  void upgrade_from(socket_t s, std::string_view host, rs::util::Deadline deadline);
+  void upgrade_from(socket_t s, std::string_view host,
+                    rs::util::Deadline deadline);
 
 private:
   SocketTransport tcp_;
@@ -45,6 +53,7 @@ private:
   std::string ca_file_, ca_dir_;
 
   void ensure_ctx();
+  void upgrade_impl(std::string_view host, rs::util::Deadline deadline);
   void verify_hostname(X509* cert);
 };
 

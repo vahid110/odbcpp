@@ -75,20 +75,27 @@ void TLSTransport::ensure_ctx() {
 }
 
 rs::util::Result<void> TLSTransport::connect(std::string_view host, uint16_t port, Deadline deadline) {
-  return rs::util::try_catch([&]() {
-  ensure_ctx();
-  sni_host_ = std::string(host);
+  auto result = connect_plain(host, port, deadline);
+  if (result.has_error()) return result;
+  return upgrade_to_tls(host, deadline);
+}
 
-    auto result = tcp_.connect(host, port, deadline);
-    if (result.has_error()) {
-      rs::util::unwrap_or_throw(std::move(result));
-    }
-    upgrade_from(tcp_.release(), host, deadline);
-  });
+rs::util::Result<void> TLSTransport::connect_plain(
+    std::string_view host, uint16_t port, Deadline deadline) {
+  return tcp_.connect(host, port, deadline);
+}
+
+rs::util::Result<void> TLSTransport::upgrade_to_tls(
+    std::string_view host, Deadline deadline) {
+  return rs::util::try_catch([&] { upgrade_impl(host, deadline); });
 }
 
 void TLSTransport::upgrade_from(socket_t s, std::string_view host, Deadline deadline) {
   tcp_.adopt(s);
+  upgrade_impl(host, deadline);
+}
+
+void TLSTransport::upgrade_impl(std::string_view host, Deadline deadline) {
   tcp_.prepare_for_io(deadline);
   ensure_ctx();
   sni_host_ = std::string(host);
@@ -167,8 +174,8 @@ void TLSTransport::close() noexcept {
 }
 
 rs::util::Result<IOResult> TLSTransport::send(std::span<const std::byte> buf, Deadline dl) {
+  if (!ssl_) return tcp_.send(buf, dl);
   return rs::util::try_catch([&]() {
-  if (!ssl_) throw TLSError("TLS not connected");
   tcp_.prepare_for_io(dl);
 
   size_t n = 0;
@@ -189,8 +196,8 @@ rs::util::Result<IOResult> TLSTransport::send(std::span<const std::byte> buf, De
 }
 
 rs::util::Result<IOResult> TLSTransport::recv(std::span<std::byte> buf, Deadline dl) {
+  if (!ssl_) return tcp_.recv(buf, dl);
   return rs::util::try_catch([&]() {
-  if (!ssl_) throw TLSError("TLS not connected");
   tcp_.prepare_for_io(dl);
 
   size_t got = 0;

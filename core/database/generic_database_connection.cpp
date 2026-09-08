@@ -1,5 +1,6 @@
 #include "generic_database_connection.h"
 #include "core/transport/socket_transport.h"
+#include "core/transport/start_tls_transport.h"
 #include "core/transport/tls_transport.h"
 #include "core/util/exception_adapter.h"
 
@@ -28,24 +29,33 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
   auto deadline = rs::util::make_deadline(settings.timeout);
   
   if (settings.use_ssl) {
-    // For PostgreSQL/Redshift: plain connect + SSL request + upgrade
-    auto plain_transport = std::make_unique<rs::core::transport::SocketTransport>();
-    
-    auto connect_result = plain_transport->connect(settings.host, settings.port, deadline);
+    // PostgreSQL/Redshift starts in plain text, sends an SSLRequest, then
+    // upgrades the same transport connection in place.
+    auto* start_tls = dynamic_cast<
+        rs::core::transport::IStartTlsTransport*>(transport_.get());
+    if (start_tls == nullptr) {
+      return rs::util::Result<void>{
+          rs::util::DbErrorCode::InvalidParameter,
+          "selected transport does not support PostgreSQL TLS upgrade"};
+    }
+
+    auto connect_result = start_tls->connect_plain(
+        settings.host, settings.port, deadline);
     if (connect_result.has_error()) {
       return rs::util::Result<void>{rs::util::DbErrorCode::ConnectionFailed, connect_result.error_message()};
     }
     
     // Send SSL request
     auto ssl_req = parser_->create_ssl_request();
-    auto write_result = write_message_to_transport_result(*plain_transport, ssl_req, deadline);
+    auto write_result = write_message_to_transport_result(
+        *transport_, ssl_req, deadline);
     if (write_result.has_error()) {
       return write_result;
     }
     
     // Read SSL response
     std::vector<std::byte> response(1);
-    auto recv_result = plain_transport->recv(response, deadline);
+    auto recv_result = transport_->recv(response, deadline);
     if (recv_result.has_error()) {
       return rs::util::Result<void>{rs::util::DbErrorCode::NetworkError, "Failed to read SSL response"};
     }
@@ -54,9 +64,8 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
       return rs::util::Result<void>{rs::util::DbErrorCode::TLSError, "SSL not supported by server"};
     }
     
-    // Upgrade to TLS
-    auto* tls_transport = static_cast<rs::core::transport::TLSTransport*>(transport_.get());
-    tls_transport->upgrade_from(plain_transport->release(), settings.host, deadline);
+    auto upgrade_result = start_tls->upgrade_to_tls(settings.host, deadline);
+    if (upgrade_result.has_error()) return upgrade_result;
   } else {
     auto connect_result = transport_->connect(settings.host, settings.port, deadline);
     if (connect_result.has_error()) {
