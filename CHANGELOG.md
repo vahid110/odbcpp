@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SQLDriverConnect support for DSN-less driver-manager connections
 - SQLGetFunctions support for individual, ODBC 2.x array, and ODBC 3.x bitmap queries
 - SQLCloseCursor and SQLFreeStmt lifecycle operations
+- SQLGetTypeInfo metadata for the supported PostgreSQL type set
 - SQL_ATTR_AUTOCOMMIT and connection-level SQLEndTran commit/rollback support
 - SQL_ATTR_TXN_ISOLATION with PostgreSQL session-level isolation configuration
 - unixODBC end-to-end coverage that dynamically loads the shared driver

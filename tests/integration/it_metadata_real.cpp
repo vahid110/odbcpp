@@ -114,6 +114,24 @@ TEST_F(MetadataIntegrationTest, ReportsAffectedRows) {
     EXPECT_EQ(2, row_count);
 }
 
+TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
+    ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfo(hstmt, SQL_INTEGER));
+    SQLSMALLINT columns = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns));
+    EXPECT_EQ(19, columns);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    char type_name[32]{};
+    SQLSMALLINT data_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, type_name, sizeof(type_name), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 2, SQL_C_SSHORT, &data_type, 0, nullptr));
+    EXPECT_STREQ("integer", type_name);
+    EXPECT_EQ(SQL_INTEGER, data_type);
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, ErrorCases) {
     // Execute query first
     SQLRETURN ret = SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS);

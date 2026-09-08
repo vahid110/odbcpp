@@ -118,6 +118,15 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  if (!succeeded(SQLGetTypeInfo(statement, SQL_INTEGER)) ||
+      !succeeded(SQLFetch(statement))) {
+    print_diagnostic(SQL_HANDLE_STMT, statement);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
 
   SQLFreeHandle(SQL_HANDLE_STMT, statement);
   SQLDisconnect(connection);

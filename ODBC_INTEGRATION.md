@@ -30,7 +30,7 @@
 
 ### ⚠️ Missing for Full ODBC Compliance
 - **Installer-managed registration**: Registration still uses an `odbcinst.ini` entry
-- **Type discovery**: SQLGetTypeInfo remains incomplete
+- **Catalog discovery**: Table, column, key, and procedure catalog APIs remain incomplete
 
 ## Integration Paths
 

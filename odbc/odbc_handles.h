@@ -186,6 +186,7 @@ public:
   
   // Metadata functions
   SQLRETURN get_num_result_cols(SQLSMALLINT* column_count);
+  SQLRETURN get_type_info(SQLSMALLINT data_type);
   SQLRETURN row_count(SQLLEN* row_count);
   SQLRETURN describe_col(SQLUSMALLINT column_number, SQLCHAR* column_name, SQLSMALLINT name_buffer_length,
                         SQLSMALLINT* name_length, SQLSMALLINT* data_type, SQLULEN* column_size,

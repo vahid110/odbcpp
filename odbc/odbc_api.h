@@ -35,6 +35,7 @@ SQLRETURN SQLFetch(SQLHSTMT statement_handle);
 SQLRETURN SQLGetData(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLSMALLINT target_type,
                     void* target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator);
 SQLRETURN SQLRowCount(SQLHSTMT statement_handle, SQLLEN* row_count);
+SQLRETURN SQLGetTypeInfo(SQLHSTMT statement_handle, SQLSMALLINT data_type);
 SQLRETURN SQLSetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
                          SQLPOINTER value, SQLINTEGER string_length);
 SQLRETURN SQLGetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,

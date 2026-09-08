@@ -164,6 +164,64 @@ ParameterMetadata parameter_metadata_for(std::uint32_t oid) {
                            type.decimal_digits, SQL_NULLABLE_UNKNOWN, {}};
 }
 
+struct TypeInfoDefinition {
+  const char* name;
+  SQLSMALLINT data_type;
+  SQLINTEGER column_size;
+  const char* literal_prefix;
+  const char* literal_suffix;
+  const char* create_params;
+  SQLSMALLINT case_sensitive;
+  SQLSMALLINT unsigned_attribute;
+  SQLSMALLINT minimum_scale;
+  SQLSMALLINT maximum_scale;
+  SQLSMALLINT sql_data_type;
+  SQLSMALLINT datetime_sub;
+  SQLINTEGER numeric_radix;
+};
+
+const TypeInfoDefinition type_info_definitions[] = {
+    {"boolean", SQL_BIT, 1, nullptr, nullptr, nullptr, SQL_FALSE, -1,
+     -1, -1, SQL_BIT, 0, 0},
+    {"bigint", SQL_BIGINT, 19, nullptr, nullptr, nullptr, SQL_FALSE, SQL_FALSE,
+     0, 0, SQL_BIGINT, 0, 10},
+    {"bytea", SQL_VARBINARY, 1073741824, "'", "'", nullptr, SQL_FALSE, -1,
+     -1, -1, SQL_VARBINARY, 0, 0},
+    {"text", SQL_LONGVARCHAR, 1073741824, "'", "'", nullptr, SQL_TRUE, -1,
+     -1, -1, SQL_LONGVARCHAR, 0, 0},
+    {"char", SQL_CHAR, 10485760, "'", "'", "length", SQL_TRUE, -1,
+     -1, -1, SQL_CHAR, 0, 0},
+    {"numeric", SQL_NUMERIC, 1000, nullptr, nullptr, "precision,scale",
+     SQL_FALSE, SQL_FALSE, 0, 1000, SQL_NUMERIC, 0, 10},
+    {"decimal", SQL_DECIMAL, 1000, nullptr, nullptr, "precision,scale",
+     SQL_FALSE, SQL_FALSE, 0, 1000, SQL_DECIMAL, 0, 10},
+    {"integer", SQL_INTEGER, 10, nullptr, nullptr, nullptr, SQL_FALSE,
+     SQL_FALSE, 0, 0, SQL_INTEGER, 0, 10},
+    {"smallint", SQL_SMALLINT, 5, nullptr, nullptr, nullptr, SQL_FALSE,
+     SQL_FALSE, 0, 0, SQL_SMALLINT, 0, 10},
+    {"real", SQL_REAL, 7, nullptr, nullptr, nullptr, SQL_FALSE, SQL_FALSE,
+     -1, -1, SQL_REAL, 0, 2},
+    {"double precision", SQL_DOUBLE, 15, nullptr, nullptr, nullptr, SQL_FALSE,
+     SQL_FALSE, -1, -1, SQL_DOUBLE, 0, 2},
+    {"varchar", SQL_VARCHAR, 10485760, "'", "'", "length", SQL_TRUE,
+     -1, -1, -1, SQL_VARCHAR, 0, 0},
+    {"date", SQL_TYPE_DATE, 10, "'", "'", nullptr, SQL_FALSE, -1,
+     -1, -1, SQL_DATETIME, SQL_CODE_DATE, 0},
+    {"time", SQL_TYPE_TIME, 15, "'", "'", "precision", SQL_FALSE,
+     -1, 0, 6, SQL_DATETIME, SQL_CODE_TIME, 0},
+    {"timestamp", SQL_TYPE_TIMESTAMP, 29, "'", "'", "precision", SQL_FALSE,
+     -1, 0, 6, SQL_DATETIME, SQL_CODE_TIMESTAMP, 0},
+};
+
+rs::core::database::ResultCell type_info_text(const char* value) {
+  if (!value) return std::nullopt;
+  return std::string(value);
+}
+
+rs::core::database::ResultCell type_info_number(long long value) {
+  return std::to_string(value);
+}
+
 } // namespace
 
 // Connection implementation
@@ -880,6 +938,77 @@ SQLRETURN ODBCStatement::get_num_result_cols(SQLSMALLINT* column_count) {
   }
   
   *column_count = static_cast<SQLSMALLINT>(column_info_.size());
+  return SQL_SUCCESS;
+}
+
+SQLRETURN ODBCStatement::get_type_info(SQLSMALLINT data_type) {
+  if (!conn_->is_connected()) {
+    set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
+    return SQL_ERROR;
+  }
+  if (executed_ && !column_info_.empty()) {
+    set_error(SQLSTATE_INVALID_CURSOR_STATE,
+              "A result cursor is already open");
+    return SQL_ERROR;
+  }
+
+  using rs::core::database::QueryResult;
+  using rs::core::database::ResultColumnMetadata;
+  QueryResult result;
+  const auto column = [](const char* name, std::uint32_t oid,
+                         std::int16_t size) {
+    return ResultColumnMetadata{name, 0, 0, oid, size, -1, 0};
+  };
+  result.columns = {
+      column("TYPE_NAME", 25, -1),
+      column("DATA_TYPE", 21, 2),
+      column("COLUMN_SIZE", 23, 4),
+      column("LITERAL_PREFIX", 25, -1),
+      column("LITERAL_SUFFIX", 25, -1),
+      column("CREATE_PARAMS", 25, -1),
+      column("NULLABLE", 21, 2),
+      column("CASE_SENSITIVE", 21, 2),
+      column("SEARCHABLE", 21, 2),
+      column("UNSIGNED_ATTRIBUTE", 21, 2),
+      column("FIXED_PREC_SCALE", 21, 2),
+      column("AUTO_UNIQUE_VALUE", 21, 2),
+      column("LOCAL_TYPE_NAME", 25, -1),
+      column("MINIMUM_SCALE", 21, 2),
+      column("MAXIMUM_SCALE", 21, 2),
+      column("SQL_DATA_TYPE", 21, 2),
+      column("SQL_DATETIME_SUB", 21, 2),
+      column("NUM_PREC_RADIX", 23, 4),
+      column("INTERVAL_PRECISION", 21, 2),
+  };
+
+  for (const auto& type : type_info_definitions) {
+    if (data_type != SQL_ALL_TYPES && data_type != type.data_type) continue;
+    result.rows.push_back({
+        type_info_text(type.name), type_info_number(type.data_type),
+        type_info_number(type.column_size), type_info_text(type.literal_prefix),
+        type_info_text(type.literal_suffix), type_info_text(type.create_params),
+        type_info_number(SQL_NULLABLE), type_info_number(type.case_sensitive),
+        type_info_number(SQL_SEARCHABLE),
+        type.unsigned_attribute < 0 ? rs::core::database::ResultCell{}
+                                    : type_info_number(type.unsigned_attribute),
+        type_info_number(SQL_FALSE),
+        type.unsigned_attribute < 0 ? rs::core::database::ResultCell{}
+                                    : type_info_number(SQL_FALSE),
+        rs::core::database::ResultCell{},
+        type.minimum_scale < 0 ? rs::core::database::ResultCell{}
+                               : type_info_number(type.minimum_scale),
+        type.maximum_scale < 0 ? rs::core::database::ResultCell{}
+                               : type_info_number(type.maximum_scale),
+        type_info_number(type.sql_data_type),
+        type.datetime_sub == 0 ? rs::core::database::ResultCell{}
+                               : type_info_number(type.datetime_sub),
+        type.numeric_radix == 0 ? rs::core::database::ResultCell{}
+                                : type_info_number(type.numeric_radix),
+        rs::core::database::ResultCell{},
+    });
+  }
+  result.affected_rows = result.rows.size();
+  apply_query_result(std::move(result), false);
   return SQL_SUCCESS;
 }
 

@@ -48,6 +48,7 @@ namespace {
       case SQL_API_SQLGETFUNCTIONS:
       case SQL_API_SQLGETINFO:
       case SQL_API_SQLGETSTMTATTR:
+      case SQL_API_SQLGETTYPEINFO:
       case SQL_API_SQLNUMRESULTCOLS:
       case SQL_API_SQLPREPARE:
       case SQL_API_SQLROWCOUNT:
@@ -628,6 +629,12 @@ SQLRETURN SQLRowCount(SQLHSTMT statement_handle, SQLLEN* row_count) {
   if (!stmt) return SQL_INVALID_HANDLE;
 
   return stmt->row_count(row_count);
+}
+
+SQLRETURN SQLGetTypeInfo(SQLHSTMT statement_handle, SQLSMALLINT data_type) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  return stmt->get_type_info(data_type);
 }
 
 SQLRETURN SQLDescribeCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number,
