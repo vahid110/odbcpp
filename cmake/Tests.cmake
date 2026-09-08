@@ -7,6 +7,7 @@ FetchContent_Declare(
 )
 
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 # ---- Test Discovery and Setup ----
@@ -41,3 +42,20 @@ foreach(test_file ${INTEGRATION_TEST_SOURCES})
   add_test_executable(${test_name} ${test_file})
   set_tests_properties(${test_name} PROPERTIES LABELS "integration")
 endforeach()
+
+# Exercise the shared driver through the platform ODBC Driver Manager. This
+# deliberately does not link odbcpp_core, so missing exports or registration
+# problems cannot be hidden by the in-process integration tests.
+if(UNIX)
+  find_library(ODBC_DRIVER_MANAGER_LIBRARY NAMES odbc iodbc)
+  if(ODBC_DRIVER_MANAGER_LIBRARY)
+    add_executable(it_driver_manager tests/driver_manager/it_driver_manager.cpp)
+    target_include_directories(it_driver_manager PRIVATE ${ODBC_INCLUDE_DIR})
+    target_link_libraries(it_driver_manager PRIVATE ${ODBC_DRIVER_MANAGER_LIBRARY})
+    apply_compiler_settings(it_driver_manager)
+    add_test(NAME it_driver_manager COMMAND it_driver_manager)
+    set_tests_properties(it_driver_manager PROPERTIES LABELS "integration")
+    set_target_properties(it_driver_manager PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+  endif()
+endif()

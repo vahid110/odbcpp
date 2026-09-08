@@ -3,7 +3,7 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 # Install the library
-install(TARGETS ${PROJECT_NAME}_core
+install(TARGETS ${PROJECT_NAME}_core ${PROJECT_NAME}_driver
   EXPORT ${PROJECT_NAME}Targets
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}

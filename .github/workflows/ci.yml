@@ -65,6 +65,8 @@ jobs:
           EOF
           cat > "$ODBCSYSINI/odbcinst.ini" <<'EOF'
           [ODBCPP PostgreSQL]
+          Driver=${{ github.workspace }}/build/libodbcpp.so
+          Setup=${{ github.workspace }}/build/libodbcpp.so
           TransportMode=Auto
           AsyncMaxInflight=64
           AsyncQueueDepth=256

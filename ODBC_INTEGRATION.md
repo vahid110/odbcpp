@@ -24,16 +24,18 @@
 - **Custom DSN files**: `odbcpp.dsn` format
 - **Connection strings**: Direct parameter format
 - **Standard locations**: Checks `/etc/odbc.ini`, `~/.odbc.ini`
-- **ODBC API**: Full SQLConnect, SQLDriverConnect support
+- **Shared driver**: CMake builds and installs `libodbcpp`
+- **ODBC Driver Manager**: unixODBC loading and query execution are covered in CI
+- **ODBC API**: DSN-based SQLConnect support
 
 ### ⚠️ Missing for Full ODBC Compliance
-- **Driver registration**: Not in `odbcinst.ini`
-- **ODBC Driver Manager**: Not using unixODBC/iODBC
-- **Shared library**: Currently static executable
+- **Installer-managed registration**: Registration still uses an `odbcinst.ini` entry
+- **SQLDriverConnect**: Driver-manager connection-string entry point is not implemented yet
+- **Capability discovery**: SQLGetFunctions and SQLGetTypeInfo remain incomplete
 
 ## Integration Paths
 
-### Path 1: Standalone Driver (Current)
+### Path 1: Standalone Driver
 ```bash
 # Direct executable usage
 ./redshift_test "SERVER=host;DATABASE=db;UID=user;PWD=pass"
@@ -42,18 +44,17 @@
 **Pros**: Self-contained, no system dependencies
 **Cons**: Not discoverable by standard ODBC tools
 
-### Path 2: Full ODBC Driver Manager Integration
+### Path 2: ODBC Driver Manager Integration
 ```bash
-# 1. Build as shared library
-cmake -DBUILD_SHARED_LIBS=ON -B build-shared
+# 1. Build and install the shared driver
+cmake -DTARGET_DATABASE=POSTGRESQL -B build-postgresql
+cmake --build build-postgresql
+sudo cmake --install build-postgresql
 
-# 2. Install driver
-sudo cp build-shared/libodbcpp.so /usr/local/lib/
-
-# 3. Register driver
+# 2. Register driver
 sudo odbcinst -i -d -f install/odbcinst.ini.template
 
-# 4. Create DSN
+# 3. Create DSN
 odbcinst -i -s -f install/odbc.ini.example
 ```
 
@@ -114,6 +115,7 @@ echo "ODBCPP driver installed successfully"
 
 ### Works Now
 - **Direct integration**: Applications linking to our library
+- **unixODBC SQLConnect**: Applications connecting through registered DSNs
 - **Custom tools**: Using our connection string format
 - **Manual DSN**: Applications reading standard odbc.ini files
 
@@ -121,7 +123,7 @@ echo "ODBCPP driver installed successfully"
 - **Excel**: Needs driver in odbcinst.ini
 - **Tableau**: Needs ODBC Driver Manager registration
 - **Power BI**: Needs Windows ODBC registry entries
-- **Generic ODBC tools**: Need standard driver discovery
+- **Connection-string clients**: Need SQLDriverConnect
 
 ## Recommendation
 

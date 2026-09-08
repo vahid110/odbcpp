@@ -19,7 +19,7 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 - **Secure Transport**: Built-in TLS/SSL support via OpenSSL
 - **Modern Authentication**: PostgreSQL cleartext, MD5, and SCRAM-SHA-256 password authentication
 - **Cross-Platform**: macOS, Linux, Windows support
-- **Comprehensive Testing**: Unit, PostgreSQL integration, sanitizer, and Windows CI coverage
+- **Comprehensive Testing**: Unit, PostgreSQL integration, unixODBC driver-manager, sanitizer, and Windows CI coverage
 
 ## Implementation Status
 

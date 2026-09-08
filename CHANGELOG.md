@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - SQL_ATTR_AUTOCOMMIT and connection-level SQLEndTran commit/rollback support
 - SQL_ATTR_TXN_ISOLATION with PostgreSQL session-level isolation configuration
+- unixODBC end-to-end coverage that dynamically loads the shared driver
 - SQLGetInfo reporting for transaction capability, isolation, and cursor behavior
 - PostgreSQL bytea decoding for SQL_C_BINARY and SQL_C_DEFAULT results
 - Chunked SQLGetData retrieval for binary values
@@ -35,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Development roadmap and changelog
 
 ### Changed
+- Installation now includes the shared ODBC driver library
 - ODBC login and query timeouts now drive transport deadlines and report HYT01/HYT00
 - Timed-out queries close their connection to prevent reuse of an unsynchronized protocol stream
 - SQLGetData now reports the remaining length before each chunk and returns SQL_NO_DATA after exhaustion
