@@ -129,3 +129,37 @@ jobs:
         run: >-
           ctest --test-dir build-windows -C Release -L unit
           --timeout 30 --output-on-failure
+
+  linux-sanitizers:
+    runs-on: ubuntu-latest
+
+    env:
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build-sanitize
+          -DBUILD_EXAMPLES=OFF
+          -DBUILD_TESTING=ON
+          -DOPENSSL_USE_STATIC_LIBS=OFF
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build
+        run: cmake --build build-sanitize --parallel
+
+      - name: Run unit tests
+        run: >-
+          ctest --test-dir build-sanitize -L unit
+          --timeout 60 --output-on-failure
