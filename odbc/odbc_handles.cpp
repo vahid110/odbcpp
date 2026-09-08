@@ -48,6 +48,16 @@ std::chrono::milliseconds timeout_duration(SQLULEN seconds) {
       seconds * scale));
 }
 
+const char* transaction_isolation_name(SQLULEN value) {
+  switch (value) {
+    case SQL_TXN_READ_UNCOMMITTED: return "READ UNCOMMITTED";
+    case SQL_TXN_READ_COMMITTED: return "READ COMMITTED";
+    case SQL_TXN_REPEATABLE_READ: return "REPEATABLE READ";
+    case SQL_TXN_SERIALIZABLE: return "SERIALIZABLE";
+    default: return nullptr;
+  }
+}
+
 rs::core::database::QueryParameterType parameter_type_for(
     const ParameterInfo& parameter) {
   using rs::core::database::QueryParameterType;
@@ -201,6 +211,22 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
                 result.error_message());
       return SQL_ERROR;
     }
+
+    if (transaction_isolation_ != SQL_TXN_READ_COMMITTED) {
+      const std::string command =
+          "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL " +
+          std::string(transaction_isolation_name(transaction_isolation_));
+      auto isolation_result = db_conn_->execute_query(
+          command, rs::util::make_deadline(settings.timeout));
+      if (isolation_result.has_error()) {
+        const auto timeout = isolation_result.error() ==
+            rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
+        set_error(timeout ? SQLSTATE_CONNECTION_TIMEOUT : SQLSTATE_CONNECTION_FAILURE,
+                  isolation_result.error_message());
+        db_conn_->disconnect();
+        return SQL_ERROR;
+      }
+    }
     
     connected_ = true;
     transaction_active_ = false;
@@ -225,6 +251,36 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
       if (result != SQL_SUCCESS) return result;
     }
     autocommit_ = static_cast<SQLUINTEGER>(value);
+    return SQL_SUCCESS;
+  }
+  if (attribute == SQL_ATTR_TXN_ISOLATION) {
+    const auto* isolation_name = transaction_isolation_name(value);
+    if (!isolation_name) {
+      set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                "Unsupported transaction isolation level");
+      return SQL_ERROR;
+    }
+    if (transaction_active_) {
+      set_error(SQLSTATE_ATTRIBUTE_CANNOT_BE_SET,
+                "Transaction isolation cannot change during a transaction");
+      return SQL_ERROR;
+    }
+    if (connected_) {
+      const std::string command =
+          "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL " +
+          std::string(isolation_name);
+      auto result = db_conn_->execute_query(
+          command, rs::util::make_deadline(std::chrono::seconds(30)));
+      if (result.has_error()) {
+        const auto timeout = result.error() ==
+            rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
+        set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_GENERAL_ERROR,
+                  result.error_message());
+        if (timeout) disconnect();
+        return SQL_ERROR;
+      }
+    }
+    transaction_isolation_ = static_cast<SQLUINTEGER>(value);
     return SQL_SUCCESS;
   }
   if (attribute != SQL_ATTR_LOGIN_TIMEOUT) {
@@ -254,6 +310,9 @@ SQLRETURN ODBCConnection::get_attribute(SQLINTEGER attribute,
       return SQL_SUCCESS;
     case SQL_ATTR_AUTOCOMMIT:
       *value = autocommit_;
+      return SQL_SUCCESS;
+    case SQL_ATTR_TXN_ISOLATION:
+      *value = transaction_isolation_;
       return SQL_SUCCESS;
     default:
       set_error(SQLSTATE_INVALID_ATTRIBUTE,

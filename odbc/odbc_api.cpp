@@ -384,7 +384,7 @@ SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type,
   auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
 
-  const auto write_usmallint = [&](SQLUSMALLINT value) {
+  const auto write_usmallint = [&](SQLUSMALLINT value) -> SQLRETURN {
     if (!info_value) {
       conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
                       "Information output pointer is null");
@@ -396,7 +396,7 @@ SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type,
     }
     return SQL_SUCCESS;
   };
-  const auto write_uinteger = [&](SQLUINTEGER value) {
+  const auto write_uinteger = [&](SQLUINTEGER value) -> SQLRETURN {
     if (!info_value) {
       conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
                       "Information output pointer is null");
@@ -420,13 +420,17 @@ SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type,
       }
       return SQL_SUCCESS;
     case SQL_TXN_CAPABLE:
-      return write_usmallint(SQL_TC_ALL);
+      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_TC_ALL));
     case SQL_CURSOR_COMMIT_BEHAVIOR:
     case SQL_CURSOR_ROLLBACK_BEHAVIOR:
-      return write_usmallint(SQL_CB_PRESERVE);
+      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_CB_PRESERVE));
     case SQL_DEFAULT_TXN_ISOLATION:
+      return write_uinteger(
+          static_cast<SQLUINTEGER>(SQL_TXN_READ_COMMITTED));
     case SQL_TXN_ISOLATION_OPTION:
-      return write_uinteger(SQL_TXN_READ_COMMITTED);
+      return write_uinteger(static_cast<SQLUINTEGER>(
+          SQL_TXN_READ_UNCOMMITTED | SQL_TXN_READ_COMMITTED |
+          SQL_TXN_REPEATABLE_READ | SQL_TXN_SERIALIZABLE));
     default:
       conn->set_error(SQLSTATE_GENERAL_ERROR, "Unsupported SQLGetInfo type");
       return SQL_ERROR;

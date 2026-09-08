@@ -63,6 +63,18 @@ TEST_F(PreparedStatementIntegrationTest, AutocommitOffSupportsCommitAndRollback)
         hdbc, SQL_ATTR_AUTOCOMMIT,
         reinterpret_cast<SQLPOINTER>(
             static_cast<std::uintptr_t>(SQL_AUTOCOMMIT_OFF)), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(
+        hdbc, SQL_ATTR_TXN_ISOLATION,
+        reinterpret_cast<SQLPOINTER>(
+            static_cast<std::uintptr_t>(SQL_TXN_REPEATABLE_READ)), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SHOW transaction_isolation", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    char isolation[32]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, isolation, sizeof(isolation), nullptr));
+    EXPECT_STREQ("repeatable read", isolation);
+    ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_ROLLBACK));
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"INSERT INTO odbcpp_tx_test VALUES (1)", SQL_NTS));

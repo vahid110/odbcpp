@@ -75,6 +75,24 @@ TEST_F(AttributeApisTest, StoresAutocommitMode) {
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
+TEST_F(AttributeApisTest, StoresTransactionIsolation) {
+  SQLUINTEGER value = 0;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(
+      connection_, SQL_ATTR_TXN_ISOLATION, &value, sizeof(value), nullptr));
+  EXPECT_EQ(SQL_TXN_READ_COMMITTED, value);
+
+  EXPECT_EQ(SQL_SUCCESS, SQLSetConnectAttr(
+      connection_, SQL_ATTR_TXN_ISOLATION,
+      integer_value(SQL_TXN_REPEATABLE_READ), 0));
+  EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(
+      connection_, SQL_ATTR_TXN_ISOLATION, &value, sizeof(value), nullptr));
+  EXPECT_EQ(SQL_TXN_REPEATABLE_READ, value);
+
+  EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(
+      connection_, SQL_ATTR_TXN_ISOLATION, integer_value(0), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_DBC, connection_));
+}
+
 TEST_F(AttributeApisTest, EndTransactionValidatesState) {
   EXPECT_EQ(SQL_ERROR, SQLEndTran(SQL_HANDLE_DBC, connection_, SQL_COMMIT));
   EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection_));
@@ -110,7 +128,9 @@ TEST_F(AttributeApisTest, ReportsTransactionCapabilities) {
   EXPECT_EQ(SQL_SUCCESS, SQLGetInfo(
       connection_, SQL_TXN_ISOLATION_OPTION, &integer_value,
       sizeof(integer_value), nullptr));
-  EXPECT_EQ(SQL_TXN_READ_COMMITTED, integer_value);
+  EXPECT_EQ(SQL_TXN_READ_UNCOMMITTED | SQL_TXN_READ_COMMITTED |
+                SQL_TXN_REPEATABLE_READ | SQL_TXN_SERIALIZABLE,
+            integer_value);
 }
 
 TEST_F(AttributeApisTest, StoresQueryTimeoutAndAllowsZero) {

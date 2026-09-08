@@ -109,6 +109,7 @@ private:
   bool connected_ = false;
   SQLUINTEGER login_timeout_seconds_ = 30;
   SQLUINTEGER autocommit_ = SQL_AUTOCOMMIT_ON;
+  SQLUINTEGER transaction_isolation_ = SQL_TXN_READ_COMMITTED;
   bool transaction_active_ = false;
   
   // Suppress unused warning - env_ will be used for ODBC compliance features
