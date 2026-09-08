@@ -1134,6 +1134,116 @@ SQLRETURN ODBCStatement::tables(
   return execute_direct(query);
 }
 
+SQLRETURN ODBCStatement::columns(
+    const std::optional<std::string>& catalog_name,
+    const std::optional<std::string>& schema_name,
+    const std::optional<std::string>& table_name,
+    const std::optional<std::string>& column_name) {
+  std::string query =
+      "SELECT table_cat, table_schem, table_name, column_name, data_type, "
+      "type_name, column_size, buffer_length, decimal_digits, "
+      "num_prec_radix, nullable, remarks, column_def, sql_data_type, "
+      "sql_datetime_sub, char_octet_length, ordinal_position, is_nullable "
+      "FROM (SELECT current_database()::text AS table_cat, "
+      "table_schema::text AS table_schem, table_name::text AS table_name, "
+      "column_name::text AS column_name, "
+      "CASE data_type "
+      "WHEN 'boolean' THEN -7 WHEN 'smallint' THEN 5 "
+      "WHEN 'integer' THEN 4 WHEN 'bigint' THEN -5 "
+      "WHEN 'real' THEN 7 WHEN 'double precision' THEN 8 "
+      "WHEN 'numeric' THEN 2 WHEN 'decimal' THEN 3 "
+      "WHEN 'character' THEN 1 WHEN 'character varying' THEN 12 "
+      "WHEN 'text' THEN -1 WHEN 'bytea' THEN -3 "
+      "WHEN 'date' THEN 91 "
+      "WHEN 'time without time zone' THEN 92 "
+      "WHEN 'time with time zone' THEN 92 "
+      "WHEN 'timestamp without time zone' THEN 93 "
+      "WHEN 'timestamp with time zone' THEN 93 ELSE 12 END::smallint "
+      "AS data_type, "
+      "CASE data_type "
+      "WHEN 'character' THEN 'character' "
+      "WHEN 'character varying' THEN 'character varying' "
+      "WHEN 'time without time zone' THEN 'time' "
+      "WHEN 'timestamp without time zone' THEN 'timestamp' "
+      "ELSE data_type END::text AS type_name, "
+      "CASE data_type "
+      "WHEN 'boolean' THEN 1 WHEN 'smallint' THEN 5 "
+      "WHEN 'integer' THEN 10 WHEN 'bigint' THEN 19 "
+      "WHEN 'real' THEN 7 WHEN 'double precision' THEN 15 "
+      "WHEN 'numeric' THEN numeric_precision "
+      "WHEN 'decimal' THEN numeric_precision "
+      "WHEN 'character' THEN character_maximum_length "
+      "WHEN 'character varying' THEN character_maximum_length "
+      "WHEN 'text' THEN 1073741824 WHEN 'bytea' THEN 1073741824 "
+      "WHEN 'date' THEN 10 "
+      "WHEN 'time without time zone' THEN 15 "
+      "WHEN 'time with time zone' THEN 21 "
+      "WHEN 'timestamp without time zone' THEN 29 "
+      "WHEN 'timestamp with time zone' THEN 35 "
+      "ELSE character_maximum_length END::integer AS column_size, "
+      "CASE data_type "
+      "WHEN 'boolean' THEN 1 WHEN 'smallint' THEN 2 "
+      "WHEN 'integer' THEN 4 WHEN 'bigint' THEN 8 "
+      "WHEN 'real' THEN 4 WHEN 'double precision' THEN 8 "
+      "WHEN 'numeric' THEN numeric_precision + 2 "
+      "WHEN 'decimal' THEN numeric_precision + 2 "
+      "WHEN 'character' THEN character_octet_length "
+      "WHEN 'character varying' THEN character_octet_length "
+      "WHEN 'text' THEN 1073741824 WHEN 'bytea' THEN 1073741824 "
+      "WHEN 'date' THEN 10 "
+      "WHEN 'time without time zone' THEN 15 "
+      "WHEN 'time with time zone' THEN 21 "
+      "WHEN 'timestamp without time zone' THEN 29 "
+      "WHEN 'timestamp with time zone' THEN 35 ELSE NULL END::integer "
+      "AS buffer_length, "
+      "CASE WHEN data_type IN ('numeric', 'decimal') THEN numeric_scale "
+      "WHEN data_type IN ('time without time zone', 'time with time zone', "
+      "'timestamp without time zone', 'timestamp with time zone') "
+      "THEN datetime_precision WHEN data_type IN ('smallint', 'integer', "
+      "'bigint') THEN 0 ELSE NULL END::smallint AS decimal_digits, "
+      "CASE WHEN data_type IN ('smallint', 'integer', 'bigint', 'real', "
+      "'double precision', 'numeric', 'decimal') THEN numeric_precision_radix "
+      "ELSE NULL END::smallint AS num_prec_radix, "
+      "CASE is_nullable WHEN 'YES' THEN 1 ELSE 0 END::smallint AS nullable, "
+      "NULL::text AS remarks, column_default::text AS column_def, "
+      "CASE WHEN data_type IN ('date', 'time without time zone', "
+      "'time with time zone', 'timestamp without time zone', "
+      "'timestamp with time zone') THEN 9 ELSE CASE data_type "
+      "WHEN 'boolean' THEN -7 WHEN 'smallint' THEN 5 "
+      "WHEN 'integer' THEN 4 WHEN 'bigint' THEN -5 "
+      "WHEN 'real' THEN 7 WHEN 'double precision' THEN 8 "
+      "WHEN 'numeric' THEN 2 WHEN 'decimal' THEN 3 "
+      "WHEN 'character' THEN 1 WHEN 'character varying' THEN 12 "
+      "WHEN 'text' THEN -1 WHEN 'bytea' THEN -3 ELSE 12 END "
+      "END::smallint AS sql_data_type, "
+      "CASE data_type WHEN 'date' THEN 1 "
+      "WHEN 'time without time zone' THEN 2 "
+      "WHEN 'time with time zone' THEN 2 "
+      "WHEN 'timestamp without time zone' THEN 3 "
+      "WHEN 'timestamp with time zone' THEN 3 ELSE NULL END::smallint "
+      "AS sql_datetime_sub, "
+      "CASE WHEN data_type IN ('character', 'character varying', 'text') "
+      "THEN character_octet_length WHEN data_type = 'bytea' "
+      "THEN 1073741824 ELSE NULL END::integer AS char_octet_length, "
+      "ordinal_position::integer AS ordinal_position, "
+      "is_nullable::text AS is_nullable FROM information_schema.columns) "
+      "AS odbcpp_columns WHERE 1=1";
+  if (catalog_name && !catalog_name->empty()) {
+    query += " AND table_cat LIKE " + quote_catalog_literal(*catalog_name);
+  }
+  if (schema_name && !schema_name->empty()) {
+    query += " AND table_schem LIKE " + quote_catalog_literal(*schema_name);
+  }
+  if (table_name && !table_name->empty()) {
+    query += " AND table_name LIKE " + quote_catalog_literal(*table_name);
+  }
+  if (column_name && !column_name->empty()) {
+    query += " AND column_name LIKE " + quote_catalog_literal(*column_name);
+  }
+  query += " ORDER BY table_cat, table_schem, table_name, ordinal_position";
+  return execute_direct(query);
+}
+
 SQLRETURN ODBCStatement::row_count(SQLLEN* row_count_value) {
   if (!row_count_value) {
     set_error(SQLSTATE_GENERAL_ERROR, "Null pointer for row count");

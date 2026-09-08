@@ -153,6 +153,53 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLTables) {
     EXPECT_STREQ("TABLE", returned_type);
 }
 
+TEST_F(MetadataIntegrationTest, ListsPostgreSQLColumns) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_columns_test("
+                  "id integer NOT NULL, name varchar(32))",
+        SQL_NTS));
+    SQLCHAR table_name[] = "odbcpp_columns_test";
+    SQLCHAR column_pattern[] = "%";
+    ASSERT_EQ(SQL_SUCCESS, SQLColumns(
+        hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS,
+        column_pattern, SQL_NTS));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    char column_name[64]{};
+    SQLSMALLINT data_type = 0;
+    SQLINTEGER ordinal_position = 0;
+    SQLSMALLINT nullable = SQL_NULLABLE_UNKNOWN;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 4, SQL_C_CHAR, column_name, sizeof(column_name), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 5, SQL_C_SSHORT, &data_type, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 11, SQL_C_SSHORT, &nullable, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 17, SQL_C_SLONG, &ordinal_position, 0, nullptr));
+    EXPECT_STREQ("id", column_name);
+    EXPECT_EQ(SQL_INTEGER, data_type);
+    EXPECT_EQ(SQL_NO_NULLS, nullable);
+    EXPECT_EQ(1, ordinal_position);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLINTEGER column_size = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 4, SQL_C_CHAR, column_name, sizeof(column_name), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 5, SQL_C_SSHORT, &data_type, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 7, SQL_C_SLONG, &column_size, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 11, SQL_C_SSHORT, &nullable, 0, nullptr));
+    EXPECT_STREQ("name", column_name);
+    EXPECT_EQ(SQL_VARCHAR, data_type);
+    EXPECT_EQ(32, column_size);
+    EXPECT_EQ(SQL_NULLABLE, nullable);
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, ErrorCases) {
     // Execute query first
     SQLRETURN ret = SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS);

@@ -189,6 +189,10 @@ public:
   // Metadata functions
   SQLRETURN get_num_result_cols(SQLSMALLINT* column_count);
   SQLRETURN get_type_info(SQLSMALLINT data_type);
+  SQLRETURN columns(const std::optional<std::string>& catalog_name,
+                    const std::optional<std::string>& schema_name,
+                    const std::optional<std::string>& table_name,
+                    const std::optional<std::string>& column_name);
   SQLRETURN tables(const std::optional<std::string>& catalog_name,
                    const std::optional<std::string>& schema_name,
                    const std::optional<std::string>& table_name,

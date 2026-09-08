@@ -178,6 +178,19 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  SQLCHAR column_pattern[] = "table_name";
+  if (!succeeded(SQLCloseCursor(statement)) ||
+      !succeeded(SQLColumns(
+          statement, nullptr, 0, schema_pattern, SQL_NTS,
+          table_pattern, SQL_NTS, column_pattern, SQL_NTS)) ||
+      !succeeded(SQLFetch(statement))) {
+    print_diagnostic(SQL_HANDLE_STMT, statement);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
 
   SQLFreeHandle(SQL_HANDLE_STMT, statement);
   SQLDisconnect(connection);

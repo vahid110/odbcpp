@@ -40,6 +40,8 @@ TEST_F(MetadataAPITest, InvalidHandles) {
     SQLCHAR pattern[] = "%";
     EXPECT_EQ(SQL_ERROR, SQLTables(
         hstmt, nullptr, 0, nullptr, 0, pattern, -2, nullptr, 0));
+    EXPECT_EQ(SQL_ERROR, SQLColumns(
+        hstmt, nullptr, 0, nullptr, 0, pattern, -2, nullptr, 0));
 }
 
 TEST_F(MetadataAPITest, NoQueryExecuted) {
