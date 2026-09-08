@@ -215,6 +215,11 @@ public:
       const std::optional<std::string>& schema_name,
       const std::optional<std::string>& procedure_name,
       const std::optional<std::string>& column_name);
+  SQLRETURN special_columns(
+      SQLUSMALLINT identifier_type,
+      const std::optional<std::string>& catalog_name,
+      const std::optional<std::string>& schema_name,
+      const std::string& table_name, bool require_non_nullable);
   SQLRETURN tables(const std::optional<std::string>& catalog_name,
                    const std::optional<std::string>& schema_name,
                    const std::optional<std::string>& table_name,

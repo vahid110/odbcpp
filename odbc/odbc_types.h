@@ -48,6 +48,9 @@ constexpr const char* SQLSTATE_INVALID_TRANSACTION_OPERATION = "HY012";
 constexpr const char* SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED = "HYC00";
 constexpr const char* SQLSTATE_INVALID_DRIVER_COMPLETION = "HY110";
 constexpr const char* SQLSTATE_INVALID_OPTION_VALUE = "HY100";
+constexpr const char* SQLSTATE_COLUMN_TYPE_OUT_OF_RANGE = "HY097";
+constexpr const char* SQLSTATE_SCOPE_OUT_OF_RANGE = "HY098";
+constexpr const char* SQLSTATE_NULLABLE_TYPE_OUT_OF_RANGE = "HY099";
 constexpr const char* SQLSTATE_INVALID_CURSOR_STATE = "24000";
 constexpr const char* SQLSTATE_STATEMENT_NOT_PREPARED = "HY007";
 

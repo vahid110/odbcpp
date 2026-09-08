@@ -1555,6 +1555,91 @@ SQLRETURN ODBCStatement::procedure_columns(
   return execute_direct(query);
 }
 
+SQLRETURN ODBCStatement::special_columns(
+    SQLUSMALLINT identifier_type,
+    const std::optional<std::string>& catalog_name,
+    const std::optional<std::string>& schema_name,
+    const std::string& table_name, bool require_non_nullable) {
+  if (identifier_type == SQL_ROWVER) {
+    return execute_direct(
+        "SELECT 2::smallint AS scope, NULL::text AS column_name, "
+        "0::smallint AS data_type, NULL::text AS type_name, "
+        "0::integer AS column_size, 0::integer AS buffer_length, "
+        "NULL::smallint AS decimal_digits, 2::smallint AS pseudo_column "
+        "WHERE FALSE");
+  }
+
+  std::string query =
+      "SELECT 2::smallint AS scope, keys.column_name::text AS column_name, "
+      "CASE columns.data_type WHEN 'boolean' THEN -7 "
+      "WHEN 'smallint' THEN 5 WHEN 'integer' THEN 4 WHEN 'bigint' THEN -5 "
+      "WHEN 'real' THEN 7 WHEN 'double precision' THEN 8 "
+      "WHEN 'numeric' THEN 2 WHEN 'decimal' THEN 3 "
+      "WHEN 'character' THEN 1 WHEN 'character varying' THEN 12 "
+      "WHEN 'text' THEN -1 WHEN 'bytea' THEN -3 WHEN 'date' THEN 91 "
+      "WHEN 'time without time zone' THEN 92 "
+      "WHEN 'time with time zone' THEN 92 "
+      "WHEN 'timestamp without time zone' THEN 93 "
+      "WHEN 'timestamp with time zone' THEN 93 ELSE 12 END::smallint "
+      "AS data_type, CASE columns.data_type "
+      "WHEN 'time without time zone' THEN 'time' "
+      "WHEN 'timestamp without time zone' THEN 'timestamp' "
+      "ELSE columns.data_type END::text AS type_name, "
+      "CASE columns.data_type WHEN 'boolean' THEN 1 WHEN 'smallint' THEN 5 "
+      "WHEN 'integer' THEN 10 WHEN 'bigint' THEN 19 WHEN 'real' THEN 7 "
+      "WHEN 'double precision' THEN 15 "
+      "WHEN 'numeric' THEN columns.numeric_precision "
+      "WHEN 'decimal' THEN columns.numeric_precision "
+      "WHEN 'character' THEN columns.character_maximum_length "
+      "WHEN 'character varying' THEN columns.character_maximum_length "
+      "WHEN 'text' THEN 1073741824 WHEN 'bytea' THEN 1073741824 "
+      "WHEN 'date' THEN 10 WHEN 'time without time zone' THEN 15 "
+      "WHEN 'time with time zone' THEN 21 "
+      "WHEN 'timestamp without time zone' THEN 29 "
+      "WHEN 'timestamp with time zone' THEN 35 ELSE 0 END::integer "
+      "AS column_size, CASE columns.data_type "
+      "WHEN 'boolean' THEN 1 WHEN 'smallint' THEN 2 WHEN 'integer' THEN 4 "
+      "WHEN 'bigint' THEN 8 WHEN 'real' THEN 4 "
+      "WHEN 'double precision' THEN 8 "
+      "WHEN 'numeric' THEN columns.numeric_precision + 2 "
+      "WHEN 'decimal' THEN columns.numeric_precision + 2 "
+      "WHEN 'character' THEN columns.character_octet_length "
+      "WHEN 'character varying' THEN columns.character_octet_length "
+      "WHEN 'text' THEN 1073741824 WHEN 'bytea' THEN 1073741824 "
+      "WHEN 'date' THEN 10 WHEN 'time without time zone' THEN 15 "
+      "WHEN 'time with time zone' THEN 21 "
+      "WHEN 'timestamp without time zone' THEN 29 "
+      "WHEN 'timestamp with time zone' THEN 35 ELSE 0 END::integer "
+      "AS buffer_length, CASE WHEN columns.data_type IN "
+      "('numeric', 'decimal') THEN columns.numeric_scale "
+      "WHEN columns.data_type IN ('smallint', 'integer', 'bigint') THEN 0 "
+      "ELSE NULL END::smallint AS decimal_digits, "
+      "1::smallint AS pseudo_column "
+      "FROM information_schema.table_constraints AS constraints "
+      "JOIN information_schema.key_column_usage AS keys "
+      "ON constraints.constraint_catalog = keys.constraint_catalog "
+      "AND constraints.constraint_schema = keys.constraint_schema "
+      "AND constraints.constraint_name = keys.constraint_name "
+      "JOIN information_schema.columns AS columns "
+      "ON columns.table_catalog = keys.table_catalog "
+      "AND columns.table_schema = keys.table_schema "
+      "AND columns.table_name = keys.table_name "
+      "AND columns.column_name = keys.column_name "
+      "WHERE constraints.constraint_type = 'PRIMARY KEY' "
+      "AND keys.table_name = " + quote_catalog_literal(table_name);
+  if (catalog_name && !catalog_name->empty()) {
+    query += " AND keys.table_catalog = " +
+        quote_catalog_literal(*catalog_name);
+  }
+  if (schema_name && !schema_name->empty()) {
+    query += " AND keys.table_schema = " +
+        quote_catalog_literal(*schema_name);
+  }
+  if (require_non_nullable) query += " AND columns.is_nullable = 'NO'";
+  query += " ORDER BY keys.ordinal_position";
+  return execute_direct(query);
+}
+
 SQLRETURN ODBCStatement::row_count(SQLLEN* row_count_value) {
   if (!row_count_value) {
     set_error(SQLSTATE_GENERAL_ERROR, "Null pointer for row count");

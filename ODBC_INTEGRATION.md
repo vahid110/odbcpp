@@ -30,7 +30,7 @@
 
 ### ⚠️ Missing for Full ODBC Compliance
 - **Installer-managed registration**: Registration still uses an `odbcinst.ini` entry
-- **Catalog discovery**: Table, column, key, index, routine, and routine-column discovery work
+- **Catalog discovery**: ANSI catalog APIs are implemented; SQL_ROWVER has no PostgreSQL row-version column to report
 
 ## Integration Paths
 

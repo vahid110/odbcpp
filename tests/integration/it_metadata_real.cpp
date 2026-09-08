@@ -417,6 +417,37 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLRoutineColumns) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, ReportsBestRowIdentifier) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_special_column_test("
+                  "id integer PRIMARY KEY, value text)",
+        SQL_NTS));
+    SQLCHAR table_name[] = "odbcpp_special_column_test";
+    ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
+        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+        table_name, SQL_NTS, SQL_SCOPE_SESSION, SQL_NO_NULLS));
+
+    SQLSMALLINT scope = -1;
+    char column_name[64]{};
+    SQLSMALLINT data_type = 0;
+    SQLSMALLINT pseudo_column = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_SSHORT, &scope, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 2, SQL_C_CHAR, column_name, sizeof(column_name), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 3, SQL_C_SSHORT, &data_type, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 8, SQL_C_SSHORT, &pseudo_column, 0, nullptr));
+    EXPECT_EQ(SQL_SCOPE_SESSION, scope);
+    EXPECT_STREQ("id", column_name);
+    EXPECT_EQ(SQL_INTEGER, data_type);
+    EXPECT_EQ(SQL_PC_NOT_PSEUDO, pseudo_column);
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, ErrorCases) {
     // Execute query first
     SQLRETURN ret = SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS);
