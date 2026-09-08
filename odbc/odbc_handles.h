@@ -203,6 +203,10 @@ public:
       const std::optional<std::string>& fk_catalog_name,
       const std::optional<std::string>& fk_schema_name,
       const std::optional<std::string>& fk_table_name);
+  SQLRETURN statistics(const std::optional<std::string>& catalog_name,
+                       const std::optional<std::string>& schema_name,
+                       const std::string& table_name,
+                       bool unique_only);
   SQLRETURN tables(const std::optional<std::string>& catalog_name,
                    const std::optional<std::string>& schema_name,
                    const std::optional<std::string>& table_name,

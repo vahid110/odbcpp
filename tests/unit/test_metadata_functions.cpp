@@ -52,6 +52,15 @@ TEST_F(MetadataAPITest, InvalidHandles) {
     EXPECT_EQ(SQL_ERROR, SQLForeignKeys(
         hstmt, nullptr, 0, nullptr, 0, nullptr, 0,
         nullptr, 0, nullptr, 0, pattern, -2));
+    EXPECT_EQ(SQL_ERROR, SQLStatistics(
+        hstmt, nullptr, 0, nullptr, 0, nullptr, 0,
+        SQL_INDEX_ALL, SQL_QUICK));
+    EXPECT_EQ(SQL_ERROR, SQLStatistics(
+        hstmt, nullptr, 0, nullptr, 0, pattern, SQL_NTS,
+        99, SQL_QUICK));
+    EXPECT_EQ(SQL_ERROR, SQLStatistics(
+        hstmt, nullptr, 0, nullptr, 0, pattern, SQL_NTS,
+        SQL_INDEX_ALL, 99));
 }
 
 TEST_F(MetadataAPITest, NoQueryExecuted) {

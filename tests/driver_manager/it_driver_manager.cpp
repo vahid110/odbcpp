@@ -226,6 +226,18 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  if (!succeeded(SQLCloseCursor(statement)) ||
+      !succeeded(SQLStatistics(
+          statement, nullptr, 0, nullptr, 0,
+          primary_key_table, SQL_NTS, SQL_INDEX_UNIQUE, SQL_QUICK)) ||
+      !succeeded(SQLFetch(statement))) {
+    print_diagnostic(SQL_HANDLE_STMT, statement);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
 
   SQLFreeHandle(SQL_HANDLE_STMT, statement);
   SQLDisconnect(connection);

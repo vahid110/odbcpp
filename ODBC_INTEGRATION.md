@@ -30,7 +30,7 @@
 
 ### ⚠️ Missing for Full ODBC Compliance
 - **Installer-managed registration**: Registration still uses an `odbcinst.ini` entry
-- **Catalog discovery**: Table, column, and key discovery work; index and procedure APIs remain incomplete
+- **Catalog discovery**: Table, column, key, and index discovery work; procedure APIs remain incomplete
 
 ## Integration Paths
 

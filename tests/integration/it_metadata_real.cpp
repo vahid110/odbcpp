@@ -300,6 +300,50 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLForeignKeys) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, ListsPostgreSQLIndexes) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_index_test("
+                  "id integer, value text)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE UNIQUE INDEX odbcpp_index_test_id_idx "
+                  "ON odbcpp_index_test(id DESC)",
+        SQL_NTS));
+    SQLCHAR table_name[] = "odbcpp_index_test";
+    ASSERT_EQ(SQL_SUCCESS, SQLStatistics(
+        hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS,
+        SQL_INDEX_UNIQUE, SQL_QUICK));
+
+    char index_name[128]{};
+    char column_name[64]{};
+    char ordering[2]{};
+    SQLSMALLINT non_unique = SQL_TRUE;
+    SQLSMALLINT type = 0;
+    SQLSMALLINT ordinal_position = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 4, SQL_C_SSHORT, &non_unique, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 6, SQL_C_CHAR, index_name, sizeof(index_name), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 7, SQL_C_SSHORT, &type, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 8, SQL_C_SSHORT, &ordinal_position, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 9, SQL_C_CHAR, column_name, sizeof(column_name), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 10, SQL_C_CHAR, ordering, sizeof(ordering), nullptr));
+    EXPECT_EQ(SQL_FALSE, non_unique);
+    EXPECT_STREQ("odbcpp_index_test_id_idx", index_name);
+    EXPECT_EQ(SQL_INDEX_OTHER, type);
+    EXPECT_EQ(1, ordinal_position);
+    EXPECT_STREQ("id", column_name);
+    EXPECT_STREQ("D", ordering);
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, ErrorCases) {
     // Execute query first
     SQLRETURN ret = SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS);

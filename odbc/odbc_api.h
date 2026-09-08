@@ -55,6 +55,12 @@ SQLRETURN SQLForeignKeys(
     SQLSMALLINT name_length4, SQLCHAR* fk_schema_name,
     SQLSMALLINT name_length5, SQLCHAR* fk_table_name,
     SQLSMALLINT name_length6);
+SQLRETURN SQLStatistics(
+    SQLHSTMT statement_handle, SQLCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLCHAR* table_name,
+    SQLSMALLINT name_length3, SQLUSMALLINT unique,
+    SQLUSMALLINT reserved);
 SQLRETURN SQLTables(
     SQLHSTMT statement_handle, SQLCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLCHAR* schema_name,

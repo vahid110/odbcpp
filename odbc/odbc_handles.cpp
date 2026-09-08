@@ -1364,6 +1364,53 @@ SQLRETURN ODBCStatement::foreign_keys(
   return execute_direct(query);
 }
 
+SQLRETURN ODBCStatement::statistics(
+    const std::optional<std::string>& catalog_name,
+    const std::optional<std::string>& schema_name,
+    const std::string& table_name, bool unique_only) {
+  std::string query =
+      "SELECT current_database()::text AS table_cat, "
+      "namespaces.nspname::text AS table_schem, "
+      "tables.relname::text AS table_name, "
+      "CASE WHEN indexes.indisunique THEN 0 ELSE 1 END::smallint "
+      "AS non_unique, NULL::text AS index_qualifier, "
+      "index_names.relname::text AS index_name, 3::smallint AS type, "
+      "index_columns.ordinality::smallint AS ordinal_position, "
+      "columns.attname::text AS column_name, "
+      "CASE WHEN pg_index_column_has_property(indexes.indexrelid, "
+      "index_columns.ordinality::integer, 'desc') THEN 'D' "
+      "ELSE 'A' END::text AS asc_or_desc, "
+      "LEAST(GREATEST(tables.reltuples, 0), 2147483647)::integer "
+      "AS cardinality, tables.relpages::integer AS pages, "
+      "pg_get_expr(indexes.indpred, indexes.indrelid)::text "
+      "AS filter_condition FROM pg_catalog.pg_index AS indexes "
+      "JOIN pg_catalog.pg_class AS tables "
+      "ON tables.oid = indexes.indrelid "
+      "JOIN pg_catalog.pg_namespace AS namespaces "
+      "ON namespaces.oid = tables.relnamespace "
+      "JOIN pg_catalog.pg_class AS index_names "
+      "ON index_names.oid = indexes.indexrelid "
+      "CROSS JOIN LATERAL unnest(indexes.indkey) WITH ORDINALITY "
+      "AS index_columns(attribute_number, ordinality) "
+      "LEFT JOIN pg_catalog.pg_attribute AS columns "
+      "ON columns.attrelid = tables.oid "
+      "AND columns.attnum = index_columns.attribute_number "
+      "WHERE tables.relname = " + quote_catalog_literal(table_name);
+  if (catalog_name && !catalog_name->empty()) {
+    query += " AND current_database() = " +
+        quote_catalog_literal(*catalog_name);
+  }
+  if (schema_name && !schema_name->empty()) {
+    query += " AND namespaces.nspname = " +
+        quote_catalog_literal(*schema_name);
+  }
+  if (unique_only) query += " AND indexes.indisunique";
+  query +=
+      " ORDER BY non_unique, type, index_qualifier, index_name, "
+      "ordinal_position";
+  return execute_direct(query);
+}
+
 SQLRETURN ODBCStatement::row_count(SQLLEN* row_count_value) {
   if (!row_count_value) {
     set_error(SQLSTATE_GENERAL_ERROR, "Null pointer for row count");
