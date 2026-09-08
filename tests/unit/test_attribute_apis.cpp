@@ -170,6 +170,23 @@ TEST_F(AttributeApisTest, RejectsInvalidHandles) {
       nullptr, SQL_ATTR_QUERY_TIMEOUT, integer_value(1), 0));
 }
 
+TEST_F(AttributeApisTest, DriverConnectValidatesArgumentsBeforeConnecting) {
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnect(
+      connection_, nullptr, nullptr, 0, nullptr, 0, nullptr,
+      SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("HY009", diagnostic_state(SQL_HANDLE_DBC, connection_));
+
+  SQLCHAR connection_string[] = "SERVER=127.0.0.1";
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnect(
+      connection_, nullptr, connection_string, SQL_NTS, nullptr, 0, nullptr,
+      999));
+  EXPECT_EQ("HY110", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnect(
+      connection_, nullptr, connection_string, SQL_NTS, nullptr, 0, nullptr,
+      SQL_DRIVER_PROMPT));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_DBC, connection_));
+}
+
 TEST(AttributeDeadlineTest, SaturatesUnlimitedTimeoutWithoutOverflow) {
   EXPECT_EQ(rs::util::Deadline::max(),
             rs::util::make_deadline(std::chrono::milliseconds::max()));

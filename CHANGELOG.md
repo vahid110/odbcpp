@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- SQLDriverConnect support for DSN-less driver-manager connections
 - SQL_ATTR_AUTOCOMMIT and connection-level SQLEndTran commit/rollback support
 - SQL_ATTR_TXN_ISOLATION with PostgreSQL session-level isolation configuration
 - unixODBC end-to-end coverage that dynamically loads the shared driver

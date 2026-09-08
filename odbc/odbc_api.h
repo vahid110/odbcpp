@@ -15,6 +15,11 @@ SQLRETURN SQLConnect(SQLHDBC connection_handle,
                     SQLCHAR* server_name, SQLSMALLINT name_length1,
                     SQLCHAR* user_name, SQLSMALLINT name_length2, 
                     SQLCHAR* authentication, SQLSMALLINT name_length3);
+SQLRETURN SQLDriverConnect(
+    SQLHDBC connection_handle, SQLHWND window_handle,
+    SQLCHAR* connection_string_in, SQLSMALLINT string_length1,
+    SQLCHAR* connection_string_out, SQLSMALLINT buffer_length,
+    SQLSMALLINT* string_length2, SQLUSMALLINT driver_completion);
 SQLRETURN SQLDisconnect(SQLHDBC connection_handle);
 SQLRETURN SQLSetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
                             SQLPOINTER value, SQLINTEGER string_length);

@@ -26,11 +26,10 @@
 - **Standard locations**: Checks `/etc/odbc.ini`, `~/.odbc.ini`
 - **Shared driver**: CMake builds and installs `libodbcpp`
 - **ODBC Driver Manager**: unixODBC loading and query execution are covered in CI
-- **ODBC API**: DSN-based SQLConnect support
+- **ODBC API**: DSN-based SQLConnect and DSN-less SQLDriverConnect support
 
 ### ⚠️ Missing for Full ODBC Compliance
 - **Installer-managed registration**: Registration still uses an `odbcinst.ini` entry
-- **SQLDriverConnect**: Driver-manager connection-string entry point is not implemented yet
 - **Capability discovery**: SQLGetFunctions and SQLGetTypeInfo remain incomplete
 
 ## Integration Paths
@@ -123,7 +122,7 @@ echo "ODBCPP driver installed successfully"
 - **Excel**: Needs driver in odbcinst.ini
 - **Tableau**: Needs ODBC Driver Manager registration
 - **Power BI**: Needs Windows ODBC registry entries
-- **Connection-string clients**: Need SQLDriverConnect
+- **Catalog-driven clients**: Need broader metadata APIs
 
 ## Recommendation
 

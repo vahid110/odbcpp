@@ -4,7 +4,7 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 
 ## Features
 
-- **ODBC API Foundation**: 26 ANSI entry points with diagnostics and descriptor storage
+- **ODBC API Foundation**: 27 ANSI entry points with diagnostics and descriptor storage
 - **4 ODBC Descriptors**: IRD, APD, ARD, IPD fully implemented
 - **Prepared Statements**: Typed/null-aware PostgreSQL Parse/Bind/Describe/Execute workflow
 - **Column Binding**: SQLBindCol with automatic data population during fetch
@@ -26,7 +26,7 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 ### ODBC API Coverage
 | Component | Status | Functions |
 |-----------|--------|----------|
-| **Core APIs** | ✅ Complete | SQLAllocHandle, SQLFreeHandle, SQLConnect, SQLDisconnect |
+| **Core APIs** | ✅ Complete | SQLAllocHandle, SQLFreeHandle, SQLConnect, SQLDriverConnect, SQLDisconnect |
 | **Timeout Attributes** | ✅ Complete | SQL_ATTR_LOGIN_TIMEOUT and SQL_ATTR_QUERY_TIMEOUT set/get APIs |
 | **Transactions** | ✅ Complete | SQL_ATTR_AUTOCOMMIT, SQL_ATTR_TXN_ISOLATION, SQLEndTran, capability reporting |
 | **Statement Execution** | ✅ Complete | SQLExecDirect, SQLFetch, SQLGetData, SQLRowCount |

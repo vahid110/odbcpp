@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 
 using namespace rs::odbc;
 
@@ -118,6 +119,67 @@ SQLRETURN SQLConnect(SQLHDBC connection_handle,
   std::string password = normalize_string(sqlchar_to_string(authentication, name_length3));
   
   return conn->connect(dsn, user, password);
+}
+
+SQLRETURN SQLDriverConnect(
+    SQLHDBC connection_handle, SQLHWND, SQLCHAR* connection_string_in,
+    SQLSMALLINT string_length1, SQLCHAR* connection_string_out,
+    SQLSMALLINT buffer_length, SQLSMALLINT* string_length2,
+    SQLUSMALLINT driver_completion) {
+  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  if (!conn) return SQL_INVALID_HANDLE;
+  if (!connection_string_in) {
+    conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                    "Input connection string is null");
+    return SQL_ERROR;
+  }
+  if (string_length1 < 0 && string_length1 != SQL_NTS) {
+    conn->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid input connection string length");
+    return SQL_ERROR;
+  }
+  if (buffer_length < 0) {
+    conn->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid output connection string buffer length");
+    return SQL_ERROR;
+  }
+  if (driver_completion != SQL_DRIVER_NOPROMPT &&
+      driver_completion != SQL_DRIVER_COMPLETE &&
+      driver_completion != SQL_DRIVER_COMPLETE_REQUIRED &&
+      driver_completion != SQL_DRIVER_PROMPT) {
+    conn->set_error(SQLSTATE_INVALID_DRIVER_COMPLETION,
+                    "Invalid driver completion mode");
+    return SQL_ERROR;
+  }
+  if (driver_completion == SQL_DRIVER_PROMPT) {
+    conn->set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                    "Interactive connection prompting is not implemented");
+    return SQL_ERROR;
+  }
+
+  const auto connection_string = normalize_string(
+      sqlchar_to_string(connection_string_in, string_length1));
+  const auto connect_result = conn->connect(connection_string, {}, {});
+  if (connect_result != SQL_SUCCESS) return connect_result;
+
+  const auto output_length = connection_string.size();
+  if (string_length2) {
+    *string_length2 = static_cast<SQLSMALLINT>(
+        std::min(output_length,
+                 static_cast<std::size_t>(std::numeric_limits<SQLSMALLINT>::max())));
+  }
+  if (!connection_string_out || buffer_length <= 0) return SQL_SUCCESS;
+
+  const auto copied_length = std::min(
+      output_length, static_cast<std::size_t>(buffer_length - 1));
+  std::memcpy(connection_string_out, connection_string.data(), copied_length);
+  connection_string_out[copied_length] = '\0';
+  if (copied_length < output_length) {
+    conn->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                    "Output connection string was truncated");
+    return SQL_SUCCESS_WITH_INFO;
+  }
+  return SQL_SUCCESS;
 }
 
 SQLRETURN SQLDisconnect(SQLHDBC connection_handle) {

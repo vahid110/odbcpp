@@ -45,11 +45,24 @@ int main() {
     return 1;
   }
 
-  SQLCHAR dsn[] = "RedshiftProd";
-  const auto connect_result = SQLConnect(
-      connection, dsn, SQL_NTS, nullptr, 0, nullptr, 0);
+  SQLCHAR connection_string[] =
+      "DRIVER={ODBCPP PostgreSQL};SERVER=127.0.0.1;PORT=5432;"
+      "DATABASE=postgres;UID=postgres;PWD=postgres;SSL=0";
+  SQLCHAR completed_connection_string[sizeof(connection_string)]{};
+  SQLSMALLINT completed_length = 0;
+  const auto connect_result = SQLDriverConnect(
+      connection, nullptr, connection_string, SQL_NTS,
+      completed_connection_string, sizeof(completed_connection_string),
+      &completed_length, SQL_DRIVER_NOPROMPT);
   if (!succeeded(connect_result)) {
     print_diagnostic(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+  if (completed_length != sizeof(connection_string) - 1) {
+    std::fprintf(stderr, "Unexpected completed connection string length\n");
+    SQLDisconnect(connection);
     SQLFreeHandle(SQL_HANDLE_DBC, connection);
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
