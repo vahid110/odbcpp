@@ -50,6 +50,7 @@ namespace {
       case SQL_API_SQLGETSTMTATTR:
       case SQL_API_SQLGETTYPEINFO:
       case SQL_API_SQLNUMRESULTCOLS:
+      case SQL_API_SQLNUMPARAMS:
       case SQL_API_SQLPREPARE:
       case SQL_API_SQLROWCOUNT:
       case SQL_API_SQLSETCONNECTATTR:
@@ -671,6 +672,13 @@ SQLRETURN SQLExecute(SQLHSTMT statement_handle) {
   if (!stmt) return SQL_INVALID_HANDLE;
   
   return stmt->execute();
+}
+
+SQLRETURN SQLNumParams(SQLHSTMT statement_handle,
+                       SQLSMALLINT* parameter_count) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  return stmt->num_params(parameter_count);
 }
 
 SQLRETURN SQLBindParameter(SQLHSTMT statement_handle, SQLUSMALLINT parameter_number, SQLSMALLINT input_output_type,

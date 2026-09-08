@@ -127,6 +127,19 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  SQLCHAR prepared_query[] = "SELECT ?, '?'::text";
+  SQLSMALLINT parameter_count = 0;
+  if (!succeeded(SQLCloseCursor(statement)) ||
+      !succeeded(SQLPrepare(statement, prepared_query, SQL_NTS)) ||
+      !succeeded(SQLNumParams(statement, &parameter_count)) ||
+      parameter_count != 1) {
+    print_diagnostic(SQL_HANDLE_STMT, statement);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
 
   SQLFreeHandle(SQL_HANDLE_STMT, statement);
   SQLDisconnect(connection);

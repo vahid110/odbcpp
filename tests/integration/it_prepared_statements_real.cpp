@@ -54,6 +54,14 @@ TEST_F(PreparedStatementIntegrationTest, BinaryParameterRoundTripsAsBytea) {
     EXPECT_EQ(0, std::memcmp(input, output, sizeof(input)));
 }
 
+TEST_F(PreparedStatementIntegrationTest, ReportsPreparedParameterCount) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT ?, '?'::text, ? /* ? */, $$?$$, ?", SQL_NTS));
+    SQLSMALLINT parameter_count = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumParams(hstmt, &parameter_count));
+    EXPECT_EQ(3, parameter_count);
+}
+
 TEST_F(PreparedStatementIntegrationTest, AutocommitOffSupportsCommitAndRollback) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,

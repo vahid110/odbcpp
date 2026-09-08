@@ -113,15 +113,19 @@ bool is_dollar_tag_continue(char ch) {
   return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
 }
 
-std::string replace_parameter_markers(std::string_view sql,
-                                      std::size_t parameter_count) {
+struct ParameterMarkerRewrite {
+  std::string sql;
+  std::size_t marker_count{0};
+};
+
+ParameterMarkerRewrite replace_parameter_markers(std::string_view sql) {
   enum class State { Normal, SingleQuote, DoubleQuote, LineComment, BlockComment };
   State state = State::Normal;
   std::size_t block_depth = 0;
   std::size_t marker_count = 0;
   std::string dollar_delimiter;
   std::string out;
-  out.reserve(sql.size() + parameter_count * 2);
+  out.reserve(sql.size());
 
   for (std::size_t i = 0; i < sql.size();) {
     if (!dollar_delimiter.empty()) {
@@ -212,11 +216,7 @@ std::string replace_parameter_markers(std::string_view sql,
     }
   }
 
-  if (marker_count != 0 && marker_count != parameter_count) {
-    throw std::invalid_argument(
-        "parameter marker count does not match bound parameter count");
-  }
-  return out;
+  return {std::move(out), marker_count};
 }
 
 } // namespace
@@ -449,7 +449,12 @@ std::vector<std::byte> PgProtocolParser::create_prepared_query(
     throw std::length_error("too many PostgreSQL query parameters");
   }
 
-  const std::string rewritten_sql = replace_parameter_markers(sql, params.size());
+  auto rewritten = replace_parameter_markers(sql);
+  if (rewritten.marker_count != 0 && rewritten.marker_count != params.size()) {
+    throw std::invalid_argument(
+        "parameter marker count does not match bound parameter count");
+  }
+  const auto& rewritten_sql = rewritten.sql;
   std::vector<std::byte> out;
   out.reserve(rewritten_sql.size() + 64);
 
@@ -504,6 +509,10 @@ std::vector<std::byte> PgProtocolParser::create_prepared_query(
   start = begin_message(out, 'S');
   finish_message(out, start);
   return out;
+}
+
+std::size_t PgProtocolParser::parameter_marker_count(std::string_view sql) {
+  return replace_parameter_markers(sql).marker_count;
 }
 
 Message PgProtocolParser::parse_message(const std::vector<std::byte>& data) {

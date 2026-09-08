@@ -70,6 +70,7 @@ SQLRETURN SQLSetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute,
 // Prepared statements
 SQLRETURN SQLPrepare(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length);
 SQLRETURN SQLExecute(SQLHSTMT statement_handle);
+SQLRETURN SQLNumParams(SQLHSTMT statement_handle, SQLSMALLINT* parameter_count);
 SQLRETURN SQLBindParameter(SQLHSTMT statement_handle, SQLUSMALLINT parameter_number, SQLSMALLINT input_output_type,
                           SQLSMALLINT value_type, SQLSMALLINT parameter_type, SQLULEN column_size,
                           SQLSMALLINT decimal_digits, SQLPOINTER parameter_value, SQLLEN buffer_length,

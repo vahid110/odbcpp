@@ -175,6 +175,7 @@ public:
   // Prepared statements
   SQLRETURN prepare(const std::string& sql);
   SQLRETURN execute();
+  SQLRETURN num_params(SQLSMALLINT* parameter_count);
   SQLRETURN bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLINT input_output_type,
                           SQLSMALLINT value_type, SQLSMALLINT parameter_type, SQLULEN column_size,
                           SQLSMALLINT decimal_digits, SQLPOINTER parameter_value, SQLLEN buffer_length,
@@ -220,6 +221,7 @@ private:
   size_t current_row_ = 0;
   bool executed_ = false;
   bool prepared_ = false;
+  SQLSMALLINT parameter_count_ = 0;
   SQLLEN affected_rows_ = 0;
   SQLULEN query_timeout_seconds_ = 0;
 

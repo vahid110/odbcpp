@@ -691,12 +691,35 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
     return SQL_ERROR;
   }
   
+  const auto marker_count =
+      rs::core::database::postgres::PgProtocolParser::parameter_marker_count(sql);
+  if (marker_count > static_cast<std::size_t>(
+          std::numeric_limits<SQLSMALLINT>::max())) {
+    set_error(SQLSTATE_GENERAL_ERROR, "Too many parameter markers");
+    return SQL_ERROR;
+  }
   prepared_sql_ = sql;
+  parameter_count_ = static_cast<SQLSMALLINT>(marker_count);
   parameter_info_.clear();
   param_metadata_.clear();
   prepared_ = true;
   executed_ = false;
   
+  return SQL_SUCCESS;
+}
+
+SQLRETURN ODBCStatement::num_params(SQLSMALLINT* parameter_count) {
+  if (!parameter_count) {
+    set_error(SQLSTATE_INVALID_NULL_POINTER,
+              "Parameter count output pointer is null");
+    return SQL_ERROR;
+  }
+  if (!prepared_) {
+    set_error(SQLSTATE_STATEMENT_NOT_PREPARED,
+              "Statement is not prepared");
+    return SQL_ERROR;
+  }
+  *parameter_count = parameter_count_;
   return SQL_SUCCESS;
 }
 

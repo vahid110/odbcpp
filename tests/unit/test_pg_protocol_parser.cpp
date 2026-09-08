@@ -223,6 +223,13 @@ TEST(PgProtocolParserTest, RejectsMismatchedOdbcMarkerCount) {
                std::invalid_argument);
 }
 
+TEST(PgProtocolParserTest, CountsOnlyUnquotedOdbcParameterMarkers) {
+  EXPECT_EQ(3u, PgProtocolParser::parameter_marker_count(
+      "SELECT ?, '?'::text, ? /* ? */, $$?$$, ? -- ?\n"));
+  EXPECT_EQ(0u, PgProtocolParser::parameter_marker_count(
+      "SELECT $1, '$2', $$?$$"));
+}
+
 TEST(PgProtocolParserTest, ExtractsResultAndParameterMetadata) {
   PgProtocolParser parser;
   std::vector<rs::core::database::Message> messages;

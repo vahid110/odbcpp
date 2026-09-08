@@ -48,6 +48,7 @@ constexpr const char* SQLSTATE_INVALID_TRANSACTION_OPERATION = "HY012";
 constexpr const char* SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED = "HYC00";
 constexpr const char* SQLSTATE_INVALID_DRIVER_COMPLETION = "HY110";
 constexpr const char* SQLSTATE_INVALID_CURSOR_STATE = "24000";
+constexpr const char* SQLSTATE_STATEMENT_NOT_PREPARED = "HY007";
 
 // Note: All SQL_DIAG_* constants are already defined in system ODBC headers (sql.h, sqlext.h)
 // No need to redefine them here
