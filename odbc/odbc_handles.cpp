@@ -430,6 +430,29 @@ SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLULEN* value) {
   return SQL_SUCCESS;
 }
 
+SQLRETURN ODBCStatement::close_cursor(bool report_missing_cursor) {
+  const bool cursor_open = executed_ && !column_info_.empty();
+  if (!cursor_open && report_missing_cursor) {
+    set_error(SQLSTATE_INVALID_CURSOR_STATE, "No cursor is open");
+    return SQL_ERROR;
+  }
+  result_rows_.clear();
+  column_info_.clear();
+  get_data_offsets_.clear();
+  current_row_ = 0;
+  affected_rows_ = 0;
+  executed_ = false;
+  return SQL_SUCCESS;
+}
+
+void ODBCStatement::unbind_columns() {
+  column_bindings_.clear();
+}
+
+void ODBCStatement::reset_parameters() {
+  parameter_info_.clear();
+}
+
 SQLRETURN ODBCStatement::fetch() {
   if (!executed_ || current_row_ >= result_rows_.size()) {
     return SQL_NO_DATA;

@@ -40,6 +40,8 @@ SQLRETURN SQLSetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
 SQLRETURN SQLGetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
                          SQLPOINTER value, SQLINTEGER buffer_length,
                          SQLINTEGER* string_length);
+SQLRETURN SQLCloseCursor(SQLHSTMT statement_handle);
+SQLRETURN SQLFreeStmt(SQLHSTMT statement_handle, SQLUSMALLINT option);
 
 // Error handling
 SQLRETURN SQLGetDiagRec(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,

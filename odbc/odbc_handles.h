@@ -168,6 +168,9 @@ public:
                      void* buffer, SQLLEN buffer_length, SQLLEN* indicator);
   SQLRETURN set_attribute(SQLINTEGER attribute, SQLULEN value);
   SQLRETURN get_attribute(SQLINTEGER attribute, SQLULEN* value);
+  SQLRETURN close_cursor(bool report_missing_cursor);
+  void unbind_columns();
+  void reset_parameters();
   
   // Prepared statements
   SQLRETURN prepare(const std::string& sql);

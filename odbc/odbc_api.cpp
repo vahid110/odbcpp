@@ -28,6 +28,7 @@ namespace {
       case SQL_API_SQLBINDCOL:
       case SQL_API_SQLBINDPARAMETER:
       case SQL_API_SQLCOLATTRIBUTE:
+      case SQL_API_SQLCLOSECURSOR:
       case SQL_API_SQLCONNECT:
       case SQL_API_SQLDESCRIBECOL:
       case SQL_API_SQLDESCRIBEPARAM:
@@ -39,6 +40,7 @@ namespace {
       case SQL_API_SQLEXECUTE:
       case SQL_API_SQLFETCH:
       case SQL_API_SQLFREEHANDLE:
+      case SQL_API_SQLFREESTMT:
       case SQL_API_SQLGETCONNECTATTR:
       case SQL_API_SQLGETDATA:
       case SQL_API_SQLGETDIAGFIELD:
@@ -316,6 +318,34 @@ SQLRETURN SQLGetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
     *string_length = static_cast<SQLINTEGER>(sizeof(SQLULEN));
   }
   return result;
+}
+
+SQLRETURN SQLCloseCursor(SQLHSTMT statement_handle) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  return stmt->close_cursor(true);
+}
+
+SQLRETURN SQLFreeStmt(SQLHSTMT statement_handle, SQLUSMALLINT option) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  switch (option) {
+    case SQL_CLOSE:
+      return stmt->close_cursor(false);
+    case SQL_UNBIND:
+      stmt->unbind_columns();
+      return SQL_SUCCESS;
+    case SQL_RESET_PARAMS:
+      stmt->reset_parameters();
+      return SQL_SUCCESS;
+    case SQL_DROP:
+      HandleRegistry::instance().unregister_handle(statement_handle);
+      return SQL_SUCCESS;
+    default:
+      stmt->set_error(SQLSTATE_INVALID_ATTRIBUTE,
+                      "Invalid SQLFreeStmt option");
+      return SQL_ERROR;
+  }
 }
 
 SQLRETURN SQLGetDiagRec(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,

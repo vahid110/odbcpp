@@ -179,6 +179,16 @@ TEST_F(AttributeApisTest, StoresQueryTimeoutAndAllowsZero) {
       statement_, SQL_ATTR_QUERY_TIMEOUT, integer_value(0), 0));
 }
 
+TEST_F(AttributeApisTest, ManagesStatementCursorAndBindings) {
+  EXPECT_EQ(SQL_ERROR, SQLCloseCursor(statement_));
+  EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_CLOSE));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_UNBIND));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_RESET_PARAMS));
+  EXPECT_EQ(SQL_ERROR, SQLFreeStmt(statement_, 999));
+  EXPECT_EQ("HY092", diagnostic_state(SQL_HANDLE_STMT, statement_));
+}
+
 TEST_F(AttributeApisTest, ReportsUnsupportedAttributesAndNullOutputs) {
   SQLUINTEGER value = 0;
   EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(

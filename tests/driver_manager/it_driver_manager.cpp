@@ -101,6 +101,23 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  if (!succeeded(SQLCloseCursor(statement))) {
+    print_diagnostic(SQL_HANDLE_STMT, statement);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+  if (!succeeded(SQLFreeStmt(statement, SQL_UNBIND)) ||
+      !succeeded(SQLFreeStmt(statement, SQL_RESET_PARAMS))) {
+    print_diagnostic(SQL_HANDLE_STMT, statement);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
 
   SQLFreeHandle(SQL_HANDLE_STMT, statement);
   SQLDisconnect(connection);
