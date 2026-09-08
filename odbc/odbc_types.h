@@ -37,6 +37,8 @@ constexpr const char* SQLSTATE_INDICATOR_VARIABLE_REQUIRED = "22002";
 constexpr const char* SQLSTATE_RESTRICTED_DATA_TYPE = "07006";
 constexpr const char* SQLSTATE_INVALID_CHARACTER_VALUE = "22018";
 constexpr const char* SQLSTATE_STRING_DATA_TRUNCATED = "01004";
+constexpr const char* SQLSTATE_INVALID_STRING_LENGTH = "HY090";
+constexpr const char* SQLSTATE_INVALID_NULL_POINTER = "HY009";
 
 // Note: All SQL_DIAG_* constants are already defined in system ODBC headers (sql.h, sqlext.h)
 // No need to redefine them here

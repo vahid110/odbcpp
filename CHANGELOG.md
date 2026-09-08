@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Chunked SQLGetData retrieval for long character values across repeated calls
 - Shared text-result conversion for small integers, integers, big integers, floating-point values, booleans, dates, times, and timestamps
 - Metadata-driven SQL_C_DEFAULT handling for SQLGetData and bound columns
 - Null-aware result cells that preserve PostgreSQL NULL separately from empty strings
@@ -24,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Development roadmap and changelog
 
 ### Changed
+- SQLGetData now reports the remaining length before each chunk and returns SQL_NO_DATA after exhaustion
 - Continuous integration now builds the native POSTGRESQL target on Linux and Windows
 - Result conversions use PostgreSQL column metadata instead of assuming SQL_VARCHAR
 - SQLFetch and SQLGetData now propagate protocol-level NULL indicators without modifying application buffers

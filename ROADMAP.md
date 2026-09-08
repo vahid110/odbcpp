@@ -16,6 +16,7 @@
 - [x] Data type conversion framework
 - [x] Text-protocol NULL preservation with SQL_NULL_DATA indicators
 - [x] Metadata-driven SQL_C_DEFAULT conversion for core PostgreSQL scalar types
+- [x] Chunked SQLGetData retrieval for long text values
 - [x] Cross-platform build system
 
 ### Milestone 3: Prepared Statements (COMPLETE)

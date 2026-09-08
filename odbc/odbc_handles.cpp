@@ -235,6 +235,7 @@ SQLRETURN ODBCStatement::fetch() {
   }
   
   current_row_++;
+  get_data_offsets_.assign(result_rows_[current_row_ - 1].size(), 0);
   SQLRETURN fetch_result = SQL_SUCCESS;
   
   // Auto-populate bound columns from ARD
@@ -295,7 +296,23 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     set_error(SQLSTATE_GENERAL_ERROR, "Invalid column number");
     return SQL_ERROR;
   }
-  
+
+  constexpr auto complete = std::numeric_limits<std::size_t>::max();
+  if (get_data_offsets_.size() != row.size()) {
+    get_data_offsets_.assign(row.size(), 0);
+  }
+  auto& offset = get_data_offsets_[col - 1];
+  if (offset == complete) return SQL_NO_DATA;
+
+  if (!buffer) {
+    set_error(SQLSTATE_INVALID_NULL_POINTER, "Null result buffer");
+    return SQL_ERROR;
+  }
+  if (buffer_length < 0) {
+    set_error(SQLSTATE_INVALID_STRING_LENGTH, "Invalid result buffer length");
+    return SQL_ERROR;
+  }
+
   const auto& cell = row[col - 1];
   if (!cell) {
     if (!indicator) {
@@ -304,6 +321,7 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
       return SQL_ERROR;
     }
     *indicator = SQL_NULL_DATA;
+    offset = complete;
     return SQL_SUCCESS;
   }
   
@@ -318,6 +336,28 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     return SQL_ERROR;
   }
 
+  if (effective_target_type == SQL_C_CHAR) {
+    const auto remaining = cell->size() - offset;
+    if (indicator) *indicator = static_cast<SQLLEN>(remaining);
+    const auto capacity = buffer_length > 0
+        ? static_cast<std::size_t>(buffer_length - 1) : 0;
+    const auto copy_length = std::min(capacity, remaining);
+    if (copy_length > 0) {
+      std::memcpy(buffer, cell->data() + offset, copy_length);
+    }
+    if (buffer_length > 0) {
+      static_cast<char*>(buffer)[copy_length] = '\0';
+    }
+    offset += copy_length;
+    if (offset < cell->size()) {
+      set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                "Result value was truncated to fit the application buffer");
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    offset = complete;
+    return SQL_SUCCESS;
+  }
+
   SQLRETURN result = TextDataConverter::convert_data(
       *cell, effective_target_type, buffer, buffer_length, indicator);
 
@@ -328,6 +368,7 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     set_error(SQLSTATE_STRING_DATA_TRUNCATED,
               "Result value was truncated to fit the application buffer");
   }
+  if (result != SQL_ERROR) offset = complete;
   
   return result;
 }
@@ -482,6 +523,7 @@ void ODBCStatement::apply_query_result(
     bool include_parameter_metadata) {
   result_rows_ = std::move(result.rows);
   current_row_ = 0;
+  get_data_offsets_.clear();
   executed_ = true;
 
   const auto max_rows = static_cast<std::size_t>(

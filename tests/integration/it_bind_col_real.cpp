@@ -143,6 +143,68 @@ TEST_F(BindColIntegrationTest, GetDataNullWithoutIndicatorReturns22002) {
     EXPECT_STREQ("22002", reinterpret_cast<char*>(sqlstate));
 }
 
+TEST_F(BindColIntegrationTest, GetDataRetrievesLongTextInChunks) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 'abcdefghijklmnopqrstuvwxyz'::text", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    const std::vector<std::string> expected_chunks{
+        "abcde", "fghij", "klmno", "pqrst", "uvwxy", "z"};
+    const std::vector<SQLLEN> expected_remaining{26, 21, 16, 11, 6, 1};
+    std::string assembled;
+    for (std::size_t i = 0; i < expected_chunks.size(); ++i) {
+        char chunk[6]{};
+        SQLLEN remaining = 0;
+        const auto result = SQLGetData(
+            hstmt, 1, SQL_C_CHAR, chunk, sizeof(chunk), &remaining);
+        EXPECT_EQ(i + 1 == expected_chunks.size()
+                      ? SQL_SUCCESS : SQL_SUCCESS_WITH_INFO,
+                  result);
+        EXPECT_EQ(expected_remaining[i], remaining);
+        EXPECT_EQ(expected_chunks[i], chunk);
+        assembled += chunk;
+
+        if (result == SQL_SUCCESS_WITH_INFO) {
+            SQLCHAR sqlstate[6]{};
+            ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+                SQL_HANDLE_STMT, hstmt, 1, sqlstate,
+                nullptr, nullptr, 0, nullptr));
+            EXPECT_STREQ("01004", reinterpret_cast<char*>(sqlstate));
+        }
+    }
+    EXPECT_EQ("abcdefghijklmnopqrstuvwxyz", assembled);
+
+    char exhausted[6] = "keep";
+    SQLLEN exhausted_length = 99;
+    EXPECT_EQ(SQL_NO_DATA, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, exhausted, sizeof(exhausted),
+        &exhausted_length));
+    EXPECT_STREQ("keep", exhausted);
+    EXPECT_EQ(99, exhausted_length);
+}
+
+TEST_F(BindColIntegrationTest, GetDataOffsetsResetForEachFetchedRow) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"SELECT value FROM (VALUES (1, 'abcdefgh'::text), "
+                  "(2, 'ijklmnop'::text)) AS rows(id, value) ORDER BY id",
+        SQL_NTS));
+
+    char chunk[5]{};
+    SQLLEN remaining = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, chunk, sizeof(chunk), &remaining));
+    EXPECT_STREQ("abcd", chunk);
+    EXPECT_EQ(8, remaining);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, chunk, sizeof(chunk), &remaining));
+    EXPECT_STREQ("ijkl", chunk);
+    EXPECT_EQ(8, remaining);
+}
+
 // Test mixed binding (some bound, some unbound)
 TEST_F(BindColIntegrationTest, MixedBinding) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 'Bound' as col1, 'Unbound' as col2, 999 as col3", SQL_NTS));
