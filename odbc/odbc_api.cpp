@@ -41,6 +41,7 @@ namespace {
       case SQL_API_SQLEXECDIRECT:
       case SQL_API_SQLEXECUTE:
       case SQL_API_SQLFETCH:
+      case SQL_API_SQLFETCHSCROLL:
       case SQL_API_SQLFOREIGNKEYS:
       case SQL_API_SQLFREEHANDLE:
       case SQL_API_SQLFREESTMT:
@@ -298,6 +299,30 @@ SQLRETURN SQLFetch(SQLHSTMT statement_handle) {
   if (!stmt) return SQL_INVALID_HANDLE;
   
   return stmt->fetch();
+}
+
+SQLRETURN SQLFetchScroll(SQLHSTMT statement_handle,
+                         SQLSMALLINT fetch_orientation, SQLLEN) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  if (fetch_orientation == SQL_FETCH_NEXT) return stmt->fetch();
+
+  switch (fetch_orientation) {
+    case SQL_FETCH_PRIOR:
+    case SQL_FETCH_FIRST:
+    case SQL_FETCH_LAST:
+    case SQL_FETCH_ABSOLUTE:
+    case SQL_FETCH_RELATIVE:
+    case SQL_FETCH_BOOKMARK:
+      stmt->set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                      "Scrollable fetch orientation is not supported");
+      break;
+    default:
+      stmt->set_error(SQLSTATE_FETCH_TYPE_OUT_OF_RANGE,
+                      "Invalid fetch orientation");
+      break;
+  }
+  return SQL_ERROR;
 }
 
 SQLRETURN SQLMoreResults(SQLHSTMT statement_handle) {

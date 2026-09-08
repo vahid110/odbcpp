@@ -48,7 +48,7 @@
 
 ## 🚧 Current Status
 
-**Implementation**: 43 exported ANSI ODBC entry points
+**Implementation**: 44 exported ANSI ODBC entry points
 **Descriptors**: 4/4 ODBC Descriptors Complete
 **Diagnostics**: Complete ODBC diagnostics implementation
 **Test Coverage**: 19 tests (100% unit test pass rate)
@@ -179,7 +179,7 @@
 - [ ] **Column-wise arrays** - multiple rows per column buffer
 - [ ] Cursor management (SQLSetCursorName, SQLGetCursorName)
 - [ ] Positioned operations (SQLSetPos, SQLBulkOperations)
-- [ ] Scrollable cursors (SQL_ATTR_CURSOR_TYPE)
+- [ ] Scrollable cursors (SQLFetchScroll supports SQL_FETCH_NEXT only)
 - [ ] Asynchronous execution (SQL_ATTR_ASYNC_ENABLE)
 
 **Success Criteria**:

@@ -32,6 +32,9 @@ SQLRETURN SQLEndTran(SQLSMALLINT handle_type, SQLHANDLE handle,
 // Statement execution
 SQLRETURN SQLExecDirect(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length);
 SQLRETURN SQLFetch(SQLHSTMT statement_handle);
+SQLRETURN SQLFetchScroll(SQLHSTMT statement_handle,
+                         SQLSMALLINT fetch_orientation,
+                         SQLLEN fetch_offset);
 SQLRETURN SQLMoreResults(SQLHSTMT statement_handle);
 SQLRETURN SQLGetData(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLSMALLINT target_type,
                     void* target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator);

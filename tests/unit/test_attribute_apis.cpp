@@ -161,6 +161,9 @@ TEST_F(AttributeApisTest, ReportsImplementedFunctions) {
       connection_, SQL_API_SQLMORERESULTS, &supported));
   EXPECT_EQ(SQL_TRUE, supported);
   EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
+      connection_, SQL_API_SQLFETCHSCROLL, &supported));
+  EXPECT_EQ(SQL_TRUE, supported);
+  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
       connection_, SQL_API_SQLCOLUMNS, &supported));
   EXPECT_EQ(SQL_TRUE, supported);
   EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
@@ -209,6 +212,8 @@ TEST_F(AttributeApisTest, ReportsImplementedFunctions) {
             SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLDRIVERCONNECT));
   EXPECT_EQ(SQL_TRUE,
             SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLMORERESULTS));
+  EXPECT_EQ(SQL_TRUE,
+            SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLFETCHSCROLL));
   EXPECT_EQ(SQL_TRUE,
             SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLCOLUMNS));
   EXPECT_EQ(SQL_TRUE,
@@ -292,6 +297,17 @@ TEST_F(AttributeApisTest, StoresMaximumRowsAndFinishesResultSequence) {
 
   EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(statement_));
   EXPECT_EQ(SQL_INVALID_HANDLE, SQLMoreResults(nullptr));
+}
+
+TEST_F(AttributeApisTest, SupportsForwardOnlyFetchScroll) {
+  EXPECT_EQ(SQL_NO_DATA, SQLFetchScroll(
+      statement_, SQL_FETCH_NEXT, 0));
+  EXPECT_EQ(SQL_ERROR, SQLFetchScroll(
+      statement_, SQL_FETCH_FIRST, 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLFetchScroll(statement_, 999, 0));
+  EXPECT_EQ("HY106", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_INVALID_HANDLE, SQLFetchScroll(nullptr, SQL_FETCH_NEXT, 0));
 }
 
 TEST_F(AttributeApisTest, ManagesStatementCursorAndBindings) {

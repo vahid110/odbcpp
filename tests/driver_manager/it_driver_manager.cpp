@@ -291,6 +291,17 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  SQLCHAR fetch_scroll_query[] = "SELECT 1";
+  if (!succeeded(SQLExecDirect(
+          statement, fetch_scroll_query, SQL_NTS)) ||
+      !succeeded(SQLFetchScroll(statement, SQL_FETCH_NEXT, 0))) {
+    print_diagnostic(SQL_HANDLE_STMT, statement);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
 
   SQLFreeHandle(SQL_HANDLE_STMT, statement);
   SQLDisconnect(connection);

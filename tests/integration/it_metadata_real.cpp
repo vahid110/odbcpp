@@ -466,6 +466,16 @@ TEST_F(MetadataIntegrationTest, LimitsRowsAndCompletesResultSequence) {
     EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &column_count));
 }
 
+TEST_F(MetadataIntegrationTest, FetchScrollSupportsNextRows) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT value FROM generate_series(1, 2) value",
+        SQL_NTS));
+    EXPECT_EQ(SQL_SUCCESS, SQLFetchScroll(hstmt, SQL_FETCH_NEXT, 0));
+    EXPECT_EQ(SQL_SUCCESS, SQLFetchScroll(hstmt, SQL_FETCH_NEXT, 0));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetchScroll(hstmt, SQL_FETCH_NEXT, 0));
+    EXPECT_EQ(SQL_ERROR, SQLFetchScroll(hstmt, SQL_FETCH_FIRST, 0));
+}
+
 TEST_F(MetadataIntegrationTest, ErrorCases) {
     // Execute query first
     SQLRETURN ret = SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS);
