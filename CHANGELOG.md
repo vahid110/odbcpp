@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SQLTables catalog discovery with ODBC patterns and table-type filtering
 - SQLColumns catalog discovery with PostgreSQL type and nullability mapping
 - SQLPrimaryKeys discovery with ordered PostgreSQL key columns
+- SQLForeignKeys discovery with ODBC update, delete, and deferrability mappings
 - SQL_ATTR_AUTOCOMMIT and connection-level SQLEndTran commit/rollback support
 - SQL_ATTR_TXN_ISOLATION with PostgreSQL session-level isolation configuration
 - unixODBC end-to-end coverage that dynamically loads the shared driver

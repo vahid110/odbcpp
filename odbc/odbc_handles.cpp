@@ -1278,6 +1278,92 @@ SQLRETURN ODBCStatement::primary_keys(
   return execute_direct(query);
 }
 
+SQLRETURN ODBCStatement::foreign_keys(
+    const std::optional<std::string>& pk_catalog_name,
+    const std::optional<std::string>& pk_schema_name,
+    const std::optional<std::string>& pk_table_name,
+    const std::optional<std::string>& fk_catalog_name,
+    const std::optional<std::string>& fk_schema_name,
+    const std::optional<std::string>& fk_table_name) {
+  std::string query =
+      "SELECT primary_keys.table_catalog::text AS pktable_cat, "
+      "primary_keys.table_schema::text AS pktable_schem, "
+      "primary_keys.table_name::text AS pktable_name, "
+      "primary_keys.column_name::text AS pkcolumn_name, "
+      "foreign_keys.table_catalog::text AS fktable_cat, "
+      "foreign_keys.table_schema::text AS fktable_schem, "
+      "foreign_keys.table_name::text AS fktable_name, "
+      "foreign_keys.column_name::text AS fkcolumn_name, "
+      "foreign_keys.ordinal_position::smallint AS key_seq, "
+      "CASE relations.update_rule WHEN 'CASCADE' THEN 0 "
+      "WHEN 'RESTRICT' THEN 1 WHEN 'SET NULL' THEN 2 "
+      "WHEN 'NO ACTION' THEN 3 WHEN 'SET DEFAULT' THEN 4 "
+      "ELSE 3 END::smallint AS update_rule, "
+      "CASE relations.delete_rule WHEN 'CASCADE' THEN 0 "
+      "WHEN 'RESTRICT' THEN 1 WHEN 'SET NULL' THEN 2 "
+      "WHEN 'NO ACTION' THEN 3 WHEN 'SET DEFAULT' THEN 4 "
+      "ELSE 3 END::smallint AS delete_rule, "
+      "fk_constraints.constraint_name::text AS fk_name, "
+      "pk_constraints.constraint_name::text AS pk_name, "
+      "CASE WHEN fk_constraints.is_deferrable = 'NO' THEN 7 "
+      "WHEN fk_constraints.initially_deferred = 'YES' THEN 5 "
+      "ELSE 6 END::smallint AS deferrability "
+      "FROM information_schema.referential_constraints AS relations "
+      "JOIN information_schema.table_constraints AS fk_constraints "
+      "ON relations.constraint_catalog = fk_constraints.constraint_catalog "
+      "AND relations.constraint_schema = fk_constraints.constraint_schema "
+      "AND relations.constraint_name = fk_constraints.constraint_name "
+      "JOIN information_schema.key_column_usage AS foreign_keys "
+      "ON fk_constraints.constraint_catalog = foreign_keys.constraint_catalog "
+      "AND fk_constraints.constraint_schema = foreign_keys.constraint_schema "
+      "AND fk_constraints.constraint_name = foreign_keys.constraint_name "
+      "JOIN information_schema.table_constraints AS pk_constraints "
+      "ON relations.unique_constraint_catalog = "
+      "pk_constraints.constraint_catalog "
+      "AND relations.unique_constraint_schema = "
+      "pk_constraints.constraint_schema "
+      "AND relations.unique_constraint_name = "
+      "pk_constraints.constraint_name "
+      "JOIN information_schema.key_column_usage AS primary_keys "
+      "ON pk_constraints.constraint_catalog = primary_keys.constraint_catalog "
+      "AND pk_constraints.constraint_schema = primary_keys.constraint_schema "
+      "AND pk_constraints.constraint_name = primary_keys.constraint_name "
+      "AND primary_keys.ordinal_position = "
+      "foreign_keys.position_in_unique_constraint WHERE 1=1";
+  if (pk_catalog_name && !pk_catalog_name->empty()) {
+    query += " AND primary_keys.table_catalog = " +
+        quote_catalog_literal(*pk_catalog_name);
+  }
+  if (pk_schema_name && !pk_schema_name->empty()) {
+    query += " AND primary_keys.table_schema = " +
+        quote_catalog_literal(*pk_schema_name);
+  }
+  if (pk_table_name) {
+    query += " AND primary_keys.table_name = " +
+        quote_catalog_literal(*pk_table_name);
+  }
+  if (fk_catalog_name && !fk_catalog_name->empty()) {
+    query += " AND foreign_keys.table_catalog = " +
+        quote_catalog_literal(*fk_catalog_name);
+  }
+  if (fk_schema_name && !fk_schema_name->empty()) {
+    query += " AND foreign_keys.table_schema = " +
+        quote_catalog_literal(*fk_schema_name);
+  }
+  if (fk_table_name) {
+    query += " AND foreign_keys.table_name = " +
+        quote_catalog_literal(*fk_table_name);
+  }
+  if (pk_table_name) {
+    query +=
+        " ORDER BY fktable_cat, fktable_schem, fktable_name, key_seq";
+  } else {
+    query +=
+        " ORDER BY pktable_cat, pktable_schem, pktable_name, key_seq";
+  }
+  return execute_direct(query);
+}
+
 SQLRETURN ODBCStatement::row_count(SQLLEN* row_count_value) {
   if (!row_count_value) {
     set_error(SQLSTATE_GENERAL_ERROR, "Null pointer for row count");

@@ -208,6 +208,24 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  SQLCHAR create_foreign_key_table[] =
+      "CREATE TEMP TABLE odbcpp_dm_foreign_key("
+      "id integer REFERENCES odbcpp_dm_primary_key(id))";
+  SQLCHAR foreign_key_table[] = "odbcpp_dm_foreign_key";
+  if (!succeeded(SQLCloseCursor(statement)) ||
+      !succeeded(SQLExecDirect(
+          statement, create_foreign_key_table, SQL_NTS)) ||
+      !succeeded(SQLForeignKeys(
+          statement, nullptr, 0, nullptr, 0, nullptr, 0,
+          nullptr, 0, nullptr, 0, foreign_key_table, SQL_NTS)) ||
+      !succeeded(SQLFetch(statement))) {
+    print_diagnostic(SQL_HANDLE_STMT, statement);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
 
   SQLFreeHandle(SQL_HANDLE_STMT, statement);
   SQLDisconnect(connection);

@@ -235,6 +235,71 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLPrimaryKeys) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, ListsPostgreSQLForeignKeys) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_foreign_parent("
+                  "tenant_id integer, item_id integer, "
+                  "PRIMARY KEY(tenant_id, item_id))",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_foreign_child("
+                  "tenant_id integer, item_id integer, "
+                  "CONSTRAINT odbcpp_child_parent_fk "
+                  "FOREIGN KEY(tenant_id, item_id) REFERENCES "
+                  "odbcpp_foreign_parent(tenant_id, item_id) "
+                  "ON UPDATE CASCADE ON DELETE SET NULL)",
+        SQL_NTS));
+    SQLCHAR foreign_table[] = "odbcpp_foreign_child";
+    ASSERT_EQ(SQL_SUCCESS, SQLForeignKeys(
+        hstmt, nullptr, 0, nullptr, 0, nullptr, 0,
+        nullptr, 0, nullptr, 0, foreign_table, SQL_NTS));
+
+    char primary_column[64]{};
+    char foreign_column[64]{};
+    char foreign_key_name[128]{};
+    SQLSMALLINT key_sequence = 0;
+    SQLSMALLINT update_rule = -1;
+    SQLSMALLINT delete_rule = -1;
+    SQLSMALLINT deferrability = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 4, SQL_C_CHAR, primary_column, sizeof(primary_column), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 8, SQL_C_CHAR, foreign_column, sizeof(foreign_column), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 9, SQL_C_SSHORT, &key_sequence, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 10, SQL_C_SSHORT, &update_rule, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 11, SQL_C_SSHORT, &delete_rule, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 12, SQL_C_CHAR, foreign_key_name,
+        sizeof(foreign_key_name), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 14, SQL_C_SSHORT, &deferrability, 0, nullptr));
+    EXPECT_STREQ("tenant_id", primary_column);
+    EXPECT_STREQ("tenant_id", foreign_column);
+    EXPECT_EQ(1, key_sequence);
+    EXPECT_EQ(SQL_CASCADE, update_rule);
+    EXPECT_EQ(SQL_SET_NULL, delete_rule);
+    EXPECT_STREQ("odbcpp_child_parent_fk", foreign_key_name);
+    EXPECT_EQ(SQL_NOT_DEFERRABLE, deferrability);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 4, SQL_C_CHAR, primary_column, sizeof(primary_column), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 8, SQL_C_CHAR, foreign_column, sizeof(foreign_column), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 9, SQL_C_SSHORT, &key_sequence, 0, nullptr));
+    EXPECT_STREQ("item_id", primary_column);
+    EXPECT_STREQ("item_id", foreign_column);
+    EXPECT_EQ(2, key_sequence);
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, ErrorCases) {
     // Execute query first
     SQLRETURN ret = SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS);

@@ -47,6 +47,14 @@ SQLRETURN SQLPrimaryKeys(
     SQLSMALLINT name_length1, SQLCHAR* schema_name,
     SQLSMALLINT name_length2, SQLCHAR* table_name,
     SQLSMALLINT name_length3);
+SQLRETURN SQLForeignKeys(
+    SQLHSTMT statement_handle, SQLCHAR* pk_catalog_name,
+    SQLSMALLINT name_length1, SQLCHAR* pk_schema_name,
+    SQLSMALLINT name_length2, SQLCHAR* pk_table_name,
+    SQLSMALLINT name_length3, SQLCHAR* fk_catalog_name,
+    SQLSMALLINT name_length4, SQLCHAR* fk_schema_name,
+    SQLSMALLINT name_length5, SQLCHAR* fk_table_name,
+    SQLSMALLINT name_length6);
 SQLRETURN SQLTables(
     SQLHSTMT statement_handle, SQLCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLCHAR* schema_name,

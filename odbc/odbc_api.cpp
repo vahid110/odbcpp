@@ -41,6 +41,7 @@ namespace {
       case SQL_API_SQLEXECDIRECT:
       case SQL_API_SQLEXECUTE:
       case SQL_API_SQLFETCH:
+      case SQL_API_SQLFOREIGNKEYS:
       case SQL_API_SQLFREEHANDLE:
       case SQL_API_SQLFREESTMT:
       case SQL_API_SQLGETCONNECTATTR:
@@ -791,6 +792,52 @@ SQLRETURN SQLPrimaryKeys(
     return SQL_ERROR;
   }
   return stmt->primary_keys(catalog, schema, *table);
+}
+
+SQLRETURN SQLForeignKeys(
+    SQLHSTMT statement_handle, SQLCHAR* pk_catalog_name,
+    SQLSMALLINT name_length1, SQLCHAR* pk_schema_name,
+    SQLSMALLINT name_length2, SQLCHAR* pk_table_name,
+    SQLSMALLINT name_length3, SQLCHAR* fk_catalog_name,
+    SQLSMALLINT name_length4, SQLCHAR* fk_schema_name,
+    SQLSMALLINT name_length5, SQLCHAR* fk_table_name,
+    SQLSMALLINT name_length6) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+
+  const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
+                                 std::optional<std::string>& output) {
+    if (!value) {
+      output.reset();
+      return true;
+    }
+    if (length < 0 && length != SQL_NTS) return false;
+    output = normalize_string(sqlchar_to_string(value, length));
+    return true;
+  };
+  std::optional<std::string> pk_catalog;
+  std::optional<std::string> pk_schema;
+  std::optional<std::string> pk_table;
+  std::optional<std::string> fk_catalog;
+  std::optional<std::string> fk_schema;
+  std::optional<std::string> fk_table;
+  if (!read_argument(pk_catalog_name, name_length1, pk_catalog) ||
+      !read_argument(pk_schema_name, name_length2, pk_schema) ||
+      !read_argument(pk_table_name, name_length3, pk_table) ||
+      !read_argument(fk_catalog_name, name_length4, fk_catalog) ||
+      !read_argument(fk_schema_name, name_length5, fk_schema) ||
+      !read_argument(fk_table_name, name_length6, fk_table)) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid SQLForeignKeys argument length");
+    return SQL_ERROR;
+  }
+  if (!pk_table && !fk_table) {
+    stmt->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                    "SQLForeignKeys requires a primary or foreign table");
+    return SQL_ERROR;
+  }
+  return stmt->foreign_keys(pk_catalog, pk_schema, pk_table, fk_catalog,
+                            fk_schema, fk_table);
 }
 
 SQLRETURN SQLTables(
