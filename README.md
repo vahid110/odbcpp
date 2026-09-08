@@ -15,6 +15,7 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 - **Pluggable Architecture**: Easy to add new database protocols
 - **Modern C++20**: Clean, type-safe interfaces
 - **Secure Transport**: Built-in TLS/SSL support via OpenSSL
+- **Modern Authentication**: PostgreSQL cleartext, MD5, and SCRAM-SHA-256 password authentication
 - **Cross-Platform**: macOS, Linux, Windows support
 - **Comprehensive Testing**: Unit, PostgreSQL integration, sanitizer, and Windows CI coverage
 
@@ -393,9 +394,9 @@ ctest --test-dir build-redshift -R bind_col
 - **Unit Tests**: No external dependencies
 - **Integration Tests**: Require valid DSN configuration in odbc.ini
 - **Database Access**: Integration tests need actual Redshift/PostgreSQL connection
-- **PostgreSQL Authentication**: The protocol layer currently supports MD5 password
-  authentication. CI uses PostgreSQL 13 with `POSTGRES_HOST_AUTH_METHOD=md5` until
-  SCRAM-SHA-256 support is implemented.
+- **PostgreSQL Authentication**: The protocol layer supports cleartext, MD5, and
+  SCRAM-SHA-256 password authentication. CI validates SCRAM-SHA-256 against
+  PostgreSQL 17.
 
 ## Architecture
 

@@ -12,7 +12,8 @@
 namespace rs::core::database {
 
 struct AuthenticationRequest {
-  enum class Type { None, Cleartext, MD5, SASL } type = Type::None;
+  enum class Type { None, Cleartext, MD5, SASL, SASLContinue, SASLFinal }
+      type = Type::None;
   std::vector<std::byte> challenge_data;
 };
 

@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- PostgreSQL SCRAM-SHA-256 authentication with server-signature verification
+- PostgreSQL 17 SCRAM-SHA-256 integration coverage across transport modes
 - Chunked SQLGetData retrieval for long character values across repeated calls
 - Shared text-result conversion for small integers, integers, big integers, floating-point values, booleans, dates, times, and timestamps
 - Metadata-driven SQL_C_DEFAULT handling for SQLGetData and bound columns
@@ -20,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Linux AddressSanitizer and UndefinedBehaviorSanitizer CI coverage
 - Complete ODBC descriptor API suite (SQLBindCol, SQLDescribeParam)
 - Enhanced SQLFetch with automatic bound column population
-- Comprehensive test coverage (17 unit and integration tests)
+- Comprehensive test coverage (18 unit and integration tests)
 - Column binding example and documentation
 - Development roadmap and changelog
 

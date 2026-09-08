@@ -79,6 +79,55 @@ std::string read_cstring(std::span<const std::byte> data, std::size_t& offset) {
   return value;
 }
 
+TEST(PgProtocolParserTest, CreatesPostgreSqlScramMessages) {
+  PgProtocolParser parser;
+  std::vector<std::byte> sasl_payload;
+  append_u32(sasl_payload, 10);
+  append_cstring(sasl_payload, "SCRAM-SHA-256");
+  sasl_payload.push_back(std::byte{0});
+
+  const auto request = parser.parse_auth_request(sasl_payload);
+  EXPECT_EQ(request.type,
+            rs::core::database::AuthenticationRequest::Type::SASL);
+  const auto initial_frames = split_frames(
+      parser.create_auth_response(request, "pencil", "user"));
+  ASSERT_EQ(initial_frames.size(), 1u);
+  EXPECT_EQ(initial_frames[0].tag, 'p');
+
+  std::size_t offset = 0;
+  EXPECT_EQ(read_cstring(initial_frames[0].payload, offset),
+            "SCRAM-SHA-256");
+  const auto initial_length = read_u32(initial_frames[0].payload, offset);
+  offset += 4;
+  ASSERT_EQ(offset + initial_length, initial_frames[0].payload.size());
+  const std::string initial(
+      reinterpret_cast<const char*>(initial_frames[0].payload.data() + offset),
+      initial_length);
+  ASSERT_TRUE(initial.starts_with("n,,n=user,r="));
+  const auto nonce = initial.substr(std::string("n,,n=user,r=").size());
+
+  std::vector<std::byte> continue_payload;
+  append_u32(continue_payload, 11);
+  const auto server_first = "r=" + nonce +
+      "server,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096";
+  continue_payload.insert(
+      continue_payload.end(),
+      reinterpret_cast<const std::byte*>(server_first.data()),
+      reinterpret_cast<const std::byte*>(server_first.data() +
+                                         server_first.size()));
+  const auto continuation = parser.parse_auth_request(continue_payload);
+  EXPECT_EQ(continuation.type,
+            rs::core::database::AuthenticationRequest::Type::SASLContinue);
+  const auto final_frames = split_frames(
+      parser.create_auth_response(continuation, "pencil", "user"));
+  ASSERT_EQ(final_frames.size(), 1u);
+  EXPECT_EQ(final_frames[0].tag, 'p');
+  const std::string final(
+      reinterpret_cast<const char*>(final_frames[0].payload.data()),
+      final_frames[0].payload.size());
+  EXPECT_TRUE(final.starts_with("c=biws,r=" + nonce + "server,p="));
+}
+
 TEST(PgProtocolParserTest, CreatesCompleteExtendedQueryExchange) {
   PgProtocolParser parser;
   const std::vector<QueryParameter> params{

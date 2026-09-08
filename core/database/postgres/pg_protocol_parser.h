@@ -1,7 +1,9 @@
 #pragma once
 #include "core/database/i_protocol_parser.h"
 #include "pg_messages.h"
+#include "scram_sha256.h"
 #include <map>
+#include <memory>
 #include <stdexcept>
 
 namespace rs::core::database::postgres {
@@ -42,6 +44,7 @@ private:
   static std::string md5_hex(const void* data, size_t n);
   static rs::pg::Authentication decode_auth(const std::vector<std::byte>& payload);
   static rs::pg::ErrorResponse decode_error(const std::vector<std::byte>& payload);
+  std::unique_ptr<ScramSha256Client> scram_client_;
 };
 
 } // namespace rs::core::database::postgres

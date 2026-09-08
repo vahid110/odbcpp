@@ -270,43 +270,53 @@ void GenericDatabaseConnection::perform_authentication(rs::util::Deadline deadli
 }
 
 rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(rs::util::Deadline deadline) {
-  while (true) {
-    auto msg_result = read_message_result(deadline);
-    if (msg_result.has_error()) {
-      return rs::util::Result<void>{msg_result.error(), msg_result.error_message()};
-    }
-    
-    auto msg = parser_->parse_message(*msg_result);
-    
-    if (msg.tag == 'R') { // Authentication
-      auto auth_req = parser_->parse_auth_request(msg.payload);
-      
-      if (auth_req.type == AuthenticationRequest::Type::None) {
-        continue; // Authentication successful
+  try {
+    while (true) {
+      auto msg_result = read_message_result(deadline);
+      if (msg_result.has_error()) {
+        return rs::util::Result<void>{msg_result.error(), msg_result.error_message()};
       }
+    
+      auto msg = parser_->parse_message(*msg_result);
+    
+      if (msg.tag == 'R') { // Authentication
+        auto auth_req = parser_->parse_auth_request(msg.payload);
       
-      auto auth_response = parser_->create_auth_response(auth_req, settings_.password, settings_.user);
-      if (!auth_response.empty()) {
-        auto write_result = write_all_result(auth_response, deadline);
-        if (write_result.has_error()) {
-          return write_result;
+        if (auth_req.type == AuthenticationRequest::Type::None) {
+          continue; // Authentication successful
+        }
+      
+        auto auth_response = parser_->create_auth_response(
+            auth_req, settings_.password, settings_.user);
+        if (!auth_response.empty()) {
+          auto write_result = write_all_result(auth_response, deadline);
+          if (write_result.has_error()) {
+            return write_result;
+          }
         }
       }
+      else if (msg.tag == 'S') { // ParameterStatus
+        // Parse and store server parameters
+        // Simplified for now
+      }
+      else if (msg.tag == 'K') { // BackendKeyData
+        // Store backend key data
+      }
+      else if (parser_->is_error_response(msg)) {
+        last_error_ = parser_->extract_error_message(msg);
+        return rs::util::Result<void>{
+            rs::util::DbErrorCode::AuthenticationFailed,
+            "Authentication failed: " + last_error_};
+      }
+      else if (parser_->is_ready_for_query(msg)) {
+        break; // Ready for queries
+      }
     }
-    else if (msg.tag == 'S') { // ParameterStatus
-      // Parse and store server parameters
-      // Simplified for now
-    }
-    else if (msg.tag == 'K') { // BackendKeyData
-      // Store backend key data
-    }
-    else if (parser_->is_error_response(msg)) {
-      last_error_ = parser_->extract_error_message(msg);
-      return rs::util::Result<void>{rs::util::DbErrorCode::AuthenticationFailed, "Authentication failed: " + last_error_};
-    }
-    else if (parser_->is_ready_for_query(msg)) {
-      break; // Ready for queries
-    }
+  } catch (const std::exception& error) {
+    last_error_ = error.what();
+    return rs::util::Result<void>{
+        rs::util::DbErrorCode::AuthenticationFailed,
+        "Authentication failed: " + last_error_};
   }
   return rs::util::Result<void>{};
 }

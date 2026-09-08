@@ -289,23 +289,25 @@ std::vector<std::byte> PgProtocolParser::create_ssl_request() {
 
 AuthenticationRequest PgProtocolParser::parse_auth_request(const std::vector<std::byte>& data) {
   if (data.size() < 4) throw std::runtime_error("Auth payload too short");
-  
-  const auto* p = reinterpret_cast<const unsigned char*>(data.data());
-  uint32_t code = (p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3];
-  
+
+  const auto code = read_u32(data, 0);
   AuthenticationRequest req;
   switch (code) {
     case 0: req.type = AuthenticationRequest::Type::None; break;
     case 3: req.type = AuthenticationRequest::Type::Cleartext; break;
-    case 5: 
+    case 5:
       req.type = AuthenticationRequest::Type::MD5;
-      if (data.size() >= 8) {
-        req.challenge_data.assign(data.begin() + 4, data.begin() + 8);
-      }
+      if (data.size() != 8) throw std::runtime_error("Invalid MD5 auth payload");
+      req.challenge_data.assign(data.begin() + 4, data.end());
       break;
+    case 10: req.type = AuthenticationRequest::Type::SASL; break;
+    case 11: req.type = AuthenticationRequest::Type::SASLContinue; break;
+    case 12: req.type = AuthenticationRequest::Type::SASLFinal; break;
     default: throw std::runtime_error("Unsupported auth method: " + std::to_string(code));
   }
-  
+  if (code >= 10 && code <= 12) {
+    req.challenge_data.assign(data.begin() + 4, data.end());
+  }
   return req;
 }
 
@@ -318,6 +320,7 @@ std::vector<std::byte> PgProtocolParser::create_auth_response(
   
   switch (request.type) {
     case AuthenticationRequest::Type::None:
+      scram_client_.reset();
       return {};
       
     case AuthenticationRequest::Type::Cleartext:
@@ -331,7 +334,74 @@ std::vector<std::byte> PgProtocolParser::create_auth_response(
       auth_string = "md5" + step2;
       break;
     }
-      
+    case AuthenticationRequest::Type::SASL: {
+      bool supported = false;
+      bool terminated = false;
+      std::size_t offset = 0;
+      while (offset < request.challenge_data.size()) {
+        const auto start = offset;
+        while (offset < request.challenge_data.size() &&
+               request.challenge_data[offset] != std::byte{0}) {
+          ++offset;
+        }
+        if (offset == request.challenge_data.size()) {
+          throw std::runtime_error("unterminated PostgreSQL SASL mechanism");
+        }
+        const std::string_view mechanism(
+            reinterpret_cast<const char*>(request.challenge_data.data() + start),
+            offset - start);
+        ++offset;
+        if (mechanism.empty()) {
+          terminated = true;
+          break;
+        }
+        if (mechanism == "SCRAM-SHA-256") supported = true;
+      }
+      if (!terminated || offset != request.challenge_data.size()) {
+        throw std::runtime_error("invalid PostgreSQL SASL mechanism list");
+      }
+      if (!supported) {
+        throw std::runtime_error("server does not offer SCRAM-SHA-256");
+      }
+      scram_client_ = std::make_unique<ScramSha256Client>(
+          user, password, generate_scram_nonce());
+      const auto initial = scram_client_->client_first_message();
+      std::vector<std::byte> response;
+      const auto start = begin_message(response, 'p');
+      append_cstring(response, "SCRAM-SHA-256");
+      append_u32(response, static_cast<std::uint32_t>(initial.size()));
+      response.insert(
+          response.end(), reinterpret_cast<const std::byte*>(initial.data()),
+          reinterpret_cast<const std::byte*>(initial.data() + initial.size()));
+      finish_message(response, start);
+      return response;
+    }
+    case AuthenticationRequest::Type::SASLContinue: {
+      if (!scram_client_) {
+        throw std::runtime_error("SCRAM continuation arrived out of sequence");
+      }
+      const std::string_view challenge(
+          reinterpret_cast<const char*>(request.challenge_data.data()),
+          request.challenge_data.size());
+      const auto final = scram_client_->receive_server_first(challenge);
+      std::vector<std::byte> response;
+      const auto start = begin_message(response, 'p');
+      response.insert(
+          response.end(), reinterpret_cast<const std::byte*>(final.data()),
+          reinterpret_cast<const std::byte*>(final.data() + final.size()));
+      finish_message(response, start);
+      return response;
+    }
+    case AuthenticationRequest::Type::SASLFinal: {
+      if (!scram_client_) {
+        throw std::runtime_error("SCRAM final message arrived out of sequence");
+      }
+      const std::string_view final(
+          reinterpret_cast<const char*>(request.challenge_data.data()),
+          request.challenge_data.size());
+      scram_client_->verify_server_final(final);
+      return {};
+    }
     default:
       throw std::runtime_error("Unsupported auth type");
   }

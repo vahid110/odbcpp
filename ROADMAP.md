@@ -17,6 +17,7 @@
 - [x] Text-protocol NULL preservation with SQL_NULL_DATA indicators
 - [x] Metadata-driven SQL_C_DEFAULT conversion for core PostgreSQL scalar types
 - [x] Chunked SQLGetData retrieval for long text values
+- [x] PostgreSQL SCRAM-SHA-256 password authentication
 - [x] Cross-platform build system
 
 ### Milestone 3: Prepared Statements (COMPLETE)
@@ -48,7 +49,7 @@
 **Implementation**: 26/26 Core ODBC APIs Complete (including diagnostics)
 **Descriptors**: 4/4 ODBC Descriptors Complete
 **Diagnostics**: Complete ODBC diagnostics implementation
-**Test Coverage**: 17 tests (100% unit test pass rate)
+**Test Coverage**: 18 tests (100% unit test pass rate)
 **Production Ready**: Core functionality validated with real Redshift database
 **Critical Gaps**: 
 - Attribute processing APIs missing (should have been Milestone 1)

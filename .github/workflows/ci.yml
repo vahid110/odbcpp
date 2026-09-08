@@ -17,13 +17,12 @@ jobs:
 
     services:
       postgres:
-        # The protocol layer currently supports PostgreSQL MD5 authentication.
-        # Move back to a current image when SCRAM-SHA-256 support lands.
-        image: postgres:13
+        image: postgres:17
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: postgres
-          POSTGRES_HOST_AUTH_METHOD: md5
+          POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+          POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
         ports:
           - 5432:5432
         options: >-
