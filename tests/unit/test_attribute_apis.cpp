@@ -43,12 +43,12 @@ protected:
 };
 
 TEST_F(AttributeApisTest, StoresLoginTimeout) {
-  SQLULEN value = 0;
+  SQLUINTEGER value = 0;
   SQLINTEGER length = 0;
   EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttr(
       connection_, SQL_ATTR_LOGIN_TIMEOUT, &value, sizeof(value), &length));
   EXPECT_EQ(30u, value);
-  EXPECT_EQ(sizeof(SQLULEN), static_cast<std::size_t>(length));
+  EXPECT_EQ(sizeof(SQLUINTEGER), static_cast<std::size_t>(length));
 
   EXPECT_EQ(SQL_SUCCESS, SQLSetConnectAttr(
       connection_, SQL_ATTR_LOGIN_TIMEOUT, integer_value(7), 0));
@@ -73,7 +73,7 @@ TEST_F(AttributeApisTest, StoresQueryTimeoutAndAllowsZero) {
 }
 
 TEST_F(AttributeApisTest, ReportsUnsupportedAttributesAndNullOutputs) {
-  SQLULEN value = 0;
+  SQLUINTEGER value = 0;
   EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(
       connection_, -12345, &value, sizeof(value), nullptr));
   EXPECT_EQ("HY092", diagnostic_state(SQL_HANDLE_DBC, connection_));

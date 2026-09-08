@@ -145,9 +145,9 @@ SQLRETURN SQLGetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
     return SQL_ERROR;
   }
   const auto result = conn->get_attribute(
-      attribute, static_cast<SQLULEN*>(value));
+      attribute, static_cast<SQLUINTEGER*>(value));
   if (result == SQL_SUCCESS && string_length) {
-    *string_length = static_cast<SQLINTEGER>(sizeof(SQLULEN));
+    *string_length = static_cast<SQLINTEGER>(sizeof(SQLUINTEGER));
   }
   return result;
 }

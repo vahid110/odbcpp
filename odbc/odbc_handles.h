@@ -96,7 +96,7 @@ public:
   SQLRETURN disconnect();
   bool is_connected() const { return connected_; }
   SQLRETURN set_attribute(SQLINTEGER attribute, SQLULEN value);
-  SQLRETURN get_attribute(SQLINTEGER attribute, SQLULEN* value);
+  SQLRETURN get_attribute(SQLINTEGER attribute, SQLUINTEGER* value);
   
   rs::core::database::IDatabaseConnection* get_db_connection() { return db_conn_.get(); }
 
@@ -104,7 +104,7 @@ private:
   ODBCEnvironment* env_; // Reserved for environment-specific settings
   std::unique_ptr<rs::core::database::IDatabaseConnection> db_conn_;
   bool connected_ = false;
-  SQLULEN login_timeout_seconds_ = 30;
+  SQLUINTEGER login_timeout_seconds_ = 30;
   
   // Suppress unused warning - env_ will be used for ODBC compliance features
   void suppress_unused_warning() { (void)env_; }

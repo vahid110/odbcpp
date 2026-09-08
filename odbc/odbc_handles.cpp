@@ -222,11 +222,17 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
               "Login timeout cannot be changed while connected");
     return SQL_ERROR;
   }
-  login_timeout_seconds_ = value;
+  if (value > std::numeric_limits<SQLUINTEGER>::max()) {
+    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+              "Login timeout is outside the supported range");
+    return SQL_ERROR;
+  }
+  login_timeout_seconds_ = static_cast<SQLUINTEGER>(value);
   return SQL_SUCCESS;
 }
 
-SQLRETURN ODBCConnection::get_attribute(SQLINTEGER attribute, SQLULEN* value) {
+SQLRETURN ODBCConnection::get_attribute(SQLINTEGER attribute,
+                                        SQLUINTEGER* value) {
   if (attribute != SQL_ATTR_LOGIN_TIMEOUT) {
     set_error(SQLSTATE_INVALID_ATTRIBUTE, "Unsupported connection attribute");
     return SQL_ERROR;
