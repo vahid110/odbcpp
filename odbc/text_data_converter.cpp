@@ -331,4 +331,21 @@ std::optional<std::vector<std::byte>> TextDataConverter::decode_binary(
   return decoded;
 }
 
+std::string TextDataConverter::encode_binary(
+    std::span<const std::byte> value) {
+  static constexpr char hex[] = "0123456789abcdef";
+  if (value.size() > (std::numeric_limits<std::size_t>::max() - 2) / 2) {
+    throw std::length_error("Binary parameter value is too large");
+  }
+  std::string encoded;
+  encoded.reserve(2 + value.size() * 2);
+  encoded += "\\x";
+  for (const auto item : value) {
+    const auto octet = std::to_integer<unsigned char>(item);
+    encoded.push_back(hex[octet >> 4]);
+    encoded.push_back(hex[octet & 0x0f]);
+  }
+  return encoded;
+}
+
 } // namespace rs::odbc

@@ -18,6 +18,7 @@
 - [x] Metadata-driven SQL_C_DEFAULT conversion for core PostgreSQL scalar types
 - [x] Chunked SQLGetData retrieval for long text values
 - [x] PostgreSQL bytea conversion and chunked SQL_C_BINARY retrieval
+- [x] PostgreSQL bytea parameter binding from SQL_C_BINARY
 - [x] PostgreSQL SCRAM-SHA-256 password authentication
 - [x] Cross-platform build system
 

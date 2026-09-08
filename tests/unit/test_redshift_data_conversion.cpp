@@ -156,6 +156,10 @@ TEST_F(RedshiftDataConverterTest, ConvertsPostgresqlByteaText) {
     EXPECT_EQ(std::byte{'B'}, (*escaped)[2]);
     EXPECT_EQ(std::byte{0}, (*escaped)[3]);
     EXPECT_FALSE(RedshiftDataConverter::decode_binary("\\x123").has_value());
+
+    const std::byte source[]{
+        std::byte{0}, std::byte{1}, std::byte{0x7f}, std::byte{0xff}};
+    EXPECT_EQ("\\x00017fff", RedshiftDataConverter::encode_binary(source));
 }
 
 TEST(ResultTypesTest, ProvidesMetadataDrivenDefaults) {

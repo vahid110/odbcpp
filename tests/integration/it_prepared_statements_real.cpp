@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_types.h"
 #include <chrono>
+#include <cstring>
 #include <thread>
 
 class PreparedStatementIntegrationTest : public ::testing::Test {
@@ -32,6 +33,25 @@ protected:
     SQLHDBC hdbc = nullptr;
     SQLHSTMT hstmt = nullptr;
 };
+
+TEST_F(PreparedStatementIntegrationTest, BinaryParameterRoundTripsAsBytea) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    unsigned char input[]{0x00, 0x01, 0x7f, 0xff};
+    SQLLEN input_length = sizeof(input);
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 1, SQL_PARAM_INPUT, SQL_C_BINARY, SQL_VARBINARY, sizeof(input),
+        0, input, sizeof(input), &input_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    unsigned char output[sizeof(input)]{};
+    SQLLEN output_length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_BINARY, output, sizeof(output), &output_length));
+    EXPECT_EQ(sizeof(input), static_cast<std::size_t>(output_length));
+    EXPECT_EQ(0, std::memcmp(input, output, sizeof(input)));
+}
 
 // Test all data type combinations with real database
 class PreparedStatementRealDataTest : public PreparedStatementIntegrationTest,

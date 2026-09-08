@@ -84,6 +84,7 @@ rs::core::database::QueryParameterType parameter_type_for(
     case SQL_C_SBIGINT: return QueryParameterType::Int64;
     case SQL_C_DOUBLE: return QueryParameterType::Float64;
     case SQL_C_BIT: return QueryParameterType::Boolean;
+    case SQL_C_BINARY: return QueryParameterType::Binary;
     case SQL_C_CHAR: return QueryParameterType::Text;
     default: return QueryParameterType::Unspecified;
   }
@@ -543,6 +544,17 @@ SQLRETURN ODBCStatement::execute() {
         value = std::to_string(*static_cast<SQLDOUBLE*>(param.parameter_value));
       } else if (param.value_type == SQL_C_BIT) {
         value = *static_cast<unsigned char*>(param.parameter_value) ? "1" : "0";
+      } else if (param.value_type == SQL_C_BINARY) {
+        SQLLEN length = param.buffer_length;
+        if (param.strlen_or_indicator) length = *param.strlen_or_indicator;
+        if (length < 0) {
+          set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid binary parameter length");
+          return SQL_ERROR;
+        }
+        value = TextDataConverter::encode_binary(std::span<const std::byte>(
+            static_cast<const std::byte*>(param.parameter_value),
+            static_cast<std::size_t>(length)));
       } else {
         set_error(SQLSTATE_GENERAL_ERROR,
                   "Unsupported C parameter type");

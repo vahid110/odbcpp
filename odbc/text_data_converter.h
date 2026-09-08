@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace rs::odbc {
@@ -20,6 +21,7 @@ public:
   // PostgreSQL text-protocol representation, including hex and legacy escape.
   static std::optional<std::vector<std::byte>> decode_binary(
       std::string_view value);
+  static std::string encode_binary(std::span<const std::byte> value);
 };
 
 } // namespace rs::odbc
