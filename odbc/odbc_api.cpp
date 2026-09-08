@@ -56,6 +56,7 @@ namespace {
       case SQL_API_SQLNUMRESULTCOLS:
       case SQL_API_SQLNUMPARAMS:
       case SQL_API_SQLNATIVESQL:
+      case SQL_API_SQLMORERESULTS:
       case SQL_API_SQLPREPARE:
       case SQL_API_SQLPRIMARYKEYS:
       case SQL_API_SQLPROCEDURECOLUMNS:
@@ -297,6 +298,12 @@ SQLRETURN SQLFetch(SQLHSTMT statement_handle) {
   if (!stmt) return SQL_INVALID_HANDLE;
   
   return stmt->fetch();
+}
+
+SQLRETURN SQLMoreResults(SQLHSTMT statement_handle) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  return stmt->more_results();
 }
 
 SQLRETURN SQLGetData(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLSMALLINT target_type,

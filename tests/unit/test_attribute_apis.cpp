@@ -158,6 +158,9 @@ TEST_F(AttributeApisTest, ReportsImplementedFunctions) {
       connection_, SQL_API_SQLDRIVERCONNECT, &supported));
   EXPECT_EQ(SQL_TRUE, supported);
   EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
+      connection_, SQL_API_SQLMORERESULTS, &supported));
+  EXPECT_EQ(SQL_TRUE, supported);
+  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
       connection_, SQL_API_SQLCOLUMNS, &supported));
   EXPECT_EQ(SQL_TRUE, supported);
   EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
@@ -187,6 +190,7 @@ TEST_F(AttributeApisTest, ReportsImplementedFunctions) {
       connection_, SQL_API_ALL_FUNCTIONS, odbc2_functions));
   EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLCONNECT]);
   EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLDRIVERCONNECT]);
+  EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLMORERESULTS]);
   EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLCOLUMNS]);
   EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLPRIMARYKEYS]);
   EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLFOREIGNKEYS]);
@@ -203,6 +207,8 @@ TEST_F(AttributeApisTest, ReportsImplementedFunctions) {
             SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLALLOCHANDLE));
   EXPECT_EQ(SQL_TRUE,
             SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLDRIVERCONNECT));
+  EXPECT_EQ(SQL_TRUE,
+            SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLMORERESULTS));
   EXPECT_EQ(SQL_TRUE,
             SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLCOLUMNS));
   EXPECT_EQ(SQL_TRUE,
@@ -238,6 +244,54 @@ TEST_F(AttributeApisTest, StoresQueryTimeoutAndAllowsZero) {
   EXPECT_EQ(3u, value);
   EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
       statement_, SQL_ATTR_QUERY_TIMEOUT, integer_value(0), 0));
+}
+
+TEST_F(AttributeApisTest, ReportsForwardOnlyStatementDefaults) {
+  struct AttributeExpectation {
+    SQLINTEGER attribute;
+    SQLULEN value;
+  };
+  const AttributeExpectation expectations[] = {
+      {SQL_ATTR_CURSOR_TYPE, SQL_CURSOR_FORWARD_ONLY},
+      {SQL_ATTR_CONCURRENCY, SQL_CONCUR_READ_ONLY},
+      {SQL_ATTR_ROW_ARRAY_SIZE, 1},
+      {SQL_ATTR_ROW_BIND_TYPE, SQL_BIND_BY_COLUMN},
+      {SQL_ATTR_RETRIEVE_DATA, SQL_RD_ON},
+      {SQL_ATTR_USE_BOOKMARKS, SQL_UB_OFF},
+      {SQL_ATTR_ASYNC_ENABLE, SQL_ASYNC_ENABLE_OFF},
+  };
+  for (const auto& expectation : expectations) {
+    SQLULEN value = 99;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        statement_, expectation.attribute, &value, sizeof(value), nullptr));
+    EXPECT_EQ(expectation.value, value);
+    EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        statement_, expectation.attribute,
+        integer_value(expectation.value), 0));
+  }
+
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_CURSOR_TYPE,
+      integer_value(SQL_CURSOR_STATIC), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_ROW_ARRAY_SIZE, integer_value(2), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+}
+
+TEST_F(AttributeApisTest, StoresMaximumRowsAndFinishesResultSequence) {
+  SQLULEN value = 99;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_MAX_ROWS, &value, sizeof(value), nullptr));
+  EXPECT_EQ(0u, value);
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_MAX_ROWS, integer_value(25), 0));
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_MAX_ROWS, &value, sizeof(value), nullptr));
+  EXPECT_EQ(25u, value);
+
+  EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(statement_));
+  EXPECT_EQ(SQL_INVALID_HANDLE, SQLMoreResults(nullptr));
 }
 
 TEST_F(AttributeApisTest, ManagesStatementCursorAndBindings) {

@@ -48,7 +48,7 @@
 
 ## 🚧 Current Status
 
-**Implementation**: 42 exported ANSI ODBC entry points
+**Implementation**: 43 exported ANSI ODBC entry points
 **Descriptors**: 4/4 ODBC Descriptors Complete
 **Diagnostics**: Complete ODBC diagnostics implementation
 **Test Coverage**: 19 tests (100% unit test pass rate)
@@ -87,7 +87,8 @@
 - [x] Propagate ODBC timeout values into transport deadlines and SQLSTATEs
 - [ ] Complete SQLSetDescField / SQLGetDescField (descriptor attributes)
 - [x] Add support for SQL_ATTR_AUTOCOMMIT and transaction completion
-- [ ] Statement attributes (SQL_ATTR_CURSOR_TYPE, SQL_ATTR_ROW_ARRAY_SIZE)
+- [x] Forward-only statement attributes and SQL_ATTR_MAX_ROWS
+- [ ] Scrollable cursor and multi-row array statement attributes
 - [ ] Descriptor field manipulation for all 4 descriptors
 
 **Success Criteria**:

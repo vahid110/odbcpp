@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_types.h"
 
+#include <cstdint>
+
 class MetadataIntegrationTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -446,6 +448,22 @@ TEST_F(MetadataIntegrationTest, ReportsBestRowIdentifier) {
     EXPECT_EQ(SQL_INTEGER, data_type);
     EXPECT_EQ(SQL_PC_NOT_PSEUDO, pseudo_column);
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+}
+
+TEST_F(MetadataIntegrationTest, LimitsRowsAndCompletesResultSequence) {
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_MAX_ROWS,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(2)), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT value FROM generate_series(1, 3) value",
+        SQL_NTS));
+    EXPECT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(hstmt));
+
+    SQLSMALLINT column_count = -1;
+    EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &column_count));
 }
 
 TEST_F(MetadataIntegrationTest, ErrorCases) {

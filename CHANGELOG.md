@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- SQLMoreResults single-result completion and SQL_ATTR_MAX_ROWS enforcement
+- Forward-only cursor, read-only concurrency, and single-row binding attribute defaults
 - SQLDriverConnect support for DSN-less driver-manager connections
 - SQLGetFunctions support for individual, ODBC 2.x array, and ODBC 3.x bitmap queries
 - SQLCloseCursor and SQLFreeStmt lifecycle operations

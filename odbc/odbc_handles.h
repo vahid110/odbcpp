@@ -165,6 +165,7 @@ public:
   
   SQLRETURN execute_direct(const std::string& sql);
   SQLRETURN fetch();
+  SQLRETURN more_results();
   SQLRETURN get_data(SQLUSMALLINT col, SQLSMALLINT target_type, 
                      void* buffer, SQLLEN buffer_length, SQLLEN* indicator);
   SQLRETURN set_attribute(SQLINTEGER attribute, SQLULEN value);
@@ -260,6 +261,7 @@ private:
   SQLSMALLINT parameter_count_ = 0;
   SQLLEN affected_rows_ = 0;
   SQLULEN query_timeout_seconds_ = 0;
+  SQLULEN max_rows_ = 0;
 
   void apply_query_result(rs::core::database::QueryResult result,
                           bool include_parameter_metadata);

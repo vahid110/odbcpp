@@ -502,21 +502,59 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
 }
 
 SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLULEN value) {
-  if (attribute != SQL_ATTR_QUERY_TIMEOUT) {
-    set_error(SQLSTATE_INVALID_ATTRIBUTE,
-              "Unsupported statement attribute");
-    return SQL_ERROR;
+  switch (attribute) {
+    case SQL_ATTR_QUERY_TIMEOUT:
+      query_timeout_seconds_ = value;
+      return SQL_SUCCESS;
+    case SQL_ATTR_MAX_ROWS:
+      max_rows_ = value;
+      return SQL_SUCCESS;
+    case SQL_ATTR_CURSOR_TYPE:
+      if (value == SQL_CURSOR_FORWARD_ONLY) return SQL_SUCCESS;
+      break;
+    case SQL_ATTR_CONCURRENCY:
+      if (value == SQL_CONCUR_READ_ONLY) return SQL_SUCCESS;
+      break;
+    case SQL_ATTR_ROW_ARRAY_SIZE:
+      if (value == 1) return SQL_SUCCESS;
+      break;
+    case SQL_ATTR_ROW_BIND_TYPE:
+      if (value == SQL_BIND_BY_COLUMN) return SQL_SUCCESS;
+      break;
+    case SQL_ATTR_RETRIEVE_DATA:
+      if (value == SQL_RD_ON) return SQL_SUCCESS;
+      break;
+    case SQL_ATTR_USE_BOOKMARKS:
+      if (value == SQL_UB_OFF) return SQL_SUCCESS;
+      break;
+    case SQL_ATTR_ASYNC_ENABLE:
+      if (value == SQL_ASYNC_ENABLE_OFF) return SQL_SUCCESS;
+      break;
+    default:
+      set_error(SQLSTATE_INVALID_ATTRIBUTE,
+                "Unsupported statement attribute");
+      return SQL_ERROR;
   }
-  query_timeout_seconds_ = value;
-  return SQL_SUCCESS;
+  set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+            "Requested statement attribute value is not supported");
+  return SQL_ERROR;
 }
 
 SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLULEN* value) {
-  if (attribute != SQL_ATTR_QUERY_TIMEOUT) {
-    set_error(SQLSTATE_INVALID_ATTRIBUTE, "Unsupported statement attribute");
-    return SQL_ERROR;
+  switch (attribute) {
+    case SQL_ATTR_QUERY_TIMEOUT: *value = query_timeout_seconds_; break;
+    case SQL_ATTR_MAX_ROWS: *value = max_rows_; break;
+    case SQL_ATTR_CURSOR_TYPE: *value = SQL_CURSOR_FORWARD_ONLY; break;
+    case SQL_ATTR_CONCURRENCY: *value = SQL_CONCUR_READ_ONLY; break;
+    case SQL_ATTR_ROW_ARRAY_SIZE: *value = 1; break;
+    case SQL_ATTR_ROW_BIND_TYPE: *value = SQL_BIND_BY_COLUMN; break;
+    case SQL_ATTR_RETRIEVE_DATA: *value = SQL_RD_ON; break;
+    case SQL_ATTR_USE_BOOKMARKS: *value = SQL_UB_OFF; break;
+    case SQL_ATTR_ASYNC_ENABLE: *value = SQL_ASYNC_ENABLE_OFF; break;
+    default:
+      set_error(SQLSTATE_INVALID_ATTRIBUTE, "Unsupported statement attribute");
+      return SQL_ERROR;
   }
-  *value = query_timeout_seconds_;
   return SQL_SUCCESS;
 }
 
@@ -596,6 +634,11 @@ SQLRETURN ODBCStatement::fetch() {
   }
 
   return fetch_result;
+}
+
+SQLRETURN ODBCStatement::more_results() {
+  close_cursor(false);
+  return SQL_NO_DATA;
 }
 
 SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type, 
@@ -913,6 +956,9 @@ void ODBCStatement::apply_query_result(
     rs::core::database::QueryResult result,
     bool include_parameter_metadata) {
   result_rows_ = std::move(result.rows);
+  if (max_rows_ > 0 && result_rows_.size() > max_rows_) {
+    result_rows_.resize(static_cast<std::size_t>(max_rows_));
+  }
   current_row_ = 0;
   get_data_offsets_.clear();
   executed_ = true;
