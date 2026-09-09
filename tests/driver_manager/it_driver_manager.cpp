@@ -136,6 +136,36 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  SQLHDESC descriptor = SQL_NULL_HDESC;
+  if (!succeeded(SQLAllocHandle(
+          SQL_HANDLE_DESC, connection, &descriptor)) ||
+      !succeeded(SQLSetDescField(
+          descriptor, 1, SQL_DESC_CONCISE_TYPE,
+          reinterpret_cast<SQLPOINTER>(SQL_C_CHAR), 0))) {
+    print_diagnostic(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+  SQLSMALLINT descriptor_count = 0;
+  SQLSMALLINT descriptor_type = 0;
+  if (!succeeded(SQLGetDescField(
+          descriptor, 0, SQL_DESC_COUNT, &descriptor_count, 0, nullptr)) ||
+      descriptor_count != 1 ||
+      !succeeded(SQLGetDescField(
+          descriptor, 1, SQL_DESC_CONCISE_TYPE, &descriptor_type, 0,
+          nullptr)) ||
+      descriptor_type != SQL_C_CHAR ||
+      !succeeded(SQLFreeHandle(SQL_HANDLE_DESC, descriptor))) {
+    print_diagnostic(SQL_HANDLE_DESC, descriptor);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
 
   SQLINTEGER value = 0;
   SQLCHAR query[] = "SELECT 42";

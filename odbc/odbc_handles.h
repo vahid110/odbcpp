@@ -157,6 +157,42 @@ struct ParameterMetadata {
   std::string name;               // Parameter name (if available)
 };
 
+struct DescriptorRecord {
+  SQLSMALLINT type{SQL_C_DEFAULT};
+  SQLSMALLINT concise_type{SQL_C_DEFAULT};
+  SQLULEN length{0};
+  SQLSMALLINT precision{0};
+  SQLSMALLINT scale{0};
+  SQLSMALLINT nullable{SQL_NULLABLE_UNKNOWN};
+  SQLPOINTER data_ptr{nullptr};
+  SQLLEN* indicator_ptr{nullptr};
+  SQLLEN* octet_length_ptr{nullptr};
+  SQLLEN octet_length{0};
+  std::string name;
+};
+
+class ODBCDescriptor : public ODBCHandle {
+public:
+  explicit ODBCDescriptor(ODBCConnection* connection)
+      : ODBCHandle(HandleType::Descriptor), connection_(connection) {}
+
+  SQLRETURN get_field(SQLSMALLINT record_number,
+                      SQLSMALLINT field_identifier, SQLPOINTER value,
+                      SQLINTEGER buffer_length, SQLINTEGER* string_length);
+  SQLRETURN set_field(SQLSMALLINT record_number,
+                      SQLSMALLINT field_identifier, SQLPOINTER value,
+                      SQLINTEGER buffer_length);
+
+private:
+  ODBCConnection* connection_;
+  std::vector<DescriptorRecord> records_;
+  SQLULEN array_size_{1};
+  SQLUSMALLINT* array_status_ptr_{nullptr};
+  SQLLEN* bind_offset_ptr_{nullptr};
+  SQLULEN bind_type_{SQL_BIND_BY_COLUMN};
+  SQLULEN* rows_processed_ptr_{nullptr};
+};
+
 // Statement handle
 class ODBCStatement : public ODBCHandle {
 public:

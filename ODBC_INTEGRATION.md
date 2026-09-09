@@ -32,6 +32,7 @@
 - **Installer-managed registration**: Registration still uses an `odbcinst.ini` entry
 - **Catalog discovery**: ANSI catalog APIs are implemented; SQL_ROWVER has no PostgreSQL row-version column to report
 - **Unicode support**: wide connection, execution, preparation, diagnostics, native-SQL, and all catalog entry points are exported; SQL_C_WCHAR results and parameters are supported
+- **Explicit descriptors**: SQL_HANDLE_DESC allocation and core SQLGetDescField/SQLSetDescField header and record fields are available
 
 ## Integration Paths
 

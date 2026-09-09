@@ -223,7 +223,7 @@ SQLRETURN SQLColAttributeW(
 SQLRETURN SQLDescribeParam(SQLHSTMT statement_handle, SQLUSMALLINT parameter_number, SQLSMALLINT* data_type,
                           SQLULEN* parameter_size, SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable);
 
-// Note: SQLGetDescField and SQLSetDescField are declared in system sql.h
+// SQLGetDescField and SQLSetDescField are declared in the system ODBC headers.
 
 SQLRETURN SQLConnectW(SQLHDBC connection_handle, 
                      SQLWCHAR* server_name, SQLSMALLINT name_length1,

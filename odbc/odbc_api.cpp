@@ -215,6 +215,7 @@ namespace {
       case SQL_API_SQLFREESTMT:
       case SQL_API_SQLGETCONNECTATTR:
       case SQL_API_SQLGETDATA:
+      case SQL_API_SQLGETDESCFIELD:
       case SQL_API_SQLGETDIAGFIELD:
       case SQL_API_SQLGETDIAGREC:
       case SQL_API_SQLGETENVATTR:
@@ -232,6 +233,7 @@ namespace {
       case SQL_API_SQLPROCEDURES:
       case SQL_API_SQLROWCOUNT:
       case SQL_API_SQLSETCONNECTATTR:
+      case SQL_API_SQLSETDESCFIELD:
       case SQL_API_SQLSETENVATTR:
       case SQL_API_SQLSETSTMTATTR:
       case SQL_API_SQLSPECIALCOLUMNS:
@@ -273,6 +275,12 @@ SQLRETURN SQLAllocHandle(SQLSMALLINT handle_type, SQLHANDLE input_handle, SQLHAN
         auto* conn = get_valid_handle<ODBCConnection>(input_handle);
         if (!conn) return SQL_INVALID_HANDLE;
         new_handle = std::make_unique<ODBCStatement>(conn);
+        break;
+      }
+      case SQL_HANDLE_DESC: {
+        auto* conn = get_valid_handle<ODBCConnection>(input_handle);
+        if (!conn) return SQL_INVALID_HANDLE;
+        new_handle = std::make_unique<ODBCDescriptor>(conn);
         break;
       }
       default: {
@@ -1930,7 +1938,24 @@ SQLRETURN SQLDescribeParam(SQLHSTMT statement_handle, SQLUSMALLINT parameter_num
   return stmt->describe_param(parameter_number, data_type, parameter_size, decimal_digits, nullable);
 }
 
-// Note: SQLGetDescField and SQLSetDescField implementations would go here
-// Currently using system declarations from sql.h
+SQLRETURN SQLGetDescField(
+    SQLHDESC descriptor_handle, SQLSMALLINT record_number,
+    SQLSMALLINT field_identifier, SQLPOINTER value,
+    SQLINTEGER buffer_length, SQLINTEGER* string_length) {
+  auto* descriptor = get_valid_handle<ODBCDescriptor>(descriptor_handle);
+  if (!descriptor) return SQL_INVALID_HANDLE;
+  return descriptor->get_field(record_number, field_identifier, value,
+                               buffer_length, string_length);
+}
+
+SQLRETURN SQLSetDescField(
+    SQLHDESC descriptor_handle, SQLSMALLINT record_number,
+    SQLSMALLINT field_identifier, SQLPOINTER value,
+    SQLINTEGER buffer_length) {
+  auto* descriptor = get_valid_handle<ODBCDescriptor>(descriptor_handle);
+  if (!descriptor) return SQL_INVALID_HANDLE;
+  return descriptor->set_field(record_number, field_identifier, value,
+                               buffer_length);
+}
 
 } // extern "C"

@@ -21,7 +21,8 @@ namespace rs::odbc {
 enum class HandleType {
   Environment = SQL_HANDLE_ENV,
   Connection = SQL_HANDLE_DBC,
-  Statement = SQL_HANDLE_STMT
+  Statement = SQL_HANDLE_STMT,
+  Descriptor = SQL_HANDLE_DESC
 };
 
 // SQLSTATE error codes (standard ODBC error states)

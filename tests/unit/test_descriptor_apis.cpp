@@ -2,6 +2,8 @@
 #include "odbc/odbc_handles.h"
 #include "core/database/database_factory.h"
 
+#include <cstdint>
+
 using namespace rs::odbc;
 
 class DescriptorAPITest : public ::testing::Test {
@@ -142,4 +144,82 @@ TEST_F(DescriptorAPITest, DescriptorConsistency) {
     
     // Binding should still work after metadata access
     EXPECT_EQ(SQL_SUCCESS, stmt->bind_col(2, SQL_C_SLONG, buffer, sizeof(SQLINTEGER), &indicator));
+}
+
+TEST(ExplicitDescriptorApiTest, AllocatesAndStoresHeaderAndRecordFields) {
+    SQLHENV environment = nullptr;
+    SQLHDBC connection = nullptr;
+    SQLHDESC descriptor = nullptr;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &environment));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLAllocHandle(SQL_HANDLE_DESC, connection, &descriptor));
+
+    const auto number = [](SQLULEN value) {
+        return reinterpret_cast<SQLPOINTER>(
+            static_cast<std::uintptr_t>(value));
+    };
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLSetDescField(descriptor, 0, SQL_DESC_ARRAY_SIZE,
+                              number(4), 0));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLSetDescField(descriptor, 1, SQL_DESC_CONCISE_TYPE,
+                              number(SQL_C_CHAR), 0));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLSetDescField(descriptor, 1, SQL_DESC_LENGTH,
+                              number(128), 0));
+    char data[128]{};
+    SQLLEN indicator = 0;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLSetDescField(descriptor, 1, SQL_DESC_DATA_PTR, data, 0));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLSetDescField(descriptor, 1, SQL_DESC_INDICATOR_PTR,
+                              &indicator, 0));
+    char name[] = "value";
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLSetDescField(descriptor, 1, SQL_DESC_NAME, name, SQL_NTS));
+
+    SQLSMALLINT count = 0;
+    SQLULEN array_size = 0;
+    SQLSMALLINT type = 0;
+    SQLULEN length = 0;
+    SQLPOINTER data_ptr = nullptr;
+    SQLLEN* indicator_ptr = nullptr;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDescField(descriptor, 0, SQL_DESC_COUNT, &count, 0,
+                              nullptr));
+    EXPECT_EQ(1, count);
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDescField(descriptor, 0, SQL_DESC_ARRAY_SIZE,
+                              &array_size, 0, nullptr));
+    EXPECT_EQ(4u, array_size);
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDescField(descriptor, 1, SQL_DESC_CONCISE_TYPE, &type,
+                              0, nullptr));
+    EXPECT_EQ(SQL_C_CHAR, type);
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDescField(descriptor, 1, SQL_DESC_LENGTH, &length, 0,
+                              nullptr));
+    EXPECT_EQ(128u, length);
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDescField(descriptor, 1, SQL_DESC_DATA_PTR, &data_ptr,
+                              0, nullptr));
+    EXPECT_EQ(data, data_ptr);
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDescField(descriptor, 1, SQL_DESC_INDICATOR_PTR,
+                              &indicator_ptr, 0, nullptr));
+    EXPECT_EQ(&indicator, indicator_ptr);
+    char returned_name[16]{};
+    SQLINTEGER name_length = 0;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDescField(descriptor, 1, SQL_DESC_NAME, returned_name,
+                              sizeof(returned_name), &name_length));
+    EXPECT_STREQ("value", returned_name);
+    EXPECT_EQ(5, name_length);
+
+    EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
+    EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+    EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
 }
