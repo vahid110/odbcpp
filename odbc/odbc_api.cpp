@@ -6,6 +6,8 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <string_view>
+#include <vector>
 
 using namespace rs::odbc;
 
@@ -48,6 +50,51 @@ namespace {
         wide->size(), static_cast<std::size_t>(buffer_length - 1));
     std::copy_n(wide->begin(), copied, output);
     output[copied] = 0;
+    if (copied < wide->size()) {
+      if (handle && set_truncation_diagnostic) {
+        handle->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                          std::string(truncation_message));
+      }
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    return SQL_SUCCESS;
+  }
+
+  template <typename Length>
+  SQLRETURN write_wide_bytes_output(
+      ODBCHandle* handle, std::string_view utf8, SQLWCHAR* output,
+      SQLINTEGER buffer_length, Length* output_length,
+      std::string_view truncation_message,
+      bool set_truncation_diagnostic = true) {
+    const auto wide = utf8_to_wide(utf8);
+    if (!wide) {
+      if (handle) {
+        handle->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                          "Invalid UTF-8 output text");
+      }
+      return SQL_ERROR;
+    }
+    const auto required_bytes = wide->size() * sizeof(SQLWCHAR);
+    if (output_length) {
+      *output_length = static_cast<Length>(std::min<std::size_t>(
+          required_bytes,
+          static_cast<std::size_t>(std::numeric_limits<Length>::max())));
+    }
+    if (!output || buffer_length <= 0) return SQL_SUCCESS;
+
+    const auto buffer_units =
+        static_cast<std::size_t>(buffer_length) / sizeof(SQLWCHAR);
+    const auto capacity = buffer_units > 0 ? buffer_units - 1 : 0;
+    auto copied = std::min(capacity, wide->size());
+    if constexpr (sizeof(SQLWCHAR) == 2) {
+      if (copied < wide->size() && copied > 0 &&
+          (*wide)[copied - 1] >= 0xd800 &&
+          (*wide)[copied - 1] <= 0xdbff) {
+        --copied;
+      }
+    }
+    if (copied > 0) std::copy_n(wide->begin(), copied, output);
+    if (buffer_units > 0) output[copied] = 0;
     if (copied < wide->size()) {
       if (handle && set_truncation_diagnostic) {
         handle->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
@@ -715,6 +762,35 @@ SQLRETURN SQLGetDiagField(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT
   }
 }
 
+SQLRETURN SQLGetDiagFieldW(
+    SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,
+    SQLSMALLINT diag_identifier, SQLPOINTER diag_info_ptr,
+    SQLSMALLINT buffer_length, SQLSMALLINT* string_length_ptr) {
+  auto* obj = HandleRegistry::instance().get_handle(handle);
+  if (!obj) return SQL_INVALID_HANDLE;
+  if (buffer_length < 0) return SQL_ERROR;
+  if (rec_number == 0 || diag_identifier == SQL_DIAG_NATIVE) {
+    return SQLGetDiagField(handle_type, handle, rec_number, diag_identifier,
+                           diag_info_ptr, buffer_length, string_length_ptr);
+  }
+
+  const auto* record = obj->get_diagnostic_record(rec_number);
+  if (!record) return SQL_NO_DATA;
+  const std::string* value = nullptr;
+  switch (diag_identifier) {
+    case SQL_DIAG_SQLSTATE: value = &record->sqlstate; break;
+    case SQL_DIAG_MESSAGE_TEXT: value = &record->message_text; break;
+    case SQL_DIAG_CLASS_ORIGIN: value = &record->class_origin; break;
+    case SQL_DIAG_SUBCLASS_ORIGIN: value = &record->subclass_origin; break;
+    case SQL_DIAG_CONNECTION_NAME: value = &record->connection_name; break;
+    case SQL_DIAG_SERVER_NAME: value = &record->server_name; break;
+    default: return SQL_ERROR;
+  }
+  return write_wide_bytes_output(
+      obj, *value, static_cast<SQLWCHAR*>(diag_info_ptr), buffer_length,
+      string_length_ptr, "Diagnostic field was truncated", false);
+}
+
 SQLRETURN SQLError(SQLHENV environment_handle, SQLHDBC connection_handle, SQLHSTMT statement_handle,
                   SQLCHAR* sqlstate, SQLINTEGER* native_error, SQLCHAR* message_text,
                   SQLSMALLINT buffer_length, SQLSMALLINT* text_length) {
@@ -747,6 +823,36 @@ SQLRETURN SQLError(SQLHENV environment_handle, SQLHDBC connection_handle, SQLHST
     }
   }
   
+  return result;
+}
+
+SQLRETURN SQLErrorW(
+    SQLHENV environment_handle, SQLHDBC connection_handle,
+    SQLHSTMT statement_handle, SQLWCHAR* sqlstate,
+    SQLINTEGER* native_error, SQLWCHAR* message_text,
+    SQLSMALLINT buffer_length, SQLSMALLINT* text_length) {
+  SQLHANDLE handle = nullptr;
+  SQLSMALLINT handle_type = 0;
+  if (statement_handle) {
+    handle = statement_handle;
+    handle_type = SQL_HANDLE_STMT;
+  } else if (connection_handle) {
+    handle = connection_handle;
+    handle_type = SQL_HANDLE_DBC;
+  } else if (environment_handle) {
+    handle = environment_handle;
+    handle_type = SQL_HANDLE_ENV;
+  } else {
+    return SQL_INVALID_HANDLE;
+  }
+
+  const auto result = SQLGetDiagRecW(
+      handle_type, handle, 1, sqlstate, native_error, message_text,
+      buffer_length, text_length);
+  if (result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO) {
+    auto* obj = HandleRegistry::instance().get_handle(handle);
+    if (obj) obj->clear_diagnostics();
+  }
   return result;
 }
 
@@ -806,6 +912,25 @@ SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type,
       conn->set_error(SQLSTATE_GENERAL_ERROR, "Unsupported SQLGetInfo type");
       return SQL_ERROR;
   }
+}
+
+SQLRETURN SQLGetInfoW(SQLHDBC connection_handle, SQLUSMALLINT info_type,
+                      void* info_value, SQLSMALLINT buffer_length,
+                      SQLSMALLINT* string_length) {
+  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  if (!conn) return SQL_INVALID_HANDLE;
+  if (buffer_length < 0) {
+    conn->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid information buffer length");
+    return SQL_ERROR;
+  }
+  if (info_type == SQL_DRIVER_NAME) {
+    return write_wide_bytes_output(
+        conn, "ODBCPP Driver", static_cast<SQLWCHAR*>(info_value),
+        buffer_length, string_length, "Driver information was truncated");
+  }
+  return SQLGetInfo(connection_handle, info_type, info_value, buffer_length,
+                    string_length);
 }
 
 SQLRETURN SQLGetFunctions(SQLHDBC connection_handle, SQLUSMALLINT function_id,
@@ -1566,6 +1691,38 @@ SQLRETURN SQLDescribeCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number,
                            data_type, column_size, decimal_digits, nullable);
 }
 
+SQLRETURN SQLDescribeColW(
+    SQLHSTMT statement_handle, SQLUSMALLINT column_number,
+    SQLWCHAR* column_name, SQLSMALLINT name_buffer_length,
+    SQLSMALLINT* name_length, SQLSMALLINT* data_type,
+    SQLULEN* column_size, SQLSMALLINT* decimal_digits,
+    SQLSMALLINT* nullable) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  if (name_buffer_length < 0) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid column-name buffer length");
+    return SQL_ERROR;
+  }
+
+  SQLSMALLINT utf8_length = 0;
+  const auto metadata_result = stmt->describe_col(
+      column_number, nullptr, 0, &utf8_length, data_type, column_size,
+      decimal_digits, nullable);
+  if (metadata_result != SQL_SUCCESS) return metadata_result;
+  std::vector<SQLCHAR> utf8(static_cast<std::size_t>(utf8_length) + 1);
+  const auto name_result = stmt->describe_col(
+      column_number, utf8.data(), static_cast<SQLSMALLINT>(utf8.size()),
+      nullptr, nullptr, nullptr, nullptr, nullptr);
+  if (name_result != SQL_SUCCESS) return name_result;
+  return write_wide_output(
+      stmt,
+      std::string_view(reinterpret_cast<const char*>(utf8.data()),
+                       static_cast<std::size_t>(utf8_length)),
+      column_name, name_buffer_length, name_length,
+      "Column name was truncated");
+}
+
 SQLRETURN SQLColAttribute(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
                          SQLPOINTER character_attribute, SQLSMALLINT buffer_length, SQLSMALLINT* string_length,
                          SQLLEN* numeric_attribute) {
@@ -1574,6 +1731,40 @@ SQLRETURN SQLColAttribute(SQLHSTMT statement_handle, SQLUSMALLINT column_number,
   
   return stmt->col_attribute(column_number, field_identifier, character_attribute,
                             buffer_length, string_length, numeric_attribute);
+}
+
+SQLRETURN SQLColAttributeW(
+    SQLHSTMT statement_handle, SQLUSMALLINT column_number,
+    SQLUSMALLINT field_identifier, SQLPOINTER character_attribute,
+    SQLSMALLINT buffer_length, SQLSMALLINT* string_length,
+    SQLLEN* numeric_attribute) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  if (buffer_length < 0) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid column-attribute buffer length");
+    return SQL_ERROR;
+  }
+  if (field_identifier != SQL_DESC_NAME) {
+    return stmt->col_attribute(column_number, field_identifier,
+                               character_attribute, buffer_length,
+                               string_length, numeric_attribute);
+  }
+
+  SQLSMALLINT utf8_length = 0;
+  const auto length_result = stmt->col_attribute(
+      column_number, field_identifier, nullptr, 0, &utf8_length,
+      numeric_attribute);
+  if (length_result != SQL_SUCCESS) return length_result;
+  std::vector<char> utf8(static_cast<std::size_t>(utf8_length) + 1);
+  const auto value_result = stmt->col_attribute(
+      column_number, field_identifier, utf8.data(),
+      static_cast<SQLSMALLINT>(utf8.size()), nullptr, nullptr);
+  if (value_result != SQL_SUCCESS) return value_result;
+  return write_wide_bytes_output(
+      stmt, std::string_view(utf8.data(), static_cast<std::size_t>(utf8_length)),
+      static_cast<SQLWCHAR*>(character_attribute), buffer_length,
+      string_length, "Column attribute was truncated");
 }
 
 SQLRETURN SQLPrepare(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length) {

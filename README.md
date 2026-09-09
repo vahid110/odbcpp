@@ -4,7 +4,7 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 
 ## Features
 
-- **ODBC API Foundation**: 58 entry points (44 ANSI, 14 Unicode) with diagnostics and descriptor storage
+- **ODBC API Foundation**: 63 entry points (44 ANSI, 19 Unicode) with diagnostics and descriptor storage
 - **Unicode SQL and Data**: Strict UTF-8/SQLWCHAR conversion for wide connections, execution, preparation, diagnostics, native SQL, results, and parameters
 - **4 ODBC Descriptors**: IRD, APD, ARD, IPD fully implemented
 - **Prepared Statements**: Typed/null-aware PostgreSQL Parse/Bind/Describe/Execute workflow
@@ -33,7 +33,7 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 | **Transactions** | ✅ Complete | SQL_ATTR_AUTOCOMMIT, SQL_ATTR_TXN_ISOLATION, SQLEndTran, capability reporting |
 | **Statement Execution** | ✅ Complete | SQLExecDirect, SQLFetch/SQLFetchScroll, SQLGetData, SQLRowCount, SQLMoreResults, SQLCloseCursor, SQLFreeStmt |
 | **Prepared Statements** | ✅ Complete | SQLPrepare, SQLExecute, SQLBindParameter, SQLNumParams |
-| **Unicode APIs** | 🚧 Advanced | 14 `W` entry points, including all 8 catalog APIs, plus SQL_C_WCHAR results and parameters |
+| **Unicode APIs** | ✅ Complete for current API surface | 19 `W` entry points plus SQL_C_WCHAR results, binding, and parameters |
 | **Column Binding** | ✅ Complete | SQLBindCol with auto-population |
 | **Metadata** | ✅ Complete | SQLNumResultCols, SQLDescribeCol, SQLColAttribute, SQLGetTypeInfo and 8 ANSI catalog APIs |
 | **Parameter Metadata** | ✅ Complete | SQLDescribeParam |

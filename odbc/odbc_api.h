@@ -151,14 +151,26 @@ SQLRETURN SQLGetDiagRec(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT r
 SQLRETURN SQLGetDiagField(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,
                          SQLSMALLINT diag_identifier, SQLPOINTER diag_info_ptr, SQLSMALLINT buffer_length,
                          SQLSMALLINT* string_length_ptr);
+SQLRETURN SQLGetDiagFieldW(
+    SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,
+    SQLSMALLINT diag_identifier, SQLPOINTER diag_info_ptr,
+    SQLSMALLINT buffer_length, SQLSMALLINT* string_length_ptr);
 
 SQLRETURN SQLError(SQLHENV environment_handle, SQLHDBC connection_handle, SQLHSTMT statement_handle,
                   SQLCHAR* sqlstate, SQLINTEGER* native_error, SQLCHAR* message_text,
                   SQLSMALLINT buffer_length, SQLSMALLINT* text_length);
+SQLRETURN SQLErrorW(
+    SQLHENV environment_handle, SQLHDBC connection_handle,
+    SQLHSTMT statement_handle, SQLWCHAR* sqlstate,
+    SQLINTEGER* native_error, SQLWCHAR* message_text,
+    SQLSMALLINT buffer_length, SQLSMALLINT* text_length);
 
 // Driver information
 SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type, 
                     void* info_value, SQLSMALLINT buffer_length, SQLSMALLINT* string_length);
+SQLRETURN SQLGetInfoW(SQLHDBC connection_handle, SQLUSMALLINT info_type,
+                      void* info_value, SQLSMALLINT buffer_length,
+                      SQLSMALLINT* string_length);
 SQLRETURN SQLGetFunctions(SQLHDBC connection_handle, SQLUSMALLINT function_id,
                           SQLUSMALLINT* supported);
 SQLRETURN SQLNativeSql(
@@ -192,9 +204,20 @@ SQLRETURN SQLDescribeCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number,
                         SQLCHAR* column_name, SQLSMALLINT name_buffer_length, SQLSMALLINT* name_length,
                         SQLSMALLINT* data_type, SQLULEN* column_size, SQLSMALLINT* decimal_digits,
                         SQLSMALLINT* nullable);
+SQLRETURN SQLDescribeColW(
+    SQLHSTMT statement_handle, SQLUSMALLINT column_number,
+    SQLWCHAR* column_name, SQLSMALLINT name_buffer_length,
+    SQLSMALLINT* name_length, SQLSMALLINT* data_type,
+    SQLULEN* column_size, SQLSMALLINT* decimal_digits,
+    SQLSMALLINT* nullable);
 SQLRETURN SQLColAttribute(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
                          SQLPOINTER character_attribute, SQLSMALLINT buffer_length, SQLSMALLINT* string_length,
                          SQLLEN* numeric_attribute);
+SQLRETURN SQLColAttributeW(
+    SQLHSTMT statement_handle, SQLUSMALLINT column_number,
+    SQLUSMALLINT field_identifier, SQLPOINTER character_attribute,
+    SQLSMALLINT buffer_length, SQLSMALLINT* string_length,
+    SQLLEN* numeric_attribute);
 
 // Parameter metadata
 SQLRETURN SQLDescribeParam(SQLHSTMT statement_handle, SQLUSMALLINT parameter_number, SQLSMALLINT* data_type,

@@ -201,6 +201,43 @@ TEST_F(MetadataIntegrationTest, FindsUnicodeCatalogIdentifiers) {
     EXPECT_EQ(column_name, *converted_column);
 }
 
+TEST_F(MetadataIntegrationTest, DescribesUnicodeColumnNames) {
+    const std::string expected =
+        "r\xc3\xa9sultat\xe4\xb8\x96\xe7\x95\x8c";
+    auto query = rs::odbc::utf8_to_wide(
+        "SELECT 1 AS \"r\xc3\xa9sultat\xe4\xb8\x96\xe7\x95\x8c\"");
+    ASSERT_TRUE(query.has_value());
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLExecDirectW(hstmt, query->data(),
+                             static_cast<SQLINTEGER>(query->size())));
+
+    SQLWCHAR described_name[64]{};
+    SQLSMALLINT described_units = 0;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLDescribeColW(hstmt, 1, described_name, 64,
+                              &described_units, nullptr, nullptr, nullptr,
+                              nullptr));
+    const auto described = rs::odbc::wide_to_utf8(
+        std::span<const SQLWCHAR>(
+            described_name, static_cast<std::size_t>(described_units)));
+    ASSERT_TRUE(described.has_value());
+    EXPECT_EQ(expected, *described);
+
+    SQLWCHAR attribute_name[64]{};
+    SQLSMALLINT attribute_bytes = 0;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLColAttributeW(hstmt, 1, SQL_DESC_NAME, attribute_name,
+                               sizeof(attribute_name), &attribute_bytes,
+                               nullptr));
+    const auto attribute = rs::odbc::wide_to_utf8(
+        std::span<const SQLWCHAR>(
+            attribute_name,
+            static_cast<std::size_t>(attribute_bytes) /
+                sizeof(SQLWCHAR)));
+    ASSERT_TRUE(attribute.has_value());
+    EXPECT_EQ(expected, *attribute);
+}
+
 TEST_F(MetadataIntegrationTest, MultipleColumns) {
     // Execute query with different data types
     SQLRETURN ret = SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 'text', 123, NOW(), true", SQL_NTS);

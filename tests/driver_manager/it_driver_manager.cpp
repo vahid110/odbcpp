@@ -90,6 +90,20 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  SQLWCHAR wide_driver_name[32]{};
+  SQLSMALLINT wide_driver_name_bytes = 0;
+  if (!succeeded(SQLGetInfoW(
+          connection, SQL_DRIVER_NAME, wide_driver_name,
+          sizeof(wide_driver_name), &wide_driver_name_bytes)) ||
+      wide_driver_name_bytes !=
+          static_cast<SQLSMALLINT>(13 * sizeof(SQLWCHAR)) ||
+      wide_driver_name[0] != static_cast<SQLWCHAR>('O')) {
+    print_diagnostic(SQL_HANDLE_DBC, connection);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
   SQLCHAR input_sql[] = "SELECT 42";
   SQLCHAR native_sql[sizeof(input_sql)]{};
   SQLINTEGER native_sql_length = 0;

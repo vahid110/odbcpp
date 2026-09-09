@@ -48,7 +48,7 @@
 
 ## 🚧 Current Status
 
-**Implementation**: 58 exported ODBC entry points (44 ANSI, 14 Unicode)
+**Implementation**: 63 exported ODBC entry points (44 ANSI, 19 Unicode)
 **Descriptors**: 4/4 ODBC Descriptors Complete
 **Diagnostics**: Complete ODBC diagnostics implementation
 **Test Coverage**: 19 tests (100% unit test pass rate)
@@ -162,7 +162,7 @@
 - [x] Implement SQLConnectW, SQLDriverConnectW, SQLExecDirectW, SQLPrepareW, SQLGetDiagRecW, SQLNativeSqlW
 - [x] Add SQL_C_WCHAR result retrieval, column binding, and input parameters
 - [x] Add all 8 wide catalog APIs for Unicode metadata
-- [ ] Wide character versions of all string-based APIs
+- [x] Wide character versions of all currently implemented string-based APIs
 - [x] UTF-8/SQLWCHAR conversion utilities
 - [x] Unicode unit, PostgreSQL, and driver-manager test coverage
 
@@ -306,7 +306,7 @@
 - **Diagnostics Coverage**: 1/3 functions (33% - critical gap)
 - **Attribute APIs**: 1/6 functions (17% - critical gap)
 - **Metadata APIs**: 8/8 functions (100% ANSI catalog milestone complete)
-- **Wide APIs**: 14/15+ functions (core connection, statement, diagnostic, native SQL, and catalog support)
+- **Wide APIs**: 19 functions (complete for the currently implemented ANSI API surface)
 - **Test Success Rate**: 20/20 unit tests (100%)
 - **Integration Success**: 16/17 tests (94%)
 - **Database Support**: 2/4 planned databases (50%)

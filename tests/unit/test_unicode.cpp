@@ -131,3 +131,36 @@ TEST_F(UnicodeApiTest, WideCatalogApisValidateLengthsAndEncoding) {
                            nullptr, 0, nullptr));
   EXPECT_EQ("22018", as_utf8(state, 5));
 }
+
+TEST_F(UnicodeApiTest, WideInformationUsesByteLengths) {
+  SQLWCHAR driver_name[32]{};
+  SQLSMALLINT name_bytes = 0;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetInfoW(connection_, SQL_DRIVER_NAME, driver_name,
+                        sizeof(driver_name), &name_bytes));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(13 * sizeof(SQLWCHAR)), name_bytes);
+  EXPECT_EQ("ODBCPP Driver", as_utf8(driver_name, 13));
+}
+
+TEST_F(UnicodeApiTest, WideDiagnosticFieldAndSqLErrorAreCompatible) {
+  ASSERT_EQ(SQL_ERROR, SQLExecDirectW(statement_, nullptr, 0));
+  SQLWCHAR message[64]{};
+  SQLSMALLINT message_bytes = 0;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetDiagFieldW(SQL_HANDLE_STMT, statement_, 1,
+                             SQL_DIAG_MESSAGE_TEXT, message,
+                             sizeof(message), &message_bytes));
+  EXPECT_EQ("SQL statement is null",
+            as_utf8(message, static_cast<std::size_t>(message_bytes) /
+                                 sizeof(SQLWCHAR)));
+
+  SQLWCHAR state[6]{};
+  SQLSMALLINT message_units = 0;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLErrorW(nullptr, nullptr, statement_, state, nullptr, message,
+                      64, &message_units));
+  EXPECT_EQ("HY009", as_utf8(state, 5));
+  EXPECT_EQ(SQL_NO_DATA,
+            SQLErrorW(nullptr, nullptr, statement_, state, nullptr, message,
+                      64, &message_units));
+}
