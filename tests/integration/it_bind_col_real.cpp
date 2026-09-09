@@ -359,6 +359,29 @@ TEST_F(BindColIntegrationTest, GetDataOffsetsResetForEachFetchedRow) {
     EXPECT_EQ(8, remaining);
 }
 
+TEST_F(BindColIntegrationTest, SwitchingColumnsInvalidatesPartialOffset) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 'abcdefgh'::text, 'other'::text", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    char chunk[5]{};
+    SQLLEN remaining = 0;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, chunk, sizeof(chunk), &remaining));
+    EXPECT_STREQ("abcd", chunk);
+    EXPECT_EQ(8, remaining);
+
+    char other[8]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 2, SQL_C_CHAR, other, sizeof(other), &remaining));
+    EXPECT_STREQ("other", other);
+
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, chunk, sizeof(chunk), &remaining));
+    EXPECT_STREQ("abcd", chunk);
+    EXPECT_EQ(8, remaining);
+}
+
 // Test mixed binding (some bound, some unbound)
 TEST_F(BindColIntegrationTest, MixedBinding) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 'Bound' as col1, 'Unbound' as col2, 999 as col3", SQL_NTS));

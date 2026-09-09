@@ -1326,7 +1326,8 @@ SQLRETURN ODBCStatement::fetch() {
   
   current_row_++;
   if (rows_fetched) *rows_fetched = 1;
-  get_data_offsets_.assign(result_rows_[current_row_ - 1].size(), 0);
+  get_data_column_ = 0;
+  get_data_offset_ = 0;
   SQLRETURN fetch_result = SQL_SUCCESS;
   
   // Auto-populate bound columns from ARD
@@ -1436,10 +1437,11 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
   }
 
   constexpr auto complete = std::numeric_limits<std::size_t>::max();
-  if (get_data_offsets_.size() != row.size()) {
-    get_data_offsets_.assign(row.size(), 0);
+  if (get_data_column_ != col) {
+    get_data_column_ = col;
+    get_data_offset_ = 0;
   }
-  auto& offset = get_data_offsets_[col - 1];
+  auto& offset = get_data_offset_;
   if (offset == complete) return SQL_NO_DATA;
 
   if (!buffer) {
@@ -1978,7 +1980,8 @@ void ODBCStatement::apply_query_result(
     result_rows_.resize(static_cast<std::size_t>(max_rows_));
   }
   current_row_ = 0;
-  get_data_offsets_.clear();
+  get_data_column_ = 0;
+  get_data_offset_ = 0;
   executed_ = true;
 
   const auto max_rows = static_cast<std::size_t>(
@@ -2045,7 +2048,8 @@ void ODBCStatement::clear_current_result() {
   result_rows_.clear();
   column_info_.clear();
   descriptor(imp_row_descriptor_)->replace_records({});
-  get_data_offsets_.clear();
+  get_data_column_ = 0;
+  get_data_offset_ = 0;
   current_row_ = 0;
   affected_rows_ = 0;
   executed_ = false;

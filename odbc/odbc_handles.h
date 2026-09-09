@@ -401,7 +401,8 @@ private:
   rs::core::database::ResultRows result_rows_;
   std::vector<ColumnInfo> column_info_;        // IRD storage
   std::vector<ParameterMetadata> param_metadata_; // IPD storage
-  std::vector<std::size_t> get_data_offsets_;
+  std::size_t get_data_offset_ = 0;
+  SQLUSMALLINT get_data_column_ = 0;
   std::vector<rs::core::database::QueryResult> pending_results_;
   std::string prepared_sql_;
   size_t current_row_ = 0;
