@@ -4,7 +4,7 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 
 ## Features
 
-- **ODBC API Foundation**: 65 entry points (46 non-wide, 19 Unicode) with diagnostics and descriptor storage
+- **ODBC API Foundation**: 66 entry points (47 non-wide, 19 Unicode) with diagnostics and descriptor storage
 - **Unicode SQL and Data**: Strict UTF-8/SQLWCHAR conversion for wide connections, execution, preparation, diagnostics, native SQL, results, and parameters
 - **ODBC Descriptors**: IRD, APD, ARD, and IPD storage plus explicit descriptor handles and field APIs
 - **Prepared Statements**: Typed/null-aware PostgreSQL Parse/Bind/Describe/Execute workflow

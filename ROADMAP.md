@@ -48,7 +48,7 @@
 
 ## 🚧 Current Status
 
-**Implementation**: 65 exported ODBC entry points (46 non-wide, 19 Unicode)
+**Implementation**: 66 exported ODBC entry points (47 non-wide, 19 Unicode)
 **Descriptors**: 4/4 ODBC Descriptors Complete
 **Diagnostics**: Complete ODBC diagnostics implementation
 **Test Coverage**: 19 tests (100% unit test pass rate)
@@ -85,7 +85,7 @@
 - [x] Implement SQLSetConnectAttr / SQLGetConnectAttr for login timeout
 - [x] Implement SQLSetStmtAttr / SQLGetStmtAttr for query timeout
 - [x] Propagate ODBC timeout values into transport deadlines and SQLSTATEs
-- [x] Export SQLSetDescField / SQLGetDescField with explicit descriptor handles and core header/record fields
+- [x] Export SQLSetDescField / SQLGetDescField / SQLCopyDesc with explicit descriptor handles and core header/record fields
 - [x] Add support for SQL_ATTR_AUTOCOMMIT and transaction completion
 - [x] Forward-only statement attributes and SQL_ATTR_MAX_ROWS
 - [ ] Scrollable cursor and multi-row array statement attributes

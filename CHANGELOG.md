@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Expanded SQLGetInfo/SQLGetInfoW identity, naming, catalog, schema, cursor, and SQLGetData capability reporting
-- Explicit descriptor-handle allocation and SQLGetDescField/SQLSetDescField header and record storage
+- Explicit descriptor-handle allocation, SQLGetDescField/SQLSetDescField storage, and SQLCopyDesc cloning
 - SQLConnectW, SQLDriverConnectW, SQLExecDirectW, SQLPrepareW, SQLGetDiagRecW, and SQLNativeSqlW Unicode entry points
 - Strict UTF-8/SQLWCHAR conversion with surrogate-pair and malformed-input validation
 - SQL_C_WCHAR result retrieval, chunking, column binding, and prepared-statement parameters

@@ -223,3 +223,41 @@ TEST(ExplicitDescriptorApiTest, AllocatesAndStoresHeaderAndRecordFields) {
     EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
     EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
 }
+
+TEST(ExplicitDescriptorApiTest, CopiesDescriptorState) {
+    SQLHENV environment = nullptr;
+    SQLHDBC connection = nullptr;
+    SQLHDESC source = nullptr;
+    SQLHDESC target = nullptr;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &environment));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLAllocHandle(SQL_HANDLE_DESC, connection, &source));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLAllocHandle(SQL_HANDLE_DESC, connection, &target));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLSetDescField(source, 1, SQL_DESC_CONCISE_TYPE,
+                              reinterpret_cast<SQLPOINTER>(SQL_C_WCHAR), 0));
+    char name[] = "copied";
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLSetDescField(source, 1, SQL_DESC_NAME, name, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLCopyDesc(source, target));
+
+    SQLSMALLINT type = 0;
+    char returned_name[16]{};
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDescField(target, 1, SQL_DESC_CONCISE_TYPE, &type, 0,
+                              nullptr));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDescField(target, 1, SQL_DESC_NAME, returned_name,
+                              sizeof(returned_name), nullptr));
+    EXPECT_EQ(SQL_C_WCHAR, type);
+    EXPECT_STREQ("copied", returned_name);
+
+    SQLFreeHandle(SQL_HANDLE_DESC, target);
+    SQLFreeHandle(SQL_HANDLE_DESC, source);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+}

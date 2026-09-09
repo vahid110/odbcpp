@@ -200,6 +200,7 @@ namespace {
       case SQL_API_SQLCLOSECURSOR:
       case SQL_API_SQLCOLUMNS:
       case SQL_API_SQLCONNECT:
+      case SQL_API_SQLCOPYDESC:
       case SQL_API_SQLDESCRIBECOL:
       case SQL_API_SQLDESCRIBEPARAM:
       case SQL_API_SQLDISCONNECT:
@@ -1956,6 +1957,16 @@ SQLRETURN SQLSetDescField(
   if (!descriptor) return SQL_INVALID_HANDLE;
   return descriptor->set_field(record_number, field_identifier, value,
                                buffer_length);
+}
+
+SQLRETURN SQLCopyDesc(SQLHDESC source_desc_handle,
+                      SQLHDESC target_desc_handle) {
+  auto* source = get_valid_handle<ODBCDescriptor>(source_desc_handle);
+  if (!source) return SQL_INVALID_HANDLE;
+  auto* target = get_valid_handle<ODBCDescriptor>(target_desc_handle);
+  if (!target) return SQL_INVALID_HANDLE;
+  target->copy_from(*source);
+  return SQL_SUCCESS;
 }
 
 } // extern "C"

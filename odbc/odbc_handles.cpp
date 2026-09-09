@@ -662,6 +662,15 @@ SQLRETURN ODBCDescriptor::set_field(
   return SQL_SUCCESS;
 }
 
+void ODBCDescriptor::copy_from(const ODBCDescriptor& source) {
+  records_ = source.records_;
+  array_size_ = source.array_size_;
+  array_status_ptr_ = source.array_status_ptr_;
+  bind_offset_ptr_ = source.bind_offset_ptr_;
+  bind_type_ = source.bind_type_;
+  rows_processed_ptr_ = source.rows_processed_ptr_;
+}
+
 // Statement implementation
 SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
   if (!conn_->is_connected()) {

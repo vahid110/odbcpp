@@ -182,6 +182,7 @@ public:
   SQLRETURN set_field(SQLSMALLINT record_number,
                       SQLSMALLINT field_identifier, SQLPOINTER value,
                       SQLINTEGER buffer_length);
+  void copy_from(const ODBCDescriptor& source);
 
 private:
   ODBCConnection* connection_;
