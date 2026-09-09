@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
+#include "odbc/odbc_api.h"
 #include "odbc/odbc_handles.h"
+#include "odbc/unicode.h"
 #include "core/database/database_factory.h"
 
 #include <cstdint>
@@ -258,6 +260,42 @@ TEST(ExplicitDescriptorApiTest, CopiesDescriptorState) {
 
     SQLFreeHandle(SQL_HANDLE_DESC, target);
     SQLFreeHandle(SQL_HANDLE_DESC, source);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+}
+
+TEST(ExplicitDescriptorApiTest, StoresAndReturnsWideDescriptorNames) {
+    SQLHENV environment = nullptr;
+    SQLHDBC connection = nullptr;
+    SQLHDESC descriptor = nullptr;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &environment));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLAllocHandle(SQL_HANDLE_DESC, connection, &descriptor));
+
+    auto name = utf8_to_wide("Gr\xc3\xbc\xc3\x9f" "e \xf0\x9f\x99\x82");
+    ASSERT_TRUE(name.has_value());
+    name->push_back(0);
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLSetDescFieldW(descriptor, 1, SQL_DESC_NAME,
+                               const_cast<SQLWCHAR*>(name->data()), SQL_NTS));
+
+    SQLWCHAR returned_name[32]{};
+    SQLINTEGER returned_bytes = 0;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDescFieldW(descriptor, 1, SQL_DESC_NAME, returned_name,
+                               sizeof(returned_name), &returned_bytes));
+    EXPECT_EQ(static_cast<SQLINTEGER>((name->size() - 1) * sizeof(SQLWCHAR)),
+              returned_bytes);
+    const auto returned_utf8 = wide_to_utf8(std::span<const SQLWCHAR>(
+        returned_name, static_cast<std::size_t>(returned_bytes) /
+                           sizeof(SQLWCHAR)));
+    ASSERT_TRUE(returned_utf8.has_value());
+    EXPECT_EQ("Gr\xc3\xbc\xc3\x9f" "e \xf0\x9f\x99\x82", *returned_utf8);
+
+    SQLFreeHandle(SQL_HANDLE_DESC, descriptor);
     SQLFreeHandle(SQL_HANDLE_DBC, connection);
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
 }

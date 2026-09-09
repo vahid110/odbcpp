@@ -262,6 +262,38 @@ std::vector<std::string> parse_table_types(const std::string& value) {
 
 } // namespace
 
+ODBCStatement::ODBCStatement(ODBCConnection* conn)
+    : ODBCHandle(HandleType::Statement), conn_(conn) {
+  try {
+    app_row_descriptor_ = create_implicit_descriptor();
+    app_param_descriptor_ = create_implicit_descriptor();
+    imp_row_descriptor_ = create_implicit_descriptor();
+    imp_param_descriptor_ = create_implicit_descriptor();
+  } catch (...) {
+    for (const auto descriptor : {
+             app_row_descriptor_, app_param_descriptor_,
+             imp_row_descriptor_, imp_param_descriptor_}) {
+      if (descriptor) HandleRegistry::instance().unregister_handle(descriptor);
+    }
+    throw;
+  }
+}
+
+ODBCStatement::~ODBCStatement() {
+  for (const auto descriptor : {
+           app_row_descriptor_, app_param_descriptor_,
+           imp_row_descriptor_, imp_param_descriptor_}) {
+    if (descriptor) HandleRegistry::instance().unregister_handle(descriptor);
+  }
+}
+
+SQLHDESC ODBCStatement::create_implicit_descriptor() {
+  auto descriptor = std::make_unique<ODBCDescriptor>(conn_, true);
+  const auto handle = reinterpret_cast<SQLHDESC>(descriptor.get());
+  HandleRegistry::instance().register_handle(handle, std::move(descriptor));
+  return handle;
+}
+
 // Connection implementation
 SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& user, const std::string& password) {
   try {
@@ -335,6 +367,16 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
 }
 
 SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
+  if (attribute == IODBC_ATTR_APP_WCHAR_TYPE) {
+    if (value != NATIVE_SQLWCHAR_ENCODING) {
+      set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                "The requested SQLWCHAR encoding is not native to this "
+                "driver build");
+      return SQL_ERROR;
+    }
+    clear_diagnostics();
+    return SQL_SUCCESS;
+  }
   if (attribute == SQL_ATTR_AUTOCOMMIT) {
     if (value != SQL_AUTOCOMMIT_ON && value != SQL_AUTOCOMMIT_OFF) {
       set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
@@ -401,6 +443,9 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
 SQLRETURN ODBCConnection::get_attribute(SQLINTEGER attribute,
                                         SQLUINTEGER* value) {
   switch (attribute) {
+    case IODBC_ATTR_APP_WCHAR_TYPE:
+      *value = NATIVE_SQLWCHAR_ENCODING;
+      return SQL_SUCCESS;
     case SQL_ATTR_LOGIN_TIMEOUT:
       *value = login_timeout_seconds_;
       return SQL_SUCCESS;
@@ -753,6 +798,18 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLULEN value) {
 
 SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLULEN* value) {
   switch (attribute) {
+    case SQL_ATTR_APP_ROW_DESC:
+      *value = reinterpret_cast<SQLULEN>(app_row_descriptor_);
+      break;
+    case SQL_ATTR_APP_PARAM_DESC:
+      *value = reinterpret_cast<SQLULEN>(app_param_descriptor_);
+      break;
+    case SQL_ATTR_IMP_ROW_DESC:
+      *value = reinterpret_cast<SQLULEN>(imp_row_descriptor_);
+      break;
+    case SQL_ATTR_IMP_PARAM_DESC:
+      *value = reinterpret_cast<SQLULEN>(imp_param_descriptor_);
+      break;
     case SQL_ATTR_QUERY_TIMEOUT: *value = query_timeout_seconds_; break;
     case SQL_ATTR_MAX_ROWS: *value = max_rows_; break;
     case SQL_ATTR_CURSOR_TYPE: *value = SQL_CURSOR_FORWARD_ONLY; break;
@@ -2100,8 +2157,14 @@ void HandleRegistry::register_handle(SQLHANDLE handle, std::unique_ptr<ODBCHandl
 }
 
 void HandleRegistry::unregister_handle(SQLHANDLE handle) {
-  std::lock_guard lock(mutex_);
-  handles_.erase(handle);
+  std::unique_ptr<ODBCHandle> removed;
+  {
+    std::lock_guard lock(mutex_);
+    const auto it = handles_.find(handle);
+    if (it == handles_.end()) return;
+    removed = std::move(it->second);
+    handles_.erase(it);
+  }
 }
 
 ODBCHandle* HandleRegistry::get_handle(SQLHANDLE handle) {

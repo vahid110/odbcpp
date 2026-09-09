@@ -66,15 +66,39 @@ TEST_F(AttributeApisTest, StoresEnvironmentVersion) {
   EXPECT_EQ(SQL_OV_ODBC3, version);
   EXPECT_EQ(sizeof(SQLINTEGER), static_cast<std::size_t>(length));
 
+#ifdef SQL_OV_ODBC3_80
   EXPECT_EQ(SQL_SUCCESS, SQLSetEnvAttr(
       environment_, SQL_ATTR_ODBC_VERSION, integer_value(SQL_OV_ODBC3_80), 0));
   EXPECT_EQ(SQL_SUCCESS, SQLGetEnvAttr(
       environment_, SQL_ATTR_ODBC_VERSION, &version, sizeof(version), nullptr));
   EXPECT_EQ(SQL_OV_ODBC3_80, version);
+#endif
 
   EXPECT_EQ(SQL_ERROR, SQLSetEnvAttr(
       environment_, SQL_ATTR_ODBC_VERSION, integer_value(999), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_ENV, environment_));
+}
+
+TEST_F(AttributeApisTest, NegotiatesNativeSqlwcharEncodingWithIodbc) {
+  SQLINTEGER driver_encoding = 0;
+  SQLINTEGER length = 0;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetEnvAttr(
+      environment_, rs::odbc::IODBC_ATTR_DRIVER_UNICODE_TYPE,
+      &driver_encoding, sizeof(driver_encoding), &length));
+  EXPECT_EQ(static_cast<SQLINTEGER>(rs::odbc::NATIVE_SQLWCHAR_ENCODING),
+            driver_encoding);
+  EXPECT_EQ(sizeof(SQLINTEGER), static_cast<std::size_t>(length));
+
+  EXPECT_EQ(SQL_SUCCESS, SQLSetConnectAttr(
+      connection_, rs::odbc::IODBC_ATTR_APP_WCHAR_TYPE,
+      integer_value(rs::odbc::NATIVE_SQLWCHAR_ENCODING), 0));
+
+  const auto other_encoding = sizeof(SQLWCHAR) == 2
+      ? rs::odbc::IODBC_CP_UCS4 : rs::odbc::IODBC_CP_UTF16;
+  EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(
+      connection_, rs::odbc::IODBC_ATTR_APP_WCHAR_TYPE,
+      integer_value(other_encoding), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
 TEST_F(AttributeApisTest, StoresAutocommitMode) {
@@ -306,6 +330,25 @@ TEST_F(AttributeApisTest, StoresQueryTimeoutAndAllowsZero) {
   EXPECT_EQ(3u, value);
   EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
       statement_, SQL_ATTR_QUERY_TIMEOUT, integer_value(0), 0));
+}
+
+TEST_F(AttributeApisTest, ReportsAllImplicitDescriptorHandles) {
+  const SQLINTEGER attributes[] = {
+      SQL_ATTR_APP_ROW_DESC, SQL_ATTR_APP_PARAM_DESC,
+      SQL_ATTR_IMP_ROW_DESC, SQL_ATTR_IMP_PARAM_DESC};
+  for (const auto attribute : attributes) {
+    SQLHDESC descriptor = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        statement_, attribute, &descriptor, sizeof(descriptor), nullptr));
+    ASSERT_NE(nullptr, descriptor);
+
+    SQLSMALLINT count = -1;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetDescField(
+        descriptor, 0, SQL_DESC_COUNT, &count, 0, nullptr));
+    EXPECT_EQ(0, count);
+    EXPECT_EQ(SQL_ERROR, SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
+    EXPECT_EQ("HY017", diagnostic_state(SQL_HANDLE_DESC, descriptor));
+  }
 }
 
 TEST_F(AttributeApisTest, ReportsForwardOnlyStatementDefaults) {

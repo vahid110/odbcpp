@@ -9,13 +9,34 @@
 #include <sql.h>
 #include <sqlext.h>
 #else
-// Linux/macOS - requires unixODBC development headers
-// Install: apt-get install unixodbc-dev (Linux) or brew install unixodbc (macOS)
+// Linux/macOS - requires ODBC development headers. The driver is normally
+// built against unixODBC's two-byte SQLWCHAR ABI; iODBC can translate its
+// native four-byte application buffers to that representation.
 #include <sql.h>
 #include <sqlext.h>
 #endif
 
 namespace rs::odbc {
+
+static_assert(sizeof(SQLWCHAR) == 2 || sizeof(SQLWCHAR) == 4,
+              "ODBCPP supports only two- or four-byte SQLWCHAR ABIs");
+
+#ifdef ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE
+static_assert(sizeof(SQLWCHAR) == ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE,
+              "The selected ODBC headers have an unexpected SQLWCHAR ABI");
+#endif
+
+// iODBC/DataDirect Unicode negotiation extensions. These are intentionally
+// defined as project constants because unixODBC and the Windows SDK do not
+// expose iodbcext.h. iODBC uses these numeric values at the driver boundary.
+inline constexpr SQLINTEGER IODBC_ATTR_APP_WCHAR_TYPE = 1061;
+inline constexpr SQLINTEGER IODBC_ATTR_APP_UNICODE_TYPE = 1064;
+inline constexpr SQLINTEGER IODBC_ATTR_DRIVER_UNICODE_TYPE = 1065;
+inline constexpr SQLUINTEGER IODBC_CP_UTF16 = 1;
+inline constexpr SQLUINTEGER IODBC_CP_UTF8 = 2;
+inline constexpr SQLUINTEGER IODBC_CP_UCS4 = 3;
+inline constexpr SQLUINTEGER NATIVE_SQLWCHAR_ENCODING =
+    sizeof(SQLWCHAR) == 2 ? IODBC_CP_UTF16 : IODBC_CP_UCS4;
 
 // ODBC handle types
 enum class HandleType {
@@ -55,6 +76,7 @@ constexpr const char* SQLSTATE_NULLABLE_TYPE_OUT_OF_RANGE = "HY099";
 constexpr const char* SQLSTATE_FETCH_TYPE_OUT_OF_RANGE = "HY106";
 constexpr const char* SQLSTATE_INVALID_CURSOR_STATE = "24000";
 constexpr const char* SQLSTATE_STATEMENT_NOT_PREPARED = "HY007";
+constexpr const char* SQLSTATE_INVALID_AUTO_DESCRIPTOR_USE = "HY017";
 
 // Note: All SQL_DIAG_* constants are already defined in system ODBC headers (sql.h, sqlext.h)
 // No need to redefine them here

@@ -5,6 +5,27 @@ project(odbcpp VERSION 1.0.0 LANGUAGES CXX)
 option(BUILD_EXAMPLES "Build examples" ON)
 option(BUILD_TESTING "Build tests" ON)
 option(OPENSSL_USE_STATIC_LIBS "Link OpenSSL statically when available" ON)
+set(ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE "" CACHE STRING
+    "Expected driver-side SQLWCHAR size (2 or 4; empty disables the ABI check)")
+set_property(CACHE ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE PROPERTY STRINGS "" "2" "4")
+set(ODBC_DRIVER_MANAGER_FLAVOR "AUTO" CACHE STRING
+    "ODBC driver manager used by the external integration test")
+set_property(CACHE ODBC_DRIVER_MANAGER_FLAVOR PROPERTY STRINGS
+             "AUTO" "UNIXODBC" "IODBC")
+set(ODBC_DRIVER_MANAGER_INCLUDE_DIR "" CACHE PATH
+    "ODBC application headers used by the driver-manager integration test")
+set(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE "" CACHE STRING
+    "Expected application-side SQLWCHAR size in the driver-manager test")
+set_property(CACHE ODBCPP_EXPECT_DM_SQLWCHAR_SIZE PROPERTY STRINGS "" "2" "4")
+
+if(ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE AND
+   NOT ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE MATCHES "^[24]$")
+  message(FATAL_ERROR "ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE must be 2 or 4")
+endif()
+if(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE AND
+   NOT ODBCPP_EXPECT_DM_SQLWCHAR_SIZE MATCHES "^[24]$")
+  message(FATAL_ERROR "ODBCPP_EXPECT_DM_SQLWCHAR_SIZE must be 2 or 4")
+endif()
 
 # ---- Build Configuration Info ----
 message(STATUS "Build Configuration:")
@@ -165,6 +186,13 @@ target_compile_definitions(${PROJECT_NAME}_driver PUBLIC
   ODBCPP_TARGET_DATABASE="${TARGET_DATABASE}"
   ODBCPP_ENABLE_${TARGET_DATABASE}=1
 )
+
+if(ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE)
+  target_compile_definitions(${PROJECT_NAME}_core PUBLIC
+    ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})
+  target_compile_definitions(${PROJECT_NAME}_driver PUBLIC
+    ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})
+endif()
 
 if(WIN32)
   target_link_libraries(${PROJECT_NAME}_core PRIVATE ws2_32 crypt32)

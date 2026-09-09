@@ -47,15 +47,64 @@ endforeach()
 # deliberately does not link odbcpp_core, so missing exports or registration
 # problems cannot be hidden by the in-process integration tests.
 if(UNIX)
-  find_library(ODBC_DRIVER_MANAGER_LIBRARY NAMES odbc iodbc)
+  if(ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "IODBC")
+    set(_odbc_driver_manager_names iodbc)
+    if(NOT ODBC_DRIVER_MANAGER_INCLUDE_DIR)
+      find_path(_odbc_driver_manager_include_dir sql.h
+        PATHS
+          /opt/homebrew/opt/libiodbc/include
+          /usr/local/opt/libiodbc/include
+          /usr/include/iodbc
+          /usr/local/include/iodbc
+          /opt/local/include/libiodbc
+          /Library/Frameworks/iODBC.framework/Headers
+        NO_DEFAULT_PATH)
+      set(ODBC_DRIVER_MANAGER_INCLUDE_DIR
+          "${_odbc_driver_manager_include_dir}")
+    endif()
+  elseif(ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "UNIXODBC")
+    set(_odbc_driver_manager_names odbc)
+    if(NOT ODBC_DRIVER_MANAGER_INCLUDE_DIR)
+      set(ODBC_DRIVER_MANAGER_INCLUDE_DIR "${ODBC_INCLUDE_DIR}")
+    endif()
+  elseif(ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "AUTO")
+    set(_odbc_driver_manager_names odbc iodbc)
+    if(NOT ODBC_DRIVER_MANAGER_INCLUDE_DIR)
+      set(ODBC_DRIVER_MANAGER_INCLUDE_DIR "${ODBC_INCLUDE_DIR}")
+    endif()
+  else()
+    message(FATAL_ERROR
+      "ODBC_DRIVER_MANAGER_FLAVOR must be AUTO, UNIXODBC, or IODBC")
+  endif()
+
+  if(NOT ODBC_DRIVER_MANAGER_INCLUDE_DIR)
+    message(FATAL_ERROR
+      "ODBC driver-manager headers were not found for ${ODBC_DRIVER_MANAGER_FLAVOR}")
+  endif()
+
+  find_library(ODBC_DRIVER_MANAGER_LIBRARY NAMES ${_odbc_driver_manager_names})
   if(ODBC_DRIVER_MANAGER_LIBRARY)
     add_executable(it_driver_manager tests/driver_manager/it_driver_manager.cpp)
-    target_include_directories(it_driver_manager PRIVATE ${ODBC_INCLUDE_DIR})
+    target_include_directories(it_driver_manager PRIVATE
+      ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
     target_link_libraries(it_driver_manager PRIVATE ${ODBC_DRIVER_MANAGER_LIBRARY})
+    if(ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "IODBC")
+      target_compile_definitions(it_driver_manager PRIVATE
+        ODBCPP_TEST_IODBC=1)
+    endif()
+    if(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE)
+      target_compile_definitions(it_driver_manager PRIVATE
+        ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DM_SQLWCHAR_SIZE})
+    endif()
     apply_compiler_settings(it_driver_manager)
     add_test(NAME it_driver_manager COMMAND it_driver_manager)
     set_tests_properties(it_driver_manager PROPERTIES LABELS "integration")
     set_target_properties(it_driver_manager PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+  elseif(NOT ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "AUTO")
+    message(FATAL_ERROR
+      "ODBC driver-manager library was not found for ${ODBC_DRIVER_MANAGER_FLAVOR}")
   endif()
+  unset(_odbc_driver_manager_names)
+  unset(_odbc_driver_manager_include_dir CACHE)
 endif()

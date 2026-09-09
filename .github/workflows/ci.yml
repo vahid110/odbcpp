@@ -67,6 +67,7 @@ jobs:
           [ODBCPP PostgreSQL]
           Driver=${{ github.workspace }}/build/libodbcpp.so
           Setup=${{ github.workspace }}/build/libodbcpp.so
+          DriverUnicodeType=UTF16
           TransportMode=Auto
           AsyncMaxInflight=64
           AsyncQueueDepth=256
@@ -81,6 +82,9 @@ jobs:
           -DBUILD_TESTING=ON
           -DTARGET_DATABASE=POSTGRESQL
           -DOPENSSL_USE_STATIC_LIBS=OFF
+          -DODBC_DRIVER_MANAGER_FLAVOR=UNIXODBC
+          -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2
+          -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
           -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
@@ -121,6 +125,7 @@ jobs:
           -DBUILD_TESTING=ON
           -DTARGET_DATABASE=POSTGRESQL
           -DOPENSSL_USE_STATIC_LIBS=OFF
+          -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2
           -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL"
 
       - name: Build
@@ -155,6 +160,9 @@ jobs:
           -DBUILD_TESTING=ON
           -DTARGET_DATABASE=POSTGRESQL
           -DOPENSSL_USE_STATIC_LIBS=OFF
+          -DODBC_DRIVER_MANAGER_FLAVOR=UNIXODBC
+          -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2
+          -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
           -DCMAKE_BUILD_TYPE=Debug
           -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
           -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
@@ -167,3 +175,89 @@ jobs:
         run: >-
           ctest --test-dir build-sanitize -L unit
           --timeout 60 --output-on-failure
+
+  iodbc-unicode:
+    runs-on: macos-latest
+
+    env:
+      ODBCINI: ${{ github.workspace }}/.ci-iodbc/odbc.ini
+      ODBCINSTINI: ${{ github.workspace }}/.ci-iodbc/odbcinst.ini
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install deps
+        run: brew install libiodbc unixodbc postgresql@17
+
+      - name: Start disposable PostgreSQL
+        run: |
+          pg_bin="$(brew --prefix postgresql@17)/bin"
+          pg_data="$RUNNER_TEMP/odbcpp-postgres"
+          "$pg_bin/initdb" -D "$pg_data" -U postgres -A trust \
+            --no-locale --encoding=UTF8
+          "$pg_bin/pg_ctl" -D "$pg_data" \
+            -l "$RUNNER_TEMP/odbcpp-postgres.log" \
+            -o '-p 5432 -h 127.0.0.1' -w start
+          echo "ODBCPP_PG_BIN=$pg_bin" >> "$GITHUB_ENV"
+          echo "ODBCPP_PG_DATA=$pg_data" >> "$GITHUB_ENV"
+
+      - name: Configure iODBC test DSN
+        run: |
+          mkdir -p "$(dirname "$ODBCINI")"
+          cat > "$ODBCINI" <<'EOF'
+          [RedshiftProd]
+          Driver=ODBCPP PostgreSQL
+          Server=127.0.0.1
+          Port=5432
+          Database=postgres
+          UID=postgres
+          PWD=postgres
+          SSL=0
+          TransportMode=Sync
+          DeadlineModel=Strict
+          EOF
+          cat > "$ODBCINSTINI" <<'EOF'
+          [ODBCPP PostgreSQL]
+          Driver=${{ github.workspace }}/build-iodbc/libodbcpp.dylib
+          Setup=${{ github.workspace }}/build-iodbc/libodbcpp.dylib
+          DriverUnicodeType=UTF16
+          TransportMode=Auto
+          AsyncMaxInflight=64
+          AsyncQueueDepth=256
+          AsyncEngine=Auto
+          DeadlineModel=Strict
+          EOF
+
+      - name: Configure mixed-width driver-manager test
+        run: |
+          cmake -S . -B build-iodbc \
+            -DCMAKE_OSX_ARCHITECTURES="$(uname -m)" \
+            -DBUILD_EXAMPLES=OFF \
+            -DBUILD_TESTING=ON \
+            -DTARGET_DATABASE=POSTGRESQL \
+            -DOPENSSL_USE_STATIC_LIBS=OFF \
+            -DODBC_INCLUDE_DIR="$(brew --prefix unixodbc)/include" \
+            -DODBC_DRIVER_MANAGER_FLAVOR=IODBC \
+            -DODBC_DRIVER_MANAGER_INCLUDE_DIR="$(brew --prefix libiodbc)/include" \
+            -DODBC_DRIVER_MANAGER_LIBRARY="$(brew --prefix libiodbc)/lib/libiodbc.dylib" \
+            -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2 \
+            -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=4 \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build-iodbc --parallel
+
+      - name: Run unit tests
+        run: ctest --test-dir build-iodbc -L unit --output-on-failure
+
+      - name: Run iODBC mixed-width integration test
+        run: >-
+          ctest --test-dir build-iodbc -R '^it_driver_manager$'
+          --output-on-failure
+
+      - name: Stop PostgreSQL
+        if: always()
+        run: |
+          if [[ -n "${ODBCPP_PG_DATA:-}" && -d "$ODBCPP_PG_DATA" ]]; then
+            "$ODBCPP_PG_BIN/pg_ctl" -D "$ODBCPP_PG_DATA" -m fast -w stop
+          fi

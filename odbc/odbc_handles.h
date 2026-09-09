@@ -173,8 +173,14 @@ struct DescriptorRecord {
 
 class ODBCDescriptor : public ODBCHandle {
 public:
-  explicit ODBCDescriptor(ODBCConnection* connection)
-      : ODBCHandle(HandleType::Descriptor), connection_(connection) {}
+  explicit ODBCDescriptor(ODBCConnection* connection,
+                          bool automatically_allocated = false)
+      : ODBCHandle(HandleType::Descriptor), connection_(connection),
+        automatically_allocated_(automatically_allocated) {}
+
+  bool is_automatically_allocated() const {
+    return automatically_allocated_;
+  }
 
   SQLRETURN get_field(SQLSMALLINT record_number,
                       SQLSMALLINT field_identifier, SQLPOINTER value,
@@ -186,6 +192,7 @@ public:
 
 private:
   ODBCConnection* connection_;
+  bool automatically_allocated_{false};
   std::vector<DescriptorRecord> records_;
   SQLULEN array_size_{1};
   SQLUSMALLINT* array_status_ptr_{nullptr};
@@ -197,8 +204,8 @@ private:
 // Statement handle
 class ODBCStatement : public ODBCHandle {
 public:
-  explicit ODBCStatement(ODBCConnection* conn) 
-    : ODBCHandle(HandleType::Statement), conn_(conn) {}
+  explicit ODBCStatement(ODBCConnection* conn);
+  ~ODBCStatement() override;
   
   SQLRETURN execute_direct(const std::string& sql);
   SQLRETURN fetch();
@@ -300,9 +307,14 @@ private:
   SQLLEN affected_rows_ = 0;
   SQLULEN query_timeout_seconds_ = 0;
   SQLULEN max_rows_ = 0;
+  SQLHDESC app_row_descriptor_{SQL_NULL_HDESC};
+  SQLHDESC app_param_descriptor_{SQL_NULL_HDESC};
+  SQLHDESC imp_row_descriptor_{SQL_NULL_HDESC};
+  SQLHDESC imp_param_descriptor_{SQL_NULL_HDESC};
 
   void apply_query_result(rs::core::database::QueryResult result,
                           bool include_parameter_metadata);
+  SQLHDESC create_implicit_descriptor();
 };
 
 // Handle registry for validation

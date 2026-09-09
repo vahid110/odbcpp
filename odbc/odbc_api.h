@@ -22,9 +22,14 @@ SQLRETURN SQLDriverConnect(
 SQLRETURN SQLDisconnect(SQLHDBC connection_handle);
 SQLRETURN SQLSetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
                             SQLPOINTER value, SQLINTEGER string_length);
+SQLRETURN SQLSetConnectAttrW(SQLHDBC connection_handle, SQLINTEGER attribute,
+                             SQLPOINTER value, SQLINTEGER string_length);
 SQLRETURN SQLGetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
                             SQLPOINTER value, SQLINTEGER buffer_length,
                             SQLINTEGER* string_length);
+SQLRETURN SQLGetConnectAttrW(SQLHDBC connection_handle, SQLINTEGER attribute,
+                             SQLPOINTER value, SQLINTEGER buffer_length,
+                             SQLINTEGER* string_length);
 SQLRETURN SQLEndTran(SQLSMALLINT handle_type, SQLHANDLE handle,
                      SQLSMALLINT completion_type);
 
@@ -39,6 +44,7 @@ SQLRETURN SQLGetData(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLS
                     void* target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator);
 SQLRETURN SQLRowCount(SQLHSTMT statement_handle, SQLLEN* row_count);
 SQLRETURN SQLGetTypeInfo(SQLHSTMT statement_handle, SQLSMALLINT data_type);
+SQLRETURN SQLGetTypeInfoW(SQLHSTMT statement_handle, SQLSMALLINT data_type);
 SQLRETURN SQLColumns(
     SQLHSTMT statement_handle, SQLCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLCHAR* schema_name,
@@ -137,9 +143,14 @@ SQLRETURN SQLTablesW(
     SQLSMALLINT name_length4);
 SQLRETURN SQLSetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
                          SQLPOINTER value, SQLINTEGER string_length);
+SQLRETURN SQLSetStmtAttrW(SQLHSTMT statement_handle, SQLINTEGER attribute,
+                          SQLPOINTER value, SQLINTEGER string_length);
 SQLRETURN SQLGetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
                          SQLPOINTER value, SQLINTEGER buffer_length,
                          SQLINTEGER* string_length);
+SQLRETURN SQLGetStmtAttrW(SQLHSTMT statement_handle, SQLINTEGER attribute,
+                          SQLPOINTER value, SQLINTEGER buffer_length,
+                          SQLINTEGER* string_length);
 SQLRETURN SQLCloseCursor(SQLHSTMT statement_handle);
 SQLRETURN SQLFreeStmt(SQLHSTMT statement_handle, SQLUSMALLINT option);
 
@@ -223,7 +234,15 @@ SQLRETURN SQLColAttributeW(
 SQLRETURN SQLDescribeParam(SQLHSTMT statement_handle, SQLUSMALLINT parameter_number, SQLSMALLINT* data_type,
                           SQLULEN* parameter_size, SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable);
 
-// SQLGetDescField and SQLSetDescField are declared in the system ODBC headers.
+// Descriptor field functions are also declared by the system ODBC headers.
+SQLRETURN SQLGetDescFieldW(
+    SQLHDESC descriptor_handle, SQLSMALLINT record_number,
+    SQLSMALLINT field_identifier, SQLPOINTER value,
+    SQLINTEGER buffer_length, SQLINTEGER* string_length);
+SQLRETURN SQLSetDescFieldW(
+    SQLHDESC descriptor_handle, SQLSMALLINT record_number,
+    SQLSMALLINT field_identifier, SQLPOINTER value,
+    SQLINTEGER buffer_length);
 
 SQLRETURN SQLConnectW(SQLHDBC connection_handle, 
                      SQLWCHAR* server_name, SQLSMALLINT name_length1,

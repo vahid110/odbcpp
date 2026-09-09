@@ -4,7 +4,7 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 
 ## Features
 
-- **ODBC API Foundation**: 66 entry points (47 non-wide, 19 Unicode) with diagnostics and descriptor storage
+- **ODBC API Foundation**: 73 entry points (47 non-wide, 26 Unicode) with diagnostics and descriptor storage
 - **Unicode SQL and Data**: Strict UTF-8/SQLWCHAR conversion for wide connections, execution, preparation, diagnostics, native SQL, results, and parameters
 - **ODBC Descriptors**: IRD, APD, ARD, and IPD storage plus explicit descriptor handles and field APIs
 - **Prepared Statements**: Typed/null-aware PostgreSQL Parse/Bind/Describe/Execute workflow
@@ -21,7 +21,7 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 - **Secure Transport**: Built-in TLS/SSL support via OpenSSL
 - **Modern Authentication**: PostgreSQL cleartext, MD5, and SCRAM-SHA-256 password authentication
 - **Cross-Platform**: macOS, Linux, Windows support
-- **Comprehensive Testing**: Unit, PostgreSQL integration, unixODBC driver-manager, sanitizer, and Windows CI coverage
+- **Comprehensive Testing**: Unit, PostgreSQL integration, unixODBC and mixed-width iODBC driver-manager, sanitizer, and Windows CI coverage
 
 ## Implementation Status
 
@@ -33,7 +33,7 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 | **Transactions** | ✅ Complete | SQL_ATTR_AUTOCOMMIT, SQL_ATTR_TXN_ISOLATION, SQLEndTran, capability reporting |
 | **Statement Execution** | ✅ Complete | SQLExecDirect, SQLFetch/SQLFetchScroll, SQLGetData, SQLRowCount, SQLMoreResults, SQLCloseCursor, SQLFreeStmt |
 | **Prepared Statements** | ✅ Complete | SQLPrepare, SQLExecute, SQLBindParameter, SQLNumParams |
-| **Unicode APIs** | ✅ Complete for current API surface | 19 `W` entry points plus SQL_C_WCHAR results, binding, and parameters |
+| **Unicode APIs** | ✅ Complete for current API surface | 26 `W` entry points plus SQL_C_WCHAR results, binding, and parameters |
 | **Column Binding** | ✅ Complete | SQLBindCol with auto-population |
 | **Metadata** | ✅ Complete | SQLNumResultCols, SQLDescribeCol, SQLColAttribute, SQLGetTypeInfo and 8 ANSI catalog APIs |
 | **Parameter Metadata** | ✅ Complete | SQLDescribeParam |
@@ -64,7 +64,7 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 - CMake 3.20+
 - C++20 compiler (GCC 10+, Clang 12+, MSVC 2019+)
 - OpenSSL 3.0+
-- unixODBC (for system integration)
+- unixODBC or iODBC (for system integration)
 
 ### Build ODBC Driver
 
@@ -242,6 +242,47 @@ int main() {
 | `BUILD_EXAMPLES` | ON | Build example applications |
 | `BUILD_TESTING` | ON | Build unit and integration tests |
 | `OPENSSL_USE_STATIC_LIBS` | OFF | Link OpenSSL statically |
+| `ODBC_DRIVER_MANAGER_FLAVOR` | AUTO | Driver manager for the external integration test: `AUTO`, `UNIXODBC`, or `IODBC` |
+| `ODBC_DRIVER_MANAGER_INCLUDE_DIR` | — | Application-side ODBC headers for mixed-ABI driver-manager tests |
+| `ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE` | — | Fail the build unless the driver headers define a 2- or 4-byte `SQLWCHAR` as expected |
+| `ODBCPP_EXPECT_DM_SQLWCHAR_SIZE` | — | Fail the external test build unless its application headers have the expected width |
+
+### Driver-manager Unicode ABI
+
+`SQLWCHAR` is not the same size in every ODBC environment. Windows and a
+default unixODBC build use a two-byte UTF-16 code unit. iODBC on Unix uses
+native `wchar_t`, which is normally four-byte UCS-4 on macOS and Linux.
+unixODBC can also be built in its optional four-byte mode.
+
+ODBCPP advertises its compiled representation through iODBC's
+`SQL_ATTR_DRIVER_UNICODE_TYPE` extension and handles
+`SQL_ATTR_APP_WCHAR_TYPE`. An iODBC application can set
+`SQL_ATTR_APP_UNICODE_TYPE`; iODBC then converts between its application
+representation and the driver's representation. Register the normal
+two-byte ODBCPP build with this fallback setting:
+
+```cpp
+SQLSetEnvAttr(environment, SQL_ATTR_APP_UNICODE_TYPE,
+              reinterpret_cast<SQLPOINTER>(SQL_DM_CP_UCS4),
+              SQL_IS_UINTEGER);
+```
+
+These constants are provided by iODBC's `iodbcext.h`. Set the attribute on
+the environment before allocating connections. The registration setting is
+still useful as a driver-wide fallback:
+
+```ini
+[ODBCPP PostgreSQL]
+Driver=/path/to/libodbcpp.dylib
+DriverUnicodeType=UTF16
+```
+
+This lets a four-byte iODBC application use the regular UTF-16 driver build.
+For a native iODBC/UCS-4 build, compile against the iODBC headers, set
+`ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=4`, and register
+`DriverUnicodeType=UCS4`. The CI suite validates the mixed case directly: a
+four-byte iODBC application loads the two-byte driver and round-trips Unicode,
+including a supplementary-plane character, through PostgreSQL.
 
 ### Build Scripts
 
@@ -372,8 +413,8 @@ sudo odbcinst -i -s -f odbc.ini
 ## Testing
 
 ### Test Coverage
-- **Total Tests**: 17 (10 unit + 7 integration)
-- **Success Rate**: 100% (17/17 unit tests, 39/39 integration tests)
+- **Total Test Executables**: 29 (20 unit + 9 integration)
+- **CI Coverage**: Linux, Windows, sanitizers, and mixed-width iODBC Unicode
 - **Coverage**: All ODBC APIs, descriptors, prepared statements, column binding
 
 ### Running Tests
@@ -387,8 +428,8 @@ source ./setup-test-env.sh
 ctest --test-dir build-redshift
 
 # Run specific test categories
-ctest --test-dir build-redshift -L unit         # 10 unit tests
-ctest --test-dir build-redshift -L integration  # 8 integration test suites
+ctest --test-dir build-redshift -L unit         # 20 unit test executables
+ctest --test-dir build-redshift -L integration  # 9 integration executables
 
 # Test specific functionality
 ctest --test-dir build-redshift -R prepared_statements

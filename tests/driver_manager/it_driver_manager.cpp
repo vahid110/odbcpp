@@ -1,10 +1,20 @@
 #include <sql.h>
 #include <sqlext.h>
+#ifdef ODBCPP_TEST_IODBC
+#include <iodbcext.h>
+#endif
 
+#include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string_view>
 #include <vector>
+
+#ifdef ODBCPP_EXPECT_DM_SQLWCHAR_SIZE
+static_assert(sizeof(SQLWCHAR) == ODBCPP_EXPECT_DM_SQLWCHAR_SIZE,
+              "Driver-manager test is using an unexpected SQLWCHAR ABI");
+#endif
 
 namespace {
 
@@ -34,6 +44,25 @@ std::vector<SQLWCHAR> wide_ascii(std::string_view input) {
   return output;
 }
 
+std::vector<SQLWCHAR> wide_text(std::u32string_view input) {
+  std::vector<SQLWCHAR> output;
+  output.reserve(input.size() + 1);
+  for (const auto character : input) {
+    const auto code_point = static_cast<std::uint32_t>(character);
+    if constexpr (sizeof(SQLWCHAR) == 2) {
+      if (code_point > 0xffff) {
+        const auto value = code_point - 0x10000;
+        output.push_back(static_cast<SQLWCHAR>(0xd800 + (value >> 10)));
+        output.push_back(static_cast<SQLWCHAR>(0xdc00 + (value & 0x3ff)));
+        continue;
+      }
+    }
+    output.push_back(static_cast<SQLWCHAR>(code_point));
+  }
+  output.push_back(0);
+  return output;
+}
+
 } // namespace
 
 int main() {
@@ -52,6 +81,19 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+#ifdef ODBCPP_TEST_IODBC
+  const auto application_unicode_type = sizeof(SQLWCHAR) == 2
+      ? SQL_DM_CP_UTF16 : SQL_DM_CP_UCS4;
+  if (!succeeded(SQLSetEnvAttr(
+          environment, SQL_ATTR_APP_UNICODE_TYPE,
+          reinterpret_cast<SQLPOINTER>(
+              static_cast<std::uintptr_t>(application_unicode_type)),
+          SQL_IS_UINTEGER))) {
+    print_diagnostic(SQL_HANDLE_ENV, environment);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+#endif
   SQLINTEGER odbc_version = 0;
   if (!succeeded(SQLGetEnvAttr(
           environment, SQL_ATTR_ODBC_VERSION, &odbc_version,
@@ -218,6 +260,48 @@ int main() {
       wide_value[0] != static_cast<SQLWCHAR>('w') ||
       wide_value[3] != static_cast<SQLWCHAR>('e') ||
       !succeeded(SQLCloseCursor(statement))) {
+    print_diagnostic(SQL_HANDLE_STMT, statement);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+  const auto unicode_query = wide_text(U"SELECT 'Gr\u00fc\u00dfe \u4e16\u754c \U0001f642'::text");
+  const auto expected_unicode = wide_text(U"Gr\u00fc\u00dfe \u4e16\u754c \U0001f642");
+  SQLWCHAR unicode_value[32]{};
+  SQLLEN unicode_value_length = 0;
+  const auto expected_unicode_bytes = static_cast<SQLLEN>(
+      (expected_unicode.size() - 1) * sizeof(SQLWCHAR));
+  const bool unicode_failed = !succeeded(SQLExecDirectW(
+          statement, const_cast<SQLWCHAR*>(unicode_query.data()), SQL_NTS)) ||
+      !succeeded(SQLFetch(statement)) ||
+      !succeeded(SQLGetData(
+          statement, 1, SQL_C_WCHAR, unicode_value, sizeof(unicode_value),
+          &unicode_value_length)) ||
+      !std::equal(expected_unicode.begin(), expected_unicode.end(),
+                  unicode_value) ||
+      !succeeded(SQLCloseCursor(statement));
+  bool unicode_length_failed = unicode_value_length != expected_unicode_bytes;
+#ifdef ODBCPP_TEST_IODBC
+  // iODBC 3.52.16 correctly collapses a UTF-16 surrogate pair into one UCS-4
+  // value, but its SQLGetData length adjustment still counts the pair as two
+  // output units. Accept that manager-reported length while verifying every
+  // returned code point above.
+  if constexpr (sizeof(SQLWCHAR) == 4) {
+    unicode_length_failed = unicode_length_failed &&
+        unicode_value_length != expected_unicode_bytes +
+            static_cast<SQLLEN>(sizeof(SQLWCHAR));
+  }
+#endif
+  if (unicode_failed || unicode_length_failed) {
+    std::fprintf(stderr,
+                 "Unicode bridge mismatch: SQLWCHAR=%zu, bytes=%lld, "
+                 "expected-bytes=%zu\n",
+                 sizeof(SQLWCHAR), static_cast<long long>(unicode_value_length),
+                 (expected_unicode.size() - 1) * sizeof(SQLWCHAR));
+  }
+  if (unicode_failed || unicode_length_failed) {
     print_diagnostic(SQL_HANDLE_STMT, statement);
     SQLFreeHandle(SQL_HANDLE_STMT, statement);
     SQLDisconnect(connection);

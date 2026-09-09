@@ -331,6 +331,14 @@ SQLRETURN SQLFreeHandle(SQLSMALLINT handle_type, SQLHANDLE handle) {
   if (!obj || static_cast<int>(obj->get_type()) != handle_type) {
     return SQL_INVALID_HANDLE;
   }
+  if (handle_type == SQL_HANDLE_DESC) {
+    auto* descriptor = static_cast<ODBCDescriptor*>(obj);
+    if (descriptor->is_automatically_allocated()) {
+      descriptor->set_error(SQLSTATE_INVALID_AUTO_DESCRIPTOR_USE,
+                            "Implicit descriptor handles cannot be freed");
+      return SQL_ERROR;
+    }
+  }
   
   HandleRegistry::instance().unregister_handle(handle);
   return SQL_SUCCESS;
@@ -505,6 +513,12 @@ SQLRETURN SQLSetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
       attribute, static_cast<SQLULEN>(reinterpret_cast<std::uintptr_t>(value)));
 }
 
+SQLRETURN SQLSetConnectAttrW(SQLHDBC connection_handle, SQLINTEGER attribute,
+                             SQLPOINTER value, SQLINTEGER string_length) {
+  return SQLSetConnectAttr(
+      connection_handle, attribute, value, string_length);
+}
+
 SQLRETURN SQLGetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
                             SQLPOINTER value, SQLINTEGER,
                             SQLINTEGER* string_length) {
@@ -521,6 +535,13 @@ SQLRETURN SQLGetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
     *string_length = static_cast<SQLINTEGER>(sizeof(SQLUINTEGER));
   }
   return result;
+}
+
+SQLRETURN SQLGetConnectAttrW(SQLHDBC connection_handle, SQLINTEGER attribute,
+                             SQLPOINTER value, SQLINTEGER buffer_length,
+                             SQLINTEGER* string_length) {
+  return SQLGetConnectAttr(
+      connection_handle, attribute, value, buffer_length, string_length);
 }
 
 SQLRETURN SQLEndTran(SQLSMALLINT handle_type, SQLHANDLE handle,
@@ -625,6 +646,11 @@ SQLRETURN SQLSetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
       attribute, static_cast<SQLULEN>(reinterpret_cast<std::uintptr_t>(value)));
 }
 
+SQLRETURN SQLSetStmtAttrW(SQLHSTMT statement_handle, SQLINTEGER attribute,
+                          SQLPOINTER value, SQLINTEGER string_length) {
+  return SQLSetStmtAttr(statement_handle, attribute, value, string_length);
+}
+
 SQLRETURN SQLGetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
                          SQLPOINTER value, SQLINTEGER,
                          SQLINTEGER* string_length) {
@@ -641,6 +667,13 @@ SQLRETURN SQLGetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
     *string_length = static_cast<SQLINTEGER>(sizeof(SQLULEN));
   }
   return result;
+}
+
+SQLRETURN SQLGetStmtAttrW(SQLHSTMT statement_handle, SQLINTEGER attribute,
+                          SQLPOINTER value, SQLINTEGER buffer_length,
+                          SQLINTEGER* string_length) {
+  return SQLGetStmtAttr(
+      statement_handle, attribute, value, buffer_length, string_length);
 }
 
 SQLRETURN SQLCloseCursor(SQLHSTMT statement_handle) {
@@ -1160,8 +1193,11 @@ SQLRETURN SQLSetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute,
     case SQL_ATTR_ODBC_VERSION: {
       const auto version = static_cast<SQLINTEGER>(
           reinterpret_cast<std::uintptr_t>(value));
-      if (version != SQL_OV_ODBC2 && version != SQL_OV_ODBC3 &&
-          version != SQL_OV_ODBC3_80) {
+      if (version != SQL_OV_ODBC2 && version != SQL_OV_ODBC3
+#ifdef SQL_OV_ODBC3_80
+          && version != SQL_OV_ODBC3_80
+#endif
+      ) {
         env->set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
                        "Unsupported ODBC version");
         return SQL_ERROR;
@@ -1185,6 +1221,14 @@ SQLRETURN SQLGetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute,
     env->set_error(SQLSTATE_INVALID_NULL_POINTER,
                    "Environment attribute output pointer is null");
     return SQL_ERROR;
+  }
+  if (attribute == IODBC_ATTR_DRIVER_UNICODE_TYPE) {
+    *static_cast<SQLINTEGER*>(value) =
+        static_cast<SQLINTEGER>(NATIVE_SQLWCHAR_ENCODING);
+    if (string_length) {
+      *string_length = static_cast<SQLINTEGER>(sizeof(SQLINTEGER));
+    }
+    return SQL_SUCCESS;
   }
   if (attribute != SQL_ATTR_ODBC_VERSION) {
     env->set_error(SQLSTATE_INVALID_ATTRIBUTE,
@@ -1216,6 +1260,10 @@ SQLRETURN SQLGetTypeInfo(SQLHSTMT statement_handle, SQLSMALLINT data_type) {
   auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   return stmt->get_type_info(data_type);
+}
+
+SQLRETURN SQLGetTypeInfoW(SQLHSTMT statement_handle, SQLSMALLINT data_type) {
+  return SQLGetTypeInfo(statement_handle, data_type);
 }
 
 SQLRETURN SQLColumns(
@@ -1949,6 +1997,33 @@ SQLRETURN SQLGetDescField(
                                buffer_length, string_length);
 }
 
+SQLRETURN SQLGetDescFieldW(
+    SQLHDESC descriptor_handle, SQLSMALLINT record_number,
+    SQLSMALLINT field_identifier, SQLPOINTER value,
+    SQLINTEGER buffer_length, SQLINTEGER* string_length) {
+  auto* descriptor = get_valid_handle<ODBCDescriptor>(descriptor_handle);
+  if (!descriptor) return SQL_INVALID_HANDLE;
+  if (field_identifier != SQL_DESC_NAME) {
+    return descriptor->get_field(record_number, field_identifier, value,
+                                 buffer_length, string_length);
+  }
+
+  SQLINTEGER utf8_length = 0;
+  auto result = descriptor->get_field(
+      record_number, field_identifier, nullptr, 0, &utf8_length);
+  if (result != SQL_SUCCESS) return result;
+  std::vector<char> utf8(static_cast<std::size_t>(utf8_length) + 1);
+  result = descriptor->get_field(
+      record_number, field_identifier, utf8.data(),
+      static_cast<SQLINTEGER>(utf8.size()), nullptr);
+  if (result != SQL_SUCCESS) return result;
+  return write_wide_bytes_output(
+      descriptor,
+      std::string_view(utf8.data(), static_cast<std::size_t>(utf8_length)),
+      static_cast<SQLWCHAR*>(value), buffer_length, string_length,
+      "Descriptor name was truncated");
+}
+
 SQLRETURN SQLSetDescField(
     SQLHDESC descriptor_handle, SQLSMALLINT record_number,
     SQLSMALLINT field_identifier, SQLPOINTER value,
@@ -1957,6 +2032,46 @@ SQLRETURN SQLSetDescField(
   if (!descriptor) return SQL_INVALID_HANDLE;
   return descriptor->set_field(record_number, field_identifier, value,
                                buffer_length);
+}
+
+SQLRETURN SQLSetDescFieldW(
+    SQLHDESC descriptor_handle, SQLSMALLINT record_number,
+    SQLSMALLINT field_identifier, SQLPOINTER value,
+    SQLINTEGER buffer_length) {
+  auto* descriptor = get_valid_handle<ODBCDescriptor>(descriptor_handle);
+  if (!descriptor) return SQL_INVALID_HANDLE;
+  if (field_identifier != SQL_DESC_NAME) {
+    return descriptor->set_field(record_number, field_identifier, value,
+                                 buffer_length);
+  }
+  if (!value) {
+    descriptor->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                          "Descriptor name pointer is null");
+    return SQL_ERROR;
+  }
+  if (buffer_length < 0 && buffer_length != SQL_NTS) {
+    descriptor->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                          "Invalid wide descriptor name length");
+    return SQL_ERROR;
+  }
+  if (buffer_length != SQL_NTS &&
+      buffer_length % static_cast<SQLINTEGER>(sizeof(SQLWCHAR)) != 0) {
+    descriptor->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                          "Wide descriptor name length is not aligned");
+    return SQL_ERROR;
+  }
+  const auto units = buffer_length == SQL_NTS
+      ? static_cast<SQLINTEGER>(SQL_NTS)
+      : buffer_length / static_cast<SQLINTEGER>(sizeof(SQLWCHAR));
+  const auto utf8 = sqlwchar_to_utf8(static_cast<SQLWCHAR*>(value), units);
+  if (!utf8) {
+    descriptor->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                          "Invalid wide descriptor name");
+    return SQL_ERROR;
+  }
+  return descriptor->set_field(
+      record_number, field_identifier,
+      const_cast<char*>(utf8->data()), static_cast<SQLINTEGER>(utf8->size()));
 }
 
 SQLRETURN SQLCopyDesc(SQLHDESC source_desc_handle,
