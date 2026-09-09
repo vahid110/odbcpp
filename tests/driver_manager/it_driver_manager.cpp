@@ -302,6 +302,21 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  SQLCHAR multiple_results_query[] = "SELECT 1; SELECT 'done'::text";
+  if (!succeeded(SQLCloseCursor(statement)) ||
+      !succeeded(SQLExecDirect(
+          statement, multiple_results_query, SQL_NTS)) ||
+      !succeeded(SQLFetch(statement)) ||
+      !succeeded(SQLMoreResults(statement)) ||
+      !succeeded(SQLFetch(statement)) ||
+      SQLMoreResults(statement) != SQL_NO_DATA) {
+    print_diagnostic(SQL_HANDLE_STMT, statement);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
 
   SQLFreeHandle(SQL_HANDLE_STMT, statement);
   SQLDisconnect(connection);

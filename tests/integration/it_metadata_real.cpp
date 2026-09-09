@@ -476,6 +476,45 @@ TEST_F(MetadataIntegrationTest, FetchScrollSupportsNextRows) {
     EXPECT_EQ(SQL_ERROR, SQLFetchScroll(hstmt, SQL_FETCH_FIRST, 0));
 }
 
+TEST_F(MetadataIntegrationTest, TraversesMultiplePostgreSQLResults) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"CREATE TEMP TABLE odbcpp_more_results(value int)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"INSERT INTO odbcpp_more_results VALUES (1)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"SELECT 11 AS first_value; "
+                  "UPDATE odbcpp_more_results SET value = 2; "
+                  "SELECT 'done'::text AS final_value",
+        SQL_NTS));
+
+    SQLSMALLINT column_count = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count));
+    EXPECT_EQ(1, column_count);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLINTEGER first_value = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_SLONG, &first_value, 0, nullptr));
+    EXPECT_EQ(11, first_value);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLMoreResults(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count));
+    EXPECT_EQ(0, column_count);
+    SQLLEN affected_rows = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLRowCount(hstmt, &affected_rows));
+    EXPECT_EQ(1, affected_rows);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLMoreResults(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    char final_value[16]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, final_value, sizeof(final_value), nullptr));
+    EXPECT_STREQ("done", final_value);
+    EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, ErrorCases) {
     // Execute query first
     SQLRETURN ret = SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS);

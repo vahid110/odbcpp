@@ -468,6 +468,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
     return SQL_ERROR;
   }
   
+  pending_results_.clear();
   try {
     auto deadline = rs::util::make_deadline(
         timeout_duration(query_timeout_seconds_));
@@ -637,8 +638,18 @@ SQLRETURN ODBCStatement::fetch() {
 }
 
 SQLRETURN ODBCStatement::more_results() {
-  close_cursor(false);
-  return SQL_NO_DATA;
+  result_rows_.clear();
+  column_info_.clear();
+  get_data_offsets_.clear();
+  current_row_ = 0;
+  affected_rows_ = 0;
+  executed_ = false;
+  if (pending_results_.empty()) return SQL_NO_DATA;
+
+  auto next = std::move(pending_results_.front());
+  pending_results_.erase(pending_results_.begin());
+  apply_query_result(std::move(next), false);
+  return SQL_SUCCESS;
 }
 
 SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type, 
@@ -809,6 +820,7 @@ SQLRETURN ODBCStatement::execute() {
     return SQL_ERROR;
   }
   
+  pending_results_.clear();
   try {
     std::vector<rs::core::database::QueryParameter> param_values;
     param_values.reserve(parameter_info_.size());
@@ -955,6 +967,13 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
 void ODBCStatement::apply_query_result(
     rs::core::database::QueryResult result,
     bool include_parameter_metadata) {
+  if (!result.additional_results.empty()) {
+    pending_results_.reserve(
+        pending_results_.size() + result.additional_results.size());
+    for (auto& additional : result.additional_results) {
+      pending_results_.push_back(std::move(additional));
+    }
+  }
   result_rows_ = std::move(result.rows);
   if (max_rows_ > 0 && result_rows_.size() > max_rows_) {
     result_rows_.resize(static_cast<std::size_t>(max_rows_));

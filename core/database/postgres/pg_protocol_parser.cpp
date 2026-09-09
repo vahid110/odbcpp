@@ -92,6 +92,34 @@ std::string read_cstring(std::span<const std::byte> data, std::size_t& offset) {
   return value;
 }
 
+rs::core::database::ResultRow parse_data_row(
+    std::span<const std::byte> payload) {
+  std::size_t offset = 0;
+  const auto column_count = read_u16(payload, offset);
+  offset += 2;
+
+  rs::core::database::ResultRow row;
+  row.reserve(column_count);
+  for (std::uint16_t i = 0; i < column_count; ++i) {
+    const auto length = read_u32(payload, offset);
+    offset += 4;
+    if (length == 0xffffffffu) {
+      row.emplace_back(std::nullopt);
+      continue;
+    }
+    if (length > 0x7fffffffu || length > payload.size() - offset) {
+      throw std::runtime_error("invalid PostgreSQL DataRow column length");
+    }
+    row.emplace_back(std::string(
+        reinterpret_cast<const char*>(payload.data() + offset), length));
+    offset += length;
+  }
+  if (offset != payload.size()) {
+    throw std::runtime_error("invalid PostgreSQL DataRow length");
+  }
+  return row;
+}
+
 std::size_t command_affected_rows(std::string_view command_tag) {
   const auto separator = command_tag.find_last_of(' ');
   const auto number = separator == std::string_view::npos
@@ -553,34 +581,7 @@ ResultRows PgProtocolParser::extract_query_results(
 
   for (const auto& msg : messages) {
     if (msg.tag == 'D') { // DataRow
-      const std::span<const std::byte> payload(msg.payload);
-      std::size_t offset = 0;
-      const auto column_count = read_u16(payload, offset);
-      offset += 2;
-
-      ResultRow row;
-      row.reserve(column_count);
-
-      for (std::uint16_t i = 0; i < column_count; ++i) {
-        const auto length = read_u32(payload, offset);
-        offset += 4;
-
-        if (length == 0xffffffffu) {
-          row.emplace_back(std::nullopt);
-          continue;
-        }
-        if (length > 0x7fffffffu || length > payload.size() - offset) {
-          throw std::runtime_error("invalid PostgreSQL DataRow column length");
-        }
-        row.emplace_back(std::string(
-            reinterpret_cast<const char*>(payload.data() + offset), length));
-        offset += length;
-      }
-
-      if (offset != payload.size()) {
-        throw std::runtime_error("invalid PostgreSQL DataRow length");
-      }
-      rows.emplace_back(std::move(row));
+      rows.emplace_back(parse_data_row(msg.payload));
     }
   }
 
@@ -589,8 +590,8 @@ ResultRows PgProtocolParser::extract_query_results(
 
 QueryResult PgProtocolParser::extract_query_result(
     const std::vector<Message>& messages) {
-  QueryResult result;
-  result.rows = extract_query_results(messages);
+  QueryResult current;
+  std::vector<QueryResult> completed;
 
   for (const auto& message : messages) {
     const std::span<const std::byte> payload(message.payload);
@@ -620,7 +621,9 @@ QueryResult PgProtocolParser::extract_query_result(
       if (offset != payload.size()) {
         throw std::runtime_error("invalid PostgreSQL RowDescription length");
       }
-      result.columns = std::move(columns);
+      current.columns = std::move(columns);
+    } else if (message.tag == 'D') { // DataRow
+      current.rows.emplace_back(parse_data_row(payload));
     } else if (message.tag == 't') { // ParameterDescription
       std::size_t offset = 0;
       const auto count = read_u16(payload, offset);
@@ -634,15 +637,24 @@ QueryResult PgProtocolParser::extract_query_result(
       if (offset != payload.size()) {
         throw std::runtime_error("invalid PostgreSQL ParameterDescription length");
       }
-      result.parameter_type_ids = std::move(parameter_types);
+      current.parameter_type_ids = std::move(parameter_types);
     } else if (message.tag == 'C') { // CommandComplete
       std::size_t offset = 0;
-      result.command_tag = read_cstring(payload, offset);
+      current.command_tag = read_cstring(payload, offset);
       if (offset != payload.size()) {
         throw std::runtime_error("invalid PostgreSQL CommandComplete length");
       }
-      result.affected_rows = command_affected_rows(result.command_tag);
+      current.affected_rows = command_affected_rows(current.command_tag);
+      completed.push_back(std::move(current));
+      current = QueryResult{};
     }
+  }
+  if (completed.empty()) return current;
+
+  QueryResult result = std::move(completed.front());
+  result.additional_results.reserve(completed.size() - 1);
+  for (std::size_t i = 1; i < completed.size(); ++i) {
+    result.additional_results.push_back(std::move(completed[i]));
   }
   return result;
 }

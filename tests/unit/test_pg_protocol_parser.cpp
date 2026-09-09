@@ -49,6 +49,40 @@ void append_cstring(std::vector<std::byte>& data, std::string_view value) {
   data.push_back(std::byte{0});
 }
 
+rs::core::database::Message one_column_description(
+    std::string_view name, std::uint32_t type_oid = 23,
+    std::uint16_t type_size = 4) {
+  rs::core::database::Message message;
+  message.tag = 'T';
+  append_u16(message.payload, 1);
+  append_cstring(message.payload, name);
+  append_u32(message.payload, 0);
+  append_u16(message.payload, 0);
+  append_u32(message.payload, type_oid);
+  append_u16(message.payload, type_size);
+  append_u32(message.payload, 0xffffffff);
+  append_u16(message.payload, 0);
+  return message;
+}
+
+rs::core::database::Message one_column_row(std::string_view value) {
+  rs::core::database::Message message;
+  message.tag = 'D';
+  append_u16(message.payload, 1);
+  append_u32(message.payload, static_cast<std::uint32_t>(value.size()));
+  for (const char ch : value) {
+    message.payload.push_back(static_cast<std::byte>(ch));
+  }
+  return message;
+}
+
+rs::core::database::Message command_complete(std::string_view tag) {
+  rs::core::database::Message message;
+  message.tag = 'C';
+  append_cstring(message.payload, tag);
+  return message;
+}
+
 std::vector<Frame> split_frames(std::span<const std::byte> wire) {
   std::vector<Frame> frames;
   std::size_t offset = 0;
@@ -288,6 +322,39 @@ TEST(PgProtocolParserTest, RejectsTruncatedMetadata) {
   append_u16(description.payload, 1);
   append_cstring(description.payload, "incomplete");
   EXPECT_THROW(parser.extract_query_result({description}), std::runtime_error);
+}
+
+TEST(PgProtocolParserTest, PreservesOrderedQueryResults) {
+  PgProtocolParser parser;
+  std::vector<rs::core::database::Message> messages;
+  messages.push_back(one_column_description("first"));
+  messages.push_back(one_column_row("1"));
+  messages.push_back(command_complete("SELECT 1"));
+  messages.push_back(command_complete("UPDATE 2"));
+  messages.push_back(one_column_description("last", 25, 0xffff));
+  messages.push_back(one_column_row("done"));
+  messages.push_back(command_complete("SELECT 1"));
+
+  const auto result = parser.extract_query_result(messages);
+  ASSERT_EQ(result.columns.size(), 1u);
+  EXPECT_EQ(result.columns[0].name, "first");
+  ASSERT_EQ(result.rows.size(), 1u);
+  ASSERT_TRUE(result.rows[0][0].has_value());
+  EXPECT_EQ(*result.rows[0][0], "1");
+  ASSERT_EQ(result.additional_results.size(), 2u);
+
+  const auto& update = result.additional_results[0];
+  EXPECT_TRUE(update.columns.empty());
+  EXPECT_TRUE(update.rows.empty());
+  EXPECT_EQ(update.command_tag, "UPDATE 2");
+  EXPECT_EQ(update.affected_rows, 2u);
+
+  const auto& last = result.additional_results[1];
+  ASSERT_EQ(last.columns.size(), 1u);
+  EXPECT_EQ(last.columns[0].name, "last");
+  ASSERT_EQ(last.rows.size(), 1u);
+  ASSERT_TRUE(last.rows[0][0].has_value());
+  EXPECT_EQ(*last.rows[0][0], "done");
 }
 
 } // namespace

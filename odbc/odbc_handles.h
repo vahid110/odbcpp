@@ -254,6 +254,7 @@ private:
   std::vector<ColumnBinding> column_bindings_; // ARD storage
   std::vector<ParameterMetadata> param_metadata_; // IPD storage
   std::vector<std::size_t> get_data_offsets_;
+  std::vector<rs::core::database::QueryResult> pending_results_;
   std::string prepared_sql_;
   size_t current_row_ = 0;
   bool executed_ = false;

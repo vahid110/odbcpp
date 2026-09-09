@@ -28,6 +28,7 @@ struct QueryResult {
   std::vector<std::uint32_t> parameter_type_ids;
   std::string command_tag;
   std::size_t affected_rows{0};
+  std::vector<QueryResult> additional_results;
 };
 
 } // namespace rs::core::database
