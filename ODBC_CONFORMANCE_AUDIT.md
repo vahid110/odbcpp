@@ -71,7 +71,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLGetDiagRec` | A/W | Partial | unit, integration, DM | Retrieval preserves records and validates type/record/buffer; truncation matrix remains |
 | `SQLGetDiagField` | A/W | Partial | unit, integration | All standard header/record identifiers, return provenance, origins, ANSI/wide lengths, and truncation are covered; row/column-specific server errors remain |
 | `SQLError` | A/W | Partial | unit, integration | ODBC 2 sequencing and multi-record consumption |
-| `SQLGetInfo` | A/W | Partial | unit, DM | Complete information matrix and capability accuracy |
+| `SQLGetInfo` | A/W | Partial | unit, integration, DM | Conservative capability matrix is guarded; complete remaining required information types |
 | `SQLGetFunctions` | A | Verified | shared-library export audit, unit, DM | Exact single-function, ODBC 2 array, and ODBC 3 bitmap behavior is enforced against all advertised exports |
 | `SQLNativeSql` | A/W | Partial | unit, DM | ODBC escape translation; currently effectively pass-through |
 | `SQLSetEnvAttr` | A | Partial | unit, integration, DM | ODBC version is locked after DBC allocation; supported attribute matrix remains |
@@ -146,7 +146,7 @@ substitute for ODBC diagnostics.
 
 ## Maintainability snapshot
 
-- `odbc_api.cpp` is 2,530 lines and contains all 73 exported wrappers;
+- `odbc_api.cpp` is 2,575 lines and contains all 73 exported wrappers;
   `odbc_handles.cpp` is 2,660 lines and combines connection, statement,
   descriptor, conversion, metadata, and registry responsibilities.
 - The callback/future methods in `AsyncDatabaseConnection` are experimental
@@ -179,7 +179,8 @@ substitute for ODBC diagnostics.
   advertised base symbols and all 26 wide exports. It exhaustively compares
   the ODBC 2 array and ODBC 3 bitmap with the supported-function set, checks
   individual queries, rejects invalid handles and null outputs, and preserves
-  an explicit false result for unknown function identifiers.
+  an explicit false result for unknown function identifiers. Windows uses an
+  exact module-definition export list rather than exporting internal symbols.
 - Audit batch 13 implements the useful scalar subset of rowset and parameter
   array reporting without claiming multirow execution. It stores and returns
   the four status/count pointers, updates them for successful, truncated,
@@ -191,6 +192,11 @@ substitute for ODBC diagnostics.
   error, microsecond duration, and connection identity for all connection-owned
   API warnings and errors. Tests cover ANSI and nested wide calls, truncation,
   unknown attributes, secret exclusion, and duplicate-record suppression.
+- Audit batch 15 makes unsupported asynchronous execution, batches, arrays,
+  bookmarks, positioned operations, and non-forward cursor modes explicit in
+  `SQLGetInfo`; fixes accessibility overclaims; and returns the required HY096
+  for unknown information types. The remaining positive flags are tied to
+  transaction, multiple-result, forward-fetch, and any-column/order tests.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
@@ -236,8 +242,9 @@ substitute for ODBC diagnostics.
 ### P1 — conformance and interoperability
 
 1. Complete the connection/statement/descriptor attribute matrices.
-2. Prove that `SQLGetInfo` never over-advertises behavior. `SQLGetFunctions`
-   is closed by audit batch 12 and remains guarded by the shared-library test.
+2. Complete the required `SQLGetInfo` information matrix. Audit batch 15
+   guards the current capability subset against over-advertising, and
+   `SQLGetFunctions` remains guarded by the shared-library export test.
 3. Exercise every exported wide symbol directly on two-byte and four-byte
    `SQLWCHAR` Driver Manager paths.
 4. Add state-machine tests for allocated, connected, prepared, executed,

@@ -222,13 +222,16 @@ namespace {
       case SQL_SEARCH_PATTERN_ESCAPE: return "\\";
       case SQL_CATALOG_NAME:
       case SQL_COLUMN_ALIAS:
+      case SQL_DESCRIBE_PARAMETER:
+      case SQL_MULT_RESULT_SETS:
+      case SQL_PROCEDURES: return "Y";
       case SQL_ACCESSIBLE_TABLES:
       case SQL_ACCESSIBLE_PROCEDURES:
-      case SQL_MULT_RESULT_SETS: return "Y";
       case SQL_DATA_SOURCE_READ_ONLY:
       case SQL_MULTIPLE_ACTIVE_TXN:
       case SQL_NEED_LONG_DATA_LEN:
-      case SQL_ORDER_BY_COLUMNS_IN_SELECT: return "N";
+      case SQL_ORDER_BY_COLUMNS_IN_SELECT:
+      case SQL_ROW_UPDATES: return "N";
       default: return std::nullopt;
     }
   }
@@ -1272,6 +1275,13 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
   };
   
   switch (info_type) {
+    case SQL_ACTIVE_ENVIRONMENTS:
+    case SQL_MAX_CONCURRENT_ACTIVITIES:
+    case SQL_MAX_DRIVER_CONNECTIONS:
+      return write_usmallint(0);
+    case SQL_FILE_USAGE:
+      return write_usmallint(
+          static_cast<SQLUSMALLINT>(SQL_FILE_NOT_SUPPORTED));
     case SQL_TXN_CAPABLE:
       return write_usmallint(static_cast<SQLUSMALLINT>(SQL_TC_ALL));
     case SQL_CURSOR_COMMIT_BEHAVIOR:
@@ -1309,6 +1319,40 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_GETDATA_EXTENSIONS:
       return write_uinteger(static_cast<SQLUINTEGER>(
           SQL_GD_ANY_COLUMN | SQL_GD_ANY_ORDER));
+    case SQL_CURSOR_SENSITIVITY:
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_UNSPECIFIED));
+    case SQL_ASYNC_MODE:
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_AM_NONE));
+    case SQL_BATCH_ROW_COUNT:
+    case SQL_BATCH_SUPPORT:
+    case SQL_BOOKMARK_PERSISTENCE:
+    case SQL_CONVERT_FUNCTIONS:
+    case SQL_DYNAMIC_CURSOR_ATTRIBUTES1:
+    case SQL_DYNAMIC_CURSOR_ATTRIBUTES2:
+    case SQL_KEYSET_CURSOR_ATTRIBUTES1:
+    case SQL_KEYSET_CURSOR_ATTRIBUTES2:
+    case SQL_MAX_ASYNC_CONCURRENT_STATEMENTS:
+    case SQL_POS_OPERATIONS:
+    case SQL_POSITIONED_STATEMENTS:
+    case SQL_STATIC_CURSOR_ATTRIBUTES1:
+    case SQL_STATIC_CURSOR_ATTRIBUTES2:
+    case SQL_STATIC_SENSITIVITY:
+      return write_uinteger(0);
+    case SQL_FETCH_DIRECTION:
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_FD_FETCH_NEXT));
+    case SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES1:
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_CA1_NEXT));
+    case SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES2:
+      return write_uinteger(
+          static_cast<SQLUINTEGER>(SQL_CA2_READ_ONLY_CONCURRENCY));
+    case SQL_LOCK_TYPES:
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_LCK_NO_CHANGE));
+    case SQL_PARAM_ARRAY_ROW_COUNTS:
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_PARC_NO_BATCH));
+    case SQL_PARAM_ARRAY_SELECTS:
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_PAS_NO_SELECT));
+    case SQL_SCROLL_CONCURRENCY:
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_SCCO_READ_ONLY));
     case SQL_CATALOG_USAGE:
       return write_uinteger(0);
     case SQL_SCHEMA_USAGE:
@@ -1317,7 +1361,8 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
           SQL_SU_TABLE_DEFINITION | SQL_SU_INDEX_DEFINITION |
           SQL_SU_PRIVILEGE_DEFINITION));
     default:
-      conn->set_error(SQLSTATE_GENERAL_ERROR, "Unsupported SQLGetInfo type");
+      conn->set_error(SQLSTATE_INVALID_INFORMATION_TYPE,
+                      "Unsupported SQLGetInfo type");
       return SQL_ERROR;
   }
 }

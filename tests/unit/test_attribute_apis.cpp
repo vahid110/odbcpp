@@ -5,6 +5,7 @@
 #include "core/util/deadline.h"
 #include "tests/test_handle_helpers.h"
 
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -335,6 +336,11 @@ TEST_F(AttributeApisTest, ReportsApplicationStartupCapabilities) {
   EXPECT_EQ("database", text_info(SQL_CATALOG_TERM));
   EXPECT_EQ("schema", text_info(SQL_SCHEMA_TERM));
   EXPECT_EQ("Y", text_info(SQL_CATALOG_NAME));
+  EXPECT_EQ("N", text_info(SQL_ACCESSIBLE_TABLES));
+  EXPECT_EQ("N", text_info(SQL_ACCESSIBLE_PROCEDURES));
+  EXPECT_EQ("Y", text_info(SQL_DESCRIBE_PARAMETER));
+  EXPECT_EQ("Y", text_info(SQL_PROCEDURES));
+  EXPECT_EQ("N", text_info(SQL_ROW_UPDATES));
 
   SQLUSMALLINT small_value = 0;
   SQLSMALLINT length = 0;
@@ -357,6 +363,72 @@ TEST_F(AttributeApisTest, ReportsApplicationStartupCapabilities) {
       connection_, SQL_GETDATA_EXTENSIONS, &capabilities,
       sizeof(capabilities), nullptr));
   EXPECT_EQ(SQL_GD_ANY_COLUMN | SQL_GD_ANY_ORDER, capabilities);
+}
+
+TEST_F(AttributeApisTest, ReportsUnsupportedFeaturesConservatively) {
+  constexpr std::array<std::pair<SQLUSMALLINT, SQLUSMALLINT>, 4> small_values{
+      std::pair{SQL_ACTIVE_ENVIRONMENTS, 0},
+      std::pair{SQL_MAX_CONCURRENT_ACTIVITIES, 0},
+      std::pair{SQL_MAX_DRIVER_CONNECTIONS, 0},
+      std::pair{SQL_FILE_USAGE, SQL_FILE_NOT_SUPPORTED},
+  };
+  for (const auto& [type, expected] : small_values) {
+    SQLUSMALLINT value = std::numeric_limits<SQLUSMALLINT>::max();
+    SQLSMALLINT length = 0;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetInfo(connection_, type, &value, sizeof(value), &length))
+        << type;
+    EXPECT_EQ(static_cast<SQLUSMALLINT>(expected), value) << type;
+    EXPECT_EQ(sizeof(SQLUSMALLINT), static_cast<std::size_t>(length))
+        << type;
+  }
+
+  constexpr std::array<std::pair<SQLUSMALLINT, SQLUINTEGER>, 23>
+      integer_values{
+      std::pair{SQL_ASYNC_MODE, SQL_AM_NONE},
+      std::pair{SQL_BATCH_ROW_COUNT, 0},
+      std::pair{SQL_BATCH_SUPPORT, 0},
+      std::pair{SQL_BOOKMARK_PERSISTENCE, 0},
+      std::pair{SQL_CONVERT_FUNCTIONS, 0},
+      std::pair{SQL_CURSOR_SENSITIVITY, SQL_UNSPECIFIED},
+      std::pair{SQL_DYNAMIC_CURSOR_ATTRIBUTES1, 0},
+      std::pair{SQL_DYNAMIC_CURSOR_ATTRIBUTES2, 0},
+      std::pair{SQL_KEYSET_CURSOR_ATTRIBUTES1, 0},
+      std::pair{SQL_KEYSET_CURSOR_ATTRIBUTES2, 0},
+      std::pair{SQL_MAX_ASYNC_CONCURRENT_STATEMENTS, 0},
+      std::pair{SQL_POS_OPERATIONS, 0},
+      std::pair{SQL_POSITIONED_STATEMENTS, 0},
+      std::pair{SQL_STATIC_CURSOR_ATTRIBUTES1, 0},
+      std::pair{SQL_STATIC_CURSOR_ATTRIBUTES2, 0},
+      std::pair{SQL_STATIC_SENSITIVITY, 0},
+      std::pair{SQL_FETCH_DIRECTION, SQL_FD_FETCH_NEXT},
+      std::pair{SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES1, SQL_CA1_NEXT},
+      std::pair{SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES2,
+                SQL_CA2_READ_ONLY_CONCURRENCY},
+      std::pair{SQL_LOCK_TYPES, SQL_LCK_NO_CHANGE},
+      std::pair{SQL_PARAM_ARRAY_ROW_COUNTS, SQL_PARC_NO_BATCH},
+      std::pair{SQL_PARAM_ARRAY_SELECTS, SQL_PAS_NO_SELECT},
+      std::pair{SQL_SCROLL_CONCURRENCY, SQL_SCCO_READ_ONLY},
+  };
+  for (const auto& [type, expected] : integer_values) {
+    SQLUINTEGER value = std::numeric_limits<SQLUINTEGER>::max();
+    SQLSMALLINT length = 0;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetInfo(connection_, type, &value, sizeof(value), &length))
+        << type;
+    EXPECT_EQ(static_cast<SQLUINTEGER>(expected), value) << type;
+    EXPECT_EQ(sizeof(SQLUINTEGER), static_cast<std::size_t>(length)) << type;
+  }
+}
+
+TEST_F(AttributeApisTest, RejectsUnknownInformationTypesPrecisely) {
+  SQLUINTEGER value = 0;
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetInfo(connection_, 0xffff, &value, sizeof(value), nullptr));
+  EXPECT_EQ("HY096", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetInfoW(connection_, 0xffff, &value, sizeof(value), nullptr));
+  EXPECT_EQ("HY096", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
 TEST_F(AttributeApisTest, ReportsInformationStringTruncation) {

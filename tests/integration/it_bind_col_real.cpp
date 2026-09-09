@@ -133,6 +133,21 @@ TEST_F(BindColIntegrationTest, GetDataReportsNullWithoutTouchingBuffer) {
     EXPECT_STREQ("", empty_value);
 }
 
+TEST_F(BindColIntegrationTest, GetDataSupportsAnyColumnOrder) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 'first'::text, 'second'::text", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    char second[16]{};
+    char first[16]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 2, SQL_C_CHAR, second, sizeof(second), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, first, sizeof(first), nullptr));
+    EXPECT_STREQ("second", second);
+    EXPECT_STREQ("first", first);
+}
+
 TEST_F(BindColIntegrationTest, NullWithoutIndicatorReturns22002) {
     SQLUSMALLINT row_status = SQL_ROW_SUCCESS;
     SQLULEN rows_fetched = 0;
