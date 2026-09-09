@@ -271,6 +271,7 @@ struct DescriptorRecord {
   SQLSMALLINT precision{0};
   SQLSMALLINT scale{0};
   SQLSMALLINT nullable{SQL_NULLABLE_UNKNOWN};
+  SQLSMALLINT parameter_type{SQL_PARAM_INPUT};
   SQLPOINTER data_ptr{nullptr};
   SQLLEN* indicator_ptr{nullptr};
   SQLLEN* octet_length_ptr{nullptr};

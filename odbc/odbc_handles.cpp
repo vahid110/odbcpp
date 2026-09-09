@@ -823,6 +823,8 @@ SQLRETURN ODBCDescriptor::get_field(
       *static_cast<SQLSMALLINT*>(value) = record.scale; break;
     case SQL_DESC_NULLABLE:
       *static_cast<SQLSMALLINT*>(value) = record.nullable; break;
+    case SQL_DESC_PARAMETER_TYPE:
+      *static_cast<SQLSMALLINT*>(value) = record.parameter_type; break;
     case SQL_DESC_DATA_PTR:
       *static_cast<SQLPOINTER*>(value) = record.data_ptr; break;
     case SQL_DESC_INDICATOR_PTR:
@@ -903,6 +905,8 @@ SQLRETURN ODBCDescriptor::set_field(
       record.scale = static_cast<SQLSMALLINT>(numeric); break;
     case SQL_DESC_NULLABLE:
       record.nullable = static_cast<SQLSMALLINT>(numeric); break;
+    case SQL_DESC_PARAMETER_TYPE:
+      record.parameter_type = static_cast<SQLSMALLINT>(numeric); break;
     case SQL_DESC_DATA_PTR: record.data_ptr = value; break;
     case SQL_DESC_INDICATOR_PTR:
       record.indicator_ptr = static_cast<SQLLEN*>(value); break;
@@ -1766,6 +1770,32 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
               "Parameter number exceeds the prepared statement count");
     return SQL_ERROR;
   }
+
+  const auto number = [](auto numeric) {
+    return reinterpret_cast<SQLPOINTER>(
+        static_cast<std::uintptr_t>(numeric));
+  };
+  const auto application_descriptor = descriptor(app_param_descriptor_);
+  application_descriptor->set_field(
+      parameter_number, SQL_DESC_CONCISE_TYPE, number(value_type), 0);
+  application_descriptor->set_field(
+      parameter_number, SQL_DESC_OCTET_LENGTH, number(buffer_length), 0);
+  application_descriptor->set_field(
+      parameter_number, SQL_DESC_DATA_PTR, parameter_value, 0);
+  application_descriptor->set_field(
+      parameter_number, SQL_DESC_INDICATOR_PTR, strlen_or_indicator, 0);
+  application_descriptor->set_field(
+      parameter_number, SQL_DESC_OCTET_LENGTH_PTR, strlen_or_indicator, 0);
+
+  const auto implementation_descriptor = descriptor(imp_param_descriptor_);
+  implementation_descriptor->set_field(
+      parameter_number, SQL_DESC_CONCISE_TYPE, number(parameter_type), 0);
+  implementation_descriptor->set_field(
+      parameter_number, SQL_DESC_LENGTH, number(column_size), 0);
+  implementation_descriptor->set_field(
+      parameter_number, SQL_DESC_SCALE, number(decimal_digits), 0);
+  implementation_descriptor->set_field(
+      parameter_number, SQL_DESC_PARAMETER_TYPE, number(input_output_type), 0);
   
   // Resize parameter array if needed
   if (parameter_number > parameter_info_.size()) {
@@ -1874,6 +1904,22 @@ SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target
               "Column number out of range");
     return SQL_ERROR;
   }
+
+  const auto number = [](auto numeric) {
+    return reinterpret_cast<SQLPOINTER>(
+        static_cast<std::uintptr_t>(numeric));
+  };
+  const auto application_descriptor = descriptor(app_row_descriptor_);
+  application_descriptor->set_field(
+      column_number, SQL_DESC_CONCISE_TYPE, number(target_type), 0);
+  application_descriptor->set_field(
+      column_number, SQL_DESC_OCTET_LENGTH, number(buffer_length), 0);
+  application_descriptor->set_field(
+      column_number, SQL_DESC_DATA_PTR, target_value, 0);
+  application_descriptor->set_field(
+      column_number, SQL_DESC_INDICATOR_PTR, strlen_or_indicator, 0);
+  application_descriptor->set_field(
+      column_number, SQL_DESC_OCTET_LENGTH_PTR, strlen_or_indicator, 0);
   
   // Resize binding array if needed
   if (column_number > column_bindings_.size()) {

@@ -299,3 +299,76 @@ TEST(ExplicitDescriptorApiTest, StoresAndReturnsWideDescriptorNames) {
     SQLFreeHandle(SQL_HANDLE_DBC, connection);
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
 }
+
+TEST(DescriptorBindingApiTest, BindCallsPopulateStatementDescriptors) {
+    SQLHENV environment = SQL_NULL_HENV;
+    SQLHDBC connection = SQL_NULL_HDBC;
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(
+        SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetEnvAttr(
+        environment, SQL_ATTR_ODBC_VERSION,
+        reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(
+        SQL_HANDLE_DBC, environment, &connection));
+    const auto statement = odbcpp::test::make_statement(connection);
+    ASSERT_NE(nullptr, statement);
+
+    char column[32]{};
+    SQLLEN column_length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(
+        statement, 1, SQL_C_CHAR, column, sizeof(column), &column_length));
+    SQLINTEGER parameter = 7;
+    SQLLEN parameter_length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        statement, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
+        10, 0, &parameter, 0, &parameter_length));
+
+    SQLHDESC row = SQL_NULL_HDESC;
+    SQLHDESC app_param = SQL_NULL_HDESC;
+    SQLHDESC imp_param = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        statement, SQL_ATTR_APP_ROW_DESC, &row, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        statement, SQL_ATTR_APP_PARAM_DESC, &app_param, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        statement, SQL_ATTR_IMP_PARAM_DESC, &imp_param, 0, nullptr));
+
+    SQLSMALLINT concise_type = 0;
+    SQLLEN octet_length = -1;
+    SQLPOINTER data = nullptr;
+    SQLLEN* indicator = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        row, 1, SQL_DESC_CONCISE_TYPE, &concise_type, 0, nullptr));
+    EXPECT_EQ(SQL_C_CHAR, concise_type);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        row, 1, SQL_DESC_OCTET_LENGTH, &octet_length, 0, nullptr));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(column)), octet_length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        row, 1, SQL_DESC_DATA_PTR, &data, 0, nullptr));
+    EXPECT_EQ(column, data);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        row, 1, SQL_DESC_INDICATOR_PTR, &indicator, 0, nullptr));
+    EXPECT_EQ(&column_length, indicator);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        app_param, 1, SQL_DESC_CONCISE_TYPE, &concise_type, 0, nullptr));
+    EXPECT_EQ(SQL_C_SLONG, concise_type);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        app_param, 1, SQL_DESC_DATA_PTR, &data, 0, nullptr));
+    EXPECT_EQ(&parameter, data);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        imp_param, 1, SQL_DESC_CONCISE_TYPE, &concise_type, 0, nullptr));
+    EXPECT_EQ(SQL_INTEGER, concise_type);
+    SQLULEN length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        imp_param, 1, SQL_DESC_LENGTH, &length, 0, nullptr));
+    EXPECT_EQ(10u, length);
+    SQLSMALLINT parameter_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        imp_param, 1, SQL_DESC_PARAMETER_TYPE, &parameter_type, 0, nullptr));
+    EXPECT_EQ(SQL_PARAM_INPUT, parameter_type);
+
+    EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement));
+    EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+    EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}

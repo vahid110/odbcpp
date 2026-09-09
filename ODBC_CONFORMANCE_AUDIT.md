@@ -125,16 +125,18 @@ descriptors are rejected with precise diagnostics.
 
 Fetch and prepared execution consume those descriptor headers and reject
 unsupported multirow, bind-offset, row-wise, and operation-array settings.
-Not yet implemented: descriptor record-driven binding, arrays larger than one,
-maximum length, metadata-ID true, no-scan behavior, row number, and genuine
-asynchronous ODBC function completion.
+`SQLBindCol` and `SQLBindParameter` populate the associated ARD/APD/IPD records.
+Direct record edits do not yet drive fetch or execution. Arrays larger than
+one, maximum length, metadata-ID true, no-scan behavior, row number, and
+genuine asynchronous ODBC function completion remain.
 
 ### Descriptors
 
 Four implicit descriptor handles, explicit descriptor allocation, application
 descriptor attachment, cross-statement sharing, null reset, and free-time
 automatic fallback exist. Statement attributes, descriptor header fields, and
-execution status use the same header state. Record-level binding
+execution status use the same header state. Binding calls populate their
+descriptor records, including parameter direction, but direct record-to-I/O
 synchronization, complete descriptor-kind rules, consistency checks, and the
 full field matrix remain partial.
 
@@ -156,7 +158,7 @@ substitute for ODBC diagnostics.
 ## Maintainability snapshot
 
 - `odbc_api.cpp` is 2,577 lines and contains all 73 exported wrappers;
-  `odbc_handles.cpp` is 2,789 lines and combines connection, statement,
+  `odbc_handles.cpp` is 2,835 lines and combines connection, statement,
   descriptor, conversion, metadata, and registry responsibilities.
 - The callback/future methods in `AsyncDatabaseConnection` are experimental
   scaffolding, are not used by the ODBC driver's production connection path,
@@ -214,6 +216,10 @@ substitute for ODBC diagnostics.
   bind settings now round-trip through descriptor headers; fetch and execute
   read the same status/count pointers and reject unsupported descriptor header
   modes before touching application buffers or issuing prepared protocol I/O.
+- Audit batch 18 makes `SQLBindCol` and `SQLBindParameter` populate the active
+  ARD/APD and IPD records, including buffer, length/indicator, C/SQL type,
+  precision/scale, and input/output direction fields. Descriptor API tests
+  retrieve those fields through the public handles rather than private state.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
