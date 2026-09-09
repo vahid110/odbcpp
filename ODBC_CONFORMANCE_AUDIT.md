@@ -32,7 +32,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 
 | Operation | Variants | Status | Existing evidence | Principal remaining work |
 |---|---:|---|---|---|
-| `SQLAllocHandle` | A | Partial | unit, integration, DM | DBC requires an ODBC version and STMT/DESC require an open connection; allocation-failure injection remains |
+| `SQLAllocHandle` | A | Partial | unit failure injection, integration, DM | DBC requires an ODBC version, STMT/DESC require an open connection, and allocation failure returns HY001; complete type/state matrix remains |
 | `SQLFreeHandle` | A | Partial | unit, integration, DM | Parent/child free ordering is enforced; complete state matrix remains |
 | `SQLConnect` | A/W | Partial | unit failure, integration, DM | Reconnect is rejected with 08002; complete input/state matrix remains |
 | `SQLDriverConnect` | A/W | Partial | unit, DM | Completion modes, exact output-string rules, connected-state handling |
@@ -161,7 +161,9 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
 1. **C entry-point exception containment:** audit batch 4 routes all 73 exported
    ODBC symbols through one exception barrier. Unexpected failures return
    `SQL_ERROR`; non-diagnostic calls attach `HY000` when their handle remains
-   usable. Allocation-failure injection through real entry points remains.
+   usable. Audit batch 8 injects `std::bad_alloc` through the real
+   `SQLAllocHandle` path and verifies `SQL_ERROR`, a null output, `HY001`, and
+   successful recovery on the next allocation.
 2. **Handle concurrency:** audit batch 2 changes registry lookup to pin shared
    ownership for each exported call. Audit batch 7 adds connection-domain
    operation leases in stable handle order, covers same-handle and sibling

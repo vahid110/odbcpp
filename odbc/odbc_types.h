@@ -53,6 +53,7 @@ constexpr const char* SQLSTATE_CONNECTION_IN_USE = "08002";
 constexpr const char* SQLSTATE_SYNTAX_ERROR = "42000";
 constexpr const char* SQLSTATE_TIMEOUT = "HYT00";
 constexpr const char* SQLSTATE_GENERAL_ERROR = "HY000";
+constexpr const char* SQLSTATE_MEMORY_ALLOCATION_ERROR = "HY001";
 constexpr const char* SQLSTATE_INVALID_HANDLE = "HY092";
 constexpr const char* SQLSTATE_FUNCTION_SEQUENCE_ERROR = "HY010";
 constexpr const char* SQLSTATE_INVALID_PARAMETER_NUMBER = "07009";

@@ -136,6 +136,7 @@ list(APPEND CORE_SOURCES
   "odbc/result_types.cpp"
   "odbc/text_data_converter.h"
   "odbc/text_data_converter.cpp"
+  "odbc/testing_hooks.h"
   "odbc/unicode.h"
   "odbc/unicode.cpp"
 )
@@ -172,6 +173,11 @@ target_compile_definitions(${PROJECT_NAME}_core PUBLIC
   ODBCPP_TARGET_DATABASE="${TARGET_DATABASE}"
   ODBCPP_ENABLE_${TARGET_DATABASE}=1
 )
+
+if(BUILD_TESTING)
+  target_compile_definitions(${PROJECT_NAME}_core PUBLIC
+    ODBCPP_ENABLE_TEST_HOOKS=1)
+endif()
 
 # Configure shared library (ODBC driver)
 target_include_directories(${PROJECT_NAME}_driver

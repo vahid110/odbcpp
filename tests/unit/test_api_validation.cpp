@@ -2,6 +2,7 @@
 
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_handles.h"
+#include "odbc/testing_hooks.h"
 #include "tests/test_handle_helpers.h"
 
 #include <chrono>
@@ -72,6 +73,25 @@ TEST(ApiAllocationValidationTest, RejectsInvalidHandleType) {
   EXPECT_EQ(SQL_NULL_HANDLE, output);
   EXPECT_EQ("HY092", diagnostic_state(SQL_HANDLE_ENV, environment));
 
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(ApiAllocationValidationTest, ReportsInjectedAllocationFailure) {
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  set_odbc3(environment);
+
+  SQLHDBC connection = reinterpret_cast<SQLHDBC>(std::uintptr_t{1});
+  rs::odbc::testing::fail_next_handle_allocation();
+  EXPECT_EQ(SQL_ERROR,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+  EXPECT_EQ(SQL_NULL_HDBC, connection);
+  EXPECT_EQ("HY001", diagnostic_state(SQL_HANDLE_ENV, environment));
+
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
 }
 

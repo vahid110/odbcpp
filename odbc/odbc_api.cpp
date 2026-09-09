@@ -3,9 +3,11 @@
 #include "odbc_handles.h"
 #include "unicode.h"
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <new>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -14,6 +16,14 @@ using namespace rs::odbc;
 
 // String conversion helpers (Unicode-ready architecture)
 namespace {
+#ifdef ODBCPP_ENABLE_TEST_HOOKS
+  std::atomic<bool> fail_handle_allocation{false};
+
+  bool consume_handle_allocation_failure() noexcept {
+    return fail_handle_allocation.exchange(false, std::memory_order_acq_rel);
+  }
+#endif
+
   // ANSI string conversion
   std::string sqlchar_to_string(SQLCHAR* str, SQLINTEGER length) {
     if (!str) return "";
@@ -283,6 +293,16 @@ namespace {
   }
 }
 
+#ifdef ODBCPP_ENABLE_TEST_HOOKS
+namespace rs::odbc::testing {
+
+void fail_next_handle_allocation() noexcept {
+  fail_handle_allocation.store(true, std::memory_order_release);
+}
+
+}  // namespace rs::odbc::testing
+#endif
+
 // Helper to validate handle
 template<typename T>
 std::shared_ptr<T> get_valid_handle(SQLHANDLE handle) {
@@ -313,6 +333,9 @@ static SQLRETURN SQLAllocHandle_impl(SQLSMALLINT handle_type, SQLHANDLE input_ha
   }
   
   try {
+#ifdef ODBCPP_ENABLE_TEST_HOOKS
+    if (consume_handle_allocation_failure()) throw std::bad_alloc{};
+#endif
     std::unique_ptr<ODBCHandle> new_handle;
     
     switch (handle_type) {
@@ -374,6 +397,15 @@ static SQLRETURN SQLAllocHandle_impl(SQLSMALLINT handle_type, SQLHANDLE input_ha
     
     return SQL_SUCCESS;
     
+  } catch (const std::bad_alloc&) {
+    if (input_handle) {
+      auto parent = HandleRegistry::instance().get_handle(input_handle);
+      if (parent) {
+        parent->set_error(SQLSTATE_MEMORY_ALLOCATION_ERROR,
+                          "Memory allocation failed while creating a handle");
+      }
+    }
+    return SQL_ERROR;
   } catch (const std::exception& e) {
     // Set diagnostic on parent handle if available
     if (input_handle) {
