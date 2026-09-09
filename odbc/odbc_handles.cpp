@@ -358,12 +358,16 @@ bool ODBCConnection::logging_enabled(
 ODBCStatement::ODBCStatement(std::shared_ptr<ODBCConnection> conn)
     : ODBCHandle(HandleType::Statement), conn_(std::move(conn)) {
   try {
-    automatic_app_row_descriptor_ = create_implicit_descriptor();
+    automatic_app_row_descriptor_ = create_implicit_descriptor(
+        DescriptorKind::Application);
     app_row_descriptor_ = automatic_app_row_descriptor_;
-    automatic_app_param_descriptor_ = create_implicit_descriptor();
+    automatic_app_param_descriptor_ = create_implicit_descriptor(
+        DescriptorKind::Application);
     app_param_descriptor_ = automatic_app_param_descriptor_;
-    imp_row_descriptor_ = create_implicit_descriptor();
-    imp_param_descriptor_ = create_implicit_descriptor();
+    imp_row_descriptor_ = create_implicit_descriptor(
+        DescriptorKind::ImplementationRow);
+    imp_param_descriptor_ = create_implicit_descriptor(
+        DescriptorKind::ImplementationParameter);
   } catch (...) {
     for (const auto descriptor : {
              automatic_app_row_descriptor_, automatic_app_param_descriptor_,
@@ -382,8 +386,8 @@ ODBCStatement::~ODBCStatement() {
   }
 }
 
-SQLHDESC ODBCStatement::create_implicit_descriptor() {
-  auto descriptor = std::make_unique<ODBCDescriptor>(conn_.get(), true);
+SQLHDESC ODBCStatement::create_implicit_descriptor(DescriptorKind kind) {
+  auto descriptor = std::make_unique<ODBCDescriptor>(conn_.get(), true, kind);
   const auto handle = reinterpret_cast<SQLHDESC>(descriptor.get());
   HandleRegistry::instance().register_handle(
       handle, std::move(descriptor), reinterpret_cast<SQLHANDLE>(this));
@@ -844,6 +848,13 @@ SQLRETURN ODBCDescriptor::get_field(
 SQLRETURN ODBCDescriptor::set_field(
     SQLSMALLINT record_number, SQLSMALLINT field_identifier,
     SQLPOINTER value, SQLINTEGER buffer_length) {
+  if (kind_ == DescriptorKind::ImplementationRow &&
+      field_identifier != SQL_DESC_ARRAY_STATUS_PTR &&
+      field_identifier != SQL_DESC_ROWS_PROCESSED_PTR) {
+    set_error(SQLSTATE_CANNOT_MODIFY_IRD,
+              "Implementation row descriptor fields are read-only");
+    return SQL_ERROR;
+  }
   const auto numeric = static_cast<SQLULEN>(
       reinterpret_cast<std::uintptr_t>(value));
   switch (field_identifier) {
@@ -939,13 +950,19 @@ SQLRETURN ODBCDescriptor::set_field(
   return SQL_SUCCESS;
 }
 
-void ODBCDescriptor::copy_from(const ODBCDescriptor& source) {
+SQLRETURN ODBCDescriptor::copy_from(const ODBCDescriptor& source) {
+  if (kind_ == DescriptorKind::ImplementationRow) {
+    set_error(SQLSTATE_CANNOT_MODIFY_IRD,
+              "An implementation row descriptor cannot be a copy target");
+    return SQL_ERROR;
+  }
   records_ = source.records_;
   array_size_ = source.array_size_;
   array_status_ptr_ = source.array_status_ptr_;
   bind_offset_ptr_ = source.bind_offset_ptr_;
   bind_type_ = source.bind_type_;
   rows_processed_ptr_ = source.rows_processed_ptr_;
+  return SQL_SUCCESS;
 }
 
 // Statement implementation

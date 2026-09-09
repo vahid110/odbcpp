@@ -257,12 +257,19 @@ struct DescriptorRecord {
   std::string name;
 };
 
+enum class DescriptorKind {
+  Application,
+  ImplementationRow,
+  ImplementationParameter,
+};
+
 class ODBCDescriptor : public ODBCHandle {
 public:
   explicit ODBCDescriptor(ODBCConnection*,
-                          bool automatically_allocated = false)
+                          bool automatically_allocated = false,
+                          DescriptorKind kind = DescriptorKind::Application)
       : ODBCHandle(HandleType::Descriptor),
-        automatically_allocated_(automatically_allocated) {}
+        automatically_allocated_(automatically_allocated), kind_(kind) {}
 
   bool is_automatically_allocated() const {
     return automatically_allocated_;
@@ -287,10 +294,11 @@ public:
   SQLRETURN set_field(SQLSMALLINT record_number,
                       SQLSMALLINT field_identifier, SQLPOINTER value,
                       SQLINTEGER buffer_length);
-  void copy_from(const ODBCDescriptor& source);
+  SQLRETURN copy_from(const ODBCDescriptor& source);
 
 private:
   bool automatically_allocated_{false};
+  DescriptorKind kind_{DescriptorKind::Application};
   std::vector<DescriptorRecord> records_;
   SQLULEN array_size_{1};
   SQLUSMALLINT* array_status_ptr_{nullptr};
@@ -408,7 +416,7 @@ private:
   void apply_query_result(rs::core::database::QueryResult result,
                           bool include_parameter_metadata);
   SQLRETURN complete_parameter_set(SQLRETURN result);
-  SQLHDESC create_implicit_descriptor();
+  SQLHDESC create_implicit_descriptor(DescriptorKind kind);
   SQLRETURN set_application_descriptor(SQLINTEGER attribute,
                                        SQLHDESC descriptor);
   std::shared_ptr<ODBCDescriptor> descriptor(SQLHDESC handle) const;

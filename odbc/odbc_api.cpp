@@ -2338,8 +2338,7 @@ static SQLRETURN SQLCopyDesc_impl(SQLHDESC source_desc_handle,
   if (!source) return SQL_INVALID_HANDLE;
   auto target = get_valid_handle<ODBCDescriptor>(target_desc_handle);
   if (!target) return SQL_INVALID_HANDLE;
-  target->copy_from(*source);
-  return SQL_SUCCESS;
+  return target->copy_from(*source);
 }
 
 } // extern "C"

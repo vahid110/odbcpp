@@ -372,3 +372,50 @@ TEST(DescriptorBindingApiTest, BindCallsPopulateStatementDescriptors) {
     EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
     EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
 }
+
+TEST_F(DescriptorAPITest, ImplementationRowDescriptorIsReadOnly) {
+    SQLHDESC implementation_row = SQL_NULL_HDESC;
+    SQLHDESC application_row = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, stmt->get_attribute(
+        SQL_ATTR_IMP_ROW_DESC, &implementation_row));
+    ASSERT_EQ(SQL_SUCCESS, stmt->get_attribute(
+        SQL_ATTR_APP_ROW_DESC, &application_row));
+
+    EXPECT_EQ(SQL_ERROR, SQLSetDescField(
+        implementation_row, 1, SQL_DESC_CONCISE_TYPE,
+        reinterpret_cast<SQLPOINTER>(std::uintptr_t{SQL_VARCHAR}), 0));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_DESC, implementation_row, 1, state, nullptr,
+        nullptr, 0, nullptr));
+    EXPECT_STREQ("HY016", reinterpret_cast<char*>(state));
+
+    EXPECT_EQ(SQL_ERROR, SQLCopyDesc(application_row, implementation_row));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_DESC, implementation_row, 1, state, nullptr,
+        nullptr, 0, nullptr));
+    EXPECT_STREQ("HY016", reinterpret_cast<char*>(state));
+}
+
+TEST_F(DescriptorAPITest, ImplementationRowStatusHeadersRemainWritable) {
+    SQLHDESC implementation_row = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, stmt->get_attribute(
+        SQL_ATTR_IMP_ROW_DESC, &implementation_row));
+    SQLUSMALLINT status = SQL_ROW_NOROW;
+    SQLULEN processed = 0;
+    EXPECT_EQ(SQL_SUCCESS, SQLSetDescField(
+        implementation_row, 0, SQL_DESC_ARRAY_STATUS_PTR, &status, 0));
+    EXPECT_EQ(SQL_SUCCESS, SQLSetDescField(
+        implementation_row, 0, SQL_DESC_ROWS_PROCESSED_PTR, &processed, 0));
+
+    SQLUSMALLINT* returned_status = nullptr;
+    SQLULEN* returned_processed = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        implementation_row, 0, SQL_DESC_ARRAY_STATUS_PTR,
+        &returned_status, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        implementation_row, 0, SQL_DESC_ROWS_PROCESSED_PTR,
+        &returned_processed, 0, nullptr));
+    EXPECT_EQ(&status, returned_status);
+    EXPECT_EQ(&processed, returned_processed);
+}

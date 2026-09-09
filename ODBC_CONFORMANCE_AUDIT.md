@@ -78,7 +78,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLGetEnvAttr` | A | Partial | unit, DM | Supported attribute matrix and buffer/type rules |
 | `SQLGetDescField` | A/W | Partial | unit | Descriptor-kind restrictions and complete header/record fields |
 | `SQLSetDescField` | A/W | Partial | unit | Consistency checks, descriptor-kind restrictions, pointer fields |
-| `SQLCopyDesc` | A | Partial | unit concurrency | Opposite-direction copies are serialized without deadlock; source/target restrictions, consistency checks, state matrix remain |
+| `SQLCopyDesc` | A | Partial | unit concurrency | Opposite-direction copies are serialized without deadlock and IRD targets return HY016; remaining consistency and state matrix remain |
 
 No operation is promoted to **Verified** until its audit row has explicit
 negative and state-transition evidence. This deliberately resets optimistic
@@ -139,8 +139,10 @@ descriptor attachment, cross-statement sharing, null reset, and free-time
 automatic fallback exist. Statement attributes, descriptor header fields, and
 execution status use the same header state. Binding calls populate their
 descriptor records, including parameter direction, and direct record edits
-drive fetch and prepared execution. Complete descriptor-kind rules,
-consistency checks, and the full field matrix remain partial.
+drive fetch and prepared execution. IRD record/header mutation and copy targets
+return HY016, except for the writable row-status and rows-processed header
+pointers. Remaining descriptor-kind rules, consistency checks, and the full
+field matrix remain partial.
 
 ## Logging coverage
 
@@ -231,6 +233,10 @@ substitute for ODBC diagnostics.
   as required by ODBC, while prepared execution consumes only the marker-count
   prefix. PostgreSQL coverage proves that the extra binding is ignored and
   that a genuinely missing in-range binding still reports 07009 before I/O.
+- Audit batch 21 assigns explicit roles to implicit descriptors and protects
+  the implementation row descriptor. `SQLSetDescField` and `SQLCopyDesc`
+  reject attempts to modify it with HY016, while its row-status and
+  rows-processed header pointers remain writable and tested.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
