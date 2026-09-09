@@ -55,7 +55,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLDescribeCol` | A/W | Partial | unit, integration | Buffer boundaries, bookmark column, wide edge cases |
 | `SQLColAttribute` | A/W | Partial | integration | Complete field identifiers and numeric/string destination rules |
 | `SQLDescribeParam` | A | Partial | unit internals, integration | Availability after prepare and complete type metadata |
-| `SQLSetStmtAttr` | A/W | Partial | unit, integration | Single-row/status and single-parameter-set pointers work; arrays, offsets, operations, and descriptor attachment remain |
+| `SQLSetStmtAttr` | A/W | Partial | unit, integration | Scalar modes and descriptor attachment work; arrays, offsets, operations, and descriptor-driven execution remain |
 | `SQLGetStmtAttr` | A/W | Partial | unit, integration | Common defaults, descriptor handles, and status pointers covered; row number and remaining attributes need classification |
 | `SQLCloseCursor` | A | Partial | unit, integration, DM | Complete statement-state matrix |
 | `SQLFreeStmt` | A | Partial | unit, DM | All options across statement states and descriptor side effects |
@@ -117,17 +117,24 @@ retrieve-data on, bookmarks off, metadata-ID false, and ODBC async off. Fetch
 and prepared execution update status outputs on success, truncation, no-row,
 local validation errors, and PostgreSQL errors.
 
-Not yet implemented: row or parameter arrays larger than one, bind offsets,
-row-wise binding, operation arrays, explicit APD/ARD attachment, maximum
-length, metadata-ID true, no-scan behavior, row number, and genuine
-asynchronous ODBC function completion.
+Explicit APD/ARD handles can be attached, shared within their connection,
+reset to the statement's automatic descriptors, and are automatically detached
+when freed. Foreign, invalid, implementation, and another statement's implicit
+descriptors are rejected with precise diagnostics.
+
+Not yet implemented: descriptor-driven execution synchronization, row or
+parameter arrays larger than one, bind offsets, row-wise binding, operation
+arrays, maximum length, metadata-ID true, no-scan behavior, row number, and
+genuine asynchronous ODBC function completion.
 
 ### Descriptors
 
-Four implicit descriptor handles and explicit descriptor allocation exist.
-The explicit descriptor object supports a useful subset of header and record
-fields, but statement attachment, descriptor-kind rules, consistency checks,
-and the full field matrix remain partial.
+Four implicit descriptor handles, explicit descriptor allocation, application
+descriptor attachment, cross-statement sharing, null reset, and free-time
+automatic fallback exist. The explicit descriptor object supports a useful
+subset of header and record fields, but field-to-execution synchronization,
+complete descriptor-kind rules, consistency checks, and the full field matrix
+remain partial.
 
 ## Logging coverage
 
@@ -146,8 +153,8 @@ substitute for ODBC diagnostics.
 
 ## Maintainability snapshot
 
-- `odbc_api.cpp` is 2,575 lines and contains all 73 exported wrappers;
-  `odbc_handles.cpp` is 2,660 lines and combines connection, statement,
+- `odbc_api.cpp` is 2,577 lines and contains all 73 exported wrappers;
+  `odbc_handles.cpp` is 2,736 lines and combines connection, statement,
   descriptor, conversion, metadata, and registry responsibilities.
 - The callback/future methods in `AsyncDatabaseConnection` are experimental
   scaffolding, are not used by the ODBC driver's production connection path,
@@ -197,6 +204,10 @@ substitute for ODBC diagnostics.
   `SQLGetInfo`; fixes accessibility overclaims; and returns the required HY096
   for unknown information types. The remaining positive flags are tied to
   transaction, multiple-result, forward-fetch, and any-column/order tests.
+- Audit batch 16 implements explicit APD/ARD association within a connection,
+  supports sharing one user descriptor across statement roles, restores the
+  original automatic descriptor on null assignment or descriptor free, and
+  rejects invalid, foreign, and implicit descriptor handles.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

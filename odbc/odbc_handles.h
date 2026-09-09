@@ -320,6 +320,7 @@ public:
                      void* buffer, SQLLEN buffer_length, SQLLEN* indicator);
   SQLRETURN set_attribute(SQLINTEGER attribute, SQLPOINTER value);
   SQLRETURN get_attribute(SQLINTEGER attribute, SQLPOINTER value);
+  void detach_descriptor(SQLHDESC descriptor) noexcept;
   SQLRETURN close_cursor(bool report_missing_cursor);
   void unbind_columns();
   void reset_parameters();
@@ -411,6 +412,8 @@ private:
   SQLULEN* rows_fetched_ptr_ = nullptr;
   SQLUSMALLINT* param_status_ptr_ = nullptr;
   SQLULEN* params_processed_ptr_ = nullptr;
+  SQLHDESC automatic_app_row_descriptor_{SQL_NULL_HDESC};
+  SQLHDESC automatic_app_param_descriptor_{SQL_NULL_HDESC};
   SQLHDESC app_row_descriptor_{SQL_NULL_HDESC};
   SQLHDESC app_param_descriptor_{SQL_NULL_HDESC};
   SQLHDESC imp_row_descriptor_{SQL_NULL_HDESC};
@@ -420,6 +423,8 @@ private:
                           bool include_parameter_metadata);
   SQLRETURN complete_parameter_set(SQLRETURN result);
   SQLHDESC create_implicit_descriptor();
+  SQLRETURN set_application_descriptor(SQLINTEGER attribute,
+                                       SQLHDESC descriptor);
 };
 
 // Handle registry for validation
@@ -434,6 +439,7 @@ public:
   bool has_children(SQLHANDLE parent);
   std::shared_ptr<ODBCHandle> get_handle(SQLHANDLE handle);
   std::shared_ptr<ODBCConnection> get_connection_for_handle(SQLHANDLE handle);
+  void detach_descriptor_from_statements(SQLHDESC descriptor);
   HandleOperationLease lock_handles(
       std::initializer_list<SQLHANDLE> handles);
   

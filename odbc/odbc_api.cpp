@@ -479,6 +479,8 @@ static SQLRETURN SQLFreeHandle_impl(SQLSMALLINT handle_type, SQLHANDLE handle) {
                             "Implicit descriptor handles cannot be freed");
       return SQL_ERROR;
     }
+    HandleRegistry::instance().detach_descriptor_from_statements(
+        static_cast<SQLHDESC>(handle));
   }
   if (handle_type == SQL_HANDLE_DBC) {
     auto* connection = static_cast<ODBCConnection*>(obj.get());

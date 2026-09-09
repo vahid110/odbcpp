@@ -358,13 +358,15 @@ bool ODBCConnection::logging_enabled(
 ODBCStatement::ODBCStatement(std::shared_ptr<ODBCConnection> conn)
     : ODBCHandle(HandleType::Statement), conn_(std::move(conn)) {
   try {
-    app_row_descriptor_ = create_implicit_descriptor();
-    app_param_descriptor_ = create_implicit_descriptor();
+    automatic_app_row_descriptor_ = create_implicit_descriptor();
+    app_row_descriptor_ = automatic_app_row_descriptor_;
+    automatic_app_param_descriptor_ = create_implicit_descriptor();
+    app_param_descriptor_ = automatic_app_param_descriptor_;
     imp_row_descriptor_ = create_implicit_descriptor();
     imp_param_descriptor_ = create_implicit_descriptor();
   } catch (...) {
     for (const auto descriptor : {
-             app_row_descriptor_, app_param_descriptor_,
+             automatic_app_row_descriptor_, automatic_app_param_descriptor_,
              imp_row_descriptor_, imp_param_descriptor_}) {
       if (descriptor) HandleRegistry::instance().unregister_handle(descriptor);
     }
@@ -374,7 +376,7 @@ ODBCStatement::ODBCStatement(std::shared_ptr<ODBCConnection> conn)
 
 ODBCStatement::~ODBCStatement() {
   for (const auto descriptor : {
-           app_row_descriptor_, app_param_descriptor_,
+           automatic_app_row_descriptor_, automatic_app_param_descriptor_,
            imp_row_descriptor_, imp_param_descriptor_}) {
     if (descriptor) HandleRegistry::instance().unregister_handle(descriptor);
   }
@@ -1016,6 +1018,15 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
   const auto numeric = static_cast<SQLULEN>(
       reinterpret_cast<std::uintptr_t>(value));
   switch (attribute) {
+    case SQL_ATTR_APP_ROW_DESC:
+    case SQL_ATTR_APP_PARAM_DESC:
+      return set_application_descriptor(
+          attribute, static_cast<SQLHDESC>(value));
+    case SQL_ATTR_IMP_ROW_DESC:
+    case SQL_ATTR_IMP_PARAM_DESC:
+      set_error(SQLSTATE_INVALID_AUTO_DESCRIPTOR_USE,
+                "Implementation descriptors are read-only");
+      return SQL_ERROR;
     case SQL_ATTR_QUERY_TIMEOUT:
       query_timeout_seconds_ = numeric;
       return SQL_SUCCESS;
@@ -1082,6 +1093,49 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
   set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
             "Requested statement attribute value is not supported");
   return SQL_ERROR;
+}
+
+SQLRETURN ODBCStatement::set_application_descriptor(
+    SQLINTEGER attribute, SQLHDESC descriptor) {
+  auto& active = attribute == SQL_ATTR_APP_ROW_DESC
+      ? app_row_descriptor_ : app_param_descriptor_;
+  const auto automatic = attribute == SQL_ATTR_APP_ROW_DESC
+      ? automatic_app_row_descriptor_ : automatic_app_param_descriptor_;
+  if (!descriptor || descriptor == automatic) {
+    active = automatic;
+    return SQL_SUCCESS;
+  }
+
+  auto candidate = HandleRegistry::instance().get_handle_as<ODBCDescriptor>(
+      descriptor);
+  if (!candidate) {
+    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+              "Application descriptor handle is invalid");
+    return SQL_ERROR;
+  }
+  if (candidate->is_automatically_allocated()) {
+    set_error(SQLSTATE_INVALID_AUTO_DESCRIPTOR_USE,
+              "A different implicit descriptor cannot be associated");
+    return SQL_ERROR;
+  }
+  auto owner = HandleRegistry::instance().get_connection_for_handle(
+      descriptor);
+  if (!owner || owner.get() != conn_.get()) {
+    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+              "Application descriptor belongs to another connection");
+    return SQL_ERROR;
+  }
+  active = descriptor;
+  return SQL_SUCCESS;
+}
+
+void ODBCStatement::detach_descriptor(SQLHDESC descriptor) noexcept {
+  if (app_row_descriptor_ == descriptor) {
+    app_row_descriptor_ = automatic_app_row_descriptor_;
+  }
+  if (app_param_descriptor_ == descriptor) {
+    app_param_descriptor_ = automatic_app_param_descriptor_;
+  }
 }
 
 SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
@@ -2624,6 +2678,28 @@ std::shared_ptr<ODBCConnection> HandleRegistry::get_connection_for_handle(
     current = it->second.parent;
   }
   return nullptr;
+}
+
+void HandleRegistry::detach_descriptor_from_statements(SQLHDESC descriptor) {
+  std::vector<std::shared_ptr<ODBCStatement>> statements;
+  {
+    std::lock_guard lock(mutex_);
+    const auto descriptor_entry = handles_.find(descriptor);
+    if (descriptor_entry == handles_.end()) return;
+    const auto connection = descriptor_entry->second.parent;
+    for (const auto& [handle, entry] : handles_) {
+      static_cast<void>(handle);
+      if (entry.object->get_type() != HandleType::Statement ||
+          entry.parent != connection) {
+        continue;
+      }
+      statements.push_back(
+          std::static_pointer_cast<ODBCStatement>(entry.object));
+    }
+  }
+  for (const auto& statement : statements) {
+    statement->detach_descriptor(descriptor);
+  }
 }
 
 HandleOperationLease HandleRegistry::lock_handles(

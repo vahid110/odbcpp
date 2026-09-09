@@ -583,6 +583,113 @@ TEST_F(AttributeApisTest, ReportsAllImplicitDescriptorHandles) {
   }
 }
 
+TEST_F(AttributeApisTest, AssociatesAndReleasesExplicitDescriptors) {
+  SQLHDESC automatic_row = SQL_NULL_HDESC;
+  SQLHDESC automatic_param = SQL_NULL_HDESC;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_APP_ROW_DESC, &automatic_row, 0, nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_APP_PARAM_DESC, &automatic_param, 0, nullptr));
+  const auto descriptor = odbcpp::test::make_descriptor(connection_);
+  ASSERT_NE(nullptr, descriptor);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_APP_ROW_DESC, descriptor, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttrW(
+      statement_, SQL_ATTR_APP_PARAM_DESC, descriptor, 0));
+  const auto other_statement = odbcpp::test::make_statement(connection_);
+  ASSERT_NE(nullptr, other_statement);
+  SQLHDESC other_automatic = SQL_NULL_HDESC;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      other_statement, SQL_ATTR_APP_ROW_DESC, &other_automatic, 0, nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      other_statement, SQL_ATTR_APP_ROW_DESC, descriptor, 0));
+  SQLHDESC associated = SQL_NULL_HDESC;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_APP_ROW_DESC, &associated, 0, nullptr));
+  EXPECT_EQ(descriptor, associated);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttrW(
+      statement_, SQL_ATTR_APP_PARAM_DESC, &associated, 0, nullptr));
+  EXPECT_EQ(descriptor, associated);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_APP_ROW_DESC, &associated, 0, nullptr));
+  EXPECT_EQ(automatic_row, associated);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_APP_PARAM_DESC, &associated, 0, nullptr));
+  EXPECT_EQ(automatic_param, associated);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      other_statement, SQL_ATTR_APP_ROW_DESC, &associated, 0, nullptr));
+  EXPECT_EQ(other_automatic, associated);
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, other_statement));
+}
+
+TEST_F(AttributeApisTest, ValidatesApplicationDescriptorAssociations) {
+  SQLHDESC implementation = SQL_NULL_HDESC;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_IMP_ROW_DESC, &implementation, 0, nullptr));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_IMP_ROW_DESC, implementation, 0));
+  EXPECT_EQ("HY017", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  const auto other_statement = odbcpp::test::make_statement(connection_);
+  ASSERT_NE(nullptr, other_statement);
+  SQLHDESC other_automatic = SQL_NULL_HDESC;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      other_statement, SQL_ATTR_APP_ROW_DESC, &other_automatic, 0, nullptr));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_APP_ROW_DESC, other_automatic, 0));
+  EXPECT_EQ("HY017", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, other_statement));
+
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_APP_ROW_DESC,
+      reinterpret_cast<SQLPOINTER>(std::uintptr_t{1}), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  SQLHENV other_environment = SQL_NULL_HENV;
+  SQLHDBC other_connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(
+      SQL_HANDLE_ENV, SQL_NULL_HANDLE, &other_environment));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetEnvAttr(
+      other_environment, SQL_ATTR_ODBC_VERSION,
+      integer_value(SQL_OV_ODBC3), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(
+      SQL_HANDLE_DBC, other_environment, &other_connection));
+  const auto foreign_descriptor =
+      odbcpp::test::make_descriptor(other_connection);
+  ASSERT_NE(nullptr, foreign_descriptor);
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_APP_PARAM_DESC, foreign_descriptor, 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLFreeHandle(SQL_HANDLE_DESC, foreign_descriptor));
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLFreeHandle(SQL_HANDLE_DBC, other_connection));
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLFreeHandle(SQL_HANDLE_ENV, other_environment));
+}
+
+TEST_F(AttributeApisTest, NullDescriptorRestoresAutomaticAssociation) {
+  SQLHDESC automatic = SQL_NULL_HDESC;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_APP_ROW_DESC, &automatic, 0, nullptr));
+  const auto descriptor = odbcpp::test::make_descriptor(connection_);
+  ASSERT_NE(nullptr, descriptor);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_APP_ROW_DESC, descriptor, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_APP_ROW_DESC, SQL_NULL_HDESC, 0));
+
+  SQLHDESC associated = SQL_NULL_HDESC;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_APP_ROW_DESC, &associated, 0, nullptr));
+  EXPECT_EQ(automatic, associated);
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
+}
+
 TEST_F(AttributeApisTest, ReportsForwardOnlyStatementDefaults) {
   struct AttributeExpectation {
     SQLINTEGER attribute;
