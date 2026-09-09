@@ -3,6 +3,8 @@
 
 #include <cstdio>
 #include <cstring>
+#include <string_view>
+#include <vector>
 
 namespace {
 
@@ -19,6 +21,17 @@ void print_diagnostic(SQLSMALLINT handle_type, SQLHANDLE handle) {
 
 bool succeeded(SQLRETURN result) {
   return result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO;
+}
+
+std::vector<SQLWCHAR> wide_ascii(std::string_view input) {
+  std::vector<SQLWCHAR> output;
+  output.reserve(input.size() + 1);
+  for (const auto character : input) {
+    output.push_back(static_cast<SQLWCHAR>(
+        static_cast<unsigned char>(character)));
+  }
+  output.push_back(0);
+  return output;
 }
 
 } // namespace
@@ -126,6 +139,36 @@ int main() {
     return 1;
   }
   if (!succeeded(SQLCloseCursor(statement))) {
+    print_diagnostic(SQL_HANDLE_STMT, statement);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+  const auto wide_native_input = wide_ascii("SELECT 84");
+  SQLWCHAR wide_native_output[16]{};
+  SQLINTEGER wide_native_length = 0;
+  if (!succeeded(SQLNativeSqlW(
+          connection, const_cast<SQLWCHAR*>(wide_native_input.data()), SQL_NTS,
+          wide_native_output, 16, &wide_native_length)) ||
+      wide_native_length != 9 ||
+      wide_native_output[7] != static_cast<SQLWCHAR>('8')) {
+    print_diagnostic(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+  const auto wide_query = wide_ascii("SELECT 84");
+  value = 0;
+  if (!succeeded(SQLExecDirectW(
+          statement, const_cast<SQLWCHAR*>(wide_query.data()), SQL_NTS)) ||
+      !succeeded(SQLFetch(statement)) ||
+      !succeeded(SQLGetData(
+          statement, 1, SQL_C_SLONG, &value, 0, nullptr)) ||
+      value != 84 || !succeeded(SQLCloseCursor(statement))) {
     print_diagnostic(SQL_HANDLE_STMT, statement);
     SQLFreeHandle(SQL_HANDLE_STMT, statement);
     SQLDisconnect(connection);

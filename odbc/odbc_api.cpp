@@ -1,5 +1,6 @@
 #include "odbc_api.h"
 #include "odbc_handles.h"
+#include "unicode.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -21,6 +22,40 @@ namespace {
   std::string normalize_string(const std::string& input) {
     // Currently pass-through, but ready for UTF-8 validation/conversion
     return input;
+  }
+
+  template <typename Length>
+  SQLRETURN write_wide_output(
+      ODBCHandle* handle, std::string_view utf8, SQLWCHAR* output,
+      SQLINTEGER buffer_length, Length* output_length,
+      std::string_view truncation_message, bool set_truncation_diagnostic = true) {
+    const auto wide = utf8_to_wide(utf8);
+    if (!wide) {
+      if (handle) {
+        handle->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                          "Invalid UTF-8 output text");
+      }
+      return SQL_ERROR;
+    }
+    if (output_length) {
+      *output_length = static_cast<Length>(std::min<std::size_t>(
+          wide->size(),
+          static_cast<std::size_t>(std::numeric_limits<Length>::max())));
+    }
+    if (!output || buffer_length <= 0) return SQL_SUCCESS;
+
+    const auto copied = std::min<std::size_t>(
+        wide->size(), static_cast<std::size_t>(buffer_length - 1));
+    std::copy_n(wide->begin(), copied, output);
+    output[copied] = 0;
+    if (copied < wide->size()) {
+      if (handle && set_truncation_diagnostic) {
+        handle->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                          std::string(truncation_message));
+      }
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    return SQL_SUCCESS;
   }
 
   bool is_supported_function(SQLUSMALLINT function_id) {
@@ -174,6 +209,32 @@ SQLRETURN SQLConnect(SQLHDBC connection_handle,
   return conn->connect(dsn, user, password);
 }
 
+SQLRETURN SQLConnectW(SQLHDBC connection_handle,
+                      SQLWCHAR* server_name, SQLSMALLINT name_length1,
+                      SQLWCHAR* user_name, SQLSMALLINT name_length2,
+                      SQLWCHAR* authentication, SQLSMALLINT name_length3) {
+  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  if (!conn) return SQL_INVALID_HANDLE;
+  if ((name_length1 < 0 && name_length1 != SQL_NTS) ||
+      (name_length2 < 0 && name_length2 != SQL_NTS) ||
+      (name_length3 < 0 && name_length3 != SQL_NTS)) {
+    conn->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid wide-character connection input length");
+    return SQL_ERROR;
+  }
+
+  const auto dsn = sqlwchar_to_utf8(server_name, name_length1);
+  const auto user = sqlwchar_to_utf8(user_name, name_length2);
+  const auto password = sqlwchar_to_utf8(authentication, name_length3);
+  if (!dsn || !user || !password) {
+    conn->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Invalid wide-character connection input");
+    return SQL_ERROR;
+  }
+  return conn->connect(normalize_string(*dsn), normalize_string(*user),
+                       normalize_string(*password));
+}
+
 SQLRETURN SQLDriverConnect(
     SQLHDBC connection_handle, SQLHWND, SQLCHAR* connection_string_in,
     SQLSMALLINT string_length1, SQLCHAR* connection_string_out,
@@ -235,6 +296,58 @@ SQLRETURN SQLDriverConnect(
   return SQL_SUCCESS;
 }
 
+SQLRETURN SQLDriverConnectW(
+    SQLHDBC connection_handle, SQLHWND, SQLWCHAR* connection_string_in,
+    SQLSMALLINT string_length1, SQLWCHAR* connection_string_out,
+    SQLSMALLINT buffer_length, SQLSMALLINT* string_length2,
+    SQLUSMALLINT driver_completion) {
+  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  if (!conn) return SQL_INVALID_HANDLE;
+  if (!connection_string_in) {
+    conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                    "Input connection string is null");
+    return SQL_ERROR;
+  }
+  if (string_length1 < 0 && string_length1 != SQL_NTS) {
+    conn->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid input connection string length");
+    return SQL_ERROR;
+  }
+  if (buffer_length < 0) {
+    conn->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid output connection string buffer length");
+    return SQL_ERROR;
+  }
+  if (driver_completion != SQL_DRIVER_NOPROMPT &&
+      driver_completion != SQL_DRIVER_COMPLETE &&
+      driver_completion != SQL_DRIVER_COMPLETE_REQUIRED &&
+      driver_completion != SQL_DRIVER_PROMPT) {
+    conn->set_error(SQLSTATE_INVALID_DRIVER_COMPLETION,
+                    "Invalid driver completion mode");
+    return SQL_ERROR;
+  }
+  if (driver_completion == SQL_DRIVER_PROMPT) {
+    conn->set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                    "Interactive connection prompting is not implemented");
+    return SQL_ERROR;
+  }
+
+  const auto connection_string =
+      sqlwchar_to_utf8(connection_string_in, string_length1);
+  if (!connection_string) {
+    conn->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Invalid wide-character connection string");
+    return SQL_ERROR;
+  }
+  const auto normalized = normalize_string(*connection_string);
+  const auto connect_result = conn->connect(normalized, {}, {});
+  if (connect_result != SQL_SUCCESS) return connect_result;
+
+  return write_wide_output(
+      conn, normalized, connection_string_out, buffer_length, string_length2,
+      "Output connection string was truncated");
+}
+
 SQLRETURN SQLDisconnect(SQLHDBC connection_handle) {
   auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
@@ -292,6 +405,29 @@ SQLRETURN SQLExecDirect(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLI
   
   std::string sql = normalize_string(sqlchar_to_string(statement_text, text_length));
   return stmt->execute_direct(sql);
+}
+
+SQLRETURN SQLExecDirectW(SQLHSTMT statement_handle,
+                         SQLWCHAR* statement_text, SQLINTEGER text_length) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  if (!statement_text) {
+    stmt->set_error(SQLSTATE_INVALID_NULL_POINTER, "SQL statement is null");
+    return SQL_ERROR;
+  }
+  if (text_length < 0 && text_length != SQL_NTS) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid SQL statement length");
+    return SQL_ERROR;
+  }
+
+  const auto sql = sqlwchar_to_utf8(statement_text, text_length);
+  if (!sql) {
+    stmt->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Invalid wide-character SQL statement");
+    return SQL_ERROR;
+  }
+  return stmt->execute_direct(normalize_string(*sql));
 }
 
 SQLRETURN SQLFetch(SQLHSTMT statement_handle) {
@@ -444,6 +580,42 @@ SQLRETURN SQLGetDiagRec(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT r
   }
   
   return SQL_SUCCESS;
+}
+
+SQLRETURN SQLGetDiagRecW(SQLSMALLINT, SQLHANDLE handle,
+                         SQLSMALLINT rec_number, SQLWCHAR* sqlstate,
+                         SQLINTEGER* native_error, SQLWCHAR* message_text,
+                         SQLSMALLINT buffer_length,
+                         SQLSMALLINT* text_length) {
+  if (rec_number < 1) {
+    auto* obj = HandleRegistry::instance().get_handle(handle);
+    if (obj) {
+      obj->set_error(SQLSTATE_GENERAL_ERROR,
+                     "Invalid diagnostic record number");
+    }
+    return SQL_ERROR;
+  }
+
+  auto* obj = HandleRegistry::instance().get_handle(handle);
+  if (!obj) return SQL_INVALID_HANDLE;
+  if (buffer_length < 0) return SQL_ERROR;
+
+  const auto* record = obj->get_diagnostic_record(rec_number);
+  if (!record) return SQL_NO_DATA;
+
+  if (sqlstate) {
+    const auto state_length = std::min<std::size_t>(5, record->sqlstate.size());
+    for (std::size_t i = 0; i < state_length; ++i) {
+      sqlstate[i] = static_cast<SQLWCHAR>(
+          static_cast<unsigned char>(record->sqlstate[i]));
+    }
+    sqlstate[state_length] = 0;
+  }
+  if (native_error) *native_error = record->native_error;
+
+  return write_wide_output(
+      obj, record->message_text, message_text, buffer_length, text_length,
+      "Diagnostic message was truncated", false);
 }
 
 SQLRETURN SQLGetDiagField(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,
@@ -691,6 +863,43 @@ SQLRETURN SQLNativeSql(
     return SQL_SUCCESS_WITH_INFO;
   }
   return SQL_SUCCESS;
+}
+
+SQLRETURN SQLNativeSqlW(
+    SQLHDBC connection_handle, SQLWCHAR* input_statement,
+    SQLINTEGER text_length1, SQLWCHAR* output_statement,
+    SQLINTEGER buffer_length, SQLINTEGER* text_length2) {
+  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  if (!conn) return SQL_INVALID_HANDLE;
+  if (!input_statement) {
+    conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                    "Input SQL statement is null");
+    return SQL_ERROR;
+  }
+  if (text_length1 < 0 && text_length1 != SQL_NTS) {
+    conn->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid input SQL statement length");
+    return SQL_ERROR;
+  }
+  if (output_statement && buffer_length < 0) {
+    conn->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid output SQL buffer length");
+    return SQL_ERROR;
+  }
+  if (!conn->is_connected()) {
+    conn->set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
+    return SQL_ERROR;
+  }
+
+  const auto native_sql = sqlwchar_to_utf8(input_statement, text_length1);
+  if (!native_sql) {
+    conn->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Invalid wide-character SQL statement");
+    return SQL_ERROR;
+  }
+  return write_wide_output(
+      conn, normalize_string(*native_sql), output_statement, buffer_length,
+      text_length2, "Output SQL statement was truncated");
 }
 
 SQLRETURN SQLSetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute, 
@@ -1104,6 +1313,29 @@ SQLRETURN SQLPrepare(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTE
   
   std::string sql = sqlchar_to_string(statement_text, text_length);
   return stmt->prepare(sql);
+}
+
+SQLRETURN SQLPrepareW(SQLHSTMT statement_handle,
+                      SQLWCHAR* statement_text, SQLINTEGER text_length) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  if (!statement_text) {
+    stmt->set_error(SQLSTATE_INVALID_NULL_POINTER, "SQL statement is null");
+    return SQL_ERROR;
+  }
+  if (text_length < 0 && text_length != SQL_NTS) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid SQL statement length");
+    return SQL_ERROR;
+  }
+
+  const auto sql = sqlwchar_to_utf8(statement_text, text_length);
+  if (!sql) {
+    stmt->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Invalid wide-character SQL statement");
+    return SQL_ERROR;
+  }
+  return stmt->prepare(normalize_string(*sql));
 }
 
 SQLRETURN SQLExecute(SQLHSTMT statement_handle) {

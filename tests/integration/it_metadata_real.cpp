@@ -1,7 +1,10 @@
 #include <gtest/gtest.h>
+#include "odbc/odbc_api.h"
 #include "odbc/odbc_types.h"
+#include "odbc/unicode.h"
 
 #include <cstdint>
+#include <string>
 
 class MetadataIntegrationTest : public ::testing::Test {
 protected:
@@ -70,6 +73,39 @@ TEST_F(MetadataIntegrationTest, BasicMetadata) {
     ret = SQLColAttribute(hstmt, 1, SQL_DESC_TYPE, nullptr, 0, nullptr, &numeric_attr);
     EXPECT_EQ(SQL_SUCCESS, ret);
     EXPECT_EQ(SQL_VARCHAR, numeric_attr);
+}
+
+TEST_F(MetadataIntegrationTest, ExecutesAndPreparesUnicodeSql) {
+    const std::string expected =
+        "Gr\xc3\xbc\xc3\x9f" "e \xe4\xb8\x96\xe7\x95\x8c "
+        "\xf0\x9f\x99\x82";
+    auto direct_sql = rs::odbc::utf8_to_wide(
+        "SELECT 'Gr\xc3\xbc\xc3\x9f" "e \xe4\xb8\x96\xe7\x95\x8c "
+        "\xf0\x9f\x99\x82'::text");
+    ASSERT_TRUE(direct_sql.has_value());
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLExecDirectW(hstmt, direct_sql->data(),
+                             static_cast<SQLINTEGER>(direct_sql->size())));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    char value[128]{};
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetData(hstmt, 1, SQL_C_CHAR, value, sizeof(value), nullptr));
+    EXPECT_EQ(expected, value);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    auto prepared_sql = rs::odbc::utf8_to_wide(
+        "SELECT '\xf0\x9f\x9a\x80 prepared'::text");
+    ASSERT_TRUE(prepared_sql.has_value());
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLPrepareW(hstmt, prepared_sql->data(),
+                          static_cast<SQLINTEGER>(prepared_sql->size())));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    char prepared_value[64]{};
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetData(hstmt, 1, SQL_C_CHAR, prepared_value,
+                         sizeof(prepared_value), nullptr));
+    EXPECT_EQ("\xf0\x9f\x9a\x80 prepared", prepared_value);
 }
 
 TEST_F(MetadataIntegrationTest, MultipleColumns) {

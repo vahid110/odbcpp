@@ -113,6 +113,8 @@ list(APPEND CORE_SOURCES
   "odbc/result_types.cpp"
   "odbc/text_data_converter.h"
   "odbc/text_data_converter.cpp"
+  "odbc/unicode.h"
+  "odbc/unicode.cpp"
 )
 
 # Build static library for linking examples/tests

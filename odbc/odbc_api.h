@@ -2,8 +2,7 @@
 #include "odbc_types.h"
 
 // ODBC API function declarations
-// Architecture supports both ANSI and Wide versions
-// Currently implementing ANSI only, Wide versions reserved for future
+// ANSI and wide-character ODBC API declarations.
 extern "C" {
 
 // Handle management
@@ -155,20 +154,25 @@ SQLRETURN SQLDescribeParam(SQLHSTMT statement_handle, SQLUSMALLINT parameter_num
 
 // Note: SQLGetDescField and SQLSetDescField are declared in system sql.h
 
-// Wide character versions (reserved for future implementation)
-// These ensure our architecture can support Unicode without breaking changes
-#ifdef ODBCPP_ENABLE_WIDE_FUNCTIONS
-typedef wchar_t SQLWCHAR;
-
-// Wide function declarations (not implemented yet)
 SQLRETURN SQLConnectW(SQLHDBC connection_handle, 
                      SQLWCHAR* server_name, SQLSMALLINT name_length1,
                      SQLWCHAR* user_name, SQLSMALLINT name_length2, 
                      SQLWCHAR* authentication, SQLSMALLINT name_length3);
-SQLRETURN SQLExecDirectW(SQLHSTMT statement_handle, SQLWCHAR* statement_text, SQLINTEGER text_length);
+SQLRETURN SQLDriverConnectW(
+    SQLHDBC connection_handle, SQLHWND window_handle,
+    SQLWCHAR* connection_string_in, SQLSMALLINT string_length1,
+    SQLWCHAR* connection_string_out, SQLSMALLINT buffer_length,
+    SQLSMALLINT* string_length2, SQLUSMALLINT driver_completion);
+SQLRETURN SQLExecDirectW(SQLHSTMT statement_handle,
+                         SQLWCHAR* statement_text, SQLINTEGER text_length);
+SQLRETURN SQLPrepareW(SQLHSTMT statement_handle,
+                      SQLWCHAR* statement_text, SQLINTEGER text_length);
 SQLRETURN SQLGetDiagRecW(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,
                         SQLWCHAR* sqlstate, SQLINTEGER* native_error, SQLWCHAR* message_text,
                         SQLSMALLINT buffer_length, SQLSMALLINT* text_length);
-#endif // ODBCPP_ENABLE_WIDE_FUNCTIONS
+SQLRETURN SQLNativeSqlW(
+    SQLHDBC connection_handle, SQLWCHAR* input_statement,
+    SQLINTEGER text_length1, SQLWCHAR* output_statement,
+    SQLINTEGER buffer_length, SQLINTEGER* text_length2);
 
 } // extern "C"
