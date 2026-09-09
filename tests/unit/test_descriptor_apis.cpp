@@ -3,6 +3,7 @@
 #include "odbc/odbc_handles.h"
 #include "odbc/unicode.h"
 #include "core/database/database_factory.h"
+#include "tests/test_handle_helpers.h"
 
 #include <cstdint>
 
@@ -146,8 +147,8 @@ TEST(ExplicitDescriptorApiTest, AllocatesAndStoresHeaderAndRecordFields) {
               SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &environment));
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
-    ASSERT_EQ(SQL_SUCCESS,
-              SQLAllocHandle(SQL_HANDLE_DESC, connection, &descriptor));
+    descriptor = odbcpp::test::make_descriptor(connection);
+    ASSERT_NE(nullptr, descriptor);
 
     const auto number = [](SQLULEN value) {
         return reinterpret_cast<SQLPOINTER>(
@@ -225,10 +226,10 @@ TEST(ExplicitDescriptorApiTest, CopiesDescriptorState) {
               SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &environment));
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
-    ASSERT_EQ(SQL_SUCCESS,
-              SQLAllocHandle(SQL_HANDLE_DESC, connection, &source));
-    ASSERT_EQ(SQL_SUCCESS,
-              SQLAllocHandle(SQL_HANDLE_DESC, connection, &target));
+    source = odbcpp::test::make_descriptor(connection);
+    target = odbcpp::test::make_descriptor(connection);
+    ASSERT_NE(nullptr, source);
+    ASSERT_NE(nullptr, target);
     ASSERT_EQ(SQL_SUCCESS,
               SQLSetDescField(source, 1, SQL_DESC_CONCISE_TYPE,
                               reinterpret_cast<SQLPOINTER>(SQL_C_WCHAR), 0));
@@ -262,8 +263,8 @@ TEST(ExplicitDescriptorApiTest, StoresAndReturnsWideDescriptorNames) {
               SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &environment));
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
-    ASSERT_EQ(SQL_SUCCESS,
-              SQLAllocHandle(SQL_HANDLE_DESC, connection, &descriptor));
+    descriptor = odbcpp::test::make_descriptor(connection);
+    ASSERT_NE(nullptr, descriptor);
 
     auto name = utf8_to_wide("Gr\xc3\xbc\xc3\x9f" "e \xf0\x9f\x99\x82");
     ASSERT_TRUE(name.has_value());

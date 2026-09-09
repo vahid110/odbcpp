@@ -23,7 +23,7 @@ template <typename Callback>
 SQLRETURN invoke_c_api(SQLHANDLE diagnostic_handle,
                        Callback&& callback) noexcept {
   try {
-    return std::forward<Callback>(callback)();
+    return static_cast<SQLRETURN>(std::forward<Callback>(callback)());
   } catch (...) {
     record_unexpected_exception(diagnostic_handle);
     return SQL_ERROR;

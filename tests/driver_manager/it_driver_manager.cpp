@@ -626,10 +626,17 @@ int main() {
   SQLFreeHandle(SQL_HANDLE_DBC, dsn_connection);
 
   SQLHDBC lifecycle_connection = SQL_NULL_HDBC;
+  SQLHSTMT premature_statement = SQL_NULL_HSTMT;
   if (!succeeded(SQLAllocHandle(
           SQL_HANDLE_DBC, environment, &lifecycle_connection)) ||
       !result_is(SQLDisconnect(lifecycle_connection), SQL_ERROR,
                  "SQLDisconnect before connect") ||
+      !diagnostic_is(SQL_HANDLE_DBC, lifecycle_connection, "08003") ||
+      !result_is(SQLAllocHandle(
+                     SQL_HANDLE_STMT, lifecycle_connection,
+                     &premature_statement),
+                 SQL_ERROR, "SQLAllocHandle before connect") ||
+      premature_statement != SQL_NULL_HSTMT ||
       !diagnostic_is(SQL_HANDLE_DBC, lifecycle_connection, "08003") ||
       !succeeded(SQLDriverConnect(
           lifecycle_connection, nullptr, connection_string, SQL_NTS,

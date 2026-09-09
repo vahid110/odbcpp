@@ -32,7 +32,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 
 | Operation | Variants | Status | Existing evidence | Principal remaining work |
 |---|---:|---|---|---|
-| `SQLAllocHandle` | A | Partial | unit, integration, DM | Parent/child state, null output, and allocation-failure injection remain |
+| `SQLAllocHandle` | A | Partial | unit, integration, DM | STMT/DESC require an open connection; environment-version state and allocation-failure injection remain |
 | `SQLFreeHandle` | A | Partial | unit, integration, DM | Parent/child free ordering is enforced; complete state matrix remains |
 | `SQLConnect` | A/W | Partial | unit failure, integration, DM | Reconnect is rejected with 08002; complete input/state matrix remains |
 | `SQLDriverConnect` | A/W | Partial | unit, DM | Completion modes, exact output-string rules, connected-state handling |

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_types.h"
+#include "tests/test_handle_helpers.h"
 
 // Simple unit test using ODBC API directly
 class MetadataAPITest : public ::testing::Test {
@@ -8,7 +9,7 @@ protected:
         SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &henv);
         SQLSetEnvAttr(henv, SQL_ATTR_ODBC_VERSION, (void*)SQL_OV_ODBC3, 0);
         SQLAllocHandle(SQL_HANDLE_DBC, henv, &hdbc);
-        SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
+        hstmt = odbcpp::test::make_statement(hdbc);
     }
     
     void TearDown() override {

@@ -2,6 +2,7 @@
 
 #include "odbc/odbc_api.h"
 #include "odbc/unicode.h"
+#include "tests/test_handle_helpers.h"
 
 #include <array>
 #include <string>
@@ -28,8 +29,8 @@ class UnicodeApiTest : public ::testing::Test {
                             reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_DBC, environment_, &connection_));
-    ASSERT_EQ(SQL_SUCCESS,
-              SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement_));
+    statement_ = odbcpp::test::make_statement(connection_);
+    ASSERT_NE(nullptr, statement_);
   }
 
   void TearDown() override {

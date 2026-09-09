@@ -3,6 +3,7 @@
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_types.h"
 #include "core/util/deadline.h"
+#include "tests/test_handle_helpers.h"
 
 #include <cstdint>
 #include <string>
@@ -16,8 +17,8 @@ protected:
               SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &environment_));
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_DBC, environment_, &connection_));
-    ASSERT_EQ(SQL_SUCCESS,
-              SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement_));
+    statement_ = odbcpp::test::make_statement(connection_);
+    ASSERT_NE(nullptr, statement_);
   }
 
   void TearDown() override {

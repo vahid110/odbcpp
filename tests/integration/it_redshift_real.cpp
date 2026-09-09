@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 
@@ -192,20 +193,20 @@ TEST_F(RedshiftRealTest, NegativeTests) {
   SQLFreeHandle(SQL_HANDLE_DBC, bad_conn);
   
   // Test operations without connection
-  SQLHSTMT disconnected_stmt;
+  SQLHSTMT disconnected_stmt = reinterpret_cast<SQLHSTMT>(
+      static_cast<std::uintptr_t>(1));
   SQLHDBC disconnected_conn;
   ASSERT_EQ(SQLAllocHandle(SQL_HANDLE_DBC, henv_, &disconnected_conn), SQL_SUCCESS);
-  ASSERT_EQ(SQLAllocHandle(SQL_HANDLE_STMT, disconnected_conn, &disconnected_stmt), SQL_SUCCESS);
-  
-  ret = SQLExecDirect(disconnected_stmt, (SQLCHAR*)"SELECT 1", SQL_NTS);
-  EXPECT_EQ(SQL_ERROR, ret);
+  EXPECT_EQ(SQL_ERROR, SQLAllocHandle(
+      SQL_HANDLE_STMT, disconnected_conn, &disconnected_stmt));
+  EXPECT_EQ(nullptr, disconnected_stmt);
   
   // Verify diagnostic
-  ret = SQLGetDiagRec(SQL_HANDLE_STMT, disconnected_stmt, 1, sqlstate, nullptr, message, sizeof(message), nullptr);
+  ret = SQLGetDiagRec(SQL_HANDLE_DBC, disconnected_conn, 1, sqlstate,
+                      nullptr, message, sizeof(message), nullptr);
   EXPECT_EQ(SQL_SUCCESS, ret);
-  EXPECT_STREQ("08001", (char*)sqlstate);
+  EXPECT_STREQ("08003", (char*)sqlstate);
   
-  SQLFreeHandle(SQL_HANDLE_STMT, disconnected_stmt);
   SQLFreeHandle(SQL_HANDLE_DBC, disconnected_conn);
   
   // Test with invalid handles

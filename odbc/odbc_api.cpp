@@ -329,12 +329,22 @@ static SQLRETURN SQLAllocHandle_impl(SQLSMALLINT handle_type, SQLHANDLE input_ha
       case SQL_HANDLE_STMT: {
         auto conn = get_valid_handle<ODBCConnection>(input_handle);
         if (!conn) return SQL_INVALID_HANDLE;
+        if (!conn->is_connected()) {
+          conn->set_error(SQLSTATE_CONNECTION_NOT_OPEN,
+                          "Connection is not open");
+          return SQL_ERROR;
+        }
         new_handle = std::make_unique<ODBCStatement>(conn);
         break;
       }
       case SQL_HANDLE_DESC: {
         auto conn = get_valid_handle<ODBCConnection>(input_handle);
         if (!conn) return SQL_INVALID_HANDLE;
+        if (!conn->is_connected()) {
+          conn->set_error(SQLSTATE_CONNECTION_NOT_OPEN,
+                          "Connection is not open");
+          return SQL_ERROR;
+        }
         new_handle = std::make_unique<ODBCDescriptor>(conn.get());
         break;
       }

@@ -345,21 +345,22 @@ TEST_F(PreparedStatementIntegrationTest, ErrorLeavesConnectionSynchronized) {
 
 TEST_F(PreparedStatementIntegrationTest, NegativeTests) {
     // Test SQLPrepare without connection
-    SQLHSTMT disconnected_stmt;
+    SQLHSTMT disconnected_stmt = reinterpret_cast<SQLHSTMT>(
+        static_cast<std::uintptr_t>(1));
     SQLHDBC disconnected_conn;
     SQLAllocHandle(SQL_HANDLE_DBC, henv, &disconnected_conn);
-    SQLAllocHandle(SQL_HANDLE_STMT, disconnected_conn, &disconnected_stmt);
-    
-    SQLRETURN ret = SQLPrepare(disconnected_stmt, (SQLCHAR*)"SELECT 1", SQL_NTS);
+    SQLRETURN ret = SQLAllocHandle(
+        SQL_HANDLE_STMT, disconnected_conn, &disconnected_stmt);
     EXPECT_EQ(SQL_ERROR, ret);
+    EXPECT_EQ(nullptr, disconnected_stmt);
     
     // Verify diagnostic
     SQLCHAR sqlstate[6], message[256];
-    ret = SQLGetDiagRec(SQL_HANDLE_STMT, disconnected_stmt, 1, sqlstate, nullptr, message, sizeof(message), nullptr);
+    ret = SQLGetDiagRec(SQL_HANDLE_DBC, disconnected_conn, 1, sqlstate,
+                        nullptr, message, sizeof(message), nullptr);
     EXPECT_EQ(SQL_SUCCESS, ret);
-    EXPECT_STREQ("08001", (char*)sqlstate);
+    EXPECT_STREQ("08003", (char*)sqlstate);
     
-    SQLFreeHandle(SQL_HANDLE_STMT, disconnected_stmt);
     SQLFreeHandle(SQL_HANDLE_DBC, disconnected_conn);
     
     // Test SQLExecute without prepare

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
+#include "tests/test_handle_helpers.h"
 #include <cstring>
 
 class DiagnosticsTest : public ::testing::Test {
@@ -8,7 +9,8 @@ protected:
         ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &henv));
         ASSERT_EQ(SQL_SUCCESS, SQLSetEnvAttr(henv, SQL_ATTR_ODBC_VERSION, (void*)SQL_OV_ODBC3, 0));
         ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_DBC, henv, &hdbc));
-        ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt));
+        hstmt = odbcpp::test::make_statement(hdbc);
+        ASSERT_NE(nullptr, hstmt);
     }
     
     void TearDown() override {

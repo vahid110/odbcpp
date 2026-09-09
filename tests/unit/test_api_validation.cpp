@@ -2,6 +2,7 @@
 
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_handles.h"
+#include "tests/test_handle_helpers.h"
 
 #include <cstdint>
 #include <string>
@@ -24,8 +25,8 @@ protected:
               SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment_));
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_DBC, environment_, &connection_));
-    ASSERT_EQ(SQL_SUCCESS,
-              SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement_));
+    statement_ = odbcpp::test::make_statement(connection_);
+    ASSERT_NE(nullptr, statement_);
   }
 
   void TearDown() override {
@@ -111,8 +112,8 @@ TEST(ApiHandleLifetimeTest, ConnectionCannotBeFreedBeforeItsStatement) {
             SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
   ASSERT_EQ(SQL_SUCCESS,
             SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
-  ASSERT_EQ(SQL_SUCCESS,
-            SQLAllocHandle(SQL_HANDLE_STMT, connection, &statement));
+  statement = odbcpp::test::make_statement(connection);
+  ASSERT_NE(nullptr, statement);
 
   EXPECT_EQ(SQL_ERROR, SQLFreeHandle(SQL_HANDLE_DBC, connection));
   EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_DBC, connection));
@@ -134,8 +135,8 @@ TEST(ApiHandleLifetimeTest, FreeingStatementInvalidatesImplicitDescriptors) {
             SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
   ASSERT_EQ(SQL_SUCCESS,
             SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
-  ASSERT_EQ(SQL_SUCCESS,
-            SQLAllocHandle(SQL_HANDLE_STMT, connection, &statement));
+  statement = odbcpp::test::make_statement(connection);
+  ASSERT_NE(nullptr, statement);
 
   SQLHDESC descriptor = SQL_NULL_HDESC;
   ASSERT_EQ(SQL_SUCCESS,
@@ -161,6 +162,30 @@ TEST(ApiHandleLifetimeTest, DisconnectRejectsConnectionThatWasNeverOpened) {
             SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
 
   EXPECT_EQ(SQL_ERROR, SQLDisconnect(connection));
+  EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection));
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(ApiHandleStateTest, RejectsStatementAndDescriptorBeforeConnect) {
+  SQLHENV environment = SQL_NULL_HENV;
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+
+  SQLHSTMT statement = reinterpret_cast<SQLHSTMT>(std::uintptr_t{1});
+  EXPECT_EQ(SQL_ERROR,
+            SQLAllocHandle(SQL_HANDLE_STMT, connection, &statement));
+  EXPECT_EQ(nullptr, statement);
+  EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection));
+
+  SQLHDESC descriptor = reinterpret_cast<SQLHDESC>(std::uintptr_t{1});
+  EXPECT_EQ(SQL_ERROR,
+            SQLAllocHandle(SQL_HANDLE_DESC, connection, &descriptor));
+  EXPECT_EQ(nullptr, descriptor);
   EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection));
 
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
