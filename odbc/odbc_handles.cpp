@@ -2269,11 +2269,11 @@ HandleRegistry& HandleRegistry::instance() {
 
 void HandleRegistry::register_handle(SQLHANDLE handle, std::unique_ptr<ODBCHandle> obj) {
   std::lock_guard lock(mutex_);
-  handles_[handle] = std::move(obj);
+  handles_[handle] = std::shared_ptr<ODBCHandle>(std::move(obj));
 }
 
 void HandleRegistry::unregister_handle(SQLHANDLE handle) {
-  std::unique_ptr<ODBCHandle> removed;
+  std::shared_ptr<ODBCHandle> removed;
   {
     std::lock_guard lock(mutex_);
     const auto it = handles_.find(handle);
@@ -2283,10 +2283,10 @@ void HandleRegistry::unregister_handle(SQLHANDLE handle) {
   }
 }
 
-ODBCHandle* HandleRegistry::get_handle(SQLHANDLE handle) {
+std::shared_ptr<ODBCHandle> HandleRegistry::get_handle(SQLHANDLE handle) {
   std::lock_guard lock(mutex_);
   auto it = handles_.find(handle);
-  return (it != handles_.end()) ? it->second.get() : nullptr;
+  return (it != handles_.end()) ? it->second : nullptr;
 }
 
 } // namespace rs::odbc

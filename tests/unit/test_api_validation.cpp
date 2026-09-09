@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
 
 #include "odbc/odbc_api.h"
+#include "odbc/odbc_handles.h"
 
 #include <cstdint>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -61,6 +63,27 @@ TEST(ApiAllocationValidationTest, RejectsInvalidHandleType) {
   EXPECT_EQ("HY092", diagnostic_state(SQL_HANDLE_ENV, environment));
 
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(ApiAllocationValidationTest, LookupPinsHandleAcrossConcurrentFree) {
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+
+  auto pinned = rs::odbc::HandleRegistry::instance().get_handle_as<
+      rs::odbc::ODBCEnvironment>(environment);
+  ASSERT_NE(nullptr, pinned);
+
+  SQLRETURN free_result = SQL_ERROR;
+  std::thread freer([&] {
+    free_result = SQLFreeHandle(SQL_HANDLE_ENV, environment);
+  });
+  freer.join();
+
+  ASSERT_EQ(SQL_SUCCESS, free_result);
+  EXPECT_EQ(nullptr,
+            rs::odbc::HandleRegistry::instance().get_handle(environment));
+  EXPECT_EQ(rs::odbc::HandleType::Environment, pinned->get_type());
 }
 
 TEST_F(ApiValidationTest, RejectsInvalidAnsiStatementText) {

@@ -54,6 +54,17 @@ namespace {
     return SQL_SUCCESS;
   }
 
+  template <typename Handle, typename Length>
+  SQLRETURN write_wide_output(
+      const std::shared_ptr<Handle>& handle, std::string_view utf8,
+      SQLWCHAR* output, SQLINTEGER buffer_length, Length* output_length,
+      std::string_view truncation_message,
+      bool set_truncation_diagnostic = true) {
+    return write_wide_output(
+        handle.get(), utf8, output, buffer_length, output_length,
+        truncation_message, set_truncation_diagnostic);
+  }
+
   template <typename Length>
   SQLRETURN write_wide_bytes_output(
       ODBCHandle* handle, std::string_view utf8, SQLWCHAR* output,
@@ -99,6 +110,17 @@ namespace {
     return SQL_SUCCESS;
   }
 
+  template <typename Handle, typename Length>
+  SQLRETURN write_wide_bytes_output(
+      const std::shared_ptr<Handle>& handle, std::string_view utf8,
+      SQLWCHAR* output, SQLINTEGER buffer_length, Length* output_length,
+      std::string_view truncation_message,
+      bool set_truncation_diagnostic = true) {
+    return write_wide_bytes_output(
+        handle.get(), utf8, output, buffer_length, output_length,
+        truncation_message, set_truncation_diagnostic);
+  }
+
   bool read_wide_argument(ODBCHandle* handle, SQLWCHAR* value,
                           SQLSMALLINT length,
                           std::optional<std::string>& output,
@@ -123,6 +145,15 @@ namespace {
     }
     output = *converted;
     return true;
+  }
+
+  template <typename Handle>
+  bool read_wide_argument(
+      const std::shared_ptr<Handle>& handle, SQLWCHAR* value,
+      SQLSMALLINT length, std::optional<std::string>& output,
+      std::string_view function_name) {
+    return read_wide_argument(
+        handle.get(), value, length, output, function_name);
   }
 
   std::optional<std::string_view> string_info_value(
@@ -185,6 +216,16 @@ namespace {
     return SQL_SUCCESS;
   }
 
+  template <typename Handle>
+  SQLRETURN write_narrow_output(
+      const std::shared_ptr<Handle>& handle, std::string_view value,
+      SQLCHAR* output, SQLSMALLINT buffer_length,
+      SQLSMALLINT* output_length, std::string_view truncation_message) {
+    return write_narrow_output(
+        handle.get(), value, output, buffer_length, output_length,
+        truncation_message);
+  }
+
   bool is_supported_function(SQLUSMALLINT function_id) {
     switch (function_id) {
       case SQL_API_SQLALLOCHANDLE:
@@ -243,7 +284,7 @@ namespace {
 
 // Helper to validate handle
 template<typename T>
-T* get_valid_handle(SQLHANDLE handle) {
+std::shared_ptr<T> get_valid_handle(SQLHANDLE handle) {
   return HandleRegistry::instance().get_handle_as<T>(handle);
 }
 
@@ -252,7 +293,7 @@ extern "C" {
 SQLRETURN SQLAllocHandle(SQLSMALLINT handle_type, SQLHANDLE input_handle, SQLHANDLE* output_handle) {
   if (!output_handle) {
     if (input_handle) {
-      if (auto* parent = HandleRegistry::instance().get_handle(input_handle)) {
+      if (auto parent = HandleRegistry::instance().get_handle(input_handle)) {
         parent->set_error(SQLSTATE_INVALID_NULL_POINTER,
                           "Output handle pointer is null");
       }
@@ -270,27 +311,27 @@ SQLRETURN SQLAllocHandle(SQLSMALLINT handle_type, SQLHANDLE input_handle, SQLHAN
         break;
       }
       case SQL_HANDLE_DBC: {
-        auto* env = get_valid_handle<ODBCEnvironment>(input_handle);
+        auto env = get_valid_handle<ODBCEnvironment>(input_handle);
         if (!env) return SQL_INVALID_HANDLE;
-        new_handle = std::make_unique<ODBCConnection>(env);
+        new_handle = std::make_unique<ODBCConnection>(env.get());
         break;
       }
       case SQL_HANDLE_STMT: {
-        auto* conn = get_valid_handle<ODBCConnection>(input_handle);
+        auto conn = get_valid_handle<ODBCConnection>(input_handle);
         if (!conn) return SQL_INVALID_HANDLE;
-        new_handle = std::make_unique<ODBCStatement>(conn);
+        new_handle = std::make_unique<ODBCStatement>(conn.get());
         break;
       }
       case SQL_HANDLE_DESC: {
-        auto* conn = get_valid_handle<ODBCConnection>(input_handle);
+        auto conn = get_valid_handle<ODBCConnection>(input_handle);
         if (!conn) return SQL_INVALID_HANDLE;
-        new_handle = std::make_unique<ODBCDescriptor>(conn);
+        new_handle = std::make_unique<ODBCDescriptor>(conn.get());
         break;
       }
       default: {
         // Set diagnostic for invalid handle type
         if (input_handle) {
-          auto* parent = HandleRegistry::instance().get_handle(input_handle);
+          auto parent = HandleRegistry::instance().get_handle(input_handle);
           if (parent) {
             parent->set_error(SQLSTATE_INVALID_ATTRIBUTE,
                               "Invalid handle type");
@@ -310,7 +351,7 @@ SQLRETURN SQLAllocHandle(SQLSMALLINT handle_type, SQLHANDLE input_handle, SQLHAN
   } catch (const std::exception& e) {
     // Set diagnostic on parent handle if available
     if (input_handle) {
-      auto* parent = HandleRegistry::instance().get_handle(input_handle);
+      auto parent = HandleRegistry::instance().get_handle(input_handle);
       if (parent) {
         parent->set_error(SQLSTATE_GENERAL_ERROR, std::string("Handle allocation failed: ") + e.what());
       }
@@ -319,7 +360,7 @@ SQLRETURN SQLAllocHandle(SQLSMALLINT handle_type, SQLHANDLE input_handle, SQLHAN
   } catch (...) {
     // Set diagnostic on parent handle if available
     if (input_handle) {
-      auto* parent = HandleRegistry::instance().get_handle(input_handle);
+      auto parent = HandleRegistry::instance().get_handle(input_handle);
       if (parent) {
         parent->set_error(SQLSTATE_GENERAL_ERROR, "Handle allocation failed: unknown error");
       }
@@ -331,12 +372,12 @@ SQLRETURN SQLAllocHandle(SQLSMALLINT handle_type, SQLHANDLE input_handle, SQLHAN
 SQLRETURN SQLFreeHandle(SQLSMALLINT handle_type, SQLHANDLE handle) {
   if (!handle) return SQL_INVALID_HANDLE;
   
-  auto* obj = HandleRegistry::instance().get_handle(handle);
+  auto obj = HandleRegistry::instance().get_handle(handle);
   if (!obj || static_cast<int>(obj->get_type()) != handle_type) {
     return SQL_INVALID_HANDLE;
   }
   if (handle_type == SQL_HANDLE_DESC) {
-    auto* descriptor = static_cast<ODBCDescriptor*>(obj);
+    auto* descriptor = static_cast<ODBCDescriptor*>(obj.get());
     if (descriptor->is_automatically_allocated()) {
       descriptor->set_error(SQLSTATE_INVALID_AUTO_DESCRIPTOR_USE,
                             "Implicit descriptor handles cannot be freed");
@@ -353,7 +394,7 @@ SQLRETURN SQLConnect(SQLHDBC connection_handle,
                     SQLCHAR* user_name, SQLSMALLINT name_length2, 
                     SQLCHAR* authentication, SQLSMALLINT name_length3) {
   
-  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
   if ((name_length1 < 0 && name_length1 != SQL_NTS) ||
       (name_length2 < 0 && name_length2 != SQL_NTS) ||
@@ -374,7 +415,7 @@ SQLRETURN SQLConnectW(SQLHDBC connection_handle,
                       SQLWCHAR* server_name, SQLSMALLINT name_length1,
                       SQLWCHAR* user_name, SQLSMALLINT name_length2,
                       SQLWCHAR* authentication, SQLSMALLINT name_length3) {
-  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
   if ((name_length1 < 0 && name_length1 != SQL_NTS) ||
       (name_length2 < 0 && name_length2 != SQL_NTS) ||
@@ -400,7 +441,7 @@ SQLRETURN SQLDriverConnect(
     SQLSMALLINT string_length1, SQLCHAR* connection_string_out,
     SQLSMALLINT buffer_length, SQLSMALLINT* string_length2,
     SQLUSMALLINT driver_completion) {
-  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
   if (!connection_string_in) {
     conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
@@ -461,7 +502,7 @@ SQLRETURN SQLDriverConnectW(
     SQLSMALLINT string_length1, SQLWCHAR* connection_string_out,
     SQLSMALLINT buffer_length, SQLSMALLINT* string_length2,
     SQLUSMALLINT driver_completion) {
-  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
   if (!connection_string_in) {
     conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
@@ -509,7 +550,7 @@ SQLRETURN SQLDriverConnectW(
 }
 
 SQLRETURN SQLDisconnect(SQLHDBC connection_handle) {
-  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
   
   return conn->disconnect();
@@ -517,7 +558,7 @@ SQLRETURN SQLDisconnect(SQLHDBC connection_handle) {
 
 SQLRETURN SQLSetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
                             SQLPOINTER value, SQLINTEGER) {
-  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
   return conn->set_attribute(
       attribute, static_cast<SQLULEN>(reinterpret_cast<std::uintptr_t>(value)));
@@ -532,7 +573,7 @@ SQLRETURN SQLSetConnectAttrW(SQLHDBC connection_handle, SQLINTEGER attribute,
 SQLRETURN SQLGetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
                             SQLPOINTER value, SQLINTEGER,
                             SQLINTEGER* string_length) {
-  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
   if (!value) {
     conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
@@ -557,12 +598,12 @@ SQLRETURN SQLGetConnectAttrW(SQLHDBC connection_handle, SQLINTEGER attribute,
 SQLRETURN SQLEndTran(SQLSMALLINT handle_type, SQLHANDLE handle,
                      SQLSMALLINT completion_type) {
   if (handle_type == SQL_HANDLE_DBC) {
-    auto* conn = get_valid_handle<ODBCConnection>(handle);
+    auto conn = get_valid_handle<ODBCConnection>(handle);
     if (!conn) return SQL_INVALID_HANDLE;
     return conn->end_transaction(completion_type);
   }
   if (handle_type == SQL_HANDLE_ENV) {
-    auto* environment = get_valid_handle<ODBCEnvironment>(handle);
+    auto environment = get_valid_handle<ODBCEnvironment>(handle);
     if (!environment) return SQL_INVALID_HANDLE;
     environment->set_error(
         SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
@@ -573,7 +614,7 @@ SQLRETURN SQLEndTran(SQLSMALLINT handle_type, SQLHANDLE handle,
 }
 
 SQLRETURN SQLExecDirect(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
 
   if (!statement_text) {
@@ -591,7 +632,7 @@ SQLRETURN SQLExecDirect(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLI
 
 SQLRETURN SQLExecDirectW(SQLHSTMT statement_handle,
                          SQLWCHAR* statement_text, SQLINTEGER text_length) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   if (!statement_text) {
     stmt->set_error(SQLSTATE_INVALID_NULL_POINTER, "SQL statement is null");
@@ -613,7 +654,7 @@ SQLRETURN SQLExecDirectW(SQLHSTMT statement_handle,
 }
 
 SQLRETURN SQLFetch(SQLHSTMT statement_handle) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   
   return stmt->fetch();
@@ -621,7 +662,7 @@ SQLRETURN SQLFetch(SQLHSTMT statement_handle) {
 
 SQLRETURN SQLFetchScroll(SQLHSTMT statement_handle,
                          SQLSMALLINT fetch_orientation, SQLLEN) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   if (fetch_orientation == SQL_FETCH_NEXT) return stmt->fetch();
 
@@ -644,14 +685,14 @@ SQLRETURN SQLFetchScroll(SQLHSTMT statement_handle,
 }
 
 SQLRETURN SQLMoreResults(SQLHSTMT statement_handle) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   return stmt->more_results();
 }
 
 SQLRETURN SQLGetData(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLSMALLINT target_type,
                     void* target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   
   return stmt->get_data(column_number, target_type, target_value, buffer_length, strlen_or_indicator);
@@ -659,7 +700,7 @@ SQLRETURN SQLGetData(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLS
 
 SQLRETURN SQLSetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
                          SQLPOINTER value, SQLINTEGER) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   return stmt->set_attribute(
       attribute, static_cast<SQLULEN>(reinterpret_cast<std::uintptr_t>(value)));
@@ -673,7 +714,7 @@ SQLRETURN SQLSetStmtAttrW(SQLHSTMT statement_handle, SQLINTEGER attribute,
 SQLRETURN SQLGetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
                          SQLPOINTER value, SQLINTEGER,
                          SQLINTEGER* string_length) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   if (!value) {
     stmt->set_error(SQLSTATE_INVALID_NULL_POINTER,
@@ -696,13 +737,13 @@ SQLRETURN SQLGetStmtAttrW(SQLHSTMT statement_handle, SQLINTEGER attribute,
 }
 
 SQLRETURN SQLCloseCursor(SQLHSTMT statement_handle) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   return stmt->close_cursor(true);
 }
 
 SQLRETURN SQLFreeStmt(SQLHSTMT statement_handle, SQLUSMALLINT option) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   switch (option) {
     case SQL_CLOSE:
@@ -728,14 +769,14 @@ SQLRETURN SQLGetDiagRec(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT r
                        SQLSMALLINT buffer_length, SQLSMALLINT* text_length) {
   if (rec_number < 1) {
     // Invalid record number - set diagnostic on handle if possible
-    auto* obj = HandleRegistry::instance().get_handle(handle);
+    auto obj = HandleRegistry::instance().get_handle(handle);
     if (obj) {
       obj->set_error(SQLSTATE_GENERAL_ERROR, "Invalid diagnostic record number");
     }
     return SQL_ERROR;
   }
   
-  auto* obj = HandleRegistry::instance().get_handle(handle);
+  auto obj = HandleRegistry::instance().get_handle(handle);
   if (!obj) return SQL_INVALID_HANDLE;
   
   const auto* record = obj->get_diagnostic_record(rec_number);
@@ -782,7 +823,7 @@ SQLRETURN SQLGetDiagRecW(SQLSMALLINT, SQLHANDLE handle,
                          SQLSMALLINT buffer_length,
                          SQLSMALLINT* text_length) {
   if (rec_number < 1) {
-    auto* obj = HandleRegistry::instance().get_handle(handle);
+    auto obj = HandleRegistry::instance().get_handle(handle);
     if (obj) {
       obj->set_error(SQLSTATE_GENERAL_ERROR,
                      "Invalid diagnostic record number");
@@ -790,7 +831,7 @@ SQLRETURN SQLGetDiagRecW(SQLSMALLINT, SQLHANDLE handle,
     return SQL_ERROR;
   }
 
-  auto* obj = HandleRegistry::instance().get_handle(handle);
+  auto obj = HandleRegistry::instance().get_handle(handle);
   if (!obj) return SQL_INVALID_HANDLE;
   if (buffer_length < 0) return SQL_ERROR;
 
@@ -815,7 +856,7 @@ SQLRETURN SQLGetDiagRecW(SQLSMALLINT, SQLHANDLE handle,
 SQLRETURN SQLGetDiagField(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,
                          SQLSMALLINT diag_identifier, SQLPOINTER diag_info_ptr, SQLSMALLINT buffer_length,
                          SQLSMALLINT* string_length_ptr) {
-  auto* obj = HandleRegistry::instance().get_handle(handle);
+  auto obj = HandleRegistry::instance().get_handle(handle);
   if (!obj) return SQL_INVALID_HANDLE;
   
   // Header fields (rec_number = 0)
@@ -887,7 +928,7 @@ SQLRETURN SQLGetDiagFieldW(
     SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,
     SQLSMALLINT diag_identifier, SQLPOINTER diag_info_ptr,
     SQLSMALLINT buffer_length, SQLSMALLINT* string_length_ptr) {
-  auto* obj = HandleRegistry::instance().get_handle(handle);
+  auto obj = HandleRegistry::instance().get_handle(handle);
   if (!obj) return SQL_INVALID_HANDLE;
   if (buffer_length < 0) return SQL_ERROR;
   if (rec_number == 0 || diag_identifier == SQL_DIAG_NATIVE) {
@@ -938,7 +979,7 @@ SQLRETURN SQLError(SQLHENV environment_handle, SQLHDBC connection_handle, SQLHST
   
   // SQLError should clear the diagnostic after retrieving it (ODBC 2.x behavior)
   if (result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO) {
-    auto* obj = HandleRegistry::instance().get_handle(handle);
+    auto obj = HandleRegistry::instance().get_handle(handle);
     if (obj) {
       obj->clear_diagnostics();
     }
@@ -971,7 +1012,7 @@ SQLRETURN SQLErrorW(
       handle_type, handle, 1, sqlstate, native_error, message_text,
       buffer_length, text_length);
   if (result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO) {
-    auto* obj = HandleRegistry::instance().get_handle(handle);
+    auto obj = HandleRegistry::instance().get_handle(handle);
     if (obj) obj->clear_diagnostics();
   }
   return result;
@@ -979,7 +1020,7 @@ SQLRETURN SQLErrorW(
 
 SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type, 
                     void* info_value, SQLSMALLINT buffer_length, SQLSMALLINT* string_length) {
-  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
 
   if (const auto value = string_info_value(info_type)) {
@@ -1067,7 +1108,7 @@ SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type,
 SQLRETURN SQLGetInfoW(SQLHDBC connection_handle, SQLUSMALLINT info_type,
                       void* info_value, SQLSMALLINT buffer_length,
                       SQLSMALLINT* string_length) {
-  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
   if (buffer_length < 0) {
     conn->set_error(SQLSTATE_INVALID_STRING_LENGTH,
@@ -1085,7 +1126,7 @@ SQLRETURN SQLGetInfoW(SQLHDBC connection_handle, SQLUSMALLINT info_type,
 
 SQLRETURN SQLGetFunctions(SQLHDBC connection_handle, SQLUSMALLINT function_id,
                           SQLUSMALLINT* supported) {
-  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
   if (!supported) {
     conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
@@ -1123,7 +1164,7 @@ SQLRETURN SQLNativeSql(
     SQLHDBC connection_handle, SQLCHAR* input_statement,
     SQLINTEGER text_length1, SQLCHAR* output_statement,
     SQLINTEGER buffer_length, SQLINTEGER* text_length2) {
-  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
   if (!input_statement) {
     conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
@@ -1169,7 +1210,7 @@ SQLRETURN SQLNativeSqlW(
     SQLHDBC connection_handle, SQLWCHAR* input_statement,
     SQLINTEGER text_length1, SQLWCHAR* output_statement,
     SQLINTEGER buffer_length, SQLINTEGER* text_length2) {
-  auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
+  auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
   if (!input_statement) {
     conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
@@ -1204,7 +1245,7 @@ SQLRETURN SQLNativeSqlW(
 
 SQLRETURN SQLSetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute, 
                        void* value, SQLINTEGER string_length) {
-  auto* env = get_valid_handle<ODBCEnvironment>(environment_handle);
+  auto env = get_valid_handle<ODBCEnvironment>(environment_handle);
   if (!env) return SQL_INVALID_HANDLE;
   
   switch (attribute) {
@@ -1233,7 +1274,7 @@ SQLRETURN SQLSetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute,
 SQLRETURN SQLGetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute,
                         SQLPOINTER value, SQLINTEGER,
                         SQLINTEGER* string_length) {
-  auto* env = get_valid_handle<ODBCEnvironment>(environment_handle);
+  auto env = get_valid_handle<ODBCEnvironment>(environment_handle);
   if (!env) return SQL_INVALID_HANDLE;
   if (!value) {
     env->set_error(SQLSTATE_INVALID_NULL_POINTER,
@@ -1261,21 +1302,21 @@ SQLRETURN SQLGetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute,
 }
 
 SQLRETURN SQLNumResultCols(SQLHSTMT statement_handle, SQLSMALLINT* column_count) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   
   return stmt->get_num_result_cols(column_count);
 }
 
 SQLRETURN SQLRowCount(SQLHSTMT statement_handle, SQLLEN* row_count) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
 
   return stmt->row_count(row_count);
 }
 
 SQLRETURN SQLGetTypeInfo(SQLHSTMT statement_handle, SQLSMALLINT data_type) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   return stmt->get_type_info(data_type);
 }
@@ -1290,7 +1331,7 @@ SQLRETURN SQLColumns(
     SQLSMALLINT name_length2, SQLCHAR* table_name,
     SQLSMALLINT name_length3, SQLCHAR* column_name,
     SQLSMALLINT name_length4) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
 
   const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
@@ -1323,7 +1364,7 @@ SQLRETURN SQLPrimaryKeys(
     SQLSMALLINT name_length1, SQLCHAR* schema_name,
     SQLSMALLINT name_length2, SQLCHAR* table_name,
     SQLSMALLINT name_length3) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
 
   const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
@@ -1362,7 +1403,7 @@ SQLRETURN SQLForeignKeys(
     SQLSMALLINT name_length4, SQLCHAR* fk_schema_name,
     SQLSMALLINT name_length5, SQLCHAR* fk_table_name,
     SQLSMALLINT name_length6) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
 
   const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
@@ -1406,7 +1447,7 @@ SQLRETURN SQLStatistics(
     SQLSMALLINT name_length2, SQLCHAR* table_name,
     SQLSMALLINT name_length3, SQLUSMALLINT unique,
     SQLUSMALLINT reserved) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
 
   const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
@@ -1453,7 +1494,7 @@ SQLRETURN SQLProcedures(
     SQLSMALLINT name_length1, SQLCHAR* schema_name,
     SQLSMALLINT name_length2, SQLCHAR* procedure_name,
     SQLSMALLINT name_length3) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
 
   const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
@@ -1485,7 +1526,7 @@ SQLRETURN SQLProcedureColumns(
     SQLSMALLINT name_length2, SQLCHAR* procedure_name,
     SQLSMALLINT name_length3, SQLCHAR* column_name,
     SQLSMALLINT name_length4) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
 
   const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
@@ -1519,7 +1560,7 @@ SQLRETURN SQLSpecialColumns(
     SQLCHAR* schema_name, SQLSMALLINT name_length2,
     SQLCHAR* table_name, SQLSMALLINT name_length3,
     SQLUSMALLINT scope, SQLUSMALLINT nullable) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
 
   const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
@@ -1573,7 +1614,7 @@ SQLRETURN SQLTables(
     SQLSMALLINT name_length2, SQLCHAR* table_name,
     SQLSMALLINT name_length3, SQLCHAR* table_type,
     SQLSMALLINT name_length4) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
 
   const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
@@ -1607,7 +1648,7 @@ SQLRETURN SQLColumnsW(
     SQLSMALLINT name_length2, SQLWCHAR* table_name,
     SQLSMALLINT name_length3, SQLWCHAR* column_name,
     SQLSMALLINT name_length4) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   std::optional<std::string> catalog;
   std::optional<std::string> schema;
@@ -1631,7 +1672,7 @@ SQLRETURN SQLPrimaryKeysW(
     SQLSMALLINT name_length1, SQLWCHAR* schema_name,
     SQLSMALLINT name_length2, SQLWCHAR* table_name,
     SQLSMALLINT name_length3) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   std::optional<std::string> catalog;
   std::optional<std::string> schema;
@@ -1660,7 +1701,7 @@ SQLRETURN SQLForeignKeysW(
     SQLSMALLINT name_length4, SQLWCHAR* fk_schema_name,
     SQLSMALLINT name_length5, SQLWCHAR* fk_table_name,
     SQLSMALLINT name_length6) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   std::optional<std::string> pk_catalog;
   std::optional<std::string> pk_schema;
@@ -1697,7 +1738,7 @@ SQLRETURN SQLStatisticsW(
     SQLSMALLINT name_length2, SQLWCHAR* table_name,
     SQLSMALLINT name_length3, SQLUSMALLINT unique,
     SQLUSMALLINT reserved) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   std::optional<std::string> catalog;
   std::optional<std::string> schema;
@@ -1734,7 +1775,7 @@ SQLRETURN SQLProceduresW(
     SQLSMALLINT name_length1, SQLWCHAR* schema_name,
     SQLSMALLINT name_length2, SQLWCHAR* procedure_name,
     SQLSMALLINT name_length3) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   std::optional<std::string> catalog;
   std::optional<std::string> schema;
@@ -1756,7 +1797,7 @@ SQLRETURN SQLProcedureColumnsW(
     SQLSMALLINT name_length2, SQLWCHAR* procedure_name,
     SQLSMALLINT name_length3, SQLWCHAR* column_name,
     SQLSMALLINT name_length4) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   std::optional<std::string> catalog;
   std::optional<std::string> schema;
@@ -1781,7 +1822,7 @@ SQLRETURN SQLSpecialColumnsW(
     SQLWCHAR* schema_name, SQLSMALLINT name_length2,
     SQLWCHAR* table_name, SQLSMALLINT name_length3,
     SQLUSMALLINT scope, SQLUSMALLINT nullable) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   std::optional<std::string> catalog;
   std::optional<std::string> schema;
@@ -1825,7 +1866,7 @@ SQLRETURN SQLTablesW(
     SQLSMALLINT name_length2, SQLWCHAR* table_name,
     SQLSMALLINT name_length3, SQLWCHAR* table_type,
     SQLSMALLINT name_length4) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   std::optional<std::string> catalog;
   std::optional<std::string> schema;
@@ -1848,7 +1889,7 @@ SQLRETURN SQLDescribeCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number,
                         SQLCHAR* column_name, SQLSMALLINT name_buffer_length, SQLSMALLINT* name_length,
                         SQLSMALLINT* data_type, SQLULEN* column_size, SQLSMALLINT* decimal_digits,
                         SQLSMALLINT* nullable) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   
   return stmt->describe_col(column_number, column_name, name_buffer_length, name_length,
@@ -1861,7 +1902,7 @@ SQLRETURN SQLDescribeColW(
     SQLSMALLINT* name_length, SQLSMALLINT* data_type,
     SQLULEN* column_size, SQLSMALLINT* decimal_digits,
     SQLSMALLINT* nullable) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   if (name_buffer_length < 0) {
     stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
@@ -1890,7 +1931,7 @@ SQLRETURN SQLDescribeColW(
 SQLRETURN SQLColAttribute(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
                          SQLPOINTER character_attribute, SQLSMALLINT buffer_length, SQLSMALLINT* string_length,
                          SQLLEN* numeric_attribute) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   
   return stmt->col_attribute(column_number, field_identifier, character_attribute,
@@ -1902,7 +1943,7 @@ SQLRETURN SQLColAttributeW(
     SQLUSMALLINT field_identifier, SQLPOINTER character_attribute,
     SQLSMALLINT buffer_length, SQLSMALLINT* string_length,
     SQLLEN* numeric_attribute) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   if (buffer_length < 0) {
     stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
@@ -1932,7 +1973,7 @@ SQLRETURN SQLColAttributeW(
 }
 
 SQLRETURN SQLPrepare(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
 
   if (!statement_text) {
@@ -1950,7 +1991,7 @@ SQLRETURN SQLPrepare(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTE
 
 SQLRETURN SQLPrepareW(SQLHSTMT statement_handle,
                       SQLWCHAR* statement_text, SQLINTEGER text_length) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   if (!statement_text) {
     stmt->set_error(SQLSTATE_INVALID_NULL_POINTER, "SQL statement is null");
@@ -1972,7 +2013,7 @@ SQLRETURN SQLPrepareW(SQLHSTMT statement_handle,
 }
 
 SQLRETURN SQLExecute(SQLHSTMT statement_handle) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   
   return stmt->execute();
@@ -1980,7 +2021,7 @@ SQLRETURN SQLExecute(SQLHSTMT statement_handle) {
 
 SQLRETURN SQLNumParams(SQLHSTMT statement_handle,
                        SQLSMALLINT* parameter_count) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   return stmt->num_params(parameter_count);
 }
@@ -1989,7 +2030,7 @@ SQLRETURN SQLBindParameter(SQLHSTMT statement_handle, SQLUSMALLINT parameter_num
                           SQLSMALLINT value_type, SQLSMALLINT parameter_type, SQLULEN column_size,
                           SQLSMALLINT decimal_digits, SQLPOINTER parameter_value, SQLLEN buffer_length,
                           SQLLEN* strlen_or_indicator) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   
   return stmt->bind_parameter(parameter_number, input_output_type, value_type, parameter_type,
@@ -1999,7 +2040,7 @@ SQLRETURN SQLBindParameter(SQLHSTMT statement_handle, SQLUSMALLINT parameter_num
 // Column binding
 SQLRETURN SQLBindCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLSMALLINT target_type,
                     SQLPOINTER target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   
   return stmt->bind_col(column_number, target_type, target_value, buffer_length, strlen_or_indicator);
@@ -2008,7 +2049,7 @@ SQLRETURN SQLBindCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLS
 // Parameter metadata
 SQLRETURN SQLDescribeParam(SQLHSTMT statement_handle, SQLUSMALLINT parameter_number, SQLSMALLINT* data_type,
                           SQLULEN* parameter_size, SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable) {
-  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   
   return stmt->describe_param(parameter_number, data_type, parameter_size, decimal_digits, nullable);
@@ -2018,7 +2059,7 @@ SQLRETURN SQLGetDescField(
     SQLHDESC descriptor_handle, SQLSMALLINT record_number,
     SQLSMALLINT field_identifier, SQLPOINTER value,
     SQLINTEGER buffer_length, SQLINTEGER* string_length) {
-  auto* descriptor = get_valid_handle<ODBCDescriptor>(descriptor_handle);
+  auto descriptor = get_valid_handle<ODBCDescriptor>(descriptor_handle);
   if (!descriptor) return SQL_INVALID_HANDLE;
   return descriptor->get_field(record_number, field_identifier, value,
                                buffer_length, string_length);
@@ -2028,7 +2069,7 @@ SQLRETURN SQLGetDescFieldW(
     SQLHDESC descriptor_handle, SQLSMALLINT record_number,
     SQLSMALLINT field_identifier, SQLPOINTER value,
     SQLINTEGER buffer_length, SQLINTEGER* string_length) {
-  auto* descriptor = get_valid_handle<ODBCDescriptor>(descriptor_handle);
+  auto descriptor = get_valid_handle<ODBCDescriptor>(descriptor_handle);
   if (!descriptor) return SQL_INVALID_HANDLE;
   if (field_identifier != SQL_DESC_NAME) {
     return descriptor->get_field(record_number, field_identifier, value,
@@ -2055,7 +2096,7 @@ SQLRETURN SQLSetDescField(
     SQLHDESC descriptor_handle, SQLSMALLINT record_number,
     SQLSMALLINT field_identifier, SQLPOINTER value,
     SQLINTEGER buffer_length) {
-  auto* descriptor = get_valid_handle<ODBCDescriptor>(descriptor_handle);
+  auto descriptor = get_valid_handle<ODBCDescriptor>(descriptor_handle);
   if (!descriptor) return SQL_INVALID_HANDLE;
   return descriptor->set_field(record_number, field_identifier, value,
                                buffer_length);
@@ -2065,7 +2106,7 @@ SQLRETURN SQLSetDescFieldW(
     SQLHDESC descriptor_handle, SQLSMALLINT record_number,
     SQLSMALLINT field_identifier, SQLPOINTER value,
     SQLINTEGER buffer_length) {
-  auto* descriptor = get_valid_handle<ODBCDescriptor>(descriptor_handle);
+  auto descriptor = get_valid_handle<ODBCDescriptor>(descriptor_handle);
   if (!descriptor) return SQL_INVALID_HANDLE;
   if (field_identifier != SQL_DESC_NAME) {
     return descriptor->set_field(record_number, field_identifier, value,
@@ -2103,9 +2144,9 @@ SQLRETURN SQLSetDescFieldW(
 
 SQLRETURN SQLCopyDesc(SQLHDESC source_desc_handle,
                       SQLHDESC target_desc_handle) {
-  auto* source = get_valid_handle<ODBCDescriptor>(source_desc_handle);
+  auto source = get_valid_handle<ODBCDescriptor>(source_desc_handle);
   if (!source) return SQL_INVALID_HANDLE;
-  auto* target = get_valid_handle<ODBCDescriptor>(target_desc_handle);
+  auto target = get_valid_handle<ODBCDescriptor>(target_desc_handle);
   if (!target) return SQL_INVALID_HANDLE;
   target->copy_from(*source);
   return SQL_SUCCESS;

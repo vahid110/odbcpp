@@ -323,16 +323,15 @@ public:
   
   void register_handle(SQLHANDLE handle, std::unique_ptr<ODBCHandle> obj);
   void unregister_handle(SQLHANDLE handle);
-  ODBCHandle* get_handle(SQLHANDLE handle);
+  std::shared_ptr<ODBCHandle> get_handle(SQLHANDLE handle);
   
   template<typename T>
-  T* get_handle_as(SQLHANDLE handle) {
-    auto* base = get_handle(handle);
-    return base ? dynamic_cast<T*>(base) : nullptr;
+  std::shared_ptr<T> get_handle_as(SQLHANDLE handle) {
+    return std::dynamic_pointer_cast<T>(get_handle(handle));
   }
 
 private:
-  std::map<SQLHANDLE, std::unique_ptr<ODBCHandle>> handles_;
+  std::map<SQLHANDLE, std::shared_ptr<ODBCHandle>> handles_;
   std::mutex mutex_;
 };
 

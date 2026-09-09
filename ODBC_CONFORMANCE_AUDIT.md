@@ -33,7 +33,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | Operation | Variants | Status | Existing evidence | Principal remaining work |
 |---|---:|---|---|---|
 | `SQLAllocHandle` | A | Partial | unit, integration, DM | Parent/child state, null output, allocation failure, exception barrier |
-| `SQLFreeHandle` | A | Partial | unit, integration, DM | Reject live children; concurrent lookup/free lifetime |
+| `SQLFreeHandle` | A | Partial | unit, integration, DM | Parent/child and disconnect/free state transitions |
 | `SQLConnect` | A/W | Partial | unit failure, integration, DM | Complete input/state matrix; reconnect behavior |
 | `SQLDriverConnect` | A/W | Partial | unit, DM | Completion modes, exact output-string rules, connected-state handling |
 | `SQLDisconnect` | A | Partial | integration, DM | Disconnected state, active transaction and live statement behavior |
@@ -157,10 +157,10 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
 1. **C entry-point exception containment:** no C++ exception may cross an ODBC
    C ABI boundary. Several entry points allocate strings/vectors without a
    shared exception barrier.
-2. **Handle lifetime under concurrency:** the registry returns a raw pointer
-   after releasing its mutex. Concurrent `SQLFreeHandle` can invalidate an
-   in-flight API call. The current thread test covers a database wrapper, not
-   ODBC handles.
+2. **Handle concurrency:** audit batch 2 changes registry lookup to pin shared
+   ownership for the duration of each exported API call, so concurrent removal
+   cannot destroy an in-flight handle. Per-handle operation serialization and
+   concurrent parent/child transitions still require explicit state tests.
 3. **Parent/child lifetime:** freeing an environment or connection does not
    currently prove that dependent connection/statement/descriptor handles are
    absent, leaving dangling parent pointers possible for direct API callers.
