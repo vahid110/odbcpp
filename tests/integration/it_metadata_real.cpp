@@ -86,26 +86,61 @@ TEST_F(MetadataIntegrationTest, ExecutesAndPreparesUnicodeSql) {
     ASSERT_EQ(SQL_SUCCESS,
               SQLExecDirectW(hstmt, direct_sql->data(),
                              static_cast<SQLINTEGER>(direct_sql->size())));
-    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
-    char value[128]{};
+    SQLWCHAR bound_value[64]{};
+    SQLLEN bound_length = 0;
     ASSERT_EQ(SQL_SUCCESS,
-              SQLGetData(hstmt, 1, SQL_C_CHAR, value, sizeof(value), nullptr));
-    EXPECT_EQ(expected, value);
+              SQLBindCol(hstmt, 1, SQL_C_WCHAR, bound_value,
+                         sizeof(bound_value), &bound_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    const auto converted_bound = rs::odbc::wide_to_utf8(
+        std::span<const SQLWCHAR>(
+            bound_value, static_cast<std::size_t>(bound_length) /
+                             sizeof(SQLWCHAR)));
+    ASSERT_TRUE(converted_bound.has_value());
+    EXPECT_EQ(expected, *converted_bound);
+    SQLWCHAR value[64]{};
+    SQLLEN value_length = 0;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetData(hstmt, 1, SQL_C_WCHAR, value, sizeof(value),
+                         &value_length));
+    const auto converted_value = rs::odbc::wide_to_utf8(
+        std::span<const SQLWCHAR>(
+            value, static_cast<std::size_t>(value_length) /
+                       sizeof(SQLWCHAR)));
+    ASSERT_TRUE(converted_value.has_value());
+    EXPECT_EQ(expected, *converted_value);
 
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
-    auto prepared_sql = rs::odbc::utf8_to_wide(
-        "SELECT '\xf0\x9f\x9a\x80 prepared'::text");
+    auto prepared_sql = rs::odbc::utf8_to_wide("SELECT ?::text");
     ASSERT_TRUE(prepared_sql.has_value());
     ASSERT_EQ(SQL_SUCCESS,
               SQLPrepareW(hstmt, prepared_sql->data(),
                           static_cast<SQLINTEGER>(prepared_sql->size())));
+    const std::string prepared_expected = "\xf0\x9f\x9a\x80 prepared";
+    auto parameter = rs::odbc::utf8_to_wide(prepared_expected);
+    ASSERT_TRUE(parameter.has_value());
+    parameter->push_back(0);
+    SQLLEN parameter_length = SQL_NTS;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_WCHAR,
+                               SQL_WVARCHAR, parameter->size() - 1, 0,
+                               parameter->data(),
+                               static_cast<SQLLEN>(parameter->size() *
+                                                   sizeof(SQLWCHAR)),
+                               &parameter_length));
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
-    char prepared_value[64]{};
+    SQLWCHAR prepared_value[64]{};
+    SQLLEN prepared_length = 0;
     ASSERT_EQ(SQL_SUCCESS,
-              SQLGetData(hstmt, 1, SQL_C_CHAR, prepared_value,
-                         sizeof(prepared_value), nullptr));
-    EXPECT_EQ("\xf0\x9f\x9a\x80 prepared", prepared_value);
+              SQLGetData(hstmt, 1, SQL_C_WCHAR, prepared_value,
+                         sizeof(prepared_value), &prepared_length));
+    const auto converted_prepared = rs::odbc::wide_to_utf8(
+        std::span<const SQLWCHAR>(
+            prepared_value, static_cast<std::size_t>(prepared_length) /
+                                sizeof(SQLWCHAR)));
+    ASSERT_TRUE(converted_prepared.has_value());
+    EXPECT_EQ(prepared_expected, *converted_prepared);
 }
 
 TEST_F(MetadataIntegrationTest, MultipleColumns) {

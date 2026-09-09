@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_types.h"
+#include "odbc/unicode.h"
 
 #include <chrono>
 #include <cstdint>
+#include <string>
 
 class BindColIntegrationTest : public ::testing::Test {
 protected:
@@ -201,6 +203,34 @@ TEST_F(BindColIntegrationTest, GetDataRetrievesLongTextInChunks) {
         &exhausted_length));
     EXPECT_STREQ("keep", exhausted);
     EXPECT_EQ(99, exhausted_length);
+}
+
+TEST_F(BindColIntegrationTest, GetDataRetrievesWideTextInWholeCodePoints) {
+    const std::string expected = "A\xf0\x9f\x99\x82" "BC";
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"SELECT 'A\xf0\x9f\x99\x82" "BC'::text",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    std::string assembled;
+    SQLRETURN result = SQL_SUCCESS_WITH_INFO;
+    for (int call = 0; call < 4 && result == SQL_SUCCESS_WITH_INFO; ++call) {
+        SQLWCHAR chunk[3]{};
+        SQLLEN remaining_bytes = 0;
+        result = SQLGetData(hstmt, 1, SQL_C_WCHAR, chunk, sizeof(chunk),
+                            &remaining_bytes);
+        ASSERT_TRUE(result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO);
+        std::size_t chunk_units = 0;
+        while (chunk_units < 2 && chunk[chunk_units] != 0) ++chunk_units;
+        const auto converted = rs::odbc::wide_to_utf8(
+            std::span<const SQLWCHAR>(chunk, chunk_units));
+        ASSERT_TRUE(converted.has_value());
+        assembled += *converted;
+        EXPECT_GT(remaining_bytes, 0);
+    }
+    EXPECT_EQ(SQL_SUCCESS, result);
+    EXPECT_EQ(expected, assembled);
 }
 
 TEST_F(BindColIntegrationTest, GetDataOffsetsResetForEachFetchedRow) {

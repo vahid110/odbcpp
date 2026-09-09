@@ -2,6 +2,7 @@
 #include "connection_string.h"
 #include "result_types.h"
 #include "text_data_converter.h"
+#include "unicode.h"
 #include "core/database/generic_database_connection.h"
 #include "core/database/postgres/pg_protocol_parser.h"
 #include "core/transport/transport_factory.h"
@@ -65,6 +66,9 @@ rs::core::database::QueryParameterType parameter_type_for(
     case SQL_CHAR:
     case SQL_VARCHAR:
     case SQL_LONGVARCHAR:
+    case SQL_WCHAR:
+    case SQL_WVARCHAR:
+    case SQL_WLONGVARCHAR:
       return QueryParameterType::Text;
     case SQL_TINYINT:
     case SQL_SMALLINT:
@@ -95,7 +99,8 @@ rs::core::database::QueryParameterType parameter_type_for(
     case SQL_C_DOUBLE: return QueryParameterType::Float64;
     case SQL_C_BIT: return QueryParameterType::Boolean;
     case SQL_C_BINARY: return QueryParameterType::Binary;
-    case SQL_C_CHAR: return QueryParameterType::Text;
+    case SQL_C_CHAR:
+    case SQL_C_WCHAR: return QueryParameterType::Text;
     default: return QueryParameterType::Unspecified;
   }
 }
@@ -726,6 +731,51 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     return SQL_SUCCESS;
   }
 
+  if (effective_target_type == SQL_C_WCHAR) {
+    const auto wide = utf8_to_wide(*cell);
+    if (!wide) {
+      set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                "Result value is not valid UTF-8");
+      return SQL_ERROR;
+    }
+    if (offset > wide->size()) {
+      set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
+                "SQLGetData target type changed during chunked retrieval");
+      return SQL_ERROR;
+    }
+
+    const auto remaining = wide->size() - offset;
+    if (indicator) {
+      *indicator = static_cast<SQLLEN>(remaining * sizeof(SQLWCHAR));
+    }
+    const auto buffer_units = buffer_length > 0
+        ? static_cast<std::size_t>(buffer_length) / sizeof(SQLWCHAR) : 0;
+    const auto capacity = buffer_units > 0 ? buffer_units - 1 : 0;
+    auto copy_length = std::min(capacity, remaining);
+    if constexpr (sizeof(SQLWCHAR) == 2) {
+      if (copy_length < remaining && copy_length > 0 &&
+          (*wide)[offset + copy_length - 1] >= 0xd800 &&
+          (*wide)[offset + copy_length - 1] <= 0xdbff) {
+        --copy_length;
+      }
+    }
+    if (copy_length > 0) {
+      std::copy_n(wide->begin() + static_cast<std::ptrdiff_t>(offset),
+                  copy_length, static_cast<SQLWCHAR*>(buffer));
+    }
+    if (buffer_units > 0) {
+      static_cast<SQLWCHAR*>(buffer)[copy_length] = 0;
+    }
+    offset += copy_length;
+    if (offset < wide->size()) {
+      set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                "Result value was truncated to fit the application buffer");
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    offset = complete;
+    return SQL_SUCCESS;
+  }
+
   if (effective_target_type == SQL_C_BINARY) {
     const auto decoded = TextDataConverter::decode_binary(*cell);
     if (!decoded) {
@@ -864,6 +914,29 @@ SQLRETURN ODBCStatement::execute() {
                     "Data-at-execution parameters are not supported yet");
           return SQL_ERROR;
         }
+      } else if (param.value_type == SQL_C_WCHAR) {
+        const auto* text = static_cast<const SQLWCHAR*>(param.parameter_value);
+        SQLLEN length = param.buffer_length;
+        if (param.strlen_or_indicator) length = *param.strlen_or_indicator;
+        SQLINTEGER units = SQL_NTS;
+        if (length != SQL_NTS && length != 0) {
+          if (length < 0 || length % sizeof(SQLWCHAR) != 0 ||
+              static_cast<SQLULEN>(length / sizeof(SQLWCHAR)) >
+                  static_cast<SQLULEN>(
+                      std::numeric_limits<SQLINTEGER>::max())) {
+            set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                      "Invalid wide-character parameter length");
+            return SQL_ERROR;
+          }
+          units = static_cast<SQLINTEGER>(length / sizeof(SQLWCHAR));
+        }
+        const auto converted = sqlwchar_to_utf8(text, units);
+        if (!converted) {
+          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Invalid wide-character parameter value");
+          return SQL_ERROR;
+        }
+        value = *converted;
       } else if (param.value_type == SQL_C_SLONG) {
         value = std::to_string(*static_cast<SQLINTEGER*>(param.parameter_value));
       } else if (param.value_type == SQL_C_SBIGINT) {

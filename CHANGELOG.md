@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - SQLConnectW, SQLDriverConnectW, SQLExecDirectW, SQLPrepareW, SQLGetDiagRecW, and SQLNativeSqlW Unicode entry points
 - Strict UTF-8/SQLWCHAR conversion with surrogate-pair and malformed-input validation
+- SQL_C_WCHAR result retrieval, chunking, column binding, and prepared-statement parameters
 - Unicode unit, PostgreSQL integration, and unixODBC driver-manager coverage
 - SQLMoreResults traversal of ordered PostgreSQL multi-statement results and SQL_ATTR_MAX_ROWS enforcement
 - SQLFetchScroll support for forward-only SQL_FETCH_NEXT cursors

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "odbc/result_types.h"
 #include "odbc/text_data_converter.h"
+#include "odbc/unicode.h"
 
 using RedshiftDataConverter = rs::odbc::TextDataConverter;
 
@@ -117,6 +118,31 @@ TEST_F(RedshiftDataConverterTest, ConvertDataString) {
     // Truncation
     EXPECT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data("Very long string", SQL_C_CHAR, buffer, 5, &indicator));
     EXPECT_STREQ("Very", buffer);
+}
+
+TEST_F(RedshiftDataConverterTest, ConvertDataWideString) {
+    const std::string utf8 =
+        "Gr\xc3\xbc\xc3\x9f" "e \xf0\x9f\x99\x82";
+    SQLWCHAR wide_buffer[32]{};
+    EXPECT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        utf8, SQL_C_WCHAR, wide_buffer, sizeof(wide_buffer), &indicator));
+    EXPECT_EQ(static_cast<SQLLEN>(
+                  rs::odbc::utf8_to_wide(utf8)->size() * sizeof(SQLWCHAR)),
+              indicator);
+    const auto converted = rs::odbc::wide_to_utf8(
+        std::span<const SQLWCHAR>(
+            wide_buffer, static_cast<std::size_t>(indicator) /
+                             sizeof(SQLWCHAR)));
+    ASSERT_TRUE(converted.has_value());
+    EXPECT_EQ(utf8, *converted);
+
+    SQLWCHAR truncated[3]{};
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        utf8, SQL_C_WCHAR, truncated, sizeof(truncated), &indicator));
+    EXPECT_EQ(static_cast<SQLWCHAR>(0), truncated[2]);
+    EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+        "\xc0\x80", SQL_C_WCHAR, wide_buffer, sizeof(wide_buffer),
+        &indicator));
 }
 
 TEST_F(RedshiftDataConverterTest, ConvertDataBoolean) {

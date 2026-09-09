@@ -31,7 +31,7 @@
 ### ⚠️ Missing for Full ODBC Compliance
 - **Installer-managed registration**: Registration still uses an `odbcinst.ini` entry
 - **Catalog discovery**: ANSI catalog APIs are implemented; SQL_ROWVER has no PostgreSQL row-version column to report
-- **Unicode foundation**: wide connection, execution, preparation, diagnostics, and native-SQL entry points are exported; wide catalog APIs remain planned
+- **Unicode foundation**: wide connection, execution, preparation, diagnostics, and native-SQL entry points are exported; SQL_C_WCHAR results and parameters are supported; wide catalog APIs remain planned
 
 ## Integration Paths
 

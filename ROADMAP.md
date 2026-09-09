@@ -160,6 +160,7 @@
 ### Milestone 11: Wide Character API Support (PRIORITY: MEDIUM)
 **Timeline**: 1-2 weeks
 - [x] Implement SQLConnectW, SQLDriverConnectW, SQLExecDirectW, SQLPrepareW, SQLGetDiagRecW, SQLNativeSqlW
+- [x] Add SQL_C_WCHAR result retrieval, column binding, and input parameters
 - [ ] Add SQLTablesW, SQLColumnsW for Unicode metadata
 - [ ] Wide character versions of all string-based APIs
 - [x] UTF-8/SQLWCHAR conversion utilities

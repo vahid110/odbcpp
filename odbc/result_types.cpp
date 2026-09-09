@@ -25,6 +25,7 @@ bool ResultTypes::is_conversion_supported(SQLSMALLINT sql_type,
                                           SQLSMALLINT c_type) {
   switch (c_type) {
     case SQL_C_CHAR:
+    case SQL_C_WCHAR:
     case SQL_C_SSHORT:
     case SQL_C_SLONG:
     case SQL_C_SBIGINT:

@@ -161,14 +161,19 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
-  const auto wide_query = wide_ascii("SELECT 84");
-  value = 0;
+  const auto wide_query = wide_ascii("SELECT 'wide'::text");
+  SQLWCHAR wide_value[8]{};
+  SQLLEN wide_value_length = 0;
   if (!succeeded(SQLExecDirectW(
           statement, const_cast<SQLWCHAR*>(wide_query.data()), SQL_NTS)) ||
       !succeeded(SQLFetch(statement)) ||
       !succeeded(SQLGetData(
-          statement, 1, SQL_C_SLONG, &value, 0, nullptr)) ||
-      value != 84 || !succeeded(SQLCloseCursor(statement))) {
+          statement, 1, SQL_C_WCHAR, wide_value, sizeof(wide_value),
+          &wide_value_length)) ||
+      wide_value_length != static_cast<SQLLEN>(4 * sizeof(SQLWCHAR)) ||
+      wide_value[0] != static_cast<SQLWCHAR>('w') ||
+      wide_value[3] != static_cast<SQLWCHAR>('e') ||
+      !succeeded(SQLCloseCursor(statement))) {
     print_diagnostic(SQL_HANDLE_STMT, statement);
     SQLFreeHandle(SQL_HANDLE_STMT, statement);
     SQLDisconnect(connection);

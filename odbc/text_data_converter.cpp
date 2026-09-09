@@ -1,4 +1,5 @@
 #include "text_data_converter.h"
+#include "unicode.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -144,6 +145,31 @@ SQLRETURN convert_string(const std::string& value, void* buffer,
   return copy_length < value.size() ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS;
 }
 
+SQLRETURN convert_wide_string(const std::string& value, void* buffer,
+                              SQLLEN buffer_length, SQLLEN* indicator) {
+  if (buffer_length < static_cast<SQLLEN>(sizeof(SQLWCHAR))) return SQL_ERROR;
+  const auto wide = utf8_to_wide(value);
+  if (!wide) return SQL_ERROR;
+
+  const auto required_bytes = wide->size() * sizeof(SQLWCHAR);
+  if (indicator) *indicator = static_cast<SQLLEN>(required_bytes);
+  const auto buffer_units =
+      static_cast<std::size_t>(buffer_length) / sizeof(SQLWCHAR);
+  const auto capacity = buffer_units - 1;
+  auto copy_length = std::min(capacity, wide->size());
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    if (copy_length < wide->size() && copy_length > 0 &&
+        (*wide)[copy_length - 1] >= 0xd800 &&
+        (*wide)[copy_length - 1] <= 0xdbff) {
+      --copy_length;
+    }
+  }
+  std::copy_n(wide->begin(), copy_length, static_cast<SQLWCHAR*>(buffer));
+  static_cast<SQLWCHAR*>(buffer)[copy_length] = 0;
+  return copy_length < wide->size()
+      ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS;
+}
+
 int hex_value(char ch) {
   if (ch >= '0' && ch <= '9') return ch - '0';
   if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
@@ -255,6 +281,8 @@ SQLRETURN TextDataConverter::convert_data(const std::string& value,
   switch (target_c_type) {
     case SQL_C_CHAR:
       return convert_string(value, buffer, buffer_length, indicator);
+    case SQL_C_WCHAR:
+      return convert_wide_string(value, buffer, buffer_length, indicator);
     case SQL_C_SSHORT:
       return convert_integral<SQLSMALLINT>(value, buffer, indicator);
     case SQL_C_SLONG:
