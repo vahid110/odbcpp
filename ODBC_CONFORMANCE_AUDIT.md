@@ -198,8 +198,8 @@ substitute for ODBC diagnostics.
   array reporting without claiming multirow execution. It stores and returns
   the four status/count pointers, updates them for successful, truncated,
   exhausted, locally invalid, and server-rejected operations, distinguishes
-  invalid zero sizes from unsupported larger arrays, and rejects parameter
-  ordinals beyond the prepared marker count before protocol I/O.
+  invalid zero sizes from unsupported larger arrays, and reports incomplete
+  parameter sets before protocol I/O.
 - Audit batch 14 extends the existing C ABI guard into the common failure-log
   boundary. One compact path emits operation, return code, SQLSTATE, native
   error, microsecond duration, and connection identity for all connection-owned
@@ -227,6 +227,10 @@ substitute for ODBC diagnostics.
   directly, preserve bindings across `SQLPrepare`, and are exercised through
   descriptor-only bindings against PostgreSQL. `SQL_UNBIND` and
   `SQL_RESET_PARAMS` clear the corresponding application descriptor records.
+- Audit batch 20 accepts parameter bindings above the prepared marker count,
+  as required by ODBC, while prepared execution consumes only the marker-count
+  prefix. PostgreSQL coverage proves that the extra binding is ignored and
+  that a genuinely missing in-range binding still reports 07009 before I/O.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

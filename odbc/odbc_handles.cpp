@@ -1781,11 +1781,6 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
     set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid parameter number");
     return SQL_ERROR;
   }
-  if (prepared_ && parameter_number > parameter_count_) {
-    set_error(SQLSTATE_INVALID_PARAMETER_NUMBER,
-              "Parameter number exceeds the prepared statement count");
-    return SQL_ERROR;
-  }
 
   const auto number = [](auto numeric) {
     return reinterpret_cast<SQLPOINTER>(

@@ -152,7 +152,7 @@ TEST_F(PreparedStatementIntegrationTest, ReportsPreparedParameterCount) {
 }
 
 TEST_F(PreparedStatementIntegrationTest,
-       MissingAndOutOfRangeParametersReportSetFailure) {
+       MissingParameterFailsAndExtraBindingIsIgnored) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
         hstmt, (SQLCHAR*)"SELECT ?::integer", SQL_NTS));
     SQLUSMALLINT param_status = SQL_PARAM_UNUSED;
@@ -170,13 +170,20 @@ TEST_F(PreparedStatementIntegrationTest,
         SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("07009", reinterpret_cast<char*>(sqlstate));
 
-    SQLINTEGER value = 1;
-    EXPECT_EQ(SQL_ERROR, SQLBindParameter(
+    SQLINTEGER ignored = 99;
+    EXPECT_EQ(SQL_SUCCESS, SQLBindParameter(
         hstmt, 2, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
-        0, 0, &value, 0, nullptr));
-    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
-        SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, nullptr, 0, nullptr));
-    EXPECT_STREQ("07009", reinterpret_cast<char*>(sqlstate));
+        0, 0, &ignored, 0, nullptr));
+    SQLINTEGER used = 41;
+    EXPECT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
+        0, 0, &used, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLINTEGER output = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_SLONG, &output, 0, nullptr));
+    EXPECT_EQ(used, output);
 }
 
 TEST_F(PreparedStatementIntegrationTest, AutocommitOffSupportsCommitAndRollback) {
