@@ -448,12 +448,16 @@ TEST_F(BindColIntegrationTest, DataTypeConversions) {
     ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 2, SQL_C_SLONG, &str_as_int, 0, &len2));
     ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 3, SQL_C_SLONG, &double_as_int, 0, &len3));
     
-    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLFetch(hstmt));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01S07", reinterpret_cast<char*>(state));
     
     // Verify conversions
     EXPECT_STREQ("123", int_as_str);
     EXPECT_EQ(456, str_as_int);
-    EXPECT_EQ(78, double_as_int);  // Truncated
+    EXPECT_EQ(78, double_as_int);
 }
 
 TEST_F(BindColIntegrationTest, MetadataDrivenDefaultConversions) {
@@ -625,6 +629,45 @@ TEST_F(BindColIntegrationTest, ConversionFailuresUseSpecificSqlstates) {
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
         SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("07006", reinterpret_cast<char*>(sqlstate));
+}
+
+TEST_F(BindColIntegrationTest, ConversionDiagnosticsDistinguishFailureKinds) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"SELECT 32768::integer, 12.75::numeric, "
+                  "'not-a-number'::text, '2025-02-29'::text",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLSMALLINT number = 0;
+    SQLINTEGER integer = 0;
+    SQL_DATE_STRUCT date{};
+    SQLCHAR state[6]{};
+
+    EXPECT_EQ(SQL_ERROR, SQLGetData(
+        hstmt, 1, SQL_C_SSHORT, &number, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 2, SQL_C_SSHORT, &number, 0, nullptr));
+    EXPECT_EQ(12, number);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01S07", reinterpret_cast<char*>(state));
+
+    EXPECT_EQ(SQL_ERROR, SQLGetData(
+        hstmt, 3, SQL_C_SLONG, &integer, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
+
+    EXPECT_EQ(SQL_ERROR, SQLGetData(
+        hstmt, 4, SQL_C_DATE, &date, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22007", reinterpret_cast<char*>(state));
 }
 
 // Test rebinding columns

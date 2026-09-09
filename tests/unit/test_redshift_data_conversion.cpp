@@ -65,6 +65,24 @@ TEST_F(RedshiftDataConverterTest, ConvertDataSmallintAndFloat) {
     EXPECT_FLOAT_EQ(1.25f, float_result);
 }
 
+TEST_F(RedshiftDataConverterTest, ClassifiesNumericConversionIssues) {
+    rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;
+    SQLSMALLINT result = 0;
+
+    EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+        "32768", SQL_C_SSHORT, &result, 0, &indicator, &issue));
+    EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
+
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "12.75", SQL_C_SSHORT, &result, 0, &indicator, &issue));
+    EXPECT_EQ(12, result);
+    EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
+
+    EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+        "not-a-number", SQL_C_SSHORT, &result, 0, &indicator, &issue));
+    EXPECT_EQ(rs::odbc::ConversionIssue::InvalidCharacterValue, issue);
+}
+
 TEST_F(RedshiftDataConverterTest, ConvertDataDate) {
     SQL_DATE_STRUCT result;
     
@@ -80,6 +98,14 @@ TEST_F(RedshiftDataConverterTest, ConvertDataDate) {
     
     // Invalid date
     EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data("invalid-date", SQL_C_DATE, &result, 0, &indicator));
+}
+
+TEST_F(RedshiftDataConverterTest, ClassifiesInvalidDatetimeFormat) {
+    rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;
+    SQL_DATE_STRUCT result{};
+    EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+        "2025-02-29", SQL_C_DATE, &result, 0, &indicator, &issue));
+    EXPECT_EQ(rs::odbc::ConversionIssue::InvalidDatetimeFormat, issue);
 }
 
 TEST_F(RedshiftDataConverterTest, ConvertDataTimestamp) {

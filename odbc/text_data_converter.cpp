@@ -15,13 +15,21 @@
 namespace rs::odbc {
 namespace {
 
-std::optional<long double> parse_number(const std::string& value) {
-  if (value.empty()) return std::nullopt;
+std::optional<long double> parse_number(const std::string& value,
+                                        ConversionIssue* issue) {
+  if (value.empty()) {
+    if (issue) *issue = ConversionIssue::InvalidCharacterValue;
+    return std::nullopt;
+  }
   char* end = nullptr;
   errno = 0;
   const auto parsed = std::strtold(value.c_str(), &end);
-  if (end != value.c_str() + value.size() || errno == ERANGE ||
-      !std::isfinite(parsed)) {
+  if (end != value.c_str() + value.size()) {
+    if (issue) *issue = ConversionIssue::InvalidCharacterValue;
+    return std::nullopt;
+  }
+  if (errno == ERANGE || !std::isfinite(parsed)) {
+    if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
     return std::nullopt;
   }
   return parsed;
@@ -29,16 +37,21 @@ std::optional<long double> parse_number(const std::string& value) {
 
 template <typename T>
 SQLRETURN convert_integral(const std::string& value, void* buffer,
-                           SQLLEN* indicator) {
-  const auto parsed = parse_number(value);
+                           SQLLEN* indicator, ConversionIssue* issue) {
+  const auto parsed = parse_number(value, issue);
   if (!parsed) return SQL_ERROR;
   const auto truncated = std::trunc(*parsed);
   if (truncated < static_cast<long double>(std::numeric_limits<T>::lowest()) ||
       truncated > static_cast<long double>(std::numeric_limits<T>::max())) {
+    if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
     return SQL_ERROR;
   }
   *static_cast<T*>(buffer) = static_cast<T>(truncated);
   if (indicator) *indicator = sizeof(T);
+  if (truncated != *parsed) {
+    if (issue) *issue = ConversionIssue::FractionalTruncation;
+    return SQL_SUCCESS_WITH_INFO;
+  }
   return SQL_SUCCESS;
 }
 
@@ -146,10 +159,14 @@ SQLRETURN convert_string(const std::string& value, void* buffer,
 }
 
 SQLRETURN convert_wide_string(const std::string& value, void* buffer,
-                              SQLLEN buffer_length, SQLLEN* indicator) {
+                              SQLLEN buffer_length, SQLLEN* indicator,
+                              ConversionIssue* issue) {
   if (buffer_length < static_cast<SQLLEN>(sizeof(SQLWCHAR))) return SQL_ERROR;
   const auto wide = utf8_to_wide(value);
-  if (!wide) return SQL_ERROR;
+  if (!wide) {
+    if (issue) *issue = ConversionIssue::InvalidCharacterValue;
+    return SQL_ERROR;
+  }
 
   const auto required_bytes = wide->size() * sizeof(SQLWCHAR);
   if (indicator) *indicator = static_cast<SQLLEN>(required_bytes);
@@ -178,12 +195,14 @@ int hex_value(char ch) {
 }
 
 SQLRETURN convert_floating(const std::string& value, SQLSMALLINT target_type,
-                           void* buffer, SQLLEN* indicator) {
-  const auto parsed = parse_number(value);
+                           void* buffer, SQLLEN* indicator,
+                           ConversionIssue* issue) {
+  const auto parsed = parse_number(value, issue);
   if (!parsed) return SQL_ERROR;
   if (target_type == SQL_C_FLOAT) {
     if (*parsed < -std::numeric_limits<SQLREAL>::max() ||
         *parsed > std::numeric_limits<SQLREAL>::max()) {
+      if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
       return SQL_ERROR;
     }
     *static_cast<SQLREAL*>(buffer) = static_cast<SQLREAL>(*parsed);
@@ -191,6 +210,7 @@ SQLRETURN convert_floating(const std::string& value, SQLSMALLINT target_type,
   } else {
     if (*parsed < -std::numeric_limits<SQLDOUBLE>::max() ||
         *parsed > std::numeric_limits<SQLDOUBLE>::max()) {
+      if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
       return SQL_ERROR;
     }
     *static_cast<SQLDOUBLE*>(buffer) = static_cast<SQLDOUBLE>(*parsed);
@@ -200,11 +220,12 @@ SQLRETURN convert_floating(const std::string& value, SQLSMALLINT target_type,
 }
 
 SQLRETURN convert_boolean(const std::string& value, void* buffer,
-                          SQLLEN* indicator) {
+                          SQLLEN* indicator, ConversionIssue* issue) {
   SQLCHAR converted = 0;
   if (value == "t" || value == "true" || value == "1") {
     converted = 1;
   } else if (value != "f" && value != "false" && value != "0") {
+    if (issue) *issue = ConversionIssue::InvalidCharacterValue;
     return SQL_ERROR;
   }
   *static_cast<SQLCHAR*>(buffer) = converted;
@@ -213,11 +234,14 @@ SQLRETURN convert_boolean(const std::string& value, void* buffer,
 }
 
 SQLRETURN convert_date(const std::string& value, void* buffer,
-                       SQLLEN* indicator) {
+                       SQLLEN* indicator, ConversionIssue* issue) {
   unsigned year = 0;
   unsigned month = 0;
   unsigned day = 0;
-  if (!parse_date(value, year, month, day)) return SQL_ERROR;
+  if (!parse_date(value, year, month, day)) {
+    if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
+    return SQL_ERROR;
+  }
   auto* date = static_cast<SQL_DATE_STRUCT*>(buffer);
   date->year = static_cast<SQLSMALLINT>(year);
   date->month = static_cast<SQLUSMALLINT>(month);
@@ -227,12 +251,15 @@ SQLRETURN convert_date(const std::string& value, void* buffer,
 }
 
 SQLRETURN convert_time(const std::string& value, void* buffer,
-                       SQLLEN* indicator) {
+                       SQLLEN* indicator, ConversionIssue* issue) {
   unsigned hour = 0;
   unsigned minute = 0;
   unsigned second = 0;
   SQLUINTEGER fraction = 0;
-  if (!parse_time(value, hour, minute, second, fraction)) return SQL_ERROR;
+  if (!parse_time(value, hour, minute, second, fraction)) {
+    if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
+    return SQL_ERROR;
+  }
   auto* time = static_cast<SQL_TIME_STRUCT*>(buffer);
   time->hour = static_cast<SQLUSMALLINT>(hour);
   time->minute = static_cast<SQLUSMALLINT>(minute);
@@ -242,8 +269,9 @@ SQLRETURN convert_time(const std::string& value, void* buffer,
 }
 
 SQLRETURN convert_timestamp(const std::string& value, void* buffer,
-                            SQLLEN* indicator) {
+                            SQLLEN* indicator, ConversionIssue* issue) {
   if (value.size() < 19 || (value[10] != ' ' && value[10] != 'T')) {
+    if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
     return SQL_ERROR;
   }
   unsigned year = 0;
@@ -256,6 +284,7 @@ SQLRETURN convert_timestamp(const std::string& value, void* buffer,
   if (!parse_date(std::string_view(value).substr(0, 10), year, month, day) ||
       !parse_time(std::string_view(value).substr(11), hour, minute, second,
                   fraction)) {
+    if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
     return SQL_ERROR;
   }
   auto* timestamp = static_cast<SQL_TIMESTAMP_STRUCT*>(buffer);
@@ -276,33 +305,40 @@ SQLRETURN TextDataConverter::convert_data(const std::string& value,
                                           SQLSMALLINT target_c_type,
                                           void* buffer,
                                           SQLLEN buffer_length,
-                                          SQLLEN* indicator) {
+                                          SQLLEN* indicator,
+                                          ConversionIssue* issue) {
+  if (issue) *issue = ConversionIssue::None;
   if (!buffer) return SQL_ERROR;
   switch (target_c_type) {
     case SQL_C_CHAR:
       return convert_string(value, buffer, buffer_length, indicator);
     case SQL_C_WCHAR:
-      return convert_wide_string(value, buffer, buffer_length, indicator);
+      return convert_wide_string(
+          value, buffer, buffer_length, indicator, issue);
     case SQL_C_SSHORT:
-      return convert_integral<SQLSMALLINT>(value, buffer, indicator);
+      return convert_integral<SQLSMALLINT>(value, buffer, indicator, issue);
     case SQL_C_SLONG:
-      return convert_integral<SQLINTEGER>(value, buffer, indicator);
+      return convert_integral<SQLINTEGER>(value, buffer, indicator, issue);
     case SQL_C_SBIGINT:
-      return convert_integral<SQLBIGINT>(value, buffer, indicator);
+      return convert_integral<SQLBIGINT>(value, buffer, indicator, issue);
     case SQL_C_FLOAT:
     case SQL_C_DOUBLE:
-      return convert_floating(value, target_c_type, buffer, indicator);
+      return convert_floating(
+          value, target_c_type, buffer, indicator, issue);
     case SQL_C_BIT:
-      return convert_boolean(value, buffer, indicator);
+      return convert_boolean(value, buffer, indicator, issue);
     case SQL_C_DATE:
-      return convert_date(value, buffer, indicator);
+      return convert_date(value, buffer, indicator, issue);
     case SQL_C_TIME:
-      return convert_time(value, buffer, indicator);
+      return convert_time(value, buffer, indicator, issue);
     case SQL_C_TIMESTAMP:
-      return convert_timestamp(value, buffer, indicator);
+      return convert_timestamp(value, buffer, indicator, issue);
     case SQL_C_BINARY: {
       const auto decoded = decode_binary(value);
-      if (!decoded || buffer_length < 0) return SQL_ERROR;
+      if (!decoded || buffer_length < 0) {
+        if (issue) *issue = ConversionIssue::InvalidCharacterValue;
+        return SQL_ERROR;
+      }
       const auto capacity = static_cast<std::size_t>(buffer_length);
       const auto copy_length = std::min(capacity, decoded->size());
       if (copy_length > 0) {

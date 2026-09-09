@@ -280,6 +280,11 @@ substitute for ODBC diagnostics.
   active column/offset pair defined by ODBC. Switching to another column now
   invalidates a partial offset, so switching back restarts that column while
   same-column calls still retrieve successive chunks.
+- Audit batch 31 preserves conversion outcomes through the shared text-protocol
+  converter. Numeric overflow now reports 22003, invalid date/time input reports
+  22007, invalid numeric text remains 22018, and fractional numeric loss returns
+  `SQL_SUCCESS_WITH_INFO` with 01S07. Unit tests classify converter outcomes and
+  PostgreSQL integration tests verify the public `SQLGetData` diagnostics.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

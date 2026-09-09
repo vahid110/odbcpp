@@ -60,6 +60,39 @@ std::chrono::milliseconds timeout_duration(SQLULEN seconds) {
       seconds * scale));
 }
 
+void set_conversion_diagnostic(ODBCHandle& handle, SQLRETURN result,
+                               ConversionIssue issue) {
+  if (result == SQL_SUCCESS_WITH_INFO &&
+      issue == ConversionIssue::FractionalTruncation) {
+    handle.set_error(SQLSTATE_FRACTIONAL_TRUNCATION,
+                     "Fractional result digits were truncated");
+    return;
+  }
+  if (result == SQL_SUCCESS_WITH_INFO) {
+    handle.set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                     "Result value was truncated to fit the application buffer");
+    return;
+  }
+  if (result != SQL_ERROR) return;
+
+  switch (issue) {
+    case ConversionIssue::NumericValueOutOfRange:
+      handle.set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                       "Result value is outside the requested numeric range");
+      break;
+    case ConversionIssue::InvalidDatetimeFormat:
+      handle.set_error(SQLSTATE_INVALID_DATETIME_FORMAT,
+                       "Result value is not a valid date or time");
+      break;
+    case ConversionIssue::None:
+    case ConversionIssue::FractionalTruncation:
+    case ConversionIssue::InvalidCharacterValue:
+      handle.set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                       "Result value could not be converted to the requested C type");
+      break;
+  }
+}
+
 struct DynamicFunction {
   std::string name;
   SQLINTEGER code{SQL_DIAG_UNKNOWN_STATEMENT};
@@ -1364,20 +1397,20 @@ SQLRETURN ODBCStatement::fetch() {
         if (row_status) row_status[0] = SQL_ROW_ERROR;
         return SQL_ERROR;
       }
+      ConversionIssue conversion_issue = ConversionIssue::None;
       SQLRETURN conv_result = TextDataConverter::convert_data(
           *cell, target_type, binding.data_ptr, binding.octet_length,
           binding.octet_length_ptr ? binding.octet_length_ptr
-                                   : binding.indicator_ptr);
+                                   : binding.indicator_ptr,
+          &conversion_issue);
 
       if (conv_result == SQL_ERROR) {
-        set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                  "Result value could not be converted to the requested C type");
+        set_conversion_diagnostic(*this, conv_result, conversion_issue);
         if (row_status) row_status[0] = SQL_ROW_ERROR;
         return SQL_ERROR;
       }
       if (conv_result == SQL_SUCCESS_WITH_INFO) {
-        set_error(SQLSTATE_STRING_DATA_TRUNCATED,
-                  "Result value was truncated to fit the application buffer");
+        set_conversion_diagnostic(*this, conv_result, conversion_issue);
         fetch_result = SQL_SUCCESS_WITH_INFO;
       }
     }
@@ -1567,16 +1600,12 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     return SQL_SUCCESS;
   }
 
+  ConversionIssue conversion_issue = ConversionIssue::None;
   SQLRETURN result = TextDataConverter::convert_data(
-      *cell, effective_target_type, buffer, buffer_length, indicator);
+      *cell, effective_target_type, buffer, buffer_length, indicator,
+      &conversion_issue);
 
-  if (result == SQL_ERROR) {
-    set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-              "Result value could not be converted to the requested C type");
-  } else if (result == SQL_SUCCESS_WITH_INFO) {
-    set_error(SQLSTATE_STRING_DATA_TRUNCATED,
-              "Result value was truncated to fit the application buffer");
-  }
+  set_conversion_diagnostic(*this, result, conversion_issue);
   if (result != SQL_ERROR) offset = complete;
   
   return result;
