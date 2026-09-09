@@ -785,6 +785,74 @@ TEST_F(AttributeApisTest, StoresSingleRowAndParameterStatusPointers) {
   EXPECT_EQ(nullptr, reported_row_status);
 }
 
+TEST_F(AttributeApisTest, StatementPointersShareDescriptorHeaderState) {
+  SQLHDESC row_descriptor = SQL_NULL_HDESC;
+  SQLHDESC param_descriptor = SQL_NULL_HDESC;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_IMP_ROW_DESC, &row_descriptor, 0, nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_IMP_PARAM_DESC, &param_descriptor, 0, nullptr));
+
+  SQLUSMALLINT row_status = 99;
+  SQLULEN rows_fetched = 99;
+  SQLUSMALLINT param_status = 99;
+  SQLULEN params_processed = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+      row_descriptor, 0, SQL_DESC_ARRAY_STATUS_PTR, &row_status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+      row_descriptor, 0, SQL_DESC_ROWS_PROCESSED_PTR, &rows_fetched, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+      param_descriptor, 0, SQL_DESC_ARRAY_STATUS_PTR, &param_status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+      param_descriptor, 0, SQL_DESC_ROWS_PROCESSED_PTR,
+      &params_processed, 0));
+
+  SQLUSMALLINT* reported_row_status = nullptr;
+  SQLULEN* reported_rows_fetched = nullptr;
+  SQLUSMALLINT* reported_param_status = nullptr;
+  SQLULEN* reported_params_processed = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_ROW_STATUS_PTR, &reported_row_status, 0, nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_ROWS_FETCHED_PTR, &reported_rows_fetched,
+      0, nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_PARAM_STATUS_PTR, &reported_param_status,
+      0, nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_PARAMS_PROCESSED_PTR,
+      &reported_params_processed, 0, nullptr));
+  EXPECT_EQ(&row_status, reported_row_status);
+  EXPECT_EQ(&rows_fetched, reported_rows_fetched);
+  EXPECT_EQ(&param_status, reported_param_status);
+  EXPECT_EQ(&params_processed, reported_params_processed);
+
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(statement_));
+  EXPECT_EQ(0u, rows_fetched);
+  EXPECT_EQ(SQL_ROW_NOROW, row_status);
+}
+
+TEST_F(AttributeApisTest, AttachedDescriptorHeadersDriveStatementAttributes) {
+  const auto descriptor = odbcpp::test::make_descriptor(connection_);
+  ASSERT_NE(nullptr, descriptor);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_APP_ROW_DESC, descriptor, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+      descriptor, 0, SQL_DESC_ARRAY_SIZE, integer_value(2), 0));
+
+  SQLULEN array_size = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_ROW_ARRAY_SIZE, &array_size, 0, nullptr));
+  EXPECT_EQ(2u, array_size);
+  EXPECT_EQ(SQL_ERROR, SQLFetch(statement_));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+      descriptor, 0, SQL_DESC_ARRAY_SIZE, integer_value(1), 0));
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(statement_));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
+}
+
 TEST_F(AttributeApisTest, StoresMaximumRowsAndFinishesResultSequence) {
   SQLULEN value = 99;
   EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(

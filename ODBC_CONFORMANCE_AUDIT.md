@@ -109,8 +109,9 @@ Manager-owned tracing or cursor-library attributes.
 
 ### Statement
 
-Stored: query timeout, maximum rows, single-row status and rows-fetched
-pointers, and single-parameter-set status and processed-count pointers.
+Stored: query timeout and maximum rows. Row/parameter array sizes, bind types,
+status pointers, and processed-count pointers share their descriptor header
+state rather than maintaining duplicate statement-only values.
 Default-only behavior is reported for forward-only cursor type, read-only
 concurrency, single-row and single-parameter arrays, column-wise binding,
 retrieve-data on, bookmarks off, metadata-ID false, and ODBC async off. Fetch
@@ -122,19 +123,20 @@ reset to the statement's automatic descriptors, and are automatically detached
 when freed. Foreign, invalid, implementation, and another statement's implicit
 descriptors are rejected with precise diagnostics.
 
-Not yet implemented: descriptor-driven execution synchronization, row or
-parameter arrays larger than one, bind offsets, row-wise binding, operation
-arrays, maximum length, metadata-ID true, no-scan behavior, row number, and
-genuine asynchronous ODBC function completion.
+Fetch and prepared execution consume those descriptor headers and reject
+unsupported multirow, bind-offset, row-wise, and operation-array settings.
+Not yet implemented: descriptor record-driven binding, arrays larger than one,
+maximum length, metadata-ID true, no-scan behavior, row number, and genuine
+asynchronous ODBC function completion.
 
 ### Descriptors
 
 Four implicit descriptor handles, explicit descriptor allocation, application
 descriptor attachment, cross-statement sharing, null reset, and free-time
-automatic fallback exist. The explicit descriptor object supports a useful
-subset of header and record fields, but field-to-execution synchronization,
-complete descriptor-kind rules, consistency checks, and the full field matrix
-remain partial.
+automatic fallback exist. Statement attributes, descriptor header fields, and
+execution status use the same header state. Record-level binding
+synchronization, complete descriptor-kind rules, consistency checks, and the
+full field matrix remain partial.
 
 ## Logging coverage
 
@@ -154,7 +156,7 @@ substitute for ODBC diagnostics.
 ## Maintainability snapshot
 
 - `odbc_api.cpp` is 2,577 lines and contains all 73 exported wrappers;
-  `odbc_handles.cpp` is 2,736 lines and combines connection, statement,
+  `odbc_handles.cpp` is 2,789 lines and combines connection, statement,
   descriptor, conversion, metadata, and registry responsibilities.
 - The callback/future methods in `AsyncDatabaseConnection` are experimental
   scaffolding, are not used by the ODBC driver's production connection path,
@@ -208,6 +210,10 @@ substitute for ODBC diagnostics.
   supports sharing one user descriptor across statement roles, restores the
   original automatic descriptor on null assignment or descriptor free, and
   rejects invalid, foreign, and implicit descriptor handles.
+- Audit batch 17 removes duplicate statement status storage. Scalar array and
+  bind settings now round-trip through descriptor headers; fetch and execute
+  read the same status/count pointers and reject unsupported descriptor header
+  modes before touching application buffers or issuing prepared protocol I/O.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

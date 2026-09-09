@@ -288,6 +288,15 @@ public:
   bool is_automatically_allocated() const {
     return automatically_allocated_;
   }
+  SQLULEN array_size() const noexcept { return array_size_; }
+  SQLUSMALLINT* array_status_ptr() const noexcept {
+    return array_status_ptr_;
+  }
+  SQLLEN* bind_offset_ptr() const noexcept { return bind_offset_ptr_; }
+  SQLULEN bind_type() const noexcept { return bind_type_; }
+  SQLULEN* rows_processed_ptr() const noexcept {
+    return rows_processed_ptr_;
+  }
 
   SQLRETURN get_field(SQLSMALLINT record_number,
                       SQLSMALLINT field_identifier, SQLPOINTER value,
@@ -408,10 +417,6 @@ private:
   SQLLEN affected_rows_ = 0;
   SQLULEN query_timeout_seconds_ = 0;
   SQLULEN max_rows_ = 0;
-  SQLUSMALLINT* row_status_ptr_ = nullptr;
-  SQLULEN* rows_fetched_ptr_ = nullptr;
-  SQLUSMALLINT* param_status_ptr_ = nullptr;
-  SQLULEN* params_processed_ptr_ = nullptr;
   SQLHDESC automatic_app_row_descriptor_{SQL_NULL_HDESC};
   SQLHDESC automatic_app_param_descriptor_{SQL_NULL_HDESC};
   SQLHDESC app_row_descriptor_{SQL_NULL_HDESC};
@@ -425,6 +430,7 @@ private:
   SQLHDESC create_implicit_descriptor();
   SQLRETURN set_application_descriptor(SQLINTEGER attribute,
                                        SQLHDESC descriptor);
+  std::shared_ptr<ODBCDescriptor> descriptor(SQLHDESC handle) const;
 };
 
 // Handle registry for validation

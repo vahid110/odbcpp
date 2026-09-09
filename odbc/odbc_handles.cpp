@@ -1045,10 +1045,16 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
                   "Row array size must be positive");
         return SQL_ERROR;
       }
-      if (numeric == 1) return SQL_SUCCESS;
+      if (numeric == 1) {
+        return descriptor(app_row_descriptor_)->set_field(
+            0, SQL_DESC_ARRAY_SIZE, value, 0);
+      }
       break;
     case SQL_ATTR_ROW_BIND_TYPE:
-      if (numeric == SQL_BIND_BY_COLUMN) return SQL_SUCCESS;
+      if (numeric == SQL_BIND_BY_COLUMN) {
+        return descriptor(app_row_descriptor_)->set_field(
+            0, SQL_DESC_BIND_TYPE, value, 0);
+      }
       break;
     case SQL_ATTR_RETRIEVE_DATA:
       if (numeric == SQL_RD_ON) return SQL_SUCCESS;
@@ -1065,26 +1071,32 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
                   "Parameter-set size must be positive");
         return SQL_ERROR;
       }
-      if (numeric == 1) return SQL_SUCCESS;
+      if (numeric == 1) {
+        return descriptor(app_param_descriptor_)->set_field(
+            0, SQL_DESC_ARRAY_SIZE, value, 0);
+      }
       break;
     case SQL_ATTR_PARAM_BIND_TYPE:
-      if (numeric == SQL_PARAM_BIND_BY_COLUMN) return SQL_SUCCESS;
+      if (numeric == SQL_PARAM_BIND_BY_COLUMN) {
+        return descriptor(app_param_descriptor_)->set_field(
+            0, SQL_DESC_BIND_TYPE, value, 0);
+      }
       break;
     case SQL_ATTR_METADATA_ID:
       if (numeric == SQL_FALSE) return SQL_SUCCESS;
       break;
     case SQL_ATTR_ROW_STATUS_PTR:
-      row_status_ptr_ = static_cast<SQLUSMALLINT*>(value);
-      return SQL_SUCCESS;
+      return descriptor(imp_row_descriptor_)->set_field(
+          0, SQL_DESC_ARRAY_STATUS_PTR, value, 0);
     case SQL_ATTR_ROWS_FETCHED_PTR:
-      rows_fetched_ptr_ = static_cast<SQLULEN*>(value);
-      return SQL_SUCCESS;
+      return descriptor(imp_row_descriptor_)->set_field(
+          0, SQL_DESC_ROWS_PROCESSED_PTR, value, 0);
     case SQL_ATTR_PARAM_STATUS_PTR:
-      param_status_ptr_ = static_cast<SQLUSMALLINT*>(value);
-      return SQL_SUCCESS;
+      return descriptor(imp_param_descriptor_)->set_field(
+          0, SQL_DESC_ARRAY_STATUS_PTR, value, 0);
     case SQL_ATTR_PARAMS_PROCESSED_PTR:
-      params_processed_ptr_ = static_cast<SQLULEN*>(value);
-      return SQL_SUCCESS;
+      return descriptor(imp_param_descriptor_)->set_field(
+          0, SQL_DESC_ROWS_PROCESSED_PTR, value, 0);
     default:
       set_error(SQLSTATE_INVALID_ATTRIBUTE,
                 "Unsupported statement attribute");
@@ -1138,6 +1150,11 @@ void ODBCStatement::detach_descriptor(SQLHDESC descriptor) noexcept {
   }
 }
 
+std::shared_ptr<ODBCDescriptor> ODBCStatement::descriptor(
+    SQLHDESC handle) const {
+  return HandleRegistry::instance().get_handle_as<ODBCDescriptor>(handle);
+}
+
 SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
   switch (attribute) {
     case SQL_ATTR_APP_ROW_DESC:
@@ -1161,9 +1178,11 @@ SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
     case SQL_ATTR_CONCURRENCY:
       *static_cast<SQLULEN*>(value) = SQL_CONCUR_READ_ONLY; break;
     case SQL_ATTR_ROW_ARRAY_SIZE:
-      *static_cast<SQLULEN*>(value) = 1; break;
+      *static_cast<SQLULEN*>(value) =
+          descriptor(app_row_descriptor_)->array_size(); break;
     case SQL_ATTR_ROW_BIND_TYPE:
-      *static_cast<SQLULEN*>(value) = SQL_BIND_BY_COLUMN; break;
+      *static_cast<SQLULEN*>(value) =
+          descriptor(app_row_descriptor_)->bind_type(); break;
     case SQL_ATTR_RETRIEVE_DATA:
       *static_cast<SQLULEN*>(value) = SQL_RD_ON; break;
     case SQL_ATTR_USE_BOOKMARKS:
@@ -1171,19 +1190,25 @@ SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
     case SQL_ATTR_ASYNC_ENABLE:
       *static_cast<SQLULEN*>(value) = SQL_ASYNC_ENABLE_OFF; break;
     case SQL_ATTR_PARAMSET_SIZE:
-      *static_cast<SQLULEN*>(value) = 1; break;
+      *static_cast<SQLULEN*>(value) =
+          descriptor(app_param_descriptor_)->array_size(); break;
     case SQL_ATTR_PARAM_BIND_TYPE:
-      *static_cast<SQLULEN*>(value) = SQL_PARAM_BIND_BY_COLUMN; break;
+      *static_cast<SQLULEN*>(value) =
+          descriptor(app_param_descriptor_)->bind_type(); break;
     case SQL_ATTR_METADATA_ID:
       *static_cast<SQLULEN*>(value) = SQL_FALSE; break;
     case SQL_ATTR_ROW_STATUS_PTR:
-      *static_cast<SQLUSMALLINT**>(value) = row_status_ptr_; break;
+      *static_cast<SQLUSMALLINT**>(value) =
+          descriptor(imp_row_descriptor_)->array_status_ptr(); break;
     case SQL_ATTR_ROWS_FETCHED_PTR:
-      *static_cast<SQLULEN**>(value) = rows_fetched_ptr_; break;
+      *static_cast<SQLULEN**>(value) =
+          descriptor(imp_row_descriptor_)->rows_processed_ptr(); break;
     case SQL_ATTR_PARAM_STATUS_PTR:
-      *static_cast<SQLUSMALLINT**>(value) = param_status_ptr_; break;
+      *static_cast<SQLUSMALLINT**>(value) =
+          descriptor(imp_param_descriptor_)->array_status_ptr(); break;
     case SQL_ATTR_PARAMS_PROCESSED_PTR:
-      *static_cast<SQLULEN**>(value) = params_processed_ptr_; break;
+      *static_cast<SQLULEN**>(value) =
+          descriptor(imp_param_descriptor_)->rows_processed_ptr(); break;
     default:
       set_error(SQLSTATE_INVALID_ATTRIBUTE, "Unsupported statement attribute");
       return SQL_ERROR;
@@ -1215,14 +1240,25 @@ void ODBCStatement::reset_parameters() {
 }
 
 SQLRETURN ODBCStatement::fetch() {
+  const auto application_descriptor = descriptor(app_row_descriptor_);
+  if (application_descriptor->array_size() != 1 ||
+      application_descriptor->bind_type() != SQL_BIND_BY_COLUMN ||
+      application_descriptor->bind_offset_ptr()) {
+    set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+              "Only single-row column-wise descriptor binding is supported");
+    return SQL_ERROR;
+  }
+  const auto implementation_descriptor = descriptor(imp_row_descriptor_);
+  auto* rows_fetched = implementation_descriptor->rows_processed_ptr();
+  auto* row_status = implementation_descriptor->array_status_ptr();
   if (!executed_ || current_row_ >= result_rows_.size()) {
-    if (rows_fetched_ptr_) *rows_fetched_ptr_ = 0;
-    if (row_status_ptr_) row_status_ptr_[0] = SQL_ROW_NOROW;
+    if (rows_fetched) *rows_fetched = 0;
+    if (row_status) row_status[0] = SQL_ROW_NOROW;
     return SQL_NO_DATA;
   }
   
   current_row_++;
-  if (rows_fetched_ptr_) *rows_fetched_ptr_ = 1;
+  if (rows_fetched) *rows_fetched = 1;
   get_data_offsets_.assign(result_rows_[current_row_ - 1].size(), 0);
   SQLRETURN fetch_result = SQL_SUCCESS;
   
@@ -1237,7 +1273,7 @@ SQLRETURN ODBCStatement::fetch() {
         if (!binding.strlen_or_indicator) {
           set_error(SQLSTATE_INDICATOR_VARIABLE_REQUIRED,
                     "NULL column requires an indicator variable");
-          if (row_status_ptr_) row_status_ptr_[0] = SQL_ROW_ERROR;
+          if (row_status) row_status[0] = SQL_ROW_ERROR;
           return SQL_ERROR;
         }
         *binding.strlen_or_indicator = SQL_NULL_DATA;
@@ -1251,7 +1287,7 @@ SQLRETURN ODBCStatement::fetch() {
       if (!ResultTypes::is_conversion_supported(sql_type, target_type)) {
         set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
                   "Unsupported result data type conversion");
-        if (row_status_ptr_) row_status_ptr_[0] = SQL_ROW_ERROR;
+        if (row_status) row_status[0] = SQL_ROW_ERROR;
         return SQL_ERROR;
       }
       SQLRETURN conv_result = TextDataConverter::convert_data(
@@ -1261,7 +1297,7 @@ SQLRETURN ODBCStatement::fetch() {
       if (conv_result == SQL_ERROR) {
         set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
                   "Result value could not be converted to the requested C type");
-        if (row_status_ptr_) row_status_ptr_[0] = SQL_ROW_ERROR;
+        if (row_status) row_status[0] = SQL_ROW_ERROR;
         return SQL_ERROR;
       }
       if (conv_result == SQL_SUCCESS_WITH_INFO) {
@@ -1272,8 +1308,8 @@ SQLRETURN ODBCStatement::fetch() {
     }
   }
 
-  if (row_status_ptr_) {
-    row_status_ptr_[0] = fetch_result == SQL_SUCCESS_WITH_INFO
+  if (row_status) {
+    row_status[0] = fetch_result == SQL_SUCCESS_WITH_INFO
         ? SQL_ROW_SUCCESS_WITH_INFO : SQL_ROW_SUCCESS;
   }
   return fetch_result;
@@ -1503,14 +1539,17 @@ SQLRETURN ODBCStatement::num_params(SQLSMALLINT* parameter_count) {
 
 SQLRETURN ODBCStatement::complete_parameter_set(SQLRETURN result) {
   if (parameter_count_ == 0) return result;
-  if (params_processed_ptr_) *params_processed_ptr_ = 1;
-  if (param_status_ptr_) {
+  const auto implementation_descriptor = descriptor(imp_param_descriptor_);
+  auto* params_processed = implementation_descriptor->rows_processed_ptr();
+  auto* param_status = implementation_descriptor->array_status_ptr();
+  if (params_processed) *params_processed = 1;
+  if (param_status) {
     if (result == SQL_SUCCESS) {
-      param_status_ptr_[0] = SQL_PARAM_SUCCESS;
+      param_status[0] = SQL_PARAM_SUCCESS;
     } else if (result == SQL_SUCCESS_WITH_INFO) {
-      param_status_ptr_[0] = SQL_PARAM_SUCCESS_WITH_INFO;
+      param_status[0] = SQL_PARAM_SUCCESS_WITH_INFO;
     } else {
-      param_status_ptr_[0] = SQL_PARAM_ERROR;
+      param_status[0] = SQL_PARAM_ERROR;
     }
   }
   return result;
@@ -1536,9 +1575,23 @@ SQLRETURN ODBCStatement::execute() {
                                      {"kind", "prepared"}});
     return SQL_ERROR;
   }
+  const auto application_descriptor = descriptor(app_param_descriptor_);
+  if (application_descriptor->array_size() != 1 ||
+      application_descriptor->bind_type() != SQL_PARAM_BIND_BY_COLUMN ||
+      application_descriptor->bind_offset_ptr() ||
+      application_descriptor->array_status_ptr()) {
+    set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+              "Only one column-wise parameter set is supported");
+    return SQL_ERROR;
+  }
   if (parameter_count_ > 0) {
-    if (params_processed_ptr_) *params_processed_ptr_ = 0;
-    if (param_status_ptr_) param_status_ptr_[0] = SQL_PARAM_UNUSED;
+    const auto implementation_descriptor = descriptor(imp_param_descriptor_);
+    if (auto* processed = implementation_descriptor->rows_processed_ptr()) {
+      *processed = 0;
+    }
+    if (auto* status = implementation_descriptor->array_status_ptr()) {
+      status[0] = SQL_PARAM_UNUSED;
+    }
   }
   if (conn_->logs_queries()) {
     conn_->log(rs::core::logging::LogLevel::Debug, "query_text",

@@ -62,6 +62,32 @@ TEST_F(PreparedStatementIntegrationTest, BinaryParameterRoundTripsAsBytea) {
     EXPECT_EQ(0, std::memcmp(input, output, sizeof(input)));
 }
 
+TEST_F(PreparedStatementIntegrationTest,
+       RejectsUnsupportedAttachedParameterArraysBeforeExecution) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT ?::integer", SQL_NTS));
+    SQLINTEGER input = 7;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
+        0, 0, &input, 0, nullptr));
+
+    SQLHDESC descriptor = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(
+        SQL_HANDLE_DESC, hdbc, &descriptor));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+        descriptor, 0, SQL_DESC_ARRAY_SIZE,
+        reinterpret_cast<SQLPOINTER>(std::uintptr_t{2}), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_APP_PARAM_DESC, descriptor, 0));
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HYC00", reinterpret_cast<char*>(state));
+    EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
+}
+
 TEST_F(PreparedStatementIntegrationTest, ReportsPreparedParameterCount) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
         hstmt, (SQLCHAR*)"SELECT ?, '?'::text, ? /* ? */, $$?$$, ?", SQL_NTS));
