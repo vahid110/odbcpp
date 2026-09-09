@@ -545,6 +545,10 @@ TEST_F(PreparedStatementIntegrationTest, NegativeTests) {
     // Test SQLExecute without prepare
     ret = SQLExecute(hstmt);
     EXPECT_EQ(SQL_ERROR, ret);
+    ret = SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, sqlstate,
+                        nullptr, message, sizeof(message), nullptr);
+    ASSERT_EQ(SQL_SUCCESS, ret);
+    EXPECT_STREQ("HY010", reinterpret_cast<char*>(sqlstate));
     
     // Test SQLBindParameter with invalid parameter number
     SQLINTEGER param = 123;

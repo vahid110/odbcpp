@@ -773,9 +773,10 @@ TEST_F(AttributeApisTest, StoresSingleRowAndParameterStatusPointers) {
       sizeof(reported_params_processed), nullptr));
   EXPECT_EQ(&params_processed, reported_params_processed);
 
-  EXPECT_EQ(SQL_NO_DATA, SQLFetch(statement_));
-  EXPECT_EQ(0u, rows_fetched);
-  EXPECT_EQ(SQL_ROW_NOROW, row_status);
+  EXPECT_EQ(SQL_ERROR, SQLFetch(statement_));
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(99u, rows_fetched);
+  EXPECT_EQ(99, row_status);
 
   EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
       statement_, SQL_ATTR_ROW_STATUS_PTR, nullptr, 0));
@@ -827,9 +828,10 @@ TEST_F(AttributeApisTest, StatementPointersShareDescriptorHeaderState) {
   EXPECT_EQ(&param_status, reported_param_status);
   EXPECT_EQ(&params_processed, reported_params_processed);
 
-  EXPECT_EQ(SQL_NO_DATA, SQLFetch(statement_));
-  EXPECT_EQ(0u, rows_fetched);
-  EXPECT_EQ(SQL_ROW_NOROW, row_status);
+  EXPECT_EQ(SQL_ERROR, SQLFetch(statement_));
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(99u, rows_fetched);
+  EXPECT_EQ(99, row_status);
 }
 
 TEST_F(AttributeApisTest, AttachedDescriptorHeadersDriveStatementAttributes) {
@@ -845,11 +847,12 @@ TEST_F(AttributeApisTest, AttachedDescriptorHeadersDriveStatementAttributes) {
       statement_, SQL_ATTR_ROW_ARRAY_SIZE, &array_size, 0, nullptr));
   EXPECT_EQ(2u, array_size);
   EXPECT_EQ(SQL_ERROR, SQLFetch(statement_));
-  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_STMT, statement_));
 
   ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
       descriptor, 0, SQL_DESC_ARRAY_SIZE, integer_value(1), 0));
-  EXPECT_EQ(SQL_NO_DATA, SQLFetch(statement_));
+  EXPECT_EQ(SQL_ERROR, SQLFetch(statement_));
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
 }
 
@@ -869,8 +872,9 @@ TEST_F(AttributeApisTest, StoresMaximumRowsAndFinishesResultSequence) {
 }
 
 TEST_F(AttributeApisTest, SupportsForwardOnlyFetchScroll) {
-  EXPECT_EQ(SQL_NO_DATA, SQLFetchScroll(
+  EXPECT_EQ(SQL_ERROR, SQLFetchScroll(
       statement_, SQL_FETCH_NEXT, 0));
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_ERROR, SQLFetchScroll(
       statement_, SQL_FETCH_FIRST, 0));
   EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));

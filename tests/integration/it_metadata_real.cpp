@@ -325,6 +325,12 @@ TEST_F(MetadataIntegrationTest, ReportsAffectedRows) {
                             SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLRowCount(hstmt, &row_count));
     EXPECT_EQ(2, row_count);
+
+    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("24000", reinterpret_cast<char*>(state));
 }
 
 TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {

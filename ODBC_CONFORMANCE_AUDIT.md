@@ -42,8 +42,8 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLEndTran` | A | Partial | unit, integration | Environment-wide completion and multi-connection behavior |
 | `SQLExecDirect` | A/W | Partial | unit failure, integration, DM | Full state sequencing, empty/invalid text, cancellation |
 | `SQLPrepare` | A/W | Partial | integration, DM | Full state sequencing, preparation errors, pre-execution metadata |
-| `SQLExecute` | A | Partial | integration | Re-execution states, parameter arrays, data-at-execution |
-| `SQLFetch` | A | Partial | integration, DM | Row arrays/status, bound-buffer boundaries, state matrix |
+| `SQLExecute` | A | Partial | integration | Unprepared execution returns HY010; re-execution states, parameter arrays, and data-at-execution remain |
+| `SQLFetch` | A | Partial | unit, integration, DM | Never-executed and no-result states return HY010/24000; row arrays and full state matrix remain |
 | `SQLFetchScroll` | A | Partial | unit, integration, DM | Only `SQL_FETCH_NEXT` is supported; keep other orientations honest |
 | `SQLMoreResults` | A | Partial | unit, integration, DM | Error/result/update-count sequences and state transitions |
 | `SQLGetData` | A | Partial | integration, DM | Complete conversion matrix and call-order/chunking edge cases |
@@ -254,6 +254,12 @@ substitute for ODBC diagnostics.
   types or output directions return HYC00. Prepared execution also resolves
   `SQL_C_DEFAULT` from the declared SQL type and now handles its smallint and
   real mappings.
+- Audit batch 25 corrects core statement sequencing. Fetch before execution now
+  returns HY010 without changing row-status outputs; fetch after a successfully
+  executed update with no result set returns 24000; and execute without prepare
+  returns HY010. Exhausting a real result set still returns `SQL_NO_DATA`, and
+  unsupported row-array settings are tested after a real execution so state
+  validation cannot mask them.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

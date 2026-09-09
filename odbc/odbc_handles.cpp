@@ -1293,6 +1293,16 @@ void ODBCStatement::reset_parameters() {
 }
 
 SQLRETURN ODBCStatement::fetch() {
+  if (!executed_) {
+    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
+              "Statement has not been executed");
+    return SQL_ERROR;
+  }
+  if (column_info_.empty()) {
+    set_error(SQLSTATE_INVALID_CURSOR_STATE,
+              "Executed statement did not produce a result set");
+    return SQL_ERROR;
+  }
   const auto application_descriptor = descriptor(app_row_descriptor_);
   if (application_descriptor->array_size() != 1 ||
       application_descriptor->bind_type() != SQL_BIND_BY_COLUMN ||
@@ -1304,7 +1314,7 @@ SQLRETURN ODBCStatement::fetch() {
   const auto implementation_descriptor = descriptor(imp_row_descriptor_);
   auto* rows_fetched = implementation_descriptor->rows_processed_ptr();
   auto* row_status = implementation_descriptor->array_status_ptr();
-  if (!executed_ || current_row_ >= result_rows_.size()) {
+  if (current_row_ >= result_rows_.size()) {
     if (rows_fetched) *rows_fetched = 0;
     if (row_status) row_status[0] = SQL_ROW_NOROW;
     return SQL_NO_DATA;
@@ -1621,7 +1631,7 @@ SQLRETURN ODBCStatement::execute() {
   set_statement_diagnostic_header(
       0, 0, dynamic_function.name, dynamic_function.code);
   if (!prepared_) {
-    set_error(SQLSTATE_GENERAL_ERROR, "Statement not prepared");
+    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "Statement not prepared");
     conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                get_error_message(), {{"sqlstate", get_sqlstate()},
                                      {"kind", "prepared"}});

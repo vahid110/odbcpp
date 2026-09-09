@@ -107,6 +107,26 @@ TEST_F(BindColIntegrationTest, ApplicationDescriptorDrivesFetchBinding) {
     ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
 }
 
+TEST_F(BindColIntegrationTest,
+       RejectsUnsupportedAttachedRowArraysBeforeFetch) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS));
+    SQLHDESC descriptor = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(
+        SQL_HANDLE_DESC, hdbc, &descriptor));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+        descriptor, 0, SQL_DESC_ARRAY_SIZE,
+        reinterpret_cast<SQLPOINTER>(std::uintptr_t{2}), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_APP_ROW_DESC, descriptor, 0));
+    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HYC00", reinterpret_cast<char*>(state));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
+}
+
 // Test column binding with NULL values
 TEST_F(BindColIntegrationTest, NullValueBinding) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT NULL as null_col, 'NotNull' as str_col", SQL_NTS));
@@ -626,7 +646,11 @@ TEST_F(BindColIntegrationTest, NegativeTests) {
     SQLHSTMT new_stmt;
     SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &new_stmt);
     ret = SQLFetch(new_stmt);
-    EXPECT_EQ(SQL_NO_DATA, ret);
+    EXPECT_EQ(SQL_ERROR, ret);
+    ret = SQLGetDiagRec(SQL_HANDLE_STMT, new_stmt, 1, sqlstate,
+                        nullptr, message, sizeof(message), nullptr);
+    ASSERT_EQ(SQL_SUCCESS, ret);
+    EXPECT_STREQ("HY010", reinterpret_cast<char*>(sqlstate));
     SQLFreeHandle(SQL_HANDLE_STMT, new_stmt);
     
     // Test SQLGetData without execution
