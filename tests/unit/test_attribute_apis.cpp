@@ -6,6 +6,7 @@
 #include "tests/test_handle_helpers.h"
 
 #include <cstdint>
+#include <limits>
 #include <string>
 
 namespace {
@@ -135,6 +136,124 @@ TEST_F(AttributeApisTest, StoresAutocommitMode) {
   EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(
       connection_, SQL_ATTR_AUTOCOMMIT, integer_value(99), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_DBC, connection_));
+}
+
+TEST_F(AttributeApisTest, ReportsCommonConnectionAttributeDefaults) {
+  const auto expect_attribute = [&](SQLINTEGER attribute,
+                                    SQLUINTEGER expected) {
+    SQLUINTEGER value = std::numeric_limits<SQLUINTEGER>::max();
+    SQLINTEGER length = 0;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetConnectAttr(connection_, attribute, &value,
+                                sizeof(value), &length));
+    EXPECT_EQ(expected, value);
+    EXPECT_EQ(sizeof(SQLUINTEGER), static_cast<std::size_t>(length));
+  };
+
+  expect_attribute(SQL_ATTR_ACCESS_MODE, SQL_MODE_READ_WRITE);
+  expect_attribute(SQL_ATTR_ASYNC_ENABLE, SQL_ASYNC_ENABLE_OFF);
+  expect_attribute(SQL_ATTR_AUTO_IPD, SQL_FALSE);
+  expect_attribute(SQL_ATTR_METADATA_ID, SQL_FALSE);
+
+  SQLUINTEGER dead = SQL_CD_TRUE;
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetConnectAttr(connection_, SQL_ATTR_CONNECTION_DEAD, &dead,
+                              sizeof(dead), nullptr));
+  EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection_));
+
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLSetConnectAttr(connection_, SQL_ATTR_ACCESS_MODE,
+                              integer_value(SQL_MODE_READ_WRITE), 0));
+  EXPECT_EQ(SQL_ERROR,
+            SQLSetConnectAttr(connection_, SQL_ATTR_ACCESS_MODE,
+                              integer_value(SQL_MODE_READ_ONLY), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLSetConnectAttr(connection_, SQL_ATTR_ASYNC_ENABLE,
+                              integer_value(SQL_ASYNC_ENABLE_OFF), 0));
+  EXPECT_EQ(SQL_ERROR,
+            SQLSetConnectAttr(connection_, SQL_ATTR_ASYNC_ENABLE,
+                              integer_value(SQL_ASYNC_ENABLE_ON), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLSetConnectAttr(connection_, SQL_ATTR_METADATA_ID,
+                              integer_value(SQL_FALSE), 0));
+  EXPECT_EQ(SQL_ERROR,
+            SQLSetConnectAttr(connection_, SQL_ATTR_METADATA_ID,
+                              integer_value(SQL_TRUE), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLSetConnectAttr(connection_, SQL_ATTR_CONNECTION_DEAD,
+                              integer_value(SQL_CD_FALSE), 0));
+  EXPECT_EQ("HY092", diagnostic_state(SQL_HANDLE_DBC, connection_));
+}
+
+TEST_F(AttributeApisTest, StoresCurrentCatalogBeforeConnecting) {
+  SQLINTEGER length = -1;
+  EXPECT_EQ(SQL_NO_DATA,
+            SQLGetConnectAttr(connection_, SQL_ATTR_CURRENT_CATALOG,
+                              nullptr, 0, &length));
+  EXPECT_EQ(-1, length);
+
+  SQLCHAR catalog[]{'p', 'o', 's', 't', 'g', 'r', 'e', 's', 0};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetConnectAttr(connection_, SQL_ATTR_CURRENT_CATALOG,
+                              catalog, SQL_NTS));
+
+  SQLCHAR narrow[16]{};
+  length = 0;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetConnectAttr(connection_, SQL_ATTR_CURRENT_CATALOG,
+                              narrow, sizeof(narrow), &length));
+  EXPECT_STREQ("postgres", reinterpret_cast<char*>(narrow));
+  EXPECT_EQ(8, length);
+
+  SQLWCHAR wide[16]{};
+  length = 0;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetConnectAttrW(connection_, SQL_ATTR_CURRENT_CATALOG,
+                               wide, sizeof(wide), &length));
+  EXPECT_EQ(8 * static_cast<SQLINTEGER>(sizeof(SQLWCHAR)), length);
+  EXPECT_EQ(static_cast<SQLWCHAR>('p'), wide[0]);
+  EXPECT_EQ(0, wide[8]);
+
+  length = 0;
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLGetConnectAttr(connection_, SQL_ATTR_CURRENT_CATALOG,
+                              nullptr, 0, &length));
+  EXPECT_EQ(8, length);
+
+  SQLCHAR truncated[5]{};
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLGetConnectAttr(connection_, SQL_ATTR_CURRENT_CATALOG,
+                              truncated, sizeof(truncated), &length));
+  EXPECT_STREQ("post", reinterpret_cast<char*>(truncated));
+  EXPECT_EQ(8, length);
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection_));
+
+  EXPECT_EQ(SQL_ERROR,
+            SQLSetConnectAttr(connection_, SQL_ATTR_CURRENT_CATALOG,
+                              nullptr, SQL_NTS));
+  EXPECT_EQ("HY009", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLSetConnectAttr(connection_, SQL_ATTR_CURRENT_CATALOG,
+                              catalog, -2));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
+
+  EXPECT_EQ(SQL_ERROR,
+            SQLSetConnectAttrW(connection_, SQL_ATTR_CURRENT_CATALOG,
+                               wide, 1));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
+
+  SQLCHAR replacement[]{'t', 'e', 'm', 'p', 'l', 'a', 't', 'e', '1', 0};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetConnectAttr(connection_, SQL_ATTR_CURRENT_CATALOG,
+                              replacement, SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetConnectAttr(connection_, SQL_ATTR_CURRENT_CATALOG,
+                              narrow, sizeof(narrow), &length));
+  EXPECT_STREQ("template1", reinterpret_cast<char*>(narrow));
+  EXPECT_EQ(9, length);
 }
 
 TEST_F(AttributeApisTest, StoresTransactionIsolation) {

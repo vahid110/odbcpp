@@ -233,9 +233,10 @@ namespace {
     }
   }
 
+  template <typename BufferLength, typename OutputLength>
   SQLRETURN write_narrow_output(
       ODBCHandle* handle, std::string_view value, SQLCHAR* output,
-      SQLSMALLINT buffer_length, SQLSMALLINT* output_length,
+      BufferLength buffer_length, OutputLength* output_length,
       std::string_view truncation_message) {
     if (buffer_length < 0) {
       handle->set_error(SQLSTATE_INVALID_STRING_LENGTH,
@@ -243,9 +244,9 @@ namespace {
       return SQL_ERROR;
     }
     if (output_length) {
-      *output_length = static_cast<SQLSMALLINT>(std::min<std::size_t>(
+      *output_length = static_cast<OutputLength>(std::min<std::size_t>(
           value.size(), static_cast<std::size_t>(
-                            std::numeric_limits<SQLSMALLINT>::max())));
+                            std::numeric_limits<OutputLength>::max())));
     }
     if (!output || buffer_length <= 0) return SQL_SUCCESS;
     const auto copied = std::min<std::size_t>(
@@ -260,11 +261,11 @@ namespace {
     return SQL_SUCCESS;
   }
 
-  template <typename Handle>
+  template <typename Handle, typename BufferLength, typename OutputLength>
   SQLRETURN write_narrow_output(
       const std::shared_ptr<Handle>& handle, std::string_view value,
-      SQLCHAR* output, SQLSMALLINT buffer_length,
-      SQLSMALLINT* output_length, std::string_view truncation_message) {
+      SQLCHAR* output, BufferLength buffer_length,
+      OutputLength* output_length, std::string_view truncation_message) {
     return write_narrow_output(
         handle.get(), value, output, buffer_length, output_length,
         truncation_message);
@@ -667,24 +668,77 @@ static SQLRETURN SQLDisconnect_impl(SQLHDBC connection_handle) {
 }
 
 static SQLRETURN SQLSetConnectAttr_impl(SQLHDBC connection_handle, SQLINTEGER attribute,
-                            SQLPOINTER value, SQLINTEGER) {
+                            SQLPOINTER value, SQLINTEGER string_length) {
   auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
+  if (attribute == SQL_ATTR_CURRENT_CATALOG) {
+    if (!value) {
+      conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                      "Current catalog pointer is null");
+      return SQL_ERROR;
+    }
+    if (string_length < 0 && string_length != SQL_NTS) {
+      conn->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                      "Invalid current catalog length");
+      return SQL_ERROR;
+    }
+    const auto catalog = sqlchar_to_string(
+        static_cast<SQLCHAR*>(value), string_length);
+    return conn->set_current_catalog(catalog);
+  }
   return conn->set_attribute(
       attribute, static_cast<SQLULEN>(reinterpret_cast<std::uintptr_t>(value)));
 }
 
 static SQLRETURN SQLSetConnectAttrW_impl(SQLHDBC connection_handle, SQLINTEGER attribute,
                              SQLPOINTER value, SQLINTEGER string_length) {
+  if (attribute == SQL_ATTR_CURRENT_CATALOG) {
+    auto conn = get_valid_handle<ODBCConnection>(connection_handle);
+    if (!conn) return SQL_INVALID_HANDLE;
+    if (!value) {
+      conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                      "Current catalog pointer is null");
+      return SQL_ERROR;
+    }
+    if (string_length < 0 && string_length != SQL_NTS) {
+      conn->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                      "Invalid wide current catalog length");
+      return SQL_ERROR;
+    }
+    if (string_length != SQL_NTS &&
+        string_length % static_cast<SQLINTEGER>(sizeof(SQLWCHAR)) != 0) {
+      conn->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                      "Wide current catalog length is not aligned");
+      return SQL_ERROR;
+    }
+    const auto units = string_length == SQL_NTS
+        ? static_cast<SQLINTEGER>(SQL_NTS)
+        : string_length / static_cast<SQLINTEGER>(sizeof(SQLWCHAR));
+    const auto catalog = sqlwchar_to_utf8(
+        static_cast<const SQLWCHAR*>(value), units);
+    if (!catalog) {
+      conn->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                      "Invalid wide current catalog");
+      return SQL_ERROR;
+    }
+    return conn->set_current_catalog(*catalog);
+  }
   return SQLSetConnectAttr(
       connection_handle, attribute, value, string_length);
 }
 
 static SQLRETURN SQLGetConnectAttr_impl(SQLHDBC connection_handle, SQLINTEGER attribute,
-                            SQLPOINTER value, SQLINTEGER,
+                            SQLPOINTER value, SQLINTEGER buffer_length,
                             SQLINTEGER* string_length) {
   auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
+  if (attribute == SQL_ATTR_CURRENT_CATALOG) {
+    const auto catalog = conn->get_current_catalog();
+    if (catalog.empty()) return SQL_NO_DATA;
+    return write_narrow_output(
+        conn, catalog, static_cast<SQLCHAR*>(value),
+        buffer_length, string_length, "Current catalog was truncated");
+  }
   if (!value) {
     conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
                     "Null connection attribute output pointer");
@@ -701,6 +755,15 @@ static SQLRETURN SQLGetConnectAttr_impl(SQLHDBC connection_handle, SQLINTEGER at
 static SQLRETURN SQLGetConnectAttrW_impl(SQLHDBC connection_handle, SQLINTEGER attribute,
                              SQLPOINTER value, SQLINTEGER buffer_length,
                              SQLINTEGER* string_length) {
+  if (attribute == SQL_ATTR_CURRENT_CATALOG) {
+    auto conn = get_valid_handle<ODBCConnection>(connection_handle);
+    if (!conn) return SQL_INVALID_HANDLE;
+    const auto catalog = conn->get_current_catalog();
+    if (catalog.empty()) return SQL_NO_DATA;
+    return write_wide_bytes_output(
+        conn, catalog, static_cast<SQLWCHAR*>(value),
+        buffer_length, string_length, "Current catalog was truncated");
+  }
   return SQLGetConnectAttr(
       connection_handle, attribute, value, buffer_length, string_length);
 }

@@ -416,6 +416,7 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
     settings.database = params.count("DATABASE") ? params.at("DATABASE") :
                         (params.count("DB") ? params.at("DB") :
                          (!resolved.dsn_name.empty() ? resolved.dsn_name : "postgres"));
+    if (requested_catalog_) settings.database = *requested_catalog_;
     settings.user = params.count("UID") ? params.at("UID") :
                     (params.count("USER") ? params.at("USER") : user);
     settings.password = params.count("PWD") ? params.at("PWD") :
@@ -481,6 +482,7 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
     
     connected_ = true;
     transaction_active_ = false;
+    current_catalog_ = settings.database;
     log(rs::core::logging::LogLevel::Info, "connection_opened",
         "Database connection established",
         {{"duration_ms", elapsed_milliseconds(started)}});
@@ -519,6 +521,39 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
     }
     autocommit_ = static_cast<SQLUINTEGER>(value);
     return SQL_SUCCESS;
+  }
+  if (attribute == SQL_ATTR_ACCESS_MODE) {
+    if (value == SQL_MODE_READ_WRITE) return SQL_SUCCESS;
+    if (value == SQL_MODE_READ_ONLY) {
+      set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                "Read-only connection mode is not implemented");
+      return SQL_ERROR;
+    }
+    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+              "Invalid connection access mode");
+    return SQL_ERROR;
+  }
+  if (attribute == SQL_ATTR_ASYNC_ENABLE) {
+    if (value == SQL_ASYNC_ENABLE_OFF) return SQL_SUCCESS;
+    if (value == SQL_ASYNC_ENABLE_ON) {
+      set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                "Asynchronous ODBC function execution is not implemented");
+      return SQL_ERROR;
+    }
+    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+              "Invalid asynchronous execution mode");
+    return SQL_ERROR;
+  }
+  if (attribute == SQL_ATTR_METADATA_ID) {
+    if (value == SQL_FALSE) return SQL_SUCCESS;
+    if (value == SQL_TRUE) {
+      set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                "Metadata identifier semantics are not implemented");
+      return SQL_ERROR;
+    }
+    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+              "Invalid metadata identifier mode");
+    return SQL_ERROR;
   }
   if (attribute == SQL_ATTR_TXN_ISOLATION) {
     const auto* isolation_name = transaction_isolation_name(value);
@@ -578,6 +613,25 @@ SQLRETURN ODBCConnection::get_attribute(SQLINTEGER attribute,
     case SQL_ATTR_LOGIN_TIMEOUT:
       *value = login_timeout_seconds_;
       return SQL_SUCCESS;
+    case SQL_ATTR_ACCESS_MODE:
+      *value = SQL_MODE_READ_WRITE;
+      return SQL_SUCCESS;
+    case SQL_ATTR_ASYNC_ENABLE:
+      *value = SQL_ASYNC_ENABLE_OFF;
+      return SQL_SUCCESS;
+    case SQL_ATTR_AUTO_IPD:
+      *value = SQL_FALSE;
+      return SQL_SUCCESS;
+    case SQL_ATTR_CONNECTION_DEAD:
+      if (!connected_) {
+        set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
+        return SQL_ERROR;
+      }
+      *value = SQL_CD_FALSE;
+      return SQL_SUCCESS;
+    case SQL_ATTR_METADATA_ID:
+      *value = SQL_FALSE;
+      return SQL_SUCCESS;
     case SQL_ATTR_AUTOCOMMIT:
       *value = autocommit_;
       return SQL_SUCCESS;
@@ -589,6 +643,28 @@ SQLRETURN ODBCConnection::get_attribute(SQLINTEGER attribute,
                 "Unsupported connection attribute");
       return SQL_ERROR;
   }
+}
+
+SQLRETURN ODBCConnection::set_current_catalog(std::string catalog) {
+  if (catalog.empty()) {
+    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+              "Current catalog cannot be empty");
+    return SQL_ERROR;
+  }
+  if (connected_) {
+    if (catalog != current_catalog_) {
+      set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                "PostgreSQL cannot change databases on an open connection");
+      return SQL_ERROR;
+    }
+  }
+  requested_catalog_ = std::move(catalog);
+  return SQL_SUCCESS;
+}
+
+std::string ODBCConnection::get_current_catalog() const {
+  if (requested_catalog_) return *requested_catalog_;
+  return current_catalog_;
 }
 
 rs::util::Result<void> ODBCConnection::begin_transaction_if_needed(

@@ -37,8 +37,8 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLConnect` | A/W | Partial | unit failure, integration, DM | Reconnect is rejected with 08002; complete input/state matrix remains |
 | `SQLDriverConnect` | A/W | Partial | unit, DM | Completion modes, exact output-string rules, connected-state handling |
 | `SQLDisconnect` | A | Partial | unit, integration, DM | Disconnected, active-transaction, and child-invalidation paths covered; async execution remains |
-| `SQLSetConnectAttr` | A/W | Partial | unit, integration | Attribute matrix and pre/post-connect restrictions |
-| `SQLGetConnectAttr` | A/W | Partial | unit, integration | Read-only/common attributes, buffer/type rules, wide entry tests |
+| `SQLSetConnectAttr` | A/W | Partial | unit, integration | Common defaults, catalog selection, invalid values, and unsupported modes covered; connection timeout and packet size remain |
+| `SQLGetConnectAttr` | A/W | Partial | unit, integration | Common numeric values, current catalog buffers, read-only attributes, and connected-state checks covered; broken-link detection remains |
 | `SQLEndTran` | A | Partial | unit, integration | Environment-wide completion and multi-connection behavior |
 | `SQLExecDirect` | A/W | Partial | unit failure, integration, DM | Full state sequencing, empty/invalid text, cancellation |
 | `SQLPrepare` | A/W | Partial | integration, DM | Full state sequencing, preparation errors, pre-execution metadata |
@@ -96,11 +96,15 @@ which should be rejected.
 ### Connection
 
 Implemented: `SQL_ATTR_LOGIN_TIMEOUT`, `SQL_ATTR_AUTOCOMMIT`,
-`SQL_ATTR_TXN_ISOLATION`, and iODBC application `SQLWCHAR` negotiation.
+`SQL_ATTR_TXN_ISOLATION`, pre-connect `SQL_ATTR_CURRENT_CATALOG`, read/write
+access-mode default, ODBC async-off default, metadata-ID false default,
+automatic-IPD false reporting, open-connection `SQL_ATTR_CONNECTION_DEAD`
+reporting, and iODBC application `SQLWCHAR` negotiation. Unsupported read-only,
+async-on, and metadata-ID true modes are rejected rather than silently ignored.
 
-Not yet implemented or fully classified: access mode, connection timeout,
-current catalog, metadata ID, packet size, connection-dead status, automatic
-IPD reporting, asynchronous connection/statement defaults, and platform/Driver
+Not yet implemented or fully classified: connection timeout, packet size,
+actual broken-link detection for connection-dead status, genuine asynchronous
+ODBC function execution, metadata identifier semantics, and platform/Driver
 Manager-owned tracing or cursor-library attributes.
 
 ### Statement
@@ -135,8 +139,8 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
 
 ## Maintainability snapshot
 
-- `odbc_api.cpp` is 2,466 lines and contains all 73 exported wrappers;
-  `odbc_handles.cpp` is 2,469 lines and combines connection, statement,
+- `odbc_api.cpp` is 2,529 lines and contains all 73 exported wrappers;
+  `odbc_handles.cpp` is 2,545 lines and combines connection, statement,
   descriptor, conversion, metadata, and registry responsibilities.
 - The callback/future methods in `AsyncDatabaseConnection` are experimental
   scaffolding, are not used by the ODBC driver's production connection path,
@@ -158,6 +162,12 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
   one validated helper parallel to the wide reader. Shared wide-output length
   validation and direct A/W parity tests cover catalog arguments,
   `SQLDescribeCol`, `SQLColAttribute`, and string versus numeric `SQLGetInfo`.
+- Audit batch 11 fills the commonly queried connection-attribute defaults and
+  implements pre-connect current-catalog selection for PostgreSQL. It tests
+  ANSI and wide byte lengths, truncation, null and malformed lengths,
+  read-only attributes, unsupported values, and connection-state behavior.
+  `SQL_ATTR_CONNECTION_DEAD` reports a known-open connection and returns 08003
+  when no connection is open; actual link-loss probing remains explicit work.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

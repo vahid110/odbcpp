@@ -193,6 +193,8 @@ public:
   bool is_connected() const { return connected_; }
   SQLRETURN set_attribute(SQLINTEGER attribute, SQLULEN value);
   SQLRETURN get_attribute(SQLINTEGER attribute, SQLUINTEGER* value);
+  SQLRETURN set_current_catalog(std::string catalog);
+  std::string get_current_catalog() const;
   SQLRETURN end_transaction(SQLSMALLINT completion_type);
   rs::util::Result<void> begin_transaction_if_needed(
       rs::util::Deadline deadline);
@@ -214,6 +216,8 @@ private:
   SQLUINTEGER autocommit_ = SQL_AUTOCOMMIT_ON;
   SQLUINTEGER transaction_isolation_ = SQL_TXN_READ_COMMITTED;
   bool transaction_active_ = false;
+  std::optional<std::string> requested_catalog_;
+  std::string current_catalog_;
   std::uint64_t connection_id_{};
   std::shared_ptr<rs::core::logging::DriverLogger> logger_;
   

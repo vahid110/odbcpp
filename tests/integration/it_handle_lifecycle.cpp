@@ -102,4 +102,55 @@ TEST_F(HandleLifecycleIntegrationTest,
   EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection_));
 }
 
+TEST(ConnectionAttributeIntegrationTest,
+     CurrentCatalogAndConnectionDeadTrackConnectionState) {
+  SQLHENV environment = SQL_NULL_HENV;
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                          reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+
+  auto catalog = reinterpret_cast<SQLCHAR*>(const_cast<char*>("postgres"));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetConnectAttr(connection, SQL_ATTR_CURRENT_CATALOG,
+                              catalog, SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLConnect(connection,
+                       reinterpret_cast<SQLCHAR*>(const_cast<char*>(
+                           "DSN=RedshiftProd")),
+                       SQL_NTS, nullptr, 0, nullptr, 0));
+
+  SQLUINTEGER dead = SQL_CD_TRUE;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetConnectAttr(connection, SQL_ATTR_CONNECTION_DEAD, &dead,
+                              sizeof(dead), nullptr));
+  EXPECT_EQ(SQL_CD_FALSE, dead);
+  SQLCHAR reported_catalog[16]{};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetConnectAttr(connection, SQL_ATTR_CURRENT_CATALOG,
+                              reported_catalog, sizeof(reported_catalog),
+                              nullptr));
+  EXPECT_STREQ("postgres", reinterpret_cast<char*>(reported_catalog));
+
+  EXPECT_EQ(SQL_ERROR,
+            SQLSetConnectAttr(
+                connection, SQL_ATTR_CURRENT_CATALOG,
+                reinterpret_cast<SQLCHAR*>(const_cast<char*>("other")),
+                SQL_NTS));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_DBC, connection));
+
+  EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
+  dead = SQL_CD_FALSE;
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetConnectAttr(connection, SQL_ATTR_CONNECTION_DEAD, &dead,
+                              sizeof(dead), nullptr));
+  EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
 }  // namespace
