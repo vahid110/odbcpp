@@ -69,7 +69,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLProcedureColumns` | A/W | Partial | unit, integration, DM | Modes, result columns, overloads and type metadata |
 | `SQLSpecialColumns` | A/W | Partial | unit, integration, DM | Scope/nullable semantics and row-version behavior |
 | `SQLGetDiagRec` | A/W | Partial | unit, integration, DM | Retrieval preserves records and validates type/record/buffer; truncation matrix remains |
-| `SQLGetDiagField` | A/W | Partial | unit, integration | Retrieval preserves records and reports the generating return code; complete field matrix remains |
+| `SQLGetDiagField` | A/W | Partial | unit, integration | All standard header/record identifiers, return provenance, origins, ANSI/wide lengths, and truncation are covered; row/column-specific server errors remain |
 | `SQLError` | A/W | Partial | unit, integration | ODBC 2 sequencing and multi-record consumption |
 | `SQLGetInfo` | A/W | Partial | unit, DM | Complete information matrix and capability accuracy |
 | `SQLGetFunctions` | A | Partial | unit, DM | Automatically prove advertised functions match usable exports |
@@ -135,8 +135,8 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
 
 ## Maintainability snapshot
 
-- `odbc_api.cpp` is 2,430 lines and contains all 73 exported wrappers;
-  `odbc_handles.cpp` is 2,376 lines and combines connection, statement,
+- `odbc_api.cpp` is 2,512 lines and contains all 73 exported wrappers;
+  `odbc_handles.cpp` is 2,459 lines and combines connection, statement,
   descriptor, conversion, metadata, and registry responsibilities.
 - The callback/future methods in `AsyncDatabaseConnection` are experimental
   scaffolding, are not used by the ODBC driver's production connection path,
@@ -150,6 +150,10 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
   on the same handle or connection-owned handle graph are serialized in a
   stable lock order, while distinct connections remain concurrent. This
   replaces ad hoc locking rather than adding locks throughout API bodies.
+- Audit batch 9 implements the standard `SQLGetDiagField` header and record
+  families, including statement dynamic-function and row-count provenance,
+  row/column defaults, correct standard origins, and ANSI/wide byte-length and
+  truncation behavior. PostgreSQL execution tests cover INSERT and SELECT.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
@@ -178,7 +182,9 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
    non-diagnostic handle calls. Audit batch 5 makes diagnostic retrieval itself
    non-mutating and validates handle type, record number, and buffer length.
    Audit batch 6 records return-code provenance at the shared ABI boundary;
-   the complete header/record field matrix remains.
+   audit batch 9 covers the standard header/record field identifiers and
+   statement execution provenance. Rowset- and parameter-array-specific
+   row/column diagnostics remain with those unsupported features.
 5. **Input validation parity:** ANSI and wide entry points have historically
    differed on null and invalid-length handling. Audit batch 1 begins closing
    this with execution/preparation boundary tests.

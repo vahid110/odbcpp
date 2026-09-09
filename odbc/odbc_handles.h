@@ -4,10 +4,13 @@
 #include "core/database/connection_pool.h"
 #include "core/util/driver_logging.h"
 #include "core/util/result.h"
+#include <array>
 #include <cstdint>
 #include <initializer_list>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 #include <map>
 #include <mutex>
@@ -26,12 +29,39 @@ struct DiagnosticRecord {
   std::string subclass_origin;
   std::string connection_name;
   std::string server_name;
+  SQLLEN row_number;
+  SQLINTEGER column_number;
+
+  static bool has_odbc_origin(std::string_view state) {
+    if (state.starts_with("IM")) return true;
+    static constexpr std::array<std::string_view, 31> odbc_subclasses{
+        "01S00", "01S01", "01S02", "01S06", "01S07", "07S01",
+        "08S01", "21S01", "21S02", "25S01", "25S02", "25S03",
+        "42S01", "42S02", "42S11", "42S12", "42S21", "42S22",
+        "HY095", "HY097", "HY098", "HY099", "HY100", "HY101",
+        "HY105", "HY107", "HY109", "HY110", "HY111", "HYT00",
+        "HYT01"};
+    for (const auto subclass : odbc_subclasses) {
+      if (state == subclass) return true;
+    }
+    return false;
+  }
   
   DiagnosticRecord(const std::string& state = SQLSTATE_SUCCESS, 
                    SQLINTEGER native = 0,
                    const std::string& message = "")
     : sqlstate(state), native_error(native), message_text(message),
-      class_origin("ISO 9075"), subclass_origin("ODBCPP 1.0") {}
+      class_origin(std::string_view(state).starts_with("IM")
+                       ? "ODBC 3.0" : "ISO 9075"),
+      subclass_origin(has_odbc_origin(state) ? "ODBC 3.0" : "ISO 9075"),
+      row_number(SQL_NO_ROW_NUMBER), column_number(SQL_NO_COLUMN_NUMBER) {}
+};
+
+struct DiagnosticHeader {
+  SQLLEN cursor_row_count{0};
+  SQLLEN row_count{0};
+  std::string dynamic_function;
+  SQLINTEGER dynamic_function_code{SQL_DIAG_UNKNOWN_STATEMENT};
 };
 
 // Base ODBC handle with diagnostic-record storage.
@@ -46,6 +76,7 @@ public:
   void clear_diagnostics() {
     std::lock_guard lock(diagnostics_mutex_);
     diagnostic_records_.clear();
+    diagnostic_header_ = {};
   }
   
   void add_diagnostic(const std::string& sqlstate, SQLINTEGER native_error, const std::string& message) {
@@ -95,6 +126,21 @@ public:
     return last_return_code_;
   }
 
+  void set_statement_diagnostic_header(
+      SQLLEN cursor_row_count, SQLLEN row_count,
+      std::string dynamic_function, SQLINTEGER dynamic_function_code) {
+    std::lock_guard lock(diagnostics_mutex_);
+    diagnostic_header_.cursor_row_count = cursor_row_count;
+    diagnostic_header_.row_count = row_count;
+    diagnostic_header_.dynamic_function = std::move(dynamic_function);
+    diagnostic_header_.dynamic_function_code = dynamic_function_code;
+  }
+
+  DiagnosticHeader get_diagnostic_header() const {
+    std::lock_guard lock(diagnostics_mutex_);
+    return diagnostic_header_;
+  }
+
 private:
   friend class HandleRegistry;
 
@@ -102,6 +148,7 @@ private:
   std::recursive_mutex operation_mutex_;
   mutable std::mutex diagnostics_mutex_;
   std::vector<DiagnosticRecord> diagnostic_records_;
+  DiagnosticHeader diagnostic_header_;
   SQLRETURN last_return_code_{SQL_SUCCESS};
 };
 

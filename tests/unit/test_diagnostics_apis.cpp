@@ -3,6 +3,7 @@
 #include "tests/test_handle_helpers.h"
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 
 class DiagnosticsTest : public ::testing::Test {
 protected:
@@ -109,6 +110,95 @@ TEST_F(DiagnosticsTest, SQLGetDiagField_RecordFields) {
     EXPECT_GT(string_length, 0);
 }
 
+TEST_F(DiagnosticsTest, SQLGetDiagField_CompleteStatementFieldFamilies) {
+    ASSERT_EQ(SQL_ERROR,
+              SQLExecDirect(hstmt, reinterpret_cast<SQLCHAR*>(
+                                       const_cast<char*>("select 1")),
+                            SQL_NTS));
+
+    SQLCHAR dynamic_function[32]{};
+    SQLSMALLINT string_length = 0;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDiagField(SQL_HANDLE_STMT, hstmt, 0,
+                              SQL_DIAG_DYNAMIC_FUNCTION, dynamic_function,
+                              sizeof(dynamic_function), &string_length));
+    EXPECT_STREQ("SELECT CURSOR", reinterpret_cast<char*>(dynamic_function));
+    EXPECT_EQ(13, string_length);
+
+    SQLINTEGER dynamic_code = -1;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetDiagField(SQL_HANDLE_STMT, hstmt, 0,
+                              SQL_DIAG_DYNAMIC_FUNCTION_CODE, &dynamic_code,
+                              0, nullptr));
+    EXPECT_EQ(SQL_DIAG_SELECT_CURSOR, dynamic_code);
+
+    SQLLEN row_count = -1;
+    SQLLEN cursor_row_count = -1;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetDiagField(SQL_HANDLE_STMT, hstmt, 0,
+                              SQL_DIAG_ROW_COUNT, &row_count, 0, nullptr));
+    EXPECT_EQ(0, row_count);
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetDiagField(SQL_HANDLE_STMT, hstmt, 0,
+                              SQL_DIAG_CURSOR_ROW_COUNT, &cursor_row_count,
+                              0, nullptr));
+    EXPECT_EQ(0, cursor_row_count);
+
+    SQLLEN row_number = 0;
+    SQLINTEGER column_number = 0;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetDiagField(SQL_HANDLE_STMT, hstmt, 1,
+                              SQL_DIAG_ROW_NUMBER, &row_number, 0, nullptr));
+    EXPECT_EQ(SQL_NO_ROW_NUMBER, row_number);
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetDiagField(SQL_HANDLE_STMT, hstmt, 1,
+                              SQL_DIAG_COLUMN_NUMBER, &column_number, 0,
+                              nullptr));
+    EXPECT_EQ(SQL_NO_COLUMN_NUMBER, column_number);
+
+    SQLWCHAR wide_dynamic_function[32]{};
+    string_length = 0;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDiagFieldW(SQL_HANDLE_STMT, hstmt, 0,
+                               SQL_DIAG_DYNAMIC_FUNCTION,
+                               wide_dynamic_function,
+                               sizeof(wide_dynamic_function),
+                               &string_length));
+    EXPECT_EQ(13 * static_cast<SQLSMALLINT>(sizeof(SQLWCHAR)), string_length);
+    EXPECT_EQ(static_cast<SQLWCHAR>('S'), wide_dynamic_function[0]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('R'), wide_dynamic_function[12]);
+    EXPECT_EQ(0, wide_dynamic_function[13]);
+}
+
+TEST_F(DiagnosticsTest, StatementOnlyFieldsRejectOtherHandleTypes) {
+    SQLLEN value = 0;
+    EXPECT_EQ(SQL_ERROR,
+              SQLGetDiagField(SQL_HANDLE_DBC, hdbc, 0,
+                              SQL_DIAG_ROW_COUNT, &value, 0, nullptr));
+    EXPECT_EQ(SQL_ERROR,
+              SQLGetDiagField(SQL_HANDLE_DBC, hdbc, 0,
+                              SQL_DIAG_CURSOR_ROW_COUNT, &value, 0,
+                              nullptr));
+
+    ASSERT_EQ(SQL_ERROR,
+              SQLDriverConnect(
+                  hdbc, nullptr,
+                  reinterpret_cast<SQLCHAR*>(const_cast<char*>("DSN=x")),
+                  SQL_NTS, nullptr, 0, nullptr,
+                  static_cast<SQLUSMALLINT>(999)));
+    SQLCHAR origin[16]{};
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDiagField(SQL_HANDLE_DBC, hdbc, 1,
+                              SQL_DIAG_CLASS_ORIGIN, origin,
+                              sizeof(origin), nullptr));
+    EXPECT_STREQ("ISO 9075", reinterpret_cast<char*>(origin));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDiagField(SQL_HANDLE_DBC, hdbc, 1,
+                              SQL_DIAG_SUBCLASS_ORIGIN, origin,
+                              sizeof(origin), nullptr));
+    EXPECT_STREQ("ODBC 3.0", reinterpret_cast<char*>(origin));
+}
+
 TEST_F(DiagnosticsTest, SQLError_ODBC2Compatibility) {
     // Force an error
     SQLConnect(hdbc, (SQLCHAR*)"invalid_dsn", SQL_NTS, nullptr, 0, nullptr, 0);
@@ -191,6 +281,9 @@ TEST_F(DiagnosticsTest, DiagnosticFunctionsValidateTypeRecordAndBuffer) {
     EXPECT_EQ(SQL_ERROR,
               SQLGetDiagField(SQL_HANDLE_STMT, hstmt, -1,
                               SQL_DIAG_MESSAGE_TEXT, nullptr, 0, nullptr));
+    EXPECT_EQ(SQL_ERROR,
+              SQLGetDiagField(SQL_HANDLE_STMT, hstmt, 1,
+                              SQL_DIAG_MESSAGE_TEXT, nullptr, -1, nullptr));
 
     EXPECT_EQ(SQL_SUCCESS,
               SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, state, nullptr,
@@ -219,4 +312,31 @@ TEST_F(DiagnosticsTest, SQLGetDiagRec_MessageTruncation) {
     
     EXPECT_GT(text_length, 0);
     EXPECT_EQ('\0', message[sizeof(message) - 1]);  // Null terminated
+}
+
+TEST_F(DiagnosticsTest, SQLGetDiagField_TruncatesAnsiAndWideStrings) {
+    ASSERT_EQ(SQL_ERROR,
+              SQLExecDirect(hstmt, reinterpret_cast<SQLCHAR*>(
+                                       const_cast<char*>("SELECT 1")),
+                            SQL_NTS));
+
+    SQLCHAR message[5]{};
+    SQLSMALLINT required = 0;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLGetDiagField(SQL_HANDLE_STMT, hstmt, 1,
+                              SQL_DIAG_MESSAGE_TEXT, message,
+                              sizeof(message), &required));
+    EXPECT_GT(required, static_cast<SQLSMALLINT>(sizeof(message) - 1));
+    EXPECT_EQ(0, message[sizeof(message) - 1]);
+
+    SQLWCHAR wide_message[5]{};
+    required = 0;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLGetDiagFieldW(SQL_HANDLE_STMT, hstmt, 1,
+                               SQL_DIAG_MESSAGE_TEXT, wide_message,
+                               sizeof(wide_message), &required));
+    EXPECT_GT(required,
+              static_cast<SQLSMALLINT>((std::size(wide_message) - 1) *
+                                       sizeof(SQLWCHAR)));
+    EXPECT_EQ(0, wide_message[std::size(wide_message) - 1]);
 }

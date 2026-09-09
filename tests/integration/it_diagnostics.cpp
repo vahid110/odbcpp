@@ -172,6 +172,75 @@ TEST_F(DiagnosticsIntegrationTest, SQLGetDiagFieldRecordFields) {
     EXPECT_TRUE(strstr(message, "Connection") != nullptr);
 }
 
+TEST(DiagnosticsConnectedIntegrationTest, StatementHeaderReflectsExecution) {
+    SQLHENV environment = SQL_NULL_HENV;
+    SQLHDBC connection = SQL_NULL_HDBC;
+    SQLHSTMT statement = SQL_NULL_HSTMT;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                            reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLConnect(connection,
+                         reinterpret_cast<SQLCHAR*>(
+                             const_cast<char*>("DSN=RedshiftProd")),
+                         SQL_NTS, nullptr, 0, nullptr, 0));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLAllocHandle(SQL_HANDLE_STMT, connection, &statement));
+
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLExecDirect(statement,
+                            reinterpret_cast<SQLCHAR*>(const_cast<char*>(
+                                "CREATE TEMP TABLE odbcpp_diag_matrix "
+                                "(value integer)")),
+                            SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLExecDirect(statement,
+                            reinterpret_cast<SQLCHAR*>(const_cast<char*>(
+                                "INSERT INTO odbcpp_diag_matrix VALUES "
+                                "(1), (2), (3)")),
+                            SQL_NTS));
+
+    SQLLEN row_count = -1;
+    SQLINTEGER dynamic_code = -1;
+    SQLCHAR dynamic_function[32]{};
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDiagField(SQL_HANDLE_STMT, statement, 0,
+                              SQL_DIAG_ROW_COUNT, &row_count, 0, nullptr));
+    EXPECT_EQ(3, row_count);
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDiagField(SQL_HANDLE_STMT, statement, 0,
+                              SQL_DIAG_DYNAMIC_FUNCTION_CODE, &dynamic_code,
+                              0, nullptr));
+    EXPECT_EQ(SQL_DIAG_INSERT, dynamic_code);
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDiagField(SQL_HANDLE_STMT, statement, 0,
+                              SQL_DIAG_DYNAMIC_FUNCTION, dynamic_function,
+                              sizeof(dynamic_function), nullptr));
+    EXPECT_STREQ("INSERT", reinterpret_cast<char*>(dynamic_function));
+
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLExecDirect(statement,
+                            reinterpret_cast<SQLCHAR*>(const_cast<char*>(
+                                "SELECT value FROM odbcpp_diag_matrix "
+                                "ORDER BY value")),
+                            SQL_NTS));
+    SQLLEN cursor_row_count = -1;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDiagField(SQL_HANDLE_STMT, statement, 0,
+                              SQL_DIAG_CURSOR_ROW_COUNT, &cursor_row_count,
+                              0, nullptr));
+    EXPECT_EQ(3, cursor_row_count);
+
+    EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement));
+    EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
+    EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+    EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
 TEST_F(DiagnosticsIntegrationTest, SQLErrorCompatibility) {
     // First create an error
     SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS); // Will fail - no connection

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -57,6 +58,69 @@ std::chrono::milliseconds timeout_duration(SQLULEN seconds) {
   }
   return std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(
       seconds * scale));
+}
+
+struct DynamicFunction {
+  std::string name;
+  SQLINTEGER code{SQL_DIAG_UNKNOWN_STATEMENT};
+};
+
+DynamicFunction classify_dynamic_function(std::string_view statement) {
+  const auto first = statement.find_first_not_of(" \t\r\n");
+  if (first == std::string_view::npos) return {};
+  std::string normalized(statement.substr(first));
+  std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                 [](unsigned char character) {
+                   return static_cast<char>(std::toupper(character));
+                 });
+  const auto matches = [&](std::string_view prefix) {
+    return normalized.starts_with(prefix) &&
+        (normalized.size() == prefix.size() ||
+         std::isspace(static_cast<unsigned char>(normalized[prefix.size()])));
+  };
+  struct PrefixMapping {
+    std::string_view prefix;
+    std::string_view name;
+    SQLINTEGER code;
+  };
+  static constexpr std::array<PrefixMapping, 27> mappings{{
+      {"SELECT", "SELECT CURSOR", SQL_DIAG_SELECT_CURSOR},
+      {"INSERT", "INSERT", SQL_DIAG_INSERT},
+      {"UPDATE", "UPDATE WHERE", SQL_DIAG_UPDATE_WHERE},
+      {"DELETE", "DELETE WHERE", SQL_DIAG_DELETE_WHERE},
+      {"CALL", "CALL", SQL_DIAG_CALL},
+      {"GRANT", "GRANT", SQL_DIAG_GRANT},
+      {"REVOKE", "REVOKE", SQL_DIAG_REVOKE},
+      {"ALTER DOMAIN", "ALTER DOMAIN", SQL_DIAG_ALTER_DOMAIN},
+      {"ALTER TABLE", "ALTER TABLE", SQL_DIAG_ALTER_TABLE},
+      {"CREATE ASSERTION", "CREATE ASSERTION", SQL_DIAG_CREATE_ASSERTION},
+      {"CREATE CHARACTER SET", "CREATE CHARACTER SET",
+       SQL_DIAG_CREATE_CHARACTER_SET},
+      {"CREATE COLLATION", "CREATE COLLATION", SQL_DIAG_CREATE_COLLATION},
+      {"CREATE DOMAIN", "CREATE DOMAIN", SQL_DIAG_CREATE_DOMAIN},
+      {"CREATE INDEX", "CREATE INDEX", SQL_DIAG_CREATE_INDEX},
+      {"CREATE SCHEMA", "CREATE SCHEMA", SQL_DIAG_CREATE_SCHEMA},
+      {"CREATE TABLE", "CREATE TABLE", SQL_DIAG_CREATE_TABLE},
+      {"CREATE TRANSLATION", "CREATE TRANSLATION",
+       SQL_DIAG_CREATE_TRANSLATION},
+      {"CREATE VIEW", "CREATE VIEW", SQL_DIAG_CREATE_VIEW},
+      {"DROP ASSERTION", "DROP ASSERTION", SQL_DIAG_DROP_ASSERTION},
+      {"DROP CHARACTER SET", "DROP CHARACTER SET",
+       SQL_DIAG_DROP_CHARACTER_SET},
+      {"DROP COLLATION", "DROP COLLATION", SQL_DIAG_DROP_COLLATION},
+      {"DROP DOMAIN", "DROP DOMAIN", SQL_DIAG_DROP_DOMAIN},
+      {"DROP INDEX", "DROP INDEX", SQL_DIAG_DROP_INDEX},
+      {"DROP SCHEMA", "DROP SCHEMA", SQL_DIAG_DROP_SCHEMA},
+      {"DROP TABLE", "DROP TABLE", SQL_DIAG_DROP_TABLE},
+      {"DROP TRANSLATION", "DROP TRANSLATION",
+       SQL_DIAG_DROP_TRANSLATION},
+      {"DROP VIEW", "DROP VIEW", SQL_DIAG_DROP_VIEW}}};
+  for (const auto& mapping : mappings) {
+    if (matches(mapping.prefix)) {
+      return {std::string(mapping.name), mapping.code};
+    }
+  }
+  return {};
 }
 
 const char* transaction_isolation_name(SQLULEN value) {
@@ -800,6 +864,9 @@ void ODBCDescriptor::copy_from(const ODBCDescriptor& source) {
 // Statement implementation
 SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
   const auto started = std::chrono::steady_clock::now();
+  const auto dynamic_function = classify_dynamic_function(sql);
+  set_statement_diagnostic_header(
+      0, 0, dynamic_function.name, dynamic_function.code);
   if (!conn_->is_connected()) {
     set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
     conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
@@ -1235,6 +1302,9 @@ SQLRETURN ODBCStatement::num_params(SQLSMALLINT* parameter_count) {
 
 SQLRETURN ODBCStatement::execute() {
   const auto started = std::chrono::steady_clock::now();
+  const auto dynamic_function = classify_dynamic_function(prepared_sql_);
+  set_statement_diagnostic_header(
+      0, 0, dynamic_function.name, dynamic_function.code);
   if (!prepared_) {
     set_error(SQLSTATE_GENERAL_ERROR, "Statement not prepared");
     conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
@@ -1446,6 +1516,7 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
 void ODBCStatement::apply_query_result(
     rs::core::database::QueryResult result,
     bool include_parameter_metadata) {
+  const auto command_tag = result.command_tag;
   if (!result.additional_results.empty()) {
     pending_results_.reserve(
         pending_results_.size() + result.additional_results.size());
@@ -1466,6 +1537,18 @@ void ODBCStatement::apply_query_result(
   affected_rows_ = result.affected_rows > max_rows
       ? std::numeric_limits<SQLLEN>::max()
       : static_cast<SQLLEN>(result.affected_rows);
+  auto diagnostic_header = get_diagnostic_header();
+  if (!command_tag.empty()) {
+    const auto dynamic_function = classify_dynamic_function(command_tag);
+    diagnostic_header.dynamic_function = dynamic_function.name;
+    diagnostic_header.dynamic_function_code = dynamic_function.code;
+  }
+  const auto cursor_rows = result_rows_.size() > max_rows
+      ? std::numeric_limits<SQLLEN>::max()
+      : static_cast<SQLLEN>(result_rows_.size());
+  set_statement_diagnostic_header(
+      cursor_rows, affected_rows_, diagnostic_header.dynamic_function,
+      diagnostic_header.dynamic_function_code);
 
   column_info_.clear();
   column_info_.reserve(result.columns.size());
