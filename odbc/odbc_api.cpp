@@ -2210,6 +2210,11 @@ static SQLRETURN SQLCopyDesc_impl(SQLHDESC source_desc_handle,
     return rs::odbc::detail::invoke_c_api(                                \
         diagnostic, [&] { return name##_impl(a1, a2); });                 \
   }
+#define ODBCPP_API_2_TWO_HANDLES(name, diagnostic, T1, T2)                \
+  extern "C" SQLRETURN SQL_API name(T1 a1, T2 a2) {                     \
+    return rs::odbc::detail::invoke_c_api_with_handles(                   \
+        diagnostic, {a1, a2}, [&] { return name##_impl(a1, a2); });       \
+  }
 #define ODBCPP_API_3(name, diagnostic, T1, T2, T3)                        \
   extern "C" SQLRETURN SQL_API name(T1 a1, T2 a2, T3 a3) {              \
     return rs::odbc::detail::invoke_c_api(                                \
@@ -2409,10 +2414,11 @@ ODBCPP_API_5(SQLSetDescField, a1, SQLHDESC, SQLSMALLINT, SQLSMALLINT,
              SQLPOINTER, SQLINTEGER)
 ODBCPP_API_5(SQLSetDescFieldW, a1, SQLHDESC, SQLSMALLINT, SQLSMALLINT,
              SQLPOINTER, SQLINTEGER)
-ODBCPP_API_2(SQLCopyDesc, a2, SQLHDESC, SQLHDESC)
+ODBCPP_API_2_TWO_HANDLES(SQLCopyDesc, a2, SQLHDESC, SQLHDESC)
 
 #undef ODBCPP_API_1
 #undef ODBCPP_API_2
+#undef ODBCPP_API_2_TWO_HANDLES
 #undef ODBCPP_API_3
 #undef ODBCPP_API_4
 #undef ODBCPP_API_5

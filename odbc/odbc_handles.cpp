@@ -2342,4 +2342,35 @@ std::shared_ptr<ODBCHandle> HandleRegistry::get_handle(SQLHANDLE handle) {
   return (it != handles_.end()) ? it->second.object : nullptr;
 }
 
+HandleOperationLease HandleRegistry::lock_handles(
+    std::initializer_list<SQLHANDLE> handles) {
+  HandleOperationLease lease;
+  std::map<SQLHANDLE, std::shared_ptr<ODBCHandle>> ordered_handles;
+  {
+    std::lock_guard lock(mutex_);
+    for (const auto requested_handle : handles) {
+      auto current = requested_handle;
+      while (current) {
+        const auto it = handles_.find(current);
+        if (it == handles_.end()) break;
+        const auto [inserted, is_new] =
+            ordered_handles.emplace(current, it->second.object);
+        static_cast<void>(inserted);
+        if (!is_new) break;
+        if (it->second.object->get_type() == HandleType::Connection) break;
+        current = it->second.parent;
+      }
+    }
+  }
+
+  lease.handles_.reserve(ordered_handles.size());
+  lease.locks_.reserve(ordered_handles.size());
+  for (auto& [handle, object] : ordered_handles) {
+    static_cast<void>(handle);
+    lease.handles_.push_back(object);
+    lease.locks_.emplace_back(object->operation_mutex_);
+  }
+  return lease;
+}
+
 } // namespace rs::odbc

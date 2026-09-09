@@ -2,6 +2,7 @@
 
 #include "odbc_handles.h"
 
+#include <initializer_list>
 #include <utility>
 
 namespace rs::odbc::detail {
@@ -30,18 +31,36 @@ inline void record_return_code(SQLHANDLE diagnostic_handle,
 }
 
 template <typename Callback>
-SQLRETURN invoke_c_api(SQLHANDLE diagnostic_handle,
-                       Callback&& callback) noexcept {
+SQLRETURN invoke_c_api_with_handles(
+    SQLHANDLE diagnostic_handle,
+    std::initializer_list<SQLHANDLE> operation_handles,
+    Callback&& callback) noexcept {
   try {
-    const auto result = static_cast<SQLRETURN>(
-        std::forward<Callback>(callback)());
-    record_return_code(diagnostic_handle, result);
-    return result;
+    auto operation =
+        HandleRegistry::instance().lock_handles(operation_handles);
+    try {
+      const auto result = static_cast<SQLRETURN>(
+          std::forward<Callback>(callback)());
+      record_return_code(diagnostic_handle, result);
+      return result;
+    } catch (...) {
+      record_unexpected_exception(diagnostic_handle);
+      record_return_code(diagnostic_handle, SQL_ERROR);
+      return SQL_ERROR;
+    }
   } catch (...) {
     record_unexpected_exception(diagnostic_handle);
     record_return_code(diagnostic_handle, SQL_ERROR);
     return SQL_ERROR;
   }
+}
+
+template <typename Callback>
+SQLRETURN invoke_c_api(SQLHANDLE diagnostic_handle,
+                       Callback&& callback) noexcept {
+  return invoke_c_api_with_handles(
+      diagnostic_handle, {diagnostic_handle},
+      std::forward<Callback>(callback));
 }
 
 }  // namespace rs::odbc::detail

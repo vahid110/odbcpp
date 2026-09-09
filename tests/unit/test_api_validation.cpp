@@ -4,7 +4,9 @@
 #include "odbc/odbc_handles.h"
 #include "tests/test_handle_helpers.h"
 
+#include <chrono>
 #include <cstdint>
+#include <future>
 #include <string>
 #include <thread>
 
@@ -159,6 +161,75 @@ TEST(ApiHandleLifetimeTest, FreeingStatementInvalidatesImplicitDescriptors) {
   EXPECT_EQ(SQL_INVALID_HANDLE,
             SQLGetDescField(descriptor, 0, SQL_DESC_COUNT, &count, 0,
                             nullptr));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(ApiHandleLifetimeTest, OppositeDescriptorCopiesDoNotDeadlock) {
+  SQLHENV environment = SQL_NULL_HENV;
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  set_odbc3(environment);
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+  const auto first = odbcpp::test::make_descriptor(connection);
+  const auto second = odbcpp::test::make_descriptor(connection);
+  ASSERT_NE(nullptr, first);
+  ASSERT_NE(nullptr, second);
+
+  std::atomic<int> failures{0};
+  std::thread forward([&] {
+    for (int iteration = 0; iteration < 500; ++iteration) {
+      if (SQLCopyDesc(first, second) != SQL_SUCCESS) ++failures;
+    }
+  });
+  std::thread reverse([&] {
+    for (int iteration = 0; iteration < 500; ++iteration) {
+      if (SQLCopyDesc(second, first) != SQL_SUCCESS) ++failures;
+    }
+  });
+  forward.join();
+  reverse.join();
+
+  EXPECT_EQ(0, failures.load());
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, first));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, second));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(ApiHandleLifetimeTest, ParentFreeWaitsForInFlightChildOperation) {
+  SQLHENV environment = SQL_NULL_HENV;
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  set_odbc3(environment);
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+  const auto statement = odbcpp::test::make_statement(connection);
+  ASSERT_NE(nullptr, statement);
+
+  std::promise<void> free_started;
+  auto started = free_started.get_future();
+  std::future<SQLRETURN> free_result;
+  {
+    auto child_operation =
+        rs::odbc::HandleRegistry::instance().lock_handles({statement});
+    free_result = std::async(std::launch::async, [&] {
+      free_started.set_value();
+      return SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    });
+    started.wait();
+    EXPECT_EQ(std::future_status::timeout,
+              free_result.wait_for(std::chrono::milliseconds(50)));
+  }
+
+  ASSERT_EQ(std::future_status::ready,
+            free_result.wait_for(std::chrono::seconds(2)));
+  EXPECT_EQ(SQL_ERROR, free_result.get());
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
 }

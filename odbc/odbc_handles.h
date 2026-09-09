@@ -5,6 +5,7 @@
 #include "core/util/driver_logging.h"
 #include "core/util/result.h"
 #include <cstdint>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <vector>
@@ -13,6 +14,8 @@
 #include <optional>
 
 namespace rs::odbc {
+
+class HandleRegistry;
 
 // Diagnostic record for ODBC error handling
 struct DiagnosticRecord {
@@ -93,10 +96,31 @@ public:
   }
 
 private:
+  friend class HandleRegistry;
+
   HandleType type_;
+  std::recursive_mutex operation_mutex_;
   mutable std::mutex diagnostics_mutex_;
   std::vector<DiagnosticRecord> diagnostic_records_;
   SQLRETURN last_return_code_{SQL_SUCCESS};
+};
+
+// Pins and serializes one or more handles within their connection ownership
+// domains. Every lease takes locks in registry order so overlapping operations
+// cannot deadlock, while independent connections remain concurrent.
+class HandleOperationLease {
+public:
+  HandleOperationLease() = default;
+  HandleOperationLease(HandleOperationLease&&) noexcept = default;
+  HandleOperationLease& operator=(HandleOperationLease&&) noexcept = default;
+  HandleOperationLease(const HandleOperationLease&) = delete;
+  HandleOperationLease& operator=(const HandleOperationLease&) = delete;
+
+private:
+  friend class HandleRegistry;
+
+  std::vector<std::shared_ptr<ODBCHandle>> handles_;
+  std::vector<std::unique_lock<std::recursive_mutex>> locks_;
 };
 
 // Environment handle
@@ -352,6 +376,8 @@ public:
   void unregister_children(SQLHANDLE parent);
   bool has_children(SQLHANDLE parent);
   std::shared_ptr<ODBCHandle> get_handle(SQLHANDLE handle);
+  HandleOperationLease lock_handles(
+      std::initializer_list<SQLHANDLE> handles);
   
   template<typename T>
   std::shared_ptr<T> get_handle_as(SQLHANDLE handle) {

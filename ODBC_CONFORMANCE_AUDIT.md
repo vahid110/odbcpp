@@ -78,7 +78,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLGetEnvAttr` | A | Partial | unit, DM | Supported attribute matrix and buffer/type rules |
 | `SQLGetDescField` | A/W | Partial | unit | Descriptor-kind restrictions and complete header/record fields |
 | `SQLSetDescField` | A/W | Partial | unit | Consistency checks, descriptor-kind restrictions, pointer fields |
-| `SQLCopyDesc` | A | Partial | unit | Source/target restrictions, consistency checks, state matrix |
+| `SQLCopyDesc` | A | Partial | unit concurrency | Opposite-direction copies are serialized without deadlock; source/target restrictions, consistency checks, state matrix remain |
 
 No operation is promoted to **Verified** until its audit row has explicit
 negative and state-transition evidence. This deliberately resets optimistic
@@ -135,8 +135,8 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
 
 ## Maintainability snapshot
 
-- `odbc_api.cpp` is 2,114 lines and contains all 73 exported wrappers;
-  `odbc_handles.cpp` is 2,292 lines and combines connection, statement,
+- `odbc_api.cpp` is 2,430 lines and contains all 73 exported wrappers;
+  `odbc_handles.cpp` is 2,376 lines and combines connection, statement,
   descriptor, conversion, metadata, and registry responsibilities.
 - The callback/future methods in `AsyncDatabaseConnection` are experimental
   scaffolding, are not used by the ODBC driver's production connection path,
@@ -146,6 +146,10 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
 - Audit batch 1 removes a pass-through string helper and obsolete statement
   descriptor stubs whose only test asserted that they failed. This is the
   first targeted deletion pass; it is not a blanket rewrite.
+- Audit batch 7 adds one shared operation lease at the C ABI boundary. Calls
+  on the same handle or connection-owned handle graph are serialized in a
+  stable lock order, while distinct connections remain concurrent. This
+  replaces ad hoc locking rather than adding locks throughout API bodies.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
@@ -159,13 +163,15 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
    `SQL_ERROR`; non-diagnostic calls attach `HY000` when their handle remains
    usable. Allocation-failure injection through real entry points remains.
 2. **Handle concurrency:** audit batch 2 changes registry lookup to pin shared
-   ownership for the duration of each exported API call, so concurrent removal
-   cannot destroy an in-flight handle. Per-handle operation serialization and
-   concurrent parent/child transitions still require explicit state tests.
+   ownership for each exported call. Audit batch 7 adds connection-domain
+   operation leases in stable handle order, covers same-handle and sibling
+   serialization, proves independent connections remain concurrent, and
+   exercises opposite-direction descriptor copies for deadlock regressions.
 3. **Parent/child lifetime:** audit batch 3 records the handle graph, pins a
    statement's connection, rejects out-of-order parent frees, and recursively
    invalidates subordinate handles on statement free or successful disconnect.
-   Concurrent operations still need per-handle serialization.
+   Audit batch 7 serializes child calls with connection disconnect/free and
+   allocation transitions through their shared connection lease.
 4. **Diagnostic lifecycle:** audit batch 2 clears prior records at the start of
    non-diagnostic handle calls. Audit batch 5 makes diagnostic retrieval itself
    non-mutating and validates handle type, record number, and buffer length.
