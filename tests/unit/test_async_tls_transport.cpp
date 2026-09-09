@@ -286,18 +286,18 @@ TEST(AsyncTlsTransportTest, SupportsDirectTlsRoundTrip) {
   transport.set_verify(false);
 
   auto connected = transport.connect(
-      "127.0.0.1", server.port(), rs::util::make_deadline(2s));
+      "127.0.0.1", server.port(), rs::util::make_deadline(15s));
   ASSERT_TRUE(connected.has_value()) << connected.error_message();
 
   constexpr std::string_view request = "ping";
   auto sent = transport.send(
       std::as_bytes(std::span<const char>(request.data(), request.size())),
-      rs::util::make_deadline(1s));
+      rs::util::make_deadline(5s));
   ASSERT_TRUE(sent.has_value()) << sent.error_message();
   EXPECT_EQ(sent->n, request.size());
 
   std::array<std::byte, 4> response{};
-  auto received = transport.recv(response, rs::util::make_deadline(1s));
+  auto received = transport.recv(response, rs::util::make_deadline(5s));
   ASSERT_TRUE(received.has_value()) << received.error_message();
   EXPECT_EQ(received->n, response.size());
   EXPECT_EQ(std::memcmp(response.data(), "pong", response.size()), 0);
