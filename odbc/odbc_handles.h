@@ -173,9 +173,9 @@ struct DescriptorRecord {
 
 class ODBCDescriptor : public ODBCHandle {
 public:
-  explicit ODBCDescriptor(ODBCConnection* connection,
+  explicit ODBCDescriptor(ODBCConnection*,
                           bool automatically_allocated = false)
-      : ODBCHandle(HandleType::Descriptor), connection_(connection),
+      : ODBCHandle(HandleType::Descriptor),
         automatically_allocated_(automatically_allocated) {}
 
   bool is_automatically_allocated() const {
@@ -191,7 +191,6 @@ public:
   void copy_from(const ODBCDescriptor& source);
 
 private:
-  ODBCConnection* connection_;
   bool automatically_allocated_{false};
   std::vector<DescriptorRecord> records_;
   SQLULEN array_size_{1};
