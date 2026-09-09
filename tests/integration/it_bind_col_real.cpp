@@ -511,6 +511,7 @@ TEST_F(BindColIntegrationTest, ByteaUsesBinaryDefaultAndSupportsChunks) {
     EXPECT_EQ(0xff, second[1]);
     EXPECT_EQ(SQL_NO_DATA, SQLGetData(
         hstmt, 1, SQL_C_DEFAULT, second, sizeof(second), &indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT decode('10203040', 'hex')", SQL_NTS));
@@ -559,6 +560,7 @@ TEST_F(BindColIntegrationTest, ConversionFailuresUseSpecificSqlstates) {
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
         SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("22018", reinterpret_cast<char*>(sqlstate));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 'binary-not-supported'::text", SQL_NTS));

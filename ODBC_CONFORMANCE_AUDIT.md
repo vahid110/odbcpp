@@ -40,16 +40,16 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLSetConnectAttr` | A/W | Partial | unit, integration | Common defaults, catalog selection, invalid values, and unsupported modes covered; connection timeout and packet size remain |
 | `SQLGetConnectAttr` | A/W | Partial | unit, integration | Common numeric values, current catalog buffers, read-only attributes, and connected-state checks covered; broken-link detection remains |
 | `SQLEndTran` | A | Partial | unit, integration | Environment-wide completion and multi-connection behavior |
-| `SQLExecDirect` | A/W | Partial | unit failure, integration, DM | Full state sequencing, empty/invalid text, cancellation |
-| `SQLPrepare` | A/W | Partial | integration, DM | Full state sequencing, preparation errors, pre-execution metadata |
-| `SQLExecute` | A | Partial | integration | Unprepared execution returns HY010; re-execution states, parameter arrays, and data-at-execution remain |
+| `SQLExecDirect` | A/W | Partial | unit failure, integration, DM | Open cursors are protected and direct execution replaces prepared SQL; cancellation remains |
+| `SQLPrepare` | A/W | Partial | integration, DM | Open cursors are protected and old result state is retired; preparation errors and pre-execution metadata remain |
+| `SQLExecute` | A | Partial | integration | Unprepared execution returns HY010 and open-cursor re-execution returns 24000; parameter arrays and data-at-execution remain |
 | `SQLFetch` | A | Partial | unit, integration, DM | Never-executed and no-result states return HY010/24000; row arrays and full state matrix remain |
 | `SQLFetchScroll` | A | Partial | unit, integration, DM | Only `SQL_FETCH_NEXT` is supported; keep other orientations honest |
 | `SQLMoreResults` | A | Partial | unit, integration, DM | Result/update-count traversal and close-time discard are covered; error-result sequences remain |
 | `SQLGetData` | A | Partial | integration, DM | Complete conversion matrix and call-order/chunking edge cases |
 | `SQLBindCol` | A | Partial | unit, integration | Invalid C types and negative lengths are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
 | `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics covered; input arrays, data-at-execution, and full conversion matrix remain |
-| `SQLNumParams` | A | Partial | integration, DM | Invalid state/output and complex marker parsing |
+| `SQLNumParams` | A | Partial | integration, DM | Prepared marker parsing and direct-execution zero count are covered; pre-execution server validation remains |
 | `SQLNumResultCols` | A | Partial | unit, integration | State transitions and no-result/update-count cases |
 | `SQLRowCount` | A | Partial | unit, integration | Statement-state matrix and all statement classes |
 | `SQLDescribeCol` | A/W | Partial | unit, integration | Buffer boundaries, bookmark column, wide edge cases |
@@ -264,6 +264,10 @@ substitute for ODBC diagnostics.
   discard every pending result and row count from a PostgreSQL batch. A later
   `SQLMoreResults` now remains at `SQL_NO_DATA` instead of reviving a result
   that the application explicitly discarded.
+- Audit batch 27 protects open cursors from `SQLPrepare`, `SQLExecDirect`, and
+  prepared re-execution with 24000. A successful direct execution now replaces
+  any older prepared statement, reports zero parameters through `SQLNumParams`,
+  and leaves a later `SQLExecute` in HY010 instead of running stale SQL.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

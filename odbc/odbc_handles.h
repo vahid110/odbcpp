@@ -420,6 +420,7 @@ private:
 
   void apply_query_result(rs::core::database::QueryResult result,
                           bool include_parameter_metadata);
+  void clear_current_result();
   SQLRETURN complete_parameter_set(SQLRETURN result);
   SQLHDESC create_implicit_descriptor(DescriptorKind kind);
   SQLRETURN set_application_descriptor(SQLINTEGER attribute,

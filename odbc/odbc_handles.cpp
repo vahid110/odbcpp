@@ -1000,6 +1000,11 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
   const auto dynamic_function = classify_dynamic_function(sql);
   set_statement_diagnostic_header(
       0, 0, dynamic_function.name, dynamic_function.code);
+  if (executed_ && (!column_info_.empty() || !pending_results_.empty())) {
+    set_error(SQLSTATE_INVALID_CURSOR_STATE,
+              "Cannot execute while results are pending");
+    return SQL_ERROR;
+  }
   if (!conn_->is_connected()) {
     set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
     conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
@@ -1012,7 +1017,11 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
                "Executing direct SQL", {{"sql", sql}});
   }
   
+  clear_current_result();
   pending_results_.clear();
+  prepared_ = false;
+  prepared_sql_.clear();
+  parameter_count_ = 0;
   try {
     auto deadline = rs::util::make_deadline(
         timeout_duration(query_timeout_seconds_));
@@ -1272,14 +1281,8 @@ SQLRETURN ODBCStatement::close_cursor(bool report_missing_cursor) {
     set_error(SQLSTATE_INVALID_CURSOR_STATE, "No cursor is open");
     return SQL_ERROR;
   }
-  result_rows_.clear();
-  column_info_.clear();
+  clear_current_result();
   pending_results_.clear();
-  descriptor(imp_row_descriptor_)->replace_records({});
-  get_data_offsets_.clear();
-  current_row_ = 0;
-  affected_rows_ = 0;
-  executed_ = false;
   return SQL_SUCCESS;
 }
 
@@ -1387,13 +1390,7 @@ SQLRETURN ODBCStatement::fetch() {
 }
 
 SQLRETURN ODBCStatement::more_results() {
-  result_rows_.clear();
-  column_info_.clear();
-  descriptor(imp_row_descriptor_)->replace_records({});
-  get_data_offsets_.clear();
-  current_row_ = 0;
-  affected_rows_ = 0;
-  executed_ = false;
+  clear_current_result();
   if (pending_results_.empty()) return SQL_NO_DATA;
 
   auto next = std::move(pending_results_.front());
@@ -1567,6 +1564,11 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
 
 // Prepared statement implementation
 SQLRETURN ODBCStatement::prepare(const std::string& sql) {
+  if (executed_ && (!column_info_.empty() || !pending_results_.empty())) {
+    set_error(SQLSTATE_INVALID_CURSOR_STATE,
+              "Cannot prepare while results are pending");
+    return SQL_ERROR;
+  }
   if (!conn_->is_connected()) {
     set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
     return SQL_ERROR;
@@ -1582,8 +1584,9 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
   prepared_sql_ = sql;
   parameter_count_ = static_cast<SQLSMALLINT>(marker_count);
   param_metadata_.clear();
+  clear_current_result();
+  pending_results_.clear();
   prepared_ = true;
-  executed_ = false;
   if (conn_->logs_queries()) {
     conn_->log(rs::core::logging::LogLevel::Debug, "query_prepared",
                "Prepared SQL statement",
@@ -1599,12 +1602,12 @@ SQLRETURN ODBCStatement::num_params(SQLSMALLINT* parameter_count) {
               "Parameter count output pointer is null");
     return SQL_ERROR;
   }
-  if (!prepared_) {
+  if (!prepared_ && !executed_) {
     set_error(SQLSTATE_STATEMENT_NOT_PREPARED,
-              "Statement is not prepared");
+              "Statement has not been prepared or executed");
     return SQL_ERROR;
   }
-  *parameter_count = parameter_count_;
+  *parameter_count = prepared_ ? parameter_count_ : 0;
   return SQL_SUCCESS;
 }
 
@@ -1636,6 +1639,11 @@ SQLRETURN ODBCStatement::execute() {
     conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                get_error_message(), {{"sqlstate", get_sqlstate()},
                                      {"kind", "prepared"}});
+    return SQL_ERROR;
+  }
+  if (executed_ && (!column_info_.empty() || !pending_results_.empty())) {
+    set_error(SQLSTATE_INVALID_CURSOR_STATE,
+              "Cannot re-execute while results are pending");
     return SQL_ERROR;
   }
   
@@ -1671,6 +1679,7 @@ SQLRETURN ODBCStatement::execute() {
                 {"parameters", std::to_string(parameter_count_)}});
   }
   
+  clear_current_result();
   pending_results_.clear();
   try {
     const auto implementation_descriptor = descriptor(imp_param_descriptor_);
@@ -2012,6 +2021,16 @@ void ODBCStatement::apply_query_result(
     descriptor(imp_param_descriptor_)->replace_records(
         std::move(parameter_descriptor_records));
   }
+}
+
+void ODBCStatement::clear_current_result() {
+  result_rows_.clear();
+  column_info_.clear();
+  descriptor(imp_row_descriptor_)->replace_records({});
+  get_data_offsets_.clear();
+  current_row_ = 0;
+  affected_rows_ = 0;
+  executed_ = false;
 }
 
 // Column binding implementation

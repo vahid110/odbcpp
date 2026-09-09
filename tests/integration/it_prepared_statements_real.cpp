@@ -152,6 +152,36 @@ TEST_F(PreparedStatementIntegrationTest, ReportsPreparedParameterCount) {
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       ReplacesPreparedStatementsAndProtectsOpenCursors) {
+    SQLCHAR state[6]{};
+    const auto expect_state = [&](SQLRETURN result, const char* expected) {
+        EXPECT_EQ(SQL_ERROR, result);
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+            SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ(expected, reinterpret_cast<char*>(state));
+    };
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT 11", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    expect_state(SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT 12", SQL_NTS), "24000");
+    expect_state(SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 13", SQL_NTS), "24000");
+    expect_state(SQLExecute(hstmt), "24000");
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 21", SQL_NTS));
+    SQLSMALLINT parameter_count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumParams(hstmt, &parameter_count));
+    EXPECT_EQ(0, parameter_count);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    expect_state(SQLExecute(hstmt), "HY010");
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        MissingParameterFailsAndExtraBindingIsIgnored) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
         hstmt, (SQLCHAR*)"SELECT ?::integer", SQL_NTS));
@@ -253,6 +283,7 @@ TEST_F(PreparedStatementIntegrationTest, AutocommitOffSupportsCommitAndRollback)
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(
         hstmt, 1, SQL_C_CHAR, isolation, sizeof(isolation), nullptr));
     EXPECT_STREQ("repeatable read", isolation);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_ROLLBACK));
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
@@ -266,6 +297,7 @@ TEST_F(PreparedStatementIntegrationTest, AutocommitOffSupportsCommitAndRollback)
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(
         hstmt, 1, SQL_C_SLONG, &count, 0, nullptr));
     EXPECT_EQ(0, count);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_ROLLBACK));
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
@@ -277,6 +309,7 @@ TEST_F(PreparedStatementIntegrationTest, AutocommitOffSupportsCommitAndRollback)
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(
         hstmt, 1, SQL_C_SLONG, &count, 0, nullptr));
     EXPECT_EQ(1, count);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
     ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(
         hdbc, SQL_ATTR_AUTOCOMMIT,
