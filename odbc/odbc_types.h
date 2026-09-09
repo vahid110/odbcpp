@@ -49,6 +49,7 @@ enum class HandleType {
 // SQLSTATE error codes (standard ODBC error states)
 constexpr const char* SQLSTATE_SUCCESS = "00000";
 constexpr const char* SQLSTATE_CONNECTION_FAILURE = "08001";
+constexpr const char* SQLSTATE_CONNECTION_IN_USE = "08002";
 constexpr const char* SQLSTATE_SYNTAX_ERROR = "42000";
 constexpr const char* SQLSTATE_TIMEOUT = "HYT00";
 constexpr const char* SQLSTATE_GENERAL_ERROR = "HY000";
@@ -66,6 +67,7 @@ constexpr const char* SQLSTATE_INVALID_ATTRIBUTE_VALUE = "HY024";
 constexpr const char* SQLSTATE_INVALID_ATTRIBUTE = "HY092";
 constexpr const char* SQLSTATE_CONNECTION_TIMEOUT = "HYT01";
 constexpr const char* SQLSTATE_CONNECTION_NOT_OPEN = "08003";
+constexpr const char* SQLSTATE_INVALID_TRANSACTION_STATE = "25000";
 constexpr const char* SQLSTATE_INVALID_TRANSACTION_OPERATION = "HY012";
 constexpr const char* SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED = "HYC00";
 constexpr const char* SQLSTATE_INVALID_DRIVER_COMPLETION = "HY110";

@@ -33,6 +33,28 @@ bool succeeded(SQLRETURN result) {
   return result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO;
 }
 
+bool diagnostic_is(SQLSMALLINT handle_type, SQLHANDLE handle,
+                   const char* expected_state) {
+  SQLCHAR state[6]{};
+  const auto result = SQLGetDiagRec(handle_type, handle, 1, state, nullptr,
+                                    nullptr, 0, nullptr);
+  const bool matches = result == SQL_SUCCESS &&
+      std::strcmp(reinterpret_cast<const char*>(state), expected_state) == 0;
+  if (!matches) {
+    std::fprintf(stderr, "Expected diagnostic %s, received %s (result %d)\n",
+                 expected_state, reinterpret_cast<const char*>(state),
+                 static_cast<int>(result));
+  }
+  return matches;
+}
+
+bool result_is(SQLRETURN actual, SQLRETURN expected, const char* operation) {
+  if (actual == expected) return true;
+  std::fprintf(stderr, "%s returned %d; expected %d\n", operation,
+               static_cast<int>(actual), static_cast<int>(expected));
+  return false;
+}
+
 std::vector<SQLWCHAR> wide_ascii(std::string_view input) {
   std::vector<SQLWCHAR> output;
   output.reserve(input.size() + 1);
@@ -602,6 +624,52 @@ int main() {
   }
   SQLDisconnect(dsn_connection);
   SQLFreeHandle(SQL_HANDLE_DBC, dsn_connection);
+
+  SQLHDBC lifecycle_connection = SQL_NULL_HDBC;
+  if (!succeeded(SQLAllocHandle(
+          SQL_HANDLE_DBC, environment, &lifecycle_connection)) ||
+      !result_is(SQLDisconnect(lifecycle_connection), SQL_ERROR,
+                 "SQLDisconnect before connect") ||
+      !diagnostic_is(SQL_HANDLE_DBC, lifecycle_connection, "08003") ||
+      !succeeded(SQLDriverConnect(
+          lifecycle_connection, nullptr, connection_string, SQL_NTS,
+          nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT))) {
+    print_diagnostic(SQL_HANDLE_DBC, lifecycle_connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, lifecycle_connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+  SQLHSTMT lifecycle_statement = SQL_NULL_HSTMT;
+  SQLHDESC lifecycle_descriptor = SQL_NULL_HDESC;
+  if (!succeeded(SQLAllocHandle(
+          SQL_HANDLE_STMT, lifecycle_connection, &lifecycle_statement)) ||
+      !succeeded(SQLAllocHandle(
+          SQL_HANDLE_DESC, lifecycle_connection, &lifecycle_descriptor))) {
+    print_diagnostic(SQL_HANDLE_DBC, lifecycle_connection);
+    SQLFreeHandle(SQL_HANDLE_STMT, lifecycle_statement);
+    SQLFreeHandle(SQL_HANDLE_DESC, lifecycle_descriptor);
+    SQLDisconnect(lifecycle_connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, lifecycle_connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+  if (!succeeded(SQLDisconnect(lifecycle_connection))) {
+    print_diagnostic(SQL_HANDLE_DBC, lifecycle_connection);
+    SQLFreeHandle(SQL_HANDLE_STMT, lifecycle_statement);
+    SQLFreeHandle(SQL_HANDLE_DESC, lifecycle_descriptor);
+    SQLFreeHandle(SQL_HANDLE_DBC, lifecycle_connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+  // SQLDisconnect releases subordinate statement and descriptor handles.
+  // Calling a Driver Manager again with those stale values is undefined.
+  lifecycle_statement = SQL_NULL_HSTMT;
+  lifecycle_descriptor = SQL_NULL_HDESC;
+  if (!succeeded(SQLFreeHandle(SQL_HANDLE_DBC, lifecycle_connection))) {
+    print_diagnostic(SQL_HANDLE_DBC, lifecycle_connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
   SQLFreeHandle(SQL_HANDLE_ENV, environment);
   return 0;
 }

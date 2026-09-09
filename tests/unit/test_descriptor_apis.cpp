@@ -11,11 +11,11 @@ using namespace rs::odbc;
 class DescriptorAPITest : public ::testing::Test {
 protected:
     void SetUp() override {
-        conn = std::make_unique<ODBCConnection>(nullptr);
-        stmt = std::make_unique<ODBCStatement>(conn.get());
+        conn = std::make_shared<ODBCConnection>(nullptr);
+        stmt = std::make_unique<ODBCStatement>(conn);
     }
     
-    std::unique_ptr<ODBCConnection> conn;
+    std::shared_ptr<ODBCConnection> conn;
     std::unique_ptr<ODBCStatement> stmt;
 };
 

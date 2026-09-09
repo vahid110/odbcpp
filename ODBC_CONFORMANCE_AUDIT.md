@@ -33,10 +33,10 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | Operation | Variants | Status | Existing evidence | Principal remaining work |
 |---|---:|---|---|---|
 | `SQLAllocHandle` | A | Partial | unit, integration, DM | Parent/child state, null output, allocation failure, exception barrier |
-| `SQLFreeHandle` | A | Partial | unit, integration, DM | Parent/child and disconnect/free state transitions |
-| `SQLConnect` | A/W | Partial | unit failure, integration, DM | Complete input/state matrix; reconnect behavior |
+| `SQLFreeHandle` | A | Partial | unit, integration, DM | Parent/child free ordering is enforced; complete state matrix remains |
+| `SQLConnect` | A/W | Partial | unit failure, integration, DM | Reconnect is rejected with 08002; complete input/state matrix remains |
 | `SQLDriverConnect` | A/W | Partial | unit, DM | Completion modes, exact output-string rules, connected-state handling |
-| `SQLDisconnect` | A | Partial | integration, DM | Disconnected state, active transaction and live statement behavior |
+| `SQLDisconnect` | A | Partial | unit, integration, DM | Disconnected, active-transaction, and child-invalidation paths covered; async execution remains |
 | `SQLSetConnectAttr` | A/W | Partial | unit, integration | Attribute matrix and pre/post-connect restrictions |
 | `SQLGetConnectAttr` | A/W | Partial | unit, integration | Read-only/common attributes, buffer/type rules, wide entry tests |
 | `SQLEndTran` | A | Partial | unit, integration | Environment-wide completion and multi-connection behavior |
@@ -161,9 +161,10 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
    ownership for the duration of each exported API call, so concurrent removal
    cannot destroy an in-flight handle. Per-handle operation serialization and
    concurrent parent/child transitions still require explicit state tests.
-3. **Parent/child lifetime:** freeing an environment or connection does not
-   currently prove that dependent connection/statement/descriptor handles are
-   absent, leaving dangling parent pointers possible for direct API callers.
+3. **Parent/child lifetime:** audit batch 3 records the handle graph, pins a
+   statement's connection, rejects out-of-order parent frees, and recursively
+   invalidates subordinate handles on statement free or successful disconnect.
+   Concurrent operations still need per-handle serialization.
 4. **Diagnostic lifecycle:** audit batch 2 clears prior records at the start of
    non-diagnostic handle calls. Return-code provenance, complete header/record
    fields, and state-transition diagnostics are not yet centrally enforced.

@@ -328,7 +328,7 @@ SQLRETURN SQLAllocHandle(SQLSMALLINT handle_type, SQLHANDLE input_handle, SQLHAN
       case SQL_HANDLE_STMT: {
         auto conn = get_valid_handle<ODBCConnection>(input_handle);
         if (!conn) return SQL_INVALID_HANDLE;
-        new_handle = std::make_unique<ODBCStatement>(conn.get());
+        new_handle = std::make_unique<ODBCStatement>(conn);
         break;
       }
       case SQL_HANDLE_DESC: {
@@ -352,7 +352,8 @@ SQLRETURN SQLAllocHandle(SQLSMALLINT handle_type, SQLHANDLE input_handle, SQLHAN
     
     // Use the object pointer as the handle
     SQLHANDLE handle = reinterpret_cast<SQLHANDLE>(new_handle.get());
-    HandleRegistry::instance().register_handle(handle, std::move(new_handle));
+    HandleRegistry::instance().register_handle(
+        handle, std::move(new_handle), input_handle);
     *output_handle = handle;
     
     return SQL_SUCCESS;
@@ -393,6 +394,20 @@ SQLRETURN SQLFreeHandle(SQLSMALLINT handle_type, SQLHANDLE handle) {
                             "Implicit descriptor handles cannot be freed");
       return SQL_ERROR;
     }
+  }
+  if (handle_type == SQL_HANDLE_DBC) {
+    auto* connection = static_cast<ODBCConnection*>(obj.get());
+    if (connection->is_connected()) {
+      connection->set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
+                            "Connected handles must be disconnected before they are freed");
+      return SQL_ERROR;
+    }
+  }
+  if ((handle_type == SQL_HANDLE_ENV || handle_type == SQL_HANDLE_DBC) &&
+      HandleRegistry::instance().has_children(handle)) {
+    obj->set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
+                   "Dependent handles must be released before their parent handle");
+    return SQL_ERROR;
   }
   
   HandleRegistry::instance().unregister_handle(handle);
@@ -563,7 +578,11 @@ SQLRETURN SQLDisconnect(SQLHDBC connection_handle) {
   auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
   
-  return conn->disconnect();
+  const auto result = conn->disconnect();
+  if (result == SQL_SUCCESS) {
+    HandleRegistry::instance().unregister_children(connection_handle);
+  }
+  return result;
 }
 
 SQLRETURN SQLSetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,

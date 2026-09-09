@@ -112,6 +112,8 @@ public:
   rs::core::database::IDatabaseConnection* get_db_connection() { return db_conn_.get(); }
 
 private:
+  void close_connection();
+
   std::unique_ptr<rs::core::database::IDatabaseConnection> db_conn_;
   bool connected_ = false;
   SQLUINTEGER login_timeout_seconds_ = 30;
@@ -209,7 +211,7 @@ private:
 // Statement handle
 class ODBCStatement : public ODBCHandle {
 public:
-  explicit ODBCStatement(ODBCConnection* conn);
+  explicit ODBCStatement(std::shared_ptr<ODBCConnection> conn);
   ~ODBCStatement() override;
   
   SQLRETURN execute_direct(const std::string& sql);
@@ -290,7 +292,7 @@ public:
   size_t get_column_count() const { return result_rows_.empty() ? 0 : result_rows_[0].size(); }
 
 private:
-  ODBCConnection* conn_;
+  std::shared_ptr<ODBCConnection> conn_;
   rs::core::database::ResultRows result_rows_;
   std::vector<ColumnInfo> column_info_;        // IRD storage
   std::vector<ParameterInfo> parameter_info_;  // APD storage
@@ -321,8 +323,11 @@ class HandleRegistry {
 public:
   static HandleRegistry& instance();
   
-  void register_handle(SQLHANDLE handle, std::unique_ptr<ODBCHandle> obj);
+  void register_handle(SQLHANDLE handle, std::unique_ptr<ODBCHandle> obj,
+                       SQLHANDLE parent = SQL_NULL_HANDLE);
   void unregister_handle(SQLHANDLE handle);
+  void unregister_children(SQLHANDLE parent);
+  bool has_children(SQLHANDLE parent);
   std::shared_ptr<ODBCHandle> get_handle(SQLHANDLE handle);
   
   template<typename T>
@@ -331,7 +336,15 @@ public:
   }
 
 private:
-  std::map<SQLHANDLE, std::shared_ptr<ODBCHandle>> handles_;
+  struct Entry {
+    std::shared_ptr<ODBCHandle> object;
+    SQLHANDLE parent{SQL_NULL_HANDLE};
+  };
+
+  void collect_subtree_locked(
+      SQLHANDLE handle, std::vector<std::shared_ptr<ODBCHandle>>& removed);
+
+  std::map<SQLHANDLE, Entry> handles_;
   std::mutex mutex_;
 };
 

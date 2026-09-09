@@ -86,6 +86,87 @@ TEST(ApiAllocationValidationTest, LookupPinsHandleAcrossConcurrentFree) {
   EXPECT_EQ(rs::odbc::HandleType::Environment, pinned->get_type());
 }
 
+TEST(ApiHandleLifetimeTest, EnvironmentCannotBeFreedBeforeItsConnection) {
+  SQLHENV environment = SQL_NULL_HENV;
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+
+  EXPECT_EQ(SQL_ERROR, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_ENV, environment));
+  EXPECT_NE(nullptr,
+            rs::odbc::HandleRegistry::instance().get_handle(connection));
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(ApiHandleLifetimeTest, ConnectionCannotBeFreedBeforeItsStatement) {
+  SQLHENV environment = SQL_NULL_HENV;
+  SQLHDBC connection = SQL_NULL_HDBC;
+  SQLHSTMT statement = SQL_NULL_HSTMT;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_STMT, connection, &statement));
+
+  EXPECT_EQ(SQL_ERROR, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLSetStmtAttr(statement, SQL_ATTR_MAX_ROWS,
+                           reinterpret_cast<SQLPOINTER>(std::uintptr_t{1}),
+                           0));
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(ApiHandleLifetimeTest, FreeingStatementInvalidatesImplicitDescriptors) {
+  SQLHENV environment = SQL_NULL_HENV;
+  SQLHDBC connection = SQL_NULL_HDBC;
+  SQLHSTMT statement = SQL_NULL_HSTMT;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_STMT, connection, &statement));
+
+  SQLHDESC descriptor = SQL_NULL_HDESC;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetStmtAttr(statement, SQL_ATTR_APP_ROW_DESC, &descriptor, 0,
+                           nullptr));
+  ASSERT_NE(nullptr, descriptor);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement));
+
+  SQLSMALLINT count = 0;
+  EXPECT_EQ(SQL_INVALID_HANDLE,
+            SQLGetDescField(descriptor, 0, SQL_DESC_COUNT, &count, 0,
+                            nullptr));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(ApiHandleLifetimeTest, DisconnectRejectsConnectionThatWasNeverOpened) {
+  SQLHENV environment = SQL_NULL_HENV;
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+
+  EXPECT_EQ(SQL_ERROR, SQLDisconnect(connection));
+  EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection));
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
 TEST_F(ApiValidationTest, RejectsInvalidAnsiStatementText) {
   EXPECT_EQ(SQL_ERROR, SQLExecDirect(statement_, nullptr, SQL_NTS));
   EXPECT_EQ("HY009", diagnostic_state(SQL_HANDLE_STMT, statement_));

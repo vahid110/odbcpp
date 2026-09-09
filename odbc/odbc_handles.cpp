@@ -286,8 +286,8 @@ bool ODBCConnection::logs_queries() const noexcept {
   return logger_ && logger_->logs_queries();
 }
 
-ODBCStatement::ODBCStatement(ODBCConnection* conn)
-    : ODBCHandle(HandleType::Statement), conn_(conn) {
+ODBCStatement::ODBCStatement(std::shared_ptr<ODBCConnection> conn)
+    : ODBCHandle(HandleType::Statement), conn_(std::move(conn)) {
   try {
     app_row_descriptor_ = create_implicit_descriptor();
     app_param_descriptor_ = create_implicit_descriptor();
@@ -312,15 +312,20 @@ ODBCStatement::~ODBCStatement() {
 }
 
 SQLHDESC ODBCStatement::create_implicit_descriptor() {
-  auto descriptor = std::make_unique<ODBCDescriptor>(conn_, true);
+  auto descriptor = std::make_unique<ODBCDescriptor>(conn_.get(), true);
   const auto handle = reinterpret_cast<SQLHDESC>(descriptor.get());
-  HandleRegistry::instance().register_handle(handle, std::move(descriptor));
+  HandleRegistry::instance().register_handle(
+      handle, std::move(descriptor), reinterpret_cast<SQLHANDLE>(this));
   return handle;
 }
 
 // Connection implementation
 SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& user, const std::string& password) {
   const auto started = std::chrono::steady_clock::now();
+  if (connected_) {
+    set_error(SQLSTATE_CONNECTION_IN_USE, "Connection is already open");
+    return SQL_ERROR;
+  }
   try {
     const auto resolved = ConnectionString::resolve(dsn, default_driver_name());
     const auto logging_options = rs::core::logging::LoggingOptions::resolve(
@@ -474,7 +479,7 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
             rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
         set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_GENERAL_ERROR,
                   result.error_message());
-        if (timeout) disconnect();
+        if (timeout) close_connection();
         return SQL_ERROR;
       }
     }
@@ -556,7 +561,7 @@ SQLRETURN ODBCConnection::end_transaction(SQLSMALLINT completion_type) {
         rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
     set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_GENERAL_ERROR,
               result.error_message());
-    if (timeout) disconnect();
+    if (timeout) close_connection();
     return SQL_ERROR;
   }
   transaction_active_ = false;
@@ -564,18 +569,28 @@ SQLRETURN ODBCConnection::end_transaction(SQLSMALLINT completion_type) {
 }
 
 SQLRETURN ODBCConnection::disconnect() {
-  const bool was_connected = connected_;
+  if (!connected_) {
+    set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
+    return SQL_ERROR;
+  }
+  if (transaction_active_) {
+    set_error(SQLSTATE_INVALID_TRANSACTION_STATE,
+              "An active transaction must be committed or rolled back before disconnecting");
+    return SQL_ERROR;
+  }
+  close_connection();
+  return SQL_SUCCESS;
+}
+
+void ODBCConnection::close_connection() {
   if (db_conn_) {
     db_conn_->disconnect();
     connected_ = false;
     transaction_active_ = false;
   }
-  if (was_connected) {
-    log(rs::core::logging::LogLevel::Info, "connection_closed",
-        "Database connection closed");
-  }
+  log(rs::core::logging::LogLevel::Info, "connection_closed",
+      "Database connection closed");
   if (logger_) logger_->flush();
-  return SQL_SUCCESS;
 }
 
 SQLRETURN ODBCDescriptor::get_field(
@@ -2267,26 +2282,64 @@ HandleRegistry& HandleRegistry::instance() {
   return registry;
 }
 
-void HandleRegistry::register_handle(SQLHANDLE handle, std::unique_ptr<ODBCHandle> obj) {
+void HandleRegistry::register_handle(SQLHANDLE handle,
+                                     std::unique_ptr<ODBCHandle> obj,
+                                     SQLHANDLE parent) {
   std::lock_guard lock(mutex_);
-  handles_[handle] = std::shared_ptr<ODBCHandle>(std::move(obj));
+  handles_[handle] = {
+      std::shared_ptr<ODBCHandle>(std::move(obj)), parent};
 }
 
 void HandleRegistry::unregister_handle(SQLHANDLE handle) {
-  std::shared_ptr<ODBCHandle> removed;
+  std::vector<std::shared_ptr<ODBCHandle>> removed;
   {
     std::lock_guard lock(mutex_);
-    const auto it = handles_.find(handle);
-    if (it == handles_.end()) return;
-    removed = std::move(it->second);
-    handles_.erase(it);
+    collect_subtree_locked(handle, removed);
   }
+}
+
+void HandleRegistry::unregister_children(SQLHANDLE parent) {
+  std::vector<std::shared_ptr<ODBCHandle>> removed;
+  {
+    std::lock_guard lock(mutex_);
+    std::vector<SQLHANDLE> children;
+    for (const auto& [handle, entry] : handles_) {
+      if (entry.parent == parent) children.push_back(handle);
+    }
+    for (const auto child : children) {
+      collect_subtree_locked(child, removed);
+    }
+  }
+}
+
+bool HandleRegistry::has_children(SQLHANDLE parent) {
+  std::lock_guard lock(mutex_);
+  for (const auto& [handle, entry] : handles_) {
+    static_cast<void>(handle);
+    if (entry.parent == parent) return true;
+  }
+  return false;
+}
+
+void HandleRegistry::collect_subtree_locked(
+    SQLHANDLE handle, std::vector<std::shared_ptr<ODBCHandle>>& removed) {
+  std::vector<SQLHANDLE> children;
+  for (const auto& [candidate, entry] : handles_) {
+    if (entry.parent == handle) children.push_back(candidate);
+  }
+  for (const auto child : children) {
+    collect_subtree_locked(child, removed);
+  }
+  const auto it = handles_.find(handle);
+  if (it == handles_.end()) return;
+  removed.push_back(std::move(it->second.object));
+  handles_.erase(it);
 }
 
 std::shared_ptr<ODBCHandle> HandleRegistry::get_handle(SQLHANDLE handle) {
   std::lock_guard lock(mutex_);
   auto it = handles_.find(handle);
-  return (it != handles_.end()) ? it->second : nullptr;
+  return (it != handles_.end()) ? it->second.object : nullptr;
 }
 
 } // namespace rs::odbc
