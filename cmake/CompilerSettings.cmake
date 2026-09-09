@@ -3,6 +3,7 @@ function(apply_compiler_settings target)
     target_compile_options(${target} PRIVATE 
       /W4 /WX
       /permissive-
+      /utf-8
       # Match the non-MSVC policy for intentionally unused API parameters and
       # locals retained for protocol readability.
       /wd4100 /wd4189
