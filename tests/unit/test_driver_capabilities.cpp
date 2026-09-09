@@ -187,10 +187,10 @@ TEST(DriverCapabilitiesTest, AdvertisesExactlyItsBaseExports) {
   }
 
   for (const auto& function : advertised_functions) {
-    SQLUSMALLINT supported = SQL_FALSE;
+    SQLUSMALLINT queried_support = SQL_FALSE;
     ASSERT_EQ(SQL_SUCCESS,
-              get_functions(connection, function.id, &supported));
-    EXPECT_EQ(SQL_TRUE, supported) << function.name;
+              get_functions(connection, function.id, &queried_support));
+    EXPECT_EQ(SQL_TRUE, queried_support) << function.name;
   }
 
   supported = SQL_TRUE;
