@@ -69,7 +69,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLProcedureColumns` | A/W | Partial | unit, integration, DM | Modes, result columns, overloads and type metadata |
 | `SQLSpecialColumns` | A/W | Partial | unit, integration, DM | Scope/nullable semantics and row-version behavior |
 | `SQLGetDiagRec` | A/W | Partial | unit, integration, DM | Retrieval preserves records and validates type/record/buffer; truncation matrix remains |
-| `SQLGetDiagField` | A/W | Partial | unit, integration | Retrieval preserves records and validates type/record; complete field matrix remains |
+| `SQLGetDiagField` | A/W | Partial | unit, integration | Retrieval preserves records and reports the generating return code; complete field matrix remains |
 | `SQLError` | A/W | Partial | unit, integration | ODBC 2 sequencing and multi-record consumption |
 | `SQLGetInfo` | A/W | Partial | unit, DM | Complete information matrix and capability accuracy |
 | `SQLGetFunctions` | A | Partial | unit, DM | Automatically prove advertised functions match usable exports |
@@ -169,7 +169,8 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
 4. **Diagnostic lifecycle:** audit batch 2 clears prior records at the start of
    non-diagnostic handle calls. Audit batch 5 makes diagnostic retrieval itself
    non-mutating and validates handle type, record number, and buffer length.
-   Return-code provenance and the complete header/record field matrix remain.
+   Audit batch 6 records return-code provenance at the shared ABI boundary;
+   the complete header/record field matrix remains.
 5. **Input validation parity:** ANSI and wide entry points have historically
    differed on null and invalid-length handling. Audit batch 1 begins closing
    this with execution/preparation boundary tests.

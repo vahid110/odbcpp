@@ -818,7 +818,7 @@ static SQLRETURN SQLGetDiagRec_impl(SQLSMALLINT handle_type, SQLHANDLE handle, S
   }
   if (rec_number < 1 || buffer_length < 0) return SQL_ERROR;
   
-  const auto* record = obj->get_diagnostic_record(rec_number);
+  const auto record = obj->get_diagnostic_record(rec_number);
   if (!record) return SQL_NO_DATA;
   
   // Copy SQLSTATE (always 5 characters + null terminator)
@@ -872,7 +872,7 @@ static SQLRETURN SQLGetDiagRecW_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
   }
   if (rec_number < 1 || buffer_length < 0) return SQL_ERROR;
 
-  const auto* record = obj->get_diagnostic_record(rec_number);
+  const auto record = obj->get_diagnostic_record(rec_number);
   if (!record) return SQL_NO_DATA;
 
   if (sqlstate) {
@@ -910,8 +910,8 @@ static SQLRETURN SQLGetDiagField_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
       }
       case SQL_DIAG_RETURNCODE: {
         if (diag_info_ptr) {
-          // Return the last return code (simplified - would need to track per operation)
-          *static_cast<SQLRETURN*>(diag_info_ptr) = obj->get_diagnostic_count() > 0 ? SQL_ERROR : SQL_SUCCESS;
+          *static_cast<SQLRETURN*>(diag_info_ptr) =
+              obj->get_last_return_code();
         }
         return SQL_SUCCESS;
       }
@@ -921,7 +921,7 @@ static SQLRETURN SQLGetDiagField_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
   }
   
   // Record fields (rec_number > 0)
-  const auto* record = obj->get_diagnostic_record(rec_number);
+  const auto record = obj->get_diagnostic_record(rec_number);
   if (!record) return SQL_NO_DATA;
   
   auto copy_string = [&](const std::string& str) -> SQLRETURN {
@@ -977,7 +977,7 @@ static SQLRETURN SQLGetDiagFieldW_impl(
                            diag_info_ptr, buffer_length, string_length_ptr);
   }
 
-  const auto* record = obj->get_diagnostic_record(rec_number);
+  const auto record = obj->get_diagnostic_record(rec_number);
   if (!record) return SQL_NO_DATA;
   const std::string* value = nullptr;
   switch (diag_identifier) {

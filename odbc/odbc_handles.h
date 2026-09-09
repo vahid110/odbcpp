@@ -41,40 +41,62 @@ public:
   
   // Diagnostic record management
   void clear_diagnostics() {
+    std::lock_guard lock(diagnostics_mutex_);
     diagnostic_records_.clear();
   }
   
   void add_diagnostic(const std::string& sqlstate, SQLINTEGER native_error, const std::string& message) {
+    std::lock_guard lock(diagnostics_mutex_);
     diagnostic_records_.emplace_back(sqlstate, native_error, message);
   }
   
   void set_error(const std::string& sqlstate, const std::string& message, SQLINTEGER native_error = 0) {
-    clear_diagnostics();
-    add_diagnostic(sqlstate, native_error, message);
+    std::lock_guard lock(diagnostics_mutex_);
+    diagnostic_records_.clear();
+    diagnostic_records_.emplace_back(sqlstate, native_error, message);
   }
   
   // First-record accessors retained for existing internal callers.
   std::string get_sqlstate() const { 
+    std::lock_guard lock(diagnostics_mutex_);
     return diagnostic_records_.empty() ? std::string(SQLSTATE_SUCCESS) : diagnostic_records_[0].sqlstate;
   }
   
   std::string get_error_message() const {
+    std::lock_guard lock(diagnostics_mutex_);
     return diagnostic_records_.empty() ? std::string() : diagnostic_records_[0].message_text;
   }
   
   // Diagnostic record access
-  size_t get_diagnostic_count() const { return diagnostic_records_.size(); }
+  size_t get_diagnostic_count() const {
+    std::lock_guard lock(diagnostics_mutex_);
+    return diagnostic_records_.size();
+  }
   
-  const DiagnosticRecord* get_diagnostic_record(SQLSMALLINT record_number) const {
+  std::optional<DiagnosticRecord> get_diagnostic_record(
+      SQLSMALLINT record_number) const {
+    std::lock_guard lock(diagnostics_mutex_);
     if (record_number < 1 || record_number > static_cast<SQLSMALLINT>(diagnostic_records_.size())) {
-      return nullptr;
+      return std::nullopt;
     }
-    return &diagnostic_records_[record_number - 1];
+    return diagnostic_records_[record_number - 1];
+  }
+
+  void set_last_return_code(SQLRETURN return_code) {
+    std::lock_guard lock(diagnostics_mutex_);
+    last_return_code_ = return_code;
+  }
+
+  SQLRETURN get_last_return_code() const {
+    std::lock_guard lock(diagnostics_mutex_);
+    return last_return_code_;
   }
 
 private:
   HandleType type_;
+  mutable std::mutex diagnostics_mutex_;
   std::vector<DiagnosticRecord> diagnostic_records_;
+  SQLRETURN last_return_code_{SQL_SUCCESS};
 };
 
 // Environment handle

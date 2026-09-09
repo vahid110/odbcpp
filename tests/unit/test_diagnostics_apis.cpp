@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
 #include "tests/test_handle_helpers.h"
+#include <cstdint>
 #include <cstring>
 
 class DiagnosticsTest : public ::testing::Test {
@@ -60,6 +61,28 @@ TEST_F(DiagnosticsTest, SQLGetDiagField_HeaderFields) {
     ret = SQLGetDiagField(SQL_HANDLE_DBC, hdbc, 0, SQL_DIAG_RETURNCODE, &return_code, 0, nullptr);
     EXPECT_EQ(SQL_SUCCESS, ret);
     EXPECT_EQ(SQL_ERROR, return_code);
+}
+
+TEST_F(DiagnosticsTest, SQLDiagReturnCodeTracksTheGeneratingCall) {
+    EXPECT_EQ(SQL_ERROR,
+              SQLExecDirect(hstmt, nullptr, SQL_NTS));
+
+    SQLRETURN return_code = SQL_SUCCESS;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDiagField(SQL_HANDLE_STMT, hstmt, 0,
+                              SQL_DIAG_RETURNCODE, &return_code, 0, nullptr));
+    EXPECT_EQ(SQL_ERROR, return_code);
+
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLSetStmtAttr(hstmt, SQL_ATTR_MAX_ROWS,
+                             reinterpret_cast<SQLPOINTER>(
+                                 static_cast<std::uintptr_t>(1)),
+                             0));
+    return_code = SQL_ERROR;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDiagField(SQL_HANDLE_STMT, hstmt, 0,
+                              SQL_DIAG_RETURNCODE, &return_code, 0, nullptr));
+    EXPECT_EQ(SQL_SUCCESS, return_code);
 }
 
 TEST_F(DiagnosticsTest, SQLGetDiagField_RecordFields) {

@@ -19,13 +19,27 @@ inline void record_unexpected_exception(SQLHANDLE diagnostic_handle) noexcept {
   }
 }
 
+inline void record_return_code(SQLHANDLE diagnostic_handle,
+                               SQLRETURN return_code) noexcept {
+  if (!diagnostic_handle) return;
+  try {
+    auto handle = HandleRegistry::instance().get_handle(diagnostic_handle);
+    if (handle) handle->set_last_return_code(return_code);
+  } catch (...) {
+  }
+}
+
 template <typename Callback>
 SQLRETURN invoke_c_api(SQLHANDLE diagnostic_handle,
                        Callback&& callback) noexcept {
   try {
-    return static_cast<SQLRETURN>(std::forward<Callback>(callback)());
+    const auto result = static_cast<SQLRETURN>(
+        std::forward<Callback>(callback)());
+    record_return_code(diagnostic_handle, result);
+    return result;
   } catch (...) {
     record_unexpected_exception(diagnostic_handle);
+    record_return_code(diagnostic_handle, SQL_ERROR);
     return SQL_ERROR;
   }
 }
