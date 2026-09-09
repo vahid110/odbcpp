@@ -707,7 +707,7 @@ TEST_F(MetadataIntegrationTest, NegativeTests) {
     SQLCHAR sqlstate[6], message[256];
     ret = SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, message, sizeof(message), nullptr);
     EXPECT_EQ(SQL_SUCCESS, ret);
-    EXPECT_STREQ("HY000", (char*)sqlstate);
+    EXPECT_STREQ("HY010", (char*)sqlstate);
     
     // Test SQLNumResultCols with null pointer
     ret = SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS);

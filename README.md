@@ -19,42 +19,46 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 - **Pluggable Architecture**: Easy to add new database protocols
 - **Modern C++20**: Clean, type-safe interfaces
 - **Secure Transport**: Built-in TLS/SSL support via OpenSSL
-- **Production Logging**: Asynchronous rotating files, stderr, or syslog with text/JSON output and connection/query timing
+- **Configurable Driver Logging**: Asynchronous rotating files, stderr, or syslog with text/JSON output and connection/query timing
 - **Modern Authentication**: PostgreSQL cleartext, MD5, and SCRAM-SHA-256 password authentication
 - **Cross-Platform**: macOS, Linux, Windows support
-- **Comprehensive Testing**: Unit, PostgreSQL integration, unixODBC and mixed-width iODBC driver-manager, sanitizer, and Windows CI coverage
+- **Cross-Platform Testing**: Unit, PostgreSQL integration, unixODBC and mixed-width iODBC driver-manager, sanitizer, and Windows CI coverage
 
 ## Implementation Status
+
+The entries below describe implemented surface area, not a claim of complete
+ODBC conformance. See the [conformance and hardening audit](ODBC_CONFORMANCE_AUDIT.md)
+for attribute, state, diagnostic, negative-test, and maintainability gaps.
 
 ### ODBC API Coverage
 | Component | Status | Functions |
 |-----------|--------|----------|
-| **Core APIs** | ✅ Complete | SQLAllocHandle, SQLFreeHandle, SQLConnect, SQLDriverConnect, SQLDisconnect |
-| **Timeout Attributes** | ✅ Complete | SQL_ATTR_LOGIN_TIMEOUT and SQL_ATTR_QUERY_TIMEOUT set/get APIs |
-| **Transactions** | ✅ Complete | SQL_ATTR_AUTOCOMMIT, SQL_ATTR_TXN_ISOLATION, SQLEndTran, capability reporting |
-| **Statement Execution** | ✅ Complete | SQLExecDirect, SQLFetch/SQLFetchScroll, SQLGetData, SQLRowCount, SQLMoreResults, SQLCloseCursor, SQLFreeStmt |
-| **Prepared Statements** | ✅ Complete | SQLPrepare, SQLExecute, SQLBindParameter, SQLNumParams |
-| **Unicode APIs** | ✅ Complete for current API surface | 26 `W` entry points plus SQL_C_WCHAR results, binding, and parameters |
-| **Column Binding** | ✅ Complete | SQLBindCol with auto-population |
-| **Metadata** | ✅ Complete | SQLNumResultCols, SQLDescribeCol, SQLColAttribute, SQLGetTypeInfo and 8 ANSI catalog APIs |
-| **Parameter Metadata** | ✅ Complete | SQLDescribeParam |
-| **Error Handling** | ✅ Complete | SQLGetDiagRec |
-| **Driver Info** | ✅ Complete | SQLGetInfo, SQLGetFunctions, SQLNativeSql, environment attributes |
+| **Core APIs** | Implemented; under audit | SQLAllocHandle, SQLFreeHandle, SQLConnect, SQLDriverConnect, SQLDisconnect |
+| **Timeout Attributes** | Partial | SQL_ATTR_LOGIN_TIMEOUT and SQL_ATTR_QUERY_TIMEOUT set/get APIs |
+| **Transactions** | Partial | SQL_ATTR_AUTOCOMMIT, SQL_ATTR_TXN_ISOLATION, SQLEndTran, capability reporting |
+| **Statement Execution** | Partial | SQLExecDirect, forward fetch, SQLGetData, SQLRowCount, SQLMoreResults, cursor cleanup |
+| **Prepared Statements** | Partial | SQLPrepare, SQLExecute, input SQLBindParameter, SQLNumParams |
+| **Unicode APIs** | Implemented for current surface; parity audit active | 26 `W` entry points plus SQL_C_WCHAR results, binding, and parameters |
+| **Column Binding** | Scalar rows only | SQLBindCol with automatic data population; row arrays remain pending |
+| **Metadata** | Implemented subset | Result metadata, type info, and 8 ANSI/wide catalog operations |
+| **Parameter Metadata** | Partial | SQLDescribeParam is populated after server execution |
+| **Diagnostics** | Partial | Multi-record SQLGetDiagRec/Field and legacy SQLError |
+| **Driver Info** | Implemented subset | SQLGetInfo, SQLGetFunctions, SQLNativeSql, environment attributes |
 
 ### ODBC Descriptors
 | Descriptor | Status | Purpose |
 |------------|--------|----------|
-| **IRD** | ✅ Complete | Implementation Row Descriptor - result column metadata |
-| **APD** | ✅ Complete | Application Parameter Descriptor - parameter binding |
-| **ARD** | ✅ Complete | Application Row Descriptor - column binding |
-| **IPD** | ✅ Complete | Implementation Parameter Descriptor - parameter metadata |
+| **IRD** | Storage implemented; under audit | Implementation Row Descriptor - result column metadata |
+| **APD** | Storage implemented; under audit | Application Parameter Descriptor - parameter binding |
+| **ARD** | Storage implemented; under audit | Application Row Descriptor - column binding |
+| **IPD** | Storage implemented; under audit | Implementation Parameter Descriptor - parameter metadata |
 
 ## Supported Databases
 
 | Database | Status | Protocol |
 |----------|--------|----------|
-| **Redshift** | ✅ Production Ready | PostgreSQL Wire Protocol |
-| **PostgreSQL** | ✅ Production Ready | PostgreSQL Wire Protocol |
+| **Redshift** | Compatibility target; revalidation deferred | PostgreSQL Wire Protocol |
+| **PostgreSQL** | Primary target; integration validated | PostgreSQL Wire Protocol |
 | **MySQL** | 🚧 Planned | MySQL Protocol |
 | **SQL Server** | 🚧 Planned | TDS Protocol |
 
@@ -443,9 +447,11 @@ sudo odbcinst -i -s -f odbc.ini
 ## Testing
 
 ### Test Coverage
-- **Total Test Executables**: 30 (21 unit + 9 integration)
+- **Total Test Executables**: 31 (22 unit + 9 integration)
 - **CI Coverage**: Linux, Windows, sanitizers, and mixed-width iODBC Unicode
-- **Coverage**: All ODBC APIs, descriptors, prepared statements, column binding
+- **Current Focus**: Transport, PostgreSQL protocol, core ODBC behavior, Unicode,
+  descriptors, prepared statements, column binding, diagnostics, and logging;
+  the audit matrix records untested and partial behavior
 
 ### Running Tests
 
@@ -458,7 +464,7 @@ source ./setup-test-env.sh
 ctest --test-dir build-redshift
 
 # Run specific test categories
-ctest --test-dir build-redshift -L unit         # 21 unit test executables
+ctest --test-dir build-redshift -L unit         # 22 unit test executables
 ctest --test-dir build-redshift -L integration  # 9 integration executables
 
 # Test specific functionality

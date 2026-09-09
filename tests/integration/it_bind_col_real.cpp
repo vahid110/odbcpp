@@ -522,7 +522,7 @@ TEST_F(BindColIntegrationTest, NegativeTests) {
     SQLCHAR sqlstate[6], message[256];
     ret = SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, message, sizeof(message), nullptr);
     EXPECT_EQ(SQL_SUCCESS, ret);
-    EXPECT_STREQ("HY000", (char*)sqlstate);
+    EXPECT_STREQ("07009", (char*)sqlstate);
     EXPECT_TRUE(strstr((char*)message, "column number") != nullptr);
     
     // Test SQLFetch without execution
@@ -540,7 +540,7 @@ TEST_F(BindColIntegrationTest, NegativeTests) {
     // Verify diagnostic
     ret = SQLGetDiagRec(SQL_HANDLE_STMT, new_stmt, 1, sqlstate, nullptr, message, sizeof(message), nullptr);
     EXPECT_EQ(SQL_SUCCESS, ret);
-    EXPECT_STREQ("HY000", (char*)sqlstate);
+    EXPECT_STREQ("24000", (char*)sqlstate);
     SQLFreeHandle(SQL_HANDLE_STMT, new_stmt);
     
     // Test SQLGetData with invalid column

@@ -332,6 +332,29 @@ TEST_F(AttributeApisTest, StoresQueryTimeoutAndAllowsZero) {
       statement_, SQL_ATTR_QUERY_TIMEOUT, integer_value(0), 0));
 }
 
+TEST_F(AttributeApisTest, WideAttributeEntryPointsMatchAnsiBehavior) {
+  SQLUINTEGER connection_value = 0;
+  SQLINTEGER connection_length = 0;
+  EXPECT_EQ(SQL_SUCCESS, SQLSetConnectAttrW(
+      connection_, SQL_ATTR_LOGIN_TIMEOUT, integer_value(9), 0));
+  EXPECT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(
+      connection_, SQL_ATTR_LOGIN_TIMEOUT, &connection_value,
+      sizeof(connection_value), &connection_length));
+  EXPECT_EQ(9u, connection_value);
+  EXPECT_EQ(sizeof(SQLUINTEGER),
+            static_cast<std::size_t>(connection_length));
+
+  SQLULEN statement_value = 0;
+  SQLINTEGER statement_length = 0;
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttrW(
+      statement_, SQL_ATTR_QUERY_TIMEOUT, integer_value(4), 0));
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttrW(
+      statement_, SQL_ATTR_QUERY_TIMEOUT, &statement_value,
+      sizeof(statement_value), &statement_length));
+  EXPECT_EQ(4u, statement_value);
+  EXPECT_EQ(sizeof(SQLULEN), static_cast<std::size_t>(statement_length));
+}
+
 TEST_F(AttributeApisTest, ReportsAllImplicitDescriptorHandles) {
   const SQLINTEGER attributes[] = {
       SQL_ATTR_APP_ROW_DESC, SQL_ATTR_APP_PARAM_DESC,

@@ -65,16 +65,6 @@ TEST_F(DescriptorAPITest, DescribeParamBasic) {
     EXPECT_EQ(SQL_ERROR, stmt->describe_param(0, &data_type, &param_size, &decimal_digits, &nullable));
 }
 
-// Test descriptor field access framework
-TEST_F(DescriptorAPITest, DescriptorFieldAccess) {
-    char buffer[256];
-    SQLLEN string_length;
-    
-    // These should return error for now (not fully implemented)
-    EXPECT_EQ(SQL_ERROR, stmt->get_desc_field(1, 1, 1, buffer, sizeof(buffer), &string_length));
-    EXPECT_EQ(SQL_ERROR, stmt->set_desc_field(1, 1, 1, buffer, 10));
-}
-
 // Test column binding with different data types
 TEST_F(DescriptorAPITest, MultipleDataTypeBinding) {
     char char_buf[256];

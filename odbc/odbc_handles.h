@@ -31,7 +31,7 @@ struct DiagnosticRecord {
       class_origin("ISO 9075"), subclass_origin("ODBCPP 1.0") {}
 };
 
-// Base ODBC handle with comprehensive diagnostics
+// Base ODBC handle with diagnostic-record storage.
 class ODBCHandle {
 public:
   explicit ODBCHandle(HandleType type) : type_(type) {}
@@ -39,7 +39,7 @@ public:
   
   HandleType get_type() const { return type_; }
   
-  // Enhanced error handling with multiple records
+  // Diagnostic record management
   void clear_diagnostics() {
     diagnostic_records_.clear();
   }
@@ -53,7 +53,7 @@ public:
     add_diagnostic(sqlstate, native_error, message);
   }
   
-  // Legacy compatibility
+  // First-record accessors retained for existing internal callers.
   std::string get_sqlstate() const { 
     return diagnostic_records_.empty() ? std::string(SQLSTATE_SUCCESS) : diagnostic_records_[0].sqlstate;
   }
@@ -62,7 +62,7 @@ public:
     return diagnostic_records_.empty() ? std::string() : diagnostic_records_[0].message_text;
   }
   
-  // New diagnostic access
+  // Diagnostic record access
   size_t get_diagnostic_count() const { return diagnostic_records_.size(); }
   
   const DiagnosticRecord* get_diagnostic_record(SQLSMALLINT record_number) const {
@@ -122,8 +122,6 @@ private:
   std::uint64_t connection_id_{};
   std::shared_ptr<rs::core::logging::DriverLogger> logger_;
   
-  // Suppress unused warning - env_ will be used for ODBC compliance features
-  void suppress_unused_warning() { (void)env_; }
 };
 
 // IRD (Implementation Row Descriptor) - ODBC result column metadata
@@ -288,12 +286,6 @@ public:
   // Parameter metadata (IPD)
   SQLRETURN describe_param(SQLUSMALLINT parameter_number, SQLSMALLINT* data_type,
                           SQLULEN* parameter_size, SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable);
-  
-  // Descriptor field access
-  SQLRETURN get_desc_field(SQLSMALLINT descriptor_type, SQLSMALLINT record_number, SQLSMALLINT field_identifier,
-                           SQLPOINTER value, SQLLEN buffer_length, SQLLEN* string_length);
-  SQLRETURN set_desc_field(SQLSMALLINT descriptor_type, SQLSMALLINT record_number, SQLSMALLINT field_identifier,
-                           SQLPOINTER value, SQLLEN string_length);
   
   bool has_results() const { return !result_rows_.empty(); }
   size_t get_column_count() const { return result_rows_.empty() ? 0 : result_rows_[0].size(); }

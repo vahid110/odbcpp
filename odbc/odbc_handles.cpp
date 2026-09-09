@@ -1014,13 +1014,13 @@ SQLRETURN ODBCStatement::more_results() {
 SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type, 
                                  void* buffer, SQLLEN buffer_length, SQLLEN* indicator) {
   if (!executed_ || current_row_ == 0 || current_row_ > result_rows_.size()) {
-    set_error(SQLSTATE_GENERAL_ERROR, "No current row");
+    set_error(SQLSTATE_INVALID_CURSOR_STATE, "No current row");
     return SQL_ERROR;
   }
   
   const auto& row = result_rows_[current_row_ - 1];
   if (col < 1 || col > row.size()) {
-    set_error(SQLSTATE_GENERAL_ERROR, "Invalid column number");
+    set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid column number");
     return SQL_ERROR;
   }
 
@@ -1395,7 +1395,7 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
                                        SQLSMALLINT decimal_digits, SQLPOINTER parameter_value, SQLLEN buffer_length,
                                        SQLLEN* strlen_or_indicator) {
   if (parameter_number < 1) {
-    set_error(SQLSTATE_GENERAL_ERROR, "Invalid parameter number");
+    set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid parameter number");
     return SQL_ERROR;
   }
   
@@ -1483,13 +1483,14 @@ void ODBCStatement::apply_query_result(
 SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target_type,
                                   SQLPOINTER target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator) {
   if (column_number < 1) {
-    set_error(SQLSTATE_GENERAL_ERROR, "Invalid column number");
+    set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid column number");
     return SQL_ERROR;
   }
   
   // Check if column number is valid (after execution)
   if (executed_ && column_number > column_info_.size()) {
-    set_error(SQLSTATE_GENERAL_ERROR, "Column number out of range");
+    set_error(SQLSTATE_INVALID_PARAMETER_NUMBER,
+              "Column number out of range");
     return SQL_ERROR;
   }
   
@@ -1512,12 +1513,13 @@ SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target
 // Metadata functions implementation
 SQLRETURN ODBCStatement::get_num_result_cols(SQLSMALLINT* column_count) {
   if (!column_count) {
-    set_error(SQLSTATE_GENERAL_ERROR, "Null pointer for column count");
+    set_error(SQLSTATE_INVALID_NULL_POINTER,
+              "Null pointer for column count");
     return SQL_ERROR;
   }
   
   if (!executed_) {
-    set_error(SQLSTATE_GENERAL_ERROR, "No query executed");
+    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "No query executed");
     return SQL_ERROR;
   }
   
@@ -2171,7 +2173,7 @@ SQLRETURN ODBCStatement::special_columns(
 
 SQLRETURN ODBCStatement::row_count(SQLLEN* row_count_value) {
   if (!row_count_value) {
-    set_error(SQLSTATE_GENERAL_ERROR, "Null pointer for row count");
+    set_error(SQLSTATE_INVALID_NULL_POINTER, "Null pointer for row count");
     return SQL_ERROR;
   }
   if (!executed_) {
@@ -2186,7 +2188,7 @@ SQLRETURN ODBCStatement::describe_col(SQLUSMALLINT column_number, SQLCHAR* colum
                                      SQLSMALLINT* name_length, SQLSMALLINT* data_type, SQLULEN* column_size,
                                      SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable) {
   if (column_number < 1 || column_number > column_info_.size()) {
-    set_error(SQLSTATE_GENERAL_ERROR, "Invalid column number");
+    set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid column number");
     return SQL_ERROR;
   }
   
@@ -2212,7 +2214,7 @@ SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT 
                                       SQLPOINTER character_attribute, SQLSMALLINT buffer_length,
                                       SQLSMALLINT* string_length, SQLLEN* numeric_attribute) {
   if (column_number < 1 || column_number > column_info_.size()) {
-    set_error(SQLSTATE_GENERAL_ERROR, "Invalid column number");
+    set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid column number");
     return SQL_ERROR;
   }
   
@@ -2246,7 +2248,7 @@ SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT 
 SQLRETURN ODBCStatement::describe_param(SQLUSMALLINT parameter_number, SQLSMALLINT* data_type,
                                         SQLULEN* parameter_size, SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable) {
   if (parameter_number < 1 || parameter_number > param_metadata_.size()) {
-    set_error(SQLSTATE_GENERAL_ERROR, "Invalid parameter number");
+    set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid parameter number");
     return SQL_ERROR;
   }
   
@@ -2257,21 +2259,6 @@ SQLRETURN ODBCStatement::describe_param(SQLUSMALLINT parameter_number, SQLSMALLI
   if (nullable) *nullable = meta.nullable;
   
   return SQL_SUCCESS;
-}
-
-// Descriptor field access implementation
-SQLRETURN ODBCStatement::get_desc_field(SQLSMALLINT descriptor_type, SQLSMALLINT record_number, SQLSMALLINT field_identifier,
-                                        SQLPOINTER value, SQLLEN buffer_length, SQLLEN* string_length) {
-  // Simplified implementation - would need full descriptor type handling
-  set_error(SQLSTATE_GENERAL_ERROR, "SQLGetDescField not fully implemented");
-  return SQL_ERROR;
-}
-
-SQLRETURN ODBCStatement::set_desc_field(SQLSMALLINT descriptor_type, SQLSMALLINT record_number, SQLSMALLINT field_identifier,
-                                        SQLPOINTER value, SQLLEN string_length) {
-  // Simplified implementation - would need full descriptor type handling
-  set_error(SQLSTATE_GENERAL_ERROR, "SQLSetDescField not fully implemented");
-  return SQL_ERROR;
 }
 
 // Handle registry implementation

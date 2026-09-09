@@ -1,5 +1,9 @@
 # ODBCPP Development Roadmap
 
+> Completion marks below describe the originally planned implementation scope,
+> not full ODBC conformance. The specification-backed status and remaining
+> negative/state testing are tracked in `ODBC_CONFORMANCE_AUDIT.md`.
+
 ## ✅ Completed Milestones
 
 ### Milestone 1: Core ODBC Framework (COMPLETE)
@@ -48,13 +52,14 @@
 
 ## 🚧 Current Status
 
-**Implementation**: 66 exported ODBC entry points (47 non-wide, 19 Unicode)
-**Descriptors**: 4/4 ODBC Descriptors Complete
-**Diagnostics**: Complete ODBC diagnostics implementation
-**Test Coverage**: 19 tests (100% unit test pass rate)
-**Production Ready**: Core functionality validated with real Redshift database
+**Implementation**: 73 exported ODBC entry points (47 base operations, 26 wide variants)
+**Descriptors**: All 4 descriptor roles represented; full fields and attachment remain under audit
+**Diagnostics**: Multi-record diagnostics implemented; lifecycle and full field behavior remain under audit
+**Test Coverage**: 31 executables (22 unit + 9 integration) after audit batch 1
+**Production Readiness**: Not yet claimed; PostgreSQL is the primary validation target and Redshift revalidation is deferred
 **Critical Gaps**:
-- Broader statement and descriptor attribute processing remains incomplete
+- See `ODBC_CONFORMANCE_AUDIT.md` for the prioritized correctness, attribute,
+  state-machine, logging, and maintainability gaps
 
 ## 🎯 Next Milestones
 

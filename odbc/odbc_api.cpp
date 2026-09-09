@@ -20,12 +20,6 @@ namespace {
     return std::string(reinterpret_cast<char*>(str), length);
   }
   
-  // Internal UTF-8 string handling (ready for Wide function support)
-  std::string normalize_string(const std::string& input) {
-    // Currently pass-through, but ready for UTF-8 validation/conversion
-    return input;
-  }
-
   template <typename Length>
   SQLRETURN write_wide_output(
       ODBCHandle* handle, std::string_view utf8, SQLWCHAR* output,
@@ -127,7 +121,7 @@ namespace {
               " argument");
       return false;
     }
-    output = normalize_string(*converted);
+    output = *converted;
     return true;
   }
 
@@ -256,7 +250,16 @@ T* get_valid_handle(SQLHANDLE handle) {
 extern "C" {
 
 SQLRETURN SQLAllocHandle(SQLSMALLINT handle_type, SQLHANDLE input_handle, SQLHANDLE* output_handle) {
-  if (!output_handle) return SQL_INVALID_HANDLE;
+  if (!output_handle) {
+    if (input_handle) {
+      if (auto* parent = HandleRegistry::instance().get_handle(input_handle)) {
+        parent->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                          "Output handle pointer is null");
+      }
+    }
+    return SQL_ERROR;
+  }
+  *output_handle = SQL_NULL_HANDLE;
   
   try {
     std::unique_ptr<ODBCHandle> new_handle;
@@ -289,7 +292,8 @@ SQLRETURN SQLAllocHandle(SQLSMALLINT handle_type, SQLHANDLE input_handle, SQLHAN
         if (input_handle) {
           auto* parent = HandleRegistry::instance().get_handle(input_handle);
           if (parent) {
-            parent->set_error(SQLSTATE_GENERAL_ERROR, "Invalid handle type");
+            parent->set_error(SQLSTATE_INVALID_ATTRIBUTE,
+                              "Invalid handle type");
           }
         }
         return SQL_ERROR;
@@ -351,10 +355,17 @@ SQLRETURN SQLConnect(SQLHDBC connection_handle,
   
   auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
+  if ((name_length1 < 0 && name_length1 != SQL_NTS) ||
+      (name_length2 < 0 && name_length2 != SQL_NTS) ||
+      (name_length3 < 0 && name_length3 != SQL_NTS)) {
+    conn->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid connection input length");
+    return SQL_ERROR;
+  }
   
-  std::string dsn = normalize_string(sqlchar_to_string(server_name, name_length1));
-  std::string user = normalize_string(sqlchar_to_string(user_name, name_length2));
-  std::string password = normalize_string(sqlchar_to_string(authentication, name_length3));
+  std::string dsn = sqlchar_to_string(server_name, name_length1);
+  std::string user = sqlchar_to_string(user_name, name_length2);
+  std::string password = sqlchar_to_string(authentication, name_length3);
   
   return conn->connect(dsn, user, password);
 }
@@ -381,8 +392,7 @@ SQLRETURN SQLConnectW(SQLHDBC connection_handle,
                     "Invalid wide-character connection input");
     return SQL_ERROR;
   }
-  return conn->connect(normalize_string(*dsn), normalize_string(*user),
-                       normalize_string(*password));
+  return conn->connect(*dsn, *user, *password);
 }
 
 SQLRETURN SQLDriverConnect(
@@ -421,8 +431,8 @@ SQLRETURN SQLDriverConnect(
     return SQL_ERROR;
   }
 
-  const auto connection_string = normalize_string(
-      sqlchar_to_string(connection_string_in, string_length1));
+  const auto connection_string =
+      sqlchar_to_string(connection_string_in, string_length1);
   const auto connect_result = conn->connect(connection_string, {}, {});
   if (connect_result != SQL_SUCCESS) return connect_result;
 
@@ -489,12 +499,12 @@ SQLRETURN SQLDriverConnectW(
                     "Invalid wide-character connection string");
     return SQL_ERROR;
   }
-  const auto normalized = normalize_string(*connection_string);
-  const auto connect_result = conn->connect(normalized, {}, {});
+  const auto connect_result = conn->connect(*connection_string, {}, {});
   if (connect_result != SQL_SUCCESS) return connect_result;
 
   return write_wide_output(
-      conn, normalized, connection_string_out, buffer_length, string_length2,
+      conn, *connection_string, connection_string_out, buffer_length,
+      string_length2,
       "Output connection string was truncated");
 }
 
@@ -565,8 +575,17 @@ SQLRETURN SQLEndTran(SQLSMALLINT handle_type, SQLHANDLE handle,
 SQLRETURN SQLExecDirect(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length) {
   auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
-  
-  std::string sql = normalize_string(sqlchar_to_string(statement_text, text_length));
+
+  if (!statement_text) {
+    stmt->set_error(SQLSTATE_INVALID_NULL_POINTER, "SQL statement is null");
+    return SQL_ERROR;
+  }
+  if (text_length <= 0 && text_length != SQL_NTS) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid SQL statement length");
+    return SQL_ERROR;
+  }
+  std::string sql = sqlchar_to_string(statement_text, text_length);
   return stmt->execute_direct(sql);
 }
 
@@ -578,7 +597,7 @@ SQLRETURN SQLExecDirectW(SQLHSTMT statement_handle,
     stmt->set_error(SQLSTATE_INVALID_NULL_POINTER, "SQL statement is null");
     return SQL_ERROR;
   }
-  if (text_length < 0 && text_length != SQL_NTS) {
+  if (text_length <= 0 && text_length != SQL_NTS) {
     stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
                     "Invalid SQL statement length");
     return SQL_ERROR;
@@ -590,7 +609,7 @@ SQLRETURN SQLExecDirectW(SQLHSTMT statement_handle,
                     "Invalid wide-character SQL statement");
     return SQL_ERROR;
   }
-  return stmt->execute_direct(normalize_string(*sql));
+  return stmt->execute_direct(*sql);
 }
 
 SQLRETURN SQLFetch(SQLHSTMT statement_handle) {
@@ -1126,8 +1145,7 @@ SQLRETURN SQLNativeSql(
     return SQL_ERROR;
   }
 
-  const auto native_sql = normalize_string(
-      sqlchar_to_string(input_statement, text_length1));
+  const auto native_sql = sqlchar_to_string(input_statement, text_length1);
   if (text_length2) {
     *text_length2 = static_cast<SQLINTEGER>(std::min(
         native_sql.size(),
@@ -1180,7 +1198,7 @@ SQLRETURN SQLNativeSqlW(
     return SQL_ERROR;
   }
   return write_wide_output(
-      conn, normalize_string(*native_sql), output_statement, buffer_length,
+      conn, *native_sql, output_statement, buffer_length,
       text_length2, "Output SQL statement was truncated");
 }
 
@@ -1282,7 +1300,7 @@ SQLRETURN SQLColumns(
       return true;
     }
     if (length < 0 && length != SQL_NTS) return false;
-    output = normalize_string(sqlchar_to_string(value, length));
+    output = sqlchar_to_string(value, length);
     return true;
   };
   std::optional<std::string> catalog;
@@ -1315,7 +1333,7 @@ SQLRETURN SQLPrimaryKeys(
       return true;
     }
     if (length < 0 && length != SQL_NTS) return false;
-    output = normalize_string(sqlchar_to_string(value, length));
+    output = sqlchar_to_string(value, length);
     return true;
   };
   std::optional<std::string> catalog;
@@ -1354,7 +1372,7 @@ SQLRETURN SQLForeignKeys(
       return true;
     }
     if (length < 0 && length != SQL_NTS) return false;
-    output = normalize_string(sqlchar_to_string(value, length));
+    output = sqlchar_to_string(value, length);
     return true;
   };
   std::optional<std::string> pk_catalog;
@@ -1398,7 +1416,7 @@ SQLRETURN SQLStatistics(
       return true;
     }
     if (length < 0 && length != SQL_NTS) return false;
-    output = normalize_string(sqlchar_to_string(value, length));
+    output = sqlchar_to_string(value, length);
     return true;
   };
   std::optional<std::string> catalog;
@@ -1445,7 +1463,7 @@ SQLRETURN SQLProcedures(
       return true;
     }
     if (length < 0 && length != SQL_NTS) return false;
-    output = normalize_string(sqlchar_to_string(value, length));
+    output = sqlchar_to_string(value, length);
     return true;
   };
   std::optional<std::string> catalog;
@@ -1477,7 +1495,7 @@ SQLRETURN SQLProcedureColumns(
       return true;
     }
     if (length < 0 && length != SQL_NTS) return false;
-    output = normalize_string(sqlchar_to_string(value, length));
+    output = sqlchar_to_string(value, length);
     return true;
   };
   std::optional<std::string> catalog;
@@ -1511,7 +1529,7 @@ SQLRETURN SQLSpecialColumns(
       return true;
     }
     if (length < 0 && length != SQL_NTS) return false;
-    output = normalize_string(sqlchar_to_string(value, length));
+    output = sqlchar_to_string(value, length);
     return true;
   };
   std::optional<std::string> catalog;
@@ -1565,7 +1583,7 @@ SQLRETURN SQLTables(
       return true;
     }
     if (length < 0 && length != SQL_NTS) return false;
-    output = normalize_string(sqlchar_to_string(value, length));
+    output = sqlchar_to_string(value, length);
     return true;
   };
   std::optional<std::string> catalog;
@@ -1916,7 +1934,16 @@ SQLRETURN SQLColAttributeW(
 SQLRETURN SQLPrepare(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length) {
   auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
-  
+
+  if (!statement_text) {
+    stmt->set_error(SQLSTATE_INVALID_NULL_POINTER, "SQL statement is null");
+    return SQL_ERROR;
+  }
+  if (text_length <= 0 && text_length != SQL_NTS) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Invalid SQL statement length");
+    return SQL_ERROR;
+  }
   std::string sql = sqlchar_to_string(statement_text, text_length);
   return stmt->prepare(sql);
 }
@@ -1929,7 +1956,7 @@ SQLRETURN SQLPrepareW(SQLHSTMT statement_handle,
     stmt->set_error(SQLSTATE_INVALID_NULL_POINTER, "SQL statement is null");
     return SQL_ERROR;
   }
-  if (text_length < 0 && text_length != SQL_NTS) {
+  if (text_length <= 0 && text_length != SQL_NTS) {
     stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
                     "Invalid SQL statement length");
     return SQL_ERROR;
@@ -1941,7 +1968,7 @@ SQLRETURN SQLPrepareW(SQLHSTMT statement_handle,
                     "Invalid wide-character SQL statement");
     return SQL_ERROR;
   }
-  return stmt->prepare(normalize_string(*sql));
+  return stmt->prepare(*sql);
 }
 
 SQLRETURN SQLExecute(SQLHSTMT statement_handle) {

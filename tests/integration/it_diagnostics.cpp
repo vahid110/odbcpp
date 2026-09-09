@@ -73,7 +73,7 @@ TEST_F(DiagnosticsIntegrationTest, InvalidParameterNumber) {
     ret = SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, 
                        message, sizeof(message), nullptr);
     EXPECT_EQ(ret, SQL_SUCCESS);
-    EXPECT_STREQ((char*)sqlstate, "HY000"); // General error
+    EXPECT_STREQ((char*)sqlstate, "07009"); // Invalid descriptor index
     EXPECT_TRUE(strstr((char*)message, "parameter number") != nullptr);
 }
 
@@ -91,7 +91,7 @@ TEST_F(DiagnosticsIntegrationTest, InvalidColumnNumber) {
     ret = SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, 
                        message, sizeof(message), nullptr);
     EXPECT_EQ(ret, SQL_SUCCESS);
-    EXPECT_STREQ((char*)sqlstate, "HY000"); // General error
+    EXPECT_STREQ((char*)sqlstate, "07009"); // Invalid descriptor index
     EXPECT_TRUE(strstr((char*)message, "column number") != nullptr);
 }
 
@@ -109,7 +109,7 @@ TEST_F(DiagnosticsIntegrationTest, GetDataWithoutExecution) {
     ret = SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, 
                        message, sizeof(message), nullptr);
     EXPECT_EQ(ret, SQL_SUCCESS);
-    EXPECT_STREQ((char*)sqlstate, "HY000"); // General error
+    EXPECT_STREQ((char*)sqlstate, "24000"); // Invalid cursor state
     EXPECT_TRUE(strstr((char*)message, "No current row") != nullptr);
 }
 
