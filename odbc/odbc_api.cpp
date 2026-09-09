@@ -285,7 +285,9 @@ namespace {
 // Helper to validate handle
 template<typename T>
 std::shared_ptr<T> get_valid_handle(SQLHANDLE handle) {
-  return HandleRegistry::instance().get_handle_as<T>(handle);
+  auto result = HandleRegistry::instance().get_handle_as<T>(handle);
+  if (result) result->clear_diagnostics();
+  return result;
 }
 
 extern "C" {
@@ -294,6 +296,7 @@ SQLRETURN SQLAllocHandle(SQLSMALLINT handle_type, SQLHANDLE input_handle, SQLHAN
   if (!output_handle) {
     if (input_handle) {
       if (auto parent = HandleRegistry::instance().get_handle(input_handle)) {
+        parent->clear_diagnostics();
         parent->set_error(SQLSTATE_INVALID_NULL_POINTER,
                           "Output handle pointer is null");
       }
@@ -301,6 +304,12 @@ SQLRETURN SQLAllocHandle(SQLSMALLINT handle_type, SQLHANDLE input_handle, SQLHAN
     return SQL_ERROR;
   }
   *output_handle = SQL_NULL_HANDLE;
+
+  if (input_handle) {
+    if (auto parent = HandleRegistry::instance().get_handle(input_handle)) {
+      parent->clear_diagnostics();
+    }
+  }
   
   try {
     std::unique_ptr<ODBCHandle> new_handle;
@@ -376,6 +385,7 @@ SQLRETURN SQLFreeHandle(SQLSMALLINT handle_type, SQLHANDLE handle) {
   if (!obj || static_cast<int>(obj->get_type()) != handle_type) {
     return SQL_INVALID_HANDLE;
   }
+  obj->clear_diagnostics();
   if (handle_type == SQL_HANDLE_DESC) {
     auto* descriptor = static_cast<ODBCDescriptor*>(obj.get());
     if (descriptor->is_automatically_allocated()) {

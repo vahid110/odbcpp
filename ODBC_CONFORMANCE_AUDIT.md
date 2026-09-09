@@ -164,9 +164,9 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
 3. **Parent/child lifetime:** freeing an environment or connection does not
    currently prove that dependent connection/statement/descriptor handles are
    absent, leaving dangling parent pointers possible for direct API callers.
-4. **Diagnostic lifecycle:** successful/non-diagnostic calls do not
-   consistently clear prior diagnostics, and state-transition diagnostics are
-   not yet centrally enforced.
+4. **Diagnostic lifecycle:** audit batch 2 clears prior records at the start of
+   non-diagnostic handle calls. Return-code provenance, complete header/record
+   fields, and state-transition diagnostics are not yet centrally enforced.
 5. **Input validation parity:** ANSI and wide entry points have historically
    differed on null and invalid-length handling. Audit batch 1 begins closing
    this with execution/preparation boundary tests.

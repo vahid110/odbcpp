@@ -104,6 +104,19 @@ TEST_F(ApiValidationTest, RejectsInvalidAnsiStatementText) {
   EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, statement_));
 }
 
+TEST_F(ApiValidationTest, SuccessfulCallClearsPreviousDiagnostics) {
+  EXPECT_EQ(SQL_ERROR, SQLExecDirect(statement_, nullptr, SQL_NTS));
+  EXPECT_EQ("HY009", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLSetStmtAttr(statement_, SQL_ATTR_MAX_ROWS,
+                           reinterpret_cast<SQLPOINTER>(std::uintptr_t{10}),
+                           0));
+  EXPECT_EQ(SQL_NO_DATA,
+            SQLGetDiagRec(SQL_HANDLE_STMT, statement_, 1, nullptr, nullptr,
+                          nullptr, 0, nullptr));
+}
+
 TEST_F(ApiValidationTest, RejectsInvalidWideStatementText) {
   SQLWCHAR statement[]{'S', 'E', 'L', 'E', 'C', 'T', ' ', '1', 0};
 
