@@ -45,10 +45,21 @@ SQLRETURN SQLColumns(
     SQLSMALLINT name_length2, SQLCHAR* table_name,
     SQLSMALLINT name_length3, SQLCHAR* column_name,
     SQLSMALLINT name_length4);
+SQLRETURN SQLColumnsW(
+    SQLHSTMT statement_handle, SQLWCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLWCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLWCHAR* table_name,
+    SQLSMALLINT name_length3, SQLWCHAR* column_name,
+    SQLSMALLINT name_length4);
 SQLRETURN SQLPrimaryKeys(
     SQLHSTMT statement_handle, SQLCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLCHAR* schema_name,
     SQLSMALLINT name_length2, SQLCHAR* table_name,
+    SQLSMALLINT name_length3);
+SQLRETURN SQLPrimaryKeysW(
+    SQLHSTMT statement_handle, SQLWCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLWCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLWCHAR* table_name,
     SQLSMALLINT name_length3);
 SQLRETURN SQLForeignKeys(
     SQLHSTMT statement_handle, SQLCHAR* pk_catalog_name,
@@ -58,10 +69,24 @@ SQLRETURN SQLForeignKeys(
     SQLSMALLINT name_length4, SQLCHAR* fk_schema_name,
     SQLSMALLINT name_length5, SQLCHAR* fk_table_name,
     SQLSMALLINT name_length6);
+SQLRETURN SQLForeignKeysW(
+    SQLHSTMT statement_handle, SQLWCHAR* pk_catalog_name,
+    SQLSMALLINT name_length1, SQLWCHAR* pk_schema_name,
+    SQLSMALLINT name_length2, SQLWCHAR* pk_table_name,
+    SQLSMALLINT name_length3, SQLWCHAR* fk_catalog_name,
+    SQLSMALLINT name_length4, SQLWCHAR* fk_schema_name,
+    SQLSMALLINT name_length5, SQLWCHAR* fk_table_name,
+    SQLSMALLINT name_length6);
 SQLRETURN SQLStatistics(
     SQLHSTMT statement_handle, SQLCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLCHAR* schema_name,
     SQLSMALLINT name_length2, SQLCHAR* table_name,
+    SQLSMALLINT name_length3, SQLUSMALLINT unique,
+    SQLUSMALLINT reserved);
+SQLRETURN SQLStatisticsW(
+    SQLHSTMT statement_handle, SQLWCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLWCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLWCHAR* table_name,
     SQLSMALLINT name_length3, SQLUSMALLINT unique,
     SQLUSMALLINT reserved);
 SQLRETURN SQLProcedures(
@@ -69,11 +94,22 @@ SQLRETURN SQLProcedures(
     SQLSMALLINT name_length1, SQLCHAR* schema_name,
     SQLSMALLINT name_length2, SQLCHAR* procedure_name,
     SQLSMALLINT name_length3);
+SQLRETURN SQLProceduresW(
+    SQLHSTMT statement_handle, SQLWCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLWCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLWCHAR* procedure_name,
+    SQLSMALLINT name_length3);
 SQLRETURN SQLProcedureColumns(
     SQLHSTMT statement_handle, SQLCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLCHAR* schema_name,
     SQLSMALLINT name_length2, SQLCHAR* procedure_name,
     SQLSMALLINT name_length3, SQLCHAR* column_name,
+    SQLSMALLINT name_length4);
+SQLRETURN SQLProcedureColumnsW(
+    SQLHSTMT statement_handle, SQLWCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLWCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLWCHAR* procedure_name,
+    SQLSMALLINT name_length3, SQLWCHAR* column_name,
     SQLSMALLINT name_length4);
 SQLRETURN SQLSpecialColumns(
     SQLHSTMT statement_handle, SQLUSMALLINT identifier_type,
@@ -81,11 +117,23 @@ SQLRETURN SQLSpecialColumns(
     SQLCHAR* schema_name, SQLSMALLINT name_length2,
     SQLCHAR* table_name, SQLSMALLINT name_length3,
     SQLUSMALLINT scope, SQLUSMALLINT nullable);
+SQLRETURN SQLSpecialColumnsW(
+    SQLHSTMT statement_handle, SQLUSMALLINT identifier_type,
+    SQLWCHAR* catalog_name, SQLSMALLINT name_length1,
+    SQLWCHAR* schema_name, SQLSMALLINT name_length2,
+    SQLWCHAR* table_name, SQLSMALLINT name_length3,
+    SQLUSMALLINT scope, SQLUSMALLINT nullable);
 SQLRETURN SQLTables(
     SQLHSTMT statement_handle, SQLCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLCHAR* schema_name,
     SQLSMALLINT name_length2, SQLCHAR* table_name,
     SQLSMALLINT name_length3, SQLCHAR* table_type,
+    SQLSMALLINT name_length4);
+SQLRETURN SQLTablesW(
+    SQLHSTMT statement_handle, SQLWCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLWCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLWCHAR* table_name,
+    SQLSMALLINT name_length3, SQLWCHAR* table_type,
     SQLSMALLINT name_length4);
 SQLRETURN SQLSetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
                          SQLPOINTER value, SQLINTEGER string_length);

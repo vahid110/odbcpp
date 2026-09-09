@@ -58,6 +58,32 @@ namespace {
     return SQL_SUCCESS;
   }
 
+  bool read_wide_argument(ODBCHandle* handle, SQLWCHAR* value,
+                          SQLSMALLINT length,
+                          std::optional<std::string>& output,
+                          std::string_view function_name) {
+    if (!value) {
+      output.reset();
+      return true;
+    }
+    if (length < 0 && length != SQL_NTS) {
+      handle->set_error(
+          SQLSTATE_INVALID_STRING_LENGTH,
+          "Invalid " + std::string(function_name) + " argument length");
+      return false;
+    }
+    const auto converted = sqlwchar_to_utf8(value, length);
+    if (!converted) {
+      handle->set_error(
+          SQLSTATE_INVALID_CHARACTER_VALUE,
+          "Invalid wide-character " + std::string(function_name) +
+              " argument");
+      return false;
+    }
+    output = normalize_string(*converted);
+    return true;
+  }
+
   bool is_supported_function(SQLUSMALLINT function_id) {
     switch (function_id) {
       case SQL_API_SQLALLOCHANDLE:
@@ -1281,6 +1307,249 @@ SQLRETURN SQLTables(
       !read_argument(table_type, name_length4, type)) {
     stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
                     "Invalid SQLTables argument length");
+    return SQL_ERROR;
+  }
+  return stmt->tables(catalog, schema, table, type);
+}
+
+SQLRETURN SQLColumnsW(
+    SQLHSTMT statement_handle, SQLWCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLWCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLWCHAR* table_name,
+    SQLSMALLINT name_length3, SQLWCHAR* column_name,
+    SQLSMALLINT name_length4) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  std::optional<std::string> catalog;
+  std::optional<std::string> schema;
+  std::optional<std::string> table;
+  std::optional<std::string> column;
+  if (!read_wide_argument(stmt, catalog_name, name_length1, catalog,
+                          "SQLColumnsW") ||
+      !read_wide_argument(stmt, schema_name, name_length2, schema,
+                          "SQLColumnsW") ||
+      !read_wide_argument(stmt, table_name, name_length3, table,
+                          "SQLColumnsW") ||
+      !read_wide_argument(stmt, column_name, name_length4, column,
+                          "SQLColumnsW")) {
+    return SQL_ERROR;
+  }
+  return stmt->columns(catalog, schema, table, column);
+}
+
+SQLRETURN SQLPrimaryKeysW(
+    SQLHSTMT statement_handle, SQLWCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLWCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLWCHAR* table_name,
+    SQLSMALLINT name_length3) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  std::optional<std::string> catalog;
+  std::optional<std::string> schema;
+  std::optional<std::string> table;
+  if (!read_wide_argument(stmt, catalog_name, name_length1, catalog,
+                          "SQLPrimaryKeysW") ||
+      !read_wide_argument(stmt, schema_name, name_length2, schema,
+                          "SQLPrimaryKeysW") ||
+      !read_wide_argument(stmt, table_name, name_length3, table,
+                          "SQLPrimaryKeysW")) {
+    return SQL_ERROR;
+  }
+  if (!table) {
+    stmt->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                    "SQLPrimaryKeysW requires a table name");
+    return SQL_ERROR;
+  }
+  return stmt->primary_keys(catalog, schema, *table);
+}
+
+SQLRETURN SQLForeignKeysW(
+    SQLHSTMT statement_handle, SQLWCHAR* pk_catalog_name,
+    SQLSMALLINT name_length1, SQLWCHAR* pk_schema_name,
+    SQLSMALLINT name_length2, SQLWCHAR* pk_table_name,
+    SQLSMALLINT name_length3, SQLWCHAR* fk_catalog_name,
+    SQLSMALLINT name_length4, SQLWCHAR* fk_schema_name,
+    SQLSMALLINT name_length5, SQLWCHAR* fk_table_name,
+    SQLSMALLINT name_length6) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  std::optional<std::string> pk_catalog;
+  std::optional<std::string> pk_schema;
+  std::optional<std::string> pk_table;
+  std::optional<std::string> fk_catalog;
+  std::optional<std::string> fk_schema;
+  std::optional<std::string> fk_table;
+  if (!read_wide_argument(stmt, pk_catalog_name, name_length1, pk_catalog,
+                          "SQLForeignKeysW") ||
+      !read_wide_argument(stmt, pk_schema_name, name_length2, pk_schema,
+                          "SQLForeignKeysW") ||
+      !read_wide_argument(stmt, pk_table_name, name_length3, pk_table,
+                          "SQLForeignKeysW") ||
+      !read_wide_argument(stmt, fk_catalog_name, name_length4, fk_catalog,
+                          "SQLForeignKeysW") ||
+      !read_wide_argument(stmt, fk_schema_name, name_length5, fk_schema,
+                          "SQLForeignKeysW") ||
+      !read_wide_argument(stmt, fk_table_name, name_length6, fk_table,
+                          "SQLForeignKeysW")) {
+    return SQL_ERROR;
+  }
+  if (!pk_table && !fk_table) {
+    stmt->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                    "SQLForeignKeysW requires a primary or foreign table");
+    return SQL_ERROR;
+  }
+  return stmt->foreign_keys(pk_catalog, pk_schema, pk_table, fk_catalog,
+                            fk_schema, fk_table);
+}
+
+SQLRETURN SQLStatisticsW(
+    SQLHSTMT statement_handle, SQLWCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLWCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLWCHAR* table_name,
+    SQLSMALLINT name_length3, SQLUSMALLINT unique,
+    SQLUSMALLINT reserved) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  std::optional<std::string> catalog;
+  std::optional<std::string> schema;
+  std::optional<std::string> table;
+  if (!read_wide_argument(stmt, catalog_name, name_length1, catalog,
+                          "SQLStatisticsW") ||
+      !read_wide_argument(stmt, schema_name, name_length2, schema,
+                          "SQLStatisticsW") ||
+      !read_wide_argument(stmt, table_name, name_length3, table,
+                          "SQLStatisticsW")) {
+    return SQL_ERROR;
+  }
+  if (!table) {
+    stmt->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                    "SQLStatisticsW requires a table name");
+    return SQL_ERROR;
+  }
+  if (unique != SQL_INDEX_UNIQUE && unique != SQL_INDEX_ALL) {
+    stmt->set_error(SQLSTATE_INVALID_OPTION_VALUE,
+                    "Invalid SQLStatisticsW uniqueness option");
+    return SQL_ERROR;
+  }
+  if (reserved != SQL_QUICK && reserved != SQL_ENSURE) {
+    stmt->set_error(SQLSTATE_INVALID_OPTION_VALUE,
+                    "Invalid SQLStatisticsW accuracy option");
+    return SQL_ERROR;
+  }
+  return stmt->statistics(catalog, schema, *table,
+                          unique == SQL_INDEX_UNIQUE);
+}
+
+SQLRETURN SQLProceduresW(
+    SQLHSTMT statement_handle, SQLWCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLWCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLWCHAR* procedure_name,
+    SQLSMALLINT name_length3) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  std::optional<std::string> catalog;
+  std::optional<std::string> schema;
+  std::optional<std::string> procedure;
+  if (!read_wide_argument(stmt, catalog_name, name_length1, catalog,
+                          "SQLProceduresW") ||
+      !read_wide_argument(stmt, schema_name, name_length2, schema,
+                          "SQLProceduresW") ||
+      !read_wide_argument(stmt, procedure_name, name_length3, procedure,
+                          "SQLProceduresW")) {
+    return SQL_ERROR;
+  }
+  return stmt->procedures(catalog, schema, procedure);
+}
+
+SQLRETURN SQLProcedureColumnsW(
+    SQLHSTMT statement_handle, SQLWCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLWCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLWCHAR* procedure_name,
+    SQLSMALLINT name_length3, SQLWCHAR* column_name,
+    SQLSMALLINT name_length4) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  std::optional<std::string> catalog;
+  std::optional<std::string> schema;
+  std::optional<std::string> procedure;
+  std::optional<std::string> column;
+  if (!read_wide_argument(stmt, catalog_name, name_length1, catalog,
+                          "SQLProcedureColumnsW") ||
+      !read_wide_argument(stmt, schema_name, name_length2, schema,
+                          "SQLProcedureColumnsW") ||
+      !read_wide_argument(stmt, procedure_name, name_length3, procedure,
+                          "SQLProcedureColumnsW") ||
+      !read_wide_argument(stmt, column_name, name_length4, column,
+                          "SQLProcedureColumnsW")) {
+    return SQL_ERROR;
+  }
+  return stmt->procedure_columns(catalog, schema, procedure, column);
+}
+
+SQLRETURN SQLSpecialColumnsW(
+    SQLHSTMT statement_handle, SQLUSMALLINT identifier_type,
+    SQLWCHAR* catalog_name, SQLSMALLINT name_length1,
+    SQLWCHAR* schema_name, SQLSMALLINT name_length2,
+    SQLWCHAR* table_name, SQLSMALLINT name_length3,
+    SQLUSMALLINT scope, SQLUSMALLINT nullable) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  std::optional<std::string> catalog;
+  std::optional<std::string> schema;
+  std::optional<std::string> table;
+  if (!read_wide_argument(stmt, catalog_name, name_length1, catalog,
+                          "SQLSpecialColumnsW") ||
+      !read_wide_argument(stmt, schema_name, name_length2, schema,
+                          "SQLSpecialColumnsW") ||
+      !read_wide_argument(stmt, table_name, name_length3, table,
+                          "SQLSpecialColumnsW")) {
+    return SQL_ERROR;
+  }
+  if (!table) {
+    stmt->set_error(SQLSTATE_INVALID_NULL_POINTER,
+                    "SQLSpecialColumnsW requires a table name");
+    return SQL_ERROR;
+  }
+  if (identifier_type != SQL_BEST_ROWID && identifier_type != SQL_ROWVER) {
+    stmt->set_error(SQLSTATE_COLUMN_TYPE_OUT_OF_RANGE,
+                    "Invalid SQLSpecialColumnsW identifier type");
+    return SQL_ERROR;
+  }
+  if (scope != SQL_SCOPE_CURROW && scope != SQL_SCOPE_TRANSACTION &&
+      scope != SQL_SCOPE_SESSION) {
+    stmt->set_error(SQLSTATE_SCOPE_OUT_OF_RANGE,
+                    "Invalid SQLSpecialColumnsW scope");
+    return SQL_ERROR;
+  }
+  if (nullable != SQL_NO_NULLS && nullable != SQL_NULLABLE) {
+    stmt->set_error(SQLSTATE_NULLABLE_TYPE_OUT_OF_RANGE,
+                    "Invalid SQLSpecialColumnsW nullable option");
+    return SQL_ERROR;
+  }
+  return stmt->special_columns(identifier_type, catalog, schema, *table,
+                               nullable == SQL_NO_NULLS);
+}
+
+SQLRETURN SQLTablesW(
+    SQLHSTMT statement_handle, SQLWCHAR* catalog_name,
+    SQLSMALLINT name_length1, SQLWCHAR* schema_name,
+    SQLSMALLINT name_length2, SQLWCHAR* table_name,
+    SQLSMALLINT name_length3, SQLWCHAR* table_type,
+    SQLSMALLINT name_length4) {
+  auto* stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  std::optional<std::string> catalog;
+  std::optional<std::string> schema;
+  std::optional<std::string> table;
+  std::optional<std::string> type;
+  if (!read_wide_argument(stmt, catalog_name, name_length1, catalog,
+                          "SQLTablesW") ||
+      !read_wide_argument(stmt, schema_name, name_length2, schema,
+                          "SQLTablesW") ||
+      !read_wide_argument(stmt, table_name, name_length3, table,
+                          "SQLTablesW") ||
+      !read_wide_argument(stmt, table_type, name_length4, type,
+                          "SQLTablesW")) {
     return SQL_ERROR;
   }
   return stmt->tables(catalog, schema, table, type);

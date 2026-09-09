@@ -331,6 +331,66 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  auto wide_schema_pattern = wide_ascii("information_schema");
+  auto wide_table_pattern = wide_ascii("tables");
+  auto wide_table_type = wide_ascii("VIEW");
+  auto wide_column_pattern = wide_ascii("table_name");
+  auto wide_primary_key_table = wide_ascii("odbcpp_dm_primary_key");
+  auto wide_foreign_key_table = wide_ascii("odbcpp_dm_foreign_key");
+  auto wide_catalog_function = wide_ascii("odbcpp_dm_catalog_function");
+  auto wide_catalog_parameter = wide_ascii("value");
+  if (!succeeded(SQLCloseCursor(statement)) ||
+      !succeeded(SQLTablesW(
+          statement, nullptr, 0, wide_schema_pattern.data(), SQL_NTS,
+          wide_table_pattern.data(), SQL_NTS, wide_table_type.data(),
+          SQL_NTS)) ||
+      !succeeded(SQLFetch(statement)) ||
+      !succeeded(SQLCloseCursor(statement)) ||
+      !succeeded(SQLColumnsW(
+          statement, nullptr, 0, wide_schema_pattern.data(), SQL_NTS,
+          wide_table_pattern.data(), SQL_NTS, wide_column_pattern.data(),
+          SQL_NTS)) ||
+      !succeeded(SQLFetch(statement)) ||
+      !succeeded(SQLCloseCursor(statement)) ||
+      !succeeded(SQLPrimaryKeysW(
+          statement, nullptr, 0, nullptr, 0,
+          wide_primary_key_table.data(), SQL_NTS)) ||
+      !succeeded(SQLFetch(statement)) ||
+      !succeeded(SQLCloseCursor(statement)) ||
+      !succeeded(SQLForeignKeysW(
+          statement, nullptr, 0, nullptr, 0, nullptr, 0,
+          nullptr, 0, nullptr, 0, wide_foreign_key_table.data(), SQL_NTS)) ||
+      !succeeded(SQLFetch(statement)) ||
+      !succeeded(SQLCloseCursor(statement)) ||
+      !succeeded(SQLStatisticsW(
+          statement, nullptr, 0, nullptr, 0,
+          wide_primary_key_table.data(), SQL_NTS, SQL_INDEX_UNIQUE,
+          SQL_QUICK)) ||
+      !succeeded(SQLFetch(statement)) ||
+      !succeeded(SQLCloseCursor(statement)) ||
+      !succeeded(SQLProceduresW(
+          statement, nullptr, 0, nullptr, 0,
+          wide_catalog_function.data(), SQL_NTS)) ||
+      !succeeded(SQLFetch(statement)) ||
+      !succeeded(SQLCloseCursor(statement)) ||
+      !succeeded(SQLProcedureColumnsW(
+          statement, nullptr, 0, nullptr, 0,
+          wide_catalog_function.data(), SQL_NTS,
+          wide_catalog_parameter.data(), SQL_NTS)) ||
+      !succeeded(SQLFetch(statement)) ||
+      !succeeded(SQLCloseCursor(statement)) ||
+      !succeeded(SQLSpecialColumnsW(
+          statement, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+          wide_primary_key_table.data(), SQL_NTS,
+          SQL_SCOPE_SESSION, SQL_NO_NULLS)) ||
+      !succeeded(SQLFetch(statement))) {
+    print_diagnostic(SQL_HANDLE_STMT, statement);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
   if (SQLMoreResults(statement) != SQL_NO_DATA) {
     print_diagnostic(SQL_HANDLE_STMT, statement);
     SQLFreeHandle(SQL_HANDLE_STMT, statement);

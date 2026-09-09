@@ -143,6 +143,64 @@ TEST_F(MetadataIntegrationTest, ExecutesAndPreparesUnicodeSql) {
     EXPECT_EQ(prepared_expected, *converted_prepared);
 }
 
+TEST_F(MetadataIntegrationTest, FindsUnicodeCatalogIdentifiers) {
+    const std::string table_name =
+        "odbcpp\xe4\xb8\x96\xe7\x95\x8c" "table";
+    const std::string column_name =
+        "gr\xc3\xbc\xc3\x9f" "ecolumn";
+    auto create_sql = rs::odbc::utf8_to_wide(
+        "CREATE TEMP TABLE \"odbcpp\xe4\xb8\x96\xe7\x95\x8c"
+        "table\" (\"gr\xc3\xbc\xc3\x9f" "ecolumn\" text)");
+    ASSERT_TRUE(create_sql.has_value());
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLExecDirectW(hstmt, create_sql->data(),
+                             static_cast<SQLINTEGER>(create_sql->size())));
+
+    auto wide_table = rs::odbc::utf8_to_wide(table_name);
+    ASSERT_TRUE(wide_table.has_value());
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLTablesW(hstmt, nullptr, 0, nullptr, 0,
+                         wide_table->data(),
+                         static_cast<SQLSMALLINT>(wide_table->size()),
+                         nullptr, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLWCHAR returned_table[128]{};
+    SQLLEN returned_table_bytes = 0;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetData(hstmt, 3, SQL_C_WCHAR, returned_table,
+                         sizeof(returned_table), &returned_table_bytes));
+    const auto converted_table = rs::odbc::wide_to_utf8(
+        std::span<const SQLWCHAR>(
+            returned_table,
+            static_cast<std::size_t>(returned_table_bytes) /
+                sizeof(SQLWCHAR)));
+    ASSERT_TRUE(converted_table.has_value());
+    EXPECT_EQ(table_name, *converted_table);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    auto wide_column = rs::odbc::utf8_to_wide(column_name);
+    ASSERT_TRUE(wide_column.has_value());
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLColumnsW(hstmt, nullptr, 0, nullptr, 0,
+                          wide_table->data(),
+                          static_cast<SQLSMALLINT>(wide_table->size()),
+                          wide_column->data(),
+                          static_cast<SQLSMALLINT>(wide_column->size())));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLWCHAR returned_column[128]{};
+    SQLLEN returned_column_bytes = 0;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetData(hstmt, 4, SQL_C_WCHAR, returned_column,
+                         sizeof(returned_column), &returned_column_bytes));
+    const auto converted_column = rs::odbc::wide_to_utf8(
+        std::span<const SQLWCHAR>(
+            returned_column,
+            static_cast<std::size_t>(returned_column_bytes) /
+                sizeof(SQLWCHAR)));
+    ASSERT_TRUE(converted_column.has_value());
+    EXPECT_EQ(column_name, *converted_column);
+}
+
 TEST_F(MetadataIntegrationTest, MultipleColumns) {
     // Execute query with different data types
     SQLRETURN ret = SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 'text', 123, NOW(), true", SQL_NTS);
