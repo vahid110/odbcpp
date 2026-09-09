@@ -524,6 +524,9 @@ TEST_F(AttributeApisTest, ReportsForwardOnlyStatementDefaults) {
       {SQL_ATTR_RETRIEVE_DATA, SQL_RD_ON},
       {SQL_ATTR_USE_BOOKMARKS, SQL_UB_OFF},
       {SQL_ATTR_ASYNC_ENABLE, SQL_ASYNC_ENABLE_OFF},
+      {SQL_ATTR_PARAMSET_SIZE, 1},
+      {SQL_ATTR_PARAM_BIND_TYPE, SQL_PARAM_BIND_BY_COLUMN},
+      {SQL_ATTR_METADATA_ID, SQL_FALSE},
   };
   for (const auto& expectation : expectations) {
     SQLULEN value = 99;
@@ -542,6 +545,65 @@ TEST_F(AttributeApisTest, ReportsForwardOnlyStatementDefaults) {
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_ROW_ARRAY_SIZE, integer_value(2), 0));
   EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_ROW_ARRAY_SIZE, integer_value(0), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_PARAMSET_SIZE, integer_value(2), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_PARAMSET_SIZE, integer_value(0), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_METADATA_ID, integer_value(SQL_TRUE), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+}
+
+TEST_F(AttributeApisTest, StoresSingleRowAndParameterStatusPointers) {
+  SQLUSMALLINT row_status = 99;
+  SQLULEN rows_fetched = 99;
+  SQLUSMALLINT param_status = 99;
+  SQLULEN params_processed = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_ROW_STATUS_PTR, &row_status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_ROWS_FETCHED_PTR, &rows_fetched, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_PARAM_STATUS_PTR, &param_status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_PARAMS_PROCESSED_PTR, &params_processed, 0));
+
+  SQLUSMALLINT* reported_row_status = nullptr;
+  SQLULEN* reported_rows_fetched = nullptr;
+  SQLUSMALLINT* reported_param_status = nullptr;
+  SQLULEN* reported_params_processed = nullptr;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_ROW_STATUS_PTR, &reported_row_status,
+      sizeof(reported_row_status), nullptr));
+  EXPECT_EQ(&row_status, reported_row_status);
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_ROWS_FETCHED_PTR, &reported_rows_fetched,
+      sizeof(reported_rows_fetched), nullptr));
+  EXPECT_EQ(&rows_fetched, reported_rows_fetched);
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_PARAM_STATUS_PTR, &reported_param_status,
+      sizeof(reported_param_status), nullptr));
+  EXPECT_EQ(&param_status, reported_param_status);
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_PARAMS_PROCESSED_PTR, &reported_params_processed,
+      sizeof(reported_params_processed), nullptr));
+  EXPECT_EQ(&params_processed, reported_params_processed);
+
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(statement_));
+  EXPECT_EQ(0u, rows_fetched);
+  EXPECT_EQ(SQL_ROW_NOROW, row_status);
+
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_ROW_STATUS_PTR, nullptr, 0));
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_ROW_STATUS_PTR, &reported_row_status,
+      sizeof(reported_row_status), nullptr));
+  EXPECT_EQ(nullptr, reported_row_status);
 }
 
 TEST_F(AttributeApisTest, StoresMaximumRowsAndFinishesResultSequence) {

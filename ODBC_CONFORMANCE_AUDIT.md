@@ -55,8 +55,8 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLDescribeCol` | A/W | Partial | unit, integration | Buffer boundaries, bookmark column, wide edge cases |
 | `SQLColAttribute` | A/W | Partial | integration | Complete field identifiers and numeric/string destination rules |
 | `SQLDescribeParam` | A | Partial | unit internals, integration | Availability after prepare and complete type metadata |
-| `SQLSetStmtAttr` | A/W | Partial | unit, integration | Most non-default values intentionally unsupported; pointer attributes absent |
-| `SQLGetStmtAttr` | A/W | Partial | unit | Pointer/status attributes, row number, wide entry tests |
+| `SQLSetStmtAttr` | A/W | Partial | unit, integration | Single-row/status and single-parameter-set pointers work; arrays, offsets, operations, and descriptor attachment remain |
+| `SQLGetStmtAttr` | A/W | Partial | unit, integration | Common defaults, descriptor handles, and status pointers covered; row number and remaining attributes need classification |
 | `SQLCloseCursor` | A | Partial | unit, integration, DM | Complete statement-state matrix |
 | `SQLFreeStmt` | A | Partial | unit, DM | All options across statement states and descriptor side effects |
 | `SQLGetTypeInfo` | A/W | Partial | integration, DM | All supported types, type filters, wide entry test |
@@ -109,14 +109,18 @@ Manager-owned tracing or cursor-library attributes.
 
 ### Statement
 
-Stored: query timeout and maximum rows. Default-only behavior is reported for
-forward-only cursor type, read-only concurrency, single-row arrays,
-column-wise binding, retrieve-data on, bookmarks off, and ODBC async off.
+Stored: query timeout, maximum rows, single-row status and rows-fetched
+pointers, and single-parameter-set status and processed-count pointers.
+Default-only behavior is reported for forward-only cursor type, read-only
+concurrency, single-row and single-parameter arrays, column-wise binding,
+retrieve-data on, bookmarks off, metadata-ID false, and ODBC async off. Fetch
+and prepared execution update status outputs on success, truncation, no-row,
+local validation errors, and PostgreSQL errors.
 
-Not yet implemented: row arrays and row status, rows-fetched pointers, row-wise
-binding, parameter arrays and status, explicit APD/ARD attachment, maximum
-length, metadata ID, no-scan behavior, row number, and genuine asynchronous
-ODBC function completion.
+Not yet implemented: row or parameter arrays larger than one, bind offsets,
+row-wise binding, operation arrays, explicit APD/ARD attachment, maximum
+length, metadata-ID true, no-scan behavior, row number, and genuine
+asynchronous ODBC function completion.
 
 ### Descriptors
 
@@ -139,8 +143,8 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
 
 ## Maintainability snapshot
 
-- `odbc_api.cpp` is 2,529 lines and contains all 73 exported wrappers;
-  `odbc_handles.cpp` is 2,545 lines and combines connection, statement,
+- `odbc_api.cpp` is 2,527 lines and contains all 73 exported wrappers;
+  `odbc_handles.cpp` is 2,640 lines and combines connection, statement,
   descriptor, conversion, metadata, and registry responsibilities.
 - The callback/future methods in `AsyncDatabaseConnection` are experimental
   scaffolding, are not used by the ODBC driver's production connection path,
@@ -173,6 +177,12 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
   the ODBC 2 array and ODBC 3 bitmap with the supported-function set, checks
   individual queries, rejects invalid handles and null outputs, and preserves
   an explicit false result for unknown function identifiers.
+- Audit batch 13 implements the useful scalar subset of rowset and parameter
+  array reporting without claiming multirow execution. It stores and returns
+  the four status/count pointers, updates them for successful, truncated,
+  exhausted, locally invalid, and server-rejected operations, distinguishes
+  invalid zero sizes from unsupported larger arrays, and rejects parameter
+  ordinals beyond the prepared marker count before protocol I/O.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

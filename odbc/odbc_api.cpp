@@ -875,8 +875,7 @@ static SQLRETURN SQLSetStmtAttr_impl(SQLHSTMT statement_handle, SQLINTEGER attri
                          SQLPOINTER value, SQLINTEGER) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
-  return stmt->set_attribute(
-      attribute, static_cast<SQLULEN>(reinterpret_cast<std::uintptr_t>(value)));
+  return stmt->set_attribute(attribute, value);
 }
 
 static SQLRETURN SQLSetStmtAttrW_impl(SQLHSTMT statement_handle, SQLINTEGER attribute,
@@ -894,8 +893,7 @@ static SQLRETURN SQLGetStmtAttr_impl(SQLHSTMT statement_handle, SQLINTEGER attri
                     "Null statement attribute output pointer");
     return SQL_ERROR;
   }
-  const auto result = stmt->get_attribute(
-      attribute, static_cast<SQLULEN*>(value));
+  const auto result = stmt->get_attribute(attribute, value);
   if (result == SQL_SUCCESS && string_length) {
     *string_length = static_cast<SQLINTEGER>(sizeof(SQLULEN));
   }

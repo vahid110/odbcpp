@@ -317,8 +317,8 @@ public:
   SQLRETURN more_results();
   SQLRETURN get_data(SQLUSMALLINT col, SQLSMALLINT target_type, 
                      void* buffer, SQLLEN buffer_length, SQLLEN* indicator);
-  SQLRETURN set_attribute(SQLINTEGER attribute, SQLULEN value);
-  SQLRETURN get_attribute(SQLINTEGER attribute, SQLULEN* value);
+  SQLRETURN set_attribute(SQLINTEGER attribute, SQLPOINTER value);
+  SQLRETURN get_attribute(SQLINTEGER attribute, SQLPOINTER value);
   SQLRETURN close_cursor(bool report_missing_cursor);
   void unbind_columns();
   void reset_parameters();
@@ -406,6 +406,10 @@ private:
   SQLLEN affected_rows_ = 0;
   SQLULEN query_timeout_seconds_ = 0;
   SQLULEN max_rows_ = 0;
+  SQLUSMALLINT* row_status_ptr_ = nullptr;
+  SQLULEN* rows_fetched_ptr_ = nullptr;
+  SQLUSMALLINT* param_status_ptr_ = nullptr;
+  SQLULEN* params_processed_ptr_ = nullptr;
   SQLHDESC app_row_descriptor_{SQL_NULL_HDESC};
   SQLHDESC app_param_descriptor_{SQL_NULL_HDESC};
   SQLHDESC imp_row_descriptor_{SQL_NULL_HDESC};
@@ -413,6 +417,7 @@ private:
 
   void apply_query_result(rs::core::database::QueryResult result,
                           bool include_parameter_metadata);
+  SQLRETURN complete_parameter_set(SQLRETURN result);
   SQLHDESC create_implicit_descriptor();
 };
 

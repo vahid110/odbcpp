@@ -1007,35 +1007,68 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
   }
 }
 
-SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLULEN value) {
+SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
+  const auto numeric = static_cast<SQLULEN>(
+      reinterpret_cast<std::uintptr_t>(value));
   switch (attribute) {
     case SQL_ATTR_QUERY_TIMEOUT:
-      query_timeout_seconds_ = value;
+      query_timeout_seconds_ = numeric;
       return SQL_SUCCESS;
     case SQL_ATTR_MAX_ROWS:
-      max_rows_ = value;
+      max_rows_ = numeric;
       return SQL_SUCCESS;
     case SQL_ATTR_CURSOR_TYPE:
-      if (value == SQL_CURSOR_FORWARD_ONLY) return SQL_SUCCESS;
+      if (numeric == SQL_CURSOR_FORWARD_ONLY) return SQL_SUCCESS;
       break;
     case SQL_ATTR_CONCURRENCY:
-      if (value == SQL_CONCUR_READ_ONLY) return SQL_SUCCESS;
+      if (numeric == SQL_CONCUR_READ_ONLY) return SQL_SUCCESS;
       break;
     case SQL_ATTR_ROW_ARRAY_SIZE:
-      if (value == 1) return SQL_SUCCESS;
+      if (numeric == 0) {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                  "Row array size must be positive");
+        return SQL_ERROR;
+      }
+      if (numeric == 1) return SQL_SUCCESS;
       break;
     case SQL_ATTR_ROW_BIND_TYPE:
-      if (value == SQL_BIND_BY_COLUMN) return SQL_SUCCESS;
+      if (numeric == SQL_BIND_BY_COLUMN) return SQL_SUCCESS;
       break;
     case SQL_ATTR_RETRIEVE_DATA:
-      if (value == SQL_RD_ON) return SQL_SUCCESS;
+      if (numeric == SQL_RD_ON) return SQL_SUCCESS;
       break;
     case SQL_ATTR_USE_BOOKMARKS:
-      if (value == SQL_UB_OFF) return SQL_SUCCESS;
+      if (numeric == SQL_UB_OFF) return SQL_SUCCESS;
       break;
     case SQL_ATTR_ASYNC_ENABLE:
-      if (value == SQL_ASYNC_ENABLE_OFF) return SQL_SUCCESS;
+      if (numeric == SQL_ASYNC_ENABLE_OFF) return SQL_SUCCESS;
       break;
+    case SQL_ATTR_PARAMSET_SIZE:
+      if (numeric == 0) {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                  "Parameter-set size must be positive");
+        return SQL_ERROR;
+      }
+      if (numeric == 1) return SQL_SUCCESS;
+      break;
+    case SQL_ATTR_PARAM_BIND_TYPE:
+      if (numeric == SQL_PARAM_BIND_BY_COLUMN) return SQL_SUCCESS;
+      break;
+    case SQL_ATTR_METADATA_ID:
+      if (numeric == SQL_FALSE) return SQL_SUCCESS;
+      break;
+    case SQL_ATTR_ROW_STATUS_PTR:
+      row_status_ptr_ = static_cast<SQLUSMALLINT*>(value);
+      return SQL_SUCCESS;
+    case SQL_ATTR_ROWS_FETCHED_PTR:
+      rows_fetched_ptr_ = static_cast<SQLULEN*>(value);
+      return SQL_SUCCESS;
+    case SQL_ATTR_PARAM_STATUS_PTR:
+      param_status_ptr_ = static_cast<SQLUSMALLINT*>(value);
+      return SQL_SUCCESS;
+    case SQL_ATTR_PARAMS_PROCESSED_PTR:
+      params_processed_ptr_ = static_cast<SQLULEN*>(value);
+      return SQL_SUCCESS;
     default:
       set_error(SQLSTATE_INVALID_ATTRIBUTE,
                 "Unsupported statement attribute");
@@ -1046,29 +1079,52 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLULEN value) {
   return SQL_ERROR;
 }
 
-SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLULEN* value) {
+SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
   switch (attribute) {
     case SQL_ATTR_APP_ROW_DESC:
-      *value = reinterpret_cast<SQLULEN>(app_row_descriptor_);
+      *static_cast<SQLHDESC*>(value) = app_row_descriptor_;
       break;
     case SQL_ATTR_APP_PARAM_DESC:
-      *value = reinterpret_cast<SQLULEN>(app_param_descriptor_);
+      *static_cast<SQLHDESC*>(value) = app_param_descriptor_;
       break;
     case SQL_ATTR_IMP_ROW_DESC:
-      *value = reinterpret_cast<SQLULEN>(imp_row_descriptor_);
+      *static_cast<SQLHDESC*>(value) = imp_row_descriptor_;
       break;
     case SQL_ATTR_IMP_PARAM_DESC:
-      *value = reinterpret_cast<SQLULEN>(imp_param_descriptor_);
+      *static_cast<SQLHDESC*>(value) = imp_param_descriptor_;
       break;
-    case SQL_ATTR_QUERY_TIMEOUT: *value = query_timeout_seconds_; break;
-    case SQL_ATTR_MAX_ROWS: *value = max_rows_; break;
-    case SQL_ATTR_CURSOR_TYPE: *value = SQL_CURSOR_FORWARD_ONLY; break;
-    case SQL_ATTR_CONCURRENCY: *value = SQL_CONCUR_READ_ONLY; break;
-    case SQL_ATTR_ROW_ARRAY_SIZE: *value = 1; break;
-    case SQL_ATTR_ROW_BIND_TYPE: *value = SQL_BIND_BY_COLUMN; break;
-    case SQL_ATTR_RETRIEVE_DATA: *value = SQL_RD_ON; break;
-    case SQL_ATTR_USE_BOOKMARKS: *value = SQL_UB_OFF; break;
-    case SQL_ATTR_ASYNC_ENABLE: *value = SQL_ASYNC_ENABLE_OFF; break;
+    case SQL_ATTR_QUERY_TIMEOUT:
+      *static_cast<SQLULEN*>(value) = query_timeout_seconds_; break;
+    case SQL_ATTR_MAX_ROWS:
+      *static_cast<SQLULEN*>(value) = max_rows_; break;
+    case SQL_ATTR_CURSOR_TYPE:
+      *static_cast<SQLULEN*>(value) = SQL_CURSOR_FORWARD_ONLY; break;
+    case SQL_ATTR_CONCURRENCY:
+      *static_cast<SQLULEN*>(value) = SQL_CONCUR_READ_ONLY; break;
+    case SQL_ATTR_ROW_ARRAY_SIZE:
+      *static_cast<SQLULEN*>(value) = 1; break;
+    case SQL_ATTR_ROW_BIND_TYPE:
+      *static_cast<SQLULEN*>(value) = SQL_BIND_BY_COLUMN; break;
+    case SQL_ATTR_RETRIEVE_DATA:
+      *static_cast<SQLULEN*>(value) = SQL_RD_ON; break;
+    case SQL_ATTR_USE_BOOKMARKS:
+      *static_cast<SQLULEN*>(value) = SQL_UB_OFF; break;
+    case SQL_ATTR_ASYNC_ENABLE:
+      *static_cast<SQLULEN*>(value) = SQL_ASYNC_ENABLE_OFF; break;
+    case SQL_ATTR_PARAMSET_SIZE:
+      *static_cast<SQLULEN*>(value) = 1; break;
+    case SQL_ATTR_PARAM_BIND_TYPE:
+      *static_cast<SQLULEN*>(value) = SQL_PARAM_BIND_BY_COLUMN; break;
+    case SQL_ATTR_METADATA_ID:
+      *static_cast<SQLULEN*>(value) = SQL_FALSE; break;
+    case SQL_ATTR_ROW_STATUS_PTR:
+      *static_cast<SQLUSMALLINT**>(value) = row_status_ptr_; break;
+    case SQL_ATTR_ROWS_FETCHED_PTR:
+      *static_cast<SQLULEN**>(value) = rows_fetched_ptr_; break;
+    case SQL_ATTR_PARAM_STATUS_PTR:
+      *static_cast<SQLUSMALLINT**>(value) = param_status_ptr_; break;
+    case SQL_ATTR_PARAMS_PROCESSED_PTR:
+      *static_cast<SQLULEN**>(value) = params_processed_ptr_; break;
     default:
       set_error(SQLSTATE_INVALID_ATTRIBUTE, "Unsupported statement attribute");
       return SQL_ERROR;
@@ -1101,10 +1157,13 @@ void ODBCStatement::reset_parameters() {
 
 SQLRETURN ODBCStatement::fetch() {
   if (!executed_ || current_row_ >= result_rows_.size()) {
+    if (rows_fetched_ptr_) *rows_fetched_ptr_ = 0;
+    if (row_status_ptr_) row_status_ptr_[0] = SQL_ROW_NOROW;
     return SQL_NO_DATA;
   }
   
   current_row_++;
+  if (rows_fetched_ptr_) *rows_fetched_ptr_ = 1;
   get_data_offsets_.assign(result_rows_[current_row_ - 1].size(), 0);
   SQLRETURN fetch_result = SQL_SUCCESS;
   
@@ -1119,6 +1178,7 @@ SQLRETURN ODBCStatement::fetch() {
         if (!binding.strlen_or_indicator) {
           set_error(SQLSTATE_INDICATOR_VARIABLE_REQUIRED,
                     "NULL column requires an indicator variable");
+          if (row_status_ptr_) row_status_ptr_[0] = SQL_ROW_ERROR;
           return SQL_ERROR;
         }
         *binding.strlen_or_indicator = SQL_NULL_DATA;
@@ -1132,6 +1192,7 @@ SQLRETURN ODBCStatement::fetch() {
       if (!ResultTypes::is_conversion_supported(sql_type, target_type)) {
         set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
                   "Unsupported result data type conversion");
+        if (row_status_ptr_) row_status_ptr_[0] = SQL_ROW_ERROR;
         return SQL_ERROR;
       }
       SQLRETURN conv_result = TextDataConverter::convert_data(
@@ -1141,6 +1202,7 @@ SQLRETURN ODBCStatement::fetch() {
       if (conv_result == SQL_ERROR) {
         set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
                   "Result value could not be converted to the requested C type");
+        if (row_status_ptr_) row_status_ptr_[0] = SQL_ROW_ERROR;
         return SQL_ERROR;
       }
       if (conv_result == SQL_SUCCESS_WITH_INFO) {
@@ -1151,6 +1213,10 @@ SQLRETURN ODBCStatement::fetch() {
     }
   }
 
+  if (row_status_ptr_) {
+    row_status_ptr_[0] = fetch_result == SQL_SUCCESS_WITH_INFO
+        ? SQL_ROW_SUCCESS_WITH_INFO : SQL_ROW_SUCCESS;
+  }
   return fetch_result;
 }
 
@@ -1376,6 +1442,21 @@ SQLRETURN ODBCStatement::num_params(SQLSMALLINT* parameter_count) {
   return SQL_SUCCESS;
 }
 
+SQLRETURN ODBCStatement::complete_parameter_set(SQLRETURN result) {
+  if (parameter_count_ == 0) return result;
+  if (params_processed_ptr_) *params_processed_ptr_ = 1;
+  if (param_status_ptr_) {
+    if (result == SQL_SUCCESS) {
+      param_status_ptr_[0] = SQL_PARAM_SUCCESS;
+    } else if (result == SQL_SUCCESS_WITH_INFO) {
+      param_status_ptr_[0] = SQL_PARAM_SUCCESS_WITH_INFO;
+    } else {
+      param_status_ptr_[0] = SQL_PARAM_ERROR;
+    }
+  }
+  return result;
+}
+
 SQLRETURN ODBCStatement::execute() {
   const auto started = std::chrono::steady_clock::now();
   const auto dynamic_function = classify_dynamic_function(prepared_sql_);
@@ -1396,6 +1477,10 @@ SQLRETURN ODBCStatement::execute() {
                                      {"kind", "prepared"}});
     return SQL_ERROR;
   }
+  if (parameter_count_ > 0) {
+    if (params_processed_ptr_) *params_processed_ptr_ = 0;
+    if (param_status_ptr_) param_status_ptr_[0] = SQL_PARAM_UNUSED;
+  }
   if (conn_->logs_queries()) {
     conn_->log(rs::core::logging::LogLevel::Debug, "query_text",
                "Executing prepared SQL",
@@ -1405,6 +1490,11 @@ SQLRETURN ODBCStatement::execute() {
   
   pending_results_.clear();
   try {
+    if (parameter_info_.size() != static_cast<std::size_t>(parameter_count_)) {
+      set_error(SQLSTATE_INVALID_PARAMETER_NUMBER,
+                "Not all statement parameters are bound");
+      return complete_parameter_set(SQL_ERROR);
+    }
     std::vector<rs::core::database::QueryParameter> param_values;
     param_values.reserve(parameter_info_.size());
     
@@ -1412,12 +1502,12 @@ SQLRETURN ODBCStatement::execute() {
       if (!param.bound) {
         set_error(SQLSTATE_INVALID_PARAMETER_NUMBER,
                   "Not all statement parameters are bound");
-        return SQL_ERROR;
+        return complete_parameter_set(SQL_ERROR);
       }
       if (param.input_output_type != SQL_PARAM_INPUT) {
         set_error(SQLSTATE_GENERAL_ERROR,
                   "Only input parameters are currently supported");
-        return SQL_ERROR;
+        return complete_parameter_set(SQL_ERROR);
       }
 
       rs::core::database::QueryParameter query_param;
@@ -1430,7 +1520,7 @@ SQLRETURN ODBCStatement::execute() {
       }
       if (!param.parameter_value) {
         set_error(SQLSTATE_GENERAL_ERROR, "Bound parameter has no value buffer");
-        return SQL_ERROR;
+        return complete_parameter_set(SQL_ERROR);
       }
 
       std::string value;
@@ -1445,7 +1535,7 @@ SQLRETURN ODBCStatement::execute() {
         } else {
           set_error(SQLSTATE_GENERAL_ERROR,
                     "Data-at-execution parameters are not supported yet");
-          return SQL_ERROR;
+          return complete_parameter_set(SQL_ERROR);
         }
       } else if (param.value_type == SQL_C_WCHAR) {
         const auto* text = static_cast<const SQLWCHAR*>(param.parameter_value);
@@ -1459,7 +1549,7 @@ SQLRETURN ODBCStatement::execute() {
                       std::numeric_limits<SQLINTEGER>::max())) {
             set_error(SQLSTATE_INVALID_STRING_LENGTH,
                       "Invalid wide-character parameter length");
-            return SQL_ERROR;
+            return complete_parameter_set(SQL_ERROR);
           }
           units = static_cast<SQLINTEGER>(length / sizeof(SQLWCHAR));
         }
@@ -1467,7 +1557,7 @@ SQLRETURN ODBCStatement::execute() {
         if (!converted) {
           set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
                     "Invalid wide-character parameter value");
-          return SQL_ERROR;
+          return complete_parameter_set(SQL_ERROR);
         }
         value = *converted;
       } else if (param.value_type == SQL_C_SLONG) {
@@ -1484,7 +1574,7 @@ SQLRETURN ODBCStatement::execute() {
         if (length < 0) {
           set_error(SQLSTATE_INVALID_STRING_LENGTH,
                     "Invalid binary parameter length");
-          return SQL_ERROR;
+          return complete_parameter_set(SQL_ERROR);
         }
         value = TextDataConverter::encode_binary(std::span<const std::byte>(
             static_cast<const std::byte*>(param.parameter_value),
@@ -1492,7 +1582,7 @@ SQLRETURN ODBCStatement::execute() {
       } else {
         set_error(SQLSTATE_GENERAL_ERROR,
                   "Unsupported C parameter type");
-        return SQL_ERROR;
+        return complete_parameter_set(SQL_ERROR);
       }
 
       query_param.value = std::move(value);
@@ -1513,7 +1603,7 @@ SQLRETURN ODBCStatement::execute() {
                  {{"sqlstate", get_sqlstate()}, {"kind", "prepared"},
                   {"duration_ms", elapsed_milliseconds(started)}});
       if (timeout) conn_->disconnect();
-      return SQL_ERROR;
+      return complete_parameter_set(SQL_ERROR);
     }
     auto result = conn_->get_db_connection()->execute_prepared(prepared_sql_, param_values, deadline);
     
@@ -1527,7 +1617,7 @@ SQLRETURN ODBCStatement::execute() {
                  {{"sqlstate", get_sqlstate()}, {"kind", "prepared"},
                   {"duration_ms", elapsed_milliseconds(started)}});
       if (timeout) conn_->disconnect();
-      return SQL_ERROR;
+      return complete_parameter_set(SQL_ERROR);
     }
 
     const auto row_count = result->rows.size();
@@ -1540,14 +1630,14 @@ SQLRETURN ODBCStatement::execute() {
                 {"rows", std::to_string(row_count)},
                 {"affected_rows", std::to_string(affected_rows)},
                 {"parameters", std::to_string(parameter_count_)}});
-    return SQL_SUCCESS;
+    return complete_parameter_set(SQL_SUCCESS);
     
   } catch (const std::exception& e) {
     set_error(SQLSTATE_GENERAL_ERROR, e.what());
     conn_->log(rs::core::logging::LogLevel::Error, "query_failed", e.what(),
                {{"sqlstate", get_sqlstate()}, {"kind", "prepared"},
                 {"duration_ms", elapsed_milliseconds(started)}});
-    return SQL_ERROR;
+    return complete_parameter_set(SQL_ERROR);
   }
 }
 
@@ -1557,6 +1647,11 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
                                        SQLLEN* strlen_or_indicator) {
   if (parameter_number < 1) {
     set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid parameter number");
+    return SQL_ERROR;
+  }
+  if (prepared_ && parameter_number > parameter_count_) {
+    set_error(SQLSTATE_INVALID_PARAMETER_NUMBER,
+              "Parameter number exceeds the prepared statement count");
     return SQL_ERROR;
   }
   

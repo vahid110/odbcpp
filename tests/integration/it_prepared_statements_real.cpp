@@ -43,7 +43,15 @@ TEST_F(PreparedStatementIntegrationTest, BinaryParameterRoundTripsAsBytea) {
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
         hstmt, 1, SQL_PARAM_INPUT, SQL_C_BINARY, SQL_VARBINARY, sizeof(input),
         0, input, sizeof(input), &input_length));
+    SQLUSMALLINT param_status = SQL_PARAM_UNUSED;
+    SQLULEN params_processed = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_PARAM_STATUS_PTR, &param_status, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &params_processed, 0));
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    EXPECT_EQ(1u, params_processed);
+    EXPECT_EQ(SQL_PARAM_SUCCESS, param_status);
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
     unsigned char output[sizeof(input)]{};
@@ -60,6 +68,34 @@ TEST_F(PreparedStatementIntegrationTest, ReportsPreparedParameterCount) {
     SQLSMALLINT parameter_count = 0;
     ASSERT_EQ(SQL_SUCCESS, SQLNumParams(hstmt, &parameter_count));
     EXPECT_EQ(3, parameter_count);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       MissingAndOutOfRangeParametersReportSetFailure) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT ?::integer", SQL_NTS));
+    SQLUSMALLINT param_status = SQL_PARAM_UNUSED;
+    SQLULEN params_processed = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_PARAM_STATUS_PTR, &param_status, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &params_processed, 0));
+
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    EXPECT_EQ(1u, params_processed);
+    EXPECT_EQ(SQL_PARAM_ERROR, param_status);
+    SQLCHAR sqlstate[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("07009", reinterpret_cast<char*>(sqlstate));
+
+    SQLINTEGER value = 1;
+    EXPECT_EQ(SQL_ERROR, SQLBindParameter(
+        hstmt, 2, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
+        0, 0, &value, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("07009", reinterpret_cast<char*>(sqlstate));
 }
 
 TEST_F(PreparedStatementIntegrationTest, AutocommitOffSupportsCommitAndRollback) {
@@ -329,7 +365,15 @@ TEST_F(PreparedStatementIntegrationTest, ErrorLeavesConnectionSynchronized) {
               SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
                                SQL_VARCHAR, 0, 0, (SQLPOINTER)invalid,
                                SQL_NTS, nullptr));
+    SQLUSMALLINT param_status = SQL_PARAM_UNUSED;
+    SQLULEN params_processed = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_PARAM_STATUS_PTR, &param_status, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &params_processed, 0));
     EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    EXPECT_EQ(1u, params_processed);
+    EXPECT_EQ(SQL_PARAM_ERROR, param_status);
 
     SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
     hstmt = nullptr;

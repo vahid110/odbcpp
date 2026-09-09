@@ -134,6 +134,12 @@ TEST_F(BindColIntegrationTest, GetDataReportsNullWithoutTouchingBuffer) {
 }
 
 TEST_F(BindColIntegrationTest, NullWithoutIndicatorReturns22002) {
+    SQLUSMALLINT row_status = SQL_ROW_SUCCESS;
+    SQLULEN rows_fetched = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_ROW_STATUS_PTR, &row_status, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_ROWS_FETCHED_PTR, &rows_fetched, 0));
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT NULL::text", SQL_NTS));
 
@@ -142,11 +148,43 @@ TEST_F(BindColIntegrationTest, NullWithoutIndicatorReturns22002) {
         hstmt, 1, SQL_C_CHAR, value, sizeof(value), nullptr));
     EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
     EXPECT_STREQ("unchanged", value);
+    EXPECT_EQ(1u, rows_fetched);
+    EXPECT_EQ(SQL_ROW_ERROR, row_status);
 
     SQLCHAR sqlstate[6]{};
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
         SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("22002", reinterpret_cast<char*>(sqlstate));
+}
+
+TEST_F(BindColIntegrationTest, ReportsSingleRowFetchStatus) {
+    SQLUSMALLINT row_status = SQL_ROW_NOROW;
+    SQLULEN rows_fetched = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_ROW_STATUS_PTR, &row_status, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_ROWS_FETCHED_PTR, &rows_fetched, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT value FROM (VALUES ('abcdef'::text), "
+                         "('xy'::text)) rows(value)", SQL_NTS));
+
+    char value[4]{};
+    SQLLEN length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(
+        hstmt, 1, SQL_C_CHAR, value, sizeof(value), &length));
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLFetch(hstmt));
+    EXPECT_EQ(1u, rows_fetched);
+    EXPECT_EQ(SQL_ROW_SUCCESS_WITH_INFO, row_status);
+    EXPECT_STREQ("abc", value);
+
+    EXPECT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(1u, rows_fetched);
+    EXPECT_EQ(SQL_ROW_SUCCESS, row_status);
+    EXPECT_STREQ("xy", value);
+
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    EXPECT_EQ(0u, rows_fetched);
+    EXPECT_EQ(SQL_ROW_NOROW, row_status);
 }
 
 TEST_F(BindColIntegrationTest, GetDataNullWithoutIndicatorReturns22002) {
