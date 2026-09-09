@@ -5,6 +5,7 @@
 #include "core/util/deadline.h"
 
 #include <cstdint>
+#include <string>
 
 namespace {
 
@@ -150,6 +151,62 @@ TEST_F(AttributeApisTest, ReportsTransactionCapabilities) {
   EXPECT_EQ(SQL_TXN_READ_UNCOMMITTED | SQL_TXN_READ_COMMITTED |
                 SQL_TXN_REPEATABLE_READ | SQL_TXN_SERIALIZABLE,
             integer_value);
+}
+
+TEST_F(AttributeApisTest, ReportsApplicationStartupCapabilities) {
+  const auto text_info = [&](SQLUSMALLINT type) {
+    SQLCHAR value[64]{};
+    SQLSMALLINT length = 0;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetInfo(
+        connection_, type, value, sizeof(value), &length));
+    return std::string(reinterpret_cast<char*>(value),
+                       static_cast<std::size_t>(length));
+  };
+  EXPECT_EQ("ODBCPP Driver", text_info(SQL_DRIVER_NAME));
+  EXPECT_EQ("01.00.0000", text_info(SQL_DRIVER_VER));
+  EXPECT_EQ("03.80", text_info(SQL_DRIVER_ODBC_VER));
+#ifdef ODBCPP_ENABLE_REDSHIFT
+  EXPECT_EQ("Amazon Redshift", text_info(SQL_DBMS_NAME));
+#else
+  EXPECT_EQ("PostgreSQL", text_info(SQL_DBMS_NAME));
+#endif
+  EXPECT_EQ("\"", text_info(SQL_IDENTIFIER_QUOTE_CHAR));
+  EXPECT_EQ("database", text_info(SQL_CATALOG_TERM));
+  EXPECT_EQ("schema", text_info(SQL_SCHEMA_TERM));
+  EXPECT_EQ("Y", text_info(SQL_CATALOG_NAME));
+
+  SQLUSMALLINT small_value = 0;
+  SQLSMALLINT length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(
+      connection_, SQL_MAX_IDENTIFIER_LEN, &small_value,
+      sizeof(small_value), &length));
+  EXPECT_EQ(63, small_value);
+  EXPECT_EQ(sizeof(SQLUSMALLINT), static_cast<std::size_t>(length));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(
+      connection_, SQL_IDENTIFIER_CASE, &small_value,
+      sizeof(small_value), nullptr));
+  EXPECT_EQ(SQL_IC_LOWER, small_value);
+
+  SQLUINTEGER capabilities = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(
+      connection_, SQL_SCROLL_OPTIONS, &capabilities,
+      sizeof(capabilities), nullptr));
+  EXPECT_EQ(SQL_SO_FORWARD_ONLY, capabilities);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(
+      connection_, SQL_GETDATA_EXTENSIONS, &capabilities,
+      sizeof(capabilities), nullptr));
+  EXPECT_EQ(SQL_GD_ANY_COLUMN | SQL_GD_ANY_ORDER, capabilities);
+}
+
+TEST_F(AttributeApisTest, ReportsInformationStringTruncation) {
+  SQLCHAR value[5]{};
+  SQLSMALLINT required = 0;
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLGetInfo(connection_, SQL_DRIVER_NAME, value, sizeof(value),
+                       &required));
+  EXPECT_STREQ("ODBC", reinterpret_cast<char*>(value));
+  EXPECT_EQ(13, required);
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
 TEST_F(AttributeApisTest, ReportsImplementedFunctions) {

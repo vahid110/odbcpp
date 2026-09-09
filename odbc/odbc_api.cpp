@@ -131,6 +131,66 @@ namespace {
     return true;
   }
 
+  std::optional<std::string_view> string_info_value(
+      SQLUSMALLINT info_type) {
+    switch (info_type) {
+      case SQL_DRIVER_NAME: return "ODBCPP Driver";
+      case SQL_DRIVER_VER: return "01.00.0000";
+      case SQL_DRIVER_ODBC_VER:
+      case SQL_ODBC_VER: return "03.80";
+      case SQL_DBMS_NAME:
+#ifdef ODBCPP_ENABLE_REDSHIFT
+        return "Amazon Redshift";
+#else
+        return "PostgreSQL";
+#endif
+      case SQL_IDENTIFIER_QUOTE_CHAR: return "\"";
+      case SQL_CATALOG_NAME_SEPARATOR: return ".";
+      case SQL_CATALOG_TERM: return "database";
+      case SQL_SCHEMA_TERM: return "schema";
+      case SQL_TABLE_TERM: return "table";
+      case SQL_PROCEDURE_TERM: return "procedure";
+      case SQL_SEARCH_PATTERN_ESCAPE: return "\\";
+      case SQL_CATALOG_NAME:
+      case SQL_COLUMN_ALIAS:
+      case SQL_ACCESSIBLE_TABLES:
+      case SQL_ACCESSIBLE_PROCEDURES:
+      case SQL_MULT_RESULT_SETS: return "Y";
+      case SQL_DATA_SOURCE_READ_ONLY:
+      case SQL_MULTIPLE_ACTIVE_TXN:
+      case SQL_NEED_LONG_DATA_LEN:
+      case SQL_ORDER_BY_COLUMNS_IN_SELECT: return "N";
+      default: return std::nullopt;
+    }
+  }
+
+  SQLRETURN write_narrow_output(
+      ODBCHandle* handle, std::string_view value, SQLCHAR* output,
+      SQLSMALLINT buffer_length, SQLSMALLINT* output_length,
+      std::string_view truncation_message) {
+    if (buffer_length < 0) {
+      handle->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                        "Invalid output buffer length");
+      return SQL_ERROR;
+    }
+    if (output_length) {
+      *output_length = static_cast<SQLSMALLINT>(std::min<std::size_t>(
+          value.size(), static_cast<std::size_t>(
+                            std::numeric_limits<SQLSMALLINT>::max())));
+    }
+    if (!output || buffer_length <= 0) return SQL_SUCCESS;
+    const auto copied = std::min<std::size_t>(
+        value.size(), static_cast<std::size_t>(buffer_length - 1));
+    std::memcpy(output, value.data(), copied);
+    output[copied] = 0;
+    if (copied < value.size()) {
+      handle->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                        std::string(truncation_message));
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    return SQL_SUCCESS;
+  }
+
   bool is_supported_function(SQLUSMALLINT function_id) {
     switch (function_id) {
       case SQL_API_SQLALLOCHANDLE:
@@ -861,6 +921,12 @@ SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type,
   auto* conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
 
+  if (const auto value = string_info_value(info_type)) {
+    return write_narrow_output(
+        conn, *value, static_cast<SQLCHAR*>(info_value), buffer_length,
+        string_length, "Driver information was truncated");
+  }
+
   const auto write_usmallint = [&](SQLUSMALLINT value) -> SQLRETURN {
     if (!info_value) {
       conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
@@ -887,15 +953,6 @@ SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type,
   };
   
   switch (info_type) {
-    case SQL_DRIVER_NAME:
-      if (info_value && buffer_length > 0) {
-        const char* name = "ODBCPP Driver";
-        size_t len = std::min(static_cast<size_t>(buffer_length - 1), std::strlen(name));
-        std::memcpy(info_value, name, len);
-        static_cast<char*>(info_value)[len] = '\0';
-        if (string_length) *string_length = static_cast<SQLSMALLINT>(std::strlen(name));
-      }
-      return SQL_SUCCESS;
     case SQL_TXN_CAPABLE:
       return write_usmallint(static_cast<SQLUSMALLINT>(SQL_TC_ALL));
     case SQL_CURSOR_COMMIT_BEHAVIOR:
@@ -908,6 +965,38 @@ SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type,
       return write_uinteger(static_cast<SQLUINTEGER>(
           SQL_TXN_READ_UNCOMMITTED | SQL_TXN_READ_COMMITTED |
           SQL_TXN_REPEATABLE_READ | SQL_TXN_SERIALIZABLE));
+    case SQL_MAX_IDENTIFIER_LEN:
+    case SQL_MAX_COLUMN_NAME_LEN:
+    case SQL_MAX_TABLE_NAME_LEN:
+    case SQL_MAX_SCHEMA_NAME_LEN:
+    case SQL_MAX_CATALOG_NAME_LEN:
+    case SQL_MAX_PROCEDURE_NAME_LEN:
+    case SQL_MAX_USER_NAME_LEN:
+      return write_usmallint(63);
+    case SQL_IDENTIFIER_CASE:
+      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_IC_LOWER));
+    case SQL_QUOTED_IDENTIFIER_CASE:
+      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_IC_SENSITIVE));
+    case SQL_CATALOG_LOCATION:
+      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_CL_START));
+    case SQL_NULL_COLLATION:
+      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_NC_HIGH));
+    case SQL_CONCAT_NULL_BEHAVIOR:
+      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_CB_NULL));
+    case SQL_NON_NULLABLE_COLUMNS:
+      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_NNC_NON_NULL));
+    case SQL_SCROLL_OPTIONS:
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_SO_FORWARD_ONLY));
+    case SQL_GETDATA_EXTENSIONS:
+      return write_uinteger(static_cast<SQLUINTEGER>(
+          SQL_GD_ANY_COLUMN | SQL_GD_ANY_ORDER));
+    case SQL_CATALOG_USAGE:
+      return write_uinteger(0);
+    case SQL_SCHEMA_USAGE:
+      return write_uinteger(static_cast<SQLUINTEGER>(
+          SQL_SU_DML_STATEMENTS | SQL_SU_PROCEDURE_INVOCATION |
+          SQL_SU_TABLE_DEFINITION | SQL_SU_INDEX_DEFINITION |
+          SQL_SU_PRIVILEGE_DEFINITION));
     default:
       conn->set_error(SQLSTATE_GENERAL_ERROR, "Unsupported SQLGetInfo type");
       return SQL_ERROR;
@@ -924,9 +1013,9 @@ SQLRETURN SQLGetInfoW(SQLHDBC connection_handle, SQLUSMALLINT info_type,
                     "Invalid information buffer length");
     return SQL_ERROR;
   }
-  if (info_type == SQL_DRIVER_NAME) {
+  if (const auto value = string_info_value(info_type)) {
     return write_wide_bytes_output(
-        conn, "ODBCPP Driver", static_cast<SQLWCHAR*>(info_value),
+        conn, *value, static_cast<SQLWCHAR*>(info_value),
         buffer_length, string_length, "Driver information was truncated");
   }
   return SQLGetInfo(connection_handle, info_type, info_value, buffer_length,

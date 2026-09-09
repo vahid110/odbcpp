@@ -443,6 +443,51 @@ int main() {
   SQLFreeHandle(SQL_HANDLE_STMT, statement);
   SQLDisconnect(connection);
   SQLFreeHandle(SQL_HANDLE_DBC, connection);
+
+  SQLHDBC wide_connection = SQL_NULL_HDBC;
+  if (!succeeded(SQLAllocHandle(
+          SQL_HANDLE_DBC, environment, &wide_connection))) {
+    print_diagnostic(SQL_HANDLE_ENV, environment);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+  auto wide_connection_string = wide_ascii(
+      "DRIVER={ODBCPP PostgreSQL};SERVER=127.0.0.1;PORT=5432;"
+      "DATABASE=postgres;UID=postgres;PWD=postgres;SSL=0");
+  SQLWCHAR completed_wide_connection_string[256]{};
+  SQLSMALLINT completed_wide_length = 0;
+  if (!succeeded(SQLDriverConnectW(
+          wide_connection, nullptr, wide_connection_string.data(), SQL_NTS,
+          completed_wide_connection_string, 256, &completed_wide_length,
+          SQL_DRIVER_NOPROMPT)) ||
+      completed_wide_length !=
+          static_cast<SQLSMALLINT>(wide_connection_string.size() - 1)) {
+    print_diagnostic(SQL_HANDLE_DBC, wide_connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, wide_connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+  SQLDisconnect(wide_connection);
+  SQLFreeHandle(SQL_HANDLE_DBC, wide_connection);
+
+  SQLHDBC dsn_connection = SQL_NULL_HDBC;
+  if (!succeeded(SQLAllocHandle(
+          SQL_HANDLE_DBC, environment, &dsn_connection))) {
+    print_diagnostic(SQL_HANDLE_ENV, environment);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+  auto wide_dsn = wide_ascii("RedshiftProd");
+  if (!succeeded(SQLConnectW(
+          dsn_connection, wide_dsn.data(), SQL_NTS,
+          nullptr, 0, nullptr, 0))) {
+    print_diagnostic(SQL_HANDLE_DBC, dsn_connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, dsn_connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+  SQLDisconnect(dsn_connection);
+  SQLFreeHandle(SQL_HANDLE_DBC, dsn_connection);
   SQLFreeHandle(SQL_HANDLE_ENV, environment);
   return 0;
 }
