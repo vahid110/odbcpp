@@ -147,6 +147,9 @@ add_library(${PROJECT_NAME}::core ALIAS ${PROJECT_NAME}_core)
 
 # Build shared library for ODBC Driver Manager
 add_library(${PROJECT_NAME}_driver SHARED ${CORE_SOURCES})
+if(WIN32)
+  target_sources(${PROJECT_NAME}_driver PRIVATE "odbc/odbcpp.def")
+endif()
 set_target_properties(${PROJECT_NAME}_driver PROPERTIES
   OUTPUT_NAME "odbcpp"
   VERSION ${PROJECT_VERSION}

@@ -2297,64 +2297,56 @@ static SQLRETURN SQLCopyDesc_impl(SQLHDESC source_desc_handle,
 
 } // extern "C"
 
-#ifdef _WIN32
-#define ODBCPP_DRIVER_EXPORT __declspec(dllexport)
-#else
-#define ODBCPP_DRIVER_EXPORT
-#endif
-
 #define ODBCPP_API_1(name, diagnostic, T1)                                \
-  extern "C" ODBCPP_DRIVER_EXPORT SQLRETURN SQL_API name(T1 a1) {        \
+  extern "C" SQLRETURN SQL_API name(T1 a1) {                            \
     return rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name, [&] { return name##_impl(a1); });              \
   }
 #define ODBCPP_API_2(name, diagnostic, T1, T2)                            \
-  extern "C" ODBCPP_DRIVER_EXPORT SQLRETURN SQL_API name(T1 a1, T2 a2) { \
+  extern "C" SQLRETURN SQL_API name(T1 a1, T2 a2) {                     \
     return rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name, [&] { return name##_impl(a1, a2); });          \
   }
 #define ODBCPP_API_2_TWO_HANDLES(name, diagnostic, T1, T2)                \
-  extern "C" ODBCPP_DRIVER_EXPORT SQLRETURN SQL_API name(T1 a1, T2 a2) { \
+  extern "C" SQLRETURN SQL_API name(T1 a1, T2 a2) {                     \
     return rs::odbc::detail::invoke_c_api_with_handles(                   \
         diagnostic, {a1, a2}, #name,                                     \
         [&] { return name##_impl(a1, a2); });                             \
   }
 #define ODBCPP_API_3(name, diagnostic, T1, T2, T3)                        \
-  extern "C" ODBCPP_DRIVER_EXPORT SQLRETURN SQL_API name(                \
-      T1 a1, T2 a2, T3 a3) {                                             \
+  extern "C" SQLRETURN SQL_API name(T1 a1, T2 a2, T3 a3) {              \
     return rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name, [&] { return name##_impl(a1, a2, a3); });      \
   }
 #define ODBCPP_API_4(name, diagnostic, T1, T2, T3, T4)                    \
-  extern "C" ODBCPP_DRIVER_EXPORT SQLRETURN SQL_API name(                \
-      T1 a1, T2 a2, T3 a3, T4 a4) {                                      \
+  extern "C" SQLRETURN SQL_API name(T1 a1, T2 a2, T3 a3, T4 a4) {       \
     return rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name,                                                \
         [&] { return name##_impl(a1, a2, a3, a4); });                     \
   }
 #define ODBCPP_API_5(name, diagnostic, T1, T2, T3, T4, T5)                \
-  extern "C" ODBCPP_DRIVER_EXPORT SQLRETURN SQL_API name(                \
+  extern "C" SQLRETURN SQL_API name(                                    \
       T1 a1, T2 a2, T3 a3, T4 a4, T5 a5) {                              \
     return rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name,                                                \
         [&] { return name##_impl(a1, a2, a3, a4, a5); });                 \
   }
 #define ODBCPP_API_6(name, diagnostic, T1, T2, T3, T4, T5, T6)            \
-  extern "C" ODBCPP_DRIVER_EXPORT SQLRETURN SQL_API name(                 \
+  extern "C" SQLRETURN SQL_API name(                                     \
       T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6) {                        \
     return rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name,                                                \
         [&] { return name##_impl(a1, a2, a3, a4, a5, a6); });             \
   }
 #define ODBCPP_API_7(name, diagnostic, T1, T2, T3, T4, T5, T6, T7)        \
-  extern "C" ODBCPP_DRIVER_EXPORT SQLRETURN SQL_API name(                 \
+  extern "C" SQLRETURN SQL_API name(                                     \
       T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7) {                 \
     return rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name,                                                \
         [&] { return name##_impl(a1, a2, a3, a4, a5, a6, a7); });         \
   }
 #define ODBCPP_API_8(name, diagnostic, T1, T2, T3, T4, T5, T6, T7, T8)    \
-  extern "C" ODBCPP_DRIVER_EXPORT SQLRETURN SQL_API name(                 \
+  extern "C" SQLRETURN SQL_API name(                                     \
       T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7, T8 a8) {          \
     return rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name,                                                \
@@ -2362,7 +2354,7 @@ static SQLRETURN SQLCopyDesc_impl(SQLHDESC source_desc_handle,
   }
 #define ODBCPP_API_9(name, diagnostic, T1, T2, T3, T4, T5, T6, T7, T8,   \
                      T9)                                                   \
-  extern "C" ODBCPP_DRIVER_EXPORT SQLRETURN SQL_API name(                 \
+  extern "C" SQLRETURN SQL_API name(                                     \
       T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7, T8 a8, T9 a9) {   \
     return rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name, [&] { return name##_impl(                      \
@@ -2370,7 +2362,7 @@ static SQLRETURN SQLCopyDesc_impl(SQLHDESC source_desc_handle,
   }
 #define ODBCPP_API_10(name, diagnostic, T1, T2, T3, T4, T5, T6, T7, T8,  \
                       T9, T10)                                             \
-  extern "C" ODBCPP_DRIVER_EXPORT SQLRETURN SQL_API name(                 \
+  extern "C" SQLRETURN SQL_API name(                                     \
       T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7, T8 a8, T9 a9,    \
       T10 a10) {                                                           \
     return rs::odbc::detail::invoke_c_api(                                \
@@ -2379,7 +2371,7 @@ static SQLRETURN SQLCopyDesc_impl(SQLHDESC source_desc_handle,
   }
 #define ODBCPP_API_13(name, diagnostic, T1, T2, T3, T4, T5, T6, T7, T8,  \
                       T9, T10, T11, T12, T13)                              \
-  extern "C" ODBCPP_DRIVER_EXPORT SQLRETURN SQL_API name(                 \
+  extern "C" SQLRETURN SQL_API name(                                     \
       T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7, T8 a8, T9 a9,    \
       T10 a10, T11 a11, T12 a12, T13 a13) {                               \
     return rs::odbc::detail::invoke_c_api(                                \
