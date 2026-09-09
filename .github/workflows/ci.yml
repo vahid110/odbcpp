@@ -45,6 +45,7 @@ jobs:
 
       - name: Install deps
         run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
           sudo apt-get update
           sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev
 
@@ -169,6 +170,7 @@ jobs:
 
       - name: Install deps
         run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
           sudo apt-get update
           sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev
 
