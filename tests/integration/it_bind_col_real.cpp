@@ -309,6 +309,153 @@ TEST_F(BindColIntegrationTest, GetDataRetrievesLongTextInChunks) {
     EXPECT_EQ(99, exhausted_length);
 }
 
+TEST_F(BindColIntegrationTest, GetDataHonorsNarrowBufferBoundaries) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT ''::text, 'abc'::text, 'abc'::text",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    char value[4] = {'x', 'x', 'x', 'x'};
+    SQLLEN length = -1;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, value, 0, &length));
+    EXPECT_EQ('x', value[0]);
+    EXPECT_EQ(0, length);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01004", reinterpret_cast<char*>(state));
+
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, value, 1, &length));
+    EXPECT_EQ('\0', value[0]);
+    EXPECT_EQ(0, length);
+
+    value[0] = 'x';
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 2, SQL_C_CHAR, value, 1, &length));
+    EXPECT_EQ('\0', value[0]);
+    EXPECT_EQ(3, length);
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 2, SQL_C_CHAR, value, sizeof(value), &length));
+    EXPECT_STREQ("abc", value);
+    EXPECT_EQ(3, length);
+
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 3, SQL_C_CHAR, value, 3, &length));
+    EXPECT_STREQ("ab", value);
+    EXPECT_EQ(3, length);
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 3, SQL_C_CHAR, value, 3, &length));
+    EXPECT_STREQ("c", value);
+    EXPECT_EQ(1, length);
+    EXPECT_EQ(SQL_NO_DATA, SQLGetData(
+        hstmt, 3, SQL_C_CHAR, value, sizeof(value), &length));
+}
+
+TEST_F(BindColIntegrationTest, GetDataHonorsWideBufferBoundaries) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT ''::text, 'A'::text", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLWCHAR value[2]{static_cast<SQLWCHAR>('x'),
+                      static_cast<SQLWCHAR>('x')};
+    SQLLEN length = -1;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 1, SQL_C_WCHAR, value, sizeof(SQLWCHAR) - 1, &length));
+    EXPECT_EQ(static_cast<SQLWCHAR>('x'), value[0]);
+    EXPECT_EQ(0, length);
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_WCHAR, value, sizeof(SQLWCHAR), &length));
+    EXPECT_EQ(static_cast<SQLWCHAR>(0), value[0]);
+    EXPECT_EQ(0, length);
+
+    value[0] = static_cast<SQLWCHAR>('x');
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 2, SQL_C_WCHAR, value, sizeof(SQLWCHAR), &length));
+    EXPECT_EQ(static_cast<SQLWCHAR>(0), value[0]);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLWCHAR)), length);
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 2, SQL_C_WCHAR, value, sizeof(value), &length));
+    EXPECT_EQ(static_cast<SQLWCHAR>('A'), value[0]);
+    EXPECT_EQ(static_cast<SQLWCHAR>(0), value[1]);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLWCHAR)), length);
+}
+
+TEST_F(BindColIntegrationTest, BoundCharacterBuffersRequireTerminatorSpace) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT ''::text, ''::text", SQL_NTS));
+
+    char narrow = 'x';
+    SQLWCHAR wide = static_cast<SQLWCHAR>('x');
+    SQLLEN narrow_length = -1;
+    SQLLEN wide_length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(
+        hstmt, 1, SQL_C_CHAR, &narrow, 0, &narrow_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(
+        hstmt, 2, SQL_C_WCHAR, &wide, sizeof(SQLWCHAR) - 1, &wide_length));
+
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLFetch(hstmt));
+    EXPECT_EQ('x', narrow);
+    EXPECT_EQ(static_cast<SQLWCHAR>('x'), wide);
+    EXPECT_EQ(0, narrow_length);
+    EXPECT_EQ(0, wide_length);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01004", reinterpret_cast<char*>(state));
+}
+
+TEST_F(BindColIntegrationTest, GetDataHonorsBinaryBufferBoundaries) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"SELECT decode('', 'hex'), decode('aa', 'hex')",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    unsigned char value = 0x55;
+    SQLLEN length = -1;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_BINARY, &value, 0, &length));
+    EXPECT_EQ(0x55, value);
+    EXPECT_EQ(0, length);
+    EXPECT_EQ(SQL_NO_DATA, SQLGetData(
+        hstmt, 1, SQL_C_BINARY, &value, 0, &length));
+
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 2, SQL_C_BINARY, &value, 0, &length));
+    EXPECT_EQ(0x55, value);
+    EXPECT_EQ(1, length);
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 2, SQL_C_BINARY, &value, 1, &length));
+    EXPECT_EQ(0xaa, value);
+    EXPECT_EQ(1, length);
+}
+
+TEST_F(BindColIntegrationTest, FailedGetDataDoesNotDiscardPartialOffset) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 'abcdef'::text, 'other'::text", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    char chunk[4]{};
+    SQLLEN length = 0;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, chunk, sizeof(chunk), &length));
+    EXPECT_STREQ("abc", chunk);
+
+    EXPECT_EQ(SQL_ERROR, SQLGetData(
+        hstmt, 2, SQL_C_CHAR, nullptr, 0, &length));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY009", reinterpret_cast<char*>(state));
+
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, chunk, sizeof(chunk), &length));
+    EXPECT_STREQ("def", chunk);
+    EXPECT_EQ(3, length);
+}
+
 TEST_F(BindColIntegrationTest, GetDataRetrievesWideTextInWholeCodePoints) {
     const std::string expected = "A\xf0\x9f\x99\x82" "BC";
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(

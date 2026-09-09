@@ -146,6 +146,26 @@ TEST_F(RedshiftDataConverterTest, ConvertDataString) {
     EXPECT_STREQ("Very", buffer);
 }
 
+TEST_F(RedshiftDataConverterTest, CharacterBuffersMayHaveNoTerminatorSpace) {
+    char narrow = 'x';
+    indicator = -1;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "", SQL_C_CHAR, &narrow, 0, &indicator));
+    EXPECT_EQ('x', narrow);
+    EXPECT_EQ(0, indicator);
+
+    SQLWCHAR wide = static_cast<SQLWCHAR>('x');
+    indicator = -1;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "", SQL_C_WCHAR, &wide, sizeof(SQLWCHAR) - 1, &indicator));
+    EXPECT_EQ(static_cast<SQLWCHAR>('x'), wide);
+    EXPECT_EQ(0, indicator);
+
+    EXPECT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "", SQL_C_WCHAR, &wide, sizeof(SQLWCHAR), &indicator));
+    EXPECT_EQ(static_cast<SQLWCHAR>(0), wide);
+}
+
 TEST_F(RedshiftDataConverterTest, ConvertDataWideString) {
     const std::string utf8 =
         "Gr\xc3\xbc\xc3\x9f" "e \xf0\x9f\x99\x82";

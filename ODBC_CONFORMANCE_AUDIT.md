@@ -285,6 +285,12 @@ substitute for ODBC diagnostics.
   22007, invalid numeric text remains 22018, and fractional numeric loss returns
   `SQL_SUCCESS_WITH_INFO` with 01S07. Unit tests classify converter outcomes and
   PostgreSQL integration tests verify the public `SQLGetData` diagnostics.
+- Audit batch 32 completes the first variable-length buffer-boundary pass.
+  Zero-byte and sub-`SQLWCHAR` character buffers now return 01004 without
+  consuming data, empty values still require terminator space, exact-fit and
+  one-unit-short retrieval are covered, and failed calls no longer discard a
+  different column's partial offset. The same tests run with two- and four-byte
+  driver-side `SQLWCHAR` builds.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

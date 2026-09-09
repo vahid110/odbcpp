@@ -1470,11 +1470,7 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
   }
 
   constexpr auto complete = std::numeric_limits<std::size_t>::max();
-  if (get_data_column_ != col) {
-    get_data_column_ = col;
-    get_data_offset_ = 0;
-  }
-  auto& offset = get_data_offset_;
+  auto offset = get_data_column_ == col ? get_data_offset_ : 0;
   if (offset == complete) return SQL_NO_DATA;
 
   if (!buffer) {
@@ -1485,6 +1481,10 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     set_error(SQLSTATE_INVALID_STRING_LENGTH, "Invalid result buffer length");
     return SQL_ERROR;
   }
+  const auto save_offset = [&](std::size_t value) {
+    get_data_column_ = col;
+    get_data_offset_ = value;
+  };
 
   const auto& cell = row[col - 1];
   if (!cell) {
@@ -1494,7 +1494,7 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
       return SQL_ERROR;
     }
     *indicator = SQL_NULL_DATA;
-    offset = complete;
+    save_offset(complete);
     return SQL_SUCCESS;
   }
   
@@ -1503,8 +1503,12 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
               "Unsupported result data type conversion");
     return SQL_ERROR;
   }
-
   if (effective_target_type == SQL_C_CHAR) {
+    if (offset > cell->size()) {
+      set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
+                "SQLGetData target type changed during chunked retrieval");
+      return SQL_ERROR;
+    }
     const auto remaining = cell->size() - offset;
     if (indicator) *indicator = static_cast<SQLLEN>(remaining);
     const auto capacity = buffer_length > 0
@@ -1517,12 +1521,13 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
       static_cast<char*>(buffer)[copy_length] = '\0';
     }
     offset += copy_length;
-    if (offset < cell->size()) {
+    if (offset < cell->size() || buffer_length == 0) {
+      save_offset(offset);
       set_error(SQLSTATE_STRING_DATA_TRUNCATED,
                 "Result value was truncated to fit the application buffer");
       return SQL_SUCCESS_WITH_INFO;
     }
-    offset = complete;
+    save_offset(complete);
     return SQL_SUCCESS;
   }
 
@@ -1562,12 +1567,13 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
       static_cast<SQLWCHAR*>(buffer)[copy_length] = 0;
     }
     offset += copy_length;
-    if (offset < wide->size()) {
+    if (offset < wide->size() || buffer_units == 0) {
+      save_offset(offset);
       set_error(SQLSTATE_STRING_DATA_TRUNCATED,
                 "Result value was truncated to fit the application buffer");
       return SQL_SUCCESS_WITH_INFO;
     }
-    offset = complete;
+    save_offset(complete);
     return SQL_SUCCESS;
   }
 
@@ -1592,11 +1598,12 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     }
     offset += copy_length;
     if (offset < decoded->size()) {
+      save_offset(offset);
       set_error(SQLSTATE_STRING_DATA_TRUNCATED,
                 "Binary result value was truncated to fit the application buffer");
       return SQL_SUCCESS_WITH_INFO;
     }
-    offset = complete;
+    save_offset(complete);
     return SQL_SUCCESS;
   }
 
@@ -1606,7 +1613,7 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
       &conversion_issue);
 
   set_conversion_diagnostic(*this, result, conversion_issue);
-  if (result != SQL_ERROR) offset = complete;
+  if (result != SQL_ERROR) save_offset(complete);
   
   return result;
 }
