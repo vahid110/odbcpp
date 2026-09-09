@@ -350,6 +350,11 @@ bool ODBCConnection::logs_queries() const noexcept {
   return logger_ && logger_->logs_queries();
 }
 
+bool ODBCConnection::logging_enabled(
+    rs::core::logging::LogLevel level) const noexcept {
+  return logger_ && logger_->enabled(level);
+}
+
 ODBCStatement::ODBCStatement(std::shared_ptr<ODBCConnection> conn)
     : ODBCHandle(HandleType::Statement), conn_(std::move(conn)) {
   try {
@@ -2604,6 +2609,21 @@ std::shared_ptr<ODBCHandle> HandleRegistry::get_handle(SQLHANDLE handle) {
   std::lock_guard lock(mutex_);
   auto it = handles_.find(handle);
   return (it != handles_.end()) ? it->second.object : nullptr;
+}
+
+std::shared_ptr<ODBCConnection> HandleRegistry::get_connection_for_handle(
+    SQLHANDLE handle) {
+  std::lock_guard lock(mutex_);
+  auto current = handle;
+  while (current) {
+    const auto it = handles_.find(current);
+    if (it == handles_.end()) return nullptr;
+    if (it->second.object->get_type() == HandleType::Connection) {
+      return std::static_pointer_cast<ODBCConnection>(it->second.object);
+    }
+    current = it->second.parent;
+  }
+  return nullptr;
 }
 
 HandleOperationLease HandleRegistry::lock_handles(

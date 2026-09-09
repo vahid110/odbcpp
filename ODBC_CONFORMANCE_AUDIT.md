@@ -131,20 +131,23 @@ and the full field matrix remain partial.
 
 ## Logging coverage
 
-The logging backend is suitable as a foundation: logging is off by default,
-configuration precedence is tested, file rotation and asynchronous delivery
-are tested, structured output is escaped, and connection passwords are covered
-by a non-disclosure test. The current instrumentation is narrower than the
-ODBC surface, however. It records connection lifecycle and direct/prepared
-query outcomes, but does not yet consistently record API operation class,
-SQLSTATE, native error, duration, or connection identity for metadata,
-attribute, descriptor, transaction, fetch, and diagnostic failures. Logging is
-therefore **implemented but partial**, not a substitute for ODBC diagnostics.
+The logging backend is off by default; configuration precedence, file rotation,
+asynchronous delivery, structured escaping, and password non-disclosure are
+tested. The shared C API boundary now records every warning and error associated
+with a configured connection, including the exact ODBC operation, return code,
+SQLSTATE, native error, duration, and connection identity. This covers
+metadata, attributes, descriptors, transactions, fetches, and unexpected
+exceptions without copying instrumentation into each wrapper. Nested A/W
+delegation emits one record for the application-visible operation, and no
+arguments or bound values are included. Diagnostic-retrieval calls, invalid
+handles with no owning connection, success tracing, and disabled-logging
+overhead benchmarks remain; logging is **implemented but partial** and never a
+substitute for ODBC diagnostics.
 
 ## Maintainability snapshot
 
-- `odbc_api.cpp` is 2,527 lines and contains all 73 exported wrappers;
-  `odbc_handles.cpp` is 2,640 lines and combines connection, statement,
+- `odbc_api.cpp` is 2,530 lines and contains all 73 exported wrappers;
+  `odbc_handles.cpp` is 2,660 lines and combines connection, statement,
   descriptor, conversion, metadata, and registry responsibilities.
 - The callback/future methods in `AsyncDatabaseConnection` are experimental
   scaffolding, are not used by the ODBC driver's production connection path,
@@ -183,6 +186,11 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
   exhausted, locally invalid, and server-rejected operations, distinguishes
   invalid zero sizes from unsupported larger arrays, and rejects parameter
   ordinals beyond the prepared marker count before protocol I/O.
+- Audit batch 14 extends the existing C ABI guard into the common failure-log
+  boundary. One compact path emits operation, return code, SQLSTATE, native
+  error, microsecond duration, and connection identity for all connection-owned
+  API warnings and errors. Tests cover ANSI and nested wide calls, truncation,
+  unknown attributes, secret exclusion, and duplicate-record suppression.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
@@ -241,8 +249,8 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
 
 ### P2 — observability and maintainability
 
-1. Extend logging to consistently capture operation class, SQLSTATE, native
-   error, duration, and connection ID without logging secrets or bound values.
+1. Extend the common failure logger to diagnostic-retrieval calls where an
+   owning connection is still valid, without mutating diagnostic state.
 2. Benchmark disabled and asynchronous logging before claiming the roadmap's
    `<1%` overhead target.
 3. Split the two 2,000-plus-line ODBC implementation files by responsibility.

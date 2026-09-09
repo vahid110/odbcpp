@@ -2,9 +2,11 @@
 
 #include "core/util/driver_logging.h"
 #include "odbc/connection_string.h"
+#include "odbc/odbc_api.h"
 #include "odbc/odbc_handles.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -15,6 +17,12 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
+
 namespace {
 
 using rs::core::logging::DriverLogger;
@@ -24,8 +32,15 @@ using rs::core::logging::LogSink;
 using rs::core::logging::LoggingOptions;
 
 std::filesystem::path temporary_directory(std::string_view name) {
+  static std::atomic<unsigned int> sequence{0};
+#ifdef _WIN32
+  const auto process_id = _getpid();
+#else
+  const auto process_id = getpid();
+#endif
   auto directory = std::filesystem::temp_directory_path() /
-      (std::string(name) + "-" + std::to_string(std::rand()));
+      (std::string(name) + "-" + std::to_string(process_id) + "-" +
+       std::to_string(sequence.fetch_add(1)));
   std::filesystem::create_directories(directory);
   return directory;
 }
@@ -169,6 +184,63 @@ TEST(DriverLoggerTest, ConnectionLoggingNeverWritesPassword) {
   EXPECT_NE(std::string::npos, contents.find("connection_start"));
   EXPECT_NE(std::string::npos, contents.find("connection_failed"));
   EXPECT_EQ(std::string::npos, contents.find("top-secret"));
+  std::filesystem::remove_all(directory);
+}
+
+TEST(DriverLoggerTest, ApiFailuresIncludeOperationAndDiagnosticContext) {
+  const auto directory = temporary_directory("odbcpp-api-log");
+  const auto path = directory / "driver.log";
+  SQLHENV environment = SQL_NULL_HENV;
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                          reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+  const std::string connection_string =
+      "SERVER=127.0.0.1;PORT=1;UID=test-user;PWD=top-secret;SSL=0;"
+      "TransportMode=Sync;LogLevel=Warn;LogFormat=Text;LogSink=File;LogFile=" +
+      path.string() + ";LogAsync=false";
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnect(
+      connection, nullptr,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(connection_string.c_str())),
+      SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+
+  SQLUINTEGER value = 0;
+  EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(
+      connection, -12345, &value, sizeof(value), nullptr));
+  EXPECT_EQ(SQL_ERROR, SQLGetConnectAttrW(
+      connection, -12345, &value, sizeof(value), nullptr));
+  SQLCHAR catalog[] = "postgres";
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(
+      connection, SQL_ATTR_CURRENT_CATALOG, catalog, SQL_NTS));
+  SQLWCHAR short_catalog[3]{};
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetConnectAttrW(
+      connection, SQL_ATTR_CURRENT_CATALOG, short_catalog,
+      sizeof(short_catalog), nullptr));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+
+  const auto contents = read_file(path);
+  EXPECT_NE(std::string::npos, contents.find("event=odbc_api_error"));
+  EXPECT_NE(std::string::npos, contents.find("event=odbc_api_warning"));
+  EXPECT_NE(std::string::npos,
+            contents.find("operation=\"SQLGetConnectAttr\""));
+  EXPECT_NE(std::string::npos,
+            contents.find("operation=\"SQLGetConnectAttrW\""));
+  EXPECT_NE(std::string::npos, contents.find("sqlstate=\"HY092\""));
+  EXPECT_NE(std::string::npos, contents.find("sqlstate=\"01004\""));
+  EXPECT_NE(std::string::npos, contents.find("native_error=\"0\""));
+  EXPECT_NE(std::string::npos, contents.find("duration_us=\""));
+  EXPECT_EQ(std::string::npos, contents.find("top-secret"));
+
+  const std::string ansi_operation = "operation=\"SQLGetConnectAttr\"";
+  const auto first_ansi = contents.find(ansi_operation);
+  ASSERT_NE(std::string::npos, first_ansi);
+  EXPECT_EQ(std::string::npos,
+            contents.find(ansi_operation, first_ansi + ansi_operation.size()));
   std::filesystem::remove_all(directory);
 }
 

@@ -202,6 +202,7 @@ public:
            std::string_view message,
            std::initializer_list<rs::core::logging::LogField> fields = {})
       const noexcept;
+  bool logging_enabled(rs::core::logging::LogLevel level) const noexcept;
   bool logs_queries() const noexcept;
   std::uint64_t connection_id() const noexcept { return connection_id_; }
   
@@ -432,6 +433,7 @@ public:
   void unregister_children(SQLHANDLE parent);
   bool has_children(SQLHANDLE parent);
   std::shared_ptr<ODBCHandle> get_handle(SQLHANDLE handle);
+  std::shared_ptr<ODBCConnection> get_connection_for_handle(SQLHANDLE handle);
   HandleOperationLease lock_handles(
       std::initializer_list<SQLHANDLE> handles);
   
