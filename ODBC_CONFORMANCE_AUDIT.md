@@ -32,7 +32,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 
 | Operation | Variants | Status | Existing evidence | Principal remaining work |
 |---|---:|---|---|---|
-| `SQLAllocHandle` | A | Partial | unit, integration, DM | STMT/DESC require an open connection; environment-version state and allocation-failure injection remain |
+| `SQLAllocHandle` | A | Partial | unit, integration, DM | DBC requires an ODBC version and STMT/DESC require an open connection; allocation-failure injection remains |
 | `SQLFreeHandle` | A | Partial | unit, integration, DM | Parent/child free ordering is enforced; complete state matrix remains |
 | `SQLConnect` | A/W | Partial | unit failure, integration, DM | Reconnect is rejected with 08002; complete input/state matrix remains |
 | `SQLDriverConnect` | A/W | Partial | unit, DM | Completion modes, exact output-string rules, connected-state handling |
@@ -74,7 +74,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLGetInfo` | A/W | Partial | unit, DM | Complete information matrix and capability accuracy |
 | `SQLGetFunctions` | A | Partial | unit, DM | Automatically prove advertised functions match usable exports |
 | `SQLNativeSql` | A/W | Partial | unit, DM | ODBC escape translation; currently effectively pass-through |
-| `SQLSetEnvAttr` | A | Partial | unit, integration, DM | Allocation-state restrictions and supported attribute matrix |
+| `SQLSetEnvAttr` | A | Partial | unit, integration, DM | ODBC version is locked after DBC allocation; supported attribute matrix remains |
 | `SQLGetEnvAttr` | A | Partial | unit, DM | Supported attribute matrix and buffer/type rules |
 | `SQLGetDescField` | A/W | Partial | unit | Descriptor-kind restrictions and complete header/record fields |
 | `SQLSetDescField` | A/W | Partial | unit | Consistency checks, descriptor-kind restrictions, pointer fields |

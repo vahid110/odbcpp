@@ -146,6 +146,9 @@ TEST(ExplicitDescriptorApiTest, AllocatesAndStoresHeaderAndRecordFields) {
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &environment));
     ASSERT_EQ(SQL_SUCCESS,
+              SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                            reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+    ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
     descriptor = odbcpp::test::make_descriptor(connection);
     ASSERT_NE(nullptr, descriptor);
@@ -225,6 +228,9 @@ TEST(ExplicitDescriptorApiTest, CopiesDescriptorState) {
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &environment));
     ASSERT_EQ(SQL_SUCCESS,
+              SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                            reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+    ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
     source = odbcpp::test::make_descriptor(connection);
     target = odbcpp::test::make_descriptor(connection);
@@ -261,6 +267,9 @@ TEST(ExplicitDescriptorApiTest, StoresAndReturnsWideDescriptorNames) {
     SQLHDESC descriptor = nullptr;
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &environment));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                            reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
     descriptor = odbcpp::test::make_descriptor(connection);

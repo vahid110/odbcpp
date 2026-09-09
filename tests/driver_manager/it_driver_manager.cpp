@@ -88,6 +88,25 @@ std::vector<SQLWCHAR> wide_text(std::u32string_view input) {
 } // namespace
 
 int main() {
+  SQLHENV unconfigured_environment = SQL_NULL_HENV;
+  SQLHDBC premature_connection = SQL_NULL_HDBC;
+  if (!succeeded(SQLAllocHandle(
+          SQL_HANDLE_ENV, SQL_NULL_HANDLE, &unconfigured_environment)) ||
+      !result_is(SQLAllocHandle(
+                     SQL_HANDLE_DBC, unconfigured_environment,
+                     &premature_connection),
+                 SQL_ERROR, "SQLAllocHandle before setting ODBC version") ||
+      premature_connection != SQL_NULL_HDBC ||
+      !diagnostic_is(
+          SQL_HANDLE_ENV, unconfigured_environment, "HY010") ||
+      !succeeded(SQLFreeHandle(
+          SQL_HANDLE_ENV, unconfigured_environment))) {
+    print_diagnostic(SQL_HANDLE_ENV, unconfigured_environment);
+    SQLFreeHandle(SQL_HANDLE_DBC, premature_connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, unconfigured_environment);
+    return 1;
+  }
+
   SQLHENV environment = SQL_NULL_HENV;
   SQLHDBC connection = SQL_NULL_HDBC;
   SQLHSTMT statement = SQL_NULL_HSTMT;

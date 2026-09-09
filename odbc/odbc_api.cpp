@@ -323,6 +323,11 @@ static SQLRETURN SQLAllocHandle_impl(SQLSMALLINT handle_type, SQLHANDLE input_ha
       case SQL_HANDLE_DBC: {
         auto env = get_valid_handle<ODBCEnvironment>(input_handle);
         if (!env) return SQL_INVALID_HANDLE;
+        if (!env->has_odbc_version()) {
+          env->set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
+                         "ODBC version must be set before allocating a connection");
+          return SQL_ERROR;
+        }
         new_handle = std::make_unique<ODBCConnection>(env.get());
         break;
       }
@@ -1286,6 +1291,11 @@ static SQLRETURN SQLSetEnvAttr_impl(SQLHENV environment_handle, SQLINTEGER attri
   
   switch (attribute) {
     case SQL_ATTR_ODBC_VERSION: {
+      if (HandleRegistry::instance().has_children(environment_handle)) {
+        env->set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
+                       "ODBC version cannot change after a connection is allocated");
+        return SQL_ERROR;
+      }
       const auto version = static_cast<SQLINTEGER>(
           reinterpret_cast<std::uintptr_t>(value));
       if (version != SQL_OV_ODBC2 && version != SQL_OV_ODBC3

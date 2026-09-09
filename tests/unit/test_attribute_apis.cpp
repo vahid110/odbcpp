@@ -16,6 +16,9 @@ protected:
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &environment_));
     ASSERT_EQ(SQL_SUCCESS,
+              SQLSetEnvAttr(environment_, SQL_ATTR_ODBC_VERSION,
+                            integer_value(SQL_OV_ODBC3), 0));
+    ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_DBC, environment_, &connection_));
     statement_ = odbcpp::test::make_statement(connection_);
     ASSERT_NE(nullptr, statement_);
@@ -68,16 +71,30 @@ TEST_F(AttributeApisTest, StoresEnvironmentVersion) {
   EXPECT_EQ(sizeof(SQLINTEGER), static_cast<std::size_t>(length));
 
 #ifdef SQL_OV_ODBC3_80
-  EXPECT_EQ(SQL_SUCCESS, SQLSetEnvAttr(
+  EXPECT_EQ(SQL_ERROR, SQLSetEnvAttr(
       environment_, SQL_ATTR_ODBC_VERSION, integer_value(SQL_OV_ODBC3_80), 0));
-  EXPECT_EQ(SQL_SUCCESS, SQLGetEnvAttr(
-      environment_, SQL_ATTR_ODBC_VERSION, &version, sizeof(version), nullptr));
-  EXPECT_EQ(SQL_OV_ODBC3_80, version);
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_ENV, environment_));
 #endif
 
   EXPECT_EQ(SQL_ERROR, SQLSetEnvAttr(
       environment_, SQL_ATTR_ODBC_VERSION, integer_value(999), 0));
-  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_ENV, environment_));
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_ENV, environment_));
+}
+
+TEST(AttributeApisStandaloneTest, RejectsInvalidEnvironmentVersion) {
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  EXPECT_EQ(SQL_ERROR,
+            SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                          reinterpret_cast<SQLPOINTER>(std::uintptr_t{999}),
+                          0));
+  SQLCHAR state[6]{};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetDiagRec(SQL_HANDLE_ENV, environment, 1, state, nullptr,
+                          nullptr, 0, nullptr));
+  EXPECT_STREQ("HY024", reinterpret_cast<const char*>(state));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
 }
 
 TEST_F(AttributeApisTest, NegotiatesNativeSqlwcharEncodingWithIodbc) {

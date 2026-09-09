@@ -84,9 +84,10 @@ public:
   
   void set_odbc_version(SQLINTEGER version) { odbc_version_ = version; }
   SQLINTEGER get_odbc_version() const { return odbc_version_; }
+  bool has_odbc_version() const { return odbc_version_ != 0; }
 
 private:
-  SQLINTEGER odbc_version_ = 3; // ODBC 3.x by default
+  SQLINTEGER odbc_version_ = 0;
 };
 
 // Connection handle

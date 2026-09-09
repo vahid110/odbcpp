@@ -12,9 +12,9 @@ TEST(CApiGuardTest, ConvertsUnexpectedExceptionToDiagnosticError) {
   ASSERT_EQ(SQL_SUCCESS,
             SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
 
-  EXPECT_EQ(SQL_ERROR, rs::odbc::detail::invoke_c_api(environment, [] {
+  EXPECT_EQ(SQL_ERROR, rs::odbc::detail::invoke_c_api(
+                           environment, []() -> SQLRETURN {
               throw std::runtime_error("injected failure");
-              return SQL_SUCCESS;
             }));
 
   SQLCHAR state[6]{};
