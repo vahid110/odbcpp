@@ -118,6 +118,61 @@ TEST_F(DiagnosticsTest, SQLGetDiagRec_InvalidParameters) {
     EXPECT_EQ(SQL_INVALID_HANDLE, ret);
 }
 
+TEST_F(DiagnosticsTest, DiagnosticRetrievalErrorsPreserveExistingRecords) {
+    ASSERT_EQ(SQL_ERROR,
+              SQLExecDirect(hstmt, reinterpret_cast<SQLCHAR*>(
+                                       const_cast<char*>("SELECT 1")),
+                            SQL_NTS));
+
+    SQLCHAR state[6]{};
+    EXPECT_EQ(SQL_ERROR,
+              SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 0, state, nullptr,
+                            nullptr, 0, nullptr));
+    EXPECT_EQ(SQL_ERROR,
+              SQLGetDiagField(SQL_HANDLE_STMT, hstmt, 0, -1, nullptr, 0,
+                              nullptr));
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, state, nullptr,
+                            nullptr, 0, nullptr));
+    EXPECT_STREQ("08001", reinterpret_cast<const char*>(state));
+
+    SQLWCHAR wide_state[6]{};
+    EXPECT_EQ(SQL_ERROR,
+              SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt, 0, wide_state, nullptr,
+                             nullptr, 0, nullptr));
+    EXPECT_EQ(SQL_ERROR,
+              SQLGetDiagFieldW(SQL_HANDLE_STMT, hstmt, 0, -1, nullptr, 0,
+                               nullptr));
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetDiagRecW(SQL_HANDLE_STMT, hstmt, 1, wide_state, nullptr,
+                             nullptr, 0, nullptr));
+    EXPECT_EQ(static_cast<SQLWCHAR>('0'), wide_state[0]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('8'), wide_state[1]);
+}
+
+TEST_F(DiagnosticsTest, DiagnosticFunctionsValidateTypeRecordAndBuffer) {
+    ASSERT_EQ(SQL_ERROR,
+              SQLExecDirect(hstmt, reinterpret_cast<SQLCHAR*>(
+                                       const_cast<char*>("SELECT 1")),
+                            SQL_NTS));
+
+    SQLCHAR state[6]{};
+    EXPECT_EQ(SQL_INVALID_HANDLE,
+              SQLGetDiagRec(SQL_HANDLE_DBC, hstmt, 1, state, nullptr,
+                            nullptr, 0, nullptr));
+    EXPECT_EQ(SQL_ERROR,
+              SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, state, nullptr,
+                            nullptr, -1, nullptr));
+    EXPECT_EQ(SQL_ERROR,
+              SQLGetDiagField(SQL_HANDLE_STMT, hstmt, -1,
+                              SQL_DIAG_MESSAGE_TEXT, nullptr, 0, nullptr));
+
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, state, nullptr,
+                            nullptr, 0, nullptr));
+    EXPECT_STREQ("08001", reinterpret_cast<const char*>(state));
+}
+
 TEST_F(DiagnosticsTest, SQLGetDiagRec_MessageTruncation) {
     // Force an error with a long message
     SQLConnect(hdbc, (SQLCHAR*)"invalid_dsn_with_very_long_name_that_should_cause_truncation", SQL_NTS, nullptr, 0, nullptr, 0);

@@ -68,8 +68,8 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLProcedures` | A/W | Partial | unit, integration, DM | PostgreSQL procedure/function distinctions and overloads |
 | `SQLProcedureColumns` | A/W | Partial | unit, integration, DM | Modes, result columns, overloads and type metadata |
 | `SQLSpecialColumns` | A/W | Partial | unit, integration, DM | Scope/nullable semantics and row-version behavior |
-| `SQLGetDiagRec` | A/W | Partial | unit, integration, DM | Diagnostic lifetime, truncation matrix, return-code provenance |
-| `SQLGetDiagField` | A/W | Partial | unit, integration | Header/record field matrix and handle-type restrictions |
+| `SQLGetDiagRec` | A/W | Partial | unit, integration, DM | Retrieval preserves records and validates type/record/buffer; truncation matrix remains |
+| `SQLGetDiagField` | A/W | Partial | unit, integration | Retrieval preserves records and validates type/record; complete field matrix remains |
 | `SQLError` | A/W | Partial | unit, integration | ODBC 2 sequencing and multi-record consumption |
 | `SQLGetInfo` | A/W | Partial | unit, DM | Complete information matrix and capability accuracy |
 | `SQLGetFunctions` | A | Partial | unit, DM | Automatically prove advertised functions match usable exports |
@@ -167,8 +167,9 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
    invalidates subordinate handles on statement free or successful disconnect.
    Concurrent operations still need per-handle serialization.
 4. **Diagnostic lifecycle:** audit batch 2 clears prior records at the start of
-   non-diagnostic handle calls. Return-code provenance, complete header/record
-   fields, and state-transition diagnostics are not yet centrally enforced.
+   non-diagnostic handle calls. Audit batch 5 makes diagnostic retrieval itself
+   non-mutating and validates handle type, record number, and buffer length.
+   Return-code provenance and the complete header/record field matrix remain.
 5. **Input validation parity:** ANSI and wide entry points have historically
    differed on null and invalid-length handling. Audit batch 1 begins closing
    this with execution/preparation boundary tests.

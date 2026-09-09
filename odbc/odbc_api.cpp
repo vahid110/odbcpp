@@ -797,17 +797,11 @@ static SQLRETURN SQLFreeStmt_impl(SQLHSTMT statement_handle, SQLUSMALLINT option
 static SQLRETURN SQLGetDiagRec_impl(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,
                        SQLCHAR* sqlstate, SQLINTEGER* native_error, SQLCHAR* message_text,
                        SQLSMALLINT buffer_length, SQLSMALLINT* text_length) {
-  if (rec_number < 1) {
-    // Invalid record number - set diagnostic on handle if possible
-    auto obj = HandleRegistry::instance().get_handle(handle);
-    if (obj) {
-      obj->set_error(SQLSTATE_GENERAL_ERROR, "Invalid diagnostic record number");
-    }
-    return SQL_ERROR;
-  }
-  
   auto obj = HandleRegistry::instance().get_handle(handle);
-  if (!obj) return SQL_INVALID_HANDLE;
+  if (!obj || static_cast<SQLSMALLINT>(obj->get_type()) != handle_type) {
+    return SQL_INVALID_HANDLE;
+  }
+  if (rec_number < 1 || buffer_length < 0) return SQL_ERROR;
   
   const auto* record = obj->get_diagnostic_record(rec_number);
   if (!record) return SQL_NO_DATA;
@@ -826,14 +820,17 @@ static SQLRETURN SQLGetDiagRec_impl(SQLSMALLINT handle_type, SQLHANDLE handle, S
   
   // Copy message text with proper truncation handling
   if (message_text && buffer_length > 0) {
-    size_t msg_len = record->message_text.length();
-    size_t copy_len = std::min(static_cast<size_t>(buffer_length - 1), msg_len);
+    const auto msg_len = record->message_text.length();
+    const auto copy_len = std::min(
+        static_cast<size_t>(buffer_length - 1), msg_len);
     
     std::memcpy(message_text, record->message_text.data(), copy_len);
     message_text[copy_len] = '\0';
     
     if (text_length) {
-      *text_length = static_cast<SQLSMALLINT>(msg_len);
+      *text_length = static_cast<SQLSMALLINT>(std::min<std::size_t>(
+          msg_len, static_cast<std::size_t>(
+                       std::numeric_limits<SQLSMALLINT>::max())));
     }
     
     // Return SQL_SUCCESS_WITH_INFO if message was truncated
@@ -841,29 +838,24 @@ static SQLRETURN SQLGetDiagRec_impl(SQLSMALLINT handle_type, SQLHANDLE handle, S
       return SQL_SUCCESS_WITH_INFO;
     }
   } else if (text_length) {
-    *text_length = static_cast<SQLSMALLINT>(record->message_text.length());
+    *text_length = static_cast<SQLSMALLINT>(std::min<std::size_t>(
+        record->message_text.length(), static_cast<std::size_t>(
+                                           std::numeric_limits<SQLSMALLINT>::max())));
   }
   
   return SQL_SUCCESS;
 }
 
-static SQLRETURN SQLGetDiagRecW_impl(SQLSMALLINT, SQLHANDLE handle,
+static SQLRETURN SQLGetDiagRecW_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
                          SQLSMALLINT rec_number, SQLWCHAR* sqlstate,
                          SQLINTEGER* native_error, SQLWCHAR* message_text,
                          SQLSMALLINT buffer_length,
                          SQLSMALLINT* text_length) {
-  if (rec_number < 1) {
-    auto obj = HandleRegistry::instance().get_handle(handle);
-    if (obj) {
-      obj->set_error(SQLSTATE_GENERAL_ERROR,
-                     "Invalid diagnostic record number");
-    }
-    return SQL_ERROR;
-  }
-
   auto obj = HandleRegistry::instance().get_handle(handle);
-  if (!obj) return SQL_INVALID_HANDLE;
-  if (buffer_length < 0) return SQL_ERROR;
+  if (!obj || static_cast<SQLSMALLINT>(obj->get_type()) != handle_type) {
+    return SQL_INVALID_HANDLE;
+  }
+  if (rec_number < 1 || buffer_length < 0) return SQL_ERROR;
 
   const auto* record = obj->get_diagnostic_record(rec_number);
   if (!record) return SQL_NO_DATA;
@@ -887,7 +879,10 @@ static SQLRETURN SQLGetDiagField_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
                          SQLSMALLINT diag_identifier, SQLPOINTER diag_info_ptr, SQLSMALLINT buffer_length,
                          SQLSMALLINT* string_length_ptr) {
   auto obj = HandleRegistry::instance().get_handle(handle);
-  if (!obj) return SQL_INVALID_HANDLE;
+  if (!obj || static_cast<SQLSMALLINT>(obj->get_type()) != handle_type) {
+    return SQL_INVALID_HANDLE;
+  }
+  if (rec_number < 0) return SQL_ERROR;
   
   // Header fields (rec_number = 0)
   if (rec_number == 0) {
@@ -906,7 +901,6 @@ static SQLRETURN SQLGetDiagField_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
         return SQL_SUCCESS;
       }
       default:
-        obj->set_error(SQLSTATE_GENERAL_ERROR, "Invalid diagnostic field identifier");
         return SQL_ERROR;
     }
   }
@@ -959,8 +953,10 @@ static SQLRETURN SQLGetDiagFieldW_impl(
     SQLSMALLINT diag_identifier, SQLPOINTER diag_info_ptr,
     SQLSMALLINT buffer_length, SQLSMALLINT* string_length_ptr) {
   auto obj = HandleRegistry::instance().get_handle(handle);
-  if (!obj) return SQL_INVALID_HANDLE;
-  if (buffer_length < 0) return SQL_ERROR;
+  if (!obj || static_cast<SQLSMALLINT>(obj->get_type()) != handle_type) {
+    return SQL_INVALID_HANDLE;
+  }
+  if (rec_number < 0 || buffer_length < 0) return SQL_ERROR;
   if (rec_number == 0 || diag_identifier == SQL_DIAG_NATIVE) {
     return SQLGetDiagField(handle_type, handle, rec_number, diag_identifier,
                            diag_info_ptr, buffer_length, string_length_ptr);
