@@ -93,12 +93,18 @@ TEST(DriverLoggingOptionsTest, ReadsDriverWideIodbcConfigurationPath) {
               "LogFormat=Json\n";
   }
 
+#ifdef _WIN32
+  char* previous = nullptr;
+  std::size_t previous_size = 0;
+  _dupenv_s(&previous, &previous_size, "ODBCINSTINI");
+  const bool had_previous = previous != nullptr;
+  const std::string saved = previous ? previous : "";
+  std::free(previous);
+  _putenv_s("ODBCINSTINI", path.string().c_str());
+#else
   const char* previous = std::getenv("ODBCINSTINI");
   const bool had_previous = previous != nullptr;
   const std::string saved = previous ? previous : "";
-#ifdef _WIN32
-  _putenv_s("ODBCINSTINI", path.string().c_str());
-#else
   setenv("ODBCINSTINI", path.string().c_str(), 1);
 #endif
   const auto parameters =
