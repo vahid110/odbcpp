@@ -46,7 +46,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLFetch` | A | Partial | unit, integration, DM | Never-executed and no-result states return HY010/24000; row arrays and full state matrix remain |
 | `SQLFetchScroll` | A | Partial | unit, integration, DM | Only `SQL_FETCH_NEXT` is supported; keep other orientations honest |
 | `SQLMoreResults` | A | Partial | unit, integration, DM | Result/update-count traversal and close-time discard are covered; error-result sequences remain |
-| `SQLGetData` | A | Partial | integration, DM | Complete conversion matrix and call-order/chunking edge cases |
+| `SQLGetData` | A | Partial | integration, DM | Invalid and ARD-derived target types are covered; complete conversion and chunking matrices remain |
 | `SQLBindCol` | A | Partial | unit, integration | Invalid C types and negative lengths are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
 | `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics covered; input arrays, data-at-execution, and full conversion matrix remain |
 | `SQLNumParams` | A | Partial | integration, DM | Prepared marker parsing and direct-execution zero count are covered; pre-execution server validation remains |
@@ -272,6 +272,10 @@ substitute for ODBC diagnostics.
   wide variants on short output buffers: both preserve the full source length,
   null-terminate the truncated value, and return `SQL_SUCCESS_WITH_INFO` with
   01004 instead of silently succeeding.
+- Audit batch 29 validates `SQLGetData` target identifiers before conversion.
+  Invalid identifiers return HY003, incompatible valid conversions remain
+  07006, and `SQL_ARD_TYPE` resolves the active application row descriptor's
+  concise type instead of being rejected as an unknown target.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

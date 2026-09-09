@@ -1412,6 +1412,29 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     return SQL_ERROR;
   }
 
+  if (target_type != SQL_ARD_TYPE &&
+      !ResultTypes::is_valid_c_type(target_type)) {
+    set_error(SQLSTATE_INVALID_APPLICATION_BUFFER_TYPE,
+              "Invalid SQLGetData target type");
+    return SQL_ERROR;
+  }
+
+  const SQLSMALLINT sql_type = col <= column_info_.size()
+      ? column_info_[col - 1].sql_type : static_cast<SQLSMALLINT>(SQL_VARCHAR);
+  SQLSMALLINT effective_target_type = target_type == SQL_C_DEFAULT
+      ? ResultTypes::default_c_type(sql_type) : target_type;
+  if (target_type == SQL_ARD_TYPE) {
+    const auto application_descriptor = descriptor(app_row_descriptor_);
+    const auto* record = application_descriptor->record(col - 1);
+    if (!record || !ResultTypes::is_valid_c_type(record->concise_type)) {
+      set_error(SQLSTATE_INVALID_APPLICATION_BUFFER_TYPE,
+                "ARD does not define a valid target type for the column");
+      return SQL_ERROR;
+    }
+    effective_target_type = record->concise_type == SQL_C_DEFAULT
+        ? ResultTypes::default_c_type(sql_type) : record->concise_type;
+  }
+
   constexpr auto complete = std::numeric_limits<std::size_t>::max();
   if (get_data_offsets_.size() != row.size()) {
     get_data_offsets_.assign(row.size(), 0);
@@ -1440,11 +1463,6 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     return SQL_SUCCESS;
   }
   
-  const SQLSMALLINT sql_type = col <= column_info_.size()
-      ? column_info_[col - 1].sql_type : static_cast<SQLSMALLINT>(SQL_VARCHAR);
-  const SQLSMALLINT effective_target_type = target_type == SQL_C_DEFAULT
-      ? ResultTypes::default_c_type(sql_type) : target_type;
-
   if (!ResultTypes::is_conversion_supported(sql_type, effective_target_type)) {
     set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
               "Unsupported result data type conversion");

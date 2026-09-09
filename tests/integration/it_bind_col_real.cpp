@@ -548,6 +548,37 @@ TEST_F(BindColIntegrationTest, BoundColumnsResolveSqlCDefault) {
     EXPECT_EQ(sizeof(SQL_DATE_STRUCT), date_indicator);
 }
 
+TEST_F(BindColIntegrationTest, GetDataValidatesAndResolvesTargetTypes) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 42::integer, 43::integer, 44::integer",
+        SQL_NTS));
+    char bound[16]{};
+    SQLLEN bound_length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(
+        hstmt, 1, SQL_C_CHAR, bound, sizeof(bound), &bound_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    char value[16]{};
+    SQLLEN value_length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_ARD_TYPE, value, sizeof(value), &value_length));
+    EXPECT_STREQ("42", value);
+    EXPECT_EQ(2, value_length);
+
+    SQLCHAR state[6]{};
+    EXPECT_EQ(SQL_ERROR, SQLGetData(
+        hstmt, 2, 12345, value, sizeof(value), &value_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY003", reinterpret_cast<char*>(state));
+
+    EXPECT_EQ(SQL_ERROR, SQLGetData(
+        hstmt, 3, SQL_C_BINARY, value, sizeof(value), &value_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+}
+
 TEST_F(BindColIntegrationTest, ConversionFailuresUseSpecificSqlstates) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 'not-an-integer'::text", SQL_NTS));
