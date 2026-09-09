@@ -112,7 +112,6 @@ public:
   rs::core::database::IDatabaseConnection* get_db_connection() { return db_conn_.get(); }
 
 private:
-  ODBCEnvironment* env_; // Reserved for environment-specific settings
   std::unique_ptr<rs::core::database::IDatabaseConnection> db_conn_;
   bool connected_ = false;
   SQLUINTEGER login_timeout_seconds_ = 30;

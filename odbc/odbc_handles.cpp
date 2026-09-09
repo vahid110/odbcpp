@@ -271,8 +271,8 @@ std::vector<std::string> parse_table_types(const std::string& value) {
 
 } // namespace
 
-ODBCConnection::ODBCConnection(ODBCEnvironment* env)
-    : ODBCHandle(HandleType::Connection), env_(env),
+ODBCConnection::ODBCConnection(ODBCEnvironment*)
+    : ODBCHandle(HandleType::Connection),
       connection_id_(next_connection_id.fetch_add(1)) {}
 
 void ODBCConnection::log(
