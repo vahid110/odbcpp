@@ -2285,6 +2285,11 @@ SQLRETURN ODBCStatement::row_count(SQLLEN* row_count_value) {
 SQLRETURN ODBCStatement::describe_col(SQLUSMALLINT column_number, SQLCHAR* column_name, SQLSMALLINT name_buffer_length,
                                      SQLSMALLINT* name_length, SQLSMALLINT* data_type, SQLULEN* column_size,
                                      SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable) {
+  if (name_buffer_length < 0) {
+    set_error(SQLSTATE_INVALID_STRING_LENGTH,
+              "Invalid column-name buffer length");
+    return SQL_ERROR;
+  }
   if (column_number < 1 || column_number > column_info_.size()) {
     set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid column number");
     return SQL_ERROR;
@@ -2311,6 +2316,11 @@ SQLRETURN ODBCStatement::describe_col(SQLUSMALLINT column_number, SQLCHAR* colum
 SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
                                       SQLPOINTER character_attribute, SQLSMALLINT buffer_length,
                                       SQLSMALLINT* string_length, SQLLEN* numeric_attribute) {
+  if (field_identifier == SQL_DESC_NAME && buffer_length < 0) {
+    set_error(SQLSTATE_INVALID_STRING_LENGTH,
+              "Invalid column-attribute buffer length");
+    return SQL_ERROR;
+  }
   if (column_number < 1 || column_number > column_info_.size()) {
     set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid column number");
     return SQL_ERROR;

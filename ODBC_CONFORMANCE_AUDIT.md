@@ -135,8 +135,8 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
 
 ## Maintainability snapshot
 
-- `odbc_api.cpp` is 2,512 lines and contains all 73 exported wrappers;
-  `odbc_handles.cpp` is 2,459 lines and combines connection, statement,
+- `odbc_api.cpp` is 2,466 lines and contains all 73 exported wrappers;
+  `odbc_handles.cpp` is 2,469 lines and combines connection, statement,
   descriptor, conversion, metadata, and registry responsibilities.
 - The callback/future methods in `AsyncDatabaseConnection` are experimental
   scaffolding, are not used by the ODBC driver's production connection path,
@@ -154,6 +154,10 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
   families, including statement dynamic-function and row-count provenance,
   row/column defaults, correct standard origins, and ANSI/wide byte-length and
   truncation behavior. PostgreSQL execution tests cover INSERT and SELECT.
+- Audit batch 10 replaces eight repeated ANSI catalog-argument readers with
+  one validated helper parallel to the wide reader. Shared wide-output length
+  validation and direct A/W parity tests cover catalog arguments,
+  `SQLDescribeCol`, `SQLColAttribute`, and string versus numeric `SQLGetInfo`.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
@@ -185,9 +189,12 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
    audit batch 9 covers the standard header/record field identifiers and
    statement execution provenance. Rowset- and parameter-array-specific
    row/column diagnostics remain with those unsupported features.
-5. **Input validation parity:** ANSI and wide entry points have historically
-   differed on null and invalid-length handling. Audit batch 1 begins closing
-   this with execution/preparation boundary tests.
+5. **Input validation parity:** audit batch 1 covers execution/preparation
+   boundaries. Audit batch 10 centralizes catalog string validation and wide
+   output validation, then directly compares ANSI/wide behavior for connection
+   strings, catalog arguments, column metadata, and `SQLGetInfo`. Remaining
+   pairs stay explicitly listed as partial in the inventory until their full
+   value and state matrices are covered.
 6. **Experimental async database facade:** do not expose or advertise the
    simulated callback/future query path as implemented. Either connect it to
    real protocol I/O with cancellation/deadline ownership or remove it after

@@ -376,6 +376,66 @@ TEST_F(ApiValidationTest, RejectsInvalidConnectionStringLengths) {
   EXPECT_EQ(SQL_ERROR,
             SQLConnect(connection_, dsn, SQL_NTS, nullptr, 0, nullptr, -2));
   EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
+
+  SQLWCHAR wide_dsn[]{'e', 'x', 'a', 'm', 'p', 'l', 'e', 0};
+  EXPECT_EQ(SQL_ERROR,
+            SQLConnectW(connection_, wide_dsn, -2, nullptr, 0, nullptr, 0));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
+}
+
+TEST_F(ApiValidationTest, AnsiAndWideOutputLengthsHaveMatchingValidation) {
+  SQLCHAR narrow[16]{};
+  SQLWCHAR wide[16]{};
+
+  EXPECT_EQ(SQL_ERROR,
+            SQLDescribeCol(statement_, 1, narrow, -1, nullptr, nullptr,
+                           nullptr, nullptr, nullptr));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLDescribeColW(statement_, 1, wide, -1, nullptr, nullptr,
+                            nullptr, nullptr, nullptr));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  EXPECT_EQ(SQL_ERROR,
+            SQLColAttribute(statement_, 1, SQL_DESC_NAME, narrow, -1,
+                            nullptr, nullptr));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLColAttributeW(statement_, 1, SQL_DESC_NAME, wide, -1,
+                             nullptr, nullptr));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetInfo(connection_, SQL_DRIVER_NAME, narrow, -1, nullptr));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetInfoW(connection_, SQL_DRIVER_NAME, wide, -1, nullptr));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
+
+  SQLUSMALLINT transaction_capability = 0;
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLGetInfo(connection_, SQL_TXN_CAPABLE,
+                       &transaction_capability, -1, nullptr));
+  EXPECT_EQ(SQL_TC_ALL, transaction_capability);
+  transaction_capability = 0;
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLGetInfoW(connection_, SQL_TXN_CAPABLE,
+                        &transaction_capability, -1, nullptr));
+  EXPECT_EQ(SQL_TC_ALL, transaction_capability);
+}
+
+TEST_F(ApiValidationTest, CatalogApisShareAnsiAndWideLengthValidation) {
+  auto table = reinterpret_cast<SQLCHAR*>(const_cast<char*>("table"));
+  EXPECT_EQ(SQL_ERROR,
+            SQLTables(statement_, nullptr, 0, nullptr, 0, table, -2,
+                      nullptr, 0));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  SQLWCHAR wide_table[]{'t', 'a', 'b', 'l', 'e', 0};
+  EXPECT_EQ(SQL_ERROR,
+            SQLTablesW(statement_, nullptr, 0, nullptr, 0, wide_table, -2,
+                       nullptr, 0));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, statement_));
 }
 
 TEST_F(ApiValidationTest, UsesSpecificDiagnosticsForInvalidStatementInputs) {

@@ -36,6 +36,13 @@ namespace {
       ODBCHandle* handle, std::string_view utf8, SQLWCHAR* output,
       SQLINTEGER buffer_length, Length* output_length,
       std::string_view truncation_message, bool set_truncation_diagnostic = true) {
+    if (buffer_length < 0) {
+      if (handle) {
+        handle->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                          "Invalid output buffer length");
+      }
+      return SQL_ERROR;
+    }
     const auto wide = utf8_to_wide(utf8);
     if (!wide) {
       if (handle) {
@@ -82,6 +89,13 @@ namespace {
       SQLINTEGER buffer_length, Length* output_length,
       std::string_view truncation_message,
       bool set_truncation_diagnostic = true) {
+    if (buffer_length < 0) {
+      if (handle) {
+        handle->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                          "Invalid output buffer length");
+      }
+      return SQL_ERROR;
+    }
     const auto wide = utf8_to_wide(utf8);
     if (!wide) {
       if (handle) {
@@ -155,6 +169,25 @@ namespace {
       return false;
     }
     output = *converted;
+    return true;
+  }
+
+  template <typename Handle>
+  bool read_narrow_argument(
+      const std::shared_ptr<Handle>& handle, SQLCHAR* value,
+      SQLSMALLINT length, std::optional<std::string>& output,
+      std::string_view function_name) {
+    if (!value) {
+      output.reset();
+      return true;
+    }
+    if (length < 0 && length != SQL_NTS) {
+      handle->set_error(
+          SQLSTATE_INVALID_STRING_LENGTH,
+          "Invalid " + std::string(function_name) + " argument length");
+      return false;
+    }
+    output = sqlchar_to_string(value, length);
     return true;
   }
 
@@ -1233,11 +1266,6 @@ static SQLRETURN SQLGetInfoW_impl(SQLHDBC connection_handle, SQLUSMALLINT info_t
                       SQLSMALLINT* string_length) {
   auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
-  if (buffer_length < 0) {
-    conn->set_error(SQLSTATE_INVALID_STRING_LENGTH,
-                    "Invalid information buffer length");
-    return SQL_ERROR;
-  }
   if (const auto value = string_info_value(info_type)) {
     return write_wide_bytes_output(
         conn, *value, static_cast<SQLWCHAR*>(info_value),
@@ -1461,27 +1489,18 @@ static SQLRETURN SQLColumns_impl(
     SQLSMALLINT name_length4) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
-
-  const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
-                                 std::optional<std::string>& output) {
-    if (!value) {
-      output.reset();
-      return true;
-    }
-    if (length < 0 && length != SQL_NTS) return false;
-    output = sqlchar_to_string(value, length);
-    return true;
-  };
   std::optional<std::string> catalog;
   std::optional<std::string> schema;
   std::optional<std::string> table;
   std::optional<std::string> column;
-  if (!read_argument(catalog_name, name_length1, catalog) ||
-      !read_argument(schema_name, name_length2, schema) ||
-      !read_argument(table_name, name_length3, table) ||
-      !read_argument(column_name, name_length4, column)) {
-    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
-                    "Invalid SQLColumns argument length");
+  if (!read_narrow_argument(stmt, catalog_name, name_length1, catalog,
+                            "SQLColumns") ||
+      !read_narrow_argument(stmt, schema_name, name_length2, schema,
+                            "SQLColumns") ||
+      !read_narrow_argument(stmt, table_name, name_length3, table,
+                            "SQLColumns") ||
+      !read_narrow_argument(stmt, column_name, name_length4, column,
+                            "SQLColumns")) {
     return SQL_ERROR;
   }
   return stmt->columns(catalog, schema, table, column);
@@ -1494,25 +1513,15 @@ static SQLRETURN SQLPrimaryKeys_impl(
     SQLSMALLINT name_length3) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
-
-  const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
-                                 std::optional<std::string>& output) {
-    if (!value) {
-      output.reset();
-      return true;
-    }
-    if (length < 0 && length != SQL_NTS) return false;
-    output = sqlchar_to_string(value, length);
-    return true;
-  };
   std::optional<std::string> catalog;
   std::optional<std::string> schema;
   std::optional<std::string> table;
-  if (!read_argument(catalog_name, name_length1, catalog) ||
-      !read_argument(schema_name, name_length2, schema) ||
-      !read_argument(table_name, name_length3, table)) {
-    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
-                    "Invalid SQLPrimaryKeys argument length");
+  if (!read_narrow_argument(stmt, catalog_name, name_length1, catalog,
+                            "SQLPrimaryKeys") ||
+      !read_narrow_argument(stmt, schema_name, name_length2, schema,
+                            "SQLPrimaryKeys") ||
+      !read_narrow_argument(stmt, table_name, name_length3, table,
+                            "SQLPrimaryKeys")) {
     return SQL_ERROR;
   }
   if (!table) {
@@ -1533,31 +1542,24 @@ static SQLRETURN SQLForeignKeys_impl(
     SQLSMALLINT name_length6) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
-
-  const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
-                                 std::optional<std::string>& output) {
-    if (!value) {
-      output.reset();
-      return true;
-    }
-    if (length < 0 && length != SQL_NTS) return false;
-    output = sqlchar_to_string(value, length);
-    return true;
-  };
   std::optional<std::string> pk_catalog;
   std::optional<std::string> pk_schema;
   std::optional<std::string> pk_table;
   std::optional<std::string> fk_catalog;
   std::optional<std::string> fk_schema;
   std::optional<std::string> fk_table;
-  if (!read_argument(pk_catalog_name, name_length1, pk_catalog) ||
-      !read_argument(pk_schema_name, name_length2, pk_schema) ||
-      !read_argument(pk_table_name, name_length3, pk_table) ||
-      !read_argument(fk_catalog_name, name_length4, fk_catalog) ||
-      !read_argument(fk_schema_name, name_length5, fk_schema) ||
-      !read_argument(fk_table_name, name_length6, fk_table)) {
-    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
-                    "Invalid SQLForeignKeys argument length");
+  if (!read_narrow_argument(stmt, pk_catalog_name, name_length1, pk_catalog,
+                            "SQLForeignKeys") ||
+      !read_narrow_argument(stmt, pk_schema_name, name_length2, pk_schema,
+                            "SQLForeignKeys") ||
+      !read_narrow_argument(stmt, pk_table_name, name_length3, pk_table,
+                            "SQLForeignKeys") ||
+      !read_narrow_argument(stmt, fk_catalog_name, name_length4, fk_catalog,
+                            "SQLForeignKeys") ||
+      !read_narrow_argument(stmt, fk_schema_name, name_length5, fk_schema,
+                            "SQLForeignKeys") ||
+      !read_narrow_argument(stmt, fk_table_name, name_length6, fk_table,
+                            "SQLForeignKeys")) {
     return SQL_ERROR;
   }
   if (!pk_table && !fk_table) {
@@ -1577,25 +1579,15 @@ static SQLRETURN SQLStatistics_impl(
     SQLUSMALLINT reserved) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
-
-  const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
-                                 std::optional<std::string>& output) {
-    if (!value) {
-      output.reset();
-      return true;
-    }
-    if (length < 0 && length != SQL_NTS) return false;
-    output = sqlchar_to_string(value, length);
-    return true;
-  };
   std::optional<std::string> catalog;
   std::optional<std::string> schema;
   std::optional<std::string> table;
-  if (!read_argument(catalog_name, name_length1, catalog) ||
-      !read_argument(schema_name, name_length2, schema) ||
-      !read_argument(table_name, name_length3, table)) {
-    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
-                    "Invalid SQLStatistics argument length");
+  if (!read_narrow_argument(stmt, catalog_name, name_length1, catalog,
+                            "SQLStatistics") ||
+      !read_narrow_argument(stmt, schema_name, name_length2, schema,
+                            "SQLStatistics") ||
+      !read_narrow_argument(stmt, table_name, name_length3, table,
+                            "SQLStatistics")) {
     return SQL_ERROR;
   }
   if (!table) {
@@ -1624,25 +1616,15 @@ static SQLRETURN SQLProcedures_impl(
     SQLSMALLINT name_length3) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
-
-  const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
-                                 std::optional<std::string>& output) {
-    if (!value) {
-      output.reset();
-      return true;
-    }
-    if (length < 0 && length != SQL_NTS) return false;
-    output = sqlchar_to_string(value, length);
-    return true;
-  };
   std::optional<std::string> catalog;
   std::optional<std::string> schema;
   std::optional<std::string> procedure;
-  if (!read_argument(catalog_name, name_length1, catalog) ||
-      !read_argument(schema_name, name_length2, schema) ||
-      !read_argument(procedure_name, name_length3, procedure)) {
-    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
-                    "Invalid SQLProcedures argument length");
+  if (!read_narrow_argument(stmt, catalog_name, name_length1, catalog,
+                            "SQLProcedures") ||
+      !read_narrow_argument(stmt, schema_name, name_length2, schema,
+                            "SQLProcedures") ||
+      !read_narrow_argument(stmt, procedure_name, name_length3, procedure,
+                            "SQLProcedures")) {
     return SQL_ERROR;
   }
   return stmt->procedures(catalog, schema, procedure);
@@ -1656,27 +1638,18 @@ static SQLRETURN SQLProcedureColumns_impl(
     SQLSMALLINT name_length4) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
-
-  const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
-                                 std::optional<std::string>& output) {
-    if (!value) {
-      output.reset();
-      return true;
-    }
-    if (length < 0 && length != SQL_NTS) return false;
-    output = sqlchar_to_string(value, length);
-    return true;
-  };
   std::optional<std::string> catalog;
   std::optional<std::string> schema;
   std::optional<std::string> procedure;
   std::optional<std::string> column;
-  if (!read_argument(catalog_name, name_length1, catalog) ||
-      !read_argument(schema_name, name_length2, schema) ||
-      !read_argument(procedure_name, name_length3, procedure) ||
-      !read_argument(column_name, name_length4, column)) {
-    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
-                    "Invalid SQLProcedureColumns argument length");
+  if (!read_narrow_argument(stmt, catalog_name, name_length1, catalog,
+                            "SQLProcedureColumns") ||
+      !read_narrow_argument(stmt, schema_name, name_length2, schema,
+                            "SQLProcedureColumns") ||
+      !read_narrow_argument(stmt, procedure_name, name_length3, procedure,
+                            "SQLProcedureColumns") ||
+      !read_narrow_argument(stmt, column_name, name_length4, column,
+                            "SQLProcedureColumns")) {
     return SQL_ERROR;
   }
   return stmt->procedure_columns(catalog, schema, procedure, column);
@@ -1690,25 +1663,15 @@ static SQLRETURN SQLSpecialColumns_impl(
     SQLUSMALLINT scope, SQLUSMALLINT nullable) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
-
-  const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
-                                 std::optional<std::string>& output) {
-    if (!value) {
-      output.reset();
-      return true;
-    }
-    if (length < 0 && length != SQL_NTS) return false;
-    output = sqlchar_to_string(value, length);
-    return true;
-  };
   std::optional<std::string> catalog;
   std::optional<std::string> schema;
   std::optional<std::string> table;
-  if (!read_argument(catalog_name, name_length1, catalog) ||
-      !read_argument(schema_name, name_length2, schema) ||
-      !read_argument(table_name, name_length3, table)) {
-    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
-                    "Invalid SQLSpecialColumns argument length");
+  if (!read_narrow_argument(stmt, catalog_name, name_length1, catalog,
+                            "SQLSpecialColumns") ||
+      !read_narrow_argument(stmt, schema_name, name_length2, schema,
+                            "SQLSpecialColumns") ||
+      !read_narrow_argument(stmt, table_name, name_length3, table,
+                            "SQLSpecialColumns")) {
     return SQL_ERROR;
   }
   if (!table) {
@@ -1744,27 +1707,18 @@ static SQLRETURN SQLTables_impl(
     SQLSMALLINT name_length4) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
-
-  const auto read_argument = [&](SQLCHAR* value, SQLSMALLINT length,
-                                 std::optional<std::string>& output) {
-    if (!value) {
-      output.reset();
-      return true;
-    }
-    if (length < 0 && length != SQL_NTS) return false;
-    output = sqlchar_to_string(value, length);
-    return true;
-  };
   std::optional<std::string> catalog;
   std::optional<std::string> schema;
   std::optional<std::string> table;
   std::optional<std::string> type;
-  if (!read_argument(catalog_name, name_length1, catalog) ||
-      !read_argument(schema_name, name_length2, schema) ||
-      !read_argument(table_name, name_length3, table) ||
-      !read_argument(table_type, name_length4, type)) {
-    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
-                    "Invalid SQLTables argument length");
+  if (!read_narrow_argument(stmt, catalog_name, name_length1, catalog,
+                            "SQLTables") ||
+      !read_narrow_argument(stmt, schema_name, name_length2, schema,
+                            "SQLTables") ||
+      !read_narrow_argument(stmt, table_name, name_length3, table,
+                            "SQLTables") ||
+      !read_narrow_argument(stmt, table_type, name_length4, type,
+                            "SQLTables")) {
     return SQL_ERROR;
   }
   return stmt->tables(catalog, schema, table, type);
@@ -2073,7 +2027,7 @@ static SQLRETURN SQLColAttributeW_impl(
     SQLLEN* numeric_attribute) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
-  if (buffer_length < 0) {
+  if (field_identifier == SQL_DESC_NAME && buffer_length < 0) {
     stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
                     "Invalid column-attribute buffer length");
     return SQL_ERROR;
