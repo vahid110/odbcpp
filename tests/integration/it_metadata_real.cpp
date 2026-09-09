@@ -75,6 +75,51 @@ TEST_F(MetadataIntegrationTest, BasicMetadata) {
     EXPECT_EQ(SQL_VARCHAR, numeric_attr);
 }
 
+TEST_F(MetadataIntegrationTest, ImplementationDescriptorReportsResultMetadata) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"SELECT 'hello'::varchar(12) AS label, "
+                  "12.34::numeric(8,2) AS amount",
+        SQL_NTS));
+
+    SQLHDESC descriptor = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_IMP_ROW_DESC, &descriptor, 0, nullptr));
+    SQLSMALLINT count = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        descriptor, 0, SQL_DESC_COUNT, &count, 0, nullptr));
+    EXPECT_EQ(2, count);
+
+    char name[16]{};
+    SQLINTEGER name_length = 0;
+    SQLSMALLINT type = 0;
+    SQLULEN length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        descriptor, 1, SQL_DESC_NAME, name, sizeof(name), &name_length));
+    EXPECT_STREQ("label", name);
+    EXPECT_EQ(5, name_length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        descriptor, 1, SQL_DESC_CONCISE_TYPE, &type, 0, nullptr));
+    EXPECT_EQ(SQL_VARCHAR, type);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        descriptor, 1, SQL_DESC_LENGTH, &length, 0, nullptr));
+    EXPECT_EQ(12u, length);
+
+    SQLSMALLINT precision = 0;
+    SQLSMALLINT scale = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        descriptor, 2, SQL_DESC_PRECISION, &precision, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        descriptor, 2, SQL_DESC_SCALE, &scale, 0, nullptr));
+    EXPECT_EQ(8, precision);
+    EXPECT_EQ(2, scale);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        descriptor, 0, SQL_DESC_COUNT, &count, 0, nullptr));
+    EXPECT_EQ(0, count);
+}
+
 TEST_F(MetadataIntegrationTest, ExecutesAndPreparesUnicodeSql) {
     const std::string expected =
         "Gr\xc3\xbc\xc3\x9f" "e \xe4\xb8\x96\xe7\x95\x8c "

@@ -297,6 +297,11 @@ public:
   SQLRETURN copy_from(const ODBCDescriptor& source);
 
 private:
+  friend class ODBCStatement;
+  void replace_records(std::vector<DescriptorRecord> records) {
+    records_ = std::move(records);
+  }
+
   bool automatically_allocated_{false};
   DescriptorKind kind_{DescriptorKind::Application};
   std::vector<DescriptorRecord> records_;

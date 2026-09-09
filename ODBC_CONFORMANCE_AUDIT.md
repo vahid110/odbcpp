@@ -76,7 +76,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLNativeSql` | A/W | Partial | unit, DM | ODBC escape translation; currently effectively pass-through |
 | `SQLSetEnvAttr` | A | Partial | unit, integration, DM | ODBC version is locked after DBC allocation; supported attribute matrix remains |
 | `SQLGetEnvAttr` | A | Partial | unit, DM | Supported attribute matrix and buffer/type rules |
-| `SQLGetDescField` | A/W | Partial | unit | Descriptor-kind restrictions and complete header/record fields |
+| `SQLGetDescField` | A/W | Partial | unit, integration | IRD result metadata and common header/record fields work; complete field matrix remains |
 | `SQLSetDescField` | A/W | Partial | unit | Consistency checks, descriptor-kind restrictions, pointer fields |
 | `SQLCopyDesc` | A | Partial | unit concurrency | Opposite-direction copies are serialized without deadlock and IRD targets return HY016; remaining consistency and state matrix remain |
 
@@ -143,6 +143,9 @@ drive fetch and prepared execution. IRD record/header mutation and copy targets
 return HY016, except for the writable row-status and rows-processed header
 pointers. Remaining descriptor-kind rules, consistency checks, and the full
 field matrix remain partial.
+The IRD record count and common name, type, length, precision, scale, and
+nullability fields are populated from PostgreSQL result metadata and cleared
+when the cursor closes.
 
 ## Logging coverage
 
@@ -162,7 +165,7 @@ substitute for ODBC diagnostics.
 ## Maintainability snapshot
 
 - `odbc_api.cpp` is 2,577 lines and contains all 73 exported wrappers;
-  `odbc_handles.cpp` is 2,819 lines and combines connection, statement,
+  `odbc_handles.cpp` is 2,877 lines and combines connection, statement,
   descriptor, conversion, metadata, and registry responsibilities.
 - The callback/future methods in `AsyncDatabaseConnection` are experimental
   scaffolding, are not used by the ODBC driver's production connection path,
@@ -237,6 +240,10 @@ substitute for ODBC diagnostics.
   the implementation row descriptor. `SQLSetDescField` and `SQLCopyDesc`
   reject attempts to modify it with HY016, while its row-status and
   rows-processed header pointers remain writable and tested.
+- Audit batch 22 populates IRD records from each PostgreSQL result's column
+  metadata and clears them with the cursor. Integration coverage retrieves the
+  record count, names, SQL types, declared length, numeric precision, and scale
+  through `SQLGetDescField` rather than the statement metadata helpers.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

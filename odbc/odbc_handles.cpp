@@ -243,6 +243,35 @@ ParameterMetadata parameter_metadata_for(std::uint32_t oid) {
                            type.decimal_digits, SQL_NULLABLE_UNKNOWN, {}};
 }
 
+DescriptorRecord descriptor_record_for(const ColumnInfo& column) {
+  DescriptorRecord record;
+  record.type = column.sql_type;
+  record.concise_type = column.sql_type;
+  record.length = column.column_size;
+  record.precision = static_cast<SQLSMALLINT>(std::min<SQLULEN>(
+      column.column_size,
+      static_cast<SQLULEN>(std::numeric_limits<SQLSMALLINT>::max())));
+  record.scale = column.decimal_digits;
+  record.nullable = column.nullable;
+  record.name = column.name;
+  return record;
+}
+
+DescriptorRecord descriptor_record_for(const ParameterMetadata& parameter) {
+  DescriptorRecord record;
+  record.type = parameter.sql_type;
+  record.concise_type = parameter.sql_type;
+  record.length = parameter.column_size;
+  record.precision = static_cast<SQLSMALLINT>(std::min<SQLULEN>(
+      parameter.column_size,
+      static_cast<SQLULEN>(std::numeric_limits<SQLSMALLINT>::max())));
+  record.scale = parameter.decimal_digits;
+  record.nullable = parameter.nullable;
+  record.parameter_type = SQL_PARAM_INPUT;
+  record.name = parameter.name;
+  return record;
+}
+
 struct TypeInfoDefinition {
   const char* name;
   SQLSMALLINT data_type;
@@ -1245,6 +1274,7 @@ SQLRETURN ODBCStatement::close_cursor(bool report_missing_cursor) {
   }
   result_rows_.clear();
   column_info_.clear();
+  descriptor(imp_row_descriptor_)->replace_records({});
   get_data_offsets_.clear();
   current_row_ = 0;
   affected_rows_ = 0;
@@ -1348,6 +1378,7 @@ SQLRETURN ODBCStatement::fetch() {
 SQLRETURN ODBCStatement::more_results() {
   result_rows_.clear();
   column_info_.clear();
+  descriptor(imp_row_descriptor_)->replace_records({});
   get_data_offsets_.clear();
   current_row_ = 0;
   affected_rows_ = 0;
@@ -1886,6 +1917,13 @@ void ODBCStatement::apply_query_result(
           SQL_NULLABLE_UNKNOWN});
     }
   }
+  std::vector<DescriptorRecord> row_descriptor_records;
+  row_descriptor_records.reserve(column_info_.size());
+  for (const auto& column : column_info_) {
+    row_descriptor_records.push_back(descriptor_record_for(column));
+  }
+  descriptor(imp_row_descriptor_)->replace_records(
+      std::move(row_descriptor_records));
 
   if (!include_parameter_metadata) {
     param_metadata_.clear();
@@ -1897,6 +1935,14 @@ void ODBCStatement::apply_query_result(
     for (const auto oid : result.parameter_type_ids) {
       param_metadata_.push_back(parameter_metadata_for(oid));
     }
+    std::vector<DescriptorRecord> parameter_descriptor_records;
+    parameter_descriptor_records.reserve(param_metadata_.size());
+    for (const auto& parameter : param_metadata_) {
+      parameter_descriptor_records.push_back(
+          descriptor_record_for(parameter));
+    }
+    descriptor(imp_param_descriptor_)->replace_records(
+        std::move(parameter_descriptor_records));
   }
 }
 
