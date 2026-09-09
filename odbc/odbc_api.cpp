@@ -1,4 +1,5 @@
 #include "odbc_api.h"
+#include "c_api_guard.h"
 #include "odbc_handles.h"
 #include "unicode.h"
 #include <algorithm>
@@ -292,7 +293,7 @@ std::shared_ptr<T> get_valid_handle(SQLHANDLE handle) {
 
 extern "C" {
 
-SQLRETURN SQLAllocHandle(SQLSMALLINT handle_type, SQLHANDLE input_handle, SQLHANDLE* output_handle) {
+static SQLRETURN SQLAllocHandle_impl(SQLSMALLINT handle_type, SQLHANDLE input_handle, SQLHANDLE* output_handle) {
   if (!output_handle) {
     if (input_handle) {
       if (auto parent = HandleRegistry::instance().get_handle(input_handle)) {
@@ -379,7 +380,7 @@ SQLRETURN SQLAllocHandle(SQLSMALLINT handle_type, SQLHANDLE input_handle, SQLHAN
   }
 }
 
-SQLRETURN SQLFreeHandle(SQLSMALLINT handle_type, SQLHANDLE handle) {
+static SQLRETURN SQLFreeHandle_impl(SQLSMALLINT handle_type, SQLHANDLE handle) {
   if (!handle) return SQL_INVALID_HANDLE;
   
   auto obj = HandleRegistry::instance().get_handle(handle);
@@ -414,7 +415,7 @@ SQLRETURN SQLFreeHandle(SQLSMALLINT handle_type, SQLHANDLE handle) {
   return SQL_SUCCESS;
 }
 
-SQLRETURN SQLConnect(SQLHDBC connection_handle, 
+static SQLRETURN SQLConnect_impl(SQLHDBC connection_handle,
                     SQLCHAR* server_name, SQLSMALLINT name_length1,
                     SQLCHAR* user_name, SQLSMALLINT name_length2, 
                     SQLCHAR* authentication, SQLSMALLINT name_length3) {
@@ -436,7 +437,7 @@ SQLRETURN SQLConnect(SQLHDBC connection_handle,
   return conn->connect(dsn, user, password);
 }
 
-SQLRETURN SQLConnectW(SQLHDBC connection_handle,
+static SQLRETURN SQLConnectW_impl(SQLHDBC connection_handle,
                       SQLWCHAR* server_name, SQLSMALLINT name_length1,
                       SQLWCHAR* user_name, SQLSMALLINT name_length2,
                       SQLWCHAR* authentication, SQLSMALLINT name_length3) {
@@ -461,7 +462,7 @@ SQLRETURN SQLConnectW(SQLHDBC connection_handle,
   return conn->connect(*dsn, *user, *password);
 }
 
-SQLRETURN SQLDriverConnect(
+static SQLRETURN SQLDriverConnect_impl(
     SQLHDBC connection_handle, SQLHWND, SQLCHAR* connection_string_in,
     SQLSMALLINT string_length1, SQLCHAR* connection_string_out,
     SQLSMALLINT buffer_length, SQLSMALLINT* string_length2,
@@ -522,7 +523,7 @@ SQLRETURN SQLDriverConnect(
   return SQL_SUCCESS;
 }
 
-SQLRETURN SQLDriverConnectW(
+static SQLRETURN SQLDriverConnectW_impl(
     SQLHDBC connection_handle, SQLHWND, SQLWCHAR* connection_string_in,
     SQLSMALLINT string_length1, SQLWCHAR* connection_string_out,
     SQLSMALLINT buffer_length, SQLSMALLINT* string_length2,
@@ -574,7 +575,7 @@ SQLRETURN SQLDriverConnectW(
       "Output connection string was truncated");
 }
 
-SQLRETURN SQLDisconnect(SQLHDBC connection_handle) {
+static SQLRETURN SQLDisconnect_impl(SQLHDBC connection_handle) {
   auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
   
@@ -585,7 +586,7 @@ SQLRETURN SQLDisconnect(SQLHDBC connection_handle) {
   return result;
 }
 
-SQLRETURN SQLSetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
+static SQLRETURN SQLSetConnectAttr_impl(SQLHDBC connection_handle, SQLINTEGER attribute,
                             SQLPOINTER value, SQLINTEGER) {
   auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
@@ -593,13 +594,13 @@ SQLRETURN SQLSetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
       attribute, static_cast<SQLULEN>(reinterpret_cast<std::uintptr_t>(value)));
 }
 
-SQLRETURN SQLSetConnectAttrW(SQLHDBC connection_handle, SQLINTEGER attribute,
+static SQLRETURN SQLSetConnectAttrW_impl(SQLHDBC connection_handle, SQLINTEGER attribute,
                              SQLPOINTER value, SQLINTEGER string_length) {
   return SQLSetConnectAttr(
       connection_handle, attribute, value, string_length);
 }
 
-SQLRETURN SQLGetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
+static SQLRETURN SQLGetConnectAttr_impl(SQLHDBC connection_handle, SQLINTEGER attribute,
                             SQLPOINTER value, SQLINTEGER,
                             SQLINTEGER* string_length) {
   auto conn = get_valid_handle<ODBCConnection>(connection_handle);
@@ -617,14 +618,14 @@ SQLRETURN SQLGetConnectAttr(SQLHDBC connection_handle, SQLINTEGER attribute,
   return result;
 }
 
-SQLRETURN SQLGetConnectAttrW(SQLHDBC connection_handle, SQLINTEGER attribute,
+static SQLRETURN SQLGetConnectAttrW_impl(SQLHDBC connection_handle, SQLINTEGER attribute,
                              SQLPOINTER value, SQLINTEGER buffer_length,
                              SQLINTEGER* string_length) {
   return SQLGetConnectAttr(
       connection_handle, attribute, value, buffer_length, string_length);
 }
 
-SQLRETURN SQLEndTran(SQLSMALLINT handle_type, SQLHANDLE handle,
+static SQLRETURN SQLEndTran_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
                      SQLSMALLINT completion_type) {
   if (handle_type == SQL_HANDLE_DBC) {
     auto conn = get_valid_handle<ODBCConnection>(handle);
@@ -642,7 +643,7 @@ SQLRETURN SQLEndTran(SQLSMALLINT handle_type, SQLHANDLE handle,
   return SQL_INVALID_HANDLE;
 }
 
-SQLRETURN SQLExecDirect(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length) {
+static SQLRETURN SQLExecDirect_impl(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
 
@@ -659,7 +660,7 @@ SQLRETURN SQLExecDirect(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLI
   return stmt->execute_direct(sql);
 }
 
-SQLRETURN SQLExecDirectW(SQLHSTMT statement_handle,
+static SQLRETURN SQLExecDirectW_impl(SQLHSTMT statement_handle,
                          SQLWCHAR* statement_text, SQLINTEGER text_length) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
@@ -682,14 +683,14 @@ SQLRETURN SQLExecDirectW(SQLHSTMT statement_handle,
   return stmt->execute_direct(*sql);
 }
 
-SQLRETURN SQLFetch(SQLHSTMT statement_handle) {
+static SQLRETURN SQLFetch_impl(SQLHSTMT statement_handle) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   
   return stmt->fetch();
 }
 
-SQLRETURN SQLFetchScroll(SQLHSTMT statement_handle,
+static SQLRETURN SQLFetchScroll_impl(SQLHSTMT statement_handle,
                          SQLSMALLINT fetch_orientation, SQLLEN) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
@@ -713,13 +714,13 @@ SQLRETURN SQLFetchScroll(SQLHSTMT statement_handle,
   return SQL_ERROR;
 }
 
-SQLRETURN SQLMoreResults(SQLHSTMT statement_handle) {
+static SQLRETURN SQLMoreResults_impl(SQLHSTMT statement_handle) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   return stmt->more_results();
 }
 
-SQLRETURN SQLGetData(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLSMALLINT target_type,
+static SQLRETURN SQLGetData_impl(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLSMALLINT target_type,
                     void* target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
@@ -727,7 +728,7 @@ SQLRETURN SQLGetData(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLS
   return stmt->get_data(column_number, target_type, target_value, buffer_length, strlen_or_indicator);
 }
 
-SQLRETURN SQLSetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
+static SQLRETURN SQLSetStmtAttr_impl(SQLHSTMT statement_handle, SQLINTEGER attribute,
                          SQLPOINTER value, SQLINTEGER) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
@@ -735,12 +736,12 @@ SQLRETURN SQLSetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
       attribute, static_cast<SQLULEN>(reinterpret_cast<std::uintptr_t>(value)));
 }
 
-SQLRETURN SQLSetStmtAttrW(SQLHSTMT statement_handle, SQLINTEGER attribute,
+static SQLRETURN SQLSetStmtAttrW_impl(SQLHSTMT statement_handle, SQLINTEGER attribute,
                           SQLPOINTER value, SQLINTEGER string_length) {
   return SQLSetStmtAttr(statement_handle, attribute, value, string_length);
 }
 
-SQLRETURN SQLGetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
+static SQLRETURN SQLGetStmtAttr_impl(SQLHSTMT statement_handle, SQLINTEGER attribute,
                          SQLPOINTER value, SQLINTEGER,
                          SQLINTEGER* string_length) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
@@ -758,20 +759,20 @@ SQLRETURN SQLGetStmtAttr(SQLHSTMT statement_handle, SQLINTEGER attribute,
   return result;
 }
 
-SQLRETURN SQLGetStmtAttrW(SQLHSTMT statement_handle, SQLINTEGER attribute,
+static SQLRETURN SQLGetStmtAttrW_impl(SQLHSTMT statement_handle, SQLINTEGER attribute,
                           SQLPOINTER value, SQLINTEGER buffer_length,
                           SQLINTEGER* string_length) {
   return SQLGetStmtAttr(
       statement_handle, attribute, value, buffer_length, string_length);
 }
 
-SQLRETURN SQLCloseCursor(SQLHSTMT statement_handle) {
+static SQLRETURN SQLCloseCursor_impl(SQLHSTMT statement_handle) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   return stmt->close_cursor(true);
 }
 
-SQLRETURN SQLFreeStmt(SQLHSTMT statement_handle, SQLUSMALLINT option) {
+static SQLRETURN SQLFreeStmt_impl(SQLHSTMT statement_handle, SQLUSMALLINT option) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   switch (option) {
@@ -793,7 +794,7 @@ SQLRETURN SQLFreeStmt(SQLHSTMT statement_handle, SQLUSMALLINT option) {
   }
 }
 
-SQLRETURN SQLGetDiagRec(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,
+static SQLRETURN SQLGetDiagRec_impl(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,
                        SQLCHAR* sqlstate, SQLINTEGER* native_error, SQLCHAR* message_text,
                        SQLSMALLINT buffer_length, SQLSMALLINT* text_length) {
   if (rec_number < 1) {
@@ -846,7 +847,7 @@ SQLRETURN SQLGetDiagRec(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT r
   return SQL_SUCCESS;
 }
 
-SQLRETURN SQLGetDiagRecW(SQLSMALLINT, SQLHANDLE handle,
+static SQLRETURN SQLGetDiagRecW_impl(SQLSMALLINT, SQLHANDLE handle,
                          SQLSMALLINT rec_number, SQLWCHAR* sqlstate,
                          SQLINTEGER* native_error, SQLWCHAR* message_text,
                          SQLSMALLINT buffer_length,
@@ -882,7 +883,7 @@ SQLRETURN SQLGetDiagRecW(SQLSMALLINT, SQLHANDLE handle,
       "Diagnostic message was truncated", false);
 }
 
-SQLRETURN SQLGetDiagField(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,
+static SQLRETURN SQLGetDiagField_impl(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,
                          SQLSMALLINT diag_identifier, SQLPOINTER diag_info_ptr, SQLSMALLINT buffer_length,
                          SQLSMALLINT* string_length_ptr) {
   auto obj = HandleRegistry::instance().get_handle(handle);
@@ -953,7 +954,7 @@ SQLRETURN SQLGetDiagField(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT
   }
 }
 
-SQLRETURN SQLGetDiagFieldW(
+static SQLRETURN SQLGetDiagFieldW_impl(
     SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT rec_number,
     SQLSMALLINT diag_identifier, SQLPOINTER diag_info_ptr,
     SQLSMALLINT buffer_length, SQLSMALLINT* string_length_ptr) {
@@ -982,7 +983,7 @@ SQLRETURN SQLGetDiagFieldW(
       string_length_ptr, "Diagnostic field was truncated", false);
 }
 
-SQLRETURN SQLError(SQLHENV environment_handle, SQLHDBC connection_handle, SQLHSTMT statement_handle,
+static SQLRETURN SQLError_impl(SQLHENV environment_handle, SQLHDBC connection_handle, SQLHSTMT statement_handle,
                   SQLCHAR* sqlstate, SQLINTEGER* native_error, SQLCHAR* message_text,
                   SQLSMALLINT buffer_length, SQLSMALLINT* text_length) {
   // ODBC 2.x compatibility function - check handles in order of precedence
@@ -1017,7 +1018,7 @@ SQLRETURN SQLError(SQLHENV environment_handle, SQLHDBC connection_handle, SQLHST
   return result;
 }
 
-SQLRETURN SQLErrorW(
+static SQLRETURN SQLErrorW_impl(
     SQLHENV environment_handle, SQLHDBC connection_handle,
     SQLHSTMT statement_handle, SQLWCHAR* sqlstate,
     SQLINTEGER* native_error, SQLWCHAR* message_text,
@@ -1047,7 +1048,7 @@ SQLRETURN SQLErrorW(
   return result;
 }
 
-SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type, 
+static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_type,
                     void* info_value, SQLSMALLINT buffer_length, SQLSMALLINT* string_length) {
   auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
@@ -1134,7 +1135,7 @@ SQLRETURN SQLGetInfo(SQLHDBC connection_handle, SQLUSMALLINT info_type,
   }
 }
 
-SQLRETURN SQLGetInfoW(SQLHDBC connection_handle, SQLUSMALLINT info_type,
+static SQLRETURN SQLGetInfoW_impl(SQLHDBC connection_handle, SQLUSMALLINT info_type,
                       void* info_value, SQLSMALLINT buffer_length,
                       SQLSMALLINT* string_length) {
   auto conn = get_valid_handle<ODBCConnection>(connection_handle);
@@ -1153,7 +1154,7 @@ SQLRETURN SQLGetInfoW(SQLHDBC connection_handle, SQLUSMALLINT info_type,
                     string_length);
 }
 
-SQLRETURN SQLGetFunctions(SQLHDBC connection_handle, SQLUSMALLINT function_id,
+static SQLRETURN SQLGetFunctions_impl(SQLHDBC connection_handle, SQLUSMALLINT function_id,
                           SQLUSMALLINT* supported) {
   auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
@@ -1189,7 +1190,7 @@ SQLRETURN SQLGetFunctions(SQLHDBC connection_handle, SQLUSMALLINT function_id,
   return SQL_SUCCESS;
 }
 
-SQLRETURN SQLNativeSql(
+static SQLRETURN SQLNativeSql_impl(
     SQLHDBC connection_handle, SQLCHAR* input_statement,
     SQLINTEGER text_length1, SQLCHAR* output_statement,
     SQLINTEGER buffer_length, SQLINTEGER* text_length2) {
@@ -1235,7 +1236,7 @@ SQLRETURN SQLNativeSql(
   return SQL_SUCCESS;
 }
 
-SQLRETURN SQLNativeSqlW(
+static SQLRETURN SQLNativeSqlW_impl(
     SQLHDBC connection_handle, SQLWCHAR* input_statement,
     SQLINTEGER text_length1, SQLWCHAR* output_statement,
     SQLINTEGER buffer_length, SQLINTEGER* text_length2) {
@@ -1272,7 +1273,7 @@ SQLRETURN SQLNativeSqlW(
       text_length2, "Output SQL statement was truncated");
 }
 
-SQLRETURN SQLSetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute, 
+static SQLRETURN SQLSetEnvAttr_impl(SQLHENV environment_handle, SQLINTEGER attribute,
                        void* value, SQLINTEGER string_length) {
   auto env = get_valid_handle<ODBCEnvironment>(environment_handle);
   if (!env) return SQL_INVALID_HANDLE;
@@ -1300,7 +1301,7 @@ SQLRETURN SQLSetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute,
   }
 }
 
-SQLRETURN SQLGetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute,
+static SQLRETURN SQLGetEnvAttr_impl(SQLHENV environment_handle, SQLINTEGER attribute,
                         SQLPOINTER value, SQLINTEGER,
                         SQLINTEGER* string_length) {
   auto env = get_valid_handle<ODBCEnvironment>(environment_handle);
@@ -1330,31 +1331,31 @@ SQLRETURN SQLGetEnvAttr(SQLHENV environment_handle, SQLINTEGER attribute,
   return SQL_SUCCESS;
 }
 
-SQLRETURN SQLNumResultCols(SQLHSTMT statement_handle, SQLSMALLINT* column_count) {
+static SQLRETURN SQLNumResultCols_impl(SQLHSTMT statement_handle, SQLSMALLINT* column_count) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   
   return stmt->get_num_result_cols(column_count);
 }
 
-SQLRETURN SQLRowCount(SQLHSTMT statement_handle, SQLLEN* row_count) {
+static SQLRETURN SQLRowCount_impl(SQLHSTMT statement_handle, SQLLEN* row_count) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
 
   return stmt->row_count(row_count);
 }
 
-SQLRETURN SQLGetTypeInfo(SQLHSTMT statement_handle, SQLSMALLINT data_type) {
+static SQLRETURN SQLGetTypeInfo_impl(SQLHSTMT statement_handle, SQLSMALLINT data_type) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   return stmt->get_type_info(data_type);
 }
 
-SQLRETURN SQLGetTypeInfoW(SQLHSTMT statement_handle, SQLSMALLINT data_type) {
+static SQLRETURN SQLGetTypeInfoW_impl(SQLHSTMT statement_handle, SQLSMALLINT data_type) {
   return SQLGetTypeInfo(statement_handle, data_type);
 }
 
-SQLRETURN SQLColumns(
+static SQLRETURN SQLColumns_impl(
     SQLHSTMT statement_handle, SQLCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLCHAR* schema_name,
     SQLSMALLINT name_length2, SQLCHAR* table_name,
@@ -1388,7 +1389,7 @@ SQLRETURN SQLColumns(
   return stmt->columns(catalog, schema, table, column);
 }
 
-SQLRETURN SQLPrimaryKeys(
+static SQLRETURN SQLPrimaryKeys_impl(
     SQLHSTMT statement_handle, SQLCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLCHAR* schema_name,
     SQLSMALLINT name_length2, SQLCHAR* table_name,
@@ -1424,7 +1425,7 @@ SQLRETURN SQLPrimaryKeys(
   return stmt->primary_keys(catalog, schema, *table);
 }
 
-SQLRETURN SQLForeignKeys(
+static SQLRETURN SQLForeignKeys_impl(
     SQLHSTMT statement_handle, SQLCHAR* pk_catalog_name,
     SQLSMALLINT name_length1, SQLCHAR* pk_schema_name,
     SQLSMALLINT name_length2, SQLCHAR* pk_table_name,
@@ -1470,7 +1471,7 @@ SQLRETURN SQLForeignKeys(
                             fk_schema, fk_table);
 }
 
-SQLRETURN SQLStatistics(
+static SQLRETURN SQLStatistics_impl(
     SQLHSTMT statement_handle, SQLCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLCHAR* schema_name,
     SQLSMALLINT name_length2, SQLCHAR* table_name,
@@ -1518,7 +1519,7 @@ SQLRETURN SQLStatistics(
                           unique == SQL_INDEX_UNIQUE);
 }
 
-SQLRETURN SQLProcedures(
+static SQLRETURN SQLProcedures_impl(
     SQLHSTMT statement_handle, SQLCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLCHAR* schema_name,
     SQLSMALLINT name_length2, SQLCHAR* procedure_name,
@@ -1549,7 +1550,7 @@ SQLRETURN SQLProcedures(
   return stmt->procedures(catalog, schema, procedure);
 }
 
-SQLRETURN SQLProcedureColumns(
+static SQLRETURN SQLProcedureColumns_impl(
     SQLHSTMT statement_handle, SQLCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLCHAR* schema_name,
     SQLSMALLINT name_length2, SQLCHAR* procedure_name,
@@ -1583,7 +1584,7 @@ SQLRETURN SQLProcedureColumns(
   return stmt->procedure_columns(catalog, schema, procedure, column);
 }
 
-SQLRETURN SQLSpecialColumns(
+static SQLRETURN SQLSpecialColumns_impl(
     SQLHSTMT statement_handle, SQLUSMALLINT identifier_type,
     SQLCHAR* catalog_name, SQLSMALLINT name_length1,
     SQLCHAR* schema_name, SQLSMALLINT name_length2,
@@ -1637,7 +1638,7 @@ SQLRETURN SQLSpecialColumns(
                                nullable == SQL_NO_NULLS);
 }
 
-SQLRETURN SQLTables(
+static SQLRETURN SQLTables_impl(
     SQLHSTMT statement_handle, SQLCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLCHAR* schema_name,
     SQLSMALLINT name_length2, SQLCHAR* table_name,
@@ -1671,7 +1672,7 @@ SQLRETURN SQLTables(
   return stmt->tables(catalog, schema, table, type);
 }
 
-SQLRETURN SQLColumnsW(
+static SQLRETURN SQLColumnsW_impl(
     SQLHSTMT statement_handle, SQLWCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLWCHAR* schema_name,
     SQLSMALLINT name_length2, SQLWCHAR* table_name,
@@ -1696,7 +1697,7 @@ SQLRETURN SQLColumnsW(
   return stmt->columns(catalog, schema, table, column);
 }
 
-SQLRETURN SQLPrimaryKeysW(
+static SQLRETURN SQLPrimaryKeysW_impl(
     SQLHSTMT statement_handle, SQLWCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLWCHAR* schema_name,
     SQLSMALLINT name_length2, SQLWCHAR* table_name,
@@ -1722,7 +1723,7 @@ SQLRETURN SQLPrimaryKeysW(
   return stmt->primary_keys(catalog, schema, *table);
 }
 
-SQLRETURN SQLForeignKeysW(
+static SQLRETURN SQLForeignKeysW_impl(
     SQLHSTMT statement_handle, SQLWCHAR* pk_catalog_name,
     SQLSMALLINT name_length1, SQLWCHAR* pk_schema_name,
     SQLSMALLINT name_length2, SQLWCHAR* pk_table_name,
@@ -1761,7 +1762,7 @@ SQLRETURN SQLForeignKeysW(
                             fk_schema, fk_table);
 }
 
-SQLRETURN SQLStatisticsW(
+static SQLRETURN SQLStatisticsW_impl(
     SQLHSTMT statement_handle, SQLWCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLWCHAR* schema_name,
     SQLSMALLINT name_length2, SQLWCHAR* table_name,
@@ -1799,7 +1800,7 @@ SQLRETURN SQLStatisticsW(
                           unique == SQL_INDEX_UNIQUE);
 }
 
-SQLRETURN SQLProceduresW(
+static SQLRETURN SQLProceduresW_impl(
     SQLHSTMT statement_handle, SQLWCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLWCHAR* schema_name,
     SQLSMALLINT name_length2, SQLWCHAR* procedure_name,
@@ -1820,7 +1821,7 @@ SQLRETURN SQLProceduresW(
   return stmt->procedures(catalog, schema, procedure);
 }
 
-SQLRETURN SQLProcedureColumnsW(
+static SQLRETURN SQLProcedureColumnsW_impl(
     SQLHSTMT statement_handle, SQLWCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLWCHAR* schema_name,
     SQLSMALLINT name_length2, SQLWCHAR* procedure_name,
@@ -1845,7 +1846,7 @@ SQLRETURN SQLProcedureColumnsW(
   return stmt->procedure_columns(catalog, schema, procedure, column);
 }
 
-SQLRETURN SQLSpecialColumnsW(
+static SQLRETURN SQLSpecialColumnsW_impl(
     SQLHSTMT statement_handle, SQLUSMALLINT identifier_type,
     SQLWCHAR* catalog_name, SQLSMALLINT name_length1,
     SQLWCHAR* schema_name, SQLSMALLINT name_length2,
@@ -1889,7 +1890,7 @@ SQLRETURN SQLSpecialColumnsW(
                                nullable == SQL_NO_NULLS);
 }
 
-SQLRETURN SQLTablesW(
+static SQLRETURN SQLTablesW_impl(
     SQLHSTMT statement_handle, SQLWCHAR* catalog_name,
     SQLSMALLINT name_length1, SQLWCHAR* schema_name,
     SQLSMALLINT name_length2, SQLWCHAR* table_name,
@@ -1914,7 +1915,7 @@ SQLRETURN SQLTablesW(
   return stmt->tables(catalog, schema, table, type);
 }
 
-SQLRETURN SQLDescribeCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number,
+static SQLRETURN SQLDescribeCol_impl(SQLHSTMT statement_handle, SQLUSMALLINT column_number,
                         SQLCHAR* column_name, SQLSMALLINT name_buffer_length, SQLSMALLINT* name_length,
                         SQLSMALLINT* data_type, SQLULEN* column_size, SQLSMALLINT* decimal_digits,
                         SQLSMALLINT* nullable) {
@@ -1925,7 +1926,7 @@ SQLRETURN SQLDescribeCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number,
                            data_type, column_size, decimal_digits, nullable);
 }
 
-SQLRETURN SQLDescribeColW(
+static SQLRETURN SQLDescribeColW_impl(
     SQLHSTMT statement_handle, SQLUSMALLINT column_number,
     SQLWCHAR* column_name, SQLSMALLINT name_buffer_length,
     SQLSMALLINT* name_length, SQLSMALLINT* data_type,
@@ -1957,7 +1958,7 @@ SQLRETURN SQLDescribeColW(
       "Column name was truncated");
 }
 
-SQLRETURN SQLColAttribute(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
+static SQLRETURN SQLColAttribute_impl(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
                          SQLPOINTER character_attribute, SQLSMALLINT buffer_length, SQLSMALLINT* string_length,
                          SQLLEN* numeric_attribute) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
@@ -1967,7 +1968,7 @@ SQLRETURN SQLColAttribute(SQLHSTMT statement_handle, SQLUSMALLINT column_number,
                             buffer_length, string_length, numeric_attribute);
 }
 
-SQLRETURN SQLColAttributeW(
+static SQLRETURN SQLColAttributeW_impl(
     SQLHSTMT statement_handle, SQLUSMALLINT column_number,
     SQLUSMALLINT field_identifier, SQLPOINTER character_attribute,
     SQLSMALLINT buffer_length, SQLSMALLINT* string_length,
@@ -2001,7 +2002,7 @@ SQLRETURN SQLColAttributeW(
       string_length, "Column attribute was truncated");
 }
 
-SQLRETURN SQLPrepare(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length) {
+static SQLRETURN SQLPrepare_impl(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
 
@@ -2018,7 +2019,7 @@ SQLRETURN SQLPrepare(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTE
   return stmt->prepare(sql);
 }
 
-SQLRETURN SQLPrepareW(SQLHSTMT statement_handle,
+static SQLRETURN SQLPrepareW_impl(SQLHSTMT statement_handle,
                       SQLWCHAR* statement_text, SQLINTEGER text_length) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
@@ -2041,21 +2042,21 @@ SQLRETURN SQLPrepareW(SQLHSTMT statement_handle,
   return stmt->prepare(*sql);
 }
 
-SQLRETURN SQLExecute(SQLHSTMT statement_handle) {
+static SQLRETURN SQLExecute_impl(SQLHSTMT statement_handle) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   
   return stmt->execute();
 }
 
-SQLRETURN SQLNumParams(SQLHSTMT statement_handle,
+static SQLRETURN SQLNumParams_impl(SQLHSTMT statement_handle,
                        SQLSMALLINT* parameter_count) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   return stmt->num_params(parameter_count);
 }
 
-SQLRETURN SQLBindParameter(SQLHSTMT statement_handle, SQLUSMALLINT parameter_number, SQLSMALLINT input_output_type,
+static SQLRETURN SQLBindParameter_impl(SQLHSTMT statement_handle, SQLUSMALLINT parameter_number, SQLSMALLINT input_output_type,
                           SQLSMALLINT value_type, SQLSMALLINT parameter_type, SQLULEN column_size,
                           SQLSMALLINT decimal_digits, SQLPOINTER parameter_value, SQLLEN buffer_length,
                           SQLLEN* strlen_or_indicator) {
@@ -2067,7 +2068,7 @@ SQLRETURN SQLBindParameter(SQLHSTMT statement_handle, SQLUSMALLINT parameter_num
 }
 
 // Column binding
-SQLRETURN SQLBindCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLSMALLINT target_type,
+static SQLRETURN SQLBindCol_impl(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLSMALLINT target_type,
                     SQLPOINTER target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
@@ -2076,7 +2077,7 @@ SQLRETURN SQLBindCol(SQLHSTMT statement_handle, SQLUSMALLINT column_number, SQLS
 }
 
 // Parameter metadata
-SQLRETURN SQLDescribeParam(SQLHSTMT statement_handle, SQLUSMALLINT parameter_number, SQLSMALLINT* data_type,
+static SQLRETURN SQLDescribeParam_impl(SQLHSTMT statement_handle, SQLUSMALLINT parameter_number, SQLSMALLINT* data_type,
                           SQLULEN* parameter_size, SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
@@ -2084,7 +2085,7 @@ SQLRETURN SQLDescribeParam(SQLHSTMT statement_handle, SQLUSMALLINT parameter_num
   return stmt->describe_param(parameter_number, data_type, parameter_size, decimal_digits, nullable);
 }
 
-SQLRETURN SQLGetDescField(
+static SQLRETURN SQLGetDescField_impl(
     SQLHDESC descriptor_handle, SQLSMALLINT record_number,
     SQLSMALLINT field_identifier, SQLPOINTER value,
     SQLINTEGER buffer_length, SQLINTEGER* string_length) {
@@ -2094,7 +2095,7 @@ SQLRETURN SQLGetDescField(
                                buffer_length, string_length);
 }
 
-SQLRETURN SQLGetDescFieldW(
+static SQLRETURN SQLGetDescFieldW_impl(
     SQLHDESC descriptor_handle, SQLSMALLINT record_number,
     SQLSMALLINT field_identifier, SQLPOINTER value,
     SQLINTEGER buffer_length, SQLINTEGER* string_length) {
@@ -2121,7 +2122,7 @@ SQLRETURN SQLGetDescFieldW(
       "Descriptor name was truncated");
 }
 
-SQLRETURN SQLSetDescField(
+static SQLRETURN SQLSetDescField_impl(
     SQLHDESC descriptor_handle, SQLSMALLINT record_number,
     SQLSMALLINT field_identifier, SQLPOINTER value,
     SQLINTEGER buffer_length) {
@@ -2131,7 +2132,7 @@ SQLRETURN SQLSetDescField(
                                buffer_length);
 }
 
-SQLRETURN SQLSetDescFieldW(
+static SQLRETURN SQLSetDescFieldW_impl(
     SQLHDESC descriptor_handle, SQLSMALLINT record_number,
     SQLSMALLINT field_identifier, SQLPOINTER value,
     SQLINTEGER buffer_length) {
@@ -2171,7 +2172,7 @@ SQLRETURN SQLSetDescFieldW(
       const_cast<char*>(utf8->data()), static_cast<SQLINTEGER>(utf8->size()));
 }
 
-SQLRETURN SQLCopyDesc(SQLHDESC source_desc_handle,
+static SQLRETURN SQLCopyDesc_impl(SQLHDESC source_desc_handle,
                       SQLHDESC target_desc_handle) {
   auto source = get_valid_handle<ODBCDescriptor>(source_desc_handle);
   if (!source) return SQL_INVALID_HANDLE;
@@ -2182,3 +2183,226 @@ SQLRETURN SQLCopyDesc(SQLHDESC source_desc_handle,
 }
 
 } // extern "C"
+
+#define ODBCPP_API_1(name, diagnostic, T1)                                \
+  extern "C" SQLRETURN SQL_API name(T1 a1) {                            \
+    return rs::odbc::detail::invoke_c_api(                                \
+        diagnostic, [&] { return name##_impl(a1); });                     \
+  }
+#define ODBCPP_API_2(name, diagnostic, T1, T2)                            \
+  extern "C" SQLRETURN SQL_API name(T1 a1, T2 a2) {                     \
+    return rs::odbc::detail::invoke_c_api(                                \
+        diagnostic, [&] { return name##_impl(a1, a2); });                 \
+  }
+#define ODBCPP_API_3(name, diagnostic, T1, T2, T3)                        \
+  extern "C" SQLRETURN SQL_API name(T1 a1, T2 a2, T3 a3) {              \
+    return rs::odbc::detail::invoke_c_api(                                \
+        diagnostic, [&] { return name##_impl(a1, a2, a3); });             \
+  }
+#define ODBCPP_API_4(name, diagnostic, T1, T2, T3, T4)                    \
+  extern "C" SQLRETURN SQL_API name(T1 a1, T2 a2, T3 a3, T4 a4) {       \
+    return rs::odbc::detail::invoke_c_api(                                \
+        diagnostic, [&] { return name##_impl(a1, a2, a3, a4); });         \
+  }
+#define ODBCPP_API_5(name, diagnostic, T1, T2, T3, T4, T5)                \
+  extern "C" SQLRETURN SQL_API name(                                    \
+      T1 a1, T2 a2, T3 a3, T4 a4, T5 a5) {                              \
+    return rs::odbc::detail::invoke_c_api(                                \
+        diagnostic, [&] { return name##_impl(a1, a2, a3, a4, a5); });     \
+  }
+#define ODBCPP_API_6(name, diagnostic, T1, T2, T3, T4, T5, T6)            \
+  extern "C" SQLRETURN SQL_API name(                                     \
+      T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6) {                        \
+    return rs::odbc::detail::invoke_c_api(                                \
+        diagnostic,                                                       \
+        [&] { return name##_impl(a1, a2, a3, a4, a5, a6); });             \
+  }
+#define ODBCPP_API_7(name, diagnostic, T1, T2, T3, T4, T5, T6, T7)        \
+  extern "C" SQLRETURN SQL_API name(                                     \
+      T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7) {                 \
+    return rs::odbc::detail::invoke_c_api(                                \
+        diagnostic,                                                       \
+        [&] { return name##_impl(a1, a2, a3, a4, a5, a6, a7); });         \
+  }
+#define ODBCPP_API_8(name, diagnostic, T1, T2, T3, T4, T5, T6, T7, T8)    \
+  extern "C" SQLRETURN SQL_API name(                                     \
+      T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7, T8 a8) {          \
+    return rs::odbc::detail::invoke_c_api(                                \
+        diagnostic,                                                       \
+        [&] { return name##_impl(a1, a2, a3, a4, a5, a6, a7, a8); });     \
+  }
+#define ODBCPP_API_9(name, diagnostic, T1, T2, T3, T4, T5, T6, T7, T8,   \
+                     T9)                                                   \
+  extern "C" SQLRETURN SQL_API name(                                     \
+      T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7, T8 a8, T9 a9) {   \
+    return rs::odbc::detail::invoke_c_api(                                \
+        diagnostic, [&] { return name##_impl(                             \
+                        a1, a2, a3, a4, a5, a6, a7, a8, a9); });           \
+  }
+#define ODBCPP_API_10(name, diagnostic, T1, T2, T3, T4, T5, T6, T7, T8,  \
+                      T9, T10)                                             \
+  extern "C" SQLRETURN SQL_API name(                                     \
+      T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7, T8 a8, T9 a9,    \
+      T10 a10) {                                                           \
+    return rs::odbc::detail::invoke_c_api(                                \
+        diagnostic, [&] { return name##_impl(                             \
+                        a1, a2, a3, a4, a5, a6, a7, a8, a9, a10); });      \
+  }
+#define ODBCPP_API_13(name, diagnostic, T1, T2, T3, T4, T5, T6, T7, T8,  \
+                      T9, T10, T11, T12, T13)                              \
+  extern "C" SQLRETURN SQL_API name(                                     \
+      T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7, T8 a8, T9 a9,    \
+      T10 a10, T11 a11, T12 a12, T13 a13) {                               \
+    return rs::odbc::detail::invoke_c_api(                                \
+        diagnostic, [&] { return name##_impl(                             \
+                        a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11,     \
+                        a12, a13); });                                     \
+  }
+
+ODBCPP_API_3(SQLAllocHandle, a2, SQLSMALLINT, SQLHANDLE, SQLHANDLE*)
+ODBCPP_API_2(SQLFreeHandle, a2, SQLSMALLINT, SQLHANDLE)
+ODBCPP_API_7(SQLConnect, a1, SQLHDBC, SQLCHAR*, SQLSMALLINT, SQLCHAR*,
+             SQLSMALLINT, SQLCHAR*, SQLSMALLINT)
+ODBCPP_API_7(SQLConnectW, a1, SQLHDBC, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*,
+             SQLSMALLINT, SQLWCHAR*, SQLSMALLINT)
+ODBCPP_API_8(SQLDriverConnect, a1, SQLHDBC, SQLHWND, SQLCHAR*, SQLSMALLINT,
+             SQLCHAR*, SQLSMALLINT, SQLSMALLINT*, SQLUSMALLINT)
+ODBCPP_API_8(SQLDriverConnectW, a1, SQLHDBC, SQLHWND, SQLWCHAR*, SQLSMALLINT,
+             SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*, SQLUSMALLINT)
+ODBCPP_API_1(SQLDisconnect, a1, SQLHDBC)
+ODBCPP_API_4(SQLSetConnectAttr, a1, SQLHDBC, SQLINTEGER, SQLPOINTER,
+             SQLINTEGER)
+ODBCPP_API_4(SQLSetConnectAttrW, a1, SQLHDBC, SQLINTEGER, SQLPOINTER,
+             SQLINTEGER)
+ODBCPP_API_5(SQLGetConnectAttr, a1, SQLHDBC, SQLINTEGER, SQLPOINTER,
+             SQLINTEGER, SQLINTEGER*)
+ODBCPP_API_5(SQLGetConnectAttrW, a1, SQLHDBC, SQLINTEGER, SQLPOINTER,
+             SQLINTEGER, SQLINTEGER*)
+ODBCPP_API_3(SQLEndTran, a2, SQLSMALLINT, SQLHANDLE, SQLSMALLINT)
+ODBCPP_API_3(SQLExecDirect, a1, SQLHSTMT, SQLCHAR*, SQLINTEGER)
+ODBCPP_API_3(SQLExecDirectW, a1, SQLHSTMT, SQLWCHAR*, SQLINTEGER)
+ODBCPP_API_1(SQLFetch, a1, SQLHSTMT)
+ODBCPP_API_3(SQLFetchScroll, a1, SQLHSTMT, SQLSMALLINT, SQLLEN)
+ODBCPP_API_1(SQLMoreResults, a1, SQLHSTMT)
+ODBCPP_API_6(SQLGetData, a1, SQLHSTMT, SQLUSMALLINT, SQLSMALLINT, void*,
+             SQLLEN, SQLLEN*)
+ODBCPP_API_4(SQLSetStmtAttr, a1, SQLHSTMT, SQLINTEGER, SQLPOINTER, SQLINTEGER)
+ODBCPP_API_4(SQLSetStmtAttrW, a1, SQLHSTMT, SQLINTEGER, SQLPOINTER,
+             SQLINTEGER)
+ODBCPP_API_5(SQLGetStmtAttr, a1, SQLHSTMT, SQLINTEGER, SQLPOINTER, SQLINTEGER,
+             SQLINTEGER*)
+ODBCPP_API_5(SQLGetStmtAttrW, a1, SQLHSTMT, SQLINTEGER, SQLPOINTER,
+             SQLINTEGER, SQLINTEGER*)
+ODBCPP_API_1(SQLCloseCursor, a1, SQLHSTMT)
+ODBCPP_API_2(SQLFreeStmt, a1, SQLHSTMT, SQLUSMALLINT)
+ODBCPP_API_8(SQLGetDiagRec, SQL_NULL_HANDLE, SQLSMALLINT, SQLHANDLE,
+             SQLSMALLINT, SQLCHAR*, SQLINTEGER*, SQLCHAR*, SQLSMALLINT,
+             SQLSMALLINT*)
+ODBCPP_API_8(SQLGetDiagRecW, SQL_NULL_HANDLE, SQLSMALLINT, SQLHANDLE,
+             SQLSMALLINT, SQLWCHAR*, SQLINTEGER*, SQLWCHAR*, SQLSMALLINT,
+             SQLSMALLINT*)
+ODBCPP_API_7(SQLGetDiagField, SQL_NULL_HANDLE, SQLSMALLINT, SQLHANDLE,
+             SQLSMALLINT, SQLSMALLINT, SQLPOINTER, SQLSMALLINT, SQLSMALLINT*)
+ODBCPP_API_7(SQLGetDiagFieldW, SQL_NULL_HANDLE, SQLSMALLINT, SQLHANDLE,
+             SQLSMALLINT, SQLSMALLINT, SQLPOINTER, SQLSMALLINT, SQLSMALLINT*)
+ODBCPP_API_8(SQLError, SQL_NULL_HANDLE, SQLHENV, SQLHDBC, SQLHSTMT, SQLCHAR*,
+             SQLINTEGER*, SQLCHAR*, SQLSMALLINT, SQLSMALLINT*)
+ODBCPP_API_8(SQLErrorW, SQL_NULL_HANDLE, SQLHENV, SQLHDBC, SQLHSTMT,
+             SQLWCHAR*, SQLINTEGER*, SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*)
+ODBCPP_API_5(SQLGetInfo, a1, SQLHDBC, SQLUSMALLINT, void*, SQLSMALLINT,
+             SQLSMALLINT*)
+ODBCPP_API_5(SQLGetInfoW, a1, SQLHDBC, SQLUSMALLINT, void*, SQLSMALLINT,
+             SQLSMALLINT*)
+ODBCPP_API_3(SQLGetFunctions, a1, SQLHDBC, SQLUSMALLINT, SQLUSMALLINT*)
+ODBCPP_API_6(SQLNativeSql, a1, SQLHDBC, SQLCHAR*, SQLINTEGER, SQLCHAR*,
+             SQLINTEGER, SQLINTEGER*)
+ODBCPP_API_6(SQLNativeSqlW, a1, SQLHDBC, SQLWCHAR*, SQLINTEGER, SQLWCHAR*,
+             SQLINTEGER, SQLINTEGER*)
+ODBCPP_API_4(SQLSetEnvAttr, a1, SQLHENV, SQLINTEGER, void*, SQLINTEGER)
+ODBCPP_API_5(SQLGetEnvAttr, a1, SQLHENV, SQLINTEGER, SQLPOINTER, SQLINTEGER,
+             SQLINTEGER*)
+ODBCPP_API_2(SQLNumResultCols, a1, SQLHSTMT, SQLSMALLINT*)
+ODBCPP_API_2(SQLRowCount, a1, SQLHSTMT, SQLLEN*)
+ODBCPP_API_2(SQLGetTypeInfo, a1, SQLHSTMT, SQLSMALLINT)
+ODBCPP_API_2(SQLGetTypeInfoW, a1, SQLHSTMT, SQLSMALLINT)
+ODBCPP_API_9(SQLColumns, a1, SQLHSTMT, SQLCHAR*, SQLSMALLINT, SQLCHAR*,
+             SQLSMALLINT, SQLCHAR*, SQLSMALLINT, SQLCHAR*, SQLSMALLINT)
+ODBCPP_API_7(SQLPrimaryKeys, a1, SQLHSTMT, SQLCHAR*, SQLSMALLINT, SQLCHAR*,
+             SQLSMALLINT, SQLCHAR*, SQLSMALLINT)
+ODBCPP_API_13(SQLForeignKeys, a1, SQLHSTMT, SQLCHAR*, SQLSMALLINT, SQLCHAR*,
+              SQLSMALLINT, SQLCHAR*, SQLSMALLINT, SQLCHAR*, SQLSMALLINT,
+              SQLCHAR*, SQLSMALLINT, SQLCHAR*, SQLSMALLINT)
+ODBCPP_API_9(SQLStatistics, a1, SQLHSTMT, SQLCHAR*, SQLSMALLINT, SQLCHAR*,
+             SQLSMALLINT, SQLCHAR*, SQLSMALLINT, SQLUSMALLINT, SQLUSMALLINT)
+ODBCPP_API_7(SQLProcedures, a1, SQLHSTMT, SQLCHAR*, SQLSMALLINT, SQLCHAR*,
+             SQLSMALLINT, SQLCHAR*, SQLSMALLINT)
+ODBCPP_API_9(SQLProcedureColumns, a1, SQLHSTMT, SQLCHAR*, SQLSMALLINT,
+             SQLCHAR*, SQLSMALLINT, SQLCHAR*, SQLSMALLINT, SQLCHAR*,
+             SQLSMALLINT)
+ODBCPP_API_10(SQLSpecialColumns, a1, SQLHSTMT, SQLUSMALLINT, SQLCHAR*,
+              SQLSMALLINT, SQLCHAR*, SQLSMALLINT, SQLCHAR*, SQLSMALLINT,
+              SQLUSMALLINT, SQLUSMALLINT)
+ODBCPP_API_9(SQLTables, a1, SQLHSTMT, SQLCHAR*, SQLSMALLINT, SQLCHAR*,
+             SQLSMALLINT, SQLCHAR*, SQLSMALLINT, SQLCHAR*, SQLSMALLINT)
+ODBCPP_API_9(SQLColumnsW, a1, SQLHSTMT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*,
+             SQLSMALLINT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, SQLSMALLINT)
+ODBCPP_API_7(SQLPrimaryKeysW, a1, SQLHSTMT, SQLWCHAR*, SQLSMALLINT,
+             SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, SQLSMALLINT)
+ODBCPP_API_13(SQLForeignKeysW, a1, SQLHSTMT, SQLWCHAR*, SQLSMALLINT,
+              SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*,
+              SQLSMALLINT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, SQLSMALLINT)
+ODBCPP_API_9(SQLStatisticsW, a1, SQLHSTMT, SQLWCHAR*, SQLSMALLINT,
+             SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, SQLSMALLINT, SQLUSMALLINT,
+             SQLUSMALLINT)
+ODBCPP_API_7(SQLProceduresW, a1, SQLHSTMT, SQLWCHAR*, SQLSMALLINT,
+             SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, SQLSMALLINT)
+ODBCPP_API_9(SQLProcedureColumnsW, a1, SQLHSTMT, SQLWCHAR*, SQLSMALLINT,
+             SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*,
+             SQLSMALLINT)
+ODBCPP_API_10(SQLSpecialColumnsW, a1, SQLHSTMT, SQLUSMALLINT, SQLWCHAR*,
+              SQLSMALLINT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, SQLSMALLINT,
+              SQLUSMALLINT, SQLUSMALLINT)
+ODBCPP_API_9(SQLTablesW, a1, SQLHSTMT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*,
+             SQLSMALLINT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, SQLSMALLINT)
+ODBCPP_API_9(SQLDescribeCol, a1, SQLHSTMT, SQLUSMALLINT, SQLCHAR*,
+             SQLSMALLINT, SQLSMALLINT*, SQLSMALLINT*, SQLULEN*, SQLSMALLINT*,
+             SQLSMALLINT*)
+ODBCPP_API_9(SQLDescribeColW, a1, SQLHSTMT, SQLUSMALLINT, SQLWCHAR*,
+             SQLSMALLINT, SQLSMALLINT*, SQLSMALLINT*, SQLULEN*, SQLSMALLINT*,
+             SQLSMALLINT*)
+ODBCPP_API_7(SQLColAttribute, a1, SQLHSTMT, SQLUSMALLINT, SQLUSMALLINT,
+             SQLPOINTER, SQLSMALLINT, SQLSMALLINT*, SQLLEN*)
+ODBCPP_API_7(SQLColAttributeW, a1, SQLHSTMT, SQLUSMALLINT, SQLUSMALLINT,
+             SQLPOINTER, SQLSMALLINT, SQLSMALLINT*, SQLLEN*)
+ODBCPP_API_3(SQLPrepare, a1, SQLHSTMT, SQLCHAR*, SQLINTEGER)
+ODBCPP_API_3(SQLPrepareW, a1, SQLHSTMT, SQLWCHAR*, SQLINTEGER)
+ODBCPP_API_1(SQLExecute, a1, SQLHSTMT)
+ODBCPP_API_2(SQLNumParams, a1, SQLHSTMT, SQLSMALLINT*)
+ODBCPP_API_10(SQLBindParameter, a1, SQLHSTMT, SQLUSMALLINT, SQLSMALLINT,
+              SQLSMALLINT, SQLSMALLINT, SQLULEN, SQLSMALLINT, SQLPOINTER,
+              SQLLEN, SQLLEN*)
+ODBCPP_API_6(SQLBindCol, a1, SQLHSTMT, SQLUSMALLINT, SQLSMALLINT, SQLPOINTER,
+             SQLLEN, SQLLEN*)
+ODBCPP_API_6(SQLDescribeParam, a1, SQLHSTMT, SQLUSMALLINT, SQLSMALLINT*,
+             SQLULEN*, SQLSMALLINT*, SQLSMALLINT*)
+ODBCPP_API_6(SQLGetDescField, a1, SQLHDESC, SQLSMALLINT, SQLSMALLINT,
+             SQLPOINTER, SQLINTEGER, SQLINTEGER*)
+ODBCPP_API_6(SQLGetDescFieldW, a1, SQLHDESC, SQLSMALLINT, SQLSMALLINT,
+             SQLPOINTER, SQLINTEGER, SQLINTEGER*)
+ODBCPP_API_5(SQLSetDescField, a1, SQLHDESC, SQLSMALLINT, SQLSMALLINT,
+             SQLPOINTER, SQLINTEGER)
+ODBCPP_API_5(SQLSetDescFieldW, a1, SQLHDESC, SQLSMALLINT, SQLSMALLINT,
+             SQLPOINTER, SQLINTEGER)
+ODBCPP_API_2(SQLCopyDesc, a2, SQLHDESC, SQLHDESC)
+
+#undef ODBCPP_API_1
+#undef ODBCPP_API_2
+#undef ODBCPP_API_3
+#undef ODBCPP_API_4
+#undef ODBCPP_API_5
+#undef ODBCPP_API_6
+#undef ODBCPP_API_7
+#undef ODBCPP_API_8
+#undef ODBCPP_API_9
+#undef ODBCPP_API_10
+#undef ODBCPP_API_13

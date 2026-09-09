@@ -32,7 +32,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 
 | Operation | Variants | Status | Existing evidence | Principal remaining work |
 |---|---:|---|---|---|
-| `SQLAllocHandle` | A | Partial | unit, integration, DM | Parent/child state, null output, allocation failure, exception barrier |
+| `SQLAllocHandle` | A | Partial | unit, integration, DM | Parent/child state, null output, and allocation-failure injection remain |
 | `SQLFreeHandle` | A | Partial | unit, integration, DM | Parent/child free ordering is enforced; complete state matrix remains |
 | `SQLConnect` | A/W | Partial | unit failure, integration, DM | Reconnect is rejected with 08002; complete input/state matrix remains |
 | `SQLDriverConnect` | A/W | Partial | unit, DM | Completion modes, exact output-string rules, connected-state handling |
@@ -154,9 +154,10 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
 
 ### P0 — correctness and safety
 
-1. **C entry-point exception containment:** no C++ exception may cross an ODBC
-   C ABI boundary. Several entry points allocate strings/vectors without a
-   shared exception barrier.
+1. **C entry-point exception containment:** audit batch 4 routes all 73 exported
+   ODBC symbols through one exception barrier. Unexpected failures return
+   `SQL_ERROR`; non-diagnostic calls attach `HY000` when their handle remains
+   usable. Allocation-failure injection through real entry points remains.
 2. **Handle concurrency:** audit batch 2 changes registry lookup to pin shared
    ownership for the duration of each exported API call, so concurrent removal
    cannot destroy an in-flight handle. Per-handle operation serialization and

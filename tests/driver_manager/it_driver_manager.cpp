@@ -38,7 +38,7 @@ bool diagnostic_is(SQLSMALLINT handle_type, SQLHANDLE handle,
   SQLCHAR state[6]{};
   const auto result = SQLGetDiagRec(handle_type, handle, 1, state, nullptr,
                                     nullptr, 0, nullptr);
-  const bool matches = result == SQL_SUCCESS &&
+  const bool matches = succeeded(result) &&
       std::strcmp(reinterpret_cast<const char*>(state), expected_state) == 0;
   if (!matches) {
     std::fprintf(stderr, "Expected diagnostic %s, received %s (result %d)\n",

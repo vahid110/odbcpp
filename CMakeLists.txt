@@ -128,6 +128,7 @@ list(APPEND CORE_SOURCES
   "odbc/odbc_handles.h"
   "odbc/odbc_handles.cpp"
   "odbc/odbc_api.h"
+  "odbc/c_api_guard.h"
   "odbc/odbc_api.cpp"
   "odbc/connection_string.h"
   "odbc/connection_string.cpp"
