@@ -134,9 +134,9 @@ const char* transaction_isolation_name(SQLULEN value) {
 }
 
 rs::core::database::QueryParameterType parameter_type_for(
-    const ParameterInfo& parameter) {
+    SQLSMALLINT parameter_type, SQLSMALLINT value_type) {
   using rs::core::database::QueryParameterType;
-  switch (parameter.parameter_type) {
+  switch (parameter_type) {
     case SQL_CHAR:
     case SQL_VARCHAR:
     case SQL_LONGVARCHAR:
@@ -167,7 +167,7 @@ rs::core::database::QueryParameterType parameter_type_for(
       break;
   }
 
-  switch (parameter.value_type) {
+  switch (value_type) {
     case SQL_C_SLONG: return QueryParameterType::Int32;
     case SQL_C_SBIGINT: return QueryParameterType::Int64;
     case SQL_C_DOUBLE: return QueryParameterType::Float64;
@@ -1236,11 +1236,13 @@ SQLRETURN ODBCStatement::close_cursor(bool report_missing_cursor) {
 }
 
 void ODBCStatement::unbind_columns() {
-  column_bindings_.clear();
+  descriptor(app_row_descriptor_)->set_field(
+      0, SQL_DESC_COUNT, nullptr, 0);
 }
 
 void ODBCStatement::reset_parameters() {
-  parameter_info_.clear();
+  descriptor(app_param_descriptor_)->set_field(
+      0, SQL_DESC_COUNT, nullptr, 0);
 }
 
 SQLRETURN ODBCStatement::fetch() {
@@ -1268,26 +1270,32 @@ SQLRETURN ODBCStatement::fetch() {
   
   // Auto-populate bound columns from ARD
   const auto& row = result_rows_[current_row_ - 1];
-  for (size_t i = 0; i < column_bindings_.size() && i < row.size(); ++i) {
-    const auto& binding = column_bindings_[i];
-    if (binding.bound && binding.target_value) {
+  for (size_t i = 0;
+       i < application_descriptor->record_count() && i < row.size(); ++i) {
+    const auto& binding = *application_descriptor->record(i);
+    if (binding.data_ptr) {
       const auto& cell = row[i];
 
       if (!cell) {
-        if (!binding.strlen_or_indicator) {
+        if (!binding.indicator_ptr) {
           set_error(SQLSTATE_INDICATOR_VARIABLE_REQUIRED,
                     "NULL column requires an indicator variable");
           if (row_status) row_status[0] = SQL_ROW_ERROR;
           return SQL_ERROR;
         }
-        *binding.strlen_or_indicator = SQL_NULL_DATA;
+        *binding.indicator_ptr = SQL_NULL_DATA;
         continue;
+      }
+
+      if (binding.indicator_ptr &&
+          binding.indicator_ptr != binding.octet_length_ptr) {
+        *binding.indicator_ptr = 0;
       }
 
       const SQLSMALLINT sql_type = i < column_info_.size()
           ? column_info_[i].sql_type : static_cast<SQLSMALLINT>(SQL_VARCHAR);
-      const SQLSMALLINT target_type = binding.target_type == SQL_C_DEFAULT
-          ? ResultTypes::default_c_type(sql_type) : binding.target_type;
+      const SQLSMALLINT target_type = binding.concise_type == SQL_C_DEFAULT
+          ? ResultTypes::default_c_type(sql_type) : binding.concise_type;
       if (!ResultTypes::is_conversion_supported(sql_type, target_type)) {
         set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
                   "Unsupported result data type conversion");
@@ -1295,8 +1303,9 @@ SQLRETURN ODBCStatement::fetch() {
         return SQL_ERROR;
       }
       SQLRETURN conv_result = TextDataConverter::convert_data(
-          *cell, target_type, binding.target_value, binding.buffer_length,
-          binding.strlen_or_indicator);
+          *cell, target_type, binding.data_ptr, binding.octet_length,
+          binding.octet_length_ptr ? binding.octet_length_ptr
+                                   : binding.indicator_ptr);
 
       if (conv_result == SQL_ERROR) {
         set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
@@ -1513,7 +1522,6 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
   }
   prepared_sql_ = sql;
   parameter_count_ = static_cast<SQLSMALLINT>(marker_count);
-  parameter_info_.clear();
   param_metadata_.clear();
   prepared_ = true;
   executed_ = false;
@@ -1606,44 +1614,52 @@ SQLRETURN ODBCStatement::execute() {
   
   pending_results_.clear();
   try {
-    if (parameter_info_.size() != static_cast<std::size_t>(parameter_count_)) {
+    const auto implementation_descriptor = descriptor(imp_param_descriptor_);
+    if (application_descriptor->record_count() <
+            static_cast<std::size_t>(parameter_count_) ||
+        implementation_descriptor->record_count() <
+            static_cast<std::size_t>(parameter_count_)) {
       set_error(SQLSTATE_INVALID_PARAMETER_NUMBER,
                 "Not all statement parameters are bound");
       return complete_parameter_set(SQL_ERROR);
     }
     std::vector<rs::core::database::QueryParameter> param_values;
-    param_values.reserve(parameter_info_.size());
+    param_values.reserve(static_cast<std::size_t>(parameter_count_));
     
-    for (const auto& param : parameter_info_) {
-      if (!param.bound) {
+    for (SQLSMALLINT index = 0; index < parameter_count_; ++index) {
+      const auto& application = *application_descriptor->record(
+          static_cast<std::size_t>(index));
+      const auto& implementation = *implementation_descriptor->record(
+          static_cast<std::size_t>(index));
+      const auto* length_or_indicator = application.octet_length_ptr
+          ? application.octet_length_ptr : application.indicator_ptr;
+      const bool is_null = application.indicator_ptr &&
+          *application.indicator_ptr == SQL_NULL_DATA;
+      if (!application.data_ptr && !is_null) {
         set_error(SQLSTATE_INVALID_PARAMETER_NUMBER,
                   "Not all statement parameters are bound");
         return complete_parameter_set(SQL_ERROR);
       }
-      if (param.input_output_type != SQL_PARAM_INPUT) {
+      if (implementation.parameter_type != SQL_PARAM_INPUT) {
         set_error(SQLSTATE_GENERAL_ERROR,
                   "Only input parameters are currently supported");
         return complete_parameter_set(SQL_ERROR);
       }
 
       rs::core::database::QueryParameter query_param;
-      query_param.type = parameter_type_for(param);
-      if (param.strlen_or_indicator &&
-          *param.strlen_or_indicator == SQL_NULL_DATA) {
+      query_param.type = parameter_type_for(
+          implementation.concise_type, application.concise_type);
+      if (is_null) {
         query_param.value = std::nullopt;
         param_values.push_back(std::move(query_param));
         continue;
       }
-      if (!param.parameter_value) {
-        set_error(SQLSTATE_GENERAL_ERROR, "Bound parameter has no value buffer");
-        return complete_parameter_set(SQL_ERROR);
-      }
 
       std::string value;
-      if (param.value_type == SQL_C_CHAR) {
-        const auto* text = static_cast<const char*>(param.parameter_value);
-        SQLLEN length = param.buffer_length;
-        if (param.strlen_or_indicator) length = *param.strlen_or_indicator;
+      if (application.concise_type == SQL_C_CHAR) {
+        const auto* text = static_cast<const char*>(application.data_ptr);
+        SQLLEN length = application.octet_length;
+        if (length_or_indicator) length = *length_or_indicator;
         if (length == SQL_NTS || length == 0) {
           value.assign(text);
         } else if (length >= 0) {
@@ -1653,10 +1669,10 @@ SQLRETURN ODBCStatement::execute() {
                     "Data-at-execution parameters are not supported yet");
           return complete_parameter_set(SQL_ERROR);
         }
-      } else if (param.value_type == SQL_C_WCHAR) {
-        const auto* text = static_cast<const SQLWCHAR*>(param.parameter_value);
-        SQLLEN length = param.buffer_length;
-        if (param.strlen_or_indicator) length = *param.strlen_or_indicator;
+      } else if (application.concise_type == SQL_C_WCHAR) {
+        const auto* text = static_cast<const SQLWCHAR*>(application.data_ptr);
+        SQLLEN length = application.octet_length;
+        if (length_or_indicator) length = *length_or_indicator;
         SQLINTEGER units = SQL_NTS;
         if (length != SQL_NTS && length != 0) {
           if (length < 0 || length % sizeof(SQLWCHAR) != 0 ||
@@ -1676,24 +1692,24 @@ SQLRETURN ODBCStatement::execute() {
           return complete_parameter_set(SQL_ERROR);
         }
         value = *converted;
-      } else if (param.value_type == SQL_C_SLONG) {
-        value = std::to_string(*static_cast<SQLINTEGER*>(param.parameter_value));
-      } else if (param.value_type == SQL_C_SBIGINT) {
-        value = std::to_string(*static_cast<SQLBIGINT*>(param.parameter_value));
-      } else if (param.value_type == SQL_C_DOUBLE) {
-        value = std::to_string(*static_cast<SQLDOUBLE*>(param.parameter_value));
-      } else if (param.value_type == SQL_C_BIT) {
-        value = *static_cast<unsigned char*>(param.parameter_value) ? "1" : "0";
-      } else if (param.value_type == SQL_C_BINARY) {
-        SQLLEN length = param.buffer_length;
-        if (param.strlen_or_indicator) length = *param.strlen_or_indicator;
+      } else if (application.concise_type == SQL_C_SLONG) {
+        value = std::to_string(*static_cast<SQLINTEGER*>(application.data_ptr));
+      } else if (application.concise_type == SQL_C_SBIGINT) {
+        value = std::to_string(*static_cast<SQLBIGINT*>(application.data_ptr));
+      } else if (application.concise_type == SQL_C_DOUBLE) {
+        value = std::to_string(*static_cast<SQLDOUBLE*>(application.data_ptr));
+      } else if (application.concise_type == SQL_C_BIT) {
+        value = *static_cast<unsigned char*>(application.data_ptr) ? "1" : "0";
+      } else if (application.concise_type == SQL_C_BINARY) {
+        SQLLEN length = application.octet_length;
+        if (length_or_indicator) length = *length_or_indicator;
         if (length < 0) {
           set_error(SQLSTATE_INVALID_STRING_LENGTH,
                     "Invalid binary parameter length");
           return complete_parameter_set(SQL_ERROR);
         }
         value = TextDataConverter::encode_binary(std::span<const std::byte>(
-            static_cast<const std::byte*>(param.parameter_value),
+            static_cast<const std::byte*>(application.data_ptr),
             static_cast<std::size_t>(length)));
       } else {
         set_error(SQLSTATE_GENERAL_ERROR,
@@ -1796,24 +1812,6 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
       parameter_number, SQL_DESC_SCALE, number(decimal_digits), 0);
   implementation_descriptor->set_field(
       parameter_number, SQL_DESC_PARAMETER_TYPE, number(input_output_type), 0);
-  
-  // Resize parameter array if needed
-  if (parameter_number > parameter_info_.size()) {
-    parameter_info_.resize(parameter_number);
-  }
-  
-  // Store parameter info in APD
-  auto& param = parameter_info_[parameter_number - 1];
-  param.input_output_type = input_output_type;
-  param.value_type = value_type;
-  param.parameter_type = parameter_type;
-  param.column_size = column_size;
-  param.decimal_digits = decimal_digits;
-  param.parameter_value = parameter_value;
-  param.buffer_length = buffer_length;
-  param.strlen_or_indicator = strlen_or_indicator;
-  param.bound = true;
-
   if (parameter_number > param_metadata_.size()) {
     param_metadata_.resize(parameter_number);
   }
@@ -1920,20 +1918,6 @@ SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target
       column_number, SQL_DESC_INDICATOR_PTR, strlen_or_indicator, 0);
   application_descriptor->set_field(
       column_number, SQL_DESC_OCTET_LENGTH_PTR, strlen_or_indicator, 0);
-  
-  // Resize binding array if needed
-  if (column_number > column_bindings_.size()) {
-    column_bindings_.resize(column_number);
-  }
-  
-  // Store binding info in ARD
-  auto& binding = column_bindings_[column_number - 1];
-  binding.target_type = target_type;
-  binding.target_value = target_value;
-  binding.buffer_length = buffer_length;
-  binding.strlen_or_indicator = strlen_or_indicator;
-  binding.bound = true;
-  
   return SQL_SUCCESS;
 }
 

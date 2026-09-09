@@ -76,6 +76,37 @@ TEST_F(BindColIntegrationTest, BasicColumnBinding) {
     EXPECT_DOUBLE_EQ(45.67, double_val);
 }
 
+TEST_F(BindColIntegrationTest, ApplicationDescriptorDrivesFetchBinding) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 'descriptor'::text", SQL_NTS));
+
+    SQLHDESC descriptor = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(
+        SQL_HANDLE_DESC, hdbc, &descriptor));
+    char value[32]{};
+    SQLLEN indicator = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+        descriptor, 1, SQL_DESC_CONCISE_TYPE,
+        reinterpret_cast<SQLPOINTER>(std::uintptr_t{SQL_C_CHAR}), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+        descriptor, 1, SQL_DESC_OCTET_LENGTH,
+        reinterpret_cast<SQLPOINTER>(std::uintptr_t{sizeof(value)}), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+        descriptor, 1, SQL_DESC_DATA_PTR, value, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+        descriptor, 1, SQL_DESC_INDICATOR_PTR, &indicator, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+        descriptor, 1, SQL_DESC_OCTET_LENGTH_PTR, &indicator, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_APP_ROW_DESC, descriptor, 0));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_STREQ("descriptor", value);
+    EXPECT_EQ(10, indicator);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
+}
+
 // Test column binding with NULL values
 TEST_F(BindColIntegrationTest, NullValueBinding) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT NULL as null_col, 'NotNull' as str_col", SQL_NTS));

@@ -233,28 +233,6 @@ struct ColumnInfo {
   SQLSMALLINT nullable;       // SQL_DESC_NULLABLE
 };
 
-// APD (Application Parameter Descriptor) - ODBC parameter binding info
-struct ParameterInfo {
-  SQLSMALLINT input_output_type{SQL_PARAM_INPUT};
-  SQLSMALLINT value_type{SQL_C_DEFAULT};
-  SQLSMALLINT parameter_type{SQL_UNKNOWN_TYPE};
-  SQLULEN column_size{0};
-  SQLSMALLINT decimal_digits{0};
-  SQLPOINTER parameter_value{nullptr};
-  SQLLEN buffer_length{0};
-  SQLLEN* strlen_or_indicator{nullptr};
-  bool bound{false};
-};
-
-// ARD (Application Row Descriptor) - ODBC result column binding info
-struct ColumnBinding {
-  SQLSMALLINT target_type;        // SQL_C_CHAR, SQL_C_LONG, etc.
-  SQLPOINTER target_value;        // Application buffer
-  SQLLEN buffer_length;
-  SQLLEN* strlen_or_indicator;
-  bool bound = false;
-};
-
 // IPD (Implementation Parameter Descriptor) - ODBC parameter metadata
 struct ParameterMetadata {
   SQLSMALLINT sql_type;           // SQL_VARCHAR, SQL_INTEGER, etc.
@@ -297,6 +275,10 @@ public:
   SQLULEN bind_type() const noexcept { return bind_type_; }
   SQLULEN* rows_processed_ptr() const noexcept {
     return rows_processed_ptr_;
+  }
+  std::size_t record_count() const noexcept { return records_.size(); }
+  const DescriptorRecord* record(std::size_t index) const noexcept {
+    return index < records_.size() ? &records_[index] : nullptr;
   }
 
   SQLRETURN get_field(SQLSMALLINT record_number,
@@ -405,8 +387,6 @@ private:
   std::shared_ptr<ODBCConnection> conn_;
   rs::core::database::ResultRows result_rows_;
   std::vector<ColumnInfo> column_info_;        // IRD storage
-  std::vector<ParameterInfo> parameter_info_;  // APD storage
-  std::vector<ColumnBinding> column_bindings_; // ARD storage
   std::vector<ParameterMetadata> param_metadata_; // IPD storage
   std::vector<std::size_t> get_data_offsets_;
   std::vector<rs::core::database::QueryResult> pending_results_;

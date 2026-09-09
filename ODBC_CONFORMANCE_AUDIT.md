@@ -55,7 +55,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLDescribeCol` | A/W | Partial | unit, integration | Buffer boundaries, bookmark column, wide edge cases |
 | `SQLColAttribute` | A/W | Partial | integration | Complete field identifiers and numeric/string destination rules |
 | `SQLDescribeParam` | A | Partial | unit internals, integration | Availability after prepare and complete type metadata |
-| `SQLSetStmtAttr` | A/W | Partial | unit, integration | Scalar modes and descriptor attachment work; arrays, offsets, operations, and descriptor-driven execution remain |
+| `SQLSetStmtAttr` | A/W | Partial | unit, integration | Scalar modes, descriptor attachment, and descriptor-driven execution work; arrays, offsets, and operations remain |
 | `SQLGetStmtAttr` | A/W | Partial | unit, integration | Common defaults, descriptor handles, and status pointers covered; row number and remaining attributes need classification |
 | `SQLCloseCursor` | A | Partial | unit, integration, DM | Complete statement-state matrix |
 | `SQLFreeStmt` | A | Partial | unit, DM | All options across statement states and descriptor side effects |
@@ -126,9 +126,11 @@ descriptors are rejected with precise diagnostics.
 Fetch and prepared execution consume those descriptor headers and reject
 unsupported multirow, bind-offset, row-wise, and operation-array settings.
 `SQLBindCol` and `SQLBindParameter` populate the associated ARD/APD/IPD records.
-Direct record edits do not yet drive fetch or execution. Arrays larger than
-one, maximum length, metadata-ID true, no-scan behavior, row number, and
-genuine asynchronous ODBC function completion remain.
+The same records are the source of truth for fetch and prepared execution, so
+applications can bind through the descriptor APIs and parameter bindings
+survive `SQLPrepare`. Arrays larger than one, maximum length, metadata-ID true,
+no-scan behavior, row number, and genuine asynchronous ODBC function completion
+remain.
 
 ### Descriptors
 
@@ -136,9 +138,9 @@ Four implicit descriptor handles, explicit descriptor allocation, application
 descriptor attachment, cross-statement sharing, null reset, and free-time
 automatic fallback exist. Statement attributes, descriptor header fields, and
 execution status use the same header state. Binding calls populate their
-descriptor records, including parameter direction, but direct record-to-I/O
-synchronization, complete descriptor-kind rules, consistency checks, and the
-full field matrix remain partial.
+descriptor records, including parameter direction, and direct record edits
+drive fetch and prepared execution. Complete descriptor-kind rules,
+consistency checks, and the full field matrix remain partial.
 
 ## Logging coverage
 
@@ -158,7 +160,7 @@ substitute for ODBC diagnostics.
 ## Maintainability snapshot
 
 - `odbc_api.cpp` is 2,577 lines and contains all 73 exported wrappers;
-  `odbc_handles.cpp` is 2,835 lines and combines connection, statement,
+  `odbc_handles.cpp` is 2,819 lines and combines connection, statement,
   descriptor, conversion, metadata, and registry responsibilities.
 - The callback/future methods in `AsyncDatabaseConnection` are experimental
   scaffolding, are not used by the ODBC driver's production connection path,
@@ -220,6 +222,11 @@ substitute for ODBC diagnostics.
   ARD/APD and IPD records, including buffer, length/indicator, C/SQL type,
   precision/scale, and input/output direction fields. Descriptor API tests
   retrieve those fields through the public handles rather than private state.
+- Audit batch 19 removes the duplicate column- and parameter-binding vectors.
+  Fetch and prepared execution now consume the active descriptor records
+  directly, preserve bindings across `SQLPrepare`, and are exercised through
+  descriptor-only bindings against PostgreSQL. `SQL_UNBIND` and
+  `SQL_RESET_PARAMS` clear the corresponding application descriptor records.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

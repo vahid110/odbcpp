@@ -63,6 +63,61 @@ TEST_F(PreparedStatementIntegrationTest, BinaryParameterRoundTripsAsBytea) {
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       ApplicationDescriptorsDrivePreparedExecution) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT ?::integer + 1", SQL_NTS));
+
+    SQLHDESC application = SQL_NULL_HDESC;
+    SQLHDESC implementation = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(
+        SQL_HANDLE_DESC, hdbc, &application));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_IMP_PARAM_DESC, &implementation, 0, nullptr));
+    SQLINTEGER input = 41;
+    const auto number = [](SQLLEN value) {
+        return reinterpret_cast<SQLPOINTER>(
+            static_cast<std::uintptr_t>(value));
+    };
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+        application, 1, SQL_DESC_CONCISE_TYPE,
+        number(SQL_C_SLONG), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+        application, 1, SQL_DESC_DATA_PTR, &input, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+        implementation, 1, SQL_DESC_CONCISE_TYPE,
+        number(SQL_INTEGER), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+        implementation, 1, SQL_DESC_PARAMETER_TYPE,
+        number(SQL_PARAM_INPUT), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_APP_PARAM_DESC, application, 0));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLINTEGER output = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_SLONG, &output, 0, nullptr));
+    EXPECT_EQ(42, output);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, application));
+}
+
+TEST_F(PreparedStatementIntegrationTest, PreparePreservesParameterBindings) {
+    SQLINTEGER input = 7;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
+        0, 0, &input, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT ?::integer", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLINTEGER output = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_SLONG, &output, 0, nullptr));
+    EXPECT_EQ(input, output);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        RejectsUnsupportedAttachedParameterArraysBeforeExecution) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
         hstmt, (SQLCHAR*)"SELECT ?::integer", SQL_NTS));
