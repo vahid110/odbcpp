@@ -47,7 +47,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLFetchScroll` | A | Partial | unit, integration, DM | Only `SQL_FETCH_NEXT` is supported; keep other orientations honest |
 | `SQLMoreResults` | A | Partial | unit, integration, DM | Error/result/update-count sequences and state transitions |
 | `SQLGetData` | A | Partial | integration, DM | Complete conversion matrix and call-order/chunking edge cases |
-| `SQLBindCol` | A | Partial | unit internals, integration | Row arrays, row-wise binding, invalid buffer/type combinations |
+| `SQLBindCol` | A | Partial | unit, integration | Invalid C types and negative lengths are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
 | `SQLBindParameter` | A | Partial | unit internals, integration | Input arrays, data-at-execution, supported C/SQL type matrix |
 | `SQLNumParams` | A | Partial | integration, DM | Invalid state/output and complex marker parsing |
 | `SQLNumResultCols` | A | Partial | unit, integration | State transitions and no-result/update-count cases |
@@ -244,6 +244,10 @@ substitute for ODBC diagnostics.
   metadata and clears them with the cursor. Integration coverage retrieves the
   record count, names, SQL types, declared length, numeric precision, and scale
   through `SQLGetDescField` rather than the statement metadata helpers.
+- Audit batch 23 validates `SQLBindCol` buffer descriptions before mutating the
+  ARD: negative lengths return HY090, invalid C type identifiers return HY003,
+  and recognized but unsupported C types return HYC00. Unit and exported-API
+  integration tests assert the exact diagnostics and successful recovery.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

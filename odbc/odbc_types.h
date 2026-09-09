@@ -63,6 +63,7 @@ constexpr const char* SQLSTATE_INVALID_CHARACTER_VALUE = "22018";
 constexpr const char* SQLSTATE_STRING_DATA_TRUNCATED = "01004";
 constexpr const char* SQLSTATE_INVALID_STRING_LENGTH = "HY090";
 constexpr const char* SQLSTATE_INVALID_NULL_POINTER = "HY009";
+constexpr const char* SQLSTATE_INVALID_APPLICATION_BUFFER_TYPE = "HY003";
 constexpr const char* SQLSTATE_ATTRIBUTE_CANNOT_BE_SET = "HY011";
 constexpr const char* SQLSTATE_INVALID_ATTRIBUTE_VALUE = "HY024";
 constexpr const char* SQLSTATE_INVALID_ATTRIBUTE = "HY092";

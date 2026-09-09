@@ -33,6 +33,25 @@ TEST_F(DescriptorAPITest, BindColValidation) {
     EXPECT_EQ(SQL_SUCCESS, stmt->bind_col(2, SQL_C_SLONG, buffer, sizeof(SQLINTEGER), &indicator));
 }
 
+TEST_F(DescriptorAPITest, BindColRejectsMalformedBufferDescriptions) {
+    char buffer[16]{};
+    SQLLEN indicator = 0;
+
+    EXPECT_EQ(SQL_ERROR, stmt->bind_col(
+        1, SQL_C_CHAR, buffer, -1, &indicator));
+    EXPECT_EQ("HY090", stmt->get_sqlstate());
+    stmt->clear_diagnostics();
+
+    EXPECT_EQ(SQL_ERROR, stmt->bind_col(
+        1, 12345, buffer, sizeof(buffer), &indicator));
+    EXPECT_EQ("HY003", stmt->get_sqlstate());
+    stmt->clear_diagnostics();
+
+    EXPECT_EQ(SQL_ERROR, stmt->bind_col(
+        1, SQL_C_NUMERIC, buffer, sizeof(buffer), &indicator));
+    EXPECT_EQ("HYC00", stmt->get_sqlstate());
+}
+
 // Test column binding storage in ARD
 TEST_F(DescriptorAPITest, ARDStorage) {
     char str_buffer[256];

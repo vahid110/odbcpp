@@ -586,6 +586,19 @@ TEST_F(BindColIntegrationTest, ErrorConditions) {
     // Invalid column number
     EXPECT_EQ(SQL_ERROR, SQLBindCol(hstmt, 0, SQL_C_CHAR, buffer, sizeof(buffer), &len));
     EXPECT_EQ(SQL_ERROR, SQLBindCol(hstmt, 999, SQL_C_CHAR, buffer, sizeof(buffer), &len));
+
+    SQLCHAR state[6]{};
+    EXPECT_EQ(SQL_ERROR, SQLBindCol(
+        hstmt, 1, 12345, buffer, sizeof(buffer), &len));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY003", reinterpret_cast<char*>(state));
+
+    EXPECT_EQ(SQL_ERROR, SQLBindCol(
+        hstmt, 1, SQL_C_CHAR, buffer, -1, &len));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY090", reinterpret_cast<char*>(state));
     
     // Valid binding should still work
     EXPECT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_CHAR, buffer, sizeof(buffer), &len));

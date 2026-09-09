@@ -1953,6 +1953,21 @@ SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target
     set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid column number");
     return SQL_ERROR;
   }
+  if (buffer_length < 0) {
+    set_error(SQLSTATE_INVALID_STRING_LENGTH,
+              "Column buffer length cannot be negative");
+    return SQL_ERROR;
+  }
+  if (!ResultTypes::is_valid_c_type(target_type)) {
+    set_error(SQLSTATE_INVALID_APPLICATION_BUFFER_TYPE,
+              "Invalid column application buffer type");
+    return SQL_ERROR;
+  }
+  if (!ResultTypes::is_supported_c_type(target_type)) {
+    set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+              "Column application buffer type is not supported");
+    return SQL_ERROR;
+  }
   
   // Check if column number is valid (after execution)
   if (executed_ && column_number > column_info_.size()) {
