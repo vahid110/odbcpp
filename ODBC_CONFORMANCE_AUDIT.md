@@ -45,7 +45,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLExecute` | A | Partial | integration | Unprepared execution returns HY010; re-execution states, parameter arrays, and data-at-execution remain |
 | `SQLFetch` | A | Partial | unit, integration, DM | Never-executed and no-result states return HY010/24000; row arrays and full state matrix remain |
 | `SQLFetchScroll` | A | Partial | unit, integration, DM | Only `SQL_FETCH_NEXT` is supported; keep other orientations honest |
-| `SQLMoreResults` | A | Partial | unit, integration, DM | Error/result/update-count sequences and state transitions |
+| `SQLMoreResults` | A | Partial | unit, integration, DM | Result/update-count traversal and close-time discard are covered; error-result sequences remain |
 | `SQLGetData` | A | Partial | integration, DM | Complete conversion matrix and call-order/chunking edge cases |
 | `SQLBindCol` | A | Partial | unit, integration | Invalid C types and negative lengths are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
 | `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics covered; input arrays, data-at-execution, and full conversion matrix remain |
@@ -57,8 +57,8 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLDescribeParam` | A | Partial | unit internals, integration | Availability after prepare and complete type metadata |
 | `SQLSetStmtAttr` | A/W | Partial | unit, integration | Scalar modes, descriptor attachment, and descriptor-driven execution work; arrays, offsets, and operations remain |
 | `SQLGetStmtAttr` | A/W | Partial | unit, integration | Common defaults, descriptor handles, and status pointers covered; row number and remaining attributes need classification |
-| `SQLCloseCursor` | A | Partial | unit, integration, DM | Complete statement-state matrix |
-| `SQLFreeStmt` | A | Partial | unit, DM | All options across statement states and descriptor side effects |
+| `SQLCloseCursor` | A | Partial | unit, integration, DM | Missing/open cursor and pending-result discard are covered; complete statement-state matrix remains |
+| `SQLFreeStmt` | A | Partial | unit, integration, DM | SQL_CLOSE pending-result discard and basic options are covered; complete option/state matrix remains |
 | `SQLGetTypeInfo` | A/W | Partial | integration, DM | All supported types, type filters, wide entry test |
 | `SQLTables` | A/W | Partial | unit, integration, DM | Pattern/metadata-ID semantics and privilege visibility |
 | `SQLColumns` | A/W | Partial | unit, integration, DM | Pattern semantics and complete PostgreSQL type metadata |
@@ -260,6 +260,10 @@ substitute for ODBC diagnostics.
   returns HY010. Exhausting a real result set still returns `SQL_NO_DATA`, and
   unsupported row-array settings are tested after a real execution so state
   validation cannot mask them.
+- Audit batch 26 makes both `SQLCloseCursor` and `SQLFreeStmt(SQL_CLOSE)`
+  discard every pending result and row count from a PostgreSQL batch. A later
+  `SQLMoreResults` now remains at `SQL_NO_DATA` instead of reviving a result
+  that the application explicitly discarded.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

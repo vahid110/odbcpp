@@ -732,6 +732,21 @@ TEST_F(MetadataIntegrationTest, TraversesMultiplePostgreSQLResults) {
     EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, ClosingCursorDiscardsPendingResults) {
+    constexpr auto batch =
+        "SELECT 1 AS first_value; SELECT 2 AS second_value";
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)batch, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)batch, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_CLOSE));
+    EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, ErrorCases) {
     // Execute query first
     SQLRETURN ret = SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS);

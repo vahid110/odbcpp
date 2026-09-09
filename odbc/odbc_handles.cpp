@@ -1274,6 +1274,7 @@ SQLRETURN ODBCStatement::close_cursor(bool report_missing_cursor) {
   }
   result_rows_.clear();
   column_info_.clear();
+  pending_results_.clear();
   descriptor(imp_row_descriptor_)->replace_records({});
   get_data_offsets_.clear();
   current_row_ = 0;
