@@ -72,7 +72,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLGetDiagField` | A/W | Partial | unit, integration | All standard header/record identifiers, return provenance, origins, ANSI/wide lengths, and truncation are covered; row/column-specific server errors remain |
 | `SQLError` | A/W | Partial | unit, integration | ODBC 2 sequencing and multi-record consumption |
 | `SQLGetInfo` | A/W | Partial | unit, DM | Complete information matrix and capability accuracy |
-| `SQLGetFunctions` | A | Partial | unit, DM | Automatically prove advertised functions match usable exports |
+| `SQLGetFunctions` | A | Verified | shared-library export audit, unit, DM | Exact single-function, ODBC 2 array, and ODBC 3 bitmap behavior is enforced against all advertised exports |
 | `SQLNativeSql` | A/W | Partial | unit, DM | ODBC escape translation; currently effectively pass-through |
 | `SQLSetEnvAttr` | A | Partial | unit, integration, DM | ODBC version is locked after DBC allocation; supported attribute matrix remains |
 | `SQLGetEnvAttr` | A | Partial | unit, DM | Supported attribute matrix and buffer/type rules |
@@ -168,6 +168,11 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
   read-only attributes, unsupported values, and connection-state behavior.
   `SQL_ATTR_CONNECTION_DEAD` reports a known-open connection and returns 08003
   when no connection is open; actual link-loss probing remains explicit work.
+- Audit batch 12 loads the built shared driver and verifies every one of the 47
+  advertised base symbols and all 26 wide exports. It exhaustively compares
+  the ODBC 2 array and ODBC 3 bitmap with the supported-function set, checks
+  individual queries, rejects invalid handles and null outputs, and preserves
+  an explicit false result for unknown function identifiers.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
@@ -213,7 +218,8 @@ therefore **implemented but partial**, not a substitute for ODBC diagnostics.
 ### P1 — conformance and interoperability
 
 1. Complete the connection/statement/descriptor attribute matrices.
-2. Prove that `SQLGetFunctions` and `SQLGetInfo` never over-advertise behavior.
+2. Prove that `SQLGetInfo` never over-advertises behavior. `SQLGetFunctions`
+   is closed by audit batch 12 and remains guarded by the shared-library test.
 3. Exercise every exported wide symbol directly on two-byte and four-byte
    `SQLWCHAR` Driver Manager paths.
 4. Add state-machine tests for allocated, connected, prepared, executed,

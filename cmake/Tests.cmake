@@ -35,6 +35,15 @@ foreach(test_file ${UNIT_TEST_SOURCES})
   set_tests_properties(${test_name} PROPERTIES LABELS "unit")
 endforeach()
 
+if(TARGET test_driver_capabilities)
+  add_dependencies(test_driver_capabilities odbcpp_driver)
+  target_compile_definitions(test_driver_capabilities PRIVATE
+    ODBCPP_DRIVER_LIBRARY_PATH="$<TARGET_FILE:odbcpp_driver>")
+  if(CMAKE_DL_LIBS)
+    target_link_libraries(test_driver_capabilities PRIVATE ${CMAKE_DL_LIBS})
+  endif()
+endif()
+
 # ---- Integration Tests ----
 file(GLOB INTEGRATION_TEST_SOURCES "tests/integration/*.cpp")
 foreach(test_file ${INTEGRATION_TEST_SOURCES})
