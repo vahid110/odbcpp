@@ -2782,7 +2782,13 @@ SQLRETURN ODBCStatement::describe_col(SQLUSMALLINT column_number, SQLCHAR* colum
   if (column_size) *column_size = col.column_size;
   if (decimal_digits) *decimal_digits = col.decimal_digits;
   if (nullable) *nullable = col.nullable;
-  
+
+  if (column_name && !col.name.empty() &&
+      static_cast<std::size_t>(name_buffer_length) <= col.name.length()) {
+    set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+              "Column name was truncated");
+    return SQL_SUCCESS_WITH_INFO;
+  }
   return SQL_SUCCESS;
 }
 
@@ -2809,6 +2815,12 @@ SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT 
         static_cast<char*>(character_attribute)[copy_len] = '\0';
       }
       if (string_length) *string_length = static_cast<SQLSMALLINT>(col.name.length());
+      if (character_attribute && !col.name.empty() &&
+          static_cast<std::size_t>(buffer_length) <= col.name.length()) {
+        set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                  "Column attribute was truncated");
+        return SQL_SUCCESS_WITH_INFO;
+      }
       return SQL_SUCCESS;
       
     case SQL_DESC_TYPE:

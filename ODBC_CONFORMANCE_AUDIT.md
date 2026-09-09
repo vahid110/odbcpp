@@ -52,8 +52,8 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLNumParams` | A | Partial | integration, DM | Prepared marker parsing and direct-execution zero count are covered; pre-execution server validation remains |
 | `SQLNumResultCols` | A | Partial | unit, integration | State transitions and no-result/update-count cases |
 | `SQLRowCount` | A | Partial | unit, integration | Statement-state matrix and all statement classes |
-| `SQLDescribeCol` | A/W | Partial | unit, integration | Buffer boundaries, bookmark column, wide edge cases |
-| `SQLColAttribute` | A/W | Partial | integration | Complete field identifiers and numeric/string destination rules |
+| `SQLDescribeCol` | A/W | Partial | unit, integration | ANSI/wide name truncation is diagnosed; bookmark column and remaining wide edge cases remain |
+| `SQLColAttribute` | A/W | Partial | integration | ANSI/wide name truncation is diagnosed; complete field and destination rules remain |
 | `SQLDescribeParam` | A | Partial | unit internals, integration | Availability after prepare and complete type metadata |
 | `SQLSetStmtAttr` | A/W | Partial | unit, integration | Scalar modes, descriptor attachment, and descriptor-driven execution work; arrays, offsets, and operations remain |
 | `SQLGetStmtAttr` | A/W | Partial | unit, integration | Common defaults, descriptor handles, and status pointers covered; row number and remaining attributes need classification |
@@ -268,6 +268,10 @@ substitute for ODBC diagnostics.
   prepared re-execution with 24000. A successful direct execution now replaces
   any older prepared statement, reports zero parameters through `SQLNumParams`,
   and leaves a later `SQLExecute` in HY010 instead of running stale SQL.
+- Audit batch 28 makes ANSI `SQLDescribeCol` and `SQLColAttribute` match their
+  wide variants on short output buffers: both preserve the full source length,
+  null-terminate the truncated value, and return `SQL_SUCCESS_WITH_INFO` with
+  01004 instead of silently succeeding.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

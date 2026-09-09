@@ -75,6 +75,33 @@ TEST_F(MetadataIntegrationTest, BasicMetadata) {
     EXPECT_EQ(SQL_VARCHAR, numeric_attr);
 }
 
+TEST_F(MetadataIntegrationTest, ReportsAnsiColumnNameTruncation) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 1 AS long_column_name", SQL_NTS));
+
+    char name[5]{};
+    SQLSMALLINT length = 0;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLDescribeCol(
+        hstmt, 1, reinterpret_cast<SQLCHAR*>(name), sizeof(name), &length,
+        nullptr, nullptr, nullptr, nullptr));
+    EXPECT_STREQ("long", name);
+    EXPECT_EQ(16, length);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01004", reinterpret_cast<char*>(state));
+
+    name[0] = '\0';
+    length = 0;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLColAttribute(
+        hstmt, 1, SQL_DESC_NAME, name, sizeof(name), &length, nullptr));
+    EXPECT_STREQ("long", name);
+    EXPECT_EQ(16, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01004", reinterpret_cast<char*>(state));
+}
+
 TEST_F(MetadataIntegrationTest, ImplementationDescriptorReportsResultMetadata) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,
