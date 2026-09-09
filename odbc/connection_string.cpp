@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <filesystem>
 
 namespace rs::odbc {
 namespace {
@@ -140,6 +141,16 @@ std::vector<std::string> ConnectionString::get_driver_file_paths() {
   std::vector<std::string> paths;
 
   const auto odbcsysini = environment_value("ODBCSYSINI");
+  const auto odbcinstini = environment_value("ODBCINSTINI");
+  if (!odbcinstini.empty()) {
+    const std::filesystem::path configured(odbcinstini);
+    if (configured.is_absolute() || odbcsysini.empty()) {
+      paths.push_back(configured.string());
+    } else {
+      paths.push_back(
+          (std::filesystem::path(odbcsysini) / configured).string());
+    }
+  }
   if (!odbcsysini.empty()) paths.push_back(odbcsysini + "/odbcinst.ini");
 
 #ifdef _WIN32

@@ -75,6 +75,7 @@ file(GLOB CORE_BASE_SOURCES
   "core/transport/*.cpp"
   "core/transport/*.h"
   "core/util/*.h"
+  "core/util/*.cpp"
 )
 
 set(CORE_SOURCES ${CORE_BASE_SOURCES})
@@ -156,6 +157,9 @@ target_include_directories(${PROJECT_NAME}_core
     $<INSTALL_INTERFACE:include>
     ${ODBC_INCLUDE_DIR}
 )
+target_include_directories(${PROJECT_NAME}_core SYSTEM PRIVATE
+  ${SPDLOG_INCLUDE_DIR}
+)
 
 target_link_libraries(${PROJECT_NAME}_core 
   PUBLIC 
@@ -174,6 +178,9 @@ target_include_directories(${PROJECT_NAME}_driver
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
     $<INSTALL_INTERFACE:include>
     ${ODBC_INCLUDE_DIR}
+)
+target_include_directories(${PROJECT_NAME}_driver SYSTEM PRIVATE
+  ${SPDLOG_INCLUDE_DIR}
 )
 
 target_link_libraries(${PROJECT_NAME}_driver 

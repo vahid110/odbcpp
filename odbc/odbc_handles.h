@@ -2,7 +2,9 @@
 #include "odbc_types.h"
 #include "core/database/i_database_connection.h"
 #include "core/database/connection_pool.h"
+#include "core/util/driver_logging.h"
 #include "core/util/result.h"
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -90,8 +92,7 @@ private:
 // Connection handle
 class ODBCConnection : public ODBCHandle {
 public:
-  explicit ODBCConnection(ODBCEnvironment* env) 
-    : ODBCHandle(HandleType::Connection), env_(env) {}
+  explicit ODBCConnection(ODBCEnvironment* env);
   
   SQLRETURN connect(const std::string& dsn, const std::string& user, const std::string& password);
   SQLRETURN disconnect();
@@ -101,6 +102,12 @@ public:
   SQLRETURN end_transaction(SQLSMALLINT completion_type);
   rs::util::Result<void> begin_transaction_if_needed(
       rs::util::Deadline deadline);
+  void log(rs::core::logging::LogLevel level, std::string_view event,
+           std::string_view message,
+           std::initializer_list<rs::core::logging::LogField> fields = {})
+      const noexcept;
+  bool logs_queries() const noexcept;
+  std::uint64_t connection_id() const noexcept { return connection_id_; }
   
   rs::core::database::IDatabaseConnection* get_db_connection() { return db_conn_.get(); }
 
@@ -112,6 +119,8 @@ private:
   SQLUINTEGER autocommit_ = SQL_AUTOCOMMIT_ON;
   SQLUINTEGER transaction_isolation_ = SQL_TXN_READ_COMMITTED;
   bool transaction_active_ = false;
+  std::uint64_t connection_id_{};
+  std::shared_ptr<rs::core::logging::DriverLogger> logger_;
   
   // Suppress unused warning - env_ will be used for ODBC compliance features
   void suppress_unused_warning() { (void)env_; }

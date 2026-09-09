@@ -19,6 +19,7 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 - **Pluggable Architecture**: Easy to add new database protocols
 - **Modern C++20**: Clean, type-safe interfaces
 - **Secure Transport**: Built-in TLS/SSL support via OpenSSL
+- **Production Logging**: Asynchronous rotating files, stderr, or syslog with text/JSON output and connection/query timing
 - **Modern Authentication**: PostgreSQL cleartext, MD5, and SCRAM-SHA-256 password authentication
 - **Cross-Platform**: macOS, Linux, Windows support
 - **Comprehensive Testing**: Unit, PostgreSQL integration, unixODBC and mixed-width iODBC driver-manager, sanitizer, and Windows CI coverage
@@ -247,6 +248,35 @@ int main() {
 | `ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE` | — | Fail the build unless the driver headers define a 2- or 4-byte `SQLWCHAR` as expected |
 | `ODBCPP_EXPECT_DM_SQLWCHAR_SIZE` | — | Fail the external test build unless its application headers have the expected width |
 
+### Driver logging
+
+Logging is disabled by default. Configure it in the driver section of
+`odbcinst.ini`, a DSN, or a connection string. The precedence is the same as
+transport settings: connection string, DSN, driver section, then defaults.
+
+```ini
+[ODBCPP PostgreSQL]
+LogLevel=Info
+LogSink=File
+LogFile=/var/log/odbcpp/driver.log
+LogMaxSize=10485760
+LogMaxFiles=5
+LogAsync=true
+LogFormat=Json
+LogQueries=false
+```
+
+`LogLevel` accepts `Off`, `Error`, `Warn`, `Info`, `Debug`, or `Trace`.
+`LogSink` accepts a comma-separated combination of `File`, `Stderr`, and
+`Syslog` (syslog is available on POSIX systems). File logs rotate at
+`LogMaxSize` bytes and retain `LogMaxFiles` archives. Every record includes a
+connection ID; connection and query completion records include elapsed time,
+row counts, and affected-row counts.
+
+SQL text is never logged unless both `LogLevel=Debug|Trace` and
+`LogQueries=true` are set. Parameter values and passwords are never logged.
+JSON output escapes control characters and is suitable for log processors.
+
 ### Driver-manager Unicode ABI
 
 `SQLWCHAR` is not the same size in every ODBC environment. Windows and a
@@ -413,7 +443,7 @@ sudo odbcinst -i -s -f odbc.ini
 ## Testing
 
 ### Test Coverage
-- **Total Test Executables**: 29 (20 unit + 9 integration)
+- **Total Test Executables**: 30 (21 unit + 9 integration)
 - **CI Coverage**: Linux, Windows, sanitizers, and mixed-width iODBC Unicode
 - **Coverage**: All ODBC APIs, descriptors, prepared statements, column binding
 
@@ -428,7 +458,7 @@ source ./setup-test-env.sh
 ctest --test-dir build-redshift
 
 # Run specific test categories
-ctest --test-dir build-redshift -L unit         # 20 unit test executables
+ctest --test-dir build-redshift -L unit         # 21 unit test executables
 ctest --test-dir build-redshift -L integration  # 9 integration executables
 
 # Test specific functionality

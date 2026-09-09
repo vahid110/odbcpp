@@ -73,6 +73,11 @@ jobs:
           AsyncQueueDepth=256
           AsyncEngine=Auto
           DeadlineModel=Strict
+          LogLevel=Info
+          LogSink=File
+          LogFile=${{ github.workspace }}/build/ci-driver.log
+          LogFormat=Json
+          LogQueries=false
           EOF
 
       - name: Configure
@@ -106,6 +111,20 @@ jobs:
           sed -i 's/^TransportMode=Async$/TransportMode=Auto/' "$ODBCINI"
           sed -i 's/^AsyncEngine=Epoll$/AsyncEngine=Auto/' "$ODBCINI"
           ctest --test-dir build -L integration --output-on-failure
+
+      - name: Verify production logging
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("build/ci-driver.log")
+          records = [json.loads(line) for line in path.read_text().splitlines()]
+          assert any(record.get("record", {}).get("event") == "query_completed"
+                     for record in records)
+          assert all("sql" not in record.get("record", {}) for record in records)
+          assert all("PWD=" not in line for line in path.read_text().splitlines())
+          PY
 
   windows-unit:
     runs-on: windows-latest

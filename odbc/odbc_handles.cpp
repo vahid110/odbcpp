@@ -9,6 +9,8 @@
 #include "core/transport/transport_options.h"
 #include "core/util/deadline.h"
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -17,6 +19,13 @@
 
 namespace rs::odbc {
 namespace {
+
+std::atomic<std::uint64_t> next_connection_id{1};
+
+std::string elapsed_milliseconds(std::chrono::steady_clock::time_point start) {
+  return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - start).count());
+}
 
 std::string default_driver_name() {
 #ifdef ODBCPP_ENABLE_REDSHIFT
@@ -262,6 +271,21 @@ std::vector<std::string> parse_table_types(const std::string& value) {
 
 } // namespace
 
+ODBCConnection::ODBCConnection(ODBCEnvironment* env)
+    : ODBCHandle(HandleType::Connection), env_(env),
+      connection_id_(next_connection_id.fetch_add(1)) {}
+
+void ODBCConnection::log(
+    rs::core::logging::LogLevel level, std::string_view event,
+    std::string_view message,
+    std::initializer_list<rs::core::logging::LogField> fields) const noexcept {
+  if (logger_) logger_->log(level, event, message, fields);
+}
+
+bool ODBCConnection::logs_queries() const noexcept {
+  return logger_ && logger_->logs_queries();
+}
+
 ODBCStatement::ODBCStatement(ODBCConnection* conn)
     : ODBCHandle(HandleType::Statement), conn_(conn) {
   try {
@@ -296,12 +320,21 @@ SQLHDESC ODBCStatement::create_implicit_descriptor() {
 
 // Connection implementation
 SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& user, const std::string& password) {
+  const auto started = std::chrono::steady_clock::now();
   try {
     const auto resolved = ConnectionString::resolve(dsn, default_driver_name());
+    const auto logging_options = rs::core::logging::LoggingOptions::resolve(
+        resolved.driver_parameters, resolved.dsn_parameters,
+        resolved.connection_parameters);
+    logger_ = rs::core::logging::DriverLogger::create(
+        logging_options, connection_id_);
     const auto& params = resolved.effective_parameters;
     if (!resolved.dsn_name.empty() && resolved.dsn_parameters.empty()) {
       set_error(SQLSTATE_CONNECTION_FAILURE,
                 "DSN '" + resolved.dsn_name + "' not found");
+      log(rs::core::logging::LogLevel::Error, "connection_failed",
+          get_error_message(), {{"sqlstate", get_sqlstate()},
+                                {"duration_ms", elapsed_milliseconds(started)}});
       return SQL_ERROR;
     }
 
@@ -324,6 +357,19 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
     const auto transport_options = rs::core::transport::TransportOptions::resolve(
         resolved.driver_parameters, resolved.dsn_parameters,
         resolved.connection_parameters);
+    log(rs::core::logging::LogLevel::Info, "connection_start",
+        "Opening database connection",
+        {{"host", settings.host},
+         {"port", std::to_string(settings.port)},
+         {"database", settings.database},
+         {"tls", settings.use_ssl ? "true" : "false"},
+         {"transport_mode", std::string(rs::core::transport::to_string(
+                                rs::core::transport::TransportFactory::resolve_mode(
+                                    transport_options)))},
+         {"async_engine", std::string(rs::core::transport::to_string(
+                               transport_options.async_engine))},
+         {"deadline_model", std::string(rs::core::transport::to_string(
+                                 transport_options.deadline_model))}});
     auto transport = rs::core::transport::TransportFactory::create(
         transport_options, settings.use_ssl);
     auto parser = std::make_unique<rs::core::database::postgres::PgProtocolParser>();
@@ -337,6 +383,10 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
           rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
       set_error(timeout ? SQLSTATE_CONNECTION_TIMEOUT : SQLSTATE_CONNECTION_FAILURE,
                 result.error_message());
+      log(rs::core::logging::LogLevel::Error, "connection_failed",
+          result.error_message(),
+          {{"sqlstate", get_sqlstate()},
+           {"duration_ms", elapsed_milliseconds(started)}});
       return SQL_ERROR;
     }
 
@@ -351,6 +401,10 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
             rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
         set_error(timeout ? SQLSTATE_CONNECTION_TIMEOUT : SQLSTATE_CONNECTION_FAILURE,
                   isolation_result.error_message());
+        log(rs::core::logging::LogLevel::Error, "connection_failed",
+            isolation_result.error_message(),
+            {{"sqlstate", get_sqlstate()},
+             {"duration_ms", elapsed_milliseconds(started)}});
         db_conn_->disconnect();
         return SQL_ERROR;
       }
@@ -358,10 +412,16 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
     
     connected_ = true;
     transaction_active_ = false;
+    log(rs::core::logging::LogLevel::Info, "connection_opened",
+        "Database connection established",
+        {{"duration_ms", elapsed_milliseconds(started)}});
     return SQL_SUCCESS;
     
   } catch (const std::exception& e) {
     set_error(SQLSTATE_GENERAL_ERROR, e.what());
+    log(rs::core::logging::LogLevel::Error, "connection_failed", e.what(),
+        {{"sqlstate", get_sqlstate()},
+         {"duration_ms", elapsed_milliseconds(started)}});
     return SQL_ERROR;
   }
 }
@@ -504,11 +564,17 @@ SQLRETURN ODBCConnection::end_transaction(SQLSMALLINT completion_type) {
 }
 
 SQLRETURN ODBCConnection::disconnect() {
+  const bool was_connected = connected_;
   if (db_conn_) {
     db_conn_->disconnect();
     connected_ = false;
     transaction_active_ = false;
   }
+  if (was_connected) {
+    log(rs::core::logging::LogLevel::Info, "connection_closed",
+        "Database connection closed");
+  }
+  if (logger_) logger_->flush();
   return SQL_SUCCESS;
 }
 
@@ -718,9 +784,17 @@ void ODBCDescriptor::copy_from(const ODBCDescriptor& source) {
 
 // Statement implementation
 SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
+  const auto started = std::chrono::steady_clock::now();
   if (!conn_->is_connected()) {
     set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
+    conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
+               get_error_message(), {{"sqlstate", get_sqlstate()},
+                                     {"kind", "direct"}});
     return SQL_ERROR;
+  }
+  if (conn_->logs_queries()) {
+    conn_->log(rs::core::logging::LogLevel::Debug, "query_text",
+               "Executing direct SQL", {{"sql", sql}});
   }
   
   pending_results_.clear();
@@ -733,6 +807,10 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
           rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
       set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_GENERAL_ERROR,
                 transaction.error_message());
+      conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
+                 transaction.error_message(),
+                 {{"sqlstate", get_sqlstate()}, {"kind", "direct"},
+                  {"duration_ms", elapsed_milliseconds(started)}});
       if (timeout) conn_->disconnect();
       return SQL_ERROR;
     }
@@ -743,16 +821,30 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
           rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
       set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_SYNTAX_ERROR,
                 result.error_message());
+      conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
+                 result.error_message(),
+                 {{"sqlstate", get_sqlstate()}, {"kind", "direct"},
+                  {"duration_ms", elapsed_milliseconds(started)}});
       if (timeout) conn_->disconnect();
       return SQL_ERROR;
     }
-    
+
+    const auto row_count = result->rows.size();
+    const auto affected_rows = result->affected_rows;
     apply_query_result(std::move(*result), false);
-    
+    conn_->log(rs::core::logging::LogLevel::Info, "query_completed",
+               "Direct SQL execution completed",
+               {{"kind", "direct"},
+                {"duration_ms", elapsed_milliseconds(started)},
+                {"rows", std::to_string(row_count)},
+                {"affected_rows", std::to_string(affected_rows)}});
     return SQL_SUCCESS;
     
   } catch (const std::exception& e) {
     set_error(SQLSTATE_GENERAL_ERROR, e.what());
+    conn_->log(rs::core::logging::LogLevel::Error, "query_failed", e.what(),
+               {{"sqlstate", get_sqlstate()}, {"kind", "direct"},
+                {"duration_ms", elapsed_milliseconds(started)}});
     return SQL_ERROR;
   }
 }
@@ -1102,6 +1194,11 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
   param_metadata_.clear();
   prepared_ = true;
   executed_ = false;
+  if (conn_->logs_queries()) {
+    conn_->log(rs::core::logging::LogLevel::Debug, "query_prepared",
+               "Prepared SQL statement",
+               {{"sql", sql}, {"parameters", std::to_string(marker_count)}});
+  }
   
   return SQL_SUCCESS;
 }
@@ -1122,14 +1219,27 @@ SQLRETURN ODBCStatement::num_params(SQLSMALLINT* parameter_count) {
 }
 
 SQLRETURN ODBCStatement::execute() {
+  const auto started = std::chrono::steady_clock::now();
   if (!prepared_) {
     set_error(SQLSTATE_GENERAL_ERROR, "Statement not prepared");
+    conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
+               get_error_message(), {{"sqlstate", get_sqlstate()},
+                                     {"kind", "prepared"}});
     return SQL_ERROR;
   }
   
   if (!conn_->is_connected()) {
     set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
+    conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
+               get_error_message(), {{"sqlstate", get_sqlstate()},
+                                     {"kind", "prepared"}});
     return SQL_ERROR;
+  }
+  if (conn_->logs_queries()) {
+    conn_->log(rs::core::logging::LogLevel::Debug, "query_text",
+               "Executing prepared SQL",
+               {{"sql", prepared_sql_},
+                {"parameters", std::to_string(parameter_count_)}});
   }
   
   pending_results_.clear();
@@ -1237,6 +1347,10 @@ SQLRETURN ODBCStatement::execute() {
           rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
       set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_GENERAL_ERROR,
                 transaction.error_message());
+      conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
+                 transaction.error_message(),
+                 {{"sqlstate", get_sqlstate()}, {"kind", "prepared"},
+                  {"duration_ms", elapsed_milliseconds(started)}});
       if (timeout) conn_->disconnect();
       return SQL_ERROR;
     }
@@ -1247,16 +1361,31 @@ SQLRETURN ODBCStatement::execute() {
           rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
       set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_SYNTAX_ERROR,
                 result.error_message());
+      conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
+                 result.error_message(),
+                 {{"sqlstate", get_sqlstate()}, {"kind", "prepared"},
+                  {"duration_ms", elapsed_milliseconds(started)}});
       if (timeout) conn_->disconnect();
       return SQL_ERROR;
     }
-    
+
+    const auto row_count = result->rows.size();
+    const auto affected_rows = result->affected_rows;
     apply_query_result(std::move(*result), true);
-    
+    conn_->log(rs::core::logging::LogLevel::Info, "query_completed",
+               "Prepared SQL execution completed",
+               {{"kind", "prepared"},
+                {"duration_ms", elapsed_milliseconds(started)},
+                {"rows", std::to_string(row_count)},
+                {"affected_rows", std::to_string(affected_rows)},
+                {"parameters", std::to_string(parameter_count_)}});
     return SQL_SUCCESS;
     
   } catch (const std::exception& e) {
     set_error(SQLSTATE_GENERAL_ERROR, e.what());
+    conn_->log(rs::core::logging::LogLevel::Error, "query_failed", e.what(),
+               {{"sqlstate", get_sqlstate()}, {"kind", "prepared"},
+                {"duration_ms", elapsed_milliseconds(started)}});
     return SQL_ERROR;
   }
 }
