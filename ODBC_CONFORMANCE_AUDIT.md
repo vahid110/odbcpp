@@ -48,7 +48,7 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLMoreResults` | A | Partial | unit, integration, DM | Error/result/update-count sequences and state transitions |
 | `SQLGetData` | A | Partial | integration, DM | Complete conversion matrix and call-order/chunking edge cases |
 | `SQLBindCol` | A | Partial | unit, integration | Invalid C types and negative lengths are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
-| `SQLBindParameter` | A | Partial | unit internals, integration | Input arrays, data-at-execution, supported C/SQL type matrix |
+| `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics covered; input arrays, data-at-execution, and full conversion matrix remain |
 | `SQLNumParams` | A | Partial | integration, DM | Invalid state/output and complex marker parsing |
 | `SQLNumResultCols` | A | Partial | unit, integration | State transitions and no-result/update-count cases |
 | `SQLRowCount` | A | Partial | unit, integration | Statement-state matrix and all statement classes |
@@ -248,6 +248,12 @@ substitute for ODBC diagnostics.
   ARD: negative lengths return HY090, invalid C type identifiers return HY003,
   and recognized but unsupported C types return HYC00. Unit and exported-API
   integration tests assert the exact diagnostics and successful recovery.
+- Audit batch 24 validates `SQLBindParameter` before mutating APD/IPD state.
+  Invalid direction, C type, SQL type, length, and missing input pointers return
+  HY105, HY003, HY004, HY090, and HY009 respectively; recognized unsupported
+  types or output directions return HYC00. Prepared execution also resolves
+  `SQL_C_DEFAULT` from the declared SQL type and now handles its smallint and
+  real mappings.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

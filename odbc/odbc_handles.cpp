@@ -1694,9 +1694,12 @@ SQLRETURN ODBCStatement::execute() {
         return complete_parameter_set(SQL_ERROR);
       }
 
+      const auto value_type = application.concise_type == SQL_C_DEFAULT
+          ? ResultTypes::default_c_type(implementation.concise_type)
+          : application.concise_type;
       rs::core::database::QueryParameter query_param;
       query_param.type = parameter_type_for(
-          implementation.concise_type, application.concise_type);
+          implementation.concise_type, value_type);
       if (is_null) {
         query_param.value = std::nullopt;
         param_values.push_back(std::move(query_param));
@@ -1704,7 +1707,7 @@ SQLRETURN ODBCStatement::execute() {
       }
 
       std::string value;
-      if (application.concise_type == SQL_C_CHAR) {
+      if (value_type == SQL_C_CHAR) {
         const auto* text = static_cast<const char*>(application.data_ptr);
         SQLLEN length = application.octet_length;
         if (length_or_indicator) length = *length_or_indicator;
@@ -1717,7 +1720,7 @@ SQLRETURN ODBCStatement::execute() {
                     "Data-at-execution parameters are not supported yet");
           return complete_parameter_set(SQL_ERROR);
         }
-      } else if (application.concise_type == SQL_C_WCHAR) {
+      } else if (value_type == SQL_C_WCHAR) {
         const auto* text = static_cast<const SQLWCHAR*>(application.data_ptr);
         SQLLEN length = application.octet_length;
         if (length_or_indicator) length = *length_or_indicator;
@@ -1740,15 +1743,19 @@ SQLRETURN ODBCStatement::execute() {
           return complete_parameter_set(SQL_ERROR);
         }
         value = *converted;
-      } else if (application.concise_type == SQL_C_SLONG) {
+      } else if (value_type == SQL_C_SSHORT) {
+        value = std::to_string(*static_cast<SQLSMALLINT*>(application.data_ptr));
+      } else if (value_type == SQL_C_SLONG) {
         value = std::to_string(*static_cast<SQLINTEGER*>(application.data_ptr));
-      } else if (application.concise_type == SQL_C_SBIGINT) {
+      } else if (value_type == SQL_C_SBIGINT) {
         value = std::to_string(*static_cast<SQLBIGINT*>(application.data_ptr));
-      } else if (application.concise_type == SQL_C_DOUBLE) {
+      } else if (value_type == SQL_C_FLOAT) {
+        value = std::to_string(*static_cast<SQLREAL*>(application.data_ptr));
+      } else if (value_type == SQL_C_DOUBLE) {
         value = std::to_string(*static_cast<SQLDOUBLE*>(application.data_ptr));
-      } else if (application.concise_type == SQL_C_BIT) {
+      } else if (value_type == SQL_C_BIT) {
         value = *static_cast<unsigned char*>(application.data_ptr) ? "1" : "0";
-      } else if (application.concise_type == SQL_C_BINARY) {
+      } else if (value_type == SQL_C_BINARY) {
         SQLLEN length = application.octet_length;
         if (length_or_indicator) length = *length_or_indicator;
         if (length < 0) {
@@ -1827,6 +1834,56 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
                                        SQLLEN* strlen_or_indicator) {
   if (parameter_number < 1) {
     set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid parameter number");
+    return SQL_ERROR;
+  }
+  const bool valid_direction = input_output_type == SQL_PARAM_INPUT ||
+      input_output_type == SQL_PARAM_INPUT_OUTPUT ||
+      input_output_type == SQL_PARAM_OUTPUT
+#ifdef SQL_PARAM_INPUT_OUTPUT_STREAM
+      || input_output_type == SQL_PARAM_INPUT_OUTPUT_STREAM
+#endif
+#ifdef SQL_PARAM_OUTPUT_STREAM
+      || input_output_type == SQL_PARAM_OUTPUT_STREAM
+#endif
+      ;
+  if (!valid_direction) {
+    set_error(SQLSTATE_INVALID_PARAMETER_TYPE,
+              "Invalid input/output parameter type");
+    return SQL_ERROR;
+  }
+  if (input_output_type != SQL_PARAM_INPUT) {
+    set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+              "Output parameters are not supported");
+    return SQL_ERROR;
+  }
+  if (buffer_length < 0) {
+    set_error(SQLSTATE_INVALID_STRING_LENGTH,
+              "Parameter buffer length cannot be negative");
+    return SQL_ERROR;
+  }
+  if (!ResultTypes::is_valid_c_type(value_type)) {
+    set_error(SQLSTATE_INVALID_APPLICATION_BUFFER_TYPE,
+              "Invalid parameter application buffer type");
+    return SQL_ERROR;
+  }
+  if (!ResultTypes::is_supported_parameter_c_type(value_type)) {
+    set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+              "Parameter application buffer type is not supported");
+    return SQL_ERROR;
+  }
+  if (!ResultTypes::is_valid_sql_type(parameter_type)) {
+    set_error(SQLSTATE_INVALID_SQL_DATA_TYPE,
+              "Invalid parameter SQL data type");
+    return SQL_ERROR;
+  }
+  if (!ResultTypes::is_supported_parameter_sql_type(parameter_type)) {
+    set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+              "Parameter SQL data type is not supported");
+    return SQL_ERROR;
+  }
+  if (!parameter_value && !strlen_or_indicator) {
+    set_error(SQLSTATE_INVALID_NULL_POINTER,
+              "Input parameter requires a value or indicator pointer");
     return SQL_ERROR;
   }
 

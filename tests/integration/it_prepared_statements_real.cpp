@@ -186,6 +186,53 @@ TEST_F(PreparedStatementIntegrationTest,
     EXPECT_EQ(used, output);
 }
 
+TEST_F(PreparedStatementIntegrationTest,
+       BindingValidationUsesSpecificDiagnostics) {
+    SQLINTEGER value = 7;
+    SQLCHAR state[6]{};
+    const auto expect_state = [&](SQLRETURN result, const char* expected) {
+        EXPECT_EQ(SQL_ERROR, result);
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+            SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ(expected, reinterpret_cast<char*>(state));
+    };
+
+    expect_state(SQLBindParameter(
+        hstmt, 1, 12345, SQL_C_SLONG, SQL_INTEGER,
+        0, 0, &value, 0, nullptr), "HY105");
+    expect_state(SQLBindParameter(
+        hstmt, 1, SQL_PARAM_INPUT, 12345, SQL_INTEGER,
+        0, 0, &value, 0, nullptr), "HY003");
+    expect_state(SQLBindParameter(
+        hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, 12345,
+        0, 0, &value, 0, nullptr), "HY004");
+    expect_state(SQLBindParameter(
+        hstmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+        0, 0, &value, -1, nullptr), "HY090");
+    expect_state(SQLBindParameter(
+        hstmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+        0, 0, nullptr, 0, nullptr), "HY009");
+
+    EXPECT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
+        0, 0, &value, 0, nullptr));
+}
+
+TEST_F(PreparedStatementIntegrationTest, DefaultCTypeUsesSqlTypeMapping) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT ?::smallint", SQL_NTS));
+    SQLSMALLINT input = 123;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 1, SQL_PARAM_INPUT, SQL_C_DEFAULT, SQL_SMALLINT,
+        0, 0, &input, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLINTEGER output = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_SLONG, &output, 0, nullptr));
+    EXPECT_EQ(input, output);
+}
+
 TEST_F(PreparedStatementIntegrationTest, AutocommitOffSupportsCommitAndRollback) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,
@@ -452,7 +499,7 @@ TEST_F(PreparedStatementIntegrationTest, ErrorLeavesConnectionSynchronized) {
     ASSERT_EQ(SQL_SUCCESS,
               SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
                                SQL_VARCHAR, 0, 0, (SQLPOINTER)invalid,
-                               SQL_NTS, nullptr));
+                               sizeof(invalid) - 1, nullptr));
     SQLUSMALLINT param_status = SQL_PARAM_UNUSED;
     SQLULEN params_processed = 0;
     ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(

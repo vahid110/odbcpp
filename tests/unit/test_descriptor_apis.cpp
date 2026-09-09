@@ -52,6 +52,48 @@ TEST_F(DescriptorAPITest, BindColRejectsMalformedBufferDescriptions) {
     EXPECT_EQ("HYC00", stmt->get_sqlstate());
 }
 
+TEST_F(DescriptorAPITest, BindParameterRejectsMalformedDescriptions) {
+    SQLINTEGER value = 7;
+    const auto expect_failure = [&](SQLRETURN result, const char* state) {
+        EXPECT_EQ(SQL_ERROR, result);
+        EXPECT_EQ(state, stmt->get_sqlstate());
+        stmt->clear_diagnostics();
+    };
+
+    expect_failure(stmt->bind_parameter(
+        1, 12345, SQL_C_SLONG, SQL_INTEGER, 0, 0, &value, 0, nullptr),
+        "HY105");
+    expect_failure(stmt->bind_parameter(
+        1, SQL_PARAM_OUTPUT, SQL_C_SLONG, SQL_INTEGER,
+        0, 0, &value, 0, nullptr), "HYC00");
+    expect_failure(stmt->bind_parameter(
+        1, SQL_PARAM_INPUT, 12345, SQL_INTEGER,
+        0, 0, &value, 0, nullptr), "HY003");
+    expect_failure(stmt->bind_parameter(
+        1, SQL_PARAM_INPUT, SQL_C_NUMERIC, SQL_NUMERIC,
+        10, 2, &value, sizeof(value), nullptr), "HYC00");
+    expect_failure(stmt->bind_parameter(
+        1, SQL_PARAM_INPUT, SQL_C_SLONG, 12345,
+        0, 0, &value, 0, nullptr), "HY004");
+    expect_failure(stmt->bind_parameter(
+        1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_TYPE_DATE,
+        10, 0, &value, sizeof(value), nullptr), "HYC00");
+    expect_failure(stmt->bind_parameter(
+        1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+        0, 0, &value, -1, nullptr), "HY090");
+    expect_failure(stmt->bind_parameter(
+        1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+        0, 0, nullptr, 0, nullptr), "HY009");
+
+    SQLHDESC application = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, stmt->get_attribute(
+        SQL_ATTR_APP_PARAM_DESC, &application));
+    SQLSMALLINT count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        application, 0, SQL_DESC_COUNT, &count, 0, nullptr));
+    EXPECT_EQ(0, count);
+}
+
 // Test column binding storage in ARD
 TEST_F(DescriptorAPITest, ARDStorage) {
     char str_buffer[256];

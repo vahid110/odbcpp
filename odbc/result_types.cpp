@@ -55,6 +55,50 @@ bool ResultTypes::is_valid_c_type(SQLSMALLINT c_type) {
   return false;
 }
 
+bool ResultTypes::is_supported_parameter_c_type(SQLSMALLINT c_type) {
+  return c_type == SQL_C_DEFAULT || c_type == SQL_C_CHAR ||
+      c_type == SQL_C_WCHAR || c_type == SQL_C_SSHORT ||
+      c_type == SQL_C_SLONG || c_type == SQL_C_SBIGINT ||
+      c_type == SQL_C_FLOAT || c_type == SQL_C_DOUBLE ||
+      c_type == SQL_C_BIT || c_type == SQL_C_BINARY;
+}
+
+bool ResultTypes::is_supported_parameter_sql_type(SQLSMALLINT sql_type) {
+  return sql_type == SQL_CHAR || sql_type == SQL_VARCHAR ||
+      sql_type == SQL_LONGVARCHAR || sql_type == SQL_WCHAR ||
+      sql_type == SQL_WVARCHAR || sql_type == SQL_WLONGVARCHAR ||
+      sql_type == SQL_TINYINT || sql_type == SQL_SMALLINT ||
+      sql_type == SQL_INTEGER || sql_type == SQL_BIGINT ||
+      sql_type == SQL_REAL || sql_type == SQL_FLOAT ||
+      sql_type == SQL_DOUBLE || sql_type == SQL_DECIMAL ||
+      sql_type == SQL_NUMERIC || sql_type == SQL_BIT ||
+      sql_type == SQL_BINARY || sql_type == SQL_VARBINARY ||
+      sql_type == SQL_LONGVARBINARY;
+}
+
+bool ResultTypes::is_valid_sql_type(SQLSMALLINT sql_type) {
+  if (is_supported_parameter_sql_type(sql_type) ||
+      sql_type == SQL_DATE || sql_type == SQL_TIME ||
+      sql_type == SQL_TIMESTAMP || sql_type == SQL_TYPE_DATE ||
+      sql_type == SQL_TYPE_TIME || sql_type == SQL_TYPE_TIMESTAMP ||
+      sql_type == SQL_INTERVAL_YEAR || sql_type == SQL_INTERVAL_MONTH ||
+      sql_type == SQL_INTERVAL_DAY || sql_type == SQL_INTERVAL_HOUR ||
+      sql_type == SQL_INTERVAL_MINUTE || sql_type == SQL_INTERVAL_SECOND ||
+      sql_type == SQL_INTERVAL_YEAR_TO_MONTH ||
+      sql_type == SQL_INTERVAL_DAY_TO_HOUR ||
+      sql_type == SQL_INTERVAL_DAY_TO_MINUTE ||
+      sql_type == SQL_INTERVAL_DAY_TO_SECOND ||
+      sql_type == SQL_INTERVAL_HOUR_TO_MINUTE ||
+      sql_type == SQL_INTERVAL_HOUR_TO_SECOND ||
+      sql_type == SQL_INTERVAL_MINUTE_TO_SECOND) {
+    return true;
+  }
+#ifdef SQL_GUID
+  if (sql_type == SQL_GUID) return true;
+#endif
+  return false;
+}
+
 bool ResultTypes::is_conversion_supported(SQLSMALLINT sql_type,
                                           SQLSMALLINT c_type) {
   switch (c_type) {
