@@ -1405,7 +1405,7 @@ SQLRETURN ODBCDescriptor::set_field(
         static_cast<std::size_t>(record_number) <= records_.size()
         ? records_[static_cast<std::size_t>(record_number - 1)]
               .datetime_interval_code
-        : 0;
+        : SQLSMALLINT{0};
     new_concise_type = concise_type_for(type, current_subtype);
     if (!new_concise_type ||
         !valid_descriptor_type(*new_concise_type, kind_)) {
