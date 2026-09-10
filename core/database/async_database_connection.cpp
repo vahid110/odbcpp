@@ -252,6 +252,15 @@ rs::util::Result<QueryResult> AsyncDatabaseConnection::execute_prepared(std::str
   }
 }
 
+rs::util::Result<QueryResult> AsyncDatabaseConnection::describe_statement(
+    std::string_view,
+    std::span<const QueryParameterType>,
+    rs::util::Deadline) {
+  return rs::util::Result<QueryResult>{
+      rs::util::DbErrorCode::InvalidParameter,
+      "Statement description is unavailable on the experimental async facade"};
+}
+
 std::string AsyncDatabaseConnection::get_parameter(std::string_view key) const {
   auto it = server_params_.find(std::string(key));
   return (it != server_params_.end()) ? it->second : std::string{};

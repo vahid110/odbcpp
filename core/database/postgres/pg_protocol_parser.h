@@ -30,6 +30,9 @@ public:
   std::vector<std::byte> create_prepared_query(
     std::string_view sql,
     std::span<const QueryParameter> params) override;
+  std::vector<std::byte> create_statement_description(
+    std::string_view sql,
+    std::span<const QueryParameterType> parameter_types) override;
   static std::size_t parameter_marker_count(std::string_view sql);
   
   // Message parsing

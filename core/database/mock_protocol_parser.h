@@ -20,6 +20,12 @@ public:
     std::string_view sql, std::span<const QueryParameter> params) override {
     return {std::byte{0x50}}; // 'P' for Parse
   }
+
+  std::vector<std::byte> create_statement_description(
+    std::string_view sql,
+    std::span<const QueryParameterType> parameter_types) override {
+    return {std::byte{0x44}}; // 'D' for Describe
+  }
   
   std::vector<std::byte> create_ssl_request() override {
     return {std::byte{0x04}, std::byte{0xd2}, std::byte{0x16}, std::byte{0x2f}};

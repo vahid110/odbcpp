@@ -46,6 +46,9 @@ public:
   virtual std::vector<std::byte> create_prepared_query(
     std::string_view sql,
     std::span<const QueryParameter> params) = 0;
+  virtual std::vector<std::byte> create_statement_description(
+    std::string_view sql,
+    std::span<const QueryParameterType> parameter_types) = 0;
   
   // Message parsing
   virtual Message parse_message(const std::vector<std::byte>& data) = 0;

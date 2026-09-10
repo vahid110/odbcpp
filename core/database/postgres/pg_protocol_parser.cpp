@@ -539,6 +539,40 @@ std::vector<std::byte> PgProtocolParser::create_prepared_query(
   return out;
 }
 
+std::vector<std::byte> PgProtocolParser::create_statement_description(
+    std::string_view sql,
+    std::span<const QueryParameterType> parameter_types) {
+  if (parameter_types.size() > std::numeric_limits<std::uint16_t>::max()) {
+    throw std::length_error("too many PostgreSQL query parameters");
+  }
+
+  const auto rewritten = replace_parameter_markers(sql);
+  if (rewritten.marker_count != parameter_types.size()) {
+    throw std::invalid_argument(
+        "parameter marker count does not match described parameter count");
+  }
+
+  std::vector<std::byte> out;
+  out.reserve(rewritten.sql.size() + 32);
+  auto start = begin_message(out, 'P');
+  append_cstring(out, {});
+  append_cstring(out, rewritten.sql);
+  append_u16(out, static_cast<std::uint16_t>(parameter_types.size()));
+  for (const auto type : parameter_types) {
+    append_u32(out, postgres_type_oid(type));
+  }
+  finish_message(out, start);
+
+  start = begin_message(out, 'D');
+  out.push_back(std::byte{'S'});
+  append_cstring(out, {});
+  finish_message(out, start);
+
+  start = begin_message(out, 'S');
+  finish_message(out, start);
+  return out;
+}
+
 std::size_t PgProtocolParser::parameter_marker_count(std::string_view sql) {
   return replace_parameter_markers(sql).marker_count;
 }

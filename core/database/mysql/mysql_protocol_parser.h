@@ -44,6 +44,12 @@ public:
     // MySQL COM_STMT_PREPARE + COM_STMT_EXECUTE
     throw std::runtime_error("MySQL prepared statements not implemented yet");
   }
+
+  std::vector<std::byte> create_statement_description(
+    std::string_view sql,
+    std::span<const QueryParameterType> parameter_types) override {
+    throw std::runtime_error("MySQL statement description not implemented yet");
+  }
   
   Message parse_message(const std::vector<std::byte>& data) override {
     // Parse MySQL packet format

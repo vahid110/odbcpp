@@ -360,6 +360,195 @@ TEST_F(MetadataIntegrationTest, ReportsAffectedRows) {
     EXPECT_STREQ("24000", reinterpret_cast<char*>(state));
 }
 
+TEST_F(MetadataIntegrationTest, DescribesPreparedResultsBeforeExecution) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE prepared_metadata_state(value integer)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt,
+        (SQLCHAR*)"INSERT INTO prepared_metadata_state VALUES (?) "
+                  "RETURNING value AS inserted_value",
+        SQL_NTS));
+
+    SQLINTEGER input = 42;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
+        0, 0, &input, 0, nullptr));
+
+    SQLLEN row_count = 91;
+    EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
+    EXPECT_EQ(91, row_count);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY010", reinterpret_cast<char*>(state));
+
+    SQLSMALLINT column_count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count));
+    EXPECT_EQ(1, column_count);
+    char name[32]{};
+    SQLSMALLINT data_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+        hstmt, 1, reinterpret_cast<SQLCHAR*>(name), sizeof(name), nullptr,
+        &data_type, nullptr, nullptr, nullptr));
+    EXPECT_STREQ("inserted_value", name);
+    EXPECT_EQ(SQL_INTEGER, data_type);
+
+    SQLHSTMT verification = SQL_NULL_HSTMT;
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(
+        SQL_HANDLE_STMT, hdbc, &verification));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        verification,
+        (SQLCHAR*)"SELECT count(*) FROM prepared_metadata_state", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(verification));
+    SQLINTEGER rows_before_execution = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        verification, 1, SQL_C_SLONG, &rows_before_execution, 0, nullptr));
+    EXPECT_EQ(0, rows_before_execution);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, verification));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count));
+    EXPECT_EQ(1, column_count);
+    ASSERT_EQ(SQL_SUCCESS, SQLRowCount(hstmt, &row_count));
+    EXPECT_EQ(1, row_count);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLINTEGER returned = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_SLONG, &returned, 0, nullptr));
+    EXPECT_EQ(input, returned);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    column_count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count));
+    EXPECT_EQ(1, column_count);
+    row_count = 92;
+    EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
+    EXPECT_EQ(92, row_count);
+}
+
+TEST_F(MetadataIntegrationTest, RefreshesPreparedShapeAfterIpdTypeChange) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT ? AS typed_value", SQL_NTS));
+    SQLHDESC implementation = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_IMP_PARAM_DESC, &implementation, 0, nullptr));
+    const auto number = [](SQLSMALLINT value) {
+        return reinterpret_cast<SQLPOINTER>(
+            static_cast<std::uintptr_t>(value));
+    };
+
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+        implementation, 1, SQL_DESC_CONCISE_TYPE,
+        number(SQL_INTEGER), 0));
+    SQLSMALLINT column_count = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count));
+    EXPECT_EQ(1, column_count);
+    SQLSMALLINT data_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+        hstmt, 1, nullptr, 0, nullptr, &data_type,
+        nullptr, nullptr, nullptr));
+    EXPECT_EQ(SQL_INTEGER, data_type);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+        implementation, 1, SQL_DESC_CONCISE_TYPE,
+        number(SQL_VARCHAR), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count));
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+        hstmt, 1, nullptr, 0, nullptr, &data_type,
+        nullptr, nullptr, nullptr));
+    EXPECT_EQ(SQL_VARCHAR, data_type);
+}
+
+TEST_F(MetadataIntegrationTest, ResultShapeAndRowCountFollowStatementState) {
+    SQLSMALLINT column_count = 71;
+    SQLLEN row_count = 72;
+    EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &column_count));
+    EXPECT_EQ(71, column_count);
+    EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
+    EXPECT_EQ(72, row_count);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE result_state(value integer)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count));
+    EXPECT_EQ(0, column_count);
+    ASSERT_EQ(SQL_SUCCESS, SQLRowCount(hstmt, &row_count));
+    EXPECT_EQ(0, row_count);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"INSERT INTO result_state VALUES (1), (2), (3)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count));
+    EXPECT_EQ(0, column_count);
+    ASSERT_EQ(SQL_SUCCESS, SQLRowCount(hstmt, &row_count));
+    EXPECT_EQ(3, row_count);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT value FROM result_state ORDER BY value",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count));
+    EXPECT_EQ(1, column_count);
+    ASSERT_EQ(SQL_SUCCESS, SQLRowCount(hstmt, &row_count));
+    EXPECT_EQ(3, row_count);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count));
+    EXPECT_EQ(1, column_count);
+    ASSERT_EQ(SQL_SUCCESS, SQLRowCount(hstmt, &row_count));
+    EXPECT_EQ(3, row_count);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    column_count = 73;
+    row_count = 74;
+    EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &column_count));
+    EXPECT_EQ(73, column_count);
+    EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
+    EXPECT_EQ(74, row_count);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"UPDATE result_state SET value = value + 10",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count));
+    EXPECT_EQ(0, column_count);
+    row_count = 75;
+    EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
+    EXPECT_EQ(75, row_count);
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count));
+    EXPECT_EQ(0, column_count);
+    ASSERT_EQ(SQL_SUCCESS, SQLRowCount(hstmt, &row_count));
+    EXPECT_EQ(3, row_count);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT FROM missing syntax", SQL_NTS));
+    column_count = 76;
+    EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &column_count));
+    EXPECT_EQ(76, column_count);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("42000", reinterpret_cast<char*>(state));
+    row_count = 77;
+    EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
+    EXPECT_EQ(77, row_count);
+
+    EXPECT_EQ(SQL_ERROR, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT * FROM definitely_missing_odbcpp_table",
+        SQL_NTS));
+    column_count = 78;
+    row_count = 79;
+    EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &column_count));
+    EXPECT_EQ(78, column_count);
+    EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
+    EXPECT_EQ(79, row_count);
+}
+
 TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
     ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfo(hstmt, SQL_INTEGER));
     SQLSMALLINT columns = 0;

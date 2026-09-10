@@ -919,6 +919,10 @@ SQLRETURN ODBCDescriptor::set_field(
   }
   const auto numeric = static_cast<SQLULEN>(
       reinterpret_cast<std::uintptr_t>(value));
+  const auto changed = [this]() {
+    ++revision_;
+    return SQL_SUCCESS;
+  };
   switch (field_identifier) {
     case SQL_DESC_COUNT:
       if (numeric > static_cast<SQLULEN>(
@@ -928,7 +932,7 @@ SQLRETURN ODBCDescriptor::set_field(
         return SQL_ERROR;
       }
       records_.resize(static_cast<std::size_t>(numeric));
-      return SQL_SUCCESS;
+      return changed();
     case SQL_DESC_ARRAY_SIZE:
       if (numeric == 0) {
         set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
@@ -936,19 +940,19 @@ SQLRETURN ODBCDescriptor::set_field(
         return SQL_ERROR;
       }
       array_size_ = numeric;
-      return SQL_SUCCESS;
+      return changed();
     case SQL_DESC_ARRAY_STATUS_PTR:
       array_status_ptr_ = static_cast<SQLUSMALLINT*>(value);
-      return SQL_SUCCESS;
+      return changed();
     case SQL_DESC_BIND_OFFSET_PTR:
       bind_offset_ptr_ = static_cast<SQLLEN*>(value);
-      return SQL_SUCCESS;
+      return changed();
     case SQL_DESC_BIND_TYPE:
       bind_type_ = numeric;
-      return SQL_SUCCESS;
+      return changed();
     case SQL_DESC_ROWS_PROCESSED_PTR:
       rows_processed_ptr_ = static_cast<SQLULEN*>(value);
-      return SQL_SUCCESS;
+      return changed();
     default:
       break;
   }
@@ -1009,7 +1013,7 @@ SQLRETURN ODBCDescriptor::set_field(
                 "Unsupported descriptor field");
       return SQL_ERROR;
   }
-  return SQL_SUCCESS;
+  return changed();
 }
 
 SQLRETURN ODBCDescriptor::copy_from(const ODBCDescriptor& source) {
@@ -1024,6 +1028,7 @@ SQLRETURN ODBCDescriptor::copy_from(const ODBCDescriptor& source) {
   bind_offset_ptr_ = source.bind_offset_ptr_;
   bind_type_ = source.bind_type_;
   rows_processed_ptr_ = source.rows_processed_ptr_;
+  ++revision_;
   return SQL_SUCCESS;
 }
 
@@ -1996,6 +2001,11 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
   metadata.column_size = column_size;
   metadata.decimal_digits = decimal_digits;
   metadata.nullable = SQL_NULLABLE_UNKNOWN;
+  if (prepared_ && !executed_) {
+    prepared_metadata_available_ = false;
+    column_info_.clear();
+    descriptor(imp_row_descriptor_)->replace_records({});
+  }
   
   return SQL_SUCCESS;
 }
@@ -2037,6 +2047,13 @@ void ODBCStatement::apply_query_result(
   set_statement_diagnostic_header(
       cursor_rows, affected_rows_, diagnostic_header.dynamic_function,
       diagnostic_header.dynamic_function_code);
+
+  apply_result_metadata(result, include_parameter_metadata);
+}
+
+void ODBCStatement::apply_result_metadata(
+    const rs::core::database::QueryResult& result,
+    bool include_parameter_metadata) {
 
   column_info_.clear();
   column_info_.reserve(result.columns.size());
@@ -2089,6 +2106,8 @@ void ODBCStatement::clear_current_result() {
   current_row_ = 0;
   affected_rows_ = 0;
   executed_ = false;
+  prepared_metadata_available_ = false;
+  prepared_metadata_ipd_revision_ = 0;
 }
 
 // Column binding implementation
@@ -2140,6 +2159,44 @@ SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target
 }
 
 // Metadata functions implementation
+SQLRETURN ODBCStatement::describe_prepared_metadata() {
+  const auto implementation_descriptor = descriptor(imp_param_descriptor_);
+  if (prepared_metadata_available_ &&
+      prepared_metadata_ipd_revision_ ==
+          implementation_descriptor->revision()) {
+    return SQL_SUCCESS;
+  }
+
+  std::vector<rs::core::database::QueryParameterType> parameter_types(
+      static_cast<std::size_t>(parameter_count_),
+      rs::core::database::QueryParameterType::Unspecified);
+  for (std::size_t index = 0;
+       index < parameter_types.size() &&
+       index < implementation_descriptor->record_count(); ++index) {
+    const auto* record = implementation_descriptor->record(index);
+    parameter_types[index] = parameter_type_for(
+        record->concise_type, SQL_C_DEFAULT);
+  }
+
+  auto deadline = rs::util::make_deadline(
+      timeout_duration(query_timeout_seconds_));
+  auto result = conn_->get_db_connection()->describe_statement(
+      prepared_sql_, parameter_types, deadline);
+  if (result.has_error()) {
+    const auto timeout = result.error() ==
+        rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
+    set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_SYNTAX_ERROR,
+              result.error_message());
+    if (timeout) conn_->disconnect();
+    return SQL_ERROR;
+  }
+
+  apply_result_metadata(*result, true);
+  prepared_metadata_available_ = true;
+  prepared_metadata_ipd_revision_ = implementation_descriptor->revision();
+  return SQL_SUCCESS;
+}
+
 SQLRETURN ODBCStatement::get_num_result_cols(SQLSMALLINT* column_count) {
   if (!column_count) {
     set_error(SQLSTATE_INVALID_NULL_POINTER,
@@ -2148,8 +2205,13 @@ SQLRETURN ODBCStatement::get_num_result_cols(SQLSMALLINT* column_count) {
   }
   
   if (!executed_) {
-    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "No query executed");
-    return SQL_ERROR;
+    if (!prepared_) {
+      set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
+                "Statement has not been prepared or executed");
+      return SQL_ERROR;
+    }
+    const auto result = describe_prepared_metadata();
+    if (result != SQL_SUCCESS) return result;
   }
   
   *column_count = static_cast<SQLSMALLINT>(column_info_.size());

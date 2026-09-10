@@ -51,6 +51,10 @@ public:
   rs::util::Result<QueryResult> execute_prepared(std::string_view sql, 
                                                 std::span<const QueryParameter> params,
                                                 rs::util::Deadline deadline) override;
+  rs::util::Result<QueryResult> describe_statement(
+      std::string_view sql,
+      std::span<const QueryParameterType> parameter_types,
+      rs::util::Deadline deadline) override;
   
   std::string get_parameter(std::string_view key) const override;
   std::string get_last_error() const override;

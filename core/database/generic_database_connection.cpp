@@ -150,6 +150,30 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::execute_prepared(std::s
   return read_query_result(deadline);
 }
 
+rs::util::Result<QueryResult> GenericDatabaseConnection::describe_statement(
+    std::string_view sql,
+    std::span<const QueryParameterType> parameter_types,
+    rs::util::Deadline deadline) {
+  if (!connected_) {
+    return rs::util::Result<QueryResult>{
+        rs::util::DbErrorCode::NotConnected, "Not connected"};
+  }
+
+  std::vector<std::byte> request;
+  try {
+    request = parser_->create_statement_description(sql, parameter_types);
+  } catch (const std::exception& error) {
+    return rs::util::Result<QueryResult>{
+        rs::util::DbErrorCode::InvalidParameter, error.what()};
+  }
+  auto write_result = write_all_result(request, deadline);
+  if (write_result.has_error()) {
+    return rs::util::Result<QueryResult>{
+        write_result.error(), write_result.error_message()};
+  }
+  return read_query_result(deadline);
+}
+
 rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
     rs::util::Deadline deadline) {
   std::vector<Message> messages;

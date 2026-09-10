@@ -36,6 +36,10 @@ public:
   virtual rs::util::Result<QueryResult> execute_prepared(std::string_view sql, 
                                                        std::span<const QueryParameter> params,
                                                        rs::util::Deadline deadline) = 0;
+  virtual rs::util::Result<QueryResult> describe_statement(
+      std::string_view sql,
+      std::span<const QueryParameterType> parameter_types,
+      rs::util::Deadline deadline) = 0;
 
   rs::util::Result<QueryResult> execute_prepared(
       std::string_view sql, std::span<const std::string> params,

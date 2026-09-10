@@ -234,6 +234,50 @@ TEST(PgProtocolParserTest, CreatesCompleteExtendedQueryExchange) {
   EXPECT_TRUE(frames[5].payload.empty());
 }
 
+TEST(PgProtocolParserTest, CreatesStatementDescriptionExchange) {
+  PgProtocolParser parser;
+  const std::vector<QueryParameterType> parameter_types{
+      QueryParameterType::Int32,
+      QueryParameterType::Text,
+  };
+
+  const auto frames = split_frames(parser.create_statement_description(
+      "SELECT ? + 1, '?'::text, ?::text", parameter_types));
+
+  ASSERT_EQ(frames.size(), 3u);
+  EXPECT_EQ(frames[0].tag, 'P');
+  EXPECT_EQ(frames[1].tag, 'D');
+  EXPECT_EQ(frames[2].tag, 'S');
+
+  std::size_t offset = 0;
+  EXPECT_TRUE(read_cstring(frames[0].payload, offset).empty());
+  EXPECT_EQ(read_cstring(frames[0].payload, offset),
+            "SELECT $1 + 1, '?'::text, $2::text");
+  ASSERT_LE(offset + 10, frames[0].payload.size());
+  EXPECT_EQ(read_u16(frames[0].payload, offset), 2);
+  offset += 2;
+  EXPECT_EQ(read_u32(frames[0].payload, offset), 23u);
+  offset += 4;
+  EXPECT_EQ(read_u32(frames[0].payload, offset), 25u);
+  offset += 4;
+  EXPECT_EQ(offset, frames[0].payload.size());
+
+  ASSERT_EQ(frames[1].payload.size(), 2u);
+  EXPECT_EQ(frames[1].payload[0], std::byte{'S'});
+  EXPECT_EQ(frames[1].payload[1], std::byte{0});
+  EXPECT_TRUE(frames[2].payload.empty());
+}
+
+TEST(PgProtocolParserTest, RejectsMismatchedDescriptionMarkerCount) {
+  PgProtocolParser parser;
+  const std::vector<QueryParameterType> parameter_types{
+      QueryParameterType::Int32,
+  };
+  EXPECT_THROW(
+      parser.create_statement_description("SELECT ?, ?", parameter_types),
+      std::invalid_argument);
+}
+
 TEST(PgProtocolParserTest, PreservesNativeDollarParameters) {
   PgProtocolParser parser;
   const std::vector<QueryParameter> params{

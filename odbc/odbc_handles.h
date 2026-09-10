@@ -283,6 +283,7 @@ public:
   SQLULEN* rows_processed_ptr() const noexcept {
     return rows_processed_ptr_;
   }
+  std::uint64_t revision() const noexcept { return revision_; }
   std::size_t record_count() const noexcept { return records_.size(); }
   const DescriptorRecord* record(std::size_t index) const noexcept {
     return index < records_.size() ? &records_[index] : nullptr;
@@ -300,6 +301,7 @@ private:
   friend class ODBCStatement;
   void replace_records(std::vector<DescriptorRecord> records) {
     records_ = std::move(records);
+    ++revision_;
   }
 
   bool automatically_allocated_{false};
@@ -310,6 +312,7 @@ private:
   SQLLEN* bind_offset_ptr_{nullptr};
   SQLULEN bind_type_{SQL_BIND_BY_COLUMN};
   SQLULEN* rows_processed_ptr_{nullptr};
+  std::uint64_t revision_{0};
 };
 
 // Statement handle
@@ -408,6 +411,8 @@ private:
   size_t current_row_ = 0;
   bool executed_ = false;
   bool prepared_ = false;
+  bool prepared_metadata_available_ = false;
+  std::uint64_t prepared_metadata_ipd_revision_{0};
   SQLSMALLINT parameter_count_ = 0;
   SQLLEN affected_rows_ = 0;
   SQLULEN query_timeout_seconds_ = 0;
@@ -421,6 +426,10 @@ private:
 
   void apply_query_result(rs::core::database::QueryResult result,
                           bool include_parameter_metadata);
+  void apply_result_metadata(
+      const rs::core::database::QueryResult& result,
+      bool include_parameter_metadata);
+  SQLRETURN describe_prepared_metadata();
   void clear_current_result();
   SQLRETURN complete_parameter_set(SQLRETURN result);
   SQLHDESC create_implicit_descriptor(DescriptorKind kind);
