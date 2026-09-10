@@ -152,6 +152,254 @@ TEST_F(PreparedStatementIntegrationTest, ReportsPreparedParameterCount) {
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       ParameterMetadataFollowsStatementState) {
+    const auto expect_state = [this](const char* expected) {
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+            SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0,
+            nullptr));
+        EXPECT_STREQ(expected, reinterpret_cast<char*>(state));
+    };
+
+    SQLSMALLINT parameter_count = 61;
+    EXPECT_EQ(SQL_ERROR, SQLNumParams(hstmt, &parameter_count));
+    expect_state("HY010");
+    EXPECT_EQ(61, parameter_count);
+
+    SQLSMALLINT data_type = 62;
+    SQLULEN parameter_size = 63;
+    SQLSMALLINT decimal_digits = 64;
+    SQLSMALLINT nullable = 65;
+    EXPECT_EQ(SQL_ERROR, SQLDescribeParam(
+        hstmt, 0, &data_type, &parameter_size, &decimal_digits,
+        &nullable));
+    expect_state("07009");
+    EXPECT_EQ(SQL_ERROR, SQLDescribeParam(
+        hstmt, 1, &data_type, &parameter_size, &decimal_digits,
+        &nullable));
+    expect_state("HY010");
+    EXPECT_EQ(62, data_type);
+    EXPECT_EQ(63u, parameter_size);
+    EXPECT_EQ(64, decimal_digits);
+    EXPECT_EQ(65, nullable);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT ? FROM", SQL_NTS));
+    parameter_count = 66;
+    EXPECT_EQ(SQL_ERROR, SQLNumParams(hstmt, &parameter_count));
+    expect_state("42000");
+    EXPECT_EQ(66, parameter_count);
+    EXPECT_EQ(SQL_ERROR, SQLDescribeParam(
+        hstmt, 1, &data_type, &parameter_size, &decimal_digits,
+        &nullable));
+    expect_state("42000");
+    EXPECT_EQ(62, data_type);
+    EXPECT_EQ(63u, parameter_size);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT ?::integer", SQL_NTS));
+    SQLINTEGER extra_value = 99;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 2, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
+        0, 0, &extra_value, 0, nullptr));
+    EXPECT_EQ(SQL_ERROR, SQLDescribeParam(
+        hstmt, 2, &data_type, &parameter_size, &decimal_digits,
+        &nullable));
+    expect_state("07009");
+    ASSERT_EQ(SQL_SUCCESS, SQLNumParams(hstmt, &parameter_count));
+    EXPECT_EQ(1, parameter_count);
+
+    SQLHDESC implementation = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_IMP_PARAM_DESC, &implementation, 0, nullptr));
+    SQLSMALLINT descriptor_count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        implementation, 0, SQL_DESC_COUNT, &descriptor_count, 0,
+        nullptr));
+    EXPECT_EQ(1, descriptor_count);
+
+    SQLINTEGER input = 41;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
+        0, 0, &input, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(
+        hstmt, 1, &data_type, &parameter_size, &decimal_digits,
+        &nullable));
+    EXPECT_EQ(SQL_INTEGER, data_type);
+    EXPECT_EQ(10u, parameter_size);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    data_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(
+        hstmt, 1, &data_type, nullptr, nullptr, nullptr));
+    EXPECT_EQ(SQL_INTEGER, data_type);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS));
+    parameter_count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumParams(hstmt, &parameter_count));
+    EXPECT_EQ(0, parameter_count);
+    descriptor_count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        implementation, 0, SQL_DESC_COUNT, &descriptor_count, 0,
+        nullptr));
+    EXPECT_EQ(0, descriptor_count);
+    data_type = 67;
+    EXPECT_EQ(SQL_ERROR, SQLDescribeParam(
+        hstmt, 1, &data_type, nullptr, nullptr, nullptr));
+    expect_state("07009");
+    EXPECT_EQ(67, data_type);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    parameter_count = 68;
+    EXPECT_EQ(SQL_ERROR, SQLNumParams(hstmt, &parameter_count));
+    expect_state("HY010");
+    EXPECT_EQ(68, parameter_count);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       DescribesInferredParameterTypesBeforeExecution) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt,
+        (SQLCHAR*)"SELECT ?::boolean, ?::smallint, ?::integer, "
+                  "?::bigint, ?::real, ?::double precision, ?::date, "
+                  "?::time, ?::timestamp, ?::bytea, ?::text",
+        SQL_NTS));
+
+    SQLSMALLINT first_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(
+        hstmt, 1, &first_type, nullptr, nullptr, nullptr));
+    EXPECT_EQ(SQL_BIT, first_type);
+
+    SQLSMALLINT parameter_count = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumParams(hstmt, &parameter_count));
+    EXPECT_EQ(11, parameter_count);
+
+    struct ExpectedParameter {
+        SQLSMALLINT data_type;
+        SQLULEN size;
+        SQLSMALLINT decimal_digits;
+    };
+    const ExpectedParameter expected[] = {
+        {SQL_BIT, 1, 0},
+        {SQL_SMALLINT, 5, 0},
+        {SQL_INTEGER, 10, 0},
+        {SQL_BIGINT, 19, 0},
+        {SQL_REAL, 7, 6},
+        {SQL_DOUBLE, 15, 15},
+        {SQL_TYPE_DATE, 10, 0},
+        {SQL_TYPE_TIME, 15, 6},
+        {SQL_TYPE_TIMESTAMP, 29, 6},
+        {SQL_VARBINARY, 0, 0},
+        {SQL_VARCHAR, 0, 0},
+    };
+    for (SQLUSMALLINT index = 0; index < parameter_count; ++index) {
+        SQLSMALLINT data_type = 0;
+        SQLULEN parameter_size = 0;
+        SQLSMALLINT decimal_digits = -1;
+        SQLSMALLINT nullable = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(
+            hstmt, index + 1, &data_type, &parameter_size,
+            &decimal_digits, &nullable));
+        EXPECT_EQ(expected[index].data_type, data_type) << index;
+        EXPECT_EQ(expected[index].size, parameter_size) << index;
+        EXPECT_EQ(expected[index].decimal_digits, decimal_digits) << index;
+        EXPECT_EQ(SQL_NULLABLE_UNKNOWN, nullable) << index;
+    }
+
+    SQLHDESC implementation = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_IMP_PARAM_DESC, &implementation, 0, nullptr));
+    SQLSMALLINT descriptor_count = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        implementation, 0, SQL_DESC_COUNT, &descriptor_count, 0,
+        nullptr));
+    EXPECT_EQ(parameter_count, descriptor_count);
+    SQLSMALLINT descriptor_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        implementation, 7, SQL_DESC_TYPE, &descriptor_type, 0,
+        nullptr));
+    EXPECT_EQ(SQL_DATETIME, descriptor_type);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       PreservesBoundParameterPrecisionAndClearsStaleIpdRecords) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT ?::numeric, ?::varchar", SQL_NTS));
+    char amount[]{"12.34"};
+    char label[]{"prepared"};
+    SQLLEN amount_length = SQL_NTS;
+    SQLLEN label_length = SQL_NTS;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_NUMERIC,
+        8, 2, amount, sizeof(amount), &amount_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 2, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+        12, 0, label, sizeof(label), &label_length));
+
+    SQLSMALLINT data_type = 0;
+    SQLULEN parameter_size = 0;
+    SQLSMALLINT decimal_digits = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(
+        hstmt, 1, &data_type, &parameter_size, &decimal_digits,
+        nullptr));
+    EXPECT_EQ(SQL_NUMERIC, data_type);
+    EXPECT_EQ(8u, parameter_size);
+    EXPECT_EQ(2, decimal_digits);
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(
+        hstmt, 2, &data_type, &parameter_size, &decimal_digits,
+        nullptr));
+    EXPECT_EQ(SQL_VARCHAR, data_type);
+    EXPECT_EQ(12u, parameter_size);
+
+    SQLHDESC implementation = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_IMP_PARAM_DESC, &implementation, 0, nullptr));
+    const auto number = [](SQLLEN value) {
+        return reinterpret_cast<SQLPOINTER>(
+            static_cast<std::uintptr_t>(value));
+    };
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+        implementation, 1, SQL_DESC_LENGTH, number(9), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+        implementation, 1, SQL_DESC_SCALE, number(3), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(
+        hstmt, 1, &data_type, &parameter_size, &decimal_digits,
+        nullptr));
+    EXPECT_EQ(SQL_NUMERIC, data_type);
+    EXPECT_EQ(9u, parameter_size);
+    EXPECT_EQ(3, decimal_digits);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS));
+    SQLSMALLINT parameter_count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumParams(hstmt, &parameter_count));
+    EXPECT_EQ(0, parameter_count);
+    SQLSMALLINT descriptor_count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        implementation, 0, SQL_DESC_COUNT, &descriptor_count, 0,
+        nullptr));
+    EXPECT_EQ(0, descriptor_count);
+
+    data_type = 71;
+    parameter_size = 72;
+    decimal_digits = 73;
+    EXPECT_EQ(SQL_ERROR, SQLDescribeParam(
+        hstmt, 1, &data_type, &parameter_size, &decimal_digits,
+        nullptr));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("07009", reinterpret_cast<char*>(state));
+    EXPECT_EQ(71, data_type);
+    EXPECT_EQ(72u, parameter_size);
+    EXPECT_EQ(73, decimal_digits);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        ReplacesPreparedStatementsAndProtectsOpenCursors) {
     SQLCHAR state[6]{};
     const auto expect_state = [&](SQLRETURN result, const char* expected) {

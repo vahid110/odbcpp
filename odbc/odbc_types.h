@@ -87,7 +87,6 @@ constexpr const char* SQLSTATE_SCOPE_OUT_OF_RANGE = "HY098";
 constexpr const char* SQLSTATE_NULLABLE_TYPE_OUT_OF_RANGE = "HY099";
 constexpr const char* SQLSTATE_FETCH_TYPE_OUT_OF_RANGE = "HY106";
 constexpr const char* SQLSTATE_INVALID_CURSOR_STATE = "24000";
-constexpr const char* SQLSTATE_STATEMENT_NOT_PREPARED = "HY007";
 constexpr const char* SQLSTATE_CANNOT_MODIFY_IRD = "HY016";
 constexpr const char* SQLSTATE_INVALID_AUTO_DESCRIPTOR_USE = "HY017";
 

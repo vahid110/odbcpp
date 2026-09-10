@@ -49,12 +49,12 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLGetData` | A | Partial | integration, DM | Target types and per-row/switching-column offsets are covered; complete conversion/chunking matrices remain |
 | `SQLBindCol` | A | Partial | unit, integration | Invalid C types and negative lengths are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
 | `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics covered; input arrays, data-at-execution, and full conversion matrix remain |
-| `SQLNumParams` | A | Partial | integration, DM | Prepared marker parsing and direct-execution zero count are covered; pre-execution server validation remains |
+| `SQLNumParams` | A | Partial | unit, integration, DM | Prepared statements are server-validated without execution; state, null/output preservation, complex markers, direct execution, and IPD count agreement are covered; cancellation and communication-failure injection remain |
 | `SQLNumResultCols` | A | Partial | unit, integration | Prepared metadata, result sets, update counts, exhausted/closed cursors, delayed PostgreSQL errors, null outputs, and output preservation are covered; cancellation and communication-failure injection remain |
 | `SQLRowCount` | A | Verified | unit, integration | Allocated, prepared, update-count, result-set, fetched/exhausted, closed, failed-execution, null-output, and output-preservation cases are covered |
 | `SQLDescribeCol` | A/W | Partial | unit, integration | Prepared/executed/closed and no-result states, untouched error outputs, and ANSI/wide names are covered; bookmark column and communication/cancellation failures remain |
 | `SQLColAttribute` | A/W | Partial | unit, integration | Prepared-state discovery, count/name/label/core numeric fields, destination isolation, exact field diagnostics, and wide byte lengths are covered; remaining descriptor fields need values or explicit negative tests |
-| `SQLDescribeParam` | A | Partial | unit internals, integration | Availability after prepare and complete type metadata |
+| `SQLDescribeParam` | A | Partial | unit, integration | Prepared/executed/exhausted/closed/direct states, exact diagnostics, fixed-size PostgreSQL types, bound precision/scale, cache revision, and untouched errors are covered; unknown variable precision and failure injection remain |
 | `SQLSetStmtAttr` | A/W | Partial | unit, integration | Scalar modes, descriptor attachment, and descriptor-driven execution work; arrays, offsets, and operations remain |
 | `SQLGetStmtAttr` | A/W | Partial | unit, integration | Common defaults, descriptor handles, and status pointers covered; row number and remaining attributes need classification |
 | `SQLCloseCursor` | A | Partial | unit, integration, DM | Missing/open cursor and pending-result discard are covered; complete statement-state matrix remains |
@@ -311,6 +311,17 @@ substitute for ODBC diagnostics.
   lengths and reject misaligned buffers; real PostgreSQL tests cover prepared,
   executed, exhausted, and closed transitions without requiring a preceding
   `SQLNumResultCols` call.
+- Audit batch 35 completes the first parameter-metadata state and type pass.
+  `SQLNumParams` and `SQLDescribeParam` now validate lazily prepared SQL through
+  PostgreSQL Parse/Describe/Sync without executing it, cache the returned
+  parameter OIDs, and preserve application outputs on every error. Allocated,
+  prepared, executed, exhausted, closed, direct-execution, invalid-index, and
+  delayed-server-error cases have exact return-code and SQLSTATE coverage. The
+  IPD count is replaced even for zero-parameter statements, extra bindings do
+  not become statement markers, and direct execution cannot expose stale IPD
+  records. Fixed-size PostgreSQL types use driver-owned size/scale metadata;
+  bound precision and scale are retained when the server confirms the same
+  type, while unavailable variable-length precision remains explicitly zero.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

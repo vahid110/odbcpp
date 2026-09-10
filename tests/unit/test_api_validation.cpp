@@ -439,6 +439,13 @@ TEST_F(ApiValidationTest, CatalogApisShareAnsiAndWideLengthValidation) {
 }
 
 TEST_F(ApiValidationTest, UsesSpecificDiagnosticsForInvalidStatementInputs) {
+  SQLSMALLINT parameter_count = 91;
+  EXPECT_EQ(SQL_ERROR, SQLNumParams(statement_, nullptr));
+  EXPECT_EQ("HY009", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLNumParams(statement_, &parameter_count));
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(91, parameter_count);
+
   SQLSMALLINT column_count = 0;
   EXPECT_EQ(SQL_ERROR, SQLNumResultCols(statement_, nullptr));
   EXPECT_EQ("HY009", diagnostic_state(SQL_HANDLE_STMT, statement_));
@@ -469,11 +476,22 @@ TEST_F(ApiValidationTest, UsesSpecificDiagnosticsForInvalidStatementInputs) {
                              &indicator));
   EXPECT_EQ("07009", diagnostic_state(SQL_HANDLE_STMT, statement_));
 
-  SQLSMALLINT data_type = 0;
+  SQLSMALLINT data_type = 71;
+  SQLULEN parameter_size = 72;
+  SQLSMALLINT decimal_digits = 73;
+  SQLSMALLINT nullable = 74;
   EXPECT_EQ(SQL_ERROR,
             SQLDescribeParam(statement_, 0, &data_type, nullptr, nullptr,
                              nullptr));
   EXPECT_EQ("07009", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLDescribeParam(statement_, 1, &data_type, &parameter_size,
+                             &decimal_digits, &nullable));
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(71, data_type);
+  EXPECT_EQ(72u, parameter_size);
+  EXPECT_EQ(73, decimal_digits);
+  EXPECT_EQ(74, nullable);
 
   SQLLEN column_attribute = 81;
   EXPECT_EQ(SQL_ERROR,

@@ -281,10 +281,25 @@ SQLSMALLINT descriptor_type_for(SQLSMALLINT concise_type) {
   }
 }
 
-ParameterMetadata parameter_metadata_for(std::uint32_t oid) {
+ParameterMetadata parameter_metadata_for(
+    std::uint32_t oid, const DescriptorRecord* prior_record) {
   const auto type = postgres_type_info(oid, -1, -1);
-  return ParameterMetadata{type.sql_type, type.column_size,
-                           type.decimal_digits, SQL_NULLABLE_UNKNOWN, {}};
+  ParameterMetadata metadata{type.sql_type, type.column_size,
+                             type.decimal_digits, SQL_NULLABLE_UNKNOWN, {}};
+  if (!prior_record || prior_record->concise_type != metadata.sql_type) {
+    return metadata;
+  }
+  if (prior_record->length > 0) {
+    metadata.column_size = prior_record->length;
+  }
+  if (metadata.sql_type == SQL_DECIMAL || metadata.sql_type == SQL_NUMERIC ||
+      metadata.sql_type == SQL_TYPE_TIME ||
+      metadata.sql_type == SQL_TYPE_TIMESTAMP) {
+    metadata.decimal_digits = prior_record->scale;
+  }
+  metadata.nullable = prior_record->nullable;
+  metadata.name = prior_record->name;
+  return metadata;
 }
 
 DescriptorRecord descriptor_record_for(const ColumnInfo& column) {
@@ -1149,6 +1164,8 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
   prepared_ = false;
   prepared_sql_.clear();
   parameter_count_ = 0;
+  param_metadata_.clear();
+  descriptor(imp_param_descriptor_)->replace_records({});
   try {
     auto deadline = rs::util::make_deadline(
         timeout_duration(query_timeout_seconds_));
@@ -1753,9 +1770,13 @@ SQLRETURN ODBCStatement::num_params(SQLSMALLINT* parameter_count) {
     return SQL_ERROR;
   }
   if (!prepared_ && !executed_) {
-    set_error(SQLSTATE_STATEMENT_NOT_PREPARED,
+    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
               "Statement has not been prepared or executed");
     return SQL_ERROR;
+  }
+  if (prepared_ && !executed_) {
+    const auto metadata_result = describe_prepared_metadata();
+    if (metadata_result != SQL_SUCCESS) return metadata_result;
   }
   *parameter_count = prepared_ ? parameter_count_ : 0;
   return SQL_SUCCESS;
@@ -2165,25 +2186,29 @@ void ODBCStatement::apply_result_metadata(
   descriptor(imp_row_descriptor_)->replace_records(
       std::move(row_descriptor_records));
 
+  const auto implementation_descriptor = descriptor(imp_param_descriptor_);
   if (!include_parameter_metadata) {
     param_metadata_.clear();
+    implementation_descriptor->replace_records({});
     return;
   }
-  if (!result.parameter_type_ids.empty()) {
-    param_metadata_.clear();
-    param_metadata_.reserve(result.parameter_type_ids.size());
-    for (const auto oid : result.parameter_type_ids) {
-      param_metadata_.push_back(parameter_metadata_for(oid));
-    }
-    std::vector<DescriptorRecord> parameter_descriptor_records;
-    parameter_descriptor_records.reserve(param_metadata_.size());
-    for (const auto& parameter : param_metadata_) {
-      parameter_descriptor_records.push_back(
-          descriptor_record_for(parameter));
-    }
-    descriptor(imp_param_descriptor_)->replace_records(
-        std::move(parameter_descriptor_records));
+
+  param_metadata_.clear();
+  param_metadata_.reserve(result.parameter_type_ids.size());
+  for (std::size_t index = 0;
+       index < result.parameter_type_ids.size(); ++index) {
+    const auto* prior_record = index < implementation_descriptor->record_count()
+        ? implementation_descriptor->record(index) : nullptr;
+    param_metadata_.push_back(parameter_metadata_for(
+        result.parameter_type_ids[index], prior_record));
   }
+  std::vector<DescriptorRecord> parameter_descriptor_records;
+  parameter_descriptor_records.reserve(param_metadata_.size());
+  for (const auto& parameter : param_metadata_) {
+    parameter_descriptor_records.push_back(descriptor_record_for(parameter));
+  }
+  implementation_descriptor->replace_records(
+      std::move(parameter_descriptor_records));
 }
 
 void ODBCStatement::clear_current_result() {
@@ -2277,6 +2302,12 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
     set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_SYNTAX_ERROR,
               result.error_message());
     if (timeout) conn_->disconnect();
+    return SQL_ERROR;
+  }
+  if (result->parameter_type_ids.size() !=
+      static_cast<std::size_t>(parameter_count_)) {
+    set_error(SQLSTATE_GENERAL_ERROR,
+              "Data source returned an inconsistent parameter count");
     return SQL_ERROR;
   }
 
@@ -3098,8 +3129,26 @@ SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT 
 // Parameter metadata implementation
 SQLRETURN ODBCStatement::describe_param(SQLUSMALLINT parameter_number, SQLSMALLINT* data_type,
                                         SQLULEN* parameter_size, SQLSMALLINT* decimal_digits, SQLSMALLINT* nullable) {
-  if (parameter_number < 1 || parameter_number > param_metadata_.size()) {
+  if (parameter_number < 1) {
     set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid parameter number");
+    return SQL_ERROR;
+  }
+  if (!prepared_ && !executed_) {
+    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
+              "Statement has not been prepared or executed");
+    return SQL_ERROR;
+  }
+  if (parameter_number > static_cast<SQLUSMALLINT>(parameter_count_)) {
+    set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid parameter number");
+    return SQL_ERROR;
+  }
+  if (prepared_ && !executed_) {
+    const auto metadata_result = describe_prepared_metadata();
+    if (metadata_result != SQL_SUCCESS) return metadata_result;
+  }
+  if (parameter_number > param_metadata_.size()) {
+    set_error(SQLSTATE_GENERAL_ERROR,
+              "Parameter metadata was not returned by the data source");
     return SQL_ERROR;
   }
   
