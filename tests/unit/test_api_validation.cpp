@@ -474,6 +474,31 @@ TEST_F(ApiValidationTest, UsesSpecificDiagnosticsForInvalidStatementInputs) {
             SQLDescribeParam(statement_, 0, &data_type, nullptr, nullptr,
                              nullptr));
   EXPECT_EQ("07009", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  SQLLEN column_attribute = 81;
+  EXPECT_EQ(SQL_ERROR,
+            SQLColAttribute(statement_, 1, SQL_DESC_TYPE, nullptr, 0,
+                            nullptr, &column_attribute));
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(81, column_attribute);
+  EXPECT_EQ(SQL_ERROR,
+            SQLColAttribute(statement_, 1, 9999, nullptr, 0, nullptr,
+                            &column_attribute));
+  EXPECT_EQ("HY091", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLColAttribute(statement_, 1, SQL_DESC_BASE_TABLE_NAME,
+                            buffer, sizeof(buffer), nullptr, nullptr));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  SQLWCHAR wide_buffer[8]{};
+  EXPECT_EQ(SQL_ERROR,
+            SQLColAttribute(statement_, 1, SQL_DESC_BASE_TABLE_NAME,
+                            buffer, -1, nullptr, nullptr));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLColAttributeW(statement_, 1, SQL_DESC_BASE_TABLE_NAME,
+                             wide_buffer, -1, nullptr, nullptr));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, statement_));
 }
 
 } // namespace

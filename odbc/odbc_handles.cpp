@@ -270,6 +270,17 @@ ColumnInfo column_info_for(
                     type.decimal_digits, SQL_NULLABLE_UNKNOWN};
 }
 
+SQLSMALLINT descriptor_type_for(SQLSMALLINT concise_type) {
+  switch (concise_type) {
+    case SQL_TYPE_DATE:
+    case SQL_TYPE_TIME:
+    case SQL_TYPE_TIMESTAMP:
+      return SQL_DATETIME;
+    default:
+      return concise_type;
+  }
+}
+
 ParameterMetadata parameter_metadata_for(std::uint32_t oid) {
   const auto type = postgres_type_info(oid, -1, -1);
   return ParameterMetadata{type.sql_type, type.column_size,
@@ -278,7 +289,7 @@ ParameterMetadata parameter_metadata_for(std::uint32_t oid) {
 
 DescriptorRecord descriptor_record_for(const ColumnInfo& column) {
   DescriptorRecord record;
-  record.type = column.sql_type;
+  record.type = descriptor_type_for(column.sql_type);
   record.concise_type = column.sql_type;
   record.length = column.column_size;
   record.precision = static_cast<SQLSMALLINT>(std::min<SQLULEN>(
@@ -292,7 +303,7 @@ DescriptorRecord descriptor_record_for(const ColumnInfo& column) {
 
 DescriptorRecord descriptor_record_for(const ParameterMetadata& parameter) {
   DescriptorRecord record;
-  record.type = parameter.sql_type;
+  record.type = descriptor_type_for(parameter.sql_type);
   record.concise_type = parameter.sql_type;
   record.length = parameter.column_size;
   record.precision = static_cast<SQLSMALLINT>(std::min<SQLULEN>(
@@ -395,7 +406,85 @@ std::vector<std::string> parse_table_types(const std::string& value) {
   return types;
 }
 
+template <std::size_t Size>
+bool contains_attribute(
+    SQLUSMALLINT field_identifier,
+    const std::array<SQLUSMALLINT, Size>& attributes) {
+  return std::find(attributes.begin(), attributes.end(), field_identifier) !=
+      attributes.end();
+}
+
+bool is_count_column_attribute(SQLUSMALLINT field_identifier) {
+  static constexpr std::array<SQLUSMALLINT, 2> attributes{
+      SQL_DESC_COUNT, SQL_COLUMN_COUNT};
+  return contains_attribute(field_identifier, attributes);
+}
+
+bool is_supported_column_attribute(SQLUSMALLINT field_identifier) {
+  static constexpr std::array<SQLUSMALLINT, 18> attributes{
+      SQL_DESC_COUNT, SQL_COLUMN_COUNT,
+      SQL_DESC_NAME, SQL_COLUMN_NAME,
+      SQL_DESC_LABEL, SQL_COLUMN_LABEL,
+      SQL_DESC_TYPE,
+      SQL_DESC_CONCISE_TYPE, SQL_COLUMN_TYPE,
+      SQL_DESC_LENGTH, SQL_COLUMN_LENGTH,
+      SQL_DESC_PRECISION, SQL_COLUMN_PRECISION,
+      SQL_DESC_SCALE, SQL_COLUMN_SCALE,
+      SQL_DESC_NULLABLE, SQL_COLUMN_NULLABLE,
+      SQL_DESC_UNNAMED};
+  return contains_attribute(field_identifier, attributes);
+}
+
+bool is_known_column_attribute(SQLUSMALLINT field_identifier) {
+  static constexpr std::array<SQLUSMALLINT, 47> attributes{
+      SQL_DESC_AUTO_UNIQUE_VALUE, SQL_COLUMN_AUTO_INCREMENT,
+      SQL_DESC_BASE_COLUMN_NAME,
+      SQL_DESC_BASE_TABLE_NAME,
+      SQL_DESC_CASE_SENSITIVE, SQL_COLUMN_CASE_SENSITIVE,
+      SQL_DESC_CATALOG_NAME, SQL_COLUMN_QUALIFIER_NAME,
+      SQL_DESC_CONCISE_TYPE, SQL_COLUMN_TYPE,
+      SQL_DESC_COUNT, SQL_COLUMN_COUNT,
+      SQL_DESC_DISPLAY_SIZE, SQL_COLUMN_DISPLAY_SIZE,
+      SQL_DESC_FIXED_PREC_SCALE, SQL_COLUMN_MONEY,
+      SQL_DESC_LABEL, SQL_COLUMN_LABEL,
+      SQL_DESC_LENGTH, SQL_COLUMN_LENGTH,
+      SQL_DESC_LITERAL_PREFIX,
+      SQL_DESC_LITERAL_SUFFIX,
+      SQL_DESC_LOCAL_TYPE_NAME,
+      SQL_DESC_NAME, SQL_COLUMN_NAME,
+      SQL_DESC_NULLABLE, SQL_COLUMN_NULLABLE,
+      SQL_DESC_NUM_PREC_RADIX,
+      SQL_DESC_OCTET_LENGTH,
+      SQL_DESC_PRECISION, SQL_COLUMN_PRECISION,
+      SQL_DESC_SCALE, SQL_COLUMN_SCALE,
+      SQL_DESC_SCHEMA_NAME, SQL_COLUMN_OWNER_NAME,
+      SQL_DESC_SEARCHABLE, SQL_COLUMN_SEARCHABLE,
+      SQL_DESC_TABLE_NAME, SQL_COLUMN_TABLE_NAME,
+      SQL_DESC_TYPE,
+      SQL_DESC_TYPE_NAME, SQL_COLUMN_TYPE_NAME,
+      SQL_DESC_UNNAMED,
+      SQL_DESC_UNSIGNED, SQL_COLUMN_UNSIGNED,
+      SQL_DESC_UPDATABLE, SQL_COLUMN_UPDATABLE};
+  return contains_attribute(field_identifier, attributes);
+}
+
 } // namespace
+
+bool is_character_column_attribute(SQLUSMALLINT field_identifier) {
+  static constexpr std::array<SQLUSMALLINT, 17> attributes{
+      SQL_DESC_BASE_COLUMN_NAME,
+      SQL_DESC_BASE_TABLE_NAME,
+      SQL_DESC_CATALOG_NAME, SQL_COLUMN_QUALIFIER_NAME,
+      SQL_DESC_LABEL, SQL_COLUMN_LABEL,
+      SQL_DESC_LITERAL_PREFIX,
+      SQL_DESC_LITERAL_SUFFIX,
+      SQL_DESC_LOCAL_TYPE_NAME,
+      SQL_DESC_NAME, SQL_COLUMN_NAME,
+      SQL_DESC_SCHEMA_NAME, SQL_COLUMN_OWNER_NAME,
+      SQL_DESC_TABLE_NAME, SQL_COLUMN_TABLE_NAME,
+      SQL_DESC_TYPE_NAME, SQL_COLUMN_TYPE_NAME};
+  return contains_attribute(field_identifier, attributes);
+}
 
 ODBCConnection::ODBCConnection(ODBCEnvironment*)
     : ODBCHandle(HandleType::Connection),
@@ -2197,6 +2286,16 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
   return SQL_SUCCESS;
 }
 
+SQLRETURN ODBCStatement::ensure_result_metadata() {
+  if (executed_) return SQL_SUCCESS;
+  if (!prepared_) {
+    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
+              "Statement has not been prepared or executed");
+    return SQL_ERROR;
+  }
+  return describe_prepared_metadata();
+}
+
 SQLRETURN ODBCStatement::get_num_result_cols(SQLSMALLINT* column_count) {
   if (!column_count) {
     set_error(SQLSTATE_INVALID_NULL_POINTER,
@@ -2204,15 +2303,8 @@ SQLRETURN ODBCStatement::get_num_result_cols(SQLSMALLINT* column_count) {
     return SQL_ERROR;
   }
   
-  if (!executed_) {
-    if (!prepared_) {
-      set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
-                "Statement has not been prepared or executed");
-      return SQL_ERROR;
-    }
-    const auto result = describe_prepared_metadata();
-    if (result != SQL_SUCCESS) return result;
-  }
+  const auto metadata_result = ensure_result_metadata();
+  if (metadata_result != SQL_SUCCESS) return metadata_result;
   
   *column_count = static_cast<SQLSMALLINT>(column_info_.size());
   return SQL_SUCCESS;
@@ -2883,6 +2975,13 @@ SQLRETURN ODBCStatement::describe_col(SQLUSMALLINT column_number, SQLCHAR* colum
               "Invalid column-name buffer length");
     return SQL_ERROR;
   }
+  const auto metadata_result = ensure_result_metadata();
+  if (metadata_result != SQL_SUCCESS) return metadata_result;
+  if (column_info_.empty()) {
+    set_error(SQLSTATE_PREPARED_STATEMENT_NOT_CURSOR,
+              "Statement does not produce a result set");
+    return SQL_ERROR;
+  }
   if (column_number < 1 || column_number > column_info_.size()) {
     set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid column number");
     return SQL_ERROR;
@@ -2915,9 +3014,32 @@ SQLRETURN ODBCStatement::describe_col(SQLUSMALLINT column_number, SQLCHAR* colum
 SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT field_identifier,
                                       SQLPOINTER character_attribute, SQLSMALLINT buffer_length,
                                       SQLSMALLINT* string_length, SQLLEN* numeric_attribute) {
-  if (field_identifier == SQL_DESC_NAME && buffer_length < 0) {
+  if (!is_known_column_attribute(field_identifier)) {
+    set_error(SQLSTATE_INVALID_DESCRIPTOR_FIELD,
+              "Invalid column attribute identifier");
+    return SQL_ERROR;
+  }
+  if (is_character_column_attribute(field_identifier) && buffer_length < 0) {
     set_error(SQLSTATE_INVALID_STRING_LENGTH,
               "Invalid column-attribute buffer length");
+    return SQL_ERROR;
+  }
+  if (!is_supported_column_attribute(field_identifier)) {
+    set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+              "Column attribute is not supported");
+    return SQL_ERROR;
+  }
+  const auto metadata_result = ensure_result_metadata();
+  if (metadata_result != SQL_SUCCESS) return metadata_result;
+  if (is_count_column_attribute(field_identifier)) {
+    if (numeric_attribute) {
+      *numeric_attribute = static_cast<SQLLEN>(column_info_.size());
+    }
+    return SQL_SUCCESS;
+  }
+  if (column_info_.empty()) {
+    set_error(SQLSTATE_PREPARED_STATEMENT_NOT_CURSOR,
+              "Statement does not produce a result set");
     return SQL_ERROR;
   }
   if (column_number < 1 || column_number > column_info_.size()) {
@@ -2927,34 +3049,50 @@ SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT 
   
   const auto& col = column_info_[column_number - 1];
   
-  switch (field_identifier) {
-    case SQL_DESC_NAME:
-      if (character_attribute && buffer_length > 0) {
-        size_t copy_len = std::min(static_cast<size_t>(buffer_length - 1), col.name.length());
-        std::memcpy(character_attribute, col.name.c_str(), copy_len);
-        static_cast<char*>(character_attribute)[copy_len] = '\0';
-      }
-      if (string_length) *string_length = static_cast<SQLSMALLINT>(col.name.length());
-      if (character_attribute && !col.name.empty() &&
-          static_cast<std::size_t>(buffer_length) <= col.name.length()) {
-        set_error(SQLSTATE_STRING_DATA_TRUNCATED,
-                  "Column attribute was truncated");
-        return SQL_SUCCESS_WITH_INFO;
-      }
-      return SQL_SUCCESS;
-      
-    case SQL_DESC_TYPE:
-      if (numeric_attribute) *numeric_attribute = col.sql_type;
-      return SQL_SUCCESS;
-      
-    case SQL_DESC_LENGTH:
-      if (numeric_attribute) *numeric_attribute = col.column_size;
-      return SQL_SUCCESS;
-      
-    default:
-      set_error(SQLSTATE_GENERAL_ERROR, "Unsupported column attribute");
-      return SQL_ERROR;
+  if (field_identifier == SQL_DESC_NAME ||
+      field_identifier == SQL_COLUMN_NAME ||
+      field_identifier == SQL_DESC_LABEL ||
+      field_identifier == SQL_COLUMN_LABEL) {
+    if (character_attribute && buffer_length > 0) {
+      const auto copy_len = std::min(
+          static_cast<std::size_t>(buffer_length - 1), col.name.length());
+      std::memcpy(character_attribute, col.name.c_str(), copy_len);
+      static_cast<char*>(character_attribute)[copy_len] = '\0';
+    }
+    if (string_length) {
+      *string_length = static_cast<SQLSMALLINT>(col.name.length());
+    }
+    if (character_attribute && !col.name.empty() &&
+        static_cast<std::size_t>(buffer_length) <= col.name.length()) {
+      set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                "Column attribute was truncated");
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    return SQL_SUCCESS;
   }
+
+  if (numeric_attribute) {
+    if (field_identifier == SQL_DESC_TYPE) {
+      *numeric_attribute = descriptor_type_for(col.sql_type);
+    } else if (field_identifier == SQL_DESC_CONCISE_TYPE ||
+        field_identifier == SQL_COLUMN_TYPE) {
+      *numeric_attribute = col.sql_type;
+    } else if (field_identifier == SQL_DESC_LENGTH ||
+               field_identifier == SQL_COLUMN_LENGTH ||
+               field_identifier == SQL_DESC_PRECISION ||
+               field_identifier == SQL_COLUMN_PRECISION) {
+      *numeric_attribute = static_cast<SQLLEN>(col.column_size);
+    } else if (field_identifier == SQL_DESC_SCALE ||
+               field_identifier == SQL_COLUMN_SCALE) {
+      *numeric_attribute = col.decimal_digits;
+    } else if (field_identifier == SQL_DESC_NULLABLE ||
+               field_identifier == SQL_COLUMN_NULLABLE) {
+      *numeric_attribute = col.nullable;
+    } else if (field_identifier == SQL_DESC_UNNAMED) {
+      *numeric_attribute = col.name.empty() ? SQL_UNNAMED : SQL_NAMED;
+    }
+  }
+  return SQL_SUCCESS;
 }
 
 // Parameter metadata implementation

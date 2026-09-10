@@ -2135,12 +2135,20 @@ static SQLRETURN SQLColAttributeW_impl(
     SQLLEN* numeric_attribute) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
-  if (field_identifier == SQL_DESC_NAME && buffer_length < 0) {
+  const bool character_field =
+      is_character_column_attribute(field_identifier);
+  if (character_field && buffer_length < 0) {
     stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
                     "Invalid column-attribute buffer length");
     return SQL_ERROR;
   }
-  if (field_identifier != SQL_DESC_NAME) {
+  if (character_field && character_attribute &&
+      buffer_length % static_cast<SQLSMALLINT>(sizeof(SQLWCHAR)) != 0) {
+    stmt->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                    "Wide column-attribute buffer length is not aligned");
+    return SQL_ERROR;
+  }
+  if (!character_field) {
     return stmt->col_attribute(column_number, field_identifier,
                                character_attribute, buffer_length,
                                string_length, numeric_attribute);

@@ -428,6 +428,245 @@ TEST_F(MetadataIntegrationTest, DescribesPreparedResultsBeforeExecution) {
     EXPECT_EQ(92, row_count);
 }
 
+TEST_F(MetadataIntegrationTest, DescribesPreparedColumnsDirectly) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt,
+        (SQLCHAR*)"SELECT 12.34::numeric(8,2) AS prepared_amount, "
+                  "'x'::varchar(12) AS prepared_label",
+        SQL_NTS));
+
+    char name[32]{"unchanged"};
+    SQLSMALLINT name_length = -1;
+    SQLSMALLINT data_type = 0;
+    SQLULEN column_size = 0;
+    SQLSMALLINT scale = -1;
+    SQLSMALLINT nullable = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+        hstmt, 1, reinterpret_cast<SQLCHAR*>(name), sizeof(name),
+        &name_length, &data_type, &column_size, &scale, &nullable));
+    EXPECT_STREQ("prepared_amount", name);
+    EXPECT_EQ(15, name_length);
+    EXPECT_EQ(SQL_NUMERIC, data_type);
+    EXPECT_EQ(8u, column_size);
+    EXPECT_EQ(2, scale);
+    EXPECT_EQ(SQL_NULLABLE_UNKNOWN, nullable);
+
+    char label[32]{"unchanged"};
+    SQLSMALLINT label_length = -1;
+    SQLLEN ignored_numeric = 81;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        hstmt, 2, SQL_DESC_LABEL, label, sizeof(label), &label_length,
+        &ignored_numeric));
+    EXPECT_STREQ("prepared_label", label);
+    EXPECT_EQ(14, label_length);
+    EXPECT_EQ(81, ignored_numeric);
+
+    struct NumericAttribute {
+        SQLUSMALLINT field;
+        SQLLEN expected;
+    };
+    const NumericAttribute attributes[] = {
+        {SQL_DESC_TYPE, SQL_NUMERIC},
+        {SQL_DESC_CONCISE_TYPE, SQL_NUMERIC},
+        {SQL_DESC_LENGTH, 8},
+        {SQL_DESC_PRECISION, 8},
+        {SQL_DESC_SCALE, 2},
+        {SQL_DESC_NULLABLE, SQL_NULLABLE_UNKNOWN},
+        {SQL_DESC_UNNAMED, SQL_NAMED},
+    };
+    for (const auto& attribute : attributes) {
+        char ignored_text[]{"keep"};
+        SQLSMALLINT ignored_length = 82;
+        SQLLEN value = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+            hstmt, 1, attribute.field, ignored_text, -7, &ignored_length,
+            &value));
+        EXPECT_EQ(attribute.expected, value);
+        EXPECT_STREQ("keep", ignored_text);
+        EXPECT_EQ(82, ignored_length);
+    }
+
+    char ignored_text[]{"keep"};
+    SQLSMALLINT ignored_length = 83;
+    SQLLEN count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        hstmt, 999, SQL_DESC_COUNT, ignored_text, -7, &ignored_length,
+        &count));
+    EXPECT_EQ(2, count);
+    EXPECT_STREQ("keep", ignored_text);
+    EXPECT_EQ(83, ignored_length);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    data_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+        hstmt, 2, nullptr, 0, nullptr, &data_type, nullptr, nullptr,
+        nullptr));
+    EXPECT_EQ(SQL_VARCHAR, data_type);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    name[0] = '\0';
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+        hstmt, 1, reinterpret_cast<SQLCHAR*>(name), sizeof(name), nullptr,
+        nullptr, nullptr, nullptr, nullptr));
+    EXPECT_STREQ("prepared_amount", name);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT CURRENT_DATE AS prepared_date", SQL_NTS));
+    SQLLEN descriptor_type = 0;
+    SQLLEN concise_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        hstmt, 1, SQL_DESC_TYPE, nullptr, 0, nullptr, &descriptor_type));
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        hstmt, 1, SQL_DESC_CONCISE_TYPE, nullptr, 0, nullptr,
+        &concise_type));
+    EXPECT_EQ(SQL_DATETIME, descriptor_type);
+    EXPECT_EQ(SQL_TYPE_DATE, concise_type);
+}
+
+TEST_F(MetadataIntegrationTest, ColumnMetadataStateErrorsPreserveOutputs) {
+    const auto expect_state = [this](const char* expected) {
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+            SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0,
+            nullptr));
+        EXPECT_STREQ(expected, reinterpret_cast<char*>(state));
+    };
+
+    char name[16]{"unchanged"};
+    SQLSMALLINT name_length = 71;
+    SQLSMALLINT data_type = 72;
+    SQLULEN column_size = 73;
+    SQLSMALLINT scale = 74;
+    SQLSMALLINT nullable = 75;
+    EXPECT_EQ(SQL_ERROR, SQLDescribeCol(
+        hstmt, 1, reinterpret_cast<SQLCHAR*>(name), sizeof(name),
+        &name_length, &data_type, &column_size, &scale, &nullable));
+    expect_state("HY010");
+    EXPECT_STREQ("unchanged", name);
+    EXPECT_EQ(71, name_length);
+    EXPECT_EQ(72, data_type);
+    EXPECT_EQ(73u, column_size);
+    EXPECT_EQ(74, scale);
+    EXPECT_EQ(75, nullable);
+
+    SQLLEN numeric = 76;
+    SQLSMALLINT string_length = 77;
+    EXPECT_EQ(SQL_ERROR, SQLColAttribute(
+        hstmt, 1, SQL_DESC_TYPE, name, sizeof(name), &string_length,
+        &numeric));
+    expect_state("HY010");
+    EXPECT_EQ(76, numeric);
+    EXPECT_EQ(77, string_length);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"UPDATE pg_catalog.pg_class SET relname = relname "
+                         "WHERE false",
+        SQL_NTS));
+    EXPECT_EQ(SQL_ERROR, SQLDescribeCol(
+        hstmt, 1, reinterpret_cast<SQLCHAR*>(name), sizeof(name),
+        &name_length, &data_type, &column_size, &scale, &nullable));
+    expect_state("07005");
+    EXPECT_STREQ("unchanged", name);
+    EXPECT_EQ(71, name_length);
+
+    EXPECT_EQ(SQL_ERROR, SQLColAttribute(
+        hstmt, 1, SQL_DESC_NAME, name, sizeof(name), &string_length,
+        &numeric));
+    expect_state("07005");
+    EXPECT_EQ(76, numeric);
+    EXPECT_EQ(77, string_length);
+
+    numeric = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        hstmt, 999, SQL_DESC_COUNT, nullptr, 0, nullptr, &numeric));
+    EXPECT_EQ(0, numeric);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    EXPECT_EQ(SQL_ERROR, SQLDescribeCol(
+        hstmt, 1, reinterpret_cast<SQLCHAR*>(name), sizeof(name),
+        &name_length, &data_type, &column_size, &scale, &nullable));
+    expect_state("07005");
+    EXPECT_EQ(SQL_ERROR, SQLColAttribute(
+        hstmt, 1, SQL_DESC_NAME, name, sizeof(name), &string_length,
+        &numeric));
+    expect_state("07005");
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT 1 AS value", SQL_NTS));
+    EXPECT_EQ(SQL_ERROR, SQLDescribeCol(
+        hstmt, 0, reinterpret_cast<SQLCHAR*>(name), sizeof(name),
+        &name_length, &data_type, &column_size, &scale, &nullable));
+    expect_state("07009");
+    EXPECT_EQ(SQL_ERROR, SQLColAttribute(
+        hstmt, 2, SQL_DESC_TYPE, nullptr, 0, nullptr, &numeric));
+    expect_state("07009");
+
+    EXPECT_EQ(SQL_ERROR, SQLColAttribute(
+        hstmt, 1, 9999, nullptr, 0, nullptr, &numeric));
+    expect_state("HY091");
+    EXPECT_EQ(SQL_ERROR, SQLColAttribute(
+        hstmt, 1, SQL_DESC_BASE_TABLE_NAME, name, sizeof(name),
+        &string_length, nullptr));
+    expect_state("HYC00");
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 1 AS direct_value", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    EXPECT_EQ(SQL_ERROR, SQLDescribeCol(
+        hstmt, 1, reinterpret_cast<SQLCHAR*>(name), sizeof(name), nullptr,
+        nullptr, nullptr, nullptr, nullptr));
+    expect_state("HY010");
+}
+
+TEST_F(MetadataIntegrationTest, DescribesPreparedWideColumnNames) {
+    const std::string expected =
+        "pr\xc3\xa9par\xc3\xa9\xe4\xb8\x96\xe7\x95\x8c";
+    auto query = rs::odbc::utf8_to_wide(
+        "SELECT 1 AS \"pr\xc3\xa9par\xc3\xa9\xe4\xb8\x96\xe7\x95\x8c\"");
+    ASSERT_TRUE(query.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepareW(
+        hstmt, query->data(), static_cast<SQLINTEGER>(query->size())));
+
+    SQLWCHAR name[32]{};
+    SQLSMALLINT name_units = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeColW(
+        hstmt, 1, name, 32, &name_units, nullptr, nullptr, nullptr,
+        nullptr));
+    const auto described = rs::odbc::wide_to_utf8(
+        std::span<const SQLWCHAR>(name, static_cast<std::size_t>(name_units)));
+    ASSERT_TRUE(described.has_value());
+    EXPECT_EQ(expected, *described);
+
+    SQLWCHAR label[32]{};
+    SQLSMALLINT label_bytes = -1;
+    SQLLEN ignored_numeric = 91;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttributeW(
+        hstmt, 1, SQL_DESC_LABEL, label, sizeof(label), &label_bytes,
+        &ignored_numeric));
+    const auto described_label = rs::odbc::wide_to_utf8(
+        std::span<const SQLWCHAR>(
+            label, static_cast<std::size_t>(label_bytes) /
+                       sizeof(SQLWCHAR)));
+    ASSERT_TRUE(described_label.has_value());
+    EXPECT_EQ(expected, *described_label);
+    EXPECT_EQ(91, ignored_numeric);
+
+    label[0] = static_cast<SQLWCHAR>('x');
+    label_bytes = 92;
+    EXPECT_EQ(SQL_ERROR, SQLColAttributeW(
+        hstmt, 1, SQL_DESC_LABEL, label,
+        static_cast<SQLSMALLINT>(sizeof(SQLWCHAR) + 1), &label_bytes,
+        nullptr));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY090", reinterpret_cast<char*>(state));
+    EXPECT_EQ(static_cast<SQLWCHAR>('x'), label[0]);
+    EXPECT_EQ(92, label_bytes);
+}
+
 TEST_F(MetadataIntegrationTest, RefreshesPreparedShapeAfterIpdTypeChange) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
         hstmt, (SQLCHAR*)"SELECT ? AS typed_value", SQL_NTS));

@@ -233,6 +233,8 @@ struct ColumnInfo {
   SQLSMALLINT nullable;       // SQL_DESC_NULLABLE
 };
 
+bool is_character_column_attribute(SQLUSMALLINT field_identifier);
+
 // IPD (Implementation Parameter Descriptor) - ODBC parameter metadata
 struct ParameterMetadata {
   SQLSMALLINT sql_type;           // SQL_VARCHAR, SQL_INTEGER, etc.
@@ -429,6 +431,7 @@ private:
   void apply_result_metadata(
       const rs::core::database::QueryResult& result,
       bool include_parameter_metadata);
+  SQLRETURN ensure_result_metadata();
   SQLRETURN describe_prepared_metadata();
   void clear_current_result();
   SQLRETURN complete_parameter_set(SQLRETURN result);

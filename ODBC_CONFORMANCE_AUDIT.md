@@ -52,8 +52,8 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLNumParams` | A | Partial | integration, DM | Prepared marker parsing and direct-execution zero count are covered; pre-execution server validation remains |
 | `SQLNumResultCols` | A | Partial | unit, integration | Prepared metadata, result sets, update counts, exhausted/closed cursors, delayed PostgreSQL errors, null outputs, and output preservation are covered; cancellation and communication-failure injection remain |
 | `SQLRowCount` | A | Verified | unit, integration | Allocated, prepared, update-count, result-set, fetched/exhausted, closed, failed-execution, null-output, and output-preservation cases are covered |
-| `SQLDescribeCol` | A/W | Partial | unit, integration | ANSI/wide name truncation is diagnosed; bookmark column and remaining wide edge cases remain |
-| `SQLColAttribute` | A/W | Partial | integration | ANSI/wide name truncation is diagnosed; complete field and destination rules remain |
+| `SQLDescribeCol` | A/W | Partial | unit, integration | Prepared/executed/closed and no-result states, untouched error outputs, and ANSI/wide names are covered; bookmark column and communication/cancellation failures remain |
+| `SQLColAttribute` | A/W | Partial | unit, integration | Prepared-state discovery, count/name/label/core numeric fields, destination isolation, exact field diagnostics, and wide byte lengths are covered; remaining descriptor fields need values or explicit negative tests |
 | `SQLDescribeParam` | A | Partial | unit internals, integration | Availability after prepare and complete type metadata |
 | `SQLSetStmtAttr` | A/W | Partial | unit, integration | Scalar modes, descriptor attachment, and descriptor-driven execution work; arrays, offsets, and operations remain |
 | `SQLGetStmtAttr` | A/W | Partial | unit, integration | Common defaults, descriptor handles, and status pointers covered; row number and remaining attributes need classification |
@@ -300,6 +300,17 @@ substitute for ODBC diagnostics.
   describing `INSERT ... RETURNING` causes no side effect. Cached descriptions
   are revision-bound to the IPD, so direct descriptor type changes force fresh
   server metadata instead of leaving stale result types.
+- Audit batch 34 routes `SQLDescribeCol` and `SQLColAttribute` through the same
+  cached prepared-statement description used by `SQLNumResultCols`. It
+  distinguishes no-result statements (07005), bad column numbers (07009),
+  unknown fields (HY091), and known unsupported fields (HYC00), while leaving
+  application outputs untouched on errors. `SQL_DESC_COUNT` now ignores the
+  column number, name and label fields isolate character destinations from
+  numeric ones, and the core type/length/precision/scale/nullability/unnamed
+  fields are available before execution. Wide column attributes report byte
+  lengths and reject misaligned buffers; real PostgreSQL tests cover prepared,
+  executed, exhausted, and closed transitions without requiring a preceding
+  `SQLNumResultCols` call.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
