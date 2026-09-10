@@ -27,8 +27,8 @@ Authoritative references:
 
 ## Inventory
 
-The shared library currently exports 73 ODBC symbols: 47 base operations and
-26 wide-character variants. The older roadmap count of 66 was stale.
+The shared library currently exports 76 ODBC symbols: 49 base operations and
+27 wide-character variants. The older roadmap count of 66 was stale.
 
 | Operation | Variants | Status | Existing evidence | Principal remaining work |
 |---|---:|---|---|---|
@@ -76,8 +76,10 @@ The shared library currently exports 73 ODBC symbols: 47 base operations and
 | `SQLNativeSql` | A/W | Partial | unit, DM | ODBC escape translation; currently effectively pass-through |
 | `SQLSetEnvAttr` | A | Partial | unit, integration, DM | ODBC version is locked after DBC allocation; supported attribute matrix remains |
 | `SQLGetEnvAttr` | A | Partial | unit, DM | Supported attribute matrix and buffer/type rules |
-| `SQLGetDescField` | A/W | Partial | unit, integration | IRD result metadata and common header/record fields work; complete field matrix remains |
-| `SQLSetDescField` | A/W | Partial | unit | Consistency checks, descriptor-kind restrictions, pointer fields |
+| `SQLGetDescField` | A/W | Partial | unit, integration, DM | Standard header/record fields, PostgreSQL type characteristics, wide byte lengths, and truncation work; statement association and origin-name enrichment remain |
+| `SQLGetDescRec` | A/W | Partial | unit, integration, DM | Core fields, datetime subtype, null outputs, record bounds, truncation, and mixed-width iODBC translation are covered; full associated-statement state matrix remains |
+| `SQLSetDescField` | A/W | Partial | unit | Header/record mutability, descriptor-kind restrictions, type consistency, unbinding, and pointer fields are covered; bookmarks and complete type-derived defaults remain |
+| `SQLSetDescRec` | A | Partial | unit, DM | Atomic core-field updates, pointer fields, descriptor growth, type/subtype consistency, and IRD rejection are covered; bookmarks and all interval combinations remain |
 | `SQLCopyDesc` | A | Partial | unit concurrency | Opposite-direction copies are serialized without deadlock and IRD targets return HY016; remaining consistency and state matrix remain |
 
 No operation is promoted to **Verified** until its audit row has explicit
@@ -164,8 +166,8 @@ substitute for ODBC diagnostics.
 
 ## Maintainability snapshot
 
-- `odbc_api.cpp` is 2,577 lines and contains all 73 exported wrappers;
-  `odbc_handles.cpp` is 2,877 lines and combines connection, statement,
+- `odbc_api.cpp` is 2,688 lines and contains all 76 exported wrappers;
+  `odbc_handles.cpp` is 3,794 lines and combines connection, statement,
   descriptor, conversion, metadata, and registry responsibilities.
 - The callback/future methods in `AsyncDatabaseConnection` are experimental
   scaffolding, are not used by the ODBC driver's production connection path,
@@ -193,8 +195,8 @@ substitute for ODBC diagnostics.
   read-only attributes, unsupported values, and connection-state behavior.
   `SQL_ATTR_CONNECTION_DEAD` reports a known-open connection and returns 08003
   when no connection is open; actual link-loss probing remains explicit work.
-- Audit batch 12 loads the built shared driver and verifies every one of the 47
-  advertised base symbols and all 26 wide exports. It exhaustively compares
+- Audit batch 12 loads the built shared driver and verifies every advertised
+  base symbol and wide export. It exhaustively compares
   the ODBC 2 array and ODBC 3 bitmap with the supported-function set, checks
   individual queries, rejects invalid handles and null outputs, and preserves
   an explicit false result for unknown function identifiers. Windows uses an
@@ -322,6 +324,18 @@ substitute for ODBC diagnostics.
   records. Fixed-size PostgreSQL types use driver-owned size/scale metadata;
   bound precision and scale are retained when the server confirms the same
   type, while unavailable variable-length precision remains explicitly zero.
+- Audit batch 36 adds the missing ODBC 3 `SQLGetDescRec`, `SQLGetDescRecW`, and
+  `SQLSetDescRec` exports and advertises them through `SQLGetFunctions`.
+  `SQLGetDescField` now returns the standard descriptor header and record
+  families, including data type names, datetime subtypes, radix, transfer
+  octet length, display size, searchability, signedness, and writable status.
+  Mutations enforce descriptor-kind and read-only restrictions, validate
+  type/subtype consistency, avoid retaining validation-only IPD data pointers,
+  and unbind records when non-deferred fields change.
+  Unit and PostgreSQL tests cover bounds, diagnostics, null destinations,
+  truncation, atomic multi-field updates, and IRD rejection. Driver Manager
+  coverage exercises both multi-field APIs and records iODBC's negotiated
+  two-byte-driver/four-byte-application name-buffer translation.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
@@ -330,7 +344,7 @@ substitute for ODBC diagnostics.
 
 ### P0 — correctness and safety
 
-1. **C entry-point exception containment:** audit batch 4 routes all 73 exported
+1. **C entry-point exception containment:** audit batch 4 routes all 76 exported
    ODBC symbols through one exception barrier. Unexpected failures return
    `SQL_ERROR`; non-diagnostic calls attach `HY000` when their handle remains
    usable. Audit batch 8 injects `std::bad_alloc` through the real

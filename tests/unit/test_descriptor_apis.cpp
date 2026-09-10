@@ -5,7 +5,9 @@
 #include "core/database/database_factory.h"
 #include "tests/test_handle_helpers.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <iterator>
 
 using namespace rs::odbc;
 
@@ -234,9 +236,6 @@ TEST(ExplicitDescriptorApiTest, AllocatesAndStoresHeaderAndRecordFields) {
     ASSERT_EQ(SQL_SUCCESS,
               SQLSetDescField(descriptor, 1, SQL_DESC_INDICATOR_PTR,
                               &indicator, 0));
-    char name[] = "value";
-    ASSERT_EQ(SQL_SUCCESS,
-              SQLSetDescField(descriptor, 1, SQL_DESC_NAME, name, SQL_NTS));
 
     SQLSMALLINT count = 0;
     SQLULEN array_size = 0;
@@ -268,14 +267,6 @@ TEST(ExplicitDescriptorApiTest, AllocatesAndStoresHeaderAndRecordFields) {
               SQLGetDescField(descriptor, 1, SQL_DESC_INDICATOR_PTR,
                               &indicator_ptr, 0, nullptr));
     EXPECT_EQ(&indicator, indicator_ptr);
-    char returned_name[16]{};
-    SQLINTEGER name_length = 0;
-    ASSERT_EQ(SQL_SUCCESS,
-              SQLGetDescField(descriptor, 1, SQL_DESC_NAME, returned_name,
-                              sizeof(returned_name), &name_length));
-    EXPECT_STREQ("value", returned_name);
-    EXPECT_EQ(5, name_length);
-
     EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
     EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
     EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
@@ -300,21 +291,21 @@ TEST(ExplicitDescriptorApiTest, CopiesDescriptorState) {
     ASSERT_EQ(SQL_SUCCESS,
               SQLSetDescField(source, 1, SQL_DESC_CONCISE_TYPE,
                               reinterpret_cast<SQLPOINTER>(SQL_C_WCHAR), 0));
-    char name[] = "copied";
     ASSERT_EQ(SQL_SUCCESS,
-              SQLSetDescField(source, 1, SQL_DESC_NAME, name, SQL_NTS));
+              SQLSetDescField(source, 1, SQL_DESC_LENGTH,
+                              reinterpret_cast<SQLPOINTER>(42), 0));
     ASSERT_EQ(SQL_SUCCESS, SQLCopyDesc(source, target));
 
     SQLSMALLINT type = 0;
-    char returned_name[16]{};
+    SQLULEN length = 0;
     ASSERT_EQ(SQL_SUCCESS,
               SQLGetDescField(target, 1, SQL_DESC_CONCISE_TYPE, &type, 0,
                               nullptr));
     ASSERT_EQ(SQL_SUCCESS,
-              SQLGetDescField(target, 1, SQL_DESC_NAME, returned_name,
-                              sizeof(returned_name), nullptr));
+              SQLGetDescField(target, 1, SQL_DESC_LENGTH, &length, 0,
+                              nullptr));
     EXPECT_EQ(SQL_C_WCHAR, type);
-    EXPECT_STREQ("copied", returned_name);
+    EXPECT_EQ(42u, length);
 
     SQLFreeHandle(SQL_HANDLE_DESC, target);
     SQLFreeHandle(SQL_HANDLE_DESC, source);
@@ -325,6 +316,7 @@ TEST(ExplicitDescriptorApiTest, CopiesDescriptorState) {
 TEST(ExplicitDescriptorApiTest, StoresAndReturnsWideDescriptorNames) {
     SQLHENV environment = nullptr;
     SQLHDBC connection = nullptr;
+    SQLHSTMT statement = nullptr;
     SQLHDESC descriptor = nullptr;
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &environment));
@@ -333,7 +325,10 @@ TEST(ExplicitDescriptorApiTest, StoresAndReturnsWideDescriptorNames) {
                             reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
-    descriptor = odbcpp::test::make_descriptor(connection);
+    statement = odbcpp::test::make_statement(connection);
+    ASSERT_NE(nullptr, statement);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        statement, SQL_ATTR_IMP_PARAM_DESC, &descriptor, 0, nullptr));
     ASSERT_NE(nullptr, descriptor);
 
     auto name = utf8_to_wide("Gr\xc3\xbc\xc3\x9f" "e \xf0\x9f\x99\x82");
@@ -356,9 +351,213 @@ TEST(ExplicitDescriptorApiTest, StoresAndReturnsWideDescriptorNames) {
     ASSERT_TRUE(returned_utf8.has_value());
     EXPECT_EQ("Gr\xc3\xbc\xc3\x9f" "e \xf0\x9f\x99\x82", *returned_utf8);
 
+    std::fill(std::begin(returned_name), std::end(returned_name), 0);
+    SQLSMALLINT returned_units = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescRecW(
+        descriptor, 1, returned_name,
+        static_cast<SQLSMALLINT>(std::size(returned_name)),
+        &returned_units, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr));
+    EXPECT_EQ(static_cast<SQLSMALLINT>(name->size() - 1), returned_units);
+    const auto record_utf8 = wide_to_utf8(std::span<const SQLWCHAR>(
+        returned_name, static_cast<std::size_t>(returned_units)));
+    ASSERT_TRUE(record_utf8.has_value());
+    EXPECT_EQ("Gr\xc3\xbc\xc3\x9f" "e \xf0\x9f\x99\x82", *record_utf8);
+
+    returned_name[0] = static_cast<SQLWCHAR>('x');
+    returned_bytes = 91;
+    EXPECT_EQ(SQL_ERROR, SQLGetDescFieldW(
+        descriptor, 1, SQL_DESC_NAME, returned_name,
+        static_cast<SQLINTEGER>(sizeof(returned_name) - 1),
+        &returned_bytes));
+    EXPECT_EQ(static_cast<SQLWCHAR>('x'), returned_name[0]);
+    EXPECT_EQ(91, returned_bytes);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_DESC, descriptor, 1, state, nullptr, nullptr, 0,
+        nullptr));
+    EXPECT_STREQ("HY090", reinterpret_cast<char*>(state));
+
+    SQLWCHAR short_name[3]{};
+    returned_units = -1;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetDescRecW(
+        descriptor, 1, short_name, 3, &returned_units, nullptr, nullptr,
+        nullptr, nullptr, nullptr, nullptr));
+    EXPECT_EQ(static_cast<SQLSMALLINT>(name->size() - 1), returned_units);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_DESC, descriptor, 1, state, nullptr, nullptr, 0,
+        nullptr));
+    EXPECT_STREQ("01004", reinterpret_cast<char*>(state));
+
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+}
+
+TEST(ExplicitDescriptorApiTest, GetAndSetRecordRoundTripAndValidate) {
+    SQLHENV environment = nullptr;
+    SQLHDBC connection = nullptr;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &environment));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                            reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+    SQLHDESC descriptor = odbcpp::test::make_descriptor(connection);
+    ASSERT_NE(nullptr, descriptor);
+
+    SQLINTEGER value = 17;
+    SQLLEN length_or_indicator = sizeof(value);
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescRec(
+        descriptor, 1, SQL_C_SLONG, 0, sizeof(value), 10, 0,
+        &value, &length_or_indicator, &length_or_indicator));
+
+    char name[2]{'x', 'x'};
+    SQLSMALLINT name_length = -1;
+    SQLSMALLINT type = 0;
+    SQLSMALLINT subtype = -1;
+    SQLLEN length = -1;
+    SQLSMALLINT precision = -1;
+    SQLSMALLINT scale = -1;
+    SQLSMALLINT nullable = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescRec(
+        descriptor, 1, reinterpret_cast<SQLCHAR*>(name), sizeof(name),
+        &name_length, &type, &subtype, &length, &precision, &scale,
+        &nullable));
+    EXPECT_STREQ("", name);
+    EXPECT_EQ(0, name_length);
+    EXPECT_EQ(SQL_C_SLONG, type);
+    EXPECT_EQ(0, subtype);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+    EXPECT_EQ(10, precision);
+    EXPECT_EQ(0, scale);
+    EXPECT_EQ(SQL_NULLABLE_UNKNOWN, nullable);
+
+    SQLPOINTER data = nullptr;
+    SQLLEN* octet_length = nullptr;
+    SQLLEN* indicator = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        descriptor, 1, SQL_DESC_DATA_PTR, &data, -99, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        descriptor, 1, SQL_DESC_OCTET_LENGTH_PTR, &octet_length, 0,
+        nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        descriptor, 1, SQL_DESC_INDICATOR_PTR, &indicator, 0, nullptr));
+    EXPECT_EQ(&value, data);
+    EXPECT_EQ(&length_or_indicator, octet_length);
+    EXPECT_EQ(&length_or_indicator, indicator);
+
+    EXPECT_EQ(SQL_ERROR, SQLSetDescRec(
+        descriptor, 2, SQL_DATETIME, 999, 0, 0, 0,
+        nullptr, nullptr, nullptr));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_DESC, descriptor, 1, state, nullptr, nullptr, 0,
+        nullptr));
+    EXPECT_STREQ("HY021", reinterpret_cast<char*>(state));
+
+    EXPECT_EQ(SQL_ERROR, SQLGetDescRec(
+        descriptor, 0, nullptr, 0, nullptr, nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_DESC, descriptor, 1, state, nullptr, nullptr, 0,
+        nullptr));
+    EXPECT_STREQ("07009", reinterpret_cast<char*>(state));
+    EXPECT_EQ(SQL_NO_DATA, SQLGetDescRec(
+        descriptor, 2, nullptr, 0, nullptr, nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr));
+
+    type = 71;
+    length = 72;
+    EXPECT_EQ(SQL_ERROR, SQLGetDescRec(
+        descriptor, 1, nullptr, -1, nullptr, &type, nullptr, &length,
+        nullptr, nullptr, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_DESC, descriptor, 1, state, nullptr, nullptr, 0,
+        nullptr));
+    EXPECT_STREQ("HY090", reinterpret_cast<char*>(state));
+    EXPECT_EQ(71, type);
+    EXPECT_EQ(72, length);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescRec(
+        descriptor, 2, SQL_DATETIME, SQL_CODE_DATE,
+        sizeof(SQL_DATE_STRUCT), 0, 0, nullptr, nullptr, nullptr));
+    type = 0;
+    subtype = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescRec(
+        descriptor, 2, nullptr, 0, nullptr, &type, &subtype, nullptr,
+        nullptr, nullptr, nullptr));
+    EXPECT_EQ(SQL_DATETIME, type);
+    EXPECT_EQ(SQL_CODE_DATE, subtype);
+
     SQLFreeHandle(SQL_HANDLE_DESC, descriptor);
     SQLFreeHandle(SQL_HANDLE_DBC, connection);
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
+}
+
+TEST_F(DescriptorAPITest, DescriptorFieldKindsAndMutationRules) {
+    SQLHDESC application = SQL_NULL_HDESC;
+    SQLHDESC implementation_row = SQL_NULL_HDESC;
+    SQLHDESC implementation_parameter = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, stmt->get_attribute(
+        SQL_ATTR_APP_ROW_DESC, &application));
+    ASSERT_EQ(SQL_SUCCESS, stmt->get_attribute(
+        SQL_ATTR_IMP_ROW_DESC, &implementation_row));
+    ASSERT_EQ(SQL_SUCCESS, stmt->get_attribute(
+        SQL_ATTR_IMP_PARAM_DESC, &implementation_parameter));
+
+    SQLSMALLINT allocation = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        application, 99, SQL_DESC_ALLOC_TYPE, &allocation, 0, nullptr));
+    EXPECT_EQ(SQL_DESC_ALLOC_AUTO, allocation);
+
+    auto expect_state = [](SQLHDESC descriptor, const char* expected) {
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+            SQL_HANDLE_DESC, descriptor, 1, state, nullptr, nullptr, 0,
+            nullptr));
+        EXPECT_STREQ(expected, reinterpret_cast<char*>(state));
+    };
+    EXPECT_EQ(SQL_ERROR, SQLSetDescField(
+        application, 0, SQL_DESC_ALLOC_TYPE,
+        reinterpret_cast<SQLPOINTER>(SQL_DESC_ALLOC_USER), 0));
+    expect_state(application, "HY091");
+    EXPECT_EQ(SQL_ERROR, SQLSetDescField(
+        application, 0, SQL_DESC_ROWS_PROCESSED_PTR, nullptr, 0));
+    expect_state(application, "HY091");
+    EXPECT_EQ(SQL_ERROR, SQLSetDescField(
+        implementation_parameter, 0, SQL_DESC_ARRAY_SIZE,
+        reinterpret_cast<SQLPOINTER>(1), 0));
+    expect_state(implementation_parameter, "HY091");
+    EXPECT_EQ(SQL_ERROR, SQLSetDescRec(
+        implementation_row, 1, SQL_INTEGER, 0, 4, 10, 0,
+        nullptr, nullptr, nullptr));
+    expect_state(implementation_row, "HY016");
+    SQLINTEGER value = 3;
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescRec(
+        application, 1, SQL_C_SLONG, 0, sizeof(value), 10, 0,
+        &value, nullptr, nullptr));
+    EXPECT_EQ(SQL_ERROR, SQLGetDescField(
+        application, 1, 32000, nullptr, 0, nullptr));
+    expect_state(application, "HY091");
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+        application, 1, SQL_DESC_SCALE,
+        reinterpret_cast<SQLPOINTER>(2), 0));
+    SQLPOINTER returned = &value;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        application, 1, SQL_DESC_DATA_PTR, &returned, 0, nullptr));
+    EXPECT_EQ(nullptr, returned);
+
+    SQLLEN length_or_indicator = sizeof(value);
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescRec(
+        implementation_parameter, 1, SQL_INTEGER, 0, sizeof(SQLINTEGER),
+        10, 0, &value, &length_or_indicator, &length_or_indicator));
+    returned = &value;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        implementation_parameter, 1, SQL_DESC_DATA_PTR, &returned, 0,
+        nullptr));
+    EXPECT_EQ(nullptr, returned);
 }
 
 TEST(DescriptorBindingApiTest, BindCallsPopulateStatementDescriptors) {

@@ -300,6 +300,7 @@ namespace {
       case SQL_API_SQLGETCONNECTATTR:
       case SQL_API_SQLGETDATA:
       case SQL_API_SQLGETDESCFIELD:
+      case SQL_API_SQLGETDESCREC:
       case SQL_API_SQLGETDIAGFIELD:
       case SQL_API_SQLGETDIAGREC:
       case SQL_API_SQLGETENVATTR:
@@ -318,6 +319,7 @@ namespace {
       case SQL_API_SQLROWCOUNT:
       case SQL_API_SQLSETCONNECTATTR:
       case SQL_API_SQLSETDESCFIELD:
+      case SQL_API_SQLSETDESCREC:
       case SQL_API_SQLSETENVATTR:
       case SQL_API_SQLSETSTMTATTR:
       case SQL_API_SQLSPECIALCOLUMNS:
@@ -2269,7 +2271,20 @@ static SQLRETURN SQLGetDescFieldW_impl(
     SQLINTEGER buffer_length, SQLINTEGER* string_length) {
   auto descriptor = get_valid_handle<ODBCDescriptor>(descriptor_handle);
   if (!descriptor) return SQL_INVALID_HANDLE;
-  if (field_identifier != SQL_DESC_NAME) {
+  const bool character_field = is_character_column_attribute(
+      static_cast<SQLUSMALLINT>(field_identifier));
+  if (character_field && buffer_length < 0) {
+    descriptor->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                          "Invalid descriptor output buffer length");
+    return SQL_ERROR;
+  }
+  if (character_field && value &&
+      buffer_length % static_cast<SQLINTEGER>(sizeof(SQLWCHAR)) != 0) {
+    descriptor->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                          "Wide descriptor output length is not aligned");
+    return SQL_ERROR;
+  }
+  if (!character_field) {
     return descriptor->get_field(record_number, field_identifier, value,
                                  buffer_length, string_length);
   }
@@ -2287,7 +2302,65 @@ static SQLRETURN SQLGetDescFieldW_impl(
       descriptor,
       std::string_view(utf8.data(), static_cast<std::size_t>(utf8_length)),
       static_cast<SQLWCHAR*>(value), buffer_length, string_length,
-      "Descriptor name was truncated");
+      "Descriptor text was truncated");
+}
+
+static SQLRETURN SQLGetDescRec_impl(
+    SQLHDESC descriptor_handle, SQLSMALLINT record_number, SQLCHAR* name,
+    SQLSMALLINT buffer_length, SQLSMALLINT* string_length,
+    SQLSMALLINT* type, SQLSMALLINT* subtype, SQLLEN* length,
+    SQLSMALLINT* precision, SQLSMALLINT* scale, SQLSMALLINT* nullable) {
+  auto descriptor = get_valid_handle<ODBCDescriptor>(descriptor_handle);
+  if (!descriptor) return SQL_INVALID_HANDLE;
+  return descriptor->get_record(
+      record_number, name, buffer_length, string_length, type, subtype,
+      length, precision, scale, nullable);
+}
+
+static SQLRETURN SQLGetDescRecW_impl(
+    SQLHDESC descriptor_handle, SQLSMALLINT record_number, SQLWCHAR* name,
+    SQLSMALLINT buffer_length, SQLSMALLINT* string_length,
+    SQLSMALLINT* type, SQLSMALLINT* subtype, SQLLEN* length,
+    SQLSMALLINT* precision, SQLSMALLINT* scale, SQLSMALLINT* nullable) {
+  auto descriptor = get_valid_handle<ODBCDescriptor>(descriptor_handle);
+  if (!descriptor) return SQL_INVALID_HANDLE;
+  if (buffer_length < 0) {
+    descriptor->set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                          "Invalid wide descriptor name buffer length");
+    return SQL_ERROR;
+  }
+
+  SQLSMALLINT utf8_length = 0;
+  SQLSMALLINT record_type = 0;
+  SQLSMALLINT record_subtype = 0;
+  SQLLEN record_length = 0;
+  SQLSMALLINT record_precision = 0;
+  SQLSMALLINT record_scale = 0;
+  SQLSMALLINT record_nullable = 0;
+  const auto result = descriptor->get_record(
+      record_number, nullptr, 0, &utf8_length, &record_type,
+      &record_subtype, &record_length, &record_precision, &record_scale,
+      &record_nullable);
+  if (result != SQL_SUCCESS) return result;
+  std::vector<char> utf8(static_cast<std::size_t>(utf8_length) + 1);
+  const auto name_result = descriptor->get_record(
+      record_number, reinterpret_cast<SQLCHAR*>(utf8.data()),
+      static_cast<SQLSMALLINT>(utf8.size()), nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr);
+  if (name_result != SQL_SUCCESS) return name_result;
+  const auto output_result = write_wide_output(
+      descriptor,
+      std::string_view(utf8.data(), static_cast<std::size_t>(utf8_length)),
+      name, buffer_length, string_length,
+      "Descriptor record name was truncated");
+  if (output_result == SQL_ERROR) return output_result;
+  if (type) *type = record_type;
+  if (subtype) *subtype = record_subtype;
+  if (length) *length = record_length;
+  if (precision) *precision = record_precision;
+  if (scale) *scale = record_scale;
+  if (nullable) *nullable = record_nullable;
+  return output_result;
 }
 
 static SQLRETURN SQLSetDescField_impl(
@@ -2338,6 +2411,18 @@ static SQLRETURN SQLSetDescFieldW_impl(
   return descriptor->set_field(
       record_number, field_identifier,
       const_cast<char*>(utf8->data()), static_cast<SQLINTEGER>(utf8->size()));
+}
+
+static SQLRETURN SQLSetDescRec_impl(
+    SQLHDESC descriptor_handle, SQLSMALLINT record_number,
+    SQLSMALLINT type, SQLSMALLINT subtype, SQLLEN length,
+    SQLSMALLINT precision, SQLSMALLINT scale, SQLPOINTER data,
+    SQLLEN* string_length, SQLLEN* indicator) {
+  auto descriptor = get_valid_handle<ODBCDescriptor>(descriptor_handle);
+  if (!descriptor) return SQL_INVALID_HANDLE;
+  return descriptor->set_record(
+      record_number, type, subtype, length, precision, scale, data,
+      string_length, indicator);
 }
 
 static SQLRETURN SQLCopyDesc_impl(SQLHDESC source_desc_handle,
@@ -2422,6 +2507,15 @@ static SQLRETURN SQLCopyDesc_impl(SQLHDESC source_desc_handle,
     return rs::odbc::detail::invoke_c_api(                                \
         diagnostic, #name, [&] { return name##_impl(                      \
                         a1, a2, a3, a4, a5, a6, a7, a8, a9, a10); });      \
+  }
+#define ODBCPP_API_11(name, diagnostic, T1, T2, T3, T4, T5, T6, T7, T8,  \
+                      T9, T10, T11)                                        \
+  extern "C" SQLRETURN SQL_API name(                                     \
+      T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7, T8 a8, T9 a9,    \
+      T10 a10, T11 a11) {                                                  \
+    return rs::odbc::detail::invoke_c_api(                                \
+        diagnostic, #name, [&] { return name##_impl(                      \
+                        a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11); }); \
   }
 #define ODBCPP_API_13(name, diagnostic, T1, T2, T3, T4, T5, T6, T7, T8,  \
                       T9, T10, T11, T12, T13)                              \
@@ -2564,10 +2658,19 @@ ODBCPP_API_6(SQLGetDescField, a1, SQLHDESC, SQLSMALLINT, SQLSMALLINT,
              SQLPOINTER, SQLINTEGER, SQLINTEGER*)
 ODBCPP_API_6(SQLGetDescFieldW, a1, SQLHDESC, SQLSMALLINT, SQLSMALLINT,
              SQLPOINTER, SQLINTEGER, SQLINTEGER*)
+ODBCPP_API_11(SQLGetDescRec, a1, SQLHDESC, SQLSMALLINT, SQLCHAR*,
+              SQLSMALLINT, SQLSMALLINT*, SQLSMALLINT*, SQLSMALLINT*,
+              SQLLEN*, SQLSMALLINT*, SQLSMALLINT*, SQLSMALLINT*)
+ODBCPP_API_11(SQLGetDescRecW, a1, SQLHDESC, SQLSMALLINT, SQLWCHAR*,
+              SQLSMALLINT, SQLSMALLINT*, SQLSMALLINT*, SQLSMALLINT*,
+              SQLLEN*, SQLSMALLINT*, SQLSMALLINT*, SQLSMALLINT*)
 ODBCPP_API_5(SQLSetDescField, a1, SQLHDESC, SQLSMALLINT, SQLSMALLINT,
              SQLPOINTER, SQLINTEGER)
 ODBCPP_API_5(SQLSetDescFieldW, a1, SQLHDESC, SQLSMALLINT, SQLSMALLINT,
              SQLPOINTER, SQLINTEGER)
+ODBCPP_API_10(SQLSetDescRec, a1, SQLHDESC, SQLSMALLINT, SQLSMALLINT,
+              SQLSMALLINT, SQLLEN, SQLSMALLINT, SQLSMALLINT, SQLPOINTER,
+              SQLLEN*, SQLLEN*)
 ODBCPP_API_2_TWO_HANDLES(SQLCopyDesc, a2, SQLHDESC, SQLHDESC)
 
 #undef ODBCPP_API_1
@@ -2581,4 +2684,5 @@ ODBCPP_API_2_TWO_HANDLES(SQLCopyDesc, a2, SQLHDESC, SQLHDESC)
 #undef ODBCPP_API_8
 #undef ODBCPP_API_9
 #undef ODBCPP_API_10
+#undef ODBCPP_API_11
 #undef ODBCPP_API_13

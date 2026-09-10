@@ -88,6 +88,7 @@ constexpr const char* SQLSTATE_NULLABLE_TYPE_OUT_OF_RANGE = "HY099";
 constexpr const char* SQLSTATE_FETCH_TYPE_OUT_OF_RANGE = "HY106";
 constexpr const char* SQLSTATE_INVALID_CURSOR_STATE = "24000";
 constexpr const char* SQLSTATE_CANNOT_MODIFY_IRD = "HY016";
+constexpr const char* SQLSTATE_INCONSISTENT_DESCRIPTOR = "HY021";
 constexpr const char* SQLSTATE_INVALID_AUTO_DESCRIPTOR_USE = "HY017";
 
 // Note: All SQL_DIAG_* constants are already defined in system ODBC headers (sql.h, sqlext.h)

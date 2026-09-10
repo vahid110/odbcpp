@@ -247,6 +247,8 @@ struct ParameterMetadata {
 struct DescriptorRecord {
   SQLSMALLINT type{SQL_C_DEFAULT};
   SQLSMALLINT concise_type{SQL_C_DEFAULT};
+  SQLSMALLINT datetime_interval_code{0};
+  SQLINTEGER datetime_interval_precision{0};
   SQLULEN length{0};
   SQLSMALLINT precision{0};
   SQLSMALLINT scale{0};
@@ -257,6 +259,26 @@ struct DescriptorRecord {
   SQLLEN* octet_length_ptr{nullptr};
   SQLLEN octet_length{0};
   std::string name;
+  std::string base_column_name;
+  std::string base_table_name;
+  std::string catalog_name;
+  std::string label;
+  std::string literal_prefix;
+  std::string literal_suffix;
+  std::string local_type_name;
+  std::string schema_name;
+  std::string table_name;
+  std::string type_name;
+  SQLINTEGER auto_unique_value{SQL_FALSE};
+  SQLINTEGER case_sensitive{SQL_FALSE};
+  SQLLEN display_size{0};
+  SQLSMALLINT fixed_prec_scale{SQL_FALSE};
+  SQLINTEGER num_prec_radix{0};
+  SQLSMALLINT rowver{SQL_FALSE};
+  SQLSMALLINT searchable{SQL_PRED_SEARCHABLE};
+  SQLSMALLINT unnamed{SQL_UNNAMED};
+  SQLSMALLINT unsigned_attribute{SQL_FALSE};
+  SQLSMALLINT updatable{SQL_ATTR_READONLY};
 };
 
 enum class DescriptorKind {
@@ -297,6 +319,17 @@ public:
   SQLRETURN set_field(SQLSMALLINT record_number,
                       SQLSMALLINT field_identifier, SQLPOINTER value,
                       SQLINTEGER buffer_length);
+  SQLRETURN get_record(SQLSMALLINT record_number, SQLCHAR* name,
+                       SQLSMALLINT buffer_length,
+                       SQLSMALLINT* string_length, SQLSMALLINT* type,
+                       SQLSMALLINT* subtype, SQLLEN* length,
+                       SQLSMALLINT* precision, SQLSMALLINT* scale,
+                       SQLSMALLINT* nullable);
+  SQLRETURN set_record(SQLSMALLINT record_number, SQLSMALLINT type,
+                       SQLSMALLINT subtype, SQLLEN length,
+                       SQLSMALLINT precision, SQLSMALLINT scale,
+                       SQLPOINTER data, SQLLEN* string_length,
+                       SQLLEN* indicator);
   SQLRETURN copy_from(const ODBCDescriptor& source);
 
 private:

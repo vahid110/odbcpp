@@ -276,59 +276,80 @@ SQLSMALLINT descriptor_type_for(SQLSMALLINT concise_type) {
     case SQL_TYPE_TIME:
     case SQL_TYPE_TIMESTAMP:
       return SQL_DATETIME;
+    case SQL_INTERVAL_YEAR:
+    case SQL_INTERVAL_MONTH:
+    case SQL_INTERVAL_DAY:
+    case SQL_INTERVAL_HOUR:
+    case SQL_INTERVAL_MINUTE:
+    case SQL_INTERVAL_SECOND:
+    case SQL_INTERVAL_YEAR_TO_MONTH:
+    case SQL_INTERVAL_DAY_TO_HOUR:
+    case SQL_INTERVAL_DAY_TO_MINUTE:
+    case SQL_INTERVAL_DAY_TO_SECOND:
+    case SQL_INTERVAL_HOUR_TO_MINUTE:
+    case SQL_INTERVAL_HOUR_TO_SECOND:
+    case SQL_INTERVAL_MINUTE_TO_SECOND:
+      return SQL_INTERVAL;
     default:
       return concise_type;
   }
 }
 
-ParameterMetadata parameter_metadata_for(
-    std::uint32_t oid, const DescriptorRecord* prior_record) {
-  const auto type = postgres_type_info(oid, -1, -1);
-  ParameterMetadata metadata{type.sql_type, type.column_size,
-                             type.decimal_digits, SQL_NULLABLE_UNKNOWN, {}};
-  if (!prior_record || prior_record->concise_type != metadata.sql_type) {
-    return metadata;
+SQLSMALLINT descriptor_subtype_for(SQLSMALLINT concise_type) {
+  switch (concise_type) {
+    case SQL_TYPE_DATE: return SQL_CODE_DATE;
+    case SQL_TYPE_TIME: return SQL_CODE_TIME;
+    case SQL_TYPE_TIMESTAMP: return SQL_CODE_TIMESTAMP;
+    case SQL_INTERVAL_YEAR: return SQL_CODE_YEAR;
+    case SQL_INTERVAL_MONTH: return SQL_CODE_MONTH;
+    case SQL_INTERVAL_DAY: return SQL_CODE_DAY;
+    case SQL_INTERVAL_HOUR: return SQL_CODE_HOUR;
+    case SQL_INTERVAL_MINUTE: return SQL_CODE_MINUTE;
+    case SQL_INTERVAL_SECOND: return SQL_CODE_SECOND;
+    case SQL_INTERVAL_YEAR_TO_MONTH: return SQL_CODE_YEAR_TO_MONTH;
+    case SQL_INTERVAL_DAY_TO_HOUR: return SQL_CODE_DAY_TO_HOUR;
+    case SQL_INTERVAL_DAY_TO_MINUTE: return SQL_CODE_DAY_TO_MINUTE;
+    case SQL_INTERVAL_DAY_TO_SECOND: return SQL_CODE_DAY_TO_SECOND;
+    case SQL_INTERVAL_HOUR_TO_MINUTE: return SQL_CODE_HOUR_TO_MINUTE;
+    case SQL_INTERVAL_HOUR_TO_SECOND: return SQL_CODE_HOUR_TO_SECOND;
+    case SQL_INTERVAL_MINUTE_TO_SECOND: return SQL_CODE_MINUTE_TO_SECOND;
+    default: return 0;
   }
-  if (prior_record->length > 0) {
-    metadata.column_size = prior_record->length;
-  }
-  if (metadata.sql_type == SQL_DECIMAL || metadata.sql_type == SQL_NUMERIC ||
-      metadata.sql_type == SQL_TYPE_TIME ||
-      metadata.sql_type == SQL_TYPE_TIMESTAMP) {
-    metadata.decimal_digits = prior_record->scale;
-  }
-  metadata.nullable = prior_record->nullable;
-  metadata.name = prior_record->name;
-  return metadata;
 }
 
-DescriptorRecord descriptor_record_for(const ColumnInfo& column) {
-  DescriptorRecord record;
-  record.type = descriptor_type_for(column.sql_type);
-  record.concise_type = column.sql_type;
-  record.length = column.column_size;
-  record.precision = static_cast<SQLSMALLINT>(std::min<SQLULEN>(
-      column.column_size,
-      static_cast<SQLULEN>(std::numeric_limits<SQLSMALLINT>::max())));
-  record.scale = column.decimal_digits;
-  record.nullable = column.nullable;
-  record.name = column.name;
-  return record;
+std::optional<SQLSMALLINT> concise_type_for(
+    SQLSMALLINT type, SQLSMALLINT subtype) {
+  if (type != SQL_DATETIME && type != SQL_INTERVAL) return type;
+  if (type == SQL_DATETIME) {
+    switch (subtype) {
+      case SQL_CODE_DATE: return SQL_TYPE_DATE;
+      case SQL_CODE_TIME: return SQL_TYPE_TIME;
+      case SQL_CODE_TIMESTAMP: return SQL_TYPE_TIMESTAMP;
+      default: return std::nullopt;
+    }
+  }
+  switch (subtype) {
+    case SQL_CODE_YEAR: return SQL_INTERVAL_YEAR;
+    case SQL_CODE_MONTH: return SQL_INTERVAL_MONTH;
+    case SQL_CODE_DAY: return SQL_INTERVAL_DAY;
+    case SQL_CODE_HOUR: return SQL_INTERVAL_HOUR;
+    case SQL_CODE_MINUTE: return SQL_INTERVAL_MINUTE;
+    case SQL_CODE_SECOND: return SQL_INTERVAL_SECOND;
+    case SQL_CODE_YEAR_TO_MONTH: return SQL_INTERVAL_YEAR_TO_MONTH;
+    case SQL_CODE_DAY_TO_HOUR: return SQL_INTERVAL_DAY_TO_HOUR;
+    case SQL_CODE_DAY_TO_MINUTE: return SQL_INTERVAL_DAY_TO_MINUTE;
+    case SQL_CODE_DAY_TO_SECOND: return SQL_INTERVAL_DAY_TO_SECOND;
+    case SQL_CODE_HOUR_TO_MINUTE: return SQL_INTERVAL_HOUR_TO_MINUTE;
+    case SQL_CODE_HOUR_TO_SECOND: return SQL_INTERVAL_HOUR_TO_SECOND;
+    case SQL_CODE_MINUTE_TO_SECOND: return SQL_INTERVAL_MINUTE_TO_SECOND;
+    default: return std::nullopt;
+  }
 }
 
-DescriptorRecord descriptor_record_for(const ParameterMetadata& parameter) {
-  DescriptorRecord record;
-  record.type = descriptor_type_for(parameter.sql_type);
-  record.concise_type = parameter.sql_type;
-  record.length = parameter.column_size;
-  record.precision = static_cast<SQLSMALLINT>(std::min<SQLULEN>(
-      parameter.column_size,
-      static_cast<SQLULEN>(std::numeric_limits<SQLSMALLINT>::max())));
-  record.scale = parameter.decimal_digits;
-  record.nullable = parameter.nullable;
-  record.parameter_type = SQL_PARAM_INPUT;
-  record.name = parameter.name;
-  return record;
+bool valid_descriptor_type(SQLSMALLINT concise_type, DescriptorKind kind) {
+  return kind == DescriptorKind::Application
+      ? ResultTypes::is_valid_c_type(concise_type)
+      : ResultTypes::is_valid_sql_type(concise_type);
 }
 
 struct TypeInfoDefinition {
@@ -379,6 +400,175 @@ const TypeInfoDefinition type_info_definitions[] = {
     {"timestamp", SQL_TYPE_TIMESTAMP, 29, "'", "'", "precision", SQL_FALSE,
      -1, 0, 6, SQL_DATETIME, SQL_CODE_TIMESTAMP, 0},
 };
+
+const TypeInfoDefinition* find_type_info(SQLSMALLINT type) {
+  const auto found = std::find_if(
+      std::begin(type_info_definitions), std::end(type_info_definitions),
+      [type](const auto& candidate) { return candidate.data_type == type; });
+  return found == std::end(type_info_definitions) ? nullptr : &*found;
+}
+
+SQLSMALLINT descriptor_precision(SQLSMALLINT type, SQLULEN length,
+                                 SQLSMALLINT scale) {
+  switch (type) {
+    case SQL_TINYINT:
+    case SQL_SMALLINT:
+    case SQL_INTEGER:
+    case SQL_BIGINT:
+    case SQL_DECIMAL:
+    case SQL_NUMERIC:
+      return static_cast<SQLSMALLINT>(std::min<SQLULEN>(
+          length, static_cast<SQLULEN>(std::numeric_limits<SQLSMALLINT>::max())));
+    case SQL_REAL: return 24;
+    case SQL_FLOAT:
+    case SQL_DOUBLE: return 53;
+    case SQL_TYPE_TIME:
+    case SQL_TYPE_TIMESTAMP: return scale;
+    default: return 0;
+  }
+}
+
+SQLLEN bounded_descriptor_length(SQLULEN length, SQLULEN multiplier = 1,
+                                 SQLULEN extra = 0) {
+  const auto maximum =
+      static_cast<SQLULEN>(std::numeric_limits<SQLLEN>::max());
+  if (extra > maximum ||
+      length > (maximum - extra) / multiplier) {
+    return std::numeric_limits<SQLLEN>::max();
+  }
+  return static_cast<SQLLEN>(length * multiplier + extra);
+}
+
+SQLLEN descriptor_octet_length(SQLSMALLINT type, SQLULEN length) {
+  switch (type) {
+    case SQL_BIT:
+    case SQL_TINYINT: return 1;
+    case SQL_SMALLINT: return 2;
+    case SQL_INTEGER:
+    case SQL_REAL: return 4;
+    case SQL_BIGINT:
+    case SQL_FLOAT:
+    case SQL_DOUBLE: return 8;
+    case SQL_TYPE_DATE:
+    case SQL_TYPE_TIME: return 6;
+    case SQL_TYPE_TIMESTAMP: return 16;
+    case SQL_DECIMAL:
+    case SQL_NUMERIC:
+      return length == 0 ? SQL_NO_TOTAL
+                         : bounded_descriptor_length(length, 1, 2);
+    case SQL_CHAR:
+    case SQL_VARCHAR:
+    case SQL_LONGVARCHAR:
+    case SQL_WCHAR:
+    case SQL_WVARCHAR:
+    case SQL_WLONGVARCHAR:
+    case SQL_BINARY:
+    case SQL_VARBINARY:
+    case SQL_LONGVARBINARY:
+      return length == 0 ? SQL_NO_TOTAL : bounded_descriptor_length(length);
+    default: return bounded_descriptor_length(length);
+  }
+}
+
+SQLLEN descriptor_display_size(SQLSMALLINT type, SQLULEN length,
+                               SQLSMALLINT scale) {
+  switch (type) {
+    case SQL_BIT: return 1;
+    case SQL_TINYINT: return 4;
+    case SQL_SMALLINT: return 6;
+    case SQL_INTEGER: return 11;
+    case SQL_BIGINT: return 20;
+    case SQL_REAL: return 14;
+    case SQL_FLOAT:
+    case SQL_DOUBLE: return 24;
+    case SQL_DECIMAL:
+    case SQL_NUMERIC:
+      return length == 0 ? SQL_NO_TOTAL
+                         : bounded_descriptor_length(length, 1, 2);
+    case SQL_BINARY:
+    case SQL_VARBINARY:
+    case SQL_LONGVARBINARY:
+      return length == 0 ? SQL_NO_TOTAL
+                         : bounded_descriptor_length(length, 2);
+    case SQL_TYPE_DATE: return 10;
+    case SQL_TYPE_TIME: return scale == 0 ? 8 : 9 + scale;
+    case SQL_TYPE_TIMESTAMP: return scale == 0 ? 19 : 20 + scale;
+    default:
+      return length == 0 ? SQL_NO_TOTAL : bounded_descriptor_length(length);
+  }
+}
+
+void complete_descriptor_record(DescriptorRecord& record) {
+  const auto* type_info = find_type_info(record.concise_type);
+  record.type = descriptor_type_for(record.concise_type);
+  record.datetime_interval_code = descriptor_subtype_for(record.concise_type);
+  record.precision = descriptor_precision(
+      record.concise_type, record.length, record.scale);
+  record.octet_length = descriptor_octet_length(
+      record.concise_type, record.length);
+  record.label = record.name;
+  record.unnamed = record.name.empty() ? SQL_UNNAMED : SQL_NAMED;
+  record.type_name = type_info ? type_info->name : "";
+  record.local_type_name = record.type_name;
+  record.literal_prefix = type_info && type_info->literal_prefix
+      ? type_info->literal_prefix : "";
+  record.literal_suffix = type_info && type_info->literal_suffix
+      ? type_info->literal_suffix : "";
+  record.case_sensitive = type_info ? type_info->case_sensitive : SQL_FALSE;
+  record.num_prec_radix = type_info ? type_info->numeric_radix : 0;
+  record.unsigned_attribute = type_info && type_info->unsigned_attribute >= 0
+      ? type_info->unsigned_attribute : SQL_FALSE;
+  record.fixed_prec_scale =
+      (record.concise_type == SQL_DECIMAL ||
+       record.concise_type == SQL_NUMERIC) && record.scale != 0
+      ? SQL_TRUE : SQL_FALSE;
+  record.display_size = descriptor_display_size(
+      record.concise_type, record.length, record.scale);
+}
+
+ParameterMetadata parameter_metadata_for(
+    std::uint32_t oid, const DescriptorRecord* prior_record) {
+  const auto type = postgres_type_info(oid, -1, -1);
+  ParameterMetadata metadata{type.sql_type, type.column_size,
+                             type.decimal_digits, SQL_NULLABLE_UNKNOWN, {}};
+  if (!prior_record || prior_record->concise_type != metadata.sql_type) {
+    return metadata;
+  }
+  if (prior_record->length > 0) {
+    metadata.column_size = prior_record->length;
+  }
+  if (metadata.sql_type == SQL_DECIMAL || metadata.sql_type == SQL_NUMERIC ||
+      metadata.sql_type == SQL_TYPE_TIME ||
+      metadata.sql_type == SQL_TYPE_TIMESTAMP) {
+    metadata.decimal_digits = prior_record->scale;
+  }
+  metadata.nullable = prior_record->nullable;
+  metadata.name = prior_record->name;
+  return metadata;
+}
+
+DescriptorRecord descriptor_record_for(const ColumnInfo& column) {
+  DescriptorRecord record;
+  record.concise_type = column.sql_type;
+  record.length = column.column_size;
+  record.scale = column.decimal_digits;
+  record.nullable = column.nullable;
+  record.name = column.name;
+  complete_descriptor_record(record);
+  return record;
+}
+
+DescriptorRecord descriptor_record_for(const ParameterMetadata& parameter) {
+  DescriptorRecord record;
+  record.concise_type = parameter.sql_type;
+  record.length = parameter.column_size;
+  record.scale = parameter.decimal_digits;
+  record.nullable = parameter.nullable;
+  record.parameter_type = SQL_PARAM_INPUT;
+  record.name = parameter.name;
+  complete_descriptor_record(record);
+  return record;
+}
 
 rs::core::database::ResultCell type_info_text(const char* value) {
   if (!value) return std::nullopt;
@@ -913,42 +1103,33 @@ void ODBCConnection::close_connection() {
 SQLRETURN ODBCDescriptor::get_field(
     SQLSMALLINT record_number, SQLSMALLINT field_identifier,
     SQLPOINTER value, SQLINTEGER buffer_length, SQLINTEGER* string_length) {
-  if (buffer_length < 0) {
-    set_error(SQLSTATE_INVALID_STRING_LENGTH,
-              "Invalid descriptor output buffer length");
-    return SQL_ERROR;
-  }
-  const auto require_output = [&]() {
-    if (value) return true;
-    set_error(SQLSTATE_INVALID_NULL_POINTER,
-              "Descriptor output pointer is null");
-    return false;
-  };
   switch (field_identifier) {
+    case SQL_DESC_ALLOC_TYPE:
+      if (value) {
+        *static_cast<SQLSMALLINT*>(value) = automatically_allocated_
+            ? SQL_DESC_ALLOC_AUTO : SQL_DESC_ALLOC_USER;
+      }
+      return SQL_SUCCESS;
     case SQL_DESC_COUNT:
-      if (!require_output()) return SQL_ERROR;
-      *static_cast<SQLSMALLINT*>(value) =
-          static_cast<SQLSMALLINT>(records_.size());
+      if (value) {
+        *static_cast<SQLSMALLINT*>(value) =
+            static_cast<SQLSMALLINT>(records_.size());
+      }
       return SQL_SUCCESS;
     case SQL_DESC_ARRAY_SIZE:
-      if (!require_output()) return SQL_ERROR;
-      *static_cast<SQLULEN*>(value) = array_size_;
+      if (value) *static_cast<SQLULEN*>(value) = array_size_;
       return SQL_SUCCESS;
     case SQL_DESC_ARRAY_STATUS_PTR:
-      if (!require_output()) return SQL_ERROR;
-      *static_cast<SQLUSMALLINT**>(value) = array_status_ptr_;
+      if (value) *static_cast<SQLUSMALLINT**>(value) = array_status_ptr_;
       return SQL_SUCCESS;
     case SQL_DESC_BIND_OFFSET_PTR:
-      if (!require_output()) return SQL_ERROR;
-      *static_cast<SQLLEN**>(value) = bind_offset_ptr_;
+      if (value) *static_cast<SQLLEN**>(value) = bind_offset_ptr_;
       return SQL_SUCCESS;
     case SQL_DESC_BIND_TYPE:
-      if (!require_output()) return SQL_ERROR;
-      *static_cast<SQLULEN*>(value) = bind_type_;
+      if (value) *static_cast<SQLULEN*>(value) = bind_type_;
       return SQL_SUCCESS;
     case SQL_DESC_ROWS_PROCESSED_PTR:
-      if (!require_output()) return SQL_ERROR;
-      *static_cast<SQLULEN**>(value) = rows_processed_ptr_;
+      if (value) *static_cast<SQLULEN**>(value) = rows_processed_ptr_;
       return SQL_SUCCESS;
     default:
       break;
@@ -963,48 +1144,120 @@ SQLRETURN ODBCDescriptor::get_field(
     return SQL_NO_DATA;
   }
   const auto& record = records_[static_cast<std::size_t>(record_number - 1)];
-  if (field_identifier == SQL_DESC_NAME) {
+  const std::string* text = nullptr;
+  switch (field_identifier) {
+    case SQL_DESC_BASE_COLUMN_NAME: text = &record.base_column_name; break;
+    case SQL_DESC_BASE_TABLE_NAME: text = &record.base_table_name; break;
+    case SQL_DESC_CATALOG_NAME: text = &record.catalog_name; break;
+    case SQL_DESC_LABEL: text = &record.label; break;
+    case SQL_DESC_LITERAL_PREFIX: text = &record.literal_prefix; break;
+    case SQL_DESC_LITERAL_SUFFIX: text = &record.literal_suffix; break;
+    case SQL_DESC_LOCAL_TYPE_NAME: text = &record.local_type_name; break;
+    case SQL_DESC_NAME: text = &record.name; break;
+    case SQL_DESC_SCHEMA_NAME: text = &record.schema_name; break;
+    case SQL_DESC_TABLE_NAME: text = &record.table_name; break;
+    case SQL_DESC_TYPE_NAME: text = &record.type_name; break;
+    default: break;
+  }
+  if (text) {
+    if (buffer_length < 0) {
+      set_error(SQLSTATE_INVALID_STRING_LENGTH,
+                "Invalid descriptor output buffer length");
+      return SQL_ERROR;
+    }
     if (string_length) {
-      *string_length = static_cast<SQLINTEGER>(record.name.size());
+      *string_length = static_cast<SQLINTEGER>(text->size());
     }
     if (!value || buffer_length == 0) return SQL_SUCCESS;
     const auto copied = std::min<std::size_t>(
-        record.name.size(), static_cast<std::size_t>(buffer_length - 1));
-    std::memcpy(value, record.name.data(), copied);
+        text->size(), static_cast<std::size_t>(buffer_length - 1));
+    std::memcpy(value, text->data(), copied);
     static_cast<char*>(value)[copied] = 0;
-    if (copied < record.name.size()) {
+    if (copied < text->size()) {
       set_error(SQLSTATE_STRING_DATA_TRUNCATED,
-                "Descriptor name was truncated");
+                "Descriptor text was truncated");
       return SQL_SUCCESS_WITH_INFO;
     }
     return SQL_SUCCESS;
   }
-  if (!require_output()) return SQL_ERROR;
   switch (field_identifier) {
     case SQL_DESC_TYPE:
-      *static_cast<SQLSMALLINT*>(value) = record.type; break;
+      if (value) *static_cast<SQLSMALLINT*>(value) = record.type; break;
     case SQL_DESC_CONCISE_TYPE:
-      *static_cast<SQLSMALLINT*>(value) = record.concise_type; break;
+      if (value) *static_cast<SQLSMALLINT*>(value) = record.concise_type; break;
+    case SQL_DESC_DATETIME_INTERVAL_CODE:
+      if (value) {
+        *static_cast<SQLSMALLINT*>(value) = record.datetime_interval_code;
+      }
+      break;
+    case SQL_DESC_DATETIME_INTERVAL_PRECISION:
+      if (value) {
+        *static_cast<SQLINTEGER*>(value) =
+            record.datetime_interval_precision;
+      }
+      break;
     case SQL_DESC_LENGTH:
-      *static_cast<SQLULEN*>(value) = record.length; break;
+      if (value) *static_cast<SQLULEN*>(value) = record.length; break;
     case SQL_DESC_PRECISION:
-      *static_cast<SQLSMALLINT*>(value) = record.precision; break;
+      if (value) *static_cast<SQLSMALLINT*>(value) = record.precision; break;
     case SQL_DESC_SCALE:
-      *static_cast<SQLSMALLINT*>(value) = record.scale; break;
+      if (value) *static_cast<SQLSMALLINT*>(value) = record.scale; break;
     case SQL_DESC_NULLABLE:
-      *static_cast<SQLSMALLINT*>(value) = record.nullable; break;
+      if (value) *static_cast<SQLSMALLINT*>(value) = record.nullable; break;
     case SQL_DESC_PARAMETER_TYPE:
-      *static_cast<SQLSMALLINT*>(value) = record.parameter_type; break;
+      if (value) {
+        *static_cast<SQLSMALLINT*>(value) = record.parameter_type;
+      }
+      break;
     case SQL_DESC_DATA_PTR:
-      *static_cast<SQLPOINTER*>(value) = record.data_ptr; break;
+      if (value) *static_cast<SQLPOINTER*>(value) = record.data_ptr; break;
     case SQL_DESC_INDICATOR_PTR:
-      *static_cast<SQLLEN**>(value) = record.indicator_ptr; break;
+      if (value) *static_cast<SQLLEN**>(value) = record.indicator_ptr; break;
     case SQL_DESC_OCTET_LENGTH_PTR:
-      *static_cast<SQLLEN**>(value) = record.octet_length_ptr; break;
+      if (value) {
+        *static_cast<SQLLEN**>(value) = record.octet_length_ptr;
+      }
+      break;
     case SQL_DESC_OCTET_LENGTH:
-      *static_cast<SQLLEN*>(value) = record.octet_length; break;
+      if (value) *static_cast<SQLLEN*>(value) = record.octet_length; break;
+    case SQL_DESC_AUTO_UNIQUE_VALUE:
+      if (value) {
+        *static_cast<SQLINTEGER*>(value) = record.auto_unique_value;
+      }
+      break;
+    case SQL_DESC_CASE_SENSITIVE:
+      if (value) *static_cast<SQLINTEGER*>(value) = record.case_sensitive;
+      break;
+    case SQL_DESC_DISPLAY_SIZE:
+      if (value) *static_cast<SQLLEN*>(value) = record.display_size;
+      break;
+    case SQL_DESC_FIXED_PREC_SCALE:
+      if (value) {
+        *static_cast<SQLSMALLINT*>(value) = record.fixed_prec_scale;
+      }
+      break;
+    case SQL_DESC_NUM_PREC_RADIX:
+      if (value) *static_cast<SQLINTEGER*>(value) = record.num_prec_radix;
+      break;
+    case SQL_DESC_ROWVER:
+      if (value) *static_cast<SQLSMALLINT*>(value) = record.rowver;
+      break;
+    case SQL_DESC_SEARCHABLE:
+      if (value) *static_cast<SQLSMALLINT*>(value) = record.searchable;
+      break;
+    case SQL_DESC_UNNAMED:
+      if (value) *static_cast<SQLSMALLINT*>(value) = record.unnamed;
+      break;
+    case SQL_DESC_UNSIGNED:
+      if (value) {
+        *static_cast<SQLSMALLINT*>(value) = record.unsigned_attribute;
+      }
+      break;
+    case SQL_DESC_UPDATABLE:
+      if (value) *static_cast<SQLSMALLINT*>(value) = record.updatable;
+      break;
     default:
-      set_error(SQLSTATE_INVALID_ATTRIBUTE,
+      set_error(SQLSTATE_INVALID_DESCRIPTOR_FIELD,
                 "Unsupported descriptor field");
       return SQL_ERROR;
   }
@@ -1021,6 +1274,8 @@ SQLRETURN ODBCDescriptor::set_field(
               "Implementation row descriptor fields are read-only");
     return SQL_ERROR;
   }
+  const auto numeric_signed = static_cast<SQLLEN>(
+      reinterpret_cast<std::intptr_t>(value));
   const auto numeric = static_cast<SQLULEN>(
       reinterpret_cast<std::uintptr_t>(value));
   const auto changed = [this]() -> SQLRETURN {
@@ -1028,7 +1283,16 @@ SQLRETURN ODBCDescriptor::set_field(
     return SQL_SUCCESS;
   };
   switch (field_identifier) {
+    case SQL_DESC_ALLOC_TYPE:
+      set_error(SQLSTATE_INVALID_DESCRIPTOR_FIELD,
+                "Descriptor allocation type is read-only");
+      return SQL_ERROR;
     case SQL_DESC_COUNT:
+      if (numeric_signed < 0) {
+        set_error(SQLSTATE_INVALID_PARAMETER_NUMBER,
+                  "Descriptor record count cannot be negative");
+        return SQL_ERROR;
+      }
       if (numeric > static_cast<SQLULEN>(
                         std::numeric_limits<SQLSMALLINT>::max())) {
         set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
@@ -1038,6 +1302,11 @@ SQLRETURN ODBCDescriptor::set_field(
       records_.resize(static_cast<std::size_t>(numeric));
       return changed();
     case SQL_DESC_ARRAY_SIZE:
+      if (kind_ != DescriptorKind::Application) {
+        set_error(SQLSTATE_INVALID_DESCRIPTOR_FIELD,
+                  "Descriptor array size is not defined for this descriptor");
+        return SQL_ERROR;
+      }
       if (numeric == 0) {
         set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
                   "Descriptor array size must be positive");
@@ -1049,12 +1318,27 @@ SQLRETURN ODBCDescriptor::set_field(
       array_status_ptr_ = static_cast<SQLUSMALLINT*>(value);
       return changed();
     case SQL_DESC_BIND_OFFSET_PTR:
+      if (kind_ != DescriptorKind::Application) {
+        set_error(SQLSTATE_INVALID_DESCRIPTOR_FIELD,
+                  "Descriptor bind offset is not defined for this descriptor");
+        return SQL_ERROR;
+      }
       bind_offset_ptr_ = static_cast<SQLLEN*>(value);
       return changed();
     case SQL_DESC_BIND_TYPE:
+      if (kind_ != DescriptorKind::Application) {
+        set_error(SQLSTATE_INVALID_DESCRIPTOR_FIELD,
+                  "Descriptor bind type is not defined for this descriptor");
+        return SQL_ERROR;
+      }
       bind_type_ = numeric;
       return changed();
     case SQL_DESC_ROWS_PROCESSED_PTR:
+      if (kind_ == DescriptorKind::Application) {
+        set_error(SQLSTATE_INVALID_DESCRIPTOR_FIELD,
+                  "Rows processed is not defined for application descriptors");
+        return SQL_ERROR;
+      }
       rows_processed_ptr_ = static_cast<SQLULEN*>(value);
       return changed();
     default:
@@ -1066,35 +1350,138 @@ SQLRETURN ODBCDescriptor::set_field(
               "Invalid descriptor record number");
     return SQL_ERROR;
   }
+
+  const auto writable_for_kind = [this](SQLSMALLINT field) {
+    switch (field) {
+      case SQL_DESC_TYPE:
+      case SQL_DESC_CONCISE_TYPE:
+      case SQL_DESC_DATETIME_INTERVAL_CODE:
+      case SQL_DESC_DATETIME_INTERVAL_PRECISION:
+      case SQL_DESC_LENGTH:
+      case SQL_DESC_NUM_PREC_RADIX:
+      case SQL_DESC_OCTET_LENGTH:
+      case SQL_DESC_PRECISION:
+      case SQL_DESC_SCALE:
+      case SQL_DESC_DATA_PTR:
+        return true;
+      case SQL_DESC_INDICATOR_PTR:
+      case SQL_DESC_OCTET_LENGTH_PTR:
+        return kind_ == DescriptorKind::Application;
+      case SQL_DESC_NAME:
+      case SQL_DESC_PARAMETER_TYPE:
+      case SQL_DESC_UNNAMED:
+        return kind_ == DescriptorKind::ImplementationParameter;
+      default:
+        return false;
+    }
+  };
+  if (!writable_for_kind(field_identifier)) {
+    set_error(SQLSTATE_INVALID_DESCRIPTOR_FIELD,
+              "Descriptor field is read-only or undefined");
+    return SQL_ERROR;
+  }
+
+  std::optional<SQLSMALLINT> new_concise_type;
+  if (field_identifier == SQL_DESC_CONCISE_TYPE) {
+    const auto concise = static_cast<SQLSMALLINT>(numeric_signed);
+    if (!valid_descriptor_type(concise, kind_)) {
+      set_error(SQLSTATE_INCONSISTENT_DESCRIPTOR,
+                "Invalid concise descriptor type");
+      return SQL_ERROR;
+    }
+    new_concise_type = concise;
+  } else if (field_identifier == SQL_DESC_TYPE) {
+    const auto type = static_cast<SQLSMALLINT>(numeric_signed);
+    const auto current_subtype =
+        static_cast<std::size_t>(record_number) <= records_.size()
+        ? records_[static_cast<std::size_t>(record_number - 1)]
+              .datetime_interval_code
+        : 0;
+    new_concise_type = concise_type_for(type, current_subtype);
+    if (!new_concise_type ||
+        !valid_descriptor_type(*new_concise_type, kind_)) {
+      set_error(SQLSTATE_INCONSISTENT_DESCRIPTOR,
+                "Descriptor type and subtype are inconsistent");
+      return SQL_ERROR;
+    }
+  } else if (field_identifier == SQL_DESC_PARAMETER_TYPE) {
+    const auto parameter_type = static_cast<SQLSMALLINT>(numeric_signed);
+    const bool valid = parameter_type == SQL_PARAM_INPUT ||
+        parameter_type == SQL_PARAM_INPUT_OUTPUT ||
+        parameter_type == SQL_PARAM_OUTPUT
+#ifdef SQL_PARAM_INPUT_OUTPUT_STREAM
+        || parameter_type == SQL_PARAM_INPUT_OUTPUT_STREAM
+#endif
+#ifdef SQL_PARAM_OUTPUT_STREAM
+        || parameter_type == SQL_PARAM_OUTPUT_STREAM
+#endif
+        ;
+    if (!valid) {
+      set_error(SQLSTATE_INVALID_PARAMETER_TYPE,
+                "Invalid descriptor parameter type");
+      return SQL_ERROR;
+    }
+  } else if (field_identifier == SQL_DESC_UNNAMED &&
+             numeric_signed != SQL_UNNAMED) {
+    set_error(SQLSTATE_INVALID_ATTRIBUTE,
+              "SQL_DESC_UNNAMED can only be set to SQL_UNNAMED");
+    return SQL_ERROR;
+  }
+
   if (static_cast<std::size_t>(record_number) > records_.size()) {
     records_.resize(static_cast<std::size_t>(record_number));
   }
   auto& record = records_[static_cast<std::size_t>(record_number - 1)];
   switch (field_identifier) {
     case SQL_DESC_TYPE:
-      record.type = static_cast<SQLSMALLINT>(numeric);
-      record.concise_type = record.type;
+      record.concise_type = *new_concise_type;
+      complete_descriptor_record(record);
       break;
     case SQL_DESC_CONCISE_TYPE:
-      record.concise_type = static_cast<SQLSMALLINT>(numeric);
-      record.type = record.concise_type;
+      record.concise_type = *new_concise_type;
+      complete_descriptor_record(record);
+      break;
+    case SQL_DESC_DATETIME_INTERVAL_CODE: {
+      const auto subtype = static_cast<SQLSMALLINT>(numeric_signed);
+      const auto concise = concise_type_for(record.type, subtype);
+      if (!concise || !valid_descriptor_type(*concise, kind_)) {
+        set_error(SQLSTATE_INCONSISTENT_DESCRIPTOR,
+                  "Descriptor type and subtype are inconsistent");
+        return SQL_ERROR;
+      }
+      record.concise_type = *concise;
+      complete_descriptor_record(record);
+      break;
+    }
+    case SQL_DESC_DATETIME_INTERVAL_PRECISION:
+      record.datetime_interval_precision =
+          static_cast<SQLINTEGER>(numeric_signed);
       break;
     case SQL_DESC_LENGTH: record.length = numeric; break;
     case SQL_DESC_PRECISION:
-      record.precision = static_cast<SQLSMALLINT>(numeric); break;
+      record.precision = static_cast<SQLSMALLINT>(numeric_signed); break;
     case SQL_DESC_SCALE:
-      record.scale = static_cast<SQLSMALLINT>(numeric); break;
-    case SQL_DESC_NULLABLE:
-      record.nullable = static_cast<SQLSMALLINT>(numeric); break;
+      record.scale = static_cast<SQLSMALLINT>(numeric_signed); break;
+    case SQL_DESC_NUM_PREC_RADIX:
+      record.num_prec_radix = static_cast<SQLINTEGER>(numeric_signed); break;
     case SQL_DESC_PARAMETER_TYPE:
-      record.parameter_type = static_cast<SQLSMALLINT>(numeric); break;
-    case SQL_DESC_DATA_PTR: record.data_ptr = value; break;
+      record.parameter_type = static_cast<SQLSMALLINT>(numeric_signed); break;
+    case SQL_DESC_DATA_PTR:
+      if (!valid_descriptor_type(record.concise_type, kind_)) {
+        set_error(SQLSTATE_INCONSISTENT_DESCRIPTOR,
+                  "Descriptor type is invalid for the data pointer");
+        return SQL_ERROR;
+      }
+      // An IPD data pointer only requests a consistency check. It is not a
+      // binding pointer and must not be retained or returned.
+      record.data_ptr = kind_ == DescriptorKind::Application ? value : nullptr;
+      break;
     case SQL_DESC_INDICATOR_PTR:
       record.indicator_ptr = static_cast<SQLLEN*>(value); break;
     case SQL_DESC_OCTET_LENGTH_PTR:
       record.octet_length_ptr = static_cast<SQLLEN*>(value); break;
     case SQL_DESC_OCTET_LENGTH:
-      record.octet_length = static_cast<SQLLEN>(numeric); break;
+      record.octet_length = numeric_signed; break;
     case SQL_DESC_NAME:
       if (!value) {
         set_error(SQLSTATE_INVALID_NULL_POINTER,
@@ -1111,13 +1498,122 @@ SQLRETURN ODBCDescriptor::set_field(
                   "Invalid descriptor name length");
         return SQL_ERROR;
       }
+      record.unnamed = SQL_NAMED;
+      break;
+    case SQL_DESC_UNNAMED:
+      record.unnamed = SQL_UNNAMED;
+      record.name.clear();
       break;
     default:
-      set_error(SQLSTATE_INVALID_ATTRIBUTE,
-                "Unsupported descriptor field");
-      return SQL_ERROR;
+      break;
+  }
+  if (field_identifier != SQL_DESC_DATA_PTR &&
+      field_identifier != SQL_DESC_INDICATOR_PTR &&
+      field_identifier != SQL_DESC_OCTET_LENGTH_PTR) {
+    record.data_ptr = nullptr;
   }
   return changed();
+}
+
+SQLRETURN ODBCDescriptor::get_record(
+    SQLSMALLINT record_number, SQLCHAR* name, SQLSMALLINT buffer_length,
+    SQLSMALLINT* string_length, SQLSMALLINT* type, SQLSMALLINT* subtype,
+    SQLLEN* length, SQLSMALLINT* precision, SQLSMALLINT* scale,
+    SQLSMALLINT* nullable) {
+  if (buffer_length < 0) {
+    set_error(SQLSTATE_INVALID_STRING_LENGTH,
+              "Invalid descriptor name buffer length");
+    return SQL_ERROR;
+  }
+  if (record_number < 1) {
+    set_error(SQLSTATE_INVALID_PARAMETER_NUMBER,
+              "Invalid descriptor record number");
+    return SQL_ERROR;
+  }
+  if (static_cast<std::size_t>(record_number) > records_.size()) {
+    return SQL_NO_DATA;
+  }
+
+  const auto& record = records_[static_cast<std::size_t>(record_number - 1)];
+  if (string_length) {
+    *string_length = static_cast<SQLSMALLINT>(std::min<std::size_t>(
+        record.name.size(),
+        static_cast<std::size_t>(std::numeric_limits<SQLSMALLINT>::max())));
+  }
+  if (type) *type = record.type;
+  if (subtype) *subtype = record.datetime_interval_code;
+  if (length) *length = record.octet_length;
+  if (precision) *precision = record.precision;
+  if (scale) *scale = record.scale;
+  if (nullable) *nullable = record.nullable;
+
+  if (!name || buffer_length == 0) return SQL_SUCCESS;
+  const auto copied = std::min<std::size_t>(
+      record.name.size(), static_cast<std::size_t>(buffer_length - 1));
+  std::memcpy(name, record.name.data(), copied);
+  name[copied] = 0;
+  if (copied < record.name.size()) {
+    set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+              "Descriptor record name was truncated");
+    return SQL_SUCCESS_WITH_INFO;
+  }
+  return SQL_SUCCESS;
+}
+
+SQLRETURN ODBCDescriptor::set_record(
+    SQLSMALLINT record_number, SQLSMALLINT type, SQLSMALLINT subtype,
+    SQLLEN length, SQLSMALLINT precision, SQLSMALLINT scale,
+    SQLPOINTER data, SQLLEN* string_length, SQLLEN* indicator) {
+  if (kind_ == DescriptorKind::ImplementationRow) {
+    set_error(SQLSTATE_CANNOT_MODIFY_IRD,
+              "Implementation row descriptor records are read-only");
+    return SQL_ERROR;
+  }
+  if (record_number < 1) {
+    set_error(SQLSTATE_INVALID_PARAMETER_NUMBER,
+              "Invalid descriptor record number");
+    return SQL_ERROR;
+  }
+  const auto concise_type = concise_type_for(type, subtype);
+  if (!concise_type || !valid_descriptor_type(*concise_type, kind_)) {
+    set_error(SQLSTATE_INCONSISTENT_DESCRIPTOR,
+              "Descriptor type and subtype are inconsistent");
+    return SQL_ERROR;
+  }
+
+  DescriptorRecord candidate;
+  if (static_cast<std::size_t>(record_number) <= records_.size()) {
+    candidate = records_[static_cast<std::size_t>(record_number - 1)];
+  }
+  candidate.concise_type = *concise_type;
+  complete_descriptor_record(candidate);
+  candidate.type = type;
+  candidate.datetime_interval_code =
+      type == SQL_DATETIME || type == SQL_INTERVAL ? subtype : 0;
+  candidate.octet_length = length;
+  candidate.precision = precision;
+  candidate.scale = scale;
+  candidate.fixed_prec_scale =
+      (candidate.concise_type == SQL_DECIMAL ||
+       candidate.concise_type == SQL_NUMERIC) && scale != 0
+      ? SQL_TRUE : SQL_FALSE;
+  if (kind_ == DescriptorKind::Application) {
+    candidate.data_ptr = data;
+    candidate.octet_length_ptr = string_length;
+    candidate.indicator_ptr = indicator;
+  } else {
+    candidate.data_ptr = nullptr;
+    candidate.octet_length_ptr = nullptr;
+    candidate.indicator_ptr = nullptr;
+  }
+
+  if (static_cast<std::size_t>(record_number) > records_.size()) {
+    records_.resize(static_cast<std::size_t>(record_number));
+  }
+  records_[static_cast<std::size_t>(record_number - 1)] =
+      std::move(candidate);
+  ++revision_;
+  return SQL_SUCCESS;
 }
 
 SQLRETURN ODBCDescriptor::copy_from(const ODBCDescriptor& source) {

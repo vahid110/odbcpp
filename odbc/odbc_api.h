@@ -243,6 +243,12 @@ SQLRETURN SQLSetDescFieldW(
     SQLHDESC descriptor_handle, SQLSMALLINT record_number,
     SQLSMALLINT field_identifier, SQLPOINTER value,
     SQLINTEGER buffer_length);
+SQLRETURN SQLGetDescRecW(
+    SQLHDESC descriptor_handle, SQLSMALLINT record_number,
+    SQLWCHAR* name, SQLSMALLINT buffer_length,
+    SQLSMALLINT* string_length, SQLSMALLINT* type,
+    SQLSMALLINT* subtype, SQLLEN* length, SQLSMALLINT* precision,
+    SQLSMALLINT* scale, SQLSMALLINT* nullable);
 
 SQLRETURN SQLConnectW(SQLHDBC connection_handle, 
                      SQLWCHAR* server_name, SQLSMALLINT name_length1,

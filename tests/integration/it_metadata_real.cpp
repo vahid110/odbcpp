@@ -4,6 +4,8 @@
 #include "odbc/unicode.h"
 
 #include <cstdint>
+#include <cstring>
+#include <iterator>
 #include <string>
 
 class MetadataIntegrationTest : public ::testing::Test {
@@ -145,6 +147,124 @@ TEST_F(MetadataIntegrationTest, ImplementationDescriptorReportsResultMetadata) {
     ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
         descriptor, 0, SQL_DESC_COUNT, &count, 0, nullptr));
     EXPECT_EQ(0, count);
+}
+
+TEST_F(MetadataIntegrationTest, ImplementationDescriptorCompletesFieldMatrix) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"SELECT 12.34::numeric(8,2) AS amount, "
+                  "'hello'::varchar(12) AS label, CURRENT_DATE AS day",
+        SQL_NTS));
+
+    SQLHDESC descriptor = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_IMP_ROW_DESC, &descriptor, 0, nullptr));
+
+    SQLSMALLINT allocation = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        descriptor, 0, SQL_DESC_ALLOC_TYPE, &allocation, 0, nullptr));
+    EXPECT_EQ(SQL_DESC_ALLOC_AUTO, allocation);
+
+    struct NumericField {
+        SQLSMALLINT identifier;
+        SQLLEN expected;
+    };
+    const NumericField numeric_fields[] = {
+        {SQL_DESC_AUTO_UNIQUE_VALUE, SQL_FALSE},
+        {SQL_DESC_CASE_SENSITIVE, SQL_FALSE},
+        {SQL_DESC_DISPLAY_SIZE, 10},
+        {SQL_DESC_FIXED_PREC_SCALE, SQL_TRUE},
+        {SQL_DESC_NUM_PREC_RADIX, 10},
+        {SQL_DESC_OCTET_LENGTH, 10},
+        {SQL_DESC_ROWVER, SQL_FALSE},
+        {SQL_DESC_SEARCHABLE, SQL_PRED_SEARCHABLE},
+        {SQL_DESC_UNNAMED, SQL_NAMED},
+        {SQL_DESC_UNSIGNED, SQL_FALSE},
+        {SQL_DESC_UPDATABLE, SQL_ATTR_READONLY},
+    };
+    for (const auto& field : numeric_fields) {
+        SQLLEN value = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+            descriptor, 1, field.identifier, &value, 0, nullptr));
+        EXPECT_EQ(field.expected, value) << field.identifier;
+    }
+
+    struct TextField {
+        SQLSMALLINT identifier;
+        const char* expected;
+    };
+    const TextField text_fields[] = {
+        {SQL_DESC_BASE_COLUMN_NAME, ""},
+        {SQL_DESC_BASE_TABLE_NAME, ""},
+        {SQL_DESC_CATALOG_NAME, ""},
+        {SQL_DESC_LABEL, "amount"},
+        {SQL_DESC_LITERAL_PREFIX, ""},
+        {SQL_DESC_LITERAL_SUFFIX, ""},
+        {SQL_DESC_LOCAL_TYPE_NAME, "numeric"},
+        {SQL_DESC_NAME, "amount"},
+        {SQL_DESC_SCHEMA_NAME, ""},
+        {SQL_DESC_TABLE_NAME, ""},
+        {SQL_DESC_TYPE_NAME, "numeric"},
+    };
+    for (const auto& field : text_fields) {
+        char value[32]{'x'};
+        SQLINTEGER length = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+            descriptor, 1, field.identifier, value, sizeof(value),
+            &length));
+        EXPECT_STREQ(field.expected, value) << field.identifier;
+        EXPECT_EQ(static_cast<SQLINTEGER>(std::strlen(field.expected)),
+                  length) << field.identifier;
+    }
+
+    char name[16]{};
+    SQLSMALLINT name_length = -1;
+    SQLSMALLINT type = 0;
+    SQLSMALLINT subtype = -1;
+    SQLLEN length = -1;
+    SQLSMALLINT precision = -1;
+    SQLSMALLINT scale = -1;
+    SQLSMALLINT nullable = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescRec(
+        descriptor, 1, reinterpret_cast<SQLCHAR*>(name), sizeof(name),
+        &name_length, &type, &subtype, &length, &precision, &scale,
+        &nullable));
+    EXPECT_STREQ("amount", name);
+    EXPECT_EQ(6, name_length);
+    EXPECT_EQ(SQL_NUMERIC, type);
+    EXPECT_EQ(0, subtype);
+    EXPECT_EQ(10, length);
+    EXPECT_EQ(8, precision);
+    EXPECT_EQ(2, scale);
+    EXPECT_EQ(SQL_NULLABLE_UNKNOWN, nullable);
+
+    SQLWCHAR wide_name[16]{};
+    name_length = -1;
+    type = 0;
+    subtype = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescRecW(
+        descriptor, 3, wide_name,
+        static_cast<SQLSMALLINT>(std::size(wide_name)), &name_length,
+        &type, &subtype, nullptr, nullptr, nullptr, nullptr));
+    EXPECT_EQ(3, name_length);
+    EXPECT_EQ(SQL_DATETIME, type);
+    EXPECT_EQ(SQL_CODE_DATE, subtype);
+    const auto wide_name_utf8 = rs::odbc::wide_to_utf8(
+        std::span<const SQLWCHAR>(wide_name, 3));
+    ASSERT_TRUE(wide_name_utf8.has_value());
+    EXPECT_EQ("day", *wide_name_utf8);
+
+    SQLWCHAR short_type_name[4]{};
+    SQLINTEGER required_bytes = -1;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetDescFieldW(
+        descriptor, 1, SQL_DESC_TYPE_NAME, short_type_name,
+        sizeof(short_type_name), &required_bytes));
+    EXPECT_EQ(static_cast<SQLINTEGER>(7 * sizeof(SQLWCHAR)), required_bytes);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_DESC, descriptor, 1, state, nullptr, nullptr, 0,
+        nullptr));
+    EXPECT_STREQ("01004", reinterpret_cast<char*>(state));
 }
 
 TEST_F(MetadataIntegrationTest, ExecutesAndPreparesUnicodeSql) {

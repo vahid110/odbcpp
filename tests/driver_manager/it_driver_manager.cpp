@@ -221,11 +221,19 @@ int main() {
   }
   SQLHDESC descriptor = SQL_NULL_HDESC;
   if (!succeeded(SQLAllocHandle(
-          SQL_HANDLE_DESC, connection, &descriptor)) ||
-      !succeeded(SQLSetDescField(
-          descriptor, 1, SQL_DESC_CONCISE_TYPE,
-          reinterpret_cast<SQLPOINTER>(SQL_C_CHAR), 0))) {
+          SQL_HANDLE_DESC, connection, &descriptor))) {
     print_diagnostic(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+  if (!succeeded(SQLSetDescRec(
+          descriptor, 1, SQL_C_CHAR, 0, 32, 0, 0,
+          nullptr, nullptr, nullptr))) {
+    print_diagnostic(SQL_HANDLE_DESC, descriptor);
+    SQLFreeHandle(SQL_HANDLE_DESC, descriptor);
     SQLFreeHandle(SQL_HANDLE_STMT, statement);
     SQLDisconnect(connection);
     SQLFreeHandle(SQL_HANDLE_DBC, connection);
@@ -234,6 +242,7 @@ int main() {
   }
   SQLSMALLINT descriptor_count = 0;
   SQLSMALLINT descriptor_type = 0;
+  SQLLEN descriptor_length = 0;
   if (!succeeded(SQLGetDescField(
           descriptor, 0, SQL_DESC_COUNT, &descriptor_count, 0, nullptr)) ||
       descriptor_count != 1 ||
@@ -241,8 +250,23 @@ int main() {
           descriptor, 1, SQL_DESC_CONCISE_TYPE, &descriptor_type, 0,
           nullptr)) ||
       descriptor_type != SQL_C_CHAR ||
-      !succeeded(SQLFreeHandle(SQL_HANDLE_DESC, descriptor))) {
+      !succeeded(SQLGetDescRec(
+          descriptor, 1, nullptr, 0, nullptr, &descriptor_type, nullptr,
+          &descriptor_length, nullptr, nullptr, nullptr)) ||
+      descriptor_type != SQL_C_CHAR || descriptor_length != 32) {
     print_diagnostic(SQL_HANDLE_DESC, descriptor);
+    std::fprintf(stderr,
+                 "Descriptor record mismatch: count=%d type=%d length=%lld\n",
+                 descriptor_count, descriptor_type,
+                 static_cast<long long>(descriptor_length));
+    SQLFreeHandle(SQL_HANDLE_DESC, descriptor);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+  if (!succeeded(SQLFreeHandle(SQL_HANDLE_DESC, descriptor))) {
     SQLFreeHandle(SQL_HANDLE_STMT, statement);
     SQLDisconnect(connection);
     SQLFreeHandle(SQL_HANDLE_DBC, connection);
@@ -259,6 +283,44 @@ int main() {
           statement, 1, SQL_C_SLONG, &value, 0, nullptr)) ||
       value != 42) {
     print_diagnostic(SQL_HANDLE_STMT, statement);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+  SQLHDESC result_descriptor = SQL_NULL_HDESC;
+  SQLWCHAR wide_column_name[16]{};
+  SQLSMALLINT wide_column_name_length = 0;
+  descriptor_type = 0;
+#ifdef ODBCPP_TEST_IODBC
+  const auto wide_descriptor_buffer_length =
+      static_cast<SQLSMALLINT>(sizeof(wide_column_name));
+  const auto expected_wide_descriptor_length =
+      static_cast<SQLSMALLINT>(8 * sizeof(SQLWCHAR));
+#else
+  const auto wide_descriptor_buffer_length =
+      static_cast<SQLSMALLINT>(std::size(wide_column_name));
+  constexpr SQLSMALLINT expected_wide_descriptor_length = 8;
+#endif
+  if (!succeeded(SQLGetStmtAttr(
+          statement, SQL_ATTR_IMP_ROW_DESC, &result_descriptor, 0,
+          nullptr)) ||
+      !succeeded(SQLGetDescRecW(
+          result_descriptor, 1, wide_column_name,
+          wide_descriptor_buffer_length,
+          &wide_column_name_length, &descriptor_type, nullptr, nullptr,
+          nullptr, nullptr, nullptr)) ||
+      wide_column_name_length != expected_wide_descriptor_length ||
+      wide_column_name[0] != static_cast<SQLWCHAR>('?') ||
+      wide_column_name[7] != static_cast<SQLWCHAR>('?') ||
+      wide_column_name[8] != 0 ||
+      descriptor_type != SQL_INTEGER) {
+    print_diagnostic(SQL_HANDLE_DESC, result_descriptor);
+    std::fprintf(stderr,
+                 "Wide descriptor mismatch: length=%d type=%d first=%u\n",
+                 wide_column_name_length, descriptor_type,
+                 static_cast<unsigned>(wide_column_name[0]));
     SQLFreeHandle(SQL_HANDLE_STMT, statement);
     SQLDisconnect(connection);
     SQLFreeHandle(SQL_HANDLE_DBC, connection);
