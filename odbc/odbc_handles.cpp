@@ -1182,9 +1182,11 @@ SQLRETURN ODBCDescriptor::get_field(
   }
   switch (field_identifier) {
     case SQL_DESC_TYPE:
-      if (value) *static_cast<SQLSMALLINT*>(value) = record.type; break;
+      if (value) *static_cast<SQLSMALLINT*>(value) = record.type;
+      break;
     case SQL_DESC_CONCISE_TYPE:
-      if (value) *static_cast<SQLSMALLINT*>(value) = record.concise_type; break;
+      if (value) *static_cast<SQLSMALLINT*>(value) = record.concise_type;
+      break;
     case SQL_DESC_DATETIME_INTERVAL_CODE:
       if (value) {
         *static_cast<SQLSMALLINT*>(value) = record.datetime_interval_code;
@@ -1197,29 +1199,36 @@ SQLRETURN ODBCDescriptor::get_field(
       }
       break;
     case SQL_DESC_LENGTH:
-      if (value) *static_cast<SQLULEN*>(value) = record.length; break;
+      if (value) *static_cast<SQLULEN*>(value) = record.length;
+      break;
     case SQL_DESC_PRECISION:
-      if (value) *static_cast<SQLSMALLINT*>(value) = record.precision; break;
+      if (value) *static_cast<SQLSMALLINT*>(value) = record.precision;
+      break;
     case SQL_DESC_SCALE:
-      if (value) *static_cast<SQLSMALLINT*>(value) = record.scale; break;
+      if (value) *static_cast<SQLSMALLINT*>(value) = record.scale;
+      break;
     case SQL_DESC_NULLABLE:
-      if (value) *static_cast<SQLSMALLINT*>(value) = record.nullable; break;
+      if (value) *static_cast<SQLSMALLINT*>(value) = record.nullable;
+      break;
     case SQL_DESC_PARAMETER_TYPE:
       if (value) {
         *static_cast<SQLSMALLINT*>(value) = record.parameter_type;
       }
       break;
     case SQL_DESC_DATA_PTR:
-      if (value) *static_cast<SQLPOINTER*>(value) = record.data_ptr; break;
+      if (value) *static_cast<SQLPOINTER*>(value) = record.data_ptr;
+      break;
     case SQL_DESC_INDICATOR_PTR:
-      if (value) *static_cast<SQLLEN**>(value) = record.indicator_ptr; break;
+      if (value) *static_cast<SQLLEN**>(value) = record.indicator_ptr;
+      break;
     case SQL_DESC_OCTET_LENGTH_PTR:
       if (value) {
         *static_cast<SQLLEN**>(value) = record.octet_length_ptr;
       }
       break;
     case SQL_DESC_OCTET_LENGTH:
-      if (value) *static_cast<SQLLEN*>(value) = record.octet_length; break;
+      if (value) *static_cast<SQLLEN*>(value) = record.octet_length;
+      break;
     case SQL_DESC_AUTO_UNIQUE_VALUE:
       if (value) {
         *static_cast<SQLINTEGER*>(value) = record.auto_unique_value;

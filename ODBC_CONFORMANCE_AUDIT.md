@@ -167,7 +167,7 @@ substitute for ODBC diagnostics.
 ## Maintainability snapshot
 
 - `odbc_api.cpp` is 2,688 lines and contains all 76 exported wrappers;
-  `odbc_handles.cpp` is 3,794 lines and combines connection, statement,
+  `odbc_handles.cpp` is 3,803 lines and combines connection, statement,
   descriptor, conversion, metadata, and registry responsibilities.
 - The callback/future methods in `AsyncDatabaseConnection` are experimental
   scaffolding, are not used by the ODBC driver's production connection path,
