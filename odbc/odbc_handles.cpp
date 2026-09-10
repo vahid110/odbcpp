@@ -919,7 +919,7 @@ SQLRETURN ODBCDescriptor::set_field(
   }
   const auto numeric = static_cast<SQLULEN>(
       reinterpret_cast<std::uintptr_t>(value));
-  const auto changed = [this]() {
+  const auto changed = [this]() -> SQLRETURN {
     ++revision_;
     return SQL_SUCCESS;
   };
