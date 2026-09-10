@@ -64,6 +64,34 @@ TEST_F(AttributeApisTest, StoresLoginTimeout) {
   EXPECT_EQ(7u, value);
 }
 
+TEST_F(AttributeApisTest, StoresConnectionTimeoutAndClassifiesPacketSize) {
+  SQLUINTEGER value = 99;
+  SQLINTEGER length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(
+      connection_, SQL_ATTR_CONNECTION_TIMEOUT, &value, sizeof(value),
+      &length));
+  EXPECT_EQ(0u, value);
+  EXPECT_EQ(sizeof(SQLUINTEGER), static_cast<std::size_t>(length));
+
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(
+      connection_, SQL_ATTR_CONNECTION_TIMEOUT, integer_value(11), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(
+      connection_, SQL_ATTR_CONNECTION_TIMEOUT, &value, sizeof(value),
+      nullptr));
+  EXPECT_EQ(11u, value);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttrW(
+      connection_, SQL_ATTR_CONNECTION_TIMEOUT, integer_value(0), 0));
+
+  EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(
+      connection_, SQL_ATTR_PACKET_SIZE, integer_value(8192), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  value = 123;
+  EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(
+      connection_, SQL_ATTR_PACKET_SIZE, &value, sizeof(value), nullptr));
+  EXPECT_EQ(123u, value);
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_DBC, connection_));
+}
+
 TEST_F(AttributeApisTest, StoresEnvironmentVersion) {
   SQLINTEGER version = 0;
   SQLINTEGER length = 0;

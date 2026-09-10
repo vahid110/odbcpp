@@ -214,6 +214,7 @@ private:
   std::unique_ptr<rs::core::database::IDatabaseConnection> db_conn_;
   bool connected_ = false;
   SQLUINTEGER login_timeout_seconds_ = 30;
+  SQLUINTEGER connection_timeout_seconds_ = 0;
   SQLUINTEGER autocommit_ = SQL_AUTOCOMMIT_ON;
   SQLUINTEGER transaction_isolation_ = SQL_TXN_READ_COMMITTED;
   bool transaction_active_ = false;

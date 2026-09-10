@@ -143,6 +143,20 @@ TEST(ConnectionAttributeIntegrationTest,
                 SQL_NTS));
   EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_DBC, connection));
 
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetConnectAttr(connection, SQL_ATTR_CONNECTION_TIMEOUT,
+                              reinterpret_cast<SQLPOINTER>(5), 0));
+  SQLUINTEGER connection_timeout = 0;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetConnectAttr(connection, SQL_ATTR_CONNECTION_TIMEOUT,
+                              &connection_timeout,
+                              sizeof(connection_timeout), nullptr));
+  EXPECT_EQ(5u, connection_timeout);
+  EXPECT_EQ(SQL_ERROR,
+            SQLSetConnectAttr(connection, SQL_ATTR_PACKET_SIZE,
+                              reinterpret_cast<SQLPOINTER>(8192), 0));
+  EXPECT_EQ("HY011", diagnostic_state(SQL_HANDLE_DBC, connection));
+
   EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
   dead = SQL_CD_FALSE;
   EXPECT_EQ(SQL_ERROR,

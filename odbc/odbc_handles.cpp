@@ -939,7 +939,8 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
           "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL " +
           std::string(isolation_name);
       auto result = db_conn_->execute_query(
-          command, rs::util::make_deadline(std::chrono::seconds(30)));
+          command, rs::util::make_deadline(
+                       timeout_duration(connection_timeout_seconds_)));
       if (result.has_error()) {
         const auto timeout = result.error() ==
             rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
@@ -951,6 +952,25 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
     }
     transaction_isolation_ = static_cast<SQLUINTEGER>(value);
     return SQL_SUCCESS;
+  }
+  if (attribute == SQL_ATTR_CONNECTION_TIMEOUT) {
+    if (value > std::numeric_limits<SQLUINTEGER>::max()) {
+      set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                "Connection timeout is outside the supported range");
+      return SQL_ERROR;
+    }
+    connection_timeout_seconds_ = static_cast<SQLUINTEGER>(value);
+    return SQL_SUCCESS;
+  }
+  if (attribute == SQL_ATTR_PACKET_SIZE) {
+    if (connected_) {
+      set_error(SQLSTATE_ATTRIBUTE_CANNOT_BE_SET,
+                "Packet size cannot be set while connected");
+      return SQL_ERROR;
+    }
+    set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+              "PostgreSQL network packet sizing is not configurable");
+    return SQL_ERROR;
   }
   if (attribute != SQL_ATTR_LOGIN_TIMEOUT) {
     set_error(SQLSTATE_INVALID_ATTRIBUTE,
@@ -980,6 +1000,13 @@ SQLRETURN ODBCConnection::get_attribute(SQLINTEGER attribute,
     case SQL_ATTR_LOGIN_TIMEOUT:
       *value = login_timeout_seconds_;
       return SQL_SUCCESS;
+    case SQL_ATTR_CONNECTION_TIMEOUT:
+      *value = connection_timeout_seconds_;
+      return SQL_SUCCESS;
+    case SQL_ATTR_PACKET_SIZE:
+      set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                "PostgreSQL network packet sizing is not configurable");
+      return SQL_ERROR;
     case SQL_ATTR_ACCESS_MODE:
       *value = SQL_MODE_READ_WRITE;
       return SQL_SUCCESS;
@@ -1062,7 +1089,8 @@ SQLRETURN ODBCConnection::end_transaction(SQLSMALLINT completion_type) {
 
   const auto command = completion_type == SQL_COMMIT ? "COMMIT" : "ROLLBACK";
   auto result = db_conn_->execute_query(
-      command, rs::util::make_deadline(std::chrono::seconds(30)));
+      command, rs::util::make_deadline(
+                   timeout_duration(connection_timeout_seconds_)));
   if (result.has_error()) {
     const auto timeout = result.error() ==
         rs::util::make_error_code(rs::util::DbErrorCode::Timeout);

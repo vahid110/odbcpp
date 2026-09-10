@@ -37,8 +37,8 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLConnect` | A/W | Partial | unit failure, integration, DM | Reconnect is rejected with 08002; complete input/state matrix remains |
 | `SQLDriverConnect` | A/W | Partial | unit, DM | Completion modes, exact output-string rules, connected-state handling |
 | `SQLDisconnect` | A | Partial | unit, integration, DM | Disconnected, active-transaction, and child-invalidation paths covered; async execution remains |
-| `SQLSetConnectAttr` | A/W | Partial | unit, integration | Common defaults, catalog selection, invalid values, and unsupported modes covered; connection timeout and packet size remain |
-| `SQLGetConnectAttr` | A/W | Partial | unit, integration | Common numeric values, current catalog buffers, read-only attributes, and connected-state checks covered; broken-link detection remains |
+| `SQLSetConnectAttr` | A/W | Partial | unit, integration | Common defaults, catalog selection, connection timeout, invalid values, and unsupported modes covered; remaining platform/DM-owned attributes need classification |
+| `SQLGetConnectAttr` | A/W | Partial | unit, integration | Common numeric values, connection timeout, current catalog buffers, read-only attributes, and connected-state checks covered; broken-link detection remains |
 | `SQLEndTran` | A | Partial | unit, integration | Environment-wide completion and multi-connection behavior |
 | `SQLExecDirect` | A/W | Partial | unit failure, integration, DM | Open cursors are protected and direct execution replaces prepared SQL; cancellation remains |
 | `SQLPrepare` | A/W | Partial | integration, DM | Open cursors are protected, old result state is retired, and PostgreSQL errors can surface through pre-execution result metadata discovery; eager prepare-time validation remains |
@@ -97,14 +97,16 @@ which should be rejected.
 
 ### Connection
 
-Implemented: `SQL_ATTR_LOGIN_TIMEOUT`, `SQL_ATTR_AUTOCOMMIT`,
+Implemented: `SQL_ATTR_LOGIN_TIMEOUT`, `SQL_ATTR_CONNECTION_TIMEOUT`,
+`SQL_ATTR_AUTOCOMMIT`,
 `SQL_ATTR_TXN_ISOLATION`, pre-connect `SQL_ATTR_CURRENT_CATALOG`, read/write
 access-mode default, ODBC async-off default, metadata-ID false default,
 automatic-IPD false reporting, open-connection `SQL_ATTR_CONNECTION_DEAD`
 reporting, and iODBC application `SQLWCHAR` negotiation. Unsupported read-only,
 async-on, and metadata-ID true modes are rejected rather than silently ignored.
 
-Not yet implemented or fully classified: connection timeout, packet size,
+PostgreSQL packet sizing is explicitly rejected as unsupported before connect
+and as too late while connected. Not yet implemented or fully classified:
 actual broken-link detection for connection-dead status, genuine asynchronous
 ODBC function execution, metadata identifier semantics, and platform/Driver
 Manager-owned tracing or cursor-library attributes.
@@ -167,7 +169,7 @@ substitute for ODBC diagnostics.
 ## Maintainability snapshot
 
 - `odbc_api.cpp` is 2,688 lines and contains all 76 exported wrappers;
-  `odbc_handles.cpp` is 3,803 lines and combines connection, statement,
+  `odbc_handles.cpp` is 3,831 lines and combines connection, statement,
   descriptor, conversion, metadata, and registry responsibilities.
 - The callback/future methods in `AsyncDatabaseConnection` are experimental
   scaffolding, are not used by the ODBC driver's production connection path,
@@ -336,6 +338,11 @@ substitute for ODBC diagnostics.
   truncation, atomic multi-field updates, and IRD rejection. Driver Manager
   coverage exercises both multi-field APIs and records iODBC's negotiated
   two-byte-driver/four-byte-application name-buffer translation.
+- Audit batch 37 implements the connection-wide request timeout with the ODBC
+  default of no deadline and applies it to connection-level server requests.
+  PostgreSQL packet sizing is explicitly classified as unsupported before
+  connection and as immutable after connection, with output preservation and
+  ANSI/wide entry-point coverage.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
