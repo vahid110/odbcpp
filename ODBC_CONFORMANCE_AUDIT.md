@@ -667,9 +667,18 @@ substitute for ODBC diagnostics.
   the implementation parameter descriptor now report length for nested
   `varchar(13)` and precision/scale for `numeric(8,3)`. The real PostgreSQL
   test covers duplicate parameter OIDs in one statement and both descriptor
-  fields. This does not infer typmods for ordinary non-domain parameters,
+  fields. It also confirms that PostgreSQL's prepared result metadata already
+  supplies the same modifiers to `SQLDescribeCol` without another lookup.
+  This does not infer typmods for ordinary non-domain parameters,
   which PostgreSQL's `ParameterDescription` does not provide, nor does it
   expose domain constraints or names through the parameter descriptor.
+- Audit batch 83 carries the effective typmod through the recursive
+  PostgreSQL catalog type join used by `SQLColumns`. Nested `varchar(13)` and
+  `numeric(8,3)` domains now report the same data type, column and transfer
+  size, scale, radix, and character octet length as plain columns. A real
+  PostgreSQL test compares all six fields, including `SQLColumnsW` parity for
+  the character domain. Routine argument and special-column typmod coverage
+  remains separate work.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

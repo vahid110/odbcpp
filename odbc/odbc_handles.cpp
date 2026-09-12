@@ -713,12 +713,15 @@ std::string catalog_type_name_sql(const std::string& type_oid) {
 
 std::string catalog_base_type_join_sql(const std::string& type_oid) {
   return " CROSS JOIN LATERAL (WITH RECURSIVE domain_chain AS ("
-      "SELECT oid, typbasetype FROM pg_catalog.pg_type WHERE oid = " +
+      "SELECT oid, typbasetype, typtypmod AS type_modifier "
+      "FROM pg_catalog.pg_type WHERE oid = " +
       type_oid +
-      " UNION ALL SELECT base.oid, base.typbasetype "
+      " UNION ALL SELECT base.oid, base.typbasetype, "
+      "CASE WHEN chain.type_modifier >= 0 THEN chain.type_modifier "
+      "ELSE base.typtypmod END "
       "FROM domain_chain AS chain JOIN pg_catalog.pg_type AS base "
       "ON base.oid = chain.typbasetype) "
-      "SELECT oid FROM domain_chain WHERE typbasetype = 0) "
+      "SELECT oid, type_modifier FROM domain_chain WHERE typbasetype = 0) "
       "AS resolved_type";
 }
 
@@ -3458,6 +3461,25 @@ SQLRETURN ODBCStatement::columns(
     const std::optional<std::string>& schema_name,
     const std::optional<std::string>& table_name,
     const std::optional<std::string>& column_name) {
+  const std::string character_length =
+      "CASE WHEN resolved_type.type_modifier >= 4 THEN "
+      "resolved_type.type_modifier - 4 ELSE character_maximum_length END";
+  const std::string character_octet_length =
+      "CASE WHEN resolved_type.type_modifier >= 4 THEN "
+      "(resolved_type.type_modifier - 4) * "
+      "pg_catalog.pg_encoding_max_length(pg_catalog.pg_char_to_encoding("
+      "current_setting('server_encoding'))) "
+      "ELSE character_octet_length END";
+  const std::string numeric_precision =
+      "CASE WHEN resolved_type.type_modifier >= 4 THEN "
+      "((resolved_type.type_modifier - 4) >> 16) & 65535 "
+      "ELSE numeric_precision END";
+  const std::string numeric_scale =
+      "CASE WHEN resolved_type.type_modifier >= 4 THEN "
+      "CASE WHEN ((resolved_type.type_modifier - 4) & 65535) >= 32768 "
+      "THEN ((resolved_type.type_modifier - 4) & 65535) - 65536 "
+      "ELSE (resolved_type.type_modifier - 4) & 65535 END "
+      "ELSE numeric_scale END";
   std::string query =
       "SELECT table_cat, table_schem, table_name, column_name, data_type, "
       "type_name, column_size, buffer_length, decimal_digits, "
@@ -3473,7 +3495,10 @@ SQLRETURN ODBCStatement::columns(
       "WHEN 16 THEN 1 WHEN 17 THEN 1073741824 WHEN 18 THEN 1 "
       "WHEN 20 THEN 19 WHEN 21 THEN 5 WHEN 23 THEN 10 "
       "WHEN 25 THEN 1073741824 WHEN 700 THEN 7 WHEN 701 THEN 15 "
-      "WHEN 1082 THEN 10 WHEN 2950 THEN 36 ELSE CASE data_type "
+      "WHEN 1042 THEN " + character_length +
+      " WHEN 1043 THEN " + character_length +
+      " WHEN 1700 THEN " + numeric_precision +
+      " WHEN 1082 THEN 10 WHEN 2950 THEN 36 ELSE CASE data_type "
       "WHEN 'boolean' THEN 1 WHEN 'smallint' THEN 5 "
       "WHEN 'integer' THEN 10 WHEN 'bigint' THEN 19 "
       "WHEN 'real' THEN 7 WHEN 'double precision' THEN 15 "
@@ -3500,6 +3525,9 @@ SQLRETURN ODBCStatement::columns(
       "WHEN 16 THEN 1 WHEN 17 THEN 1073741824 WHEN 18 THEN 1 "
       "WHEN 20 THEN 8 WHEN 21 THEN 2 WHEN 23 THEN 4 "
       "WHEN 25 THEN 1073741824 WHEN 700 THEN 4 WHEN 701 THEN 8 "
+      "WHEN 1042 THEN " + character_octet_length +
+      " WHEN 1043 THEN " + character_octet_length +
+      " WHEN 1700 THEN (" + numeric_precision + ") + 2 "
       "WHEN 1082 THEN 6 WHEN 2950 THEN 36 ELSE CASE data_type "
       "WHEN 'boolean' THEN 1 WHEN 'smallint' THEN 2 "
       "WHEN 'integer' THEN 4 WHEN 'bigint' THEN 8 "
@@ -3516,13 +3544,15 @@ SQLRETURN ODBCStatement::columns(
       "WHEN 'timestamp with time zone' THEN 16 ELSE NULL END "
       "END::integer "
       "AS buffer_length, "
-      "CASE WHEN data_type IN ('numeric', 'decimal') THEN numeric_scale "
+      "CASE WHEN resolved_type.oid = 1700 THEN " + numeric_scale +
+      " WHEN data_type IN ('numeric', 'decimal') THEN numeric_scale "
       "WHEN data_type IN ('time without time zone', 'time with time zone', "
       "'timestamp without time zone', 'timestamp with time zone') "
       "THEN datetime_precision WHEN resolved_type.oid IN (20, 21, 23) "
       "THEN 0 ELSE NULL END::smallint AS decimal_digits, "
       "CASE WHEN resolved_type.oid IN (20, 21, 23) THEN 10 "
       "WHEN resolved_type.oid IN (700, 701) THEN 2 "
+      "WHEN resolved_type.oid = 1700 THEN 10 "
       "WHEN data_type IN ('real', "
       "'double precision', 'numeric', 'decimal') THEN numeric_precision_radix "
       "ELSE NULL END::smallint AS num_prec_radix, "
@@ -3538,6 +3568,9 @@ SQLRETURN ODBCStatement::columns(
       "AS sql_datetime_sub, "
       "CASE WHEN resolved_type.oid = 2950 THEN 36 "
       "WHEN resolved_type.oid IN (17, 25) THEN 1073741824 "
+      "WHEN resolved_type.oid IN (1042, 1043) THEN " +
+      character_octet_length +
+      " "
       "WHEN data_type IN ('character', 'character varying') "
       "THEN character_octet_length WHEN data_type = 'bytea' "
       "THEN 1073741824 ELSE NULL END::integer AS char_octet_length, "

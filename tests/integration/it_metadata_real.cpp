@@ -1758,7 +1758,8 @@ TEST_F(MetadataIntegrationTest, NestedDomainParameterMetadataKeepsTypmods) {
                   "?::pg_temp.odbcpp_scale_domain",
         SQL_NTS));
 
-    for (SQLUSMALLINT parameter : {1, 2, 3}) {
+    for (SQLUSMALLINT parameter :
+         std::array<SQLUSMALLINT, 3>{1, 2, 3}) {
         SQLSMALLINT data_type = 0;
         SQLULEN size = 0;
         SQLSMALLINT scale = -1;
@@ -1790,6 +1791,89 @@ TEST_F(MetadataIntegrationTest, NestedDomainParameterMetadataKeepsTypmods) {
         implementation, 3, SQL_DESC_SCALE, &scale, 0, nullptr));
     EXPECT_EQ(8, precision);
     EXPECT_EQ(3, scale);
+
+    SQLSMALLINT result_type = 0;
+    SQLULEN result_size = 0;
+    SQLSMALLINT result_scale = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+        hstmt, 1, nullptr, 0, nullptr, &result_type, &result_size,
+        &result_scale, nullptr));
+    EXPECT_EQ(SQL_VARCHAR, result_type);
+    EXPECT_EQ(13u, result_size);
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+        hstmt, 3, nullptr, 0, nullptr, &result_type, &result_size,
+        &result_scale, nullptr));
+    EXPECT_EQ(SQL_NUMERIC, result_type);
+    EXPECT_EQ(8u, result_size);
+    EXPECT_EQ(3, result_scale);
+}
+
+TEST_F(MetadataIntegrationTest, NestedDomainCatalogDimensionsMatchBaseColumns) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_catalog_length "
+                  "AS varchar(13)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_catalog_nested_length "
+                  "AS pg_temp.odbcpp_catalog_length",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_catalog_scale "
+                  "AS numeric(8,3)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_catalog_nested_scale "
+                  "AS pg_temp.odbcpp_catalog_scale",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_catalog_domain_dimensions("
+                  "base_v varchar(13), nested_v "
+                  "pg_temp.odbcpp_catalog_nested_length, "
+                  "base_n numeric(8,3), domain_n "
+                  "pg_temp.odbcpp_catalog_nested_scale)",
+        SQL_NTS));
+
+    SQLCHAR table_name[] = "odbcpp_catalog_domain_dimensions";
+    ASSERT_EQ(SQL_SUCCESS, SQLColumns(
+        hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS,
+        nullptr, 0));
+    constexpr std::array<SQLUSMALLINT, 6> fields{5, 7, 8, 9, 10, 16};
+    std::array<std::optional<SQLINTEGER>, fields.size()> base{};
+    std::array<std::optional<SQLINTEGER>, fields.size()> nested_character{};
+    for (int pair = 0; pair < 2; ++pair) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        for (std::size_t index = 0; index < fields.size(); ++index) {
+            base[index] = integer_cell(hstmt, fields[index]);
+        }
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        for (std::size_t index = 0; index < fields.size(); ++index) {
+            const auto nested = integer_cell(hstmt, fields[index]);
+            EXPECT_EQ(base[index], nested)
+                << "pair=" << pair << " field=" << fields[index];
+            if (pair == 0) nested_character[index] = nested;
+        }
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    auto wide_table = rs::odbc::utf8_to_wide("odbcpp_catalog_domain_dimensions");
+    auto wide_column = rs::odbc::utf8_to_wide("nested_v");
+    ASSERT_TRUE(wide_table.has_value());
+    ASSERT_TRUE(wide_column.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLColumnsW(
+        hstmt, nullptr, 0, nullptr, 0,
+        wide_table->data(), static_cast<SQLSMALLINT>(wide_table->size()),
+        wide_column->data(), static_cast<SQLSMALLINT>(wide_column->size())));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    for (std::size_t index = 0; index < fields.size(); ++index) {
+        EXPECT_EQ(nested_character[index], integer_cell(hstmt, fields[index]));
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
 TEST_F(MetadataIntegrationTest, TemporalMetadataUsesDeclaredPrecision) {
