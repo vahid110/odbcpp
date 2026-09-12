@@ -332,8 +332,8 @@ OdbcTypeInfo postgres_type_info(std::uint32_t oid, std::int16_t type_size,
     case 1114:
     case 1184: return {SQL_TYPE_TIMESTAMP, 29,
                        static_cast<SQLSMALLINT>(type_modifier >= 0 ? type_modifier : 6)};
+    case 2950: return {SQL_VARCHAR, 36, 0};
     case 114:
-    case 2950:
     case 3802: return {SQL_VARCHAR, 0, 0};
     case 1700: {
       if (type_modifier < 4) return {SQL_NUMERIC, 0, 0};
@@ -3357,7 +3357,7 @@ SQLRETURN ODBCStatement::columns(
       catalog_data_type_sql("types.oid") + " AS data_type, "
       "COALESCE(columns.domain_name, " +
       catalog_type_name_sql("types.oid") + ")::text AS type_name, "
-      "CASE data_type "
+      "CASE WHEN types.oid = 2950 THEN 36 ELSE CASE data_type "
       "WHEN 'boolean' THEN 1 WHEN 'smallint' THEN 5 "
       "WHEN 'integer' THEN 10 WHEN 'bigint' THEN 19 "
       "WHEN 'real' THEN 7 WHEN 'double precision' THEN 15 "
@@ -3371,8 +3371,8 @@ SQLRETURN ODBCStatement::columns(
       "WHEN 'time with time zone' THEN 21 "
       "WHEN 'timestamp without time zone' THEN 29 "
       "WHEN 'timestamp with time zone' THEN 35 "
-      "ELSE character_maximum_length END::integer AS column_size, "
-      "CASE data_type "
+      "ELSE character_maximum_length END END::integer AS column_size, "
+      "CASE WHEN types.oid = 2950 THEN 36 ELSE CASE data_type "
       "WHEN 'boolean' THEN 1 WHEN 'smallint' THEN 2 "
       "WHEN 'integer' THEN 4 WHEN 'bigint' THEN 8 "
       "WHEN 'real' THEN 4 WHEN 'double precision' THEN 8 "
@@ -3385,7 +3385,8 @@ SQLRETURN ODBCStatement::columns(
       "WHEN 'time without time zone' THEN 15 "
       "WHEN 'time with time zone' THEN 21 "
       "WHEN 'timestamp without time zone' THEN 29 "
-      "WHEN 'timestamp with time zone' THEN 35 ELSE NULL END::integer "
+      "WHEN 'timestamp with time zone' THEN 35 ELSE NULL END "
+      "END::integer "
       "AS buffer_length, "
       "CASE WHEN data_type IN ('numeric', 'decimal') THEN numeric_scale "
       "WHEN data_type IN ('time without time zone', 'time with time zone', "
@@ -3406,7 +3407,8 @@ SQLRETURN ODBCStatement::columns(
       "WHEN 'timestamp without time zone' THEN 3 "
       "WHEN 'timestamp with time zone' THEN 3 ELSE NULL END::smallint "
       "AS sql_datetime_sub, "
-      "CASE WHEN data_type = 'text' THEN 1073741824 "
+      "CASE WHEN types.oid = 2950 THEN 36 "
+      "WHEN data_type = 'text' THEN 1073741824 "
       "WHEN data_type IN ('character', 'character varying') "
       "THEN character_octet_length WHEN data_type = 'bytea' "
       "THEN 1073741824 ELSE NULL END::integer AS char_octet_length, "
@@ -3693,14 +3695,15 @@ SQLRETURN ODBCStatement::procedure_columns(
       "columns.procedure_name, columns.column_name, columns.column_type, " +
       catalog_data_type_sql(base_type_oid) + " AS data_type, " +
       catalog_type_name_sql("types.oid") + " AS type_name, "
-      "CASE " + base_type_oid + " WHEN 16 THEN 1 WHEN 17 THEN 1073741824 "
+      "CASE " + base_type_oid +
+      " WHEN 2950 THEN 36 WHEN 16 THEN 1 WHEN 17 THEN 1073741824 "
       "WHEN 18 THEN 1 WHEN 20 THEN 19 WHEN 21 THEN 5 WHEN 23 THEN 10 "
       "WHEN 25 THEN 1073741824 WHEN 700 THEN 7 WHEN 701 THEN 15 "
       "WHEN 1042 THEN 0 WHEN 1043 THEN 0 WHEN 1082 THEN 10 "
       "WHEN 1083 THEN 15 WHEN 1266 THEN 21 WHEN 1114 THEN 29 "
       "WHEN 1184 THEN 35 WHEN 1700 THEN 0 ELSE 0 END::integer "
       "AS column_size, CASE " + base_type_oid +
-      " WHEN 16 THEN 1 WHEN 17 THEN 1073741824 "
+      " WHEN 2950 THEN 36 WHEN 16 THEN 1 WHEN 17 THEN 1073741824 "
       "WHEN 18 THEN 1 WHEN 20 THEN 8 WHEN 21 THEN 2 WHEN 23 THEN 4 "
       "WHEN 25 THEN 1073741824 WHEN 700 THEN 4 WHEN 701 THEN 8 "
       "WHEN 1042 THEN 0 WHEN 1043 THEN 0 WHEN 1082 THEN 10 "
@@ -3723,7 +3726,7 @@ SQLRETURN ODBCStatement::procedure_columns(
       " WHEN 1082 THEN 1 WHEN 1083 THEN 2 WHEN 1266 THEN 2 "
       "WHEN 1114 THEN 3 WHEN 1184 THEN 3 ELSE NULL END::smallint "
       "AS sql_datetime_sub, CASE " + base_type_oid +
-      " WHEN 17 THEN 1073741824 "
+      " WHEN 2950 THEN 36 WHEN 17 THEN 1073741824 "
       "WHEN 18 THEN 1 WHEN 25 THEN 1073741824 WHEN 1042 THEN 0 "
       "WHEN 1043 THEN 0 ELSE NULL END::integer AS char_octet_length, "
       "columns.ordinal_position, ''::text AS is_nullable "
@@ -3825,7 +3828,8 @@ SQLRETURN ODBCStatement::special_columns(
       catalog_data_type_sql("types.oid") + " AS data_type, "
       "COALESCE(columns.domain_name, " +
       catalog_type_name_sql("types.oid") + ")::text AS type_name, "
-      "CASE columns.data_type WHEN 'boolean' THEN 1 WHEN 'smallint' THEN 5 "
+      "CASE WHEN types.oid = 2950 THEN 36 ELSE CASE columns.data_type "
+      "WHEN 'boolean' THEN 1 WHEN 'smallint' THEN 5 "
       "WHEN 'integer' THEN 10 WHEN 'bigint' THEN 19 WHEN 'real' THEN 7 "
       "WHEN 'double precision' THEN 15 "
       "WHEN 'numeric' THEN columns.numeric_precision "
@@ -3836,8 +3840,9 @@ SQLRETURN ODBCStatement::special_columns(
       "WHEN 'date' THEN 10 WHEN 'time without time zone' THEN 15 "
       "WHEN 'time with time zone' THEN 21 "
       "WHEN 'timestamp without time zone' THEN 29 "
-      "WHEN 'timestamp with time zone' THEN 35 ELSE 0 END::integer "
-      "AS column_size, CASE columns.data_type "
+      "WHEN 'timestamp with time zone' THEN 35 ELSE 0 END "
+      "END::integer AS column_size, "
+      "CASE WHEN types.oid = 2950 THEN 36 ELSE CASE columns.data_type "
       "WHEN 'boolean' THEN 1 WHEN 'smallint' THEN 2 WHEN 'integer' THEN 4 "
       "WHEN 'bigint' THEN 8 WHEN 'real' THEN 4 "
       "WHEN 'double precision' THEN 8 "
@@ -3849,7 +3854,8 @@ SQLRETURN ODBCStatement::special_columns(
       "WHEN 'date' THEN 10 WHEN 'time without time zone' THEN 15 "
       "WHEN 'time with time zone' THEN 21 "
       "WHEN 'timestamp without time zone' THEN 29 "
-      "WHEN 'timestamp with time zone' THEN 35 ELSE 0 END::integer "
+      "WHEN 'timestamp with time zone' THEN 35 ELSE 0 END "
+      "END::integer "
       "AS buffer_length, CASE WHEN columns.data_type IN "
       "('numeric', 'decimal') THEN columns.numeric_scale "
       "WHEN columns.data_type IN ('smallint', 'integer', 'bigint') THEN 0 "

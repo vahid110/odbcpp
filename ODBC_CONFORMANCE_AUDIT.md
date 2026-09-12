@@ -615,6 +615,12 @@ substitute for ODBC diagnostics.
   PostgreSQL tests cover the three catalog paths, numeric precision/scale,
   domain sizes, and ANSI/wide parity. Variable-length size/precision details
   and nested-domain handling remain explicit follow-ups.
+- Audit batch 77 reports UUID's canonical 36-character PostgreSQL text form
+  consistently as `SQL_VARCHAR` metadata. `SQLDescribeCol` now reports a
+  column size of 36, and `SQLColumns`, `SQLProcedureColumns`, and
+  `SQLSpecialColumns` report 36 for their corresponding character size and
+  buffer-length fields. A real PostgreSQL test checks all four paths. Other
+  variable-length and nested-domain metadata remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

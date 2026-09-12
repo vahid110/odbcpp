@@ -1482,7 +1482,11 @@ TEST_F(MetadataIntegrationTest, CatalogTypeNamesPreservePostgreSQLTypes) {
                   text_cell(hstmt, 6));
         EXPECT_EQ(std::optional<SQLINTEGER>(expected.type),
                   integer_cell(hstmt, 14));
-        if (std::strcmp(expected.name, "domain_key") == 0) {
+        if (std::strcmp(expected.name, "uuid_key") == 0) {
+            EXPECT_EQ(std::optional<SQLINTEGER>(36), integer_cell(hstmt, 7));
+            EXPECT_EQ(std::optional<SQLINTEGER>(36), integer_cell(hstmt, 8));
+            EXPECT_EQ(std::optional<SQLINTEGER>(36), integer_cell(hstmt, 16));
+        } else if (std::strcmp(expected.name, "domain_key") == 0) {
             EXPECT_EQ(std::optional<SQLINTEGER>(10), integer_cell(hstmt, 7));
             EXPECT_EQ(std::optional<SQLINTEGER>(4), integer_cell(hstmt, 8));
         } else if (std::strcmp(expected.name, "numeric_key") == 0) {
@@ -1518,6 +1522,8 @@ TEST_F(MetadataIntegrationTest, CatalogTypeNamesPreservePostgreSQLTypes) {
     EXPECT_EQ(std::optional<std::string>("uuid_key"), text_cell(hstmt, 2));
     EXPECT_EQ(std::optional<SQLINTEGER>(SQL_VARCHAR), integer_cell(hstmt, 3));
     EXPECT_EQ(std::optional<std::string>("uuid"), text_cell(hstmt, 4));
+    EXPECT_EQ(std::optional<SQLINTEGER>(36), integer_cell(hstmt, 5));
+    EXPECT_EQ(std::optional<SQLINTEGER>(36), integer_cell(hstmt, 6));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     EXPECT_EQ(std::optional<std::string>("domain_key"), text_cell(hstmt, 2));
     EXPECT_EQ(std::optional<SQLINTEGER>(SQL_INTEGER), integer_cell(hstmt, 3));
@@ -1557,7 +1563,11 @@ TEST_F(MetadataIntegrationTest, CatalogTypeNamesPreservePostgreSQLTypes) {
         ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
         EXPECT_EQ(std::optional<SQLINTEGER>(expected_routine_types[i]),
                   integer_cell(hstmt, 6));
-        if (i == 1) {
+        if (i == 0) {
+            EXPECT_EQ(std::optional<SQLINTEGER>(36), integer_cell(hstmt, 8));
+            EXPECT_EQ(std::optional<SQLINTEGER>(36), integer_cell(hstmt, 9));
+            EXPECT_EQ(std::optional<SQLINTEGER>(36), integer_cell(hstmt, 17));
+        } else if (i == 1) {
             const auto type_name = text_cell(hstmt, 7);
             ASSERT_TRUE(type_name.has_value());
             EXPECT_NE(std::string::npos,
@@ -1569,6 +1579,18 @@ TEST_F(MetadataIntegrationTest, CatalogTypeNamesPreservePostgreSQLTypes) {
         }
     }
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT uuid_key FROM odbcpp_catalog_type_test",
+        SQL_NTS));
+    SQLSMALLINT result_type = 0;
+    SQLULEN result_size = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+        hstmt, 1, nullptr, 0, nullptr, &result_type, &result_size,
+        nullptr, nullptr));
+    EXPECT_EQ(SQL_VARCHAR, result_type);
+    EXPECT_EQ(36u, result_size);
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
     auto wide_procedure = rs::odbc::utf8_to_wide(
