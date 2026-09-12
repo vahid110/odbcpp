@@ -635,6 +635,13 @@ substitute for ODBC diagnostics.
   See the ODBC [column-size](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/column-size)
   and [transfer-length](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/transfer-octet-length)
   rules and PostgreSQL's [information-schema precision](https://www.postgresql.org/docs/current/infoschema-columns.html).
+- Audit batch 79 makes the iODBC Driver Manager descriptor test account for
+  both Unicode ABI paths: direct four-byte `SQLWCHAR` calls report the name
+  length in characters, while iODBC's two-byte-driver to four-byte-application
+  conversion reports it in bytes. Both paths still verify the full wide name,
+  terminator, and type. This is a test expectation for observed manager
+  behavior, not a claim that the mixed-width byte count follows ODBC's
+  [character-count contract](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlgetdescrec-function).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

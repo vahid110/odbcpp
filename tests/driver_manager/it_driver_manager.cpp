@@ -391,12 +391,24 @@ int main() {
 #ifdef ODBCPP_TEST_IODBC
   const auto wide_descriptor_buffer_length =
       static_cast<SQLSMALLINT>(sizeof(wide_column_name));
+#ifdef ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE
+  // iODBC reports characters when forwarding a same-width call, but bytes
+  // when its wide-character bridge converts between driver and app widths.
+  const auto iodbc_converts_width =
+      sizeof(SQLWCHAR) != ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE;
+  constexpr bool driver_width_unknown = false;
+#else
+  const auto iodbc_converts_width = true;
+  constexpr bool driver_width_unknown = true;
+#endif
   const auto expected_wide_descriptor_length =
-      static_cast<SQLSMALLINT>(8 * sizeof(SQLWCHAR));
+      static_cast<SQLSMALLINT>(iodbc_converts_width
+          ? 8 * sizeof(SQLWCHAR) : 8);
 #else
   const auto wide_descriptor_buffer_length =
       static_cast<SQLSMALLINT>(std::size(wide_column_name));
   constexpr SQLSMALLINT expected_wide_descriptor_length = 8;
+  constexpr bool driver_width_unknown = false;
 #endif
   if (!succeeded(SQLGetStmtAttr(
           statement, SQL_ATTR_IMP_ROW_DESC, &result_descriptor, 0,
@@ -406,7 +418,8 @@ int main() {
           wide_descriptor_buffer_length,
           &wide_column_name_length, &descriptor_type, nullptr, nullptr,
           nullptr, nullptr, nullptr)) ||
-      wide_column_name_length != expected_wide_descriptor_length ||
+      (wide_column_name_length != expected_wide_descriptor_length &&
+       !(driver_width_unknown && wide_column_name_length == 8)) ||
       wide_column_name[0] != static_cast<SQLWCHAR>('?') ||
       wide_column_name[7] != static_cast<SQLWCHAR>('?') ||
       wide_column_name[8] != 0 ||
