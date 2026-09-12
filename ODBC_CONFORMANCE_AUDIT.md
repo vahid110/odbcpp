@@ -55,8 +55,8 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLDescribeCol` | A/W | Partial | unit, integration | Prepared/executed/closed and no-result states, untouched error outputs, and ANSI/wide names are covered; bookmark column and communication/cancellation failures remain |
 | `SQLColAttribute` | A/W | Partial | unit, integration | Prepared-state discovery, count/name/label/core numeric fields, destination isolation, exact field diagnostics, and wide byte lengths are covered; remaining descriptor fields need values or explicit negative tests |
 | `SQLDescribeParam` | A | Partial | unit, integration | Prepared/executed/exhausted/closed/direct states, exact diagnostics, fixed-size PostgreSQL types, bound precision/scale, cache revision, and untouched errors are covered; unknown variable precision and failure injection remain |
-| `SQLSetStmtAttr` | A/W | Partial | unit, integration | Scalar modes, descriptor attachment, and descriptor-driven execution work; arrays, offsets, and operations remain |
-| `SQLGetStmtAttr` | A/W | Partial | unit, integration | Common defaults, descriptor handles, and status pointers covered; row number and remaining attributes need classification |
+| `SQLSetStmtAttr` | A/W | Partial | unit, integration | Common scalar modes, descriptor attachment, offset/operation pointers, and precise value diagnostics work; multirow arrays and optional cursor modes remain |
+| `SQLGetStmtAttr` | A/W | Partial | unit, integration | Common defaults, descriptor handles/pointers, row positioning, and recognized unsupported attributes are covered; platform-specific ODBC 3.8 fields remain |
 | `SQLCloseCursor` | A | Partial | unit, integration, DM | Missing/open cursor and pending-result discard are covered; complete statement-state matrix remains |
 | `SQLFreeStmt` | A | Partial | unit, integration, DM | SQL_CLOSE pending-result discard and basic options are covered; complete option/state matrix remains |
 | `SQLGetTypeInfo` | A/W | Partial | integration, DM | All supported types, type filters, wide entry test |
@@ -74,8 +74,8 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLGetInfo` | A/W | Partial | unit, integration, DM | Conservative capability matrix is guarded; complete remaining required information types |
 | `SQLGetFunctions` | A | Verified | shared-library export audit, unit, DM | Exact single-function, ODBC 2 array, and ODBC 3 bitmap behavior is enforced against all advertised exports |
 | `SQLNativeSql` | A/W | Partial | unit, DM | ODBC escape translation; currently effectively pass-through |
-| `SQLSetEnvAttr` | A | Partial | unit, integration, DM | ODBC version is locked after DBC allocation; supported attribute matrix remains |
-| `SQLGetEnvAttr` | A | Partial | unit, DM | Supported attribute matrix and buffer/type rules |
+| `SQLSetEnvAttr` | A | Partial | unit, integration, DM | ODBC version and null-terminated output are classified and locked after DBC allocation; Driver Manager pooling attributes remain |
+| `SQLGetEnvAttr` | A | Partial | unit, DM | ODBC version, null-terminated output, iODBC negotiation, and output validation are covered; Driver Manager pooling attributes remain |
 | `SQLGetDescField` | A/W | Partial | unit, integration, DM | Standard header/record fields, PostgreSQL type characteristics, wide byte lengths, and truncation work; statement association and origin-name enrichment remain |
 | `SQLGetDescRec` | A/W | Partial | unit, integration, DM | Core fields, datetime subtype, null outputs, record bounds, truncation, and mixed-width iODBC translation are covered; full associated-statement state matrix remains |
 | `SQLSetDescField` | A/W | Partial | unit | Header/record mutability, descriptor-kind restrictions, type consistency, unbinding, and pointer fields are covered; bookmarks and complete type-derived defaults remain |
@@ -90,7 +90,8 @@ historical “complete” labels without discarding working behavior.
 
 ### Environment
 
-Implemented: `SQL_ATTR_ODBC_VERSION` and iODBC driver Unicode negotiation.
+Implemented: `SQL_ATTR_ODBC_VERSION`, mandatory null-terminated output through
+`SQL_ATTR_OUTPUT_NTS`, and iODBC driver Unicode negotiation.
 Connection pooling remains a Driver Manager responsibility, but the audit must
 verify which environment attributes are expected at the driver boundary and
 which should be rejected.
@@ -116,11 +117,12 @@ Manager-owned tracing or cursor-library attributes.
 Stored: query timeout and maximum rows. Row/parameter array sizes, bind types,
 status pointers, and processed-count pointers share their descriptor header
 state rather than maintaining duplicate statement-only values.
-Default-only behavior is reported for forward-only cursor type, read-only
-concurrency, single-row and single-parameter arrays, column-wise binding,
-retrieve-data on, bookmarks off, metadata-ID false, and ODBC async off. Fetch
-and prepared execution update status outputs on success, truncation, no-row,
-local validation errors, and PostgreSQL errors.
+Default-only behavior is reported for forward-only/non-scrollable cursors,
+unspecified sensitivity, read-only concurrency, single-row and
+single-parameter arrays, column-wise binding, retrieve-data on, bookmarks off,
+automatic IPD off, zero keyset/maximum length, metadata-ID false, and ODBC
+async off. Fetch and prepared execution update status outputs on success,
+truncation, no-row, local validation errors, and PostgreSQL errors.
 
 Explicit APD/ARD handles can be attached, shared within their connection,
 reset to the statement's automatic descriptors, and are automatically detached
@@ -129,12 +131,15 @@ descriptors are rejected with precise diagnostics.
 
 Fetch and prepared execution consume those descriptor headers and reject
 unsupported multirow, bind-offset, row-wise, and operation-array settings.
+Bind-offset and operation pointers round-trip through the active application
+descriptors, and the current row number is available only while the cursor is
+positioned on a fetched row.
 `SQLBindCol` and `SQLBindParameter` populate the associated ARD/APD/IPD records.
 The same records are the source of truth for fetch and prepared execution, so
 applications can bind through the descriptor APIs and parameter bindings
-survive `SQLPrepare`. Arrays larger than one, maximum length, metadata-ID true,
-no-scan behavior, row number, and genuine asynchronous ODBC function completion
-remain.
+survive `SQLPrepare`. Arrays larger than one, nonzero maximum length,
+metadata-ID true, no-scan behavior, and genuine asynchronous ODBC function
+completion remain.
 
 ### Descriptors
 
@@ -378,6 +383,10 @@ substitute for ODBC diagnostics.
   modes. `SQL_ATTR_ROW_NUMBER` now observes the cursor-position rules, and a
   PostgreSQL regression test also proves that fetching past the end invalidates
   the prior row for `SQLGetData`.
+- Audit batch 44 implements the mandatory `SQL_ATTR_OUTPUT_NTS` environment
+  contract: true is the default and accepted value, false is explicitly
+  unsupported, other values are invalid, and changes after DBC allocation are
+  rejected. Unit coverage runs against both unixODBC and iODBC headers.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

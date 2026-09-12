@@ -1576,6 +1576,29 @@ static SQLRETURN SQLSetEnvAttr_impl(SQLHENV environment_handle, SQLINTEGER attri
       env->set_odbc_version(version);
       return SQL_SUCCESS;
     }
+    case SQL_ATTR_OUTPUT_NTS: {
+      if (HandleRegistry::instance().has_children(environment_handle)) {
+        env->set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
+                       "Environment attributes cannot change after a connection is allocated");
+        return SQL_ERROR;
+      }
+      if (!env->has_odbc_version()) {
+        env->set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
+                       "ODBC version must be selected first");
+        return SQL_ERROR;
+      }
+      const auto enabled = static_cast<SQLINTEGER>(
+          reinterpret_cast<std::uintptr_t>(value));
+      if (enabled == SQL_TRUE) return SQL_SUCCESS;
+      if (enabled == SQL_FALSE) {
+        env->set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                       "Non-null-terminated output is not supported");
+      } else {
+        env->set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                       "Invalid output-termination value");
+      }
+      return SQL_ERROR;
+    }
     default:
       env->set_error(SQLSTATE_INVALID_ATTRIBUTE,
                      "Unsupported environment attribute");
@@ -1601,12 +1624,23 @@ static SQLRETURN SQLGetEnvAttr_impl(SQLHENV environment_handle, SQLINTEGER attri
     }
     return SQL_SUCCESS;
   }
-  if (attribute != SQL_ATTR_ODBC_VERSION) {
-    env->set_error(SQLSTATE_INVALID_ATTRIBUTE,
-                   "Unsupported environment attribute");
-    return SQL_ERROR;
+  switch (attribute) {
+    case SQL_ATTR_ODBC_VERSION:
+      *static_cast<SQLINTEGER*>(value) = env->get_odbc_version();
+      break;
+    case SQL_ATTR_OUTPUT_NTS:
+      if (!env->has_odbc_version()) {
+        env->set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
+                       "ODBC version must be selected first");
+        return SQL_ERROR;
+      }
+      *static_cast<SQLINTEGER*>(value) = SQL_TRUE;
+      break;
+    default:
+      env->set_error(SQLSTATE_INVALID_ATTRIBUTE,
+                     "Unsupported environment attribute");
+      return SQL_ERROR;
   }
-  *static_cast<SQLINTEGER*>(value) = env->get_odbc_version();
   if (string_length) {
     *string_length = static_cast<SQLINTEGER>(sizeof(SQLINTEGER));
   }

@@ -127,6 +127,50 @@ TEST(AttributeApisStandaloneTest, RejectsInvalidEnvironmentVersion) {
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
 }
 
+TEST(AttributeApisStandaloneTest, SupportsNullTerminatedEnvironmentOutput) {
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+
+  SQLINTEGER value = 99;
+  EXPECT_EQ(SQL_ERROR, SQLGetEnvAttr(
+      environment, SQL_ATTR_OUTPUT_NTS, &value, sizeof(value), nullptr));
+  SQLCHAR state[6]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+      SQL_HANDLE_ENV, environment, 1, state, nullptr, nullptr, 0, nullptr));
+  EXPECT_STREQ("HY010", reinterpret_cast<const char*>(state));
+
+  ASSERT_EQ(SQL_SUCCESS, SQLSetEnvAttr(
+      environment, SQL_ATTR_ODBC_VERSION,
+      reinterpret_cast<SQLPOINTER>(std::uintptr_t{SQL_OV_ODBC3}), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetEnvAttr(
+      environment, SQL_ATTR_OUTPUT_NTS, &value, sizeof(value), nullptr));
+  EXPECT_EQ(SQL_TRUE, value);
+  EXPECT_EQ(SQL_SUCCESS, SQLSetEnvAttr(
+      environment, SQL_ATTR_OUTPUT_NTS,
+      reinterpret_cast<SQLPOINTER>(std::uintptr_t{SQL_TRUE}), 0));
+  EXPECT_EQ(SQL_ERROR, SQLSetEnvAttr(
+      environment, SQL_ATTR_OUTPUT_NTS,
+      reinterpret_cast<SQLPOINTER>(std::uintptr_t{SQL_FALSE}), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+      SQL_HANDLE_ENV, environment, 1, state, nullptr, nullptr, 0, nullptr));
+  EXPECT_STREQ("HYC00", reinterpret_cast<const char*>(state));
+  EXPECT_EQ(SQL_ERROR, SQLSetEnvAttr(
+      environment, SQL_ATTR_OUTPUT_NTS,
+      reinterpret_cast<SQLPOINTER>(std::uintptr_t{99}), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+      SQL_HANDLE_ENV, environment, 1, state, nullptr, nullptr, 0, nullptr));
+  EXPECT_STREQ("HY024", reinterpret_cast<const char*>(state));
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST_F(AttributeApisTest, RejectsEnvironmentChangesAfterConnectionAllocation) {
+  EXPECT_EQ(SQL_ERROR, SQLSetEnvAttr(
+      environment_, SQL_ATTR_OUTPUT_NTS, integer_value(SQL_TRUE), 0));
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_ENV, environment_));
+}
+
 TEST_F(AttributeApisTest, NegotiatesNativeSqlwcharEncodingWithIodbc) {
   SQLINTEGER driver_encoding = 0;
   SQLINTEGER length = 0;
