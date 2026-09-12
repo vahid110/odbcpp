@@ -2,6 +2,7 @@
 
 #include "odbc/odbc_api.h"
 #include "tests/test_connection_config.h"
+#include "tests/test_driver_exports.h"
 
 #include <array>
 #include <cstring>
@@ -409,6 +410,47 @@ TEST_F(GetInfoIntegrationTest, AdvertisedPostgresqlSyntaxExecutes) {
   execute("SELECT 1 UNION ALL SELECT 2");
   execute("SELECT 'a_b' LIKE 'a\\_b' ESCAPE '\\'");
   execute("SELECT 1 AS id INTO TEMP TABLE odbcpp_get_info_select_into");
+}
+
+TEST_F(GetInfoIntegrationTest, FunctionSupportMatchesDriverExports) {
+  SQLUSMALLINT odbc3[SQL_API_ODBC3_ALL_FUNCTIONS_SIZE]{};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetFunctions(connection_, SQL_API_ODBC3_ALL_FUNCTIONS, odbc3));
+  for (SQLUSMALLINT id = 0; id < 4000; ++id) {
+    EXPECT_EQ(odbcpp::test::expected_support(id),
+              SQL_FUNC_EXISTS(odbc3, id) != 0)
+        << id;
+  }
+
+  SQLUSMALLINT odbc2[100]{};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetFunctions(connection_, SQL_API_ALL_FUNCTIONS, odbc2));
+  for (SQLUSMALLINT id = 0; id < 100; ++id) {
+    EXPECT_EQ(odbcpp::test::expected_support(id), odbc2[id] == SQL_TRUE)
+        << id;
+  }
+
+  for (const auto& function : odbcpp::test::advertised_functions) {
+    SQLUSMALLINT supported = SQL_FALSE;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetFunctions(connection_, function.id, &supported))
+        << function.name;
+    EXPECT_EQ(SQL_TRUE, supported) << function.name;
+  }
+
+  SQLUSMALLINT supported = SQL_TRUE;
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLGetFunctions(connection_, SQL_API_SQLBROWSECONNECT,
+                            &supported));
+  EXPECT_EQ(SQL_FALSE, supported);
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetFunctions(connection_, static_cast<SQLUSMALLINT>(0xffff),
+                            &supported));
+  EXPECT_EQ(SQL_FALSE, supported);
+  EXPECT_EQ("HY095", diagnostic_state(connection_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetFunctions(connection_, SQL_API_SQLCONNECT, nullptr));
+  EXPECT_EQ("HY009", diagnostic_state(connection_));
 }
 
 }  // namespace

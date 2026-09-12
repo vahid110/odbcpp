@@ -72,7 +72,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLGetDiagField` | A/W | Partial | unit, integration | All standard header/record identifiers, return provenance, origins, ANSI/wide lengths, and truncation are covered; row/column-specific server errors remain |
 | `SQLError` | A/W | Partial | unit, integration | ODBC 2 sequencing and multi-record consumption |
 | `SQLGetInfo` | A/W | Verified | unit, integration, DM | Every driver-owned standard type is classified; positive PostgreSQL claims execute end to end, and Driver Manager-only mappings are covered separately |
-| `SQLGetFunctions` | A | Verified | shared-library export audit, unit, DM | Exact single-function, ODBC 2 array, and ODBC 3 bitmap behavior is enforced against all advertised exports |
+| `SQLGetFunctions` | A | Verified | shared-library export audit, unit, integration, DM | Connection state, exact single-function results, ODBC 2 array, ODBC 3 bitmap, null output, and invalid identifiers are enforced against all advertised exports |
 | `SQLNativeSql` | A/W | Partial | unit, DM | ODBC escape translation; currently effectively pass-through |
 | `SQLSetEnvAttr` | A | Partial | unit, integration, DM | ODBC version and null-terminated output are classified and locked after DBC allocation; Driver Manager pooling attributes remain |
 | `SQLGetEnvAttr` | A | Partial | unit, DM | ODBC version, null-terminated output, iODBC negotiation, and output validation are covered; Driver Manager pooling attributes remain |
@@ -419,6 +419,12 @@ substitute for ODBC diagnostics.
   invalid types have direct return-code, output-preservation, and SQLSTATE
   assertions. With the header comparison leaving only aliases and
   Driver Manager-owned types, `SQLGetInfo` is promoted to Verified.
+- Audit batch 50 rechecks `SQLGetFunctions` state and diagnostics rather than
+  relying only on its earlier export bitmap. Calls before connection now return
+  HY010 without changing outputs, invalid identifiers return HY095, and null
+  outputs return HY009. The single-function, ODBC 2 array, and ODBC 3 bitmap
+  matrices run on a real PostgreSQL connection and share one export inventory
+  with the dynamic-library test, eliminating the duplicated capability list.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

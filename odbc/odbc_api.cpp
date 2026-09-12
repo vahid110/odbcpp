@@ -414,6 +414,44 @@ namespace {
         return false;
     }
   }
+
+  bool is_known_function(SQLUSMALLINT function_id) {
+    if (is_supported_function(function_id)) return true;
+    switch (function_id) {
+      case SQL_API_SQLALLOCCONNECT:
+      case SQL_API_SQLALLOCENV:
+      case SQL_API_SQLALLOCSTMT:
+      case SQL_API_SQLBINDPARAM:
+      case SQL_API_SQLBROWSECONNECT:
+      case SQL_API_SQLBULKOPERATIONS:
+      case SQL_API_SQLCANCEL:
+#ifdef SQL_API_SQLCANCELHANDLE
+      case SQL_API_SQLCANCELHANDLE:
+#endif
+      case SQL_API_SQLCOLATTRIBUTES:
+      case SQL_API_SQLCOLUMNPRIVILEGES:
+      case SQL_API_SQLDATASOURCES:
+      case SQL_API_SQLDRIVERS:
+      case SQL_API_SQLEXTENDEDFETCH:
+      case SQL_API_SQLFREECONNECT:
+      case SQL_API_SQLFREEENV:
+      case SQL_API_SQLGETCONNECTOPTION:
+      case SQL_API_SQLGETCURSORNAME:
+      case SQL_API_SQLGETSTMTOPTION:
+      case SQL_API_SQLPARAMDATA:
+      case SQL_API_SQLPUTDATA:
+      case SQL_API_SQLSETCONNECTOPTION:
+      case SQL_API_SQLSETCURSORNAME:
+      case SQL_API_SQLSETPARAM:
+      case SQL_API_SQLSETPOS:
+      case SQL_API_SQLSETSTMTOPTION:
+      case SQL_API_SQLTABLEPRIVILEGES:
+      case SQL_API_SQLTRANSACT:
+        return true;
+      default:
+        return false;
+    }
+  }
 }
 
 #ifdef ODBCPP_ENABLE_TEST_HOOKS
@@ -1644,9 +1682,22 @@ static SQLRETURN SQLGetFunctions_impl(SQLHDBC connection_handle, SQLUSMALLINT fu
                           SQLUSMALLINT* supported) {
   auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
+  if (!conn->is_connected()) {
+    conn->set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
+                    "Connection is not open");
+    return SQL_ERROR;
+  }
   if (!supported) {
     conn->set_error(SQLSTATE_INVALID_NULL_POINTER,
                     "Function support output pointer is null");
+    return SQL_ERROR;
+  }
+
+  if (function_id != SQL_API_ODBC3_ALL_FUNCTIONS &&
+      function_id != SQL_API_ALL_FUNCTIONS &&
+      !is_known_function(function_id)) {
+    conn->set_error(SQLSTATE_FUNCTION_TYPE_OUT_OF_RANGE,
+                    "Invalid ODBC function identifier");
     return SQL_ERROR;
   }
 

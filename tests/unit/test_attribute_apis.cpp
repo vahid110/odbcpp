@@ -445,88 +445,16 @@ TEST_F(AttributeApisTest, ReportsInformationStringTruncation) {
   EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
-TEST_F(AttributeApisTest, ReportsImplementedFunctions) {
-  SQLUSMALLINT supported = SQL_FALSE;
-  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
-      connection_, SQL_API_SQLDRIVERCONNECT, &supported));
+TEST_F(AttributeApisTest, GetFunctionsRequiresACompletedConnection) {
+  SQLUSMALLINT supported = SQL_TRUE;
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetFunctions(connection_, SQL_API_SQLCONNECT, &supported));
   EXPECT_EQ(SQL_TRUE, supported);
-  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
-      connection_, SQL_API_SQLMORERESULTS, &supported));
-  EXPECT_EQ(SQL_TRUE, supported);
-  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
-      connection_, SQL_API_SQLFETCHSCROLL, &supported));
-  EXPECT_EQ(SQL_TRUE, supported);
-  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
-      connection_, SQL_API_SQLCOLUMNS, &supported));
-  EXPECT_EQ(SQL_TRUE, supported);
-  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
-      connection_, SQL_API_SQLPRIMARYKEYS, &supported));
-  EXPECT_EQ(SQL_TRUE, supported);
-  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
-      connection_, SQL_API_SQLFOREIGNKEYS, &supported));
-  EXPECT_EQ(SQL_TRUE, supported);
-  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
-      connection_, SQL_API_SQLSTATISTICS, &supported));
-  EXPECT_EQ(SQL_TRUE, supported);
-  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
-      connection_, SQL_API_SQLPROCEDURES, &supported));
-  EXPECT_EQ(SQL_TRUE, supported);
-  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
-      connection_, SQL_API_SQLPROCEDURECOLUMNS, &supported));
-  EXPECT_EQ(SQL_TRUE, supported);
-  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
-      connection_, SQL_API_SQLSPECIALCOLUMNS, &supported));
-  EXPECT_EQ(SQL_TRUE, supported);
-  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
-      connection_, SQL_API_SQLBROWSECONNECT, &supported));
-  EXPECT_EQ(SQL_FALSE, supported);
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_DBC, connection_));
 
-  SQLUSMALLINT odbc2_functions[100]{};
-  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
-      connection_, SQL_API_ALL_FUNCTIONS, odbc2_functions));
-  EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLCONNECT]);
-  EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLDRIVERCONNECT]);
-  EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLMORERESULTS]);
-  EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLCOLUMNS]);
-  EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLPRIMARYKEYS]);
-  EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLFOREIGNKEYS]);
-  EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLSTATISTICS]);
-  EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLPROCEDURES]);
-  EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLPROCEDURECOLUMNS]);
-  EXPECT_EQ(SQL_TRUE, odbc2_functions[SQL_API_SQLSPECIALCOLUMNS]);
-  EXPECT_EQ(SQL_FALSE, odbc2_functions[SQL_API_SQLBROWSECONNECT]);
-
-  SQLUSMALLINT odbc3_functions[SQL_API_ODBC3_ALL_FUNCTIONS_SIZE]{};
-  EXPECT_EQ(SQL_SUCCESS, SQLGetFunctions(
-      connection_, SQL_API_ODBC3_ALL_FUNCTIONS, odbc3_functions));
-  EXPECT_EQ(SQL_TRUE,
-            SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLALLOCHANDLE));
-  EXPECT_EQ(SQL_TRUE,
-            SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLDRIVERCONNECT));
-  EXPECT_EQ(SQL_TRUE,
-            SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLMORERESULTS));
-  EXPECT_EQ(SQL_TRUE,
-            SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLFETCHSCROLL));
-  EXPECT_EQ(SQL_TRUE,
-            SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLCOLUMNS));
-  EXPECT_EQ(SQL_TRUE,
-            SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLPRIMARYKEYS));
-  EXPECT_EQ(SQL_TRUE,
-            SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLFOREIGNKEYS));
-  EXPECT_EQ(SQL_TRUE,
-            SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLSTATISTICS));
-  EXPECT_EQ(SQL_TRUE,
-            SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLPROCEDURES));
-  EXPECT_EQ(SQL_TRUE,
-            SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLPROCEDURECOLUMNS));
-  EXPECT_EQ(SQL_TRUE,
-            SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLSPECIALCOLUMNS));
-  EXPECT_EQ(SQL_FALSE,
-            SQL_FUNC_EXISTS(odbc3_functions, SQL_API_SQLBROWSECONNECT));
-
-  EXPECT_EQ(SQL_ERROR, SQLGetFunctions(
-      connection_, SQL_API_SQLCONNECT, nullptr));
-  EXPECT_EQ("HY009", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetFunctions(connection_, SQL_API_SQLCONNECT, nullptr));
+  EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
 TEST_F(AttributeApisTest, StoresQueryTimeoutAndAllowsZero) {
