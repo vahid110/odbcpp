@@ -1376,16 +1376,17 @@ static SQLRETURN SQLError_impl(SQLHENV environment_handle, SQLHDBC connection_ha
     return SQL_INVALID_HANDLE;
   }
   
-  // Use SQLGetDiagRec to get the first error record
-  SQLRETURN result = SQLGetDiagRec(handle_type, handle, 1, sqlstate, native_error, 
-                                  message_text, buffer_length, text_length);
-  
-  // SQLError should clear the diagnostic after retrieving it (ODBC 2.x behavior)
+  auto obj = HandleRegistry::instance().get_handle(handle);
+  if (!obj || static_cast<SQLSMALLINT>(obj->get_type()) != handle_type) {
+    return SQL_INVALID_HANDLE;
+  }
+  const auto record_number = obj->legacy_diagnostic_record_number();
+  if (!record_number) return SQL_NO_DATA;
+  const auto result = SQLGetDiagRec(
+      handle_type, handle, *record_number, sqlstate, native_error,
+      message_text, buffer_length, text_length);
   if (result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO) {
-    auto obj = HandleRegistry::instance().get_handle(handle);
-    if (obj) {
-      obj->clear_diagnostics();
-    }
+    obj->advance_legacy_diagnostic_record();
   }
   
   return result;
@@ -1411,12 +1412,17 @@ static SQLRETURN SQLErrorW_impl(
     return SQL_INVALID_HANDLE;
   }
 
+  auto obj = HandleRegistry::instance().get_handle(handle);
+  if (!obj || static_cast<SQLSMALLINT>(obj->get_type()) != handle_type) {
+    return SQL_INVALID_HANDLE;
+  }
+  const auto record_number = obj->legacy_diagnostic_record_number();
+  if (!record_number) return SQL_NO_DATA;
   const auto result = SQLGetDiagRecW(
-      handle_type, handle, 1, sqlstate, native_error, message_text,
-      buffer_length, text_length);
+      handle_type, handle, *record_number, sqlstate, native_error,
+      message_text, buffer_length, text_length);
   if (result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO) {
-    auto obj = HandleRegistry::instance().get_handle(handle);
-    if (obj) obj->clear_diagnostics();
+    obj->advance_legacy_diagnostic_record();
   }
   return result;
 }

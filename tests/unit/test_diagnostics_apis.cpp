@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
+#include "odbc/odbc_handles.h"
 #include "tests/test_handle_helpers.h"
 #include <array>
 #include <cstdint>
@@ -201,22 +202,59 @@ TEST_F(DiagnosticsTest, StatementOnlyFieldsRejectOtherHandleTypes) {
 }
 
 TEST_F(DiagnosticsTest, SQLError_ODBC2Compatibility) {
-    // Force an error
-    SQLConnect(hdbc, (SQLCHAR*)"invalid_dsn", SQL_NTS, nullptr, 0, nullptr, 0);
-    
-    // Test SQLError (ODBC 2.x compatibility)
-    SQLCHAR sqlstate[6];
-    SQLINTEGER native_error;
-    SQLCHAR message[256];
-    SQLSMALLINT text_length;
-    
-    SQLRETURN ret = SQLError(henv, hdbc, nullptr, sqlstate, &native_error, message, sizeof(message), &text_length);
-    EXPECT_EQ(SQL_SUCCESS, ret);
-    EXPECT_STREQ("08001", (char*)sqlstate);
-    
-    // SQLError should clear diagnostics after retrieval
-    ret = SQLError(henv, hdbc, nullptr, sqlstate, &native_error, message, sizeof(message), &text_length);
-    EXPECT_EQ(SQL_NO_DATA, ret);
+    auto connection = rs::odbc::HandleRegistry::instance().get_handle_as<
+        rs::odbc::ODBCConnection>(hdbc);
+    ASSERT_NE(nullptr, connection);
+    connection->set_error("01000", "first diagnostic", 11);
+    connection->add_diagnostic("22003", 22, "second diagnostic");
+
+    SQLCHAR state[6]{};
+    SQLINTEGER native_error = 0;
+    SQLCHAR message[32]{};
+    SQLSMALLINT text_length = 0;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLError(henv, hdbc, nullptr, state, &native_error, message,
+                       sizeof(message), &text_length));
+    EXPECT_STREQ("01000", reinterpret_cast<const char*>(state));
+    EXPECT_EQ(11, native_error);
+    EXPECT_STREQ("first diagnostic",
+                 reinterpret_cast<const char*>(message));
+    EXPECT_EQ(16, text_length);
+
+    SQLWCHAR wide_state[6]{};
+    SQLWCHAR wide_message[32]{};
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLErrorW(henv, hdbc, nullptr, wide_state, &native_error,
+                        wide_message,
+                        static_cast<SQLSMALLINT>(std::size(wide_message)),
+                        &text_length));
+    EXPECT_EQ(static_cast<SQLWCHAR>('2'), wide_state[0]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('2'), wide_state[1]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('3'), wide_state[4]);
+    EXPECT_EQ(22, native_error);
+    EXPECT_EQ(17, text_length);
+    EXPECT_EQ(static_cast<SQLWCHAR>('s'), wide_message[0]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('c'), wide_message[16]);
+    EXPECT_EQ(0, wide_message[17]);
+    EXPECT_EQ(SQL_NO_DATA,
+              SQLError(henv, hdbc, nullptr, state, nullptr, nullptr, 0,
+                       nullptr));
+
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDiagRec(SQL_HANDLE_DBC, hdbc, 1, state, nullptr,
+                            message, sizeof(message), nullptr));
+    EXPECT_STREQ("01000", reinterpret_cast<const char*>(state));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetDiagRec(SQL_HANDLE_DBC, hdbc, 2, state, nullptr,
+                            message, sizeof(message), nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<const char*>(state));
+
+    connection->set_error("HY000", "replacement diagnostic", 33);
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLError(henv, hdbc, nullptr, state, &native_error, message,
+                       sizeof(message), nullptr));
+    EXPECT_STREQ("HY000", reinterpret_cast<const char*>(state));
+    EXPECT_EQ(33, native_error);
 }
 
 TEST_F(DiagnosticsTest, SQLGetDiagRec_InvalidParameters) {

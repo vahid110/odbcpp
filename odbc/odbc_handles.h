@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -77,6 +78,7 @@ public:
     std::lock_guard lock(diagnostics_mutex_);
     diagnostic_records_.clear();
     diagnostic_header_ = {};
+    legacy_diagnostic_record_ = 1;
   }
   
   void add_diagnostic(const std::string& sqlstate, SQLINTEGER native_error, const std::string& message) {
@@ -88,6 +90,7 @@ public:
     std::lock_guard lock(diagnostics_mutex_);
     diagnostic_records_.clear();
     diagnostic_records_.emplace_back(sqlstate, native_error, message);
+    legacy_diagnostic_record_ = 1;
   }
   
   // First-record accessors retained for existing internal callers.
@@ -114,6 +117,20 @@ public:
       return std::nullopt;
     }
     return diagnostic_records_[record_number - 1];
+  }
+
+  std::optional<SQLSMALLINT> legacy_diagnostic_record_number() const {
+    std::lock_guard lock(diagnostics_mutex_);
+    if (legacy_diagnostic_record_ >
+        static_cast<std::size_t>(std::numeric_limits<SQLSMALLINT>::max())) {
+      return std::nullopt;
+    }
+    return static_cast<SQLSMALLINT>(legacy_diagnostic_record_);
+  }
+
+  void advance_legacy_diagnostic_record() {
+    std::lock_guard lock(diagnostics_mutex_);
+    ++legacy_diagnostic_record_;
   }
 
   void set_last_return_code(SQLRETURN return_code) {
@@ -150,6 +167,7 @@ private:
   std::vector<DiagnosticRecord> diagnostic_records_;
   DiagnosticHeader diagnostic_header_;
   SQLRETURN last_return_code_{SQL_SUCCESS};
+  std::size_t legacy_diagnostic_record_{1};
 };
 
 // Pins and serializes one or more handles within their connection ownership

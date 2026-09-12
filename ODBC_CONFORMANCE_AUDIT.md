@@ -70,7 +70,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLSpecialColumns` | A/W | Partial | unit, integration, DM | Scope/nullable semantics and row-version behavior |
 | `SQLGetDiagRec` | A/W | Verified | unit, integration, DM | Retrieval is nondestructive; handle type, record number, absent records, null destinations, native codes, exact-fit, one-short, and terminator-only A/W buffers are covered, including mixed-width iODBC translation |
 | `SQLGetDiagField` | A/W | Partial | unit, integration | All standard header/record identifiers, return provenance, origins, ANSI/wide lengths, and truncation are covered; row/column-specific server errors remain |
-| `SQLError` | A/W | Partial | unit, integration | ODBC 2 sequencing and multi-record consumption |
+| `SQLError` | A/W | Partial | unit, integration | ANSI/wide calls share a per-handle cursor, return every diagnostic in order, preserve the records for SQLGetDiagRec, and reset on a new diagnostic stack; complete handle-selection and Driver Manager mapping matrices remain |
 | `SQLGetInfo` | A/W | Verified | unit, integration, DM | Every driver-owned standard type is classified; positive PostgreSQL claims execute end to end, and Driver Manager-only mappings are covered separately |
 | `SQLGetFunctions` | A | Verified | shared-library export audit, unit, integration, DM | Connection state, exact single-function results, ODBC 2 array, ODBC 3 bitmap, null output, and invalid identifiers are enforced against all advertised exports |
 | `SQLNativeSql` | A/W | Verified | unit, integration, DM | Advertised ODBC escapes translate to PostgreSQL syntax; A/W lengths, truncation, diagnostics, literals/comments, and execution-path agreement are covered |
@@ -473,6 +473,13 @@ substitute for ODBC diagnostics.
   not consume the record. The Driver Manager path now calls SQLGetDiagRecW
   directly, including the four-byte iODBC application ABI, so the ordinary
   synchronous handle surface is Verified.
+- Audit batch 59 fixes legacy SQLError sequencing. The prior implementation
+  always requested record one and then erased the complete diagnostic stack,
+  losing every later record. Each handle now keeps a resettable legacy cursor;
+  ANSI and wide calls consume successive records from that cursor while
+  SQLGetDiagRec remains nondestructive. Tests retrieve two records across mixed
+  A/W calls, reach SQL_NO_DATA, prove both records are still directly
+  addressable, and verify that replacing the diagnostic stack resets the cursor.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
