@@ -134,6 +134,8 @@ list(APPEND CORE_SOURCES
   "odbc/connection_string.cpp"
   "odbc/result_types.h"
   "odbc/result_types.cpp"
+  "odbc/sql_escape.h"
+  "odbc/sql_escape.cpp"
   "odbc/text_data_converter.h"
   "odbc/text_data_converter.cpp"
   "odbc/testing_hooks.h"

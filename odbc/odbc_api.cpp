@@ -2,6 +2,7 @@
 #include "c_api_guard.h"
 #include "connection_string.h"
 #include "odbc_handles.h"
+#include "sql_escape.h"
 #include "unicode.h"
 #include <algorithm>
 #include <array>
@@ -53,6 +54,25 @@ namespace {
       }
     }
     return std::nullopt;
+  }
+
+  SQLRETURN set_sql_escape_error(ODBCHandle& handle,
+                                 const SqlEscapeResult& result) {
+    switch (result.error) {
+      case SqlEscapeError::InvalidDatetime:
+        handle.set_error(SQLSTATE_INVALID_DATETIME_FORMAT, result.message);
+        break;
+      case SqlEscapeError::Unsupported:
+        handle.set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                         result.message);
+        break;
+      case SqlEscapeError::InvalidSyntax:
+        handle.set_error(SQLSTATE_SYNTAX_ERROR, result.message);
+        break;
+      case SqlEscapeError::None:
+        return SQL_SUCCESS;
+    }
+    return SQL_ERROR;
   }
   
   template <typename Length>
@@ -952,8 +972,10 @@ static SQLRETURN SQLExecDirect_impl(SQLHSTMT statement_handle, SQLCHAR* statemen
                     "Invalid SQL statement length");
     return SQL_ERROR;
   }
-  std::string sql = sqlchar_to_string(statement_text, text_length);
-  return stmt->execute_direct(sql);
+  const auto sql = translate_odbc_sql(
+      sqlchar_to_string(statement_text, text_length));
+  if (!sql) return set_sql_escape_error(*stmt, sql);
+  return stmt->execute_direct(sql.sql);
 }
 
 static SQLRETURN SQLExecDirectW_impl(SQLHSTMT statement_handle,
@@ -976,7 +998,9 @@ static SQLRETURN SQLExecDirectW_impl(SQLHSTMT statement_handle,
                     "Invalid wide-character SQL statement");
     return SQL_ERROR;
   }
-  return stmt->execute_direct(*sql);
+  const auto native_sql = translate_odbc_sql(*sql);
+  if (!native_sql) return set_sql_escape_error(*stmt, native_sql);
+  return stmt->execute_direct(native_sql.sql);
 }
 
 static SQLRETURN SQLFetch_impl(SQLHSTMT statement_handle) {
@@ -1753,19 +1777,27 @@ static SQLRETURN SQLNativeSql_impl(
     return SQL_ERROR;
   }
 
-  const auto native_sql = sqlchar_to_string(input_statement, text_length1);
+  const auto native_sql = translate_odbc_sql(
+      sqlchar_to_string(input_statement, text_length1));
+  if (!native_sql) return set_sql_escape_error(*conn, native_sql);
   if (text_length2) {
     *text_length2 = static_cast<SQLINTEGER>(std::min(
-        native_sql.size(),
+        native_sql.sql.size(),
         static_cast<std::size_t>(std::numeric_limits<SQLINTEGER>::max())));
   }
-  if (!output_statement || buffer_length <= 0) return SQL_SUCCESS;
+  if (!output_statement) return SQL_SUCCESS;
+  if (buffer_length == 0) {
+    if (native_sql.sql.empty()) return SQL_SUCCESS;
+    conn->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                    "Output SQL statement was truncated");
+    return SQL_SUCCESS_WITH_INFO;
+  }
 
   const auto copied_length = std::min(
-      native_sql.size(), static_cast<std::size_t>(buffer_length - 1));
-  std::memcpy(output_statement, native_sql.data(), copied_length);
+      native_sql.sql.size(), static_cast<std::size_t>(buffer_length - 1));
+  std::memcpy(output_statement, native_sql.sql.data(), copied_length);
   output_statement[copied_length] = '\0';
-  if (copied_length < native_sql.size()) {
+  if (copied_length < native_sql.sql.size()) {
     conn->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
                     "Output SQL statement was truncated");
     return SQL_SUCCESS_WITH_INFO;
@@ -1805,8 +1837,27 @@ static SQLRETURN SQLNativeSqlW_impl(
                     "Invalid wide-character SQL statement");
     return SQL_ERROR;
   }
+  const auto translated = translate_odbc_sql(*native_sql);
+  if (!translated) return set_sql_escape_error(*conn, translated);
+  if (output_statement && buffer_length == 0 && !translated.sql.empty()) {
+    if (text_length2) {
+      const auto wide = utf8_to_wide(translated.sql);
+      if (!wide) {
+        conn->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                        "Invalid UTF-8 output text");
+        return SQL_ERROR;
+      }
+      *text_length2 = static_cast<SQLINTEGER>(std::min<std::size_t>(
+          wide->size(), static_cast<std::size_t>(
+              std::numeric_limits<SQLINTEGER>::max())));
+    }
+    conn->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                    "Output SQL statement was truncated");
+    return SQL_SUCCESS_WITH_INFO;
+  }
   return write_wide_output(
-      conn, *native_sql, output_statement, buffer_length,
+      conn, translated.sql, output_statement,
+      output_statement ? buffer_length : 0,
       text_length2, "Output SQL statement was truncated");
 }
 
@@ -2525,8 +2576,10 @@ static SQLRETURN SQLPrepare_impl(SQLHSTMT statement_handle, SQLCHAR* statement_t
                     "Invalid SQL statement length");
     return SQL_ERROR;
   }
-  std::string sql = sqlchar_to_string(statement_text, text_length);
-  return stmt->prepare(sql);
+  const auto sql = translate_odbc_sql(
+      sqlchar_to_string(statement_text, text_length));
+  if (!sql) return set_sql_escape_error(*stmt, sql);
+  return stmt->prepare(sql.sql);
 }
 
 static SQLRETURN SQLPrepareW_impl(SQLHSTMT statement_handle,
@@ -2549,7 +2602,9 @@ static SQLRETURN SQLPrepareW_impl(SQLHSTMT statement_handle,
                     "Invalid wide-character SQL statement");
     return SQL_ERROR;
   }
-  return stmt->prepare(*sql);
+  const auto native_sql = translate_odbc_sql(*sql);
+  if (!native_sql) return set_sql_escape_error(*stmt, native_sql);
+  return stmt->prepare(native_sql.sql);
 }
 
 static SQLRETURN SQLExecute_impl(SQLHSTMT statement_handle) {

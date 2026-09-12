@@ -73,7 +73,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLError` | A/W | Partial | unit, integration | ODBC 2 sequencing and multi-record consumption |
 | `SQLGetInfo` | A/W | Verified | unit, integration, DM | Every driver-owned standard type is classified; positive PostgreSQL claims execute end to end, and Driver Manager-only mappings are covered separately |
 | `SQLGetFunctions` | A | Verified | shared-library export audit, unit, integration, DM | Connection state, exact single-function results, ODBC 2 array, ODBC 3 bitmap, null output, and invalid identifiers are enforced against all advertised exports |
-| `SQLNativeSql` | A/W | Partial | unit, DM | ODBC escape translation; currently effectively pass-through |
+| `SQLNativeSql` | A/W | Verified | unit, integration, DM | Advertised ODBC escapes translate to PostgreSQL syntax; A/W lengths, truncation, diagnostics, literals/comments, and execution-path agreement are covered |
 | `SQLSetEnvAttr` | A | Verified | unit, integration, DM | ODBC 2/3/3.8 version selection, mandatory null-terminated output, invalid values, sequencing, and Driver Manager-owned pooling boundaries are classified |
 | `SQLGetEnvAttr` | A | Verified | unit, DM | Version, null-terminated output, iODBC Unicode negotiation, ignored numeric buffer lengths, null outputs, invalid attributes, output preservation, and storage widths are covered |
 | `SQLGetDescField` | A/W | Partial | unit, integration, DM | Standard header/record fields, PostgreSQL type characteristics, wide byte lengths, and truncation work; statement association and origin-name enrichment remain |
@@ -432,6 +432,15 @@ substitute for ODBC diagnostics.
   post-DBC mutations have exact diagnostics and preserve outputs. Connection
   pooling attributes remain correctly owned by the Driver Manager rather than
   being duplicated inside the driver, so both environment APIs are Verified.
+- Audit batch 52 replaces the `SQLNativeSql` pass-through with a small,
+  quote-aware ODBC escape translator shared by `SQLNativeSql`, direct
+  execution, and preparation. Date/time/timestamp, scalar function, outer
+  join, LIKE escape, and procedure-call clauses are covered without rewriting
+  braces inside literals, identifiers, dollar strings, or comments. ANSI and
+  wide length-only, explicit-length, zero-length, truncation, malformed input,
+  output preservation, Driver Manager, and real PostgreSQL execution tests
+  make the advertised surface Verified; unsupported function-return calls stay
+  explicit with HYC00.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

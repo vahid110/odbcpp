@@ -210,14 +210,15 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
-  SQLCHAR input_sql[] = "SELECT 42";
+  SQLCHAR input_sql[] = "SELECT {fn UCASE('dm')}";
   SQLCHAR native_sql[sizeof(input_sql)]{};
   SQLINTEGER native_sql_length = 0;
   if (!succeeded(SQLNativeSql(
           connection, input_sql, SQL_NTS, native_sql, sizeof(native_sql),
           &native_sql_length)) ||
-      native_sql_length != sizeof(input_sql) - 1 ||
-      std::strcmp(reinterpret_cast<const char*>(native_sql), "SELECT 42") != 0) {
+      native_sql_length != 18 ||
+      std::strcmp(reinterpret_cast<const char*>(native_sql),
+                  "SELECT UPPER('dm')") != 0) {
     print_diagnostic(SQL_HANDLE_DBC, connection);
     SQLDisconnect(connection);
     SQLFreeHandle(SQL_HANDLE_DBC, connection);
@@ -387,14 +388,14 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
-  const auto wide_native_input = wide_ascii("SELECT 84");
-  SQLWCHAR wide_native_output[16]{};
+  const auto wide_native_input = wide_ascii("SELECT {d '2024-02-29'}");
+  SQLWCHAR wide_native_output[32]{};
   SQLINTEGER wide_native_length = 0;
   if (!succeeded(SQLNativeSqlW(
           connection, const_cast<SQLWCHAR*>(wide_native_input.data()), SQL_NTS,
-          wide_native_output, 16, &wide_native_length)) ||
-      wide_native_length != 9 ||
-      wide_native_output[7] != static_cast<SQLWCHAR>('8')) {
+          wide_native_output, 32, &wide_native_length)) ||
+      wide_native_length != 24 ||
+      wide_native_output[7] != static_cast<SQLWCHAR>('D')) {
     print_diagnostic(SQL_HANDLE_DBC, connection);
     SQLFreeHandle(SQL_HANDLE_STMT, statement);
     SQLDisconnect(connection);
