@@ -37,8 +37,8 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLConnect` | A/W | Partial | unit failure, integration, DM | Reconnect is rejected with 08002; complete input/state matrix remains |
 | `SQLDriverConnect` | A/W | Partial | unit, integration, DM | Noninteractive completion modes, exact output/truncation rules, connected-state output preservation, and ANSI/wide unknown-keyword warnings are covered; interactive prompting remains unsupported |
 | `SQLDisconnect` | A | Partial | unit, integration, DM | Disconnected, active-transaction, and child-invalidation paths covered; async execution remains |
-| `SQLSetConnectAttr` | A/W | Partial | unit, integration | Common defaults, catalog selection, connection timeout, invalid values, and unsupported modes covered; remaining platform/DM-owned attributes need classification |
-| `SQLGetConnectAttr` | A/W | Partial | unit, integration | Common numeric values, connection timeout, current catalog buffers, read-only attributes, connected-state checks, and cached broken-link detection are covered; remaining platform/DM-owned attributes need classification |
+| `SQLSetConnectAttr` | A/W | Partial | unit, integration | Common defaults, catalog selection, connection timeout, quiet-mode pointer width, invalid values, read-only fields, and recognized unsupported modes are classified; platform-specific pooling attributes remain |
+| `SQLGetConnectAttr` | A/W | Partial | unit, integration | Common numeric values, connection timeout, current catalog buffers, pointer-valued quiet mode, read-only attributes, connected-state checks, and cached broken-link detection are covered; platform-specific pooling attributes remain |
 | `SQLEndTran` | A | Partial | unit, integration | Connection and environment scopes, multi-connection commit/rollback, inactive environments, and invalid completion codes are covered; transaction-failure injection remains |
 | `SQLExecDirect` | A/W | Partial | unit failure, integration, DM | Open cursors are protected and direct execution replaces prepared SQL; cancellation remains |
 | `SQLPrepare` | A/W | Partial | integration, DM | Open cursors are protected, old result state is retired, and PostgreSQL errors can surface through pre-execution result metadata discovery; eager prepare-time validation remains |
@@ -363,6 +363,12 @@ substitute for ODBC diagnostics.
   25S01 on aggregate failure. Two independent PostgreSQL sessions prove both
   rollback and commit behavior; empty-environment and invalid-code cases are
   covered without server I/O.
+- Audit batch 42 preserves the full native pointer width for
+  `SQL_ATTR_QUIET_MODE`, accepts the disabled default for connection-level
+  asynchronous execution, and distinguishes recognized-but-unsupported ODBC
+  connection attributes (HYC00) from invalid identifiers (HY092). Read-only
+  attributes remain rejected on the setter path, and failed getters preserve
+  application outputs.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

@@ -59,6 +59,34 @@ bool is_connection_loss(const std::error_code& error) {
       error == rs::util::make_error_code(rs::util::DbErrorCode::ConnectionFailed);
 }
 
+bool is_recognized_unsupported_connection_attribute(SQLINTEGER attribute) {
+  if (attribute == SQL_ATTR_ODBC_CURSORS ||
+      attribute == SQL_ATTR_TRACE ||
+      attribute == SQL_ATTR_TRACEFILE ||
+      attribute == SQL_ATTR_TRANSLATE_LIB ||
+      attribute == SQL_ATTR_TRANSLATE_OPTION ||
+      attribute == SQL_ATTR_DISCONNECT_BEHAVIOR ||
+      attribute == SQL_ATTR_ENLIST_IN_DTC) {
+    return true;
+  }
+#ifdef SQL_ATTR_ENLIST_IN_XA
+  if (attribute == SQL_ATTR_ENLIST_IN_XA) return true;
+#endif
+#ifdef SQL_ATTR_RESET_CONNECTION
+  if (attribute == SQL_ATTR_RESET_CONNECTION) return true;
+#endif
+#ifdef SQL_ATTR_ASYNC_DBC_EVENT
+  if (attribute == SQL_ATTR_ASYNC_DBC_EVENT) return true;
+#endif
+#ifdef SQL_ATTR_ASYNC_DBC_PCALLBACK
+  if (attribute == SQL_ATTR_ASYNC_DBC_PCALLBACK) return true;
+#endif
+#ifdef SQL_ATTR_ASYNC_DBC_PCONTEXT
+  if (attribute == SQL_ATTR_ASYNC_DBC_PCONTEXT) return true;
+#endif
+  return false;
+}
+
 const char* request_sqlstate(const std::error_code& error,
                              const char* fallback) {
   if (is_timeout_error(error)) return SQLSTATE_TIMEOUT;
@@ -940,6 +968,24 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
               "Invalid metadata identifier mode");
     return SQL_ERROR;
   }
+#ifdef SQL_ATTR_ASYNC_DBC_FUNCTIONS_ENABLE
+  if (attribute == SQL_ATTR_ASYNC_DBC_FUNCTIONS_ENABLE) {
+    if (value == SQL_ASYNC_DBC_ENABLE_OFF) return SQL_SUCCESS;
+    if (value == SQL_ASYNC_DBC_ENABLE_ON) {
+      set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                "Asynchronous connection functions are not implemented");
+      return SQL_ERROR;
+    }
+    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+              "Invalid asynchronous connection mode");
+    return SQL_ERROR;
+  }
+#endif
+  if (attribute == SQL_ATTR_QUIET_MODE) {
+    quiet_mode_ = reinterpret_cast<SQLHWND>(
+        static_cast<std::uintptr_t>(value));
+    return SQL_SUCCESS;
+  }
   if (attribute == SQL_ATTR_TXN_ISOLATION) {
     const auto* isolation_name = transaction_isolation_name(value);
     if (!isolation_name) {
@@ -989,6 +1035,11 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
               "PostgreSQL network packet sizing is not configurable");
     return SQL_ERROR;
   }
+  if (is_recognized_unsupported_connection_attribute(attribute)) {
+    set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+              "Connection attribute is recognized but not implemented");
+    return SQL_ERROR;
+  }
   if (attribute != SQL_ATTR_LOGIN_TIMEOUT) {
     set_error(SQLSTATE_INVALID_ATTRIBUTE,
               "Unsupported connection attribute");
@@ -1009,50 +1060,66 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
 }
 
 SQLRETURN ODBCConnection::get_attribute(SQLINTEGER attribute,
-                                        SQLUINTEGER* value) {
+                                        SQLPOINTER value) {
+  const auto write_uinteger = [value](SQLUINTEGER result) {
+    *static_cast<SQLUINTEGER*>(value) = result;
+  };
   switch (attribute) {
     case IODBC_ATTR_APP_WCHAR_TYPE:
-      *value = NATIVE_SQLWCHAR_ENCODING;
+      write_uinteger(NATIVE_SQLWCHAR_ENCODING);
       return SQL_SUCCESS;
     case SQL_ATTR_LOGIN_TIMEOUT:
-      *value = login_timeout_seconds_;
+      write_uinteger(login_timeout_seconds_);
       return SQL_SUCCESS;
     case SQL_ATTR_CONNECTION_TIMEOUT:
-      *value = connection_timeout_seconds_;
+      write_uinteger(connection_timeout_seconds_);
       return SQL_SUCCESS;
     case SQL_ATTR_PACKET_SIZE:
       set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
                 "PostgreSQL network packet sizing is not configurable");
       return SQL_ERROR;
     case SQL_ATTR_ACCESS_MODE:
-      *value = SQL_MODE_READ_WRITE;
+      write_uinteger(SQL_MODE_READ_WRITE);
       return SQL_SUCCESS;
     case SQL_ATTR_ASYNC_ENABLE:
-      *value = SQL_ASYNC_ENABLE_OFF;
+      write_uinteger(SQL_ASYNC_ENABLE_OFF);
       return SQL_SUCCESS;
+#ifdef SQL_ATTR_ASYNC_DBC_FUNCTIONS_ENABLE
+    case SQL_ATTR_ASYNC_DBC_FUNCTIONS_ENABLE:
+      write_uinteger(SQL_ASYNC_DBC_ENABLE_OFF);
+      return SQL_SUCCESS;
+#endif
     case SQL_ATTR_AUTO_IPD:
-      *value = SQL_FALSE;
+      write_uinteger(SQL_FALSE);
       return SQL_SUCCESS;
     case SQL_ATTR_CONNECTION_DEAD:
       if (!connected_) {
         set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
         return SQL_ERROR;
       }
-      *value = db_conn_ && db_conn_->is_connected()
-          ? SQL_CD_FALSE : SQL_CD_TRUE;
+      write_uinteger(db_conn_ && db_conn_->is_connected()
+                         ? SQL_CD_FALSE : SQL_CD_TRUE);
       return SQL_SUCCESS;
     case SQL_ATTR_METADATA_ID:
-      *value = SQL_FALSE;
+      write_uinteger(SQL_FALSE);
       return SQL_SUCCESS;
     case SQL_ATTR_AUTOCOMMIT:
-      *value = autocommit_;
+      write_uinteger(autocommit_);
       return SQL_SUCCESS;
     case SQL_ATTR_TXN_ISOLATION:
-      *value = transaction_isolation_;
+      write_uinteger(transaction_isolation_);
+      return SQL_SUCCESS;
+    case SQL_ATTR_QUIET_MODE:
+      *static_cast<SQLHWND*>(value) = quiet_mode_;
       return SQL_SUCCESS;
     default:
-      set_error(SQLSTATE_INVALID_ATTRIBUTE,
-                "Unsupported connection attribute");
+      if (is_recognized_unsupported_connection_attribute(attribute)) {
+        set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                  "Connection attribute is recognized but not implemented");
+      } else {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE,
+                  "Unsupported connection attribute");
+      }
       return SQL_ERROR;
   }
 }

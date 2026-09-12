@@ -217,6 +217,58 @@ TEST_F(AttributeApisTest, ReportsCommonConnectionAttributeDefaults) {
   EXPECT_EQ("HY092", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
+TEST_F(AttributeApisTest,
+       ClassifiesStandardConnectionAttributesAndPreservesPointers) {
+  auto quiet_mode = reinterpret_cast<SQLHWND>(std::uintptr_t{0x12345678});
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetConnectAttr(connection_, SQL_ATTR_QUIET_MODE, quiet_mode, 0));
+  SQLHWND returned_quiet_mode = nullptr;
+  SQLINTEGER length = 0;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetConnectAttr(connection_, SQL_ATTR_QUIET_MODE,
+                              &returned_quiet_mode,
+                              sizeof(returned_quiet_mode), &length));
+  EXPECT_EQ(quiet_mode, returned_quiet_mode);
+  EXPECT_EQ(sizeof(SQLHWND), static_cast<std::size_t>(length));
+
+#ifdef SQL_ATTR_ASYNC_DBC_FUNCTIONS_ENABLE
+  SQLUINTEGER async_mode = 99;
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLSetConnectAttr(
+                connection_, SQL_ATTR_ASYNC_DBC_FUNCTIONS_ENABLE,
+                integer_value(SQL_ASYNC_DBC_ENABLE_OFF), 0));
+  EXPECT_EQ(SQL_ERROR,
+            SQLSetConnectAttr(
+                connection_, SQL_ATTR_ASYNC_DBC_FUNCTIONS_ENABLE,
+                integer_value(SQL_ASYNC_DBC_ENABLE_ON), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetConnectAttr(
+                connection_, SQL_ATTR_ASYNC_DBC_FUNCTIONS_ENABLE,
+                &async_mode, sizeof(async_mode), nullptr));
+  EXPECT_EQ(SQL_ASYNC_DBC_ENABLE_OFF, async_mode);
+#endif
+
+  SQLUINTEGER untouched = 77;
+  for (const auto attribute : {
+           SQL_ATTR_TRANSLATE_OPTION, SQL_ATTR_DISCONNECT_BEHAVIOR,
+           SQL_ATTR_ENLIST_IN_DTC}) {
+    EXPECT_EQ(SQL_ERROR,
+              SQLSetConnectAttr(connection_, attribute, integer_value(0), 0));
+    EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_DBC, connection_));
+    EXPECT_EQ(SQL_ERROR,
+              SQLGetConnectAttr(connection_, attribute, &untouched,
+                                sizeof(untouched), nullptr));
+    EXPECT_EQ(77u, untouched);
+    EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  }
+
+  EXPECT_EQ(SQL_ERROR,
+            SQLSetConnectAttr(connection_, SQL_ATTR_AUTO_IPD,
+                              integer_value(SQL_FALSE), 0));
+  EXPECT_EQ("HY092", diagnostic_state(SQL_HANDLE_DBC, connection_));
+}
+
 TEST_F(AttributeApisTest, StoresCurrentCatalogBeforeConnecting) {
   SQLINTEGER length = -1;
   EXPECT_EQ(SQL_NO_DATA,

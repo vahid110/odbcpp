@@ -771,9 +771,11 @@ static SQLRETURN SQLGetConnectAttr_impl(SQLHDBC connection_handle, SQLINTEGER at
     return SQL_ERROR;
   }
   const auto result = conn->get_attribute(
-      attribute, static_cast<SQLUINTEGER*>(value));
+      attribute, value);
   if (result == SQL_SUCCESS && string_length) {
-    *string_length = static_cast<SQLINTEGER>(sizeof(SQLUINTEGER));
+    *string_length = static_cast<SQLINTEGER>(
+        attribute == SQL_ATTR_QUIET_MODE ? sizeof(SQLHWND)
+                                         : sizeof(SQLUINTEGER));
   }
   return result;
 }

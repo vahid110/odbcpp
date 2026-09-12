@@ -192,7 +192,7 @@ public:
   SQLRETURN disconnect();
   bool is_connected() const { return connected_; }
   SQLRETURN set_attribute(SQLINTEGER attribute, SQLULEN value);
-  SQLRETURN get_attribute(SQLINTEGER attribute, SQLUINTEGER* value);
+  SQLRETURN get_attribute(SQLINTEGER attribute, SQLPOINTER value);
   SQLRETURN set_current_catalog(std::string catalog);
   std::string get_current_catalog() const;
   SQLRETURN end_transaction(SQLSMALLINT completion_type);
@@ -217,6 +217,7 @@ private:
   SQLUINTEGER connection_timeout_seconds_ = 0;
   SQLUINTEGER autocommit_ = SQL_AUTOCOMMIT_ON;
   SQLUINTEGER transaction_isolation_ = SQL_TXN_READ_COMMITTED;
+  SQLHWND quiet_mode_ = nullptr;
   bool transaction_active_ = false;
   std::optional<std::string> requested_catalog_;
   std::string current_catalog_;
