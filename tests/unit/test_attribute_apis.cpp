@@ -1064,10 +1064,59 @@ TEST_F(AttributeApisTest, ManagesStatementCursorAndBindings) {
   EXPECT_EQ(SQL_ERROR, SQLCloseCursor(statement_));
   EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_CLOSE));
-  EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_UNBIND));
-  EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_RESET_PARAMS));
+
+  SQLHDESC row_descriptor = SQL_NULL_HDESC;
+  SQLHDESC parameter_descriptor = SQL_NULL_HDESC;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_APP_ROW_DESC, &row_descriptor, 0, nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_APP_PARAM_DESC, &parameter_descriptor, 0,
+      nullptr));
+  SQLCHAR column[8]{};
+  SQLINTEGER parameter = 7;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(
+      statement_, 1, SQL_C_CHAR, column, sizeof(column), nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+      statement_, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0,
+      &parameter, 0, nullptr));
+  SQLSMALLINT count = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+      row_descriptor, 0, SQL_DESC_COUNT, &count, 0, nullptr));
+  EXPECT_EQ(1, count);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+      parameter_descriptor, 0, SQL_DESC_COUNT, &count, 0, nullptr));
+  EXPECT_EQ(1, count);
+
   EXPECT_EQ(SQL_ERROR, SQLFreeStmt(statement_, 999));
   EXPECT_EQ("HY092", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+      row_descriptor, 0, SQL_DESC_COUNT, &count, 0, nullptr));
+  EXPECT_EQ(1, count);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+      parameter_descriptor, 0, SQL_DESC_COUNT, &count, 0, nullptr));
+  EXPECT_EQ(1, count);
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_UNBIND));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_RESET_PARAMS));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+      row_descriptor, 0, SQL_DESC_COUNT, &count, 0, nullptr));
+  EXPECT_EQ(0, count);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+      parameter_descriptor, 0, SQL_DESC_COUNT, &count, 0, nullptr));
+  EXPECT_EQ(0, count);
+}
+
+TEST_F(AttributeApisTest, FreeStmtDropReleasesStatementAndDescriptors) {
+  SQLHDESC descriptor = SQL_NULL_HDESC;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_IMP_ROW_DESC, &descriptor, 0, nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_DROP));
+  EXPECT_EQ(SQL_INVALID_HANDLE, SQLCloseCursor(statement_));
+  SQLSMALLINT count = 99;
+  EXPECT_EQ(SQL_INVALID_HANDLE, SQLGetDescField(
+      descriptor, 0, SQL_DESC_COUNT, &count, 0, nullptr));
+  EXPECT_EQ(99, count);
+  statement_ = SQL_NULL_HSTMT;
 }
 
 TEST_F(AttributeApisTest, ReportsUnsupportedAttributesAndNullOutputs) {

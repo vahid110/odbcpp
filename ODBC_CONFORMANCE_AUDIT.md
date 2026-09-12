@@ -57,8 +57,8 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLDescribeParam` | A | Partial | unit, integration | Prepared/executed/exhausted/closed/direct states, exact diagnostics, fixed-size PostgreSQL types, bound precision/scale, cache revision, and untouched errors are covered; unknown variable precision and failure injection remain |
 | `SQLSetStmtAttr` | A/W | Partial | unit, integration | Common scalar modes, escape scanning, descriptor attachment, offset/operation pointers, and precise value diagnostics work; multirow arrays and optional cursor modes remain |
 | `SQLGetStmtAttr` | A/W | Partial | unit, integration | Common defaults, escape scanning, descriptor handles/pointers, row positioning, and recognized unsupported attributes are covered; platform-specific ODBC 3.8 fields remain |
-| `SQLCloseCursor` | A | Partial | unit, integration, DM | Missing/open cursor and pending-result discard are covered; complete statement-state matrix remains |
-| `SQLFreeStmt` | A | Partial | unit, integration, DM | SQL_CLOSE pending-result discard and basic options are covered; complete option/state matrix remains |
+| `SQLCloseCursor` | A | Verified | unit, integration, DM | Allocated, prepared, open-empty, exhausted, closed, update-count, failed-execution, and pending-result states are covered |
+| `SQLFreeStmt` | A | Verified | unit, integration, DM | SQL_CLOSE idempotence, ARD unbinding, APD reset, invalid-option preservation, SQL_DROP ownership, and pending-result discard are covered |
 | `SQLGetTypeInfo` | A/W | Partial | integration, DM | All supported types, type filters, wide entry test |
 | `SQLTables` | A/W | Partial | unit, integration, DM | Pattern/metadata-ID semantics and privilege visibility |
 | `SQLColumns` | A/W | Partial | unit, integration, DM | Pattern semantics and complete PostgreSQL type metadata |
@@ -445,6 +445,13 @@ substitute for ODBC diagnostics.
   default OFF path translates escapes before PostgreSQL sees them, ON preserves
   the original SQL for both direct and prepared execution, invalid modes return
   HY024 without changing state, and SQLNativeSql remains statement-independent.
+- Audit batch 54 closes the cursor-lifecycle pair. `SQLCloseCursor` now has
+  explicit coverage for allocated, prepared, open-empty, exhausted, already
+  closed, update-count, failed-execution, and pending-result states.
+  `SQLFreeStmt` proves SQL_CLOSE is harmless without a cursor, SQL_UNBIND and
+  SQL_RESET_PARAMS mutate the active descriptors, invalid options preserve
+  bindings, and deprecated SQL_DROP releases the statement plus its implicit
+  descriptor subtree. Both APIs are Verified for the synchronous surface.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

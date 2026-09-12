@@ -76,6 +76,38 @@ TEST_F(HandleLifecycleIntegrationTest,
   EXPECT_EQ("08002", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
+TEST_F(HandleLifecycleIntegrationTest, CursorCloseStateMatrix) {
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement_));
+  EXPECT_EQ(SQL_ERROR, SQLCloseCursor(statement_));
+  EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_CLOSE));
+
+  SQLCHAR prepared[] = "SELECT 1 WHERE FALSE";
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(statement_, prepared, SQL_NTS));
+  EXPECT_EQ(SQL_ERROR, SQLCloseCursor(statement_));
+  EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_CLOSE));
+
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(statement_));
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(statement_));
+  EXPECT_EQ(SQL_SUCCESS, SQLCloseCursor(statement_));
+  EXPECT_EQ(SQL_ERROR, SQLCloseCursor(statement_));
+  EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  SQLCHAR update[] = "SET application_name TO 'odbcpp_cursor_test'";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, update, SQL_NTS));
+  EXPECT_EQ(SQL_ERROR, SQLCloseCursor(statement_));
+  EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_CLOSE));
+
+  SQLCHAR invalid[] = "SELECT FROM";
+  ASSERT_EQ(SQL_ERROR, SQLExecDirect(statement_, invalid, SQL_NTS));
+  EXPECT_EQ(SQL_ERROR, SQLCloseCursor(statement_));
+  EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(statement_, SQL_CLOSE));
+}
+
 TEST_F(HandleLifecycleIntegrationTest,
        SuccessfulDisconnectInvalidatesStatementsAndDescriptors) {
   ASSERT_EQ(SQL_SUCCESS,
