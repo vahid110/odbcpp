@@ -1477,6 +1477,86 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLPrimaryKeys) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, PrimaryKeyArgumentsAreLiteralAndKeepEmpty) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE \"odbcpp.primary_'_keys\"("
+                  "second_key integer, first_key integer, "
+                  "CONSTRAINT odbcpp_literal_pk "
+                  "PRIMARY KEY(first_key, second_key))",
+        SQL_NTS));
+
+    SQLCHAR table_name[] = "odbcpp.primary_'_keys";
+    ASSERT_EQ(SQL_SUCCESS, SQLPrimaryKeys(
+        hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    const auto catalog = text_cell(hstmt, 1);
+    const auto schema = text_cell(hstmt, 2);
+    ASSERT_TRUE(catalog.has_value());
+    ASSERT_TRUE(schema.has_value());
+    EXPECT_EQ(std::optional<std::string>("odbcpp.primary_'_keys"),
+              text_cell(hstmt, 3));
+    EXPECT_EQ(std::optional<std::string>("first_key"), text_cell(hstmt, 4));
+    EXPECT_EQ(std::optional<SQLINTEGER>(1), integer_cell(hstmt, 5));
+    EXPECT_EQ(std::optional<std::string>("odbcpp_literal_pk"),
+              text_cell(hstmt, 6));
+
+    EXPECT_EQ(SQL_ERROR, SQLPrimaryKeys(
+        hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS));
+    EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("second_key"), text_cell(hstmt, 4));
+    EXPECT_EQ(std::optional<SQLINTEGER>(2), integer_cell(hstmt, 5));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR empty[] = "";
+    SQLCHAR wildcard[] = "%";
+    auto expect_no_keys = [&](SQLCHAR* catalog_name,
+                              SQLSMALLINT catalog_length,
+                              SQLCHAR* schema_name,
+                              SQLSMALLINT schema_length,
+                              SQLCHAR* requested_table,
+                              SQLSMALLINT table_length) {
+        ASSERT_EQ(SQL_SUCCESS, SQLPrimaryKeys(
+            hstmt, catalog_name, catalog_length, schema_name, schema_length,
+            requested_table, table_length));
+        EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    expect_no_keys(empty, SQL_NTS, nullptr, 0, table_name, SQL_NTS);
+    expect_no_keys(nullptr, 0, empty, SQL_NTS, table_name, SQL_NTS);
+    expect_no_keys(nullptr, 0, nullptr, 0, empty, SQL_NTS);
+    expect_no_keys(wildcard, SQL_NTS, nullptr, 0, table_name, SQL_NTS);
+    expect_no_keys(nullptr, 0, wildcard, SQL_NTS, table_name, SQL_NTS);
+    expect_no_keys(nullptr, 0, nullptr, 0, wildcard, SQL_NTS);
+
+    std::string catalog_name = *catalog;
+    std::string schema_name = *schema;
+    ASSERT_EQ(SQL_SUCCESS, SQLPrimaryKeys(
+        hstmt, reinterpret_cast<SQLCHAR*>(catalog_name.data()), SQL_NTS,
+        reinterpret_cast<SQLCHAR*>(schema_name.data()), SQL_NTS,
+        table_name, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("first_key"), text_cell(hstmt, 4));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    auto wide_catalog = rs::odbc::utf8_to_wide(catalog_name);
+    auto wide_schema = rs::odbc::utf8_to_wide(schema_name);
+    auto wide_table = rs::odbc::utf8_to_wide("odbcpp.primary_'_keys");
+    ASSERT_TRUE(wide_catalog.has_value());
+    ASSERT_TRUE(wide_schema.has_value());
+    ASSERT_TRUE(wide_table.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLPrimaryKeysW(
+        hstmt,
+        wide_catalog->data(), static_cast<SQLSMALLINT>(wide_catalog->size()),
+        wide_schema->data(), static_cast<SQLSMALLINT>(wide_schema->size()),
+        wide_table->data(), static_cast<SQLSMALLINT>(wide_table->size())));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("first_key"), text_cell(hstmt, 4));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, ListsPostgreSQLForeignKeys) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,

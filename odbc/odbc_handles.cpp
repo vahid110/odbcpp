@@ -3456,11 +3456,11 @@ SQLRETURN ODBCStatement::primary_keys(
       "AND constraints.table_name = keys.table_name "
       "WHERE constraints.constraint_type = 'PRIMARY KEY' "
       "AND keys.table_name = " + quote_catalog_literal(table_name);
-  if (catalog_name && !catalog_name->empty()) {
+  if (catalog_name) {
     query += " AND keys.table_catalog = " +
         quote_catalog_literal(*catalog_name);
   }
-  if (schema_name && !schema_name->empty()) {
+  if (schema_name) {
     query += " AND keys.table_schema = " +
         quote_catalog_literal(*schema_name);
   }
