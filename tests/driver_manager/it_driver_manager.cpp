@@ -651,7 +651,7 @@ int main() {
       !succeeded(SQLSpecialColumns(
           statement, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
           primary_key_table, SQL_NTS,
-          SQL_SCOPE_SESSION, SQL_NO_NULLS)) ||
+          SQL_SCOPE_CURROW, SQL_NO_NULLS)) ||
       !succeeded(SQLFetch(statement))) {
     print_diagnostic(SQL_HANDLE_STMT, statement);
     SQLFreeHandle(SQL_HANDLE_STMT, statement);
@@ -711,7 +711,7 @@ int main() {
       !succeeded(SQLSpecialColumnsW(
           statement, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
           wide_primary_key_table.data(), SQL_NTS,
-          SQL_SCOPE_SESSION, SQL_NO_NULLS)) ||
+          SQL_SCOPE_CURROW, SQL_NO_NULLS)) ||
       !succeeded(SQLFetch(statement))) {
     print_diagnostic(SQL_HANDLE_STMT, statement);
     SQLFreeHandle(SQL_HANDLE_STMT, statement);
