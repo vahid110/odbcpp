@@ -308,8 +308,10 @@ TEST_F(AttributeApisTest, EndTransactionValidatesState) {
   EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection_));
   EXPECT_EQ(SQL_ERROR, SQLEndTran(SQL_HANDLE_DBC, connection_, 99));
   EXPECT_EQ("HY012", diagnostic_state(SQL_HANDLE_DBC, connection_));
-  EXPECT_EQ(SQL_ERROR, SQLEndTran(SQL_HANDLE_ENV, environment_, SQL_COMMIT));
-  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_ENV, environment_));
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLEndTran(SQL_HANDLE_ENV, environment_, SQL_COMMIT));
+  EXPECT_EQ(SQL_ERROR, SQLEndTran(SQL_HANDLE_ENV, environment_, 99));
+  EXPECT_EQ("HY012", diagnostic_state(SQL_HANDLE_ENV, environment_));
 }
 
 TEST_F(AttributeApisTest, ReportsTransactionCapabilities) {

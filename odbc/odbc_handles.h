@@ -485,6 +485,7 @@ public:
   void unregister_handle(SQLHANDLE handle);
   void unregister_children(SQLHANDLE parent);
   bool has_children(SQLHANDLE parent);
+  std::vector<SQLHANDLE> child_handles(SQLHANDLE parent, HandleType type);
   std::shared_ptr<ODBCHandle> get_handle(SQLHANDLE handle);
   std::shared_ptr<ODBCConnection> get_connection_for_handle(SQLHANDLE handle);
   void detach_descriptor_from_statements(SQLHDESC descriptor);

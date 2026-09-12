@@ -4,7 +4,7 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 
 ## Features
 
-- **ODBC API Foundation**: 73 entry points (47 non-wide, 26 Unicode) with diagnostics and descriptor storage
+- **ODBC API Foundation**: 76 entry points (49 non-wide, 27 Unicode) with diagnostics and descriptor storage
 - **Unicode SQL and Data**: Strict UTF-8/SQLWCHAR conversion for wide connections, execution, preparation, diagnostics, native SQL, results, and parameters
 - **ODBC Descriptors**: IRD, APD, ARD, and IPD storage plus explicit descriptor handles and field APIs
 - **Prepared Statements**: Typed/null-aware PostgreSQL Parse/Bind/Describe/Execute workflow
@@ -447,7 +447,8 @@ sudo odbcinst -i -s -f odbc.ini
 ## Testing
 
 ### Test Coverage
-- **Total Test Executables**: 31 (22 unit + 9 integration)
+- **Total Test Executables**: 35 when a Driver Manager is available
+  (25 unit + 9 in-process integration + 1 Driver Manager integration)
 - **CI Coverage**: Linux, Windows, sanitizers, and mixed-width iODBC Unicode
 - **Current Focus**: Transport, PostgreSQL protocol, core ODBC behavior, Unicode,
   descriptors, prepared statements, column binding, diagnostics, and logging;
@@ -464,8 +465,8 @@ source ./setup-test-env.sh
 ctest --test-dir build-redshift
 
 # Run specific test categories
-ctest --test-dir build-redshift -L unit         # 22 unit test executables
-ctest --test-dir build-redshift -L integration  # 9 integration executables
+ctest --test-dir build-redshift -L unit         # 25 unit test executables
+ctest --test-dir build-redshift -L integration  # 10 including Driver Manager
 
 # Test specific functionality
 ctest --test-dir build-redshift -R prepared_statements

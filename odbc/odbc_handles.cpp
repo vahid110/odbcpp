@@ -48,6 +48,24 @@ bool enabled(const std::string& value) {
          normalized == "ON";
 }
 
+bool is_timeout_error(const std::error_code& error) {
+  return error == rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
+}
+
+bool is_connection_loss(const std::error_code& error) {
+  return error == rs::util::make_error_code(rs::util::DbErrorCode::NetworkError) ||
+      error == rs::util::make_error_code(rs::util::DbErrorCode::TLSError) ||
+      error == rs::util::make_error_code(rs::util::DbErrorCode::NotConnected) ||
+      error == rs::util::make_error_code(rs::util::DbErrorCode::ConnectionFailed);
+}
+
+const char* request_sqlstate(const std::error_code& error,
+                             const char* fallback) {
+  if (is_timeout_error(error)) return SQLSTATE_TIMEOUT;
+  if (is_connection_loss(error)) return SQLSTATE_COMMUNICATION_LINK_FAILURE;
+  return fallback;
+}
+
 std::chrono::milliseconds timeout_duration(SQLULEN seconds) {
   if (seconds == 0) return std::chrono::milliseconds::max();
   constexpr auto maximum = std::chrono::milliseconds::max().count();
@@ -816,8 +834,7 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
     // Connect synchronously for ODBC compatibility
     auto result = db_conn_->connect(settings);
     if (result.has_error()) {
-      const auto timeout = result.error() ==
-          rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
+      const auto timeout = is_timeout_error(result.error());
       set_error(timeout ? SQLSTATE_CONNECTION_TIMEOUT : SQLSTATE_CONNECTION_FAILURE,
                 result.error_message());
       log(rs::core::logging::LogLevel::Error, "connection_failed",
@@ -834,9 +851,10 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
       auto isolation_result = db_conn_->execute_query(
           command, rs::util::make_deadline(settings.timeout));
       if (isolation_result.has_error()) {
-        const auto timeout = isolation_result.error() ==
-            rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
-        set_error(timeout ? SQLSTATE_CONNECTION_TIMEOUT : SQLSTATE_CONNECTION_FAILURE,
+        const auto timeout = is_timeout_error(isolation_result.error());
+        set_error(timeout ? SQLSTATE_CONNECTION_TIMEOUT
+                          : request_sqlstate(isolation_result.error(),
+                                             SQLSTATE_CONNECTION_FAILURE),
                   isolation_result.error_message());
         log(rs::core::logging::LogLevel::Error, "connection_failed",
             isolation_result.error_message(),
@@ -942,9 +960,8 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
           command, rs::util::make_deadline(
                        timeout_duration(connection_timeout_seconds_)));
       if (result.has_error()) {
-        const auto timeout = result.error() ==
-            rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
-        set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_GENERAL_ERROR,
+        const auto timeout = is_timeout_error(result.error());
+        set_error(request_sqlstate(result.error(), SQLSTATE_GENERAL_ERROR),
                   result.error_message());
         if (timeout) close_connection();
         return SQL_ERROR;
@@ -1021,7 +1038,8 @@ SQLRETURN ODBCConnection::get_attribute(SQLINTEGER attribute,
         set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
         return SQL_ERROR;
       }
-      *value = SQL_CD_FALSE;
+      *value = db_conn_ && db_conn_->is_connected()
+          ? SQL_CD_FALSE : SQL_CD_TRUE;
       return SQL_SUCCESS;
     case SQL_ATTR_METADATA_ID:
       *value = SQL_FALSE;
@@ -1092,9 +1110,8 @@ SQLRETURN ODBCConnection::end_transaction(SQLSMALLINT completion_type) {
       command, rs::util::make_deadline(
                    timeout_duration(connection_timeout_seconds_)));
   if (result.has_error()) {
-    const auto timeout = result.error() ==
-        rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
-    set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_GENERAL_ERROR,
+    const auto timeout = is_timeout_error(result.error());
+    set_error(request_sqlstate(result.error(), SQLSTATE_GENERAL_ERROR),
               result.error_message());
     if (timeout) close_connection();
     return SQL_ERROR;
@@ -1108,7 +1125,7 @@ SQLRETURN ODBCConnection::disconnect() {
     set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
     return SQL_ERROR;
   }
-  if (transaction_active_) {
+  if (transaction_active_ && db_conn_ && db_conn_->is_connected()) {
     set_error(SQLSTATE_INVALID_TRANSACTION_STATE,
               "An active transaction must be committed or rolled back before disconnecting");
     return SQL_ERROR;
@@ -1704,9 +1721,8 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
         timeout_duration(query_timeout_seconds_));
     auto transaction = conn_->begin_transaction_if_needed(deadline);
     if (transaction.has_error()) {
-      const auto timeout = transaction.error() ==
-          rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
-      set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_GENERAL_ERROR,
+      const auto timeout = is_timeout_error(transaction.error());
+      set_error(request_sqlstate(transaction.error(), SQLSTATE_GENERAL_ERROR),
                 transaction.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                  transaction.error_message(),
@@ -1718,9 +1734,8 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
     auto result = conn_->get_db_connection()->execute_query(sql, deadline);
     
     if (result.has_error()) {
-      const auto timeout = result.error() ==
-          rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
-      set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_SYNTAX_ERROR,
+      const auto timeout = is_timeout_error(result.error());
+      set_error(request_sqlstate(result.error(), SQLSTATE_SYNTAX_ERROR),
                 result.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                  result.error_message(),
@@ -2505,9 +2520,8 @@ SQLRETURN ODBCStatement::execute() {
         timeout_duration(query_timeout_seconds_));
     auto transaction = conn_->begin_transaction_if_needed(deadline);
     if (transaction.has_error()) {
-      const auto timeout = transaction.error() ==
-          rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
-      set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_GENERAL_ERROR,
+      const auto timeout = is_timeout_error(transaction.error());
+      set_error(request_sqlstate(transaction.error(), SQLSTATE_GENERAL_ERROR),
                 transaction.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                  transaction.error_message(),
@@ -2519,9 +2533,8 @@ SQLRETURN ODBCStatement::execute() {
     auto result = conn_->get_db_connection()->execute_prepared(prepared_sql_, param_values, deadline);
     
     if (result.has_error()) {
-      const auto timeout = result.error() ==
-          rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
-      set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_SYNTAX_ERROR,
+      const auto timeout = is_timeout_error(result.error());
+      set_error(request_sqlstate(result.error(), SQLSTATE_SYNTAX_ERROR),
                 result.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                  result.error_message(),
@@ -2830,9 +2843,8 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
   auto result = conn_->get_db_connection()->describe_statement(
       prepared_sql_, parameter_types, deadline);
   if (result.has_error()) {
-    const auto timeout = result.error() ==
-        rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
-    set_error(timeout ? SQLSTATE_TIMEOUT : SQLSTATE_SYNTAX_ERROR,
+    const auto timeout = is_timeout_error(result.error());
+    set_error(request_sqlstate(result.error(), SQLSTATE_SYNTAX_ERROR),
               result.error_message());
     if (timeout) conn_->disconnect();
     return SQL_ERROR;
@@ -3737,6 +3749,18 @@ bool HandleRegistry::has_children(SQLHANDLE parent) {
     if (entry.parent == parent) return true;
   }
   return false;
+}
+
+std::vector<SQLHANDLE> HandleRegistry::child_handles(
+    SQLHANDLE parent, HandleType type) {
+  std::vector<SQLHANDLE> result;
+  std::lock_guard lock(mutex_);
+  for (const auto& [handle, entry] : handles_) {
+    if (entry.parent == parent && entry.object->get_type() == type) {
+      result.push_back(handle);
+    }
+  }
+  return result;
 }
 
 void HandleRegistry::collect_subtree_locked(

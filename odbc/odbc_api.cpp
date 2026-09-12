@@ -1,8 +1,10 @@
 #include "odbc_api.h"
 #include "c_api_guard.h"
+#include "connection_string.h"
 #include "odbc_handles.h"
 #include "unicode.h"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -29,6 +31,26 @@ namespace {
     if (!str) return "";
     if (length == SQL_NTS) return reinterpret_cast<char*>(str);
     return std::string(reinterpret_cast<char*>(str), length);
+  }
+
+  std::optional<std::string> first_unknown_connection_keyword(
+      const std::string& connection_string) {
+    static constexpr std::array<std::string_view, 26> supported{{
+        "DSN", "DRIVER", "SERVER", "HOST", "PORT", "DATABASE", "DB",
+        "UID", "USER", "PWD", "PASSWORD", "SSL", "DESCRIPTION",
+        "TRANSPORTMODE", "ASYNCMAXINFLIGHT", "ASYNCQUEUEDEPTH",
+        "ASYNCENGINE", "DEADLINEMODEL", "LOGLEVEL", "LOGFORMAT",
+        "LOGSINK", "LOGFILE", "LOGMAXSIZE", "LOGMAXFILES", "LOGASYNC",
+        "LOGQUERIES"}};
+    for (const auto& [keyword, value] :
+         ConnectionString::parse(connection_string)) {
+      (void)value;
+      if (std::find(supported.begin(), supported.end(), keyword) ==
+          supported.end()) {
+        return keyword;
+      }
+    }
+    return std::nullopt;
   }
   
   template <typename Length>
@@ -590,25 +612,16 @@ static SQLRETURN SQLDriverConnect_impl(
       sqlchar_to_string(connection_string_in, string_length1);
   const auto connect_result = conn->connect(connection_string, {}, {});
   if (connect_result != SQL_SUCCESS) return connect_result;
-
-  const auto output_length = connection_string.size();
-  if (string_length2) {
-    *string_length2 = static_cast<SQLSMALLINT>(
-        std::min(output_length,
-                 static_cast<std::size_t>(std::numeric_limits<SQLSMALLINT>::max())));
-  }
-  if (!connection_string_out || buffer_length <= 0) return SQL_SUCCESS;
-
-  const auto copied_length = std::min(
-      output_length, static_cast<std::size_t>(buffer_length - 1));
-  std::memcpy(connection_string_out, connection_string.data(), copied_length);
-  connection_string_out[copied_length] = '\0';
-  if (copied_length < output_length) {
-    conn->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
-                    "Output connection string was truncated");
+  const auto unknown = first_unknown_connection_keyword(connection_string);
+  const auto output_result = write_narrow_output(
+      conn.get(), connection_string, connection_string_out, buffer_length,
+      string_length2, "Output connection string was truncated");
+  if (unknown) {
+    conn->set_error(SQLSTATE_INVALID_CONNECTION_STRING_ATTRIBUTE,
+                    "Unsupported connection string keyword: " + *unknown);
     return SQL_SUCCESS_WITH_INFO;
   }
-  return SQL_SUCCESS;
+  return output_result;
 }
 
 static SQLRETURN SQLDriverConnectW_impl(
@@ -656,11 +669,17 @@ static SQLRETURN SQLDriverConnectW_impl(
   }
   const auto connect_result = conn->connect(*connection_string, {}, {});
   if (connect_result != SQL_SUCCESS) return connect_result;
-
-  return write_wide_output(
+  const auto unknown = first_unknown_connection_keyword(*connection_string);
+  const auto output_result = write_wide_output(
       conn, *connection_string, connection_string_out, buffer_length,
       string_length2,
       "Output connection string was truncated");
+  if (unknown) {
+    conn->set_error(SQLSTATE_INVALID_CONNECTION_STRING_ATTRIBUTE,
+                    "Unsupported connection string keyword: " + *unknown);
+    return SQL_SUCCESS_WITH_INFO;
+  }
+  return output_result;
 }
 
 static SQLRETURN SQLDisconnect_impl(SQLHDBC connection_handle) {
@@ -785,10 +804,35 @@ static SQLRETURN SQLEndTran_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
   if (handle_type == SQL_HANDLE_ENV) {
     auto environment = get_valid_handle<ODBCEnvironment>(handle);
     if (!environment) return SQL_INVALID_HANDLE;
-    environment->set_error(
-        SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
-        "Environment-wide transaction completion is not implemented");
-    return SQL_ERROR;
+    if (completion_type != SQL_COMMIT && completion_type != SQL_ROLLBACK) {
+      environment->set_error(
+          SQLSTATE_INVALID_TRANSACTION_OPERATION,
+          "Completion type must be SQL_COMMIT or SQL_ROLLBACK");
+      return SQL_ERROR;
+    }
+
+    SQLRETURN aggregate = SQL_SUCCESS;
+    for (const auto connection_handle :
+         HandleRegistry::instance().child_handles(
+             handle, HandleType::Connection)) {
+      const auto connection = HandleRegistry::instance().get_handle_as<
+          ODBCConnection>(connection_handle);
+      if (!connection || !connection->is_connected()) continue;
+      const auto result = SQLEndTran(
+          SQL_HANDLE_DBC, connection_handle, completion_type);
+      if (result == SQL_ERROR || result == SQL_INVALID_HANDLE) {
+        aggregate = SQL_ERROR;
+      } else if (result == SQL_SUCCESS_WITH_INFO &&
+                 aggregate == SQL_SUCCESS) {
+        aggregate = SQL_SUCCESS_WITH_INFO;
+      }
+    }
+    if (aggregate == SQL_ERROR) {
+      environment->set_error(
+          SQLSTATE_TRANSACTION_STATE_UNKNOWN,
+          "One or more connections could not complete the transaction");
+    }
+    return aggregate;
   }
   return SQL_INVALID_HANDLE;
 }

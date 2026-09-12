@@ -35,11 +35,11 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLAllocHandle` | A | Partial | unit failure injection, integration, DM | DBC requires an ODBC version, STMT/DESC require an open connection, and allocation failure returns HY001; complete type/state matrix remains |
 | `SQLFreeHandle` | A | Partial | unit, integration, DM | Parent/child free ordering is enforced; complete state matrix remains |
 | `SQLConnect` | A/W | Partial | unit failure, integration, DM | Reconnect is rejected with 08002; complete input/state matrix remains |
-| `SQLDriverConnect` | A/W | Partial | unit, DM | Completion modes, exact output-string rules, connected-state handling |
+| `SQLDriverConnect` | A/W | Partial | unit, integration, DM | Noninteractive completion modes, exact output/truncation rules, connected-state output preservation, and ANSI/wide unknown-keyword warnings are covered; interactive prompting remains unsupported |
 | `SQLDisconnect` | A | Partial | unit, integration, DM | Disconnected, active-transaction, and child-invalidation paths covered; async execution remains |
 | `SQLSetConnectAttr` | A/W | Partial | unit, integration | Common defaults, catalog selection, connection timeout, invalid values, and unsupported modes covered; remaining platform/DM-owned attributes need classification |
-| `SQLGetConnectAttr` | A/W | Partial | unit, integration | Common numeric values, connection timeout, current catalog buffers, read-only attributes, and connected-state checks covered; broken-link detection remains |
-| `SQLEndTran` | A | Partial | unit, integration | Environment-wide completion and multi-connection behavior |
+| `SQLGetConnectAttr` | A/W | Partial | unit, integration | Common numeric values, connection timeout, current catalog buffers, read-only attributes, connected-state checks, and cached broken-link detection are covered; remaining platform/DM-owned attributes need classification |
+| `SQLEndTran` | A | Partial | unit, integration | Connection and environment scopes, multi-connection commit/rollback, inactive environments, and invalid completion codes are covered; transaction-failure injection remains |
 | `SQLExecDirect` | A/W | Partial | unit failure, integration, DM | Open cursors are protected and direct execution replaces prepared SQL; cancellation remains |
 | `SQLPrepare` | A/W | Partial | integration, DM | Open cursors are protected, old result state is retired, and PostgreSQL errors can surface through pre-execution result metadata discovery; eager prepare-time validation remains |
 | `SQLExecute` | A | Partial | integration | Unprepared execution returns HY010 and open-cursor re-execution returns 24000; parameter arrays and data-at-execution remain |
@@ -343,6 +343,26 @@ substitute for ODBC diagnostics.
   PostgreSQL packet sizing is explicitly classified as unsupported before
   connection and as immutable after connection, with output preservation and
   ANSI/wide entry-point coverage.
+- Audit batch 38 records failed transport trips in the database connection and
+  exposes that cached state through `SQL_ATTR_CONNECTION_DEAD` without a
+  server round trip. Communication failures now report 08S01 instead of being
+  misclassified as SQL syntax errors. A deterministic transport test and a
+  real PostgreSQL backend-termination test cover the transition.
+- Audit batch 39 verifies `SQLDriverConnect` with no-prompt, complete, and
+  complete-required modes against PostgreSQL. The driver returns the exact
+  input connection string and required length, reports 01004 on truncation,
+  and preserves both output destinations when a connected handle is reused.
+  Interactive prompting remains explicitly unsupported with HYC00.
+- Audit batch 40 reports the required 01S00 warning when an otherwise usable
+  ANSI or wide connection string contains an unknown keyword. The completed
+  connection is retained, the input string is still returned unchanged, and
+  the shared narrow output writer replaces a duplicate buffer-copy path.
+- Audit batch 41 implements environment-scoped `SQLEndTran`. It visits every
+  connected child, commits or rolls back each active transaction, ignores
+  inactive connections, preserves per-connection diagnostics, and reports
+  25S01 on aggregate failure. Two independent PostgreSQL sessions prove both
+  rollback and commit behavior; empty-environment and invalid-code cases are
+  covered without server I/O.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

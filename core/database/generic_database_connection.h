@@ -49,6 +49,7 @@ private:
   rs::util::Result<void> perform_authentication_result(rs::util::Deadline deadline);
   rs::util::Result<QueryResult> read_query_result(rs::util::Deadline deadline);
   rs::util::Result<void> write_message_to_transport_result(rs::core::transport::ITransport& transport, const std::vector<std::byte>& data, rs::util::Deadline deadline);
+  void mark_transport_failed() noexcept;
 };
 
 } // namespace rs::core::database

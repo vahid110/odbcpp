@@ -114,6 +114,10 @@ bool GenericDatabaseConnection::is_connected() const {
   return connected_;
 }
 
+void GenericDatabaseConnection::mark_transport_failed() noexcept {
+  connected_ = false;
+}
+
 rs::util::Result<QueryResult> GenericDatabaseConnection::execute_query(std::string_view sql, rs::util::Deadline deadline) {
   if (!connected_) {
     return rs::util::Result<QueryResult>{rs::util::DbErrorCode::NotConnected, "Not connected"};
@@ -232,9 +236,11 @@ rs::util::Result<void> GenericDatabaseConnection::write_all_result(const std::ve
   while (offset < data.size()) {
     auto result = transport_->send(std::span<const std::byte>(data.data() + offset, data.size() - offset), deadline);
     if (result.has_error()) {
+      mark_transport_failed();
       return rs::util::Result<void>{result.error(), result.error_message()};
     }
     if (result->n == 0) {
+      mark_transport_failed();
       return rs::util::Result<void>{rs::util::DbErrorCode::NetworkError, "Write failed"};
     }
     offset += result->n;
@@ -258,10 +264,12 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
   while (offset < 5) {
     auto result = transport_->recv(std::span<std::byte>(header.data() + offset, 5 - offset), deadline);
     if (result.has_error()) {
+      mark_transport_failed();
       return rs::util::Result<std::vector<std::byte>>{
           result.error(), result.error_message()};
     }
     if (result->eof) {
+      mark_transport_failed();
       return rs::util::Result<std::vector<std::byte>>{rs::util::DbErrorCode::NetworkError, "Unexpected EOF"};
     }
     if (result->n == 0) continue;
@@ -273,6 +281,7 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
   uint32_t len = (p[1] << 24) | (p[2] << 16) | (p[3] << 8) | p[4];
   
   if (len < 4) {
+    mark_transport_failed();
     return rs::util::Result<std::vector<std::byte>>{rs::util::DbErrorCode::ProtocolError, "Invalid message length"};
   }
   
@@ -286,10 +295,12 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
   while (offset < message.size()) {
     auto result = transport_->recv(std::span<std::byte>(message.data() + offset, message.size() - offset), deadline);
     if (result.has_error()) {
+      mark_transport_failed();
       return rs::util::Result<std::vector<std::byte>>{
           result.error(), result.error_message()};
     }
     if (result->eof) {
+      mark_transport_failed();
       return rs::util::Result<std::vector<std::byte>>{rs::util::DbErrorCode::NetworkError, "Unexpected EOF"};
     }
     if (result->n == 0) continue;
@@ -377,9 +388,11 @@ rs::util::Result<void> GenericDatabaseConnection::write_message_to_transport_res
   while (offset < data.size()) {
     auto result = transport.send(std::span<const std::byte>(data.data() + offset, data.size() - offset), deadline);
     if (result.has_error()) {
+      mark_transport_failed();
       return rs::util::Result<void>{result.error(), result.error_message()};
     }
     if (result->n == 0) {
+      mark_transport_failed();
       return rs::util::Result<void>{rs::util::DbErrorCode::NetworkError, "Write failed"};
     }
     offset += result->n;

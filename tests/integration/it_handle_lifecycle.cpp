@@ -2,8 +2,11 @@
 
 #include "odbc/odbc_api.h"
 
+#include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -13,6 +16,22 @@ std::string diagnostic_state(SQLSMALLINT handle_type, SQLHANDLE handle) {
             SQLGetDiagRec(handle_type, handle, 1, state, nullptr, nullptr, 0,
                           nullptr));
   return reinterpret_cast<const char*>(state);
+}
+
+SQLCHAR* test_dsn() {
+  const auto* configured = std::getenv("ODBCPP_TEST_DSN");
+  return reinterpret_cast<SQLCHAR*>(const_cast<char*>(
+      configured && *configured ? configured : "DSN=RedshiftProd"));
+}
+
+std::vector<SQLWCHAR> wide_ascii(const std::string& value) {
+  std::vector<SQLWCHAR> result;
+  result.reserve(value.size() + 1);
+  for (const unsigned char character : value) {
+    result.push_back(static_cast<SQLWCHAR>(character));
+  }
+  result.push_back(0);
+  return result;
 }
 
 class HandleLifecycleIntegrationTest : public ::testing::Test {
@@ -25,10 +44,8 @@ class HandleLifecycleIntegrationTest : public ::testing::Test {
                             reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_DBC, environment_, &connection_));
-    const auto result = SQLConnect(
-        connection_, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
-                         "DSN=RedshiftProd")),
-        SQL_NTS, nullptr, 0, nullptr, 0);
+    const auto result = SQLConnect(connection_, test_dsn(), SQL_NTS,
+                                   nullptr, 0, nullptr, 0);
     if (result != SQL_SUCCESS) {
       GTEST_SKIP() << "Database connection failed";
     }
@@ -54,10 +71,8 @@ TEST_F(HandleLifecycleIntegrationTest,
   EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_DBC, connection_));
 
   EXPECT_EQ(SQL_ERROR,
-            SQLConnect(connection_,
-                       reinterpret_cast<SQLCHAR*>(const_cast<char*>(
-                           "DSN=RedshiftProd")),
-                       SQL_NTS, nullptr, 0, nullptr, 0));
+            SQLConnect(connection_, test_dsn(), SQL_NTS,
+                       nullptr, 0, nullptr, 0));
   EXPECT_EQ("08002", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
@@ -119,10 +134,8 @@ TEST(ConnectionAttributeIntegrationTest,
             SQLSetConnectAttr(connection, SQL_ATTR_CURRENT_CATALOG,
                               catalog, SQL_NTS));
   ASSERT_EQ(SQL_SUCCESS,
-            SQLConnect(connection,
-                       reinterpret_cast<SQLCHAR*>(const_cast<char*>(
-                           "DSN=RedshiftProd")),
-                       SQL_NTS, nullptr, 0, nullptr, 0));
+            SQLConnect(connection, test_dsn(), SQL_NTS,
+                       nullptr, 0, nullptr, 0));
 
   SQLUINTEGER dead = SQL_CD_TRUE;
   ASSERT_EQ(SQL_SUCCESS,
@@ -164,6 +177,245 @@ TEST(ConnectionAttributeIntegrationTest,
                               sizeof(dead), nullptr));
   EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST_F(HandleLifecycleIntegrationTest,
+       FailedServerTripMarksConnectionDeadWithoutAnotherRoundTrip) {
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement_));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetConnectAttr(
+                connection_, SQL_ATTR_AUTOCOMMIT,
+                reinterpret_cast<SQLPOINTER>(
+                    static_cast<std::uintptr_t>(SQL_AUTOCOMMIT_OFF)),
+                0));
+
+  EXPECT_EQ(SQL_ERROR,
+            SQLExecDirect(
+                statement_,
+                reinterpret_cast<SQLCHAR*>(const_cast<char*>(
+                    "SELECT pg_terminate_backend(pg_backend_pid())")),
+                SQL_NTS));
+  EXPECT_EQ("08S01", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  SQLUINTEGER dead = SQL_CD_FALSE;
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLGetConnectAttr(connection_, SQL_ATTR_CONNECTION_DEAD, &dead,
+                              sizeof(dead), nullptr));
+  EXPECT_EQ(SQL_CD_TRUE, dead);
+  EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection_));
+}
+
+TEST(DriverConnectIntegrationTest,
+     NoninteractiveCompletionModesReturnTheExactInputString) {
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                          reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+
+  for (const auto completion : {SQL_DRIVER_NOPROMPT, SQL_DRIVER_COMPLETE,
+                                SQL_DRIVER_COMPLETE_REQUIRED}) {
+    SQLHDBC connection = SQL_NULL_HDBC;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+    const auto* input = reinterpret_cast<const char*>(test_dsn());
+    SQLCHAR output[256]{};
+    SQLSMALLINT output_length = -1;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLDriverConnect(
+                  connection, nullptr, test_dsn(), SQL_NTS, output,
+                  sizeof(output), &output_length, completion));
+    EXPECT_STREQ(input, reinterpret_cast<const char*>(output));
+    EXPECT_EQ(std::strlen(input), static_cast<std::size_t>(output_length));
+    EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
+    EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  }
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(DriverConnectIntegrationTest,
+     TruncationAndConnectedStatePreserveRequiredOutputs) {
+  SQLHENV environment = SQL_NULL_HENV;
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                          reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+
+  SQLCHAR output[4]{};
+  SQLSMALLINT output_length = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLDriverConnect(connection, nullptr, test_dsn(), SQL_NTS,
+                             output, sizeof(output), &output_length,
+                             SQL_DRIVER_NOPROMPT));
+  EXPECT_STREQ("DSN", reinterpret_cast<const char*>(output));
+  EXPECT_EQ(std::strlen(reinterpret_cast<const char*>(test_dsn())),
+            static_cast<std::size_t>(output_length));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection));
+
+  SQLCHAR untouched[]{'k', 'e', 'e', 'p', 0};
+  output_length = 77;
+  EXPECT_EQ(SQL_ERROR,
+            SQLDriverConnect(connection, nullptr, test_dsn(), SQL_NTS,
+                             untouched, sizeof(untouched), &output_length,
+                             SQL_DRIVER_NOPROMPT));
+  EXPECT_STREQ("keep", reinterpret_cast<const char*>(untouched));
+  EXPECT_EQ(77, output_length);
+  EXPECT_EQ("08002", diagnostic_state(SQL_HANDLE_DBC, connection));
+
+  EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(DriverConnectIntegrationTest,
+     UnknownKeywordsWarnAfterConnectingForAnsiAndWideCalls) {
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                          reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+
+  const std::string input = reinterpret_cast<const char*>(test_dsn()) +
+      std::string(";UnknownOption=ignored");
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLDriverConnect(
+                connection, nullptr,
+                reinterpret_cast<SQLCHAR*>(const_cast<char*>(input.c_str())),
+                SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("01S00", diagnostic_state(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+  auto wide_input = wide_ascii(input);
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLDriverConnectW(connection, nullptr, wide_input.data(), SQL_NTS,
+                              nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("01S00", diagnostic_state(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(EnvironmentTransactionIntegrationTest,
+     CommitAndRollbackApplyToEveryConnectedChild) {
+  SQLHENV environment = SQL_NULL_HENV;
+  SQLHDBC first_connection = SQL_NULL_HDBC;
+  SQLHDBC second_connection = SQL_NULL_HDBC;
+  SQLHSTMT first_statement = SQL_NULL_HSTMT;
+  SQLHSTMT second_statement = SQL_NULL_HSTMT;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                          reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &first_connection));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &second_connection));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLConnect(first_connection, test_dsn(), SQL_NTS,
+                       nullptr, 0, nullptr, 0));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLConnect(second_connection, test_dsn(), SQL_NTS,
+                       nullptr, 0, nullptr, 0));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_STMT, first_connection,
+                           &first_statement));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_STMT, second_connection,
+                           &second_statement));
+  for (const auto connection : {first_connection, second_connection}) {
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLSetConnectAttr(
+                  connection, SQL_ATTR_AUTOCOMMIT,
+                  reinterpret_cast<SQLPOINTER>(
+                      static_cast<std::uintptr_t>(SQL_AUTOCOMMIT_OFF)),
+                  0));
+  }
+  for (const auto statement : {first_statement, second_statement}) {
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLExecDirect(
+                  statement,
+                  reinterpret_cast<SQLCHAR*>(const_cast<char*>(
+                      "CREATE TEMP TABLE odbcpp_env_txn(value integer)")),
+                  SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLExecDirect(
+                  statement,
+                  reinterpret_cast<SQLCHAR*>(const_cast<char*>(
+                      "INSERT INTO odbcpp_env_txn VALUES (1)")),
+                  SQL_NTS));
+  }
+
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLEndTran(SQL_HANDLE_ENV, environment, SQL_ROLLBACK));
+  for (const auto statement : {first_statement, second_statement}) {
+    EXPECT_EQ(SQL_ERROR,
+              SQLExecDirect(
+                  statement,
+                  reinterpret_cast<SQLCHAR*>(const_cast<char*>(
+                      "SELECT count(*) FROM odbcpp_env_txn")),
+                  SQL_NTS));
+    EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_STMT, statement));
+  }
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLEndTran(SQL_HANDLE_ENV, environment, SQL_ROLLBACK));
+
+  for (const auto statement : {first_statement, second_statement}) {
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLExecDirect(
+                  statement,
+                  reinterpret_cast<SQLCHAR*>(const_cast<char*>(
+                      "CREATE TEMP TABLE odbcpp_env_txn(value integer)")),
+                  SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLExecDirect(
+                  statement,
+                  reinterpret_cast<SQLCHAR*>(const_cast<char*>(
+                      "INSERT INTO odbcpp_env_txn VALUES (2)")),
+                  SQL_NTS));
+  }
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLEndTran(SQL_HANDLE_ENV, environment, SQL_COMMIT));
+  for (const auto statement : {first_statement, second_statement}) {
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLExecDirect(
+                  statement,
+                  reinterpret_cast<SQLCHAR*>(const_cast<char*>(
+                      "SELECT count(*) FROM odbcpp_env_txn")),
+                  SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement));
+    SQLINTEGER count = 0;
+    SQLLEN indicator = 0;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetData(statement, 1, SQL_C_SLONG, &count, sizeof(count),
+                         &indicator));
+    EXPECT_EQ(1, count);
+  }
+
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLEndTran(SQL_HANDLE_ENV, environment, SQL_ROLLBACK));
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, first_statement));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, second_statement));
+  EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(first_connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(second_connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, first_connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, second_connection));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
 }
 
