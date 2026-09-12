@@ -682,6 +682,22 @@ std::string quote_catalog_literal(const std::string& value) {
   return quoted;
 }
 
+std::string catalog_data_type_sql(const std::string& type_oid) {
+  return "CASE " + type_oid +
+      " WHEN 16 THEN -7 WHEN 17 THEN -3 WHEN 18 THEN 1 "
+      "WHEN 20 THEN -5 WHEN 21 THEN 5 WHEN 23 THEN 4 "
+      "WHEN 25 THEN -1 WHEN 700 THEN 7 WHEN 701 THEN 8 "
+      "WHEN 1042 THEN 1 WHEN 1043 THEN 12 WHEN 1082 THEN 91 "
+      "WHEN 1083 THEN 92 WHEN 1266 THEN 92 WHEN 1114 THEN 93 "
+      "WHEN 1184 THEN 93 WHEN 1700 THEN 2 ELSE 12 END::smallint";
+}
+
+std::string catalog_type_name_sql(const std::string& type_oid) {
+  return "CASE " + type_oid +
+      " WHEN 1083 THEN 'time' WHEN 1114 THEN 'timestamp' "
+      "ELSE pg_catalog.format_type(" + type_oid + ", NULL) END::text";
+}
+
 std::vector<std::string> parse_table_types(const std::string& value) {
   std::vector<std::string> types;
   std::size_t start = 0;
@@ -3337,26 +3353,10 @@ SQLRETURN ODBCStatement::columns(
       "sql_datetime_sub, char_octet_length, ordinal_position, is_nullable "
       "FROM (SELECT current_database()::text AS table_cat, "
       "table_schema::text AS table_schem, table_name::text AS table_name, "
-      "column_name::text AS column_name, "
-      "CASE data_type "
-      "WHEN 'boolean' THEN -7 WHEN 'smallint' THEN 5 "
-      "WHEN 'integer' THEN 4 WHEN 'bigint' THEN -5 "
-      "WHEN 'real' THEN 7 WHEN 'double precision' THEN 8 "
-      "WHEN 'numeric' THEN 2 WHEN 'decimal' THEN 3 "
-      "WHEN 'character' THEN 1 WHEN 'character varying' THEN 12 "
-      "WHEN 'text' THEN -1 WHEN 'bytea' THEN -3 "
-      "WHEN 'date' THEN 91 "
-      "WHEN 'time without time zone' THEN 92 "
-      "WHEN 'time with time zone' THEN 92 "
-      "WHEN 'timestamp without time zone' THEN 93 "
-      "WHEN 'timestamp with time zone' THEN 93 ELSE 12 END::smallint "
-      "AS data_type, "
-      "CASE data_type "
-      "WHEN 'character' THEN 'character' "
-      "WHEN 'character varying' THEN 'character varying' "
-      "WHEN 'time without time zone' THEN 'time' "
-      "WHEN 'timestamp without time zone' THEN 'timestamp' "
-      "ELSE data_type END::text AS type_name, "
+      "column_name::text AS column_name, " +
+      catalog_data_type_sql("types.oid") + " AS data_type, "
+      "COALESCE(columns.domain_name, " +
+      catalog_type_name_sql("types.oid") + ")::text AS type_name, "
       "CASE data_type "
       "WHEN 'boolean' THEN 1 WHEN 'smallint' THEN 5 "
       "WHEN 'integer' THEN 10 WHEN 'bigint' THEN 19 "
@@ -3397,27 +3397,27 @@ SQLRETURN ODBCStatement::columns(
       "ELSE NULL END::smallint AS num_prec_radix, "
       "CASE is_nullable WHEN 'YES' THEN 1 ELSE 0 END::smallint AS nullable, "
       "NULL::text AS remarks, column_default::text AS column_def, "
-      "CASE WHEN data_type IN ('date', 'time without time zone', "
-      "'time with time zone', 'timestamp without time zone', "
-      "'timestamp with time zone') THEN 9 ELSE CASE data_type "
-      "WHEN 'boolean' THEN -7 WHEN 'smallint' THEN 5 "
-      "WHEN 'integer' THEN 4 WHEN 'bigint' THEN -5 "
-      "WHEN 'real' THEN 7 WHEN 'double precision' THEN 8 "
-      "WHEN 'numeric' THEN 2 WHEN 'decimal' THEN 3 "
-      "WHEN 'character' THEN 1 WHEN 'character varying' THEN 12 "
-      "WHEN 'text' THEN -1 WHEN 'bytea' THEN -3 ELSE 12 END "
-      "END::smallint AS sql_data_type, "
+      "CASE WHEN types.oid IN (1082, 1083, 1266, 1114, 1184) "
+      "THEN 9 ELSE " + catalog_data_type_sql("types.oid") +
+      " END::smallint AS sql_data_type, "
       "CASE data_type WHEN 'date' THEN 1 "
       "WHEN 'time without time zone' THEN 2 "
       "WHEN 'time with time zone' THEN 2 "
       "WHEN 'timestamp without time zone' THEN 3 "
       "WHEN 'timestamp with time zone' THEN 3 ELSE NULL END::smallint "
       "AS sql_datetime_sub, "
-      "CASE WHEN data_type IN ('character', 'character varying', 'text') "
+      "CASE WHEN data_type = 'text' THEN 1073741824 "
+      "WHEN data_type IN ('character', 'character varying') "
       "THEN character_octet_length WHEN data_type = 'bytea' "
       "THEN 1073741824 ELSE NULL END::integer AS char_octet_length, "
       "ordinal_position::integer AS ordinal_position, "
-      "is_nullable::text AS is_nullable FROM information_schema.columns) "
+      "is_nullable::text AS is_nullable "
+      "FROM information_schema.columns AS columns "
+      "JOIN pg_catalog.pg_namespace AS type_schemas "
+      "ON type_schemas.nspname = columns.udt_schema "
+      "JOIN pg_catalog.pg_type AS types "
+      "ON types.typnamespace = type_schemas.oid "
+      "AND types.typname = columns.udt_name) "
       "AS odbcpp_columns WHERE 1=1";
   if (catalog_name) {
     query += " AND table_cat = " + quote_catalog_literal(*catalog_name);
@@ -3658,6 +3658,8 @@ SQLRETURN ODBCStatement::procedure_columns(
     const std::optional<std::string>& schema_name,
     const std::optional<std::string>& procedure_name,
     const std::optional<std::string>& column_name) {
+  const std::string base_type_oid =
+      "COALESCE(NULLIF(types.typbasetype, 0), types.oid)";
   std::string query =
       "WITH routine_columns AS (SELECT current_database()::text "
       "AS procedure_cat, namespaces.nspname::text AS procedure_schem, "
@@ -3688,50 +3690,40 @@ SQLRETURN ODBCStatement::procedure_columns(
       "(SELECT 1 FROM unnest(procedures.proargmodes) AS mode "
       "WHERE mode::text IN ('o', 'b', 't')))) "
       "SELECT columns.procedure_cat, columns.procedure_schem, "
-      "columns.procedure_name, columns.column_name, columns.column_type, "
-      "CASE types.oid WHEN 16 THEN -7 WHEN 17 THEN -3 WHEN 18 THEN 1 "
-      "WHEN 20 THEN -5 WHEN 21 THEN 5 WHEN 23 THEN 4 WHEN 25 THEN -1 "
-      "WHEN 700 THEN 7 WHEN 701 THEN 8 WHEN 1042 THEN 1 "
-      "WHEN 1043 THEN 12 WHEN 1082 THEN 91 "
-      "WHEN 1083 THEN 92 WHEN 1266 THEN 92 "
-      "WHEN 1114 THEN 93 WHEN 1184 THEN 93 "
-      "WHEN 1700 THEN 2 ELSE 12 END::smallint AS data_type, "
-      "CASE types.oid WHEN 16 THEN 'boolean' WHEN 17 THEN 'bytea' "
-      "WHEN 18 THEN 'char' WHEN 20 THEN 'bigint' WHEN 21 THEN 'smallint' "
-      "WHEN 23 THEN 'integer' WHEN 25 THEN 'text' WHEN 700 THEN 'real' "
-      "WHEN 701 THEN 'double precision' WHEN 1042 THEN 'character' "
-      "WHEN 1043 THEN 'character varying' WHEN 1082 THEN 'date' "
-      "WHEN 1083 THEN 'time' WHEN 1266 THEN 'time with time zone' "
-      "WHEN 1114 THEN 'timestamp' WHEN 1184 THEN 'timestamp with time zone' "
-      "WHEN 1700 THEN 'numeric' ELSE types.typname END::text AS type_name, "
-      "CASE types.oid WHEN 16 THEN 1 WHEN 17 THEN 1073741824 "
+      "columns.procedure_name, columns.column_name, columns.column_type, " +
+      catalog_data_type_sql(base_type_oid) + " AS data_type, " +
+      catalog_type_name_sql("types.oid") + " AS type_name, "
+      "CASE " + base_type_oid + " WHEN 16 THEN 1 WHEN 17 THEN 1073741824 "
       "WHEN 18 THEN 1 WHEN 20 THEN 19 WHEN 21 THEN 5 WHEN 23 THEN 10 "
       "WHEN 25 THEN 1073741824 WHEN 700 THEN 7 WHEN 701 THEN 15 "
       "WHEN 1042 THEN 0 WHEN 1043 THEN 0 WHEN 1082 THEN 10 "
       "WHEN 1083 THEN 15 WHEN 1266 THEN 21 WHEN 1114 THEN 29 "
       "WHEN 1184 THEN 35 WHEN 1700 THEN 0 ELSE 0 END::integer "
-      "AS column_size, CASE types.oid WHEN 16 THEN 1 WHEN 17 THEN 1073741824 "
+      "AS column_size, CASE " + base_type_oid +
+      " WHEN 16 THEN 1 WHEN 17 THEN 1073741824 "
       "WHEN 18 THEN 1 WHEN 20 THEN 8 WHEN 21 THEN 2 WHEN 23 THEN 4 "
       "WHEN 25 THEN 1073741824 WHEN 700 THEN 4 WHEN 701 THEN 8 "
       "WHEN 1042 THEN 0 WHEN 1043 THEN 0 WHEN 1082 THEN 10 "
       "WHEN 1083 THEN 15 WHEN 1266 THEN 21 WHEN 1114 THEN 29 "
       "WHEN 1184 THEN 35 WHEN 1700 THEN 0 ELSE 0 END::integer "
-      "AS buffer_length, CASE types.oid WHEN 20 THEN 0 WHEN 21 THEN 0 "
+      "AS buffer_length, CASE " + base_type_oid +
+      " WHEN 20 THEN 0 WHEN 21 THEN 0 "
       "WHEN 23 THEN 0 WHEN 700 THEN 6 WHEN 701 THEN 15 "
       "WHEN 1083 THEN 6 WHEN 1266 THEN 6 WHEN 1114 THEN 6 "
       "WHEN 1184 THEN 6 ELSE NULL END::smallint AS decimal_digits, "
-      "CASE WHEN types.oid IN (20, 21, 23, 700, 701, 1700) THEN 10 "
+      "CASE WHEN " + base_type_oid +
+      " IN (20, 21, 23, 700, 701, 1700) THEN 10 "
       "ELSE NULL END::smallint AS num_prec_radix, 2::smallint AS nullable, "
       "NULL::text AS remarks, NULL::text AS column_def, "
-      "CASE WHEN types.oid IN (1082, 1083, 1266, 1114, 1184) THEN 9 "
-      "ELSE CASE types.oid WHEN 16 THEN -7 WHEN 17 THEN -3 "
-      "WHEN 18 THEN 1 WHEN 20 THEN -5 WHEN 21 THEN 5 WHEN 23 THEN 4 "
-      "WHEN 25 THEN -1 WHEN 700 THEN 7 WHEN 701 THEN 8 "
-      "WHEN 1042 THEN 1 WHEN 1043 THEN 12 WHEN 1700 THEN 2 "
-      "ELSE 12 END END::smallint AS sql_data_type, "
-      "CASE types.oid WHEN 1082 THEN 1 WHEN 1083 THEN 2 WHEN 1266 THEN 2 "
+      "CASE WHEN " + base_type_oid +
+      " IN (1082, 1083, 1266, 1114, 1184) THEN 9 ELSE " +
+      catalog_data_type_sql(base_type_oid) +
+      " END::smallint AS sql_data_type, "
+      "CASE " + base_type_oid +
+      " WHEN 1082 THEN 1 WHEN 1083 THEN 2 WHEN 1266 THEN 2 "
       "WHEN 1114 THEN 3 WHEN 1184 THEN 3 ELSE NULL END::smallint "
-      "AS sql_datetime_sub, CASE types.oid WHEN 17 THEN 1073741824 "
+      "AS sql_datetime_sub, CASE " + base_type_oid +
+      " WHEN 17 THEN 1073741824 "
       "WHEN 18 THEN 1 WHEN 25 THEN 1073741824 WHEN 1042 THEN 0 "
       "WHEN 1043 THEN 0 ELSE NULL END::integer AS char_octet_length, "
       "columns.ordinal_position, ''::text AS is_nullable "
@@ -3829,21 +3821,10 @@ SQLRETURN ODBCStatement::special_columns(
       "AND attributes.attnum = key_numbers.attnum "
       "WHERE key_numbers.ordinal_position <= indexes.indnkeyatts) "
       "SELECT 0::smallint AS scope, "
-      "key_columns.column_name AS column_name, "
-      "CASE columns.data_type WHEN 'boolean' THEN -7 "
-      "WHEN 'smallint' THEN 5 WHEN 'integer' THEN 4 WHEN 'bigint' THEN -5 "
-      "WHEN 'real' THEN 7 WHEN 'double precision' THEN 8 "
-      "WHEN 'numeric' THEN 2 WHEN 'decimal' THEN 3 "
-      "WHEN 'character' THEN 1 WHEN 'character varying' THEN 12 "
-      "WHEN 'text' THEN -1 WHEN 'bytea' THEN -3 WHEN 'date' THEN 91 "
-      "WHEN 'time without time zone' THEN 92 "
-      "WHEN 'time with time zone' THEN 92 "
-      "WHEN 'timestamp without time zone' THEN 93 "
-      "WHEN 'timestamp with time zone' THEN 93 ELSE 12 END::smallint "
-      "AS data_type, CASE columns.data_type "
-      "WHEN 'time without time zone' THEN 'time' "
-      "WHEN 'timestamp without time zone' THEN 'timestamp' "
-      "ELSE columns.data_type END::text AS type_name, "
+      "key_columns.column_name AS column_name, " +
+      catalog_data_type_sql("types.oid") + " AS data_type, "
+      "COALESCE(columns.domain_name, " +
+      catalog_type_name_sql("types.oid") + ")::text AS type_name, "
       "CASE columns.data_type WHEN 'boolean' THEN 1 WHEN 'smallint' THEN 5 "
       "WHEN 'integer' THEN 10 WHEN 'bigint' THEN 19 WHEN 'real' THEN 7 "
       "WHEN 'double precision' THEN 15 "
@@ -3884,6 +3865,11 @@ SQLRETURN ODBCStatement::special_columns(
       "AND columns.table_schema = schemas.nspname "
       "AND columns.table_name = tables.relname "
       "AND columns.column_name = key_columns.column_name "
+      "JOIN pg_catalog.pg_namespace AS type_schemas "
+      "ON type_schemas.nspname = columns.udt_schema "
+      "JOIN pg_catalog.pg_type AS types "
+      "ON types.typnamespace = type_schemas.oid "
+      "AND types.typname = columns.udt_name "
       "ORDER BY key_columns.table_oid, key_columns.ordinal_position";
   return execute_direct(query);
 }

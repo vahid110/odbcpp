@@ -1443,6 +1443,150 @@ TEST_F(MetadataIntegrationTest, ColumnPatternsAndCatalogArgumentsFollowOdbc) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, CatalogTypeNamesPreservePostgreSQLTypes) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_catalog_domain AS integer",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_catalog_type_test("
+                  "uuid_key uuid NOT NULL, document jsonb, tags integer[], "
+                  "domain_key pg_temp.odbcpp_catalog_domain NOT NULL, "
+                  "numeric_key numeric(12,3), memo text, "
+                  "PRIMARY KEY(uuid_key, domain_key))",
+        SQL_NTS));
+    SQLCHAR table_name[] = "odbcpp_catalog_type_test";
+    ASSERT_EQ(SQL_SUCCESS, SQLColumns(
+        hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS,
+        nullptr, 0));
+
+    struct ExpectedColumn {
+        const char* name;
+        SQLINTEGER type;
+        const char* type_name;
+    };
+    constexpr std::array<ExpectedColumn, 6> expected_columns{{
+        {"uuid_key", SQL_VARCHAR, "uuid"},
+        {"document", SQL_VARCHAR, "jsonb"},
+        {"tags", SQL_VARCHAR, "integer[]"},
+        {"domain_key", SQL_INTEGER, "odbcpp_catalog_domain"},
+        {"numeric_key", SQL_NUMERIC, "numeric"},
+        {"memo", SQL_LONGVARCHAR, "text"},
+    }};
+    for (const auto& expected : expected_columns) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::optional<std::string>(expected.name), text_cell(hstmt, 4));
+        EXPECT_EQ(std::optional<SQLINTEGER>(expected.type), integer_cell(hstmt, 5));
+        EXPECT_EQ(std::optional<std::string>(expected.type_name),
+                  text_cell(hstmt, 6));
+        EXPECT_EQ(std::optional<SQLINTEGER>(expected.type),
+                  integer_cell(hstmt, 14));
+        if (std::strcmp(expected.name, "domain_key") == 0) {
+            EXPECT_EQ(std::optional<SQLINTEGER>(10), integer_cell(hstmt, 7));
+            EXPECT_EQ(std::optional<SQLINTEGER>(4), integer_cell(hstmt, 8));
+        } else if (std::strcmp(expected.name, "numeric_key") == 0) {
+            EXPECT_EQ(std::optional<SQLINTEGER>(12), integer_cell(hstmt, 7));
+            EXPECT_EQ(std::optional<SQLINTEGER>(3), integer_cell(hstmt, 9));
+        } else if (std::strcmp(expected.name, "memo") == 0) {
+            EXPECT_EQ(std::optional<SQLINTEGER>(1073741824),
+                      integer_cell(hstmt, 16));
+        }
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    auto wide_table = rs::odbc::utf8_to_wide("odbcpp_catalog_type_test");
+    auto wide_column = rs::odbc::utf8_to_wide("domain_key");
+    ASSERT_TRUE(wide_table.has_value());
+    ASSERT_TRUE(wide_column.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLColumnsW(
+        hstmt, nullptr, 0, nullptr, 0,
+        wide_table->data(), static_cast<SQLSMALLINT>(wide_table->size()),
+        wide_column->data(), static_cast<SQLSMALLINT>(wide_column->size())));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_INTEGER), integer_cell(hstmt, 5));
+    EXPECT_EQ(std::optional<std::string>("odbcpp_catalog_domain"),
+              text_cell(hstmt, 6));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
+        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+        table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NO_NULLS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("uuid_key"), text_cell(hstmt, 2));
+    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_VARCHAR), integer_cell(hstmt, 3));
+    EXPECT_EQ(std::optional<std::string>("uuid"), text_cell(hstmt, 4));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("domain_key"), text_cell(hstmt, 2));
+    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_INTEGER), integer_cell(hstmt, 3));
+    EXPECT_EQ(std::optional<std::string>("odbcpp_catalog_domain"),
+              text_cell(hstmt, 4));
+    EXPECT_EQ(std::optional<SQLINTEGER>(10), integer_cell(hstmt, 5));
+    EXPECT_EQ(std::optional<SQLINTEGER>(4), integer_cell(hstmt, 6));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumnsW(
+        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+        wide_table->data(), static_cast<SQLSMALLINT>(wide_table->size()),
+        SQL_SCOPE_CURROW, SQL_NO_NULLS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("uuid"), text_cell(hstmt, 4));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("odbcpp_catalog_domain"),
+              text_cell(hstmt, 4));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE FUNCTION pg_temp.odbcpp_catalog_type_function("
+                  "id uuid, key pg_temp.odbcpp_catalog_domain, "
+                  "tags integer[]) RETURNS jsonb LANGUAGE SQL "
+                  "AS 'SELECT ''{}''::jsonb'",
+        SQL_NTS));
+    SQLCHAR procedure_name[] = "odbcpp\\_catalog\\_type\\_function";
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedureColumns(
+        hstmt, nullptr, 0, nullptr, 0, procedure_name, SQL_NTS,
+        nullptr, 0));
+    constexpr std::array<SQLINTEGER, 4> expected_routine_types{
+        SQL_VARCHAR, SQL_INTEGER, SQL_VARCHAR, SQL_VARCHAR};
+    for (std::size_t i = 0; i < expected_routine_types.size(); ++i) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::optional<SQLINTEGER>(expected_routine_types[i]),
+                  integer_cell(hstmt, 6));
+        if (i == 1) {
+            const auto type_name = text_cell(hstmt, 7);
+            ASSERT_TRUE(type_name.has_value());
+            EXPECT_NE(std::string::npos,
+                      type_name->find("odbcpp_catalog_domain"));
+            EXPECT_EQ(std::optional<SQLINTEGER>(10), integer_cell(hstmt, 8));
+            EXPECT_EQ(std::optional<SQLINTEGER>(4), integer_cell(hstmt, 9));
+            EXPECT_EQ(std::optional<SQLINTEGER>(SQL_INTEGER),
+                      integer_cell(hstmt, 15));
+        }
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    auto wide_procedure = rs::odbc::utf8_to_wide(
+        "odbcpp\\_catalog\\_type\\_function");
+    ASSERT_TRUE(wide_procedure.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedureColumnsW(
+        hstmt, nullptr, 0, nullptr, 0,
+        wide_procedure->data(),
+        static_cast<SQLSMALLINT>(wide_procedure->size()),
+        nullptr, 0));
+    for (const auto expected_type : expected_routine_types) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::optional<SQLINTEGER>(expected_type),
+                  integer_cell(hstmt, 6));
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, ListsPostgreSQLPrimaryKeys) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,

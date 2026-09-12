@@ -61,13 +61,13 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLFreeStmt` | A | Verified | unit, integration, DM | SQL_CLOSE idempotence, ARD unbinding, APD reset, invalid-option preservation, SQL_DROP ownership, and pending-result discard are covered |
 | `SQLGetTypeInfo` | A/W | Verified | unit, integration, DM | All 19 fields are checked across the ordered supported-type inventory; valid-empty and HY004 filters, disconnected/open/exhausted cursor states, legacy plus ODBC 3 datetime identifiers, and A/W Driver Manager calls are covered |
 | `SQLTables` | A/W | Partial | unit, integration, DM | Null versus empty arguments, wildcard escaping, value-list filtering, catalog/schema/type enumerations, local temporary tables, state errors, malformed wide input, and A/W paths are covered; ODBC 2 catalog-pattern behavior and restricted-user visibility remain |
-| `SQLColumns` | A/W | Partial | unit, integration, DM | Null/empty, ordinary catalog, escaped patterns, cursor states, and A/W paths are covered; complete PostgreSQL type metadata and restricted-user visibility remain |
+| `SQLColumns` | A/W | Partial | unit, integration, DM | Null/empty, ordinary catalog, escaped patterns, PostgreSQL UUID/JSONB/array/domain type identities, text octet length, cursor states, and A/W paths are covered; complete size/precision metadata and restricted-user visibility remain |
 | `SQLPrimaryKeys` | A/W | Partial | unit, integration, DM | Required table, literal/empty arguments, escaping, key ordering, cursor states, and A/W paths are covered; restricted-user visibility remains |
 | `SQLForeignKeys` | A/W | Partial | unit, integration, DM | PK/FK filter combinations, ordinary/empty arguments, primary-target filtering, same-name constraints, rule/deferrability mapping, ordering, cursor states, and A/W paths are covered; restricted-user visibility remains |
 | `SQLStatistics` | A/W | Partial | unit, integration, DM | Ordinary/empty arguments, uniqueness filtering, quick statistics, expression/partial/hash/clustered classification, included columns, ordering, cursor states, and A/W paths are covered; exact cardinality remains |
 | `SQLProcedures` | A/W | Partial | unit, integration, DM | Ordinary catalog, null/empty and escaped patterns, procedure/function distinctions, overloads, all PostgreSQL argument-mode counts, cursor states, and A/W paths are covered; restricted-user visibility remains |
-| `SQLProcedureColumns` | A/W | Partial | unit, integration, DM | Ordinary catalog, null/empty and escaped patterns, unnamed columns, parameter modes/order, return rows, cursor states, and A/W paths are covered; result-set discovery and complete PostgreSQL type metadata remain |
-| `SQLSpecialColumns` | A/W | Partial | unit, integration, DM | Ordinary/empty arguments, conservative scope, nullable modes, primary-key preference, safe unique-index fallback, composite keys, row-version empty results, cursor states, and A/W paths are covered; complete type metadata remains |
+| `SQLProcedureColumns` | A/W | Partial | unit, integration, DM | Ordinary catalog, null/empty and escaped patterns, unnamed columns, parameter modes/order, return rows, PostgreSQL domain type identity/base metadata, cursor states, and A/W paths are covered; result-set discovery and complete size/precision metadata remain |
+| `SQLSpecialColumns` | A/W | Partial | unit, integration, DM | Ordinary/empty arguments, conservative scope, nullable modes, primary-key preference, safe unique-index fallback, composite keys, PostgreSQL UUID/domain identities, row-version empty results, cursor states, and A/W paths are covered; complete size/precision metadata remains |
 | `SQLGetDiagRec` | A/W | Verified | unit, integration, DM | Retrieval is nondestructive; handle type, record number, absent records, null destinations, native codes, exact-fit, one-short, and terminator-only A/W buffers are covered, including mixed-width iODBC translation |
 | `SQLGetDiagField` | A/W | Partial | unit, integration | All standard header/record identifiers, return provenance, origins, ANSI/wide lengths, and truncation are covered; row/column-specific server errors remain |
 | `SQLError` | A/W | Verified | unit, integration, DM | ANSI/wide calls share a per-handle cursor, return every diagnostic in order, preserve records for SQLGetDiagRec, reset on a new stack, select statement/connection/environment precedence, retain position after errors, and run through mixed-width iODBC mapping |
@@ -606,6 +606,15 @@ substitute for ODBC diagnostics.
   the prior count gap without adding duplicate production logic: the existing
   catalog query already handled the server's `i`, `o`, `b`, `v`, and `t` modes
   correctly.
+- Audit batch 76 shares PostgreSQL type classification across `SQLColumns`,
+  `SQLProcedureColumns`, and `SQLSpecialColumns`. Catalog rows now identify
+  UUID, JSONB, arrays, and domains by their PostgreSQL type names instead of
+  generic information-schema labels; domain rows use their underlying ODBC
+  data type and base integer size. The text `CHAR_OCTET_LENGTH` now has the
+  driver's declared large-text limit rather than a spurious null. Real
+  PostgreSQL tests cover the three catalog paths, numeric precision/scale,
+  domain sizes, and ANSI/wide parity. Variable-length size/precision details
+  and nested-domain handling remain explicit follow-ups.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
