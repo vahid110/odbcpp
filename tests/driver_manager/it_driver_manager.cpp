@@ -33,6 +33,12 @@ bool succeeded(SQLRETURN result) {
   return result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO;
 }
 
+#ifdef ODBCPP_TEST_IODBC
+constexpr bool require_nonzero_driver_handle_mapping = false;
+#else
+constexpr bool require_nonzero_driver_handle_mapping = true;
+#endif
+
 bool diagnostic_is(SQLSMALLINT handle_type, SQLHANDLE handle,
                    const char* expected_state) {
   SQLCHAR state[6]{};
@@ -173,6 +179,23 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  SQLULEN driver_connection = 0;
+  SQLULEN driver_environment = 0;
+  if (!succeeded(SQLGetInfo(
+          connection, SQL_DRIVER_HDBC, &driver_connection,
+          sizeof(driver_connection), nullptr)) ||
+      !succeeded(SQLGetInfo(
+          connection, SQL_DRIVER_HENV, &driver_environment,
+          sizeof(driver_environment), nullptr)) ||
+      (require_nonzero_driver_handle_mapping &&
+       (driver_connection == 0 || driver_environment == 0))) {
+    std::fprintf(stderr, "Driver Manager rejected ENV/DBC handle mapping\n");
+    print_diagnostic(SQL_HANDLE_DBC, connection);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
   SQLWCHAR wide_driver_name[32]{};
   SQLSMALLINT wide_driver_name_bytes = 0;
   if (!succeeded(SQLGetInfoW(
@@ -219,6 +242,19 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  SQLULEN driver_statement = reinterpret_cast<SQLULEN>(statement);
+  if (!succeeded(SQLGetInfo(
+          connection, SQL_DRIVER_HSTMT, &driver_statement,
+          sizeof(driver_statement), nullptr)) ||
+      (require_nonzero_driver_handle_mapping && driver_statement == 0)) {
+    std::fprintf(stderr, "Driver Manager rejected statement handle mapping\n");
+    print_diagnostic(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
   SQLHDESC descriptor = SQL_NULL_HDESC;
   if (!succeeded(SQLAllocHandle(
           SQL_HANDLE_DESC, connection, &descriptor))) {
@@ -229,6 +265,22 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+#ifndef ODBCPP_TEST_IODBC
+  SQLULEN driver_descriptor = reinterpret_cast<SQLULEN>(descriptor);
+  if (!succeeded(SQLGetInfo(
+          connection, SQL_DRIVER_HDESC, &driver_descriptor,
+          sizeof(driver_descriptor), nullptr)) ||
+      (require_nonzero_driver_handle_mapping && driver_descriptor == 0)) {
+    std::fprintf(stderr, "Driver Manager rejected descriptor handle mapping\n");
+    print_diagnostic(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_DESC, descriptor);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+#endif
   if (!succeeded(SQLSetDescRec(
           descriptor, 1, SQL_C_CHAR, 0, 32, 0, 0,
           nullptr, nullptr, nullptr))) {

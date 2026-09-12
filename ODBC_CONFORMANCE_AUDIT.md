@@ -405,6 +405,13 @@ substitute for ODBC diagnostics.
   verifies result types, storage widths, and values under both unixODBC and
   iODBC headers, then executes the advertised grouping, alias, join, insert,
   index, union, escape-clause, and integrity syntax end to end.
+- Audit batch 48 exercises the Driver Manager-owned `SQL_DRIVER_HENV`,
+  `SQL_DRIVER_HDBC`, and `SQL_DRIVER_HSTMT` mappings through the external
+  application path. unixODBC must produce nonzero native handles; iODBC's
+  accepted zero-valued mappings are recorded as a manager limitation.
+  `SQL_DRIVER_HDESC` is likewise covered where the Driver Manager implements
+  it; current iODBC forwards its manager handle to the driver and is excluded
+  from that assertion because the driver cannot safely translate it.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
