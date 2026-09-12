@@ -59,7 +59,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLGetStmtAttr` | A/W | Partial | unit, integration | Common defaults, escape scanning, descriptor handles/pointers, row positioning, and recognized unsupported attributes are covered; platform-specific ODBC 3.8 fields remain |
 | `SQLCloseCursor` | A | Verified | unit, integration, DM | Allocated, prepared, open-empty, exhausted, closed, update-count, failed-execution, and pending-result states are covered |
 | `SQLFreeStmt` | A | Verified | unit, integration, DM | SQL_CLOSE idempotence, ARD unbinding, APD reset, invalid-option preservation, SQL_DROP ownership, and pending-result discard are covered |
-| `SQLGetTypeInfo` | A/W | Partial | unit, integration, DM | Ordered supported-type inventory, valid-empty and HY004 filters, disconnected/open-cursor states, legacy plus ODBC 3 datetime identifiers, and A/W Driver Manager calls are covered; complete per-field value verification remains |
+| `SQLGetTypeInfo` | A/W | Verified | unit, integration, DM | All 19 fields are checked across the ordered supported-type inventory; valid-empty and HY004 filters, disconnected/open/exhausted cursor states, legacy plus ODBC 3 datetime identifiers, and A/W Driver Manager calls are covered |
 | `SQLTables` | A/W | Partial | unit, integration, DM | Pattern/metadata-ID semantics and privilege visibility |
 | `SQLColumns` | A/W | Partial | unit, integration, DM | Pattern semantics and complete PostgreSQL type metadata |
 | `SQLPrimaryKeys` | A/W | Partial | unit, integration, DM | Empty/multipart identifiers, ordering, visibility |
@@ -501,6 +501,13 @@ substitute for ODBC diagnostics.
   ordered inventory that includes both legacy and ODBC 3 date/time/timestamp
   identifiers. Disconnected and open-cursor state errors, invalid handles,
   direct ANSI/wide calls, and the external Driver Manager path are covered.
+- Audit batch 63 verifies every `SQLGetTypeInfo` result column for every
+  advertised PostgreSQL type. Literal delimiters, creation parameters,
+  nullability, case sensitivity, signedness, scales, datetime subtypes,
+  radices, and null fields are checked alongside names, sizes, and ordering.
+  Non-character types now report basic predicate support instead of incorrectly
+  claiming LIKE support. Exhausted-cursor behavior is covered and the API is
+  promoted to Verified.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

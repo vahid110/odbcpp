@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <optional>
 #include <string>
 
 namespace {
@@ -17,6 +18,28 @@ std::string diagnostic_state(SQLSMALLINT handle_type, SQLHANDLE handle) {
               SQLGetDiagRec(handle_type, handle, 1, state, nullptr, nullptr,
                             0, nullptr));
     return reinterpret_cast<const char*>(state);
+}
+
+std::optional<SQLINTEGER> integer_cell(SQLHSTMT statement,
+                                       SQLUSMALLINT column) {
+    SQLINTEGER value = 0;
+    SQLLEN indicator = 0;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetData(statement, column, SQL_C_SLONG, &value,
+                         sizeof(value), &indicator));
+    if (indicator == SQL_NULL_DATA) return std::nullopt;
+    return value;
+}
+
+std::optional<std::string> text_cell(SQLHSTMT statement,
+                                     SQLUSMALLINT column) {
+    std::array<char, 64> value{};
+    SQLLEN indicator = 0;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetData(statement, column, SQL_C_CHAR, value.data(),
+                         value.size(), &indicator));
+    if (indicator == SQL_NULL_DATA) return std::nullopt;
+    return std::string(value.data());
 }
 
 }  // namespace
@@ -989,31 +1012,34 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
     ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns));
     EXPECT_EQ(19, columns);
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    EXPECT_EQ(SQL_ERROR, SQLGetTypeInfoW(hstmt, SQL_INTEGER));
+    EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
     struct ExpectedType {
         const char* name;
         SQLSMALLINT data_type;
+        SQLINTEGER column_size;
     };
     constexpr std::array<ExpectedType, 18> expected_types{{
-        {"boolean", SQL_BIT},
-        {"bigint", SQL_BIGINT},
-        {"bytea", SQL_VARBINARY},
-        {"text", SQL_LONGVARCHAR},
-        {"char", SQL_CHAR},
-        {"numeric", SQL_NUMERIC},
-        {"decimal", SQL_DECIMAL},
-        {"integer", SQL_INTEGER},
-        {"smallint", SQL_SMALLINT},
-        {"real", SQL_REAL},
-        {"double precision", SQL_DOUBLE},
-        {"date", SQL_DATE},
-        {"time", SQL_TIME},
-        {"timestamp", SQL_TIMESTAMP},
-        {"varchar", SQL_VARCHAR},
-        {"date", SQL_TYPE_DATE},
-        {"time", SQL_TYPE_TIME},
-        {"timestamp", SQL_TYPE_TIMESTAMP},
+        {"boolean", SQL_BIT, 1},
+        {"bigint", SQL_BIGINT, 19},
+        {"bytea", SQL_VARBINARY, 1073741824},
+        {"text", SQL_LONGVARCHAR, 1073741824},
+        {"char", SQL_CHAR, 10485760},
+        {"numeric", SQL_NUMERIC, 1000},
+        {"decimal", SQL_DECIMAL, 1000},
+        {"integer", SQL_INTEGER, 10},
+        {"smallint", SQL_SMALLINT, 5},
+        {"real", SQL_REAL, 7},
+        {"double precision", SQL_DOUBLE, 15},
+        {"date", SQL_DATE, 10},
+        {"time", SQL_TIME, 15},
+        {"timestamp", SQL_TIMESTAMP, 29},
+        {"varchar", SQL_VARCHAR, 10485760},
+        {"date", SQL_TYPE_DATE, 10},
+        {"time", SQL_TYPE_TIME, 15},
+        {"timestamp", SQL_TYPE_TIMESTAMP, 29},
     }};
 
     ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfo(hstmt, SQL_ALL_TYPES));
@@ -1035,6 +1061,90 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
             hstmt, 2, SQL_C_SSHORT, &data_type, 0, nullptr));
         EXPECT_STREQ(expected_types[index].name, type_name);
         EXPECT_EQ(expected_types[index].data_type, data_type);
+
+        const auto type = expected_types[index].data_type;
+        const bool character_type = type == SQL_CHAR ||
+            type == SQL_VARCHAR || type == SQL_LONGVARCHAR;
+        const bool quoted_type = character_type || type == SQL_VARBINARY ||
+            type == SQL_DATE || type == SQL_TIME || type == SQL_TIMESTAMP ||
+            type == SQL_TYPE_DATE || type == SQL_TYPE_TIME ||
+            type == SQL_TYPE_TIMESTAMP;
+        const bool numeric_type = type == SQL_BIGINT || type == SQL_NUMERIC ||
+            type == SQL_DECIMAL || type == SQL_INTEGER ||
+            type == SQL_SMALLINT || type == SQL_REAL || type == SQL_DOUBLE;
+        const bool exact_numeric_type = type == SQL_BIGINT ||
+            type == SQL_NUMERIC || type == SQL_DECIMAL ||
+            type == SQL_INTEGER || type == SQL_SMALLINT;
+        const bool datetime_type = type == SQL_DATE || type == SQL_TIME ||
+            type == SQL_TIMESTAMP || type == SQL_TYPE_DATE ||
+            type == SQL_TYPE_TIME || type == SQL_TYPE_TIMESTAMP;
+        const bool time_type = type == SQL_TIME || type == SQL_TIMESTAMP ||
+            type == SQL_TYPE_TIME || type == SQL_TYPE_TIMESTAMP;
+
+        EXPECT_EQ(std::optional<SQLINTEGER>(expected_types[index].column_size),
+                  integer_cell(hstmt, 3));
+        EXPECT_EQ(quoted_type ? std::optional<std::string>("'") : std::nullopt,
+                  text_cell(hstmt, 4));
+        EXPECT_EQ(quoted_type ? std::optional<std::string>("'") : std::nullopt,
+                  text_cell(hstmt, 5));
+        if (type == SQL_CHAR || type == SQL_VARCHAR) {
+            EXPECT_EQ(std::optional<std::string>("length"), text_cell(hstmt, 6));
+        } else if (type == SQL_NUMERIC || type == SQL_DECIMAL) {
+            EXPECT_EQ(std::optional<std::string>("precision,scale"),
+                      text_cell(hstmt, 6));
+        } else if (time_type) {
+            EXPECT_EQ(std::optional<std::string>("precision"),
+                      text_cell(hstmt, 6));
+        } else {
+            EXPECT_EQ(std::nullopt, text_cell(hstmt, 6));
+        }
+        EXPECT_EQ(std::optional<SQLINTEGER>(SQL_NULLABLE),
+                  integer_cell(hstmt, 7));
+        EXPECT_EQ(std::optional<SQLINTEGER>(
+                      character_type ? SQL_TRUE : SQL_FALSE),
+                  integer_cell(hstmt, 8));
+        EXPECT_EQ(std::optional<SQLINTEGER>(
+                      character_type ? SQL_SEARCHABLE : SQL_PRED_BASIC),
+                  integer_cell(hstmt, 9));
+        EXPECT_EQ(numeric_type ? std::optional<SQLINTEGER>(SQL_FALSE)
+                               : std::nullopt,
+                  integer_cell(hstmt, 10));
+        EXPECT_EQ(std::optional<SQLINTEGER>(SQL_FALSE),
+                  integer_cell(hstmt, 11));
+        EXPECT_EQ(numeric_type ? std::optional<SQLINTEGER>(SQL_FALSE)
+                               : std::nullopt,
+                  integer_cell(hstmt, 12));
+        EXPECT_EQ(std::nullopt, text_cell(hstmt, 13));
+        EXPECT_EQ((exact_numeric_type || time_type)
+                      ? std::optional<SQLINTEGER>(0)
+                      : std::nullopt,
+                  integer_cell(hstmt, 14));
+        const auto maximum_scale = type == SQL_NUMERIC || type == SQL_DECIMAL
+            ? std::optional<SQLINTEGER>(1000)
+            : (time_type ? std::optional<SQLINTEGER>(6)
+                         : (exact_numeric_type
+                                ? std::optional<SQLINTEGER>(0)
+                                : std::nullopt));
+        EXPECT_EQ(maximum_scale, integer_cell(hstmt, 15));
+        EXPECT_EQ(std::optional<SQLINTEGER>(
+                      datetime_type ? SQL_DATETIME : type),
+                  integer_cell(hstmt, 16));
+        const auto datetime_subtype =
+            type == SQL_DATE || type == SQL_TYPE_DATE
+                ? std::optional<SQLINTEGER>(SQL_CODE_DATE)
+                : (type == SQL_TIME || type == SQL_TYPE_TIME
+                       ? std::optional<SQLINTEGER>(SQL_CODE_TIME)
+                       : (type == SQL_TIMESTAMP || type == SQL_TYPE_TIMESTAMP
+                              ? std::optional<SQLINTEGER>(SQL_CODE_TIMESTAMP)
+                              : std::nullopt));
+        EXPECT_EQ(datetime_subtype, integer_cell(hstmt, 17));
+        EXPECT_EQ(exact_numeric_type
+                      ? std::optional<SQLINTEGER>(10)
+                      : ((type == SQL_REAL || type == SQL_DOUBLE)
+                             ? std::optional<SQLINTEGER>(2)
+                             : std::nullopt),
+                  integer_cell(hstmt, 18));
+        EXPECT_EQ(std::nullopt, integer_cell(hstmt, 19));
     }
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));

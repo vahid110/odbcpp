@@ -3223,12 +3223,15 @@ SQLRETURN ODBCStatement::get_type_info(SQLSMALLINT data_type) {
 
   for (const auto& type : type_info_definitions) {
     if (data_type != SQL_ALL_TYPES && data_type != type.data_type) continue;
+    const bool character_type = type.data_type == SQL_CHAR ||
+        type.data_type == SQL_VARCHAR ||
+        type.data_type == SQL_LONGVARCHAR;
     result.rows.push_back({
         type_info_text(type.name), type_info_number(type.data_type),
         type_info_number(type.column_size), type_info_text(type.literal_prefix),
         type_info_text(type.literal_suffix), type_info_text(type.create_params),
         type_info_number(SQL_NULLABLE), type_info_number(type.case_sensitive),
-        type_info_number(SQL_SEARCHABLE),
+        type_info_number(character_type ? SQL_SEARCHABLE : SQL_PRED_BASIC),
         type.unsigned_attribute < 0 ? rs::core::database::ResultCell{}
                                     : type_info_number(type.unsigned_attribute),
         type_info_number(SQL_FALSE),
