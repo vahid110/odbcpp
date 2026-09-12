@@ -257,6 +257,64 @@ TEST_F(DiagnosticsTest, SQLError_ODBC2Compatibility) {
     EXPECT_EQ(33, native_error);
 }
 
+TEST_F(DiagnosticsTest, SQLErrorSelectsHandlesAndAdvancesOnlyOnSuccess) {
+    auto environment = rs::odbc::HandleRegistry::instance().get_handle_as<
+        rs::odbc::ODBCEnvironment>(henv);
+    auto connection = rs::odbc::HandleRegistry::instance().get_handle_as<
+        rs::odbc::ODBCConnection>(hdbc);
+    auto statement = rs::odbc::HandleRegistry::instance().get_handle_as<
+        rs::odbc::ODBCStatement>(hstmt);
+    ASSERT_NE(nullptr, environment);
+    ASSERT_NE(nullptr, connection);
+    ASSERT_NE(nullptr, statement);
+    environment->set_error("01000", "environment");
+    connection->set_error("08001", "connection");
+    statement->set_error("22003", "statement");
+
+    SQLCHAR state[6]{};
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLError(henv, hdbc, hstmt, state, nullptr, nullptr, 0,
+                       nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<const char*>(state));
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLError(henv, hdbc, nullptr, state, nullptr, nullptr, 0,
+                       nullptr));
+    EXPECT_STREQ("08001", reinterpret_cast<const char*>(state));
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLError(henv, nullptr, nullptr, state, nullptr, nullptr, 0,
+                       nullptr));
+    EXPECT_STREQ("01000", reinterpret_cast<const char*>(state));
+
+    statement->set_error("HY000", "retry after invalid buffer");
+    EXPECT_EQ(SQL_ERROR,
+              SQLError(henv, hdbc, hstmt, state, nullptr, nullptr, -1,
+                       nullptr));
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLError(henv, hdbc, hstmt, state, nullptr, nullptr, 0,
+                       nullptr));
+    EXPECT_STREQ("HY000", reinterpret_cast<const char*>(state));
+
+    statement->set_error("01000", "truncated legacy diagnostic");
+    SQLCHAR terminator = 0x7f;
+    SQLSMALLINT required = -1;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLError(henv, hdbc, hstmt, state, nullptr, &terminator, 1,
+                       &required));
+    EXPECT_EQ(0, terminator);
+    EXPECT_EQ(27, required);
+    EXPECT_EQ(SQL_NO_DATA,
+              SQLError(henv, hdbc, hstmt, state, nullptr, nullptr, 0,
+                       nullptr));
+
+    EXPECT_EQ(SQL_INVALID_HANDLE,
+              SQLError(henv, hdbc,
+                       reinterpret_cast<SQLHSTMT>(std::uintptr_t{1}),
+                       state, nullptr, nullptr, 0, nullptr));
+    EXPECT_EQ(SQL_INVALID_HANDLE,
+              SQLError(nullptr, nullptr, nullptr, state, nullptr, nullptr,
+                       0, nullptr));
+}
+
 TEST_F(DiagnosticsTest, SQLGetDiagRec_InvalidParameters) {
     // Test invalid record number
     SQLCHAR sqlstate[6];

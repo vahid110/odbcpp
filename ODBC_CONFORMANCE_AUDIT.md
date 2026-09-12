@@ -70,7 +70,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLSpecialColumns` | A/W | Partial | unit, integration, DM | Scope/nullable semantics and row-version behavior |
 | `SQLGetDiagRec` | A/W | Verified | unit, integration, DM | Retrieval is nondestructive; handle type, record number, absent records, null destinations, native codes, exact-fit, one-short, and terminator-only A/W buffers are covered, including mixed-width iODBC translation |
 | `SQLGetDiagField` | A/W | Partial | unit, integration | All standard header/record identifiers, return provenance, origins, ANSI/wide lengths, and truncation are covered; row/column-specific server errors remain |
-| `SQLError` | A/W | Partial | unit, integration | ANSI/wide calls share a per-handle cursor, return every diagnostic in order, preserve the records for SQLGetDiagRec, and reset on a new diagnostic stack; complete handle-selection and Driver Manager mapping matrices remain |
+| `SQLError` | A/W | Verified | unit, integration, DM | ANSI/wide calls share a per-handle cursor, return every diagnostic in order, preserve records for SQLGetDiagRec, reset on a new stack, select statement/connection/environment precedence, retain position after errors, and run through mixed-width iODBC mapping |
 | `SQLGetInfo` | A/W | Verified | unit, integration, DM | Every driver-owned standard type is classified; positive PostgreSQL claims execute end to end, and Driver Manager-only mappings are covered separately |
 | `SQLGetFunctions` | A | Verified | shared-library export audit, unit, integration, DM | Connection state, exact single-function results, ODBC 2 array, ODBC 3 bitmap, null output, and invalid identifiers are enforced against all advertised exports |
 | `SQLNativeSql` | A/W | Verified | unit, integration, DM | Advertised ODBC escapes translate to PostgreSQL syntax; A/W lengths, truncation, diagnostics, literals/comments, and execution-path agreement are covered |
@@ -480,6 +480,12 @@ substitute for ODBC diagnostics.
   SQLGetDiagRec remains nondestructive. Tests retrieve two records across mixed
   A/W calls, reach SQL_NO_DATA, prove both records are still directly
   addressable, and verify that replacing the diagnostic stack resets the cursor.
+- Audit batch 60 closes the remaining SQLError compatibility matrix. Tests
+  enforce statement-before-connection-before-environment handle precedence,
+  invalid/null handles, negative and terminator-only buffers, no cursor advance
+  on SQL_ERROR, advance on SQL_SUCCESS_WITH_INFO, and ANSI/wide Driver Manager
+  calls. The wide mapping also runs through the four-byte iODBC application ABI,
+  so SQLError is Verified for the exported synchronous surface.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

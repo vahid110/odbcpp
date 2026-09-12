@@ -72,6 +72,30 @@ bool wide_diagnostic_is(SQLSMALLINT handle_type, SQLHANDLE handle,
   return matches;
 }
 
+bool legacy_diagnostic_is(SQLHENV environment, SQLHDBC connection,
+                          const char* expected_state) {
+  SQLCHAR state[6]{};
+  const auto result = SQLError(environment, connection, nullptr, state,
+                               nullptr, nullptr, 0, nullptr);
+  return succeeded(result) &&
+      std::strcmp(reinterpret_cast<const char*>(state), expected_state) == 0;
+}
+
+bool wide_legacy_diagnostic_is(SQLHENV environment, SQLHDBC connection,
+                               const char* expected_state) {
+  SQLWCHAR state[6]{};
+  const auto result = SQLErrorW(environment, connection, nullptr, state,
+                                nullptr, nullptr, 0, nullptr);
+  if (!succeeded(result)) return false;
+  for (std::size_t index = 0; index < 5; ++index) {
+    if (state[index] != static_cast<SQLWCHAR>(
+                            static_cast<unsigned char>(expected_state[index]))) {
+      return false;
+    }
+  }
+  return state[5] == 0;
+}
+
 bool result_is(SQLRETURN actual, SQLRETURN expected, const char* operation) {
   if (actual == expected) return true;
   std::fprintf(stderr, "%s returned %d; expected %d\n", operation,
@@ -785,12 +809,15 @@ int main() {
                  "SQLDisconnect before connect") ||
       !diagnostic_is(SQL_HANDLE_DBC, lifecycle_connection, "08003") ||
       !wide_diagnostic_is(SQL_HANDLE_DBC, lifecycle_connection, "08003") ||
+      !legacy_diagnostic_is(environment, lifecycle_connection, "08003") ||
       !result_is(SQLAllocHandle(
                      SQL_HANDLE_STMT, lifecycle_connection,
                      &premature_statement),
                  SQL_ERROR, "SQLAllocHandle before connect") ||
       premature_statement != SQL_NULL_HSTMT ||
       !diagnostic_is(SQL_HANDLE_DBC, lifecycle_connection, "08003") ||
+      !wide_legacy_diagnostic_is(
+          environment, lifecycle_connection, "08003") ||
       !succeeded(SQLDriverConnect(
           lifecycle_connection, nullptr, connection_string, SQL_NTS,
           nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT))) {
