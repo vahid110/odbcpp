@@ -11,6 +11,7 @@
 #include "core/util/deadline.h"
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cctype>
 #include <cstdint>
@@ -302,6 +303,7 @@ struct OdbcTypeInfo {
   SQLSMALLINT sql_type{SQL_VARCHAR};
   SQLULEN column_size{255};
   SQLSMALLINT decimal_digits{0};
+  bool known_oid{true};
 };
 
 OdbcTypeInfo postgres_type_info(std::uint32_t oid, std::int16_t type_size,
@@ -354,7 +356,7 @@ OdbcTypeInfo postgres_type_info(std::uint32_t oid, std::int16_t type_size,
     }
     default:
       return {SQL_VARCHAR,
-              type_size > 0 ? static_cast<SQLULEN>(type_size) : 0, 0};
+              type_size > 0 ? static_cast<SQLULEN>(type_size) : 0, 0, false};
   }
 }
 
@@ -2620,6 +2622,7 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
     return SQL_ERROR;
   }
   prepared_sql_ = *native_sql;
+  parameter_base_type_cache_.clear();
   parameter_count_ = static_cast<SQLSMALLINT>(marker_count);
   param_metadata_.clear();
   clear_current_result();
@@ -2865,6 +2868,10 @@ SQLRETURN ODBCStatement::execute() {
                  {{"sqlstate", get_sqlstate()}, {"kind", "prepared"},
                   {"duration_ms", elapsed_milliseconds(started)}});
       if (timeout) conn_->disconnect();
+      return complete_parameter_set(SQL_ERROR);
+    }
+
+    if (resolve_parameter_base_types(*result, deadline) != SQL_SUCCESS) {
       return complete_parameter_set(SQL_ERROR);
     }
 
@@ -3145,6 +3152,79 @@ SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target
 }
 
 // Metadata functions implementation
+SQLRETURN ODBCStatement::resolve_parameter_base_types(
+    rs::core::database::QueryResult& result, rs::util::Deadline deadline) {
+  std::vector<std::uint32_t> unresolved;
+  for (const auto oid : result.parameter_type_ids) {
+    if (oid != 0 && !postgres_type_info(oid, -1, -1).known_oid &&
+        !parameter_base_type_cache_.contains(oid)) {
+      unresolved.push_back(oid);
+    }
+  }
+  std::sort(unresolved.begin(), unresolved.end());
+  unresolved.erase(std::unique(unresolved.begin(), unresolved.end()),
+                   unresolved.end());
+
+  if (!unresolved.empty()) {
+    std::string query =
+        "WITH RECURSIVE type_chain(original_oid, type_oid, base_oid) AS ("
+        "SELECT oid, oid, typbasetype FROM pg_catalog.pg_type WHERE oid IN (";
+    for (std::size_t index = 0; index < unresolved.size(); ++index) {
+      if (index != 0) query += ',';
+      query += std::to_string(unresolved[index]);
+    }
+    query +=
+        ") UNION ALL SELECT chain.original_oid, base.oid, base.typbasetype "
+        "FROM type_chain AS chain JOIN pg_catalog.pg_type AS base "
+        "ON base.oid = chain.base_oid) "
+        "SELECT original_oid::text, type_oid::text FROM type_chain "
+        "WHERE base_oid = 0";
+
+    auto types = conn_->get_db_connection()->execute_query(query, deadline);
+    if (types.has_error()) {
+      const auto timeout = is_timeout_error(types.error());
+      set_error(request_sqlstate(types.error(), SQLSTATE_GENERAL_ERROR),
+                types.error_message());
+      if (timeout) conn_->disconnect();
+      return SQL_ERROR;
+    }
+
+    const auto parse_oid = [](const std::string& value,
+                              std::uint32_t& oid) {
+      const auto [end, error] = std::from_chars(
+          value.data(), value.data() + value.size(), oid);
+      return error == std::errc{} && end == value.data() + value.size();
+    };
+    std::unordered_map<std::uint32_t, std::uint32_t> resolved;
+    for (const auto& row : types->rows) {
+      std::uint32_t original_oid = 0;
+      std::uint32_t base_oid = 0;
+      if (row.size() != 2 || !row[0] || !row[1] ||
+          !parse_oid(*row[0], original_oid) ||
+          !parse_oid(*row[1], base_oid) ||
+          !std::binary_search(unresolved.begin(), unresolved.end(),
+                              original_oid)) {
+        set_error(SQLSTATE_GENERAL_ERROR,
+                  "Data source returned invalid parameter type metadata");
+        return SQL_ERROR;
+      }
+      resolved[original_oid] = base_oid;
+    }
+    for (const auto oid : unresolved) {
+      parameter_base_type_cache_[oid] = resolved.contains(oid)
+          ? resolved.at(oid) : oid;
+    }
+  }
+
+  for (auto& oid : result.parameter_type_ids) {
+    if (const auto found = parameter_base_type_cache_.find(oid);
+        found != parameter_base_type_cache_.end()) {
+      oid = found->second;
+    }
+  }
+  return SQL_SUCCESS;
+}
+
 SQLRETURN ODBCStatement::describe_prepared_metadata() {
   const auto implementation_descriptor = descriptor(imp_param_descriptor_);
   if (prepared_metadata_available_ &&
@@ -3179,6 +3259,10 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
       static_cast<std::size_t>(parameter_count_)) {
     set_error(SQLSTATE_GENERAL_ERROR,
               "Data source returned an inconsistent parameter count");
+    return SQL_ERROR;
+  }
+
+  if (resolve_parameter_base_types(*result, deadline) != SQL_SUCCESS) {
     return SQL_ERROR;
   }
 

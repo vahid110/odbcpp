@@ -1690,6 +1690,49 @@ TEST_F(MetadataIntegrationTest, NestedDomainsKeepBaseCatalogMetadata) {
         EXPECT_EQ(std::optional<SQLINTEGER>(SQL_INTEGER), integer_cell(hstmt, 15));
     }
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT id FROM odbcpp_nested_domain_test",
+        SQL_NTS));
+    SQLSMALLINT result_type = 0;
+    SQLULEN result_size = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+        hstmt, 1, nullptr, 0, nullptr, &result_type, &result_size,
+        nullptr, nullptr));
+    EXPECT_EQ(SQL_INTEGER, result_type);
+    EXPECT_EQ(10u, result_size);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT ?::pg_temp.odbcpp_outer_domain",
+        SQL_NTS));
+    SQLSMALLINT parameter_type = 0;
+    SQLULEN parameter_size = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(
+        hstmt, 1, &parameter_type, &parameter_size, nullptr, nullptr));
+    EXPECT_EQ(SQL_INTEGER, parameter_type);
+    EXPECT_EQ(10u, parameter_size);
+    result_type = 0;
+    result_size = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+        hstmt, 1, nullptr, 0, nullptr, &result_type, &result_size,
+        nullptr, nullptr));
+    EXPECT_EQ(SQL_INTEGER, result_type);
+    EXPECT_EQ(10u, result_size);
+
+    SQLINTEGER input = 37;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
+        0, 0, &input, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(
+        hstmt, 1, &parameter_type, &parameter_size, nullptr, nullptr));
+    EXPECT_EQ(SQL_INTEGER, parameter_type);
+    EXPECT_EQ(10u, parameter_size);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<SQLINTEGER>(input), integer_cell(hstmt, 1));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
 TEST_F(MetadataIntegrationTest, TemporalMetadataUsesDeclaredPrecision) {

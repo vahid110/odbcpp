@@ -651,6 +651,17 @@ substitute for ODBC diagnostics.
   domains and result/parameter descriptors are not yet covered. The query
   relies on the documented [`typbasetype` link](https://www.postgresql.org/docs/current/catalog-pg-type.html),
   not the newer `pg_basetype` function.
+- Audit batch 81 resolves unknown PostgreSQL parameter type OIDs through
+  recursive `pg_type.typbasetype` links before populating `SQLDescribeParam`
+  and the implementation parameter descriptor. It only queries the catalog
+  for unrecognized OIDs and caches their base type for the statement; known
+  built-in parameters incur no extra query. A real PostgreSQL test covers a
+  two-level integer domain before execution, its result-column description,
+  and execution after metadata inspection. PostgreSQL already reports the
+  integer base type for that domain in result-column metadata. Domain
+  constraints and typmods (such as a domain over `varchar(n)` or
+  `numeric(p,s)`) are not yet reflected in parameter size or scale because
+  `ParameterDescription` supplies a type OID but no typmod.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
