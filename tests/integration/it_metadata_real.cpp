@@ -1854,6 +1854,21 @@ TEST_F(MetadataIntegrationTest, StatisticsReportPostgreSQLIndexSemantics) {
         (SQLCHAR*)"CREATE INDEX odbcpp_stats_hash "
                   "ON \"odbcpp.stats_'_table\" USING hash(value)",
         SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE INDEX odbcpp_stats_covering "
+                  "ON \"odbcpp.stats_'_table\"(id) INCLUDE(value)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE INDEX odbcpp_stats_clustered "
+                  "ON \"odbcpp.stats_'_table\"(id)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CLUSTER \"odbcpp.stats_'_table\" "
+                  "USING odbcpp_stats_clustered",
+        SQL_NTS));
 
     SQLCHAR table_name[] = "odbcpp.stats_'_table";
     ASSERT_EQ(SQL_SUCCESS, SQLStatistics(
@@ -1869,6 +1884,9 @@ TEST_F(MetadataIntegrationTest, StatisticsReportPostgreSQLIndexSemantics) {
     bool found_unique = false;
     bool found_expression = false;
     bool found_hash = false;
+    bool found_covering_key = false;
+    bool found_covering_include = false;
+    bool found_clustered = false;
     int index_rows = 0;
     while (SQLFetch(hstmt) == SQL_SUCCESS) {
         ++index_rows;
@@ -1888,14 +1906,14 @@ TEST_F(MetadataIntegrationTest, StatisticsReportPostgreSQLIndexSemantics) {
         ASSERT_TRUE(type.has_value());
         ASSERT_TRUE(ordinal.has_value());
         ASSERT_TRUE(column.has_value());
-        EXPECT_EQ(SQL_INDEX_OTHER, *type);
-        EXPECT_EQ(1, *ordinal);
         EXPECT_EQ(std::nullopt, cardinality);
         EXPECT_TRUE(pages.has_value());
 
         if (*index_name == "odbcpp_stats_unique") {
             found_unique = true;
             EXPECT_EQ(SQL_FALSE, *non_unique);
+            EXPECT_EQ(SQL_INDEX_OTHER, *type);
+            EXPECT_EQ(1, *ordinal);
             EXPECT_EQ("id", *column);
             EXPECT_EQ(std::optional<std::string>("D"), direction);
             ASSERT_TRUE(filter.has_value());
@@ -1903,23 +1921,54 @@ TEST_F(MetadataIntegrationTest, StatisticsReportPostgreSQLIndexSemantics) {
         } else if (*index_name == "odbcpp_stats_expression") {
             found_expression = true;
             EXPECT_EQ(SQL_TRUE, *non_unique);
+            EXPECT_EQ(SQL_INDEX_OTHER, *type);
+            EXPECT_EQ(1, *ordinal);
             EXPECT_EQ("lower(value)", *column);
             EXPECT_EQ(std::optional<std::string>("A"), direction);
             EXPECT_EQ(std::nullopt, filter);
         } else if (*index_name == "odbcpp_stats_hash") {
             found_hash = true;
             EXPECT_EQ(SQL_TRUE, *non_unique);
+            EXPECT_EQ(SQL_INDEX_HASHED, *type);
+            EXPECT_EQ(1, *ordinal);
             EXPECT_EQ("value", *column);
             EXPECT_EQ(std::nullopt, direction);
+            EXPECT_EQ(std::nullopt, filter);
+        } else if (*index_name == "odbcpp_stats_covering") {
+            EXPECT_EQ(SQL_TRUE, *non_unique);
+            EXPECT_EQ(SQL_INDEX_OTHER, *type);
+            EXPECT_EQ(std::nullopt, filter);
+            if (*ordinal == 1) {
+                found_covering_key = true;
+                EXPECT_EQ("id", *column);
+                EXPECT_EQ(std::optional<std::string>("A"), direction);
+            } else if (*ordinal == 2) {
+                found_covering_include = true;
+                EXPECT_EQ("value", *column);
+                EXPECT_EQ(std::nullopt, direction);
+            } else {
+                ADD_FAILURE() << "Unexpected covering-index ordinal "
+                              << *ordinal;
+            }
+        } else if (*index_name == "odbcpp_stats_clustered") {
+            found_clustered = true;
+            EXPECT_EQ(SQL_TRUE, *non_unique);
+            EXPECT_EQ(SQL_INDEX_CLUSTERED, *type);
+            EXPECT_EQ(1, *ordinal);
+            EXPECT_EQ("id", *column);
+            EXPECT_EQ(std::optional<std::string>("A"), direction);
             EXPECT_EQ(std::nullopt, filter);
         } else {
             ADD_FAILURE() << "Unexpected index " << *index_name;
         }
     }
-    EXPECT_EQ(3, index_rows);
+    EXPECT_EQ(6, index_rows);
     EXPECT_TRUE(found_unique);
     EXPECT_TRUE(found_expression);
     EXPECT_TRUE(found_hash);
+    EXPECT_TRUE(found_covering_key);
+    EXPECT_TRUE(found_covering_include);
+    EXPECT_TRUE(found_clustered);
     ASSERT_TRUE(catalog.has_value());
     ASSERT_TRUE(schema.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
@@ -1971,7 +2020,7 @@ TEST_F(MetadataIntegrationTest, StatisticsReportPostgreSQLIndexSemantics) {
         SQL_INDEX_ALL, SQL_QUICK));
     index_rows = 0;
     while (SQLFetch(hstmt) == SQL_SUCCESS) ++index_rows;
-    EXPECT_EQ(3, index_rows);
+    EXPECT_EQ(6, index_rows);
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 }
 

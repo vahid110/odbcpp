@@ -3567,12 +3567,16 @@ SQLRETURN ODBCStatement::statistics(
       "tables.relname::text AS table_name, "
       "CASE WHEN indexes.indisunique THEN 0 ELSE 1 END::smallint "
       "AS non_unique, NULL::text AS index_qualifier, "
-      "index_names.relname::text AS index_name, 3::smallint AS type, "
+      "index_names.relname::text AS index_name, "
+      "CASE WHEN indexes.indisclustered THEN 1 "
+      "WHEN index_methods.amname = 'hash' THEN 2 ELSE 3 END::smallint "
+      "AS type, "
       "index_columns.ordinality::smallint AS ordinal_position, "
       "COALESCE(columns.attname::text, pg_get_indexdef("
       "indexes.indexrelid, index_columns.ordinality::integer, false)) "
       "AS column_name, "
-      "CASE WHEN pg_index_column_has_property(indexes.indexrelid, "
+      "CASE WHEN index_columns.ordinality <= indexes.indnkeyatts "
+      "AND pg_index_column_has_property(indexes.indexrelid, "
       "index_columns.ordinality::integer, 'orderable') THEN "
       "CASE WHEN pg_index_column_has_property(indexes.indexrelid, "
       "index_columns.ordinality::integer, 'desc') THEN 'D' ELSE 'A' END "
@@ -3586,12 +3590,15 @@ SQLRETURN ODBCStatement::statistics(
       "ON namespaces.oid = tables.relnamespace "
       "JOIN pg_catalog.pg_class AS index_names "
       "ON index_names.oid = indexes.indexrelid "
+      "JOIN pg_catalog.pg_am AS index_methods "
+      "ON index_methods.oid = index_names.relam "
       "CROSS JOIN LATERAL unnest(indexes.indkey) WITH ORDINALITY "
       "AS index_columns(attribute_number, ordinality) "
       "LEFT JOIN pg_catalog.pg_attribute AS columns "
       "ON columns.attrelid = tables.oid "
       "AND columns.attnum = index_columns.attribute_number "
-      "WHERE tables.relname = " + quote_catalog_literal(table_name);
+      "WHERE indexes.indisvalid AND indexes.indislive "
+      "AND tables.relname = " + quote_catalog_literal(table_name);
   if (catalog_name) {
     query += " AND current_database() = " +
         quote_catalog_literal(*catalog_name);

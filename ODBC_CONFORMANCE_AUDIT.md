@@ -64,7 +64,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLColumns` | A/W | Partial | unit, integration, DM | Null/empty, ordinary catalog, escaped patterns, cursor states, and A/W paths are covered; complete PostgreSQL type metadata and restricted-user visibility remain |
 | `SQLPrimaryKeys` | A/W | Partial | unit, integration, DM | Required table, literal/empty arguments, escaping, key ordering, cursor states, and A/W paths are covered; restricted-user visibility remains |
 | `SQLForeignKeys` | A/W | Partial | unit, integration, DM | PK/FK filter combinations, ordinary/empty arguments, primary-target filtering, same-name constraints, rule/deferrability mapping, ordering, cursor states, and A/W paths are covered; restricted-user visibility remains |
-| `SQLStatistics` | A/W | Partial | unit, integration, DM | Ordinary/empty arguments, uniqueness filtering, quick statistics, expression/partial/hash indexes, ordering, cursor states, and A/W paths are covered; exact cardinality and included-column semantics remain |
+| `SQLStatistics` | A/W | Partial | unit, integration, DM | Ordinary/empty arguments, uniqueness filtering, quick statistics, expression/partial/hash/clustered classification, included columns, ordering, cursor states, and A/W paths are covered; exact cardinality remains |
 | `SQLProcedures` | A/W | Partial | unit, integration, DM | Ordinary catalog, null/empty and escaped patterns, procedure/function distinctions, overloads, cursor states, and A/W paths are covered; argument-mode counts and restricted-user visibility remain |
 | `SQLProcedureColumns` | A/W | Partial | unit, integration, DM | Ordinary catalog, null/empty and escaped patterns, unnamed columns, parameter modes/order, return rows, cursor states, and A/W paths are covered; result-set discovery and complete PostgreSQL type metadata remain |
 | `SQLSpecialColumns` | A/W | Partial | unit, integration, DM | Ordinary/empty arguments, conservative scope, nullable modes, primary-key preference, safe unique-index fallback, composite keys, row-version empty results, cursor states, and A/W paths are covered; complete type metadata remains |
@@ -591,6 +591,14 @@ substitute for ODBC diagnostics.
   column is nullable instead of returning an invalid key subset. PostgreSQL
   tests cover nullable selection, non-null fallback, included-column exclusion,
   and the no-qualifying-index empty result.
+- Audit batch 74 aligns `SQLStatistics` with PostgreSQL index structure. Hash
+  indexes now report `SQL_INDEX_HASHED`, indexes marked as the table's cluster
+  index report `SQL_INDEX_CLUSTERED`, and other access methods remain
+  `SQL_INDEX_OTHER`. Included attributes remain visible as index columns with
+  their actual ordinal positions but return null sort direction because they
+  are stored values rather than ordering keys. Invalid or dropping indexes are
+  excluded. PostgreSQL tests distinguish key and included attributes and keep
+  `SQL_INDEX_UNIQUE` filtering independent of covering-index storage.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
