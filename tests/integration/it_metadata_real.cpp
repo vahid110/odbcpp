@@ -2352,7 +2352,10 @@ TEST_F(MetadataIntegrationTest, SpecialColumnScopeAndArgumentsFollowOdbc) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
-    for (SQLUSMALLINT scope : {SQL_SCOPE_TRANSACTION, SQL_SCOPE_SESSION}) {
+    constexpr std::array<SQLUSMALLINT, 2> broader_scopes{
+        static_cast<SQLUSMALLINT>(SQL_SCOPE_TRANSACTION),
+        static_cast<SQLUSMALLINT>(SQL_SCOPE_SESSION)};
+    for (const auto scope : broader_scopes) {
         ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
             hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
             table_name, SQL_NTS, scope, SQL_NULLABLE));
