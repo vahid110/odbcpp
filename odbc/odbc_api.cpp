@@ -751,8 +751,13 @@ static SQLRETURN SQLDriverConnect_impl(
       conn.get(), connection_string, connection_string_out, buffer_length,
       string_length2, "Output connection string was truncated");
   if (unknown) {
-    conn->set_error(SQLSTATE_INVALID_CONNECTION_STRING_ATTRIBUTE,
-                    "Unsupported connection string keyword: " + *unknown);
+    const auto message = "Unsupported connection string keyword: " + *unknown;
+    if (output_result == SQL_SUCCESS_WITH_INFO) {
+      conn->add_diagnostic(
+          SQLSTATE_INVALID_CONNECTION_STRING_ATTRIBUTE, 0, message);
+    } else {
+      conn->set_error(SQLSTATE_INVALID_CONNECTION_STRING_ATTRIBUTE, message);
+    }
     return SQL_SUCCESS_WITH_INFO;
   }
   return output_result;
@@ -809,8 +814,13 @@ static SQLRETURN SQLDriverConnectW_impl(
       string_length2,
       "Output connection string was truncated");
   if (unknown) {
-    conn->set_error(SQLSTATE_INVALID_CONNECTION_STRING_ATTRIBUTE,
-                    "Unsupported connection string keyword: " + *unknown);
+    const auto message = "Unsupported connection string keyword: " + *unknown;
+    if (output_result == SQL_SUCCESS_WITH_INFO) {
+      conn->add_diagnostic(
+          SQLSTATE_INVALID_CONNECTION_STRING_ATTRIBUTE, 0, message);
+    } else {
+      conn->set_error(SQLSTATE_INVALID_CONNECTION_STRING_ATTRIBUTE, message);
+    }
     return SQL_SUCCESS_WITH_INFO;
   }
   return output_result;

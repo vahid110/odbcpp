@@ -12,11 +12,12 @@
 
 namespace {
 
-std::string diagnostic_state(SQLSMALLINT handle_type, SQLHANDLE handle) {
+std::string diagnostic_state(SQLSMALLINT handle_type, SQLHANDLE handle,
+                             SQLSMALLINT record_number = 1) {
   SQLCHAR state[6]{};
   EXPECT_EQ(SQL_SUCCESS,
-            SQLGetDiagRec(handle_type, handle, 1, state, nullptr, nullptr, 0,
-                          nullptr));
+            SQLGetDiagRec(handle_type, handle, record_number, state, nullptr,
+                          nullptr, 0, nullptr));
   return reinterpret_cast<const char*>(state);
 }
 
@@ -397,6 +398,83 @@ TEST(DriverConnectIntegrationTest,
 }
 
 TEST(DriverConnectIntegrationTest,
+     LengthOnlyAndTerminatorOnlyOutputsMatchForAnsiAndWideCalls) {
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                          reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+
+  const std::string input = reinterpret_cast<const char*>(test_dsn());
+  const auto input_length = static_cast<SQLSMALLINT>(input.size());
+  const auto wide_input = wide_ascii(input);
+  const auto wide_input_length =
+      static_cast<SQLSMALLINT>(wide_input.size() - 1);
+
+  auto allocate_connection = [&] {
+    SQLHDBC connection = SQL_NULL_HDBC;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+    return connection;
+  };
+  auto release_connection = [](SQLHDBC connection) {
+    EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
+    EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  };
+
+  SQLSMALLINT output_length = -1;
+  auto connection = allocate_connection();
+  ASSERT_NE(nullptr, connection);
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLDriverConnect(
+                connection, nullptr, test_dsn(), input_length, nullptr, 0,
+                &output_length, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ(input_length, output_length);
+  release_connection(connection);
+
+  output_length = -1;
+  SQLCHAR ansi_terminator[]{'x'};
+  connection = allocate_connection();
+  ASSERT_NE(nullptr, connection);
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLDriverConnect(
+                connection, nullptr, test_dsn(), input_length,
+                ansi_terminator, 1, &output_length, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ(0, ansi_terminator[0]);
+  EXPECT_EQ(input_length, output_length);
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection));
+  release_connection(connection);
+
+  output_length = -1;
+  connection = allocate_connection();
+  ASSERT_NE(nullptr, connection);
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLDriverConnectW(
+                connection, nullptr,
+                const_cast<SQLWCHAR*>(wide_input.data()), wide_input_length,
+                nullptr, 0, &output_length, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ(wide_input_length, output_length);
+  release_connection(connection);
+
+  output_length = -1;
+  SQLWCHAR wide_terminator[]{static_cast<SQLWCHAR>('x')};
+  connection = allocate_connection();
+  ASSERT_NE(nullptr, connection);
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLDriverConnectW(
+                connection, nullptr,
+                const_cast<SQLWCHAR*>(wide_input.data()), wide_input_length,
+                wide_terminator, 1, &output_length, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ(0, wide_terminator[0]);
+  EXPECT_EQ(wide_input_length, output_length);
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection));
+  release_connection(connection);
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(DriverConnectIntegrationTest,
      UnknownKeywordsWarnAfterConnectingForAnsiAndWideCalls) {
   SQLHENV environment = SQL_NULL_HENV;
   ASSERT_EQ(SQL_SUCCESS,
@@ -410,22 +488,35 @@ TEST(DriverConnectIntegrationTest,
   SQLHDBC connection = SQL_NULL_HDBC;
   ASSERT_EQ(SQL_SUCCESS,
             SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+  SQLCHAR ansi_output[]{'x'};
+  SQLSMALLINT ansi_output_length = -1;
   EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
             SQLDriverConnect(
                 connection, nullptr,
                 reinterpret_cast<SQLCHAR*>(const_cast<char*>(input.c_str())),
-                SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
-  EXPECT_EQ("01S00", diagnostic_state(SQL_HANDLE_DBC, connection));
+                SQL_NTS, ansi_output, 1, &ansi_output_length,
+                SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ(0, ansi_output[0]);
+  EXPECT_EQ(input.size(), static_cast<std::size_t>(ansi_output_length));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ("01S00", diagnostic_state(SQL_HANDLE_DBC, connection, 2));
   EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
 
   ASSERT_EQ(SQL_SUCCESS,
             SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
   auto wide_input = wide_ascii(input);
+  SQLWCHAR wide_output[]{static_cast<SQLWCHAR>('x')};
+  SQLSMALLINT wide_output_length = -1;
   EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
             SQLDriverConnectW(connection, nullptr, wide_input.data(), SQL_NTS,
-                              nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
-  EXPECT_EQ("01S00", diagnostic_state(SQL_HANDLE_DBC, connection));
+                              wide_output, 1, &wide_output_length,
+                              SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ(0, wide_output[0]);
+  EXPECT_EQ(wide_input.size() - 1,
+            static_cast<std::size_t>(wide_output_length));
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ("01S00", diagnostic_state(SQL_HANDLE_DBC, connection, 2));
   EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));

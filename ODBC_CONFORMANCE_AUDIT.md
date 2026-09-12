@@ -35,7 +35,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLAllocHandle` | A | Partial | unit failure injection, integration, DM | Root/parent types, null outputs, ODBC version, open-connection state, output clearing, and HY001 are covered; optional pooling info tokens remain |
 | `SQLFreeHandle` | A | Partial | unit, integration, DM | Type identity, parent/child ordering, connected state, descriptor ownership/detachment, and failed-free retention are covered; optional pooling info tokens remain |
 | `SQLConnect` | A/W | Partial | unit failure, integration, DM | Reconnect is rejected with 08002; A/W lengths and malformed wide input are covered, API credentials override DSN credentials, and authentication failures return 28000; timeout/cancellation and remaining connection-failure injection remain |
-| `SQLDriverConnect` | A/W | Partial | unit, integration, DM | Noninteractive completion modes, exact output/truncation rules, connected-state output preservation, and ANSI/wide unknown-keyword warnings are covered; interactive prompting remains unsupported |
+| `SQLDriverConnect` | A/W | Partial | unit, integration, DM | The supported noninteractive surface has A/W validation, explicit input lengths, length-only and terminator-only outputs, exact output/truncation rules, connected-state preservation, and unknown-keyword warnings; interactive prompting remains unsupported |
 | `SQLDisconnect` | A | Partial | unit, integration, DM | Disconnected, active-transaction, and child-invalidation paths covered; async execution remains |
 | `SQLSetConnectAttr` | A/W | Partial | unit, integration | Common defaults, catalog selection, connection timeout, quiet-mode pointer width, invalid values, read-only fields, and recognized unsupported modes are classified; platform-specific pooling attributes remain |
 | `SQLGetConnectAttr` | A/W | Partial | unit, integration | Common numeric values, connection timeout, current catalog buffers, pointer-valued quiet mode, read-only attributes, connected-state checks, and cached broken-link detection are covered; platform-specific pooling attributes remain |
@@ -486,6 +486,15 @@ substitute for ODBC diagnostics.
   on SQL_ERROR, advance on SQL_SUCCESS_WITH_INFO, and ANSI/wide Driver Manager
   calls. The wide mapping also runs through the four-byte iODBC application ABI,
   so SQLError is Verified for the exported synchronous surface.
+- Audit batch 61 completes the supported `SQLDriverConnect` boundary matrix.
+  ANSI and wide entry points now cover null inputs, invalid input and output
+  lengths, invalid and interactive completion modes, malformed wide text,
+  invalid handles, explicit-length input, length-only output, and the
+  terminator-only truncation boundary. PostgreSQL integration verifies that
+  both character widths report the complete required output length and 01004
+  consistently. Simultaneous truncation and unknown-keyword warnings retain
+  both diagnostic records instead of overwriting the first; interactive
+  prompting remains deliberately unsupported.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

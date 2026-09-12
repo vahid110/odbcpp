@@ -1149,6 +1149,14 @@ TEST_F(AttributeApisTest, DriverConnectValidatesArgumentsBeforeConnecting) {
 
   SQLCHAR connection_string[] = "SERVER=127.0.0.1";
   EXPECT_EQ(SQL_ERROR, SQLDriverConnect(
+      connection_, nullptr, connection_string, -2, nullptr, 0, nullptr,
+      SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnect(
+      connection_, nullptr, connection_string, SQL_NTS, nullptr, -1, nullptr,
+      SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnect(
       connection_, nullptr, connection_string, SQL_NTS, nullptr, 0, nullptr,
       999));
   EXPECT_EQ("HY110", diagnostic_state(SQL_HANDLE_DBC, connection_));
@@ -1156,6 +1164,46 @@ TEST_F(AttributeApisTest, DriverConnectValidatesArgumentsBeforeConnecting) {
       connection_, nullptr, connection_string, SQL_NTS, nullptr, 0, nullptr,
       SQL_DRIVER_PROMPT));
   EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_DBC, connection_));
+
+  SQLWCHAR wide_connection_string[]{'S', 'E', 'R', 'V', 'E', 'R', '=',
+                                    '1', '2', '7', '.', '0', '.', '0',
+                                    '.', '1', 0};
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnectW(
+      connection_, nullptr, nullptr, 0, nullptr, 0, nullptr,
+      SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("HY009", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnectW(
+      connection_, nullptr, wide_connection_string, -2, nullptr, 0, nullptr,
+      SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnectW(
+      connection_, nullptr, wide_connection_string, SQL_NTS, nullptr, -1,
+      nullptr, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnectW(
+      connection_, nullptr, wide_connection_string, SQL_NTS, nullptr, 0,
+      nullptr, 999));
+  EXPECT_EQ("HY110", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnectW(
+      connection_, nullptr, wide_connection_string, SQL_NTS, nullptr, 0,
+      nullptr, SQL_DRIVER_PROMPT));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_DBC, connection_));
+
+  const SQLWCHAR invalid_wide_character = sizeof(SQLWCHAR) == 2
+      ? static_cast<SQLWCHAR>(0xd800)
+      : static_cast<SQLWCHAR>(0x110000);
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnectW(
+      connection_, nullptr,
+      const_cast<SQLWCHAR*>(&invalid_wide_character), 1, nullptr, 0, nullptr,
+      SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("22018", diagnostic_state(SQL_HANDLE_DBC, connection_));
+
+  EXPECT_EQ(SQL_INVALID_HANDLE, SQLDriverConnect(
+      nullptr, nullptr, connection_string, SQL_NTS, nullptr, 0, nullptr,
+      SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ(SQL_INVALID_HANDLE, SQLDriverConnectW(
+      nullptr, nullptr, wide_connection_string, SQL_NTS, nullptr, 0, nullptr,
+      SQL_DRIVER_NOPROMPT));
 }
 
 TEST_F(AttributeApisTest, NativeSqlValidatesInputAndConnectionState) {
