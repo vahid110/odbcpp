@@ -467,6 +467,7 @@ private:
   SQLLEN affected_rows_ = 0;
   SQLULEN query_timeout_seconds_ = 0;
   SQLULEN max_rows_ = 0;
+  bool no_scan_ = false;
   SQLLEN* fetch_bookmark_ptr_ = nullptr;
   SQLHDESC automatic_app_row_descriptor_{SQL_NULL_HDESC};
   SQLHDESC automatic_app_param_descriptor_{SQL_NULL_HDESC};

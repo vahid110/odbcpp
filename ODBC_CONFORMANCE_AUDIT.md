@@ -55,8 +55,8 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLDescribeCol` | A/W | Partial | unit, integration | Prepared/executed/closed and no-result states, untouched error outputs, and ANSI/wide names are covered; bookmark column and communication/cancellation failures remain |
 | `SQLColAttribute` | A/W | Partial | unit, integration | Prepared-state discovery, count/name/label/core numeric fields, destination isolation, exact field diagnostics, and wide byte lengths are covered; remaining descriptor fields need values or explicit negative tests |
 | `SQLDescribeParam` | A | Partial | unit, integration | Prepared/executed/exhausted/closed/direct states, exact diagnostics, fixed-size PostgreSQL types, bound precision/scale, cache revision, and untouched errors are covered; unknown variable precision and failure injection remain |
-| `SQLSetStmtAttr` | A/W | Partial | unit, integration | Common scalar modes, descriptor attachment, offset/operation pointers, and precise value diagnostics work; multirow arrays and optional cursor modes remain |
-| `SQLGetStmtAttr` | A/W | Partial | unit, integration | Common defaults, descriptor handles/pointers, row positioning, and recognized unsupported attributes are covered; platform-specific ODBC 3.8 fields remain |
+| `SQLSetStmtAttr` | A/W | Partial | unit, integration | Common scalar modes, escape scanning, descriptor attachment, offset/operation pointers, and precise value diagnostics work; multirow arrays and optional cursor modes remain |
+| `SQLGetStmtAttr` | A/W | Partial | unit, integration | Common defaults, escape scanning, descriptor handles/pointers, row positioning, and recognized unsupported attributes are covered; platform-specific ODBC 3.8 fields remain |
 | `SQLCloseCursor` | A | Partial | unit, integration, DM | Missing/open cursor and pending-result discard are covered; complete statement-state matrix remains |
 | `SQLFreeStmt` | A | Partial | unit, integration, DM | SQL_CLOSE pending-result discard and basic options are covered; complete option/state matrix remains |
 | `SQLGetTypeInfo` | A/W | Partial | integration, DM | All supported types, type filters, wide entry test |
@@ -441,6 +441,10 @@ substitute for ODBC diagnostics.
   output preservation, Driver Manager, and real PostgreSQL execution tests
   make the advertised surface Verified; unsupported function-return calls stay
   explicit with HYC00.
+- Audit batch 53 implements `SQL_ATTR_NOSCAN` as real statement state. The
+  default OFF path translates escapes before PostgreSQL sees them, ON preserves
+  the original SQL for both direct and prepared execution, invalid modes return
+  HY024 without changing state, and SQLNativeSql remains statement-independent.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

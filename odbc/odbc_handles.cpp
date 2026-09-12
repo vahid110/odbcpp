@@ -1,6 +1,7 @@
 #include "odbc_handles.h"
 #include "connection_string.h"
 #include "result_types.h"
+#include "sql_escape.h"
 #include "text_data_converter.h"
 #include "unicode.h"
 #include "core/database/generic_database_connection.h"
@@ -88,8 +89,7 @@ bool is_recognized_unsupported_connection_attribute(SQLINTEGER attribute) {
 }
 
 bool is_recognized_unsupported_statement_attribute(SQLINTEGER attribute) {
-  if (attribute == SQL_ATTR_NOSCAN ||
-      attribute == SQL_ATTR_SIMULATE_CURSOR) {
+  if (attribute == SQL_ATTR_SIMULATE_CURSOR) {
     return true;
   }
 #ifdef SQL_ATTR_ASYNC_STMT_EVENT
@@ -102,6 +102,29 @@ bool is_recognized_unsupported_statement_attribute(SQLINTEGER attribute) {
   if (attribute == SQL_ATTR_ASYNC_STMT_PCONTEXT) return true;
 #endif
   return false;
+}
+
+std::optional<std::string> statement_sql(ODBCHandle& handle,
+                                         std::string_view sql,
+                                         bool no_scan) {
+  if (no_scan) return std::string(sql);
+  auto translated = translate_odbc_sql(sql);
+  if (translated) return std::move(translated.sql);
+  switch (translated.error) {
+    case SqlEscapeError::InvalidDatetime:
+      handle.set_error(SQLSTATE_INVALID_DATETIME_FORMAT, translated.message);
+      break;
+    case SqlEscapeError::Unsupported:
+      handle.set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                       translated.message);
+      break;
+    case SqlEscapeError::InvalidSyntax:
+      handle.set_error(SQLSTATE_SYNTAX_ERROR, translated.message);
+      break;
+    case SqlEscapeError::None:
+      break;
+  }
+  return std::nullopt;
 }
 
 const char* request_sqlstate(const std::error_code& error,
@@ -1791,9 +1814,11 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
                                      {"kind", "direct"}});
     return SQL_ERROR;
   }
+  const auto native_sql = statement_sql(*this, sql, no_scan_);
+  if (!native_sql) return SQL_ERROR;
   if (conn_->logs_queries()) {
     conn_->log(rs::core::logging::LogLevel::Debug, "query_text",
-               "Executing direct SQL", {{"sql", sql}});
+               "Executing direct SQL", {{"sql", *native_sql}});
   }
   
   clear_current_result();
@@ -1818,7 +1843,8 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
       if (timeout) conn_->disconnect();
       return SQL_ERROR;
     }
-    auto result = conn_->get_db_connection()->execute_query(sql, deadline);
+    auto result = conn_->get_db_connection()->execute_query(*native_sql,
+                                                            deadline);
     
     if (result.has_error()) {
       const auto timeout = is_timeout_error(result.error());
@@ -1884,6 +1910,14 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
     case SQL_ATTR_MAX_ROWS:
       max_rows_ = numeric;
       return SQL_SUCCESS;
+    case SQL_ATTR_NOSCAN:
+      if (numeric == SQL_NOSCAN_OFF || numeric == SQL_NOSCAN_ON) {
+        no_scan_ = numeric == SQL_NOSCAN_ON;
+        return SQL_SUCCESS;
+      }
+      set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                "Invalid escape-scanning mode");
+      return SQL_ERROR;
     case SQL_ATTR_CURSOR_TYPE:
       if (!cursor_attribute_settable()) return SQL_ERROR;
       if (numeric == SQL_CURSOR_FORWARD_ONLY) return SQL_SUCCESS;
@@ -2113,6 +2147,9 @@ SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
       *static_cast<SQLULEN*>(value) = query_timeout_seconds_; break;
     case SQL_ATTR_MAX_ROWS:
       *static_cast<SQLULEN*>(value) = max_rows_; break;
+    case SQL_ATTR_NOSCAN:
+      *static_cast<SQLULEN*>(value) =
+          no_scan_ ? SQL_NOSCAN_ON : SQL_NOSCAN_OFF; break;
     case SQL_ATTR_CURSOR_TYPE:
       *static_cast<SQLULEN*>(value) = SQL_CURSOR_FORWARD_ONLY; break;
     case SQL_ATTR_CONCURRENCY:
@@ -2518,15 +2555,18 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
     set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
     return SQL_ERROR;
   }
+  const auto native_sql = statement_sql(*this, sql, no_scan_);
+  if (!native_sql) return SQL_ERROR;
   
   const auto marker_count =
-      rs::core::database::postgres::PgProtocolParser::parameter_marker_count(sql);
+      rs::core::database::postgres::PgProtocolParser::parameter_marker_count(
+          *native_sql);
   if (marker_count > static_cast<std::size_t>(
           std::numeric_limits<SQLSMALLINT>::max())) {
     set_error(SQLSTATE_GENERAL_ERROR, "Too many parameter markers");
     return SQL_ERROR;
   }
-  prepared_sql_ = sql;
+  prepared_sql_ = *native_sql;
   parameter_count_ = static_cast<SQLSMALLINT>(marker_count);
   param_metadata_.clear();
   clear_current_result();
@@ -2535,7 +2575,8 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
   if (conn_->logs_queries()) {
     conn_->log(rs::core::logging::LogLevel::Debug, "query_prepared",
                "Prepared SQL statement",
-               {{"sql", sql}, {"parameters", std::to_string(marker_count)}});
+               {{"sql", *native_sql},
+                {"parameters", std::to_string(marker_count)}});
   }
   
   return SQL_SUCCESS;

@@ -972,10 +972,7 @@ static SQLRETURN SQLExecDirect_impl(SQLHSTMT statement_handle, SQLCHAR* statemen
                     "Invalid SQL statement length");
     return SQL_ERROR;
   }
-  const auto sql = translate_odbc_sql(
-      sqlchar_to_string(statement_text, text_length));
-  if (!sql) return set_sql_escape_error(*stmt, sql);
-  return stmt->execute_direct(sql.sql);
+  return stmt->execute_direct(sqlchar_to_string(statement_text, text_length));
 }
 
 static SQLRETURN SQLExecDirectW_impl(SQLHSTMT statement_handle,
@@ -998,9 +995,7 @@ static SQLRETURN SQLExecDirectW_impl(SQLHSTMT statement_handle,
                     "Invalid wide-character SQL statement");
     return SQL_ERROR;
   }
-  const auto native_sql = translate_odbc_sql(*sql);
-  if (!native_sql) return set_sql_escape_error(*stmt, native_sql);
-  return stmt->execute_direct(native_sql.sql);
+  return stmt->execute_direct(*sql);
 }
 
 static SQLRETURN SQLFetch_impl(SQLHSTMT statement_handle) {
@@ -2576,10 +2571,7 @@ static SQLRETURN SQLPrepare_impl(SQLHSTMT statement_handle, SQLCHAR* statement_t
                     "Invalid SQL statement length");
     return SQL_ERROR;
   }
-  const auto sql = translate_odbc_sql(
-      sqlchar_to_string(statement_text, text_length));
-  if (!sql) return set_sql_escape_error(*stmt, sql);
-  return stmt->prepare(sql.sql);
+  return stmt->prepare(sqlchar_to_string(statement_text, text_length));
 }
 
 static SQLRETURN SQLPrepareW_impl(SQLHSTMT statement_handle,
@@ -2602,9 +2594,7 @@ static SQLRETURN SQLPrepareW_impl(SQLHSTMT statement_handle,
                     "Invalid wide-character SQL statement");
     return SQL_ERROR;
   }
-  const auto native_sql = translate_odbc_sql(*sql);
-  if (!native_sql) return set_sql_escape_error(*stmt, native_sql);
-  return stmt->prepare(native_sql.sql);
+  return stmt->prepare(*sql);
 }
 
 static SQLRETURN SQLExecute_impl(SQLHSTMT statement_handle) {

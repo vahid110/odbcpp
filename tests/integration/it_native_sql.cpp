@@ -167,3 +167,23 @@ TEST_F(NativeSqlIntegrationTest, ExecutesEscapesInDirectAndPreparedSql) {
             SQLGetData(statement_, 1, SQL_C_CHAR, text, sizeof(text), nullptr));
   EXPECT_STREQ("prepared", reinterpret_cast<const char*>(text));
 }
+
+TEST_F(NativeSqlIntegrationTest, NoScanBypassesEscapeTranslation) {
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetStmtAttr(statement_, SQL_ATTR_NOSCAN,
+                           reinterpret_cast<SQLPOINTER>(SQL_NOSCAN_ON), 0));
+  SQLCHAR escaped[] = "SELECT {fn UCASE('unchanged')}";
+  EXPECT_EQ(SQL_ERROR, SQLExecDirect(statement_, escaped, SQL_NTS));
+  EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetStmtAttr(statement_, SQL_ATTR_NOSCAN,
+                           reinterpret_cast<SQLPOINTER>(SQL_NOSCAN_OFF), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, escaped, SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
+  SQLCHAR output[16]{};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetData(statement_, 1, SQL_C_CHAR, output, sizeof(output),
+                       nullptr));
+  EXPECT_STREQ("UNCHANGED", reinterpret_cast<const char*>(output));
+}

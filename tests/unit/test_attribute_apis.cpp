@@ -871,15 +871,35 @@ TEST_F(AttributeApisTest, StoresBookmarkAndOperationPointers) {
 
 TEST_F(AttributeApisTest, ClassifiesRecognizedUnsupportedStatementAttributes) {
   SQLULEN value = 77;
-  for (const auto attribute : {SQL_ATTR_NOSCAN, SQL_ATTR_SIMULATE_CURSOR}) {
-    EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
-        statement_, attribute, integer_value(0), 0));
-    EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
-    EXPECT_EQ(SQL_ERROR, SQLGetStmtAttr(
-        statement_, attribute, &value, sizeof(value), nullptr));
-    EXPECT_EQ(77u, value);
-    EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
-  }
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_SIMULATE_CURSOR, integer_value(0), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLGetStmtAttr(
+      statement_, SQL_ATTR_SIMULATE_CURSOR, &value, sizeof(value), nullptr));
+  EXPECT_EQ(77u, value);
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+}
+
+TEST_F(AttributeApisTest, StoresEscapeScanningMode) {
+  SQLULEN value = 99;
+  SQLINTEGER length = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_NOSCAN, &value, sizeof(value), &length));
+  EXPECT_EQ(static_cast<SQLULEN>(SQL_NOSCAN_OFF), value);
+  EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(SQLULEN)), length);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_NOSCAN, integer_value(SQL_NOSCAN_ON), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_NOSCAN, &value, sizeof(value), nullptr));
+  EXPECT_EQ(static_cast<SQLULEN>(SQL_NOSCAN_ON), value);
+
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_NOSCAN, integer_value(99), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_NOSCAN, &value, sizeof(value), nullptr));
+  EXPECT_EQ(static_cast<SQLULEN>(SQL_NOSCAN_ON), value);
 }
 
 TEST_F(AttributeApisTest, CurrentRowNumberIsReadOnlyAndRequiresPosition) {
