@@ -71,7 +71,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLGetDiagRec` | A/W | Partial | unit, integration, DM | Retrieval preserves records and validates type/record/buffer; truncation matrix remains |
 | `SQLGetDiagField` | A/W | Partial | unit, integration | All standard header/record identifiers, return provenance, origins, ANSI/wide lengths, and truncation are covered; row/column-specific server errors remain |
 | `SQLError` | A/W | Partial | unit, integration | ODBC 2 sequencing and multi-record consumption |
-| `SQLGetInfo` | A/W | Partial | unit, integration, DM | Open-connection state, conservative capability matrix, and PostgreSQL identity values are guarded; complete remaining required information types |
+| `SQLGetInfo` | A/W | Partial | unit, integration, DM | Open-connection state, PostgreSQL identity, limits, SQL grammar, conversion, scalar-function, and compatibility families are guarded; driver-handle mappings and deeper capability validation remain |
 | `SQLGetFunctions` | A | Verified | shared-library export audit, unit, DM | Exact single-function, ODBC 2 array, and ODBC 3 bitmap behavior is enforced against all advertised exports |
 | `SQLNativeSql` | A/W | Partial | unit, DM | ODBC escape translation; currently effectively pass-through |
 | `SQLSetEnvAttr` | A | Partial | unit, integration, DM | ODBC version and null-terminated output are classified and locked after DBC allocation; Driver Manager pooling attributes remain |
@@ -398,6 +398,13 @@ substitute for ODBC diagnostics.
   a real PostgreSQL connection, including ANSI/wide byte lengths, numeric
   storage widths, truncation, and invalid-type diagnostics; disconnected calls
   preserve application outputs and return 08003.
+- Audit batch 47 classifies the remaining common ODBC 2.x/3.x `SQLGetInfo`
+  families instead of returning HY096 for defined information types. Unknown
+  limits and unverified optional syntax, conversion, and scalar functions use
+  the standard conservative zero/empty values. A connected PostgreSQL matrix
+  verifies result types, storage widths, and values under both unixODBC and
+  iODBC headers, then executes the advertised grouping, alias, join, insert,
+  index, union, escape-clause, and integrity syntax end to end.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

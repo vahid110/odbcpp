@@ -244,14 +244,23 @@ namespace {
       case SQL_TABLE_TERM: return "table";
       case SQL_PROCEDURE_TERM: return "procedure";
       case SQL_SEARCH_PATTERN_ESCAPE: return "\\";
+      case SQL_COLLATION_SEQ:
+      case SQL_KEYWORDS:
+      case SQL_SPECIAL_CHARACTERS: return "";
+      case SQL_XOPEN_CLI_YEAR: return "1995";
       case SQL_CATALOG_NAME:
       case SQL_COLUMN_ALIAS:
       case SQL_DESCRIBE_PARAMETER:
+      case SQL_EXPRESSIONS_IN_ORDERBY:
+      case SQL_INTEGRITY:
+      case SQL_LIKE_ESCAPE_CLAUSE:
       case SQL_MULT_RESULT_SETS:
+      case SQL_OUTER_JOINS:
       case SQL_PROCEDURES: return "Y";
       case SQL_ACCESSIBLE_TABLES:
       case SQL_ACCESSIBLE_PROCEDURES:
       case SQL_DATA_SOURCE_READ_ONLY:
+      case SQL_MAX_ROW_SIZE_INCLUDES_LONG:
       case SQL_MULTIPLE_ACTIVE_TXN:
       case SQL_NEED_LONG_DATA_LEN:
       case SQL_ORDER_BY_COLUMNS_IN_SELECT:
@@ -1416,6 +1425,14 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_MAX_PROCEDURE_NAME_LEN:
     case SQL_MAX_USER_NAME_LEN:
       return write_usmallint(63);
+    case SQL_MAX_COLUMNS_IN_GROUP_BY:
+    case SQL_MAX_COLUMNS_IN_INDEX:
+    case SQL_MAX_COLUMNS_IN_ORDER_BY:
+    case SQL_MAX_COLUMNS_IN_SELECT:
+    case SQL_MAX_COLUMNS_IN_TABLE:
+    case SQL_MAX_CURSOR_NAME_LEN:
+    case SQL_MAX_TABLES_IN_SELECT:
+      return write_usmallint(0);
     case SQL_IDENTIFIER_CASE:
       return write_usmallint(static_cast<SQLUSMALLINT>(SQL_IC_LOWER));
     case SQL_QUOTED_IDENTIFIER_CASE:
@@ -1428,6 +1445,16 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
       return write_usmallint(static_cast<SQLUSMALLINT>(SQL_CB_NULL));
     case SQL_NON_NULLABLE_COLUMNS:
       return write_usmallint(static_cast<SQLUSMALLINT>(SQL_NNC_NON_NULL));
+    case SQL_CORRELATION_NAME:
+      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_CN_ANY));
+    case SQL_GROUP_BY:
+      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_GB_NO_RELATION));
+    case SQL_ODBC_API_CONFORMANCE:
+      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_OAC_LEVEL1));
+    case SQL_ODBC_SAG_CLI_CONFORMANCE:
+      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_OSCC_COMPLIANT));
+    case SQL_ODBC_SQL_CONFORMANCE:
+      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_OSC_CORE));
     case SQL_SCROLL_OPTIONS:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_SO_FORWARD_ONLY));
     case SQL_GETDATA_EXTENSIONS:
@@ -1440,18 +1467,94 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_BATCH_ROW_COUNT:
     case SQL_BATCH_SUPPORT:
     case SQL_BOOKMARK_PERSISTENCE:
+    case SQL_AGGREGATE_FUNCTIONS:
+    case SQL_ALTER_DOMAIN:
+    case SQL_ALTER_TABLE:
+    case SQL_DATETIME_LITERALS:
+    case SQL_CREATE_ASSERTION:
+    case SQL_CREATE_CHARACTER_SET:
+    case SQL_CREATE_COLLATION:
+    case SQL_CREATE_DOMAIN:
+    case SQL_CREATE_SCHEMA:
+    case SQL_CREATE_TABLE:
+    case SQL_CREATE_TRANSLATION:
+    case SQL_CREATE_VIEW:
     case SQL_CONVERT_FUNCTIONS:
+    case SQL_CONVERT_BIGINT:
+    case SQL_CONVERT_BINARY:
+    case SQL_CONVERT_BIT:
+    case SQL_CONVERT_CHAR:
+    case SQL_CONVERT_DATE:
+    case SQL_CONVERT_DECIMAL:
+    case SQL_CONVERT_DOUBLE:
+    case SQL_CONVERT_FLOAT:
+    case SQL_CONVERT_INTEGER:
+    case SQL_CONVERT_INTERVAL_DAY_TIME:
+    case SQL_CONVERT_INTERVAL_YEAR_MONTH:
+    case SQL_CONVERT_LONGVARBINARY:
+    case SQL_CONVERT_LONGVARCHAR:
+    case SQL_CONVERT_NUMERIC:
+    case SQL_CONVERT_REAL:
+    case SQL_CONVERT_SMALLINT:
+    case SQL_CONVERT_TIME:
+    case SQL_CONVERT_TIMESTAMP:
+    case SQL_CONVERT_TINYINT:
+    case SQL_CONVERT_VARBINARY:
+    case SQL_CONVERT_VARCHAR:
+    case SQL_CONVERT_WCHAR:
+    case SQL_CONVERT_WLONGVARCHAR:
+    case SQL_CONVERT_WVARCHAR:
+#ifdef SQL_CONVERT_GUID
+    case SQL_CONVERT_GUID:
+#endif
     case SQL_DYNAMIC_CURSOR_ATTRIBUTES1:
     case SQL_DYNAMIC_CURSOR_ATTRIBUTES2:
+    case SQL_DROP_ASSERTION:
+    case SQL_DROP_CHARACTER_SET:
+    case SQL_DROP_COLLATION:
+    case SQL_DROP_DOMAIN:
+    case SQL_DROP_SCHEMA:
+    case SQL_DROP_TABLE:
+    case SQL_DROP_TRANSLATION:
+    case SQL_DROP_VIEW:
+    case SQL_INFO_SCHEMA_VIEWS:
+    case SQL_INDEX_KEYWORDS:
     case SQL_KEYSET_CURSOR_ATTRIBUTES1:
     case SQL_KEYSET_CURSOR_ATTRIBUTES2:
+    case SQL_MAX_BINARY_LITERAL_LEN:
+    case SQL_MAX_CHAR_LITERAL_LEN:
+    case SQL_MAX_INDEX_SIZE:
+    case SQL_MAX_ROW_SIZE:
+    case SQL_MAX_STATEMENT_LEN:
     case SQL_MAX_ASYNC_CONCURRENT_STATEMENTS:
+    case SQL_NUMERIC_FUNCTIONS:
+    case SQL_OJ_CAPABILITIES:
     case SQL_POS_OPERATIONS:
     case SQL_POSITIONED_STATEMENTS:
+    case SQL_SQL92_DATETIME_FUNCTIONS:
+    case SQL_SQL92_FOREIGN_KEY_DELETE_RULE:
+    case SQL_SQL92_FOREIGN_KEY_UPDATE_RULE:
+    case SQL_SQL92_GRANT:
+    case SQL_SQL92_NUMERIC_VALUE_FUNCTIONS:
+    case SQL_SQL92_PREDICATES:
+    case SQL_SQL92_RELATIONAL_JOIN_OPERATORS:
+    case SQL_SQL92_REVOKE:
+    case SQL_SQL92_ROW_VALUE_CONSTRUCTOR:
+    case SQL_SQL92_STRING_FUNCTIONS:
+    case SQL_SQL92_VALUE_EXPRESSIONS:
     case SQL_STATIC_CURSOR_ATTRIBUTES1:
     case SQL_STATIC_CURSOR_ATTRIBUTES2:
     case SQL_STATIC_SENSITIVITY:
+    case SQL_STRING_FUNCTIONS:
+    case SQL_SUBQUERIES:
+    case SQL_SYSTEM_FUNCTIONS:
+    case SQL_TIMEDATE_ADD_INTERVALS:
+    case SQL_TIMEDATE_DIFF_INTERVALS:
+    case SQL_TIMEDATE_FUNCTIONS:
       return write_uinteger(0);
+    case SQL_DDL_INDEX:
+      return write_uinteger(static_cast<SQLUINTEGER>(
+          SQL_DI_CREATE_INDEX | SQL_DI_DROP_INDEX));
     case SQL_FETCH_DIRECTION:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_FD_FETCH_NEXT));
     case SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES1:
@@ -1467,6 +1570,37 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_PAS_NO_SELECT));
     case SQL_SCROLL_CONCURRENCY:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_SCCO_READ_ONLY));
+    case SQL_INSERT_STATEMENT:
+      return write_uinteger(static_cast<SQLUINTEGER>(
+          SQL_IS_INSERT_LITERALS | SQL_IS_INSERT_SEARCHED |
+          SQL_IS_SELECT_INTO));
+    case SQL_ODBC_INTERFACE_CONFORMANCE:
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_OIC_CORE));
+    case SQL_SQL_CONFORMANCE:
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_SC_SQL92_ENTRY));
+    case SQL_STANDARD_CLI_CONFORMANCE:
+      return write_uinteger(
+          static_cast<SQLUINTEGER>(SQL_SCC_XOPEN_CLI_VERSION1));
+    case SQL_UNION:
+      return write_uinteger(static_cast<SQLUINTEGER>(
+          SQL_U_UNION | SQL_U_UNION_ALL));
+#ifdef SQL_ASYNC_DBC_FUNCTIONS
+    case SQL_ASYNC_DBC_FUNCTIONS:
+      return write_uinteger(
+          static_cast<SQLUINTEGER>(SQL_ASYNC_DBC_NOT_CAPABLE));
+#endif
+#ifdef SQL_ASYNC_NOTIFICATION
+    case SQL_ASYNC_NOTIFICATION:
+      return write_uinteger(
+          static_cast<SQLUINTEGER>(SQL_ASYNC_NOTIFICATION_NOT_CAPABLE));
+#endif
+#ifdef SQL_DRIVER_AWARE_POOLING_SUPPORTED
+    case SQL_DRIVER_AWARE_POOLING_SUPPORTED:
+      return write_uinteger(static_cast<SQLUINTEGER>(
+          SQL_DRIVER_AWARE_POOLING_NOT_CAPABLE));
+#endif
+    case SQL_DTC_TRANSITION_COST:
+      return write_uinteger(0);
     case SQL_CATALOG_USAGE:
       return write_uinteger(0);
     case SQL_SCHEMA_USAGE:
