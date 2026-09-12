@@ -127,6 +127,74 @@ TEST(AttributeApisStandaloneTest, RejectsInvalidEnvironmentVersion) {
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
 }
 
+TEST(AttributeApisStandaloneTest, EnvironmentVersionGetSetMatrix) {
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+
+  SQLINTEGER value = 99;
+  SQLINTEGER length = -1;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetEnvAttr(environment, SQL_ATTR_ODBC_VERSION, &value, -1,
+                          &length));
+  EXPECT_EQ(0, value);
+  EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(value)), length);
+
+  constexpr SQLINTEGER versions[]{
+      SQL_OV_ODBC2,
+      SQL_OV_ODBC3,
+#ifdef SQL_OV_ODBC3_80
+      SQL_OV_ODBC3_80,
+#endif
+  };
+  for (const auto version : versions) {
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLSetEnvAttr(
+                  environment, SQL_ATTR_ODBC_VERSION,
+                  reinterpret_cast<SQLPOINTER>(
+                      static_cast<std::uintptr_t>(version)),
+                  123));
+    value = 0;
+    length = -1;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetEnvAttr(environment, SQL_ATTR_ODBC_VERSION, &value, -1,
+                            &length));
+    EXPECT_EQ(version, value);
+    EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(value)), length);
+  }
+
+  length = 71;
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetEnvAttr(environment, SQL_ATTR_ODBC_VERSION, nullptr, 0,
+                          &length));
+  EXPECT_EQ(71, length);
+  SQLCHAR state[6]{};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetDiagRec(SQL_HANDLE_ENV, environment, 1, state, nullptr,
+                          nullptr, 0, nullptr));
+  EXPECT_STREQ("HY009", reinterpret_cast<const char*>(state));
+
+  value = 42;
+  length = 71;
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetEnvAttr(environment, 0x7fffffff, &value, sizeof(value),
+                          &length));
+  EXPECT_EQ(42, value);
+  EXPECT_EQ(71, length);
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetDiagRec(SQL_HANDLE_ENV, environment, 1, state, nullptr,
+                          nullptr, 0, nullptr));
+  EXPECT_STREQ("HY092", reinterpret_cast<const char*>(state));
+  EXPECT_EQ(SQL_ERROR,
+            SQLSetEnvAttr(environment, 0x7fffffff, nullptr, 0));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetDiagRec(SQL_HANDLE_ENV, environment, 1, state, nullptr,
+                          nullptr, 0, nullptr));
+  EXPECT_STREQ("HY092", reinterpret_cast<const char*>(state));
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
 TEST(AttributeApisStandaloneTest, SupportsNullTerminatedEnvironmentOutput) {
   SQLHENV environment = SQL_NULL_HENV;
   ASSERT_EQ(SQL_SUCCESS,
@@ -143,9 +211,11 @@ TEST(AttributeApisStandaloneTest, SupportsNullTerminatedEnvironmentOutput) {
   ASSERT_EQ(SQL_SUCCESS, SQLSetEnvAttr(
       environment, SQL_ATTR_ODBC_VERSION,
       reinterpret_cast<SQLPOINTER>(std::uintptr_t{SQL_OV_ODBC3}), 0));
+  SQLINTEGER length = -1;
   ASSERT_EQ(SQL_SUCCESS, SQLGetEnvAttr(
-      environment, SQL_ATTR_OUTPUT_NTS, &value, sizeof(value), nullptr));
+      environment, SQL_ATTR_OUTPUT_NTS, &value, -1, &length));
   EXPECT_EQ(SQL_TRUE, value);
+  EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(value)), length);
   EXPECT_EQ(SQL_SUCCESS, SQLSetEnvAttr(
       environment, SQL_ATTR_OUTPUT_NTS,
       reinterpret_cast<SQLPOINTER>(std::uintptr_t{SQL_TRUE}), 0));

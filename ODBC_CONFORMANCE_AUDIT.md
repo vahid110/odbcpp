@@ -74,8 +74,8 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLGetInfo` | A/W | Verified | unit, integration, DM | Every driver-owned standard type is classified; positive PostgreSQL claims execute end to end, and Driver Manager-only mappings are covered separately |
 | `SQLGetFunctions` | A | Verified | shared-library export audit, unit, integration, DM | Connection state, exact single-function results, ODBC 2 array, ODBC 3 bitmap, null output, and invalid identifiers are enforced against all advertised exports |
 | `SQLNativeSql` | A/W | Partial | unit, DM | ODBC escape translation; currently effectively pass-through |
-| `SQLSetEnvAttr` | A | Partial | unit, integration, DM | ODBC version and null-terminated output are classified and locked after DBC allocation; Driver Manager pooling attributes remain |
-| `SQLGetEnvAttr` | A | Partial | unit, DM | ODBC version, null-terminated output, iODBC negotiation, and output validation are covered; Driver Manager pooling attributes remain |
+| `SQLSetEnvAttr` | A | Verified | unit, integration, DM | ODBC 2/3/3.8 version selection, mandatory null-terminated output, invalid values, sequencing, and Driver Manager-owned pooling boundaries are classified |
+| `SQLGetEnvAttr` | A | Verified | unit, DM | Version, null-terminated output, iODBC Unicode negotiation, ignored numeric buffer lengths, null outputs, invalid attributes, output preservation, and storage widths are covered |
 | `SQLGetDescField` | A/W | Partial | unit, integration, DM | Standard header/record fields, PostgreSQL type characteristics, wide byte lengths, and truncation work; statement association and origin-name enrichment remain |
 | `SQLGetDescRec` | A/W | Partial | unit, integration, DM | Core fields, datetime subtype, null outputs, record bounds, truncation, and mixed-width iODBC translation are covered; full associated-statement state matrix remains |
 | `SQLSetDescField` | A/W | Partial | unit | Header/record mutability, descriptor-kind restrictions, type consistency, unbinding, and pointer fields are covered; bookmarks and complete type-derived defaults remain |
@@ -425,6 +425,13 @@ substitute for ODBC diagnostics.
   outputs return HY009. The single-function, ODBC 2 array, and ODBC 3 bitmap
   matrices run on a real PostgreSQL connection and share one export inventory
   with the dynamic-library test, eliminating the duplicated capability list.
+- Audit batch 51 completes the driver-owned environment-attribute matrix.
+  ODBC 2, 3, and (where defined) 3.8 versions round-trip before child
+  allocation; numeric buffer lengths are ignored as required; null outputs,
+  invalid values and attributes, pre-version `SQL_ATTR_OUTPUT_NTS`, and
+  post-DBC mutations have exact diagnostics and preserve outputs. Connection
+  pooling attributes remain correctly owned by the Driver Manager rather than
+  being duplicated inside the driver, so both environment APIs are Verified.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
