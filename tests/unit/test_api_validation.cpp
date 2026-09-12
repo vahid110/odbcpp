@@ -406,22 +406,23 @@ TEST_F(ApiValidationTest, AnsiAndWideOutputLengthsHaveMatchingValidation) {
   EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, statement_));
 
   EXPECT_EQ(SQL_ERROR,
-            SQLGetInfo(connection_, SQL_DRIVER_NAME, narrow, -1, nullptr));
+            SQLGetInfo(connection_, SQL_ODBC_VER, narrow, -1, nullptr));
   EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
   EXPECT_EQ(SQL_ERROR,
-            SQLGetInfoW(connection_, SQL_DRIVER_NAME, wide, -1, nullptr));
+            SQLGetInfoW(connection_, SQL_ODBC_VER, wide, -1, nullptr));
   EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
 
-  SQLUSMALLINT transaction_capability = 0;
-  EXPECT_EQ(SQL_SUCCESS,
+  SQLUSMALLINT transaction_capability = 123;
+  EXPECT_EQ(SQL_ERROR,
             SQLGetInfo(connection_, SQL_TXN_CAPABLE,
                        &transaction_capability, -1, nullptr));
-  EXPECT_EQ(SQL_TC_ALL, transaction_capability);
-  transaction_capability = 0;
-  EXPECT_EQ(SQL_SUCCESS,
+  EXPECT_EQ(123, transaction_capability);
+  EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR,
             SQLGetInfoW(connection_, SQL_TXN_CAPABLE,
                         &transaction_capability, -1, nullptr));
-  EXPECT_EQ(SQL_TC_ALL, transaction_capability);
+  EXPECT_EQ(123, transaction_capability);
+  EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
 TEST_F(ApiValidationTest, CatalogApisShareAnsiAndWideLengthValidation) {

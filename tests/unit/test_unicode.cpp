@@ -134,13 +134,13 @@ TEST_F(UnicodeApiTest, WideCatalogApisValidateLengthsAndEncoding) {
 }
 
 TEST_F(UnicodeApiTest, WideInformationUsesByteLengths) {
-  SQLWCHAR driver_name[32]{};
-  SQLSMALLINT name_bytes = 0;
+  SQLWCHAR odbc_version[16]{};
+  SQLSMALLINT version_bytes = 0;
   ASSERT_EQ(SQL_SUCCESS,
-            SQLGetInfoW(connection_, SQL_DRIVER_NAME, driver_name,
-                        sizeof(driver_name), &name_bytes));
-  EXPECT_EQ(static_cast<SQLSMALLINT>(13 * sizeof(SQLWCHAR)), name_bytes);
-  EXPECT_EQ("ODBCPP Driver", as_utf8(driver_name, 13));
+            SQLGetInfoW(connection_, SQL_ODBC_VER, odbc_version,
+                        sizeof(odbc_version), &version_bytes));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(5 * sizeof(SQLWCHAR)), version_bytes);
+  EXPECT_EQ("03.80", as_utf8(odbc_version, 5));
 }
 
 TEST_F(UnicodeApiTest, WideDiagnosticFieldAndSqLErrorAreCompatible) {

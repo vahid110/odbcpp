@@ -270,19 +270,19 @@ namespace {
     unsigned major = 0;
     unsigned minor = 0;
     unsigned release = 0;
-    auto cursor = server_version.begin();
+    const auto* cursor = server_version.data();
+    const auto* end = server_version.data() + server_version.size();
     const auto parse_component = [&](unsigned& component) {
-      const auto parsed = std::from_chars(
-          cursor, server_version.end(), component);
+      const auto parsed = std::from_chars(cursor, end, component);
       cursor = parsed.ptr;
       return parsed.ec == std::errc{};
     };
     if (!parse_component(major)) return "00.00.0000";
-    if (cursor != server_version.end() && *cursor == '.') {
+    if (cursor != end && *cursor == '.') {
       ++cursor;
       if (!parse_component(minor)) minor = 0;
     }
-    if (cursor != server_version.end() && *cursor == '.') {
+    if (cursor != end && *cursor == '.') {
       ++cursor;
       if (!parse_component(release)) release = 0;
     }
@@ -1345,11 +1345,12 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
   auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
 
+  if (info_type != SQL_ODBC_VER && !conn->is_connected()) {
+    conn->set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
+    return SQL_ERROR;
+  }
+
   if (is_dynamic_string_info(info_type)) {
-    if (!conn->is_connected()) {
-      conn->set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
-      return SQL_ERROR;
-    }
     return write_narrow_output(
         conn, dynamic_string_info_value(*conn, info_type),
         static_cast<SQLCHAR*>(info_value), buffer_length, string_length,
@@ -1485,11 +1486,11 @@ static SQLRETURN SQLGetInfoW_impl(SQLHDBC connection_handle, SQLUSMALLINT info_t
                       SQLSMALLINT* string_length) {
   auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
+  if (info_type != SQL_ODBC_VER && !conn->is_connected()) {
+    conn->set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
+    return SQL_ERROR;
+  }
   if (is_dynamic_string_info(info_type)) {
-    if (!conn->is_connected()) {
-      conn->set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
-      return SQL_ERROR;
-    }
     return write_wide_bytes_output(
         conn, dynamic_string_info_value(*conn, info_type),
         static_cast<SQLWCHAR*>(info_value), buffer_length, string_length,

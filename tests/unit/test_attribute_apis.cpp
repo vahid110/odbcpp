@@ -410,159 +410,22 @@ TEST_F(AttributeApisTest, EndTransactionValidatesState) {
   EXPECT_EQ("HY012", diagnostic_state(SQL_HANDLE_ENV, environment_));
 }
 
-TEST_F(AttributeApisTest, ReportsTransactionCapabilities) {
-  SQLUSMALLINT small_value = 0;
-  SQLSMALLINT length = 0;
-  EXPECT_EQ(SQL_SUCCESS, SQLGetInfo(
-      connection_, SQL_TXN_CAPABLE, &small_value, sizeof(small_value), &length));
-  EXPECT_EQ(SQL_TC_ALL, small_value);
-  EXPECT_EQ(sizeof(SQLUSMALLINT), static_cast<std::size_t>(length));
+TEST_F(AttributeApisTest, OnlyOdbcVersionIsAvailableBeforeConnect) {
+  SQLCHAR odbc_version[8]{};
+  SQLSMALLINT version_length = -1;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetInfo(connection_, SQL_ODBC_VER, odbc_version,
+                       sizeof(odbc_version), &version_length));
+  EXPECT_STREQ("03.80", reinterpret_cast<const char*>(odbc_version));
+  EXPECT_EQ(5, version_length);
 
-  EXPECT_EQ(SQL_SUCCESS, SQLGetInfo(
-      connection_, SQL_CURSOR_COMMIT_BEHAVIOR, &small_value,
-      sizeof(small_value), nullptr));
-  EXPECT_EQ(SQL_CB_PRESERVE, small_value);
-  EXPECT_EQ(SQL_SUCCESS, SQLGetInfo(
-      connection_, SQL_CURSOR_ROLLBACK_BEHAVIOR, &small_value,
-      sizeof(small_value), nullptr));
-  EXPECT_EQ(SQL_CB_PRESERVE, small_value);
-
-  SQLUINTEGER integer_value = 0;
-  EXPECT_EQ(SQL_SUCCESS, SQLGetInfo(
-      connection_, SQL_DEFAULT_TXN_ISOLATION, &integer_value,
-      sizeof(integer_value), &length));
-  EXPECT_EQ(SQL_TXN_READ_COMMITTED, integer_value);
-  EXPECT_EQ(sizeof(SQLUINTEGER), static_cast<std::size_t>(length));
-  EXPECT_EQ(SQL_SUCCESS, SQLGetInfo(
-      connection_, SQL_TXN_ISOLATION_OPTION, &integer_value,
-      sizeof(integer_value), nullptr));
-  EXPECT_EQ(SQL_TXN_READ_UNCOMMITTED | SQL_TXN_READ_COMMITTED |
-                SQL_TXN_REPEATABLE_READ | SQL_TXN_SERIALIZABLE,
-            integer_value);
-}
-
-TEST_F(AttributeApisTest, ReportsApplicationStartupCapabilities) {
-  const auto text_info = [&](SQLUSMALLINT type) {
-    SQLCHAR value[64]{};
-    SQLSMALLINT length = 0;
-    EXPECT_EQ(SQL_SUCCESS, SQLGetInfo(
-        connection_, type, value, sizeof(value), &length));
-    return std::string(reinterpret_cast<char*>(value),
-                       static_cast<std::size_t>(length));
-  };
-  EXPECT_EQ("ODBCPP Driver", text_info(SQL_DRIVER_NAME));
-  EXPECT_EQ("01.00.0000", text_info(SQL_DRIVER_VER));
-  EXPECT_EQ("03.80", text_info(SQL_DRIVER_ODBC_VER));
-#ifdef ODBCPP_ENABLE_REDSHIFT
-  EXPECT_EQ("Amazon Redshift", text_info(SQL_DBMS_NAME));
-#else
-  EXPECT_EQ("PostgreSQL", text_info(SQL_DBMS_NAME));
-#endif
-  EXPECT_EQ("\"", text_info(SQL_IDENTIFIER_QUOTE_CHAR));
-  EXPECT_EQ("database", text_info(SQL_CATALOG_TERM));
-  EXPECT_EQ("schema", text_info(SQL_SCHEMA_TERM));
-  EXPECT_EQ("Y", text_info(SQL_CATALOG_NAME));
-  EXPECT_EQ("N", text_info(SQL_ACCESSIBLE_TABLES));
-  EXPECT_EQ("N", text_info(SQL_ACCESSIBLE_PROCEDURES));
-  EXPECT_EQ("Y", text_info(SQL_DESCRIBE_PARAMETER));
-  EXPECT_EQ("Y", text_info(SQL_PROCEDURES));
-  EXPECT_EQ("N", text_info(SQL_ROW_UPDATES));
-
-  SQLUSMALLINT small_value = 0;
-  SQLSMALLINT length = 0;
-  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(
-      connection_, SQL_MAX_IDENTIFIER_LEN, &small_value,
-      sizeof(small_value), &length));
-  EXPECT_EQ(63, small_value);
-  EXPECT_EQ(sizeof(SQLUSMALLINT), static_cast<std::size_t>(length));
-  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(
-      connection_, SQL_IDENTIFIER_CASE, &small_value,
-      sizeof(small_value), nullptr));
-  EXPECT_EQ(SQL_IC_LOWER, small_value);
-
-  SQLUINTEGER capabilities = 0;
-  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(
-      connection_, SQL_SCROLL_OPTIONS, &capabilities,
-      sizeof(capabilities), nullptr));
-  EXPECT_EQ(SQL_SO_FORWARD_ONLY, capabilities);
-  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(
-      connection_, SQL_GETDATA_EXTENSIONS, &capabilities,
-      sizeof(capabilities), nullptr));
-  EXPECT_EQ(SQL_GD_ANY_COLUMN | SQL_GD_ANY_ORDER, capabilities);
-}
-
-TEST_F(AttributeApisTest, ReportsUnsupportedFeaturesConservatively) {
-  constexpr std::array<std::pair<SQLUSMALLINT, SQLUSMALLINT>, 4> small_values{
-      std::pair{SQL_ACTIVE_ENVIRONMENTS, 0},
-      std::pair{SQL_MAX_CONCURRENT_ACTIVITIES, 0},
-      std::pair{SQL_MAX_DRIVER_CONNECTIONS, 0},
-      std::pair{SQL_FILE_USAGE, SQL_FILE_NOT_SUPPORTED},
-  };
-  for (const auto& [type, expected] : small_values) {
-    SQLUSMALLINT value = std::numeric_limits<SQLUSMALLINT>::max();
-    SQLSMALLINT length = 0;
-    ASSERT_EQ(SQL_SUCCESS,
-              SQLGetInfo(connection_, type, &value, sizeof(value), &length))
-        << type;
-    EXPECT_EQ(static_cast<SQLUSMALLINT>(expected), value) << type;
-    EXPECT_EQ(sizeof(SQLUSMALLINT), static_cast<std::size_t>(length))
-        << type;
-  }
-
-  constexpr std::array<std::pair<SQLUSMALLINT, SQLUINTEGER>, 23>
-      integer_values{
-      std::pair{SQL_ASYNC_MODE, SQL_AM_NONE},
-      std::pair{SQL_BATCH_ROW_COUNT, 0},
-      std::pair{SQL_BATCH_SUPPORT, 0},
-      std::pair{SQL_BOOKMARK_PERSISTENCE, 0},
-      std::pair{SQL_CONVERT_FUNCTIONS, 0},
-      std::pair{SQL_CURSOR_SENSITIVITY, SQL_UNSPECIFIED},
-      std::pair{SQL_DYNAMIC_CURSOR_ATTRIBUTES1, 0},
-      std::pair{SQL_DYNAMIC_CURSOR_ATTRIBUTES2, 0},
-      std::pair{SQL_KEYSET_CURSOR_ATTRIBUTES1, 0},
-      std::pair{SQL_KEYSET_CURSOR_ATTRIBUTES2, 0},
-      std::pair{SQL_MAX_ASYNC_CONCURRENT_STATEMENTS, 0},
-      std::pair{SQL_POS_OPERATIONS, 0},
-      std::pair{SQL_POSITIONED_STATEMENTS, 0},
-      std::pair{SQL_STATIC_CURSOR_ATTRIBUTES1, 0},
-      std::pair{SQL_STATIC_CURSOR_ATTRIBUTES2, 0},
-      std::pair{SQL_STATIC_SENSITIVITY, 0},
-      std::pair{SQL_FETCH_DIRECTION, SQL_FD_FETCH_NEXT},
-      std::pair{SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES1, SQL_CA1_NEXT},
-      std::pair{SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES2,
-                SQL_CA2_READ_ONLY_CONCURRENCY},
-      std::pair{SQL_LOCK_TYPES, SQL_LCK_NO_CHANGE},
-      std::pair{SQL_PARAM_ARRAY_ROW_COUNTS, SQL_PARC_NO_BATCH},
-      std::pair{SQL_PARAM_ARRAY_SELECTS, SQL_PAS_NO_SELECT},
-      std::pair{SQL_SCROLL_CONCURRENCY, SQL_SCCO_READ_ONLY},
-  };
-  for (const auto& [type, expected] : integer_values) {
-    SQLUINTEGER value = std::numeric_limits<SQLUINTEGER>::max();
-    SQLSMALLINT length = 0;
-    ASSERT_EQ(SQL_SUCCESS,
-              SQLGetInfo(connection_, type, &value, sizeof(value), &length))
-        << type;
-    EXPECT_EQ(static_cast<SQLUINTEGER>(expected), value) << type;
-    EXPECT_EQ(sizeof(SQLUINTEGER), static_cast<std::size_t>(length)) << type;
-  }
-}
-
-TEST_F(AttributeApisTest, RejectsUnknownInformationTypesPrecisely) {
-  SQLUINTEGER value = 0;
-  EXPECT_EQ(SQL_ERROR,
-            SQLGetInfo(connection_, 0xffff, &value, sizeof(value), nullptr));
-  EXPECT_EQ("HY096", diagnostic_state(SQL_HANDLE_DBC, connection_));
-  EXPECT_EQ(SQL_ERROR,
-            SQLGetInfoW(connection_, 0xffff, &value, sizeof(value), nullptr));
-  EXPECT_EQ("HY096", diagnostic_state(SQL_HANDLE_DBC, connection_));
-}
-
-TEST_F(AttributeApisTest, DynamicInformationRequiresAnOpenConnection) {
   SQLCHAR value[]{'k', 'e', 'e', 'p', 0};
   SQLSMALLINT length = 77;
-  for (const auto info_type : {
-           SQL_DATA_SOURCE_NAME, SQL_DATABASE_NAME, SQL_DBMS_VER,
-           SQL_SERVER_NAME, SQL_USER_NAME}) {
+  constexpr std::array<SQLUSMALLINT, 8> connected_info_types{
+      SQL_DRIVER_NAME, SQL_TXN_CAPABLE, SQL_DATA_SOURCE_NAME,
+      SQL_DATABASE_NAME, SQL_DBMS_VER, SQL_SERVER_NAME, SQL_USER_NAME,
+      static_cast<SQLUSMALLINT>(0xffff)};
+  for (const auto info_type : connected_info_types) {
     EXPECT_EQ(SQL_ERROR, SQLGetInfo(
         connection_, info_type, value, sizeof(value), &length));
     EXPECT_STREQ("keep", reinterpret_cast<const char*>(value));
@@ -575,10 +438,10 @@ TEST_F(AttributeApisTest, ReportsInformationStringTruncation) {
   SQLCHAR value[5]{};
   SQLSMALLINT required = 0;
   EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
-            SQLGetInfo(connection_, SQL_DRIVER_NAME, value, sizeof(value),
+            SQLGetInfo(connection_, SQL_ODBC_VER, value, sizeof(value),
                        &required));
-  EXPECT_STREQ("ODBC", reinterpret_cast<char*>(value));
-  EXPECT_EQ(13, required);
+  EXPECT_STREQ("03.8", reinterpret_cast<char*>(value));
+  EXPECT_EQ(5, required);
   EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
