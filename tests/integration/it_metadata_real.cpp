@@ -2148,6 +2148,134 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLRoutineColumns) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, ProcedureColumnModesAndPatternsFollowOdbc) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE FUNCTION pg_temp.odbcpp_param_a_b("
+                  "IN input_arg integer, INOUT inout_arg text, "
+                  "OUT output_arg bigint) LANGUAGE SQL "
+                  "AS 'SELECT inout_arg, input_arg::bigint'",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE FUNCTION pg_temp.odbcpp_param_axb(input_arg integer) "
+                  "RETURNS integer LANGUAGE SQL AS 'SELECT input_arg'",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE FUNCTION pg_temp.odbcpp_unnamed(integer) "
+                  "RETURNS integer LANGUAGE SQL AS 'SELECT $1'",
+        SQL_NTS));
+
+    SQLCHAR wildcard_procedure[] = "odbcpp_param_a_b";
+    SQLCHAR all_columns[] = "%";
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedureColumns(
+        hstmt, nullptr, 0, nullptr, 0, wildcard_procedure, SQL_NTS,
+        all_columns, SQL_NTS));
+    int wildcard_rows = 0;
+    while (SQLFetch(hstmt) == SQL_SUCCESS) ++wildcard_rows;
+    EXPECT_EQ(5, wildcard_rows);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR escaped_procedure[] = "odbcpp\\_param\\_a\\_b";
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedureColumns(
+        hstmt, nullptr, 0, nullptr, 0, escaped_procedure, SQL_NTS,
+        all_columns, SQL_NTS));
+    EXPECT_EQ(SQL_ERROR, SQLProcedureColumns(
+        hstmt, nullptr, 0, nullptr, 0, escaped_procedure, SQL_NTS,
+        all_columns, SQL_NTS));
+    EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    const std::array<const char*, 3> expected_names{
+        "input_arg", "inout_arg", "output_arg"};
+    const std::array<SQLINTEGER, 3> expected_modes{
+        SQL_PARAM_INPUT, SQL_PARAM_INPUT_OUTPUT, SQL_PARAM_OUTPUT};
+    const std::array<SQLINTEGER, 3> expected_types{
+        SQL_INTEGER, SQL_LONGVARCHAR, SQL_BIGINT};
+    std::optional<std::string> catalog;
+    std::optional<std::string> schema;
+    for (std::size_t i = 0; i < expected_names.size(); ++i) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        if (!catalog) catalog = text_cell(hstmt, 1);
+        if (!schema) schema = text_cell(hstmt, 2);
+        EXPECT_EQ(std::optional<std::string>(expected_names[i]),
+                  text_cell(hstmt, 4));
+        EXPECT_EQ(std::optional<SQLINTEGER>(expected_modes[i]),
+                  integer_cell(hstmt, 5));
+        EXPECT_EQ(std::optional<SQLINTEGER>(expected_types[i]),
+                  integer_cell(hstmt, 6));
+        EXPECT_EQ(std::optional<SQLINTEGER>(SQL_NULLABLE_UNKNOWN),
+                  integer_cell(hstmt, 12));
+        EXPECT_EQ(std::optional<SQLINTEGER>(static_cast<SQLINTEGER>(i + 1)),
+                  integer_cell(hstmt, 18));
+        EXPECT_EQ(std::optional<std::string>(""), text_cell(hstmt, 19));
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_TRUE(catalog.has_value());
+    ASSERT_TRUE(schema.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR unnamed_procedure[] = "odbcpp\\_unnamed";
+    SQLCHAR empty[] = "";
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedureColumns(
+        hstmt, nullptr, 0, nullptr, 0, unnamed_procedure, SQL_NTS,
+        empty, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>(""), text_cell(hstmt, 4));
+    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_PARAM_INPUT),
+              integer_cell(hstmt, 5));
+    EXPECT_EQ(std::optional<SQLINTEGER>(1), integer_cell(hstmt, 18));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>(""), text_cell(hstmt, 4));
+    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_RETURN_VALUE),
+              integer_cell(hstmt, 5));
+    EXPECT_EQ(std::optional<SQLINTEGER>(0), integer_cell(hstmt, 18));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR percent[] = "%";
+    auto expect_no_procedure_columns = [&](SQLCHAR* requested_catalog,
+                                           SQLCHAR* requested_schema,
+                                           SQLCHAR* requested_procedure,
+                                           SQLCHAR* requested_column) {
+        ASSERT_EQ(SQL_SUCCESS, SQLProcedureColumns(
+            hstmt, requested_catalog, requested_catalog ? SQL_NTS : 0,
+            requested_schema, requested_schema ? SQL_NTS : 0,
+            requested_procedure, requested_procedure ? SQL_NTS : 0,
+            requested_column, requested_column ? SQL_NTS : 0));
+        EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    expect_no_procedure_columns(empty, nullptr, escaped_procedure,
+                                all_columns);
+    expect_no_procedure_columns(percent, nullptr, escaped_procedure,
+                                all_columns);
+    expect_no_procedure_columns(nullptr, empty, escaped_procedure,
+                                all_columns);
+    expect_no_procedure_columns(nullptr, nullptr, empty, all_columns);
+    expect_no_procedure_columns(nullptr, nullptr, escaped_procedure, empty);
+
+    auto wide_catalog = rs::odbc::utf8_to_wide(*catalog);
+    auto wide_schema = rs::odbc::utf8_to_wide(*schema);
+    auto wide_procedure = rs::odbc::utf8_to_wide("odbcpp\\_param\\_a\\_b");
+    auto wide_column = rs::odbc::utf8_to_wide("input%");
+    ASSERT_TRUE(wide_catalog.has_value());
+    ASSERT_TRUE(wide_schema.has_value());
+    ASSERT_TRUE(wide_procedure.has_value());
+    ASSERT_TRUE(wide_column.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedureColumnsW(
+        hstmt,
+        wide_catalog->data(), static_cast<SQLSMALLINT>(wide_catalog->size()),
+        wide_schema->data(), static_cast<SQLSMALLINT>(wide_schema->size()),
+        wide_procedure->data(),
+        static_cast<SQLSMALLINT>(wide_procedure->size()),
+        wide_column->data(), static_cast<SQLSMALLINT>(wide_column->size())));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("input_arg"), text_cell(hstmt, 4));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, ReportsBestRowIdentifier) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,

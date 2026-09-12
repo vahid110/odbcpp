@@ -130,6 +130,9 @@ TEST_F(MetadataAPITest, InvalidHandles) {
         nullptr, nullptr, 0, nullptr, 0, nullptr, 0));
     EXPECT_EQ(SQL_ERROR, SQLProcedureColumns(
         hstmt, nullptr, 0, nullptr, 0, nullptr, 0, pattern, -2));
+    EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    EXPECT_EQ(SQL_INVALID_HANDLE, SQLProcedureColumnsW(
+        nullptr, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0));
     EXPECT_EQ(SQL_ERROR, SQLSpecialColumns(
         hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0, nullptr, 0,
         SQL_SCOPE_SESSION, SQL_NO_NULLS));

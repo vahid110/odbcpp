@@ -66,7 +66,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLForeignKeys` | A/W | Partial | unit, integration, DM | PK/FK filter combinations, ordinary/empty arguments, primary-target filtering, rule/deferrability mapping, ordering, cursor states, and A/W paths are covered; same-name constraints and restricted-user visibility remain |
 | `SQLStatistics` | A/W | Partial | unit, integration, DM | Ordinary/empty arguments, uniqueness filtering, quick statistics, expression/partial/hash indexes, ordering, cursor states, and A/W paths are covered; exact cardinality and included-column semantics remain |
 | `SQLProcedures` | A/W | Partial | unit, integration, DM | Ordinary catalog, null/empty and escaped patterns, procedure/function distinctions, overloads, cursor states, and A/W paths are covered; argument-mode counts and restricted-user visibility remain |
-| `SQLProcedureColumns` | A/W | Partial | unit, integration, DM | Modes, result columns, overloads and type metadata |
+| `SQLProcedureColumns` | A/W | Partial | unit, integration, DM | Ordinary catalog, null/empty and escaped patterns, unnamed columns, parameter modes/order, return rows, cursor states, and A/W paths are covered; result-set discovery and complete PostgreSQL type metadata remain |
 | `SQLSpecialColumns` | A/W | Partial | unit, integration, DM | Scope/nullable semantics and row-version behavior |
 | `SQLGetDiagRec` | A/W | Verified | unit, integration, DM | Retrieval is nondestructive; handle type, record number, absent records, null destinations, native codes, exact-fit, one-short, and terminator-only A/W buffers are covered, including mixed-width iODBC translation |
 | `SQLGetDiagField` | A/W | Partial | unit, integration | All standard header/record identifiers, return provenance, origins, ANSI/wide lengths, and truncation are covered; row/column-specific server errors remain |
@@ -558,6 +558,14 @@ substitute for ODBC diagnostics.
   overload rows, classify functions separately from procedures, validate the
   core count/type columns, protect an open cursor, reject malformed wide text,
   and repeat exact catalog/schema/pattern selection through `SQLProceduresW`.
+- Audit batch 70 corrects `SQLProcedureColumns` filtering and required result
+  values. Catalog matching is literal while schema, procedure, and column
+  patterns retain null-versus-empty behavior. Unnamed parameters and function
+  returns now use the required empty `COLUMN_NAME`, which also makes an empty
+  column pattern select only those rows. Results include column type in their
+  standard ordering. PostgreSQL tests cover input, input/output, output, and
+  return rows; ordinal positions; wildcard escaping; overload-like name
+  matches; open cursors; malformed wide input; and A/W parity.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

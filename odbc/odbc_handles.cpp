@@ -3654,7 +3654,8 @@ SQLRETURN ODBCStatement::procedure_columns(
       "WITH routine_columns AS (SELECT current_database()::text "
       "AS procedure_cat, namespaces.nspname::text AS procedure_schem, "
       "procedures.proname::text AS procedure_name, "
-      "procedures.proargnames[arguments.ordinality]::text AS column_name, "
+      "COALESCE(procedures.proargnames[arguments.ordinality], '')::text "
+      "AS column_name, "
       "CASE COALESCE(procedures.proargmodes[arguments.ordinality], 'i') "
       "WHEN 'i' THEN 1 WHEN 'v' THEN 1 WHEN 'b' THEN 2 "
       "WHEN 't' THEN 3 WHEN 'o' THEN 4 ELSE 0 END::smallint "
@@ -3669,7 +3670,7 @@ SQLRETURN ODBCStatement::procedure_columns(
       "AS arguments(type_oid, ordinality) "
       "WHERE procedures.prokind IN ('f', 'p') UNION ALL "
       "SELECT current_database()::text, namespaces.nspname::text, "
-      "procedures.proname::text, NULL::text, 5::smallint, "
+      "procedures.proname::text, ''::text, 5::smallint, "
       "procedures.prorettype, 0::integer "
       "FROM pg_catalog.pg_proc AS procedures "
       "JOIN pg_catalog.pg_namespace AS namespaces "
@@ -3728,25 +3729,25 @@ SQLRETURN ODBCStatement::procedure_columns(
       "columns.ordinal_position, ''::text AS is_nullable "
       "FROM routine_columns AS columns JOIN pg_catalog.pg_type AS types "
       "ON types.oid = columns.type_oid WHERE 1=1";
-  if (catalog_name && !catalog_name->empty()) {
-    query += " AND columns.procedure_cat LIKE " +
+  if (catalog_name) {
+    query += " AND columns.procedure_cat = " +
         quote_catalog_literal(*catalog_name);
   }
-  if (schema_name && !schema_name->empty()) {
+  if (schema_name) {
     query += " AND columns.procedure_schem LIKE " +
         quote_catalog_literal(*schema_name);
   }
-  if (procedure_name && !procedure_name->empty()) {
+  if (procedure_name) {
     query += " AND columns.procedure_name LIKE " +
         quote_catalog_literal(*procedure_name);
   }
-  if (column_name && !column_name->empty()) {
+  if (column_name) {
     query += " AND columns.column_name LIKE " +
         quote_catalog_literal(*column_name);
   }
   query +=
       " ORDER BY procedure_cat, procedure_schem, procedure_name, "
-      "ordinal_position";
+      "column_type, ordinal_position";
   return execute_direct(query);
 }
 
