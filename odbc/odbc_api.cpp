@@ -2129,8 +2129,13 @@ static SQLRETURN SQLStatistics_impl(
     return SQL_ERROR;
   }
   if (reserved != SQL_QUICK && reserved != SQL_ENSURE) {
-    stmt->set_error(SQLSTATE_INVALID_OPTION_VALUE,
+    stmt->set_error(SQLSTATE_ACCURACY_OPTION_OUT_OF_RANGE,
                     "Invalid SQLStatistics accuracy option");
+    return SQL_ERROR;
+  }
+  if (reserved == SQL_ENSURE) {
+    stmt->set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                    "SQLStatistics exact statistics are not supported");
     return SQL_ERROR;
   }
   return stmt->statistics(catalog, schema, *table,
@@ -2372,8 +2377,13 @@ static SQLRETURN SQLStatisticsW_impl(
     return SQL_ERROR;
   }
   if (reserved != SQL_QUICK && reserved != SQL_ENSURE) {
-    stmt->set_error(SQLSTATE_INVALID_OPTION_VALUE,
+    stmt->set_error(SQLSTATE_ACCURACY_OPTION_OUT_OF_RANGE,
                     "Invalid SQLStatisticsW accuracy option");
+    return SQL_ERROR;
+  }
+  if (reserved == SQL_ENSURE) {
+    stmt->set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                    "SQLStatisticsW exact statistics are not supported");
     return SQL_ERROR;
   }
   return stmt->statistics(catalog, schema, *table,

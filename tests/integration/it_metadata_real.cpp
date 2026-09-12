@@ -1831,6 +1831,149 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLIndexes) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, StatisticsReportPostgreSQLIndexSemantics) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE \"odbcpp.stats_'_table\"("
+                  "id integer, value text)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE UNIQUE INDEX odbcpp_stats_unique "
+                  "ON \"odbcpp.stats_'_table\"(id DESC) "
+                  "WHERE value IS NOT NULL",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE INDEX odbcpp_stats_expression "
+                  "ON \"odbcpp.stats_'_table\"((lower(value)))",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE INDEX odbcpp_stats_hash "
+                  "ON \"odbcpp.stats_'_table\" USING hash(value)",
+        SQL_NTS));
+
+    SQLCHAR table_name[] = "odbcpp.stats_'_table";
+    ASSERT_EQ(SQL_SUCCESS, SQLStatistics(
+        hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS,
+        SQL_INDEX_ALL, SQL_QUICK));
+    EXPECT_EQ(SQL_ERROR, SQLStatistics(
+        hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS,
+        SQL_INDEX_ALL, SQL_QUICK));
+    EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    std::optional<std::string> catalog;
+    std::optional<std::string> schema;
+    bool found_unique = false;
+    bool found_expression = false;
+    bool found_hash = false;
+    int index_rows = 0;
+    while (SQLFetch(hstmt) == SQL_SUCCESS) {
+        ++index_rows;
+        if (!catalog) catalog = text_cell(hstmt, 1);
+        if (!schema) schema = text_cell(hstmt, 2);
+        const auto non_unique = integer_cell(hstmt, 4);
+        const auto index_name = text_cell(hstmt, 6);
+        const auto type = integer_cell(hstmt, 7);
+        const auto ordinal = integer_cell(hstmt, 8);
+        const auto column = text_cell(hstmt, 9);
+        const auto direction = text_cell(hstmt, 10);
+        const auto cardinality = integer_cell(hstmt, 11);
+        const auto pages = integer_cell(hstmt, 12);
+        const auto filter = text_cell(hstmt, 13);
+        ASSERT_TRUE(non_unique.has_value());
+        ASSERT_TRUE(index_name.has_value());
+        ASSERT_TRUE(type.has_value());
+        ASSERT_TRUE(ordinal.has_value());
+        ASSERT_TRUE(column.has_value());
+        EXPECT_EQ(SQL_INDEX_OTHER, *type);
+        EXPECT_EQ(1, *ordinal);
+        EXPECT_EQ(std::nullopt, cardinality);
+        EXPECT_TRUE(pages.has_value());
+
+        if (*index_name == "odbcpp_stats_unique") {
+            found_unique = true;
+            EXPECT_EQ(SQL_FALSE, *non_unique);
+            EXPECT_EQ("id", *column);
+            EXPECT_EQ(std::optional<std::string>("D"), direction);
+            ASSERT_TRUE(filter.has_value());
+            EXPECT_NE(std::string::npos, filter->find("value IS NOT NULL"));
+        } else if (*index_name == "odbcpp_stats_expression") {
+            found_expression = true;
+            EXPECT_EQ(SQL_TRUE, *non_unique);
+            EXPECT_EQ("lower(value)", *column);
+            EXPECT_EQ(std::optional<std::string>("A"), direction);
+            EXPECT_EQ(std::nullopt, filter);
+        } else if (*index_name == "odbcpp_stats_hash") {
+            found_hash = true;
+            EXPECT_EQ(SQL_TRUE, *non_unique);
+            EXPECT_EQ("value", *column);
+            EXPECT_EQ(std::nullopt, direction);
+            EXPECT_EQ(std::nullopt, filter);
+        } else {
+            ADD_FAILURE() << "Unexpected index " << *index_name;
+        }
+    }
+    EXPECT_EQ(3, index_rows);
+    EXPECT_TRUE(found_unique);
+    EXPECT_TRUE(found_expression);
+    EXPECT_TRUE(found_hash);
+    ASSERT_TRUE(catalog.has_value());
+    ASSERT_TRUE(schema.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLStatistics(
+        hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS,
+        SQL_INDEX_UNIQUE, SQL_QUICK));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("odbcpp_stats_unique"),
+              text_cell(hstmt, 6));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    EXPECT_EQ(SQL_ERROR, SQLStatistics(
+        hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS,
+        SQL_INDEX_ALL, SQL_ENSURE));
+    EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    SQLCHAR empty[] = "";
+    SQLCHAR wildcard[] = "%";
+    auto expect_no_statistics = [&](SQLCHAR* requested_catalog,
+                                    SQLCHAR* requested_schema,
+                                    SQLCHAR* requested_table) {
+        ASSERT_EQ(SQL_SUCCESS, SQLStatistics(
+            hstmt, requested_catalog, requested_catalog ? SQL_NTS : 0,
+            requested_schema, requested_schema ? SQL_NTS : 0,
+            requested_table, SQL_NTS, SQL_INDEX_ALL, SQL_QUICK));
+        EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    expect_no_statistics(empty, nullptr, table_name);
+    expect_no_statistics(nullptr, empty, table_name);
+    expect_no_statistics(nullptr, nullptr, empty);
+    expect_no_statistics(wildcard, nullptr, table_name);
+    expect_no_statistics(nullptr, wildcard, table_name);
+    expect_no_statistics(nullptr, nullptr, wildcard);
+
+    auto wide_catalog = rs::odbc::utf8_to_wide(*catalog);
+    auto wide_schema = rs::odbc::utf8_to_wide(*schema);
+    auto wide_table = rs::odbc::utf8_to_wide("odbcpp.stats_'_table");
+    ASSERT_TRUE(wide_catalog.has_value());
+    ASSERT_TRUE(wide_schema.has_value());
+    ASSERT_TRUE(wide_table.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLStatisticsW(
+        hstmt,
+        wide_catalog->data(), static_cast<SQLSMALLINT>(wide_catalog->size()),
+        wide_schema->data(), static_cast<SQLSMALLINT>(wide_schema->size()),
+        wide_table->data(), static_cast<SQLSMALLINT>(wide_table->size()),
+        SQL_INDEX_ALL, SQL_QUICK));
+    index_rows = 0;
+    while (SQLFetch(hstmt) == SQL_SUCCESS) ++index_rows;
+    EXPECT_EQ(3, index_rows);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, ListsPostgreSQLRoutines) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,

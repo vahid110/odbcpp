@@ -3568,12 +3568,15 @@ SQLRETURN ODBCStatement::statistics(
       "AS non_unique, NULL::text AS index_qualifier, "
       "index_names.relname::text AS index_name, 3::smallint AS type, "
       "index_columns.ordinality::smallint AS ordinal_position, "
-      "columns.attname::text AS column_name, "
+      "COALESCE(columns.attname::text, pg_get_indexdef("
+      "indexes.indexrelid, index_columns.ordinality::integer, false)) "
+      "AS column_name, "
       "CASE WHEN pg_index_column_has_property(indexes.indexrelid, "
-      "index_columns.ordinality::integer, 'desc') THEN 'D' "
-      "ELSE 'A' END::text AS asc_or_desc, "
-      "LEAST(GREATEST(tables.reltuples, 0), 2147483647)::integer "
-      "AS cardinality, tables.relpages::integer AS pages, "
+      "index_columns.ordinality::integer, 'orderable') THEN "
+      "CASE WHEN pg_index_column_has_property(indexes.indexrelid, "
+      "index_columns.ordinality::integer, 'desc') THEN 'D' ELSE 'A' END "
+      "ELSE NULL END::text AS asc_or_desc, NULL::integer AS cardinality, "
+      "index_names.relpages::integer AS pages, "
       "pg_get_expr(indexes.indpred, indexes.indrelid)::text "
       "AS filter_condition FROM pg_catalog.pg_index AS indexes "
       "JOIN pg_catalog.pg_class AS tables "
@@ -3588,11 +3591,11 @@ SQLRETURN ODBCStatement::statistics(
       "ON columns.attrelid = tables.oid "
       "AND columns.attnum = index_columns.attribute_number "
       "WHERE tables.relname = " + quote_catalog_literal(table_name);
-  if (catalog_name && !catalog_name->empty()) {
+  if (catalog_name) {
     query += " AND current_database() = " +
         quote_catalog_literal(*catalog_name);
   }
-  if (schema_name && !schema_name->empty()) {
+  if (schema_name) {
     query += " AND namespaces.nspname = " +
         quote_catalog_literal(*schema_name);
   }

@@ -64,7 +64,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLColumns` | A/W | Partial | unit, integration, DM | Null/empty, ordinary catalog, escaped patterns, cursor states, and A/W paths are covered; complete PostgreSQL type metadata and restricted-user visibility remain |
 | `SQLPrimaryKeys` | A/W | Partial | unit, integration, DM | Required table, literal/empty arguments, escaping, key ordering, cursor states, and A/W paths are covered; restricted-user visibility remains |
 | `SQLForeignKeys` | A/W | Partial | unit, integration, DM | PK/FK filter combinations, ordinary/empty arguments, primary-target filtering, rule/deferrability mapping, ordering, cursor states, and A/W paths are covered; same-name constraints and restricted-user visibility remain |
-| `SQLStatistics` | A/W | Partial | unit, integration, DM | Accuracy/cardinality modes and expression/partial indexes |
+| `SQLStatistics` | A/W | Partial | unit, integration, DM | Ordinary/empty arguments, uniqueness filtering, quick statistics, expression/partial/hash indexes, ordering, cursor states, and A/W paths are covered; exact cardinality and included-column semantics remain |
 | `SQLProcedures` | A/W | Partial | unit, integration, DM | PostgreSQL procedure/function distinctions and overloads |
 | `SQLProcedureColumns` | A/W | Partial | unit, integration, DM | Modes, result columns, overloads and type metadata |
 | `SQLSpecialColumns` | A/W | Partial | unit, integration, DM | Scope/nullable semantics and row-version behavior |
@@ -542,6 +542,15 @@ substitute for ODBC diagnostics.
   sides; foreign-table ordering; all five update/delete rules; all three
   deferrability values; required-pointer diagnostics; malformed wide input;
   and exact six-argument `SQLForeignKeysW` matching.
+- Audit batch 68 tightens `SQLStatistics` metadata instead of inventing
+  precision the server does not expose. Index cardinality is now null rather
+  than the unrelated table-row estimate, page counts come from the index
+  relation rather than the table, expressions are returned as column text,
+  and non-orderable hash columns no longer claim ascending order. Empty and
+  wildcard-looking ordinary arguments are literal, `SQL_INDEX_UNIQUE` is
+  verified, unsupported exact `SQL_ENSURE` statistics return HYC00, and the
+  distinct invalid accuracy option now returns HY101 rather than HY100. A/W
+  PostgreSQL tests cover quoted names, partial, expression, and hash indexes.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

@@ -103,12 +103,26 @@ TEST_F(MetadataAPITest, InvalidHandles) {
     EXPECT_EQ(SQL_ERROR, SQLStatistics(
         hstmt, nullptr, 0, nullptr, 0, nullptr, 0,
         SQL_INDEX_ALL, SQL_QUICK));
+    EXPECT_EQ("HY009", diagnostic_state(SQL_HANDLE_STMT, hstmt));
     EXPECT_EQ(SQL_ERROR, SQLStatistics(
         hstmt, nullptr, 0, nullptr, 0, pattern, SQL_NTS,
         99, SQL_QUICK));
+    EXPECT_EQ("HY100", diagnostic_state(SQL_HANDLE_STMT, hstmt));
     EXPECT_EQ(SQL_ERROR, SQLStatistics(
         hstmt, nullptr, 0, nullptr, 0, pattern, SQL_NTS,
         SQL_INDEX_ALL, 99));
+    EXPECT_EQ("HY101", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    EXPECT_EQ(SQL_ERROR, SQLStatistics(
+        hstmt, nullptr, 0, nullptr, 0, pattern, SQL_NTS,
+        SQL_INDEX_ALL, SQL_ENSURE));
+    EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    EXPECT_EQ(SQL_INVALID_HANDLE, SQLStatisticsW(
+        nullptr, nullptr, 0, nullptr, 0, nullptr, 0,
+        SQL_INDEX_ALL, SQL_QUICK));
+    EXPECT_EQ(SQL_ERROR, SQLStatisticsW(
+        hstmt, nullptr, 0, nullptr, 0, nullptr, 0,
+        SQL_INDEX_ALL, SQL_QUICK));
+    EXPECT_EQ("HY009", diagnostic_state(SQL_HANDLE_STMT, hstmt));
     EXPECT_EQ(SQL_ERROR, SQLProcedures(
         hstmt, nullptr, 0, nullptr, 0, pattern, -2));
     EXPECT_EQ(SQL_ERROR, SQLProcedureColumns(
