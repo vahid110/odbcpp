@@ -449,7 +449,8 @@ public:
       SQLUSMALLINT identifier_type,
       const std::optional<std::string>& catalog_name,
       const std::optional<std::string>& schema_name,
-      const std::string& table_name, bool require_non_nullable);
+      const std::string& table_name, SQLUSMALLINT scope,
+      bool require_non_nullable);
   SQLRETURN tables(const std::optional<std::string>& catalog_name,
                    const std::optional<std::string>& schema_name,
                    const std::optional<std::string>& table_name,

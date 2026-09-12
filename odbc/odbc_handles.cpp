@@ -3755,10 +3755,11 @@ SQLRETURN ODBCStatement::special_columns(
     SQLUSMALLINT identifier_type,
     const std::optional<std::string>& catalog_name,
     const std::optional<std::string>& schema_name,
-    const std::string& table_name, bool require_non_nullable) {
-  if (identifier_type == SQL_ROWVER) {
+    const std::string& table_name, SQLUSMALLINT scope,
+    bool require_non_nullable) {
+  if (identifier_type == SQL_ROWVER || scope != SQL_SCOPE_CURROW) {
     return execute_direct(
-        "SELECT 2::smallint AS scope, NULL::text AS column_name, "
+        "SELECT NULL::smallint AS scope, ''::text AS column_name, "
         "0::smallint AS data_type, NULL::text AS type_name, "
         "0::integer AS column_size, 0::integer AS buffer_length, "
         "NULL::smallint AS decimal_digits, 2::smallint AS pseudo_column "
@@ -3766,7 +3767,7 @@ SQLRETURN ODBCStatement::special_columns(
   }
 
   std::string query =
-      "SELECT 2::smallint AS scope, keys.column_name::text AS column_name, "
+      "SELECT 0::smallint AS scope, keys.column_name::text AS column_name, "
       "CASE columns.data_type WHEN 'boolean' THEN -7 "
       "WHEN 'smallint' THEN 5 WHEN 'integer' THEN 4 WHEN 'bigint' THEN -5 "
       "WHEN 'real' THEN 7 WHEN 'double precision' THEN 8 "
@@ -3823,11 +3824,11 @@ SQLRETURN ODBCStatement::special_columns(
       "AND columns.column_name = keys.column_name "
       "WHERE constraints.constraint_type = 'PRIMARY KEY' "
       "AND keys.table_name = " + quote_catalog_literal(table_name);
-  if (catalog_name && !catalog_name->empty()) {
+  if (catalog_name) {
     query += " AND keys.table_catalog = " +
         quote_catalog_literal(*catalog_name);
   }
-  if (schema_name && !schema_name->empty()) {
+  if (schema_name) {
     query += " AND keys.table_schema = " +
         quote_catalog_literal(*schema_name);
   }

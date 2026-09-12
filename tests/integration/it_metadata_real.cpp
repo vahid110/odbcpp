@@ -2285,7 +2285,7 @@ TEST_F(MetadataIntegrationTest, ReportsBestRowIdentifier) {
     SQLCHAR table_name[] = "odbcpp_special_column_test";
     ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
         hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
-        table_name, SQL_NTS, SQL_SCOPE_SESSION, SQL_NO_NULLS));
+        table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NO_NULLS));
 
     SQLSMALLINT scope = -1;
     char column_name[64]{};
@@ -2300,11 +2300,111 @@ TEST_F(MetadataIntegrationTest, ReportsBestRowIdentifier) {
         hstmt, 3, SQL_C_SSHORT, &data_type, 0, nullptr));
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(
         hstmt, 8, SQL_C_SSHORT, &pseudo_column, 0, nullptr));
-    EXPECT_EQ(SQL_SCOPE_SESSION, scope);
+    EXPECT_EQ(SQL_SCOPE_CURROW, scope);
     EXPECT_STREQ("id", column_name);
     EXPECT_EQ(SQL_INTEGER, data_type);
     EXPECT_EQ(SQL_PC_NOT_PSEUDO, pseudo_column);
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+}
+
+TEST_F(MetadataIntegrationTest, SpecialColumnScopeAndArgumentsFollowOdbc) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE \"odbcpp.special_'_table\"("
+                  "second_key bigint, first_key integer, value text, "
+                  "PRIMARY KEY(first_key, second_key))",
+        SQL_NTS));
+
+    SQLCHAR table_name[] = "odbcpp.special_'_table";
+    SQLCHAR column_pattern[] = "first_key";
+    ASSERT_EQ(SQL_SUCCESS, SQLColumns(
+        hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS,
+        column_pattern, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    const auto catalog = text_cell(hstmt, 1);
+    const auto schema = text_cell(hstmt, 2);
+    ASSERT_TRUE(catalog.has_value());
+    ASSERT_TRUE(schema.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
+        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+        table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NULLABLE));
+    EXPECT_EQ(SQL_ERROR, SQLSpecialColumns(
+        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+        table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NULLABLE));
+    EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    const std::array<const char*, 2> expected_names{"first_key", "second_key"};
+    const std::array<SQLINTEGER, 2> expected_types{SQL_INTEGER, SQL_BIGINT};
+    for (std::size_t i = 0; i < expected_names.size(); ++i) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::optional<SQLINTEGER>(SQL_SCOPE_CURROW),
+                  integer_cell(hstmt, 1));
+        EXPECT_EQ(std::optional<std::string>(expected_names[i]),
+                  text_cell(hstmt, 2));
+        EXPECT_EQ(std::optional<SQLINTEGER>(expected_types[i]),
+                  integer_cell(hstmt, 3));
+        EXPECT_EQ(std::optional<SQLINTEGER>(SQL_PC_NOT_PSEUDO),
+                  integer_cell(hstmt, 8));
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    for (SQLUSMALLINT scope : {SQL_SCOPE_TRANSACTION, SQL_SCOPE_SESSION}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
+            hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+            table_name, SQL_NTS, scope, SQL_NULLABLE));
+        EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
+        hstmt, SQL_ROWVER, nullptr, 0, nullptr, 0,
+        table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NULLABLE));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
+        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+        table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NO_NULLS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR empty[] = "";
+    SQLCHAR wildcard[] = "%";
+    auto expect_no_special_columns = [&](SQLCHAR* requested_catalog,
+                                         SQLCHAR* requested_schema,
+                                         SQLCHAR* requested_table) {
+        ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
+            hstmt, SQL_BEST_ROWID,
+            requested_catalog, requested_catalog ? SQL_NTS : 0,
+            requested_schema, requested_schema ? SQL_NTS : 0,
+            requested_table, SQL_NTS, SQL_SCOPE_CURROW, SQL_NULLABLE));
+        EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    expect_no_special_columns(empty, nullptr, table_name);
+    expect_no_special_columns(nullptr, empty, table_name);
+    expect_no_special_columns(nullptr, nullptr, empty);
+    expect_no_special_columns(wildcard, nullptr, table_name);
+    expect_no_special_columns(nullptr, wildcard, table_name);
+    expect_no_special_columns(nullptr, nullptr, wildcard);
+
+    auto wide_catalog = rs::odbc::utf8_to_wide(*catalog);
+    auto wide_schema = rs::odbc::utf8_to_wide(*schema);
+    auto wide_table = rs::odbc::utf8_to_wide("odbcpp.special_'_table");
+    ASSERT_TRUE(wide_catalog.has_value());
+    ASSERT_TRUE(wide_schema.has_value());
+    ASSERT_TRUE(wide_table.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumnsW(
+        hstmt, SQL_BEST_ROWID,
+        wide_catalog->data(), static_cast<SQLSMALLINT>(wide_catalog->size()),
+        wide_schema->data(), static_cast<SQLSMALLINT>(wide_schema->size()),
+        wide_table->data(), static_cast<SQLSMALLINT>(wide_table->size()),
+        SQL_SCOPE_CURROW, SQL_NULLABLE));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("first_key"), text_cell(hstmt, 2));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 }
 
 TEST_F(MetadataIntegrationTest, LimitsRowsAndCompletesResultSequence) {

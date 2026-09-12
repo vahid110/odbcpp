@@ -180,6 +180,15 @@ TEST_F(UnicodeApiTest, WideCatalogApisValidateLengthsAndEncoding) {
             SQLGetDiagRecW(SQL_HANDLE_STMT, statement_, 1, state, nullptr,
                            nullptr, 0, nullptr));
   EXPECT_EQ("22018", as_utf8(state, 5));
+
+  ASSERT_EQ(SQL_ERROR,
+            SQLSpecialColumnsW(statement_, SQL_BEST_ROWID,
+                               nullptr, 0, nullptr, 0, invalid.data(), 1,
+                               SQL_SCOPE_CURROW, SQL_NO_NULLS));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetDiagRecW(SQL_HANDLE_STMT, statement_, 1, state, nullptr,
+                           nullptr, 0, nullptr));
+  EXPECT_EQ("22018", as_utf8(state, 5));
 }
 
 TEST_F(UnicodeApiTest, WideInformationUsesByteLengths) {

@@ -2228,7 +2228,7 @@ static SQLRETURN SQLSpecialColumns_impl(
                     "Invalid SQLSpecialColumns nullable option");
     return SQL_ERROR;
   }
-  return stmt->special_columns(identifier_type, catalog, schema, *table,
+  return stmt->special_columns(identifier_type, catalog, schema, *table, scope,
                                nullable == SQL_NO_NULLS);
 }
 
@@ -2476,7 +2476,7 @@ static SQLRETURN SQLSpecialColumnsW_impl(
                     "Invalid SQLSpecialColumnsW nullable option");
     return SQL_ERROR;
   }
-  return stmt->special_columns(identifier_type, catalog, schema, *table,
+  return stmt->special_columns(identifier_type, catalog, schema, *table, scope,
                                nullable == SQL_NO_NULLS);
 }
 

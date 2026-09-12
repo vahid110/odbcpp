@@ -136,15 +136,22 @@ TEST_F(MetadataAPITest, InvalidHandles) {
     EXPECT_EQ(SQL_ERROR, SQLSpecialColumns(
         hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0, nullptr, 0,
         SQL_SCOPE_SESSION, SQL_NO_NULLS));
+    EXPECT_EQ("HY009", diagnostic_state(SQL_HANDLE_STMT, hstmt));
     EXPECT_EQ(SQL_ERROR, SQLSpecialColumns(
         hstmt, 99, nullptr, 0, nullptr, 0, pattern, SQL_NTS,
         SQL_SCOPE_SESSION, SQL_NO_NULLS));
+    EXPECT_EQ("HY097", diagnostic_state(SQL_HANDLE_STMT, hstmt));
     EXPECT_EQ(SQL_ERROR, SQLSpecialColumns(
         hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0, pattern, SQL_NTS,
         99, SQL_NO_NULLS));
+    EXPECT_EQ("HY098", diagnostic_state(SQL_HANDLE_STMT, hstmt));
     EXPECT_EQ(SQL_ERROR, SQLSpecialColumns(
         hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0, pattern, SQL_NTS,
         SQL_SCOPE_SESSION, 99));
+    EXPECT_EQ("HY099", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    EXPECT_EQ(SQL_INVALID_HANDLE, SQLSpecialColumnsW(
+        nullptr, SQL_BEST_ROWID, nullptr, 0, nullptr, 0, nullptr, 0,
+        SQL_SCOPE_CURROW, SQL_NO_NULLS));
 }
 
 TEST_F(MetadataAPITest, NoQueryExecuted) {
