@@ -60,6 +60,16 @@ TEST_F(MetadataAPITest, InvalidHandles) {
     EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_STMT, hstmt));
 
     SQLCHAR pattern[] = "%";
+    EXPECT_EQ(SQL_INVALID_HANDLE, SQLTables(
+        nullptr, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0));
+    EXPECT_EQ(SQL_INVALID_HANDLE, SQLTablesW(
+        nullptr, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0));
+    EXPECT_EQ(SQL_ERROR, SQLTables(
+        hstmt, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0));
+    EXPECT_EQ("08001", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    EXPECT_EQ(SQL_ERROR, SQLTablesW(
+        hstmt, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0));
+    EXPECT_EQ("08001", diagnostic_state(SQL_HANDLE_STMT, hstmt));
     EXPECT_EQ(SQL_ERROR, SQLTables(
         hstmt, nullptr, 0, nullptr, 0, pattern, -2, nullptr, 0));
     EXPECT_EQ(SQL_ERROR, SQLColumns(

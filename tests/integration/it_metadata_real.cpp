@@ -1163,7 +1163,7 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLTables) {
         hstmt, (SQLCHAR*)"CREATE TEMP TABLE odbcpp_catalog_test(value int)",
         SQL_NTS));
     SQLCHAR table_name[] = "odbcpp_catalog_test";
-    SQLCHAR table_type[] = "TABLE";
+    SQLCHAR table_type[] = "LOCAL TEMPORARY";
     ASSERT_EQ(SQL_SUCCESS, SQLTables(
         hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS,
         table_type, SQL_NTS));
@@ -1176,7 +1176,122 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLTables) {
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(
         hstmt, 4, SQL_C_CHAR, returned_type, sizeof(returned_type), nullptr));
     EXPECT_STREQ("odbcpp_catalog_test", returned_name);
-    EXPECT_STREQ("TABLE", returned_type);
+    EXPECT_STREQ("LOCAL TEMPORARY", returned_type);
+}
+
+TEST_F(MetadataIntegrationTest, TablePatternsTypesAndEnumerationsFollowOdbc) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"CREATE TEMP TABLE odbcpp_table_a_b(value int)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"CREATE TEMP TABLE odbcpp_table_axb(value int)",
+        SQL_NTS));
+
+    SQLCHAR wildcard_pattern[] = "odbcpp_table_a_b";
+    ASSERT_EQ(SQL_SUCCESS, SQLTables(
+        hstmt, nullptr, 0, nullptr, 0, wildcard_pattern, SQL_NTS,
+        nullptr, 0));
+    for (const char* expected : {"odbcpp_table_a_b", "odbcpp_table_axb"}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::optional<std::string>(expected), text_cell(hstmt, 3));
+        EXPECT_EQ(std::optional<std::string>("LOCAL TEMPORARY"),
+                  text_cell(hstmt, 4));
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR escaped_pattern[] = "odbcpp\\_table\\_a\\_b";
+    ASSERT_EQ(SQL_SUCCESS, SQLTables(
+        hstmt, nullptr, 0, nullptr, 0, escaped_pattern, SQL_NTS,
+        nullptr, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("odbcpp_table_a_b"),
+              text_cell(hstmt, 3));
+    EXPECT_EQ(SQL_ERROR, SQLTables(
+        hstmt, nullptr, 0, nullptr, 0, escaped_pattern, SQL_NTS,
+        nullptr, 0));
+    EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR local_temporary[] = "'local temporary'";
+    ASSERT_EQ(SQL_SUCCESS, SQLTables(
+        hstmt, nullptr, 0, nullptr, 0, wildcard_pattern, SQL_NTS,
+        local_temporary, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("LOCAL TEMPORARY"),
+              text_cell(hstmt, 4));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR empty[] = "";
+    SQLCHAR all[]{'%', 0};
+    constexpr std::array<const char*, 5> expected_types{
+        "FOREIGN TABLE", "LOCAL TEMPORARY", "SYSTEM TABLE", "TABLE", "VIEW"};
+    ASSERT_EQ(SQL_SUCCESS, SQLTables(
+        hstmt, empty, SQL_NTS, empty, SQL_NTS, empty, SQL_NTS,
+        nullptr, 0));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLTables(
+        hstmt, all, SQL_NTS, empty, SQL_NTS, empty, SQL_NTS,
+        empty, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_TRUE(text_cell(hstmt, 1).has_value());
+    EXPECT_EQ(std::nullopt, text_cell(hstmt, 2));
+    EXPECT_EQ(std::nullopt, text_cell(hstmt, 3));
+    EXPECT_EQ(std::nullopt, text_cell(hstmt, 4));
+    EXPECT_EQ(std::nullopt, text_cell(hstmt, 5));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLWCHAR wide_empty[]{0};
+    SQLWCHAR wide_all[]{'%', 0};
+    ASSERT_EQ(SQL_SUCCESS, SQLTablesW(
+        hstmt, wide_empty, SQL_NTS, wide_empty, SQL_NTS,
+        wide_empty, SQL_NTS, wide_all, SQL_NTS));
+    for (const auto* expected : expected_types) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::optional<std::string>(expected), text_cell(hstmt, 4));
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLTables(
+        hstmt, empty, SQL_NTS, all, SQL_NTS, empty, SQL_NTS,
+        empty, SQL_NTS));
+    bool found_information_schema = false;
+    while (SQLFetch(hstmt) == SQL_SUCCESS) {
+        EXPECT_EQ(std::nullopt, text_cell(hstmt, 1));
+        const auto schema = text_cell(hstmt, 2);
+        found_information_schema = found_information_schema ||
+            schema == std::optional<std::string>("information_schema");
+        EXPECT_EQ(std::nullopt, text_cell(hstmt, 3));
+        EXPECT_EQ(std::nullopt, text_cell(hstmt, 4));
+        EXPECT_EQ(std::nullopt, text_cell(hstmt, 5));
+    }
+    EXPECT_TRUE(found_information_schema);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLTables(
+        hstmt, empty, SQL_NTS, empty, SQL_NTS, empty, SQL_NTS,
+        all, SQL_NTS));
+    for (const auto* expected : expected_types) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::nullopt, text_cell(hstmt, 1));
+        EXPECT_EQ(std::nullopt, text_cell(hstmt, 2));
+        EXPECT_EQ(std::nullopt, text_cell(hstmt, 3));
+        EXPECT_EQ(std::optional<std::string>(expected), text_cell(hstmt, 4));
+        EXPECT_EQ(std::nullopt, text_cell(hstmt, 5));
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLTables(
+        hstmt, all, SQL_NTS, nullptr, 0, nullptr, 0,
+        nullptr, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_TRUE(text_cell(hstmt, 3).has_value());
 }
 
 TEST_F(MetadataIntegrationTest, ListsPostgreSQLColumns) {

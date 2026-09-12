@@ -125,6 +125,14 @@ TEST_F(UnicodeApiTest, WideCatalogApisValidateLengthsAndEncoding) {
 
   std::array<SQLWCHAR, 1> invalid{static_cast<SQLWCHAR>(0xd800)};
   ASSERT_EQ(SQL_ERROR,
+            SQLTablesW(statement_, nullptr, 0, nullptr, 0, invalid.data(), 1,
+                       nullptr, 0));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetDiagRecW(SQL_HANDLE_STMT, statement_, 1, state, nullptr,
+                           nullptr, 0, nullptr));
+  EXPECT_EQ("22018", as_utf8(state, 5));
+
+  ASSERT_EQ(SQL_ERROR,
             SQLColumnsW(statement_, nullptr, 0, nullptr, 0, invalid.data(), 1,
                         nullptr, 0));
   ASSERT_EQ(SQL_SUCCESS,
