@@ -2009,6 +2009,107 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLRoutines) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, RoutinePatternsTypesAndOverloadsFollowOdbc) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE FUNCTION pg_temp.odbcpp_routine_a_b(integer) "
+                  "RETURNS integer LANGUAGE SQL AS 'SELECT $1'",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE FUNCTION pg_temp.odbcpp_routine_a_b(text) "
+                  "RETURNS text LANGUAGE SQL AS 'SELECT $1'",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE FUNCTION pg_temp.odbcpp_routine_axb(integer) "
+                  "RETURNS integer LANGUAGE SQL AS 'SELECT $1'",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE PROCEDURE pg_temp.odbcpp_procedure_a_b(integer) "
+                  "LANGUAGE SQL AS 'SELECT 1'",
+        SQL_NTS));
+
+    SQLCHAR wildcard_pattern[] = "odbcpp_routine_a_b";
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedures(
+        hstmt, nullptr, 0, nullptr, 0, wildcard_pattern, SQL_NTS));
+    int wildcard_rows = 0;
+    while (SQLFetch(hstmt) == SQL_SUCCESS) ++wildcard_rows;
+    EXPECT_EQ(3, wildcard_rows);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR escaped_pattern[] = "odbcpp\\_routine\\_a\\_b";
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedures(
+        hstmt, nullptr, 0, nullptr, 0, escaped_pattern, SQL_NTS));
+    EXPECT_EQ(SQL_ERROR, SQLProcedures(
+        hstmt, nullptr, 0, nullptr, 0, escaped_pattern, SQL_NTS));
+    EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    std::optional<std::string> catalog;
+    std::optional<std::string> schema;
+    int overload_rows = 0;
+    while (SQLFetch(hstmt) == SQL_SUCCESS) {
+        ++overload_rows;
+        if (!catalog) catalog = text_cell(hstmt, 1);
+        if (!schema) schema = text_cell(hstmt, 2);
+        EXPECT_EQ(std::optional<std::string>("odbcpp_routine_a_b"),
+                  text_cell(hstmt, 3));
+        EXPECT_EQ(std::optional<SQLINTEGER>(1), integer_cell(hstmt, 4));
+        EXPECT_EQ(std::optional<SQLINTEGER>(0), integer_cell(hstmt, 5));
+        EXPECT_EQ(std::optional<SQLINTEGER>(-1), integer_cell(hstmt, 6));
+        EXPECT_EQ(std::optional<SQLINTEGER>(SQL_PT_FUNCTION),
+                  integer_cell(hstmt, 8));
+    }
+    EXPECT_EQ(2, overload_rows);
+    ASSERT_TRUE(catalog.has_value());
+    ASSERT_TRUE(schema.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR procedure_pattern[] = "odbcpp\\_procedure\\_a\\_b";
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedures(
+        hstmt, nullptr, 0, nullptr, 0, procedure_pattern, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_PT_PROCEDURE),
+              integer_cell(hstmt, 8));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR empty[] = "";
+    SQLCHAR percent[] = "%";
+    auto expect_no_routines = [&](SQLCHAR* requested_catalog,
+                                  SQLCHAR* requested_schema,
+                                  SQLCHAR* requested_procedure) {
+        ASSERT_EQ(SQL_SUCCESS, SQLProcedures(
+            hstmt, requested_catalog, requested_catalog ? SQL_NTS : 0,
+            requested_schema, requested_schema ? SQL_NTS : 0,
+            requested_procedure,
+            requested_procedure ? SQL_NTS : 0));
+        EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    expect_no_routines(empty, nullptr, escaped_pattern);
+    expect_no_routines(percent, nullptr, escaped_pattern);
+    expect_no_routines(nullptr, empty, escaped_pattern);
+    expect_no_routines(nullptr, nullptr, empty);
+
+    auto wide_catalog = rs::odbc::utf8_to_wide(*catalog);
+    auto wide_schema = rs::odbc::utf8_to_wide(*schema);
+    auto wide_pattern = rs::odbc::utf8_to_wide("odbcpp\\_routine\\_a\\_b");
+    ASSERT_TRUE(wide_catalog.has_value());
+    ASSERT_TRUE(wide_schema.has_value());
+    ASSERT_TRUE(wide_pattern.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLProceduresW(
+        hstmt,
+        wide_catalog->data(), static_cast<SQLSMALLINT>(wide_catalog->size()),
+        wide_schema->data(), static_cast<SQLSMALLINT>(wide_schema->size()),
+        wide_pattern->data(), static_cast<SQLSMALLINT>(wide_pattern->size())));
+    overload_rows = 0;
+    while (SQLFetch(hstmt) == SQL_SUCCESS) ++overload_rows;
+    EXPECT_EQ(2, overload_rows);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, ListsPostgreSQLRoutineColumns) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,

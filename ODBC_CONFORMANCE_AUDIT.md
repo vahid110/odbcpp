@@ -65,7 +65,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLPrimaryKeys` | A/W | Partial | unit, integration, DM | Required table, literal/empty arguments, escaping, key ordering, cursor states, and A/W paths are covered; restricted-user visibility remains |
 | `SQLForeignKeys` | A/W | Partial | unit, integration, DM | PK/FK filter combinations, ordinary/empty arguments, primary-target filtering, rule/deferrability mapping, ordering, cursor states, and A/W paths are covered; same-name constraints and restricted-user visibility remain |
 | `SQLStatistics` | A/W | Partial | unit, integration, DM | Ordinary/empty arguments, uniqueness filtering, quick statistics, expression/partial/hash indexes, ordering, cursor states, and A/W paths are covered; exact cardinality and included-column semantics remain |
-| `SQLProcedures` | A/W | Partial | unit, integration, DM | PostgreSQL procedure/function distinctions and overloads |
+| `SQLProcedures` | A/W | Partial | unit, integration, DM | Ordinary catalog, null/empty and escaped patterns, procedure/function distinctions, overloads, cursor states, and A/W paths are covered; argument-mode counts and restricted-user visibility remain |
 | `SQLProcedureColumns` | A/W | Partial | unit, integration, DM | Modes, result columns, overloads and type metadata |
 | `SQLSpecialColumns` | A/W | Partial | unit, integration, DM | Scope/nullable semantics and row-version behavior |
 | `SQLGetDiagRec` | A/W | Verified | unit, integration, DM | Retrieval is nondestructive; handle type, record number, absent records, null destinations, native codes, exact-fit, one-short, and terminator-only A/W buffers are covered, including mixed-width iODBC translation |
@@ -551,6 +551,13 @@ substitute for ODBC diagnostics.
   verified, unsupported exact `SQL_ENSURE` statistics return HYC00, and the
   distinct invalid accuracy option now returns HY101 rather than HY100. A/W
   PostgreSQL tests cover quoted names, partial, expression, and hash indexes.
+- Audit batch 69 corrects `SQLProcedures` argument classes. The catalog is a
+  case-sensitive ordinary argument rather than a pattern, while schema and
+  procedure names preserve pattern semantics even when explicitly empty.
+  PostgreSQL tests distinguish wildcard and escaped underscores, retain both
+  overload rows, classify functions separately from procedures, validate the
+  core count/type columns, protect an open cursor, reject malformed wide text,
+  and repeat exact catalog/schema/pattern selection through `SQLProceduresW`.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

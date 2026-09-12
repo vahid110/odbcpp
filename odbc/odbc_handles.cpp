@@ -3628,15 +3628,15 @@ SQLRETURN ODBCStatement::procedures(
       "JOIN pg_catalog.pg_namespace AS namespaces "
       "ON namespaces.oid = procedures.pronamespace "
       "WHERE procedures.prokind IN ('f', 'p')";
-  if (catalog_name && !catalog_name->empty()) {
-    query += " AND current_database() LIKE " +
+  if (catalog_name) {
+    query += " AND current_database() = " +
         quote_catalog_literal(*catalog_name);
   }
-  if (schema_name && !schema_name->empty()) {
+  if (schema_name) {
     query += " AND namespaces.nspname LIKE " +
         quote_catalog_literal(*schema_name);
   }
-  if (procedure_name && !procedure_name->empty()) {
+  if (procedure_name) {
     query += " AND procedures.proname LIKE " +
         quote_catalog_literal(*procedure_name);
   }
