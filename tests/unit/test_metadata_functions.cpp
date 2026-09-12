@@ -88,9 +88,18 @@ TEST_F(MetadataAPITest, InvalidHandles) {
     EXPECT_EQ(SQL_ERROR, SQLForeignKeys(
         hstmt, nullptr, 0, nullptr, 0, nullptr, 0,
         nullptr, 0, nullptr, 0, nullptr, 0));
+    EXPECT_EQ("HY009", diagnostic_state(SQL_HANDLE_STMT, hstmt));
     EXPECT_EQ(SQL_ERROR, SQLForeignKeys(
         hstmt, nullptr, 0, nullptr, 0, nullptr, 0,
         nullptr, 0, nullptr, 0, pattern, -2));
+    EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    EXPECT_EQ(SQL_INVALID_HANDLE, SQLForeignKeysW(
+        nullptr, nullptr, 0, nullptr, 0, nullptr, 0,
+        nullptr, 0, nullptr, 0, nullptr, 0));
+    EXPECT_EQ(SQL_ERROR, SQLForeignKeysW(
+        hstmt, nullptr, 0, nullptr, 0, nullptr, 0,
+        nullptr, 0, nullptr, 0, nullptr, 0));
+    EXPECT_EQ("HY009", diagnostic_state(SQL_HANDLE_STMT, hstmt));
     EXPECT_EQ(SQL_ERROR, SQLStatistics(
         hstmt, nullptr, 0, nullptr, 0, nullptr, 0,
         SQL_INDEX_ALL, SQL_QUICK));

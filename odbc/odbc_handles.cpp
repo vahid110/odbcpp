@@ -3520,12 +3520,13 @@ SQLRETURN ODBCStatement::foreign_keys(
       "AND pk_constraints.constraint_schema = primary_keys.constraint_schema "
       "AND pk_constraints.constraint_name = primary_keys.constraint_name "
       "AND primary_keys.ordinal_position = "
-      "foreign_keys.position_in_unique_constraint WHERE 1=1";
-  if (pk_catalog_name && !pk_catalog_name->empty()) {
+      "foreign_keys.position_in_unique_constraint "
+      "WHERE pk_constraints.constraint_type = 'PRIMARY KEY'";
+  if (pk_catalog_name) {
     query += " AND primary_keys.table_catalog = " +
         quote_catalog_literal(*pk_catalog_name);
   }
-  if (pk_schema_name && !pk_schema_name->empty()) {
+  if (pk_schema_name) {
     query += " AND primary_keys.table_schema = " +
         quote_catalog_literal(*pk_schema_name);
   }
@@ -3533,11 +3534,11 @@ SQLRETURN ODBCStatement::foreign_keys(
     query += " AND primary_keys.table_name = " +
         quote_catalog_literal(*pk_table_name);
   }
-  if (fk_catalog_name && !fk_catalog_name->empty()) {
+  if (fk_catalog_name) {
     query += " AND foreign_keys.table_catalog = " +
         quote_catalog_literal(*fk_catalog_name);
   }
-  if (fk_schema_name && !fk_schema_name->empty()) {
+  if (fk_schema_name) {
     query += " AND foreign_keys.table_schema = " +
         quote_catalog_literal(*fk_schema_name);
   }

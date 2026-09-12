@@ -63,7 +63,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLTables` | A/W | Partial | unit, integration, DM | Null versus empty arguments, wildcard escaping, value-list filtering, catalog/schema/type enumerations, local temporary tables, state errors, malformed wide input, and A/W paths are covered; ODBC 2 catalog-pattern behavior and restricted-user visibility remain |
 | `SQLColumns` | A/W | Partial | unit, integration, DM | Null/empty, ordinary catalog, escaped patterns, cursor states, and A/W paths are covered; complete PostgreSQL type metadata and restricted-user visibility remain |
 | `SQLPrimaryKeys` | A/W | Partial | unit, integration, DM | Required table, literal/empty arguments, escaping, key ordering, cursor states, and A/W paths are covered; restricted-user visibility remains |
-| `SQLForeignKeys` | A/W | Partial | unit, integration, DM | PK/FK filter combinations and rule mapping |
+| `SQLForeignKeys` | A/W | Partial | unit, integration, DM | PK/FK filter combinations, ordinary/empty arguments, primary-target filtering, rule/deferrability mapping, ordering, cursor states, and A/W paths are covered; same-name constraints and restricted-user visibility remain |
 | `SQLStatistics` | A/W | Partial | unit, integration, DM | Accuracy/cardinality modes and expression/partial indexes |
 | `SQLProcedures` | A/W | Partial | unit, integration, DM | PostgreSQL procedure/function distinctions and overloads |
 | `SQLProcedureColumns` | A/W | Partial | unit, integration, DM | Modes, result columns, overloads and type metadata |
@@ -534,6 +534,14 @@ substitute for ODBC diagnostics.
   constraint rather than physical column ordering, preserve an open cursor,
   enforce the required table pointer with HY009, cover malformed wide input,
   and repeat exact catalog/schema/table selection through `SQLPrimaryKeysW`.
+- Audit batch 67 corrects `SQLForeignKeys` scope and ordinary arguments.
+  References to unique constraints are no longer misreported as references to
+  a primary key, and present empty catalog/schema arguments constrain the
+  result instead of disappearing. PostgreSQL tests cover primary-only,
+  foreign-only, and combined filters; literal wildcard-looking values on both
+  sides; foreign-table ordering; all five update/delete rules; all three
+  deferrability values; required-pointer diagnostics; malformed wide input;
+  and exact six-argument `SQLForeignKeysW` matching.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

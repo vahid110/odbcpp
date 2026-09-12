@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <string>
 
@@ -1620,6 +1621,170 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLForeignKeys) {
     EXPECT_STREQ("item_id", foreign_column);
     EXPECT_EQ(2, key_sequence);
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+}
+
+TEST_F(MetadataIntegrationTest, ForeignKeyFiltersRulesAndPrimaryTargetsFollowOdbc) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_fk_rules_parent("
+                  "id integer PRIMARY KEY, alternate integer UNIQUE)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_fk_rules_child("
+                  "cascade_id integer, restrict_id integer, null_id integer, "
+                  "default_id integer DEFAULT 1, no_action_id integer, "
+                  "unique_id integer, "
+                  "CONSTRAINT fk_rule_cascade FOREIGN KEY(cascade_id) "
+                  "REFERENCES odbcpp_fk_rules_parent(id) "
+                  "ON UPDATE CASCADE ON DELETE CASCADE, "
+                  "CONSTRAINT fk_rule_restrict FOREIGN KEY(restrict_id) "
+                  "REFERENCES odbcpp_fk_rules_parent(id) "
+                  "ON UPDATE RESTRICT ON DELETE RESTRICT "
+                  "DEFERRABLE INITIALLY IMMEDIATE, "
+                  "CONSTRAINT fk_rule_set_null FOREIGN KEY(null_id) "
+                  "REFERENCES odbcpp_fk_rules_parent(id) "
+                  "ON UPDATE SET NULL ON DELETE SET NULL "
+                  "DEFERRABLE INITIALLY DEFERRED, "
+                  "CONSTRAINT fk_rule_set_default FOREIGN KEY(default_id) "
+                  "REFERENCES odbcpp_fk_rules_parent(id) "
+                  "ON UPDATE SET DEFAULT ON DELETE SET DEFAULT, "
+                  "CONSTRAINT fk_rule_no_action FOREIGN KEY(no_action_id) "
+                  "REFERENCES odbcpp_fk_rules_parent(id), "
+                  "CONSTRAINT fk_rule_unique FOREIGN KEY(unique_id) "
+                  "REFERENCES odbcpp_fk_rules_parent(alternate))",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_fk_rules_other("
+                  "id integer REFERENCES odbcpp_fk_rules_parent(id))",
+        SQL_NTS));
+
+    SQLCHAR parent[] = "odbcpp_fk_rules_parent";
+    SQLCHAR child[] = "odbcpp_fk_rules_child";
+    ASSERT_EQ(SQL_SUCCESS, SQLForeignKeys(
+        hstmt, nullptr, 0, nullptr, 0, nullptr, 0,
+        nullptr, 0, nullptr, 0, child, SQL_NTS));
+
+    std::optional<std::string> catalog;
+    std::optional<std::string> schema;
+    std::map<std::string, std::array<SQLINTEGER, 3>> rules;
+    while (SQLFetch(hstmt) == SQL_SUCCESS) {
+        if (!catalog) catalog = text_cell(hstmt, 1);
+        if (!schema) schema = text_cell(hstmt, 2);
+        const auto update_rule = integer_cell(hstmt, 10);
+        const auto delete_rule = integer_cell(hstmt, 11);
+        const auto name = text_cell(hstmt, 12);
+        const auto deferrability = integer_cell(hstmt, 14);
+        ASSERT_TRUE(update_rule.has_value());
+        ASSERT_TRUE(delete_rule.has_value());
+        ASSERT_TRUE(name.has_value());
+        ASSERT_TRUE(deferrability.has_value());
+        rules.emplace(*name, std::array<SQLINTEGER, 3>{
+            *update_rule, *delete_rule, *deferrability});
+    }
+    ASSERT_TRUE(catalog.has_value());
+    ASSERT_TRUE(schema.has_value());
+    const std::map<std::string, std::array<SQLINTEGER, 3>> expected_rules{
+        {"fk_rule_cascade", {SQL_CASCADE, SQL_CASCADE, SQL_NOT_DEFERRABLE}},
+        {"fk_rule_restrict", {SQL_RESTRICT, SQL_RESTRICT,
+                               SQL_INITIALLY_IMMEDIATE}},
+        {"fk_rule_set_null", {SQL_SET_NULL, SQL_SET_NULL,
+                               SQL_INITIALLY_DEFERRED}},
+        {"fk_rule_set_default", {SQL_SET_DEFAULT, SQL_SET_DEFAULT,
+                                  SQL_NOT_DEFERRABLE}},
+        {"fk_rule_no_action", {SQL_NO_ACTION, SQL_NO_ACTION,
+                                SQL_NOT_DEFERRABLE}},
+    };
+    EXPECT_EQ(expected_rules, rules);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLForeignKeys(
+        hstmt, nullptr, 0, nullptr, 0, parent, SQL_NTS,
+        nullptr, 0, nullptr, 0, nullptr, 0));
+    int referring_rows = 0;
+    while (SQLFetch(hstmt) == SQL_SUCCESS) {
+        ++referring_rows;
+        EXPECT_EQ(std::optional<std::string>("odbcpp_fk_rules_parent"),
+                  text_cell(hstmt, 3));
+        const auto foreign_table = text_cell(hstmt, 7);
+        ASSERT_TRUE(foreign_table.has_value());
+        if (referring_rows <= 5) {
+            EXPECT_EQ("odbcpp_fk_rules_child", *foreign_table);
+        } else {
+            EXPECT_EQ("odbcpp_fk_rules_other", *foreign_table);
+        }
+    }
+    EXPECT_EQ(6, referring_rows);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLForeignKeys(
+        hstmt, nullptr, 0, nullptr, 0, parent, SQL_NTS,
+        nullptr, 0, nullptr, 0, child, SQL_NTS));
+    int matching_rows = 0;
+    while (SQLFetch(hstmt) == SQL_SUCCESS) ++matching_rows;
+    EXPECT_EQ(5, matching_rows);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR empty[] = "";
+    SQLCHAR wildcard[] = "%";
+    auto expect_no_foreign_keys = [&](SQLCHAR* pk_catalog,
+                                      SQLCHAR* pk_schema,
+                                      SQLCHAR* pk_table,
+                                      SQLCHAR* fk_catalog,
+                                      SQLCHAR* fk_schema,
+                                      SQLCHAR* fk_table) {
+        ASSERT_EQ(SQL_SUCCESS, SQLForeignKeys(
+            hstmt, pk_catalog, pk_catalog ? SQL_NTS : 0,
+            pk_schema, pk_schema ? SQL_NTS : 0,
+            pk_table, pk_table ? SQL_NTS : 0,
+            fk_catalog, fk_catalog ? SQL_NTS : 0,
+            fk_schema, fk_schema ? SQL_NTS : 0,
+            fk_table, fk_table ? SQL_NTS : 0));
+        EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    expect_no_foreign_keys(empty, nullptr, parent,
+                           nullptr, nullptr, nullptr);
+    expect_no_foreign_keys(nullptr, empty, parent,
+                           nullptr, nullptr, nullptr);
+    expect_no_foreign_keys(wildcard, nullptr, parent,
+                           nullptr, nullptr, nullptr);
+    expect_no_foreign_keys(nullptr, wildcard, parent,
+                           nullptr, nullptr, nullptr);
+    expect_no_foreign_keys(nullptr, nullptr, wildcard,
+                           nullptr, nullptr, nullptr);
+    expect_no_foreign_keys(nullptr, nullptr, nullptr,
+                           empty, nullptr, child);
+    expect_no_foreign_keys(nullptr, nullptr, nullptr,
+                           nullptr, empty, child);
+    expect_no_foreign_keys(nullptr, nullptr, nullptr,
+                           wildcard, nullptr, child);
+    expect_no_foreign_keys(nullptr, nullptr, nullptr,
+                           nullptr, wildcard, child);
+    expect_no_foreign_keys(nullptr, nullptr, nullptr,
+                           nullptr, nullptr, wildcard);
+
+    auto wide_catalog = rs::odbc::utf8_to_wide(*catalog);
+    auto wide_schema = rs::odbc::utf8_to_wide(*schema);
+    auto wide_parent = rs::odbc::utf8_to_wide("odbcpp_fk_rules_parent");
+    auto wide_child = rs::odbc::utf8_to_wide("odbcpp_fk_rules_child");
+    ASSERT_TRUE(wide_catalog.has_value());
+    ASSERT_TRUE(wide_schema.has_value());
+    ASSERT_TRUE(wide_parent.has_value());
+    ASSERT_TRUE(wide_child.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLForeignKeysW(
+        hstmt,
+        wide_catalog->data(), static_cast<SQLSMALLINT>(wide_catalog->size()),
+        wide_schema->data(), static_cast<SQLSMALLINT>(wide_schema->size()),
+        wide_parent->data(), static_cast<SQLSMALLINT>(wide_parent->size()),
+        wide_catalog->data(), static_cast<SQLSMALLINT>(wide_catalog->size()),
+        wide_schema->data(), static_cast<SQLSMALLINT>(wide_schema->size()),
+        wide_child->data(), static_cast<SQLSMALLINT>(wide_child->size())));
+    matching_rows = 0;
+    while (SQLFetch(hstmt) == SQL_SUCCESS) ++matching_rows;
+    EXPECT_EQ(5, matching_rows);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 }
 
 TEST_F(MetadataIntegrationTest, ListsPostgreSQLIndexes) {
