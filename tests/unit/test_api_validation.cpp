@@ -76,6 +76,54 @@ TEST(ApiAllocationValidationTest, RejectsInvalidHandleType) {
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
 }
 
+TEST(ApiAllocationValidationTest, EnforcesHandleParentTypes) {
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  set_odbc3(environment);
+
+  SQLHANDLE output = reinterpret_cast<SQLHANDLE>(std::uintptr_t{1});
+  EXPECT_EQ(SQL_INVALID_HANDLE,
+            SQLAllocHandle(SQL_HANDLE_ENV, environment, &output));
+  EXPECT_EQ(SQL_NULL_HANDLE, output);
+
+  EXPECT_EQ(SQL_INVALID_HANDLE,
+            SQLAllocHandle(SQL_HANDLE_DBC, SQL_NULL_HANDLE, &output));
+  EXPECT_EQ(SQL_NULL_HANDLE, output);
+  EXPECT_EQ(SQL_INVALID_HANDLE,
+            SQLAllocHandle(SQL_HANDLE_STMT, environment, &output));
+  EXPECT_EQ(SQL_NULL_HANDLE, output);
+  EXPECT_EQ(SQL_INVALID_HANDLE,
+            SQLAllocHandle(SQL_HANDLE_DESC, environment, &output));
+  EXPECT_EQ(SQL_NULL_HANDLE, output);
+
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+  EXPECT_EQ(SQL_INVALID_HANDLE,
+            SQLAllocHandle(SQL_HANDLE_DBC, connection, &output));
+  EXPECT_EQ(SQL_NULL_HANDLE, output);
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(ApiAllocationValidationTest, FreeHandleRejectsTypeMismatches) {
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+
+  EXPECT_EQ(SQL_INVALID_HANDLE,
+            SQLFreeHandle(SQL_HANDLE_DBC, environment));
+  EXPECT_EQ(SQL_INVALID_HANDLE, SQLFreeHandle(999, environment));
+  EXPECT_EQ(SQL_INVALID_HANDLE,
+            SQLFreeHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE));
+
+  // Failed frees leave the correctly typed handle usable.
+  set_odbc3(environment);
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
 TEST(ApiAllocationValidationTest, ReportsInjectedAllocationFailure) {
   SQLHENV environment = SQL_NULL_HENV;
   ASSERT_EQ(SQL_SUCCESS,

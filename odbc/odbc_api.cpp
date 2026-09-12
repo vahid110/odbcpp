@@ -507,6 +507,12 @@ static SQLRETURN SQLAllocHandle_impl(SQLSMALLINT handle_type, SQLHANDLE input_ha
   }
   *output_handle = SQL_NULL_HANDLE;
 
+  // Environment handles are roots. Accepting a parent here creates a registry
+  // subtree that no ODBC handle model can represent or release correctly.
+  if (handle_type == SQL_HANDLE_ENV && input_handle != SQL_NULL_HANDLE) {
+    return SQL_INVALID_HANDLE;
+  }
+
   if (input_handle) {
     if (auto parent = HandleRegistry::instance().get_handle(input_handle)) {
       parent->clear_diagnostics();

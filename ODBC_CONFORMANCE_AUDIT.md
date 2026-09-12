@@ -32,8 +32,8 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 
 | Operation | Variants | Status | Existing evidence | Principal remaining work |
 |---|---:|---|---|---|
-| `SQLAllocHandle` | A | Partial | unit failure injection, integration, DM | DBC requires an ODBC version, STMT/DESC require an open connection, and allocation failure returns HY001; complete type/state matrix remains |
-| `SQLFreeHandle` | A | Partial | unit, integration, DM | Parent/child free ordering is enforced; complete state matrix remains |
+| `SQLAllocHandle` | A | Partial | unit failure injection, integration, DM | Root/parent types, null outputs, ODBC version, open-connection state, output clearing, and HY001 are covered; optional pooling info tokens remain |
+| `SQLFreeHandle` | A | Partial | unit, integration, DM | Type identity, parent/child ordering, connected state, descriptor ownership/detachment, and failed-free retention are covered; optional pooling info tokens remain |
 | `SQLConnect` | A/W | Partial | unit failure, integration, DM | Reconnect is rejected with 08002; complete input/state matrix remains |
 | `SQLDriverConnect` | A/W | Partial | unit, integration, DM | Noninteractive completion modes, exact output/truncation rules, connected-state output preservation, and ANSI/wide unknown-keyword warnings are covered; interactive prompting remains unsupported |
 | `SQLDisconnect` | A | Partial | unit, integration, DM | Disconnected, active-transaction, and child-invalidation paths covered; async execution remains |
@@ -452,6 +452,11 @@ substitute for ODBC diagnostics.
   SQL_RESET_PARAMS mutate the active descriptors, invalid options preserve
   bindings, and deprecated SQL_DROP releases the statement plus its implicit
   descriptor subtree. Both APIs are Verified for the synchronous surface.
+- Audit batch 55 closes the ordinary handle-type matrix. Environment handles
+  are enforced as registry roots, every child type rejects a wrong parent and
+  clears its output on failure, mismatched frees return SQL_INVALID_HANDLE, and
+  failed frees leave the correctly typed handle usable. The only remaining
+  allocation/free gap is the optional Driver Manager pooling info-token path.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
