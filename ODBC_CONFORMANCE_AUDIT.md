@@ -67,7 +67,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLStatistics` | A/W | Partial | unit, integration, DM | Ordinary/empty arguments, uniqueness filtering, quick statistics, expression/partial/hash indexes, ordering, cursor states, and A/W paths are covered; exact cardinality and included-column semantics remain |
 | `SQLProcedures` | A/W | Partial | unit, integration, DM | Ordinary catalog, null/empty and escaped patterns, procedure/function distinctions, overloads, cursor states, and A/W paths are covered; argument-mode counts and restricted-user visibility remain |
 | `SQLProcedureColumns` | A/W | Partial | unit, integration, DM | Ordinary catalog, null/empty and escaped patterns, unnamed columns, parameter modes/order, return rows, cursor states, and A/W paths are covered; result-set discovery and complete PostgreSQL type metadata remain |
-| `SQLSpecialColumns` | A/W | Partial | unit, integration, DM | Ordinary/empty arguments, conservative scope, nullable modes, composite primary keys, row-version empty results, cursor states, and A/W paths are covered; unique-index fallback and complete type metadata remain |
+| `SQLSpecialColumns` | A/W | Partial | unit, integration, DM | Ordinary/empty arguments, conservative scope, nullable modes, primary-key preference, safe unique-index fallback, composite keys, row-version empty results, cursor states, and A/W paths are covered; complete type metadata remains |
 | `SQLGetDiagRec` | A/W | Verified | unit, integration, DM | Retrieval is nondestructive; handle type, record number, absent records, null destinations, native codes, exact-fit, one-short, and terminator-only A/W buffers are covered, including mixed-width iODBC translation |
 | `SQLGetDiagField` | A/W | Partial | unit, integration | All standard header/record identifiers, return provenance, origins, ANSI/wide lengths, and truncation are covered; row/column-specific server errors remain |
 | `SQLError` | A/W | Verified | unit, integration, DM | ANSI/wide calls share a per-handle cursor, return every diagnostic in order, preserve records for SQLGetDiagRec, reset on a new stack, select statement/connection/environment precedence, retain position after errors, and run through mixed-width iODBC mapping |
@@ -583,6 +583,14 @@ substitute for ODBC diagnostics.
   locates the referenced primary-key constraint by its exact column set. The
   integration fixture deliberately reuses a constraint name across two child
   tables while retaining unique-constraint exclusion and ordering checks.
+- Audit batch 73 completes `SQLSpecialColumns` row-identifier selection beyond
+  primary keys. A primary key remains the preferred candidate, followed by the
+  shortest usable unique index in stable object order. Invalid, not-ready,
+  partial, and expression indexes are excluded; included columns are not
+  reported as key columns. `SQL_NO_NULLS` rejects a whole candidate if any key
+  column is nullable instead of returning an invalid key subset. PostgreSQL
+  tests cover nullable selection, non-null fallback, included-column exclusion,
+  and the no-qualifying-index empty result.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

@@ -3768,7 +3768,61 @@ SQLRETURN ODBCStatement::special_columns(
   }
 
   std::string query =
-      "SELECT 0::smallint AS scope, keys.column_name::text AS column_name, "
+      "WITH candidate_indexes AS ("
+      "SELECT tables.oid AS table_oid, indexes.indexrelid, "
+      "row_number() OVER (PARTITION BY tables.oid ORDER BY "
+      "indexes.indisprimary DESC, indexes.indnkeyatts, "
+      "indexes.indexrelid)::integer AS candidate_rank "
+      "FROM pg_catalog.pg_class AS tables "
+      "JOIN pg_catalog.pg_namespace AS schemas "
+      "ON schemas.oid = tables.relnamespace "
+      "JOIN pg_catalog.pg_index AS indexes "
+      "ON indexes.indrelid = tables.oid "
+      "WHERE tables.relkind IN ('r', 'p') "
+      "AND tables.relname = " + quote_catalog_literal(table_name) +
+      " AND indexes.indisunique AND indexes.indisvalid "
+      "AND indexes.indisready AND indexes.indpred IS NULL "
+      "AND indexes.indexprs IS NULL AND indexes.indnkeyatts > 0 "
+      "AND NOT EXISTS (SELECT 1 FROM unnest(indexes.indkey) "
+      "WITH ORDINALITY AS key_numbers(attnum, ordinal_position) "
+      "WHERE key_numbers.ordinal_position <= indexes.indnkeyatts "
+      "AND key_numbers.attnum <= 0)";
+  if (catalog_name) {
+    query += " AND current_database() = " +
+        quote_catalog_literal(*catalog_name);
+  }
+  if (schema_name) {
+    query += " AND schemas.nspname = " +
+        quote_catalog_literal(*schema_name);
+  }
+  if (require_non_nullable) {
+    query +=
+        " AND NOT EXISTS (SELECT 1 FROM unnest(indexes.indkey) "
+        "WITH ORDINALITY AS key_numbers(attnum, ordinal_position) "
+        "JOIN pg_catalog.pg_attribute AS key_attributes "
+        "ON key_attributes.attrelid = tables.oid "
+        "AND key_attributes.attnum = key_numbers.attnum "
+        "WHERE key_numbers.ordinal_position <= indexes.indnkeyatts "
+        "AND NOT key_attributes.attnotnull)";
+  }
+  query +=
+      "), chosen_indexes AS ("
+      "SELECT table_oid, indexrelid FROM candidate_indexes "
+      "WHERE candidate_rank = 1), key_columns AS ("
+      "SELECT chosen_indexes.table_oid, "
+      "attributes.attname::text AS column_name, "
+      "key_numbers.ordinal_position "
+      "FROM chosen_indexes "
+      "JOIN pg_catalog.pg_index AS indexes "
+      "ON indexes.indexrelid = chosen_indexes.indexrelid "
+      "CROSS JOIN LATERAL unnest(indexes.indkey) WITH ORDINALITY "
+      "AS key_numbers(attnum, ordinal_position) "
+      "JOIN pg_catalog.pg_attribute AS attributes "
+      "ON attributes.attrelid = chosen_indexes.table_oid "
+      "AND attributes.attnum = key_numbers.attnum "
+      "WHERE key_numbers.ordinal_position <= indexes.indnkeyatts) "
+      "SELECT 0::smallint AS scope, "
+      "key_columns.column_name AS column_name, "
       "CASE columns.data_type WHEN 'boolean' THEN -7 "
       "WHEN 'smallint' THEN 5 WHEN 'integer' THEN 4 WHEN 'bigint' THEN -5 "
       "WHEN 'real' THEN 7 WHEN 'double precision' THEN 8 "
@@ -3813,28 +3867,17 @@ SQLRETURN ODBCStatement::special_columns(
       "WHEN columns.data_type IN ('smallint', 'integer', 'bigint') THEN 0 "
       "ELSE NULL END::smallint AS decimal_digits, "
       "1::smallint AS pseudo_column "
-      "FROM information_schema.table_constraints AS constraints "
-      "JOIN information_schema.key_column_usage AS keys "
-      "ON constraints.constraint_catalog = keys.constraint_catalog "
-      "AND constraints.constraint_schema = keys.constraint_schema "
-      "AND constraints.constraint_name = keys.constraint_name "
+      "FROM key_columns "
+      "JOIN pg_catalog.pg_class AS tables "
+      "ON tables.oid = key_columns.table_oid "
+      "JOIN pg_catalog.pg_namespace AS schemas "
+      "ON schemas.oid = tables.relnamespace "
       "JOIN information_schema.columns AS columns "
-      "ON columns.table_catalog = keys.table_catalog "
-      "AND columns.table_schema = keys.table_schema "
-      "AND columns.table_name = keys.table_name "
-      "AND columns.column_name = keys.column_name "
-      "WHERE constraints.constraint_type = 'PRIMARY KEY' "
-      "AND keys.table_name = " + quote_catalog_literal(table_name);
-  if (catalog_name) {
-    query += " AND keys.table_catalog = " +
-        quote_catalog_literal(*catalog_name);
-  }
-  if (schema_name) {
-    query += " AND keys.table_schema = " +
-        quote_catalog_literal(*schema_name);
-  }
-  if (require_non_nullable) query += " AND columns.is_nullable = 'NO'";
-  query += " ORDER BY keys.ordinal_position";
+      "ON columns.table_catalog = current_database() "
+      "AND columns.table_schema = schemas.nspname "
+      "AND columns.table_name = tables.relname "
+      "AND columns.column_name = key_columns.column_name "
+      "ORDER BY key_columns.table_oid, key_columns.ordinal_position";
   return execute_direct(query);
 }
 

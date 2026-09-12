@@ -2315,6 +2315,11 @@ TEST_F(MetadataIntegrationTest, SpecialColumnScopeAndArgumentsFollowOdbc) {
                   "second_key bigint, first_key integer, value text, "
                   "PRIMARY KEY(first_key, second_key))",
         SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE UNIQUE INDEX odbcpp_special_shorter_unique "
+                  "ON \"odbcpp.special_'_table\" (value)",
+        SQL_NTS));
 
     SQLCHAR table_name[] = "odbcpp.special_'_table";
     SQLCHAR column_pattern[] = "first_key";
@@ -2408,6 +2413,69 @@ TEST_F(MetadataIntegrationTest, SpecialColumnScopeAndArgumentsFollowOdbc) {
         SQL_SCOPE_CURROW, SQL_NULLABLE));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     EXPECT_EQ(std::optional<std::string>("first_key"), text_cell(hstmt, 2));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+}
+
+TEST_F(MetadataIntegrationTest, SpecialColumnsFallsBackToUsableUniqueIndex) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_unique_rowid_test("
+                  "nullable_code integer, stable_code bigint NOT NULL, "
+                  "included_value text, spare integer NOT NULL)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE UNIQUE INDEX odbcpp_rowid_expression "
+                  "ON odbcpp_unique_rowid_test ((lower(included_value)))",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE UNIQUE INDEX odbcpp_rowid_partial "
+                  "ON odbcpp_unique_rowid_test (spare) WHERE spare > 0",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE UNIQUE INDEX odbcpp_rowid_nullable "
+                  "ON odbcpp_unique_rowid_test (nullable_code)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE UNIQUE INDEX odbcpp_rowid_nonnull "
+                  "ON odbcpp_unique_rowid_test (stable_code) "
+                  "INCLUDE (included_value)",
+        SQL_NTS));
+
+    SQLCHAR table_name[] = "odbcpp_unique_rowid_test";
+    ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
+        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+        table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NULLABLE));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("nullable_code"),
+              text_cell(hstmt, 2));
+    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_INTEGER), integer_cell(hstmt, 3));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
+        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+        table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NO_NULLS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("stable_code"),
+              text_cell(hstmt, 2));
+    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_BIGINT), integer_cell(hstmt, 3));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_nullable_rowid_test("
+                  "only_key integer UNIQUE)",
+        SQL_NTS));
+    SQLCHAR nullable_table[] = "odbcpp_nullable_rowid_test";
+    ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
+        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+        nullable_table, SQL_NTS, SQL_SCOPE_CURROW, SQL_NO_NULLS));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 }
 
