@@ -54,6 +54,24 @@ bool diagnostic_is(SQLSMALLINT handle_type, SQLHANDLE handle,
   return matches;
 }
 
+bool wide_diagnostic_is(SQLSMALLINT handle_type, SQLHANDLE handle,
+                        const char* expected_state) {
+  SQLWCHAR state[6]{};
+  const auto result = SQLGetDiagRecW(handle_type, handle, 1, state, nullptr,
+                                     nullptr, 0, nullptr);
+  bool matches = succeeded(result);
+  for (std::size_t index = 0; matches && index < 5; ++index) {
+    matches = state[index] == static_cast<SQLWCHAR>(
+        static_cast<unsigned char>(expected_state[index]));
+  }
+  matches = matches && state[5] == 0;
+  if (!matches) {
+    std::fprintf(stderr, "Expected wide diagnostic %s (result %d)\n",
+                 expected_state, static_cast<int>(result));
+  }
+  return matches;
+}
+
 bool result_is(SQLRETURN actual, SQLRETURN expected, const char* operation) {
   if (actual == expected) return true;
   std::fprintf(stderr, "%s returned %d; expected %d\n", operation,
@@ -766,6 +784,7 @@ int main() {
       !result_is(SQLDisconnect(lifecycle_connection), SQL_ERROR,
                  "SQLDisconnect before connect") ||
       !diagnostic_is(SQL_HANDLE_DBC, lifecycle_connection, "08003") ||
+      !wide_diagnostic_is(SQL_HANDLE_DBC, lifecycle_connection, "08003") ||
       !result_is(SQLAllocHandle(
                      SQL_HANDLE_STMT, lifecycle_connection,
                      &premature_statement),

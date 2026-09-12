@@ -68,7 +68,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLProcedures` | A/W | Partial | unit, integration, DM | PostgreSQL procedure/function distinctions and overloads |
 | `SQLProcedureColumns` | A/W | Partial | unit, integration, DM | Modes, result columns, overloads and type metadata |
 | `SQLSpecialColumns` | A/W | Partial | unit, integration, DM | Scope/nullable semantics and row-version behavior |
-| `SQLGetDiagRec` | A/W | Partial | unit, integration, DM | Retrieval preserves records and validates type/record/buffer; truncation matrix remains |
+| `SQLGetDiagRec` | A/W | Verified | unit, integration, DM | Retrieval is nondestructive; handle type, record number, absent records, null destinations, native codes, exact-fit, one-short, and terminator-only A/W buffers are covered, including mixed-width iODBC translation |
 | `SQLGetDiagField` | A/W | Partial | unit, integration | All standard header/record identifiers, return provenance, origins, ANSI/wide lengths, and truncation are covered; row/column-specific server errors remain |
 | `SQLError` | A/W | Partial | unit, integration | ODBC 2 sequencing and multi-record consumption |
 | `SQLGetInfo` | A/W | Verified | unit, integration, DM | Every driver-owned standard type is classified; positive PostgreSQL claims execute end to end, and Driver Manager-only mappings are covered separately |
@@ -466,6 +466,13 @@ substitute for ODBC diagnostics.
   three invalid length positions and malformed wide DSN, user, and password
   inputs without attempting network I/O. Login-deadline expiration is also
   classified as HYT00 rather than the connection-request HYT01 state.
+- Audit batch 58 replaces a conditional, network-dependent SQLGetDiagRec test
+  with exact ANSI and wide boundary assertions. Length-only, terminator-only,
+  one-unit-short, and exact-fit retrieval preserve the full required length,
+  populate independent SQLSTATE/native destinations, terminate output, and do
+  not consume the record. The Driver Manager path now calls SQLGetDiagRecW
+  directly, including the four-byte iODBC application ABI, so the ordinary
+  synchronous handle surface is Verified.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

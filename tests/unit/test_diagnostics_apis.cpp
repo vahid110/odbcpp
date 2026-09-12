@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
 #include "tests/test_handle_helpers.h"
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
@@ -291,27 +292,100 @@ TEST_F(DiagnosticsTest, DiagnosticFunctionsValidateTypeRecordAndBuffer) {
     EXPECT_STREQ("08001", reinterpret_cast<const char*>(state));
 }
 
-TEST_F(DiagnosticsTest, SQLGetDiagRec_MessageTruncation) {
-    // Force an error with a long message
-    SQLConnect(hdbc, (SQLCHAR*)"invalid_dsn_with_very_long_name_that_should_cause_truncation", SQL_NTS, nullptr, 0, nullptr, 0);
-    
-    // Test with small buffer to trigger truncation
-    SQLCHAR sqlstate[6];
-    SQLINTEGER native_error;
-    SQLCHAR message[10];  // Very small buffer
-    SQLSMALLINT text_length;
-    
-    SQLRETURN ret = SQLGetDiagRec(SQL_HANDLE_DBC, hdbc, 1, sqlstate, &native_error, message, sizeof(message), &text_length);
-    
-    // Should return SQL_SUCCESS_WITH_INFO for truncation
-    if (text_length >= static_cast<SQLSMALLINT>(sizeof(message))) {
-        EXPECT_EQ(SQL_SUCCESS_WITH_INFO, ret);
-    } else {
-        EXPECT_EQ(SQL_SUCCESS, ret);
+TEST_F(DiagnosticsTest, SQLGetDiagRec_ExactAnsiAndWideBufferBoundaries) {
+    ASSERT_EQ(SQL_ERROR, SQLExecDirect(hstmt, nullptr, SQL_NTS));
+    constexpr char expected[] = "SQL statement is null";
+    constexpr auto expected_length =
+        static_cast<SQLSMALLINT>(sizeof(expected) - 1);
+
+    SQLCHAR state[6]{};
+    SQLINTEGER native_error = -1;
+    SQLSMALLINT required = -1;
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, state,
+                            &native_error, nullptr, 0, &required));
+    EXPECT_STREQ("HY009", reinterpret_cast<const char*>(state));
+    EXPECT_EQ(0, native_error);
+    EXPECT_EQ(expected_length, required);
+
+    std::array<SQLCHAR, 1> terminator_only{0x7f};
+    required = -1;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, nullptr, nullptr,
+                            terminator_only.data(),
+                            static_cast<SQLSMALLINT>(terminator_only.size()),
+                            &required));
+    EXPECT_EQ(0, terminator_only[0]);
+    EXPECT_EQ(expected_length, required);
+
+    std::array<SQLCHAR, sizeof(expected) - 1> short_message{};
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, nullptr, nullptr,
+                            short_message.data(),
+                            static_cast<SQLSMALLINT>(short_message.size()),
+                            &required));
+    EXPECT_EQ(0, short_message.back());
+    EXPECT_EQ(0, std::memcmp(short_message.data(), expected,
+                             short_message.size() - 1));
+
+    std::array<SQLCHAR, sizeof(expected)> exact_message{};
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, nullptr, nullptr,
+                            exact_message.data(),
+                            static_cast<SQLSMALLINT>(exact_message.size()),
+                            &required));
+    EXPECT_STREQ(expected,
+                 reinterpret_cast<const char*>(exact_message.data()));
+
+    std::array<SQLWCHAR, 1> wide_terminator_only{
+        static_cast<SQLWCHAR>(0x7f)};
+    required = -1;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLGetDiagRecW(
+                  SQL_HANDLE_STMT, hstmt, 1, nullptr, nullptr,
+                  wide_terminator_only.data(),
+                  static_cast<SQLSMALLINT>(wide_terminator_only.size()),
+                  &required));
+    EXPECT_EQ(0, wide_terminator_only[0]);
+    EXPECT_EQ(expected_length, required);
+
+    std::array<SQLWCHAR, sizeof(expected) - 1> wide_short_message{};
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+              SQLGetDiagRecW(
+                  SQL_HANDLE_STMT, hstmt, 1, nullptr, nullptr,
+                  wide_short_message.data(),
+                  static_cast<SQLSMALLINT>(wide_short_message.size()),
+                  &required));
+    EXPECT_EQ(0, wide_short_message.back());
+    for (std::size_t index = 0;
+         index + 1 < wide_short_message.size(); ++index) {
+        EXPECT_EQ(static_cast<SQLWCHAR>(expected[index]),
+                  wide_short_message[index]);
     }
-    
-    EXPECT_GT(text_length, 0);
-    EXPECT_EQ('\0', message[sizeof(message) - 1]);  // Null terminated
+
+    std::array<SQLWCHAR, sizeof(expected)> wide_exact_message{};
+    SQLWCHAR wide_state[6]{};
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetDiagRecW(
+                  SQL_HANDLE_STMT, hstmt, 1, wide_state, nullptr,
+                  wide_exact_message.data(),
+                  static_cast<SQLSMALLINT>(wide_exact_message.size()),
+                  &required));
+    constexpr char expected_state[] = "HY009";
+    for (std::size_t index = 0; index < sizeof(expected_state) - 1; ++index) {
+        EXPECT_EQ(static_cast<SQLWCHAR>(expected_state[index]),
+                  wide_state[index]);
+    }
+    EXPECT_EQ(0, wide_state[5]);
+    EXPECT_EQ(expected_length, required);
+    for (std::size_t index = 0; index < sizeof(expected); ++index) {
+        EXPECT_EQ(static_cast<SQLWCHAR>(expected[index]),
+                  wide_exact_message[index]);
+    }
+
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, nullptr, nullptr,
+                            nullptr, 0, nullptr));
 }
 
 TEST_F(DiagnosticsTest, SQLGetDiagField_TruncatesAnsiAndWideStrings) {
