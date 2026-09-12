@@ -327,11 +327,21 @@ OdbcTypeInfo postgres_type_info(std::uint32_t oid, std::int16_t type_size,
     }
     case 1082: return {SQL_TYPE_DATE, 10, 0};
     case 1083:
-    case 1266: return {SQL_TYPE_TIME, 15,
-                       static_cast<SQLSMALLINT>(type_modifier >= 0 ? type_modifier : 6)};
+    case 1266: {
+      const auto precision = type_modifier >= 0 ? type_modifier : 6;
+      return {SQL_TYPE_TIME,
+              static_cast<SQLULEN>((oid == 1083 ? 8 : 14) +
+                                   (precision > 0 ? 1 + precision : 0)),
+              static_cast<SQLSMALLINT>(precision)};
+    }
     case 1114:
-    case 1184: return {SQL_TYPE_TIMESTAMP, 29,
-                       static_cast<SQLSMALLINT>(type_modifier >= 0 ? type_modifier : 6)};
+    case 1184: {
+      const auto precision = type_modifier >= 0 ? type_modifier : 6;
+      return {SQL_TYPE_TIMESTAMP,
+              static_cast<SQLULEN>((oid == 1114 ? 19 : 25) +
+                                   (precision > 0 ? 1 + precision : 0)),
+              static_cast<SQLSMALLINT>(precision)};
+    }
     case 2950: return {SQL_VARCHAR, 36, 0};
     case 114:
     case 3802: return {SQL_VARCHAR, 0, 0};
@@ -481,7 +491,7 @@ const TypeInfoDefinition type_info_definitions[] = {
      -1, -1, SQL_DATETIME, SQL_CODE_DATE, 0},
     {"time", SQL_TIME, 15, "'", "'", "precision", SQL_FALSE, -1,
      0, 6, SQL_DATETIME, SQL_CODE_TIME, 0},
-    {"timestamp", SQL_TIMESTAMP, 29, "'", "'", "precision", SQL_FALSE, -1,
+    {"timestamp", SQL_TIMESTAMP, 26, "'", "'", "precision", SQL_FALSE, -1,
      0, 6, SQL_DATETIME, SQL_CODE_TIMESTAMP, 0},
     {"varchar", SQL_VARCHAR, 10485760, "'", "'", "length", SQL_TRUE,
      -1, -1, -1, SQL_VARCHAR, 0, 0},
@@ -489,7 +499,7 @@ const TypeInfoDefinition type_info_definitions[] = {
      -1, -1, SQL_DATETIME, SQL_CODE_DATE, 0},
     {"time", SQL_TYPE_TIME, 15, "'", "'", "precision", SQL_FALSE,
      -1, 0, 6, SQL_DATETIME, SQL_CODE_TIME, 0},
-    {"timestamp", SQL_TYPE_TIMESTAMP, 29, "'", "'", "precision", SQL_FALSE,
+    {"timestamp", SQL_TYPE_TIMESTAMP, 26, "'", "'", "precision", SQL_FALSE,
      -1, 0, 6, SQL_DATETIME, SQL_CODE_TIMESTAMP, 0},
 };
 
@@ -3367,10 +3377,18 @@ SQLRETURN ODBCStatement::columns(
       "WHEN 'character varying' THEN character_maximum_length "
       "WHEN 'text' THEN 1073741824 WHEN 'bytea' THEN 1073741824 "
       "WHEN 'date' THEN 10 "
-      "WHEN 'time without time zone' THEN 15 "
-      "WHEN 'time with time zone' THEN 21 "
-      "WHEN 'timestamp without time zone' THEN 29 "
-      "WHEN 'timestamp with time zone' THEN 35 "
+      "WHEN 'time without time zone' THEN 8 + "
+      "CASE WHEN datetime_precision > 0 THEN 1 + datetime_precision "
+      "ELSE 0 END "
+      "WHEN 'time with time zone' THEN 14 + "
+      "CASE WHEN datetime_precision > 0 THEN 1 + datetime_precision "
+      "ELSE 0 END "
+      "WHEN 'timestamp without time zone' THEN 19 + "
+      "CASE WHEN datetime_precision > 0 THEN 1 + datetime_precision "
+      "ELSE 0 END "
+      "WHEN 'timestamp with time zone' THEN 25 + "
+      "CASE WHEN datetime_precision > 0 THEN 1 + datetime_precision "
+      "ELSE 0 END "
       "ELSE character_maximum_length END END::integer AS column_size, "
       "CASE WHEN types.oid = 2950 THEN 36 ELSE CASE data_type "
       "WHEN 'boolean' THEN 1 WHEN 'smallint' THEN 2 "
@@ -3381,11 +3399,11 @@ SQLRETURN ODBCStatement::columns(
       "WHEN 'character' THEN character_octet_length "
       "WHEN 'character varying' THEN character_octet_length "
       "WHEN 'text' THEN 1073741824 WHEN 'bytea' THEN 1073741824 "
-      "WHEN 'date' THEN 10 "
-      "WHEN 'time without time zone' THEN 15 "
-      "WHEN 'time with time zone' THEN 21 "
-      "WHEN 'timestamp without time zone' THEN 29 "
-      "WHEN 'timestamp with time zone' THEN 35 ELSE NULL END "
+      "WHEN 'date' THEN 6 "
+      "WHEN 'time without time zone' THEN 6 "
+      "WHEN 'time with time zone' THEN 6 "
+      "WHEN 'timestamp without time zone' THEN 16 "
+      "WHEN 'timestamp with time zone' THEN 16 ELSE NULL END "
       "END::integer "
       "AS buffer_length, "
       "CASE WHEN data_type IN ('numeric', 'decimal') THEN numeric_scale "
@@ -3706,9 +3724,9 @@ SQLRETURN ODBCStatement::procedure_columns(
       " WHEN 2950 THEN 36 WHEN 16 THEN 1 WHEN 17 THEN 1073741824 "
       "WHEN 18 THEN 1 WHEN 20 THEN 8 WHEN 21 THEN 2 WHEN 23 THEN 4 "
       "WHEN 25 THEN 1073741824 WHEN 700 THEN 4 WHEN 701 THEN 8 "
-      "WHEN 1042 THEN 0 WHEN 1043 THEN 0 WHEN 1082 THEN 10 "
-      "WHEN 1083 THEN 15 WHEN 1266 THEN 21 WHEN 1114 THEN 29 "
-      "WHEN 1184 THEN 35 WHEN 1700 THEN 0 ELSE 0 END::integer "
+      "WHEN 1042 THEN 0 WHEN 1043 THEN 0 WHEN 1082 THEN 6 "
+      "WHEN 1083 THEN 6 WHEN 1266 THEN 6 WHEN 1114 THEN 16 "
+      "WHEN 1184 THEN 16 WHEN 1700 THEN 0 ELSE 0 END::integer "
       "AS buffer_length, CASE " + base_type_oid +
       " WHEN 20 THEN 0 WHEN 21 THEN 0 "
       "WHEN 23 THEN 0 WHEN 700 THEN 6 WHEN 701 THEN 15 "
@@ -3837,10 +3855,20 @@ SQLRETURN ODBCStatement::special_columns(
       "WHEN 'character' THEN columns.character_maximum_length "
       "WHEN 'character varying' THEN columns.character_maximum_length "
       "WHEN 'text' THEN 1073741824 WHEN 'bytea' THEN 1073741824 "
-      "WHEN 'date' THEN 10 WHEN 'time without time zone' THEN 15 "
-      "WHEN 'time with time zone' THEN 21 "
-      "WHEN 'timestamp without time zone' THEN 29 "
-      "WHEN 'timestamp with time zone' THEN 35 ELSE 0 END "
+      "WHEN 'date' THEN 10 "
+      "WHEN 'time without time zone' THEN 8 + "
+      "CASE WHEN columns.datetime_precision > 0 "
+      "THEN 1 + columns.datetime_precision ELSE 0 END "
+      "WHEN 'time with time zone' THEN 14 + "
+      "CASE WHEN columns.datetime_precision > 0 "
+      "THEN 1 + columns.datetime_precision ELSE 0 END "
+      "WHEN 'timestamp without time zone' THEN 19 + "
+      "CASE WHEN columns.datetime_precision > 0 "
+      "THEN 1 + columns.datetime_precision ELSE 0 END "
+      "WHEN 'timestamp with time zone' THEN 25 + "
+      "CASE WHEN columns.datetime_precision > 0 "
+      "THEN 1 + columns.datetime_precision ELSE 0 END "
+      "ELSE 0 END "
       "END::integer AS column_size, "
       "CASE WHEN types.oid = 2950 THEN 36 ELSE CASE columns.data_type "
       "WHEN 'boolean' THEN 1 WHEN 'smallint' THEN 2 WHEN 'integer' THEN 4 "
@@ -3851,13 +3879,16 @@ SQLRETURN ODBCStatement::special_columns(
       "WHEN 'character' THEN columns.character_octet_length "
       "WHEN 'character varying' THEN columns.character_octet_length "
       "WHEN 'text' THEN 1073741824 WHEN 'bytea' THEN 1073741824 "
-      "WHEN 'date' THEN 10 WHEN 'time without time zone' THEN 15 "
-      "WHEN 'time with time zone' THEN 21 "
-      "WHEN 'timestamp without time zone' THEN 29 "
-      "WHEN 'timestamp with time zone' THEN 35 ELSE 0 END "
+      "WHEN 'date' THEN 6 WHEN 'time without time zone' THEN 6 "
+      "WHEN 'time with time zone' THEN 6 "
+      "WHEN 'timestamp without time zone' THEN 16 "
+      "WHEN 'timestamp with time zone' THEN 16 ELSE 0 END "
       "END::integer "
       "AS buffer_length, CASE WHEN columns.data_type IN "
       "('numeric', 'decimal') THEN columns.numeric_scale "
+      "WHEN columns.data_type IN ('time without time zone', "
+      "'time with time zone', 'timestamp without time zone', "
+      "'timestamp with time zone') THEN columns.datetime_precision "
       "WHEN columns.data_type IN ('smallint', 'integer', 'bigint') THEN 0 "
       "ELSE NULL END::smallint AS decimal_digits, "
       "1::smallint AS pseudo_column "

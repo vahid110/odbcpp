@@ -1037,11 +1037,11 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
         {"double precision", SQL_DOUBLE, 15},
         {"date", SQL_DATE, 10},
         {"time", SQL_TIME, 15},
-        {"timestamp", SQL_TIMESTAMP, 29},
+        {"timestamp", SQL_TIMESTAMP, 26},
         {"varchar", SQL_VARCHAR, 10485760},
         {"date", SQL_TYPE_DATE, 10},
         {"time", SQL_TYPE_TIME, 15},
-        {"timestamp", SQL_TYPE_TIMESTAMP, 29},
+        {"timestamp", SQL_TYPE_TIMESTAMP, 26},
     }};
 
     ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfo(hstmt, SQL_ALL_TYPES));
@@ -1606,6 +1606,99 @@ TEST_F(MetadataIntegrationTest, CatalogTypeNamesPreservePostgreSQLTypes) {
         EXPECT_EQ(std::optional<SQLINTEGER>(expected_type),
                   integer_cell(hstmt, 6));
     }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+}
+
+TEST_F(MetadataIntegrationTest, TemporalMetadataUsesDeclaredPrecision) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_temporal_metadata("
+                  "d date, t0 time(0), t2 time(2), ts0 timestamp(0), "
+                  "ts3 timestamp(3) NOT NULL, tz0 timetz(0), "
+                  "ttz3 timestamptz(3), PRIMARY KEY(ts3))",
+        SQL_NTS));
+    SQLCHAR table_name[] = "odbcpp_temporal_metadata";
+    ASSERT_EQ(SQL_SUCCESS, SQLColumns(
+        hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS,
+        nullptr, 0));
+    struct ExpectedColumn {
+        const char* name;
+        SQLSMALLINT type;
+        SQLINTEGER size;
+        SQLINTEGER transfer_size;
+        SQLINTEGER scale;
+    };
+    constexpr std::array<ExpectedColumn, 7> expected{{
+        {"d", SQL_TYPE_DATE, 10, 6, -1},
+        {"t0", SQL_TYPE_TIME, 8, 6, 0},
+        {"t2", SQL_TYPE_TIME, 11, 6, 2},
+        {"ts0", SQL_TYPE_TIMESTAMP, 19, 16, 0},
+        {"ts3", SQL_TYPE_TIMESTAMP, 23, 16, 3},
+        {"tz0", SQL_TYPE_TIME, 14, 6, 0},
+        {"ttz3", SQL_TYPE_TIMESTAMP, 29, 16, 3},
+    }};
+    for (const auto& column : expected) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::optional<std::string>(column.name), text_cell(hstmt, 4));
+        EXPECT_EQ(std::optional<SQLINTEGER>(column.type), integer_cell(hstmt, 5));
+        EXPECT_EQ(std::optional<SQLINTEGER>(column.size), integer_cell(hstmt, 7));
+        EXPECT_EQ(std::optional<SQLINTEGER>(column.transfer_size),
+                  integer_cell(hstmt, 8));
+        if (column.scale >= 0) {
+            EXPECT_EQ(std::optional<SQLINTEGER>(column.scale),
+                      integer_cell(hstmt, 9));
+        }
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
+        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+        table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NO_NULLS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("ts3"), text_cell(hstmt, 2));
+    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_TYPE_TIMESTAMP),
+              integer_cell(hstmt, 3));
+    EXPECT_EQ(std::optional<SQLINTEGER>(23), integer_cell(hstmt, 5));
+    EXPECT_EQ(std::optional<SQLINTEGER>(16), integer_cell(hstmt, 6));
+    EXPECT_EQ(std::optional<SQLINTEGER>(3), integer_cell(hstmt, 7));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"SELECT d, t0, t2, ts0, ts3, tz0, ttz3 "
+                  "FROM odbcpp_temporal_metadata",
+        SQL_NTS));
+    for (SQLUSMALLINT i = 1; i <= expected.size(); ++i) {
+        SQLSMALLINT type = 0;
+        SQLULEN size = 0;
+        SQLSMALLINT scale = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+            hstmt, i, nullptr, 0, nullptr, &type, &size, &scale, nullptr));
+        EXPECT_EQ(expected[i - 1].type, type);
+        EXPECT_EQ(static_cast<SQLULEN>(expected[i - 1].size), size);
+        if (expected[i - 1].scale >= 0) {
+            EXPECT_EQ(expected[i - 1].scale, scale);
+        }
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE FUNCTION pg_temp.odbcpp_temporal_metadata_func("
+                  "d date, t time, ts timestamp) RETURNS integer "
+                  "LANGUAGE SQL AS 'SELECT 1'",
+        SQL_NTS));
+    SQLCHAR procedure_name[] = "odbcpp\\_temporal\\_metadata\\_func";
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedureColumns(
+        hstmt, nullptr, 0, nullptr, 0, procedure_name, SQL_NTS,
+        nullptr, 0));
+    for (const SQLINTEGER transfer_size : {6, 6, 16}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::optional<SQLINTEGER>(transfer_size), integer_cell(hstmt, 9));
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 

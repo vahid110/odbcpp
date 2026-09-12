@@ -292,7 +292,7 @@ TEST_F(PreparedStatementIntegrationTest,
         {SQL_DOUBLE, 15, 15},
         {SQL_TYPE_DATE, 10, 0},
         {SQL_TYPE_TIME, 15, 6},
-        {SQL_TYPE_TIMESTAMP, 29, 6},
+        {SQL_TYPE_TIMESTAMP, 26, 6},
         {SQL_VARBINARY, 0, 0},
         {SQL_VARCHAR, 0, 0},
     };

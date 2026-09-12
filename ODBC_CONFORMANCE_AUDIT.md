@@ -621,6 +621,20 @@ substitute for ODBC diagnostics.
   `SQLSpecialColumns` report 36 for their corresponding character size and
   buffer-length fields. A real PostgreSQL test checks all four paths. Other
   variable-length and nested-domain metadata remain open.
+- Audit batch 78 derives time and timestamp `COLUMN_SIZE` from PostgreSQL's
+  declared fractional-second precision in result descriptions, `SQLColumns`,
+  and `SQLSpecialColumns`; the maximum unzoned timestamp size is corrected to
+  26 in `SQLGetTypeInfo` and inferred `SQLDescribeParam`. It also reports the
+  ODBC default-C-type transfer
+  lengths (6 bytes for date/time, 16 for timestamp) in `SQLColumns`,
+  `SQLProcedureColumns`, and `SQLSpecialColumns`, and supplies temporal
+  `DECIMAL_DIGITS` for special columns. PostgreSQL tests cover precision 0,
+  explicit fractional precision, time-zone variants, primary-key metadata,
+  and routine arguments. Routine argument `COLUMN_SIZE` remains the default
+  maximum because PostgreSQL's routine argument type OIDs do not carry typmods.
+  See the ODBC [column-size](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/column-size)
+  and [transfer-length](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/transfer-octet-length)
+  rules and PostgreSQL's [information-schema precision](https://www.postgresql.org/docs/current/infoschema-columns.html).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
