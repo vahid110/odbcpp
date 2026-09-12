@@ -65,7 +65,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLPrimaryKeys` | A/W | Partial | unit, integration, DM | Required table, literal/empty arguments, escaping, key ordering, cursor states, and A/W paths are covered; restricted-user visibility remains |
 | `SQLForeignKeys` | A/W | Partial | unit, integration, DM | PK/FK filter combinations, ordinary/empty arguments, primary-target filtering, same-name constraints, rule/deferrability mapping, ordering, cursor states, and A/W paths are covered; restricted-user visibility remains |
 | `SQLStatistics` | A/W | Partial | unit, integration, DM | Ordinary/empty arguments, uniqueness filtering, quick statistics, expression/partial/hash/clustered classification, included columns, ordering, cursor states, and A/W paths are covered; exact cardinality remains |
-| `SQLProcedures` | A/W | Partial | unit, integration, DM | Ordinary catalog, null/empty and escaped patterns, procedure/function distinctions, overloads, cursor states, and A/W paths are covered; argument-mode counts and restricted-user visibility remain |
+| `SQLProcedures` | A/W | Partial | unit, integration, DM | Ordinary catalog, null/empty and escaped patterns, procedure/function distinctions, overloads, all PostgreSQL argument-mode counts, cursor states, and A/W paths are covered; restricted-user visibility remains |
 | `SQLProcedureColumns` | A/W | Partial | unit, integration, DM | Ordinary catalog, null/empty and escaped patterns, unnamed columns, parameter modes/order, return rows, cursor states, and A/W paths are covered; result-set discovery and complete PostgreSQL type metadata remain |
 | `SQLSpecialColumns` | A/W | Partial | unit, integration, DM | Ordinary/empty arguments, conservative scope, nullable modes, primary-key preference, safe unique-index fallback, composite keys, row-version empty results, cursor states, and A/W paths are covered; complete type metadata remains |
 | `SQLGetDiagRec` | A/W | Verified | unit, integration, DM | Retrieval is nondestructive; handle type, record number, absent records, null destinations, native codes, exact-fit, one-short, and terminator-only A/W buffers are covered, including mixed-width iODBC translation |
@@ -599,6 +599,13 @@ substitute for ODBC diagnostics.
   are stored values rather than ordering keys. Invalid or dropping indexes are
   excluded. PostgreSQL tests distinguish key and included attributes and keep
   `SQL_INDEX_UNIQUE` filtering independent of covering-index storage.
+- Audit batch 75 verifies `SQLProcedures` parameter counts against PostgreSQL's
+  full argument-mode model. Real functions now prove that `INOUT` contributes
+  to both input and output counts, `VARIADIC` contributes to the input count,
+  and every `TABLE` result column contributes to the output count. This closes
+  the prior count gap without adding duplicate production logic: the existing
+  catalog query already handled the server's `i`, `o`, `b`, `v`, and `t` modes
+  correctly.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

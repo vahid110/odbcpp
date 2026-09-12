@@ -2160,6 +2160,53 @@ TEST_F(MetadataIntegrationTest, RoutinePatternsTypesAndOverloadsFollowOdbc) {
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, ProcedureCountsFollowPostgreSQLArgumentModes) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE FUNCTION pg_temp.odbcpp_modes_inout("
+                  "IN first integer, INOUT shared integer, OUT final text) "
+                  "LANGUAGE SQL AS "
+                  "'SELECT shared + first, first::text'",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE FUNCTION pg_temp.odbcpp_modes_variadic("
+                  "VARIADIC items integer[]) RETURNS integer "
+                  "LANGUAGE SQL AS 'SELECT cardinality(items)'",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE FUNCTION pg_temp.odbcpp_modes_table(first integer) "
+                  "RETURNS TABLE(total integer, label text) LANGUAGE SQL "
+                  "AS 'SELECT first, first::text'",
+        SQL_NTS));
+
+    auto expect_counts = [&](SQLCHAR* routine_pattern,
+                             SQLINTEGER expected_inputs,
+                             SQLINTEGER expected_outputs) {
+        ASSERT_EQ(SQL_SUCCESS, SQLProcedures(
+            hstmt, nullptr, 0, nullptr, 0,
+            routine_pattern, SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::optional<SQLINTEGER>(expected_inputs),
+                  integer_cell(hstmt, 4));
+        EXPECT_EQ(std::optional<SQLINTEGER>(expected_outputs),
+                  integer_cell(hstmt, 5));
+        EXPECT_EQ(std::optional<SQLINTEGER>(-1), integer_cell(hstmt, 6));
+        EXPECT_EQ(std::optional<SQLINTEGER>(SQL_PT_FUNCTION),
+                  integer_cell(hstmt, 8));
+        EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+
+    SQLCHAR inout_name[] = "odbcpp\\_modes\\_inout";
+    SQLCHAR variadic_name[] = "odbcpp\\_modes\\_variadic";
+    SQLCHAR table_name[] = "odbcpp\\_modes\\_table";
+    expect_counts(inout_name, 2, 2);
+    expect_counts(variadic_name, 1, 0);
+    expect_counts(table_name, 1, 2);
+}
+
 TEST_F(MetadataIntegrationTest, ListsPostgreSQLRoutineColumns) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,
