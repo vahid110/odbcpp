@@ -3419,16 +3419,16 @@ SQLRETURN ODBCStatement::columns(
       "ordinal_position::integer AS ordinal_position, "
       "is_nullable::text AS is_nullable FROM information_schema.columns) "
       "AS odbcpp_columns WHERE 1=1";
-  if (catalog_name && !catalog_name->empty()) {
-    query += " AND table_cat LIKE " + quote_catalog_literal(*catalog_name);
+  if (catalog_name) {
+    query += " AND table_cat = " + quote_catalog_literal(*catalog_name);
   }
-  if (schema_name && !schema_name->empty()) {
+  if (schema_name) {
     query += " AND table_schem LIKE " + quote_catalog_literal(*schema_name);
   }
-  if (table_name && !table_name->empty()) {
+  if (table_name) {
     query += " AND table_name LIKE " + quote_catalog_literal(*table_name);
   }
-  if (column_name && !column_name->empty()) {
+  if (column_name) {
     query += " AND column_name LIKE " + quote_catalog_literal(*column_name);
   }
   query += " ORDER BY table_cat, table_schem, table_name, ordinal_position";

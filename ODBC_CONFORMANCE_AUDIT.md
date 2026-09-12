@@ -61,7 +61,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLFreeStmt` | A | Verified | unit, integration, DM | SQL_CLOSE idempotence, ARD unbinding, APD reset, invalid-option preservation, SQL_DROP ownership, and pending-result discard are covered |
 | `SQLGetTypeInfo` | A/W | Verified | unit, integration, DM | All 19 fields are checked across the ordered supported-type inventory; valid-empty and HY004 filters, disconnected/open/exhausted cursor states, legacy plus ODBC 3 datetime identifiers, and A/W Driver Manager calls are covered |
 | `SQLTables` | A/W | Partial | unit, integration, DM | Null versus empty arguments, wildcard escaping, value-list filtering, catalog/schema/type enumerations, local temporary tables, state errors, malformed wide input, and A/W paths are covered; ODBC 2 catalog-pattern behavior and restricted-user visibility remain |
-| `SQLColumns` | A/W | Partial | unit, integration, DM | Pattern semantics and complete PostgreSQL type metadata |
+| `SQLColumns` | A/W | Partial | unit, integration, DM | Null/empty, ordinary catalog, escaped patterns, cursor states, and A/W paths are covered; complete PostgreSQL type metadata and restricted-user visibility remain |
 | `SQLPrimaryKeys` | A/W | Partial | unit, integration, DM | Empty/multipart identifiers, ordering, visibility |
 | `SQLForeignKeys` | A/W | Partial | unit, integration, DM | PK/FK filter combinations and rule mapping |
 | `SQLStatistics` | A/W | Partial | unit, integration, DM | Accuracy/cardinality modes and expression/partial indexes |
@@ -517,6 +517,14 @@ substitute for ODBC diagnostics.
   wildcard matching, quoted case-insensitive type lists, result ordering and
   null columns, open and disconnected states, malformed wide input, and A/W
   enumeration parity.
+- Audit batch 65 corrects the `SQLColumns` argument classes. `CatalogName` is
+  now a case-sensitive ordinary argument instead of a wildcard pattern, while
+  schema, table, and column names retain ODBC pattern matching and the
+  advertised backslash escape. Explicit empty arguments no longer collapse
+  into null unrestricted searches. PostgreSQL tests distinguish `_` from
+  escaped underscores, prove literal `%` catalog handling, verify an exact
+  current-catalog match, cover every null-versus-empty position and open-cursor
+  diagnostics, and exercise the same escaped patterns through `SQLColumnsW`.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

@@ -1341,6 +1341,107 @@ TEST_F(MetadataIntegrationTest, ListsPostgreSQLColumns) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, ColumnPatternsAndCatalogArgumentsFollowOdbc) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_columns_a_b("
+                  "column_a_b integer, column_axb integer)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_columns_axb(marker integer)",
+        SQL_NTS));
+
+    SQLCHAR table_pattern[] = "odbcpp_columns_a_b";
+    SQLCHAR column_pattern[] = "column_a_b";
+    ASSERT_EQ(SQL_SUCCESS, SQLColumns(
+        hstmt, nullptr, 0, nullptr, 0, table_pattern, SQL_NTS,
+        column_pattern, SQL_NTS));
+    for (const char* expected : {"column_a_b", "column_axb"}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::optional<std::string>("odbcpp_columns_a_b"),
+                  text_cell(hstmt, 3));
+        EXPECT_EQ(std::optional<std::string>(expected), text_cell(hstmt, 4));
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR escaped_table[] = "odbcpp\\_columns\\_a\\_b";
+    SQLCHAR escaped_column[] = "column\\_a\\_b";
+    ASSERT_EQ(SQL_SUCCESS, SQLColumns(
+        hstmt, nullptr, 0, nullptr, 0, escaped_table, SQL_NTS,
+        escaped_column, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("odbcpp_columns_a_b"),
+              text_cell(hstmt, 3));
+    EXPECT_EQ(std::optional<std::string>("column_a_b"),
+              text_cell(hstmt, 4));
+    EXPECT_EQ(SQL_ERROR, SQLColumns(
+        hstmt, nullptr, 0, nullptr, 0, escaped_table, SQL_NTS,
+        escaped_column, SQL_NTS));
+    EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR empty[] = "";
+    SQLCHAR exact_table[] = "odbcpp_columns_a_b";
+    SQLCHAR exact_column[] = "column_a_b";
+    auto expect_no_columns = [&](SQLCHAR* catalog, SQLSMALLINT catalog_length,
+                                 SQLCHAR* schema, SQLSMALLINT schema_length,
+                                 SQLCHAR* table, SQLSMALLINT table_length,
+                                 SQLCHAR* column, SQLSMALLINT column_length) {
+        ASSERT_EQ(SQL_SUCCESS, SQLColumns(
+            hstmt, catalog, catalog_length, schema, schema_length,
+            table, table_length, column, column_length));
+        EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    expect_no_columns(empty, SQL_NTS, nullptr, 0, exact_table, SQL_NTS,
+                      exact_column, SQL_NTS);
+    expect_no_columns(nullptr, 0, empty, SQL_NTS, exact_table, SQL_NTS,
+                      exact_column, SQL_NTS);
+    expect_no_columns(nullptr, 0, nullptr, 0, empty, SQL_NTS,
+                      exact_column, SQL_NTS);
+    expect_no_columns(nullptr, 0, nullptr, 0, exact_table, SQL_NTS,
+                      empty, SQL_NTS);
+
+    SQLCHAR percent[] = "%";
+    expect_no_columns(percent, SQL_NTS, nullptr, 0, exact_table, SQL_NTS,
+                      exact_column, SQL_NTS);
+
+    std::array<SQLCHAR, 128> catalog{};
+    SQLSMALLINT catalog_length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(
+        hdbc, SQL_DATABASE_NAME, catalog.data(),
+        static_cast<SQLSMALLINT>(catalog.size()),
+        &catalog_length));
+    ASSERT_GT(catalog_length, 0);
+    ASSERT_EQ(SQL_SUCCESS, SQLColumns(
+        hstmt, catalog.data(), catalog_length, nullptr, 0,
+        escaped_table, SQL_NTS, escaped_column, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>(
+                  reinterpret_cast<const char*>(catalog.data())),
+              text_cell(hstmt, 1));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    auto wide_table = rs::odbc::utf8_to_wide("odbcpp\\_columns\\_a\\_b");
+    auto wide_column = rs::odbc::utf8_to_wide("column\\_a\\_b");
+    ASSERT_TRUE(wide_table.has_value());
+    ASSERT_TRUE(wide_column.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLColumnsW(
+        hstmt, nullptr, 0, nullptr, 0,
+        wide_table->data(), static_cast<SQLSMALLINT>(wide_table->size()),
+        wide_column->data(), static_cast<SQLSMALLINT>(wide_column->size())));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("odbcpp_columns_a_b"),
+              text_cell(hstmt, 3));
+    EXPECT_EQ(std::optional<std::string>("column_a_b"),
+              text_cell(hstmt, 4));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, ListsPostgreSQLPrimaryKeys) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,
