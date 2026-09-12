@@ -1,8 +1,9 @@
 #include <gtest/gtest.h>
 
 #include "odbc/odbc_api.h"
+#include "tests/test_connection_config.h"
 
-#include <cstdlib>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -19,9 +20,7 @@ std::string diagnostic_state(SQLSMALLINT handle_type, SQLHANDLE handle) {
 }
 
 SQLCHAR* test_dsn() {
-  const auto* configured = std::getenv("ODBCPP_TEST_DSN");
-  return reinterpret_cast<SQLCHAR*>(const_cast<char*>(
-      configured && *configured ? configured : "DSN=RedshiftProd"));
+  return odbcpp::test::configured_connection_string_data();
 }
 
 std::vector<SQLWCHAR> wide_ascii(const std::string& value) {
@@ -216,8 +215,10 @@ TEST(DriverConnectIntegrationTest,
             SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
                           reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
 
-  for (const auto completion : {SQL_DRIVER_NOPROMPT, SQL_DRIVER_COMPLETE,
-                                SQL_DRIVER_COMPLETE_REQUIRED}) {
+  constexpr std::array<SQLUSMALLINT, 3> completion_modes{
+      SQL_DRIVER_NOPROMPT, SQL_DRIVER_COMPLETE,
+      SQL_DRIVER_COMPLETE_REQUIRED};
+  for (const auto completion : completion_modes) {
     SQLHDBC connection = SQL_NULL_HDBC;
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
@@ -227,7 +228,8 @@ TEST(DriverConnectIntegrationTest,
     ASSERT_EQ(SQL_SUCCESS,
               SQLDriverConnect(
                   connection, nullptr, test_dsn(), SQL_NTS, output,
-                  sizeof(output), &output_length, completion));
+                  static_cast<SQLSMALLINT>(sizeof(output)), &output_length,
+                  completion));
     EXPECT_STREQ(input, reinterpret_cast<const char*>(output));
     EXPECT_EQ(std::strlen(input), static_cast<std::size_t>(output_length));
     EXPECT_EQ(SQL_SUCCESS, SQLDisconnect(connection));
@@ -253,7 +255,8 @@ TEST(DriverConnectIntegrationTest,
   SQLSMALLINT output_length = -1;
   ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
             SQLDriverConnect(connection, nullptr, test_dsn(), SQL_NTS,
-                             output, sizeof(output), &output_length,
+                             output, static_cast<SQLSMALLINT>(sizeof(output)),
+                             &output_length,
                              SQL_DRIVER_NOPROMPT));
   EXPECT_STREQ("DSN", reinterpret_cast<const char*>(output));
   EXPECT_EQ(std::strlen(reinterpret_cast<const char*>(test_dsn())),
@@ -264,7 +267,9 @@ TEST(DriverConnectIntegrationTest,
   output_length = 77;
   EXPECT_EQ(SQL_ERROR,
             SQLDriverConnect(connection, nullptr, test_dsn(), SQL_NTS,
-                             untouched, sizeof(untouched), &output_length,
+                             untouched,
+                             static_cast<SQLSMALLINT>(sizeof(untouched)),
+                             &output_length,
                              SQL_DRIVER_NOPROMPT));
   EXPECT_STREQ("keep", reinterpret_cast<const char*>(untouched));
   EXPECT_EQ(77, output_length);

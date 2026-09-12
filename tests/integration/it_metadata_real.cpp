@@ -2,8 +2,8 @@
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_types.h"
 #include "odbc/unicode.h"
+#include "tests/test_connection_config.h"
 
-#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
@@ -17,11 +17,9 @@ protected:
         SQLAllocHandle(SQL_HANDLE_DBC, henv, &hdbc);
         
         // Connect to test database
-        const auto* configured = std::getenv("ODBCPP_TEST_DSN");
-        auto* dsn = reinterpret_cast<SQLCHAR*>(const_cast<char*>(
-            configured && *configured ? configured : "DSN=RedshiftProd"));
         SQLRETURN ret = SQLConnect(
-            hdbc, dsn, SQL_NTS, nullptr, 0, nullptr, 0);
+            hdbc, odbcpp::test::configured_connection_string_data(), SQL_NTS,
+            nullptr, 0, nullptr, 0);
         ASSERT_EQ(SQL_SUCCESS, ret) << "Failed to connect to test database";
         
         SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
