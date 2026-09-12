@@ -1735,6 +1735,63 @@ TEST_F(MetadataIntegrationTest, NestedDomainsKeepBaseCatalogMetadata) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, NestedDomainParameterMetadataKeepsTypmods) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_length_domain "
+                  "AS varchar(13)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_nested_length_domain "
+                  "AS pg_temp.odbcpp_length_domain",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_scale_domain "
+                  "AS numeric(8,3)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt,
+        (SQLCHAR*)"SELECT ?::pg_temp.odbcpp_nested_length_domain, "
+                  "?::pg_temp.odbcpp_nested_length_domain, "
+                  "?::pg_temp.odbcpp_scale_domain",
+        SQL_NTS));
+
+    for (SQLUSMALLINT parameter : {1, 2, 3}) {
+        SQLSMALLINT data_type = 0;
+        SQLULEN size = 0;
+        SQLSMALLINT scale = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(
+            hstmt, parameter, &data_type, &size, &scale, nullptr));
+        if (parameter < 3) {
+            EXPECT_EQ(SQL_VARCHAR, data_type);
+            EXPECT_EQ(13u, size);
+            EXPECT_EQ(0, scale);
+        } else {
+            EXPECT_EQ(SQL_NUMERIC, data_type);
+            EXPECT_EQ(8u, size);
+            EXPECT_EQ(3, scale);
+        }
+    }
+
+    SQLHDESC implementation = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_IMP_PARAM_DESC, &implementation, 0, nullptr));
+    SQLULEN length = 0;
+    SQLSMALLINT precision = 0;
+    SQLSMALLINT scale = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        implementation, 1, SQL_DESC_LENGTH, &length, 0, nullptr));
+    EXPECT_EQ(13u, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        implementation, 3, SQL_DESC_PRECISION, &precision, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        implementation, 3, SQL_DESC_SCALE, &scale, 0, nullptr));
+    EXPECT_EQ(8, precision);
+    EXPECT_EQ(3, scale);
+}
+
 TEST_F(MetadataIntegrationTest, TemporalMetadataUsesDeclaredPrecision) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,

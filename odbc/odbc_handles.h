@@ -472,11 +472,17 @@ public:
   size_t get_column_count() const { return result_rows_.empty() ? 0 : result_rows_[0].size(); }
 
 private:
+  struct ResolvedParameterType {
+    std::uint32_t base_oid{0};
+    std::int32_t type_modifier{-1};
+  };
+
   std::shared_ptr<ODBCConnection> conn_;
   rs::core::database::ResultRows result_rows_;
   std::vector<ColumnInfo> column_info_;        // IRD storage
   std::vector<ParameterMetadata> param_metadata_; // IPD storage
-  std::unordered_map<std::uint32_t, std::uint32_t> parameter_base_type_cache_;
+  std::unordered_map<std::uint32_t, ResolvedParameterType>
+      parameter_base_type_cache_;
   std::size_t get_data_offset_ = 0;
   SQLUSMALLINT get_data_column_ = 0;
   std::vector<rs::core::database::QueryResult> pending_results_;
@@ -508,7 +514,8 @@ private:
   SQLRETURN ensure_result_metadata();
   SQLRETURN describe_prepared_metadata();
   SQLRETURN resolve_parameter_base_types(
-      rs::core::database::QueryResult& result, rs::util::Deadline deadline);
+      const rs::core::database::QueryResult& result,
+      rs::util::Deadline deadline);
   void clear_current_result();
   SQLRETURN complete_parameter_set(SQLRETURN result);
   SQLHDESC create_implicit_descriptor(DescriptorKind kind);

@@ -662,6 +662,14 @@ substitute for ODBC diagnostics.
   constraints and typmods (such as a domain over `varchar(n)` or
   `numeric(p,s)`) are not yet reflected in parameter size or scale because
   `ParameterDescription` supplies a type OID but no typmod.
+- Audit batch 82 extends the domain parameter lookup to retain the nearest
+  declared `typtypmod` while walking nested domains. `SQLDescribeParam` and
+  the implementation parameter descriptor now report length for nested
+  `varchar(13)` and precision/scale for `numeric(8,3)`. The real PostgreSQL
+  test covers duplicate parameter OIDs in one statement and both descriptor
+  fields. This does not infer typmods for ordinary non-domain parameters,
+  which PostgreSQL's `ParameterDescription` does not provide, nor does it
+  expose domain constraints or names through the parameter descriptor.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
