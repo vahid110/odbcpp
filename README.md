@@ -447,8 +447,8 @@ sudo odbcinst -i -s -f odbc.ini
 ## Testing
 
 ### Test Coverage
-- **Total Test Executables**: 35 when a Driver Manager is available
-  (25 unit + 9 in-process integration + 1 Driver Manager integration)
+- **Total Test Executables**: 33 when a Driver Manager is available
+  (23 unit + 9 in-process integration + 1 Driver Manager integration)
 - **CI Coverage**: Linux, Windows, sanitizers, and mixed-width iODBC Unicode
 - **Current Focus**: Transport, PostgreSQL protocol, core ODBC behavior, Unicode,
   descriptors, prepared statements, column binding, diagnostics, and logging;
@@ -465,7 +465,7 @@ source ./setup-test-env.sh
 ctest --test-dir build-redshift
 
 # Run specific test categories
-ctest --test-dir build-redshift -L unit         # 25 unit test executables
+ctest --test-dir build-redshift -L unit         # 23 unit test executables
 ctest --test-dir build-redshift -L integration  # 10 including Driver Manager
 
 # Test specific functionality

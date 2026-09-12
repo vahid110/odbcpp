@@ -176,11 +176,12 @@ substitute for ODBC diagnostics.
 - `odbc_api.cpp` is 2,688 lines and contains all 76 exported wrappers;
   `odbc_handles.cpp` is 3,831 lines and combines connection, statement,
   descriptor, conversion, metadata, and registry responsibilities.
-- The callback/future methods in `AsyncDatabaseConnection` are experimental
-  scaffolding, are not used by the ODBC driver's production connection path,
-  and currently simulate query results on a detached thread. Four real async
-  integration cases remain disabled. They must not be counted as end-to-end
-  async database coverage.
+- Audit batch 56 removes the unused `AsyncDatabaseConnection` facade, whose
+  detached threads fabricated query rows and never participated in the ODBC
+  production path. Its permissive and disabled tests and misleading example
+  are gone. The small protocol double needed by a real liveness test now lives
+  under `tests/`; platform async transports and their focused deadline,
+  cancellation, saturation, and real PostgreSQL coverage remain intact.
 - Audit batch 1 removes a pass-through string helper and obsolete statement
   descriptor stubs whose only test asserted that they failed. This is the
   first targeted deletion pass; it is not a blanket rewrite.
@@ -494,10 +495,6 @@ substitute for ODBC diagnostics.
    strings, catalog arguments, column metadata, and `SQLGetInfo`. Remaining
    pairs stay explicitly listed as partial in the inventory until their full
    value and state matrices are covered.
-6. **Experimental async database facade:** do not expose or advertise the
-   simulated callback/future query path as implemented. Either connect it to
-   real protocol I/O with cancellation/deadline ownership or remove it after
-   the transport layer no longer needs its test scaffolding.
 
 ### P1 — conformance and interoperability
 

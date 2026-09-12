@@ -55,8 +55,8 @@
 **Implementation**: 76 exported ODBC entry points (49 base operations, 27 wide variants)
 **Descriptors**: All 4 descriptor roles represented; full fields and attachment remain under audit
 **Diagnostics**: Multi-record diagnostics implemented; lifecycle and full field behavior remain under audit
-**Test Coverage**: 35 executables when a Driver Manager is available
-(25 unit + 9 in-process integration + 1 Driver Manager integration)
+**Test Coverage**: 33 executables when a Driver Manager is available
+(23 unit + 9 in-process integration + 1 Driver Manager integration)
 **Production Readiness**: Not yet claimed; PostgreSQL is the primary validation target and Redshift revalidation is deferred
 **Critical Gaps**:
 - See `ODBC_CONFORMANCE_AUDIT.md` for the prioritized correctness, attribute,

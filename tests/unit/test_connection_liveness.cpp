@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
 
 #include "core/database/generic_database_connection.h"
-#include "core/database/mock_protocol_parser.h"
 #include "core/database/postgres/pg_protocol_parser.h"
 #include "core/transport/i_transport.h"
+#include "tests/mock_protocol_parser.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -100,7 +100,7 @@ class StartupParameterTransport final : public rs::core::transport::ITransport {
 TEST(ConnectionLivenessTest, FailedServerTripMarksConnectionDead) {
   auto transport = std::make_unique<FailingQueryTransport>();
   rs::core::database::GenericDatabaseConnection connection(
-      std::make_unique<rs::core::database::MockProtocolParser>(),
+      std::make_unique<odbcpp::test::MockProtocolParser>(),
       std::move(transport));
 
   rs::core::database::ConnectionSettings settings;
