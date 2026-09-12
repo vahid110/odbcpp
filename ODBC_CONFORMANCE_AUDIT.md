@@ -614,7 +614,7 @@ substitute for ODBC diagnostics.
   driver's declared large-text limit rather than a spurious null. Real
   PostgreSQL tests cover the three catalog paths, numeric precision/scale,
   domain sizes, and ANSI/wide parity. Variable-length size/precision details
-  and nested-domain handling remain explicit follow-ups.
+  and nested-domain result/parameter metadata remain explicit follow-ups.
 - Audit batch 77 reports UUID's canonical 36-character PostgreSQL text form
   consistently as `SQL_VARCHAR` metadata. `SQLDescribeCol` now reports a
   column size of 36, and `SQLColumns`, `SQLProcedureColumns`, and
@@ -642,6 +642,15 @@ substitute for ODBC diagnostics.
   terminator, and type. This is a test expectation for observed manager
   behavior, not a claim that the mixed-width byte count follows ODBC's
   [character-count contract](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlgetdescrec-function).
+- Audit batch 80 resolves PostgreSQL domain chains in `SQLColumns`,
+  `SQLProcedureColumns`, and `SQLSpecialColumns` through recursive `pg_type`
+  links. A two-level integer domain now retains its outer type name while
+  reporting `SQL_INTEGER`, fixed size and transfer length, scale, radix, and
+  SQL data type. Real PostgreSQL tests cover table columns, a primary key,
+  input and return parameters, and `SQLColumnsW`. Typmod-bearing nested
+  domains and result/parameter descriptors are not yet covered. The query
+  relies on the documented [`typbasetype` link](https://www.postgresql.org/docs/current/catalog-pg-type.html),
+  not the newer `pg_basetype` function.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

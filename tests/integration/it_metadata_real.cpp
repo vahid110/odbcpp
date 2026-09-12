@@ -1609,6 +1609,89 @@ TEST_F(MetadataIntegrationTest, CatalogTypeNamesPreservePostgreSQLTypes) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, NestedDomainsKeepBaseCatalogMetadata) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_inner_domain AS integer",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_outer_domain "
+                  "AS pg_temp.odbcpp_inner_domain",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_nested_domain_test("
+                  "id pg_temp.odbcpp_outer_domain NOT NULL PRIMARY KEY)",
+        SQL_NTS));
+    SQLCHAR table_name[] = "odbcpp_nested_domain_test";
+    ASSERT_EQ(SQL_SUCCESS, SQLColumns(
+        hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS,
+        nullptr, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_INTEGER), integer_cell(hstmt, 5));
+    EXPECT_EQ(std::optional<std::string>("odbcpp_outer_domain"),
+              text_cell(hstmt, 6));
+    EXPECT_EQ(std::optional<SQLINTEGER>(10), integer_cell(hstmt, 7));
+    EXPECT_EQ(std::optional<SQLINTEGER>(4), integer_cell(hstmt, 8));
+    EXPECT_EQ(std::optional<SQLINTEGER>(0), integer_cell(hstmt, 9));
+    EXPECT_EQ(std::optional<SQLINTEGER>(10), integer_cell(hstmt, 10));
+    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_INTEGER), integer_cell(hstmt, 14));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    auto wide_table = rs::odbc::utf8_to_wide("odbcpp_nested_domain_test");
+    ASSERT_TRUE(wide_table.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLColumnsW(
+        hstmt, nullptr, 0, nullptr, 0,
+        wide_table->data(), static_cast<SQLSMALLINT>(wide_table->size()),
+        nullptr, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_INTEGER), integer_cell(hstmt, 5));
+    EXPECT_EQ(std::optional<std::string>("odbcpp_outer_domain"),
+              text_cell(hstmt, 6));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
+        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+        table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NO_NULLS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_INTEGER), integer_cell(hstmt, 3));
+    EXPECT_EQ(std::optional<std::string>("odbcpp_outer_domain"),
+              text_cell(hstmt, 4));
+    EXPECT_EQ(std::optional<SQLINTEGER>(10), integer_cell(hstmt, 5));
+    EXPECT_EQ(std::optional<SQLINTEGER>(4), integer_cell(hstmt, 6));
+    EXPECT_EQ(std::optional<SQLINTEGER>(0), integer_cell(hstmt, 7));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE FUNCTION pg_temp.odbcpp_nested_domain_func("
+                  "value pg_temp.odbcpp_outer_domain) "
+                  "RETURNS pg_temp.odbcpp_outer_domain "
+                  "LANGUAGE SQL AS 'SELECT $1'",
+        SQL_NTS));
+    SQLCHAR procedure_name[] = "odbcpp\\_nested\\_domain\\_func";
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedureColumns(
+        hstmt, nullptr, 0, nullptr, 0, procedure_name, SQL_NTS,
+        nullptr, 0));
+    for (SQLINTEGER column_type : {1, 5}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::optional<SQLINTEGER>(column_type), integer_cell(hstmt, 5));
+        EXPECT_EQ(std::optional<SQLINTEGER>(SQL_INTEGER), integer_cell(hstmt, 6));
+        EXPECT_EQ(std::optional<std::string>("odbcpp_outer_domain"),
+                  text_cell(hstmt, 7));
+        EXPECT_EQ(std::optional<SQLINTEGER>(10), integer_cell(hstmt, 8));
+        EXPECT_EQ(std::optional<SQLINTEGER>(4), integer_cell(hstmt, 9));
+        EXPECT_EQ(std::optional<SQLINTEGER>(0), integer_cell(hstmt, 10));
+        EXPECT_EQ(std::optional<SQLINTEGER>(10), integer_cell(hstmt, 11));
+        EXPECT_EQ(std::optional<SQLINTEGER>(SQL_INTEGER), integer_cell(hstmt, 15));
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, TemporalMetadataUsesDeclaredPrecision) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,
