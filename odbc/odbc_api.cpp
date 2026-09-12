@@ -6,11 +6,13 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <new>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -255,6 +257,56 @@ namespace {
       case SQL_ORDER_BY_COLUMNS_IN_SELECT:
       case SQL_ROW_UPDATES: return "N";
       default: return std::nullopt;
+    }
+  }
+
+  bool is_dynamic_string_info(SQLUSMALLINT info_type) {
+    return info_type == SQL_DATA_SOURCE_NAME ||
+        info_type == SQL_DATABASE_NAME || info_type == SQL_DBMS_VER ||
+        info_type == SQL_SERVER_NAME || info_type == SQL_USER_NAME;
+  }
+
+  std::string dbms_version_value(std::string_view server_version) {
+    unsigned major = 0;
+    unsigned minor = 0;
+    unsigned release = 0;
+    auto cursor = server_version.begin();
+    const auto parse_component = [&](unsigned& component) {
+      const auto parsed = std::from_chars(
+          cursor, server_version.end(), component);
+      cursor = parsed.ptr;
+      return parsed.ec == std::errc{};
+    };
+    if (!parse_component(major)) return "00.00.0000";
+    if (cursor != server_version.end() && *cursor == '.') {
+      ++cursor;
+      if (!parse_component(minor)) minor = 0;
+    }
+    if (cursor != server_version.end() && *cursor == '.') {
+      ++cursor;
+      if (!parse_component(release)) release = 0;
+    }
+    const auto padded = [](unsigned value, std::size_t width) {
+      auto result = std::to_string(value);
+      if (result.size() < width) {
+        result.insert(0, width - result.size(), '0');
+      }
+      return result;
+    };
+    return padded(std::min(major, 99u), 2) + "." +
+        padded(std::min(minor, 99u), 2) + "." +
+        padded(std::min(release, 9999u), 4);
+  }
+
+  std::string dynamic_string_info_value(
+      const ODBCConnection& connection, SQLUSMALLINT info_type) {
+    switch (info_type) {
+      case SQL_DATA_SOURCE_NAME: return connection.data_source_name();
+      case SQL_DATABASE_NAME: return connection.get_current_catalog();
+      case SQL_DBMS_VER: return dbms_version_value(connection.dbms_version());
+      case SQL_SERVER_NAME: return connection.server_name();
+      case SQL_USER_NAME: return connection.user_name();
+      default: return {};
     }
   }
 
@@ -1293,6 +1345,17 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
   auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
 
+  if (is_dynamic_string_info(info_type)) {
+    if (!conn->is_connected()) {
+      conn->set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
+      return SQL_ERROR;
+    }
+    return write_narrow_output(
+        conn, dynamic_string_info_value(*conn, info_type),
+        static_cast<SQLCHAR*>(info_value), buffer_length, string_length,
+        "Driver information was truncated");
+  }
+
   if (const auto value = string_info_value(info_type)) {
     return write_narrow_output(
         conn, *value, static_cast<SQLCHAR*>(info_value), buffer_length,
@@ -1422,6 +1485,16 @@ static SQLRETURN SQLGetInfoW_impl(SQLHDBC connection_handle, SQLUSMALLINT info_t
                       SQLSMALLINT* string_length) {
   auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
+  if (is_dynamic_string_info(info_type)) {
+    if (!conn->is_connected()) {
+      conn->set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
+      return SQL_ERROR;
+    }
+    return write_wide_bytes_output(
+        conn, dynamic_string_info_value(*conn, info_type),
+        static_cast<SQLWCHAR*>(info_value), buffer_length, string_length,
+        "Driver information was truncated");
+  }
   if (const auto value = string_info_value(info_type)) {
     return write_wide_bytes_output(
         conn, *value, static_cast<SQLWCHAR*>(info_value),

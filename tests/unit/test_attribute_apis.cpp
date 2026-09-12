@@ -557,6 +557,20 @@ TEST_F(AttributeApisTest, RejectsUnknownInformationTypesPrecisely) {
   EXPECT_EQ("HY096", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
+TEST_F(AttributeApisTest, DynamicInformationRequiresAnOpenConnection) {
+  SQLCHAR value[]{'k', 'e', 'e', 'p', 0};
+  SQLSMALLINT length = 77;
+  for (const auto info_type : {
+           SQL_DATA_SOURCE_NAME, SQL_DATABASE_NAME, SQL_DBMS_VER,
+           SQL_SERVER_NAME, SQL_USER_NAME}) {
+    EXPECT_EQ(SQL_ERROR, SQLGetInfo(
+        connection_, info_type, value, sizeof(value), &length));
+    EXPECT_STREQ("keep", reinterpret_cast<const char*>(value));
+    EXPECT_EQ(77, length);
+    EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  }
+}
+
 TEST_F(AttributeApisTest, ReportsInformationStringTruncation) {
   SQLCHAR value[5]{};
   SQLSMALLINT required = 0;

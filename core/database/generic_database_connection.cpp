@@ -4,7 +4,9 @@
 #include "core/transport/tls_transport.h"
 #include "core/util/exception_adapter.h"
 
+#include <algorithm>
 #include <cstring>
+#include <iterator>
 
 namespace rs::core::database {
 
@@ -15,6 +17,7 @@ GenericDatabaseConnection::GenericDatabaseConnection(
 
 rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettings& settings) {
   settings_ = settings;
+  server_params_.clear();
   
   if (!transport_) {
     if (settings.use_ssl) {
@@ -108,6 +111,7 @@ void GenericDatabaseConnection::disconnect() {
     transport_->close();
   }
   connected_ = false;
+  server_params_.clear();
 }
 
 bool GenericDatabaseConnection::is_connected() const {
@@ -344,8 +348,27 @@ rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(
         }
       }
       else if (msg.tag == 'S') { // ParameterStatus
-        // Parse and store server parameters
-        // Simplified for now
+        const auto key_end = std::find(
+            msg.payload.begin(), msg.payload.end(), std::byte{0});
+        const auto value_begin = key_end == msg.payload.end()
+            ? msg.payload.end() : std::next(key_end);
+        const auto value_end = std::find(
+            value_begin, msg.payload.end(), std::byte{0});
+        if (key_end == msg.payload.begin() || key_end == msg.payload.end() ||
+            value_end == msg.payload.end() ||
+            std::next(value_end) != msg.payload.end()) {
+          return rs::util::Result<void>{
+              rs::util::DbErrorCode::ProtocolError,
+              "Malformed PostgreSQL ParameterStatus message"};
+        }
+        const auto* bytes = reinterpret_cast<const char*>(msg.payload.data());
+        const auto key_size = static_cast<std::size_t>(
+            std::distance(msg.payload.begin(), key_end));
+        const auto value_offset = key_size + 1;
+        const auto value_size = static_cast<std::size_t>(
+            std::distance(value_begin, value_end));
+        server_params_[std::string(bytes, key_size)] =
+            std::string(bytes + value_offset, value_size);
       }
       else if (msg.tag == 'K') { // BackendKeyData
         // Store backend key data

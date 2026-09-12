@@ -205,6 +205,15 @@ public:
   bool logging_enabled(rs::core::logging::LogLevel level) const noexcept;
   bool logs_queries() const noexcept;
   std::uint64_t connection_id() const noexcept { return connection_id_; }
+  const std::string& data_source_name() const noexcept {
+    return data_source_name_;
+  }
+  const std::string& server_name() const noexcept { return server_name_; }
+  const std::string& user_name() const noexcept { return user_name_; }
+  std::string dbms_version() const {
+    return db_conn_ ? db_conn_->get_parameter("server_version")
+                    : std::string{};
+  }
   
   rs::core::database::IDatabaseConnection* get_db_connection() { return db_conn_.get(); }
 
@@ -221,6 +230,9 @@ private:
   bool transaction_active_ = false;
   std::optional<std::string> requested_catalog_;
   std::string current_catalog_;
+  std::string data_source_name_;
+  std::string server_name_;
+  std::string user_name_;
   std::uint64_t connection_id_{};
   std::shared_ptr<rs::core::logging::DriverLogger> logger_;
   

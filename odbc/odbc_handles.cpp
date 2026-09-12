@@ -913,6 +913,9 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
     connected_ = true;
     transaction_active_ = false;
     current_catalog_ = settings.database;
+    data_source_name_ = resolved.dsn_name;
+    server_name_ = settings.host;
+    user_name_ = settings.user;
     log(rs::core::logging::LogLevel::Info, "connection_opened",
         "Database connection established",
         {{"duration_ms", elapsed_milliseconds(started)}});
