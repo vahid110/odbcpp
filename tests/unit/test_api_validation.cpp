@@ -429,6 +429,29 @@ TEST_F(ApiValidationTest, RejectsInvalidConnectionStringLengths) {
   EXPECT_EQ(SQL_ERROR,
             SQLConnectW(connection_, wide_dsn, -2, nullptr, 0, nullptr, 0));
   EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLConnectW(connection_, wide_dsn, SQL_NTS, wide_dsn, -2,
+                        nullptr, 0));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLConnectW(connection_, wide_dsn, SQL_NTS, nullptr, 0,
+                        wide_dsn, -2));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
+}
+
+TEST_F(ApiValidationTest, RejectsInvalidWideConnectionInputs) {
+  SQLWCHAR dsn[]{'e', 'x', 'a', 'm', 'p', 'l', 'e', 0};
+  SQLWCHAR invalid[]{static_cast<SQLWCHAR>(0xd800)};
+
+  EXPECT_EQ(SQL_ERROR,
+            SQLConnectW(connection_, invalid, 1, nullptr, 0, nullptr, 0));
+  EXPECT_EQ("22018", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLConnectW(connection_, dsn, SQL_NTS, invalid, 1, nullptr, 0));
+  EXPECT_EQ("22018", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLConnectW(connection_, dsn, SQL_NTS, nullptr, 0, invalid, 1));
+  EXPECT_EQ("22018", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
 TEST_F(ApiValidationTest, AnsiAndWideOutputLengthsHaveMatchingValidation) {

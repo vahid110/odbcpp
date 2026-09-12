@@ -188,7 +188,10 @@ class ODBCConnection : public ODBCHandle {
 public:
   explicit ODBCConnection(ODBCEnvironment* env);
   
-  SQLRETURN connect(const std::string& dsn, const std::string& user, const std::string& password);
+  SQLRETURN connect(
+      const std::string& dsn,
+      const std::optional<std::string>& user = std::nullopt,
+      const std::optional<std::string>& password = std::nullopt);
   SQLRETURN disconnect();
   bool is_connected() const { return connected_; }
   SQLRETURN set_attribute(SQLINTEGER attribute, SQLULEN value);

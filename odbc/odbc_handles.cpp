@@ -837,7 +837,9 @@ SQLHDESC ODBCStatement::create_implicit_descriptor(DescriptorKind kind) {
 }
 
 // Connection implementation
-SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& user, const std::string& password) {
+SQLRETURN ODBCConnection::connect(
+    const std::string& dsn, const std::optional<std::string>& user,
+    const std::optional<std::string>& password) {
   const auto started = std::chrono::steady_clock::now();
   if (connected_) {
     set_error(SQLSTATE_CONNECTION_IN_USE, "Connection is already open");
@@ -870,10 +872,12 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
                         (params.count("DB") ? params.at("DB") :
                          (!resolved.dsn_name.empty() ? resolved.dsn_name : "postgres"));
     if (requested_catalog_) settings.database = *requested_catalog_;
-    settings.user = params.count("UID") ? params.at("UID") :
-                    (params.count("USER") ? params.at("USER") : user);
-    settings.password = params.count("PWD") ? params.at("PWD") :
-                        (params.count("PASSWORD") ? params.at("PASSWORD") : password);
+    settings.user = user ? *user :
+                    (params.count("UID") ? params.at("UID") :
+                     (params.count("USER") ? params.at("USER") : ""));
+    settings.password = password ? *password :
+                        (params.count("PWD") ? params.at("PWD") :
+                         (params.count("PASSWORD") ? params.at("PASSWORD") : ""));
     settings.use_ssl = params.count("SSL") && enabled(params.at("SSL"));
     settings.timeout = timeout_duration(login_timeout_seconds_);
 
@@ -903,7 +907,13 @@ SQLRETURN ODBCConnection::connect(const std::string& dsn, const std::string& use
     auto result = db_conn_->connect(settings);
     if (result.has_error()) {
       const auto timeout = is_timeout_error(result.error());
-      set_error(timeout ? SQLSTATE_CONNECTION_TIMEOUT : SQLSTATE_CONNECTION_FAILURE,
+      const auto authentication_failed =
+          result.error() == rs::util::make_error_code(
+                                rs::util::DbErrorCode::AuthenticationFailed);
+      set_error(timeout ? SQLSTATE_TIMEOUT
+                        : (authentication_failed
+                               ? SQLSTATE_INVALID_AUTHORIZATION
+                               : SQLSTATE_CONNECTION_FAILURE),
                 result.error_message());
       log(rs::core::logging::LogLevel::Error, "connection_failed",
           result.error_message(),

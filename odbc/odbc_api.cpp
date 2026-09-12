@@ -667,8 +667,12 @@ static SQLRETURN SQLConnect_impl(SQLHDBC connection_handle,
   }
   
   std::string dsn = sqlchar_to_string(server_name, name_length1);
-  std::string user = sqlchar_to_string(user_name, name_length2);
-  std::string password = sqlchar_to_string(authentication, name_length3);
+  std::optional<std::string> user;
+  std::optional<std::string> password;
+  if (user_name) user = sqlchar_to_string(user_name, name_length2);
+  if (authentication) {
+    password = sqlchar_to_string(authentication, name_length3);
+  }
   
   return conn->connect(dsn, user, password);
 }
@@ -688,14 +692,18 @@ static SQLRETURN SQLConnectW_impl(SQLHDBC connection_handle,
   }
 
   const auto dsn = sqlwchar_to_utf8(server_name, name_length1);
-  const auto user = sqlwchar_to_utf8(user_name, name_length2);
-  const auto password = sqlwchar_to_utf8(authentication, name_length3);
-  if (!dsn || !user || !password) {
+  const auto user = user_name
+      ? sqlwchar_to_utf8(user_name, name_length2)
+      : std::optional<std::string>{};
+  const auto password = authentication
+      ? sqlwchar_to_utf8(authentication, name_length3)
+      : std::optional<std::string>{};
+  if (!dsn || (user_name && !user) || (authentication && !password)) {
     conn->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
                     "Invalid wide-character connection input");
     return SQL_ERROR;
   }
-  return conn->connect(*dsn, *user, *password);
+  return conn->connect(*dsn, user, password);
 }
 
 static SQLRETURN SQLDriverConnect_impl(
@@ -736,7 +744,7 @@ static SQLRETURN SQLDriverConnect_impl(
 
   const auto connection_string =
       sqlchar_to_string(connection_string_in, string_length1);
-  const auto connect_result = conn->connect(connection_string, {}, {});
+  const auto connect_result = conn->connect(connection_string);
   if (connect_result != SQL_SUCCESS) return connect_result;
   const auto unknown = first_unknown_connection_keyword(connection_string);
   const auto output_result = write_narrow_output(
@@ -793,7 +801,7 @@ static SQLRETURN SQLDriverConnectW_impl(
                     "Invalid wide-character connection string");
     return SQL_ERROR;
   }
-  const auto connect_result = conn->connect(*connection_string, {}, {});
+  const auto connect_result = conn->connect(*connection_string);
   if (connect_result != SQL_SUCCESS) return connect_result;
   const auto unknown = first_unknown_connection_keyword(*connection_string);
   const auto output_result = write_wide_output(

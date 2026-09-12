@@ -76,6 +76,41 @@ TEST_F(HandleLifecycleIntegrationTest,
   EXPECT_EQ("08002", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
+TEST_F(HandleLifecycleIntegrationTest,
+       SqlConnectCredentialsOverrideDsnAndClassifyAuthenticationFailures) {
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(connection_));
+
+  auto missing_user = reinterpret_cast<SQLCHAR*>(
+      const_cast<char*>("odbcpp_missing_login_role"));
+  auto wrong_password =
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>("wrong-password"));
+  EXPECT_EQ(SQL_ERROR,
+            SQLConnect(connection_, test_dsn(), SQL_NTS,
+                       missing_user, SQL_NTS, wrong_password, SQL_NTS));
+  EXPECT_EQ("28000", diagnostic_state(SQL_HANDLE_DBC, connection_));
+
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLConnect(connection_, test_dsn(), SQL_NTS,
+                       nullptr, 0, nullptr, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(connection_));
+
+  auto wide_dsn =
+      wide_ascii(odbcpp::test::configured_connection_string());
+  auto wide_user = wide_ascii("odbcpp_missing_wide_login_role");
+  auto wide_password = wide_ascii("wrong-password");
+  EXPECT_EQ(SQL_ERROR,
+            SQLConnectW(connection_,
+                        wide_dsn.data(), SQL_NTS,
+                        wide_user.data(), SQL_NTS,
+                        wide_password.data(), SQL_NTS));
+  EXPECT_EQ("28000", diagnostic_state(SQL_HANDLE_DBC, connection_));
+
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLConnectW(connection_,
+                        wide_dsn.data(), SQL_NTS,
+                        nullptr, 0, nullptr, 0));
+}
+
 TEST_F(HandleLifecycleIntegrationTest, CursorCloseStateMatrix) {
   ASSERT_EQ(SQL_SUCCESS,
             SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement_));

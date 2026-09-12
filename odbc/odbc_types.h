@@ -51,6 +51,7 @@ constexpr const char* SQLSTATE_SUCCESS = "00000";
 constexpr const char* SQLSTATE_CONNECTION_FAILURE = "08001";
 constexpr const char* SQLSTATE_CONNECTION_IN_USE = "08002";
 constexpr const char* SQLSTATE_COMMUNICATION_LINK_FAILURE = "08S01";
+constexpr const char* SQLSTATE_INVALID_AUTHORIZATION = "28000";
 constexpr const char* SQLSTATE_SYNTAX_ERROR = "42000";
 constexpr const char* SQLSTATE_TIMEOUT = "HYT00";
 constexpr const char* SQLSTATE_GENERAL_ERROR = "HY000";

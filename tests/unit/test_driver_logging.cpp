@@ -174,8 +174,7 @@ TEST(DriverLoggerTest, ConnectionLoggingNeverWritesPassword) {
     const auto result = connection.connect(
         "SERVER=127.0.0.1;PORT=1;UID=test-user;PWD=top-secret;SSL=0;"
         "TransportMode=Sync;LogLevel=Debug;LogSink=File;LogFile=" +
-            path.string() + ";LogAsync=false;LogQueries=true",
-        "", "");
+            path.string() + ";LogAsync=false;LogQueries=true");
     EXPECT_EQ(SQL_ERROR, result);
     connection.disconnect();
   }

@@ -4,6 +4,7 @@
 #include "core/transport/tls_transport.h"
 #include "core/util/deadline.h"
 #include "core/util/platform.h"
+#include "odbc/odbc_handles.h"
 
 #include <openssl/evp.h>
 #include <openssl/rsa.h>
@@ -14,6 +15,7 @@
 #include <chrono>
 #include <cstddef>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -261,6 +263,25 @@ TEST(SocketTransportDeadlineTest, ExpiredDeadlineFailsWithoutBlocking) {
 
   ASSERT_TRUE(result.has_error());
   EXPECT_EQ(result.error(), rs::util::make_error_code(rs::util::DbErrorCode::Timeout));
+}
+
+TEST(OdbcLoginDeadlineTest, ReportsLoginTimeoutInsteadOfConnectionTimeout) {
+  SleepingServer server(1250ms);
+  rs::odbc::ODBCConnection connection(nullptr);
+  ASSERT_EQ(SQL_SUCCESS,
+            connection.set_attribute(SQL_ATTR_LOGIN_TIMEOUT, 1));
+
+  const auto connection_string =
+      "SERVER=127.0.0.1;PORT=" + std::to_string(server.port()) +
+      ";DATABASE=postgres;UID=test;PWD=test;SSL=0;"
+      "TransportMode=Sync;DeadlineModel=Strict";
+  const auto start = std::chrono::steady_clock::now();
+  EXPECT_EQ(SQL_ERROR, connection.connect(connection_string));
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_EQ("HYT00", connection.get_sqlstate());
+  EXPECT_GE(elapsed, 750ms);
+  EXPECT_LT(elapsed, 2500ms);
 }
 
 TEST(TLSTransportDeadlineTest, StrictHandshakeTimesOutAgainstSilentPeer) {

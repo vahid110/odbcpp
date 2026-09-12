@@ -34,7 +34,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 |---|---:|---|---|---|
 | `SQLAllocHandle` | A | Partial | unit failure injection, integration, DM | Root/parent types, null outputs, ODBC version, open-connection state, output clearing, and HY001 are covered; optional pooling info tokens remain |
 | `SQLFreeHandle` | A | Partial | unit, integration, DM | Type identity, parent/child ordering, connected state, descriptor ownership/detachment, and failed-free retention are covered; optional pooling info tokens remain |
-| `SQLConnect` | A/W | Partial | unit failure, integration, DM | Reconnect is rejected with 08002; complete input/state matrix remains |
+| `SQLConnect` | A/W | Partial | unit failure, integration, DM | Reconnect is rejected with 08002; A/W lengths and malformed wide input are covered, API credentials override DSN credentials, and authentication failures return 28000; timeout/cancellation and remaining connection-failure injection remain |
 | `SQLDriverConnect` | A/W | Partial | unit, integration, DM | Noninteractive completion modes, exact output/truncation rules, connected-state output preservation, and ANSI/wide unknown-keyword warnings are covered; interactive prompting remains unsupported |
 | `SQLDisconnect` | A | Partial | unit, integration, DM | Disconnected, active-transaction, and child-invalidation paths covered; async execution remains |
 | `SQLSetConnectAttr` | A/W | Partial | unit, integration | Common defaults, catalog selection, connection timeout, quiet-mode pointer width, invalid values, read-only fields, and recognized unsupported modes are classified; platform-specific pooling attributes remain |
@@ -458,6 +458,14 @@ substitute for ODBC diagnostics.
   clears its output on failure, mismatched frees return SQL_INVALID_HANDLE, and
   failed frees leave the correctly typed handle usable. The only remaining
   allocation/free gap is the optional Driver Manager pooling info-token path.
+- Audit batch 57 fixes SQLConnect credential semantics and authentication
+  diagnostics. Non-null user and authentication arguments now override values
+  stored in a DSN, while omitted arguments continue to use DSN defaults.
+  PostgreSQL rejects deliberately invalid ANSI and wide credentials with 28000,
+  and both paths recover on the same connection handle. Unit tests cover all
+  three invalid length positions and malformed wide DSN, user, and password
+  inputs without attempting network I/O. Login-deadline expiration is also
+  classified as HYT00 rather than the connection-request HYT01 state.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
