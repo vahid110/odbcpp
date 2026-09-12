@@ -1657,7 +1657,8 @@ TEST_F(MetadataIntegrationTest, ForeignKeyFiltersRulesAndPrimaryTargetsFollowOdb
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,
         (SQLCHAR*)"CREATE TEMP TABLE odbcpp_fk_rules_other("
-                  "id integer REFERENCES odbcpp_fk_rules_parent(id))",
+                  "id integer, CONSTRAINT fk_rule_cascade FOREIGN KEY(id) "
+                  "REFERENCES odbcpp_fk_rules_parent(id))",
         SQL_NTS));
 
     SQLCHAR parent[] = "odbcpp_fk_rules_parent";

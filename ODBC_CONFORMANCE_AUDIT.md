@@ -63,7 +63,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLTables` | A/W | Partial | unit, integration, DM | Null versus empty arguments, wildcard escaping, value-list filtering, catalog/schema/type enumerations, local temporary tables, state errors, malformed wide input, and A/W paths are covered; ODBC 2 catalog-pattern behavior and restricted-user visibility remain |
 | `SQLColumns` | A/W | Partial | unit, integration, DM | Null/empty, ordinary catalog, escaped patterns, cursor states, and A/W paths are covered; complete PostgreSQL type metadata and restricted-user visibility remain |
 | `SQLPrimaryKeys` | A/W | Partial | unit, integration, DM | Required table, literal/empty arguments, escaping, key ordering, cursor states, and A/W paths are covered; restricted-user visibility remains |
-| `SQLForeignKeys` | A/W | Partial | unit, integration, DM | PK/FK filter combinations, ordinary/empty arguments, primary-target filtering, rule/deferrability mapping, ordering, cursor states, and A/W paths are covered; same-name constraints and restricted-user visibility remain |
+| `SQLForeignKeys` | A/W | Partial | unit, integration, DM | PK/FK filter combinations, ordinary/empty arguments, primary-target filtering, same-name constraints, rule/deferrability mapping, ordering, cursor states, and A/W paths are covered; restricted-user visibility remains |
 | `SQLStatistics` | A/W | Partial | unit, integration, DM | Ordinary/empty arguments, uniqueness filtering, quick statistics, expression/partial/hash indexes, ordering, cursor states, and A/W paths are covered; exact cardinality and included-column semantics remain |
 | `SQLProcedures` | A/W | Partial | unit, integration, DM | Ordinary catalog, null/empty and escaped patterns, procedure/function distinctions, overloads, cursor states, and A/W paths are covered; argument-mode counts and restricted-user visibility remain |
 | `SQLProcedureColumns` | A/W | Partial | unit, integration, DM | Ordinary catalog, null/empty and escaped patterns, unnamed columns, parameter modes/order, return rows, cursor states, and A/W paths are covered; result-set discovery and complete PostgreSQL type metadata remain |
@@ -575,6 +575,14 @@ substitute for ODBC diagnostics.
   automatically updated row-version column. Tests cover composite key order,
   nullable modes, literal wildcard-looking values, exact A/W selection,
   malformed wide text, open cursors, and HY097/HY098/HY099 option diagnostics.
+- Audit batch 72 replaces `SQLForeignKeys`' ambiguous information-schema join
+  with PostgreSQL object-identity joins. PostgreSQL permits the same foreign
+  key constraint name on multiple tables; joining by schema and name could
+  cross-pair those unrelated constraints. The query now follows relation and
+  attribute OIDs, zips each foreign/referenced column pair by ordinality, and
+  locates the referenced primary-key constraint by its exact column set. The
+  integration fixture deliberately reuses a constraint name across two child
+  tables while retaining unique-constraint exclusion and ordering checks.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

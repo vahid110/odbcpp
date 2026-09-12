@@ -3477,73 +3477,74 @@ SQLRETURN ODBCStatement::foreign_keys(
     const std::optional<std::string>& fk_schema_name,
     const std::optional<std::string>& fk_table_name) {
   std::string query =
-      "SELECT primary_keys.table_catalog::text AS pktable_cat, "
-      "primary_keys.table_schema::text AS pktable_schem, "
-      "primary_keys.table_name::text AS pktable_name, "
-      "primary_keys.column_name::text AS pkcolumn_name, "
-      "foreign_keys.table_catalog::text AS fktable_cat, "
-      "foreign_keys.table_schema::text AS fktable_schem, "
-      "foreign_keys.table_name::text AS fktable_name, "
-      "foreign_keys.column_name::text AS fkcolumn_name, "
-      "foreign_keys.ordinal_position::smallint AS key_seq, "
-      "CASE relations.update_rule WHEN 'CASCADE' THEN 0 "
-      "WHEN 'RESTRICT' THEN 1 WHEN 'SET NULL' THEN 2 "
-      "WHEN 'NO ACTION' THEN 3 WHEN 'SET DEFAULT' THEN 4 "
+      "SELECT current_database()::text AS pktable_cat, "
+      "pk_namespaces.nspname::text AS pktable_schem, "
+      "pk_tables.relname::text AS pktable_name, "
+      "pk_columns.attname::text AS pkcolumn_name, "
+      "current_database()::text AS fktable_cat, "
+      "fk_namespaces.nspname::text AS fktable_schem, "
+      "fk_tables.relname::text AS fktable_name, "
+      "fk_columns.attname::text AS fkcolumn_name, "
+      "key_columns.ordinality::smallint AS key_seq, "
+      "CASE fk_constraints.confupdtype WHEN 'c' THEN 0 "
+      "WHEN 'r' THEN 1 WHEN 'n' THEN 2 "
+      "WHEN 'a' THEN 3 WHEN 'd' THEN 4 "
       "ELSE 3 END::smallint AS update_rule, "
-      "CASE relations.delete_rule WHEN 'CASCADE' THEN 0 "
-      "WHEN 'RESTRICT' THEN 1 WHEN 'SET NULL' THEN 2 "
-      "WHEN 'NO ACTION' THEN 3 WHEN 'SET DEFAULT' THEN 4 "
+      "CASE fk_constraints.confdeltype WHEN 'c' THEN 0 "
+      "WHEN 'r' THEN 1 WHEN 'n' THEN 2 "
+      "WHEN 'a' THEN 3 WHEN 'd' THEN 4 "
       "ELSE 3 END::smallint AS delete_rule, "
-      "fk_constraints.constraint_name::text AS fk_name, "
-      "pk_constraints.constraint_name::text AS pk_name, "
-      "CASE WHEN fk_constraints.is_deferrable = 'NO' THEN 7 "
-      "WHEN fk_constraints.initially_deferred = 'YES' THEN 5 "
+      "fk_constraints.conname::text AS fk_name, "
+      "pk_constraints.conname::text AS pk_name, "
+      "CASE WHEN NOT fk_constraints.condeferrable THEN 7 "
+      "WHEN fk_constraints.condeferred THEN 5 "
       "ELSE 6 END::smallint AS deferrability "
-      "FROM information_schema.referential_constraints AS relations "
-      "JOIN information_schema.table_constraints AS fk_constraints "
-      "ON relations.constraint_catalog = fk_constraints.constraint_catalog "
-      "AND relations.constraint_schema = fk_constraints.constraint_schema "
-      "AND relations.constraint_name = fk_constraints.constraint_name "
-      "JOIN information_schema.key_column_usage AS foreign_keys "
-      "ON fk_constraints.constraint_catalog = foreign_keys.constraint_catalog "
-      "AND fk_constraints.constraint_schema = foreign_keys.constraint_schema "
-      "AND fk_constraints.constraint_name = foreign_keys.constraint_name "
-      "JOIN information_schema.table_constraints AS pk_constraints "
-      "ON relations.unique_constraint_catalog = "
-      "pk_constraints.constraint_catalog "
-      "AND relations.unique_constraint_schema = "
-      "pk_constraints.constraint_schema "
-      "AND relations.unique_constraint_name = "
-      "pk_constraints.constraint_name "
-      "JOIN information_schema.key_column_usage AS primary_keys "
-      "ON pk_constraints.constraint_catalog = primary_keys.constraint_catalog "
-      "AND pk_constraints.constraint_schema = primary_keys.constraint_schema "
-      "AND pk_constraints.constraint_name = primary_keys.constraint_name "
-      "AND primary_keys.ordinal_position = "
-      "foreign_keys.position_in_unique_constraint "
-      "WHERE pk_constraints.constraint_type = 'PRIMARY KEY'";
+      "FROM pg_catalog.pg_constraint AS fk_constraints "
+      "JOIN pg_catalog.pg_class AS fk_tables "
+      "ON fk_tables.oid = fk_constraints.conrelid "
+      "JOIN pg_catalog.pg_namespace AS fk_namespaces "
+      "ON fk_namespaces.oid = fk_tables.relnamespace "
+      "JOIN pg_catalog.pg_class AS pk_tables "
+      "ON pk_tables.oid = fk_constraints.confrelid "
+      "JOIN pg_catalog.pg_namespace AS pk_namespaces "
+      "ON pk_namespaces.oid = pk_tables.relnamespace "
+      "JOIN pg_catalog.pg_constraint AS pk_constraints "
+      "ON pk_constraints.conrelid = fk_constraints.confrelid "
+      "AND pk_constraints.contype = 'p' "
+      "AND pk_constraints.conkey @> fk_constraints.confkey "
+      "AND pk_constraints.conkey <@ fk_constraints.confkey "
+      "CROSS JOIN LATERAL unnest(fk_constraints.conkey, "
+      "fk_constraints.confkey) WITH ORDINALITY "
+      "AS key_columns(fk_attribute, pk_attribute, ordinality) "
+      "JOIN pg_catalog.pg_attribute AS fk_columns "
+      "ON fk_columns.attrelid = fk_constraints.conrelid "
+      "AND fk_columns.attnum = key_columns.fk_attribute "
+      "JOIN pg_catalog.pg_attribute AS pk_columns "
+      "ON pk_columns.attrelid = fk_constraints.confrelid "
+      "AND pk_columns.attnum = key_columns.pk_attribute "
+      "WHERE fk_constraints.contype = 'f'";
   if (pk_catalog_name) {
-    query += " AND primary_keys.table_catalog = " +
+    query += " AND current_database() = " +
         quote_catalog_literal(*pk_catalog_name);
   }
   if (pk_schema_name) {
-    query += " AND primary_keys.table_schema = " +
+    query += " AND pk_namespaces.nspname = " +
         quote_catalog_literal(*pk_schema_name);
   }
   if (pk_table_name) {
-    query += " AND primary_keys.table_name = " +
+    query += " AND pk_tables.relname = " +
         quote_catalog_literal(*pk_table_name);
   }
   if (fk_catalog_name) {
-    query += " AND foreign_keys.table_catalog = " +
+    query += " AND current_database() = " +
         quote_catalog_literal(*fk_catalog_name);
   }
   if (fk_schema_name) {
-    query += " AND foreign_keys.table_schema = " +
+    query += " AND fk_namespaces.nspname = " +
         quote_catalog_literal(*fk_schema_name);
   }
   if (fk_table_name) {
-    query += " AND foreign_keys.table_name = " +
+    query += " AND fk_tables.relname = " +
         quote_catalog_literal(*fk_table_name);
   }
   if (pk_table_name) {
