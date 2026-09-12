@@ -64,7 +64,7 @@ TEST_F(NativeSqlIntegrationTest, ReturnsTranslatedAnsiSqlAndExactLength) {
   std::array<SQLCHAR, sizeof(expected)> output{};
   ASSERT_EQ(SQL_SUCCESS,
             SQLNativeSql(connection_, input, SQL_NTS, output.data(),
-                         output.size(), &length));
+                         static_cast<SQLINTEGER>(output.size()), &length));
   EXPECT_STREQ(expected, reinterpret_cast<const char*>(output.data()));
 
   auto wide_input = rs::odbc::utf8_to_wide("SELECT {t '12:34:56'} trailing");
@@ -73,7 +73,9 @@ TEST_F(NativeSqlIntegrationTest, ReturnsTranslatedAnsiSqlAndExactLength) {
   length = -1;
   ASSERT_EQ(SQL_SUCCESS,
             SQLNativeSqlW(connection_, wide_input->data(), 21,
-                          wide_output.data(), wide_output.size(), &length));
+                          wide_output.data(),
+                          static_cast<SQLINTEGER>(wide_output.size()),
+                          &length));
   EXPECT_EQ(22, length);
   EXPECT_EQ("SELECT TIME '12:34:56'",
             *rs::odbc::wide_to_utf8(
@@ -92,7 +94,7 @@ TEST_F(NativeSqlIntegrationTest, ReportsAnsiAndWideTruncation) {
   SQLINTEGER length = -1;
   ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
             SQLNativeSql(connection_, input, SQL_NTS, output.data(),
-                         output.size(), &length));
+                         static_cast<SQLINTEGER>(output.size()), &length));
   EXPECT_STREQ("SELECT ", reinterpret_cast<const char*>(output.data()));
   EXPECT_EQ(21, length);
   EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection_));
@@ -105,7 +107,9 @@ TEST_F(NativeSqlIntegrationTest, ReportsAnsiAndWideTruncation) {
   ASSERT_EQ(SQL_SUCCESS_WITH_INFO,
             SQLNativeSqlW(connection_, wide_input->data(),
                           static_cast<SQLINTEGER>(wide_input->size()),
-                          wide_output.data(), wide_output.size(), &length));
+                          wide_output.data(),
+                          static_cast<SQLINTEGER>(wide_output.size()),
+                          &length));
   EXPECT_EQ(21, length);
   EXPECT_EQ("SELECT ", *rs::odbc::wide_to_utf8(
                            std::span<const SQLWCHAR>(wide_output.data(), 7)));
