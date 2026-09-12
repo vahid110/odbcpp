@@ -446,6 +446,7 @@ private:
   std::vector<rs::core::database::QueryResult> pending_results_;
   std::string prepared_sql_;
   size_t current_row_ = 0;
+  bool row_positioned_ = false;
   bool executed_ = false;
   bool prepared_ = false;
   bool prepared_metadata_available_ = false;
@@ -454,6 +455,7 @@ private:
   SQLLEN affected_rows_ = 0;
   SQLULEN query_timeout_seconds_ = 0;
   SQLULEN max_rows_ = 0;
+  SQLLEN* fetch_bookmark_ptr_ = nullptr;
   SQLHDESC automatic_app_row_descriptor_{SQL_NULL_HDESC};
   SQLHDESC automatic_app_param_descriptor_{SQL_NULL_HDESC};
   SQLHDESC app_row_descriptor_{SQL_NULL_HDESC};

@@ -95,7 +95,7 @@
 - [x] Add support for SQL_ATTR_AUTOCOMMIT and transaction completion
 - [x] Forward-only statement attributes and SQL_ATTR_MAX_ROWS
 - [ ] Scrollable cursor and multi-row array statement attributes
-- [ ] Attach explicit descriptors to statements and expose all four implicit descriptors
+- [x] Attach explicit descriptors to statements and expose all four implicit descriptors
 
 **Success Criteria**:
 - Full attribute processing compliance

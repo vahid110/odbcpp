@@ -87,6 +87,23 @@ bool is_recognized_unsupported_connection_attribute(SQLINTEGER attribute) {
   return false;
 }
 
+bool is_recognized_unsupported_statement_attribute(SQLINTEGER attribute) {
+  if (attribute == SQL_ATTR_NOSCAN ||
+      attribute == SQL_ATTR_SIMULATE_CURSOR) {
+    return true;
+  }
+#ifdef SQL_ATTR_ASYNC_STMT_EVENT
+  if (attribute == SQL_ATTR_ASYNC_STMT_EVENT) return true;
+#endif
+#ifdef SQL_ATTR_ASYNC_STMT_PCALLBACK
+  if (attribute == SQL_ATTR_ASYNC_STMT_PCALLBACK) return true;
+#endif
+#ifdef SQL_ATTR_ASYNC_STMT_PCONTEXT
+  if (attribute == SQL_ATTR_ASYNC_STMT_PCONTEXT) return true;
+#endif
+  return false;
+}
+
 const char* request_sqlstate(const std::error_code& error,
                              const char* fallback) {
   if (is_timeout_error(error)) return SQLSTATE_TIMEOUT;
@@ -1835,6 +1852,19 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
 SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
   const auto numeric = static_cast<SQLULEN>(
       reinterpret_cast<std::uintptr_t>(value));
+  const auto cursor_attribute_settable = [this]() {
+    if (executed_ && !column_info_.empty()) {
+      set_error(SQLSTATE_INVALID_CURSOR_STATE,
+                "Cursor attribute cannot be changed while the cursor is open");
+      return false;
+    }
+    if (prepared_) {
+      set_error(SQLSTATE_ATTRIBUTE_CANNOT_BE_SET,
+                "Cursor attribute cannot be changed after preparation");
+      return false;
+    }
+    return true;
+  };
   switch (attribute) {
     case SQL_ATTR_APP_ROW_DESC:
     case SQL_ATTR_APP_PARAM_DESC:
@@ -1852,10 +1882,57 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
       max_rows_ = numeric;
       return SQL_SUCCESS;
     case SQL_ATTR_CURSOR_TYPE:
+      if (!cursor_attribute_settable()) return SQL_ERROR;
       if (numeric == SQL_CURSOR_FORWARD_ONLY) return SQL_SUCCESS;
+      if (numeric != SQL_CURSOR_KEYSET_DRIVEN &&
+          numeric != SQL_CURSOR_DYNAMIC && numeric != SQL_CURSOR_STATIC) {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                  "Invalid cursor type");
+        return SQL_ERROR;
+      }
       break;
     case SQL_ATTR_CONCURRENCY:
+      if (!cursor_attribute_settable()) return SQL_ERROR;
       if (numeric == SQL_CONCUR_READ_ONLY) return SQL_SUCCESS;
+      if (numeric != SQL_CONCUR_LOCK && numeric != SQL_CONCUR_ROWVER &&
+          numeric != SQL_CONCUR_VALUES) {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                  "Invalid cursor concurrency");
+        return SQL_ERROR;
+      }
+      break;
+    case SQL_ATTR_CURSOR_SCROLLABLE:
+      if (numeric == SQL_NONSCROLLABLE) return SQL_SUCCESS;
+      if (numeric != SQL_SCROLLABLE) {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                  "Invalid cursor scrollability");
+        return SQL_ERROR;
+      }
+      break;
+    case SQL_ATTR_CURSOR_SENSITIVITY:
+      if (numeric == SQL_UNSPECIFIED) return SQL_SUCCESS;
+      if (numeric != SQL_INSENSITIVE && numeric != SQL_SENSITIVE) {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                  "Invalid cursor sensitivity");
+        return SQL_ERROR;
+      }
+      break;
+    case SQL_ATTR_ENABLE_AUTO_IPD:
+      if (numeric == SQL_FALSE) return SQL_SUCCESS;
+      if (numeric != SQL_TRUE) {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                  "Invalid automatic IPD value");
+        return SQL_ERROR;
+      }
+      break;
+    case SQL_ATTR_FETCH_BOOKMARK_PTR:
+      fetch_bookmark_ptr_ = static_cast<SQLLEN*>(value);
+      return SQL_SUCCESS;
+    case SQL_ATTR_KEYSET_SIZE:
+      if (numeric == 0) return SQL_SUCCESS;
+      break;
+    case SQL_ATTR_MAX_LENGTH:
+      if (numeric == 0) return SQL_SUCCESS;
       break;
     case SQL_ATTR_ROW_ARRAY_SIZE:
       if (numeric == 0) {
@@ -1874,14 +1951,33 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
             0, SQL_DESC_BIND_TYPE, value, 0);
       }
       break;
+    case SQL_ATTR_ROW_BIND_OFFSET_PTR:
+      return descriptor(app_row_descriptor_)->set_field(
+          0, SQL_DESC_BIND_OFFSET_PTR, value, 0);
     case SQL_ATTR_RETRIEVE_DATA:
       if (numeric == SQL_RD_ON) return SQL_SUCCESS;
+      if (numeric != SQL_RD_OFF) {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                  "Invalid retrieve-data value");
+        return SQL_ERROR;
+      }
       break;
     case SQL_ATTR_USE_BOOKMARKS:
+      if (!cursor_attribute_settable()) return SQL_ERROR;
       if (numeric == SQL_UB_OFF) return SQL_SUCCESS;
+      if (numeric != SQL_UB_FIXED && numeric != SQL_UB_VARIABLE) {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                  "Invalid bookmark mode");
+        return SQL_ERROR;
+      }
       break;
     case SQL_ATTR_ASYNC_ENABLE:
       if (numeric == SQL_ASYNC_ENABLE_OFF) return SQL_SUCCESS;
+      if (numeric != SQL_ASYNC_ENABLE_ON) {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                  "Invalid asynchronous execution value");
+        return SQL_ERROR;
+      }
       break;
     case SQL_ATTR_PARAMSET_SIZE:
       if (numeric == 0) {
@@ -1900,9 +1996,27 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
             0, SQL_DESC_BIND_TYPE, value, 0);
       }
       break;
+    case SQL_ATTR_PARAM_BIND_OFFSET_PTR:
+      return descriptor(app_param_descriptor_)->set_field(
+          0, SQL_DESC_BIND_OFFSET_PTR, value, 0);
+    case SQL_ATTR_PARAM_OPERATION_PTR:
+      return descriptor(app_param_descriptor_)->set_field(
+          0, SQL_DESC_ARRAY_STATUS_PTR, value, 0);
     case SQL_ATTR_METADATA_ID:
       if (numeric == SQL_FALSE) return SQL_SUCCESS;
+      if (numeric != SQL_TRUE) {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                  "Invalid metadata identifier value");
+        return SQL_ERROR;
+      }
       break;
+    case SQL_ATTR_ROW_NUMBER:
+      set_error(SQLSTATE_INVALID_ATTRIBUTE,
+                "Current row number is read-only");
+      return SQL_ERROR;
+    case SQL_ATTR_ROW_OPERATION_PTR:
+      return descriptor(app_row_descriptor_)->set_field(
+          0, SQL_DESC_ARRAY_STATUS_PTR, value, 0);
     case SQL_ATTR_ROW_STATUS_PTR:
       return descriptor(imp_row_descriptor_)->set_field(
           0, SQL_DESC_ARRAY_STATUS_PTR, value, 0);
@@ -1916,8 +2030,13 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
       return descriptor(imp_param_descriptor_)->set_field(
           0, SQL_DESC_ROWS_PROCESSED_PTR, value, 0);
     default:
-      set_error(SQLSTATE_INVALID_ATTRIBUTE,
-                "Unsupported statement attribute");
+      if (is_recognized_unsupported_statement_attribute(attribute)) {
+        set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                  "Statement attribute is recognized but not implemented");
+      } else {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE,
+                  "Unsupported statement attribute");
+      }
       return SQL_ERROR;
   }
   set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
@@ -1995,12 +2114,26 @@ SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
       *static_cast<SQLULEN*>(value) = SQL_CURSOR_FORWARD_ONLY; break;
     case SQL_ATTR_CONCURRENCY:
       *static_cast<SQLULEN*>(value) = SQL_CONCUR_READ_ONLY; break;
+    case SQL_ATTR_CURSOR_SCROLLABLE:
+      *static_cast<SQLULEN*>(value) = SQL_NONSCROLLABLE; break;
+    case SQL_ATTR_CURSOR_SENSITIVITY:
+      *static_cast<SQLULEN*>(value) = SQL_UNSPECIFIED; break;
+    case SQL_ATTR_ENABLE_AUTO_IPD:
+      *static_cast<SQLULEN*>(value) = SQL_FALSE; break;
+    case SQL_ATTR_FETCH_BOOKMARK_PTR:
+      *static_cast<SQLLEN**>(value) = fetch_bookmark_ptr_; break;
+    case SQL_ATTR_KEYSET_SIZE:
+    case SQL_ATTR_MAX_LENGTH:
+      *static_cast<SQLULEN*>(value) = 0; break;
     case SQL_ATTR_ROW_ARRAY_SIZE:
       *static_cast<SQLULEN*>(value) =
           descriptor(app_row_descriptor_)->array_size(); break;
     case SQL_ATTR_ROW_BIND_TYPE:
       *static_cast<SQLULEN*>(value) =
           descriptor(app_row_descriptor_)->bind_type(); break;
+    case SQL_ATTR_ROW_BIND_OFFSET_PTR:
+      *static_cast<SQLLEN**>(value) =
+          descriptor(app_row_descriptor_)->bind_offset_ptr(); break;
     case SQL_ATTR_RETRIEVE_DATA:
       *static_cast<SQLULEN*>(value) = SQL_RD_ON; break;
     case SQL_ATTR_USE_BOOKMARKS:
@@ -2013,8 +2146,25 @@ SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
     case SQL_ATTR_PARAM_BIND_TYPE:
       *static_cast<SQLULEN*>(value) =
           descriptor(app_param_descriptor_)->bind_type(); break;
+    case SQL_ATTR_PARAM_BIND_OFFSET_PTR:
+      *static_cast<SQLLEN**>(value) =
+          descriptor(app_param_descriptor_)->bind_offset_ptr(); break;
+    case SQL_ATTR_PARAM_OPERATION_PTR:
+      *static_cast<SQLUSMALLINT**>(value) =
+          descriptor(app_param_descriptor_)->array_status_ptr(); break;
     case SQL_ATTR_METADATA_ID:
       *static_cast<SQLULEN*>(value) = SQL_FALSE; break;
+    case SQL_ATTR_ROW_NUMBER:
+      if (!executed_ || column_info_.empty() || !row_positioned_) {
+        set_error(SQLSTATE_INVALID_CURSOR_STATE,
+                  "Cursor is not positioned on a row");
+        return SQL_ERROR;
+      }
+      *static_cast<SQLULEN*>(value) = static_cast<SQLULEN>(current_row_);
+      break;
+    case SQL_ATTR_ROW_OPERATION_PTR:
+      *static_cast<SQLUSMALLINT**>(value) =
+          descriptor(app_row_descriptor_)->array_status_ptr(); break;
     case SQL_ATTR_ROW_STATUS_PTR:
       *static_cast<SQLUSMALLINT**>(value) =
           descriptor(imp_row_descriptor_)->array_status_ptr(); break;
@@ -2028,7 +2178,13 @@ SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
       *static_cast<SQLULEN**>(value) =
           descriptor(imp_param_descriptor_)->rows_processed_ptr(); break;
     default:
-      set_error(SQLSTATE_INVALID_ATTRIBUTE, "Unsupported statement attribute");
+      if (is_recognized_unsupported_statement_attribute(attribute)) {
+        set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                  "Statement attribute is recognized but not implemented");
+      } else {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE,
+                  "Unsupported statement attribute");
+      }
       return SQL_ERROR;
   }
   return SQL_SUCCESS;
@@ -2078,12 +2234,14 @@ SQLRETURN ODBCStatement::fetch() {
   auto* rows_fetched = implementation_descriptor->rows_processed_ptr();
   auto* row_status = implementation_descriptor->array_status_ptr();
   if (current_row_ >= result_rows_.size()) {
+    row_positioned_ = false;
     if (rows_fetched) *rows_fetched = 0;
     if (row_status) row_status[0] = SQL_ROW_NOROW;
     return SQL_NO_DATA;
   }
   
   current_row_++;
+  row_positioned_ = true;
   if (rows_fetched) *rows_fetched = 1;
   get_data_column_ = 0;
   get_data_offset_ = 0;
@@ -2159,9 +2317,11 @@ SQLRETURN ODBCStatement::more_results() {
   return SQL_SUCCESS;
 }
 
-SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type, 
-                                 void* buffer, SQLLEN buffer_length, SQLLEN* indicator) {
-  if (!executed_ || current_row_ == 0 || current_row_ > result_rows_.size()) {
+SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
+                                 void* buffer, SQLLEN buffer_length,
+                                 SQLLEN* indicator) {
+  if (!executed_ || !row_positioned_ || current_row_ == 0 ||
+      current_row_ > result_rows_.size()) {
     set_error(SQLSTATE_INVALID_CURSOR_STATE, "No current row");
     return SQL_ERROR;
   }
@@ -2749,6 +2909,7 @@ void ODBCStatement::apply_query_result(
     result_rows_.resize(static_cast<std::size_t>(max_rows_));
   }
   current_row_ = 0;
+  row_positioned_ = false;
   get_data_column_ = 0;
   get_data_offset_ = 0;
   executed_ = true;
@@ -2831,6 +2992,7 @@ void ODBCStatement::clear_current_result() {
   get_data_column_ = 0;
   get_data_offset_ = 0;
   current_row_ = 0;
+  row_positioned_ = false;
   affected_rows_ = 0;
   executed_ = false;
   prepared_metadata_available_ = false;

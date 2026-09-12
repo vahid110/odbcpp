@@ -3,6 +3,7 @@
 #include "odbc/odbc_types.h"
 #include "odbc/unicode.h"
 
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
@@ -16,7 +17,11 @@ protected:
         SQLAllocHandle(SQL_HANDLE_DBC, henv, &hdbc);
         
         // Connect to test database
-        SQLRETURN ret = SQLConnect(hdbc, (SQLCHAR*)"DSN=RedshiftProd", SQL_NTS, nullptr, 0, nullptr, 0);
+        const auto* configured = std::getenv("ODBCPP_TEST_DSN");
+        auto* dsn = reinterpret_cast<SQLCHAR*>(const_cast<char*>(
+            configured && *configured ? configured : "DSN=RedshiftProd"));
+        SQLRETURN ret = SQLConnect(
+            hdbc, dsn, SQL_NTS, nullptr, 0, nullptr, 0);
         ASSERT_EQ(SQL_SUCCESS, ret) << "Failed to connect to test database";
         
         SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
@@ -75,6 +80,63 @@ TEST_F(MetadataIntegrationTest, BasicMetadata) {
     ret = SQLColAttribute(hstmt, 1, SQL_DESC_TYPE, nullptr, 0, nullptr, &numeric_attr);
     EXPECT_EQ(SQL_SUCCESS, ret);
     EXPECT_EQ(SQL_VARCHAR, numeric_attr);
+}
+
+TEST_F(MetadataIntegrationTest, ReportsCurrentRowNumberOnlyWhilePositioned) {
+    SQLCHAR query[] =
+        "SELECT value FROM (VALUES (10), (20)) AS rows(value) ORDER BY value";
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, query, SQL_NTS));
+
+    SQLULEN row_number = 99;
+    EXPECT_EQ(SQL_ERROR, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_ROW_NUMBER, &row_number, sizeof(row_number), nullptr));
+    EXPECT_EQ(99u, row_number);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("24000", reinterpret_cast<char*>(state));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_ROW_NUMBER, &row_number, sizeof(row_number), nullptr));
+    EXPECT_EQ(1u, row_number);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_ROW_NUMBER, &row_number, sizeof(row_number), nullptr));
+    EXPECT_EQ(2u, row_number);
+
+    ASSERT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    row_number = 99;
+    EXPECT_EQ(SQL_ERROR, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_ROW_NUMBER, &row_number, sizeof(row_number), nullptr));
+    EXPECT_EQ(99u, row_number);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("24000", reinterpret_cast<char*>(state));
+
+    SQLINTEGER value = 0;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(
+        hstmt, 1, SQL_C_SLONG, &value, sizeof(value), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("24000", reinterpret_cast<char*>(state));
+
+    EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_CURSOR_TYPE,
+        reinterpret_cast<SQLPOINTER>(SQL_CURSOR_FORWARD_ONLY), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("24000", reinterpret_cast<char*>(state));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    SQLCHAR prepared_query[] = "SELECT 1";
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, prepared_query, SQL_NTS));
+    EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_CURSOR_TYPE,
+        reinterpret_cast<SQLPOINTER>(SQL_CURSOR_FORWARD_ONLY), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY011", reinterpret_cast<char*>(state));
 }
 
 TEST_F(MetadataIntegrationTest, ReportsAnsiColumnNameTruncation) {

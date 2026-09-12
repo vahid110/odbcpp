@@ -369,6 +369,15 @@ substitute for ODBC diagnostics.
   connection attributes (HYC00) from invalid identifiers (HY092). Read-only
   attributes remain rejected on the setter path, and failed getters preserve
   application outputs.
+- Audit batch 43 completes the common forward-only statement-attribute matrix.
+  Cursor scrollability and sensitivity report their conservative defaults;
+  valid unsupported values are separated from invalid values. Application
+  descriptor bind-offset and operation pointers round-trip through their
+  descriptor headers, while keyset, maximum-length, automatic-IPD, and
+  bookmark defaults are exposed without overstating unsupported execution
+  modes. `SQL_ATTR_ROW_NUMBER` now observes the cursor-position rules, and a
+  PostgreSQL regression test also proves that fetching past the end invalidates
+  the prior row for `SQLGetData`.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

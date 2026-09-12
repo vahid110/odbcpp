@@ -780,6 +780,11 @@ TEST_F(AttributeApisTest, ReportsForwardOnlyStatementDefaults) {
   const AttributeExpectation expectations[] = {
       {SQL_ATTR_CURSOR_TYPE, SQL_CURSOR_FORWARD_ONLY},
       {SQL_ATTR_CONCURRENCY, SQL_CONCUR_READ_ONLY},
+      {SQL_ATTR_CURSOR_SCROLLABLE, SQL_NONSCROLLABLE},
+      {SQL_ATTR_CURSOR_SENSITIVITY, SQL_UNSPECIFIED},
+      {SQL_ATTR_ENABLE_AUTO_IPD, SQL_FALSE},
+      {SQL_ATTR_KEYSET_SIZE, 0},
+      {SQL_ATTR_MAX_LENGTH, 0},
       {SQL_ATTR_ROW_ARRAY_SIZE, 1},
       {SQL_ATTR_ROW_BIND_TYPE, SQL_BIND_BY_COLUMN},
       {SQL_ATTR_RETRIEVE_DATA, SQL_RD_ON},
@@ -804,6 +809,30 @@ TEST_F(AttributeApisTest, ReportsForwardOnlyStatementDefaults) {
       integer_value(SQL_CURSOR_STATIC), 0));
   EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_CURSOR_TYPE, integer_value(99), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_CONCURRENCY,
+      integer_value(SQL_CONCUR_VALUES), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_CONCURRENCY, integer_value(99), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_CURSOR_SCROLLABLE,
+      integer_value(SQL_SCROLLABLE), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_CURSOR_SCROLLABLE, integer_value(99), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_CURSOR_SENSITIVITY,
+      integer_value(SQL_INSENSITIVE), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_CURSOR_SENSITIVITY, integer_value(99), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_ROW_ARRAY_SIZE, integer_value(2), 0));
   EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
@@ -818,6 +847,133 @@ TEST_F(AttributeApisTest, ReportsForwardOnlyStatementDefaults) {
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_METADATA_ID, integer_value(SQL_TRUE), 0));
   EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_RETRIEVE_DATA, integer_value(99), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_USE_BOOKMARKS, integer_value(99), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_ASYNC_ENABLE, integer_value(99), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_METADATA_ID, integer_value(99), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_ENABLE_AUTO_IPD, integer_value(SQL_TRUE), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_ENABLE_AUTO_IPD, integer_value(99), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_KEYSET_SIZE, integer_value(1), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_MAX_LENGTH, integer_value(1), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+}
+
+TEST_F(AttributeApisTest, StoresApplicationDescriptorBindOffsetPointers) {
+  SQLLEN row_offset = 8;
+  SQLLEN parameter_offset = 16;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_ROW_BIND_OFFSET_PTR, &row_offset, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_PARAM_BIND_OFFSET_PTR, &parameter_offset, 0));
+
+  SQLLEN* reported_row_offset = nullptr;
+  SQLLEN* reported_parameter_offset = nullptr;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_ROW_BIND_OFFSET_PTR, &reported_row_offset,
+      sizeof(reported_row_offset), nullptr));
+  EXPECT_EQ(&row_offset, reported_row_offset);
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_PARAM_BIND_OFFSET_PTR, &reported_parameter_offset,
+      sizeof(reported_parameter_offset), nullptr));
+  EXPECT_EQ(&parameter_offset, reported_parameter_offset);
+
+  SQLHDESC row_descriptor = SQL_NULL_HDESC;
+  SQLHDESC parameter_descriptor = SQL_NULL_HDESC;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_APP_ROW_DESC, &row_descriptor, 0, nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_APP_PARAM_DESC, &parameter_descriptor, 0, nullptr));
+  SQLLEN* descriptor_offset = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+      row_descriptor, 0, SQL_DESC_BIND_OFFSET_PTR, &descriptor_offset, 0,
+      nullptr));
+  EXPECT_EQ(&row_offset, descriptor_offset);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+      parameter_descriptor, 0, SQL_DESC_BIND_OFFSET_PTR, &descriptor_offset,
+      0, nullptr));
+  EXPECT_EQ(&parameter_offset, descriptor_offset);
+
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_ROW_BIND_OFFSET_PTR, nullptr, 0));
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_PARAM_BIND_OFFSET_PTR, nullptr, 0));
+}
+
+TEST_F(AttributeApisTest, StoresBookmarkAndOperationPointers) {
+  SQLLEN bookmark = 42;
+  SQLUSMALLINT row_operation = SQL_ROW_PROCEED;
+  SQLUSMALLINT parameter_operation = SQL_PARAM_PROCEED;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_FETCH_BOOKMARK_PTR, &bookmark, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_ROW_OPERATION_PTR, &row_operation, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_PARAM_OPERATION_PTR, &parameter_operation, 0));
+
+  SQLLEN* reported_bookmark = nullptr;
+  SQLUSMALLINT* reported_row_operation = nullptr;
+  SQLUSMALLINT* reported_parameter_operation = nullptr;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_FETCH_BOOKMARK_PTR, &reported_bookmark,
+      sizeof(reported_bookmark), nullptr));
+  EXPECT_EQ(&bookmark, reported_bookmark);
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_ROW_OPERATION_PTR, &reported_row_operation,
+      sizeof(reported_row_operation), nullptr));
+  EXPECT_EQ(&row_operation, reported_row_operation);
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_PARAM_OPERATION_PTR,
+      &reported_parameter_operation, sizeof(reported_parameter_operation),
+      nullptr));
+  EXPECT_EQ(&parameter_operation, reported_parameter_operation);
+
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_FETCH_BOOKMARK_PTR, nullptr, 0));
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_ROW_OPERATION_PTR, nullptr, 0));
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_PARAM_OPERATION_PTR, nullptr, 0));
+}
+
+TEST_F(AttributeApisTest, ClassifiesRecognizedUnsupportedStatementAttributes) {
+  SQLULEN value = 77;
+  for (const auto attribute : {SQL_ATTR_NOSCAN, SQL_ATTR_SIMULATE_CURSOR}) {
+    EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+        statement_, attribute, integer_value(0), 0));
+    EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+    EXPECT_EQ(SQL_ERROR, SQLGetStmtAttr(
+        statement_, attribute, &value, sizeof(value), nullptr));
+    EXPECT_EQ(77u, value);
+    EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  }
+}
+
+TEST_F(AttributeApisTest, CurrentRowNumberIsReadOnlyAndRequiresPosition) {
+  SQLULEN row_number = 99;
+  EXPECT_EQ(SQL_ERROR, SQLGetStmtAttr(
+      statement_, SQL_ATTR_ROW_NUMBER, &row_number, sizeof(row_number),
+      nullptr));
+  EXPECT_EQ(99u, row_number);
+  EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_ROW_NUMBER, integer_value(1), 0));
+  EXPECT_EQ("HY092", diagnostic_state(SQL_HANDLE_STMT, statement_));
 }
 
 TEST_F(AttributeApisTest, StoresSingleRowAndParameterStatusPointers) {
