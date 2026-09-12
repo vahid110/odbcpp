@@ -477,6 +477,12 @@ const TypeInfoDefinition type_info_definitions[] = {
      -1, -1, SQL_REAL, 0, 2},
     {"double precision", SQL_DOUBLE, 15, nullptr, nullptr, nullptr, SQL_FALSE,
      SQL_FALSE, -1, -1, SQL_DOUBLE, 0, 2},
+    {"date", SQL_DATE, 10, "'", "'", nullptr, SQL_FALSE, -1,
+     -1, -1, SQL_DATETIME, SQL_CODE_DATE, 0},
+    {"time", SQL_TIME, 15, "'", "'", "precision", SQL_FALSE, -1,
+     0, 6, SQL_DATETIME, SQL_CODE_TIME, 0},
+    {"timestamp", SQL_TIMESTAMP, 29, "'", "'", "precision", SQL_FALSE, -1,
+     0, 6, SQL_DATETIME, SQL_CODE_TIMESTAMP, 0},
     {"varchar", SQL_VARCHAR, 10485760, "'", "'", "length", SQL_TRUE,
      -1, -1, -1, SQL_VARCHAR, 0, 0},
     {"date", SQL_TYPE_DATE, 10, "'", "'", nullptr, SQL_FALSE, -1,
@@ -3177,6 +3183,12 @@ SQLRETURN ODBCStatement::get_type_info(SQLSMALLINT data_type) {
   if (executed_ && !column_info_.empty()) {
     set_error(SQLSTATE_INVALID_CURSOR_STATE,
               "A result cursor is already open");
+    return SQL_ERROR;
+  }
+  if (data_type != SQL_ALL_TYPES &&
+      !ResultTypes::is_valid_sql_type(data_type)) {
+    set_error(SQLSTATE_INVALID_SQL_DATA_TYPE,
+              "Invalid SQL data type identifier");
     return SQL_ERROR;
   }
 

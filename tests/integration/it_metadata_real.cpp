@@ -9,6 +9,18 @@
 #include <iterator>
 #include <string>
 
+namespace {
+
+std::string diagnostic_state(SQLSMALLINT handle_type, SQLHANDLE handle) {
+    SQLCHAR state[6]{};
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetDiagRec(handle_type, handle, 1, state, nullptr, nullptr,
+                            0, nullptr));
+    return reinterpret_cast<const char*>(state);
+}
+
+}  // namespace
+
 class MetadataIntegrationTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -969,21 +981,70 @@ TEST_F(MetadataIntegrationTest, ResultShapeAndRowCountFollowStatementState) {
 }
 
 TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
-    ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfo(hstmt, SQL_INTEGER));
+    EXPECT_EQ(SQL_ERROR, SQLGetTypeInfo(hstmt, 12345));
+    EXPECT_EQ("HY004", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfo(hstmt, SQL_WVARCHAR));
     SQLSMALLINT columns = 0;
     ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns));
     EXPECT_EQ(19, columns);
-    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
+    struct ExpectedType {
+        const char* name;
+        SQLSMALLINT data_type;
+    };
+    constexpr std::array<ExpectedType, 18> expected_types{{
+        {"boolean", SQL_BIT},
+        {"bigint", SQL_BIGINT},
+        {"bytea", SQL_VARBINARY},
+        {"text", SQL_LONGVARCHAR},
+        {"char", SQL_CHAR},
+        {"numeric", SQL_NUMERIC},
+        {"decimal", SQL_DECIMAL},
+        {"integer", SQL_INTEGER},
+        {"smallint", SQL_SMALLINT},
+        {"real", SQL_REAL},
+        {"double precision", SQL_DOUBLE},
+        {"date", SQL_DATE},
+        {"time", SQL_TIME},
+        {"timestamp", SQL_TIMESTAMP},
+        {"varchar", SQL_VARCHAR},
+        {"date", SQL_TYPE_DATE},
+        {"time", SQL_TYPE_TIME},
+        {"timestamp", SQL_TYPE_TIMESTAMP},
+    }};
+
+    ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfo(hstmt, SQL_ALL_TYPES));
+    SQLLEN row_count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLRowCount(hstmt, &row_count));
+    EXPECT_EQ(static_cast<SQLLEN>(expected_types.size()), row_count);
+
+    for (std::size_t index = 0; index < expected_types.size(); ++index) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        if (index == 0) {
+            EXPECT_EQ(SQL_ERROR, SQLGetTypeInfo(hstmt, SQL_INTEGER));
+            EXPECT_EQ("24000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+        }
+        char type_name[32]{};
+        SQLSMALLINT data_type = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+            hstmt, 1, SQL_C_CHAR, type_name, sizeof(type_name), nullptr));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+            hstmt, 2, SQL_C_SSHORT, &data_type, 0, nullptr));
+        EXPECT_STREQ(expected_types[index].name, type_name);
+        EXPECT_EQ(expected_types[index].data_type, data_type);
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfoW(hstmt, SQL_INTEGER));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     char type_name[32]{};
-    SQLSMALLINT data_type = 0;
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(
         hstmt, 1, SQL_C_CHAR, type_name, sizeof(type_name), nullptr));
-    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
-        hstmt, 2, SQL_C_SSHORT, &data_type, 0, nullptr));
     EXPECT_STREQ("integer", type_name);
-    EXPECT_EQ(SQL_INTEGER, data_type);
-    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
 TEST_F(MetadataIntegrationTest, ListsPostgreSQLTables) {

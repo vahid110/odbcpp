@@ -517,6 +517,9 @@ int main() {
     return 1;
   }
   if (!succeeded(SQLGetTypeInfo(statement, SQL_INTEGER)) ||
+      !succeeded(SQLFetch(statement)) ||
+      !succeeded(SQLCloseCursor(statement)) ||
+      !succeeded(SQLGetTypeInfoW(statement, SQL_INTEGER)) ||
       !succeeded(SQLFetch(statement))) {
     print_diagnostic(SQL_HANDLE_STMT, statement);
     SQLFreeHandle(SQL_HANDLE_STMT, statement);

@@ -59,7 +59,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLGetStmtAttr` | A/W | Partial | unit, integration | Common defaults, escape scanning, descriptor handles/pointers, row positioning, and recognized unsupported attributes are covered; platform-specific ODBC 3.8 fields remain |
 | `SQLCloseCursor` | A | Verified | unit, integration, DM | Allocated, prepared, open-empty, exhausted, closed, update-count, failed-execution, and pending-result states are covered |
 | `SQLFreeStmt` | A | Verified | unit, integration, DM | SQL_CLOSE idempotence, ARD unbinding, APD reset, invalid-option preservation, SQL_DROP ownership, and pending-result discard are covered |
-| `SQLGetTypeInfo` | A/W | Partial | integration, DM | All supported types, type filters, wide entry test |
+| `SQLGetTypeInfo` | A/W | Partial | unit, integration, DM | Ordered supported-type inventory, valid-empty and HY004 filters, disconnected/open-cursor states, legacy plus ODBC 3 datetime identifiers, and A/W Driver Manager calls are covered; complete per-field value verification remains |
 | `SQLTables` | A/W | Partial | unit, integration, DM | Pattern/metadata-ID semantics and privilege visibility |
 | `SQLColumns` | A/W | Partial | unit, integration, DM | Pattern semantics and complete PostgreSQL type metadata |
 | `SQLPrimaryKeys` | A/W | Partial | unit, integration, DM | Empty/multipart identifiers, ordering, visibility |
@@ -495,6 +495,12 @@ substitute for ODBC diagnostics.
   consistently. Simultaneous truncation and unknown-keyword warnings retain
   both diagnostic records instead of overwriting the first; interactive
   prompting remains deliberately unsupported.
+- Audit batch 62 tightens `SQLGetTypeInfo` without broadening advertised type
+  support. Invalid type identifiers now return HY004, valid but unsupported
+  types return an empty 19-column result, and `SQL_ALL_TYPES` returns an
+  ordered inventory that includes both legacy and ODBC 3 date/time/timestamp
+  identifiers. Disconnected and open-cursor state errors, invalid handles,
+  direct ANSI/wide calls, and the external Driver Manager path are covered.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

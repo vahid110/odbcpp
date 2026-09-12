@@ -2,6 +2,20 @@
 #include "odbc/odbc_types.h"
 #include "tests/test_handle_helpers.h"
 
+#include <string>
+
+namespace {
+
+std::string diagnostic_state(SQLSMALLINT handle_type, SQLHANDLE handle) {
+    SQLCHAR state[6]{};
+    EXPECT_EQ(SQL_SUCCESS,
+              SQLGetDiagRec(handle_type, handle, 1, state, nullptr, nullptr,
+                            0, nullptr));
+    return reinterpret_cast<const char*>(state);
+}
+
+}  // namespace
+
 // Simple unit test using ODBC API directly
 class MetadataAPITest : public ::testing::Test {
 protected:
@@ -37,6 +51,13 @@ TEST_F(MetadataAPITest, InvalidHandles) {
     EXPECT_EQ(SQL_INVALID_HANDLE, SQLRowCount(nullptr, &row_count));
     EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, &row_count));
     EXPECT_EQ(SQL_ERROR, SQLRowCount(hstmt, nullptr));
+
+    EXPECT_EQ(SQL_INVALID_HANDLE, SQLGetTypeInfo(nullptr, SQL_ALL_TYPES));
+    EXPECT_EQ(SQL_INVALID_HANDLE, SQLGetTypeInfoW(nullptr, SQL_ALL_TYPES));
+    EXPECT_EQ(SQL_ERROR, SQLGetTypeInfo(hstmt, SQL_ALL_TYPES));
+    EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    EXPECT_EQ(SQL_ERROR, SQLGetTypeInfoW(hstmt, SQL_ALL_TYPES));
+    EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_STMT, hstmt));
 
     SQLCHAR pattern[] = "%";
     EXPECT_EQ(SQL_ERROR, SQLTables(

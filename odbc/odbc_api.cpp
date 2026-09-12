@@ -2004,7 +2004,9 @@ static SQLRETURN SQLGetTypeInfo_impl(SQLHSTMT statement_handle, SQLSMALLINT data
 }
 
 static SQLRETURN SQLGetTypeInfoW_impl(SQLHSTMT statement_handle, SQLSMALLINT data_type) {
-  return SQLGetTypeInfo(statement_handle, data_type);
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  return stmt->get_type_info(data_type);
 }
 
 static SQLRETURN SQLColumns_impl(
