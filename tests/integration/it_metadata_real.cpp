@@ -4,6 +4,7 @@
 #include "odbc/unicode.h"
 #include "tests/test_connection_config.h"
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
