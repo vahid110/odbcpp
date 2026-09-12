@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -158,6 +159,19 @@ TEST(ConnectionAttributeIntegrationTest,
       {SQL_DATABASE_NAME, "postgres"},
       {SQL_USER_NAME, "postgres"},
   };
+  const auto verify_wide_info = [&](SQLUSMALLINT type,
+                                    std::string_view expected) {
+    SQLWCHAR value[128]{};
+    SQLSMALLINT length = -1;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetInfoW(connection, type, value, sizeof(value), &length));
+    EXPECT_EQ(static_cast<SQLSMALLINT>(expected.size() * sizeof(SQLWCHAR)),
+              length);
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+      EXPECT_EQ(static_cast<SQLWCHAR>(expected[index]), value[index]);
+    }
+    EXPECT_EQ(static_cast<SQLWCHAR>(0), value[expected.size()]);
+  };
   for (const auto& info : string_info) {
     SQLCHAR value[64]{};
     SQLSMALLINT length = -1;
@@ -166,25 +180,22 @@ TEST(ConnectionAttributeIntegrationTest,
     EXPECT_STREQ(info.expected, reinterpret_cast<const char*>(value));
     EXPECT_EQ(std::strlen(info.expected),
               static_cast<std::size_t>(length));
+    verify_wide_info(info.type, info.expected);
   }
   SQLCHAR server_name[128]{};
   ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(
       connection, SQL_SERVER_NAME, server_name, sizeof(server_name), nullptr));
   EXPECT_NE('\0', server_name[0]);
+  verify_wide_info(
+      SQL_SERVER_NAME, reinterpret_cast<const char*>(server_name));
   SQLCHAR dbms_version[32]{};
   ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(
       connection, SQL_DBMS_VER, dbms_version, sizeof(dbms_version), nullptr));
   EXPECT_EQ('.', dbms_version[2]);
   EXPECT_EQ('.', dbms_version[5]);
   EXPECT_EQ(10u, std::strlen(reinterpret_cast<const char*>(dbms_version)));
-
-  SQLWCHAR wide_database[32]{};
-  SQLSMALLINT wide_length = -1;
-  ASSERT_EQ(SQL_SUCCESS, SQLGetInfoW(
-      connection, SQL_DATABASE_NAME, wide_database,
-      static_cast<SQLSMALLINT>(sizeof(wide_database)), &wide_length));
-  EXPECT_EQ(8 * static_cast<SQLSMALLINT>(sizeof(SQLWCHAR)), wide_length);
-  EXPECT_EQ(static_cast<SQLWCHAR>('p'), wide_database[0]);
+  verify_wide_info(
+      SQL_DBMS_VER, reinterpret_cast<const char*>(dbms_version));
 
   EXPECT_EQ(SQL_ERROR,
             SQLSetConnectAttr(

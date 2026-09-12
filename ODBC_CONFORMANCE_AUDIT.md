@@ -71,7 +71,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLGetDiagRec` | A/W | Partial | unit, integration, DM | Retrieval preserves records and validates type/record/buffer; truncation matrix remains |
 | `SQLGetDiagField` | A/W | Partial | unit, integration | All standard header/record identifiers, return provenance, origins, ANSI/wide lengths, and truncation are covered; row/column-specific server errors remain |
 | `SQLError` | A/W | Partial | unit, integration | ODBC 2 sequencing and multi-record consumption |
-| `SQLGetInfo` | A/W | Partial | unit, integration, DM | Open-connection state, PostgreSQL identity, limits, SQL grammar, conversion, scalar-function, and compatibility families are guarded; driver-handle mappings and deeper capability validation remain |
+| `SQLGetInfo` | A/W | Verified | unit, integration, DM | Every driver-owned standard type is classified; positive PostgreSQL claims execute end to end, and Driver Manager-only mappings are covered separately |
 | `SQLGetFunctions` | A | Verified | shared-library export audit, unit, DM | Exact single-function, ODBC 2 array, and ODBC 3 bitmap behavior is enforced against all advertised exports |
 | `SQLNativeSql` | A/W | Partial | unit, DM | ODBC escape translation; currently effectively pass-through |
 | `SQLSetEnvAttr` | A | Partial | unit, integration, DM | ODBC version and null-terminated output are classified and locked after DBC allocation; Driver Manager pooling attributes remain |
@@ -412,6 +412,13 @@ substitute for ODBC diagnostics.
   `SQL_DRIVER_HDESC` is likewise covered where the Driver Manager implements
   it; current iODBC forwards its manager handle to the driver and is excluded
   from that assertion because the driver cannot safely translate it.
+- Audit batch 49 exhaustively checks every implemented static string and
+  numeric information type, plus all five dynamic identity strings, through
+  ANSI and wide entry points. Length-only calls, numeric null outputs, narrow
+  and wide truncation, misaligned wide byte buffers, disconnected state, and
+  invalid types have direct return-code, output-preservation, and SQLSTATE
+  assertions. With the header comparison leaving only aliases and
+  Driver Manager-owned types, `SQLGetInfo` is promoted to Verified.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
@@ -457,9 +464,9 @@ substitute for ODBC diagnostics.
 ### P1 — conformance and interoperability
 
 1. Complete the connection/statement/descriptor attribute matrices.
-2. Complete the required `SQLGetInfo` information matrix. Audit batch 15
-   guards the current capability subset against over-advertising, and
-   `SQLGetFunctions` remains guarded by the shared-library export test.
+2. Keep the verified `SQLGetInfo` matrix synchronized with newly implemented
+   driver features and platform headers; do not turn conservative zero values
+   into capability claims without executable PostgreSQL evidence.
 3. Exercise every exported wide symbol directly on two-byte and four-byte
    `SQLWCHAR` Driver Manager paths.
 4. Add state-machine tests for allocated, connected, prepared, executed,

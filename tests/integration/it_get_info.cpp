@@ -73,40 +73,64 @@ class GetInfoIntegrationTest : public ::testing::Test {
 };
 
 TEST_F(GetInfoIntegrationTest, ReportsStaticStringCapabilities) {
-  EXPECT_EQ("ODBCPP Driver", string_info(SQL_DRIVER_NAME));
-  EXPECT_EQ("01.00.0000", string_info(SQL_DRIVER_VER));
-  EXPECT_EQ("03.80", string_info(SQL_DRIVER_ODBC_VER));
-  EXPECT_EQ("PostgreSQL", string_info(SQL_DBMS_NAME));
-  EXPECT_EQ("\"", string_info(SQL_IDENTIFIER_QUOTE_CHAR));
-  EXPECT_EQ("database", string_info(SQL_CATALOG_TERM));
-  EXPECT_EQ("schema", string_info(SQL_SCHEMA_TERM));
-  EXPECT_EQ("Y", string_info(SQL_CATALOG_NAME));
-  EXPECT_EQ("N", string_info(SQL_ACCESSIBLE_TABLES));
-  EXPECT_EQ("N", string_info(SQL_ACCESSIBLE_PROCEDURES));
-  EXPECT_EQ("Y", string_info(SQL_DESCRIBE_PARAMETER));
-  EXPECT_EQ("Y", string_info(SQL_EXPRESSIONS_IN_ORDERBY));
-  EXPECT_EQ("Y", string_info(SQL_INTEGRITY));
-  EXPECT_EQ("Y", string_info(SQL_LIKE_ESCAPE_CLAUSE));
-  EXPECT_EQ("Y", string_info(SQL_OUTER_JOINS));
-  EXPECT_EQ("Y", string_info(SQL_PROCEDURES));
-  EXPECT_EQ("", string_info(SQL_COLLATION_SEQ));
-  EXPECT_EQ("", string_info(SQL_KEYWORDS));
-  EXPECT_EQ("", string_info(SQL_SPECIAL_CHARACTERS));
-  EXPECT_EQ("1995", string_info(SQL_XOPEN_CLI_YEAR));
-  EXPECT_EQ("N", string_info(SQL_MAX_ROW_SIZE_INCLUDES_LONG));
-  EXPECT_EQ("N", string_info(SQL_ROW_UPDATES));
+  constexpr std::array<std::pair<SQLUSMALLINT, std::string_view>, 33>
+      expected_values{{
+          {SQL_DRIVER_NAME, "ODBCPP Driver"},
+          {SQL_DRIVER_VER, "01.00.0000"},
+          {SQL_DRIVER_ODBC_VER, "03.80"},
+          {SQL_ODBC_VER, "03.80"},
+          {SQL_DBMS_NAME, "PostgreSQL"},
+          {SQL_IDENTIFIER_QUOTE_CHAR, "\""},
+          {SQL_CATALOG_NAME_SEPARATOR, "."},
+          {SQL_CATALOG_TERM, "database"},
+          {SQL_SCHEMA_TERM, "schema"},
+          {SQL_TABLE_TERM, "table"},
+          {SQL_PROCEDURE_TERM, "procedure"},
+          {SQL_SEARCH_PATTERN_ESCAPE, "\\"},
+          {SQL_CATALOG_NAME, "Y"},
+          {SQL_COLUMN_ALIAS, "Y"},
+          {SQL_DESCRIBE_PARAMETER, "Y"},
+          {SQL_EXPRESSIONS_IN_ORDERBY, "Y"},
+          {SQL_INTEGRITY, "Y"},
+          {SQL_LIKE_ESCAPE_CLAUSE, "Y"},
+          {SQL_MULT_RESULT_SETS, "Y"},
+          {SQL_OUTER_JOINS, "Y"},
+          {SQL_PROCEDURES, "Y"},
+          {SQL_ACCESSIBLE_TABLES, "N"},
+          {SQL_ACCESSIBLE_PROCEDURES, "N"},
+          {SQL_DATA_SOURCE_READ_ONLY, "N"},
+          {SQL_MAX_ROW_SIZE_INCLUDES_LONG, "N"},
+          {SQL_MULTIPLE_ACTIVE_TXN, "N"},
+          {SQL_NEED_LONG_DATA_LEN, "N"},
+          {SQL_ORDER_BY_COLUMNS_IN_SELECT, "N"},
+          {SQL_ROW_UPDATES, "N"},
+          {SQL_COLLATION_SEQ, ""},
+          {SQL_KEYWORDS, ""},
+          {SQL_SPECIAL_CHARACTERS, ""},
+          {SQL_XOPEN_CLI_YEAR, "1995"},
+      }};
+  for (const auto& [type, expected] : expected_values) {
+    EXPECT_EQ(expected, string_info(type)) << type;
 
-  SQLWCHAR driver_name[32]{};
-  SQLSMALLINT name_bytes = -1;
-  ASSERT_EQ(SQL_SUCCESS,
-            SQLGetInfoW(connection_, SQL_DRIVER_NAME, driver_name,
-                        sizeof(driver_name), &name_bytes));
-  EXPECT_EQ(static_cast<SQLSMALLINT>(13 * sizeof(SQLWCHAR)), name_bytes);
-  EXPECT_EQ(static_cast<SQLWCHAR>('O'), driver_name[0]);
+    SQLWCHAR wide_value[128]{};
+    SQLSMALLINT wide_bytes = -1;
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLGetInfoW(connection_, type, wide_value, sizeof(wide_value),
+                          &wide_bytes))
+        << type;
+    EXPECT_EQ(static_cast<SQLSMALLINT>(expected.size() * sizeof(SQLWCHAR)),
+              wide_bytes)
+        << type;
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+      EXPECT_EQ(static_cast<SQLWCHAR>(expected[index]), wide_value[index])
+          << type << " at " << index;
+    }
+    EXPECT_EQ(static_cast<SQLWCHAR>(0), wide_value[expected.size()]) << type;
+  }
 }
 
 TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
-  constexpr std::array<std::pair<SQLUSMALLINT, SQLUSMALLINT>, 18>
+  constexpr std::array<std::pair<SQLUSMALLINT, SQLUSMALLINT>, 25>
       small_values{{
           {SQL_ACTIVE_ENVIRONMENTS, 0},
           {SQL_MAX_CONCURRENT_ACTIVITIES, 0},
@@ -121,11 +145,18 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
           {SQL_CATALOG_LOCATION, SQL_CL_START},
           {SQL_NULL_COLLATION, SQL_NC_HIGH},
           {SQL_NON_NULLABLE_COLUMNS, SQL_NNC_NON_NULL},
+          {SQL_CONCAT_NULL_BEHAVIOR, SQL_CB_NULL},
           {SQL_CORRELATION_NAME, SQL_CN_ANY},
           {SQL_GROUP_BY, SQL_GB_NO_RELATION},
           {SQL_ODBC_API_CONFORMANCE, SQL_OAC_LEVEL1},
           {SQL_ODBC_SAG_CLI_CONFORMANCE, SQL_OSCC_COMPLIANT},
           {SQL_ODBC_SQL_CONFORMANCE, SQL_OSC_CORE},
+          {SQL_MAX_COLUMN_NAME_LEN, 63},
+          {SQL_MAX_TABLE_NAME_LEN, 63},
+          {SQL_MAX_SCHEMA_NAME_LEN, 63},
+          {SQL_MAX_CATALOG_NAME_LEN, 63},
+          {SQL_MAX_PROCEDURE_NAME_LEN, 63},
+          {SQL_MAX_USER_NAME_LEN, 63},
       }};
   for (const auto& [type, expected] : small_values) {
     SQLUSMALLINT value = std::numeric_limits<SQLUSMALLINT>::max();
@@ -152,7 +183,7 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
     EXPECT_EQ(static_cast<SQLSMALLINT>(sizeof(value)), length) << type;
   }
 
-  constexpr std::array<std::pair<SQLUSMALLINT, SQLUINTEGER>, 34>
+  constexpr std::array<std::pair<SQLUSMALLINT, SQLUINTEGER>, 36>
       integer_values{{
           {SQL_DEFAULT_TXN_ISOLATION, SQL_TXN_READ_COMMITTED},
           {SQL_TXN_ISOLATION_OPTION,
@@ -193,6 +224,11 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
           {SQL_STANDARD_CLI_CONFORMANCE, SQL_SCC_XOPEN_CLI_VERSION1},
           {SQL_UNION, SQL_U_UNION | SQL_U_UNION_ALL},
           {SQL_DTC_TRANSITION_COST, 0},
+          {SQL_CATALOG_USAGE, 0},
+          {SQL_SCHEMA_USAGE,
+           SQL_SU_DML_STATEMENTS | SQL_SU_PROCEDURE_INVOCATION |
+               SQL_SU_TABLE_DEFINITION | SQL_SU_INDEX_DEFINITION |
+               SQL_SU_PRIVILEGE_DEFINITION},
       }};
   for (const auto& [type, expected] : integer_values) {
     SQLUINTEGER value = std::numeric_limits<SQLUINTEGER>::max();
@@ -321,6 +357,41 @@ TEST_F(GetInfoIntegrationTest, ReportsErrorsAndTruncationPrecisely) {
   EXPECT_STREQ("ODBC", reinterpret_cast<const char*>(driver_name));
   EXPECT_EQ(13, required);
   EXPECT_EQ("01004", diagnostic_state(connection_));
+
+  SQLWCHAR wide_driver_name[5]{};
+  SQLSMALLINT wide_required = -1;
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
+            SQLGetInfoW(connection_, SQL_DRIVER_NAME, wide_driver_name,
+                        sizeof(wide_driver_name), &wide_required));
+  EXPECT_EQ(static_cast<SQLWCHAR>('O'), wide_driver_name[0]);
+  EXPECT_EQ(static_cast<SQLWCHAR>('C'), wide_driver_name[3]);
+  EXPECT_EQ(static_cast<SQLWCHAR>(0), wide_driver_name[4]);
+  EXPECT_EQ(static_cast<SQLSMALLINT>(13 * sizeof(SQLWCHAR)), wide_required);
+  EXPECT_EQ("01004", diagnostic_state(connection_));
+
+  required = -1;
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLGetInfo(connection_, SQL_DRIVER_NAME, nullptr, 0, &required));
+  EXPECT_EQ(13, required);
+  wide_required = -1;
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLGetInfoW(connection_, SQL_DRIVER_NAME, nullptr, 0,
+                        &wide_required));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(13 * sizeof(SQLWCHAR)), wide_required);
+
+  SQLSMALLINT untouched_length = 41;
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetInfo(connection_, SQL_TXN_CAPABLE, nullptr, 0,
+                       &untouched_length));
+  EXPECT_EQ(41, untouched_length);
+  EXPECT_EQ("HY009", diagnostic_state(connection_));
+
+  SQLWCHAR misaligned[2]{};
+  EXPECT_EQ(SQL_ERROR,
+            SQLGetInfoW(connection_, SQL_DRIVER_NAME, misaligned,
+                        static_cast<SQLSMALLINT>(sizeof(SQLWCHAR) + 1),
+                        nullptr));
+  EXPECT_EQ("HY090", diagnostic_state(connection_));
 }
 
 TEST_F(GetInfoIntegrationTest, AdvertisedPostgresqlSyntaxExecutes) {

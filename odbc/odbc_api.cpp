@@ -113,7 +113,8 @@ namespace {
       SQLINTEGER buffer_length, Length* output_length,
       std::string_view truncation_message,
       bool set_truncation_diagnostic = true) {
-    if (buffer_length < 0) {
+    if (buffer_length < 0 ||
+        (output && buffer_length % sizeof(SQLWCHAR) != 0)) {
       if (handle) {
         handle->set_error(SQLSTATE_INVALID_STRING_LENGTH,
                           "Invalid output buffer length");
