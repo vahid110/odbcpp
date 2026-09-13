@@ -907,6 +907,11 @@ substitute for ODBC diagnostics.
   ODBC `23000` as documented for [SQLExecDirect](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function).
   A real duplicate-key test covers direct execution, prepared execution,
   deferred `SQLMoreResults`, and subsequent connection recovery.
+- Audit batch 126 maps PostgreSQL `42P01` (undefined table) and `42703`
+  (undefined column) to ODBC `42S02` and `42S22` using the
+  [SQLExecDirect diagnostics](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function).
+  Other class-42 errors retain the existing `42000` fallback. Real
+  PostgreSQL tests cover direct, prepared, and deferred-result paths.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

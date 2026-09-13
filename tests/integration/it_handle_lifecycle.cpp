@@ -582,7 +582,7 @@ TEST(EnvironmentTransactionIntegrationTest,
                   reinterpret_cast<SQLCHAR*>(const_cast<char*>(
                       "SELECT count(*) FROM odbcpp_env_txn")),
                   SQL_NTS));
-    EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_STMT, statement));
+    EXPECT_EQ("42S02", diagnostic_state(SQL_HANDLE_STMT, statement));
   }
   ASSERT_EQ(SQL_SUCCESS,
             SQLEndTran(SQL_HANDLE_ENV, environment, SQL_ROLLBACK));
