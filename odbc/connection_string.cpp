@@ -84,7 +84,7 @@ std::map<std::string, std::string> ConnectionString::parse(const std::string& co
       position = end == std::string::npos ? conn_str.size() : end;
     }
 
-    if (!key.empty()) params[to_upper(key)] = std::move(value);
+    if (!key.empty()) params.try_emplace(to_upper(key), std::move(value));
     if (position < conn_str.size()) ++position;
   }
 

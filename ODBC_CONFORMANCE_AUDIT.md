@@ -812,6 +812,10 @@ substitute for ODBC diagnostics.
   ANSI and wide Driver Manager connections verify that a semicolon inside a
   braced description does not produce a spurious 01S00 warning. The syntax
   follows [Microsoft's ODBC connection-string grammar](https://learn.microsoft.com/en-us/openspecs/sql_server_protocols/ms-odbcstr/55953f0e-2d30-4ad4-8e56-b4207e491409).
+- Audit batch 107 applies the first occurrence of a repeated connection-string
+  keyword, as specified by [SQLDriverConnect](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqldriverconnect-function).
+  A unit test checks the parsed value, and ANSI/wide Driver Manager connections
+  prove that a later, invalid password cannot override the first valid one.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

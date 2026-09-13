@@ -39,11 +39,11 @@ TEST(ConnectionStringTest, RejectsMalformedBracedValues) {
                std::invalid_argument);
 }
 
-TEST(ConnectionStringTest, RetainsSimpleAndRepeatedOptionBehavior) {
+TEST(ConnectionStringTest, KeepsFirstRepeatedOption) {
   const auto parsed = ConnectionString::parse(
       "; NO_EQUALS ; UID=first;UID=second;PWD= plain ;");
 
-  EXPECT_EQ(parsed.at("UID"), "second");
+  EXPECT_EQ(parsed.at("UID"), "first");
   EXPECT_EQ(parsed.at("PWD"), "plain");
   EXPECT_EQ(parsed.size(), 2u);
 }
