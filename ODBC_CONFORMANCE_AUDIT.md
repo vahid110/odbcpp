@@ -844,6 +844,12 @@ substitute for ODBC diagnostics.
   and `SQLNativeSqlW`. Explicit-length input now returns 42000 before escape
   translation, leaving the caller's output buffer and output length untouched;
   PostgreSQL integration covers both character widths.
+- Audit batch 113 treats malformed PostgreSQL query frames as fatal to the
+  logical connection. Parser and result-decoding failures return a protocol
+  error, mark the connection dead, and prevent a subsequent query from using
+  the untrusted stream. The ODBC error mapper classifies protocol errors as
+  communication-link failures (08S01). A synthetic server-response test covers
+  a truncated `RowDescription` followed by `ReadyForQuery`.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

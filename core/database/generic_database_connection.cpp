@@ -199,15 +199,17 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
       return rs::util::Result<QueryResult>{msg_result.error(), msg_result.error_message()};
     }
     
-    auto msg = parser_->parse_message(*msg_result);
-
-    if (parser_->is_error_response(msg)) {
-      if (query_error.empty()) query_error = parser_->extract_error_message(msg);
-    }
-
-    messages.push_back(msg);
-    if (parser_->is_ready_for_query(msg)) {
-      break;
+    try {
+      auto msg = parser_->parse_message(*msg_result);
+      if (parser_->is_error_response(msg) && query_error.empty()) {
+        query_error = parser_->extract_error_message(msg);
+      }
+      messages.push_back(msg);
+      if (parser_->is_ready_for_query(msg)) break;
+    } catch (const std::exception& error) {
+      mark_transport_failed();
+      return rs::util::Result<QueryResult>{
+          rs::util::DbErrorCode::ProtocolError, error.what()};
     }
   }
 
@@ -220,6 +222,7 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
   try {
     return rs::util::Result<QueryResult>{parser_->extract_query_result(messages)};
   } catch (const std::exception& error) {
+    mark_transport_failed();
     return rs::util::Result<QueryResult>{
         rs::util::DbErrorCode::ProtocolError, error.what()};
   }

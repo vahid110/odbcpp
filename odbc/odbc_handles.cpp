@@ -83,6 +83,7 @@ bool is_timeout_error(const std::error_code& error) {
 bool is_connection_loss(const std::error_code& error) {
   return error == rs::util::make_error_code(rs::util::DbErrorCode::NetworkError) ||
       error == rs::util::make_error_code(rs::util::DbErrorCode::TLSError) ||
+      error == rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError) ||
       error == rs::util::make_error_code(rs::util::DbErrorCode::NotConnected) ||
       error == rs::util::make_error_code(rs::util::DbErrorCode::ConnectionFailed);
 }

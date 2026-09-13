@@ -49,14 +49,21 @@ class FailingQueryTransport final : public rs::core::transport::ITransport {
 
 class StartupParameterTransport final : public rs::core::transport::ITransport {
  public:
-  explicit StartupParameterTransport(bool malformed = false) {
-    if (malformed) {
+  enum class ResponseMode { ValidStartup, MalformedStartup, MalformedQuery };
+
+  explicit StartupParameterTransport(
+      ResponseMode mode = ResponseMode::ValidStartup) {
+    if (mode == ResponseMode::MalformedStartup) {
       append_message('S', "missing-terminators", 19);
       return;
     }
     append_message('S', "server_version\0" "17.6\0", 20);
     append_message('S', "application_name\0" "odbcpp\0", 24);
     append_message('Z', "I", 1);
+    if (mode == ResponseMode::MalformedQuery) {
+      append_message('T', "\0\1", 2);
+      append_message('Z', "I", 1);
+    }
   }
 
   rs::util::Result<void> connect(std::string_view, uint16_t,
@@ -153,7 +160,8 @@ TEST(ConnectionLivenessTest, RejectsMalformedStartupParameters) {
   rs::core::database::GenericDatabaseConnection connection(
       std::make_unique<
           rs::core::database::postgres::PgProtocolParser>(),
-      std::make_unique<StartupParameterTransport>(true));
+      std::make_unique<StartupParameterTransport>(
+          StartupParameterTransport::ResponseMode::MalformedStartup));
 
   rs::core::database::ConnectionSettings settings;
   settings.use_ssl = false;
@@ -162,6 +170,31 @@ TEST(ConnectionLivenessTest, RejectsMalformedStartupParameters) {
   EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
             result.error());
   EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, MalformedQueryResultClosesLogicalConnection) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<StartupParameterTransport>(
+          StartupParameterTransport::ResponseMode::MalformedQuery));
+
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  const auto connected = connection.connect(settings);
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+  ASSERT_TRUE(connection.is_connected());
+
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds(1));
+  const auto result = connection.execute_query("SELECT 1", deadline);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_FALSE(connection.is_connected());
+
+  const auto retry = connection.execute_query("SELECT 2", deadline);
+  ASSERT_TRUE(retry.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::NotConnected),
+            retry.error());
 }
 
 }  // namespace
