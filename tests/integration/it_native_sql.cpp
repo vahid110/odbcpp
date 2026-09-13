@@ -80,6 +80,35 @@ TEST_F(NativeSqlIntegrationTest, RejectsEmbeddedNulSqlAndRecovers) {
   EXPECT_EQ(42, value);
 }
 
+TEST_F(NativeSqlIntegrationTest, NativeSqlRejectsEmbeddedNulWithoutChangingOutputs) {
+  std::string sql("SELECT 1\0;SELECT 2", sizeof("SELECT 1\0;SELECT 2") - 1);
+  std::vector<SQLWCHAR> wide(sql.begin(), sql.end());
+  SQLCHAR output[] = "keep";
+  SQLWCHAR wide_output[] = {'k', 'e', 'e', 'p', 0};
+  SQLINTEGER length = 91;
+
+  EXPECT_EQ(SQL_ERROR,
+            SQLNativeSql(connection_, reinterpret_cast<SQLCHAR*>(sql.data()),
+                         static_cast<SQLINTEGER>(sql.size()), output,
+                         static_cast<SQLINTEGER>(sizeof(output)), &length));
+  EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_STREQ("keep", reinterpret_cast<const char*>(output));
+  EXPECT_EQ(91, length);
+
+  EXPECT_EQ(SQL_ERROR,
+            SQLNativeSqlW(connection_, wide.data(),
+                          static_cast<SQLINTEGER>(wide.size()), wide_output,
+                          static_cast<SQLINTEGER>(std::size(wide_output)),
+                          &length));
+  EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ('k', wide_output[0]);
+  EXPECT_EQ('e', wide_output[1]);
+  EXPECT_EQ('e', wide_output[2]);
+  EXPECT_EQ('p', wide_output[3]);
+  EXPECT_EQ(0, wide_output[4]);
+  EXPECT_EQ(91, length);
+}
+
 TEST_F(NativeSqlIntegrationTest, ReturnsTranslatedAnsiSqlAndExactLength) {
   SQLCHAR input[] = "SELECT {fn UCASE('mixed')}, {d '2024-02-29'}";
   constexpr char expected[] = "SELECT UPPER('mixed'), DATE '2024-02-29'";

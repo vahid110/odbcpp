@@ -1802,8 +1802,13 @@ static SQLRETURN SQLNativeSql_impl(
     return SQL_ERROR;
   }
 
-  const auto native_sql = translate_odbc_sql(
-      sqlchar_to_string(input_statement, text_length1));
+  const auto input_sql = sqlchar_to_string(input_statement, text_length1);
+  if (input_sql.find('\0') != std::string::npos) {
+    conn->set_error(SQLSTATE_SYNTAX_ERROR,
+                    "SQL text contains an embedded NUL byte");
+    return SQL_ERROR;
+  }
+  const auto native_sql = translate_odbc_sql(input_sql);
   if (!native_sql) return set_sql_escape_error(*conn, native_sql);
   if (text_length2) {
     *text_length2 = static_cast<SQLINTEGER>(std::min(
@@ -1860,6 +1865,11 @@ static SQLRETURN SQLNativeSqlW_impl(
   if (!native_sql) {
     conn->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
                     "Invalid wide-character SQL statement");
+    return SQL_ERROR;
+  }
+  if (native_sql->find('\0') != std::string::npos) {
+    conn->set_error(SQLSTATE_SYNTAX_ERROR,
+                    "SQL text contains an embedded NUL byte");
     return SQL_ERROR;
   }
   const auto translated = translate_odbc_sql(*native_sql);

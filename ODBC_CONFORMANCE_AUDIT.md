@@ -840,6 +840,10 @@ substitute for ODBC diagnostics.
   PostgreSQL integration confirms the statement handle can execute a valid
   query afterward. The simple-query path now converts parser exceptions to
   `InvalidParameter`, matching prepared and description requests.
+- Audit batch 112 applies the same embedded-NUL rejection to `SQLNativeSql`
+  and `SQLNativeSqlW`. Explicit-length input now returns 42000 before escape
+  translation, leaving the caller's output buffer and output length untouched;
+  PostgreSQL integration covers both character widths.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
