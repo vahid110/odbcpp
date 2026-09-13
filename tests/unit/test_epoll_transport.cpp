@@ -109,6 +109,14 @@ TEST(EpollTransportTest, RejectsEmbeddedNulHost) {
   EXPECT_TRUE(recovered.has_value()) << recovered.error_message();
 }
 
+TEST(EpollTransportTest, ResolvesLocalhostToIpv4Loopback) {
+  LoopbackServer server(LoopbackServer::Behavior::Silent);
+  EpollTransport transport;
+  auto connected = transport.connect(
+      "localhost", server.port(), rs::util::make_deadline(2s));
+  EXPECT_TRUE(connected.has_value()) << connected.error_message();
+}
+
 TEST(EpollTransportTest, SupportsSynchronousRoundTripThroughReactor) {
   LoopbackServer server(LoopbackServer::Behavior::Echo);
   EpollTransport transport;
