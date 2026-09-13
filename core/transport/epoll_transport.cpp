@@ -51,8 +51,14 @@ public:
   }
 
   bool finish() {
+    return finish_with([] {});
+  }
+
+  template<typename BeforeFinish>
+  bool finish_with(BeforeFinish before_finish) {
     std::lock_guard lock(mutex_);
     if (complete_) return false;
+    before_finish();
     complete_ = true;
     cancel_callback_ = {};
     return true;
@@ -128,6 +134,7 @@ public:
     uint16_t port{};
     std::vector<std::byte> send_buffer;
     std::span<std::byte> recv_buffer;
+    std::vector<std::byte> recv_storage;
     std::vector<Endpoint> endpoints;
     std::size_t next_endpoint{};
   };
@@ -529,7 +536,7 @@ private:
       if ((request->kind == RequestKind::Send &&
            request->send_buffer.empty()) ||
           (request->kind == RequestKind::Recv &&
-           request->recv_buffer.empty())) {
+           request->recv_storage.empty())) {
         if (request->kind == RequestKind::Send) {
           complete_send_locked(request,
                                rs::util::Result<IOResult>{IOResult{0, false}},
@@ -560,8 +567,8 @@ private:
       } else {
         ssize_t count;
         do {
-          count = ::recv(socket_fd_, request->recv_buffer.data(),
-                         request->recv_buffer.size(), 0);
+          count = ::recv(socket_fd_, request->recv_storage.data(),
+                         request->recv_storage.size(), 0);
         } while (count < 0 && errno == EINTR);
         if (count > 0) {
           complete_recv_locked(request, rs::util::Result<IOResult>{
@@ -646,7 +653,12 @@ private:
   void complete_recv_locked(const std::shared_ptr<Request>& request,
                             rs::util::Result<IOResult> result,
                             std::vector<Completion>& completions) {
-    if (!request->state->finish()) return;
+    if (!request->state->finish_with([&] {
+          if (result.has_value()) {
+            std::copy_n(request->recv_storage.begin(), result->n,
+                        request->recv_buffer.begin());
+          }
+        })) return;
     auto callback = request->recv_callback;
     completions.emplace_back(
         [callback = std::move(callback), result = std::move(result)]() mutable {
@@ -788,6 +800,7 @@ std::unique_ptr<AsyncOperation> EpollTransport::recv_async(
   request->state = state;
   request->recv_callback = std::move(callback);
   request->recv_buffer = buf;
+  request->recv_storage.resize(buf.size());
   if (!core_->submit(request) && state->finish()) {
     invoke_safely(request->recv_callback, rs::util::Result<IOResult>{
         rs::util::DbErrorCode::NetworkError,

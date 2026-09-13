@@ -945,6 +945,11 @@ substitute for ODBC diagnostics.
   completion wins. A delayed loopback reply and a queued-work barrier verify
   that cancellation leaves the buffer unchanged and calls back once. Native
   epoll and IOCP receive-buffer cancellation remain separate lifetime audits.
+- Audit batch 133 gives epoll receives owned storage too. Completion copies
+  into the caller's span only while winning the operation-state lock, so a
+  cancellation cannot return and then race with a reactor write. Existing
+  loopback round-trip and cancellation tests exercise both paths; IOCP remains
+  to be audited independently.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

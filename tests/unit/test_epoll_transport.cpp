@@ -255,6 +255,39 @@ TEST(EpollTransportTest, CancellationCompletesExactlyOnce) {
   EXPECT_EQ(callback_count.load(), 1);
 }
 
+TEST(EpollTransportTest, CancelledReceiveLeavesCallerBufferUntouched) {
+  LoopbackServer server(LoopbackServer::Behavior::Echo);
+  EpollTransport transport;
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  std::array<std::byte, 4> cancelled_buffer{};
+  std::atomic<int> callbacks{0};
+  auto cancelled = transport.recv_async(
+      cancelled_buffer, rs::util::make_deadline(1s),
+      [&](rs::util::Result<IOResult> result) {
+        EXPECT_TRUE(result.has_error());
+        callbacks.fetch_add(1);
+      });
+  cancelled->cancel();
+  ASSERT_TRUE(cancelled->is_complete());
+  ASSERT_TRUE(cancelled->is_cancelled());
+  cancelled_buffer.fill(std::byte{0x2a});
+
+  constexpr std::string_view request = "ping";
+  auto sent = transport.send(std::as_bytes(
+      std::span<const char>(request.data(), request.size())),
+      rs::util::make_deadline(1s));
+  ASSERT_TRUE(sent.has_value()) << sent.error_message();
+  std::array<std::byte, 4> response{};
+  auto received = transport.recv(response, rs::util::make_deadline(1s));
+  ASSERT_TRUE(received.has_value()) << received.error_message();
+  EXPECT_EQ(std::memcmp(response.data(), "pong", response.size()), 0);
+  EXPECT_EQ(1, callbacks.load());
+  for (auto byte : cancelled_buffer) EXPECT_EQ(std::byte{0x2a}, byte);
+}
+
 TEST(EpollTransportTest, RejectsWorkBeyondConfiguredQueueDepth) {
   LoopbackServer server(LoopbackServer::Behavior::Silent);
   EpollTransport transport(1, 2);
