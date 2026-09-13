@@ -950,6 +950,11 @@ substitute for ODBC diagnostics.
   cancellation cannot return and then race with a reactor write. Existing
   loopback round-trip and cancellation tests exercise both paths; IOCP remains
   to be audited independently.
+- Audit batch 134 gives IOCP receives owned storage for the duration of the
+  overlapped Winsock operation. The completion transfers successful bytes to
+  the caller before marking the operation complete; cancelled receives do not
+  copy. Windows loopback tests check normal round-trip and cancellation
+  followed by a successful receive into a different buffer.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

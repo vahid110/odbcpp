@@ -276,6 +276,47 @@ TEST(IocpTransportTest, CancellationCompletesExactlyOnce) {
   EXPECT_EQ(callback_count.load(), 1);
 }
 
+TEST(IocpTransportTest, CancelledReceiveLeavesCallerBufferUntouched) {
+  LoopbackServer server(LoopbackServer::Behavior::Echo);
+  IocpTransport transport;
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(2s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  std::array<std::byte, 4> cancelled_buffer{};
+  std::mutex mutex;
+  std::condition_variable ready;
+  std::atomic<int> callback_count{0};
+  auto cancelled = transport.recv_async(
+      cancelled_buffer, rs::util::make_deadline(2s),
+      [&](rs::util::Result<IOResult> result) {
+        EXPECT_TRUE(result.has_error());
+        callback_count.fetch_add(1);
+        ready.notify_one();
+      });
+  cancelled->cancel();
+  {
+    std::unique_lock lock(mutex);
+    ASSERT_TRUE(ready.wait_for(lock, 2s, [&] {
+      return callback_count.load() == 1;
+    }));
+  }
+  cancelled_buffer.fill(std::byte{0x2a});
+
+  constexpr std::string_view request = "ping";
+  auto sent = transport.send(
+      std::as_bytes(std::span<const char>(request.data(), request.size())),
+      rs::util::make_deadline(2s));
+  ASSERT_TRUE(sent.has_value()) << sent.error_message();
+  std::array<std::byte, 4> response{};
+  auto received = transport.recv(response, rs::util::make_deadline(2s));
+  ASSERT_TRUE(received.has_value()) << received.error_message();
+  EXPECT_EQ(received->n, response.size());
+  EXPECT_EQ(std::memcmp(response.data(), "pong", response.size()), 0);
+  for (auto byte : cancelled_buffer) EXPECT_EQ(byte, std::byte{0x2a});
+  EXPECT_EQ(callback_count.load(), 1);
+}
+
 TEST(IocpTransportTest, RejectsWorkBeyondConfiguredQueueDepth) {
   LoopbackServer server(LoopbackServer::Behavior::Silent);
   IocpTransport transport(1, 2);

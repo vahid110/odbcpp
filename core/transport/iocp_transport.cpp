@@ -44,8 +44,14 @@ public:
   }
 
   bool finish() {
+    return finish_with([] {});
+  }
+
+  template<typename Action>
+  bool finish_with(Action action) {
     std::lock_guard lock(mutex_);
     if (complete_) return false;
+    action();
     complete_ = true;
     wake_ = {};
     return true;
@@ -128,6 +134,7 @@ public:
     uint16_t port{};
     std::vector<std::byte> send_buffer;
     std::span<std::byte> recv_buffer;
+    std::vector<std::byte> recv_storage;
     WSABUF winsock_buffer{};
     DWORD recv_flags{};
     std::vector<Endpoint> endpoints;
@@ -599,7 +606,7 @@ private:
       request->native_socket = socket_;
       request->winsock_buffer.buf = request->kind == RequestKind::Send
           ? reinterpret_cast<char*>(request->send_buffer.data())
-          : reinterpret_cast<char*>(request->recv_buffer.data());
+          : reinterpret_cast<char*>(request->recv_storage.data());
       request->winsock_buffer.len = static_cast<ULONG>((std::min<std::size_t>)(
           size, static_cast<std::size_t>((std::numeric_limits<ULONG>::max)())));
       request->recv_flags = 0;
@@ -730,7 +737,12 @@ private:
   void complete_recv_locked(const std::shared_ptr<Request>& request,
                             rs::util::Result<IOResult> result,
                             std::vector<Completion>& completions) {
-    if (!request->state->finish()) return;
+    if (!request->state->finish_with([&] {
+          if (result.has_value()) {
+            std::copy_n(request->recv_storage.begin(), result->n,
+                        request->recv_buffer.begin());
+          }
+        })) return;
     auto callback = request->recv_callback;
     completions.emplace_back(
         [callback = std::move(callback), result = std::move(result)]() mutable {
@@ -862,6 +874,7 @@ std::unique_ptr<AsyncOperation> IocpTransport::recv_async(
   request->state = state;
   request->recv_callback = std::move(callback);
   request->recv_buffer = buf;
+  request->recv_storage.resize(buf.size());
   if (!core->submit(request) && state->finish()) {
     invoke_safely(request->recv_callback, rs::util::Result<IOResult>{
         rs::util::DbErrorCode::NetworkError,
