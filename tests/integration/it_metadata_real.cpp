@@ -2101,6 +2101,11 @@ TEST_F(MetadataIntegrationTest, NegativeNumericScaleMetadata) {
         SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,
+        (SQLCHAR*)"INSERT INTO odbcpp_negative_scale_metadata "
+                  "VALUES (-9999999900, -9999999900)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
         (SQLCHAR*)"CREATE FUNCTION pg_temp.odbcpp_negative_scale_func("
                   "n pg_temp.odbcpp_nested_negative_scale) "
                   "RETURNS pg_temp.odbcpp_nested_negative_scale "
@@ -2136,13 +2141,62 @@ TEST_F(MetadataIntegrationTest, NegativeNumericScaleMetadata) {
         (SQLCHAR*)"SELECT base_n, domain_n "
                   "FROM odbcpp_negative_scale_metadata",
         SQL_NTS));
+    SQLHDESC row_descriptor = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_IMP_ROW_DESC, &row_descriptor, 0, nullptr));
     for (SQLUSMALLINT column : std::array<SQLUSMALLINT, 2>{1, 2}) {
         SQLSMALLINT scale = 0;
         ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
             hstmt, column, nullptr, 0, nullptr, nullptr, nullptr,
             &scale, nullptr));
         EXPECT_EQ(-2, scale);
+        SQLLEN display_size = 0;
+        SQLLEN octet_length = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+            hstmt, column, SQL_DESC_DISPLAY_SIZE, nullptr, 0, nullptr,
+            &display_size));
+        ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+            hstmt, column, SQL_DESC_OCTET_LENGTH, nullptr, 0, nullptr,
+            &octet_length));
+        EXPECT_EQ(11, display_size);
+        EXPECT_EQ(11, octet_length);
+        SQLLEN descriptor_display = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+            row_descriptor, column, SQL_DESC_DISPLAY_SIZE,
+            &descriptor_display, 0, nullptr));
+        EXPECT_EQ(display_size, descriptor_display);
     }
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("-9999999900"), text_cell(hstmt, 1));
+    EXPECT_EQ(std::optional<std::string>("-9999999900"), text_cell(hstmt, 2));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_fractional_numeric("
+                  "value numeric(8,10))",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"INSERT INTO odbcpp_fractional_numeric "
+                  "VALUES (-0.0012345678)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"SELECT value FROM odbcpp_fractional_numeric",
+        SQL_NTS));
+    SQLLEN fractional_display = 0;
+    SQLLEN fractional_octets = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        hstmt, 1, SQL_DESC_DISPLAY_SIZE, nullptr, 0, nullptr,
+        &fractional_display));
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        hstmt, 1, SQL_DESC_OCTET_LENGTH, nullptr, 0, nullptr,
+        &fractional_octets));
+    EXPECT_EQ(13, fractional_display);
+    EXPECT_EQ(13, fractional_octets);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("-0.0012345678"), text_cell(hstmt, 1));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
     ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(

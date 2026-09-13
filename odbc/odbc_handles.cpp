@@ -545,7 +545,19 @@ SQLLEN bounded_descriptor_length(SQLULEN length, SQLULEN multiplier = 1,
   return static_cast<SQLLEN>(length * multiplier + extra);
 }
 
-SQLLEN descriptor_octet_length(SQLSMALLINT type, SQLULEN length) {
+SQLULEN numeric_character_extra(SQLULEN precision, SQLSMALLINT scale) {
+  if (scale < 0) {
+    return std::max<SQLULEN>(
+        2, static_cast<SQLULEN>(1 - static_cast<int>(scale)));
+  }
+  if (static_cast<SQLULEN>(scale) >= precision) {
+    return static_cast<SQLULEN>(scale) - precision + 3;
+  }
+  return 2;
+}
+
+SQLLEN descriptor_octet_length(SQLSMALLINT type, SQLULEN length,
+                              SQLSMALLINT scale) {
   switch (type) {
     case SQL_BIT:
     case SQL_TINYINT: return 1;
@@ -561,7 +573,9 @@ SQLLEN descriptor_octet_length(SQLSMALLINT type, SQLULEN length) {
     case SQL_DECIMAL:
     case SQL_NUMERIC:
       return length == 0 ? SQL_NO_TOTAL
-                         : bounded_descriptor_length(length, 1, 2);
+                         : bounded_descriptor_length(
+                               length, 1, numeric_character_extra(
+                                   length, scale));
     case SQL_CHAR:
     case SQL_VARCHAR:
     case SQL_LONGVARCHAR:
@@ -590,7 +604,9 @@ SQLLEN descriptor_display_size(SQLSMALLINT type, SQLULEN length,
     case SQL_DECIMAL:
     case SQL_NUMERIC:
       return length == 0 ? SQL_NO_TOTAL
-                         : bounded_descriptor_length(length, 1, 2);
+                         : bounded_descriptor_length(
+                               length, 1, numeric_character_extra(
+                                   length, scale));
     case SQL_BINARY:
     case SQL_VARBINARY:
     case SQL_LONGVARBINARY:
@@ -611,7 +627,7 @@ void complete_descriptor_record(DescriptorRecord& record) {
   record.precision = descriptor_precision(
       record.concise_type, record.length, record.scale);
   record.octet_length = descriptor_octet_length(
-      record.concise_type, record.length);
+      record.concise_type, record.length, record.scale);
   record.label = record.name;
   record.unnamed = record.name.empty() ? SQL_UNNAMED : SQL_NAMED;
   record.type_name = type_info ? type_info->name : "";

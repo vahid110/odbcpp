@@ -711,6 +711,13 @@ substitute for ODBC diagnostics.
   as required by the [ODBC column-attribute definition](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlcolattribute-function).
   The real PostgreSQL test checks both the IRD and `SQLColAttribute` for
   numeric and character columns.
+- Audit batch 88 sizes numeric display and transfer buffers for PostgreSQL
+  scales outside the ordinary ODBC range. Negative scales can add integer
+  digits beyond precision, and scales at least as large as precision require
+  a leading zero before the decimal point. Real PostgreSQL values exercise
+  both cases and check the resulting `SQLColAttribute` display/octet sizes
+  against the IRD where applicable. Standard positive-scale values retain
+  the [ODBC precision-plus-two rule](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/display-size).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
