@@ -1835,7 +1835,8 @@ TEST_F(MetadataIntegrationTest, NestedDomainCatalogDimensionsMatchBaseColumns) {
                   "base_v varchar(13), nested_v "
                   "pg_temp.odbcpp_catalog_nested_length, "
                   "base_n numeric(8,3), domain_n "
-                  "pg_temp.odbcpp_catalog_nested_scale)",
+                  "pg_temp.odbcpp_catalog_nested_scale, "
+                  "PRIMARY KEY(nested_v, domain_n))",
         SQL_NTS));
 
     SQLCHAR table_name[] = "odbcpp_catalog_domain_dimensions";
@@ -1845,6 +1846,7 @@ TEST_F(MetadataIntegrationTest, NestedDomainCatalogDimensionsMatchBaseColumns) {
     constexpr std::array<SQLUSMALLINT, 6> fields{5, 7, 8, 9, 10, 16};
     std::array<std::optional<SQLINTEGER>, fields.size()> base{};
     std::array<std::optional<SQLINTEGER>, fields.size()> nested_character{};
+    std::array<std::optional<SQLINTEGER>, fields.size()> nested_numeric{};
     for (int pair = 0; pair < 2; ++pair) {
         ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
         for (std::size_t index = 0; index < fields.size(); ++index) {
@@ -1856,6 +1858,7 @@ TEST_F(MetadataIntegrationTest, NestedDomainCatalogDimensionsMatchBaseColumns) {
             EXPECT_EQ(base[index], nested)
                 << "pair=" << pair << " field=" << fields[index];
             if (pair == 0) nested_character[index] = nested;
+            else nested_numeric[index] = nested;
         }
     }
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
@@ -1872,6 +1875,78 @@ TEST_F(MetadataIntegrationTest, NestedDomainCatalogDimensionsMatchBaseColumns) {
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     for (std::size_t index = 0; index < fields.size(); ++index) {
         EXPECT_EQ(nested_character[index], integer_cell(hstmt, fields[index]));
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
+        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+        table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NO_NULLS));
+    constexpr std::array<SQLUSMALLINT, 4> special_fields{3, 5, 6, 7};
+    for (const auto& expected : {nested_character, nested_numeric}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        for (std::size_t index = 0; index < special_fields.size(); ++index) {
+            EXPECT_EQ(expected[index],
+                      integer_cell(hstmt, special_fields[index]));
+        }
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE FUNCTION pg_temp.odbcpp_catalog_domain_func("
+                  "v pg_temp.odbcpp_catalog_nested_length, "
+                  "n pg_temp.odbcpp_catalog_nested_scale) "
+                  "RETURNS pg_temp.odbcpp_catalog_nested_scale "
+                  "LANGUAGE SQL AS 'SELECT $2'",
+        SQL_NTS));
+    SQLCHAR procedure_name[] = "odbcpp\\_catalog\\_domain\\_func";
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedureColumns(
+        hstmt, nullptr, 0, nullptr, 0, procedure_name, SQL_NTS,
+        nullptr, 0));
+    constexpr std::array<SQLUSMALLINT, 6> procedure_fields{
+        6, 8, 9, 10, 11, 17};
+    for (const auto& expected :
+         {nested_character, nested_numeric, nested_numeric}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        for (std::size_t index = 0; index < procedure_fields.size(); ++index) {
+            EXPECT_EQ(expected[index],
+                      integer_cell(hstmt, procedure_fields[index]));
+        }
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumnsW(
+        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+        wide_table->data(), static_cast<SQLSMALLINT>(wide_table->size()),
+        SQL_SCOPE_CURROW, SQL_NO_NULLS));
+    for (const auto& expected : {nested_character, nested_numeric}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        for (std::size_t index = 0; index < special_fields.size(); ++index) {
+            EXPECT_EQ(expected[index],
+                      integer_cell(hstmt, special_fields[index]));
+        }
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    auto wide_procedure = rs::odbc::utf8_to_wide(
+        "odbcpp\\_catalog\\_domain\\_func");
+    ASSERT_TRUE(wide_procedure.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedureColumnsW(
+        hstmt, nullptr, 0, nullptr, 0,
+        wide_procedure->data(),
+        static_cast<SQLSMALLINT>(wide_procedure->size()),
+        nullptr, 0));
+    for (const auto& expected :
+         {nested_character, nested_numeric, nested_numeric}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        for (std::size_t index = 0; index < procedure_fields.size(); ++index) {
+            EXPECT_EQ(expected[index],
+                      integer_cell(hstmt, procedure_fields[index]));
+        }
     }
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }

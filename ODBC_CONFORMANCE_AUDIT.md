@@ -679,6 +679,14 @@ substitute for ODBC diagnostics.
   PostgreSQL test compares all six fields, including `SQLColumnsW` parity for
   the character domain. Routine argument and special-column typmod coverage
   remains separate work.
+- Audit batch 84 applies that effective typmod to `SQLSpecialColumns` and
+  `SQLProcedureColumns` using shared character-length, octet-length, numeric
+  precision, buffer-length, and scale expressions. A real PostgreSQL test
+  compares a composite primary key and routine input/return arguments over
+  nested `varchar(13)` and `numeric(8,3)` domains with the corresponding
+  `SQLColumns` values, including ANSI/wide parity. Non-domain routine
+  arguments still use conservative sizes because `pg_proc` carries type OIDs
+  but not argument typmods.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
