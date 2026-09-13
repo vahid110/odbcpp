@@ -119,6 +119,7 @@ public:
   struct Request {
     RequestKind kind{};
     rs::util::Deadline deadline{};
+    rs::util::Deadline endpoint_deadline{};
     std::shared_ptr<OperationState> state;
     ConnectCallback connect_callback;
     SendCallback send_callback;
@@ -295,6 +296,7 @@ private:
               (socket_events & (EPOLLOUT | EPOLLERR | EPOLLHUP))) {
             finish_connect_locked(completions);
           }
+          expire_connect_endpoint_locked(completions);
           if (!active_connect_ &&
               (control_event || socket_events != 0 || count == 0)) {
             process_io_locked(completions);
@@ -318,6 +320,10 @@ private:
       if (!request->state->is_complete()) {
         nearest = std::min(nearest, request->deadline);
       }
+    }
+    if (active_connect_ &&
+        active_connect_->next_endpoint < active_connect_->endpoints.size()) {
+      nearest = std::min(nearest, active_connect_->endpoint_deadline);
     }
     if (nearest == rs::util::Clock::time_point::max()) return -1;
     const auto now = rs::util::Clock::now();
@@ -359,6 +365,16 @@ private:
                               "async operation deadline expired", completions);
       }
     }
+  }
+
+  void expire_connect_endpoint_locked(std::vector<Completion>& completions) {
+    if (!active_connect_ ||
+        active_connect_->next_endpoint >= active_connect_->endpoints.size() ||
+        active_connect_->endpoint_deadline > rs::util::Clock::now()) {
+      return;
+    }
+    close_socket_locked();
+    try_next_endpoint_locked(completions);
   }
 
   void start_connect_locked(std::vector<Completion>& completions) {
@@ -421,6 +437,20 @@ private:
   void try_next_endpoint_locked(std::vector<Completion>& completions) {
     while (active_connect_ &&
            active_connect_->next_endpoint < active_connect_->endpoints.size()) {
+      const auto left = rs::util::remaining(active_connect_->deadline);
+      if (left <= std::chrono::milliseconds::zero()) {
+        complete_error_locked(active_connect_, rs::util::DbErrorCode::Timeout,
+                              "async operation deadline expired", completions);
+        active_connect_.reset();
+        return;
+      }
+      const auto remaining_endpoints =
+          active_connect_->endpoints.size() - active_connect_->next_endpoint;
+      const auto budget = std::max(
+          std::chrono::milliseconds(1),
+          left / static_cast<std::chrono::milliseconds::rep>(remaining_endpoints));
+      active_connect_->endpoint_deadline = std::min(
+          active_connect_->deadline, rs::util::Clock::now() + budget);
       const auto& endpoint =
           active_connect_->endpoints[active_connect_->next_endpoint++];
       const int socket = ::socket(endpoint.family, endpoint.type | SOCK_CLOEXEC,

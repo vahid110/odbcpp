@@ -796,6 +796,10 @@ substitute for ODBC diagnostics.
   `ConnectEx` could consume the whole login deadline. IOCP now budgets each
   pending endpoint, cancels and closes a stalled socket, then attempts the
   next address while preserving the overall deadline and one-shot completion.
+- Audit batch 104 applies the per-endpoint budget to Linux Epoll as well, so a
+  silent first address does not consume the deadline before later addresses
+  are tried. Both native async backends have expired-connect recovery tests
+  and IPv4-only localhost fallback coverage.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

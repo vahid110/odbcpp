@@ -133,6 +133,20 @@ TEST(IocpTransportTest, ResolvesLocalhostToIpv4Loopback) {
   EXPECT_TRUE(connected.has_value()) << connected.error_message();
 }
 
+TEST(IocpTransportTest, ExpiredConnectCanRecoverOnNextConnection) {
+  IocpTransport transport;
+  auto expired = transport.connect(
+      "localhost", 1, rs::util::Clock::now());
+  ASSERT_TRUE(expired.has_error());
+  EXPECT_EQ(expired.error(),
+            rs::util::make_error_code(rs::util::DbErrorCode::Timeout));
+
+  LoopbackServer server(LoopbackServer::Behavior::Silent);
+  auto connected = transport.connect(
+      "localhost", server.port(), rs::util::make_deadline(2s));
+  EXPECT_TRUE(connected.has_value()) << connected.error_message();
+}
+
 TEST(IocpTransportTest, SupportsSynchronousRoundTripThroughCompletionPort) {
   LoopbackServer server(LoopbackServer::Behavior::Echo);
   IocpTransport transport;

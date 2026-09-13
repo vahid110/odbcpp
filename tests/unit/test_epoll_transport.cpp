@@ -117,6 +117,20 @@ TEST(EpollTransportTest, ResolvesLocalhostToIpv4Loopback) {
   EXPECT_TRUE(connected.has_value()) << connected.error_message();
 }
 
+TEST(EpollTransportTest, ExpiredConnectCanRecoverOnNextConnection) {
+  EpollTransport transport;
+  auto expired = transport.connect(
+      "localhost", 1, rs::util::Clock::now());
+  ASSERT_TRUE(expired.has_error());
+  EXPECT_EQ(expired.error(),
+            rs::util::make_error_code(rs::util::DbErrorCode::Timeout));
+
+  LoopbackServer server(LoopbackServer::Behavior::Silent);
+  auto connected = transport.connect(
+      "localhost", server.port(), rs::util::make_deadline(2s));
+  EXPECT_TRUE(connected.has_value()) << connected.error_message();
+}
+
 TEST(EpollTransportTest, SupportsSynchronousRoundTripThroughReactor) {
   LoopbackServer server(LoopbackServer::Behavior::Echo);
   EpollTransport transport;
