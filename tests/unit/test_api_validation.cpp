@@ -482,6 +482,50 @@ TEST_F(ApiValidationTest, RejectsInvalidConnectionOptionsWithoutConnecting) {
   }
 }
 
+TEST_F(ApiValidationTest, RejectsEmbeddedNulInConnectionInputs) {
+  std::string input("SERVER=127.0.0.1;UID=alice\0;SERVER=other",
+                    sizeof("SERVER=127.0.0.1;UID=alice\0;SERVER=other") - 1);
+  EXPECT_EQ(SQL_ERROR,
+            SQLDriverConnect(connection_, nullptr,
+                             reinterpret_cast<SQLCHAR*>(input.data()),
+                             static_cast<SQLSMALLINT>(input.size()),
+                             nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("HY000", diagnostic_state(SQL_HANDLE_DBC, connection_));
+
+  std::vector<SQLWCHAR> wide_input(input.begin(), input.end());
+  EXPECT_EQ(SQL_ERROR,
+            SQLDriverConnectW(connection_, nullptr, wide_input.data(),
+                              static_cast<SQLSMALLINT>(wide_input.size()),
+                              nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("HY000", diagnostic_state(SQL_HANDLE_DBC, connection_));
+
+  SQLCHAR dsn[]{'m', 'i', 's', 's', 'i', 'n', 'g'};
+  SQLCHAR user[]{'a', 'l', 'i', 'c', 'e', 0, 'r', 'o', 'o', 't'};
+  SQLCHAR password[]{'p', 'a', 's', 's', 0, 'w', 'o', 'r', 'd'};
+  EXPECT_EQ(SQL_ERROR,
+            SQLConnect(connection_, dsn, sizeof(dsn), user, sizeof(user),
+                       nullptr, 0));
+  EXPECT_EQ("HY000", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLConnect(connection_, dsn, sizeof(dsn), nullptr, 0,
+                       password, sizeof(password)));
+  EXPECT_EQ("HY000", diagnostic_state(SQL_HANDLE_DBC, connection_));
+
+  std::vector<SQLWCHAR> wide_dsn(dsn, dsn + sizeof(dsn));
+  std::vector<SQLWCHAR> wide_user(user, user + sizeof(user));
+  std::vector<SQLWCHAR> wide_password(password,
+                                     password + sizeof(password));
+  EXPECT_EQ(SQL_ERROR,
+            SQLConnectW(connection_, wide_dsn.data(), wide_dsn.size(),
+                        wide_user.data(), wide_user.size(), nullptr, 0));
+  EXPECT_EQ("HY000", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR,
+            SQLConnectW(connection_, wide_dsn.data(), wide_dsn.size(),
+                        nullptr, 0, wide_password.data(),
+                        wide_password.size()));
+  EXPECT_EQ("HY000", diagnostic_state(SQL_HANDLE_DBC, connection_));
+}
+
 TEST_F(ApiValidationTest, RejectsInvalidWideConnectionInputs) {
   SQLWCHAR dsn[]{'e', 'x', 'a', 'm', 'p', 'l', 'e', 0};
   SQLWCHAR invalid[]{static_cast<SQLWCHAR>(0xd800)};

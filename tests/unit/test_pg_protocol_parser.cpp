@@ -4,16 +4,47 @@
 #include "core/database/query_parameter.h"
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace {
 
+using rs::core::database::AuthenticationRequest;
 using rs::core::database::QueryParameter;
 using rs::core::database::QueryParameterType;
 using rs::core::database::postgres::PgProtocolParser;
+
+TEST(PgProtocolParserTest, RejectsEmbeddedNulInStartupFields) {
+  PgProtocolParser parser;
+  const std::string malformed("alice\0admin", sizeof("alice\0admin") - 1);
+
+  EXPECT_THROW(parser.create_startup_message(malformed, "postgres", {}),
+               std::invalid_argument);
+  EXPECT_THROW(parser.create_startup_message("alice", malformed, {}),
+               std::invalid_argument);
+  EXPECT_THROW(parser.create_startup_message(
+                   "alice", "postgres", {{malformed, "value"}}),
+               std::invalid_argument);
+  EXPECT_THROW(parser.create_startup_message(
+                   "alice", "postgres", {{"application_name", malformed}}),
+               std::invalid_argument);
+}
+
+TEST(PgProtocolParserTest, RejectsEmbeddedNulInAuthenticationCredentials) {
+  PgProtocolParser parser;
+  AuthenticationRequest request;
+  request.type = AuthenticationRequest::Type::Cleartext;
+  const std::string malformed("alice\0admin", sizeof("alice\0admin") - 1);
+
+  EXPECT_THROW(parser.create_auth_response(request, malformed, "alice"),
+               std::invalid_argument);
+  EXPECT_THROW(parser.create_auth_response(request, "password", malformed),
+               std::invalid_argument);
+}
 
 struct Frame {
   char tag{};

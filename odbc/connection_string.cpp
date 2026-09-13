@@ -31,6 +31,9 @@ std::string environment_value(const char* name) {
 } // namespace
 
 std::map<std::string, std::string> ConnectionString::parse(const std::string& conn_str) {
+  if (conn_str.find('\0') != std::string::npos) {
+    throw std::invalid_argument("Connection string contains an embedded NUL byte");
+  }
   std::map<std::string, std::string> params;
 
   std::size_t position = 0;

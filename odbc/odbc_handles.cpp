@@ -55,6 +55,13 @@ bool parse_ssl(const std::string& value) {
       "SSL must be true or false (1/0, yes/no, on/off)");
 }
 
+void require_no_nul(std::string_view value, std::string_view name) {
+  if (value.find('\0') != std::string_view::npos) {
+    throw std::invalid_argument(std::string(name) +
+                                " contains an embedded NUL byte");
+  }
+}
+
 std::uint16_t parse_port(std::string_view value) {
   if (value.empty()) {
     throw std::invalid_argument("PORT must be an integer from 1 to 65535");
@@ -979,6 +986,9 @@ SQLRETURN ODBCConnection::connect(
     return SQL_ERROR;
   }
   try {
+    require_no_nul(dsn, "Connection string or DSN");
+    if (user) require_no_nul(*user, "User name");
+    if (password) require_no_nul(*password, "Password");
     const auto resolved = ConnectionString::resolve(dsn, default_driver_name());
     const auto logging_options = rs::core::logging::LoggingOptions::resolve(
         resolved.driver_parameters, resolved.dsn_parameters,
@@ -1009,6 +1019,10 @@ SQLRETURN ODBCConnection::connect(
     settings.password = password ? *password :
                         (params.count("PWD") ? params.at("PWD") :
                          (params.count("PASSWORD") ? params.at("PASSWORD") : ""));
+    require_no_nul(settings.host, "Server name");
+    require_no_nul(settings.database, "Database name");
+    require_no_nul(settings.user, "User name");
+    require_no_nul(settings.password, "Password");
     settings.use_ssl = params.count("SSL") && parse_ssl(params.at("SSL"));
     settings.timeout = timeout_duration(login_timeout_seconds_);
 

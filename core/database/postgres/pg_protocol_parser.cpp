@@ -3,6 +3,7 @@
 #include <charconv>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 #include <openssl/evp.h>
 
 namespace {
@@ -262,6 +263,14 @@ std::vector<std::byte> PgProtocolParser::create_startup_message(
   for (const auto& p : params) {
     kv.push_back(p);
   }
+
+  for (const auto& [key, value] : kv) {
+    if (key.find('\0') != std::string::npos ||
+        value.find('\0') != std::string::npos) {
+      throw std::invalid_argument(
+          "PostgreSQL startup field contains an embedded NUL byte");
+    }
+  }
   
   size_t bytes = 4 + 4 + 1; // len + protocol + terminator
   for (const auto& p : kv) {
@@ -343,6 +352,11 @@ std::vector<std::byte> PgProtocolParser::create_auth_response(
     const AuthenticationRequest& request,
     const std::string& password,
     const std::string& user) {
+  if (password.find('\0') != std::string::npos ||
+      user.find('\0') != std::string::npos) {
+    throw std::invalid_argument(
+        "PostgreSQL authentication credential contains an embedded NUL byte");
+  }
   
   std::string auth_string;
   

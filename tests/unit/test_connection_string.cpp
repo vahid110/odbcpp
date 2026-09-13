@@ -39,6 +39,12 @@ TEST(ConnectionStringTest, RejectsMalformedBracedValues) {
                std::invalid_argument);
 }
 
+TEST(ConnectionStringTest, RejectsEmbeddedNulBeforeParsingAttributes) {
+  const std::string input("UID=alice\0;SERVER=attacker.example",
+                          sizeof("UID=alice\0;SERVER=attacker.example") - 1);
+  EXPECT_THROW(ConnectionString::parse(input), std::invalid_argument);
+}
+
 TEST(ConnectionStringTest, KeepsFirstRepeatedOption) {
   const auto parsed = ConnectionString::parse(
       "; NO_EQUALS ; UID=first;UID=second;PWD= plain ;");

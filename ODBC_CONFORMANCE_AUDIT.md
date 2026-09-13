@@ -827,6 +827,13 @@ substitute for ODBC diagnostics.
   malformed values, error diagnostics, and braced text; Driver Manager tests
   connect with accepted `off` and `no` values. The README documents accepted
   spellings and the no-downgrade behavior.
+- Audit batch 110 rejects embedded NUL bytes in explicit-length connection
+  strings, connection identities and credentials, and PostgreSQL startup and
+  authentication fields before a packet can be sent. PostgreSQL defines these
+  fields as [NUL-terminated strings](https://www.postgresql.org/docs/current/protocol-message-types.html),
+  so an embedded NUL could change how the server interprets subsequent bytes.
+  Parser and ANSI/wide ODBC tests cover connection strings, users, passwords,
+  database names, and startup parameter names and values.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
