@@ -27,10 +27,10 @@ public:
 
   // configuration
   void set_min_tls_version(long v); // e.g., TLS1_2_VERSION
-  void set_verify(bool on) { verify_ = on; }
+  void set_verify(bool on) { verify_ = on; context_dirty_ = true; }
   void set_hostname_verification(bool on) { verify_host_ = on; }
   void set_ca_locations(const std::string& file, const std::string& dir) {
-    ca_file_ = file; ca_dir_ = dir;
+    ca_file_ = file; ca_dir_ = dir; context_dirty_ = true;
   }
   void set_deadline_model(DeadlineModel model) { tcp_.set_deadline_model(model); }
   DeadlineModel deadline_model() const noexcept { return tcp_.deadline_model(); }
@@ -46,6 +46,7 @@ private:
   SocketTransport tcp_;
   SSL_CTX* ctx_ {nullptr};
   SSL* ssl_ {nullptr};
+  bool context_dirty_ {false};
   std::string sni_host_;
   bool verify_ {true};
   bool verify_host_ {true}; 

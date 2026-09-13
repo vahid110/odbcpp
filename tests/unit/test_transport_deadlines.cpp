@@ -402,6 +402,27 @@ TEST(TLSTransportDeadlineTest, PlainReconnectDiscardsPriorTlsSession) {
   EXPECT_EQ(sent->n, plaintext.size());
 }
 
+TEST(TLSTransportDeadlineTest, ReconnectAppliesUpdatedVerification) {
+  TLSSleepingServer first(250ms);
+  TLSSleepingServer second(250ms);
+  TLSTransport transport(DeadlineModel::Strict);
+  transport.set_verify(false);
+
+  auto connected = transport.connect(
+      "127.0.0.1", first.port(), rs::util::make_deadline(1s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+  ASSERT_TRUE(first.wait_for_handshake());
+
+  transport.set_verify(true);
+  auto rejected = transport.connect(
+      "127.0.0.1", second.port(), rs::util::make_deadline(1s));
+  EXPECT_TRUE(rejected.has_error())
+      << "updated certificate verification must apply on reconnect";
+
+  const std::array<std::byte, 1> plaintext{std::byte{'x'}};
+  EXPECT_TRUE(transport.send(plaintext, rs::util::make_deadline(100ms)).has_error());
+}
+
 TEST(TLSTransportDeadlineTest, StrictReceiveTimesOutAfterHandshake) {
   TLSSleepingServer server(250ms);
   TLSTransport transport(DeadlineModel::Strict);

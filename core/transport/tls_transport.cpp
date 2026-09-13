@@ -28,6 +28,11 @@ TLSTransport::~TLSTransport() {
 }
 
 void TLSTransport::ensure_ctx() {
+  if (context_dirty_) {
+    if (ctx_) SSL_CTX_free(ctx_);
+    ctx_ = nullptr;
+    context_dirty_ = false;
+  }
   if (ctx_) return;
 
   const SSL_METHOD* method = TLS_client_method();
@@ -105,6 +110,7 @@ void TLSTransport::upgrade_from(socket_t s, std::string_view host, Deadline dead
 }
 
 void TLSTransport::upgrade_impl(std::string_view host, Deadline deadline) {
+  if (ssl_) throw TLSError("TLS session is already active");
   tcp_.prepare_for_io(deadline);
   ensure_ctx();
   sni_host_ = std::string(host);
@@ -229,6 +235,7 @@ rs::util::Result<IOResult> TLSTransport::recv(std::span<std::byte> buf, Deadline
 
 void TLSTransport::set_min_tls_version(long v) {
   min_version_ = v;
+  context_dirty_ = true;
 }
 
 } // namespace rs::core::transport

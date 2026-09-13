@@ -741,6 +741,11 @@ substitute for ODBC diagnostics.
   rechecking the original deadline. A POSIX signal-interruption regression
   verifies that `DeadlineModel=SocketTimeout` receives a timeout diagnostic
   rather than an unrelated I/O failure.
+- Audit batch 94 rebuilds the synchronous TLS context on the next connection
+  after verification, CA location, or minimum-protocol settings change. A
+  reconnect regression verifies that switching from unverified TLS to peer
+  verification rejects a self-signed certificate instead of reusing the old
+  no-verification context.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
