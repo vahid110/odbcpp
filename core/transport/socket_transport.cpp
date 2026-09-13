@@ -113,7 +113,7 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
     return {rs::util::DbErrorCode::InvalidParameter,
             "host contains an embedded NUL byte"};
   }
-  return rs::util::try_catch([&]() {
+  auto result = rs::util::try_catch([&]() {
   close();
 
   if (remaining(deadline) <= std::chrono::milliseconds::zero()) {
@@ -156,13 +156,7 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
     }
 #endif
 
-    int rc = ::connect(sock_, ai->ai_addr,
-#ifdef _WIN32
-                       (int)ai->ai_addrlen
-#else
-                       (int)ai->ai_addrlen
-#endif
-    );
+    int rc = ::connect(sock_, ai->ai_addr, static_cast<int>(ai->ai_addrlen));
     if (rc == 0) {
 #ifdef _WIN32
       const bool unregistered = ::WSAEventSelect(sock_, nullptr, 0) == 0;
@@ -227,6 +221,8 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
     }
     throw IOError("connect failed for all resolved addresses");
   });
+  if (result.has_error()) close();
+  return result;
 }
 
 rs::util::Result<IOResult> SocketTransport::send(std::span<const std::byte> buf, Deadline deadline) {

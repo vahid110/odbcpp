@@ -299,6 +299,12 @@ TEST(SocketTransportDeadlineTest, ResolvesLocalhostToIpv4Loopback) {
 
 TEST(SocketTransportDeadlineTest, RefusedConnectionDoesNotLeaveOpenSocket) {
   SocketTransport transport(DeadlineModel::Strict);
+  SleepingServer prior_server(100ms);
+  auto prior_connection = transport.connect(
+      "127.0.0.1", prior_server.port(), rs::util::make_deadline(1s));
+  ASSERT_TRUE(prior_connection.has_value()) << prior_connection.error_message();
+  ASSERT_NE(transport.native(), invalid_test_socket);
+
   const test_socket_t unused = ::socket(AF_INET, SOCK_STREAM, 0);
   ASSERT_NE(unused, invalid_test_socket);
   sockaddr_in address{};
@@ -321,6 +327,7 @@ TEST(SocketTransportDeadlineTest, RefusedConnectionDoesNotLeaveOpenSocket) {
       "127.0.0.1", ntohs(address.sin_port), rs::util::make_deadline(2s));
   const auto elapsed = std::chrono::steady_clock::now() - start;
   ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(transport.native(), invalid_test_socket);
 #ifndef _WIN32
   EXPECT_LT(elapsed, 1s);
 #else

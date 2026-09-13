@@ -800,6 +800,10 @@ substitute for ODBC diagnostics.
   silent first address does not consume the deadline before later addresses
   are tried. Both native async backends have expired-connect recovery tests
   and IPv4-only localhost fallback coverage.
+- Audit batch 105 makes synchronous TCP connect failure close any socket left
+  by an exception during socket configuration or post-connect I/O setup. The
+  refused-port regression now begins from a live connection and checks that
+  the failed reconnect leaves no native socket behind.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
