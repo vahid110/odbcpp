@@ -174,6 +174,7 @@ std::string mapped_backend_sqlstate(std::string_view server_state,
   }
   if (server_state.substr(0, 2) == "22") return std::string(server_state);
   if (server_state.substr(0, 2) == "23") return "23000";
+  if (server_state == "3F000") return "3F000";
   if (server_state == "42P07") {
     if (statement_code == SQL_DIAG_CREATE_INDEX) return "42S11";
     if (statement_code == SQL_DIAG_CREATE_TABLE ||

@@ -930,6 +930,10 @@ substitute for ODBC diagnostics.
   Other undefined objects and deferred errors without statement identity
   retain `42000`. Real PostgreSQL tests cover direct/prepared/deferred errors
   and recovery.
+- Audit batch 130 preserves PostgreSQL `3F000` (invalid schema name), which
+  matches [ODBC `3F000`](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function).
+  A real nonexistent-schema test covers direct, prepared, and deferred
+  execution plus connection recovery.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
