@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "core/transport/socket_transport.h"
+#include "core/transport/tls_io.h"
 #include "core/transport/tls_peer_identity.h"
 #include "core/transport/tls_transport.h"
 #include "core/util/deadline.h"
@@ -16,8 +17,10 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <limits>
 #include <mutex>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -521,6 +524,35 @@ TEST(TLSTransportDeadlineTest, StrictReceiveTimesOutAfterHandshake) {
 
   ASSERT_TRUE(result.has_error());
   EXPECT_EQ(result.error(), rs::util::make_error_code(rs::util::DbErrorCode::Timeout));
+}
+
+TEST(TLSTransportDeadlineTest, EmptyTlsIoDoesNotWaitForSocket) {
+  TLSSleepingServer server(100ms);
+  TLSTransport transport(DeadlineModel::Strict);
+  transport.set_verify(false);
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  const auto expired = rs::util::Clock::now();
+  auto sent = transport.send(std::span<const std::byte>{}, expired);
+  ASSERT_TRUE(sent.has_value()) << sent.error_message();
+  EXPECT_EQ(sent->n, 0u);
+  EXPECT_FALSE(sent->eof);
+
+  auto received = transport.recv(std::span<std::byte>{}, expired);
+  ASSERT_TRUE(received.has_value()) << received.error_message();
+  EXPECT_EQ(received->n, 0u);
+  EXPECT_FALSE(received->eof);
+}
+
+TEST(TLSTransportDeadlineTest, OpenSslIoLengthsStayWithinSignedInt) {
+  const auto maximum = std::numeric_limits<int>::max();
+  EXPECT_EQ(rs::core::transport::tls_io_chunk_size(1), 1);
+  EXPECT_EQ(rs::core::transport::tls_io_chunk_size(
+                static_cast<std::size_t>(maximum)), maximum);
+  EXPECT_EQ(rs::core::transport::tls_io_chunk_size(
+                static_cast<std::size_t>(maximum) + 1), maximum);
 }
 
 } // namespace

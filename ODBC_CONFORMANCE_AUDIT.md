@@ -758,6 +758,12 @@ substitute for ODBC diagnostics.
   resolution in sync, epoll, and IOCP transports. This prevents the resolver
   from silently connecting to the truncated prefix; a rejected reconnect also
   closes the previous socket.
+- Audit batch 98 aligns synchronous TLS zero-length send/receive with plain
+  and async transports, avoiding a zero-length `SSL_read` and unnecessary
+  deadline checks. TLS I/O also caps each OpenSSL `int` length argument at
+  `INT_MAX`, with boundary tests that do not allocate giant buffers. See the
+  [OpenSSL write](https://docs.openssl.org/3.2/man3/SSL_write/) and
+  [read](https://docs.openssl.org/3.6/man3/SSL_read/) signatures.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

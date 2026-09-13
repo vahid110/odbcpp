@@ -1,8 +1,10 @@
 // core/transport/tls_io.h
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <cstddef>
 #include <chrono>
+#include <limits>
 #include <span>
 
 #include <openssl/ssl.h>
@@ -37,6 +39,11 @@ struct Error {
   int  sys_errno{0};
   long ssl_err{0};
 };
+
+inline int tls_io_chunk_size(std::size_t remaining) noexcept {
+  return static_cast<int>(std::min(
+      remaining, static_cast<std::size_t>(std::numeric_limits<int>::max())));
+}
 
 inline bool deadline_expired(rs::util::Deadline dl) {
   using namespace std::chrono;
@@ -102,7 +109,8 @@ inline Error tls_write_all(SSL* ssl,
   written = 0;
   while (written < len) {
     if (deadline_expired(dl)) return {Errc::Timeout, "send", "deadline"};
-    int rc = ::SSL_write(ssl, buf + written, static_cast<int>(len - written));
+    int rc = ::SSL_write(ssl, buf + written,
+                         tls_io_chunk_size(len - written));
     if (rc > 0) { written += static_cast<size_t>(rc); continue; }
     int e = ::SSL_get_error(ssl, rc);
     if (e == SSL_ERROR_WANT_READ) {
@@ -133,9 +141,10 @@ inline Error tls_read_some(SSL* ssl,
   uint8_t* buf, size_t cap, rs::util::Deadline dl, size_t& got, bool& eof)
 {
   got = 0; eof = false;
+  if (cap == 0) return {};
   for (;;) {
     if (deadline_expired(dl)) return {Errc::Timeout, "recv", "deadline"};
-    int rc = ::SSL_read(ssl, buf, static_cast<int>(cap));
+    int rc = ::SSL_read(ssl, buf, tls_io_chunk_size(cap));
     if (rc > 0) { got = static_cast<size_t>(rc); return {}; }
     int e = ::SSL_get_error(ssl, rc);
     if (e == SSL_ERROR_ZERO_RETURN) { eof = true; return {}; }
