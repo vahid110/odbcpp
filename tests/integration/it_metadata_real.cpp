@@ -3654,6 +3654,48 @@ TEST_F(MetadataIntegrationTest, MissingObjectsUseOdbcSqlstates) {
     EXPECT_EQ(1, integer_cell(hstmt, 1));
 }
 
+TEST_F(MetadataIntegrationTest, DuplicateObjectsUseOdbcSqlstates) {
+    constexpr auto create_table =
+        "CREATE TEMP TABLE odbcpp_duplicate_diag(id integer)";
+    constexpr auto add_column =
+        "ALTER TABLE odbcpp_duplicate_diag ADD COLUMN id integer";
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)create_table, SQL_NTS));
+
+    EXPECT_EQ(SQL_ERROR, SQLExecDirect(
+        hstmt, (SQLCHAR*)create_table, SQL_NTS));
+    EXPECT_EQ("42S01", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)create_table, SQL_NTS));
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    EXPECT_EQ("42S01", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    EXPECT_EQ(SQL_ERROR, SQLExecDirect(
+        hstmt, (SQLCHAR*)add_column, SQL_NTS));
+    EXPECT_EQ("42S21", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)add_column, SQL_NTS));
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    EXPECT_EQ("42S21", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 7; "
+                         "ALTER TABLE odbcpp_duplicate_diag "
+                         "ADD COLUMN id integer", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(7, integer_cell(hstmt, 1));
+    EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
+    EXPECT_EQ("42S21", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT count(*) FROM odbcpp_duplicate_diag",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(0, integer_cell(hstmt, 1));
+}
+
 TEST_F(MetadataIntegrationTest, ClosingCursorDiscardsPendingResults) {
     constexpr auto batch =
         "SELECT 1 AS first_value; SELECT 2 AS second_value";

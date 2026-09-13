@@ -172,7 +172,9 @@ std::string mapped_backend_sqlstate(std::string_view server_state,
   }
   if (server_state.substr(0, 2) == "22") return std::string(server_state);
   if (server_state.substr(0, 2) == "23") return "23000";
+  if (server_state == "42P07") return "42S01";
   if (server_state == "42P01") return "42S02";
+  if (server_state == "42701") return "42S21";
   if (server_state == "42703") return "42S22";
   return fallback;
 }

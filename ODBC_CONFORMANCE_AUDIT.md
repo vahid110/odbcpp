@@ -912,6 +912,12 @@ substitute for ODBC diagnostics.
   [SQLExecDirect diagnostics](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function).
   Other class-42 errors retain the existing `42000` fallback. Real
   PostgreSQL tests cover direct, prepared, and deferred-result paths.
+- Audit batch 127 maps PostgreSQL `42P07` (duplicate table) and `42701`
+  (duplicate column) to ODBC `42S01` and `42S21`, respectively, using the
+  [PostgreSQL error-code list](https://www.postgresql.org/docs/current/errcodes-appendix.html)
+  and [SQLExecDirect diagnostics](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function).
+  A real PostgreSQL test covers direct, prepared, deferred-result, and
+  recovery paths; other class-42 errors retain the `42000` fallback.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
