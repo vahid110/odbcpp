@@ -768,6 +768,11 @@ substitute for ODBC diagnostics.
   when certificate verification is disabled, and closes the underlying plain
   socket. Sync and async loopback tests verify the rejection and that no
   plaintext I/O remains available after failure.
+- Audit batch 100 publishes a synchronous TLS context only after protocol
+  bounds and trust-store configuration succeed. Invalid minimum protocol
+  versions fail explicitly. Failed CA-file loading is retried on reconnect
+  rather than leaving a partially configured context in use; a two-connection
+  regression checks both failures.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

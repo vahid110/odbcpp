@@ -4,6 +4,7 @@
 #include "core/util/exception_adapter.h"
 
 #include <stdexcept>
+#include <memory>
 #include <vector>
 #include <cassert>
 
@@ -37,37 +38,46 @@ void TLSTransport::ensure_ctx() {
   if (ctx_) return;
 
   const SSL_METHOD* method = TLS_client_method();
-  ctx_ = SSL_CTX_new(method);
-  if (!ctx_) {
+  std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> context(
+      SSL_CTX_new(method), SSL_CTX_free);
+  if (!context) {
     ERR_print_errors_fp(stderr);
     throw TLSError("SSL_CTX_new failed");
   }
 
   // Protocol bounds
-  SSL_CTX_set_min_proto_version(ctx_, static_cast<int>(min_version_));
+  if (SSL_CTX_set_min_proto_version(
+          context.get(), static_cast<int>(min_version_)) != 1) {
+    throw TLSError("Failed to set minimum TLS version");
+  }
 #ifdef TLS1_3_VERSION
-  SSL_CTX_set_max_proto_version(ctx_, TLS1_3_VERSION);
+  if (SSL_CTX_set_max_proto_version(context.get(), TLS1_3_VERSION) != 1) {
+    throw TLSError("Failed to set maximum TLS version");
+  }
 #endif
 
   // Chain verification on/off
-  SSL_CTX_set_verify(ctx_, verify_ ? SSL_VERIFY_PEER : SSL_VERIFY_NONE, nullptr);
+  SSL_CTX_set_verify(context.get(), verify_ ? SSL_VERIFY_PEER : SSL_VERIFY_NONE,
+                     nullptr);
 
   if (verify_) {
     // Load CA trust (file -> dir -> defaults) only when the connection will
     // actually verify its peer. This can involve filesystem or platform trust
     // store I/O, especially on Windows.
     if (!ca_file_.empty()) {
-      if (SSL_CTX_load_verify_locations(ctx_, ca_file_.c_str(), nullptr) != 1) {
+      if (SSL_CTX_load_verify_locations(
+              context.get(), ca_file_.c_str(), nullptr) != 1) {
         ERR_print_errors_fp(stderr);
         throw TLSError("Failed to load CA file: " + ca_file_);
       }
     } else if (!ca_dir_.empty()) {
-      if (SSL_CTX_load_verify_locations(ctx_, nullptr, ca_dir_.c_str()) != 1) {
+      if (SSL_CTX_load_verify_locations(
+              context.get(), nullptr, ca_dir_.c_str()) != 1) {
         ERR_print_errors_fp(stderr);
         throw TLSError("Failed to load CA directory: " + ca_dir_);
       }
     } else {
-      if (SSL_CTX_set_default_verify_paths(ctx_) != 1) {
+      if (SSL_CTX_set_default_verify_paths(context.get()) != 1) {
         ERR_print_errors_fp(stderr);
         throw TLSError("Failed to load default CA paths");
       }
@@ -76,8 +86,9 @@ void TLSTransport::ensure_ctx() {
 
 #ifdef SSL_MODE_AUTO_RETRY
   // Avoid spurious SSL_ERROR_WANT_READ after writes on some stacks.
-  SSL_CTX_set_mode(ctx_, SSL_MODE_AUTO_RETRY);
+  SSL_CTX_set_mode(context.get(), SSL_MODE_AUTO_RETRY);
 #endif
+  ctx_ = context.release();
 }
 
 rs::util::Result<void> TLSTransport::connect(std::string_view host, uint16_t port, Deadline deadline) {

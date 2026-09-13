@@ -17,6 +17,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <filesystem>
 #include <limits>
 #include <mutex>
 #include <memory>
@@ -459,6 +460,40 @@ TEST(TLSTransportDeadlineTest, ReconnectAppliesUpdatedVerification) {
 
   const std::array<std::byte, 1> plaintext{std::byte{'x'}};
   EXPECT_TRUE(transport.send(plaintext, rs::util::make_deadline(100ms)).has_error());
+}
+
+TEST(TLSTransportDeadlineTest, RetriesFailedTrustStoreLoadOnReconnect) {
+  const auto missing_ca = std::filesystem::temp_directory_path() /
+      ("odbcpp-missing-ca-" + std::to_string(
+          std::chrono::steady_clock::now().time_since_epoch().count()) +
+       ".pem");
+  ASSERT_FALSE(std::filesystem::exists(missing_ca));
+
+  TLSTransport transport(DeadlineModel::Strict);
+  transport.set_ca_locations(missing_ca.string(), "");
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    SleepingServer server(100ms);
+    auto result = transport.connect(
+        "127.0.0.1", server.port(), rs::util::make_deadline(1s));
+    ASSERT_TRUE(result.has_error());
+    EXPECT_NE(result.error_message().find("Failed to load CA file"),
+              std::string::npos);
+  }
+}
+
+TEST(TLSTransportDeadlineTest, RejectsInvalidMinimumTlsVersion) {
+  SleepingServer server(100ms);
+  TLSTransport transport(DeadlineModel::Strict);
+  transport.set_verify(false);
+  transport.set_min_tls_version(0x7fff);
+
+  auto result = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s));
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(result.error(),
+            rs::util::make_error_code(rs::util::DbErrorCode::TLSError));
+  EXPECT_NE(result.error_message().find("minimum TLS version"),
+            std::string::npos);
 }
 
 TEST(TLSTransportDeadlineTest, RejectsEmbeddedNulUpgradeAndClosesPlainSocket) {
