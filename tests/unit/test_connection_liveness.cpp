@@ -56,7 +56,9 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     ValidStartup, MalformedStartup, MalformedAuth, AuthRejected,
     MalformedQuery, MalformedStartupReady, MalformedQueryReady,
     MalformedQueryError, MalformedBackendKey, ReadyWithoutAuth,
-    StartupRejectedAfterAuth, LoginRejectedAfterAuth
+    StartupRejectedAfterAuth, LoginRejectedAfterAuth,
+    DuplicateAuthenticationOk, ChallengeAfterAuthenticationOk,
+    ParameterStatusBeforeAuthenticationOk, BackendKeyBeforeAuthenticationOk
   };
 
   explicit ScriptedBackendTransport(
@@ -83,7 +85,24 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('Z', "I", 1);
       return;
     }
+    if (mode == ResponseMode::ParameterStatusBeforeAuthenticationOk) {
+      append_message('S', "server_version\0" "17.6\0", 20);
+      return;
+    }
+    if (mode == ResponseMode::BackendKeyBeforeAuthenticationOk) {
+      constexpr char backend_key[] = "\0\0\0\0\0\0\0\0";
+      append_message('K', backend_key, 8);
+      return;
+    }
     append_message('R', "\0\0\0\0", 4);
+    if (mode == ResponseMode::DuplicateAuthenticationOk) {
+      append_message('R', "\0\0\0\0", 4);
+      return;
+    }
+    if (mode == ResponseMode::ChallengeAfterAuthenticationOk) {
+      append_message('R', "\0\0\0\3", 4);
+      return;
+    }
     if (mode == ResponseMode::StartupRejectedAfterAuth) {
       constexpr char error[] =
           "SERROR\0C22023\0Mstartup option rejected\0";
@@ -265,6 +284,28 @@ TEST(ConnectionLivenessTest, ReadyWithoutAuthenticationOkIsProtocolError) {
   EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
             result.error());
   EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, OutOfPhaseStartupMessagesAreProtocolErrors) {
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {
+           Mode::DuplicateAuthenticationOk,
+           Mode::ChallengeAfterAuthenticationOk,
+           Mode::ParameterStatusBeforeAuthenticationOk,
+           Mode::BackendKeyBeforeAuthenticationOk}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    rs::core::database::GenericDatabaseConnection connection(
+        std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+        std::make_unique<ScriptedBackendTransport>(mode));
+
+    rs::core::database::ConnectionSettings settings;
+    settings.use_ssl = false;
+    const auto result = connection.connect(settings);
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+              result.error());
+    EXPECT_FALSE(connection.is_connected());
+  }
 }
 
 TEST(ConnectionLivenessTest, ErrorAfterAuthenticationIsStartupFailure) {

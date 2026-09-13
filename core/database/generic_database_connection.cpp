@@ -343,6 +343,11 @@ rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(
       auto msg = parser_->parse_message(*msg_result);
     
       if (msg.tag == 'R') { // Authentication
+        if (authenticated) {
+          return rs::util::Result<void>{
+              rs::util::DbErrorCode::ProtocolError,
+              "Authentication request arrived after AuthenticationOk"};
+        }
         auto auth_req = parser_->parse_auth_request(msg.payload);
       
         if (auth_req.type == AuthenticationRequest::Type::None) {
@@ -360,6 +365,11 @@ rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(
         }
       }
       else if (msg.tag == 'S') { // ParameterStatus
+        if (!authenticated) {
+          return rs::util::Result<void>{
+              rs::util::DbErrorCode::ProtocolError,
+              "ParameterStatus arrived before AuthenticationOk"};
+        }
         const auto key_end = std::find(
             msg.payload.begin(), msg.payload.end(), std::byte{0});
         const auto value_begin = key_end == msg.payload.end()
@@ -381,6 +391,13 @@ rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(
             std::distance(value_begin, value_end));
         server_params_[std::string(bytes, key_size)] =
             std::string(bytes + value_offset, value_size);
+      }
+      else if (msg.tag == 'K') { // BackendKeyData
+        if (!authenticated) {
+          return rs::util::Result<void>{
+              rs::util::DbErrorCode::ProtocolError,
+              "BackendKeyData arrived before AuthenticationOk"};
+        }
       }
       else if (parser_->is_error_response(msg)) {
         last_error_ = parser_->extract_error_message(msg);

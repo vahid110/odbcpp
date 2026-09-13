@@ -876,6 +876,10 @@ substitute for ODBC diagnostics.
   after authentication it is classified by the server SQLSTATE: class `28`
   remains an authentication failure (including a nonexistent role after
   `AuthenticationOk`), while other errors are startup/connection failures.
+- Audit batch 119 rejects out-of-phase PostgreSQL startup frames. A second
+  authentication request after `AuthenticationOk` cannot trigger another
+  credential response, and `ParameterStatus` or `BackendKeyData` before
+  authentication succeeds cannot be mistaken for normal startup metadata.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
