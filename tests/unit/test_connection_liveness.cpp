@@ -60,7 +60,9 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     DuplicateAuthenticationOk, ChallengeAfterAuthenticationOk,
     ParameterStatusBeforeAuthenticationOk, BackendKeyBeforeAuthenticationOk,
     UnexpectedQueryFrameBeforeAuthenticationOk,
-    UnexpectedQueryFrameAfterAuthenticationOk, NoticeAfterAuthenticationOk
+    UnexpectedQueryFrameAfterAuthenticationOk, NoticeAfterAuthenticationOk,
+    MalformedNoticeMissingField, MalformedNoticeDuplicateField,
+    MalformedNoticeUnterminated
   };
 
   explicit ScriptedBackendTransport(
@@ -108,6 +110,22 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     if (mode == ResponseMode::NoticeAfterAuthenticationOk) {
       constexpr char notice[] = "SNOTICE\0C00000\0Mstartup notice\0";
       append_message('N', notice, sizeof(notice));
+    }
+    if (mode == ResponseMode::MalformedNoticeMissingField) {
+      constexpr char notice[] = "SNOTICE\0C00000\0\0";
+      append_message('N', notice, sizeof(notice) - 1);
+      return;
+    }
+    if (mode == ResponseMode::MalformedNoticeDuplicateField) {
+      constexpr char notice[] =
+          "SNOTICE\0C00000\0Mstartup notice\0SNOTICE\0\0";
+      append_message('N', notice, sizeof(notice) - 1);
+      return;
+    }
+    if (mode == ResponseMode::MalformedNoticeUnterminated) {
+      constexpr char notice[] = "SNOTICE\0C00000\0Mstartup notice";
+      append_message('N', notice, sizeof(notice) - 1);
+      return;
     }
     if (mode == ResponseMode::DuplicateAuthenticationOk) {
       append_message('R', "\0\0\0\0", 4);
@@ -335,6 +353,26 @@ TEST(ConnectionLivenessTest, NoticeAfterAuthenticationOkAllowsStartup) {
   ASSERT_TRUE(connection.connect(settings).has_value());
   EXPECT_TRUE(connection.is_connected());
   EXPECT_EQ("17.6", connection.get_parameter("server_version"));
+}
+
+TEST(ConnectionLivenessTest, MalformedNoticeCannotCompleteStartup) {
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::MalformedNoticeMissingField,
+                          Mode::MalformedNoticeDuplicateField,
+                          Mode::MalformedNoticeUnterminated}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    rs::core::database::GenericDatabaseConnection connection(
+        std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+        std::make_unique<ScriptedBackendTransport>(mode));
+
+    rs::core::database::ConnectionSettings settings;
+    settings.use_ssl = false;
+    const auto result = connection.connect(settings);
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+              result.error());
+    EXPECT_FALSE(connection.is_connected());
+  }
 }
 
 TEST(ConnectionLivenessTest, ErrorAfterAuthenticationIsStartupFailure) {

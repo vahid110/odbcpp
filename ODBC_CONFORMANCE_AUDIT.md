@@ -884,6 +884,10 @@ substitute for ODBC diagnostics.
   instead of silently skipping them until `ReadyForQuery`. Query-phase frames
   cannot precede the first query, while a post-authentication `NoticeResponse`
   remains permitted by the [startup flow](https://www.postgresql.org/docs/current/protocol-flow.html).
+- Audit batch 121 validates [PostgreSQL `NoticeResponse` fields](https://www.postgresql.org/docs/current/protocol-error-fields.html)
+  with the same field decoder used for `ErrorResponse`. Missing mandatory
+  fields, duplicates, and unterminated notices fail startup with a protocol
+  error instead of being silently ignored.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

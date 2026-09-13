@@ -623,6 +623,9 @@ Message PgProtocolParser::parse_message(const std::vector<std::byte>& data) {
   if (msg.tag == 'K' && msg.payload.size() != 8) {
     throw std::runtime_error("Invalid PostgreSQL 3.0 BackendKeyData length");
   }
+  if (msg.tag == 'N') {
+    (void)decode_error_fields(msg.payload);
+  }
   return msg;
 }
 
@@ -644,13 +647,13 @@ bool PgProtocolParser::is_error_response(const Message& msg) {
 std::string PgProtocolParser::extract_error_message(const Message& msg) {
   if (msg.tag != 'E') return "";
   
-  auto error = decode_error(msg.payload);
+  auto error = decode_error_fields(msg.payload);
   return error.message();
 }
 
 std::string PgProtocolParser::extract_error_sqlstate(const Message& msg) {
   if (msg.tag != 'E') return "";
-  return decode_error(msg.payload).code();
+  return decode_error_fields(msg.payload).code();
 }
 
 ResultRows PgProtocolParser::extract_query_results(
@@ -772,7 +775,8 @@ rs::pg::Authentication PgProtocolParser::decode_auth(const std::vector<std::byte
   return a;
 }
 
-rs::pg::ErrorResponse PgProtocolParser::decode_error(const std::vector<std::byte>& payload) {
+rs::pg::ErrorResponse PgProtocolParser::decode_error_fields(
+    const std::vector<std::byte>& payload) {
   rs::pg::ErrorResponse e{};
   std::size_t offset = 0;
   while (offset < payload.size() && payload[offset] != std::byte{0}) {
@@ -793,7 +797,7 @@ rs::pg::ErrorResponse PgProtocolParser::decode_error(const std::vector<std::byte
   if (offset + 1 != payload.size() ||
       !e.fields.contains('S') || !e.fields.contains('C') ||
       !e.fields.contains('M') || e.fields.at('M').empty()) {
-    throw std::runtime_error("Invalid PostgreSQL ErrorResponse payload");
+    throw std::runtime_error("Invalid PostgreSQL error/notice payload");
   }
   return e;
 }
