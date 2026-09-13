@@ -20,6 +20,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -258,6 +259,30 @@ TEST(SocketTransportDeadlineTest, StrictReceiveHonorsAbsoluteDeadline) {
 
 TEST(SocketTransportDeadlineTest, SocketTimeoutIsRefreshedForReceive) {
   expect_receive_timeout(DeadlineModel::SocketTimeout);
+}
+
+TEST(SocketTransportDeadlineTest, RejectsEmbeddedNulHostAndClosesOldSocket) {
+  SleepingServer server(250ms);
+  SocketTransport transport(DeadlineModel::Strict);
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  constexpr char malformed[] = "127.0.0.1\0unexpected";
+  auto rejected = transport.connect(
+      std::string_view(malformed, sizeof(malformed) - 1), server.port(),
+      rs::util::make_deadline(1s));
+  ASSERT_TRUE(rejected.has_error());
+  EXPECT_EQ(rejected.error(),
+            rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter));
+
+  const std::array<std::byte, 1> data{std::byte{'x'}};
+  EXPECT_TRUE(transport.send(data, rs::util::make_deadline(100ms)).has_error());
+
+  SleepingServer recovered_server(100ms);
+  auto recovered = transport.connect(
+      "127.0.0.1", recovered_server.port(), rs::util::make_deadline(1s));
+  EXPECT_TRUE(recovered.has_value()) << recovered.error_message();
 }
 
 #ifndef _WIN32

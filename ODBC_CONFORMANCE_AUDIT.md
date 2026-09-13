@@ -754,6 +754,10 @@ substitute for ODBC diagnostics.
   transports while preserving it for DNS names. Loopback servers inspect the
   actual ClientHello behavior. [RFC 6066](https://datatracker.ietf.org/doc/html/rfc6066#section-3)
   disallows literal IP addresses in the SNI `HostName` field.
+- Audit batch 97 rejects embedded NUL bytes in host strings before DNS
+  resolution in sync, epoll, and IOCP transports. This prevents the resolver
+  from silently connecting to the truncated prefix; a rejected reconnect also
+  closes the previous socket.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

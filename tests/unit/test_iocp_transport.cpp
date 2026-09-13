@@ -109,6 +109,22 @@ TEST(IocpTransportTest, ValidatesCapacitySettings) {
   EXPECT_THROW(IocpTransport(2, 1), std::invalid_argument);
 }
 
+TEST(IocpTransportTest, RejectsEmbeddedNulHost) {
+  IocpTransport transport;
+  constexpr char malformed[] = "127.0.0.1\0unexpected";
+  auto result = transport.connect(
+      std::string_view(malformed, sizeof(malformed) - 1), 5432,
+      rs::util::make_deadline(1s));
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(result.error(),
+            rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter));
+
+  LoopbackServer server(LoopbackServer::Behavior::Silent);
+  auto recovered = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s));
+  EXPECT_TRUE(recovered.has_value()) << recovered.error_message();
+}
+
 TEST(IocpTransportTest, SupportsSynchronousRoundTripThroughCompletionPort) {
   LoopbackServer server(LoopbackServer::Behavior::Echo);
   IocpTransport transport;

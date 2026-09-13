@@ -403,6 +403,16 @@ private:
     close_socket_locked();
     connected_ = false;
 
+    if (active_connect_->host.find('\0') != std::string::npos) {
+      complete_connect_locked(
+          active_connect_,
+          rs::util::Result<void>{rs::util::DbErrorCode::InvalidParameter,
+                                 "host contains an embedded NUL byte"},
+          completions);
+      active_connect_.reset();
+      return;
+    }
+
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;

@@ -108,6 +108,11 @@ void SocketTransport::prepare_for_io(Deadline deadline) {
 }
 
 rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t port, Deadline deadline) {
+  if (host.find('\0') != std::string_view::npos) {
+    close();
+    return {rs::util::DbErrorCode::InvalidParameter,
+            "host contains an embedded NUL byte"};
+  }
   return rs::util::try_catch([&]() {
   close();
 
