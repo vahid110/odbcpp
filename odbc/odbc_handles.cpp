@@ -799,17 +799,28 @@ bool is_count_column_attribute(SQLUSMALLINT field_identifier) {
 }
 
 bool is_supported_column_attribute(SQLUSMALLINT field_identifier) {
-  static constexpr std::array<SQLUSMALLINT, 18> attributes{
+  static constexpr auto attributes = std::to_array<SQLUSMALLINT>({
       SQL_DESC_COUNT, SQL_COLUMN_COUNT,
+      SQL_DESC_AUTO_UNIQUE_VALUE, SQL_COLUMN_AUTO_INCREMENT,
+      SQL_DESC_CASE_SENSITIVE, SQL_COLUMN_CASE_SENSITIVE,
+      SQL_DESC_DISPLAY_SIZE, SQL_COLUMN_DISPLAY_SIZE,
+      SQL_DESC_FIXED_PREC_SCALE, SQL_COLUMN_MONEY,
       SQL_DESC_NAME, SQL_COLUMN_NAME,
       SQL_DESC_LABEL, SQL_COLUMN_LABEL,
+      SQL_DESC_LITERAL_PREFIX, SQL_DESC_LITERAL_SUFFIX,
+      SQL_DESC_LOCAL_TYPE_NAME,
+      SQL_DESC_NUM_PREC_RADIX, SQL_DESC_OCTET_LENGTH,
+      SQL_DESC_SEARCHABLE, SQL_COLUMN_SEARCHABLE,
       SQL_DESC_TYPE,
       SQL_DESC_CONCISE_TYPE, SQL_COLUMN_TYPE,
+      SQL_DESC_TYPE_NAME, SQL_COLUMN_TYPE_NAME,
       SQL_DESC_LENGTH, SQL_COLUMN_LENGTH,
       SQL_DESC_PRECISION, SQL_COLUMN_PRECISION,
       SQL_DESC_SCALE, SQL_COLUMN_SCALE,
       SQL_DESC_NULLABLE, SQL_COLUMN_NULLABLE,
-      SQL_DESC_UNNAMED};
+      SQL_DESC_UNNAMED,
+      SQL_DESC_UNSIGNED, SQL_COLUMN_UNSIGNED,
+      SQL_DESC_UPDATABLE, SQL_COLUMN_UPDATABLE});
   return contains_attribute(field_identifier, attributes);
 }
 
@@ -4221,22 +4232,36 @@ SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT 
   }
   
   const auto& col = column_info_[column_number - 1];
-  
+  const auto record = descriptor_record_for(col);
+  const std::string* text = nullptr;
   if (field_identifier == SQL_DESC_NAME ||
-      field_identifier == SQL_COLUMN_NAME ||
-      field_identifier == SQL_DESC_LABEL ||
-      field_identifier == SQL_COLUMN_LABEL) {
+      field_identifier == SQL_COLUMN_NAME) {
+    text = &record.name;
+  } else if (field_identifier == SQL_DESC_LABEL ||
+             field_identifier == SQL_COLUMN_LABEL) {
+    text = &record.label;
+  } else if (field_identifier == SQL_DESC_TYPE_NAME ||
+             field_identifier == SQL_COLUMN_TYPE_NAME) {
+    text = &record.type_name;
+  } else if (field_identifier == SQL_DESC_LOCAL_TYPE_NAME) {
+    text = &record.local_type_name;
+  } else if (field_identifier == SQL_DESC_LITERAL_PREFIX) {
+    text = &record.literal_prefix;
+  } else if (field_identifier == SQL_DESC_LITERAL_SUFFIX) {
+    text = &record.literal_suffix;
+  }
+  if (text) {
     if (character_attribute && buffer_length > 0) {
       const auto copy_len = std::min(
-          static_cast<std::size_t>(buffer_length - 1), col.name.length());
-      std::memcpy(character_attribute, col.name.c_str(), copy_len);
+          static_cast<std::size_t>(buffer_length - 1), text->length());
+      std::memcpy(character_attribute, text->c_str(), copy_len);
       static_cast<char*>(character_attribute)[copy_len] = '\0';
     }
     if (string_length) {
-      *string_length = static_cast<SQLSMALLINT>(col.name.length());
+      *string_length = static_cast<SQLSMALLINT>(text->length());
     }
-    if (character_attribute && !col.name.empty() &&
-        static_cast<std::size_t>(buffer_length) <= col.name.length()) {
+    if (character_attribute && !text->empty() &&
+        static_cast<std::size_t>(buffer_length) <= text->length()) {
       set_error(SQLSTATE_STRING_DATA_TRUNCATED,
                 "Column attribute was truncated");
       return SQL_SUCCESS_WITH_INFO;
@@ -4245,16 +4270,42 @@ SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT 
   }
 
   if (numeric_attribute) {
-    if (field_identifier == SQL_DESC_TYPE) {
+    if (field_identifier == SQL_DESC_AUTO_UNIQUE_VALUE ||
+        field_identifier == SQL_COLUMN_AUTO_INCREMENT) {
+      *numeric_attribute = record.auto_unique_value;
+    } else if (field_identifier == SQL_DESC_CASE_SENSITIVE ||
+               field_identifier == SQL_COLUMN_CASE_SENSITIVE) {
+      *numeric_attribute = record.case_sensitive;
+    } else if (field_identifier == SQL_DESC_DISPLAY_SIZE ||
+               field_identifier == SQL_COLUMN_DISPLAY_SIZE) {
+      *numeric_attribute = record.display_size;
+    } else if (field_identifier == SQL_DESC_FIXED_PREC_SCALE ||
+               field_identifier == SQL_COLUMN_MONEY) {
+      *numeric_attribute = record.fixed_prec_scale;
+    } else if (field_identifier == SQL_DESC_NUM_PREC_RADIX) {
+      *numeric_attribute = record.num_prec_radix;
+    } else if (field_identifier == SQL_DESC_OCTET_LENGTH) {
+      *numeric_attribute = record.octet_length;
+    } else if (field_identifier == SQL_DESC_SEARCHABLE ||
+               field_identifier == SQL_COLUMN_SEARCHABLE) {
+      *numeric_attribute = record.searchable;
+    } else if (field_identifier == SQL_DESC_UNSIGNED ||
+               field_identifier == SQL_COLUMN_UNSIGNED) {
+      *numeric_attribute = record.unsigned_attribute;
+    } else if (field_identifier == SQL_DESC_UPDATABLE ||
+               field_identifier == SQL_COLUMN_UPDATABLE) {
+      *numeric_attribute = record.updatable;
+    } else if (field_identifier == SQL_DESC_TYPE) {
       *numeric_attribute = descriptor_type_for(col.sql_type);
     } else if (field_identifier == SQL_DESC_CONCISE_TYPE ||
         field_identifier == SQL_COLUMN_TYPE) {
       *numeric_attribute = col.sql_type;
     } else if (field_identifier == SQL_DESC_LENGTH ||
                field_identifier == SQL_COLUMN_LENGTH ||
-               field_identifier == SQL_DESC_PRECISION ||
                field_identifier == SQL_COLUMN_PRECISION) {
       *numeric_attribute = static_cast<SQLLEN>(col.column_size);
+    } else if (field_identifier == SQL_DESC_PRECISION) {
+      *numeric_attribute = record.precision;
     } else if (field_identifier == SQL_DESC_SCALE ||
                field_identifier == SQL_COLUMN_SCALE) {
       *numeric_attribute = col.decimal_digits;

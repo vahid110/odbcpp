@@ -742,6 +742,115 @@ TEST_F(MetadataIntegrationTest, DescribesPreparedColumnsDirectly) {
     EXPECT_EQ(SQL_TYPE_DATE, concise_type);
 }
 
+TEST_F(MetadataIntegrationTest, ColumnAttributesMatchImplementationDescriptor) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt,
+        (SQLCHAR*)"SELECT 12.34::numeric(8,2) AS amount, "
+                  "'x'::varchar(12) AS label",
+        SQL_NTS));
+    SQLSMALLINT column_count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &column_count));
+    ASSERT_EQ(2, column_count);
+
+    SQLHDESC row_descriptor = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_IMP_ROW_DESC, &row_descriptor, 0, nullptr));
+    struct NumericField {
+        SQLUSMALLINT identifier;
+        SQLLEN expected;
+    };
+    const NumericField numeric_fields[] = {
+        {SQL_DESC_AUTO_UNIQUE_VALUE, SQL_FALSE},
+        {SQL_DESC_CASE_SENSITIVE, SQL_FALSE},
+        {SQL_DESC_DISPLAY_SIZE, 10},
+        {SQL_DESC_FIXED_PREC_SCALE, SQL_TRUE},
+        {SQL_DESC_NUM_PREC_RADIX, 10},
+        {SQL_DESC_OCTET_LENGTH, 10},
+        {SQL_DESC_SEARCHABLE, SQL_PRED_SEARCHABLE},
+        {SQL_DESC_UNSIGNED, SQL_FALSE},
+        {SQL_DESC_UPDATABLE, SQL_ATTR_READONLY},
+    };
+    for (const auto& field : numeric_fields) {
+        SQLLEN descriptor_value = 0;
+        SQLLEN attribute_value = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+            row_descriptor, 1, field.identifier, &descriptor_value, 0,
+            nullptr));
+        ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+            hstmt, 1, field.identifier, nullptr, 0, nullptr,
+            &attribute_value));
+        EXPECT_EQ(field.expected, descriptor_value) << field.identifier;
+        EXPECT_EQ(descriptor_value, attribute_value) << field.identifier;
+    }
+
+    SQLLEN legacy_display_size = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        hstmt, 2, SQL_COLUMN_DISPLAY_SIZE, nullptr, 0, nullptr,
+        &legacy_display_size));
+    EXPECT_EQ(12, legacy_display_size);
+    SQLLEN case_sensitive = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        hstmt, 2, SQL_DESC_CASE_SENSITIVE, nullptr, 0, nullptr,
+        &case_sensitive));
+    EXPECT_EQ(SQL_TRUE, case_sensitive);
+    SQLLEN descriptor_precision = -1;
+    SQLLEN legacy_precision = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        hstmt, 2, SQL_DESC_PRECISION, nullptr, 0, nullptr,
+        &descriptor_precision));
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        hstmt, 2, SQL_COLUMN_PRECISION, nullptr, 0, nullptr,
+        &legacy_precision));
+    EXPECT_EQ(0, descriptor_precision);
+    EXPECT_EQ(12, legacy_precision);
+
+    struct TextField {
+        SQLUSMALLINT identifier;
+        const char* expected;
+    };
+    const TextField text_fields[] = {
+        {SQL_DESC_TYPE_NAME, "numeric"},
+        {SQL_DESC_LOCAL_TYPE_NAME, "numeric"},
+        {SQL_DESC_LITERAL_PREFIX, ""},
+        {SQL_DESC_LITERAL_SUFFIX, ""},
+    };
+    for (const auto& field : text_fields) {
+        char descriptor_value[32]{};
+        char attribute_value[32]{};
+        SQLINTEGER descriptor_length = -1;
+        SQLSMALLINT attribute_length = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+            row_descriptor, 1, field.identifier, descriptor_value,
+            sizeof(descriptor_value), &descriptor_length));
+        ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+            hstmt, 1, field.identifier, attribute_value,
+            sizeof(attribute_value), &attribute_length, nullptr));
+        EXPECT_STREQ(field.expected, descriptor_value) << field.identifier;
+        EXPECT_STREQ(descriptor_value, attribute_value) << field.identifier;
+        EXPECT_EQ(descriptor_length, attribute_length) << field.identifier;
+    }
+
+    char short_type_name[4]{};
+    SQLSMALLINT required_length = -1;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLColAttribute(
+        hstmt, 1, SQL_DESC_TYPE_NAME, short_type_name,
+        sizeof(short_type_name), &required_length, nullptr));
+    EXPECT_STREQ("num", short_type_name);
+    EXPECT_EQ(7, required_length);
+    EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    SQLWCHAR wide_type_name[16]{};
+    SQLSMALLINT required_bytes = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttributeW(
+        hstmt, 2, SQL_DESC_TYPE_NAME, wide_type_name,
+        sizeof(wide_type_name), &required_bytes, nullptr));
+    EXPECT_EQ(static_cast<SQLSMALLINT>(7 * sizeof(SQLWCHAR)), required_bytes);
+    const auto wide_text = rs::odbc::wide_to_utf8(
+        std::span<const SQLWCHAR>(wide_type_name, 7));
+    ASSERT_TRUE(wide_text.has_value());
+    EXPECT_EQ("varchar", *wide_text);
+}
+
 TEST_F(MetadataIntegrationTest, ColumnMetadataStateErrorsPreserveOutputs) {
     const auto expect_state = [this](const char* expected) {
         SQLCHAR state[6]{};

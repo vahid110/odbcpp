@@ -53,7 +53,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLNumResultCols` | A | Partial | unit, integration | Prepared metadata, result sets, update counts, exhausted/closed cursors, delayed PostgreSQL errors, null outputs, and output preservation are covered; cancellation and communication-failure injection remain |
 | `SQLRowCount` | A | Verified | unit, integration | Allocated, prepared, update-count, result-set, fetched/exhausted, closed, failed-execution, null-output, and output-preservation cases are covered |
 | `SQLDescribeCol` | A/W | Partial | unit, integration | Prepared/executed/closed and no-result states, untouched error outputs, and ANSI/wide names are covered; bookmark column and communication/cancellation failures remain |
-| `SQLColAttribute` | A/W | Partial | unit, integration | Prepared-state discovery, count/name/label/core numeric fields, destination isolation, exact field diagnostics, and wide byte lengths are covered; remaining descriptor fields need values or explicit negative tests |
+| `SQLColAttribute` | A/W | Partial | unit, integration | Prepared-state discovery, count/name/label/core and type-derived IRD fields, destination isolation, exact field diagnostics, truncation, and wide byte lengths are covered; origin-name fields and remaining state/error paths need enrichment or explicit negative tests |
 | `SQLDescribeParam` | A | Partial | unit, integration | Prepared/executed/exhausted/closed/direct states, exact diagnostics, fixed-size PostgreSQL types, bound precision/scale, cache revision, and untouched errors are covered; unknown variable precision and failure injection remain |
 | `SQLSetStmtAttr` | A/W | Partial | unit, integration | Common scalar modes, escape scanning, descriptor attachment, offset/operation pointers, and precise value diagnostics work; multirow arrays and optional cursor modes remain |
 | `SQLGetStmtAttr` | A/W | Partial | unit, integration | Common defaults, escape scanning, descriptor handles/pointers, row positioning, and recognized unsupported attributes are covered; platform-specific ODBC 3.8 fields remain |
@@ -697,6 +697,15 @@ substitute for ODBC diagnostics.
   introduced](https://www.postgresql.org/docs/15/datatype-numeric.html).
   Catalog fallback values from `information_schema` are normalized as well,
   since they expose the encoded value for this case.
+- Audit batch 86 exposes the type-derived IRD fields already calculated for
+  result columns through `SQLColAttribute` and `SQLColAttributeW`, including
+  type names, literal syntax, display and octet lengths, and numeric/type
+  characteristics. A prepared PostgreSQL query checks these values against
+  `SQLGetDescField`, explicit numeric expectations, legacy field aliases,
+  ANSI truncation diagnostics, and wide string byte lengths. ODBC 3
+  `SQL_DESC_PRECISION` now uses the IRD value while the ODBC 2
+  `SQL_COLUMN_PRECISION` retains column-size semantics. Origin-name
+  fields remain unsupported because the driver does not yet populate them.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
