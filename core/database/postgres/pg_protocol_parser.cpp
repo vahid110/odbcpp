@@ -728,6 +728,11 @@ QueryResult PgProtocolParser::extract_query_result(
       current.affected_rows = command_affected_rows(current.command_tag);
       completed.push_back(std::move(current));
       current = QueryResult{};
+    } else if (message.tag == 'E') { // ErrorResponse
+      current = QueryResult{};
+      current.error_message = decode_error_fields(message.payload).message();
+      completed.push_back(std::move(current));
+      current = QueryResult{};
     }
   }
   if (completed.empty()) return current;

@@ -27,6 +27,7 @@ struct QueryResult {
   std::vector<ResultColumnMetadata> columns;
   std::vector<std::uint32_t> parameter_type_ids;
   std::string command_tag;
+  std::string error_message;
   std::size_t affected_rows{0};
   std::vector<QueryResult> additional_results;
 };

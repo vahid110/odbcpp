@@ -2514,6 +2514,11 @@ SQLRETURN ODBCStatement::more_results() {
 
   auto next = std::move(pending_results_.front());
   pending_results_.erase(pending_results_.begin());
+  if (!next.error_message.empty()) {
+    pending_results_.clear();
+    set_error(SQLSTATE_SYNTAX_ERROR, "Query error: " + next.error_message);
+    return SQL_ERROR;
+  }
   apply_query_result(std::move(next), false);
   return SQL_SUCCESS;
 }

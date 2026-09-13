@@ -222,14 +222,15 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
     }
   }
 
-  if (query_error) {
-    last_error_ = *query_error;
-    return rs::util::Result<QueryResult>{
-        rs::util::DbErrorCode::QueryFailed, "Query error: " + last_error_};
-  }
-
   try {
-    return rs::util::Result<QueryResult>{parser_->extract_query_result(messages)};
+    auto result = parser_->extract_query_result(messages);
+    if (query_error &&
+        (!result.error_message.empty() || result.additional_results.empty())) {
+      last_error_ = *query_error;
+      return rs::util::Result<QueryResult>{
+          rs::util::DbErrorCode::QueryFailed, "Query error: " + last_error_};
+    }
+    return rs::util::Result<QueryResult>{std::move(result)};
   } catch (const std::exception& error) {
     mark_transport_failed();
     return rs::util::Result<QueryResult>{

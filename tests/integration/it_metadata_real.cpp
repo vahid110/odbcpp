@@ -3554,6 +3554,23 @@ TEST_F(MetadataIntegrationTest, TraversesMultiplePostgreSQLResults) {
     EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, LaterBatchErrorSurfacesThroughMoreResults) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 11 AS first_value; SELECT 1 / 0", SQL_NTS));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(11, integer_cell(hstmt, 1));
+
+    EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
+    EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 22 AS recovered", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(22, integer_cell(hstmt, 1));
+}
+
 TEST_F(MetadataIntegrationTest, ClosingCursorDiscardsPendingResults) {
     constexpr auto batch =
         "SELECT 1 AS first_value; SELECT 2 AS second_value";

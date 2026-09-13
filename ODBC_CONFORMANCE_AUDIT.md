@@ -892,6 +892,11 @@ substitute for ODBC diagnostics.
   received during a query, so connection metadata stays current after `SET`
   and other changes. Startup and query responses share the same payload
   validator; a malformed query-time status invalidates the connection.
+- Audit batch 123 preserves successful PostgreSQL results before a later
+  batch error. The first result remains accessible, then `SQLMoreResults`
+  reports the aborted batch with `SQL_ERROR` as required by the
+  [ODBC multiple-results contract](https://learn.microsoft.com/en-us/sql/odbc/reference/develop-app/multiple-results).
+  Server-specific query SQLSTATE mapping remains a separate diagnostic gap.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

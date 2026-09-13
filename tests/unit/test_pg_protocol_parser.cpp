@@ -173,6 +173,27 @@ TEST(PgProtocolParserTest, ErrorResponseRequiresCompleteUniqueFields) {
   EXPECT_THROW(parser.extract_error_message(trailing), std::runtime_error);
 }
 
+TEST(PgProtocolParserTest, ErrorAfterCommandIsASeparatePendingResult) {
+  PgProtocolParser parser;
+  Message command{'C', {}};
+  append_cstring(command.payload, "SELECT 1");
+  Message error{'E', {}};
+  append_cstring(error.payload, "SERROR");
+  append_cstring(error.payload, "C22012");
+  append_cstring(error.payload, "Mdivision by zero");
+  error.payload.push_back(std::byte{0});
+
+  const auto result = parser.extract_query_result({command, error});
+  EXPECT_EQ("SELECT 1", result.command_tag);
+  ASSERT_EQ(1u, result.additional_results.size());
+  EXPECT_EQ("division by zero",
+            result.additional_results.front().error_message);
+
+  const auto first_error = parser.extract_query_result({error});
+  EXPECT_EQ("division by zero", first_error.error_message);
+  EXPECT_TRUE(first_error.additional_results.empty());
+}
+
 rs::core::database::Message one_column_description(
     std::string_view name, std::uint32_t type_oid = 23,
     std::uint16_t type_size = 4) {
