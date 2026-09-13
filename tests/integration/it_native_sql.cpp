@@ -7,6 +7,7 @@
 #include <array>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -52,6 +53,32 @@ class NativeSqlIntegrationTest : public ::testing::Test {
 };
 
 } // namespace
+
+TEST_F(NativeSqlIntegrationTest, RejectsEmbeddedNulSqlAndRecovers) {
+  std::string sql("SELECT 1\0;SELECT 2", sizeof("SELECT 1\0;SELECT 2") - 1);
+  auto* narrow = reinterpret_cast<SQLCHAR*>(sql.data());
+  std::vector<SQLWCHAR> wide(sql.begin(), sql.end());
+  const auto length = static_cast<SQLINTEGER>(sql.size());
+  const auto wide_length = static_cast<SQLINTEGER>(wide.size());
+
+  EXPECT_EQ(SQL_ERROR, SQLExecDirect(statement_, narrow, length));
+  EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLExecDirectW(statement_, wide.data(), wide_length));
+  EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLPrepare(statement_, narrow, length));
+  EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLPrepareW(statement_, wide.data(), wide_length));
+  EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  SQLCHAR valid[] = "SELECT 42";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, valid, SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
+  SQLINTEGER value = 0;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetData(statement_, 1, SQL_C_SLONG, &value, sizeof(value),
+                       nullptr));
+  EXPECT_EQ(42, value);
+}
 
 TEST_F(NativeSqlIntegrationTest, ReturnsTranslatedAnsiSqlAndExactLength) {
   SQLCHAR input[] = "SELECT {fn UCASE('mixed')}, {d '2024-02-29'}";

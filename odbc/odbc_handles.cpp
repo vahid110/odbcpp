@@ -1969,6 +1969,11 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
                                      {"kind", "direct"}});
     return SQL_ERROR;
   }
+  if (sql.find('\0') != std::string::npos) {
+    set_error(SQLSTATE_SYNTAX_ERROR,
+              "SQL text contains an embedded NUL byte");
+    return SQL_ERROR;
+  }
   const auto native_sql = statement_sql(*this, sql, no_scan_);
   if (!native_sql) return SQL_ERROR;
   if (conn_->logs_queries()) {
@@ -2708,6 +2713,11 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
   }
   if (!conn_->is_connected()) {
     set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
+    return SQL_ERROR;
+  }
+  if (sql.find('\0') != std::string::npos) {
+    set_error(SQLSTATE_SYNTAX_ERROR,
+              "SQL text contains an embedded NUL byte");
     return SQL_ERROR;
   }
   const auto native_sql = statement_sql(*this, sql, no_scan_);

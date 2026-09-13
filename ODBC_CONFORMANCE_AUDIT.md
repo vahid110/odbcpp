@@ -834,6 +834,12 @@ substitute for ODBC diagnostics.
   so an embedded NUL could change how the server interprets subsequent bytes.
   Parser and ANSI/wide ODBC tests cover connection strings, users, passwords,
   database names, and startup parameter names and values.
+- Audit batch 111 rejects embedded NUL bytes in simple and extended SQL text
+  before PostgreSQL's NUL-terminated query fields are framed or a transaction
+  begins. `SQLExecDirect`/`SQLPrepare` and their wide forms return 42000;
+  PostgreSQL integration confirms the statement handle can execute a valid
+  query afterward. The simple-query path now converts parser exceptions to
+  `InvalidParameter`, matching prepared and description requests.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

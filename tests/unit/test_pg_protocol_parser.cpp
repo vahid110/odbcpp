@@ -332,6 +332,20 @@ TEST(PgProtocolParserTest, RejectsMismatchedOdbcMarkerCount) {
                std::invalid_argument);
 }
 
+TEST(PgProtocolParserTest, RejectsEmbeddedNulInSqlText) {
+  PgProtocolParser parser;
+  const std::string sql("SELECT 1\0;SELECT 2",
+                        sizeof("SELECT 1\0;SELECT 2") - 1);
+
+  EXPECT_THROW(parser.create_simple_query(sql), std::invalid_argument);
+  EXPECT_THROW(parser.create_prepared_query(
+                   sql, std::span<const QueryParameter>{}),
+               std::invalid_argument);
+  EXPECT_THROW(parser.create_statement_description(
+                   sql, std::span<const QueryParameterType>{}),
+               std::invalid_argument);
+}
+
 TEST(PgProtocolParserTest, CountsOnlyUnquotedOdbcParameterMarkers) {
   EXPECT_EQ(3u, PgProtocolParser::parameter_marker_count(
       "SELECT ?, '?'::text, ? /* ? */, $$?$$, ? -- ?\n"));

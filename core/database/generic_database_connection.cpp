@@ -127,7 +127,13 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::execute_query(std::stri
     return rs::util::Result<QueryResult>{rs::util::DbErrorCode::NotConnected, "Not connected"};
   }
   
-  auto query_msg = parser_->create_simple_query(sql);
+  std::vector<std::byte> query_msg;
+  try {
+    query_msg = parser_->create_simple_query(sql);
+  } catch (const std::exception& error) {
+    return rs::util::Result<QueryResult>{
+        rs::util::DbErrorCode::InvalidParameter, error.what()};
+  }
   auto write_result = write_all_result(query_msg, deadline);
   if (write_result.has_error()) {
     return rs::util::Result<QueryResult>{write_result.error(), write_result.error_message()};

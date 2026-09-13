@@ -30,6 +30,12 @@ void append_cstring(std::vector<std::byte>& out, std::string_view value) {
   out.push_back(std::byte{0});
 }
 
+void reject_sql_nul(std::string_view sql) {
+  if (sql.find('\0') != std::string_view::npos) {
+    throw std::invalid_argument("SQL text contains an embedded NUL byte");
+  }
+}
+
 std::size_t begin_message(std::vector<std::byte>& out, char tag) {
   const auto start = out.size();
   out.push_back(static_cast<std::byte>(tag));
@@ -467,6 +473,7 @@ std::vector<std::byte> PgProtocolParser::create_auth_response(
 }
 
 std::vector<std::byte> PgProtocolParser::create_simple_query(std::string_view sql) {
+  reject_sql_nul(sql);
   size_t total_len = 1 + 4 + sql.size() + 1;
   std::vector<std::byte> buf(total_len);
   auto* data = reinterpret_cast<unsigned char*>(buf.data());
@@ -487,6 +494,7 @@ std::vector<std::byte> PgProtocolParser::create_simple_query(std::string_view sq
 std::vector<std::byte> PgProtocolParser::create_prepared_query(
     std::string_view sql,
     std::span<const QueryParameter> params) {
+  reject_sql_nul(sql);
   if (params.size() > std::numeric_limits<std::uint16_t>::max()) {
     throw std::length_error("too many PostgreSQL query parameters");
   }
@@ -556,6 +564,7 @@ std::vector<std::byte> PgProtocolParser::create_prepared_query(
 std::vector<std::byte> PgProtocolParser::create_statement_description(
     std::string_view sql,
     std::span<const QueryParameterType> parameter_types) {
+  reject_sql_nul(sql);
   if (parameter_types.size() > std::numeric_limits<std::uint16_t>::max()) {
     throw std::length_error("too many PostgreSQL query parameters");
   }

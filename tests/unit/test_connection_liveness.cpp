@@ -130,6 +130,25 @@ TEST(ConnectionLivenessTest, RetainsPostgresqlStartupParameters) {
   EXPECT_TRUE(connection.get_parameter("missing").empty());
 }
 
+TEST(ConnectionLivenessTest, InvalidSqlDoesNotEscapeOrDisconnect) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<StartupParameterTransport>());
+
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  ASSERT_TRUE(connection.connect(settings).has_value());
+  const std::string sql("SELECT 1\0;SELECT 2",
+                        sizeof("SELECT 1\0;SELECT 2") - 1);
+  const auto result = connection.execute_query(
+      sql, rs::util::make_deadline(std::chrono::seconds(1)));
+
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter),
+            result.error());
+  EXPECT_TRUE(connection.is_connected());
+}
+
 TEST(ConnectionLivenessTest, RejectsMalformedStartupParameters) {
   rs::core::database::GenericDatabaseConnection connection(
       std::make_unique<
