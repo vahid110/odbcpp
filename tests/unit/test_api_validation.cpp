@@ -516,13 +516,16 @@ TEST_F(ApiValidationTest, RejectsEmbeddedNulInConnectionInputs) {
   std::vector<SQLWCHAR> wide_password(password,
                                      password + sizeof(password));
   EXPECT_EQ(SQL_ERROR,
-            SQLConnectW(connection_, wide_dsn.data(), wide_dsn.size(),
-                        wide_user.data(), wide_user.size(), nullptr, 0));
+            SQLConnectW(connection_, wide_dsn.data(),
+                        static_cast<SQLSMALLINT>(wide_dsn.size()),
+                        wide_user.data(),
+                        static_cast<SQLSMALLINT>(wide_user.size()), nullptr, 0));
   EXPECT_EQ("HY000", diagnostic_state(SQL_HANDLE_DBC, connection_));
   EXPECT_EQ(SQL_ERROR,
-            SQLConnectW(connection_, wide_dsn.data(), wide_dsn.size(),
+            SQLConnectW(connection_, wide_dsn.data(),
+                        static_cast<SQLSMALLINT>(wide_dsn.size()),
                         nullptr, 0, wide_password.data(),
-                        wide_password.size()));
+                        static_cast<SQLSMALLINT>(wide_password.size())));
   EXPECT_EQ("HY000", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
