@@ -289,6 +289,40 @@ TEST(SocketTransportDeadlineTest, RejectsEmbeddedNulHostAndClosesOldSocket) {
   EXPECT_TRUE(recovered.has_value()) << recovered.error_message();
 }
 
+TEST(SocketTransportDeadlineTest, ResolvesLocalhostToIpv4Loopback) {
+  SleepingServer server(100ms);
+  SocketTransport transport(DeadlineModel::Strict);
+  auto connected = transport.connect(
+      "localhost", server.port(), rs::util::make_deadline(2s));
+  EXPECT_TRUE(connected.has_value()) << connected.error_message();
+}
+
+TEST(SocketTransportDeadlineTest, RefusedConnectionDoesNotLeaveOpenSocket) {
+  SocketTransport transport(DeadlineModel::Strict);
+  const test_socket_t unused = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_NE(unused, invalid_test_socket);
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = 0;
+  ASSERT_EQ(0, ::bind(unused, reinterpret_cast<sockaddr*>(&address),
+                      sizeof(address)));
+#ifdef _WIN32
+  int length = sizeof(address);
+#else
+  socklen_t length = sizeof(address);
+#endif
+  ASSERT_EQ(0, ::getsockname(unused, reinterpret_cast<sockaddr*>(&address),
+                            &length));
+
+  auto result = transport.connect(
+      "127.0.0.1", ntohs(address.sin_port), rs::util::make_deadline(1s));
+  ASSERT_TRUE(result.has_error());
+  const std::array<std::byte, 1> data{std::byte{'x'}};
+  EXPECT_TRUE(transport.send(data, rs::util::make_deadline(100ms)).has_error());
+  close_test_socket(unused);
+}
+
 #ifndef _WIN32
 volatile std::sig_atomic_t interrupted_receive_signals = 0;
 

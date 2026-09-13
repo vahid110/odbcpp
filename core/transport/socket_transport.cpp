@@ -170,8 +170,8 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
 #else
       socklen_t len = sizeof(err);
 #endif
-      getsockopt(sock_, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&err), &len);
-      if (err == 0) {
+      if (getsockopt(sock_, SOL_SOCKET, SO_ERROR,
+                     reinterpret_cast<char*>(&err), &len) == 0 && err == 0) {
         prepare_for_io(deadline);
         return;
       }

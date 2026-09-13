@@ -773,6 +773,9 @@ substitute for ODBC diagnostics.
   versions fail explicitly. Failed CA-file loading is retried on reconnect
   rather than leaving a partially configured context in use; a two-connection
   regression checks both failures.
+- Audit batch 101 requires `getsockopt(SO_ERROR)` itself to succeed before a
+  pending TCP connection is accepted. Refused-port and IPv4-only localhost
+  tests cover connect failure cleanup and DNS address fallback.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
