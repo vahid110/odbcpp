@@ -498,7 +498,7 @@ private:
     ::SSL_set_connect_state(ssl_);
 
     server_name_ = std::string(host);
-    if (!server_name_.empty() &&
+    if (tls_host_uses_sni(server_name_) &&
         ::SSL_set_tlsext_host_name(ssl_, server_name_.c_str()) != 1) {
       reset_ssl_locked();
       return {rs::util::DbErrorCode::TLSError,

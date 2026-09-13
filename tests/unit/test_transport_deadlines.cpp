@@ -152,6 +152,8 @@ public:
         if (SSL_accept(ssl) == 1) {
           {
             std::lock_guard lock(handshake_mutex_);
+            const char* name = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
+            observed_sni_ = name ? name : "";
             handshake_complete_ = true;
           }
           handshake_ready_.notify_all();
@@ -176,6 +178,11 @@ public:
     return handshake_ready_.wait_for(lock, 1s, [this] {
       return handshake_complete_;
     });
+  }
+
+  std::string observed_sni() {
+    std::lock_guard lock(handshake_mutex_);
+    return observed_sni_;
   }
 
 private:
@@ -223,6 +230,7 @@ private:
   std::mutex handshake_mutex_;
   std::condition_variable handshake_ready_;
   bool handshake_complete_{false};
+  std::string observed_sni_;
 };
 
 void expect_receive_timeout(DeadlineModel model) {
@@ -444,6 +452,31 @@ TEST(TLSPeerIdentityTest, UsesIpSanWithoutFallingBackToDnsNames) {
   EXPECT_FALSE(tls_certificate_matches_host(certificate.get(), "other.example.test"));
   EXPECT_FALSE(tls_certificate_matches_host(
       certificate.get(), std::string_view("127.0.0.1\0invalid", 17)));
+}
+
+TEST(TLSPeerIdentityTest, SendsSniOnlyForDnsNames) {
+  using rs::core::transport::tls_host_uses_sni;
+  EXPECT_TRUE(tls_host_uses_sni("db.example.test"));
+  EXPECT_FALSE(tls_host_uses_sni("127.0.0.1"));
+  EXPECT_FALSE(tls_host_uses_sni("::1"));
+  EXPECT_FALSE(tls_host_uses_sni(""));
+  EXPECT_FALSE(tls_host_uses_sni(std::string_view("db.example.test\0x", 17)));
+
+  TLSSleepingServer ip_server(100ms);
+  TLSTransport transport(DeadlineModel::Strict);
+  transport.set_verify(false);
+  auto ip_connected = transport.connect(
+      "127.0.0.1", ip_server.port(), rs::util::make_deadline(2s));
+  ASSERT_TRUE(ip_connected.has_value()) << ip_connected.error_message();
+  ASSERT_TRUE(ip_server.wait_for_handshake());
+  EXPECT_TRUE(ip_server.observed_sni().empty());
+
+  TLSSleepingServer dns_server(100ms);
+  auto dns_connected = transport.connect(
+      "localhost", dns_server.port(), rs::util::make_deadline(2s));
+  ASSERT_TRUE(dns_connected.has_value()) << dns_connected.error_message();
+  ASSERT_TRUE(dns_server.wait_for_handshake());
+  EXPECT_EQ(dns_server.observed_sni(), "localhost");
 }
 
 TEST(TLSTransportDeadlineTest, StrictReceiveTimesOutAfterHandshake) {

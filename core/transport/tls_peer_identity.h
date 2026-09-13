@@ -7,6 +7,16 @@
 
 namespace rs::core::transport {
 
+inline bool tls_host_uses_sni(std::string_view host) {
+  if (host.empty() || host.find('\0') != std::string_view::npos) return false;
+
+  const std::string name(host);
+  ASN1_OCTET_STRING* address = a2i_IPADDRESS(name.c_str());
+  if (!address) return true;
+  ASN1_OCTET_STRING_free(address);
+  return false;
+}
+
 inline bool tls_certificate_matches_host(X509* certificate,
                                          std::string_view host) {
   if (host.find('\0') != std::string_view::npos) return false;

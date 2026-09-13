@@ -133,7 +133,7 @@ void TLSTransport::upgrade_impl(std::string_view host, Deadline deadline) {
     throw TLSError("SSL_set_fd failed");
   }
 
-  if (!sni_host_.empty()) {
+  if (tls_host_uses_sni(sni_host_)) {
     if (SSL_set_tlsext_host_name(ssl_, sni_host_.c_str()) != 1) {
       ERR_print_errors_fp(stderr);
       SSL_free(ssl_); ssl_ = nullptr;

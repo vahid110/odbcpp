@@ -750,6 +750,10 @@ substitute for ODBC diagnostics.
   in both sync and async TLS transports; DNS hosts continue to use DNS/CN
   matching. A certificate with a numeric DNS SAN cannot impersonate a valid
   IP address. See [OpenSSL's X.509 matching contract](https://docs.openssl.org/3.0/man3/X509_check_host/).
+- Audit batch 96 omits SNI for literal IPv4/IPv6 addresses in both TLS
+  transports while preserving it for DNS names. Loopback servers inspect the
+  actual ClientHello behavior. [RFC 6066](https://datatracker.ietf.org/doc/html/rfc6066#section-3)
+  disallows literal IP addresses in the SNI `HostName` field.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

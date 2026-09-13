@@ -27,6 +27,7 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
@@ -125,6 +126,11 @@ public:
 
   uint16_t port() const noexcept { return port_; }
 
+  std::string observed_sni() {
+    std::lock_guard lock(sni_mutex_);
+    return observed_sni_;
+  }
+
 private:
   void configure_tls() {
     context_ = ::SSL_CTX_new(::TLS_server_method());
@@ -212,6 +218,12 @@ private:
       return;
     }
 
+    {
+      std::lock_guard lock(sni_mutex_);
+      const char* name = ::SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
+      observed_sni_ = name ? name : "";
+    }
+
     if (behavior_ == Behavior::SilentAfterTls) {
       std::this_thread::sleep_for(300ms);
     } else if (behavior_ == Behavior::PostgresStartup) {
@@ -278,6 +290,8 @@ private:
   test_socket_t listener_{invalid_test_socket};
   uint16_t port_{};
   std::thread worker_;
+  std::mutex sni_mutex_;
+  std::string observed_sni_;
 };
 
 TEST(AsyncTlsTransportTest, SupportsDirectTlsRoundTrip) {
@@ -301,6 +315,29 @@ TEST(AsyncTlsTransportTest, SupportsDirectTlsRoundTrip) {
   ASSERT_TRUE(received.has_value()) << received.error_message();
   EXPECT_EQ(received->n, response.size());
   EXPECT_EQ(std::memcmp(response.data(), "pong", response.size()), 0);
+  EXPECT_TRUE(server.observed_sni().empty());
+}
+
+TEST(AsyncTlsTransportTest, SendsDnsNameInSni) {
+  TlsLoopbackServer server(TlsLoopbackServer::Behavior::DirectEcho);
+  AsyncTlsTransport transport(make_native_transport());
+  transport.set_verify(false);
+
+  auto connected = transport.connect(
+      "localhost", server.port(), rs::util::make_deadline(15s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  constexpr std::string_view request = "ping";
+  auto sent = transport.send(
+      std::as_bytes(std::span<const char>(request.data(), request.size())),
+      rs::util::make_deadline(5s));
+  ASSERT_TRUE(sent.has_value()) << sent.error_message();
+
+  std::array<std::byte, 4> response{};
+  auto received = transport.recv(response, rs::util::make_deadline(5s));
+  ASSERT_TRUE(received.has_value()) << received.error_message();
+  EXPECT_EQ(std::memcmp(response.data(), "pong", response.size()), 0);
+  EXPECT_EQ(server.observed_sni(), "localhost");
 }
 
 TEST(AsyncTlsTransportTest, ValidatesCapacitySettings) {
