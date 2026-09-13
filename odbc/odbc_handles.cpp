@@ -4248,23 +4248,29 @@ SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT 
   }
   
   const auto& col = column_info_[column_number - 1];
-  const auto record = descriptor_record_for(col);
+  const auto row_descriptor = descriptor(imp_row_descriptor_);
+  const auto* record = row_descriptor->record(column_number - 1);
+  if (!record) {
+    set_error(SQLSTATE_GENERAL_ERROR,
+              "Result column descriptor is unavailable");
+    return SQL_ERROR;
+  }
   const std::string* text = nullptr;
   if (field_identifier == SQL_DESC_NAME ||
       field_identifier == SQL_COLUMN_NAME) {
-    text = &record.name;
+    text = &record->name;
   } else if (field_identifier == SQL_DESC_LABEL ||
              field_identifier == SQL_COLUMN_LABEL) {
-    text = &record.label;
+    text = &record->label;
   } else if (field_identifier == SQL_DESC_TYPE_NAME ||
              field_identifier == SQL_COLUMN_TYPE_NAME) {
-    text = &record.type_name;
+    text = &record->type_name;
   } else if (field_identifier == SQL_DESC_LOCAL_TYPE_NAME) {
-    text = &record.local_type_name;
+    text = &record->local_type_name;
   } else if (field_identifier == SQL_DESC_LITERAL_PREFIX) {
-    text = &record.literal_prefix;
+    text = &record->literal_prefix;
   } else if (field_identifier == SQL_DESC_LITERAL_SUFFIX) {
-    text = &record.literal_suffix;
+    text = &record->literal_suffix;
   }
   if (text) {
     if (character_attribute && buffer_length > 0) {
@@ -4288,48 +4294,50 @@ SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT 
   if (numeric_attribute) {
     if (field_identifier == SQL_DESC_AUTO_UNIQUE_VALUE ||
         field_identifier == SQL_COLUMN_AUTO_INCREMENT) {
-      *numeric_attribute = record.auto_unique_value;
+      *numeric_attribute = record->auto_unique_value;
     } else if (field_identifier == SQL_DESC_CASE_SENSITIVE ||
                field_identifier == SQL_COLUMN_CASE_SENSITIVE) {
-      *numeric_attribute = record.case_sensitive;
+      *numeric_attribute = record->case_sensitive;
     } else if (field_identifier == SQL_DESC_DISPLAY_SIZE ||
                field_identifier == SQL_COLUMN_DISPLAY_SIZE) {
-      *numeric_attribute = record.display_size;
+      *numeric_attribute = record->display_size;
     } else if (field_identifier == SQL_DESC_FIXED_PREC_SCALE ||
                field_identifier == SQL_COLUMN_MONEY) {
-      *numeric_attribute = record.fixed_prec_scale;
+      *numeric_attribute = record->fixed_prec_scale;
     } else if (field_identifier == SQL_DESC_NUM_PREC_RADIX) {
-      *numeric_attribute = record.num_prec_radix;
+      *numeric_attribute = record->num_prec_radix;
     } else if (field_identifier == SQL_DESC_OCTET_LENGTH) {
-      *numeric_attribute = record.octet_length;
+      *numeric_attribute = record->octet_length;
     } else if (field_identifier == SQL_DESC_SEARCHABLE ||
                field_identifier == SQL_COLUMN_SEARCHABLE) {
-      *numeric_attribute = record.searchable;
+      *numeric_attribute = record->searchable;
     } else if (field_identifier == SQL_DESC_UNSIGNED ||
                field_identifier == SQL_COLUMN_UNSIGNED) {
-      *numeric_attribute = record.unsigned_attribute;
+      *numeric_attribute = record->unsigned_attribute;
     } else if (field_identifier == SQL_DESC_UPDATABLE ||
                field_identifier == SQL_COLUMN_UPDATABLE) {
-      *numeric_attribute = record.updatable;
+      *numeric_attribute = record->updatable;
     } else if (field_identifier == SQL_DESC_TYPE) {
-      *numeric_attribute = descriptor_type_for(col.sql_type);
+      *numeric_attribute = record->type;
     } else if (field_identifier == SQL_DESC_CONCISE_TYPE ||
         field_identifier == SQL_COLUMN_TYPE) {
-      *numeric_attribute = col.sql_type;
-    } else if (field_identifier == SQL_DESC_LENGTH ||
-               field_identifier == SQL_COLUMN_LENGTH ||
+      *numeric_attribute = record->concise_type;
+    } else if (field_identifier == SQL_DESC_LENGTH) {
+      *numeric_attribute = static_cast<SQLLEN>(record->length);
+    } else if (field_identifier == SQL_COLUMN_LENGTH ||
                field_identifier == SQL_COLUMN_PRECISION) {
       *numeric_attribute = static_cast<SQLLEN>(col.column_size);
     } else if (field_identifier == SQL_DESC_PRECISION) {
-      *numeric_attribute = record.precision;
-    } else if (field_identifier == SQL_DESC_SCALE ||
-               field_identifier == SQL_COLUMN_SCALE) {
+      *numeric_attribute = record->precision;
+    } else if (field_identifier == SQL_DESC_SCALE) {
+      *numeric_attribute = record->scale;
+    } else if (field_identifier == SQL_COLUMN_SCALE) {
       *numeric_attribute = col.decimal_digits;
     } else if (field_identifier == SQL_DESC_NULLABLE ||
                field_identifier == SQL_COLUMN_NULLABLE) {
-      *numeric_attribute = col.nullable;
+      *numeric_attribute = record->nullable;
     } else if (field_identifier == SQL_DESC_UNNAMED) {
-      *numeric_attribute = col.name.empty() ? SQL_UNNAMED : SQL_NAMED;
+      *numeric_attribute = record->unnamed;
     }
   }
   return SQL_SUCCESS;

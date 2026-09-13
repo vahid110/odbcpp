@@ -718,6 +718,11 @@ substitute for ODBC diagnostics.
   both cases and check the resulting `SQLColAttribute` display/octet sizes
   against the IRD where applicable. Standard positive-scale values retain
   the [ODBC precision-plus-two rule](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/display-size).
+- Audit batch 89 reads ODBC 3 `SQLColAttribute` values from the active IRD
+  record instead of reconstructing a second descriptor from cached column
+  metadata. ODBC 2 column-size and decimal-digit identifiers keep their
+  separate legacy values. This also ensures later IRD origin-name enrichment
+  will not diverge from `SQLColAttribute`.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
