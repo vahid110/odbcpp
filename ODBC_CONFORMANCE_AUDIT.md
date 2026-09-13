@@ -804,6 +804,14 @@ substitute for ODBC diagnostics.
   by an exception during socket configuration or post-connect I/O setup. The
   refused-port regression now begins from a live connection and checks that
   the failed reconnect leaves no native socket behind.
+- Audit batch 106 parses semicolon-delimited connection attributes without
+  splitting braced values, decodes escaped closing braces, and rejects
+  malformed braced values. This prevents embedded text such as
+  `PWD={secret;SERVER=other}` from changing connection options. Unit tests
+  cover escaped braces, whitespace, malformed input, and option precedence;
+  ANSI and wide Driver Manager connections verify that a semicolon inside a
+  braced description does not produce a spurious 01S00 warning. The syntax
+  follows [Microsoft's ODBC connection-string grammar](https://learn.microsoft.com/en-us/openspecs/sql_server_protocols/ms-odbcstr/55953f0e-2d30-4ad4-8e56-b4207e491409).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

@@ -1,9 +1,10 @@
 #include "connection_string.h"
-#include <sstream>
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
+#include <stdexcept>
+#include <utility>
 
 namespace rs::odbc {
 namespace {
@@ -31,27 +32,62 @@ std::string environment_value(const char* name) {
 
 std::map<std::string, std::string> ConnectionString::parse(const std::string& conn_str) {
   std::map<std::string, std::string> params;
-  
-  std::istringstream stream(conn_str);
-  std::string pair;
-  
-  while (std::getline(stream, pair, ';')) {
-    if (pair.empty()) continue;
-    
-    size_t eq_pos = pair.find('=');
-    if (eq_pos == std::string::npos) continue;
-    
-    std::string key = trim(pair.substr(0, eq_pos));
-    std::string value = trim(pair.substr(eq_pos + 1));
-    
-    // Remove braces from values like {ODBCPP Driver}
-    if (value.size() >= 2 && value.front() == '{' && value.back() == '}') {
-      value = value.substr(1, value.length() - 2);
+
+  std::size_t position = 0;
+  while (position < conn_str.size()) {
+    const auto separator = conn_str.find(';', position);
+    const auto equals = conn_str.find('=', position);
+    if (equals == std::string::npos ||
+        (separator != std::string::npos && separator < equals)) {
+      if (separator == std::string::npos) break;
+      position = separator + 1;
+      continue;
     }
-    
-    params[to_upper(key)] = value;
+
+    const auto key = trim(conn_str.substr(position, equals - position));
+    position = equals + 1;
+    while (position < conn_str.size() &&
+           std::isspace(static_cast<unsigned char>(conn_str[position]))) {
+      ++position;
+    }
+
+    std::string value;
+    if (position < conn_str.size() && conn_str[position] == '{') {
+      ++position;
+      bool closed = false;
+      while (position < conn_str.size()) {
+        const char current = conn_str[position++];
+        if (current != '}') {
+          value.push_back(current);
+        } else if (position < conn_str.size() && conn_str[position] == '}') {
+          value.push_back('}');
+          ++position;
+        } else {
+          closed = true;
+          break;
+        }
+      }
+      if (!closed) {
+        throw std::invalid_argument("Unterminated braced connection string value");
+      }
+      while (position < conn_str.size() &&
+             std::isspace(static_cast<unsigned char>(conn_str[position]))) {
+        ++position;
+      }
+      if (position < conn_str.size() && conn_str[position] != ';') {
+        throw std::invalid_argument("Unexpected text after braced connection string value");
+      }
+    } else {
+      const auto end = conn_str.find(';', position);
+      value = trim(conn_str.substr(
+          position, end == std::string::npos ? end : end - position));
+      position = end == std::string::npos ? conn_str.size() : end;
+    }
+
+    if (!key.empty()) params[to_upper(key)] = std::move(value);
+    if (position < conn_str.size()) ++position;
   }
-  
+
   return params;
 }
 
@@ -180,7 +216,8 @@ std::string ConnectionString::trim(const std::string& str) {
 
 std::string ConnectionString::to_upper(const std::string& str) {
   std::string result = str;
-  std::transform(result.begin(), result.end(), result.begin(), ::toupper);
+  std::transform(result.begin(), result.end(), result.begin(),
+                 [](unsigned char character) { return std::toupper(character); });
   return result;
 }
 

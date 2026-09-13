@@ -201,14 +201,16 @@ int main() {
 
   SQLCHAR connection_string[] =
       "DRIVER={ODBCPP PostgreSQL};SERVER=127.0.0.1;PORT=5432;"
-      "DATABASE=postgres;UID=postgres;PWD=postgres;SSL=0";
+      "DATABASE=postgres;UID=postgres;PWD=postgres;SSL=0;"
+      "DESCRIPTION={note;INJECTED=ignored}";
   SQLCHAR completed_connection_string[sizeof(connection_string)]{};
   SQLSMALLINT completed_length = 0;
   const auto connect_result = SQLDriverConnect(
       connection, nullptr, connection_string, SQL_NTS,
       completed_connection_string, sizeof(completed_connection_string),
       &completed_length, SQL_DRIVER_NOPROMPT);
-  if (!succeeded(connect_result)) {
+  if (!result_is(connect_result, SQL_SUCCESS,
+                 "SQLDriverConnect with braced semicolon")) {
     print_diagnostic(SQL_HANDLE_DBC, connection);
     SQLFreeHandle(SQL_HANDLE_DBC, connection);
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
@@ -781,13 +783,16 @@ int main() {
   }
   auto wide_connection_string = wide_ascii(
       "DRIVER={ODBCPP PostgreSQL};SERVER=127.0.0.1;PORT=5432;"
-      "DATABASE=postgres;UID=postgres;PWD=postgres;SSL=0");
+      "DATABASE=postgres;UID=postgres;PWD=postgres;SSL=0;"
+      "DESCRIPTION={note;INJECTED=ignored}");
   SQLWCHAR completed_wide_connection_string[256]{};
   SQLSMALLINT completed_wide_length = 0;
-  if (!succeeded(SQLDriverConnectW(
-          wide_connection, nullptr, wide_connection_string.data(), SQL_NTS,
-          completed_wide_connection_string, 256, &completed_wide_length,
-          SQL_DRIVER_NOPROMPT)) ||
+  const auto wide_connect_result = SQLDriverConnectW(
+      wide_connection, nullptr, wide_connection_string.data(), SQL_NTS,
+      completed_wide_connection_string, 256, &completed_wide_length,
+      SQL_DRIVER_NOPROMPT);
+  if (!result_is(wide_connect_result, SQL_SUCCESS,
+                 "SQLDriverConnectW with braced semicolon") ||
       completed_wide_length !=
           static_cast<SQLSMALLINT>(wide_connection_string.size() - 1)) {
     print_diagnostic(SQL_HANDLE_DBC, wide_connection);
