@@ -934,6 +934,11 @@ substitute for ODBC diagnostics.
   matches [ODBC `3F000`](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function).
   A real nonexistent-schema test covers direct, prepared, and deferred
   execution plus connection recovery.
+- Audit batch 131 translates PostgreSQL `22P02` (invalid text representation)
+  to ODBC `22018` (invalid character value for cast specification) for query
+  errors. Other class-22 states remain unchanged. A real invalid numeric cast
+  test covers direct, prepared, deferred, and recovery paths using the
+  [SQLPrepare diagnostics](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlprepare-function).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

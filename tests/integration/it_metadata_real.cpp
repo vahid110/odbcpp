@@ -3580,6 +3580,32 @@ TEST_F(MetadataIntegrationTest, LaterBatchErrorSurfacesThroughMoreResults) {
     EXPECT_EQ(22, integer_cell(hstmt, 1));
 }
 
+TEST_F(MetadataIntegrationTest, InvalidTextCastUsesOdbcSqlstate) {
+    constexpr auto invalid_cast = "SELECT 'not-a-number'::integer";
+
+    EXPECT_EQ(SQL_ERROR, SQLExecDirect(
+        hstmt, (SQLCHAR*)invalid_cast, SQL_NTS));
+    EXPECT_EQ("22018", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)invalid_cast, SQL_NTS));
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    EXPECT_EQ("22018", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 7; SELECT 'not-a-number'::integer",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(7, integer_cell(hstmt, 1));
+    EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
+    EXPECT_EQ("22018", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 1 AS recovered", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(1, integer_cell(hstmt, 1));
+}
+
 TEST_F(MetadataIntegrationTest, IntegrityViolationsUseOdbcSqlstate) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"CREATE TEMP TABLE odbcpp_integrity_diag("
