@@ -786,6 +786,11 @@ substitute for ODBC diagnostics.
   resolved addresses so one stalled address cannot starve IPv4 fallback.
   Refused-port and IPv4-only localhost tests cover failure cleanup and
   address fallback; the prompt-refusal timing assertion applies only on POSIX.
+- Audit batch 102 parses transport settings only after merging driver-wide,
+  DSN, and connection-string layers. A valid higher-priority value now
+  overrides an invalid lower-priority value. Async size settings use strict
+  decimal parsing, rejecting signs, whitespace, trailing characters, zero,
+  and overflow. Unit tests cover both precedence and malformed values.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

@@ -77,6 +77,35 @@ TEST(TransportOptionsTest, RejectsInvalidKnownValues) {
       TransportOptions::resolve(
           {}, {}, {{"AsyncMaxInflight", "257"}, {"AsyncQueueDepth", "256"}}),
       std::invalid_argument);
+  for (const auto* value : {"+8", " 8", "8 ", "8x",
+                            "1844674407370955161600"}) {
+    EXPECT_THROW(
+        TransportOptions::resolve({}, {}, {{"AsyncQueueDepth", value}}),
+        std::invalid_argument) << value;
+  }
+}
+
+TEST(TransportOptionsTest, ValidOverridesIgnoreInvalidLowerPriorityValues) {
+  const std::map<std::string, std::string> driver{
+      {"TransportMode", "invalid"},
+      {"AsyncQueueDepth", "invalid"},
+      {"AsyncEngine", "invalid"},
+  };
+  const std::map<std::string, std::string> dsn{
+      {"TRANSPORTMODE", "Async"},
+      {"ASYNCQUEUEDEPTH", "also invalid"},
+      {"ASYNCENGINE", "Auto"},
+  };
+  const std::map<std::string, std::string> connection{
+      {"asyncqueuedepth", "128"},
+  };
+
+  const auto options = TransportOptions::resolve(driver, dsn, connection);
+  EXPECT_EQ(options.mode, TransportMode::Async);
+  EXPECT_EQ(options.async_queue_depth, 128u);
+  EXPECT_EQ(options.async_engine, AsyncEngine::Auto);
+  EXPECT_THROW(TransportOptions::resolve(driver, {}, {}),
+               std::invalid_argument);
 }
 
 TEST(TransportFactoryTest, AutoSelectsAvailableNativeTransport) {
@@ -246,6 +275,20 @@ TEST_F(ConnectionResolutionTest, PreservesLayersAndConnectionOverridesDsn) {
   EXPECT_EQ(options.async_max_inflight, 12u);
   EXPECT_EQ(options.async_queue_depth, 120u);
   EXPECT_EQ(options.deadline_model, DeadlineModel::Strict);
+}
+
+TEST_F(ConnectionResolutionTest, DsnOverridesInvalidDriverDefault) {
+  std::ofstream driver_file(directory_ / "odbcinst.ini", std::ios::trunc);
+  driver_file << "[ODBCPP Test Driver]\n"
+                 "TransportMode=invalid\n";
+  driver_file.close();
+
+  const auto resolved = rs::odbc::ConnectionString::resolve(
+      "DSN=TransportOptionsTest", "Unused Default");
+  const auto options = TransportOptions::resolve(
+      resolved.driver_parameters, resolved.dsn_parameters,
+      resolved.connection_parameters);
+  EXPECT_EQ(options.mode, TransportMode::Async);
 }
 
 } // namespace

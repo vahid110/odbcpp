@@ -1,8 +1,8 @@
 #include "transport_options.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
-#include <limits>
 #include <stdexcept>
 
 namespace rs::core::transport {
@@ -16,29 +16,24 @@ std::string uppercase(std::string_view value) {
   return result;
 }
 
-std::size_t parse_positive_size(std::string_view name, const std::string& value) {
-  if (value.empty() || value.front() == '-') {
+std::size_t parse_positive_size(std::string_view name, std::string_view value) {
+  if (value.empty()) {
     throw std::invalid_argument(std::string(name) + " must be a positive integer");
   }
 
-  std::size_t consumed = 0;
-  unsigned long long parsed = 0;
-  try {
-    parsed = std::stoull(value, &consumed);
-  } catch (const std::exception&) {
+  std::size_t parsed = 0;
+  const auto [end, error] = std::from_chars(
+      value.data(), value.data() + value.size(), parsed);
+  if (error != std::errc{} || end != value.data() + value.size() ||
+      parsed == 0) {
     throw std::invalid_argument(std::string(name) + " must be a positive integer");
   }
-  if (consumed != value.size() || parsed == 0 ||
-      parsed > std::numeric_limits<std::size_t>::max()) {
-    throw std::invalid_argument(std::string(name) + " must be a positive integer");
-  }
-  return static_cast<std::size_t>(parsed);
+  return parsed;
 }
 
-void apply(TransportOptions& options,
-           const std::map<std::string, std::string>& parameters) {
-  for (const auto& [raw_key, raw_value] : parameters) {
-    const auto key = uppercase(raw_key);
+void apply_parameters(TransportOptions& options,
+                      const std::map<std::string, std::string_view>& parameters) {
+  for (const auto& [key, raw_value] : parameters) {
     const auto value = uppercase(raw_value);
 
     if (key == "TRANSPORTMODE") {
@@ -73,9 +68,21 @@ TransportOptions TransportOptions::resolve(
     const std::map<std::string, std::string>& dsn_parameters,
     const std::map<std::string, std::string>& connection_parameters) {
   TransportOptions options;
-  apply(options, driver_parameters);
-  apply(options, dsn_parameters);
-  apply(options, connection_parameters);
+  std::map<std::string, std::string_view> effective;
+  const auto overlay = [&](const auto& layer) {
+    for (const auto& [key, value] : layer) {
+      const auto normalized = uppercase(key);
+      if (normalized == "TRANSPORTMODE" || normalized == "ASYNCMAXINFLIGHT" ||
+          normalized == "ASYNCQUEUEDEPTH" || normalized == "ASYNCENGINE" ||
+          normalized == "DEADLINEMODEL") {
+        effective[normalized] = value;
+      }
+    }
+  };
+  overlay(driver_parameters);
+  overlay(dsn_parameters);
+  overlay(connection_parameters);
+  apply_parameters(options, effective);
 
   if (options.async_max_inflight > options.async_queue_depth) {
     throw std::invalid_argument(
