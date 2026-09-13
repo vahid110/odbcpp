@@ -82,17 +82,26 @@ rs::util::Result<void> TLSTransport::connect(std::string_view host, uint16_t por
 
 rs::util::Result<void> TLSTransport::connect_plain(
     std::string_view host, uint16_t port, Deadline deadline) {
+  close();
   return tcp_.connect(host, port, deadline);
 }
 
 rs::util::Result<void> TLSTransport::upgrade_to_tls(
     std::string_view host, Deadline deadline) {
-  return rs::util::try_catch([&] { upgrade_impl(host, deadline); });
+  auto result = rs::util::try_catch([&] { upgrade_impl(host, deadline); });
+  if (result.has_error()) close();
+  return result;
 }
 
 void TLSTransport::upgrade_from(socket_t s, std::string_view host, Deadline deadline) {
+  close();
   tcp_.adopt(s);
-  upgrade_impl(host, deadline);
+  try {
+    upgrade_impl(host, deadline);
+  } catch (...) {
+    close();
+    throw;
+  }
 }
 
 void TLSTransport::upgrade_impl(std::string_view host, Deadline deadline) {
@@ -164,9 +173,8 @@ void TLSTransport::verify_hostname(X509* cert) {
 
 void TLSTransport::close() noexcept {
   if (ssl_) {
-    // Best-effort shutdown; on non-blocking it may need a loop,
-    // but we keep it simple and robust.
-    SSL_shutdown(ssl_);
+    // Closing the socket ends this client session. SSL_shutdown can write a
+    // close_notify to an already-closed peer and raise SIGPIPE on Unix.
     SSL_free(ssl_);
     ssl_ = nullptr;
   }

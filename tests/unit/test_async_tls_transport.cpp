@@ -388,6 +388,27 @@ TEST(AsyncTlsTransportTest, HandshakeHonorsStrictDeadline) {
   EXPECT_EQ(connected.error(),
             rs::util::make_error_code(rs::util::DbErrorCode::Timeout));
   EXPECT_LT(elapsed, 500ms);
+
+  constexpr std::string_view plaintext = "ping";
+  auto sent = transport.send(
+      std::as_bytes(std::span<const char>(plaintext.data(), plaintext.size())),
+      rs::util::make_deadline(100ms));
+  EXPECT_TRUE(sent.has_error()) << "failed TLS must not expose plaintext I/O";
+}
+
+TEST(AsyncTlsTransportTest, CertificateFailureClosesPlainConnection) {
+  TlsLoopbackServer server(TlsLoopbackServer::Behavior::DirectEcho);
+  AsyncTlsTransport transport(make_native_transport());
+
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(2s));
+  ASSERT_TRUE(connected.has_error());
+
+  constexpr std::string_view plaintext = "ping";
+  auto sent = transport.send(
+      std::as_bytes(std::span<const char>(plaintext.data(), plaintext.size())),
+      rs::util::make_deadline(100ms));
+  EXPECT_TRUE(sent.has_error()) << "certificate failure must close the socket";
 }
 
 TEST(AsyncTlsTransportTest, CancellationCompletesReceiveExactlyOnce) {

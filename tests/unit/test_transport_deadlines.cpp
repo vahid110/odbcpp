@@ -298,6 +298,43 @@ TEST(TLSTransportDeadlineTest, StrictHandshakeTimesOutAgainstSilentPeer) {
   EXPECT_EQ(result.error(), rs::util::make_error_code(rs::util::DbErrorCode::Timeout));
   EXPECT_GE(elapsed, 30ms);
   EXPECT_LT(elapsed, 500ms);
+
+  const std::array<std::byte, 1> plaintext{std::byte{'x'}};
+  auto sent = transport.send(plaintext, rs::util::make_deadline(100ms));
+  EXPECT_TRUE(sent.has_error()) << "failed TLS must not expose plaintext I/O";
+}
+
+TEST(TLSTransportDeadlineTest, CertificateFailureClosesPlainConnection) {
+  TLSSleepingServer server(100ms);
+  TLSTransport transport(DeadlineModel::Strict);
+
+  auto result = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s));
+  ASSERT_TRUE(result.has_error());
+
+  const std::array<std::byte, 1> plaintext{std::byte{'x'}};
+  auto sent = transport.send(plaintext, rs::util::make_deadline(100ms));
+  EXPECT_TRUE(sent.has_error()) << "certificate failure must close the socket";
+}
+
+TEST(TLSTransportDeadlineTest, PlainReconnectDiscardsPriorTlsSession) {
+  TLSSleepingServer first(250ms);
+  SleepingServer second(250ms);
+  TLSTransport transport(DeadlineModel::Strict);
+  transport.set_verify(false);
+
+  auto connected = transport.connect(
+      "127.0.0.1", first.port(), rs::util::make_deadline(1s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  auto reconnected = transport.connect_plain(
+      "127.0.0.1", second.port(), rs::util::make_deadline(1s));
+  ASSERT_TRUE(reconnected.has_value()) << reconnected.error_message();
+
+  const std::array<std::byte, 1> plaintext{std::byte{'x'}};
+  auto sent = transport.send(plaintext, rs::util::make_deadline(100ms));
+  ASSERT_TRUE(sent.has_value()) << sent.error_message();
+  EXPECT_EQ(sent->n, plaintext.size());
 }
 
 TEST(TLSTransportDeadlineTest, StrictReceiveTimesOutAfterHandshake) {

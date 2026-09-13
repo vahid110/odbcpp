@@ -731,6 +731,12 @@ substitute for ODBC diagnostics.
   scale of -1000 in `SQLGetTypeInfo`, while older servers retain zero. The
   all-types integration matrix and `SQLGetTypeInfoW` check the value against
   the connected server version, matching [PostgreSQL's documented scale range](https://www.postgresql.org/docs/17/datatype-numeric.html).
+- Audit batch 92 closes the underlying socket after a failed TLS handshake or
+  certificate verification in both sync and async transports, so a failed
+  upgrade cannot leave a writable plaintext connection. Sync reconnect and
+  raw-socket upgrade also discard prior TLS state; timeout and certificate
+  rejection have direct no-plaintext-I/O regression checks. Socket closure
+  avoids writing TLS close-notify to a peer that may have already gone away.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

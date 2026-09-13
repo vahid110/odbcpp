@@ -324,7 +324,10 @@ private:
 
   rs::util::Result<void> execute_connect_task(Task& task) {
     std::lock_guard lock(tls_mutex_);
-    if (task.state->cancellation_requested()) return cancelled_result<void>();
+    if (task.state->cancellation_requested()) {
+      if (task.kind == TaskKind::Upgrade) transport_->close();
+      return cancelled_result<void>();
+    }
 
     if (task.kind == TaskKind::ConnectTls ||
         task.kind == TaskKind::ConnectPlain) {
@@ -333,7 +336,12 @@ private:
       if (connected.has_error()) return connected;
       if (task.kind == TaskKind::ConnectPlain) return {};
     }
-    return handshake_locked(task.host, task.deadline);
+    auto result = handshake_locked(task.host, task.deadline);
+    if (result.has_error() || task.state->cancellation_requested()) {
+      reset_ssl_locked();
+      transport_->close();
+    }
+    return result;
   }
 
   rs::util::Result<IOResult> execute_send_task(Task& task) {
@@ -704,7 +712,9 @@ rs::util::Result<void> AsyncTlsTransport::connect_plain(
     task->connect_callback({rs::util::DbErrorCode::NetworkError,
                             "async TLS queue is full"});
   }
-  return future.get();
+  auto result = future.get();
+  if (result.has_error()) core_->close_transport();
+  return result;
 }
 
 rs::util::Result<void> AsyncTlsTransport::upgrade_to_tls(
@@ -733,7 +743,9 @@ rs::util::Result<void> AsyncTlsTransport::upgrade_to_tls(
     task->connect_callback({rs::util::DbErrorCode::NetworkError,
                             "async TLS queue is full"});
   }
-  return future.get();
+  auto result = future.get();
+  if (result.has_error()) core_->close_transport();
+  return result;
 }
 
 std::unique_ptr<AsyncOperation> AsyncTlsTransport::connect_async(
