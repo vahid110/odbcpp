@@ -91,4 +91,32 @@ inline SocketWaitResult wait_for_socket(native_socket_t socket, bool read,
   }
 }
 
+inline SocketWaitResult wait_for_connect(native_socket_t socket,
+                                         rs::util::Deadline deadline) {
+#ifdef _WIN32
+  for (;;) {
+    const auto left = rs::util::remaining(deadline);
+    if (left <= std::chrono::milliseconds::zero()) {
+      return SocketWaitResult::Timeout;
+    }
+    const auto bounded = std::min<long long>(
+        left.count(), std::numeric_limits<int>::max());
+    timeval timeout{static_cast<long>(bounded / 1000),
+                    static_cast<long>((bounded % 1000) * 1000)};
+    fd_set writable;
+    FD_ZERO(&writable);
+    FD_SET(socket, &writable);
+    fd_set errors;
+    FD_ZERO(&errors);
+    FD_SET(socket, &errors);
+    const int result = ::select(0, nullptr, &writable, &errors, &timeout);
+    if (result > 0) return SocketWaitResult::Ready;
+    if (result == 0) return SocketWaitResult::Timeout;
+    if (::WSAGetLastError() != WSAEINTR) return SocketWaitResult::Failed;
+  }
+#else
+  return wait_for_socket(socket, false, true, deadline);
+#endif
+}
+
 } // namespace rs::core::transport

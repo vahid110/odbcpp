@@ -314,13 +314,16 @@ TEST(SocketTransportDeadlineTest, RefusedConnectionDoesNotLeaveOpenSocket) {
 #endif
   ASSERT_EQ(0, ::getsockname(unused, reinterpret_cast<sockaddr*>(&address),
                             &length));
+  close_test_socket(unused);
 
+  const auto start = std::chrono::steady_clock::now();
   auto result = transport.connect(
-      "127.0.0.1", ntohs(address.sin_port), rs::util::make_deadline(1s));
+      "127.0.0.1", ntohs(address.sin_port), rs::util::make_deadline(2s));
+  const auto elapsed = std::chrono::steady_clock::now() - start;
   ASSERT_TRUE(result.has_error());
+  EXPECT_LT(elapsed, 1s);
   const std::array<std::byte, 1> data{std::byte{'x'}};
   EXPECT_TRUE(transport.send(data, rs::util::make_deadline(100ms)).has_error());
-  close_test_socket(unused);
 }
 
 #ifndef _WIN32

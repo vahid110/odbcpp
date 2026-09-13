@@ -774,8 +774,13 @@ substitute for ODBC diagnostics.
   rather than leaving a partially configured context in use; a two-connection
   regression checks both failures.
 - Audit batch 101 requires `getsockopt(SO_ERROR)` itself to succeed before a
-  pending TCP connection is accepted. Refused-port and IPv4-only localhost
-  tests cover connect failure cleanup and DNS address fallback.
+  pending TCP connection is accepted. A Windows CI regression revealed that
+  polling only for writability can consume the whole deadline on a refused
+  endpoint, preventing fallback from IPv6 localhost to IPv4. Pending Winsock
+  connects now wait for both write success and exception failure using
+  [Microsoft's documented `select` contract](https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-select).
+  Refused-port and IPv4-only localhost tests cover timely failure cleanup and
+  address fallback.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

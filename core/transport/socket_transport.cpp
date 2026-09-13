@@ -161,7 +161,7 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
     }
 #endif
     // Wait for connect or timeout
-    const auto wait = wait_for_socket(sock_, false, true, deadline);
+    const auto wait = wait_for_connect(sock_, deadline);
     if (wait == SocketWaitResult::Ready) {
       // Check for connect success
       int err = 0;
