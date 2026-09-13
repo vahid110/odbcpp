@@ -41,8 +41,14 @@ public:
   }
 
   bool finish() {
+    return finish_with([](bool) {});
+  }
+
+  template<typename Action>
+  bool finish_with(Action action) {
     std::lock_guard lock(mutex_);
     if (complete_) return false;
+    action(cancellation_requested_);
     complete_ = true;
     cancel_hook_ = {};
     return true;
@@ -297,20 +303,25 @@ private:
       } else {
         auto result = task->kind == TaskKind::Send
             ? execute_send_task(*task) : execute_recv_task(*task);
-        if (task->state->cancellation_requested()) {
-          result = cancelled_result<IOResult>();
-        }
-        if (task->kind == TaskKind::Recv && result.has_value() &&
-            result->n <= task->recv_target.size()) {
-          std::memcpy(task->recv_target.data(), task->recv_storage.data(),
-                      result->n);
-        }
-        finish_active(task);
-        if (task->state->finish()) {
-          if (task->kind == TaskKind::Send) {
+        if (task->kind == TaskKind::Recv) {
+          const bool completed = task->state->finish_with([&](bool cancelled) {
+            if (cancelled) {
+              result = cancelled_result<IOResult>();
+            } else if (result.has_value() && result->n != 0 &&
+                       result->n <= task->recv_target.size()) {
+              std::memcpy(task->recv_target.data(), task->recv_storage.data(),
+                          result->n);
+            }
+          });
+          finish_active(task);
+          if (completed) invoke_safely(task->recv_callback, std::move(result));
+        } else {
+          if (task->state->cancellation_requested()) {
+            result = cancelled_result<IOResult>();
+          }
+          finish_active(task);
+          if (task->state->finish()) {
             invoke_safely(task->send_callback, std::move(result));
-          } else {
-            invoke_safely(task->recv_callback, std::move(result));
           }
         }
       }

@@ -1,14 +1,14 @@
 #include <gtest/gtest.h>
 
-#if defined(__linux__) || defined(_WIN32)
-
 #include "core/transport/async_tls_transport.h"
 #include "core/database/generic_database_connection.h"
 #include "core/database/postgres/pg_protocol_parser.h"
 #ifdef __linux__
 #include "core/transport/epoll_transport.h"
-#else
+#elif defined(_WIN32)
 #include "core/transport/iocp_transport.h"
+#else
+#include "core/transport/thread_pool_transport.h"
 #endif
 #include "core/util/deadline.h"
 #include "core/util/platform.h"
@@ -58,8 +58,11 @@ std::unique_ptr<IAsyncTransport> make_native_transport(
 #ifdef __linux__
   return std::make_unique<rs::core::transport::EpollTransport>(
       max_inflight, queue_depth);
-#else
+#elif defined(_WIN32)
   return std::make_unique<rs::core::transport::IocpTransport>(
+      max_inflight, queue_depth);
+#else
+  return std::make_unique<rs::core::transport::ThreadPoolTransport>(
       max_inflight, queue_depth);
 #endif
 }
@@ -303,6 +306,12 @@ TEST(AsyncTlsTransportTest, SupportsDirectTlsRoundTrip) {
       "127.0.0.1", server.port(), rs::util::make_deadline(15s));
   ASSERT_TRUE(connected.has_value()) << connected.error_message();
 
+  std::array<std::byte, 0> empty{};
+  auto empty_receive = transport.recv(empty, rs::util::make_deadline(5s));
+  ASSERT_TRUE(empty_receive.has_value()) << empty_receive.error_message();
+  EXPECT_EQ(empty_receive->n, 0u);
+  EXPECT_FALSE(empty_receive->eof);
+
   constexpr std::string_view request = "ping";
   auto sent = transport.send(
       std::as_bytes(std::span<const char>(request.data(), request.size())),
@@ -479,7 +488,7 @@ TEST(AsyncTlsTransportTest, CancellationCompletesReceiveExactlyOnce) {
       "127.0.0.1", server.port(), rs::util::make_deadline(2s));
   ASSERT_TRUE(connected.has_value()) << connected.error_message();
 
-  std::array<std::byte, 1> buffer{};
+  std::array<std::byte, 1> buffer{std::byte{0x2a}};
   std::mutex mutex;
   std::condition_variable ready;
   std::atomic<int> callbacks{0};
@@ -501,8 +510,7 @@ TEST(AsyncTlsTransportTest, CancellationCompletesReceiveExactlyOnce) {
   operation->cancel();
   std::this_thread::sleep_for(50ms);
   EXPECT_EQ(callbacks.load(), 1);
+  EXPECT_EQ(buffer[0], std::byte{0x2a});
 }
 
 } // namespace
-
-#endif

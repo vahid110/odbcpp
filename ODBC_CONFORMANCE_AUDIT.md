@@ -955,6 +955,14 @@ substitute for ODBC diagnostics.
   the caller before marking the operation complete; cancelled receives do not
   copy. Windows loopback tests check normal round-trip and cancellation
   followed by a successful receive into a different buffer.
+- Audit batch 135 makes the async TLS receive completion and cancellation
+  decision atomic with the copy into the caller's buffer. A cancellation that
+  wins the operation-state lock reports cancellation and leaves the buffer
+  unchanged; a completed copy makes a later cancellation a no-op. The TLS
+  cancellation test now checks the buffer as well as callback cardinality,
+  and the round-trip checks a zero-length receive before ordinary I/O.
+  The TLS loopback suite also runs on macOS with the thread-pool transport,
+  instead of compiling to an empty test binary there.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

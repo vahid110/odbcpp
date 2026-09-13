@@ -9,8 +9,8 @@
 
 namespace rs::core::transport {
 
-// TLS wrapper for native asynchronous transports. OpenSSL uses memory BIOs;
-// encrypted records are pumped through the wrapped epoll/IOCP transport.
+// TLS wrapper for asynchronous transports. OpenSSL uses memory BIOs;
+// encrypted records are pumped through the wrapped transport.
 class AsyncTlsTransport : public IAsyncTransport, public IStartTlsTransport {
 public:
   explicit AsyncTlsTransport(
