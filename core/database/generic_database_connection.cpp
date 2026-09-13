@@ -419,6 +419,14 @@ rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(
         }
         break; // Ready for queries
       }
+      else if (msg.tag == 'N' && authenticated) {
+        continue; // NoticeResponse may accompany backend startup
+      }
+      else {
+        return rs::util::Result<void>{
+            rs::util::DbErrorCode::ProtocolError,
+            "Unexpected PostgreSQL startup message"};
+      }
     }
   } catch (const std::exception& error) {
     last_error_ = error.what();

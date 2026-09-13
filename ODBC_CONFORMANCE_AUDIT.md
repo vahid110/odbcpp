@@ -880,6 +880,10 @@ substitute for ODBC diagnostics.
   authentication request after `AuthenticationOk` cannot trigger another
   credential response, and `ParameterStatus` or `BackendKeyData` before
   authentication succeeds cannot be mistaken for normal startup metadata.
+- Audit batch 120 rejects unexpected backend frames during PostgreSQL startup
+  instead of silently skipping them until `ReadyForQuery`. Query-phase frames
+  cannot precede the first query, while a post-authentication `NoticeResponse`
+  remains permitted by the [startup flow](https://www.postgresql.org/docs/current/protocol-flow.html).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

@@ -58,7 +58,9 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     MalformedQueryError, MalformedBackendKey, ReadyWithoutAuth,
     StartupRejectedAfterAuth, LoginRejectedAfterAuth,
     DuplicateAuthenticationOk, ChallengeAfterAuthenticationOk,
-    ParameterStatusBeforeAuthenticationOk, BackendKeyBeforeAuthenticationOk
+    ParameterStatusBeforeAuthenticationOk, BackendKeyBeforeAuthenticationOk,
+    UnexpectedQueryFrameBeforeAuthenticationOk,
+    UnexpectedQueryFrameAfterAuthenticationOk, NoticeAfterAuthenticationOk
   };
 
   explicit ScriptedBackendTransport(
@@ -94,7 +96,19 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('K', backend_key, 8);
       return;
     }
+    if (mode == ResponseMode::UnexpectedQueryFrameBeforeAuthenticationOk) {
+      append_message('C', "SELECT 1\0", 9);
+      return;
+    }
     append_message('R', "\0\0\0\0", 4);
+    if (mode == ResponseMode::UnexpectedQueryFrameAfterAuthenticationOk) {
+      append_message('C', "SELECT 1\0", 9);
+      return;
+    }
+    if (mode == ResponseMode::NoticeAfterAuthenticationOk) {
+      constexpr char notice[] = "SNOTICE\0C00000\0Mstartup notice\0";
+      append_message('N', notice, sizeof(notice));
+    }
     if (mode == ResponseMode::DuplicateAuthenticationOk) {
       append_message('R', "\0\0\0\0", 4);
       return;
@@ -292,7 +306,9 @@ TEST(ConnectionLivenessTest, OutOfPhaseStartupMessagesAreProtocolErrors) {
            Mode::DuplicateAuthenticationOk,
            Mode::ChallengeAfterAuthenticationOk,
            Mode::ParameterStatusBeforeAuthenticationOk,
-           Mode::BackendKeyBeforeAuthenticationOk}) {
+           Mode::BackendKeyBeforeAuthenticationOk,
+           Mode::UnexpectedQueryFrameBeforeAuthenticationOk,
+           Mode::UnexpectedQueryFrameAfterAuthenticationOk}) {
     SCOPED_TRACE(static_cast<int>(mode));
     rs::core::database::GenericDatabaseConnection connection(
         std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
@@ -306,6 +322,19 @@ TEST(ConnectionLivenessTest, OutOfPhaseStartupMessagesAreProtocolErrors) {
               result.error());
     EXPECT_FALSE(connection.is_connected());
   }
+}
+
+TEST(ConnectionLivenessTest, NoticeAfterAuthenticationOkAllowsStartup) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::NoticeAfterAuthenticationOk));
+
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  ASSERT_TRUE(connection.connect(settings).has_value());
+  EXPECT_TRUE(connection.is_connected());
+  EXPECT_EQ("17.6", connection.get_parameter("server_version"));
 }
 
 TEST(ConnectionLivenessTest, ErrorAfterAuthenticationIsStartupFailure) {
