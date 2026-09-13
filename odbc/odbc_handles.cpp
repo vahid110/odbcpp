@@ -162,14 +162,16 @@ const char* request_sqlstate(const std::error_code& error,
   return fallback;
 }
 
-std::string backend_data_exception_sqlstate(std::string_view server_state,
-                                            const char* fallback) {
-  if (server_state.size() == 5 && server_state.substr(0, 2) == "22" &&
-      std::all_of(server_state.begin(), server_state.end(), [](char ch) {
+std::string mapped_backend_sqlstate(std::string_view server_state,
+                                    const char* fallback) {
+  if (server_state.size() != 5 ||
+      !std::all_of(server_state.begin(), server_state.end(), [](char ch) {
         return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z');
       })) {
-    return std::string(server_state);
+    return fallback;
   }
+  if (server_state.substr(0, 2) == "22") return std::string(server_state);
+  if (server_state.substr(0, 2) == "23") return "23000";
   return fallback;
 }
 
@@ -180,7 +182,7 @@ std::string query_failure_sqlstate(
   if (error != rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed)) {
     return default_state;
   }
-  return backend_data_exception_sqlstate(
+  return mapped_backend_sqlstate(
       connection.get_last_server_sqlstate(), default_state);
 }
 
@@ -2539,8 +2541,8 @@ SQLRETURN ODBCStatement::more_results() {
   pending_results_.erase(pending_results_.begin());
   if (!next.error_message.empty()) {
     pending_results_.clear();
-    set_error(backend_data_exception_sqlstate(next.error_sqlstate,
-                                               SQLSTATE_SYNTAX_ERROR),
+    set_error(mapped_backend_sqlstate(next.error_sqlstate,
+                                      SQLSTATE_SYNTAX_ERROR),
               "Query error: " + next.error_message);
     return SQL_ERROR;
   }

@@ -3580,6 +3580,42 @@ TEST_F(MetadataIntegrationTest, LaterBatchErrorSurfacesThroughMoreResults) {
     EXPECT_EQ(22, integer_cell(hstmt, 1));
 }
 
+TEST_F(MetadataIntegrationTest, IntegrityViolationsUseOdbcSqlstate) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"CREATE TEMP TABLE odbcpp_integrity_diag("
+                         "id integer PRIMARY KEY)", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"INSERT INTO odbcpp_integrity_diag VALUES (1)",
+        SQL_NTS));
+
+    EXPECT_EQ(SQL_ERROR, SQLExecDirect(
+        hstmt, (SQLCHAR*)"INSERT INTO odbcpp_integrity_diag VALUES (1)",
+        SQL_NTS));
+    EXPECT_EQ("23000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"INSERT INTO odbcpp_integrity_diag VALUES (1)",
+        SQL_NTS));
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    EXPECT_EQ("23000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 7; "
+                         "INSERT INTO odbcpp_integrity_diag VALUES (1)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(7, integer_cell(hstmt, 1));
+    EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
+    EXPECT_EQ("23000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT count(*) FROM odbcpp_integrity_diag",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(1, integer_cell(hstmt, 1));
+}
+
 TEST_F(MetadataIntegrationTest, ClosingCursorDiscardsPendingResults) {
     constexpr auto batch =
         "SELECT 1 AS first_value; SELECT 2 AS second_value";

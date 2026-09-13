@@ -903,6 +903,10 @@ substitute for ODBC diagnostics.
   server-specific classes retain the existing conservative mapping pending
   an ODBC-by-PostgreSQL SQLSTATE audit. Malformed five-character server codes
   are rejected as protocol errors.
+- Audit batch 125 maps PostgreSQL class-23 integrity-constraint errors to
+  ODBC `23000` as documented for [SQLExecDirect](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function).
+  A real duplicate-key test covers direct execution, prepared execution,
+  deferred `SQLMoreResults`, and subsequent connection recovery.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
