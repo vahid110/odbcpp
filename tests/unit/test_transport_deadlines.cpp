@@ -13,7 +13,9 @@
 
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -141,6 +143,11 @@ public:
       if (ssl) {
         SSL_set_fd(ssl, static_cast<int>(client));
         if (SSL_accept(ssl) == 1) {
+          {
+            std::lock_guard lock(handshake_mutex_);
+            handshake_complete_ = true;
+          }
+          handshake_ready_.notify_all();
           std::this_thread::sleep_for(sleep_for_);
         }
         SSL_free(ssl);
@@ -156,6 +163,13 @@ public:
   }
 
   uint16_t port() const noexcept { return port_; }
+
+  bool wait_for_handshake() {
+    std::unique_lock lock(handshake_mutex_);
+    return handshake_ready_.wait_for(lock, 1s, [this] {
+      return handshake_complete_;
+    });
+  }
 
 private:
   void configure_certificate() {
@@ -199,6 +213,9 @@ private:
   test_socket_t listener_{invalid_test_socket};
   uint16_t port_{};
   std::thread worker_;
+  std::mutex handshake_mutex_;
+  std::condition_variable handshake_ready_;
+  bool handshake_complete_{false};
 };
 
 void expect_receive_timeout(DeadlineModel model) {
@@ -326,6 +343,7 @@ TEST(TLSTransportDeadlineTest, PlainReconnectDiscardsPriorTlsSession) {
   auto connected = transport.connect(
       "127.0.0.1", first.port(), rs::util::make_deadline(1s));
   ASSERT_TRUE(connected.has_value()) << connected.error_message();
+  ASSERT_TRUE(first.wait_for_handshake());
 
   auto reconnected = transport.connect_plain(
       "127.0.0.1", second.port(), rs::util::make_deadline(1s));
