@@ -262,11 +262,11 @@ private:
 
 // IRD (Implementation Row Descriptor) - ODBC result column metadata
 struct ColumnInfo {
-  std::string name;           // SQL_DESC_NAME
-  SQLSMALLINT sql_type;       // SQL_DESC_TYPE
-  SQLULEN column_size;        // SQL_DESC_LENGTH
-  SQLSMALLINT decimal_digits; // SQL_DESC_PRECISION
-  SQLSMALLINT nullable;       // SQL_DESC_NULLABLE
+  std::string name;
+  SQLSMALLINT sql_type;
+  SQLULEN column_size;
+  SQLSMALLINT decimal_digits;
+  SQLSMALLINT nullable;
 };
 
 bool is_character_column_attribute(SQLUSMALLINT field_identifier);

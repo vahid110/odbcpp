@@ -1025,6 +1025,11 @@ TEST_F(MetadataIntegrationTest, RefreshesPreparedShapeAfterIpdTypeChange) {
         hstmt, 1, nullptr, 0, nullptr, &data_type,
         nullptr, nullptr, nullptr));
     EXPECT_EQ(SQL_INTEGER, data_type);
+    char type_name[16]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        hstmt, 1, SQL_DESC_TYPE_NAME, type_name, sizeof(type_name),
+        nullptr, nullptr));
+    EXPECT_STREQ("integer", type_name);
 
     ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
         implementation, 1, SQL_DESC_CONCISE_TYPE,
@@ -1034,6 +1039,10 @@ TEST_F(MetadataIntegrationTest, RefreshesPreparedShapeAfterIpdTypeChange) {
         hstmt, 1, nullptr, 0, nullptr, &data_type,
         nullptr, nullptr, nullptr));
     EXPECT_EQ(SQL_VARCHAR, data_type);
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        hstmt, 1, SQL_DESC_TYPE_NAME, type_name, sizeof(type_name),
+        nullptr, nullptr));
+    EXPECT_STREQ("varchar", type_name);
 }
 
 TEST_F(MetadataIntegrationTest, ResultShapeAndRowCountFollowStatementState) {

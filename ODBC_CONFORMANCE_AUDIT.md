@@ -723,6 +723,10 @@ substitute for ODBC diagnostics.
   metadata. ODBC 2 column-size and decimal-digit identifiers keep their
   separate legacy values. This also ensures later IRD origin-name enrichment
   will not diverge from `SQLColAttribute`.
+- Audit batch 90 tests that changing an IPD parameter type invalidates the
+  prepared result shape for type-name attributes as well as `SQLDescribeCol`.
+  Stale `ColumnInfo` comments that incorrectly equated concise SQL type and
+  decimal digits with different descriptor fields were removed.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
