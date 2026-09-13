@@ -31,8 +31,14 @@ public:
   }
 
   bool finish() {
+    return finish_with([] {});
+  }
+
+  template<typename BeforeFinish>
+  bool finish_with(BeforeFinish before_finish) {
     std::lock_guard lock(mutex_);
     if (complete_) return false;
+    before_finish();
     complete_ = true;
     cancel_callback_ = {};
     return true;
@@ -187,14 +193,22 @@ std::unique_ptr<AsyncOperation> ThreadPoolTransport::recv_async(
   auto callback_copy = callback;
   auto state = make_operation_state<rs::util::Result<IOResult>>(callback_copy);
   auto operation = std::make_unique<ThreadPoolOperation>(state);
+  std::vector<std::byte> buffer(buf.size());
 
   Task task{
-      [this, state, buf, deadline, callback = std::move(callback)]() mutable {
+      [this, state, buf, buffer = std::move(buffer), deadline,
+       callback = std::move(callback)]() mutable {
         rs::util::Result<IOResult> result = expired(deadline)
             ? rs::util::Result<IOResult>{rs::util::DbErrorCode::Timeout,
                                          "async receive deadline expired in queue"}
-            : recv(buf, deadline);
-        if (state->finish()) callback(std::move(result));
+            : recv(buffer, deadline);
+        if (state->finish_with([&] {
+              if (result.has_value()) {
+                std::copy_n(buffer.begin(), result->n, buf.begin());
+              }
+            })) {
+          callback(std::move(result));
+        }
       },
       [state] { state->cancel(); }};
 

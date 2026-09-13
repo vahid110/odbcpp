@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "core/transport/socket_transport.h"
+#include "core/transport/thread_pool_transport.h"
 #include "core/transport/tls_io.h"
 #include "core/transport/tls_peer_identity.h"
 #include "core/transport/tls_transport.h"
@@ -14,10 +15,12 @@
 #include <openssl/x509.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <filesystem>
+#include <future>
 #include <limits>
 #include <mutex>
 #include <memory>
@@ -58,8 +61,9 @@ void close_test_socket(test_socket_t socket) noexcept {
 
 class SleepingServer {
 public:
-  explicit SleepingServer(std::chrono::milliseconds sleep_for)
-      : sleep_for_(sleep_for) {
+  explicit SleepingServer(std::chrono::milliseconds sleep_for,
+                          bool send_after_sleep = false)
+      : sleep_for_(sleep_for), send_after_sleep_(send_after_sleep) {
     listener_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (listener_ == invalid_test_socket) {
       throw std::runtime_error("failed to create test listener");
@@ -94,6 +98,10 @@ public:
       auto client = ::accept(listener_, nullptr, nullptr);
       if (client != invalid_test_socket) {
         std::this_thread::sleep_for(sleep_for_);
+        if (send_after_sleep_) {
+          const char reply = 'x';
+          (void)::send(client, &reply, 1, 0);
+        }
         close_test_socket(client);
       }
     });
@@ -111,6 +119,7 @@ private:
   test_socket_t listener_{invalid_test_socket};
   uint16_t port_{};
   std::chrono::milliseconds sleep_for_;
+  bool send_after_sleep_;
   std::thread worker_;
 };
 
@@ -400,6 +409,33 @@ TEST(SocketTransportDeadlineTest, StrictSendTimesOutUnderBackpressure) {
   } while (result.has_value());
 
   EXPECT_EQ(result.error(), rs::util::make_error_code(rs::util::DbErrorCode::Timeout));
+}
+
+TEST(ThreadPoolTransportDeadlineTest, CancelledReceiveDoesNotWriteCallerBuffer) {
+  SleepingServer server(100ms, true);
+  rs::core::transport::ThreadPoolTransport transport(1);
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  std::array<std::byte, 1> buffer{};
+  std::atomic<int> callbacks{0};
+  auto operation = transport.recv_async(
+      buffer, rs::util::make_deadline(1s),
+      [&](rs::util::Result<rs::core::transport::IOResult> result) {
+        EXPECT_TRUE(result.has_error());
+        callbacks.fetch_add(1);
+      });
+  operation->cancel();
+  ASSERT_TRUE(operation->is_complete());
+  ASSERT_TRUE(operation->is_cancelled());
+  buffer[0] = std::byte{0x2a};
+
+  auto drained = transport.send_future(
+      std::span<const std::byte>{}, rs::util::make_deadline(1s));
+  ASSERT_EQ(std::future_status::ready, drained.wait_for(2s));
+  EXPECT_EQ(1, callbacks.load());
+  EXPECT_EQ(std::byte{0x2a}, buffer[0]);
 }
 
 TEST(SocketTransportDeadlineTest, ExpiredDeadlineFailsWithoutBlocking) {

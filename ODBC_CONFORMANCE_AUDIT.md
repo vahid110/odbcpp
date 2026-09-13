@@ -939,6 +939,12 @@ substitute for ODBC diagnostics.
   errors. Other class-22 states remain unchanged. A real invalid numeric cast
   test covers direct, prepared, deferred, and recovery paths using the
   [SQLPrepare diagnostics](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlprepare-function).
+- Audit batch 132 prevents a cancelled thread-pool receive from writing into
+  the caller's buffer after cancellation returns. The worker receives into
+  owned storage and copies under the completion/cancellation lock only when
+  completion wins. A delayed loopback reply and a queued-work barrier verify
+  that cancellation leaves the buffer unchanged and calls back once. Native
+  epoll and IOCP receive-buffer cancellation remain separate lifetime audits.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
