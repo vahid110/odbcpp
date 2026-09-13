@@ -687,6 +687,16 @@ substitute for ODBC diagnostics.
   `SQLColumns` values, including ANSI/wide parity. Non-domain routine
   arguments still use conservative sizes because `pg_proc` carries type OIDs
   but not argument typmods.
+- Audit batch 85 decodes PostgreSQL's signed numeric scale from the low
+  11 typmod bits instead of interpreting the encoded value as a positive
+  scale. A PostgreSQL 17 integration test covers `numeric(8,-2)` on plain
+  and nested-domain columns in `SQLColumns` and `SQLDescribeCol`, plus
+  nested-domain `SQLSpecialColumns`, `SQLProcedureColumns`, and
+  `SQLDescribeParam`, the parameter descriptor, and `SQLColumnsW`. The test
+  skips PostgreSQL versions before 15, when [negative numeric scales were
+  introduced](https://www.postgresql.org/docs/15/datatype-numeric.html).
+  Catalog fallback values from `information_schema` are normalized as well,
+  since they expose the encoded value for this case.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

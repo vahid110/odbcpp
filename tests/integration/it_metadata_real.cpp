@@ -1951,6 +1951,116 @@ TEST_F(MetadataIntegrationTest, NestedDomainCatalogDimensionsMatchBaseColumns) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, NegativeNumericScaleMetadata) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"SELECT current_setting('server_version_num')::integer",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    const auto server_version = integer_cell(hstmt, 1);
+    ASSERT_TRUE(server_version.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    if (*server_version < 150000) {
+        GTEST_SKIP() << "Negative numeric scales require PostgreSQL 15";
+    }
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_negative_scale "
+                  "AS numeric(8,-2)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_nested_negative_scale "
+                  "AS pg_temp.odbcpp_negative_scale",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_negative_scale_metadata("
+                  "base_n numeric(8,-2), domain_n "
+                  "pg_temp.odbcpp_nested_negative_scale PRIMARY KEY)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"CREATE FUNCTION pg_temp.odbcpp_negative_scale_func("
+                  "n pg_temp.odbcpp_nested_negative_scale) "
+                  "RETURNS pg_temp.odbcpp_nested_negative_scale "
+                  "LANGUAGE SQL AS 'SELECT $1'",
+        SQL_NTS));
+
+    SQLCHAR table_name[] = "odbcpp_negative_scale_metadata";
+    ASSERT_EQ(SQL_SUCCESS, SQLColumns(
+        hstmt, nullptr, 0, nullptr, 0, table_name, SQL_NTS,
+        nullptr, 0));
+    for (int column = 0; column < 2; ++column) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::optional<SQLINTEGER>(-2), integer_cell(hstmt, 9));
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    auto wide_table = rs::odbc::utf8_to_wide("odbcpp_negative_scale_metadata");
+    auto wide_column = rs::odbc::utf8_to_wide("domain_n");
+    ASSERT_TRUE(wide_table.has_value());
+    ASSERT_TRUE(wide_column.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLColumnsW(
+        hstmt, nullptr, 0, nullptr, 0,
+        wide_table->data(), static_cast<SQLSMALLINT>(wide_table->size()),
+        wide_column->data(), static_cast<SQLSMALLINT>(wide_column->size())));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<SQLINTEGER>(-2), integer_cell(hstmt, 9));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"SELECT base_n, domain_n "
+                  "FROM odbcpp_negative_scale_metadata",
+        SQL_NTS));
+    for (SQLUSMALLINT column : std::array<SQLUSMALLINT, 2>{1, 2}) {
+        SQLSMALLINT scale = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+            hstmt, column, nullptr, 0, nullptr, nullptr, nullptr,
+            &scale, nullptr));
+        EXPECT_EQ(-2, scale);
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
+        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0,
+        table_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NO_NULLS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<SQLINTEGER>(-2), integer_cell(hstmt, 7));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR procedure_name[] = "odbcpp\\_negative\\_scale\\_func";
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedureColumns(
+        hstmt, nullptr, 0, nullptr, 0, procedure_name, SQL_NTS,
+        nullptr, 0));
+    for (int column = 0; column < 2; ++column) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(std::optional<SQLINTEGER>(-2), integer_cell(hstmt, 10));
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT ?::pg_temp.odbcpp_nested_negative_scale",
+        SQL_NTS));
+    SQLSMALLINT parameter_scale = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(
+        hstmt, 1, nullptr, nullptr, &parameter_scale, nullptr));
+    EXPECT_EQ(-2, parameter_scale);
+    SQLHDESC implementation = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_IMP_PARAM_DESC, &implementation, 0, nullptr));
+    SQLSMALLINT descriptor_scale = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        implementation, 1, SQL_DESC_SCALE, &descriptor_scale, 0, nullptr));
+    EXPECT_EQ(-2, descriptor_scale);
+}
+
 TEST_F(MetadataIntegrationTest, TemporalMetadataUsesDeclaredPrecision) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,

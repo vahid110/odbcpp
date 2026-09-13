@@ -351,7 +351,9 @@ OdbcTypeInfo postgres_type_info(std::uint32_t oid, std::int16_t type_size,
       if (type_modifier < 4) return {SQL_NUMERIC, 0, 0};
       const auto modifier = static_cast<std::uint32_t>(type_modifier - 4);
       const auto precision = static_cast<SQLULEN>((modifier >> 16) & 0xffff);
-      const auto scale = static_cast<SQLSMALLINT>(modifier & 0xffff);
+      const auto encoded_scale = static_cast<std::int32_t>(modifier & 0x7ff);
+      const auto scale = static_cast<SQLSMALLINT>(
+          encoded_scale >= 1024 ? encoded_scale - 2048 : encoded_scale);
       return {SQL_NUMERIC, precision, scale};
     }
     default:
@@ -750,11 +752,15 @@ std::string catalog_numeric_buffer_length_sql(const std::string& fallback) {
 }
 
 std::string catalog_numeric_scale_sql(const std::string& fallback) {
-  return "CASE WHEN resolved_type.type_modifier >= 4 THEN "
-      "CASE WHEN ((resolved_type.type_modifier - 4) & 65535) >= 32768 "
-      "THEN ((resolved_type.type_modifier - 4) & 65535) - 65536 "
-      "ELSE (resolved_type.type_modifier - 4) & 65535 END "
-      "ELSE " + fallback + " END";
+  const std::string encoded_scale =
+      "((resolved_type.type_modifier - 4) & 2047)";
+  const auto signed_scale = [](const std::string& value) {
+    return "CASE WHEN (" + value + ") BETWEEN 1024 AND 2047 "
+        "THEN (" + value + ") - 2048 ELSE " + value + " END";
+  };
+  return std::string("CASE WHEN resolved_type.type_modifier >= 4 THEN ") +
+      signed_scale(encoded_scale) + " ELSE " +
+      signed_scale(fallback) + " END";
 }
 
 std::vector<std::string> parse_table_types(const std::string& value) {
