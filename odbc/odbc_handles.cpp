@@ -181,6 +181,9 @@ std::string mapped_backend_sqlstate(std::string_view server_state,
     return fallback;
   }
   if (server_state == "42P01") return "42S02";
+  if (server_state == "42704" && statement_code == SQL_DIAG_DROP_INDEX) {
+    return "42S12";
+  }
   if (server_state == "42701") return "42S21";
   if (server_state == "42703") return "42S22";
   return fallback;

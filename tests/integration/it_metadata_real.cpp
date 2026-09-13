@@ -3741,6 +3741,34 @@ TEST_F(MetadataIntegrationTest, DuplicateIndexUsesIndexSqlstate) {
     EXPECT_EQ(0, integer_cell(hstmt, 1));
 }
 
+TEST_F(MetadataIntegrationTest, MissingIndexUsesIndexSqlstate) {
+    constexpr auto drop_index =
+        "DROP INDEX odbcpp_missing_index_diag_9b41";
+
+    EXPECT_EQ(SQL_ERROR, SQLExecDirect(
+        hstmt, (SQLCHAR*)drop_index, SQL_NTS));
+    EXPECT_EQ("42S12", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)drop_index, SQL_NTS));
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    EXPECT_EQ("42S12", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 7; "
+                         "DROP INDEX odbcpp_missing_index_diag_9b41",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(7, integer_cell(hstmt, 1));
+    EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
+    EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 1 AS recovered", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(1, integer_cell(hstmt, 1));
+}
+
 TEST_F(MetadataIntegrationTest, ClosingCursorDiscardsPendingResults) {
     constexpr auto batch =
         "SELECT 1 AS first_value; SELECT 2 AS second_value";

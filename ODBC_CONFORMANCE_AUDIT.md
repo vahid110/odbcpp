@@ -924,6 +924,12 @@ substitute for ODBC diagnostics.
   batch error without an identified statement retains `42000` rather than
   claiming the wrong object kind. Real PostgreSQL tests cover duplicate
   table/index direct, prepared, and deferred errors plus connection recovery.
+- Audit batch 129 maps PostgreSQL `42704` (undefined object) to ODBC `42S12`
+  only for a known `DROP INDEX` statement, following the
+  [SQLExecDirect diagnostics](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function).
+  Other undefined objects and deferred errors without statement identity
+  retain `42000`. Real PostgreSQL tests cover direct/prepared/deferred errors
+  and recovery.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
