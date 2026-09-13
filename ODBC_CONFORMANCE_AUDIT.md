@@ -888,6 +888,10 @@ substitute for ODBC diagnostics.
   with the same field decoder used for `ErrorResponse`. Missing mandatory
   fields, duplicates, and unterminated notices fail startup with a protocol
   error instead of being silently ignored.
+- Audit batch 122 retains [asynchronous `ParameterStatus` changes](https://www.postgresql.org/docs/current/protocol-flow.html)
+  received during a query, so connection metadata stays current after `SET`
+  and other changes. Startup and query responses share the same payload
+  validator; a malformed query-time status invalidates the connection.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

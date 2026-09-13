@@ -62,7 +62,8 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     UnexpectedQueryFrameBeforeAuthenticationOk,
     UnexpectedQueryFrameAfterAuthenticationOk, NoticeAfterAuthenticationOk,
     MalformedNoticeMissingField, MalformedNoticeDuplicateField,
-    MalformedNoticeUnterminated
+    MalformedNoticeUnterminated, QueryParameterStatus,
+    MalformedQueryParameterStatus
   };
 
   explicit ScriptedBackendTransport(
@@ -162,6 +163,15 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       constexpr char error[] = "SERROR\0C42601\0\0";
       append_message('E', error, sizeof(error) - 1);
       append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::QueryParameterStatus) {
+      constexpr char status[] = "application_name\0changed\0";
+      append_message('S', status, sizeof(status) - 1);
+      append_message('C', "SET\0", 4);
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::MalformedQueryParameterStatus) {
+      constexpr char status[] = "application_name\0unterminated";
+      append_message('S', status, sizeof(status) - 1);
+      append_message('Z', "I", 1);
     }
   }
 
@@ -234,6 +244,43 @@ TEST(ConnectionLivenessTest, RetainsPostgresqlStartupParameters) {
   EXPECT_EQ("17.6", connection.get_parameter("server_version"));
   EXPECT_EQ("odbcpp", connection.get_parameter("application_name"));
   EXPECT_TRUE(connection.get_parameter("missing").empty());
+}
+
+TEST(ConnectionLivenessTest, QueryParameterStatusUpdatesNegotiatedValue) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::QueryParameterStatus));
+
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  ASSERT_TRUE(connection.connect(settings).has_value());
+  EXPECT_EQ("odbcpp", connection.get_parameter("application_name"));
+  const auto result = connection.execute_query(
+      "SET application_name = 'changed'",
+      rs::util::make_deadline(std::chrono::seconds(1)));
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ("changed", connection.get_parameter("application_name"));
+  EXPECT_TRUE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, MalformedQueryParameterStatusClosesConnection) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::MalformedQueryParameterStatus));
+
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  ASSERT_TRUE(connection.connect(settings).has_value());
+  const auto result = connection.execute_query(
+      "SET application_name = 'changed'",
+      rs::util::make_deadline(std::chrono::seconds(1)));
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_EQ("odbcpp", connection.get_parameter("application_name"));
+  EXPECT_FALSE(connection.is_connected());
 }
 
 TEST(ConnectionLivenessTest, InvalidSqlDoesNotEscapeOrDisconnect) {

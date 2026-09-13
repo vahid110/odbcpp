@@ -202,6 +202,14 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
     
     try {
       auto msg = parser_->parse_message(*msg_result);
+      if (msg.tag == 'S') {
+        auto status_result = record_parameter_status(msg);
+        if (status_result.has_error()) {
+          mark_transport_failed();
+          return rs::util::Result<QueryResult>{
+              status_result.error(), status_result.error_message()};
+        }
+      }
       if (parser_->is_error_response(msg) && !query_error) {
         query_error = parser_->extract_error_message(msg);
       }
@@ -370,27 +378,8 @@ rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(
               rs::util::DbErrorCode::ProtocolError,
               "ParameterStatus arrived before AuthenticationOk"};
         }
-        const auto key_end = std::find(
-            msg.payload.begin(), msg.payload.end(), std::byte{0});
-        const auto value_begin = key_end == msg.payload.end()
-            ? msg.payload.end() : std::next(key_end);
-        const auto value_end = std::find(
-            value_begin, msg.payload.end(), std::byte{0});
-        if (key_end == msg.payload.begin() || key_end == msg.payload.end() ||
-            value_end == msg.payload.end() ||
-            std::next(value_end) != msg.payload.end()) {
-          return rs::util::Result<void>{
-              rs::util::DbErrorCode::ProtocolError,
-              "Malformed PostgreSQL ParameterStatus message"};
-        }
-        const auto* bytes = reinterpret_cast<const char*>(msg.payload.data());
-        const auto key_size = static_cast<std::size_t>(
-            std::distance(msg.payload.begin(), key_end));
-        const auto value_offset = key_size + 1;
-        const auto value_size = static_cast<std::size_t>(
-            std::distance(value_begin, value_end));
-        server_params_[std::string(bytes, key_size)] =
-            std::string(bytes + value_offset, value_size);
+        auto status_result = record_parameter_status(msg);
+        if (status_result.has_error()) return status_result;
       }
       else if (msg.tag == 'K') { // BackendKeyData
         if (!authenticated) {
@@ -435,6 +424,32 @@ rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(
         "Invalid authentication exchange: " + last_error_};
   }
   return rs::util::Result<void>{};
+}
+
+rs::util::Result<void> GenericDatabaseConnection::record_parameter_status(
+    const Message& msg) {
+  const auto key_end = std::find(
+      msg.payload.begin(), msg.payload.end(), std::byte{0});
+  const auto value_begin = key_end == msg.payload.end()
+      ? msg.payload.end() : std::next(key_end);
+  const auto value_end = std::find(
+      value_begin, msg.payload.end(), std::byte{0});
+  if (key_end == msg.payload.begin() || key_end == msg.payload.end() ||
+      value_end == msg.payload.end() ||
+      std::next(value_end) != msg.payload.end()) {
+    return rs::util::Result<void>{
+        rs::util::DbErrorCode::ProtocolError,
+        "Malformed PostgreSQL ParameterStatus message"};
+  }
+  const auto* bytes = reinterpret_cast<const char*>(msg.payload.data());
+  const auto key_size = static_cast<std::size_t>(
+      std::distance(msg.payload.begin(), key_end));
+  const auto value_offset = key_size + 1;
+  const auto value_size = static_cast<std::size_t>(
+      std::distance(value_begin, value_end));
+  server_params_[std::string(bytes, key_size)] =
+      std::string(bytes + value_offset, value_size);
+  return {};
 }
 
 void GenericDatabaseConnection::write_message_to_transport(

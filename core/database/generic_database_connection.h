@@ -47,6 +47,7 @@ private:
   rs::util::Result<void> write_all_result(const std::vector<std::byte>& data, rs::util::Deadline deadline);
   rs::util::Result<std::vector<std::byte>> read_message_result(rs::util::Deadline deadline);
   rs::util::Result<void> perform_authentication_result(rs::util::Deadline deadline);
+  rs::util::Result<void> record_parameter_status(const Message& msg);
   rs::util::Result<QueryResult> read_query_result(rs::util::Deadline deadline);
   rs::util::Result<void> write_message_to_transport_result(rs::core::transport::ITransport& transport, const std::vector<std::byte>& data, rs::util::Deadline deadline);
   void mark_transport_failed() noexcept;
