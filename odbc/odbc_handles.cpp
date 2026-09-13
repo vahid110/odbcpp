@@ -19,6 +19,7 @@
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 
 namespace rs::odbc {
 namespace {
@@ -48,6 +49,20 @@ bool enabled(const std::string& value) {
   const auto normalized = ConnectionString::to_upper(ConnectionString::trim(value));
   return normalized == "1" || normalized == "TRUE" || normalized == "YES" ||
          normalized == "ON";
+}
+
+std::uint16_t parse_port(std::string_view value) {
+  if (value.empty()) {
+    throw std::invalid_argument("PORT must be an integer from 1 to 65535");
+  }
+  std::uint32_t parsed = 0;
+  const auto [end, error] = std::from_chars(
+      value.data(), value.data() + value.size(), parsed);
+  if (error != std::errc{} || end != value.data() + value.size() || parsed == 0 ||
+      parsed > std::numeric_limits<std::uint16_t>::max()) {
+    throw std::invalid_argument("PORT must be an integer from 1 to 65535");
+  }
+  return static_cast<std::uint16_t>(parsed);
 }
 
 bool is_timeout_error(const std::error_code& error) {
@@ -979,9 +994,7 @@ SQLRETURN ODBCConnection::connect(
     rs::core::database::ConnectionSettings settings;
     settings.host = params.count("SERVER") ? params.at("SERVER") :
                     (params.count("HOST") ? params.at("HOST") : "localhost");
-    settings.port = params.count("PORT")
-        ? static_cast<uint16_t>(std::stoul(params.at("PORT")))
-        : 5432;
+    settings.port = params.count("PORT") ? parse_port(params.at("PORT")) : 5432;
     settings.database = params.count("DATABASE") ? params.at("DATABASE") :
                         (params.count("DB") ? params.at("DB") :
                          (!resolved.dsn_name.empty() ? resolved.dsn_name : "postgres"));

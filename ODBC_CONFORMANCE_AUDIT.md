@@ -816,6 +816,11 @@ substitute for ODBC diagnostics.
   keyword, as specified by [SQLDriverConnect](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqldriverconnect-function).
   A unit test checks the parsed value, and ANSI/wide Driver Manager connections
   prove that a later, invalid password cannot override the first valid one.
+- Audit batch 108 validates `PORT` as an entire unsigned decimal value in the
+  TCP range 1–65535 before narrowing it to 16 bits. This prevents `65536` from
+  wrapping to zero and rejects signs, suffixes, empty values, and overflow.
+  ANSI/wide API tests verify `SQL_ERROR`, `HY000`, and a PORT-specific message
+  without making a network connection.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
