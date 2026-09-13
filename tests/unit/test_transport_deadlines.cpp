@@ -533,6 +533,7 @@ TEST(TLSTransportDeadlineTest, EmptyTlsIoDoesNotWaitForSocket) {
   auto connected = transport.connect(
       "127.0.0.1", server.port(), rs::util::make_deadline(1s));
   ASSERT_TRUE(connected.has_value()) << connected.error_message();
+  ASSERT_TRUE(server.wait_for_handshake());
 
   const auto expired = rs::util::Clock::now();
   auto sent = transport.send(std::span<const std::byte>{}, expired);
