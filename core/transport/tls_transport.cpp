@@ -94,6 +94,11 @@ rs::util::Result<void> TLSTransport::connect_plain(
 
 rs::util::Result<void> TLSTransport::upgrade_to_tls(
     std::string_view host, Deadline deadline) {
+  if (host.find('\0') != std::string_view::npos) {
+    close();
+    return {rs::util::DbErrorCode::InvalidParameter,
+            "TLS host contains an embedded NUL byte"};
+  }
   auto result = rs::util::try_catch([&] { upgrade_impl(host, deadline); });
   if (result.has_error()) close();
   return result;
@@ -111,6 +116,9 @@ void TLSTransport::upgrade_from(socket_t s, std::string_view host, Deadline dead
 }
 
 void TLSTransport::upgrade_impl(std::string_view host, Deadline deadline) {
+  if (host.find('\0') != std::string_view::npos) {
+    throw TLSError("TLS host contains an embedded NUL byte");
+  }
   if (ssl_) throw TLSError("TLS session is already active");
   tcp_.prepare_for_io(deadline);
   ensure_ctx();

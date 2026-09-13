@@ -764,6 +764,10 @@ substitute for ODBC diagnostics.
   `INT_MAX`, with boundary tests that do not allocate giant buffers. See the
   [OpenSSL write](https://docs.openssl.org/3.2/man3/SSL_write/) and
   [read](https://docs.openssl.org/3.6/man3/SSL_read/) signatures.
+- Audit batch 99 rejects embedded NUL bytes in TLS upgrade hostnames even
+  when certificate verification is disabled, and closes the underlying plain
+  socket. Sync and async loopback tests verify the rejection and that no
+  plaintext I/O remains available after failure.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

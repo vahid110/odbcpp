@@ -451,6 +451,26 @@ TEST(AsyncTlsTransportTest, CertificateFailureClosesPlainConnection) {
   EXPECT_TRUE(sent.has_error()) << "certificate failure must close the socket";
 }
 
+TEST(AsyncTlsTransportTest, RejectsEmbeddedNulUpgradeAndClosesPlainSocket) {
+  TlsLoopbackServer server(TlsLoopbackServer::Behavior::DirectEcho);
+  AsyncTlsTransport transport(make_native_transport());
+  transport.set_verify(false);
+  auto connected = transport.connect_plain(
+      "127.0.0.1", server.port(), rs::util::make_deadline(2s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  constexpr char malformed[] = "localhost\0unexpected";
+  auto rejected = transport.upgrade_to_tls(
+      std::string_view(malformed, sizeof(malformed) - 1),
+      rs::util::make_deadline(2s));
+  ASSERT_TRUE(rejected.has_error());
+  EXPECT_EQ(rejected.error(),
+            rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter));
+
+  const std::array<std::byte, 1> plaintext{std::byte{'x'}};
+  EXPECT_TRUE(transport.send(plaintext, rs::util::make_deadline(100ms)).has_error());
+}
+
 TEST(AsyncTlsTransportTest, CancellationCompletesReceiveExactlyOnce) {
   TlsLoopbackServer server(TlsLoopbackServer::Behavior::SilentAfterTls);
   AsyncTlsTransport transport(make_native_transport());

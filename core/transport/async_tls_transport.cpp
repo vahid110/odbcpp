@@ -330,6 +330,13 @@ private:
       return cancelled_result<void>();
     }
 
+    if (task.host.find('\0') != std::string::npos) {
+      reset_ssl_locked();
+      transport_->close();
+      return {rs::util::DbErrorCode::InvalidParameter,
+              "TLS host contains an embedded NUL byte"};
+    }
+
     if (task.kind == TaskKind::ConnectTls ||
         task.kind == TaskKind::ConnectPlain) {
       reset_ssl_locked();

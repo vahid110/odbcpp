@@ -461,6 +461,26 @@ TEST(TLSTransportDeadlineTest, ReconnectAppliesUpdatedVerification) {
   EXPECT_TRUE(transport.send(plaintext, rs::util::make_deadline(100ms)).has_error());
 }
 
+TEST(TLSTransportDeadlineTest, RejectsEmbeddedNulUpgradeAndClosesPlainSocket) {
+  TLSSleepingServer server(100ms);
+  TLSTransport transport(DeadlineModel::Strict);
+  transport.set_verify(false);
+  auto connected = transport.connect_plain(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  constexpr char malformed[] = "localhost\0unexpected";
+  auto rejected = transport.upgrade_to_tls(
+      std::string_view(malformed, sizeof(malformed) - 1),
+      rs::util::make_deadline(1s));
+  ASSERT_TRUE(rejected.has_error());
+  EXPECT_EQ(rejected.error(),
+            rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter));
+
+  const std::array<std::byte, 1> plaintext{std::byte{'x'}};
+  EXPECT_TRUE(transport.send(plaintext, rs::util::make_deadline(100ms)).has_error());
+}
+
 TEST(TLSPeerIdentityTest, UsesIpSanWithoutFallingBackToDnsNames) {
   std::unique_ptr<X509, decltype(&X509_free)> certificate(X509_new(), X509_free);
   ASSERT_NE(nullptr, certificate);
