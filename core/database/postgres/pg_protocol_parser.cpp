@@ -336,8 +336,14 @@ AuthenticationRequest PgProtocolParser::parse_auth_request(const std::vector<std
   const auto code = read_u32(data, 0);
   AuthenticationRequest req;
   switch (code) {
-    case 0: req.type = AuthenticationRequest::Type::None; break;
-    case 3: req.type = AuthenticationRequest::Type::Cleartext; break;
+    case 0:
+    case 3:
+      if (data.size() != 4) {
+        throw std::runtime_error("Invalid authentication request length");
+      }
+      req.type = code == 0 ? AuthenticationRequest::Type::None
+                           : AuthenticationRequest::Type::Cleartext;
+      break;
     case 5:
       req.type = AuthenticationRequest::Type::MD5;
       if (data.size() != 8) throw std::runtime_error("Invalid MD5 auth payload");
@@ -614,6 +620,9 @@ Message PgProtocolParser::parse_message(const std::vector<std::byte>& data) {
   }
   
   msg.payload.assign(data.begin() + 5, data.begin() + 1 + len);
+  if (msg.tag == 'K' && msg.payload.size() != 8) {
+    throw std::runtime_error("Invalid PostgreSQL 3.0 BackendKeyData length");
+  }
   return msg;
 }
 

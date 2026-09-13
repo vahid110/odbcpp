@@ -380,9 +380,6 @@ rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(
         server_params_[std::string(bytes, key_size)] =
             std::string(bytes + value_offset, value_size);
       }
-      else if (msg.tag == 'K') { // BackendKeyData
-        // Store backend key data
-      }
       else if (parser_->is_error_response(msg)) {
         last_error_ = parser_->extract_error_message(msg);
         return rs::util::Result<void>{

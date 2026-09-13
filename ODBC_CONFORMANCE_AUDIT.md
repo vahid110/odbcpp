@@ -865,6 +865,11 @@ substitute for ODBC diagnostics.
   tracks the presence of an `ErrorResponse` independently of its message text,
   so a malformed or empty error cannot be mistaken for success; a synthetic
   backend regression covers the missing-message case.
+- Audit batch 117 validates fixed-size startup frames. AuthenticationOk and
+  AuthenticationCleartextPassword must carry exactly four payload bytes;
+  BackendKeyData must carry eight in the driver's negotiated PostgreSQL 3.0
+  protocol, rather than the variable-length key permitted by 3.2. Malformed
+  lengths fail startup with a protocol error instead of opening a connection.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

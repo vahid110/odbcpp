@@ -53,7 +53,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
   enum class ResponseMode {
     ValidStartup, MalformedStartup, MalformedAuth, AuthRejected,
     MalformedQuery, MalformedStartupReady, MalformedQueryReady,
-    MalformedQueryError
+    MalformedQueryError, MalformedBackendKey
   };
 
   explicit ScriptedBackendTransport(
@@ -78,6 +78,9 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     }
     append_message('S', "server_version\0" "17.6\0", 20);
     append_message('S', "application_name\0" "odbcpp\0", 24);
+    constexpr char backend_key[] = "\0\0\0\0\0\0\0\0";
+    append_message('K', backend_key,
+                   mode == ResponseMode::MalformedBackendKey ? 7 : 8);
     append_message('Z', "I", 1);
     if (mode == ResponseMode::MalformedQuery) {
       append_message('T', "\0\1", 2);
@@ -234,6 +237,21 @@ TEST(ConnectionLivenessTest, MalformedStartupReadyCannotOpenConnection) {
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::MalformedStartupReady));
+
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  const auto result = connection.connect(settings);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, MalformedBackendKeyCannotOpenConnection) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::MalformedBackendKey));
 
   rs::core::database::ConnectionSettings settings;
   settings.use_ssl = false;

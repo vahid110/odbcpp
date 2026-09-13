@@ -63,6 +63,39 @@ TEST(PgProtocolParserTest, RejectsEmbeddedNulInAuthenticationCredentials) {
                std::invalid_argument);
 }
 
+TEST(PgProtocolParserTest, AuthenticationOkAndCleartextHaveExactLengths) {
+  PgProtocolParser parser;
+  std::vector<std::byte> payload(4, std::byte{0});
+  EXPECT_EQ(AuthenticationRequest::Type::None,
+            parser.parse_auth_request(payload).type);
+  payload.push_back(std::byte{0});
+  EXPECT_THROW(parser.parse_auth_request(payload), std::runtime_error);
+
+  payload.resize(4);
+  payload[3] = std::byte{3};
+  EXPECT_EQ(AuthenticationRequest::Type::Cleartext,
+            parser.parse_auth_request(payload).type);
+  payload.push_back(std::byte{0});
+  EXPECT_THROW(parser.parse_auth_request(payload), std::runtime_error);
+}
+
+TEST(PgProtocolParserTest, BackendKeyDataMatchesProtocol30Length) {
+  PgProtocolParser parser;
+  std::vector<std::byte> frame(13, std::byte{0});
+  frame[0] = std::byte{'K'};
+  frame[4] = std::byte{12};
+  EXPECT_EQ(8u, parser.parse_message(frame).payload.size());
+
+  frame.pop_back();
+  frame[4] = std::byte{11};
+  EXPECT_THROW(parser.parse_message(frame), std::runtime_error);
+
+  frame.push_back(std::byte{0});
+  frame.push_back(std::byte{0});
+  frame[4] = std::byte{13};
+  EXPECT_THROW(parser.parse_message(frame), std::runtime_error);
+}
+
 struct Frame {
   char tag{};
   std::vector<std::byte> payload;
