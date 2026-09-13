@@ -440,32 +440,44 @@ TEST_F(ApiValidationTest, RejectsInvalidConnectionStringLengths) {
   EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
-TEST_F(ApiValidationTest, RejectsInvalidPortWithoutConnecting) {
-  for (const char* invalid_port : {
-           "", "0", "65536", "65537", "+5432", "-1", "5432x",
-           "1844674407370955161600", "{ 5432}"}) {
-    std::string input = std::string("SERVER=127.0.0.1;PORT=") + invalid_port;
+TEST_F(ApiValidationTest, RejectsInvalidConnectionOptionsWithoutConnecting) {
+  struct InvalidOption {
+    const char* keyword;
+    const char* value;
+  };
+  for (const auto& option : {
+           InvalidOption{"PORT", ""}, InvalidOption{"PORT", "0"},
+           InvalidOption{"PORT", "65536"}, InvalidOption{"PORT", "65537"},
+           InvalidOption{"PORT", "+5432"}, InvalidOption{"PORT", "-1"},
+           InvalidOption{"PORT", "5432x"},
+           InvalidOption{"PORT", "1844674407370955161600"},
+           InvalidOption{"PORT", "{ 5432}"},
+           InvalidOption{"SSL", "require"}, InvalidOption{"SSL", "maybe"},
+           InvalidOption{"SSL", "2"}, InvalidOption{"SSL", "1x"},
+           InvalidOption{"SSL", "{false;TransportMode=Sync}"}}) {
+    std::string input = std::string("SERVER=127.0.0.1;") +
+        option.keyword + "=" + option.value;
     auto* narrow = reinterpret_cast<SQLCHAR*>(input.data());
     EXPECT_EQ(SQL_ERROR,
               SQLDriverConnect(connection_, nullptr, narrow, SQL_NTS,
                                nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT))
-        << invalid_port;
+        << input;
     EXPECT_EQ("HY000", diagnostic_state(SQL_HANDLE_DBC, connection_))
-        << invalid_port;
+        << input;
 
     std::vector<SQLWCHAR> wide(input.begin(), input.end());
     wide.push_back(0);
     EXPECT_EQ(SQL_ERROR,
               SQLDriverConnectW(connection_, nullptr, wide.data(), SQL_NTS,
                                 nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT))
-        << invalid_port;
+        << input;
     EXPECT_EQ("HY000", diagnostic_state(SQL_HANDLE_DBC, connection_))
-        << invalid_port;
+        << input;
     SQLCHAR message[128]{};
     EXPECT_EQ(SQL_SUCCESS,
               SQLGetDiagRec(SQL_HANDLE_DBC, connection_, 1, nullptr, nullptr,
                             message, sizeof(message), nullptr));
-    EXPECT_NE(std::string(reinterpret_cast<char*>(message)).find("PORT"),
+    EXPECT_NE(std::string(reinterpret_cast<char*>(message)).find(option.keyword),
               std::string::npos);
   }
 }

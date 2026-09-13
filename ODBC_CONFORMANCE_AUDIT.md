@@ -821,6 +821,12 @@ substitute for ODBC diagnostics.
   wrapping to zero and rejects signs, suffixes, empty values, and overflow.
   ANSI/wide API tests verify `SQL_ERROR`, `HY000`, and a PORT-specific message
   without making a network connection.
+- Audit batch 109 parses `SSL` as a boolean option instead of treating every
+  unrecognized value as false. Values such as `SSL=require` now fail before
+  connecting instead of silently using plaintext. ANSI/wide API tests cover
+  malformed values, error diagnostics, and braced text; Driver Manager tests
+  connect with accepted `off` and `no` values. The README documents accepted
+  spellings and the no-downgrade behavior.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

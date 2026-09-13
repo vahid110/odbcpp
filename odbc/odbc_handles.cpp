@@ -45,10 +45,14 @@ std::string default_driver_name() {
 #endif
 }
 
-bool enabled(const std::string& value) {
+bool parse_ssl(const std::string& value) {
   const auto normalized = ConnectionString::to_upper(ConnectionString::trim(value));
-  return normalized == "1" || normalized == "TRUE" || normalized == "YES" ||
-         normalized == "ON";
+  if (normalized == "1" || normalized == "TRUE" || normalized == "YES" ||
+      normalized == "ON") return true;
+  if (normalized.empty() || normalized == "0" || normalized == "FALSE" ||
+      normalized == "NO" || normalized == "OFF") return false;
+  throw std::invalid_argument(
+      "SSL must be true or false (1/0, yes/no, on/off)");
 }
 
 std::uint16_t parse_port(std::string_view value) {
@@ -1005,7 +1009,7 @@ SQLRETURN ODBCConnection::connect(
     settings.password = password ? *password :
                         (params.count("PWD") ? params.at("PWD") :
                          (params.count("PASSWORD") ? params.at("PASSWORD") : ""));
-    settings.use_ssl = params.count("SSL") && enabled(params.at("SSL"));
+    settings.use_ssl = params.count("SSL") && parse_ssl(params.at("SSL"));
     settings.timeout = timeout_duration(login_timeout_seconds_);
 
     const auto transport_options = rs::core::transport::TransportOptions::resolve(
