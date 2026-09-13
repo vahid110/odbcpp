@@ -138,6 +138,16 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
     if (is_invalid(sock_)) continue;
 
     set_nonblocking(sock_, true);
+#ifdef _WIN32
+    const auto connect_event = ::WSACreateEvent();
+    if (connect_event == WSA_INVALID_EVENT) {
+      do_close(sock_); sock_ = invalid_socket(); continue;
+    }
+    if (::WSAEventSelect(sock_, connect_event, FD_CONNECT) != 0) {
+      ::WSACloseEvent(connect_event);
+      do_close(sock_); sock_ = invalid_socket(); continue;
+    }
+#endif
 
     int rc = ::connect(sock_, ai->ai_addr,
 #ifdef _WIN32
@@ -147,13 +157,24 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
 #endif
     );
     if (rc == 0) {
+#ifdef _WIN32
+      const bool unregistered = ::WSAEventSelect(sock_, nullptr, 0) == 0;
+      if (!unregistered) {
+        do_close(sock_); sock_ = invalid_socket();
+        ::WSACloseEvent(connect_event);
+        continue;
+      }
+      ::WSACloseEvent(connect_event);
+#endif
       prepare_for_io(deadline);
       return;
     }
 #ifdef _WIN32
     int werr = WSAGetLastError();
     if (werr != WSAEWOULDBLOCK && werr != WSAEINPROGRESS) {
-      do_close(sock_); sock_ = invalid_socket(); continue;
+      do_close(sock_); sock_ = invalid_socket();
+      ::WSACloseEvent(connect_event);
+      continue;
     }
 #else
     if (errno != EINPROGRESS) {
@@ -161,7 +182,19 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
     }
 #endif
     // Wait for connect or timeout
+#ifdef _WIN32
+    const auto wait = wait_for_connect(sock_, connect_event, deadline);
+    const bool unregistered = ::WSAEventSelect(sock_, nullptr, 0) == 0;
+    if (!unregistered) {
+      do_close(sock_); sock_ = invalid_socket();
+      ::WSACloseEvent(connect_event);
+      if (wait == SocketWaitResult::Timeout) break;
+      continue;
+    }
+    ::WSACloseEvent(connect_event);
+#else
     const auto wait = wait_for_connect(sock_, deadline);
+#endif
     if (wait == SocketWaitResult::Ready) {
       // Check for connect success
       int err = 0;

@@ -91,32 +91,40 @@ inline SocketWaitResult wait_for_socket(native_socket_t socket, bool read,
   }
 }
 
-inline SocketWaitResult wait_for_connect(native_socket_t socket,
-                                         rs::util::Deadline deadline) {
 #ifdef _WIN32
+inline SocketWaitResult wait_for_connect(native_socket_t socket,
+                                         WSAEVENT event,
+                                         rs::util::Deadline deadline) {
   for (;;) {
     const auto left = rs::util::remaining(deadline);
     if (left <= std::chrono::milliseconds::zero()) {
       return SocketWaitResult::Timeout;
     }
-    const auto bounded = std::min<long long>(
-        left.count(), std::numeric_limits<int>::max());
-    timeval timeout{static_cast<long>(bounded / 1000),
-                    static_cast<long>((bounded % 1000) * 1000)};
-    fd_set writable;
-    FD_ZERO(&writable);
-    FD_SET(socket, &writable);
-    fd_set errors;
-    FD_ZERO(&errors);
-    FD_SET(socket, &errors);
-    const int result = ::select(0, nullptr, &writable, &errors, &timeout);
-    if (result > 0) return SocketWaitResult::Ready;
-    if (result == 0) return SocketWaitResult::Timeout;
-    if (::WSAGetLastError() != WSAEINTR) return SocketWaitResult::Failed;
+    const auto bounded = std::min<long long>(left.count(),
+                                             std::numeric_limits<DWORD>::max() - 1);
+    const auto result = ::WSAWaitForMultipleEvents(
+        1, &event, FALSE, static_cast<DWORD>(bounded), FALSE);
+    if (result == WSA_WAIT_TIMEOUT) return SocketWaitResult::Timeout;
+    if (result == WSA_WAIT_FAILED) {
+      if (::WSAGetLastError() == WSAEINTR) continue;
+      return SocketWaitResult::Failed;
+    }
+    if (result != WSA_WAIT_EVENT_0) return SocketWaitResult::Failed;
+    WSANETWORKEVENTS events{};
+    if (::WSAEnumNetworkEvents(socket, event, &events) != 0) {
+      return SocketWaitResult::Failed;
+    }
+    if (events.lNetworkEvents & FD_CONNECT) {
+      return events.iErrorCode[FD_CONNECT_BIT] == 0
+                 ? SocketWaitResult::Ready : SocketWaitResult::Failed;
+    }
   }
-#else
-  return wait_for_socket(socket, false, true, deadline);
-#endif
 }
+#else
+inline SocketWaitResult wait_for_connect(native_socket_t socket,
+                                         rs::util::Deadline deadline) {
+  return wait_for_socket(socket, false, true, deadline);
+}
+#endif
 
 } // namespace rs::core::transport
