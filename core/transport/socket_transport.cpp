@@ -128,7 +128,14 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
 
   auto guard = std::unique_ptr<addrinfo, void(*)(addrinfo*)>(res, freeaddrinfo);
 
+  std::size_t addresses_left = 0;
+  for (auto* ai = res; ai; ai = ai->ai_next) ++addresses_left;
   for (addrinfo* ai = res; ai; ai = ai->ai_next) {
+    const auto budget = std::max(std::chrono::milliseconds(1),
+                                 remaining(deadline) /
+                                     static_cast<std::chrono::milliseconds::rep>(addresses_left));
+    const auto attempt_deadline = std::min(deadline, rs::util::Clock::now() + budget);
+    --addresses_left;
 #ifdef _WIN32
     sock_ = ::WSASocketW(ai->ai_family, ai->ai_socktype, ai->ai_protocol,
                          nullptr, 0, WSA_FLAG_OVERLAPPED);
@@ -183,17 +190,18 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
 #endif
     // Wait for connect or timeout
 #ifdef _WIN32
-    const auto wait = wait_for_connect(sock_, connect_event, deadline);
+    const auto wait = wait_for_connect(sock_, connect_event, attempt_deadline);
     const bool unregistered = ::WSAEventSelect(sock_, nullptr, 0) == 0;
     if (!unregistered) {
       do_close(sock_); sock_ = invalid_socket();
       ::WSACloseEvent(connect_event);
-      if (wait == SocketWaitResult::Timeout) break;
+      if (wait == SocketWaitResult::Timeout &&
+          remaining(deadline) <= std::chrono::milliseconds::zero()) break;
       continue;
     }
     ::WSACloseEvent(connect_event);
 #else
-    const auto wait = wait_for_connect(sock_, deadline);
+    const auto wait = wait_for_connect(sock_, attempt_deadline);
 #endif
     if (wait == SocketWaitResult::Ready) {
       // Check for connect success
@@ -210,7 +218,8 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
       }
     }
     do_close(sock_); sock_ = invalid_socket();
-    if (wait == SocketWaitResult::Timeout) break;
+    if (wait == SocketWaitResult::Timeout &&
+        remaining(deadline) <= std::chrono::milliseconds::zero()) break;
   }
 
     if (remaining(deadline) <= std::chrono::milliseconds::zero()) {

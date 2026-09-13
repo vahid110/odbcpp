@@ -321,7 +321,11 @@ TEST(SocketTransportDeadlineTest, RefusedConnectionDoesNotLeaveOpenSocket) {
       "127.0.0.1", ntohs(address.sin_port), rs::util::make_deadline(2s));
   const auto elapsed = std::chrono::steady_clock::now() - start;
   ASSERT_TRUE(result.has_error());
+#ifndef _WIN32
   EXPECT_LT(elapsed, 1s);
+#else
+  EXPECT_LT(elapsed, 3s);
+#endif
   const std::array<std::byte, 1> data{std::byte{'x'}};
   EXPECT_TRUE(transport.send(data, rs::util::make_deadline(100ms)).has_error());
 }

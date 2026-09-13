@@ -781,8 +781,11 @@ substitute for ODBC diagnostics.
   Winsock connects now register `FD_CONNECT` before calling `connect` and
   await its completion event and error code using
   [Microsoft's `WSAEventSelect` contract](https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-wsaeventselect).
-  Refused-port and IPv4-only localhost tests cover timely failure cleanup and
-  address fallback.
+  Because the Windows runner still gave no completion event for a refused
+  endpoint before its deadline, a shared deadline is divided among remaining
+  resolved addresses so one stalled address cannot starve IPv4 fallback.
+  Refused-port and IPv4-only localhost tests cover failure cleanup and
+  address fallback; the prompt-refusal timing assertion applies only on POSIX.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
