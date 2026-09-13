@@ -623,7 +623,7 @@ void complete_descriptor_record(DescriptorRecord& record) {
   record.case_sensitive = type_info ? type_info->case_sensitive : SQL_FALSE;
   record.num_prec_radix = type_info ? type_info->numeric_radix : 0;
   record.unsigned_attribute = type_info && type_info->unsigned_attribute >= 0
-      ? type_info->unsigned_attribute : SQL_FALSE;
+      ? type_info->unsigned_attribute : SQL_TRUE;
   record.fixed_prec_scale =
       (record.concise_type == SQL_DECIMAL ||
        record.concise_type == SQL_NUMERIC) && record.scale != 0

@@ -793,6 +793,16 @@ TEST_F(MetadataIntegrationTest, ColumnAttributesMatchImplementationDescriptor) {
         hstmt, 2, SQL_DESC_CASE_SENSITIVE, nullptr, 0, nullptr,
         &case_sensitive));
     EXPECT_EQ(SQL_TRUE, case_sensitive);
+    SQLSMALLINT descriptor_unsigned = SQL_FALSE;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        row_descriptor, 2, SQL_DESC_UNSIGNED, &descriptor_unsigned, 0,
+        nullptr));
+    SQLLEN attribute_unsigned = SQL_FALSE;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        hstmt, 2, SQL_DESC_UNSIGNED, nullptr, 0, nullptr,
+        &attribute_unsigned));
+    EXPECT_EQ(SQL_TRUE, descriptor_unsigned);
+    EXPECT_EQ(SQL_TRUE, attribute_unsigned);
     SQLLEN descriptor_precision = -1;
     SQLLEN legacy_precision = -1;
     ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(

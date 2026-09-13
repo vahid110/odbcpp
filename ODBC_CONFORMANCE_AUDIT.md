@@ -706,6 +706,11 @@ substitute for ODBC diagnostics.
   `SQL_DESC_PRECISION` now uses the IRD value while the ODBC 2
   `SQL_COLUMN_PRECISION` retains column-size semantics. Origin-name
   fields remain unsupported because the driver does not yet populate them.
+- Audit batch 87 makes `SQL_DESC_UNSIGNED` return `SQL_TRUE` for nonnumeric
+  result types while keeping signed PostgreSQL numeric types `SQL_FALSE`,
+  as required by the [ODBC column-attribute definition](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlcolattribute-function).
+  The real PostgreSQL test checks both the IRD and `SQLColAttribute` for
+  numeric and character columns.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
