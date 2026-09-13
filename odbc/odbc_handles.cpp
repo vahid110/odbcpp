@@ -3417,11 +3417,25 @@ SQLRETURN ODBCStatement::get_type_info(SQLSMALLINT data_type) {
       column("INTERVAL_PRECISION", 21, 2),
   };
 
+  const auto server_version = conn_->dbms_version();
+  int server_major_version = 0;
+  const auto parsed_version = std::from_chars(
+      server_version.data(), server_version.data() + server_version.size(),
+      server_major_version);
+  const bool supports_negative_numeric_scale =
+      parsed_version.ec == std::errc{} && server_major_version >= 15;
+
   for (const auto& type : type_info_definitions) {
     if (data_type != SQL_ALL_TYPES && data_type != type.data_type) continue;
     const bool character_type = type.data_type == SQL_CHAR ||
         type.data_type == SQL_VARCHAR ||
         type.data_type == SQL_LONGVARCHAR;
+    const bool numeric_type = type.data_type == SQL_NUMERIC ||
+        type.data_type == SQL_DECIMAL;
+    const auto minimum_scale = numeric_type && supports_negative_numeric_scale
+        ? type_info_number(-1000)
+        : (type.minimum_scale < 0 ? rs::core::database::ResultCell{}
+                                  : type_info_number(type.minimum_scale));
     result.rows.push_back({
         type_info_text(type.name), type_info_number(type.data_type),
         type_info_number(type.column_size), type_info_text(type.literal_prefix),
@@ -3434,8 +3448,7 @@ SQLRETURN ODBCStatement::get_type_info(SQLSMALLINT data_type) {
         type.unsigned_attribute < 0 ? rs::core::database::ResultCell{}
                                     : type_info_number(SQL_FALSE),
         rs::core::database::ResultCell{},
-        type.minimum_scale < 0 ? rs::core::database::ResultCell{}
-                               : type_info_number(type.minimum_scale),
+        minimum_scale,
         type.maximum_scale < 0 ? rs::core::database::ResultCell{}
                                : type_info_number(type.maximum_scale),
         type_info_number(type.sql_data_type),

@@ -1134,6 +1134,15 @@ TEST_F(MetadataIntegrationTest, ResultShapeAndRowCountFollowStatementState) {
 }
 
 TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"SELECT current_setting('server_version_num')::integer",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    const auto server_version = integer_cell(hstmt, 1);
+    ASSERT_TRUE(server_version.has_value());
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
     EXPECT_EQ(SQL_ERROR, SQLGetTypeInfo(hstmt, 12345));
     EXPECT_EQ("HY004", diagnostic_state(SQL_HANDLE_STMT, hstmt));
 
@@ -1245,10 +1254,13 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
                                : std::nullopt,
                   integer_cell(hstmt, 12));
         EXPECT_EQ(std::nullopt, text_cell(hstmt, 13));
-        EXPECT_EQ((exact_numeric_type || time_type)
-                      ? std::optional<SQLINTEGER>(0)
-                      : std::nullopt,
-                  integer_cell(hstmt, 14));
+        const auto minimum_scale =
+            (type == SQL_NUMERIC || type == SQL_DECIMAL) &&
+                    *server_version >= 150000
+                ? std::optional<SQLINTEGER>(-1000)
+                : ((exact_numeric_type || time_type)
+                       ? std::optional<SQLINTEGER>(0) : std::nullopt);
+        EXPECT_EQ(minimum_scale, integer_cell(hstmt, 14));
         const auto maximum_scale = type == SQL_NUMERIC || type == SQL_DECIMAL
             ? std::optional<SQLINTEGER>(1000)
             : (time_type ? std::optional<SQLINTEGER>(6)
@@ -1285,6 +1297,15 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(
         hstmt, 1, SQL_C_CHAR, type_name, sizeof(type_name), nullptr));
     EXPECT_STREQ("integer", type_name);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfoW(hstmt, SQL_NUMERIC));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(*server_version >= 150000
+                  ? std::optional<SQLINTEGER>(-1000)
+                  : std::optional<SQLINTEGER>(0),
+              integer_cell(hstmt, 14));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 }
 
 TEST_F(MetadataIntegrationTest, ListsPostgreSQLTables) {

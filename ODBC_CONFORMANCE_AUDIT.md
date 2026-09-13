@@ -59,7 +59,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLGetStmtAttr` | A/W | Partial | unit, integration | Common defaults, escape scanning, descriptor handles/pointers, row positioning, and recognized unsupported attributes are covered; platform-specific ODBC 3.8 fields remain |
 | `SQLCloseCursor` | A | Verified | unit, integration, DM | Allocated, prepared, open-empty, exhausted, closed, update-count, failed-execution, and pending-result states are covered |
 | `SQLFreeStmt` | A | Verified | unit, integration, DM | SQL_CLOSE idempotence, ARD unbinding, APD reset, invalid-option preservation, SQL_DROP ownership, and pending-result discard are covered |
-| `SQLGetTypeInfo` | A/W | Verified | unit, integration, DM | All 19 fields are checked across the ordered supported-type inventory; valid-empty and HY004 filters, disconnected/open/exhausted cursor states, legacy plus ODBC 3 datetime identifiers, and A/W Driver Manager calls are covered |
+| `SQLGetTypeInfo` | A/W | Verified | unit, integration, DM | All 19 fields are checked across the ordered supported-type inventory, including PostgreSQL-version-aware numeric scale ranges; valid-empty and HY004 filters, disconnected/open/exhausted cursor states, legacy plus ODBC 3 datetime identifiers, and A/W Driver Manager calls are covered |
 | `SQLTables` | A/W | Partial | unit, integration, DM | Null versus empty arguments, wildcard escaping, value-list filtering, catalog/schema/type enumerations, local temporary tables, state errors, malformed wide input, and A/W paths are covered; ODBC 2 catalog-pattern behavior and restricted-user visibility remain |
 | `SQLColumns` | A/W | Partial | unit, integration, DM | Null/empty, ordinary catalog, escaped patterns, PostgreSQL UUID/JSONB/array/domain type identities, text octet length, cursor states, and A/W paths are covered; complete size/precision metadata and restricted-user visibility remain |
 | `SQLPrimaryKeys` | A/W | Partial | unit, integration, DM | Required table, literal/empty arguments, escaping, key ordering, cursor states, and A/W paths are covered; restricted-user visibility remains |
@@ -727,6 +727,10 @@ substitute for ODBC diagnostics.
   prepared result shape for type-name attributes as well as `SQLDescribeCol`.
   Stale `ColumnInfo` comments that incorrectly equated concise SQL type and
   decimal digits with different descriptor fields were removed.
+- Audit batch 91 advertises PostgreSQL 15+'s `numeric`/`decimal` minimum
+  scale of -1000 in `SQLGetTypeInfo`, while older servers retain zero. The
+  all-types integration matrix and `SQLGetTypeInfoW` check the value against
+  the connected server version, matching [PostgreSQL's documented scale range](https://www.postgresql.org/docs/17/datatype-numeric.html).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
