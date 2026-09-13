@@ -163,7 +163,9 @@ const char* request_sqlstate(const std::error_code& error,
 }
 
 std::string mapped_backend_sqlstate(std::string_view server_state,
-                                    const char* fallback) {
+                                    const char* fallback,
+                                    SQLINTEGER statement_code =
+                                        SQL_DIAG_UNKNOWN_STATEMENT) {
   if (server_state.size() != 5 ||
       !std::all_of(server_state.begin(), server_state.end(), [](char ch) {
         return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z');
@@ -172,7 +174,12 @@ std::string mapped_backend_sqlstate(std::string_view server_state,
   }
   if (server_state.substr(0, 2) == "22") return std::string(server_state);
   if (server_state.substr(0, 2) == "23") return "23000";
-  if (server_state == "42P07") return "42S01";
+  if (server_state == "42P07") {
+    if (statement_code == SQL_DIAG_CREATE_INDEX) return "42S11";
+    if (statement_code == SQL_DIAG_CREATE_TABLE ||
+        statement_code == SQL_DIAG_CREATE_VIEW) return "42S01";
+    return fallback;
+  }
   if (server_state == "42P01") return "42S02";
   if (server_state == "42701") return "42S21";
   if (server_state == "42703") return "42S22";
@@ -181,13 +188,14 @@ std::string mapped_backend_sqlstate(std::string_view server_state,
 
 std::string query_failure_sqlstate(
     const rs::core::database::IDatabaseConnection& connection,
-    const std::error_code& error, const char* fallback) {
+    const std::error_code& error, const char* fallback,
+    SQLINTEGER statement_code) {
   const auto* default_state = request_sqlstate(error, fallback);
   if (error != rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed)) {
     return default_state;
   }
   return mapped_backend_sqlstate(
-      connection.get_last_server_sqlstate(), default_state);
+      connection.get_last_server_sqlstate(), default_state, statement_code);
 }
 
 std::chrono::milliseconds timeout_duration(SQLULEN seconds) {
@@ -258,7 +266,7 @@ DynamicFunction classify_dynamic_function(std::string_view statement) {
     std::string_view name;
     SQLINTEGER code;
   };
-  static constexpr std::array<PrefixMapping, 27> mappings{{
+  static constexpr std::array<PrefixMapping, 31> mappings{{
       {"SELECT", "SELECT CURSOR", SQL_DIAG_SELECT_CURSOR},
       {"INSERT", "INSERT", SQL_DIAG_INSERT},
       {"UPDATE", "UPDATE WHERE", SQL_DIAG_UPDATE_WHERE},
@@ -274,8 +282,12 @@ DynamicFunction classify_dynamic_function(std::string_view statement) {
       {"CREATE COLLATION", "CREATE COLLATION", SQL_DIAG_CREATE_COLLATION},
       {"CREATE DOMAIN", "CREATE DOMAIN", SQL_DIAG_CREATE_DOMAIN},
       {"CREATE INDEX", "CREATE INDEX", SQL_DIAG_CREATE_INDEX},
+      {"CREATE UNIQUE INDEX", "CREATE INDEX", SQL_DIAG_CREATE_INDEX},
       {"CREATE SCHEMA", "CREATE SCHEMA", SQL_DIAG_CREATE_SCHEMA},
       {"CREATE TABLE", "CREATE TABLE", SQL_DIAG_CREATE_TABLE},
+      {"CREATE TEMP TABLE", "CREATE TABLE", SQL_DIAG_CREATE_TABLE},
+      {"CREATE TEMPORARY TABLE", "CREATE TABLE", SQL_DIAG_CREATE_TABLE},
+      {"CREATE UNLOGGED TABLE", "CREATE TABLE", SQL_DIAG_CREATE_TABLE},
       {"CREATE TRANSLATION", "CREATE TRANSLATION",
        SQL_DIAG_CREATE_TRANSLATION},
       {"CREATE VIEW", "CREATE VIEW", SQL_DIAG_CREATE_VIEW},
@@ -2038,7 +2050,8 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
     if (result.has_error()) {
       const auto timeout = is_timeout_error(result.error());
       set_error(query_failure_sqlstate(*conn_->get_db_connection(),
-                                       result.error(), SQLSTATE_SYNTAX_ERROR),
+                                       result.error(), SQLSTATE_SYNTAX_ERROR,
+                                       dynamic_function.code),
                 result.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                  result.error_message(),
@@ -3009,7 +3022,8 @@ SQLRETURN ODBCStatement::execute() {
     if (result.has_error()) {
       const auto timeout = is_timeout_error(result.error());
       set_error(query_failure_sqlstate(*conn_->get_db_connection(),
-                                       result.error(), SQLSTATE_SYNTAX_ERROR),
+                                       result.error(), SQLSTATE_SYNTAX_ERROR,
+                                       dynamic_function.code),
                 result.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                  result.error_message(),
@@ -3405,7 +3419,8 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
   if (result.has_error()) {
     const auto timeout = is_timeout_error(result.error());
     set_error(query_failure_sqlstate(*conn_->get_db_connection(),
-                                     result.error(), SQLSTATE_SYNTAX_ERROR),
+                                     result.error(), SQLSTATE_SYNTAX_ERROR,
+                                     classify_dynamic_function(prepared_sql_).code),
               result.error_message());
     if (timeout) conn_->disconnect();
     return SQL_ERROR;

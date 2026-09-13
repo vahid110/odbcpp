@@ -918,6 +918,12 @@ substitute for ODBC diagnostics.
   and [SQLExecDirect diagnostics](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function).
   A real PostgreSQL test covers direct, prepared, deferred-result, and
   recovery paths; other class-42 errors retain the `42000` fallback.
+- Audit batch 128 narrows `42P07`: PostgreSQL also uses that code for a
+  duplicate index name. Direct and prepared `CREATE INDEX` errors now map to
+  ODBC `42S11`, while `CREATE TABLE`/`CREATE VIEW` map to `42S01`. A deferred
+  batch error without an identified statement retains `42000` rather than
+  claiming the wrong object kind. Real PostgreSQL tests cover duplicate
+  table/index direct, prepared, and deferred errors plus connection recovery.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

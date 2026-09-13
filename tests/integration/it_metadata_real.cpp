@@ -3690,7 +3690,52 @@ TEST_F(MetadataIntegrationTest, DuplicateObjectsUseOdbcSqlstates) {
     EXPECT_EQ("42S21", diagnostic_state(SQL_HANDLE_STMT, hstmt));
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 8; "
+                         "CREATE TEMP TABLE odbcpp_duplicate_diag(id integer)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(8, integer_cell(hstmt, 1));
+    EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
+    EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT count(*) FROM odbcpp_duplicate_diag",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(0, integer_cell(hstmt, 1));
+}
+
+TEST_F(MetadataIntegrationTest, DuplicateIndexUsesIndexSqlstate) {
+    constexpr auto create_index =
+        "CREATE INDEX odbcpp_duplicate_index_diag_idx "
+        "ON odbcpp_duplicate_index_diag(id)";
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"CREATE TEMP TABLE "
+                         "odbcpp_duplicate_index_diag(id integer)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)create_index, SQL_NTS));
+
+    EXPECT_EQ(SQL_ERROR, SQLExecDirect(
+        hstmt, (SQLCHAR*)create_index, SQL_NTS));
+    EXPECT_EQ("42S11", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)create_index, SQL_NTS));
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    EXPECT_EQ("42S11", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 7; "
+                         "CREATE INDEX odbcpp_duplicate_index_diag_idx "
+                         "ON odbcpp_duplicate_index_diag(id)", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(7, integer_cell(hstmt, 1));
+    EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
+    EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT count(*) FROM odbcpp_duplicate_index_diag",
         SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     EXPECT_EQ(0, integer_cell(hstmt, 1));
