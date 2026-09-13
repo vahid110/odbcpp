@@ -51,7 +51,8 @@ class FailingQueryTransport final : public rs::core::transport::ITransport {
 class ScriptedBackendTransport final : public rs::core::transport::ITransport {
  public:
   enum class ResponseMode {
-    ValidStartup, MalformedStartup, MalformedAuth, AuthRejected, MalformedQuery
+    ValidStartup, MalformedStartup, MalformedAuth, AuthRejected,
+    MalformedQuery, MalformedStartupReady, MalformedQueryReady
   };
 
   explicit ScriptedBackendTransport(
@@ -70,12 +71,18 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('E', error, sizeof(error));
       return;
     }
+    if (mode == ResponseMode::MalformedStartupReady) {
+      append_message('Z', "X", 1);
+      return;
+    }
     append_message('S', "server_version\0" "17.6\0", 20);
     append_message('S', "application_name\0" "odbcpp\0", 24);
     append_message('Z', "I", 1);
     if (mode == ResponseMode::MalformedQuery) {
       append_message('T', "\0\1", 2);
       append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::MalformedQueryReady) {
+      append_message('Z', "IT", 2);
     }
   }
 
@@ -214,6 +221,38 @@ TEST(ConnectionLivenessTest, ServerAuthRejectionRemainsCredentialFailure) {
                 rs::util::DbErrorCode::AuthenticationFailed), result.error());
   EXPECT_NE(result.error_message().find("password authentication failed"),
             std::string::npos);
+  EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, MalformedStartupReadyCannotOpenConnection) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::MalformedStartupReady));
+
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  const auto result = connection.connect(settings);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, MalformedQueryReadyClosesLogicalConnection) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::MalformedQueryReady));
+
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  ASSERT_TRUE(connection.connect(settings).has_value());
+  const auto result = connection.execute_query(
+      "SELECT 1", rs::util::make_deadline(std::chrono::seconds(1)));
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
   EXPECT_FALSE(connection.is_connected());
 }
 

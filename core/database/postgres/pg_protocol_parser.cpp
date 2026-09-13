@@ -618,7 +618,14 @@ Message PgProtocolParser::parse_message(const std::vector<std::byte>& data) {
 }
 
 bool PgProtocolParser::is_ready_for_query(const Message& msg) {
-  return msg.tag == 'Z';
+  if (msg.tag != 'Z') return false;
+  if (msg.payload.size() != 1 ||
+      (msg.payload[0] != std::byte{'I'} &&
+       msg.payload[0] != std::byte{'T'} &&
+       msg.payload[0] != std::byte{'E'})) {
+    throw std::runtime_error("Invalid PostgreSQL ReadyForQuery payload");
+  }
+  return true;
 }
 
 bool PgProtocolParser::is_error_response(const Message& msg) {

@@ -14,9 +14,26 @@
 namespace {
 
 using rs::core::database::AuthenticationRequest;
+using rs::core::database::Message;
 using rs::core::database::QueryParameter;
 using rs::core::database::QueryParameterType;
 using rs::core::database::postgres::PgProtocolParser;
+
+TEST(PgProtocolParserTest, ReadyForQueryRequiresOneValidStatusByte) {
+  PgProtocolParser parser;
+  for (const char status : {'I', 'T', 'E'}) {
+    EXPECT_TRUE(parser.is_ready_for_query(
+        Message{'Z', {static_cast<std::byte>(status)}}));
+  }
+  EXPECT_FALSE(parser.is_ready_for_query(Message{'C', {}}));
+  EXPECT_THROW(parser.is_ready_for_query(Message{'Z', {}}),
+               std::runtime_error);
+  EXPECT_THROW(parser.is_ready_for_query(Message{'Z', {std::byte{'X'}}}),
+               std::runtime_error);
+  EXPECT_THROW(parser.is_ready_for_query(
+                   Message{'Z', {std::byte{'I'}, std::byte{'T'}}}),
+               std::runtime_error);
+}
 
 TEST(PgProtocolParserTest, RejectsEmbeddedNulInStartupFields) {
   PgProtocolParser parser;

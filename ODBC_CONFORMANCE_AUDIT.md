@@ -855,6 +855,10 @@ substitute for ODBC diagnostics.
   error rather than an authentication failure; synthetic backend tests cover
   both a truncated authentication request and a server `ErrorResponse` that
   rejects the credentials.
+- Audit batch 115 validates the [PostgreSQL `ReadyForQuery` message](https://www.postgresql.org/docs/current/protocol-message-formats.html):
+  it must carry exactly one `I`, `T`, or `E` status byte. Malformed markers
+  during startup return a protocol error without opening the connection;
+  malformed query-completion markers invalidate an established connection.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
