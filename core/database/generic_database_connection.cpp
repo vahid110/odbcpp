@@ -395,8 +395,8 @@ rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(
   } catch (const std::exception& error) {
     last_error_ = error.what();
     return rs::util::Result<void>{
-        rs::util::DbErrorCode::AuthenticationFailed,
-        "Authentication failed: " + last_error_};
+        rs::util::DbErrorCode::ProtocolError,
+        "Invalid authentication exchange: " + last_error_};
   }
   return rs::util::Result<void>{};
 }

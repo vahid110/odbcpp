@@ -850,6 +850,11 @@ substitute for ODBC diagnostics.
   the untrusted stream. The ODBC error mapper classifies protocol errors as
   communication-link failures (08S01). A synthetic server-response test covers
   a truncated `RowDescription` followed by `ReadyForQuery`.
+- Audit batch 114 separates malformed PostgreSQL authentication frames from
+  credential rejection. Parser failures during startup now return a protocol
+  error rather than an authentication failure; synthetic backend tests cover
+  both a truncated authentication request and a server `ErrorResponse` that
+  rejects the credentials.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

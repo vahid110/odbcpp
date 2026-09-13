@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <memory>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace {
@@ -47,14 +48,26 @@ class FailingQueryTransport final : public rs::core::transport::ITransport {
   std::size_t receive_offset_{0};
 };
 
-class StartupParameterTransport final : public rs::core::transport::ITransport {
+class ScriptedBackendTransport final : public rs::core::transport::ITransport {
  public:
-  enum class ResponseMode { ValidStartup, MalformedStartup, MalformedQuery };
+  enum class ResponseMode {
+    ValidStartup, MalformedStartup, MalformedAuth, AuthRejected, MalformedQuery
+  };
 
-  explicit StartupParameterTransport(
+  explicit ScriptedBackendTransport(
       ResponseMode mode = ResponseMode::ValidStartup) {
     if (mode == ResponseMode::MalformedStartup) {
       append_message('S', "missing-terminators", 19);
+      return;
+    }
+    if (mode == ResponseMode::MalformedAuth) {
+      append_message('R', "\0\0\0", 3);
+      return;
+    }
+    if (mode == ResponseMode::AuthRejected) {
+      constexpr char error[] =
+          "SFATAL\0C28P01\0Mpassword authentication failed\0";
+      append_message('E', error, sizeof(error));
       return;
     }
     append_message('S', "server_version\0" "17.6\0", 20);
@@ -127,7 +140,7 @@ TEST(ConnectionLivenessTest, RetainsPostgresqlStartupParameters) {
   rs::core::database::GenericDatabaseConnection connection(
       std::make_unique<
           rs::core::database::postgres::PgProtocolParser>(),
-      std::make_unique<StartupParameterTransport>());
+      std::make_unique<ScriptedBackendTransport>());
 
   rs::core::database::ConnectionSettings settings;
   settings.use_ssl = false;
@@ -140,7 +153,7 @@ TEST(ConnectionLivenessTest, RetainsPostgresqlStartupParameters) {
 TEST(ConnectionLivenessTest, InvalidSqlDoesNotEscapeOrDisconnect) {
   rs::core::database::GenericDatabaseConnection connection(
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
-      std::make_unique<StartupParameterTransport>());
+      std::make_unique<ScriptedBackendTransport>());
 
   rs::core::database::ConnectionSettings settings;
   settings.use_ssl = false;
@@ -160,8 +173,8 @@ TEST(ConnectionLivenessTest, RejectsMalformedStartupParameters) {
   rs::core::database::GenericDatabaseConnection connection(
       std::make_unique<
           rs::core::database::postgres::PgProtocolParser>(),
-      std::make_unique<StartupParameterTransport>(
-          StartupParameterTransport::ResponseMode::MalformedStartup));
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::MalformedStartup));
 
   rs::core::database::ConnectionSettings settings;
   settings.use_ssl = false;
@@ -172,11 +185,43 @@ TEST(ConnectionLivenessTest, RejectsMalformedStartupParameters) {
   EXPECT_FALSE(connection.is_connected());
 }
 
+TEST(ConnectionLivenessTest, MalformedAuthIsNotReportedAsBadCredentials) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::MalformedAuth));
+
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  const auto result = connection.connect(settings);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, ServerAuthRejectionRemainsCredentialFailure) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::AuthRejected));
+
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  const auto result = connection.connect(settings);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(
+                rs::util::DbErrorCode::AuthenticationFailed), result.error());
+  EXPECT_NE(result.error_message().find("password authentication failed"),
+            std::string::npos);
+  EXPECT_FALSE(connection.is_connected());
+}
+
 TEST(ConnectionLivenessTest, MalformedQueryResultClosesLogicalConnection) {
   rs::core::database::GenericDatabaseConnection connection(
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
-      std::make_unique<StartupParameterTransport>(
-          StartupParameterTransport::ResponseMode::MalformedQuery));
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::MalformedQuery));
 
   rs::core::database::ConnectionSettings settings;
   settings.use_ssl = false;
