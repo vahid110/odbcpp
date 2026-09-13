@@ -323,9 +323,12 @@ TEST(AsyncTlsTransportTest, SendsDnsNameInSni) {
   AsyncTlsTransport transport(make_native_transport());
   transport.set_verify(false);
 
-  auto connected = transport.connect(
-      "localhost", server.port(), rs::util::make_deadline(15s));
+  auto connected = transport.connect_plain(
+      "127.0.0.1", server.port(), rs::util::make_deadline(15s));
   ASSERT_TRUE(connected.has_value()) << connected.error_message();
+  auto upgraded = transport.upgrade_to_tls(
+      "localhost", rs::util::make_deadline(5s));
+  ASSERT_TRUE(upgraded.has_value()) << upgraded.error_message();
 
   constexpr std::string_view request = "ping";
   auto sent = transport.send(

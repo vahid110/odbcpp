@@ -472,9 +472,12 @@ TEST(TLSPeerIdentityTest, SendsSniOnlyForDnsNames) {
   EXPECT_TRUE(ip_server.observed_sni().empty());
 
   TLSSleepingServer dns_server(100ms);
-  auto dns_connected = transport.connect(
-      "localhost", dns_server.port(), rs::util::make_deadline(2s));
+  auto dns_connected = transport.connect_plain(
+      "127.0.0.1", dns_server.port(), rs::util::make_deadline(2s));
   ASSERT_TRUE(dns_connected.has_value()) << dns_connected.error_message();
+  auto upgraded = transport.upgrade_to_tls(
+      "localhost", rs::util::make_deadline(2s));
+  ASSERT_TRUE(upgraded.has_value()) << upgraded.error_message();
   ASSERT_TRUE(dns_server.wait_for_handshake());
   EXPECT_EQ(dns_server.observed_sni(), "localhost");
 }
