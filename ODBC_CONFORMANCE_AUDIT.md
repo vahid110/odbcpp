@@ -791,6 +791,11 @@ substitute for ODBC diagnostics.
   overrides an invalid lower-priority value. Async size settings use strict
   decimal parsing, rejecting signs, whitespace, trailing characters, zero,
   and overflow. Unit tests cover both precedence and malformed values.
+- Audit batch 103 adds IPv4-only localhost fallback tests for Epoll and IOCP.
+  Windows CI exposed the same first-address starvation in IOCP: an unfinished
+  `ConnectEx` could consume the whole login deadline. IOCP now budgets each
+  pending endpoint, cancels and closes a stalled socket, then attempts the
+  next address while preserving the overall deadline and one-shot completion.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

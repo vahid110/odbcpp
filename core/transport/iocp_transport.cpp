@@ -119,6 +119,7 @@ public:
     OVERLAPPED overlapped{};
     RequestKind kind{};
     rs::util::Deadline deadline{};
+    rs::util::Deadline endpoint_deadline{};
     std::shared_ptr<OperationState> state;
     ConnectCallback connect_callback;
     SendCallback send_callback;
@@ -134,6 +135,7 @@ public:
     SOCKET native_socket{INVALID_SOCKET};
     bool cancellation_issued{false};
     bool timed_out{false};
+    bool endpoint_timed_out{false};
     bool closing{false};
   };
 
@@ -282,6 +284,11 @@ private:
       (void)overlapped;
       if (!request->state->is_complete()) {
         nearest = (std::min)(nearest, request->deadline);
+        if (request->kind == RequestKind::Connect &&
+            !request->endpoint_timed_out &&
+            request->next_endpoint < request->endpoints.size()) {
+          nearest = (std::min)(nearest, request->endpoint_deadline);
+        }
       }
     }
     if (nearest == rs::util::Clock::time_point::max()) return INFINITE;
@@ -375,15 +382,27 @@ private:
     }
 
     for (auto& [overlapped, request] : active_) {
-      if (request->deadline > now || request->state->is_complete() ||
-          request->timed_out) {
+      if (request->state->is_complete() || request->timed_out) {
         continue;
       }
-      request->timed_out = true;
-      request->cancellation_issued = true;
-      if (request->native_socket != INVALID_SOCKET) {
-        (void)::CancelIoEx(reinterpret_cast<HANDLE>(request->native_socket),
-                           overlapped);
+      if (request->deadline <= now) {
+        request->timed_out = true;
+        request->cancellation_issued = true;
+        if (request->native_socket != INVALID_SOCKET) {
+          (void)::CancelIoEx(reinterpret_cast<HANDLE>(request->native_socket),
+                             overlapped);
+        }
+      } else if (request->kind == RequestKind::Connect &&
+                 request->next_endpoint < request->endpoints.size() &&
+                 request->endpoint_deadline <= now &&
+                 !request->endpoint_timed_out) {
+        request->endpoint_timed_out = true;
+        request->cancellation_issued = true;
+        if (request->native_socket != INVALID_SOCKET) {
+          (void)::CancelIoEx(reinterpret_cast<HANDLE>(request->native_socket),
+                             overlapped);
+        }
+        close_socket_locked();
       }
     }
   }
@@ -495,6 +514,22 @@ private:
   void try_next_endpoint_locked(std::vector<Completion>& completions) {
     while (active_connect_ &&
            active_connect_->next_endpoint < active_connect_->endpoints.size()) {
+      const auto left = rs::util::remaining(active_connect_->deadline);
+      if (left <= std::chrono::milliseconds::zero()) {
+        complete_error_locked(active_connect_, rs::util::DbErrorCode::Timeout,
+                              "async operation deadline expired", completions);
+        active_connect_.reset();
+        return;
+      }
+      const auto remaining_endpoints =
+          active_connect_->endpoints.size() - active_connect_->next_endpoint;
+      const auto budget = (std::max)(
+          std::chrono::milliseconds(1),
+          left / static_cast<std::chrono::milliseconds::rep>(remaining_endpoints));
+      active_connect_->endpoint_deadline = (std::min)(
+          active_connect_->deadline, rs::util::Clock::now() + budget);
+      active_connect_->endpoint_timed_out = false;
+      active_connect_->cancellation_issued = false;
       const auto& endpoint =
           active_connect_->endpoints[active_connect_->next_endpoint++];
       if (!prepare_socket_locked(endpoint)) continue;
@@ -616,6 +651,9 @@ private:
                                         : "transport closed",
                               completions);
         active_connect_.reset();
+      } else if (request->endpoint_timed_out) {
+        close_socket_locked();
+        try_next_endpoint_locked(completions);
       } else if (error == ERROR_SUCCESS &&
                  ::setsockopt(socket_, SOL_SOCKET, SO_UPDATE_CONNECT_CONTEXT,
                               nullptr, 0) == 0) {
