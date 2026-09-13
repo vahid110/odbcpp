@@ -139,6 +139,7 @@ TEST(PgProtocolParserTest, ErrorResponseRequiresCompleteUniqueFields) {
   append_cstring(valid.payload, "Xfuture field");
   valid.payload.push_back(std::byte{0});
   EXPECT_EQ("syntax error", parser.extract_error_message(valid));
+  EXPECT_EQ("42601", parser.extract_error_sqlstate(valid));
 
   for (const char missing : {'S', 'C', 'M'}) {
     Message incomplete{'E', {}};
@@ -171,6 +172,15 @@ TEST(PgProtocolParserTest, ErrorResponseRequiresCompleteUniqueFields) {
   auto trailing = valid;
   trailing.payload.push_back(std::byte{1});
   EXPECT_THROW(parser.extract_error_message(trailing), std::runtime_error);
+
+  auto invalid_state = valid;
+  invalid_state.payload.clear();
+  append_cstring(invalid_state.payload, "SERROR");
+  append_cstring(invalid_state.payload, "C22@12");
+  append_cstring(invalid_state.payload, "Mbad state");
+  invalid_state.payload.push_back(std::byte{0});
+  EXPECT_THROW(parser.extract_error_sqlstate(invalid_state),
+               std::runtime_error);
 }
 
 TEST(PgProtocolParserTest, ErrorAfterCommandIsASeparatePendingResult) {
@@ -188,6 +198,7 @@ TEST(PgProtocolParserTest, ErrorAfterCommandIsASeparatePendingResult) {
   ASSERT_EQ(1u, result.additional_results.size());
   EXPECT_EQ("division by zero",
             result.additional_results.front().error_message);
+  EXPECT_EQ("22012", result.additional_results.front().error_sqlstate);
 
   const auto first_error = parser.extract_query_result({error});
   EXPECT_EQ("division by zero", first_error.error_message);

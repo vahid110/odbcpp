@@ -162,6 +162,28 @@ const char* request_sqlstate(const std::error_code& error,
   return fallback;
 }
 
+std::string backend_data_exception_sqlstate(std::string_view server_state,
+                                            const char* fallback) {
+  if (server_state.size() == 5 && server_state.substr(0, 2) == "22" &&
+      std::all_of(server_state.begin(), server_state.end(), [](char ch) {
+        return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z');
+      })) {
+    return std::string(server_state);
+  }
+  return fallback;
+}
+
+std::string query_failure_sqlstate(
+    const rs::core::database::IDatabaseConnection& connection,
+    const std::error_code& error, const char* fallback) {
+  const auto* default_state = request_sqlstate(error, fallback);
+  if (error != rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed)) {
+    return default_state;
+  }
+  return backend_data_exception_sqlstate(
+      connection.get_last_server_sqlstate(), default_state);
+}
+
 std::chrono::milliseconds timeout_duration(SQLULEN seconds) {
   if (seconds == 0) return std::chrono::milliseconds::max();
   constexpr auto maximum = std::chrono::milliseconds::max().count();
@@ -2009,7 +2031,8 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
     
     if (result.has_error()) {
       const auto timeout = is_timeout_error(result.error());
-      set_error(request_sqlstate(result.error(), SQLSTATE_SYNTAX_ERROR),
+      set_error(query_failure_sqlstate(*conn_->get_db_connection(),
+                                       result.error(), SQLSTATE_SYNTAX_ERROR),
                 result.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                  result.error_message(),
@@ -2516,7 +2539,9 @@ SQLRETURN ODBCStatement::more_results() {
   pending_results_.erase(pending_results_.begin());
   if (!next.error_message.empty()) {
     pending_results_.clear();
-    set_error(SQLSTATE_SYNTAX_ERROR, "Query error: " + next.error_message);
+    set_error(backend_data_exception_sqlstate(next.error_sqlstate,
+                                               SQLSTATE_SYNTAX_ERROR),
+              "Query error: " + next.error_message);
     return SQL_ERROR;
   }
   apply_query_result(std::move(next), false);
@@ -2977,7 +3002,8 @@ SQLRETURN ODBCStatement::execute() {
     
     if (result.has_error()) {
       const auto timeout = is_timeout_error(result.error());
-      set_error(request_sqlstate(result.error(), SQLSTATE_SYNTAX_ERROR),
+      set_error(query_failure_sqlstate(*conn_->get_db_connection(),
+                                       result.error(), SQLSTATE_SYNTAX_ERROR),
                 result.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                  result.error_message(),
@@ -3372,7 +3398,8 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
       prepared_sql_, parameter_types, deadline);
   if (result.has_error()) {
     const auto timeout = is_timeout_error(result.error());
-    set_error(request_sqlstate(result.error(), SQLSTATE_SYNTAX_ERROR),
+    set_error(query_failure_sqlstate(*conn_->get_db_connection(),
+                                     result.error(), SQLSTATE_SYNTAX_ERROR),
               result.error_message());
     if (timeout) conn_->disconnect();
     return SQL_ERROR;

@@ -28,6 +28,7 @@ public:
   
   std::string get_parameter(std::string_view key) const override;
   std::string get_last_error() const override;
+  std::string get_last_server_sqlstate() const override;
 
 private:
   std::unique_ptr<IProtocolParser> parser_;
@@ -35,6 +36,7 @@ private:
   ConnectionSettings settings_;
   std::map<std::string, std::string> server_params_;
   std::string last_error_;
+  std::string last_server_sqlstate_;
   bool connected_ = false;
   
   // Exception-based methods (for backward compatibility)

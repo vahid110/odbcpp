@@ -19,6 +19,7 @@ GenericDatabaseConnection::GenericDatabaseConnection(
 rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettings& settings) {
   settings_ = settings;
   server_params_.clear();
+  last_server_sqlstate_.clear();
   
   if (!transport_) {
     if (settings.use_ssl) {
@@ -113,6 +114,7 @@ void GenericDatabaseConnection::disconnect() {
   }
   connected_ = false;
   server_params_.clear();
+  last_server_sqlstate_.clear();
 }
 
 bool GenericDatabaseConnection::is_connected() const {
@@ -193,6 +195,8 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
     rs::util::Deadline deadline) {
   std::vector<Message> messages;
   std::optional<std::string> query_error;
+  std::string query_error_sqlstate;
+  last_server_sqlstate_.clear();
 
   while (true) {
     auto msg_result = read_message_result(deadline);
@@ -212,6 +216,7 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
       }
       if (parser_->is_error_response(msg) && !query_error) {
         query_error = parser_->extract_error_message(msg);
+        query_error_sqlstate = parser_->extract_error_sqlstate(msg);
       }
       messages.push_back(msg);
       if (parser_->is_ready_for_query(msg)) break;
@@ -227,6 +232,7 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
     if (query_error &&
         (!result.error_message.empty() || result.additional_results.empty())) {
       last_error_ = *query_error;
+      last_server_sqlstate_ = std::move(query_error_sqlstate);
       return rs::util::Result<QueryResult>{
           rs::util::DbErrorCode::QueryFailed, "Query error: " + last_error_};
     }
@@ -245,6 +251,10 @@ std::string GenericDatabaseConnection::get_parameter(std::string_view key) const
 
 std::string GenericDatabaseConnection::get_last_error() const {
   return last_error_;
+}
+
+std::string GenericDatabaseConnection::get_last_server_sqlstate() const {
+  return last_server_sqlstate_;
 }
 
 void GenericDatabaseConnection::write_all(const std::vector<std::byte>& data, rs::util::Deadline deadline) {

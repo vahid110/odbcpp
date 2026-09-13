@@ -54,6 +54,7 @@ public:
   
   virtual std::string get_parameter(std::string_view key) const = 0;
   virtual std::string get_last_error() const = 0;
+  virtual std::string get_last_server_sqlstate() const { return {}; }
 };
 
 } // namespace rs::core::database

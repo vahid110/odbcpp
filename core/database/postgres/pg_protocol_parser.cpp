@@ -1,4 +1,5 @@
 #include "pg_protocol_parser.h"
+#include <algorithm>
 #include <cctype>
 #include <charconv>
 #include <cstring>
@@ -730,7 +731,9 @@ QueryResult PgProtocolParser::extract_query_result(
       current = QueryResult{};
     } else if (message.tag == 'E') { // ErrorResponse
       current = QueryResult{};
-      current.error_message = decode_error_fields(message.payload).message();
+      const auto error = decode_error_fields(message.payload);
+      current.error_message = error.message();
+      current.error_sqlstate = error.code();
       completed.push_back(std::move(current));
       current = QueryResult{};
     }
@@ -803,6 +806,13 @@ rs::pg::ErrorResponse PgProtocolParser::decode_error_fields(
       !e.fields.contains('S') || !e.fields.contains('C') ||
       !e.fields.contains('M') || e.fields.at('M').empty()) {
     throw std::runtime_error("Invalid PostgreSQL error/notice payload");
+  }
+  const auto& sqlstate = e.fields.at('C');
+  if (sqlstate.size() != 5 ||
+      !std::all_of(sqlstate.begin(), sqlstate.end(), [](char ch) {
+        return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z');
+      })) {
+    throw std::runtime_error("Invalid PostgreSQL SQLSTATE");
   }
   return e;
 }

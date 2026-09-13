@@ -897,6 +897,12 @@ substitute for ODBC diagnostics.
   reports the aborted batch with `SQL_ERROR` as required by the
   [ODBC multiple-results contract](https://learn.microsoft.com/en-us/sql/odbc/reference/develop-app/multiple-results).
   Server-specific query SQLSTATE mapping remains a separate diagnostic gap.
+- Audit batch 124 preserves PostgreSQL class-22 data-exception SQLSTATEs in
+  immediate and deferred query errors. Real `SQLExecDirect`, `SQLExecute`,
+  and `SQLMoreResults` division-by-zero paths now report `22012`; other
+  server-specific classes retain the existing conservative mapping pending
+  an ODBC-by-PostgreSQL SQLSTATE audit. Malformed five-character server codes
+  are rejected as protocol errors.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

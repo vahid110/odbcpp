@@ -3562,8 +3562,17 @@ TEST_F(MetadataIntegrationTest, LaterBatchErrorSurfacesThroughMoreResults) {
     EXPECT_EQ(11, integer_cell(hstmt, 1));
 
     EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
-    EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    EXPECT_EQ("22012", diagnostic_state(SQL_HANDLE_STMT, hstmt));
     EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(hstmt));
+
+    EXPECT_EQ(SQL_ERROR, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 1 / 0", SQL_NTS));
+    EXPECT_EQ("22012", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT 1 / 0", SQL_NTS));
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    EXPECT_EQ("22012", diagnostic_state(SQL_HANDLE_STMT, hstmt));
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 22 AS recovered", SQL_NTS));
