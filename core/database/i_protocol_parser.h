@@ -55,6 +55,7 @@ public:
   virtual bool is_ready_for_query(const Message& msg) = 0;
   virtual bool is_error_response(const Message& msg) = 0;
   virtual std::string extract_error_message(const Message& msg) = 0;
+  virtual std::string extract_error_sqlstate(const Message&) { return {}; }
   virtual ResultRows extract_query_results(
     const std::vector<Message>& messages) = 0;
   virtual QueryResult extract_query_result(const std::vector<Message>& messages) {

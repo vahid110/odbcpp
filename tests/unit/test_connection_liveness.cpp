@@ -32,11 +32,13 @@ class FailingQueryTransport final : public rs::core::transport::ITransport {
 
   rs::util::Result<rs::core::transport::IOResult> recv(
       std::span<std::byte> buffer, rs::util::Deadline) override {
-    static constexpr std::byte ready[]{
+    static constexpr std::byte startup[]{
+        std::byte{'R'}, std::byte{0}, std::byte{0}, std::byte{0},
+        std::byte{8}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0},
         std::byte{'Z'}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{4}};
-    const auto available = std::size(ready) - receive_offset_;
+    const auto available = std::size(startup) - receive_offset_;
     const auto count = std::min(buffer.size(), available);
-    std::copy_n(ready + receive_offset_, count, buffer.begin());
+    std::copy_n(startup + receive_offset_, count, buffer.begin());
     receive_offset_ += count;
     return rs::core::transport::IOResult{count, false};
   }
@@ -53,7 +55,8 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
   enum class ResponseMode {
     ValidStartup, MalformedStartup, MalformedAuth, AuthRejected,
     MalformedQuery, MalformedStartupReady, MalformedQueryReady,
-    MalformedQueryError, MalformedBackendKey
+    MalformedQueryError, MalformedBackendKey, ReadyWithoutAuth,
+    StartupRejectedAfterAuth, LoginRejectedAfterAuth
   };
 
   explicit ScriptedBackendTransport(
@@ -74,6 +77,23 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     }
     if (mode == ResponseMode::MalformedStartupReady) {
       append_message('Z', "X", 1);
+      return;
+    }
+    if (mode == ResponseMode::ReadyWithoutAuth) {
+      append_message('Z', "I", 1);
+      return;
+    }
+    append_message('R', "\0\0\0\0", 4);
+    if (mode == ResponseMode::StartupRejectedAfterAuth) {
+      constexpr char error[] =
+          "SERROR\0C22023\0Mstartup option rejected\0";
+      append_message('E', error, sizeof(error));
+      return;
+    }
+    if (mode == ResponseMode::LoginRejectedAfterAuth) {
+      constexpr char error[] =
+          "SFATAL\0C28000\0Mrole does not exist\0";
+      append_message('E', error, sizeof(error));
       return;
     }
     append_message('S', "server_version\0" "17.6\0", 20);
@@ -228,6 +248,55 @@ TEST(ConnectionLivenessTest, ServerAuthRejectionRemainsCredentialFailure) {
   EXPECT_EQ(rs::util::make_error_code(
                 rs::util::DbErrorCode::AuthenticationFailed), result.error());
   EXPECT_NE(result.error_message().find("password authentication failed"),
+            std::string::npos);
+  EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, ReadyWithoutAuthenticationOkIsProtocolError) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::ReadyWithoutAuth));
+
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  const auto result = connection.connect(settings);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, ErrorAfterAuthenticationIsStartupFailure) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::StartupRejectedAfterAuth));
+
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  const auto result = connection.connect(settings);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ConnectionFailed),
+            result.error());
+  EXPECT_NE(result.error_message().find("startup option rejected"),
+            std::string::npos);
+  EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, AuthenticationSqlstateAfterOkIsCredentialFailure) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::LoginRejectedAfterAuth));
+
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  const auto result = connection.connect(settings);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(
+                rs::util::DbErrorCode::AuthenticationFailed), result.error());
+  EXPECT_NE(result.error_message().find("role does not exist"),
             std::string::npos);
   EXPECT_FALSE(connection.is_connected());
 }

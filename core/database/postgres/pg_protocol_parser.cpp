@@ -648,6 +648,11 @@ std::string PgProtocolParser::extract_error_message(const Message& msg) {
   return error.message();
 }
 
+std::string PgProtocolParser::extract_error_sqlstate(const Message& msg) {
+  if (msg.tag != 'E') return "";
+  return decode_error(msg.payload).code();
+}
+
 ResultRows PgProtocolParser::extract_query_results(
     const std::vector<Message>& messages) {
   ResultRows rows;

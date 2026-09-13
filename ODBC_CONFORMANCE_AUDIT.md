@@ -870,6 +870,12 @@ substitute for ODBC diagnostics.
   BackendKeyData must carry eight in the driver's negotiated PostgreSQL 3.0
   protocol, rather than the variable-length key permitted by 3.2. Malformed
   lengths fail startup with a protocol error instead of opening a connection.
+- Audit batch 118 enforces the [PostgreSQL startup sequence](https://www.postgresql.org/docs/current/protocol-flow.html):
+  `ReadyForQuery` cannot complete a connection before `AuthenticationOk`.
+  A server `ErrorResponse` before authentication remains a credential failure;
+  after authentication it is classified by the server SQLSTATE: class `28`
+  remains an authentication failure (including a nonexistent role after
+  `AuthenticationOk`), while other errors are startup/connection failures.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

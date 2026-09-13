@@ -332,6 +332,7 @@ void GenericDatabaseConnection::perform_authentication(rs::util::Deadline deadli
 }
 
 rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(rs::util::Deadline deadline) {
+  bool authenticated = false;
   try {
     while (true) {
       auto msg_result = read_message_result(deadline);
@@ -345,6 +346,7 @@ rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(
         auto auth_req = parser_->parse_auth_request(msg.payload);
       
         if (auth_req.type == AuthenticationRequest::Type::None) {
+          authenticated = true;
           continue; // Authentication successful
         }
       
@@ -382,11 +384,22 @@ rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(
       }
       else if (parser_->is_error_response(msg)) {
         last_error_ = parser_->extract_error_message(msg);
+        const auto sqlstate = parser_->extract_error_sqlstate(msg);
+        const bool authentication_error =
+            !authenticated || sqlstate.starts_with("28");
         return rs::util::Result<void>{
-            rs::util::DbErrorCode::AuthenticationFailed,
-            "Authentication failed: " + last_error_};
+            authentication_error ? rs::util::DbErrorCode::AuthenticationFailed
+                                 : rs::util::DbErrorCode::ConnectionFailed,
+            (authentication_error ? "Authentication failed: "
+                                  : "Startup failed: ") +
+                last_error_};
       }
       else if (parser_->is_ready_for_query(msg)) {
+        if (!authenticated) {
+          return rs::util::Result<void>{
+              rs::util::DbErrorCode::ProtocolError,
+              "ReadyForQuery arrived before AuthenticationOk"};
+        }
         break; // Ready for queries
       }
     }
