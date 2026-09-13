@@ -746,6 +746,10 @@ substitute for ODBC diagnostics.
   reconnect regression verifies that switching from unverified TLS to peer
   verification rejects a self-signed certificate instead of reusing the old
   no-verification context.
+- Audit batch 95 checks IPv4/IPv6 hosts against IP subject-alternative names
+  in both sync and async TLS transports; DNS hosts continue to use DNS/CN
+  matching. A certificate with a numeric DNS SAN cannot impersonate a valid
+  IP address. See [OpenSSL's X.509 matching contract](https://docs.openssl.org/3.0/man3/X509_check_host/).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

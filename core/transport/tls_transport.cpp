@@ -1,5 +1,6 @@
 #include "tls_transport.h"
 #include "core/transport/tls_io.h"
+#include "core/transport/tls_peer_identity.h"
 #include "core/util/exception_adapter.h"
 
 #include <stdexcept>
@@ -169,7 +170,7 @@ void TLSTransport::upgrade_impl(std::string_view host, Deadline deadline) {
 
 void TLSTransport::verify_hostname(X509* cert) {
 #if OPENSSL_VERSION_NUMBER >= 0x10100000L
-  if (X509_check_host(cert, sni_host_.c_str(), sni_host_.size(), 0, nullptr) != 1) {
+  if (!tls_certificate_matches_host(cert, sni_host_)) {
     throw TLSError("Hostname verification failed for " + sni_host_);
   }
 #else

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "core/transport/socket_transport.h"
+#include "core/transport/tls_peer_identity.h"
 #include "core/transport/tls_transport.h"
 #include "core/util/deadline.h"
 #include "core/util/platform.h"
@@ -16,6 +17,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <mutex>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -421,6 +423,27 @@ TEST(TLSTransportDeadlineTest, ReconnectAppliesUpdatedVerification) {
 
   const std::array<std::byte, 1> plaintext{std::byte{'x'}};
   EXPECT_TRUE(transport.send(plaintext, rs::util::make_deadline(100ms)).has_error());
+}
+
+TEST(TLSPeerIdentityTest, UsesIpSanWithoutFallingBackToDnsNames) {
+  std::unique_ptr<X509, decltype(&X509_free)> certificate(X509_new(), X509_free);
+  ASSERT_NE(nullptr, certificate);
+  char san_text[] = "IP:127.0.0.1,IP:::1,DNS:db.example.test,DNS:127.0.0.2";
+  std::unique_ptr<X509_EXTENSION, decltype(&X509_EXTENSION_free)> san(
+      X509V3_EXT_conf_nid(nullptr, nullptr, NID_subject_alt_name, san_text),
+      X509_EXTENSION_free);
+  ASSERT_NE(nullptr, san);
+  ASSERT_EQ(1, X509_add_ext(certificate.get(), san.get(), -1));
+
+  using rs::core::transport::tls_certificate_matches_host;
+  EXPECT_TRUE(tls_certificate_matches_host(certificate.get(), "127.0.0.1"));
+  EXPECT_FALSE(tls_certificate_matches_host(certificate.get(), "127.0.0.2"));
+  EXPECT_TRUE(tls_certificate_matches_host(certificate.get(), "::1"));
+  EXPECT_FALSE(tls_certificate_matches_host(certificate.get(), "::2"));
+  EXPECT_TRUE(tls_certificate_matches_host(certificate.get(), "db.example.test"));
+  EXPECT_FALSE(tls_certificate_matches_host(certificate.get(), "other.example.test"));
+  EXPECT_FALSE(tls_certificate_matches_host(
+      certificate.get(), std::string_view("127.0.0.1\0invalid", 17)));
 }
 
 TEST(TLSTransportDeadlineTest, StrictReceiveTimesOutAfterHandshake) {

@@ -1,4 +1,5 @@
 #include "async_tls_transport.h"
+#include "tls_peer_identity.h"
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -555,8 +556,7 @@ private:
     }
     const long verification = ::SSL_get_verify_result(ssl_);
     const bool hostname_matches = !verify_hostname_ ||
-        ::X509_check_host(certificate, server_name_.c_str(),
-                          server_name_.size(), 0, nullptr) == 1;
+        tls_certificate_matches_host(certificate, server_name_);
     ::X509_free(certificate);
     if (verification != X509_V_OK || !hostname_matches) {
       reset_ssl_locked();
