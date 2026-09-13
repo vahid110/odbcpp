@@ -52,7 +52,8 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
  public:
   enum class ResponseMode {
     ValidStartup, MalformedStartup, MalformedAuth, AuthRejected,
-    MalformedQuery, MalformedStartupReady, MalformedQueryReady
+    MalformedQuery, MalformedStartupReady, MalformedQueryReady,
+    MalformedQueryError
   };
 
   explicit ScriptedBackendTransport(
@@ -83,6 +84,10 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::MalformedQueryReady) {
       append_message('Z', "IT", 2);
+    } else if (mode == ResponseMode::MalformedQueryError) {
+      constexpr char error[] = "SERROR\0C42601\0\0";
+      append_message('E', error, sizeof(error) - 1);
+      append_message('Z', "I", 1);
     }
   }
 
@@ -244,6 +249,23 @@ TEST(ConnectionLivenessTest, MalformedQueryReadyClosesLogicalConnection) {
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::MalformedQueryReady));
+
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  ASSERT_TRUE(connection.connect(settings).has_value());
+  const auto result = connection.execute_query(
+      "SELECT 1", rs::util::make_deadline(std::chrono::seconds(1)));
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, MalformedErrorCannotBecomeSuccessfulQuery) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::MalformedQueryError));
 
   rs::core::database::ConnectionSettings settings;
   settings.use_ssl = false;

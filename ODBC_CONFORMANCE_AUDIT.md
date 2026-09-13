@@ -859,6 +859,12 @@ substitute for ODBC diagnostics.
   it must carry exactly one `I`, `T`, or `E` status byte. Malformed markers
   during startup return a protocol error without opening the connection;
   malformed query-completion markers invalidate an established connection.
+- Audit batch 116 validates [PostgreSQL error fields](https://www.postgresql.org/docs/current/protocol-error-fields.html)
+  and the terminating byte. Missing required fields, duplicate fields,
+  unterminated values, and trailing bytes are protocol errors. Query execution
+  tracks the presence of an `ErrorResponse` independently of its message text,
+  so a malformed or empty error cannot be mistaken for success; a synthetic
+  backend regression covers the missing-message case.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

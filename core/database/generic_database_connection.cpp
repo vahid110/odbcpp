@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstring>
 #include <iterator>
+#include <optional>
 
 namespace rs::core::database {
 
@@ -191,7 +192,7 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::describe_statement(
 rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
     rs::util::Deadline deadline) {
   std::vector<Message> messages;
-  std::string query_error;
+  std::optional<std::string> query_error;
 
   while (true) {
     auto msg_result = read_message_result(deadline);
@@ -201,7 +202,7 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
     
     try {
       auto msg = parser_->parse_message(*msg_result);
-      if (parser_->is_error_response(msg) && query_error.empty()) {
+      if (parser_->is_error_response(msg) && !query_error) {
         query_error = parser_->extract_error_message(msg);
       }
       messages.push_back(msg);
@@ -213,8 +214,8 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
     }
   }
 
-  if (!query_error.empty()) {
-    last_error_ = query_error;
+  if (query_error) {
+    last_error_ = *query_error;
     return rs::util::Result<QueryResult>{
         rs::util::DbErrorCode::QueryFailed, "Query error: " + last_error_};
   }

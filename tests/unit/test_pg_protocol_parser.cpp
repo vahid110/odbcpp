@@ -97,6 +97,49 @@ void append_cstring(std::vector<std::byte>& data, std::string_view value) {
   data.push_back(std::byte{0});
 }
 
+TEST(PgProtocolParserTest, ErrorResponseRequiresCompleteUniqueFields) {
+  PgProtocolParser parser;
+  Message valid{'E', {}};
+  append_cstring(valid.payload, "SERROR");
+  append_cstring(valid.payload, "C42601");
+  append_cstring(valid.payload, "Msyntax error");
+  append_cstring(valid.payload, "Xfuture field");
+  valid.payload.push_back(std::byte{0});
+  EXPECT_EQ("syntax error", parser.extract_error_message(valid));
+
+  for (const char missing : {'S', 'C', 'M'}) {
+    Message incomplete{'E', {}};
+    if (missing != 'S') append_cstring(incomplete.payload, "SERROR");
+    if (missing != 'C') append_cstring(incomplete.payload, "C42601");
+    if (missing != 'M') append_cstring(incomplete.payload, "Msyntax error");
+    incomplete.payload.push_back(std::byte{0});
+    EXPECT_THROW(parser.extract_error_message(incomplete), std::runtime_error);
+  }
+
+  Message empty_message{'E', {}};
+  append_cstring(empty_message.payload, "SERROR");
+  append_cstring(empty_message.payload, "C42601");
+  append_cstring(empty_message.payload, "M");
+  empty_message.payload.push_back(std::byte{0});
+  EXPECT_THROW(parser.extract_error_message(empty_message),
+               std::runtime_error);
+
+  auto duplicate = valid;
+  duplicate.payload.pop_back();
+  append_cstring(duplicate.payload, "SERROR");
+  duplicate.payload.push_back(std::byte{0});
+  EXPECT_THROW(parser.extract_error_message(duplicate), std::runtime_error);
+
+  auto unterminated = valid;
+  unterminated.payload.pop_back();
+  unterminated.payload.pop_back();
+  EXPECT_THROW(parser.extract_error_message(unterminated), std::runtime_error);
+
+  auto trailing = valid;
+  trailing.payload.push_back(std::byte{1});
+  EXPECT_THROW(parser.extract_error_message(trailing), std::runtime_error);
+}
+
 rs::core::database::Message one_column_description(
     std::string_view name, std::uint32_t type_oid = 23,
     std::uint16_t type_size = 4) {

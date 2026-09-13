@@ -760,20 +760,27 @@ rs::pg::Authentication PgProtocolParser::decode_auth(const std::vector<std::byte
 
 rs::pg::ErrorResponse PgProtocolParser::decode_error(const std::vector<std::byte>& payload) {
   rs::pg::ErrorResponse e{};
-  const auto* p = reinterpret_cast<const unsigned char*>(payload.data());
-  size_t i = 0, n = payload.size();
-  
-  while (i < n && p[i] != 0) {
-    char code = static_cast<char>(p[i++]);
-    size_t start = i;
-    while (i < n && p[i] != 0) ++i;
-    
-    std::string val(reinterpret_cast<const char*>(p + start), i - start);
-    if (i < n && p[i] == 0) ++i;
-    
-    e.fields[code] = std::move(val);
+  std::size_t offset = 0;
+  while (offset < payload.size() && payload[offset] != std::byte{0}) {
+    const auto code = static_cast<char>(payload[offset++]);
+    const auto start = offset;
+    while (offset < payload.size() && payload[offset] != std::byte{0}) {
+      ++offset;
+    }
+    if (offset == payload.size()) {
+      throw std::runtime_error("Unterminated PostgreSQL error field");
+    }
+    const auto* value = reinterpret_cast<const char*>(payload.data() + start);
+    if (!e.fields.emplace(code, std::string(value, offset - start)).second) {
+      throw std::runtime_error("Duplicate PostgreSQL error field");
+    }
+    ++offset;
   }
-  
+  if (offset + 1 != payload.size() ||
+      !e.fields.contains('S') || !e.fields.contains('C') ||
+      !e.fields.contains('M') || e.fields.at('M').empty()) {
+    throw std::runtime_error("Invalid PostgreSQL ErrorResponse payload");
+  }
   return e;
 }
 
