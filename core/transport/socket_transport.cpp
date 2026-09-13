@@ -207,6 +207,10 @@ rs::util::Result<IOResult> SocketTransport::send(std::span<const std::byte> buf,
       if (n >= 0) return IOResult{static_cast<std::size_t>(n), false};
 #endif
       const int error = last_socket_error();
+      if (socket_error_interrupted(error)) {
+        prepare_for_io(deadline);
+        continue;
+      }
       if (deadline_model_ == DeadlineModel::Strict && socket_error_would_block(error)) {
         continue;
       }
@@ -239,6 +243,10 @@ rs::util::Result<IOResult> SocketTransport::recv(std::span<std::byte> buf, Deadl
       if (n == 0) return IOResult{0, true};
 #endif
       const int error = last_socket_error();
+      if (socket_error_interrupted(error)) {
+        prepare_for_io(deadline);
+        continue;
+      }
       if (deadline_model_ == DeadlineModel::Strict && socket_error_would_block(error)) {
         continue;
       }

@@ -37,6 +37,14 @@ inline bool socket_error_would_block(int error) noexcept {
 #endif
 }
 
+inline bool socket_error_interrupted(int error) noexcept {
+#ifdef _WIN32
+  return error == WSAEINTR;
+#else
+  return error == EINTR;
+#endif
+}
+
 inline bool socket_error_is_timeout(int error) noexcept {
 #ifdef _WIN32
   return error == WSAETIMEDOUT || error == WSAEWOULDBLOCK;

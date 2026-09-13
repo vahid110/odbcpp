@@ -737,6 +737,10 @@ substitute for ODBC diagnostics.
   raw-socket upgrade also discard prior TLS state; timeout and certificate
   rejection have direct no-plaintext-I/O regression checks. Socket closure
   avoids writing TLS close-notify to a peer that may have already gone away.
+- Audit batch 93 retries interrupted plain-socket send/receive calls while
+  rechecking the original deadline. A POSIX signal-interruption regression
+  verifies that `DeadlineModel=SocketTimeout` receives a timeout diagnostic
+  rather than an unrelated I/O failure.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

@@ -21,6 +21,11 @@
 #include <thread>
 #include <vector>
 
+#ifndef _WIN32
+#include <csignal>
+#include <pthread.h>
+#endif
+
 namespace {
 
 using namespace std::chrono_literals;
@@ -244,6 +249,48 @@ TEST(SocketTransportDeadlineTest, StrictReceiveHonorsAbsoluteDeadline) {
 TEST(SocketTransportDeadlineTest, SocketTimeoutIsRefreshedForReceive) {
   expect_receive_timeout(DeadlineModel::SocketTimeout);
 }
+
+#ifndef _WIN32
+volatile std::sig_atomic_t interrupted_receive_signals = 0;
+
+void record_interrupted_receive(int) {
+  interrupted_receive_signals = 1;
+}
+
+TEST(SocketTransportDeadlineTest, InterruptedReceiveStillHonorsDeadline) {
+  SleepingServer server(250ms);
+  SocketTransport transport(DeadlineModel::SocketTimeout);
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  struct sigaction action{};
+  action.sa_handler = record_interrupted_receive;
+  sigemptyset(&action.sa_mask);
+  struct sigaction previous{};
+  ASSERT_EQ(0, sigaction(SIGUSR1, &action, &previous));
+  interrupted_receive_signals = 0;
+
+  const auto waiting_thread = pthread_self();
+  std::thread interrupt([waiting_thread] {
+    std::this_thread::sleep_for(30ms);
+    (void)pthread_kill(waiting_thread, SIGUSR1);
+  });
+
+  std::array<std::byte, 1> buffer{};
+  const auto start = std::chrono::steady_clock::now();
+  auto result = transport.recv(buffer, rs::util::make_deadline(90ms));
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  interrupt.join();
+  EXPECT_EQ(0, sigaction(SIGUSR1, &previous, nullptr));
+
+  EXPECT_EQ(1, interrupted_receive_signals);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(result.error(), rs::util::make_error_code(rs::util::DbErrorCode::Timeout));
+  EXPECT_GE(elapsed, 60ms);
+  EXPECT_LT(elapsed, 500ms);
+}
+#endif
 
 TEST(SocketTransportDeadlineTest, StrictSendTimesOutUnderBackpressure) {
   SleepingServer server(300ms);
