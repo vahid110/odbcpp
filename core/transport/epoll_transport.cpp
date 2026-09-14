@@ -207,7 +207,9 @@ public:
   bool submit(const std::shared_ptr<Request>& request) {
     {
       std::lock_guard lock(mutex_);
-      if (stopping_ || requests_.size() >= queue_depth_) return false;
+      if (stopping_) return false;
+      reap_cancelled_locked();
+      if (requests_.size() >= queue_depth_) return false;
       if (request->kind == RequestKind::Connect &&
           std::any_of(requests_.begin(), requests_.end(), [](const auto& item) {
             return item->kind == RequestKind::Connect &&

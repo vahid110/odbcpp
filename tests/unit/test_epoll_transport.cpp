@@ -324,6 +324,74 @@ TEST(EpollTransportTest, RejectsWorkBeyondConfiguredQueueDepth) {
   second->cancel();
 }
 
+TEST(EpollTransportTest, CancelledRequestReleasesQueueCapacity) {
+  LoopbackServer server(LoopbackServer::Behavior::Silent);
+  std::mutex mutex;
+  std::condition_variable ready;
+  bool callback_entered = false;
+  bool release_callback = false;
+  std::array<std::byte, 1> cancelled_buffer{};
+  std::atomic<int> cancelled_callbacks{0};
+  std::atomic<int> replacement_callbacks{0};
+  std::atomic<bool> replacement_succeeded{false};
+  EpollTransport transport(1, 1);
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(2s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  auto blocker = transport.send_async(
+      std::span<const std::byte>{}, rs::util::make_deadline(2s),
+      [&](rs::util::Result<IOResult> result) {
+        EXPECT_TRUE(result.has_value());
+        if (result.has_error()) return;
+        std::unique_lock lock(mutex);
+        callback_entered = true;
+        ready.notify_all();
+        ready.wait(lock, [&] { return release_callback; });
+      });
+  {
+    std::unique_lock lock(mutex);
+    const bool entered = ready.wait_for(lock, 2s, [&] {
+      return callback_entered;
+    });
+    if (!entered) {
+      release_callback = true;
+      lock.unlock();
+      ready.notify_all();
+      FAIL() << "reactor did not enter the blocking callback";
+    }
+  }
+
+  auto cancelled = transport.recv_async(
+      cancelled_buffer, rs::util::make_deadline(2s),
+      [&](rs::util::Result<IOResult> result) {
+        EXPECT_TRUE(result.has_error());
+        cancelled_callbacks.fetch_add(1);
+      });
+  cancelled->cancel();
+  auto replacement = transport.send_async(
+      std::span<const std::byte>{}, rs::util::make_deadline(2s),
+      [&](rs::util::Result<IOResult> result) {
+        replacement_succeeded.store(result.has_value());
+        replacement_callbacks.fetch_add(1);
+        ready.notify_all();
+      });
+  {
+    std::lock_guard lock(mutex);
+    release_callback = true;
+  }
+  ready.notify_all();
+
+  std::unique_lock lock(mutex);
+  ASSERT_TRUE(ready.wait_for(lock, 2s, [&] {
+    return replacement_callbacks.load() == 1;
+  }));
+  EXPECT_TRUE(replacement_succeeded.load());
+  EXPECT_EQ(cancelled_callbacks.load(), 1);
+  EXPECT_TRUE(cancelled->is_cancelled());
+  EXPECT_TRUE(replacement->is_complete());
+}
+
 } // namespace
 
 #endif // __linux__

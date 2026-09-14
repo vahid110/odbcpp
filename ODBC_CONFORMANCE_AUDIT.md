@@ -976,6 +976,12 @@ substitute for ODBC diagnostics.
   socket. The same tests now confirm those queued tasks execute no socket I/O.
   Cancellation after a worker starts remains best-effort because the
   synchronous socket call may already be in progress.
+- Audit batch 138 reaps completed epoll requests when admitting new work, so
+  a cancelled request releases its queue slot immediately even while the
+  reactor is occupied by a callback. A Linux-only test holds that callback,
+  cancels a queued receive at depth one, and submits a replacement before
+  releasing the reactor. IOCP cancellation remains completion-driven and is
+  not covered by this immediate-release rule.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
