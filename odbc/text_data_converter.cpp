@@ -184,7 +184,9 @@ SQLRETURN convert_wide_string(const std::string& value, void* buffer,
     }
   }
   const auto copied_bytes = copy_length * sizeof(SQLWCHAR);
-  std::memcpy(buffer, wide->data(), copied_bytes);
+  if (copied_bytes > 0) {
+    std::memcpy(buffer, wide->data(), copied_bytes);
+  }
   const SQLWCHAR terminator = 0;
   std::memcpy(static_cast<char*>(buffer) + copied_bytes, &terminator,
               sizeof(terminator));

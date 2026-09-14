@@ -1034,7 +1034,9 @@ substitute for ODBC diagnostics.
   in `TextDataConverter`. A unit test first reproduced a misaligned store under
   strict UBSan; byte-wise copies now handle both complete and truncated output.
   A PostgreSQL-backed `SQLBindCol` test verifies the real fetch path with an
-  unaligned application buffer in both two- and four-byte builds.
+  unaligned application buffer in both two- and four-byte builds. Linux CI
+  additionally caught a null source pointer on zero-byte copies for empty
+  strings; those copies are skipped.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
