@@ -2961,7 +2961,6 @@ SQLRETURN ODBCStatement::execute() {
           return complete_parameter_set(SQL_ERROR);
         }
       } else if (value_type == SQL_C_WCHAR) {
-        const auto* text = static_cast<const SQLWCHAR*>(application.data_ptr);
         SQLLEN length = application.octet_length;
         if (length_or_indicator) length = *length_or_indicator;
         SQLINTEGER units = SQL_NTS;
@@ -2976,7 +2975,7 @@ SQLRETURN ODBCStatement::execute() {
           }
           units = static_cast<SQLINTEGER>(length / sizeof(SQLWCHAR));
         }
-        const auto converted = sqlwchar_to_utf8(text, units);
+        const auto converted = sqlwchar_to_utf8(application.data_ptr, units);
         if (!converted) {
           set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
                     "Invalid wide-character parameter value");

@@ -1,6 +1,7 @@
 #include "unicode.h"
 
 #include <cstdint>
+#include <cstring>
 #include <limits>
 
 namespace rs::odbc {
@@ -65,17 +66,23 @@ std::optional<std::uint32_t> next_utf8_code_point(
   return code_point;
 }
 
-} // namespace
+SQLWCHAR read_wide_unit(const unsigned char* bytes, std::size_t index) {
+  SQLWCHAR unit{};
+  std::memcpy(&unit, bytes + index * sizeof(unit), sizeof(unit));
+  return unit;
+}
 
-std::optional<std::string> wide_to_utf8(std::span<const SQLWCHAR> input) {
+std::optional<std::string> decode_wide_bytes(
+    const void* input, std::size_t units) {
+  const auto* bytes = static_cast<const unsigned char*>(input);
   std::string output;
-  output.reserve(input.size());
-  for (std::size_t i = 0; i < input.size(); ++i) {
-    std::uint32_t code_point = static_cast<std::uint32_t>(input[i]);
+  output.reserve(units);
+  for (std::size_t i = 0; i < units; ++i) {
+    std::uint32_t code_point = read_wide_unit(bytes, i);
     if constexpr (sizeof(SQLWCHAR) == 2) {
       if (code_point >= 0xd800 && code_point <= 0xdbff) {
-        if (++i >= input.size()) return std::nullopt;
-        const auto low = static_cast<std::uint32_t>(input[i]);
+        if (++i >= units) return std::nullopt;
+        const auto low = static_cast<std::uint32_t>(read_wide_unit(bytes, i));
         if (low < 0xdc00 || low > 0xdfff) return std::nullopt;
         code_point = 0x10000 + ((code_point - 0xd800) << 10) +
             (low - 0xdc00);
@@ -88,17 +95,24 @@ std::optional<std::string> wide_to_utf8(std::span<const SQLWCHAR> input) {
   return output;
 }
 
+} // namespace
+
+std::optional<std::string> wide_to_utf8(std::span<const SQLWCHAR> input) {
+  return decode_wide_bytes(input.data(), input.size());
+}
+
 std::optional<std::string> sqlwchar_to_utf8(
-    const SQLWCHAR* input, SQLINTEGER length) {
+    const void* input, SQLINTEGER length) {
   if (!input) return std::string{};
   std::size_t units = 0;
   if (length == SQL_NTS) {
-    while (input[units] != 0) ++units;
+    const auto* bytes = static_cast<const unsigned char*>(input);
+    while (read_wide_unit(bytes, units) != 0) ++units;
   } else {
     if (length < 0) return std::nullopt;
     units = static_cast<std::size_t>(length);
   }
-  return wide_to_utf8(std::span<const SQLWCHAR>(input, units));
+  return decode_wide_bytes(input, units);
 }
 
 std::optional<std::vector<SQLWCHAR>> utf8_to_wide(

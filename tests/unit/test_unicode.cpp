@@ -5,6 +5,8 @@
 #include "tests/test_handle_helpers.h"
 
 #include <array>
+#include <cstddef>
+#include <cstring>
 #include <string>
 
 using rs::odbc::sqlwchar_to_utf8;
@@ -68,6 +70,24 @@ TEST(UnicodeConversionTest, SupportsNullTerminatedAndExplicitLengths) {
   ASSERT_TRUE(sqlwchar_to_utf8(input.data(), 2).has_value());
   EXPECT_EQ("OD", *sqlwchar_to_utf8(input.data(), 2));
   EXPECT_FALSE(sqlwchar_to_utf8(input.data(), -2).has_value());
+}
+
+TEST(UnicodeConversionTest, ReadsUnalignedWideInput) {
+  const std::string expected = "A\xf0\x9f\x99\x82";
+  const auto wide = utf8_to_wide(expected);
+  ASSERT_TRUE(wide.has_value());
+  alignas(SQLWCHAR) std::array<std::byte, 1 + 4 * sizeof(SQLWCHAR)> storage{};
+  std::memcpy(storage.data() + 1, wide->data(),
+              wide->size() * sizeof(SQLWCHAR));
+  const auto* input = reinterpret_cast<const SQLWCHAR*>(storage.data() + 1);
+
+  EXPECT_EQ(expected, sqlwchar_to_utf8(
+      input, static_cast<SQLINTEGER>(wide->size())));
+  EXPECT_EQ(expected, sqlwchar_to_utf8(input, SQL_NTS));
+
+  const SQLWCHAR invalid = static_cast<SQLWCHAR>(0xd800);
+  std::memcpy(storage.data() + 1, &invalid, sizeof(invalid));
+  EXPECT_FALSE(sqlwchar_to_utf8(input, 1).has_value());
 }
 
 TEST(UnicodeConversionTest, RejectsMalformedUnicodeAndUtf8) {

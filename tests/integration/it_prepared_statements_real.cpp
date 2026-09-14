@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_types.h"
+#include "odbc/unicode.h"
 #include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <thread>
 
 class PreparedStatementIntegrationTest : public ::testing::Test {
@@ -107,6 +109,37 @@ TEST_F(PreparedStatementIntegrationTest,
     EXPECT_EQ(integer, returned_integer);
     EXPECT_FLOAT_EQ(real, returned_real);
     EXPECT_DOUBLE_EQ(floating, returned_double);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       WideParameterMayUseUnalignedBuffer) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT ?::text", SQL_NTS));
+    const std::string expected = "\xf0\x9f\x9a\x80 prepared";
+    auto wide = rs::odbc::utf8_to_wide(expected);
+    ASSERT_TRUE(wide.has_value());
+    wide->push_back(0);
+    alignas(SQLWCHAR)
+        std::array<std::byte, 1 + 16 * sizeof(SQLWCHAR)> storage{};
+    ASSERT_LE(wide->size() * sizeof(SQLWCHAR), storage.size() - 1);
+    std::memcpy(storage.data() + 1, wide->data(),
+                wide->size() * sizeof(SQLWCHAR));
+
+    SQLLEN input_length = SQL_NTS;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 1, SQL_PARAM_INPUT, SQL_C_WCHAR, SQL_WVARCHAR,
+        wide->size() - 1, 0, storage.data() + 1,
+        static_cast<SQLLEN>(wide->size() * sizeof(SQLWCHAR)),
+        &input_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    char output[64]{};
+    SQLLEN output_length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, output, sizeof(output), &output_length));
+    EXPECT_EQ(static_cast<SQLLEN>(expected.size()), output_length);
+    EXPECT_EQ(expected, output);
 }
 
 TEST_F(PreparedStatementIntegrationTest,

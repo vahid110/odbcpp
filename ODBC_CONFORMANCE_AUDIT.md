@@ -1053,6 +1053,11 @@ substitute for ODBC diagnostics.
   misaligned `SQL_C_SLONG` load, then passed with unaligned integer, float, and
   double input buffers; existing parameter tests cover null, type, and state
   failures separately.
+- Audit batch 153 makes the shared SQLWCHAR-to-UTF-8 decoder read code units
+  through byte-wise copies. A unit test first reproduced a strict UBSan
+  misaligned span access, then covered explicit lengths, `SQL_NTS`,
+  supplementary characters, and malformed surrogate input. A PostgreSQL-backed
+  prepared-parameter test verifies an unaligned wide input round-trip.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
