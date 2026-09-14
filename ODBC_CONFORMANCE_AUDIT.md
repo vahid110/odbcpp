@@ -1021,6 +1021,10 @@ substitute for ODBC diagnostics.
   operation once with a queue-full network error while `is_cancelled()` stays
   false; the depth-one overflow test first reproduced the old cancellation
   status and generic message before the change.
+- Audit batch 147 extends that saturated-queue regression to connect and
+  receive as well as send. Each rejected operation completes without a false
+  cancellation flag, and the rejected receive leaves the caller buffer intact.
+  The deterministic test passed five repeated local runs.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

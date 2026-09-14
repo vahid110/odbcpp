@@ -540,6 +540,30 @@ TEST(ThreadPoolTransportDeadlineTest, CancelledQueuedTaskReleasesQueueCapacity) 
   EXPECT_EQ(rejection_error, rs::util::make_error_code(
       rs::util::DbErrorCode::NetworkError));
   EXPECT_NE(rejection_message.find("queue is full"), std::string::npos);
+
+  std::error_code connect_error;
+  auto rejected_connect = transport.connect_async(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s),
+      [&](auto result) {
+        if (result.has_error()) connect_error = result.error();
+      });
+  EXPECT_TRUE(rejected_connect->is_complete());
+  EXPECT_FALSE(rejected_connect->is_cancelled());
+  EXPECT_EQ(connect_error, rs::util::make_error_code(
+      rs::util::DbErrorCode::NetworkError));
+
+  std::array<std::byte, 1> rejected_buffer{std::byte{0x2a}};
+  std::error_code receive_error;
+  auto rejected_receive = transport.recv_async(
+      rejected_buffer, rs::util::make_deadline(1s),
+      [&](auto result) {
+        if (result.has_error()) receive_error = result.error();
+      });
+  EXPECT_TRUE(rejected_receive->is_complete());
+  EXPECT_FALSE(rejected_receive->is_cancelled());
+  EXPECT_EQ(receive_error, rs::util::make_error_code(
+      rs::util::DbErrorCode::NetworkError));
+  EXPECT_EQ(rejected_buffer[0], std::byte{0x2a});
   release_callback.set_value();
 
   ASSERT_EQ(std::future_status::ready, replacement.wait_for(2s));
