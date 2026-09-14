@@ -311,6 +311,15 @@ TEST(AsyncTlsTransportTest, SupportsDirectTlsRoundTrip) {
   ASSERT_TRUE(empty_receive.has_value()) << empty_receive.error_message();
   EXPECT_EQ(empty_receive->n, 0u);
   EXPECT_FALSE(empty_receive->eof);
+  auto expired_receive = transport.recv(empty, rs::util::Clock::now());
+  auto expired_send = transport.send(
+      std::span<const std::byte>{}, rs::util::Clock::now());
+  ASSERT_TRUE(expired_receive.has_error());
+  ASSERT_TRUE(expired_send.has_error());
+  EXPECT_EQ(expired_receive.error(), rs::util::make_error_code(
+      rs::util::DbErrorCode::Timeout));
+  EXPECT_EQ(expired_send.error(), rs::util::make_error_code(
+      rs::util::DbErrorCode::Timeout));
 
   constexpr std::string_view request = "ping";
   auto sent = transport.send(
@@ -325,6 +334,23 @@ TEST(AsyncTlsTransportTest, SupportsDirectTlsRoundTrip) {
   EXPECT_EQ(received->n, response.size());
   EXPECT_EQ(std::memcmp(response.data(), "pong", response.size()), 0);
   EXPECT_TRUE(server.observed_sni().empty());
+}
+
+TEST(AsyncTlsTransportTest, EmptyIoWithoutConnectionFails) {
+  AsyncTlsTransport transport(make_native_transport());
+  auto sent = transport.send(
+      std::span<const std::byte>{}, rs::util::make_deadline(1s));
+  auto received = transport.recv(
+      std::span<std::byte>{}, rs::util::make_deadline(1s));
+  ASSERT_TRUE(sent.has_error());
+  ASSERT_TRUE(received.has_error());
+#ifdef __APPLE__
+  constexpr auto expected = rs::util::DbErrorCode::NetworkError;
+#else
+  constexpr auto expected = rs::util::DbErrorCode::NotConnected;
+#endif
+  EXPECT_EQ(sent.error(), rs::util::make_error_code(expected));
+  EXPECT_EQ(received.error(), rs::util::make_error_code(expected));
 }
 
 TEST(AsyncTlsTransportTest, SendsDnsNameInSni) {

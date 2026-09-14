@@ -227,8 +227,8 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
 
 rs::util::Result<IOResult> SocketTransport::send(std::span<const std::byte> buf, Deadline deadline) {
   return rs::util::try_catch([&]() {
-    if (buf.empty()) return IOResult{0, false};
     prepare_for_io(deadline);
+    if (buf.empty()) return IOResult{0, false};
     for (;;) {
       if (deadline_model_ == DeadlineModel::Strict) {
         const auto wait = wait_for_socket(sock_, false, true, deadline);
@@ -265,8 +265,8 @@ rs::util::Result<IOResult> SocketTransport::send(std::span<const std::byte> buf,
 
 rs::util::Result<IOResult> SocketTransport::recv(std::span<std::byte> buf, Deadline deadline) {
   return rs::util::try_catch([&]() {
-    if (buf.empty()) return IOResult{0, false};
     prepare_for_io(deadline);
+    if (buf.empty()) return IOResult{0, false};
     for (;;) {
       if (deadline_model_ == DeadlineModel::Strict) {
         const auto wait = wait_for_socket(sock_, true, false, deadline);

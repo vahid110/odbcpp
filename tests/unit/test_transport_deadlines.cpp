@@ -452,6 +452,48 @@ TEST(SocketTransportDeadlineTest, ExpiredDeadlineFailsWithoutBlocking) {
   EXPECT_EQ(result.error(), rs::util::make_error_code(rs::util::DbErrorCode::Timeout));
 }
 
+TEST(SocketTransportDeadlineTest, EmptyIoStillRequiresConnectionAndDeadline) {
+  for (auto model : {DeadlineModel::Strict, DeadlineModel::SocketTimeout}) {
+    SocketTransport transport(model);
+    std::span<const std::byte> empty_send;
+    std::span<std::byte> empty_recv;
+    const auto deadline = rs::util::make_deadline(1s);
+    auto disconnected_send = transport.send(empty_send, deadline);
+    auto disconnected_recv = transport.recv(empty_recv, deadline);
+    ASSERT_TRUE(disconnected_send.has_error());
+    ASSERT_TRUE(disconnected_recv.has_error());
+    EXPECT_EQ(disconnected_send.error(), rs::util::make_error_code(
+        rs::util::DbErrorCode::NetworkError));
+    EXPECT_EQ(disconnected_recv.error(), rs::util::make_error_code(
+        rs::util::DbErrorCode::NetworkError));
+
+    SleepingServer server(200ms);
+    auto connected = transport.connect(
+        "127.0.0.1", server.port(), rs::util::make_deadline(1s));
+    ASSERT_TRUE(connected.has_value()) << connected.error_message();
+    auto expired_send = transport.send(empty_send, rs::util::Clock::now());
+    auto expired_recv = transport.recv(empty_recv, rs::util::Clock::now());
+    ASSERT_TRUE(expired_send.has_error());
+    ASSERT_TRUE(expired_recv.has_error());
+    EXPECT_EQ(expired_send.error(), rs::util::make_error_code(
+        rs::util::DbErrorCode::Timeout));
+    EXPECT_EQ(expired_recv.error(), rs::util::make_error_code(
+        rs::util::DbErrorCode::Timeout));
+
+    auto sent = transport.send(empty_send, rs::util::make_deadline(1s));
+    auto received = transport.recv(empty_recv, rs::util::make_deadline(1s));
+    ASSERT_TRUE(sent.has_value()) << sent.error_message();
+    ASSERT_TRUE(received.has_value()) << received.error_message();
+    EXPECT_EQ(sent->n, 0u);
+    EXPECT_EQ(received->n, 0u);
+    EXPECT_FALSE(received->eof);
+
+    transport.close();
+    EXPECT_TRUE(transport.send(empty_send, deadline).has_error());
+    EXPECT_TRUE(transport.recv(empty_recv, deadline).has_error());
+  }
+}
+
 TEST(OdbcLoginDeadlineTest, ReportsLoginTimeoutInsteadOfConnectionTimeout) {
   SleepingServer server(1250ms);
   rs::odbc::ODBCConnection connection(nullptr);
@@ -665,25 +707,47 @@ TEST(TLSTransportDeadlineTest, StrictReceiveTimesOutAfterHandshake) {
   EXPECT_EQ(result.error(), rs::util::make_error_code(rs::util::DbErrorCode::Timeout));
 }
 
-TEST(TLSTransportDeadlineTest, EmptyTlsIoDoesNotWaitForSocket) {
-  TLSSleepingServer server(100ms);
+TEST(TLSTransportDeadlineTest, EmptyTlsIoChecksConnectionAndDeadline) {
   TLSTransport transport(DeadlineModel::Strict);
+  auto disconnected_send = transport.send(
+      std::span<const std::byte>{}, rs::util::make_deadline(1s));
+  auto disconnected_recv = transport.recv(
+      std::span<std::byte>{}, rs::util::make_deadline(1s));
+  ASSERT_TRUE(disconnected_send.has_error());
+  ASSERT_TRUE(disconnected_recv.has_error());
+  EXPECT_EQ(disconnected_send.error(), rs::util::make_error_code(
+      rs::util::DbErrorCode::NetworkError));
+  EXPECT_EQ(disconnected_recv.error(), rs::util::make_error_code(
+      rs::util::DbErrorCode::NetworkError));
+
+  TLSSleepingServer server(100ms);
   transport.set_verify(false);
   auto connected = transport.connect(
       "127.0.0.1", server.port(), rs::util::make_deadline(1s));
   ASSERT_TRUE(connected.has_value()) << connected.error_message();
   ASSERT_TRUE(server.wait_for_handshake());
 
-  const auto expired = rs::util::Clock::now();
-  auto sent = transport.send(std::span<const std::byte>{}, expired);
+  auto sent = transport.send(
+      std::span<const std::byte>{}, rs::util::make_deadline(1s));
   ASSERT_TRUE(sent.has_value()) << sent.error_message();
   EXPECT_EQ(sent->n, 0u);
   EXPECT_FALSE(sent->eof);
 
-  auto received = transport.recv(std::span<std::byte>{}, expired);
+  auto received = transport.recv(
+      std::span<std::byte>{}, rs::util::make_deadline(1s));
   ASSERT_TRUE(received.has_value()) << received.error_message();
   EXPECT_EQ(received->n, 0u);
   EXPECT_FALSE(received->eof);
+
+  const auto expired = rs::util::Clock::now();
+  auto expired_send = transport.send(std::span<const std::byte>{}, expired);
+  auto expired_recv = transport.recv(std::span<std::byte>{}, expired);
+  ASSERT_TRUE(expired_send.has_error());
+  ASSERT_TRUE(expired_recv.has_error());
+  EXPECT_EQ(expired_send.error(), rs::util::make_error_code(
+      rs::util::DbErrorCode::Timeout));
+  EXPECT_EQ(expired_recv.error(), rs::util::make_error_code(
+      rs::util::DbErrorCode::Timeout));
 }
 
 TEST(TLSTransportDeadlineTest, OpenSslIoLengthsStayWithinSignedInt) {

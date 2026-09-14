@@ -963,6 +963,12 @@ substitute for ODBC diagnostics.
   and the round-trip checks a zero-length receive before ordinary I/O.
   The TLS loopback suite also runs on macOS with the thread-pool transport,
   instead of compiling to an empty test binary there.
+- Audit batch 136 makes zero-length socket and TLS I/O validate connection
+  state and the deadline before reporting a successful no-op, matching the
+  native async engines. Tests cover disconnected, expired, and connected
+  no-op calls in Strict and SocketTimeout modes, plus synchronous and async
+  TLS paths. The earlier expired-deadline TLS no-op test was updated to assert
+  the strict deadline contract while retaining the connected no-op check.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

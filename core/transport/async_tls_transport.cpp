@@ -369,7 +369,9 @@ private:
       return cancelled_result<IOResult>();
     }
     if (!ssl_) return transport_->send(task.send_buffer, task.deadline);
-    if (task.send_buffer.empty()) return IOResult{0, false};
+    if (task.send_buffer.empty()) {
+      return transport_->send(task.send_buffer, task.deadline);
+    }
 
     std::size_t written_total = 0;
     while (written_total < task.send_buffer.size()) {
@@ -415,7 +417,9 @@ private:
       return cancelled_result<IOResult>();
     }
     if (!ssl_) return transport_->recv(task.recv_storage, task.deadline);
-    if (task.recv_storage.empty()) return IOResult{0, false};
+    if (task.recv_storage.empty()) {
+      return transport_->recv(task.recv_storage, task.deadline);
+    }
 
     for (;;) {
       if (rs::util::remaining(task.deadline) <=

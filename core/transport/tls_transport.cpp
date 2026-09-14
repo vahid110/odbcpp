@@ -208,10 +208,10 @@ void TLSTransport::close() noexcept {
 }
 
 rs::util::Result<IOResult> TLSTransport::send(std::span<const std::byte> buf, Deadline dl) {
-  if (buf.empty()) return IOResult{0, false};
   if (!ssl_) return tcp_.send(buf, dl);
   return rs::util::try_catch([&]() {
   tcp_.prepare_for_io(dl);
+  if (buf.empty()) return IOResult{0, false};
 
   size_t n = 0;
   auto e = tls_write_all(
@@ -231,10 +231,10 @@ rs::util::Result<IOResult> TLSTransport::send(std::span<const std::byte> buf, De
 }
 
 rs::util::Result<IOResult> TLSTransport::recv(std::span<std::byte> buf, Deadline dl) {
-  if (buf.empty()) return IOResult{0, false};
   if (!ssl_) return tcp_.recv(buf, dl);
   return rs::util::try_catch([&]() {
   tcp_.prepare_for_io(dl);
+  if (buf.empty()) return IOResult{0, false};
 
   size_t got = 0;
   bool eof = false;
