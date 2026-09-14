@@ -1048,6 +1048,11 @@ substitute for ODBC diagnostics.
   locally assembled structs are now copied as bytes to application buffers.
   Unit tests cover all three types plus an invalid-date no-write case, and a
   PostgreSQL-backed `SQLBindCol` test exercises all three on unaligned output.
+- Audit batch 152 applies byte-wise reads to numeric bound parameters during
+  prepared execution. A PostgreSQL-backed test first reproduced a strict UBSan
+  misaligned `SQL_C_SLONG` load, then passed with unaligned integer, float, and
+  double input buffers; existing parameter tests cover null, type, and state
+  failures separately.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

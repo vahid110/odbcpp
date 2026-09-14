@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_types.h"
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <thread>
@@ -60,6 +62,51 @@ TEST_F(PreparedStatementIntegrationTest, BinaryParameterRoundTripsAsBytea) {
         hstmt, 1, SQL_C_BINARY, output, sizeof(output), &output_length));
     EXPECT_EQ(sizeof(input), static_cast<std::size_t>(output_length));
     EXPECT_EQ(0, std::memcmp(input, output, sizeof(input)));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       NumericParametersMayUseUnalignedBuffers) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::integer, ?::real, ?::double precision",
+        SQL_NTS));
+
+    alignas(SQLDOUBLE)
+        std::array<std::byte, 1 + sizeof(SQLDOUBLE)> integer_bytes{};
+    alignas(SQLDOUBLE)
+        std::array<std::byte, 1 + sizeof(SQLDOUBLE)> real_bytes{};
+    alignas(SQLDOUBLE)
+        std::array<std::byte, 1 + sizeof(SQLDOUBLE)> double_bytes{};
+    const SQLINTEGER integer = 42;
+    const SQLREAL real = 1.5f;
+    const SQLDOUBLE floating = 2.25;
+    std::memcpy(integer_bytes.data() + 1, &integer, sizeof(integer));
+    std::memcpy(real_bytes.data() + 1, &real, sizeof(real));
+    std::memcpy(double_bytes.data() + 1, &floating, sizeof(floating));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_SLONG, SQL_INTEGER, 0, 0, integer_bytes.data() + 1,
+        sizeof(integer), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 2, SQL_PARAM_INPUT,
+        SQL_C_FLOAT, SQL_REAL, 0, 0, real_bytes.data() + 1,
+        sizeof(real), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 3, SQL_PARAM_INPUT,
+        SQL_C_DOUBLE, SQL_DOUBLE, 0, 0, double_bytes.data() + 1,
+        sizeof(floating), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLINTEGER returned_integer = 0;
+    SQLREAL returned_real = 0;
+    SQLDOUBLE returned_double = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG,
+        &returned_integer, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 2, SQL_C_FLOAT,
+        &returned_real, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 3, SQL_C_DOUBLE,
+        &returned_double, 0, nullptr));
+    EXPECT_EQ(integer, returned_integer);
+    EXPECT_FLOAT_EQ(real, returned_real);
+    EXPECT_DOUBLE_EQ(floating, returned_double);
 }
 
 TEST_F(PreparedStatementIntegrationTest,

@@ -26,6 +26,13 @@ namespace {
 
 std::atomic<std::uint64_t> next_connection_id{1};
 
+template <typename T>
+T load_application_value(const void* source) {
+  T value{};
+  std::memcpy(&value, source, sizeof(value));
+  return value;
+}
+
 std::string elapsed_milliseconds(std::chrono::steady_clock::time_point start) {
   return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - start).count());
@@ -2977,15 +2984,20 @@ SQLRETURN ODBCStatement::execute() {
         }
         value = *converted;
       } else if (value_type == SQL_C_SSHORT) {
-        value = std::to_string(*static_cast<SQLSMALLINT*>(application.data_ptr));
+        value = std::to_string(
+            load_application_value<SQLSMALLINT>(application.data_ptr));
       } else if (value_type == SQL_C_SLONG) {
-        value = std::to_string(*static_cast<SQLINTEGER*>(application.data_ptr));
+        value = std::to_string(
+            load_application_value<SQLINTEGER>(application.data_ptr));
       } else if (value_type == SQL_C_SBIGINT) {
-        value = std::to_string(*static_cast<SQLBIGINT*>(application.data_ptr));
+        value = std::to_string(
+            load_application_value<SQLBIGINT>(application.data_ptr));
       } else if (value_type == SQL_C_FLOAT) {
-        value = std::to_string(*static_cast<SQLREAL*>(application.data_ptr));
+        value = std::to_string(
+            load_application_value<SQLREAL>(application.data_ptr));
       } else if (value_type == SQL_C_DOUBLE) {
-        value = std::to_string(*static_cast<SQLDOUBLE*>(application.data_ptr));
+        value = std::to_string(
+            load_application_value<SQLDOUBLE>(application.data_ptr));
       } else if (value_type == SQL_C_BIT) {
         value = *static_cast<unsigned char*>(application.data_ptr) ? "1" : "0";
       } else if (value_type == SQL_C_BINARY) {
