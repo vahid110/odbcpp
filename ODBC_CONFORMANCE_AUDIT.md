@@ -1030,6 +1030,11 @@ substitute for ODBC diagnostics.
   byte off `SQLWCHAR` alignment; UBSan first reported misaligned copy and
   terminator stores, then passed with strict fail-on-error after byte-wise
   copies. The test runs in both two- and four-byte driver builds.
+- Audit batch 149 applies the same alignment rule to bound-column wide output
+  in `TextDataConverter`. A unit test first reproduced a misaligned store under
+  strict UBSan; byte-wise copies now handle both complete and truncated output.
+  A PostgreSQL-backed `SQLBindCol` test verifies the real fetch path with an
+  unaligned application buffer in both two- and four-byte builds.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

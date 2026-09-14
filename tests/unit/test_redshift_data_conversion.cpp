@@ -3,6 +3,10 @@
 #include "odbc/text_data_converter.h"
 #include "odbc/unicode.h"
 
+#include <array>
+#include <cstddef>
+#include <cstring>
+
 using RedshiftDataConverter = rs::odbc::TextDataConverter;
 
 class RedshiftDataConverterTest : public ::testing::Test {
@@ -189,6 +193,29 @@ TEST_F(RedshiftDataConverterTest, ConvertDataWideString) {
     EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
         "\xc0\x80", SQL_C_WCHAR, wide_buffer, sizeof(wide_buffer),
         &indicator));
+}
+
+TEST_F(RedshiftDataConverterTest, WideOutputNeedNotBeAligned) {
+    alignas(SQLWCHAR) std::array<std::byte, 1 + 3 * sizeof(SQLWCHAR)> storage{};
+    void* output = storage.data() + 1;
+    SQLLEN length = -1;
+
+    EXPECT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "AB", SQL_C_WCHAR, output, 3 * sizeof(SQLWCHAR), &length));
+    EXPECT_EQ(2 * static_cast<SQLLEN>(sizeof(SQLWCHAR)), length);
+
+    SQLWCHAR units[3]{};
+    std::memcpy(units, output, sizeof(units));
+    EXPECT_EQ(static_cast<SQLWCHAR>('A'), units[0]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('B'), units[1]);
+    EXPECT_EQ(static_cast<SQLWCHAR>(0), units[2]);
+
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "AB", SQL_C_WCHAR, output, 2 * sizeof(SQLWCHAR), &length));
+    EXPECT_EQ(2 * static_cast<SQLLEN>(sizeof(SQLWCHAR)), length);
+    std::memcpy(units, output, 2 * sizeof(SQLWCHAR));
+    EXPECT_EQ(static_cast<SQLWCHAR>('A'), units[0]);
+    EXPECT_EQ(static_cast<SQLWCHAR>(0), units[1]);
 }
 
 TEST_F(RedshiftDataConverterTest, ConvertDataBoolean) {

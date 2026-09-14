@@ -2,8 +2,11 @@
 #include "odbc/odbc_types.h"
 #include "odbc/unicode.h"
 
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
 
 class BindColIntegrationTest : public ::testing::Test {
@@ -74,6 +77,25 @@ TEST_F(BindColIntegrationTest, BasicColumnBinding) {
     EXPECT_STREQ("Hello", str_val);
     EXPECT_EQ(123, int_val);
     EXPECT_DOUBLE_EQ(45.67, double_val);
+}
+
+TEST_F(BindColIntegrationTest, WideBoundColumnHandlesUnalignedBuffer) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 'AB'::text", SQL_NTS));
+
+    alignas(SQLWCHAR) std::array<std::byte, 1 + 3 * sizeof(SQLWCHAR)> storage{};
+    void* output = storage.data() + 1;
+    SQLLEN length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(
+        hstmt, 1, SQL_C_WCHAR, output, 3 * sizeof(SQLWCHAR), &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(2 * static_cast<SQLLEN>(sizeof(SQLWCHAR)), length);
+
+    SQLWCHAR units[3]{};
+    std::memcpy(units, output, sizeof(units));
+    EXPECT_EQ(static_cast<SQLWCHAR>('A'), units[0]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('B'), units[1]);
+    EXPECT_EQ(static_cast<SQLWCHAR>(0), units[2]);
 }
 
 TEST_F(BindColIntegrationTest, ApplicationDescriptorDrivesFetchBinding) {
