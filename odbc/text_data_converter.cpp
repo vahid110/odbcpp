@@ -252,10 +252,10 @@ SQLRETURN convert_date(const std::string& value, void* buffer,
     if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
     return SQL_ERROR;
   }
-  auto* date = static_cast<SQL_DATE_STRUCT*>(buffer);
-  date->year = static_cast<SQLSMALLINT>(year);
-  date->month = static_cast<SQLUSMALLINT>(month);
-  date->day = static_cast<SQLUSMALLINT>(day);
+  const SQL_DATE_STRUCT date{
+      static_cast<SQLSMALLINT>(year), static_cast<SQLUSMALLINT>(month),
+      static_cast<SQLUSMALLINT>(day)};
+  std::memcpy(buffer, &date, sizeof(date));
   if (indicator) *indicator = sizeof(SQL_DATE_STRUCT);
   return SQL_SUCCESS;
 }
@@ -270,10 +270,10 @@ SQLRETURN convert_time(const std::string& value, void* buffer,
     if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
     return SQL_ERROR;
   }
-  auto* time = static_cast<SQL_TIME_STRUCT*>(buffer);
-  time->hour = static_cast<SQLUSMALLINT>(hour);
-  time->minute = static_cast<SQLUSMALLINT>(minute);
-  time->second = static_cast<SQLUSMALLINT>(second);
+  const SQL_TIME_STRUCT time{
+      static_cast<SQLUSMALLINT>(hour), static_cast<SQLUSMALLINT>(minute),
+      static_cast<SQLUSMALLINT>(second)};
+  std::memcpy(buffer, &time, sizeof(time));
   if (indicator) *indicator = sizeof(SQL_TIME_STRUCT);
   return SQL_SUCCESS;
 }
@@ -297,14 +297,12 @@ SQLRETURN convert_timestamp(const std::string& value, void* buffer,
     if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
     return SQL_ERROR;
   }
-  auto* timestamp = static_cast<SQL_TIMESTAMP_STRUCT*>(buffer);
-  timestamp->year = static_cast<SQLSMALLINT>(year);
-  timestamp->month = static_cast<SQLUSMALLINT>(month);
-  timestamp->day = static_cast<SQLUSMALLINT>(day);
-  timestamp->hour = static_cast<SQLUSMALLINT>(hour);
-  timestamp->minute = static_cast<SQLUSMALLINT>(minute);
-  timestamp->second = static_cast<SQLUSMALLINT>(second);
-  timestamp->fraction = fraction;
+  const SQL_TIMESTAMP_STRUCT timestamp{
+      static_cast<SQLSMALLINT>(year), static_cast<SQLUSMALLINT>(month),
+      static_cast<SQLUSMALLINT>(day), static_cast<SQLUSMALLINT>(hour),
+      static_cast<SQLUSMALLINT>(minute), static_cast<SQLUSMALLINT>(second),
+      fraction};
+  std::memcpy(buffer, &timestamp, sizeof(timestamp));
   if (indicator) *indicator = sizeof(SQL_TIMESTAMP_STRUCT);
   return SQL_SUCCESS;
 }

@@ -124,6 +124,49 @@ TEST_F(BindColIntegrationTest, NumericBoundColumnsHandleUnalignedBuffers) {
     EXPECT_DOUBLE_EQ(1.5, floating);
 }
 
+TEST_F(BindColIntegrationTest, DateTimeBoundColumnsHandleUnalignedBuffers) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT DATE '2024-02-29', TIME '12:34:56', "
+                  "TIMESTAMP '2024-02-29 12:34:56'", SQL_NTS));
+
+    alignas(SQL_DATE_STRUCT)
+        std::array<std::byte, 1 + sizeof(SQL_DATE_STRUCT)> date_bytes{};
+    alignas(SQL_TIME_STRUCT)
+        std::array<std::byte, 1 + sizeof(SQL_TIME_STRUCT)> time_bytes{};
+    alignas(SQL_TIMESTAMP_STRUCT)
+        std::array<std::byte, 1 + sizeof(SQL_TIMESTAMP_STRUCT)> timestamp_bytes{};
+    SQLLEN lengths[3]{-1, -1, -1};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_DATE,
+        date_bytes.data() + 1, sizeof(SQL_DATE_STRUCT), &lengths[0]));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 2, SQL_C_TIME,
+        time_bytes.data() + 1, sizeof(SQL_TIME_STRUCT), &lengths[1]));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 3, SQL_C_TIMESTAMP,
+        timestamp_bytes.data() + 1, sizeof(SQL_TIMESTAMP_STRUCT), &lengths[2]));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQL_DATE_STRUCT)), lengths[0]);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQL_TIME_STRUCT)), lengths[1]);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQL_TIMESTAMP_STRUCT)), lengths[2]);
+    SQL_DATE_STRUCT date{};
+    SQL_TIME_STRUCT time{};
+    SQL_TIMESTAMP_STRUCT timestamp{};
+    std::memcpy(&date, date_bytes.data() + 1, sizeof(date));
+    std::memcpy(&time, time_bytes.data() + 1, sizeof(time));
+    std::memcpy(&timestamp, timestamp_bytes.data() + 1, sizeof(timestamp));
+    EXPECT_EQ(2024, date.year);
+    EXPECT_EQ(2, date.month);
+    EXPECT_EQ(29, date.day);
+    EXPECT_EQ(12, time.hour);
+    EXPECT_EQ(34, time.minute);
+    EXPECT_EQ(56, time.second);
+    EXPECT_EQ(2024, timestamp.year);
+    EXPECT_EQ(2, timestamp.month);
+    EXPECT_EQ(29, timestamp.day);
+    EXPECT_EQ(12, timestamp.hour);
+    EXPECT_EQ(34, timestamp.minute);
+    EXPECT_EQ(56, timestamp.second);
+}
+
 TEST_F(BindColIntegrationTest, ApplicationDescriptorDrivesFetchBinding) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 'descriptor'::text", SQL_NTS));

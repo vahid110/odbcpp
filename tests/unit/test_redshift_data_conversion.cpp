@@ -250,6 +250,50 @@ TEST_F(RedshiftDataConverterTest, NumericOutputNeedNotBeAligned) {
     EXPECT_EQ(2, integer);
 }
 
+TEST_F(RedshiftDataConverterTest, DateTimeOutputNeedNotBeAligned) {
+    alignas(SQL_TIMESTAMP_STRUCT)
+        std::array<std::byte, 1 + sizeof(SQL_TIMESTAMP_STRUCT)> storage{};
+    void* output = storage.data() + 1;
+    SQLLEN length = -1;
+
+    EXPECT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "2024-02-29", SQL_C_DATE, output, 0, &length));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQL_DATE_STRUCT)), length);
+    SQL_DATE_STRUCT date{};
+    std::memcpy(&date, output, sizeof(date));
+    EXPECT_EQ(2024, date.year);
+    EXPECT_EQ(2, date.month);
+    EXPECT_EQ(29, date.day);
+
+    EXPECT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "12:34:56", SQL_C_TIME, output, 0, &length));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQL_TIME_STRUCT)), length);
+    SQL_TIME_STRUCT time{};
+    std::memcpy(&time, output, sizeof(time));
+    EXPECT_EQ(12, time.hour);
+    EXPECT_EQ(34, time.minute);
+    EXPECT_EQ(56, time.second);
+
+    EXPECT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "2024-02-29 12:34:56.123456", SQL_C_TIMESTAMP,
+        output, 0, &length));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQL_TIMESTAMP_STRUCT)), length);
+    SQL_TIMESTAMP_STRUCT timestamp{};
+    std::memcpy(&timestamp, output, sizeof(timestamp));
+    EXPECT_EQ(2024, timestamp.year);
+    EXPECT_EQ(2, timestamp.month);
+    EXPECT_EQ(29, timestamp.day);
+    EXPECT_EQ(12, timestamp.hour);
+    EXPECT_EQ(34, timestamp.minute);
+    EXPECT_EQ(56, timestamp.second);
+    EXPECT_EQ(123456000u, timestamp.fraction);
+
+    const auto previous_output = storage;
+    EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+        "2024-02-30 12:34:56", SQL_C_TIMESTAMP, output, 0, &length));
+    EXPECT_EQ(previous_output, storage);
+}
+
 TEST_F(RedshiftDataConverterTest, ConvertDataBoolean) {
     SQLCHAR result;
     

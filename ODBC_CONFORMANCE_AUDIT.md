@@ -1043,6 +1043,11 @@ substitute for ODBC diagnostics.
   conversions. Unit tests exercise complete, fractional-truncation, and
   invalid-input behavior with unaligned buffers; a PostgreSQL-backed
   `SQLBindCol` test covers integer and double fetches on that path.
+- Audit batch 151 handles date, time, and timestamp structs the same way.
+  Strict UBSan first reported misaligned `SQL_DATE_STRUCT` member access;
+  locally assembled structs are now copied as bytes to application buffers.
+  Unit tests cover all three types plus an invalid-date no-write case, and a
+  PostgreSQL-backed `SQLBindCol` test exercises all three on unaligned output.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
