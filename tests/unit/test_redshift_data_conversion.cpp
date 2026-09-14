@@ -218,6 +218,38 @@ TEST_F(RedshiftDataConverterTest, WideOutputNeedNotBeAligned) {
     EXPECT_EQ(static_cast<SQLWCHAR>(0), units[1]);
 }
 
+TEST_F(RedshiftDataConverterTest, NumericOutputNeedNotBeAligned) {
+    alignas(SQLDOUBLE) std::array<std::byte, 1 + sizeof(SQLDOUBLE)> storage{};
+    void* output = storage.data() + 1;
+    SQLLEN length = -1;
+
+    EXPECT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "42", SQL_C_SLONG, output, 0, &length));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)), length);
+    SQLINTEGER integer = 0;
+    std::memcpy(&integer, output, sizeof(integer));
+    EXPECT_EQ(42, integer);
+
+    EXPECT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "1.5", SQL_C_DOUBLE, output, 0, &length));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLDOUBLE)), length);
+    SQLDOUBLE floating = 0;
+    std::memcpy(&floating, output, sizeof(floating));
+    EXPECT_DOUBLE_EQ(1.5, floating);
+
+    rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "2.5", SQL_C_SLONG, output, 0, &length, &issue));
+    EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
+    std::memcpy(&integer, output, sizeof(integer));
+    EXPECT_EQ(2, integer);
+
+    EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+        "invalid", SQL_C_SLONG, output, 0, &length));
+    std::memcpy(&integer, output, sizeof(integer));
+    EXPECT_EQ(2, integer);
+}
+
 TEST_F(RedshiftDataConverterTest, ConvertDataBoolean) {
     SQLCHAR result;
     

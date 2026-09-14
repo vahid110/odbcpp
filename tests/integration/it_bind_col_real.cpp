@@ -98,6 +98,32 @@ TEST_F(BindColIntegrationTest, WideBoundColumnHandlesUnalignedBuffer) {
     EXPECT_EQ(static_cast<SQLWCHAR>(0), units[2]);
 }
 
+TEST_F(BindColIntegrationTest, NumericBoundColumnsHandleUnalignedBuffers) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT 42::integer, 1.5::double precision", SQL_NTS));
+
+    alignas(SQLINTEGER)
+        std::array<std::byte, 1 + sizeof(SQLINTEGER)> integer_bytes{};
+    alignas(SQLDOUBLE)
+        std::array<std::byte, 1 + sizeof(SQLDOUBLE)> double_bytes{};
+    SQLLEN integer_length = -1;
+    SQLLEN double_length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_SLONG,
+        integer_bytes.data() + 1, sizeof(SQLINTEGER), &integer_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 2, SQL_C_DOUBLE,
+        double_bytes.data() + 1, sizeof(SQLDOUBLE), &double_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)), integer_length);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLDOUBLE)), double_length);
+
+    SQLINTEGER integer = 0;
+    SQLDOUBLE floating = 0;
+    std::memcpy(&integer, integer_bytes.data() + 1, sizeof(integer));
+    std::memcpy(&floating, double_bytes.data() + 1, sizeof(floating));
+    EXPECT_EQ(42, integer);
+    EXPECT_DOUBLE_EQ(1.5, floating);
+}
+
 TEST_F(BindColIntegrationTest, ApplicationDescriptorDrivesFetchBinding) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 'descriptor'::text", SQL_NTS));

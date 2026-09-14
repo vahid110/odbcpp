@@ -1037,6 +1037,12 @@ substitute for ODBC diagnostics.
   unaligned application buffer in both two- and four-byte builds. Linux CI
   additionally caught a null source pointer on zero-byte copies for empty
   strings; those copies are skipped.
+- Audit batch 150 removes typed stores to application-owned integral and
+  floating-point result buffers. Strict UBSan first reported a misaligned
+  `SQL_C_SLONG` store; byte-wise copies now cover integer and floating result
+  conversions. Unit tests exercise complete, fractional-truncation, and
+  invalid-input behavior with unaligned buffers; a PostgreSQL-backed
+  `SQLBindCol` test covers integer and double fetches on that path.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

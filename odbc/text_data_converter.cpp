@@ -46,7 +46,8 @@ SQLRETURN convert_integral(const std::string& value, void* buffer,
     if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
     return SQL_ERROR;
   }
-  *static_cast<T*>(buffer) = static_cast<T>(truncated);
+  const T converted = static_cast<T>(truncated);
+  std::memcpy(buffer, &converted, sizeof(converted));
   if (indicator) *indicator = sizeof(T);
   if (truncated != *parsed) {
     if (issue) *issue = ConversionIssue::FractionalTruncation;
@@ -212,7 +213,8 @@ SQLRETURN convert_floating(const std::string& value, SQLSMALLINT target_type,
       if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
       return SQL_ERROR;
     }
-    *static_cast<SQLREAL*>(buffer) = static_cast<SQLREAL>(*parsed);
+    const SQLREAL converted = static_cast<SQLREAL>(*parsed);
+    std::memcpy(buffer, &converted, sizeof(converted));
     if (indicator) *indicator = sizeof(SQLREAL);
   } else {
     if (*parsed < -std::numeric_limits<SQLDOUBLE>::max() ||
@@ -220,7 +222,8 @@ SQLRETURN convert_floating(const std::string& value, SQLSMALLINT target_type,
       if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
       return SQL_ERROR;
     }
-    *static_cast<SQLDOUBLE*>(buffer) = static_cast<SQLDOUBLE>(*parsed);
+    const SQLDOUBLE converted = static_cast<SQLDOUBLE>(*parsed);
+    std::memcpy(buffer, &converted, sizeof(converted));
     if (indicator) *indicator = sizeof(SQLDOUBLE);
   }
   return SQL_SUCCESS;
