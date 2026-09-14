@@ -159,7 +159,8 @@ std::unique_ptr<AsyncOperation> ThreadPoolTransport::connect_async(
             : connect(host, port, deadline);
         if (state->finish()) callback(std::move(result));
       },
-      [state] { state->cancel(); }};
+      [state] { state->cancel(); },
+      [state] { return state->is_complete(); }};
 
   if (!submit_task(std::move(task))) state->cancel();
   return operation;
@@ -183,7 +184,8 @@ std::unique_ptr<AsyncOperation> ThreadPoolTransport::send_async(
             : send(buffer, deadline);
         if (state->finish()) callback(std::move(result));
       },
-      [state] { state->cancel(); }};
+      [state] { state->cancel(); },
+      [state] { return state->is_complete(); }};
 
   if (!submit_task(std::move(task))) state->cancel();
   return operation;
@@ -213,7 +215,8 @@ std::unique_ptr<AsyncOperation> ThreadPoolTransport::recv_async(
           callback(std::move(result));
         }
       },
-      [state] { state->cancel(); }};
+      [state] { state->cancel(); },
+      [state] { return state->is_complete(); }};
 
   if (!submit_task(std::move(task))) state->cancel();
   return operation;
@@ -274,7 +277,17 @@ void ThreadPoolTransport::worker_thread() {
 bool ThreadPoolTransport::submit_task(Task task) {
   {
     std::lock_guard lock(queue_mutex_);
-    if (shutdown_.load() || tasks_.size() >= queue_depth_) return false;
+    if (shutdown_.load()) return false;
+    if (tasks_.size() >= queue_depth_) {
+      std::queue<Task> pending;
+      while (!tasks_.empty()) {
+        Task queued = std::move(tasks_.front());
+        tasks_.pop();
+        if (!queued.is_complete()) pending.push(std::move(queued));
+      }
+      tasks_.swap(pending);
+      if (tasks_.size() >= queue_depth_) return false;
+    }
     tasks_.push(std::move(task));
   }
   cv_.notify_one();

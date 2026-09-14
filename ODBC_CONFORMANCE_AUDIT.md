@@ -1006,6 +1006,11 @@ substitute for ODBC diagnostics.
   representable deadline. It exercises both connection setup and the
   connected no-op receive, which applies the platform socket timeout, without
   waiting for that long deadline to elapse.
+- Audit batch 144 reclaims canceled thread-pool requests when a full queue
+  admits new work. The one-worker, depth-one test first reproduced a rejected
+  replacement while the worker was held in a callback, then confirms the
+  canceled request releases capacity immediately and a genuinely full live
+  queue still rejects overflow. Only full-queue submissions scan pending work.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

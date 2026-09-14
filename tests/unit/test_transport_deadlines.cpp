@@ -491,6 +491,56 @@ TEST(ThreadPoolTransportDeadlineTest, CancelledQueuedSendDoesNotReachPeer) {
   EXPECT_EQ(1, cancelled_callbacks.load());
 }
 
+TEST(ThreadPoolTransportDeadlineTest, CancelledQueuedTaskReleasesQueueCapacity) {
+  SleepingServer server(500ms);
+  rs::core::transport::ThreadPoolTransport transport(1, 1);
+  ASSERT_TRUE(transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s)).has_value());
+
+  std::promise<void> callback_entered;
+  std::promise<void> release_callback;
+  auto release = release_callback.get_future().share();
+  auto active = transport.send_async(
+      std::span<const std::byte>{}, rs::util::make_deadline(1s),
+      [&](auto) {
+        callback_entered.set_value();
+        release.wait();
+      });
+  const auto entered = callback_entered.get_future().wait_for(1s);
+  if (entered != std::future_status::ready) {
+    release_callback.set_value();
+    FAIL() << "worker did not enter the blocking callback";
+  }
+
+  std::atomic<int> cancelled_callbacks{0};
+  auto cancelled = transport.send_async(
+      std::span<const std::byte>{}, rs::util::make_deadline(1s),
+      [&](auto result) {
+        EXPECT_TRUE(result.has_error());
+        cancelled_callbacks.fetch_add(1);
+      });
+  cancelled->cancel();
+  auto replacement = transport.send_future(
+      std::span<const std::byte>{}, rs::util::make_deadline(1s));
+  auto overflow = transport.send_future(
+      std::span<const std::byte>{}, rs::util::make_deadline(1s));
+  const auto overflow_status = overflow.wait_for(100ms);
+  EXPECT_EQ(overflow_status, std::future_status::ready);
+  if (overflow_status == std::future_status::ready) {
+    auto rejected = overflow.get();
+    EXPECT_TRUE(rejected.has_error());
+    if (rejected.has_error()) {
+      EXPECT_EQ(rejected.error(), rs::util::make_error_code(
+          rs::util::DbErrorCode::NetworkError));
+    }
+  }
+  release_callback.set_value();
+
+  ASSERT_EQ(std::future_status::ready, replacement.wait_for(2s));
+  EXPECT_TRUE(replacement.get().has_value());
+  EXPECT_EQ(cancelled_callbacks.load(), 1);
+}
+
 TEST(ThreadPoolTransportDeadlineTest, CancelledQueuedReceiveLeavesDataForNext) {
   SleepingServer server(120ms, true);
   rs::core::transport::ThreadPoolTransport transport(1);

@@ -53,6 +53,7 @@ private:
   struct Task {
     std::function<void()> work;
     std::function<void()> cancel;
+    std::function<bool()> is_complete;
   };
   
   SocketTransport socket_;
