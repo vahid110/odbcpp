@@ -62,8 +62,10 @@ void close_test_socket(test_socket_t socket) noexcept {
 class SleepingServer {
 public:
   explicit SleepingServer(std::chrono::milliseconds sleep_for,
-                          bool send_after_sleep = false)
-      : sleep_for_(sleep_for), send_after_sleep_(send_after_sleep) {
+                          bool send_after_sleep = false,
+                          bool read_after_sleep = false)
+      : sleep_for_(sleep_for), send_after_sleep_(send_after_sleep),
+        read_after_sleep_(read_after_sleep) {
     listener_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (listener_ == invalid_test_socket) {
       throw std::runtime_error("failed to create test listener");
@@ -102,6 +104,11 @@ public:
           const char reply = 'x';
           (void)::send(client, &reply, 1, 0);
         }
+        if (read_after_sleep_) {
+          char received = 0;
+          const int count = ::recv(client, &received, 1, 0);
+          received_byte_.set_value(count == 1 ? received : 0);
+        }
         close_test_socket(client);
       }
     });
@@ -113,6 +120,7 @@ public:
   }
 
   uint16_t port() const noexcept { return port_; }
+  std::future<char> received_byte() { return received_byte_.get_future(); }
 
 private:
   rs::platform::WSAInit wsa_{};
@@ -120,6 +128,8 @@ private:
   uint16_t port_{};
   std::chrono::milliseconds sleep_for_;
   bool send_after_sleep_;
+  bool read_after_sleep_;
+  std::promise<char> received_byte_;
   std::thread worker_;
 };
 
@@ -436,6 +446,91 @@ TEST(ThreadPoolTransportDeadlineTest, CancelledReceiveDoesNotWriteCallerBuffer) 
   ASSERT_EQ(std::future_status::ready, drained.wait_for(2s));
   EXPECT_EQ(1, callbacks.load());
   EXPECT_EQ(std::byte{0x2a}, buffer[0]);
+}
+
+TEST(ThreadPoolTransportDeadlineTest, CancelledQueuedSendDoesNotReachPeer) {
+  SleepingServer server(120ms, false, true);
+  auto received_byte = server.received_byte();
+  rs::core::transport::ThreadPoolTransport transport(1);
+  ASSERT_TRUE(transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s)).has_value());
+
+  std::array<std::byte, 1> blocked_buffer{};
+  auto blocked = transport.recv_async(
+      blocked_buffer, rs::util::make_deadline(40ms), [](auto) {});
+  const std::array<std::byte, 1> abandoned{std::byte{'a'}};
+  std::atomic<int> cancelled_callbacks{0};
+  auto cancelled = transport.send_async(
+      abandoned, rs::util::make_deadline(1s), [&](auto result) {
+        EXPECT_TRUE(result.has_error());
+        cancelled_callbacks.fetch_add(1);
+      });
+  cancelled->cancel();
+  const std::array<std::byte, 1> live{std::byte{'b'}};
+  auto sent = transport.send_future(live, rs::util::make_deadline(1s));
+
+  ASSERT_EQ(std::future_status::ready, sent.wait_for(2s));
+  ASSERT_TRUE(sent.get().has_value());
+  ASSERT_EQ(std::future_status::ready, received_byte.wait_for(2s));
+  EXPECT_EQ('b', received_byte.get());
+  EXPECT_EQ(1, cancelled_callbacks.load());
+}
+
+TEST(ThreadPoolTransportDeadlineTest, CancelledQueuedReceiveLeavesDataForNext) {
+  SleepingServer server(120ms, true);
+  rs::core::transport::ThreadPoolTransport transport(1);
+  ASSERT_TRUE(transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s)).has_value());
+
+  std::array<std::byte, 1> blocked_buffer{};
+  auto blocked = transport.recv_async(
+      blocked_buffer, rs::util::make_deadline(40ms), [](auto) {});
+  std::array<std::byte, 1> abandoned_buffer{std::byte{0x2a}};
+  std::atomic<int> cancelled_callbacks{0};
+  auto cancelled = transport.recv_async(
+      abandoned_buffer, rs::util::make_deadline(1s), [&](auto result) {
+        EXPECT_TRUE(result.has_error());
+        cancelled_callbacks.fetch_add(1);
+      });
+  cancelled->cancel();
+  std::array<std::byte, 1> live_buffer{};
+  auto received = transport.recv_future(
+      live_buffer, rs::util::make_deadline(1s));
+
+  ASSERT_EQ(std::future_status::ready, received.wait_for(2s));
+  auto result = received.get();
+  ASSERT_TRUE(result.has_value()) << result.error_message();
+  EXPECT_EQ(result->n, 1u);
+  EXPECT_EQ(live_buffer[0], std::byte{'x'});
+  EXPECT_EQ(abandoned_buffer[0], std::byte{0x2a});
+  EXPECT_EQ(1, cancelled_callbacks.load());
+}
+
+TEST(ThreadPoolTransportDeadlineTest, CancelledQueuedConnectKeepsCurrentSocket) {
+  SleepingServer server(120ms);
+  rs::core::transport::ThreadPoolTransport transport(1);
+  ASSERT_TRUE(transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s)).has_value());
+
+  std::array<std::byte, 1> blocked_buffer{};
+  auto blocked = transport.recv_async(
+      blocked_buffer, rs::util::make_deadline(40ms), [](auto) {});
+  constexpr char malformed[] = "localhost\0unexpected";
+  std::atomic<int> cancelled_callbacks{0};
+  auto cancelled = transport.connect_async(
+      std::string_view(malformed, sizeof(malformed) - 1), server.port(),
+      rs::util::make_deadline(1s), [&](auto result) {
+        EXPECT_TRUE(result.has_error());
+        cancelled_callbacks.fetch_add(1);
+      });
+  cancelled->cancel();
+  auto barrier = transport.send_future(
+      std::span<const std::byte>{}, rs::util::make_deadline(1s));
+
+  ASSERT_EQ(std::future_status::ready, barrier.wait_for(2s));
+  auto result = barrier.get();
+  EXPECT_TRUE(result.has_value()) << result.error_message();
+  EXPECT_EQ(1, cancelled_callbacks.load());
 }
 
 TEST(SocketTransportDeadlineTest, ExpiredDeadlineFailsWithoutBlocking) {

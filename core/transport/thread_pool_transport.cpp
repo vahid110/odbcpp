@@ -152,6 +152,7 @@ std::unique_ptr<AsyncOperation> ThreadPoolTransport::connect_async(
   Task task{
       [this, state, host = std::move(host_copy), port, deadline,
        callback = std::move(callback)]() mutable {
+        if (state->is_complete()) return;
         rs::util::Result<void> result = expired(deadline)
             ? rs::util::Result<void>{rs::util::DbErrorCode::Timeout,
                                      "async connect deadline expired in queue"}
@@ -175,6 +176,7 @@ std::unique_ptr<AsyncOperation> ThreadPoolTransport::send_async(
   Task task{
       [this, state, buffer = std::move(buffer_copy), deadline,
        callback = std::move(callback)]() mutable {
+        if (state->is_complete()) return;
         rs::util::Result<IOResult> result = expired(deadline)
             ? rs::util::Result<IOResult>{rs::util::DbErrorCode::Timeout,
                                          "async send deadline expired in queue"}
@@ -198,6 +200,7 @@ std::unique_ptr<AsyncOperation> ThreadPoolTransport::recv_async(
   Task task{
       [this, state, buf, buffer = std::move(buffer), deadline,
        callback = std::move(callback)]() mutable {
+        if (state->is_complete()) return;
         rs::util::Result<IOResult> result = expired(deadline)
             ? rs::util::Result<IOResult>{rs::util::DbErrorCode::Timeout,
                                          "async receive deadline expired in queue"}

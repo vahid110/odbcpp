@@ -969,6 +969,13 @@ substitute for ODBC diagnostics.
   no-op calls in Strict and SocketTimeout modes, plus synchronous and async
   TLS paths. The earlier expired-deadline TLS no-op test was updated to assert
   the strict deadline contract while retaining the connected no-op check.
+- Audit batch 137 skips thread-pool connect, send, and receive work when its
+  operation was cancelled while queued. Before the fix, deterministic
+  one-worker tests showed a cancelled send reaching the peer, a cancelled
+  receive consuming the next byte, and a cancelled connect closing the live
+  socket. The same tests now confirm those queued tasks execute no socket I/O.
+  Cancellation after a worker starts remains best-effort because the
+  synchronous socket call may already be in progress.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
