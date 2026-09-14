@@ -2700,12 +2700,14 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
         --copy_length;
       }
     }
-    if (copy_length > 0) {
-      std::copy_n(wide->begin() + static_cast<std::ptrdiff_t>(offset),
-                  copy_length, static_cast<SQLWCHAR*>(buffer));
+    const auto copied_bytes = copy_length * sizeof(SQLWCHAR);
+    if (copied_bytes > 0) {
+      std::memcpy(buffer, wide->data() + offset, copied_bytes);
     }
     if (buffer_units > 0) {
-      static_cast<SQLWCHAR*>(buffer)[copy_length] = 0;
+      const SQLWCHAR terminator = 0;
+      std::memcpy(static_cast<unsigned char*>(buffer) + copied_bytes,
+                  &terminator, sizeof(terminator));
     }
     offset += copy_length;
     if (offset < wide->size() || buffer_units == 0) {

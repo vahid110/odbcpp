@@ -1025,6 +1025,11 @@ substitute for ODBC diagnostics.
   receive as well as send. Each rejected operation completes without a false
   cancellation flag, and the rejected receive leaves the caller buffer intact.
   The deterministic test passed five repeated local runs.
+- Audit batch 148 removes typed stores to application-owned `SQL_C_WCHAR`
+  buffers in `SQLGetData`. A PostgreSQL-backed test positions the output one
+  byte off `SQLWCHAR` alignment; UBSan first reported misaligned copy and
+  terminator stores, then passed with strict fail-on-error after byte-wise
+  copies. The test runs in both two- and four-byte driver builds.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

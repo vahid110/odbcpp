@@ -364,6 +364,27 @@ TEST_F(MetadataIntegrationTest, ImplementationDescriptorCompletesFieldMatrix) {
     EXPECT_STREQ("01004", reinterpret_cast<char*>(state));
 }
 
+TEST_F(MetadataIntegrationTest, GetDataWideHandlesUnalignedBuffer) {
+    char query[] = "SELECT 'A'::text";
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, reinterpret_cast<SQLCHAR*>(query), SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    alignas(SQLWCHAR) std::array<std::byte, 1 + 2 * sizeof(SQLWCHAR)> storage{};
+    auto* output = storage.data() + 1;
+    SQLLEN length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_WCHAR, output, 2 * sizeof(SQLWCHAR), &length));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLWCHAR)), length);
+
+    SQLWCHAR value = 0;
+    SQLWCHAR terminator = 1;
+    std::memcpy(&value, output, sizeof(value));
+    std::memcpy(&terminator, output + sizeof(value), sizeof(terminator));
+    EXPECT_EQ(static_cast<SQLWCHAR>('A'), value);
+    EXPECT_EQ(static_cast<SQLWCHAR>(0), terminator);
+}
+
 TEST_F(MetadataIntegrationTest, ExecutesAndPreparesUnicodeSql) {
     const std::string expected =
         "Gr\xc3\xbc\xc3\x9f" "e \xe4\xb8\x96\xe7\x95\x8c "
