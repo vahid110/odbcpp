@@ -160,7 +160,8 @@ std::unique_ptr<AsyncOperation> ThreadPoolTransport::connect_async(
         if (state->finish()) callback(std::move(result));
       },
       [state] { state->cancel(); },
-      [state] { return state->is_complete(); }};
+      [state] { return state->is_complete(); },
+      deadline};
 
   if (!submit_task(std::move(task))) state->cancel();
   return operation;
@@ -185,7 +186,8 @@ std::unique_ptr<AsyncOperation> ThreadPoolTransport::send_async(
         if (state->finish()) callback(std::move(result));
       },
       [state] { state->cancel(); },
-      [state] { return state->is_complete(); }};
+      [state] { return state->is_complete(); },
+      deadline};
 
   if (!submit_task(std::move(task))) state->cancel();
   return operation;
@@ -216,7 +218,8 @@ std::unique_ptr<AsyncOperation> ThreadPoolTransport::recv_async(
         }
       },
       [state] { state->cancel(); },
-      [state] { return state->is_complete(); }};
+      [state] { return state->is_complete(); },
+      deadline};
 
   if (!submit_task(std::move(task))) state->cancel();
   return operation;
@@ -275,6 +278,8 @@ void ThreadPoolTransport::worker_thread() {
 }
 
 bool ThreadPoolTransport::submit_task(Task task) {
+  std::vector<Task> expired_tasks;
+  bool accepted = false;
   {
     std::lock_guard lock(queue_mutex_);
     if (shutdown_.load()) return false;
@@ -283,15 +288,29 @@ bool ThreadPoolTransport::submit_task(Task task) {
       while (!tasks_.empty()) {
         Task queued = std::move(tasks_.front());
         tasks_.pop();
-        if (!queued.is_complete()) pending.push(std::move(queued));
+        if (queued.is_complete()) continue;
+        if (expired(queued.deadline)) {
+          expired_tasks.push_back(std::move(queued));
+        } else {
+          pending.push(std::move(queued));
+        }
       }
       tasks_.swap(pending);
-      if (tasks_.size() >= queue_depth_) return false;
     }
-    tasks_.push(std::move(task));
+    if (tasks_.size() < queue_depth_) {
+      tasks_.push(std::move(task));
+      accepted = true;
+    }
   }
-  cv_.notify_one();
-  return true;
+  if (accepted) cv_.notify_one();
+  for (auto& queued : expired_tasks) {
+    try {
+      queued.work();
+    } catch (...) {
+      if (queued.cancel) queued.cancel();
+    }
+  }
+  return accepted;
 }
 
 } // namespace rs::core::transport

@@ -541,6 +541,45 @@ TEST(ThreadPoolTransportDeadlineTest, CancelledQueuedTaskReleasesQueueCapacity) 
   EXPECT_EQ(cancelled_callbacks.load(), 1);
 }
 
+TEST(ThreadPoolTransportDeadlineTest, ExpiredQueuedTaskReleasesQueueCapacity) {
+  SleepingServer server(500ms);
+  rs::core::transport::ThreadPoolTransport transport(1, 1);
+  ASSERT_TRUE(transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s)).has_value());
+
+  std::promise<void> callback_entered;
+  std::promise<void> release_callback;
+  auto release = release_callback.get_future().share();
+  auto active = transport.send_async(
+      std::span<const std::byte>{}, rs::util::make_deadline(1s),
+      [&](auto) {
+        callback_entered.set_value();
+        release.wait();
+      });
+  const auto entered = callback_entered.get_future().wait_for(1s);
+  if (entered != std::future_status::ready) {
+    release_callback.set_value();
+    FAIL() << "worker did not enter the blocking callback";
+  }
+
+  auto expired = transport.send_future(
+      std::span<const std::byte>{}, rs::util::make_deadline(20ms));
+  std::this_thread::sleep_for(50ms);
+  auto replacement = transport.send_future(
+      std::span<const std::byte>{}, rs::util::make_deadline(1s));
+  const auto expired_status = expired.wait_for(100ms);
+  EXPECT_EQ(expired_status, std::future_status::ready);
+  release_callback.set_value();
+
+  ASSERT_EQ(std::future_status::ready, expired.wait_for(2s));
+  auto timed_out = expired.get();
+  ASSERT_TRUE(timed_out.has_error());
+  EXPECT_EQ(timed_out.error(), rs::util::make_error_code(
+      rs::util::DbErrorCode::Timeout));
+  ASSERT_EQ(std::future_status::ready, replacement.wait_for(2s));
+  EXPECT_TRUE(replacement.get().has_value());
+}
+
 TEST(ThreadPoolTransportDeadlineTest, CancelledQueuedReceiveLeavesDataForNext) {
   SleepingServer server(120ms, true);
   rs::core::transport::ThreadPoolTransport transport(1);

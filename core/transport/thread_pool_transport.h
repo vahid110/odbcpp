@@ -54,6 +54,7 @@ private:
     std::function<void()> work;
     std::function<void()> cancel;
     std::function<bool()> is_complete;
+    rs::util::Deadline deadline{};
   };
   
   SocketTransport socket_;

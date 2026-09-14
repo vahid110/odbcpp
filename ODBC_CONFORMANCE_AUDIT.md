@@ -1011,6 +1011,11 @@ substitute for ODBC diagnostics.
   replacement while the worker was held in a callback, then confirms the
   canceled request releases capacity immediately and a genuinely full live
   queue still rejects overflow. Only full-queue submissions scan pending work.
+- Audit batch 145 also reclaims deadline-expired thread-pool requests at
+  admission. Expiration callbacks run outside the queue lock, so an expired
+  request reports a timeout and releases its slot even if the sole worker is
+  blocked in another callback. A deterministic depth-one test reproduced the
+  prior rejected replacement and delayed timeout callback before the fix.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
