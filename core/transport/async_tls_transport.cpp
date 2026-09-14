@@ -445,7 +445,10 @@ private:
         if (received.has_error()) {
           return {received.error(), received.error_message()};
         }
-        if (*received) return IOResult{0, true};
+        if (*received) {
+          return {rs::util::DbErrorCode::TLSError,
+                  "TLS peer closed without close_notify"};
+        }
       } else if (error != SSL_ERROR_WANT_WRITE) {
         return {rs::util::DbErrorCode::TLSError,
                 openssl_error_text("SSL_read_ex")};

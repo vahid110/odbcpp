@@ -70,7 +70,7 @@ std::unique_ptr<IAsyncTransport> make_native_transport(
 class TlsLoopbackServer {
 public:
   enum class Behavior { DirectEcho, StartTlsEcho, PostgresStartup,
-                        SilentBeforeTls, SilentAfterTls };
+                        SilentBeforeTls, SilentAfterTls, CleanCloseAfterTls };
 
   explicit TlsLoopbackServer(Behavior behavior) : behavior_(behavior) {
     if (behavior_ != Behavior::SilentBeforeTls) configure_tls();
@@ -227,7 +227,9 @@ private:
       observed_sni_ = name ? name : "";
     }
 
-    if (behavior_ == Behavior::SilentAfterTls) {
+    if (behavior_ == Behavior::CleanCloseAfterTls) {
+      (void)::SSL_shutdown(ssl);
+    } else if (behavior_ == Behavior::SilentAfterTls) {
       std::this_thread::sleep_for(300ms);
     } else if (behavior_ == Behavior::PostgresStartup) {
       std::array<unsigned char, 4> length_bytes{};
@@ -537,6 +539,36 @@ TEST(AsyncTlsTransportTest, CancellationCompletesReceiveExactlyOnce) {
   std::this_thread::sleep_for(50ms);
   EXPECT_EQ(callbacks.load(), 1);
   EXPECT_EQ(buffer[0], std::byte{0x2a});
+}
+
+TEST(AsyncTlsTransportTest, UnannouncedTcpCloseIsNotCleanTlsEof) {
+  TlsLoopbackServer server(TlsLoopbackServer::Behavior::SilentAfterTls);
+  AsyncTlsTransport transport(make_native_transport());
+  transport.set_verify(false);
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(2s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  std::array<std::byte, 1> buffer{};
+  auto result = transport.recv(buffer, rs::util::make_deadline(2s));
+  ASSERT_TRUE(result.has_error()) << "raw TCP EOF must not be TLS close_notify";
+  EXPECT_EQ(result.error(),
+            rs::util::make_error_code(rs::util::DbErrorCode::TLSError));
+}
+
+TEST(AsyncTlsTransportTest, CloseNotifyReportsCleanTlsEof) {
+  TlsLoopbackServer server(TlsLoopbackServer::Behavior::CleanCloseAfterTls);
+  AsyncTlsTransport transport(make_native_transport());
+  transport.set_verify(false);
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(2s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  std::array<std::byte, 1> buffer{};
+  auto result = transport.recv(buffer, rs::util::make_deadline(2s));
+  ASSERT_TRUE(result.has_value()) << result.error_message();
+  EXPECT_EQ(result->n, 0u);
+  EXPECT_TRUE(result->eof);
 }
 
 } // namespace

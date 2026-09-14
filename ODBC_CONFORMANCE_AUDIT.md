@@ -982,6 +982,11 @@ substitute for ODBC diagnostics.
   cancels a queued receive at depth one, and submits a replacement before
   releasing the reactor. IOCP cancellation remains completion-driven and is
   not covered by this immediate-release rule.
+- Audit batch 139 distinguishes an unannounced TCP close from authenticated
+  TLS shutdown in the async receive path. Raw EOF now returns a TLS error;
+  only OpenSSL's `SSL_ERROR_ZERO_RETURN` reports clean EOF after a
+  `close_notify`, as [OpenSSL documents](https://docs.openssl.org/3.4/man3/SSL_shutdown/).
+  Loopback tests cover both abrupt closure and a real `close_notify`.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
