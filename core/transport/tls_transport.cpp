@@ -223,6 +223,7 @@ rs::util::Result<IOResult> TLSTransport::send(std::span<const std::byte> buf, De
 
   if (e.code != Errc::Ok) {
     if (e.code == Errc::Timeout) throw TimeoutError("TLS send timeout");
+    if (e.code == Errc::TlsFailed) throw TLSError("TLS send failed");
     throw IOError("TLS send failed");
   }
 
@@ -248,6 +249,7 @@ rs::util::Result<IOResult> TLSTransport::recv(std::span<std::byte> buf, Deadline
 
   if (e.code != Errc::Ok) {
     if (e.code == Errc::Timeout) throw TimeoutError("TLS recv timeout");
+    if (e.code == Errc::TlsFailed) throw TLSError("TLS recv failed");
     throw IOError("TLS recv failed");
   }
 

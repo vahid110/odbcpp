@@ -30,6 +30,7 @@ enum class Errc {
   WantRetry,
   SyscallFailed,
   HandshakeFailed,
+  TlsFailed,
 };
 
 struct Error {
@@ -127,7 +128,8 @@ inline Error tls_write_all(SSL* ssl,
       return {Errc::Timeout, "send", "socket_timeout"};
     }
     long serr = ::ERR_get_error();
-    return {Errc::SyscallFailed, "send", "SSL_write", 0, serr};
+    return {e == SSL_ERROR_SSL ? Errc::TlsFailed : Errc::SyscallFailed,
+            "send", "SSL_write", 0, serr};
   }
   return {};
 }
@@ -162,7 +164,12 @@ inline Error tls_read_some(SSL* ssl,
       return {Errc::Timeout, "recv", "socket_timeout"};
     }
     long serr = ::ERR_get_error();
-    return {Errc::SyscallFailed, "recv", "SSL_read", 0, serr};
+    // OpenSSL 1.1 reports a bare TCP EOF as SSL_ERROR_SYSCALL with rc == 0;
+    // OpenSSL 3 reports it as SSL_ERROR_SSL. Neither is a clean TLS shutdown.
+    const bool tls_failure = e == SSL_ERROR_SSL ||
+        (e == SSL_ERROR_SYSCALL && rc == 0 && serr == 0);
+    return {tls_failure ? Errc::TlsFailed : Errc::SyscallFailed,
+            "recv", "SSL_read", 0, serr};
   }
 }
 

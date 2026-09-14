@@ -135,8 +135,10 @@ private:
 
 class TLSSleepingServer {
 public:
-  explicit TLSSleepingServer(std::chrono::milliseconds sleep_for)
-      : sleep_for_(sleep_for), context_(SSL_CTX_new(TLS_server_method())) {
+  explicit TLSSleepingServer(std::chrono::milliseconds sleep_for,
+                            bool send_close_notify = false)
+      : sleep_for_(sleep_for), send_close_notify_(send_close_notify),
+        context_(SSL_CTX_new(TLS_server_method())) {
     if (!context_) throw std::runtime_error("failed to create TLS test context");
     configure_certificate();
 
@@ -182,6 +184,7 @@ public:
           }
           handshake_ready_.notify_all();
           std::this_thread::sleep_for(sleep_for_);
+          if (send_close_notify_) SSL_shutdown(ssl);
         }
         SSL_free(ssl);
       }
@@ -247,6 +250,7 @@ private:
 
   rs::platform::WSAInit wsa_{};
   std::chrono::milliseconds sleep_for_;
+  bool send_close_notify_;
   SSL_CTX* context_{};
   test_socket_t listener_{invalid_test_socket};
   uint16_t port_{};
@@ -800,6 +804,39 @@ TEST(TLSTransportDeadlineTest, StrictReceiveTimesOutAfterHandshake) {
 
   ASSERT_TRUE(result.has_error());
   EXPECT_EQ(result.error(), rs::util::make_error_code(rs::util::DbErrorCode::Timeout));
+}
+
+TEST(TLSTransportDeadlineTest, RejectsPeerCloseWithoutCloseNotify) {
+  TLSSleepingServer server(25ms);
+  TLSTransport transport(DeadlineModel::Strict);
+  transport.set_verify(false);
+
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+  ASSERT_TRUE(server.wait_for_handshake());
+
+  std::array<std::byte, 1> buffer{};
+  auto result = transport.recv(buffer, rs::util::make_deadline(1s));
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(result.error(), rs::util::make_error_code(rs::util::DbErrorCode::TLSError));
+}
+
+TEST(TLSTransportDeadlineTest, AcceptsPeerCloseNotifyAsCleanEof) {
+  TLSSleepingServer server(25ms, true);
+  TLSTransport transport(DeadlineModel::Strict);
+  transport.set_verify(false);
+
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+  ASSERT_TRUE(server.wait_for_handshake());
+
+  std::array<std::byte, 1> buffer{};
+  auto result = transport.recv(buffer, rs::util::make_deadline(1s));
+  ASSERT_TRUE(result.has_value()) << result.error_message();
+  EXPECT_EQ(result->n, 0u);
+  EXPECT_TRUE(result->eof);
 }
 
 TEST(TLSTransportDeadlineTest, EmptyTlsIoChecksConnectionAndDeadline) {

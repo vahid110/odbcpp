@@ -987,6 +987,12 @@ substitute for ODBC diagnostics.
   only OpenSSL's `SSL_ERROR_ZERO_RETURN` reports clean EOF after a
   `close_notify`, as [OpenSSL documents](https://docs.openssl.org/3.4/man3/SSL_shutdown/).
   Loopback tests cover both abrupt closure and a real `close_notify`.
+- Audit batch 140 applies the same distinction to synchronous TLS receive.
+  [OpenSSL's version-specific unexpected-EOF reporting](https://docs.openssl.org/1.1.1/man3/SSL_get_error/)
+  is handled in both the 1.1 and 3.x forms. Protocol failures now carry the
+  TLS error category; underlying socket failures remain network errors and
+  deadline expiration remains a timeout. Loopback tests cover both closure
+  paths, including a real `close_notify`.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
