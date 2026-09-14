@@ -522,18 +522,24 @@ TEST(ThreadPoolTransportDeadlineTest, CancelledQueuedTaskReleasesQueueCapacity) 
   cancelled->cancel();
   auto replacement = transport.send_future(
       std::span<const std::byte>{}, rs::util::make_deadline(1s));
-  auto overflow = transport.send_future(
-      std::span<const std::byte>{}, rs::util::make_deadline(1s));
-  const auto overflow_status = overflow.wait_for(100ms);
-  EXPECT_EQ(overflow_status, std::future_status::ready);
-  if (overflow_status == std::future_status::ready) {
-    auto rejected = overflow.get();
-    EXPECT_TRUE(rejected.has_error());
-    if (rejected.has_error()) {
-      EXPECT_EQ(rejected.error(), rs::util::make_error_code(
-          rs::util::DbErrorCode::NetworkError));
-    }
-  }
+  std::atomic<int> rejected_callbacks{0};
+  std::error_code rejection_error;
+  std::string rejection_message;
+  auto overflow = transport.send_async(
+      std::span<const std::byte>{}, rs::util::make_deadline(1s),
+      [&](auto result) {
+        if (result.has_error()) {
+          rejection_error = result.error();
+          rejection_message = result.error_message();
+        }
+        rejected_callbacks.fetch_add(1);
+      });
+  EXPECT_TRUE(overflow->is_complete());
+  EXPECT_FALSE(overflow->is_cancelled());
+  EXPECT_EQ(rejected_callbacks.load(), 1);
+  EXPECT_EQ(rejection_error, rs::util::make_error_code(
+      rs::util::DbErrorCode::NetworkError));
+  EXPECT_NE(rejection_message.find("queue is full"), std::string::npos);
   release_callback.set_value();
 
   ASSERT_EQ(std::future_status::ready, replacement.wait_for(2s));

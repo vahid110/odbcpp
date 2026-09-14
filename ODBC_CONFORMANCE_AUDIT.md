@@ -1016,6 +1016,11 @@ substitute for ODBC diagnostics.
   request reports a timeout and releases its slot even if the sole worker is
   blocked in another callback. A deterministic depth-one test reproduced the
   prior rejected replacement and delayed timeout callback before the fix.
+- Audit batch 146 distinguishes thread-pool queue rejection from caller
+  cancellation, matching epoll and IOCP. A full queue now completes the
+  operation once with a queue-full network error while `is_cancelled()` stays
+  false; the depth-one overflow test first reproduced the old cancellation
+  status and generic message before the change.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

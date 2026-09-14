@@ -69,6 +69,18 @@ std::shared_ptr<OperationState> make_operation_state(Callback callback) {
   });
 }
 
+template<typename ResultType, typename Callback>
+void report_queue_full(const std::shared_ptr<OperationState>& state,
+                       Callback& callback) noexcept {
+  if (!state->finish()) return;
+  try {
+    callback(ResultType{rs::util::DbErrorCode::NetworkError,
+                        "thread-pool transport queue is full"});
+  } catch (...) {
+    // User callbacks must not unwind through transport submission.
+  }
+}
+
 bool expired(rs::util::Deadline deadline) {
   return rs::util::remaining(deadline) <= std::chrono::milliseconds::zero();
 }
@@ -163,7 +175,9 @@ std::unique_ptr<AsyncOperation> ThreadPoolTransport::connect_async(
       [state] { return state->is_complete(); },
       deadline};
 
-  if (!submit_task(std::move(task))) state->cancel();
+  if (!submit_task(std::move(task))) {
+    report_queue_full<rs::util::Result<void>>(state, callback_copy);
+  }
   return operation;
 }
 
@@ -189,7 +203,9 @@ std::unique_ptr<AsyncOperation> ThreadPoolTransport::send_async(
       [state] { return state->is_complete(); },
       deadline};
 
-  if (!submit_task(std::move(task))) state->cancel();
+  if (!submit_task(std::move(task))) {
+    report_queue_full<rs::util::Result<IOResult>>(state, callback_copy);
+  }
   return operation;
 }
 
@@ -221,7 +237,9 @@ std::unique_ptr<AsyncOperation> ThreadPoolTransport::recv_async(
       [state] { return state->is_complete(); },
       deadline};
 
-  if (!submit_task(std::move(task))) state->cancel();
+  if (!submit_task(std::move(task))) {
+    report_queue_full<rs::util::Result<IOResult>>(state, callback_copy);
+  }
   return operation;
 }
 
