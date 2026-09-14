@@ -998,6 +998,10 @@ substitute for ODBC diagnostics.
   diagnostic, and the error queue is drained before subsequent TLS operations.
   The invalid trust-store test asserts the diagnostic retains OpenSSL detail
   on repeated connection attempts.
+- Audit batch 142 makes the synchronous TLS receive error classifier directly
+  testable. Unit cases cover both pre-3.0 and 3.x unexpected-EOF forms, while
+  preserving network classification for syscall failures and nonempty error
+  queues; the loopback tests continue to cover real TLS shutdown behavior.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

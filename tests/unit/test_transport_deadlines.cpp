@@ -841,6 +841,16 @@ TEST(TLSTransportDeadlineTest, AcceptsPeerCloseNotifyAsCleanEof) {
   EXPECT_TRUE(result->eof);
 }
 
+TEST(TLSTransportDeadlineTest, DistinguishesLegacyTlsEofFromSocketFailure) {
+  using rs::core::transport::classify_tls_read_failure;
+  using rs::core::transport::Errc;
+
+  EXPECT_EQ(classify_tls_read_failure(SSL_ERROR_SSL, -1, 1), Errc::TlsFailed);
+  EXPECT_EQ(classify_tls_read_failure(SSL_ERROR_SYSCALL, 0, 0), Errc::TlsFailed);
+  EXPECT_EQ(classify_tls_read_failure(SSL_ERROR_SYSCALL, -1, 0), Errc::SyscallFailed);
+  EXPECT_EQ(classify_tls_read_failure(SSL_ERROR_SYSCALL, 0, 1), Errc::SyscallFailed);
+}
+
 TEST(TLSTransportDeadlineTest, EmptyTlsIoChecksConnectionAndDeadline) {
   TLSTransport transport(DeadlineModel::Strict);
   auto disconnected_send = transport.send(

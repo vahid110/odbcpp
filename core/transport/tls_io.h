@@ -134,6 +134,17 @@ inline Error tls_write_all(SSL* ssl,
   return {};
 }
 
+inline Errc classify_tls_read_failure(
+    int ssl_error, int ssl_result, long openssl_error) noexcept {
+  // OpenSSL 1.1 reports unexpected EOF as SYSCALL/0 with an empty error
+  // queue; OpenSSL 3 reports it as SSL_ERROR_SSL. Neither is close_notify.
+  if (ssl_error == SSL_ERROR_SSL ||
+      (ssl_error == SSL_ERROR_SYSCALL && ssl_result == 0 && openssl_error == 0)) {
+    return Errc::TlsFailed;
+  }
+  return Errc::SyscallFailed;
+}
+
 inline Error tls_read_some(SSL* ssl,
 #if defined(_WIN32)
   SOCKET fd,
@@ -164,11 +175,7 @@ inline Error tls_read_some(SSL* ssl,
       return {Errc::Timeout, "recv", "socket_timeout"};
     }
     long serr = ::ERR_get_error();
-    // OpenSSL 1.1 reports a bare TCP EOF as SSL_ERROR_SYSCALL with rc == 0;
-    // OpenSSL 3 reports it as SSL_ERROR_SSL. Neither is a clean TLS shutdown.
-    const bool tls_failure = e == SSL_ERROR_SSL ||
-        (e == SSL_ERROR_SYSCALL && rc == 0 && serr == 0);
-    return {tls_failure ? Errc::TlsFailed : Errc::SyscallFailed,
+    return {classify_tls_read_failure(e, rc, serr),
             "recv", "SSL_read", 0, serr};
   }
 }
