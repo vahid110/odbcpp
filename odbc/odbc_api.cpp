@@ -1466,7 +1466,7 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
                       "Information output pointer is null");
       return SQL_ERROR;
     }
-    *static_cast<SQLUSMALLINT*>(info_value) = value;
+    std::memcpy(info_value, &value, sizeof(value));
     if (string_length) {
       *string_length = static_cast<SQLSMALLINT>(sizeof(value));
     }
@@ -1478,7 +1478,7 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
                       "Information output pointer is null");
       return SQL_ERROR;
     }
-    *static_cast<SQLUINTEGER*>(info_value) = value;
+    std::memcpy(info_value, &value, sizeof(value));
     if (string_length) {
       *string_length = static_cast<SQLSMALLINT>(sizeof(value));
     }

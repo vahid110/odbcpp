@@ -1058,6 +1058,10 @@ substitute for ODBC diagnostics.
   misaligned span access, then covered explicit lengths, `SQL_NTS`,
   supplementary characters, and malformed surrogate input. A PostgreSQL-backed
   prepared-parameter test verifies an unaligned wide input round-trip.
+- Audit batch 154 removes typed stores to `SQLGetInfo` numeric output buffers.
+  A PostgreSQL-backed test first reproduced a strict UBSan misaligned
+  `SQLUSMALLINT` store, then verified two- and four-byte numeric values through
+  the A/W entry points and output preservation on an unknown information type.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

@@ -5,6 +5,7 @@
 #include "tests/test_driver_exports.h"
 
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -339,6 +340,36 @@ TEST_F(GetInfoIntegrationTest, ReportsNumericCapabilities) {
     EXPECT_EQ(0u, value) << type;
   }
 #endif
+}
+
+TEST_F(GetInfoIntegrationTest, NumericOutputNeedNotBeAligned) {
+  alignas(SQLUINTEGER)
+      std::array<std::byte, 1 + sizeof(SQLUINTEGER)> storage{};
+  void* output = storage.data() + 1;
+  SQLSMALLINT length = -1;
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(
+      connection_, SQL_TXN_CAPABLE, output, sizeof(SQLUSMALLINT), &length));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(sizeof(SQLUSMALLINT)), length);
+  SQLUSMALLINT small = 0;
+  std::memcpy(&small, output, sizeof(small));
+  EXPECT_EQ(SQL_TC_ALL, small);
+
+  length = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfoW(
+      connection_, SQL_DEFAULT_TXN_ISOLATION, output,
+      sizeof(SQLUINTEGER), &length));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(sizeof(SQLUINTEGER)), length);
+  SQLUINTEGER integer = 0;
+  std::memcpy(&integer, output, sizeof(integer));
+  EXPECT_EQ(SQL_TXN_READ_COMMITTED, integer);
+
+  const auto previous_output = storage;
+  length = 17;
+  EXPECT_EQ(SQL_ERROR, SQLGetInfo(
+      connection_, 0xffff, output, sizeof(SQLUINTEGER), &length));
+  EXPECT_EQ(previous_output, storage);
+  EXPECT_EQ(17, length);
 }
 
 TEST_F(GetInfoIntegrationTest, ReportsErrorsAndTruncationPrecisely) {
