@@ -288,6 +288,17 @@ TEST(SocketTransportDeadlineTest, SocketTimeoutIsRefreshedForReceive) {
   expect_receive_timeout(DeadlineModel::SocketTimeout);
 }
 
+TEST(SocketTransportDeadlineTest, SocketTimeoutAcceptsMaximumDeadline) {
+  SleepingServer server(100ms);
+  SocketTransport transport(DeadlineModel::SocketTimeout);
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::Deadline::max());
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  auto received = transport.recv(std::span<std::byte>{}, rs::util::Deadline::max());
+  ASSERT_TRUE(received.has_value()) << received.error_message();
+}
+
 TEST(SocketTransportDeadlineTest, RejectsEmbeddedNulHostAndClosesOldSocket) {
   SleepingServer server(250ms);
   SocketTransport transport(DeadlineModel::Strict);
