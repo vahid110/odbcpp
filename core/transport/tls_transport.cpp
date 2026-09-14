@@ -4,6 +4,7 @@
 #include "core/util/exception_adapter.h"
 
 #include <stdexcept>
+#include <array>
 #include <memory>
 #include <vector>
 #include <cassert>
@@ -16,6 +17,20 @@ using rs::util::TLSError;
 using rs::util::TimeoutError;
 
 namespace rs::core::transport {
+
+namespace {
+
+std::string tls_setup_error(std::string message) {
+  const unsigned long error = ERR_get_error();
+  if (error == 0) return message;
+
+  std::array<char, 256> detail{};
+  ERR_error_string_n(error, detail.data(), detail.size());
+  while (ERR_get_error() != 0) {} // Do not leave stale errors for SSL_get_error.
+  return message + ": " + detail.data();
+}
+
+} // namespace
 
 TLSTransport::TLSTransport(DeadlineModel deadline_model) : tcp_(deadline_model) {
   // Lazy SSL_CTX creation in ensure_ctx()
@@ -41,18 +56,17 @@ void TLSTransport::ensure_ctx() {
   std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> context(
       SSL_CTX_new(method), SSL_CTX_free);
   if (!context) {
-    ERR_print_errors_fp(stderr);
-    throw TLSError("SSL_CTX_new failed");
+    throw TLSError(tls_setup_error("SSL_CTX_new failed"));
   }
 
   // Protocol bounds
   if (SSL_CTX_set_min_proto_version(
           context.get(), static_cast<int>(min_version_)) != 1) {
-    throw TLSError("Failed to set minimum TLS version");
+    throw TLSError(tls_setup_error("Failed to set minimum TLS version"));
   }
 #ifdef TLS1_3_VERSION
   if (SSL_CTX_set_max_proto_version(context.get(), TLS1_3_VERSION) != 1) {
-    throw TLSError("Failed to set maximum TLS version");
+    throw TLSError(tls_setup_error("Failed to set maximum TLS version"));
   }
 #endif
 
@@ -67,19 +81,16 @@ void TLSTransport::ensure_ctx() {
     if (!ca_file_.empty()) {
       if (SSL_CTX_load_verify_locations(
               context.get(), ca_file_.c_str(), nullptr) != 1) {
-        ERR_print_errors_fp(stderr);
-        throw TLSError("Failed to load CA file: " + ca_file_);
+        throw TLSError(tls_setup_error("Failed to load CA file: " + ca_file_));
       }
     } else if (!ca_dir_.empty()) {
       if (SSL_CTX_load_verify_locations(
               context.get(), nullptr, ca_dir_.c_str()) != 1) {
-        ERR_print_errors_fp(stderr);
-        throw TLSError("Failed to load CA directory: " + ca_dir_);
+        throw TLSError(tls_setup_error("Failed to load CA directory: " + ca_dir_));
       }
     } else {
       if (SSL_CTX_set_default_verify_paths(context.get()) != 1) {
-        ERR_print_errors_fp(stderr);
-        throw TLSError("Failed to load default CA paths");
+        throw TLSError(tls_setup_error("Failed to load default CA paths"));
       }
     }
   }
@@ -137,8 +148,7 @@ void TLSTransport::upgrade_impl(std::string_view host, Deadline deadline) {
 
   ssl_ = SSL_new(ctx_);
   if (!ssl_) {
-    ERR_print_errors_fp(stderr);
-    throw TLSError("SSL_new failed");
+    throw TLSError(tls_setup_error("SSL_new failed"));
   }
 
 #ifdef _WIN32
@@ -147,16 +157,16 @@ void TLSTransport::upgrade_impl(std::string_view host, Deadline deadline) {
   if (SSL_set_fd(ssl_, tcp_.native()) != 1)
 #endif
   {
-    ERR_print_errors_fp(stderr);
+    const auto message = tls_setup_error("SSL_set_fd failed");
     SSL_free(ssl_); ssl_ = nullptr;
-    throw TLSError("SSL_set_fd failed");
+    throw TLSError(message);
   }
 
   if (tls_host_uses_sni(sni_host_)) {
     if (SSL_set_tlsext_host_name(ssl_, sni_host_.c_str()) != 1) {
-      ERR_print_errors_fp(stderr);
+      const auto message = tls_setup_error("Failed to set SNI");
       SSL_free(ssl_); ssl_ = nullptr;
-      throw TLSError("Failed to set SNI");
+      throw TLSError(message);
     }
   }
 

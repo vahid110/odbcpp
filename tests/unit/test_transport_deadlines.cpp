@@ -703,6 +703,8 @@ TEST(TLSTransportDeadlineTest, RetriesFailedTrustStoreLoadOnReconnect) {
     ASSERT_TRUE(result.has_error());
     EXPECT_NE(result.error_message().find("Failed to load CA file"),
               std::string::npos);
+    EXPECT_NE(result.error_message().find("error:"), std::string::npos)
+        << "the OpenSSL failure must reach the caller's diagnostic";
   }
 }
 

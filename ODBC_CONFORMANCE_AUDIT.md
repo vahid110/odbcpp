@@ -993,6 +993,11 @@ substitute for ODBC diagnostics.
   TLS error category; underlying socket failures remain network errors and
   deadline expiration remains a timeout. Loopback tests cover both closure
   paths, including a real `close_notify`.
+- Audit batch 141 removes direct stderr writes from synchronous TLS setup
+  failures. The first OpenSSL error now reaches the caller through the TLS
+  diagnostic, and the error queue is drained before subsequent TLS operations.
+  The invalid trust-store test asserts the diagnostic retains OpenSSL detail
+  on repeated connection attempts.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
