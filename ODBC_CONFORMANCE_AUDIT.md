@@ -1115,6 +1115,10 @@ substitute for ODBC diagnostics.
   descriptor-derived numeric results byte-wise. A PostgreSQL-backed strict
   UBSan test first reproduced a misaligned string-length store, then checks
   each output category and no-write behavior for an invalid field identifier.
+- Audit batch 167 copies the `SQLNumParams` result byte-wise. A PostgreSQL-
+  backed strict UBSan test first reproduced a misaligned parameter-count
+  store, then checks the copied count and preserves the output for an
+  unprepared statement.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

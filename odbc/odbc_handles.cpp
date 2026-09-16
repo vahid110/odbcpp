@@ -2827,7 +2827,9 @@ SQLRETURN ODBCStatement::num_params(SQLSMALLINT* parameter_count) {
     const auto metadata_result = describe_prepared_metadata();
     if (metadata_result != SQL_SUCCESS) return metadata_result;
   }
-  *parameter_count = prepared_ ? parameter_count_ : 0;
+  store_application_value(
+      parameter_count,
+      static_cast<SQLSMALLINT>(prepared_ ? parameter_count_ : 0));
   return SQL_SUCCESS;
 }
 

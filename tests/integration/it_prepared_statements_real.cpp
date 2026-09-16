@@ -229,6 +229,22 @@ TEST_F(PreparedStatementIntegrationTest, ReportsPreparedParameterCount) {
     SQLSMALLINT parameter_count = 0;
     ASSERT_EQ(SQL_SUCCESS, SQLNumParams(hstmt, &parameter_count));
     EXPECT_EQ(3, parameter_count);
+
+    alignas(SQLSMALLINT) std::array<std::byte, 1 + sizeof(SQLSMALLINT)> storage{};
+    auto* unaligned_count = reinterpret_cast<SQLSMALLINT*>(
+        storage.data() + 1);
+    ASSERT_EQ(SQL_SUCCESS, SQLNumParams(hstmt, unaligned_count));
+    SQLSMALLINT copied_count = 0;
+    std::memcpy(&copied_count, storage.data() + 1, sizeof(copied_count));
+    EXPECT_EQ(parameter_count, copied_count);
+
+    SQLHSTMT unprepared = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(
+        SQL_HANDLE_STMT, hdbc, &unprepared));
+    const auto previous_output = storage;
+    EXPECT_EQ(SQL_ERROR, SQLNumParams(unprepared, unaligned_count));
+    EXPECT_EQ(previous_output, storage);
+    EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, unprepared));
 }
 
 TEST_F(PreparedStatementIntegrationTest,
