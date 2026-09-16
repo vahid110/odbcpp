@@ -1144,6 +1144,10 @@ substitute for ODBC diagnostics.
   and `SQLNativeSql` A/W length paths byte-wise. Strict UBSan tests first
   reproduced misaligned wide-descriptor and narrow native-SQL stores, then
   checked success, zero-length truncation, and error-path preservation.
+- Audit batch 174 copies `SQLAllocHandle` output handles byte-wise, both when
+  clearing the result and after registration. A strict UBSan unit test first
+  reproduced a misaligned handle store, then checked successful allocation
+  and the cleared result after an invalid handle type.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

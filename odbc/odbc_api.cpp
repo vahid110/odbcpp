@@ -532,7 +532,8 @@ static SQLRETURN SQLAllocHandle_impl(SQLSMALLINT handle_type, SQLHANDLE input_ha
     }
     return SQL_ERROR;
   }
-  *output_handle = SQL_NULL_HANDLE;
+  const SQLHANDLE null_handle = SQL_NULL_HANDLE;
+  store_output_value(output_handle, null_handle);
 
   // Environment handles are roots. Accepting a parent here creates a registry
   // subtree that no ODBC handle model can represent or release correctly.
@@ -607,7 +608,7 @@ static SQLRETURN SQLAllocHandle_impl(SQLSMALLINT handle_type, SQLHANDLE input_ha
     SQLHANDLE handle = reinterpret_cast<SQLHANDLE>(new_handle.get());
     HandleRegistry::instance().register_handle(
         handle, std::move(new_handle), input_handle);
-    *output_handle = handle;
+    store_output_value(output_handle, handle);
     
     return SQL_SUCCESS;
     

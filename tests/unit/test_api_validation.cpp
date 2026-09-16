@@ -5,8 +5,11 @@
 #include "odbc/testing_hooks.h"
 #include "tests/test_handle_helpers.h"
 
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <future>
 #include <string>
 #include <thread>
@@ -75,6 +78,25 @@ TEST(ApiAllocationValidationTest, RejectsInvalidHandleType) {
   EXPECT_EQ("HY092", diagnostic_state(SQL_HANDLE_ENV, environment));
 
   EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(ApiAllocationValidationTest, HandleOutputMayBeUnaligned) {
+  alignas(SQLHANDLE)
+  std::array<std::byte, 1 + sizeof(SQLHANDLE)> storage{};
+  auto* output = reinterpret_cast<SQLHANDLE*>(storage.data() + 1);
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, output));
+  SQLHANDLE environment = SQL_NULL_HANDLE;
+  std::memcpy(&environment, storage.data() + 1, sizeof(environment));
+  const SQLHANDLE null_handle = SQL_NULL_HANDLE;
+  ASSERT_NE(null_handle, environment);
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+
+  storage.fill(std::byte{0x5a});
+  EXPECT_EQ(SQL_ERROR, SQLAllocHandle(999, SQL_NULL_HANDLE, output));
+  SQLHANDLE rejected = reinterpret_cast<SQLHANDLE>(std::uintptr_t{1});
+  std::memcpy(&rejected, storage.data() + 1, sizeof(rejected));
+  EXPECT_EQ(null_handle, rejected);
 }
 
 TEST(ApiAllocationValidationTest, EnforcesHandleParentTypes) {
