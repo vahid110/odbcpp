@@ -372,6 +372,37 @@ TEST_F(GetInfoIntegrationTest, NumericOutputNeedNotBeAligned) {
   EXPECT_EQ(17, length);
 }
 
+TEST_F(GetInfoIntegrationTest, NumericOutputLengthNeedNotBeAligned) {
+  alignas(SQLSMALLINT)
+      std::array<std::byte, 1 + sizeof(SQLSMALLINT)> length_storage{};
+  auto* length = reinterpret_cast<SQLSMALLINT*>(length_storage.data() + 1);
+
+  SQLUSMALLINT small_value = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(
+      connection_, SQL_TXN_CAPABLE, &small_value,
+      static_cast<SQLSMALLINT>(sizeof(small_value)), length));
+  SQLSMALLINT required = -1;
+  std::memcpy(&required, reinterpret_cast<const std::byte*>(length),
+              sizeof(required));
+  EXPECT_EQ(SQL_TC_ALL, small_value);
+  EXPECT_EQ(sizeof(small_value), required);
+
+  SQLUINTEGER integer = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfoW(
+      connection_, SQL_DEFAULT_TXN_ISOLATION, &integer,
+      static_cast<SQLSMALLINT>(sizeof(integer)), length));
+  std::memcpy(&required, reinterpret_cast<const std::byte*>(length),
+              sizeof(required));
+  EXPECT_EQ(SQL_TXN_READ_COMMITTED, integer);
+  EXPECT_EQ(sizeof(integer), required);
+
+  const auto previous_length = length_storage;
+  EXPECT_EQ(SQL_ERROR, SQLGetInfo(
+      connection_, 0xffff, &integer,
+      static_cast<SQLSMALLINT>(sizeof(integer)), length));
+  EXPECT_EQ(previous_length, length_storage);
+}
+
 TEST_F(GetInfoIntegrationTest, ReportsErrorsAndTruncationPrecisely) {
   SQLUINTEGER value = 0;
   EXPECT_EQ(SQL_ERROR,

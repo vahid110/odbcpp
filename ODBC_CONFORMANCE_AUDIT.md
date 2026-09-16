@@ -1077,6 +1077,11 @@ substitute for ODBC diagnostics.
   A focused unit test first reproduced a strict UBSan misaligned
   `SQLSMALLINT` store, then verified the length-only query on an unaligned
   output pointer.
+- Audit batch 158 copies lengths from the shared narrow-string writer and
+  numeric `SQLGetInfo` branches byte-wise. A unit test first reproduced a
+  strict UBSan misaligned string-length store; PostgreSQL-backed tests cover
+  two- and four-byte numeric values through A/W entry points and preserve the
+  output length on an unknown information type.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

@@ -367,9 +367,11 @@ namespace {
       return SQL_ERROR;
     }
     if (output_length) {
-      *output_length = static_cast<OutputLength>(std::min<std::size_t>(
+      const auto length = static_cast<OutputLength>(std::min<std::size_t>(
           value.size(), static_cast<std::size_t>(
                             std::numeric_limits<OutputLength>::max())));
+      std::memcpy(reinterpret_cast<std::byte*>(output_length), &length,
+                  sizeof(length));
     }
     if (!output || buffer_length <= 0) return SQL_SUCCESS;
     const auto copied = std::min<std::size_t>(
@@ -1473,7 +1475,9 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     }
     std::memcpy(info_value, &value, sizeof(value));
     if (string_length) {
-      *string_length = static_cast<SQLSMALLINT>(sizeof(value));
+      const auto length = static_cast<SQLSMALLINT>(sizeof(value));
+      std::memcpy(reinterpret_cast<std::byte*>(string_length), &length,
+                  sizeof(length));
     }
     return SQL_SUCCESS;
   };
@@ -1485,7 +1489,9 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     }
     std::memcpy(info_value, &value, sizeof(value));
     if (string_length) {
-      *string_length = static_cast<SQLSMALLINT>(sizeof(value));
+      const auto length = static_cast<SQLSMALLINT>(sizeof(value));
+      std::memcpy(reinterpret_cast<std::byte*>(string_length), &length,
+                  sizeof(length));
     }
     return SQL_SUCCESS;
   };

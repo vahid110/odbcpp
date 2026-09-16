@@ -6,7 +6,9 @@
 #include "tests/test_handle_helpers.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <string>
 
@@ -502,6 +504,18 @@ TEST_F(AttributeApisTest, OnlyOdbcVersionIsAvailableBeforeConnect) {
     EXPECT_EQ(77, length);
     EXPECT_EQ("08003", diagnostic_state(SQL_HANDLE_DBC, connection_));
   }
+}
+
+TEST_F(AttributeApisTest, InformationStringLengthHandlesUnalignedOutput) {
+  alignas(SQLSMALLINT) std::array<std::byte, 1 + sizeof(SQLSMALLINT)>
+      length_storage{};
+  auto* length = reinterpret_cast<SQLSMALLINT*>(length_storage.data() + 1);
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetInfo(connection_, SQL_ODBC_VER, nullptr, 0, length));
+  SQLSMALLINT required = -1;
+  std::memcpy(&required, reinterpret_cast<const std::byte*>(length),
+              sizeof(required));
+  EXPECT_EQ(5, required);
 }
 
 TEST_F(AttributeApisTest, ReportsInformationStringTruncation) {
