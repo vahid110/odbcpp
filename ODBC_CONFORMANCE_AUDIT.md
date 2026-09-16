@@ -1099,6 +1099,10 @@ substitute for ODBC diagnostics.
   pointer-valued outputs. A strict UBSan unit test first reproduced a
   misaligned `SQLULEN` store, then covered narrow and wide numeric attributes,
   descriptor and binding pointers, and error-path output preservation.
+- Audit batch 163 copies `SQLGetFunctions` results from aligned local storage
+  into caller buffers. A PostgreSQL-backed strict UBSan test first reproduced
+  a misaligned `SQLUSMALLINT` store, then checked single-function, ODBC 2 array,
+  and ODBC 3 bitmap outputs plus no-write behavior for an invalid function id.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

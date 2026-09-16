@@ -515,4 +515,46 @@ TEST_F(GetInfoIntegrationTest, FunctionSupportMatchesDriverExports) {
   EXPECT_EQ("HY009", diagnostic_state(connection_));
 }
 
+TEST_F(GetInfoIntegrationTest, FunctionSupportHandlesUnalignedOutput) {
+  alignas(SQLUSMALLINT)
+      std::array<std::byte, 1 + sizeof(SQLUSMALLINT)> single_storage{};
+  auto* single = reinterpret_cast<SQLUSMALLINT*>(single_storage.data() + 1);
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetFunctions(connection_, SQL_API_SQLCONNECT, single));
+  SQLUSMALLINT supported = SQL_FALSE;
+  std::memcpy(&supported, reinterpret_cast<const std::byte*>(single),
+              sizeof(supported));
+  EXPECT_EQ(SQL_TRUE, supported);
+
+  alignas(SQLUSMALLINT) std::array<
+      std::byte, 1 + sizeof(SQLUSMALLINT) * SQL_API_ODBC3_ALL_FUNCTIONS_SIZE>
+      odbc3_storage{};
+  auto* odbc3 = reinterpret_cast<SQLUSMALLINT*>(odbc3_storage.data() + 1);
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetFunctions(connection_, SQL_API_ODBC3_ALL_FUNCTIONS, odbc3));
+  std::array<SQLUSMALLINT, SQL_API_ODBC3_ALL_FUNCTIONS_SIZE> odbc3_words{};
+  std::memcpy(odbc3_words.data(),
+              reinterpret_cast<const std::byte*>(odbc3),
+              sizeof(odbc3_words));
+  EXPECT_NE(0, odbc3_words[SQL_API_SQLCONNECT >> 4] &
+                   (1u << (SQL_API_SQLCONNECT & 0x000f)));
+
+  alignas(SQLUSMALLINT)
+      std::array<std::byte, 1 + 100 * sizeof(SQLUSMALLINT)> odbc2_storage{};
+  auto* odbc2 = reinterpret_cast<SQLUSMALLINT*>(odbc2_storage.data() + 1);
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetFunctions(connection_, SQL_API_ALL_FUNCTIONS, odbc2));
+  std::array<SQLUSMALLINT, 100> odbc2_values{};
+  std::memcpy(odbc2_values.data(),
+              reinterpret_cast<const std::byte*>(odbc2),
+              sizeof(odbc2_values));
+  EXPECT_EQ(SQL_TRUE, odbc2_values[SQL_API_SQLCONNECT]);
+  EXPECT_EQ(SQL_FALSE, odbc2_values[SQL_API_SQLBROWSECONNECT]);
+
+  const auto previous_single = single_storage;
+  EXPECT_EQ(SQL_ERROR, SQLGetFunctions(
+      connection_, static_cast<SQLUSMALLINT>(0xffff), single));
+  EXPECT_EQ(previous_single, single_storage);
+}
+
 }  // namespace

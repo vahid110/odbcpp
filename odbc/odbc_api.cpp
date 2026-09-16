@@ -1765,29 +1765,31 @@ static SQLRETURN SQLGetFunctions_impl(SQLHDBC connection_handle, SQLUSMALLINT fu
     return SQL_ERROR;
   }
 
+  auto* output_bytes = reinterpret_cast<std::byte*>(supported);
   if (function_id == SQL_API_ODBC3_ALL_FUNCTIONS) {
-    std::fill_n(supported, SQL_API_ODBC3_ALL_FUNCTIONS_SIZE,
-                static_cast<SQLUSMALLINT>(0));
+    std::array<SQLUSMALLINT, SQL_API_ODBC3_ALL_FUNCTIONS_SIZE> bitmap{};
     for (SQLUSMALLINT id = 0; id < 4000; ++id) {
       if (!is_supported_function(id)) continue;
-      supported[id >> 4] |= static_cast<SQLUSMALLINT>(
+      bitmap[id >> 4] |= static_cast<SQLUSMALLINT>(
           1u << (id & 0x000f));
     }
+    std::memcpy(output_bytes, bitmap.data(), sizeof(bitmap));
     return SQL_SUCCESS;
   }
   if (function_id == SQL_API_ALL_FUNCTIONS) {
     constexpr std::size_t odbc2_function_count = 100;
-    std::fill_n(supported, odbc2_function_count,
-                static_cast<SQLUSMALLINT>(SQL_FALSE));
+    std::array<SQLUSMALLINT, odbc2_function_count> functions{};
     for (SQLUSMALLINT id = 0; id < odbc2_function_count; ++id) {
-      supported[id] = static_cast<SQLUSMALLINT>(
+      functions[id] = static_cast<SQLUSMALLINT>(
           is_supported_function(id) ? SQL_TRUE : SQL_FALSE);
     }
+    std::memcpy(output_bytes, functions.data(), sizeof(functions));
     return SQL_SUCCESS;
   }
 
-  *supported = static_cast<SQLUSMALLINT>(
+  const auto result = static_cast<SQLUSMALLINT>(
       is_supported_function(function_id) ? SQL_TRUE : SQL_FALSE);
+  std::memcpy(output_bytes, &result, sizeof(result));
   return SQL_SUCCESS;
 }
 
