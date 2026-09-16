@@ -1119,6 +1119,11 @@ substitute for ODBC diagnostics.
   backed strict UBSan test first reproduced a misaligned parameter-count
   store, then checks the copied count and preserves the output for an
   unprepared statement.
+- Audit batch 168 copies `SQLGetDescRec` numeric outputs and `SQLGetDescField`
+  header, record, pointer, and string-length outputs byte-wise. A strict
+  UBSan unit test first reproduced a misaligned descriptor name-length
+  store, then checks representative fields and preserves output on invalid
+  record and field identifiers.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

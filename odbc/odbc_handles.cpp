@@ -1473,33 +1473,34 @@ void ODBCConnection::close_connection() {
 SQLRETURN ODBCDescriptor::get_field(
     SQLSMALLINT record_number, SQLSMALLINT field_identifier,
     SQLPOINTER value, SQLINTEGER buffer_length, SQLINTEGER* string_length) {
+  const auto write_value = [value](auto field_value) {
+    if (value) {
+      store_application_value(
+          reinterpret_cast<decltype(field_value)*>(value), field_value);
+    }
+  };
   switch (field_identifier) {
     case SQL_DESC_ALLOC_TYPE:
-      if (value) {
-        *static_cast<SQLSMALLINT*>(value) = automatically_allocated_
-            ? SQL_DESC_ALLOC_AUTO : SQL_DESC_ALLOC_USER;
-      }
+      write_value(static_cast<SQLSMALLINT>(automatically_allocated_
+          ? SQL_DESC_ALLOC_AUTO : SQL_DESC_ALLOC_USER));
       return SQL_SUCCESS;
     case SQL_DESC_COUNT:
-      if (value) {
-        *static_cast<SQLSMALLINT*>(value) =
-            static_cast<SQLSMALLINT>(records_.size());
-      }
+      write_value(static_cast<SQLSMALLINT>(records_.size()));
       return SQL_SUCCESS;
     case SQL_DESC_ARRAY_SIZE:
-      if (value) *static_cast<SQLULEN*>(value) = array_size_;
+      write_value(array_size_);
       return SQL_SUCCESS;
     case SQL_DESC_ARRAY_STATUS_PTR:
-      if (value) *static_cast<SQLUSMALLINT**>(value) = array_status_ptr_;
+      write_value(array_status_ptr_);
       return SQL_SUCCESS;
     case SQL_DESC_BIND_OFFSET_PTR:
-      if (value) *static_cast<SQLLEN**>(value) = bind_offset_ptr_;
+      write_value(bind_offset_ptr_);
       return SQL_SUCCESS;
     case SQL_DESC_BIND_TYPE:
-      if (value) *static_cast<SQLULEN*>(value) = bind_type_;
+      write_value(bind_type_);
       return SQL_SUCCESS;
     case SQL_DESC_ROWS_PROCESSED_PTR:
-      if (value) *static_cast<SQLULEN**>(value) = rows_processed_ptr_;
+      write_value(rows_processed_ptr_);
       return SQL_SUCCESS;
     default:
       break;
@@ -1536,7 +1537,8 @@ SQLRETURN ODBCDescriptor::get_field(
       return SQL_ERROR;
     }
     if (string_length) {
-      *string_length = static_cast<SQLINTEGER>(text->size());
+      store_application_value(
+          string_length, static_cast<SQLINTEGER>(text->size()));
     }
     if (!value || buffer_length == 0) return SQL_SUCCESS;
     const auto copied = std::min<std::size_t>(
@@ -1552,88 +1554,73 @@ SQLRETURN ODBCDescriptor::get_field(
   }
   switch (field_identifier) {
     case SQL_DESC_TYPE:
-      if (value) *static_cast<SQLSMALLINT*>(value) = record.type;
+      write_value(record.type);
       break;
     case SQL_DESC_CONCISE_TYPE:
-      if (value) *static_cast<SQLSMALLINT*>(value) = record.concise_type;
+      write_value(record.concise_type);
       break;
     case SQL_DESC_DATETIME_INTERVAL_CODE:
-      if (value) {
-        *static_cast<SQLSMALLINT*>(value) = record.datetime_interval_code;
-      }
+      write_value(record.datetime_interval_code);
       break;
     case SQL_DESC_DATETIME_INTERVAL_PRECISION:
-      if (value) {
-        *static_cast<SQLINTEGER*>(value) =
-            record.datetime_interval_precision;
-      }
+      write_value(record.datetime_interval_precision);
       break;
     case SQL_DESC_LENGTH:
-      if (value) *static_cast<SQLULEN*>(value) = record.length;
+      write_value(record.length);
       break;
     case SQL_DESC_PRECISION:
-      if (value) *static_cast<SQLSMALLINT*>(value) = record.precision;
+      write_value(record.precision);
       break;
     case SQL_DESC_SCALE:
-      if (value) *static_cast<SQLSMALLINT*>(value) = record.scale;
+      write_value(record.scale);
       break;
     case SQL_DESC_NULLABLE:
-      if (value) *static_cast<SQLSMALLINT*>(value) = record.nullable;
+      write_value(record.nullable);
       break;
     case SQL_DESC_PARAMETER_TYPE:
-      if (value) {
-        *static_cast<SQLSMALLINT*>(value) = record.parameter_type;
-      }
+      write_value(record.parameter_type);
       break;
     case SQL_DESC_DATA_PTR:
-      if (value) *static_cast<SQLPOINTER*>(value) = record.data_ptr;
+      write_value(record.data_ptr);
       break;
     case SQL_DESC_INDICATOR_PTR:
-      if (value) *static_cast<SQLLEN**>(value) = record.indicator_ptr;
+      write_value(record.indicator_ptr);
       break;
     case SQL_DESC_OCTET_LENGTH_PTR:
-      if (value) {
-        *static_cast<SQLLEN**>(value) = record.octet_length_ptr;
-      }
+      write_value(record.octet_length_ptr);
       break;
     case SQL_DESC_OCTET_LENGTH:
-      if (value) *static_cast<SQLLEN*>(value) = record.octet_length;
+      write_value(record.octet_length);
       break;
     case SQL_DESC_AUTO_UNIQUE_VALUE:
-      if (value) {
-        *static_cast<SQLINTEGER*>(value) = record.auto_unique_value;
-      }
+      write_value(record.auto_unique_value);
       break;
     case SQL_DESC_CASE_SENSITIVE:
-      if (value) *static_cast<SQLINTEGER*>(value) = record.case_sensitive;
+      write_value(record.case_sensitive);
       break;
     case SQL_DESC_DISPLAY_SIZE:
-      if (value) *static_cast<SQLLEN*>(value) = record.display_size;
+      write_value(record.display_size);
       break;
     case SQL_DESC_FIXED_PREC_SCALE:
-      if (value) {
-        *static_cast<SQLSMALLINT*>(value) = record.fixed_prec_scale;
-      }
+      write_value(record.fixed_prec_scale);
       break;
     case SQL_DESC_NUM_PREC_RADIX:
-      if (value) *static_cast<SQLINTEGER*>(value) = record.num_prec_radix;
+      write_value(record.num_prec_radix);
       break;
     case SQL_DESC_ROWVER:
-      if (value) *static_cast<SQLSMALLINT*>(value) = record.rowver;
+      write_value(record.rowver);
       break;
     case SQL_DESC_SEARCHABLE:
-      if (value) *static_cast<SQLSMALLINT*>(value) = record.searchable;
+      write_value(record.searchable);
       break;
     case SQL_DESC_UNNAMED:
-      if (value) *static_cast<SQLSMALLINT*>(value) = record.unnamed;
+      write_value(record.unnamed);
       break;
     case SQL_DESC_UNSIGNED:
-      if (value) {
-        *static_cast<SQLSMALLINT*>(value) = record.unsigned_attribute;
-      }
+      write_value(record.unsigned_attribute);
       break;
     case SQL_DESC_UPDATABLE:
-      if (value) *static_cast<SQLSMALLINT*>(value) = record.updatable;
+      write_value(record.updatable);
       break;
     default:
       set_error(SQLSTATE_INVALID_DESCRIPTOR_FIELD,
@@ -1915,16 +1902,19 @@ SQLRETURN ODBCDescriptor::get_record(
 
   const auto& record = records_[static_cast<std::size_t>(record_number - 1)];
   if (string_length) {
-    *string_length = static_cast<SQLSMALLINT>(std::min<std::size_t>(
-        record.name.size(),
-        static_cast<std::size_t>(std::numeric_limits<SQLSMALLINT>::max())));
+    store_application_value(
+        string_length, static_cast<SQLSMALLINT>(std::min<std::size_t>(
+            record.name.size(), static_cast<std::size_t>(
+                                    std::numeric_limits<SQLSMALLINT>::max()))));
   }
-  if (type) *type = record.type;
-  if (subtype) *subtype = record.datetime_interval_code;
-  if (length) *length = record.octet_length;
-  if (precision) *precision = record.precision;
-  if (scale) *scale = record.scale;
-  if (nullable) *nullable = record.nullable;
+  if (type) store_application_value(type, record.type);
+  if (subtype) {
+    store_application_value(subtype, record.datetime_interval_code);
+  }
+  if (length) store_application_value(length, record.octet_length);
+  if (precision) store_application_value(precision, record.precision);
+  if (scale) store_application_value(scale, record.scale);
+  if (nullable) store_application_value(nullable, record.nullable);
 
   if (!name || buffer_length == 0) return SQL_SUCCESS;
   const auto copied = std::min<std::size_t>(

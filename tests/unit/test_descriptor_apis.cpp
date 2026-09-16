@@ -6,7 +6,10 @@
 #include "tests/test_handle_helpers.h"
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 
 using namespace rs::odbc;
@@ -494,6 +497,98 @@ TEST(ExplicitDescriptorApiTest, GetAndSetRecordRoundTripAndValidate) {
     SQLFreeHandle(SQL_HANDLE_DESC, descriptor);
     SQLFreeHandle(SQL_HANDLE_DBC, connection);
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
+}
+
+TEST(ExplicitDescriptorApiTest, GetOutputsHandleUnalignedBuffers) {
+    SQLHENV environment = nullptr;
+    SQLHDBC connection = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(
+        SQL_HANDLE_ENV, nullptr, &environment));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetEnvAttr(
+        environment, SQL_ATTR_ODBC_VERSION,
+        reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(
+        SQL_HANDLE_DBC, environment, &connection));
+    SQLHDESC descriptor = odbcpp::test::make_descriptor(connection);
+    ASSERT_NE(nullptr, descriptor);
+
+    SQLINTEGER bound_value = 17;
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescRec(
+        descriptor, 1, SQL_C_SLONG, 0, sizeof(bound_value), 10, 0,
+        &bound_value, nullptr, nullptr));
+
+    alignas(SQLLEN) std::array<std::byte, 13 + sizeof(SQLLEN)> record{};
+    auto* name_length = reinterpret_cast<SQLSMALLINT*>(record.data() + 1);
+    auto* type = reinterpret_cast<SQLSMALLINT*>(record.data() + 3);
+    auto* subtype = reinterpret_cast<SQLSMALLINT*>(record.data() + 5);
+    auto* length = reinterpret_cast<SQLLEN*>(record.data() + 7);
+    auto* precision = reinterpret_cast<SQLSMALLINT*>(
+        record.data() + 7 + sizeof(SQLLEN));
+    auto* scale = reinterpret_cast<SQLSMALLINT*>(
+        record.data() + 9 + sizeof(SQLLEN));
+    auto* nullable = reinterpret_cast<SQLSMALLINT*>(
+        record.data() + 11 + sizeof(SQLLEN));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescRec(
+        descriptor, 1, nullptr, 0, name_length, type, subtype, length,
+        precision, scale, nullable));
+    const auto read_short = [&](std::size_t offset) {
+        SQLSMALLINT value = -1;
+        std::memcpy(&value, record.data() + offset, sizeof(value));
+        return value;
+    };
+    SQLLEN copied_length = -1;
+    std::memcpy(&copied_length, record.data() + 7, sizeof(copied_length));
+    EXPECT_EQ(0, read_short(1));
+    EXPECT_EQ(SQL_C_SLONG, read_short(3));
+    EXPECT_EQ(0, read_short(5));
+    EXPECT_EQ(sizeof(bound_value), copied_length);
+    EXPECT_EQ(10, read_short(7 + sizeof(SQLLEN)));
+    EXPECT_EQ(0, read_short(9 + sizeof(SQLLEN)));
+    EXPECT_EQ(SQL_NULLABLE_UNKNOWN, read_short(11 + sizeof(SQLLEN)));
+
+    const auto record_output = record;
+    EXPECT_EQ(SQL_ERROR, SQLGetDescRec(
+        descriptor, 0, nullptr, 0, name_length, type, subtype, length,
+        precision, scale, nullable));
+    EXPECT_EQ(record_output, record);
+
+    alignas(std::max_align_t)
+    std::array<std::byte, 1 + sizeof(std::max_align_t)> field{};
+    auto* output = field.data() + 1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        descriptor, 0, SQL_DESC_COUNT, output, 0, nullptr));
+    SQLSMALLINT count = -1;
+    std::memcpy(&count, output, sizeof(count));
+    EXPECT_EQ(1, count);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        descriptor, 1, SQL_DESC_OCTET_LENGTH, output, 0, nullptr));
+    SQLLEN copied_field_length = 0;
+    std::memcpy(&copied_field_length, output, sizeof(copied_field_length));
+    EXPECT_EQ(sizeof(bound_value), copied_field_length);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        descriptor, 1, SQL_DESC_DATA_PTR, output, 0, nullptr));
+    SQLPOINTER copied_pointer = nullptr;
+    std::memcpy(&copied_pointer, output, sizeof(copied_pointer));
+    EXPECT_EQ(&bound_value, copied_pointer);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        descriptor, 1, SQL_DESC_NAME, nullptr, 0,
+        reinterpret_cast<SQLINTEGER*>(output)));
+    SQLINTEGER copied_name_length = -1;
+    std::memcpy(&copied_name_length, output, sizeof(copied_name_length));
+    EXPECT_EQ(0, copied_name_length);
+
+    const auto field_output = field;
+    EXPECT_EQ(SQL_ERROR, SQLGetDescField(
+        descriptor, 1, 32000, output, 0,
+        reinterpret_cast<SQLINTEGER*>(output)));
+    EXPECT_EQ(field_output, field);
+
+    EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
+    EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+    EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
 }
 
 TEST_F(DescriptorAPITest, DescriptorFieldKindsAndMutationRules) {
