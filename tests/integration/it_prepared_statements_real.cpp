@@ -67,6 +67,45 @@ TEST_F(PreparedStatementIntegrationTest, BinaryParameterRoundTripsAsBytea) {
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       ParameterStatusOutputsHandleUnalignedBuffers) {
+    alignas(SQLULEN) std::array<std::byte, 1 + sizeof(SQLULEN)> processed{};
+    alignas(SQLUSMALLINT)
+    std::array<std::byte, 1 + sizeof(SQLUSMALLINT)> status{};
+    auto* processed_output = reinterpret_cast<SQLULEN*>(processed.data() + 1);
+    auto* status_output = reinterpret_cast<SQLUSMALLINT*>(status.data() + 1);
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, processed_output, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_PARAM_STATUS_PTR, status_output, 0));
+
+    SQLINTEGER input = 7;
+    const auto run = [&](const char* query, SQLRETURN expected_result,
+                         SQLUSMALLINT expected_status) {
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+            hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(query)),
+            SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+            hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
+            0, 0, &input, 0, nullptr));
+        processed.fill(std::byte{0x5a});
+        status.fill(std::byte{0x5a});
+        EXPECT_EQ(expected_result, SQLExecute(hstmt));
+        SQLULEN copied_processed = 0;
+        SQLUSMALLINT copied_status = 0;
+        std::memcpy(&copied_processed, processed.data() + 1,
+                    sizeof(copied_processed));
+        std::memcpy(&copied_status, status.data() + 1,
+                    sizeof(copied_status));
+        EXPECT_EQ(1u, copied_processed);
+        EXPECT_EQ(expected_status, copied_status);
+    };
+    run("SELECT ?::integer", SQL_SUCCESS, SQL_PARAM_SUCCESS);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    input = 0;
+    run("SELECT 1 / ?::integer", SQL_ERROR, SQL_PARAM_ERROR);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        NumericParametersMayUseUnalignedBuffers) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
         (SQLCHAR*)"SELECT ?::integer, ?::real, ?::double precision",

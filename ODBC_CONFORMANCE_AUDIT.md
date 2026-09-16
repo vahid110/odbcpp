@@ -1124,6 +1124,10 @@ substitute for ODBC diagnostics.
   UBSan unit test first reproduced a misaligned descriptor name-length
   store, then checks representative fields and preserves output on invalid
   record and field identifiers.
+- Audit batch 169 copies parameter-set processed counts and status values
+  byte-wise at execution start and completion. A PostgreSQL-backed strict
+  UBSan test first reproduced a misaligned processed-count store, then
+  verifies both success and execution-error status outputs.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

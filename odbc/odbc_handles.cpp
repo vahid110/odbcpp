@@ -2828,15 +2828,17 @@ SQLRETURN ODBCStatement::complete_parameter_set(SQLRETURN result) {
   const auto implementation_descriptor = descriptor(imp_param_descriptor_);
   auto* params_processed = implementation_descriptor->rows_processed_ptr();
   auto* param_status = implementation_descriptor->array_status_ptr();
-  if (params_processed) *params_processed = 1;
+  if (params_processed) {
+    store_application_value(params_processed, static_cast<SQLULEN>(1));
+  }
   if (param_status) {
+    SQLUSMALLINT status = SQL_PARAM_ERROR;
     if (result == SQL_SUCCESS) {
-      param_status[0] = SQL_PARAM_SUCCESS;
+      status = SQL_PARAM_SUCCESS;
     } else if (result == SQL_SUCCESS_WITH_INFO) {
-      param_status[0] = SQL_PARAM_SUCCESS_WITH_INFO;
-    } else {
-      param_status[0] = SQL_PARAM_ERROR;
+      status = SQL_PARAM_SUCCESS_WITH_INFO;
     }
+    store_application_value(param_status, status);
   }
   return result;
 }
@@ -2878,10 +2880,11 @@ SQLRETURN ODBCStatement::execute() {
   if (parameter_count_ > 0) {
     const auto implementation_descriptor = descriptor(imp_param_descriptor_);
     if (auto* processed = implementation_descriptor->rows_processed_ptr()) {
-      *processed = 0;
+      store_application_value(processed, static_cast<SQLULEN>(0));
     }
     if (auto* status = implementation_descriptor->array_status_ptr()) {
-      status[0] = SQL_PARAM_UNUSED;
+      store_application_value(status,
+                              static_cast<SQLUSMALLINT>(SQL_PARAM_UNUSED));
     }
   }
   if (conn_->logs_queries()) {
