@@ -335,6 +335,44 @@ TEST_F(RedshiftDataConverterTest, ClassifiesInvalidDatetimeFormat) {
     EXPECT_EQ(rs::odbc::ConversionIssue::InvalidDatetimeFormat, issue);
 }
 
+TEST_F(RedshiftDataConverterTest, TimestampToDateReportsLostTime) {
+    SQL_DATE_STRUCT date{};
+    SQLLEN length = -1;
+    rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;
+
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "2024-02-29 00:00:00.000000", SQL_C_DATE, &date, 0,
+        &length, &issue));
+    EXPECT_EQ(2024, date.year);
+    EXPECT_EQ(2, date.month);
+    EXPECT_EQ(29, date.day);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(date)), length);
+    EXPECT_EQ(rs::odbc::ConversionIssue::None, issue);
+
+    for (const char* input : {
+             "2024-02-29 12:00:00", "2024-02-29 00:00:01",
+             "2024-02-29 00:00:00.0000000001"}) {
+        issue = rs::odbc::ConversionIssue::None;
+        ASSERT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+            input, SQL_C_DATE, &date, 0, &length, &issue));
+        EXPECT_EQ(29, date.day);
+        EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
+    }
+
+    for (const char* input : {
+             "2024-02-30 12:00:00", "2024-02-29 24:00:00",
+             "2024-02-29 12:00:00 junk"}) {
+        date.year = 73;
+        length = 74;
+        issue = rs::odbc::ConversionIssue::None;
+        EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+            input, SQL_C_DATE, &date, 0, &length, &issue));
+        EXPECT_EQ(73, date.year);
+        EXPECT_EQ(74, length);
+        EXPECT_EQ(rs::odbc::ConversionIssue::InvalidDatetimeFormat, issue);
+    }
+}
+
 TEST_F(RedshiftDataConverterTest, ConvertDataTimestamp) {
     SQL_TIMESTAMP_STRUCT result;
     

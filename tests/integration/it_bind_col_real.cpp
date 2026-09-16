@@ -995,6 +995,46 @@ TEST_F(BindColIntegrationTest, TemporalFractionTruncationHasDiagnostic) {
     EXPECT_STREQ("01S07", reinterpret_cast<char*>(state));
 }
 
+TEST_F(BindColIntegrationTest, TimestampToDateReportsLostTime) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)
+            "SELECT TIMESTAMP '2024-02-29 00:00:00', "
+            "TIMESTAMP '2024-02-29 12:34:56', "
+            "'2024-02-29 00:00:00.0000000001'::text, "
+            "'2024-02-30 12:00:00'::text",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQL_DATE_STRUCT date{};
+    SQLLEN length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_DATE, &date, sizeof(date), &length));
+    EXPECT_EQ(2024, date.year);
+    EXPECT_EQ(2, date.month);
+    EXPECT_EQ(29, date.day);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(date)), length);
+
+    SQLCHAR state[6]{};
+    for (SQLUSMALLINT column : {2, 3}) {
+        ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+            hstmt, column, SQL_C_DATE, &date, sizeof(date), &length));
+        EXPECT_EQ(29, date.day);
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+            SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("01S07", reinterpret_cast<char*>(state));
+    }
+
+    date.year = 73;
+    length = 74;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(
+        hstmt, 4, SQL_C_DATE, &date, sizeof(date), &length));
+    EXPECT_EQ(73, date.year);
+    EXPECT_EQ(74, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22007", reinterpret_cast<char*>(state));
+}
+
 TEST_F(BindColIntegrationTest, MetadataDrivenDefaultConversions) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,

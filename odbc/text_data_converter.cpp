@@ -383,18 +383,41 @@ SQLRETURN convert_boolean(const std::string& value, void* buffer,
 
 SQLRETURN convert_date(const std::string& value, void* buffer,
                        SQLLEN* indicator, ConversionIssue* issue) {
+  const auto text = trim_whitespace(value);
+  const bool timestamp = text.size() >= 19 &&
+      (text[10] == ' ' || text[10] == 'T');
   unsigned year = 0;
   unsigned month = 0;
   unsigned day = 0;
-  if (!parse_date(trim_whitespace(value), year, month, day)) {
+  if (!parse_date(timestamp ? text.substr(0, 10) : text,
+                  year, month, day)) {
     if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
     return SQL_ERROR;
+  }
+  bool lost_time = false;
+  if (timestamp) {
+    unsigned hour = 0;
+    unsigned minute = 0;
+    unsigned second = 0;
+    SQLUINTEGER fraction = 0;
+    bool discarded_fraction = false;
+    if (!parse_time(text.substr(11), hour, minute, second, fraction,
+                    discarded_fraction)) {
+      if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
+      return SQL_ERROR;
+    }
+    lost_time = hour != 0 || minute != 0 || second != 0 ||
+        fraction != 0 || discarded_fraction;
   }
   const SQL_DATE_STRUCT date{
       static_cast<SQLSMALLINT>(year), static_cast<SQLUSMALLINT>(month),
       static_cast<SQLUSMALLINT>(day)};
   std::memcpy(buffer, &date, sizeof(date));
   store_indicator(indicator, static_cast<SQLLEN>(sizeof(SQL_DATE_STRUCT)));
+  if (lost_time) {
+    if (issue) *issue = ConversionIssue::FractionalTruncation;
+    return SQL_SUCCESS_WITH_INFO;
+  }
   return SQL_SUCCESS;
 }
 

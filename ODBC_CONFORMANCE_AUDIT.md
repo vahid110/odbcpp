@@ -1175,6 +1175,10 @@ substitute for ODBC diagnostics.
   nonzero digits beyond its nine-digit fractional field. Unit tests first
   reproduced the missing time warning; PostgreSQL-backed tests cover time,
   timestamp-to-time, and long text-to-timestamp conversions.
+- Audit batch 180 accepts valid timestamps for `SQL_C_DATE`, preserving the
+  date and reporting `01S07` only when nonzero time fields are discarded.
+  Unit and PostgreSQL-backed tests cover zero and nonzero time, subnanosecond
+  fractions, malformed date/time text, and untouched outputs on error.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
