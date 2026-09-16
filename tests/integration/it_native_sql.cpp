@@ -5,6 +5,7 @@
 #include "tests/test_connection_config.h"
 
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -181,6 +182,47 @@ TEST_F(NativeSqlIntegrationTest, ZeroLengthOutputReportsTruncation) {
   EXPECT_EQ(99, output);
   EXPECT_EQ(8, length);
   EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection_));
+}
+
+TEST_F(NativeSqlIntegrationTest, LengthOutputsHandleUnalignedBuffers) {
+  SQLCHAR input[] = "SELECT {fn UCASE('x')}";
+  alignas(SQLINTEGER)
+  std::array<std::byte, 1 + sizeof(SQLINTEGER)> storage{};
+  auto* length = reinterpret_cast<SQLINTEGER*>(storage.data() + 1);
+  const auto read_length = [&] {
+    SQLINTEGER copied = 0;
+    std::memcpy(&copied, storage.data() + 1, sizeof(copied));
+    return copied;
+  };
+
+  SQLINTEGER expected = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLNativeSql(
+      connection_, input, SQL_NTS, nullptr, 0, &expected));
+  ASSERT_EQ(SQL_SUCCESS, SQLNativeSql(
+      connection_, input, SQL_NTS, nullptr, 0, length));
+  EXPECT_EQ(expected, read_length());
+
+  auto wide_input = rs::odbc::utf8_to_wide("SELECT {fn UCASE('x')}");
+  ASSERT_TRUE(wide_input.has_value());
+  SQLWCHAR wide_output = static_cast<SQLWCHAR>('k');
+  expected = -1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLNativeSqlW(
+      connection_, wide_input->data(),
+      static_cast<SQLINTEGER>(wide_input->size()), &wide_output, 0,
+      &expected));
+  storage.fill(std::byte{0x5a});
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLNativeSqlW(
+      connection_, wide_input->data(),
+      static_cast<SQLINTEGER>(wide_input->size()), &wide_output, 0,
+      length));
+  EXPECT_EQ(expected, read_length());
+  EXPECT_EQ(static_cast<SQLWCHAR>('k'), wide_output);
+
+  SQLCHAR invalid[] = "SELECT {d '2023-02-29'}";
+  const auto previous_output = storage;
+  EXPECT_EQ(SQL_ERROR, SQLNativeSql(
+      connection_, invalid, SQL_NTS, nullptr, 0, length));
+  EXPECT_EQ(previous_output, storage);
 }
 
 TEST_F(NativeSqlIntegrationTest, PreservesOutputsOnTranslationErrors) {

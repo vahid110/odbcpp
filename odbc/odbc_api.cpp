@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -21,6 +22,14 @@ using namespace rs::odbc;
 
 // String conversion helpers (Unicode-ready architecture)
 namespace {
+  template <typename T>
+  void store_output_value(T* output, T value) {
+    if (output) {
+      std::memcpy(reinterpret_cast<std::byte*>(output), &value,
+                  sizeof(value));
+    }
+  }
+
 #ifdef ODBCPP_ENABLE_TEST_HOOKS
   std::atomic<bool> fail_handle_allocation{false};
 
@@ -1828,9 +1837,10 @@ static SQLRETURN SQLNativeSql_impl(
   const auto native_sql = translate_odbc_sql(input_sql);
   if (!native_sql) return set_sql_escape_error(*conn, native_sql);
   if (text_length2) {
-    *text_length2 = static_cast<SQLINTEGER>(std::min(
-        native_sql.sql.size(),
-        static_cast<std::size_t>(std::numeric_limits<SQLINTEGER>::max())));
+    const auto length = static_cast<SQLINTEGER>(std::min(
+        native_sql.sql.size(), static_cast<std::size_t>(
+                                   std::numeric_limits<SQLINTEGER>::max())));
+    store_output_value(text_length2, length);
   }
   if (!output_statement) return SQL_SUCCESS;
   if (buffer_length == 0) {
@@ -1899,9 +1909,10 @@ static SQLRETURN SQLNativeSqlW_impl(
                         "Invalid UTF-8 output text");
         return SQL_ERROR;
       }
-      *text_length2 = static_cast<SQLINTEGER>(std::min<std::size_t>(
+      const auto length = static_cast<SQLINTEGER>(std::min<std::size_t>(
           wide->size(), static_cast<std::size_t>(
-              std::numeric_limits<SQLINTEGER>::max())));
+                            std::numeric_limits<SQLINTEGER>::max())));
+      store_output_value(text_length2, length);
     }
     conn->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
                     "Output SQL statement was truncated");
@@ -2814,12 +2825,12 @@ static SQLRETURN SQLGetDescRecW_impl(
       name, buffer_length, string_length,
       "Descriptor record name was truncated");
   if (output_result == SQL_ERROR) return output_result;
-  if (type) *type = record_type;
-  if (subtype) *subtype = record_subtype;
-  if (length) *length = record_length;
-  if (precision) *precision = record_precision;
-  if (scale) *scale = record_scale;
-  if (nullable) *nullable = record_nullable;
+  store_output_value(type, record_type);
+  store_output_value(subtype, record_subtype);
+  store_output_value(length, record_length);
+  store_output_value(precision, record_precision);
+  store_output_value(scale, record_scale);
+  store_output_value(nullable, record_nullable);
   return output_result;
 }
 

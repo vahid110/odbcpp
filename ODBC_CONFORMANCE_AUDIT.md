@@ -1140,6 +1140,10 @@ substitute for ODBC diagnostics.
   byte-wise. A PostgreSQL-backed strict UBSan test first reproduced a
   misaligned input-indicator load, then checks text, binary, wide-text, and
   NULL parameter round-trips with unaligned indicators.
+- Audit batch 173 copies numeric outputs from the `SQLGetDescRecW` wrapper
+  and `SQLNativeSql` A/W length paths byte-wise. Strict UBSan tests first
+  reproduced misaligned wide-descriptor and narrow native-SQL stores, then
+  checked success, zero-length truncation, and error-path preservation.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

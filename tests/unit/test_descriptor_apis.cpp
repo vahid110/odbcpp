@@ -546,8 +546,25 @@ TEST(ExplicitDescriptorApiTest, GetOutputsHandleUnalignedBuffers) {
     EXPECT_EQ(0, read_short(9 + sizeof(SQLLEN)));
     EXPECT_EQ(SQL_NULLABLE_UNKNOWN, read_short(11 + sizeof(SQLLEN)));
 
+    record.fill(std::byte{0x5a});
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescRecW(
+        descriptor, 1, nullptr, 0, name_length, type, subtype, length,
+        precision, scale, nullable));
+    std::memcpy(&copied_length, record.data() + 7, sizeof(copied_length));
+    EXPECT_EQ(0, read_short(1));
+    EXPECT_EQ(SQL_C_SLONG, read_short(3));
+    EXPECT_EQ(0, read_short(5));
+    EXPECT_EQ(sizeof(bound_value), copied_length);
+    EXPECT_EQ(10, read_short(7 + sizeof(SQLLEN)));
+    EXPECT_EQ(0, read_short(9 + sizeof(SQLLEN)));
+    EXPECT_EQ(SQL_NULLABLE_UNKNOWN, read_short(11 + sizeof(SQLLEN)));
+
     const auto record_output = record;
     EXPECT_EQ(SQL_ERROR, SQLGetDescRec(
+        descriptor, 0, nullptr, 0, name_length, type, subtype, length,
+        precision, scale, nullable));
+    EXPECT_EQ(record_output, record);
+    EXPECT_EQ(SQL_ERROR, SQLGetDescRecW(
         descriptor, 0, nullptr, 0, name_length, type, subtype, length,
         precision, scale, nullable));
     EXPECT_EQ(record_output, record);
