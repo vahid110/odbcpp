@@ -34,6 +34,12 @@ T load_application_value(const void* source) {
   return value;
 }
 
+template <typename T>
+void store_application_value(T* destination, T value) {
+  std::memcpy(reinterpret_cast<std::byte*>(destination), &value,
+              sizeof(value));
+}
+
 std::string elapsed_milliseconds(std::chrono::steady_clock::time_point start) {
   return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - start).count());
@@ -3475,8 +3481,7 @@ SQLRETURN ODBCStatement::get_num_result_cols(SQLSMALLINT* column_count) {
   if (metadata_result != SQL_SUCCESS) return metadata_result;
   
   const auto count = static_cast<SQLSMALLINT>(column_info_.size());
-  std::memcpy(reinterpret_cast<std::byte*>(column_count), &count,
-              sizeof(count));
+  store_application_value(column_count, count);
   return SQL_SUCCESS;
 }
 
@@ -4286,8 +4291,7 @@ SQLRETURN ODBCStatement::row_count(SQLLEN* row_count_value) {
     return SQL_ERROR;
   }
   const SQLLEN count = affected_rows_;
-  std::memcpy(reinterpret_cast<std::byte*>(row_count_value), &count,
-              sizeof(count));
+  store_application_value(row_count_value, count);
   return SQL_SUCCESS;
 }
 
@@ -4320,11 +4324,24 @@ SQLRETURN ODBCStatement::describe_col(SQLUSMALLINT column_number, SQLCHAR* colum
     column_name[copy_len] = '\0';
   }
   
-  if (name_length) *name_length = static_cast<SQLSMALLINT>(col.name.length());
-  if (data_type) *data_type = col.sql_type;
-  if (column_size) *column_size = col.column_size;
-  if (decimal_digits) *decimal_digits = col.decimal_digits;
-  if (nullable) *nullable = col.nullable;
+  if (name_length) {
+    store_application_value(name_length,
+                            static_cast<SQLSMALLINT>(col.name.length()));
+  }
+  if (data_type) {
+    store_application_value(data_type, static_cast<SQLSMALLINT>(col.sql_type));
+  }
+  if (column_size) {
+    store_application_value(column_size,
+                            static_cast<SQLULEN>(col.column_size));
+  }
+  if (decimal_digits) {
+    store_application_value(
+        decimal_digits, static_cast<SQLSMALLINT>(col.decimal_digits));
+  }
+  if (nullable) {
+    store_application_value(nullable, static_cast<SQLSMALLINT>(col.nullable));
+  }
 
   if (column_name && !col.name.empty() &&
       static_cast<std::size_t>(name_buffer_length) <= col.name.length()) {
@@ -4494,10 +4511,20 @@ SQLRETURN ODBCStatement::describe_param(SQLUSMALLINT parameter_number, SQLSMALLI
   }
   
   const auto& meta = param_metadata_[parameter_number - 1];
-  if (data_type) *data_type = meta.sql_type;
-  if (parameter_size) *parameter_size = meta.column_size;
-  if (decimal_digits) *decimal_digits = meta.decimal_digits;
-  if (nullable) *nullable = meta.nullable;
+  if (data_type) {
+    store_application_value(data_type, static_cast<SQLSMALLINT>(meta.sql_type));
+  }
+  if (parameter_size) {
+    store_application_value(parameter_size,
+                            static_cast<SQLULEN>(meta.column_size));
+  }
+  if (decimal_digits) {
+    store_application_value(
+        decimal_digits, static_cast<SQLSMALLINT>(meta.decimal_digits));
+  }
+  if (nullable) {
+    store_application_value(nullable, static_cast<SQLSMALLINT>(meta.nullable));
+  }
   
   return SQL_SUCCESS;
 }

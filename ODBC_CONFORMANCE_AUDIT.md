@@ -1107,6 +1107,10 @@ substitute for ODBC diagnostics.
   aligned locals into caller buffers. A PostgreSQL-backed strict UBSan test
   first reproduced a misaligned column-count store, then checks both outputs
   and preserves their buffer on statement-sequence errors.
+- Audit batch 165 copies `SQLDescribeCol` and `SQLDescribeParam` numeric
+  outputs byte-wise. A PostgreSQL-backed strict UBSan test first reproduced
+  a misaligned column-name-length store, then checks every numeric output of
+  both APIs and no-write behavior for invalid column and parameter numbers.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

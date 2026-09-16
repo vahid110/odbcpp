@@ -799,6 +799,86 @@ TEST_F(MetadataIntegrationTest, DescribesPreparedColumnsDirectly) {
     EXPECT_EQ(SQL_TYPE_DATE, concise_type);
 }
 
+TEST_F(MetadataIntegrationTest, DescribeOutputsHandleUnalignedBuffers) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT ?::numeric(8,2) AS prepared_amount",
+        SQL_NTS));
+
+    SQLSMALLINT expected_name_length = -1;
+    SQLSMALLINT expected_type = 0;
+    SQLULEN expected_size = 0;
+    SQLSMALLINT expected_scale = -1;
+    SQLSMALLINT expected_nullable = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+        hstmt, 1, nullptr, 0, &expected_name_length, &expected_type,
+        &expected_size, &expected_scale, &expected_nullable));
+
+    alignas(SQLULEN) std::array<std::byte, 9 + sizeof(SQLULEN)> storage{};
+    storage.fill(std::byte{0x5a});
+    auto* name_length = reinterpret_cast<SQLSMALLINT*>(storage.data() + 1);
+    auto* data_type = reinterpret_cast<SQLSMALLINT*>(storage.data() + 3);
+    auto* column_size = reinterpret_cast<SQLULEN*>(storage.data() + 5);
+    auto* scale = reinterpret_cast<SQLSMALLINT*>(
+        storage.data() + 5 + sizeof(SQLULEN));
+    auto* nullable = reinterpret_cast<SQLSMALLINT*>(
+        storage.data() + 7 + sizeof(SQLULEN));
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+        hstmt, 1, nullptr, 0, name_length, data_type, column_size, scale,
+        nullable));
+
+    auto read_smallint = [&](std::size_t offset) {
+        SQLSMALLINT value = 0;
+        std::memcpy(&value, storage.data() + offset, sizeof(value));
+        return value;
+    };
+    auto read_size = [&](std::size_t offset) {
+        SQLULEN value = 0;
+        std::memcpy(&value, storage.data() + offset, sizeof(value));
+        return value;
+    };
+    EXPECT_EQ(expected_name_length, read_smallint(1));
+    EXPECT_EQ(expected_type, read_smallint(3));
+    EXPECT_EQ(expected_size, read_size(5));
+    EXPECT_EQ(expected_scale, read_smallint(5 + sizeof(SQLULEN)));
+    EXPECT_EQ(expected_nullable, read_smallint(7 + sizeof(SQLULEN)));
+
+    const auto column_output = storage;
+    EXPECT_EQ(SQL_ERROR, SQLDescribeCol(
+        hstmt, 0, nullptr, 0, name_length, data_type, column_size, scale,
+        nullable));
+    EXPECT_EQ(column_output, storage);
+
+    SQLSMALLINT expected_parameter_type = 0;
+    SQLULEN expected_parameter_size = 0;
+    SQLSMALLINT expected_parameter_scale = -1;
+    SQLSMALLINT expected_parameter_nullable = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(
+        hstmt, 1, &expected_parameter_type, &expected_parameter_size,
+        &expected_parameter_scale, &expected_parameter_nullable));
+
+    storage.fill(std::byte{0x5a});
+    auto* parameter_type = reinterpret_cast<SQLSMALLINT*>(storage.data() + 1);
+    auto* parameter_size = reinterpret_cast<SQLULEN*>(storage.data() + 3);
+    auto* parameter_scale = reinterpret_cast<SQLSMALLINT*>(
+        storage.data() + 3 + sizeof(SQLULEN));
+    auto* parameter_nullable = reinterpret_cast<SQLSMALLINT*>(
+        storage.data() + 5 + sizeof(SQLULEN));
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(
+        hstmt, 1, parameter_type, parameter_size, parameter_scale,
+        parameter_nullable));
+    EXPECT_EQ(expected_parameter_type, read_smallint(1));
+    EXPECT_EQ(expected_parameter_size, read_size(3));
+    EXPECT_EQ(expected_parameter_scale, read_smallint(3 + sizeof(SQLULEN)));
+    EXPECT_EQ(expected_parameter_nullable,
+              read_smallint(5 + sizeof(SQLULEN)));
+
+    const auto parameter_output = storage;
+    EXPECT_EQ(SQL_ERROR, SQLDescribeParam(
+        hstmt, 0, parameter_type, parameter_size, parameter_scale,
+        parameter_nullable));
+    EXPECT_EQ(parameter_output, storage);
+}
+
 TEST_F(MetadataIntegrationTest, ColumnAttributesMatchImplementationDescriptor) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
         hstmt,
