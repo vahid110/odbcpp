@@ -1183,6 +1183,11 @@ substitute for ODBC diagnostics.
   time fields to zero, as required by the ODBC date conversion table. Unit and
   PostgreSQL-backed tests verify leap dates, outer spaces, invalid dates,
   diagnostic classification, and untouched outputs on error.
+- Audit batch 182 reuses exact decimal-to-integer conversion for numeric text
+  requested as `SQL_C_BIT`. Values strictly between zero and two truncate to
+  a bit with `01S07`; negative or at-least-two values return `22003`, and
+  malformed text returns `22018`. Unit and PostgreSQL-backed tests cover
+  values near the upper boundary and preserve native PostgreSQL `t`/`f` input.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

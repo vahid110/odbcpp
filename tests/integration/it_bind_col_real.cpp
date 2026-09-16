@@ -1071,6 +1071,56 @@ TEST_F(BindColIntegrationTest, DateToTimestampZeroesTimeFields) {
     EXPECT_STREQ("22007", reinterpret_cast<char*>(state));
 }
 
+TEST_F(BindColIntegrationTest, NumericTextToBitDiagnostics) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)
+            "SELECT '0.5'::text, '1.999999999999999999999'::text, true",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLCHAR bit = 73;
+    SQLLEN length = -1;
+    SQLCHAR state[6]{};
+    for (SQLUSMALLINT column : {1, 2}) {
+        ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+            hstmt, column, SQL_C_BIT, &bit, sizeof(bit), &length));
+        EXPECT_EQ(column == 1 ? 0 : 1, bit);
+        EXPECT_EQ(static_cast<SQLLEN>(sizeof(bit)), length);
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+            SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("01S07", reinterpret_cast<char*>(state));
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 3, SQL_C_BIT, &bit, sizeof(bit), &length));
+    EXPECT_EQ(1, bit);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    struct Failure {
+        const char* query;
+        const char* state;
+    };
+    for (const Failure& failure : {
+             Failure{"SELECT '-0.5'::text", "22003"},
+             Failure{"SELECT '2'::text", "22003"},
+             Failure{"SELECT '1.5x'::text", "22018"}}) {
+        SCOPED_TRACE(failure.query);
+        std::string query(failure.query);
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+            hstmt, reinterpret_cast<SQLCHAR*>(query.data()), SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        bit = 73;
+        length = 74;
+        EXPECT_EQ(SQL_ERROR, SQLGetData(
+            hstmt, 1, SQL_C_BIT, &bit, sizeof(bit), &length));
+        EXPECT_EQ(73, bit);
+        EXPECT_EQ(74, length);
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+            SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ(failure.state, reinterpret_cast<char*>(state));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    }
+}
+
 TEST_F(BindColIntegrationTest, MetadataDrivenDefaultConversions) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,

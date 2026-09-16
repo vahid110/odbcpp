@@ -656,6 +656,59 @@ TEST_F(RedshiftDataConverterTest, ConvertDataBoolean) {
     EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data("maybe", SQL_C_BIT, &result, 0, &indicator));
 }
 
+TEST_F(RedshiftDataConverterTest, NumericTextToBitUsesExactRange) {
+    struct Case {
+        const char* text;
+        SQLRETURN result;
+        SQLCHAR bit;
+        rs::odbc::ConversionIssue issue;
+    };
+    const std::array<Case, 7> accepted{{
+        {"0", SQL_SUCCESS, 0, rs::odbc::ConversionIssue::None},
+        {"1", SQL_SUCCESS, 1, rs::odbc::ConversionIssue::None},
+        {"-0.000", SQL_SUCCESS, 0, rs::odbc::ConversionIssue::None},
+        {"0.5", SQL_SUCCESS_WITH_INFO, 0,
+         rs::odbc::ConversionIssue::FractionalTruncation},
+        {"1.5", SQL_SUCCESS_WITH_INFO, 1,
+         rs::odbc::ConversionIssue::FractionalTruncation},
+        {"1.999999999999999999999", SQL_SUCCESS_WITH_INFO, 1,
+         rs::odbc::ConversionIssue::FractionalTruncation},
+        {" 1e-100 ", SQL_SUCCESS_WITH_INFO, 0,
+         rs::odbc::ConversionIssue::FractionalTruncation},
+    }};
+    SQLCHAR bit = 73;
+    SQLLEN length = 74;
+    rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;
+    for (const auto& test : accepted) {
+        SCOPED_TRACE(test.text);
+        ASSERT_EQ(test.result, RedshiftDataConverter::convert_data(
+            test.text, SQL_C_BIT, &bit, 0, &length, &issue));
+        EXPECT_EQ(test.bit, bit);
+        EXPECT_EQ(static_cast<SQLLEN>(sizeof(bit)), length);
+        EXPECT_EQ(test.issue, issue);
+    }
+
+    for (const char* text : {"-0.5", "-1e-100", "2", "1e2"}) {
+        SCOPED_TRACE(text);
+        bit = 73;
+        length = 74;
+        issue = rs::odbc::ConversionIssue::None;
+        EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+            text, SQL_C_BIT, &bit, 0, &length, &issue));
+        EXPECT_EQ(73, bit);
+        EXPECT_EQ(74, length);
+        EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
+    }
+
+    bit = 73;
+    length = 74;
+    EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+        "1.5x", SQL_C_BIT, &bit, 0, &length, &issue));
+    EXPECT_EQ(73, bit);
+    EXPECT_EQ(74, length);
+    EXPECT_EQ(rs::odbc::ConversionIssue::InvalidCharacterValue, issue);
+}
+
 TEST_F(RedshiftDataConverterTest, ConvertsPostgresqlByteaText) {
     unsigned char binary[4]{};
     EXPECT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(

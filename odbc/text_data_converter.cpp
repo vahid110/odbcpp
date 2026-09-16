@@ -370,14 +370,34 @@ SQLRETURN convert_floating(const std::string& value, SQLSMALLINT target_type,
 SQLRETURN convert_boolean(const std::string& value, void* buffer,
                           SQLLEN* indicator, ConversionIssue* issue) {
   SQLCHAR converted = 0;
+  bool fractional = false;
   if (value == "t" || value == "true" || value == "1") {
     converted = 1;
   } else if (value != "f" && value != "false" && value != "0") {
-    if (issue) *issue = ConversionIssue::InvalidCharacterValue;
-    return SQL_ERROR;
+    SQLSMALLINT numeric = 0;
+    ConversionIssue numeric_issue = ConversionIssue::None;
+    const auto result = convert_integral<SQLSMALLINT>(
+        value, &numeric, nullptr, &numeric_issue);
+    if (result == SQL_ERROR) {
+      if (issue) *issue = numeric_issue;
+      return SQL_ERROR;
+    }
+    const bool negative_fraction =
+        trim_whitespace(value).starts_with('-') &&
+        result == SQL_SUCCESS_WITH_INFO && numeric == 0;
+    if (numeric < 0 || numeric > 1 || negative_fraction) {
+      if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+      return SQL_ERROR;
+    }
+    converted = static_cast<SQLCHAR>(numeric);
+    fractional = result == SQL_SUCCESS_WITH_INFO;
   }
   *static_cast<SQLCHAR*>(buffer) = converted;
   store_indicator(indicator, static_cast<SQLLEN>(sizeof(SQLCHAR)));
+  if (fractional) {
+    if (issue) *issue = ConversionIssue::FractionalTruncation;
+    return SQL_SUCCESS_WITH_INFO;
+  }
   return SQL_SUCCESS;
 }
 
