@@ -1247,9 +1247,11 @@ static SQLRETURN SQLGetDiagField_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
 
   auto copy_string = [&](const std::string& str) -> SQLRETURN {
     if (string_length_ptr) {
-      *string_length_ptr = static_cast<SQLSMALLINT>(std::min<std::size_t>(
+      const auto length = static_cast<SQLSMALLINT>(std::min<std::size_t>(
           str.length(), static_cast<std::size_t>(
                             std::numeric_limits<SQLSMALLINT>::max())));
+      std::memcpy(reinterpret_cast<std::byte*>(string_length_ptr), &length,
+                  sizeof(length));
     }
 
     if (diag_info_ptr && buffer_length > 0) {

@@ -124,6 +124,21 @@ TEST_F(DiagnosticsTest, NumericFieldsHandleUnalignedOutput) {
     EXPECT_EQ(previous_output, storage);
 }
 
+TEST_F(DiagnosticsTest, StringFieldLengthHandlesUnalignedOutput) {
+    ASSERT_EQ(SQL_ERROR, SQLExecDirect(hstmt, nullptr, SQL_NTS));
+    alignas(SQLSMALLINT) std::array<std::byte, 1 + sizeof(SQLSMALLINT)>
+        length_storage{};
+    auto* length = reinterpret_cast<SQLSMALLINT*>(length_storage.data() + 1);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(
+        SQL_HANDLE_STMT, hstmt, 1, SQL_DIAG_MESSAGE_TEXT,
+        nullptr, 0, length));
+    SQLSMALLINT required = -1;
+    std::memcpy(&required, reinterpret_cast<const std::byte*>(length),
+                sizeof(required));
+    EXPECT_EQ(21, required);
+}
+
 TEST_F(DiagnosticsTest, DiagnosticRecordHandlesUnalignedOutputs) {
     ASSERT_EQ(SQL_ERROR, SQLExecDirect(hstmt, nullptr, SQL_NTS));
 

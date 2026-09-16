@@ -1073,6 +1073,10 @@ substitute for ODBC diagnostics.
   strict UBSan misaligned native-error store, then covered A/W diagnostic
   records, unaligned wide SQLSTATE and message buffers, the wide diagnostic
   field's byte-length variant, and no-data output preservation.
+- Audit batch 157 copies narrow `SQLGetDiagField` string lengths byte-wise.
+  A focused unit test first reproduced a strict UBSan misaligned
+  `SQLSMALLINT` store, then verified the length-only query on an unaligned
+  output pointer.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
