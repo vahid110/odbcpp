@@ -124,6 +124,90 @@ TEST_F(DiagnosticsTest, NumericFieldsHandleUnalignedOutput) {
     EXPECT_EQ(previous_output, storage);
 }
 
+TEST_F(DiagnosticsTest, DiagnosticRecordHandlesUnalignedOutputs) {
+    ASSERT_EQ(SQL_ERROR, SQLExecDirect(hstmt, nullptr, SQL_NTS));
+
+    alignas(SQLINTEGER) std::array<std::byte, 1 + sizeof(SQLINTEGER)>
+        native_storage{};
+    alignas(SQLSMALLINT) std::array<std::byte, 1 + sizeof(SQLSMALLINT)>
+        length_storage{};
+    auto* native = reinterpret_cast<SQLINTEGER*>(native_storage.data() + 1);
+    auto* length = reinterpret_cast<SQLSMALLINT*>(length_storage.data() + 1);
+
+    SQLCHAR state[6]{};
+    SQLCHAR message[32]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, native, message,
+        static_cast<SQLSMALLINT>(sizeof(message)), length));
+    EXPECT_STREQ("HY009", reinterpret_cast<const char*>(state));
+    EXPECT_STREQ("SQL statement is null",
+                reinterpret_cast<const char*>(message));
+    SQLINTEGER native_value = -1;
+    SQLSMALLINT length_value = -1;
+    std::memcpy(&native_value, reinterpret_cast<const std::byte*>(native),
+                sizeof(native_value));
+    std::memcpy(&length_value, reinterpret_cast<const std::byte*>(length),
+                sizeof(length_value));
+    EXPECT_EQ(0, native_value);
+    EXPECT_EQ(21, length_value);
+
+    alignas(SQLWCHAR) std::array<std::byte, 1 + 6 * sizeof(SQLWCHAR)>
+        wide_state_storage{};
+    alignas(SQLWCHAR) std::array<std::byte, 1 + 32 * sizeof(SQLWCHAR)>
+        wide_message_storage{};
+    auto* wide_state = reinterpret_cast<SQLWCHAR*>(
+        wide_state_storage.data() + 1);
+    auto* wide_message = reinterpret_cast<SQLWCHAR*>(
+        wide_message_storage.data() + 1);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRecW(
+        SQL_HANDLE_STMT, hstmt, 1, wide_state, native, wide_message,
+        32, length));
+    std::array<SQLWCHAR, 6> decoded_state{};
+    std::array<SQLWCHAR, 22> decoded_message{};
+    std::memcpy(decoded_state.data(),
+                reinterpret_cast<const std::byte*>(wide_state),
+                sizeof(decoded_state));
+    std::memcpy(decoded_message.data(),
+                reinterpret_cast<const std::byte*>(wide_message),
+                sizeof(decoded_message));
+    constexpr char expected_state[] = "HY009";
+    constexpr char expected_message[] = "SQL statement is null";
+    for (std::size_t index = 0; index < sizeof(expected_state); ++index) {
+        EXPECT_EQ(static_cast<SQLWCHAR>(expected_state[index]),
+                  decoded_state[index]);
+    }
+    for (std::size_t index = 0; index < sizeof(expected_message); ++index) {
+        EXPECT_EQ(static_cast<SQLWCHAR>(expected_message[index]),
+                  decoded_message[index]);
+    }
+    std::memcpy(&length_value, reinterpret_cast<const std::byte*>(length),
+                sizeof(length_value));
+    EXPECT_EQ(21, length_value);
+
+    wide_message_storage.fill(std::byte{0x7f});
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(
+        SQL_HANDLE_STMT, hstmt, 1, SQL_DIAG_MESSAGE_TEXT,
+        wide_message, static_cast<SQLSMALLINT>(32 * sizeof(SQLWCHAR)),
+        length));
+    std::memcpy(decoded_message.data(),
+                reinterpret_cast<const std::byte*>(wide_message),
+                sizeof(decoded_message));
+    for (std::size_t index = 0; index < sizeof(expected_message); ++index) {
+        EXPECT_EQ(static_cast<SQLWCHAR>(expected_message[index]),
+                  decoded_message[index]);
+    }
+    std::memcpy(&length_value, reinterpret_cast<const std::byte*>(length),
+                sizeof(length_value));
+    EXPECT_EQ(21 * sizeof(SQLWCHAR), length_value);
+
+    const auto previous_native = native_storage;
+    const auto previous_length = length_storage;
+    EXPECT_EQ(SQL_NO_DATA, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 2, nullptr, native, nullptr, 0, length));
+    EXPECT_EQ(previous_native, native_storage);
+    EXPECT_EQ(previous_length, length_storage);
+}
+
 TEST_F(DiagnosticsTest, SQLDiagReturnCodeTracksTheGeneratingCall) {
     EXPECT_EQ(SQL_ERROR,
               SQLExecDirect(hstmt, nullptr, SQL_NTS));

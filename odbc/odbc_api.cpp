@@ -96,16 +96,23 @@ namespace {
       return SQL_ERROR;
     }
     if (output_length) {
-      *output_length = static_cast<Length>(std::min<std::size_t>(
+      const auto length = static_cast<Length>(std::min<std::size_t>(
           wide->size(),
           static_cast<std::size_t>(std::numeric_limits<Length>::max())));
+      std::memcpy(reinterpret_cast<std::byte*>(output_length), &length,
+                  sizeof(length));
     }
     if (!output || buffer_length <= 0) return SQL_SUCCESS;
 
     const auto copied = std::min<std::size_t>(
         wide->size(), static_cast<std::size_t>(buffer_length - 1));
-    std::copy_n(wide->begin(), copied, output);
-    output[copied] = 0;
+    auto* output_bytes = reinterpret_cast<std::byte*>(output);
+    if (copied > 0) {
+      std::memcpy(output_bytes, wide->data(), copied * sizeof(SQLWCHAR));
+    }
+    const SQLWCHAR terminator = 0;
+    std::memcpy(output_bytes + copied * sizeof(SQLWCHAR), &terminator,
+                sizeof(terminator));
     if (copied < wide->size()) {
       if (handle && set_truncation_diagnostic) {
         handle->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
@@ -151,9 +158,11 @@ namespace {
     }
     const auto required_bytes = wide->size() * sizeof(SQLWCHAR);
     if (output_length) {
-      *output_length = static_cast<Length>(std::min<std::size_t>(
+      const auto length = static_cast<Length>(std::min<std::size_t>(
           required_bytes,
           static_cast<std::size_t>(std::numeric_limits<Length>::max())));
+      std::memcpy(reinterpret_cast<std::byte*>(output_length), &length,
+                  sizeof(length));
     }
     if (!output || buffer_length <= 0) return SQL_SUCCESS;
 
@@ -168,8 +177,15 @@ namespace {
         --copied;
       }
     }
-    if (copied > 0) std::copy_n(wide->begin(), copied, output);
-    if (buffer_units > 0) output[copied] = 0;
+    auto* output_bytes = reinterpret_cast<std::byte*>(output);
+    if (copied > 0) {
+      std::memcpy(output_bytes, wide->data(), copied * sizeof(SQLWCHAR));
+    }
+    if (buffer_units > 0) {
+      const SQLWCHAR terminator = 0;
+      std::memcpy(output_bytes + copied * sizeof(SQLWCHAR), &terminator,
+                  sizeof(terminator));
+    }
     if (copied < wide->size()) {
       if (handle && set_truncation_diagnostic) {
         handle->set_error(SQLSTATE_STRING_DATA_TRUNCATED,
@@ -1152,8 +1168,13 @@ static SQLRETURN SQLGetDiagRec_impl(SQLSMALLINT handle_type, SQLHANDLE handle, S
   
   // Set native error code
   if (native_error) {
-    *native_error = record->native_error;
+    std::memcpy(reinterpret_cast<std::byte*>(native_error),
+                &record->native_error, sizeof(SQLINTEGER));
   }
+
+  const auto required_length = static_cast<SQLSMALLINT>(std::min<std::size_t>(
+      record->message_text.length(), static_cast<std::size_t>(
+                                         std::numeric_limits<SQLSMALLINT>::max())));
   
   // Copy message text with proper truncation handling
   if (message_text && buffer_length > 0) {
@@ -1165,9 +1186,8 @@ static SQLRETURN SQLGetDiagRec_impl(SQLSMALLINT handle_type, SQLHANDLE handle, S
     message_text[copy_len] = '\0';
     
     if (text_length) {
-      *text_length = static_cast<SQLSMALLINT>(std::min<std::size_t>(
-          msg_len, static_cast<std::size_t>(
-                       std::numeric_limits<SQLSMALLINT>::max())));
+      std::memcpy(reinterpret_cast<std::byte*>(text_length),
+                  &required_length, sizeof(required_length));
     }
     
     // Return SQL_SUCCESS_WITH_INFO if message was truncated
@@ -1175,9 +1195,8 @@ static SQLRETURN SQLGetDiagRec_impl(SQLSMALLINT handle_type, SQLHANDLE handle, S
       return SQL_SUCCESS_WITH_INFO;
     }
   } else if (text_length) {
-    *text_length = static_cast<SQLSMALLINT>(std::min<std::size_t>(
-        record->message_text.length(), static_cast<std::size_t>(
-                                           std::numeric_limits<SQLSMALLINT>::max())));
+    std::memcpy(reinterpret_cast<std::byte*>(text_length),
+                &required_length, sizeof(required_length));
   }
   
   return SQL_SUCCESS;
@@ -1199,13 +1218,18 @@ static SQLRETURN SQLGetDiagRecW_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
 
   if (sqlstate) {
     const auto state_length = std::min<std::size_t>(5, record->sqlstate.size());
+    std::array<SQLWCHAR, 6> wide_state{};
     for (std::size_t i = 0; i < state_length; ++i) {
-      sqlstate[i] = static_cast<SQLWCHAR>(
+      wide_state[i] = static_cast<SQLWCHAR>(
           static_cast<unsigned char>(record->sqlstate[i]));
     }
-    sqlstate[state_length] = 0;
+    std::memcpy(reinterpret_cast<std::byte*>(sqlstate), wide_state.data(),
+                (state_length + 1) * sizeof(SQLWCHAR));
   }
-  if (native_error) *native_error = record->native_error;
+  if (native_error) {
+    std::memcpy(reinterpret_cast<std::byte*>(native_error),
+                &record->native_error, sizeof(SQLINTEGER));
+  }
 
   return write_wide_output(
       obj, record->message_text, message_text, buffer_length, text_length,

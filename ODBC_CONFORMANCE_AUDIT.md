@@ -1068,6 +1068,11 @@ substitute for ODBC diagnostics.
   buffers. A unit test first reproduced a strict UBSan misaligned `SQLINTEGER`
   store, then checked unaligned header and record values through the A/W entry
   points, including no-data output preservation.
+- Audit batch 156 removes typed stores from `SQLGetDiagRec` numeric outputs and
+  from the shared wide-string output helpers. A unit test first reproduced a
+  strict UBSan misaligned native-error store, then covered A/W diagnostic
+  records, unaligned wide SQLSTATE and message buffers, the wide diagnostic
+  field's byte-length variant, and no-data output preservation.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
