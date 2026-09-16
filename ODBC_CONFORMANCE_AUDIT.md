@@ -1132,6 +1132,10 @@ substitute for ODBC diagnostics.
   across success, truncation, conversion error, and no-data paths. A
   PostgreSQL-backed strict UBSan test first reproduced a misaligned
   rows-fetched store, then checks all four outcomes with unaligned outputs.
+- Audit batch 171 copies bound-column and `SQLGetData` length indicators
+  byte-wise, including the shared text conversion path. A PostgreSQL-backed
+  strict UBSan test first reproduced a misaligned NULL-indicator store, then
+  checks NULL and non-NULL values plus no-write behavior before fetching.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

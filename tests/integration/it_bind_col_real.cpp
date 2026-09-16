@@ -387,6 +387,47 @@ TEST_F(BindColIntegrationTest, RowStatusOutputsHandleUnalignedBuffers) {
     expect_fetch(SQL_NO_DATA, 0, SQL_ROW_NOROW);
 }
 
+TEST_F(BindColIntegrationTest, LengthIndicatorsHandleUnalignedBuffers) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT NULL::text, 'abcd'::text", SQL_NTS));
+
+    alignas(SQLLEN) std::array<std::byte, 1 + sizeof(SQLLEN)> null_bound{};
+    alignas(SQLLEN) std::array<std::byte, 1 + sizeof(SQLLEN)> text_bound{};
+    alignas(SQLLEN) std::array<std::byte, 1 + sizeof(SQLLEN)> get_data{};
+    auto* null_indicator = reinterpret_cast<SQLLEN*>(null_bound.data() + 1);
+    auto* text_indicator = reinterpret_cast<SQLLEN*>(text_bound.data() + 1);
+    auto* data_indicator = reinterpret_cast<SQLLEN*>(get_data.data() + 1);
+    const auto read_indicator = [](const auto& storage) {
+        SQLLEN value = 0;
+        std::memcpy(&value, storage.data() + 1, sizeof(value));
+        return value;
+    };
+
+    get_data.fill(std::byte{0x5a});
+    char buffer[8]{};
+    const auto previous_output = get_data;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, buffer, sizeof(buffer), data_indicator));
+    EXPECT_EQ(previous_output, get_data);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(
+        hstmt, 1, SQL_C_CHAR, buffer, sizeof(buffer), null_indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(
+        hstmt, 2, SQL_C_CHAR, buffer, sizeof(buffer), text_indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(SQL_NULL_DATA, read_indicator(null_bound));
+    EXPECT_EQ(4, read_indicator(text_bound));
+    EXPECT_STREQ("abcd", buffer);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, buffer, sizeof(buffer), data_indicator));
+    EXPECT_EQ(SQL_NULL_DATA, read_indicator(get_data));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 2, SQL_C_CHAR, buffer, sizeof(buffer), data_indicator));
+    EXPECT_EQ(4, read_indicator(get_data));
+    EXPECT_STREQ("abcd", buffer);
+}
+
 TEST_F(BindColIntegrationTest, GetDataNullWithoutIndicatorReturns22002) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT NULL::text", SQL_NTS));

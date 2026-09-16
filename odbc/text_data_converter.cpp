@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -14,6 +15,13 @@
 
 namespace rs::odbc {
 namespace {
+
+void store_indicator(SQLLEN* indicator, SQLLEN value) {
+  if (indicator) {
+    std::memcpy(reinterpret_cast<std::byte*>(indicator), &value,
+                sizeof(value));
+  }
+}
 
 std::optional<long double> parse_number(const std::string& value,
                                         ConversionIssue* issue) {
@@ -48,7 +56,7 @@ SQLRETURN convert_integral(const std::string& value, void* buffer,
   }
   const T converted = static_cast<T>(truncated);
   std::memcpy(buffer, &converted, sizeof(converted));
-  if (indicator) *indicator = sizeof(T);
+  store_indicator(indicator, static_cast<SQLLEN>(sizeof(T)));
   if (truncated != *parsed) {
     if (issue) *issue = ConversionIssue::FractionalTruncation;
     return SQL_SUCCESS_WITH_INFO;
@@ -151,7 +159,7 @@ bool parse_time(std::string_view value, unsigned& hour, unsigned& minute,
 SQLRETURN convert_string(const std::string& value, void* buffer,
                          SQLLEN buffer_length, SQLLEN* indicator) {
   if (buffer_length < 0) return SQL_ERROR;
-  if (indicator) *indicator = static_cast<SQLLEN>(value.size());
+  store_indicator(indicator, static_cast<SQLLEN>(value.size()));
   if (buffer_length == 0) return SQL_SUCCESS_WITH_INFO;
   const auto capacity = static_cast<std::size_t>(buffer_length - 1);
   const auto copy_length = std::min(capacity, value.size());
@@ -171,7 +179,7 @@ SQLRETURN convert_wide_string(const std::string& value, void* buffer,
   }
 
   const auto required_bytes = wide->size() * sizeof(SQLWCHAR);
-  if (indicator) *indicator = static_cast<SQLLEN>(required_bytes);
+  store_indicator(indicator, static_cast<SQLLEN>(required_bytes));
   const auto buffer_units =
       static_cast<std::size_t>(buffer_length) / sizeof(SQLWCHAR);
   if (buffer_units == 0) return SQL_SUCCESS_WITH_INFO;
@@ -215,7 +223,7 @@ SQLRETURN convert_floating(const std::string& value, SQLSMALLINT target_type,
     }
     const SQLREAL converted = static_cast<SQLREAL>(*parsed);
     std::memcpy(buffer, &converted, sizeof(converted));
-    if (indicator) *indicator = sizeof(SQLREAL);
+    store_indicator(indicator, static_cast<SQLLEN>(sizeof(SQLREAL)));
   } else {
     if (*parsed < -std::numeric_limits<SQLDOUBLE>::max() ||
         *parsed > std::numeric_limits<SQLDOUBLE>::max()) {
@@ -224,7 +232,7 @@ SQLRETURN convert_floating(const std::string& value, SQLSMALLINT target_type,
     }
     const SQLDOUBLE converted = static_cast<SQLDOUBLE>(*parsed);
     std::memcpy(buffer, &converted, sizeof(converted));
-    if (indicator) *indicator = sizeof(SQLDOUBLE);
+    store_indicator(indicator, static_cast<SQLLEN>(sizeof(SQLDOUBLE)));
   }
   return SQL_SUCCESS;
 }
@@ -239,7 +247,7 @@ SQLRETURN convert_boolean(const std::string& value, void* buffer,
     return SQL_ERROR;
   }
   *static_cast<SQLCHAR*>(buffer) = converted;
-  if (indicator) *indicator = sizeof(SQLCHAR);
+  store_indicator(indicator, static_cast<SQLLEN>(sizeof(SQLCHAR)));
   return SQL_SUCCESS;
 }
 
@@ -256,7 +264,7 @@ SQLRETURN convert_date(const std::string& value, void* buffer,
       static_cast<SQLSMALLINT>(year), static_cast<SQLUSMALLINT>(month),
       static_cast<SQLUSMALLINT>(day)};
   std::memcpy(buffer, &date, sizeof(date));
-  if (indicator) *indicator = sizeof(SQL_DATE_STRUCT);
+  store_indicator(indicator, static_cast<SQLLEN>(sizeof(SQL_DATE_STRUCT)));
   return SQL_SUCCESS;
 }
 
@@ -274,7 +282,7 @@ SQLRETURN convert_time(const std::string& value, void* buffer,
       static_cast<SQLUSMALLINT>(hour), static_cast<SQLUSMALLINT>(minute),
       static_cast<SQLUSMALLINT>(second)};
   std::memcpy(buffer, &time, sizeof(time));
-  if (indicator) *indicator = sizeof(SQL_TIME_STRUCT);
+  store_indicator(indicator, static_cast<SQLLEN>(sizeof(SQL_TIME_STRUCT)));
   return SQL_SUCCESS;
 }
 
@@ -303,7 +311,7 @@ SQLRETURN convert_timestamp(const std::string& value, void* buffer,
       static_cast<SQLUSMALLINT>(minute), static_cast<SQLUSMALLINT>(second),
       fraction};
   std::memcpy(buffer, &timestamp, sizeof(timestamp));
-  if (indicator) *indicator = sizeof(SQL_TIMESTAMP_STRUCT);
+  store_indicator(indicator, static_cast<SQLLEN>(sizeof(SQL_TIMESTAMP_STRUCT)));
   return SQL_SUCCESS;
 }
 
@@ -352,7 +360,7 @@ SQLRETURN TextDataConverter::convert_data(const std::string& value,
       if (copy_length > 0) {
         std::memcpy(buffer, decoded->data(), copy_length);
       }
-      if (indicator) *indicator = static_cast<SQLLEN>(decoded->size());
+      store_indicator(indicator, static_cast<SQLLEN>(decoded->size()));
       return copy_length < decoded->size()
           ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS;
     }

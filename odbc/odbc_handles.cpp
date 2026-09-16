@@ -2517,13 +2517,14 @@ SQLRETURN ODBCStatement::fetch() {
           }
           return SQL_ERROR;
         }
-        *binding.indicator_ptr = SQL_NULL_DATA;
+        store_application_value(
+            binding.indicator_ptr, static_cast<SQLLEN>(SQL_NULL_DATA));
         continue;
       }
 
       if (binding.indicator_ptr &&
           binding.indicator_ptr != binding.octet_length_ptr) {
-        *binding.indicator_ptr = 0;
+        store_application_value(binding.indicator_ptr, static_cast<SQLLEN>(0));
       }
 
       const SQLSMALLINT sql_type = i < column_info_.size()
@@ -2649,7 +2650,7 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
                 "NULL column requires an indicator variable");
       return SQL_ERROR;
     }
-    *indicator = SQL_NULL_DATA;
+    store_application_value(indicator, static_cast<SQLLEN>(SQL_NULL_DATA));
     save_offset(complete);
     return SQL_SUCCESS;
   }
@@ -2666,7 +2667,9 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
       return SQL_ERROR;
     }
     const auto remaining = cell->size() - offset;
-    if (indicator) *indicator = static_cast<SQLLEN>(remaining);
+    if (indicator) {
+      store_application_value(indicator, static_cast<SQLLEN>(remaining));
+    }
     const auto capacity = buffer_length > 0
         ? static_cast<std::size_t>(buffer_length - 1) : 0;
     const auto copy_length = std::min(capacity, remaining);
@@ -2702,7 +2705,8 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
 
     const auto remaining = wide->size() - offset;
     if (indicator) {
-      *indicator = static_cast<SQLLEN>(remaining * sizeof(SQLWCHAR));
+      store_application_value(
+          indicator, static_cast<SQLLEN>(remaining * sizeof(SQLWCHAR)));
     }
     const auto buffer_units = buffer_length > 0
         ? static_cast<std::size_t>(buffer_length) / sizeof(SQLWCHAR) : 0;
@@ -2748,7 +2752,9 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
       return SQL_ERROR;
     }
     const auto remaining = decoded->size() - offset;
-    if (indicator) *indicator = static_cast<SQLLEN>(remaining);
+    if (indicator) {
+      store_application_value(indicator, static_cast<SQLLEN>(remaining));
+    }
     const auto capacity = static_cast<std::size_t>(buffer_length);
     const auto copy_length = std::min(capacity, remaining);
     if (copy_length > 0) {
