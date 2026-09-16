@@ -1087,6 +1087,10 @@ substitute for ODBC diagnostics.
   reproduced a misaligned environment-attribute length store, then exercised
   environment, wide connection, and statement attributes plus error-path
   preservation on the same unaligned buffer.
+- Audit batch 160 removes typed stores from `SQLGetEnvAttr` numeric values.
+  A strict UBSan unit test first reproduced a misaligned ODBC-version store,
+  then covered the ODBC version, output-termination flag, iODBC Unicode type,
+  and output preservation for an unsupported attribute.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

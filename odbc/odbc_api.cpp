@@ -1977,9 +1977,11 @@ static SQLRETURN SQLGetEnvAttr_impl(SQLHENV environment_handle, SQLINTEGER attri
                    "Environment attribute output pointer is null");
     return SQL_ERROR;
   }
+  const auto copy_value = [&](SQLINTEGER result) {
+    std::memcpy(value, &result, sizeof(result));
+  };
   if (attribute == IODBC_ATTR_DRIVER_UNICODE_TYPE) {
-    *static_cast<SQLINTEGER*>(value) =
-        static_cast<SQLINTEGER>(NATIVE_SQLWCHAR_ENCODING);
+    copy_value(static_cast<SQLINTEGER>(NATIVE_SQLWCHAR_ENCODING));
     if (string_length) {
       const auto length = static_cast<SQLINTEGER>(sizeof(SQLINTEGER));
       std::memcpy(reinterpret_cast<std::byte*>(string_length), &length,
@@ -1989,7 +1991,7 @@ static SQLRETURN SQLGetEnvAttr_impl(SQLHENV environment_handle, SQLINTEGER attri
   }
   switch (attribute) {
     case SQL_ATTR_ODBC_VERSION:
-      *static_cast<SQLINTEGER*>(value) = env->get_odbc_version();
+      copy_value(env->get_odbc_version());
       break;
     case SQL_ATTR_OUTPUT_NTS:
       if (!env->has_odbc_version()) {
@@ -1997,7 +1999,7 @@ static SQLRETURN SQLGetEnvAttr_impl(SQLHENV environment_handle, SQLINTEGER attri
                        "ODBC version must be selected first");
         return SQL_ERROR;
       }
-      *static_cast<SQLINTEGER*>(value) = SQL_TRUE;
+      copy_value(SQL_TRUE);
       break;
     default:
       env->set_error(SQLSTATE_INVALID_ATTRIBUTE,

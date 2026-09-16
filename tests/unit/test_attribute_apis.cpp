@@ -556,6 +556,42 @@ TEST_F(AttributeApisTest, AttributeLengthsHandleUnalignedOutput) {
   EXPECT_EQ(previous_length, length_storage);
 }
 
+TEST_F(AttributeApisTest, EnvironmentValuesHandleUnalignedOutput) {
+  alignas(SQLINTEGER) std::array<std::byte, 1 + sizeof(SQLINTEGER)>
+      value_storage{};
+  void* output = value_storage.data() + 1;
+  const auto read_value = [&] {
+    SQLINTEGER result = -1;
+    std::memcpy(&result, output, sizeof(result));
+    return result;
+  };
+  SQLINTEGER length = -1;
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetEnvAttr(
+      environment_, SQL_ATTR_ODBC_VERSION, output, sizeof(SQLINTEGER),
+      &length));
+  EXPECT_EQ(SQL_OV_ODBC3, read_value());
+  EXPECT_EQ(sizeof(SQLINTEGER), length);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetEnvAttr(
+      environment_, SQL_ATTR_OUTPUT_NTS, output, sizeof(SQLINTEGER),
+      &length));
+  EXPECT_EQ(SQL_TRUE, read_value());
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetEnvAttr(
+      environment_, rs::odbc::IODBC_ATTR_DRIVER_UNICODE_TYPE,
+      output, sizeof(SQLINTEGER), &length));
+  EXPECT_EQ(static_cast<SQLINTEGER>(rs::odbc::NATIVE_SQLWCHAR_ENCODING),
+            read_value());
+
+  const auto previous_value = value_storage;
+  length = 17;
+  EXPECT_EQ(SQL_ERROR, SQLGetEnvAttr(
+      environment_, 0x7fffffff, output, sizeof(SQLINTEGER), &length));
+  EXPECT_EQ(previous_value, value_storage);
+  EXPECT_EQ(17, length);
+}
+
 TEST_F(AttributeApisTest, ReportsInformationStringTruncation) {
   SQLCHAR value[5]{};
   SQLSMALLINT required = 0;
