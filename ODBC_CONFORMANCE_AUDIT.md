@@ -1153,8 +1153,13 @@ substitute for ODBC diagnostics.
   floating-point fallback by an exclusive power-of-two limit. Strict UBSan
   first reproduced an out-of-range `SQL_C_SBIGINT` cast at the maximum value;
   unit and PostgreSQL tests now cover both 64-bit limits, fractional
-  truncation, overflow diagnostics, and unchanged error outputs. Exact
-  scientific-notation conversion at the 64-bit boundary remains open.
+  truncation, overflow diagnostics, and unchanged error outputs.
+- Audit batch 176 parses ordinary decimal and scientific notation as decimal
+  digits before converting to C signed integers, eliminating floating-point
+  rounding at the 64-bit boundary. A failing unit test first reproduced the
+  positive maximum being rejected; unit and PostgreSQL-backed tests now cover
+  both signed limits, fractional truncation, overflow and invalid-exponent
+  diagnostics, extreme exponent magnitudes, and untouched outputs on error.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

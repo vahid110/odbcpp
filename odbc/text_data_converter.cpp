@@ -6,6 +6,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -73,46 +74,76 @@ SQLRETURN convert_integral(const std::string& value, void* buffer,
     }
   }
 
-  const auto dot = value.find('.');
-  if (dot != std::string::npos &&
-      value.find('.', dot + 1) == std::string::npos &&
-      value.find_first_of("eE") == std::string::npos) {
-    auto integer = std::string_view(value).substr(0, dot);
-    const auto fraction = std::string_view(value).substr(dot + 1);
-    const bool negative = !integer.empty() && integer.front() == '-';
-    if (!integer.empty() && integer.front() == '+') {
-      integer.remove_prefix(1);
+  // Parse decimal/scientific notation as digits so 64-bit boundaries never
+  // pass through floating point. Keep strtold below for legacy text forms.
+  std::size_t pos = 0;
+  const bool negative = !value.empty() && value.front() == '-';
+  if (!value.empty() && (value.front() == '-' || value.front() == '+')) ++pos;
+  std::string digits;
+  digits.reserve(value.size());
+  while (pos < value.size() && value[pos] >= '0' && value[pos] <= '9') {
+    digits.push_back(value[pos++]);
+  }
+  const auto whole_digits = digits.size();
+  if (pos < value.size() && value[pos] == '.') {
+    ++pos;
+    while (pos < value.size() && value[pos] >= '0' && value[pos] <= '9') {
+      digits.push_back(value[pos++]);
     }
-    const bool has_integer_digits = !integer.empty() && integer != "-";
-    const bool valid_fraction = std::all_of(
-        fraction.begin(), fraction.end(), [](char ch) {
-          return ch >= '0' && ch <= '9';
-        });
-    if ((has_integer_digits || !fraction.empty()) && valid_fraction) {
-      T decimal_integer{};
-      std::errc decimal_error{};
-      bool valid_integer = true;
-      if (has_integer_digits) {
-        const auto [integer_end, integer_error] = std::from_chars(
-            integer.data(), integer.data() + integer.size(),
-            decimal_integer);
-        valid_integer = integer_end == integer.data() + integer.size();
-        decimal_error = integer_error;
-      } else if (negative) {
-        decimal_integer = 0;
-      }
-      if (valid_integer && decimal_error == std::errc::result_out_of_range) {
+  }
+  bool negative_exponent = false;
+  std::size_t exponent = 0;
+  bool valid_exponent = true;
+  if (pos < value.size() && (value[pos] == 'e' || value[pos] == 'E')) {
+    ++pos;
+    if (pos < value.size() && (value[pos] == '-' || value[pos] == '+')) {
+      negative_exponent = value[pos++] == '-';
+    }
+    const auto exponent_start = pos;
+    while (pos < value.size() && value[pos] >= '0' && value[pos] <= '9') {
+      const auto digit = static_cast<std::size_t>(value[pos++] - '0');
+      const auto max = std::numeric_limits<std::size_t>::max();
+      exponent = exponent > (max - digit) / 10 ? max : exponent * 10 + digit;
+    }
+    valid_exponent = pos != exponent_start;
+  }
+  if (!digits.empty() && valid_exponent && pos == value.size()) {
+    const auto first_nonzero = digits.find_first_not_of('0');
+    if (first_nonzero == std::string::npos) return finish(T{}, false);
+
+    const auto max_size = std::numeric_limits<std::size_t>::max();
+    const auto integral_digits = negative_exponent
+        ? (exponent >= whole_digits ? 0 : whole_digits - exponent)
+        : (exponent > max_size - whole_digits ? max_size
+                                              : whole_digits + exponent);
+    if (integral_digits <= first_nonzero) return finish(T{}, true);
+    if (integral_digits - first_nonzero >
+        static_cast<std::size_t>(std::numeric_limits<T>::digits10 + 1)) {
+      if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+      return SQL_ERROR;
+    }
+
+    const auto limit = static_cast<std::uintmax_t>(
+        std::numeric_limits<T>::max()) + (negative ? 1u : 0u);
+    std::uintmax_t magnitude = 0;
+    for (auto i = first_nonzero; i < integral_digits; ++i) {
+      const auto digit = static_cast<std::uintmax_t>(
+          i < digits.size() ? digits[i] - '0' : 0);
+      if (magnitude > (limit - digit) / 10) {
         if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
         return SQL_ERROR;
       }
-      if (valid_integer && decimal_error == std::errc{}) {
-        const bool fractional = std::any_of(
-            fraction.begin(), fraction.end(), [](char ch) {
-              return ch != '0';
-            });
-        return finish(decimal_integer, fractional);
-      }
+      magnitude = magnitude * 10 + digit;
     }
+    const auto converted = negative
+        ? (magnitude == limit ? std::numeric_limits<T>::min()
+                              : static_cast<T>(-static_cast<std::intmax_t>(magnitude)))
+        : static_cast<T>(magnitude);
+    const auto fraction_start = std::min(integral_digits, digits.size());
+    const bool fractional = std::any_of(
+        digits.begin() + fraction_start, digits.end(),
+        [](char digit) { return digit != '0'; });
+    return finish(converted, fractional);
   }
 
   const auto parsed = parse_number(value, issue);
