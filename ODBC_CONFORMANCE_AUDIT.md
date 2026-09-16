@@ -1062,6 +1062,8 @@ substitute for ODBC diagnostics.
   A PostgreSQL-backed test first reproduced a strict UBSan misaligned
   `SQLUSMALLINT` store, then verified two- and four-byte numeric values through
   the A/W entry points and output preservation on an unknown information type.
+  Windows CI also caught a platform macro collision with the test's `small`
+  variable; the variable was renamed before rerunning CI.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

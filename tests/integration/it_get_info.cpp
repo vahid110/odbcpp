@@ -351,9 +351,9 @@ TEST_F(GetInfoIntegrationTest, NumericOutputNeedNotBeAligned) {
   ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(
       connection_, SQL_TXN_CAPABLE, output, sizeof(SQLUSMALLINT), &length));
   EXPECT_EQ(static_cast<SQLSMALLINT>(sizeof(SQLUSMALLINT)), length);
-  SQLUSMALLINT small = 0;
-  std::memcpy(&small, output, sizeof(small));
-  EXPECT_EQ(SQL_TC_ALL, small);
+  SQLUSMALLINT small_value = 0;
+  std::memcpy(&small_value, output, sizeof(small_value));
+  EXPECT_EQ(SQL_TC_ALL, small_value);
 
   length = -1;
   ASSERT_EQ(SQL_SUCCESS, SQLGetInfoW(
