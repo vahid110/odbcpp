@@ -4374,7 +4374,8 @@ SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT 
   if (metadata_result != SQL_SUCCESS) return metadata_result;
   if (is_count_column_attribute(field_identifier)) {
     if (numeric_attribute) {
-      *numeric_attribute = static_cast<SQLLEN>(column_info_.size());
+      store_application_value(
+          numeric_attribute, static_cast<SQLLEN>(column_info_.size()));
     }
     return SQL_SUCCESS;
   }
@@ -4421,7 +4422,8 @@ SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT 
       static_cast<char*>(character_attribute)[copy_len] = '\0';
     }
     if (string_length) {
-      *string_length = static_cast<SQLSMALLINT>(text->length());
+      store_application_value(
+          string_length, static_cast<SQLSMALLINT>(text->length()));
     }
     if (character_attribute && !text->empty() &&
         static_cast<std::size_t>(buffer_length) <= text->length()) {
@@ -4433,52 +4435,56 @@ SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT 
   }
 
   if (numeric_attribute) {
+    std::optional<SQLLEN> value;
     if (field_identifier == SQL_DESC_AUTO_UNIQUE_VALUE ||
         field_identifier == SQL_COLUMN_AUTO_INCREMENT) {
-      *numeric_attribute = record->auto_unique_value;
+      value = record->auto_unique_value;
     } else if (field_identifier == SQL_DESC_CASE_SENSITIVE ||
                field_identifier == SQL_COLUMN_CASE_SENSITIVE) {
-      *numeric_attribute = record->case_sensitive;
+      value = record->case_sensitive;
     } else if (field_identifier == SQL_DESC_DISPLAY_SIZE ||
                field_identifier == SQL_COLUMN_DISPLAY_SIZE) {
-      *numeric_attribute = record->display_size;
+      value = record->display_size;
     } else if (field_identifier == SQL_DESC_FIXED_PREC_SCALE ||
                field_identifier == SQL_COLUMN_MONEY) {
-      *numeric_attribute = record->fixed_prec_scale;
+      value = record->fixed_prec_scale;
     } else if (field_identifier == SQL_DESC_NUM_PREC_RADIX) {
-      *numeric_attribute = record->num_prec_radix;
+      value = record->num_prec_radix;
     } else if (field_identifier == SQL_DESC_OCTET_LENGTH) {
-      *numeric_attribute = record->octet_length;
+      value = record->octet_length;
     } else if (field_identifier == SQL_DESC_SEARCHABLE ||
                field_identifier == SQL_COLUMN_SEARCHABLE) {
-      *numeric_attribute = record->searchable;
+      value = record->searchable;
     } else if (field_identifier == SQL_DESC_UNSIGNED ||
                field_identifier == SQL_COLUMN_UNSIGNED) {
-      *numeric_attribute = record->unsigned_attribute;
+      value = record->unsigned_attribute;
     } else if (field_identifier == SQL_DESC_UPDATABLE ||
                field_identifier == SQL_COLUMN_UPDATABLE) {
-      *numeric_attribute = record->updatable;
+      value = record->updatable;
     } else if (field_identifier == SQL_DESC_TYPE) {
-      *numeric_attribute = record->type;
+      value = record->type;
     } else if (field_identifier == SQL_DESC_CONCISE_TYPE ||
         field_identifier == SQL_COLUMN_TYPE) {
-      *numeric_attribute = record->concise_type;
+      value = record->concise_type;
     } else if (field_identifier == SQL_DESC_LENGTH) {
-      *numeric_attribute = static_cast<SQLLEN>(record->length);
+      value = static_cast<SQLLEN>(record->length);
     } else if (field_identifier == SQL_COLUMN_LENGTH ||
                field_identifier == SQL_COLUMN_PRECISION) {
-      *numeric_attribute = static_cast<SQLLEN>(col.column_size);
+      value = static_cast<SQLLEN>(col.column_size);
     } else if (field_identifier == SQL_DESC_PRECISION) {
-      *numeric_attribute = record->precision;
+      value = record->precision;
     } else if (field_identifier == SQL_DESC_SCALE) {
-      *numeric_attribute = record->scale;
+      value = record->scale;
     } else if (field_identifier == SQL_COLUMN_SCALE) {
-      *numeric_attribute = col.decimal_digits;
+      value = col.decimal_digits;
     } else if (field_identifier == SQL_DESC_NULLABLE ||
                field_identifier == SQL_COLUMN_NULLABLE) {
-      *numeric_attribute = record->nullable;
+      value = record->nullable;
     } else if (field_identifier == SQL_DESC_UNNAMED) {
-      *numeric_attribute = record->unnamed;
+      value = record->unnamed;
+    }
+    if (value) {
+      store_application_value(numeric_attribute, *value);
     }
   }
   return SQL_SUCCESS;

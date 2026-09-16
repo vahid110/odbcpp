@@ -879,6 +879,45 @@ TEST_F(MetadataIntegrationTest, DescribeOutputsHandleUnalignedBuffers) {
     EXPECT_EQ(parameter_output, storage);
 }
 
+TEST_F(MetadataIntegrationTest, ColumnAttributeOutputsHandleUnalignedBuffers) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT 12.34::numeric(8,2) AS amount", SQL_NTS));
+
+    alignas(SQLLEN) std::array<std::byte, 1 + sizeof(SQLLEN)> storage{};
+    auto* string_length = reinterpret_cast<SQLSMALLINT*>(storage.data() + 1);
+    auto* numeric_value = reinterpret_cast<SQLLEN*>(storage.data() + 1);
+    char label[32]{};
+    SQLSMALLINT expected_length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        hstmt, 1, SQL_DESC_LABEL, label, sizeof(label), &expected_length,
+        nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+        hstmt, 1, SQL_DESC_LABEL, label, sizeof(label), string_length,
+        nullptr));
+    SQLSMALLINT actual_length = 0;
+    std::memcpy(&actual_length, storage.data() + 1, sizeof(actual_length));
+    EXPECT_EQ(expected_length, actual_length);
+
+    const auto expect_numeric = [&](SQLUSMALLINT column, SQLUSMALLINT field) {
+        SQLLEN expected = -1;
+        EXPECT_EQ(SQL_SUCCESS, SQLColAttribute(
+            hstmt, column, field, nullptr, 0, nullptr, &expected));
+        storage.fill(std::byte{0x5a});
+        EXPECT_EQ(SQL_SUCCESS, SQLColAttribute(
+            hstmt, column, field, nullptr, 0, nullptr, numeric_value));
+        SQLLEN actual = -1;
+        std::memcpy(&actual, storage.data() + 1, sizeof(actual));
+        EXPECT_EQ(expected, actual);
+    };
+    expect_numeric(999, SQL_DESC_COUNT);
+    expect_numeric(1, SQL_DESC_PRECISION);
+
+    const auto previous_output = storage;
+    EXPECT_EQ(SQL_ERROR, SQLColAttribute(
+        hstmt, 1, 9999, nullptr, 0, string_length, numeric_value));
+    EXPECT_EQ(previous_output, storage);
+}
+
 TEST_F(MetadataIntegrationTest, ColumnAttributesMatchImplementationDescriptor) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
         hstmt,
