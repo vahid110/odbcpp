@@ -5,6 +5,7 @@
 #include "tests/test_connection_config.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
@@ -596,6 +597,41 @@ TEST_F(MetadataIntegrationTest, ReportsAffectedRows) {
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
         SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("24000", reinterpret_cast<char*>(state));
+}
+
+TEST_F(MetadataIntegrationTest, CountOutputsHandleUnalignedBuffers) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, reinterpret_cast<SQLCHAR*>(
+                   const_cast<char*>("SELECT 1 AS value")), SQL_NTS));
+
+    alignas(SQLLEN) std::array<std::byte, 1 + sizeof(SQLLEN)> storage{};
+    auto* column_output = reinterpret_cast<SQLSMALLINT*>(storage.data() + 1);
+    auto* row_output = reinterpret_cast<SQLLEN*>(storage.data() + 1);
+
+    SQLSMALLINT expected_columns = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &expected_columns));
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, column_output));
+    SQLSMALLINT actual_columns = 0;
+    std::memcpy(&actual_columns, storage.data() + 1,
+                sizeof(actual_columns));
+    EXPECT_EQ(expected_columns, actual_columns);
+
+    SQLLEN expected_rows = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLRowCount(hstmt, &expected_rows));
+    ASSERT_EQ(SQL_SUCCESS, SQLRowCount(hstmt, row_output));
+    SQLLEN actual_rows = -2;
+    std::memcpy(&actual_rows, storage.data() + 1, sizeof(actual_rows));
+    EXPECT_EQ(expected_rows, actual_rows);
+
+    SQLHSTMT empty_statement = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(
+        SQL_HANDLE_STMT, hdbc, &empty_statement));
+    const auto previous_output = storage;
+    EXPECT_EQ(SQL_ERROR, SQLNumResultCols(empty_statement, column_output));
+    EXPECT_EQ(previous_output, storage);
+    EXPECT_EQ(SQL_ERROR, SQLRowCount(empty_statement, row_output));
+    EXPECT_EQ(previous_output, storage);
+    EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, empty_statement));
 }
 
 TEST_F(MetadataIntegrationTest, DescribesPreparedResultsBeforeExecution) {

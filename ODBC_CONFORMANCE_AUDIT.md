@@ -1103,6 +1103,10 @@ substitute for ODBC diagnostics.
   into caller buffers. A PostgreSQL-backed strict UBSan test first reproduced
   a misaligned `SQLUSMALLINT` store, then checked single-function, ODBC 2 array,
   and ODBC 3 bitmap outputs plus no-write behavior for an invalid function id.
+- Audit batch 164 copies `SQLNumResultCols` and `SQLRowCount` results from
+  aligned locals into caller buffers. A PostgreSQL-backed strict UBSan test
+  first reproduced a misaligned column-count store, then checks both outputs
+  and preserves their buffer on statement-sequence errors.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

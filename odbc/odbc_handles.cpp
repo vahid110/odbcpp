@@ -14,6 +14,7 @@
 #include <charconv>
 #include <chrono>
 #include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -3473,7 +3474,9 @@ SQLRETURN ODBCStatement::get_num_result_cols(SQLSMALLINT* column_count) {
   const auto metadata_result = ensure_result_metadata();
   if (metadata_result != SQL_SUCCESS) return metadata_result;
   
-  *column_count = static_cast<SQLSMALLINT>(column_info_.size());
+  const auto count = static_cast<SQLSMALLINT>(column_info_.size());
+  std::memcpy(reinterpret_cast<std::byte*>(column_count), &count,
+              sizeof(count));
   return SQL_SUCCESS;
 }
 
@@ -4282,7 +4285,9 @@ SQLRETURN ODBCStatement::row_count(SQLLEN* row_count_value) {
     set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "No statement executed");
     return SQL_ERROR;
   }
-  *row_count_value = affected_rows_;
+  const SQLLEN count = affected_rows_;
+  std::memcpy(reinterpret_cast<std::byte*>(row_count_value), &count,
+              sizeof(count));
   return SQL_SUCCESS;
 }
 
