@@ -935,9 +935,11 @@ static SQLRETURN SQLGetConnectAttr_impl(SQLHDBC connection_handle, SQLINTEGER at
   const auto result = conn->get_attribute(
       attribute, value);
   if (result == SQL_SUCCESS && string_length) {
-    *string_length = static_cast<SQLINTEGER>(
+    const auto length = static_cast<SQLINTEGER>(
         attribute == SQL_ATTR_QUIET_MODE ? sizeof(SQLHWND)
                                          : sizeof(SQLUINTEGER));
+    std::memcpy(reinterpret_cast<std::byte*>(string_length), &length,
+                sizeof(length));
   }
   return result;
 }
@@ -1109,7 +1111,9 @@ static SQLRETURN SQLGetStmtAttr_impl(SQLHSTMT statement_handle, SQLINTEGER attri
   }
   const auto result = stmt->get_attribute(attribute, value);
   if (result == SQL_SUCCESS && string_length) {
-    *string_length = static_cast<SQLINTEGER>(sizeof(SQLULEN));
+    const auto length = static_cast<SQLINTEGER>(sizeof(SQLULEN));
+    std::memcpy(reinterpret_cast<std::byte*>(string_length), &length,
+                sizeof(length));
   }
   return result;
 }
@@ -1977,7 +1981,9 @@ static SQLRETURN SQLGetEnvAttr_impl(SQLHENV environment_handle, SQLINTEGER attri
     *static_cast<SQLINTEGER*>(value) =
         static_cast<SQLINTEGER>(NATIVE_SQLWCHAR_ENCODING);
     if (string_length) {
-      *string_length = static_cast<SQLINTEGER>(sizeof(SQLINTEGER));
+      const auto length = static_cast<SQLINTEGER>(sizeof(SQLINTEGER));
+      std::memcpy(reinterpret_cast<std::byte*>(string_length), &length,
+                  sizeof(length));
     }
     return SQL_SUCCESS;
   }
@@ -1999,7 +2005,9 @@ static SQLRETURN SQLGetEnvAttr_impl(SQLHENV environment_handle, SQLINTEGER attri
       return SQL_ERROR;
   }
   if (string_length) {
-    *string_length = static_cast<SQLINTEGER>(sizeof(SQLINTEGER));
+    const auto length = static_cast<SQLINTEGER>(sizeof(SQLINTEGER));
+    std::memcpy(reinterpret_cast<std::byte*>(string_length), &length,
+                sizeof(length));
   }
   return SQL_SUCCESS;
 }

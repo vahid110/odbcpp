@@ -518,6 +518,44 @@ TEST_F(AttributeApisTest, InformationStringLengthHandlesUnalignedOutput) {
   EXPECT_EQ(5, required);
 }
 
+TEST_F(AttributeApisTest, AttributeLengthsHandleUnalignedOutput) {
+  alignas(SQLINTEGER) std::array<std::byte, 1 + sizeof(SQLINTEGER)>
+      length_storage{};
+  auto* length = reinterpret_cast<SQLINTEGER*>(length_storage.data() + 1);
+  const auto read_length = [&] {
+    SQLINTEGER result = -1;
+    std::memcpy(&result, reinterpret_cast<const std::byte*>(length),
+                sizeof(result));
+    return result;
+  };
+
+  SQLINTEGER version = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetEnvAttr(
+      environment_, SQL_ATTR_ODBC_VERSION, &version, sizeof(version), length));
+  EXPECT_EQ(SQL_OV_ODBC3, version);
+  EXPECT_EQ(sizeof(version), read_length());
+
+  SQLUINTEGER login_timeout = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(
+      connection_, SQL_ATTR_LOGIN_TIMEOUT, &login_timeout,
+      sizeof(login_timeout), length));
+  EXPECT_EQ(30u, login_timeout);
+  EXPECT_EQ(sizeof(login_timeout), read_length());
+
+  SQLULEN query_timeout = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_QUERY_TIMEOUT, &query_timeout,
+      sizeof(query_timeout), length));
+  EXPECT_EQ(0u, query_timeout);
+  EXPECT_EQ(sizeof(query_timeout), read_length());
+
+  const auto previous_length = length_storage;
+  EXPECT_EQ(SQL_ERROR, SQLGetStmtAttr(
+      statement_, 0x7fffffff, &query_timeout,
+      sizeof(query_timeout), length));
+  EXPECT_EQ(previous_length, length_storage);
+}
+
 TEST_F(AttributeApisTest, ReportsInformationStringTruncation) {
   SQLCHAR value[5]{};
   SQLSMALLINT required = 0;

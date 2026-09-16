@@ -1082,6 +1082,11 @@ substitute for ODBC diagnostics.
   strict UBSan misaligned string-length store; PostgreSQL-backed tests cover
   two- and four-byte numeric values through A/W entry points and preserve the
   output length on an unknown information type.
+- Audit batch 159 copies `SQLGetEnvAttr`, `SQLGetConnectAttr`, and
+  `SQLGetStmtAttr` output lengths byte-wise. A strict UBSan unit test first
+  reproduced a misaligned environment-attribute length store, then exercised
+  environment, wide connection, and statement attributes plus error-path
+  preservation on the same unaligned buffer.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
