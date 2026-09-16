@@ -1179,6 +1179,10 @@ substitute for ODBC diagnostics.
   date and reporting `01S07` only when nonzero time fields are discarded.
   Unit and PostgreSQL-backed tests cover zero and nonzero time, subnanosecond
   fractions, malformed date/time text, and untouched outputs on error.
+- Audit batch 181 accepts dates for `SQL_C_TIMESTAMP` and initializes all
+  time fields to zero, as required by the ODBC date conversion table. Unit and
+  PostgreSQL-backed tests verify leap dates, outer spaces, invalid dates,
+  diagnostic classification, and untouched outputs on error.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

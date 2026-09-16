@@ -1035,6 +1035,42 @@ TEST_F(BindColIntegrationTest, TimestampToDateReportsLostTime) {
     EXPECT_STREQ("22007", reinterpret_cast<char*>(state));
 }
 
+TEST_F(BindColIntegrationTest, DateToTimestampZeroesTimeFields) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)
+            "SELECT DATE '2024-02-29', '2024-02-30'::text",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQL_TIMESTAMP_STRUCT timestamp{};
+    timestamp.hour = 73;
+    timestamp.minute = 74;
+    timestamp.second = 75;
+    timestamp.fraction = 76;
+    SQLLEN length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_TIMESTAMP, &timestamp, sizeof(timestamp), &length));
+    EXPECT_EQ(2024, timestamp.year);
+    EXPECT_EQ(2, timestamp.month);
+    EXPECT_EQ(29, timestamp.day);
+    EXPECT_EQ(0, timestamp.hour);
+    EXPECT_EQ(0, timestamp.minute);
+    EXPECT_EQ(0, timestamp.second);
+    EXPECT_EQ(0u, timestamp.fraction);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(timestamp)), length);
+
+    timestamp.year = 73;
+    length = 74;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(
+        hstmt, 2, SQL_C_TIMESTAMP, &timestamp, sizeof(timestamp), &length));
+    EXPECT_EQ(73, timestamp.year);
+    EXPECT_EQ(74, length);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22007", reinterpret_cast<char*>(state));
+}
+
 TEST_F(BindColIntegrationTest, MetadataDrivenDefaultConversions) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,

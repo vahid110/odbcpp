@@ -389,6 +389,38 @@ TEST_F(RedshiftDataConverterTest, ConvertDataTimestamp) {
     EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data("invalid", SQL_C_TIMESTAMP, &result, 0, &indicator));
 }
 
+TEST_F(RedshiftDataConverterTest, DateToTimestampZeroesTimeFields) {
+    SQL_TIMESTAMP_STRUCT timestamp{};
+    timestamp.hour = 73;
+    timestamp.minute = 74;
+    timestamp.second = 75;
+    timestamp.fraction = 76;
+    SQLLEN length = -1;
+    rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;
+
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        " 2024-02-29 ", SQL_C_TIMESTAMP, &timestamp, 0,
+        &length, &issue));
+    EXPECT_EQ(2024, timestamp.year);
+    EXPECT_EQ(2, timestamp.month);
+    EXPECT_EQ(29, timestamp.day);
+    EXPECT_EQ(0, timestamp.hour);
+    EXPECT_EQ(0, timestamp.minute);
+    EXPECT_EQ(0, timestamp.second);
+    EXPECT_EQ(0u, timestamp.fraction);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(timestamp)), length);
+    EXPECT_EQ(rs::odbc::ConversionIssue::None, issue);
+
+    timestamp.year = 73;
+    length = 74;
+    EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+        "2024-02-30", SQL_C_TIMESTAMP, &timestamp, 0,
+        &length, &issue));
+    EXPECT_EQ(73, timestamp.year);
+    EXPECT_EQ(74, length);
+    EXPECT_EQ(rs::odbc::ConversionIssue::InvalidDatetimeFormat, issue);
+}
+
 TEST_F(RedshiftDataConverterTest, ConvertDataTime) {
     SQL_TIME_STRUCT result{};
     rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;

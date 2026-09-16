@@ -459,7 +459,9 @@ SQLRETURN convert_time(const std::string& value, void* buffer,
 SQLRETURN convert_timestamp(const std::string& value, void* buffer,
                             SQLLEN* indicator, ConversionIssue* issue) {
   const auto text = trim_whitespace(value);
-  if (text.size() < 19 || (text[10] != ' ' && text[10] != 'T')) {
+  const bool date_only = text.size() == 10;
+  if (!date_only &&
+      (text.size() < 19 || (text[10] != ' ' && text[10] != 'T'))) {
     if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
     return SQL_ERROR;
   }
@@ -472,8 +474,8 @@ SQLRETURN convert_timestamp(const std::string& value, void* buffer,
   SQLUINTEGER fraction = 0;
   bool discarded_fraction = false;
   if (!parse_date(text.substr(0, 10), year, month, day) ||
-      !parse_time(text.substr(11), hour, minute, second,
-                  fraction, discarded_fraction)) {
+      (!date_only && !parse_time(text.substr(11), hour, minute, second,
+                                 fraction, discarded_fraction))) {
     if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
     return SQL_ERROR;
   }
