@@ -1313,7 +1313,7 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
 SQLRETURN ODBCConnection::get_attribute(SQLINTEGER attribute,
                                         SQLPOINTER value) {
   const auto write_uinteger = [value](SQLUINTEGER result) {
-    *static_cast<SQLUINTEGER*>(value) = result;
+    std::memcpy(value, &result, sizeof(result));
   };
   switch (attribute) {
     case IODBC_ATTR_APP_WCHAR_TYPE:
@@ -1361,7 +1361,7 @@ SQLRETURN ODBCConnection::get_attribute(SQLINTEGER attribute,
       write_uinteger(transaction_isolation_);
       return SQL_SUCCESS;
     case SQL_ATTR_QUIET_MODE:
-      *static_cast<SQLHWND*>(value) = quiet_mode_;
+      std::memcpy(value, &quiet_mode_, sizeof(quiet_mode_));
       return SQL_SUCCESS;
     default:
       if (is_recognized_unsupported_connection_attribute(attribute)) {

@@ -1091,6 +1091,10 @@ substitute for ODBC diagnostics.
   A strict UBSan unit test first reproduced a misaligned ODBC-version store,
   then covered the ODBC version, output-termination flag, iODBC Unicode type,
   and output preservation for an unsupported attribute.
+- Audit batch 161 removes typed stores from `SQLGetConnectAttr` numeric and
+  pointer-sized values. A strict UBSan unit test first reproduced a misaligned
+  login-timeout store, then covered narrow numeric and wide quiet-mode output
+  plus preservation of the output buffer for an unsupported attribute.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

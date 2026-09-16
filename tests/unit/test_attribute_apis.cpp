@@ -333,6 +333,36 @@ TEST_F(AttributeApisTest, ReportsCommonConnectionAttributeDefaults) {
   EXPECT_EQ("HY092", diagnostic_state(SQL_HANDLE_DBC, connection_));
 }
 
+TEST_F(AttributeApisTest, ConnectionValuesHandleUnalignedOutput) {
+  alignas(SQLHWND) std::array<std::byte,
+                              1 + sizeof(SQLHWND) + sizeof(SQLUINTEGER)>
+      value_storage{};
+  void* output = value_storage.data() + 1;
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(
+      connection_, SQL_ATTR_LOGIN_TIMEOUT, output, sizeof(SQLUINTEGER),
+      nullptr));
+  SQLUINTEGER timeout = 0;
+  std::memcpy(&timeout, output, sizeof(timeout));
+  EXPECT_EQ(30u, timeout);
+
+  const auto quiet_mode =
+      reinterpret_cast<SQLHWND>(std::uintptr_t{0x12345678});
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(
+      connection_, SQL_ATTR_QUIET_MODE, quiet_mode, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(
+      connection_, SQL_ATTR_QUIET_MODE, output, sizeof(SQLHWND), nullptr));
+  SQLHWND returned_quiet_mode = nullptr;
+  std::memcpy(&returned_quiet_mode, output, sizeof(returned_quiet_mode));
+  EXPECT_EQ(quiet_mode, returned_quiet_mode);
+
+  const auto previous_value = value_storage;
+  EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(
+      connection_, SQL_ATTR_PACKET_SIZE, output, sizeof(SQLUINTEGER),
+      nullptr));
+  EXPECT_EQ(previous_value, value_storage);
+}
+
 TEST_F(AttributeApisTest,
        ClassifiesStandardConnectionAttributesAndPreservesPointers) {
   auto quiet_mode = reinterpret_cast<SQLHWND>(std::uintptr_t{0x12345678});
