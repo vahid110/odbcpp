@@ -344,6 +344,49 @@ TEST_F(BindColIntegrationTest, ReportsSingleRowFetchStatus) {
     EXPECT_EQ(SQL_ROW_NOROW, row_status);
 }
 
+TEST_F(BindColIntegrationTest, RowStatusOutputsHandleUnalignedBuffers) {
+    alignas(SQLULEN) std::array<std::byte, 1 + sizeof(SQLULEN)> fetched{};
+    alignas(SQLUSMALLINT)
+    std::array<std::byte, 1 + sizeof(SQLUSMALLINT)> status{};
+    auto* fetched_output = reinterpret_cast<SQLULEN*>(fetched.data() + 1);
+    auto* status_output = reinterpret_cast<SQLUSMALLINT*>(status.data() + 1);
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_ROWS_FETCHED_PTR, fetched_output, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_ROW_STATUS_PTR, status_output, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)
+            "SELECT value FROM (VALUES (1, 'abcdef'::text), "
+            "(2, 'xy'::text), (3, NULL::text)) rows(position, value) "
+            "ORDER BY position",
+        SQL_NTS));
+
+    char value[4]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(
+        hstmt, 1, SQL_C_CHAR, value, sizeof(value), nullptr));
+    const auto expect_fetch = [&](SQLRETURN expected_result,
+                                  SQLULEN expected_count,
+                                  SQLUSMALLINT expected_status) {
+        fetched.fill(std::byte{0x5a});
+        status.fill(std::byte{0x5a});
+        EXPECT_EQ(expected_result, SQLFetch(hstmt));
+        SQLULEN copied_count = 0;
+        SQLUSMALLINT copied_status = 0;
+        std::memcpy(&copied_count, fetched.data() + 1,
+                    sizeof(copied_count));
+        std::memcpy(&copied_status, status.data() + 1,
+                    sizeof(copied_status));
+        EXPECT_EQ(expected_count, copied_count);
+        EXPECT_EQ(expected_status, copied_status);
+    };
+    expect_fetch(SQL_SUCCESS_WITH_INFO, 1, SQL_ROW_SUCCESS_WITH_INFO);
+    EXPECT_STREQ("abc", value);
+    expect_fetch(SQL_SUCCESS, 1, SQL_ROW_SUCCESS);
+    EXPECT_STREQ("xy", value);
+    expect_fetch(SQL_ERROR, 1, SQL_ROW_ERROR);
+    expect_fetch(SQL_NO_DATA, 0, SQL_ROW_NOROW);
+}
+
 TEST_F(BindColIntegrationTest, GetDataNullWithoutIndicatorReturns22002) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT NULL::text", SQL_NTS));

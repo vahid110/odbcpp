@@ -1128,6 +1128,10 @@ substitute for ODBC diagnostics.
   byte-wise at execution start and completion. A PostgreSQL-backed strict
   UBSan test first reproduced a misaligned processed-count store, then
   verifies both success and execution-error status outputs.
+- Audit batch 170 copies fetched-row counts and row status values byte-wise
+  across success, truncation, conversion error, and no-data paths. A
+  PostgreSQL-backed strict UBSan test first reproduced a misaligned
+  rows-fetched store, then checks all four outcomes with unaligned outputs.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

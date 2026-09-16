@@ -2480,14 +2480,21 @@ SQLRETURN ODBCStatement::fetch() {
   auto* row_status = implementation_descriptor->array_status_ptr();
   if (current_row_ >= result_rows_.size()) {
     row_positioned_ = false;
-    if (rows_fetched) *rows_fetched = 0;
-    if (row_status) row_status[0] = SQL_ROW_NOROW;
+    if (rows_fetched) {
+      store_application_value(rows_fetched, static_cast<SQLULEN>(0));
+    }
+    if (row_status) {
+      store_application_value(
+          row_status, static_cast<SQLUSMALLINT>(SQL_ROW_NOROW));
+    }
     return SQL_NO_DATA;
   }
   
   current_row_++;
   row_positioned_ = true;
-  if (rows_fetched) *rows_fetched = 1;
+  if (rows_fetched) {
+    store_application_value(rows_fetched, static_cast<SQLULEN>(1));
+  }
   get_data_column_ = 0;
   get_data_offset_ = 0;
   SQLRETURN fetch_result = SQL_SUCCESS;
@@ -2504,7 +2511,10 @@ SQLRETURN ODBCStatement::fetch() {
         if (!binding.indicator_ptr) {
           set_error(SQLSTATE_INDICATOR_VARIABLE_REQUIRED,
                     "NULL column requires an indicator variable");
-          if (row_status) row_status[0] = SQL_ROW_ERROR;
+          if (row_status) {
+            store_application_value(
+                row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
+          }
           return SQL_ERROR;
         }
         *binding.indicator_ptr = SQL_NULL_DATA;
@@ -2523,7 +2533,10 @@ SQLRETURN ODBCStatement::fetch() {
       if (!ResultTypes::is_conversion_supported(sql_type, target_type)) {
         set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
                   "Unsupported result data type conversion");
-        if (row_status) row_status[0] = SQL_ROW_ERROR;
+        if (row_status) {
+          store_application_value(
+              row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
+        }
         return SQL_ERROR;
       }
       ConversionIssue conversion_issue = ConversionIssue::None;
@@ -2535,7 +2548,10 @@ SQLRETURN ODBCStatement::fetch() {
 
       if (conv_result == SQL_ERROR) {
         set_conversion_diagnostic(*this, conv_result, conversion_issue);
-        if (row_status) row_status[0] = SQL_ROW_ERROR;
+        if (row_status) {
+          store_application_value(
+              row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
+        }
         return SQL_ERROR;
       }
       if (conv_result == SQL_SUCCESS_WITH_INFO) {
@@ -2546,8 +2562,10 @@ SQLRETURN ODBCStatement::fetch() {
   }
 
   if (row_status) {
-    row_status[0] = fetch_result == SQL_SUCCESS_WITH_INFO
-        ? SQL_ROW_SUCCESS_WITH_INFO : SQL_ROW_SUCCESS;
+    store_application_value(
+        row_status, static_cast<SQLUSMALLINT>(
+                        fetch_result == SQL_SUCCESS_WITH_INFO
+                            ? SQL_ROW_SUCCESS_WITH_INFO : SQL_ROW_SUCCESS));
   }
   return fetch_result;
 }
