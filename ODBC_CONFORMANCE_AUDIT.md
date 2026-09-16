@@ -1148,6 +1148,13 @@ substitute for ODBC diagnostics.
   clearing the result and after registration. A strict UBSan unit test first
   reproduced a misaligned handle store, then checked successful allocation
   and the cleared result after an invalid handle type.
+- Audit batch 175 parses plain signed integers and fixed-point decimal integer
+  parts exactly before conversion to C integral types, and bounds the remaining
+  floating-point fallback by an exclusive power-of-two limit. Strict UBSan
+  first reproduced an out-of-range `SQL_C_SBIGINT` cast at the maximum value;
+  unit and PostgreSQL tests now cover both 64-bit limits, fractional
+  truncation, overflow diagnostics, and unchanged error outputs. Exact
+  scientific-notation conversion at the 64-bit boundary remains open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

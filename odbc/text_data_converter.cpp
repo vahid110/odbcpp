@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
@@ -46,22 +47,85 @@ std::optional<long double> parse_number(const std::string& value,
 template <typename T>
 SQLRETURN convert_integral(const std::string& value, void* buffer,
                            SQLLEN* indicator, ConversionIssue* issue) {
+  static_assert(std::numeric_limits<T>::is_signed);
+  const auto finish = [&](T converted, bool fractional) -> SQLRETURN {
+    std::memcpy(buffer, &converted, sizeof(converted));
+    store_indicator(indicator, static_cast<SQLLEN>(sizeof(T)));
+    if (fractional) {
+      if (issue) *issue = ConversionIssue::FractionalTruncation;
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    return SQL_SUCCESS;
+  };
+
+  auto integer_text = std::string_view(value);
+  if (integer_text.starts_with('+')) integer_text.remove_prefix(1);
+  T exact{};
+  const auto [end, error] = std::from_chars(
+      integer_text.data(), integer_text.data() + integer_text.size(), exact);
+  if (end == integer_text.data() + integer_text.size()) {
+    if (error == std::errc{}) {
+      return finish(exact, false);
+    }
+    if (error == std::errc::result_out_of_range) {
+      if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+      return SQL_ERROR;
+    }
+  }
+
+  const auto dot = value.find('.');
+  if (dot != std::string::npos &&
+      value.find('.', dot + 1) == std::string::npos &&
+      value.find_first_of("eE") == std::string::npos) {
+    auto integer = std::string_view(value).substr(0, dot);
+    const auto fraction = std::string_view(value).substr(dot + 1);
+    const bool negative = !integer.empty() && integer.front() == '-';
+    if (!integer.empty() && integer.front() == '+') {
+      integer.remove_prefix(1);
+    }
+    const bool has_integer_digits = !integer.empty() && integer != "-";
+    const bool valid_fraction = std::all_of(
+        fraction.begin(), fraction.end(), [](char ch) {
+          return ch >= '0' && ch <= '9';
+        });
+    if ((has_integer_digits || !fraction.empty()) && valid_fraction) {
+      T decimal_integer{};
+      std::errc decimal_error{};
+      bool valid_integer = true;
+      if (has_integer_digits) {
+        const auto [integer_end, integer_error] = std::from_chars(
+            integer.data(), integer.data() + integer.size(),
+            decimal_integer);
+        valid_integer = integer_end == integer.data() + integer.size();
+        decimal_error = integer_error;
+      } else if (negative) {
+        decimal_integer = 0;
+      }
+      if (valid_integer && decimal_error == std::errc::result_out_of_range) {
+        if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+        return SQL_ERROR;
+      }
+      if (valid_integer && decimal_error == std::errc{}) {
+        const bool fractional = std::any_of(
+            fraction.begin(), fraction.end(), [](char ch) {
+              return ch != '0';
+            });
+        return finish(decimal_integer, fractional);
+      }
+    }
+  }
+
   const auto parsed = parse_number(value, issue);
   if (!parsed) return SQL_ERROR;
   const auto truncated = std::trunc(*parsed);
-  if (truncated < static_cast<long double>(std::numeric_limits<T>::lowest()) ||
-      truncated > static_cast<long double>(std::numeric_limits<T>::max())) {
+  const auto upper_exclusive = std::ldexp(
+      1.0L, std::numeric_limits<T>::digits);
+  if (truncated < -upper_exclusive || truncated >= upper_exclusive) {
     if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
     return SQL_ERROR;
   }
   const T converted = static_cast<T>(truncated);
-  std::memcpy(buffer, &converted, sizeof(converted));
-  store_indicator(indicator, static_cast<SQLLEN>(sizeof(T)));
-  if (truncated != *parsed) {
-    if (issue) *issue = ConversionIssue::FractionalTruncation;
-    return SQL_SUCCESS_WITH_INFO;
-  }
-  return SQL_SUCCESS;
+  return finish(converted, truncated != *parsed);
 }
 
 bool parse_digits(std::string_view value, std::size_t offset,

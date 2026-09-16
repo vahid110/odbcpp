@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <limits>
 
 using RedshiftDataConverter = rs::odbc::TextDataConverter;
 
@@ -41,6 +42,55 @@ TEST_F(RedshiftDataConverterTest, ConvertDataBigint) {
     
     // Invalid bigint
     EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data("invalid", SQL_C_SBIGINT, &result, 0, &indicator));
+}
+
+TEST_F(RedshiftDataConverterTest, BigintLimitsStayExact) {
+    SQLBIGINT value = 0;
+    SQLLEN length = -1;
+    rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "9223372036854775807", SQL_C_SBIGINT, &value, 0, &length,
+        &issue));
+    EXPECT_EQ(std::numeric_limits<SQLBIGINT>::max(), value);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+    EXPECT_EQ(rs::odbc::ConversionIssue::None, issue);
+
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "+9223372036854775807", SQL_C_SBIGINT, &value, 0, &length,
+        &issue));
+    EXPECT_EQ(std::numeric_limits<SQLBIGINT>::max(), value);
+
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "-9223372036854775808", SQL_C_SBIGINT, &value, 0, &length,
+        &issue));
+    EXPECT_EQ(std::numeric_limits<SQLBIGINT>::min(), value);
+
+    issue = rs::odbc::ConversionIssue::None;
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "9223372036854775807.9", SQL_C_SBIGINT, &value, 0, &length,
+        &issue));
+    EXPECT_EQ(std::numeric_limits<SQLBIGINT>::max(), value);
+    EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
+
+    issue = rs::odbc::ConversionIssue::None;
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "-9223372036854775808.9", SQL_C_SBIGINT, &value, 0, &length,
+        &issue));
+    EXPECT_EQ(std::numeric_limits<SQLBIGINT>::min(), value);
+    EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
+
+    for (const auto* out_of_range : {
+             "9223372036854775808", "-9223372036854775809",
+             "9223372036854775808.1", "-9223372036854775809.1"}) {
+        value = 73;
+        length = 74;
+        issue = rs::odbc::ConversionIssue::None;
+        EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+            out_of_range, SQL_C_SBIGINT, &value, 0, &length, &issue));
+        EXPECT_EQ(73, value);
+        EXPECT_EQ(74, length);
+        EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
+    }
 }
 
 TEST_F(RedshiftDataConverterTest, ConvertDataDouble) {
