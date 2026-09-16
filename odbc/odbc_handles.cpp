@@ -2941,7 +2941,8 @@ SQLRETURN ODBCStatement::execute() {
       const auto* length_or_indicator = application.octet_length_ptr
           ? application.octet_length_ptr : application.indicator_ptr;
       const bool is_null = application.indicator_ptr &&
-          *application.indicator_ptr == SQL_NULL_DATA;
+          load_application_value<SQLLEN>(application.indicator_ptr) ==
+              SQL_NULL_DATA;
       if (!application.data_ptr && !is_null) {
         set_error(SQLSTATE_INVALID_PARAMETER_NUMBER,
                   "Not all statement parameters are bound");
@@ -2969,7 +2970,9 @@ SQLRETURN ODBCStatement::execute() {
       if (value_type == SQL_C_CHAR) {
         const auto* text = static_cast<const char*>(application.data_ptr);
         SQLLEN length = application.octet_length;
-        if (length_or_indicator) length = *length_or_indicator;
+        if (length_or_indicator) {
+          length = load_application_value<SQLLEN>(length_or_indicator);
+        }
         if (length == SQL_NTS || length == 0) {
           value.assign(text);
         } else if (length >= 0) {
@@ -2981,7 +2984,9 @@ SQLRETURN ODBCStatement::execute() {
         }
       } else if (value_type == SQL_C_WCHAR) {
         SQLLEN length = application.octet_length;
-        if (length_or_indicator) length = *length_or_indicator;
+        if (length_or_indicator) {
+          length = load_application_value<SQLLEN>(length_or_indicator);
+        }
         SQLINTEGER units = SQL_NTS;
         if (length != SQL_NTS && length != 0) {
           if (length < 0 || length % sizeof(SQLWCHAR) != 0 ||
@@ -3020,7 +3025,9 @@ SQLRETURN ODBCStatement::execute() {
         value = *static_cast<unsigned char*>(application.data_ptr) ? "1" : "0";
       } else if (value_type == SQL_C_BINARY) {
         SQLLEN length = application.octet_length;
-        if (length_or_indicator) length = *length_or_indicator;
+        if (length_or_indicator) {
+          length = load_application_value<SQLLEN>(length_or_indicator);
+        }
         if (length < 0) {
           set_error(SQLSTATE_INVALID_STRING_LENGTH,
                     "Invalid binary parameter length");

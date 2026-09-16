@@ -1136,6 +1136,10 @@ substitute for ODBC diagnostics.
   byte-wise, including the shared text conversion path. A PostgreSQL-backed
   strict UBSan test first reproduced a misaligned NULL-indicator store, then
   checks NULL and non-NULL values plus no-write behavior before fetching.
+- Audit batch 172 loads prepared-parameter NULL and length indicators
+  byte-wise. A PostgreSQL-backed strict UBSan test first reproduced a
+  misaligned input-indicator load, then checks text, binary, wide-text, and
+  NULL parameter round-trips with unaligned indicators.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

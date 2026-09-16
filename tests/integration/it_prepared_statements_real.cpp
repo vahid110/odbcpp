@@ -106,6 +106,74 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       ParameterIndicatorsMayUseUnalignedBuffers) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT ?::text, ?::bytea, ?::integer, ?::text",
+        SQL_NTS));
+
+    alignas(SQLLEN) std::array<std::byte, 1 + sizeof(SQLLEN)> text_length{};
+    alignas(SQLLEN) std::array<std::byte, 1 + sizeof(SQLLEN)> binary_length{};
+    alignas(SQLLEN) std::array<std::byte, 1 + sizeof(SQLLEN)> null_length{};
+    alignas(SQLLEN) std::array<std::byte, 1 + sizeof(SQLLEN)> wide_length{};
+    auto* text_indicator = reinterpret_cast<SQLLEN*>(text_length.data() + 1);
+    auto* binary_indicator = reinterpret_cast<SQLLEN*>(
+        binary_length.data() + 1);
+    auto* null_indicator = reinterpret_cast<SQLLEN*>(null_length.data() + 1);
+    auto* wide_indicator = reinterpret_cast<SQLLEN*>(wide_length.data() + 1);
+    const SQLLEN text_bytes = 3;
+    const SQLLEN binary_bytes = 2;
+    const SQLLEN null_value = SQL_NULL_DATA;
+    auto wide = rs::odbc::utf8_to_wide("Hi");
+    ASSERT_TRUE(wide.has_value());
+    const SQLLEN wide_bytes = static_cast<SQLLEN>(
+        wide->size() * sizeof(SQLWCHAR));
+    wide->push_back(0);
+    std::memcpy(text_length.data() + 1, &text_bytes, sizeof(text_bytes));
+    std::memcpy(binary_length.data() + 1, &binary_bytes,
+                sizeof(binary_bytes));
+    std::memcpy(null_length.data() + 1, &null_value, sizeof(null_value));
+    std::memcpy(wide_length.data() + 1, &wide_bytes, sizeof(wide_bytes));
+
+    char text[] = "abc";
+    unsigned char binary[]{0x00, 0xff};
+    SQLINTEGER ignored = 7;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+        3, 0, text, sizeof(text), text_indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 2, SQL_PARAM_INPUT, SQL_C_BINARY, SQL_VARBINARY,
+        sizeof(binary), 0, binary, sizeof(binary), binary_indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 3, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
+        0, 0, &ignored, 0, null_indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 4, SQL_PARAM_INPUT, SQL_C_WCHAR, SQL_WVARCHAR,
+        2, 0, wide->data(),
+        static_cast<SQLLEN>(wide->size() * sizeof(SQLWCHAR)),
+        wide_indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    char text_output[8]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, text_output, sizeof(text_output), nullptr));
+    EXPECT_STREQ("abc", text_output);
+    unsigned char binary_output[sizeof(binary)]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 2, SQL_C_BINARY, binary_output,
+        sizeof(binary_output), nullptr));
+    EXPECT_EQ(0, std::memcmp(binary, binary_output, sizeof(binary)));
+    SQLLEN returned_null = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 3, SQL_C_SLONG, &ignored, sizeof(ignored), &returned_null));
+    EXPECT_EQ(SQL_NULL_DATA, returned_null);
+    char wide_output[8]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 4, SQL_C_CHAR, wide_output, sizeof(wide_output), nullptr));
+    EXPECT_STREQ("Hi", wide_output);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        NumericParametersMayUseUnalignedBuffers) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
         (SQLCHAR*)"SELECT ?::integer, ?::real, ?::double precision",
