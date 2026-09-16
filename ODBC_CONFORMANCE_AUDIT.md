@@ -1095,6 +1095,10 @@ substitute for ODBC diagnostics.
   pointer-sized values. A strict UBSan unit test first reproduced a misaligned
   login-timeout store, then covered narrow numeric and wide quiet-mode output
   plus preservation of the output buffer for an unsupported attribute.
+- Audit batch 162 removes typed stores from `SQLGetStmtAttr` numeric and
+  pointer-valued outputs. A strict UBSan unit test first reproduced a
+  misaligned `SQLULEN` store, then covered narrow and wide numeric attributes,
+  descriptor and binding pointers, and error-path output preservation.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

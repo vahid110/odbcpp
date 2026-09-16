@@ -363,6 +363,49 @@ TEST_F(AttributeApisTest, ConnectionValuesHandleUnalignedOutput) {
   EXPECT_EQ(previous_value, value_storage);
 }
 
+TEST_F(AttributeApisTest, StatementValuesHandleUnalignedOutput) {
+  alignas(SQLULEN) std::array<std::byte, 1 + sizeof(SQLULEN)>
+      value_storage{};
+  void* output = value_storage.data() + 1;
+
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_QUERY_TIMEOUT, integer_value(3), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_QUERY_TIMEOUT, output, sizeof(SQLULEN), nullptr));
+  SQLULEN timeout = 0;
+  std::memcpy(&timeout, output, sizeof(timeout));
+  EXPECT_EQ(3u, timeout);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttrW(
+      statement_, SQL_ATTR_ROW_ARRAY_SIZE, output, sizeof(SQLULEN), nullptr));
+  SQLULEN array_size = 0;
+  std::memcpy(&array_size, output, sizeof(array_size));
+  EXPECT_EQ(1u, array_size);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+      statement_, SQL_ATTR_APP_ROW_DESC, output, sizeof(SQLHDESC), nullptr));
+  SQLHDESC descriptor = nullptr;
+  std::memcpy(&descriptor, output, sizeof(descriptor));
+  EXPECT_NE(nullptr, descriptor);
+
+  SQLLEN bind_offset = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_ROW_BIND_OFFSET_PTR, &bind_offset, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttrW(
+      statement_, SQL_ATTR_ROW_BIND_OFFSET_PTR, output,
+      sizeof(SQLLEN*), nullptr));
+  SQLLEN* returned_offset = nullptr;
+  std::memcpy(&returned_offset, output, sizeof(returned_offset));
+  EXPECT_EQ(&bind_offset, returned_offset);
+
+  const auto previous_value = value_storage;
+  EXPECT_EQ(SQL_ERROR, SQLGetStmtAttr(
+      statement_, SQL_ATTR_ROW_NUMBER, output, sizeof(SQLULEN), nullptr));
+  EXPECT_EQ(previous_value, value_storage);
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_ROW_BIND_OFFSET_PTR, nullptr, 0));
+}
+
 TEST_F(AttributeApisTest,
        ClassifiesStandardConnectionAttributesAndPreservesPointers) {
   auto quiet_mode = reinterpret_cast<SQLHWND>(std::uintptr_t{0x12345678});

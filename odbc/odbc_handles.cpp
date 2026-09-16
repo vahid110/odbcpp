@@ -2345,93 +2345,86 @@ std::shared_ptr<ODBCDescriptor> ODBCStatement::descriptor(
 }
 
 SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
+  const auto write_ulen = [value](SQLULEN result) {
+    std::memcpy(value, &result, sizeof(result));
+  };
+  const auto write_pointer = [value](auto result) {
+    std::memcpy(value, &result, sizeof(result));
+  };
   switch (attribute) {
     case SQL_ATTR_APP_ROW_DESC:
-      *static_cast<SQLHDESC*>(value) = app_row_descriptor_;
+      write_pointer(app_row_descriptor_);
       break;
     case SQL_ATTR_APP_PARAM_DESC:
-      *static_cast<SQLHDESC*>(value) = app_param_descriptor_;
+      write_pointer(app_param_descriptor_);
       break;
     case SQL_ATTR_IMP_ROW_DESC:
-      *static_cast<SQLHDESC*>(value) = imp_row_descriptor_;
+      write_pointer(imp_row_descriptor_);
       break;
     case SQL_ATTR_IMP_PARAM_DESC:
-      *static_cast<SQLHDESC*>(value) = imp_param_descriptor_;
+      write_pointer(imp_param_descriptor_);
       break;
     case SQL_ATTR_QUERY_TIMEOUT:
-      *static_cast<SQLULEN*>(value) = query_timeout_seconds_; break;
+      write_ulen(query_timeout_seconds_); break;
     case SQL_ATTR_MAX_ROWS:
-      *static_cast<SQLULEN*>(value) = max_rows_; break;
+      write_ulen(max_rows_); break;
     case SQL_ATTR_NOSCAN:
-      *static_cast<SQLULEN*>(value) =
-          no_scan_ ? SQL_NOSCAN_ON : SQL_NOSCAN_OFF; break;
+      write_ulen(no_scan_ ? SQL_NOSCAN_ON : SQL_NOSCAN_OFF); break;
     case SQL_ATTR_CURSOR_TYPE:
-      *static_cast<SQLULEN*>(value) = SQL_CURSOR_FORWARD_ONLY; break;
+      write_ulen(SQL_CURSOR_FORWARD_ONLY); break;
     case SQL_ATTR_CONCURRENCY:
-      *static_cast<SQLULEN*>(value) = SQL_CONCUR_READ_ONLY; break;
+      write_ulen(SQL_CONCUR_READ_ONLY); break;
     case SQL_ATTR_CURSOR_SCROLLABLE:
-      *static_cast<SQLULEN*>(value) = SQL_NONSCROLLABLE; break;
+      write_ulen(SQL_NONSCROLLABLE); break;
     case SQL_ATTR_CURSOR_SENSITIVITY:
-      *static_cast<SQLULEN*>(value) = SQL_UNSPECIFIED; break;
+      write_ulen(SQL_UNSPECIFIED); break;
     case SQL_ATTR_ENABLE_AUTO_IPD:
-      *static_cast<SQLULEN*>(value) = SQL_FALSE; break;
+      write_ulen(SQL_FALSE); break;
     case SQL_ATTR_FETCH_BOOKMARK_PTR:
-      *static_cast<SQLLEN**>(value) = fetch_bookmark_ptr_; break;
+      write_pointer(fetch_bookmark_ptr_); break;
     case SQL_ATTR_KEYSET_SIZE:
     case SQL_ATTR_MAX_LENGTH:
-      *static_cast<SQLULEN*>(value) = 0; break;
+      write_ulen(0); break;
     case SQL_ATTR_ROW_ARRAY_SIZE:
-      *static_cast<SQLULEN*>(value) =
-          descriptor(app_row_descriptor_)->array_size(); break;
+      write_ulen(descriptor(app_row_descriptor_)->array_size()); break;
     case SQL_ATTR_ROW_BIND_TYPE:
-      *static_cast<SQLULEN*>(value) =
-          descriptor(app_row_descriptor_)->bind_type(); break;
+      write_ulen(descriptor(app_row_descriptor_)->bind_type()); break;
     case SQL_ATTR_ROW_BIND_OFFSET_PTR:
-      *static_cast<SQLLEN**>(value) =
-          descriptor(app_row_descriptor_)->bind_offset_ptr(); break;
+      write_pointer(descriptor(app_row_descriptor_)->bind_offset_ptr()); break;
     case SQL_ATTR_RETRIEVE_DATA:
-      *static_cast<SQLULEN*>(value) = SQL_RD_ON; break;
+      write_ulen(SQL_RD_ON); break;
     case SQL_ATTR_USE_BOOKMARKS:
-      *static_cast<SQLULEN*>(value) = SQL_UB_OFF; break;
+      write_ulen(SQL_UB_OFF); break;
     case SQL_ATTR_ASYNC_ENABLE:
-      *static_cast<SQLULEN*>(value) = SQL_ASYNC_ENABLE_OFF; break;
+      write_ulen(SQL_ASYNC_ENABLE_OFF); break;
     case SQL_ATTR_PARAMSET_SIZE:
-      *static_cast<SQLULEN*>(value) =
-          descriptor(app_param_descriptor_)->array_size(); break;
+      write_ulen(descriptor(app_param_descriptor_)->array_size()); break;
     case SQL_ATTR_PARAM_BIND_TYPE:
-      *static_cast<SQLULEN*>(value) =
-          descriptor(app_param_descriptor_)->bind_type(); break;
+      write_ulen(descriptor(app_param_descriptor_)->bind_type()); break;
     case SQL_ATTR_PARAM_BIND_OFFSET_PTR:
-      *static_cast<SQLLEN**>(value) =
-          descriptor(app_param_descriptor_)->bind_offset_ptr(); break;
+      write_pointer(descriptor(app_param_descriptor_)->bind_offset_ptr()); break;
     case SQL_ATTR_PARAM_OPERATION_PTR:
-      *static_cast<SQLUSMALLINT**>(value) =
-          descriptor(app_param_descriptor_)->array_status_ptr(); break;
+      write_pointer(descriptor(app_param_descriptor_)->array_status_ptr()); break;
     case SQL_ATTR_METADATA_ID:
-      *static_cast<SQLULEN*>(value) = SQL_FALSE; break;
+      write_ulen(SQL_FALSE); break;
     case SQL_ATTR_ROW_NUMBER:
       if (!executed_ || column_info_.empty() || !row_positioned_) {
         set_error(SQLSTATE_INVALID_CURSOR_STATE,
                   "Cursor is not positioned on a row");
         return SQL_ERROR;
       }
-      *static_cast<SQLULEN*>(value) = static_cast<SQLULEN>(current_row_);
+      write_ulen(static_cast<SQLULEN>(current_row_));
       break;
     case SQL_ATTR_ROW_OPERATION_PTR:
-      *static_cast<SQLUSMALLINT**>(value) =
-          descriptor(app_row_descriptor_)->array_status_ptr(); break;
+      write_pointer(descriptor(app_row_descriptor_)->array_status_ptr()); break;
     case SQL_ATTR_ROW_STATUS_PTR:
-      *static_cast<SQLUSMALLINT**>(value) =
-          descriptor(imp_row_descriptor_)->array_status_ptr(); break;
+      write_pointer(descriptor(imp_row_descriptor_)->array_status_ptr()); break;
     case SQL_ATTR_ROWS_FETCHED_PTR:
-      *static_cast<SQLULEN**>(value) =
-          descriptor(imp_row_descriptor_)->rows_processed_ptr(); break;
+      write_pointer(descriptor(imp_row_descriptor_)->rows_processed_ptr()); break;
     case SQL_ATTR_PARAM_STATUS_PTR:
-      *static_cast<SQLUSMALLINT**>(value) =
-          descriptor(imp_param_descriptor_)->array_status_ptr(); break;
+      write_pointer(descriptor(imp_param_descriptor_)->array_status_ptr()); break;
     case SQL_ATTR_PARAMS_PROCESSED_PTR:
-      *static_cast<SQLULEN**>(value) =
-          descriptor(imp_param_descriptor_)->rows_processed_ptr(); break;
+      write_pointer(descriptor(imp_param_descriptor_)->rows_processed_ptr()); break;
     default:
       if (is_recognized_unsupported_statement_attribute(attribute)) {
         set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
