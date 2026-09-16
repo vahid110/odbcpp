@@ -1237,6 +1237,10 @@ static SQLRETURN SQLGetDiagField_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
     }
     return SQL_SUCCESS;
   };
+  const auto copy_numeric = [&](auto value) -> SQLRETURN {
+    if (diag_info_ptr) std::memcpy(diag_info_ptr, &value, sizeof(value));
+    return SQL_SUCCESS;
+  };
   
   // Header fields (rec_number = 0)
   if (rec_number == 0) {
@@ -1244,39 +1248,23 @@ static SQLRETURN SQLGetDiagField_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
     switch (diag_identifier) {
       case SQL_DIAG_CURSOR_ROW_COUNT:
         if (obj->get_type() != HandleType::Statement) return SQL_ERROR;
-        if (diag_info_ptr) {
-          *static_cast<SQLLEN*>(diag_info_ptr) = header.cursor_row_count;
-        }
-        return SQL_SUCCESS;
+        return copy_numeric(header.cursor_row_count);
       case SQL_DIAG_DYNAMIC_FUNCTION:
         if (obj->get_type() != HandleType::Statement) return SQL_ERROR;
         return copy_string(header.dynamic_function);
       case SQL_DIAG_DYNAMIC_FUNCTION_CODE:
         if (obj->get_type() != HandleType::Statement) return SQL_ERROR;
-        if (diag_info_ptr) {
-          *static_cast<SQLINTEGER*>(diag_info_ptr) =
-              header.dynamic_function_code;
-        }
-        return SQL_SUCCESS;
+        return copy_numeric(header.dynamic_function_code);
       case SQL_DIAG_NUMBER: {
-        if (diag_info_ptr) {
-          *static_cast<SQLINTEGER*>(diag_info_ptr) = static_cast<SQLINTEGER>(obj->get_diagnostic_count());
-        }
-        return SQL_SUCCESS;
+        return copy_numeric(
+            static_cast<SQLINTEGER>(obj->get_diagnostic_count()));
       }
       case SQL_DIAG_RETURNCODE: {
-        if (diag_info_ptr) {
-          *static_cast<SQLRETURN*>(diag_info_ptr) =
-              obj->get_last_return_code();
-        }
-        return SQL_SUCCESS;
+        return copy_numeric(obj->get_last_return_code());
       }
       case SQL_DIAG_ROW_COUNT:
         if (obj->get_type() != HandleType::Statement) return SQL_ERROR;
-        if (diag_info_ptr) {
-          *static_cast<SQLLEN*>(diag_info_ptr) = header.row_count;
-        }
-        return SQL_SUCCESS;
+        return copy_numeric(header.row_count);
       default:
         return SQL_ERROR;
     }
@@ -1290,20 +1278,14 @@ static SQLRETURN SQLGetDiagField_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
     case SQL_DIAG_SQLSTATE:
       return copy_string(record->sqlstate);
     case SQL_DIAG_NATIVE:
-      if (diag_info_ptr) {
-        *static_cast<SQLINTEGER*>(diag_info_ptr) = record->native_error;
-      }
-      return SQL_SUCCESS;
+      return copy_numeric(record->native_error);
     case SQL_DIAG_MESSAGE_TEXT:
       return copy_string(record->message_text);
     case SQL_DIAG_CLASS_ORIGIN:
       return copy_string(record->class_origin);
     case SQL_DIAG_COLUMN_NUMBER:
       if (obj->get_type() != HandleType::Statement) return SQL_ERROR;
-      if (diag_info_ptr) {
-        *static_cast<SQLINTEGER*>(diag_info_ptr) = record->column_number;
-      }
-      return SQL_SUCCESS;
+      return copy_numeric(record->column_number);
     case SQL_DIAG_SUBCLASS_ORIGIN:
       return copy_string(record->subclass_origin);
     case SQL_DIAG_CONNECTION_NAME:
@@ -1312,10 +1294,7 @@ static SQLRETURN SQLGetDiagField_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
       return copy_string(record->server_name);
     case SQL_DIAG_ROW_NUMBER:
       if (obj->get_type() != HandleType::Statement) return SQL_ERROR;
-      if (diag_info_ptr) {
-        *static_cast<SQLLEN*>(diag_info_ptr) = record->row_number;
-      }
-      return SQL_SUCCESS;
+      return copy_numeric(record->row_number);
     default:
       return SQL_ERROR;
   }

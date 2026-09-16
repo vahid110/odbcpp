@@ -3,6 +3,7 @@
 #include "odbc/odbc_handles.h"
 #include "tests/test_handle_helpers.h"
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
@@ -64,6 +65,63 @@ TEST_F(DiagnosticsTest, SQLGetDiagField_HeaderFields) {
     ret = SQLGetDiagField(SQL_HANDLE_DBC, hdbc, 0, SQL_DIAG_RETURNCODE, &return_code, 0, nullptr);
     EXPECT_EQ(SQL_SUCCESS, ret);
     EXPECT_EQ(SQL_ERROR, return_code);
+}
+
+TEST_F(DiagnosticsTest, NumericFieldsHandleUnalignedOutput) {
+    ASSERT_EQ(SQL_ERROR, SQLExecDirect(hstmt, nullptr, SQL_NTS));
+    alignas(SQLLEN) std::array<std::byte, 1 + sizeof(SQLLEN)> storage{};
+    void* output = storage.data() + 1;
+
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(
+        SQL_HANDLE_STMT, hstmt, 0, SQL_DIAG_NUMBER, output, 0, nullptr));
+    SQLINTEGER count = 0;
+    std::memcpy(&count, output, sizeof(count));
+    EXPECT_EQ(1, count);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(
+        SQL_HANDLE_STMT, hstmt, 0, SQL_DIAG_RETURNCODE,
+        output, 0, nullptr));
+    SQLRETURN return_code = SQL_SUCCESS;
+    std::memcpy(&return_code, output, sizeof(return_code));
+    EXPECT_EQ(SQL_ERROR, return_code);
+
+    SQLLEN expected_count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(
+        SQL_HANDLE_STMT, hstmt, 0, SQL_DIAG_CURSOR_ROW_COUNT,
+        &expected_count, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(
+        SQL_HANDLE_STMT, hstmt, 0, SQL_DIAG_CURSOR_ROW_COUNT,
+        output, 0, nullptr));
+    SQLLEN actual_count = -2;
+    std::memcpy(&actual_count, output, sizeof(actual_count));
+    EXPECT_EQ(expected_count, actual_count);
+
+    SQLINTEGER expected_native = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(
+        SQL_HANDLE_STMT, hstmt, 1, SQL_DIAG_NATIVE,
+        &expected_native, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(
+        SQL_HANDLE_STMT, hstmt, 1, SQL_DIAG_NATIVE,
+        output, 0, nullptr));
+    SQLINTEGER actual_native = -2;
+    std::memcpy(&actual_native, output, sizeof(actual_native));
+    EXPECT_EQ(expected_native, actual_native);
+
+    SQLLEN expected_row = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(
+        SQL_HANDLE_STMT, hstmt, 1, SQL_DIAG_ROW_NUMBER,
+        &expected_row, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagFieldW(
+        SQL_HANDLE_STMT, hstmt, 1, SQL_DIAG_ROW_NUMBER,
+        output, 0, nullptr));
+    SQLLEN actual_row = 0;
+    std::memcpy(&actual_row, output, sizeof(actual_row));
+    EXPECT_EQ(expected_row, actual_row);
+
+    const auto previous_output = storage;
+    EXPECT_EQ(SQL_NO_DATA, SQLGetDiagField(
+        SQL_HANDLE_STMT, hstmt, 2, SQL_DIAG_NATIVE, output, 0, nullptr));
+    EXPECT_EQ(previous_output, storage);
 }
 
 TEST_F(DiagnosticsTest, SQLDiagReturnCodeTracksTheGeneratingCall) {

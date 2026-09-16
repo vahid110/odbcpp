@@ -1064,6 +1064,10 @@ substitute for ODBC diagnostics.
   the A/W entry points and output preservation on an unknown information type.
   Windows CI also caught a platform macro collision with the test's `small`
   variable; the variable was renamed before rerunning CI.
+- Audit batch 155 removes typed stores to `SQLGetDiagField` numeric output
+  buffers. A unit test first reproduced a strict UBSan misaligned `SQLINTEGER`
+  store, then checked unaligned header and record values through the A/W entry
+  points, including no-data output preservation.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
