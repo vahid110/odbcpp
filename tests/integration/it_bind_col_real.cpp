@@ -956,6 +956,45 @@ TEST_F(BindColIntegrationTest, CharacterConversionsIgnoreOuterWhitespace) {
     EXPECT_STREQ("22007", reinterpret_cast<char*>(state));
 }
 
+TEST_F(BindColIntegrationTest, TemporalFractionTruncationHasDiagnostic) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)
+            "SELECT TIME '12:34:56.123456', TIME '12:34:56', "
+            "TIMESTAMP '2024-02-29 12:34:56.123456', "
+            "'2024-02-29 12:34:56.1234567891'::text",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQL_TIME_STRUCT time{};
+    SQLLEN length = -1;
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 1, SQL_C_TIME, &time, sizeof(time), &length));
+    EXPECT_EQ(12, time.hour);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(time)), length);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01S07", reinterpret_cast<char*>(state));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 2, SQL_C_TIME, &time, sizeof(time), &length));
+    EXPECT_EQ(12, time.hour);
+
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 3, SQL_C_TIME, &time, sizeof(time), &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01S07", reinterpret_cast<char*>(state));
+
+    SQL_TIMESTAMP_STRUCT timestamp{};
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 4, SQL_C_TIMESTAMP, &timestamp, sizeof(timestamp), &length));
+    EXPECT_EQ(123456789u, timestamp.fraction);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01S07", reinterpret_cast<char*>(state));
+}
+
 TEST_F(BindColIntegrationTest, MetadataDrivenDefaultConversions) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,

@@ -353,13 +353,70 @@ TEST_F(RedshiftDataConverterTest, ConvertDataTimestamp) {
 
 TEST_F(RedshiftDataConverterTest, ConvertDataTime) {
     SQL_TIME_STRUCT result{};
-    EXPECT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
-        "23:45:30.123456+02:00", SQL_C_TIME, &result, 0, &indicator));
+    rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "23:45:30.123456+02:00", SQL_C_TIME, &result, 0,
+        &indicator, &issue));
     EXPECT_EQ(23, result.hour);
     EXPECT_EQ(45, result.minute);
     EXPECT_EQ(30, result.second);
+    EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
     EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
         "24:00:00", SQL_C_TIME, &result, 0, &indicator));
+}
+
+TEST_F(RedshiftDataConverterTest, TemporalFractionTruncationIsReported) {
+    SQLLEN length = -1;
+    rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;
+    SQL_TIME_STRUCT time{};
+
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "12:34:56.123456", SQL_C_TIME, &time, 0, &length, &issue));
+    EXPECT_EQ(12, time.hour);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(time)), length);
+    EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
+
+    issue = rs::odbc::ConversionIssue::None;
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "2024-02-29 12:34:56.123456", SQL_C_TIME, &time, 0,
+        &length, &issue));
+    EXPECT_EQ(12, time.hour);
+    EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
+
+    issue = rs::odbc::ConversionIssue::None;
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "12:34:56.0000000001", SQL_C_TIME, &time, 0,
+        &length, &issue));
+    EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
+
+    issue = rs::odbc::ConversionIssue::None;
+    EXPECT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "12:34:56.000000", SQL_C_TIME, &time, 0, &length, &issue));
+    EXPECT_EQ(rs::odbc::ConversionIssue::None, issue);
+
+    SQL_TIMESTAMP_STRUCT timestamp{};
+    issue = rs::odbc::ConversionIssue::None;
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "2024-02-29 12:34:56.1234567891", SQL_C_TIMESTAMP,
+        &timestamp, 0, &length, &issue));
+    EXPECT_EQ(123456789u, timestamp.fraction);
+    EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
+
+    issue = rs::odbc::ConversionIssue::None;
+    EXPECT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "2024-02-29 12:34:56.1234567890", SQL_C_TIMESTAMP,
+        &timestamp, 0, &length, &issue));
+    EXPECT_EQ(rs::odbc::ConversionIssue::None, issue);
+
+    time.hour = 73;
+    length = 74;
+    issue = rs::odbc::ConversionIssue::None;
+    EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+        "2024-02-30 12:34:56.123456", SQL_C_TIME, &time, 0,
+        &length, &issue));
+    EXPECT_EQ(73, time.hour);
+    EXPECT_EQ(74, length);
+    EXPECT_EQ(rs::odbc::ConversionIssue::InvalidDatetimeFormat, issue);
 }
 
 TEST_F(RedshiftDataConverterTest, ConvertDataString) {

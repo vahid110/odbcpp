@@ -1170,6 +1170,11 @@ substitute for ODBC diagnostics.
   floating-point parsing, and date, time, and timestamp parsing now accept
   surrounding whitespace. Unit and PostgreSQL-backed tests cover valid values,
   malformed suffixes, empty input, diagnostics, and untouched error outputs.
+- Audit batch 179 reports `01S07` when converting a value with nonzero
+  fractional seconds to `SQL_C_TIME`, or when a `SQL_C_TIMESTAMP` value loses
+  nonzero digits beyond its nine-digit fractional field. Unit tests first
+  reproduced the missing time warning; PostgreSQL-backed tests cover time,
+  timestamp-to-time, and long text-to-timestamp conversions.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

@@ -254,7 +254,8 @@ bool valid_time_suffix(std::string_view suffix) {
 }
 
 bool parse_time(std::string_view value, unsigned& hour, unsigned& minute,
-                unsigned& second, SQLUINTEGER& fraction) {
+                unsigned& second, SQLUINTEGER& fraction,
+                bool& discarded_fraction) {
   if (value.size() < 8 || value[2] != ':' || value[5] != ':' ||
       !parse_digits(value, 0, 2, hour) ||
       !parse_digits(value, 3, 2, minute) ||
@@ -265,14 +266,20 @@ bool parse_time(std::string_view value, unsigned& hour, unsigned& minute,
   }
 
   fraction = 0;
+  discarded_fraction = false;
   if (value.size() > 8 && value[8] == '.') {
     std::size_t offset = 9;
     unsigned digits = 0;
-    while (offset < value.size() && digits < 9 &&
+    while (offset < value.size() &&
            value[offset] >= '0' && value[offset] <= '9') {
-      fraction = fraction * 10u + static_cast<SQLUINTEGER>(value[offset] - '0');
+      if (digits < 9) {
+        fraction = fraction * 10u +
+            static_cast<SQLUINTEGER>(value[offset] - '0');
+        ++digits;
+      } else if (value[offset] != '0') {
+        discarded_fraction = true;
+      }
       ++offset;
-      ++digits;
     }
     while (digits++ < 9) fraction *= 10u;
   }
@@ -393,11 +400,24 @@ SQLRETURN convert_date(const std::string& value, void* buffer,
 
 SQLRETURN convert_time(const std::string& value, void* buffer,
                        SQLLEN* indicator, ConversionIssue* issue) {
+  auto text = trim_whitespace(value);
+  if (text.size() >= 19 && (text[10] == ' ' || text[10] == 'T')) {
+    unsigned year = 0;
+    unsigned month = 0;
+    unsigned day = 0;
+    if (!parse_date(text.substr(0, 10), year, month, day)) {
+      if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
+      return SQL_ERROR;
+    }
+    text.remove_prefix(11);
+  }
   unsigned hour = 0;
   unsigned minute = 0;
   unsigned second = 0;
   SQLUINTEGER fraction = 0;
-  if (!parse_time(trim_whitespace(value), hour, minute, second, fraction)) {
+  bool discarded_fraction = false;
+  if (!parse_time(text, hour, minute, second, fraction,
+                  discarded_fraction)) {
     if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
     return SQL_ERROR;
   }
@@ -406,6 +426,10 @@ SQLRETURN convert_time(const std::string& value, void* buffer,
       static_cast<SQLUSMALLINT>(second)};
   std::memcpy(buffer, &time, sizeof(time));
   store_indicator(indicator, static_cast<SQLLEN>(sizeof(SQL_TIME_STRUCT)));
+  if (fraction != 0 || discarded_fraction) {
+    if (issue) *issue = ConversionIssue::FractionalTruncation;
+    return SQL_SUCCESS_WITH_INFO;
+  }
   return SQL_SUCCESS;
 }
 
@@ -423,9 +447,10 @@ SQLRETURN convert_timestamp(const std::string& value, void* buffer,
   unsigned minute = 0;
   unsigned second = 0;
   SQLUINTEGER fraction = 0;
+  bool discarded_fraction = false;
   if (!parse_date(text.substr(0, 10), year, month, day) ||
       !parse_time(text.substr(11), hour, minute, second,
-                  fraction)) {
+                  fraction, discarded_fraction)) {
     if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
     return SQL_ERROR;
   }
@@ -436,6 +461,10 @@ SQLRETURN convert_timestamp(const std::string& value, void* buffer,
       fraction};
   std::memcpy(buffer, &timestamp, sizeof(timestamp));
   store_indicator(indicator, static_cast<SQLLEN>(sizeof(SQL_TIMESTAMP_STRUCT)));
+  if (discarded_fraction) {
+    if (issue) *issue = ConversionIssue::FractionalTruncation;
+    return SQL_SUCCESS_WITH_INFO;
+  }
   return SQL_SUCCESS;
 }
 
