@@ -863,6 +863,46 @@ TEST_F(BindColIntegrationTest, BigintScientificTextConversionAtExactLimits) {
     EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
 }
 
+TEST_F(BindColIntegrationTest, BigintLeadingWhitespaceConversionAtLimits) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)
+            "SELECT ' \t9223372036854775807'::text, "
+            "' \t-9.223372036854775808e18'::text, "
+            "' \t9.2233720368547758079e18'::text, "
+            "' \t9.223372036854775808e18'::text",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLBIGINT value = 0;
+    SQLLEN length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_SBIGINT, &value, sizeof(value), &length));
+    EXPECT_EQ(std::numeric_limits<SQLBIGINT>::max(), value);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 2, SQL_C_SBIGINT, &value, sizeof(value), &length));
+    EXPECT_EQ(std::numeric_limits<SQLBIGINT>::min(), value);
+
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 3, SQL_C_SBIGINT, &value, sizeof(value), &length));
+    EXPECT_EQ(std::numeric_limits<SQLBIGINT>::max(), value);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01S07", reinterpret_cast<char*>(state));
+
+    value = 73;
+    length = 74;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(
+        hstmt, 4, SQL_C_SBIGINT, &value, sizeof(value), &length));
+    EXPECT_EQ(73, value);
+    EXPECT_EQ(74, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+}
+
 TEST_F(BindColIntegrationTest, MetadataDrivenDefaultConversions) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,

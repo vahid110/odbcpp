@@ -1160,6 +1160,12 @@ substitute for ODBC diagnostics.
   positive maximum being rejected; unit and PostgreSQL-backed tests now cover
   both signed limits, fractional truncation, overflow and invalid-exponent
   diagnostics, extreme exponent magnitudes, and untouched outputs on error.
+- Audit batch 177 retains accepted leading whitespace while sending the
+  remaining decimal/scientific text through the exact integer parser. A
+  failing strict UBSan unit test reproduced rejection of a whitespace-prefixed
+  64-bit maximum. Unit and PostgreSQL-backed tests cover both signed limits,
+  fractional warning, overflow diagnostics, and unchanged outputs on error;
+  trailing whitespace remains invalid as before.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

@@ -182,6 +182,43 @@ TEST_F(RedshiftDataConverterTest, SmallintScientificNotationChecksRange) {
     EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
 }
 
+TEST_F(RedshiftDataConverterTest, LeadingWhitespaceKeepsBigintExact) {
+    SQLBIGINT value = 0;
+    SQLLEN length = -1;
+    rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        " \t9223372036854775807", SQL_C_SBIGINT, &value, 0,
+        &length, &issue));
+    EXPECT_EQ(std::numeric_limits<SQLBIGINT>::max(), value);
+
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        " \t-9.223372036854775808e18", SQL_C_SBIGINT, &value, 0,
+        &length, &issue));
+    EXPECT_EQ(std::numeric_limits<SQLBIGINT>::min(), value);
+
+    issue = rs::odbc::ConversionIssue::None;
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        " \t9.2233720368547758079e18", SQL_C_SBIGINT, &value, 0,
+        &length, &issue));
+    EXPECT_EQ(std::numeric_limits<SQLBIGINT>::max(), value);
+    EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
+
+    value = 73;
+    length = 74;
+    issue = rs::odbc::ConversionIssue::None;
+    EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+        " \t9.223372036854775808e18", SQL_C_SBIGINT, &value, 0,
+        &length, &issue));
+    EXPECT_EQ(73, value);
+    EXPECT_EQ(74, length);
+    EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
+
+    issue = rs::odbc::ConversionIssue::None;
+    EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+        " \t1e2 ", SQL_C_SBIGINT, &value, 0, &length, &issue));
+    EXPECT_EQ(rs::odbc::ConversionIssue::InvalidCharacterValue, issue);
+}
+
 TEST_F(RedshiftDataConverterTest, ConvertDataDouble) {
     SQLDOUBLE result;
     

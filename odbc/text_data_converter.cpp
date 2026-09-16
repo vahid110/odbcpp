@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cctype>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
@@ -59,7 +60,12 @@ SQLRETURN convert_integral(const std::string& value, void* buffer,
     return SQL_SUCCESS;
   };
 
-  auto integer_text = std::string_view(value);
+  auto numeric_text = std::string_view(value);
+  while (!numeric_text.empty() &&
+         std::isspace(static_cast<unsigned char>(numeric_text.front()))) {
+    numeric_text.remove_prefix(1);
+  }
+  auto integer_text = numeric_text;
   if (integer_text.starts_with('+')) integer_text.remove_prefix(1);
   T exact{};
   const auto [end, error] = std::from_chars(
@@ -77,37 +83,43 @@ SQLRETURN convert_integral(const std::string& value, void* buffer,
   // Parse decimal/scientific notation as digits so 64-bit boundaries never
   // pass through floating point. Keep strtold below for legacy text forms.
   std::size_t pos = 0;
-  const bool negative = !value.empty() && value.front() == '-';
-  if (!value.empty() && (value.front() == '-' || value.front() == '+')) ++pos;
+  const bool negative = !numeric_text.empty() && numeric_text.front() == '-';
+  if (!numeric_text.empty() &&
+      (numeric_text.front() == '-' || numeric_text.front() == '+')) ++pos;
   std::string digits;
-  digits.reserve(value.size());
-  while (pos < value.size() && value[pos] >= '0' && value[pos] <= '9') {
-    digits.push_back(value[pos++]);
+  digits.reserve(numeric_text.size());
+  while (pos < numeric_text.size() &&
+         numeric_text[pos] >= '0' && numeric_text[pos] <= '9') {
+    digits.push_back(numeric_text[pos++]);
   }
   const auto whole_digits = digits.size();
-  if (pos < value.size() && value[pos] == '.') {
+  if (pos < numeric_text.size() && numeric_text[pos] == '.') {
     ++pos;
-    while (pos < value.size() && value[pos] >= '0' && value[pos] <= '9') {
-      digits.push_back(value[pos++]);
+    while (pos < numeric_text.size() &&
+           numeric_text[pos] >= '0' && numeric_text[pos] <= '9') {
+      digits.push_back(numeric_text[pos++]);
     }
   }
   bool negative_exponent = false;
   std::size_t exponent = 0;
   bool valid_exponent = true;
-  if (pos < value.size() && (value[pos] == 'e' || value[pos] == 'E')) {
+  if (pos < numeric_text.size() &&
+      (numeric_text[pos] == 'e' || numeric_text[pos] == 'E')) {
     ++pos;
-    if (pos < value.size() && (value[pos] == '-' || value[pos] == '+')) {
-      negative_exponent = value[pos++] == '-';
+    if (pos < numeric_text.size() &&
+        (numeric_text[pos] == '-' || numeric_text[pos] == '+')) {
+      negative_exponent = numeric_text[pos++] == '-';
     }
     const auto exponent_start = pos;
-    while (pos < value.size() && value[pos] >= '0' && value[pos] <= '9') {
-      const auto digit = static_cast<std::size_t>(value[pos++] - '0');
+    while (pos < numeric_text.size() &&
+           numeric_text[pos] >= '0' && numeric_text[pos] <= '9') {
+      const auto digit = static_cast<std::size_t>(numeric_text[pos++] - '0');
       const auto max = std::numeric_limits<std::size_t>::max();
       exponent = exponent > (max - digit) / 10 ? max : exponent * 10 + digit;
     }
     valid_exponent = pos != exponent_start;
   }
-  if (!digits.empty() && valid_exponent && pos == value.size()) {
+  if (!digits.empty() && valid_exponent && pos == numeric_text.size()) {
     const auto first_nonzero = digits.find_first_not_of('0');
     if (first_nonzero == std::string::npos) return finish(T{}, false);
 
