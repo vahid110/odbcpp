@@ -215,7 +215,54 @@ TEST_F(RedshiftDataConverterTest, LeadingWhitespaceKeepsBigintExact) {
 
     issue = rs::odbc::ConversionIssue::None;
     EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
-        " \t1e2 ", SQL_C_SBIGINT, &value, 0, &length, &issue));
+        " \t1e2 x", SQL_C_SBIGINT, &value, 0, &length, &issue));
+    EXPECT_EQ(rs::odbc::ConversionIssue::InvalidCharacterValue, issue);
+}
+
+TEST_F(RedshiftDataConverterTest, CharacterConversionsIgnoreOuterWhitespace) {
+    SQLLEN length = -1;
+    rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;
+
+    SQLBIGINT integer = 0;
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        " \t9223372036854775807 \t", SQL_C_SBIGINT, &integer, 0,
+        &length, &issue));
+    EXPECT_EQ(std::numeric_limits<SQLBIGINT>::max(), integer);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(integer)), length);
+
+    SQLDOUBLE floating = 0;
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        " 1.25e2 \t", SQL_C_DOUBLE, &floating, 0, &length, &issue));
+    EXPECT_DOUBLE_EQ(125.0, floating);
+
+    SQL_DATE_STRUCT date{};
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        " 2024-02-29 ", SQL_C_DATE, &date, 0, &length, &issue));
+    EXPECT_EQ(2024, date.year);
+    EXPECT_EQ(2, date.month);
+    EXPECT_EQ(29, date.day);
+
+    SQL_TIME_STRUCT time{};
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        " 12:34:56 ", SQL_C_TIME, &time, 0, &length, &issue));
+    EXPECT_EQ(12, time.hour);
+    EXPECT_EQ(34, time.minute);
+    EXPECT_EQ(56, time.second);
+
+    SQL_TIMESTAMP_STRUCT timestamp{};
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        " 2024-02-29 12:34:56 ", SQL_C_TIMESTAMP, &timestamp,
+        0, &length, &issue));
+    EXPECT_EQ(2024, timestamp.year);
+    EXPECT_EQ(12, timestamp.hour);
+
+    integer = 73;
+    length = 74;
+    issue = rs::odbc::ConversionIssue::None;
+    EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+        " \t ", SQL_C_SBIGINT, &integer, 0, &length, &issue));
+    EXPECT_EQ(73, integer);
+    EXPECT_EQ(74, length);
     EXPECT_EQ(rs::odbc::ConversionIssue::InvalidCharacterValue, issue);
 }
 

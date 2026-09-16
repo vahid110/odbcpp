@@ -1164,8 +1164,12 @@ substitute for ODBC diagnostics.
   remaining decimal/scientific text through the exact integer parser. A
   failing strict UBSan unit test reproduced rejection of a whitespace-prefixed
   64-bit maximum. Unit and PostgreSQL-backed tests cover both signed limits,
-  fractional warning, overflow diagnostics, and unchanged outputs on error;
-  trailing whitespace remains invalid as before.
+  fractional warning, overflow diagnostics, and unchanged outputs on error.
+- Audit batch 178 follows the ODBC character-to-C conversion rule that outer
+  spaces are ignored for numeric and date/time targets. Exact integer parsing,
+  floating-point parsing, and date, time, and timestamp parsing now accept
+  surrounding whitespace. Unit and PostgreSQL-backed tests cover valid values,
+  malformed suffixes, empty input, diagnostics, and untouched error outputs.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

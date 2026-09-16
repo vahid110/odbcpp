@@ -26,6 +26,18 @@ void store_indicator(SQLLEN* indicator, SQLLEN value) {
   }
 }
 
+std::string_view trim_whitespace(std::string_view value) {
+  while (!value.empty() &&
+         std::isspace(static_cast<unsigned char>(value.front()))) {
+    value.remove_prefix(1);
+  }
+  while (!value.empty() &&
+         std::isspace(static_cast<unsigned char>(value.back()))) {
+    value.remove_suffix(1);
+  }
+  return value;
+}
+
 std::optional<long double> parse_number(const std::string& value,
                                         ConversionIssue* issue) {
   if (value.empty()) {
@@ -35,6 +47,14 @@ std::optional<long double> parse_number(const std::string& value,
   char* end = nullptr;
   errno = 0;
   const auto parsed = std::strtold(value.c_str(), &end);
+  if (end == value.c_str()) {
+    if (issue) *issue = ConversionIssue::InvalidCharacterValue;
+    return std::nullopt;
+  }
+  while (end != value.c_str() + value.size() &&
+         std::isspace(static_cast<unsigned char>(*end))) {
+    ++end;
+  }
   if (end != value.c_str() + value.size()) {
     if (issue) *issue = ConversionIssue::InvalidCharacterValue;
     return std::nullopt;
@@ -60,11 +80,7 @@ SQLRETURN convert_integral(const std::string& value, void* buffer,
     return SQL_SUCCESS;
   };
 
-  auto numeric_text = std::string_view(value);
-  while (!numeric_text.empty() &&
-         std::isspace(static_cast<unsigned char>(numeric_text.front()))) {
-    numeric_text.remove_prefix(1);
-  }
+  auto numeric_text = trim_whitespace(value);
   auto integer_text = numeric_text;
   if (integer_text.starts_with('+')) integer_text.remove_prefix(1);
   T exact{};
@@ -363,7 +379,7 @@ SQLRETURN convert_date(const std::string& value, void* buffer,
   unsigned year = 0;
   unsigned month = 0;
   unsigned day = 0;
-  if (!parse_date(value, year, month, day)) {
+  if (!parse_date(trim_whitespace(value), year, month, day)) {
     if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
     return SQL_ERROR;
   }
@@ -381,7 +397,7 @@ SQLRETURN convert_time(const std::string& value, void* buffer,
   unsigned minute = 0;
   unsigned second = 0;
   SQLUINTEGER fraction = 0;
-  if (!parse_time(value, hour, minute, second, fraction)) {
+  if (!parse_time(trim_whitespace(value), hour, minute, second, fraction)) {
     if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
     return SQL_ERROR;
   }
@@ -395,7 +411,8 @@ SQLRETURN convert_time(const std::string& value, void* buffer,
 
 SQLRETURN convert_timestamp(const std::string& value, void* buffer,
                             SQLLEN* indicator, ConversionIssue* issue) {
-  if (value.size() < 19 || (value[10] != ' ' && value[10] != 'T')) {
+  const auto text = trim_whitespace(value);
+  if (text.size() < 19 || (text[10] != ' ' && text[10] != 'T')) {
     if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
     return SQL_ERROR;
   }
@@ -406,8 +423,8 @@ SQLRETURN convert_timestamp(const std::string& value, void* buffer,
   unsigned minute = 0;
   unsigned second = 0;
   SQLUINTEGER fraction = 0;
-  if (!parse_date(std::string_view(value).substr(0, 10), year, month, day) ||
-      !parse_time(std::string_view(value).substr(11), hour, minute, second,
+  if (!parse_date(text.substr(0, 10), year, month, day) ||
+      !parse_time(text.substr(11), hour, minute, second,
                   fraction)) {
     if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
     return SQL_ERROR;
