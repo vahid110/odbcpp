@@ -1375,6 +1375,11 @@ substitute for ODBC diagnostics.
   but a directly constructed request could reach the response builder with
   a short salt and read past its buffer. A sanitizer red test reproduced the
   failure; parser and builder tests cover short, exact, and oversized salts.
+- Audit batch 217 checks DataRow field counts against the preceding
+  RowDescription for each query result. The extractor previously accepted
+  both missing and extra fields, allowing inconsistent metadata and values
+  to reach ODBC callers. Parser red/green tests cover both mismatches, and a
+  synthetic backend test verifies protocol failure invalidates the connection.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

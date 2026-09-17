@@ -68,7 +68,8 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     TooLargeDataRow, IncompleteLargeDataRow,
     ZeroHeaderRead, ZeroBodyRead,
     OverreportedHeaderRead, OverreportedStartupWrite,
-    AuthenticationDuringQuery, BackendKeyDuringQuery
+    AuthenticationDuringQuery, BackendKeyDuringQuery,
+    MismatchedDataRow
   };
 
   explicit ScriptedBackendTransport(
@@ -212,6 +213,14 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
         append_message('K', backend_key, 8);
       }
       append_message('C', "SELECT 1\0", 9);
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::MismatchedDataRow) {
+      constexpr char description[] =
+          "\0\1" "v\0" "\0\0\0\0" "\0\0" "\0\0\0\27"
+          "\0\4" "\377\377\377\377" "\0\0";
+      append_message('T', description, sizeof(description) - 1);
+      append_message('D', "\0\0", 2);
+      append_message('C', "SELECT 0", sizeof("SELECT 0"));
       append_message('Z', "I", 1);
     }
   }
@@ -696,6 +705,22 @@ TEST(ConnectionLivenessTest, StartupOnlyFramesCannotAppearDuringQuery) {
               result.error());
     EXPECT_FALSE(connection.is_connected());
   }
+}
+
+TEST(ConnectionLivenessTest, MismatchedDataRowClosesLogicalConnection) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::MismatchedDataRow));
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  ASSERT_TRUE(connection.connect(settings).has_value());
+  const auto result = connection.execute_query(
+      "SELECT 1", rs::util::make_deadline(std::chrono::seconds(1)));
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_FALSE(connection.is_connected());
 }
 
 TEST(ConnectionLivenessTest, MalformedErrorCannotBecomeSuccessfulQuery) {

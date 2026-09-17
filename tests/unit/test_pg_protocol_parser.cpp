@@ -711,4 +711,29 @@ TEST(PgProtocolParserTest, PreservesOrderedQueryResults) {
   EXPECT_EQ(*last.rows[0][0], "done");
 }
 
+TEST(PgProtocolParserTest, DataRowMustMatchDescribedColumnCount) {
+  PgProtocolParser parser;
+  const auto description = one_column_description("value");
+  const auto complete = command_complete("SELECT 1");
+  EXPECT_EQ(parser.extract_query_result(
+                {description, one_column_row("ok"), complete}).rows.size(),
+            1u);
+
+  rs::core::database::Message missing;
+  missing.tag = 'D';
+  append_u16(missing.payload, 0);
+  EXPECT_THROW(parser.extract_query_result({description, missing, complete}),
+               std::runtime_error);
+
+  rs::core::database::Message extra;
+  extra.tag = 'D';
+  append_u16(extra.payload, 2);
+  for (const char value : {'a', 'b'}) {
+    append_u32(extra.payload, 1);
+    extra.payload.push_back(static_cast<std::byte>(value));
+  }
+  EXPECT_THROW(parser.extract_query_result({description, extra, complete}),
+               std::runtime_error);
+}
+
 } // namespace

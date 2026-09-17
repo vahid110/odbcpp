@@ -719,6 +719,7 @@ QueryResult PgProtocolParser::extract_query_result(
     const std::vector<Message>& messages) {
   QueryResult current;
   std::vector<QueryResult> completed;
+  bool has_row_description = false;
 
   for (const auto& message : messages) {
     const std::span<const std::byte> payload(message.payload);
@@ -749,8 +750,14 @@ QueryResult PgProtocolParser::extract_query_result(
         throw std::runtime_error("invalid PostgreSQL RowDescription length");
       }
       current.columns = std::move(columns);
+      has_row_description = true;
     } else if (message.tag == 'D') { // DataRow
-      current.rows.emplace_back(parse_data_row(payload));
+      auto row = parse_data_row(payload);
+      if (has_row_description && row.size() != current.columns.size()) {
+        throw std::runtime_error(
+            "PostgreSQL DataRow column count differs from RowDescription");
+      }
+      current.rows.emplace_back(std::move(row));
     } else if (message.tag == 't') { // ParameterDescription
       std::size_t offset = 0;
       const auto count = read_u16(payload, offset);
@@ -774,6 +781,7 @@ QueryResult PgProtocolParser::extract_query_result(
       current.affected_rows = command_affected_rows(current.command_tag);
       completed.push_back(std::move(current));
       current = QueryResult{};
+      has_row_description = false;
     } else if (message.tag == 'E') { // ErrorResponse
       current = QueryResult{};
       const auto error = decode_error_fields(message.payload);
@@ -781,6 +789,7 @@ QueryResult PgProtocolParser::extract_query_result(
       current.error_sqlstate = error.code();
       completed.push_back(std::move(current));
       current = QueryResult{};
+      has_row_description = false;
     }
   }
   if (completed.empty()) return current;
