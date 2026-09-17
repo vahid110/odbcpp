@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "core/transport/socket_transport.h"
+#include "core/transport/socket_wait.h"
 #include "core/transport/thread_pool_transport.h"
 #include "core/transport/tls_io.h"
 #include "core/transport/tls_peer_identity.h"
@@ -290,6 +291,19 @@ TEST(DeadlineTest, PositiveSubmillisecondRemainderDoesNotExpire) {
   EXPECT_EQ(1ms, rs::util::remaining_at(origin + tick, origin));
   EXPECT_EQ(1ms, rs::util::remaining_at(origin + 1ms, origin));
   EXPECT_EQ(2ms, rs::util::remaining_at(origin + 1ms + tick, origin));
+}
+
+TEST(SocketTransportDeadlineTest, CappedPollWaitDoesNotExpireLongerDeadline) {
+  SleepingServer server(100ms, true);
+  SocketTransport transport(DeadlineModel::Strict);
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  EXPECT_EQ(rs::core::transport::SocketWaitResult::Ready,
+            rs::core::transport::wait_for_socket(
+                transport.native(), true, false,
+                rs::util::make_deadline(500ms), 5));
 }
 
 TEST(SocketTransportDeadlineTest, StrictReceiveHonorsAbsoluteDeadline) {

@@ -1202,6 +1202,10 @@ substitute for ODBC diagnostics.
 - Audit batch 185 uses the same exact ceil-to-millisecond calculation for epoll
   and IOCP reactor waits. Their former add-one-millisecond expression both
   overshot exact boundaries and risked clock-duration overflow near its limit.
+- Audit batch 186 rechecks the absolute deadline after a capped poll or Winsock
+  event wait times out. A shortened-wait loopback test first reproduced an
+  early timeout while the server still had time to send a reply, then verified
+  that the socket becomes ready within the original deadline.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

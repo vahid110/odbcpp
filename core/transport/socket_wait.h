@@ -54,15 +54,15 @@ inline bool socket_error_is_timeout(int error) noexcept {
 }
 
 inline SocketWaitResult wait_for_socket(native_socket_t socket, bool read,
-                                        bool write, rs::util::Deadline deadline) {
+                                        bool write, rs::util::Deadline deadline,
+                                        int max_wait_ms = std::numeric_limits<int>::max()) {
   for (;;) {
     const auto left = rs::util::remaining(deadline);
     if (left <= std::chrono::milliseconds::zero()) {
       return SocketWaitResult::Timeout;
     }
 
-    const auto bounded = std::min<long long>(
-        left.count(), std::numeric_limits<int>::max());
+    const auto bounded = std::min<long long>(left.count(), max_wait_ms);
     const int timeout_ms = static_cast<int>(std::max<long long>(1, bounded));
 
 #ifdef _WIN32
@@ -80,7 +80,7 @@ inline SocketWaitResult wait_for_socket(native_socket_t socket, bool read,
 #endif
 
     if (result > 0) return SocketWaitResult::Ready;
-    if (result == 0) return SocketWaitResult::Timeout;
+    if (result == 0) continue;
 
 #ifdef _WIN32
     if (WSAGetLastError() == WSAEINTR) continue;
@@ -104,7 +104,7 @@ inline SocketWaitResult wait_for_connect(native_socket_t socket,
                                              std::numeric_limits<DWORD>::max() - 1);
     const auto result = ::WSAWaitForMultipleEvents(
         1, &event, FALSE, static_cast<DWORD>(bounded), FALSE);
-    if (result == WSA_WAIT_TIMEOUT) return SocketWaitResult::Timeout;
+    if (result == WSA_WAIT_TIMEOUT) continue;
     if (result == WSA_WAIT_FAILED) {
       if (::WSAGetLastError() == WSAEINTR) continue;
       return SocketWaitResult::Failed;
