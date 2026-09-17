@@ -39,6 +39,18 @@ void SocketTransport::do_close(socket_t s) noexcept {
 #endif
 }
 
+void SocketTransport::suppress_sigpipe(socket_t s) {
+#if defined(SO_NOSIGPIPE) && !defined(_WIN32)
+  const int enabled = 1;
+  if (::setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &enabled,
+                   sizeof(enabled)) != 0) {
+    throw IOError(platform::last_error_text("setsockopt(SO_NOSIGPIPE)"));
+  }
+#else
+  (void)s;
+#endif
+}
+
 void SocketTransport::set_nonblocking(socket_t s, bool nb) {
 #ifdef _WIN32
   u_long mode = nb ? 1UL : 0UL;
@@ -84,6 +96,12 @@ void SocketTransport::adopt(socket_t socket) {
   close();
   if (is_invalid(socket)) throw IOError("cannot adopt an invalid socket");
   sock_ = socket;
+  try {
+    suppress_sigpipe(sock_);
+  } catch (...) {
+    close();
+    throw;
+  }
 }
 
 void SocketTransport::set_deadline_model(DeadlineModel model) {
@@ -145,6 +163,7 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
 #endif
     if (is_invalid(sock_)) continue;
 
+    suppress_sigpipe(sock_);
     set_nonblocking(sock_, true);
 #ifdef _WIN32
     const auto connect_event = ::WSACreateEvent();

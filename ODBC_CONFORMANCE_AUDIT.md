@@ -1206,6 +1206,10 @@ substitute for ODBC diagnostics.
   event wait times out. A shortened-wait loopback test first reproduced an
   early timeout while the server still had time to send a reply, then verified
   that the socket becomes ready within the original deadline.
+- Audit batch 187 enables `SO_NOSIGPIPE` on macOS for both newly connected and
+  adopted sockets. Two platform regressions first observed the option disabled,
+  then verified it is enabled; this complements `MSG_NOSIGNAL` on Linux and
+  prevents a closed peer from terminating the driver process during a send.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

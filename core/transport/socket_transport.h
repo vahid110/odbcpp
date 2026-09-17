@@ -41,6 +41,7 @@ private:
 
   static socket_t invalid_socket();
   static bool is_invalid(socket_t s);
+  static void suppress_sigpipe(socket_t s);
   static void set_nonblocking(socket_t s, bool nb);
   static void set_timeouts(socket_t s, std::chrono::milliseconds rw);
   static void do_close(socket_t s) noexcept;

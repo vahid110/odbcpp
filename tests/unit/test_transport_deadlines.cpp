@@ -306,6 +306,37 @@ TEST(SocketTransportDeadlineTest, CappedPollWaitDoesNotExpireLongerDeadline) {
                 rs::util::make_deadline(500ms), 5));
 }
 
+#if defined(SO_NOSIGPIPE) && !defined(_WIN32)
+TEST(SocketTransportDeadlineTest, AdoptedSocketSuppressesSigpipe) {
+  int sockets[2];
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets), 0);
+
+  SocketTransport transport;
+  transport.adopt(sockets[0]);
+  int enabled = 0;
+  socklen_t length = sizeof(enabled);
+  const int result = ::getsockopt(transport.native(), SOL_SOCKET, SO_NOSIGPIPE,
+                                  &enabled, &length);
+  close_test_socket(sockets[1]);
+  ASSERT_EQ(result, 0);
+  EXPECT_EQ(enabled, 1);
+}
+
+TEST(SocketTransportDeadlineTest, ConnectedSocketSuppressesSigpipe) {
+  SleepingServer server(100ms);
+  SocketTransport transport;
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(1s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  int enabled = 0;
+  socklen_t length = sizeof(enabled);
+  ASSERT_EQ(::getsockopt(transport.native(), SOL_SOCKET, SO_NOSIGPIPE,
+                         &enabled, &length), 0);
+  EXPECT_EQ(enabled, 1);
+}
+#endif
+
 TEST(SocketTransportDeadlineTest, StrictReceiveHonorsAbsoluteDeadline) {
   expect_receive_timeout(DeadlineModel::Strict);
 }
