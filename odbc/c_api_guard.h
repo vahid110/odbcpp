@@ -49,7 +49,8 @@ inline void record_return_code(SQLHANDLE diagnostic_handle,
 inline void log_api_result(
     SQLHANDLE diagnostic_handle, std::string_view operation,
     SQLRETURN return_code,
-    std::chrono::steady_clock::time_point started) noexcept {
+    std::chrono::steady_clock::time_point started,
+    bool include_diagnostic = true) noexcept {
   if (operation.empty() ||
       (return_code != SQL_ERROR && return_code != SQL_SUCCESS_WITH_INFO)) {
     return;
@@ -62,7 +63,8 @@ inline void log_api_result(
         : rs::core::logging::LogLevel::Warn;
     if (!connection || !connection->logging_enabled(level)) return;
 
-    auto handle = HandleRegistry::instance().get_handle(diagnostic_handle);
+    const auto handle = include_diagnostic
+        ? HandleRegistry::instance().get_handle(diagnostic_handle) : nullptr;
     const auto diagnostic = handle
         ? handle->get_diagnostic_record(1) : std::nullopt;
     const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -88,9 +90,12 @@ SQLRETURN invoke_c_api_with_handles(
     SQLHANDLE diagnostic_handle,
     std::initializer_list<SQLHANDLE> operation_handles,
     std::string_view operation_name,
-    Callback&& callback) noexcept {
+    Callback&& callback,
+    SQLHANDLE logging_handle = SQL_NULL_HANDLE) noexcept {
   ApiCallScope call_scope;
   const auto started = std::chrono::steady_clock::now();
+  const auto log_handle = logging_handle ? logging_handle : diagnostic_handle;
+  const auto include_diagnostic = diagnostic_handle != SQL_NULL_HANDLE;
   try {
     auto operation =
         HandleRegistry::instance().lock_handles(operation_handles);
@@ -99,15 +104,16 @@ SQLRETURN invoke_c_api_with_handles(
           std::forward<Callback>(callback)());
       record_return_code(diagnostic_handle, result);
       if (call_scope.outermost()) {
-        log_api_result(diagnostic_handle, operation_name, result, started);
+        log_api_result(log_handle, operation_name, result, started,
+                       include_diagnostic);
       }
       return result;
     } catch (...) {
       record_unexpected_exception(diagnostic_handle);
       record_return_code(diagnostic_handle, SQL_ERROR);
       if (call_scope.outermost()) {
-        log_api_result(
-            diagnostic_handle, operation_name, SQL_ERROR, started);
+        log_api_result(log_handle, operation_name, SQL_ERROR, started,
+                       include_diagnostic);
       }
       return SQL_ERROR;
     }
@@ -115,7 +121,8 @@ SQLRETURN invoke_c_api_with_handles(
     record_unexpected_exception(diagnostic_handle);
     record_return_code(diagnostic_handle, SQL_ERROR);
     if (call_scope.outermost()) {
-      log_api_result(diagnostic_handle, operation_name, SQL_ERROR, started);
+      log_api_result(log_handle, operation_name, SQL_ERROR, started,
+                     include_diagnostic);
     }
     return SQL_ERROR;
   }

@@ -166,10 +166,11 @@ SQLSTATE, native error, duration, and connection identity. This covers
 metadata, attributes, descriptors, transactions, fetches, and unexpected
 exceptions without copying instrumentation into each wrapper. Nested A/W
 delegation emits one record for the application-visible operation, and no
-arguments or bound values are included. Diagnostic-retrieval calls, invalid
-handles with no owning connection, success tracing, and disabled-logging
-overhead benchmarks remain; logging is **implemented but partial** and never a
-substitute for ODBC diagnostics.
+arguments or bound values are included. Diagnostic-retrieval failures and
+truncation warnings are logged without assigning them a stale SQLSTATE or
+mutating the retrieved records. Invalid handles with no owning connection,
+success tracing, and disabled-logging overhead benchmarks remain; logging is
+**implemented but partial** and never a substitute for ODBC diagnostics.
 
 ## Maintainability snapshot
 
@@ -1514,6 +1515,13 @@ substitute for ODBC diagnostics.
   target afterward is safe and now succeeds. A real PostgreSQL regression
   first reproduced the over-rejection and verifies the returned wide value,
   while the partially consumed case still returns `HY010`.
+- Audit batch 240 logs `SQLGetDiagRec`, `SQLGetDiagField`, and legacy `SQLError`
+  failures and truncation warnings, including wide entry points, when their
+  handle has an owning connection. The API guard uses that handle only for
+  logging: it neither changes the diagnostic return code nor attaches a stale
+  SQLSTATE from the record being retrieved. A regression checks all six
+  entry points, preserved diagnostic records, and log redaction. All 34 tests
+  pass in sanitizer, PostgreSQL Driver Manager, and iODBC configurations.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
@@ -1569,12 +1577,10 @@ substitute for ODBC diagnostics.
 
 ### P2 — observability and maintainability
 
-1. Extend the common failure logger to diagnostic-retrieval calls where an
-   owning connection is still valid, without mutating diagnostic state.
-2. Benchmark disabled and asynchronous logging before claiming the roadmap's
+1. Benchmark disabled and asynchronous logging before claiming the roadmap's
    `<1%` overhead target.
-3. Split the two 2,000-plus-line ODBC implementation files by responsibility.
-4. Remove obsolete descriptor stubs, pass-through helpers, speculative
+2. Split the two 2,000-plus-line ODBC implementation files by responsibility.
+3. Remove obsolete descriptor stubs, pass-through helpers, speculative
    comments, duplicated ANSI/wide validation, and tests that lock in temporary
    stubs instead of contractual behavior.
 

@@ -3000,6 +3000,23 @@ static SQLRETURN SQLCopyDesc_impl(SQLHDESC source_desc_handle,
                         a12, a13); });                                     \
   }
 
+#define ODBCPP_DIAG_API_7(name, logging, T1, T2, T3, T4, T5, T6, T7)      \
+  extern "C" SQLRETURN SQL_API name(                                     \
+      T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7) {                \
+    return rs::odbc::detail::invoke_c_api_with_handles(                   \
+        SQL_NULL_HANDLE, {}, #name,                                       \
+        [&] { return name##_impl(a1, a2, a3, a4, a5, a6, a7); },          \
+        logging);                                                         \
+  }
+#define ODBCPP_DIAG_API_8(name, logging, T1, T2, T3, T4, T5, T6, T7, T8) \
+  extern "C" SQLRETURN SQL_API name(                                     \
+      T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7, T8 a8) {         \
+    return rs::odbc::detail::invoke_c_api_with_handles(                   \
+        SQL_NULL_HANDLE, {}, #name,                                       \
+        [&] { return name##_impl(a1, a2, a3, a4, a5, a6, a7, a8); },      \
+        logging);                                                         \
+  }
+
 ODBCPP_API_3(SQLAllocHandle, a2, SQLSMALLINT, SQLHANDLE, SQLHANDLE*)
 ODBCPP_API_2(SQLFreeHandle, a2, SQLSMALLINT, SQLHANDLE)
 ODBCPP_API_7(SQLConnect, a1, SQLHDBC, SQLCHAR*, SQLSMALLINT, SQLCHAR*,
@@ -3036,20 +3053,22 @@ ODBCPP_API_5(SQLGetStmtAttrW, a1, SQLHSTMT, SQLINTEGER, SQLPOINTER,
              SQLINTEGER, SQLINTEGER*)
 ODBCPP_API_1(SQLCloseCursor, a1, SQLHSTMT)
 ODBCPP_API_2(SQLFreeStmt, a1, SQLHSTMT, SQLUSMALLINT)
-ODBCPP_API_8(SQLGetDiagRec, SQL_NULL_HANDLE, SQLSMALLINT, SQLHANDLE,
+ODBCPP_DIAG_API_8(SQLGetDiagRec, a2, SQLSMALLINT, SQLHANDLE,
              SQLSMALLINT, SQLCHAR*, SQLINTEGER*, SQLCHAR*, SQLSMALLINT,
              SQLSMALLINT*)
-ODBCPP_API_8(SQLGetDiagRecW, SQL_NULL_HANDLE, SQLSMALLINT, SQLHANDLE,
+ODBCPP_DIAG_API_8(SQLGetDiagRecW, a2, SQLSMALLINT, SQLHANDLE,
              SQLSMALLINT, SQLWCHAR*, SQLINTEGER*, SQLWCHAR*, SQLSMALLINT,
              SQLSMALLINT*)
-ODBCPP_API_7(SQLGetDiagField, SQL_NULL_HANDLE, SQLSMALLINT, SQLHANDLE,
+ODBCPP_DIAG_API_7(SQLGetDiagField, a2, SQLSMALLINT, SQLHANDLE,
              SQLSMALLINT, SQLSMALLINT, SQLPOINTER, SQLSMALLINT, SQLSMALLINT*)
-ODBCPP_API_7(SQLGetDiagFieldW, SQL_NULL_HANDLE, SQLSMALLINT, SQLHANDLE,
+ODBCPP_DIAG_API_7(SQLGetDiagFieldW, a2, SQLSMALLINT, SQLHANDLE,
              SQLSMALLINT, SQLSMALLINT, SQLPOINTER, SQLSMALLINT, SQLSMALLINT*)
-ODBCPP_API_8(SQLError, SQL_NULL_HANDLE, SQLHENV, SQLHDBC, SQLHSTMT, SQLCHAR*,
-             SQLINTEGER*, SQLCHAR*, SQLSMALLINT, SQLSMALLINT*)
-ODBCPP_API_8(SQLErrorW, SQL_NULL_HANDLE, SQLHENV, SQLHDBC, SQLHSTMT,
-             SQLWCHAR*, SQLINTEGER*, SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*)
+ODBCPP_DIAG_API_8(SQLError, a3 ? a3 : (a2 ? a2 : a1), SQLHENV, SQLHDBC,
+                  SQLHSTMT, SQLCHAR*, SQLINTEGER*, SQLCHAR*, SQLSMALLINT,
+                  SQLSMALLINT*)
+ODBCPP_DIAG_API_8(SQLErrorW, a3 ? a3 : (a2 ? a2 : a1), SQLHENV, SQLHDBC,
+                  SQLHSTMT, SQLWCHAR*, SQLINTEGER*, SQLWCHAR*, SQLSMALLINT,
+                  SQLSMALLINT*)
 ODBCPP_API_5(SQLGetInfo, a1, SQLHDBC, SQLUSMALLINT, void*, SQLSMALLINT,
              SQLSMALLINT*)
 ODBCPP_API_5(SQLGetInfoW, a1, SQLHDBC, SQLUSMALLINT, void*, SQLSMALLINT,
@@ -3158,3 +3177,5 @@ ODBCPP_API_2_TWO_HANDLES(SQLCopyDesc, a2, SQLHDESC, SQLHDESC)
 #undef ODBCPP_API_10
 #undef ODBCPP_API_11
 #undef ODBCPP_API_13
+#undef ODBCPP_DIAG_API_7
+#undef ODBCPP_DIAG_API_8

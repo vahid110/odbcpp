@@ -243,6 +243,80 @@ TEST(DriverLoggerTest, ApiFailuresIncludeOperationAndDiagnosticContext) {
   std::filesystem::remove_all(directory);
 }
 
+TEST(DriverLoggerTest, DiagnosticRetrievalLogsWithoutChangingDiagnostics) {
+  const auto directory = temporary_directory("odbcpp-diagnostic-log");
+  const auto path = directory / "driver.log";
+  SQLHENV environment = SQL_NULL_HENV;
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                          reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+  const std::string connection_string =
+      "SERVER=127.0.0.1;PORT=1;UID=test-user;PWD=top-secret;SSL=0;"
+      "TransportMode=Sync;LogLevel=Warn;LogFormat=Text;LogSink=File;LogFile=" +
+      path.string() + ";LogAsync=false";
+  ASSERT_EQ(SQL_ERROR, SQLDriverConnect(
+      connection, nullptr,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(connection_string.c_str())),
+      SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+
+  SQLCHAR state[6]{};
+  SQLSMALLINT length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+      SQL_HANDLE_DBC, connection, 1, state, nullptr, nullptr, 0, nullptr));
+  const std::string original_state(reinterpret_cast<char*>(state));
+  EXPECT_EQ(SQL_ERROR, SQLGetDiagRec(
+      SQL_HANDLE_DBC, connection, 0, nullptr, nullptr, nullptr, 0, nullptr));
+  SQLWCHAR short_message[2]{};
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetDiagRecW(
+      SQL_HANDLE_DBC, connection, 1, nullptr, nullptr, short_message, 2,
+      &length));
+  EXPECT_EQ(SQL_ERROR, SQLGetDiagField(
+      SQL_HANDLE_DBC, connection, 1, -12345, nullptr, 0, nullptr));
+  SQLWCHAR short_state[2]{};
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetDiagFieldW(
+      SQL_HANDLE_DBC, connection, 1, SQL_DIAG_SQLSTATE, short_state,
+      sizeof(short_state), &length));
+  EXPECT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+      SQL_HANDLE_DBC, connection, 1, state, nullptr, nullptr, 0, nullptr));
+  EXPECT_EQ(original_state, reinterpret_cast<char*>(state));
+
+  SQLCHAR short_ansi_message[2]{};
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLError(
+      environment, connection, nullptr, nullptr, nullptr,
+      short_ansi_message, sizeof(short_ansi_message), &length));
+  EXPECT_EQ(SQL_NO_DATA, SQLError(
+      environment, connection, nullptr, nullptr, nullptr,
+      short_ansi_message, sizeof(short_ansi_message), &length));
+  SQLUINTEGER value = 0;
+  ASSERT_EQ(SQL_ERROR, SQLGetConnectAttr(
+      connection, -12345, &value, sizeof(value), nullptr));
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLErrorW(
+      environment, connection, nullptr, nullptr, nullptr,
+      short_message, 2, &length));
+  EXPECT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+      SQL_HANDLE_DBC, connection, 1, state, nullptr, nullptr, 0, nullptr));
+  EXPECT_STREQ("HY092", reinterpret_cast<char*>(state));
+
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+  const auto contents = read_file(path);
+  for (const auto* operation : {"SQLGetDiagRec", "SQLGetDiagRecW",
+                                "SQLGetDiagField", "SQLGetDiagFieldW",
+                                "SQLError", "SQLErrorW"}) {
+    EXPECT_NE(std::string::npos,
+              contents.find(std::string("operation=\"") + operation + "\""));
+  }
+  EXPECT_NE(std::string::npos, contents.find(
+      "operation=\"SQLGetDiagRec\" return_code=\"-1\" sqlstate=\"\""));
+  EXPECT_EQ(std::string::npos, contents.find("top-secret"));
+  std::filesystem::remove_all(directory);
+}
+
 TEST(DriverLoggerTest, RotatesFilesAtConfiguredSize) {
   const auto directory = temporary_directory("odbcpp-rotating-log");
   const auto path = directory / "driver.log";
