@@ -760,8 +760,12 @@ QueryResult PgProtocolParser::extract_query_result(
       current.columns = std::move(columns);
       has_row_description = true;
     } else if (message.tag == 'D') { // DataRow
+      if (!has_row_description) {
+        throw std::runtime_error(
+            "PostgreSQL DataRow arrived without RowDescription");
+      }
       auto row = parse_data_row(payload);
-      if (has_row_description && row.size() != current.columns.size()) {
+      if (row.size() != current.columns.size()) {
         throw std::runtime_error(
             "PostgreSQL DataRow column count differs from RowDescription");
       }

@@ -1453,6 +1453,12 @@ substitute for ODBC diagnostics.
   a password response. The startup-input regression now covers user,
   database, and password, verifies no socket activity on rejection, and
   confirms a corrected retry succeeds.
+- Audit batch 231 rejects a DataRow unless the current result has a preceding
+  RowDescription. Previously an unannounced row could be returned with values
+  but no column metadata, including after an earlier result completed.
+  Parser tests cover both positions, and a synthetic connection test verifies
+  protocol failure closes the transport. [PostgreSQL's query flow](https://www.postgresql.org/docs/current/protocol-flow.html)
+  places RowDescription before DataRow messages.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

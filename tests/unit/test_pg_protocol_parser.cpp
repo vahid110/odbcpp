@@ -750,6 +750,19 @@ TEST(PgProtocolParserTest, DataRowMustMatchDescribedColumnCount) {
                std::runtime_error);
 }
 
+TEST(PgProtocolParserTest, DataRowRequiresCurrentRowDescription) {
+  PgProtocolParser parser;
+  const auto description = one_column_description("value");
+  const auto row = one_column_row("ok");
+  const auto complete = command_complete("SELECT 1");
+
+  EXPECT_THROW(parser.extract_query_result({row, complete}),
+               std::runtime_error);
+  EXPECT_THROW(parser.extract_query_result(
+                   {description, row, complete, row, complete}),
+               std::runtime_error);
+}
+
 TEST(PgProtocolParserTest, RowDescriptionRejectsUnknownFormatCodes) {
   PgProtocolParser parser;
   const auto text = parser.extract_query_result(

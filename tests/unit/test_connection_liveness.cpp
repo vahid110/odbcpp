@@ -152,7 +152,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     ZeroHeaderRead, ZeroBodyRead,
     OverreportedHeaderRead, OverreportedStartupWrite,
     AuthenticationDuringQuery, BackendKeyDuringQuery,
-    MismatchedDataRow, MalformedEmptyQueryResponse,
+    MismatchedDataRow, UnannouncedDataRow, MalformedEmptyQueryResponse,
     CopyInDuringQuery, CopyOutDuringQuery, CopyBothDuringQuery,
     UnsolicitedCopyData, UnsolicitedCopyDone,
     OversizedUnsolicitedCopyData, BinaryResultRow,
@@ -318,6 +318,11 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('T', description, sizeof(description) - 1);
       append_message('D', "\0\0", 2);
       append_message('C', "SELECT 0", sizeof("SELECT 0"));
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::UnannouncedDataRow) {
+      constexpr char row[] = "\0\1\0\0\0\1" "x";
+      append_message('D', row, sizeof(row) - 1);
+      append_message('C', "SELECT 1", sizeof("SELECT 1"));
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::CopyInDuringQuery ||
                mode == ResponseMode::CopyOutDuringQuery ||
@@ -1076,6 +1081,26 @@ TEST(ConnectionLivenessTest, MismatchedDataRowClosesLogicalConnection) {
   EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
             result.error());
   EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, UnannouncedDataRowClosesConnection) {
+  auto transport = std::make_unique<ScriptedBackendTransport>(
+      ScriptedBackendTransport::ResponseMode::UnannouncedDataRow);
+  auto* observed_transport = transport.get();
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::move(transport));
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  ASSERT_TRUE(connection.connect(settings).has_value());
+
+  const auto result = connection.execute_query(
+      "SELECT 1", rs::util::make_deadline(std::chrono::seconds(1)));
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_FALSE(connection.is_connected());
+  EXPECT_EQ(1u, observed_transport->close_count());
 }
 
 TEST(ConnectionLivenessTest, MalformedEmptyQueryResponseClosesConnection) {
