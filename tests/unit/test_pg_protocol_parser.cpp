@@ -763,6 +763,40 @@ TEST(PgProtocolParserTest, DataRowRequiresCurrentRowDescription) {
                std::runtime_error);
 }
 
+TEST(PgProtocolParserTest, RejectsDuplicateRowDescriptionWithinResult) {
+  PgProtocolParser parser;
+  const auto first = one_column_description("first");
+  const auto second = one_column_description("second");
+  const auto row = one_column_row("ok");
+  const auto complete = command_complete("SELECT 1");
+
+  EXPECT_THROW(parser.extract_query_result({first, second, row, complete}),
+               std::runtime_error);
+  EXPECT_THROW(parser.extract_query_result({first, row, second, complete}),
+               std::runtime_error);
+  EXPECT_THROW(parser.extract_query_result(
+                   {first, row, {'2', {}}, second, complete}),
+               std::runtime_error);
+  EXPECT_EQ(parser.extract_query_result(
+                {first, row, complete, second, row, complete})
+                .additional_results.size(),
+            1u);
+}
+
+TEST(PgProtocolParserTest, PortalDescriptionReplacesStatementDescription) {
+  PgProtocolParser parser;
+  const auto result = parser.extract_query_result(
+      {{'1', {}}, {'t', {std::byte{0}, std::byte{0}}},
+       one_column_description("statement"), {'2', {}},
+       one_column_description("portal"), one_column_row("ok"),
+       command_complete("SELECT 1")});
+  ASSERT_EQ(result.columns.size(), 1u);
+  EXPECT_EQ(result.columns[0].name, "portal");
+  ASSERT_EQ(result.rows.size(), 1u);
+  ASSERT_TRUE(result.rows[0][0].has_value());
+  EXPECT_EQ(*result.rows[0][0], "ok");
+}
+
 TEST(PgProtocolParserTest, RowDescriptionRejectsUnknownFormatCodes) {
   PgProtocolParser parser;
   const auto text = parser.extract_query_result(

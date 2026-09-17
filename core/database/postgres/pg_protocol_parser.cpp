@@ -724,10 +724,18 @@ QueryResult PgProtocolParser::extract_query_result(
   QueryResult current;
   std::vector<QueryResult> completed;
   bool has_row_description = false;
+  bool bind_complete_since_description = false;
 
   for (const auto& message : messages) {
     const std::span<const std::byte> payload(message.payload);
     if (message.tag == 'T') { // RowDescription
+      // Describing a prepared statement and then its bound portal can produce
+      // two descriptions before execution; only the portal one describes rows.
+      if (has_row_description &&
+          (!bind_complete_since_description || !current.rows.empty())) {
+        throw std::runtime_error(
+            "duplicate PostgreSQL RowDescription within result");
+      }
       std::size_t offset = 0;
       const auto count = read_u16(payload, offset);
       offset += 2;
@@ -759,6 +767,7 @@ QueryResult PgProtocolParser::extract_query_result(
       }
       current.columns = std::move(columns);
       has_row_description = true;
+      bind_complete_since_description = false;
     } else if (message.tag == 'D') { // DataRow
       if (!has_row_description) {
         throw std::runtime_error(
@@ -770,6 +779,8 @@ QueryResult PgProtocolParser::extract_query_result(
             "PostgreSQL DataRow column count differs from RowDescription");
       }
       current.rows.emplace_back(std::move(row));
+    } else if (message.tag == '2') { // BindComplete
+      bind_complete_since_description = true;
     } else if (message.tag == 't') { // ParameterDescription
       std::size_t offset = 0;
       const auto count = read_u16(payload, offset);
@@ -794,6 +805,7 @@ QueryResult PgProtocolParser::extract_query_result(
       completed.push_back(std::move(current));
       current = QueryResult{};
       has_row_description = false;
+      bind_complete_since_description = false;
     } else if (message.tag == 'E') { // ErrorResponse
       current = QueryResult{};
       const auto error = decode_error_fields(message.payload);
@@ -802,6 +814,7 @@ QueryResult PgProtocolParser::extract_query_result(
       completed.push_back(std::move(current));
       current = QueryResult{};
       has_row_description = false;
+      bind_complete_since_description = false;
     }
   }
   if (completed.empty()) return current;

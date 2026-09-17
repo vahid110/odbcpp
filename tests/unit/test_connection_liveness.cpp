@@ -152,7 +152,8 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     ZeroHeaderRead, ZeroBodyRead,
     OverreportedHeaderRead, OverreportedStartupWrite,
     AuthenticationDuringQuery, BackendKeyDuringQuery,
-    MismatchedDataRow, UnannouncedDataRow, MalformedEmptyQueryResponse,
+    MismatchedDataRow, UnannouncedDataRow, DuplicateRowDescription,
+    MalformedEmptyQueryResponse,
     CopyInDuringQuery, CopyOutDuringQuery, CopyBothDuringQuery,
     UnsolicitedCopyData, UnsolicitedCopyDone,
     OversizedUnsolicitedCopyData, BinaryResultRow,
@@ -323,6 +324,17 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       constexpr char row[] = "\0\1\0\0\0\1" "x";
       append_message('D', row, sizeof(row) - 1);
       append_message('C', "SELECT 1", sizeof("SELECT 1"));
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::DuplicateRowDescription) {
+      constexpr char first[] =
+          "\0\1" "a\0" "\0\0\0\0" "\0\0" "\0\0\0\27"
+          "\0\4" "\377\377\377\377" "\0\0";
+      constexpr char second[] =
+          "\0\1" "b\0" "\0\0\0\0" "\0\0" "\0\0\0\27"
+          "\0\4" "\377\377\377\377" "\0\0";
+      append_message('T', first, sizeof(first) - 1);
+      append_message('T', second, sizeof(second) - 1);
+      append_message('C', "SELECT 0", sizeof("SELECT 0"));
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::CopyInDuringQuery ||
                mode == ResponseMode::CopyOutDuringQuery ||
@@ -1096,6 +1108,26 @@ TEST(ConnectionLivenessTest, UnannouncedDataRowClosesConnection) {
 
   const auto result = connection.execute_query(
       "SELECT 1", rs::util::make_deadline(std::chrono::seconds(1)));
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_FALSE(connection.is_connected());
+  EXPECT_EQ(1u, observed_transport->close_count());
+}
+
+TEST(ConnectionLivenessTest, DuplicateRowDescriptionClosesConnection) {
+  auto transport = std::make_unique<ScriptedBackendTransport>(
+      ScriptedBackendTransport::ResponseMode::DuplicateRowDescription);
+  auto* observed_transport = transport.get();
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::move(transport));
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  ASSERT_TRUE(connection.connect(settings).has_value());
+
+  const auto result = connection.execute_query(
+      "SELECT 0", rs::util::make_deadline(std::chrono::seconds(1)));
   ASSERT_TRUE(result.has_error());
   EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
             result.error());

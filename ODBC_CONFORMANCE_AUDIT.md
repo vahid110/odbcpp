@@ -1459,6 +1459,14 @@ substitute for ODBC diagnostics.
   Parser tests cover both positions, and a synthetic connection test verifies
   protocol failure closes the transport. [PostgreSQL's query flow](https://www.postgresql.org/docs/current/protocol-flow.html)
   places RowDescription before DataRow messages.
+- Audit batch 232 rejects a second RowDescription within a result unless it
+  follows BindComplete before any rows. This preserves the valid extended-query
+  sequence where PostgreSQL describes both a prepared statement and its bound
+  portal, while preventing later metadata from replacing columns already in
+  use. Parser tests cover both sequences and the malformed after-row case; a
+  synthetic connection test verifies protocol failure closes the transport.
+  [PostgreSQL's extended-query flow](https://www.postgresql.org/docs/current/protocol-flow.html)
+  specifies separate statement and portal Describe responses.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
