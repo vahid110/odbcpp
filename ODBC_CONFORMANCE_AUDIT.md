@@ -1328,6 +1328,11 @@ substitute for ODBC diagnostics.
   without rejecting multibyte characters. Red/green unit tests reject
   malformed UTF-8 and two code points; ANSI/wide translation and real UTF-8
   PostgreSQL execution tests cover the accepted forms.
+- Audit batch 209 carries a Unicode LIKE escape through the real
+  `SQLNativeSqlW` Driver Manager path. The test compares the complete wide
+  output on unixODBC, iODBC's four-byte application/two-byte driver bridge,
+  and a native four-byte iODBC driver, closing the ABI gap left by in-process
+  testing of batch 208. All three connected suites pass.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

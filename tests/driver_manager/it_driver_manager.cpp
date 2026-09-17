@@ -460,6 +460,26 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+  const auto wide_like_input = wide_text(
+      U"SELECT 'a%b' LIKE 'a\u00e9%b' {escape '\u00e9'}");
+  const auto wide_like_expected = wide_text(
+      U"SELECT 'a%b' LIKE 'a\u00e9%b' ESCAPE '\u00e9'");
+  SQLWCHAR wide_like_output[64]{};
+  SQLINTEGER wide_like_length = 0;
+  if (!succeeded(SQLNativeSqlW(
+          connection, const_cast<SQLWCHAR*>(wide_like_input.data()), SQL_NTS,
+          wide_like_output, 64, &wide_like_length)) ||
+      wide_like_length != static_cast<SQLINTEGER>(
+                              wide_like_expected.size() - 1) ||
+      !std::equal(wide_like_expected.begin(), wide_like_expected.end(),
+                  wide_like_output)) {
+    print_diagnostic(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
   const auto wide_query = wide_ascii("SELECT 'wide'::text");
   SQLWCHAR wide_value[8]{};
   SQLLEN wide_value_length = 0;
