@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -211,6 +212,66 @@ TEST_F(PreparedStatementIntegrationTest, DefaultTimeParameterCTypeRoundTrips) {
     EXPECT_EQ(23, output.hour);
     EXPECT_EQ(59, output.minute);
     EXPECT_EQ(59, output.second);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       TimeStructParameterConvertsToTimestampOnCurrentLocalDate) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQL_TIME_STRUCT input{12, 34, 56};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TYPE_TIME, SQL_TYPE_TIMESTAMP, 19, 0,
+        &input, sizeof(input), nullptr));
+
+    const auto before_time = std::time(nullptr);
+    const auto* before_calendar = std::localtime(&before_time);
+    ASSERT_NE(nullptr, before_calendar);
+    const std::tm before = *before_calendar;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_TIMESTAMP_STRUCT output{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIMESTAMP,
+        &output, sizeof(output), nullptr));
+    const auto after_time = std::time(nullptr);
+    const auto* after_calendar = std::localtime(&after_time);
+    ASSERT_NE(nullptr, after_calendar);
+    const std::tm after = *after_calendar;
+    const auto matches = [&](const std::tm& calendar) {
+        return output.year == calendar.tm_year + 1900 &&
+            output.month == calendar.tm_mon + 1 &&
+            output.day == calendar.tm_mday;
+    };
+    EXPECT_TRUE(matches(before) || matches(after));
+    EXPECT_EQ(12, output.hour);
+    EXPECT_EQ(34, output.minute);
+    EXPECT_EQ(56, output.second);
+    EXPECT_EQ(0u, output.fraction);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       TimeStructToTimestampRejectsInvalidTimeAndPreservesNull) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQL_TIME_STRUCT input{24, 0, 0};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TIME, SQL_TYPE_TIMESTAMP, 19, 0,
+        &input, sizeof(input), nullptr));
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22007", reinterpret_cast<char*>(state));
+
+    SQLLEN indicator = SQL_NULL_DATA;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TIME, SQL_TYPE_TIMESTAMP, 19, 0,
+        &input, sizeof(input), &indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_TIMESTAMP_STRUCT output{73, 1, 1, 0, 0, 0, 0};
+    SQLLEN length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIMESTAMP,
+        &output, sizeof(output), &length));
+    EXPECT_EQ(SQL_NULL_DATA, length);
+    EXPECT_EQ(73, output.year);
 }
 
 TEST_F(PreparedStatementIntegrationTest, TimeStructParameterRejectsInvalidTime) {

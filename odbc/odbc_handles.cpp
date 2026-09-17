@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <ctime>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -67,6 +68,24 @@ std::optional<std::string> format_time_parameter(SQL_TIME_STRUCT time) {
   std::snprintf(iso_time, sizeof(iso_time), "%02u:%02u:%02u",
                 time.hour, time.minute, time.second);
   return std::string(iso_time);
+}
+
+std::optional<std::string> current_local_date_parameter() {
+  const auto now = std::time(nullptr);
+  std::tm local{};
+#ifdef _WIN32
+  const bool valid = localtime_s(&local, &now) == 0;
+#else
+  const bool valid = localtime_r(&now, &local) != nullptr;
+#endif
+  if (!valid || local.tm_year + 1900 < 1 ||
+      local.tm_year + 1900 > 9999) {
+    return std::nullopt;
+  }
+  return format_date_parameter(SQL_DATE_STRUCT{
+      static_cast<SQLSMALLINT>(local.tm_year + 1900),
+      static_cast<SQLUSMALLINT>(local.tm_mon + 1),
+      static_cast<SQLUSMALLINT>(local.tm_mday)});
 }
 
 std::string default_driver_name() {
@@ -3087,7 +3106,18 @@ SQLRETURN ODBCStatement::execute() {
                     "Invalid time parameter value");
           return complete_parameter_set(SQL_ERROR);
         }
-        value = *formatted;
+        if (query_param.type ==
+            rs::core::database::QueryParameterType::Timestamp) {
+          const auto date = current_local_date_parameter();
+          if (!date) {
+            set_error(SQLSTATE_GENERAL_ERROR,
+                      "Current local date is unavailable");
+            return complete_parameter_set(SQL_ERROR);
+          }
+          value = *date + " " + *formatted;
+        } else {
+          value = *formatted;
+        }
       } else if (value_type == SQL_C_TIMESTAMP ||
                  value_type == SQL_C_TYPE_TIMESTAMP) {
         const auto timestamp = load_application_value<SQL_TIMESTAMP_STRUCT>(
