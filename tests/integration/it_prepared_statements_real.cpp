@@ -480,6 +480,47 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       TimeAndTimestampStructsRejectUnsupportedSqlTargetsAtBind) {
+    SQL_TIME_STRUCT time{12, 34, 56};
+    SQL_TIMESTAMP_STRUCT timestamp{2024, 2, 29, 12, 34, 56, 0};
+    SQLHDESC implementation = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_IMP_PARAM_DESC, &implementation, 0, nullptr));
+    SQLSMALLINT bound_type = 0;
+    SQLCHAR state[6]{};
+
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TYPE_TIME, SQL_TYPE_TIME, 8, 0,
+        &time, sizeof(time), nullptr));
+    for (const SQLSMALLINT sql_type : {SQL_TYPE_DATE, SQL_INTEGER}) {
+        EXPECT_EQ(SQL_ERROR, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_TYPE_TIME, sql_type, 10, 0,
+            &time, sizeof(time), nullptr));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(implementation, 1,
+            SQL_DESC_CONCISE_TYPE, &bound_type, 0, nullptr));
+        EXPECT_EQ(SQL_TYPE_TIME, bound_type);
+    }
+
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TYPE_TIMESTAMP, SQL_TYPE_TIMESTAMP, 19, 0,
+        &timestamp, sizeof(timestamp), nullptr));
+    for (const SQLSMALLINT sql_type : {SQL_INTEGER, SQL_VARBINARY}) {
+        EXPECT_EQ(SQL_ERROR, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_TYPE_TIMESTAMP, sql_type, 19, 0,
+            &timestamp, sizeof(timestamp), nullptr));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(implementation, 1,
+            SQL_DESC_CONCISE_TYPE, &bound_type, 0, nullptr));
+        EXPECT_EQ(SQL_TYPE_TIMESTAMP, bound_type);
+    }
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        QuotedIdentifierBackslashDoesNotHideParameter) {
     char sql[] = R"(SELECT 1 AS "slash\", ?::integer AS value)";
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(

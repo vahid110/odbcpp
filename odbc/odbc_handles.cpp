@@ -3283,14 +3283,26 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
               "Parameter SQL data type is not supported");
     return SQL_ERROR;
   }
-  if (value_type == SQL_C_DATE || value_type == SQL_C_TYPE_DATE) {
+  const bool date_c_type = value_type == SQL_C_DATE ||
+      value_type == SQL_C_TYPE_DATE;
+  const bool time_c_type = value_type == SQL_C_TIME ||
+      value_type == SQL_C_TYPE_TIME;
+  const bool timestamp_c_type = value_type == SQL_C_TIMESTAMP ||
+      value_type == SQL_C_TYPE_TIMESTAMP;
+  if (date_c_type || time_c_type || timestamp_c_type) {
     const auto target = parameter_type_for(parameter_type, value_type);
     using rs::core::database::QueryParameterType;
-    if (target != QueryParameterType::Text &&
-        target != QueryParameterType::Date &&
-        target != QueryParameterType::Timestamp) {
+    const bool convertible = target == QueryParameterType::Text ||
+        (date_c_type && (target == QueryParameterType::Date ||
+                         target == QueryParameterType::Timestamp)) ||
+        (time_c_type && (target == QueryParameterType::Time ||
+                         target == QueryParameterType::Timestamp)) ||
+        (timestamp_c_type && (target == QueryParameterType::Date ||
+                              target == QueryParameterType::Time ||
+                              target == QueryParameterType::Timestamp));
+    if (!convertible) {
       set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
-                "Date C parameter cannot convert to the SQL data type");
+                "Temporal C parameter cannot convert to the SQL data type");
       return SQL_ERROR;
     }
   }
