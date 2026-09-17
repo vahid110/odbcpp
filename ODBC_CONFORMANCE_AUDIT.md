@@ -1214,6 +1214,10 @@ substitute for ODBC diagnostics.
   child process with default SIGPIPE handling. The child must return a network
   error normally rather than terminate from the signal; process isolation
   keeps a regression from killing the entire transport test executable.
+- Audit batch 189 distinguishes an abrupt peer close during the TLS handshake
+  from a deadline timeout in both Strict and SocketTimeout modes. The new
+  loopback test also verifies the failed upgrade leaves no plaintext send path;
+  ten repeated runs passed before the full local matrix.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

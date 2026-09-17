@@ -850,6 +850,23 @@ TEST(TLSTransportDeadlineTest, StrictHandshakeTimesOutAgainstSilentPeer) {
   EXPECT_TRUE(sent.has_error()) << "failed TLS must not expose plaintext I/O";
 }
 
+TEST(TLSTransportDeadlineTest, AbruptHandshakeCloseIsNotATimeout) {
+  for (const auto model : {DeadlineModel::Strict, DeadlineModel::SocketTimeout}) {
+    SCOPED_TRACE(model == DeadlineModel::Strict ? "Strict" : "SocketTimeout");
+    SleepingServer server(1ms);
+    TLSTransport transport(model);
+    transport.set_verify(false);
+
+    auto result = transport.connect(
+        "127.0.0.1", server.port(), rs::util::make_deadline(1s));
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(result.error(), rs::util::make_error_code(rs::util::DbErrorCode::TLSError));
+
+    const std::array<std::byte, 1> plaintext{std::byte{'x'}};
+    EXPECT_TRUE(transport.send(plaintext, rs::util::make_deadline(100ms)).has_error());
+  }
+}
+
 TEST(TLSTransportDeadlineTest, CertificateFailureClosesPlainConnection) {
   TLSSleepingServer server(100ms);
   TLSTransport transport(DeadlineModel::Strict);
