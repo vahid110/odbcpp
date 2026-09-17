@@ -284,10 +284,17 @@ void GenericDatabaseConnection::write_all(const std::vector<std::byte>& data, rs
 rs::util::Result<void> GenericDatabaseConnection::write_all_result(const std::vector<std::byte>& data, rs::util::Deadline deadline) {
   size_t offset = 0;
   while (offset < data.size()) {
-    auto result = transport_->send(std::span<const std::byte>(data.data() + offset, data.size() - offset), deadline);
+    const auto requested = data.size() - offset;
+    auto result = transport_->send(std::span<const std::byte>(data.data() + offset, requested), deadline);
     if (result.has_error()) {
       mark_transport_failed();
       return rs::util::Result<void>{result.error(), result.error_message()};
+    }
+    if (result->n > requested) {
+      mark_transport_failed();
+      return rs::util::Result<void>{
+          rs::util::DbErrorCode::ProtocolError,
+          "Transport write exceeded requested message bytes"};
     }
     if (result->n == 0) {
       mark_transport_failed();
@@ -312,7 +319,8 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
   size_t offset = 0;
   
   while (offset < 5) {
-    auto result = transport_->recv(std::span<std::byte>(header.data() + offset, 5 - offset), deadline);
+    const auto requested = header.size() - offset;
+    auto result = transport_->recv(std::span<std::byte>(header.data() + offset, requested), deadline);
     if (result.has_error()) {
       mark_transport_failed();
       return rs::util::Result<std::vector<std::byte>>{
@@ -322,7 +330,18 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
       mark_transport_failed();
       return rs::util::Result<std::vector<std::byte>>{rs::util::DbErrorCode::NetworkError, "Unexpected EOF"};
     }
-    if (result->n == 0) continue;
+    if (result->n > requested) {
+      mark_transport_failed();
+      return rs::util::Result<std::vector<std::byte>>{
+          rs::util::DbErrorCode::ProtocolError,
+          "Transport read exceeded requested message bytes"};
+    }
+    if (result->n == 0) {
+      mark_transport_failed();
+      return rs::util::Result<std::vector<std::byte>>{
+          rs::util::DbErrorCode::NetworkError,
+          "Transport read made no progress"};
+    }
     offset += result->n;
   }
   
@@ -365,6 +384,12 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
       return rs::util::Result<std::vector<std::byte>>{
           rs::util::DbErrorCode::ProtocolError,
           "Transport read exceeded requested message bytes"};
+    }
+    if (result->n == 0) {
+      mark_transport_failed();
+      return rs::util::Result<std::vector<std::byte>>{
+          rs::util::DbErrorCode::NetworkError,
+          "Transport read made no progress"};
     }
     message.resize(offset + result->n);
   }

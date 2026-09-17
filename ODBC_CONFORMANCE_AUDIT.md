@@ -1359,6 +1359,12 @@ substitute for ODBC diagnostics.
   after SCRAM has started. The parser resets SCRAM state for a new startup,
   and real SCRAM-authenticated PostgreSQL testing protects the valid path.
   This follows [PostgreSQL's SCRAM message flow](https://www.postgresql.org/docs/current/sasl-authentication.html).
+- Audit batch 214 checks transport byte counts at every PostgreSQL frame
+  boundary. Zero-progress header or payload reads now fail as network errors
+  instead of spinning, while a send or header read that reports more bytes
+  than requested fails as a protocol error. Synthetic transports proved
+  both prior behaviors red before the fix; connected suites cover the
+  ordinary socket and Driver Manager paths.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

@@ -65,11 +65,13 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     MalformedNoticeMissingField, MalformedNoticeDuplicateField,
     MalformedNoticeUnterminated, QueryParameterStatus,
     MalformedQueryParameterStatus, OversizedStartupReady,
-    TooLargeDataRow, IncompleteLargeDataRow
+    TooLargeDataRow, IncompleteLargeDataRow,
+    ZeroHeaderRead, ZeroBodyRead,
+    OverreportedHeaderRead, OverreportedStartupWrite
   };
 
   explicit ScriptedBackendTransport(
-      ResponseMode mode = ResponseMode::ValidStartup) {
+      ResponseMode mode = ResponseMode::ValidStartup) : mode_(mode) {
     if (mode == ResponseMode::MalformedStartup) {
       append_message('S', "missing-terminators", 19);
       return;
@@ -211,6 +213,9 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
   rs::util::Result<rs::core::transport::IOResult> send(
       std::span<const std::byte> buffer, rs::util::Deadline) override {
     ++send_count_;
+    if (mode_ == ResponseMode::OverreportedStartupWrite) {
+      return rs::core::transport::IOResult{buffer.size() + 1, false};
+    }
     return rs::core::transport::IOResult{buffer.size(), false};
   }
 
@@ -218,12 +223,24 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
 
   rs::util::Result<rs::core::transport::IOResult> recv(
       std::span<std::byte> buffer, rs::util::Deadline) override {
+    if ((mode_ == ResponseMode::ZeroHeaderRead && offset_ == 0) ||
+        (mode_ == ResponseMode::ZeroBodyRead && offset_ == 5)) {
+      if (!zero_returned_) {
+        zero_returned_ = true;
+        return rs::core::transport::IOResult{0, false};
+      }
+      return {rs::util::DbErrorCode::NetworkError,
+              "injected repeated read"};
+    }
     const auto available = input_.size() - offset_;
     if (available == 0) return rs::core::transport::IOResult{0, true};
     const auto count = std::min(buffer.size(), available);
     std::copy_n(input_.begin() + static_cast<std::ptrdiff_t>(offset_), count,
                 buffer.begin());
     offset_ += count;
+    if (mode_ == ResponseMode::OverreportedHeaderRead && offset_ == 5) {
+      return rs::core::transport::IOResult{count + 1, false};
+    }
     return rs::core::transport::IOResult{count, false};
   }
 
@@ -242,8 +259,10 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
   }
 
   std::vector<std::byte> input_;
+  ResponseMode mode_;
   std::size_t offset_{0};
   std::size_t send_count_{0};
+  bool zero_returned_{false};
 };
 
 TEST(ConnectionLivenessTest, FailedServerTripMarksConnectionDead) {
@@ -469,6 +488,45 @@ TEST(ConnectionLivenessTest, ScramCannotDowngradeToCleartext) {
   EXPECT_NE(std::string::npos, result.error_message().find("SCRAM"));
   EXPECT_EQ(2u, observed_transport->send_count());
   EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, ZeroProgressFrameReadsFailPromptly) {
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::ZeroHeaderRead, Mode::ZeroBodyRead}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    rs::core::database::GenericDatabaseConnection connection(
+        std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+        std::make_unique<ScriptedBackendTransport>(mode));
+    rs::core::database::ConnectionSettings settings;
+    settings.use_ssl = false;
+    const auto result = connection.connect(settings);
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::NetworkError),
+              result.error());
+    EXPECT_NE(std::string::npos,
+              result.error_message().find("made no progress"));
+    EXPECT_FALSE(connection.is_connected());
+  }
+}
+
+TEST(ConnectionLivenessTest, OverreportedTransportCountsAreProtocolErrors) {
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {
+           Mode::OverreportedHeaderRead, Mode::OverreportedStartupWrite}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    rs::core::database::GenericDatabaseConnection connection(
+        std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+        std::make_unique<ScriptedBackendTransport>(mode));
+    rs::core::database::ConnectionSettings settings;
+    settings.use_ssl = false;
+    const auto result = connection.connect(settings);
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+              result.error());
+    EXPECT_NE(std::string::npos,
+              result.error_message().find("exceeded requested"));
+    EXPECT_FALSE(connection.is_connected());
+  }
 }
 
 TEST(ConnectionLivenessTest, OutOfPhaseStartupMessagesAreProtocolErrors) {
