@@ -1380,6 +1380,12 @@ substitute for ODBC diagnostics.
   both missing and extra fields, allowing inconsistent metadata and values
   to reach ODBC callers. Parser red/green tests cover both mismatches, and a
   synthetic backend test verifies protocol failure invalidates the connection.
+- Audit batch 218 enforces empty payloads for PostgreSQL's fixed-length
+  ParseComplete, BindComplete, CloseComplete, NoData, EmptyQueryResponse, and
+  PortalSuspended frames. Previously an extra byte on these ignored responses
+  was accepted; a synthetic malformed EmptyQueryResponse could complete a
+  query successfully. Parser and connection-level red/green tests cover the
+  boundary. The lengths follow [PostgreSQL's message formats](https://www.postgresql.org/docs/current/protocol-message-formats.html).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

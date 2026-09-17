@@ -664,6 +664,10 @@ Message PgProtocolParser::parse_message(const std::vector<std::byte>& data) {
   if (len < 4 || data.size() - 1 != len) {
     throw std::runtime_error("Invalid message length");
   }
+  if ((msg.tag == '1' || msg.tag == '2' || msg.tag == '3' ||
+       msg.tag == 'n' || msg.tag == 'I' || msg.tag == 's') && len != 4) {
+    throw std::runtime_error("Invalid PostgreSQL fixed-length response");
+  }
   
   msg.payload.assign(data.begin() + 5, data.end());
   if (msg.tag == 'K' && msg.payload.size() != 8) {

@@ -157,6 +157,20 @@ TEST(PgProtocolParserTest, BackendKeyDataMatchesProtocol30Length) {
   EXPECT_THROW(parser.parse_message(frame), std::runtime_error);
 }
 
+TEST(PgProtocolParserTest, FixedLengthQueryResponsesRejectPayloads) {
+  PgProtocolParser parser;
+  for (const char tag : {'1', '2', '3', 'n', 'I', 's'}) {
+    SCOPED_TRACE(tag);
+    std::vector<std::byte> frame{
+        static_cast<std::byte>(tag), std::byte{0}, std::byte{0},
+        std::byte{0}, std::byte{4}};
+    EXPECT_TRUE(parser.parse_message(frame).payload.empty());
+    frame[4] = std::byte{5};
+    frame.push_back(std::byte{0});
+    EXPECT_THROW(parser.parse_message(frame), std::runtime_error);
+  }
+}
+
 TEST(PgProtocolParserTest, RejectsTrailingBytesAfterOneFrame) {
   PgProtocolParser parser;
   const std::vector<std::byte> frame{

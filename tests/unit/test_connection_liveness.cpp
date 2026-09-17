@@ -69,7 +69,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     ZeroHeaderRead, ZeroBodyRead,
     OverreportedHeaderRead, OverreportedStartupWrite,
     AuthenticationDuringQuery, BackendKeyDuringQuery,
-    MismatchedDataRow
+    MismatchedDataRow, MalformedEmptyQueryResponse
   };
 
   explicit ScriptedBackendTransport(
@@ -191,6 +191,9 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::MalformedQueryReady) {
       append_message('Z', "IT", 2);
+    } else if (mode == ResponseMode::MalformedEmptyQueryResponse) {
+      append_message('I', "x", 1);
+      append_message('Z', "I", 1);
     } else if (mode == ResponseMode::MalformedQueryError) {
       constexpr char error[] = "SERROR\0C42601\0\0";
       append_message('E', error, sizeof(error) - 1);
@@ -717,6 +720,22 @@ TEST(ConnectionLivenessTest, MismatchedDataRowClosesLogicalConnection) {
   ASSERT_TRUE(connection.connect(settings).has_value());
   const auto result = connection.execute_query(
       "SELECT 1", rs::util::make_deadline(std::chrono::seconds(1)));
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, MalformedEmptyQueryResponseClosesConnection) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::MalformedEmptyQueryResponse));
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  ASSERT_TRUE(connection.connect(settings).has_value());
+  const auto result = connection.execute_query(
+      "", rs::util::make_deadline(std::chrono::seconds(1)));
   ASSERT_TRUE(result.has_error());
   EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
             result.error());
