@@ -1285,6 +1285,10 @@ substitute for ODBC diagnostics.
   prepared-statement integration test exercises the identifier against
   PostgreSQL. This follows the same
   [lexical rules](https://www.postgresql.org/docs/current/sql-syntax-lexical.html).
+- Audit batch 202 ends `--` line comments at either CR or LF, matching the
+  [PostgreSQL lexer](https://github.com/postgres/postgres/blob/master/src/backend/parser/scan.l).
+  Previously, a CR-only line ending hid the next `?` parameter. A red/green
+  parser test and a real prepared-statement test cover the boundary.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

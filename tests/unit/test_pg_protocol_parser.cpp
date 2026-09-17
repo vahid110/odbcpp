@@ -512,6 +512,22 @@ TEST(PgProtocolParserTest, DollarSignsInIdentifierDoNotStartQuotedString) {
             read_cstring(frames[0].payload, offset));
 }
 
+TEST(PgProtocolParserTest, CarriageReturnEndsLineCommentBeforeMarker) {
+  PgProtocolParser parser;
+  constexpr std::string_view sql =
+      "SELECT 1 -- ignored ?\r, ?::integer AS value";
+  EXPECT_EQ(1u, PgProtocolParser::parameter_marker_count(sql));
+
+  const std::vector<QueryParameterType> types{QueryParameterType::Int32};
+  const auto frames = split_frames(
+      parser.create_statement_description(sql, types));
+  ASSERT_FALSE(frames.empty());
+  std::size_t offset = 0;
+  EXPECT_TRUE(read_cstring(frames[0].payload, offset).empty());
+  EXPECT_EQ("SELECT 1 -- ignored ?\r, $1::integer AS value",
+            read_cstring(frames[0].payload, offset));
+}
+
 TEST(PgProtocolParserTest, ExtractsResultAndParameterMetadata) {
   PgProtocolParser parser;
   std::vector<rs::core::database::Message> messages;

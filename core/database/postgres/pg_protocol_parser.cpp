@@ -186,7 +186,7 @@ ParameterMarkerRewrite replace_parameter_markers(std::string_view sql) {
     if (state == State::LineComment) {
       out.push_back(ch);
       ++i;
-      if (ch == '\n') state = State::Normal;
+      if (ch == '\n' || ch == '\r') state = State::Normal;
       continue;
     }
     if (state == State::BlockComment) {
