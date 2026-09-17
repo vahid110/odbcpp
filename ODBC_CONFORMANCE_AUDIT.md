@@ -1496,6 +1496,10 @@ substitute for ODBC diagnostics.
   usable and malformed ones close it. [PostgreSQL's message format](https://www.postgresql.org/docs/current/protocol-message-formats.html)
   defines the frame layout, and its [message flow](https://www.postgresql.org/docs/current/protocol-flow.html)
   permits notifications asynchronously.
+- Audit batch 237 adds a real PostgreSQL `LISTEN`/`NOTIFY` round trip through
+  `SQLExecDirect`, followed by a normal result fetch on the same connection.
+  This complements the synthetic notification-frame tests and runs under the
+  sanitizer, PostgreSQL, and iODBC configurations.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

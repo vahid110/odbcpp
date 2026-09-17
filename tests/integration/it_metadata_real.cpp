@@ -118,6 +118,20 @@ TEST_F(MetadataIntegrationTest, BasicMetadata) {
     EXPECT_EQ(SQL_VARCHAR, numeric_attr);
 }
 
+TEST_F(MetadataIntegrationTest, NotificationDoesNotCorruptQueryResults) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"LISTEN odbcpp_notification_test", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"NOTIFY odbcpp_notification_test, 'delivered'",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 42", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<SQLINTEGER>(42), integer_cell(hstmt, 1));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, ReportsCurrentRowNumberOnlyWhilePositioned) {
     SQLCHAR query[] =
         "SELECT value FROM (VALUES (10), (20)) AS rows(value) ORDER BY value";
