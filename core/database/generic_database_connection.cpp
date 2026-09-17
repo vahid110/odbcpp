@@ -223,6 +223,12 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
     
     try {
       auto msg = parser_->parse_message(*msg_result);
+      if (msg.tag == 'G' || msg.tag == 'H' || msg.tag == 'W') {
+        disconnect();
+        return rs::util::Result<QueryResult>{
+            rs::util::DbErrorCode::UnsupportedFeature,
+            "PostgreSQL COPY streaming is not supported"};
+      }
       if (msg.tag == 'R' || msg.tag == 'K') {
         mark_transport_failed();
         return rs::util::Result<QueryResult>{

@@ -16,7 +16,8 @@ enum class DbErrorCode {
   TLSError,
   InvalidParameter,
   NotConnected,
-  ProtocolError
+  ProtocolError,
+  UnsupportedFeature
 };
 
 // Error category for database errors
@@ -36,6 +37,7 @@ public:
       case DbErrorCode::InvalidParameter: return "Invalid parameter";
       case DbErrorCode::NotConnected: return "Not connected";
       case DbErrorCode::ProtocolError: return "Protocol error";
+      case DbErrorCode::UnsupportedFeature: return "Unsupported feature";
       default: return "Unknown error";
     }
   }

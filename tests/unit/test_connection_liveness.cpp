@@ -69,7 +69,8 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     ZeroHeaderRead, ZeroBodyRead,
     OverreportedHeaderRead, OverreportedStartupWrite,
     AuthenticationDuringQuery, BackendKeyDuringQuery,
-    MismatchedDataRow, MalformedEmptyQueryResponse
+    MismatchedDataRow, MalformedEmptyQueryResponse,
+    CopyInDuringQuery, CopyOutDuringQuery, CopyBothDuringQuery
   };
 
   explicit ScriptedBackendTransport(
@@ -225,6 +226,12 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('D', "\0\0", 2);
       append_message('C', "SELECT 0", sizeof("SELECT 0"));
       append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::CopyInDuringQuery ||
+               mode == ResponseMode::CopyOutDuringQuery ||
+               mode == ResponseMode::CopyBothDuringQuery) {
+      const char tag = mode == ResponseMode::CopyInDuringQuery ? 'G' :
+                       mode == ResponseMode::CopyOutDuringQuery ? 'H' : 'W';
+      append_message(tag, "\0\0\0", 3);
     }
   }
 
@@ -740,6 +747,28 @@ TEST(ConnectionLivenessTest, MalformedEmptyQueryResponseClosesConnection) {
   EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
             result.error());
   EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, CopyStreamingFailsPromptlyAsUnsupported) {
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {
+           Mode::CopyInDuringQuery, Mode::CopyOutDuringQuery,
+           Mode::CopyBothDuringQuery}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    rs::core::database::GenericDatabaseConnection connection(
+        std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+        std::make_unique<ScriptedBackendTransport>(mode));
+    rs::core::database::ConnectionSettings settings;
+    settings.use_ssl = false;
+    ASSERT_TRUE(connection.connect(settings).has_value());
+    const auto result = connection.execute_query(
+        "COPY sample TO STDOUT", rs::util::make_deadline(
+                                    std::chrono::seconds(1)));
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature),
+              result.error());
+    EXPECT_FALSE(connection.is_connected());
+  }
 }
 
 TEST(ConnectionLivenessTest, MalformedErrorCannotBecomeSuccessfulQuery) {

@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -79,6 +80,34 @@ TEST_F(NativeSqlIntegrationTest, RejectsEmbeddedNulSqlAndRecovers) {
             SQLGetData(statement_, 1, SQL_C_SLONG, &value, sizeof(value),
                        nullptr));
   EXPECT_EQ(42, value);
+}
+
+TEST_F(NativeSqlIntegrationTest, CopyOutReportsUnsupportedWithoutHanging) {
+  SQLCHAR sql[] = "COPY (SELECT 1) TO STDOUT";
+  EXPECT_EQ(SQL_ERROR, SQLExecDirect(statement_, sql, SQL_NTS));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  SQLUINTEGER dead = SQL_CD_FALSE;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetConnectAttr(connection_, SQL_ATTR_CONNECTION_DEAD, &dead,
+                              sizeof(dead), nullptr));
+  EXPECT_EQ(SQL_CD_TRUE, dead);
+}
+
+TEST_F(NativeSqlIntegrationTest, CopyInReportsUnsupportedBeforeTimeout) {
+  SQLCHAR create[] = "CREATE TEMP TABLE odbcpp_copy_input_probe (value integer)";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, create, SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_QUERY_TIMEOUT,
+      reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(2)), 0));
+
+  SQLCHAR sql[] = "COPY odbcpp_copy_input_probe FROM STDIN";
+  EXPECT_EQ(SQL_ERROR, SQLExecDirect(statement_, sql, SQL_NTS));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  SQLUINTEGER dead = SQL_CD_FALSE;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetConnectAttr(connection_, SQL_ATTR_CONNECTION_DEAD, &dead,
+                              sizeof(dead), nullptr));
+  EXPECT_EQ(SQL_CD_TRUE, dead);
 }
 
 TEST_F(NativeSqlIntegrationTest, NativeSqlRejectsEmbeddedNulWithoutChangingOutputs) {

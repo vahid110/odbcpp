@@ -172,6 +172,10 @@ std::optional<std::string> statement_sql(ODBCHandle& handle,
 const char* request_sqlstate(const std::error_code& error,
                              const char* fallback) {
   if (is_timeout_error(error)) return SQLSTATE_TIMEOUT;
+  if (error == rs::util::make_error_code(
+                   rs::util::DbErrorCode::UnsupportedFeature)) {
+    return SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED;
+  }
   if (is_connection_loss(error)) return SQLSTATE_COMMUNICATION_LINK_FAILURE;
   return fallback;
 }

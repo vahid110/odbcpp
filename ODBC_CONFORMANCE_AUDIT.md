@@ -1386,6 +1386,13 @@ substitute for ODBC diagnostics.
   was accepted; a synthetic malformed EmptyQueryResponse could complete a
   query successfully. Parser and connection-level red/green tests cover the
   boundary. The lengths follow [PostgreSQL's message formats](https://www.postgresql.org/docs/current/protocol-message-formats.html).
+- Audit batch 219 reports PostgreSQL COPY streaming as unsupported instead of
+  waiting for input or silently discarding output. CopyInResponse,
+  CopyOutResponse, and CopyBothResponse now close the connection and return
+  `HYC00`; synthetic tests cover all three modes, while real PostgreSQL
+  `COPY FROM STDIN` and `COPY TO STDOUT` tests verify prompt failure and
+  connection-dead reporting. Full COPY streaming remains out of scope.
+  [PostgreSQL defines COPY as a distinct sub-protocol](https://www.postgresql.org/docs/current/protocol-flow.html).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
