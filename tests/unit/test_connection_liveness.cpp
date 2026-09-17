@@ -154,6 +154,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     AuthenticationDuringQuery, BackendKeyDuringQuery,
     MismatchedDataRow, UnannouncedDataRow, DuplicateRowDescription,
     UnknownQueryFrame, ExtendedFrameDuringSimpleQuery, ResultAfterError,
+    ValidNotificationDuringQuery, MalformedNotificationDuringQuery,
     MalformedEmptyQueryResponse,
     CopyInDuringQuery, CopyOutDuringQuery, CopyBothDuringQuery,
     UnsolicitedCopyData, UnsolicitedCopyDone,
@@ -356,6 +357,14 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('E', error, sizeof(error));
       append_message('C', "SELECT 1", sizeof("SELECT 1"));
       append_message('Z', "E", 1);
+    } else if (mode == ResponseMode::ValidNotificationDuringQuery ||
+               mode == ResponseMode::MalformedNotificationDuringQuery) {
+      constexpr char valid[] = "\0\0\0\1" "channel\0" "payload\0";
+      append_message('A', valid,
+                     mode == ResponseMode::ValidNotificationDuringQuery
+                         ? sizeof(valid) - 1 : sizeof(valid) - 2);
+      append_message('C', "SELECT 0", sizeof("SELECT 0"));
+      append_message('Z', "I", 1);
     } else if (mode == ResponseMode::CopyInDuringQuery ||
                mode == ResponseMode::CopyOutDuringQuery ||
                mode == ResponseMode::CopyBothDuringQuery) {
@@ -1218,6 +1227,35 @@ TEST(ConnectionLivenessTest, ResultAfterErrorClosesConnection) {
             result.error());
   EXPECT_FALSE(connection.is_connected());
   EXPECT_EQ(1u, observed_transport->close_count());
+}
+
+TEST(ConnectionLivenessTest, NotificationPayloadMustBeComplete) {
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::ValidNotificationDuringQuery,
+                          Mode::MalformedNotificationDuringQuery}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    auto transport = std::make_unique<ScriptedBackendTransport>(mode);
+    auto* observed_transport = transport.get();
+    rs::core::database::GenericDatabaseConnection connection(
+        std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+        std::move(transport));
+    rs::core::database::ConnectionSettings settings;
+    settings.use_ssl = false;
+    ASSERT_TRUE(connection.connect(settings).has_value());
+
+    const auto result = connection.execute_query(
+        "SELECT 0", rs::util::make_deadline(std::chrono::seconds(1)));
+    if (mode == Mode::ValidNotificationDuringQuery) {
+      ASSERT_TRUE(result.has_value()) << result.error_message();
+      EXPECT_TRUE(connection.is_connected());
+    } else {
+      ASSERT_TRUE(result.has_error());
+      EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+                result.error());
+      EXPECT_FALSE(connection.is_connected());
+      EXPECT_EQ(1u, observed_transport->close_count());
+    }
+  }
 }
 
 TEST(ConnectionLivenessTest, MalformedEmptyQueryResponseClosesConnection) {

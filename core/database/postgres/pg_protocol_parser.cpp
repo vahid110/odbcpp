@@ -675,6 +675,17 @@ Message PgProtocolParser::parse_message(const std::vector<std::byte>& data) {
   }
   if (msg.tag == 'N') {
     (void)decode_error_fields(msg.payload);
+  } else if (msg.tag == 'A') {
+    const std::span<const std::byte> payload(msg.payload);
+    if (payload.size() < 6) {
+      throw std::runtime_error("truncated PostgreSQL NotificationResponse");
+    }
+    std::size_t offset = 4; // notifying process ID
+    (void)read_cstring(payload, offset);
+    (void)read_cstring(payload, offset);
+    if (offset != payload.size()) {
+      throw std::runtime_error("invalid PostgreSQL NotificationResponse length");
+    }
   }
   return msg;
 }

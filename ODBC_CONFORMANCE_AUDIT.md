@@ -1488,6 +1488,14 @@ substitute for ODBC diagnostics.
   result followed by an error remains available through `SQLMoreResults`.
   [PostgreSQL's protocol flow](https://www.postgresql.org/docs/current/protocol-flow.html)
   says an error aborts the remaining query string.
+- Audit batch 236 validates asynchronous NotificationResponse payloads before
+  accepting them during a query: the notifying process ID must be present,
+  followed by exactly two terminated strings and no trailing bytes. Parser
+  tests cover valid, truncated, unterminated, and trailing-data frames;
+  synthetic connection tests verify valid notifications leave the connection
+  usable and malformed ones close it. [PostgreSQL's message format](https://www.postgresql.org/docs/current/protocol-message-formats.html)
+  defines the frame layout, and its [message flow](https://www.postgresql.org/docs/current/protocol-flow.html)
+  permits notifications asynchronously.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

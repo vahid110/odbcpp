@@ -3,6 +3,7 @@
 #include "core/database/postgres/pg_protocol_parser.h"
 #include "core/database/query_parameter.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -169,6 +170,34 @@ TEST(PgProtocolParserTest, FixedLengthQueryResponsesRejectPayloads) {
     frame.push_back(std::byte{0});
     EXPECT_THROW(parser.parse_message(frame), std::runtime_error);
   }
+}
+
+TEST(PgProtocolParserTest, NotificationResponseHasExactFields) {
+  PgProtocolParser parser;
+  const auto frame = [](std::vector<std::byte> payload) {
+    std::vector<std::byte> bytes{
+        std::byte{'A'}, std::byte{0}, std::byte{0}, std::byte{0},
+        static_cast<std::byte>(payload.size() + 4)};
+    bytes.insert(bytes.end(), payload.begin(), payload.end());
+    return bytes;
+  };
+  const std::vector<std::byte> valid{
+      std::byte{0}, std::byte{0}, std::byte{0}, std::byte{1},
+      std::byte{'c'}, std::byte{0}, std::byte{'p'}, std::byte{0}};
+  EXPECT_EQ(valid, parser.parse_message(frame(valid)).payload);
+
+  auto truncated_pid = valid;
+  truncated_pid.resize(3);
+  EXPECT_THROW(parser.parse_message(frame(truncated_pid)), std::runtime_error);
+  auto missing_channel = valid;
+  missing_channel.resize(5);
+  EXPECT_THROW(parser.parse_message(frame(missing_channel)), std::runtime_error);
+  auto missing_payload = valid;
+  missing_payload.pop_back();
+  EXPECT_THROW(parser.parse_message(frame(missing_payload)), std::runtime_error);
+  auto trailing = valid;
+  trailing.push_back(std::byte{0});
+  EXPECT_THROW(parser.parse_message(frame(trailing)), std::runtime_error);
 }
 
 TEST(PgProtocolParserTest, RejectsTrailingBytesAfterOneFrame) {
