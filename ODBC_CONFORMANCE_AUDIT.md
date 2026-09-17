@@ -1438,6 +1438,11 @@ substitute for ODBC diagnostics.
   database now return `InvalidParameter` rather than escaping as exceptions
   after network I/O. Synthetic tests verify no connect, send, or close occurs
   for the invalid attempt and that a corrected retry succeeds.
+- Audit batch 228 preserves transport `InvalidParameter` errors during both
+  plain and TLS connection establishment instead of changing them to generic
+  connection failures. The shared error classifier continues to preserve
+  timeouts and normalize other transport failures to `ConnectionFailed`;
+  synthetic tests check all three classes, messages, and cleanup in both modes.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

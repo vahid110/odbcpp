@@ -43,6 +43,17 @@ bool has_binary_columns(const QueryResult& result) {
   return false;
 }
 
+rs::util::DbErrorCode connect_error_code(const std::error_code& error) {
+  if (error == rs::util::make_error_code(rs::util::DbErrorCode::Timeout)) {
+    return rs::util::DbErrorCode::Timeout;
+  }
+  if (error == rs::util::make_error_code(
+                   rs::util::DbErrorCode::InvalidParameter)) {
+    return rs::util::DbErrorCode::InvalidParameter;
+  }
+  return rs::util::DbErrorCode::ConnectionFailed;
+}
+
 } // namespace
 
 GenericDatabaseConnection::GenericDatabaseConnection(
@@ -99,12 +110,9 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
     auto connect_result = start_tls->connect_plain(
         settings.host, settings.port, deadline);
     if (connect_result.has_error()) {
-      const auto code = connect_result.error() ==
-              rs::util::make_error_code(rs::util::DbErrorCode::Timeout)
-          ? rs::util::DbErrorCode::Timeout
-          : rs::util::DbErrorCode::ConnectionFailed;
       return rs::util::Result<void>{
-          code, connect_result.error_message()};
+          connect_error_code(connect_result.error()),
+          connect_result.error_message()};
     }
     
     // Send SSL request
@@ -147,12 +155,9 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
   } else {
     auto connect_result = transport_->connect(settings.host, settings.port, deadline);
     if (connect_result.has_error()) {
-      const auto code = connect_result.error() ==
-              rs::util::make_error_code(rs::util::DbErrorCode::Timeout)
-          ? rs::util::DbErrorCode::Timeout
-          : rs::util::DbErrorCode::ConnectionFailed;
       return rs::util::Result<void>{
-          code, connect_result.error_message()};
+          connect_error_code(connect_result.error()),
+          connect_result.error_message()};
     }
   }
   

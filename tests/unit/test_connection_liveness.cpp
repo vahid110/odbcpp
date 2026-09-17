@@ -57,19 +57,32 @@ class ScriptedTlsTransport final : public rs::core::transport::ITransport,
  public:
   enum class Mode {
     Refused, OverreportedWrite, NoProgress, Eof, EofWithAccept,
-    InvalidReply, OverreportedRead
+    InvalidReply, OverreportedRead, InvalidConnect, TimedOutConnect,
+    FailedConnect
   };
 
   explicit ScriptedTlsTransport(Mode mode = Mode::Refused) : mode_(mode) {}
 
   rs::util::Result<void> connect(std::string_view, uint16_t,
                                  rs::util::Deadline) override {
+    if (mode_ == Mode::InvalidConnect) {
+      return {rs::util::DbErrorCode::InvalidParameter,
+              "injected invalid transport endpoint"};
+    }
+    if (mode_ == Mode::TimedOutConnect) {
+      return {rs::util::DbErrorCode::Timeout,
+              "injected transport timeout"};
+    }
+    if (mode_ == Mode::FailedConnect) {
+      return {rs::util::DbErrorCode::NetworkError,
+              "injected transport failure"};
+    }
     return {};
   }
 
-  rs::util::Result<void> connect_plain(std::string_view, uint16_t,
-                                       rs::util::Deadline) override {
-    return {};
+  rs::util::Result<void> connect_plain(std::string_view host, uint16_t port,
+                                       rs::util::Deadline deadline) override {
+    return connect(host, port, deadline);
   }
 
   rs::util::Result<void> upgrade_to_tls(
@@ -582,6 +595,36 @@ TEST(ConnectionLivenessTest, InvalidSslNegotiationReadsKeepTheirErrorClass) {
     EXPECT_EQ(rs::util::make_error_code(expected_error), result.error());
     EXPECT_FALSE(connection.is_connected());
     EXPECT_EQ(1u, observed_transport->close_count());
+  }
+}
+
+TEST(ConnectionLivenessTest, ConnectErrorClassesSurvivePlainAndTlsPaths) {
+  using Mode = ScriptedTlsTransport::Mode;
+  for (const auto [mode, expected_error] : {
+           std::pair{Mode::InvalidConnect,
+                     rs::util::DbErrorCode::InvalidParameter},
+           std::pair{Mode::TimedOutConnect,
+                     rs::util::DbErrorCode::Timeout},
+           std::pair{Mode::FailedConnect,
+                     rs::util::DbErrorCode::ConnectionFailed}}) {
+    for (const bool use_ssl : {false, true}) {
+      SCOPED_TRACE(static_cast<int>(mode));
+      SCOPED_TRACE(use_ssl ? "TLS" : "plain");
+      auto transport = std::make_unique<ScriptedTlsTransport>(mode);
+      auto* observed_transport = transport.get();
+      rs::core::database::GenericDatabaseConnection connection(
+          std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+          std::move(transport));
+      rs::core::database::ConnectionSettings settings;
+      settings.use_ssl = use_ssl;
+
+      const auto result = connection.connect(settings);
+      ASSERT_TRUE(result.has_error());
+      EXPECT_EQ(rs::util::make_error_code(expected_error), result.error());
+      EXPECT_NE(std::string::npos, result.error_message().find("injected"));
+      EXPECT_FALSE(connection.is_connected());
+      EXPECT_EQ(1u, observed_transport->close_count());
+    }
   }
 }
 
