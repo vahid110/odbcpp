@@ -379,6 +379,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
 
   rs::util::Result<void> connect(std::string_view, uint16_t,
                                  rs::util::Deadline) override {
+    ++connect_count_;
     return {};
   }
 
@@ -392,6 +393,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
   }
 
   std::size_t send_count() const noexcept { return send_count_; }
+  std::size_t connect_count() const noexcept { return connect_count_; }
   std::size_t close_count() const noexcept { return close_count_; }
 
   rs::util::Result<rs::core::transport::IOResult> recv(
@@ -438,6 +440,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
   std::vector<std::byte> input_;
   ResponseMode mode_;
   std::size_t offset_{0};
+  std::size_t connect_count_{0};
   std::size_t send_count_{0};
   std::size_t close_count_{0};
   bool zero_returned_{false};
@@ -463,6 +466,43 @@ TEST(ConnectionLivenessTest, FailedAuthenticationClosesTransport) {
     EXPECT_EQ(rs::util::make_error_code(expected_error), result.error());
     EXPECT_FALSE(connection.is_connected());
     EXPECT_EQ(1u, observed_transport->close_count());
+  }
+}
+
+TEST(ConnectionLivenessTest, MalformedStartupFieldsFailBeforeConnectingAndAllowRetry) {
+  for (const bool malformed_user : {true, false}) {
+    SCOPED_TRACE(malformed_user ? "user" : "database");
+    auto transport = std::make_unique<ScriptedBackendTransport>();
+    auto* observed_transport = transport.get();
+    rs::core::database::GenericDatabaseConnection connection(
+        std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+        std::move(transport));
+    rs::core::database::ConnectionSettings settings;
+    settings.use_ssl = false;
+    settings.user = malformed_user
+        ? std::string("alice\0admin", sizeof("alice\0admin") - 1)
+        : "alice";
+    settings.database = malformed_user
+        ? "postgres"
+        : std::string("postgres\0other", sizeof("postgres\0other") - 1);
+
+    rs::util::Result<void> result;
+    EXPECT_NO_THROW(result = connection.connect(settings));
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter),
+              result.error());
+    EXPECT_NE(std::string::npos, result.error_message().find("embedded NUL"));
+    EXPECT_EQ(0u, observed_transport->connect_count());
+    EXPECT_EQ(0u, observed_transport->send_count());
+    EXPECT_EQ(0u, observed_transport->close_count());
+    EXPECT_FALSE(connection.is_connected());
+
+    settings.user = "alice";
+    settings.database = "postgres";
+    ASSERT_TRUE(connection.connect(settings).has_value());
+    EXPECT_TRUE(connection.is_connected());
+    EXPECT_EQ(1u, observed_transport->connect_count());
+    EXPECT_EQ(1u, observed_transport->send_count());
   }
 }
 

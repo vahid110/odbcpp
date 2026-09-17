@@ -51,6 +51,16 @@ GenericDatabaseConnection::GenericDatabaseConnection(
   : parser_(std::move(parser)), transport_(std::move(transport)) {}
 
 rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettings& settings) {
+  std::map<std::string, std::string> params;
+  params["application_name"] = "odbcpp";
+  std::vector<std::byte> startup;
+  try {
+    startup = parser_->create_startup_message(
+        settings.user, settings.database, params);
+  } catch (const std::invalid_argument& error) {
+    return {rs::util::DbErrorCode::InvalidParameter, error.what()};
+  }
+
   settings_ = settings;
   server_params_.clear();
   last_server_sqlstate_.clear();
@@ -147,9 +157,6 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
   }
   
   // Send startup message
-  std::map<std::string, std::string> params;
-  params["application_name"] = "odbcpp";
-  auto startup = parser_->create_startup_message(settings.user, settings.database, params);
   auto write_result = write_all_result(startup, deadline);
   if (write_result.has_error()) {
     return write_result;

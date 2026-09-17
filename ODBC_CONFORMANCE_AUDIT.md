@@ -1433,6 +1433,11 @@ substitute for ODBC diagnostics.
   protocol errors, and `N` remains a TLS refusal. Synthetic tests verify each
   error and transport cleanup. The negotiation still reads exactly one byte,
   as [PostgreSQL's protocol specifies](https://www.postgresql.org/docs/current/protocol-flow.html).
+- Audit batch 227 constructs and validates the PostgreSQL startup message
+  before opening a transport connection. Embedded NUL bytes in the user or
+  database now return `InvalidParameter` rather than escaping as exceptions
+  after network I/O. Synthetic tests verify no connect, send, or close occurs
+  for the invalid attempt and that a corrected retry succeeds.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
