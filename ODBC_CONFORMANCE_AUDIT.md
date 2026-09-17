@@ -1222,6 +1222,10 @@ substitute for ODBC diagnostics.
   diagnostic instead of returning only a generic message. The abrupt-close
   regression first reproduced the missing `SSL_connect` context in both
   deadline models, then verified the connection remains unusable after failure.
+- Audit batch 191 reuses that formatter for TLS send and receive failures,
+  preserving OpenSSL operation and error detail while retaining the existing
+  timeout, TLS, and network error categories. The abrupt-close receive test
+  first reproduced the missing `SSL_read` context, then verified it is present.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

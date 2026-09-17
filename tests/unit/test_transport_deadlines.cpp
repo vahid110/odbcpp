@@ -1058,6 +1058,7 @@ TEST(TLSTransportDeadlineTest, RejectsPeerCloseWithoutCloseNotify) {
   auto result = transport.recv(buffer, rs::util::make_deadline(1s));
   ASSERT_TRUE(result.has_error());
   EXPECT_EQ(result.error(), rs::util::make_error_code(rs::util::DbErrorCode::TLSError));
+  EXPECT_NE(result.error_message().find("SSL_read"), std::string::npos);
 }
 
 TEST(TLSTransportDeadlineTest, AcceptsPeerCloseNotifyAsCleanEof) {

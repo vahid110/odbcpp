@@ -30,8 +30,10 @@ std::string tls_setup_error(std::string message) {
   return message + ": " + detail.data();
 }
 
-std::string tls_handshake_error(const Error& error) {
-  std::string message = "TLS handshake failed";
+std::string tls_operation_error(const char* operation, const Error& error) {
+  std::string message = "TLS ";
+  message += operation;
+  message += " failed";
   if (error.detail[0] != '\0') {
     message += " (";
     message += error.detail;
@@ -194,7 +196,7 @@ void TLSTransport::upgrade_impl(std::string_view host, Deadline deadline) {
     SSL_free(ssl_); ssl_ = nullptr;
     if (e.code == Errc::Timeout) throw TimeoutError("TLS handshake timeout");
     if (e.code == Errc::HandshakeFailed) {
-      throw TLSError(tls_handshake_error(e));
+      throw TLSError(tls_operation_error("handshake", e));
     }
     throw IOError("TLS handshake I/O error");
   }
@@ -253,8 +255,10 @@ rs::util::Result<IOResult> TLSTransport::send(std::span<const std::byte> buf, De
 
   if (e.code != Errc::Ok) {
     if (e.code == Errc::Timeout) throw TimeoutError("TLS send timeout");
-    if (e.code == Errc::TlsFailed) throw TLSError("TLS send failed");
-    throw IOError("TLS send failed");
+    if (e.code == Errc::TlsFailed) {
+      throw TLSError(tls_operation_error("send", e));
+    }
+    throw IOError(tls_operation_error("send", e));
   }
 
     return IOResult{ n, false };
@@ -279,8 +283,10 @@ rs::util::Result<IOResult> TLSTransport::recv(std::span<std::byte> buf, Deadline
 
   if (e.code != Errc::Ok) {
     if (e.code == Errc::Timeout) throw TimeoutError("TLS recv timeout");
-    if (e.code == Errc::TlsFailed) throw TLSError("TLS recv failed");
-    throw IOError("TLS recv failed");
+    if (e.code == Errc::TlsFailed) {
+      throw TLSError(tls_operation_error("recv", e));
+    }
+    throw IOError(tls_operation_error("recv", e));
   }
 
     return IOResult{ got, eof };
