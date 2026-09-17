@@ -1411,6 +1411,13 @@ substitute for ODBC diagnostics.
   or after rows without CommandComplete, and the driver reported success.
   Describe-only exchanges remain separate and valid without an execution
   completion. This follows [PostgreSQL's query message flow](https://www.postgresql.org/docs/current/protocol-flow.html).
+- Audit batch 223 checks the distinct Parse/Describe statement response
+  sequence: ParseComplete, ParameterDescription, then RowDescription or
+  NoData. Missing or out-of-order frames now fail as protocol errors instead
+  of producing empty metadata, while ErrorResponse still preserves its
+  server SQLSTATE as a query failure. Synthetic tests cover each missing
+  stage and the valid NoData/error paths. The expected order follows
+  [PostgreSQL's extended-query flow](https://www.postgresql.org/docs/current/protocol-flow.html).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

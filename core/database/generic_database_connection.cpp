@@ -9,6 +9,7 @@
 #include <cstring>
 #include <iterator>
 #include <optional>
+#include <stdexcept>
 
 namespace rs::core::database {
 namespace {
@@ -226,10 +227,12 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::describe_statement(
 
 rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
     rs::util::Deadline deadline, ResponseKind kind) {
+  enum class DescriptionPhase { Parse, Parameters, Result, Complete, Error };
   std::vector<Message> messages;
   std::optional<std::string> query_error;
   std::string query_error_sqlstate;
   bool saw_completion = false;
+  auto description_phase = DescriptionPhase::Parse;
   last_server_sqlstate_.clear();
 
   while (true) {
@@ -251,6 +254,42 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
         return rs::util::Result<QueryResult>{
             rs::util::DbErrorCode::ProtocolError,
             "PostgreSQL startup frame arrived during query"};
+      }
+      if (kind == ResponseKind::Description) {
+        switch (msg.tag) {
+          case '1':
+            if (description_phase != DescriptionPhase::Parse) {
+              throw std::runtime_error("PostgreSQL ParseComplete out of sequence");
+            }
+            description_phase = DescriptionPhase::Parameters;
+            break;
+          case 't':
+            if (description_phase != DescriptionPhase::Parameters) {
+              throw std::runtime_error(
+                  "PostgreSQL ParameterDescription out of sequence");
+            }
+            description_phase = DescriptionPhase::Result;
+            break;
+          case 'T':
+          case 'n':
+            if (description_phase != DescriptionPhase::Result) {
+              throw std::runtime_error(
+                  "PostgreSQL statement description out of sequence");
+            }
+            description_phase = DescriptionPhase::Complete;
+            break;
+          case 'E':
+            description_phase = DescriptionPhase::Error;
+            break;
+          case 'N':
+          case 'S':
+          case 'A':
+          case 'Z':
+            break;
+          default:
+            throw std::runtime_error(
+                "Unexpected PostgreSQL statement description frame");
+        }
       }
       if (msg.tag == 'S') {
         auto status_result = record_parameter_status(msg);
@@ -274,6 +313,14 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
           return rs::util::Result<QueryResult>{
               rs::util::DbErrorCode::ProtocolError,
               "PostgreSQL query ended without a completion response"};
+        }
+        if (kind == ResponseKind::Description &&
+            description_phase != DescriptionPhase::Complete &&
+            description_phase != DescriptionPhase::Error) {
+          mark_transport_failed();
+          return rs::util::Result<QueryResult>{
+              rs::util::DbErrorCode::ProtocolError,
+              "PostgreSQL statement description was incomplete"};
         }
         break;
       }

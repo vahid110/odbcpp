@@ -74,7 +74,10 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     UnsolicitedCopyData, UnsolicitedCopyDone,
     OversizedUnsolicitedCopyData, BinaryResultRow,
     BinaryAdditionalResultRow, ReadyOnlyQuery, RowsWithoutCompletion,
-    EmptyQueryResponse, DescriptionNoData
+    EmptyQueryResponse, DescriptionNoData,
+    DescriptionMissingParse, DescriptionMissingParameters,
+    DescriptionMissingResult, DescriptionOutOfOrder,
+    DescriptionServerError
   };
 
   explicit ScriptedBackendTransport(
@@ -278,6 +281,27 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('1', "", 0);
       append_message('t', "\0\0", 2);
       append_message('n', "", 0);
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::DescriptionMissingParse) {
+      append_message('t', "\0\0", 2);
+      append_message('n', "", 0);
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::DescriptionMissingParameters) {
+      append_message('1', "", 0);
+      append_message('n', "", 0);
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::DescriptionMissingResult) {
+      append_message('1', "", 0);
+      append_message('t', "\0\0", 2);
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::DescriptionOutOfOrder) {
+      append_message('t', "\0\0", 2);
+      append_message('1', "", 0);
+      append_message('n', "", 0);
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::DescriptionServerError) {
+      constexpr char error[] = "SERROR\0C42601\0Msyntax error\0";
+      append_message('E', error, sizeof(error));
       append_message('Z', "I", 1);
     }
   }
@@ -905,6 +929,47 @@ TEST(ConnectionLivenessTest, EmptyQueryAndDescribeRemainValid) {
     ASSERT_TRUE(result.has_value()) << result.error_message();
     EXPECT_TRUE(connection.is_connected());
   }
+}
+
+TEST(ConnectionLivenessTest, DescriptionRequiresCompleteMetadataSequence) {
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {
+           Mode::ReadyOnlyQuery, Mode::DescriptionMissingParse,
+           Mode::DescriptionMissingParameters,
+           Mode::DescriptionMissingResult,
+           Mode::DescriptionOutOfOrder}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    rs::core::database::GenericDatabaseConnection connection(
+        std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+        std::make_unique<ScriptedBackendTransport>(mode));
+    rs::core::database::ConnectionSettings settings;
+    settings.use_ssl = false;
+    ASSERT_TRUE(connection.connect(settings).has_value());
+    const auto result = connection.describe_statement(
+        "UPDATE sample SET value = 1", {},
+        rs::util::make_deadline(std::chrono::seconds(1)));
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+              result.error());
+    EXPECT_FALSE(connection.is_connected());
+  }
+}
+
+TEST(ConnectionLivenessTest, DescriptionServerErrorRemainsQueryFailure) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::DescriptionServerError));
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  ASSERT_TRUE(connection.connect(settings).has_value());
+  const auto result = connection.describe_statement(
+      "invalid SQL", {}, rs::util::make_deadline(std::chrono::seconds(1)));
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),
+            result.error());
+  EXPECT_EQ("42601", connection.get_last_server_sqlstate());
+  EXPECT_TRUE(connection.is_connected());
 }
 
 TEST(ConnectionLivenessTest, MalformedErrorCannotBecomeSuccessfulQuery) {
