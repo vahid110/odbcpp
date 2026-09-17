@@ -2501,6 +2501,7 @@ SQLRETURN ODBCStatement::fetch() {
   }
   get_data_column_ = 0;
   get_data_offset_ = 0;
+  get_data_target_type_ = 0;
   SQLRETURN fetch_result = SQL_SUCCESS;
   
   // Auto-populate bound columns from ARD
@@ -2633,6 +2634,12 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
   constexpr auto complete = std::numeric_limits<std::size_t>::max();
   auto offset = get_data_column_ == col ? get_data_offset_ : 0;
   if (offset == complete) return SQL_NO_DATA;
+  if (get_data_column_ == col &&
+      get_data_target_type_ != effective_target_type) {
+    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
+              "SQLGetData target type changed during chunked retrieval");
+    return SQL_ERROR;
+  }
 
   if (!buffer) {
     set_error(SQLSTATE_INVALID_NULL_POINTER, "Null result buffer");
@@ -2645,6 +2652,7 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
   const auto save_offset = [&](std::size_t value) {
     get_data_column_ = col;
     get_data_offset_ = value;
+    get_data_target_type_ = effective_target_type;
   };
 
   const auto& cell = row[col - 1];
@@ -3226,6 +3234,7 @@ void ODBCStatement::apply_query_result(
   row_positioned_ = false;
   get_data_column_ = 0;
   get_data_offset_ = 0;
+  get_data_target_type_ = 0;
   executed_ = true;
 
   const auto max_rows = static_cast<std::size_t>(
@@ -3311,6 +3320,7 @@ void ODBCStatement::clear_current_result() {
   descriptor(imp_row_descriptor_)->replace_records({});
   get_data_column_ = 0;
   get_data_offset_ = 0;
+  get_data_target_type_ = 0;
   current_row_ = 0;
   row_positioned_ = false;
   affected_rows_ = 0;

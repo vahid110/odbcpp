@@ -485,6 +485,7 @@ private:
       parameter_base_type_cache_;
   std::size_t get_data_offset_ = 0;
   SQLUSMALLINT get_data_column_ = 0;
+  SQLSMALLINT get_data_target_type_ = 0;
   std::vector<rs::core::database::QueryResult> pending_results_;
   std::string prepared_sql_;
   size_t current_row_ = 0;

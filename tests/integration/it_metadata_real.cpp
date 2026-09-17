@@ -400,6 +400,48 @@ TEST_F(MetadataIntegrationTest, GetDataWideHandlesUnalignedBuffer) {
     EXPECT_EQ(static_cast<SQLWCHAR>(0), terminator);
 }
 
+TEST_F(MetadataIntegrationTest, GetDataRejectsTargetChangeMidChunk) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt,
+        (SQLCHAR*)"SELECT value FROM (VALUES ('abcdef'::text), "
+                  "('ghij'::text)) AS rows(value)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    char first[3]{};
+    SQLLEN length = -1;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, first, sizeof(first), &length));
+    EXPECT_STREQ("ab", first);
+    EXPECT_EQ(6, length);
+
+    SQLWCHAR changed[8]{static_cast<SQLWCHAR>('X')};
+    SQLLEN changed_length = 77;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(
+        hstmt, 1, SQL_C_WCHAR, changed, sizeof(changed), &changed_length));
+    EXPECT_EQ("HY010", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    EXPECT_EQ(static_cast<SQLWCHAR>('X'), changed[0]);
+    EXPECT_EQ(77, changed_length);
+
+    char remaining[8]{};
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, remaining, sizeof(remaining), &length));
+    EXPECT_STREQ("cdef", remaining);
+    EXPECT_EQ(4, length);
+    EXPECT_EQ(SQL_NO_DATA, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, remaining, sizeof(remaining), &length));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLWCHAR next_row[8]{};
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_WCHAR, next_row, sizeof(next_row), &length));
+    EXPECT_EQ(static_cast<SQLLEN>(4 * sizeof(SQLWCHAR)), length);
+    EXPECT_EQ(static_cast<SQLWCHAR>('g'), next_row[0]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('h'), next_row[1]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('i'), next_row[2]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('j'), next_row[3]);
+}
+
 TEST_F(MetadataIntegrationTest, ExecutesAndPreparesUnicodeSql) {
     const std::string expected =
         "Gr\xc3\xbc\xc3\x9f" "e \xe4\xb8\x96\xe7\x95\x8c "

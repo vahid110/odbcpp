@@ -1500,6 +1500,14 @@ substitute for ODBC diagnostics.
   `SQLExecDirect`, followed by a normal result fetch on the same connection.
   This complements the synthetic notification-frame tests and runs under the
   sanitizer, PostgreSQL, and iODBC configurations.
+- Audit batch 238 prevents `SQLGetData` from reusing a partial-read offset
+  after the application changes the C target type for the same column. The
+  prior behavior could return a suffix interpreted in the wrong encoding and
+  consume the remaining value. A real PostgreSQL regression first reproduced
+  the false success, then verifies `HY010`, untouched error outputs, resumed
+  retrieval in the original type, and a fresh type on the next row. [ODBC's
+  long-data guidance](https://learn.microsoft.com/en-us/sql/odbc/reference/develop-app/getting-long-data)
+  defines successive calls as successive parts of one value.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
