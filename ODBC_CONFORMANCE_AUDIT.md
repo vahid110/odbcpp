@@ -1544,6 +1544,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   reaches the existing platform error, while explicit sync and
   `DeadlineModel=SocketTimeout` continue to select sync transport. All 34 tests
   pass in sanitizer, PostgreSQL Driver Manager, and iODBC configurations.
+- Audit batch 244 requests `client_encoding=UTF8` in the PostgreSQL startup
+  message. A regression run against a disposable LATIN1 database first
+  reproduced a LATIN1 session and failed `SQL_C_WCHAR` conversion for `é`;
+  after the startup change the server reports UTF8 and the wide result is
+  correct. The same test remains in the regular PostgreSQL integration suite.
+  PostgreSQL applies [startup run-time parameters](https://www.postgresql.org/docs/current/protocol-flow.html)
+  before ReadyForQuery. All 34 tests pass in sanitizer, PostgreSQL Driver
+  Manager, and iODBC configurations.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

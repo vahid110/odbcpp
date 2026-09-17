@@ -438,6 +438,8 @@ current platform; `Auto` does not silently substitute synchronous transport.
 An omitted or empty value disables TLS; any other value is rejected rather
 than silently selecting a plaintext connection. `SSL=true` requires TLS and
 peer certificate/hostname verification; it does not fall back to plaintext.
+PostgreSQL sessions request UTF-8 client encoding at startup, so Unicode
+results remain decodable even when the database uses another encoding.
 
 ### System Installation (Optional)
 

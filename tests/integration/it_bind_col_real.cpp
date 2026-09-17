@@ -662,6 +662,27 @@ TEST_F(BindColIntegrationTest, GetDataRetrievesWideTextInWholeCodePoints) {
     EXPECT_EQ(expected, assembled);
 }
 
+TEST_F(BindColIntegrationTest, RequestsUtf8ClientEncoding) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)
+            "SELECT current_setting('client_encoding'), chr(233)::text",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    char encoding[16]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, encoding, sizeof(encoding), nullptr));
+    EXPECT_STREQ("UTF8", encoding);
+
+    SQLWCHAR wide[2]{};
+    SQLLEN length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 2, SQL_C_WCHAR, wide, sizeof(wide), &length));
+    EXPECT_EQ(static_cast<SQLWCHAR>(0x00e9), wide[0]);
+    EXPECT_EQ(static_cast<SQLWCHAR>(0), wide[1]);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLWCHAR)), length);
+}
+
 TEST_F(BindColIntegrationTest, GetDataOffsetsResetForEachFetchedRow) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,

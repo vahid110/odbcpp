@@ -69,6 +69,7 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
   }
   std::map<std::string, std::string> params;
   params["application_name"] = "odbcpp";
+  params["client_encoding"] = "UTF8";
   std::vector<std::byte> startup;
   try {
     startup = parser_->create_startup_message(
