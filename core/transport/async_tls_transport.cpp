@@ -107,6 +107,20 @@ std::string openssl_error_text(const char* operation) {
   return std::string(operation) + ": " + message.data();
 }
 
+struct SslCallStatus {
+  int error{SSL_ERROR_NONE};
+  std::string message;
+};
+
+SslCallStatus capture_ssl_call(SSL* ssl, int result, const char* operation) {
+  if (result == 1) return {};
+  const int error = ::SSL_get_error(ssl, result);
+  if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) {
+    return {error, {}};
+  }
+  return {error, openssl_error_text(operation)};
+}
+
 template<typename T>
 rs::util::Result<T> cancelled_result() {
   return rs::util::Result<T>{rs::util::DbErrorCode::NetworkError,
@@ -381,9 +395,11 @@ private:
       }
 
       std::size_t written = 0;
+      ::ERR_clear_error();
       const int result = ::SSL_write_ex(
           ssl_, task.send_buffer.data() + written_total,
           task.send_buffer.size() - written_total, &written);
+      const auto status = capture_ssl_call(ssl_, result, "SSL_write_ex");
       auto flushed = flush_ciphertext_locked(task.deadline);
       if (flushed.has_error()) {
         return {flushed.error(), flushed.error_message()};
@@ -393,8 +409,7 @@ private:
         continue;
       }
 
-      const int error = ::SSL_get_error(ssl_, result);
-      if (error == SSL_ERROR_WANT_READ) {
+      if (status.error == SSL_ERROR_WANT_READ) {
         auto received = receive_ciphertext_locked(task.deadline);
         if (received.has_error()) {
           return {received.error(), received.error_message()};
@@ -403,9 +418,9 @@ private:
           return {rs::util::DbErrorCode::TLSError,
                   "TLS peer closed during send"};
         }
-      } else if (error != SSL_ERROR_WANT_WRITE) {
+      } else if (status.error != SSL_ERROR_WANT_WRITE) {
         return {rs::util::DbErrorCode::TLSError,
-                openssl_error_text("SSL_write_ex")};
+                status.message};
       }
     }
     return IOResult{written_total, false};
@@ -429,18 +444,19 @@ private:
       }
 
       std::size_t received_plaintext = 0;
+      ::ERR_clear_error();
       const int result = ::SSL_read_ex(
           ssl_, task.recv_storage.data(), task.recv_storage.size(),
           &received_plaintext);
+      const auto status = capture_ssl_call(ssl_, result, "SSL_read_ex");
       auto flushed = flush_ciphertext_locked(task.deadline);
       if (flushed.has_error()) {
         return {flushed.error(), flushed.error_message()};
       }
       if (result == 1) return IOResult{received_plaintext, false};
 
-      const int error = ::SSL_get_error(ssl_, result);
-      if (error == SSL_ERROR_ZERO_RETURN) return IOResult{0, true};
-      if (error == SSL_ERROR_WANT_READ) {
+      if (status.error == SSL_ERROR_ZERO_RETURN) return IOResult{0, true};
+      if (status.error == SSL_ERROR_WANT_READ) {
         auto received = receive_ciphertext_locked(task.deadline);
         if (received.has_error()) {
           return {received.error(), received.error_message()};
@@ -449,9 +465,9 @@ private:
           return {rs::util::DbErrorCode::TLSError,
                   "TLS peer closed without close_notify"};
         }
-      } else if (error != SSL_ERROR_WANT_WRITE) {
+      } else if (status.error != SSL_ERROR_WANT_WRITE) {
         return {rs::util::DbErrorCode::TLSError,
-                openssl_error_text("SSL_read_ex")};
+                status.message};
       }
     }
   }
@@ -545,7 +561,9 @@ private:
                 "TLS handshake deadline expired"};
       }
 
+      ::ERR_clear_error();
       const int result = ::SSL_connect(ssl_);
+      const auto status = capture_ssl_call(ssl_, result, "SSL_connect");
       auto flushed = flush_ciphertext_locked(deadline);
       if (flushed.has_error()) {
         reset_ssl_locked();
@@ -553,8 +571,7 @@ private:
       }
       if (result == 1) break;
 
-      const int error = ::SSL_get_error(ssl_, result);
-      if (error == SSL_ERROR_WANT_READ) {
+      if (status.error == SSL_ERROR_WANT_READ) {
         auto received = receive_ciphertext_locked(deadline);
         if (received.has_error()) {
           reset_ssl_locked();
@@ -565,8 +582,8 @@ private:
           return {rs::util::DbErrorCode::TLSError,
                   "TLS peer closed during handshake"};
         }
-      } else if (error != SSL_ERROR_WANT_WRITE) {
-        const auto message = openssl_error_text("SSL_connect");
+      } else if (status.error != SSL_ERROR_WANT_WRITE) {
+        const auto message = status.message;
         reset_ssl_locked();
         return {rs::util::DbErrorCode::TLSError, message};
       }

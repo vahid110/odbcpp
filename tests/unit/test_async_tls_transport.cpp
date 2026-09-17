@@ -1,19 +1,19 @@
 #include <gtest/gtest.h>
 
 #include "core/transport/async_tls_transport.h"
+#include "core/transport/thread_pool_transport.h"
 #include "core/database/generic_database_connection.h"
 #include "core/database/postgres/pg_protocol_parser.h"
 #ifdef __linux__
 #include "core/transport/epoll_transport.h"
 #elif defined(_WIN32)
 #include "core/transport/iocp_transport.h"
-#else
-#include "core/transport/thread_pool_transport.h"
 #endif
 #include "core/util/deadline.h"
 #include "core/util/platform.h"
 
 #include <openssl/evp.h>
+#include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 
@@ -66,6 +66,19 @@ std::unique_ptr<IAsyncTransport> make_native_transport(
       max_inflight, queue_depth);
 #endif
 }
+
+class ErrorQueueInjectingTransport final
+    : public rs::core::transport::ThreadPoolTransport {
+public:
+  using ThreadPoolTransport::ThreadPoolTransport;
+
+  rs::util::Result<IOResult> send(std::span<const std::byte> buffer,
+                                  rs::util::Deadline deadline) override {
+    auto result = ThreadPoolTransport::send(buffer, deadline);
+    ERR_put_error(ERR_LIB_USER, 0, ERR_R_INTERNAL_ERROR, __FILE__, __LINE__);
+    return result;
+  }
+};
 
 class TlsLoopbackServer {
 public:
@@ -336,6 +349,29 @@ TEST(AsyncTlsTransportTest, SupportsDirectTlsRoundTrip) {
   EXPECT_EQ(received->n, response.size());
   EXPECT_EQ(std::memcmp(response.data(), "pong", response.size()), 0);
   EXPECT_TRUE(server.observed_sni().empty());
+}
+
+TEST(AsyncTlsTransportTest, TransportErrorQueueCannotCorruptSslRetry) {
+  TlsLoopbackServer server(TlsLoopbackServer::Behavior::DirectEcho);
+  AsyncTlsTransport transport(std::make_unique<ErrorQueueInjectingTransport>(1));
+  transport.set_verify(false);
+
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(5s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  constexpr std::string_view request = "ping";
+  auto sent = transport.send(
+      std::as_bytes(std::span<const char>(request.data(), request.size())),
+      rs::util::make_deadline(5s));
+  ASSERT_TRUE(sent.has_value()) << sent.error_message();
+  EXPECT_EQ(sent->n, request.size());
+
+  std::array<std::byte, 4> response{};
+  auto received = transport.recv(response, rs::util::make_deadline(5s));
+  ASSERT_TRUE(received.has_value()) << received.error_message();
+  EXPECT_EQ(received->n, response.size());
+  EXPECT_EQ(std::memcmp(response.data(), "pong", response.size()), 0);
 }
 
 TEST(AsyncTlsTransportTest, EmptyIoWithoutConnectionFails) {

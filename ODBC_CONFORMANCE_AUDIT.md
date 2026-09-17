@@ -1231,6 +1231,12 @@ substitute for ODBC diagnostics.
   an unannounced peer close on older OpenSSL and must not inherit a stale
   timeout code; deterministic cases cover zero, negative timeout, and network
   failure for handshake, read, and write's shared decision.
+- Audit batch 193 captures `SSL_get_error` immediately after async TLS
+  handshake, read, and write calls, before memory-BIO flushing can change the
+  thread-local OpenSSL error queue. The loopback regression injects an error
+  during transport send and first reproduced a false handshake failure, then
+  completed a TLS echo round trip. The worker also clears unrelated queued
+  errors before each TLS call, per [OpenSSL's contract](https://docs.openssl.org/3.0/man3/SSL_get_error/).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
