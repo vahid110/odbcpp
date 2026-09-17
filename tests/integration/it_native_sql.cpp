@@ -236,11 +236,31 @@ TEST_F(NativeSqlIntegrationTest, PreservesOutputsOnTranslationErrors) {
   EXPECT_EQ(91, length);
   EXPECT_EQ("22007", diagnostic_state(SQL_HANDLE_DBC, connection_));
 
+  SQLCHAR invalid_time[] = "SELECT {t '-1:00:00'}";
+  EXPECT_EQ(SQL_ERROR,
+            SQLNativeSql(connection_, invalid_time, SQL_NTS, output,
+                         sizeof(output), &length));
+  EXPECT_STREQ("keep", reinterpret_cast<const char*>(output));
+  EXPECT_EQ(91, length);
+  EXPECT_EQ("22007", diagnostic_state(SQL_HANDLE_DBC, connection_));
+
   SQLCHAR malformed[] = "SELECT {fn UCASE('x')";
   EXPECT_EQ(SQL_ERROR,
             SQLNativeSql(connection_, malformed, SQL_NTS, output,
                          sizeof(output), &length));
   EXPECT_EQ("42000", diagnostic_state(SQL_HANDLE_DBC, connection_));
+}
+
+TEST_F(NativeSqlIntegrationTest, RejectsNegativeTimeInDirectAndPreparedSql) {
+  SQLCHAR invalid[] = "SELECT {t '12:-1:00'}";
+  EXPECT_EQ(SQL_ERROR, SQLExecDirect(statement_, invalid, SQL_NTS));
+  EXPECT_EQ("22007", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLPrepare(statement_, invalid, SQL_NTS));
+  EXPECT_EQ("22007", diagnostic_state(SQL_HANDLE_STMT, statement_));
+
+  SQLCHAR valid[] = "SELECT {t '12:34:56'}";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, valid, SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
 }
 
 TEST_F(NativeSqlIntegrationTest, ExecutesEscapesInDirectAndPreparedSql) {

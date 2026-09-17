@@ -67,6 +67,15 @@ bool valid_date(std::string_view value) {
 
 bool valid_time(std::string_view value) {
   if (value.size() < 8 || value[2] != ':' || value[5] != ':') return false;
+  const auto digits = [](std::string_view part) {
+    return std::all_of(part.begin(), part.end(), [](unsigned char c) {
+      return std::isdigit(c);
+    });
+  };
+  if (!digits(value.substr(0, 2)) || !digits(value.substr(3, 2)) ||
+      !digits(value.substr(6, 2))) {
+    return false;
+  }
   const auto hour = decimal(value.substr(0, 2));
   const auto minute = decimal(value.substr(3, 2));
   const auto second = decimal(value.substr(6, 2));
@@ -76,9 +85,7 @@ bool valid_time(std::string_view value) {
   }
   if (value.size() == 8) return true;
   if (value[8] != '.' || value.size() == 9) return false;
-  return std::all_of(value.begin() + 9, value.end(), [](unsigned char c) {
-    return std::isdigit(c);
-  });
+  return digits(value.substr(9));
 }
 
 std::optional<std::string_view> quoted_value(std::string_view value) {

@@ -1299,6 +1299,13 @@ substitute for ODBC diagnostics.
   could be rewritten as SQL, and a later real escape left unchanged. A
   red/green unit test and real PostgreSQL translation/execution test cover
   both sides of the quote boundary.
+- Audit batch 205 enforces digit-only hours, minutes, and seconds in ODBC
+  time/timestamp escapes, as required by the
+  [ODBC datetime grammar](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/date-time-and-timestamp-escape-sequences).
+  Previously, two-character negative fields such as `-1` and `-0` passed
+  range validation. Red/green unit tests cover all three fields; connected
+  tests verify SQLSTATE 22007, output preservation, and direct/prepared
+  recovery.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

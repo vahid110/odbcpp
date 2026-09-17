@@ -19,6 +19,9 @@ TEST(SqlEscapeTest, RejectsInvalidDatetimeValues) {
   for (const auto* sql : {
            "SELECT {d '2023-02-29'}", "SELECT {d '2024-13-01'}",
            "SELECT {t '24:00:00'}", "SELECT {t '12:00:60'}",
+           "SELECT {t '-1:00:00'}", "SELECT {t '12:-1:00'}",
+           "SELECT {t '12:00:-1'}", "SELECT {t '-0:00:00'}",
+           "SELECT {ts '2024-01-01 12:-1:00'}",
            "SELECT {ts '2024-01-01T12:00:00'}"}) {
     const auto translated = translate_odbc_sql(sql);
     EXPECT_EQ(SqlEscapeError::InvalidDatetime, translated.error) << sql;
