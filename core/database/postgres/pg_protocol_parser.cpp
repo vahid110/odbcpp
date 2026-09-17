@@ -209,7 +209,8 @@ ParameterMarkerRewrite replace_parameter_markers(std::string_view sql) {
         } else {
           state = State::Normal;
         }
-      } else if (ch == '\\' && i < sql.size()) {
+      } else if (state == State::SingleQuote && ch == '\\' &&
+                 i < sql.size()) {
         out.push_back(sql[i++]);
       }
       continue;

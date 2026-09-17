@@ -1272,6 +1272,12 @@ substitute for ODBC diagnostics.
   avoids overflow for extreme negative durations. A red/green test covers
   negative one millisecond and the minimum milliseconds value, then passed 20
   repeated runs in both normal and sanitizer builds.
+- Audit batch 200 treats backslash as an ordinary character inside PostgreSQL
+  double-quoted identifiers, consistent with the
+  [lexical syntax](https://www.postgresql.org/docs/current/sql-syntax-lexical.html).
+  The parameter-marker scanner previously mistook a backslash before the
+  closing quote for an escape and missed a later `?` marker. A red/green parser
+  test and a real prepared-statement test cover that identifier shape.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
