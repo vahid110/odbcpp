@@ -1443,6 +1443,11 @@ substitute for ODBC diagnostics.
   connection failures. The shared error classifier continues to preserve
   timeouts and normalize other transport failures to `ConnectionFailed`;
   synthetic tests check all three classes, messages, and cleanup in both modes.
+- Audit batch 229 closes an established transport as soon as a query-level
+  network or protocol failure marks the connection dead. Synthetic tests
+  verify one close after a failed write or malformed result, and that a
+  rejected retry does not close it again. Authentication failures remain
+  covered by the connection-attempt cleanup guard.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

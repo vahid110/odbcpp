@@ -45,11 +45,13 @@ class FailingQueryTransport final : public rs::core::transport::ITransport {
     return rs::core::transport::IOResult{count, false};
   }
 
-  void close() noexcept override {}
+  void close() noexcept override { ++close_count_; }
+  std::size_t close_count() const noexcept { return close_count_; }
 
  private:
   std::size_t send_count_{0};
   std::size_t receive_offset_{0};
+  std::size_t close_count_{0};
 };
 
 class ScriptedTlsTransport final : public rs::core::transport::ITransport,
@@ -630,6 +632,7 @@ TEST(ConnectionLivenessTest, ConnectErrorClassesSurvivePlainAndTlsPaths) {
 
 TEST(ConnectionLivenessTest, FailedServerTripMarksConnectionDead) {
   auto transport = std::make_unique<FailingQueryTransport>();
+  auto* observed_transport = transport.get();
   rs::core::database::GenericDatabaseConnection connection(
       std::make_unique<odbcpp::test::MockProtocolParser>(),
       std::move(transport));
@@ -645,6 +648,7 @@ TEST(ConnectionLivenessTest, FailedServerTripMarksConnectionDead) {
   EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::NetworkError),
             result.error());
   EXPECT_FALSE(connection.is_connected());
+  EXPECT_EQ(1u, observed_transport->close_count());
 }
 
 TEST(ConnectionLivenessTest, RetainsPostgresqlStartupParameters) {
@@ -1252,10 +1256,12 @@ TEST(ConnectionLivenessTest, MalformedErrorCannotBecomeSuccessfulQuery) {
 }
 
 TEST(ConnectionLivenessTest, MalformedQueryResultClosesLogicalConnection) {
+  auto transport = std::make_unique<ScriptedBackendTransport>(
+      ScriptedBackendTransport::ResponseMode::MalformedQuery);
+  auto* observed_transport = transport.get();
   rs::core::database::GenericDatabaseConnection connection(
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
-      std::make_unique<ScriptedBackendTransport>(
-          ScriptedBackendTransport::ResponseMode::MalformedQuery));
+      std::move(transport));
 
   rs::core::database::ConnectionSettings settings;
   settings.use_ssl = false;
@@ -1269,11 +1275,13 @@ TEST(ConnectionLivenessTest, MalformedQueryResultClosesLogicalConnection) {
   EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
             result.error());
   EXPECT_FALSE(connection.is_connected());
+  EXPECT_EQ(1u, observed_transport->close_count());
 
   const auto retry = connection.execute_query("SELECT 2", deadline);
   ASSERT_TRUE(retry.has_error());
   EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::NotConnected),
             retry.error());
+  EXPECT_EQ(1u, observed_transport->close_count());
 }
 
 }  // namespace

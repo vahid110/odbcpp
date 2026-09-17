@@ -192,7 +192,9 @@ bool GenericDatabaseConnection::is_connected() const {
 }
 
 void GenericDatabaseConnection::mark_transport_failed() noexcept {
+  const bool was_connected = connected_;
   connected_ = false;
+  if (was_connected && transport_) transport_->close();
 }
 
 rs::util::Result<QueryResult> GenericDatabaseConnection::execute_query(std::string_view sql, rs::util::Deadline deadline) {
