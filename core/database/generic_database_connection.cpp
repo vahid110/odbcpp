@@ -5,11 +5,28 @@
 #include "core/util/exception_adapter.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <iterator>
 #include <optional>
 
 namespace rs::core::database {
+namespace {
+
+constexpr std::uint32_t kShortFrameLimit = 30000;
+constexpr std::uint32_t kLargeFrameLimit = 0x3fffffff;
+
+bool allows_large_frame(char tag) {
+  switch (tag) {
+    case 'd': case 'D': case 'E': case 'V':
+    case 'N': case 'A': case 'T': case 't':
+      return true;
+    default:
+      return false;
+  }
+}
+
+} // namespace
 
 GenericDatabaseConnection::GenericDatabaseConnection(
     std::unique_ptr<IProtocolParser> parser,
@@ -311,22 +328,29 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
   
   // Extract length
   const auto* p = reinterpret_cast<const unsigned char*>(header.data());
-  uint32_t len = (p[1] << 24) | (p[2] << 16) | (p[3] << 8) | p[4];
+  const std::uint32_t len = (static_cast<std::uint32_t>(p[1]) << 24) |
+      (static_cast<std::uint32_t>(p[2]) << 16) |
+      (static_cast<std::uint32_t>(p[3]) << 8) | p[4];
   
-  if (len < 4) {
+  const auto limit = allows_large_frame(static_cast<char>(header[0]))
+      ? kLargeFrameLimit : kShortFrameLimit;
+  if (len < 4 || len > limit) {
     mark_transport_failed();
     return rs::util::Result<std::vector<std::byte>>{rs::util::DbErrorCode::ProtocolError, "Invalid message length"};
   }
   
-  // Read payload
-  std::vector<std::byte> message(1 + len);
-  message[0] = header[0]; // tag
-  std::memcpy(message.data() + 1, header.data() + 1, 4); // length
-  
-  offset = 5;
-  
-  while (offset < message.size()) {
-    auto result = transport_->recv(std::span<std::byte>(message.data() + offset, message.size() - offset), deadline);
+  // Grow only as bytes arrive; an untrusted length must not preallocate it.
+  const auto total_length = static_cast<std::size_t>(len) + 1;
+  std::vector<std::byte> message;
+  message.reserve(std::min<std::size_t>(total_length, 8192));
+  message.insert(message.end(), header.begin(), header.end());
+
+  while (message.size() < total_length) {
+    const auto offset = message.size();
+    const auto requested = std::min<std::size_t>(total_length - offset, 8192);
+    message.resize(offset + requested);
+    auto result = transport_->recv(
+        std::span<std::byte>(message.data() + offset, requested), deadline);
     if (result.has_error()) {
       mark_transport_failed();
       return rs::util::Result<std::vector<std::byte>>{
@@ -336,8 +360,13 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
       mark_transport_failed();
       return rs::util::Result<std::vector<std::byte>>{rs::util::DbErrorCode::NetworkError, "Unexpected EOF"};
     }
-    if (result->n == 0) continue;
-    offset += result->n;
+    if (result->n > requested) {
+      mark_transport_failed();
+      return rs::util::Result<std::vector<std::byte>>{
+          rs::util::DbErrorCode::ProtocolError,
+          "Transport read exceeded requested message bytes"};
+    }
+    message.resize(offset + result->n);
   }
   
   return rs::util::Result<std::vector<std::byte>>{std::move(message)};

@@ -1312,6 +1312,15 @@ substitute for ODBC diagnostics.
   Previously, trailing bytes after a valid frame were silently discarded.
   A red/green malformed-frame test covers the boundary; the sanitizer,
   unixODBC, and iODBC suites still pass against PostgreSQL.
+- Audit batch 207 bounds received PostgreSQL frame lengths before allocation:
+  control messages use the same 30,000-byte threshold as
+  [libpq](https://github.com/postgres/postgres/blob/master/src/interfaces/libpq/fe-protocol3.c),
+  while potentially large messages retain an approximately 1 GiB ceiling
+  based on PostgreSQL's
+  [allocation limit](https://github.com/postgres/postgres/blob/master/src/include/utils/memutils.h).
+  The receive buffer now grows only as payload bytes arrive. A red/green
+  oversized-control test and incomplete/over-limit DataRow tests cover the
+  failure paths; all three local suites pass against PostgreSQL.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

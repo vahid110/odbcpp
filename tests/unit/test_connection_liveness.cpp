@@ -63,7 +63,8 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     UnexpectedQueryFrameAfterAuthenticationOk, NoticeAfterAuthenticationOk,
     MalformedNoticeMissingField, MalformedNoticeDuplicateField,
     MalformedNoticeUnterminated, QueryParameterStatus,
-    MalformedQueryParameterStatus
+    MalformedQueryParameterStatus, OversizedStartupReady,
+    TooLargeDataRow, IncompleteLargeDataRow
   };
 
   explicit ScriptedBackendTransport(
@@ -84,6 +85,23 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     }
     if (mode == ResponseMode::MalformedStartupReady) {
       append_message('Z', "X", 1);
+      return;
+    }
+    if (mode == ResponseMode::OversizedStartupReady) {
+      input_ = {std::byte{'Z'}, std::byte{0}, std::byte{0},
+                std::byte{0x75}, std::byte{0x31}};
+      return;
+    }
+    if (mode == ResponseMode::TooLargeDataRow ||
+        mode == ResponseMode::IncompleteLargeDataRow) {
+      input_ = {std::byte{'D'}, std::byte{0x40}, std::byte{0},
+                std::byte{0}, std::byte{0}};
+      if (mode == ResponseMode::IncompleteLargeDataRow) {
+        input_[1] = std::byte{0x3f};
+        input_[2] = std::byte{0xff};
+        input_[3] = std::byte{0xff};
+        input_[4] = std::byte{0xfe};
+      }
       return;
     }
     if (mode == ResponseMode::ReadyWithoutAuth) {
@@ -188,6 +206,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
   rs::util::Result<rs::core::transport::IOResult> recv(
       std::span<std::byte> buffer, rs::util::Deadline) override {
     const auto available = input_.size() - offset_;
+    if (available == 0) return rs::core::transport::IOResult{0, true};
     const auto count = std::min(buffer.size(), available);
     std::copy_n(input_.begin() + static_cast<std::ptrdiff_t>(offset_), count,
                 buffer.begin());
@@ -331,6 +350,41 @@ TEST(ConnectionLivenessTest, MalformedAuthIsNotReportedAsBadCredentials) {
   EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
             result.error());
   EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, OversizedControlFrameClosesConnection) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::OversizedStartupReady));
+
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  const auto result = connection.connect(settings);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, LargeDataRowLengthsDoNotPreallocatePayload) {
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::TooLargeDataRow,
+                          Mode::IncompleteLargeDataRow}) {
+    rs::core::database::GenericDatabaseConnection connection(
+        std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+        std::make_unique<ScriptedBackendTransport>(mode));
+    rs::core::database::ConnectionSettings settings;
+    settings.use_ssl = false;
+    const auto result = connection.connect(settings);
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(
+                  mode == Mode::TooLargeDataRow
+                      ? rs::util::DbErrorCode::ProtocolError
+                      : rs::util::DbErrorCode::NetworkError),
+              result.error());
+    EXPECT_FALSE(connection.is_connected());
+  }
 }
 
 TEST(ConnectionLivenessTest, ServerAuthRejectionRemainsCredentialFailure) {
