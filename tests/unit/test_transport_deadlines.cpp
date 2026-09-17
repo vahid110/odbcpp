@@ -1088,6 +1088,20 @@ TEST(TLSTransportDeadlineTest, DistinguishesLegacyTlsEofFromSocketFailure) {
   EXPECT_EQ(classify_tls_read_failure(SSL_ERROR_SYSCALL, 0, 1), Errc::SyscallFailed);
 }
 
+TEST(TLSTransportDeadlineTest, ZeroResultIgnoresStaleSocketTimeout) {
+#ifdef _WIN32
+  constexpr int timeout = WSAETIMEDOUT;
+  constexpr int network_error = WSAECONNRESET;
+#else
+  constexpr int timeout = ETIMEDOUT;
+  constexpr int network_error = ECONNRESET;
+#endif
+  using rs::core::transport::tls_syscall_timed_out;
+  EXPECT_FALSE(tls_syscall_timed_out(0, timeout));
+  EXPECT_TRUE(tls_syscall_timed_out(-1, timeout));
+  EXPECT_FALSE(tls_syscall_timed_out(-1, network_error));
+}
+
 TEST(TLSTransportDeadlineTest, EmptyTlsIoChecksConnectionAndDeadline) {
   TLSTransport transport(DeadlineModel::Strict);
   auto disconnected_send = transport.send(

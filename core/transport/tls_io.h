@@ -51,6 +51,10 @@ inline bool deadline_expired(rs::util::Deadline dl) {
   return rs::util::remaining(dl) <= milliseconds{0};
 }
 
+inline bool tls_syscall_timed_out(int ssl_result, int socket_error) noexcept {
+  return ssl_result < 0 && socket_error_is_timeout(socket_error);
+}
+
 // Wait for readiness (read=0x01, write=0x02)
 inline Errc wait_fd_ready(
 #if defined(_WIN32)
@@ -91,7 +95,8 @@ inline Error tls_handshake_with_deadline(SSL* ssl,
       if (ec != Errc::Ok) return {ec, "handshake", "want_write"};
       continue;
     }
-    if (e == SSL_ERROR_SYSCALL && socket_error_is_timeout(last_socket_error())) {
+    if (e == SSL_ERROR_SYSCALL &&
+        tls_syscall_timed_out(rc, last_socket_error())) {
       return {Errc::Timeout, "handshake", "socket_timeout"};
     }
     long serr = ::ERR_get_error();
@@ -124,7 +129,8 @@ inline Error tls_write_all(SSL* ssl,
       if (ec != Errc::Ok) return {ec, "send", "want_write"};
       continue;
     }
-    if (e == SSL_ERROR_SYSCALL && socket_error_is_timeout(last_socket_error())) {
+    if (e == SSL_ERROR_SYSCALL &&
+        tls_syscall_timed_out(rc, last_socket_error())) {
       return {Errc::Timeout, "send", "socket_timeout"};
     }
     long serr = ::ERR_get_error();
@@ -171,7 +177,8 @@ inline Error tls_read_some(SSL* ssl,
       if (ec != Errc::Ok) return {ec, "recv", "want_write"};
       continue;
     }
-    if (e == SSL_ERROR_SYSCALL && socket_error_is_timeout(last_socket_error())) {
+    if (e == SSL_ERROR_SYSCALL &&
+        tls_syscall_timed_out(rc, last_socket_error())) {
       return {Errc::Timeout, "recv", "socket_timeout"};
     }
     long serr = ::ERR_get_error();

@@ -1226,6 +1226,11 @@ substitute for ODBC diagnostics.
   preserving OpenSSL operation and error detail while retaining the existing
   timeout, TLS, and network error categories. The abrupt-close receive test
   first reproduced the missing `SSL_read` context, then verified it is present.
+- Audit batch 192 classifies an OpenSSL `SSL_ERROR_SYSCALL` as a socket timeout
+  only when the OpenSSL call returned a negative result. A zero result can mean
+  an unannounced peer close on older OpenSSL and must not inherit a stale
+  timeout code; deterministic cases cover zero, negative timeout, and network
+  failure for handshake, read, and write's shared decision.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
