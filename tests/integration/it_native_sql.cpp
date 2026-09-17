@@ -389,6 +389,26 @@ TEST_F(NativeSqlIntegrationTest, KeepsEscapesInsideBackslashQuotedStrings) {
   EXPECT_STREQ("OK", reinterpret_cast<const char*>(second));
 }
 
+TEST_F(NativeSqlIntegrationTest, DollarSignsInIdentifiersDoNotHideEscapes) {
+  SQLCHAR input[] =
+      "SELECT 1 AS foo$tag$bar, {fn UCASE('ok')}, 2 AS baz$tag$qux";
+  constexpr char expected[] =
+      "SELECT 1 AS foo$tag$bar, UPPER('ok'), 2 AS baz$tag$qux";
+  SQLCHAR output[sizeof(expected)]{};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLNativeSql(connection_, input, SQL_NTS, output, sizeof(output),
+                         nullptr));
+  EXPECT_STREQ(expected, reinterpret_cast<const char*>(output));
+
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, input, SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
+  SQLCHAR value[8]{};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetData(statement_, 2, SQL_C_CHAR, value, sizeof(value),
+                       nullptr));
+  EXPECT_STREQ("OK", reinterpret_cast<const char*>(value));
+}
+
 TEST_F(NativeSqlIntegrationTest, NoScanBypassesEscapeTranslation) {
   ASSERT_EQ(SQL_SUCCESS,
             SQLSetStmtAttr(statement_, SQL_ATTR_NOSCAN,

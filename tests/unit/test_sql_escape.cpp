@@ -99,6 +99,17 @@ TEST(SqlEscapeTest, PreservesBackslashQuotedEscapeStrings) {
                 .sql);
 }
 
+TEST(SqlEscapeTest, DollarSignsInIdentifiersDoNotHideEscapes) {
+  constexpr const char* sql =
+      "SELECT 1 AS foo$tag$bar, {fn UCASE('ok')}, 2 AS baz$tag$qux";
+  EXPECT_EQ("SELECT 1 AS foo$tag$bar, UPPER('ok'), 2 AS baz$tag$qux",
+            translate_odbc_sql(sql).sql);
+  EXPECT_EQ("SELECT $tag${fn UCASE('ignored')}$tag$, UPPER('ok')",
+            translate_odbc_sql(
+                "SELECT $tag${fn UCASE('ignored')}$tag$, {fn UCASE('ok')}")
+                .sql);
+}
+
 TEST(SqlEscapeTest, ReportsMalformedAndUnsupportedEscapes) {
   EXPECT_EQ(SqlEscapeError::InvalidSyntax,
             translate_odbc_sql("SELECT {d '2024-01-01'").error);

@@ -97,12 +97,25 @@ std::optional<std::string_view> quoted_value(std::string_view value) {
   return value.substr(1, value.size() - 2);
 }
 
+bool identifier_continue(unsigned char ch) {
+  return std::isalnum(ch) || ch == '_' || ch == '$' || ch >= 0x80;
+}
+
 std::optional<std::string_view> dollar_tag_at(std::string_view sql,
                                                std::size_t position) {
-  if (sql[position] != '$') return std::nullopt;
+  if (sql[position] != '$' ||
+      (position > 0 && identifier_continue(
+          static_cast<unsigned char>(sql[position - 1])))) {
+    return std::nullopt;
+  }
   const auto end = sql.find('$', position + 1);
   if (end == std::string_view::npos) return std::nullopt;
   const auto name = sql.substr(position + 1, end - position - 1);
+  if (!name.empty() &&
+      !std::isalpha(static_cast<unsigned char>(name.front())) &&
+      name.front() != '_') {
+    return std::nullopt;
+  }
   if (!std::all_of(name.begin(), name.end(), [](unsigned char c) {
         return std::isalnum(c) || c == '_';
       })) {
@@ -116,10 +129,8 @@ std::optional<std::size_t> quoted_end(std::string_view sql,
   const char quote = sql[position];
   const bool escape_string = quote == '\'' && position > 0 &&
       (sql[position - 1] == 'E' || sql[position - 1] == 'e') &&
-      (position == 1 ||
-       !(std::isalnum(static_cast<unsigned char>(sql[position - 2])) ||
-         sql[position - 2] == '_' || sql[position - 2] == '$' ||
-         static_cast<unsigned char>(sql[position - 2]) >= 0x80));
+      (position == 1 || !identifier_continue(
+          static_cast<unsigned char>(sql[position - 2])));
   for (std::size_t i = position + 1; i < sql.size(); ++i) {
     if (escape_string && sql[i] == '\\' && i + 1 < sql.size()) {
       ++i;

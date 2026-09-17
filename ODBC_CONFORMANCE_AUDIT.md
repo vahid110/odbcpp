@@ -1346,6 +1346,11 @@ substitute for ODBC diagnostics.
   checks both forms, and a prepared-query integration test exercises the
   ordinary form against PostgreSQL. This follows the
   [PostgreSQL lexical rules](https://www.postgresql.org/docs/current/sql-syntax-lexical.html).
+- Audit batch 212 applies the same PostgreSQL identifier boundary to
+  `SQLNativeSql`'s dollar-quote recognition. A dollar sign inside an
+  unquoted identifier no longer hides a subsequent ODBC escape; real
+  dollar-quoted strings still protect their contents. Red/green translator
+  and connected execution tests cover the distinction.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
