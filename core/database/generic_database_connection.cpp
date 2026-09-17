@@ -175,7 +175,7 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::execute_query(std::stri
     return rs::util::Result<QueryResult>{write_result.error(), write_result.error_message()};
   }
 
-  return read_query_result(deadline);
+  return read_query_result(deadline, ResponseKind::Execution);
 }
 
 rs::util::Result<QueryResult> GenericDatabaseConnection::execute_prepared(std::string_view sql, 
@@ -197,7 +197,7 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::execute_prepared(std::s
     return rs::util::Result<QueryResult>{write_result.error(), write_result.error_message()};
   }
   
-  return read_query_result(deadline);
+  return read_query_result(deadline, ResponseKind::Execution);
 }
 
 rs::util::Result<QueryResult> GenericDatabaseConnection::describe_statement(
@@ -221,14 +221,15 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::describe_statement(
     return rs::util::Result<QueryResult>{
         write_result.error(), write_result.error_message()};
   }
-  return read_query_result(deadline);
+  return read_query_result(deadline, ResponseKind::Description);
 }
 
 rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
-    rs::util::Deadline deadline) {
+    rs::util::Deadline deadline, ResponseKind kind) {
   std::vector<Message> messages;
   std::optional<std::string> query_error;
   std::string query_error_sqlstate;
+  bool saw_completion = false;
   last_server_sqlstate_.clear();
 
   while (true) {
@@ -263,8 +264,19 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
         query_error = parser_->extract_error_message(msg);
         query_error_sqlstate = parser_->extract_error_sqlstate(msg);
       }
+      if (msg.tag == 'C' || msg.tag == 'E' || msg.tag == 'I') {
+        saw_completion = true;
+      }
       messages.push_back(msg);
-      if (parser_->is_ready_for_query(msg)) break;
+      if (parser_->is_ready_for_query(msg)) {
+        if (kind == ResponseKind::Execution && !saw_completion) {
+          mark_transport_failed();
+          return rs::util::Result<QueryResult>{
+              rs::util::DbErrorCode::ProtocolError,
+              "PostgreSQL query ended without a completion response"};
+        }
+        break;
+      }
     } catch (const std::exception& error) {
       mark_transport_failed();
       return rs::util::Result<QueryResult>{

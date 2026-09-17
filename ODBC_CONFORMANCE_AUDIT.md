@@ -1405,6 +1405,12 @@ substitute for ODBC diagnostics.
   PostgreSQL `BINARY CURSOR` fetch verifies the ODBC diagnostic and a
   successful follow-up text query on the same connection.
   [PostgreSQL documents binary cursor output](https://www.postgresql.org/docs/current/protocol-flow.html).
+- Audit batch 222 requires a terminal CommandComplete, EmptyQueryResponse,
+  or ErrorResponse before ReadyForQuery can complete direct or prepared
+  execution. A synthetic backend previously returned ReadyForQuery alone,
+  or after rows without CommandComplete, and the driver reported success.
+  Describe-only exchanges remain separate and valid without an execution
+  completion. This follows [PostgreSQL's query message flow](https://www.postgresql.org/docs/current/protocol-flow.html).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

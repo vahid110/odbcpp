@@ -31,6 +31,7 @@ public:
   std::string get_last_server_sqlstate() const override;
 
 private:
+  enum class ResponseKind { Execution, Description };
   std::unique_ptr<IProtocolParser> parser_;
   std::unique_ptr<rs::core::transport::ITransport> transport_;
   ConnectionSettings settings_;
@@ -50,7 +51,8 @@ private:
   rs::util::Result<std::vector<std::byte>> read_message_result(rs::util::Deadline deadline);
   rs::util::Result<void> perform_authentication_result(rs::util::Deadline deadline);
   rs::util::Result<void> record_parameter_status(const Message& msg);
-  rs::util::Result<QueryResult> read_query_result(rs::util::Deadline deadline);
+  rs::util::Result<QueryResult> read_query_result(
+      rs::util::Deadline deadline, ResponseKind kind);
   rs::util::Result<void> write_message_to_transport_result(rs::core::transport::ITransport& transport, const std::vector<std::byte>& data, rs::util::Deadline deadline);
   void mark_transport_failed() noexcept;
 };

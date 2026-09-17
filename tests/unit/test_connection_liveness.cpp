@@ -73,7 +73,8 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     CopyInDuringQuery, CopyOutDuringQuery, CopyBothDuringQuery,
     UnsolicitedCopyData, UnsolicitedCopyDone,
     OversizedUnsolicitedCopyData, BinaryResultRow,
-    BinaryAdditionalResultRow
+    BinaryAdditionalResultRow, ReadyOnlyQuery, RowsWithoutCompletion,
+    EmptyQueryResponse, DescriptionNoData
   };
 
   explicit ScriptedBackendTransport(
@@ -259,6 +260,24 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('T', description, sizeof(description) - 1);
       append_message('D', row, sizeof(row) - 1);
       append_message('C', "SELECT 1", sizeof("SELECT 1"));
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::ReadyOnlyQuery) {
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::RowsWithoutCompletion) {
+      constexpr char description[] =
+          "\0\1" "value\0" "\0\0\0\0" "\0\0" "\0\0\0\27"
+          "\0\4" "\377\377\377\377" "\0\0";
+      constexpr char row[] = "\0\1" "\0\0\0\1" "7";
+      append_message('T', description, sizeof(description) - 1);
+      append_message('D', row, sizeof(row) - 1);
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::EmptyQueryResponse) {
+      append_message('I', "", 0);
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::DescriptionNoData) {
+      append_message('1', "", 0);
+      append_message('t', "\0\0", 2);
+      append_message('n', "", 0);
       append_message('Z', "I", 1);
     }
   }
@@ -836,6 +855,54 @@ TEST(ConnectionLivenessTest, BinaryResultRowsAreNotExposedAsText) {
     ASSERT_TRUE(result.has_error());
     EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature),
               result.error());
+    EXPECT_TRUE(connection.is_connected());
+  }
+}
+
+TEST(ConnectionLivenessTest, QueryNeedsACompletionBeforeReady) {
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::ReadyOnlyQuery,
+                          Mode::RowsWithoutCompletion}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    for (const bool prepared : {false, true}) {
+      SCOPED_TRACE(prepared);
+      rs::core::database::GenericDatabaseConnection connection(
+          std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+          std::make_unique<ScriptedBackendTransport>(mode));
+      rs::core::database::ConnectionSettings settings;
+      settings.use_ssl = false;
+      ASSERT_TRUE(connection.connect(settings).has_value());
+      const auto deadline = rs::util::make_deadline(std::chrono::seconds(1));
+      const auto result = prepared
+          ? connection.execute_prepared(
+                "SELECT 7",
+                std::span<const rs::core::database::QueryParameter>{}, deadline)
+          : connection.execute_query("SELECT 7", deadline);
+      ASSERT_TRUE(result.has_error());
+      EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+                result.error());
+      EXPECT_FALSE(connection.is_connected());
+    }
+  }
+}
+
+TEST(ConnectionLivenessTest, EmptyQueryAndDescribeRemainValid) {
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::EmptyQueryResponse,
+                          Mode::DescriptionNoData}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    rs::core::database::GenericDatabaseConnection connection(
+        std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+        std::make_unique<ScriptedBackendTransport>(mode));
+    rs::core::database::ConnectionSettings settings;
+    settings.use_ssl = false;
+    ASSERT_TRUE(connection.connect(settings).has_value());
+    const auto deadline = rs::util::make_deadline(std::chrono::seconds(1));
+    const auto result = mode == Mode::EmptyQueryResponse
+        ? connection.execute_query("", deadline)
+        : connection.describe_statement("UPDATE sample SET value = 1", {},
+                                        deadline);
+    ASSERT_TRUE(result.has_value()) << result.error_message();
     EXPECT_TRUE(connection.is_connected());
   }
 }
