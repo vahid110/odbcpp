@@ -16,6 +16,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -43,6 +44,19 @@ void store_application_value(T* destination, T value) {
 std::string elapsed_milliseconds(std::chrono::steady_clock::time_point start) {
   return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - start).count());
+}
+
+std::optional<std::string> format_date_parameter(SQL_DATE_STRUCT date) {
+  const auto calendar_date = std::chrono::year_month_day{
+      std::chrono::year{date.year}, std::chrono::month{date.month},
+      std::chrono::day{date.day}};
+  if (date.year < 1 || date.year > 9999 || !calendar_date.ok()) {
+    return std::nullopt;
+  }
+  char iso_date[11]{};
+  std::snprintf(iso_date, sizeof(iso_date), "%04d-%02u-%02u",
+                date.year, date.month, date.day);
+  return std::string(iso_date);
 }
 
 std::string default_driver_name() {
@@ -369,6 +383,8 @@ rs::core::database::QueryParameterType parameter_type_for(
       return QueryParameterType::Numeric;
     case SQL_BIT:
       return QueryParameterType::Boolean;
+    case SQL_TYPE_DATE:
+      return QueryParameterType::Date;
     case SQL_BINARY:
     case SQL_VARBINARY:
     case SQL_LONGVARBINARY:
@@ -3035,6 +3051,16 @@ SQLRETURN ODBCStatement::execute() {
             load_application_value<SQLDOUBLE>(application.data_ptr));
       } else if (value_type == SQL_C_BIT) {
         value = *static_cast<unsigned char*>(application.data_ptr) ? "1" : "0";
+      } else if (value_type == SQL_C_DATE ||
+                 value_type == SQL_C_TYPE_DATE) {
+        const auto formatted = format_date_parameter(
+            load_application_value<SQL_DATE_STRUCT>(application.data_ptr));
+        if (!formatted) {
+          set_error(SQLSTATE_INVALID_DATETIME_FORMAT,
+                    "Invalid date parameter value");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        value = *formatted;
       } else if (value_type == SQL_C_BINARY) {
         SQLLEN length = application.octet_length;
         if (length_or_indicator) {

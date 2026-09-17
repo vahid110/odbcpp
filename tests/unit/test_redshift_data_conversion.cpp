@@ -797,6 +797,12 @@ TEST(ResultTypesTest, ProvidesMetadataDrivenDefaults) {
         SQL_INTEGER, SQL_C_BINARY));
     EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
         SQL_VARBINARY, SQL_C_BINARY));
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_supported_parameter_c_type(
+        SQL_C_TYPE_DATE));
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_supported_parameter_c_type(
+        SQL_C_DATE));
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_supported_parameter_sql_type(
+        SQL_TYPE_DATE));
 }
 
 TEST_F(RedshiftDataConverterTest, UnsupportedType) {

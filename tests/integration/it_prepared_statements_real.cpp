@@ -66,6 +66,78 @@ TEST_F(PreparedStatementIntegrationTest, BinaryParameterRoundTripsAsBytea) {
     EXPECT_EQ(0, std::memcmp(input, output, sizeof(input)));
 }
 
+TEST_F(PreparedStatementIntegrationTest, DateStructParameterRoundTrips) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQL_DATE_STRUCT input{2024, 2, 29};
+    alignas(SQL_DATE_STRUCT)
+        std::array<std::byte, 1 + sizeof(SQL_DATE_STRUCT)> input_bytes{};
+    std::memcpy(input_bytes.data() + 1, &input, sizeof(input));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TYPE_DATE, SQL_TYPE_DATE, 10, 0, input_bytes.data() + 1,
+        sizeof(input), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    SQLSMALLINT sql_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt, 1, nullptr, 0, nullptr,
+        &sql_type, nullptr, nullptr, nullptr));
+    EXPECT_EQ(SQL_TYPE_DATE, sql_type);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_DATE_STRUCT output{};
+    SQLLEN length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_DATE,
+        &output, sizeof(output), &length));
+    EXPECT_EQ(2024, output.year);
+    EXPECT_EQ(2, output.month);
+    EXPECT_EQ(29, output.day);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(output)), length);
+}
+
+TEST_F(PreparedStatementIntegrationTest, DefaultDateParameterCTypeRoundTrips) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQL_DATE_STRUCT input{2024, 12, 31};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_DEFAULT, SQL_TYPE_DATE, 10, 0, &input, sizeof(input), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_DATE_STRUCT output{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_DATE,
+        &output, sizeof(output), nullptr));
+    EXPECT_EQ(2024, output.year);
+    EXPECT_EQ(12, output.month);
+    EXPECT_EQ(31, output.day);
+}
+
+TEST_F(PreparedStatementIntegrationTest, DateStructParameterRejectsInvalidDate) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQL_DATE_STRUCT input{2023, 2, 29};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_DATE, SQL_TYPE_DATE, 10, 0, &input, sizeof(input), nullptr));
+    SQLCHAR state[6]{};
+    for (const SQL_DATE_STRUCT invalid : {
+             SQL_DATE_STRUCT{2023, 2, 29}, SQL_DATE_STRUCT{2024, 13, 1},
+             SQL_DATE_STRUCT{2024, 4, 31}, SQL_DATE_STRUCT{0, 1, 1}}) {
+        input = invalid;
+        EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22007", reinterpret_cast<char*>(state));
+    }
+}
+
+TEST_F(PreparedStatementIntegrationTest, NullDateStructParameterStaysNull) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQLLEN indicator = SQL_NULL_DATA;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TYPE_DATE, SQL_TYPE_DATE, 10, 0, nullptr, 0, &indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_DATE_STRUCT output{73, 1, 1};
+    SQLLEN length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_DATE,
+        &output, sizeof(output), &length));
+    EXPECT_EQ(SQL_NULL_DATA, length);
+    EXPECT_EQ(73, output.year);
+}
+
 TEST_F(PreparedStatementIntegrationTest,
        QuotedIdentifierBackslashDoesNotHideParameter) {
     char sql[] = R"(SELECT 1 AS "slash\", ?::integer AS value)";

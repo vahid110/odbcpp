@@ -66,6 +66,7 @@ std::uint32_t postgres_type_oid(QueryParameterType type) {
     case QueryParameterType::Text: return 25;
     case QueryParameterType::Float64: return 701;
     case QueryParameterType::Numeric: return 1700;
+    case QueryParameterType::Date: return 1082;
   }
   return 0;
 }
