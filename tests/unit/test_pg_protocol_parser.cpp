@@ -96,6 +96,14 @@ TEST(PgProtocolParserTest, BackendKeyDataMatchesProtocol30Length) {
   EXPECT_THROW(parser.parse_message(frame), std::runtime_error);
 }
 
+TEST(PgProtocolParserTest, RejectsTrailingBytesAfterOneFrame) {
+  PgProtocolParser parser;
+  const std::vector<std::byte> frame{
+      std::byte{'Z'}, std::byte{0}, std::byte{0}, std::byte{0},
+      std::byte{5}, std::byte{'I'}, std::byte{0}};
+  EXPECT_THROW(parser.parse_message(frame), std::runtime_error);
+}
+
 struct Frame {
   char tag{};
   std::vector<std::byte> payload;

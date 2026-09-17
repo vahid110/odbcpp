@@ -620,14 +620,13 @@ Message PgProtocolParser::parse_message(const std::vector<std::byte>& data) {
   Message msg;
   msg.tag = static_cast<char>(data[0]);
   
-  const auto* p = reinterpret_cast<const unsigned char*>(data.data());
-  uint32_t len = (p[1] << 24) | (p[2] << 16) | (p[3] << 8) | p[4];
+  const auto len = read_u32(data, 1);
   
-  if (len < 4 || data.size() < len + 1) {
+  if (len < 4 || data.size() - 1 != len) {
     throw std::runtime_error("Invalid message length");
   }
   
-  msg.payload.assign(data.begin() + 5, data.begin() + 1 + len);
+  msg.payload.assign(data.begin() + 5, data.end());
   if (msg.tag == 'K' && msg.payload.size() != 8) {
     throw std::runtime_error("Invalid PostgreSQL 3.0 BackendKeyData length");
   }

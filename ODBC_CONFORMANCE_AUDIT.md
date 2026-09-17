@@ -1306,6 +1306,12 @@ substitute for ODBC diagnostics.
   range validation. Red/green unit tests cover all three fields; connected
   tests verify SQLSTATE 22007, output preservation, and direct/prepared
   recovery.
+- Audit batch 206 requires the PostgreSQL parser's input to contain exactly
+  one frame, matching the
+  [protocol length rule](https://www.postgresql.org/docs/current/protocol-overview.html).
+  Previously, trailing bytes after a valid frame were silently discarded.
+  A red/green malformed-frame test covers the boundary; the sanitizer,
+  unixODBC, and iODBC suites still pass against PostgreSQL.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
