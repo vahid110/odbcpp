@@ -632,6 +632,63 @@ TEST(AsyncTlsTransportTest, CancelledQueuedRequestReleasesCapacity) {
             std::string::npos);
 }
 
+TEST(AsyncTlsTransportTest, ExpiredQueuedRequestReleasesCapacity) {
+  AsyncTlsTransport transport(make_native_transport(1, 1), 1, 1);
+
+  std::promise<void> entered;
+  auto entered_future = entered.get_future();
+  std::promise<void> release;
+  auto release_future = release.get_future().share();
+  auto first = transport.send_async(
+      std::span<const std::byte>{}, rs::util::make_deadline(5s),
+      [&](rs::util::Result<IOResult>) {
+        entered.set_value();
+        release_future.wait();
+      });
+  const bool callback_started = entered_future.wait_for(1s) ==
+                                std::future_status::ready;
+  if (!callback_started) {
+    release.set_value();
+    FAIL() << "TLS worker did not enter the first callback";
+    return;
+  }
+
+  std::promise<rs::util::Result<IOResult>> expired_promise;
+  auto expired_future = expired_promise.get_future();
+  const auto expired_deadline = rs::util::make_deadline(30ms);
+  auto expired = transport.send_async(
+      std::span<const std::byte>{}, expired_deadline,
+      [&](rs::util::Result<IOResult> result) {
+        expired_promise.set_value(std::move(result));
+      });
+  while (rs::util::Clock::now() <= expired_deadline) {
+    std::this_thread::sleep_for(1ms);
+  }
+
+  std::promise<rs::util::Result<IOResult>> replacement_promise;
+  auto replacement_future = replacement_promise.get_future();
+  auto replacement = transport.send_async(
+      std::span<const std::byte>{}, rs::util::make_deadline(5s),
+      [&](rs::util::Result<IOResult> result) {
+        replacement_promise.set_value(std::move(result));
+      });
+  EXPECT_EQ(expired_future.wait_for(100ms), std::future_status::ready);
+  EXPECT_TRUE(expired->is_complete());
+  EXPECT_FALSE(replacement->is_complete());
+  release.set_value();
+
+  ASSERT_EQ(expired_future.wait_for(2s), std::future_status::ready);
+  ASSERT_EQ(replacement_future.wait_for(2s), std::future_status::ready);
+  auto expired_result = expired_future.get();
+  auto replacement_result = replacement_future.get();
+  ASSERT_TRUE(expired_result.has_error());
+  EXPECT_EQ(expired_result.error(), rs::util::make_error_code(
+      rs::util::DbErrorCode::Timeout));
+  ASSERT_TRUE(replacement_result.has_error());
+  EXPECT_EQ(replacement_result.error_message().find("queue is full"),
+            std::string::npos);
+}
+
 TEST(AsyncTlsTransportTest, UnannouncedTcpCloseIsNotCleanTlsEof) {
   TlsLoopbackServer server(TlsLoopbackServer::Behavior::SilentAfterTls);
   AsyncTlsTransport transport(make_native_transport());

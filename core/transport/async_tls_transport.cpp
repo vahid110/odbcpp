@@ -178,20 +178,37 @@ public:
   }
 
   bool submit(const std::shared_ptr<Task>& task) {
+    std::vector<std::shared_ptr<Task>> expired;
+    bool accepted = false;
     {
       std::lock_guard lock(queue_mutex_);
-      const std::size_t active_count = active_ ? 1 : 0;
-      if (stopping_ || tasks_.size() + active_count >= queue_depth_) {
-        return false;
+      if (!stopping_) {
+        const bool connecting = task->kind == TaskKind::ConnectTls ||
+                                task->kind == TaskKind::ConnectPlain;
+        const std::size_t active_count = active_ ? 1 : 0;
+        if (tasks_.size() + active_count >= queue_depth_ ||
+            (connecting && has_pending_connect_locked())) {
+          const auto now = rs::util::Clock::now();
+          for (auto it = tasks_.begin(); it != tasks_.end();) {
+            if ((*it)->deadline <= now) {
+              expired.push_back(std::move(*it));
+              it = tasks_.erase(it);
+            } else {
+              ++it;
+            }
+          }
+          if (!active_ && tasks_.empty()) idle_.notify_all();
+        }
+        if (tasks_.size() + active_count < queue_depth_ &&
+            (!connecting || !has_pending_connect_locked())) {
+          tasks_.push_back(task);
+          accepted = true;
+        }
       }
-      if ((task->kind == TaskKind::ConnectTls ||
-           task->kind == TaskKind::ConnectPlain) && has_pending_connect_locked()) {
-        return false;
-      }
-      tasks_.push_back(task);
     }
-    queue_ready_.notify_one();
-    return true;
+    if (accepted) queue_ready_.notify_one();
+    for (const auto& queued : expired) complete_expired_task(queued);
+    return accepted;
   }
 
   void request_cancel(const std::shared_ptr<OperationState>& state) noexcept {
@@ -300,6 +317,35 @@ private:
       }
     } catch (...) {
       // Cancellation cannot unwind through shutdown.
+    }
+  }
+
+  static void complete_expired_task(const std::shared_ptr<Task>& task) noexcept {
+    bool cancelled = false;
+    if (!task->state->finish_with([&](bool requested) {
+          cancelled = requested;
+        })) return;
+    try {
+      if (task->kind == TaskKind::ConnectTls ||
+          task->kind == TaskKind::ConnectPlain ||
+          task->kind == TaskKind::Upgrade) {
+        invoke_safely(task->connect_callback, cancelled
+            ? cancelled_result<void>()
+            : rs::util::Result<void>{rs::util::DbErrorCode::Timeout,
+                "async TLS operation deadline expired in queue"});
+      } else if (task->kind == TaskKind::Send) {
+        invoke_safely(task->send_callback, cancelled
+            ? cancelled_result<IOResult>()
+            : rs::util::Result<IOResult>{rs::util::DbErrorCode::Timeout,
+                "async TLS operation deadline expired in queue"});
+      } else {
+        invoke_safely(task->recv_callback, cancelled
+            ? cancelled_result<IOResult>()
+            : rs::util::Result<IOResult>{rs::util::DbErrorCode::Timeout,
+                "async TLS operation deadline expired in queue"});
+      }
+    } catch (...) {
+      // Queue reclamation cannot unwind through submission.
     }
   }
 

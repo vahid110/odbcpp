@@ -1242,6 +1242,12 @@ substitute for ODBC diagnostics.
   deterministic depth-one test holds the worker in a callback, cancels the
   queued request, and first reproduced a false queue-full rejection for its
   replacement. The canceled callback now completes before the worker resumes.
+- Audit batch 195 reclaims expired async TLS requests when a full queue or a
+  pending connect would otherwise reject new work. Expiration callbacks run
+  outside the queue lock and preserve a concurrent cancellation outcome. A
+  depth-one test first reproduced delayed timeout and false queue-full errors
+  while the worker was held in a callback, then verified prompt timeout and
+  replacement admission.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
