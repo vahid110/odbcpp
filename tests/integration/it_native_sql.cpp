@@ -297,6 +297,32 @@ TEST_F(NativeSqlIntegrationTest, KeepsEscapesInsideNestedComments) {
   EXPECT_STREQ("OK", reinterpret_cast<const char*>(text));
 }
 
+TEST_F(NativeSqlIntegrationTest, KeepsEscapesInsideBackslashQuotedStrings) {
+  SQLCHAR input[] =
+      "SELECT E'it\\'s {fn UCASE(ignored)}', {fn UCASE('ok')}";
+  constexpr char expected[] =
+      "SELECT E'it\\'s {fn UCASE(ignored)}', UPPER('ok')";
+  SQLCHAR output[sizeof(expected)]{};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLNativeSql(connection_, input, SQL_NTS, output, sizeof(output),
+                         nullptr));
+  EXPECT_STREQ(expected, reinterpret_cast<const char*>(output));
+
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, input, SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
+  SQLCHAR first[64]{};
+  SQLCHAR second[8]{};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetData(statement_, 1, SQL_C_CHAR, first, sizeof(first),
+                       nullptr));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetData(statement_, 2, SQL_C_CHAR, second, sizeof(second),
+                       nullptr));
+  EXPECT_STREQ("it's {fn UCASE(ignored)}",
+               reinterpret_cast<const char*>(first));
+  EXPECT_STREQ("OK", reinterpret_cast<const char*>(second));
+}
+
 TEST_F(NativeSqlIntegrationTest, NoScanBypassesEscapeTranslation) {
   ASSERT_EQ(SQL_SUCCESS,
             SQLSetStmtAttr(statement_, SQL_ATTR_NOSCAN,

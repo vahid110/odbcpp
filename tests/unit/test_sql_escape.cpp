@@ -75,6 +75,14 @@ TEST(SqlEscapeTest, EndsLineCommentsOnCarriageReturn) {
                 .sql);
 }
 
+TEST(SqlEscapeTest, PreservesBackslashQuotedEscapeStrings) {
+  EXPECT_EQ("SELECT E'it\\'s {fn UCASE(ignored)}', UPPER('outside')",
+            translate_odbc_sql(
+                "SELECT E'it\\'s {fn UCASE(ignored)}', "
+                "{fn UCASE('outside')}")
+                .sql);
+}
+
 TEST(SqlEscapeTest, ReportsMalformedAndUnsupportedEscapes) {
   EXPECT_EQ(SqlEscapeError::InvalidSyntax,
             translate_odbc_sql("SELECT {d '2024-01-01'").error);

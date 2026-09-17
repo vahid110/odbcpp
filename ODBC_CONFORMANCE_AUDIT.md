@@ -1289,6 +1289,16 @@ substitute for ODBC diagnostics.
   [PostgreSQL lexer](https://github.com/postgres/postgres/blob/master/src/backend/parser/scan.l).
   Previously, a CR-only line ending hid the next `?` parameter. A red/green
   parser test and a real prepared-statement test cover the boundary.
+- Audit batch 203 makes the ODBC SQL escape translator honor PostgreSQL's
+  nested block comments and CR-only line endings. Previously, an escape inside
+  the outer comment could be rewritten after the inner `*/`. Red/green unit
+  tests cover both boundaries and real PostgreSQL tests cover `SQLNativeSql`
+  and execution through a nested comment.
+- Audit batch 204 keeps backslash-escaped quotes inside PostgreSQL `E'...'`
+  strings while scanning for ODBC escapes. Previously, an embedded escape
+  could be rewritten as SQL, and a later real escape left unchanged. A
+  red/green unit test and real PostgreSQL translation/execution test cover
+  both sides of the quote boundary.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

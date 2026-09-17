@@ -106,7 +106,17 @@ std::optional<std::string_view> dollar_tag_at(std::string_view sql,
 std::optional<std::size_t> quoted_end(std::string_view sql,
                                       std::size_t position) {
   const char quote = sql[position];
+  const bool escape_string = quote == '\'' && position > 0 &&
+      (sql[position - 1] == 'E' || sql[position - 1] == 'e') &&
+      (position == 1 ||
+       !(std::isalnum(static_cast<unsigned char>(sql[position - 2])) ||
+         sql[position - 2] == '_' || sql[position - 2] == '$' ||
+         static_cast<unsigned char>(sql[position - 2]) >= 0x80));
   for (std::size_t i = position + 1; i < sql.size(); ++i) {
+    if (escape_string && sql[i] == '\\' && i + 1 < sql.size()) {
+      ++i;
+      continue;
+    }
     if (sql[i] != quote) continue;
     if (i + 1 < sql.size() && sql[i + 1] == quote) {
       ++i;
