@@ -1393,6 +1393,11 @@ substitute for ODBC diagnostics.
   `COPY FROM STDIN` and `COPY TO STDOUT` tests verify prompt failure and
   connection-dead reporting. Full COPY streaming remains out of scope.
   [PostgreSQL defines COPY as a distinct sub-protocol](https://www.postgresql.org/docs/current/protocol-flow.html).
+- Audit batch 220 rejects out-of-sequence CopyData and CopyDone frames from
+  their headers, before reading a potential streaming payload. Previously a
+  small CopyData frame could be ignored and followed by a reported query
+  success. Synthetic tests cover both tags and a large claimed CopyData
+  length with no body; all now invalidate the connection as protocol errors.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

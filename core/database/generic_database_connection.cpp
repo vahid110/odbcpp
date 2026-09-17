@@ -18,7 +18,7 @@ constexpr std::uint32_t kLargeFrameLimit = 0x3fffffff;
 
 bool allows_large_frame(char tag) {
   switch (tag) {
-    case 'd': case 'D': case 'E': case 'V':
+    case 'D': case 'E': case 'V':
     case 'N': case 'A': case 'T': case 't':
       return true;
     default:
@@ -368,6 +368,12 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
   if (len < 4 || len > limit) {
     mark_transport_failed();
     return rs::util::Result<std::vector<std::byte>>{rs::util::DbErrorCode::ProtocolError, "Invalid message length"};
+  }
+  if (header[0] == std::byte{'d'} || header[0] == std::byte{'c'}) {
+    disconnect();
+    return rs::util::Result<std::vector<std::byte>>{
+        rs::util::DbErrorCode::ProtocolError,
+        "PostgreSQL COPY frame arrived outside COPY mode"};
   }
   
   // Grow only as bytes arrive; an untrusted length must not preallocate it.
