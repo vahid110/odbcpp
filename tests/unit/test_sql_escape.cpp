@@ -55,6 +55,26 @@ TEST(SqlEscapeTest, PreservesBracesOutsideEscapeClauses) {
   EXPECT_EQ(sql, translate_odbc_sql(sql).sql);
 }
 
+TEST(SqlEscapeTest, PreservesNestedBlockComments) {
+  const char* sql =
+      "SELECT 1 /* outer /* inner */ {fn UCASE(ignored)} */ "
+      "WHERE 1 = {fn IFNULL(NULL, 1)}";
+  EXPECT_EQ("SELECT 1 /* outer /* inner */ {fn UCASE(ignored)} */ "
+            "WHERE 1 = COALESCE(NULL, 1)",
+            translate_odbc_sql(sql).sql);
+  EXPECT_EQ("SELECT UPPER(1 /* outer /* inner */ } still commented */)",
+            translate_odbc_sql(
+                "SELECT {fn UCASE(1 /* outer /* inner */ } still commented */)}")
+                .sql);
+}
+
+TEST(SqlEscapeTest, EndsLineCommentsOnCarriageReturn) {
+  EXPECT_EQ("SELECT 1 -- {fn UCASE(ignored)}\r, UPPER('yes')",
+            translate_odbc_sql(
+                "SELECT 1 -- {fn UCASE(ignored)}\r, {fn UCASE('yes')}")
+                .sql);
+}
+
 TEST(SqlEscapeTest, ReportsMalformedAndUnsupportedEscapes) {
   EXPECT_EQ(SqlEscapeError::InvalidSyntax,
             translate_odbc_sql("SELECT {d '2024-01-01'").error);

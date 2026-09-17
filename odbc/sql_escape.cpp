@@ -120,14 +120,22 @@ std::optional<std::size_t> quoted_end(std::string_view sql,
 std::optional<std::size_t> comment_end(std::string_view sql,
                                        std::size_t position) {
   if (sql.substr(position, 2) == "--") {
-    const auto end = sql.find('\n', position + 2);
+    const auto end = sql.find_first_of("\r\n", position + 2);
     return end == std::string_view::npos ? sql.size() : end + 1;
   }
   if (sql.substr(position, 2) == "/*") {
-    const auto end = sql.find("*/", position + 2);
-    return end == std::string_view::npos
-        ? std::optional<std::size_t>{}
-        : std::optional<std::size_t>{end + 2};
+    std::size_t depth = 1;
+    for (std::size_t i = position + 2; i + 1 < sql.size();) {
+      if (sql.substr(i, 2) == "/*") {
+        ++depth;
+        i += 2;
+      } else if (sql.substr(i, 2) == "*/") {
+        if (--depth == 0) return i + 2;
+        i += 2;
+      } else {
+        ++i;
+      }
+    }
   }
   return std::nullopt;
 }

@@ -270,6 +270,33 @@ TEST_F(NativeSqlIntegrationTest, ExecutesEscapesInDirectAndPreparedSql) {
   EXPECT_STREQ("prepared", reinterpret_cast<const char*>(text));
 }
 
+TEST_F(NativeSqlIntegrationTest, KeepsEscapesInsideNestedComments) {
+  SQLCHAR input[] =
+      "SELECT 1 /* outer /* inner */ {fn UCASE(ignored)} */, "
+      "{fn UCASE('ok')}";
+  constexpr char expected[] =
+      "SELECT 1 /* outer /* inner */ {fn UCASE(ignored)} */, UPPER('ok')";
+  SQLCHAR output[sizeof(expected)]{};
+  SQLINTEGER length = 0;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLNativeSql(connection_, input, SQL_NTS, output, sizeof(output),
+                         &length));
+  EXPECT_STREQ(expected, reinterpret_cast<const char*>(output));
+  EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(expected) - 1), length);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, input, SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
+  SQLINTEGER number = 0;
+  SQLCHAR text[8]{};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetData(statement_, 1, SQL_C_SLONG, &number, sizeof(number),
+                       nullptr));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetData(statement_, 2, SQL_C_CHAR, text, sizeof(text), nullptr));
+  EXPECT_EQ(1, number);
+  EXPECT_STREQ("OK", reinterpret_cast<const char*>(text));
+}
+
 TEST_F(NativeSqlIntegrationTest, NoScanBypassesEscapeTranslation) {
   ASSERT_EQ(SQL_SUCCESS,
             SQLSetStmtAttr(statement_, SQL_ATTR_NOSCAN,
