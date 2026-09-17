@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -480,7 +481,9 @@ SQLRETURN convert_timestamp(const std::string& value, void* buffer,
                             SQLLEN* indicator, ConversionIssue* issue) {
   const auto text = trim_whitespace(value);
   const bool date_only = text.size() == 10;
-  if (!date_only &&
+  const bool time_only = text.size() >= 8 &&
+      text[2] == ':' && text[5] == ':';
+  if (!date_only && !time_only &&
       (text.size() < 19 || (text[10] != ' ' && text[10] != 'T'))) {
     if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
     return SQL_ERROR;
@@ -493,11 +496,31 @@ SQLRETURN convert_timestamp(const std::string& value, void* buffer,
   unsigned second = 0;
   SQLUINTEGER fraction = 0;
   bool discarded_fraction = false;
-  if (!parse_date(text.substr(0, 10), year, month, day) ||
-      (!date_only && !parse_time(text.substr(11), hour, minute, second,
-                                 fraction, discarded_fraction))) {
+  const bool valid = time_only
+      ? parse_time(text, hour, minute, second, fraction, discarded_fraction)
+      : (parse_date(text.substr(0, 10), year, month, day) &&
+         (date_only || parse_time(text.substr(11), hour, minute, second,
+                                  fraction, discarded_fraction)));
+  if (!valid) {
     if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
     return SQL_ERROR;
+  }
+  if (time_only) {
+    const auto now = std::time(nullptr);
+    std::tm local{};
+#ifdef _WIN32
+    const bool valid_local_date = localtime_s(&local, &now) == 0;
+#else
+    const bool valid_local_date = localtime_r(&now, &local) != nullptr;
+#endif
+    if (!valid_local_date || local.tm_year + 1900 >
+            std::numeric_limits<SQLSMALLINT>::max()) {
+      if (issue) *issue = ConversionIssue::InvalidDatetimeFormat;
+      return SQL_ERROR;
+    }
+    year = static_cast<unsigned>(local.tm_year + 1900);
+    month = static_cast<unsigned>(local.tm_mon + 1);
+    day = static_cast<unsigned>(local.tm_mday);
   }
   const SQL_TIMESTAMP_STRUCT timestamp{
       static_cast<SQLSMALLINT>(year), static_cast<SQLUSMALLINT>(month),

@@ -1188,6 +1188,10 @@ substitute for ODBC diagnostics.
   a bit with `01S07`; negative or at-least-two values return `22003`, and
   malformed text returns `22018`. Unit and PostgreSQL-backed tests cover
   values near the upper boundary and preserve native PostgreSQL `t`/`f` input.
+- Audit batch 183 accepts time-only values for `SQL_C_TIMESTAMP`, using the
+  current local date from platform thread-safe time conversion. Unit and
+  PostgreSQL-backed tests allow a midnight rollover while checking the date,
+  time fields, malformed input, `22007`, and untouched outputs on error.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

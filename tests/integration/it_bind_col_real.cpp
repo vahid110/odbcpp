@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -1064,6 +1065,51 @@ TEST_F(BindColIntegrationTest, DateToTimestampZeroesTimeFields) {
     EXPECT_EQ(SQL_ERROR, SQLGetData(
         hstmt, 2, SQL_C_TIMESTAMP, &timestamp, sizeof(timestamp), &length));
     EXPECT_EQ(73, timestamp.year);
+    EXPECT_EQ(74, length);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22007", reinterpret_cast<char*>(state));
+}
+
+TEST_F(BindColIntegrationTest, TimeToTimestampUsesCurrentLocalDate) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)
+            "SELECT TIME '12:34:56', '25:00:00'::text",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    const auto before_time = std::time(nullptr);
+    const auto* before_calendar = std::localtime(&before_time);
+    ASSERT_NE(nullptr, before_calendar);
+    const std::tm before = *before_calendar;
+
+    SQL_TIMESTAMP_STRUCT timestamp{};
+    SQLLEN length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_TIMESTAMP, &timestamp, sizeof(timestamp), &length));
+
+    const auto after_time = std::time(nullptr);
+    const auto* after_calendar = std::localtime(&after_time);
+    ASSERT_NE(nullptr, after_calendar);
+    const std::tm after = *after_calendar;
+    const auto matches = [&](const std::tm& calendar) {
+        return timestamp.year == calendar.tm_year + 1900 &&
+            timestamp.month == calendar.tm_mon + 1 &&
+            timestamp.day == calendar.tm_mday;
+    };
+    EXPECT_TRUE(matches(before) || matches(after));
+    EXPECT_EQ(12, timestamp.hour);
+    EXPECT_EQ(34, timestamp.minute);
+    EXPECT_EQ(56, timestamp.second);
+    EXPECT_EQ(0u, timestamp.fraction);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(timestamp)), length);
+
+    timestamp.hour = 73;
+    length = 74;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(
+        hstmt, 2, SQL_C_TIMESTAMP, &timestamp, sizeof(timestamp), &length));
+    EXPECT_EQ(73, timestamp.hour);
     EXPECT_EQ(74, length);
     SQLCHAR state[6]{};
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(

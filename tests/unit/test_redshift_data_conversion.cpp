@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstddef>
+#include <ctime>
 #include <cstring>
 #include <limits>
 
@@ -417,6 +418,46 @@ TEST_F(RedshiftDataConverterTest, DateToTimestampZeroesTimeFields) {
         "2024-02-30", SQL_C_TIMESTAMP, &timestamp, 0,
         &length, &issue));
     EXPECT_EQ(73, timestamp.year);
+    EXPECT_EQ(74, length);
+    EXPECT_EQ(rs::odbc::ConversionIssue::InvalidDatetimeFormat, issue);
+}
+
+TEST_F(RedshiftDataConverterTest, TimeToTimestampUsesCurrentLocalDate) {
+    const auto before_time = std::time(nullptr);
+    const auto* before_calendar = std::localtime(&before_time);
+    ASSERT_NE(nullptr, before_calendar);
+    const std::tm before = *before_calendar;
+
+    SQL_TIMESTAMP_STRUCT timestamp{};
+    SQLLEN length = -1;
+    rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        " 12:34:56 ", SQL_C_TIMESTAMP, &timestamp, 0,
+        &length, &issue));
+
+    const auto after_time = std::time(nullptr);
+    const auto* after_calendar = std::localtime(&after_time);
+    ASSERT_NE(nullptr, after_calendar);
+    const std::tm after = *after_calendar;
+    const auto matches = [&](const std::tm& calendar) {
+        return timestamp.year == calendar.tm_year + 1900 &&
+            timestamp.month == calendar.tm_mon + 1 &&
+            timestamp.day == calendar.tm_mday;
+    };
+    EXPECT_TRUE(matches(before) || matches(after));
+    EXPECT_EQ(12, timestamp.hour);
+    EXPECT_EQ(34, timestamp.minute);
+    EXPECT_EQ(56, timestamp.second);
+    EXPECT_EQ(0u, timestamp.fraction);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(timestamp)), length);
+    EXPECT_EQ(rs::odbc::ConversionIssue::None, issue);
+
+    timestamp.hour = 73;
+    length = 74;
+    EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+        "25:00:00", SQL_C_TIMESTAMP, &timestamp, 0,
+        &length, &issue));
+    EXPECT_EQ(73, timestamp.hour);
     EXPECT_EQ(74, length);
     EXPECT_EQ(rs::odbc::ConversionIssue::InvalidDatetimeFormat, issue);
 }
