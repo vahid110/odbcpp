@@ -1552,6 +1552,16 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   PostgreSQL applies [startup run-time parameters](https://www.postgresql.org/docs/current/protocol-flow.html)
   before ReadyForQuery. All 34 tests pass in sanitizer, PostgreSQL Driver
   Manager, and iODBC configurations.
+- Audit batch 245 requests `DateStyle=ISO, YMD` at PostgreSQL startup. A
+  disposable database configured with `SQL, DMY` first reproduced non-ISO
+  output and failed date conversion; the new startup parameter makes the
+  server return ISO text and restores date/timestamp conversion. The
+  regression remains in the regular integration suite. This does not yet
+  address applications that change DateStyle after connecting. A separate
+  audit found the ODBC 3 `SQL_C_TYPE_DATE` and related modern temporal C
+  aliases are classified as valid but not yet supported; that conversion
+  matrix remains open. All 34 tests pass in sanitizer, PostgreSQL Driver
+  Manager, and iODBC configurations against the non-ISO-default database.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

@@ -11,6 +11,7 @@
 #include <cstring>
 #include <limits>
 #include <string>
+#include <string_view>
 
 class BindColIntegrationTest : public ::testing::Test {
 protected:
@@ -681,6 +682,38 @@ TEST_F(BindColIntegrationTest, RequestsUtf8ClientEncoding) {
     EXPECT_EQ(static_cast<SQLWCHAR>(0x00e9), wide[0]);
     EXPECT_EQ(static_cast<SQLWCHAR>(0), wide[1]);
     EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLWCHAR)), length);
+}
+
+TEST_F(BindColIntegrationTest, RequestsIsoDateStyle) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)
+            "SELECT current_setting('DateStyle'), DATE '2024-02-29', "
+            "TIMESTAMP '2024-02-29 12:34:56'",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    char date_style[32]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, date_style, sizeof(date_style), nullptr));
+    EXPECT_TRUE(std::string_view(date_style).starts_with("ISO"));
+
+    SQL_DATE_STRUCT date{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 2, SQL_C_DATE, &date, sizeof(date), nullptr));
+    EXPECT_EQ(2024, date.year);
+    EXPECT_EQ(2, date.month);
+    EXPECT_EQ(29, date.day);
+
+    SQL_TIMESTAMP_STRUCT timestamp{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 3, SQL_C_TIMESTAMP, &timestamp, sizeof(timestamp),
+        nullptr));
+    EXPECT_EQ(2024, timestamp.year);
+    EXPECT_EQ(2, timestamp.month);
+    EXPECT_EQ(29, timestamp.day);
+    EXPECT_EQ(12, timestamp.hour);
+    EXPECT_EQ(34, timestamp.minute);
+    EXPECT_EQ(56, timestamp.second);
 }
 
 TEST_F(BindColIntegrationTest, GetDataOffsetsResetForEachFetchedRow) {
