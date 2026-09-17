@@ -1262,6 +1262,11 @@ substitute for ODBC diagnostics.
   and a full queue mislabeled them as network errors. Red/green tests cover both
   cases, plus expired connect/send/receive parity and an untouched receive
   buffer; the focused tests passed 50 repeated runs after the fix.
+- Audit batch 198 applies the same admission-time deadline rule to the async
+  TLS wrapper. Already-expired requests complete outside its queue lock, ahead
+  of queue-full or pending-connect rejection. Red/green tests cover a blocked
+  worker, full queue, connect/send/receive error parity, and an untouched
+  receive buffer; the focused tests passed 50 repeated runs after the fix.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

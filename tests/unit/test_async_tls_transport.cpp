@@ -689,6 +689,96 @@ TEST(AsyncTlsTransportTest, ExpiredQueuedRequestReleasesCapacity) {
             std::string::npos);
 }
 
+TEST(AsyncTlsTransportTest, ExpiredSubmissionCompletesBehindBusyWorker) {
+  std::promise<void> entered;
+  auto entered_future = entered.get_future();
+  std::promise<void> release;
+  auto release_future = release.get_future().share();
+  AsyncTlsTransport transport(make_native_transport(1, 1), 1, 1);
+  auto active = transport.send_async(
+      std::span<const std::byte>{}, rs::util::make_deadline(5s),
+      [&](rs::util::Result<IOResult>) {
+        entered.set_value();
+        release_future.wait();
+      });
+  if (entered_future.wait_for(1s) != std::future_status::ready) {
+    release.set_value();
+    FAIL() << "TLS worker did not enter the blocking callback";
+  }
+
+  std::promise<rs::util::Result<IOResult>> expired_promise;
+  auto expired_future = expired_promise.get_future();
+  auto expired = transport.send_async(
+      std::span<const std::byte>{}, rs::util::Clock::now(),
+      [&](rs::util::Result<IOResult> result) {
+        expired_promise.set_value(std::move(result));
+      });
+  const auto status = expired_future.wait_for(100ms);
+  release.set_value();
+
+  EXPECT_EQ(status, std::future_status::ready);
+  ASSERT_EQ(expired_future.wait_for(2s), std::future_status::ready);
+  auto result = expired_future.get();
+  EXPECT_TRUE(expired->is_complete());
+  EXPECT_FALSE(expired->is_cancelled());
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(result.error(), rs::util::make_error_code(
+      rs::util::DbErrorCode::Timeout));
+}
+
+TEST(AsyncTlsTransportTest, ExpiredSubmissionIsNotQueueFull) {
+  std::promise<void> entered;
+  auto entered_future = entered.get_future();
+  std::promise<void> release;
+  auto release_future = release.get_future().share();
+  AsyncTlsTransport transport(make_native_transport(1, 1), 1, 1);
+  auto active = transport.send_async(
+      std::span<const std::byte>{}, rs::util::make_deadline(5s),
+      [&](rs::util::Result<IOResult>) {
+        entered.set_value();
+        release_future.wait();
+      });
+  if (entered_future.wait_for(1s) != std::future_status::ready) {
+    release.set_value();
+    FAIL() << "TLS worker did not enter the blocking callback";
+  }
+
+  auto queued = transport.send_async(
+      std::span<const std::byte>{}, rs::util::make_deadline(5s),
+      [](rs::util::Result<IOResult>) {});
+  std::array<std::byte, 1> buffer{std::byte{0x2a}};
+  const auto expired_deadline = rs::util::Clock::now();
+  auto expired_connect = transport.connect_future(
+      "127.0.0.1", 1, expired_deadline);
+  auto expired_send = transport.send_future(
+      std::span<const std::byte>{}, expired_deadline);
+  auto expired_receive = transport.recv_future(buffer, expired_deadline);
+  const auto connect_status = expired_connect.wait_for(100ms);
+  const auto send_status = expired_send.wait_for(100ms);
+  const auto receive_status = expired_receive.wait_for(100ms);
+  release.set_value();
+
+  EXPECT_EQ(connect_status, std::future_status::ready);
+  EXPECT_EQ(send_status, std::future_status::ready);
+  EXPECT_EQ(receive_status, std::future_status::ready);
+  ASSERT_EQ(expired_connect.wait_for(2s), std::future_status::ready);
+  ASSERT_EQ(expired_send.wait_for(2s), std::future_status::ready);
+  ASSERT_EQ(expired_receive.wait_for(2s), std::future_status::ready);
+  auto connect_result = expired_connect.get();
+  auto send_result = expired_send.get();
+  auto receive_result = expired_receive.get();
+  ASSERT_TRUE(connect_result.has_error());
+  ASSERT_TRUE(send_result.has_error());
+  ASSERT_TRUE(receive_result.has_error());
+  EXPECT_EQ(connect_result.error(), rs::util::make_error_code(
+      rs::util::DbErrorCode::Timeout));
+  EXPECT_EQ(send_result.error(), rs::util::make_error_code(
+      rs::util::DbErrorCode::Timeout));
+  EXPECT_EQ(receive_result.error(), rs::util::make_error_code(
+      rs::util::DbErrorCode::Timeout));
+  EXPECT_EQ(buffer[0], std::byte{0x2a});
+}
+
 TEST(AsyncTlsTransportTest, UnannouncedTcpCloseIsNotCleanTlsEof) {
   TlsLoopbackServer server(TlsLoopbackServer::Behavior::SilentAfterTls);
   AsyncTlsTransport transport(make_native_transport());

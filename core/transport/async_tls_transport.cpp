@@ -180,35 +180,43 @@ public:
   bool submit(const std::shared_ptr<Task>& task) {
     std::vector<std::shared_ptr<Task>> expired;
     bool accepted = false;
+    bool expired_incoming = false;
     {
       std::lock_guard lock(queue_mutex_);
       if (!stopping_) {
-        const bool connecting = task->kind == TaskKind::ConnectTls ||
-                                task->kind == TaskKind::ConnectPlain;
-        const std::size_t active_count = active_ ? 1 : 0;
-        if (tasks_.size() + active_count >= queue_depth_ ||
-            (connecting && has_pending_connect_locked())) {
-          const auto now = rs::util::Clock::now();
-          for (auto it = tasks_.begin(); it != tasks_.end();) {
-            if ((*it)->deadline <= now) {
-              expired.push_back(std::move(*it));
-              it = tasks_.erase(it);
-            } else {
-              ++it;
+        if (task->deadline <= rs::util::Clock::now()) {
+          expired_incoming = true;
+        } else {
+          const bool connecting = task->kind == TaskKind::ConnectTls ||
+                                  task->kind == TaskKind::ConnectPlain;
+          const std::size_t active_count = active_ ? 1 : 0;
+          if (tasks_.size() + active_count >= queue_depth_ ||
+              (connecting && has_pending_connect_locked())) {
+            const auto now = rs::util::Clock::now();
+            for (auto it = tasks_.begin(); it != tasks_.end();) {
+              if ((*it)->deadline <= now) {
+                expired.push_back(std::move(*it));
+                it = tasks_.erase(it);
+              } else {
+                ++it;
+              }
             }
+            if (!active_ && tasks_.empty()) idle_.notify_all();
           }
-          if (!active_ && tasks_.empty()) idle_.notify_all();
-        }
-        if (tasks_.size() + active_count < queue_depth_ &&
-            (!connecting || !has_pending_connect_locked())) {
-          tasks_.push_back(task);
-          accepted = true;
+          if (task->deadline <= rs::util::Clock::now()) {
+            expired_incoming = true;
+          } else if (tasks_.size() + active_count < queue_depth_ &&
+                     (!connecting || !has_pending_connect_locked())) {
+            tasks_.push_back(task);
+            accepted = true;
+          }
         }
       }
     }
     if (accepted) queue_ready_.notify_one();
     for (const auto& queued : expired) complete_expired_task(queued);
-    return accepted;
+    if (expired_incoming) complete_expired_task(task);
+    return accepted || expired_incoming;
   }
 
   void request_cancel(const std::shared_ptr<OperationState>& state) noexcept {
