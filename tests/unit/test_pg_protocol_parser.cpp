@@ -290,7 +290,7 @@ TEST(PgProtocolParserTest, ErrorAfterCommandIsASeparatePendingResult) {
 
 rs::core::database::Message one_column_description(
     std::string_view name, std::uint32_t type_oid = 23,
-    std::uint16_t type_size = 4) {
+    std::uint16_t type_size = 4, std::uint16_t format_code = 0) {
   rs::core::database::Message message;
   message.tag = 'T';
   append_u16(message.payload, 1);
@@ -300,7 +300,7 @@ rs::core::database::Message one_column_description(
   append_u32(message.payload, type_oid);
   append_u16(message.payload, type_size);
   append_u32(message.payload, 0xffffffff);
-  append_u16(message.payload, 0);
+  append_u16(message.payload, format_code);
   return message;
 }
 
@@ -747,6 +747,26 @@ TEST(PgProtocolParserTest, DataRowMustMatchDescribedColumnCount) {
     extra.payload.push_back(static_cast<std::byte>(value));
   }
   EXPECT_THROW(parser.extract_query_result({description, extra, complete}),
+               std::runtime_error);
+}
+
+TEST(PgProtocolParserTest, RowDescriptionRejectsUnknownFormatCodes) {
+  PgProtocolParser parser;
+  const auto text = parser.extract_query_result(
+      {one_column_description("value", 23, 4, 0),
+       command_complete("SELECT 0")});
+  ASSERT_EQ(text.columns.size(), 1u);
+  EXPECT_EQ(text.columns[0].format_code, 0);
+
+  const auto binary = parser.extract_query_result(
+      {one_column_description("value", 23, 4, 1),
+       command_complete("SELECT 0")});
+  ASSERT_EQ(binary.columns.size(), 1u);
+  EXPECT_EQ(binary.columns[0].format_code, 1);
+
+  EXPECT_THROW(parser.extract_query_result(
+                   {one_column_description("value", 23, 4, 2),
+                    command_complete("SELECT 0")}),
                std::runtime_error);
 }
 

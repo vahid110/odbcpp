@@ -110,6 +110,32 @@ TEST_F(NativeSqlIntegrationTest, CopyInReportsUnsupportedBeforeTimeout) {
   EXPECT_EQ(SQL_CD_TRUE, dead);
 }
 
+TEST_F(NativeSqlIntegrationTest, BinaryCursorResultsAreNotReadAsText) {
+  SQLCHAR begin[] = "BEGIN";
+  SQLCHAR declare[] =
+      "DECLARE odbcpp_binary_probe BINARY CURSOR FOR "
+      "SELECT 42::int4 AS value";
+  SQLCHAR fetch[] = "FETCH ALL FROM odbcpp_binary_probe";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, begin, SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, declare, SQL_NTS));
+  EXPECT_EQ(SQL_ERROR, SQLExecDirect(statement_, fetch, SQL_NTS));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  SQLUINTEGER dead = SQL_CD_FALSE;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetConnectAttr(connection_, SQL_ATTR_CONNECTION_DEAD, &dead,
+                              sizeof(dead), nullptr));
+  EXPECT_EQ(SQL_CD_FALSE, dead);
+
+  SQLCHAR recovery[] = "SELECT 43";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, recovery, SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
+  SQLINTEGER value = 0;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetData(statement_, 1, SQL_C_SLONG, &value, sizeof(value),
+                       nullptr));
+  EXPECT_EQ(43, value);
+}
+
 TEST_F(NativeSqlIntegrationTest, NativeSqlRejectsEmbeddedNulWithoutChangingOutputs) {
   std::string sql("SELECT 1\0;SELECT 2", sizeof("SELECT 1\0;SELECT 2") - 1);
   std::vector<SQLWCHAR> wide(sql.begin(), sql.end());

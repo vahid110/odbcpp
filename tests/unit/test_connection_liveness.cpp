@@ -72,7 +72,8 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     MismatchedDataRow, MalformedEmptyQueryResponse,
     CopyInDuringQuery, CopyOutDuringQuery, CopyBothDuringQuery,
     UnsolicitedCopyData, UnsolicitedCopyDone,
-    OversizedUnsolicitedCopyData
+    OversizedUnsolicitedCopyData, BinaryResultRow,
+    BinaryAdditionalResultRow
   };
 
   explicit ScriptedBackendTransport(
@@ -246,6 +247,19 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       input_.insert(input_.end(), {
           std::byte{'d'}, std::byte{0x3f}, std::byte{0xff},
           std::byte{0xff}, std::byte{0xfe}});
+    } else if (mode == ResponseMode::BinaryResultRow ||
+               mode == ResponseMode::BinaryAdditionalResultRow) {
+      constexpr char description[] =
+          "\0\1" "value\0" "\0\0\0\0" "\0\0" "\0\0\0\27"
+          "\0\4" "\377\377\377\377" "\0\1";
+      constexpr char row[] = "\0\1" "\0\0\0\4" "\0\0\0\52";
+      if (mode == ResponseMode::BinaryAdditionalResultRow) {
+        append_message('C', "UPDATE 0", sizeof("UPDATE 0"));
+      }
+      append_message('T', description, sizeof(description) - 1);
+      append_message('D', row, sizeof(row) - 1);
+      append_message('C', "SELECT 1", sizeof("SELECT 1"));
+      append_message('Z', "I", 1);
     }
   }
 
@@ -803,6 +817,26 @@ TEST(ConnectionLivenessTest, UnsolicitedCopyFramesFailBeforePayloadRead) {
     EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
               result.error());
     EXPECT_FALSE(connection.is_connected());
+  }
+}
+
+TEST(ConnectionLivenessTest, BinaryResultRowsAreNotExposedAsText) {
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::BinaryResultRow,
+                          Mode::BinaryAdditionalResultRow}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    rs::core::database::GenericDatabaseConnection connection(
+        std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+        std::make_unique<ScriptedBackendTransport>(mode));
+    rs::core::database::ConnectionSettings settings;
+    settings.use_ssl = false;
+    ASSERT_TRUE(connection.connect(settings).has_value());
+    const auto result = connection.execute_query(
+        "SELECT 42", rs::util::make_deadline(std::chrono::seconds(1)));
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature),
+              result.error());
+    EXPECT_TRUE(connection.is_connected());
   }
 }
 

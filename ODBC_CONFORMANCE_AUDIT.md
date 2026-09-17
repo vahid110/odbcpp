@@ -1398,6 +1398,13 @@ substitute for ODBC diagnostics.
   small CopyData frame could be ignored and followed by a reported query
   success. Synthetic tests cover both tags and a large claimed CopyData
   length with no body; all now invalidate the connection as protocol errors.
+- Audit batch 221 validates RowDescription format codes. Codes other than
+  text (0) and binary (1) are protocol errors; binary result columns are
+  reported as unsupported (`HYC00`) instead of exposing raw wire bytes as
+  text. Synthetic tests cover the first and later results, and a real
+  PostgreSQL `BINARY CURSOR` fetch verifies the ODBC diagnostic and a
+  successful follow-up text query on the same connection.
+  [PostgreSQL documents binary cursor output](https://www.postgresql.org/docs/current/protocol-flow.html).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

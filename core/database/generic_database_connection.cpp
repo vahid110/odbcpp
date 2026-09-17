@@ -26,6 +26,22 @@ bool allows_large_frame(char tag) {
   }
 }
 
+bool has_binary_columns(const QueryResult& result) {
+  const auto binary = [](const ResultColumnMetadata& column) {
+    return column.format_code == 1;
+  };
+  if (std::any_of(result.columns.begin(), result.columns.end(), binary)) {
+    return true;
+  }
+  for (const auto& additional : result.additional_results) {
+    if (std::any_of(additional.columns.begin(), additional.columns.end(),
+                    binary)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 } // namespace
 
 GenericDatabaseConnection::GenericDatabaseConnection(
@@ -258,6 +274,11 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
 
   try {
     auto result = parser_->extract_query_result(messages);
+    if (has_binary_columns(result)) {
+      return rs::util::Result<QueryResult>{
+          rs::util::DbErrorCode::UnsupportedFeature,
+          "PostgreSQL binary result format is not supported"};
+    }
     if (query_error &&
         (!result.error_message.empty() || result.additional_results.empty())) {
       last_error_ = *query_error;

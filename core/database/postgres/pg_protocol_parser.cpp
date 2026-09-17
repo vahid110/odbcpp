@@ -746,7 +746,11 @@ QueryResult PgProtocolParser::extract_query_result(
         offset += 2;
         column.type_modifier = static_cast<std::int32_t>(read_u32(payload, offset));
         offset += 4;
-        column.format_code = static_cast<std::int16_t>(read_u16(payload, offset));
+        const auto format_code = read_u16(payload, offset);
+        if (format_code > 1) {
+          throw std::runtime_error("invalid PostgreSQL result format code");
+        }
+        column.format_code = static_cast<std::int16_t>(format_code);
         offset += 2;
         columns.push_back(std::move(column));
       }
