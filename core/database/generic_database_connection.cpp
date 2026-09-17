@@ -64,6 +64,14 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
       transport_ = std::make_unique<rs::core::transport::SocketTransport>();
     }
   }
+
+  struct FailedConnectCleanup {
+    GenericDatabaseConnection& connection;
+    bool complete = false;
+    ~FailedConnectCleanup() {
+      if (!complete) connection.disconnect();
+    }
+  } cleanup{*this};
   
   auto deadline = rs::util::make_deadline(settings.timeout);
   
@@ -91,8 +99,7 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
     
     // Send SSL request
     auto ssl_req = parser_->create_ssl_request();
-    auto write_result = write_message_to_transport_result(
-        *transport_, ssl_req, deadline);
+    auto write_result = write_all_result(ssl_req, deadline);
     if (write_result.has_error()) {
       return write_result;
     }
@@ -135,11 +142,11 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
   // Handle authentication
   auto auth_result = perform_authentication_result(deadline);
   if (auth_result.has_error()) {
-    disconnect();
     return auth_result;
   }
   
   connected_ = true;
+  cleanup.complete = true;
   return rs::util::Result<void>{};
 }
 
@@ -614,37 +621,6 @@ rs::util::Result<void> GenericDatabaseConnection::record_parameter_status(
   server_params_[std::string(bytes, key_size)] =
       std::string(bytes + value_offset, value_size);
   return {};
-}
-
-void GenericDatabaseConnection::write_message_to_transport(
-    rs::core::transport::ITransport& transport,
-    const std::vector<std::byte>& data, 
-    rs::util::Deadline deadline) {
-  auto result = write_message_to_transport_result(transport, data, deadline);
-  if (result.has_error()) {
-    rs::util::unwrap_or_throw(std::move(result));
-  }
-}
-
-rs::util::Result<void> GenericDatabaseConnection::write_message_to_transport_result(
-    rs::core::transport::ITransport& transport,
-    const std::vector<std::byte>& data, 
-    rs::util::Deadline deadline) {
-  
-  size_t offset = 0;
-  while (offset < data.size()) {
-    auto result = transport.send(std::span<const std::byte>(data.data() + offset, data.size() - offset), deadline);
-    if (result.has_error()) {
-      mark_transport_failed();
-      return rs::util::Result<void>{result.error(), result.error_message()};
-    }
-    if (result->n == 0) {
-      mark_transport_failed();
-      return rs::util::Result<void>{rs::util::DbErrorCode::NetworkError, "Write failed"};
-    }
-    offset += result->n;
-  }
-  return rs::util::Result<void>{};
 }
 
 } // namespace rs::core::database

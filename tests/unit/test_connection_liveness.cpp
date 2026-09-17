@@ -3,6 +3,7 @@
 #include "core/database/generic_database_connection.h"
 #include "core/database/postgres/pg_protocol_parser.h"
 #include "core/transport/i_transport.h"
+#include "core/transport/start_tls_transport.h"
 #include "tests/mock_protocol_parser.h"
 
 #include <algorithm>
@@ -49,6 +50,48 @@ class FailingQueryTransport final : public rs::core::transport::ITransport {
  private:
   std::size_t send_count_{0};
   std::size_t receive_offset_{0};
+};
+
+class ScriptedTlsTransport final : public rs::core::transport::ITransport,
+                                   public rs::core::transport::IStartTlsTransport {
+ public:
+  explicit ScriptedTlsTransport(bool overreport_write = false)
+      : overreport_write_(overreport_write) {}
+
+  rs::util::Result<void> connect(std::string_view, uint16_t,
+                                 rs::util::Deadline) override {
+    return {};
+  }
+
+  rs::util::Result<void> connect_plain(std::string_view, uint16_t,
+                                       rs::util::Deadline) override {
+    return {};
+  }
+
+  rs::util::Result<void> upgrade_to_tls(
+      std::string_view, rs::util::Deadline) override {
+    return {rs::util::DbErrorCode::TLSError,
+            "unexpected TLS upgrade after refusal"};
+  }
+
+  rs::util::Result<rs::core::transport::IOResult> send(
+      std::span<const std::byte> buffer, rs::util::Deadline) override {
+    return rs::core::transport::IOResult{
+        buffer.size() + static_cast<std::size_t>(overreport_write_), false};
+  }
+
+  rs::util::Result<rs::core::transport::IOResult> recv(
+      std::span<std::byte> buffer, rs::util::Deadline) override {
+    buffer[0] = std::byte{'N'};
+    return rs::core::transport::IOResult{1, false};
+  }
+
+  void close() noexcept override { ++close_count_; }
+  std::size_t close_count() const noexcept { return close_count_; }
+
+ private:
+  bool overreport_write_;
+  std::size_t close_count_{0};
 };
 
 class ScriptedBackendTransport final : public rs::core::transport::ITransport {
@@ -398,6 +441,58 @@ TEST(ConnectionLivenessTest, FailedAuthenticationClosesTransport) {
     EXPECT_FALSE(connection.is_connected());
     EXPECT_EQ(1u, observed_transport->close_count());
   }
+}
+
+TEST(ConnectionLivenessTest, FailedStartupWriteClosesTransport) {
+  auto transport = std::make_unique<ScriptedBackendTransport>(
+      ScriptedBackendTransport::ResponseMode::OverreportedStartupWrite);
+  auto* observed_transport = transport.get();
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::move(transport));
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+
+  const auto result = connection.connect(settings);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_FALSE(connection.is_connected());
+  EXPECT_EQ(1u, observed_transport->close_count());
+}
+
+TEST(ConnectionLivenessTest, RefusedTlsClosesTransport) {
+  auto transport = std::make_unique<ScriptedTlsTransport>();
+  auto* observed_transport = transport.get();
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::move(transport));
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = true;
+
+  const auto result = connection.connect(settings);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::TLSError),
+            result.error());
+  EXPECT_FALSE(connection.is_connected());
+  EXPECT_EQ(1u, observed_transport->close_count());
+}
+
+TEST(ConnectionLivenessTest, OverreportedSslRequestWriteIsProtocolError) {
+  auto transport = std::make_unique<ScriptedTlsTransport>(true);
+  auto* observed_transport = transport.get();
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::move(transport));
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = true;
+
+  const auto result = connection.connect(settings);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_FALSE(connection.is_connected());
+  EXPECT_EQ(1u, observed_transport->close_count());
 }
 
 TEST(ConnectionLivenessTest, FailedServerTripMarksConnectionDead) {

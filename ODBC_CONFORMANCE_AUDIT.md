@@ -1422,6 +1422,11 @@ substitute for ODBC diagnostics.
   startup response processing fails. A synthetic backend verifies that both
   rejected credentials and an authentication read timeout retain their
   original error classifications while closing the connection exactly once.
+- Audit batch 225 extends connection-attempt cleanup to earlier failures,
+  including a malformed startup write and TLS refusal. The SSL request now
+  uses the same checked writer as startup and query messages; a synthetic
+  transport that overreports sent bytes is rejected as a protocol error.
+  The duplicate, less strict SSL-request writer was removed.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
