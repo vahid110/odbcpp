@@ -138,6 +138,78 @@ TEST_F(PreparedStatementIntegrationTest, NullDateStructParameterStaysNull) {
     EXPECT_EQ(73, output.year);
 }
 
+TEST_F(PreparedStatementIntegrationTest, TimeStructParameterRoundTrips) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQL_TIME_STRUCT input{12, 34, 56};
+    alignas(SQL_TIME_STRUCT)
+        std::array<std::byte, 1 + sizeof(SQL_TIME_STRUCT)> input_bytes{};
+    std::memcpy(input_bytes.data() + 1, &input, sizeof(input));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TYPE_TIME, SQL_TYPE_TIME, 8, 0, input_bytes.data() + 1,
+        sizeof(input), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    SQLSMALLINT sql_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt, 1, nullptr, 0, nullptr,
+        &sql_type, nullptr, nullptr, nullptr));
+    EXPECT_EQ(SQL_TYPE_TIME, sql_type);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_TIME_STRUCT output{};
+    SQLLEN length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIME,
+        &output, sizeof(output), &length));
+    EXPECT_EQ(12, output.hour);
+    EXPECT_EQ(34, output.minute);
+    EXPECT_EQ(56, output.second);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(output)), length);
+}
+
+TEST_F(PreparedStatementIntegrationTest, DefaultTimeParameterCTypeRoundTrips) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQL_TIME_STRUCT input{23, 59, 59};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_DEFAULT, SQL_TYPE_TIME, 8, 0, &input, sizeof(input), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_TIME_STRUCT output{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIME,
+        &output, sizeof(output), nullptr));
+    EXPECT_EQ(23, output.hour);
+    EXPECT_EQ(59, output.minute);
+    EXPECT_EQ(59, output.second);
+}
+
+TEST_F(PreparedStatementIntegrationTest, TimeStructParameterRejectsInvalidTime) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQL_TIME_STRUCT input{24, 0, 0};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TIME, SQL_TYPE_TIME, 8, 0, &input, sizeof(input), nullptr));
+    SQLCHAR state[6]{};
+    for (const SQL_TIME_STRUCT invalid : {
+             SQL_TIME_STRUCT{24, 0, 0}, SQL_TIME_STRUCT{12, 60, 0},
+             SQL_TIME_STRUCT{12, 0, 62}}) {
+        input = invalid;
+        EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22007", reinterpret_cast<char*>(state));
+    }
+}
+
+TEST_F(PreparedStatementIntegrationTest, NullTimeStructParameterStaysNull) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQLLEN indicator = SQL_NULL_DATA;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TYPE_TIME, SQL_TYPE_TIME, 8, 0, nullptr, 0, &indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_TIME_STRUCT output{73, 1, 1};
+    SQLLEN length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIME,
+        &output, sizeof(output), &length));
+    EXPECT_EQ(SQL_NULL_DATA, length);
+    EXPECT_EQ(73, output.hour);
+}
+
 TEST_F(PreparedStatementIntegrationTest,
        QuotedIdentifierBackslashDoesNotHideParameter) {
     char sql[] = R"(SELECT 1 AS "slash\", ?::integer AS value)";

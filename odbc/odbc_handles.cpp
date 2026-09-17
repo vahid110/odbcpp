@@ -59,6 +59,16 @@ std::optional<std::string> format_date_parameter(SQL_DATE_STRUCT date) {
   return std::string(iso_date);
 }
 
+std::optional<std::string> format_time_parameter(SQL_TIME_STRUCT time) {
+  if (time.hour > 23 || time.minute > 59 || time.second > 61) {
+    return std::nullopt;
+  }
+  char iso_time[9]{};
+  std::snprintf(iso_time, sizeof(iso_time), "%02u:%02u:%02u",
+                time.hour, time.minute, time.second);
+  return std::string(iso_time);
+}
+
 std::string default_driver_name() {
 #ifdef ODBCPP_ENABLE_REDSHIFT
   return "ODBCPP Redshift";
@@ -385,6 +395,8 @@ rs::core::database::QueryParameterType parameter_type_for(
       return QueryParameterType::Boolean;
     case SQL_TYPE_DATE:
       return QueryParameterType::Date;
+    case SQL_TYPE_TIME:
+      return QueryParameterType::Time;
     case SQL_BINARY:
     case SQL_VARBINARY:
     case SQL_LONGVARBINARY:
@@ -3058,6 +3070,16 @@ SQLRETURN ODBCStatement::execute() {
         if (!formatted) {
           set_error(SQLSTATE_INVALID_DATETIME_FORMAT,
                     "Invalid date parameter value");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        value = *formatted;
+      } else if (value_type == SQL_C_TIME ||
+                 value_type == SQL_C_TYPE_TIME) {
+        const auto formatted = format_time_parameter(
+            load_application_value<SQL_TIME_STRUCT>(application.data_ptr));
+        if (!formatted) {
+          set_error(SQLSTATE_INVALID_DATETIME_FORMAT,
+                    "Invalid time parameter value");
           return complete_parameter_set(SQL_ERROR);
         }
         value = *formatted;

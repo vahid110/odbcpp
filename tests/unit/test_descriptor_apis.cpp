@@ -81,8 +81,8 @@ TEST_F(DescriptorAPITest, BindParameterRejectsMalformedDescriptions) {
         1, SQL_PARAM_INPUT, SQL_C_SLONG, 12345,
         0, 0, &value, 0, nullptr), "HY004");
     expect_failure(stmt->bind_parameter(
-        1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_TYPE_TIME,
-        8, 0, &value, sizeof(value), nullptr), "HYC00");
+        1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_TYPE_TIMESTAMP,
+        26, 6, &value, sizeof(value), nullptr), "HYC00");
     expect_failure(stmt->bind_parameter(
         1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
         0, 0, &value, -1, nullptr), "HY090");

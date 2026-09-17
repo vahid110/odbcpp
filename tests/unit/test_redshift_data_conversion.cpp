@@ -803,6 +803,12 @@ TEST(ResultTypesTest, ProvidesMetadataDrivenDefaults) {
         SQL_C_DATE));
     EXPECT_TRUE(rs::odbc::ResultTypes::is_supported_parameter_sql_type(
         SQL_TYPE_DATE));
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_supported_parameter_c_type(
+        SQL_C_TYPE_TIME));
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_supported_parameter_c_type(
+        SQL_C_TIME));
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_supported_parameter_sql_type(
+        SQL_TYPE_TIME));
 }
 
 TEST_F(RedshiftDataConverterTest, UnsupportedType) {

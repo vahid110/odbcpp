@@ -17,6 +17,7 @@ enum class QueryParameterType {
   Boolean,
   Binary,
   Date,
+  Time,
 };
 
 struct QueryParameter {

@@ -62,7 +62,8 @@ bool ResultTypes::is_supported_parameter_c_type(SQLSMALLINT c_type) {
       c_type == SQL_C_SLONG || c_type == SQL_C_SBIGINT ||
       c_type == SQL_C_FLOAT || c_type == SQL_C_DOUBLE ||
       c_type == SQL_C_BIT || c_type == SQL_C_BINARY ||
-      c_type == SQL_C_DATE || c_type == SQL_C_TYPE_DATE;
+      c_type == SQL_C_DATE || c_type == SQL_C_TYPE_DATE ||
+      c_type == SQL_C_TIME || c_type == SQL_C_TYPE_TIME;
 }
 
 bool ResultTypes::is_supported_parameter_sql_type(SQLSMALLINT sql_type) {
@@ -75,7 +76,8 @@ bool ResultTypes::is_supported_parameter_sql_type(SQLSMALLINT sql_type) {
       sql_type == SQL_DOUBLE || sql_type == SQL_DECIMAL ||
       sql_type == SQL_NUMERIC || sql_type == SQL_BIT ||
       sql_type == SQL_BINARY || sql_type == SQL_VARBINARY ||
-      sql_type == SQL_LONGVARBINARY || sql_type == SQL_TYPE_DATE;
+      sql_type == SQL_LONGVARBINARY || sql_type == SQL_TYPE_DATE ||
+      sql_type == SQL_TYPE_TIME;
 }
 
 bool ResultTypes::is_valid_sql_type(SQLSMALLINT sql_type) {

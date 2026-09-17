@@ -48,7 +48,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLMoreResults` | A | Partial | unit, integration, DM | Result/update-count traversal and close-time discard are covered; error-result sequences remain |
 | `SQLGetData` | A | Partial | integration, DM | Legacy and ODBC 3 temporal C targets, malformed-value diagnostics, and per-row/switching-column offsets are covered; complete conversion/chunking matrices remain |
 | `SQLBindCol` | A | Partial | unit, integration | Invalid C types, negative lengths, and ODBC 3 temporal C targets are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
-| `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics plus ODBC date-struct input are covered; time/timestamp structs, input arrays, data-at-execution, and full conversion matrix remain |
+| `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics plus ODBC date/time-struct input are covered; timestamp structs, input arrays, data-at-execution, and full conversion matrix remain |
 | `SQLNumParams` | A | Partial | unit, integration, DM | Prepared statements are server-validated without execution; state, null/output preservation, complex markers, direct execution, and IPD count agreement are covered; cancellation and communication-failure injection remain |
 | `SQLNumResultCols` | A | Partial | unit, integration | Prepared metadata, result sets, update counts, exhausted/closed cursors, delayed PostgreSQL errors, null outputs, and output preservation are covered; cancellation and communication-failure injection remain |
 | `SQLRowCount` | A | Verified | unit, integration | Allocated, prepared, update-count, result-set, fetched/exhausted, closed, failed-execution, null-output, and output-preservation cases are covered |
@@ -1577,9 +1577,20 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   1082) without relying on a cast in the SQL text. Focused tests first
   reproduced `HYC00` rejection, then verified round-trip, unaligned input,
   invalid Gregorian dates returning `22007`, and NULL preservation. The
-  stale negative unit assertion now targets still-unsupported time input.
+  stale negative unit assertion moved to then-unsupported time input.
   Time/timestamp structs and the full C-to-SQL conversion matrix remain open.
   All 34 tests pass in sanitizer, PostgreSQL Driver Manager, and iODBC
+  configurations, with focused cases confirmed not to skip.
+- Audit batch 248 supports `SQL_TIME_STRUCT` input for `SQLBindParameter` with
+  `SQL_TYPE_TIME`, accepting `SQL_C_TYPE_TIME`, legacy `SQL_C_TIME`, and
+  `SQL_C_DEFAULT`. PostgreSQL receives a typed time parameter (OID 1083)
+  without a cast in the SQL text. Focused tests first reproduced `HYC00`
+  rejection, then verified round-trip, unaligned input, invalid hour/minute/
+  second fields returning `22007`, and NULL preservation. The negative unit
+  assertion now targets still-unsupported timestamp input. PostgreSQL accepts
+  seconds value 60 by normalization but rejects 61, although ODBC permits
+  61; backend-specific leap-second handling and timestamp-struct input remain
+  open. All 34 tests pass in sanitizer, PostgreSQL Driver Manager, and iODBC
   configurations, with focused cases confirmed not to skip.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
