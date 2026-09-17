@@ -223,6 +223,12 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
     
     try {
       auto msg = parser_->parse_message(*msg_result);
+      if (msg.tag == 'R' || msg.tag == 'K') {
+        mark_transport_failed();
+        return rs::util::Result<QueryResult>{
+            rs::util::DbErrorCode::ProtocolError,
+            "PostgreSQL startup frame arrived during query"};
+      }
       if (msg.tag == 'S') {
         auto status_result = record_parameter_status(msg);
         if (status_result.has_error()) {

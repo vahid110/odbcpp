@@ -1365,6 +1365,11 @@ substitute for ODBC diagnostics.
   than requested fails as a protocol error. Synthetic transports proved
   both prior behaviors red before the fix; connected suites cover the
   ordinary socket and Driver Manager paths.
+- Audit batch 215 rejects `Authentication` and `BackendKeyData` frames after
+  startup while reading a query. The shared query-result reader previously
+  ignored both and could report success after an out-of-phase frame.
+  Synthetic backend tests verify protocol failure and connection invalidation;
+  ordinary PostgreSQL execution remains covered by connected suites.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

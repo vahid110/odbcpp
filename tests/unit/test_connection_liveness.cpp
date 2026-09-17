@@ -67,7 +67,8 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     MalformedQueryParameterStatus, OversizedStartupReady,
     TooLargeDataRow, IncompleteLargeDataRow,
     ZeroHeaderRead, ZeroBodyRead,
-    OverreportedHeaderRead, OverreportedStartupWrite
+    OverreportedHeaderRead, OverreportedStartupWrite,
+    AuthenticationDuringQuery, BackendKeyDuringQuery
   };
 
   explicit ScriptedBackendTransport(
@@ -201,6 +202,16 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     } else if (mode == ResponseMode::MalformedQueryParameterStatus) {
       constexpr char status[] = "application_name\0unterminated";
       append_message('S', status, sizeof(status) - 1);
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::AuthenticationDuringQuery ||
+               mode == ResponseMode::BackendKeyDuringQuery) {
+      if (mode == ResponseMode::AuthenticationDuringQuery) {
+        append_message('R', "\0\0\0\0", 4);
+      } else {
+        constexpr char backend_key[] = "\0\0\0\0\0\0\0\0";
+        append_message('K', backend_key, 8);
+      }
+      append_message('C', "SELECT 1\0", 9);
       append_message('Z', "I", 1);
     }
   }
@@ -665,6 +676,26 @@ TEST(ConnectionLivenessTest, MalformedQueryReadyClosesLogicalConnection) {
   EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
             result.error());
   EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, StartupOnlyFramesCannotAppearDuringQuery) {
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {
+           Mode::AuthenticationDuringQuery, Mode::BackendKeyDuringQuery}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    rs::core::database::GenericDatabaseConnection connection(
+        std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+        std::make_unique<ScriptedBackendTransport>(mode));
+    rs::core::database::ConnectionSettings settings;
+    settings.use_ssl = false;
+    ASSERT_TRUE(connection.connect(settings).has_value());
+    const auto result = connection.execute_query(
+        "SELECT 1", rs::util::make_deadline(std::chrono::seconds(1)));
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+              result.error());
+    EXPECT_FALSE(connection.is_connected());
+  }
 }
 
 TEST(ConnectionLivenessTest, MalformedErrorCannotBecomeSuccessfulQuery) {
