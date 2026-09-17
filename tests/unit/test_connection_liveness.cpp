@@ -153,7 +153,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     OverreportedHeaderRead, OverreportedStartupWrite,
     AuthenticationDuringQuery, BackendKeyDuringQuery,
     MismatchedDataRow, UnannouncedDataRow, DuplicateRowDescription,
-    UnknownQueryFrame, ExtendedFrameDuringSimpleQuery,
+    UnknownQueryFrame, ExtendedFrameDuringSimpleQuery, ResultAfterError,
     MalformedEmptyQueryResponse,
     CopyInDuringQuery, CopyOutDuringQuery, CopyBothDuringQuery,
     UnsolicitedCopyData, UnsolicitedCopyDone,
@@ -350,6 +350,12 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       }
       append_message('C', "SELECT 0", sizeof("SELECT 0"));
       append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::ResultAfterError) {
+      constexpr char error[] = "SERROR\0C22012\0Mdivision by zero\0";
+      append_message('C', "SELECT 1", sizeof("SELECT 1"));
+      append_message('E', error, sizeof(error));
+      append_message('C', "SELECT 1", sizeof("SELECT 1"));
+      append_message('Z', "E", 1);
     } else if (mode == ResponseMode::CopyInDuringQuery ||
                mode == ResponseMode::CopyOutDuringQuery ||
                mode == ResponseMode::CopyBothDuringQuery) {
@@ -1191,6 +1197,27 @@ TEST(ConnectionLivenessTest, ExtendedFrameDuringSimpleQueryClosesConnection) {
     EXPECT_FALSE(connection.is_connected());
     EXPECT_EQ(1u, observed_transport->close_count());
   }
+}
+
+TEST(ConnectionLivenessTest, ResultAfterErrorClosesConnection) {
+  auto transport = std::make_unique<ScriptedBackendTransport>(
+      ScriptedBackendTransport::ResponseMode::ResultAfterError);
+  auto* observed_transport = transport.get();
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::move(transport));
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  ASSERT_TRUE(connection.connect(settings).has_value());
+
+  const auto result = connection.execute_query(
+      "SELECT 1; SELECT 1 / 0; SELECT 2",
+      rs::util::make_deadline(std::chrono::seconds(1)));
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_FALSE(connection.is_connected());
+  EXPECT_EQ(1u, observed_transport->close_count());
 }
 
 TEST(ConnectionLivenessTest, MalformedEmptyQueryResponseClosesConnection) {

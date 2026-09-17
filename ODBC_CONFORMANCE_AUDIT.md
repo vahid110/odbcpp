@@ -1480,6 +1480,14 @@ substitute for ODBC diagnostics.
   setup frames. A synthetic test checks each tag and transport cleanup; real
   prepared-statement integration tests still pass. [PostgreSQL's protocol flow](https://www.postgresql.org/docs/current/protocol-flow.html)
   assigns those setup responses to the extended-query protocol.
+- Audit batch 235 rejects result frames after ErrorResponse within one query
+  cycle. Previously `CommandComplete, ErrorResponse, CommandComplete` could
+  return false success for the first result while leaving the connection open.
+  A synthetic test reproduces that path and verifies protocol failure and one
+  transport close; real multi-statement tests still verify that a completed
+  result followed by an error remains available through `SQLMoreResults`.
+  [PostgreSQL's protocol flow](https://www.postgresql.org/docs/current/protocol-flow.html)
+  says an error aborts the remaining query string.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

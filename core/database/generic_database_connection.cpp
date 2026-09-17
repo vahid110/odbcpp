@@ -286,6 +286,11 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
     
     try {
       auto msg = parser_->parse_message(*msg_result);
+      if (query_error && msg.tag != 'N' && msg.tag != 'S' &&
+          msg.tag != 'A' && msg.tag != 'Z') {
+        throw std::runtime_error(
+            "PostgreSQL result frame arrived after ErrorResponse");
+      }
       if (msg.tag == 'G' || msg.tag == 'H' || msg.tag == 'W') {
         disconnect();
         return rs::util::Result<QueryResult>{
