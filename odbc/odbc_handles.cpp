@@ -2634,7 +2634,7 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
   constexpr auto complete = std::numeric_limits<std::size_t>::max();
   auto offset = get_data_column_ == col ? get_data_offset_ : 0;
   if (offset == complete) return SQL_NO_DATA;
-  if (get_data_column_ == col &&
+  if (get_data_column_ == col && offset != 0 &&
       get_data_target_type_ != effective_target_type) {
     set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
               "SQLGetData target type changed during chunked retrieval");

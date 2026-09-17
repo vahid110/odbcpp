@@ -442,6 +442,28 @@ TEST_F(MetadataIntegrationTest, GetDataRejectsTargetChangeMidChunk) {
     EXPECT_EQ(static_cast<SQLWCHAR>('j'), next_row[3]);
 }
 
+TEST_F(MetadataIntegrationTest, GetDataCanChangeTypeAfterZeroLengthProbe) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT 'abc'::text", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    char untouched = 'X';
+    SQLLEN length = -1;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
+        hstmt, 1, SQL_C_CHAR, &untouched, 0, &length));
+    EXPECT_EQ('X', untouched);
+    EXPECT_EQ(3, length);
+
+    SQLWCHAR wide[4]{};
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_WCHAR, wide, sizeof(wide), &length));
+    EXPECT_EQ(static_cast<SQLLEN>(3 * sizeof(SQLWCHAR)), length);
+    EXPECT_EQ(static_cast<SQLWCHAR>('a'), wide[0]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('b'), wide[1]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('c'), wide[2]);
+    EXPECT_EQ(static_cast<SQLWCHAR>(0), wide[3]);
+}
+
 TEST_F(MetadataIntegrationTest, ExecutesAndPreparesUnicodeSql) {
     const std::string expected =
         "Gr\xc3\xbc\xc3\x9f" "e \xe4\xb8\x96\xe7\x95\x8c "

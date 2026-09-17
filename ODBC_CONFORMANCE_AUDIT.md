@@ -1508,6 +1508,12 @@ substitute for ODBC diagnostics.
   retrieval in the original type, and a fresh type on the next row. [ODBC's
   long-data guidance](https://learn.microsoft.com/en-us/sql/odbc/reference/develop-app/getting-long-data)
   defines successive calls as successive parts of one value.
+- Audit batch 239 narrows that target-type guard to cases where a prior
+  `SQLGetData` call actually consumed bytes. A zero-length probe may report
+  truncation and length without advancing the offset; changing to a wide
+  target afterward is safe and now succeeds. A real PostgreSQL regression
+  first reproduced the over-rejection and verifies the returned wide value,
+  while the partially consumed case still returns `HY010`.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
