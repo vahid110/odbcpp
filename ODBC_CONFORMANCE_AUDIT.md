@@ -1218,6 +1218,10 @@ substitute for ODBC diagnostics.
   from a deadline timeout in both Strict and SocketTimeout modes. The new
   loopback test also verifies the failed upgrade leaves no plaintext send path;
   ten repeated runs passed before the full local matrix.
+- Audit batch 190 retains OpenSSL's handshake failure context in the TLS
+  diagnostic instead of returning only a generic message. The abrupt-close
+  regression first reproduced the missing `SSL_connect` context in both
+  deadline models, then verified the connection remains unusable after failure.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

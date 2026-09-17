@@ -861,6 +861,7 @@ TEST(TLSTransportDeadlineTest, AbruptHandshakeCloseIsNotATimeout) {
         "127.0.0.1", server.port(), rs::util::make_deadline(1s));
     ASSERT_TRUE(result.has_error());
     EXPECT_EQ(result.error(), rs::util::make_error_code(rs::util::DbErrorCode::TLSError));
+    EXPECT_NE(result.error_message().find("SSL_connect"), std::string::npos);
 
     const std::array<std::byte, 1> plaintext{std::byte{'x'}};
     EXPECT_TRUE(transport.send(plaintext, rs::util::make_deadline(100ms)).has_error());

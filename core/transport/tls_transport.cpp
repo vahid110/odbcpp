@@ -30,6 +30,24 @@ std::string tls_setup_error(std::string message) {
   return message + ": " + detail.data();
 }
 
+std::string tls_handshake_error(const Error& error) {
+  std::string message = "TLS handshake failed";
+  if (error.detail[0] != '\0') {
+    message += " (";
+    message += error.detail;
+    message += ')';
+  }
+  if (error.ssl_err != 0) {
+    std::array<char, 256> detail{};
+    ERR_error_string_n(static_cast<unsigned long>(error.ssl_err),
+                       detail.data(), detail.size());
+    message += ": ";
+    message += detail.data();
+  }
+  while (ERR_get_error() != 0) {}
+  return message;
+}
+
 } // namespace
 
 TLSTransport::TLSTransport(DeadlineModel deadline_model) : tcp_(deadline_model) {
@@ -175,7 +193,9 @@ void TLSTransport::upgrade_impl(std::string_view host, Deadline deadline) {
       e.code != Errc::Ok) {
     SSL_free(ssl_); ssl_ = nullptr;
     if (e.code == Errc::Timeout) throw TimeoutError("TLS handshake timeout");
-    if (e.code == Errc::HandshakeFailed) throw TLSError("TLS handshake failed");
+    if (e.code == Errc::HandshakeFailed) {
+      throw TLSError(tls_handshake_error(e));
+    }
     throw IOError("TLS handshake I/O error");
   }
 
