@@ -421,6 +421,9 @@ std::vector<std::byte> PgProtocolParser::create_auth_response(
       break;
       
     case AuthenticationRequest::Type::MD5: {
+      if (request.challenge_data.size() != 4) {
+        throw std::invalid_argument("PostgreSQL MD5 salt must be four bytes");
+      }
       std::string step1 = md5_hex((password + user).data(), password.size() + user.size());
       std::string salted = step1 + std::string(reinterpret_cast<const char*>(request.challenge_data.data()), 4);
       std::string step2 = md5_hex(salted.data(), salted.size());

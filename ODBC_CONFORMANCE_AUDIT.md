@@ -1370,6 +1370,11 @@ substitute for ODBC diagnostics.
   ignored both and could report success after an out-of-phase frame.
   Synthetic backend tests verify protocol failure and connection invalidation;
   ordinary PostgreSQL execution remains covered by connected suites.
+- Audit batch 216 validates the four-byte MD5 salt at both authentication
+  boundaries. The wire parser already required an exact-length challenge,
+  but a directly constructed request could reach the response builder with
+  a short salt and read past its buffer. A sanitizer red test reproduced the
+  failure; parser and builder tests cover short, exact, and oversized salts.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

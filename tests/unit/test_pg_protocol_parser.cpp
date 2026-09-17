@@ -79,6 +79,39 @@ TEST(PgProtocolParserTest, AuthenticationOkAndCleartextHaveExactLengths) {
   EXPECT_THROW(parser.parse_auth_request(payload), std::runtime_error);
 }
 
+TEST(PgProtocolParserTest, Md5AuthenticationRequiresExactlyFourSaltBytes) {
+  PgProtocolParser parser;
+  std::vector<std::byte> payload{
+      std::byte{0}, std::byte{0}, std::byte{0}, std::byte{5},
+      std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}};
+  const auto parsed = parser.parse_auth_request(payload);
+  ASSERT_EQ(parsed.type, AuthenticationRequest::Type::MD5);
+  ASSERT_EQ(parsed.challenge_data.size(), 4u);
+
+  const auto response = parser.create_auth_response(parsed, "password", "alice");
+  ASSERT_EQ(response.size(), 41u);
+  EXPECT_EQ(response[0], std::byte{'p'});
+  EXPECT_EQ(response[4], std::byte{40});
+  EXPECT_EQ(response[5], std::byte{'m'});
+  EXPECT_EQ(response[6], std::byte{'d'});
+  EXPECT_EQ(response[7], std::byte{'5'});
+  EXPECT_EQ(response.back(), std::byte{0});
+
+  payload.pop_back();
+  EXPECT_THROW(parser.parse_auth_request(payload), std::runtime_error);
+  payload.push_back(std::byte{4});
+  payload.push_back(std::byte{5});
+  EXPECT_THROW(parser.parse_auth_request(payload), std::runtime_error);
+
+  AuthenticationRequest direct;
+  direct.type = AuthenticationRequest::Type::MD5;
+  for (const std::size_t salt_size : {0u, 3u, 5u}) {
+    direct.challenge_data.resize(salt_size);
+    EXPECT_THROW(parser.create_auth_response(direct, "password", "alice"),
+                 std::invalid_argument);
+  }
+}
+
 TEST(PgProtocolParserTest, ScramRequiresServerFinalAndRejectsDowngrade) {
   PgProtocolParser parser;
   std::vector<std::byte> offer{
