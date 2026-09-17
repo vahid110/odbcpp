@@ -708,6 +708,88 @@ TEST(ThreadPoolTransportDeadlineTest, ExpiredQueuedTaskReleasesQueueCapacity) {
   EXPECT_TRUE(replacement.get().has_value());
 }
 
+TEST(ThreadPoolTransportDeadlineTest, ExpiredSubmissionCompletesBehindBusyWorker) {
+  std::promise<void> callback_entered;
+  std::promise<void> release_callback;
+  auto release = release_callback.get_future().share();
+  rs::core::transport::ThreadPoolTransport transport(1, 1);
+  auto active = transport.send_async(
+      std::span<const std::byte>{}, rs::util::make_deadline(2s),
+      [&](auto) {
+        callback_entered.set_value();
+        release.wait();
+      });
+  const auto entered = callback_entered.get_future().wait_for(1s);
+  if (entered != std::future_status::ready) {
+    release_callback.set_value();
+    FAIL() << "worker did not enter the blocking callback";
+  }
+
+  auto expired = transport.send_future(
+      std::span<const std::byte>{}, rs::util::Clock::now());
+  const auto status = expired.wait_for(100ms);
+  release_callback.set_value();
+
+  EXPECT_EQ(status, std::future_status::ready);
+  ASSERT_EQ(expired.wait_for(2s), std::future_status::ready);
+  auto result = expired.get();
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(result.error(), rs::util::make_error_code(
+      rs::util::DbErrorCode::Timeout));
+}
+
+TEST(ThreadPoolTransportDeadlineTest, ExpiredSubmissionIsNotQueueFull) {
+  std::promise<void> callback_entered;
+  std::promise<void> release_callback;
+  auto release = release_callback.get_future().share();
+  rs::core::transport::ThreadPoolTransport transport(1, 1);
+  auto active = transport.send_async(
+      std::span<const std::byte>{}, rs::util::make_deadline(2s),
+      [&](auto) {
+        callback_entered.set_value();
+        release.wait();
+      });
+  const auto entered = callback_entered.get_future().wait_for(1s);
+  if (entered != std::future_status::ready) {
+    release_callback.set_value();
+    FAIL() << "worker did not enter the blocking callback";
+  }
+
+  auto queued = transport.send_future(
+      std::span<const std::byte>{}, rs::util::make_deadline(2s));
+  std::array<std::byte, 1> buffer{std::byte{0x2a}};
+  const auto expired_deadline = rs::util::Clock::now();
+  auto expired_connect = transport.connect_future(
+      "127.0.0.1", 1, expired_deadline);
+  auto expired_send = transport.send_future(
+      std::span<const std::byte>{}, expired_deadline);
+  auto expired_receive = transport.recv_future(buffer, expired_deadline);
+  const auto connect_status = expired_connect.wait_for(100ms);
+  const auto send_status = expired_send.wait_for(100ms);
+  const auto receive_status = expired_receive.wait_for(100ms);
+  release_callback.set_value();
+
+  EXPECT_EQ(connect_status, std::future_status::ready);
+  EXPECT_EQ(send_status, std::future_status::ready);
+  EXPECT_EQ(receive_status, std::future_status::ready);
+  ASSERT_EQ(expired_connect.wait_for(2s), std::future_status::ready);
+  ASSERT_EQ(expired_send.wait_for(2s), std::future_status::ready);
+  ASSERT_EQ(expired_receive.wait_for(2s), std::future_status::ready);
+  auto connect_result = expired_connect.get();
+  auto send_result = expired_send.get();
+  auto receive_result = expired_receive.get();
+  ASSERT_TRUE(connect_result.has_error());
+  ASSERT_TRUE(send_result.has_error());
+  ASSERT_TRUE(receive_result.has_error());
+  EXPECT_EQ(connect_result.error(), rs::util::make_error_code(
+      rs::util::DbErrorCode::Timeout));
+  EXPECT_EQ(send_result.error(), rs::util::make_error_code(
+      rs::util::DbErrorCode::Timeout));
+  EXPECT_EQ(receive_result.error(), rs::util::make_error_code(
+      rs::util::DbErrorCode::Timeout));
+  EXPECT_EQ(buffer[0], std::byte{0x2a});
+}
+
 TEST(ThreadPoolTransportDeadlineTest, CancelledQueuedReceiveLeavesDataForNext) {
   SleepingServer server(120ms, true);
   rs::core::transport::ThreadPoolTransport transport(1);

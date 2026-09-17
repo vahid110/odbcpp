@@ -1257,6 +1257,11 @@ substitute for ODBC diagnostics.
   behavior across supported OpenSSL versions rather than claiming a local bug.
   The macOS loopback server suppresses SIGPIPE if a client times out during its
   handshake, keeping that expected test race from terminating the suite.
+- Audit batch 197 completes already-expired thread-pool requests at admission,
+  outside the queue lock. Before the fix, a busy worker delayed their timeout,
+  and a full queue mislabeled them as network errors. Red/green tests cover both
+  cases, plus expired connect/send/receive parity and an untouched receive
+  buffer; the focused tests passed 50 repeated runs after the fix.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

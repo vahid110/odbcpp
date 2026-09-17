@@ -298,10 +298,13 @@ void ThreadPoolTransport::worker_thread() {
 bool ThreadPoolTransport::submit_task(Task task) {
   std::vector<Task> expired_tasks;
   bool accepted = false;
+  bool run_expired = false;
   {
     std::lock_guard lock(queue_mutex_);
     if (shutdown_.load()) return false;
-    if (tasks_.size() >= queue_depth_) {
+    if (expired(task.deadline)) {
+      run_expired = true;
+    } else if (tasks_.size() >= queue_depth_) {
       std::queue<Task> pending;
       while (!tasks_.empty()) {
         Task queued = std::move(tasks_.front());
@@ -315,9 +318,13 @@ bool ThreadPoolTransport::submit_task(Task task) {
       }
       tasks_.swap(pending);
     }
-    if (tasks_.size() < queue_depth_) {
-      tasks_.push(std::move(task));
-      accepted = true;
+    if (!run_expired) {
+      if (expired(task.deadline)) {
+        run_expired = true;
+      } else if (tasks_.size() < queue_depth_) {
+        tasks_.push(std::move(task));
+        accepted = true;
+      }
     }
   }
   if (accepted) cv_.notify_one();
@@ -327,6 +334,14 @@ bool ThreadPoolTransport::submit_task(Task task) {
     } catch (...) {
       if (queued.cancel) queued.cancel();
     }
+  }
+  if (run_expired) {
+    try {
+      task.work();
+    } catch (...) {
+      if (task.cancel) task.cancel();
+    }
+    return true;
   }
   return accepted;
 }
