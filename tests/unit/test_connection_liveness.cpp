@@ -153,6 +153,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     OverreportedHeaderRead, OverreportedStartupWrite,
     AuthenticationDuringQuery, BackendKeyDuringQuery,
     MismatchedDataRow, UnannouncedDataRow, DuplicateRowDescription,
+    UnknownQueryFrame,
     MalformedEmptyQueryResponse,
     CopyInDuringQuery, CopyOutDuringQuery, CopyBothDuringQuery,
     UnsolicitedCopyData, UnsolicitedCopyDone,
@@ -334,6 +335,10 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
           "\0\4" "\377\377\377\377" "\0\0";
       append_message('T', first, sizeof(first) - 1);
       append_message('T', second, sizeof(second) - 1);
+      append_message('C', "SELECT 0", sizeof("SELECT 0"));
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::UnknownQueryFrame) {
+      append_message('?', "", 0);
       append_message('C', "SELECT 0", sizeof("SELECT 0"));
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::CopyInDuringQuery ||
@@ -1118,6 +1123,26 @@ TEST(ConnectionLivenessTest, UnannouncedDataRowClosesConnection) {
 TEST(ConnectionLivenessTest, DuplicateRowDescriptionClosesConnection) {
   auto transport = std::make_unique<ScriptedBackendTransport>(
       ScriptedBackendTransport::ResponseMode::DuplicateRowDescription);
+  auto* observed_transport = transport.get();
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::move(transport));
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  ASSERT_TRUE(connection.connect(settings).has_value());
+
+  const auto result = connection.execute_query(
+      "SELECT 0", rs::util::make_deadline(std::chrono::seconds(1)));
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_FALSE(connection.is_connected());
+  EXPECT_EQ(1u, observed_transport->close_count());
+}
+
+TEST(ConnectionLivenessTest, UnknownQueryFrameClosesConnection) {
+  auto transport = std::make_unique<ScriptedBackendTransport>(
+      ScriptedBackendTransport::ResponseMode::UnknownQueryFrame);
   auto* observed_transport = transport.get();
   rs::core::database::GenericDatabaseConnection connection(
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),

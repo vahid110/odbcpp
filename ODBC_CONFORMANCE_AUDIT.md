@@ -1467,6 +1467,13 @@ substitute for ODBC diagnostics.
   synthetic connection test verifies protocol failure closes the transport.
   [PostgreSQL's extended-query flow](https://www.postgresql.org/docs/current/protocol-flow.html)
   specifies separate statement and portal Describe responses.
+- Audit batch 233 rejects unrecognized backend frames during query execution
+  instead of silently ignoring them and returning success after a later
+  CommandComplete. A synthetic connection test first reproduced the false
+  success, then verifies a protocol error and one transport close. The accepted
+  frame set covers the simple and extended-query responses this driver sends
+  for, plus asynchronous notice, status, and notification messages described
+  in [PostgreSQL's protocol flow](https://www.postgresql.org/docs/current/protocol-flow.html).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

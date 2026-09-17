@@ -333,6 +333,26 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
             throw std::runtime_error(
                 "Unexpected PostgreSQL statement description frame");
         }
+      } else {
+        switch (msg.tag) {
+          case '1': // ParseComplete
+          case '2': // BindComplete
+          case 't': // ParameterDescription
+          case 'n': // NoData
+          case 'T': // RowDescription
+          case 'D': // DataRow
+          case 'C': // CommandComplete
+          case 'I': // EmptyQueryResponse
+          case 'E': // ErrorResponse
+          case 'N': // NoticeResponse
+          case 'S': // ParameterStatus
+          case 'A': // NotificationResponse
+          case 'Z': // ReadyForQuery
+            break;
+          default:
+            throw std::runtime_error(
+                "Unexpected PostgreSQL query response frame");
+        }
       }
       if (msg.tag == 'S') {
         auto status_result = record_parameter_status(msg);
