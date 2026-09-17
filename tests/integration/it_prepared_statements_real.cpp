@@ -210,6 +210,113 @@ TEST_F(PreparedStatementIntegrationTest, NullTimeStructParameterStaysNull) {
     EXPECT_EQ(73, output.hour);
 }
 
+TEST_F(PreparedStatementIntegrationTest, TimestampStructParameterRoundTrips) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQL_TIMESTAMP_STRUCT input{2024, 2, 29, 12, 34, 56, 123456000};
+    alignas(SQL_TIMESTAMP_STRUCT)
+        std::array<std::byte, 1 + sizeof(SQL_TIMESTAMP_STRUCT)> input_bytes{};
+    std::memcpy(input_bytes.data() + 1, &input, sizeof(input));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TYPE_TIMESTAMP, SQL_TYPE_TIMESTAMP, 26, 6,
+        input_bytes.data() + 1, sizeof(input), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    SQLSMALLINT sql_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt, 1, nullptr, 0, nullptr,
+        &sql_type, nullptr, nullptr, nullptr));
+    EXPECT_EQ(SQL_TYPE_TIMESTAMP, sql_type);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_TIMESTAMP_STRUCT output{};
+    SQLLEN length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIMESTAMP,
+        &output, sizeof(output), &length));
+    EXPECT_EQ(2024, output.year);
+    EXPECT_EQ(2, output.month);
+    EXPECT_EQ(29, output.day);
+    EXPECT_EQ(12, output.hour);
+    EXPECT_EQ(34, output.minute);
+    EXPECT_EQ(56, output.second);
+    EXPECT_EQ(123456000u, output.fraction);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(output)), length);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       DefaultTimestampParameterCTypeRoundTrips) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQL_TIMESTAMP_STRUCT input{2024, 12, 31, 23, 59, 59, 0};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_DEFAULT, SQL_TYPE_TIMESTAMP, 26, 6,
+        &input, sizeof(input), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_TIMESTAMP_STRUCT output{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIMESTAMP,
+        &output, sizeof(output), nullptr));
+    EXPECT_EQ(2024, output.year);
+    EXPECT_EQ(12, output.month);
+    EXPECT_EQ(31, output.day);
+    EXPECT_EQ(23, output.hour);
+    EXPECT_EQ(59, output.minute);
+    EXPECT_EQ(59, output.second);
+    EXPECT_EQ(0u, output.fraction);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       TimestampStructParameterRejectsInvalidFieldsAndPrecisionLoss) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQL_TIMESTAMP_STRUCT input{2024, 2, 29, 12, 34, 56, 0};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TIMESTAMP, SQL_TYPE_TIMESTAMP, 26, 6,
+        &input, sizeof(input), nullptr));
+    SQLCHAR state[6]{};
+    for (const SQL_TIMESTAMP_STRUCT invalid : {
+             SQL_TIMESTAMP_STRUCT{2023, 2, 29, 12, 34, 56, 0},
+             SQL_TIMESTAMP_STRUCT{2024, 2, 29, 24, 0, 0, 0},
+             SQL_TIMESTAMP_STRUCT{2024, 2, 29, 12, 34, 56, 1000000000u}}) {
+        input = invalid;
+        EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22007", reinterpret_cast<char*>(state));
+    }
+    input = SQL_TIMESTAMP_STRUCT{2024, 2, 29, 12, 34, 56, 123456789u};
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22008", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       NullTimestampStructParameterStaysNull) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQLLEN indicator = SQL_NULL_DATA;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TYPE_TIMESTAMP, SQL_TYPE_TIMESTAMP, 26, 6,
+        nullptr, 0, &indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_TIMESTAMP_STRUCT output{73, 1, 1, 0, 0, 0, 0};
+    SQLLEN length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIMESTAMP,
+        &output, sizeof(output), &length));
+    EXPECT_EQ(SQL_NULL_DATA, length);
+    EXPECT_EQ(73, output.year);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       TimestampStructToCharacterParameterPreservesNanoseconds) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQL_TIMESTAMP_STRUCT input{2024, 2, 29, 12, 34, 56, 123456789u};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TYPE_TIMESTAMP, SQL_VARCHAR, 29, 0,
+        &input, sizeof(input), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    char output[40]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        output, sizeof(output), nullptr));
+    EXPECT_STREQ("2024-02-29 12:34:56.123456789", output);
+}
+
 TEST_F(PreparedStatementIntegrationTest,
        QuotedIdentifierBackslashDoesNotHideParameter) {
     char sql[] = R"(SELECT 1 AS "slash\", ?::integer AS value)";

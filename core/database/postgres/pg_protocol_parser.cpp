@@ -68,6 +68,7 @@ std::uint32_t postgres_type_oid(QueryParameterType type) {
     case QueryParameterType::Numeric: return 1700;
     case QueryParameterType::Date: return 1082;
     case QueryParameterType::Time: return 1083;
+    case QueryParameterType::Timestamp: return 1114;
   }
   return 0;
 }

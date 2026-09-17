@@ -569,6 +569,21 @@ TEST(PgProtocolParserTest, TimeParameterUsesPostgresqlTimeOid) {
   EXPECT_EQ(1083u, read_u32(frames[0].payload, offset));
 }
 
+TEST(PgProtocolParserTest, TimestampParameterUsesPostgresqlTimestampOid) {
+  PgProtocolParser parser;
+  const std::vector<QueryParameterType> types{QueryParameterType::Timestamp};
+  const auto frames = split_frames(parser.create_statement_description(
+      "SELECT ?", types));
+  ASSERT_EQ(frames.size(), 3u);
+  std::size_t offset = 0;
+  EXPECT_TRUE(read_cstring(frames[0].payload, offset).empty());
+  EXPECT_EQ("SELECT $1", read_cstring(frames[0].payload, offset));
+  ASSERT_LE(offset + 6, frames[0].payload.size());
+  EXPECT_EQ(1, read_u16(frames[0].payload, offset));
+  offset += 2;
+  EXPECT_EQ(1114u, read_u32(frames[0].payload, offset));
+}
+
 TEST(PgProtocolParserTest, RejectsMismatchedDescriptionMarkerCount) {
   PgProtocolParser parser;
   const std::vector<QueryParameterType> parameter_types{

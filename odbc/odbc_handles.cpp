@@ -397,6 +397,8 @@ rs::core::database::QueryParameterType parameter_type_for(
       return QueryParameterType::Date;
     case SQL_TYPE_TIME:
       return QueryParameterType::Time;
+    case SQL_TYPE_TIMESTAMP:
+      return QueryParameterType::Timestamp;
     case SQL_BINARY:
     case SQL_VARBINARY:
     case SQL_LONGVARBINARY:
@@ -3083,6 +3085,35 @@ SQLRETURN ODBCStatement::execute() {
           return complete_parameter_set(SQL_ERROR);
         }
         value = *formatted;
+      } else if (value_type == SQL_C_TIMESTAMP ||
+                 value_type == SQL_C_TYPE_TIMESTAMP) {
+        const auto timestamp = load_application_value<SQL_TIMESTAMP_STRUCT>(
+            application.data_ptr);
+        const auto date = format_date_parameter(SQL_DATE_STRUCT{
+            timestamp.year, timestamp.month, timestamp.day});
+        const auto time = format_time_parameter(SQL_TIME_STRUCT{
+            timestamp.hour, timestamp.minute, timestamp.second});
+        if (!date || !time || timestamp.fraction >= 1000000000u) {
+          set_error(SQLSTATE_INVALID_DATETIME_FORMAT,
+                    "Invalid timestamp parameter value");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        const bool character_target =
+            query_param.type == rs::core::database::QueryParameterType::Text;
+        if (!character_target && timestamp.fraction % 1000u != 0) {
+          set_error(SQLSTATE_DATETIME_FIELD_OVERFLOW,
+                    "Timestamp fraction exceeds PostgreSQL precision");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        char fraction[11]{};
+        if (character_target) {
+          std::snprintf(fraction, sizeof(fraction), ".%09u",
+                        timestamp.fraction);
+        } else {
+          std::snprintf(fraction, sizeof(fraction), ".%06u",
+                        timestamp.fraction / 1000u);
+        }
+        value = *date + " " + *time + fraction;
       } else if (value_type == SQL_C_BINARY) {
         SQLLEN length = application.octet_length;
         if (length_or_indicator) {
