@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <clocale>
 #include <ctime>
 #include <cstring>
 #include <limits>
@@ -922,6 +923,49 @@ TEST_F(BindColIntegrationTest, BoundFloatingUnderflowPreservesOutput) {
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
         SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+}
+
+TEST_F(BindColIntegrationTest, FloatingConversionIgnoresProcessLocale) {
+    const char* current = std::setlocale(LC_NUMERIC, nullptr);
+    const std::string original = current ? current : "C";
+    const char* german_locale = std::setlocale(LC_NUMERIC, "de_DE.UTF-8");
+#ifdef _WIN32
+    if (!german_locale) {
+        german_locale = std::setlocale(LC_NUMERIC, "German_Germany.1252");
+    }
+#endif
+    if (!german_locale) GTEST_SKIP() << "German numeric locale unavailable";
+    struct LocaleRestore {
+        std::string name;
+        ~LocaleRestore() { std::setlocale(LC_NUMERIC, name.c_str()); }
+    } restore{original};
+    if (std::localeconv()->decimal_point[0] != ',') {
+        GTEST_SKIP() << "Selected locale does not use a decimal comma";
+    }
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)
+            "SELECT 1.5::numeric, '1.5e2'::text, '1,5'::text",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLREAL real_value = 0;
+    SQLDOUBLE double_value = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_FLOAT, &real_value, sizeof(real_value), nullptr));
+    EXPECT_FLOAT_EQ(1.5f, real_value);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 2, SQL_C_DOUBLE, &double_value, sizeof(double_value), nullptr));
+    EXPECT_DOUBLE_EQ(150.0, double_value);
+
+    double_value = 73.0;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(
+        hstmt, 3, SQL_C_DOUBLE, &double_value, sizeof(double_value), nullptr));
+    EXPECT_DOUBLE_EQ(73.0, double_value);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
 }
 
 TEST_F(BindColIntegrationTest, BigintLeadingWhitespaceConversionAtLimits) {

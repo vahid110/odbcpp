@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <locale.h>
 #include <optional>
 #include <stdexcept>
 #include <string_view>
@@ -41,13 +42,28 @@ std::string_view trim_whitespace(std::string_view value) {
 
 std::optional<long double> parse_number(const std::string& value,
                                         ConversionIssue* issue) {
-  if (value.empty()) {
+  struct NumericLocale {
+#ifdef _WIN32
+    _locale_t handle = _create_locale(LC_NUMERIC, "C");
+    ~NumericLocale() { if (handle) _free_locale(handle); }
+#else
+    locale_t handle = newlocale(LC_NUMERIC_MASK, "C", nullptr);
+    ~NumericLocale() { if (handle) freelocale(handle); }
+#endif
+  };
+  static const NumericLocale numeric_locale;
+  if (!numeric_locale.handle || value.empty()) {
     if (issue) *issue = ConversionIssue::InvalidCharacterValue;
     return std::nullopt;
   }
   char* end = nullptr;
   errno = 0;
-  const auto parsed = std::strtold(value.c_str(), &end);
+#ifdef _WIN32
+  const auto parsed = static_cast<long double>(
+      _strtod_l(value.c_str(), &end, numeric_locale.handle));
+#else
+  const auto parsed = strtold_l(value.c_str(), &end, numeric_locale.handle);
+#endif
   if (end == value.c_str()) {
     if (issue) *issue = ConversionIssue::InvalidCharacterValue;
     return std::nullopt;
@@ -98,7 +114,7 @@ SQLRETURN convert_integral(const std::string& value, void* buffer,
   }
 
   // Parse decimal/scientific notation as digits so 64-bit boundaries never
-  // pass through floating point. Keep strtold below for legacy text forms.
+  // pass through floating point. The fallback handles other numeric forms.
   std::size_t pos = 0;
   const bool negative = !numeric_text.empty() && numeric_text.front() == '-';
   if (!numeric_text.empty() &&

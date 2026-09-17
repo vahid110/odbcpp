@@ -1530,6 +1530,13 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   succeed. The [ODBC SQL-to-C character conversion table](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/sql-to-c-character)
   specifies `22003` for floating conversion outside the target range. All 34
   tests pass in sanitizer, PostgreSQL Driver Manager, and iODBC configurations.
+- Audit batch 242 makes numeric text parsing independent of the application's
+  process locale. A PostgreSQL regression under a comma-decimal locale first
+  reproduced rejection of valid `1.5` output; it also checks that `1,5` is
+  rejected as malformed, scientific notation still works, and the prior
+  underflow diagnostics remain. Parsing now uses a cached C numeric locale
+  rather than changing the process locale. All 34 tests pass in sanitizer,
+  PostgreSQL Driver Manager, and iODBC configurations.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
