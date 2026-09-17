@@ -1210,6 +1210,10 @@ substitute for ODBC diagnostics.
   adopted sockets. Two platform regressions first observed the option disabled,
   then verified it is enabled; this complements `MSG_NOSIGNAL` on Linux and
   prevents a closed peer from terminating the driver process during a send.
+- Audit batch 188 exercises an actual send to a closed macOS socket peer in a
+  child process with default SIGPIPE handling. The child must return a network
+  error normally rather than terminate from the signal; process isolation
+  keeps a regression from killing the entire transport test executable.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

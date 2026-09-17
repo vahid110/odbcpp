@@ -37,6 +37,11 @@
 #include <pthread.h>
 #endif
 
+#if defined(SO_NOSIGPIPE) && !defined(_WIN32)
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 namespace {
 
 using namespace std::chrono_literals;
@@ -334,6 +339,32 @@ TEST(SocketTransportDeadlineTest, ConnectedSocketSuppressesSigpipe) {
   ASSERT_EQ(::getsockopt(transport.native(), SOL_SOCKET, SO_NOSIGPIPE,
                          &enabled, &length), 0);
   EXPECT_EQ(enabled, 1);
+}
+
+TEST(SocketTransportDeadlineTest, ClosedPeerSendDoesNotRaiseSigpipe) {
+  int sockets[2];
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets), 0);
+  SocketTransport transport;
+  transport.adopt(sockets[0]);
+
+  const pid_t child = ::fork();
+  if (child == 0) {
+    ::signal(SIGPIPE, SIG_DFL);
+    close_test_socket(sockets[1]);
+    const std::array<std::byte, 1> data{std::byte{'x'}};
+    const auto result = transport.send(data, rs::util::make_deadline(1s));
+    ::_exit(result.has_error() &&
+                    result.error() == rs::util::make_error_code(
+                                          rs::util::DbErrorCode::NetworkError)
+                ? 0 : 1);
+  }
+
+  close_test_socket(sockets[1]);
+  ASSERT_GT(child, 0);
+  int status = 0;
+  ASSERT_EQ(::waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFEXITED(status)) << "child terminated from signal " << WTERMSIG(status);
+  EXPECT_EQ(WEXITSTATUS(status), 0);
 }
 #endif
 
