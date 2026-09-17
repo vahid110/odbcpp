@@ -7,6 +7,9 @@ using Clock = std::chrono::steady_clock;
 using Deadline = Clock::time_point;
 
 inline Deadline make_deadline(std::chrono::milliseconds from_now) {
+  if (from_now < std::chrono::milliseconds::zero()) {
+    return Deadline::min();
+  }
   const auto now = Clock::now();
   const auto maximum = std::chrono::duration_cast<std::chrono::milliseconds>(
       Deadline::max() - now);

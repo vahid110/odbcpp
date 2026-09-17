@@ -1267,6 +1267,11 @@ substitute for ODBC diagnostics.
   of queue-full or pending-connect rejection. Red/green tests cover a blocked
   worker, full queue, connect/send/receive error parity, and an untouched
   receive buffer; the focused tests passed 50 repeated runs after the fix.
+- Audit batch 199 saturates negative relative deadlines to an already-expired
+  time point before converting milliseconds to the clock's finer unit. This
+  avoids overflow for extreme negative durations. A red/green test covers
+  negative one millisecond and the minimum milliseconds value, then passed 20
+  repeated runs in both normal and sanitizer builds.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

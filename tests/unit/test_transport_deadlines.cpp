@@ -308,6 +308,14 @@ TEST(DeadlineTest, PositiveSubmillisecondRemainderDoesNotExpire) {
   EXPECT_EQ(2ms, rs::util::remaining_at(origin + 1ms + tick, origin));
 }
 
+TEST(DeadlineTest, NegativeDurationSaturatesWithoutClockOverflow) {
+  EXPECT_EQ(rs::util::Deadline::min(), rs::util::make_deadline(-1ms));
+  EXPECT_EQ(rs::util::Deadline::min(),
+            rs::util::make_deadline(std::chrono::milliseconds::min()));
+  EXPECT_EQ(0ms, rs::util::remaining(
+      rs::util::make_deadline(std::chrono::milliseconds::min())));
+}
+
 TEST(SocketTransportDeadlineTest, CappedPollWaitDoesNotExpireLongerDeadline) {
   SleepingServer server(100ms, true);
   SocketTransport transport(DeadlineModel::Strict);
