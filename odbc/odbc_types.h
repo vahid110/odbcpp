@@ -76,6 +76,7 @@ constexpr const char* SQLSTATE_INVALID_SQL_DATA_TYPE = "HY004";
 constexpr const char* SQLSTATE_INVALID_PARAMETER_TYPE = "HY105";
 constexpr const char* SQLSTATE_ATTRIBUTE_CANNOT_BE_SET = "HY011";
 constexpr const char* SQLSTATE_INVALID_ATTRIBUTE_VALUE = "HY024";
+constexpr const char* SQLSTATE_INVALID_PRECISION_OR_SCALE = "HY104";
 constexpr const char* SQLSTATE_INVALID_ATTRIBUTE = "HY092";
 constexpr const char* SQLSTATE_INVALID_DESCRIPTOR_FIELD = "HY091";
 constexpr const char* SQLSTATE_CONNECTION_TIMEOUT = "HYT01";

@@ -3118,9 +3118,24 @@ SQLRETURN ODBCStatement::execute() {
           value = *time;
         } else {
           const bool character_target = target == QueryParameterType::Text;
-          if (!character_target && timestamp.fraction % 1000u != 0) {
+          std::uint32_t fractional_quantum = 1000u;
+          if (target == QueryParameterType::Timestamp) {
+            if (implementation.precision < 0 ||
+                implementation.precision > 6) {
+              set_error(SQLSTATE_INVALID_PRECISION_OR_SCALE,
+                        "Unsupported timestamp parameter precision");
+              return complete_parameter_set(SQL_ERROR);
+            }
+            fractional_quantum = 1000000000u;
+            for (SQLSMALLINT digit = 0;
+                 digit < implementation.precision; ++digit) {
+              fractional_quantum /= 10u;
+            }
+          }
+          if (!character_target &&
+              timestamp.fraction % fractional_quantum != 0) {
             set_error(SQLSTATE_DATETIME_FIELD_OVERFLOW,
-                      "Timestamp fraction exceeds PostgreSQL precision");
+                      "Timestamp fraction exceeds parameter precision");
             return complete_parameter_set(SQL_ERROR);
           }
           char fraction[11]{};
@@ -3265,6 +3280,13 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
               "Parameter SQL data type is not supported");
     return SQL_ERROR;
   }
+  if ((parameter_type == SQL_TYPE_TIME ||
+       parameter_type == SQL_TYPE_TIMESTAMP) &&
+      (decimal_digits < 0 || decimal_digits > 6)) {
+    set_error(SQLSTATE_INVALID_PRECISION_OR_SCALE,
+              "Temporal parameter precision must be from 0 to 6");
+    return SQL_ERROR;
+  }
   if (!parameter_value && !strlen_or_indicator) {
     set_error(SQLSTATE_INVALID_NULL_POINTER,
               "Input parameter requires a value or indicator pointer");
@@ -3294,6 +3316,11 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
       parameter_number, SQL_DESC_LENGTH, number(column_size), 0);
   implementation_descriptor->set_field(
       parameter_number, SQL_DESC_SCALE, number(decimal_digits), 0);
+  if (parameter_type == SQL_TYPE_TIME ||
+      parameter_type == SQL_TYPE_TIMESTAMP) {
+    implementation_descriptor->set_field(
+        parameter_number, SQL_DESC_PRECISION, number(decimal_digits), 0);
+  }
   implementation_descriptor->set_field(
       parameter_number, SQL_DESC_PARAMETER_TYPE, number(input_output_type), 0);
   if (parameter_number > param_metadata_.size()) {

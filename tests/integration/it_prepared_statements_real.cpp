@@ -384,6 +384,67 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       TimestampParameterHonorsDeclaredFractionalPrecision) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQL_TIMESTAMP_STRUCT input{2024, 2, 29, 12, 34, 56, 123000000u};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TYPE_TIMESTAMP, SQL_TYPE_TIMESTAMP, 23, 3,
+        &input, sizeof(input), nullptr));
+
+    SQLHDESC implementation = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_IMP_PARAM_DESC, &implementation, 0, nullptr));
+    SQLSMALLINT precision = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(implementation, 1,
+        SQL_DESC_PRECISION, &precision, 0, nullptr));
+    EXPECT_EQ(3, precision);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_TIMESTAMP_STRUCT output{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIMESTAMP,
+        &output, sizeof(output), nullptr));
+    EXPECT_EQ(123000000u, output.fraction);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    input.fraction = 123456000u;
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22008", reinterpret_cast<char*>(state));
+
+    input.fraction = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TYPE_TIMESTAMP, SQL_TYPE_TIMESTAMP, 19, 0,
+        &input, sizeof(input), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    input.fraction = 1000u;
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22008", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       TemporalParameterRejectsUnsupportedFractionalPrecision) {
+    SQL_TIMESTAMP_STRUCT input{2024, 2, 29, 12, 34, 56, 0};
+    SQLCHAR state[6]{};
+    for (const SQLSMALLINT sql_type : {SQL_TYPE_TIME, SQL_TYPE_TIMESTAMP}) {
+        for (const SQLSMALLINT precision : {SQLSMALLINT{-1}, SQLSMALLINT{7}}) {
+            EXPECT_EQ(SQL_ERROR, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+                SQL_C_TYPE_TIMESTAMP, sql_type, 26, precision,
+                &input, sizeof(input), nullptr));
+            ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+                state, nullptr, nullptr, 0, nullptr));
+            EXPECT_STREQ("HY104", reinterpret_cast<char*>(state));
+        }
+    }
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        QuotedIdentifierBackslashDoesNotHideParameter) {
     char sql[] = R"(SELECT 1 AS "slash\", ?::integer AS value)";
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
