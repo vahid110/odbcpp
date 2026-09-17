@@ -1418,6 +1418,10 @@ substitute for ODBC diagnostics.
   server SQLSTATE as a query failure. Synthetic tests cover each missing
   stage and the valid NoData/error paths. The expected order follows
   [PostgreSQL's extended-query flow](https://www.postgresql.org/docs/current/protocol-flow.html).
+- Audit batch 224 closes the transport when authentication or subsequent
+  startup response processing fails. A synthetic backend verifies that both
+  rejected credentials and an authentication read timeout retain their
+  original error classifications while closing the connection exactly once.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

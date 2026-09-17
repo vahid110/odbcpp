@@ -10,6 +10,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -54,6 +55,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
  public:
   enum class ResponseMode {
     ValidStartup, MalformedStartup, MalformedAuth, AuthRejected,
+    AuthenticationTimeout,
     MalformedQuery, MalformedStartupReady, MalformedQueryReady,
     MalformedQueryError, MalformedBackendKey, ReadyWithoutAuth,
     StartupRejectedAfterAuth, LoginRejectedAfterAuth,
@@ -94,6 +96,9 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       constexpr char error[] =
           "SFATAL\0C28P01\0Mpassword authentication failed\0";
       append_message('E', error, sizeof(error));
+      return;
+    }
+    if (mode == ResponseMode::AuthenticationTimeout) {
       return;
     }
     if (mode == ResponseMode::MalformedStartupReady) {
@@ -321,9 +326,14 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
   }
 
   std::size_t send_count() const noexcept { return send_count_; }
+  std::size_t close_count() const noexcept { return close_count_; }
 
   rs::util::Result<rs::core::transport::IOResult> recv(
       std::span<std::byte> buffer, rs::util::Deadline) override {
+    if (mode_ == ResponseMode::AuthenticationTimeout) {
+      return {rs::util::DbErrorCode::Timeout,
+              "injected authentication timeout"};
+    }
     if ((mode_ == ResponseMode::ZeroHeaderRead && offset_ == 0) ||
         (mode_ == ResponseMode::ZeroBodyRead && offset_ == 5)) {
       if (!zero_returned_) {
@@ -345,7 +355,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     return rs::core::transport::IOResult{count, false};
   }
 
-  void close() noexcept override {}
+  void close() noexcept override { ++close_count_; }
 
  private:
   void append_message(char tag, const char* payload, std::size_t size) {
@@ -363,8 +373,32 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
   ResponseMode mode_;
   std::size_t offset_{0};
   std::size_t send_count_{0};
+  std::size_t close_count_{0};
   bool zero_returned_{false};
 };
+
+TEST(ConnectionLivenessTest, FailedAuthenticationClosesTransport) {
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto [mode, expected_error] : {
+           std::pair{Mode::AuthRejected,
+                     rs::util::DbErrorCode::AuthenticationFailed},
+           std::pair{Mode::AuthenticationTimeout,
+                     rs::util::DbErrorCode::Timeout}}) {
+    auto transport = std::make_unique<ScriptedBackendTransport>(mode);
+    auto* observed_transport = transport.get();
+    rs::core::database::GenericDatabaseConnection connection(
+        std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+        std::move(transport));
+    rs::core::database::ConnectionSettings settings;
+    settings.use_ssl = false;
+
+    const auto result = connection.connect(settings);
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(expected_error), result.error());
+    EXPECT_FALSE(connection.is_connected());
+    EXPECT_EQ(1u, observed_transport->close_count());
+  }
+}
 
 TEST(ConnectionLivenessTest, FailedServerTripMarksConnectionDead) {
   auto transport = std::make_unique<FailingQueryTransport>();

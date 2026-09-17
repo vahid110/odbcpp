@@ -135,6 +135,7 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
   // Handle authentication
   auto auth_result = perform_authentication_result(deadline);
   if (auth_result.has_error()) {
+    disconnect();
     return auth_result;
   }
   
