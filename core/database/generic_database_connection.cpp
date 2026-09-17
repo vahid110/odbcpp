@@ -219,7 +219,7 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::execute_query(std::stri
     return rs::util::Result<QueryResult>{write_result.error(), write_result.error_message()};
   }
 
-  return read_query_result(deadline, ResponseKind::Execution);
+  return read_query_result(deadline, ResponseKind::SimpleExecution);
 }
 
 rs::util::Result<QueryResult> GenericDatabaseConnection::execute_prepared(std::string_view sql, 
@@ -241,7 +241,7 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::execute_prepared(std::s
     return rs::util::Result<QueryResult>{write_result.error(), write_result.error_message()};
   }
   
-  return read_query_result(deadline, ResponseKind::Execution);
+  return read_query_result(deadline, ResponseKind::PreparedExecution);
 }
 
 rs::util::Result<QueryResult> GenericDatabaseConnection::describe_statement(
@@ -339,6 +339,11 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
           case '2': // BindComplete
           case 't': // ParameterDescription
           case 'n': // NoData
+            if (kind == ResponseKind::SimpleExecution) {
+              throw std::runtime_error(
+                  "PostgreSQL extended-query frame arrived during simple query");
+            }
+            break;
           case 'T': // RowDescription
           case 'D': // DataRow
           case 'C': // CommandComplete
@@ -371,7 +376,7 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
       }
       messages.push_back(msg);
       if (parser_->is_ready_for_query(msg)) {
-        if (kind == ResponseKind::Execution && !saw_completion) {
+        if (kind != ResponseKind::Description && !saw_completion) {
           mark_transport_failed();
           return rs::util::Result<QueryResult>{
               rs::util::DbErrorCode::ProtocolError,

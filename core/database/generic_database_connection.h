@@ -31,7 +31,7 @@ public:
   std::string get_last_server_sqlstate() const override;
 
 private:
-  enum class ResponseKind { Execution, Description };
+  enum class ResponseKind { SimpleExecution, PreparedExecution, Description };
   std::unique_ptr<IProtocolParser> parser_;
   std::unique_ptr<rs::core::transport::ITransport> transport_;
   ConnectionSettings settings_;

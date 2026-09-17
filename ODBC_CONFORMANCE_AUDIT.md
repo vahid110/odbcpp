@@ -1474,6 +1474,12 @@ substitute for ODBC diagnostics.
   frame set covers the simple and extended-query responses this driver sends
   for, plus asynchronous notice, status, and notification messages described
   in [PostgreSQL's protocol flow](https://www.postgresql.org/docs/current/protocol-flow.html).
+- Audit batch 234 distinguishes simple-query responses from prepared execution.
+  ParseComplete, BindComplete, ParameterDescription, and NoData are now protocol
+  errors after a simple Query message, rather than being accepted as harmless
+  setup frames. A synthetic test checks each tag and transport cleanup; real
+  prepared-statement integration tests still pass. [PostgreSQL's protocol flow](https://www.postgresql.org/docs/current/protocol-flow.html)
+  assigns those setup responses to the extended-query protocol.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
