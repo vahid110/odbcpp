@@ -48,7 +48,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLMoreResults` | A | Partial | unit, integration, DM | Result/update-count traversal and close-time discard are covered; error-result sequences remain |
 | `SQLGetData` | A | Partial | integration, DM | Legacy and ODBC 3 temporal C targets, malformed-value diagnostics, and per-row/switching-column offsets are covered; complete conversion/chunking matrices remain |
 | `SQLBindCol` | A | Partial | unit, integration | Invalid C types, negative lengths, and ODBC 3 temporal C targets are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
-| `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics plus ODBC date/time/timestamp-struct input are covered; precision negotiation, input arrays, data-at-execution, and full conversion matrix remain |
+| `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics plus ODBC date/time/timestamp-struct input and timestamp-to-date/time rules are covered; precision negotiation, input arrays, data-at-execution, and full conversion matrix remain |
 | `SQLNumParams` | A | Partial | unit, integration, DM | Prepared statements are server-validated without execution; state, null/output preservation, complex markers, direct execution, and IPD count agreement are covered; cancellation and communication-failure injection remain |
 | `SQLNumResultCols` | A | Partial | unit, integration | Prepared metadata, result sets, update counts, exhausted/closed cursors, delayed PostgreSQL errors, null outputs, and output preservation are covered; cancellation and communication-failure injection remain |
 | `SQLRowCount` | A | Verified | unit, integration | Allocated, prepared, update-count, result-set, fetched/exhausted, closed, failed-execution, null-output, and output-preservation cases are covered |
@@ -1604,6 +1604,16 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   The latter follows the [ODBC C-to-SQL timestamp conversion rule](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/c-to-sql-timestamp)
   for lost fractional digits. Scale/precision negotiation and the wider
   C-to-SQL conversion matrix remain open. All 34 tests pass in sanitizer,
+  PostgreSQL Driver Manager, and iODBC configurations, with focused cases
+  confirmed not to skip.
+- Audit batch 250 applies the [ODBC timestamp-to-date/time conversion rules](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/c-to-sql-timestamp)
+  before sending a typed PostgreSQL parameter. Timestamp-to-date now requires
+  zero time fields and returns `22008` instead of allowing PostgreSQL to
+  silently discard nonzero time. Timestamp-to-time ignores date fields, as
+  specified, and rejects nonzero fractional seconds with `22008`; malformed
+  retained fields return `22007`. Focused tests first reproduced the silent
+  date truncation and incorrect rejection of time values with ignored date
+  fields, then passed against PostgreSQL. All 34 tests pass in sanitizer,
   PostgreSQL Driver Manager, and iODBC configurations, with focused cases
   confirmed not to skip.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.

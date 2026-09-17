@@ -3093,27 +3093,46 @@ SQLRETURN ODBCStatement::execute() {
             timestamp.year, timestamp.month, timestamp.day});
         const auto time = format_time_parameter(SQL_TIME_STRUCT{
             timestamp.hour, timestamp.minute, timestamp.second});
-        if (!date || !time || timestamp.fraction >= 1000000000u) {
+        const auto target = query_param.type;
+        using rs::core::database::QueryParameterType;
+        if ((target != QueryParameterType::Time && !date) || !time ||
+            timestamp.fraction >= 1000000000u) {
           set_error(SQLSTATE_INVALID_DATETIME_FORMAT,
                     "Invalid timestamp parameter value");
           return complete_parameter_set(SQL_ERROR);
         }
-        const bool character_target =
-            query_param.type == rs::core::database::QueryParameterType::Text;
-        if (!character_target && timestamp.fraction % 1000u != 0) {
-          set_error(SQLSTATE_DATETIME_FIELD_OVERFLOW,
-                    "Timestamp fraction exceeds PostgreSQL precision");
-          return complete_parameter_set(SQL_ERROR);
-        }
-        char fraction[11]{};
-        if (character_target) {
-          std::snprintf(fraction, sizeof(fraction), ".%09u",
-                        timestamp.fraction);
+        if (target == QueryParameterType::Date) {
+          if (timestamp.hour != 0 || timestamp.minute != 0 ||
+              timestamp.second != 0 || timestamp.fraction != 0) {
+            set_error(SQLSTATE_DATETIME_FIELD_OVERFLOW,
+                      "Timestamp time fields cannot fit a date parameter");
+            return complete_parameter_set(SQL_ERROR);
+          }
+          value = *date;
+        } else if (target == QueryParameterType::Time) {
+          if (timestamp.fraction != 0) {
+            set_error(SQLSTATE_DATETIME_FIELD_OVERFLOW,
+                      "Timestamp fraction cannot fit a time parameter");
+            return complete_parameter_set(SQL_ERROR);
+          }
+          value = *time;
         } else {
-          std::snprintf(fraction, sizeof(fraction), ".%06u",
-                        timestamp.fraction / 1000u);
+          const bool character_target = target == QueryParameterType::Text;
+          if (!character_target && timestamp.fraction % 1000u != 0) {
+            set_error(SQLSTATE_DATETIME_FIELD_OVERFLOW,
+                      "Timestamp fraction exceeds PostgreSQL precision");
+            return complete_parameter_set(SQL_ERROR);
+          }
+          char fraction[11]{};
+          if (character_target) {
+            std::snprintf(fraction, sizeof(fraction), ".%09u",
+                          timestamp.fraction);
+          } else {
+            std::snprintf(fraction, sizeof(fraction), ".%06u",
+                          timestamp.fraction / 1000u);
+          }
+          value = *date + " " + *time + fraction;
         }
-        value = *date + " " + *time + fraction;
       } else if (value_type == SQL_C_BINARY) {
         SQLLEN length = application.octet_length;
         if (length_or_indicator) {

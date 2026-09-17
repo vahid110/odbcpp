@@ -318,6 +318,72 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       TimestampStructToDateRequiresZeroTime) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQL_TIMESTAMP_STRUCT input{2024, 2, 29, 0, 0, 0, 0};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TYPE_TIMESTAMP, SQL_TYPE_DATE, 10, 0,
+        &input, sizeof(input), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_DATE_STRUCT output{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_DATE,
+        &output, sizeof(output), nullptr));
+    EXPECT_EQ(2024, output.year);
+    EXPECT_EQ(2, output.month);
+    EXPECT_EQ(29, output.day);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR state[6]{};
+    for (const SQL_TIMESTAMP_STRUCT truncated : {
+             SQL_TIMESTAMP_STRUCT{2024, 2, 29, 12, 0, 0, 0},
+             SQL_TIMESTAMP_STRUCT{2024, 2, 29, 0, 0, 0, 1}}) {
+        input = truncated;
+        EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22008", reinterpret_cast<char*>(state));
+    }
+    input = SQL_TIMESTAMP_STRUCT{2023, 2, 29, 0, 0, 0, 0};
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22007", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       TimestampStructToTimeIgnoresDateAndRejectsFraction) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQL_TIMESTAMP_STRUCT input{0, 0, 0, 12, 34, 56, 0};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TYPE_TIMESTAMP, SQL_TYPE_TIME, 8, 0,
+        &input, sizeof(input), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_TIME_STRUCT output{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIME,
+        &output, sizeof(output), nullptr));
+    EXPECT_EQ(12, output.hour);
+    EXPECT_EQ(34, output.minute);
+    EXPECT_EQ(56, output.second);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR state[6]{};
+    input.fraction = 1;
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22008", reinterpret_cast<char*>(state));
+
+    input.fraction = 0;
+    input.hour = 24;
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22007", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        QuotedIdentifierBackslashDoesNotHideParameter) {
     char sql[] = R"(SELECT 1 AS "slash\", ?::integer AS value)";
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
