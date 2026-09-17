@@ -3074,7 +3074,10 @@ SQLRETURN ODBCStatement::execute() {
                     "Invalid date parameter value");
           return complete_parameter_set(SQL_ERROR);
         }
-        value = *formatted;
+        value = query_param.type ==
+                rs::core::database::QueryParameterType::Timestamp
+            ? *formatted + " 00:00:00"
+            : *formatted;
       } else if (value_type == SQL_C_TIME ||
                  value_type == SQL_C_TYPE_TIME) {
         const auto formatted = format_time_parameter(
@@ -3279,6 +3282,17 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
     set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
               "Parameter SQL data type is not supported");
     return SQL_ERROR;
+  }
+  if (value_type == SQL_C_DATE || value_type == SQL_C_TYPE_DATE) {
+    const auto target = parameter_type_for(parameter_type, value_type);
+    using rs::core::database::QueryParameterType;
+    if (target != QueryParameterType::Text &&
+        target != QueryParameterType::Date &&
+        target != QueryParameterType::Timestamp) {
+      set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
+                "Date C parameter cannot convert to the SQL data type");
+      return SQL_ERROR;
+    }
   }
   if ((parameter_type == SQL_TYPE_TIME ||
        parameter_type == SQL_TYPE_TIMESTAMP) &&

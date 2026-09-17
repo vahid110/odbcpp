@@ -106,6 +106,41 @@ TEST_F(PreparedStatementIntegrationTest, DefaultDateParameterCTypeRoundTrips) {
     EXPECT_EQ(31, output.day);
 }
 
+TEST_F(PreparedStatementIntegrationTest,
+       DateStructParameterConvertsToTimestampAtMidnight) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQL_DATE_STRUCT input{2024, 2, 29};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TYPE_DATE, SQL_TYPE_TIMESTAMP, 19, 0,
+        &input, sizeof(input), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_TIMESTAMP_STRUCT output{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIMESTAMP,
+        &output, sizeof(output), nullptr));
+    EXPECT_EQ(2024, output.year);
+    EXPECT_EQ(2, output.month);
+    EXPECT_EQ(29, output.day);
+    EXPECT_EQ(0, output.hour);
+    EXPECT_EQ(0, output.minute);
+    EXPECT_EQ(0, output.second);
+    EXPECT_EQ(0u, output.fraction);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       DateStructParameterRejectsUnsupportedSqlTargetsAtBind) {
+    SQL_DATE_STRUCT input{2024, 2, 29};
+    SQLCHAR state[6]{};
+    for (const SQLSMALLINT sql_type : {SQL_TYPE_TIME, SQL_INTEGER}) {
+        EXPECT_EQ(SQL_ERROR, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_TYPE_DATE, sql_type, 10, 0,
+            &input, sizeof(input), nullptr));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+    }
+}
+
 TEST_F(PreparedStatementIntegrationTest, DateStructParameterRejectsInvalidDate) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
     SQL_DATE_STRUCT input{2023, 2, 29};
