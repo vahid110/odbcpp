@@ -1339,6 +1339,13 @@ substitute for ODBC diagnostics.
   driver's code-unit count as `SQLNativeSqlW`'s result length. The test
   verifies the complete converted output and records this manager-specific
   length behavior without changing the driver's two-byte ABI contract.
+- Audit batch 211 distinguishes ordinary PostgreSQL strings from `E'...'`
+  escape strings while rewriting ODBC parameter markers. With the default
+  `standard_conforming_strings=on`, a backslash before an ordinary string's
+  closing quote must not hide the following `?`. A red/green parser test
+  checks both forms, and a prepared-query integration test exercises the
+  ordinary form against PostgreSQL. This follows the
+  [PostgreSQL lexical rules](https://www.postgresql.org/docs/current/sql-syntax-lexical.html).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

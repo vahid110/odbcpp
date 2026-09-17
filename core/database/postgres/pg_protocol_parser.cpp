@@ -160,7 +160,9 @@ struct ParameterMarkerRewrite {
 };
 
 ParameterMarkerRewrite replace_parameter_markers(std::string_view sql) {
-  enum class State { Normal, SingleQuote, DoubleQuote, LineComment, BlockComment };
+  enum class State {
+    Normal, SingleQuote, EscapeString, DoubleQuote, LineComment, BlockComment
+  };
   State state = State::Normal;
   std::size_t block_depth = 0;
   std::size_t marker_count = 0;
@@ -204,8 +206,9 @@ ParameterMarkerRewrite replace_parameter_markers(std::string_view sql) {
       }
       continue;
     }
-    if (state == State::SingleQuote || state == State::DoubleQuote) {
-      const char quote = state == State::SingleQuote ? '\'' : '"';
+    if (state == State::SingleQuote || state == State::EscapeString ||
+        state == State::DoubleQuote) {
+      const char quote = state == State::DoubleQuote ? '"' : '\'';
       out.push_back(ch);
       ++i;
       if (ch == quote) {
@@ -214,7 +217,7 @@ ParameterMarkerRewrite replace_parameter_markers(std::string_view sql) {
         } else {
           state = State::Normal;
         }
-      } else if (state == State::SingleQuote && ch == '\\' &&
+      } else if (state == State::EscapeString && ch == '\\' &&
                  i < sql.size()) {
         out.push_back(sql[i++]);
       }
@@ -222,7 +225,12 @@ ParameterMarkerRewrite replace_parameter_markers(std::string_view sql) {
     }
 
     if (ch == '\'' || ch == '"') {
-      state = ch == '\'' ? State::SingleQuote : State::DoubleQuote;
+      const bool escape_string = ch == '\'' && i > 0 &&
+          (sql[i - 1] == 'E' || sql[i - 1] == 'e') &&
+          (i == 1 || !is_identifier_continue(sql[i - 2]));
+      state = ch == '"' ? State::DoubleQuote
+                        : escape_string ? State::EscapeString
+                                        : State::SingleQuote;
       out.push_back(ch);
       ++i;
     } else if (ch == '-' && next == '-') {
