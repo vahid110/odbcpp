@@ -864,6 +864,66 @@ TEST_F(BindColIntegrationTest, BigintScientificTextConversionAtExactLimits) {
     EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
 }
 
+TEST_F(BindColIntegrationTest, FloatingConversionRejectsUnderflowToZero) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)
+            "SELECT '1e-50'::text, '-1e-50'::text, "
+            "'1e-400'::text, '-1e-400'::text, "
+            "'1e-30'::text, '1e-300'::text",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    for (const SQLUSMALLINT column : {1, 2}) {
+        SQLREAL value = 7.0f;
+        SQLLEN length = 8;
+        EXPECT_EQ(SQL_ERROR, SQLGetData(
+            hstmt, column, SQL_C_FLOAT, &value, sizeof(value), &length));
+        EXPECT_EQ(7.0f, value);
+        EXPECT_EQ(8, length);
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+            SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    }
+    for (const SQLUSMALLINT column : {3, 4}) {
+        SQLDOUBLE value = 7.0;
+        SQLLEN length = 8;
+        EXPECT_EQ(SQL_ERROR, SQLGetData(
+            hstmt, column, SQL_C_DOUBLE, &value, sizeof(value), &length));
+        EXPECT_EQ(7.0, value);
+        EXPECT_EQ(8, length);
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+            SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    }
+
+    SQLREAL small_float = 0;
+    SQLDOUBLE small_double = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 5, SQL_C_FLOAT, &small_float, sizeof(small_float), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 6, SQL_C_DOUBLE, &small_double, sizeof(small_double), nullptr));
+    EXPECT_GT(small_float, 0);
+    EXPECT_GT(small_double, 0);
+}
+
+TEST_F(BindColIntegrationTest, BoundFloatingUnderflowPreservesOutput) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"SELECT '1e-50'::text", SQL_NTS));
+    SQLREAL value = 7.0f;
+    SQLLEN length = 8;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(
+        hstmt, 1, SQL_C_FLOAT, &value, sizeof(value), &length));
+    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+    EXPECT_EQ(7.0f, value);
+    EXPECT_EQ(8, length);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+}
+
 TEST_F(BindColIntegrationTest, BigintLeadingWhitespaceConversionAtLimits) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)

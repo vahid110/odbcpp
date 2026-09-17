@@ -353,6 +353,10 @@ SQLRETURN convert_floating(const std::string& value, SQLSMALLINT target_type,
       return SQL_ERROR;
     }
     const SQLREAL converted = static_cast<SQLREAL>(*parsed);
+    if (converted == 0 && *parsed != 0) {
+      if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+      return SQL_ERROR;
+    }
     std::memcpy(buffer, &converted, sizeof(converted));
     store_indicator(indicator, static_cast<SQLLEN>(sizeof(SQLREAL)));
   } else {
@@ -362,6 +366,10 @@ SQLRETURN convert_floating(const std::string& value, SQLSMALLINT target_type,
       return SQL_ERROR;
     }
     const SQLDOUBLE converted = static_cast<SQLDOUBLE>(*parsed);
+    if (converted == 0 && *parsed != 0) {
+      if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+      return SQL_ERROR;
+    }
     std::memcpy(buffer, &converted, sizeof(converted));
     store_indicator(indicator, static_cast<SQLLEN>(sizeof(SQLDOUBLE)));
   }

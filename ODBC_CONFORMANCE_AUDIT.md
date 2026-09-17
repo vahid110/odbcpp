@@ -1522,6 +1522,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   SQLSTATE from the record being retrieved. A regression checks all six
   entry points, preserved diagnostic records, and log redaction. All 34 tests
   pass in sanitizer, PostgreSQL Driver Manager, and iODBC configurations.
+- Audit batch 241 rejects nonzero numeric text that underflows to zero when
+  converted to `SQL_C_FLOAT` or `SQL_C_DOUBLE`. A real PostgreSQL regression
+  first reproduced false success and overwritten application outputs in both
+  `SQLGetData` and bound-column fetch. The converter now returns `22003`
+  without touching those outputs while representable small values still
+  succeed. The [ODBC SQL-to-C character conversion table](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/sql-to-c-character)
+  specifies `22003` for floating conversion outside the target range. All 34
+  tests pass in sanitizer, PostgreSQL Driver Manager, and iODBC configurations.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
