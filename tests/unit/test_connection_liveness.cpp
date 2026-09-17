@@ -484,9 +484,10 @@ TEST(ConnectionLivenessTest, FailedAuthenticationClosesTransport) {
   }
 }
 
-TEST(ConnectionLivenessTest, MalformedStartupFieldsFailBeforeConnectingAndAllowRetry) {
-  for (const bool malformed_user : {true, false}) {
-    SCOPED_TRACE(malformed_user ? "user" : "database");
+TEST(ConnectionLivenessTest, MalformedCredentialsFailBeforeConnectingAndAllowRetry) {
+  enum class Field { User, Database, Password };
+  for (const auto field : {Field::User, Field::Database, Field::Password}) {
+    SCOPED_TRACE(static_cast<int>(field));
     auto transport = std::make_unique<ScriptedBackendTransport>();
     auto* observed_transport = transport.get();
     rs::core::database::GenericDatabaseConnection connection(
@@ -494,12 +495,18 @@ TEST(ConnectionLivenessTest, MalformedStartupFieldsFailBeforeConnectingAndAllowR
         std::move(transport));
     rs::core::database::ConnectionSettings settings;
     settings.use_ssl = false;
-    settings.user = malformed_user
-        ? std::string("alice\0admin", sizeof("alice\0admin") - 1)
-        : "alice";
-    settings.database = malformed_user
-        ? "postgres"
-        : std::string("postgres\0other", sizeof("postgres\0other") - 1);
+    settings.user = "alice";
+    settings.database = "postgres";
+    settings.password = "secret";
+    if (field == Field::User) {
+      settings.user = std::string("alice\0admin", sizeof("alice\0admin") - 1);
+    } else if (field == Field::Database) {
+      settings.database = std::string(
+          "postgres\0other", sizeof("postgres\0other") - 1);
+    } else {
+      settings.password = std::string(
+          "secret\0other", sizeof("secret\0other") - 1);
+    }
 
     rs::util::Result<void> result;
     EXPECT_NO_THROW(result = connection.connect(settings));
@@ -514,6 +521,7 @@ TEST(ConnectionLivenessTest, MalformedStartupFieldsFailBeforeConnectingAndAllowR
 
     settings.user = "alice";
     settings.database = "postgres";
+    settings.password = "secret";
     ASSERT_TRUE(connection.connect(settings).has_value());
     EXPECT_TRUE(connection.is_connected());
     EXPECT_EQ(1u, observed_transport->connect_count());

@@ -62,6 +62,11 @@ GenericDatabaseConnection::GenericDatabaseConnection(
   : parser_(std::move(parser)), transport_(std::move(transport)) {}
 
 rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettings& settings) {
+  if (settings.password.find('\0') != std::string::npos) {
+    return {rs::util::DbErrorCode::InvalidParameter,
+            "PostgreSQL authentication credential contains an "
+            "embedded NUL byte"};
+  }
   std::map<std::string, std::string> params;
   params["application_name"] = "odbcpp";
   std::vector<std::byte> startup;

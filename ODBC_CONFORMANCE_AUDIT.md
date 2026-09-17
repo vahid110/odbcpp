@@ -1448,6 +1448,11 @@ substitute for ODBC diagnostics.
   verify one close after a failed write or malformed result, and that a
   rejected retry does not close it again. Authentication failures remain
   covered by the connection-attempt cleanup guard.
+- Audit batch 230 rejects embedded NUL bytes in the password before transport
+  I/O, even when the server would use trust authentication and never request
+  a password response. The startup-input regression now covers user,
+  database, and password, verifies no socket activity on rejection, and
+  confirms a corrected retry succeeds.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
