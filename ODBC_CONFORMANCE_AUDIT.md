@@ -1199,6 +1199,9 @@ substitute for ODBC diagnostics.
   The full matrix exposed that rounding up can overflow the clock when deriving
   a per-address deadline from `Deadline::max()`; synchronous, epoll, and IOCP
   connection attempts now use the saturating deadline helper.
+- Audit batch 185 uses the same exact ceil-to-millisecond calculation for epoll
+  and IOCP reactor waits. Their former add-one-millisecond expression both
+  overshot exact boundaries and risked clock-duration overflow near its limit.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

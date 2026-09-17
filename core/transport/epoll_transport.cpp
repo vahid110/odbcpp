@@ -337,9 +337,7 @@ private:
     if (nearest == rs::util::Clock::time_point::max()) return -1;
     const auto now = rs::util::Clock::now();
     if (nearest <= now) return 0;
-    const auto duration = nearest - now;
-    const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
-        duration + std::chrono::milliseconds(1));
+    const auto milliseconds = rs::util::remaining_at(nearest, now);
     return static_cast<int>(std::min<long long>(
         milliseconds.count(), std::numeric_limits<int>::max()));
   }

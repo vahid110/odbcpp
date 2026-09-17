@@ -302,10 +302,7 @@ private:
 
     const auto now = rs::util::Clock::now();
     if (nearest <= now) return 0;
-    const auto duration = nearest - now;
-    const auto milliseconds =
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            duration + std::chrono::milliseconds(1));
+    const auto milliseconds = rs::util::remaining_at(nearest, now);
     return static_cast<DWORD>((std::min<long long>)(
         milliseconds.count(), static_cast<long long>(INFINITE - 1)));
   }
