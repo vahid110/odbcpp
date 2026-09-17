@@ -460,25 +460,49 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
-  const auto wide_like_input = wide_text(
-      U"SELECT 'a%b' LIKE 'a\u00e9%b' {escape '\u00e9'}");
-  const auto wide_like_expected = wide_text(
-      U"SELECT 'a%b' LIKE 'a\u00e9%b' ESCAPE '\u00e9'");
-  SQLWCHAR wide_like_output[64]{};
-  SQLINTEGER wide_like_length = 0;
-  if (!succeeded(SQLNativeSqlW(
-          connection, const_cast<SQLWCHAR*>(wide_like_input.data()), SQL_NTS,
-          wide_like_output, 64, &wide_like_length)) ||
-      wide_like_length != static_cast<SQLINTEGER>(
-                              wide_like_expected.size() - 1) ||
-      !std::equal(wide_like_expected.begin(), wide_like_expected.end(),
-                  wide_like_output)) {
-    print_diagnostic(SQL_HANDLE_DBC, connection);
-    SQLFreeHandle(SQL_HANDLE_STMT, statement);
-    SQLDisconnect(connection);
-    SQLFreeHandle(SQL_HANDLE_DBC, connection);
-    SQLFreeHandle(SQL_HANDLE_ENV, environment);
-    return 1;
+  struct WideLikeCase {
+    std::u32string_view input;
+    std::u32string_view expected;
+    SQLINTEGER supplementary_characters;
+  };
+  constexpr WideLikeCase wide_like_cases[]{
+      {U"SELECT 'a%b' LIKE 'a\u00e9%b' {escape '\u00e9'}",
+       U"SELECT 'a%b' LIKE 'a\u00e9%b' ESCAPE '\u00e9'", 0},
+      {U"SELECT 'a%b' LIKE 'a\U0001f642%b' {escape '\U0001f642'}",
+       U"SELECT 'a%b' LIKE 'a\U0001f642%b' ESCAPE '\U0001f642'", 2}};
+  for (const auto& test_case : wide_like_cases) {
+    const auto wide_like_input = wide_text(test_case.input);
+    const auto wide_like_expected = wide_text(test_case.expected);
+    SQLWCHAR wide_like_output[64]{};
+    SQLINTEGER wide_like_length = 0;
+    const auto wide_like_result = SQLNativeSqlW(
+        connection, const_cast<SQLWCHAR*>(wide_like_input.data()), SQL_NTS,
+        wide_like_output, 64, &wide_like_length);
+    auto expected_wide_like_length =
+        static_cast<SQLINTEGER>(wide_like_expected.size() - 1);
+#if defined(ODBCPP_TEST_IODBC) && defined(ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE)
+    // iODBC converts the returned text from UTF-16 to UCS-4, but forwards
+    // SQLNativeSqlW's UTF-16 code-unit count without adjusting surrogate pairs.
+    if (sizeof(SQLWCHAR) == 4 && ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE == 2) {
+      expected_wide_like_length += test_case.supplementary_characters;
+    }
+#endif
+    const bool matches_output = std::equal(
+        wide_like_expected.begin(), wide_like_expected.end(),
+        wide_like_output);
+    if (!succeeded(wide_like_result) ||
+        wide_like_length != expected_wide_like_length || !matches_output) {
+      print_diagnostic(SQL_HANDLE_DBC, connection);
+      std::fprintf(stderr,
+                   "Wide LIKE native SQL mismatch: result=%d length=%d expected=%d output_match=%d\n",
+                   static_cast<int>(wide_like_result), wide_like_length,
+                   expected_wide_like_length, matches_output);
+      SQLFreeHandle(SQL_HANDLE_STMT, statement);
+      SQLDisconnect(connection);
+      SQLFreeHandle(SQL_HANDLE_DBC, connection);
+      SQLFreeHandle(SQL_HANDLE_ENV, environment);
+      return 1;
+    }
   }
   const auto wide_query = wide_ascii("SELECT 'wide'::text");
   SQLWCHAR wide_value[8]{};

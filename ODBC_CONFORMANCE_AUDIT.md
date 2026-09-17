@@ -1333,6 +1333,12 @@ substitute for ODBC diagnostics.
   output on unixODBC, iODBC's four-byte application/two-byte driver bridge,
   and a native four-byte iODBC driver, closing the ABI gap left by in-process
   testing of batch 208. All three connected suites pass.
+- Audit batch 210 adds a supplementary-plane LIKE escape to the same
+  Driver Manager paths. iODBC's mixed-width bridge converts both surrogate
+  pairs to four-byte characters in the output but forwards the two-byte
+  driver's code-unit count as `SQLNativeSqlW`'s result length. The test
+  verifies the complete converted output and records this manager-specific
+  length behavior without changing the driver's two-byte ABI contract.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
