@@ -589,10 +589,13 @@ SQLRETURN TextDataConverter::convert_data(const std::string& value,
     case SQL_C_BIT:
       return convert_boolean(value, buffer, indicator, issue);
     case SQL_C_DATE:
+    case SQL_C_TYPE_DATE:
       return convert_date(value, buffer, indicator, issue);
     case SQL_C_TIME:
+    case SQL_C_TYPE_TIME:
       return convert_time(value, buffer, indicator, issue);
     case SQL_C_TIMESTAMP:
+    case SQL_C_TYPE_TIMESTAMP:
       return convert_timestamp(value, buffer, indicator, issue);
     case SQL_C_BINARY: {
       const auto decoded = decode_binary(value);

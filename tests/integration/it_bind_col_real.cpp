@@ -171,6 +171,101 @@ TEST_F(BindColIntegrationTest, DateTimeBoundColumnsHandleUnalignedBuffers) {
     EXPECT_EQ(56, timestamp.second);
 }
 
+TEST_F(BindColIntegrationTest, Odbc3TemporalBoundColumns) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT DATE '2024-02-29', TIME '12:34:56', "
+                  "TIMESTAMP '2024-02-29 12:34:56.123456'", SQL_NTS));
+
+    SQL_DATE_STRUCT date{};
+    SQL_TIME_STRUCT time{};
+    SQL_TIMESTAMP_STRUCT timestamp{};
+    SQLLEN lengths[3]{-1, -1, -1};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_TYPE_DATE,
+        &date, sizeof(date), &lengths[0]));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 2, SQL_C_TYPE_TIME,
+        &time, sizeof(time), &lengths[1]));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 3, SQL_C_TYPE_TIMESTAMP,
+        &timestamp, sizeof(timestamp), &lengths[2]));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(date)), lengths[0]);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(time)), lengths[1]);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(timestamp)), lengths[2]);
+    EXPECT_EQ(2024, date.year);
+    EXPECT_EQ(2, date.month);
+    EXPECT_EQ(29, date.day);
+    EXPECT_EQ(12, time.hour);
+    EXPECT_EQ(34, time.minute);
+    EXPECT_EQ(56, time.second);
+    EXPECT_EQ(2024, timestamp.year);
+    EXPECT_EQ(2, timestamp.month);
+    EXPECT_EQ(29, timestamp.day);
+    EXPECT_EQ(12, timestamp.hour);
+    EXPECT_EQ(34, timestamp.minute);
+    EXPECT_EQ(56, timestamp.second);
+    EXPECT_EQ(123456000u, timestamp.fraction);
+}
+
+TEST_F(BindColIntegrationTest, Odbc3TemporalGetDataAndInvalidValues) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT DATE '2024-02-29', TIME '12:34:56', "
+                  "TIMESTAMP '2024-02-29 12:34:56.123456', "
+                  "'2024-02-30'::text, '25:00:00'::text, 'bad'::text",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQL_DATE_STRUCT date{};
+    SQL_TIME_STRUCT time{};
+    SQL_TIMESTAMP_STRUCT timestamp{};
+    SQLLEN length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_DATE,
+        &date, sizeof(date), &length));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(date)), length);
+    EXPECT_EQ(2024, date.year);
+    EXPECT_EQ(29, date.day);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 2, SQL_C_TYPE_TIME,
+        &time, sizeof(time), &length));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(time)), length);
+    EXPECT_EQ(12, time.hour);
+    EXPECT_EQ(56, time.second);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 3, SQL_C_TYPE_TIMESTAMP,
+        &timestamp, sizeof(timestamp), &length));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(timestamp)), length);
+    EXPECT_EQ(2024, timestamp.year);
+    EXPECT_EQ(123456000u, timestamp.fraction);
+
+    SQLCHAR state[6]{};
+    date.year = 73;
+    length = 74;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 4, SQL_C_TYPE_DATE,
+        &date, sizeof(date), &length));
+    EXPECT_EQ(73, date.year);
+    EXPECT_EQ(74, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22007", reinterpret_cast<char*>(state));
+
+    time.hour = 73;
+    length = 74;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 5, SQL_C_TYPE_TIME,
+        &time, sizeof(time), &length));
+    EXPECT_EQ(73, time.hour);
+    EXPECT_EQ(74, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22007", reinterpret_cast<char*>(state));
+
+    timestamp.year = 73;
+    length = 74;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 6, SQL_C_TYPE_TIMESTAMP,
+        &timestamp, sizeof(timestamp), &length));
+    EXPECT_EQ(73, timestamp.year);
+    EXPECT_EQ(74, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22007", reinterpret_cast<char*>(state));
+}
+
 TEST_F(BindColIntegrationTest, ApplicationDescriptorDrivesFetchBinding) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 'descriptor'::text", SQL_NTS));

@@ -46,8 +46,8 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLFetch` | A | Partial | unit, integration, DM | Never-executed and no-result states return HY010/24000; row arrays and full state matrix remain |
 | `SQLFetchScroll` | A | Partial | unit, integration, DM | Only `SQL_FETCH_NEXT` is supported; keep other orientations honest |
 | `SQLMoreResults` | A | Partial | unit, integration, DM | Result/update-count traversal and close-time discard are covered; error-result sequences remain |
-| `SQLGetData` | A | Partial | integration, DM | Target types and per-row/switching-column offsets are covered; complete conversion/chunking matrices remain |
-| `SQLBindCol` | A | Partial | unit, integration | Invalid C types and negative lengths are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
+| `SQLGetData` | A | Partial | integration, DM | Legacy and ODBC 3 temporal C targets, malformed-value diagnostics, and per-row/switching-column offsets are covered; complete conversion/chunking matrices remain |
+| `SQLBindCol` | A | Partial | unit, integration | Invalid C types, negative lengths, and ODBC 3 temporal C targets are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
 | `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics covered; input arrays, data-at-execution, and full conversion matrix remain |
 | `SQLNumParams` | A | Partial | unit, integration, DM | Prepared statements are server-validated without execution; state, null/output preservation, complex markers, direct execution, and IPD count agreement are covered; cancellation and communication-failure injection remain |
 | `SQLNumResultCols` | A | Partial | unit, integration | Prepared metadata, result sets, update counts, exhausted/closed cursors, delayed PostgreSQL errors, null outputs, and output preservation are covered; cancellation and communication-failure injection remain |
@@ -1559,9 +1559,18 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   regression remains in the regular integration suite. This does not yet
   address applications that change DateStyle after connecting. A separate
   audit found the ODBC 3 `SQL_C_TYPE_DATE` and related modern temporal C
-  aliases are classified as valid but not yet supported; that conversion
-  matrix remains open. All 34 tests pass in sanitizer, PostgreSQL Driver
+  targets were classified as valid but not yet supported; audit batch 246
+  closes that specific gap. All 34 tests pass in sanitizer, PostgreSQL Driver
   Manager, and iODBC configurations against the non-ISO-default database.
+- Audit batch 246 supports explicit ODBC 3 `SQL_C_TYPE_DATE`,
+  `SQL_C_TYPE_TIME`, and `SQL_C_TYPE_TIMESTAMP` result targets in both
+  `SQLGetData` and `SQLBindCol`. Focused PostgreSQL tests first reproduced
+  rejection of valid targets; they now cover successful conversion, output
+  lengths, timestamp fractions, malformed-value `22007` diagnostics, and
+  unchanged outputs on errors. Parameter binding and the wider SQL-to-C
+  conversion matrix remain open. All 34 tests pass in sanitizer, PostgreSQL
+  Driver Manager, and iODBC configurations; the focused cases were verified
+  to execute, not skip, in each configuration.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
