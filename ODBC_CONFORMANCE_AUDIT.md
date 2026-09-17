@@ -1537,6 +1537,13 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   underflow diagnostics remain. Parsing now uses a cached C numeric locale
   rather than changing the process locale. All 34 tests pass in sanitizer,
   PostgreSQL Driver Manager, and iODBC configurations.
+- Audit batch 243 stops `TransportMode=Auto` with strict deadlines from silently
+  falling back to sync transport when `AsyncEngine` explicitly selects an
+  unavailable platform backend. Focused tests first reproduced the fallback
+  through both the factory and ODBC connection path. The selected mode now
+  reaches the existing platform error, while explicit sync and
+  `DeadlineModel=SocketTimeout` continue to select sync transport. All 34 tests
+  pass in sanitizer, PostgreSQL Driver Manager, and iODBC configurations.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

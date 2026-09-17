@@ -18,18 +18,14 @@ TransportMode TransportFactory::resolve_mode(const TransportOptions& options) no
   if (options.deadline_model != DeadlineModel::Strict) {
     return TransportMode::Sync;
   }
-#ifdef __linux__
-  if (options.async_engine == AsyncEngine::Auto ||
-      options.async_engine == AsyncEngine::Epoll) {
+  if (options.async_engine != AsyncEngine::Auto) {
     return TransportMode::Async;
   }
-#elif defined(_WIN32)
-  if (options.async_engine == AsyncEngine::Auto ||
-      options.async_engine == AsyncEngine::IOCP) {
-    return TransportMode::Async;
-  }
-#endif
+#if defined(__linux__) || defined(_WIN32)
+  return TransportMode::Async;
+#else
   return TransportMode::Sync;
+#endif
 }
 
 std::unique_ptr<ITransport> TransportFactory::create(

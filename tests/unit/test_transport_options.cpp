@@ -184,6 +184,28 @@ TEST(TransportFactoryTest, CreatesAvailablePlatformAsyncBackend) {
 #endif
 }
 
+TEST(TransportFactoryTest, AutoRejectsUnavailableExplicitEngine) {
+  TransportOptions options;
+#ifdef __linux__
+  options.async_engine = AsyncEngine::IOCP;
+#else
+  options.async_engine = AsyncEngine::Epoll;
+#endif
+  EXPECT_EQ(TransportFactory::resolve_mode(options), TransportMode::Async);
+  EXPECT_THROW(TransportFactory::create(options, false),
+               std::invalid_argument);
+
+  options.mode = TransportMode::Sync;
+  EXPECT_NE(dynamic_cast<SocketTransport*>(
+                TransportFactory::create(options, false).get()), nullptr);
+
+  options.mode = TransportMode::Auto;
+  options.deadline_model = DeadlineModel::SocketTimeout;
+  EXPECT_EQ(TransportFactory::resolve_mode(options), TransportMode::Sync);
+  EXPECT_NE(dynamic_cast<SocketTransport*>(
+                TransportFactory::create(options, false).get()), nullptr);
+}
+
 TEST(TransportFactoryTest, WrapsPlatformAsyncBackendWithTls) {
   TransportOptions options;
   options.mode = TransportMode::Async;
@@ -213,6 +235,23 @@ TEST(ODBCTransportSelectionTest, ReportsUnavailablePlatformAsyncEngine) {
 #endif
 
   EXPECT_EQ(result, SQL_ERROR);
+  EXPECT_NE(connection.get_error_message().find("AsyncEngine"),
+            std::string::npos);
+}
+
+TEST(ODBCTransportSelectionTest, AutoReportsUnavailableExplicitEngine) {
+  rs::odbc::ODBCConnection connection(nullptr);
+#ifdef __linux__
+  const auto result = connection.connect(
+      "SERVER=127.0.0.1;PORT=1;TransportMode=Auto;AsyncEngine=IOCP",
+      "", "");
+#else
+  const auto result = connection.connect(
+      "SERVER=127.0.0.1;PORT=1;TransportMode=Auto;AsyncEngine=Epoll",
+      "", "");
+#endif
+  EXPECT_EQ(SQL_ERROR, result);
+  EXPECT_EQ("HY000", connection.get_sqlstate());
   EXPECT_NE(connection.get_error_message().find("AsyncEngine"),
             std::string::npos);
 }

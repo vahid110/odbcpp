@@ -432,6 +432,8 @@ same path explicitly, and `AsyncEngine=Epoll|IOCP` can require a particular
 engine. Native asynchronous mode supports TLS, including PostgreSQL's in-band
 SSL upgrade. `Auto` falls back to the synchronous transport for
 `DeadlineModel=SocketTimeout` and on platforms without a native engine.
+With strict deadlines, an explicit `AsyncEngine` must be available on the
+current platform; `Auto` does not silently substitute synchronous transport.
 `SSL` accepts `true/false`, `1/0`, `yes/no`, or `on/off` (case-insensitive).
 An omitted or empty value disables TLS; any other value is rejected rather
 than silently selecting a plaintext connection. `SSL=true` requires TLS and
