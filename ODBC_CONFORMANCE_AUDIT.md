@@ -1351,6 +1351,14 @@ substitute for ODBC diagnostics.
   unquoted identifier no longer hides a subsequent ODBC escape; real
   dollar-quoted strings still protect their contents. Red/green translator
   and connected execution tests cover the distinction.
+- Audit batch 213 requires a verified SCRAM server-final signature before
+  accepting PostgreSQL `AuthenticationOk`. A synthetic backend previously
+  completed startup immediately after the SASL mechanism offer; parser and
+  connection-level red/green tests now reject that sequence as a protocol
+  error. A second synthetic path rejects a cleartext-password downgrade
+  after SCRAM has started. The parser resets SCRAM state for a new startup,
+  and real SCRAM-authenticated PostgreSQL testing protects the valid path.
+  This follows [PostgreSQL's SCRAM message flow](https://www.postgresql.org/docs/current/sasl-authentication.html).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

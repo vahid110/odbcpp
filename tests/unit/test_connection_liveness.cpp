@@ -58,6 +58,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     MalformedQueryError, MalformedBackendKey, ReadyWithoutAuth,
     StartupRejectedAfterAuth, LoginRejectedAfterAuth,
     DuplicateAuthenticationOk, ChallengeAfterAuthenticationOk,
+    ScramOkWithoutServerFinal, ScramDowngradeToCleartext,
     ParameterStatusBeforeAuthenticationOk, BackendKeyBeforeAuthenticationOk,
     UnexpectedQueryFrameBeforeAuthenticationOk,
     UnexpectedQueryFrameAfterAuthenticationOk, NoticeAfterAuthenticationOk,
@@ -105,6 +106,15 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       return;
     }
     if (mode == ResponseMode::ReadyWithoutAuth) {
+      append_message('Z', "I", 1);
+      return;
+    }
+    if (mode == ResponseMode::ScramOkWithoutServerFinal ||
+        mode == ResponseMode::ScramDowngradeToCleartext) {
+      constexpr char offer[] = "\0\0\0\nSCRAM-SHA-256\0";
+      append_message('R', offer, sizeof(offer));
+      append_message('R', mode == ResponseMode::ScramOkWithoutServerFinal
+                              ? "\0\0\0\0" : "\0\0\0\3", 4);
       append_message('Z', "I", 1);
       return;
     }
@@ -200,8 +210,11 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
 
   rs::util::Result<rs::core::transport::IOResult> send(
       std::span<const std::byte> buffer, rs::util::Deadline) override {
+    ++send_count_;
     return rs::core::transport::IOResult{buffer.size(), false};
   }
+
+  std::size_t send_count() const noexcept { return send_count_; }
 
   rs::util::Result<rs::core::transport::IOResult> recv(
       std::span<std::byte> buffer, rs::util::Deadline) override {
@@ -230,6 +243,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
 
   std::vector<std::byte> input_;
   std::size_t offset_{0};
+  std::size_t send_count_{0};
 };
 
 TEST(ConnectionLivenessTest, FailedServerTripMarksConnectionDead) {
@@ -416,6 +430,44 @@ TEST(ConnectionLivenessTest, ReadyWithoutAuthenticationOkIsProtocolError) {
   ASSERT_TRUE(result.has_error());
   EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
             result.error());
+  EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, ScramOkWithoutServerFinalIsProtocolError) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::make_unique<ScriptedBackendTransport>(
+          ScriptedBackendTransport::ResponseMode::ScramOkWithoutServerFinal));
+
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  settings.user = "postgres";
+  settings.password = "postgres";
+  const auto result = connection.connect(settings);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, ScramCannotDowngradeToCleartext) {
+  auto transport = std::make_unique<ScriptedBackendTransport>(
+      ScriptedBackendTransport::ResponseMode::ScramDowngradeToCleartext);
+  const auto* observed_transport = transport.get();
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+      std::move(transport));
+
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = false;
+  settings.user = "postgres";
+  settings.password = "postgres";
+  const auto result = connection.connect(settings);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_NE(std::string::npos, result.error_message().find("SCRAM"));
+  EXPECT_EQ(2u, observed_transport->send_count());
   EXPECT_FALSE(connection.is_connected());
 }
 

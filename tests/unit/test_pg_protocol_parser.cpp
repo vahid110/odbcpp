@@ -79,6 +79,34 @@ TEST(PgProtocolParserTest, AuthenticationOkAndCleartextHaveExactLengths) {
   EXPECT_THROW(parser.parse_auth_request(payload), std::runtime_error);
 }
 
+TEST(PgProtocolParserTest, ScramRequiresServerFinalAndRejectsDowngrade) {
+  PgProtocolParser parser;
+  std::vector<std::byte> offer{
+      std::byte{0}, std::byte{0}, std::byte{0}, std::byte{10}};
+  for (const char ch : std::string_view("SCRAM-SHA-256")) {
+    offer.push_back(static_cast<std::byte>(ch));
+  }
+  offer.push_back(std::byte{0});
+  offer.push_back(std::byte{0});
+  const auto request = parser.parse_auth_request(offer);
+  ASSERT_FALSE(parser.create_auth_response(request, "postgres", "postgres")
+                   .empty());
+  const std::vector<std::byte> auth_ok(4, std::byte{0});
+  EXPECT_THROW(parser.parse_auth_request(auth_ok), std::runtime_error);
+  const std::vector<std::byte> cleartext{
+      std::byte{0}, std::byte{0}, std::byte{0}, std::byte{3}};
+  EXPECT_THROW(parser.parse_auth_request(cleartext), std::runtime_error);
+  AuthenticationRequest forged_cleartext;
+  forged_cleartext.type = AuthenticationRequest::Type::Cleartext;
+  EXPECT_THROW(parser.create_auth_response(
+                   forged_cleartext, "postgres", "postgres"),
+               std::runtime_error);
+
+  parser.create_startup_message("postgres", "postgres", {});
+  EXPECT_EQ(AuthenticationRequest::Type::None,
+            parser.parse_auth_request(auth_ok).type);
+}
+
 TEST(PgProtocolParserTest, BackendKeyDataMatchesProtocol30Length) {
   PgProtocolParser parser;
   std::vector<std::byte> frame(13, std::byte{0});
@@ -324,6 +352,9 @@ TEST(PgProtocolParserTest, CreatesPostgreSqlScramMessages) {
       reinterpret_cast<const char*>(final_frames[0].payload.data()),
       final_frames[0].payload.size());
   EXPECT_TRUE(final.starts_with("c=biws,r=" + nonce + "server,p="));
+  EXPECT_THROW(parser.parse_auth_request(
+                   std::vector<std::byte>(4, std::byte{0})),
+               std::runtime_error);
 }
 
 TEST(PgProtocolParserTest, CreatesCompleteExtendedQueryExchange) {

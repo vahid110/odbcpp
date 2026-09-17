@@ -278,6 +278,8 @@ std::vector<std::byte> PgProtocolParser::create_startup_message(
     const std::string& user, 
     const std::string& database,
     const std::map<std::string, std::string>& params) {
+  scram_client_.reset();
+  scram_server_verified_ = false;
   
   std::vector<std::pair<std::string, std::string>> kv;
   kv.push_back({"user", user});
@@ -350,12 +352,23 @@ AuthenticationRequest PgProtocolParser::parse_auth_request(const std::vector<std
   if (data.size() < 4) throw std::runtime_error("Auth payload too short");
 
   const auto code = read_u32(data, 0);
+  if (scram_client_ && code != 0 && code != 11 && code != 12) {
+    throw std::runtime_error("SCRAM authentication method changed");
+  }
   AuthenticationRequest req;
   switch (code) {
     case 0:
     case 3:
       if (data.size() != 4) {
         throw std::runtime_error("Invalid authentication request length");
+      }
+      if (code == 0 && scram_client_) {
+        if (!scram_server_verified_) {
+          throw std::runtime_error(
+              "SCRAM AuthenticationOk arrived before server verification");
+        }
+        scram_client_.reset();
+        scram_server_verified_ = false;
       }
       req.type = code == 0 ? AuthenticationRequest::Type::None
                            : AuthenticationRequest::Type::Cleartext;
@@ -385,12 +398,22 @@ std::vector<std::byte> PgProtocolParser::create_auth_response(
     throw std::invalid_argument(
         "PostgreSQL authentication credential contains an embedded NUL byte");
   }
+  if (scram_client_ &&
+      (request.type == AuthenticationRequest::Type::Cleartext ||
+       request.type == AuthenticationRequest::Type::MD5)) {
+    throw std::runtime_error("SCRAM authentication method changed");
+  }
   
   std::string auth_string;
   
   switch (request.type) {
     case AuthenticationRequest::Type::None:
+      if (scram_client_ && !scram_server_verified_) {
+        throw std::runtime_error(
+            "SCRAM AuthenticationOk arrived before server verification");
+      }
       scram_client_.reset();
+      scram_server_verified_ = false;
       return {};
       
     case AuthenticationRequest::Type::Cleartext:
@@ -405,6 +428,9 @@ std::vector<std::byte> PgProtocolParser::create_auth_response(
       break;
     }
     case AuthenticationRequest::Type::SASL: {
+      if (scram_client_) {
+        throw std::runtime_error("duplicate SCRAM mechanism offer");
+      }
       bool supported = false;
       bool terminated = false;
       std::size_t offset = 0;
@@ -433,6 +459,7 @@ std::vector<std::byte> PgProtocolParser::create_auth_response(
       if (!supported) {
         throw std::runtime_error("server does not offer SCRAM-SHA-256");
       }
+      scram_server_verified_ = false;
       scram_client_ = std::make_unique<ScramSha256Client>(
           user, password, generate_scram_nonce());
       const auto initial = scram_client_->client_first_message();
@@ -463,13 +490,14 @@ std::vector<std::byte> PgProtocolParser::create_auth_response(
       return response;
     }
     case AuthenticationRequest::Type::SASLFinal: {
-      if (!scram_client_) {
+      if (!scram_client_ || scram_server_verified_) {
         throw std::runtime_error("SCRAM final message arrived out of sequence");
       }
       const std::string_view final(
           reinterpret_cast<const char*>(request.challenge_data.data()),
           request.challenge_data.size());
       scram_client_->verify_server_final(final);
+      scram_server_verified_ = true;
       return {};
     }
     default:

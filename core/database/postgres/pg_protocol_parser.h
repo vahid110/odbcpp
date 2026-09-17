@@ -51,6 +51,7 @@ private:
   static rs::pg::ErrorResponse decode_error_fields(
       const std::vector<std::byte>& payload);
   std::unique_ptr<ScramSha256Client> scram_client_;
+  bool scram_server_verified_{false};
 };
 
 } // namespace rs::core::database::postgres
