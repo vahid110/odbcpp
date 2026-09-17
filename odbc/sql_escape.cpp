@@ -1,4 +1,5 @@
 #include "sql_escape.h"
+#include "unicode.h"
 
 #include <algorithm>
 #include <array>
@@ -273,7 +274,8 @@ SqlEscapeResult translate_escape(std::string_view body) {
   }
   if (starts_with_word(body, "escape")) {
     const auto literal = quoted_value(body.substr(6));
-    if (!literal || literal->size() != 1) {
+    if (!literal || (*literal != "''" &&
+                     utf8_code_point_count(*literal) != 1)) {
       return failure(SqlEscapeError::InvalidSyntax,
                      "ODBC LIKE escape must contain one character");
     }

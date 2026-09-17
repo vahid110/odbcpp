@@ -140,4 +140,14 @@ std::optional<std::vector<SQLWCHAR>> utf8_to_wide(
   return output;
 }
 
+std::optional<std::size_t> utf8_code_point_count(std::string_view input) {
+  std::size_t count = 0;
+  std::size_t offset = 0;
+  while (offset < input.size()) {
+    if (!next_utf8_code_point(input, offset)) return std::nullopt;
+    ++count;
+  }
+  return count;
+}
+
 } // namespace rs::odbc

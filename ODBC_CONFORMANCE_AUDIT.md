@@ -1321,6 +1321,13 @@ substitute for ODBC diagnostics.
   The receive buffer now grows only as payload bytes arrive. A red/green
   oversized-control test and incomplete/over-limit DataRow tests cover the
   failure paths; all three local suites pass against PostgreSQL.
+- Audit batch 208 validates ODBC LIKE escape characters as one UTF-8 code
+  point rather than one byte, and accepts a single quote represented by a
+  doubled SQL quote. This follows ODBC's
+  [one-character escape clause](https://learn.microsoft.com/en-us/sql/odbc/reference/develop-app/like-predicate-escape-character)
+  without rejecting multibyte characters. Red/green unit tests reject
+  malformed UTF-8 and two code points; ANSI/wide translation and real UTF-8
+  PostgreSQL execution tests cover the accepted forms.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

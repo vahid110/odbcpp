@@ -290,6 +290,52 @@ TEST_F(NativeSqlIntegrationTest, ExecutesEscapesInDirectAndPreparedSql) {
   EXPECT_STREQ("prepared", reinterpret_cast<const char*>(text));
 }
 
+TEST_F(NativeSqlIntegrationTest, LikeEscapeAcceptsUnicodeAndQuote) {
+  SQLCHAR unicode[] =
+      "SELECT 'a%b' LIKE 'a\xC3\xA9%b' {escape '\xC3\xA9'}";
+  constexpr char expected[] =
+      "SELECT 'a%b' LIKE 'a\xC3\xA9%b' ESCAPE '\xC3\xA9'";
+  SQLCHAR output[sizeof(expected)]{};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLNativeSql(connection_, unicode, SQL_NTS, output,
+                         sizeof(output), nullptr));
+  EXPECT_STREQ(expected, reinterpret_cast<const char*>(output));
+
+  auto wide_input = rs::odbc::utf8_to_wide(
+      reinterpret_cast<const char*>(unicode));
+  ASSERT_TRUE(wide_input.has_value());
+  std::array<SQLWCHAR, sizeof(expected)> wide_output{};
+  SQLINTEGER wide_length = 0;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLNativeSqlW(connection_, wide_input->data(),
+                          static_cast<SQLINTEGER>(wide_input->size()),
+                          wide_output.data(),
+                          static_cast<SQLINTEGER>(wide_output.size()),
+                          &wide_length));
+  ASSERT_GE(wide_length, 0);
+  const auto native_wide = rs::odbc::wide_to_utf8(
+      std::span<const SQLWCHAR>(wide_output.data(), wide_length));
+  ASSERT_TRUE(native_wide.has_value());
+  EXPECT_EQ(expected, *native_wide);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, unicode, SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
+  SQLCHAR matched[4]{};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetData(statement_, 1, SQL_C_CHAR, matched, sizeof(matched),
+                       nullptr));
+  EXPECT_STREQ("t", reinterpret_cast<const char*>(matched));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(statement_));
+
+  SQLCHAR quoted[] = "SELECT 'a%b' LIKE 'a''%b' {escape ''''}";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(statement_, quoted, SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetData(statement_, 1, SQL_C_CHAR, matched, sizeof(matched),
+                       nullptr));
+  EXPECT_STREQ("t", reinterpret_cast<const char*>(matched));
+}
+
 TEST_F(NativeSqlIntegrationTest, KeepsEscapesInsideNestedComments) {
   SQLCHAR input[] =
       "SELECT 1 /* outer /* inner */ {fn UCASE(ignored)} */, "

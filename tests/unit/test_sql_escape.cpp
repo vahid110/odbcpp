@@ -51,6 +51,19 @@ TEST(SqlEscapeTest, TranslatesJoinLikeAndProcedureEscapes) {
             translate_odbc_sql("{call refresh_cache(1)}").sql);
 }
 
+TEST(SqlEscapeTest, LikeEscapeAcceptsOneUnicodeOrQuotedCharacter) {
+  EXPECT_EQ("SELECT ESCAPE '\xC3\xA9'",
+            translate_odbc_sql("SELECT {escape '\xC3\xA9'}").sql);
+  EXPECT_EQ("SELECT ESCAPE '\xF0\x9F\x98\x80'",
+            translate_odbc_sql("SELECT {escape '\xF0\x9F\x98\x80'}").sql);
+  EXPECT_EQ("SELECT ESCAPE ''''",
+            translate_odbc_sql("SELECT {escape ''''}").sql);
+  EXPECT_EQ(SqlEscapeError::InvalidSyntax,
+            translate_odbc_sql("SELECT {escape 'e\xCC\x81'}").error);
+  EXPECT_EQ(SqlEscapeError::InvalidSyntax,
+            translate_odbc_sql("SELECT {escape '\xC3'}").error);
+}
+
 TEST(SqlEscapeTest, PreservesBracesOutsideEscapeClauses) {
   const char* sql =
       "SELECT '{d ''not-a-date''}', \"{column}\", $$ {fn UCASE(x)} $$ "
