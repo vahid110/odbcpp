@@ -13,10 +13,14 @@ inline Deadline make_deadline(std::chrono::milliseconds from_now) {
   return from_now >= maximum ? Deadline::max() : now + from_now;
 }
 
-inline std::chrono::milliseconds remaining(Deadline dl) {
-  auto now = Clock::now();
+inline std::chrono::milliseconds remaining_at(
+    Deadline dl, Clock::time_point now) {
   if (dl <= now) return std::chrono::milliseconds(0);
-  return std::chrono::duration_cast<std::chrono::milliseconds>(dl - now);
+  return std::chrono::ceil<std::chrono::milliseconds>(dl - now);
+}
+
+inline std::chrono::milliseconds remaining(Deadline dl) {
+  return remaining_at(dl, Clock::now());
 }
 
 } // namespace rs::util

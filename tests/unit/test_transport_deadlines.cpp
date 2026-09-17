@@ -280,6 +280,18 @@ void expect_receive_timeout(DeadlineModel model) {
   EXPECT_LT(elapsed, 500ms);
 }
 
+TEST(DeadlineTest, PositiveSubmillisecondRemainderDoesNotExpire) {
+  const rs::util::Deadline origin{};
+  const auto tick = rs::util::Clock::duration{1};
+  if (tick >= 1ms) GTEST_SKIP() << "clock has no submillisecond resolution";
+
+  EXPECT_EQ(0ms, rs::util::remaining_at(origin, origin));
+  EXPECT_EQ(0ms, rs::util::remaining_at(origin, origin + tick));
+  EXPECT_EQ(1ms, rs::util::remaining_at(origin + tick, origin));
+  EXPECT_EQ(1ms, rs::util::remaining_at(origin + 1ms, origin));
+  EXPECT_EQ(2ms, rs::util::remaining_at(origin + 1ms + tick, origin));
+}
+
 TEST(SocketTransportDeadlineTest, StrictReceiveHonorsAbsoluteDeadline) {
   expect_receive_timeout(DeadlineModel::Strict);
 }

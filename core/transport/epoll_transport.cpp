@@ -459,7 +459,7 @@ private:
           std::chrono::milliseconds(1),
           left / static_cast<std::chrono::milliseconds::rep>(remaining_endpoints));
       active_connect_->endpoint_deadline = std::min(
-          active_connect_->deadline, rs::util::Clock::now() + budget);
+          active_connect_->deadline, rs::util::make_deadline(budget));
       const auto& endpoint =
           active_connect_->endpoints[active_connect_->next_endpoint++];
       const int socket = ::socket(endpoint.family, endpoint.type | SOCK_CLOEXEC,

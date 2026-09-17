@@ -1192,6 +1192,13 @@ substitute for ODBC diagnostics.
   current local date from platform thread-safe time conversion. Unit and
   PostgreSQL-backed tests allow a midnight rollover while checking the date,
   time fields, malformed input, `22007`, and untouched outputs on error.
+- Audit batch 184 rounds positive submillisecond deadline remainders up to the
+  next millisecond across transport backends. A deterministic clock test first
+  reproduced a still-future deadline being reported as expired, then checked
+  exact and just-past millisecond boundaries without relying on scheduling.
+  The full matrix exposed that rounding up can overflow the clock when deriving
+  a per-address deadline from `Deadline::max()`; synchronous, epoll, and IOCP
+  connection attempts now use the saturating deadline helper.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

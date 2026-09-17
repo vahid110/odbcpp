@@ -534,7 +534,7 @@ private:
           std::chrono::milliseconds(1),
           left / static_cast<std::chrono::milliseconds::rep>(remaining_endpoints));
       active_connect_->endpoint_deadline = (std::min)(
-          active_connect_->deadline, rs::util::Clock::now() + budget);
+          active_connect_->deadline, rs::util::make_deadline(budget));
       active_connect_->endpoint_timed_out = false;
       active_connect_->cancellation_issued = false;
       const auto& endpoint =

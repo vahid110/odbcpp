@@ -134,7 +134,8 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
     const auto budget = std::max(std::chrono::milliseconds(1),
                                  remaining(deadline) /
                                      static_cast<std::chrono::milliseconds::rep>(addresses_left));
-    const auto attempt_deadline = std::min(deadline, rs::util::Clock::now() + budget);
+    const auto attempt_deadline =
+        std::min(deadline, rs::util::make_deadline(budget));
     --addresses_left;
 #ifdef _WIN32
     sock_ = ::WSASocketW(ai->ai_family, ai->ai_socktype, ai->ai_protocol,
