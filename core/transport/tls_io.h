@@ -82,6 +82,7 @@ inline Error tls_handshake_with_deadline(SSL* ssl,
 {
   for (;;) {
     if (deadline_expired(dl)) return {Errc::Timeout, "handshake", "deadline"};
+    ::ERR_clear_error();
     int rc = ::SSL_connect(ssl);
     if (rc == 1) return {};
     int e = ::SSL_get_error(ssl, rc);
@@ -115,6 +116,7 @@ inline Error tls_write_all(SSL* ssl,
   written = 0;
   while (written < len) {
     if (deadline_expired(dl)) return {Errc::Timeout, "send", "deadline"};
+    ::ERR_clear_error();
     int rc = ::SSL_write(ssl, buf + written,
                          tls_io_chunk_size(len - written));
     if (rc > 0) { written += static_cast<size_t>(rc); continue; }
@@ -163,6 +165,7 @@ inline Error tls_read_some(SSL* ssl,
   if (cap == 0) return {};
   for (;;) {
     if (deadline_expired(dl)) return {Errc::Timeout, "recv", "deadline"};
+    ::ERR_clear_error();
     int rc = ::SSL_read(ssl, buf, tls_io_chunk_size(cap));
     if (rc > 0) { got = static_cast<size_t>(rc); return {}; }
     int e = ::SSL_get_error(ssl, rc);

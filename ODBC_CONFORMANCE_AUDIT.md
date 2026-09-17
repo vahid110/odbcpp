@@ -1248,6 +1248,15 @@ substitute for ODBC diagnostics.
   depth-one test first reproduced delayed timeout and false queue-full errors
   while the worker was held in a callback, then verified prompt timeout and
   replacement admission.
+- Audit batch 196 clears the thread-local OpenSSL error queue before each
+  synchronous TLS handshake, read, and write call, as required by the
+  [SSL_get_error contract](https://docs.openssl.org/3.0/man3/SSL_get_error/).
+  Loopback tests inject a stale error before handshake, send, and receive, then
+  check connection success, timeout classification, and an empty error queue. The
+  installed OpenSSL already passed those cases before the guard; this hardens
+  behavior across supported OpenSSL versions rather than claiming a local bug.
+  The macOS loopback server suppresses SIGPIPE if a client times out during its
+  handshake, keeping that expected test race from terminating the suite.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

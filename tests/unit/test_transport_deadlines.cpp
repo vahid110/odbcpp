@@ -11,6 +11,7 @@
 #include "odbc/odbc_handles.h"
 
 #include <openssl/evp.h>
+#include <openssl/err.h>
 #include <openssl/rsa.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
@@ -177,6 +178,15 @@ public:
     worker_ = std::thread([this] {
       auto client = ::accept(listener_, nullptr, nullptr);
       if (client == invalid_test_socket) return;
+#if defined(SO_NOSIGPIPE) && !defined(_WIN32)
+      // A client may time out while SSL_accept is writing its handshake.
+      int suppress_sigpipe = 1;
+      if (::setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE,
+                       &suppress_sigpipe, sizeof(suppress_sigpipe)) != 0) {
+        close_test_socket(client);
+        return;
+      }
+#endif
 
       SSL* ssl = SSL_new(context_);
       if (ssl) {
@@ -850,6 +860,40 @@ TEST(TLSTransportDeadlineTest, StrictHandshakeTimesOutAgainstSilentPeer) {
   EXPECT_TRUE(sent.has_error()) << "failed TLS must not expose plaintext I/O";
 }
 
+TEST(TLSTransportDeadlineTest, StaleOpenSslErrorDoesNotBreakHandshake) {
+  TLSSleepingServer server(100ms);
+  TLSTransport transport(DeadlineModel::Strict);
+  transport.set_verify(false);
+
+  ERR_put_error(ERR_LIB_USER, 0, ERR_R_INTERNAL_ERROR, __FILE__, __LINE__);
+  ASSERT_NE(ERR_peek_error(), 0UL);
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(3s));
+  const auto remaining_errors = ERR_peek_error();
+  ERR_clear_error();
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+  EXPECT_EQ(remaining_errors, 0UL);
+}
+
+TEST(TLSTransportDeadlineTest, StaleOpenSslErrorDoesNotBreakSend) {
+  TLSSleepingServer server(100ms);
+  TLSTransport transport(DeadlineModel::Strict);
+  transport.set_verify(false);
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(3s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+
+  const std::array<std::byte, 1> data{std::byte{'x'}};
+  ERR_put_error(ERR_LIB_USER, 0, ERR_R_INTERNAL_ERROR, __FILE__, __LINE__);
+  ASSERT_NE(ERR_peek_error(), 0UL);
+  auto sent = transport.send(data, rs::util::make_deadline(1s));
+  const auto remaining_errors = ERR_peek_error();
+  ERR_clear_error();
+  ASSERT_TRUE(sent.has_value()) << sent.error_message();
+  EXPECT_EQ(sent->n, data.size());
+  EXPECT_EQ(remaining_errors, 0UL);
+}
+
 TEST(TLSTransportDeadlineTest, AbruptHandshakeCloseIsNotATimeout) {
   for (const auto model : {DeadlineModel::Strict, DeadlineModel::SocketTimeout}) {
     SCOPED_TRACE(model == DeadlineModel::Strict ? "Strict" : "SocketTimeout");
@@ -1042,6 +1086,26 @@ TEST(TLSTransportDeadlineTest, StrictReceiveTimesOutAfterHandshake) {
 
   ASSERT_TRUE(result.has_error());
   EXPECT_EQ(result.error(), rs::util::make_error_code(rs::util::DbErrorCode::Timeout));
+}
+
+TEST(TLSTransportDeadlineTest, StaleOpenSslErrorDoesNotMaskReceiveTimeout) {
+  TLSSleepingServer server(250ms);
+  TLSTransport transport(DeadlineModel::Strict);
+  transport.set_verify(false);
+  auto connected = transport.connect(
+      "127.0.0.1", server.port(), rs::util::make_deadline(3s));
+  ASSERT_TRUE(connected.has_value()) << connected.error_message();
+  ASSERT_TRUE(server.wait_for_handshake());
+
+  std::array<std::byte, 1> buffer{};
+  ERR_put_error(ERR_LIB_USER, 0, ERR_R_INTERNAL_ERROR, __FILE__, __LINE__);
+  ASSERT_NE(ERR_peek_error(), 0UL);
+  auto result = transport.recv(buffer, rs::util::make_deadline(60ms));
+  const auto remaining_errors = ERR_peek_error();
+  ERR_clear_error();
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(result.error(), rs::util::make_error_code(rs::util::DbErrorCode::Timeout));
+  EXPECT_EQ(remaining_errors, 0UL);
 }
 
 TEST(TLSTransportDeadlineTest, RejectsPeerCloseWithoutCloseNotify) {
