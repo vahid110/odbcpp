@@ -149,6 +149,11 @@ bool is_dollar_tag_continue(char ch) {
   return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
 }
 
+bool is_identifier_continue(char ch) {
+  return is_dollar_tag_continue(ch) || ch == '$' ||
+         static_cast<unsigned char>(ch) >= 0x80;
+}
+
 struct ParameterMarkerRewrite {
   std::string sql;
   std::size_t marker_count{0};
@@ -229,7 +234,8 @@ ParameterMarkerRewrite replace_parameter_markers(std::string_view sql) {
       block_depth = 1;
       out.append("/*");
       i += 2;
-    } else if (ch == '$') {
+    } else if (ch == '$' &&
+               (i == 0 || !is_identifier_continue(sql[i - 1]))) {
       std::size_t end = i + 1;
       if (end < sql.size() && is_dollar_tag_start(sql[end])) {
         while (end < sql.size() && is_dollar_tag_continue(sql[end])) ++end;

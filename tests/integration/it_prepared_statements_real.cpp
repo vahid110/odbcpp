@@ -88,6 +88,27 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       DollarSignsInIdentifierDoNotHideParameter) {
+    char sql[] = "SELECT 1 AS foo$tag$bar, ?::integer AS value";
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, reinterpret_cast<SQLCHAR*>(sql), SQL_NTS));
+    SQLSMALLINT parameter_count = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumParams(hstmt, &parameter_count));
+    EXPECT_EQ(1, parameter_count);
+
+    SQLINTEGER input = 42;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
+        0, 0, &input, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLINTEGER output = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 2, SQL_C_SLONG, &output, sizeof(output), nullptr));
+    EXPECT_EQ(input, output);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        ParameterStatusOutputsHandleUnalignedBuffers) {
     alignas(SQLULEN) std::array<std::byte, 1 + sizeof(SQLULEN)> processed{};
     alignas(SQLUSMALLINT)

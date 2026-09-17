@@ -1278,6 +1278,13 @@ substitute for ODBC diagnostics.
   The parameter-marker scanner previously mistook a backslash before the
   closing quote for an escape and missed a later `?` marker. A red/green parser
   test and a real prepared-statement test cover that identifier shape.
+- Audit batch 201 distinguishes a dollar sign inside an unquoted PostgreSQL
+  identifier from the start of a dollar-quoted string. The scanner previously
+  treated `foo$tag$bar` as opening a string and hid a later `?` parameter.
+  A red/green parser test also preserves genuine `$tag$...$tag$` strings; a
+  prepared-statement integration test exercises the identifier against
+  PostgreSQL. This follows the same
+  [lexical rules](https://www.postgresql.org/docs/current/sql-syntax-lexical.html).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

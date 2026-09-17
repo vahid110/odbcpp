@@ -494,6 +494,24 @@ TEST(PgProtocolParserTest, BackslashInQuotedIdentifierDoesNotHideMarker) {
             read_cstring(frames[0].payload, offset));
 }
 
+TEST(PgProtocolParserTest, DollarSignsInIdentifierDoNotStartQuotedString) {
+  PgProtocolParser parser;
+  constexpr std::string_view sql =
+      "SELECT 1 AS foo$tag$bar, ?::integer AS value";
+  EXPECT_EQ(1u, PgProtocolParser::parameter_marker_count(sql));
+  EXPECT_EQ(1u, PgProtocolParser::parameter_marker_count(
+      "SELECT $tag$?$tag$, ?::integer"));
+
+  const std::vector<QueryParameterType> types{QueryParameterType::Int32};
+  const auto frames = split_frames(
+      parser.create_statement_description(sql, types));
+  ASSERT_FALSE(frames.empty());
+  std::size_t offset = 0;
+  EXPECT_TRUE(read_cstring(frames[0].payload, offset).empty());
+  EXPECT_EQ("SELECT 1 AS foo$tag$bar, $1::integer AS value",
+            read_cstring(frames[0].payload, offset));
+}
+
 TEST(PgProtocolParserTest, ExtractsResultAndParameterMetadata) {
   PgProtocolParser parser;
   std::vector<rs::core::database::Message> messages;
