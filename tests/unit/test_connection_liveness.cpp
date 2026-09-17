@@ -55,8 +55,12 @@ class FailingQueryTransport final : public rs::core::transport::ITransport {
 class ScriptedTlsTransport final : public rs::core::transport::ITransport,
                                    public rs::core::transport::IStartTlsTransport {
  public:
-  explicit ScriptedTlsTransport(bool overreport_write = false)
-      : overreport_write_(overreport_write) {}
+  enum class Mode {
+    Refused, OverreportedWrite, NoProgress, Eof, EofWithAccept,
+    InvalidReply, OverreportedRead
+  };
+
+  explicit ScriptedTlsTransport(Mode mode = Mode::Refused) : mode_(mode) {}
 
   rs::util::Result<void> connect(std::string_view, uint16_t,
                                  rs::util::Deadline) override {
@@ -77,11 +81,30 @@ class ScriptedTlsTransport final : public rs::core::transport::ITransport,
   rs::util::Result<rs::core::transport::IOResult> send(
       std::span<const std::byte> buffer, rs::util::Deadline) override {
     return rs::core::transport::IOResult{
-        buffer.size() + static_cast<std::size_t>(overreport_write_), false};
+        buffer.size() + static_cast<std::size_t>(mode_ == Mode::OverreportedWrite),
+        false};
   }
 
   rs::util::Result<rs::core::transport::IOResult> recv(
       std::span<std::byte> buffer, rs::util::Deadline) override {
+    if (mode_ == Mode::NoProgress) {
+      return rs::core::transport::IOResult{0, false};
+    }
+    if (mode_ == Mode::Eof) {
+      return rs::core::transport::IOResult{0, true};
+    }
+    if (mode_ == Mode::EofWithAccept) {
+      buffer[0] = std::byte{'S'};
+      return rs::core::transport::IOResult{1, true};
+    }
+    if (mode_ == Mode::InvalidReply) {
+      buffer[0] = std::byte{'?'};
+      return rs::core::transport::IOResult{1, false};
+    }
+    if (mode_ == Mode::OverreportedRead) {
+      buffer[0] = std::byte{'S'};
+      return rs::core::transport::IOResult{2, false};
+    }
     buffer[0] = std::byte{'N'};
     return rs::core::transport::IOResult{1, false};
   }
@@ -90,7 +113,7 @@ class ScriptedTlsTransport final : public rs::core::transport::ITransport,
   std::size_t close_count() const noexcept { return close_count_; }
 
  private:
-  bool overreport_write_;
+  Mode mode_;
   std::size_t close_count_{0};
 };
 
@@ -479,7 +502,8 @@ TEST(ConnectionLivenessTest, RefusedTlsClosesTransport) {
 }
 
 TEST(ConnectionLivenessTest, OverreportedSslRequestWriteIsProtocolError) {
-  auto transport = std::make_unique<ScriptedTlsTransport>(true);
+  auto transport = std::make_unique<ScriptedTlsTransport>(
+      ScriptedTlsTransport::Mode::OverreportedWrite);
   auto* observed_transport = transport.get();
   rs::core::database::GenericDatabaseConnection connection(
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
@@ -493,6 +517,32 @@ TEST(ConnectionLivenessTest, OverreportedSslRequestWriteIsProtocolError) {
             result.error());
   EXPECT_FALSE(connection.is_connected());
   EXPECT_EQ(1u, observed_transport->close_count());
+}
+
+TEST(ConnectionLivenessTest, InvalidSslNegotiationReadsKeepTheirErrorClass) {
+  using Mode = ScriptedTlsTransport::Mode;
+  for (const auto [mode, expected_error] : {
+           std::pair{Mode::NoProgress, rs::util::DbErrorCode::NetworkError},
+           std::pair{Mode::Eof, rs::util::DbErrorCode::NetworkError},
+           std::pair{Mode::EofWithAccept, rs::util::DbErrorCode::NetworkError},
+           std::pair{Mode::InvalidReply, rs::util::DbErrorCode::ProtocolError},
+           std::pair{Mode::OverreportedRead,
+                     rs::util::DbErrorCode::ProtocolError}}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    auto transport = std::make_unique<ScriptedTlsTransport>(mode);
+    auto* observed_transport = transport.get();
+    rs::core::database::GenericDatabaseConnection connection(
+        std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+        std::move(transport));
+    rs::core::database::ConnectionSettings settings;
+    settings.use_ssl = true;
+
+    const auto result = connection.connect(settings);
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(expected_error), result.error());
+    EXPECT_FALSE(connection.is_connected());
+    EXPECT_EQ(1u, observed_transport->close_count());
+  }
 }
 
 TEST(ConnectionLivenessTest, FailedServerTripMarksConnectionDead) {

@@ -1427,6 +1427,12 @@ substitute for ODBC diagnostics.
   uses the same checked writer as startup and query messages; a synthetic
   transport that overreports sent bytes is rejected as a protocol error.
   The duplicate, less strict SSL-request writer was removed.
+- Audit batch 226 classifies malformed SSL-negotiation reads without treating
+  transport failure as a server refusal: EOF and zero-progress reads are
+  network errors, overreported counts and replies other than `S` or `N` are
+  protocol errors, and `N` remains a TLS refusal. Synthetic tests verify each
+  error and transport cleanup. The negotiation still reads exactly one byte,
+  as [PostgreSQL's protocol specifies](https://www.postgresql.org/docs/current/protocol-flow.html).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

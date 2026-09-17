@@ -111,9 +111,25 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
       return rs::util::Result<void>{
           recv_result.error(), recv_result.error_message()};
     }
-    
-    if (recv_result->n != 1 || response[0] != std::byte{'S'}) {
-      return rs::util::Result<void>{rs::util::DbErrorCode::TLSError, "SSL not supported by server"};
+    if (recv_result->n > response.size()) {
+      return {rs::util::DbErrorCode::ProtocolError,
+              "Transport read exceeded requested SSL response bytes"};
+    }
+    if (recv_result->eof) {
+      return {rs::util::DbErrorCode::NetworkError,
+              "Unexpected EOF during SSL negotiation"};
+    }
+    if (recv_result->n == 0) {
+      return {rs::util::DbErrorCode::NetworkError,
+              "SSL negotiation read made no progress"};
+    }
+    if (response[0] == std::byte{'N'}) {
+      return {rs::util::DbErrorCode::TLSError,
+              "SSL not supported by server"};
+    }
+    if (response[0] != std::byte{'S'}) {
+      return {rs::util::DbErrorCode::ProtocolError,
+              "Invalid PostgreSQL SSL negotiation response"};
     }
     
     auto upgrade_result = start_tls->upgrade_to_tls(settings.host, deadline);
