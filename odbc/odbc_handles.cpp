@@ -88,6 +88,13 @@ std::optional<std::string> current_local_date_parameter() {
       static_cast<SQLUSMALLINT>(local.tm_mday)});
 }
 
+const char* invalid_temporal_parameter_state(
+    rs::core::database::QueryParameterType target) {
+  return target == rs::core::database::QueryParameterType::Text
+      ? SQLSTATE_DATETIME_FIELD_OVERFLOW
+      : SQLSTATE_INVALID_DATETIME_FORMAT;
+}
+
 std::string default_driver_name() {
 #ifdef ODBCPP_ENABLE_REDSHIFT
   return "ODBCPP Redshift";
@@ -3089,7 +3096,7 @@ SQLRETURN ODBCStatement::execute() {
         const auto formatted = format_date_parameter(
             load_application_value<SQL_DATE_STRUCT>(application.data_ptr));
         if (!formatted) {
-          set_error(SQLSTATE_INVALID_DATETIME_FORMAT,
+          set_error(invalid_temporal_parameter_state(query_param.type),
                     "Invalid date parameter value");
           return complete_parameter_set(SQL_ERROR);
         }
@@ -3102,7 +3109,7 @@ SQLRETURN ODBCStatement::execute() {
         const auto formatted = format_time_parameter(
             load_application_value<SQL_TIME_STRUCT>(application.data_ptr));
         if (!formatted) {
-          set_error(SQLSTATE_INVALID_DATETIME_FORMAT,
+          set_error(invalid_temporal_parameter_state(query_param.type),
                     "Invalid time parameter value");
           return complete_parameter_set(SQL_ERROR);
         }
@@ -3130,7 +3137,7 @@ SQLRETURN ODBCStatement::execute() {
         using rs::core::database::QueryParameterType;
         if ((target != QueryParameterType::Time && !date) || !time ||
             timestamp.fraction >= 1000000000u) {
-          set_error(SQLSTATE_INVALID_DATETIME_FORMAT,
+          set_error(invalid_temporal_parameter_state(target),
                     "Invalid timestamp parameter value");
           return complete_parameter_set(SQL_ERROR);
         }
