@@ -196,10 +196,21 @@ public:
 
   void request_cancel(const std::shared_ptr<OperationState>& state) noexcept {
     bool interrupt = false;
+    std::shared_ptr<Task> queued;
     {
       std::lock_guard lock(queue_mutex_);
       interrupt = active_ && active_->state == state;
+      if (!interrupt) {
+        const auto it = std::find_if(tasks_.begin(), tasks_.end(),
+            [&](const auto& task) { return task->state == state; });
+        if (it != tasks_.end()) {
+          queued = std::move(*it);
+          tasks_.erase(it);
+          if (!active_ && tasks_.empty()) idle_.notify_all();
+        }
+      }
     }
+    if (queued) complete_cancelled_task(queued);
     if (interrupt) transport_->close();
     queue_ready_.notify_one();
   }
@@ -275,6 +286,23 @@ public:
   std::size_t queue_depth() const noexcept { return queue_depth_; }
 
 private:
+  static void complete_cancelled_task(const std::shared_ptr<Task>& task) noexcept {
+    if (!task->state->finish()) return;
+    try {
+      if (task->kind == TaskKind::ConnectTls ||
+          task->kind == TaskKind::ConnectPlain ||
+          task->kind == TaskKind::Upgrade) {
+        invoke_safely(task->connect_callback, cancelled_result<void>());
+      } else if (task->kind == TaskKind::Send) {
+        invoke_safely(task->send_callback, cancelled_result<IOResult>());
+      } else {
+        invoke_safely(task->recv_callback, cancelled_result<IOResult>());
+      }
+    } catch (...) {
+      // Cancellation cannot unwind through shutdown.
+    }
+  }
+
   bool has_pending_connect_locked() const {
     if (active_ && (active_->kind == TaskKind::ConnectTls ||
                     active_->kind == TaskKind::ConnectPlain)) {

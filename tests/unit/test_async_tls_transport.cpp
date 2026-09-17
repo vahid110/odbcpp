@@ -24,6 +24,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -575,6 +576,60 @@ TEST(AsyncTlsTransportTest, CancellationCompletesReceiveExactlyOnce) {
   std::this_thread::sleep_for(50ms);
   EXPECT_EQ(callbacks.load(), 1);
   EXPECT_EQ(buffer[0], std::byte{0x2a});
+}
+
+TEST(AsyncTlsTransportTest, CancelledQueuedRequestReleasesCapacity) {
+  AsyncTlsTransport transport(make_native_transport(1, 1), 1, 1);
+  const auto deadline = rs::util::make_deadline(5s);
+
+  std::promise<void> entered;
+  auto entered_future = entered.get_future();
+  std::promise<void> release;
+  auto release_future = release.get_future().share();
+  auto first = transport.send_async(
+      std::span<const std::byte>{}, deadline,
+      [&](rs::util::Result<IOResult>) {
+        entered.set_value();
+        release_future.wait();
+      });
+  const bool callback_started = entered_future.wait_for(1s) ==
+                                std::future_status::ready;
+  if (!callback_started) {
+    release.set_value();
+    FAIL() << "TLS worker did not enter the first callback";
+    return;
+  }
+
+  std::promise<rs::util::Result<IOResult>> cancelled_promise;
+  auto cancelled_future = cancelled_promise.get_future();
+  auto cancelled = transport.send_async(
+      std::span<const std::byte>{}, deadline,
+      [&](rs::util::Result<IOResult> result) {
+        cancelled_promise.set_value(std::move(result));
+      });
+  cancelled->cancel();
+  EXPECT_EQ(cancelled_future.wait_for(100ms), std::future_status::ready);
+
+  std::promise<rs::util::Result<IOResult>> replacement_promise;
+  auto replacement_future = replacement_promise.get_future();
+  auto replacement = transport.send_async(
+      std::span<const std::byte>{}, deadline,
+      [&](rs::util::Result<IOResult> result) {
+        replacement_promise.set_value(std::move(result));
+      });
+  EXPECT_FALSE(replacement->is_complete());
+  release.set_value();
+
+  ASSERT_EQ(cancelled_future.wait_for(2s), std::future_status::ready);
+  ASSERT_EQ(replacement_future.wait_for(2s), std::future_status::ready);
+  auto cancelled_result = cancelled_future.get();
+  auto replacement_result = replacement_future.get();
+  EXPECT_TRUE(cancelled->is_cancelled());
+  ASSERT_TRUE(cancelled_result.has_error());
+  EXPECT_NE(cancelled_result.error_message().find("cancelled"), std::string::npos);
+  ASSERT_TRUE(replacement_result.has_error());
+  EXPECT_EQ(replacement_result.error_message().find("queue is full"),
+            std::string::npos);
 }
 
 TEST(AsyncTlsTransportTest, UnannouncedTcpCloseIsNotCleanTlsEof) {

@@ -1237,6 +1237,11 @@ substitute for ODBC diagnostics.
   during transport send and first reproduced a false handshake failure, then
   completed a TLS echo round trip. The worker also clears unrelated queued
   errors before each TLS call, per [OpenSSL's contract](https://docs.openssl.org/3.0/man3/SSL_get_error/).
+- Audit batch 194 releases async TLS queue capacity immediately when a queued
+  request is canceled, completing its callback outside the queue lock. A
+  deterministic depth-one test holds the worker in a callback, cancels the
+  queued request, and first reproduced a false queue-full rejection for its
+  replacement. The canceled callback now completes before the worker resumes.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
