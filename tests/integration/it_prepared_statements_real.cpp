@@ -694,6 +694,60 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       CharacterDateParameterValidatesAndDiscardsOnlyZeroTime) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQLLEN indicator = SQL_NTS;
+    SQLCHAR state[6]{};
+    const auto bind = [&](SQLSMALLINT c_type, SQLPOINTER input) {
+        return SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            c_type, SQL_TYPE_DATE, 10, 0, input, 0, &indicator);
+    };
+    const auto expect_date = [&](const char* input, SQLSMALLINT year,
+                                 SQLUSMALLINT month, SQLUSMALLINT day) {
+        ASSERT_EQ(SQL_SUCCESS, bind(SQL_C_CHAR, const_cast<char*>(input)));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQL_DATE_STRUCT output{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_DATE,
+            &output, sizeof(output), nullptr));
+        EXPECT_EQ(year, output.year);
+        EXPECT_EQ(month, output.month);
+        EXPECT_EQ(day, output.day);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    const auto expect_error = [&](const char* input,
+                                  const char* expected_state) {
+        ASSERT_EQ(SQL_SUCCESS, bind(SQL_C_CHAR, const_cast<char*>(input)));
+        const auto result = SQLExecute(hstmt);
+        EXPECT_EQ(SQL_ERROR, result);
+        if (result != SQL_ERROR) {
+            SQLCloseCursor(hstmt);
+            return;
+        }
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ(expected_state, reinterpret_cast<char*>(state));
+    };
+
+    expect_date(" 2024-02-29 ", 2024, 2, 29);
+    expect_date("2024-02-29 00:00:00.000000", 2024, 2, 29);
+    expect_error("2024-02-29 00:00:01", "22008");
+    expect_error("2024-02-29 00:00:00.000001", "22008");
+    expect_error("2023-02-29", "22018");
+
+    SQLWCHAR wide_input[] = {'2', '0', '2', '4', '-', '1', '2', '-', '3', '1', 0};
+    ASSERT_EQ(SQL_SUCCESS, bind(SQL_C_WCHAR, wide_input));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_DATE_STRUCT wide_output{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_DATE,
+        &wide_output, sizeof(wide_output), nullptr));
+    EXPECT_EQ(2024, wide_output.year);
+    EXPECT_EQ(12, wide_output.month);
+    EXPECT_EQ(31, wide_output.day);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        TemporalParameterRejectsUnsupportedFractionalPrecision) {
     SQL_TIMESTAMP_STRUCT input{2024, 2, 29, 12, 34, 56, 0};
     SQLCHAR state[6]{};

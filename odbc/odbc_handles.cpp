@@ -3252,7 +3252,31 @@ SQLRETURN ODBCStatement::execute() {
 
       if ((value_type == SQL_C_CHAR || value_type == SQL_C_WCHAR) &&
           query_param.type ==
-              rs::core::database::QueryParameterType::Timestamp) {
+              rs::core::database::QueryParameterType::Date) {
+        SQL_DATE_STRUCT parsed{};
+        const auto converted = TextDataConverter::convert_data(
+            value, SQL_C_TYPE_DATE, &parsed, sizeof(parsed), nullptr,
+            nullptr);
+        if (converted == SQL_ERROR) {
+          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Invalid character date parameter value");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        if (converted == SQL_SUCCESS_WITH_INFO) {
+          set_error(SQLSTATE_DATETIME_FIELD_OVERFLOW,
+                    "Character date parameter contains nonzero time");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        const auto date = format_date_parameter(parsed);
+        if (!date) {
+          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Invalid character date parameter value");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        value = *date;
+      } else if ((value_type == SQL_C_CHAR || value_type == SQL_C_WCHAR) &&
+                 query_param.type ==
+                     rs::core::database::QueryParameterType::Timestamp) {
         const auto quantum = timestamp_fractional_quantum(
             implementation.precision);
         if (!quantum) {
