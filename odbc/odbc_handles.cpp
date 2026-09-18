@@ -3193,14 +3193,29 @@ SQLRETURN ODBCStatement::execute() {
             return complete_parameter_set(SQL_ERROR);
           }
           char fraction[11]{};
+          std::string fractional_text;
           if (character_target) {
             std::snprintf(fraction, sizeof(fraction), ".%09u",
                           timestamp.fraction);
+            fractional_text = fraction;
+            while (fractional_text.size() > 1 &&
+                   fractional_text.back() == '0') {
+              fractional_text.pop_back();
+            }
+            if (fractional_text.size() == 1) {
+              fractional_text.clear();
+            }
           } else {
             std::snprintf(fraction, sizeof(fraction), ".%06u",
                           timestamp.fraction / 1000u);
+            fractional_text = fraction;
           }
-          value = *date + " " + *time + fraction;
+          value = *date + " " + *time + fractional_text;
+          if (character_target && implementation.length < value.size()) {
+            set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                      "Timestamp parameter exceeds SQL character length");
+            return complete_parameter_set(SQL_ERROR);
+          }
         }
       } else if (value_type == SQL_C_BINARY) {
         SQLLEN length = application.octet_length;
