@@ -105,6 +105,19 @@ std::optional<std::uint32_t> timestamp_fractional_quantum(
   return quantum;
 }
 
+bool has_temporal_timezone_suffix(const std::string& value) {
+  const auto text = ConnectionString::trim(value);
+  std::size_t time_start = std::string::npos;
+  if (text.size() >= 8 && text[2] == ':' && text[5] == ':') {
+    time_start = 0;
+  } else if (text.size() >= 19 &&
+             (text[10] == ' ' || text[10] == 'T')) {
+    time_start = 11;
+  }
+  return time_start != std::string::npos &&
+      text.find_first_of("+-", time_start + 8) != std::string::npos;
+}
+
 std::string default_driver_name() {
 #ifdef ODBCPP_ENABLE_REDSHIFT
   return "ODBCPP Redshift";
@@ -3253,6 +3266,15 @@ SQLRETURN ODBCStatement::execute() {
       const bool character_input =
           value_type == SQL_C_CHAR || value_type == SQL_C_WCHAR;
       using rs::core::database::QueryParameterType;
+      if (character_input &&
+          (query_param.type == QueryParameterType::Date ||
+           query_param.type == QueryParameterType::Time ||
+           query_param.type == QueryParameterType::Timestamp) &&
+          has_temporal_timezone_suffix(value)) {
+        set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                  "ODBC temporal parameter literal cannot have a timezone");
+        return complete_parameter_set(SQL_ERROR);
+      }
       if (character_input && query_param.type == QueryParameterType::Date) {
         SQL_DATE_STRUCT parsed{};
         const auto converted = TextDataConverter::convert_data(

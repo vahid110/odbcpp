@@ -802,6 +802,46 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       CharacterTemporalParametersRejectTimezoneSuffix) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQLLEN indicator = SQL_NTS;
+    SQLCHAR state[6]{};
+    struct Case {
+        SQLSMALLINT sql_type;
+        SQLSMALLINT precision;
+        SQLULEN column_size;
+        const char* input;
+    };
+    for (const auto& test : std::array<Case, 4>{{
+             {SQL_TYPE_DATE, 0, 10, "2024-02-29 00:00:00+02:00"},
+             {SQL_TYPE_TIME, 0, 8, "2024-02-29 12:34:56+02:00"},
+             {SQL_TYPE_TIMESTAMP, 6, 26, "2024-02-29 12:34:56+02:00"},
+             {SQL_TYPE_TIMESTAMP, 6, 26, "12:34:56+02:00"}}}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_CHAR, test.sql_type, test.column_size, test.precision,
+            const_cast<char*>(test.input), 0, &indicator));
+        const auto result = SQLExecute(hstmt);
+        EXPECT_EQ(SQL_ERROR, result);
+        if (result != SQL_ERROR) {
+            SQLCloseCursor(hstmt);
+            continue;
+        }
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
+    }
+
+    SQLWCHAR wide_input[] = {'1', '2', ':', '3', '4', ':', '5', '6',
+                             '-', '0', '2', ':', '0', '0', 0};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_WCHAR, SQL_TYPE_TIME, 8, 0, wide_input, 0, &indicator));
+    ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        TemporalParameterRejectsUnsupportedFractionalPrecision) {
     SQL_TIMESTAMP_STRUCT input{2024, 2, 29, 12, 34, 56, 0};
     SQLCHAR state[6]{};

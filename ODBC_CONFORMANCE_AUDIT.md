@@ -1720,6 +1720,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   sanitizer, PostgreSQL Driver Manager, and iODBC. All 34 tests pass in each
   configuration. Nonstandard literal suffixes and the wider C-to-SQL matrix
   remain open.
+- Audit batch 263 rejects timezone-offset suffixes on character inputs bound
+  to ODBC date, time, or timestamp SQL parameters. The [ODBC temporal literal
+  forms](https://learn.microsoft.com/en-us/sql/odbc/reference/develop-app/date-time-and-timestamp-literals)
+  do not include offsets, so narrow and wide inputs return `22018` before
+  PostgreSQL can accept or reinterpret them. The focused test first reproduced
+  silent acceptance and a PostgreSQL-specific diagnostic, then passed without
+  skipping under sanitizer, PostgreSQL Driver Manager, and iODBC. All 34 tests
+  pass in each configuration. Other nonstandard literal forms and the wider
+  C-to-SQL conversion matrix remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
