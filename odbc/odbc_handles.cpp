@@ -3250,9 +3250,10 @@ SQLRETURN ODBCStatement::execute() {
         return complete_parameter_set(SQL_ERROR);
       }
 
-      if ((value_type == SQL_C_CHAR || value_type == SQL_C_WCHAR) &&
-          query_param.type ==
-              rs::core::database::QueryParameterType::Date) {
+      const bool character_input =
+          value_type == SQL_C_CHAR || value_type == SQL_C_WCHAR;
+      using rs::core::database::QueryParameterType;
+      if (character_input && query_param.type == QueryParameterType::Date) {
         SQL_DATE_STRUCT parsed{};
         const auto converted = TextDataConverter::convert_data(
             value, SQL_C_TYPE_DATE, &parsed, sizeof(parsed), nullptr,
@@ -3274,9 +3275,31 @@ SQLRETURN ODBCStatement::execute() {
           return complete_parameter_set(SQL_ERROR);
         }
         value = *date;
-      } else if ((value_type == SQL_C_CHAR || value_type == SQL_C_WCHAR) &&
-                 query_param.type ==
-                     rs::core::database::QueryParameterType::Timestamp) {
+      } else if (character_input &&
+                 query_param.type == QueryParameterType::Time) {
+        SQL_TIME_STRUCT parsed{};
+        const auto converted = TextDataConverter::convert_data(
+            value, SQL_C_TYPE_TIME, &parsed, sizeof(parsed), nullptr,
+            nullptr);
+        if (converted == SQL_ERROR) {
+          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Invalid character time parameter value");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        if (converted == SQL_SUCCESS_WITH_INFO) {
+          set_error(SQLSTATE_DATETIME_FIELD_OVERFLOW,
+                    "Character time parameter contains nonzero fraction");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        const auto time = format_time_parameter(parsed);
+        if (!time) {
+          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Invalid character time parameter value");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        value = *time;
+      } else if (character_input &&
+                 query_param.type == QueryParameterType::Timestamp) {
         const auto quantum = timestamp_fractional_quantum(
             implementation.precision);
         if (!quantum) {

@@ -748,6 +748,60 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       CharacterTimeParameterValidatesAndDiscardsOnlyZeroFraction) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQLLEN indicator = SQL_NTS;
+    SQLCHAR state[6]{};
+    const auto bind = [&](SQLSMALLINT c_type, SQLPOINTER input) {
+        return SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            c_type, SQL_TYPE_TIME, 8, 0, input, 0, &indicator);
+    };
+    const auto expect_time = [&](const char* input, SQLUSMALLINT hour,
+                                 SQLUSMALLINT minute, SQLUSMALLINT second) {
+        ASSERT_EQ(SQL_SUCCESS, bind(SQL_C_CHAR, const_cast<char*>(input)));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQL_TIME_STRUCT output{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIME,
+            &output, sizeof(output), nullptr));
+        EXPECT_EQ(hour, output.hour);
+        EXPECT_EQ(minute, output.minute);
+        EXPECT_EQ(second, output.second);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    const auto expect_error = [&](const char* input,
+                                  const char* expected_state) {
+        ASSERT_EQ(SQL_SUCCESS, bind(SQL_C_CHAR, const_cast<char*>(input)));
+        const auto result = SQLExecute(hstmt);
+        EXPECT_EQ(SQL_ERROR, result);
+        if (result != SQL_ERROR) {
+            SQLCloseCursor(hstmt);
+            return;
+        }
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ(expected_state, reinterpret_cast<char*>(state));
+    };
+
+    expect_time(" 12:34:56 ", 12, 34, 56);
+    expect_time("2024-02-29 12:34:56.000000", 12, 34, 56);
+    expect_error("2024-02-29 12:34:56.000001", "22008");
+    expect_error("25:00:00", "22018");
+    expect_error("2023-02-29 12:34:56", "22018");
+
+    SQLWCHAR wide_input[] = {'2', '3', ':', '5', '9', ':', '5', '9', 0};
+    ASSERT_EQ(SQL_SUCCESS, bind(SQL_C_WCHAR, wide_input));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_TIME_STRUCT wide_output{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIME,
+        &wide_output, sizeof(wide_output), nullptr));
+    EXPECT_EQ(23, wide_output.hour);
+    EXPECT_EQ(59, wide_output.minute);
+    EXPECT_EQ(59, wide_output.second);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        TemporalParameterRejectsUnsupportedFractionalPrecision) {
     SQL_TIMESTAMP_STRUCT input{2024, 2, 29, 12, 34, 56, 0};
     SQLCHAR state[6]{};
