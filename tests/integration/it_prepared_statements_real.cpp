@@ -9,6 +9,7 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <vector>
 
 class PreparedStatementIntegrationTest : public ::testing::Test {
 protected:
@@ -578,6 +579,80 @@ TEST_F(PreparedStatementIntegrationTest,
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
     input.fraction = 1000u;
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22008", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       CharacterTimestampParameterHonorsDeclaredFractionalPrecision) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQLLEN indicator = SQL_NTS;
+    SQLCHAR state[6]{};
+    const auto bind = [&](const char* value, SQLSMALLINT precision) {
+        return SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_CHAR, SQL_TYPE_TIMESTAMP, 26, precision,
+            const_cast<char*>(value), 0, &indicator);
+    };
+    const auto expect_fraction = [&](const char* value,
+                                     SQLSMALLINT precision,
+                                     SQLUINTEGER fraction) {
+        ASSERT_EQ(SQL_SUCCESS, bind(value, precision));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQL_TIMESTAMP_STRUCT output{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIMESTAMP,
+            &output, sizeof(output), nullptr));
+        EXPECT_EQ(fraction, output.fraction);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    const auto expect_error = [&](const char* value,
+                                  SQLSMALLINT precision,
+                                  const char* expected_state) {
+        ASSERT_EQ(SQL_SUCCESS, bind(value, precision));
+        const auto result = SQLExecute(hstmt);
+        EXPECT_EQ(SQL_ERROR, result);
+        if (result != SQL_ERROR) {
+            SQLCloseCursor(hstmt);
+            return;
+        }
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ(expected_state, reinterpret_cast<char*>(state));
+    };
+
+    expect_fraction("2024-02-29 12:34:56", 0, 0);
+    expect_error("2024-02-29 12:34:56.1", 0, "22008");
+    expect_fraction("2024-02-29 12:34:56.123000", 3, 123000000u);
+    expect_fraction(" 2024-02-29 12:34:56.123000 ", 3, 123000000u);
+    expect_error("2024-02-29 12:34:56.123456", 3, "22008");
+    expect_fraction("2024-02-29 12:34:56.123456000", 6, 123456000u);
+    expect_error("2024-02-29 12:34:56.123456789", 6, "22008");
+    expect_error("2024-02-29 12:34:56.1234560001", 6, "22008");
+    expect_error("not-a-timestamp", 6, "22018");
+    expect_error("2023-02-29 12:34:56", 6, "22018");
+
+    std::vector<SQLWCHAR> wide_input;
+    const auto bind_wide = [&](const char* value) {
+        wide_input.clear();
+        for (const char* ch = value; *ch; ++ch) {
+            wide_input.push_back(static_cast<SQLWCHAR>(*ch));
+        }
+        wide_input.push_back(0);
+        return SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_WCHAR, SQL_TYPE_TIMESTAMP, 26, 3,
+            wide_input.data(), 0, &indicator);
+    };
+    ASSERT_EQ(SQL_SUCCESS, bind_wide("2024-02-29 12:34:56.123000"));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_TIMESTAMP_STRUCT wide_output{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIMESTAMP,
+        &wide_output, sizeof(wide_output), nullptr));
+    EXPECT_EQ(123000000u, wide_output.fraction);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, bind_wide("2024-02-29 12:34:56.123456"));
     EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));

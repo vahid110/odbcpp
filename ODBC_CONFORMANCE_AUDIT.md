@@ -48,7 +48,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLMoreResults` | A | Partial | unit, integration, DM | Result/update-count traversal and close-time discard are covered; error-result sequences remain |
 | `SQLGetData` | A | Partial | integration, DM | Legacy and ODBC 3 temporal C targets, malformed-value diagnostics, and per-row/switching-column offsets are covered; complete conversion/chunking matrices remain |
 | `SQLBindCol` | A | Partial | unit, integration | Invalid C types, negative lengths, and ODBC 3 temporal C targets are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
-| `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics, ODBC date/time/timestamp-struct input, temporal target rejection and target-specific diagnostics, date/time-to-timestamp and timestamp-to-date/time rules, temporal struct character-target lengths, binary SQL-target length, and declared timestamp fractional precision are covered; character-input precision, input arrays, data-at-execution, and full conversion matrix remain |
+| `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics, ODBC date/time/timestamp-struct input, temporal target rejection and target-specific diagnostics, date/time-to-timestamp and timestamp-to-date/time rules, temporal struct character-target lengths, binary SQL-target length, and struct/character timestamp fractional precision are covered; date/time character-input conversion, input arrays, data-at-execution, and full conversion matrix remain |
 | `SQLNumParams` | A | Partial | unit, integration, DM | Prepared statements are server-validated without execution; state, null/output preservation, complex markers, direct execution, and IPD count agreement are covered; cancellation and communication-failure injection remain |
 | `SQLNumResultCols` | A | Partial | unit, integration | Prepared metadata, result sets, update counts, exhausted/closed cursors, delayed PostgreSQL errors, null outputs, and output preservation are covered; cancellation and communication-failure injection remain |
 | `SQLRowCount` | A | Verified | unit, integration | Allocated, prepared, update-count, result-set, fetched/exhausted, closed, failed-execution, null-output, and output-preservation cases are covered |
@@ -1684,6 +1684,16 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   test reproduced silent acceptance, then passed without skipping under
   sanitizer, PostgreSQL Driver Manager, and iODBC. All 34 tests pass in each
   configuration. Other binary C-to-SQL target conversions remain open.
+- Audit batch 259 validates `SQL_C_CHAR` and `SQL_C_WCHAR` input bound to
+  `SQL_TYPE_TIMESTAMP` using the [ODBC character-to-timestamp rule](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/c-to-sql-character).
+  Exact fractions at declared precisions 0, 3, and 6 succeed; a nonzero digit
+  beyond precision returns `22008` before PostgreSQL can round it. Malformed
+  timestamp text returns `22018`; surrounding blanks are accepted. The focused
+  test first reproduced silent fractional loss and PostgreSQL's `22007` for
+  malformed input, then passed without skipping under sanitizer, PostgreSQL
+  Driver Manager, and iODBC. All 34 tests pass in each configuration. Other
+  character-to-temporal conversions and strict literal-form normalization
+  remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

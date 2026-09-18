@@ -95,6 +95,16 @@ const char* invalid_temporal_parameter_state(
       : SQLSTATE_INVALID_DATETIME_FORMAT;
 }
 
+std::optional<std::uint32_t> timestamp_fractional_quantum(
+    SQLSMALLINT precision) {
+  if (precision < 0 || precision > 6) return std::nullopt;
+  std::uint32_t quantum = 1000000000u;
+  for (SQLSMALLINT digit = 0; digit < precision; ++digit) {
+    quantum /= 10u;
+  }
+  return quantum;
+}
+
 std::string default_driver_name() {
 #ifdef ODBCPP_ENABLE_REDSHIFT
   return "ODBCPP Redshift";
@@ -3174,17 +3184,14 @@ SQLRETURN ODBCStatement::execute() {
           const bool character_target = target == QueryParameterType::Text;
           std::uint32_t fractional_quantum = 1000u;
           if (target == QueryParameterType::Timestamp) {
-            if (implementation.precision < 0 ||
-                implementation.precision > 6) {
+            const auto quantum = timestamp_fractional_quantum(
+                implementation.precision);
+            if (!quantum) {
               set_error(SQLSTATE_INVALID_PRECISION_OR_SCALE,
                         "Unsupported timestamp parameter precision");
               return complete_parameter_set(SQL_ERROR);
             }
-            fractional_quantum = 1000000000u;
-            for (SQLSMALLINT digit = 0;
-                 digit < implementation.precision; ++digit) {
-              fractional_quantum /= 10u;
-            }
+            fractional_quantum = *quantum;
           }
           if (!character_target &&
               timestamp.fraction % fractional_quantum != 0) {
@@ -3241,6 +3248,33 @@ SQLRETURN ODBCStatement::execute() {
         set_error(SQLSTATE_GENERAL_ERROR,
                   "Unsupported C parameter type");
         return complete_parameter_set(SQL_ERROR);
+      }
+
+      if ((value_type == SQL_C_CHAR || value_type == SQL_C_WCHAR) &&
+          query_param.type ==
+              rs::core::database::QueryParameterType::Timestamp) {
+        const auto quantum = timestamp_fractional_quantum(
+            implementation.precision);
+        if (!quantum) {
+          set_error(SQLSTATE_INVALID_PRECISION_OR_SCALE,
+                    "Unsupported timestamp parameter precision");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        SQL_TIMESTAMP_STRUCT parsed{};
+        const auto converted = TextDataConverter::convert_data(
+            value, SQL_C_TYPE_TIMESTAMP, &parsed, sizeof(parsed), nullptr,
+            nullptr);
+        if (converted == SQL_ERROR) {
+          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Invalid character timestamp parameter value");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        if (converted == SQL_SUCCESS_WITH_INFO ||
+            parsed.fraction % *quantum != 0) {
+          set_error(SQLSTATE_DATETIME_FIELD_OVERFLOW,
+                    "Character timestamp fraction exceeds parameter precision");
+          return complete_parameter_set(SQL_ERROR);
+        }
       }
 
       query_param.value = std::move(value);
