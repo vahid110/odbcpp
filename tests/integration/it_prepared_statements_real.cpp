@@ -632,6 +632,7 @@ TEST_F(PreparedStatementIntegrationTest,
     expect_error("2024-02-29 12:34:56.1234560001", 6, "22008");
     expect_error("not-a-timestamp", 6, "22018");
     expect_error("2023-02-29 12:34:56", 6, "22018");
+    expect_error("25:00:00", 6, "22018");
 
     std::vector<SQLWCHAR> wide_input;
     const auto bind_wide = [&](const char* value) {
@@ -657,6 +658,39 @@ TEST_F(PreparedStatementIntegrationTest,
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("22008", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       TimeOnlyCharacterTimestampParameterUsesCurrentLocalDate) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQLLEN indicator = SQL_NTS;
+    char input[] = " 12:34:56.123 ";
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_CHAR, SQL_TYPE_TIMESTAMP, 23, 3,
+        input, 0, &indicator));
+    const auto before_time = std::time(nullptr);
+    const auto* before_calendar = std::localtime(&before_time);
+    ASSERT_NE(nullptr, before_calendar);
+    const std::tm before = *before_calendar;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_TIMESTAMP_STRUCT output{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIMESTAMP,
+        &output, sizeof(output), nullptr));
+    const auto after_time = std::time(nullptr);
+    const auto* after_calendar = std::localtime(&after_time);
+    ASSERT_NE(nullptr, after_calendar);
+    const std::tm after = *after_calendar;
+    const auto matches = [&](const std::tm& calendar) {
+        return output.year == calendar.tm_year + 1900 &&
+            output.month == calendar.tm_mon + 1 &&
+            output.day == calendar.tm_mday;
+    };
+    EXPECT_TRUE(matches(before) || matches(after));
+    EXPECT_EQ(12, output.hour);
+    EXPECT_EQ(34, output.minute);
+    EXPECT_EQ(56, output.second);
+    EXPECT_EQ(123000000u, output.fraction);
 }
 
 TEST_F(PreparedStatementIntegrationTest,

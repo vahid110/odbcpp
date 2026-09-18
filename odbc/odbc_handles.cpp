@@ -3275,6 +3275,25 @@ SQLRETURN ODBCStatement::execute() {
                     "Character timestamp fraction exceeds parameter precision");
           return complete_parameter_set(SQL_ERROR);
         }
+        const auto trimmed = ConnectionString::trim(value);
+        const bool time_only = trimmed.size() >= 8 &&
+            trimmed[2] == ':' && trimmed[5] == ':' &&
+            (trimmed.size() == 8 ||
+             (trimmed[8] == '.' && trimmed.size() > 9 &&
+              std::all_of(trimmed.begin() + 9, trimmed.end(),
+                          [](char digit) {
+                            return digit >= '0' && digit <= '9';
+                          })));
+        if (time_only) {
+          const auto date = format_date_parameter(SQL_DATE_STRUCT{
+              parsed.year, parsed.month, parsed.day});
+          if (!date) {
+            set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                      "Current local date is unavailable for timestamp");
+            return complete_parameter_set(SQL_ERROR);
+          }
+          value = *date + " " + trimmed;
+        }
       }
 
       query_param.value = std::move(value);
