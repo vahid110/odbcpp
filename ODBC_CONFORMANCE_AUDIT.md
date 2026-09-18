@@ -1729,6 +1729,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   skipping under sanitizer, PostgreSQL Driver Manager, and iODBC. All 34 tests
   pass in each configuration. Other nonstandard literal forms and the wider
   C-to-SQL conversion matrix remain open.
+- Audit batch 264 rejects ISO-style `T` separators in character inputs bound
+  to ODBC date, time, or timestamp SQL parameters; the [ODBC timestamp literal
+  form](https://learn.microsoft.com/en-us/sql/odbc/reference/develop-app/date-time-and-timestamp-literals)
+  uses a space between date and time. A focused test first reproduced silent
+  acceptance and an incorrect `22008` diagnostic, then verified `22018` for
+  narrow inputs to all three targets and wide timestamp input. It passed
+  without skipping under sanitizer, PostgreSQL Driver Manager, and iODBC;
+  all 34 tests pass in each configuration. Other nonstandard literal forms
+  and the wider C-to-SQL conversion matrix remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

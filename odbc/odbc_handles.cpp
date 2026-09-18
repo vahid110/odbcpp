@@ -118,6 +118,11 @@ bool has_temporal_timezone_suffix(const std::string& value) {
       text.find_first_of("+-", time_start + 8) != std::string::npos;
 }
 
+bool has_temporal_t_separator(const std::string& value) {
+  const auto text = ConnectionString::trim(value);
+  return text.size() >= 19 && text[10] == 'T';
+}
+
 std::string default_driver_name() {
 #ifdef ODBCPP_ENABLE_REDSHIFT
   return "ODBCPP Redshift";
@@ -3270,9 +3275,10 @@ SQLRETURN ODBCStatement::execute() {
           (query_param.type == QueryParameterType::Date ||
            query_param.type == QueryParameterType::Time ||
            query_param.type == QueryParameterType::Timestamp) &&
-          has_temporal_timezone_suffix(value)) {
+          (has_temporal_timezone_suffix(value) ||
+           has_temporal_t_separator(value))) {
         set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                  "ODBC temporal parameter literal cannot have a timezone");
+                  "Invalid ODBC temporal parameter literal form");
         return complete_parameter_set(SQL_ERROR);
       }
       if (character_input && query_param.type == QueryParameterType::Date) {

@@ -842,6 +842,39 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       CharacterTemporalParametersRejectIsoTSeparator) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQLLEN indicator = SQL_NTS;
+    SQLCHAR state[6]{};
+    for (const auto sql_type : {SQL_TYPE_DATE, SQL_TYPE_TIME,
+                                SQL_TYPE_TIMESTAMP}) {
+        char input[] = "2024-02-29T12:34:56";
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_CHAR, sql_type, 26,
+            sql_type == SQL_TYPE_TIMESTAMP ? 6 : 0, input, 0, &indicator));
+        const auto result = SQLExecute(hstmt);
+        EXPECT_EQ(SQL_ERROR, result);
+        if (result != SQL_ERROR) {
+            SQLCloseCursor(hstmt);
+            continue;
+        }
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
+    }
+
+    SQLWCHAR wide_input[] = {'2', '0', '2', '4', '-', '0', '2', '-', '2', '9',
+                             'T', '1', '2', ':', '3', '4', ':', '5', '6', 0};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_WCHAR, SQL_TYPE_TIMESTAMP, 26, 6,
+        wide_input, 0, &indicator));
+    ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        TemporalParameterRejectsUnsupportedFractionalPrecision) {
     SQL_TIMESTAMP_STRUCT input{2024, 2, 29, 12, 34, 56, 0};
     SQLCHAR state[6]{};
