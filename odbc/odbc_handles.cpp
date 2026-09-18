@@ -3227,6 +3227,13 @@ SQLRETURN ODBCStatement::execute() {
                     "Invalid binary parameter length");
           return complete_parameter_set(SQL_ERROR);
         }
+        if (query_param.type ==
+                rs::core::database::QueryParameterType::Binary &&
+            static_cast<SQLULEN>(length) > implementation.length) {
+          set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                    "Binary parameter exceeds SQL binary length");
+          return complete_parameter_set(SQL_ERROR);
+        }
         value = TextDataConverter::encode_binary(std::span<const std::byte>(
             static_cast<const std::byte*>(application.data_ptr),
             static_cast<std::size_t>(length)));

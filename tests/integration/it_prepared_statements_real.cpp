@@ -67,6 +67,40 @@ TEST_F(PreparedStatementIntegrationTest, BinaryParameterRoundTripsAsBytea) {
     EXPECT_EQ(0, std::memcmp(input, output, sizeof(input)));
 }
 
+TEST_F(PreparedStatementIntegrationTest,
+       BinaryParameterHonorsDeclaredSqlLength) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    unsigned char input[]{0x00, 0x01, 0x7f, 0xff};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_BINARY, SQL_VARBINARY, sizeof(input), 0,
+        input, sizeof(input), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    unsigned char output[sizeof(input)]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BINARY,
+        output, sizeof(output), nullptr));
+    EXPECT_EQ(0, std::memcmp(input, output, sizeof(input)));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR state[6]{};
+    for (const SQLULEN short_width : {
+             static_cast<SQLULEN>(sizeof(input) - 1),
+             static_cast<SQLULEN>(0)}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_BINARY, SQL_VARBINARY, short_width, 0,
+            input, sizeof(input), nullptr));
+        const auto result = SQLExecute(hstmt);
+        EXPECT_EQ(SQL_ERROR, result);
+        if (result != SQL_ERROR) {
+            SQLCloseCursor(hstmt);
+            continue;
+        }
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
+    }
+}
+
 TEST_F(PreparedStatementIntegrationTest, DateStructParameterRoundTrips) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
     SQL_DATE_STRUCT input{2024, 2, 29};
