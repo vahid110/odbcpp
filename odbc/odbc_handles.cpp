@@ -63,24 +63,29 @@ bool is_character_sql_type(SQLSMALLINT sql_type) {
   }
 }
 
-bool exact_numeric_character_buffer_fits(SQLSMALLINT sql_type,
-                                         SQLSMALLINT target_type,
-                                         std::string_view value,
-                                         SQLLEN buffer_length,
-                                         std::size_t offset = 0) {
+bool numeric_character_buffer_fits(SQLSMALLINT sql_type,
+                                   SQLSMALLINT target_type,
+                                   std::string_view value,
+                                   SQLLEN buffer_length,
+                                   std::size_t offset = 0) {
   const bool integer_type = sql_type == SQL_TINYINT ||
       sql_type == SQL_SMALLINT || sql_type == SQL_INTEGER ||
       sql_type == SQL_BIGINT;
   const bool decimal_type = sql_type == SQL_DECIMAL || sql_type == SQL_NUMERIC;
-  if ((!integer_type && !decimal_type) ||
+  const bool approximate_type = sql_type == SQL_REAL || sql_type == SQL_FLOAT ||
+      sql_type == SQL_DOUBLE;
+  if ((!integer_type && !decimal_type && !approximate_type) ||
       (target_type != SQL_C_CHAR && target_type != SQL_C_WCHAR)) {
     return true;
   }
   const auto unit_size = target_type == SQL_C_WCHAR
       ? sizeof(SQLWCHAR) : 1;
-  const auto decimal_point = decimal_type
+  const auto decimal_point = (decimal_type || approximate_type)
       ? value.find('.') : std::string_view::npos;
-  const auto whole_length = decimal_point == std::string_view::npos
+  // A prefix of scientific notation can change the number's magnitude.
+  const auto scientific = approximate_type &&
+      value.find_first_of("eE") != std::string_view::npos;
+  const auto whole_length = scientific || decimal_point == std::string_view::npos
       ? value.size() : decimal_point;
   if (offset >= whole_length) return true;
   return static_cast<std::size_t>(buffer_length) / unit_size >
@@ -2756,7 +2761,7 @@ SQLRETURN ODBCStatement::fetch() {
       }
       const auto& conversion_value = formatted_text ? *formatted_text : *cell;
       SQLLEN conversion_length = binding.octet_length;
-      if (!exact_numeric_character_buffer_fits(
+      if (!numeric_character_buffer_fits(
               sql_type, target_type, conversion_value, conversion_length)) {
         set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
                   "Numeric whole digits do not fit in the character buffer");
@@ -2963,7 +2968,7 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     }
   }
   const auto& character_cell = formatted_text ? *formatted_text : *cell;
-  if (!exact_numeric_character_buffer_fits(
+  if (!numeric_character_buffer_fits(
           sql_type, effective_target_type, character_cell, buffer_length,
           offset)) {
     set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,

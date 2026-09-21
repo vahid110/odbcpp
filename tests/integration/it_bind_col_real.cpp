@@ -1385,6 +1385,79 @@ TEST_F(BindColIntegrationTest, DecimalTextCanTruncateOnlyFractionalDigits) {
     EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
 }
 
+TEST_F(BindColIntegrationTest, ApproximateNumericTextPreservesMagnitude) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT 1234.56::double precision, "
+                  "1.23e+30::double precision, 1.23e-30::double precision",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLCHAR state[6]{};
+    SQLLEN length = 91;
+    char tiny[4]{'x', 'x', 'x', 'x'};
+    EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        tiny, sizeof(tiny), &length));
+    EXPECT_EQ('x', tiny[0]);
+    EXPECT_EQ(91, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    char whole[5]{};
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        whole, sizeof(whole), &length));
+    EXPECT_STREQ("1234", whole);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01004", reinterpret_cast<char*>(state));
+    char fraction[8]{};
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        fraction, sizeof(fraction), &length));
+    EXPECT_STREQ(".56", fraction);
+
+    char exponent_tiny[5]{'x', 'x', 'x', 'x', 'x'};
+    length = 92;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 2, SQL_C_CHAR,
+        exponent_tiny, sizeof(exponent_tiny), &length));
+    EXPECT_EQ('x', exponent_tiny[0]);
+    EXPECT_EQ(92, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    char exponent[32]{};
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 2, SQL_C_CHAR,
+        exponent, sizeof(exponent), &length));
+    EXPECT_STREQ("1.23e+30", exponent);
+
+    SQLWCHAR exponent_wide_tiny[5]{'x', 'x', 'x', 'x', 'x'};
+    length = 93;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 3, SQL_C_WCHAR,
+        exponent_wide_tiny, sizeof(exponent_wide_tiny), &length));
+    EXPECT_EQ(static_cast<SQLWCHAR>('x'), exponent_wide_tiny[0]);
+    EXPECT_EQ(93, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    SQLWCHAR exponent_wide[32]{};
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 3, SQL_C_WCHAR,
+        exponent_wide, sizeof(exponent_wide), &length));
+    EXPECT_EQ(static_cast<SQLWCHAR>('1'), exponent_wide[0]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('e'), exponent_wide[4]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('-'), exponent_wide[5]);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT 1.23e+30::double precision", SQL_NTS));
+    char bound_tiny[6]{'x', 'x', 'x', 'x', 'x', 'x'};
+    SQLLEN bound_length = 94;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_CHAR,
+        bound_tiny, sizeof(bound_tiny), &bound_length));
+    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+    EXPECT_EQ('x', bound_tiny[0]);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+}
+
 TEST_F(BindColIntegrationTest, FailedGetDataDoesNotDiscardPartialOffset) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 'abcdef'::text, 'other'::text", SQL_NTS));

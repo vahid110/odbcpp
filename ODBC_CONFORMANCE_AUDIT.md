@@ -1892,7 +1892,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   into fractional digits with smaller buffers, and rejection of an undersized
   bound buffer for a negative decimal. The focused test runs without skipping
   and all 34 tests pass under sanitizer, PostgreSQL Driver Manager, and iODBC.
-  Approximate numeric formatting remains open.
+- Audit batch 282 applies the same whole-part rule to approximate numeric
+  results. PostgreSQL's scientific notation requires the complete formatted
+  value because truncating before the exponent would change its magnitude;
+  ordinary decimal notation can still truncate fractional digits. The focused
+  PostgreSQL test covers narrow/wide scientific text, safe retry, a bound
+  buffer error, and fractional truncation with `01004`. The focused test runs
+  without skipping and all 34 tests pass under sanitizer, PostgreSQL Driver
+  Manager, and iODBC. Broader approximate numeric formatting and special
+  values remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
