@@ -1884,7 +1884,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   then covered exact-fit retries, signed values, and a too-small bound wide
   column. The focused test runs without skipping and all 34 tests pass under
   sanitizer, PostgreSQL Driver Manager, and iODBC. Decimal and approximate
-  numeric truncation rules remain open.
+  numeric truncation rules were left for subsequent batches.
+- Audit batch 281 extends the whole-part buffer check to exact decimal and
+  numeric SQL results. A PostgreSQL test first reproduced `01004` while
+  discarding whole digits, then verified `22003` for undersized narrow/wide
+  buffers, a safe retry that returns the whole part with `01004`, continuation
+  into fractional digits with smaller buffers, and rejection of an undersized
+  bound buffer for a negative decimal. The focused test runs without skipping
+  and all 34 tests pass under sanitizer, PostgreSQL Driver Manager, and iODBC.
+  Approximate numeric formatting remains open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

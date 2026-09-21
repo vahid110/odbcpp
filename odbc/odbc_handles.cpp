@@ -63,20 +63,28 @@ bool is_character_sql_type(SQLSMALLINT sql_type) {
   }
 }
 
-bool integer_character_buffer_fits(SQLSMALLINT sql_type,
-                                   SQLSMALLINT target_type,
-                                   std::string_view value,
-                                   SQLLEN buffer_length) {
+bool exact_numeric_character_buffer_fits(SQLSMALLINT sql_type,
+                                         SQLSMALLINT target_type,
+                                         std::string_view value,
+                                         SQLLEN buffer_length,
+                                         std::size_t offset = 0) {
   const bool integer_type = sql_type == SQL_TINYINT ||
       sql_type == SQL_SMALLINT || sql_type == SQL_INTEGER ||
       sql_type == SQL_BIGINT;
-  if (!integer_type ||
+  const bool decimal_type = sql_type == SQL_DECIMAL || sql_type == SQL_NUMERIC;
+  if ((!integer_type && !decimal_type) ||
       (target_type != SQL_C_CHAR && target_type != SQL_C_WCHAR)) {
     return true;
   }
   const auto unit_size = target_type == SQL_C_WCHAR
       ? sizeof(SQLWCHAR) : 1;
-  return static_cast<std::size_t>(buffer_length) / unit_size > value.size();
+  const auto decimal_point = decimal_type
+      ? value.find('.') : std::string_view::npos;
+  const auto whole_length = decimal_point == std::string_view::npos
+      ? value.size() : decimal_point;
+  if (offset >= whole_length) return true;
+  return static_cast<std::size_t>(buffer_length) / unit_size >
+      whole_length - offset;
 }
 
 SQLRETURN convert_character_result_to_binary(std::string_view value,
@@ -2748,10 +2756,10 @@ SQLRETURN ODBCStatement::fetch() {
       }
       const auto& conversion_value = formatted_text ? *formatted_text : *cell;
       SQLLEN conversion_length = binding.octet_length;
-      if (!integer_character_buffer_fits(
+      if (!exact_numeric_character_buffer_fits(
               sql_type, target_type, conversion_value, conversion_length)) {
         set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                  "Integer result does not fit in the character buffer");
+                  "Numeric whole digits do not fit in the character buffer");
         if (row_status) {
           store_application_value(
               row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
@@ -2955,10 +2963,11 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     }
   }
   const auto& character_cell = formatted_text ? *formatted_text : *cell;
-  if (!integer_character_buffer_fits(
-          sql_type, effective_target_type, character_cell, buffer_length)) {
+  if (!exact_numeric_character_buffer_fits(
+          sql_type, effective_target_type, character_cell, buffer_length,
+          offset)) {
     set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-              "Integer result does not fit in the character buffer");
+              "Numeric whole digits do not fit in the character buffer");
     return SQL_ERROR;
   }
   if (effective_target_type == SQL_C_CHAR) {
