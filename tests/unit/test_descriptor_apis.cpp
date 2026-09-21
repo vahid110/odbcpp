@@ -437,6 +437,27 @@ TEST(ExplicitDescriptorApiTest, GetAndSetRecordRoundTripAndValidate) {
     EXPECT_EQ(0, scale);
     EXPECT_EQ(SQL_NULLABLE_UNKNOWN, nullable);
 
+    SQLCHAR length_state[6]{};
+    EXPECT_EQ(SQL_ERROR, SQLSetDescField(
+        descriptor, 1, SQL_DESC_OCTET_LENGTH,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::intptr_t>(-1)), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_DESC, descriptor, 1, length_state,
+        nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY090", reinterpret_cast<char*>(length_state));
+    SQLLEN retained_length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        descriptor, 1, SQL_DESC_OCTET_LENGTH,
+        &retained_length, 0, nullptr));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), retained_length);
+    EXPECT_EQ(SQL_ERROR, SQLSetDescRec(
+        descriptor, 1, SQL_C_SLONG, 0, -1, 10, 0,
+        &value, &length_or_indicator, &length_or_indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
+        SQL_HANDLE_DESC, descriptor, 1, length_state,
+        nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY090", reinterpret_cast<char*>(length_state));
+
     SQLPOINTER data = nullptr;
     SQLLEN* octet_length = nullptr;
     SQLLEN* indicator = nullptr;

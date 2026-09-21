@@ -1946,6 +1946,13 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   covered; unit assertions pin the conversion matrix. The focused tests run
   without skipping and all 34 tests pass under sanitizer, PostgreSQL Driver
   Manager, and iODBC.
+- Audit batch 288 rejects negative descriptor `SQL_DESC_OCTET_LENGTH` values
+  through both `SQLSetDescField` and `SQLSetDescRec` with `HY090`. A unit
+  regression first showed the field setter accepting `-1`; the corrected
+  path rejects it before changing the existing record length. The record
+  setter is checked independently, preventing invalid application buffer
+  lengths from reaching fetch-time conversion. The focused test and all 34
+  tests pass under sanitizer, PostgreSQL Driver Manager, and iODBC.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

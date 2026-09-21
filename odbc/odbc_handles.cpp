@@ -1943,6 +1943,11 @@ SQLRETURN ODBCDescriptor::set_field(
               "Descriptor field is read-only or undefined");
     return SQL_ERROR;
   }
+  if (field_identifier == SQL_DESC_OCTET_LENGTH && numeric_signed < 0) {
+    set_error(SQLSTATE_INVALID_STRING_LENGTH,
+              "Descriptor buffer length cannot be negative");
+    return SQL_ERROR;
+  }
 
   std::optional<SQLSMALLINT> new_concise_type;
   if (field_identifier == SQL_DESC_CONCISE_TYPE) {
@@ -2138,6 +2143,11 @@ SQLRETURN ODBCDescriptor::set_record(
   if (record_number < 1) {
     set_error(SQLSTATE_INVALID_PARAMETER_NUMBER,
               "Invalid descriptor record number");
+    return SQL_ERROR;
+  }
+  if (length < 0) {
+    set_error(SQLSTATE_INVALID_STRING_LENGTH,
+              "Descriptor buffer length cannot be negative");
     return SQL_ERROR;
   }
   const auto concise_type = concise_type_for(type, subtype);
