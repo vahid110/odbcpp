@@ -184,6 +184,61 @@ TEST_F(PreparedStatementIntegrationTest,
     expect_length(SQL_C_WCHAR, SQL_WVARCHAR, wide, 4);
 }
 
+TEST_F(PreparedStatementIntegrationTest,
+       CharacterParameterHonorsDeclaredNarrowSqlByteLength) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQLLEN input_length = SQL_NTS;
+    SQLCHAR state[6]{};
+    char ascii[] = "abc";
+    for (const auto sql_type : {SQL_CHAR, SQL_VARCHAR, SQL_LONGVARCHAR}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1,
+            SQL_PARAM_INPUT, SQL_C_CHAR, sql_type, 3, 0,
+            ascii, 0, &input_length));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        char output[8]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+            output, sizeof(output), nullptr));
+        EXPECT_STREQ("abc", output);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1,
+            SQL_PARAM_INPUT, SQL_C_CHAR, sql_type, 2, 0,
+            ascii, 0, &input_length));
+        const auto result = SQLExecute(hstmt);
+        EXPECT_EQ(SQL_ERROR, result);
+        if (result != SQL_ERROR) {
+            SQLCloseCursor(hstmt);
+            continue;
+        }
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
+    }
+
+    SQLWCHAR wide[] = {0x00e9, 0};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_WCHAR, SQL_VARCHAR, 2, 0, wide, 0, &input_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    char output[8]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        output, sizeof(output), nullptr));
+    EXPECT_STREQ("\xc3\xa9", output);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_WCHAR, SQL_VARCHAR, 1, 0, wide, 0, &input_length));
+    const auto result = SQLExecute(hstmt);
+    EXPECT_EQ(SQL_ERROR, result);
+    if (result != SQL_ERROR) {
+        SQLCloseCursor(hstmt);
+        return;
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
+}
+
 TEST_F(PreparedStatementIntegrationTest, DateStructParameterRoundTrips) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
     SQL_DATE_STRUCT input{2024, 2, 29};

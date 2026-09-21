@@ -3271,6 +3271,15 @@ SQLRETURN ODBCStatement::execute() {
       const bool character_input =
           value_type == SQL_C_CHAR || value_type == SQL_C_WCHAR;
       using rs::core::database::QueryParameterType;
+      if (character_input && implementation.length > 0 &&
+          (implementation.concise_type == SQL_CHAR ||
+           implementation.concise_type == SQL_VARCHAR ||
+           implementation.concise_type == SQL_LONGVARCHAR) &&
+          static_cast<SQLULEN>(value.size()) > implementation.length) {
+        set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                  "Character parameter exceeds SQL byte length");
+        return complete_parameter_set(SQL_ERROR);
+      }
       if (character_input && query_param.type == QueryParameterType::Binary) {
         std::string binary_value("\\x");
         binary_value.append(value, 0, value.size() / 2 * 2);
