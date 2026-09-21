@@ -135,11 +135,23 @@ TEST_F(PreparedStatementIntegrationTest,
     input_length = SQL_NTS;
     SQLWCHAR wide_hex[] = {'0', '0', 'f', 'F', 'a', 0};
     expect_bytes(SQL_C_WCHAR, wide_hex, 2, {0x00, 0xff});
+    SQLWCHAR wide_odd_nonhex[] = {'0', '0', 0x00e9, 0};
+    expect_bytes(SQL_C_WCHAR, wide_odd_nonhex, 1, {0x00});
+    std::vector<SQLWCHAR> wide_odd_supplementary{'0', '0'};
+    if constexpr (sizeof(SQLWCHAR) == 2) {
+        wide_odd_supplementary.push_back(static_cast<SQLWCHAR>(0xd83d));
+        wide_odd_supplementary.push_back(static_cast<SQLWCHAR>(0xde00));
+    } else {
+        wide_odd_supplementary.push_back(static_cast<SQLWCHAR>(0x1f600));
+    }
+    wide_odd_supplementary.push_back(0);
+    expect_bytes(SQL_C_WCHAR, wide_odd_supplementary.data(), 1, {0x00});
 
-    const auto expect_error = [&](char* input, SQLULEN sql_length,
+    const auto expect_error = [&](SQLSMALLINT c_type, SQLPOINTER input,
+                                  SQLULEN sql_length,
                                   const char* expected_state) {
         ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
-            SQL_C_CHAR, SQL_VARBINARY, sql_length, 0,
+            c_type, SQL_VARBINARY, sql_length, 0,
             input, 0, &input_length));
         const auto result = SQLExecute(hstmt);
         EXPECT_EQ(SQL_ERROR, result);
@@ -153,9 +165,13 @@ TEST_F(PreparedStatementIntegrationTest,
         EXPECT_STREQ(expected_state, reinterpret_cast<char*>(state));
     };
     char invalid_hex[] = "0G";
-    expect_error(invalid_hex, 1, "22018");
+    expect_error(SQL_C_CHAR, invalid_hex, 1, "22018");
     char oversized_hex[] = "00117f";
-    expect_error(oversized_hex, 2, "22001");
+    expect_error(SQL_C_CHAR, oversized_hex, 2, "22001");
+    char narrow_nonhex[] = "00\xc3\xa9";
+    expect_error(SQL_C_CHAR, narrow_nonhex, 2, "22018");
+    SQLWCHAR wide_invalid_pair[] = {'0', 0x00e9, 0};
+    expect_error(SQL_C_WCHAR, wide_invalid_pair, 1, "22018");
 }
 
 TEST_F(PreparedStatementIntegrationTest,

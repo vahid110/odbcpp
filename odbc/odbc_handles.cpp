@@ -3301,8 +3301,22 @@ SQLRETURN ODBCStatement::execute() {
         }
       }
       if (character_input && query_param.type == QueryParameterType::Binary) {
+        std::size_t hex_length = value.size() / 2 * 2;
+        if (value_type == SQL_C_WCHAR) {
+          std::size_t character_count = 0;
+          std::size_t last_character_start = 0;
+          for (std::size_t position = 0; position < value.size(); ++position) {
+            const auto byte = static_cast<unsigned char>(value[position]);
+            if ((byte & 0xc0) != 0x80) {
+              ++character_count;
+              last_character_start = position;
+            }
+          }
+          hex_length = character_count % 2 == 0
+              ? value.size() : last_character_start;
+        }
         std::string binary_value("\\x");
-        binary_value.append(value, 0, value.size() / 2 * 2);
+        binary_value.append(value, 0, hex_length);
         const auto decoded = TextDataConverter::decode_binary(binary_value);
         if (!decoded) {
           set_error(SQLSTATE_INVALID_CHARACTER_VALUE,

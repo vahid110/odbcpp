@@ -1786,6 +1786,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   unixODBC, iODBC, and Windows. The focused test runs without skipping and all
   34 tests pass under sanitizer, PostgreSQL Driver Manager, and iODBC.
   `ColumnSize=0` and the wider conversion matrix remain open.
+- Audit batch 270 fixes the odd-length [character-to-binary conversion](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/c-to-sql-character)
+  for `SQL_C_WCHAR`: the final unmatched Unicode character is ignored as one
+  character, not truncated by one UTF-8 byte. BMP and supplementary trailing
+  characters now preserve preceding hex pairs; nonhex characters within a
+  complete pair still return `22018`, and narrow byte-oriented input retains
+  its existing behavior. The focused PostgreSQL test first reproduced the
+  incorrect `22018`, then passed without skipping under sanitizer, PostgreSQL
+  Driver Manager, and iODBC. All 34 tests pass in each configuration.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
