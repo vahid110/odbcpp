@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <clocale>
@@ -2234,6 +2235,58 @@ TEST_F(BindColIntegrationTest, FloatingConversionRejectsUnderflowToZero) {
         hstmt, 6, SQL_C_DOUBLE, &small_double, sizeof(small_double), nullptr));
     EXPECT_GT(small_float, 0);
     EXPECT_GT(small_double, 0);
+}
+
+TEST_F(BindColIntegrationTest, FloatingSpecialValuesPreserveIeeeResults) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT 'NaN'::double precision, "
+                  "'Infinity'::double precision, "
+                  "'-Infinity'::real", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLDOUBLE nan_value = 7.0;
+    SQLLEN length = 91;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_DOUBLE,
+        &nan_value, sizeof(nan_value), &length));
+    EXPECT_TRUE(std::isnan(nan_value));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(nan_value)), length);
+
+    SQLDOUBLE positive = 7.0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 2, SQL_C_DOUBLE,
+        &positive, sizeof(positive), &length));
+    EXPECT_TRUE(std::isinf(positive));
+    EXPECT_GT(positive, 0);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(positive)), length);
+
+    SQLREAL negative = 7.0f;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 3, SQL_C_FLOAT,
+        &negative, sizeof(negative), &length));
+    EXPECT_TRUE(std::isinf(negative));
+    EXPECT_LT(negative, 0);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(negative)), length);
+
+    SQLINTEGER integer = 73;
+    length = 92;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 2, SQL_C_SLONG,
+        &integer, sizeof(integer), &length));
+    EXPECT_EQ(73, integer);
+    EXPECT_EQ(92, length);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT 'Infinity'::double precision", SQL_NTS));
+    SQLREAL bound = 0;
+    SQLLEN bound_length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_FLOAT,
+        &bound, sizeof(bound), &bound_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_TRUE(std::isinf(bound));
+    EXPECT_GT(bound, 0);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(bound)), bound_length);
 }
 
 TEST_F(BindColIntegrationTest, BoundFloatingUnderflowPreservesOutput) {

@@ -360,11 +360,22 @@ int hex_value(char ch) {
 SQLRETURN convert_floating(const std::string& value, SQLSMALLINT target_type,
                            void* buffer, SQLLEN* indicator,
                            ConversionIssue* issue) {
-  const auto parsed = parse_number(value, issue);
+  std::optional<long double> parsed;
+  const auto text = trim_whitespace(value);
+  if (text == "NaN") {
+    parsed = std::numeric_limits<long double>::quiet_NaN();
+  } else if (text == "Infinity") {
+    parsed = std::numeric_limits<long double>::infinity();
+  } else if (text == "-Infinity") {
+    parsed = -std::numeric_limits<long double>::infinity();
+  } else {
+    parsed = parse_number(value, issue);
+  }
   if (!parsed) return SQL_ERROR;
   if (target_type == SQL_C_FLOAT) {
-    if (*parsed < -std::numeric_limits<SQLREAL>::max() ||
-        *parsed > std::numeric_limits<SQLREAL>::max()) {
+    if (std::isfinite(*parsed) &&
+        (*parsed < -std::numeric_limits<SQLREAL>::max() ||
+         *parsed > std::numeric_limits<SQLREAL>::max())) {
       if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
       return SQL_ERROR;
     }
@@ -376,8 +387,9 @@ SQLRETURN convert_floating(const std::string& value, SQLSMALLINT target_type,
     std::memcpy(buffer, &converted, sizeof(converted));
     store_indicator(indicator, static_cast<SQLLEN>(sizeof(SQLREAL)));
   } else {
-    if (*parsed < -std::numeric_limits<SQLDOUBLE>::max() ||
-        *parsed > std::numeric_limits<SQLDOUBLE>::max()) {
+    if (std::isfinite(*parsed) &&
+        (*parsed < -std::numeric_limits<SQLDOUBLE>::max() ||
+         *parsed > std::numeric_limits<SQLDOUBLE>::max())) {
       if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
       return SQL_ERROR;
     }

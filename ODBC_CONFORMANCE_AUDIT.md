@@ -1985,6 +1985,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   subsequent supported character retrieval. The focused test runs without
   skipping and all 34 tests pass under sanitizer, PostgreSQL Driver Manager,
   and iODBC.
+- Audit batch 293 accepts PostgreSQL's canonical `NaN`, `Infinity`, and
+  `-Infinity` representations when converting to C floating-point targets.
+  A real PostgreSQL test first reproduced `22003` for `NaN` to `SQL_C_DOUBLE`;
+  it now checks finite and non-finite paths separately, covers positive and
+  negative infinity, bound and retrieved values, indicator sizes, and verifies
+  that conversion to an integral target still fails without changing output.
+  The focused test runs without skipping and all 34 tests pass under sanitizer,
+  PostgreSQL Driver Manager, and iODBC.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
