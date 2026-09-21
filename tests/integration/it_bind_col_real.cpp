@@ -2,6 +2,7 @@
 #include "odbc/odbc_types.h"
 #include "odbc/unicode.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -1057,6 +1058,45 @@ TEST_F(BindColIntegrationTest, BitToNumericBoundColumnsUseZero) {
     EXPECT_EQ(static_cast<SQLLEN>(sizeof(big)), lengths[2]);
     EXPECT_EQ(static_cast<SQLLEN>(sizeof(real)), lengths[3]);
     EXPECT_EQ(static_cast<SQLLEN>(sizeof(double_value)), lengths[4]);
+}
+
+TEST_F(BindColIntegrationTest, BitRejectsTemporalResultTargets) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT true", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLCHAR state[6]{};
+    for (SQLSMALLINT target : {
+             SQL_C_DATE, SQL_C_TYPE_DATE,
+             SQL_C_TIME, SQL_C_TYPE_TIME,
+             SQL_C_TIMESTAMP, SQL_C_TYPE_TIMESTAMP}) {
+        SCOPED_TRACE(target);
+        std::array<unsigned char, sizeof(SQL_TIMESTAMP_STRUCT)> output;
+        output.fill(0x5a);
+        SQLLEN length = 83;
+        EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 1, target,
+            output.data(), static_cast<SQLLEN>(output.size()), &length));
+        EXPECT_EQ(83, length);
+        EXPECT_TRUE(std::all_of(output.begin(), output.end(),
+            [](unsigned char byte) { return byte == 0x5a; }));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+    }
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT false", SQL_NTS));
+    SQL_DATE_STRUCT date{};
+    date.year = 4242;
+    SQLLEN length = 84;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_TYPE_DATE,
+        &date, sizeof(date), &length));
+    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+    EXPECT_EQ(4242, date.year);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
 }
 
 TEST_F(BindColIntegrationTest, FailedGetDataDoesNotDiscardPartialOffset) {

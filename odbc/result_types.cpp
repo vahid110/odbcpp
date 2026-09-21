@@ -115,13 +115,14 @@ bool ResultTypes::is_conversion_supported(SQLSMALLINT sql_type,
     case SQL_C_FLOAT:
     case SQL_C_DOUBLE:
     case SQL_C_BIT:
+      return true;
     case SQL_C_DATE:
     case SQL_C_TYPE_DATE:
     case SQL_C_TIME:
     case SQL_C_TYPE_TIME:
     case SQL_C_TIMESTAMP:
     case SQL_C_TYPE_TIMESTAMP:
-      return true;
+      return sql_type != SQL_BIT;
     case SQL_C_BINARY:
       return sql_type == SQL_BIT || sql_type == SQL_BINARY ||
              sql_type == SQL_VARBINARY ||
