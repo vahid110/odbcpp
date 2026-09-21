@@ -47,7 +47,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLFetchScroll` | A | Partial | unit, integration, DM | Only `SQL_FETCH_NEXT` is supported; keep other orientations honest |
 | `SQLMoreResults` | A | Partial | unit, integration, DM | Result/update-count traversal and close-time discard are covered; error-result sequences remain |
 | `SQLGetData` | A | Partial | integration, DM | Legacy and ODBC 3 temporal C targets, malformed-value diagnostics, per-row/switching-column offsets, and binary-to-character hex chunking are covered; complete conversion/chunking matrices remain |
-| `SQLBindCol` | A | Partial | unit, integration | Invalid C types, negative lengths, and ODBC 3 temporal C targets are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
+| `SQLBindCol` | A | Partial | unit, integration | Invalid C types, negative lengths, ODBC 3 temporal C targets, and binary-to-character hex output are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
 | `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics, ODBC date/time/timestamp-struct input, temporal target rejection and target-specific diagnostics, date/time-to-timestamp and timestamp-to-date/time rules, character-to-date/time and time-only character-to-timestamp, temporal struct character-target lengths, binary SQL-target length, character-to-binary hex conversion, explicit zero-length character inputs, narrow/wide SQL character limits, and struct/character timestamp fractional precision are covered; input arrays, data-at-execution, and full conversion matrix remain |
 | `SQLNumParams` | A | Partial | unit, integration, DM | Prepared statements are server-validated without execution; state, null/output preservation, complex markers, direct execution, and IPD count agreement are covered; cancellation and communication-failure injection remain |
 | `SQLNumResultCols` | A | Partial | unit, integration | Prepared metadata, result sets, update counts, exhausted/closed cursors, delayed PostgreSQL errors, null outputs, and output preservation are covered; cancellation and communication-failure injection remain |
@@ -1801,8 +1801,17 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   a pair. A real PostgreSQL test first reproduced the prefix and split-pair
   defects, then covered narrow and wide chunking, `01004`, completion, and an
   empty binary value without skipping under sanitizer, PostgreSQL Driver
-  Manager, and iODBC. All 34 tests pass in each configuration. Bound-column
-  binary-to-character conversion remains open.
+  Manager, and iODBC. All 34 tests pass in each configuration.
+- Audit batch 272 applies the same binary-to-character formatting to bound
+  columns, using one shared PostgreSQL bytea decoder. On truncation, the
+  effective buffer length is reduced only enough to avoid half a hex pair;
+  the indicator still reports the full converted length. A real PostgreSQL
+  test first reproduced the prefix, wrong lengths, and split pairs; follow-up
+  tests cover tiny narrow and wide buffers, empty values, exact-fit output,
+  and the server's legacy bytea escape representation. The focused tests run
+  without skipping and all 34 tests pass under sanitizer, PostgreSQL Driver
+  Manager, and iODBC. The full conversion matrix and row-array binding remain
+  open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

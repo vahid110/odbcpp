@@ -766,6 +766,73 @@ TEST_F(BindColIntegrationTest,
     EXPECT_EQ(0, remaining);
 }
 
+TEST_F(BindColIntegrationTest,
+       BoundBinaryTextPreservesCompleteHexPairs) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT decode('00ff7f', 'hex'), "
+                  "decode('00ff7f', 'hex'), decode('', 'hex'), "
+                  "decode('00ff7f', 'hex')",
+        SQL_NTS));
+
+    char narrow[4]{'x', 'x', 'x', 'x'};
+    SQLWCHAR wide[4]{'x', 'x', 'x', 'x'};
+    char empty[2]{'x', 'x'};
+    char tiny[2]{'x', 'x'};
+    SQLLEN narrow_length = -1;
+    SQLLEN wide_length = -1;
+    SQLLEN empty_length = -1;
+    SQLLEN tiny_length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_CHAR,
+        narrow, sizeof(narrow), &narrow_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 2, SQL_C_WCHAR,
+        wide, sizeof(wide), &wide_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 3, SQL_C_CHAR,
+        empty, sizeof(empty), &empty_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 4, SQL_C_CHAR,
+        tiny, sizeof(tiny), &tiny_length));
+
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLFetch(hstmt));
+    EXPECT_STREQ("00", narrow);
+    EXPECT_EQ(6, narrow_length);
+    EXPECT_EQ(static_cast<SQLWCHAR>('0'), wide[0]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('0'), wide[1]);
+    EXPECT_EQ(static_cast<SQLWCHAR>(0), wide[2]);
+    EXPECT_EQ(static_cast<SQLLEN>(6 * sizeof(SQLWCHAR)), wide_length);
+    EXPECT_EQ(0, empty[0]);
+    EXPECT_EQ(0, empty_length);
+    EXPECT_EQ(0, tiny[0]);
+    EXPECT_EQ(6, tiny_length);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01004", reinterpret_cast<char*>(state));
+}
+
+TEST_F(BindColIntegrationTest, BoundBinaryTextDecodesLegacyByteaOutput) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SET bytea_output = 'escape'", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT decode('00ff7f', 'hex'), "
+                  "decode('00ff7f', 'hex')", SQL_NTS));
+
+    char narrow[7]{};
+    SQLWCHAR wide[7]{};
+    SQLLEN narrow_length = -1;
+    SQLLEN wide_length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_CHAR,
+        narrow, sizeof(narrow), &narrow_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 2, SQL_C_WCHAR,
+        wide, sizeof(wide), &wide_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_STREQ("00ff7f", narrow);
+    EXPECT_EQ(6, narrow_length);
+    for (std::size_t i = 0; i < 6; ++i) {
+        EXPECT_EQ(static_cast<SQLWCHAR>(narrow[i]), wide[i]);
+    }
+    EXPECT_EQ(static_cast<SQLWCHAR>(0), wide[6]);
+    EXPECT_EQ(static_cast<SQLLEN>(6 * sizeof(SQLWCHAR)), wide_length);
+}
+
 TEST_F(BindColIntegrationTest, FailedGetDataDoesNotDiscardPartialOffset) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 'abcdef'::text, 'other'::text", SQL_NTS));

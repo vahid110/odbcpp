@@ -42,6 +42,13 @@ void store_application_value(T* destination, T value) {
               sizeof(value));
 }
 
+std::optional<std::string> binary_result_as_hex(std::string_view value) {
+  const auto decoded = TextDataConverter::decode_binary(value);
+  if (!decoded) return std::nullopt;
+  return TextDataConverter::encode_binary(
+      std::span<const std::byte>(decoded->data(), decoded->size())).substr(2);
+}
+
 std::string elapsed_milliseconds(std::chrono::steady_clock::time_point start) {
   return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - start).count());
@@ -2629,9 +2636,41 @@ SQLRETURN ODBCStatement::fetch() {
         }
         return SQL_ERROR;
       }
+      const bool binary_as_text =
+          (sql_type == SQL_BINARY || sql_type == SQL_VARBINARY ||
+           sql_type == SQL_LONGVARBINARY) &&
+          (target_type == SQL_C_CHAR || target_type == SQL_C_WCHAR);
+      std::optional<std::string> binary_hex;
+      if (binary_as_text) {
+        binary_hex = binary_result_as_hex(*cell);
+        if (!binary_hex) {
+          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Binary result value has invalid PostgreSQL bytea encoding");
+          if (row_status) {
+            store_application_value(
+                row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
+          }
+          return SQL_ERROR;
+        }
+      }
+      const auto& conversion_value = binary_hex ? *binary_hex : *cell;
+      SQLLEN conversion_length = binding.octet_length;
+      if (binary_as_text && conversion_length > 0) {
+        const auto unit_size = target_type == SQL_C_WCHAR
+            ? sizeof(SQLWCHAR) : 1;
+        const auto units = static_cast<std::size_t>(conversion_length) /
+            unit_size;
+        if (units > 1) {
+          const auto capacity = units - 1;
+          if (capacity < conversion_value.size() && capacity % 2 != 0) {
+            conversion_length = static_cast<SQLLEN>(
+                (units - 1) * unit_size);
+          }
+        }
+      }
       ConversionIssue conversion_issue = ConversionIssue::None;
       SQLRETURN conv_result = TextDataConverter::convert_data(
-          *cell, target_type, binding.data_ptr, binding.octet_length,
+          conversion_value, target_type, binding.data_ptr, conversion_length,
           binding.octet_length_ptr ? binding.octet_length_ptr
                                    : binding.indicator_ptr,
           &conversion_issue);
@@ -2763,14 +2802,12 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
        effective_target_type == SQL_C_WCHAR);
   std::optional<std::string> binary_hex;
   if (binary_as_text) {
-    const auto decoded = TextDataConverter::decode_binary(*cell);
-    if (!decoded) {
+    binary_hex = binary_result_as_hex(*cell);
+    if (!binary_hex) {
       set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
                 "Binary result value has invalid PostgreSQL bytea encoding");
       return SQL_ERROR;
     }
-    binary_hex = TextDataConverter::encode_binary(
-        std::span<const std::byte>(decoded->data(), decoded->size())).substr(2);
   }
   const auto& character_cell = binary_hex ? *binary_hex : *cell;
   if (effective_target_type == SQL_C_CHAR) {
