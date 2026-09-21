@@ -13,6 +13,7 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -40,6 +41,19 @@ template <typename T>
 void store_application_value(T* destination, T value) {
   std::memcpy(reinterpret_cast<std::byte*>(destination), &value,
               sizeof(value));
+}
+
+template <typename T>
+std::string format_floating_parameter(T value) {
+  if (std::isnan(value)) return "NaN";
+  if (std::isinf(value)) return std::signbit(value) ? "-Infinity" : "Infinity";
+  char text[128];
+  const auto [end, error] = std::to_chars(
+      text, text + sizeof(text), value, std::chars_format::general);
+  if (error != std::errc{}) {
+    throw std::runtime_error("Floating parameter formatting failed");
+  }
+  return {text, end};
 }
 
 std::optional<std::string> binary_result_as_hex(std::string_view value) {
@@ -3378,10 +3392,10 @@ SQLRETURN ODBCStatement::execute() {
         value = std::to_string(
             load_application_value<SQLBIGINT>(application.data_ptr));
       } else if (value_type == SQL_C_FLOAT) {
-        value = std::to_string(
+        value = format_floating_parameter(
             load_application_value<SQLREAL>(application.data_ptr));
       } else if (value_type == SQL_C_DOUBLE) {
-        value = std::to_string(
+        value = format_floating_parameter(
             load_application_value<SQLDOUBLE>(application.data_ptr));
       } else if (value_type == SQL_C_BIT) {
         value = *static_cast<unsigned char*>(application.data_ptr) ? "1" : "0";

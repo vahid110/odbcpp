@@ -1993,6 +1993,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   that conversion to an integral target still fails without changing output.
   The focused test runs without skipping and all 34 tests pass under sanitizer,
   PostgreSQL Driver Manager, and iODBC.
+- Audit batch 294 replaces six-decimal `std::to_string` formatting for
+  `SQL_C_FLOAT` and `SQL_C_DOUBLE` input parameters with shortest round-trip
+  C++20 formatting. A real PostgreSQL regression first showed a precise
+  double and float being rounded and `1e-7` becoming zero; it now checks exact
+  float/double round trips, negative zero, and IEEE special values through
+  prepared parameters. The focused tests run without skipping and all 34
+  tests pass under sanitizer, PostgreSQL Driver Manager, and iODBC. Other
+  C-to-SQL conversion combinations remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

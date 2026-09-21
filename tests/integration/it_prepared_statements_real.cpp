@@ -4,11 +4,13 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -68,6 +70,79 @@ TEST_F(PreparedStatementIntegrationTest, BinaryParameterRoundTripsAsBytea) {
         hstmt, 1, SQL_C_BINARY, output, sizeof(output), &output_length));
     EXPECT_EQ(sizeof(input), static_cast<std::size_t>(output_length));
     EXPECT_EQ(0, std::memcmp(input, output, sizeof(input)));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       FloatingParametersRetainRoundTripPrecision) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::double precision, ?::real, "
+                  "?::double precision, ?::double precision", SQL_NTS));
+    SQLDOUBLE precise = 123.45678901234567;
+    SQLREAL single = 0.123456789f;
+    SQLDOUBLE tiny = 0.0000001;
+    SQLDOUBLE negative_zero = -0.0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_DOUBLE, SQL_DOUBLE, 0, 0, &precise, sizeof(precise), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 2, SQL_PARAM_INPUT,
+        SQL_C_FLOAT, SQL_REAL, 0, 0, &single, sizeof(single), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 3, SQL_PARAM_INPUT,
+        SQL_C_DOUBLE, SQL_DOUBLE, 0, 0, &tiny, sizeof(tiny), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 4, SQL_PARAM_INPUT,
+        SQL_C_DOUBLE, SQL_DOUBLE, 0, 0, &negative_zero,
+        sizeof(negative_zero), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLDOUBLE precise_result = 0;
+    SQLREAL single_result = 0;
+    SQLDOUBLE tiny_result = 0;
+    SQLDOUBLE zero_result = 1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_DOUBLE,
+        &precise_result, sizeof(precise_result), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 2, SQL_C_FLOAT,
+        &single_result, sizeof(single_result), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 3, SQL_C_DOUBLE,
+        &tiny_result, sizeof(tiny_result), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 4, SQL_C_DOUBLE,
+        &zero_result, sizeof(zero_result), nullptr));
+    EXPECT_EQ(precise, precise_result);
+    EXPECT_EQ(single, single_result);
+    EXPECT_EQ(tiny, tiny_result);
+    EXPECT_EQ(0.0, zero_result);
+    EXPECT_TRUE(std::signbit(zero_result));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       FloatingSpecialParametersRetainIeeeValues) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::double precision, ?::double precision, "
+                  "?::real", SQL_NTS));
+    SQLDOUBLE nan = std::numeric_limits<SQLDOUBLE>::quiet_NaN();
+    SQLDOUBLE positive = std::numeric_limits<SQLDOUBLE>::infinity();
+    SQLREAL negative = -std::numeric_limits<SQLREAL>::infinity();
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_DOUBLE, SQL_DOUBLE, 0, 0, &nan, sizeof(nan), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 2, SQL_PARAM_INPUT,
+        SQL_C_DOUBLE, SQL_DOUBLE, 0, 0, &positive, sizeof(positive), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 3, SQL_PARAM_INPUT,
+        SQL_C_FLOAT, SQL_REAL, 0, 0, &negative, sizeof(negative), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLDOUBLE nan_result = 0;
+    SQLDOUBLE positive_result = 0;
+    SQLREAL negative_result = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_DOUBLE,
+        &nan_result, sizeof(nan_result), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 2, SQL_C_DOUBLE,
+        &positive_result, sizeof(positive_result), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 3, SQL_C_FLOAT,
+        &negative_result, sizeof(negative_result), nullptr));
+    EXPECT_TRUE(std::isnan(nan_result));
+    EXPECT_TRUE(std::isinf(positive_result));
+    EXPECT_GT(positive_result, 0);
+    EXPECT_TRUE(std::isinf(negative_result));
+    EXPECT_LT(negative_result, 0);
 }
 
 TEST_F(PreparedStatementIntegrationTest,
@@ -2103,7 +2178,7 @@ INSTANTIATE_TEST_SUITE_P(
         std::make_tuple(SQL_C_CHAR, "Hello Database", "Hello Database"),
         std::make_tuple(SQL_C_SLONG, "12345", "12345"),
         std::make_tuple(SQL_C_SBIGINT, "9876543210", "9876543210"),
-        std::make_tuple(SQL_C_DOUBLE, "123.456", "123.456000"),
+        std::make_tuple(SQL_C_DOUBLE, "123.456", "123.456"),
         std::make_tuple(SQL_C_CHAR, "", ""),
         std::make_tuple(SQL_C_SLONG, "0", "0"),
         std::make_tuple(SQL_C_SLONG, "-999", "-999")
