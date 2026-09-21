@@ -2730,11 +2730,6 @@ SQLRETURN ODBCStatement::fetch() {
         continue;
       }
 
-      if (binding.indicator_ptr &&
-          binding.indicator_ptr != binding.octet_length_ptr) {
-        store_application_value(binding.indicator_ptr, static_cast<SQLLEN>(0));
-      }
-
       const SQLSMALLINT sql_type = i < column_info_.size()
           ? column_info_[i].sql_type : static_cast<SQLSMALLINT>(SQL_VARCHAR);
       const SQLSMALLINT target_type = binding.concise_type == SQL_C_DEFAULT
@@ -2840,6 +2835,10 @@ SQLRETURN ODBCStatement::fetch() {
               row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
         }
         return SQL_ERROR;
+      }
+      if (binding.indicator_ptr &&
+          binding.indicator_ptr != binding.octet_length_ptr) {
+        store_application_value(binding.indicator_ptr, static_cast<SQLLEN>(0));
       }
       if (conv_result == SQL_SUCCESS_WITH_INFO) {
         set_conversion_diagnostic(*this, conv_result, conversion_issue);

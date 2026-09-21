@@ -298,6 +298,44 @@ TEST_F(BindColIntegrationTest, ApplicationDescriptorDrivesFetchBinding) {
     ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
 }
 
+TEST_F(BindColIntegrationTest, FailedBoundConversionKeepsSeparateIndicator) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT 'not-a-date'::text", SQL_NTS));
+
+    SQLHDESC descriptor = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(
+        SQL_HANDLE_DESC, hdbc, &descriptor));
+    SQL_DATE_STRUCT date{4242, 4, 2};
+    SQLLEN octet_length = 91;
+    SQLLEN indicator = 92;
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescRec(descriptor, 1,
+        SQL_C_TYPE_DATE, 0, sizeof(date), 0, 0,
+        &date, &octet_length, &indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_APP_ROW_DESC, descriptor, 0));
+
+    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+    EXPECT_EQ(4242, date.year);
+    EXPECT_EQ(91, octet_length);
+    EXPECT_EQ(92, indicator);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22007", reinterpret_cast<char*>(state));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT DATE '2024-02-29'", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(2024, date.year);
+    EXPECT_EQ(2, date.month);
+    EXPECT_EQ(29, date.day);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(date)), octet_length);
+    EXPECT_EQ(0, indicator);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
+}
+
 TEST_F(BindColIntegrationTest,
        RejectsUnsupportedAttachedRowArraysBeforeFetch) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(

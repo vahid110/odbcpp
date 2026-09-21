@@ -1953,6 +1953,13 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   setter is checked independently, preventing invalid application buffer
   lengths from reaching fetch-time conversion. The focused test and all 34
   tests pass under sanitizer, PostgreSQL Driver Manager, and iODBC.
+- Audit batch 289 defers a separate bound-column indicator write until after
+  successful conversion. A PostgreSQL regression first showed invalid date
+  text returning `22007` while zeroing the indicator; it now preserves the
+  output, octet-length pointer, and indicator on failure, then verifies a
+  valid date on the same binding sets the indicator to zero and reports the
+  converted struct size. The focused test runs without skipping and all 34
+  tests pass under sanitizer, PostgreSQL Driver Manager, and iODBC.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
