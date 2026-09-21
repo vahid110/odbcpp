@@ -75,23 +75,28 @@ bool value_preserving_character_buffer_fits(SQLSMALLINT sql_type,
   const bool approximate_type = sql_type == SQL_REAL || sql_type == SQL_FLOAT ||
       sql_type == SQL_DOUBLE;
   const bool date_type = sql_type == SQL_TYPE_DATE;
-  if ((!integer_type && !decimal_type && !approximate_type && !date_type) ||
+  const bool time_type = sql_type == SQL_TYPE_TIME;
+  if ((!integer_type && !decimal_type && !approximate_type && !date_type &&
+       !time_type) ||
       (target_type != SQL_C_CHAR && target_type != SQL_C_WCHAR)) {
     return true;
   }
   const auto unit_size = target_type == SQL_C_WCHAR
       ? sizeof(SQLWCHAR) : 1;
-  const auto decimal_point = (decimal_type || approximate_type)
+  const auto decimal_point = (decimal_type || approximate_type || time_type)
       ? value.find('.') : std::string_view::npos;
   // A prefix of scientific notation can change the number's magnitude.
   const auto scientific = approximate_type &&
       value.find_first_of("eE") != std::string_view::npos;
-  const auto whole_length = scientific || date_type ||
+  // A time-zone suffix is also value-bearing, not fractional seconds.
+  const auto time_zone = time_type &&
+      value.find_first_of("+-", 8) != std::string_view::npos;
+  const auto required_length = scientific || date_type || time_zone ||
       decimal_point == std::string_view::npos
       ? value.size() : decimal_point;
-  if (offset >= whole_length) return true;
+  if (offset >= required_length) return true;
   return static_cast<std::size_t>(buffer_length) / unit_size >
-      whole_length - offset;
+      required_length - offset;
 }
 
 SQLRETURN convert_character_result_to_binary(std::string_view value,

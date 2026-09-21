@@ -1910,6 +1910,16 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   without skipping and all 34 tests pass under sanitizer, PostgreSQL Driver
   Manager, and iODBC. Time and timestamp character-buffer rules remain for a
   subsequent batch.
+- Audit batch 284 enforces [ODBC time-to-character conversion's minimum
+  buffer](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/sql-to-c-time):
+  `hh:mm:ss` and a terminator must fit, while fractional seconds can be
+  truncated with `01004`. PostgreSQL `timetz` text is kept whole if it has a
+  time-zone suffix, since dropping that suffix changes the value. A red/green
+  PostgreSQL test covers narrow/wide undersized buffers, safe retry,
+  fractional continuation, time-zone preservation, and a bound-column error.
+  The focused test runs without skipping and all 34 tests pass under
+  sanitizer, PostgreSQL Driver Manager, and iODBC. Timestamp character-buffer
+  rules remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
