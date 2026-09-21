@@ -1901,6 +1901,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   without skipping and all 34 tests pass under sanitizer, PostgreSQL Driver
   Manager, and iODBC. Broader approximate numeric formatting and special
   values remain open.
+- Audit batch 283 enforces [ODBC date-to-character conversion's minimum
+  buffer](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/sql-to-c-date):
+  the complete date plus terminator must fit. A PostgreSQL regression first
+  returned partial date text and `01004`; it now returns `22003` without
+  writing output or advancing `SQLGetData`, allowing exact-fit narrow/wide
+  retries. An undersized bound column also errors. The focused test runs
+  without skipping and all 34 tests pass under sanitizer, PostgreSQL Driver
+  Manager, and iODBC. Time and timestamp character-buffer rules remain for a
+  subsequent batch.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
