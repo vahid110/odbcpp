@@ -1583,6 +1583,82 @@ TEST_F(BindColIntegrationTest, TimeTextKeepsSecondsAndZone) {
     EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
 }
 
+TEST_F(BindColIntegrationTest, TimestampTextKeepsSecondsAndZone) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SET TIME ZONE 'UTC'", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT TIMESTAMP '2024-02-29 12:34:56.78', "
+                  "TIMESTAMP '2024-02-29 12:34:56.78', "
+                  "TIMESTAMPTZ '2024-02-29 12:34:56.78+00'", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLCHAR state[6]{};
+    SQLLEN length = 91;
+    char narrow_tiny[19]{'x'};
+    EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        narrow_tiny, sizeof(narrow_tiny), &length));
+    EXPECT_EQ('x', narrow_tiny[0]);
+    EXPECT_EQ(91, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    char narrow[20]{};
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        narrow, sizeof(narrow), &length));
+    EXPECT_STREQ("2024-02-29 12:34:56", narrow);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01004", reinterpret_cast<char*>(state));
+    char fraction[4]{};
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        fraction, sizeof(fraction), &length));
+    EXPECT_STREQ(".78", fraction);
+
+    SQLWCHAR wide_tiny[19]{'x'};
+    length = 92;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 2, SQL_C_WCHAR,
+        wide_tiny, sizeof(wide_tiny), &length));
+    EXPECT_EQ(static_cast<SQLWCHAR>('x'), wide_tiny[0]);
+    EXPECT_EQ(92, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    SQLWCHAR wide[20]{};
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(hstmt, 2, SQL_C_WCHAR,
+        wide, sizeof(wide), &length));
+    EXPECT_EQ(static_cast<SQLWCHAR>('2'), wide[0]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('6'), wide[18]);
+    EXPECT_EQ(static_cast<SQLWCHAR>(0), wide[19]);
+    EXPECT_EQ(static_cast<SQLLEN>(22 * sizeof(SQLWCHAR)), length);
+
+    char zone_tiny[20]{'x'};
+    length = 93;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 3, SQL_C_CHAR,
+        zone_tiny, sizeof(zone_tiny), &length));
+    EXPECT_EQ('x', zone_tiny[0]);
+    EXPECT_EQ(93, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    char zone[40]{};
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 3, SQL_C_CHAR,
+        zone, sizeof(zone), &length));
+    EXPECT_STREQ("2024-02-29 12:34:56.78+00", zone);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT TIMESTAMP '2024-02-29 12:34:56'", SQL_NTS));
+    char bound_tiny[19]{'x'};
+    SQLLEN bound_length = 94;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_CHAR,
+        bound_tiny, sizeof(bound_tiny), &bound_length));
+    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+    EXPECT_EQ('x', bound_tiny[0]);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+}
+
 TEST_F(BindColIntegrationTest, FailedGetDataDoesNotDiscardPartialOffset) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 'abcdef'::text, 'other'::text", SQL_NTS));
