@@ -1179,6 +1179,59 @@ TEST_F(BindColIntegrationTest, NumericRejectsTemporalResultTargets) {
     EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
 }
 
+TEST_F(BindColIntegrationTest, CharacterToBinaryReturnsRawUtf8Bytes) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT 'AéZ'::text, ''::text", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLCHAR first[2]{0x55, 0x55};
+    SQLCHAR second[2]{0x55, 0x55};
+    SQLLEN length = -1;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(hstmt, 1, SQL_C_BINARY,
+        first, sizeof(first), &length));
+    EXPECT_EQ(4, length);
+    EXPECT_EQ(0x41, first[0]);
+    EXPECT_EQ(0xc3, first[1]);
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BINARY,
+        second, sizeof(second), &length));
+    EXPECT_EQ(2, length);
+    EXPECT_EQ(0xa9, second[0]);
+    EXPECT_EQ(0x5a, second[1]);
+    EXPECT_EQ(SQL_NO_DATA, SQLGetData(hstmt, 1, SQL_C_BINARY,
+        second, sizeof(second), &length));
+
+    SQLCHAR empty = 0x55;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 2, SQL_C_BINARY,
+        &empty, 0, &length));
+    EXPECT_EQ(0x55, empty);
+    EXPECT_EQ(0, length);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT 'AéZ'::text, 'AéZ'::text", SQL_NTS));
+    SQLCHAR full[4]{};
+    SQLCHAR truncated[2]{0x55, 0x55};
+    SQLLEN full_length = -1;
+    SQLLEN truncated_length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_BINARY,
+        full, sizeof(full), &full_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 2, SQL_C_BINARY,
+        truncated, sizeof(truncated), &truncated_length));
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLFetch(hstmt));
+    EXPECT_EQ(4, full_length);
+    EXPECT_EQ(4, truncated_length);
+    EXPECT_EQ(0x41, full[0]);
+    EXPECT_EQ(0xc3, full[1]);
+    EXPECT_EQ(0xa9, full[2]);
+    EXPECT_EQ(0x5a, full[3]);
+    EXPECT_EQ(0x41, truncated[0]);
+    EXPECT_EQ(0xc3, truncated[1]);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01004", reinterpret_cast<char*>(state));
+}
+
 TEST_F(BindColIntegrationTest, FailedGetDataDoesNotDiscardPartialOffset) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 'abcdef'::text, 'other'::text", SQL_NTS));
@@ -2054,11 +2107,13 @@ TEST_F(BindColIntegrationTest, ConversionFailuresUseSpecificSqlstates) {
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
-        hstmt, (SQLCHAR*)"SELECT 'binary-not-supported'::text", SQL_NTS));
+        hstmt, (SQLCHAR*)"SELECT decode('01', 'hex')", SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
-    unsigned char binary_value[32]{};
+    SQLINTEGER binary_to_number = 42;
     EXPECT_EQ(SQL_ERROR, SQLGetData(
-        hstmt, 1, SQL_C_BINARY, binary_value, sizeof(binary_value), nullptr));
+        hstmt, 1, SQL_C_SLONG, &binary_to_number,
+        sizeof(binary_to_number), nullptr));
+    EXPECT_EQ(42, binary_to_number);
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
         SQL_HANDLE_STMT, hstmt, 1, sqlstate, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("07006", reinterpret_cast<char*>(sqlstate));

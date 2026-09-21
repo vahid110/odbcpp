@@ -143,7 +143,10 @@ bool ResultTypes::is_conversion_supported(SQLSMALLINT sql_type,
           return true;
       }
     case SQL_C_BINARY:
-      return sql_type == SQL_BIT;
+      return sql_type == SQL_BIT || sql_type == SQL_CHAR ||
+             sql_type == SQL_VARCHAR || sql_type == SQL_LONGVARCHAR ||
+             sql_type == SQL_WCHAR || sql_type == SQL_WVARCHAR ||
+             sql_type == SQL_WLONGVARCHAR;
     default:
       return false;
   }

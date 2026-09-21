@@ -1866,6 +1866,16 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   Character-to-temporal conversions remain supported and separately tested.
   The focused test runs without skipping and all 34 tests pass under
   sanitizer, PostgreSQL Driver Manager, and iODBC.
+- Audit batch 279 supports the [SQL-character to `SQL_C_BINARY` conversion](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/sql-to-c-character)
+  as raw result bytes without a terminator. A real PostgreSQL test first
+  reproduced `07006`, then verified UTF-8 byte-level chunking, remaining
+  lengths, an empty value, exact-fit bound output, and bound truncation with
+  `01004`. This also avoids misinterpreting text as PostgreSQL bytea hex or
+  escape encoding. An older negative test that asserted this valid conversion
+  was unsupported now checks binary-to-numeric rejection instead. The
+  focused test runs without skipping and all 34 tests pass under sanitizer,
+  PostgreSQL Driver Manager, and iODBC. The remaining character conversion
+  matrix stays partial.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

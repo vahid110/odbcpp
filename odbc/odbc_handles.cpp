@@ -49,6 +49,32 @@ std::optional<std::string> binary_result_as_hex(std::string_view value) {
       std::span<const std::byte>(decoded->data(), decoded->size())).substr(2);
 }
 
+bool is_character_sql_type(SQLSMALLINT sql_type) {
+  switch (sql_type) {
+    case SQL_CHAR:
+    case SQL_VARCHAR:
+    case SQL_LONGVARCHAR:
+    case SQL_WCHAR:
+    case SQL_WVARCHAR:
+    case SQL_WLONGVARCHAR:
+      return true;
+    default:
+      return false;
+  }
+}
+
+SQLRETURN convert_character_result_to_binary(std::string_view value,
+                                             void* buffer, SQLLEN buffer_length,
+                                             SQLLEN* indicator) {
+  const auto copy_length = std::min(
+      static_cast<std::size_t>(buffer_length), value.size());
+  if (copy_length > 0) std::memcpy(buffer, value.data(), copy_length);
+  if (indicator) {
+    store_application_value(indicator, static_cast<SQLLEN>(value.size()));
+  }
+  return copy_length < value.size() ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS;
+}
+
 std::optional<std::string> bit_result_as_text(std::string_view value) {
   if (value == "t" || value == "true" || value == "1") return "1";
   if (value == "f" || value == "false" || value == "0") return "0";
@@ -2734,14 +2760,20 @@ SQLRETURN ODBCStatement::fetch() {
       ConversionIssue conversion_issue = ConversionIssue::None;
       auto* output_length = binding.octet_length_ptr
           ? binding.octet_length_ptr : binding.indicator_ptr;
-      SQLRETURN conv_result = sql_type == SQL_BIT &&
-          target_type == SQL_C_BINARY
-          ? convert_bit_result_to_binary(
-              *cell, binding.data_ptr, conversion_length, output_length,
-              &conversion_issue)
-          : TextDataConverter::convert_data(
-              conversion_value, target_type, binding.data_ptr,
-              conversion_length, output_length, &conversion_issue);
+      SQLRETURN conv_result;
+      if (sql_type == SQL_BIT && target_type == SQL_C_BINARY) {
+        conv_result = convert_bit_result_to_binary(
+            *cell, binding.data_ptr, conversion_length, output_length,
+            &conversion_issue);
+      } else if (is_character_sql_type(sql_type) &&
+                 target_type == SQL_C_BINARY) {
+        conv_result = convert_character_result_to_binary(
+            *cell, binding.data_ptr, conversion_length, output_length);
+      } else {
+        conv_result = TextDataConverter::convert_data(
+            conversion_value, target_type, binding.data_ptr,
+            conversion_length, output_length, &conversion_issue);
+      }
 
       if (conv_result == SQL_ERROR) {
         set_conversion_diagnostic(*this, conv_result, conversion_issue);
@@ -2991,28 +3023,36 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
       if (result == SQL_SUCCESS) save_offset(complete);
       return result;
     }
-    const auto decoded = TextDataConverter::decode_binary(*cell);
-    if (!decoded) {
-      set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                "Binary result value has invalid PostgreSQL bytea encoding");
-      return SQL_ERROR;
+    std::optional<std::vector<std::byte>> decoded;
+    std::span<const std::byte> source;
+    if (is_character_sql_type(sql_type)) {
+      source = std::span<const std::byte>(
+          reinterpret_cast<const std::byte*>(cell->data()), cell->size());
+    } else {
+      decoded = TextDataConverter::decode_binary(*cell);
+      if (!decoded) {
+        set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                  "Binary result value has invalid PostgreSQL bytea encoding");
+        return SQL_ERROR;
+      }
+      source = std::span<const std::byte>(decoded->data(), decoded->size());
     }
-    if (offset > decoded->size()) {
+    if (offset > source.size()) {
       set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
                 "SQLGetData target type changed during chunked retrieval");
       return SQL_ERROR;
     }
-    const auto remaining = decoded->size() - offset;
+    const auto remaining = source.size() - offset;
     if (indicator) {
       store_application_value(indicator, static_cast<SQLLEN>(remaining));
     }
     const auto capacity = static_cast<std::size_t>(buffer_length);
     const auto copy_length = std::min(capacity, remaining);
     if (copy_length > 0) {
-      std::memcpy(buffer, decoded->data() + offset, copy_length);
+      std::memcpy(buffer, source.data() + offset, copy_length);
     }
     offset += copy_length;
-    if (offset < decoded->size()) {
+    if (offset < source.size()) {
       save_offset(offset);
       set_error(SQLSTATE_STRING_DATA_TRUNCATED,
                 "Binary result value was truncated to fit the application buffer");
