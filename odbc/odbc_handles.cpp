@@ -2756,27 +2756,47 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
               "Unsupported result data type conversion");
     return SQL_ERROR;
   }
+  const bool binary_as_text =
+      (sql_type == SQL_BINARY || sql_type == SQL_VARBINARY ||
+       sql_type == SQL_LONGVARBINARY) &&
+      (effective_target_type == SQL_C_CHAR ||
+       effective_target_type == SQL_C_WCHAR);
+  std::optional<std::string> binary_hex;
+  if (binary_as_text) {
+    const auto decoded = TextDataConverter::decode_binary(*cell);
+    if (!decoded) {
+      set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                "Binary result value has invalid PostgreSQL bytea encoding");
+      return SQL_ERROR;
+    }
+    binary_hex = TextDataConverter::encode_binary(
+        std::span<const std::byte>(decoded->data(), decoded->size())).substr(2);
+  }
+  const auto& character_cell = binary_hex ? *binary_hex : *cell;
   if (effective_target_type == SQL_C_CHAR) {
-    if (offset > cell->size()) {
+    if (offset > character_cell.size()) {
       set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
                 "SQLGetData target type changed during chunked retrieval");
       return SQL_ERROR;
     }
-    const auto remaining = cell->size() - offset;
+    const auto remaining = character_cell.size() - offset;
     if (indicator) {
       store_application_value(indicator, static_cast<SQLLEN>(remaining));
     }
     const auto capacity = buffer_length > 0
         ? static_cast<std::size_t>(buffer_length - 1) : 0;
-    const auto copy_length = std::min(capacity, remaining);
+    auto copy_length = std::min(capacity, remaining);
+    if (binary_as_text && copy_length < remaining) {
+      copy_length -= copy_length % 2;
+    }
     if (copy_length > 0) {
-      std::memcpy(buffer, cell->data() + offset, copy_length);
+      std::memcpy(buffer, character_cell.data() + offset, copy_length);
     }
     if (buffer_length > 0) {
       static_cast<char*>(buffer)[copy_length] = '\0';
     }
     offset += copy_length;
-    if (offset < cell->size() || buffer_length == 0) {
+    if (offset < character_cell.size() || buffer_length == 0) {
       save_offset(offset);
       set_error(SQLSTATE_STRING_DATA_TRUNCATED,
                 "Result value was truncated to fit the application buffer");
@@ -2787,7 +2807,7 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
   }
 
   if (effective_target_type == SQL_C_WCHAR) {
-    const auto wide = utf8_to_wide(*cell);
+    const auto wide = utf8_to_wide(character_cell);
     if (!wide) {
       set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
                 "Result value is not valid UTF-8");
@@ -2808,6 +2828,9 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
         ? static_cast<std::size_t>(buffer_length) / sizeof(SQLWCHAR) : 0;
     const auto capacity = buffer_units > 0 ? buffer_units - 1 : 0;
     auto copy_length = std::min(capacity, remaining);
+    if (binary_as_text && copy_length < remaining) {
+      copy_length -= copy_length % 2;
+    }
     if constexpr (sizeof(SQLWCHAR) == 2) {
       if (copy_length < remaining && copy_length > 0 &&
           (*wide)[offset + copy_length - 1] >= 0xd800 &&

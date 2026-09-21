@@ -46,7 +46,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLFetch` | A | Partial | unit, integration, DM | Never-executed and no-result states return HY010/24000; row arrays and full state matrix remain |
 | `SQLFetchScroll` | A | Partial | unit, integration, DM | Only `SQL_FETCH_NEXT` is supported; keep other orientations honest |
 | `SQLMoreResults` | A | Partial | unit, integration, DM | Result/update-count traversal and close-time discard are covered; error-result sequences remain |
-| `SQLGetData` | A | Partial | integration, DM | Legacy and ODBC 3 temporal C targets, malformed-value diagnostics, and per-row/switching-column offsets are covered; complete conversion/chunking matrices remain |
+| `SQLGetData` | A | Partial | integration, DM | Legacy and ODBC 3 temporal C targets, malformed-value diagnostics, per-row/switching-column offsets, and binary-to-character hex chunking are covered; complete conversion/chunking matrices remain |
 | `SQLBindCol` | A | Partial | unit, integration | Invalid C types, negative lengths, and ODBC 3 temporal C targets are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
 | `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics, ODBC date/time/timestamp-struct input, temporal target rejection and target-specific diagnostics, date/time-to-timestamp and timestamp-to-date/time rules, character-to-date/time and time-only character-to-timestamp, temporal struct character-target lengths, binary SQL-target length, character-to-binary hex conversion, explicit zero-length character inputs, narrow/wide SQL character limits, and struct/character timestamp fractional precision are covered; input arrays, data-at-execution, and full conversion matrix remain |
 | `SQLNumParams` | A | Partial | unit, integration, DM | Prepared statements are server-validated without execution; state, null/output preservation, complex markers, direct execution, and IPD count agreement are covered; cancellation and communication-failure injection remain |
@@ -1794,6 +1794,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   its existing behavior. The focused PostgreSQL test first reproduced the
   incorrect `22018`, then passed without skipping under sanitizer, PostgreSQL
   Driver Manager, and iODBC. All 34 tests pass in each configuration.
+- Audit batch 271 formats SQL binary results retrieved through `SQLGetData`
+  as `SQL_C_CHAR` or `SQL_C_WCHAR` using two hex characters per byte, without
+  PostgreSQL's `\x` prefix. Truncated calls preserve whole hex pairs, report
+  the remaining output length, and make no progress if the buffer cannot hold
+  a pair. A real PostgreSQL test first reproduced the prefix and split-pair
+  defects, then covered narrow and wide chunking, `01004`, completion, and an
+  empty binary value without skipping under sanitizer, PostgreSQL Driver
+  Manager, and iODBC. All 34 tests pass in each configuration. Bound-column
+  binary-to-character conversion remains open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

@@ -706,6 +706,66 @@ TEST_F(BindColIntegrationTest, GetDataHonorsBinaryBufferBoundaries) {
     EXPECT_EQ(1, length);
 }
 
+TEST_F(BindColIntegrationTest,
+       GetDataFormatsBinaryAsCompleteHexPairs) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT decode('00ff7f', 'hex'), "
+                  "decode('00ff7f', 'hex'), decode('', 'hex')",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLLEN remaining = -1;
+    SQLCHAR state[6]{};
+
+    char narrow_tiny[2]{'x', 'x'};
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        narrow_tiny, sizeof(narrow_tiny), &remaining));
+    EXPECT_EQ(0, narrow_tiny[0]);
+    EXPECT_EQ(6, remaining);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01004", reinterpret_cast<char*>(state));
+    SQLLEN expected_remaining = 6;
+    for (const auto* expected : {"00", "ff", "7f"}) {
+        char chunk[4]{};
+        const auto result = SQLGetData(hstmt, 1, SQL_C_CHAR,
+            chunk, sizeof(chunk), &remaining);
+        EXPECT_EQ(std::string_view(expected) == "7f"
+                      ? SQL_SUCCESS : SQL_SUCCESS_WITH_INFO, result);
+        EXPECT_EQ(expected_remaining, remaining);
+        EXPECT_STREQ(expected, chunk);
+        expected_remaining -= 2;
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        narrow_tiny, sizeof(narrow_tiny), &remaining));
+
+    SQLWCHAR wide_tiny[2]{'x', 'x'};
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(hstmt, 2, SQL_C_WCHAR,
+        wide_tiny, sizeof(wide_tiny), &remaining));
+    EXPECT_EQ(static_cast<SQLWCHAR>(0), wide_tiny[0]);
+    EXPECT_EQ(static_cast<SQLLEN>(6 * sizeof(SQLWCHAR)), remaining);
+    expected_remaining = 6 * sizeof(SQLWCHAR);
+    for (const auto* expected : {"00", "ff", "7f"}) {
+        SQLWCHAR chunk[4]{};
+        const auto result = SQLGetData(hstmt, 2, SQL_C_WCHAR,
+            chunk, sizeof(chunk), &remaining);
+        EXPECT_EQ(std::string_view(expected) == "7f"
+                      ? SQL_SUCCESS : SQL_SUCCESS_WITH_INFO, result);
+        EXPECT_EQ(expected_remaining, remaining);
+        EXPECT_EQ(static_cast<SQLWCHAR>(expected[0]), chunk[0]);
+        EXPECT_EQ(static_cast<SQLWCHAR>(expected[1]), chunk[1]);
+        EXPECT_EQ(static_cast<SQLWCHAR>(0), chunk[2]);
+        expected_remaining -= 2 * sizeof(SQLWCHAR);
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLGetData(hstmt, 2, SQL_C_WCHAR,
+        wide_tiny, sizeof(wide_tiny), &remaining));
+
+    char empty[2]{'x', 'x'};
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 3, SQL_C_CHAR,
+        empty, sizeof(empty), &remaining));
+    EXPECT_EQ(0, empty[0]);
+    EXPECT_EQ(0, remaining);
+}
+
 TEST_F(BindColIntegrationTest, FailedGetDataDoesNotDiscardPartialOffset) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 'abcdef'::text, 'other'::text", SQL_NTS));
