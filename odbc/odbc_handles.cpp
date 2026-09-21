@@ -2912,6 +2912,11 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     effective_target_type = record->concise_type == SQL_C_DEFAULT
         ? ResultTypes::default_c_type(sql_type) : record->concise_type;
   }
+  if (!ResultTypes::is_supported_c_type(effective_target_type)) {
+    set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+              "SQLGetData target type is not supported");
+    return SQL_ERROR;
+  }
 
   constexpr auto complete = std::numeric_limits<std::size_t>::max();
   auto offset = get_data_column_ == col ? get_data_offset_ : 0;

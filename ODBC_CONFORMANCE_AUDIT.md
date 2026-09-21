@@ -1977,6 +1977,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   same unsupported conversion on a non-`NULL` row remains an error. The
   focused test runs without skipping and all 34 tests pass under sanitizer,
   PostgreSQL Driver Manager, and iODBC.
+- Audit batch 292 aligns `SQLGetData` with `SQLBindCol` for valid but
+  unimplemented C target identifiers. A PostgreSQL test first reproduced
+  `07006` from `SQLGetData` for `SQL_C_NUMERIC` and `SQL_C_STINYINT`, while
+  `SQLBindCol` returned `HYC00`; both now report `HYC00`. The test covers
+  non-`NULL` and `NULL` numeric results, unchanged output/indicators, and a
+  subsequent supported character retrieval. The focused test runs without
+  skipping and all 34 tests pass under sanitizer, PostgreSQL Driver Manager,
+  and iODBC.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
