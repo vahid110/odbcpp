@@ -1776,6 +1776,16 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   under sanitizer, PostgreSQL Driver Manager, and iODBC. All 34 tests pass in
   each configuration. `ColumnSize=0`, supplementary-character length
   semantics, and the wider conversion matrix remain open.
+- Audit batch 269 adds a real PostgreSQL regression for supplementary
+  Unicode in wide SQL character parameters. The driver counts one valid
+  supplementary scalar plus one ASCII scalar as two characters for both
+  UTF-8 `SQL_C_CHAR` and width-appropriate `SQL_C_WCHAR` input; a one-character
+  declaration returns `22001`, and an isolated surrogate or out-of-range
+  scalar returns `22018`. This records the driver's cross-platform character
+  counting policy without assuming that SQLWCHAR has the same width under
+  unixODBC, iODBC, and Windows. The focused test runs without skipping and all
+  34 tests pass under sanitizer, PostgreSQL Driver Manager, and iODBC.
+  `ColumnSize=0` and the wider conversion matrix remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
