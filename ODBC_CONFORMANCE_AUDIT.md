@@ -1929,6 +1929,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   fractional continuation, time-zone preservation, and a bound-column error.
   The focused test runs without skipping and all 34 tests pass under
   sanitizer, PostgreSQL Driver Manager, and iODBC.
+- Audit batch 286 rejects temporal SQL results converted to numeric or bit C
+  targets, which are absent from the ODBC date, time, and timestamp conversion
+  tables. A PostgreSQL regression first reproduced `22018` after attempting
+  to parse temporal text as a number; it now checks `07006`, unchanged output
+  buffers and indicators across date/time/timestamp and six numeric targets,
+  a valid character retry, and an unsupported bound column. Unit assertions
+  cover the conversion matrix. The focused tests run without skipping and all
+  34 tests pass under sanitizer, PostgreSQL Driver Manager, and iODBC. Other
+  temporal cross-conversions remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

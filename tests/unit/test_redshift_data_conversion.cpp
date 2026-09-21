@@ -797,6 +797,17 @@ TEST(ResultTypesTest, ProvidesMetadataDrivenDefaults) {
         SQL_INTEGER, SQL_C_BINARY));
     EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
         SQL_VARBINARY, SQL_C_BINARY));
+    for (SQLSMALLINT temporal : {
+             SQL_TYPE_DATE, SQL_TYPE_TIME, SQL_TYPE_TIMESTAMP}) {
+        for (SQLSMALLINT numeric : {
+                 SQL_C_BIT, SQL_C_SSHORT, SQL_C_SLONG, SQL_C_SBIGINT,
+                 SQL_C_FLOAT, SQL_C_DOUBLE}) {
+            EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(
+                temporal, numeric));
+        }
+        EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
+            temporal, SQL_C_CHAR));
+    }
     EXPECT_TRUE(rs::odbc::ResultTypes::is_supported_parameter_c_type(
         SQL_C_TYPE_DATE));
     EXPECT_TRUE(rs::odbc::ResultTypes::is_supported_parameter_c_type(

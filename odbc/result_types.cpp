@@ -111,6 +111,16 @@ bool ResultTypes::is_conversion_supported(SQLSMALLINT sql_type,
     return c_type == SQL_C_CHAR || c_type == SQL_C_WCHAR ||
            c_type == SQL_C_BINARY;
   }
+  const bool temporal_type = sql_type == SQL_TYPE_DATE ||
+      sql_type == SQL_TYPE_TIME || sql_type == SQL_TYPE_TIMESTAMP ||
+      sql_type == SQL_DATE || sql_type == SQL_TIME ||
+      sql_type == SQL_TIMESTAMP;
+  if (temporal_type &&
+      (c_type == SQL_C_BIT || c_type == SQL_C_SSHORT ||
+       c_type == SQL_C_SLONG || c_type == SQL_C_SBIGINT ||
+       c_type == SQL_C_FLOAT || c_type == SQL_C_DOUBLE)) {
+    return false;
+  }
   switch (c_type) {
     case SQL_C_CHAR:
     case SQL_C_WCHAR:

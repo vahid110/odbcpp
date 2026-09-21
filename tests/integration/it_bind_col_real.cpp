@@ -1179,6 +1179,52 @@ TEST_F(BindColIntegrationTest, NumericRejectsTemporalResultTargets) {
     EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
 }
 
+TEST_F(BindColIntegrationTest, TemporalRejectsNumericResultTargets) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT DATE '2024-02-29', TIME '12:34:56', "
+                  "TIMESTAMP '2024-02-29 12:34:56'", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLCHAR state[6]{};
+    for (SQLUSMALLINT column : {1, 2, 3}) {
+        for (SQLSMALLINT target : {
+                 SQL_C_BIT, SQL_C_SSHORT, SQL_C_SLONG, SQL_C_SBIGINT,
+                 SQL_C_FLOAT, SQL_C_DOUBLE}) {
+            SCOPED_TRACE(column);
+            SCOPED_TRACE(target);
+            std::array<unsigned char, sizeof(SQLDOUBLE)> output;
+            output.fill(0x5a);
+            SQLLEN length = 89;
+            EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, target,
+                output.data(), static_cast<SQLLEN>(output.size()), &length));
+            EXPECT_EQ(89, length);
+            EXPECT_TRUE(std::all_of(output.begin(), output.end(),
+                [](unsigned char byte) { return byte == 0x5a; }));
+            ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+                state, nullptr, nullptr, 0, nullptr));
+            EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+        }
+    }
+
+    char valid_date[11]{};
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        valid_date, sizeof(valid_date), nullptr));
+    EXPECT_STREQ("2024-02-29", valid_date);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT TIME '12:34:56'", SQL_NTS));
+    SQLDOUBLE bound = 42.0;
+    SQLLEN length = 90;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_DOUBLE,
+        &bound, sizeof(bound), &length));
+    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+    EXPECT_DOUBLE_EQ(42.0, bound);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+}
+
 TEST_F(BindColIntegrationTest, CharacterToBinaryReturnsRawUtf8Bytes) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
         (SQLCHAR*)"SELECT 'AéZ'::text, ''::text", SQL_NTS));
