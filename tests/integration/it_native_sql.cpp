@@ -332,7 +332,7 @@ TEST_F(NativeSqlIntegrationTest, ExecutesEscapesInDirectAndPreparedSql) {
             SQLGetData(statement_, 2, SQL_C_CHAR, boolean, sizeof(boolean),
                        nullptr));
   EXPECT_STREQ("MIXED", reinterpret_cast<const char*>(text));
-  EXPECT_STREQ("t", reinterpret_cast<const char*>(boolean));
+  EXPECT_STREQ("1", reinterpret_cast<const char*>(boolean));
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(statement_));
 
   SQLCHAR prepared[] = "SELECT {fn LCASE('PREPARED')}";
@@ -379,7 +379,7 @@ TEST_F(NativeSqlIntegrationTest, LikeEscapeAcceptsUnicodeAndQuote) {
   ASSERT_EQ(SQL_SUCCESS,
             SQLGetData(statement_, 1, SQL_C_CHAR, matched, sizeof(matched),
                        nullptr));
-  EXPECT_STREQ("t", reinterpret_cast<const char*>(matched));
+  EXPECT_STREQ("1", reinterpret_cast<const char*>(matched));
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(statement_));
 
   SQLCHAR quoted[] = "SELECT 'a%b' LIKE 'a''%b' {escape ''''}";
@@ -388,7 +388,7 @@ TEST_F(NativeSqlIntegrationTest, LikeEscapeAcceptsUnicodeAndQuote) {
   ASSERT_EQ(SQL_SUCCESS,
             SQLGetData(statement_, 1, SQL_C_CHAR, matched, sizeof(matched),
                        nullptr));
-  EXPECT_STREQ("t", reinterpret_cast<const char*>(matched));
+  EXPECT_STREQ("1", reinterpret_cast<const char*>(matched));
 }
 
 TEST_F(NativeSqlIntegrationTest, KeepsEscapesInsideNestedComments) {

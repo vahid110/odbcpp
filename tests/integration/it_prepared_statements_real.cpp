@@ -2240,7 +2240,7 @@ TEST_F(PreparedStatementIntegrationTest, NullParameterUsesProtocolNull) {
     char result[8]{};
     ASSERT_EQ(SQL_SUCCESS,
               SQLGetData(hstmt, 1, SQL_C_CHAR, result, sizeof(result), nullptr));
-    EXPECT_STREQ("t", result);
+    EXPECT_STREQ("1", result);
 }
 
 TEST_F(PreparedStatementIntegrationTest, ErrorLeavesConnectionSynchronized) {

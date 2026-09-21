@@ -49,6 +49,12 @@ std::optional<std::string> binary_result_as_hex(std::string_view value) {
       std::span<const std::byte>(decoded->data(), decoded->size())).substr(2);
 }
 
+std::optional<std::string> bit_result_as_text(std::string_view value) {
+  if (value == "t" || value == "true" || value == "1") return "1";
+  if (value == "f" || value == "false" || value == "0") return "0";
+  return std::nullopt;
+}
+
 std::string elapsed_milliseconds(std::chrono::steady_clock::time_point start) {
   return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - start).count());
@@ -2640,10 +2646,12 @@ SQLRETURN ODBCStatement::fetch() {
           (sql_type == SQL_BINARY || sql_type == SQL_VARBINARY ||
            sql_type == SQL_LONGVARBINARY) &&
           (target_type == SQL_C_CHAR || target_type == SQL_C_WCHAR);
-      std::optional<std::string> binary_hex;
+      const bool bit_as_text = sql_type == SQL_BIT &&
+          (target_type == SQL_C_CHAR || target_type == SQL_C_WCHAR);
+      std::optional<std::string> formatted_text;
       if (binary_as_text) {
-        binary_hex = binary_result_as_hex(*cell);
-        if (!binary_hex) {
+        formatted_text = binary_result_as_hex(*cell);
+        if (!formatted_text) {
           set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
                     "Binary result value has invalid PostgreSQL bytea encoding");
           if (row_status) {
@@ -2652,12 +2660,33 @@ SQLRETURN ODBCStatement::fetch() {
           }
           return SQL_ERROR;
         }
+      } else if (bit_as_text) {
+        formatted_text = bit_result_as_text(*cell);
+        if (!formatted_text) {
+          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Bit result value has invalid PostgreSQL encoding");
+          if (row_status) {
+            store_application_value(
+                row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
+          }
+          return SQL_ERROR;
+        }
       }
-      const auto& conversion_value = binary_hex ? *binary_hex : *cell;
+      const auto& conversion_value = formatted_text ? *formatted_text : *cell;
       SQLLEN conversion_length = binding.octet_length;
+      const auto unit_size = target_type == SQL_C_WCHAR
+          ? sizeof(SQLWCHAR) : 1;
+      if (bit_as_text && conversion_length <
+              static_cast<SQLLEN>(2 * unit_size)) {
+        set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                  "Bit character result does not fit in the application buffer");
+        if (row_status) {
+          store_application_value(
+              row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
+        }
+        return SQL_ERROR;
+      }
       if (binary_as_text && conversion_length > 0) {
-        const auto unit_size = target_type == SQL_C_WCHAR
-            ? sizeof(SQLWCHAR) : 1;
         const auto units = static_cast<std::size_t>(conversion_length) /
             unit_size;
         if (units > 1) {
@@ -2800,16 +2829,33 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
        sql_type == SQL_LONGVARBINARY) &&
       (effective_target_type == SQL_C_CHAR ||
        effective_target_type == SQL_C_WCHAR);
-  std::optional<std::string> binary_hex;
+  const bool bit_as_text = sql_type == SQL_BIT &&
+      (effective_target_type == SQL_C_CHAR ||
+       effective_target_type == SQL_C_WCHAR);
+  std::optional<std::string> formatted_text;
   if (binary_as_text) {
-    binary_hex = binary_result_as_hex(*cell);
-    if (!binary_hex) {
+    formatted_text = binary_result_as_hex(*cell);
+    if (!formatted_text) {
       set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
                 "Binary result value has invalid PostgreSQL bytea encoding");
       return SQL_ERROR;
     }
+  } else if (bit_as_text) {
+    formatted_text = bit_result_as_text(*cell);
+    if (!formatted_text) {
+      set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                "Bit result value has invalid PostgreSQL encoding");
+      return SQL_ERROR;
+    }
+    const auto required_bytes = effective_target_type == SQL_C_WCHAR
+        ? 2 * sizeof(SQLWCHAR) : 2;
+    if (buffer_length < static_cast<SQLLEN>(required_bytes)) {
+      set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                "Bit character result does not fit in the application buffer");
+      return SQL_ERROR;
+    }
   }
-  const auto& character_cell = binary_hex ? *binary_hex : *cell;
+  const auto& character_cell = formatted_text ? *formatted_text : *cell;
   if (effective_target_type == SQL_C_CHAR) {
     if (offset > character_cell.size()) {
       set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
