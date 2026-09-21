@@ -1870,7 +1870,7 @@ SQLRETURN ODBCDescriptor::set_field(
                   "Descriptor array size is not defined for this descriptor");
         return SQL_ERROR;
       }
-      if (numeric == 0) {
+      if (numeric_signed <= 0) {
         set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
                   "Descriptor array size must be positive");
         return SQL_ERROR;
@@ -2300,6 +2300,8 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
 SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
   const auto numeric = static_cast<SQLULEN>(
       reinterpret_cast<std::uintptr_t>(value));
+  const auto numeric_signed = static_cast<SQLLEN>(
+      reinterpret_cast<std::intptr_t>(value));
   const auto cursor_attribute_settable = [this]() {
     if (executed_ && !column_info_.empty()) {
       set_error(SQLSTATE_INVALID_CURSOR_STATE,
@@ -2391,7 +2393,7 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
       if (numeric == 0) return SQL_SUCCESS;
       break;
     case SQL_ATTR_ROW_ARRAY_SIZE:
-      if (numeric == 0) {
+      if (numeric_signed <= 0) {
         set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
                   "Row array size must be positive");
         return SQL_ERROR;
@@ -2436,7 +2438,7 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
       }
       break;
     case SQL_ATTR_PARAMSET_SIZE:
-      if (numeric == 0) {
+      if (numeric_signed <= 0) {
         set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
                   "Parameter-set size must be positive");
         return SQL_ERROR;

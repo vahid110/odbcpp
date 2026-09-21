@@ -226,6 +226,13 @@ TEST(ExplicitDescriptorApiTest, AllocatesAndStoresHeaderAndRecordFields) {
     ASSERT_EQ(SQL_SUCCESS,
               SQLSetDescField(descriptor, 0, SQL_DESC_ARRAY_SIZE,
                               number(4), 0));
+    EXPECT_EQ(SQL_ERROR, SQLSetDescField(
+        descriptor, 0, SQL_DESC_ARRAY_SIZE,
+        reinterpret_cast<SQLPOINTER>(std::intptr_t{-1}), 0));
+    SQLCHAR array_state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DESC, descriptor, 1,
+        array_state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY024", reinterpret_cast<char*>(array_state));
     ASSERT_EQ(SQL_SUCCESS,
               SQLSetDescField(descriptor, 1, SQL_DESC_CONCISE_TYPE,
                               number(SQL_C_CHAR), 0));

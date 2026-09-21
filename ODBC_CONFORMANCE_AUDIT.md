@@ -1960,6 +1960,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   valid date on the same binding sets the indicator to zero and reports the
   converted struct size. The focused test runs without skipping and all 34
   tests pass under sanitizer, PostgreSQL Driver Manager, and iODBC.
+- Audit batch 290 validates signed negative inputs for descriptor
+  `SQL_DESC_ARRAY_SIZE` and statement `SQL_ATTR_ROW_ARRAY_SIZE` /
+  `SQL_ATTR_PARAMSET_SIZE` before treating them as unsigned sizes. A red/green
+  unit regression first showed the descriptor accepting `-1` and statement
+  setters reporting unsupported-feature `HYC00`; they now return `HY024`
+  without changing a prior descriptor array size. Positive sizes retain their
+  existing behavior, including the documented rowset/parameter-array feature
+  boundary. The focused tests and all 34 tests pass under sanitizer,
+  PostgreSQL Driver Manager, and iODBC.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

@@ -919,10 +919,18 @@ TEST_F(AttributeApisTest, ReportsForwardOnlyStatementDefaults) {
       statement_, SQL_ATTR_ROW_ARRAY_SIZE, integer_value(0), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_ROW_ARRAY_SIZE,
+      reinterpret_cast<SQLPOINTER>(std::intptr_t{-1}), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_PARAMSET_SIZE, integer_value(2), 0));
   EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_PARAMSET_SIZE, integer_value(0), 0));
+  EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+      statement_, SQL_ATTR_PARAMSET_SIZE,
+      reinterpret_cast<SQLPOINTER>(std::intptr_t{-1}), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_METADATA_ID, integer_value(SQL_TRUE), 0));
