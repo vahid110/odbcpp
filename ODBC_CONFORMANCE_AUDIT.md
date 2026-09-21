@@ -1857,6 +1857,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   character and binary output remains covered by earlier batches. The focused
   test runs without skipping and all 34 tests pass under sanitizer,
   PostgreSQL Driver Manager, and iODBC.
+- Audit batch 278 rejects bit and numeric SQL values converted to date, time,
+  or timestamp C structs, as those targets do not appear in the
+  [SQL-to-C numeric table](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/sql-to-c-numeric).
+  A real PostgreSQL test first reproduced `22007` for integer, floating-point,
+  and decimal columns, then verified `07006` and untouched output for three
+  ODBC 3 temporal targets through `SQLGetData` and a bound date column.
+  Character-to-temporal conversions remain supported and separately tested.
+  The focused test runs without skipping and all 34 tests pass under
+  sanitizer, PostgreSQL Driver Manager, and iODBC.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

@@ -1137,6 +1137,48 @@ TEST_F(BindColIntegrationTest, BinaryRejectsNonCharacterScalarTargets) {
     EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
 }
 
+TEST_F(BindColIntegrationTest, NumericRejectsTemporalResultTargets) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT 42::integer, 1.5::double precision, "
+                  "2.5::numeric", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLCHAR state[6]{};
+    for (SQLUSMALLINT column : {1, 2, 3}) {
+        for (SQLSMALLINT target : {
+                 SQL_C_TYPE_DATE, SQL_C_TYPE_TIME,
+                 SQL_C_TYPE_TIMESTAMP}) {
+            SCOPED_TRACE(column);
+            SCOPED_TRACE(target);
+            std::array<unsigned char, sizeof(SQL_TIMESTAMP_STRUCT)> output;
+            output.fill(0x5a);
+            SQLLEN length = 87;
+            EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, target,
+                output.data(), static_cast<SQLLEN>(output.size()), &length));
+            EXPECT_EQ(87, length);
+            EXPECT_TRUE(std::all_of(output.begin(), output.end(),
+                [](unsigned char byte) { return byte == 0x5a; }));
+            ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+                state, nullptr, nullptr, 0, nullptr));
+            EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+        }
+    }
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT 42::integer", SQL_NTS));
+    SQL_DATE_STRUCT date{};
+    date.year = 4242;
+    SQLLEN length = 88;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_TYPE_DATE,
+        &date, sizeof(date), &length));
+    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+    EXPECT_EQ(4242, date.year);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+}
+
 TEST_F(BindColIntegrationTest, FailedGetDataDoesNotDiscardPartialOffset) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 'abcdef'::text, 'other'::text", SQL_NTS));
