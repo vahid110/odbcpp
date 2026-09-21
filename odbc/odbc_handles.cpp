@@ -3271,6 +3271,22 @@ SQLRETURN ODBCStatement::execute() {
       const bool character_input =
           value_type == SQL_C_CHAR || value_type == SQL_C_WCHAR;
       using rs::core::database::QueryParameterType;
+      if (character_input && query_param.type == QueryParameterType::Binary) {
+        std::string binary_value("\\x");
+        binary_value.append(value, 0, value.size() / 2 * 2);
+        const auto decoded = TextDataConverter::decode_binary(binary_value);
+        if (!decoded) {
+          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Character binary parameter is not hexadecimal");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        if (static_cast<SQLULEN>(decoded->size()) > implementation.length) {
+          set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                    "Character binary parameter exceeds SQL binary length");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        value = std::move(binary_value);
+      }
       if (character_input &&
           (query_param.type == QueryParameterType::Date ||
            query_param.type == QueryParameterType::Time ||

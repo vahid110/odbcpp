@@ -1,12 +1,14 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_types.h"
 #include "odbc/unicode.h"
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
 #include <cstring>
+#include <initializer_list>
 #include <string>
 #include <thread>
 #include <vector>
@@ -100,6 +102,60 @@ TEST_F(PreparedStatementIntegrationTest,
             state, nullptr, nullptr, 0, nullptr));
         EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
     }
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       CharacterBinaryParameterDecodesHexAndValidatesLength) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQLLEN input_length = SQL_NTS;
+    const auto expect_bytes = [&](SQLSMALLINT c_type, SQLPOINTER input,
+                                  SQLULEN sql_length,
+                                  std::initializer_list<unsigned char> bytes) {
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            c_type, SQL_VARBINARY, sql_length, 0,
+            input, 0, &input_length));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        unsigned char output[8]{};
+        SQLLEN output_length = -1;
+        const auto get_result = SQLGetData(hstmt, 1, SQL_C_BINARY,
+            output, sizeof(output), &output_length);
+        EXPECT_EQ(SQL_SUCCESS, get_result);
+        if (get_result == SQL_SUCCESS) {
+            EXPECT_EQ(static_cast<SQLLEN>(bytes.size()), output_length);
+            EXPECT_TRUE(std::equal(bytes.begin(), bytes.end(), output));
+        }
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    char odd_hex[] = "00fFa";
+    expect_bytes(SQL_C_CHAR, odd_hex, 2, {0x00, 0xff});
+    char explicit_hex[] = "00117fff";
+    input_length = 6;
+    expect_bytes(SQL_C_CHAR, explicit_hex, 3, {0x00, 0x11, 0x7f});
+    input_length = SQL_NTS;
+    SQLWCHAR wide_hex[] = {'0', '0', 'f', 'F', 'a', 0};
+    expect_bytes(SQL_C_WCHAR, wide_hex, 2, {0x00, 0xff});
+
+    const auto expect_error = [&](char* input, SQLULEN sql_length,
+                                  const char* expected_state) {
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_CHAR, SQL_VARBINARY, sql_length, 0,
+            input, 0, &input_length));
+        const auto result = SQLExecute(hstmt);
+        EXPECT_EQ(SQL_ERROR, result);
+        if (result != SQL_ERROR) {
+            SQLCloseCursor(hstmt);
+            return;
+        }
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ(expected_state, reinterpret_cast<char*>(state));
+    };
+    char invalid_hex[] = "0G";
+    expect_error(invalid_hex, 1, "22018");
+    char oversized_hex[] = "00117f";
+    expect_error(oversized_hex, 2, "22001");
 }
 
 TEST_F(PreparedStatementIntegrationTest, DateStructParameterRoundTrips) {
