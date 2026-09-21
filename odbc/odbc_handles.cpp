@@ -2716,6 +2716,19 @@ SQLRETURN ODBCStatement::fetch() {
     const auto& binding = *application_descriptor->record(i);
     if (binding.data_ptr) {
       const auto& cell = row[i];
+      const SQLSMALLINT sql_type = i < column_info_.size()
+          ? column_info_[i].sql_type : static_cast<SQLSMALLINT>(SQL_VARCHAR);
+      const SQLSMALLINT target_type = binding.concise_type == SQL_C_DEFAULT
+          ? ResultTypes::default_c_type(sql_type) : binding.concise_type;
+      if (!ResultTypes::is_conversion_supported(sql_type, target_type)) {
+        set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
+                  "Unsupported result data type conversion");
+        if (row_status) {
+          store_application_value(
+              row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
+        }
+        return SQL_ERROR;
+      }
 
       if (!cell) {
         if (!binding.indicator_ptr) {
@@ -2732,19 +2745,6 @@ SQLRETURN ODBCStatement::fetch() {
         continue;
       }
 
-      const SQLSMALLINT sql_type = i < column_info_.size()
-          ? column_info_[i].sql_type : static_cast<SQLSMALLINT>(SQL_VARCHAR);
-      const SQLSMALLINT target_type = binding.concise_type == SQL_C_DEFAULT
-          ? ResultTypes::default_c_type(sql_type) : binding.concise_type;
-      if (!ResultTypes::is_conversion_supported(sql_type, target_type)) {
-        set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
-                  "Unsupported result data type conversion");
-        if (row_status) {
-          store_application_value(
-              row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
-        }
-        return SQL_ERROR;
-      }
       const bool binary_as_text =
           (sql_type == SQL_BINARY || sql_type == SQL_VARBINARY ||
            sql_type == SQL_LONGVARBINARY) &&
@@ -2938,6 +2938,11 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
   };
 
   const auto& cell = row[col - 1];
+  if (!ResultTypes::is_conversion_supported(sql_type, effective_target_type)) {
+    set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
+              "Unsupported result data type conversion");
+    return SQL_ERROR;
+  }
   if (!cell) {
     if (!indicator) {
       set_error(SQLSTATE_INDICATOR_VARIABLE_REQUIRED,
@@ -2949,11 +2954,6 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     return SQL_SUCCESS;
   }
   
-  if (!ResultTypes::is_conversion_supported(sql_type, effective_target_type)) {
-    set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
-              "Unsupported result data type conversion");
-    return SQL_ERROR;
-  }
   const bool binary_as_text =
       (sql_type == SQL_BINARY || sql_type == SQL_VARBINARY ||
        sql_type == SQL_LONGVARBINARY) &&

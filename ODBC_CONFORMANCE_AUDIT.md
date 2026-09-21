@@ -1969,6 +1969,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   existing behavior, including the documented rowset/parameter-array feature
   boundary. The focused tests and all 34 tests pass under sanitizer,
   PostgreSQL Driver Manager, and iODBC.
+- Audit batch 291 checks the SQL-to-C conversion matrix before treating a
+  result as `NULL`. A PostgreSQL regression first showed `NULL::date` bound or
+  retrieved as `SQL_C_SLONG` incorrectly returning `SQL_NULL_DATA`; it now
+  reports `07006` without touching output or length/indicator storage. A
+  supported `SQL_C_TYPE_DATE` request still returns `SQL_NULL_DATA`, and the
+  same unsupported conversion on a non-`NULL` row remains an error. The
+  focused test runs without skipping and all 34 tests pass under sanitizer,
+  PostgreSQL Driver Manager, and iODBC.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
