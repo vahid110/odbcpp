@@ -808,6 +808,14 @@ TEST(ResultTypesTest, ProvidesMetadataDrivenDefaults) {
         EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
             temporal, SQL_C_CHAR));
     }
+    EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(
+        SQL_TYPE_DATE, SQL_C_TYPE_TIME));
+    EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(
+        SQL_TYPE_TIME, SQL_C_TYPE_DATE));
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
+        SQL_TYPE_DATE, SQL_C_TYPE_TIMESTAMP));
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
+        SQL_TYPE_TIME, SQL_C_TYPE_TIMESTAMP));
     EXPECT_TRUE(rs::odbc::ResultTypes::is_supported_parameter_c_type(
         SQL_C_TYPE_DATE));
     EXPECT_TRUE(rs::odbc::ResultTypes::is_supported_parameter_c_type(

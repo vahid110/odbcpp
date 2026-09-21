@@ -121,6 +121,12 @@ bool ResultTypes::is_conversion_supported(SQLSMALLINT sql_type,
        c_type == SQL_C_FLOAT || c_type == SQL_C_DOUBLE)) {
     return false;
   }
+  if (((sql_type == SQL_TYPE_DATE || sql_type == SQL_DATE) &&
+       (c_type == SQL_C_TIME || c_type == SQL_C_TYPE_TIME)) ||
+      ((sql_type == SQL_TYPE_TIME || sql_type == SQL_TIME) &&
+       (c_type == SQL_C_DATE || c_type == SQL_C_TYPE_DATE))) {
+    return false;
+  }
   switch (c_type) {
     case SQL_C_CHAR:
     case SQL_C_WCHAR:

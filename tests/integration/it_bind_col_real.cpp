@@ -1225,6 +1225,62 @@ TEST_F(BindColIntegrationTest, TemporalRejectsNumericResultTargets) {
     EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
 }
 
+TEST_F(BindColIntegrationTest, TemporalCrossConversionsRespectTypeMatrix) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT DATE '2024-02-29', TIME '12:34:56'", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLCHAR state[6]{};
+    for (SQLSMALLINT target : {SQL_C_TIME, SQL_C_TYPE_TIME}) {
+        SQL_TIME_STRUCT output{42, 42, 42};
+        SQLLEN length = 91;
+        EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 1, target,
+            &output, sizeof(output), &length));
+        EXPECT_EQ(42, output.hour);
+        EXPECT_EQ(91, length);
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+    }
+    for (SQLSMALLINT target : {SQL_C_DATE, SQL_C_TYPE_DATE}) {
+        SQL_DATE_STRUCT output{4242, 42, 42};
+        SQLLEN length = 92;
+        EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 2, target,
+            &output, sizeof(output), &length));
+        EXPECT_EQ(4242, output.year);
+        EXPECT_EQ(92, length);
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+    }
+
+    SQL_TIMESTAMP_STRUCT timestamp{};
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIMESTAMP,
+        &timestamp, sizeof(timestamp), nullptr));
+    EXPECT_EQ(2024, timestamp.year);
+    EXPECT_EQ(2, timestamp.month);
+    EXPECT_EQ(29, timestamp.day);
+    EXPECT_EQ(0, timestamp.hour);
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 2, SQL_C_TYPE_TIMESTAMP,
+        &timestamp, sizeof(timestamp), nullptr));
+    EXPECT_EQ(12, timestamp.hour);
+    EXPECT_EQ(34, timestamp.minute);
+    EXPECT_EQ(56, timestamp.second);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT DATE '2024-02-29'", SQL_NTS));
+    SQL_TIME_STRUCT bound{42, 42, 42};
+    SQLLEN length = 93;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_TYPE_TIME,
+        &bound, sizeof(bound), &length));
+    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+    EXPECT_EQ(42, bound.hour);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+}
+
 TEST_F(BindColIntegrationTest, CharacterToBinaryReturnsRawUtf8Bytes) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
         (SQLCHAR*)"SELECT 'AéZ'::text, ''::text", SQL_NTS));

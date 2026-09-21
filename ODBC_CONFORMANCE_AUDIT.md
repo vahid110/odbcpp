@@ -1938,6 +1938,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   cover the conversion matrix. The focused tests run without skipping and all
   34 tests pass under sanitizer, PostgreSQL Driver Manager, and iODBC. Other
   temporal cross-conversions remain open.
+- Audit batch 287 rejects date-to-time and time-to-date C struct conversions,
+  which the ODBC temporal conversion tables do not list. A PostgreSQL test
+  first reproduced `22007` and now verifies `07006`, untouched output and
+  indicators, both legacy and ODBC 3 target identifiers, and a bound-column
+  error. Supported date-to-timestamp and time-to-timestamp paths remain
+  covered; unit assertions pin the conversion matrix. The focused tests run
+  without skipping and all 34 tests pass under sanitizer, PostgreSQL Driver
+  Manager, and iODBC.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
