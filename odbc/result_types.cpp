@@ -123,7 +123,8 @@ bool ResultTypes::is_conversion_supported(SQLSMALLINT sql_type,
     case SQL_C_TYPE_TIMESTAMP:
       return true;
     case SQL_C_BINARY:
-      return sql_type == SQL_BINARY || sql_type == SQL_VARBINARY ||
+      return sql_type == SQL_BIT || sql_type == SQL_BINARY ||
+             sql_type == SQL_VARBINARY ||
              sql_type == SQL_LONGVARBINARY;
     default:
       return false;

@@ -932,6 +932,68 @@ TEST_F(BindColIntegrationTest, BitToCharacterBoundColumnsUseZeroAndOne) {
     EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
 }
 
+TEST_F(BindColIntegrationTest, BitToBinaryGetDataReturnsOneByte) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT true, false, true", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLLEN length = -1;
+    for (SQLUSMALLINT column : {1, 2}) {
+        SQLCHAR value = 0xff;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, column, SQL_C_BINARY,
+            &value, sizeof(value), &length));
+        EXPECT_EQ(column == 1 ? 1 : 0, value);
+        EXPECT_EQ(1, length);
+    }
+
+    SQLCHAR tiny = 0x55;
+    length = 81;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 3, SQL_C_BINARY,
+        &tiny, 0, &length));
+    EXPECT_EQ(0x55, tiny);
+    EXPECT_EQ(81, length);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 3, SQL_C_BINARY,
+        &tiny, sizeof(tiny), &length));
+    EXPECT_EQ(1, tiny);
+    EXPECT_EQ(1, length);
+}
+
+TEST_F(BindColIntegrationTest, BitToBinaryBoundColumnsReturnOneByte) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT false, true", SQL_NTS));
+    SQLCHAR first = 0xff;
+    SQLCHAR second = 0xff;
+    SQLLEN first_length = -1;
+    SQLLEN second_length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_BINARY,
+        &first, sizeof(first), &first_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 2, SQL_C_BINARY,
+        &second, sizeof(second), &second_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(0, first);
+    EXPECT_EQ(1, second);
+    EXPECT_EQ(1, first_length);
+    EXPECT_EQ(1, second_length);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT true", SQL_NTS));
+    SQLCHAR tiny = 0x55;
+    SQLLEN tiny_length = 82;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_BINARY,
+        &tiny, 0, &tiny_length));
+    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+    EXPECT_EQ(0x55, tiny);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+}
+
 TEST_F(BindColIntegrationTest, FailedGetDataDoesNotDiscardPartialOffset) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 'abcdef'::text, 'other'::text", SQL_NTS));

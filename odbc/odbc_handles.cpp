@@ -55,6 +55,23 @@ std::optional<std::string> bit_result_as_text(std::string_view value) {
   return std::nullopt;
 }
 
+SQLRETURN convert_bit_result_to_binary(std::string_view value, void* buffer,
+                                       SQLLEN buffer_length, SQLLEN* indicator,
+                                       ConversionIssue* issue) {
+  const auto bit = bit_result_as_text(value);
+  if (!bit) {
+    if (issue) *issue = ConversionIssue::InvalidCharacterValue;
+    return SQL_ERROR;
+  }
+  if (buffer_length < 1) {
+    if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+    return SQL_ERROR;
+  }
+  *static_cast<SQLCHAR*>(buffer) = (*bit)[0] == '1' ? 1 : 0;
+  if (indicator) store_application_value(indicator, static_cast<SQLLEN>(1));
+  return SQL_SUCCESS;
+}
+
 std::string elapsed_milliseconds(std::chrono::steady_clock::time_point start) {
   return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - start).count());
@@ -2698,11 +2715,16 @@ SQLRETURN ODBCStatement::fetch() {
         }
       }
       ConversionIssue conversion_issue = ConversionIssue::None;
-      SQLRETURN conv_result = TextDataConverter::convert_data(
-          conversion_value, target_type, binding.data_ptr, conversion_length,
-          binding.octet_length_ptr ? binding.octet_length_ptr
-                                   : binding.indicator_ptr,
-          &conversion_issue);
+      auto* output_length = binding.octet_length_ptr
+          ? binding.octet_length_ptr : binding.indicator_ptr;
+      SQLRETURN conv_result = sql_type == SQL_BIT &&
+          target_type == SQL_C_BINARY
+          ? convert_bit_result_to_binary(
+              *cell, binding.data_ptr, conversion_length, output_length,
+              &conversion_issue)
+          : TextDataConverter::convert_data(
+              conversion_value, target_type, binding.data_ptr,
+              conversion_length, output_length, &conversion_issue);
 
       if (conv_result == SQL_ERROR) {
         set_conversion_diagnostic(*this, conv_result, conversion_issue);
@@ -2942,6 +2964,14 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
   }
 
   if (effective_target_type == SQL_C_BINARY) {
+    if (sql_type == SQL_BIT) {
+      ConversionIssue issue = ConversionIssue::None;
+      const auto result = convert_bit_result_to_binary(
+          *cell, buffer, buffer_length, indicator, &issue);
+      set_conversion_diagnostic(*this, result, issue);
+      if (result == SQL_SUCCESS) save_offset(complete);
+      return result;
+    }
     const auto decoded = TextDataConverter::decode_binary(*cell);
     if (!decoded) {
       set_error(SQLSTATE_INVALID_CHARACTER_VALUE,

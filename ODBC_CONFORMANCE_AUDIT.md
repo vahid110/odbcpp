@@ -46,8 +46,8 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLFetch` | A | Partial | unit, integration, DM | Never-executed and no-result states return HY010/24000; row arrays and full state matrix remain |
 | `SQLFetchScroll` | A | Partial | unit, integration, DM | Only `SQL_FETCH_NEXT` is supported; keep other orientations honest |
 | `SQLMoreResults` | A | Partial | unit, integration, DM | Result/update-count traversal and close-time discard are covered; error-result sequences remain |
-| `SQLGetData` | A | Partial | integration, DM | Legacy and ODBC 3 temporal C targets, malformed-value diagnostics, per-row/switching-column offsets, binary-to-character hex chunking, and bit-to-character output are covered; complete conversion/chunking matrices remain |
-| `SQLBindCol` | A | Partial | unit, integration | Invalid C types, negative lengths, ODBC 3 temporal C targets, binary-to-character hex output, and bit-to-character output are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
+| `SQLGetData` | A | Partial | integration, DM | Legacy and ODBC 3 temporal C targets, malformed-value diagnostics, per-row/switching-column offsets, binary-to-character hex chunking, and bit-to-character/binary output are covered; complete conversion/chunking matrices remain |
+| `SQLBindCol` | A | Partial | unit, integration | Invalid C types, negative lengths, ODBC 3 temporal C targets, binary-to-character hex output, and bit-to-character/binary output are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
 | `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics, ODBC date/time/timestamp-struct input, temporal target rejection and target-specific diagnostics, date/time-to-timestamp and timestamp-to-date/time rules, character-to-date/time and time-only character-to-timestamp, temporal struct character-target lengths, binary SQL-target length, character-to-binary hex conversion, explicit zero-length character inputs, narrow/wide SQL character limits, and struct/character timestamp fractional precision are covered; input arrays, data-at-execution, and full conversion matrix remain |
 | `SQLNumParams` | A | Partial | unit, integration, DM | Prepared statements are server-validated without execution; state, null/output preservation, complex markers, direct execution, and IPD count agreement are covered; cancellation and communication-failure injection remain |
 | `SQLNumResultCols` | A | Partial | unit, integration | Prepared metadata, result sets, update counts, exhausted/closed cursors, delayed PostgreSQL errors, null outputs, and output preservation are covered; cancellation and communication-failure injection remain |
@@ -1822,6 +1822,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   in PostgreSQL's `t` text were updated to the ODBC value. The focused tests
   run without skipping and all 34 tests pass under sanitizer, PostgreSQL
   Driver Manager, and iODBC. The wider bit conversion matrix remains open.
+- Audit batch 274 completes the `SQL_BIT` to `SQL_C_BINARY` case from that
+  conversion table. A true/false result writes one byte `1`/`0`; a zero-length
+  buffer returns `22003` without overwriting output, and a subsequent
+  `SQLGetData` retry can succeed. Real PostgreSQL tests first reproduced the
+  unsupported-conversion error in both `SQLGetData` and bound-column fetch,
+  then covered full and insufficient buffers. The focused tests run without
+  skipping and all 34 tests pass under sanitizer, PostgreSQL Driver Manager,
+  and iODBC. The remaining SQL-to-C type combinations are still tracked as
+  partial.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
