@@ -1099,6 +1099,44 @@ TEST_F(BindColIntegrationTest, BitRejectsTemporalResultTargets) {
     EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
 }
 
+TEST_F(BindColIntegrationTest, BinaryRejectsNonCharacterScalarTargets) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT decode('01', 'hex')", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLCHAR state[6]{};
+    for (SQLSMALLINT target : {
+             SQL_C_BIT, SQL_C_SSHORT, SQL_C_SLONG, SQL_C_SBIGINT,
+             SQL_C_FLOAT, SQL_C_DOUBLE, SQL_C_TYPE_DATE,
+             SQL_C_TYPE_TIME, SQL_C_TYPE_TIMESTAMP}) {
+        SCOPED_TRACE(target);
+        std::array<unsigned char, sizeof(SQL_TIMESTAMP_STRUCT)> output;
+        output.fill(0x5a);
+        SQLLEN length = 85;
+        EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 1, target,
+            output.data(), static_cast<SQLLEN>(output.size()), &length));
+        EXPECT_EQ(85, length);
+        EXPECT_TRUE(std::all_of(output.begin(), output.end(),
+            [](unsigned char byte) { return byte == 0x5a; }));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+    }
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT decode('01', 'hex')", SQL_NTS));
+    SQLINTEGER number = 4242;
+    SQLLEN length = 86;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_SLONG,
+        &number, sizeof(number), &length));
+    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+    EXPECT_EQ(4242, number);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+}
+
 TEST_F(BindColIntegrationTest, FailedGetDataDoesNotDiscardPartialOffset) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 'abcdef'::text, 'other'::text", SQL_NTS));

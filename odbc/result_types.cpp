@@ -106,6 +106,11 @@ bool ResultTypes::is_valid_sql_type(SQLSMALLINT sql_type) {
 
 bool ResultTypes::is_conversion_supported(SQLSMALLINT sql_type,
                                           SQLSMALLINT c_type) {
+  if (sql_type == SQL_BINARY || sql_type == SQL_VARBINARY ||
+      sql_type == SQL_LONGVARBINARY) {
+    return c_type == SQL_C_CHAR || c_type == SQL_C_WCHAR ||
+           c_type == SQL_C_BINARY;
+  }
   switch (c_type) {
     case SQL_C_CHAR:
     case SQL_C_WCHAR:
@@ -124,9 +129,7 @@ bool ResultTypes::is_conversion_supported(SQLSMALLINT sql_type,
     case SQL_C_TYPE_TIMESTAMP:
       return sql_type != SQL_BIT;
     case SQL_C_BINARY:
-      return sql_type == SQL_BIT || sql_type == SQL_BINARY ||
-             sql_type == SQL_VARBINARY ||
-             sql_type == SQL_LONGVARBINARY;
+      return sql_type == SQL_BIT;
     default:
       return false;
   }
