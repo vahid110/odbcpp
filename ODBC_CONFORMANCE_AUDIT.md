@@ -1876,6 +1876,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   focused test runs without skipping and all 34 tests pass under sanitizer,
   PostgreSQL Driver Manager, and iODBC. The remaining character conversion
   matrix stays partial.
+- Audit batch 280 follows the [SQL-to-C numeric character-buffer rule](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/sql-to-c-numeric)
+  for exact integer SQL types. A narrow or wide character buffer that cannot
+  hold the entire integer and terminator now returns `22003` without advancing
+  `SQLGetData` or overwriting output, instead of returning a truncated whole
+  value with `01004`. A real PostgreSQL test first reproduced that defect,
+  then covered exact-fit retries, signed values, and a too-small bound wide
+  column. The focused test runs without skipping and all 34 tests pass under
+  sanitizer, PostgreSQL Driver Manager, and iODBC. Decimal and approximate
+  numeric truncation rules remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
