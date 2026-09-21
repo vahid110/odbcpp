@@ -3069,7 +3069,7 @@ SQLRETURN ODBCStatement::execute() {
         if (length_or_indicator) {
           length = load_application_value<SQLLEN>(length_or_indicator);
         }
-        if (length == SQL_NTS || length == 0) {
+        if (length == SQL_NTS || (length == 0 && !length_or_indicator)) {
           value.assign(text);
         } else if (length >= 0) {
           value.assign(text, static_cast<std::size_t>(length));
@@ -3084,7 +3084,7 @@ SQLRETURN ODBCStatement::execute() {
           length = load_application_value<SQLLEN>(length_or_indicator);
         }
         SQLINTEGER units = SQL_NTS;
-        if (length != SQL_NTS && length != 0) {
+        if (length != SQL_NTS && (length != 0 || length_or_indicator)) {
           if (length < 0 || length % sizeof(SQLWCHAR) != 0 ||
               static_cast<SQLULEN>(length / sizeof(SQLWCHAR)) >
                   static_cast<SQLULEN>(

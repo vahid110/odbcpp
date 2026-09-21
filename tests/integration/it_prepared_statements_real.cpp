@@ -158,6 +158,32 @@ TEST_F(PreparedStatementIntegrationTest,
     expect_error(oversized_hex, 2, "22001");
 }
 
+TEST_F(PreparedStatementIntegrationTest,
+       ExplicitZeroCharacterParameterLengthIsEmpty) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT octet_length(?::text)", SQL_NTS));
+    SQLLEN input_length = 0;
+    const auto expect_length = [&](SQLSMALLINT c_type, SQLSMALLINT sql_type,
+                                   SQLPOINTER input, SQLINTEGER expected) {
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            c_type, sql_type, 0, 0, input, 0, &input_length));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQLINTEGER output = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG,
+            &output, sizeof(output), nullptr));
+        EXPECT_EQ(expected, output);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    char narrow[] = "secret";
+    expect_length(SQL_C_CHAR, SQL_VARCHAR, narrow, 0);
+    SQLWCHAR wide[] = {'w', 'i', 'd', 'e', 0};
+    expect_length(SQL_C_WCHAR, SQL_WVARCHAR, wide, 0);
+    input_length = SQL_NTS;
+    expect_length(SQL_C_CHAR, SQL_VARCHAR, narrow, 6);
+    expect_length(SQL_C_WCHAR, SQL_WVARCHAR, wide, 4);
+}
+
 TEST_F(PreparedStatementIntegrationTest, DateStructParameterRoundTrips) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
     SQL_DATE_STRUCT input{2024, 2, 29};
