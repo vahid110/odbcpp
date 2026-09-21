@@ -55,6 +55,21 @@ std::optional<std::string> bit_result_as_text(std::string_view value) {
   return std::nullopt;
 }
 
+bool bit_uses_decimal_representation(SQLSMALLINT target_type) {
+  switch (target_type) {
+    case SQL_C_CHAR:
+    case SQL_C_WCHAR:
+    case SQL_C_SSHORT:
+    case SQL_C_SLONG:
+    case SQL_C_SBIGINT:
+    case SQL_C_FLOAT:
+    case SQL_C_DOUBLE:
+      return true;
+    default:
+      return false;
+  }
+}
+
 SQLRETURN convert_bit_result_to_binary(std::string_view value, void* buffer,
                                        SQLLEN buffer_length, SQLLEN* indicator,
                                        ConversionIssue* issue) {
@@ -2664,7 +2679,7 @@ SQLRETURN ODBCStatement::fetch() {
            sql_type == SQL_LONGVARBINARY) &&
           (target_type == SQL_C_CHAR || target_type == SQL_C_WCHAR);
       const bool bit_as_text = sql_type == SQL_BIT &&
-          (target_type == SQL_C_CHAR || target_type == SQL_C_WCHAR);
+          bit_uses_decimal_representation(target_type);
       std::optional<std::string> formatted_text;
       if (binary_as_text) {
         formatted_text = binary_result_as_hex(*cell);
@@ -2693,7 +2708,9 @@ SQLRETURN ODBCStatement::fetch() {
       SQLLEN conversion_length = binding.octet_length;
       const auto unit_size = target_type == SQL_C_WCHAR
           ? sizeof(SQLWCHAR) : 1;
-      if (bit_as_text && conversion_length <
+      if (bit_as_text &&
+          (target_type == SQL_C_CHAR || target_type == SQL_C_WCHAR) &&
+          conversion_length <
               static_cast<SQLLEN>(2 * unit_size)) {
         set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
                   "Bit character result does not fit in the application buffer");
@@ -2852,8 +2869,7 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
       (effective_target_type == SQL_C_CHAR ||
        effective_target_type == SQL_C_WCHAR);
   const bool bit_as_text = sql_type == SQL_BIT &&
-      (effective_target_type == SQL_C_CHAR ||
-       effective_target_type == SQL_C_WCHAR);
+      bit_uses_decimal_representation(effective_target_type);
   std::optional<std::string> formatted_text;
   if (binary_as_text) {
     formatted_text = binary_result_as_hex(*cell);
@@ -2869,12 +2885,15 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
                 "Bit result value has invalid PostgreSQL encoding");
       return SQL_ERROR;
     }
-    const auto required_bytes = effective_target_type == SQL_C_WCHAR
-        ? 2 * sizeof(SQLWCHAR) : 2;
-    if (buffer_length < static_cast<SQLLEN>(required_bytes)) {
-      set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                "Bit character result does not fit in the application buffer");
-      return SQL_ERROR;
+    if (effective_target_type == SQL_C_CHAR ||
+        effective_target_type == SQL_C_WCHAR) {
+      const auto required_bytes = effective_target_type == SQL_C_WCHAR
+          ? 2 * sizeof(SQLWCHAR) : 2;
+      if (buffer_length < static_cast<SQLLEN>(required_bytes)) {
+        set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                  "Bit character result does not fit in the application buffer");
+        return SQL_ERROR;
+      }
     }
   }
   const auto& character_cell = formatted_text ? *formatted_text : *cell;
@@ -3005,7 +3024,7 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
 
   ConversionIssue conversion_issue = ConversionIssue::None;
   SQLRETURN result = TextDataConverter::convert_data(
-      *cell, effective_target_type, buffer, buffer_length, indicator,
+      character_cell, effective_target_type, buffer, buffer_length, indicator,
       &conversion_issue);
 
   set_conversion_diagnostic(*this, result, conversion_issue);

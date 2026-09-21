@@ -994,6 +994,71 @@ TEST_F(BindColIntegrationTest, BitToBinaryBoundColumnsReturnOneByte) {
     EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
 }
 
+TEST_F(BindColIntegrationTest, BitToNumericGetDataUsesZeroAndOne) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT true, true, true, true, true", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLSMALLINT small = -1;
+    SQLINTEGER integer = -1;
+    SQLBIGINT big = -1;
+    SQLREAL real = -1;
+    SQLDOUBLE double_value = -1;
+    SQLLEN length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SSHORT,
+        &small, 0, &length));
+    EXPECT_EQ(1, small);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(small)), length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 2, SQL_C_SLONG,
+        &integer, 0, &length));
+    EXPECT_EQ(1, integer);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(integer)), length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 3, SQL_C_SBIGINT,
+        &big, 0, &length));
+    EXPECT_EQ(1, big);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(big)), length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 4, SQL_C_FLOAT,
+        &real, 0, &length));
+    EXPECT_FLOAT_EQ(1.0f, real);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(real)), length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 5, SQL_C_DOUBLE,
+        &double_value, 0, &length));
+    EXPECT_DOUBLE_EQ(1.0, double_value);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(double_value)), length);
+}
+
+TEST_F(BindColIntegrationTest, BitToNumericBoundColumnsUseZero) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT false, false, false, false, false", SQL_NTS));
+    SQLSMALLINT small = -1;
+    SQLINTEGER integer = -1;
+    SQLBIGINT big = -1;
+    SQLREAL real = -1;
+    SQLDOUBLE double_value = -1;
+    SQLLEN lengths[5]{-1, -1, -1, -1, -1};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_SSHORT,
+        &small, 0, &lengths[0]));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 2, SQL_C_SLONG,
+        &integer, 0, &lengths[1]));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 3, SQL_C_SBIGINT,
+        &big, 0, &lengths[2]));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 4, SQL_C_FLOAT,
+        &real, 0, &lengths[3]));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 5, SQL_C_DOUBLE,
+        &double_value, 0, &lengths[4]));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(0, small);
+    EXPECT_EQ(0, integer);
+    EXPECT_EQ(0, big);
+    EXPECT_FLOAT_EQ(0.0f, real);
+    EXPECT_DOUBLE_EQ(0.0, double_value);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(small)), lengths[0]);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(integer)), lengths[1]);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(big)), lengths[2]);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(real)), lengths[3]);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(double_value)), lengths[4]);
+}
+
 TEST_F(BindColIntegrationTest, FailedGetDataDoesNotDiscardPartialOffset) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 'abcdef'::text, 'other'::text", SQL_NTS));
