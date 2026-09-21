@@ -3550,7 +3550,16 @@ SQLRETURN ODBCStatement::execute() {
 
       const bool character_input =
           value_type == SQL_C_CHAR || value_type == SQL_C_WCHAR;
+      const bool floating_input =
+          value_type == SQL_C_FLOAT || value_type == SQL_C_DOUBLE;
       using rs::core::database::QueryParameterType;
+      if (floating_input && implementation.length > 0 &&
+          is_character_sql_type(implementation.concise_type) &&
+          static_cast<SQLULEN>(value.size()) > implementation.length) {
+        set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                  "Floating parameter exceeds SQL character length");
+        return complete_parameter_set(SQL_ERROR);
+      }
       if (character_input && implementation.length > 0 &&
           (implementation.concise_type == SQL_CHAR ||
            implementation.concise_type == SQL_VARCHAR ||

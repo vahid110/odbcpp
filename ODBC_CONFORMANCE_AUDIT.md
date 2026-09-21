@@ -2001,6 +2001,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   prepared parameters. The focused tests run without skipping and all 34
   tests pass under sanitizer, PostgreSQL Driver Manager, and iODBC. Other
   C-to-SQL conversion combinations remain open.
+- Audit batch 295 enforces the [ODBC numeric C-to-SQL character length rule](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/c-to-sql-numeric)
+  for `SQL_C_FLOAT` and `SQL_C_DOUBLE` parameters. A PostgreSQL regression
+  first showed that a value one character longer than declared `SQL_VARCHAR`
+  length was sent without error; the driver now returns `22001` before sending
+  it. The focused test covers exact-fit and undersized narrow and wide SQL
+  character targets, including a negative value. It runs without skipping and
+  all 34 tests pass under sanitizer, PostgreSQL Driver Manager, and iODBC.
+  Other numeric C input types and C-to-SQL conversions remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
