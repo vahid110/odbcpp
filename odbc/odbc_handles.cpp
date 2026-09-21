@@ -3280,6 +3280,26 @@ SQLRETURN ODBCStatement::execute() {
                   "Character parameter exceeds SQL byte length");
         return complete_parameter_set(SQL_ERROR);
       }
+      if (character_input &&
+          (implementation.concise_type == SQL_WCHAR ||
+           implementation.concise_type == SQL_WVARCHAR ||
+           implementation.concise_type == SQL_WLONGVARCHAR)) {
+        if (!utf8_to_wide(value)) {
+          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Character parameter is not valid Unicode");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        const auto character_count = std::count_if(
+            value.begin(), value.end(), [](unsigned char byte) {
+              return (byte & 0xc0) != 0x80;
+            });
+        if (implementation.length > 0 &&
+            static_cast<SQLULEN>(character_count) > implementation.length) {
+          set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                    "Character parameter exceeds SQL character length");
+          return complete_parameter_set(SQL_ERROR);
+        }
+      }
       if (character_input && query_param.type == QueryParameterType::Binary) {
         std::string binary_value("\\x");
         binary_value.append(value, 0, value.size() / 2 * 2);

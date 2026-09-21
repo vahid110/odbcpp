@@ -239,6 +239,53 @@ TEST_F(PreparedStatementIntegrationTest,
     EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
 }
 
+TEST_F(PreparedStatementIntegrationTest,
+       CharacterParameterHonorsDeclaredWideSqlCharacterLength) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQLLEN input_length = SQL_NTS;
+    SQLCHAR state[6]{};
+    char utf8[] = "\xc3\xa9x";
+    SQLWCHAR wide[] = {0x00e9, 'x', 0};
+    const auto expect_state = [&](SQLRETURN result, const char* expected) {
+        EXPECT_EQ(SQL_ERROR, result);
+        if (result != SQL_ERROR) {
+            SQLCloseCursor(hstmt);
+            return;
+        }
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ(expected, reinterpret_cast<char*>(state));
+    };
+    for (const auto sql_type : {SQL_WCHAR, SQL_WVARCHAR,
+                                SQL_WLONGVARCHAR}) {
+        for (const auto c_type : {SQL_C_CHAR, SQL_C_WCHAR}) {
+            SQLPOINTER input = c_type == SQL_C_CHAR
+                ? static_cast<SQLPOINTER>(utf8)
+                : static_cast<SQLPOINTER>(wide);
+            ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1,
+                SQL_PARAM_INPUT, c_type, sql_type, 2, 0,
+                input, 0, &input_length));
+            ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+            ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+            char output[8]{};
+            ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+                output, sizeof(output), nullptr));
+            EXPECT_STREQ(utf8, output);
+            ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+            ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1,
+                SQL_PARAM_INPUT, c_type, sql_type, 1, 0,
+                input, 0, &input_length));
+            expect_state(SQLExecute(hstmt), "22001");
+        }
+    }
+    char invalid_utf8[] = {'\xff', 0};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_CHAR, SQL_WVARCHAR, 1, 0,
+        invalid_utf8, 0, &input_length));
+    expect_state(SQLExecute(hstmt), "22018");
+}
+
 TEST_F(PreparedStatementIntegrationTest, DateStructParameterRoundTrips) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
     SQL_DATE_STRUCT input{2024, 2, 29};
