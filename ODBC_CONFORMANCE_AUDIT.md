@@ -2027,6 +2027,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   overflow. It runs without skipping and all 34 tests pass under sanitizer,
   PostgreSQL Driver Manager, and iODBC. Other integer SQL targets and C-to-SQL
   conversions remain open.
+- Audit batch 298 extends floating C input conversion to `SQL_SMALLINT` using
+  the same [ODBC numeric-to-integer rule](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/c-to-sql-numeric).
+  A PostgreSQL regression first showed a fractional double being rejected;
+  it now verifies truncation toward zero, the signed 16-bit lower bound,
+  overflow `22003`, and a negative `SQL_C_FLOAT` value after an error. The
+  focused test runs without skipping and all 34 tests pass under sanitizer,
+  PostgreSQL Driver Manager, and iODBC. The remaining integer SQL targets and
+  C-to-SQL conversions remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
