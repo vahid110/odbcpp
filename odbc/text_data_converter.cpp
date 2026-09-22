@@ -11,6 +11,7 @@
 #include <ctime>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <locale.h>
 #include <optional>
@@ -525,6 +526,87 @@ SQLRETURN convert_time(const std::string& value, void* buffer,
   return SQL_SUCCESS;
 }
 
+SQLRETURN convert_numeric(std::string_view value, void* buffer,
+                          SQLLEN* indicator, ConversionIssue* issue,
+                          SQLSMALLINT precision, SQLSMALLINT scale) {
+  if (precision < 1 || precision > 38 || scale < 0 || scale > precision) {
+    if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+    return SQL_ERROR;
+  }
+  auto text = trim_whitespace(value);
+  const bool negative = !text.empty() && text.front() == '-';
+  if (!text.empty() && (text.front() == '-' || text.front() == '+')) {
+    text.remove_prefix(1);
+  }
+  std::size_t position = 0;
+  while (position < text.size() && text[position] >= '0' &&
+         text[position] <= '9') {
+    ++position;
+  }
+  const auto whole = text.substr(0, position);
+  std::string_view fraction;
+  if (position < text.size() && text[position] == '.') {
+    const auto start = ++position;
+    while (position < text.size() && text[position] >= '0' &&
+           text[position] <= '9') {
+      ++position;
+    }
+    fraction = text.substr(start, position - start);
+  }
+  if ((whole.empty() && fraction.empty()) || position != text.size()) {
+    if (issue) *issue = ConversionIssue::InvalidCharacterValue;
+    return SQL_ERROR;
+  }
+  const auto first_nonzero = whole.find_first_not_of('0');
+  const auto whole_digits = first_nonzero == std::string_view::npos
+      ? std::size_t{0} : whole.size() - first_nonzero;
+  if (whole_digits > static_cast<std::size_t>(precision - scale)) {
+    if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+    return SQL_ERROR;
+  }
+
+  SQL_NUMERIC_STRUCT numeric{};
+  numeric.precision = static_cast<SQLCHAR>(precision);
+  numeric.scale = static_cast<SQLSCHAR>(scale);
+  const auto append_digit = [&](unsigned digit) {
+    unsigned carry = digit;
+    for (auto& byte : numeric.val) {
+      const auto product = static_cast<unsigned>(byte) * 10u + carry;
+      byte = static_cast<SQLCHAR>(product & 0xffu);
+      carry = product >> 8;
+    }
+    return carry == 0;
+  };
+  for (const char digit : whole) {
+    if (!append_digit(static_cast<unsigned>(digit - '0'))) {
+      if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+      return SQL_ERROR;
+    }
+  }
+  for (SQLSMALLINT index = 0; index < scale; ++index) {
+    const unsigned digit = static_cast<std::size_t>(index) < fraction.size()
+        ? static_cast<unsigned>(fraction[index] - '0') : 0u;
+    if (!append_digit(digit)) {
+      if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+      return SQL_ERROR;
+    }
+  }
+  const bool nonzero = std::any_of(std::begin(numeric.val),
+      std::end(numeric.val), [](SQLCHAR byte) { return byte != 0; });
+  numeric.sign = negative && nonzero ? 0 : 1;
+  const auto discarded = fraction.substr(
+      std::min(fraction.size(), static_cast<std::size_t>(scale)));
+  const bool truncated = std::any_of(discarded.begin(), discarded.end(),
+      [](char digit) { return digit != '0'; });
+  std::memcpy(buffer, &numeric, sizeof(numeric));
+  store_indicator(indicator, static_cast<SQLLEN>(sizeof(numeric)));
+  if (truncated) {
+    if (issue) *issue = ConversionIssue::FractionalTruncation;
+    return SQL_SUCCESS_WITH_INFO;
+  }
+  return SQL_SUCCESS;
+}
+
 SQLRETURN convert_timestamp(const std::string& value, void* buffer,
                             SQLLEN* indicator, ConversionIssue* issue) {
   const auto text = trim_whitespace(value);
@@ -591,7 +673,9 @@ SQLRETURN TextDataConverter::convert_data(const std::string& value,
                                           void* buffer,
                                           SQLLEN buffer_length,
                                           SQLLEN* indicator,
-                                          ConversionIssue* issue) {
+                                          ConversionIssue* issue,
+                                          SQLSMALLINT numeric_precision,
+                                          SQLSMALLINT numeric_scale) {
   if (issue) *issue = ConversionIssue::None;
   if (!buffer) return SQL_ERROR;
   switch (target_c_type) {
@@ -616,6 +700,9 @@ SQLRETURN TextDataConverter::convert_data(const std::string& value,
       return convert_integral<SQLINTEGER>(value, buffer, indicator, issue);
     case SQL_C_SBIGINT:
       return convert_integral<SQLBIGINT>(value, buffer, indicator, issue);
+    case SQL_C_NUMERIC:
+      return convert_numeric(value, buffer, indicator, issue,
+                             numeric_precision, numeric_scale);
     case SQL_C_FLOAT:
     case SQL_C_DOUBLE:
       return convert_floating(

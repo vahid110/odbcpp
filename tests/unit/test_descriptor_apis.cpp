@@ -52,9 +52,19 @@ TEST_F(DescriptorAPITest, BindColRejectsMalformedBufferDescriptions) {
     EXPECT_EQ("HY003", stmt->get_sqlstate());
     stmt->clear_diagnostics();
 
-    EXPECT_EQ(SQL_ERROR, stmt->bind_col(
-        1, SQL_C_NUMERIC, buffer, sizeof(buffer), &indicator));
-    EXPECT_EQ("HYC00", stmt->get_sqlstate());
+    SQL_NUMERIC_STRUCT numeric{};
+    EXPECT_EQ(SQL_SUCCESS, stmt->bind_col(
+        1, SQL_C_NUMERIC, &numeric, sizeof(numeric), &indicator));
+    SQLHDESC ard = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, stmt->get_attribute(SQL_ATTR_APP_ROW_DESC, &ard));
+    SQLSMALLINT precision = 0;
+    SQLSMALLINT scale = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ard, 1, SQL_DESC_PRECISION,
+        &precision, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ard, 1, SQL_DESC_SCALE,
+        &scale, 0, nullptr));
+    EXPECT_EQ(38, precision);
+    EXPECT_EQ(0, scale);
 }
 
 TEST_F(DescriptorAPITest, BindParameterRejectsMalformedDescriptions) {

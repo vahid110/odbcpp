@@ -31,7 +31,7 @@ bool ResultTypes::is_supported_c_type(SQLSMALLINT c_type) {
       c_type == SQL_C_UTINYINT || c_type == SQL_C_USHORT ||
       c_type == SQL_C_ULONG || c_type == SQL_C_UBIGINT ||
       c_type == SQL_C_SSHORT || c_type == SQL_C_SLONG ||
-      c_type == SQL_C_SBIGINT ||
+      c_type == SQL_C_SBIGINT || c_type == SQL_C_NUMERIC ||
       c_type == SQL_C_FLOAT || c_type == SQL_C_DOUBLE ||
       c_type == SQL_C_BIT || c_type == SQL_C_DATE ||
       c_type == SQL_C_TIME || c_type == SQL_C_TIMESTAMP ||
@@ -152,6 +152,11 @@ bool ResultTypes::is_conversion_supported(SQLSMALLINT sql_type,
     case SQL_C_DOUBLE:
     case SQL_C_BIT:
       return true;
+    case SQL_C_NUMERIC:
+      return sql_type == SQL_BIT || sql_type == SQL_TINYINT ||
+             sql_type == SQL_SMALLINT || sql_type == SQL_INTEGER ||
+             sql_type == SQL_BIGINT || sql_type == SQL_DECIMAL ||
+             sql_type == SQL_NUMERIC;
     case SQL_C_DATE:
     case SQL_C_TYPE_DATE:
     case SQL_C_TIME:

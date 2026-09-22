@@ -46,8 +46,8 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLFetch` | A | Partial | unit, integration, DM | Never-executed and no-result states return HY010/24000; row arrays and full state matrix remain |
 | `SQLFetchScroll` | A | Partial | unit, integration, DM | Only `SQL_FETCH_NEXT` is supported; keep other orientations honest |
 | `SQLMoreResults` | A | Partial | unit, integration, DM | Result/update-count traversal and close-time discard are covered; error-result sequences remain |
-| `SQLGetData` | A | Partial | integration, DM | Legacy and ODBC 3 temporal C targets, malformed-value diagnostics, per-row/switching-column offsets, binary-to-character hex chunking and unsupported scalar rejection, plus bit-to-character/binary/numeric output and temporal rejection are covered; complete conversion/chunking matrices remain |
-| `SQLBindCol` | A | Partial | unit, integration | Invalid C types, negative lengths, ODBC 3 temporal C targets, binary-to-character hex output and unsupported scalar rejection, plus bit-to-character/binary/numeric output and temporal rejection are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
+| `SQLGetData` | A | Partial | integration, DM | Legacy and ODBC 3 temporal C targets, malformed-value diagnostics, per-row/switching-column offsets, binary-to-character hex chunking and unsupported scalar rejection, plus bit-to-character/binary/numeric output, exact-numeric `SQL_C_NUMERIC`, and temporal rejection are covered; complete conversion/chunking matrices remain |
+| `SQLBindCol` | A | Partial | unit, integration | Invalid C types, negative lengths, ODBC 3 temporal C targets, binary-to-character hex output and unsupported scalar rejection, plus bit-to-character/binary/numeric output, exact-numeric `SQL_C_NUMERIC`, and temporal rejection are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
 | `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics, ODBC date/time/timestamp-struct input, temporal target rejection and target-specific diagnostics, date/time-to-timestamp and timestamp-to-date/time rules, character-to-date/time and time-only character-to-timestamp, temporal struct character-target lengths, binary SQL-target length, character-to-binary hex conversion, explicit zero-length character inputs, narrow/wide SQL character limits, and struct/character timestamp fractional precision are covered; input arrays, data-at-execution, and full conversion matrix remain |
 | `SQLNumParams` | A | Partial | unit, integration, DM | Prepared statements are server-validated without execution; state, null/output preservation, complex markers, direct execution, and IPD count agreement are covered; cancellation and communication-failure injection remain |
 | `SQLNumResultCols` | A | Partial | unit, integration | Prepared metadata, result sets, update counts, exhausted/closed cursors, delayed PostgreSQL errors, null outputs, and output preservation are covered; cancellation and communication-failure injection remain |
@@ -2287,6 +2287,16 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   34 tests passed locally against PostgreSQL in the native-width build before
   the CI change. The matrix now runs unit and PostgreSQL integration suites
   with both `DriverUnicodeType=UTF16` and `DriverUnicodeType=UCS4`.
+- Audit batch 330 adds exact numeric SQL result conversion to
+  `SQL_C_NUMERIC` for `SQLGetData` and bound columns. It encodes PostgreSQL
+  decimal text as the little-endian 16-byte magnitude in
+  `SQL_NUMERIC_STRUCT`, with default precision 38 and scale 0 or the
+  application's ARD precision and scale for `SQL_ARD_TYPE` and bindings.
+  Tests cover positive and negative values, fractional truncation (`01S07`),
+  whole-digit overflow (`22003`) without output mutation, malformed values,
+  `NULL`, and descriptor-pointer reset behavior. Input `SQL_C_NUMERIC` and
+  conversions from approximate, character, and temporal SQL types remain
+  separate audit work.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

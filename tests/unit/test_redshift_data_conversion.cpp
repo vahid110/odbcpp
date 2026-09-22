@@ -19,6 +19,73 @@ protected:
     SQLLEN indicator;
 };
 
+TEST_F(RedshiftDataConverterTest, NumericStructureIsExactAndLittleEndian) {
+    SQL_NUMERIC_STRUCT numeric{};
+    SQLLEN length = -1;
+    rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "123.45", SQL_C_NUMERIC, &numeric, 0, &length, &issue, 5, 2));
+    EXPECT_EQ(5, numeric.precision);
+    EXPECT_EQ(2, numeric.scale);
+    EXPECT_EQ(1, numeric.sign);
+    EXPECT_EQ(0x39, numeric.val[0]);
+    EXPECT_EQ(0x30, numeric.val[1]);
+    EXPECT_TRUE(std::all_of(std::begin(numeric.val) + 2,
+        std::end(numeric.val), [](SQLCHAR byte) { return byte == 0; }));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(numeric)), length);
+    EXPECT_EQ(rs::odbc::ConversionIssue::None, issue);
+
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "-123.45", SQL_C_NUMERIC, &numeric, 0, &length, &issue, 5, 2));
+    EXPECT_EQ(0, numeric.sign);
+    EXPECT_EQ(0x39, numeric.val[0]);
+    EXPECT_EQ(0x30, numeric.val[1]);
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "-0.00", SQL_C_NUMERIC, &numeric, 0, &length, &issue, 5, 2));
+    EXPECT_EQ(1, numeric.sign);
+}
+
+TEST_F(RedshiftDataConverterTest, NumericStructureTruncationAndErrors) {
+    SQL_NUMERIC_STRUCT numeric{};
+    SQLLEN length = -1;
+    rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "12.34", SQL_C_NUMERIC, &numeric, 0, &length, &issue));
+    EXPECT_EQ(38, numeric.precision);
+    EXPECT_EQ(0, numeric.scale);
+    EXPECT_EQ(12, numeric.val[0]);
+    EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "12.00", SQL_C_NUMERIC, &numeric, 0, &length, &issue));
+    EXPECT_EQ(rs::odbc::ConversionIssue::None, issue);
+
+    for (const auto* invalid : {"100", "999999999999999999999999999999999999999"}) {
+        std::memset(&numeric, 0x5a, sizeof(numeric));
+        length = 91;
+        issue = rs::odbc::ConversionIssue::None;
+        const SQLSMALLINT precision = std::strcmp(invalid, "100") == 0 ? 2 : 38;
+        EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+            invalid, SQL_C_NUMERIC, &numeric, 0, &length, &issue,
+            precision, 0));
+        EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
+        EXPECT_EQ(91, length);
+        EXPECT_TRUE(std::all_of(reinterpret_cast<const unsigned char*>(&numeric),
+            reinterpret_cast<const unsigned char*>(&numeric) + sizeof(numeric),
+            [](unsigned char byte) { return byte == 0x5a; }));
+    }
+    for (const auto* invalid : {"NaN", "1e2", "."}) {
+        issue = rs::odbc::ConversionIssue::None;
+        EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+            invalid, SQL_C_NUMERIC, &numeric, 0, &length, &issue));
+        EXPECT_EQ(rs::odbc::ConversionIssue::InvalidCharacterValue, issue);
+        EXPECT_EQ(91, length);
+    }
+    issue = rs::odbc::ConversionIssue::None;
+    EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+        "1", SQL_C_NUMERIC, &numeric, 0, &length, &issue, 2, 3));
+    EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
+}
+
 // Test through public interface only - essential edge cases
 TEST_F(RedshiftDataConverterTest, ConvertDataInteger) {
     SQLINTEGER result;
@@ -802,6 +869,14 @@ TEST(ResultTypesTest, ProvidesMetadataDrivenDefaults) {
         SQL_INTEGER, SQL_C_BINARY));
     EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
         SQL_VARBINARY, SQL_C_BINARY));
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
+        SQL_NUMERIC, SQL_C_NUMERIC));
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
+        SQL_INTEGER, SQL_C_NUMERIC));
+    EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(
+        SQL_VARCHAR, SQL_C_NUMERIC));
+    EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(
+        SQL_DOUBLE, SQL_C_NUMERIC));
     for (SQLSMALLINT temporal : std::initializer_list<SQLSMALLINT>{
              SQL_TYPE_DATE, SQL_TYPE_TIME, SQL_TYPE_TIMESTAMP}) {
         for (SQLSMALLINT numeric : std::initializer_list<SQLSMALLINT>{

@@ -234,6 +234,7 @@ bool bit_uses_decimal_representation(SQLSMALLINT target_type) {
     case SQL_C_SBIGINT:
     case SQL_C_FLOAT:
     case SQL_C_DOUBLE:
+    case SQL_C_NUMERIC:
       return true;
     default:
       return false;
@@ -2252,6 +2253,14 @@ SQLRETURN ODBCDescriptor::set_field(
     default:
       break;
   }
+  // SQL_C_NUMERIC and SQL_NUMERIC share a numeric code, but application
+  // descriptors describe a fixed-size C structure rather than SQL text.
+  if (kind_ == DescriptorKind::Application && new_concise_type &&
+      *new_concise_type == SQL_C_NUMERIC) {
+    record.precision = 38;
+    record.scale = 0;
+    record.octet_length = sizeof(SQL_NUMERIC_STRUCT);
+  }
   if (field_identifier != SQL_DESC_DATA_PTR &&
       field_identifier != SQL_DESC_INDICATOR_PTR &&
       field_identifier != SQL_DESC_OCTET_LENGTH_PTR) {
@@ -3028,7 +3037,8 @@ SQLRETURN ODBCStatement::fetch() {
       } else {
         conv_result = TextDataConverter::convert_data(
             conversion_value, target_type, binding.data_ptr,
-            conversion_length, output_length, &conversion_issue);
+            conversion_length, output_length, &conversion_issue,
+            binding.precision, binding.scale);
       }
 
       if (conv_result == SQL_ERROR) {
@@ -3335,9 +3345,17 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
   }
 
   ConversionIssue conversion_issue = ConversionIssue::None;
+  SQLSMALLINT numeric_precision = 38;
+  SQLSMALLINT numeric_scale = 0;
+  if (effective_target_type == SQL_C_NUMERIC &&
+      target_type == SQL_ARD_TYPE) {
+    const auto* record = descriptor(app_row_descriptor_)->record(col - 1);
+    numeric_precision = record->precision;
+    numeric_scale = record->scale;
+  }
   SQLRETURN result = TextDataConverter::convert_data(
       character_cell, effective_target_type, buffer, buffer_length, indicator,
-      &conversion_issue);
+      &conversion_issue, numeric_precision, numeric_scale);
 
   set_conversion_diagnostic(*this, result, conversion_issue);
   if (result != SQL_ERROR) save_offset(complete);

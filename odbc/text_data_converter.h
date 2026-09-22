@@ -26,7 +26,9 @@ public:
                                 void* buffer,
                                 SQLLEN buffer_length,
                                 SQLLEN* indicator,
-                                ConversionIssue* issue = nullptr);
+                                ConversionIssue* issue = nullptr,
+                                SQLSMALLINT numeric_precision = 38,
+                                SQLSMALLINT numeric_scale = 0);
   // PostgreSQL text-protocol representation, including hex and legacy escape.
   static std::optional<std::vector<std::byte>> decode_binary(
       std::string_view value);
