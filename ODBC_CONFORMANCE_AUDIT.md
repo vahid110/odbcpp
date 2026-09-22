@@ -2017,6 +2017,16 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   and wide SQL character targets. It runs without skipping and all 34 tests
   pass under sanitizer, PostgreSQL Driver Manager, and iODBC. Unsupported
   numeric C types and the wider C-to-SQL conversion matrix remain open.
+- Audit batch 297 applies the [ODBC C numeric-to-SQL integer rule](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/c-to-sql-numeric)
+  to `SQL_C_FLOAT` and `SQL_C_DOUBLE` parameters bound as `SQL_INTEGER`.
+  A PostgreSQL regression first showed a fractional double being rejected by
+  the server. The driver now truncates fractional digits toward zero, checks
+  the signed 32-bit range and non-finite values before sending, and returns
+  `22003` for out-of-range input. The test covers positive and negative
+  fractions, the minimum integer, both floating C types, error recovery, and
+  overflow. It runs without skipping and all 34 tests pass under sanitizer,
+  PostgreSQL Driver Manager, and iODBC. Other integer SQL targets and C-to-SQL
+  conversions remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

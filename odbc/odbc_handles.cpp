@@ -3554,6 +3554,23 @@ SQLRETURN ODBCStatement::execute() {
           value_type == SQL_C_SLONG || value_type == SQL_C_SBIGINT ||
           value_type == SQL_C_FLOAT || value_type == SQL_C_DOUBLE;
       using rs::core::database::QueryParameterType;
+      if ((value_type == SQL_C_FLOAT || value_type == SQL_C_DOUBLE) &&
+          implementation.concise_type == SQL_INTEGER) {
+        const double number = value_type == SQL_C_FLOAT
+            ? static_cast<double>(load_application_value<SQLREAL>(
+                  application.data_ptr))
+            : load_application_value<SQLDOUBLE>(application.data_ptr);
+        const double truncated = std::trunc(number);
+        const double upper_exclusive = std::ldexp(
+            1.0, std::numeric_limits<SQLINTEGER>::digits);
+        if (!std::isfinite(number) ||
+            truncated < -upper_exclusive || truncated >= upper_exclusive) {
+          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                    "Floating parameter is outside SQL_INTEGER range");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        value = std::to_string(static_cast<SQLINTEGER>(truncated));
+      }
       if (numeric_input && implementation.length > 0 &&
           is_character_sql_type(implementation.concise_type) &&
           static_cast<SQLULEN>(value.size()) > implementation.length) {
