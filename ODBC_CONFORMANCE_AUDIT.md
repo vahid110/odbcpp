@@ -2118,7 +2118,17 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   bound-column overflow, and `07006` for temporal values even when `NULL`.
   Four focused tests run without skipping, and all 34 tests pass under
   sanitizer, PostgreSQL Driver Manager, and iODBC. `SQL_C_NUMERIC` output and
-  unsigned integer result targets remain open.
+  unsigned integer result targets remained open until batch 309.
+- Audit batch 309 adds `SQL_C_UTINYINT` result conversion. PostgreSQL
+  regressions first returned `HYC00`; they now cover zero and 255, negative
+  and above-255 values returning `22003` without output mutation, `01S07`
+  fractional truncation, Boolean zero/one, bound-column `NULL` and overflow,
+  malformed text returning `22018` with recovery, and `07006` for temporal
+  values including `NULL`. The conversion reuses the
+  existing exact signed-integer parser before applying the unsigned 8-bit
+  range check. Three focused tests run without skipping, and all 34 tests
+  pass under sanitizer, PostgreSQL Driver Manager, and iODBC. Wider unsigned
+  result targets and `SQL_C_NUMERIC` remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

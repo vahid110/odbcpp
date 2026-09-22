@@ -204,6 +204,23 @@ SQLRETURN convert_integral(const std::string& value, void* buffer,
   return finish(converted, truncated != *parsed);
 }
 
+SQLRETURN convert_unsigned_tinyint(const std::string& value, void* buffer,
+                                   SQLLEN* indicator,
+                                   ConversionIssue* issue) {
+  SQLBIGINT whole = 0;
+  const auto result = convert_integral<SQLBIGINT>(
+      value, &whole, nullptr, issue);
+  if (result == SQL_ERROR) return result;
+  if (whole < 0 || whole > std::numeric_limits<SQLCHAR>::max()) {
+    if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+    return SQL_ERROR;
+  }
+  const auto converted = static_cast<SQLCHAR>(whole);
+  std::memcpy(buffer, &converted, sizeof(converted));
+  store_indicator(indicator, static_cast<SQLLEN>(sizeof(converted)));
+  return result;
+}
+
 bool parse_digits(std::string_view value, std::size_t offset,
                   std::size_t count, unsigned& result) {
   if (offset + count > value.size()) return false;
@@ -590,6 +607,8 @@ SQLRETURN TextDataConverter::convert_data(const std::string& value,
           value, buffer, buffer_length, indicator, issue);
     case SQL_C_STINYINT:
       return convert_integral<SQLSCHAR>(value, buffer, indicator, issue);
+    case SQL_C_UTINYINT:
+      return convert_unsigned_tinyint(value, buffer, indicator, issue);
     case SQL_C_SSHORT:
       return convert_integral<SQLSMALLINT>(value, buffer, indicator, issue);
     case SQL_C_SLONG:
