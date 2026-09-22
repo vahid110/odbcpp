@@ -4279,7 +4279,8 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
   if (value_type == SQL_C_NUMERIC && parameter_type != SQL_DECIMAL &&
       parameter_type != SQL_NUMERIC && parameter_type != SQL_SMALLINT &&
       parameter_type != SQL_INTEGER && parameter_type != SQL_BIGINT &&
-      parameter_type != SQL_BIT &&
+      parameter_type != SQL_BIT && parameter_type != SQL_REAL &&
+      parameter_type != SQL_FLOAT && parameter_type != SQL_DOUBLE &&
       !is_character_sql_type(parameter_type)) {
     set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
               "Numeric C parameter requires an exact numeric SQL type");

@@ -3494,6 +3494,101 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       NumericStructureFloatingParametersHandleScaleAndSmallValues) {
+    SQL_NUMERIC_STRUCT numeric{};
+    numeric.sign = 1;
+    numeric.val[0] = 0x39;
+    numeric.val[1] = 0x30;  // 123.45 at APD scale 2.
+    SQLLEN indicator = 0;
+    SQLHDESC apd = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt, SQL_ATTR_APP_PARAM_DESC,
+        &apd, 0, nullptr));
+    const auto number = [](SQLLEN field) {
+        return reinterpret_cast<SQLPOINTER>(
+            static_cast<std::uintptr_t>(field));
+    };
+    const auto bind = [&](SQLSMALLINT sql_type, SQLSMALLINT precision,
+                          SQLSMALLINT scale) {
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_NUMERIC, sql_type, precision, 0, &numeric, 0, &indicator));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+            SQL_DESC_PRECISION, number(precision), 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+            SQL_DESC_SCALE, number(scale), 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+            SQL_DESC_DATA_PTR, &numeric, 0));
+    };
+    for (SQLSMALLINT sql_type : {SQLSMALLINT{SQL_REAL},
+                                  SQLSMALLINT{SQL_FLOAT},
+                                  SQLSMALLINT{SQL_DOUBLE}}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+            (SQLCHAR*)(sql_type == SQL_REAL ? "SELECT ?::real" :
+                "SELECT ?::double precision"), SQL_NTS));
+        bind(sql_type, 5, 2);
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQLDOUBLE result = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_DOUBLE,
+            &result, sizeof(result), nullptr));
+        EXPECT_NEAR(123.45, result, sql_type == SQL_REAL ? 0.0001 : 1e-10);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    }
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::real", SQL_NTS));
+    numeric = {};
+    numeric.sign = 1;
+    numeric.val[0] = 1;  // 1e-38 at APD scale 38.
+    bind(SQL_REAL, 38, 38);
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLREAL tiny_result = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_FLOAT,
+        &tiny_result, sizeof(tiny_result), nullptr));
+    EXPECT_GT(tiny_result, 0);
+    EXPECT_LT(tiny_result, 2e-38f);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    numeric = {};
+    numeric.sign = 1;
+    numeric.val[0] = 9;
+    for (int power = 0; power < 37; ++power) {
+        unsigned carry = 0;
+        for (auto& byte : numeric.val) {
+            const unsigned product = static_cast<unsigned>(byte) * 10 + carry;
+            byte = static_cast<SQLCHAR>(product & 0xff);
+            carry = product >> 8;
+        }
+        ASSERT_EQ(0u, carry);
+    }
+    bind(SQL_REAL, 38, 0);  // 9e37 remains within PostgreSQL float4 range.
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLREAL large_result = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_FLOAT,
+        &large_result, sizeof(large_result), nullptr));
+    EXPECT_GT(large_result, 8e37f);
+    EXPECT_LT(large_result, 1e38f);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    numeric.sign = 2;
+    SQLCHAR state[6]{};
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    indicator = SQL_NULL_DATA;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    tiny_result = 7;
+    SQLLEN length = 91;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_FLOAT,
+        &tiny_result, sizeof(tiny_result), &length));
+    EXPECT_EQ(SQL_NULL_DATA, length);
+    EXPECT_EQ(7, tiny_result);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        DecimalParameterUsesIpdPrecisionAndScale) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
         (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
