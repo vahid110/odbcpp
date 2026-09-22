@@ -3829,7 +3829,8 @@ SQLRETURN ODBCStatement::execute() {
           value_type == SQL_C_SBIGINT;
       const bool unsigned_integer_input = unsigned_number.has_value();
       const bool numeric_input = signed_integer_input ||
-          unsigned_integer_input || floating_input;
+          unsigned_integer_input || floating_input ||
+          value_type == SQL_C_NUMERIC;
       if (floating_input &&
           (declared_sql_type == SQL_DECIMAL ||
            declared_sql_type == SQL_NUMERIC)) {
@@ -4278,7 +4279,8 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
   if (value_type == SQL_C_NUMERIC && parameter_type != SQL_DECIMAL &&
       parameter_type != SQL_NUMERIC && parameter_type != SQL_SMALLINT &&
       parameter_type != SQL_INTEGER && parameter_type != SQL_BIGINT &&
-      parameter_type != SQL_BIT) {
+      parameter_type != SQL_BIT &&
+      !is_character_sql_type(parameter_type)) {
     set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
               "Numeric C parameter requires an exact numeric SQL type");
     return SQL_ERROR;

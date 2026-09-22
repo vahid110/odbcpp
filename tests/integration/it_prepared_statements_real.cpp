@@ -3423,6 +3423,77 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       NumericStructureCharacterParameterHonorsNarrowAndWideLengths) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::text", SQL_NTS));
+    SQL_NUMERIC_STRUCT numeric{};
+    numeric.sign = 1;
+    numeric.val[0] = 0x39;
+    numeric.val[1] = 0x30;  // 123.45 at APD scale 2.
+    SQLLEN indicator = 0;
+    SQLHDESC apd = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt, SQL_ATTR_APP_PARAM_DESC,
+        &apd, 0, nullptr));
+    const auto number = [](SQLLEN field) {
+        return reinterpret_cast<SQLPOINTER>(
+            static_cast<std::uintptr_t>(field));
+    };
+    const auto bind = [&](SQLSMALLINT sql_type, SQLULEN length) {
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_NUMERIC, sql_type, length, 0, &numeric, 0, &indicator));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+            SQL_DESC_PRECISION, number(5), 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+            SQL_DESC_SCALE, number(2), 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+            SQL_DESC_DATA_PTR, &numeric, 0));
+    };
+    const auto expect_text = [&](const char* expected) {
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        char result[32]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+            result, sizeof(result), nullptr));
+        EXPECT_STREQ(expected, result);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    const auto expect_overflow = [&] {
+        SQLCHAR state[6]{};
+        EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
+    };
+
+    bind(SQL_VARCHAR, 6);
+    expect_text("123.45");
+    numeric.sign = 0;
+    expect_overflow();  // -123.45 exceeds six characters.
+    numeric.sign = 1;
+    numeric.val[0] = 0xd2;
+    numeric.val[1] = 0x04;  // 12.34 fits after the error.
+    expect_text("12.34");
+    indicator = SQL_NULL_DATA;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    char untouched[8] = "keep";
+    SQLLEN output_length = 91;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        untouched, sizeof(untouched), &output_length));
+    EXPECT_EQ(SQL_NULL_DATA, output_length);
+    EXPECT_STREQ("keep", untouched);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    indicator = 0;
+    numeric.val[0] = 0x39;
+    numeric.val[1] = 0x30;
+    bind(SQL_WVARCHAR, 6);
+    expect_text("123.45");
+    numeric.sign = 0;
+    expect_overflow();
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        DecimalParameterUsesIpdPrecisionAndScale) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
         (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));

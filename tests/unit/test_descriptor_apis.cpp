@@ -111,9 +111,12 @@ TEST_F(DescriptorAPITest, BindParameterRejectsMalformedDescriptions) {
 
 TEST_F(DescriptorAPITest, NumericParameterDescriptorDefaultsAndTargetValidation) {
     SQL_NUMERIC_STRUCT numeric{};
-    EXPECT_EQ(SQL_ERROR, stmt->bind_parameter(
+    EXPECT_EQ(SQL_SUCCESS, stmt->bind_parameter(
         1, SQL_PARAM_INPUT, SQL_C_NUMERIC, SQL_VARCHAR,
         10, 0, &numeric, sizeof(numeric), nullptr));
+    EXPECT_EQ(SQL_ERROR, stmt->bind_parameter(
+        1, SQL_PARAM_INPUT, SQL_C_NUMERIC, SQL_TINYINT,
+        3, 0, &numeric, sizeof(numeric), nullptr));
     EXPECT_EQ("07006", stmt->get_sqlstate());
     stmt->clear_diagnostics();
 
