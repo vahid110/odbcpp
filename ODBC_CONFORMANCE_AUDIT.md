@@ -2087,6 +2087,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   failed execution. The focused tests run without skipping and all 34 tests
   pass under sanitizer, PostgreSQL Driver Manager, and iODBC. Narrower
   unsigned C types and other C-to-SQL conversions remain open.
+- Audit batch 305 adds `SQL_C_USHORT` and `SQL_C_UTINYINT` input parameters,
+  completing the four unsigned integer C widths on the supported input path.
+  PostgreSQL regressions first failed at bind time; they now cover the signed
+  `SQL_SMALLINT` boundary and `22003` overflow, full 16-bit and 8-bit values
+  bound to `SQL_BIGINT`, invalid `SQL_BIT` value 2, and recovery after errors.
+  A shared unsigned value keeps formatting and range checks consistent across
+  the four widths. The focused tests run without skipping and all 34 tests
+  pass under sanitizer, PostgreSQL Driver Manager, and iODBC. Signed tinyint,
+  `SQL_C_NUMERIC`, and other C-to-SQL conversions remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

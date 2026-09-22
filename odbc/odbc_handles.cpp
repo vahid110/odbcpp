@@ -3406,6 +3406,7 @@ SQLRETURN ODBCStatement::execute() {
       }
 
       std::string value;
+      std::optional<SQLUBIGINT> unsigned_number;
       if (value_type == SQL_C_CHAR) {
         const auto* text = static_cast<const char*>(application.data_ptr);
         SQLLEN length = application.octet_length;
@@ -3454,12 +3455,22 @@ SQLRETURN ODBCStatement::execute() {
       } else if (value_type == SQL_C_SBIGINT) {
         value = std::to_string(
             load_application_value<SQLBIGINT>(application.data_ptr));
+      } else if (value_type == SQL_C_UTINYINT) {
+        unsigned_number = load_application_value<SQLCHAR>(
+            application.data_ptr);
+        value = std::to_string(*unsigned_number);
+      } else if (value_type == SQL_C_USHORT) {
+        unsigned_number = load_application_value<SQLUSMALLINT>(
+            application.data_ptr);
+        value = std::to_string(*unsigned_number);
       } else if (value_type == SQL_C_ULONG) {
-        value = std::to_string(
-            load_application_value<SQLUINTEGER>(application.data_ptr));
+        unsigned_number = load_application_value<SQLUINTEGER>(
+            application.data_ptr);
+        value = std::to_string(*unsigned_number);
       } else if (value_type == SQL_C_UBIGINT) {
-        value = std::to_string(
-            load_application_value<SQLUBIGINT>(application.data_ptr));
+        unsigned_number = load_application_value<SQLUBIGINT>(
+            application.data_ptr);
+        value = std::to_string(*unsigned_number);
       } else if (value_type == SQL_C_FLOAT) {
         value = format_floating_parameter(
             load_application_value<SQLREAL>(application.data_ptr));
@@ -3623,8 +3634,7 @@ SQLRETURN ODBCStatement::execute() {
           value_type == SQL_C_FLOAT || value_type == SQL_C_DOUBLE;
       const bool signed_integer_input = value_type == SQL_C_SSHORT ||
           value_type == SQL_C_SLONG || value_type == SQL_C_SBIGINT;
-      const bool unsigned_integer_input = value_type == SQL_C_ULONG ||
-          value_type == SQL_C_UBIGINT;
+      const bool unsigned_integer_input = unsigned_number.has_value();
       const bool numeric_input = signed_integer_input ||
           unsigned_integer_input || floating_input;
       using rs::core::database::QueryParameterType;
@@ -3690,9 +3700,6 @@ SQLRETURN ODBCStatement::execute() {
         }
       }
       if (unsigned_integer_input && integer_target) {
-        const SQLUBIGINT number = value_type == SQL_C_ULONG
-            ? load_application_value<SQLUINTEGER>(application.data_ptr)
-            : load_application_value<SQLUBIGINT>(application.data_ptr);
         const SQLUBIGINT maximum = implementation.concise_type == SQL_SMALLINT
             ? static_cast<SQLUBIGINT>(
                   std::numeric_limits<SQLSMALLINT>::max())
@@ -3701,7 +3708,7 @@ SQLRETURN ODBCStatement::execute() {
                       std::numeric_limits<SQLINTEGER>::max())
                 : static_cast<SQLUBIGINT>(
                       std::numeric_limits<SQLBIGINT>::max());
-        if (number > maximum) {
+        if (*unsigned_number > maximum) {
           set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
                     "Unsigned parameter is outside SQL integer range");
           return complete_parameter_set(SQL_ERROR);
