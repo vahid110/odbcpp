@@ -46,8 +46,8 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLFetch` | A | Partial | unit, integration, DM | Never-executed and no-result states return HY010/24000; row arrays and full state matrix remain |
 | `SQLFetchScroll` | A | Partial | unit, integration, DM | Only `SQL_FETCH_NEXT` is supported; keep other orientations honest |
 | `SQLMoreResults` | A | Partial | unit, integration, DM | Result/update-count traversal and close-time discard are covered; error-result sequences remain |
-| `SQLGetData` | A | Partial | integration, DM | Legacy and ODBC 3 temporal C targets, malformed-value diagnostics, per-row/switching-column offsets, binary-to-character hex chunking and unsupported scalar rejection, plus bit-to-character/binary/numeric output, exact-numeric `SQL_C_NUMERIC`, and temporal rejection are covered; complete conversion/chunking matrices remain |
-| `SQLBindCol` | A | Partial | unit, integration | Invalid C types, negative lengths, ODBC 3 temporal C targets, binary-to-character hex output and unsupported scalar rejection, plus bit-to-character/binary/numeric output, exact-numeric `SQL_C_NUMERIC`, and temporal rejection are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
+| `SQLGetData` | A | Partial | integration, DM | Legacy and ODBC 3 temporal C targets, malformed-value diagnostics, per-row/switching-column offsets, binary-to-character hex chunking and unsupported scalar rejection, plus bit-to-character/binary/numeric output, exact-numeric and character-to-`SQL_C_NUMERIC` conversion, and temporal rejection are covered; complete conversion/chunking matrices remain |
+| `SQLBindCol` | A | Partial | unit, integration | Invalid C types, negative lengths, ODBC 3 temporal C targets, binary-to-character hex output and unsupported scalar rejection, plus bit-to-character/binary/numeric output, exact-numeric and character-to-`SQL_C_NUMERIC` conversion, and temporal rejection are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
 | `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics, ODBC date/time/timestamp-struct input, `SQL_C_NUMERIC` input to exact numeric SQL types using APD precision/scale, temporal target rejection and target-specific diagnostics, date/time-to-timestamp and timestamp-to-date/time rules, character-to-date/time and time-only character-to-timestamp, temporal struct character-target lengths, binary SQL-target length, character-to-binary hex conversion, explicit zero-length character inputs, narrow/wide SQL character limits, and struct/character timestamp fractional precision are covered; input arrays, data-at-execution, and full conversion matrix remain |
 | `SQLNumParams` | A | Partial | unit, integration, DM | Prepared statements are server-validated without execution; state, null/output preservation, complex markers, direct execution, and IPD count agreement are covered; cancellation and communication-failure injection remain |
 | `SQLNumResultCols` | A | Partial | unit, integration | Prepared metadata, result sets, update counts, exhausted/closed cursors, delayed PostgreSQL errors, null outputs, and output preservation are covered; cancellation and communication-failure injection remain |
@@ -2305,6 +2305,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   `NULL`, invalid sign, APD precision/scale overflow, declared SQL precision
   overflow, recovery, and rejected non-exact SQL targets (`07006`). Other
   numeric C-to-SQL conversions remain open.
+- Audit batch 332 extends result conversion from SQL character types to
+  `SQL_C_NUMERIC` under the [ODBC character conversion rules](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/sql-to-c-character).
+  Exact decimal parsing now accepts signed `E` exponents without floating
+  rounding or unbounded exponent expansion. Unit and PostgreSQL tests cover
+  exact scaled values, leading/trailing whitespace, fractional truncation
+  (`01S07`), malformed literals (`22018`), whole-digit overflow (`22003`),
+  huge positive/negative exponents, zero, `NULL`, bound columns, and preserved
+  output on error. Approximate SQL types to `SQL_C_NUMERIC` remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

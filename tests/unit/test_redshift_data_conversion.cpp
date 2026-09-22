@@ -75,7 +75,7 @@ TEST_F(RedshiftDataConverterTest, NumericStructureTruncationAndErrors) {
             reinterpret_cast<const unsigned char*>(&numeric) + sizeof(numeric),
             [](unsigned char byte) { return byte == 0x5a; }));
     }
-    for (const auto* invalid : {"NaN", "1e2", "."}) {
+    for (const auto* invalid : {"NaN", "1e", "1e+", "1e-2x", "."}) {
         issue = rs::odbc::ConversionIssue::None;
         EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
             invalid, SQL_C_NUMERIC, &numeric, 0, &length, &issue));
@@ -86,6 +86,53 @@ TEST_F(RedshiftDataConverterTest, NumericStructureTruncationAndErrors) {
     EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
         "1", SQL_C_NUMERIC, &numeric, 0, &length, &issue, 2, 3));
     EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
+}
+
+TEST_F(RedshiftDataConverterTest, NumericStructureAcceptsExactExponents) {
+    SQL_NUMERIC_STRUCT numeric{};
+    SQLLEN length = -1;
+    rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "  +1.2345E2  ", SQL_C_NUMERIC, &numeric, 0, &length,
+        &issue, 5, 2));
+    EXPECT_EQ(0x39, numeric.val[0]);
+    EXPECT_EQ(0x30, numeric.val[1]);
+    EXPECT_EQ(1, numeric.sign);
+    EXPECT_EQ(rs::odbc::ConversionIssue::None, issue);
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "-1.2345e+2", SQL_C_NUMERIC, &numeric, 0, &length,
+        &issue, 5, 2));
+    EXPECT_EQ(0, numeric.sign);
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "1e-2", SQL_C_NUMERIC, &numeric, 0, &length,
+        &issue, 3, 2));
+    EXPECT_EQ(1, numeric.val[0]);
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "1.2345e-2", SQL_C_NUMERIC, &numeric, 0, &length,
+        &issue, 5, 4));
+    EXPECT_EQ(123, numeric.val[0]);
+    EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "1e-999999999999999999999", SQL_C_NUMERIC, &numeric, 0,
+        &length, &issue));
+    EXPECT_EQ(0, numeric.val[0]);
+    EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "0e999999999999999999999", SQL_C_NUMERIC, &numeric, 0,
+        &length, &issue));
+    EXPECT_EQ(0, numeric.val[0]);
+    EXPECT_EQ(rs::odbc::ConversionIssue::None, issue);
+
+    std::memset(&numeric, 0x5a, sizeof(numeric));
+    length = 91;
+    EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+        "9e38", SQL_C_NUMERIC, &numeric, 0, &length,
+        &issue));
+    EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
+    EXPECT_EQ(91, length);
+    EXPECT_TRUE(std::all_of(reinterpret_cast<const unsigned char*>(&numeric),
+        reinterpret_cast<const unsigned char*>(&numeric) + sizeof(numeric),
+        [](unsigned char byte) { return byte == 0x5a; }));
 }
 
 TEST_F(RedshiftDataConverterTest, NumericStructureInputUsesDescriptorScale) {
@@ -927,7 +974,7 @@ TEST(ResultTypesTest, ProvidesMetadataDrivenDefaults) {
         SQL_NUMERIC, SQL_C_NUMERIC));
     EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
         SQL_INTEGER, SQL_C_NUMERIC));
-    EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
         SQL_VARCHAR, SQL_C_NUMERIC));
     EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(
         SQL_DOUBLE, SQL_C_NUMERIC));

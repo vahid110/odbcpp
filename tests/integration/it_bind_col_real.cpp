@@ -1962,6 +1962,93 @@ TEST_F(BindColIntegrationTest, BoundNumericOverflowPreservesOutput) {
     EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
 }
 
+TEST_F(BindColIntegrationTest, CharacterNumericGetDataReportsExactDiagnostics) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT '1.2345e2'::text, 'oops'::text, "
+                  "'1e39'::text, NULL::text, '1.2345e2'::text", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLHDESC ard = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt, SQL_ATTR_APP_ROW_DESC,
+        &ard, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_CONCISE_TYPE,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_C_NUMERIC)), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_PRECISION,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(5)), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_SCALE,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(2)), 0));
+    SQL_NUMERIC_STRUCT numeric{};
+    SQLLEN length = 91;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_ARD_TYPE,
+        &numeric, 0, &length));
+    EXPECT_EQ(0x39, numeric.val[0]);
+    EXPECT_EQ(0x30, numeric.val[1]);
+    EXPECT_EQ(5, numeric.precision);
+    EXPECT_EQ(2, numeric.scale);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(numeric)), length);
+
+    SQLCHAR state[6]{};
+    for (const auto column : {2, 3}) {
+        std::memset(&numeric, 0x5a, sizeof(numeric));
+        length = 92;
+        EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, SQL_C_NUMERIC,
+            &numeric, 0, &length));
+        EXPECT_EQ(92, length);
+        EXPECT_TRUE(std::all_of(reinterpret_cast<const unsigned char*>(&numeric),
+            reinterpret_cast<const unsigned char*>(&numeric) + sizeof(numeric),
+            [](unsigned char byte) { return byte == 0x5a; }));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ(column == 2 ? "22018" : "22003",
+            reinterpret_cast<char*>(state));
+    }
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 4, SQL_C_NUMERIC,
+        &numeric, 0, &length));
+    EXPECT_EQ(SQL_NULL_DATA, length);
+    EXPECT_TRUE(std::all_of(reinterpret_cast<const unsigned char*>(&numeric),
+        reinterpret_cast<const unsigned char*>(&numeric) + sizeof(numeric),
+        [](unsigned char byte) { return byte == 0x5a; }));
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(hstmt, 5, SQL_C_NUMERIC,
+        &numeric, 0, &length));
+    EXPECT_EQ(123, numeric.val[0]);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01S07", reinterpret_cast<char*>(state));
+}
+
+TEST_F(BindColIntegrationTest, BoundCharacterNumericErrorPreservesOutput) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT value FROM (VALUES (1, '1.25e1'::text), "
+                  "(2, 'bad'::text), (3, NULL::text)) AS rows(ord, value) "
+                  "ORDER BY ord", SQL_NTS));
+    SQL_NUMERIC_STRUCT numeric{};
+    SQLLEN length = 91;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_NUMERIC,
+        &numeric, sizeof(numeric), &length));
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLFetch(hstmt));
+    EXPECT_EQ(12, numeric.val[0]);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(numeric)), length);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01S07", reinterpret_cast<char*>(state));
+
+    std::memset(&numeric, 0x5a, sizeof(numeric));
+    length = 92;
+    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+    EXPECT_EQ(92, length);
+    EXPECT_TRUE(std::all_of(reinterpret_cast<const unsigned char*>(&numeric),
+        reinterpret_cast<const unsigned char*>(&numeric) + sizeof(numeric),
+        [](unsigned char byte) { return byte == 0x5a; }));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
+    EXPECT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(SQL_NULL_DATA, length);
+    EXPECT_TRUE(std::all_of(reinterpret_cast<const unsigned char*>(&numeric),
+        reinterpret_cast<const unsigned char*>(&numeric) + sizeof(numeric),
+        [](unsigned char byte) { return byte == 0x5a; }));
+}
+
 TEST_F(BindColIntegrationTest, CharacterToBinaryReturnsRawUtf8Bytes) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
         (SQLCHAR*)"SELECT 'AéZ'::text, ''::text", SQL_NTS));

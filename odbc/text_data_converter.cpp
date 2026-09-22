@@ -554,16 +554,81 @@ SQLRETURN convert_numeric(std::string_view value, void* buffer,
     }
     fraction = text.substr(start, position - start);
   }
-  if ((whole.empty() && fraction.empty()) || position != text.size()) {
+  if (whole.empty() && fraction.empty()) {
     if (issue) *issue = ConversionIssue::InvalidCharacterValue;
     return SQL_ERROR;
   }
-  const auto first_nonzero = whole.find_first_not_of('0');
-  const auto whole_digits = first_nonzero == std::string_view::npos
-      ? std::size_t{0} : whole.size() - first_nonzero;
-  if (whole_digits > static_cast<std::size_t>(precision - scale)) {
+  // Clamp an extreme exponent beyond the input length and target precision:
+  // its exact magnitude cannot change overflow or truncation decisions.
+  const auto size_limit = static_cast<std::size_t>(
+      std::numeric_limits<std::int64_t>::max() / 8);
+  if (text.size() > size_limit) {
     if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
     return SQL_ERROR;
+  }
+  const auto exponent_limit = static_cast<std::int64_t>(text.size()) + 64;
+  std::int64_t exponent = 0;
+  if (position < text.size() &&
+      (text[position] == 'e' || text[position] == 'E')) {
+    ++position;
+    bool negative_exponent = false;
+    if (position < text.size() &&
+        (text[position] == '+' || text[position] == '-')) {
+      negative_exponent = text[position] == '-';
+      ++position;
+    }
+    const auto exponent_start = position;
+    while (position < text.size() && text[position] >= '0' &&
+           text[position] <= '9') {
+      const auto digit = static_cast<std::int64_t>(text[position] - '0');
+      exponent = exponent > (exponent_limit - digit) / 10
+          ? exponent_limit : exponent * 10 + digit;
+      ++position;
+    }
+    if (position == exponent_start) {
+      if (issue) *issue = ConversionIssue::InvalidCharacterValue;
+      return SQL_ERROR;
+    }
+    if (negative_exponent) exponent = -exponent;
+  }
+  if (position != text.size()) {
+    if (issue) *issue = ConversionIssue::InvalidCharacterValue;
+    return SQL_ERROR;
+  }
+
+  std::string mantissa(whole);
+  mantissa.append(fraction);
+  const auto first_nonzero = mantissa.find_first_not_of('0');
+  std::string scaled_digits;
+  bool truncated = false;
+  if (first_nonzero != std::string::npos) {
+    const auto shift = exponent + scale -
+        static_cast<std::int64_t>(fraction.size());
+    if (shift >= 0) {
+      const auto significant = mantissa.size() - first_nonzero;
+      if (significant > static_cast<std::size_t>(precision) ||
+          static_cast<std::size_t>(shift) >
+              static_cast<std::size_t>(precision) - significant) {
+        if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+        return SQL_ERROR;
+      }
+      scaled_digits = mantissa.substr(first_nonzero);
+      scaled_digits.append(static_cast<std::size_t>(shift), '0');
+    } else {
+      const auto discarded = static_cast<std::size_t>(-shift);
+      const auto kept = discarded >= mantissa.size()
+          ? std::size_t{0} : mantissa.size() - discarded;
+      truncated = std::any_of(mantissa.begin() + kept, mantissa.end(),
+          [](char digit) { return digit != '0'; });
+      if (kept > first_nonzero) {
+        const auto significant = kept - first_nonzero;
+        if (significant > static_cast<std::size_t>(precision)) {
+          if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+          return SQL_ERROR;
+        }
+        scaled_digits = mantissa.substr(first_nonzero, significant);
+      }
+    }
   }
 
   SQL_NUMERIC_STRUCT numeric{};
@@ -578,16 +643,8 @@ SQLRETURN convert_numeric(std::string_view value, void* buffer,
     }
     return carry == 0;
   };
-  for (const char digit : whole) {
+  for (const char digit : scaled_digits) {
     if (!append_digit(static_cast<unsigned>(digit - '0'))) {
-      if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
-      return SQL_ERROR;
-    }
-  }
-  for (SQLSMALLINT index = 0; index < scale; ++index) {
-    const unsigned digit = static_cast<std::size_t>(index) < fraction.size()
-        ? static_cast<unsigned>(fraction[index] - '0') : 0u;
-    if (!append_digit(digit)) {
       if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
       return SQL_ERROR;
     }
@@ -595,10 +652,6 @@ SQLRETURN convert_numeric(std::string_view value, void* buffer,
   const bool nonzero = std::any_of(std::begin(numeric.val),
       std::end(numeric.val), [](SQLCHAR byte) { return byte != 0; });
   numeric.sign = negative && nonzero ? 0 : 1;
-  const auto discarded = fraction.substr(
-      std::min(fraction.size(), static_cast<std::size_t>(scale)));
-  const bool truncated = std::any_of(discarded.begin(), discarded.end(),
-      [](char digit) { return digit != '0'; });
   std::memcpy(buffer, &numeric, sizeof(numeric));
   store_indicator(indicator, static_cast<SQLLEN>(sizeof(numeric)));
   if (truncated) {
