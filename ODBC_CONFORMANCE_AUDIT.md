@@ -2201,6 +2201,12 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   execution, a changed APD data pointer, an explicit IPD type change with a
   wider buffer, and descriptor detachment. All 34 tests pass under sanitizer
   and both iODBC configurations.
+- Audit batch 318 maps `SQL_WCHAR`, `SQL_WVARCHAR`, and `SQL_WLONGVARCHAR`
+  to the specified `SQL_C_WCHAR` default instead of interpreting wide input
+  as narrow UTF-8. The unit regression failed for all three types before the
+  fix; live PostgreSQL tests cover wide input, overlength input (`22001`),
+  and malformed Unicode (`22018`) with two- and four-byte `SQLWCHAR` builds.
+  All 34 tests pass under sanitizer and both iODBC configurations.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

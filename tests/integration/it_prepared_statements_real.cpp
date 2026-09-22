@@ -1132,6 +1132,46 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       DefaultWideCharacterParameterUsesWideBuffer) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQLWCHAR wide[] = {0x00e9, 'x', 0};
+    SQLLEN input_length = SQL_NTS;
+    for (const auto sql_type : {SQL_WCHAR, SQL_WVARCHAR,
+                                SQL_WLONGVARCHAR}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_DEFAULT, sql_type, 2, 0, wide, 0, &input_length));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        char output[8]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+            output, sizeof(output), nullptr));
+        EXPECT_STREQ("\xc3\xa9x", output);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_DEFAULT, sql_type, 1, 0, wide, 0, &input_length));
+        ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
+    }
+
+    std::array<SQLWCHAR, 2> malformed{0, 0};
+    malformed[0] = sizeof(SQLWCHAR) == 2
+        ? static_cast<SQLWCHAR>(0xd83d)
+        : static_cast<SQLWCHAR>(0x110000);
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_DEFAULT, SQL_WVARCHAR, 2, 0,
+        malformed.data(), 0, &input_length));
+    ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        WideSqlCharacterLengthHandlesSupplementaryInput) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
     SQLLEN input_length = SQL_NTS;

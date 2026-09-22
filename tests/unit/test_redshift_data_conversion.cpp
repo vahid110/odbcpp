@@ -792,6 +792,11 @@ TEST(ResultTypesTest, ProvidesMetadataDrivenDefaults) {
     EXPECT_EQ(SQL_C_DATE, rs::odbc::ResultTypes::default_c_type(SQL_TYPE_DATE));
     EXPECT_EQ(SQL_C_BINARY,
               rs::odbc::ResultTypes::default_c_type(SQL_VARBINARY));
+    for (const auto sql_type : {SQL_WCHAR, SQL_WVARCHAR,
+                                SQL_WLONGVARCHAR}) {
+        EXPECT_EQ(SQL_C_WCHAR,
+                  rs::odbc::ResultTypes::default_c_type(sql_type));
+    }
     EXPECT_EQ(SQL_C_CHAR, rs::odbc::ResultTypes::default_c_type(SQL_NUMERIC));
     EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
         SQL_INTEGER, SQL_C_SLONG));

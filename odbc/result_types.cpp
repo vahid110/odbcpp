@@ -15,6 +15,9 @@ SQLSMALLINT ResultTypes::default_c_type(SQLSMALLINT sql_type) {
     case SQL_TYPE_DATE: return SQL_C_DATE;
     case SQL_TYPE_TIME: return SQL_C_TIME;
     case SQL_TYPE_TIMESTAMP: return SQL_C_TIMESTAMP;
+    case SQL_WCHAR:
+    case SQL_WVARCHAR:
+    case SQL_WLONGVARCHAR: return SQL_C_WCHAR;
     case SQL_BINARY:
     case SQL_VARBINARY:
     case SQL_LONGVARBINARY: return SQL_C_BINARY;
