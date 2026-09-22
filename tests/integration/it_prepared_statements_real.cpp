@@ -2761,6 +2761,36 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       RealParameterUsesFloat32ServerTypeAndRecoversFromOverflow) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQLDOUBLE value = std::numeric_limits<SQLDOUBLE>::max();
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_DOUBLE, SQL_REAL, 7, 0, &value, sizeof(value), nullptr));
+
+    SQLSMALLINT data_type = 0;
+    SQLULEN parameter_size = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+        &data_type, &parameter_size, nullptr, nullptr));
+    EXPECT_EQ(SQL_REAL, data_type);
+    EXPECT_EQ(7u, parameter_size);
+
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+
+    value = 1.5;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLREAL result = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_FLOAT,
+        &result, sizeof(result), nullptr));
+    EXPECT_EQ(1.5f, result);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        NumericParameterRejectsUnrepresentablePrecision) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
         (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));

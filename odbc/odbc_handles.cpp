@@ -630,6 +630,7 @@ rs::core::database::QueryParameterType parameter_type_for(
     case SQL_BIGINT:
       return QueryParameterType::Int64;
     case SQL_REAL:
+      return QueryParameterType::Float32;
     case SQL_FLOAT:
     case SQL_DOUBLE:
       return QueryParameterType::Float64;

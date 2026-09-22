@@ -2169,6 +2169,13 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   precision for all three types, an edited `SQL_DOUBLE` precision in
   `SQLDescribeParam`, and execution. All 34 tests pass under sanitizer and
   both iODBC configurations. `SQL_C_NUMERIC` remains open.
+- Audit batch 314 sends bound `SQL_REAL` parameters as PostgreSQL `float4`
+  (OID 700) instead of `float8` (OID 701). A live PostgreSQL regression first
+  reported the wrong `SQL_DOUBLE` metadata and accepted a value beyond the
+  `SQL_REAL` range; it now reports `SQL_REAL`, returns `22003` on overflow,
+  and executes successfully after the bound value is corrected. A protocol
+  unit test checks both floating type OIDs directly. All 34 tests pass under
+  sanitizer and both iODBC configurations.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

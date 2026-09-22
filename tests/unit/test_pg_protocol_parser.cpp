@@ -638,6 +638,26 @@ TEST(PgProtocolParserTest, CountsOnlyUnquotedOdbcParameterMarkers) {
       "SELECT $1, '$2', $$?$$"));
 }
 
+TEST(PgProtocolParserTest, DistinguishesRealAndDoubleParameterTypeOids) {
+  PgProtocolParser parser;
+  const std::vector<QueryParameterType> types{
+      QueryParameterType::Float32, QueryParameterType::Float64};
+  const auto frames = split_frames(parser.create_statement_description(
+      "SELECT ?, ?", types));
+  ASSERT_EQ(3u, frames.size());
+  std::size_t offset = 0;
+  EXPECT_TRUE(read_cstring(frames[0].payload, offset).empty());
+  EXPECT_EQ("SELECT $1, $2", read_cstring(frames[0].payload, offset));
+  ASSERT_LE(offset + 10, frames[0].payload.size());
+  EXPECT_EQ(2, read_u16(frames[0].payload, offset));
+  offset += 2;
+  EXPECT_EQ(700u, read_u32(frames[0].payload, offset));
+  offset += 4;
+  EXPECT_EQ(701u, read_u32(frames[0].payload, offset));
+  offset += 4;
+  EXPECT_EQ(offset, frames[0].payload.size());
+}
+
 TEST(PgProtocolParserTest, BackslashInQuotedIdentifierDoesNotHideMarker) {
   PgProtocolParser parser;
   constexpr std::string_view sql =
