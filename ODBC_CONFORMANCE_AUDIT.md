@@ -2137,8 +2137,17 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   overflow, and `07006` for temporal values including `NULL`. The focused
   tests also rerun the existing unsigned-tinyint cases after the helper
   refactor. All 34 tests pass under sanitizer, PostgreSQL Driver Manager,
-  and iODBC. `SQL_C_ULONG`, `SQL_C_UBIGINT`, and `SQL_C_NUMERIC` outputs
-  remain open.
+  and iODBC. `SQL_C_ULONG` remained open until batch 311;
+  `SQL_C_UBIGINT` and `SQL_C_NUMERIC` outputs remain open.
+- Audit batch 311 adds `SQL_C_ULONG` result conversion through the bounded
+  unsigned helper. PostgreSQL regressions first returned `HYC00`; they now
+  cover zero and the full 32-bit maximum above signed-32 range, negative and
+  above-maximum values returning `22003` without output mutation, `01S07`
+  fractional truncation, Boolean zero/one, bound-column `NULL` and overflow,
+  and `07006` for temporal values including `NULL`. The focused suite reruns
+  the 8- and 16-bit unsigned result cases. All 34 tests pass under sanitizer,
+  PostgreSQL Driver Manager, and iODBC. `SQL_C_UBIGINT` and `SQL_C_NUMERIC`
+  outputs remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

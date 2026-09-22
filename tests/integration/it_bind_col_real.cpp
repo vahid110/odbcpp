@@ -1342,22 +1342,94 @@ TEST_F(BindColIntegrationTest, UnsignedShortBoundColumnChecksNullAndOverflow) {
     EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
 }
 
-TEST_F(BindColIntegrationTest, UnsignedShortRejectsTemporalResults) {
+TEST_F(BindColIntegrationTest, UnsignedWideTargetsRejectTemporalResults) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
         (SQLCHAR*)"SELECT DATE '2024-01-01', NULL::date", SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
-    SQLUSMALLINT value = 44;
+    SQLUINTEGER value = 44;
     SQLLEN length = 91;
     SQLCHAR state[6]{};
-    for (SQLUSMALLINT column : {1, 2}) {
-        EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, SQL_C_USHORT,
+    for (SQLSMALLINT target : {SQL_C_USHORT, SQL_C_ULONG}) {
+        SCOPED_TRACE(target);
+        for (SQLUSMALLINT column : {1, 2}) {
+            EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, target,
+                &value, 0, &length));
+            EXPECT_EQ(44u, value);
+            EXPECT_EQ(91, length);
+            ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+                state, nullptr, nullptr, 0, nullptr));
+            EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+        }
+    }
+}
+
+TEST_F(BindColIntegrationTest, UnsignedLongGetDataChecksRangeAndFraction) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT 0::numeric, 4294967295::numeric, -1::numeric, "
+                  "4294967296::numeric, 4294967295.75::numeric, true, false",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLUINTEGER value = 44;
+    SQLLEN length = 91;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_ULONG,
+        &value, 0, &length));
+    EXPECT_EQ(0u, value);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 2, SQL_C_ULONG,
+        &value, 0, &length));
+    EXPECT_EQ(4294967295u, value);
+
+    SQLCHAR state[6]{};
+    for (SQLUSMALLINT column : {3, 4}) {
+        value = 44;
+        length = 91;
+        EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, SQL_C_ULONG,
             &value, 0, &length));
-        EXPECT_EQ(44, value);
+        EXPECT_EQ(44u, value);
         EXPECT_EQ(91, length);
         ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
             state, nullptr, nullptr, 0, nullptr));
-        EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
     }
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(hstmt, 5, SQL_C_ULONG,
+        &value, 0, &length));
+    EXPECT_EQ(4294967295u, value);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01S07", reinterpret_cast<char*>(state));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 6, SQL_C_ULONG,
+        &value, 0, &length));
+    EXPECT_EQ(1u, value);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 7, SQL_C_ULONG,
+        &value, 0, &length));
+    EXPECT_EQ(0u, value);
+}
+
+TEST_F(BindColIntegrationTest, UnsignedLongBoundColumnChecksNullAndOverflow) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT value FROM (VALUES (1, 4294967295::numeric), "
+                  "(2, NULL::numeric), (3, 4294967296::numeric)) "
+                  "AS v(ord, value) ORDER BY ord", SQL_NTS));
+    SQLUINTEGER value = 44;
+    SQLLEN length = 91;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_ULONG,
+        &value, 0, &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(4294967295u, value);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(4294967295u, value);
+    EXPECT_EQ(SQL_NULL_DATA, length);
+    length = 91;
+    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+    EXPECT_EQ(4294967295u, value);
+    EXPECT_EQ(91, length);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
 }
 
 TEST_F(BindColIntegrationTest, BitToNumericBoundColumnsUseZero) {

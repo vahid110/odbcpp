@@ -618,6 +618,9 @@ SQLRETURN TextDataConverter::convert_data(const std::string& value,
     case SQL_C_USHORT:
       return convert_bounded_unsigned_integral<SQLUSMALLINT>(
           value, buffer, indicator, issue);
+    case SQL_C_ULONG:
+      return convert_bounded_unsigned_integral<SQLUINTEGER>(
+          value, buffer, indicator, issue);
     case SQL_C_SSHORT:
       return convert_integral<SQLSMALLINT>(value, buffer, indicator, issue);
     case SQL_C_SLONG:
