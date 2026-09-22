@@ -3877,22 +3877,27 @@ SQLRETURN ODBCStatement::execute() {
       }
       if (character_input &&
           (declared_sql_type == SQL_DECIMAL ||
-           declared_sql_type == SQL_NUMERIC) &&
-          declared_sql_precision > 0 && declared_sql_scale >= 0) {
+           declared_sql_type == SQL_NUMERIC)) {
         const auto digits = decimal_digits(value);
-        const auto available_digits = std::max<int>(
-            0, declared_sql_precision - declared_sql_scale);
-        if (digits &&
-            digits->whole > static_cast<std::size_t>(available_digits)) {
-          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                    "Character parameter exceeds SQL numeric precision");
+        if (!digits) {
+          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Character parameter is not an ODBC numeric literal");
           return complete_parameter_set(SQL_ERROR);
         }
-        if (digits && digits->fractional >
-                static_cast<std::size_t>(declared_sql_scale)) {
-          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                    "Character parameter exceeds SQL numeric scale");
-          return complete_parameter_set(SQL_ERROR);
+        if (declared_sql_precision > 0 && declared_sql_scale >= 0) {
+          const auto available_digits = std::max<int>(
+              0, declared_sql_precision - declared_sql_scale);
+          if (digits->whole > static_cast<std::size_t>(available_digits)) {
+            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Character parameter exceeds SQL numeric precision");
+            return complete_parameter_set(SQL_ERROR);
+          }
+          if (digits->fractional >
+              static_cast<std::size_t>(declared_sql_scale)) {
+            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Character parameter exceeds SQL numeric scale");
+            return complete_parameter_set(SQL_ERROR);
+          }
         }
       }
       if (numeric_input && declared_sql_length > 0 &&

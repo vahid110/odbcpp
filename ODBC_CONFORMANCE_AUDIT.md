@@ -2252,8 +2252,16 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   The decimal parser counts significant fractional positions after an
   exponent without floating-point rounding. Live tests cover `1.234` into
   scale 2, both exponent directions, zero and trailing-zero inputs that fit,
-  recovery after error, and wide input. Nonsignificant fractional truncation
-  with `01S07` and broader malformed-text coverage remain open.
+  recovery after error, and wide input. The ODBC conversion rules remove
+  trailing zeroes before conversion, so extra trailing zeroes alone do not
+  require an `01S07` warning. Broader malformed-text coverage remained open.
+- Audit batch 325 validates character-to-exact-numeric input against the
+  [ODBC numeric-literal grammar](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/numeric-literal-syntax)
+  before forwarding to PostgreSQL. PostgreSQL's `NaN` and `Infinity` numeric
+  extensions now return `22018` for `SQL_C_CHAR` and `SQL_C_WCHAR`, including
+  when the binding has no explicit precision. Live tests also cover malformed
+  exponents, valid decimal, leading-period, trailing-period, and exponent
+  forms after recovery, and both driver `SQLWCHAR` widths.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
