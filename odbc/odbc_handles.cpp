@@ -56,9 +56,14 @@ std::string format_floating_parameter(T value) {
   return {text, end};
 }
 
-// Count whole digits without converting through floating point. Leave
-// malformed input and non-decimal spellings to the server's diagnostics.
-std::optional<std::size_t> decimal_whole_digits(std::string_view text) {
+struct DecimalDigits {
+  std::size_t whole;
+  std::size_t fractional;
+};
+
+// Count significant decimal places without converting through floating point.
+// Leave malformed input and non-decimal spellings to the server's diagnostics.
+std::optional<DecimalDigits> decimal_digits(std::string_view text) {
   while (!text.empty() &&
          std::isspace(static_cast<unsigned char>(text.front()))) {
     text.remove_prefix(1);
@@ -74,8 +79,12 @@ std::optional<std::size_t> decimal_whole_digits(std::string_view text) {
   bool seen_nonzero_digit = false;
   std::size_t leading_zeroes = 0;
   std::size_t digits_before_point = 0;
+  std::size_t total_digits = 0;
+  std::size_t last_nonzero_position = 0;
   const auto record_digit = [&](char digit) {
     any_digit = true;
+    ++total_digits;
+    if (digit != '0') last_nonzero_position = total_digits;
     if (!seen_nonzero_digit) {
       if (digit == '0') ++leading_zeroes;
       else seen_nonzero_digit = true;
@@ -115,15 +124,23 @@ std::optional<std::size_t> decimal_whole_digits(std::string_view text) {
     }
   }
   if (!text.empty()) return std::nullopt;
-  if (!seen_nonzero_digit) return 0;
+  if (!seen_nonzero_digit) return DecimalDigits{0, 0};
+  const auto saturating_add = [](std::size_t left, std::size_t right) {
+    constexpr auto limit = std::numeric_limits<std::size_t>::max();
+    return right > limit - left ? limit : left + right;
+  };
   const auto shifted_digits = negative_exponent
       ? (exponent >= digits_before_point ? 0 : digits_before_point - exponent)
-      : (exponent > std::numeric_limits<std::size_t>::max() -
-                        digits_before_point
-             ? std::numeric_limits<std::size_t>::max()
-             : digits_before_point + exponent);
-  return shifted_digits > leading_zeroes
-      ? shifted_digits - leading_zeroes : 0;
+      : saturating_add(digits_before_point, exponent);
+  const auto fractional_digits = negative_exponent &&
+          exponent > digits_before_point
+      ? saturating_add(last_nonzero_position,
+                       exponent - digits_before_point)
+      : (last_nonzero_position > shifted_digits
+             ? last_nonzero_position - shifted_digits : 0);
+  return DecimalDigits{
+      shifted_digits > leading_zeroes ? shifted_digits - leading_zeroes : 0,
+      fractional_digits};
 }
 
 std::optional<std::string> binary_result_as_hex(std::string_view value) {
@@ -3862,13 +3879,19 @@ SQLRETURN ODBCStatement::execute() {
           (declared_sql_type == SQL_DECIMAL ||
            declared_sql_type == SQL_NUMERIC) &&
           declared_sql_precision > 0 && declared_sql_scale >= 0) {
-        const auto whole_digits = decimal_whole_digits(value);
+        const auto digits = decimal_digits(value);
         const auto available_digits = std::max<int>(
             0, declared_sql_precision - declared_sql_scale);
-        if (whole_digits &&
-            *whole_digits > static_cast<std::size_t>(available_digits)) {
+        if (digits &&
+            digits->whole > static_cast<std::size_t>(available_digits)) {
           set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
                     "Character parameter exceeds SQL numeric precision");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        if (digits && digits->fractional >
+                static_cast<std::size_t>(declared_sql_scale)) {
+          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                    "Character parameter exceeds SQL numeric scale");
           return complete_parameter_set(SQL_ERROR);
         }
       }
