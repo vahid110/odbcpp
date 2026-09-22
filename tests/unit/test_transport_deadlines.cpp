@@ -66,6 +66,18 @@ void close_test_socket(test_socket_t socket) noexcept {
 #endif
 }
 
+void block_test_server_sigpipe() noexcept {
+#ifndef _WIN32
+  // OpenSSL's server-side handshake can write after a timed-out client closes.
+  // Only mask the fixture thread, so SIGPIPE in the transport under test is
+  // still observable.
+  sigset_t blocked{};
+  sigemptyset(&blocked);
+  sigaddset(&blocked, SIGPIPE);
+  (void)pthread_sigmask(SIG_BLOCK, &blocked, nullptr);
+#endif
+}
+
 class SleepingServer {
 public:
   explicit SleepingServer(std::chrono::milliseconds sleep_for,
@@ -104,6 +116,7 @@ public:
     port_ = ntohs(address.sin_port);
 
     worker_ = std::thread([this] {
+      block_test_server_sigpipe();
       auto client = ::accept(listener_, nullptr, nullptr);
       if (client != invalid_test_socket) {
         std::this_thread::sleep_for(sleep_for_);
@@ -176,6 +189,7 @@ public:
     port_ = ntohs(address.sin_port);
 
     worker_ = std::thread([this] {
+      block_test_server_sigpipe();
       auto client = ::accept(listener_, nullptr, nullptr);
       if (client == invalid_test_socket) return;
 #if defined(SO_NOSIGPIPE) && !defined(_WIN32)
