@@ -2282,6 +2282,11 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   it now exercises prepared statements, descriptors, result bindings,
   metadata, diagnostics, and lifecycle behavior in the two-byte driver build
   alongside the existing four-byte driver-manager bridge test.
+- Audit batch 329 adds a native four-byte iODBC driver build to the macOS CI
+  matrix alongside the existing two-byte-driver/four-byte-manager build. All
+  34 tests passed locally against PostgreSQL in the native-width build before
+  the CI change. The matrix now runs unit and PostgreSQL integration suites
+  with both `DriverUnicodeType=UTF16` and `DriverUnicodeType=UCS4`.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

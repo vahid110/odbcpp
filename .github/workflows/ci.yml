@@ -202,6 +202,16 @@ jobs:
   iodbc-unicode:
     runs-on: macos-latest
 
+    strategy:
+      matrix:
+        include:
+          - driver_headers: unixodbc
+            driver_wchar_size: 2
+            driver_unicode_type: UTF16
+          - driver_headers: libiodbc
+            driver_wchar_size: 4
+            driver_unicode_type: UCS4
+
     env:
       ODBCINI: ${{ github.workspace }}/.ci-iodbc/odbc.ini
       ODBCINSTINI: ${{ github.workspace }}/.ci-iodbc/odbcinst.ini
@@ -243,7 +253,7 @@ jobs:
           [ODBCPP PostgreSQL]
           Driver=${{ github.workspace }}/build-iodbc/libodbcpp.dylib
           Setup=${{ github.workspace }}/build-iodbc/libodbcpp.dylib
-          DriverUnicodeType=UTF16
+          DriverUnicodeType=${{ matrix.driver_unicode_type }}
           TransportMode=Auto
           AsyncMaxInflight=64
           AsyncQueueDepth=256
@@ -251,7 +261,7 @@ jobs:
           DeadlineModel=Strict
           EOF
 
-      - name: Configure mixed-width driver-manager test
+      - name: Configure iODBC driver-manager test
         run: |
           cmake -S . -B build-iodbc \
             -DCMAKE_OSX_ARCHITECTURES="$(uname -m)" \
@@ -259,11 +269,11 @@ jobs:
             -DBUILD_TESTING=ON \
             -DTARGET_DATABASE=POSTGRESQL \
             -DOPENSSL_USE_STATIC_LIBS=OFF \
-            -DODBC_INCLUDE_DIR="$(brew --prefix unixodbc)/include" \
+            -DODBC_INCLUDE_DIR="$(brew --prefix ${{ matrix.driver_headers }})/include" \
             -DODBC_DRIVER_MANAGER_FLAVOR=IODBC \
             -DODBC_DRIVER_MANAGER_INCLUDE_DIR="$(brew --prefix libiodbc)/include" \
             -DODBC_DRIVER_MANAGER_LIBRARY="$(brew --prefix libiodbc)/lib/libiodbc.dylib" \
-            -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2 \
+            -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${{ matrix.driver_wchar_size }} \
             -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=4 \
             -DCMAKE_BUILD_TYPE=Release
 
@@ -273,7 +283,7 @@ jobs:
       - name: Run unit tests
         run: ctest --test-dir build-iodbc -L unit --output-on-failure
 
-      - name: Run mixed-width PostgreSQL integration tests
+      - name: Run PostgreSQL integration tests
         run: ctest --test-dir build-iodbc -L integration --output-on-failure
 
       - name: Stop PostgreSQL
