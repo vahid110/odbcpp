@@ -2161,6 +2161,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   `NULL` and overflow, and temporal `07006` including `NULL`. All 34 tests
   pass under sanitizer, PostgreSQL Driver Manager, and iODBC. `SQL_C_NUMERIC`
   output remains open.
+- Audit batch 313 maps `SQL_FLOAT`, `SQL_REAL`, and `SQL_DOUBLE` binding
+  `ColumnSize` to IPD `SQL_DESC_PRECISION`, as required by
+  [`SQLBindParameter`](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlbindparameter-function?view=sql-server-ver17).
+  The live PostgreSQL regression first caught acceptance of unrepresentable
+  precision, then verified `HY104`, recovery by rebinding, immediate IPD
+  precision for all three types, an edited `SQL_DOUBLE` precision in
+  `SQLDescribeParam`, and execution. All 34 tests pass under sanitizer and
+  both iODBC configurations. `SQL_C_NUMERIC` remains open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

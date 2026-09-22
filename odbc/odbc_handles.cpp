@@ -1023,7 +1023,10 @@ ParameterMetadata parameter_metadata_for(
     return metadata;
   }
   if ((metadata.sql_type == SQL_DECIMAL ||
-       metadata.sql_type == SQL_NUMERIC) && prior_record->precision > 0) {
+       metadata.sql_type == SQL_NUMERIC ||
+       metadata.sql_type == SQL_FLOAT ||
+       metadata.sql_type == SQL_REAL ||
+       metadata.sql_type == SQL_DOUBLE) && prior_record->precision > 0) {
     metadata.column_size = static_cast<SQLULEN>(prior_record->precision);
   } else if (prior_record->length > 0) {
     metadata.column_size = prior_record->length;
@@ -4042,12 +4045,13 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
               "Temporal parameter precision must be from 0 to 6");
     return SQL_ERROR;
   }
-  const bool numeric_sql_type = parameter_type == SQL_DECIMAL ||
-      parameter_type == SQL_NUMERIC;
-  if (numeric_sql_type && column_size > static_cast<SQLULEN>(
+  const bool precision_sql_type = parameter_type == SQL_DECIMAL ||
+      parameter_type == SQL_NUMERIC || parameter_type == SQL_FLOAT ||
+      parameter_type == SQL_REAL || parameter_type == SQL_DOUBLE;
+  if (precision_sql_type && column_size > static_cast<SQLULEN>(
           std::numeric_limits<SQLSMALLINT>::max())) {
     set_error(SQLSTATE_INVALID_PRECISION_OR_SCALE,
-              "Numeric parameter precision is too large");
+              "Parameter precision is too large");
     return SQL_ERROR;
   }
   if (!parameter_value && !strlen_or_indicator) {
@@ -4077,7 +4081,7 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
       parameter_number, SQL_DESC_CONCISE_TYPE, number(parameter_type), 0);
   implementation_descriptor->set_field(
       parameter_number,
-      numeric_sql_type ? SQL_DESC_PRECISION : SQL_DESC_LENGTH,
+      precision_sql_type ? SQL_DESC_PRECISION : SQL_DESC_LENGTH,
       number(column_size), 0);
   implementation_descriptor->set_field(
       parameter_number, SQL_DESC_SCALE, number(decimal_digits), 0);

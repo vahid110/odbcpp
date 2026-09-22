@@ -2704,6 +2704,63 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       FloatingParameterUsesIpdPrecisionAndRejectsOversizedPrecision) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::real, ?::double precision, ?::double precision",
+        SQL_NTS));
+    SQLDOUBLE values[]{1.5, 2.5, 3.5};
+    const SQLSMALLINT sql_types[]{SQL_REAL, SQL_DOUBLE, SQL_FLOAT};
+    const SQLSMALLINT precisions[]{7, 15, 15};
+    for (SQLUSMALLINT parameter = 1; parameter <= 3; ++parameter) {
+        const auto index = parameter - 1;
+        EXPECT_EQ(SQL_ERROR, SQLBindParameter(hstmt, parameter,
+            SQL_PARAM_INPUT, SQL_C_DOUBLE, sql_types[index],
+            static_cast<SQLULEN>(std::numeric_limits<SQLSMALLINT>::max()) + 1,
+            0, &values[index], sizeof(values[index]), nullptr));
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("HY104", reinterpret_cast<char*>(state));
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, parameter,
+            SQL_PARAM_INPUT, SQL_C_DOUBLE, sql_types[index],
+            precisions[index], 0, &values[index], sizeof(values[index]),
+            nullptr));
+    }
+
+    SQLHDESC implementation = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt, SQL_ATTR_IMP_PARAM_DESC,
+        &implementation, 0, nullptr));
+    for (SQLSMALLINT parameter = 1; parameter <= 3; ++parameter) {
+        SQLSMALLINT precision = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(implementation, parameter,
+            SQL_DESC_PRECISION, &precision, 0, nullptr));
+        EXPECT_EQ(precisions[parameter - 1], precision) << parameter;
+    }
+
+    const auto number = [](SQLLEN value) {
+        return reinterpret_cast<SQLPOINTER>(
+            static_cast<std::uintptr_t>(value));
+    };
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(implementation, 2,
+        SQL_DESC_PRECISION, number(14), 0));
+    SQLSMALLINT data_type = 0;
+    SQLULEN parameter_size = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 2,
+        &data_type, &parameter_size, nullptr, nullptr));
+    EXPECT_EQ(SQL_DOUBLE, data_type);
+    EXPECT_EQ(14u, parameter_size);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    for (SQLUSMALLINT column = 1; column <= 3; ++column) {
+        SQLDOUBLE result = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, column, SQL_C_DOUBLE,
+            &result, sizeof(result), nullptr));
+        EXPECT_EQ(values[column - 1], result);
+    }
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        NumericParameterRejectsUnrepresentablePrecision) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
         (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
