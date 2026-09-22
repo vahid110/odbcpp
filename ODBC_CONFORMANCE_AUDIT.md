@@ -2009,6 +2009,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   character targets, including a negative value. It runs without skipping and
   all 34 tests pass under sanitizer, PostgreSQL Driver Manager, and iODBC.
   Other numeric C input types and C-to-SQL conversions remain open.
+- Audit batch 296 extends the numeric-to-character length check to the
+  supported signed C integer parameter types. A PostgreSQL regression first
+  showed an undersized negative `SQL_C_SLONG` to `SQL_VARCHAR` being accepted;
+  the focused test now covers one-character-short and exact-fit bindings for
+  `SQL_C_SSHORT`, `SQL_C_SLONG`, and the maximum `SQL_C_SBIGINT` through narrow
+  and wide SQL character targets. It runs without skipping and all 34 tests
+  pass under sanitizer, PostgreSQL Driver Manager, and iODBC. Unsupported
+  numeric C types and the wider C-to-SQL conversion matrix remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
