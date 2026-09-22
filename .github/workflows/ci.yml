@@ -273,10 +273,8 @@ jobs:
       - name: Run unit tests
         run: ctest --test-dir build-iodbc -L unit --output-on-failure
 
-      - name: Run iODBC mixed-width integration test
-        run: >-
-          ctest --test-dir build-iodbc -R '^it_driver_manager$'
-          --output-on-failure
+      - name: Run mixed-width PostgreSQL integration tests
+        run: ctest --test-dir build-iodbc -L integration --output-on-failure
 
       - name: Stop PostgreSQL
         if: always()

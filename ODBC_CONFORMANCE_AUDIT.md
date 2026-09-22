@@ -2276,6 +2276,12 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   The test covers positive and negative overflow, exponent notation, both C
   floating widths, valid boundary values and recovery, and unspecified
   precision. Fractional rounding and scale remain a separate audit.
+- Audit batch 328 expands macOS mixed-width iODBC CI from one driver-manager
+  executable to all ten PostgreSQL integration executables. The full suite
+  passed locally with a disposable PostgreSQL instance before changing CI;
+  it now exercises prepared statements, descriptors, result bindings,
+  metadata, diagnostics, and lifecycle behavior in the two-byte driver build
+  alongside the existing four-byte driver-manager bridge test.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
