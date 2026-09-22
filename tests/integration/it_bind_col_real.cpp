@@ -1346,10 +1346,10 @@ TEST_F(BindColIntegrationTest, UnsignedWideTargetsRejectTemporalResults) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
         (SQLCHAR*)"SELECT DATE '2024-01-01', NULL::date", SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
-    SQLUINTEGER value = 44;
+    SQLUBIGINT value = 44;
     SQLLEN length = 91;
     SQLCHAR state[6]{};
-    for (SQLSMALLINT target : {SQL_C_USHORT, SQL_C_ULONG}) {
+    for (SQLSMALLINT target : {SQL_C_USHORT, SQL_C_ULONG, SQL_C_UBIGINT}) {
         SCOPED_TRACE(target);
         for (SQLUSMALLINT column : {1, 2}) {
             EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, target,
@@ -1425,6 +1425,104 @@ TEST_F(BindColIntegrationTest, UnsignedLongBoundColumnChecksNullAndOverflow) {
     length = 91;
     EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
     EXPECT_EQ(4294967295u, value);
+    EXPECT_EQ(91, length);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+}
+
+TEST_F(BindColIntegrationTest, UnsignedBigintGetDataChecksExactLimits) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT 0::numeric, 9223372036854775808::numeric, "
+                  "18446744073709551615::numeric, -1::numeric, "
+                  "18446744073709551616::numeric, "
+                  "18446744073709551615.75::numeric, true, false, "
+                  "'1.8446744073709551615e19'::text", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLUBIGINT value = 44;
+    SQLLEN length = 91;
+    const auto maximum = std::numeric_limits<SQLUBIGINT>::max();
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_UBIGINT,
+        &value, 0, &length));
+    EXPECT_EQ(0u, value);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 2, SQL_C_UBIGINT,
+        &value, 0, &length));
+    EXPECT_EQ(static_cast<SQLUBIGINT>(1) << 63, value);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 3, SQL_C_UBIGINT,
+        &value, 0, &length));
+    EXPECT_EQ(maximum, value);
+
+    SQLCHAR state[6]{};
+    for (SQLUSMALLINT column : {4, 5}) {
+        value = 44;
+        length = 91;
+        EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, SQL_C_UBIGINT,
+            &value, 0, &length));
+        EXPECT_EQ(44u, value);
+        EXPECT_EQ(91, length);
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    }
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(hstmt, 6, SQL_C_UBIGINT,
+        &value, 0, &length));
+    EXPECT_EQ(maximum, value);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01S07", reinterpret_cast<char*>(state));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 7, SQL_C_UBIGINT,
+        &value, 0, &length));
+    EXPECT_EQ(1u, value);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 8, SQL_C_UBIGINT,
+        &value, 0, &length));
+    EXPECT_EQ(0u, value);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 9, SQL_C_UBIGINT,
+        &value, 0, &length));
+    EXPECT_EQ(maximum, value);
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT 'not-a-number'::text", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    value = 44;
+    length = 91;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 1, SQL_C_UBIGINT,
+        &value, 0, &length));
+    EXPECT_EQ(44u, value);
+    EXPECT_EQ(91, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
+    char recovered[16]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        recovered, sizeof(recovered), nullptr));
+    EXPECT_STREQ("not-a-number", recovered);
+}
+
+TEST_F(BindColIntegrationTest, UnsignedBigintBoundColumnChecksNullAndOverflow) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT value FROM "
+                  "(VALUES (1, 18446744073709551615::numeric), "
+                  "(2, NULL::numeric), "
+                  "(3, 18446744073709551616::numeric)) AS v(ord, value) "
+                  "ORDER BY ord", SQL_NTS));
+    SQLUBIGINT value = 44;
+    SQLLEN length = 91;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_UBIGINT,
+        &value, 0, &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::numeric_limits<SQLUBIGINT>::max(), value);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::numeric_limits<SQLUBIGINT>::max(), value);
+    EXPECT_EQ(SQL_NULL_DATA, length);
+    length = 91;
+    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+    EXPECT_EQ(std::numeric_limits<SQLUBIGINT>::max(), value);
     EXPECT_EQ(91, length);
     SQLCHAR state[6]{};
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,

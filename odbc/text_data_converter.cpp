@@ -86,7 +86,7 @@ std::optional<long double> parse_number(const std::string& value,
 template <typename T>
 SQLRETURN convert_integral(const std::string& value, void* buffer,
                            SQLLEN* indicator, ConversionIssue* issue) {
-  static_assert(std::numeric_limits<T>::is_signed);
+  static_assert(std::numeric_limits<T>::is_integer);
   const auto finish = [&](T converted, bool fractional) -> SQLRETURN {
     std::memcpy(buffer, &converted, sizeof(converted));
     store_indicator(indicator, static_cast<SQLLEN>(sizeof(T)));
@@ -169,7 +169,8 @@ SQLRETURN convert_integral(const std::string& value, void* buffer,
     }
 
     const auto limit = static_cast<std::uintmax_t>(
-        std::numeric_limits<T>::max()) + (negative ? 1u : 0u);
+        std::numeric_limits<T>::max()) +
+        (negative && std::numeric_limits<T>::is_signed ? 1u : 0u);
     std::uintmax_t magnitude = 0;
     for (auto i = first_nonzero; i < integral_digits; ++i) {
       const auto digit = static_cast<std::uintmax_t>(
@@ -180,10 +181,19 @@ SQLRETURN convert_integral(const std::string& value, void* buffer,
       }
       magnitude = magnitude * 10 + digit;
     }
-    const auto converted = negative
-        ? (magnitude == limit ? std::numeric_limits<T>::min()
-                              : static_cast<T>(-static_cast<std::intmax_t>(magnitude)))
-        : static_cast<T>(magnitude);
+    T converted{};
+    if constexpr (std::numeric_limits<T>::is_signed) {
+      converted = negative
+          ? (magnitude == limit ? std::numeric_limits<T>::min()
+                                : static_cast<T>(-static_cast<std::intmax_t>(magnitude)))
+          : static_cast<T>(magnitude);
+    } else {
+      if (negative) {
+        if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+        return SQL_ERROR;
+      }
+      converted = static_cast<T>(magnitude);
+    }
     const auto fraction_start = std::min(integral_digits, digits.size());
     const bool fractional = std::any_of(
         digits.begin() + fraction_start, digits.end(),
@@ -196,34 +206,14 @@ SQLRETURN convert_integral(const std::string& value, void* buffer,
   const auto truncated = std::trunc(*parsed);
   const auto upper_exclusive = std::ldexp(
       1.0L, std::numeric_limits<T>::digits);
-  if (truncated < -upper_exclusive || truncated >= upper_exclusive) {
+  const auto lower_bound = std::numeric_limits<T>::is_signed
+      ? -upper_exclusive : 0.0L;
+  if (truncated < lower_bound || truncated >= upper_exclusive) {
     if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
     return SQL_ERROR;
   }
   const T converted = static_cast<T>(truncated);
   return finish(converted, truncated != *parsed);
-}
-
-template <typename T>
-SQLRETURN convert_bounded_unsigned_integral(const std::string& value,
-                                            void* buffer, SQLLEN* indicator,
-                                            ConversionIssue* issue) {
-  static_assert(std::numeric_limits<T>::is_integer &&
-                !std::numeric_limits<T>::is_signed &&
-                sizeof(T) < sizeof(SQLBIGINT));
-  SQLBIGINT whole = 0;
-  const auto result = convert_integral<SQLBIGINT>(
-      value, &whole, nullptr, issue);
-  if (result == SQL_ERROR) return result;
-  if (whole < 0 || whole > static_cast<SQLBIGINT>(
-          std::numeric_limits<T>::max())) {
-    if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
-    return SQL_ERROR;
-  }
-  const auto converted = static_cast<T>(whole);
-  std::memcpy(buffer, &converted, sizeof(converted));
-  store_indicator(indicator, static_cast<SQLLEN>(sizeof(converted)));
-  return result;
 }
 
 bool parse_digits(std::string_view value, std::size_t offset,
@@ -613,14 +603,13 @@ SQLRETURN TextDataConverter::convert_data(const std::string& value,
     case SQL_C_STINYINT:
       return convert_integral<SQLSCHAR>(value, buffer, indicator, issue);
     case SQL_C_UTINYINT:
-      return convert_bounded_unsigned_integral<SQLCHAR>(
-          value, buffer, indicator, issue);
+      return convert_integral<SQLCHAR>(value, buffer, indicator, issue);
     case SQL_C_USHORT:
-      return convert_bounded_unsigned_integral<SQLUSMALLINT>(
-          value, buffer, indicator, issue);
+      return convert_integral<SQLUSMALLINT>(value, buffer, indicator, issue);
     case SQL_C_ULONG:
-      return convert_bounded_unsigned_integral<SQLUINTEGER>(
-          value, buffer, indicator, issue);
+      return convert_integral<SQLUINTEGER>(value, buffer, indicator, issue);
+    case SQL_C_UBIGINT:
+      return convert_integral<SQLUBIGINT>(value, buffer, indicator, issue);
     case SQL_C_SSHORT:
       return convert_integral<SQLSMALLINT>(value, buffer, indicator, issue);
     case SQL_C_SLONG:

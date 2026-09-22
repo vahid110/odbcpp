@@ -2146,8 +2146,21 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   fractional truncation, Boolean zero/one, bound-column `NULL` and overflow,
   and `07006` for temporal values including `NULL`. The focused suite reruns
   the 8- and 16-bit unsigned result cases. All 34 tests pass under sanitizer,
-  PostgreSQL Driver Manager, and iODBC. `SQL_C_UBIGINT` and `SQL_C_NUMERIC`
-  outputs remain open.
+  PostgreSQL Driver Manager, and iODBC. `SQL_C_UBIGINT` remained open until
+  batch 312; `SQL_C_NUMERIC` output remains open.
+- Audit batch 312 adds `SQL_C_UBIGINT` result conversion by extending the
+  exact digit parser to unsigned 64-bit targets without rounding through
+  floating point. The same parser now handles all unsigned widths, removing
+  the separate bounded-unsigned wrapper. Live PostgreSQL regressions first
+  returned `HYC00`; they now cover zero, the first value above signed 64-bit
+  range, and the full unsigned maximum. Negative and above-maximum values
+  return `22003` without mutating output. The tests also cover fractional
+  `01S07` under the [ODBC conversion rules](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/rules-for-conversions),
+  scientific notation at the exact maximum,
+  malformed text `22018` with recovery, Boolean zero/one, bound-column
+  `NULL` and overflow, and temporal `07006` including `NULL`. All 34 tests
+  pass under sanitizer, PostgreSQL Driver Manager, and iODBC. `SQL_C_NUMERIC`
+  output remains open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
