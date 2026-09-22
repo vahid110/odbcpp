@@ -409,6 +409,63 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       FloatingInputToSqlBitValidatesValue) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::boolean", SQL_NTS));
+    SQLDOUBLE value = 0.0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_DOUBLE, SQL_BIT, 0, 0, &value, sizeof(value), nullptr));
+    for (const SQLDOUBLE valid : {0.0, 1.0}) {
+        value = valid;
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQLCHAR result = 9;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BIT,
+            &result, sizeof(result), nullptr));
+        EXPECT_EQ(static_cast<SQLCHAR>(valid), result);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    }
+
+    struct InvalidValue {
+        SQLDOUBLE number;
+        const char* state;
+    };
+    for (const InvalidValue invalid : {
+             InvalidValue{0.5, "22001"},
+             InvalidValue{-0.5, "22003"},
+             InvalidValue{2.0, "22003"},
+             InvalidValue{std::numeric_limits<SQLDOUBLE>::infinity(),
+                          "22003"},
+             InvalidValue{std::numeric_limits<SQLDOUBLE>::quiet_NaN(),
+                          "22003"}}) {
+        value = invalid.number;
+        EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ(invalid.state, reinterpret_cast<char*>(state));
+    }
+
+    SQLREAL single = 1.0f;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_FLOAT, SQL_BIT, 0, 0, &single, sizeof(single), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLCHAR result = 9;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BIT,
+        &result, sizeof(result), nullptr));
+    EXPECT_EQ(1, result);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    single = 0.5f;
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        BinaryParameterHonorsDeclaredSqlLength) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
     unsigned char input[]{0x00, 0x01, 0x7f, 0xff};

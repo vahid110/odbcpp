@@ -3550,32 +3550,50 @@ SQLRETURN ODBCStatement::execute() {
 
       const bool character_input =
           value_type == SQL_C_CHAR || value_type == SQL_C_WCHAR;
+      const bool floating_input =
+          value_type == SQL_C_FLOAT || value_type == SQL_C_DOUBLE;
       const bool numeric_input = value_type == SQL_C_SSHORT ||
           value_type == SQL_C_SLONG || value_type == SQL_C_SBIGINT ||
-          value_type == SQL_C_FLOAT || value_type == SQL_C_DOUBLE;
+          floating_input;
       using rs::core::database::QueryParameterType;
-      if ((value_type == SQL_C_FLOAT || value_type == SQL_C_DOUBLE) &&
-          (implementation.concise_type == SQL_SMALLINT ||
-           implementation.concise_type == SQL_INTEGER ||
-           implementation.concise_type == SQL_BIGINT)) {
+      const bool integer_target =
+          implementation.concise_type == SQL_SMALLINT ||
+          implementation.concise_type == SQL_INTEGER ||
+          implementation.concise_type == SQL_BIGINT;
+      if (floating_input &&
+          (integer_target || implementation.concise_type == SQL_BIT)) {
         const double number = value_type == SQL_C_FLOAT
             ? static_cast<double>(load_application_value<SQLREAL>(
                   application.data_ptr))
             : load_application_value<SQLDOUBLE>(application.data_ptr);
-        const double truncated = std::trunc(number);
-        const int target_digits = implementation.concise_type == SQL_SMALLINT
-            ? std::numeric_limits<SQLSMALLINT>::digits
-            : implementation.concise_type == SQL_INTEGER
-                ? std::numeric_limits<SQLINTEGER>::digits
-                : std::numeric_limits<SQLBIGINT>::digits;
-        const double upper_exclusive = std::ldexp(1.0, target_digits);
-        if (!std::isfinite(number) ||
-            truncated < -upper_exclusive || truncated >= upper_exclusive) {
-          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                    "Floating parameter is outside SQL integer range");
-          return complete_parameter_set(SQL_ERROR);
+        if (implementation.concise_type == SQL_BIT) {
+          if (!std::isfinite(number) || number < 0 || number >= 2) {
+            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Floating parameter is outside SQL_BIT range");
+            return complete_parameter_set(SQL_ERROR);
+          }
+          if (number != 0 && number != 1) {
+            set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                      "Floating parameter has fractional SQL_BIT value");
+            return complete_parameter_set(SQL_ERROR);
+          }
+          value = number == 0 ? "0" : "1";
+        } else {
+          const double truncated = std::trunc(number);
+          const int target_digits = implementation.concise_type == SQL_SMALLINT
+              ? std::numeric_limits<SQLSMALLINT>::digits
+              : implementation.concise_type == SQL_INTEGER
+                  ? std::numeric_limits<SQLINTEGER>::digits
+                  : std::numeric_limits<SQLBIGINT>::digits;
+          const double upper_exclusive = std::ldexp(1.0, target_digits);
+          if (!std::isfinite(number) ||
+              truncated < -upper_exclusive || truncated >= upper_exclusive) {
+            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Floating parameter is outside SQL integer range");
+            return complete_parameter_set(SQL_ERROR);
+          }
+          value = std::to_string(static_cast<SQLBIGINT>(truncated));
         }
-        value = std::to_string(static_cast<SQLBIGINT>(truncated));
       }
       if (numeric_input && implementation.length > 0 &&
           is_character_sql_type(implementation.concise_type) &&

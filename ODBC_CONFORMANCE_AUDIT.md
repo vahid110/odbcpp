@@ -2043,6 +2043,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   test runs without skipping and all 34 tests pass under sanitizer, PostgreSQL
   Driver Manager, and iODBC. Other numeric targets and C-to-SQL conversions
   remain open.
+- Audit batch 300 validates `SQL_C_FLOAT` and `SQL_C_DOUBLE` input bound to
+  `SQL_BIT` using the [ODBC numeric-to-bit table](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/c-to-sql-numeric).
+  PostgreSQL first returned `22018` for invalid numeric bit literals; the
+  driver now accepts only 0 or 1, returns `22001` for values strictly between
+  them, and returns `22003` for negative, at least 2, or non-finite input.
+  The focused test covers both C floating types, positive values, diagnostics,
+  and recovery after failures. It runs without skipping and all 34 tests pass
+  under sanitizer, PostgreSQL Driver Manager, and iODBC. Other numeric
+  C-to-SQL targets remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
