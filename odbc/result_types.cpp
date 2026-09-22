@@ -160,7 +160,8 @@ bool ResultTypes::is_conversion_supported(SQLSMALLINT sql_type,
              sql_type == SQL_BIT || sql_type == SQL_TINYINT ||
              sql_type == SQL_SMALLINT || sql_type == SQL_INTEGER ||
              sql_type == SQL_BIGINT || sql_type == SQL_DECIMAL ||
-             sql_type == SQL_NUMERIC;
+             sql_type == SQL_NUMERIC || sql_type == SQL_REAL ||
+             sql_type == SQL_FLOAT || sql_type == SQL_DOUBLE;
     case SQL_C_DATE:
     case SQL_C_TYPE_DATE:
     case SQL_C_TIME:

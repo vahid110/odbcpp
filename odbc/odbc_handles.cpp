@@ -3204,6 +3204,15 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     }
   }
   const auto& character_cell = formatted_text ? *formatted_text : *cell;
+  if (effective_target_type == SQL_C_NUMERIC &&
+      (sql_type == SQL_REAL || sql_type == SQL_FLOAT ||
+       sql_type == SQL_DOUBLE) &&
+      (character_cell == "NaN" || character_cell == "Infinity" ||
+       character_cell == "-Infinity")) {
+    set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+              "Non-finite numeric result cannot be represented as SQL_C_NUMERIC");
+    return SQL_ERROR;
+  }
   if (!value_preserving_character_buffer_fits(
           sql_type, effective_target_type, character_cell, buffer_length,
           offset)) {

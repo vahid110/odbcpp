@@ -976,8 +976,12 @@ TEST(ResultTypesTest, ProvidesMetadataDrivenDefaults) {
         SQL_INTEGER, SQL_C_NUMERIC));
     EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
         SQL_VARCHAR, SQL_C_NUMERIC));
-    EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
         SQL_DOUBLE, SQL_C_NUMERIC));
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
+        SQL_REAL, SQL_C_NUMERIC));
+    EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
+        SQL_FLOAT, SQL_C_NUMERIC));
     for (SQLSMALLINT temporal : std::initializer_list<SQLSMALLINT>{
              SQL_TYPE_DATE, SQL_TYPE_TIME, SQL_TYPE_TIMESTAMP}) {
         for (SQLSMALLINT numeric : std::initializer_list<SQLSMALLINT>{

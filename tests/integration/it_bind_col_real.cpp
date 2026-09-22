@@ -1987,7 +1987,7 @@ TEST_F(BindColIntegrationTest, CharacterNumericGetDataReportsExactDiagnostics) {
     EXPECT_EQ(static_cast<SQLLEN>(sizeof(numeric)), length);
 
     SQLCHAR state[6]{};
-    for (const auto column : {2, 3}) {
+    for (SQLUSMALLINT column : {SQLUSMALLINT{2}, SQLUSMALLINT{3}}) {
         std::memset(&numeric, 0x5a, sizeof(numeric));
         length = 92;
         EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, SQL_C_NUMERIC,
@@ -2047,6 +2047,102 @@ TEST_F(BindColIntegrationTest, BoundCharacterNumericErrorPreservesOutput) {
     EXPECT_TRUE(std::all_of(reinterpret_cast<const unsigned char*>(&numeric),
         reinterpret_cast<const unsigned char*>(&numeric) + sizeof(numeric),
         [](unsigned char byte) { return byte == 0x5a; }));
+}
+
+TEST_F(BindColIntegrationTest, ApproximateNumericToNumericHandlesBoundaries) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT 1.25::real, 1.2345e2::double precision, "
+                  "1e39::double precision, 'NaN'::double precision, "
+                  "'Infinity'::double precision, '-Infinity'::real, "
+                  "NULL::real", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQL_NUMERIC_STRUCT numeric{};
+    SQLLEN length = 91;
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(hstmt, 1, SQL_C_NUMERIC,
+        &numeric, 0, &length));
+    EXPECT_EQ(1, numeric.val[0]);
+    EXPECT_EQ(38, numeric.precision);
+    EXPECT_EQ(0, numeric.scale);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(numeric)), length);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01S07", reinterpret_cast<char*>(state));
+
+    SQLHDESC ard = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt, SQL_ATTR_APP_ROW_DESC,
+        &ard, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 2, SQL_DESC_CONCISE_TYPE,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_C_NUMERIC)), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 2, SQL_DESC_PRECISION,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(5)), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 2, SQL_DESC_SCALE,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(2)), 0));
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 2, SQL_ARD_TYPE,
+        &numeric, 0, &length));
+    EXPECT_EQ(0x39, numeric.val[0]);
+    EXPECT_EQ(0x30, numeric.val[1]);
+    EXPECT_EQ(5, numeric.precision);
+    EXPECT_EQ(2, numeric.scale);
+
+    for (SQLUSMALLINT column : {SQLUSMALLINT{3}, SQLUSMALLINT{4},
+                                SQLUSMALLINT{5}, SQLUSMALLINT{6}}) {
+        std::memset(&numeric, 0x5a, sizeof(numeric));
+        length = 92;
+        EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, SQL_C_NUMERIC,
+            &numeric, 0, &length));
+        EXPECT_EQ(92, length);
+        EXPECT_TRUE(std::all_of(reinterpret_cast<const unsigned char*>(&numeric),
+            reinterpret_cast<const unsigned char*>(&numeric) + sizeof(numeric),
+            [](unsigned char byte) { return byte == 0x5a; }));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    }
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 7, SQL_C_NUMERIC,
+        &numeric, 0, &length));
+    EXPECT_EQ(SQL_NULL_DATA, length);
+}
+
+TEST_F(BindColIntegrationTest, BoundApproximateNumericUsesScale) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT value FROM (VALUES (1, 1.25::real), "
+                  "(2, 1e30::real), (3, NULL::real)) AS rows(ord, value) "
+                  "ORDER BY ord", SQL_NTS));
+    SQL_NUMERIC_STRUCT numeric{};
+    SQLLEN length = 91;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_NUMERIC,
+        &numeric, sizeof(numeric), &length));
+    SQLHDESC ard = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt, SQL_ATTR_APP_ROW_DESC,
+        &ard, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_PRECISION,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(5)), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_SCALE,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(1)), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_DATA_PTR,
+        &numeric, 0));
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLFetch(hstmt));
+    EXPECT_EQ(12, numeric.val[0]);
+    EXPECT_EQ(5, numeric.precision);
+    EXPECT_EQ(1, numeric.scale);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01S07", reinterpret_cast<char*>(state));
+
+    std::memset(&numeric, 0x5a, sizeof(numeric));
+    length = 92;
+    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+    EXPECT_EQ(92, length);
+    EXPECT_TRUE(std::all_of(reinterpret_cast<const unsigned char*>(&numeric),
+        reinterpret_cast<const unsigned char*>(&numeric) + sizeof(numeric),
+        [](unsigned char byte) { return byte == 0x5a; }));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    EXPECT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(SQL_NULL_DATA, length);
 }
 
 TEST_F(BindColIntegrationTest, CharacterToBinaryReturnsRawUtf8Bytes) {
