@@ -3645,12 +3645,16 @@ SQLRETURN ODBCStatement::execute() {
           return complete_parameter_set(SQL_ERROR);
         }
         value = *formatted;
-        if (declared_sql_type == SQL_SMALLINT ||
+        if (declared_sql_type == SQL_TINYINT ||
+            declared_sql_type == SQL_SMALLINT ||
             declared_sql_type == SQL_INTEGER ||
             declared_sql_type == SQL_BIGINT) {
           SQLBIGINT integer = 0;
           if (TextDataConverter::convert_data(value, SQL_C_SBIGINT,
                   &integer, 0, nullptr) == SQL_ERROR ||
+              (declared_sql_type == SQL_TINYINT &&
+               (integer < std::numeric_limits<SQLSCHAR>::min() ||
+                integer > std::numeric_limits<SQLSCHAR>::max())) ||
               (declared_sql_type == SQL_SMALLINT &&
                (integer < std::numeric_limits<SQLSMALLINT>::min() ||
                 integer > std::numeric_limits<SQLSMALLINT>::max())) ||
@@ -4277,7 +4281,8 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
     return SQL_ERROR;
   }
   if (value_type == SQL_C_NUMERIC && parameter_type != SQL_DECIMAL &&
-      parameter_type != SQL_NUMERIC && parameter_type != SQL_SMALLINT &&
+      parameter_type != SQL_NUMERIC && parameter_type != SQL_TINYINT &&
+      parameter_type != SQL_SMALLINT &&
       parameter_type != SQL_INTEGER && parameter_type != SQL_BIGINT &&
       parameter_type != SQL_BIT && parameter_type != SQL_REAL &&
       parameter_type != SQL_FLOAT && parameter_type != SQL_DOUBLE &&

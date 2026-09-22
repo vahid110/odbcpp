@@ -48,7 +48,7 @@ The shared library currently exports 76 ODBC symbols: 49 base operations and
 | `SQLMoreResults` | A | Partial | unit, integration, DM | Result/update-count traversal and close-time discard are covered; error-result sequences remain |
 | `SQLGetData` | A | Partial | integration, DM | Legacy and ODBC 3 temporal C targets, malformed-value diagnostics, per-row/switching-column offsets, binary-to-character hex chunking and unsupported scalar rejection, plus bit-to-character/binary/numeric output, exact-numeric, approximate-numeric, and character-to-`SQL_C_NUMERIC` conversion, and temporal rejection are covered; complete conversion/chunking matrices remain |
 | `SQLBindCol` | A | Partial | unit, integration | Invalid C types, negative lengths, ODBC 3 temporal C targets, binary-to-character hex output and unsupported scalar rejection, plus bit-to-character/binary/numeric output, exact-numeric, approximate-numeric, and character-to-`SQL_C_NUMERIC` conversion, and temporal rejection are covered; row arrays, row-wise binding, and full type/conversion matrix remain |
-| `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics, ODBC date/time/timestamp-struct input, `SQL_C_NUMERIC` input to decimal, signed integer, approximate numeric, bit, and character SQL types using APD precision/scale, temporal target rejection and target-specific diagnostics, date/time-to-timestamp and timestamp-to-date/time rules, character-to-date/time and time-only character-to-timestamp, temporal struct character-target lengths, binary SQL-target length, character-to-binary hex conversion, explicit zero-length character inputs, narrow/wide SQL character limits, and struct/character timestamp fractional precision are covered; input arrays, data-at-execution, and full conversion matrix remain |
+| `SQLBindParameter` | A | Partial | unit, integration | Direction/C/SQL type and length diagnostics, ODBC date/time/timestamp-struct input, `SQL_C_NUMERIC` input to decimal, signed integer (including PostgreSQL's signed tinyint binding), approximate numeric, bit, and character SQL types using APD precision/scale, temporal target rejection and target-specific diagnostics, date/time-to-timestamp and timestamp-to-date/time rules, character-to-date/time and time-only character-to-timestamp, temporal struct character-target lengths, binary SQL-target length, character-to-binary hex conversion, explicit zero-length character inputs, narrow/wide SQL character limits, and struct/character timestamp fractional precision are covered; input arrays, data-at-execution, and full conversion matrix remain |
 | `SQLNumParams` | A | Partial | unit, integration, DM | Prepared statements are server-validated without execution; state, null/output preservation, complex markers, direct execution, and IPD count agreement are covered; cancellation and communication-failure injection remain |
 | `SQLNumResultCols` | A | Partial | unit, integration | Prepared metadata, result sets, update counts, exhausted/closed cursors, delayed PostgreSQL errors, null outputs, and output preservation are covered; cancellation and communication-failure injection remain |
 | `SQLRowCount` | A | Verified | unit, integration | Allocated, prepared, update-count, result-set, fetched/exhausted, closed, failed-execution, null-output, and output-preservation cases are covered |
@@ -2346,6 +2346,13 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   maximum; the server performs the floating conversion. PostgreSQL tests
   cover all three SQL targets, fractional input, `1e-38` and `9e37`
   `SQL_REAL` inputs, invalid sign (`22003`), and `NULL`.
+- Audit batch 338 accepts `SQL_C_NUMERIC` input for `SQL_TINYINT` using this
+  PostgreSQL-first driver's existing signed 8-bit tinyint contract. Fractional
+  digits are truncated toward zero, and truncated integers outside -128 through 127
+  return `22003` before the server's `integer` promotion can obscure the
+  bound SQL type's limit. PostgreSQL tests cover both bounds, positive and
+  negative overflow, recovery, and `NULL`. Other data sources may define
+  unsigned tinyint and will need an explicit type contract before support.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
