@@ -2175,6 +2175,10 @@ SQLRETURN ODBCDescriptor::set_field(
        field_identifier == SQL_DESC_DATETIME_INTERVAL_CODE)) {
     record.bound_sql_type = record.concise_type;
   }
+  if (kind_ == DescriptorKind::ImplementationParameter &&
+      field_identifier == SQL_DESC_LENGTH) {
+    record.bound_sql_length = record.length;
+  }
   return changed();
 }
 
@@ -3415,10 +3419,12 @@ SQLRETURN ODBCStatement::execute() {
       }
 
       SQLSMALLINT value_type = application.concise_type;
+      const auto declared_sql_type = implementation.bound_sql_type != 0
+          ? implementation.bound_sql_type : implementation.concise_type;
+      const auto declared_sql_length = implementation.bound_sql_length != 0
+          ? implementation.bound_sql_length : implementation.length;
       if (value_type == SQL_C_DEFAULT) {
-        const auto sql_type = implementation.bound_sql_type != 0
-            ? implementation.bound_sql_type : implementation.concise_type;
-        value_type = ResultTypes::default_c_type(sql_type);
+        value_type = ResultTypes::default_c_type(declared_sql_type);
       }
       rs::core::database::QueryParameter query_param;
       query_param.type = parameter_type_for(
@@ -3749,26 +3755,26 @@ SQLRETURN ODBCStatement::execute() {
                   "Integer parameter is outside SQL_BIT range");
         return complete_parameter_set(SQL_ERROR);
       }
-      if (numeric_input && implementation.length > 0 &&
-          is_character_sql_type(implementation.concise_type) &&
-          static_cast<SQLULEN>(value.size()) > implementation.length) {
+      if (numeric_input && declared_sql_length > 0 &&
+          is_character_sql_type(declared_sql_type) &&
+          static_cast<SQLULEN>(value.size()) > declared_sql_length) {
         set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
                   "Numeric parameter exceeds SQL character length");
         return complete_parameter_set(SQL_ERROR);
       }
-      if (character_input && implementation.length > 0 &&
-          (implementation.concise_type == SQL_CHAR ||
-           implementation.concise_type == SQL_VARCHAR ||
-           implementation.concise_type == SQL_LONGVARCHAR) &&
-          static_cast<SQLULEN>(value.size()) > implementation.length) {
+      if (character_input && declared_sql_length > 0 &&
+          (declared_sql_type == SQL_CHAR ||
+           declared_sql_type == SQL_VARCHAR ||
+           declared_sql_type == SQL_LONGVARCHAR) &&
+          static_cast<SQLULEN>(value.size()) > declared_sql_length) {
         set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
                   "Character parameter exceeds SQL byte length");
         return complete_parameter_set(SQL_ERROR);
       }
       if (character_input &&
-          (implementation.concise_type == SQL_WCHAR ||
-           implementation.concise_type == SQL_WVARCHAR ||
-           implementation.concise_type == SQL_WLONGVARCHAR)) {
+          (declared_sql_type == SQL_WCHAR ||
+           declared_sql_type == SQL_WVARCHAR ||
+           declared_sql_type == SQL_WLONGVARCHAR)) {
         if (!utf8_to_wide(value)) {
           set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
                     "Character parameter is not valid Unicode");
@@ -3778,8 +3784,8 @@ SQLRETURN ODBCStatement::execute() {
             value.begin(), value.end(), [](unsigned char byte) {
               return (byte & 0xc0) != 0x80;
             });
-        if (implementation.length > 0 &&
-            static_cast<SQLULEN>(character_count) > implementation.length) {
+        if (declared_sql_length > 0 &&
+            static_cast<SQLULEN>(character_count) > declared_sql_length) {
           set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
                     "Character parameter exceeds SQL character length");
           return complete_parameter_set(SQL_ERROR);
@@ -4220,6 +4226,7 @@ void ODBCStatement::apply_result_metadata(
     auto record = descriptor_record_for(param_metadata_[index]);
     if (const auto* prior = implementation_descriptor->record(index)) {
       record.bound_sql_type = prior->bound_sql_type;
+      record.bound_sql_length = prior->bound_sql_length;
     }
     parameter_descriptor_records.push_back(std::move(record));
   }

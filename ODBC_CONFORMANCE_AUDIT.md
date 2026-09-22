@@ -2216,6 +2216,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   parameter and result buffers remain unsupported; applications need a
   matching-width driver for those bindings. The README's previous claim that
   all Unicode data round-tripped in the mixed build was too broad.
+- Audit batch 320 preserves a caller-declared IPD character length when
+  PostgreSQL promotes `SQL_WVARCHAR(2)` to unbounded `SQL_VARCHAR` metadata.
+  Before the fix, `SQLDescribeParam` caused a three-character input to be
+  accepted despite the two-character binding. Conversion now checks the
+  declared SQL type and length while leaving server metadata visible to
+  `SQLDescribeParam`. Live tests cover `SQL_C_DEFAULT` wide input, UTF-8
+  `SQL_C_CHAR` input, direct descriptor binding, `22001` on overlength, and
+  a later explicit IPD length change. All 34 tests pass under sanitizer and
+  both iODBC configurations.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

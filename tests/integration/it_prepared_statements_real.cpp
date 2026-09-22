@@ -1172,6 +1172,59 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       DeclaredWideLengthSurvivesServerTypePromotion) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::text", SQL_NTS));
+    SQLWCHAR value[] = {0x00e9, 'x', 'y', 0};
+    SQLLEN length = 2 * sizeof(SQLWCHAR);
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_DEFAULT, SQL_WVARCHAR, 2, 0, value, sizeof(value), &length));
+    SQLSMALLINT server_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+        &server_type, nullptr, nullptr, nullptr));
+    EXPECT_EQ(SQL_VARCHAR, server_type);
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    char output[8]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        output, sizeof(output), nullptr));
+    EXPECT_STREQ("\xc3\xa9x", output);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    length = 3 * sizeof(SQLWCHAR);
+    ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
+
+    SQLHDESC implementation = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt, SQL_ATTR_IMP_PARAM_DESC,
+        &implementation, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(implementation, 1,
+        SQL_DESC_LENGTH, reinterpret_cast<SQLPOINTER>(3), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+        &server_type, nullptr, nullptr, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        output, sizeof(output), nullptr));
+    EXPECT_STREQ("\xc3\xa9xy", output);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    char utf8[] = "\xc3\xa9xy";
+    SQLLEN utf8_length = sizeof(utf8) - 1;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_CHAR, SQL_WVARCHAR, 2, 0, utf8, sizeof(utf8), &utf8_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+        &server_type, nullptr, nullptr, nullptr));
+    ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        WideSqlCharacterLengthHandlesSupplementaryInput) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
     SQLLEN input_length = SQL_NTS;
@@ -2955,6 +3008,57 @@ TEST_F(PreparedStatementIntegrationTest,
         &result, sizeof(result), nullptr));
     EXPECT_EQ(wider, result);
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt, SQL_ATTR_APP_PARAM_DESC,
+        SQL_NULL_HDESC, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, application));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       DescriptorDefaultWideLengthSurvivesServerTypePromotion) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::text", SQL_NTS));
+    SQLHDESC application = SQL_NULL_HDESC;
+    SQLHDESC implementation = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_DESC, hdbc,
+        &application));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt, SQL_ATTR_IMP_PARAM_DESC,
+        &implementation, 0, nullptr));
+    const auto number = [](SQLLEN field) {
+        return reinterpret_cast<SQLPOINTER>(
+            static_cast<std::uintptr_t>(field));
+    };
+    SQLWCHAR value[] = {0x00e9, 'x', 'y', 0};
+    SQLLEN length = 2 * sizeof(SQLWCHAR);
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(application, 1,
+        SQL_DESC_CONCISE_TYPE, number(SQL_C_DEFAULT), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(application, 1,
+        SQL_DESC_DATA_PTR, value, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(application, 1,
+        SQL_DESC_OCTET_LENGTH_PTR, &length, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(implementation, 1,
+        SQL_DESC_CONCISE_TYPE, number(SQL_WVARCHAR), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(implementation, 1,
+        SQL_DESC_LENGTH, number(2), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt, SQL_ATTR_APP_PARAM_DESC,
+        application, 0));
+    SQLSMALLINT server_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+        &server_type, nullptr, nullptr, nullptr));
+    EXPECT_EQ(SQL_VARCHAR, server_type);
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    char output[8]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        output, sizeof(output), nullptr));
+    EXPECT_STREQ("\xc3\xa9x", output);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    length = 3 * sizeof(SQLWCHAR);
+    ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
     ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt, SQL_ATTR_APP_PARAM_DESC,
         SQL_NULL_HDESC, 0));
     ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, application));
