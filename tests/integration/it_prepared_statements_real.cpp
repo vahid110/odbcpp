@@ -466,6 +466,57 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       SignedIntegerInputToSqlBitValidatesValue) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::boolean", SQL_NTS));
+    SQLINTEGER integer = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_SLONG, SQL_BIT, 0, 0, &integer, sizeof(integer), nullptr));
+    const auto expect_bit = [&](SQLCHAR expected) {
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQLCHAR result = 9;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BIT,
+            &result, sizeof(result), nullptr));
+        EXPECT_EQ(expected, result);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    const auto expect_out_of_range = [&] {
+        ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    };
+
+    expect_bit(0);
+    integer = 1;
+    expect_bit(1);
+    integer = -1;
+    expect_out_of_range();
+    integer = 2;
+    expect_out_of_range();
+    integer = 0;
+    expect_bit(0);
+
+    SQLSMALLINT short_value = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_SSHORT, SQL_BIT, 0, 0, &short_value, sizeof(short_value),
+        nullptr));
+    expect_out_of_range();
+    short_value = 1;
+    expect_bit(1);
+
+    SQLBIGINT big_value = std::numeric_limits<SQLBIGINT>::max();
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_SBIGINT, SQL_BIT, 0, 0, &big_value, sizeof(big_value),
+        nullptr));
+    expect_out_of_range();
+    big_value = 0;
+    expect_bit(0);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        BinaryParameterHonorsDeclaredSqlLength) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
     unsigned char input[]{0x00, 0x01, 0x7f, 0xff};

@@ -3552,9 +3552,9 @@ SQLRETURN ODBCStatement::execute() {
           value_type == SQL_C_CHAR || value_type == SQL_C_WCHAR;
       const bool floating_input =
           value_type == SQL_C_FLOAT || value_type == SQL_C_DOUBLE;
-      const bool numeric_input = value_type == SQL_C_SSHORT ||
-          value_type == SQL_C_SLONG || value_type == SQL_C_SBIGINT ||
-          floating_input;
+      const bool signed_integer_input = value_type == SQL_C_SSHORT ||
+          value_type == SQL_C_SLONG || value_type == SQL_C_SBIGINT;
+      const bool numeric_input = signed_integer_input || floating_input;
       using rs::core::database::QueryParameterType;
       const bool integer_target =
           implementation.concise_type == SQL_SMALLINT ||
@@ -3594,6 +3594,12 @@ SQLRETURN ODBCStatement::execute() {
           }
           value = std::to_string(static_cast<SQLBIGINT>(truncated));
         }
+      }
+      if (signed_integer_input && implementation.concise_type == SQL_BIT &&
+          value != "0" && value != "1") {
+        set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                  "Integer parameter is outside SQL_BIT range");
+        return complete_parameter_set(SQL_ERROR);
       }
       if (numeric_input && implementation.length > 0 &&
           is_character_sql_type(implementation.concise_type) &&

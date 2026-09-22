@@ -2052,6 +2052,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   and recovery after failures. It runs without skipping and all 34 tests pass
   under sanitizer, PostgreSQL Driver Manager, and iODBC. Other numeric
   C-to-SQL targets remain open.
+- Audit batch 301 applies the same numeric-to-bit rule to signed
+  `SQL_C_SSHORT`, `SQL_C_SLONG`, and `SQL_C_SBIGINT` parameters. A live
+  PostgreSQL regression first returned `22018` for negative and above-one
+  integer values; the driver now rejects those values with `22003` before
+  sending a query. The test covers both valid bit values, boundaries,
+  the signed 64-bit maximum, and recovery after errors. It runs without
+  skipping and all 34 tests pass under sanitizer, PostgreSQL Driver Manager,
+  and iODBC. Other C-to-SQL conversions remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
