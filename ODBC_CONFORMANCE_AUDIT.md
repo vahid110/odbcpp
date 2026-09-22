@@ -2079,6 +2079,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   truncation `22001`, and recovery after errors. They run without skipping;
   all 34 tests pass under sanitizer, PostgreSQL Driver Manager, and iODBC.
   Other unsigned C types and C-to-SQL conversions remain open.
+- Audit batch 304 adds `SQL_C_ULONG` input parameters using the same numeric
+  conversion rules and existing unsigned range check. A PostgreSQL regression
+  first failed at bind time; it now verifies the signed `SQL_INTEGER` upper
+  boundary and `22003` overflow, preserves the full unsigned 32-bit maximum
+  when bound to `SQL_BIGINT`, rejects 2 for `SQL_BIT`, and recovers after a
+  failed execution. The focused tests run without skipping and all 34 tests
+  pass under sanitizer, PostgreSQL Driver Manager, and iODBC. Narrower
+  unsigned C types and other C-to-SQL conversions remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

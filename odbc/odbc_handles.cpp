@@ -3454,6 +3454,9 @@ SQLRETURN ODBCStatement::execute() {
       } else if (value_type == SQL_C_SBIGINT) {
         value = std::to_string(
             load_application_value<SQLBIGINT>(application.data_ptr));
+      } else if (value_type == SQL_C_ULONG) {
+        value = std::to_string(
+            load_application_value<SQLUINTEGER>(application.data_ptr));
       } else if (value_type == SQL_C_UBIGINT) {
         value = std::to_string(
             load_application_value<SQLUBIGINT>(application.data_ptr));
@@ -3620,9 +3623,10 @@ SQLRETURN ODBCStatement::execute() {
           value_type == SQL_C_FLOAT || value_type == SQL_C_DOUBLE;
       const bool signed_integer_input = value_type == SQL_C_SSHORT ||
           value_type == SQL_C_SLONG || value_type == SQL_C_SBIGINT;
-      const bool unsigned_bigint_input = value_type == SQL_C_UBIGINT;
+      const bool unsigned_integer_input = value_type == SQL_C_ULONG ||
+          value_type == SQL_C_UBIGINT;
       const bool numeric_input = signed_integer_input ||
-          unsigned_bigint_input || floating_input;
+          unsigned_integer_input || floating_input;
       using rs::core::database::QueryParameterType;
       const bool integer_target =
           implementation.concise_type == SQL_SMALLINT ||
@@ -3685,9 +3689,10 @@ SQLRETURN ODBCStatement::execute() {
           value = std::to_string(static_cast<SQLBIGINT>(truncated));
         }
       }
-      if (unsigned_bigint_input && integer_target) {
-        const SQLUBIGINT number = load_application_value<SQLUBIGINT>(
-            application.data_ptr);
+      if (unsigned_integer_input && integer_target) {
+        const SQLUBIGINT number = value_type == SQL_C_ULONG
+            ? load_application_value<SQLUINTEGER>(application.data_ptr)
+            : load_application_value<SQLUBIGINT>(application.data_ptr);
         const SQLUBIGINT maximum = implementation.concise_type == SQL_SMALLINT
             ? static_cast<SQLUBIGINT>(
                   std::numeric_limits<SQLSMALLINT>::max())
@@ -3702,7 +3707,7 @@ SQLRETURN ODBCStatement::execute() {
           return complete_parameter_set(SQL_ERROR);
         }
       }
-      if ((signed_integer_input || unsigned_bigint_input) &&
+      if ((signed_integer_input || unsigned_integer_input) &&
           implementation.concise_type == SQL_BIT &&
           value != "0" && value != "1") {
         set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,

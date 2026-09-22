@@ -705,6 +705,72 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       UnsignedLongInputValidatesIntegerRange) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::integer", SQL_NTS));
+    SQLUINTEGER value = static_cast<SQLUINTEGER>(
+        std::numeric_limits<SQLINTEGER>::max());
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_ULONG, SQL_INTEGER, 0, 0, &value, sizeof(value), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLINTEGER result = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG,
+        &result, sizeof(result), nullptr));
+    EXPECT_EQ(std::numeric_limits<SQLINTEGER>::max(), result);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    value = static_cast<SQLUINTEGER>(
+        std::numeric_limits<SQLINTEGER>::max()) + 1;
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    value = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       UnsignedLongInputPreservesFullWidth) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::bigint", SQL_NTS));
+    SQLUINTEGER value = std::numeric_limits<SQLUINTEGER>::max();
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_ULONG, SQL_BIGINT, 0, 0, &value, sizeof(value), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLBIGINT result = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SBIGINT,
+        &result, sizeof(result), nullptr));
+    EXPECT_EQ(static_cast<SQLBIGINT>(value), result);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       UnsignedLongInputValidatesSqlBit) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::boolean", SQL_NTS));
+    SQLUINTEGER value = 1;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_ULONG, SQL_BIT, 0, 0, &value, sizeof(value), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLCHAR result = 9;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BIT,
+        &result, sizeof(result), nullptr));
+    EXPECT_EQ(1, result);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    value = 2;
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        BinaryParameterHonorsDeclaredSqlLength) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
     unsigned char input[]{0x00, 0x01, 0x7f, 0xff};
