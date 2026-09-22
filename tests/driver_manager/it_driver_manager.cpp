@@ -600,10 +600,46 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+#if defined(ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE) && \
+    defined(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE) && \
+    ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE != ODBCPP_EXPECT_DM_SQLWCHAR_SIZE
+  // iODBC does not convert bound C buffers across different WCHAR widths.
+  char parameter[] = "\xc3\xa9x";
+  constexpr SQLSMALLINT parameter_c_type = SQL_C_CHAR;
+#else
+  SQLWCHAR parameter[] = {0x00e9, 'x', 0};
+  constexpr SQLSMALLINT parameter_c_type = SQL_C_DEFAULT;
+#endif
+  SQLLEN parameter_length = SQL_NTS;
+  SQLCHAR parameter_text[8]{};
+  if (!result_is(SQLBindParameter(
+          statement, 1, SQL_PARAM_INPUT, parameter_c_type, SQL_WVARCHAR,
+          2, 0, parameter, 0, &parameter_length),
+          SQL_SUCCESS, "SQLBindParameter Unicode") ||
+      !result_is(SQLExecute(statement), SQL_SUCCESS,
+                 "SQLExecute Unicode") ||
+      !result_is(SQLFetch(statement), SQL_SUCCESS,
+                 "SQLFetch Unicode") ||
+      !result_is(SQLGetData(
+          statement, 1, SQL_C_CHAR, parameter_text,
+          sizeof(parameter_text), nullptr), SQL_SUCCESS,
+          "SQLGetData Unicode") ||
+      std::strcmp(reinterpret_cast<const char*>(parameter_text),
+                  "\xc3\xa9x") != 0) {
+    std::fprintf(stderr, "Unicode parameter returned: %s\n",
+                 parameter_text);
+    print_diagnostic(SQL_HANDLE_STMT, statement);
+    SQLFreeHandle(SQL_HANDLE_STMT, statement);
+    SQLDisconnect(connection);
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
   SQLCHAR schema_pattern[] = "information_schema";
   SQLCHAR table_pattern[] = "tables";
   SQLCHAR table_type[] = "VIEW";
-  if (!succeeded(SQLTables(
+  if (!succeeded(SQLCloseCursor(statement)) ||
+      !succeeded(SQLTables(
           statement, nullptr, 0, schema_pattern, SQL_NTS,
           table_pattern, SQL_NTS, table_type, SQL_NTS)) ||
       !succeeded(SQLFetch(statement))) {

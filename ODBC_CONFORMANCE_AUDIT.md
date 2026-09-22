@@ -2207,6 +2207,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   fix; live PostgreSQL tests cover wide input, overlength input (`22001`),
   and malformed Unicode (`22018`) with two- and four-byte `SQLWCHAR` builds.
   All 34 tests pass under sanitizer and both iODBC configurations.
+- Audit batch 319 found a mixed-width iODBC binding limitation: a four-byte
+  application binding `SQL_C_DEFAULT`/`SQL_WVARCHAR` to the two-byte driver
+  returned only the first of two characters. iODBC translated wide API text
+  arguments but did not translate the bound C buffer. The external test now
+  exercises wide default binding on matching-width builds and UTF-8
+  `SQL_C_CHAR` binding on the mixed-width build. Mixed-width `SQL_C_WCHAR`
+  parameter and result buffers remain unsupported; applications need a
+  matching-width driver for those bindings. The README's previous claim that
+  all Unicode data round-tripped in the mixed build was too broad.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

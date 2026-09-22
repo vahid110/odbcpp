@@ -289,11 +289,11 @@ native `wchar_t`, which is normally four-byte UCS-4 on macOS and Linux.
 unixODBC can also be built in its optional four-byte mode.
 
 ODBCPP advertises its compiled representation through iODBC's
-`SQL_ATTR_DRIVER_UNICODE_TYPE` extension and handles
+`SQL_ATTR_DRIVER_UNICODE_TYPE` extension and accepts its native
 `SQL_ATTR_APP_WCHAR_TYPE`. An iODBC application can set
 `SQL_ATTR_APP_UNICODE_TYPE`; iODBC then converts between its application
-representation and the driver's representation. Register the normal
-two-byte ODBCPP build with this fallback setting:
+representation and the driver's representation for wide API string arguments.
+Register the normal two-byte ODBCPP build with this fallback setting:
 
 ```cpp
 SQLSetEnvAttr(environment, SQL_ATTR_APP_UNICODE_TYPE,
@@ -311,12 +311,16 @@ Driver=/path/to/libodbcpp.dylib
 DriverUnicodeType=UTF16
 ```
 
-This lets a four-byte iODBC application use the regular UTF-16 driver build.
-For a native iODBC/UCS-4 build, compile against the iODBC headers, set
+This lets a four-byte iODBC application call the regular UTF-16 driver build's
+wide APIs. It does **not** convert bound `SQL_C_WCHAR` parameter or column
+buffers across different `SQLWCHAR` widths; a mixed-width bind can silently
+lose data. Use `SQL_C_CHAR` with UTF-8 for those buffers, or use a driver built
+with the application's `SQLWCHAR` width. For a native iODBC/UCS-4 build,
+compile against the iODBC headers, set
 `ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=4`, and register
-`DriverUnicodeType=UCS4`. The CI suite validates the mixed case directly: a
-four-byte iODBC application loads the two-byte driver and round-trips Unicode,
-including a supplementary-plane character, through PostgreSQL.
+`DriverUnicodeType=UCS4`. The CI suite validates mixed-width wide API strings,
+including a supplementary-plane character, and tests bound Unicode data on
+matching-width builds.
 
 ### Build Scripts
 

@@ -10,8 +10,8 @@
 #include <sqlext.h>
 #else
 // Linux/macOS - requires ODBC development headers. The driver is normally
-// built against unixODBC's two-byte SQLWCHAR ABI; iODBC can translate its
-// native four-byte application buffers to that representation.
+// built against unixODBC's two-byte SQLWCHAR ABI. iODBC translates wide API
+// string arguments, but not bound SQL_C_WCHAR buffers across ABI widths.
 #include <sql.h>
 #include <sqlext.h>
 #endif
