@@ -624,9 +624,10 @@ rs::core::database::QueryParameterType parameter_type_for(
     case SQL_WLONGVARCHAR:
       return QueryParameterType::Text;
     case SQL_TINYINT:
-    case SQL_SMALLINT:
     case SQL_INTEGER:
       return QueryParameterType::Int32;
+    case SQL_SMALLINT:
+      return QueryParameterType::Int16;
     case SQL_BIGINT:
       return QueryParameterType::Int64;
     case SQL_REAL:

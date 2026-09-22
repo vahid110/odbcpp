@@ -2176,6 +2176,13 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   and executes successfully after the bound value is corrected. A protocol
   unit test checks both floating type OIDs directly. All 34 tests pass under
   sanitizer and both iODBC configurations.
+- Audit batch 315 sends bound `SQL_SMALLINT` parameters as PostgreSQL `int2`
+  (OID 21) instead of `int4` (OID 23). A live regression first reported
+  `SQL_INTEGER` metadata and accepted an out-of-range value; it now reports
+  `SQL_SMALLINT`, returns `22003` above and below the signed 16-bit range,
+  and executes both boundary values after the errors. The protocol test
+  checks the 16- and 32-bit integer OIDs alongside floating-point OIDs.
+  All 34 tests pass under sanitizer and both iODBC configurations.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

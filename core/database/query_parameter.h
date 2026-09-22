@@ -10,6 +10,7 @@ namespace rs::core::database {
 enum class QueryParameterType {
   Unspecified,
   Text,
+  Int16,
   Int32,
   Int64,
   Float32,

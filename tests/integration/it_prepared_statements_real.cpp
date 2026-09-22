@@ -2791,6 +2791,46 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       SmallintParameterUsesInt16ServerTypeAndRecoversFromOverflow) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?", SQL_NTS));
+    SQLINTEGER value = std::numeric_limits<SQLSMALLINT>::max() + 1;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_SLONG, SQL_SMALLINT, 5, 0, &value, sizeof(value), nullptr));
+
+    SQLSMALLINT data_type = 0;
+    SQLULEN parameter_size = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+        &data_type, &parameter_size, nullptr, nullptr));
+    EXPECT_EQ(SQL_SMALLINT, data_type);
+    EXPECT_EQ(5u, parameter_size);
+
+    const auto expect_overflow = [&] {
+        EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    };
+    expect_overflow();
+    value = std::numeric_limits<SQLSMALLINT>::min() - 1;
+    expect_overflow();
+
+    for (const SQLSMALLINT boundary : {
+             std::numeric_limits<SQLSMALLINT>::min(),
+             std::numeric_limits<SQLSMALLINT>::max()}) {
+        value = boundary;
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQLSMALLINT result = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SSHORT,
+            &result, sizeof(result), nullptr));
+        EXPECT_EQ(boundary, result);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    }
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        NumericParameterRejectsUnrepresentablePrecision) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
         (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
