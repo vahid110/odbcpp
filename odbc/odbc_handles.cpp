@@ -3645,6 +3645,24 @@ SQLRETURN ODBCStatement::execute() {
           return complete_parameter_set(SQL_ERROR);
         }
         value = *formatted;
+        if (declared_sql_type == SQL_SMALLINT ||
+            declared_sql_type == SQL_INTEGER ||
+            declared_sql_type == SQL_BIGINT) {
+          SQLBIGINT integer = 0;
+          if (TextDataConverter::convert_data(value, SQL_C_SBIGINT,
+                  &integer, 0, nullptr) == SQL_ERROR ||
+              (declared_sql_type == SQL_SMALLINT &&
+               (integer < std::numeric_limits<SQLSMALLINT>::min() ||
+                integer > std::numeric_limits<SQLSMALLINT>::max())) ||
+              (declared_sql_type == SQL_INTEGER &&
+               (integer < std::numeric_limits<SQLINTEGER>::min() ||
+                integer > std::numeric_limits<SQLINTEGER>::max()))) {
+            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Numeric parameter is outside SQL integer range");
+            return complete_parameter_set(SQL_ERROR);
+          }
+          value = std::to_string(integer);
+        }
       } else if (value_type == SQL_C_FLOAT) {
         value = format_floating_parameter(
             load_application_value<SQLREAL>(application.data_ptr));
@@ -4257,7 +4275,8 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
     return SQL_ERROR;
   }
   if (value_type == SQL_C_NUMERIC && parameter_type != SQL_DECIMAL &&
-      parameter_type != SQL_NUMERIC) {
+      parameter_type != SQL_NUMERIC && parameter_type != SQL_SMALLINT &&
+      parameter_type != SQL_INTEGER && parameter_type != SQL_BIGINT) {
     set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
               "Numeric C parameter requires an exact numeric SQL type");
     return SQL_ERROR;

@@ -3237,6 +3237,130 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       NumericStructureIntegerParameterTruncatesFractionAndRecovers) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::integer", SQL_NTS));
+    SQL_NUMERIC_STRUCT numeric{};
+    numeric.sign = 1;
+    numeric.val[0] = 0x39;
+    numeric.val[1] = 0x30;  // 12345, or 123.45 at APD scale 2.
+    SQLLEN indicator = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_NUMERIC, SQL_INTEGER, 12, 0, &numeric, 0, &indicator));
+    SQLHDESC apd = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt, SQL_ATTR_APP_PARAM_DESC,
+        &apd, 0, nullptr));
+    const auto number = [](SQLLEN field) {
+        return reinterpret_cast<SQLPOINTER>(
+            static_cast<std::uintptr_t>(field));
+    };
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+        SQL_DESC_PRECISION, number(12), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+        SQL_DESC_SCALE, number(2), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+        SQL_DESC_DATA_PTR, &numeric, 0));
+    const auto expect_value = [&](const char* expected) {
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        char result[24]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+            result, sizeof(result), nullptr));
+        EXPECT_STREQ(expected, result);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    expect_value("123");
+    numeric.sign = 0;
+    expect_value("-123");
+    numeric = {};
+    numeric.sign = 0;
+    numeric.val[0] = 75;  // -0.75 truncates toward zero.
+    expect_value("0");
+
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+        SQL_DESC_SCALE, number(0), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+        SQL_DESC_DATA_PTR, &numeric, 0));
+    numeric = {};
+    numeric.sign = 1;
+    numeric.val[3] = 0x80;  // 2147483648.
+    SQLCHAR state[6]{};
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+
+    numeric.val[0] = 0xff;
+    numeric.val[1] = 0xff;
+    numeric.val[2] = 0xff;
+    numeric.val[3] = 0x7f;  // 2147483647.
+    expect_value("2147483647");
+    indicator = SQL_NULL_DATA;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLINTEGER untouched = 77;
+    SQLLEN length = 91;
+    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG,
+        &untouched, sizeof(untouched), &length));
+    EXPECT_EQ(SQL_NULL_DATA, length);
+    EXPECT_EQ(77, untouched);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       NumericStructureSmallintAndBigintBoundaries) {
+    const auto check_boundary = [&](const char* statement,
+                                    SQLSMALLINT sql_type,
+                                    SQLULEN precision,
+                                    SQL_NUMERIC_STRUCT numeric,
+                                    const char* expected) {
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+            reinterpret_cast<SQLCHAR*>(const_cast<char*>(statement)), SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_NUMERIC, sql_type, precision, 0, &numeric, 0, nullptr));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        char result[32]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+            result, sizeof(result), nullptr));
+        EXPECT_STREQ(expected, result);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+        numeric.sign = 1;
+        if (sql_type == SQL_SMALLINT) {
+            numeric.val[0] = 0x00;
+            numeric.val[1] = 0x80;  // 32768.
+        } else {
+            numeric.val[7] = 0x80;  // 9223372036854775808.
+        }
+        SQLCHAR state[6]{};
+        EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    };
+    SQL_NUMERIC_STRUCT small{};
+    small.sign = 0;
+    small.val[1] = 0x80;  // -32768.
+    check_boundary("SELECT ?::smallint", SQL_SMALLINT, 5, small, "-32768");
+
+    SQL_NUMERIC_STRUCT large{};
+    large.sign = 0;
+    large.val[7] = 0x80;  // -9223372036854775808.
+    check_boundary("SELECT ?::bigint", SQL_BIGINT, 19, large,
+        "-9223372036854775808");
+
+    SQL_NUMERIC_STRUCT tiny{};
+    tiny.sign = 1;
+    tiny.val[0] = 1;
+    EXPECT_EQ(SQL_ERROR, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_NUMERIC, SQL_TINYINT, 3, 0, &tiny, 0, nullptr));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        DecimalParameterUsesIpdPrecisionAndScale) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
         (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
