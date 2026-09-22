@@ -2232,8 +2232,16 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   fix, `SQL_DECIMAL(3,1)` accepted 100 after `SQLDescribeParam`. Live tests
   cover both signs, a valid boundary and recovery, an IPD precision edit,
   zero when scale equals precision, and the full unsigned 64-bit maximum.
-  Character and floating C inputs to exact numeric SQL types still need a
-  separate conversion audit.
+  Floating C inputs to exact numeric SQL types still need a separate
+  conversion audit.
+- Audit batch 322 applies the same declared whole-digit limit to plain
+  decimal `SQL_C_CHAR` and `SQL_C_WCHAR` inputs. Leading/trailing whitespace,
+  an optional sign, and leading zeroes do not inflate the significant whole
+  digit count. Live PostgreSQL tests cover overflow after `SQLDescribeParam`,
+  valid boundary values and recovery, and zero when scale equals precision.
+  Exponent notation, fractional precision loss, and malformed numeric text
+  remain for a separate character-to-exact-numeric conversion audit; those
+  spellings continue through the existing server conversion path.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

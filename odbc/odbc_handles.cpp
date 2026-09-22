@@ -56,6 +56,40 @@ std::string format_floating_parameter(T value) {
   return {text, end};
 }
 
+// Only classify plain decimal literals here. Leave other numeric spellings and
+// malformed input to the server's existing conversion diagnostics.
+std::optional<std::size_t> plain_decimal_whole_digits(std::string_view text) {
+  while (!text.empty() &&
+         std::isspace(static_cast<unsigned char>(text.front()))) {
+    text.remove_prefix(1);
+  }
+  while (!text.empty() &&
+         std::isspace(static_cast<unsigned char>(text.back()))) {
+    text.remove_suffix(1);
+  }
+  if (!text.empty() && (text.front() == '+' || text.front() == '-')) {
+    text.remove_prefix(1);
+  }
+  bool any_digit = false;
+  bool seen_nonzero_whole_digit = false;
+  std::size_t whole_digits = 0;
+  while (!text.empty() && text.front() >= '0' && text.front() <= '9') {
+    any_digit = true;
+    if (text.front() != '0') seen_nonzero_whole_digit = true;
+    if (seen_nonzero_whole_digit) ++whole_digits;
+    text.remove_prefix(1);
+  }
+  if (!text.empty() && text.front() == '.') {
+    text.remove_prefix(1);
+    while (!text.empty() && text.front() >= '0' && text.front() <= '9') {
+      any_digit = true;
+      text.remove_prefix(1);
+    }
+  }
+  if (!any_digit || !text.empty()) return std::nullopt;
+  return whole_digits;
+}
+
 std::optional<std::string> binary_result_as_hex(std::string_view value) {
   const auto decoded = TextDataConverter::decode_binary(value);
   if (!decoded) return std::nullopt;
@@ -3785,6 +3819,20 @@ SQLRETURN ODBCStatement::execute() {
             whole_digits > static_cast<std::size_t>(available_digits)) {
           set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
                     "Integer parameter exceeds SQL numeric precision");
+          return complete_parameter_set(SQL_ERROR);
+        }
+      }
+      if (character_input &&
+          (declared_sql_type == SQL_DECIMAL ||
+           declared_sql_type == SQL_NUMERIC) &&
+          declared_sql_precision > 0 && declared_sql_scale >= 0) {
+        const auto whole_digits = plain_decimal_whole_digits(value);
+        const auto available_digits = std::max<int>(
+            0, declared_sql_precision - declared_sql_scale);
+        if (whole_digits &&
+            *whole_digits > static_cast<std::size_t>(available_digits)) {
+          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                    "Character parameter exceeds SQL numeric precision");
           return complete_parameter_set(SQL_ERROR);
         }
       }
