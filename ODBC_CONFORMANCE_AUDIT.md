@@ -2035,6 +2035,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   focused test runs without skipping and all 34 tests pass under sanitizer,
   PostgreSQL Driver Manager, and iODBC. The remaining integer SQL targets and
   C-to-SQL conversions remain open.
+- Audit batch 299 extends the same [ODBC numeric-to-integer rule](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/c-to-sql-numeric)
+  to `SQL_BIGINT`. A PostgreSQL regression first showed a fractional double
+  being rejected; it now checks truncation, the exact signed 64-bit lower
+  bound, the next representable double below the upper bound, both out-of-range
+  neighbors returning `22003`, and negative `SQL_C_FLOAT` recovery. The focused
+  test runs without skipping and all 34 tests pass under sanitizer, PostgreSQL
+  Driver Manager, and iODBC. Other numeric targets and C-to-SQL conversions
+  remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
