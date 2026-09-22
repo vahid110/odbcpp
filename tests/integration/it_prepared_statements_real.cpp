@@ -2639,6 +2639,14 @@ TEST_F(PreparedStatementIntegrationTest,
         hstmt, 2, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
         12, 0, label, sizeof(label), &label_length));
 
+    SQLHDESC implementation = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_IMP_PARAM_DESC, &implementation, 0, nullptr));
+    SQLSMALLINT precision = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        implementation, 1, SQL_DESC_PRECISION, &precision, 0, nullptr));
+    EXPECT_EQ(8, precision);
+
     SQLSMALLINT data_type = 0;
     SQLULEN parameter_size = 0;
     SQLSMALLINT decimal_digits = 0;
@@ -2654,15 +2662,12 @@ TEST_F(PreparedStatementIntegrationTest,
     EXPECT_EQ(SQL_VARCHAR, data_type);
     EXPECT_EQ(12u, parameter_size);
 
-    SQLHDESC implementation = SQL_NULL_HDESC;
-    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
-        hstmt, SQL_ATTR_IMP_PARAM_DESC, &implementation, 0, nullptr));
     const auto number = [](SQLLEN value) {
         return reinterpret_cast<SQLPOINTER>(
             static_cast<std::uintptr_t>(value));
     };
     ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
-        implementation, 1, SQL_DESC_LENGTH, number(9), 0));
+        implementation, 1, SQL_DESC_PRECISION, number(9), 0));
     ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
         implementation, 1, SQL_DESC_SCALE, number(3), 0));
     ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(
@@ -2696,6 +2701,67 @@ TEST_F(PreparedStatementIntegrationTest,
     EXPECT_EQ(71, data_type);
     EXPECT_EQ(72u, parameter_size);
     EXPECT_EQ(73, decimal_digits);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       NumericParameterRejectsUnrepresentablePrecision) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
+    SQLINTEGER value = 42;
+    EXPECT_EQ(SQL_ERROR, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_SLONG, SQL_NUMERIC,
+        static_cast<SQLULEN>(std::numeric_limits<SQLSMALLINT>::max()) + 1,
+        0, &value, sizeof(value), nullptr));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY104", reinterpret_cast<char*>(state));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_SLONG, SQL_NUMERIC, 2, 0,
+        &value, sizeof(value), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLINTEGER result = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG,
+        &result, sizeof(result), nullptr));
+    EXPECT_EQ(value, result);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       DecimalParameterUsesIpdPrecisionAndScale) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
+    SQLINTEGER value = 42;
+    EXPECT_EQ(SQL_ERROR, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_SLONG, SQL_DECIMAL,
+        static_cast<SQLULEN>(std::numeric_limits<SQLSMALLINT>::max()) + 1,
+        2, &value, sizeof(value), nullptr));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY104", reinterpret_cast<char*>(state));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_SLONG, SQL_DECIMAL, 5, 2,
+        &value, sizeof(value), nullptr));
+    SQLHDESC implementation = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt, SQL_ATTR_IMP_PARAM_DESC,
+        &implementation, 0, nullptr));
+    SQLSMALLINT precision = -1;
+    SQLSMALLINT scale = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(implementation, 1,
+        SQL_DESC_PRECISION, &precision, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(implementation, 1,
+        SQL_DESC_SCALE, &scale, 0, nullptr));
+    EXPECT_EQ(5, precision);
+    EXPECT_EQ(2, scale);
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLINTEGER result = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG,
+        &result, sizeof(result), nullptr));
+    EXPECT_EQ(value, result);
 }
 
 TEST_F(PreparedStatementIntegrationTest,

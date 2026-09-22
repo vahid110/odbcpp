@@ -2103,6 +2103,13 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   The focused tests run without skipping and all 34 tests pass under
   sanitizer, PostgreSQL Driver Manager, and iODBC. `SQL_C_NUMERIC` and other
   C-to-SQL conversions remain open.
+- Audit batch 307 maps `SQL_NUMERIC` and `SQL_DECIMAL` binding `ColumnSize` to
+  IPD `SQL_DESC_PRECISION`, as required by `SQLBindParameter`, rather than
+  `SQL_DESC_LENGTH`. Direct precision edits now appear in `SQLDescribeParam`.
+  Live PostgreSQL regressions first caught both descriptor mismatches, then
+  verified immediate precision/scale reads, oversized precision `HY104`,
+  successful rebinding after that error, and execution. All 34 tests pass
+  under sanitizer, PostgreSQL Driver Manager, and iODBC.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
