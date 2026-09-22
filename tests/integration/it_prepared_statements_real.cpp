@@ -2831,6 +2831,32 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       DefaultTinyintParameterReadsSingleSignedByte) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::integer", SQL_NTS));
+    SQLSCHAR value = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_DEFAULT, SQL_TINYINT, 3, 0, &value, 0, nullptr));
+    SQLSMALLINT server_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+        &server_type, nullptr, nullptr, nullptr));
+    EXPECT_EQ(SQL_INTEGER, server_type);
+    for (const SQLSCHAR boundary : {
+             static_cast<SQLSCHAR>(0),
+             std::numeric_limits<SQLSCHAR>::min(),
+             std::numeric_limits<SQLSCHAR>::max()}) {
+        value = boundary;
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQLINTEGER result = 999;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG,
+            &result, sizeof(result), nullptr));
+        EXPECT_EQ(boundary, result);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    }
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        NumericParameterRejectsUnrepresentablePrecision) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
         (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));

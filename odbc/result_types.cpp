@@ -4,6 +4,7 @@ namespace rs::odbc {
 
 SQLSMALLINT ResultTypes::default_c_type(SQLSMALLINT sql_type) {
   switch (sql_type) {
+    case SQL_TINYINT: return SQL_C_STINYINT;
     case SQL_SMALLINT: return SQL_C_SSHORT;
     case SQL_INTEGER: return SQL_C_SLONG;
     case SQL_BIGINT: return SQL_C_SBIGINT;

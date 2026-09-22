@@ -4067,8 +4067,10 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
         static_cast<std::uintptr_t>(numeric));
   };
   const auto application_descriptor = descriptor(app_param_descriptor_);
+  const auto bound_c_type = value_type == SQL_C_DEFAULT
+      ? ResultTypes::default_c_type(parameter_type) : value_type;
   application_descriptor->set_field(
-      parameter_number, SQL_DESC_CONCISE_TYPE, number(value_type), 0);
+      parameter_number, SQL_DESC_CONCISE_TYPE, number(bound_c_type), 0);
   application_descriptor->set_field(
       parameter_number, SQL_DESC_OCTET_LENGTH, number(buffer_length), 0);
   application_descriptor->set_field(

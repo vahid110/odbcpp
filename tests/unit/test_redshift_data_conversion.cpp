@@ -782,6 +782,8 @@ TEST_F(RedshiftDataConverterTest, ConvertsPostgresqlByteaText) {
 }
 
 TEST(ResultTypesTest, ProvidesMetadataDrivenDefaults) {
+    EXPECT_EQ(SQL_C_STINYINT,
+              rs::odbc::ResultTypes::default_c_type(SQL_TINYINT));
     EXPECT_EQ(SQL_C_SSHORT, rs::odbc::ResultTypes::default_c_type(SQL_SMALLINT));
     EXPECT_EQ(SQL_C_SLONG, rs::odbc::ResultTypes::default_c_type(SQL_INTEGER));
     EXPECT_EQ(SQL_C_SBIGINT, rs::odbc::ResultTypes::default_c_type(SQL_BIGINT));

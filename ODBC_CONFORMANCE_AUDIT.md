@@ -2183,6 +2183,17 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   and executes both boundary values after the errors. The protocol test
   checks the 16- and 32-bit integer OIDs alongside floating-point OIDs.
   All 34 tests pass under sanitizer and both iODBC configurations.
+- Audit batch 316 resolves `SQL_C_DEFAULT` at bind time from the caller's
+  `ParameterType`, as specified by
+  [`SQLBindParameter`](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlbindparameter-function?view=sql-server-ver17),
+  and maps signed `SQL_TINYINT` to `SQL_C_STINYINT`. A live
+  test first failed for a zero byte; after that mapping alone, AddressSanitizer
+  exposed a four-byte read from the one-byte input buffer when PostgreSQL
+  described the parameter as `SQL_INTEGER`. The corrected binding keeps the
+  one-byte C type through metadata discovery. Tests cover zero, both signed
+  8-bit boundaries, and server type promotion. All 34 tests pass under
+  sanitizer and both iODBC configurations. Direct descriptor-based default C
+  bindings still need a separate metadata-stability audit.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
