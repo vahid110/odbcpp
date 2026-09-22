@@ -310,8 +310,8 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       if (mode == ResponseMode::AuthenticationDuringQuery) {
         append_message('R', "\0\0\0\0", 4);
       } else {
-        constexpr char backend_key[] = "\0\0\0\0\0\0\0\0";
-        append_message('K', backend_key, 8);
+        constexpr char query_backend_key[] = "\0\0\0\0\0\0\0\0";
+        append_message('K', query_backend_key, 8);
       }
       append_message('C', "SELECT 1\0", 9);
       append_message('Z', "I", 1);
@@ -509,7 +509,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
 
 TEST(ConnectionLivenessTest, FailedAuthenticationClosesTransport) {
   using Mode = ScriptedBackendTransport::ResponseMode;
-  for (const auto [mode, expected_error] : {
+  for (const auto& [mode, expected_error] : {
            std::pair{Mode::AuthRejected,
                      rs::util::DbErrorCode::AuthenticationFailed},
            std::pair{Mode::AuthenticationTimeout,
@@ -630,7 +630,7 @@ TEST(ConnectionLivenessTest, OverreportedSslRequestWriteIsProtocolError) {
 
 TEST(ConnectionLivenessTest, InvalidSslNegotiationReadsKeepTheirErrorClass) {
   using Mode = ScriptedTlsTransport::Mode;
-  for (const auto [mode, expected_error] : {
+  for (const auto& [mode, expected_error] : {
            std::pair{Mode::NoProgress, rs::util::DbErrorCode::NetworkError},
            std::pair{Mode::Eof, rs::util::DbErrorCode::NetworkError},
            std::pair{Mode::EofWithAccept, rs::util::DbErrorCode::NetworkError},
@@ -656,7 +656,7 @@ TEST(ConnectionLivenessTest, InvalidSslNegotiationReadsKeepTheirErrorClass) {
 
 TEST(ConnectionLivenessTest, ConnectErrorClassesSurvivePlainAndTlsPaths) {
   using Mode = ScriptedTlsTransport::Mode;
-  for (const auto [mode, expected_error] : {
+  for (const auto& [mode, expected_error] : {
            std::pair{Mode::InvalidConnect,
                      rs::util::DbErrorCode::InvalidParameter},
            std::pair{Mode::TimedOutConnect,

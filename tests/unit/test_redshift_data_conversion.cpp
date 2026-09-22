@@ -2,11 +2,13 @@
 #include "odbc/result_types.h"
 #include "odbc/text_data_converter.h"
 #include "odbc/unicode.h"
+#include "tests/test_time_helpers.h"
 
 #include <array>
 #include <cstddef>
 #include <ctime>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 
 using RedshiftDataConverter = rs::odbc::TextDataConverter;
@@ -423,10 +425,8 @@ TEST_F(RedshiftDataConverterTest, DateToTimestampZeroesTimeFields) {
 }
 
 TEST_F(RedshiftDataConverterTest, TimeToTimestampUsesCurrentLocalDate) {
-    const auto before_time = std::time(nullptr);
-    const auto* before_calendar = std::localtime(&before_time);
-    ASSERT_NE(nullptr, before_calendar);
-    const std::tm before = *before_calendar;
+    const auto before = odbcpp::test::local_calendar(std::time(nullptr));
+    ASSERT_TRUE(before.has_value());
 
     SQL_TIMESTAMP_STRUCT timestamp{};
     SQLLEN length = -1;
@@ -435,16 +435,14 @@ TEST_F(RedshiftDataConverterTest, TimeToTimestampUsesCurrentLocalDate) {
         " 12:34:56 ", SQL_C_TIMESTAMP, &timestamp, 0,
         &length, &issue));
 
-    const auto after_time = std::time(nullptr);
-    const auto* after_calendar = std::localtime(&after_time);
-    ASSERT_NE(nullptr, after_calendar);
-    const std::tm after = *after_calendar;
+    const auto after = odbcpp::test::local_calendar(std::time(nullptr));
+    ASSERT_TRUE(after.has_value());
     const auto matches = [&](const std::tm& calendar) {
         return timestamp.year == calendar.tm_year + 1900 &&
             timestamp.month == calendar.tm_mon + 1 &&
             timestamp.day == calendar.tm_mday;
     };
-    EXPECT_TRUE(matches(before) || matches(after));
+    EXPECT_TRUE(matches(*before) || matches(*after));
     EXPECT_EQ(12, timestamp.hour);
     EXPECT_EQ(34, timestamp.minute);
     EXPECT_EQ(56, timestamp.second);
@@ -792,7 +790,7 @@ TEST(ResultTypesTest, ProvidesMetadataDrivenDefaults) {
     EXPECT_EQ(SQL_C_DATE, rs::odbc::ResultTypes::default_c_type(SQL_TYPE_DATE));
     EXPECT_EQ(SQL_C_BINARY,
               rs::odbc::ResultTypes::default_c_type(SQL_VARBINARY));
-    for (const auto sql_type : {SQL_WCHAR, SQL_WVARCHAR,
+    for (const SQLSMALLINT sql_type : std::initializer_list<SQLSMALLINT>{SQL_WCHAR, SQL_WVARCHAR,
                                 SQL_WLONGVARCHAR}) {
         EXPECT_EQ(SQL_C_WCHAR,
                   rs::odbc::ResultTypes::default_c_type(sql_type));
@@ -804,9 +802,9 @@ TEST(ResultTypesTest, ProvidesMetadataDrivenDefaults) {
         SQL_INTEGER, SQL_C_BINARY));
     EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(
         SQL_VARBINARY, SQL_C_BINARY));
-    for (SQLSMALLINT temporal : {
+    for (SQLSMALLINT temporal : std::initializer_list<SQLSMALLINT>{
              SQL_TYPE_DATE, SQL_TYPE_TIME, SQL_TYPE_TIMESTAMP}) {
-        for (SQLSMALLINT numeric : {
+        for (SQLSMALLINT numeric : std::initializer_list<SQLSMALLINT>{
                  SQL_C_BIT, SQL_C_SSHORT, SQL_C_SLONG, SQL_C_SBIGINT,
                  SQL_C_FLOAT, SQL_C_DOUBLE}) {
             EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(

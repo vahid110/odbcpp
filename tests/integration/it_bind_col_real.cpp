@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_types.h"
 #include "odbc/unicode.h"
+#include "tests/test_time_helpers.h"
 
 #include <algorithm>
 #include <array>
@@ -11,6 +12,7 @@
 #include <clocale>
 #include <ctime>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -880,14 +882,14 @@ TEST_F(BindColIntegrationTest, BitToCharacterGetDataUsesZeroAndOne) {
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
     SQLLEN length = -1;
-    for (SQLUSMALLINT column : {1, 2}) {
+    for (SQLUSMALLINT column : std::initializer_list<SQLUSMALLINT>{1, 2}) {
         char value[2]{};
         ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, column, SQL_C_CHAR,
             value, sizeof(value), &length));
         EXPECT_STREQ(column == 1 ? "1" : "0", value);
         EXPECT_EQ(1, length);
     }
-    for (SQLUSMALLINT column : {3, 4}) {
+    for (SQLUSMALLINT column : std::initializer_list<SQLUSMALLINT>{3, 4}) {
         SQLWCHAR value[2]{};
         ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, column, SQL_C_WCHAR,
             value, sizeof(value), &length));
@@ -978,7 +980,7 @@ TEST_F(BindColIntegrationTest, BitToBinaryGetDataReturnsOneByte) {
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
     SQLLEN length = -1;
-    for (SQLUSMALLINT column : {1, 2}) {
+    for (SQLUSMALLINT column : std::initializer_list<SQLUSMALLINT>{1, 2}) {
         SQLCHAR value = 0xff;
         ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, column, SQL_C_BINARY,
             &value, sizeof(value), &length));
@@ -1039,16 +1041,16 @@ TEST_F(BindColIntegrationTest, BitToNumericGetDataUsesZeroAndOne) {
         (SQLCHAR*)"SELECT true, true, true, true, true", SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
-    SQLSMALLINT small = -1;
+    SQLSMALLINT short_value = -1;
     SQLINTEGER integer = -1;
     SQLBIGINT big = -1;
     SQLREAL real = -1;
     SQLDOUBLE double_value = -1;
     SQLLEN length = -1;
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SSHORT,
-        &small, 0, &length));
-    EXPECT_EQ(1, small);
-    EXPECT_EQ(static_cast<SQLLEN>(sizeof(small)), length);
+        &short_value, 0, &length));
+    EXPECT_EQ(1, short_value);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(short_value)), length);
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 2, SQL_C_SLONG,
         &integer, 0, &length));
     EXPECT_EQ(1, integer);
@@ -1084,7 +1086,7 @@ TEST_F(BindColIntegrationTest, SignedTinyintGetDataChecksRangeAndFraction) {
     EXPECT_EQ(127, value);
 
     SQLCHAR state[6]{};
-    for (SQLUSMALLINT column : {3, 4}) {
+    for (SQLUSMALLINT column : std::initializer_list<SQLUSMALLINT>{3, 4}) {
         value = 44;
         length = 91;
         EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, SQL_C_STINYINT,
@@ -1154,7 +1156,7 @@ TEST_F(BindColIntegrationTest, SignedTinyintRejectsTemporalResults) {
     SQLSCHAR value = 44;
     SQLLEN length = 91;
     SQLCHAR state[6]{};
-    for (SQLUSMALLINT column : {1, 2}) {
+    for (SQLUSMALLINT column : std::initializer_list<SQLUSMALLINT>{1, 2}) {
         EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, SQL_C_STINYINT,
             &value, 0, &length));
         EXPECT_EQ(44, value);
@@ -1186,7 +1188,7 @@ TEST_F(BindColIntegrationTest, UnsignedTinyintGetDataChecksRangeAndFraction) {
     EXPECT_EQ(255, value);
 
     SQLCHAR state[6]{};
-    for (SQLUSMALLINT column : {3, 4}) {
+    for (SQLUSMALLINT column : std::initializer_list<SQLUSMALLINT>{3, 4}) {
         value = 44;
         length = 91;
         EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, SQL_C_UTINYINT,
@@ -1262,7 +1264,7 @@ TEST_F(BindColIntegrationTest, UnsignedTinyintRejectsTemporalResults) {
     SQLCHAR value = 44;
     SQLLEN length = 91;
     SQLCHAR state[6]{};
-    for (SQLUSMALLINT column : {1, 2}) {
+    for (SQLUSMALLINT column : std::initializer_list<SQLUSMALLINT>{1, 2}) {
         EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, SQL_C_UTINYINT,
             &value, 0, &length));
         EXPECT_EQ(44, value);
@@ -1291,7 +1293,7 @@ TEST_F(BindColIntegrationTest, UnsignedShortGetDataChecksRangeAndFraction) {
     EXPECT_EQ(65535, value);
 
     SQLCHAR state[6]{};
-    for (SQLUSMALLINT column : {3, 4}) {
+    for (SQLUSMALLINT column : std::initializer_list<SQLUSMALLINT>{3, 4}) {
         value = 44;
         length = 91;
         EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, SQL_C_USHORT,
@@ -1349,9 +1351,9 @@ TEST_F(BindColIntegrationTest, UnsignedWideTargetsRejectTemporalResults) {
     SQLUBIGINT value = 44;
     SQLLEN length = 91;
     SQLCHAR state[6]{};
-    for (SQLSMALLINT target : {SQL_C_USHORT, SQL_C_ULONG, SQL_C_UBIGINT}) {
+    for (SQLSMALLINT target : std::initializer_list<SQLSMALLINT>{SQL_C_USHORT, SQL_C_ULONG, SQL_C_UBIGINT}) {
         SCOPED_TRACE(target);
-        for (SQLUSMALLINT column : {1, 2}) {
+        for (SQLUSMALLINT column : std::initializer_list<SQLUSMALLINT>{1, 2}) {
             EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, target,
                 &value, 0, &length));
             EXPECT_EQ(44u, value);
@@ -1381,7 +1383,7 @@ TEST_F(BindColIntegrationTest, UnsignedLongGetDataChecksRangeAndFraction) {
     EXPECT_EQ(4294967295u, value);
 
     SQLCHAR state[6]{};
-    for (SQLUSMALLINT column : {3, 4}) {
+    for (SQLUSMALLINT column : std::initializer_list<SQLUSMALLINT>{3, 4}) {
         value = 44;
         length = 91;
         EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, SQL_C_ULONG,
@@ -1456,7 +1458,7 @@ TEST_F(BindColIntegrationTest, UnsignedBigintGetDataChecksExactLimits) {
     EXPECT_EQ(maximum, value);
 
     SQLCHAR state[6]{};
-    for (SQLUSMALLINT column : {4, 5}) {
+    for (SQLUSMALLINT column : std::initializer_list<SQLUSMALLINT>{4, 5}) {
         value = 44;
         length = 91;
         EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, SQL_C_UBIGINT,
@@ -1533,14 +1535,14 @@ TEST_F(BindColIntegrationTest, UnsignedBigintBoundColumnChecksNullAndOverflow) {
 TEST_F(BindColIntegrationTest, BitToNumericBoundColumnsUseZero) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
         (SQLCHAR*)"SELECT false, false, false, false, false", SQL_NTS));
-    SQLSMALLINT small = -1;
+    SQLSMALLINT short_value = -1;
     SQLINTEGER integer = -1;
     SQLBIGINT big = -1;
     SQLREAL real = -1;
     SQLDOUBLE double_value = -1;
     SQLLEN lengths[5]{-1, -1, -1, -1, -1};
     ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_SSHORT,
-        &small, 0, &lengths[0]));
+        &short_value, 0, &lengths[0]));
     ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 2, SQL_C_SLONG,
         &integer, 0, &lengths[1]));
     ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 3, SQL_C_SBIGINT,
@@ -1550,12 +1552,12 @@ TEST_F(BindColIntegrationTest, BitToNumericBoundColumnsUseZero) {
     ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 5, SQL_C_DOUBLE,
         &double_value, 0, &lengths[4]));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
-    EXPECT_EQ(0, small);
+    EXPECT_EQ(0, short_value);
     EXPECT_EQ(0, integer);
     EXPECT_EQ(0, big);
     EXPECT_FLOAT_EQ(0.0f, real);
     EXPECT_DOUBLE_EQ(0.0, double_value);
-    EXPECT_EQ(static_cast<SQLLEN>(sizeof(small)), lengths[0]);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(short_value)), lengths[0]);
     EXPECT_EQ(static_cast<SQLLEN>(sizeof(integer)), lengths[1]);
     EXPECT_EQ(static_cast<SQLLEN>(sizeof(big)), lengths[2]);
     EXPECT_EQ(static_cast<SQLLEN>(sizeof(real)), lengths[3]);
@@ -1568,7 +1570,7 @@ TEST_F(BindColIntegrationTest, BitRejectsTemporalResultTargets) {
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
     SQLCHAR state[6]{};
-    for (SQLSMALLINT target : {
+    for (SQLSMALLINT target : std::initializer_list<SQLSMALLINT>{
              SQL_C_DATE, SQL_C_TYPE_DATE,
              SQL_C_TIME, SQL_C_TYPE_TIME,
              SQL_C_TIMESTAMP, SQL_C_TYPE_TIMESTAMP}) {
@@ -1607,7 +1609,7 @@ TEST_F(BindColIntegrationTest, BinaryRejectsNonCharacterScalarTargets) {
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
     SQLCHAR state[6]{};
-    for (SQLSMALLINT target : {
+    for (SQLSMALLINT target : std::initializer_list<SQLSMALLINT>{
              SQL_C_BIT, SQL_C_SSHORT, SQL_C_SLONG, SQL_C_SBIGINT,
              SQL_C_FLOAT, SQL_C_DOUBLE, SQL_C_TYPE_DATE,
              SQL_C_TYPE_TIME, SQL_C_TYPE_TIMESTAMP}) {
@@ -1646,8 +1648,8 @@ TEST_F(BindColIntegrationTest, NumericRejectsTemporalResultTargets) {
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
     SQLCHAR state[6]{};
-    for (SQLUSMALLINT column : {1, 2, 3}) {
-        for (SQLSMALLINT target : {
+    for (SQLUSMALLINT column : std::initializer_list<SQLUSMALLINT>{1, 2, 3}) {
+        for (SQLSMALLINT target : std::initializer_list<SQLSMALLINT>{
                  SQL_C_TYPE_DATE, SQL_C_TYPE_TIME,
                  SQL_C_TYPE_TIMESTAMP}) {
             SCOPED_TRACE(column);
@@ -1688,8 +1690,8 @@ TEST_F(BindColIntegrationTest, TemporalRejectsNumericResultTargets) {
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
     SQLCHAR state[6]{};
-    for (SQLUSMALLINT column : {1, 2, 3}) {
-        for (SQLSMALLINT target : {
+    for (SQLUSMALLINT column : std::initializer_list<SQLUSMALLINT>{1, 2, 3}) {
+        for (SQLSMALLINT target : std::initializer_list<SQLSMALLINT>{
                  SQL_C_BIT, SQL_C_SSHORT, SQL_C_SLONG, SQL_C_SBIGINT,
                  SQL_C_FLOAT, SQL_C_DOUBLE}) {
             SCOPED_TRACE(column);
@@ -1733,7 +1735,7 @@ TEST_F(BindColIntegrationTest, TemporalCrossConversionsRespectTypeMatrix) {
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
     SQLCHAR state[6]{};
-    for (SQLSMALLINT target : {SQL_C_TIME, SQL_C_TYPE_TIME}) {
+    for (SQLSMALLINT target : std::initializer_list<SQLSMALLINT>{SQL_C_TIME, SQL_C_TYPE_TIME}) {
         SQL_TIME_STRUCT output{42, 42, 42};
         SQLLEN length = 91;
         EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 1, target,
@@ -1744,7 +1746,7 @@ TEST_F(BindColIntegrationTest, TemporalCrossConversionsRespectTypeMatrix) {
             state, nullptr, nullptr, 0, nullptr));
         EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
     }
-    for (SQLSMALLINT target : {SQL_C_DATE, SQL_C_TYPE_DATE}) {
+    for (SQLSMALLINT target : std::initializer_list<SQLSMALLINT>{SQL_C_DATE, SQL_C_TYPE_DATE}) {
         SQL_DATE_STRUCT output{4242, 42, 42};
         SQLLEN length = 92;
         EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 2, target,
@@ -1834,7 +1836,7 @@ TEST_F(BindColIntegrationTest, GetDataRejectsUnimplementedNumericTarget) {
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
     SQLCHAR state[6]{};
-    for (SQLUSMALLINT column : {1, 2}) {
+    for (SQLUSMALLINT column : std::initializer_list<SQLUSMALLINT>{1, 2}) {
         SCOPED_TRACE(column);
         std::array<unsigned char, sizeof(SQL_NUMERIC_STRUCT)> output;
         output.fill(0x5a);
@@ -2662,7 +2664,7 @@ TEST_F(BindColIntegrationTest, FloatingConversionRejectsUnderflowToZero) {
         SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
-    for (const SQLUSMALLINT column : {1, 2}) {
+    for (const SQLUSMALLINT column : std::initializer_list<SQLUSMALLINT>{1, 2}) {
         SQLREAL value = 7.0f;
         SQLLEN length = 8;
         EXPECT_EQ(SQL_ERROR, SQLGetData(
@@ -2674,7 +2676,7 @@ TEST_F(BindColIntegrationTest, FloatingConversionRejectsUnderflowToZero) {
             SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
         EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
     }
-    for (const SQLUSMALLINT column : {3, 4}) {
+    for (const SQLUSMALLINT column : std::initializer_list<SQLUSMALLINT>{3, 4}) {
         SQLDOUBLE value = 7.0;
         SQLLEN length = 8;
         EXPECT_EQ(SQL_ERROR, SQLGetData(
@@ -2960,7 +2962,7 @@ TEST_F(BindColIntegrationTest, TimestampToDateReportsLostTime) {
     EXPECT_EQ(static_cast<SQLLEN>(sizeof(date)), length);
 
     SQLCHAR state[6]{};
-    for (SQLUSMALLINT column : {2, 3}) {
+    for (SQLUSMALLINT column : std::initializer_list<SQLUSMALLINT>{2, 3}) {
         ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
             hstmt, column, SQL_C_DATE, &date, sizeof(date), &length));
         EXPECT_EQ(29, date.day);
@@ -3023,26 +3025,22 @@ TEST_F(BindColIntegrationTest, TimeToTimestampUsesCurrentLocalDate) {
         SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
-    const auto before_time = std::time(nullptr);
-    const auto* before_calendar = std::localtime(&before_time);
-    ASSERT_NE(nullptr, before_calendar);
-    const std::tm before = *before_calendar;
+    const auto before = odbcpp::test::local_calendar(std::time(nullptr));
+    ASSERT_TRUE(before.has_value());
 
     SQL_TIMESTAMP_STRUCT timestamp{};
     SQLLEN length = -1;
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(
         hstmt, 1, SQL_C_TIMESTAMP, &timestamp, sizeof(timestamp), &length));
 
-    const auto after_time = std::time(nullptr);
-    const auto* after_calendar = std::localtime(&after_time);
-    ASSERT_NE(nullptr, after_calendar);
-    const std::tm after = *after_calendar;
+    const auto after = odbcpp::test::local_calendar(std::time(nullptr));
+    ASSERT_TRUE(after.has_value());
     const auto matches = [&](const std::tm& calendar) {
         return timestamp.year == calendar.tm_year + 1900 &&
             timestamp.month == calendar.tm_mon + 1 &&
             timestamp.day == calendar.tm_mday;
     };
-    EXPECT_TRUE(matches(before) || matches(after));
+    EXPECT_TRUE(matches(*before) || matches(*after));
     EXPECT_EQ(12, timestamp.hour);
     EXPECT_EQ(34, timestamp.minute);
     EXPECT_EQ(56, timestamp.second);
@@ -3071,7 +3069,7 @@ TEST_F(BindColIntegrationTest, NumericTextToBitDiagnostics) {
     SQLCHAR bit = 73;
     SQLLEN length = -1;
     SQLCHAR state[6]{};
-    for (SQLUSMALLINT column : {1, 2}) {
+    for (SQLUSMALLINT column : std::initializer_list<SQLUSMALLINT>{1, 2}) {
         ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(
             hstmt, column, SQL_C_BIT, &bit, sizeof(bit), &length));
         EXPECT_EQ(column == 1 ? 0 : 1, bit);

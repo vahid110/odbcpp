@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_types.h"
 #include "odbc/unicode.h"
+#include "tests/test_time_helpers.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -11,9 +12,24 @@
 #include <cstring>
 #include <initializer_list>
 #include <limits>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
+
+namespace {
+
+template <std::size_t N>
+void assign_parameter_text(char (&buffer)[N], std::string_view text) {
+    if (text.size() >= N) {
+        throw std::length_error("Parameter test buffer too small");
+    }
+    std::memcpy(buffer, text.data(), text.size());
+    buffer[text.size()] = '\0';
+}
+
+}  // namespace
 
 class PreparedStatementIntegrationTest : public ::testing::Test {
 protected:
@@ -231,16 +247,16 @@ TEST_F(PreparedStatementIntegrationTest,
     EXPECT_STREQ("9223372036854775807", output);
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
-    SQLSMALLINT small = 123;
+    SQLSMALLINT short_value = 123;
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
-        SQL_C_SSHORT, SQL_CHAR, 2, 0, &small, sizeof(small), nullptr));
+        SQL_C_SSHORT, SQL_CHAR, 2, 0, &short_value, sizeof(short_value), nullptr));
     EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
 
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
-        SQL_C_SSHORT, SQL_CHAR, 3, 0, &small, sizeof(small), nullptr));
+        SQL_C_SSHORT, SQL_CHAR, 3, 0, &short_value, sizeof(short_value), nullptr));
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
@@ -1035,7 +1051,7 @@ TEST_F(PreparedStatementIntegrationTest,
     SQLLEN input_length = SQL_NTS;
     SQLCHAR state[6]{};
     char ascii[] = "abc";
-    for (const auto sql_type : {SQL_CHAR, SQL_VARCHAR, SQL_LONGVARCHAR}) {
+    for (const SQLSMALLINT sql_type : std::initializer_list<SQLSMALLINT>{SQL_CHAR, SQL_VARCHAR, SQL_LONGVARCHAR}) {
         ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1,
             SQL_PARAM_INPUT, SQL_C_CHAR, sql_type, 3, 0,
             ascii, 0, &input_length));
@@ -1101,9 +1117,9 @@ TEST_F(PreparedStatementIntegrationTest,
             state, nullptr, nullptr, 0, nullptr));
         EXPECT_STREQ(expected, reinterpret_cast<char*>(state));
     };
-    for (const auto sql_type : {SQL_WCHAR, SQL_WVARCHAR,
+    for (const SQLSMALLINT sql_type : std::initializer_list<SQLSMALLINT>{SQL_WCHAR, SQL_WVARCHAR,
                                 SQL_WLONGVARCHAR}) {
-        for (const auto c_type : {SQL_C_CHAR, SQL_C_WCHAR}) {
+        for (const SQLSMALLINT c_type : std::initializer_list<SQLSMALLINT>{SQL_C_CHAR, SQL_C_WCHAR}) {
             SQLPOINTER input = c_type == SQL_C_CHAR
                 ? static_cast<SQLPOINTER>(utf8)
                 : static_cast<SQLPOINTER>(wide);
@@ -1136,7 +1152,7 @@ TEST_F(PreparedStatementIntegrationTest,
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
     SQLWCHAR wide[] = {0x00e9, 'x', 0};
     SQLLEN input_length = SQL_NTS;
-    for (const auto sql_type : {SQL_WCHAR, SQL_WVARCHAR,
+    for (const SQLSMALLINT sql_type : std::initializer_list<SQLSMALLINT>{SQL_WCHAR, SQL_WVARCHAR,
                                 SQL_WLONGVARCHAR}) {
         ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
             SQL_C_DEFAULT, sql_type, 2, 0, wide, 0, &input_length));
@@ -1236,7 +1252,7 @@ TEST_F(PreparedStatementIntegrationTest,
     } else {
         wide = {static_cast<SQLWCHAR>(0x1f600), 'x', 0};
     }
-    for (const auto c_type : {SQL_C_CHAR, SQL_C_WCHAR}) {
+    for (const SQLSMALLINT c_type : std::initializer_list<SQLSMALLINT>{SQL_C_CHAR, SQL_C_WCHAR}) {
         SQLPOINTER input = c_type == SQL_C_CHAR
             ? static_cast<SQLPOINTER>(utf8)
             : static_cast<SQLPOINTER>(wide.data());
@@ -1345,7 +1361,7 @@ TEST_F(PreparedStatementIntegrationTest,
        DateStructParameterRejectsUnsupportedSqlTargetsAtBind) {
     SQL_DATE_STRUCT input{2024, 2, 29};
     SQLCHAR state[6]{};
-    for (const SQLSMALLINT sql_type : {SQL_TYPE_TIME, SQL_INTEGER}) {
+    for (const SQLSMALLINT sql_type : std::initializer_list<SQLSMALLINT>{SQL_TYPE_TIME, SQL_INTEGER}) {
         EXPECT_EQ(SQL_ERROR, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
             SQL_C_TYPE_DATE, sql_type, 10, 0,
             &input, sizeof(input), nullptr));
@@ -1437,25 +1453,21 @@ TEST_F(PreparedStatementIntegrationTest,
         SQL_C_TYPE_TIME, SQL_TYPE_TIMESTAMP, 19, 0,
         &input, sizeof(input), nullptr));
 
-    const auto before_time = std::time(nullptr);
-    const auto* before_calendar = std::localtime(&before_time);
-    ASSERT_NE(nullptr, before_calendar);
-    const std::tm before = *before_calendar;
+    const auto before = odbcpp::test::local_calendar(std::time(nullptr));
+    ASSERT_TRUE(before.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     SQL_TIMESTAMP_STRUCT output{};
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIMESTAMP,
         &output, sizeof(output), nullptr));
-    const auto after_time = std::time(nullptr);
-    const auto* after_calendar = std::localtime(&after_time);
-    ASSERT_NE(nullptr, after_calendar);
-    const std::tm after = *after_calendar;
+    const auto after = odbcpp::test::local_calendar(std::time(nullptr));
+    ASSERT_TRUE(after.has_value());
     const auto matches = [&](const std::tm& calendar) {
         return output.year == calendar.tm_year + 1900 &&
             output.month == calendar.tm_mon + 1 &&
             output.day == calendar.tm_mday;
     };
-    EXPECT_TRUE(matches(before) || matches(after));
+    EXPECT_TRUE(matches(*before) || matches(*after));
     EXPECT_EQ(12, output.hour);
     EXPECT_EQ(34, output.minute);
     EXPECT_EQ(56, output.second);
@@ -1851,25 +1863,21 @@ TEST_F(PreparedStatementIntegrationTest,
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
         SQL_C_CHAR, SQL_TYPE_TIMESTAMP, 23, 3,
         input, 0, &indicator));
-    const auto before_time = std::time(nullptr);
-    const auto* before_calendar = std::localtime(&before_time);
-    ASSERT_NE(nullptr, before_calendar);
-    const std::tm before = *before_calendar;
+    const auto before = odbcpp::test::local_calendar(std::time(nullptr));
+    ASSERT_TRUE(before.has_value());
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     SQL_TIMESTAMP_STRUCT output{};
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIMESTAMP,
         &output, sizeof(output), nullptr));
-    const auto after_time = std::time(nullptr);
-    const auto* after_calendar = std::localtime(&after_time);
-    ASSERT_NE(nullptr, after_calendar);
-    const std::tm after = *after_calendar;
+    const auto after = odbcpp::test::local_calendar(std::time(nullptr));
+    ASSERT_TRUE(after.has_value());
     const auto matches = [&](const std::tm& calendar) {
         return output.year == calendar.tm_year + 1900 &&
             output.month == calendar.tm_mon + 1 &&
             output.day == calendar.tm_mday;
     };
-    EXPECT_TRUE(matches(before) || matches(after));
+    EXPECT_TRUE(matches(*before) || matches(*after));
     EXPECT_EQ(12, output.hour);
     EXPECT_EQ(34, output.minute);
     EXPECT_EQ(56, output.second);
@@ -2029,7 +2037,7 @@ TEST_F(PreparedStatementIntegrationTest,
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
     SQLLEN indicator = SQL_NTS;
     SQLCHAR state[6]{};
-    for (const auto sql_type : {SQL_TYPE_DATE, SQL_TYPE_TIME,
+    for (const SQLSMALLINT sql_type : std::initializer_list<SQLSMALLINT>{SQL_TYPE_DATE, SQL_TYPE_TIME,
                                 SQL_TYPE_TIMESTAMP}) {
         char input[] = "2024-02-29T12:34:56";
         ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
@@ -2061,8 +2069,8 @@ TEST_F(PreparedStatementIntegrationTest,
        TemporalParameterRejectsUnsupportedFractionalPrecision) {
     SQL_TIMESTAMP_STRUCT input{2024, 2, 29, 12, 34, 56, 0};
     SQLCHAR state[6]{};
-    for (const SQLSMALLINT sql_type : {SQL_TYPE_TIME, SQL_TYPE_TIMESTAMP}) {
-        for (const SQLSMALLINT precision : {SQLSMALLINT{-1}, SQLSMALLINT{7}}) {
+    for (const SQLSMALLINT sql_type : std::initializer_list<SQLSMALLINT>{SQL_TYPE_TIME, SQL_TYPE_TIMESTAMP}) {
+        for (const SQLSMALLINT precision : std::initializer_list<SQLSMALLINT>{SQLSMALLINT{-1}, SQLSMALLINT{7}}) {
             EXPECT_EQ(SQL_ERROR, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
                 SQL_C_TYPE_TIMESTAMP, sql_type, 26, precision,
                 &input, sizeof(input), nullptr));
@@ -2086,7 +2094,7 @@ TEST_F(PreparedStatementIntegrationTest,
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
         SQL_C_TYPE_TIME, SQL_TYPE_TIME, 8, 0,
         &time, sizeof(time), nullptr));
-    for (const SQLSMALLINT sql_type : {SQL_TYPE_DATE, SQL_INTEGER}) {
+    for (const SQLSMALLINT sql_type : std::initializer_list<SQLSMALLINT>{SQL_TYPE_DATE, SQL_INTEGER}) {
         EXPECT_EQ(SQL_ERROR, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
             SQL_C_TYPE_TIME, sql_type, 10, 0,
             &time, sizeof(time), nullptr));
@@ -2101,7 +2109,7 @@ TEST_F(PreparedStatementIntegrationTest,
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
         SQL_C_TYPE_TIMESTAMP, SQL_TYPE_TIMESTAMP, 19, 0,
         &timestamp, sizeof(timestamp), nullptr));
-    for (const SQLSMALLINT sql_type : {SQL_INTEGER, SQL_VARBINARY}) {
+    for (const SQLSMALLINT sql_type : std::initializer_list<SQLSMALLINT>{SQL_INTEGER, SQL_VARBINARY}) {
         EXPECT_EQ(SQL_ERROR, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
             SQL_C_TYPE_TIMESTAMP, sql_type, 19, 0,
             &timestamp, sizeof(timestamp), nullptr));
@@ -3235,13 +3243,13 @@ TEST_F(PreparedStatementIntegrationTest,
         state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
 
-    std::strcpy(value, "-00100.0");
+    assign_parameter_text(value, "-00100.0");
     ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
 
-    std::strcpy(value, "  +00099.0  ");
+    assign_parameter_text(value, "  +00099.0  ");
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     char output[32]{};
@@ -3250,7 +3258,7 @@ TEST_F(PreparedStatementIntegrationTest,
     EXPECT_STREQ("99.0", output);
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
-    std::strcpy(value, "0.00");
+    assign_parameter_text(value, "0.00");
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
         SQL_C_CHAR, SQL_NUMERIC, 2, 2, value, sizeof(value), &value_length));
     ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
@@ -3258,7 +3266,7 @@ TEST_F(PreparedStatementIntegrationTest,
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
-    std::strcpy(value, "1.00");
+    assign_parameter_text(value, "1.00");
     ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
@@ -3310,25 +3318,25 @@ TEST_F(PreparedStatementIntegrationTest,
         state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
 
-    std::strcpy(value, "1E+2");
+    assign_parameter_text(value, "1E+2");
     ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
 
-    std::strcpy(value, "1e99999999999999999999999999999");
+    assign_parameter_text(value, "1e99999999999999999999999999999");
     ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
 
-    std::strcpy(value, "1e");
+    assign_parameter_text(value, "1e");
     ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
 
-    std::strcpy(value, "9.9e1");
+    assign_parameter_text(value, "9.9e1");
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     char output[32]{};
@@ -3337,13 +3345,13 @@ TEST_F(PreparedStatementIntegrationTest,
     EXPECT_STREQ("99", output);
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
-    std::strcpy(value, "1000e-1");
+    assign_parameter_text(value, "1000e-1");
     ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
 
-    std::strcpy(value, "1e-1");
+    assign_parameter_text(value, "1e-1");
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     std::memset(output, 0, sizeof(output));
@@ -3385,20 +3393,20 @@ TEST_F(PreparedStatementIntegrationTest,
     };
     expect_loss();
 
-    std::strcpy(value, "1.2300");
+    assign_parameter_text(value, "1.2300");
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
-    std::strcpy(value, "1e-3");
+    assign_parameter_text(value, "1e-3");
     expect_loss();
-    std::strcpy(value, "1.234e-1");
+    assign_parameter_text(value, "1.234e-1");
     expect_loss();
-    std::strcpy(value, "1.234e1");
+    assign_parameter_text(value, "1.234e1");
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
-    std::strcpy(value, "0.000");
+    assign_parameter_text(value, "0.000");
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
@@ -3434,15 +3442,15 @@ TEST_F(PreparedStatementIntegrationTest,
         EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
     };
     expect_invalid();
-    std::strcpy(value, "Infinity");
+    assign_parameter_text(value, "Infinity");
     expect_invalid();
-    std::strcpy(value, "-Infinity");
+    assign_parameter_text(value, "-Infinity");
     expect_invalid();
-    std::strcpy(value, "1e");
+    assign_parameter_text(value, "1e");
     expect_invalid();
 
     for (const char* valid : {"1.23", "1.", ".5", "1e2"}) {
-        std::strcpy(value, valid);
+        assign_parameter_text(value, valid);
         ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt)) << valid;
         ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
         ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
@@ -3460,7 +3468,7 @@ TEST_F(PreparedStatementIntegrationTest,
         state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
 
-    std::strcpy(value, "NaN");
+    assign_parameter_text(value, "NaN");
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
         SQL_C_CHAR, SQL_NUMERIC, 0, 0, value, sizeof(value), &value_length));
     ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
