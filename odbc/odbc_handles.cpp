@@ -3446,6 +3446,9 @@ SQLRETURN ODBCStatement::execute() {
           return complete_parameter_set(SQL_ERROR);
         }
         value = *converted;
+      } else if (value_type == SQL_C_STINYINT) {
+        value = std::to_string(
+            load_application_value<SQLSCHAR>(application.data_ptr));
       } else if (value_type == SQL_C_SSHORT) {
         value = std::to_string(
             load_application_value<SQLSMALLINT>(application.data_ptr));
@@ -3632,8 +3635,9 @@ SQLRETURN ODBCStatement::execute() {
           value_type == SQL_C_CHAR || value_type == SQL_C_WCHAR;
       const bool floating_input =
           value_type == SQL_C_FLOAT || value_type == SQL_C_DOUBLE;
-      const bool signed_integer_input = value_type == SQL_C_SSHORT ||
-          value_type == SQL_C_SLONG || value_type == SQL_C_SBIGINT;
+      const bool signed_integer_input = value_type == SQL_C_STINYINT ||
+          value_type == SQL_C_SSHORT || value_type == SQL_C_SLONG ||
+          value_type == SQL_C_SBIGINT;
       const bool unsigned_integer_input = unsigned_number.has_value();
       const bool numeric_input = signed_integer_input ||
           unsigned_integer_input || floating_input;

@@ -2096,6 +2096,13 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   the four widths. The focused tests run without skipping and all 34 tests
   pass under sanitizer, PostgreSQL Driver Manager, and iODBC. Signed tinyint,
   `SQL_C_NUMERIC`, and other C-to-SQL conversions remain open.
+- Audit batch 306 adds `SQL_C_STINYINT` input parameters. A live PostgreSQL
+  regression first failed at bind time; it now covers the signed 8-bit
+  minimum and maximum bound to `SQL_SMALLINT`, valid `SQL_BIT` input, negative
+  and above-one `SQL_BIT` inputs returning `22003`, and recovery after errors.
+  The focused tests run without skipping and all 34 tests pass under
+  sanitizer, PostgreSQL Driver Manager, and iODBC. `SQL_C_NUMERIC` and other
+  C-to-SQL conversions remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

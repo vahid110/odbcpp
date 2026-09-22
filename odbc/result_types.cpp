@@ -58,7 +58,8 @@ bool ResultTypes::is_valid_c_type(SQLSMALLINT c_type) {
 
 bool ResultTypes::is_supported_parameter_c_type(SQLSMALLINT c_type) {
   return c_type == SQL_C_DEFAULT || c_type == SQL_C_CHAR ||
-      c_type == SQL_C_WCHAR || c_type == SQL_C_SSHORT ||
+      c_type == SQL_C_WCHAR || c_type == SQL_C_STINYINT ||
+      c_type == SQL_C_SSHORT ||
       c_type == SQL_C_SLONG || c_type == SQL_C_SBIGINT ||
       c_type == SQL_C_UTINYINT || c_type == SQL_C_USHORT ||
       c_type == SQL_C_ULONG || c_type == SQL_C_UBIGINT ||
