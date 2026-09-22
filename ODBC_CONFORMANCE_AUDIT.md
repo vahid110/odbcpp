@@ -2267,8 +2267,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   PostgreSQL's `NaN` or `Infinity` numeric extensions through as ODBC exact
   numeric values. A live test covers positive and negative infinity, NaN,
   both floating C widths, absent declared precision, and finite-value
-  recovery after error. Finite floating-point precision and scale behavior
-  remains to be audited separately.
+  recovery after error. Finite floating-point behavior is covered separately
+  in the following batch.
+- Audit batch 327 enforces the declared whole-digit limit for finite
+  `SQL_C_FLOAT` and `SQL_C_DOUBLE` values bound to `SQL_DECIMAL` or
+  `SQL_NUMERIC`. A live PostgreSQL regression first reproduced acceptance of
+  100 into `NUMERIC(3,1)` after `SQLDescribeParam`; it now receives `22003`.
+  The test covers positive and negative overflow, exponent notation, both C
+  floating widths, valid boundary values and recovery, and unspecified
+  precision. Fractional rounding and scale remain a separate audit.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

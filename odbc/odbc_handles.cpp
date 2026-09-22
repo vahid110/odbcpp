@@ -3787,6 +3787,17 @@ SQLRETURN ODBCStatement::execute() {
                     "Nonfinite floating parameter cannot bind to SQL numeric");
           return complete_parameter_set(SQL_ERROR);
         }
+        if (declared_sql_precision > 0 && declared_sql_scale >= 0) {
+          const auto digits = decimal_digits(value);
+          const auto available_digits = std::max<int>(
+              0, declared_sql_precision - declared_sql_scale);
+          if (!digits ||
+              digits->whole > static_cast<std::size_t>(available_digits)) {
+            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Floating parameter exceeds SQL numeric precision");
+            return complete_parameter_set(SQL_ERROR);
+          }
+        }
       }
       using rs::core::database::QueryParameterType;
       const bool integer_target =

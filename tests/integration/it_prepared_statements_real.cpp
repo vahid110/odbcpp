@@ -3538,6 +3538,59 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       FloatingToExactNumericChecksWholeDigitPrecision) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
+    SQLDOUBLE double_value = 100.0;
+    SQLLEN indicator = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_DOUBLE, SQL_NUMERIC, 3, 1, &double_value,
+        sizeof(double_value), &indicator));
+    SQLSMALLINT server_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+        &server_type, nullptr, nullptr, nullptr));
+    EXPECT_EQ(SQL_NUMERIC, server_type);
+
+    const auto expect_out_of_range = [&] {
+        ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    };
+    expect_out_of_range();
+    double_value = -100.0;
+    expect_out_of_range();
+    double_value = 1e30;
+    expect_out_of_range();
+    double_value = 99.0;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLREAL float_value = 100.0f;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_FLOAT, SQL_DECIMAL, 3, 1, &float_value,
+        sizeof(float_value), &indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+        &server_type, nullptr, nullptr, nullptr));
+    expect_out_of_range();
+    float_value = 99.0f;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    double_value = 100.0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_DOUBLE, SQL_NUMERIC, 0, 0, &double_value,
+        sizeof(double_value), &indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+        &server_type, nullptr, nullptr, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        ReplacesPreparedStatementsAndProtectsOpenCursors) {
     SQLCHAR state[6]{};
     const auto expect_state = [&](SQLRETURN result, const char* expected) {
