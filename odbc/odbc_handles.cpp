@@ -56,9 +56,9 @@ std::string format_floating_parameter(T value) {
   return {text, end};
 }
 
-// Only classify plain decimal literals here. Leave other numeric spellings and
-// malformed input to the server's existing conversion diagnostics.
-std::optional<std::size_t> plain_decimal_whole_digits(std::string_view text) {
+// Count whole digits without converting through floating point. Leave
+// malformed input and non-decimal spellings to the server's diagnostics.
+std::optional<std::size_t> decimal_whole_digits(std::string_view text) {
   while (!text.empty() &&
          std::isspace(static_cast<unsigned char>(text.front()))) {
     text.remove_prefix(1);
@@ -71,23 +71,59 @@ std::optional<std::size_t> plain_decimal_whole_digits(std::string_view text) {
     text.remove_prefix(1);
   }
   bool any_digit = false;
-  bool seen_nonzero_whole_digit = false;
-  std::size_t whole_digits = 0;
-  while (!text.empty() && text.front() >= '0' && text.front() <= '9') {
+  bool seen_nonzero_digit = false;
+  std::size_t leading_zeroes = 0;
+  std::size_t digits_before_point = 0;
+  const auto record_digit = [&](char digit) {
     any_digit = true;
-    if (text.front() != '0') seen_nonzero_whole_digit = true;
-    if (seen_nonzero_whole_digit) ++whole_digits;
+    if (!seen_nonzero_digit) {
+      if (digit == '0') ++leading_zeroes;
+      else seen_nonzero_digit = true;
+    }
+  };
+  while (!text.empty() && text.front() >= '0' && text.front() <= '9') {
+    record_digit(text.front());
+    ++digits_before_point;
     text.remove_prefix(1);
   }
   if (!text.empty() && text.front() == '.') {
     text.remove_prefix(1);
     while (!text.empty() && text.front() >= '0' && text.front() <= '9') {
-      any_digit = true;
+      record_digit(text.front());
       text.remove_prefix(1);
     }
   }
-  if (!any_digit || !text.empty()) return std::nullopt;
-  return whole_digits;
+  if (!any_digit) return std::nullopt;
+
+  std::size_t exponent = 0;
+  bool negative_exponent = false;
+  if (!text.empty() && (text.front() == 'e' || text.front() == 'E')) {
+    text.remove_prefix(1);
+    if (!text.empty() && (text.front() == '+' || text.front() == '-')) {
+      negative_exponent = text.front() == '-';
+      text.remove_prefix(1);
+    }
+    if (text.empty() || text.front() < '0' || text.front() > '9') {
+      return std::nullopt;
+    }
+    constexpr auto maximum = std::numeric_limits<std::size_t>::max();
+    while (!text.empty() && text.front() >= '0' && text.front() <= '9') {
+      const auto digit = static_cast<std::size_t>(text.front() - '0');
+      exponent = exponent > (maximum - digit) / 10
+          ? maximum : exponent * 10 + digit;
+      text.remove_prefix(1);
+    }
+  }
+  if (!text.empty()) return std::nullopt;
+  if (!seen_nonzero_digit) return 0;
+  const auto shifted_digits = negative_exponent
+      ? (exponent >= digits_before_point ? 0 : digits_before_point - exponent)
+      : (exponent > std::numeric_limits<std::size_t>::max() -
+                        digits_before_point
+             ? std::numeric_limits<std::size_t>::max()
+             : digits_before_point + exponent);
+  return shifted_digits > leading_zeroes
+      ? shifted_digits - leading_zeroes : 0;
 }
 
 std::optional<std::string> binary_result_as_hex(std::string_view value) {
@@ -3826,7 +3862,7 @@ SQLRETURN ODBCStatement::execute() {
           (declared_sql_type == SQL_DECIMAL ||
            declared_sql_type == SQL_NUMERIC) &&
           declared_sql_precision > 0 && declared_sql_scale >= 0) {
-        const auto whole_digits = plain_decimal_whole_digits(value);
+        const auto whole_digits = decimal_whole_digits(value);
         const auto available_digits = std::max<int>(
             0, declared_sql_precision - declared_sql_scale);
         if (whole_digits &&

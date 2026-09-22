@@ -3289,6 +3289,77 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       ScientificCharacterToNumericHonorsDeclaredWholeDigits) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
+    char value[64] = "1e2";
+    SQLLEN value_length = SQL_NTS;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_CHAR, SQL_NUMERIC, 3, 1, value, sizeof(value), &value_length));
+    SQLSMALLINT server_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+        &server_type, nullptr, nullptr, nullptr));
+    ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+
+    std::strcpy(value, "1E+2");
+    ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+
+    std::strcpy(value, "1e99999999999999999999999999999");
+    ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+
+    std::strcpy(value, "1e");
+    ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
+
+    std::strcpy(value, "9.9e1");
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    char output[32]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        output, sizeof(output), nullptr));
+    EXPECT_STREQ("99", output);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    std::strcpy(value, "1000e-1");
+    ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+
+    std::strcpy(value, "1e-1");
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    std::memset(output, 0, sizeof(output));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        output, sizeof(output), nullptr));
+    EXPECT_STREQ("0.1", output);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLWCHAR wide_value[]{'1', 'e', '2', 0};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_WCHAR, SQL_NUMERIC, 3, 1, wide_value, sizeof(wide_value),
+        &value_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+        &server_type, nullptr, nullptr, nullptr));
+    ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        ReplacesPreparedStatementsAndProtectsOpenCursors) {
     SQLCHAR state[6]{};
     const auto expect_state = [&](SQLRETURN result, const char* expected) {

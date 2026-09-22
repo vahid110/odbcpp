@@ -2239,9 +2239,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   an optional sign, and leading zeroes do not inflate the significant whole
   digit count. Live PostgreSQL tests cover overflow after `SQLDescribeParam`,
   valid boundary values and recovery, and zero when scale equals precision.
-  Exponent notation, fractional precision loss, and malformed numeric text
-  remain for a separate character-to-exact-numeric conversion audit; those
-  spellings continue through the existing server conversion path.
+  Fractional precision loss and additional malformed numeric text remain for
+  a separate character-to-exact-numeric conversion audit.
+- Audit batch 323 extends the character exact-numeric whole-digit check to
+  scientific notation without floating-point conversion. Live PostgreSQL
+  tests cover positive and negative exponents, an explicit exponent sign,
+  a saturating huge exponent, valid boundary values and recovery, malformed
+  `1e` retaining `22018`, and `SQL_C_WCHAR` parity. The check follows the
+  ODBC [numeric-literal conversion rules](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/rules-for-conversions).
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
