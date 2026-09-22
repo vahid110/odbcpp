@@ -1067,6 +1067,108 @@ TEST_F(BindColIntegrationTest, BitToNumericGetDataUsesZeroAndOne) {
     EXPECT_EQ(static_cast<SQLLEN>(sizeof(double_value)), length);
 }
 
+TEST_F(BindColIntegrationTest, SignedTinyintGetDataChecksRangeAndFraction) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT -128::numeric, 127::numeric, -129::numeric, "
+                  "128::numeric, 12.75::numeric, true, false", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+
+    SQLSCHAR value = 44;
+    SQLLEN length = 91;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_STINYINT,
+        &value, 0, &length));
+    EXPECT_EQ(-128, value);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 2, SQL_C_STINYINT,
+        &value, 0, &length));
+    EXPECT_EQ(127, value);
+
+    SQLCHAR state[6]{};
+    for (SQLUSMALLINT column : {3, 4}) {
+        value = 44;
+        length = 91;
+        EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, SQL_C_STINYINT,
+            &value, 0, &length));
+        EXPECT_EQ(44, value);
+        EXPECT_EQ(91, length);
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    }
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(hstmt, 5, SQL_C_STINYINT,
+        &value, 0, &length));
+    EXPECT_EQ(12, value);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("01S07", reinterpret_cast<char*>(state));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 6, SQL_C_STINYINT,
+        &value, 0, &length));
+    EXPECT_EQ(1, value);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 7, SQL_C_STINYINT,
+        &value, 0, &length));
+    EXPECT_EQ(0, value);
+}
+
+TEST_F(BindColIntegrationTest, SignedTinyintBoundColumnHandlesNull) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT 127::numeric UNION ALL SELECT NULL::numeric "
+                  "ORDER BY 1 NULLS LAST", SQL_NTS));
+    SQLSCHAR value = 44;
+    SQLLEN length = 91;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_STINYINT,
+        &value, 0, &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(127, value);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(127, value);
+    EXPECT_EQ(SQL_NULL_DATA, length);
+}
+
+TEST_F(BindColIntegrationTest, SignedTinyintBoundColumnRejectsOverflow) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT 127::numeric UNION ALL SELECT 128::numeric "
+                  "ORDER BY 1", SQL_NTS));
+    SQLSCHAR value = 44;
+    SQLLEN length = 91;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_STINYINT,
+        &value, 0, &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(127, value);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+    length = 91;
+    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
+    EXPECT_EQ(127, value);
+    EXPECT_EQ(91, length);
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+}
+
+TEST_F(BindColIntegrationTest, SignedTinyintRejectsTemporalResults) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT DATE '2024-01-01', NULL::date", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLSCHAR value = 44;
+    SQLLEN length = 91;
+    SQLCHAR state[6]{};
+    for (SQLUSMALLINT column : {1, 2}) {
+        EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, SQL_C_STINYINT,
+            &value, 0, &length));
+        EXPECT_EQ(44, value);
+        EXPECT_EQ(91, length);
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+    }
+    SQL_DATE_STRUCT date{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_DATE,
+        &date, sizeof(date), &length));
+    EXPECT_EQ(2024, date.year);
+}
+
 TEST_F(BindColIntegrationTest, BitToNumericBoundColumnsUseZero) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
         (SQLCHAR*)"SELECT false, false, false, false, false", SQL_NTS));
@@ -1365,28 +1467,25 @@ TEST_F(BindColIntegrationTest, NullValueStillChecksResultConversion) {
     EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
 }
 
-TEST_F(BindColIntegrationTest, GetDataRejectsUnimplementedCTargets) {
+TEST_F(BindColIntegrationTest, GetDataRejectsUnimplementedNumericTarget) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
         (SQLCHAR*)"SELECT 12.34::numeric, NULL::numeric", SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
 
     SQLCHAR state[6]{};
     for (SQLUSMALLINT column : {1, 2}) {
-        for (SQLSMALLINT target : {SQL_C_NUMERIC, SQL_C_STINYINT}) {
-            SCOPED_TRACE(column);
-            SCOPED_TRACE(target);
-            std::array<unsigned char, sizeof(SQL_NUMERIC_STRUCT)> output;
-            output.fill(0x5a);
-            SQLLEN length = 91;
-            EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, target,
-                output.data(), static_cast<SQLLEN>(output.size()), &length));
-            EXPECT_EQ(91, length);
-            EXPECT_TRUE(std::all_of(output.begin(), output.end(),
-                [](unsigned char byte) { return byte == 0x5a; }));
-            ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
-                state, nullptr, nullptr, 0, nullptr));
-            EXPECT_STREQ("HYC00", reinterpret_cast<char*>(state));
-        }
+        SCOPED_TRACE(column);
+        std::array<unsigned char, sizeof(SQL_NUMERIC_STRUCT)> output;
+        output.fill(0x5a);
+        SQLLEN length = 91;
+        EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, column, SQL_C_NUMERIC,
+            output.data(), static_cast<SQLLEN>(output.size()), &length));
+        EXPECT_EQ(91, length);
+        EXPECT_TRUE(std::all_of(output.begin(), output.end(),
+            [](unsigned char byte) { return byte == 0x5a; }));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("HYC00", reinterpret_cast<char*>(state));
     }
     char supported[16]{};
     EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,

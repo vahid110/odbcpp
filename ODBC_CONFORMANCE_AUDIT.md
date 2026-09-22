@@ -1984,7 +1984,8 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   non-`NULL` and `NULL` numeric results, unchanged output/indicators, and a
   subsequent supported character retrieval. The focused test runs without
   skipping and all 34 tests pass under sanitizer, PostgreSQL Driver Manager,
-  and iODBC.
+  and iODBC. Batch 308 later adds `SQL_C_STINYINT` result support;
+  `SQL_C_NUMERIC` remains `HYC00`.
 - Audit batch 293 accepts PostgreSQL's canonical `NaN`, `Infinity`, and
   `-Infinity` representations when converting to C floating-point targets.
   A real PostgreSQL test first reproduced `22003` for `NaN` to `SQL_C_DOUBLE`;
@@ -2110,6 +2111,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   verified immediate precision/scale reads, oversized precision `HY104`,
   successful rebinding after that error, and execution. All 34 tests pass
   under sanitizer, PostgreSQL Driver Manager, and iODBC.
+- Audit batch 308 adds `SQL_C_STINYINT` result conversion for `SQLGetData`
+  and bound columns. Live PostgreSQL regressions first failed with `HYC00`;
+  they now cover the signed 8-bit limits, `22003` overflow without mutating
+  output, `01S07` fractional truncation, Boolean zero/one, `NULL` indicators,
+  bound-column overflow, and `07006` for temporal values even when `NULL`.
+  Four focused tests run without skipping, and all 34 tests pass under
+  sanitizer, PostgreSQL Driver Manager, and iODBC. `SQL_C_NUMERIC` output and
+  unsigned integer result targets remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

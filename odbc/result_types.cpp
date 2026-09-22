@@ -23,7 +23,8 @@ SQLSMALLINT ResultTypes::default_c_type(SQLSMALLINT sql_type) {
 
 bool ResultTypes::is_supported_c_type(SQLSMALLINT c_type) {
   return c_type == SQL_C_DEFAULT || c_type == SQL_C_CHAR ||
-      c_type == SQL_C_WCHAR || c_type == SQL_C_SSHORT ||
+      c_type == SQL_C_WCHAR || c_type == SQL_C_STINYINT ||
+      c_type == SQL_C_SSHORT ||
       c_type == SQL_C_SLONG || c_type == SQL_C_SBIGINT ||
       c_type == SQL_C_FLOAT || c_type == SQL_C_DOUBLE ||
       c_type == SQL_C_BIT || c_type == SQL_C_DATE ||
@@ -35,7 +36,7 @@ bool ResultTypes::is_supported_c_type(SQLSMALLINT c_type) {
 
 bool ResultTypes::is_valid_c_type(SQLSMALLINT c_type) {
   if (is_supported_c_type(c_type) || c_type == SQL_C_NUMERIC ||
-      c_type == SQL_C_STINYINT || c_type == SQL_C_UTINYINT ||
+      c_type == SQL_C_UTINYINT ||
       c_type == SQL_C_USHORT || c_type == SQL_C_ULONG ||
       c_type == SQL_C_UBIGINT ||
       c_type == SQL_C_INTERVAL_YEAR || c_type == SQL_C_INTERVAL_MONTH ||
@@ -119,7 +120,8 @@ bool ResultTypes::is_conversion_supported(SQLSMALLINT sql_type,
       sql_type == SQL_DATE || sql_type == SQL_TIME ||
       sql_type == SQL_TIMESTAMP;
   if (temporal_type &&
-      (c_type == SQL_C_BIT || c_type == SQL_C_SSHORT ||
+      (c_type == SQL_C_BIT || c_type == SQL_C_STINYINT ||
+       c_type == SQL_C_SSHORT ||
        c_type == SQL_C_SLONG || c_type == SQL_C_SBIGINT ||
        c_type == SQL_C_FLOAT || c_type == SQL_C_DOUBLE)) {
     return false;
@@ -133,6 +135,7 @@ bool ResultTypes::is_conversion_supported(SQLSMALLINT sql_type,
   switch (c_type) {
     case SQL_C_CHAR:
     case SQL_C_WCHAR:
+    case SQL_C_STINYINT:
     case SQL_C_SSHORT:
     case SQL_C_SLONG:
     case SQL_C_SBIGINT:

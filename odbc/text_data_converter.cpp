@@ -588,6 +588,8 @@ SQLRETURN TextDataConverter::convert_data(const std::string& value,
     case SQL_C_WCHAR:
       return convert_wide_string(
           value, buffer, buffer_length, indicator, issue);
+    case SQL_C_STINYINT:
+      return convert_integral<SQLSCHAR>(value, buffer, indicator, issue);
     case SQL_C_SSHORT:
       return convert_integral<SQLSMALLINT>(value, buffer, indicator, issue);
     case SQL_C_SLONG:

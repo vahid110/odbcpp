@@ -137,6 +137,7 @@ bool bit_uses_decimal_representation(SQLSMALLINT target_type) {
   switch (target_type) {
     case SQL_C_CHAR:
     case SQL_C_WCHAR:
+    case SQL_C_STINYINT:
     case SQL_C_SSHORT:
     case SQL_C_SLONG:
     case SQL_C_SBIGINT:
