@@ -2069,6 +2069,16 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   both two-byte and four-byte `SQLWCHAR` paths. It runs without skipping and
   all 34 tests pass under sanitizer, PostgreSQL Driver Manager, and iODBC.
   Other C-to-SQL conversions remain open.
+- Audit batch 303 adds `SQL_C_UBIGINT` input parameters under the
+  [ODBC numeric conversion table](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/c-to-sql-numeric).
+  A PostgreSQL regression first failed at bind time with unsupported-feature
+  diagnostics. The driver now preserves all 64 unsigned bits for character
+  targets and checks the signed limits of `SQL_SMALLINT`, `SQL_INTEGER`, and
+  `SQL_BIGINT`, the `SQL_BIT` domain, and declared character length before
+  execution. Four focused tests cover exact bounds, overflow `22003`,
+  truncation `22001`, and recovery after errors. They run without skipping;
+  all 34 tests pass under sanitizer, PostgreSQL Driver Manager, and iODBC.
+  Other unsigned C types and C-to-SQL conversions remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

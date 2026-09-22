@@ -582,6 +582,129 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       UnsignedBigIntInputValidatesIntegerRange) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::bigint", SQL_NTS));
+    SQLUBIGINT value = static_cast<SQLUBIGINT>(
+        std::numeric_limits<SQLBIGINT>::max());
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_UBIGINT, SQL_BIGINT, 0, 0, &value, sizeof(value), nullptr));
+    const auto expect_value = [&](SQLBIGINT expected) {
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQLBIGINT result = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SBIGINT,
+            &result, sizeof(result), nullptr));
+        EXPECT_EQ(expected, result);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    expect_value(std::numeric_limits<SQLBIGINT>::max());
+    value = static_cast<SQLUBIGINT>(
+        std::numeric_limits<SQLBIGINT>::max()) + 1;
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    value = 0;
+    expect_value(0);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       UnsignedBigIntInputValidatesNarrowIntegerRanges) {
+    struct Target {
+        const char* sql;
+        SQLSMALLINT type;
+        SQLUBIGINT maximum;
+    };
+    for (const Target target : {
+             Target{"SELECT ?::smallint", SQL_SMALLINT,
+                    static_cast<SQLUBIGINT>(
+                        std::numeric_limits<SQLSMALLINT>::max())},
+             Target{"SELECT ?::integer", SQL_INTEGER,
+                    static_cast<SQLUBIGINT>(
+                        std::numeric_limits<SQLINTEGER>::max())}}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+            (SQLCHAR*)target.sql, SQL_NTS));
+        SQLUBIGINT value = target.maximum;
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_UBIGINT, target.type, 0, 0, &value, sizeof(value), nullptr));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQLBIGINT result = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SBIGINT,
+            &result, sizeof(result), nullptr));
+        EXPECT_EQ(target.maximum, static_cast<SQLUBIGINT>(result));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+        value = target.maximum + 1;
+        EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+        ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, hstmt));
+        hstmt = nullptr;
+        ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt));
+    }
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       UnsignedBigIntInputValidatesSqlBit) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::boolean", SQL_NTS));
+    SQLUBIGINT value = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_UBIGINT, SQL_BIT, 0, 0, &value, sizeof(value), nullptr));
+    for (SQLUBIGINT valid : {SQLUBIGINT{0}, SQLUBIGINT{1}}) {
+        value = valid;
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQLCHAR result = 9;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BIT,
+            &result, sizeof(result), nullptr));
+        EXPECT_EQ(valid, result);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    }
+    for (SQLUBIGINT invalid : {SQLUBIGINT{2},
+                               std::numeric_limits<SQLUBIGINT>::max()}) {
+        value = invalid;
+        EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    }
+    value = 1;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       UnsignedBigIntInputHonorsCharacterLength) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::text", SQL_NTS));
+    SQLUBIGINT value = std::numeric_limits<SQLUBIGINT>::max();
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_UBIGINT, SQL_VARCHAR, 20, 0, &value, sizeof(value), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLCHAR result[32]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        result, sizeof(result), nullptr));
+    EXPECT_STREQ("18446744073709551615", reinterpret_cast<char*>(result));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_UBIGINT, SQL_VARCHAR, 19, 0, &value, sizeof(value), nullptr));
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        BinaryParameterHonorsDeclaredSqlLength) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
     unsigned char input[]{0x00, 0x01, 0x7f, 0xff};
