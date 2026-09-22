@@ -4,6 +4,7 @@
 #include "odbc/unicode.h"
 #include "tests/test_time_helpers.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <ctime>
