@@ -3775,6 +3775,19 @@ SQLRETURN ODBCStatement::execute() {
       const bool unsigned_integer_input = unsigned_number.has_value();
       const bool numeric_input = signed_integer_input ||
           unsigned_integer_input || floating_input;
+      if (floating_input &&
+          (declared_sql_type == SQL_DECIMAL ||
+           declared_sql_type == SQL_NUMERIC)) {
+        const double number = value_type == SQL_C_FLOAT
+            ? static_cast<double>(load_application_value<SQLREAL>(
+                  application.data_ptr))
+            : load_application_value<SQLDOUBLE>(application.data_ptr);
+        if (!std::isfinite(number)) {
+          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                    "Nonfinite floating parameter cannot bind to SQL numeric");
+          return complete_parameter_set(SQL_ERROR);
+        }
+      }
       using rs::core::database::QueryParameterType;
       const bool integer_target =
           implementation.concise_type == SQL_SMALLINT ||

@@ -3477,6 +3477,67 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       FloatingToExactNumericRejectsNonfiniteValuesAndRecovers) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
+    SQLDOUBLE double_value = std::numeric_limits<SQLDOUBLE>::infinity();
+    SQLLEN indicator = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_DOUBLE, SQL_NUMERIC, 10, 2, &double_value,
+        sizeof(double_value), &indicator));
+    SQLSMALLINT server_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+        &server_type, nullptr, nullptr, nullptr));
+    EXPECT_EQ(SQL_NUMERIC, server_type);
+
+    const auto expect_out_of_range = [&] {
+        ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    };
+    expect_out_of_range();
+    double_value = -std::numeric_limits<SQLDOUBLE>::infinity();
+    expect_out_of_range();
+    double_value = std::numeric_limits<SQLDOUBLE>::quiet_NaN();
+    expect_out_of_range();
+
+    double_value = 12.5;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLDOUBLE result = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_DOUBLE,
+        &result, sizeof(result), nullptr));
+    EXPECT_DOUBLE_EQ(12.5, result);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLREAL float_value = std::numeric_limits<SQLREAL>::quiet_NaN();
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_FLOAT, SQL_DECIMAL, 10, 2, &float_value,
+        sizeof(float_value), &indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+        &server_type, nullptr, nullptr, nullptr));
+    expect_out_of_range();
+    float_value = 0.5f;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    result = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_DOUBLE,
+        &result, sizeof(result), nullptr));
+    EXPECT_DOUBLE_EQ(0.5, result);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    double_value = std::numeric_limits<SQLDOUBLE>::infinity();
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_DOUBLE, SQL_NUMERIC, 0, 0, &double_value,
+        sizeof(double_value), &indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+        &server_type, nullptr, nullptr, nullptr));
+    expect_out_of_range();
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        ReplacesPreparedStatementsAndProtectsOpenCursors) {
     SQLCHAR state[6]{};
     const auto expect_state = [&](SQLRETURN result, const char* expected) {

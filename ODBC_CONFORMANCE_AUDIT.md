@@ -2262,6 +2262,13 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   when the binding has no explicit precision. Live tests also cover malformed
   exponents, valid decimal, leading-period, trailing-period, and exponent
   forms after recovery, and both driver `SQLWCHAR` widths.
+- Audit batch 326 rejects nonfinite `SQL_C_FLOAT` and `SQL_C_DOUBLE` values
+  bound to `SQL_DECIMAL` or `SQL_NUMERIC` with `22003`, rather than passing
+  PostgreSQL's `NaN` or `Infinity` numeric extensions through as ODBC exact
+  numeric values. A live test covers positive and negative infinity, NaN,
+  both floating C widths, absent declared precision, and finite-value
+  recovery after error. Finite floating-point precision and scale behavior
+  remains to be audited separately.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
