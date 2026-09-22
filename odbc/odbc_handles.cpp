@@ -269,7 +269,7 @@ std::optional<std::string> format_date_parameter(SQL_DATE_STRUCT date) {
   if (date.year < 1 || date.year > 9999 || !calendar_date.ok()) {
     return std::nullopt;
   }
-  char iso_date[11]{};
+  char iso_date[32]{};
   std::snprintf(iso_date, sizeof(iso_date), "%04d-%02u-%02u",
                 date.year, date.month, date.day);
   return std::string(iso_date);
@@ -279,7 +279,7 @@ std::optional<std::string> format_time_parameter(SQL_TIME_STRUCT time) {
   if (time.hour > 23 || time.minute > 59 || time.second > 61) {
     return std::nullopt;
   }
-  char iso_time[9]{};
+  char iso_time[32]{};
   std::snprintf(iso_time, sizeof(iso_time), "%02u:%02u:%02u",
                 time.hour, time.minute, time.second);
   return std::string(iso_time);

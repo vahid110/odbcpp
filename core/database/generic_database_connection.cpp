@@ -538,11 +538,13 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
   message.insert(message.end(), header.begin(), header.end());
 
   while (message.size() < total_length) {
-    const auto offset = message.size();
-    const auto requested = std::min<std::size_t>(total_length - offset, 8192);
-    message.resize(offset + requested);
+    const auto message_offset = message.size();
+    const auto requested = std::min<std::size_t>(
+        total_length - message_offset, 8192);
+    message.resize(message_offset + requested);
     auto result = transport_->recv(
-        std::span<std::byte>(message.data() + offset, requested), deadline);
+        std::span<std::byte>(message.data() + message_offset, requested),
+        deadline);
     if (result.has_error()) {
       mark_transport_failed();
       return rs::util::Result<std::vector<std::byte>>{
@@ -564,7 +566,7 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
           rs::util::DbErrorCode::NetworkError,
           "Transport read made no progress"};
     }
-    message.resize(offset + result->n);
+    message.resize(message_offset + result->n);
   }
   
   return rs::util::Result<std::vector<std::byte>>{std::move(message)};

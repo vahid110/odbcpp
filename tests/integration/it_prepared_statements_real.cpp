@@ -1307,7 +1307,7 @@ TEST_F(PreparedStatementIntegrationTest, DateStructParameterRoundTrips) {
 
 TEST_F(PreparedStatementIntegrationTest, DefaultDateParameterCTypeRoundTrips) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
-    SQL_DATE_STRUCT input{2024, 12, 31};
+    SQL_DATE_STRUCT input{9999, 12, 31};
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
         SQL_C_DEFAULT, SQL_TYPE_DATE, 10, 0, &input, sizeof(input), nullptr));
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
@@ -1315,7 +1315,7 @@ TEST_F(PreparedStatementIntegrationTest, DefaultDateParameterCTypeRoundTrips) {
     SQL_DATE_STRUCT output{};
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_DATE,
         &output, sizeof(output), nullptr));
-    EXPECT_EQ(2024, output.year);
+    EXPECT_EQ(9999, output.year);
     EXPECT_EQ(12, output.month);
     EXPECT_EQ(31, output.day);
 }
@@ -1363,7 +1363,9 @@ TEST_F(PreparedStatementIntegrationTest, DateStructParameterRejectsInvalidDate) 
     SQLCHAR state[6]{};
     for (const SQL_DATE_STRUCT invalid : {
              SQL_DATE_STRUCT{2023, 2, 29}, SQL_DATE_STRUCT{2024, 13, 1},
-             SQL_DATE_STRUCT{2024, 4, 31}, SQL_DATE_STRUCT{0, 1, 1}}) {
+             SQL_DATE_STRUCT{2024, 4, 31}, SQL_DATE_STRUCT{0, 1, 1},
+             SQL_DATE_STRUCT{2024, 65535, 1},
+             SQL_DATE_STRUCT{2024, 1, 65535}}) {
         input = invalid;
         EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
         ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
@@ -1495,7 +1497,10 @@ TEST_F(PreparedStatementIntegrationTest, TimeStructParameterRejectsInvalidTime) 
     SQLCHAR state[6]{};
     for (const SQL_TIME_STRUCT invalid : {
              SQL_TIME_STRUCT{24, 0, 0}, SQL_TIME_STRUCT{12, 60, 0},
-             SQL_TIME_STRUCT{12, 0, 62}}) {
+             SQL_TIME_STRUCT{12, 0, 62},
+             SQL_TIME_STRUCT{65535, 0, 0},
+             SQL_TIME_STRUCT{0, 65535, 0},
+             SQL_TIME_STRUCT{0, 0, 65535}}) {
         input = invalid;
         EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
         ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
