@@ -2170,6 +2170,11 @@ SQLRETURN ODBCDescriptor::set_field(
       field_identifier != SQL_DESC_OCTET_LENGTH_PTR) {
     record.data_ptr = nullptr;
   }
+  if (kind_ == DescriptorKind::ImplementationParameter &&
+      (new_concise_type ||
+       field_identifier == SQL_DESC_DATETIME_INTERVAL_CODE)) {
+    record.bound_sql_type = record.concise_type;
+  }
   return changed();
 }
 
@@ -2253,6 +2258,9 @@ SQLRETURN ODBCDescriptor::set_record(
   }
   candidate.concise_type = *concise_type;
   complete_descriptor_record(candidate);
+  if (kind_ == DescriptorKind::ImplementationParameter) {
+    candidate.bound_sql_type = candidate.concise_type;
+  }
   candidate.type = type;
   candidate.datetime_interval_code =
       type == SQL_DATETIME || type == SQL_INTERVAL ? subtype : 0;
@@ -3406,9 +3414,12 @@ SQLRETURN ODBCStatement::execute() {
         return complete_parameter_set(SQL_ERROR);
       }
 
-      const auto value_type = application.concise_type == SQL_C_DEFAULT
-          ? ResultTypes::default_c_type(implementation.concise_type)
-          : application.concise_type;
+      SQLSMALLINT value_type = application.concise_type;
+      if (value_type == SQL_C_DEFAULT) {
+        const auto sql_type = implementation.bound_sql_type != 0
+            ? implementation.bound_sql_type : implementation.concise_type;
+        value_type = ResultTypes::default_c_type(sql_type);
+      }
       rs::core::database::QueryParameter query_param;
       query_param.type = parameter_type_for(
           implementation.concise_type, value_type);
@@ -4205,8 +4216,12 @@ void ODBCStatement::apply_result_metadata(
   }
   std::vector<DescriptorRecord> parameter_descriptor_records;
   parameter_descriptor_records.reserve(param_metadata_.size());
-  for (const auto& parameter : param_metadata_) {
-    parameter_descriptor_records.push_back(descriptor_record_for(parameter));
+  for (std::size_t index = 0; index < param_metadata_.size(); ++index) {
+    auto record = descriptor_record_for(param_metadata_[index]);
+    if (const auto* prior = implementation_descriptor->record(index)) {
+      record.bound_sql_type = prior->bound_sql_type;
+    }
+    parameter_descriptor_records.push_back(std::move(record));
   }
   implementation_descriptor->replace_records(
       std::move(parameter_descriptor_records));

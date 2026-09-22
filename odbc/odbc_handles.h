@@ -283,6 +283,8 @@ struct ParameterMetadata {
 struct DescriptorRecord {
   SQLSMALLINT type{SQL_C_DEFAULT};
   SQLSMALLINT concise_type{SQL_C_DEFAULT};
+  // Caller-declared IPD type, retained when server metadata promotes it.
+  SQLSMALLINT bound_sql_type{0};
   SQLSMALLINT datetime_interval_code{0};
   SQLINTEGER datetime_interval_precision{0};
   SQLULEN length{0};

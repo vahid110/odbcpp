@@ -2857,6 +2857,70 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       DescriptorDefaultTinyintSurvivesServerTypePromotion) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::integer", SQL_NTS));
+    SQLHDESC application = SQL_NULL_HDESC;
+    SQLHDESC implementation = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_DESC, hdbc,
+        &application));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt, SQL_ATTR_IMP_PARAM_DESC,
+        &implementation, 0, nullptr));
+    const auto number = [](SQLLEN field) {
+        return reinterpret_cast<SQLPOINTER>(
+            static_cast<std::uintptr_t>(field));
+    };
+    SQLSCHAR value = std::numeric_limits<SQLSCHAR>::min();
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(application, 1,
+        SQL_DESC_CONCISE_TYPE, number(SQL_C_DEFAULT), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(application, 1,
+        SQL_DESC_DATA_PTR, &value, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(implementation, 1,
+        SQL_DESC_CONCISE_TYPE, number(SQL_TINYINT), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt, SQL_ATTR_APP_PARAM_DESC,
+        application, 0));
+
+    SQLSMALLINT server_type = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+        &server_type, nullptr, nullptr, nullptr));
+    EXPECT_EQ(SQL_INTEGER, server_type);
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLINTEGER result = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG,
+        &result, sizeof(result), nullptr));
+    EXPECT_EQ(value, result);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLSCHAR replacement = std::numeric_limits<SQLSCHAR>::max();
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(application, 1,
+        SQL_DESC_DATA_PTR, &replacement, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG,
+        &result, sizeof(result), nullptr));
+    EXPECT_EQ(replacement, result);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLSMALLINT wider = 1234;
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(implementation, 1,
+        SQL_DESC_CONCISE_TYPE, number(SQL_SMALLINT), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(application, 1,
+        SQL_DESC_DATA_PTR, &wider, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+        &server_type, nullptr, nullptr, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG,
+        &result, sizeof(result), nullptr));
+    EXPECT_EQ(wider, result);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt, SQL_ATTR_APP_PARAM_DESC,
+        SQL_NULL_HDESC, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, application));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        NumericParameterRejectsUnrepresentablePrecision) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
         (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));

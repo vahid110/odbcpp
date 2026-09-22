@@ -2192,8 +2192,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   described the parameter as `SQL_INTEGER`. The corrected binding keeps the
   one-byte C type through metadata discovery. Tests cover zero, both signed
   8-bit boundaries, and server type promotion. All 34 tests pass under
-  sanitizer and both iODBC configurations. Direct descriptor-based default C
-  bindings still need a separate metadata-stability audit.
+  sanitizer and both iODBC configurations.
+- Audit batch 317 preserves the caller-declared SQL type privately on an IPD
+  record when PostgreSQL reports a promoted parameter type. Direct APD
+  `SQL_C_DEFAULT` conversion uses that declared type for its buffer width.
+  AddressSanitizer first reproduced a four-byte read from a one-byte signed
+  tinyint buffer after `SQLDescribeParam`; the regression now covers repeated
+  execution, a changed APD data pointer, an explicit IPD type change with a
+  wider buffer, and descriptor detachment. All 34 tests pass under sanitizer
+  and both iODBC configurations.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
