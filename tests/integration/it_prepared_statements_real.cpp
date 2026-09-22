@@ -517,6 +517,71 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       CharacterInputToSqlBitValidatesNumericLiteral) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::boolean", SQL_NTS));
+    struct Case {
+        const char* text;
+        const char* state;
+        SQLCHAR bit;
+    };
+    for (const Case test : {
+             Case{"0", nullptr, 0},
+             Case{" +1.0 ", nullptr, 1},
+             Case{"-0e10", nullptr, 0},
+             Case{"\t0\t", nullptr, 0},
+             Case{"0.5", "22001", 0},
+             Case{"2e-1", "22001", 0},
+             Case{"1.0000000000000000001", "22001", 0},
+             Case{"1e-1000", "22001", 0},
+             Case{"-1", "22003", 0},
+             Case{"2", "22003", 0},
+             Case{"1e1000", "22003", 0},
+             Case{"true", "22018", 0},
+             Case{"1e", "22018", 0},
+             Case{"1junk", "22018", 0}}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_CHAR, SQL_BIT, 0, 0, (SQLPOINTER)test.text, 0, nullptr));
+        const SQLRETURN result = SQLExecute(hstmt);
+        if (test.state) {
+            ASSERT_EQ(SQL_ERROR, result) << test.text;
+            SQLCHAR state[6]{};
+            ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+                state, nullptr, nullptr, 0, nullptr));
+            EXPECT_STREQ(test.state, reinterpret_cast<char*>(state));
+        } else {
+            ASSERT_EQ(SQL_SUCCESS, result) << test.text;
+            ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+            SQLCHAR bit = 9;
+            ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BIT,
+                &bit, sizeof(bit), nullptr));
+            EXPECT_EQ(test.bit, bit);
+            ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        }
+    }
+
+    SQLWCHAR wide_valid[]{' ', '+', '1', '.', '0', ' ', 0};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_WCHAR, SQL_BIT, 0, 0, wide_valid, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLCHAR bit = 9;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BIT,
+        &bit, sizeof(bit), nullptr));
+    EXPECT_EQ(1, bit);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLWCHAR wide_invalid[]{'t', 'r', 'u', 'e', 0};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_WCHAR, SQL_BIT, 0, 0, wide_invalid, 0, nullptr));
+    ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        BinaryParameterHonorsDeclaredSqlLength) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
     unsigned char input[]{0x00, 0x01, 0x7f, 0xff};

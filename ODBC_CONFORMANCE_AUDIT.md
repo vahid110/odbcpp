@@ -2060,6 +2060,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   the signed 64-bit maximum, and recovery after errors. It runs without
   skipping and all 34 tests pass under sanitizer, PostgreSQL Driver Manager,
   and iODBC. Other C-to-SQL conversions remain open.
+- Audit batch 302 applies the [ODBC character-to-bit conversion table](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/c-to-sql-character)
+  to `SQL_C_CHAR` and `SQL_C_WCHAR` parameters. A live PostgreSQL regression
+  first rejected a blank-padded numeric 1; the driver now recognizes decimal
+  numeric literals before sending a canonical bit value, returning `22001`
+  for fractions, `22003` for out-of-range values, and `22018` for malformed
+  literals. The test covers exponent and precision edges, error recovery, and
+  both two-byte and four-byte `SQLWCHAR` paths. It runs without skipping and
+  all 34 tests pass under sanitizer, PostgreSQL Driver Manager, and iODBC.
+  Other C-to-SQL conversions remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

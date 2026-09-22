@@ -291,6 +291,69 @@ std::uint16_t parse_port(std::string_view value) {
   return static_cast<std::uint16_t>(parsed);
 }
 
+enum class BitNumericLiteral { Zero, One, Fraction, OutOfRange, Invalid };
+
+BitNumericLiteral classify_bit_numeric_literal(std::string_view text) {
+  const auto is_blank = [](char ch) {
+    return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' ||
+        ch == '\f' || ch == '\v';
+  };
+  while (!text.empty() && is_blank(text.front())) text.remove_prefix(1);
+  while (!text.empty() && is_blank(text.back())) text.remove_suffix(1);
+
+  std::size_t position = 0;
+  bool negative = false;
+  if (position < text.size() &&
+      (text[position] == '+' || text[position] == '-')) {
+    negative = text[position++] == '-';
+  }
+  const auto is_digit = [](char ch) { return ch >= '0' && ch <= '9'; };
+  std::string digits;
+  while (position < text.size() && is_digit(text[position])) {
+    digits += text[position++];
+  }
+  const std::size_t whole_digits = digits.size();
+  if (position < text.size() && text[position] == '.') {
+    ++position;
+    while (position < text.size() && is_digit(text[position])) {
+      digits += text[position++];
+    }
+  }
+  if (digits.empty()) return BitNumericLiteral::Invalid;
+
+  std::int64_t exponent = 0;
+  if (position < text.size() &&
+      (text[position] == 'e' || text[position] == 'E')) {
+    ++position;
+    bool negative_exponent = false;
+    if (position < text.size() &&
+        (text[position] == '+' || text[position] == '-')) {
+      negative_exponent = text[position++] == '-';
+    }
+    if (position == text.size() || !is_digit(text[position])) {
+      return BitNumericLiteral::Invalid;
+    }
+    while (position < text.size() && is_digit(text[position])) {
+      exponent = std::min<std::int64_t>(
+          exponent * 10 + (text[position++] - '0'), 1000000000);
+    }
+    if (negative_exponent) exponent = -exponent;
+  }
+  if (position != text.size()) return BitNumericLiteral::Invalid;
+
+  const std::size_t first = digits.find_first_not_of('0');
+  if (first == std::string::npos) return BitNumericLiteral::Zero;
+  if (negative) return BitNumericLiteral::OutOfRange;
+  const auto integer_digits = static_cast<std::int64_t>(whole_digits) +
+      exponent - static_cast<std::int64_t>(first);
+  if (integer_digits <= 0) return BitNumericLiteral::Fraction;
+  if (integer_digits > 1 || digits[first] > '1') {
+    return BitNumericLiteral::OutOfRange;
+  }
+  return digits.find_first_not_of('0', first + 1) == std::string::npos
+      ? BitNumericLiteral::One : BitNumericLiteral::Fraction;
+}
+
 bool is_timeout_error(const std::error_code& error) {
   return error == rs::util::make_error_code(rs::util::DbErrorCode::Timeout);
 }
@@ -3560,6 +3623,28 @@ SQLRETURN ODBCStatement::execute() {
           implementation.concise_type == SQL_SMALLINT ||
           implementation.concise_type == SQL_INTEGER ||
           implementation.concise_type == SQL_BIGINT;
+      if (character_input && implementation.concise_type == SQL_BIT) {
+        switch (classify_bit_numeric_literal(value)) {
+          case BitNumericLiteral::Zero:
+            value = "0";
+            break;
+          case BitNumericLiteral::One:
+            value = "1";
+            break;
+          case BitNumericLiteral::Fraction:
+            set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                      "Character parameter has fractional SQL_BIT value");
+            return complete_parameter_set(SQL_ERROR);
+          case BitNumericLiteral::OutOfRange:
+            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Character parameter is outside SQL_BIT range");
+            return complete_parameter_set(SQL_ERROR);
+          case BitNumericLiteral::Invalid:
+            set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                      "Character parameter is not a numeric literal");
+            return complete_parameter_set(SQL_ERROR);
+        }
+      }
       if (floating_input &&
           (integer_target || implementation.concise_type == SQL_BIT)) {
         const double number = value_type == SQL_C_FLOAT
