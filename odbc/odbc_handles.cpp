@@ -3859,7 +3859,8 @@ SQLRETURN ODBCStatement::execute() {
           implementation.concise_type == SQL_SMALLINT ||
           implementation.concise_type == SQL_INTEGER ||
           implementation.concise_type == SQL_BIGINT;
-      if (character_input && implementation.concise_type == SQL_BIT) {
+      if ((character_input || value_type == SQL_C_NUMERIC) &&
+          implementation.concise_type == SQL_BIT) {
         switch (classify_bit_numeric_literal(value)) {
           case BitNumericLiteral::Zero:
             value = "0";
@@ -4276,7 +4277,8 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
   }
   if (value_type == SQL_C_NUMERIC && parameter_type != SQL_DECIMAL &&
       parameter_type != SQL_NUMERIC && parameter_type != SQL_SMALLINT &&
-      parameter_type != SQL_INTEGER && parameter_type != SQL_BIGINT) {
+      parameter_type != SQL_INTEGER && parameter_type != SQL_BIGINT &&
+      parameter_type != SQL_BIT) {
     set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
               "Numeric C parameter requires an exact numeric SQL type");
     return SQL_ERROR;
