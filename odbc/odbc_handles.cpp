@@ -2179,6 +2179,14 @@ SQLRETURN ODBCDescriptor::set_field(
       field_identifier == SQL_DESC_LENGTH) {
     record.bound_sql_length = record.length;
   }
+  if (kind_ == DescriptorKind::ImplementationParameter &&
+      field_identifier == SQL_DESC_PRECISION) {
+    record.bound_sql_precision = record.precision;
+  }
+  if (kind_ == DescriptorKind::ImplementationParameter &&
+      field_identifier == SQL_DESC_SCALE) {
+    record.bound_sql_scale = record.scale;
+  }
   return changed();
 }
 
@@ -2271,6 +2279,10 @@ SQLRETURN ODBCDescriptor::set_record(
   candidate.octet_length = length;
   candidate.precision = precision;
   candidate.scale = scale;
+  if (kind_ == DescriptorKind::ImplementationParameter) {
+    candidate.bound_sql_precision = precision;
+    candidate.bound_sql_scale = scale;
+  }
   candidate.fixed_prec_scale =
       (candidate.concise_type == SQL_DECIMAL ||
        candidate.concise_type == SQL_NUMERIC) && scale != 0
@@ -3423,6 +3435,11 @@ SQLRETURN ODBCStatement::execute() {
           ? implementation.bound_sql_type : implementation.concise_type;
       const auto declared_sql_length = implementation.bound_sql_length != 0
           ? implementation.bound_sql_length : implementation.length;
+      const auto declared_sql_precision =
+          implementation.bound_sql_precision != 0
+          ? implementation.bound_sql_precision : implementation.precision;
+      const auto declared_sql_scale =
+          implementation.bound_sql_scale.value_or(implementation.scale);
       if (value_type == SQL_C_DEFAULT) {
         value_type = ResultTypes::default_c_type(declared_sql_type);
       }
@@ -3754,6 +3771,22 @@ SQLRETURN ODBCStatement::execute() {
         set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
                   "Integer parameter is outside SQL_BIT range");
         return complete_parameter_set(SQL_ERROR);
+      }
+      if ((signed_integer_input || unsigned_integer_input) &&
+          (declared_sql_type == SQL_DECIMAL ||
+           declared_sql_type == SQL_NUMERIC) &&
+          declared_sql_precision > 0 && declared_sql_scale >= 0) {
+        const auto sign_size = value.front() == '-' ? std::size_t{1} : 0;
+        const auto whole_digits = value.size() - sign_size;
+        const auto available_digits = std::max<int>(
+            0, declared_sql_precision - declared_sql_scale);
+        const bool is_zero = whole_digits == 1 && value[sign_size] == '0';
+        if (!is_zero &&
+            whole_digits > static_cast<std::size_t>(available_digits)) {
+          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                    "Integer parameter exceeds SQL numeric precision");
+          return complete_parameter_set(SQL_ERROR);
+        }
       }
       if (numeric_input && declared_sql_length > 0 &&
           is_character_sql_type(declared_sql_type) &&
@@ -4227,6 +4260,8 @@ void ODBCStatement::apply_result_metadata(
     if (const auto* prior = implementation_descriptor->record(index)) {
       record.bound_sql_type = prior->bound_sql_type;
       record.bound_sql_length = prior->bound_sql_length;
+      record.bound_sql_precision = prior->bound_sql_precision;
+      record.bound_sql_scale = prior->bound_sql_scale;
     }
     parameter_descriptor_records.push_back(std::move(record));
   }

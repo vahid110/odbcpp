@@ -286,6 +286,8 @@ struct DescriptorRecord {
   // Caller-declared IPD fields retained when server metadata promotes them.
   SQLSMALLINT bound_sql_type{0};
   SQLULEN bound_sql_length{0};
+  SQLSMALLINT bound_sql_precision{0};
+  std::optional<SQLSMALLINT> bound_sql_scale;
   SQLSMALLINT datetime_interval_code{0};
   SQLINTEGER datetime_interval_precision{0};
   SQLULEN length{0};

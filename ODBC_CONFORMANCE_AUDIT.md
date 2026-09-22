@@ -2225,6 +2225,15 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   `SQL_C_CHAR` input, direct descriptor binding, `22001` on overlength, and
   a later explicit IPD length change. All 34 tests pass under sanitizer and
   both iODBC configurations.
+- Audit batch 321 retains caller-declared IPD numeric precision and scale
+  when PostgreSQL reports unbounded `SQL_NUMERIC` metadata. Exact signed and
+  unsigned integer C inputs now return `22003` if their whole digits exceed
+  the bound `SQL_DECIMAL`/`SQL_NUMERIC` precision minus scale. Before the
+  fix, `SQL_DECIMAL(3,1)` accepted 100 after `SQLDescribeParam`. Live tests
+  cover both signs, a valid boundary and recovery, an IPD precision edit,
+  zero when scale equals precision, and the full unsigned 64-bit maximum.
+  Character and floating C inputs to exact numeric SQL types still need a
+  separate conversion audit.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
