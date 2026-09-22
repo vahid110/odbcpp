@@ -2128,7 +2128,17 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   existing exact signed-integer parser before applying the unsigned 8-bit
   range check. Three focused tests run without skipping, and all 34 tests
   pass under sanitizer, PostgreSQL Driver Manager, and iODBC. Wider unsigned
-  result targets and `SQL_C_NUMERIC` remain open.
+  result targets remained open until batch 310; `SQL_C_NUMERIC` remains open.
+- Audit batch 310 adds `SQL_C_USHORT` result conversion, reusing a bounded
+  unsigned-integer helper shared with `SQL_C_UTINYINT`. Live PostgreSQL
+  regressions first returned `HYC00`; they now cover zero and 65535,
+  negative and above-65535 values returning `22003` without output mutation,
+  `01S07` fractional truncation, Boolean zero/one, bound-column `NULL` and
+  overflow, and `07006` for temporal values including `NULL`. The focused
+  tests also rerun the existing unsigned-tinyint cases after the helper
+  refactor. All 34 tests pass under sanitizer, PostgreSQL Driver Manager,
+  and iODBC. `SQL_C_ULONG`, `SQL_C_UBIGINT`, and `SQL_C_NUMERIC` outputs
+  remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

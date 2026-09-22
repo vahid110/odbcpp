@@ -204,18 +204,23 @@ SQLRETURN convert_integral(const std::string& value, void* buffer,
   return finish(converted, truncated != *parsed);
 }
 
-SQLRETURN convert_unsigned_tinyint(const std::string& value, void* buffer,
-                                   SQLLEN* indicator,
-                                   ConversionIssue* issue) {
+template <typename T>
+SQLRETURN convert_bounded_unsigned_integral(const std::string& value,
+                                            void* buffer, SQLLEN* indicator,
+                                            ConversionIssue* issue) {
+  static_assert(std::numeric_limits<T>::is_integer &&
+                !std::numeric_limits<T>::is_signed &&
+                sizeof(T) < sizeof(SQLBIGINT));
   SQLBIGINT whole = 0;
   const auto result = convert_integral<SQLBIGINT>(
       value, &whole, nullptr, issue);
   if (result == SQL_ERROR) return result;
-  if (whole < 0 || whole > std::numeric_limits<SQLCHAR>::max()) {
+  if (whole < 0 || whole > static_cast<SQLBIGINT>(
+          std::numeric_limits<T>::max())) {
     if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
     return SQL_ERROR;
   }
-  const auto converted = static_cast<SQLCHAR>(whole);
+  const auto converted = static_cast<T>(whole);
   std::memcpy(buffer, &converted, sizeof(converted));
   store_indicator(indicator, static_cast<SQLLEN>(sizeof(converted)));
   return result;
@@ -608,7 +613,11 @@ SQLRETURN TextDataConverter::convert_data(const std::string& value,
     case SQL_C_STINYINT:
       return convert_integral<SQLSCHAR>(value, buffer, indicator, issue);
     case SQL_C_UTINYINT:
-      return convert_unsigned_tinyint(value, buffer, indicator, issue);
+      return convert_bounded_unsigned_integral<SQLCHAR>(
+          value, buffer, indicator, issue);
+    case SQL_C_USHORT:
+      return convert_bounded_unsigned_integral<SQLUSMALLINT>(
+          value, buffer, indicator, issue);
     case SQL_C_SSHORT:
       return convert_integral<SQLSMALLINT>(value, buffer, indicator, issue);
     case SQL_C_SLONG:
