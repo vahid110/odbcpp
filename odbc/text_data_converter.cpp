@@ -2,6 +2,7 @@
 #include "unicode.h"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cctype>
 #include <charconv>
@@ -736,6 +737,50 @@ SQLRETURN TextDataConverter::convert_data(const std::string& value,
     default:
       return SQL_ERROR;
   }
+}
+
+std::optional<std::string> TextDataConverter::format_numeric(
+    const SQL_NUMERIC_STRUCT& numeric, SQLSMALLINT precision,
+    SQLSMALLINT scale, ConversionIssue* issue) {
+  if (issue) *issue = ConversionIssue::None;
+  if (precision < 1 || precision > 38 || scale < 0 || scale > precision ||
+      numeric.sign > 1) {
+    if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+    return std::nullopt;
+  }
+  std::array<SQLCHAR, sizeof(numeric.val)> magnitude{};
+  std::copy(std::begin(numeric.val), std::end(numeric.val), magnitude.begin());
+  std::string digits;
+  bool nonzero = std::any_of(magnitude.begin(), magnitude.end(),
+      [](SQLCHAR byte) { return byte != 0; });
+  while (nonzero) {
+    unsigned remainder = 0;
+    nonzero = false;
+    for (std::size_t index = magnitude.size(); index > 0; --index) {
+      const unsigned dividend = remainder * 256u + magnitude[index - 1];
+      magnitude[index - 1] = static_cast<SQLCHAR>(dividend / 10u);
+      remainder = dividend % 10u;
+      nonzero |= magnitude[index - 1] != 0;
+    }
+    digits.push_back(static_cast<char>('0' + remainder));
+    if (digits.size() > static_cast<std::size_t>(precision)) {
+      if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+      return std::nullopt;
+    }
+  }
+  if (digits.empty()) digits = "0";
+  std::reverse(digits.begin(), digits.end());
+  if (scale > 0) {
+    if (digits.size() <= static_cast<std::size_t>(scale)) {
+      digits.insert(0, static_cast<std::size_t>(scale) + 1 - digits.size(), '0');
+    }
+    digits.insert(digits.size() - static_cast<std::size_t>(scale), 1, '.');
+  }
+  if (numeric.sign == 0 &&
+      digits.find_first_not_of("0.") != std::string::npos) {
+    digits.insert(digits.begin(), '-');
+  }
+  return digits;
 }
 
 std::optional<std::vector<std::byte>> TextDataConverter::decode_binary(

@@ -11,6 +11,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <limits>
+#include <string>
 
 using RedshiftDataConverter = rs::odbc::TextDataConverter;
 
@@ -84,6 +85,58 @@ TEST_F(RedshiftDataConverterTest, NumericStructureTruncationAndErrors) {
     issue = rs::odbc::ConversionIssue::None;
     EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
         "1", SQL_C_NUMERIC, &numeric, 0, &length, &issue, 2, 3));
+    EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
+}
+
+TEST_F(RedshiftDataConverterTest, NumericStructureInputUsesDescriptorScale) {
+    SQL_NUMERIC_STRUCT numeric{};
+    numeric.sign = 1;
+    numeric.val[0] = 0x39;
+    numeric.val[1] = 0x30;
+    // Input precision and scale come from the APD, not these fields.
+    numeric.precision = 1;
+    numeric.scale = 0;
+    EXPECT_EQ("123.45", RedshiftDataConverter::format_numeric(
+        numeric, 5, 2));
+    numeric.sign = 0;
+    EXPECT_EQ("-123.45", RedshiftDataConverter::format_numeric(
+        numeric, 5, 2));
+    numeric.val[0] = 1;
+    numeric.val[1] = 0;
+    EXPECT_EQ("-0.01", RedshiftDataConverter::format_numeric(
+        numeric, 3, 2));
+    numeric.val[0] = 0;
+    EXPECT_EQ("0.00", RedshiftDataConverter::format_numeric(
+        numeric, 3, 2));
+
+    const std::string maximum(38, '9');
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        maximum, SQL_C_NUMERIC, &numeric, 0, nullptr));
+    EXPECT_EQ(maximum, RedshiftDataConverter::format_numeric(
+        numeric, 38, 0));
+}
+
+TEST_F(RedshiftDataConverterTest, NumericStructureInputRejectsInvalidFields) {
+    SQL_NUMERIC_STRUCT numeric{};
+    numeric.sign = 1;
+    numeric.val[0] = 123;
+    rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;
+    EXPECT_FALSE(RedshiftDataConverter::format_numeric(
+        numeric, 2, 0, &issue));
+    EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
+    numeric.sign = 2;
+    EXPECT_FALSE(RedshiftDataConverter::format_numeric(
+        numeric, 3, 0, &issue));
+    EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
+    numeric.sign = 1;
+    EXPECT_FALSE(RedshiftDataConverter::format_numeric(
+        numeric, 3, 4, &issue));
+    EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
+
+    numeric.val[0] = 0;
+    std::fill(std::begin(numeric.val), std::end(numeric.val), 0xff);
+    EXPECT_FALSE(RedshiftDataConverter::format_numeric(
+        numeric, 38, 0, &issue));
     EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
 }
 

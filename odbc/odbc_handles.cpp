@@ -3626,6 +3626,16 @@ SQLRETURN ODBCStatement::execute() {
         unsigned_number = load_application_value<SQLUBIGINT>(
             application.data_ptr);
         value = std::to_string(*unsigned_number);
+      } else if (value_type == SQL_C_NUMERIC) {
+        const auto formatted = TextDataConverter::format_numeric(
+            load_application_value<SQL_NUMERIC_STRUCT>(application.data_ptr),
+            application.precision, application.scale);
+        if (!formatted) {
+          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                    "Numeric parameter exceeds APD precision or has invalid fields");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        value = *formatted;
       } else if (value_type == SQL_C_FLOAT) {
         value = format_floating_parameter(
             load_application_value<SQLREAL>(application.data_ptr));
@@ -3942,6 +3952,22 @@ SQLRETURN ODBCStatement::execute() {
           }
         }
       }
+      if (value_type == SQL_C_NUMERIC &&
+          (declared_sql_type == SQL_DECIMAL ||
+           declared_sql_type == SQL_NUMERIC) &&
+          declared_sql_precision > 0 && declared_sql_scale >= 0) {
+        const auto digits = decimal_digits(value);
+        const auto available_digits = std::max<int>(
+            0, declared_sql_precision - declared_sql_scale);
+        if (!digits ||
+            digits->whole > static_cast<std::size_t>(available_digits) ||
+            digits->fractional >
+                static_cast<std::size_t>(declared_sql_scale)) {
+          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                    "Numeric parameter exceeds SQL precision or scale");
+          return complete_parameter_set(SQL_ERROR);
+        }
+      }
       if (numeric_input && declared_sql_length > 0 &&
           is_character_sql_type(declared_sql_type) &&
           static_cast<SQLULEN>(value.size()) > declared_sql_length) {
@@ -4219,6 +4245,12 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
   if (!ResultTypes::is_supported_parameter_sql_type(parameter_type)) {
     set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
               "Parameter SQL data type is not supported");
+    return SQL_ERROR;
+  }
+  if (value_type == SQL_C_NUMERIC && parameter_type != SQL_DECIMAL &&
+      parameter_type != SQL_NUMERIC) {
+    set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
+              "Numeric C parameter requires an exact numeric SQL type");
     return SQL_ERROR;
   }
   const bool date_c_type = value_type == SQL_C_DATE ||

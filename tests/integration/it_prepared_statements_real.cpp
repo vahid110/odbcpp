@@ -3103,6 +3103,140 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       NumericStructureParameterUsesApdScaleAndHandlesNull) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
+    SQL_NUMERIC_STRUCT numeric{};
+    numeric.sign = 1;
+    numeric.precision = 1;
+    numeric.scale = 0;
+    numeric.val[0] = 0x39;
+    numeric.val[1] = 0x30;
+    SQLLEN indicator = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_NUMERIC, SQL_NUMERIC, 5, 2, &numeric, 0, &indicator));
+    SQLHDESC apd = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt, SQL_ATTR_APP_PARAM_DESC,
+        &apd, 0, nullptr));
+    const auto number = [](SQLLEN field) {
+        return reinterpret_cast<SQLPOINTER>(
+            static_cast<std::uintptr_t>(field));
+    };
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+        SQL_DESC_PRECISION, number(5), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+        SQL_DESC_SCALE, number(2), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+        SQL_DESC_DATA_PTR, &numeric, 0));
+
+    const auto expect_value = [&](const char* expected) {
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        char value[32]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+            value, sizeof(value), nullptr));
+        EXPECT_STREQ(expected, value);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    expect_value("123.45");
+    numeric.sign = 0;
+    expect_value("-123.45");
+
+    indicator = SQL_NULL_DATA;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    char untouched[8] = "keep";
+    SQLLEN length = 73;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        untouched, sizeof(untouched), &length));
+    EXPECT_EQ(SQL_NULL_DATA, length);
+    EXPECT_STREQ("keep", untouched);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       NumericStructureParameterRejectsOverflowAndRecovers) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
+    SQL_NUMERIC_STRUCT numeric{};
+    numeric.sign = 1;
+    numeric.val[0] = 0x39;
+    numeric.val[1] = 0x30;  // 12345, interpreted as 123.45 at scale 2.
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_NUMERIC, SQL_DECIMAL, 4, 2, &numeric, sizeof(numeric), nullptr));
+    SQLHDESC apd = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt, SQL_ATTR_APP_PARAM_DESC,
+        &apd, 0, nullptr));
+    const auto number = [](SQLLEN field) {
+        return reinterpret_cast<SQLPOINTER>(
+            static_cast<std::uintptr_t>(field));
+    };
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+        SQL_DESC_PRECISION, number(5), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+        SQL_DESC_SCALE, number(2), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+        SQL_DESC_DATA_PTR, &numeric, 0));
+    SQLCHAR state[6]{};
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+
+    numeric.val[0] = 0xd2;
+    numeric.val[1] = 0x04;  // 1234 -> 12.34, fits DECIMAL(4,2).
+    numeric.sign = 2;
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+
+    numeric.sign = 1;
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+        SQL_DESC_PRECISION, number(2), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+        SQL_DESC_SCALE, number(3), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+        SQL_DESC_DATA_PTR, &numeric, 0));
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+        SQL_DESC_PRECISION, number(5), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+        SQL_DESC_SCALE, number(2), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1,
+        SQL_DESC_DATA_PTR, &numeric, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    char result[16]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        result, sizeof(result), nullptr));
+    EXPECT_STREQ("12.34", result);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       NumericStructureParameterMayUseUnalignedBuffer) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));
+    SQL_NUMERIC_STRUCT numeric{};
+    numeric.sign = 1;
+    numeric.val[0] = 0x39;
+    numeric.val[1] = 0x30;
+    std::array<std::byte, 1 + sizeof(numeric)> bytes{};
+    std::memcpy(bytes.data() + 1, &numeric, sizeof(numeric));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_NUMERIC, SQL_NUMERIC, 5, 0, bytes.data() + 1, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    char result[16]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+        result, sizeof(result), nullptr));
+    EXPECT_STREQ("12345", result);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        DecimalParameterUsesIpdPrecisionAndScale) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
         (SQLCHAR*)"SELECT ?::numeric", SQL_NTS));

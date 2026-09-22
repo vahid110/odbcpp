@@ -29,6 +29,9 @@ public:
                                 ConversionIssue* issue = nullptr,
                                 SQLSMALLINT numeric_precision = 38,
                                 SQLSMALLINT numeric_scale = 0);
+  static std::optional<std::string> format_numeric(
+      const SQL_NUMERIC_STRUCT& numeric, SQLSMALLINT precision,
+      SQLSMALLINT scale, ConversionIssue* issue = nullptr);
   // PostgreSQL text-protocol representation, including hex and legacy escape.
   static std::optional<std::vector<std::byte>> decode_binary(
       std::string_view value);
