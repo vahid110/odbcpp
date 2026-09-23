@@ -176,7 +176,7 @@ protected:
                 EXPECT_STREQ(is_null ? "untouched" : expected, output);
                 ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
             };
-            for (const SQLULEN limit : {width, width - 1, SQLULEN{0}, width}) {
+            for (const SQLULEN limit : {width, width - 1, static_cast<SQLULEN>(0), width}) {
                 SCOPED_TRACE(limit);
                 indicator = 0;
                 ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
@@ -2280,6 +2280,99 @@ TEST_F(PreparedStatementIntegrationTest,
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("22008", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       TimestampPrecisionSurvivesMetadataNullAndRecovery) {
+    struct PrecisionCase {
+        SQLSMALLINT precision;
+        SQLUINTEGER fraction;
+        SQLUINTEGER excess_fraction;
+        const char* valid;
+        const char* invalid;
+    };
+    for (const auto& test : {
+             PrecisionCase{0, 0, 100000000u,
+                 "2024-02-29 12:34:56", "2024-02-29 12:34:56.1"},
+             PrecisionCase{3, 123000000u, 123456000u,
+                 "2024-02-29 12:34:56.123", "2024-02-29 12:34:56.123456"},
+             PrecisionCase{6, 123456000u, 123456789u,
+                 "2024-02-29 12:34:56.123456", "2024-02-29 12:34:56.123456789"}}) {
+        SCOPED_TRACE(test.precision);
+        for (const SQLSMALLINT c_type : std::initializer_list<SQLSMALLINT>{
+                 SQL_C_TIMESTAMP, SQL_C_TYPE_TIMESTAMP, SQL_C_CHAR, SQL_C_WCHAR}) {
+            SCOPED_TRACE(c_type);
+            ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+                (SQLCHAR*)"SELECT ?::timestamp", SQL_NTS));
+            SQL_TIMESTAMP_STRUCT input{2024, 2, 29, 12, 34, 56, test.fraction};
+            char narrow[40]{};
+            SQLWCHAR wide[40]{};
+            const auto set_value = [&](bool invalid) {
+                input.fraction = invalid ? test.excess_fraction : test.fraction;
+                const char* text = invalid ? test.invalid : test.valid;
+                assign_parameter_text(narrow, text);
+                const auto characters = ascii_wide(text);
+                std::copy(characters.begin(), characters.end(), wide);
+            };
+            set_value(false);
+            SQLPOINTER data = &input;
+            SQLLEN size = sizeof(input);
+            if (c_type == SQL_C_CHAR) {
+                data = narrow;
+                size = sizeof(narrow);
+            } else if (c_type == SQL_C_WCHAR) {
+                data = wide;
+                size = sizeof(wide);
+            }
+            SQLLEN indicator = SQL_NTS;
+            SQLUSMALLINT status = SQL_PARAM_UNUSED;
+            SQLULEN processed = 0;
+            ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+                hstmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+            ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+                hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+            ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+                c_type, SQL_TYPE_TIMESTAMP, 26, test.precision, data, size, &indicator));
+            SQLSMALLINT described_type = 0;
+            SQLSMALLINT described_scale = -1;
+            ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+                &described_type, nullptr, &described_scale, nullptr));
+            EXPECT_EQ(SQL_TYPE_TIMESTAMP, described_type);
+            EXPECT_EQ(test.precision, described_scale);
+            for (const int phase : {0, 1, 2, 3}) {
+                SCOPED_TRACE(phase);
+                // NULL must bypass the same over-precise input rejected above.
+                set_value(phase == 1 || phase == 2);
+                indicator = phase == 2 ? SQL_NULL_DATA : SQL_NTS;
+                status = SQL_PARAM_UNUSED;
+                processed = 99;
+                ASSERT_EQ(phase == 1 ? SQL_ERROR : SQL_SUCCESS, SQLExecute(hstmt));
+                EXPECT_EQ(1u, processed);
+                EXPECT_EQ(phase == 1 ? SQL_PARAM_ERROR : SQL_PARAM_SUCCESS, status);
+                if (phase == 1) {
+                    SQLCHAR state[6]{};
+                    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+                        state, nullptr, nullptr, 0, nullptr));
+                    EXPECT_STREQ("22008", reinterpret_cast<char*>(state));
+                    continue;
+                }
+                ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+                SQL_TIMESTAMP_STRUCT output{73, 1, 2, 3, 4, 5, 99};
+                SQLLEN length = 99;
+                ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_TYPE_TIMESTAMP,
+                    &output, sizeof(output), &length));
+                EXPECT_EQ(phase == 2 ? SQL_NULL_DATA : static_cast<SQLLEN>(sizeof(output)), length);
+                EXPECT_EQ(phase == 2 ? 73 : 2024, output.year);
+                EXPECT_EQ(phase == 2 ? 99u : test.fraction, output.fraction);
+                ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+            }
+            ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+                hstmt, SQL_ATTR_PARAM_STATUS_PTR, nullptr, 0));
+            ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+                hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, nullptr, 0));
+            ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_RESET_PARAMS));
+        }
+    }
 }
 
 TEST_F(PreparedStatementIntegrationTest,

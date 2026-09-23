@@ -2442,6 +2442,12 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   and full nanosecond text now run through all six SQL character targets with
   exact-fit, short and zero widths, NULL output preservation, status/count,
   repeated execution, and recovery checks. Undersized bindings return `22001`.
+- Audit batch 353 verifies timestamp fractional precision after explicit
+  metadata discovery for legacy and ODBC 3 timestamp structs plus narrow/wide
+  character input. Zero-, three-, and six-digit bindings retain their scale,
+  reject excess digits with `22008`, bypass invalid precision for NULL while
+  preserving output, report parameter status/count, and recover without
+  rebinding. Existing precision handling required no implementation change.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
