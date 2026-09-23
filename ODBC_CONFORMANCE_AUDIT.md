@@ -2390,10 +2390,12 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   `SQL_REAL`, `SQL_FLOAT`, and `SQL_DOUBLE` parameters. The driver now parses
   standard numeric literals into the bound SQL width before execution,
   returning `22003` for overflow or nonzero underflow and `22018` for
-  malformed or PostgreSQL-only nonfinite literals. Unit tests pin floating
-  boundary and output-preservation behavior; PostgreSQL tests cover exact
-  upper boundaries, accepted subnormals, overflow, underflow, recovery, and
-  narrow/wide input under both Driver Manager `SQLWCHAR` ABIs.
+  malformed or PostgreSQL-only nonfinite literals. Target-width C-locale
+  parsing keeps boundary decisions independent of host `long double`
+  precision. Unit tests pin floating boundary and output-preservation
+  behavior; PostgreSQL tests cover exact upper boundaries, accepted
+  subnormals, overflow, underflow, recovery, and narrow/wide input under both
+  Driver Manager `SQLWCHAR` ABIs.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

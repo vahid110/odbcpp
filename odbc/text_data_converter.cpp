@@ -18,6 +18,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace rs::odbc {
@@ -42,19 +43,29 @@ std::string_view trim_whitespace(std::string_view value) {
   return value;
 }
 
+struct NumericLocale {
+#ifdef _WIN32
+  _locale_t handle = _create_locale(LC_NUMERIC, "C");
+  ~NumericLocale() {
+    if (handle) _free_locale(handle);
+  }
+#else
+  locale_t handle = newlocale(LC_NUMERIC_MASK, "C", nullptr);
+  ~NumericLocale() {
+    if (handle) freelocale(handle);
+  }
+#endif
+};
+
+const NumericLocale& numeric_locale() {
+  static const NumericLocale locale;
+  return locale;
+}
+
 std::optional<long double> parse_number(const std::string& value,
                                         ConversionIssue* issue) {
-  struct NumericLocale {
-#ifdef _WIN32
-    _locale_t handle = _create_locale(LC_NUMERIC, "C");
-    ~NumericLocale() { if (handle) _free_locale(handle); }
-#else
-    locale_t handle = newlocale(LC_NUMERIC_MASK, "C", nullptr);
-    ~NumericLocale() { if (handle) freelocale(handle); }
-#endif
-  };
-  static const NumericLocale numeric_locale;
-  if (!numeric_locale.handle || value.empty()) {
+  const auto& locale = numeric_locale();
+  if (!locale.handle || value.empty()) {
     if (issue) *issue = ConversionIssue::InvalidCharacterValue;
     return std::nullopt;
   }
@@ -62,9 +73,9 @@ std::optional<long double> parse_number(const std::string& value,
   errno = 0;
 #ifdef _WIN32
   const auto parsed = static_cast<long double>(
-      _strtod_l(value.c_str(), &end, numeric_locale.handle));
+      _strtod_l(value.c_str(), &end, locale.handle));
 #else
-  const auto parsed = strtold_l(value.c_str(), &end, numeric_locale.handle);
+  const auto parsed = strtold_l(value.c_str(), &end, locale.handle);
 #endif
   if (end == value.c_str()) {
     if (issue) *issue = ConversionIssue::InvalidCharacterValue;
@@ -83,6 +94,59 @@ std::optional<long double> parse_number(const std::string& value,
     return std::nullopt;
   }
   return parsed;
+}
+
+template <typename T>
+std::optional<T> parse_floating_number(const std::string& value,
+                                       ConversionIssue* issue) {
+  const auto& locale = numeric_locale();
+  if (!locale.handle || value.empty()) {
+    if (issue) *issue = ConversionIssue::InvalidCharacterValue;
+    return std::nullopt;
+  }
+  char* end = nullptr;
+  errno = 0;
+  T parsed;
+#ifdef _WIN32
+  if constexpr (std::is_same_v<T, SQLREAL>) {
+    parsed = _strtof_l(value.c_str(), &end, locale.handle);
+  } else {
+    parsed = _strtod_l(value.c_str(), &end, locale.handle);
+  }
+#else
+  if constexpr (std::is_same_v<T, SQLREAL>) {
+    parsed = strtof_l(value.c_str(), &end, locale.handle);
+  } else {
+    parsed = strtod_l(value.c_str(), &end, locale.handle);
+  }
+#endif
+  if (end == value.c_str()) {
+    if (issue) *issue = ConversionIssue::InvalidCharacterValue;
+    return std::nullopt;
+  }
+  while (end != value.c_str() + value.size() &&
+         std::isspace(static_cast<unsigned char>(*end))) {
+    ++end;
+  }
+  if (end != value.c_str() + value.size()) {
+    if (issue) *issue = ConversionIssue::InvalidCharacterValue;
+    return std::nullopt;
+  }
+  if (!std::isfinite(parsed) || (errno == ERANGE && parsed == 0)) {
+    if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
+    return std::nullopt;
+  }
+  return parsed;
+}
+
+template <typename T>
+std::optional<T> parse_floating_value(const std::string& value,
+                                      ConversionIssue* issue) {
+  const auto text = trim_whitespace(value);
+  if (text == "NaN") return std::numeric_limits<T>::quiet_NaN();
+  if (text == "Infinity") return std::numeric_limits<T>::infinity();
+  if (text == "-Infinity") return -std::numeric_limits<T>::infinity();
+  return parse_floating_number<T>(value, issue);
 }
 
 template <typename T>
@@ -374,45 +438,15 @@ int hex_value(char ch) {
 SQLRETURN convert_floating(const std::string& value, SQLSMALLINT target_type,
                            void* buffer, SQLLEN* indicator,
                            ConversionIssue* issue) {
-  std::optional<long double> parsed;
-  const auto text = trim_whitespace(value);
-  if (text == "NaN") {
-    parsed = std::numeric_limits<long double>::quiet_NaN();
-  } else if (text == "Infinity") {
-    parsed = std::numeric_limits<long double>::infinity();
-  } else if (text == "-Infinity") {
-    parsed = -std::numeric_limits<long double>::infinity();
-  } else {
-    parsed = parse_number(value, issue);
-  }
-  if (!parsed) return SQL_ERROR;
   if (target_type == SQL_C_FLOAT) {
-    if (std::isfinite(*parsed) &&
-        (*parsed < -std::numeric_limits<SQLREAL>::max() ||
-         *parsed > std::numeric_limits<SQLREAL>::max())) {
-      if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
-      return SQL_ERROR;
-    }
-    const SQLREAL converted = static_cast<SQLREAL>(*parsed);
-    if (converted == 0 && *parsed != 0) {
-      if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
-      return SQL_ERROR;
-    }
-    std::memcpy(buffer, &converted, sizeof(converted));
+    const auto converted = parse_floating_value<SQLREAL>(value, issue);
+    if (!converted) return SQL_ERROR;
+    std::memcpy(buffer, &*converted, sizeof(SQLREAL));
     store_indicator(indicator, static_cast<SQLLEN>(sizeof(SQLREAL)));
   } else {
-    if (std::isfinite(*parsed) &&
-        (*parsed < -std::numeric_limits<SQLDOUBLE>::max() ||
-         *parsed > std::numeric_limits<SQLDOUBLE>::max())) {
-      if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
-      return SQL_ERROR;
-    }
-    const SQLDOUBLE converted = static_cast<SQLDOUBLE>(*parsed);
-    if (converted == 0 && *parsed != 0) {
-      if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
-      return SQL_ERROR;
-    }
-    std::memcpy(buffer, &converted, sizeof(converted));
+    const auto converted = parse_floating_value<SQLDOUBLE>(value, issue);
+    if (!converted) return SQL_ERROR;
+    std::memcpy(buffer, &*converted, sizeof(SQLDOUBLE));
     store_indicator(indicator, static_cast<SQLLEN>(sizeof(SQLDOUBLE)));
   }
   return SQL_SUCCESS;
