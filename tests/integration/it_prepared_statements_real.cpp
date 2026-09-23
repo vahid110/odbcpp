@@ -373,6 +373,64 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       NumericInputsToSqlTinyintUseSignedRange) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::integer", SQL_NTS));
+    SQLDOUBLE floating = 127.99;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_DOUBLE, SQL_TINYINT, 3, 0, &floating,
+        sizeof(floating), nullptr));
+    const auto expect_value = [&](SQLINTEGER expected) {
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQLINTEGER result = 999;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG,
+            &result, sizeof(result), nullptr));
+        EXPECT_EQ(expected, result);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    const auto expect_overflow = [&] {
+        SQLCHAR state[6]{};
+        EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    };
+    expect_value(127);
+    floating = -128.99;
+    expect_value(-128);
+    floating = 128.0;
+    expect_overflow();
+    floating = -129.0;
+    expect_overflow();
+    floating = std::numeric_limits<SQLDOUBLE>::infinity();
+    expect_overflow();
+    floating = 42.75;
+    expect_value(42);
+
+    SQLREAL single = -12.75f;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_FLOAT, SQL_TINYINT, 3, 0, &single, sizeof(single), nullptr));
+    expect_value(-12);
+
+    SQLSMALLINT signed_value = -129;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_SSHORT, SQL_TINYINT, 3, 0, &signed_value,
+        sizeof(signed_value), nullptr));
+    expect_overflow();
+    signed_value = -128;
+    expect_value(-128);
+
+    SQLUSMALLINT unsigned_value = 128;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_USHORT, SQL_TINYINT, 3, 0, &unsigned_value,
+        sizeof(unsigned_value), nullptr));
+    expect_overflow();
+    unsigned_value = 127;
+    expect_value(127);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        FloatingInputToSqlBigintTruncatesAndChecksRange) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
         (SQLCHAR*)"SELECT ?::bigint", SQL_NTS));

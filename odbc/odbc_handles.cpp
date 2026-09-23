@@ -61,6 +61,36 @@ struct DecimalDigits {
   std::size_t fractional;
 };
 
+struct SignedIntegerLimits {
+  SQLBIGINT minimum;
+  SQLBIGINT maximum;
+  int value_bits;
+};
+
+std::optional<SignedIntegerLimits> signed_integer_limits(
+    SQLSMALLINT sql_type) {
+  switch (sql_type) {
+    case SQL_TINYINT:
+      return SignedIntegerLimits{std::numeric_limits<SQLSCHAR>::min(),
+          std::numeric_limits<SQLSCHAR>::max(),
+          std::numeric_limits<SQLSCHAR>::digits};
+    case SQL_SMALLINT:
+      return SignedIntegerLimits{std::numeric_limits<SQLSMALLINT>::min(),
+          std::numeric_limits<SQLSMALLINT>::max(),
+          std::numeric_limits<SQLSMALLINT>::digits};
+    case SQL_INTEGER:
+      return SignedIntegerLimits{std::numeric_limits<SQLINTEGER>::min(),
+          std::numeric_limits<SQLINTEGER>::max(),
+          std::numeric_limits<SQLINTEGER>::digits};
+    case SQL_BIGINT:
+      return SignedIntegerLimits{std::numeric_limits<SQLBIGINT>::min(),
+          std::numeric_limits<SQLBIGINT>::max(),
+          std::numeric_limits<SQLBIGINT>::digits};
+    default:
+      return std::nullopt;
+  }
+}
+
 // Count significant decimal places without converting through floating point.
 // Leave malformed input and non-decimal spellings to the server's diagnostics.
 std::optional<DecimalDigits> decimal_digits(std::string_view text) {
@@ -3567,6 +3597,7 @@ SQLRETURN ODBCStatement::execute() {
       }
 
       std::string value;
+      std::optional<SQLBIGINT> signed_number;
       std::optional<SQLUBIGINT> unsigned_number;
       if (value_type == SQL_C_CHAR) {
         const auto* text = static_cast<const char*>(application.data_ptr);
@@ -3608,17 +3639,20 @@ SQLRETURN ODBCStatement::execute() {
         }
         value = *converted;
       } else if (value_type == SQL_C_STINYINT) {
-        value = std::to_string(
-            load_application_value<SQLSCHAR>(application.data_ptr));
+        signed_number = load_application_value<SQLSCHAR>(application.data_ptr);
+        value = std::to_string(*signed_number);
       } else if (value_type == SQL_C_SSHORT) {
-        value = std::to_string(
-            load_application_value<SQLSMALLINT>(application.data_ptr));
+        signed_number = load_application_value<SQLSMALLINT>(
+            application.data_ptr);
+        value = std::to_string(*signed_number);
       } else if (value_type == SQL_C_SLONG) {
-        value = std::to_string(
-            load_application_value<SQLINTEGER>(application.data_ptr));
+        signed_number = load_application_value<SQLINTEGER>(
+            application.data_ptr);
+        value = std::to_string(*signed_number);
       } else if (value_type == SQL_C_SBIGINT) {
-        value = std::to_string(
-            load_application_value<SQLBIGINT>(application.data_ptr));
+        signed_number = load_application_value<SQLBIGINT>(
+            application.data_ptr);
+        value = std::to_string(*signed_number);
       } else if (value_type == SQL_C_UTINYINT) {
         unsigned_number = load_application_value<SQLCHAR>(
             application.data_ptr);
@@ -3645,22 +3679,11 @@ SQLRETURN ODBCStatement::execute() {
           return complete_parameter_set(SQL_ERROR);
         }
         value = *formatted;
-        if (declared_sql_type == SQL_TINYINT ||
-            declared_sql_type == SQL_SMALLINT ||
-            declared_sql_type == SQL_INTEGER ||
-            declared_sql_type == SQL_BIGINT) {
+        if (const auto limits = signed_integer_limits(declared_sql_type)) {
           SQLBIGINT integer = 0;
           if (TextDataConverter::convert_data(value, SQL_C_SBIGINT,
                   &integer, 0, nullptr) == SQL_ERROR ||
-              (declared_sql_type == SQL_TINYINT &&
-               (integer < std::numeric_limits<SQLSCHAR>::min() ||
-                integer > std::numeric_limits<SQLSCHAR>::max())) ||
-              (declared_sql_type == SQL_SMALLINT &&
-               (integer < std::numeric_limits<SQLSMALLINT>::min() ||
-                integer > std::numeric_limits<SQLSMALLINT>::max())) ||
-              (declared_sql_type == SQL_INTEGER &&
-               (integer < std::numeric_limits<SQLINTEGER>::min() ||
-                integer > std::numeric_limits<SQLINTEGER>::max()))) {
+              integer < limits->minimum || integer > limits->maximum) {
             set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
                       "Numeric parameter is outside SQL integer range");
             return complete_parameter_set(SQL_ERROR);
@@ -3828,9 +3851,7 @@ SQLRETURN ODBCStatement::execute() {
           value_type == SQL_C_CHAR || value_type == SQL_C_WCHAR;
       const bool floating_input =
           value_type == SQL_C_FLOAT || value_type == SQL_C_DOUBLE;
-      const bool signed_integer_input = value_type == SQL_C_STINYINT ||
-          value_type == SQL_C_SSHORT || value_type == SQL_C_SLONG ||
-          value_type == SQL_C_SBIGINT;
+      const bool signed_integer_input = signed_number.has_value();
       const bool unsigned_integer_input = unsigned_number.has_value();
       const bool numeric_input = signed_integer_input ||
           unsigned_integer_input || floating_input ||
@@ -3860,10 +3881,7 @@ SQLRETURN ODBCStatement::execute() {
         }
       }
       using rs::core::database::QueryParameterType;
-      const bool integer_target =
-          implementation.concise_type == SQL_SMALLINT ||
-          implementation.concise_type == SQL_INTEGER ||
-          implementation.concise_type == SQL_BIGINT;
+      const auto integer_limits = signed_integer_limits(declared_sql_type);
       if ((character_input || value_type == SQL_C_NUMERIC) &&
           implementation.concise_type == SQL_BIT) {
         switch (classify_bit_numeric_literal(value)) {
@@ -3888,7 +3906,7 @@ SQLRETURN ODBCStatement::execute() {
         }
       }
       if (floating_input &&
-          (integer_target || implementation.concise_type == SQL_BIT)) {
+          (integer_limits || implementation.concise_type == SQL_BIT)) {
         const double number = value_type == SQL_C_FLOAT
             ? static_cast<double>(load_application_value<SQLREAL>(
                   application.data_ptr))
@@ -3907,12 +3925,8 @@ SQLRETURN ODBCStatement::execute() {
           value = number == 0 ? "0" : "1";
         } else {
           const double truncated = std::trunc(number);
-          const int target_digits = implementation.concise_type == SQL_SMALLINT
-              ? std::numeric_limits<SQLSMALLINT>::digits
-              : implementation.concise_type == SQL_INTEGER
-                  ? std::numeric_limits<SQLINTEGER>::digits
-                  : std::numeric_limits<SQLBIGINT>::digits;
-          const double upper_exclusive = std::ldexp(1.0, target_digits);
+          const double upper_exclusive = std::ldexp(
+              1.0, integer_limits->value_bits);
           if (!std::isfinite(number) ||
               truncated < -upper_exclusive || truncated >= upper_exclusive) {
             set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
@@ -3922,16 +3936,17 @@ SQLRETURN ODBCStatement::execute() {
           value = std::to_string(static_cast<SQLBIGINT>(truncated));
         }
       }
-      if (unsigned_integer_input && integer_target) {
-        const SQLUBIGINT maximum = implementation.concise_type == SQL_SMALLINT
-            ? static_cast<SQLUBIGINT>(
-                  std::numeric_limits<SQLSMALLINT>::max())
-            : implementation.concise_type == SQL_INTEGER
-                ? static_cast<SQLUBIGINT>(
-                      std::numeric_limits<SQLINTEGER>::max())
-                : static_cast<SQLUBIGINT>(
-                      std::numeric_limits<SQLBIGINT>::max());
-        if (*unsigned_number > maximum) {
+      if (signed_integer_input && integer_limits) {
+        if (*signed_number < integer_limits->minimum ||
+            *signed_number > integer_limits->maximum) {
+          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                    "Signed parameter is outside SQL integer range");
+          return complete_parameter_set(SQL_ERROR);
+        }
+      }
+      if (unsigned_integer_input && integer_limits) {
+        if (*unsigned_number >
+            static_cast<SQLUBIGINT>(integer_limits->maximum)) {
           set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
                     "Unsigned parameter is outside SQL integer range");
           return complete_parameter_set(SQL_ERROR);

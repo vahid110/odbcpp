@@ -2353,6 +2353,13 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   bound SQL type's limit. PostgreSQL tests cover both bounds, positive and
   negative overflow, recovery, and `NULL`. Other data sources may define
   unsigned tinyint and will need an explicit type contract before support.
+- Audit batch 339 enforces that same signed 8-bit `SQL_TINYINT` contract for
+  floating, signed-integer, and unsigned-integer C inputs. Range checks now use
+  the bound SQL type rather than PostgreSQL's promoted `integer` parameter
+  metadata, so fractions are truncated toward zero and values outside -128
+  through 127 return `22003` before execution. PostgreSQL tests cover both
+  floating widths, signed and unsigned inputs, both limits, non-finite input,
+  overflow, and recovery.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
