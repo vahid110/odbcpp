@@ -2360,6 +2360,10 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   through 127 return `22003` before execution. PostgreSQL tests cover both
   floating widths, signed and unsigned inputs, both limits, non-finite input,
   overflow, and recovery.
+- Audit batch 340 removes a race from the macOS SIGPIPE regression test. The
+  peer socket is now closed before `fork`, so the child cannot inherit a
+  transient live peer and report a successful send while the parent is still
+  closing its copy.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

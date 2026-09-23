@@ -378,11 +378,11 @@ TEST(SocketTransportDeadlineTest, ClosedPeerSendDoesNotRaiseSigpipe) {
   ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets), 0);
   SocketTransport transport;
   transport.adopt(sockets[0]);
+  close_test_socket(sockets[1]);
 
   const pid_t child = ::fork();
   if (child == 0) {
     ::signal(SIGPIPE, SIG_DFL);
-    close_test_socket(sockets[1]);
     const std::array<std::byte, 1> data{std::byte{'x'}};
     const auto result = transport.send(data, rs::util::make_deadline(1s));
     ::_exit(result.has_error() &&
@@ -391,7 +391,6 @@ TEST(SocketTransportDeadlineTest, ClosedPeerSendDoesNotRaiseSigpipe) {
                 ? 0 : 1);
   }
 
-  close_test_socket(sockets[1]);
   ASSERT_GT(child, 0);
   int status = 0;
   ASSERT_EQ(::waitpid(child, &status, 0), child);
