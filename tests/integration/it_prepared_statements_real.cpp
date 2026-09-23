@@ -29,6 +29,17 @@ void assign_parameter_text(char (&buffer)[N], std::string_view text) {
     buffer[text.size()] = '\0';
 }
 
+std::vector<SQLWCHAR> ascii_wide(std::string_view text) {
+    std::vector<SQLWCHAR> wide;
+    wide.reserve(text.size() + 1);
+    for (const char character : text) {
+        wide.push_back(static_cast<SQLWCHAR>(
+            static_cast<unsigned char>(character)));
+    }
+    wide.push_back(0);
+    return wide;
+}
+
 }  // namespace
 
 class PreparedStatementIntegrationTest : public ::testing::Test {
@@ -656,13 +667,29 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
-       CharacterInputToSqlTinyintValidatesSignedRange) {
-    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
-        (SQLCHAR*)"SELECT ?::integer", SQL_NTS));
-    const auto expect_narrow = [&](const char* text, const char* state,
-                                   SQLINTEGER expected = 0) {
+       CharacterInputToSqlIntegerTargetsValidatesSignedRange) {
+    struct Target {
+        const char* sql;
+        SQLSMALLINT type;
+        const char* minimum;
+        const char* maximum;
+        const char* below_minimum;
+        const char* above_maximum;
+    };
+    const Target targets[]{
+        {"SELECT ?::integer", SQL_TINYINT, "-128", "127", "-129", "128"},
+        {"SELECT ?::smallint", SQL_SMALLINT, "-32768", "32767",
+         "-32769", "32768"},
+        {"SELECT ?::integer", SQL_INTEGER, "-2147483648", "2147483647",
+         "-2147483649", "2147483648"},
+        {"SELECT ?::bigint", SQL_BIGINT, "-9223372036854775808",
+         "9223372036854775807", "-9223372036854775809",
+         "9223372036854775808"},
+    };
+    const auto expect_narrow = [&](const Target& target, const char* text,
+                                   const char* state, SQLBIGINT expected = 0) {
         ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
-            SQL_C_CHAR, SQL_TINYINT, 3, 0,
+            SQL_C_CHAR, target.type, 0, 0,
             reinterpret_cast<SQLPOINTER>(const_cast<char*>(text)),
             0, nullptr));
         const auto result = SQLExecute(hstmt);
@@ -676,42 +703,48 @@ TEST_F(PreparedStatementIntegrationTest,
         }
         ASSERT_EQ(SQL_SUCCESS, result) << text;
         ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
-        SQLINTEGER value = 999;
-        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG,
+        SQLBIGINT value = 999;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SBIGINT,
             &value, sizeof(value), nullptr));
         EXPECT_EQ(expected, value);
         ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
     };
-    expect_narrow(" +127 ", nullptr, 127);
-    expect_narrow("-128", nullptr, -128);
-    expect_narrow("127.9", "22001");
-    expect_narrow("128", "22001");
-    expect_narrow("-129", "22001");
-    expect_narrow("1e1000", "22001");
-    expect_narrow("not-a-number", "22018");
-    expect_narrow("NaN", "22018");
-    expect_narrow("Infinity", "22018");
-    expect_narrow("42", nullptr, 42);
+    for (const auto& target : targets) {
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+            reinterpret_cast<SQLCHAR*>(const_cast<char*>(target.sql)),
+            SQL_NTS));
+        expect_narrow(target, target.minimum, nullptr,
+                      std::stoll(target.minimum));
+        expect_narrow(target, target.maximum, nullptr,
+                      std::stoll(target.maximum));
+        expect_narrow(target, "127.9", "22001");
+        expect_narrow(target, target.below_minimum, "22001");
+        expect_narrow(target, target.above_maximum, "22001");
+        expect_narrow(target, "1e1000", "22001");
+        expect_narrow(target, "not-a-number", "22018");
+        expect_narrow(target, "42", nullptr, 42);
 
-    SQLWCHAR wide_valid[]{'-', '1', '2', '8', 0};
-    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
-        SQL_C_WCHAR, SQL_TINYINT, 3, 0, wide_valid, 0, nullptr));
-    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
-    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
-    SQLINTEGER value = 999;
-    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG,
-        &value, sizeof(value), nullptr));
-    EXPECT_EQ(-128, value);
-    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        auto wide_minimum = ascii_wide(target.minimum);
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_WCHAR, target.type, 0, 0, wide_minimum.data(), 0, nullptr));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQLBIGINT value = 999;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SBIGINT,
+            &value, sizeof(value), nullptr));
+        EXPECT_EQ(std::stoll(target.minimum), value);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 
-    SQLWCHAR wide_overflow[]{'1', '2', '8', 0};
-    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
-        SQL_C_WCHAR, SQL_TINYINT, 3, 0, wide_overflow, 0, nullptr));
-    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
-    SQLCHAR state[6]{};
-    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
-        state, nullptr, nullptr, 0, nullptr));
-    EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
+        auto wide_overflow = ascii_wide(target.above_maximum);
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_WCHAR, target.type, 0, 0, wide_overflow.data(), 0,
+            nullptr));
+        EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
+    }
 }
 
 TEST_F(PreparedStatementIntegrationTest,

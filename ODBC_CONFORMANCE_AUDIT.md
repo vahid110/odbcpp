@@ -2378,6 +2378,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   by that call, and restore the prior thread mask without changing the host
   application's global signal disposition. The existing abrupt-handshake
   regression caught this under Linux sanitizers.
+- Audit batch 343 extends the character-to-integer parameter conversion rules
+  from `SQL_TINYINT` to `SQL_SMALLINT`, `SQL_INTEGER`, and `SQL_BIGINT`.
+  Narrow exact boundary values and wide exact minima are accepted, while
+  fractional or whole-digit loss returns `22001` and malformed literals
+  return `22018` before PostgreSQL can substitute server-specific diagnostics.
+  PostgreSQL tests cover both bounds, overflow in both directions, huge
+  exponents, malformed input, and recovery for every signed integer target;
+  the Driver Manager suites cover wide input under both `SQLWCHAR` ABIs.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

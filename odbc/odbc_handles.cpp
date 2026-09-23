@@ -3882,7 +3882,7 @@ SQLRETURN ODBCStatement::execute() {
       }
       using rs::core::database::QueryParameterType;
       const auto integer_limits = signed_integer_limits(declared_sql_type);
-      if (character_input && declared_sql_type == SQL_TINYINT) {
+      if (character_input && integer_limits) {
         if (!decimal_digits(value)) {
           set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
                     "Character parameter is not a numeric literal");
@@ -3893,14 +3893,14 @@ SQLRETURN ODBCStatement::execute() {
             value, SQL_C_SBIGINT, &integer, 0, nullptr);
         if (converted == SQL_ERROR) {
           set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
-                    "Character parameter is outside SQL_TINYINT range");
+                    "Character parameter is outside SQL integer range");
           return complete_parameter_set(SQL_ERROR);
         }
         if (converted == SQL_SUCCESS_WITH_INFO ||
             integer < integer_limits->minimum ||
             integer > integer_limits->maximum) {
           set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
-                    "Character parameter loses digits as SQL_TINYINT");
+                    "Character parameter loses digits as SQL integer");
           return complete_parameter_set(SQL_ERROR);
         }
         value = std::to_string(integer);
