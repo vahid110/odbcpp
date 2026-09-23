@@ -2425,6 +2425,12 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   indicator-selected slices, empty and NULL input, oversized input (`22001`),
   invalid `SQL_NTS` (`HY090`), output preservation, status/count reporting,
   and recovery without rebinding.
+- Audit batch 350 applies the preserved bound SQL binary length to narrow
+  and wide hexadecimal character parameters after metadata discovery.
+  PostgreSQL tests cover all three binary targets, exact slices, empty and
+  NULL input, ignored odd trailing characters, embedded-NUL rejection
+  (`22018`), untouched output bytes, status/count reporting, and repeated
+  execution through explicit lengths and `SQL_NTS` after local errors.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

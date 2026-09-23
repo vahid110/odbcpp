@@ -4129,7 +4129,7 @@ SQLRETURN ODBCStatement::execute() {
                     "Character binary parameter is not hexadecimal");
           return complete_parameter_set(SQL_ERROR);
         }
-        if (static_cast<SQLULEN>(decoded->size()) > implementation.length) {
+        if (static_cast<SQLULEN>(decoded->size()) > declared_sql_length) {
           set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
                     "Character binary parameter exceeds SQL binary length");
           return complete_parameter_set(SQL_ERROR);

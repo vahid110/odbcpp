@@ -1420,6 +1420,68 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       CharacterBinaryParameterHonorsLengthsNullAndRecovery) {
+    for (const SQLSMALLINT sql_type : {SQL_BINARY, SQL_VARBINARY, SQL_LONGVARBINARY}) {
+        SCOPED_TRACE(sql_type);
+        for (const SQLSMALLINT c_type : {SQL_C_CHAR, SQL_C_WCHAR}) {
+            SCOPED_TRACE(c_type);
+            ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?::bytea", SQL_NTS));
+            char narrow[]{'f', 'F', 0, 'a'};
+            SQLWCHAR wide[]{'f', 'F', 0, 'a'};
+            const SQLLEN unit = c_type == SQL_C_CHAR ? 1 : sizeof(SQLWCHAR);
+            SQLPOINTER input = c_type == SQL_C_CHAR
+                ? static_cast<SQLPOINTER>(narrow) : static_cast<SQLPOINTER>(wide);
+            SQLLEN length = 2 * unit;
+            SQLUSMALLINT status = SQL_PARAM_UNUSED;
+            SQLULEN processed = 0;
+            ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+                hstmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+            ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+                hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+            ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+                c_type, sql_type, 1, 0, input, 4 * unit, &length));
+            SQLSMALLINT described_type = 0;
+            ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+                &described_type, nullptr, nullptr, nullptr));
+            EXPECT_EQ(SQL_VARBINARY, described_type);
+            for (const SQLLEN size : {2 * unit, SQLLEN{0}, 3 * unit, 4 * unit,
+                                     SQLLEN{SQL_NULL_DATA}, SQLLEN{SQL_NTS}, 2 * unit}) {
+                SCOPED_TRACE(size);
+                length = size;
+                status = SQL_PARAM_UNUSED;
+                processed = 99;
+                const bool invalid = size == 4 * unit;
+                ASSERT_EQ(invalid ? SQL_ERROR : SQL_SUCCESS, SQLExecute(hstmt));
+                EXPECT_EQ(1u, processed);
+                EXPECT_EQ(invalid ? SQL_PARAM_ERROR : SQL_PARAM_SUCCESS, status);
+                if (invalid) {
+                    SQLCHAR state[6]{};
+                    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+                        state, nullptr, nullptr, 0, nullptr));
+                    EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
+                    continue;
+                }
+                ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+                unsigned char output[]{0xa5, 0xa5};
+                SQLLEN output_length = 99;
+                ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BINARY,
+                    output, sizeof(output), &output_length));
+                const bool empty_or_null = size == 0 || size == SQL_NULL_DATA;
+                EXPECT_EQ(empty_or_null ? size : 1, output_length);
+                EXPECT_EQ(empty_or_null ? 0xa5 : 0xff, output[0]);
+                EXPECT_EQ(0xa5, output[1]);
+                ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+            }
+            ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+                hstmt, SQL_ATTR_PARAM_STATUS_PTR, nullptr, 0));
+            ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+                hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, nullptr, 0));
+            ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_RESET_PARAMS));
+        }
+    }
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        ExplicitZeroCharacterParameterLengthIsEmpty) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
         (SQLCHAR*)"SELECT octet_length(?::text)", SQL_NTS));
