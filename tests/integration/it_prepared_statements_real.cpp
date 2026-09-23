@@ -2246,6 +2246,16 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       CharacterTimestampInputHonorsLengthsNullAndRecovery) {
+    check_temporal_character_lengths(SQL_TYPE_TIMESTAMP, 0,
+        "SELECT (?::timestamp)::text", "2024-02-29 12:34:56");
+    check_temporal_character_lengths(SQL_TYPE_TIMESTAMP, 3,
+        "SELECT (?::timestamp)::text", "2024-02-29 12:34:56.123");
+    check_temporal_character_lengths(SQL_TYPE_TIMESTAMP, 6,
+        "SELECT (?::timestamp)::text", "2024-02-29 12:34:56.123456");
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        CharacterDateInputHonorsLengthsNullAndRecovery) {
     check_temporal_character_lengths(SQL_TYPE_DATE, 0,
         "SELECT (?::date)::text", "2024-02-29");

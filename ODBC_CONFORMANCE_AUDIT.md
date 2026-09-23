@@ -2458,6 +2458,12 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   parameters, covering narrow/wide exact slices, empty and embedded-NUL
   rejection (`22018`), misaligned wide input (`HY090`), NULL output
   preservation, status/count, and recovery after each error without rebinding.
+- Audit batch 356 extends the temporal character byte-length matrix to
+  timestamps at zero, three, and six fractional digits. Narrow/wide exact
+  slices and `SQL_NTS` succeed, empty and NUL-containing text returns
+  `22018`, and misaligned wide bytes return `HY090`. NULL preserves output;
+  status/count and successful reuse after every error are checked without
+  rebinding. Date, time, and timestamp matrices share one test helper.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
