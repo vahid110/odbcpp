@@ -2431,6 +2431,12 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   NULL input, ignored odd trailing characters, embedded-NUL rejection
   (`22018`), untouched output bytes, status/count reporting, and repeated
   execution through explicit lengths and `SQL_NTS` after local errors.
+- Audit batch 351 preserves bound character length for date and time struct
+  parameters after PostgreSQL metadata discovery. All six SQL character
+  targets now have exact-fit, one-short and zero-width, NULL, status/count,
+  repeated execution, and recovery coverage. Valid values retain their
+  application-bound capacity; undersized bindings return `22001` even when
+  the server reports a different character type or length.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

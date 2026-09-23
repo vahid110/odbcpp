@@ -3709,7 +3709,7 @@ SQLRETURN ODBCStatement::execute() {
         }
         if (query_param.type ==
                 rs::core::database::QueryParameterType::Text &&
-            implementation.length < formatted->size()) {
+            declared_sql_length < formatted->size()) {
           set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
                     "Date parameter exceeds SQL character length");
           return complete_parameter_set(SQL_ERROR);
@@ -3729,7 +3729,7 @@ SQLRETURN ODBCStatement::execute() {
         }
         if (query_param.type ==
                 rs::core::database::QueryParameterType::Text &&
-            implementation.length < formatted->size()) {
+            declared_sql_length < formatted->size()) {
           set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
                     "Time parameter exceeds SQL character length");
           return complete_parameter_set(SQL_ERROR);

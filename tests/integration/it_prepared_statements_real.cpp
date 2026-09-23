@@ -142,6 +142,70 @@ protected:
         ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_RESET_PARAMS));
     }
 
+    void check_temporal_character_limits(SQLSMALLINT c_type, SQLPOINTER input,
+                                         SQLLEN input_size, const char* expected) {
+        const auto width = static_cast<SQLULEN>(std::strlen(expected));
+        for (const SQLSMALLINT sql_type : std::initializer_list<SQLSMALLINT>{
+                 SQL_CHAR, SQL_VARCHAR, SQL_LONGVARCHAR,
+                 SQL_WCHAR, SQL_WVARCHAR, SQL_WLONGVARCHAR}) {
+            SCOPED_TRACE(sql_type);
+            ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?::text", SQL_NTS));
+            SQLLEN indicator = 0;
+            SQLUSMALLINT status = SQL_PARAM_UNUSED;
+            SQLULEN processed = 0;
+            ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+                hstmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+            ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+                hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+            const auto execute = [&](SQLRETURN expected_result) {
+                status = SQL_PARAM_UNUSED;
+                processed = 99;
+                EXPECT_EQ(expected_result, SQLExecute(hstmt));
+                EXPECT_EQ(1u, processed);
+                EXPECT_EQ(expected_result == SQL_SUCCESS
+                    ? SQL_PARAM_SUCCESS : SQL_PARAM_ERROR, status);
+            };
+            const auto expect_value = [&](bool is_null) {
+                execute(SQL_SUCCESS);
+                ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+                char output[40] = "untouched";
+                SQLLEN length = 99;
+                ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+                    output, sizeof(output), &length));
+                EXPECT_EQ(is_null ? SQL_NULL_DATA : static_cast<SQLLEN>(width), length);
+                EXPECT_STREQ(is_null ? "untouched" : expected, output);
+                ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+            };
+            for (const SQLULEN limit : {width, width - 1, SQLULEN{0}, width}) {
+                SCOPED_TRACE(limit);
+                indicator = 0;
+                ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+                    c_type, sql_type, limit, 0, input, input_size, &indicator));
+                SQLSMALLINT described_type = 0;
+                ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+                    &described_type, nullptr, nullptr, nullptr));
+                EXPECT_EQ(SQL_VARCHAR, described_type);
+                if (limit == width) {
+                    expect_value(false);
+                    expect_value(false);
+                } else {
+                    execute(SQL_ERROR);
+                    SQLCHAR state[6]{};
+                    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+                        state, nullptr, nullptr, 0, nullptr));
+                    EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
+                }
+                indicator = SQL_NULL_DATA;
+                expect_value(true);
+            }
+            ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+                hstmt, SQL_ATTR_PARAM_STATUS_PTR, nullptr, 0));
+            ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+                hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, nullptr, 0));
+            ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_RESET_PARAMS));
+        }
+    }
+
     SQLHENV henv = nullptr;
     SQLHDBC hdbc = nullptr;
     SQLHSTMT hstmt = nullptr;
@@ -2611,43 +2675,10 @@ TEST_F(PreparedStatementIntegrationTest,
 
 TEST_F(PreparedStatementIntegrationTest,
        DateAndTimeStructCharacterTargetsHonorDeclaredLength) {
-    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
     SQL_DATE_STRUCT date{2024, 2, 29};
     SQL_TIME_STRUCT time{12, 34, 56};
-    SQLCHAR state[6]{};
-    const auto check = [&](SQLSMALLINT c_type, SQLSMALLINT sql_type,
-                           SQLPOINTER input, SQLLEN size, SQLULEN width,
-                           const char* expected) {
-        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
-            c_type, sql_type, width, 0, input, size, nullptr));
-        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
-        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
-        SQLCHAR output[32]{};
-        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
-            output, sizeof(output), nullptr));
-        EXPECT_STREQ(expected, reinterpret_cast<char*>(output));
-        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
-
-        for (const SQLULEN short_width : {
-                 width - 1, static_cast<SQLULEN>(0)}) {
-            ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1,
-                SQL_PARAM_INPUT, c_type, sql_type, short_width, 0,
-                input, size, nullptr));
-            const auto result = SQLExecute(hstmt);
-            EXPECT_EQ(SQL_ERROR, result);
-            if (result != SQL_ERROR) {
-                SQLCloseCursor(hstmt);
-                continue;
-            }
-            ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
-                state, nullptr, nullptr, 0, nullptr));
-            EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
-        }
-    };
-    check(SQL_C_TYPE_DATE, SQL_VARCHAR, &date, sizeof(date), 10,
-          "2024-02-29");
-    check(SQL_C_TYPE_TIME, SQL_WVARCHAR, &time, sizeof(time), 8,
-          "12:34:56");
+    check_temporal_character_limits(SQL_C_TYPE_DATE, &date, sizeof(date), "2024-02-29");
+    check_temporal_character_limits(SQL_C_TYPE_TIME, &time, sizeof(time), "12:34:56");
 }
 
 TEST_F(PreparedStatementIntegrationTest,
