@@ -3126,6 +3126,23 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       TimestampParametersHandleUnalignedBuffersAndRecovery) {
+    const SQL_TIMESTAMP_STRUCT valid{2024, 2, 29, 12, 34, 56, 123456000u};
+    for (const SQLSMALLINT c_type :
+         std::initializer_list<SQLSMALLINT>{SQL_C_TIMESTAMP, SQL_C_TYPE_TIMESTAMP}) {
+        SCOPED_TRACE(c_type);
+        check_unaligned_temporal_parameter(c_type, SQL_TYPE_TIMESTAMP,
+            "SELECT (?::timestamp)::text", valid,
+            SQL_TIMESTAMP_STRUCT{2023, 2, 29, 12, 34, 56, 123456000u},
+            "2024-02-29 12:34:56.123456", "22007", 6);
+        check_unaligned_temporal_parameter(c_type, SQL_TYPE_TIMESTAMP,
+            "SELECT (?::timestamp)::text", valid,
+            SQL_TIMESTAMP_STRUCT{2024, 2, 29, 12, 34, 56, 123456789u},
+            "2024-02-29 12:34:56.123456", "22008", 6);
+    }
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        NumericParametersMayUseUnalignedBuffers) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
         (SQLCHAR*)"SELECT ?::integer, ?::real, ?::double precision",

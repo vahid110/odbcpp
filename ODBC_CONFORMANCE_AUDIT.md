@@ -2479,6 +2479,11 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   fields return `22007`, NULL bypasses invalid fields while preserving output,
   and valid reuse succeeds without rebinding. Tests also verify untouched
   input storage and guard bytes plus parameter status/count reporting.
+- Audit batch 360 extends unaligned parameter coverage to legacy and ODBC 3
+  timestamp structs. Valid microsecond values round-trip; invalid calendar
+  fields return `22007`, excess fractional precision returns `22008`, and
+  both cases recover through NULL and valid reuse without rebinding. Input
+  storage, guard bytes, NULL output preservation, and status/count are checked.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
