@@ -67,6 +67,78 @@ protected:
         if (henv) SQLFreeHandle(SQL_HANDLE_ENV, henv);
     }
     
+    void check_numeric_character_lengths(SQLSMALLINT sql_type,
+                                         const char* sql) {
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+            reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql)), SQL_NTS));
+        SQLUSMALLINT status = SQL_PARAM_UNUSED;
+        SQLULEN processed = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+            hstmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+            hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+        for (const auto c_type : {SQL_C_CHAR, SQL_C_WCHAR}) {
+            SCOPED_TRACE(c_type);
+            char narrow[]{'4', '2', '\0', 'x'};
+            SQLWCHAR wide[]{'4', '2', 0, 'x'};
+            const SQLLEN unit = c_type == SQL_C_CHAR
+                ? 1 : static_cast<SQLLEN>(sizeof(SQLWCHAR));
+            SQLPOINTER input = c_type == SQL_C_CHAR
+                ? static_cast<SQLPOINTER>(narrow)
+                : static_cast<SQLPOINTER>(wide);
+            SQLLEN length = 2 * unit;
+            ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1,
+                SQL_PARAM_INPUT, static_cast<SQLSMALLINT>(c_type),
+                sql_type, 0, 0, input, 4 * unit, &length));
+            const auto execute = [&](SQLRETURN expected) {
+                status = SQL_PARAM_UNUSED;
+                processed = 99;
+                EXPECT_EQ(expected, SQLExecute(hstmt));
+                EXPECT_EQ(1u, processed);
+                EXPECT_EQ(expected == SQL_SUCCESS
+                    ? SQL_PARAM_SUCCESS : SQL_PARAM_ERROR, status);
+            };
+            const auto expect_value = [&](bool is_null) {
+                execute(SQL_SUCCESS);
+                ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+                SQLDOUBLE value = -7;
+                SQLLEN indicator = 99;
+                ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_DOUBLE,
+                    &value, sizeof(value), &indicator));
+                if (is_null) {
+                    EXPECT_EQ(SQL_NULL_DATA, indicator);
+                    EXPECT_DOUBLE_EQ(-7, value);
+                } else {
+                    EXPECT_DOUBLE_EQ(42, value);
+                    EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), indicator);
+                }
+                ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+            };
+            expect_value(false);
+            // Explicit lengths include NUL bytes; only SQL_NTS stops at NUL.
+            for (const SQLLEN invalid_length : {SQLLEN{0}, 3 * unit, 4 * unit}) {
+                length = invalid_length;
+                execute(SQL_ERROR);
+                SQLCHAR state[6]{};
+                ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT,
+                    hstmt, 1, state, nullptr, nullptr, 0, nullptr));
+                EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
+            }
+            length = SQL_NULL_DATA;
+            expect_value(true);
+            length = SQL_NTS;
+            expect_value(false);
+            length = 2 * unit;
+            expect_value(false);
+        }
+        // The descriptor must not retain pointers to this helper's locals.
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+            hstmt, SQL_ATTR_PARAM_STATUS_PTR, nullptr, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+            hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, nullptr, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_RESET_PARAMS));
+    }
+
     SQLHENV henv = nullptr;
     SQLHDBC hdbc = nullptr;
     SQLHSTMT hstmt = nullptr;
@@ -744,6 +816,15 @@ TEST_F(PreparedStatementIntegrationTest,
         ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
             state, nullptr, nullptr, 0, nullptr));
         EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
+    }
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       CharacterIntegerInputHonorsLengthsNullAndRecovery) {
+    for (const auto type : {SQL_TINYINT, SQL_SMALLINT, SQL_INTEGER, SQL_BIGINT}) {
+        SCOPED_TRACE(type);
+        check_numeric_character_lengths(static_cast<SQLSMALLINT>(type),
+                                        "SELECT ?::bigint");
     }
 }
 

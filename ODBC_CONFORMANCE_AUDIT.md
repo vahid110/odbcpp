@@ -2396,6 +2396,12 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   behavior; PostgreSQL tests cover exact upper boundaries, accepted
   subnormals, overflow, underflow, recovery, and narrow/wide input under both
   Driver Manager `SQLWCHAR` ABIs.
+- Audit batch 345 adds explicit-length and NULL regression coverage for
+  narrow/wide character input to all four signed SQL integer targets.
+  Tests distinguish a two-character slice from an explicitly included NUL,
+  reject empty and embedded-NUL literals with `22018`, verify NULL output
+  preservation and parameter status/count reporting, and recover through
+  both `SQL_NTS` and explicit-length execution after local errors.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
