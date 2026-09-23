@@ -913,6 +913,15 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       CharacterDecimalInputHonorsLengthsNullAndRecovery) {
+    for (const auto type : {SQL_DECIMAL, SQL_NUMERIC}) {
+        SCOPED_TRACE(type);
+        check_numeric_character_lengths(static_cast<SQLSMALLINT>(type),
+                                        "SELECT ?::numeric");
+    }
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        CharacterFloatingInputHonorsLengthsNullAndRecovery) {
     for (const auto type : {SQL_REAL, SQL_FLOAT, SQL_DOUBLE}) {
         SCOPED_TRACE(type);

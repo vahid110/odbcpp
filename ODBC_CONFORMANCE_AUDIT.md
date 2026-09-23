@@ -2408,6 +2408,11 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   terminator; malformed input returns `22018` without executing a query, and
   NULL bypasses numeric parsing. The integration cases run with both native
   two-byte and four-byte driver `SQLWCHAR` builds.
+- Audit batch 347 extends narrow/wide character parameter length and NULL
+  regression coverage to `SQL_DECIMAL` and `SQL_NUMERIC`. Explicit slices
+  succeed, empty and NUL-containing literals return `22018`, NULL preserves
+  the output buffer, and status/count reporting and subsequent execution
+  recover correctly after malformed input.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
