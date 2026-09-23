@@ -119,16 +119,22 @@ protected:
             };
             expect_value(false);
             // Explicit lengths include NUL bytes; only SQL_NTS stops at NUL.
-            for (const SQLLEN invalid_length : {SQLLEN{0}, 3 * unit, 4 * unit}) {
+            std::vector<SQLLEN> invalid_lengths{0, 3 * unit, 4 * unit};
+            if (c_type == SQL_C_WCHAR) invalid_lengths.push_back(2 * unit - 1);
+            for (const SQLLEN invalid_length : invalid_lengths) {
+                SCOPED_TRACE(invalid_length);
                 length = invalid_length;
                 execute(SQL_ERROR);
                 SQLCHAR state[6]{};
                 ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT,
                     hstmt, 1, state, nullptr, nullptr, 0, nullptr));
-                EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
+                EXPECT_STREQ(invalid_length == 2 * unit - 1 ? "HY090" : "22018",
+                             reinterpret_cast<char*>(state));
+                length = SQL_NULL_DATA;
+                expect_value(true);
+                length = 2 * unit;
+                expect_value(false);
             }
-            length = SQL_NULL_DATA;
-            expect_value(true);
             length = SQL_NTS;
             expect_value(false);
             length = 2 * unit;

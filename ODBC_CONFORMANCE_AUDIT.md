@@ -2464,6 +2464,11 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   `22018`, and misaligned wide bytes return `HY090`. NULL preserves output;
   status/count and successful reuse after every error are checked without
   rebinding. Date, time, and timestamp matrices share one test helper.
+- Audit batch 357 extends the shared character-to-numeric length matrix
+  across integer, approximate numeric, decimal/numeric, and bit targets.
+  Misaligned wide-character byte lengths return `HY090`; every malformed
+  input is followed immediately by NULL and explicit-length recovery with
+  status/count checks. Both native driver character widths run this matrix.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
