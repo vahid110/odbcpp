@@ -1291,6 +1291,65 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       BinaryParameterHonorsIndicatorLengthsNullAndRecovery) {
+    for (const SQLSMALLINT sql_type : {SQL_BINARY, SQL_VARBINARY, SQL_LONGVARBINARY}) {
+        SCOPED_TRACE(sql_type);
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?::bytea", SQL_NTS));
+        unsigned char input[]{0x00, 0xff, 0x7f};
+        SQLLEN length = 2;
+        SQLUSMALLINT status = SQL_PARAM_UNUSED;
+        SQLULEN processed = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+            hstmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+            hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_BINARY, sql_type, 2, 0, input, sizeof(input), &length));
+        SQLSMALLINT described_type = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+            &described_type, nullptr, nullptr, nullptr));
+        EXPECT_EQ(SQL_VARBINARY, described_type);
+        for (const SQLLEN size : {SQLLEN{2}, SQLLEN{0}, SQLLEN{3},
+                                 SQLLEN{SQL_NTS}, SQLLEN{SQL_NULL_DATA}, SQLLEN{2}}) {
+            SCOPED_TRACE(size);
+            length = size;
+            status = SQL_PARAM_UNUSED;
+            processed = 99;
+            const char* state = size == 3 ? "22001" : size == SQL_NTS ? "HY090" : nullptr;
+            ASSERT_EQ(state ? SQL_ERROR : SQL_SUCCESS, SQLExecute(hstmt));
+            EXPECT_EQ(1u, processed);
+            EXPECT_EQ(state ? SQL_PARAM_ERROR : SQL_PARAM_SUCCESS, status);
+            if (state) {
+                SQLCHAR actual[6]{};
+                ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+                    actual, nullptr, nullptr, 0, nullptr));
+                EXPECT_STREQ(state, reinterpret_cast<char*>(actual));
+                continue;
+            }
+            ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+            unsigned char output[]{0xa5, 0xa5, 0xa5};
+            SQLLEN output_length = 99;
+            ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_BINARY,
+                output, sizeof(output), &output_length));
+            EXPECT_EQ(size, output_length);
+            if (size == 2) {
+                EXPECT_EQ(0, std::memcmp(input, output, 2));
+            } else {
+                EXPECT_EQ(0xa5, output[0]);
+                EXPECT_EQ(0xa5, output[1]);
+            }
+            EXPECT_EQ(0xa5, output[2]);
+            ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        }
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+            hstmt, SQL_ATTR_PARAM_STATUS_PTR, nullptr, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+            hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, nullptr, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_RESET_PARAMS));
+    }
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        CharacterBinaryParameterDecodesHexAndValidatesLength) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
     SQLLEN input_length = SQL_NTS;

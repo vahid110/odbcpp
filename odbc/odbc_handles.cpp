@@ -3577,7 +3577,7 @@ SQLRETURN ODBCStatement::execute() {
       SQLSMALLINT value_type = application.concise_type;
       const auto declared_sql_type = implementation.bound_sql_type != 0
           ? implementation.bound_sql_type : implementation.concise_type;
-      const auto declared_sql_length = implementation.bound_sql_length != 0
+      const auto declared_sql_length = implementation.bound_sql_type != 0
           ? implementation.bound_sql_length : implementation.length;
       const auto declared_sql_precision =
           implementation.bound_sql_precision != 0
@@ -3833,7 +3833,7 @@ SQLRETURN ODBCStatement::execute() {
         }
         if (query_param.type ==
                 rs::core::database::QueryParameterType::Binary &&
-            static_cast<SQLULEN>(length) > implementation.length) {
+            static_cast<SQLULEN>(length) > declared_sql_length) {
           set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
                     "Binary parameter exceeds SQL binary length");
           return complete_parameter_set(SQL_ERROR);

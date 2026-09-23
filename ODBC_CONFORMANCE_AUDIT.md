@@ -2418,6 +2418,13 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   `01` slice is accepted as true, while explicitly included NUL bytes and
   empty input return `22018`; NULL bypasses bit-literal validation and both
   null-terminated and explicit-length executions recover after errors.
+- Audit batch 349 preserves the application-bound SQL binary length when
+  PostgreSQL refreshes parameter metadata. Raw binary parameters no longer
+  fail valid repeated execution after server discovery replaces IPD length.
+  Tests cover all three SQL binary targets, explicit metadata discovery,
+  indicator-selected slices, empty and NULL input, oversized input (`22001`),
+  invalid `SQL_NTS` (`HY090`), output preservation, status/count reporting,
+  and recovery without rebinding.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
