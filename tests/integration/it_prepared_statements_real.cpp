@@ -68,7 +68,7 @@ protected:
     }
     
     void check_numeric_character_lengths(SQLSMALLINT sql_type,
-                                         const char* sql) {
+                                         const char* sql, bool bit_target = false) {
         ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
             reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql)), SQL_NTS));
         SQLUSMALLINT status = SQL_PARAM_UNUSED;
@@ -79,8 +79,11 @@ protected:
             hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
         for (const auto c_type : {SQL_C_CHAR, SQL_C_WCHAR}) {
             SCOPED_TRACE(c_type);
-            char narrow[]{'4', '2', '\0', 'x'};
-            SQLWCHAR wide[]{'4', '2', 0, 'x'};
+            const char first = bit_target ? '0' : '4';
+            const char second = bit_target ? '1' : '2';
+            char narrow[]{first, second, '\0', 'x'};
+            SQLWCHAR wide[]{static_cast<SQLWCHAR>(first),
+                            static_cast<SQLWCHAR>(second), 0, 'x'};
             const SQLLEN unit = c_type == SQL_C_CHAR
                 ? 1 : static_cast<SQLLEN>(sizeof(SQLWCHAR));
             SQLPOINTER input = c_type == SQL_C_CHAR
@@ -109,7 +112,7 @@ protected:
                     EXPECT_EQ(SQL_NULL_DATA, indicator);
                     EXPECT_DOUBLE_EQ(-7, value);
                 } else {
-                    EXPECT_DOUBLE_EQ(42, value);
+                    EXPECT_DOUBLE_EQ(bit_target ? 1 : 42, value);
                     EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), indicator);
                 }
                 ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
@@ -736,6 +739,11 @@ TEST_F(PreparedStatementIntegrationTest,
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       CharacterBitInputHonorsLengthsNullAndRecovery) {
+    check_numeric_character_lengths(SQL_BIT, "SELECT ?::boolean", true);
 }
 
 TEST_F(PreparedStatementIntegrationTest,

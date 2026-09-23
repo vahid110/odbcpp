@@ -2413,6 +2413,11 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   succeed, empty and NUL-containing literals return `22018`, NULL preserves
   the output buffer, and status/count reporting and subsequent execution
   recover correctly after malformed input.
+- Audit batch 348 adds the same length, NULL, status/count, and recovery
+  coverage for narrow/wide character input to `SQL_BIT`. A two-character
+  `01` slice is accepted as true, while explicitly included NUL bytes and
+  empty input return `22018`; NULL bypasses bit-literal validation and both
+  null-terminated and explicit-length executions recover after errors.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
