@@ -748,6 +748,90 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       CharacterInputToSqlFloatingTargetsValidatesRange) {
+    struct Target {
+        const char* sql;
+        SQLSMALLINT type;
+        const char* maximum;
+        const char* subnormal;
+        const char* overflow;
+        const char* underflow;
+        SQLDOUBLE expected_maximum;
+        SQLDOUBLE expected_subnormal;
+    };
+    const Target targets[]{
+        {"SELECT (?::real)::double precision", SQL_REAL,
+         "3.4028234663852886e38", "1e-45", "3.5e38", "1e-50",
+         static_cast<SQLDOUBLE>(
+             std::numeric_limits<SQLREAL>::max()),
+         static_cast<SQLDOUBLE>(
+             std::numeric_limits<SQLREAL>::denorm_min())},
+        {"SELECT ?::double precision", SQL_FLOAT,
+         "1.7976931348623157e308", "5e-324", "1e309", "1e-400",
+         std::numeric_limits<SQLDOUBLE>::max(),
+         std::numeric_limits<SQLDOUBLE>::denorm_min()},
+        {"SELECT ?::double precision", SQL_DOUBLE,
+         "1.7976931348623157e308", "5e-324", "1e309", "1e-400",
+         std::numeric_limits<SQLDOUBLE>::max(),
+         std::numeric_limits<SQLDOUBLE>::denorm_min()},
+    };
+    const auto expect_error = [&](const char* text, const char* state) {
+        ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt)) << text;
+        SQLCHAR actual[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            actual, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ(state, reinterpret_cast<char*>(actual));
+    };
+    const auto expect_value = [&](const char* text, SQLDOUBLE expected) {
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt)) << text;
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQLDOUBLE value = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_DOUBLE,
+            &value, sizeof(value), nullptr));
+        EXPECT_DOUBLE_EQ(expected, value);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+
+    for (const auto& target : targets) {
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+            reinterpret_cast<SQLCHAR*>(const_cast<char*>(target.sql)),
+            SQL_NTS));
+        const auto bind_narrow = [&](const char* text) {
+            ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1,
+                SQL_PARAM_INPUT, SQL_C_CHAR, target.type, 0, 0,
+                reinterpret_cast<SQLPOINTER>(const_cast<char*>(text)),
+                0, nullptr));
+        };
+        bind_narrow(target.maximum);
+        expect_value(target.maximum, target.expected_maximum);
+        bind_narrow(target.subnormal);
+        expect_value(target.subnormal, target.expected_subnormal);
+        bind_narrow(target.overflow);
+        expect_error(target.overflow, "22003");
+        bind_narrow(target.underflow);
+        expect_error(target.underflow, "22003");
+        for (const char* invalid : {"NaN", "Infinity", "-Infinity", "1e"}) {
+            bind_narrow(invalid);
+            expect_error(invalid, "22018");
+        }
+        bind_narrow(" -42.25 ");
+        expect_value(" -42.25 ", -42.25);
+
+        auto wide_maximum = ascii_wide(target.maximum);
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_WCHAR, target.type, 0, 0, wide_maximum.data(), 0,
+            nullptr));
+        expect_value(target.maximum, target.expected_maximum);
+
+        auto wide_overflow = ascii_wide(target.overflow);
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_WCHAR, target.type, 0, 0, wide_overflow.data(), 0,
+            nullptr));
+        expect_error(target.overflow, "22003");
+    }
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        UnsignedBigIntInputValidatesIntegerRange) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
         (SQLCHAR*)"SELECT ?::bigint", SQL_NTS));

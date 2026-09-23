@@ -78,7 +78,7 @@ std::optional<long double> parse_number(const std::string& value,
     if (issue) *issue = ConversionIssue::InvalidCharacterValue;
     return std::nullopt;
   }
-  if (errno == ERANGE || !std::isfinite(parsed)) {
+  if (!std::isfinite(parsed) || (errno == ERANGE && parsed == 0)) {
     if (issue) *issue = ConversionIssue::NumericValueOutOfRange;
     return std::nullopt;
   }

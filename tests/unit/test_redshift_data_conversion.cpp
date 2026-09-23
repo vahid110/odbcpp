@@ -463,6 +463,51 @@ TEST_F(RedshiftDataConverterTest, ConvertDataSmallintAndFloat) {
     EXPECT_FLOAT_EQ(1.25f, float_result);
 }
 
+TEST_F(RedshiftDataConverterTest,
+       CharacterFloatingConversionClassifiesRangeErrors) {
+    rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;
+    SQLLEN length = 73;
+    SQLREAL real = 17.0f;
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "3.4028234663852886e38", SQL_C_FLOAT, &real, 0, &length, &issue));
+    EXPECT_FLOAT_EQ(std::numeric_limits<SQLREAL>::max(), real);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(real)), length);
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "1e-45", SQL_C_FLOAT, &real, 0, &length, &issue));
+    EXPECT_FLOAT_EQ(std::numeric_limits<SQLREAL>::denorm_min(), real);
+
+    for (const char* text : {"3.5e38", "1e-50"}) {
+        real = 17.0f;
+        length = 73;
+        issue = rs::odbc::ConversionIssue::None;
+        EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+            text, SQL_C_FLOAT, &real, 0, &length, &issue));
+        EXPECT_FLOAT_EQ(17.0f, real);
+        EXPECT_EQ(73, length);
+        EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
+    }
+
+    SQLDOUBLE number = 17.0;
+    issue = rs::odbc::ConversionIssue::None;
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "1.7976931348623157e308", SQL_C_DOUBLE, &number, 0, &length,
+        &issue));
+    EXPECT_DOUBLE_EQ(std::numeric_limits<SQLDOUBLE>::max(), number);
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "5e-324", SQL_C_DOUBLE, &number, 0, &length, &issue));
+    EXPECT_DOUBLE_EQ(std::numeric_limits<SQLDOUBLE>::denorm_min(), number);
+    for (const char* text : {"1e309", "1e-400"}) {
+        number = 17.0;
+        length = 73;
+        issue = rs::odbc::ConversionIssue::None;
+        EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+            text, SQL_C_DOUBLE, &number, 0, &length, &issue));
+        EXPECT_DOUBLE_EQ(17.0, number);
+        EXPECT_EQ(73, length);
+        EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
+    }
+}
+
 TEST_F(RedshiftDataConverterTest, ClassifiesNumericConversionIssues) {
     rs::odbc::ConversionIssue issue = rs::odbc::ConversionIssue::None;
     SQLSMALLINT result = 0;

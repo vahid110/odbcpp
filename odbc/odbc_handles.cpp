@@ -3905,6 +3905,37 @@ SQLRETURN ODBCStatement::execute() {
         }
         value = std::to_string(integer);
       }
+      if (character_input &&
+          (declared_sql_type == SQL_REAL ||
+           declared_sql_type == SQL_FLOAT ||
+           declared_sql_type == SQL_DOUBLE)) {
+        if (!decimal_digits(value)) {
+          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Character parameter is not a numeric literal");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        if (declared_sql_type == SQL_REAL) {
+          SQLREAL number = 0;
+          if (TextDataConverter::convert_data(
+                  value, SQL_C_FLOAT, &number, 0, nullptr) ==
+              SQL_ERROR) {
+            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Character parameter is outside SQL_REAL range");
+            return complete_parameter_set(SQL_ERROR);
+          }
+          value = format_floating_parameter(number);
+        } else {
+          SQLDOUBLE number = 0;
+          if (TextDataConverter::convert_data(
+                  value, SQL_C_DOUBLE, &number, 0, nullptr) ==
+              SQL_ERROR) {
+            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Character parameter is outside SQL floating range");
+            return complete_parameter_set(SQL_ERROR);
+          }
+          value = format_floating_parameter(number);
+        }
+      }
       if ((character_input || value_type == SQL_C_NUMERIC) &&
           implementation.concise_type == SQL_BIT) {
         switch (classify_bit_numeric_literal(value)) {
