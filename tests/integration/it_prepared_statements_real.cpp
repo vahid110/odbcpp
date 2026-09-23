@@ -1599,13 +1599,18 @@ TEST_F(PreparedStatementIntegrationTest,
             ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
                 &described_type, nullptr, nullptr, nullptr));
             EXPECT_EQ(SQL_VARBINARY, described_type);
-            for (const SQLLEN size : {2 * unit, SQLLEN{0}, 3 * unit, 4 * unit,
-                                     SQLLEN{SQL_NULL_DATA}, SQLLEN{SQL_NTS}, 2 * unit}) {
+            std::vector<SQLLEN> lengths{2 * unit, 0, 3 * unit, 4 * unit,
+                                        SQL_NULL_DATA, SQL_NTS, 2 * unit};
+            if (c_type == SQL_C_WCHAR) {
+                lengths.insert(lengths.end(), {2 * unit - 1, SQL_NULL_DATA, 2 * unit});
+            }
+            for (const SQLLEN size : lengths) {
                 SCOPED_TRACE(size);
                 length = size;
                 status = SQL_PARAM_UNUSED;
                 processed = 99;
-                const bool invalid = size == 4 * unit;
+                const bool misaligned = c_type == SQL_C_WCHAR && size == 2 * unit - 1;
+                const bool invalid = size == 4 * unit || misaligned;
                 ASSERT_EQ(invalid ? SQL_ERROR : SQL_SUCCESS, SQLExecute(hstmt));
                 EXPECT_EQ(1u, processed);
                 EXPECT_EQ(invalid ? SQL_PARAM_ERROR : SQL_PARAM_SUCCESS, status);
@@ -1613,7 +1618,8 @@ TEST_F(PreparedStatementIntegrationTest,
                     SQLCHAR state[6]{};
                     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
                         state, nullptr, nullptr, 0, nullptr));
-                    EXPECT_STREQ("22018", reinterpret_cast<char*>(state));
+                    EXPECT_STREQ(misaligned ? "HY090" : "22018",
+                                 reinterpret_cast<char*>(state));
                     continue;
                 }
                 ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));

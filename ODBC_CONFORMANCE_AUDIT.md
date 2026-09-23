@@ -2469,6 +2469,11 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   Misaligned wide-character byte lengths return `HY090`; every malformed
   input is followed immediately by NULL and explicit-length recovery with
   status/count checks. Both native driver character widths run this matrix.
+- Audit batch 358 covers misaligned wide-character hexadecimal input for
+  all three SQL binary targets after metadata discovery. `HY090` is distinct
+  from the existing embedded-NUL `22018`; NULL preserves output and subsequent
+  correctly aligned input succeeds without rebinding. Parameter status/count
+  reporting is checked throughout. Existing conversion code passes unchanged.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
