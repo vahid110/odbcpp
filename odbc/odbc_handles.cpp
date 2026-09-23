@@ -3815,7 +3815,7 @@ SQLRETURN ODBCStatement::execute() {
             fractional_text = fraction;
           }
           value = *date + " " + *time + fractional_text;
-          if (character_target && implementation.length < value.size()) {
+          if (character_target && declared_sql_length < value.size()) {
             set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
                       "Timestamp parameter exceeds SQL character length");
             return complete_parameter_set(SQL_ERROR);

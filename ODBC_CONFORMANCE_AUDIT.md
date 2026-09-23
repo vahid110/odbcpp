@@ -2437,6 +2437,11 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   repeated execution, and recovery coverage. Valid values retain their
   application-bound capacity; undersized bindings return `22001` even when
   the server reports a different character type or length.
+- Audit batch 352 preserves the application-bound character length for
+  timestamp structs after metadata discovery. Whole-second, trimmed-fraction,
+  and full nanosecond text now run through all six SQL character targets with
+  exact-fit, short and zero widths, NULL output preservation, status/count,
+  repeated execution, and recovery checks. Undersized bindings return `22001`.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
