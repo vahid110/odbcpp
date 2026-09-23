@@ -2372,6 +2372,12 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   literals return `22018`. PostgreSQL tests cover whitespace, both bounds,
   fractions, positive and negative overflow, huge exponents, recovery, and
   both wide-character ABIs through the Driver Manager suites.
+- Audit batch 342 prevents OpenSSL handshake and record I/O from terminating a
+  Unix process with `SIGPIPE` when a peer closes abruptly. TLS calls now block
+  `SIGPIPE` only on the calling thread, consume only a signal newly generated
+  by that call, and restore the prior thread mask without changing the host
+  application's global signal disposition. The existing abrupt-handshake
+  regression caught this under Linux sanitizers.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

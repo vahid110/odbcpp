@@ -17,6 +17,8 @@
   #include <poll.h>
   #include <unistd.h>
   #include <errno.h>
+  #include <pthread.h>
+  #include <signal.h>
 #endif
 
 #include "core/util/deadline.h" // rs::util::Deadline + rs::util::remaining
@@ -39,6 +41,47 @@ struct Error {
   const char* detail{""};  // "want_read" | "want_write" | "SSL_*" | etc.
   int  sys_errno{0};
   long ssl_err{0};
+};
+
+class ScopedTlsSigpipeBlock {
+public:
+  ScopedTlsSigpipeBlock() noexcept {
+#if !defined(_WIN32)
+    sigemptyset(&blocked_);
+    sigaddset(&blocked_, SIGPIPE);
+    active_ = pthread_sigmask(SIG_BLOCK, &blocked_, &previous_) == 0;
+    if (active_) {
+      sigset_t pending{};
+      pending_before_ = sigpending(&pending) == 0 &&
+          sigismember(&pending, SIGPIPE) == 1;
+    }
+#endif
+  }
+
+  ~ScopedTlsSigpipeBlock() noexcept {
+#if !defined(_WIN32)
+    if (!active_) return;
+    sigset_t pending{};
+    const bool pending_after = sigpending(&pending) == 0 &&
+        sigismember(&pending, SIGPIPE) == 1;
+    if (!pending_before_ && pending_after) {
+      int received = 0;
+      (void)sigwait(&blocked_, &received);
+    }
+    (void)pthread_sigmask(SIG_SETMASK, &previous_, nullptr);
+#endif
+  }
+
+  ScopedTlsSigpipeBlock(const ScopedTlsSigpipeBlock&) = delete;
+  ScopedTlsSigpipeBlock& operator=(const ScopedTlsSigpipeBlock&) = delete;
+
+private:
+#if !defined(_WIN32)
+  sigset_t blocked_{};
+  sigset_t previous_{};
+  bool active_{false};
+  bool pending_before_{false};
+#endif
 };
 
 inline int tls_io_chunk_size(std::size_t remaining) noexcept {
@@ -83,7 +126,11 @@ inline Error tls_handshake_with_deadline(SSL* ssl,
   for (;;) {
     if (deadline_expired(dl)) return {Errc::Timeout, "handshake", "deadline"};
     ::ERR_clear_error();
-    int rc = ::SSL_connect(ssl);
+    int rc = 0;
+    {
+      ScopedTlsSigpipeBlock block;
+      rc = ::SSL_connect(ssl);
+    }
     if (rc == 1) return {};
     int e = ::SSL_get_error(ssl, rc);
     if (e == SSL_ERROR_WANT_READ) {
@@ -117,8 +164,12 @@ inline Error tls_write_all(SSL* ssl,
   while (written < len) {
     if (deadline_expired(dl)) return {Errc::Timeout, "send", "deadline"};
     ::ERR_clear_error();
-    int rc = ::SSL_write(ssl, buf + written,
-                         tls_io_chunk_size(len - written));
+    int rc = 0;
+    {
+      ScopedTlsSigpipeBlock block;
+      rc = ::SSL_write(ssl, buf + written,
+                       tls_io_chunk_size(len - written));
+    }
     if (rc > 0) { written += static_cast<size_t>(rc); continue; }
     int e = ::SSL_get_error(ssl, rc);
     if (e == SSL_ERROR_WANT_READ) {
@@ -166,7 +217,11 @@ inline Error tls_read_some(SSL* ssl,
   for (;;) {
     if (deadline_expired(dl)) return {Errc::Timeout, "recv", "deadline"};
     ::ERR_clear_error();
-    int rc = ::SSL_read(ssl, buf, tls_io_chunk_size(cap));
+    int rc = 0;
+    {
+      ScopedTlsSigpipeBlock block;
+      rc = ::SSL_read(ssl, buf, tls_io_chunk_size(cap));
+    }
     if (rc > 0) { got = static_cast<size_t>(rc); return {}; }
     int e = ::SSL_get_error(ssl, rc);
     if (e == SSL_ERROR_ZERO_RETURN) { eof = true; return {}; }
