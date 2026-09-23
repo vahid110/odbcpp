@@ -1292,7 +1292,8 @@ TEST_F(PreparedStatementIntegrationTest,
 
 TEST_F(PreparedStatementIntegrationTest,
        BinaryParameterHonorsIndicatorLengthsNullAndRecovery) {
-    for (const SQLSMALLINT sql_type : {SQL_BINARY, SQL_VARBINARY, SQL_LONGVARBINARY}) {
+    for (const SQLSMALLINT sql_type :
+         std::initializer_list<SQLSMALLINT>{SQL_BINARY, SQL_VARBINARY, SQL_LONGVARBINARY}) {
         SCOPED_TRACE(sql_type);
         ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?::bytea", SQL_NTS));
         unsigned char input[]{0x00, 0xff, 0x7f};
@@ -1421,14 +1422,17 @@ TEST_F(PreparedStatementIntegrationTest,
 
 TEST_F(PreparedStatementIntegrationTest,
        CharacterBinaryParameterHonorsLengthsNullAndRecovery) {
-    for (const SQLSMALLINT sql_type : {SQL_BINARY, SQL_VARBINARY, SQL_LONGVARBINARY}) {
+    for (const SQLSMALLINT sql_type :
+         std::initializer_list<SQLSMALLINT>{SQL_BINARY, SQL_VARBINARY, SQL_LONGVARBINARY}) {
         SCOPED_TRACE(sql_type);
-        for (const SQLSMALLINT c_type : {SQL_C_CHAR, SQL_C_WCHAR}) {
+        for (const SQLSMALLINT c_type :
+             std::initializer_list<SQLSMALLINT>{SQL_C_CHAR, SQL_C_WCHAR}) {
             SCOPED_TRACE(c_type);
             ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?::bytea", SQL_NTS));
             char narrow[]{'f', 'F', 0, 'a'};
             SQLWCHAR wide[]{'f', 'F', 0, 'a'};
-            const SQLLEN unit = c_type == SQL_C_CHAR ? 1 : sizeof(SQLWCHAR);
+            const SQLLEN unit = c_type == SQL_C_CHAR
+                ? 1 : static_cast<SQLLEN>(sizeof(SQLWCHAR));
             SQLPOINTER input = c_type == SQL_C_CHAR
                 ? static_cast<SQLPOINTER>(narrow) : static_cast<SQLPOINTER>(wide);
             SQLLEN length = 2 * unit;
