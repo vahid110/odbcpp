@@ -656,6 +656,65 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       CharacterInputToSqlTinyintValidatesSignedRange) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT ?::integer", SQL_NTS));
+    const auto expect_narrow = [&](const char* text, const char* state,
+                                   SQLINTEGER expected = 0) {
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            SQL_C_CHAR, SQL_TINYINT, 3, 0,
+            reinterpret_cast<SQLPOINTER>(const_cast<char*>(text)),
+            0, nullptr));
+        const auto result = SQLExecute(hstmt);
+        if (state) {
+            ASSERT_EQ(SQL_ERROR, result) << text;
+            SQLCHAR actual[6]{};
+            ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+                actual, nullptr, nullptr, 0, nullptr));
+            EXPECT_STREQ(state, reinterpret_cast<char*>(actual));
+            return;
+        }
+        ASSERT_EQ(SQL_SUCCESS, result) << text;
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQLINTEGER value = 999;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG,
+            &value, sizeof(value), nullptr));
+        EXPECT_EQ(expected, value);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    expect_narrow(" +127 ", nullptr, 127);
+    expect_narrow("-128", nullptr, -128);
+    expect_narrow("127.9", "22001");
+    expect_narrow("128", "22001");
+    expect_narrow("-129", "22001");
+    expect_narrow("1e1000", "22001");
+    expect_narrow("not-a-number", "22018");
+    expect_narrow("NaN", "22018");
+    expect_narrow("Infinity", "22018");
+    expect_narrow("42", nullptr, 42);
+
+    SQLWCHAR wide_valid[]{'-', '1', '2', '8', 0};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_WCHAR, SQL_TINYINT, 3, 0, wide_valid, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLINTEGER value = 999;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG,
+        &value, sizeof(value), nullptr));
+    EXPECT_EQ(-128, value);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLWCHAR wide_overflow[]{'1', '2', '8', 0};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_WCHAR, SQL_TINYINT, 3, 0, wide_overflow, 0, nullptr));
+    EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        UnsignedBigIntInputValidatesIntegerRange) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
         (SQLCHAR*)"SELECT ?::bigint", SQL_NTS));

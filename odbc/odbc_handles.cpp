@@ -3882,6 +3882,29 @@ SQLRETURN ODBCStatement::execute() {
       }
       using rs::core::database::QueryParameterType;
       const auto integer_limits = signed_integer_limits(declared_sql_type);
+      if (character_input && declared_sql_type == SQL_TINYINT) {
+        if (!decimal_digits(value)) {
+          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Character parameter is not a numeric literal");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        SQLBIGINT integer = 0;
+        const auto converted = TextDataConverter::convert_data(
+            value, SQL_C_SBIGINT, &integer, 0, nullptr);
+        if (converted == SQL_ERROR) {
+          set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                    "Character parameter is outside SQL_TINYINT range");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        if (converted == SQL_SUCCESS_WITH_INFO ||
+            integer < integer_limits->minimum ||
+            integer > integer_limits->maximum) {
+          set_error(SQLSTATE_STRING_DATA_RIGHT_TRUNCATION,
+                    "Character parameter loses digits as SQL_TINYINT");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        value = std::to_string(integer);
+      }
       if ((character_input || value_type == SQL_C_NUMERIC) &&
           implementation.concise_type == SQL_BIT) {
         switch (classify_bit_numeric_literal(value)) {

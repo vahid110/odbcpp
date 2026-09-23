@@ -2364,6 +2364,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   peer socket is now closed before `fork`, so the child cannot inherit a
   transient live peer and report a successful send while the parent is still
   closing its copy.
+- Audit batch 341 enforces the PostgreSQL driver's signed `SQL_TINYINT` range
+  for `SQL_C_CHAR` and `SQL_C_WCHAR` input under the
+  [ODBC character input rules](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/c-to-sql-character).
+  Exact values are canonicalized before PostgreSQL's `integer` parameter
+  promotion; fractional or whole-digit loss returns `22001`, and malformed
+  literals return `22018`. PostgreSQL tests cover whitespace, both bounds,
+  fractions, positive and negative overflow, huge exponents, recovery, and
+  both wide-character ABIs through the Driver Manager suites.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
