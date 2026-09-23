@@ -206,6 +206,87 @@ protected:
         }
     }
 
+    void check_temporal_character_lengths(SQLSMALLINT sql_type,
+                                          SQLSMALLINT scale, const char* sql,
+                                          const char* literal) {
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+            reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql)), SQL_NTS));
+        const auto characters = std::strlen(literal);
+        SQLUSMALLINT status = SQL_PARAM_UNUSED;
+        SQLULEN processed = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+            hstmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+            hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+        for (const SQLSMALLINT c_type :
+             std::initializer_list<SQLSMALLINT>{SQL_C_CHAR, SQL_C_WCHAR}) {
+            SCOPED_TRACE(c_type);
+            std::vector<char> narrow(literal, literal + characters);
+            narrow.push_back(0);
+            narrow.push_back('x');
+            auto wide = ascii_wide(literal);
+            wide.push_back('x');
+            const SQLLEN unit = c_type == SQL_C_CHAR
+                ? 1 : static_cast<SQLLEN>(sizeof(SQLWCHAR));
+            const SQLLEN bytes = static_cast<SQLLEN>(characters) * unit;
+            SQLLEN length = bytes;
+            SQLPOINTER input = c_type == SQL_C_CHAR
+                ? static_cast<SQLPOINTER>(narrow.data())
+                : static_cast<SQLPOINTER>(wide.data());
+            ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+                c_type, sql_type, static_cast<SQLULEN>(characters), scale,
+                input, bytes + 2 * unit, &length));
+            SQLSMALLINT described_type = 0;
+            ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(hstmt, 1,
+                &described_type, nullptr, nullptr, nullptr));
+            EXPECT_EQ(sql_type, described_type);
+            const auto execute = [&](SQLRETURN expected) {
+                status = SQL_PARAM_UNUSED;
+                processed = 99;
+                EXPECT_EQ(expected, SQLExecute(hstmt));
+                EXPECT_EQ(1u, processed);
+                EXPECT_EQ(expected == SQL_SUCCESS
+                    ? SQL_PARAM_SUCCESS : SQL_PARAM_ERROR, status);
+            };
+            const auto expect_value = [&](bool is_null) {
+                execute(SQL_SUCCESS);
+                ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+                char output[40] = "untouched";
+                SQLLEN output_length = 99;
+                ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+                    output, sizeof(output), &output_length));
+                EXPECT_EQ(is_null ? SQL_NULL_DATA : static_cast<SQLLEN>(characters),
+                          output_length);
+                EXPECT_STREQ(is_null ? "untouched" : literal, output);
+                ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+            };
+            expect_value(false);
+            std::vector<SQLLEN> invalid_lengths{0, bytes + unit, bytes + 2 * unit};
+            if (c_type == SQL_C_WCHAR) invalid_lengths.push_back(bytes - 1);
+            for (const SQLLEN invalid_length : invalid_lengths) {
+                SCOPED_TRACE(invalid_length);
+                length = invalid_length;
+                execute(SQL_ERROR);
+                SQLCHAR state[6]{};
+                ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+                    state, nullptr, nullptr, 0, nullptr));
+                EXPECT_STREQ(invalid_length == bytes - 1 ? "HY090" : "22018",
+                             reinterpret_cast<char*>(state));
+                length = SQL_NULL_DATA;
+                expect_value(true);
+                length = bytes;
+                expect_value(false);
+            }
+            length = SQL_NTS;
+            expect_value(false);
+        }
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+            hstmt, SQL_ATTR_PARAM_STATUS_PTR, nullptr, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+            hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, nullptr, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_RESET_PARAMS));
+    }
+
     SQLHENV henv = nullptr;
     SQLHDBC hdbc = nullptr;
     SQLHSTMT hstmt = nullptr;
@@ -2156,6 +2237,12 @@ TEST_F(PreparedStatementIntegrationTest,
         &output, sizeof(output), &length));
     EXPECT_EQ(SQL_NULL_DATA, length);
     EXPECT_EQ(73, output.year);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       CharacterDateInputHonorsLengthsNullAndRecovery) {
+    check_temporal_character_lengths(SQL_TYPE_DATE, 0,
+        "SELECT (?::date)::text", "2024-02-29");
 }
 
 TEST_F(PreparedStatementIntegrationTest,

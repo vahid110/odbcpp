@@ -2448,6 +2448,12 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   reject excess digits with `22008`, bypass invalid precision for NULL while
   preserving output, report parameter status/count, and recover without
   rebinding. Existing precision handling required no implementation change.
+- Audit batch 354 adds narrow/wide character date parameter byte-length
+  coverage after metadata discovery. Exact slices succeed; empty and
+  NUL-containing input return `22018`, and misaligned wide byte lengths
+  return `HY090`. Every error is followed by NULL output preservation and
+  successful explicit-length recovery, with status/count and `SQL_NTS`
+  behavior checked. Existing conversion code passes without changes.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
