@@ -2474,6 +2474,11 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   from the existing embedded-NUL `22018`; NULL preserves output and subsequent
   correctly aligned input succeeds without rebinding. Parameter status/count
   reporting is checked throughout. Existing conversion code passes unchanged.
+- Audit batch 359 verifies byte-offset, unaligned date/time struct parameter
+  buffers for legacy and ODBC 3 C types. Valid input round-trips, invalid
+  fields return `22007`, NULL bypasses invalid fields while preserving output,
+  and valid reuse succeeds without rebinding. Tests also verify untouched
+  input storage and guard bytes plus parameter status/count reporting.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

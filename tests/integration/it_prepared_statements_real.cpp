@@ -293,6 +293,61 @@ protected:
         ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_RESET_PARAMS));
     }
 
+    template <typename T>
+    void check_unaligned_temporal_parameter(SQLSMALLINT c_type, SQLSMALLINT sql_type,
+                                            const char* sql, const T& valid,
+                                            const T& invalid, const char* expected,
+                                            const char* expected_state,
+                                            SQLSMALLINT scale = 0) {
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+            reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql)), SQL_NTS));
+        alignas(T) std::array<std::byte, sizeof(T) + 2> storage;
+        storage.fill(std::byte{0x5a});
+        SQLLEN indicator = 0;
+        SQLUSMALLINT status = SQL_PARAM_UNUSED;
+        SQLULEN processed = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+            hstmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+            hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            c_type, sql_type, 26, scale, storage.data() + 1, sizeof(T), &indicator));
+        for (const int phase : {0, 1, 2, 3}) {
+            SCOPED_TRACE(phase);
+            const T& input = phase == 1 || phase == 2 ? invalid : valid;
+            std::memcpy(storage.data() + 1, &input, sizeof(input));
+            const auto original = storage;
+            indicator = phase == 2 ? SQL_NULL_DATA : 0;
+            status = SQL_PARAM_UNUSED;
+            processed = 99;
+            ASSERT_EQ(phase == 1 ? SQL_ERROR : SQL_SUCCESS, SQLExecute(hstmt));
+            EXPECT_EQ(original, storage);
+            EXPECT_EQ(1u, processed);
+            EXPECT_EQ(phase == 1 ? SQL_PARAM_ERROR : SQL_PARAM_SUCCESS, status);
+            if (phase == 1) {
+                SQLCHAR state[6]{};
+                ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+                    state, nullptr, nullptr, 0, nullptr));
+                EXPECT_STREQ(expected_state, reinterpret_cast<char*>(state));
+                continue;
+            }
+            ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+            char output[40] = "untouched";
+            SQLLEN length = 99;
+            ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+                output, sizeof(output), &length));
+            EXPECT_EQ(phase == 2 ? SQL_NULL_DATA : static_cast<SQLLEN>(std::strlen(expected)),
+                      length);
+            EXPECT_STREQ(phase == 2 ? "untouched" : expected, output);
+            ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        }
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+            hstmt, SQL_ATTR_PARAM_STATUS_PTR, nullptr, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+            hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, nullptr, 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_RESET_PARAMS));
+    }
+
     SQLHENV henv = nullptr;
     SQLHDBC hdbc = nullptr;
     SQLHSTMT hstmt = nullptr;
@@ -3050,6 +3105,24 @@ TEST_F(PreparedStatementIntegrationTest,
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(
         hstmt, 4, SQL_C_CHAR, wide_output, sizeof(wide_output), nullptr));
     EXPECT_STREQ("Hi", wide_output);
+}
+
+TEST_F(PreparedStatementIntegrationTest,
+       DateAndTimeParametersHandleUnalignedBuffersAndRecovery) {
+    for (const SQLSMALLINT c_type :
+         std::initializer_list<SQLSMALLINT>{SQL_C_DATE, SQL_C_TYPE_DATE}) {
+        SCOPED_TRACE(c_type);
+        check_unaligned_temporal_parameter(c_type, SQL_TYPE_DATE,
+            "SELECT (?::date)::text", SQL_DATE_STRUCT{2024, 2, 29},
+            SQL_DATE_STRUCT{2023, 2, 29}, "2024-02-29", "22007");
+    }
+    for (const SQLSMALLINT c_type :
+         std::initializer_list<SQLSMALLINT>{SQL_C_TIME, SQL_C_TYPE_TIME}) {
+        SCOPED_TRACE(c_type);
+        check_unaligned_temporal_parameter(c_type, SQL_TYPE_TIME,
+            "SELECT (?::time)::text", SQL_TIME_STRUCT{12, 34, 56},
+            SQL_TIME_STRUCT{25, 34, 56}, "12:34:56", "22007");
+    }
 }
 
 TEST_F(PreparedStatementIntegrationTest,
