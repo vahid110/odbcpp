@@ -913,6 +913,15 @@ TEST_F(PreparedStatementIntegrationTest,
 }
 
 TEST_F(PreparedStatementIntegrationTest,
+       CharacterFloatingInputHonorsLengthsNullAndRecovery) {
+    for (const auto type : {SQL_REAL, SQL_FLOAT, SQL_DOUBLE}) {
+        SCOPED_TRACE(type);
+        check_numeric_character_lengths(static_cast<SQLSMALLINT>(type),
+                                        "SELECT ?::double precision");
+    }
+}
+
+TEST_F(PreparedStatementIntegrationTest,
        UnsignedBigIntInputValidatesIntegerRange) {
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
         (SQLCHAR*)"SELECT ?::bigint", SQL_NTS));

@@ -2402,6 +2402,12 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   reject empty and embedded-NUL literals with `22018`, verify NULL output
   preservation and parameter status/count reporting, and recover through
   both `SQL_NTS` and explicit-length execution after local errors.
+- Audit batch 346 applies the same narrow/wide explicit-length, embedded-NUL,
+  empty-input, NULL, status/count, and recovery checks to `SQL_REAL`,
+  `SQL_FLOAT`, and `SQL_DOUBLE`. Explicit slices succeed without requiring a
+  terminator; malformed input returns `22018` without executing a query, and
+  NULL bypasses numeric parsing. The integration cases run with both native
+  two-byte and four-byte driver `SQLWCHAR` builds.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
