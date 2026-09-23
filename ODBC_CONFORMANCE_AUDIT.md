@@ -2454,6 +2454,10 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   return `HY090`. Every error is followed by NULL output preservation and
   successful explicit-length recovery, with status/count and `SQL_NTS`
   behavior checked. Existing conversion code passes without changes.
+- Audit batch 355 applies the character byte-length matrix to SQL time
+  parameters, covering narrow/wide exact slices, empty and embedded-NUL
+  rejection (`22018`), misaligned wide input (`HY090`), NULL output
+  preservation, status/count, and recovery after each error without rebinding.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
