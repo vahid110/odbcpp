@@ -16,13 +16,18 @@ A modern C++20 framework for building database-specific ODBC drivers with plugga
 - **Binary Results**: PostgreSQL bytea maps to SQL_VARBINARY/SQL_C_BINARY with hex and escape decoding
 - **Binary Parameters**: SQL_C_BINARY parameters round-trip through native PostgreSQL bytea bindings
 - **Single Database Per Build**: Each build targets one specific database for optimal size and performance
-- **Pluggable Architecture**: Easy to add new database protocols
+- **Extension Interfaces**: Shared transport and database interfaces; backend independence remains under validation
 - **Modern C++20**: Clean, type-safe interfaces
 - **Secure Transport**: Built-in TLS/SSL support via OpenSSL
 - **Configurable Driver Logging**: Asynchronous rotating files, stderr, or syslog with text/JSON output and connection/query timing
 - **Modern Authentication**: PostgreSQL cleartext, MD5, and SCRAM-SHA-256 password authentication
 - **Cross-Platform**: macOS, Linux, Windows support
 - **Cross-Platform Testing**: Unit, PostgreSQL integration, unixODBC and mixed-width iODBC driver-manager, sanitizer, and Windows CI coverage
+
+See the [bounded roadmap](ROADMAP.md) and [release assessment](RELEASE_PLAN.md)
+for PostgreSQL consolidation followed by Redshift adaptation. The
+[shared/backend boundary](BACKEND_BOUNDARY.md) is a PostgreSQL acceptance
+requirement; SDK packaging follows proven reuse.
 
 ## Implementation Status
 
@@ -57,7 +62,7 @@ for attribute, state, diagnostic, negative-test, and maintainability gaps.
 
 | Database | Status | Protocol |
 |----------|--------|----------|
-| **Redshift** | Compatibility target; revalidation deferred | PostgreSQL Wire Protocol |
+| **Redshift** | Compatibility target; validation follows PostgreSQL beta | PostgreSQL Wire Protocol |
 | **PostgreSQL** | Primary target; integration validated | PostgreSQL Wire Protocol |
 | **MySQL** | 🚧 Planned | MySQL Protocol |
 | **SQL Server** | 🚧 Planned | TDS Protocol |

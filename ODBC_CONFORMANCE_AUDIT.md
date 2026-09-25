@@ -1,5 +1,9 @@
 # ODBCPP Conformance and Hardening Audit
 
+Release priorities and stopping conditions are defined in [RELEASE_PLAN.md](RELEASE_PLAN.md)
+and [ROADMAP.md](ROADMAP.md). Audit completeness is not a prerequisite for a
+scoped release; remaining behavior must be explicitly classified.
+
 This document tracks behavior verified against the ODBC contract. A function
 being exported or having a happy-path test is not considered complete.
 

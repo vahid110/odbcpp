@@ -1,375 +1,115 @@
-# ODBCPP Development Roadmap
+# ODBCPP roadmap: shared foundation → Redshift → driver SDK
 
-> Completion marks below describe the originally planned implementation scope,
-> not full ODBC conformance. The specification-backed status and remaining
-> negative/state testing are tracked in `ODBC_CONFORMANCE_AUDIT.md`.
+Replanned 2026-09-23 against `4f6de2a`. This replaces the old milestone dates,
+completion percentages, and open-ended conversion checklist. Historical plans
+remain in Git history. The detailed [conformance audit](ODBC_CONFORMANCE_AUDIT.md)
+remains evidence, not the release stopping rule.
 
-## ✅ Completed Milestones
+## Product goals
 
-### Milestone 1: Core ODBC Framework (COMPLETE)
-- [x] Basic ODBC handle management (SQLAllocHandle, SQLFreeHandle)
-- [x] Connection management (SQLConnect, SQLDisconnect)
-- [x] Statement execution (SQLExecDirect, SQLFetch, SQLGetData)
-- [x] Basic error handling (SQLGetDiagRec - first record only)
-- [x] Driver information (SQLGetInfo, SQLSetEnvAttr)
+1. A dependable PostgreSQL implementation to validate shared ODBC and transport behavior.
+2. A usable Redshift driver, adapted after the PostgreSQL beta checkpoint.
+3. A reusable C++20 driver framework, with database-specific behavior outside the shared ODBC core.
 
-### Milestone 2: Metadata & Result Processing (COMPLETE)
-- [x] PostgreSQL-backed result metadata (SQLNumResultCols, SQLDescribeCol, SQLColAttribute)
-- [x] Affected-row reporting (SQLRowCount)
-- [x] IRD (Implementation Row Descriptor) implementation
-- [x] Data type conversion framework
-- [x] Text-protocol NULL preservation with SQL_NULL_DATA indicators
-- [x] Metadata-driven SQL_C_DEFAULT conversion for core PostgreSQL scalar types
-- [x] Chunked SQLGetData retrieval for long text values
-- [x] PostgreSQL bytea conversion and chunked SQL_C_BINARY retrieval
-- [x] PostgreSQL bytea parameter binding from SQL_C_BINARY
-- [x] PostgreSQL SCRAM-SHA-256 password authentication
-- [x] Cross-platform build system
+Active implementation scope is PostgreSQL and Redshift only. RDS, Aurora and
+Athena are not added to this plan. SDK architecture is a required part of
+PostgreSQL consolidation (G9a), proven through Redshift (G9b). Only separate SDK
+packaging and public stability guarantees are deferred (G12). See the
+[backend boundary and acceptance criteria](BACKEND_BOUNDARY.md).
 
-### Milestone 3: Prepared Statements (COMPLETE)
-- [x] Statement preparation (SQLPrepare, SQLExecute)
-- [x] Parameter binding (SQLBindParameter)
-- [x] APD (Application Parameter Descriptor) implementation
-- [x] Native PostgreSQL Parse/Bind/Describe/Execute protocol with typed and NULL parameters
-- [x] Comprehensive prepared statement test matrix
+Finish a coherent, scoped PostgreSQL beta before shifting implementation to
+Redshift. This does not require exhaustive PostgreSQL conformance. Work must
+close a release gate, fix a material defect, or establish a reusable boundary
+needed by these products. Extra test permutations alone do not justify a batch.
 
-### Milestone 4: Advanced Descriptors (COMPLETE)
-- [x] Column binding (SQLBindCol)
-- [x] ARD (Application Row Descriptor) implementation
-- [x] IPD (Implementation Parameter Descriptor) implementation
-- [x] PostgreSQL ParameterDescription mapping (SQLDescribeParam after execution)
-- [x] Enhanced fetch with automatic bound column population
-- [x] Comprehensive descriptor API test coverage
+## Current position
 
-### Milestone 5: ODBC Diagnostics APIs (COMPLETE)
-- [x] Complete SQLGetDiagRec implementation (multiple error records)
-- [x] Implement SQLGetDiagField for detailed diagnostic information
-- [x] Add SQLError for ODBC 2.x compatibility
-- [x] Proper SQLSTATE code mapping
-- [x] Native error code support
-- [x] SQL_SUCCESS_WITH_INFO handling
-- [x] Diagnostic record management in all handles
+The PostgreSQL foundation works and has substantial hardening evidence. At the
+baseline, 76 exported symbols cover 49 operations: 11 are fully verified under
+the audit's strict rules and 38 remain partial. These are not effort percentages.
+All five latest CI jobs passed; the local suite has 34 executables (24 unit,
+10 integration). This does not establish application or Redshift compatibility.
 
-## 🚧 Current Status
+Redshift is a build target using the PostgreSQL parser, but current CI uses
+PostgreSQL 17. Windows CI runs unit tests, not live database integration.
+The SDK has useful interfaces and install exports, but ODBC code still directly
+constructs PostgreSQL components and contains PostgreSQL catalog/type logic.
 
-**Implementation**: 76 exported ODBC entry points (49 base operations, 27 wide variants)
-**Descriptors**: All 4 descriptor roles represented; full fields and attachment remain under audit
-**Diagnostics**: Multi-record diagnostics implemented; lifecycle and full field behavior remain under audit
-**Test Coverage**: 33 executables when a Driver Manager is available
-(23 unit + 9 in-process integration + 1 Driver Manager integration)
-**Production Readiness**: Not yet claimed; PostgreSQL is the primary validation target and Redshift revalidation is deferred
-**Critical Gaps**:
-- See `ODBC_CONFORMANCE_AUDIT.md` for the prioritized correctness, attribute,
-  state-machine, logging, and maintainability gaps
+See [the assessment and release gates](RELEASE_PLAN.md) for evidence, scope,
+acceptance criteria, investigation budgets, and deferred work.
 
-## 🎯 Next Milestones
+## Milestones and working estimates
 
-### Milestone 6: Logging System (spdlog) (PRIORITY: HIGH)
-**Timeline**: 2-3 days
-- [x] **spdlog Integration** - Header-only, high-performance logging framework
-- [x] **Log levels** - ERROR, WARN, INFO, DEBUG, TRACE with runtime configuration
-- [x] **Multiple sinks** - Rotating files, console, syslog support
-- [x] **Connection lifecycle logging** - Connect, disconnect, timeouts, auth events
-- [x] **Query execution logging** - Opt-in SQL text, execution time, row counts, and parameter counts
-- [ ] **Error logging** - Full context with SQLSTATE, native errors, stack traces
-- [x] **Performance metrics** - Connection and query timings with result counts
-- [x] **Configuration via connection string** - LogLevel, LogFile, LogMaxSize parameters
-- [x] **Thread-safe async logging** - Non-blocking for multi-threaded applications
-- [x] **Structured JSON output** - For automated log analysis and monitoring
+Estimates are engineering working days for one focused implementation stream,
+not scheduler wakeups or promised calendar dates. They exclude waiting for
+credentials, infrastructure, product decisions, and external application access.
+Ranges are provisional, with low confidence until M1 completes. A 30% contingency
+is included in the cumulative ranges, rounded upward. It funds discoveries,
+not additional features. Re-estimate after the real Redshift pilot.
 
-**Success Criteria**:
-- Production-ready logging with <1% performance overhead
-- Configurable via DSN parameters (LogLevel=INFO;LogFile=/var/log/odbcpp.log)
-- Thread-safe operation in multi-threaded ODBC applications
-- JSON structured output for enterprise monitoring systems
-- Rotating log files to prevent disk space issues
+| Order | Milestone | Base effort | Buffered cumulative target | Exit |
+|---|---|---:|---:|---|
+| M0 | Freeze the supported release profile and evidence inventory | 2–3 days | 3–4 days | G0 closed; target application/auth/platforms named; A1–A4 inventoried and estimated |
+| M1 | PostgreSQL consolidation and usable beta checkpoint | 14–23 days | 21–34 days | PG-BETA below closed; G9a architecture, coherent behavior, application demonstration and installable artifact |
+| M2 | Real Redshift pilot and compatibility assessment | 3–5 days | 25–41 days | G1 closed on a real Redshift endpoint |
+| M3 | Usable Redshift beta | 8–12 days | 36–56 days | G6–G8 and G9b closed; PostgreSQL regression gates remain green |
+| M4 | Scoped production release candidate | 8–12 days | 46–72 days | G10–G11 closed; both scoped beta baselines remain green |
 
-**Rationale**: spdlog provides the perfect balance of performance, features, and simplicity for ODBC driver logging. Critical for production deployment, debugging, and enterprise compliance requirements.
+The [M0 working inventory](PG_BETA_CHECKLIST.md) sizes architecture at 9–15
+days within M1, revising M1 to 14–23 days. These estimates remain provisional,
+not a measured forecast.
+M0 must enumerate and estimate the finite PostgreSQL consolidation checklist
+before committing to a date. M1 includes application and basic packaging work
+that the earlier foundation-only estimate omitted. M0 must explicitly estimate
+A1–A4/G9a and revise the M1 range if needed; architecture effort must not be
+treated as free work or hidden in contingency. The sequence is sequential;
+external waiting is excluded. Re-estimate at PG-BETA and after the Redshift pilot.
+Redshift access preparation and documentation review may proceed earlier, but
+must not displace PostgreSQL consolidation. A separate SDK release and unrelated
+database backends have no delivery commitment in this plan.
 
-### Milestone 7: Attribute Processing APIs (PRIORITY: CRITICAL)
-**Timeline**: 2-3 days
-- [x] Implement SQLSetConnectAttr / SQLGetConnectAttr for login timeout
-- [x] Implement SQLSetStmtAttr / SQLGetStmtAttr for query timeout
-- [x] Propagate ODBC timeout values into transport deadlines and SQLSTATEs
-- [x] Export SQLSetDescField / SQLGetDescField / SQLCopyDesc with explicit descriptor handles and core header/record fields
-- [x] Add support for SQL_ATTR_AUTOCOMMIT and transaction completion
-- [x] Forward-only statement attributes and SQL_ATTR_MAX_ROWS
-- [ ] Scrollable cursor and multi-row array statement attributes
-- [x] Attach explicit descriptors to statements and expose all four implicit descriptors
+### PG-BETA: mandatory handoff checkpoint
 
-**Success Criteria**:
-- Full attribute processing compliance
-- Support for essential connection/statement configuration
-- Proper descriptor field access
-- ODBC application compatibility
+- G0 frozen for PostgreSQL; G1 evidence integrity and G2–G5 pass for PostgreSQL.
+- G9a passes: backend creation, dialect, native types/catalogs and capabilities
+  are behind an exercised boundary; ownership, errors and deadlines are defined.
+- Each promised query, parameter, result, metadata, transaction and diagnostic
+  workflow is consistent; unfinished optional behavior is explicitly unsupported.
+- G8 application workflow passes on PostgreSQL, including required metadata.
+- Basic G11 delivery subset passes: install/configure/uninstall, runnable examples,
+  TLS/auth instructions, supported features and limitations, and a versioned beta
+  artifact. Full production delivery and soak gates remain M4 work.
+- No known serious supported-path defects. Record the demonstration, evidence,
+  accepted limitations and beta baseline before starting Redshift implementation.
 
-**Rationale**: These APIs should have been in Milestone 1 as they're fundamental for ODBC applications to configure connection and statement behavior. Missing APIs prevent proper ODBC compliance.
+## Next three implementation batches
 
-### Milestone 8: Complete Redshift Data Type Matrix (PRIORITY: HIGH)
-**Timeline**: 4-5 days
-- [ ] **Numeric Types**: DECIMAL(p,s), NUMERIC(p,s), REAL, DOUBLE PRECISION
-- [ ] **Integer Types**: SMALLINT, INTEGER, BIGINT
-- [ ] **Character Types**: CHAR(n), VARCHAR(n), TEXT, BPCHAR
-- [ ] **Date/Time Types**: DATE, TIME, TIMETZ, TIMESTAMP, TIMESTAMPTZ
-- [ ] **Boolean Type**: BOOLEAN (t/f, true/false, 1/0)
-- [ ] **Binary Types**: VARBYTE, BYTEA (as SQL_C_BINARY)
-- [ ] **UUID Type**: UUID (as SQL_C_GUID)
-- [ ] **Redshift Native Types**:
-  - [ ] **SUPER** - Semi-structured data (JSON-like, as SQL_C_CHAR)
-  - [ ] **GEOMETRY** - Spatial data (as SQL_C_CHAR)
-  - [ ] **GEOGRAPHY** - Geographic data (as SQL_C_CHAR)
-  - [ ] **HLLSKETCH** - HyperLogLog sketches (as SQL_C_CHAR)
-- [ ] **Array Types**: All array variants (INT[], VARCHAR[], etc. as SQL_C_CHAR)
-- [ ] **Interval Types**: INTERVAL YEAR TO MONTH, INTERVAL DAY TO SECOND
-- [ ] **Precision/Scale Handling**: Proper DECIMAL(38,18) support
-- [x] **Text-Protocol NULL Handling**: All values preserve proper SQL_NULL_DATA indicators
-- [ ] **Type Conversion Matrix**: All Redshift SQL types → All ODBC C types
+1. **PostgreSQL consistency inventory (G0):** classify all partial audit rows,
+   identify required workflows, inconsistencies and A1–A4 backend coupling, and estimate the finite
+   PG-BETA checklist. Reuse existing evidence; avoid new permutations without
+   an identified contract gap.
+2. **Close PostgreSQL beta and architecture blockers (G1–G5/G8/G9a):** implement
+   the bounded backend extractions alongside correctness work; prioritize incorrect results,
+   state/diagnostic inconsistencies, truthful capabilities and required metadata.
+   Missing database access must fail release validation rather than skip tests.
+3. **Package and demonstrate PG-BETA (G8/basic G11):** clean installation,
+   examples, application workflow, limitations, and a recorded beta checkpoint.
+   Redshift implementation starts after this checkpoint passes.
 
-**Success Criteria**:
-- Support for ALL 20+ Redshift native data types
-- Proper precision/scale for DECIMAL/NUMERIC (up to 38 digits)
-- SUPER type JSON parsing and string representation
-- Binary data handling for VARBYTE
-- Complete array type support (as strings with proper formatting)
-- Timezone-aware timestamp handling
+## Execution and stop rules
 
-**Rationale**: Redshift has unique data types (SUPER, GEOMETRY, HLLSKETCH) that are critical for analytics workloads. Missing these types blocks real-world Redshift applications.
+Every batch names a gate ID and expected acceptance evidence. Retain focused
+checks during development and the full relevant gates before an implementation
+push. Do not rerun database gates for prose-only changes. Record new discoveries
+in the [decision/backlog table](RELEASE_PLAN.md#deferred-work-and-revisit-triggers).
 
-### Milestone 9: Data Conversion Refinement (PRIORITY: HIGH)
-**Timeline**: 1-2 weeks
-- [ ] Fix bound column data conversion in enhanced fetch
-- [ ] Improve type detection and conversion accuracy
-- [ ] Add support for more SQL data types (DATE, TIMESTAMP, DECIMAL)
-- [x] Implement proper NULL handling in bound columns
-- [ ] Add data conversion integration tests
+PostgreSQL consolidation ends at PG-BETA, including G9a. Redshift beta ends when
+G0–G8 plus G9a/G9b pass for its frozen profile and no known blocker remains. Release-candidate work
+ends when G10–G11 also pass. G12 is a deferred SDK acceptance definition.
+A remaining `Partial` audit row is acceptable only if its residual behavior is
+explicitly outside the release profile and safely handled. No serious defect
+in a supported path may be deferred to meet a date.
 
-**Success Criteria**:
-- All integration tests pass (currently 94% pass rate)
-- Accurate data conversion for all supported types
-- Proper NULL value handling in bound columns
-
-### Milestone 10: Catalog Functions (PRIORITY: MEDIUM)
-**Timeline**: 1-2 weeks
-- [x] Table metadata (SQLTables, SQLColumns)
-- [x] Index information (SQLStatistics)
-- [x] Primary/foreign keys (SQLPrimaryKeys, SQLForeignKeys)
-- [x] Stored procedures (SQLProcedures, SQLProcedureColumns)
-- [x] Best-row-identifier and schema discovery functions
-
-**Success Criteria**:
-- Complete database schema introspection
-- Integration with database administration tools
-- Support for ODBC-compliant applications
-
-**Rationale**: Metadata APIs are frequently used by ODBC applications and tools for schema discovery, making them higher priority than advanced cursor features.
-
-### Milestone 11: Wide Character API Support (PRIORITY: MEDIUM)
-**Timeline**: 1-2 weeks
-- [x] Implement SQLConnectW, SQLDriverConnectW, SQLExecDirectW, SQLPrepareW, SQLGetDiagRecW, SQLNativeSqlW
-- [x] Add SQL_C_WCHAR result retrieval, column binding, and input parameters
-- [x] Add all 8 wide catalog APIs for Unicode metadata
-- [x] Wide character versions of all currently implemented string-based APIs
-- [x] UTF-8/SQLWCHAR conversion utilities
-- [x] Unicode unit, PostgreSQL, and driver-manager test coverage
-
-**Success Criteria**:
-- Full Unicode support for modern applications
-- Wide API compatibility with ODBC Driver Manager
-- Proper character encoding handling
-
-**Rationale**: Wide APIs are essential for Unicode support and modern application compatibility.
-
-### Milestone 12: Advanced ODBC Features (PRIORITY: MEDIUM)
-**Timeline**: 2-3 weeks
-- [ ] **Row-wise binding** (SQL_ATTR_ROW_BIND_TYPE) - bind entire rows to structures
-- [ ] **Array binding** (SQL_ATTR_ROW_ARRAY_SIZE) - bulk operations with arrays
-- [ ] **Column-wise arrays** - multiple rows per column buffer
-- [ ] Cursor management (SQLSetCursorName, SQLGetCursorName)
-- [ ] Positioned operations (SQLSetPos, SQLBulkOperations)
-- [ ] Scrollable cursors (SQLFetchScroll supports SQL_FETCH_NEXT only)
-- [ ] Asynchronous execution (SQL_ATTR_ASYNC_ENABLE)
-
-**Success Criteria**:
-- Support for both row-wise and column-wise binding patterns
-- Bulk insert/update capabilities with arrays
-- Performance improvements for large datasets (10x+ faster bulk ops)
-- Support for structured data binding
-
-**Current Gap**: Only column-wise binding implemented via SQLBindCol. Missing row-wise binding for structured data and array binding for bulk operations.
-
-### Milestone 13: Windows DSN GUI Support (PRIORITY: MEDIUM)
-**Timeline**: 1 week
-- [ ] **ConfigDSN Implementation** - SQLConfigDataSource for DSN management
-- [ ] **Windows Setup DLL** - Configuration dialog for ODBC Administrator
-- [ ] **GUI Dialog** - User-friendly connection configuration interface
-- [ ] **Connection Parameters**:
-  - [ ] Server/Host, Port, Database, Username fields
-  - [ ] SSL/TLS options with certificate validation
-  - [ ] Authentication method selection (Database, IAM, SAML)
-  - [ ] Advanced options (timeouts, logging, performance)
-- [ ] **Test Connection** - Built-in connection testing from GUI
-- [ ] **Registry Integration** - Proper Windows registry DSN storage
-- [ ] **Driver Installation** - Windows installer with ODBC registration
-- [ ] **64-bit Architecture** - Native 64-bit driver for modern systems
-
-**Success Criteria**:
-- Full integration with Windows ODBC Administrator
-- User-friendly GUI for non-technical users
-- Proper DSN creation, editing, and deletion
-- Test connection functionality from GUI
-- Windows installer package (.msi)
-- Native 64-bit Windows support for modern systems
-
-**Rationale**: Windows DSN GUI is essential for enterprise Windows deployments. Most Windows users expect to configure ODBC drivers through the familiar ODBC Administrator interface rather than manual connection strings.
-
-### Milestone 14: Redshift Authentication Plugins (PRIORITY: MEDIUM)
-**Timeline**: 1-2 weeks
-- [ ] **IAM Authentication** - AWS IAM roles, users, temporary credentials
-- [ ] **SAML 2.0 SSO** - Enterprise SSO integration with SAML providers
-- [ ] **Azure AD** - Microsoft Azure Active Directory integration
-- [ ] **Okta** - Okta identity provider support
-- [ ] **JWT Authentication** - JSON Web Token validation
-- [ ] **Browser-based SSO** - OAuth2/OIDC flows with browser redirect
-- [ ] **Connection string parameters**:
-  - [ ] `AuthType` - Authentication method selection
-  - [ ] `IAMRole` - IAM role ARN for role-based auth
-  - [ ] `IdpHost` - Identity provider hostname
-  - [ ] `IdpPort` - Identity provider port
-  - [ ] `SamlResponse` - SAML assertion handling
-- [ ] **AWS SDK Integration** - For IAM credential resolution
-- [ ] **Plugin Architecture** - Extensible authentication framework
-
-**Success Criteria**:
-- Support for all major Redshift authentication methods
-- Enterprise SSO compatibility (SAML, Azure AD, Okta)
-- AWS IAM integration with temporary credentials
-- Secure credential handling and caching
-- Browser-based authentication flows
-
-**Rationale**: Authentication plugins are essential for enterprise Redshift deployments but are database-specific. Should be implemented after core ODBC features are complete but before adding other database protocols.
-
-### Milestone 15: Binary Protocol Support (PRIORITY: LOW-MEDIUM)
-**Timeline**: 1-2 weeks
-- [ ] **PostgreSQL Binary Format** - Support format=1 in protocol messages
-- [ ] **Binary Data Parsing** - Native binary parsing for integers, floats, timestamps
-- [ ] **Endianness Handling** - Cross-platform byte order compatibility
-- [ ] **Type-Specific Parsers** - Binary parsers for all PostgreSQL data types
-- [ ] **Performance Benchmarks** - Compare binary vs text format performance
-- [ ] **Connection String Parameter** - `BinaryFormat=true/false` option
-- [ ] **Fallback Support** - Graceful fallback to text format on errors
-- [ ] **NULL Handling** - Proper NULL indicators in binary format
-
-**Success Criteria**:
-- 20-50% performance improvement for large result sets
-- Support for all PostgreSQL/Redshift data types in binary format
-- Seamless fallback to text format when needed
-- Cross-platform compatibility (Windows, Linux, macOS)
-- Configurable via connection string
-
-**Rationale**: Binary format provides significant performance improvements for large datasets but is not critical for functionality. Should be implemented after core ODBC compliance and Windows support are complete.
-
-### Milestone 16: Multi-Database Support (PRIORITY: LOW)
-**Timeline**: 3-4 weeks
-- [ ] MySQL protocol implementation
-- [ ] SQL Server TDS protocol implementation
-- [ ] Database-specific optimizations
-- [ ] Protocol abstraction improvements
-- [ ] Multi-database test matrix
-
-**Success Criteria**:
-- Support for 4 major databases (Redshift, PostgreSQL, MySQL, SQL Server)
-- Consistent API across all databases
-- Database-specific performance optimizations
-
-## 🔧 Technical Debt & Improvements
-
-### Code Quality
-- [ ] Add comprehensive documentation
-- [ ] Implement connection pooling optimizations
-- [ ] Add performance benchmarking suite
-- [ ] Improve error message clarity
-
-### Platform Support
-- [ ] Linux distribution packages (.deb, .rpm)
-- [ ] Docker container support
-- [ ] CI/CD pipeline improvements
-- [ ] macOS installer package
-
-### Performance
-- [ ] Connection pooling enhancements
-- [ ] Memory usage optimization
-- [ ] Network protocol optimizations
-- [ ] Prepared statement caching
-
-## 📊 Success Metrics
-
-### Current Metrics
-- **API Coverage**: 23/23 core functions (100%)
-- **Descriptor Coverage**: 4/4 descriptors (100%)
-- **Authentication Support**: 1/8 methods (12% - critical enterprise gap)
-- **Data Type Support**: 7/25+ Redshift types (28% - critical gap)
-- **Binding Support**: Column-wise only (Row-wise missing)
-- **Diagnostics Coverage**: 1/3 functions (33% - critical gap)
-- **Attribute APIs**: 1/6 functions (17% - critical gap)
-- **Metadata APIs**: 8/8 functions (100% ANSI catalog milestone complete)
-- **Wide APIs**: 19 functions (complete for the currently implemented ANSI API surface)
-- **Test Success Rate**: 20/20 unit tests (100%)
-- **Integration Success**: 16/17 tests (94%)
-- **Database Support**: 2/4 planned databases (50%)
-
-### Target Metrics (End of 2024)
-- **API Coverage**: 50+ ODBC functions (comprehensive)
-- **Metadata APIs**: 8/8 functions (100%)
-- **Wide APIs**: 15+ functions (100%)
-- **Test Success Rate**: 100% (all tests passing)
-- **Database Support**: 4/4 databases (complete)
-- **Performance**: <10ms connection time, >1000 QPS
-- **Documentation**: 100% API documentation coverage
-
-## 🤝 Contributing Priorities
-
-### Critical Priority
-1. Complete ODBC diagnostics APIs (Milestone 5)
-2. Implement logging system (Milestone 6)
-3. Complete attribute processing APIs (Milestone 7)
-4. Complete data type matrix (Milestone 8)
-5. Fix data conversion in bound columns (Milestone 9)
-6. Improve integration test reliability
-
-### Medium Priority
-1. Add catalog functions (Milestone 10)
-2. Implement Wide API support (Milestone 11)
-3. Add advanced cursor management (Milestone 12)
-4. Implement Redshift authentication plugins (Milestone 13)
-5. Add Windows DSN GUI support (Milestone 13.5)
-6. Add performance benchmarks
-
-### Low Priority
-1. Add new database protocols
-2. Platform-specific optimizations
-3. Advanced ODBC features
-
-## 📅 Release Schedule
-
-### v1.0.0 (Target: Q1 2024)
-- Complete core ODBC API
-- All descriptors implemented
-- Redshift + PostgreSQL support
-- 100% test pass rate
-
-### v1.1.0 (Target: Q2 2024)
-- Advanced ODBC features
-- Catalog functions
-- Performance optimizations
-
-### v2.0.0 (Target: Q3 2024)
-- Multi-database support
-- MySQL + SQL Server protocols
-- Production deployment tools
-
----
-
-**Last Updated**: December 2024
-**Current Version**: 0.8.5 (Pre-release - diagnostics gap identified)
-**Next Release**: v0.9.0 (Diagnostics Complete)
-**Target v1.0.0**: Core ODBC Complete with full diagnostics
+The scheduler remains paused. This plan does not resume it or authorize cloud
+resource creation. On an explicit resume, its saved instructions should be
+updated to select work by these gates and stop at the agreed milestone.
