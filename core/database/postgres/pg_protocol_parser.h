@@ -26,6 +26,9 @@ public:
     const std::string& user) override;
   
   // Query execution
+  std::size_t count_parameter_markers(std::string_view sql) const override {
+    return parameter_marker_count(sql);
+  }
   std::vector<std::byte> create_simple_query(std::string_view sql) override;
   std::vector<std::byte> create_prepared_query(
     std::string_view sql,

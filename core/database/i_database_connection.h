@@ -31,6 +31,9 @@ public:
   virtual rs::util::Result<void> connect(const ConnectionSettings& settings) = 0;
   virtual void disconnect() = 0;
   virtual bool is_connected() const = 0;
+
+  // Count bind markers using this backend's SQL lexical rules, without I/O.
+  virtual std::size_t count_parameter_markers(std::string_view sql) const = 0;
   
   virtual rs::util::Result<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline) = 0;
   virtual rs::util::Result<QueryResult> execute_prepared(std::string_view sql, 

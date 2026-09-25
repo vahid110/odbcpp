@@ -2488,6 +2488,13 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   fields return `22007`, excess fractional precision returns `22008`, and
   both cases recover through NULL and valid reuse without rebinding. Input
   storage, guard bytes, NULL output preservation, and status/count are checked.
+- PostgreSQL beta architecture batch 1 routes ODBC connection creation through
+  the backend factory while preserving its configured transport. Startup/query,
+  authentication error/timeout, TLS refusal and unsupported-selection ownership
+  have focused tests. Parameter marker counting now dispatches through the
+  backend contract, with quoted/comment markers and a differing mock dialect
+  covered. A1 construction is implemented; full A2 dialect work and G9a remain
+  open. See [the beta inventory](PG_BETA_CHECKLIST.md) for scope and evidence.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

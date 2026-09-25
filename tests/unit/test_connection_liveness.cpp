@@ -573,6 +573,26 @@ TEST(DatabaseFactoryTest, SelectedBackendDoesNotDowngradeRefusedTls) {
   EXPECT_EQ(1u, observed->close_count());
 }
 
+TEST(DatabaseFactoryTest, MarkerCountingUsesBackendLexicalRulesWithoutConnecting) {
+  auto connection = rs::core::database::DatabaseFactory::create_connection();
+  EXPECT_FALSE(connection->is_connected());
+  EXPECT_EQ(0u, connection->count_parameter_markers("SELECT 1"));
+  EXPECT_EQ(2u, connection->count_parameter_markers("SELECT ?, ?"));
+  EXPECT_EQ(1u, connection->count_parameter_markers(
+      R"sql(SELECT '?', "?", $$?$$, $tag$?$tag$, ? /* ? /* ? */ */ -- ?
+)sql"));
+  EXPECT_FALSE(connection->is_connected());
+}
+
+TEST(DatabaseFactoryTest, GenericConnectionUsesInjectedParserMarkerSemantics) {
+  rs::core::database::GenericDatabaseConnection connection(
+      std::make_unique<odbcpp::test::MockProtocolParser>());
+  // The mock has no SQL quoting rules: this differs from PostgreSQL's count.
+  EXPECT_EQ(2u, connection.count_parameter_markers("SELECT '?', ?"));
+  EXPECT_EQ(0u, connection.count_parameter_markers(""));
+  EXPECT_FALSE(connection.is_connected());
+}
+
 TEST(DatabaseFactoryTest, UnsupportedSelectionReleasesTransferredTransport) {
   class OwnedTransport final : public rs::core::transport::ITransport {
    public:

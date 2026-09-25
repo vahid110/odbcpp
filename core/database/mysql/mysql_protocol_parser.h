@@ -6,6 +6,9 @@ namespace rs::core::database::mysql {
 // Example of how to add MySQL support
 class MySQLProtocolParser : public IProtocolParser {
 public:
+  std::size_t count_parameter_markers(std::string_view) const override {
+    throw std::runtime_error("MySQL parameter markers not implemented yet");
+  }
   // MySQL-specific protocol implementation
   std::vector<std::byte> create_startup_message(
     const std::string& user, 

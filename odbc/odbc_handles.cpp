@@ -5,7 +5,6 @@
 #include "text_data_converter.h"
 #include "unicode.h"
 #include "core/database/database_factory.h"
-#include "core/database/postgres/pg_protocol_parser.h"
 #include "core/transport/transport_factory.h"
 #include "core/transport/transport_options.h"
 #include "core/util/deadline.h"
@@ -3421,8 +3420,7 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
   if (!native_sql) return SQL_ERROR;
   
   const auto marker_count =
-      rs::core::database::postgres::PgProtocolParser::parameter_marker_count(
-          *native_sql);
+      conn_->get_db_connection()->count_parameter_markers(*native_sql);
   if (marker_count > static_cast<std::size_t>(
           std::numeric_limits<SQLSMALLINT>::max())) {
     set_error(SQLSTATE_GENERAL_ERROR, "Too many parameter markers");

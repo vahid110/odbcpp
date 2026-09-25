@@ -131,6 +131,31 @@ leak-sanitizer limitations must be recorded separately from Linux leak coverage.
 - A1: route ODBC construction through the existing factory with transport
   transfer; test real-parser startup/query, authentication error/timeout, TLS
   refusal and unsupported selection ownership. This does not close G9a.
-- Next: A2 marker/dialect boundary, followed by A3 type/catalog contract.
+- Marker counting now dispatches through the selected backend, with PostgreSQL
+  lexical edge cases and a differing fake-parser dialect tested. A2 remains open
+  for SQL escape translation; next is that remaining dialect work, followed by
+  the A3 type/catalog contract.
 - Independent blocker: choose D1 application and OS before application acceptance
   and the final G0 freeze. No credentials or cloud provisioning are needed now.
+
+## Batch 1 validation — 2026-09-25
+
+- PostgreSQL 17.11 (Homebrew), local macOS arm64: all 34 executables pass in
+  `build-postgresql`, `build-iodbc-bridge` (UTF-16 driver/UCS-4 application),
+  `build-iodbc` (UCS-4), and `build-sanitize` (unixODBC, ASan/UBSan).
+- Each configuration reports 740 Google Test cases, zero skipped cases, plus
+  the standalone Driver Manager executable. These are regression observations,
+  not 740 independent release requirements or real Redshift evidence.
+- The sanitizer Driver Manager test initially failed to find its registration
+  because the temporary unixODBC configuration used a full `ODBCINSTINI` path.
+  Rerunning that test with `ODBCINSTINI=odbcinst.ini` and the configuration directory
+  in `ODBCSYSINI` passed. The other 33 sanitizer executables already passed;
+  no production change or test suppression was needed.
+- Local ASan uses `detect_leaks=0` (macOS limitation); UBSan halts on its first
+  finding. Linux leak detection remains required in CI. The batch completion
+  report records the resulting CI run after the single batch push.
+- Focused checks: six factory/backend-boundary tests and all 36 parser tests
+  passed. Existing prepared-statement and Driver Manager regressions exercise
+  the shared ODBC path, including quoted markers, errors and recovery.
+- G0 remains open for the named application and case-level evidence review;
+  G9a remains open for the remaining dialect/type/catalog/capability extraction.

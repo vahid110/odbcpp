@@ -1,7 +1,7 @@
 # Shared ODBC and database backend boundary
 
 Planning baseline: 2026-09-23, implementation inspected at `4f6de2a`.
-Status: required architecture work, not a claim that the boundary is implemented.
+Status: architecture acceptance remains open; incremental progress is recorded below.
 Scope: PostgreSQL first, Redshift second. No other backend is added here.
 
 ## Requirement and ownership
@@ -80,3 +80,23 @@ or universal authentication framework is required for G9a. Apply the investigati
 limits in [RELEASE_PLAN.md](RELEASE_PLAN.md). If a necessary extraction exceeds
 its budget, report the impact and re-estimate the milestone; do not silently
 waive architecture acceptance or hide the extra work in contingency.
+
+## Implementation progress — 2026-09-25
+
+A1's construction change routes `ODBCConnection::connect` through
+`DatabaseFactory`, transferring its configured transport. Existing no-argument
+and explicit-type factory entry points remain available. Tests cover selected
+startup/query, authentication error/timeout, refused TLS and transport destruction
+on unsupported selection. Transport options and deadline logic remain in their
+existing paths and are covered by the full regression gates.
+
+The marker-counting part of A2 now uses `IDatabaseConnection` and the selected
+parser's lexical rules, removing the PostgreSQL parser include from shared ODBC
+handles. A test parser with different quoting semantics proves dispatch is not
+hardwired to PostgreSQL. This adds an internal virtual contract; no stable public
+C++ ABI is promised, and downstream implementations must provide the new method.
+The MySQL placeholder remains explicitly unimplemented.
+
+A2 is not closed: shared SQL escape translation still needs backend ownership.
+A3/A4 and fake-backend acceptance through the complete shared ODBC layer remain
+open. Removing the parser include does not establish complete SDK reuse.

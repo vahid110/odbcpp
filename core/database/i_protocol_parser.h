@@ -42,6 +42,7 @@ public:
     const std::string& user) = 0;
   
   // Query execution
+  virtual std::size_t count_parameter_markers(std::string_view sql) const = 0;
   virtual std::vector<std::byte> create_simple_query(std::string_view sql) = 0;
   virtual std::vector<std::byte> create_prepared_query(
     std::string_view sql,

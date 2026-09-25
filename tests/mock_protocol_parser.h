@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+
 #include "core/database/i_protocol_parser.h"
 
 namespace odbcpp::test {
@@ -7,6 +9,10 @@ namespace odbcpp::test {
 class MockProtocolParser final
     : public rs::core::database::IProtocolParser {
  public:
+  // Deliberately simple test dialect: every question mark is a marker.
+  std::size_t count_parameter_markers(std::string_view sql) const override {
+    return static_cast<std::size_t>(std::count(sql.begin(), sql.end(), '?'));
+  }
   std::vector<std::byte> create_startup_message(
       const std::string&, const std::string&,
       const std::map<std::string, std::string>&) override {
