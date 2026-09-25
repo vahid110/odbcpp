@@ -16,31 +16,37 @@
 namespace rs::core::database {
 
 std::unique_ptr<IDatabaseConnection> DatabaseFactory::create_connection(DatabaseType type) {
+  return create_connection(type, nullptr);
+}
+
+std::unique_ptr<IDatabaseConnection> DatabaseFactory::create_connection(
+    DatabaseType type,
+    std::unique_ptr<rs::core::transport::ITransport> transport) {
 #ifdef ODBCPP_ENABLE_POSTGRESQL
   if (type == DatabaseType::PostgreSQL) {
     return std::make_unique<GenericDatabaseConnection>(
-      std::make_unique<postgres::PgProtocolParser>());
+      std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
   }
 #endif
 
 #ifdef ODBCPP_ENABLE_REDSHIFT
   if (type == DatabaseType::Redshift) {
     return std::make_unique<GenericDatabaseConnection>(
-      std::make_unique<postgres::PgProtocolParser>());
+      std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
   }
 #endif
 
 #ifdef ODBCPP_ENABLE_MYSQL
   if (type == DatabaseType::MySQL) {
     return std::make_unique<GenericDatabaseConnection>(
-      std::make_unique<mysql::MySQLProtocolParser>());
+      std::make_unique<mysql::MySQLProtocolParser>(), std::move(transport));
   }
 #endif
 
 #ifdef ODBCPP_ENABLE_SQLSERVER
   if (type == DatabaseType::SQLServer) {
     return std::make_unique<GenericDatabaseConnection>(
-      std::make_unique<sqlserver::SQLServerProtocolParser>());
+      std::make_unique<sqlserver::SQLServerProtocolParser>(), std::move(transport));
   }
 #endif
 
@@ -49,6 +55,11 @@ std::unique_ptr<IDatabaseConnection> DatabaseFactory::create_connection(Database
 
 std::unique_ptr<IDatabaseConnection> DatabaseFactory::create_connection() {
   return create_connection(get_compiled_database_type());
+}
+
+std::unique_ptr<IDatabaseConnection> DatabaseFactory::create_connection(
+    std::unique_ptr<rs::core::transport::ITransport> transport) {
+  return create_connection(get_compiled_database_type(), std::move(transport));
 }
 
 DatabaseType DatabaseFactory::get_compiled_database_type() {

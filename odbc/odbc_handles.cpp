@@ -4,7 +4,7 @@
 #include "sql_escape.h"
 #include "text_data_converter.h"
 #include "unicode.h"
-#include "core/database/generic_database_connection.h"
+#include "core/database/database_factory.h"
 #include "core/database/postgres/pg_protocol_parser.h"
 #include "core/transport/transport_factory.h"
 #include "core/transport/transport_options.h"
@@ -1509,9 +1509,8 @@ SQLRETURN ODBCConnection::connect(
                                  transport_options.deadline_model))}});
     auto transport = rs::core::transport::TransportFactory::create(
         transport_options, settings.use_ssl);
-    auto parser = std::make_unique<rs::core::database::postgres::PgProtocolParser>();
-    db_conn_ = std::make_unique<rs::core::database::GenericDatabaseConnection>(
-        std::move(parser), std::move(transport));
+    db_conn_ = rs::core::database::DatabaseFactory::create_connection(
+        std::move(transport));
     
     // Connect synchronously for ODBC compatibility
     auto result = db_conn_->connect(settings);

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "core/database/generic_database_connection.h"
+#include "core/database/database_factory.h"
 #include "core/database/postgres/pg_protocol_parser.h"
 #include "core/transport/i_transport.h"
 #include "core/transport/start_tls_transport.h"
@@ -506,6 +507,102 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
   std::size_t close_count_{0};
   bool zero_returned_{false};
 };
+
+// Exercise the factory with a real parser and deterministic wire responses.
+TEST(DatabaseFactoryTest, SelectedBackendUsesConfiguredTransportForStartupAndQuery) {
+  using rs::core::database::DatabaseFactory;
+  for (const bool explicit_type : {false, true}) {
+    SCOPED_TRACE(explicit_type);
+    auto transport = std::make_unique<ScriptedBackendTransport>(
+        ScriptedBackendTransport::ResponseMode::QueryParameterStatus);
+    auto* observed = transport.get();
+    auto connection = explicit_type
+        ? DatabaseFactory::create_connection(
+              DatabaseFactory::get_compiled_database_type(), std::move(transport))
+        : DatabaseFactory::create_connection(std::move(transport));
+    rs::core::database::ConnectionSettings settings;
+    settings.use_ssl = false;
+    ASSERT_TRUE(connection->connect(settings).has_value());
+    EXPECT_TRUE(connection->is_connected());
+    EXPECT_EQ("17.6", connection->get_parameter("server_version"));
+    EXPECT_EQ(1u, observed->connect_count());
+    EXPECT_EQ(1u, observed->send_count());
+    ASSERT_TRUE(connection->execute_query(
+        "SET application_name = 'changed'",
+        rs::util::make_deadline(std::chrono::seconds(1))).has_value());
+    EXPECT_EQ("changed", connection->get_parameter("application_name"));
+    EXPECT_EQ(2u, observed->send_count());
+    connection->disconnect();
+    EXPECT_FALSE(connection->is_connected());
+    EXPECT_EQ(1u, observed->close_count());
+  }
+}
+
+TEST(DatabaseFactoryTest, SelectedBackendPreservesAuthenticationFailureCleanup) {
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto& [mode, expected] : {
+           std::pair{Mode::AuthRejected, rs::util::DbErrorCode::AuthenticationFailed},
+           std::pair{Mode::AuthenticationTimeout, rs::util::DbErrorCode::Timeout}}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    auto transport = std::make_unique<ScriptedBackendTransport>(mode);
+    auto* observed = transport.get();
+    auto connection = rs::core::database::DatabaseFactory::create_connection(
+        std::move(transport));
+    rs::core::database::ConnectionSettings settings;
+    settings.use_ssl = false;
+    const auto result = connection->connect(settings);
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(expected), result.error());
+    EXPECT_FALSE(connection->is_connected());
+    EXPECT_EQ(1u, observed->close_count());
+  }
+}
+
+TEST(DatabaseFactoryTest, SelectedBackendDoesNotDowngradeRefusedTls) {
+  auto transport = std::make_unique<ScriptedTlsTransport>();
+  auto* observed = transport.get();
+  auto connection = rs::core::database::DatabaseFactory::create_connection(
+      std::move(transport));
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = true;
+  const auto result = connection->connect(settings);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::TLSError),
+            result.error());
+  EXPECT_FALSE(connection->is_connected());
+  EXPECT_EQ(1u, observed->close_count());
+}
+
+TEST(DatabaseFactoryTest, UnsupportedSelectionReleasesTransferredTransport) {
+  class OwnedTransport final : public rs::core::transport::ITransport {
+   public:
+    explicit OwnedTransport(int& destroyed) : destroyed_(destroyed) {}
+    ~OwnedTransport() override { ++destroyed_; }
+    rs::util::Result<void> connect(std::string_view, uint16_t,
+                                  rs::util::Deadline) override {
+      ADD_FAILURE() << "Unsupported backend must not connect";
+      return {};
+    }
+    rs::util::Result<rs::core::transport::IOResult> send(
+        std::span<const std::byte>, rs::util::Deadline) override {
+      ADD_FAILURE() << "Unsupported backend must not send";
+      return {rs::util::DbErrorCode::NetworkError};
+    }
+    rs::util::Result<rs::core::transport::IOResult> recv(
+        std::span<std::byte>, rs::util::Deadline) override {
+      ADD_FAILURE() << "Unsupported backend must not receive";
+      return {rs::util::DbErrorCode::NetworkError};
+    }
+    void close() noexcept override {}
+   private:
+    int& destroyed_;
+  };
+  int destroyed = 0;
+  EXPECT_THROW(rs::core::database::DatabaseFactory::create_connection(
+      static_cast<rs::core::database::DatabaseType>(-1),
+      std::make_unique<OwnedTransport>(destroyed)), std::runtime_error);
+  EXPECT_EQ(1, destroyed);
+}
 
 TEST(ConnectionLivenessTest, FailedAuthenticationClosesTransport) {
   using Mode = ScriptedBackendTransport::ResponseMode;

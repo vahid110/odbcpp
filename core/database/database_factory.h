@@ -1,5 +1,6 @@
 #pragma once
 #include "i_database_connection.h"
+#include "core/transport/i_transport.h"
 #include <memory>
 #include <string>
 
@@ -19,6 +20,14 @@ public:
   
   // Create connection with explicit type (throws if not compiled in)
   static std::unique_ptr<IDatabaseConnection> create_connection(DatabaseType type);
+
+  // Transfer a configured transport to the selected backend. nullptr retains
+  // the backend's default transport selection at connect time.
+  static std::unique_ptr<IDatabaseConnection> create_connection(
+      std::unique_ptr<rs::core::transport::ITransport> transport);
+  static std::unique_ptr<IDatabaseConnection> create_connection(
+      DatabaseType type,
+      std::unique_ptr<rs::core::transport::ITransport> transport);
   
   // Get the database type this build was compiled for
   static DatabaseType get_compiled_database_type();
