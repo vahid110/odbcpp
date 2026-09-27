@@ -791,11 +791,9 @@ struct OdbcTypeInfo {
   SQLSMALLINT decimal_digits{0};
 };
 
-OdbcTypeInfo backend_type_info(
-    const rs::core::database::IDatabaseConnection& backend,
-    std::uint32_t id, std::int16_t size, std::int32_t modifier) {
+OdbcTypeInfo odbc_type_info(
+    const rs::core::database::NativeTypeInfo& native) {
   using rs::core::database::ScalarType;
-  const auto native = backend.describe_type(id, size, modifier);
   SQLSMALLINT sql_type = SQL_VARCHAR;
   switch (native.type) {
     case ScalarType::Boolean: sql_type = SQL_BIT; break;
@@ -819,8 +817,8 @@ OdbcTypeInfo backend_type_info(
 ColumnInfo column_info_for(
     const rs::core::database::IDatabaseConnection& backend,
     const rs::core::database::ResultColumnMetadata& metadata) {
-  const auto type = backend_type_info(
-      backend, metadata.type_id, metadata.type_size, metadata.type_modifier);
+  const auto type = odbc_type_info(backend.describe_type(
+      metadata.type_id, metadata.type_size, metadata.type_modifier));
   return ColumnInfo{metadata.name, type.sql_type, type.column_size,
                     type.decimal_digits, SQL_NULLABLE_UNKNOWN};
 }
@@ -1104,10 +1102,9 @@ void complete_descriptor_record(DescriptorRecord& record) {
 }
 
 ParameterMetadata parameter_metadata_for(
-    const rs::core::database::IDatabaseConnection& backend,
-    std::uint32_t id, std::int32_t type_modifier,
+    const rs::core::database::NativeTypeInfo& native,
     const DescriptorRecord* prior_record) {
-  const auto type = backend_type_info(backend, id, -1, type_modifier);
+  const auto type = odbc_type_info(native);
   ParameterMetadata metadata{type.sql_type, type.column_size,
                              type.decimal_digits, SQL_NULLABLE_UNKNOWN, {}};
   if (!prior_record || prior_record->concise_type != metadata.sql_type) {
@@ -3401,7 +3398,7 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
     return SQL_ERROR;
   }
   prepared_sql_ = *native_sql;
-  parameter_base_type_cache_.clear();
+  parameter_type_cache_.clear();
   parameter_count_ = static_cast<SQLSMALLINT>(marker_count);
   param_metadata_.clear();
   clear_current_result();
@@ -4242,7 +4239,7 @@ SQLRETURN ODBCStatement::execute() {
       return complete_parameter_set(SQL_ERROR);
     }
 
-    if (resolve_parameter_base_types(*result, deadline) != SQL_SUCCESS) {
+    if (resolve_parameter_types(*result, deadline) != SQL_SUCCESS) {
       return complete_parameter_set(SQL_ERROR);
     }
 
@@ -4509,13 +4506,11 @@ void ODBCStatement::apply_result_metadata(
     const auto* prior_record = index < implementation_descriptor->record_count()
         ? implementation_descriptor->record(index) : nullptr;
     const auto oid = result.parameter_type_ids[index];
-    const auto resolved = parameter_base_type_cache_.find(oid);
+    const auto resolved = parameter_type_cache_.find(oid);
     param_metadata_.push_back(parameter_metadata_for(
-        *conn_->get_db_connection(),
-        resolved == parameter_base_type_cache_.end()
-            ? oid : resolved->second.base_oid,
-        resolved == parameter_base_type_cache_.end()
-            ? -1 : resolved->second.type_modifier,
+        resolved == parameter_type_cache_.end()
+            ? conn_->get_db_connection()->describe_type(oid, -1, -1)
+            : resolved->second,
         prior_record));
   }
   std::vector<DescriptorRecord> parameter_descriptor_records;
@@ -4598,76 +4593,32 @@ SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target
 }
 
 // Metadata functions implementation
-SQLRETURN ODBCStatement::resolve_parameter_base_types(
+SQLRETURN ODBCStatement::resolve_parameter_types(
     const rs::core::database::QueryResult& result,
     rs::util::Deadline deadline) {
   std::vector<std::uint32_t> unresolved;
-  for (const auto oid : result.parameter_type_ids) {
-    if (oid != 0 && !conn_->get_db_connection()->describe_type(oid, -1, -1).known &&
-        !parameter_base_type_cache_.contains(oid)) {
-      unresolved.push_back(oid);
-    }
+  for (const auto id : result.parameter_type_ids) {
+    if (!parameter_type_cache_.contains(id)) unresolved.push_back(id);
   }
-  std::sort(unresolved.begin(), unresolved.end());
-  unresolved.erase(std::unique(unresolved.begin(), unresolved.end()),
-                   unresolved.end());
+  if (unresolved.empty()) return SQL_SUCCESS;
 
-  if (!unresolved.empty()) {
-    std::string query =
-        "WITH RECURSIVE type_chain(original_oid, type_oid, base_oid, "
-        "type_modifier) AS ("
-        "SELECT oid, oid, typbasetype, typtypmod "
-        "FROM pg_catalog.pg_type WHERE oid IN (";
-    for (std::size_t index = 0; index < unresolved.size(); ++index) {
-      if (index != 0) query += ',';
-      query += std::to_string(unresolved[index]);
-    }
-    query +=
-        ") UNION ALL SELECT chain.original_oid, base.oid, base.typbasetype, "
-        "CASE WHEN chain.type_modifier >= 0 THEN chain.type_modifier "
-        "ELSE base.typtypmod END "
-        "FROM type_chain AS chain JOIN pg_catalog.pg_type AS base "
-        "ON base.oid = chain.base_oid) "
-        "SELECT original_oid::text, type_oid::text, type_modifier::text "
-        "FROM type_chain "
-        "WHERE base_oid = 0";
-
-    auto types = conn_->get_db_connection()->execute_query(query, deadline);
-    if (types.has_error()) {
-      const auto timeout = is_timeout_error(types.error());
-      set_error(request_sqlstate(types.error(), SQLSTATE_GENERAL_ERROR),
-                types.error_message());
-      if (timeout) conn_->disconnect();
+  auto types = conn_->get_db_connection()->resolve_types(unresolved, deadline);
+  if (types.has_error()) {
+    const auto timeout = is_timeout_error(types.error());
+    set_error(request_sqlstate(types.error(), SQLSTATE_GENERAL_ERROR),
+              types.error_message());
+    if (timeout) conn_->disconnect();
+    return SQL_ERROR;
+  }
+  // Validate the entire response before changing the statement cache.
+  for (const auto id : unresolved) {
+    if (!types->contains(id)) {
+      set_error(SQLSTATE_GENERAL_ERROR,
+                "Data source returned incomplete parameter type metadata");
       return SQL_ERROR;
     }
-
-    const auto parse_number = [](const std::string& value, auto& number) {
-      const auto [end, error] = std::from_chars(
-          value.data(), value.data() + value.size(), number);
-      return error == std::errc{} && end == value.data() + value.size();
-    };
-    std::unordered_map<std::uint32_t, ResolvedParameterType> resolved;
-    for (const auto& row : types->rows) {
-      std::uint32_t original_oid = 0;
-      std::uint32_t base_oid = 0;
-      std::int32_t type_modifier = -1;
-      if (row.size() != 3 || !row[0] || !row[1] || !row[2] ||
-          !parse_number(*row[0], original_oid) ||
-          !parse_number(*row[1], base_oid) ||
-          !parse_number(*row[2], type_modifier) ||
-          !std::binary_search(unresolved.begin(), unresolved.end(),
-                              original_oid)) {
-        set_error(SQLSTATE_GENERAL_ERROR,
-                  "Data source returned invalid parameter type metadata");
-        return SQL_ERROR;
-      }
-      resolved[original_oid] = {base_oid, type_modifier};
-    }
-    for (const auto oid : unresolved) {
-      parameter_base_type_cache_[oid] = resolved.contains(oid)
-          ? resolved.at(oid) : ResolvedParameterType{oid, -1};
-    }
   }
+  parameter_type_cache_.insert(types->begin(), types->end());
   return SQL_SUCCESS;
 }
 
@@ -4710,7 +4661,7 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
     return SQL_ERROR;
   }
 
-  if (resolve_parameter_base_types(*result, deadline) != SQL_SUCCESS) {
+  if (resolve_parameter_types(*result, deadline) != SQL_SUCCESS) {
     return SQL_ERROR;
   }
 
