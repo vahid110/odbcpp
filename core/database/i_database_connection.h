@@ -12,6 +12,7 @@
 #include "sql_translation.h"
 #include "native_type_info.h"
 #include "type_definition.h"
+#include "transaction.h"
 #include "catalog_request.h"
 
 namespace rs::core::database {
@@ -58,6 +59,14 @@ public:
   // On failure no partial map is returned; callers must not update their cache.
   virtual rs::util::Result<ResolvedTypeMap> resolve_types(
       std::span<const std::uint32_t> ids, rs::util::Deadline deadline) = 0;
+
+  virtual TransactionCapabilities transaction_capabilities() const = 0;
+  // Execute exactly one backend transaction command using the caller's deadline.
+  // Return the backend error unchanged; the shared layer owns ODBC state changes.
+  virtual rs::util::Result<void> transaction(TransactionAction action,
+      rs::util::Deadline deadline) = 0;
+  virtual rs::util::Result<void> set_transaction_isolation(TransactionIsolation level,
+      rs::util::Deadline deadline) = 0;
 
   virtual rs::util::Result<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline) = 0;
   virtual rs::util::Result<QueryResult> execute_prepared(std::string_view sql, 

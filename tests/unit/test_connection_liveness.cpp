@@ -3,6 +3,7 @@
 #include "core/database/generic_database_connection.h"
 #include "core/database/database_factory.h"
 #include "core/database/postgres/pg_protocol_parser.h"
+#include "core/database/postgres/pg_database_connection.h"
 #include "core/transport/i_transport.h"
 #include "core/transport/start_tls_transport.h"
 #include "tests/mock_protocol_parser.h"
@@ -1618,6 +1619,111 @@ TEST(DatabaseDialectTest, GenericConnectionHonorsDifferentParserDialect) {
     const auto translated = backend.translate_sql(sql);
     ASSERT_TRUE(translated);
     EXPECT_EQ(sql, translated.sql);
+  }
+  EXPECT_FALSE(backend.is_connected());
+}
+
+namespace {
+class TransactionProbe final : public rs::core::database::postgres::PgDatabaseConnection {
+public:
+  std::string command;
+  rs::util::Deadline observed_deadline{};
+  std::optional<rs::util::DbErrorCode> failure;
+  int calls = 0;
+  rs::util::Result<rs::core::database::QueryResult> execute_query(
+      std::string_view sql, rs::util::Deadline deadline) override {
+    ++calls;
+    command = sql;
+    observed_deadline = deadline;
+    if (failure) return {*failure, "injected transaction failure"};
+    return rs::core::database::QueryResult{};
+  }
+};
+}
+
+TEST(BackendTransactionTest, CommandsPreserveCallerDeadline) {
+  using rs::core::database::TransactionAction;
+  TransactionProbe backend;
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds(5));
+  for (const auto action : {TransactionAction::Begin, TransactionAction::Commit,
+                            TransactionAction::Rollback}) {
+    const auto result = backend.transaction(action, deadline);
+    ASSERT_FALSE(result.has_error());
+    EXPECT_EQ(action == TransactionAction::Begin ? "BEGIN"
+        : action == TransactionAction::Commit ? "COMMIT" : "ROLLBACK", backend.command);
+    EXPECT_EQ(deadline, backend.observed_deadline);
+  }
+  EXPECT_EQ(3, backend.calls);
+}
+
+TEST(BackendTransactionTest, AdvertisedIsolationLevelsHaveCommands) {
+  using namespace rs::core::database;
+  TransactionProbe backend;
+  const auto capabilities = backend.transaction_capabilities();
+  EXPECT_TRUE(capabilities.supported);
+  EXPECT_TRUE(capabilities.transactional_ddl);
+  EXPECT_EQ(TransactionIsolation::ReadCommitted, capabilities.default_isolation);
+  const auto deadline = rs::util::Deadline::min();
+  const std::array names{"READ UNCOMMITTED", "READ COMMITTED", "REPEATABLE READ", "SERIALIZABLE"};
+  for (std::size_t i = 0; i < transaction_isolations.size(); ++i) {
+    EXPECT_TRUE(capabilities.supports(transaction_isolations[i]));
+    ASSERT_FALSE(backend.set_transaction_isolation(transaction_isolations[i], deadline).has_error());
+    EXPECT_EQ(std::string("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL ") + names[i], backend.command);
+    EXPECT_EQ(deadline, backend.observed_deadline);
+  }
+}
+
+TEST(BackendTransactionTest, RejectsInvalidEnumsWithoutIo) {
+  using namespace rs::core::database;
+  TransactionProbe backend;
+  auto result = backend.transaction(static_cast<TransactionAction>(99), rs::util::Deadline::min());
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter), result.error());
+  result = backend.set_transaction_isolation(static_cast<TransactionIsolation>(99), rs::util::Deadline::min());
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter), result.error());
+  EXPECT_FALSE(backend.transaction_capabilities().supports(static_cast<TransactionIsolation>(99)));
+  EXPECT_EQ(0, backend.calls);
+}
+
+TEST(BackendTransactionTest, PropagatesErrorsAndAllowsSuccessfulRetry) {
+  using namespace rs::core::database;
+  TransactionProbe backend;
+  const auto deadline = rs::util::Deadline::max();
+  for (const auto error : {rs::util::DbErrorCode::Timeout, rs::util::DbErrorCode::NetworkError,
+                           rs::util::DbErrorCode::QueryFailed}) {
+    backend.failure = error;
+    for (const bool isolation : {false, true}) {
+      const auto result = isolation
+          ? backend.set_transaction_isolation(TransactionIsolation::Serializable, deadline)
+          : backend.transaction(TransactionAction::Commit, deadline);
+      ASSERT_TRUE(result.has_error());
+      EXPECT_EQ(rs::util::make_error_code(error), result.error());
+      EXPECT_EQ("injected transaction failure", result.error_message());
+      EXPECT_EQ(deadline, backend.observed_deadline);
+    }
+  }
+  backend.failure.reset();
+  EXPECT_FALSE(backend.transaction(TransactionAction::Rollback, deadline).has_error());
+  EXPECT_FALSE(backend.set_transaction_isolation(TransactionIsolation::ReadCommitted, deadline).has_error());
+}
+
+TEST(BackendTransactionTest, GenericBackendDoesNotAssumeTransactionSupport) {
+  using namespace rs::core::database;
+  GenericDatabaseConnection backend(std::make_unique<odbcpp::test::MockProtocolParser>());
+  const auto capabilities = backend.transaction_capabilities();
+  EXPECT_FALSE(capabilities.supported);
+  EXPECT_FALSE(capabilities.transactional_ddl);
+  for (const auto isolation : transaction_isolations) {
+    EXPECT_FALSE(capabilities.supports(isolation));
+    const auto result = backend.set_transaction_isolation(isolation, rs::util::Deadline::max());
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature), result.error());
+  }
+  for (const auto action : {TransactionAction::Begin, TransactionAction::Commit, TransactionAction::Rollback}) {
+    const auto result = backend.transaction(action, rs::util::Deadline::max());
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature), result.error());
   }
   EXPECT_FALSE(backend.is_connected());
 }

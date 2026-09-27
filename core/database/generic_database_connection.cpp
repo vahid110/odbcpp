@@ -720,4 +720,18 @@ rs::util::Result<std::string> GenericDatabaseConnection::catalog_query(
           "Catalog discovery is not supported by this backend"};
 }
 
+TransactionCapabilities GenericDatabaseConnection::transaction_capabilities() const {
+  return {};
+}
+
+rs::util::Result<void> GenericDatabaseConnection::transaction(
+    TransactionAction, rs::util::Deadline) {
+  return {rs::util::DbErrorCode::UnsupportedFeature, "Transactions are not supported by this backend"};
+}
+
+rs::util::Result<void> GenericDatabaseConnection::set_transaction_isolation(
+    TransactionIsolation, rs::util::Deadline) {
+  return {rs::util::DbErrorCode::UnsupportedFeature, "Transaction isolation is not supported by this backend"};
+}
+
 } // namespace rs::core::database
