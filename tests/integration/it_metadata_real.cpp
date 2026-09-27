@@ -2211,6 +2211,88 @@ TEST_F(MetadataIntegrationTest, NestedDomainParameterMetadataKeepsTypmods) {
     EXPECT_EQ(3, result_scale);
 }
 
+TEST_F(MetadataIntegrationTest, DomainMetadataReprepareAndFailureRecovery) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_reprepare_short AS varchar(13)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_reprepare_long AS varchar(31)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_reprepare_numeric AS numeric(8,3)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_reprepare_numeric2 AS numeric(10,1)",
+        SQL_NTS));
+    struct ExpectedParameter {
+        const char* sql;
+        SQLSMALLINT type;
+        SQLULEN size;
+        SQLSMALLINT scale;
+    };
+    for (const auto& expected : std::array<ExpectedParameter, 6>{{
+             {"SELECT ?::pg_temp.odbcpp_reprepare_short", SQL_VARCHAR, 13, 0},
+             {"SELECT ?::pg_temp.odbcpp_reprepare_long", SQL_VARCHAR, 31, 0},
+             {"SELECT ?::integer", SQL_INTEGER, 10, 0},
+             {"SELECT ?::pg_temp.odbcpp_reprepare_numeric", SQL_NUMERIC, 8, 3},
+             {"SELECT ?::pg_temp.odbcpp_reprepare_numeric2", SQL_NUMERIC, 10, 1},
+             {"SELECT ?::pg_temp.odbcpp_reprepare_short", SQL_VARCHAR, 13, 0}}}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+            hstmt, (SQLCHAR*)expected.sql, SQL_NTS));
+        // Repeated description exercises cached metadata; reprepare must replace it.
+        for (int repeat = 0; repeat < 2; ++repeat) {
+            SQLSMALLINT type = 0, scale = -1;
+            SQLULEN size = 0;
+            ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(
+                hstmt, 1, &type, &size, &scale, nullptr));
+            EXPECT_EQ(expected.type, type);
+            EXPECT_EQ(expected.size, size);
+            EXPECT_EQ(expected.scale, scale);
+        }
+    }
+
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT ?::pg_temp.odbcpp_missing_domain", SQL_NTS));
+    SQLSMALLINT type = SQL_SMALLINT, scale = 7;
+    SQLULEN size = 123;
+    EXPECT_EQ(SQL_ERROR, SQLDescribeParam(
+        hstmt, 1, &type, &size, &scale, nullptr));
+    EXPECT_EQ(SQL_SMALLINT, type);
+    EXPECT_EQ(123u, size);
+    EXPECT_EQ(7, scale);
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
+        hstmt, (SQLCHAR*)"SELECT ?::pg_temp.odbcpp_reprepare_long", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(
+        hstmt, 1, &type, &size, &scale, nullptr));
+    EXPECT_EQ(SQL_VARCHAR, type);
+    EXPECT_EQ(31u, size);
+    EXPECT_EQ(0, scale);
+}
+
+TEST_F(MetadataIntegrationTest, ReprepareRetainsExplicitParameterTypeAndLength) {
+    char input[] = "bound value";
+    SQLLEN input_length = SQL_NTS;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(
+        hstmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+        42, 0, input, sizeof(input), &input_length));
+    for (const auto* sql : {"SELECT ?::text", "SELECT ?::varchar(50)"}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)sql, SQL_NTS));
+        SQLSMALLINT type = 0;
+        SQLULEN size = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(
+            hstmt, 1, &type, &size, nullptr, nullptr));
+        EXPECT_EQ(SQL_VARCHAR, type);
+        EXPECT_EQ(42u, size);
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        char output[64]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+            hstmt, 1, SQL_C_CHAR, output, sizeof(output), nullptr));
+        EXPECT_STREQ(input, output);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    }
+}
+
 TEST_F(MetadataIntegrationTest, NestedDomainCatalogDimensionsMatchBaseColumns) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,

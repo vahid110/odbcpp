@@ -15,7 +15,7 @@ from code inspection, not measured velocity. Do not add these again to M1.
 |---|---|---:|
 | A1 | `ODBCConnection::connect`, `DatabaseFactory`: selected backend creation preserves configured transport, ownership and failed-login/TLS behavior | 0.5–1 |
 | A2 | `ODBCStatement::prepare`, `statement_sql`, `SQLNativeSql`, `sql_escape.cpp`: marker processing and dialect ownership; preserve literal/comment/escape behavior | 1–2 |
-| A3 | `postgres_type_info`, `resolve_parameter_base_types`, `get_type_info`, eight catalog methods in `odbc_handles.cpp`: native types/domain/catalog semantics behind backend | 4–7 |
+| A3 | `postgres_type_info`, domain lookup (extracted in batch 4), `get_type_info`, eight catalog methods in `odbc_handles.cpp`: native types/domain/catalog semantics behind backend | 4–7 |
 | A4 | `QueryResult`, `IDatabaseConnection`, `IProtocolParser`; transaction SQL in `ODBCConnection`, capability values in `odbc_api.cpp`: normalized/native contract, capabilities, errors/deadlines/ownership | 1.5–2 |
 | Architecture verification | Small fake backend through shared orchestration, success/NULL/error/unsupported; PostgreSQL and Driver Manager regressions | 2–3 |
 | Supported behavior review/fixes | Finite conversion/state/metadata/attribute matrix below; fix demonstrated supported-path gaps, not every permutation | 2–3 |
@@ -211,3 +211,23 @@ The four new core type-contract tests and the complete metadata/prepared suites
 also passed focused checks. Local macOS leak detection remains disabled;
 Linux leak detection is covered by the ensuing CI run. The batch completion
 report records the CI link for the single push.
+
+## Batch 4 scope — 2026-09-27
+
+G9a/A3: move domain discovery and native catalog-row interpretation into the
+PostgreSQL connection; cache normalized metadata in shared ODBC statements.
+A related regression test found stale inferred parameter types/dimensions during
+reprepare. The fix preserves explicit application bindings while refreshing
+inferred metadata. The batch is split into backend extraction, ODBC consumption,
+and the tested reprepare correction.
+
+Next: catalog/type-info construction, then remaining capabilities and shared-layer
+contract acceptance. A3/G9a remain open. Application-host reminder is not due yet.
+
+Batch 4 validation: all 35 executables pass in PostgreSQL, iODBC UTF-16 bridge,
+iODBC UCS-4 and ASan/UBSan configurations against PostgreSQL 17.11. Each reports
+758 Google Test cases, zero skips, plus the standalone Driver Manager executable.
+Focused checks pass all 10 native-type tests, 8 factory/dialect tests and the
+complete metadata/prepared integration suites. Local macOS leak detection remains
+disabled; Linux CI retains its leak-detection gate. The batch completion report
+records the ensuing GitHub Actions result.

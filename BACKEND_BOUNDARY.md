@@ -144,3 +144,25 @@ character limits, unknown-type fallbacks, and metadata agreement before/after
 execution including NULL output preservation. Temporal width calculation uses
 unsigned wide arithmetic to avoid signed overflow on extreme metadata modifiers;
 this does not promise support for out-of-range temporal precision.
+
+## A3 domain-discovery batch — 2026-09-27
+
+`IDatabaseConnection::resolve_types` returns normalized metadata for every
+requested opaque native ID, with fallback metadata for unknown or missing types.
+`PgDatabaseConnection` owns the recursive PostgreSQL domain query and its row
+validation; the generic connection resolves parser metadata without catalog I/O.
+The lookup uses the caller's existing deadline and returns no partial map on
+failure. Shared ODBC statements cache normalized values and retain diagnostic,
+timeout-disconnect and binding responsibilities. They no longer issue domain
+lookup SQL or interpret domain catalog rows.
+
+Tests cover deduplication, nested domain typmods, unknown/missing types,
+malformed/duplicate/unrequested rows, overflow, lookup errors and recovery.
+Reprepare coverage exposed and fixed inferred IPD metadata being reused as an
+application binding: only explicit bound types and dimensions now override fresh
+backend metadata. Character widths, numeric precision/scale, error output
+preservation and explicit binding reuse are checked against PostgreSQL.
+
+Catalog SQL, SQLGetTypeInfo construction, descriptor type names and remaining
+capability/contract acceptance are still open. A3 and G9a are not complete; this
+batch does not establish Redshift compatibility.

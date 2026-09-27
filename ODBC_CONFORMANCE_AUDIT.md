@@ -2506,6 +2506,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   modifiers, unknown types, parser-specific mappings and metadata agreement
   before/after execution with NULL preservation. Extreme temporal width arithmetic
   avoids signed overflow. Domain/catalog/type-info extraction remains open in A3.
+- PostgreSQL beta architecture batch 4 moves recursive domain discovery and
+  catalog-row validation behind the connection boundary. Shared statements cache
+  normalized metadata; malformed rows and backend failures cannot partially
+  populate that cache. Tests cover missing/unknown types, deduplication, invalid
+  rows, deadlines, errors and recovery. Reprepare now distinguishes inferred IPD
+  metadata from explicit bindings, preventing stale parameter types, widths and
+  numeric scales. PostgreSQL tests verify fresh metadata, preserved error outputs
+  and explicit binding reuse. Catalog/type-info extraction and G9a remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

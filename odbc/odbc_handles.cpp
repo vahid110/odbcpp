@@ -1114,15 +1114,16 @@ ParameterMetadata parameter_metadata_for(
        metadata.sql_type == SQL_NUMERIC ||
        metadata.sql_type == SQL_FLOAT ||
        metadata.sql_type == SQL_REAL ||
-       metadata.sql_type == SQL_DOUBLE) && prior_record->precision > 0) {
-    metadata.column_size = static_cast<SQLULEN>(prior_record->precision);
-  } else if (prior_record->length > 0) {
-    metadata.column_size = prior_record->length;
+       metadata.sql_type == SQL_DOUBLE) && prior_record->bound_sql_precision > 0) {
+    metadata.column_size = static_cast<SQLULEN>(prior_record->bound_sql_precision);
+  } else if (prior_record->bound_sql_length > 0) {
+    metadata.column_size = prior_record->bound_sql_length;
   }
   if (metadata.sql_type == SQL_DECIMAL || metadata.sql_type == SQL_NUMERIC ||
       metadata.sql_type == SQL_TYPE_TIME ||
       metadata.sql_type == SQL_TYPE_TIMESTAMP) {
-    metadata.decimal_digits = prior_record->scale;
+    metadata.decimal_digits = prior_record->bound_sql_scale.value_or(
+        metadata.decimal_digits);
   }
   metadata.nullable = prior_record->nullable;
   metadata.name = prior_record->name;
@@ -4637,8 +4638,11 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
        index < parameter_types.size() &&
        index < implementation_descriptor->record_count(); ++index) {
     const auto* record = implementation_descriptor->record(index);
-    parameter_types[index] = parameter_type_for(
-        record->concise_type, SQL_C_DEFAULT);
+    // Inferred IPD types describe the previous query, not an application binding.
+    if (record->bound_sql_type != 0) {
+      parameter_types[index] = parameter_type_for(
+          record->bound_sql_type, SQL_C_DEFAULT);
+    }
   }
 
   auto deadline = rs::util::make_deadline(
