@@ -4174,7 +4174,9 @@ TEST_F(MetadataIntegrationTest, BackendScalarMetadataAgreesBeforeAndAfterExecuti
         ASSERT_EQ(SQL_SUCCESS, prepared ? SQLPrepare(hstmt, sql, SQL_NTS)
                                        : SQLExecDirect(hstmt, sql, SQL_NTS));
         for (int phase = 0; phase < (prepared ? 2 : 1); ++phase) {
-            if (phase == 1) ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+            if (phase == 1) {
+                ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+            }
             for (std::size_t i = 0; i < expected.size(); ++i) {
                 SCOPED_TRACE(i);
                 SQLSMALLINT type = 0, scale = 0, nullable = 0;
