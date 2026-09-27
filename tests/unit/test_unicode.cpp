@@ -2,6 +2,7 @@
 
 #include "odbc/odbc_api.h"
 #include "odbc/unicode.h"
+#include "core/util/utf8.h"
 #include "tests/test_handle_helpers.h"
 
 #include <array>
@@ -242,4 +243,28 @@ TEST_F(UnicodeApiTest, WideDiagnosticFieldAndSqLErrorAreCompatible) {
   EXPECT_EQ(SQL_NO_DATA,
             SQLErrorW(nullptr, nullptr, statement_, state, nullptr, message,
                       64, &message_units));
+}
+
+TEST(Utf8CoreTest, CountsScalarsIncludingNulAndRejectsInvalidEncodings) {
+  EXPECT_EQ(0u, rs::util::utf8_code_point_count("").value());
+  const std::string text("a\0\xC3\xA9\xF0\x9F\x98\x80", 8);
+  EXPECT_EQ(4u, rs::util::utf8_code_point_count(text).value());
+  EXPECT_EQ(rs::util::utf8_code_point_count(text),
+            rs::odbc::utf8_code_point_count(text));
+  for (const auto* invalid : {"\x80", "\xC0\x80", "\xE0\x80\x80",
+       "\xED\xA0\x80", "\xF4\x90\x80\x80", "\xF0\x9F", "\xC2x"}) {
+    EXPECT_FALSE(rs::util::utf8_code_point_count(invalid));
+    EXPECT_FALSE(rs::odbc::utf8_code_point_count(invalid));
+    EXPECT_FALSE(utf8_to_wide(invalid));
+  }
+}
+
+TEST(Utf8CoreTest, DecoderAdvancesAcrossValidScalarsAndStopsAtEnd) {
+  const std::string text("\0\xF4\x8F\xBF\xBF", 5);
+  std::size_t offset = 0;
+  EXPECT_EQ(0u, rs::util::next_utf8_code_point(text, offset).value());
+  EXPECT_EQ(1u, offset);
+  EXPECT_EQ(0x10ffffu, rs::util::next_utf8_code_point(text, offset).value());
+  EXPECT_EQ(text.size(), offset);
+  EXPECT_FALSE(rs::util::next_utf8_code_point(text, offset));
 }
