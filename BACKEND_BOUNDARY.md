@@ -187,3 +187,26 @@ ANSI/wide behavior and open-cursor rejection coverage.
 Five catalog operations remain in shared code: columns, statistics, procedures,
 procedure columns and special columns. SQLGetTypeInfo construction and descriptor
 type names also remain. A3/G9a are still open; no new Redshift support is claimed.
+
+## A3 remaining-catalog batch — 2026-09-27
+
+All eight catalog operations now dispatch through `CatalogRequest` and
+`IDatabaseConnection::catalog_query`. The PostgreSQL backend owns columns,
+statistics, procedures, procedure columns and special columns as well as the
+three previously extracted operations. Shared ODBC code contains no PostgreSQL
+catalog query text or catalog type/domain SQL helpers. It converts validated
+ODBC special-column options into backend-neutral identifier/scope enums and
+retains argument validation, A/W conversion, execution and cursor diagnostics.
+
+The move preserves the existing SQL expressions, filters, domain typmods,
+nullability rules, ordering and conservative special-column scope behavior.
+Eleven backend tests cover all eight request alternatives, including unsupported
+backends, literal versus pattern filters, omitted/empty names, quoting, unique
+indexes, nullable candidates and typed empty results. Added PostgreSQL tests
+exercise quoted Unicode identifiers and domain dimensions across the five moved
+operations; all existing catalog regression cases remain required.
+
+Catalog construction extraction is complete. SQLGetTypeInfo construction and
+descriptor type names remain in A3, followed by A4 and shared-layer contract
+acceptance. This is an ownership change, not a claim that all catalog semantics
+or PostgreSQL beta acceptance are complete; no new Redshift support is claimed.

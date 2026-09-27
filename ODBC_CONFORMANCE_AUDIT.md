@@ -2521,6 +2521,14 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   lists, enumeration and key ordering. Live tests exercise quoted Unicode names
   through ANSI/wide calls and reuse after empty results. The remaining five
   catalog operations, type-info construction and G9a acceptance stay open.
+- PostgreSQL beta architecture batch 6 extracts the remaining five catalog
+  builders and their PostgreSQL type/domain SQL helpers. All eight catalog
+  operations now dispatch through backend requests. Shared ODBC code retains
+  argument validation, A/W conversion and execution state. New tests cover
+  filter/option contracts and quoted Unicode/domain metadata across columns,
+  statistics, special columns, procedures and procedure columns. Catalog
+  construction extraction is complete; existing semantic limitations, type-info
+  construction and G9a acceptance remain open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

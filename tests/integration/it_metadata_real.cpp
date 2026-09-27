@@ -1562,6 +1562,90 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, BackendColumnCatalogsPreserveDomainDimensionsAndNames) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_catalog_batch_domain AS numeric(8,3)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"CREATE TEMP TABLE \"odbcpp'catalog_%é\"(\"id'é\" pg_temp.odbcpp_catalog_batch_domain PRIMARY KEY)",
+        SQL_NTS));
+    SQLCHAR pattern[] = "odbcpp'catalog\\_\\%é";
+    SQLCHAR name[] = "odbcpp'catalog_%é";
+    ASSERT_EQ(SQL_SUCCESS, SQLColumns(
+        hstmt, nullptr, 0, nullptr, 0, pattern, SQL_NTS, nullptr, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("id'é"), text_cell(hstmt, 4));
+    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_NUMERIC), integer_cell(hstmt, 5));
+    EXPECT_EQ(std::optional<SQLINTEGER>(8), integer_cell(hstmt, 7));
+    EXPECT_EQ(std::optional<SQLINTEGER>(3), integer_cell(hstmt, 9));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLWCHAR wide_name[] = {'o','d','b','c','p','p','\'','c','a','t','a','l','o','g','_','%',0xE9,0};
+    ASSERT_EQ(SQL_SUCCESS, SQLStatisticsW(
+        hstmt, nullptr, 0, nullptr, 0, wide_name, SQL_NTS,
+        SQL_INDEX_UNIQUE, SQL_QUICK));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("id'é"), text_cell(hstmt, 9));
+    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_FALSE), integer_cell(hstmt, 4));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(
+        hstmt, SQL_ROWVER, nullptr, 0, nullptr, 0, name, SQL_NTS,
+        SQL_SCOPE_CURROW, SQL_NO_NULLS));
+    SQLSMALLINT count = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &count));
+    EXPECT_EQ(8, count);
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumnsW(
+        hstmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0, wide_name, SQL_NTS,
+        SQL_SCOPE_CURROW, SQL_NO_NULLS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("id'é"), text_cell(hstmt, 2));
+    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_NUMERIC), integer_cell(hstmt, 3));
+    EXPECT_EQ(std::optional<SQLINTEGER>(8), integer_cell(hstmt, 5));
+    EXPECT_EQ(std::optional<SQLINTEGER>(3), integer_cell(hstmt, 7));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+}
+
+TEST_F(MetadataIntegrationTest, BackendRoutineCatalogsPreserveDomainArgumentsAndNames) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"CREATE DOMAIN pg_temp.odbcpp_routine_batch_domain AS varchar(11)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"CREATE FUNCTION pg_temp.\"odbcpp'routine_%é\"(\"arg'é\" pg_temp.odbcpp_routine_batch_domain) "
+                        "RETURNS pg_temp.odbcpp_routine_batch_domain LANGUAGE SQL AS 'SELECT $1'",
+        SQL_NTS));
+    SQLCHAR pattern[] = "odbcpp'routine\\_\\%é";
+    SQLCHAR empty[] = "";
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedures(
+        hstmt, empty, SQL_NTS, nullptr, 0, pattern, SQL_NTS));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedures(
+        hstmt, nullptr, 0, nullptr, 0, pattern, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("odbcpp'routine_%é"), text_cell(hstmt, 3));
+    EXPECT_EQ(std::optional<SQLINTEGER>(1), integer_cell(hstmt, 4));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLWCHAR wide_pattern[] = {'o','d','b','c','p','p','\'','r','o','u','t','i','n','e','\\','_','\\','%',0xE9,0};
+    SQLWCHAR argument[] = {'a','r','g','\'',0xE9,0};
+    ASSERT_EQ(SQL_SUCCESS, SQLProcedureColumnsW(
+        hstmt, nullptr, 0, nullptr, 0, wide_pattern, SQL_NTS, argument, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("arg'é"), text_cell(hstmt, 4));
+    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_PARAM_INPUT), integer_cell(hstmt, 5));
+    EXPECT_EQ(std::optional<SQLINTEGER>(SQL_VARCHAR), integer_cell(hstmt, 6));
+    EXPECT_EQ(std::optional<SQLINTEGER>(11), integer_cell(hstmt, 8));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, BackendCatalogsPreserveQuotedUnicodeNames) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"CREATE TEMP TABLE \"odbcpp'parent_%é\"(id integer PRIMARY KEY)",

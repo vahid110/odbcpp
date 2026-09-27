@@ -262,3 +262,26 @@ requires the exact timeout code instead of accepting cancellation after a fixed
 sleep. The corrected case passes 100 repetitions on iODBC UCS-4; the complete
 transport unit suite is rerun in all four local configurations before the repair
 push. Production transport code is unchanged.
+
+## Batch 6 scope — 2026-09-27
+
+G9a/A3: extract the remaining five catalog builders and their shared PostgreSQL
+type/domain SQL helpers. All eight catalog operations now use backend requests.
+The batch preserves catalog behavior and removes native catalog SQL from shared
+ODBC code. Two new integration cases cover column/index/special-column metadata
+and routine metadata with domain types, quoted Unicode names and empty-result
+reuse; five additional backend cases cover filters and options. Unsupported
+backend coverage now includes every catalog request alternative.
+
+Next: SQLGetTypeInfo construction and descriptor type names, then A4 capabilities
+and full shared-layer contract acceptance. A3/G9a remain open. Application-host
+reminder is not due yet.
+
+Batch 6 validation: all 36 executables pass in PostgreSQL, iODBC UTF-16 bridge,
+iODBC UCS-4 and ASan/UBSan configurations against PostgreSQL 17.11. Each reports
+773 Google Test cases, zero skips, plus the standalone Driver Manager executable.
+Focused checks pass all 11 backend catalog tests, metadata API tests and the
+complete metadata integration suite. A source comparison confirms all five
+extracted builders retain their SQL string literals in order. Local macOS leak
+detection remains disabled; Linux CI retains leak detection. The completion
+report records the ensuing GitHub Actions result.
