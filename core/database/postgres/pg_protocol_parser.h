@@ -25,6 +25,8 @@ public:
     const std::string& password,
     const std::string& user) override;
   
+  SqlTranslationResult translate_sql(std::string_view sql) const override;
+
   // Query execution
   std::size_t count_parameter_markers(std::string_view sql) const override {
     return parameter_marker_count(sql);

@@ -2495,6 +2495,12 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   backend contract, with quoted/comment markers and a differing mock dialect
   covered. A1 construction is implemented; full A2 dialect work and G9a remain
   open. See [the beta inventory](PG_BETA_CHECKLIST.md) for scope and evidence.
+- PostgreSQL beta architecture batch 2 places SQL escape translation behind
+  the selected backend for NativeSql A/W and direct/prepared execution. Shared
+  UTF-8 scalar validation no longer requires ODBC headers. Tests cover a
+  differing mock dialect, semantic translation failures, malformed Unicode,
+  A/W prepared-state preservation and successful reuse. Full regression evidence
+  and the remaining G9a scope are recorded in PG_BETA_CHECKLIST.md.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

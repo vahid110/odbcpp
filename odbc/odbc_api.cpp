@@ -2,7 +2,7 @@
 #include "c_api_guard.h"
 #include "connection_string.h"
 #include "odbc_handles.h"
-#include "sql_escape.h"
+#include "core/database/sql_translation.h"
 #include "unicode.h"
 #include <algorithm>
 #include <array>
@@ -19,6 +19,8 @@
 #include <vector>
 
 using namespace rs::odbc;
+using rs::core::database::SqlTranslationError;
+using rs::core::database::SqlTranslationResult;
 
 // String conversion helpers (Unicode-ready architecture)
 namespace {
@@ -66,19 +68,19 @@ namespace {
   }
 
   SQLRETURN set_sql_escape_error(ODBCHandle& handle,
-                                 const SqlEscapeResult& result) {
+                                 const SqlTranslationResult& result) {
     switch (result.error) {
-      case SqlEscapeError::InvalidDatetime:
+      case SqlTranslationError::InvalidDatetime:
         handle.set_error(SQLSTATE_INVALID_DATETIME_FORMAT, result.message);
         break;
-      case SqlEscapeError::Unsupported:
+      case SqlTranslationError::Unsupported:
         handle.set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
                          result.message);
         break;
-      case SqlEscapeError::InvalidSyntax:
+      case SqlTranslationError::InvalidSyntax:
         handle.set_error(SQLSTATE_SYNTAX_ERROR, result.message);
         break;
-      case SqlEscapeError::None:
+      case SqlTranslationError::None:
         return SQL_SUCCESS;
     }
     return SQL_ERROR;
@@ -1835,7 +1837,7 @@ static SQLRETURN SQLNativeSql_impl(
                     "SQL text contains an embedded NUL byte");
     return SQL_ERROR;
   }
-  const auto native_sql = translate_odbc_sql(input_sql);
+  const auto native_sql = conn->get_db_connection()->translate_sql(input_sql);
   if (!native_sql) return set_sql_escape_error(*conn, native_sql);
   if (text_length2) {
     const auto length = static_cast<SQLINTEGER>(std::min(
@@ -1900,7 +1902,7 @@ static SQLRETURN SQLNativeSqlW_impl(
                     "SQL text contains an embedded NUL byte");
     return SQL_ERROR;
   }
-  const auto translated = translate_odbc_sql(*native_sql);
+  const auto translated = conn->get_db_connection()->translate_sql(*native_sql);
   if (!translated) return set_sql_escape_error(*conn, translated);
   if (output_statement && buffer_length == 0 && !translated.sql.empty()) {
     if (text_length2) {

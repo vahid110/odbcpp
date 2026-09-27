@@ -483,3 +483,38 @@ TEST_F(NativeSqlIntegrationTest, NoScanBypassesEscapeTranslation) {
                        nullptr));
   EXPECT_STREQ("UNCHANGED", reinterpret_cast<const char*>(output));
 }
+
+TEST_F(NativeSqlIntegrationTest, BackendTranslationErrorsPreservePreparedSqlAndRecover) {
+  SQLCHAR valid[] = "SELECT {fn IFNULL(NULL, 42)}";
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(statement_, valid, SQL_NTS));
+  for (const auto& [input, state] : {
+      std::pair{"SELECT {d '2023-02-29'}", "22007"},
+      std::pair{"SELECT {fn UCASE('ok')", "42000"},
+      std::pair{"{?= call answer()}", "HYC00"}}) {
+    for (const bool wide : {false, true}) {
+      SCOPED_TRACE(input);
+      SCOPED_TRACE(wide);
+      std::string narrow(input);
+      auto unicode = rs::odbc::utf8_to_wide(input);
+      ASSERT_TRUE(unicode);
+      // Translation fails before replacing prepared text or executing SQL.
+      EXPECT_EQ(SQL_ERROR, wide
+          ? SQLPrepareW(statement_, unicode->data(),
+                        static_cast<SQLINTEGER>(unicode->size()))
+          : SQLPrepare(statement_, reinterpret_cast<SQLCHAR*>(narrow.data()), SQL_NTS));
+      EXPECT_EQ(state, diagnostic_state(SQL_HANDLE_STMT, statement_));
+      EXPECT_EQ(SQL_ERROR, wide
+          ? SQLExecDirectW(statement_, unicode->data(),
+                           static_cast<SQLINTEGER>(unicode->size()))
+          : SQLExecDirect(statement_, reinterpret_cast<SQLCHAR*>(narrow.data()), SQL_NTS));
+      EXPECT_EQ(state, diagnostic_state(SQL_HANDLE_STMT, statement_));
+      ASSERT_EQ(SQL_SUCCESS, SQLExecute(statement_));
+      ASSERT_EQ(SQL_SUCCESS, SQLFetch(statement_));
+      SQLINTEGER value = -1;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(statement_, 1, SQL_C_SLONG, &value,
+                                       sizeof(value), nullptr));
+      EXPECT_EQ(42, value);
+      ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(statement_));
+    }
+  }
+}

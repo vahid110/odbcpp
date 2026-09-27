@@ -9,6 +9,10 @@ namespace odbcpp::test {
 class MockProtocolParser final
     : public rs::core::database::IProtocolParser {
  public:
+  rs::core::database::SqlTranslationResult translate_sql(
+      std::string_view sql) const override {
+    return {std::string(sql), rs::core::database::SqlTranslationError::None, {}};
+  }
   // Deliberately simple test dialect: every question mark is a marker.
   std::size_t count_parameter_markers(std::string_view sql) const override {
     return static_cast<std::size_t>(std::count(sql.begin(), sql.end(), '?'));

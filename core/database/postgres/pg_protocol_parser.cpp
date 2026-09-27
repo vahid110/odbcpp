@@ -1,3 +1,4 @@
+#include "pg_sql_dialect.h"
 #include "pg_protocol_parser.h"
 #include <algorithm>
 #include <cctype>
@@ -913,3 +914,9 @@ rs::pg::ErrorResponse PgProtocolParser::decode_error_fields(
 }
 
 } // namespace rs::core::database::postgres
+
+rs::core::database::SqlTranslationResult
+rs::core::database::postgres::PgProtocolParser::translate_sql(
+    std::string_view sql) const {
+  return translate_odbc_sql(sql);
+}

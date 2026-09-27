@@ -135,9 +135,8 @@ leak-sanitizer limitations must be recorded separately from Linux leak coverage.
   transfer; test real-parser startup/query, authentication error/timeout, TLS
   refusal and unsupported selection ownership. This does not close G9a.
 - Marker counting now dispatches through the selected backend, with PostgreSQL
-  lexical edge cases and a differing fake-parser dialect tested. A2 remains open
-  for SQL escape translation; next is that remaining dialect work, followed by
-  the A3 type/catalog contract.
+  lexical edge cases and a differing fake-parser dialect tested. The 2026-09-27 batch moves escape translation behind the backend too;
+  next is the A3 type/catalog contract after full batch validation.
 - Independent dependency: pin versions, available test machines and workflows for
   the three D1 targets before application acceptance and the final G0 freeze.
 
@@ -172,3 +171,23 @@ runs suffice initially; dedicated self-hosted runners are optional. A daily
 checkpoint-only reminder is active; the implementation scheduler stays paused.
 The implementation owner should also raise this at the checkpoint during active
 work, rather than waiting for the next daily check.
+
+## Batch 2 scope — 2026-09-27
+
+G9a/A2: share Unicode validation independently of ODBC, move PostgreSQL escape
+syntax into its backend and route NativeSql/direct/prepared translation through
+that contract. This completes the planned A2 implementation; A3/A4 and overall
+G9a remain open. The batch does not add new database/application support claims.
+
+The checkpoint reminder checks daily and only notifies when application hosts
+become actionable. It does not resume automated implementation. Product targets
+are selected; G0 still needs versions, detailed workflows and evidence review.
+
+Batch 2 local validation: all 34 executables pass in PostgreSQL, iODBC UTF-16
+bridge, iODBC UCS-4, and ASan/UBSan configurations against PostgreSQL 17.11.
+Each configuration reports 745 Google Test cases with zero skips, plus the
+standalone Driver Manager test. Local macOS ASan has leak detection disabled;
+Linux CI retains its leak-detection gate. Focused suites: 11 Unicode tests,
+11 PostgreSQL escape tests, 8 factory/dialect tests and 18 native-SQL integration
+tests pass. Translation semantics were preserved during the move. A2 is closed
+on local evidence, subject to the single batch CI run; A3/A4 are next.

@@ -66,6 +66,11 @@ std::size_t GenericDatabaseConnection::count_parameter_markers(
   return parser_->count_parameter_markers(sql);
 }
 
+SqlTranslationResult GenericDatabaseConnection::translate_sql(
+    std::string_view sql) const {
+  return parser_->translate_sql(sql);
+}
+
 rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettings& settings) {
   if (settings.password.find('\0') != std::string::npos) {
     return {rs::util::DbErrorCode::InvalidParameter,

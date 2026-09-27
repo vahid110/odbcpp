@@ -1590,3 +1590,34 @@ TEST(ConnectionLivenessTest, MalformedQueryResultClosesLogicalConnection) {
 }
 
 }  // namespace
+
+TEST(DatabaseDialectTest, SelectedBackendTranslatesAndRecoversAfterErrorsWithoutIo) {
+  using rs::core::database::SqlTranslationError;
+  auto backend = rs::core::database::DatabaseFactory::create_connection();
+  const auto good = backend->translate_sql("SELECT {fn UCASE('ok')}");
+  ASSERT_TRUE(good);
+  EXPECT_EQ("SELECT UPPER('ok')", good.sql);
+  for (const auto& [sql, expected] : {
+      std::pair{"SELECT {d '2023-02-29'}", SqlTranslationError::InvalidDatetime},
+      std::pair{"SELECT {fn UCASE('ok')", SqlTranslationError::InvalidSyntax},
+      std::pair{"{?= call answer()}", SqlTranslationError::Unsupported}}) {
+    const auto bad = backend->translate_sql(sql);
+    EXPECT_FALSE(bad);
+    EXPECT_EQ(expected, bad.error);
+    EXPECT_FALSE(bad.message.empty());
+    EXPECT_TRUE(backend->translate_sql("SELECT {d '2024-02-29'}"));
+  }
+  EXPECT_FALSE(backend->is_connected());
+}
+
+TEST(DatabaseDialectTest, GenericConnectionHonorsDifferentParserDialect) {
+  rs::core::database::GenericDatabaseConnection backend(
+      std::make_unique<odbcpp::test::MockProtocolParser>());
+  for (const auto* sql : {"SELECT {fn UCASE('ok')}", "{?= call answer()}"}) {
+    // This parser passes its dialect through, unlike the PostgreSQL backend.
+    const auto translated = backend.translate_sql(sql);
+    ASSERT_TRUE(translated);
+    EXPECT_EQ(sql, translated.sql);
+  }
+  EXPECT_FALSE(backend.is_connected());
+}

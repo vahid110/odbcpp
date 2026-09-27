@@ -16,6 +16,7 @@ public:
   void disconnect() override;
   bool is_connected() const override;
   std::size_t count_parameter_markers(std::string_view sql) const override;
+  SqlTranslationResult translate_sql(std::string_view sql) const override;
   
   rs::util::Result<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline) override;
   using IDatabaseConnection::execute_prepared;

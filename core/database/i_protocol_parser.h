@@ -8,6 +8,7 @@
 #include "core/util/deadline.h"
 #include "query_parameter.h"
 #include "query_result.h"
+#include "sql_translation.h"
 
 namespace rs::core::database {
 
@@ -43,6 +44,8 @@ public:
   
   // Query execution
   virtual std::size_t count_parameter_markers(std::string_view sql) const = 0;
+  // Pure translation: no network I/O or mutation of connection state.
+  virtual SqlTranslationResult translate_sql(std::string_view sql) const = 0;
   virtual std::vector<std::byte> create_simple_query(std::string_view sql) = 0;
   virtual std::vector<std::byte> create_prepared_query(
     std::string_view sql,

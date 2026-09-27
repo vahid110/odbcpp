@@ -1,7 +1,7 @@
 #include "odbc_handles.h"
 #include "connection_string.h"
 #include "result_types.h"
-#include "sql_escape.h"
+#include "core/database/sql_translation.h"
 #include "text_data_converter.h"
 #include "unicode.h"
 #include "core/database/database_factory.h"
@@ -25,6 +25,7 @@
 #include <stdexcept>
 
 namespace rs::odbc {
+using rs::core::database::SqlTranslationError;
 namespace {
 
 std::atomic<std::uint64_t> next_connection_id{1};
@@ -532,24 +533,25 @@ bool is_recognized_unsupported_statement_attribute(SQLINTEGER attribute) {
   return false;
 }
 
-std::optional<std::string> statement_sql(ODBCHandle& handle,
-                                         std::string_view sql,
-                                         bool no_scan) {
+std::optional<std::string> statement_sql(
+    ODBCHandle& handle,
+    const rs::core::database::IDatabaseConnection& backend,
+    std::string_view sql, bool no_scan) {
   if (no_scan) return std::string(sql);
-  auto translated = translate_odbc_sql(sql);
+  auto translated = backend.translate_sql(sql);
   if (translated) return std::move(translated.sql);
   switch (translated.error) {
-    case SqlEscapeError::InvalidDatetime:
+    case SqlTranslationError::InvalidDatetime:
       handle.set_error(SQLSTATE_INVALID_DATETIME_FORMAT, translated.message);
       break;
-    case SqlEscapeError::Unsupported:
+    case SqlTranslationError::Unsupported:
       handle.set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
                        translated.message);
       break;
-    case SqlEscapeError::InvalidSyntax:
+    case SqlTranslationError::InvalidSyntax:
       handle.set_error(SQLSTATE_SYNTAX_ERROR, translated.message);
       break;
-    case SqlEscapeError::None:
+    case SqlTranslationError::None:
       break;
   }
   return std::nullopt;
@@ -2469,7 +2471,8 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
               "SQL text contains an embedded NUL byte");
     return SQL_ERROR;
   }
-  const auto native_sql = statement_sql(*this, sql, no_scan_);
+  const auto native_sql = statement_sql(
+      *this, *conn_->get_db_connection(), sql, no_scan_);
   if (!native_sql) return SQL_ERROR;
   if (conn_->logs_queries()) {
     conn_->log(rs::core::logging::LogLevel::Debug, "query_text",
@@ -3416,7 +3419,8 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
               "SQL text contains an embedded NUL byte");
     return SQL_ERROR;
   }
-  const auto native_sql = statement_sql(*this, sql, no_scan_);
+  const auto native_sql = statement_sql(
+      *this, *conn_->get_db_connection(), sql, no_scan_);
   if (!native_sql) return SQL_ERROR;
   
   const auto marker_count =

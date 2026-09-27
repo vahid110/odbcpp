@@ -100,3 +100,25 @@ The MySQL placeholder remains explicitly unimplemented.
 A2 is not closed: shared SQL escape translation still needs backend ownership.
 A3/A4 and fake-backend acceptance through the complete shared ODBC layer remain
 open. Removing the parser include does not establish complete SDK reuse.
+
+## Implementation progress — 2026-09-27
+
+A2's remaining escape translator now lives in
+[pg_sql_dialect.cpp](core/database/postgres/pg_sql_dialect.cpp). SQLNativeSql A/W,
+direct execution and preparation obtain translation through the selected backend.
+The backend owns syntax/lexical decisions; the ODBC layer keeps SQLSTATE mapping,
+input/output validation, truncation and NOSCAN behavior. The result contract is
+[sql_translation.h](core/database/sql_translation.h); backend/parser implementations
+must implement pure `translate_sql`, in addition to marker counting. The MySQL
+placeholder explicitly returns Unsupported and remains outside release scope.
+
+UTF-8 scalar decoding/counting is shared in [utf8.h](core/util/utf8.h), so the
+PostgreSQL dialect does not include ODBC headers. The ODBC Unicode adapter uses
+the same validator, preserving UTF-16/UCS-4 and malformed-input behavior.
+
+Tests exercise selected-backend translation, syntax/datetime/unsupported errors,
+recovery and a fake parser with different translation rules. Real PostgreSQL
+A/W direct/prepare errors preserve a previous prepared statement and permit
+reuse. Existing native-SQL output/truncation, Unicode, quoting, nested comments,
+NOSCAN and Driver Manager tests remain required. A3/A4 and complete fake-backend
+ODBC acceptance remain open; A2 closure is recorded with the batch validation.

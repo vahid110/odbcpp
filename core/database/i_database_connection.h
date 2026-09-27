@@ -9,6 +9,7 @@
 #include "core/util/result.h"
 #include "query_parameter.h"
 #include "query_result.h"
+#include "sql_translation.h"
 
 namespace rs::core::database {
 
@@ -34,6 +35,8 @@ public:
 
   // Count bind markers using this backend's SQL lexical rules, without I/O.
   virtual std::size_t count_parameter_markers(std::string_view sql) const = 0;
+  // Pure translation: no network I/O or mutation of connection state.
+  virtual SqlTranslationResult translate_sql(std::string_view sql) const = 0;
   
   virtual rs::util::Result<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline) = 0;
   virtual rs::util::Result<QueryResult> execute_prepared(std::string_view sql, 

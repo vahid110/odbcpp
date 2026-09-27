@@ -1,5 +1,5 @@
-#include "sql_escape.h"
-#include "unicode.h"
+#include "pg_sql_dialect.h"
+#include "core/util/utf8.h"
 
 #include <algorithm>
 #include <array>
@@ -9,7 +9,7 @@
 #include <string>
 #include <string_view>
 
-namespace rs::odbc {
+namespace rs::core::database::postgres {
 namespace {
 
 std::string_view trim(std::string_view value) {
@@ -211,18 +211,18 @@ std::optional<std::size_t> escape_end(std::string_view sql,
   return std::nullopt;
 }
 
-SqlEscapeResult failure(SqlEscapeError error, std::string message) {
+SqlTranslationResult failure(SqlTranslationError error, std::string message) {
   return {{}, error, std::move(message)};
 }
 
-SqlEscapeResult translate_fragment(std::string_view sql);
+SqlTranslationResult translate_fragment(std::string_view sql);
 
-SqlEscapeResult translate_datetime(std::string_view body,
+SqlTranslationResult translate_datetime(std::string_view body,
                                    std::string_view keyword,
                                    std::string_view native_keyword) {
   const auto literal = quoted_value(body.substr(keyword.size()));
   if (!literal) {
-    return failure(SqlEscapeError::InvalidDatetime,
+    return failure(SqlTranslationError::InvalidDatetime,
                    "ODBC datetime escape requires a quoted literal");
   }
   bool valid = false;
@@ -233,14 +233,14 @@ SqlEscapeResult translate_datetime(std::string_view body,
         valid_date(literal->substr(0, 10)) && valid_time(literal->substr(11));
   }
   if (!valid) {
-    return failure(SqlEscapeError::InvalidDatetime,
+    return failure(SqlTranslationError::InvalidDatetime,
                    "ODBC datetime escape contains an invalid value");
   }
   return {std::string(native_keyword) + " '" + std::string(*literal) + "'",
-          SqlEscapeError::None, {}};
+          SqlTranslationError::None, {}};
 }
 
-SqlEscapeResult translate_escape(std::string_view body) {
+SqlTranslationResult translate_escape(std::string_view body) {
   body = trim(body);
   if (starts_with_word(body, "ts")) {
     return translate_datetime(body, "ts", "TIMESTAMP");
@@ -286,12 +286,12 @@ SqlEscapeResult translate_escape(std::string_view body) {
   if (starts_with_word(body, "escape")) {
     const auto literal = quoted_value(body.substr(6));
     if (!literal || (*literal != "''" &&
-                     utf8_code_point_count(*literal) != 1)) {
-      return failure(SqlEscapeError::InvalidSyntax,
+                     rs::util::utf8_code_point_count(*literal) != 1)) {
+      return failure(SqlTranslationError::InvalidSyntax,
                      "ODBC LIKE escape must contain one character");
     }
     return {"ESCAPE '" + std::string(*literal) + "'",
-            SqlEscapeError::None, {}};
+            SqlTranslationError::None, {}};
   }
   if (starts_with_word(body, "call")) {
     auto translated = translate_fragment(trim(body.substr(4)));
@@ -300,15 +300,15 @@ SqlEscapeResult translate_escape(std::string_view body) {
     return translated;
   }
   if (body.starts_with("?")) {
-    return failure(SqlEscapeError::Unsupported,
+    return failure(SqlTranslationError::Unsupported,
                    "ODBC function-return procedure calls are not supported");
   }
   // Unknown braces may be native PostgreSQL syntax. ODBC requires drivers to
   // pass grammar they do not recognize without modification.
-  return {"{" + std::string(body) + "}", SqlEscapeError::None, {}};
+  return {"{" + std::string(body) + "}", SqlTranslationError::None, {}};
 }
 
-SqlEscapeResult translate_fragment(std::string_view sql) {
+SqlTranslationResult translate_fragment(std::string_view sql) {
   std::string output;
   output.reserve(sql.size());
   for (std::size_t i = 0; i < sql.size();) {
@@ -332,7 +332,7 @@ SqlEscapeResult translate_fragment(std::string_view sql) {
     }
     const auto end = escape_end(sql, i);
     if (!end) {
-      return failure(SqlEscapeError::InvalidSyntax,
+      return failure(SqlTranslationError::InvalidSyntax,
                      "ODBC escape clause has no closing brace");
     }
     auto translated = translate_escape(sql.substr(i + 1, *end - i - 1));
@@ -340,13 +340,13 @@ SqlEscapeResult translate_fragment(std::string_view sql) {
     output += translated.sql;
     i = *end + 1;
   }
-  return {std::move(output), SqlEscapeError::None, {}};
+  return {std::move(output), SqlTranslationError::None, {}};
 }
 
 } // namespace
 
-SqlEscapeResult translate_odbc_sql(std::string_view sql) {
+SqlTranslationResult translate_odbc_sql(std::string_view sql) {
   return translate_fragment(sql);
 }
 
-} // namespace rs::odbc
+} // namespace rs::core::database::postgres

@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
 
-#include "odbc/sql_escape.h"
+#include "core/database/postgres/pg_sql_dialect.h"
 
-using rs::odbc::SqlEscapeError;
-using rs::odbc::translate_odbc_sql;
+using rs::core::database::SqlTranslationError;
+using rs::core::database::postgres::translate_odbc_sql;
 
 TEST(SqlEscapeTest, TranslatesDatetimeLiterals) {
   EXPECT_EQ("SELECT DATE '2024-02-29'",
@@ -24,7 +24,7 @@ TEST(SqlEscapeTest, RejectsInvalidDatetimeValues) {
            "SELECT {ts '2024-01-01 12:-1:00'}",
            "SELECT {ts '2024-01-01T12:00:00'}"}) {
     const auto translated = translate_odbc_sql(sql);
-    EXPECT_EQ(SqlEscapeError::InvalidDatetime, translated.error) << sql;
+    EXPECT_EQ(SqlTranslationError::InvalidDatetime, translated.error) << sql;
     EXPECT_FALSE(translated.message.empty()) << sql;
   }
 }
@@ -58,9 +58,9 @@ TEST(SqlEscapeTest, LikeEscapeAcceptsOneUnicodeOrQuotedCharacter) {
             translate_odbc_sql("SELECT {escape '\xF0\x9F\x98\x80'}").sql);
   EXPECT_EQ("SELECT ESCAPE ''''",
             translate_odbc_sql("SELECT {escape ''''}").sql);
-  EXPECT_EQ(SqlEscapeError::InvalidSyntax,
+  EXPECT_EQ(SqlTranslationError::InvalidSyntax,
             translate_odbc_sql("SELECT {escape 'e\xCC\x81'}").error);
-  EXPECT_EQ(SqlEscapeError::InvalidSyntax,
+  EXPECT_EQ(SqlTranslationError::InvalidSyntax,
             translate_odbc_sql("SELECT {escape '\xC3'}").error);
 }
 
@@ -111,10 +111,10 @@ TEST(SqlEscapeTest, DollarSignsInIdentifiersDoNotHideEscapes) {
 }
 
 TEST(SqlEscapeTest, ReportsMalformedAndUnsupportedEscapes) {
-  EXPECT_EQ(SqlEscapeError::InvalidSyntax,
+  EXPECT_EQ(SqlTranslationError::InvalidSyntax,
             translate_odbc_sql("SELECT {d '2024-01-01'").error);
-  EXPECT_EQ(SqlEscapeError::InvalidSyntax,
+  EXPECT_EQ(SqlTranslationError::InvalidSyntax,
             translate_odbc_sql("SELECT 1 {escape '!!'}").error);
-  EXPECT_EQ(SqlEscapeError::Unsupported,
+  EXPECT_EQ(SqlTranslationError::Unsupported,
             translate_odbc_sql("{?= call answer()}").error);
 }
