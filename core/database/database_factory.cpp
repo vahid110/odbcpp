@@ -2,7 +2,7 @@
 #include "generic_database_connection.h"
 
 #if defined(ODBCPP_ENABLE_POSTGRESQL) || defined(ODBCPP_ENABLE_REDSHIFT)
-#include "postgres/pg_protocol_parser.h"
+#include "postgres/pg_database_connection.h"
 #endif
 
 #ifdef ODBCPP_ENABLE_MYSQL
@@ -24,15 +24,13 @@ std::unique_ptr<IDatabaseConnection> DatabaseFactory::create_connection(
     std::unique_ptr<rs::core::transport::ITransport> transport) {
 #ifdef ODBCPP_ENABLE_POSTGRESQL
   if (type == DatabaseType::PostgreSQL) {
-    return std::make_unique<GenericDatabaseConnection>(
-      std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
+    return std::make_unique<postgres::PgDatabaseConnection>(std::move(transport));
   }
 #endif
 
 #ifdef ODBCPP_ENABLE_REDSHIFT
   if (type == DatabaseType::Redshift) {
-    return std::make_unique<GenericDatabaseConnection>(
-      std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
+    return std::make_unique<postgres::PgDatabaseConnection>(std::move(transport));
   }
 #endif
 

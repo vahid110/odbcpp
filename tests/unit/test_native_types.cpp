@@ -2,6 +2,7 @@
 
 #include "core/database/database_factory.h"
 #include "core/database/generic_database_connection.h"
+#include "core/database/postgres/pg_database_connection.h"
 #include "tests/mock_protocol_parser.h"
 
 #include <limits>
@@ -80,4 +81,125 @@ TEST(NativeTypeTest, GenericConnectionUsesSelectedParserTypeSemantics) {
   EXPECT_EQ(7u, type.column_size);
   EXPECT_TRUE(type.known);
   EXPECT_FALSE(backend.is_connected());
+}
+
+namespace {
+class MetadataLookupConnection : public postgres::PgDatabaseConnection {
+public:
+  QueryResult response;
+  std::optional<rs::util::DbErrorCode> failure;
+  std::string query;
+  rs::util::Deadline observed_deadline{};
+  int queries = 0;
+
+  rs::util::Result<QueryResult> execute_query(
+      std::string_view sql, rs::util::Deadline deadline) override {
+    ++queries;
+    query = sql;
+    observed_deadline = deadline;
+    if (failure) return {*failure, "injected metadata failure"};
+    return response;
+  }
+};
+} // namespace
+
+TEST(NativeTypeLookupTest, KnownEmptyAndUnspecifiedTypesRequireNoQuery) {
+  MetadataLookupConnection backend;
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds(2));
+  const auto empty = backend.resolve_types({}, deadline);
+  ASSERT_TRUE(empty.has_value());
+  EXPECT_TRUE(empty->empty());
+  const std::uint32_t ids[]{23, 0, 23, 1700};
+  const auto result = backend.resolve_types(ids, deadline);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(3u, result->size());
+  EXPECT_EQ(ScalarType::Integer, result->at(23).type);
+  EXPECT_EQ(ScalarType::Numeric, result->at(1700).type);
+  EXPECT_FALSE(result->at(0).known);
+  EXPECT_EQ(0, backend.queries);
+}
+
+TEST(NativeTypeLookupTest, ResolvesDeduplicatedDomainsWithCallerDeadline) {
+  MetadataLookupConnection backend;
+  backend.response.rows = {{"90000", "1043", "21"},
+                           {"90001", "1700", std::to_string((8 << 16) + 2050)}};
+  const std::uint32_t ids[]{90001, 23, 90000, 90001};
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds(2));
+  const auto result = backend.resolve_types(ids, deadline);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(3u, result->size());
+  EXPECT_EQ(ScalarType::VarChar, result->at(90000).type);
+  EXPECT_EQ(17u, result->at(90000).column_size);
+  EXPECT_TRUE(result->at(90000).known);
+  EXPECT_EQ(ScalarType::Numeric, result->at(90001).type);
+  EXPECT_EQ(-2, result->at(90001).decimal_digits);
+  EXPECT_EQ(8u, result->at(90001).column_size);
+  EXPECT_EQ(1, backend.queries);
+  EXPECT_EQ(deadline, backend.observed_deadline);
+  EXPECT_NE(std::string::npos, backend.query.find("IN (90000,90001)"));
+}
+
+TEST(NativeTypeLookupTest, MissingAndUnknownBaseTypesRetainFallback) {
+  MetadataLookupConnection backend;
+  backend.response.rows = {{"90000", "999999", "-1"}};
+  const std::uint32_t ids[]{90000, 90001};
+  const auto result = backend.resolve_types(ids, rs::util::Deadline::max());
+  ASSERT_TRUE(result.has_value());
+  for (const auto id : ids) {
+    EXPECT_FALSE(result->at(id).known);
+    EXPECT_EQ(ScalarType::VarChar, result->at(id).type);
+    EXPECT_EQ(0u, result->at(id).column_size);
+  }
+}
+
+TEST(NativeTypeLookupTest, RejectsMalformedRowsWithoutReturningPartialMetadata) {
+  MetadataLookupConnection backend;
+  const std::uint32_t ids[]{90000, 90001};
+  const std::vector<ResultRow> invalid_rows{
+      {}, {"90001", "23"}, {"90001", std::nullopt, "-1"},
+      {"90001", "23", std::nullopt}, {"90001", "23x", "-1"},
+      {"-1", "23", "-1"}, {"90001", "4294967296", "-1"},
+      {"90001", "23", "2147483648"}, {"90001", "0", "-1"},
+      {"90002", "23", "-1"}, {"90000", "23", "-1"}};
+  for (std::size_t index = 0; index < invalid_rows.size(); ++index) {
+    SCOPED_TRACE(index);
+    backend.response.rows = {{"90000", "23", "-1"}, invalid_rows[index]};
+    const auto bad = backend.resolve_types(ids, rs::util::Deadline::max());
+    ASSERT_TRUE(bad.has_error());
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), bad.error());
+    EXPECT_NE(std::string::npos, bad.error_message().find("invalid parameter type metadata"));
+    backend.response.rows = {{"90000", "23", "-1"}, {"90001", "1043", "21"}};
+    const auto recovered = backend.resolve_types(ids, rs::util::Deadline::max());
+    ASSERT_TRUE(recovered.has_value());
+    EXPECT_EQ(17u, recovered->at(90001).column_size);
+  }
+}
+
+TEST(NativeTypeLookupTest, PropagatesQueryFailuresAndAllowsRetry) {
+  MetadataLookupConnection backend;
+  const std::uint32_t ids[]{90000};
+  for (const auto error : {rs::util::DbErrorCode::Timeout,
+                           rs::util::DbErrorCode::NetworkError,
+                           rs::util::DbErrorCode::QueryFailed}) {
+    backend.failure = error;
+    const auto failed = backend.resolve_types(ids, rs::util::Deadline::min());
+    ASSERT_TRUE(failed.has_error());
+    EXPECT_EQ(rs::util::make_error_code(error), failed.error());
+    EXPECT_EQ("injected metadata failure", failed.error_message());
+    EXPECT_EQ(rs::util::Deadline::min(), backend.observed_deadline);
+  }
+  backend.failure.reset();
+  backend.response.rows = {{"90000", "23", "-1"}};
+  EXPECT_TRUE(backend.resolve_types(ids, rs::util::Deadline::max()).has_value());
+}
+
+TEST(NativeTypeLookupTest, GenericBackendUsesItsOwnFallbackWithoutPostgresDiscovery) {
+  GenericDatabaseConnection backend(std::make_unique<odbcpp::test::MockProtocolParser>());
+  const std::uint32_t ids[]{23, 90000};
+  const auto result = backend.resolve_types(ids, rs::util::Deadline::max());
+  ASSERT_TRUE(result.has_value());
+  for (const auto id : ids) {
+    EXPECT_EQ(ScalarType::Char, result->at(id).type);
+    EXPECT_EQ(7u, result->at(id).column_size);
+  }
 }

@@ -42,6 +42,12 @@ public:
   virtual NativeTypeInfo describe_type(std::uint32_t id, std::int16_t size,
                                        std::int32_t modifier) const = 0;
   
+  // Resolve every requested native ID, retaining a fallback for missing types.
+  // May perform backend metadata I/O using the caller's existing deadline.
+  // On failure no partial map is returned; callers must not update their cache.
+  virtual rs::util::Result<ResolvedTypeMap> resolve_types(
+      std::span<const std::uint32_t> ids, rs::util::Deadline deadline) = 0;
+
   virtual rs::util::Result<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline) = 0;
   virtual rs::util::Result<QueryResult> execute_prepared(std::string_view sql, 
                                                        std::span<const QueryParameter> params,

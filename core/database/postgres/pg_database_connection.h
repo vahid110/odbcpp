@@ -1,0 +1,17 @@
+#pragma once
+
+#include "core/database/generic_database_connection.h"
+
+namespace rs::core::database::postgres {
+
+// PostgreSQL session with backend-specific metadata discovery.
+class PgDatabaseConnection : public GenericDatabaseConnection {
+public:
+  explicit PgDatabaseConnection(
+      std::unique_ptr<rs::core::transport::ITransport> transport = nullptr);
+
+  rs::util::Result<ResolvedTypeMap> resolve_types(
+      std::span<const std::uint32_t> ids, rs::util::Deadline deadline) override;
+};
+
+} // namespace rs::core::database::postgres

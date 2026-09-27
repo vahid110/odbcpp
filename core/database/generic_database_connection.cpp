@@ -76,6 +76,13 @@ NativeTypeInfo GenericDatabaseConnection::describe_type(
   return parser_->describe_type(id, size, modifier);
 }
 
+rs::util::Result<ResolvedTypeMap> GenericDatabaseConnection::resolve_types(
+    std::span<const std::uint32_t> ids, rs::util::Deadline) {
+  ResolvedTypeMap types;
+  for (const auto id : ids) types.emplace(id, describe_type(id, -1, -1));
+  return types;
+}
+
 rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettings& settings) {
   if (settings.password.find('\0') != std::string::npos) {
     return {rs::util::DbErrorCode::InvalidParameter,
