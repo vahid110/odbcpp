@@ -1,5 +1,6 @@
 #pragma once
 
+#include "native_type_info.h"
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -16,6 +17,8 @@ struct ResultColumnMetadata {
   std::int16_t type_size{-1};
   std::int32_t type_modifier{-1};
   std::int16_t format_code{0};
+  // Locally synthesized results can provide normalized metadata without native IDs.
+  std::optional<NativeTypeInfo> normalized_type{};
 };
 
 using ResultCell = std::optional<std::string>;

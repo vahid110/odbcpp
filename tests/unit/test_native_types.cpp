@@ -203,3 +203,70 @@ TEST(NativeTypeLookupTest, GenericBackendUsesItsOwnFallbackWithoutPostgresDiscov
     EXPECT_EQ(7u, result->at(id).column_size);
   }
 }
+
+namespace {
+class VersionedTypeCatalogConnection : public postgres::PgDatabaseConnection {
+public:
+  std::string version;
+  std::string get_parameter(std::string_view key) const override {
+    return key == "server_version" ? version : std::string{};
+  }
+};
+}
+
+TEST(TypeCatalogTest, AdvertisesNativeNamesAndNullablePropertiesWithoutIo) {
+  auto backend = DatabaseFactory::create_connection();
+  const auto catalog = backend->type_catalog();
+  ASSERT_EQ(15u, catalog.size());
+  for (const auto& type : catalog) {
+    EXPECT_FALSE(type.name.empty());
+    EXPECT_GT(type.column_size, 0u);
+    if (type.type == ScalarType::VarChar) {
+      EXPECT_EQ("varchar", type.name);
+      EXPECT_EQ(10485760u, type.column_size);
+      EXPECT_EQ(std::optional<std::string_view>("'"), type.literal_prefix);
+      EXPECT_EQ(std::optional<std::string_view>("length"), type.create_params);
+      EXPECT_FALSE(type.minimum_scale.has_value());
+      EXPECT_FALSE(type.unsigned_attribute.has_value());
+      EXPECT_TRUE(type.case_sensitive);
+    }
+    if (type.type == ScalarType::Integer) {
+      EXPECT_EQ("integer", type.name);
+      EXPECT_EQ(std::optional<bool>(false), type.unsigned_attribute);
+      EXPECT_EQ(std::optional<std::int16_t>(0), type.minimum_scale);
+      EXPECT_FALSE(type.literal_prefix.has_value());
+      EXPECT_EQ(10, type.numeric_radix);
+    }
+  }
+  EXPECT_FALSE(backend->is_connected());
+}
+
+TEST(TypeCatalogTest, NumericScaleTracksServerVersionWithoutInvalidatingPriorViews) {
+  VersionedTypeCatalogConnection backend;
+  const auto original = backend.type_catalog();
+  for (const auto* version : {"", "14.18", "15.0", "17.11 (package)",
+                              "invalid", "999999999999999999999"}) {
+    backend.version = version;
+    const bool modern = backend.version.starts_with("15.") || backend.version.starts_with("17.");
+    int numerics = 0;
+    for (const auto& type : backend.type_catalog()) {
+      if (type.type == ScalarType::Numeric || type.type == ScalarType::Decimal) {
+        ++numerics;
+        EXPECT_EQ(std::optional<std::int16_t>(modern ? -1000 : 0), type.minimum_scale);
+        EXPECT_EQ(std::optional<std::int16_t>(1000), type.maximum_scale);
+      }
+    }
+    EXPECT_EQ(2, numerics);
+  }
+  for (const auto& type : original) {
+    if (type.type == ScalarType::Numeric) {
+      EXPECT_EQ(std::optional<std::int16_t>(0), type.minimum_scale);
+    }
+  }
+}
+
+TEST(TypeCatalogTest, GenericBackendDoesNotAdvertisePostgresTypes) {
+  GenericDatabaseConnection backend(std::make_unique<odbcpp::test::MockProtocolParser>());
+  EXPECT_TRUE(backend.type_catalog().empty());
+  EXPECT_FALSE(backend.is_connected());
+}

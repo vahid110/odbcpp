@@ -11,6 +11,7 @@
 #include "query_result.h"
 #include "sql_translation.h"
 #include "native_type_info.h"
+#include "type_definition.h"
 #include "catalog_request.h"
 
 namespace rs::core::database {
@@ -47,6 +48,10 @@ public:
   // deadline, diagnostics and cursor handling. Unsupported catalogs return an error.
   virtual rs::util::Result<std::string> catalog_query(
       const CatalogRequest& request) const = 0;
+
+  // No I/O. Returned definitions and strings remain valid for the connection lifetime.
+  // An empty catalog means the backend advertises no types.
+  virtual std::span<const TypeDefinition> type_catalog() const = 0;
 
   // Resolve every requested native ID, retaining a fallback for missing types.
   // May perform backend metadata I/O using the caller's existing deadline.

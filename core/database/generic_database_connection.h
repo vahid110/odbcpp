@@ -23,6 +23,8 @@ public:
   rs::util::Result<std::string> catalog_query(
       const CatalogRequest& request) const override;
 
+  std::span<const TypeDefinition> type_catalog() const override { return {}; }
+
   rs::util::Result<ResolvedTypeMap> resolve_types(
       std::span<const std::uint32_t> ids, rs::util::Deadline deadline) override;
 

@@ -8,7 +8,7 @@ namespace rs::core::database {
 // Normalized scalar families; these are not database IDs or ODBC constants.
 enum class ScalarType {
   Boolean, Binary, Char, VarChar, BigInt, SmallInt, Integer, Real, Double,
-  Date, Time, Timestamp, Numeric
+  Date, Time, Timestamp, Numeric, Decimal, LongVarChar
 };
 
 struct NativeTypeInfo {

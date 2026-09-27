@@ -809,6 +809,8 @@ OdbcTypeInfo odbc_type_info(
     case ScalarType::Time: sql_type = SQL_TYPE_TIME; break;
     case ScalarType::Timestamp: sql_type = SQL_TYPE_TIMESTAMP; break;
     case ScalarType::Numeric: sql_type = SQL_NUMERIC; break;
+    case ScalarType::Decimal: sql_type = SQL_DECIMAL; break;
+    case ScalarType::LongVarChar: sql_type = SQL_LONGVARCHAR; break;
   }
   return {sql_type, static_cast<SQLULEN>(native.column_size),
           native.decimal_digits};
