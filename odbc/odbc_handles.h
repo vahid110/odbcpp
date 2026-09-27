@@ -513,6 +513,7 @@ private:
       bool include_parameter_metadata);
   SQLRETURN ensure_result_metadata();
   SQLRETURN describe_prepared_metadata();
+  SQLRETURN execute_catalog(const rs::core::database::CatalogRequest& request);
   SQLRETURN resolve_parameter_types(
       const rs::core::database::QueryResult& result,
       rs::util::Deadline deadline);

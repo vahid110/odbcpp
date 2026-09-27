@@ -4793,6 +4793,21 @@ SQLRETURN ODBCStatement::get_type_info(SQLSMALLINT data_type) {
   return SQL_SUCCESS;
 }
 
+SQLRETURN ODBCStatement::execute_catalog(
+    const rs::core::database::CatalogRequest& request) {
+  if (!conn_->is_connected()) {
+    set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
+    return SQL_ERROR;
+  }
+  auto query = conn_->get_db_connection()->catalog_query(request);
+  if (query.has_error()) {
+    set_error(request_sqlstate(query.error(), SQLSTATE_GENERAL_ERROR),
+              query.error_message());
+    return SQL_ERROR;
+  }
+  return execute_direct(*query);
+}
+
 SQLRETURN ODBCStatement::tables(
     const std::optional<std::string>& catalog_name,
     const std::optional<std::string>& schema_name,
@@ -4803,64 +4818,24 @@ SQLRETURN ODBCStatement::tables(
   const bool empty_table = table_name && table_name->empty();
   const bool no_type_filter = !table_type || table_type->empty();
 
+  using Request = rs::core::database::TablesCatalogRequest;
+  Request request;
+  request.catalog = catalog_name;
+  request.schema = schema_name;
+  request.table = table_name;
   if (catalog_name && *catalog_name == SQL_ALL_CATALOGS && empty_schema &&
       empty_table && no_type_filter) {
-    return execute_direct(
-        "SELECT current_database()::text AS table_cat, NULL::text AS "
-        "table_schem, NULL::text AS table_name, NULL::text AS table_type, "
-        "NULL::text AS remarks");
+    request.mode = Request::Mode::Catalogs;
+  } else if (schema_name && *schema_name == SQL_ALL_SCHEMAS &&
+             empty_catalog && empty_table && no_type_filter) {
+    request.mode = Request::Mode::Schemas;
+  } else if (table_type && *table_type == SQL_ALL_TABLE_TYPES &&
+             empty_catalog && empty_schema && empty_table) {
+    request.mode = Request::Mode::TableTypes;
+  } else if (!no_type_filter) {
+    request.types = parse_table_types(*table_type);
   }
-  if (schema_name && *schema_name == SQL_ALL_SCHEMAS &&
-      empty_catalog && empty_table && no_type_filter) {
-    return execute_direct(
-        "SELECT NULL::text AS table_cat, schema_name::text AS table_schem, "
-        "NULL::text AS table_name, NULL::text AS table_type, NULL::text AS "
-        "remarks FROM information_schema.schemata ORDER BY table_schem");
-  }
-  if (table_type && *table_type == SQL_ALL_TABLE_TYPES &&
-      empty_catalog && empty_schema && empty_table) {
-    return execute_direct(
-        "SELECT NULL::text AS table_cat, NULL::text AS table_schem, "
-        "NULL::text AS table_name, table_type, NULL::text AS remarks FROM "
-        "(VALUES ('TABLE'::text), ('VIEW'::text), ('SYSTEM TABLE'::text), "
-        "('FOREIGN TABLE'::text), ('LOCAL TEMPORARY'::text)) "
-        "AS supported(table_type) ORDER BY table_type");
-  }
-
-  std::string query =
-      "SELECT table_cat, table_schem, table_name, table_type, NULL::text AS "
-      "remarks FROM (SELECT current_database()::text AS table_cat, "
-      "table_schema::text AS table_schem, table_name::text AS table_name, "
-      "CASE WHEN table_type = 'VIEW' THEN 'VIEW' WHEN table_schema IN "
-      "('pg_catalog', 'information_schema') THEN 'SYSTEM TABLE' WHEN "
-      "table_type = 'BASE TABLE' THEN 'TABLE' WHEN "
-      "table_type = 'LOCAL TEMPORARY' THEN 'LOCAL TEMPORARY' WHEN "
-      "table_type = 'FOREIGN' THEN 'FOREIGN TABLE' ELSE table_type END::text "
-      "AS table_type FROM information_schema.tables) AS odbcpp_tables WHERE 1=1";
-  if (catalog_name) {
-    query += " AND table_cat LIKE " + quote_catalog_literal(*catalog_name);
-  }
-  if (schema_name) {
-    query += " AND table_schem LIKE " + quote_catalog_literal(*schema_name);
-  }
-  if (table_name) {
-    query += " AND table_name LIKE " + quote_catalog_literal(*table_name);
-  }
-  if (table_type && !table_type->empty()) {
-    const auto types = parse_table_types(*table_type);
-    if (types.empty()) {
-      query += " AND FALSE";
-    } else {
-      query += " AND table_type IN (";
-      for (std::size_t i = 0; i < types.size(); ++i) {
-        if (i != 0) query += ',';
-        query += quote_catalog_literal(types[i]);
-      }
-      query += ')';
-    }
-  }
-  query += " ORDER BY table_type, table_cat, table_schem, table_name";
-  return execute_direct(query);
+  return execute_catalog(request);
 }
 
 SQLRETURN ODBCStatement::columns(
@@ -4999,34 +4974,8 @@ SQLRETURN ODBCStatement::primary_keys(
     const std::optional<std::string>& catalog_name,
     const std::optional<std::string>& schema_name,
     const std::string& table_name) {
-  std::string query =
-      "SELECT current_database()::text AS table_cat, "
-      "keys.table_schema::text AS table_schem, "
-      "keys.table_name::text AS table_name, "
-      "keys.column_name::text AS column_name, "
-      "keys.ordinal_position::smallint AS key_seq, "
-      "constraints.constraint_name::text AS pk_name "
-      "FROM information_schema.table_constraints AS constraints "
-      "JOIN information_schema.key_column_usage AS keys "
-      "ON constraints.constraint_catalog = keys.constraint_catalog "
-      "AND constraints.constraint_schema = keys.constraint_schema "
-      "AND constraints.constraint_name = keys.constraint_name "
-      "AND constraints.table_catalog = keys.table_catalog "
-      "AND constraints.table_schema = keys.table_schema "
-      "AND constraints.table_name = keys.table_name "
-      "WHERE constraints.constraint_type = 'PRIMARY KEY' "
-      "AND keys.table_name = " + quote_catalog_literal(table_name);
-  if (catalog_name) {
-    query += " AND keys.table_catalog = " +
-        quote_catalog_literal(*catalog_name);
-  }
-  if (schema_name) {
-    query += " AND keys.table_schema = " +
-        quote_catalog_literal(*schema_name);
-  }
-  query +=
-      " ORDER BY table_cat, table_schem, table_name, key_seq";
-  return execute_direct(query);
+  return execute_catalog(rs::core::database::PrimaryKeysCatalogRequest{
+      catalog_name, schema_name, table_name});
 }
 
 SQLRETURN ODBCStatement::foreign_keys(
@@ -5036,85 +4985,9 @@ SQLRETURN ODBCStatement::foreign_keys(
     const std::optional<std::string>& fk_catalog_name,
     const std::optional<std::string>& fk_schema_name,
     const std::optional<std::string>& fk_table_name) {
-  std::string query =
-      "SELECT current_database()::text AS pktable_cat, "
-      "pk_namespaces.nspname::text AS pktable_schem, "
-      "pk_tables.relname::text AS pktable_name, "
-      "pk_columns.attname::text AS pkcolumn_name, "
-      "current_database()::text AS fktable_cat, "
-      "fk_namespaces.nspname::text AS fktable_schem, "
-      "fk_tables.relname::text AS fktable_name, "
-      "fk_columns.attname::text AS fkcolumn_name, "
-      "key_columns.ordinality::smallint AS key_seq, "
-      "CASE fk_constraints.confupdtype WHEN 'c' THEN 0 "
-      "WHEN 'r' THEN 1 WHEN 'n' THEN 2 "
-      "WHEN 'a' THEN 3 WHEN 'd' THEN 4 "
-      "ELSE 3 END::smallint AS update_rule, "
-      "CASE fk_constraints.confdeltype WHEN 'c' THEN 0 "
-      "WHEN 'r' THEN 1 WHEN 'n' THEN 2 "
-      "WHEN 'a' THEN 3 WHEN 'd' THEN 4 "
-      "ELSE 3 END::smallint AS delete_rule, "
-      "fk_constraints.conname::text AS fk_name, "
-      "pk_constraints.conname::text AS pk_name, "
-      "CASE WHEN NOT fk_constraints.condeferrable THEN 7 "
-      "WHEN fk_constraints.condeferred THEN 5 "
-      "ELSE 6 END::smallint AS deferrability "
-      "FROM pg_catalog.pg_constraint AS fk_constraints "
-      "JOIN pg_catalog.pg_class AS fk_tables "
-      "ON fk_tables.oid = fk_constraints.conrelid "
-      "JOIN pg_catalog.pg_namespace AS fk_namespaces "
-      "ON fk_namespaces.oid = fk_tables.relnamespace "
-      "JOIN pg_catalog.pg_class AS pk_tables "
-      "ON pk_tables.oid = fk_constraints.confrelid "
-      "JOIN pg_catalog.pg_namespace AS pk_namespaces "
-      "ON pk_namespaces.oid = pk_tables.relnamespace "
-      "JOIN pg_catalog.pg_constraint AS pk_constraints "
-      "ON pk_constraints.conrelid = fk_constraints.confrelid "
-      "AND pk_constraints.contype = 'p' "
-      "AND pk_constraints.conkey @> fk_constraints.confkey "
-      "AND pk_constraints.conkey <@ fk_constraints.confkey "
-      "CROSS JOIN LATERAL unnest(fk_constraints.conkey, "
-      "fk_constraints.confkey) WITH ORDINALITY "
-      "AS key_columns(fk_attribute, pk_attribute, ordinality) "
-      "JOIN pg_catalog.pg_attribute AS fk_columns "
-      "ON fk_columns.attrelid = fk_constraints.conrelid "
-      "AND fk_columns.attnum = key_columns.fk_attribute "
-      "JOIN pg_catalog.pg_attribute AS pk_columns "
-      "ON pk_columns.attrelid = fk_constraints.confrelid "
-      "AND pk_columns.attnum = key_columns.pk_attribute "
-      "WHERE fk_constraints.contype = 'f'";
-  if (pk_catalog_name) {
-    query += " AND current_database() = " +
-        quote_catalog_literal(*pk_catalog_name);
-  }
-  if (pk_schema_name) {
-    query += " AND pk_namespaces.nspname = " +
-        quote_catalog_literal(*pk_schema_name);
-  }
-  if (pk_table_name) {
-    query += " AND pk_tables.relname = " +
-        quote_catalog_literal(*pk_table_name);
-  }
-  if (fk_catalog_name) {
-    query += " AND current_database() = " +
-        quote_catalog_literal(*fk_catalog_name);
-  }
-  if (fk_schema_name) {
-    query += " AND fk_namespaces.nspname = " +
-        quote_catalog_literal(*fk_schema_name);
-  }
-  if (fk_table_name) {
-    query += " AND fk_tables.relname = " +
-        quote_catalog_literal(*fk_table_name);
-  }
-  if (pk_table_name) {
-    query +=
-        " ORDER BY fktable_cat, fktable_schem, fktable_name, key_seq";
-  } else {
-    query +=
-        " ORDER BY pktable_cat, pktable_schem, pktable_name, key_seq";
-  }
-  return execute_direct(query);
+  return execute_catalog(rs::core::database::ForeignKeysCatalogRequest{
+      pk_catalog_name, pk_schema_name, pk_table_name,
+      fk_catalog_name, fk_schema_name, fk_table_name});
 }
 
 SQLRETURN ODBCStatement::statistics(

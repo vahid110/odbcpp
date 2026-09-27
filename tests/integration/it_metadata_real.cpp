@@ -1562,6 +1562,50 @@ TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
 }
 
+TEST_F(MetadataIntegrationTest, BackendCatalogsPreserveQuotedUnicodeNames) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"CREATE TEMP TABLE \"odbcpp'parent_%é\"(id integer PRIMARY KEY)",
+        SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+        hstmt, (SQLCHAR*)"CREATE TEMP TABLE \"odbcpp'child_%é\"(id integer REFERENCES \"odbcpp'parent_%é\"(id))",
+        SQL_NTS));
+    SQLCHAR pattern[] = "odbcpp'parent\\_\\%é";
+    SQLCHAR types[] = " 'local temporary', 'unknown' ";
+    ASSERT_EQ(SQL_SUCCESS, SQLTables(
+        hstmt, nullptr, 0, nullptr, 0, pattern, SQL_NTS, types, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("odbcpp'parent_%é"), text_cell(hstmt, 3));
+    EXPECT_EQ(std::optional<std::string>("LOCAL TEMPORARY"), text_cell(hstmt, 4));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLCHAR unknown_types[] = "'unknown'";
+    ASSERT_EQ(SQL_SUCCESS, SQLTables(
+        hstmt, nullptr, 0, nullptr, 0, pattern, SQL_NTS, unknown_types, SQL_NTS));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    SQLWCHAR parent[] = {'o','d','b','c','p','p','\'','p','a','r','e','n','t','_','%',0xE9,0};
+    SQLWCHAR child[] = {'o','d','b','c','p','p','\'','c','h','i','l','d','_','%',0xE9,0};
+    ASSERT_EQ(SQL_SUCCESS, SQLPrimaryKeysW(
+        hstmt, nullptr, 0, nullptr, 0, parent, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("odbcpp'parent_%é"), text_cell(hstmt, 3));
+    EXPECT_EQ(std::optional<std::string>("id"), text_cell(hstmt, 4));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLForeignKeysW(
+        hstmt, nullptr, 0, nullptr, 0, parent, SQL_NTS,
+        nullptr, 0, nullptr, 0, child, SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(std::optional<std::string>("odbcpp'parent_%é"), text_cell(hstmt, 3));
+    EXPECT_EQ(std::optional<std::string>("odbcpp'child_%é"), text_cell(hstmt, 7));
+    EXPECT_EQ(std::optional<SQLINTEGER>(1), integer_cell(hstmt, 9));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+}
+
 TEST_F(MetadataIntegrationTest, ListsPostgreSQLTables) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"CREATE TEMP TABLE odbcpp_catalog_test(value int)",

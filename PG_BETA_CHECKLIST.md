@@ -83,7 +83,7 @@ A/W coverage applies wherever exported. G6 will revisit backend semantics for Re
 
 ## Candidate test manifest PG-BETA-1
 
-Retain all 34 existing executables. This manifest is a minimum regression set,
+Retain all 36 current executables (26 unit, 10 integration). This manifest is a minimum regression set,
 not a cap on new tests required by code changes. In G0 add exact selected
 application/server/OS/Driver Manager versions and case-level evidence for the
 surfaces above; until then this is not a frozen release profile.
@@ -103,6 +103,7 @@ surfaces above; until then this is not a frozen release profile.
 - `test_driver_logging`
 - `test_epoll_transport`
 - `test_iocp_transport`
+- `test_catalog_queries`
 - `test_metadata_functions`
 - `test_native_types`
 - `test_pg_protocol_parser`
@@ -231,3 +232,25 @@ Focused checks pass all 10 native-type tests, 8 factory/dialect tests and the
 complete metadata/prepared integration suites. Local macOS leak detection remains
 disabled; Linux CI retains its leak-detection gate. The batch completion report
 records the ensuing GitHub Actions result.
+
+## Batch 5 scope — 2026-09-27
+
+G9a/A3: extract table, primary-key and foreign-key catalog construction behind
+the selected backend. The shared layer retains ODBC enumeration rules, argument
+handling and execution state. PostgreSQL query semantics remain unchanged.
+`test_catalog_queries` adds six backend contract cases; a live integration case
+checks quoted Unicode names across all three operations, unknown table types and
+reuse after an empty result. PG-BETA-1 now contains 36 executables.
+
+Next: extract the remaining five catalogs and type-info construction, followed
+by capability and complete shared-layer contract acceptance. A3/G9a remain open.
+Application-host reminder is not due yet.
+
+Batch 5 validation: all 36 executables pass in PostgreSQL, iODBC UTF-16 bridge,
+iODBC UCS-4 and ASan/UBSan configurations against PostgreSQL 17.11. Each final
+run has 766 Google Test cases, zero skips, plus the standalone Driver Manager
+executable. Focused backend and complete metadata suites pass. An initial full
+run caught a disconnected-catalog SQLSTATE change; it was repaired to preserve
+existing behavior, covered for both key operations, then all four gates passed.
+Local macOS leak detection remains disabled; Linux CI retains leak detection.
+The completion report records the ensuing GitHub Actions result.

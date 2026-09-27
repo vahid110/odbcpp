@@ -166,3 +166,24 @@ preservation and explicit binding reuse are checked against PostgreSQL.
 Catalog SQL, SQLGetTypeInfo construction, descriptor type names and remaining
 capability/contract acceptance are still open. A3 and G9a are not complete; this
 batch does not establish Redshift compatibility.
+
+## A3 table/key catalog batch — 2026-09-27
+
+`CatalogRequest` defines table discovery and primary/foreign-key filters without
+ODBC headers or PostgreSQL identifiers. `IDatabaseConnection::catalog_query`
+constructs SQL without I/O; unsupported backends return `UnsupportedFeature`.
+`PgDatabaseConnection` owns these three queries, including native catalog joins,
+name quoting, rule mappings, result shapes and ordering. Shared ODBC code keeps
+A/W argument validation, table-type list parsing, enumeration-mode selection,
+query execution, deadlines, diagnostics and cursor state. Null versus empty names
+and pattern versus literal matching remain explicit in the request contract.
+
+Six backend tests cover unsupported discovery, omitted/empty/quoted filters,
+all/none/explicit table types, enumeration modes and foreign-key ordering. Live
+PostgreSQL coverage adds quoted Unicode table/key names and empty-result reuse;
+existing metadata tests retain enumeration, key rules, composite-key order,
+ANSI/wide behavior and open-cursor rejection coverage.
+
+Five catalog operations remain in shared code: columns, statistics, procedures,
+procedure columns and special columns. SQLGetTypeInfo construction and descriptor
+type names also remain. A3/G9a are still open; no new Redshift support is claimed.

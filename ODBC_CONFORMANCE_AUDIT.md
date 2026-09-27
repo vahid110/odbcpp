@@ -2514,6 +2514,13 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   metadata from explicit bindings, preventing stale parameter types, widths and
   numeric scales. PostgreSQL tests verify fresh metadata, preserved error outputs
   and explicit binding reuse. Catalog/type-info extraction and G9a remain open.
+- PostgreSQL beta architecture batch 5 extracts table, primary-key and
+  foreign-key catalog SQL into the PostgreSQL backend. Shared ODBC code retains
+  enumeration rules, table-list parsing, argument validation and execution state.
+  Backend tests cover unsupported discovery, null/empty/quoted filters, type
+  lists, enumeration and key ordering. Live tests exercise quoted Unicode names
+  through ANSI/wide calls and reuse after empty results. The remaining five
+  catalog operations, type-info construction and G9a acceptance stay open.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

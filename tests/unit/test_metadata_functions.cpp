@@ -175,3 +175,14 @@ TEST_F(MetadataAPITest, InvalidColumnNumbers) {
     EXPECT_EQ(SQL_ERROR, SQLDescribeCol(hstmt, 0, column_name, sizeof(column_name), 
                                        nullptr, &data_type, nullptr, nullptr, nullptr));
 }
+
+TEST_F(MetadataAPITest, KeyCatalogsPreserveDisconnectedDiagnostics) {
+    SQLCHAR table[] = "example";
+    EXPECT_EQ(SQL_ERROR, SQLPrimaryKeys(
+        hstmt, nullptr, 0, nullptr, 0, table, SQL_NTS));
+    EXPECT_EQ("08001", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    EXPECT_EQ(SQL_ERROR, SQLForeignKeys(
+        hstmt, nullptr, 0, nullptr, 0, table, SQL_NTS,
+        nullptr, 0, nullptr, 0, nullptr, 0));
+    EXPECT_EQ("08001", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+}
