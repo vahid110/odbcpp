@@ -1,3 +1,4 @@
+#include "transaction_metadata.h"
 #include "odbc_api.h"
 #include "c_api_guard.h"
 #include "connection_string.h"
@@ -1520,18 +1521,27 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_FILE_USAGE:
       return write_usmallint(
           static_cast<SQLUSMALLINT>(SQL_FILE_NOT_SUPPORTED));
-    case SQL_TXN_CAPABLE:
-      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_TC_ALL));
+    case SQL_TXN_CAPABLE: {
+      const auto capabilities = conn->transaction_capabilities();
+      return write_usmallint(static_cast<SQLUSMALLINT>(!capabilities.supported
+          ? SQL_TC_NONE : capabilities.transactional_ddl ? SQL_TC_ALL : SQL_TC_DML));
+    }
     case SQL_CURSOR_COMMIT_BEHAVIOR:
     case SQL_CURSOR_ROLLBACK_BEHAVIOR:
       return write_usmallint(static_cast<SQLUSMALLINT>(SQL_CB_PRESERVE));
-    case SQL_DEFAULT_TXN_ISOLATION:
-      return write_uinteger(
-          static_cast<SQLUINTEGER>(SQL_TXN_READ_COMMITTED));
-    case SQL_TXN_ISOLATION_OPTION:
-      return write_uinteger(static_cast<SQLUINTEGER>(
-          SQL_TXN_READ_UNCOMMITTED | SQL_TXN_READ_COMMITTED |
-          SQL_TXN_REPEATABLE_READ | SQL_TXN_SERIALIZABLE));
+    case SQL_DEFAULT_TXN_ISOLATION: {
+      const auto capabilities = conn->transaction_capabilities();
+      return write_uinteger(capabilities.supported
+          ? transaction_isolation_to_odbc(capabilities.default_isolation) : 0);
+    }
+    case SQL_TXN_ISOLATION_OPTION: {
+      const auto capabilities = conn->transaction_capabilities();
+      SQLUINTEGER mask = 0;
+      for (const auto isolation : rs::core::database::transaction_isolations) {
+        if (capabilities.supports(isolation)) mask |= transaction_isolation_to_odbc(isolation);
+      }
+      return write_uinteger(mask);
+    }
     case SQL_MAX_IDENTIFIER_LEN:
     case SQL_MAX_COLUMN_NAME_LEN:
     case SQL_MAX_TABLE_NAME_LEN:

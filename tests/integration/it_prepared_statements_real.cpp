@@ -5015,6 +5015,76 @@ TEST_F(PreparedStatementIntegrationTest, DefaultCTypeUsesSqlTypeMapping) {
     EXPECT_EQ(input, output);
 }
 
+TEST_F(PreparedStatementIntegrationTest, AdvertisedIsolationLevelsMatchSessionCommands) {
+    SQLUINTEGER mask = 0, default_level = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(hdbc, SQL_TXN_ISOLATION_OPTION, &mask, sizeof(mask), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(hdbc, SQL_DEFAULT_TXN_ISOLATION, &default_level, sizeof(default_level), nullptr));
+    EXPECT_EQ(SQL_TXN_READ_COMMITTED, default_level);
+    struct Level { SQLUINTEGER flag; const char* name; };
+    for (const auto& level : std::array<Level, 4>{{
+             {SQL_TXN_READ_UNCOMMITTED, "read uncommitted"},
+             {SQL_TXN_READ_COMMITTED, "read committed"},
+             {SQL_TXN_REPEATABLE_READ, "repeatable read"},
+             {SQL_TXN_SERIALIZABLE, "serializable"}}}) {
+        ASSERT_NE(0u, mask & level.flag);
+        ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(hdbc, SQL_ATTR_TXN_ISOLATION,
+            reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(level.flag)), 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
+            hstmt, (SQLCHAR*)"SHOW default_transaction_isolation", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        char value[32]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR, value, sizeof(value), nullptr));
+        EXPECT_STREQ(level.name, value);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(hdbc, SQL_ATTR_AUTOCOMMIT,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_AUTOCOMMIT_OFF)), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(hdbc, SQL_ATTR_TXN_ISOLATION,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_TXN_READ_COMMITTED)), 0));
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, hdbc, 1, state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("HY011", reinterpret_cast<char*>(state));
+    SQLUINTEGER retained = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(hdbc, SQL_ATTR_TXN_ISOLATION, &retained, sizeof(retained), nullptr));
+    EXPECT_EQ(SQL_TXN_SERIALIZABLE, retained);
+    ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_ROLLBACK));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(hdbc, SQL_ATTR_TXN_ISOLATION,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_TXN_READ_COMMITTED)), 0));
+}
+
+TEST_F(PreparedStatementIntegrationTest, AdvertisedTransactionalDdlRollsBackAndCommits) {
+    SQLUSMALLINT capability = SQL_TC_NONE;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(hdbc, SQL_TXN_CAPABLE, &capability, sizeof(capability), nullptr));
+    ASSERT_EQ(SQL_TC_ALL, capability);
+    ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(hdbc, SQL_ATTR_AUTOCOMMIT,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_AUTOCOMMIT_OFF)), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_backend_ddl(value integer)", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_ROLLBACK));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT to_regclass('pg_temp.odbcpp_backend_ddl')::text", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    char name[64]{};
+    SQLLEN length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR, name, sizeof(name), &length));
+    EXPECT_EQ(SQL_NULL_DATA, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_ROLLBACK));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"CREATE TEMP TABLE odbcpp_backend_ddl(value integer)", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_COMMIT));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"SELECT count(*) FROM odbcpp_backend_ddl", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLINTEGER count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG, &count, 0, nullptr));
+    EXPECT_EQ(0, count);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, hdbc, SQL_ROLLBACK));
+}
+
 TEST_F(PreparedStatementIntegrationTest, AutocommitOffSupportsCommitAndRollback) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,

@@ -1,4 +1,5 @@
 #include "odbc_handles.h"
+#include "transaction_metadata.h"
 #include "connection_string.h"
 #include "result_types.h"
 #include "core/database/sql_translation.h"
@@ -721,16 +722,6 @@ DynamicFunction classify_dynamic_function(std::string_view statement) {
   return {};
 }
 
-const char* transaction_isolation_name(SQLULEN value) {
-  switch (value) {
-    case SQL_TXN_READ_UNCOMMITTED: return "READ UNCOMMITTED";
-    case SQL_TXN_READ_COMMITTED: return "READ COMMITTED";
-    case SQL_TXN_REPEATABLE_READ: return "REPEATABLE READ";
-    case SQL_TXN_SERIALIZABLE: return "SERIALIZABLE";
-    default: return nullptr;
-  }
-}
-
 rs::core::database::QueryParameterType parameter_type_for(
     SQLSMALLINT parameter_type, SQLSMALLINT value_type) {
   using rs::core::database::QueryParameterType;
@@ -1243,12 +1234,19 @@ ODBCConnection::ODBCConnection(ODBCEnvironment*)
     : ODBCHandle(HandleType::Connection),
       connection_id_(next_connection_id.fetch_add(1)) {}
 
-std::span<const rs::core::database::TypeDefinition> ODBCConnection::type_catalog() const {
-  if (db_conn_) return db_conn_->type_catalog();
-  // Descriptor APIs are available before connect. Use the configured backend's
-  // unconnected catalog without opening a socket or inventing native type names.
+const rs::core::database::IDatabaseConnection& ODBCConnection::metadata_backend() const {
+  if (db_conn_) return *db_conn_;
+  // Metadata is available before connect through the configured backend.
   static const auto unconnected = rs::core::database::DatabaseFactory::create_connection();
-  return unconnected->type_catalog();
+  return *unconnected;
+}
+
+std::span<const rs::core::database::TypeDefinition> ODBCConnection::type_catalog() const {
+  return metadata_backend().type_catalog();
+}
+
+rs::core::database::TransactionCapabilities ODBCConnection::transaction_capabilities() const {
+  return metadata_backend().transaction_capabilities();
 }
 
 void ODBCConnection::log(
@@ -1396,12 +1394,11 @@ SQLRETURN ODBCConnection::connect(
       return SQL_ERROR;
     }
 
-    if (transaction_isolation_ != SQL_TXN_READ_COMMITTED) {
-      const std::string command =
-          "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL " +
-          std::string(transaction_isolation_name(transaction_isolation_));
-      auto isolation_result = db_conn_->execute_query(
-          command, rs::util::make_deadline(settings.timeout));
+    if (transaction_isolation_ != transaction_isolation_to_odbc(
+            db_conn_->transaction_capabilities().default_isolation)) {
+      auto isolation_result = db_conn_->set_transaction_isolation(
+          *transaction_isolation_from_odbc(transaction_isolation_),
+          rs::util::make_deadline(settings.timeout));
       if (isolation_result.has_error()) {
         const auto timeout = is_timeout_error(isolation_result.error());
         set_error(timeout ? SQLSTATE_CONNECTION_TIMEOUT
@@ -1455,6 +1452,11 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
       return SQL_ERROR;
     }
     if (autocommit_ == value) return SQL_SUCCESS;
+    if (value == SQL_AUTOCOMMIT_OFF && !transaction_capabilities().supported) {
+      set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                "Transactions are not supported by this backend");
+      return SQL_ERROR;
+    }
     if (value == SQL_AUTOCOMMIT_ON && connected_ && transaction_active_) {
       const auto result = end_transaction(SQL_COMMIT);
       if (result != SQL_SUCCESS) return result;
@@ -1514,10 +1516,15 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
     return SQL_SUCCESS;
   }
   if (attribute == SQL_ATTR_TXN_ISOLATION) {
-    const auto* isolation_name = transaction_isolation_name(value);
-    if (!isolation_name) {
+    const auto isolation = transaction_isolation_from_odbc(value);
+    if (!isolation) {
       set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
                 "Unsupported transaction isolation level");
+      return SQL_ERROR;
+    }
+    if (!transaction_capabilities().supports(*isolation)) {
+      set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                "Transaction isolation is not supported by this backend");
       return SQL_ERROR;
     }
     if (transaction_active_) {
@@ -1526,11 +1533,8 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
       return SQL_ERROR;
     }
     if (connected_) {
-      const std::string command =
-          "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL " +
-          std::string(isolation_name);
-      auto result = db_conn_->execute_query(
-          command, rs::util::make_deadline(
+      auto result = db_conn_->set_transaction_isolation(
+          *isolation, rs::util::make_deadline(
                        timeout_duration(connection_timeout_seconds_)));
       if (result.has_error()) {
         const auto timeout = is_timeout_error(result.error());
@@ -1678,7 +1682,8 @@ rs::util::Result<void> ODBCConnection::begin_transaction_if_needed(
   if (autocommit_ == SQL_AUTOCOMMIT_ON || transaction_active_) {
     return {};
   }
-  auto result = db_conn_->execute_query("BEGIN", deadline);
+  auto result = db_conn_->transaction(
+      rs::core::database::TransactionAction::Begin, deadline);
   if (result.has_error()) {
     return {result.error(), result.error_message()};
   }
@@ -1699,9 +1704,11 @@ SQLRETURN ODBCConnection::end_transaction(SQLSMALLINT completion_type) {
   if (autocommit_ == SQL_AUTOCOMMIT_ON) return SQL_SUCCESS;
   if (!transaction_active_) return SQL_SUCCESS;
 
-  const auto command = completion_type == SQL_COMMIT ? "COMMIT" : "ROLLBACK";
-  auto result = db_conn_->execute_query(
-      command, rs::util::make_deadline(
+  const auto action = completion_type == SQL_COMMIT
+      ? rs::core::database::TransactionAction::Commit
+      : rs::core::database::TransactionAction::Rollback;
+  auto result = db_conn_->transaction(
+      action, rs::util::make_deadline(
                    timeout_duration(connection_timeout_seconds_)));
   if (result.has_error()) {
     const auto timeout = is_timeout_error(result.error());

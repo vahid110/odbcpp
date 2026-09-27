@@ -5,9 +5,15 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
 
 ## Current scope
 
+- **Batch 8 implemented and locally validated:** typed backend transaction commands and
+  transaction capability reporting, with five unit and two live regression cases.
+  All four full local gates pass: 36 executables, 785 GoogleTest cases and zero
+  skips per configuration. Follow the pushed batch CI before declaring complete.
+  Evidence is in PG_BETA_CHECKLIST.md.
+
 - Branch: `codex/transport-foundation`. Implementation scheduler stays paused.
 - A1/A2 and A3 extraction are implemented after batch 7. G9a is not closed.
-- Next bounded work: A4 backend capabilities/transaction ownership and explicit
+- Next: remaining A4 backend capabilities and explicit
   native/normalized result, error and deadline contracts; then fake-backend
   acceptance through shared ODBC orchestration. Review BACKEND_BOUNDARY.md's A4
   criteria before choosing the next batch. Do not expand into optional features.

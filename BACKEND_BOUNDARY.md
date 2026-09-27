@@ -221,3 +221,15 @@ configured unconnected backend before login. Synthetic result columns can carry
 normalized metadata without native IDs. A3 extraction is implemented; A4 and
 full shared-layer contract acceptance still block G9a. See PG_BETA_CHECKLIST.md
 for batch evidence and DEVELOPMENT_HANDOFF.md for the next entry points.
+
+## A4 transaction boundary — batch 8
+
+The transaction contract uses backend-neutral action/isolation enums and a
+capability record. Backend commands preserve the caller's deadline and return
+errors unchanged; ODBC state changes occur only after success. PostgreSQL owns
+its transaction SQL, while generic unsupported backends return UnsupportedFeature.
+Transaction-related SQLGetInfo values use the same capability record. Cursor
+preservation remains shared-driver behavior for buffered results. This implements
+only the transaction portion of A4; broader capabilities, normalized/native
+contracts and fake-backend orchestration acceptance remain open. Batch 8's
+full local validation evidence is recorded in PG_BETA_CHECKLIST.md.

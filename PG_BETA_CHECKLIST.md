@@ -303,3 +303,28 @@ configuration, zero skips, plus the standalone Driver Manager executable.
 Focused native-type/descriptor suites and the complete metadata integration suite
 also pass. Local macOS leak detection remains disabled; Linux CI retains it.
 The completion report records the ensuing CI run.
+
+## Batch 8 — A4 transaction boundary
+
+The implementation routes begin/commit/rollback and session isolation
+through typed backend methods using the original caller deadline. PostgreSQL owns
+transaction command text and its transaction/isolation capabilities. Shared ODBC
+code derives SQL_TXN_CAPABLE, SQL_DEFAULT_TXN_ISOLATION and SQL_TXN_ISOLATION_OPTION
+from those capabilities, rejects unsupported settings, and retains autocommit,
+cursor behavior, diagnostics and state transitions. Other capability fields and
+the broader result/error/recovery contract remain A4 work.
+
+Five new backend unit cases cover commands, capability/isolation agreement,
+invalid enums without I/O, preserved errors/deadlines and unsupported backends.
+Two new live tests cover all advertised isolation levels, active-transaction
+attribute rejection, and transactional DDL rollback/commit.
+
+Full local validation completed on 2026-09-28 after full execution access was
+restored: PostgreSQL, iODBC UTF-16 bridge, iODBC UCS-4, and ASan/UBSan all pass.
+Each configuration runs 36 executables (26 unit, 10 integration), 785 GoogleTest
+cases with zero skips, plus the standalone Driver Manager executable. All seven
+new regression cases executed successfully. Six focused suites also passed in
+each configuration during development. `git diff --check` passes.
+Local macOS leak detection remains disabled; Linux CI retains it. The completion
+report records the ensuing CI run. A4 and G9a remain open for the bounded work
+identified above.

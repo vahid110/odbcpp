@@ -238,12 +238,14 @@ public:
   }
   
   std::span<const rs::core::database::TypeDefinition> type_catalog() const;
+  rs::core::database::TransactionCapabilities transaction_capabilities() const;
 
   rs::core::database::IDatabaseConnection* get_db_connection() { return db_conn_.get(); }
 
 private:
   void close_connection();
 
+  const rs::core::database::IDatabaseConnection& metadata_backend() const;
   std::unique_ptr<rs::core::database::IDatabaseConnection> db_conn_;
   bool connected_ = false;
   SQLUINTEGER login_timeout_seconds_ = 30;
