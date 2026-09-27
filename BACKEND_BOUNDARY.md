@@ -210,3 +210,14 @@ Catalog construction extraction is complete. SQLGetTypeInfo construction and
 descriptor type names remain in A3, followed by A4 and shared-layer contract
 acceptance. This is an ownership change, not a claim that all catalog semantics
 or PostgreSQL beta acceptance are complete; no new Redshift support is claimed.
+
+## A3 type-catalog completion — batch 7
+
+Backend `TypeDefinition` catalogs now supply advertised names, sizes, literals,
+radix and scale limits. PostgreSQL owns its server-version scale rule. Shared
+ODBC code maps normalized families, adds legacy temporal aliases and formats the
+19-column SQLGetTypeInfo result. Descriptors use the same catalog, including the
+configured unconnected backend before login. Synthetic result columns can carry
+normalized metadata without native IDs. A3 extraction is implemented; A4 and
+full shared-layer contract acceptance still block G9a. See PG_BETA_CHECKLIST.md
+for batch evidence and DEVELOPMENT_HANDOFF.md for the next entry points.

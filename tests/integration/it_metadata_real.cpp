@@ -1387,6 +1387,37 @@ TEST_F(MetadataIntegrationTest, ResultShapeAndRowCountFollowStatementState) {
     EXPECT_EQ(79, row_count);
 }
 
+TEST_F(MetadataIntegrationTest, TypeInfoSchemaUsesNormalizedDescriptorMetadata) {
+    for (const SQLSMALLINT requested : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_WVARCHAR)}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfoW(hstmt, requested));
+        SQLSMALLINT count = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &count));
+        ASSERT_EQ(19, count);
+        for (SQLUSMALLINT column = 1; column <= 19; ++column) {
+            const bool text = column == 1 || column == 4 || column == 5 ||
+                column == 6 || column == 13;
+            const bool integer = column == 3 || column == 18;
+            SQLSMALLINT type = 0, scale = -1;
+            SQLULEN size = 99;
+            ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
+                hstmt, column, nullptr, 0, nullptr, &type, &size, &scale, nullptr));
+            EXPECT_EQ(text ? SQL_VARCHAR : integer ? SQL_INTEGER : SQL_SMALLINT, type);
+            EXPECT_EQ(text ? 0u : integer ? 10u : 5u, size);
+            EXPECT_EQ(0, scale);
+            char name[32]{};
+            ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
+                hstmt, column, SQL_DESC_TYPE_NAME, name, sizeof(name), nullptr, nullptr));
+            EXPECT_STREQ(text ? "varchar" : integer ? "integer" : "smallint", name);
+        }
+        if (requested == SQL_NUMERIC) {
+            ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+            EXPECT_EQ(std::optional<std::string>("numeric"), text_cell(hstmt, 1));
+        }
+        EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    }
+}
+
 TEST_F(MetadataIntegrationTest, ReportsSupportedTypeInformation) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt,

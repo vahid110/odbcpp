@@ -2529,6 +2529,11 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   statistics, special columns, procedures and procedure columns. Catalog
   construction extraction is complete; existing semantic limitations, type-info
   construction and G9a acceptance remain open.
+- PostgreSQL beta architecture batch 7 completes A3 extraction with backend
+  type catalogs, descriptor properties and normalized synthetic result columns.
+  Versioned scale limits, preconnection descriptors, stale-name clearing and
+  the 19-column type-info schema are covered. G9a still requires A4 and full
+  shared-layer acceptance; evidence is in PG_BETA_CHECKLIST.md.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

@@ -285,3 +285,21 @@ complete metadata integration suite. A source comparison confirms all five
 extracted builders retain their SQL string literals in order. Local macOS leak
 detection remains disabled; Linux CI retains leak detection. The completion
 report records the ensuing GitHub Actions result.
+
+## Batch 7 — backend type catalogs and descriptor properties
+
+Completes the A3 extraction: PostgreSQL owns advertised type definitions and the
+server-version numeric-scale rule; shared ODBC code consumes normalized definitions
+for SQLGetTypeInfo and descriptor names/properties. Synthetic type-info result
+columns no longer require PostgreSQL IDs. Legacy temporal aliases, filtering,
+ordering and NULL properties remain unchanged. Preconnection descriptor APIs use
+the configured backend's unconnected catalog. A4 and shared-layer acceptance
+remain open; G9a is not complete. Next-work entry points and local validation
+commands are maintained in DEVELOPMENT_HANDOFF.md.
+
+Validation: all 36 executables pass in PostgreSQL, iODBC UTF-16 bridge, iODBC
+UCS-4 and ASan/UBSan against PostgreSQL 17.11: 778 Google Test cases per
+configuration, zero skips, plus the standalone Driver Manager executable.
+Focused native-type/descriptor suites and the complete metadata integration suite
+also pass. Local macOS leak detection remains disabled; Linux CI retains it.
+The completion report records the ensuing CI run.

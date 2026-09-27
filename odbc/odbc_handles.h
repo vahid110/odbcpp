@@ -237,6 +237,8 @@ public:
                     : std::string{};
   }
   
+  std::span<const rs::core::database::TypeDefinition> type_catalog() const;
+
   rs::core::database::IDatabaseConnection* get_db_connection() { return db_conn_.get(); }
 
 private:
@@ -330,11 +332,11 @@ enum class DescriptorKind {
 
 class ODBCDescriptor : public ODBCHandle {
 public:
-  explicit ODBCDescriptor(ODBCConnection*,
+  explicit ODBCDescriptor(ODBCConnection* owner,
                           bool automatically_allocated = false,
                           DescriptorKind kind = DescriptorKind::Application)
       : ODBCHandle(HandleType::Descriptor),
-        automatically_allocated_(automatically_allocated), kind_(kind) {}
+        owner_(owner), automatically_allocated_(automatically_allocated), kind_(kind) {}
 
   bool is_automatically_allocated() const {
     return automatically_allocated_;
@@ -380,6 +382,7 @@ private:
     ++revision_;
   }
 
+  ODBCConnection* owner_;
   bool automatically_allocated_{false};
   DescriptorKind kind_{DescriptorKind::Application};
   std::vector<DescriptorRecord> records_;

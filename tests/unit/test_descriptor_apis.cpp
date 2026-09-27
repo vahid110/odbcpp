@@ -853,3 +853,23 @@ TEST_F(DescriptorAPITest, ImplementationRowStatusHeadersRemainWritable) {
     EXPECT_EQ(&status, returned_status);
     EXPECT_EQ(&processed, returned_processed);
 }
+
+TEST_F(DescriptorAPITest, UnconnectedDescriptorUsesConfiguredBackendTypeCatalog) {
+    ODBCDescriptor descriptor(conn.get(), false, DescriptorKind::ImplementationParameter);
+    ASSERT_EQ(SQL_SUCCESS, descriptor.set_record(
+        1, SQL_VARCHAR, 0, 20, 0, 0, nullptr, nullptr, nullptr));
+    EXPECT_EQ("varchar", descriptor.record(0)->type_name);
+    EXPECT_EQ("'", descriptor.record(0)->literal_prefix);
+    EXPECT_EQ(SQL_TRUE, descriptor.record(0)->case_sensitive);
+    ASSERT_EQ(SQL_SUCCESS, descriptor.set_record(
+        1, SQL_INTEGER, 0, 4, 10, 0, nullptr, nullptr, nullptr));
+    EXPECT_EQ("integer", descriptor.record(0)->type_name);
+    EXPECT_TRUE(descriptor.record(0)->literal_prefix.empty());
+    EXPECT_EQ(SQL_FALSE, descriptor.record(0)->unsigned_attribute);
+    // A recognized but unadvertised type must clear the previous native name.
+    ASSERT_EQ(SQL_SUCCESS, descriptor.set_record(
+        1, SQL_WVARCHAR, 0, 20, 0, 0, nullptr, nullptr, nullptr));
+    EXPECT_TRUE(descriptor.record(0)->type_name.empty());
+    EXPECT_TRUE(descriptor.record(0)->local_type_name.empty());
+    EXPECT_FALSE(conn->is_connected());
+}

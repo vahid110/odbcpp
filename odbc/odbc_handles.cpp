@@ -791,11 +791,10 @@ struct OdbcTypeInfo {
   SQLSMALLINT decimal_digits{0};
 };
 
-OdbcTypeInfo odbc_type_info(
-    const rs::core::database::NativeTypeInfo& native) {
+SQLSMALLINT odbc_scalar_type(rs::core::database::ScalarType type) {
   using rs::core::database::ScalarType;
   SQLSMALLINT sql_type = SQL_VARCHAR;
-  switch (native.type) {
+  switch (type) {
     case ScalarType::Boolean: sql_type = SQL_BIT; break;
     case ScalarType::Binary: sql_type = SQL_VARBINARY; break;
     case ScalarType::Char: sql_type = SQL_CHAR; break;
@@ -812,15 +811,20 @@ OdbcTypeInfo odbc_type_info(
     case ScalarType::Decimal: sql_type = SQL_DECIMAL; break;
     case ScalarType::LongVarChar: sql_type = SQL_LONGVARCHAR; break;
   }
-  return {sql_type, static_cast<SQLULEN>(native.column_size),
+  return sql_type;
+}
+
+OdbcTypeInfo odbc_type_info(const rs::core::database::NativeTypeInfo& native) {
+  return {odbc_scalar_type(native.type), static_cast<SQLULEN>(native.column_size),
           native.decimal_digits};
 }
 
 ColumnInfo column_info_for(
     const rs::core::database::IDatabaseConnection& backend,
     const rs::core::database::ResultColumnMetadata& metadata) {
-  const auto type = odbc_type_info(backend.describe_type(
-      metadata.type_id, metadata.type_size, metadata.type_modifier));
+  const auto type = odbc_type_info(metadata.normalized_type
+      ? *metadata.normalized_type
+      : backend.describe_type(metadata.type_id, metadata.type_size, metadata.type_modifier));
   return ColumnInfo{metadata.name, type.sql_type, type.column_size,
                     type.decimal_digits, SQL_NULLABLE_UNKNOWN};
 }
@@ -907,66 +911,22 @@ bool valid_descriptor_type(SQLSMALLINT concise_type, DescriptorKind kind) {
       : ResultTypes::is_valid_sql_type(concise_type);
 }
 
-struct TypeInfoDefinition {
-  const char* name;
-  SQLSMALLINT data_type;
-  SQLINTEGER column_size;
-  const char* literal_prefix;
-  const char* literal_suffix;
-  const char* create_params;
-  SQLSMALLINT case_sensitive;
-  SQLSMALLINT unsigned_attribute;
-  SQLSMALLINT minimum_scale;
-  SQLSMALLINT maximum_scale;
-  SQLSMALLINT sql_data_type;
-  SQLSMALLINT datetime_sub;
-  SQLINTEGER numeric_radix;
-};
+SQLSMALLINT modern_temporal_type(SQLSMALLINT type) {
+  switch (type) {
+    case SQL_DATE: return SQL_TYPE_DATE;
+    case SQL_TIME: return SQL_TYPE_TIME;
+    case SQL_TIMESTAMP: return SQL_TYPE_TIMESTAMP;
+    default: return type;
+  }
+}
 
-const TypeInfoDefinition type_info_definitions[] = {
-    {"boolean", SQL_BIT, 1, nullptr, nullptr, nullptr, SQL_FALSE, -1,
-     -1, -1, SQL_BIT, 0, 0},
-    {"bigint", SQL_BIGINT, 19, nullptr, nullptr, nullptr, SQL_FALSE, SQL_FALSE,
-     0, 0, SQL_BIGINT, 0, 10},
-    {"bytea", SQL_VARBINARY, 1073741824, "'", "'", nullptr, SQL_FALSE, -1,
-     -1, -1, SQL_VARBINARY, 0, 0},
-    {"text", SQL_LONGVARCHAR, 1073741824, "'", "'", nullptr, SQL_TRUE, -1,
-     -1, -1, SQL_LONGVARCHAR, 0, 0},
-    {"char", SQL_CHAR, 10485760, "'", "'", "length", SQL_TRUE, -1,
-     -1, -1, SQL_CHAR, 0, 0},
-    {"numeric", SQL_NUMERIC, 1000, nullptr, nullptr, "precision,scale",
-     SQL_FALSE, SQL_FALSE, 0, 1000, SQL_NUMERIC, 0, 10},
-    {"decimal", SQL_DECIMAL, 1000, nullptr, nullptr, "precision,scale",
-     SQL_FALSE, SQL_FALSE, 0, 1000, SQL_DECIMAL, 0, 10},
-    {"integer", SQL_INTEGER, 10, nullptr, nullptr, nullptr, SQL_FALSE,
-     SQL_FALSE, 0, 0, SQL_INTEGER, 0, 10},
-    {"smallint", SQL_SMALLINT, 5, nullptr, nullptr, nullptr, SQL_FALSE,
-     SQL_FALSE, 0, 0, SQL_SMALLINT, 0, 10},
-    {"real", SQL_REAL, 7, nullptr, nullptr, nullptr, SQL_FALSE, SQL_FALSE,
-     -1, -1, SQL_REAL, 0, 2},
-    {"double precision", SQL_DOUBLE, 15, nullptr, nullptr, nullptr, SQL_FALSE,
-     SQL_FALSE, -1, -1, SQL_DOUBLE, 0, 2},
-    {"date", SQL_DATE, 10, "'", "'", nullptr, SQL_FALSE, -1,
-     -1, -1, SQL_DATETIME, SQL_CODE_DATE, 0},
-    {"time", SQL_TIME, 15, "'", "'", "precision", SQL_FALSE, -1,
-     0, 6, SQL_DATETIME, SQL_CODE_TIME, 0},
-    {"timestamp", SQL_TIMESTAMP, 26, "'", "'", "precision", SQL_FALSE, -1,
-     0, 6, SQL_DATETIME, SQL_CODE_TIMESTAMP, 0},
-    {"varchar", SQL_VARCHAR, 10485760, "'", "'", "length", SQL_TRUE,
-     -1, -1, -1, SQL_VARCHAR, 0, 0},
-    {"date", SQL_TYPE_DATE, 10, "'", "'", nullptr, SQL_FALSE, -1,
-     -1, -1, SQL_DATETIME, SQL_CODE_DATE, 0},
-    {"time", SQL_TYPE_TIME, 15, "'", "'", "precision", SQL_FALSE,
-     -1, 0, 6, SQL_DATETIME, SQL_CODE_TIME, 0},
-    {"timestamp", SQL_TYPE_TIMESTAMP, 26, "'", "'", "precision", SQL_FALSE,
-     -1, 0, 6, SQL_DATETIME, SQL_CODE_TIMESTAMP, 0},
-};
-
-const TypeInfoDefinition* find_type_info(SQLSMALLINT type) {
-  const auto found = std::find_if(
-      std::begin(type_info_definitions), std::end(type_info_definitions),
-      [type](const auto& candidate) { return candidate.data_type == type; });
-  return found == std::end(type_info_definitions) ? nullptr : &*found;
+const rs::core::database::TypeDefinition* find_type_info(
+    std::span<const rs::core::database::TypeDefinition> catalog, SQLSMALLINT type) {
+  const auto found = std::find_if(catalog.begin(), catalog.end(),
+      [type](const auto& candidate) {
+        return odbc_scalar_type(candidate.type) == modern_temporal_type(type);
+      });
+  return found == catalog.end() ? nullptr : &*found;
 }
 
 SQLSMALLINT descriptor_precision(SQLSMALLINT type, SQLULEN length,
@@ -1075,8 +1035,9 @@ SQLLEN descriptor_display_size(SQLSMALLINT type, SQLULEN length,
   }
 }
 
-void complete_descriptor_record(DescriptorRecord& record) {
-  const auto* type_info = find_type_info(record.concise_type);
+void complete_descriptor_record(DescriptorRecord& record,
+    std::span<const rs::core::database::TypeDefinition> catalog) {
+  const auto* type_info = find_type_info(catalog, record.concise_type);
   record.type = descriptor_type_for(record.concise_type);
   record.datetime_interval_code = descriptor_subtype_for(record.concise_type);
   record.precision = descriptor_precision(
@@ -1088,13 +1049,13 @@ void complete_descriptor_record(DescriptorRecord& record) {
   record.type_name = type_info ? type_info->name : "";
   record.local_type_name = record.type_name;
   record.literal_prefix = type_info && type_info->literal_prefix
-      ? type_info->literal_prefix : "";
+      ? *type_info->literal_prefix : "";
   record.literal_suffix = type_info && type_info->literal_suffix
-      ? type_info->literal_suffix : "";
+      ? *type_info->literal_suffix : "";
   record.case_sensitive = type_info ? type_info->case_sensitive : SQL_FALSE;
   record.num_prec_radix = type_info ? type_info->numeric_radix : 0;
-  record.unsigned_attribute = type_info && type_info->unsigned_attribute >= 0
-      ? type_info->unsigned_attribute : SQL_TRUE;
+  record.unsigned_attribute = type_info && type_info->unsigned_attribute
+      ? static_cast<SQLSMALLINT>(*type_info->unsigned_attribute) : SQL_TRUE;
   record.fixed_prec_scale =
       (record.concise_type == SQL_DECIMAL ||
        record.concise_type == SQL_NUMERIC) && record.scale != 0
@@ -1132,18 +1093,20 @@ ParameterMetadata parameter_metadata_for(
   return metadata;
 }
 
-DescriptorRecord descriptor_record_for(const ColumnInfo& column) {
+DescriptorRecord descriptor_record_for(const ColumnInfo& column,
+    std::span<const rs::core::database::TypeDefinition> catalog) {
   DescriptorRecord record;
   record.concise_type = column.sql_type;
   record.length = column.column_size;
   record.scale = column.decimal_digits;
   record.nullable = column.nullable;
   record.name = column.name;
-  complete_descriptor_record(record);
+  complete_descriptor_record(record, catalog);
   return record;
 }
 
-DescriptorRecord descriptor_record_for(const ParameterMetadata& parameter) {
+DescriptorRecord descriptor_record_for(const ParameterMetadata& parameter,
+    std::span<const rs::core::database::TypeDefinition> catalog) {
   DescriptorRecord record;
   record.concise_type = parameter.sql_type;
   record.length = parameter.column_size;
@@ -1151,13 +1114,13 @@ DescriptorRecord descriptor_record_for(const ParameterMetadata& parameter) {
   record.nullable = parameter.nullable;
   record.parameter_type = SQL_PARAM_INPUT;
   record.name = parameter.name;
-  complete_descriptor_record(record);
+  complete_descriptor_record(record, catalog);
   return record;
 }
 
-rs::core::database::ResultCell type_info_text(const char* value) {
+rs::core::database::ResultCell type_info_text(std::optional<std::string_view> value) {
   if (!value) return std::nullopt;
-  return std::string(value);
+  return std::string(*value);
 }
 
 rs::core::database::ResultCell type_info_number(long long value) {
@@ -1279,6 +1242,14 @@ bool is_character_column_attribute(SQLUSMALLINT field_identifier) {
 ODBCConnection::ODBCConnection(ODBCEnvironment*)
     : ODBCHandle(HandleType::Connection),
       connection_id_(next_connection_id.fetch_add(1)) {}
+
+std::span<const rs::core::database::TypeDefinition> ODBCConnection::type_catalog() const {
+  if (db_conn_) return db_conn_->type_catalog();
+  // Descriptor APIs are available before connect. Use the configured backend's
+  // unconnected catalog without opening a socket or inventing native type names.
+  static const auto unconnected = rs::core::database::DatabaseFactory::create_connection();
+  return unconnected->type_catalog();
+}
 
 void ODBCConnection::log(
     rs::core::logging::LogLevel level, std::string_view event,
@@ -2104,11 +2075,13 @@ SQLRETURN ODBCDescriptor::set_field(
   switch (field_identifier) {
     case SQL_DESC_TYPE:
       record.concise_type = *new_concise_type;
-      complete_descriptor_record(record);
+      complete_descriptor_record(record, owner_ ? owner_->type_catalog()
+          : std::span<const rs::core::database::TypeDefinition>{});
       break;
     case SQL_DESC_CONCISE_TYPE:
       record.concise_type = *new_concise_type;
-      complete_descriptor_record(record);
+      complete_descriptor_record(record, owner_ ? owner_->type_catalog()
+          : std::span<const rs::core::database::TypeDefinition>{});
       break;
     case SQL_DESC_DATETIME_INTERVAL_CODE: {
       const auto subtype = static_cast<SQLSMALLINT>(numeric_signed);
@@ -2119,7 +2092,8 @@ SQLRETURN ODBCDescriptor::set_field(
         return SQL_ERROR;
       }
       record.concise_type = *concise;
-      complete_descriptor_record(record);
+      complete_descriptor_record(record, owner_ ? owner_->type_catalog()
+          : std::span<const rs::core::database::TypeDefinition>{});
       break;
     }
     case SQL_DESC_DATETIME_INTERVAL_PRECISION:
@@ -2288,7 +2262,8 @@ SQLRETURN ODBCDescriptor::set_record(
     candidate = records_[static_cast<std::size_t>(record_number - 1)];
   }
   candidate.concise_type = *concise_type;
-  complete_descriptor_record(candidate);
+  complete_descriptor_record(candidate, owner_ ? owner_->type_catalog()
+      : std::span<const rs::core::database::TypeDefinition>{});
   if (kind_ == DescriptorKind::ImplementationParameter) {
     candidate.bound_sql_type = candidate.concise_type;
   }
@@ -4413,7 +4388,7 @@ void ODBCStatement::apply_result_metadata(
   std::vector<DescriptorRecord> row_descriptor_records;
   row_descriptor_records.reserve(column_info_.size());
   for (const auto& column : column_info_) {
-    row_descriptor_records.push_back(descriptor_record_for(column));
+    row_descriptor_records.push_back(descriptor_record_for(column, conn_->type_catalog()));
   }
   descriptor(imp_row_descriptor_)->replace_records(
       std::move(row_descriptor_records));
@@ -4442,7 +4417,7 @@ void ODBCStatement::apply_result_metadata(
   std::vector<DescriptorRecord> parameter_descriptor_records;
   parameter_descriptor_records.reserve(param_metadata_.size());
   for (std::size_t index = 0; index < param_metadata_.size(); ++index) {
-    auto record = descriptor_record_for(param_metadata_[index]);
+    auto record = descriptor_record_for(param_metadata_[index], conn_->type_catalog());
     if (const auto* prior = implementation_descriptor->record(index)) {
       record.bound_sql_type = prior->bound_sql_type;
       record.bound_sql_length = prior->bound_sql_length;
@@ -4645,69 +4620,72 @@ SQLRETURN ODBCStatement::get_type_info(SQLSMALLINT data_type) {
   using rs::core::database::QueryResult;
   using rs::core::database::ResultColumnMetadata;
   QueryResult result;
-  const auto column = [](const char* name, std::uint32_t oid,
-                         std::int16_t size) {
-    return ResultColumnMetadata{name, 0, 0, oid, size, -1, 0};
+  using rs::core::database::ScalarType;
+  const auto column = [](const char* name, ScalarType type, std::uint64_t size) {
+    ResultColumnMetadata result;
+    result.name = name;
+    result.normalized_type = rs::core::database::NativeTypeInfo{type, size, 0, true};
+    return result;
   };
   result.columns = {
-      column("TYPE_NAME", 25, -1),
-      column("DATA_TYPE", 21, 2),
-      column("COLUMN_SIZE", 23, 4),
-      column("LITERAL_PREFIX", 25, -1),
-      column("LITERAL_SUFFIX", 25, -1),
-      column("CREATE_PARAMS", 25, -1),
-      column("NULLABLE", 21, 2),
-      column("CASE_SENSITIVE", 21, 2),
-      column("SEARCHABLE", 21, 2),
-      column("UNSIGNED_ATTRIBUTE", 21, 2),
-      column("FIXED_PREC_SCALE", 21, 2),
-      column("AUTO_UNIQUE_VALUE", 21, 2),
-      column("LOCAL_TYPE_NAME", 25, -1),
-      column("MINIMUM_SCALE", 21, 2),
-      column("MAXIMUM_SCALE", 21, 2),
-      column("SQL_DATA_TYPE", 21, 2),
-      column("SQL_DATETIME_SUB", 21, 2),
-      column("NUM_PREC_RADIX", 23, 4),
-      column("INTERVAL_PRECISION", 21, 2),
+      column("TYPE_NAME", ScalarType::VarChar, 0),
+      column("DATA_TYPE", ScalarType::SmallInt, 5),
+      column("COLUMN_SIZE", ScalarType::Integer, 10),
+      column("LITERAL_PREFIX", ScalarType::VarChar, 0),
+      column("LITERAL_SUFFIX", ScalarType::VarChar, 0),
+      column("CREATE_PARAMS", ScalarType::VarChar, 0),
+      column("NULLABLE", ScalarType::SmallInt, 5),
+      column("CASE_SENSITIVE", ScalarType::SmallInt, 5),
+      column("SEARCHABLE", ScalarType::SmallInt, 5),
+      column("UNSIGNED_ATTRIBUTE", ScalarType::SmallInt, 5),
+      column("FIXED_PREC_SCALE", ScalarType::SmallInt, 5),
+      column("AUTO_UNIQUE_VALUE", ScalarType::SmallInt, 5),
+      column("LOCAL_TYPE_NAME", ScalarType::VarChar, 0),
+      column("MINIMUM_SCALE", ScalarType::SmallInt, 5),
+      column("MAXIMUM_SCALE", ScalarType::SmallInt, 5),
+      column("SQL_DATA_TYPE", ScalarType::SmallInt, 5),
+      column("SQL_DATETIME_SUB", ScalarType::SmallInt, 5),
+      column("NUM_PREC_RADIX", ScalarType::Integer, 10),
+      column("INTERVAL_PRECISION", ScalarType::SmallInt, 5),
   };
 
-  const auto server_version = conn_->dbms_version();
-  int server_major_version = 0;
-  const auto parsed_version = std::from_chars(
-      server_version.data(), server_version.data() + server_version.size(),
-      server_major_version);
-  const bool supports_negative_numeric_scale =
-      parsed_version.ec == std::errc{} && server_major_version >= 15;
-
-  for (const auto& type : type_info_definitions) {
-    if (data_type != SQL_ALL_TYPES && data_type != type.data_type) continue;
-    const bool character_type = type.data_type == SQL_CHAR ||
-        type.data_type == SQL_VARCHAR ||
-        type.data_type == SQL_LONGVARCHAR;
-    const bool numeric_type = type.data_type == SQL_NUMERIC ||
-        type.data_type == SQL_DECIMAL;
-    const auto minimum_scale = numeric_type && supports_negative_numeric_scale
-        ? type_info_number(-1000)
-        : (type.minimum_scale < 0 ? rs::core::database::ResultCell{}
-                                  : type_info_number(type.minimum_scale));
+  const auto catalog = conn_->type_catalog();
+  std::vector<std::pair<SQLSMALLINT, const rs::core::database::TypeDefinition*>> types;
+  for (const auto& type : catalog) {
+    const auto sql_type = odbc_scalar_type(type.type);
+    types.emplace_back(sql_type, &type);
+    if (sql_type == SQL_TYPE_DATE) types.emplace_back(SQL_DATE, &type);
+    if (sql_type == SQL_TYPE_TIME) types.emplace_back(SQL_TIME, &type);
+    if (sql_type == SQL_TYPE_TIMESTAMP) types.emplace_back(SQL_TIMESTAMP, &type);
+  }
+  std::stable_sort(types.begin(), types.end(),
+      [](const auto& left, const auto& right) { return left.first < right.first; });
+  for (const auto& [sql_type, definition] : types) {
+    if (data_type != SQL_ALL_TYPES && data_type != sql_type) continue;
+    const auto& type = *definition;
+    const bool character_type = sql_type == SQL_CHAR || sql_type == SQL_VARCHAR ||
+        sql_type == SQL_LONGVARCHAR;
+    const auto modern_type = modern_temporal_type(sql_type);
+    const auto datetime_sub = descriptor_subtype_for(modern_type);
     result.rows.push_back({
-        type_info_text(type.name), type_info_number(type.data_type),
+        type_info_text(type.name), type_info_number(sql_type),
         type_info_number(type.column_size), type_info_text(type.literal_prefix),
         type_info_text(type.literal_suffix), type_info_text(type.create_params),
         type_info_number(SQL_NULLABLE), type_info_number(type.case_sensitive),
         type_info_number(character_type ? SQL_SEARCHABLE : SQL_PRED_BASIC),
-        type.unsigned_attribute < 0 ? rs::core::database::ResultCell{}
-                                    : type_info_number(type.unsigned_attribute),
+        type.unsigned_attribute ? type_info_number(*type.unsigned_attribute)
+                                : rs::core::database::ResultCell{},
         type_info_number(SQL_FALSE),
-        type.unsigned_attribute < 0 ? rs::core::database::ResultCell{}
-                                    : type_info_number(SQL_FALSE),
+        type.unsigned_attribute ? type_info_number(SQL_FALSE)
+                                : rs::core::database::ResultCell{},
         rs::core::database::ResultCell{},
-        minimum_scale,
-        type.maximum_scale < 0 ? rs::core::database::ResultCell{}
-                               : type_info_number(type.maximum_scale),
-        type_info_number(type.sql_data_type),
-        type.datetime_sub == 0 ? rs::core::database::ResultCell{}
-                               : type_info_number(type.datetime_sub),
+        type.minimum_scale ? type_info_number(*type.minimum_scale)
+                           : rs::core::database::ResultCell{},
+        type.maximum_scale ? type_info_number(*type.maximum_scale)
+                           : rs::core::database::ResultCell{},
+        type_info_number(datetime_sub != 0 ? SQL_DATETIME : sql_type),
+        datetime_sub == 0 ? rs::core::database::ResultCell{}
+                          : type_info_number(datetime_sub),
         type.numeric_radix == 0 ? rs::core::database::ResultCell{}
                                 : type_info_number(type.numeric_radix),
         rs::core::database::ResultCell{},
