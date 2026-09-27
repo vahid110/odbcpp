@@ -4,6 +4,8 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <future>
+#include <memory>
 
 using namespace rs::core::transport;
 
@@ -165,22 +167,21 @@ TEST_F(AsyncTransportTest, SendReceiveAfterConnect) {
 }
 
 TEST_F(AsyncTransportTest, TimeoutHandling) {
-  std::atomic<bool> callback_called{false};
-  std::atomic<bool> operation_failed{false};
-  
-  // Very short timeout
-  auto deadline = rs::util::make_deadline(std::chrono::milliseconds(1));
-  auto op = transport_->connect_async("192.0.2.1", 12345, deadline, // Non-routable
-    [&](rs::util::Result<void> result) {
-      callback_called.store(true);
-      operation_failed.store(result.has_error());
-    });
-  
-  // Wait for timeout
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  
-  // Operation should timeout quickly due to expired deadline
-  EXPECT_TRUE(callback_called.load() || op->is_cancelled());
+  auto completion = std::make_shared<std::promise<rs::util::Result<void>>>();
+  auto future = completion->get_future();
+  // An expired deadline is deterministic and must not depend on routing or
+  // assume a worker is scheduled within a fixed sleep on a loaded CI host.
+  auto op = transport_->connect_async("127.0.0.1", 80,
+      rs::util::Deadline::min(),
+      [completion](rs::util::Result<void> result) {
+        completion->set_value(std::move(result));
+      });
+  ASSERT_EQ(std::future_status::ready, future.wait_for(std::chrono::seconds(2)));
+  const auto result = future.get();
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout),
+            result.error());
+  EXPECT_FALSE(op->is_cancelled());
 }
 
 TEST_F(AsyncTransportTest, MultipleTransportInstances) {

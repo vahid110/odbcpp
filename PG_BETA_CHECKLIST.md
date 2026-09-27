@@ -254,3 +254,11 @@ run caught a disconnected-catalog SQLSTATE change; it was repaired to preserve
 existing behavior, covered for both key operations, then all four gates passed.
 Local macOS leak detection remains disabled; Linux CI retains leak detection.
 The completion report records the ensuing GitHub Actions result.
+
+CI follow-up: the first push passed four jobs but macOS iODBC hit the existing
+`AsyncTransportTest.TimeoutHandling` scheduling/network-dependent assertion.
+The test now uses an already-expired deadline, waits for callback completion and
+requires the exact timeout code instead of accepting cancellation after a fixed
+sleep. The corrected case passes 100 repetitions on iODBC UCS-4; the complete
+transport unit suite is rerun in all four local configurations before the repair
+push. Production transport code is unchanged.
