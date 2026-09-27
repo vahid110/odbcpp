@@ -714,4 +714,10 @@ rs::util::Result<void> GenericDatabaseConnection::record_parameter_status(
   return {};
 }
 
+rs::util::Result<std::string> GenericDatabaseConnection::catalog_query(
+    const CatalogRequest&) const {
+  return {rs::util::DbErrorCode::UnsupportedFeature,
+          "Catalog discovery is not supported by this backend"};
+}
+
 } // namespace rs::core::database

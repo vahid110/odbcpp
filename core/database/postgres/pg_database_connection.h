@@ -10,6 +10,9 @@ public:
   explicit PgDatabaseConnection(
       std::unique_ptr<rs::core::transport::ITransport> transport = nullptr);
 
+  rs::util::Result<std::string> catalog_query(
+      const CatalogRequest& request) const override;
+
   rs::util::Result<ResolvedTypeMap> resolve_types(
       std::span<const std::uint32_t> ids, rs::util::Deadline deadline) override;
 };

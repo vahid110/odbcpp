@@ -11,6 +11,7 @@
 #include "query_result.h"
 #include "sql_translation.h"
 #include "native_type_info.h"
+#include "catalog_request.h"
 
 namespace rs::core::database {
 
@@ -42,6 +43,11 @@ public:
   virtual NativeTypeInfo describe_type(std::uint32_t id, std::int16_t size,
                                        std::int32_t modifier) const = 0;
   
+  // Construct backend SQL without I/O; execution retains the caller's normal
+  // deadline, diagnostics and cursor handling. Unsupported catalogs return an error.
+  virtual rs::util::Result<std::string> catalog_query(
+      const CatalogRequest& request) const = 0;
+
   // Resolve every requested native ID, retaining a fallback for missing types.
   // May perform backend metadata I/O using the caller's existing deadline.
   // On failure no partial map is returned; callers must not update their cache.
