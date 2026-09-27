@@ -82,6 +82,13 @@ database backends have no delivery commitment in this plan.
 - No known serious supported-path defects. Record the demonstration, evidence,
   accepted limitations and beta baseline before starting Redshift implementation.
 
+Application scope update (2026-09-26): SQL Server linked server/OPENQUERY,
+Power BI Desktop on Windows, and Excel on macOS are requested acceptance targets.
+See the [application matrix](RELEASE_PLAN.md#application-acceptance-targets--added-2026-09-26).
+The effort table is the prior one-application baseline; M1 and cumulative dates
+require re-estimation for these three tracks. Windows live validation is now
+required. No extra application scope is charged to contingency.
+
 ## Next three implementation batches
 
 1. **PostgreSQL consistency inventory (G0):** classify all partial audit rows,

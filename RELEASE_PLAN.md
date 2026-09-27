@@ -1,7 +1,8 @@
 # Release assessment and bounded scope
 
 Assessment date: 2026-09-23. Code baseline: `4f6de2a`.
-Status: PostgreSQL-first planning baseline; product selections below remain open.
+Status: PostgreSQL-first planning baseline; application targets updated 2026-09-26.
+Exact versions, access and detailed workflows remain open.
 Active implementation scope is PostgreSQL and Redshift only. RDS, Aurora and
 Athena are not included. SDK architecture is mandatory during PostgreSQL
 consolidation (G9a), exercised by Redshift (G9b); only SDK productization is
@@ -37,17 +38,74 @@ Sources: [database differences](https://docs.aws.amazon.com/redshift/latest/dg/c
 
 | Decision | Provisional planning assumption | Consequence if changed |
 |---|---|---|
-| D1: first application/workflow | Driver Manager C++ smoke client plus one user-selected application for PostgreSQL first, then Redshift; latter not yet selected | Application trace determines required APIs. A C++ smoke test alone cannot close application acceptance |
+| D1: application/workflow | User-requested targets: SQL Server linked server including OPENQUERY on Windows; Power BI Desktop on Windows; Excel on macOS. PostgreSQL first, then Redshift. Exact versions/workflows pending | Three real-application tracks replace the one-application assumption. Each needs independent evidence; see the acceptance matrix below |
 | D2: Redshift deployment/access | One user-supplied provisioned or Serverless endpoint; type/version, network access, test schema and permissions recorded | No live compatibility claim until available. Do not provision or spend on cloud resources implicitly |
 | D3: authentication | Database credentials over certificate- and hostname-verified TLS for initial pilot | If IAM/SSO is mandatory, it becomes a gate before beta and requires a fresh estimate; do not ship an unusable credential-only beta |
-| D4: supported systems | Existing Linux and macOS configurations; Windows beta only with live Driver Manager evidence | If the selected application is Windows-only, Windows live validation becomes critical path; otherwise label Windows experimental until validated |
+| D4: supported systems | Linux/macOS driver gates plus Windows live validation required for linked-server and Power BI targets | Windows units alone cannot close these targets. Pin Windows, SQL Server/provider, Power BI, macOS/Excel and process/driver architectures |
 | D5: workload | Forward-only, one row/parameter set at a time; declared scalar types and bounded result sizes | Arrays, streaming, cancellation, or larger workloads required by D1 must be promoted explicitly before freezing scope |
 
 These assumptions allow planning, not a silent product decision. G0 is closed separately for each backend; PostgreSQL decisions are required
 first. Redshift endpoint/authentication decisions do not block the PostgreSQL
-checkpoint. The user has been asked for the first application
-and required authentication. Endpoint details must be supplied through the
+checkpoint. Application families are now named; exact versions, available test
+machines and detailed workflows still need recording. Endpoint details must be supplied through the
 normal secure configuration path; never put credentials in this document.
+
+## Application acceptance targets — added 2026-09-26
+
+These are requested compatibility targets, not current support claims. SQL Server
+is a consumer of the PostgreSQL/Redshift driver here, not a new database backend.
+OPENQUERY is the pass-through query path of a linked server, not a fourth app.
+All three tracks need explicit evidence before claiming the requested application
+profile complete. Infrastructure waits do not silently waive acceptance.
+
+| Track | Proposed bounded first workflow | Execution environment / Actions strategy |
+|---|---|---|
+| SQL Server linked server + OPENQUERY | Register driver/System DSN; connect through MSDASQL; metadata discovery; OPENQUERY scalar/NULL/Unicode/numeric/temporal results; simple four-part-name SELECT separately; invalid-query diagnostic and recovery | Windows SQL Server plus matching driver/provider architecture. Scriptable SQL assertions; prototype GitHub-hosted Windows setup or use a dedicated Windows self-hosted runner. Linux SQL Server containers cannot substitute for this non-SQL-Server linked-server path |
+| Power BI Desktop | Generic ODBC connector in Import mode; schema navigation, native query, load typed data, simple filter/transform, save/reopen and refresh; invalid credentials/query and recovery | Windows desktop with pinned Power BI version. Hosted CI can test underlying ODBC behavior; actual Desktop acceptance initially uses a recorded manual run, then a dedicated interactive test machine if reliable automation is established |
+| Excel on macOS | Install/register our driver, use the supported database/ODBC import path for the pinned Excel version, load the same fixture to a sheet, verify types/NULL/Unicode, save/reopen/refresh and error recovery | Licensed/activated Excel on a Mac, with matching Excel/driver architecture. Existing iODBC width tests remain CI prerequisites but do not prove Excel compatibility. Record a real-app run; consider a dedicated Mac runner after automation feasibility is established |
+
+The proposed first workflows are read-oriented. Linked-server writes, distributed
+transactions/MSDTC, broad remote joins, Power BI DirectQuery, custom connectors,
+service/gateway refresh, incremental refresh and Excel writeback are separate
+scope decisions. Do not promise these from successful imports. If a requested
+workflow needs one, promote and estimate it before freezing G0. OPENQUERY itself
+does not accept variables; do not use it to claim bound-parameter coverage.
+
+Each backend/app record must identify exact app/OS/driver-manager/provider/server
+versions, architecture, installed driver artifact, authentication, fixture and
+expected values, executed actions, results and limitations. Use our ODBC driver
+explicitly, not the application's native PostgreSQL/Redshift connector. Repeat
+with a real Redshift endpoint at M3; PostgreSQL success is not Redshift evidence.
+
+GitHub Actions supports self-hosted machines with installed software. Using one
+for these tracks is an execution design recommendation, not evidence that GUI
+automation already works. Keep fast hosted driver gates on each batch; run the
+application suite on a release candidate and after relevant metadata, dialect,
+type or packaging changes. Manual app evidence is acceptable initially; missing
+apps must be reported as untested, not a passing or silently skipped gate.
+
+**Estimate impact:** M1's 14–23 base days included only one application and
+2–3 days for application/delivery. That is now a pre-expansion baseline, not a
+validated forecast for all three tracks. Size Windows live setup and each app
+workflow separately once versions/access are known; do not absorb added scope
+into the 30% contingency. Shared backend work can proceed meanwhile.
+
+Official sources reviewed 2026-09-26:
+
+- [OPENQUERY](https://learn.microsoft.com/en-us/sql/t-sql/functions/openquery-transact-sql?view=sql-server-ver17)
+  defines linked-server pass-through and its argument limitations.
+- [Linked-server provider setup](https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/sp-addlinkedserver-transact-sql?view=sql-server-ver17)
+  documents MSDASQL for ODBC; pin SQL Server patch level and record provider setup.
+- [SQL Server Linux limitations](https://learn.microsoft.com/en-us/sql/linux/sql-server-linux-editions-and-components-2025?view=sql-server-ver17)
+  exclude linked servers to non-SQL-Server sources.
+- [Power Query ODBC connector](https://learn.microsoft.com/en-us/power-query/connectors/odbc)
+  documents Import; [Power BI Desktop requirements](https://learn.microsoft.com/en-us/power-bi/fundamentals/desktop-get-the-desktop)
+  specify Windows.
+- [Excel for Mac ODBC](https://support.microsoft.com/en-us/excel/odbc-drivers-that-are-compatible-with-excel-for-mac)
+  describes third-party ODBC drivers; it does not certify this driver or imply
+  Windows Power Query connector parity on macOS.
+- [GitHub self-hosted runners](https://docs.github.com/en/actions/concepts/runners/self-hosted-runners)
+  support custom software environments.
 
 ## Initial supported surface
 
@@ -90,7 +148,7 @@ are committed.
 | G5 | Required verification / M1 | Supported attributes, descriptors and capability claims agree; known optional features are explicitly rejected. Existing complete PostgreSQL, both iODBC widths and sanitizer gates pass with reviewed skips. Windows live ODBC tests required for a Windows support claim |
 | G6 | Backend compatibility gate / M3 | Real Redshift matrix for frozen types and metadata: scalar/binary/Unicode round trips, exact numeric precision, timestamp behavior, NULL/truncation/errors; catalog queries under the chosen ordinary-user permissions. Record each PostgreSQL difference and implementation or explicit limitation; test every advertised catalog API or remove its unsupported claim |
 | G7 | Authentication gate / M3 | Chosen Redshift method succeeds and rejects invalid/expired credentials as applicable, uses verified TLS and redacts secrets. Reconnect works; if credential renewal is promised, expiry/refresh behavior is exercised. IAM/SSO cannot be accepted from docs alone |
-| G8 | Application beta gate / M1 and M3 | On PostgreSQL at M1 and Redshift at M3, the named application installs/configures the driver, connects, discovers its schema, runs parameterized and ordinary queries, fetches NULL/Unicode/numeric/temporal data, handles an error, and reconnects. Exercise writes/transactions if in its workflow. Record application, OS, driver-manager versions and known limits |
+| G8 | Application beta gate / M1 and M3 | On PostgreSQL at M1 and Redshift at M3, each requested application track above installs/configures the driver, connects, discovers its schema, runs parameterized and ordinary queries, fetches NULL/Unicode/numeric/temporal data, handles an error, and reconnects. Exercise writes/transactions if in its workflow. Record application, OS, driver-manager versions and known limits |
 | G9a | Architecture gate / M1 | Complete A1–A4 and PostgreSQL acceptance in [BACKEND_BOUNDARY.md](BACKEND_BOUNDARY.md): backend creation, SQL dialect, native types/catalogs and capabilities separated from common ODBC behavior; ownership/error/deadline contract documented; fake-backend contract cases and PostgreSQL regressions pass. Required before PG-BETA |
 | G9b | Reuse gate / M3 | Redshift implements and refines the G9a contract with observed differences; no duplicate shared ODBC wrappers. Common contract tests and live acceptance pass for both backends. Evidence and limitations are recorded under [G9b acceptance](BACKEND_BOUNDARY.md#g9b--redshift-reuse-acceptance-required-before-redshift-beta) |
 | G10 | Reliability/performance gate / M4 | Execute the frozen workload below; establish time/memory/throughput baselines and timeout behavior. No observed leak trend, corruption, crash, deadlock, or silently wrong result. Compare like-for-like against a pinned vendor-driver baseline for triage, not a promised speedup |

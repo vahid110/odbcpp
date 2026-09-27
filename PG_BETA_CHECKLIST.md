@@ -1,8 +1,9 @@
 # PostgreSQL beta work inventory — M0 working baseline
 
 Inventory: 2026-09-25, code baseline `4f6de2a`. This is a finite candidate
-checklist, not a claim that G0 or PG-BETA has passed. D1 (application/OS) remains
-open; no answer is inferred from elapsed time. Redshift access does not block
+checklist, not a claim that G0 or PG-BETA has passed. D1 application families were selected on 2026-09-26: SQL Server linked server /
+OPENQUERY, Power BI Desktop (Windows), and Excel (macOS). Versions, access and
+detailed workflows remain open; see RELEASE_PLAN.md. Redshift access does not block
 this inventory. Scheduler remains paused.
 
 ## Finite work packages and estimates
@@ -26,7 +27,9 @@ M0 remains 2–3 days. M1's previous 7–12 days did not have a sized architectu
 inventory and is superseded by 14–23 days. 30% contingency remains separate;
 architecture is required scope, not reserve consumption. Re-estimate after
 A3's type/catalog contract is reviewed and after the application is selected.
-The user application's unknown requirements can materially change this range.
+The application expansion on 2026-09-26 supersedes the one-application
+assumption: this range is a pre-expansion baseline, pending separate sizing of
+the three tracks in RELEASE_PLAN.md. Added scope is not contingency.
 
 ## All 38 partial operations: proposed scope and evidence
 
@@ -135,8 +138,8 @@ leak-sanitizer limitations must be recorded separately from Linux leak coverage.
   lexical edge cases and a differing fake-parser dialect tested. A2 remains open
   for SQL escape translation; next is that remaining dialect work, followed by
   the A3 type/catalog contract.
-- Independent blocker: choose D1 application and OS before application acceptance
-  and the final G0 freeze. No credentials or cloud provisioning are needed now.
+- Independent dependency: pin versions, available test machines and workflows for
+  the three D1 targets before application acceptance and the final G0 freeze.
 
 ## Batch 1 validation — 2026-09-25
 
@@ -159,3 +162,13 @@ leak-sanitizer limitations must be recorded separately from Linux leak coverage.
   the shared ODBC path, including quoted markers, errors and recovery.
 - G0 remains open for the named application and case-level evidence review;
   G9a remains open for the remaining dialect/type/catalog/capability extraction.
+
+## Application-host reminder
+
+Requested 2026-09-27: remind the user at the start of G8 application acceptance,
+or when that work is next and blocked on hosts. Needed then: Windows with SQL
+Server/Power BI, and a Mac with Excel. Existing machines and recorded manual
+runs suffice initially; dedicated self-hosted runners are optional. A daily
+checkpoint-only reminder is active; the implementation scheduler stays paused.
+The implementation owner should also raise this at the checkpoint during active
+work, rather than waiting for the next daily check.
