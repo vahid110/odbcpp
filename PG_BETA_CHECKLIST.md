@@ -104,6 +104,7 @@ surfaces above; until then this is not a frozen release profile.
 - `test_epoll_transport`
 - `test_iocp_transport`
 - `test_metadata_functions`
+- `test_native_types`
 - `test_pg_protocol_parser`
 - `test_redshift_data_conversion`
 - `test_scram_sha256`
@@ -191,3 +192,22 @@ Linux CI retains its leak-detection gate. Focused suites: 11 Unicode tests,
 11 PostgreSQL escape tests, 8 factory/dialect tests and 18 native-SQL integration
 tests pass. Translation semantics were preserved during the move. A2 is closed
 on local evidence, subject to the single batch CI run; A3/A4 are next.
+
+## Batch 3 scope — 2026-09-27
+
+G9a/A3: normalize native scalar metadata in the backend, then use it for ODBC
+result columns, prepared parameters and known-type classification. The new
+`test_native_types` executable is added to PG-BETA-1, taking its minimum to
+35 executables (25 unit, 10 integration). No older tests are removed.
+
+This batch closes scalar interpretation extraction only. Next: backend domain
+lookup and catalog/type-info construction, followed by the remaining capabilities
+and contract acceptance. Application-host reminder is not due yet.
+
+Batch 3 validation: all 35 executables pass in PostgreSQL, iODBC UTF-16 bridge,
+iODBC UCS-4 and ASan/UBSan configurations against PostgreSQL 17.11. Each reports
+750 Google Test cases, zero skips, plus the standalone Driver Manager executable.
+The four new core type-contract tests and the complete metadata/prepared suites
+also passed focused checks. Local macOS leak detection remains disabled;
+Linux leak detection is covered by the ensuing CI run. The batch completion
+report records the CI link for the single push.

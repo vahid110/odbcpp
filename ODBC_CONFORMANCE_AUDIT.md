@@ -2501,6 +2501,11 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   differing mock dialect, semantic translation failures, malformed Unicode,
   A/W prepared-state preservation and successful reuse. Full regression evidence
   and the remaining G9a scope are recorded in PG_BETA_CHECKLIST.md.
+- PostgreSQL beta architecture batch 3 moves native scalar type interpretation
+  behind the backend contract for columns and prepared parameters. Tests verify
+  modifiers, unknown types, parser-specific mappings and metadata agreement
+  before/after execution with NULL preservation. Extreme temporal width arithmetic
+  avoids signed overflow. Domain/catalog/type-info extraction remains open in A3.
 - No local `clang-tidy` or `cppcheck` executable was available for this pass.
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.

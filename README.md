@@ -483,7 +483,7 @@ source ./setup-test-env.sh
 ctest --test-dir build-redshift
 
 # Run specific test categories
-ctest --test-dir build-redshift -L unit         # 23 unit test executables
+ctest --test-dir build-redshift -L unit         # Unit test executables
 ctest --test-dir build-redshift -L integration  # 10 including Driver Manager
 
 # Test specific functionality

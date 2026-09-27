@@ -789,69 +789,38 @@ struct OdbcTypeInfo {
   SQLSMALLINT sql_type{SQL_VARCHAR};
   SQLULEN column_size{255};
   SQLSMALLINT decimal_digits{0};
-  bool known_oid{true};
 };
 
-OdbcTypeInfo postgres_type_info(std::uint32_t oid, std::int16_t type_size,
-                                std::int32_t type_modifier) {
-  switch (oid) {
-    case 16: return {SQL_BIT, 1, 0};
-    case 17: return {SQL_VARBINARY, type_size > 0 ? static_cast<SQLULEN>(type_size) : 0, 0};
-    case 18: return {SQL_CHAR, 1, 0};
-    case 19: return {SQL_VARCHAR, 63, 0};
-    case 20: return {SQL_BIGINT, 19, 0};
-    case 21: return {SQL_SMALLINT, 5, 0};
-    case 23: return {SQL_INTEGER, 10, 0};
-    case 25: return {SQL_VARCHAR, 0, 0};
-    case 26: return {SQL_BIGINT, 10, 0};
-    case 700: return {SQL_REAL, 7, 6};
-    case 701: return {SQL_DOUBLE, 15, 15};
-    case 1042:
-    case 1043: {
-      const auto length = type_modifier >= 4
-          ? static_cast<SQLULEN>(type_modifier - 4) : 0;
-      return {static_cast<SQLSMALLINT>(
-                  oid == 1042 ? SQL_CHAR : SQL_VARCHAR), length, 0};
-    }
-    case 1082: return {SQL_TYPE_DATE, 10, 0};
-    case 1083:
-    case 1266: {
-      const auto precision = type_modifier >= 0 ? type_modifier : 6;
-      return {SQL_TYPE_TIME,
-              static_cast<SQLULEN>((oid == 1083 ? 8 : 14) +
-                                   (precision > 0 ? 1 + precision : 0)),
-              static_cast<SQLSMALLINT>(precision)};
-    }
-    case 1114:
-    case 1184: {
-      const auto precision = type_modifier >= 0 ? type_modifier : 6;
-      return {SQL_TYPE_TIMESTAMP,
-              static_cast<SQLULEN>((oid == 1114 ? 19 : 25) +
-                                   (precision > 0 ? 1 + precision : 0)),
-              static_cast<SQLSMALLINT>(precision)};
-    }
-    case 2950: return {SQL_VARCHAR, 36, 0};
-    case 114:
-    case 3802: return {SQL_VARCHAR, 0, 0};
-    case 1700: {
-      if (type_modifier < 4) return {SQL_NUMERIC, 0, 0};
-      const auto modifier = static_cast<std::uint32_t>(type_modifier - 4);
-      const auto precision = static_cast<SQLULEN>((modifier >> 16) & 0xffff);
-      const auto encoded_scale = static_cast<std::int32_t>(modifier & 0x7ff);
-      const auto scale = static_cast<SQLSMALLINT>(
-          encoded_scale >= 1024 ? encoded_scale - 2048 : encoded_scale);
-      return {SQL_NUMERIC, precision, scale};
-    }
-    default:
-      return {SQL_VARCHAR,
-              type_size > 0 ? static_cast<SQLULEN>(type_size) : 0, 0, false};
+OdbcTypeInfo backend_type_info(
+    const rs::core::database::IDatabaseConnection& backend,
+    std::uint32_t id, std::int16_t size, std::int32_t modifier) {
+  using rs::core::database::ScalarType;
+  const auto native = backend.describe_type(id, size, modifier);
+  SQLSMALLINT sql_type = SQL_VARCHAR;
+  switch (native.type) {
+    case ScalarType::Boolean: sql_type = SQL_BIT; break;
+    case ScalarType::Binary: sql_type = SQL_VARBINARY; break;
+    case ScalarType::Char: sql_type = SQL_CHAR; break;
+    case ScalarType::VarChar: sql_type = SQL_VARCHAR; break;
+    case ScalarType::BigInt: sql_type = SQL_BIGINT; break;
+    case ScalarType::SmallInt: sql_type = SQL_SMALLINT; break;
+    case ScalarType::Integer: sql_type = SQL_INTEGER; break;
+    case ScalarType::Real: sql_type = SQL_REAL; break;
+    case ScalarType::Double: sql_type = SQL_DOUBLE; break;
+    case ScalarType::Date: sql_type = SQL_TYPE_DATE; break;
+    case ScalarType::Time: sql_type = SQL_TYPE_TIME; break;
+    case ScalarType::Timestamp: sql_type = SQL_TYPE_TIMESTAMP; break;
+    case ScalarType::Numeric: sql_type = SQL_NUMERIC; break;
   }
+  return {sql_type, static_cast<SQLULEN>(native.column_size),
+          native.decimal_digits};
 }
 
 ColumnInfo column_info_for(
+    const rs::core::database::IDatabaseConnection& backend,
     const rs::core::database::ResultColumnMetadata& metadata) {
-  const auto type = postgres_type_info(
-      metadata.type_id, metadata.type_size, metadata.type_modifier);
+  const auto type = backend_type_info(
+      backend, metadata.type_id, metadata.type_size, metadata.type_modifier);
   return ColumnInfo{metadata.name, type.sql_type, type.column_size,
                     type.decimal_digits, SQL_NULLABLE_UNKNOWN};
 }
@@ -1135,9 +1104,10 @@ void complete_descriptor_record(DescriptorRecord& record) {
 }
 
 ParameterMetadata parameter_metadata_for(
-    std::uint32_t oid, std::int32_t type_modifier,
+    const rs::core::database::IDatabaseConnection& backend,
+    std::uint32_t id, std::int32_t type_modifier,
     const DescriptorRecord* prior_record) {
-  const auto type = postgres_type_info(oid, -1, type_modifier);
+  const auto type = backend_type_info(backend, id, -1, type_modifier);
   ParameterMetadata metadata{type.sql_type, type.column_size,
                              type.decimal_digits, SQL_NULLABLE_UNKNOWN, {}};
   if (!prior_record || prior_record->concise_type != metadata.sql_type) {
@@ -4507,7 +4477,7 @@ void ODBCStatement::apply_result_metadata(
   column_info_.clear();
   column_info_.reserve(result.columns.size());
   for (const auto& column : result.columns) {
-    column_info_.push_back(column_info_for(column));
+    column_info_.push_back(column_info_for(*conn_->get_db_connection(), column));
   }
   if (column_info_.empty() && !result_rows_.empty()) {
     column_info_.reserve(result_rows_.front().size());
@@ -4541,6 +4511,7 @@ void ODBCStatement::apply_result_metadata(
     const auto oid = result.parameter_type_ids[index];
     const auto resolved = parameter_base_type_cache_.find(oid);
     param_metadata_.push_back(parameter_metadata_for(
+        *conn_->get_db_connection(),
         resolved == parameter_base_type_cache_.end()
             ? oid : resolved->second.base_oid,
         resolved == parameter_base_type_cache_.end()
@@ -4632,7 +4603,7 @@ SQLRETURN ODBCStatement::resolve_parameter_base_types(
     rs::util::Deadline deadline) {
   std::vector<std::uint32_t> unresolved;
   for (const auto oid : result.parameter_type_ids) {
-    if (oid != 0 && !postgres_type_info(oid, -1, -1).known_oid &&
+    if (oid != 0 && !conn_->get_db_connection()->describe_type(oid, -1, -1).known &&
         !parameter_base_type_cache_.contains(oid)) {
       unresolved.push_back(oid);
     }

@@ -4159,3 +4159,44 @@ TEST_F(MetadataIntegrationTest, InvalidHandleTests) {
     ret = SQLColAttribute(nullptr, 1, SQL_DESC_TYPE, nullptr, 0, nullptr, &numeric_attr);
     EXPECT_EQ(SQL_INVALID_HANDLE, ret);
 }
+
+TEST_F(MetadataIntegrationTest, BackendScalarMetadataAgreesBeforeAndAfterExecution) {
+    SQLCHAR sql[] = "SELECT NULL::numeric(12,3), NULL::numeric(8,-2), "
+                    "NULL::varchar(17), NULL::time(3), NULL::timestamp(0), "
+                    "NULL::uuid, NULL::int4[]";
+    struct Expected { SQLSMALLINT type; SQLULEN size; SQLSMALLINT scale; };
+    const std::array<Expected, 7> expected{{
+        {SQL_NUMERIC, 12, 3}, {SQL_NUMERIC, 8, -2}, {SQL_VARCHAR, 17, 0},
+        {SQL_TYPE_TIME, 12, 3}, {SQL_TYPE_TIMESTAMP, 19, 0},
+        {SQL_VARCHAR, 36, 0}, {SQL_VARCHAR, 0, 0}}};
+    for (const bool prepared : {false, true}) {
+        SCOPED_TRACE(prepared);
+        ASSERT_EQ(SQL_SUCCESS, prepared ? SQLPrepare(hstmt, sql, SQL_NTS)
+                                       : SQLExecDirect(hstmt, sql, SQL_NTS));
+        for (int phase = 0; phase < (prepared ? 2 : 1); ++phase) {
+            if (phase == 1) ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+            for (std::size_t i = 0; i < expected.size(); ++i) {
+                SCOPED_TRACE(i);
+                SQLSMALLINT type = 0, scale = 0, nullable = 0;
+                SQLULEN size = 999;
+                ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt,
+                    static_cast<SQLUSMALLINT>(i + 1), nullptr, 0, nullptr,
+                    &type, &size, &scale, &nullable));
+                EXPECT_EQ(expected[i].type, type);
+                EXPECT_EQ(expected[i].size, size);
+                EXPECT_EQ(expected[i].scale, scale);
+                EXPECT_EQ(SQL_NULLABLE_UNKNOWN, nullable);
+            }
+        }
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        for (SQLUSMALLINT i = 1; i <= expected.size(); ++i) {
+            char value = 'x';
+            SQLLEN indicator = 0;
+            EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, i, SQL_C_CHAR,
+                                             &value, 1, &indicator));
+            EXPECT_EQ(SQL_NULL_DATA, indicator);
+            EXPECT_EQ('x', value);
+        }
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    }
+}

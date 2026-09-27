@@ -122,3 +122,25 @@ A/W direct/prepare errors preserve a previous prepared statement and permit
 reuse. Existing native-SQL output/truncation, Unicode, quoting, nested comments,
 NOSCAN and Driver Manager tests remain required. A3/A4 and complete fake-backend
 ODBC acceptance remain open; A2 closure is recorded with the batch validation.
+
+## A3 scalar-metadata batch — 2026-09-27
+
+The selected backend now interprets native type IDs, widths and modifiers through
+`describe_type`, returning the ODBC-independent families and fields in
+[native_type_info.h](core/database/native_type_info.h). PostgreSQL interpretation
+lives in [pg_type_info.cpp](core/database/postgres/pg_type_info.cpp). Shared ODBC
+column and parameter metadata maps those normalized families to ODBC constants;
+it no longer contains the `postgres_type_info` native-ID switch. The connection
+contract delegates to its selected parser, and a differing mock mapping is tested.
+
+Known/unknown classification for parameter discovery also comes from the backend.
+Existing domain lookup, cache semantics, bound parameter precision overrides,
+SQLGetTypeInfo definitions, descriptor type names and catalog SQL remain for
+subsequent A3 work. Therefore A3 and overall G9a remain open. Native IDs in
+QueryResult are still opaque backend metadata awaiting the remaining extraction.
+
+Tests cover scalar mappings, numeric precision/negative scale, temporal widths,
+character limits, unknown-type fallbacks, and metadata agreement before/after
+execution including NULL output preservation. Temporal width calculation uses
+unsigned wide arithmetic to avoid signed overflow on extreme metadata modifiers;
+this does not promise support for out-of-range temporal precision.
