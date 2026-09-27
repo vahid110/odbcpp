@@ -71,6 +71,11 @@ SqlTranslationResult GenericDatabaseConnection::translate_sql(
   return parser_->translate_sql(sql);
 }
 
+NativeTypeInfo GenericDatabaseConnection::describe_type(
+    std::uint32_t id, std::int16_t size, std::int32_t modifier) const {
+  return parser_->describe_type(id, size, modifier);
+}
+
 rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettings& settings) {
   if (settings.password.find('\0') != std::string::npos) {
     return {rs::util::DbErrorCode::InvalidParameter,

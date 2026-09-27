@@ -26,6 +26,8 @@ public:
     const std::string& user) override;
   
   SqlTranslationResult translate_sql(std::string_view sql) const override;
+  NativeTypeInfo describe_type(std::uint32_t id, std::int16_t size,
+                               std::int32_t modifier) const override;
 
   // Query execution
   std::size_t count_parameter_markers(std::string_view sql) const override {

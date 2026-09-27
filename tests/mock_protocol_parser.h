@@ -9,6 +9,10 @@ namespace odbcpp::test {
 class MockProtocolParser final
     : public rs::core::database::IProtocolParser {
  public:
+  rs::core::database::NativeTypeInfo describe_type(
+      std::uint32_t, std::int16_t, std::int32_t) const override {
+    return {rs::core::database::ScalarType::Char, 7, 0, true};
+  }
   rs::core::database::SqlTranslationResult translate_sql(
       std::string_view sql) const override {
     return {std::string(sql), rs::core::database::SqlTranslationError::None, {}};

@@ -6,6 +6,10 @@ namespace rs::core::database::mysql {
 // Example of how to add MySQL support
 class MySQLProtocolParser : public IProtocolParser {
 public:
+  NativeTypeInfo describe_type(std::uint32_t, std::int16_t,
+                               std::int32_t) const override {
+    return {ScalarType::VarChar, 0, 0, false};
+  }
   SqlTranslationResult translate_sql(std::string_view) const override {
     return {{}, SqlTranslationError::Unsupported,
             "MySQL SQL translation not implemented yet"};

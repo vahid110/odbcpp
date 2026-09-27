@@ -10,6 +10,7 @@
 #include "query_parameter.h"
 #include "query_result.h"
 #include "sql_translation.h"
+#include "native_type_info.h"
 
 namespace rs::core::database {
 
@@ -37,6 +38,9 @@ public:
   virtual std::size_t count_parameter_markers(std::string_view sql) const = 0;
   // Pure translation: no network I/O or mutation of connection state.
   virtual SqlTranslationResult translate_sql(std::string_view sql) const = 0;
+  // Pure native-to-normalized metadata interpretation, without I/O.
+  virtual NativeTypeInfo describe_type(std::uint32_t id, std::int16_t size,
+                                       std::int32_t modifier) const = 0;
   
   virtual rs::util::Result<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline) = 0;
   virtual rs::util::Result<QueryResult> execute_prepared(std::string_view sql, 

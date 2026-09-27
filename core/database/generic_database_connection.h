@@ -17,6 +17,8 @@ public:
   bool is_connected() const override;
   std::size_t count_parameter_markers(std::string_view sql) const override;
   SqlTranslationResult translate_sql(std::string_view sql) const override;
+  NativeTypeInfo describe_type(std::uint32_t id, std::int16_t size,
+                               std::int32_t modifier) const override;
   
   rs::util::Result<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline) override;
   using IDatabaseConnection::execute_prepared;
