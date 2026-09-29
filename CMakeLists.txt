@@ -221,6 +221,10 @@ if(WIN32)
   enable_language(RC)
   add_library(odbcpp_setup SHARED odbc/setup/setup.cpp odbc/setup/setup_dialog.cpp odbc/setup/setup.rc odbc/setup/setup.def)
   target_link_libraries(odbcpp_setup PRIVATE odbccp32 odbc32 user32 comctl32)
+  if(MSVC)
+    # Windows SDK installer thunks reference legacy CRT formatting symbols.
+    target_link_libraries(odbcpp_setup PRIVATE legacy_stdio_definitions)
+  endif()
 endif()
 
 # ---- Compiler Settings ----

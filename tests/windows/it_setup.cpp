@@ -89,10 +89,16 @@ int main() {
   SQLSetConfigMode(ODBC_USER_DSN);
   ok=check(read(name,L"PWD")==L"<absent>" && read(name,L"UID")==L"postgres","no persisted password")&&ok;
   ok=check(!SQLConfigDataSourceW(nullptr,ODBC_ADD_DSN,driver,initial.c_str()),"duplicate add rejected")&&ok;
+  SQLSetConfigMode(ODBC_USER_DSN);
+  SQLWritePrivateProfileStringW(name,L"FutureSetting",L"retain",L"ODBC.INI");
+  SQLWritePrivateProfileStringW(name,L"PWD",L"legacy-password",L"ODBC.INI");
+  SQLWritePrivateProfileStringW(name,L"PASSWORD",L"legacy-alias",L"ODBC.INI");
   const auto edit=attrs({dsn,L"PORT=5444"});
   ok=check(SQLConfigDataSourceW(nullptr,ODBC_CONFIG_DSN,driver,edit.c_str())!=FALSE,"partial edit")&&ok;
   SQLSetConfigMode(ODBC_USER_DSN);
   ok=check(read(name,L"Port")==L"5444" && read(name,L"Server")==L"127.0.0.1","edit preserves omitted fields")&&ok;
+  ok=check(read(name,L"FutureSetting")==L"retain" && read(name,L"PWD")==L"<absent>" &&
+           read(name,L"PASSWORD")==L"<absent>","retain advanced settings and remove legacy passwords")&&ok;
   const auto bad=attrs({dsn,L"PORT=65536"});
   ok=check(!SQLConfigDataSourceW(nullptr,ODBC_CONFIG_DSN,driver,bad.c_str()),"invalid silent edit")&&ok;
   SQLSetConfigMode(ODBC_USER_DSN);
