@@ -1,0 +1,48 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="ODBCPP PostgreSQL Beta (x64)" Manufacturer="ODBCPP"
+           Version="$(var.Version)" UpgradeCode="BC23230D-B189-4CF8-81D2-11ED5F55FC6F"
+           Scope="perMachine" InstallerVersion="500" Language="1033">
+    <MajorUpgrade Schedule="afterInstallInitialize" DowngradeErrorMessage="A newer ODBCPP package is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="REGISTERED_DRIVER">
+      <RegistrySearch Id="FindDriver" Root="HKLM" Key="SOFTWARE\ODBC\ODBCINST.INI\ODBCPP PostgreSQL" Name="Driver" Type="raw" Bitness="always64" />
+    </Property>
+    <Property Id="OWNED_DRIVER">
+      <RegistrySearch Id="FindOwner" Root="HKLM" Key="SOFTWARE\ODBCPP\PostgreSQL" Name="OwnedDriver" Type="raw" Bitness="always64" />
+    </Property>
+    <Property Id="REGISTERED_SETUP">
+      <RegistrySearch Id="FindSetup" Root="HKLM" Key="SOFTWARE\ODBC\ODBCINST.INI\ODBCPP PostgreSQL" Name="Setup" Type="raw" Bitness="always64" />
+    </Property>
+    <Property Id="OWNED_SETUP">
+      <RegistrySearch Id="FindSetupOwner" Root="HKLM" Key="SOFTWARE\ODBCPP\PostgreSQL" Name="OwnedSetup" Type="raw" Bitness="always64" />
+    </Property>
+    <Launch Condition="NOT REGISTERED_SETUP OR REGISTERED_SETUP = OWNED_SETUP" Message="The setup DLL registration belongs to another installation or was changed." />
+    <Launch Condition="VersionNT64 AND NOT Arm64" Message="This package requires x64 Windows." />
+    <Launch Condition="NOT REGISTERED_DRIVER OR REGISTERED_DRIVER = OWNED_DRIVER" Message="The ODBCPP driver registration belongs to another installation or was changed. Restore or remove that registration explicitly before continuing." />
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="VENDORFOLDER" Name="ODBCPP">
+        <Directory Id="INSTALLFOLDER" Name="PostgreSQL">
+          <Component Id="Registration" Guid="A40E29D2-6905-498C-959B-2DA3138061CF" Bitness="always64">
+            <RegistryValue Root="HKLM" Key="SOFTWARE\ODBC\ODBCINST.INI\ODBC Drivers" Name="ODBCPP PostgreSQL" Type="string" Value="Installed" />
+            <RegistryValue Root="HKLM" Key="SOFTWARE\ODBC\ODBCINST.INI\ODBCPP PostgreSQL" Name="Driver" Type="string" Value="[INSTALLFOLDER]odbcpp.dll" KeyPath="yes" />
+            <RegistryValue Root="HKLM" Key="SOFTWARE\ODBC\ODBCINST.INI\ODBCPP PostgreSQL" Name="Setup" Type="string" Value="[INSTALLFOLDER]odbcpp_setup.dll" />
+            <RegistryValue Root="HKLM" Key="SOFTWARE\ODBCPP\PostgreSQL" Name="OwnedDriver" Type="string" Value="[INSTALLFOLDER]odbcpp.dll" />
+            <RegistryValue Root="HKLM" Key="SOFTWARE\ODBCPP\PostgreSQL" Name="OwnedSetup" Type="string" Value="[INSTALLFOLDER]odbcpp_setup.dll" />
+            <RegistryValue Root="HKLM" Key="SOFTWARE\ODBCPP\PostgreSQL" Name="Version" Type="string" Value="$(var.Version)" />
+          </Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+    <Feature Id="DriverFeature" Title="PostgreSQL ODBC driver" Level="1">
+      <ComponentRef Id="Registration" />
+      <ComponentGroupRef Id="Payload" />
+    </Feature>
+    <?if $(var.FailureFixture) = 1 ?>
+      <CustomAction Id="FailRollbackFixture" Error="Intentional rollback acceptance failure." />
+      <InstallExecuteSequence>
+        <Custom Action="FailRollbackFixture" After="InstallFiles" Condition="NOT Installed" />
+      </InstallExecuteSequence>
+    <?endif?>
+  </Package>
+</Wix>
