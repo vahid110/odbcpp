@@ -375,3 +375,18 @@ are internal unsigned beta validation packages, not a public release. Resolve
 licensing/signing under G11 before external distribution. G8 application acceptance
 remains separate; once package acceptance is green, application-host readiness
 becomes actionable. No Redshift-specific packaging changes are included.
+
+W4 closed at c82efd2 with CI 36595134585 green across all six jobs. G8 remains
+open. A first hosted SQL Server Developer-media prototype was cancelled before
+its 45-minute boundary after roughly 40 minutes in the opaque media/setup step;
+the cancellation does not establish either compatibility or incompatibility.
+At the user's direction this application track is deferred while other work
+continues. Its workflow is manual-only so normal pushes keep the fast Windows
+and package gates. Power BI Desktop and Excel remain untested.
+
+Redshift pilot preparation now separates evidence by build target. PostgreSQL
+test discovery excludes `it_redshift_real`. A Redshift build requires an explicit
+TLS-enabled connection string and fixture schema/table, verifies the server's
+`version()` identifies Redshift, and exercises the bounded G1 query, prepared
+NULL/scalar, metadata and recovery flow. This prevents false evidence but does
+not close G1; execution still waits on a real user-supplied endpoint.

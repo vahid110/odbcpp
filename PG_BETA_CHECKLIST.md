@@ -518,3 +518,36 @@ with the established macOS sanitizer settings. MSI building and the fresh-runner
 lifecycle remain Windows-only acceptance: require all six exact-revision CI jobs
 to pass before W4 closure. G8 host/application checks and G11 project licensing/
 signing remain open; this package is an unsigned internal beta validation artifact.
+
+W4 closed at c82efd2: CI 36595134585 passed all six exact-revision jobs. The
+packaged driver loaded app-local dependencies, opened its two-tab setup dialog
+through the 64-bit ODBC Administrator, connected through the native Driver
+Manager, survived failed-upgrade rollback, upgraded, rejected downgrade and
+foreign ownership, and uninstalled without deleting DSNs or unrelated values.
+
+## Batch 17 — deferred G8 track and truthful Redshift pilot preparation
+
+The first hosted SQL Server linked-server prototype was cancelled before its
+45-minute job limit after the opaque SQL Server media/setup phase ran for about
+40 minutes. That interruption is neither a product failure nor acceptance
+evidence. At the user's direction, SQL Server/OPENQUERY is deferred for now;
+Power BI Desktop and Excel application acceptance also remain open. The heavy
+linked-server workflow is retained as an explicit manual dispatch and no longer
+runs on every push. PG-BETA remains open at G8.
+
+Preparatory Redshift evidence work may continue without claiming the M2 pilot.
+`it_redshift_real` is now built only for `TARGET_DATABASE=REDSHIFT`; PostgreSQL
+can no longer satisfy a Redshift-named test. The pilot requires a nonempty
+`ODBCPP_REDSHIFT_TEST_CONNECTION` with `SSL=1`, requires configured schema/table
+fixture names for catalog evidence, and rejects a `version()` result that does
+not identify Amazon Redshift. It covers connection, prepared scalar/NULL fetch,
+table/column metadata, invalid SQL and recovery. A real endpoint remains required
+to execute these cases and close G1; absence fails rather than skips.
+
+Focused PostgreSQL discovery/build checks and the Redshift pilot compile check
+passed. Running the pilot without endpoint configuration failed with the required
+message. All four complete PostgreSQL local gates passed: 37 executables (28 unit,
+9 integration), 813 GoogleTest cases each and zero skips, including ASan/UBSan
+with the established macOS leak-detection limitation. The seven previously
+counted `it_redshift_real` cases were removed from PostgreSQL evidence; two new
+pilot cases compile only in the Redshift build.

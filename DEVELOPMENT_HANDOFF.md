@@ -21,11 +21,16 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
 - W2 closed at 5ed113a: CI 36572088585 passed all five jobs.
 - W3 closed at 29a22a4: CI 36584852239 passed all five jobs and both rendered
   tabs were reviewed. Native setup/API/dialog acceptance passed.
-- Batch 16 implements W4 x64 MSI and fresh-runner package lifecycle tests.
-  Confirm the exact-revision six-job CI, including windows-package, before closure.
-  Release licensing/signing and G8 real applications remain explicit gates.
-- PostgreSQL first; live Redshift validation comes later. Application-host
-  reminder is not due until G8 acceptance is actionable.
+- W4 closed at c82efd2: CI 36595134585 passed all six jobs, including the real
+  Administrator path and fresh-runner package lifecycle.
+- G8 application acceptance remains open. The first hosted SQL Server prototype
+  was cancelled before its 45-minute bound, so it supplies no pass/fail evidence;
+  its job is manual-only while that track is deferred. Power BI and Excel remain
+  unexecuted. Do not claim PG-BETA from the packaged-driver evidence alone.
+- Batch 17 prepares truthful Redshift pilot evidence without starting a live
+  compatibility claim: PostgreSQL builds exclude `it_redshift_real`; Redshift
+  builds require an explicit TLS connection and reject non-Redshift identity.
+  A real endpoint plus schema/table fixture is still required to close G1.
 - Graphify was evaluated and declined. Use narrow `rg` searches and source reads.
 
 ## Navigation
@@ -38,8 +43,8 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
   `pg_type_catalog.cpp` (advertised types and version-dependent scales).
 - Shared adaptation: `odbc/odbc_handles.cpp`: `get_type_info`,
   `complete_descriptor_record`, `apply_result_metadata`, `execute_catalog`.
-- A4 starting points: `ODBCConnection` transaction methods in that file,
-  capabilities in `odbc/odbc_api.cpp`, and generic protocol/session error handling.
+- Redshift pilot: `tests/integration/it_redshift_real.cpp`; it is release evidence
+  only in a `TARGET_DATABASE=REDSHIFT` build with explicit endpoint variables.
 - Focused tests: `test_native_types`, `test_catalog_queries`,
   `test_descriptor_apis`, `test_connection_liveness`, `it_metadata_real`.
 

@@ -48,6 +48,13 @@ endif()
 file(GLOB INTEGRATION_TEST_SOURCES "tests/integration/*.cpp")
 foreach(test_file ${INTEGRATION_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
+  # This executable is release evidence for a real Redshift endpoint. Running
+  # it against the PostgreSQL fixture would turn a green PostgreSQL job into a
+  # false Redshift compatibility claim.
+  if(test_name STREQUAL "it_redshift_real" AND
+     NOT TARGET_DATABASE STREQUAL "REDSHIFT")
+    continue()
+  endif()
   add_test_executable(${test_name} ${test_file})
   set_tests_properties(${test_name} PROPERTIES LABELS "integration")
 endforeach()

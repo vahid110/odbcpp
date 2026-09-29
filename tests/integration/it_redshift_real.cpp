@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
+#include "odbc/connection_string.h"
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -7,8 +10,23 @@
 class RedshiftRealTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    // Try to connect using DSN configuration
-    use_dsn_ = true;
+    const char* configured = std::getenv("ODBCPP_REDSHIFT_TEST_CONNECTION");
+    ASSERT_NE(configured, nullptr)
+        << "ODBCPP_REDSHIFT_TEST_CONNECTION is required; the real Redshift "
+           "pilot must fail rather than skip when its endpoint is absent";
+    connection_string_ = configured;
+    ASSERT_FALSE(connection_string_.empty())
+        << "ODBCPP_REDSHIFT_TEST_CONNECTION must not be empty";
+    const auto parameters = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto ssl = parameters.find("SSL");
+    ASSERT_NE(ssl, parameters.end())
+        << "The real Redshift pilot requires explicit verified TLS (SSL=1)";
+    std::string ssl_value = ssl->second;
+    std::transform(ssl_value.begin(), ssl_value.end(), ssl_value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    ASSERT_TRUE(ssl_value == "1" || ssl_value == "true" || ssl_value == "yes" ||
+                ssl_value == "on")
+        << "The real Redshift pilot requires SSL=1";
     
     // Allocate handles
     ASSERT_EQ(SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &henv_), SQL_SUCCESS);
@@ -26,7 +44,9 @@ protected:
   }
   
   bool connect() {
-    SQLRETURN ret = SQLConnect(hdbc_, (SQLCHAR*)"DSN=RedshiftProd", SQL_NTS, nullptr, 0, nullptr, 0);
+    SQLRETURN ret = SQLDriverConnect(
+        hdbc_, nullptr, reinterpret_cast<SQLCHAR*>(connection_string_.data()),
+        SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
     
     if (ret == SQL_SUCCESS || ret == SQL_SUCCESS_WITH_INFO) {
       EXPECT_EQ(SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt_), SQL_SUCCESS);
@@ -53,7 +73,7 @@ protected:
   SQLHDBC hdbc_ = nullptr;
   SQLHSTMT hstmt_ = nullptr;
   
-  bool use_dsn_ = false;
+  std::string connection_string_;
 };
 
 TEST_F(RedshiftRealTest, ConnectionTest) {
@@ -76,8 +96,13 @@ TEST_F(RedshiftRealTest, VersionQuery) {
   ret = SQLGetData(hstmt_, 1, SQL_C_CHAR, version, sizeof(version), &indicator);
   ASSERT_EQ(ret, SQL_SUCCESS) << "GetData failed: " << get_error(SQL_HANDLE_STMT, hstmt_);
   
-  EXPECT_TRUE(strstr(version, "PostgreSQL") != nullptr || strstr(version, "Redshift") != nullptr)
-    << "Unexpected version string: " << version;
+  std::string server_identity(version);
+  std::transform(server_identity.begin(), server_identity.end(),
+                 server_identity.begin(), [](unsigned char c) {
+                   return static_cast<char>(std::tolower(c));
+                 });
+  EXPECT_NE(server_identity.find("redshift"), std::string::npos)
+      << "Connected endpoint is not Amazon Redshift: " << version;
 }
 
 TEST_F(RedshiftRealTest, CurrentUserQuery) {
@@ -127,6 +152,65 @@ TEST_F(RedshiftRealTest, MultipleRowQuery) {
   EXPECT_EQ(row_count, 5);
 }
 
+TEST_F(RedshiftRealTest, PreparedScalarAndNull) {
+  ASSERT_TRUE(connect());
+
+  auto query = reinterpret_cast<SQLCHAR*>(
+      const_cast<char*>("SELECT ?::integer AS scalar_value, "
+                        "NULL::varchar AS null_value"));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt_, query, SQL_NTS));
+  SQLINTEGER input = 42;
+  SQLLEN input_length = 0;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+                             SQL_INTEGER, 0, 0, &input, 0, &input_length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+
+  SQLINTEGER output = 0;
+  SQLLEN indicator = 0;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetData(hstmt_, 1, SQL_C_SLONG, &output, sizeof(output),
+                       &indicator));
+  EXPECT_EQ(42, output);
+  char null_value[8]{};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetData(hstmt_, 2, SQL_C_CHAR, null_value,
+                       sizeof(null_value), &indicator));
+  EXPECT_EQ(SQL_NULL_DATA, indicator);
+}
+
+TEST_F(RedshiftRealTest, ConfiguredFixtureMetadata) {
+  const char* schema = std::getenv("ODBCPP_REDSHIFT_TEST_SCHEMA");
+  const char* table = std::getenv("ODBCPP_REDSHIFT_TEST_TABLE");
+  ASSERT_NE(schema, nullptr)
+      << "ODBCPP_REDSHIFT_TEST_SCHEMA is required for pilot metadata evidence";
+  ASSERT_NE(table, nullptr)
+      << "ODBCPP_REDSHIFT_TEST_TABLE is required for pilot metadata evidence";
+  ASSERT_NE(*schema, '\0');
+  ASSERT_NE(*table, '\0');
+  ASSERT_TRUE(connect());
+
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLTables(hstmt_, nullptr, 0,
+                      reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema)),
+                      SQL_NTS,
+                      reinterpret_cast<SQLCHAR*>(const_cast<char*>(table)),
+                      SQL_NTS, nullptr, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_))
+      << "Configured Redshift fixture table was not discovered";
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLColumns(hstmt_, nullptr, 0,
+                       reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema)),
+                       SQL_NTS,
+                       reinterpret_cast<SQLCHAR*>(const_cast<char*>(table)),
+                       SQL_NTS, nullptr, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_))
+      << "Configured Redshift fixture exposed no column metadata";
+}
+
 TEST_F(RedshiftRealTest, ErrorHandling) {
   ASSERT_TRUE(connect());
   
@@ -139,6 +223,13 @@ TEST_F(RedshiftRealTest, ErrorHandling) {
   std::string error = get_error(SQL_HANDLE_STMT, hstmt_);
   EXPECT_FALSE(error.empty());
   std::cout << "Expected error: " << error << std::endl;
+
+  ret = SQLExecDirect(
+      hstmt_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 1")),
+      SQL_NTS);
+  ASSERT_EQ(SQL_SUCCESS, ret) << "Connection did not recover after invalid SQL: "
+                              << get_error(SQL_HANDLE_STMT, hstmt_);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
 }
 
 TEST_F(RedshiftRealTest, DataTypes) {
