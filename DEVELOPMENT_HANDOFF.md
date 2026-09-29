@@ -11,16 +11,15 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
   Complete A4/G9a next, then W1–W4 Windows configuration/delivery before final
   G8 acceptance. See RELEASE_PLAN.md for scope, estimates and dependencies.
 
-- **Batch 8 implemented and locally validated:** typed backend transaction commands and
-  transaction capability reporting, with five unit and two live regression cases.
-  All four full local gates pass: 36 executables, 785 GoogleTest cases and zero
-  skips per configuration. Follow the pushed batch CI before declaring complete.
-  Evidence is in PG_BETA_CHECKLIST.md.
+- **Batch 9 implemented and locally validated:** backend capability profile and
+  SQLGetInfo routing. Four full local gates pass: 36 executables, 791 GoogleTest
+  cases and zero skips per configuration. Follow the pushed SHA's CI, including
+  Windows live coverage, before declaring the batch complete.
 
 - Branch: `codex/transport-foundation`. Implementation scheduler stays paused.
 - A1/A2 and A3 extraction are implemented after batch 7. G9a is not closed.
-- Next: remaining A4 backend capabilities and explicit
-  native/normalized result, error and deadline contracts; then fake-backend
+- Next: A4 native/normalized result, error, lifetime and deadline contracts;
+  then fake-backend
   acceptance through shared ODBC orchestration. Review BACKEND_BOUNDARY.md's A4
   criteria before choosing the next batch. Do not expand into optional features.
 - PostgreSQL first; live Redshift validation comes later. Application-host
@@ -30,7 +29,8 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
 ## Navigation
 
 - Contracts: `core/database/i_database_connection.h`, `query_result.h`,
-  `native_type_info.h`, `type_definition.h`, `catalog_request.h`.
+  `native_type_info.h`, `type_definition.h`, `catalog_request.h`,
+  `backend_capabilities.h` and `transaction.h`.
 - PostgreSQL: `pg_database_connection.cpp` (domain lookup), `pg_catalog_query.cpp`
   (all eight catalog queries), `pg_type_info.cpp` (native IDs),
   `pg_type_catalog.cpp` (advertised types and version-dependent scales).

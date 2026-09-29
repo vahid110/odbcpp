@@ -1245,6 +1245,10 @@ std::span<const rs::core::database::TypeDefinition> ODBCConnection::type_catalog
   return metadata_backend().type_catalog();
 }
 
+rs::core::database::BackendCapabilities ODBCConnection::capabilities() const {
+  return metadata_backend().capabilities();
+}
+
 rs::core::database::TransactionCapabilities ODBCConnection::transaction_capabilities() const {
   return metadata_backend().transaction_capabilities();
 }

@@ -233,3 +233,30 @@ preservation remains shared-driver behavior for buffered results. This implement
 only the transaction portion of A4; broader capabilities, normalized/native
 contracts and fake-backend orchestration acceptance remain open. Batch 8's
 full local validation evidence is recorded in PG_BETA_CHECKLIST.md.
+
+## A4 advertised backend profile — batch 9
+
+`BackendCapabilities` is a no-I/O snapshot with backend-neutral enums, feature
+flags and names. Its string views remain valid for the connection lifetime.
+PostgreSQL owns its database identity, identifier limits/casing/quoting, catalog
+terms, NULL/concatenation rules, GROUP BY/correlation rules, SQL conformance,
+index/insert/set-operation flags and schema usage. Shared SQLGetInfo maps that
+snapshot to ODBC values and retains ANSI/wide output, truncation and diagnostics.
+Generic backends return a conservative empty profile rather than PostgreSQL
+claims. The legacy Redshift build name is preserved in the PostgreSQL-family
+backend without adding any unverified Redshift capability differences.
+
+The shared layer still owns Driver Manager/driver identity, interface conformance,
+forward-only/read-only buffered cursors, multiple result delivery, scalar binding,
+get-data order and lack of async/array/bookmark support. Zero SQL feature masks
+remain conservative unadvertised features of the exposed driver profile; they do
+not claim the server lacks those features. Empty keyword/collation strings and
+zero unspecified limits remain unchanged. Accessible-object flags do not promise
+all returned objects are authorized. New backend support must review this exposed
+profile alongside its backend-specific values before advertising additional SQL.
+
+This completes this batch's capability routing, not A4/G9a. Next: explicitly
+review/document native versus normalized result/parameter representations,
+error/SQLSTATE and connection reuse/retirement contracts; exercise a differing
+fake backend through shared ODBC orchestration (including these capabilities),
+then close architecture acceptance only after the dependency review and gates.

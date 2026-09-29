@@ -238,6 +238,7 @@ public:
   }
   
   std::span<const rs::core::database::TypeDefinition> type_catalog() const;
+  rs::core::database::BackendCapabilities capabilities() const;
   rs::core::database::TransactionCapabilities transaction_capabilities() const;
 
   rs::core::database::IDatabaseConnection* get_db_connection() { return db_conn_.get(); }

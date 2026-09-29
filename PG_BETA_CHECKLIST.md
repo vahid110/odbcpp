@@ -367,3 +367,21 @@ SQL_DRIVER_ODBC_VER before backend connection (ANSI and wide), while retaining
 preconnection rejection for session/database information. Two regression cases
 exercise version output and buffer validation. All four full local gates pass
 again with 787 GoogleTest cases each and zero skips; Windows confirmation follows.
+
+## Batch 9 — A4 advertised backend capabilities
+
+Backend-neutral capability snapshots now supply SQLGetInfo's database identity,
+identifier rules/limits, SQL and schema feature claims, terminology and NULL rules.
+PostgreSQL owns the values; generic backends inherit no PostgreSQL feature claims.
+Shared ODBC output and conservative unsupported-driver masks remain unchanged.
+Two backend cases cover metadata without I/O and empty/unsupported profiles;
+two live cases verify quoted identifier boundaries and NULL/set-operation semantics.
+Existing A/W metadata, truncation, invalid input and numeric-width tests remain.
+
+Focused native-type, attribute and live GetInfo suites pass. All four complete
+local gates pass: 36 executables, 791 GoogleTest cases each, zero skips; macOS
+ASan/UBSan runs with the documented leak-detection limitation. The completion
+report records the ensuing CI run, including mandatory Windows live tests.
+A4/G9a remain open for normalized/native result, error/deadline/lifetime contract
+review and a differing fake backend through shared ODBC orchestration. W1–W4
+follow architecture closure and precede final Windows application acceptance.

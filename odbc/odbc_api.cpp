@@ -273,46 +273,48 @@ namespace {
         handle.get(), value, length, output, function_name);
   }
 
+  template <typename Enum, std::size_t N>
+  SQLUSMALLINT backend_enum_value(Enum value, const std::array<SQLUSMALLINT, N>& mapping) {
+    const auto index = static_cast<std::size_t>(value);
+    return index < N ? mapping[index] : mapping[0];
+  }
+
   std::optional<std::string_view> string_info_value(
-      SQLUSMALLINT info_type) {
+      SQLUSMALLINT info_type,
+      const rs::core::database::BackendCapabilities& backend) {
     switch (info_type) {
       case SQL_DRIVER_NAME: return "ODBCPP Driver";
       case SQL_DRIVER_VER: return "01.00.0000";
       case SQL_DRIVER_ODBC_VER:
       case SQL_ODBC_VER: return "03.80";
-      case SQL_DBMS_NAME:
-#ifdef ODBCPP_ENABLE_REDSHIFT
-        return "Amazon Redshift";
-#else
-        return "PostgreSQL";
-#endif
-      case SQL_IDENTIFIER_QUOTE_CHAR: return "\"";
-      case SQL_CATALOG_NAME_SEPARATOR: return ".";
-      case SQL_CATALOG_TERM: return "database";
-      case SQL_SCHEMA_TERM: return "schema";
-      case SQL_TABLE_TERM: return "table";
-      case SQL_PROCEDURE_TERM: return "procedure";
-      case SQL_SEARCH_PATTERN_ESCAPE: return "\\";
+      case SQL_DBMS_NAME: return backend.dbms_name;
+      case SQL_IDENTIFIER_QUOTE_CHAR: return backend.identifier_quote;
+      case SQL_CATALOG_NAME_SEPARATOR: return backend.catalog_separator;
+      case SQL_CATALOG_TERM: return backend.catalog_term;
+      case SQL_SCHEMA_TERM: return backend.schema_term;
+      case SQL_TABLE_TERM: return backend.table_term;
+      case SQL_PROCEDURE_TERM: return backend.procedure_term;
+      case SQL_SEARCH_PATTERN_ESCAPE: return backend.pattern_escape;
       case SQL_COLLATION_SEQ:
       case SQL_KEYWORDS:
       case SQL_SPECIAL_CHARACTERS: return "";
       case SQL_XOPEN_CLI_YEAR: return "1995";
-      case SQL_CATALOG_NAME:
-      case SQL_COLUMN_ALIAS:
-      case SQL_DESCRIBE_PARAMETER:
-      case SQL_EXPRESSIONS_IN_ORDERBY:
-      case SQL_INTEGRITY:
-      case SQL_LIKE_ESCAPE_CLAUSE:
-      case SQL_MULT_RESULT_SETS:
-      case SQL_OUTER_JOINS:
-      case SQL_PROCEDURES: return "Y";
+      case SQL_CATALOG_NAME: return backend.catalog_names ? "Y" : "N";
+      case SQL_COLUMN_ALIAS: return backend.column_aliases ? "Y" : "N";
+      case SQL_DESCRIBE_PARAMETER: return backend.describe_parameters ? "Y" : "N";
+      case SQL_EXPRESSIONS_IN_ORDERBY: return backend.order_by_expressions ? "Y" : "N";
+      case SQL_INTEGRITY: return backend.integrity ? "Y" : "N";
+      case SQL_LIKE_ESCAPE_CLAUSE: return backend.like_escape ? "Y" : "N";
+      case SQL_OUTER_JOINS: return backend.outer_joins ? "Y" : "N";
+      case SQL_PROCEDURES: return backend.procedures ? "Y" : "N";
+      case SQL_MULT_RESULT_SETS: return "Y";
+      case SQL_DATA_SOURCE_READ_ONLY: return backend.read_only ? "Y" : "N";
+      case SQL_ORDER_BY_COLUMNS_IN_SELECT: return backend.order_by_requires_select ? "Y" : "N";
       case SQL_ACCESSIBLE_TABLES:
       case SQL_ACCESSIBLE_PROCEDURES:
-      case SQL_DATA_SOURCE_READ_ONLY:
       case SQL_MAX_ROW_SIZE_INCLUDES_LONG:
       case SQL_MULTIPLE_ACTIVE_TXN:
       case SQL_NEED_LONG_DATA_LEN:
-      case SQL_ORDER_BY_COLUMNS_IN_SELECT:
       case SQL_ROW_UPDATES: return "N";
       default: return std::nullopt;
     }
@@ -1482,7 +1484,7 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
         "Driver information was truncated");
   }
 
-  if (const auto value = string_info_value(info_type)) {
+  if (const auto value = string_info_value(info_type, conn->capabilities())) {
     return write_narrow_output(
         conn, *value, static_cast<SQLCHAR*>(info_value), buffer_length,
         string_length, "Driver information was truncated");
@@ -1517,6 +1519,7 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     return SQL_SUCCESS;
   };
   
+  const auto backend = conn->capabilities();
   switch (info_type) {
     case SQL_ACTIVE_ENVIRONMENTS:
     case SQL_MAX_CONCURRENT_ACTIVITIES:
@@ -1553,7 +1556,7 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_MAX_CATALOG_NAME_LEN:
     case SQL_MAX_PROCEDURE_NAME_LEN:
     case SQL_MAX_USER_NAME_LEN:
-      return write_usmallint(63);
+      return write_usmallint(backend.max_identifier_length);
     case SQL_MAX_COLUMNS_IN_GROUP_BY:
     case SQL_MAX_COLUMNS_IN_INDEX:
     case SQL_MAX_COLUMNS_IN_ORDER_BY:
@@ -1563,27 +1566,32 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_MAX_TABLES_IN_SELECT:
       return write_usmallint(0);
     case SQL_IDENTIFIER_CASE:
-      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_IC_LOWER));
+      return write_usmallint(backend_enum_value(backend.identifier_case,
+          std::array<SQLUSMALLINT, 4>{SQL_IC_SENSITIVE, SQL_IC_UPPER, SQL_IC_LOWER, SQL_IC_MIXED}));
     case SQL_QUOTED_IDENTIFIER_CASE:
-      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_IC_SENSITIVE));
+      return write_usmallint(backend_enum_value(backend.quoted_identifier_case,
+          std::array<SQLUSMALLINT, 4>{SQL_IC_SENSITIVE, SQL_IC_UPPER, SQL_IC_LOWER, SQL_IC_MIXED}));
     case SQL_CATALOG_LOCATION:
-      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_CL_START));
+      return write_usmallint(static_cast<SQLUSMALLINT>(backend.catalog_at_start ? SQL_CL_START : SQL_CL_END));
     case SQL_NULL_COLLATION:
-      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_NC_HIGH));
+      return write_usmallint(backend_enum_value(backend.null_collation,
+          std::array<SQLUSMALLINT, 4>{SQL_NC_HIGH, SQL_NC_LOW, SQL_NC_START, SQL_NC_END}));
     case SQL_CONCAT_NULL_BEHAVIOR:
-      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_CB_NULL));
+      return write_usmallint(static_cast<SQLUSMALLINT>(backend.concat_null_yields_null ? SQL_CB_NULL : SQL_CB_NON_NULL));
     case SQL_NON_NULLABLE_COLUMNS:
-      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_NNC_NON_NULL));
+      return write_usmallint(static_cast<SQLUSMALLINT>(backend.non_nullable_columns ? SQL_NNC_NON_NULL : SQL_NNC_NULL));
     case SQL_CORRELATION_NAME:
-      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_CN_ANY));
+      return write_usmallint(backend_enum_value(backend.correlation_names,
+          std::array<SQLUSMALLINT, 3>{SQL_CN_NONE, SQL_CN_DIFFERENT, SQL_CN_ANY}));
     case SQL_GROUP_BY:
-      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_GB_NO_RELATION));
+      return write_usmallint(backend_enum_value(backend.group_by,
+          std::array<SQLUSMALLINT, 4>{SQL_GB_NOT_SUPPORTED, SQL_GB_GROUP_BY_EQUALS_SELECT, SQL_GB_GROUP_BY_CONTAINS_SELECT, SQL_GB_NO_RELATION}));
     case SQL_ODBC_API_CONFORMANCE:
       return write_usmallint(static_cast<SQLUSMALLINT>(SQL_OAC_LEVEL1));
     case SQL_ODBC_SAG_CLI_CONFORMANCE:
       return write_usmallint(static_cast<SQLUSMALLINT>(SQL_OSCC_COMPLIANT));
     case SQL_ODBC_SQL_CONFORMANCE:
-      return write_usmallint(static_cast<SQLUSMALLINT>(SQL_OSC_CORE));
+      return write_usmallint(static_cast<SQLUSMALLINT>(backend.sql92_entry ? SQL_OSC_CORE : SQL_OSC_MINIMUM));
     case SQL_SCROLL_OPTIONS:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_SO_FORWARD_ONLY));
     case SQL_GETDATA_EXTENSIONS:
@@ -1683,7 +1691,8 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
       return write_uinteger(0);
     case SQL_DDL_INDEX:
       return write_uinteger(static_cast<SQLUINTEGER>(
-          SQL_DI_CREATE_INDEX | SQL_DI_DROP_INDEX));
+          (backend.create_index ? SQL_DI_CREATE_INDEX : 0) |
+          (backend.drop_index ? SQL_DI_DROP_INDEX : 0)));
     case SQL_FETCH_DIRECTION:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_FD_FETCH_NEXT));
     case SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES1:
@@ -1701,18 +1710,20 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_SCCO_READ_ONLY));
     case SQL_INSERT_STATEMENT:
       return write_uinteger(static_cast<SQLUINTEGER>(
-          SQL_IS_INSERT_LITERALS | SQL_IS_INSERT_SEARCHED |
-          SQL_IS_SELECT_INTO));
+          (backend.insert_literals ? SQL_IS_INSERT_LITERALS : 0) |
+          (backend.insert_searched ? SQL_IS_INSERT_SEARCHED : 0) |
+          (backend.select_into ? SQL_IS_SELECT_INTO : 0)));
     case SQL_ODBC_INTERFACE_CONFORMANCE:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_OIC_CORE));
     case SQL_SQL_CONFORMANCE:
-      return write_uinteger(static_cast<SQLUINTEGER>(SQL_SC_SQL92_ENTRY));
+      return write_uinteger(static_cast<SQLUINTEGER>(backend.sql92_entry ? SQL_SC_SQL92_ENTRY : 0));
     case SQL_STANDARD_CLI_CONFORMANCE:
       return write_uinteger(
           static_cast<SQLUINTEGER>(SQL_SCC_XOPEN_CLI_VERSION1));
     case SQL_UNION:
       return write_uinteger(static_cast<SQLUINTEGER>(
-          SQL_U_UNION | SQL_U_UNION_ALL));
+          (backend.union_distinct ? SQL_U_UNION : 0) |
+          (backend.union_all ? SQL_U_UNION_ALL : 0)));
 #ifdef SQL_ASYNC_DBC_FUNCTIONS
     case SQL_ASYNC_DBC_FUNCTIONS:
       return write_uinteger(
@@ -1734,9 +1745,11 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
       return write_uinteger(0);
     case SQL_SCHEMA_USAGE:
       return write_uinteger(static_cast<SQLUINTEGER>(
-          SQL_SU_DML_STATEMENTS | SQL_SU_PROCEDURE_INVOCATION |
-          SQL_SU_TABLE_DEFINITION | SQL_SU_INDEX_DEFINITION |
-          SQL_SU_PRIVILEGE_DEFINITION));
+          (backend.schema_in_dml ? SQL_SU_DML_STATEMENTS : 0) |
+          (backend.schema_in_procedures ? SQL_SU_PROCEDURE_INVOCATION : 0) |
+          (backend.schema_in_table_definitions ? SQL_SU_TABLE_DEFINITION : 0) |
+          (backend.schema_in_index_definitions ? SQL_SU_INDEX_DEFINITION : 0) |
+          (backend.schema_in_privileges ? SQL_SU_PRIVILEGE_DEFINITION : 0)));
     default:
       conn->set_error(SQLSTATE_INVALID_INFORMATION_TYPE,
                       "Unsupported SQLGetInfo type");
@@ -1763,7 +1776,7 @@ static SQLRETURN SQLGetInfoW_impl(SQLHDBC connection_handle, SQLUSMALLINT info_t
         static_cast<SQLWCHAR*>(info_value), buffer_length, string_length,
         "Driver information was truncated");
   }
-  if (const auto value = string_info_value(info_type)) {
+  if (const auto value = string_info_value(info_type, conn->capabilities())) {
     return write_wide_bytes_output(
         conn, *value, static_cast<SQLWCHAR*>(info_value),
         buffer_length, string_length, "Driver information was truncated");

@@ -557,4 +557,41 @@ TEST_F(GetInfoIntegrationTest, FunctionSupportHandlesUnalignedOutput) {
   EXPECT_EQ(previous_single, single_storage);
 }
 
+
+TEST_F(GetInfoIntegrationTest, IdentifierProfileMatchesQuotedBoundaryNames) {
+  SQLUSMALLINT limit = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, SQL_MAX_IDENTIFIER_LEN,
+      &limit, sizeof(limit), nullptr));
+  ASSERT_EQ(63, limit);
+  const std::string name = "MiXeD_" + std::string(limit - 6, 'x');
+  const auto quote = string_info(SQL_IDENTIFIER_QUOTE_CHAR);
+  ASSERT_EQ("\"", quote);
+  execute("CREATE TEMP TABLE " + quote + name + quote + " (UnQuoted integer, \"MiXeD\" integer)");
+  execute("INSERT INTO " + quote + name + quote + " (unquoted, \"MiXeD\") VALUES (1, 2)");
+  execute("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM " + quote + name + quote +
+      " WHERE unquoted = 1 AND \"MiXeD\" = 2) THEN RAISE EXCEPTION 'identifier mismatch'; END IF; END $$");
+  execute("DROP TABLE " + quote + name + quote);
+}
+
+TEST_F(GetInfoIntegrationTest, NullAndSetOperationClaimsMatchServerSemantics) {
+  SQLUSMALLINT null_order = 0, concat = 0;
+  SQLUINTEGER unions = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, SQL_NULL_COLLATION,
+      &null_order, sizeof(null_order), nullptr));
+  ASSERT_EQ(SQL_NC_HIGH, null_order);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, SQL_CONCAT_NULL_BEHAVIOR,
+      &concat, sizeof(concat), nullptr));
+  ASSERT_EQ(SQL_CB_NULL, concat);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, SQL_UNION,
+      &unions, sizeof(unions), nullptr));
+  ASSERT_EQ(static_cast<SQLUINTEGER>(SQL_U_UNION | SQL_U_UNION_ALL), unions);
+  execute("DO $$ BEGIN "
+      "IF ('value'::text || NULL::text) IS NOT NULL THEN RAISE EXCEPTION 'concat mismatch'; END IF; "
+      "IF (SELECT v FROM (VALUES (NULL::integer), (7)) AS t(v) ORDER BY v DESC LIMIT 1) IS NOT NULL "
+      "THEN RAISE EXCEPTION 'NULL ordering mismatch'; END IF; "
+      "IF (SELECT count(*) FROM (SELECT NULL::integer UNION SELECT NULL::integer) t) <> 1 "
+      "OR (SELECT count(*) FROM (SELECT NULL::integer UNION ALL SELECT NULL::integer) t) <> 2 "
+      "THEN RAISE EXCEPTION 'set operation mismatch'; END IF; END $$");
+}
+
 }  // namespace
