@@ -1,7 +1,8 @@
 # Shared ODBC and database backend boundary
 
 Planning baseline: 2026-09-23, implementation inspected at `4f6de2a`.
-Status: architecture acceptance remains open; incremental progress is recorded below.
+Status: A1–A4 implementation and acceptance cases complete in batch 12;
+G9a closure requires that batch's full gates and exact-revision CI confirmation.
 Scope: PostgreSQL first, Redshift second. No other backend is added here.
 
 ## Requirement and ownership
@@ -350,3 +351,67 @@ remaining-work inventory is superseded for those two items. A4/G9a remains open
 for result-side bytea/boolean representations, remaining conversion dependencies,
 and differing fake-backend acceptance through shared ODBC orchestration. These
 remain PostgreSQL-stage work; no Redshift compatibility claim is added.
+
+## A4 final acceptance — batch 12
+
+A1–A4 implementation and the required acceptance cases are complete. G9a closes
+when this revision's full regression gates and CI pass; record the exact CI run
+in the completion report before starting W1. Earlier open-item inventories are
+historical and are superseded by this review.
+
+`normalize_result_value` is the final native-value boundary. It is a pure,
+no-I/O conversion of one non-NULL cell to an owned common value: raw bytes for
+Binary, "0"/"1" for Boolean, unchanged text for other scalar families. nullopt
+means invalid encoding, never SQL NULL. PostgreSQL owns hexadecimal/legacy bytea
+and boolean text interpretation; the generic normalized profile has no PostgreSQL
+escape rules. Shared bound-column and SQLGetData paths invoke that contract after
+metadata resolution, retain diagnostics/truncation/chunking/NULL/output ownership,
+and never interpret native encodings themselves. The text converter's binary
+path now copies normalized bytes. Character-to-bit accepted literals remain
+common application conversion rules, not native SQL_BIT result decoding.
+
+The per-ODBCConnection factory is an internal selection seam. Its default still
+uses DatabaseFactory and the configured transport. The same selected factory
+supplies prelogin metadata and login/reconnect sessions, without a global testing
+switch. It must transfer or release the transport and return a backend; input
+views cannot outlive their synchronous call. Metadata views live as long as their
+IDatabaseConnection object, not across replacement of that object on reconnect.
+
+`test_backend_contract` implements IDatabaseConnection directly without any
+PostgreSQL parser/session. Its deliberately different native IDs (23 is Binary,
+17 is Boolean), byte/boolean encodings, error states, SQL translation and capability
+profile exercise the real ODBC entry points and registry. Seven cases cover:
+
+- Selection before/after login, configured transport ownership, metadata and ANSI/
+  wide capabilities, empty capability strings, and unsupported catalogs/isolation/SQL.
+- Bound fetch, normalized metadata, NULL versus empty, binary and boolean output,
+  hexadecimal text output and chunked binary SQLGetData.
+- Native/deferred errors, invalid normalized SQLSTATE fallback, malformed values,
+  unchanged outputs on conversion errors, row status and recovery.
+- Raw prepared parameters and the caller's absolute deadline.
+- Timeout retirement/reconnect and network-failure liveness reporting.
+
+The empty capability profile also exercises the narrow-output zero-byte copy;
+that helper now avoids passing a null empty-view source to memcpy. Existing
+PostgreSQL/native-parser lifetime, malformed-wire, recovery, metadata, parameter,
+Driver Manager and sanitizer tests remain required. No existing regression gate
+is replaced by the fake backend. Legacy disconnected-statement diagnostics and
+other conformance gaps retain their existing audit/release scope; G9a is an
+architecture gate, not full ODBC conformance certification.
+
+### Final dependency review and boundary decision
+
+| Area | Reviewed ownership / evidence |
+|---|---|
+| Creation and dialect (A1/A2) | DatabaseFactory/per-connection selection; no PostgreSQL parser include in shared ODBC; marker/translation calls use the backend. Fake SQL translation dispatch is observed. |
+| Native IDs, domains, catalogs (A3) | Shared IDs remain opaque map keys; describe_type/resolve_types and TypeDefinition/CatalogRequest own interpretation/query construction. No PostgreSQL OID switch or pg_catalog SQL remains in shared ODBC. |
+| Capabilities, transactions and diagnostics (A4) | Neutral records/context and backend normalization; shared ODBC constants, fallbacks, handles and output validation remain shared. |
+| Result/parameter encodings and completions (A4) | Native cell decoding, binary Bind encoding and command-tag interpretation are backend-owned. Shared byte/bit conversions and normalized StatementKind mapping are database-independent. |
+| Lifetimes, deadlines, reuse (A4) | Owning QueryResult/QueryParameter and documented borrowed views; caller deadline propagation, backend liveness and timeout retirement are covered by existing and fake tests. |
+| Protocol internals | GenericDatabaseConnection/IProtocolParser still implement PostgreSQL-family framing/authentication below IDatabaseConnection. The direct fake proves shared ODBC does not require them; a universal protocol abstraction is not a G9a requirement. |
+| Product configuration | Compiled PostgreSQL identity, default endpoint/database values and PostgreSQL build adapters remain product defaults. They are not native query/type interpretation; explicit settings and a different backend are exercised. Runtime plugins and arbitrary-protocol packaging remain G12, as originally scoped. |
+
+No known required A1–A4 extraction is deferred to SDK packaging. G9b still requires
+real Redshift reuse/compatibility evidence. G12 still owns independent SDK packaging,
+examples and API stability. W1–W4 Windows DSN/configuration/GUI/installer work and
+G8 real-application acceptance remain necessary before PG-BETA.

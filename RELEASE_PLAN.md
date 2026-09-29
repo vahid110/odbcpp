@@ -301,3 +301,13 @@ not replaced indefinitely by new PostgreSQL edge-case permutations.
 The scheduler is paused and remains paused. On an explicitly authorized resume,
 use PostgreSQL G0 and PG-BETA first and stop at the agreed milestone. No automation is changed by
 this assessment. The new plan supersedes the old unbounded batch-selection policy.
+
+
+## Architecture checkpoint — batch 12
+
+A1–A4 implementation, the final dependency review and independent fake-backend
+ODBC acceptance are complete. Confirm batch 12's full regression evidence and
+exact-revision CI (including Windows live tests) to close G9a. The next work is
+W1–W4 under the existing estimates and checkpoints above, then G8 application
+acceptance before PG-BETA. This does not claim PostgreSQL beta, real Redshift
+compatibility or a packaged public SDK. No additional A4 feature work is planned.

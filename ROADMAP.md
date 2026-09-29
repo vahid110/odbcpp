@@ -131,3 +131,12 @@ range remains historical, not a revised completion forecast. Complete A4/G9a
 first; then W1/W2 before Windows applications, and W3/W4 before packaged G8
 acceptance. Redshift remains after PG-BETA. Broader installer polish and
 interactive connection prompts remain conditional, not part of these packages.
+
+
+### Architecture checkpoint — batch 12
+
+A1–A4 implementation and fake-backend acceptance are complete; the dependency
+review is recorded in BACKEND_BOUNDARY.md. Close G9a upon this batch's green full
+local gates and exact-revision CI. Next is Windows W1–W4, followed by G8 real
+applications. The application-host reminder is not due while Windows delivery
+work is still next. Redshift remains after PG-BETA; public SDK packaging remains G12.

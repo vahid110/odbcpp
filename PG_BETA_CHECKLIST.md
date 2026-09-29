@@ -37,7 +37,8 @@ Required W1–W4 in RELEASE_PLAN.md cover native registry DSNs, connection-strin
 interoperability, the minimal ODBC Administrator GUI and x64 beta installation.
 Subtotal 4.5–8 base days plus separate 30% contingency; replaces overlapping
 Windows delivery allowance and does not make the old M1 total a current forecast.
-A4/G9a is next. W1/W2 precede Windows application acceptance; W3/W4 and packaged
+A4/G9a implementation and acceptance coverage are complete in batch 12; confirm
+its exact-revision CI before proceeding to W1. W1/W2 precede Windows application acceptance; W3/W4 and packaged
 application reruns precede PG-BETA. Interactive SQLDriverConnect prompting stays
 out of the frozen scope unless a chosen application demonstrates a need.
 
@@ -428,3 +429,26 @@ five-job CI result for the pushed SHA, including Windows live integration.
 A4/G9a remains open for result-side binary/boolean conversion and differing fake
 backend acceptance. Binary parameter and native command-tag ownership extraction
 are implemented; no Redshift-specific behavior is introduced.
+
+## Batch 12 — A4 implementation and G9a acceptance complete
+
+PostgreSQL owns native binary/boolean result normalization. Shared ODBC consumes
+raw binary bytes and normalized bits for bound fetch and chunked SQLGetData.
+The independent fake backend uses different IDs, encodings, capabilities and
+errors through the real shared ODBC APIs; it covers backend selection, prepared
+parameters, NULL/empty results, errors/recovery, unsupported features, deadlines,
+retirement and reconnect. The final ownership/dependency review and its explicit
+boundary decisions are in BACKEND_BOUNDARY.md. A1–A4 have no remaining planned
+extraction items; exact-revision CI confirmation is the final G9a closure check.
+
+All eight focused suites passed. All four full local gates passed: 37 executables
+(27 unit, 10 integration), 811 GoogleTest cases each, zero skips. This includes
+the new seven-case fake-backend suite and backend codec regressions, without
+removing the existing PostgreSQL conversion, metadata, protocol or lifetime gates.
+ASan/UBSan uses the documented macOS leak setting; Linux CI retains leak coverage.
+The completion report must identify the green five-job CI run for the pushed
+revision, including Windows live PostgreSQL/Driver Manager coverage.
+
+After that confirmation, G9a is closed and W1 native Windows DSNs is next.
+W2–W4 and G8 application acceptance still precede PG-BETA. Redshift G9b and public
+SDK G12 remain later milestones; this checkpoint does not certify either.

@@ -8,21 +8,20 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
 - Hosted Windows live gate added after batch 8: preinstalled PostgreSQL, native
   odbc32 Driver Manager and zero-skip integration enforcement. CI 36555245322
   passed at b5f9d0b: 365 live cases, zero skips plus standalone DM.
-  Complete A4/G9a next, then W1–W4 Windows configuration/delivery before final
+  After batch 12 CI confirms G9a, implement W1–W4 configuration/delivery before final
   G8 acceptance. See RELEASE_PLAN.md for scope, estimates and dependencies.
 
-- **Batch 11 implemented:** raw binary parameter contract and backend-owned
-  wire encoding; normalized completed-statement kinds replace shared native tag
-  interpretation. Full validation evidence is in PG_BETA_CHECKLIST.md.
-  Batch 10 CI 36561452003 passed all five jobs at 379084a.
-
+- **Batch 12 implements all remaining A4 work:** backend result normalization,
+  independent fake-backend acceptance through real ODBC APIs, and final dependency
+  review in BACKEND_BOUNDARY.md. Full validation evidence is in PG_BETA_CHECKLIST.md.
+  Batch 11 CI 36563755007 passed all five jobs at 72cbfd1.
 - Branch: `codex/transport-foundation`. Implementation scheduler stays paused.
-- A1/A2 and A3 extraction are implemented after batch 7. G9a is not closed.
-- Next: A4 result-side binary/boolean normalization and remaining conversion
-  dependencies, then a differing fake backend through shared ODBC orchestration.
-  Parameter encoding and native command-tag extraction are implemented. Preserve
-  binding/get-data, parameter and diagnostic tests; close G9a only after acceptance.
-  BACKEND_BOUNDARY.md records the reviewed lifetime/deadline/error contract.
+- A1–A4 implementation and G9a acceptance coverage are complete. Confirm the
+  batch 12 pushed revision's CI before treating G9a as closed. Do not reopen the
+  historical A4 inventories or add optional SDK work to this milestone.
+- Next after green CI: W1 native Windows User/System DSNs, then W2 connection
+  strings, W3 minimal ODBC Administrator GUI and W4 x64 installer. Preserve the
+  Windows plan's acceptance tests and effort boundaries. G8 applications follow.
 - PostgreSQL first; live Redshift validation comes later. Application-host
   reminder is not due until G8 acceptance is actionable.
 - Graphify was evaluated and declined. Use narrow `rg` searches and source reads.
@@ -44,7 +43,7 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
 
 ## Existing local gates (macOS)
 
-36 executables: 26 unit, 10 integration. Latest batch evidence is in
+37 executables: 27 unit, 10 integration. Latest batch evidence is in
 PG_BETA_CHECKLIST.md; inspect the CI run for the pushed SHA before declaring done.
 Preserve full gates and repair failures. Successful logs stay in /tmp.
 
