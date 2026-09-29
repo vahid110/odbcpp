@@ -30,7 +30,9 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
 - Batch 17 prepares truthful Redshift pilot evidence without starting a live
   compatibility claim: PostgreSQL builds exclude `it_redshift_real`; Redshift
   builds require an explicit TLS connection and reject non-Redshift identity.
-  A real endpoint plus schema/table fixture is still required to close G1.
+  The Redshift target's 28 unit executables run in CI, followed by a check that
+  the live pilot fails when no endpoint is supplied. A real endpoint plus
+  schema/table fixture is still required to close G1.
 - Graphify was evaluated and declined. Use narrow `rg` searches and source reads.
 
 ## Navigation

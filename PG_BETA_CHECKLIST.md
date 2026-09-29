@@ -551,3 +551,9 @@ message. All four complete PostgreSQL local gates passed: 37 executables (28 uni
 with the established macOS leak-detection limitation. The seven previously
 counted `it_redshift_real` cases were removed from PostgreSQL evidence; two new
 pilot cases compile only in the Redshift build.
+
+The selected capability-profile unit test now derives its expected DBMS identity
+from the compiled backend instead of hard-coding PostgreSQL. All 28 Redshift-build
+unit executables pass locally. CI builds the Redshift target, runs those unit
+tests and verifies that the real pilot cannot pass without endpoint configuration;
+it does not run or simulate live Redshift compatibility.

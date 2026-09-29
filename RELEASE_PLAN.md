@@ -390,3 +390,6 @@ TLS-enabled connection string and fixture schema/table, verifies the server's
 `version()` identifies Redshift, and exercises the bounded G1 query, prepared
 NULL/scalar, metadata and recovery flow. This prevents false evidence but does
 not close G1; execution still waits on a real user-supplied endpoint.
+The non-live Redshift target build and unit suite are now a normal CI gate, along
+with an expected-failure check for absent pilot configuration. This is compile
+and contract coverage only, not a substitute for the M2 endpoint run.

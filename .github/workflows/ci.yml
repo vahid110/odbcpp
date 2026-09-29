@@ -135,6 +135,42 @@ jobs:
           assert all("PWD=" not in line for line in path.read_text().splitlines())
           PY
 
+  redshift-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install deps
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+            /etc/apt/sources.list.d/google-chrome.sources
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev
+      - name: Configure Redshift target
+        run: >-
+          cmake -S . -B build-redshift
+          -DBUILD_EXAMPLES=OFF
+          -DBUILD_TESTING=ON
+          -DTARGET_DATABASE=REDSHIFT
+          -DOPENSSL_USE_STATIC_LIBS=OFF
+          -DODBC_DRIVER_MANAGER_FLAVOR=UNIXODBC
+          -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2
+          -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
+          -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build-redshift --parallel
+      - name: Run Redshift unit tests
+        run: ctest --test-dir build-redshift -L unit --output-on-failure
+      - name: Verify real Redshift pilot rejects absent endpoint
+        run: |
+          if ctest --test-dir build-redshift -R '^it_redshift_real$' \
+              --output-on-failure > "$RUNNER_TEMP/redshift-missing-endpoint.log" 2>&1; then
+            cat "$RUNNER_TEMP/redshift-missing-endpoint.log"
+            echo "Real Redshift pilot unexpectedly passed without an endpoint" >&2
+            exit 1
+          fi
+          grep -q 'ODBCPP_REDSHIFT_TEST_CONNECTION is required' \
+            "$RUNNER_TEMP/redshift-missing-endpoint.log"
+
   windows-live:
     runs-on: windows-2025
 

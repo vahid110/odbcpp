@@ -272,10 +272,14 @@ TEST(TypeCatalogTest, GenericBackendDoesNotAdvertisePostgresTypes) {
   EXPECT_FALSE(backend.is_connected());
 }
 
-TEST(BackendCapabilitiesTest, PostgresProfileIsAvailableWithoutIo) {
+TEST(BackendCapabilitiesTest, SelectedBackendProfileIsAvailableWithoutIo) {
   auto backend = DatabaseFactory::create_connection();
   const auto profile = backend->capabilities();
-  EXPECT_EQ("PostgreSQL", profile.dbms_name);
+  const auto expected_name =
+      DatabaseFactory::get_compiled_database_type() == DatabaseType::Redshift
+          ? "Amazon Redshift"
+          : "PostgreSQL";
+  EXPECT_EQ(expected_name, profile.dbms_name);
   EXPECT_EQ(63, profile.max_identifier_length);
   EXPECT_EQ(IdentifierCase::Lower, profile.identifier_case);
   EXPECT_EQ(IdentifierCase::Sensitive, profile.quoted_identifier_case);
@@ -287,7 +291,7 @@ TEST(BackendCapabilitiesTest, PostgresProfileIsAvailableWithoutIo) {
   EXPECT_FALSE(profile.order_by_requires_select);
   EXPECT_FALSE(profile.read_only);
   backend->disconnect();
-  EXPECT_EQ("PostgreSQL", profile.dbms_name);
+  EXPECT_EQ(expected_name, profile.dbms_name);
   EXPECT_EQ(profile.identifier_quote, backend->capabilities().identifier_quote);
   EXPECT_FALSE(backend->is_connected());
 }
