@@ -377,3 +377,43 @@ TEST(BinaryParameterContractTest, PlainHexRoundTripsAllOctetsAndRejectsNativeEsc
     EXPECT_FALSE(rs::util::decode_hex(invalid));
   }
 }
+
+TEST(BackendValueTest, PostgresNormalizesHexLegacyAndBooleanWithoutIo) {
+  postgres::PgDatabaseConnection backend;
+  const auto binary = [&](std::string_view text) {
+    return backend.normalize_result_value(ScalarType::Binary, text);
+  };
+  EXPECT_EQ(std::optional<std::string>(std::string("\0\1\x7f\xff", 4)), binary("\\x00017fFF"));
+  EXPECT_EQ(std::optional<std::string>(std::string("A\\B\0", 4)), binary("A\\\\B\\000"));
+  EXPECT_EQ(std::optional<std::string>(""), binary("\\x"));
+  EXPECT_EQ(std::optional<std::string>(""), binary(""));
+  for (const auto invalid : {"\\x123", "\\xzz", "\\", "\\12", "\\400", "\\08a"}) {
+    EXPECT_FALSE(binary(invalid));
+  }
+  for (const auto text : {"t", "true", "1"})
+    EXPECT_EQ(std::optional<std::string>("1"), backend.normalize_result_value(ScalarType::Boolean, text));
+  for (const auto text : {"f", "false", "0"})
+    EXPECT_EQ(std::optional<std::string>("0"), backend.normalize_result_value(ScalarType::Boolean, text));
+  for (const auto text : {"", "yes", "2", "TRUE", " t"})
+    EXPECT_FALSE(backend.normalize_result_value(ScalarType::Boolean, text));
+  EXPECT_EQ(std::optional<std::string>("\\x00"), backend.normalize_result_value(ScalarType::VarChar, "\\x00"));
+  std::string all_bytes, legacy;
+  for (int i = 0; i < 256; ++i) {
+    all_bytes.push_back(static_cast<char>(i));
+    legacy.push_back('\\');
+    legacy.push_back(static_cast<char>('0' + i / 64));
+    legacy.push_back(static_cast<char>('0' + (i / 8) % 8));
+    legacy.push_back(static_cast<char>('0' + i % 8));
+  }
+  EXPECT_EQ(std::optional<std::string>(all_bytes), binary(legacy));
+  EXPECT_FALSE(backend.is_connected());
+}
+
+TEST(BackendValueTest, GenericBackendUsesNormalizedBytesAndStrictBoolean) {
+  GenericDatabaseConnection backend(std::make_unique<odbcpp::test::MockProtocolParser>());
+  EXPECT_EQ(std::optional<std::string>("\\x00"), backend.normalize_result_value(ScalarType::Binary, "\\x00"));
+  EXPECT_EQ(std::optional<std::string>(std::string("\0\xff", 2)),
+            backend.normalize_result_value(ScalarType::Binary, std::string("\0\xff", 2)));
+  EXPECT_EQ(std::optional<std::string>("0"), backend.normalize_result_value(ScalarType::Boolean, "0"));
+  EXPECT_FALSE(backend.normalize_result_value(ScalarType::Boolean, "f"));
+}

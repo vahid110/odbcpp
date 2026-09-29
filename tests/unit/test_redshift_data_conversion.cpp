@@ -961,35 +961,22 @@ TEST_F(RedshiftDataConverterTest, NumericTextToBitUsesExactRange) {
     EXPECT_EQ(rs::odbc::ConversionIssue::InvalidCharacterValue, issue);
 }
 
-TEST_F(RedshiftDataConverterTest, ConvertsPostgresqlByteaText) {
+TEST_F(RedshiftDataConverterTest, CopiesNormalizedBinaryWithoutNativeEscapeRules) {
+    const std::string raw("\0\1\x7f\xff", 4);
     unsigned char binary[4]{};
     EXPECT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
-        "\\x00017fFF", SQL_C_BINARY, binary, sizeof(binary), &indicator));
+        raw, SQL_C_BINARY, binary, sizeof(binary), &indicator));
     EXPECT_EQ(4, indicator);
-    EXPECT_EQ(0x00, binary[0]);
-    EXPECT_EQ(0x01, binary[1]);
-    EXPECT_EQ(0x7f, binary[2]);
-    EXPECT_EQ(0xff, binary[3]);
-
-    unsigned char truncated[2]{};
+    EXPECT_EQ(0, std::memcmp(raw.data(), binary, 4));
     EXPECT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
-        "\\x00017fff", SQL_C_BINARY, truncated, sizeof(truncated), &indicator));
+        raw, SQL_C_BINARY, binary, 2, &indicator));
     EXPECT_EQ(4, indicator);
-    EXPECT_EQ(0x00, truncated[0]);
-    EXPECT_EQ(0x01, truncated[1]);
-
-    const auto escaped = RedshiftDataConverter::decode_binary("A\\\\B\\000");
-    ASSERT_TRUE(escaped.has_value());
-    ASSERT_EQ(4u, escaped->size());
-    EXPECT_EQ(std::byte{'A'}, (*escaped)[0]);
-    EXPECT_EQ(std::byte{'\\'}, (*escaped)[1]);
-    EXPECT_EQ(std::byte{'B'}, (*escaped)[2]);
-    EXPECT_EQ(std::byte{0}, (*escaped)[3]);
-    EXPECT_FALSE(RedshiftDataConverter::decode_binary("\\x123").has_value());
-
-    const std::byte source[]{
-        std::byte{0}, std::byte{1}, std::byte{0x7f}, std::byte{0xff}};
-    EXPECT_EQ("\\x00017fff", RedshiftDataConverter::encode_binary(source));
+    EXPECT_EQ(0, binary[0]);
+    EXPECT_EQ(1, binary[1]);
+    const std::string literal = "\\x00";
+    EXPECT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        literal, SQL_C_BINARY, binary, sizeof(binary), &indicator));
+    EXPECT_EQ(0, std::memcmp(literal.data(), binary, 4));
 }
 
 TEST(ResultTypesTest, ProvidesMetadataDrivenDefaults) {

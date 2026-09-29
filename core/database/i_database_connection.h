@@ -56,6 +56,12 @@ public:
   virtual NativeTypeInfo describe_type(std::uint32_t id, std::int16_t size,
                                        std::int32_t modifier) const = 0;
   
+  // Pure, owning conversion of a non-NULL native cell. Binary becomes raw bytes;
+  // Boolean becomes "0"/"1"; other text is preserved. nullopt means malformed
+  // encoding, not SQL NULL. No I/O, state mutation or session retirement.
+  virtual std::optional<std::string> normalize_result_value(
+      ScalarType type, std::string_view value) const = 0;
+
   // Construct backend SQL without I/O; execution retains the caller's normal
   // deadline, diagnostics and cursor handling. Unsupported catalogs return an error.
   virtual rs::util::Result<std::string> catalog_query(

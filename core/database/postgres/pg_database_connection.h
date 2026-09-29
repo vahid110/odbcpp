@@ -15,6 +15,9 @@ public:
 
   std::span<const TypeDefinition> type_catalog() const override;
 
+  std::optional<std::string> normalize_result_value(
+      ScalarType type, std::string_view value) const override;
+
   BackendCapabilities capabilities() const override;
 
   std::optional<std::string> normalize_error_sqlstate(

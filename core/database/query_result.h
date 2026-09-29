@@ -26,8 +26,8 @@ struct ResultColumnMetadata {
 };
 
 // Owning bytes: nullopt is SQL NULL; an engaged empty string is a non-NULL empty
-// value. Current PostgreSQL results use text format, including native bytea and
-// boolean representations (normalization of those remains an A4 work item).
+// value. Backend cell bytes remain opaque until normalize_result_value converts
+// binary/boolean values to raw bytes or "0"/"1" for shared ODBC conversion.
 using ResultCell = std::optional<std::string>;
 using ResultRow = std::vector<ResultCell>;
 using ResultRows = std::vector<ResultRow>;

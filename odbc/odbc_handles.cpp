@@ -175,12 +175,6 @@ std::optional<DecimalDigits> decimal_digits(std::string_view text) {
       fractional_digits};
 }
 
-std::optional<std::string> binary_result_as_hex(std::string_view value) {
-  const auto decoded = TextDataConverter::decode_binary(value);
-  if (!decoded) return std::nullopt;
-  return TextDataConverter::encode_binary(
-      std::span<const std::byte>(decoded->data(), decoded->size())).substr(2);
-}
 
 bool is_character_sql_type(SQLSMALLINT sql_type) {
   switch (sql_type) {
@@ -247,8 +241,8 @@ SQLRETURN convert_character_result_to_binary(std::string_view value,
 }
 
 std::optional<std::string> bit_result_as_text(std::string_view value) {
-  if (value == "t" || value == "true" || value == "1") return "1";
-  if (value == "f" || value == "false" || value == "0") return "0";
+  if (value == "1") return "1";
+  if (value == "0") return "0";
   return std::nullopt;
 }
 
@@ -2894,6 +2888,21 @@ SQLRETURN ODBCStatement::fetch() {
         continue;
       }
 
+      std::optional<std::string> normalized_cell;
+      if (sql_type == SQL_BIT || sql_type == SQL_BINARY ||
+          sql_type == SQL_VARBINARY || sql_type == SQL_LONGVARBINARY) {
+        normalized_cell = conn_->get_db_connection()->normalize_result_value(
+            sql_type == SQL_BIT ? rs::core::database::ScalarType::Boolean
+                                 : rs::core::database::ScalarType::Binary, *cell);
+        if (!normalized_cell) {
+          set_error(SQLSTATE_INVALID_CHARACTER_VALUE, "Invalid backend result encoding");
+          if (row_status) store_application_value(
+              row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
+          return SQL_ERROR;
+        }
+      }
+      const auto& value = normalized_cell ? *normalized_cell : *cell;
+
       const bool binary_as_text =
           (sql_type == SQL_BINARY || sql_type == SQL_VARBINARY ||
            sql_type == SQL_LONGVARBINARY) &&
@@ -2902,21 +2911,12 @@ SQLRETURN ODBCStatement::fetch() {
           bit_uses_decimal_representation(target_type);
       std::optional<std::string> formatted_text;
       if (binary_as_text) {
-        formatted_text = binary_result_as_hex(*cell);
-        if (!formatted_text) {
-          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Binary result value has invalid PostgreSQL bytea encoding");
-          if (row_status) {
-            store_application_value(
-                row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
-          }
-          return SQL_ERROR;
-        }
+        formatted_text = rs::util::encode_hex(value);
       } else if (bit_as_text) {
-        formatted_text = bit_result_as_text(*cell);
+        formatted_text = bit_result_as_text(value);
         if (!formatted_text) {
           set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Bit result value has invalid PostgreSQL encoding");
+                    "Invalid normalized boolean result");
           if (row_status) {
             store_application_value(
                 row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
@@ -2924,7 +2924,7 @@ SQLRETURN ODBCStatement::fetch() {
           return SQL_ERROR;
         }
       }
-      const auto& conversion_value = formatted_text ? *formatted_text : *cell;
+      const auto& conversion_value = formatted_text ? *formatted_text : value;
       SQLLEN conversion_length = binding.octet_length;
       if (!value_preserving_character_buffer_fits(
               sql_type, target_type, conversion_value, conversion_length)) {
@@ -2967,12 +2967,12 @@ SQLRETURN ODBCStatement::fetch() {
       SQLRETURN conv_result;
       if (sql_type == SQL_BIT && target_type == SQL_C_BINARY) {
         conv_result = convert_bit_result_to_binary(
-            *cell, binding.data_ptr, conversion_length, output_length,
+            value, binding.data_ptr, conversion_length, output_length,
             &conversion_issue);
       } else if (is_character_sql_type(sql_type) &&
                  target_type == SQL_C_BINARY) {
         conv_result = convert_character_result_to_binary(
-            *cell, binding.data_ptr, conversion_length, output_length);
+            value, binding.data_ptr, conversion_length, output_length);
       } else {
         conv_result = TextDataConverter::convert_data(
             conversion_value, target_type, binding.data_ptr,
@@ -3110,6 +3110,19 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     return SQL_SUCCESS;
   }
   
+  std::optional<std::string> normalized_cell;
+  if (sql_type == SQL_BIT || sql_type == SQL_BINARY ||
+      sql_type == SQL_VARBINARY || sql_type == SQL_LONGVARBINARY) {
+    normalized_cell = conn_->get_db_connection()->normalize_result_value(
+        sql_type == SQL_BIT ? rs::core::database::ScalarType::Boolean
+                             : rs::core::database::ScalarType::Binary, *cell);
+    if (!normalized_cell) {
+      set_error(SQLSTATE_INVALID_CHARACTER_VALUE, "Invalid backend result encoding");
+      return SQL_ERROR;
+    }
+  }
+  const auto& value = normalized_cell ? *normalized_cell : *cell;
+
   const bool binary_as_text =
       (sql_type == SQL_BINARY || sql_type == SQL_VARBINARY ||
        sql_type == SQL_LONGVARBINARY) &&
@@ -3119,17 +3132,12 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
       bit_uses_decimal_representation(effective_target_type);
   std::optional<std::string> formatted_text;
   if (binary_as_text) {
-    formatted_text = binary_result_as_hex(*cell);
-    if (!formatted_text) {
-      set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                "Binary result value has invalid PostgreSQL bytea encoding");
-      return SQL_ERROR;
-    }
+    formatted_text = rs::util::encode_hex(value);
   } else if (bit_as_text) {
-    formatted_text = bit_result_as_text(*cell);
+    formatted_text = bit_result_as_text(value);
     if (!formatted_text) {
       set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                "Bit result value has invalid PostgreSQL encoding");
+                "Invalid normalized boolean result");
       return SQL_ERROR;
     }
     if (effective_target_type == SQL_C_CHAR ||
@@ -3143,7 +3151,7 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
       }
     }
   }
-  const auto& character_cell = formatted_text ? *formatted_text : *cell;
+  const auto& character_cell = formatted_text ? *formatted_text : value;
   if (effective_target_type == SQL_C_NUMERIC &&
       (sql_type == SQL_REAL || sql_type == SQL_FLOAT ||
        sql_type == SQL_DOUBLE) &&
@@ -3249,25 +3257,13 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     if (sql_type == SQL_BIT) {
       ConversionIssue issue = ConversionIssue::None;
       const auto result = convert_bit_result_to_binary(
-          *cell, buffer, buffer_length, indicator, &issue);
+          value, buffer, buffer_length, indicator, &issue);
       set_conversion_diagnostic(*this, result, issue);
       if (result == SQL_SUCCESS) save_offset(complete);
       return result;
     }
-    std::optional<std::vector<std::byte>> decoded;
-    std::span<const std::byte> source;
-    if (is_character_sql_type(sql_type)) {
-      source = std::span<const std::byte>(
-          reinterpret_cast<const std::byte*>(cell->data()), cell->size());
-    } else {
-      decoded = TextDataConverter::decode_binary(*cell);
-      if (!decoded) {
-        set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                  "Binary result value has invalid PostgreSQL bytea encoding");
-        return SQL_ERROR;
-      }
-      source = std::span<const std::byte>(decoded->data(), decoded->size());
-    }
+    const std::span<const std::byte> source(
+        reinterpret_cast<const std::byte*>(value.data()), value.size());
     if (offset > source.size()) {
       set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
                 "SQLGetData target type changed during chunked retrieval");

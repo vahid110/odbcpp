@@ -32,10 +32,7 @@ public:
   static std::optional<std::string> format_numeric(
       const SQL_NUMERIC_STRUCT& numeric, SQLSMALLINT precision,
       SQLSMALLINT scale, ConversionIssue* issue = nullptr);
-  // PostgreSQL text-protocol representation, including hex and legacy escape.
-  static std::optional<std::vector<std::byte>> decode_binary(
-      std::string_view value);
-  static std::string encode_binary(std::span<const std::byte> value);
+
 };
 
 } // namespace rs::odbc
