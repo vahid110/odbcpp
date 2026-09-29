@@ -109,9 +109,9 @@ BOOL configure(HWND parent,WORD request,const wchar_t* driver,const wchar_t* inp
     if(!SQLValidDSNW(f.dsn.c_str()) || upper(f.dsn)==L"ODBC DATA SOURCES") throw std::invalid_argument("Invalid DSN name.");
     // The Add dialog can supply the name; recheck before creating it.
     if(add) {
-      wchar_t existing[2]{};
+      wchar_t existing[4]{};
       if(read(L"ODBC Data Sources",f.dsn.c_str()) ||
-         SQLGetPrivateProfileStringW(f.dsn.c_str(),nullptr,L"",existing,2,ini)>0)
+         SQLGetPrivateProfileStringW(f.dsn.c_str(),nullptr,L"",existing,4,ini)>0)
         throw std::invalid_argument("DSN already exists.");
     }
     if(!save(f,add)) throw std::runtime_error("Cannot save DSN. Check registry permissions.");

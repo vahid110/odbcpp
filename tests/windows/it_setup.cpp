@@ -48,7 +48,7 @@ bool capture(HWND window,const wchar_t* name) {
   }
   SelectObject(memory,old);DeleteObject(bitmap);DeleteDC(memory);ReleaseDC(window,dc);return ok;
 }
-bool dialog(HWND parent,const std::wstring& input,bool cancel) {
+bool dialog(HWND parent,const std::wstring& input,bool cancel,bool add=false) {
   const auto thread=GetCurrentThreadId();std::atomic<bool> passed=false;
   std::thread automation([&] {
     HWND w=nullptr;for(int i=0;i<200 && !w;++i){Sleep(50);w=find_dialog(thread);}
@@ -74,7 +74,7 @@ bool dialog(HWND parent,const std::wstring& input,bool cancel) {
     ok=check(capture(w,L"odbcpp-setup-authentication.bmp"),"authentication screenshot")&&ok;
     passed=ok;click(ok?IDOK:IDCANCEL);
   });
-  const bool result=SQLConfigDataSourceW(parent,ODBC_CONFIG_DSN,driver,input.c_str())!=FALSE;
+  const bool result=SQLConfigDataSourceW(parent,add?ODBC_ADD_DSN:ODBC_CONFIG_DSN,driver,input.c_str())!=FALSE;
   automation.join();return passed && result==!cancel;
 }
 }
@@ -100,6 +100,10 @@ int main() {
   HWND parent=CreateWindowExW(0,L"STATIC",L"ODBCPP setup acceptance",WS_OVERLAPPED,0,0,400,300,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
   ok=check(parent!=nullptr,"parent window")&&ok;
   if(parent && ok) {
+    const auto canceled_add=attrs({L"DSN=ODBCPP_Setup_Canceled",L"SERVER=127.0.0.1",L"DATABASE=postgres"});
+    ok=check(dialog(parent,canceled_add,true,true),"cancel add")&&ok;
+    SQLSetConfigMode(ODBC_USER_DSN);
+    ok=check(read(L"ODBC Data Sources",L"ODBCPP_Setup_Canceled")==L"<absent>","canceled add creates no DSN")&&ok;
     ok=check(dialog(parent,selected,true),"cancel")&&ok;
     SQLSetConfigMode(ODBC_USER_DSN);ok=check(read(name,L"Port")==L"5444","cancel preserves registry")&&ok;
     ok=check(dialog(parent,selected,false),"edit/test/save dialog")&&ok;
@@ -119,6 +123,12 @@ int main() {
   ok=check(read(name,L"Server")==L"127.0.0.1","same-name System DSN preserved")&&ok;
   ok=check(SQLConfigDataSourceW(nullptr,ODBC_REMOVE_SYS_DSN,driver,selected.c_str())!=FALSE,"System DSN removal")&&ok;
   SQLSetConfigMode(ODBC_USER_DSN);
+  SQLWritePrivateProfileStringW(L"ODBCPP_Setup_Orphan",L"Unrelated",L"keep",L"ODBC.INI");
+  const auto orphan=attrs({L"DSN=ODBCPP_Setup_Orphan",L"SERVER=127.0.0.1",L"DATABASE=postgres"});
+  ok=check(!SQLConfigDataSourceW(nullptr,ODBC_ADD_DSN,driver,orphan.c_str()),"orphan section protected")&&ok;
+  SQLSetConfigMode(ODBC_USER_DSN);
+  ok=check(read(L"ODBCPP_Setup_Orphan",L"Unrelated")==L"keep","orphan content retained")&&ok;
+  SQLWritePrivateProfileStringW(L"ODBCPP_Setup_Orphan",nullptr,nullptr,L"ODBC.INI");
   const char ansi[]="DSN=ODBCPP_Setup_ANSI\0SERVER=127.0.0.1\0DATABASE=postgres\0SSL=0\0";
   ok=check(SQLConfigDataSource(nullptr,ODBC_ADD_DSN,"ODBCPP PostgreSQL",ansi)!=FALSE,"ANSI entry point")&&ok;
   ok=check(SQLConfigDataSource(nullptr,ODBC_REMOVE_DSN,"ODBCPP PostgreSQL","DSN=ODBCPP_Setup_ANSI\0")!=FALSE,"ANSI removal")&&ok;
