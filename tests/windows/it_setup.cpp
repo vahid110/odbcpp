@@ -18,7 +18,18 @@ std::wstring attrs(std::initializer_list<std::wstring> values) {
 std::wstring read(const wchar_t* section,const wchar_t* key) {
   wchar_t buffer[2048]{};SQLGetPrivateProfileStringW(section,key,L"<absent>",buffer,2048,L"ODBC.INI");return buffer;
 }
-bool check(bool ok,const char* what) {if(!ok) std::fprintf(stderr,"Setup acceptance failed: %s\n",what);return ok;}
+bool check(bool ok,const char* what) {
+  if(!ok) {
+    std::fprintf(stderr,"Setup acceptance failed: %s\n",what);
+    for(WORD i=1;i<=8;++i) {
+      DWORD code=0;char message[1024]{};WORD length=0;
+      const auto result=SQLInstallerError(i,&code,message,sizeof(message),&length);
+      if(result!=SQL_SUCCESS && result!=SQL_SUCCESS_WITH_INFO)break;
+      std::fprintf(stderr,"Installer diagnostic %lu: %s\n",static_cast<unsigned long>(code),message);
+    }
+  }
+  return ok;
+}
 HWND find_dialog(DWORD thread) {
   HWND found=nullptr;
   EnumThreadWindows(thread,[](HWND window,LPARAM data)->BOOL {

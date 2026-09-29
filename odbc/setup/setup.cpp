@@ -116,8 +116,11 @@ BOOL configure(HWND parent,WORD request,const wchar_t* driver,const wchar_t* inp
     }
     if(!save(f,add)) throw std::runtime_error("Cannot save DSN. Check registry permissions.");
     return TRUE;
-  } catch(const std::exception&) {
-    SQLPostInstallerErrorW(ODBC_ERROR_REQUEST_FAILED,L"ODBCPP setup failed. Check settings, DSN ownership and registry permissions.");
+  } catch(const std::exception& error) {
+    // All setup exceptions use fixed descriptions, never field values/passwords.
+    const std::string reason(error.what());
+    const std::wstring message(reason.begin(),reason.end());
+    SQLPostInstallerErrorW(ODBC_ERROR_REQUEST_FAILED,message.c_str());
     if(parent) MessageBoxW(parent,L"Could not save the data source. Check its name and registry permissions.",L"ODBCPP PostgreSQL Setup",MB_OK|MB_ICONERROR);
     return FALSE;
   }
