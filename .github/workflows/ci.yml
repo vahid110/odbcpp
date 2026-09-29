@@ -271,6 +271,35 @@ jobs:
             ${{ runner.temp }}/odbcpp-setup-*.bmp
             ${{ runner.temp }}/odbcpp-postgres.log
 
+  windows-linked-server:
+    timeout-minutes: 45
+    needs: windows-live
+    runs-on: windows-2025
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGDATABASE: postgres
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: odbcpp-postgresql-beta-x64
+          path: beta-artifact
+      - name: Validate SQL Server linked server and OPENQUERY
+        shell: pwsh
+        run: ./tools/ci/windows-linked-server.ps1
+      - name: Preserve linked-server evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-linked-server-evidence
+          path: |
+            ${{ runner.temp }}/linked-server-evidence
+            ${{ runner.temp }}/odbcpp-postgres.log
+          retention-days: 7
+
   linux-sanitizers:
     runs-on: ubuntu-latest
 
