@@ -311,3 +311,57 @@ TEST(BackendCapabilitiesTest, GenericBackendDoesNotInheritPostgresClaims) {
   EXPECT_TRUE(profile.read_only);
   EXPECT_FALSE(backend.is_connected());
 }
+
+TEST(BackendErrorsTest, PostgresNormalizesNativeStatesWithoutIo) {
+  auto backend = DatabaseFactory::create_connection();
+  struct Case { const char* native; ErrorContext context; const char* expected; };
+  for (const auto& item : {
+      Case{"22P02", ErrorContext::Unknown, "22018"},
+      Case{"22012", ErrorContext::Unknown, "22012"},
+      Case{"23505", ErrorContext::Unknown, "23000"},
+      Case{"3F000", ErrorContext::Unknown, "3F000"},
+      Case{"42P07", ErrorContext::CreateTable, "42S01"},
+      Case{"42P07", ErrorContext::CreateView, "42S01"},
+      Case{"42P07", ErrorContext::CreateIndex, "42S11"},
+      Case{"42P01", ErrorContext::Unknown, "42S02"},
+      Case{"42704", ErrorContext::DropIndex, "42S12"},
+      Case{"42701", ErrorContext::Unknown, "42S21"},
+      Case{"42703", ErrorContext::Unknown, "42S22"}}) {
+    SCOPED_TRACE(item.native);
+    EXPECT_EQ(std::optional<std::string>(item.expected),
+              backend->normalize_error_sqlstate(item.native, item.context));
+  }
+  EXPECT_FALSE(backend->is_connected());
+}
+
+TEST(BackendErrorsTest, InvalidUnknownAndAmbiguousStatesKeepCallerFallback) {
+  postgres::PgDatabaseConnection backend;
+  for (const auto state : {"", "22P0", "22P020", "22p02", "22!02", "XXXXX",
+                           "P0001", "42P07", "42704"}) {
+    SCOPED_TRACE(state);
+    EXPECT_FALSE(backend.normalize_error_sqlstate(state, ErrorContext::Unknown));
+  }
+  EXPECT_FALSE(backend.normalize_error_sqlstate("42P07", ErrorContext::DropIndex));
+  EXPECT_FALSE(backend.normalize_error_sqlstate("42704", ErrorContext::CreateIndex));
+  EXPECT_FALSE(backend.normalize_error_sqlstate(std::string("22\0\0\0", 5),
+                                                ErrorContext::Unknown));
+}
+
+TEST(BackendErrorsTest, GenericBackendDoesNotInterpretPostgresStates) {
+  GenericDatabaseConnection backend(std::make_unique<odbcpp::test::MockProtocolParser>());
+  for (const auto state : {"22P02", "22012", "23505", "42P07", "42704"}) {
+    EXPECT_FALSE(backend.normalize_error_sqlstate(state, ErrorContext::CreateIndex));
+  }
+}
+
+TEST(BackendErrorsTest, NormalizedStateOwnsItsStorage) {
+  std::optional<std::string> normalized;
+  {
+    postgres::PgDatabaseConnection backend;
+    std::string native = "22012";
+    normalized = backend.normalize_error_sqlstate(native, ErrorContext::Unknown);
+    native.assign("XXXXX");
+    backend.disconnect();
+  }
+  EXPECT_EQ(std::optional<std::string>("22012"), normalized);
+}

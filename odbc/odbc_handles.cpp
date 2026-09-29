@@ -569,33 +569,26 @@ const char* request_sqlstate(const std::error_code& error,
   return fallback;
 }
 
-std::string mapped_backend_sqlstate(std::string_view server_state,
-                                    const char* fallback,
-                                    SQLINTEGER statement_code =
-                                        SQL_DIAG_UNKNOWN_STATEMENT) {
-  if (server_state.size() != 5 ||
-      !std::all_of(server_state.begin(), server_state.end(), [](char ch) {
+std::string mapped_backend_sqlstate(
+    const rs::core::database::IDatabaseConnection& connection,
+    std::string_view server_state, const char* fallback,
+    SQLINTEGER statement_code = SQL_DIAG_UNKNOWN_STATEMENT) {
+  using rs::core::database::ErrorContext;
+  auto context = ErrorContext::Unknown;
+  switch (statement_code) {
+    case SQL_DIAG_CREATE_TABLE: context = ErrorContext::CreateTable; break;
+    case SQL_DIAG_CREATE_VIEW: context = ErrorContext::CreateView; break;
+    case SQL_DIAG_CREATE_INDEX: context = ErrorContext::CreateIndex; break;
+    case SQL_DIAG_DROP_INDEX: context = ErrorContext::DropIndex; break;
+    default: break;
+  }
+  const auto state = connection.normalize_error_sqlstate(server_state, context);
+  // Validate the backend contract before exposing a diagnostic to applications.
+  if (!state || state->size() != 5 ||
+      !std::all_of(state->begin(), state->end(), [](char ch) {
         return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z');
-      })) {
-    return fallback;
-  }
-  if (server_state == "22P02") return "22018";
-  if (server_state.substr(0, 2) == "22") return std::string(server_state);
-  if (server_state.substr(0, 2) == "23") return "23000";
-  if (server_state == "3F000") return "3F000";
-  if (server_state == "42P07") {
-    if (statement_code == SQL_DIAG_CREATE_INDEX) return "42S11";
-    if (statement_code == SQL_DIAG_CREATE_TABLE ||
-        statement_code == SQL_DIAG_CREATE_VIEW) return "42S01";
-    return fallback;
-  }
-  if (server_state == "42P01") return "42S02";
-  if (server_state == "42704" && statement_code == SQL_DIAG_DROP_INDEX) {
-    return "42S12";
-  }
-  if (server_state == "42701") return "42S21";
-  if (server_state == "42703") return "42S22";
-  return fallback;
+      })) return fallback;
+  return *state;
 }
 
 std::string query_failure_sqlstate(
@@ -607,7 +600,7 @@ std::string query_failure_sqlstate(
     return default_state;
   }
   return mapped_backend_sqlstate(
-      connection.get_last_server_sqlstate(), default_state, statement_code);
+      connection, connection.get_last_server_sqlstate(), default_state, statement_code);
 }
 
 std::chrono::milliseconds timeout_duration(SQLULEN seconds) {
@@ -2987,7 +2980,8 @@ SQLRETURN ODBCStatement::more_results() {
   pending_results_.erase(pending_results_.begin());
   if (!next.error_message.empty()) {
     pending_results_.clear();
-    set_error(mapped_backend_sqlstate(next.error_sqlstate,
+    set_error(mapped_backend_sqlstate(*conn_->get_db_connection(),
+                                      next.error_sqlstate,
                                       SQLSTATE_SYNTAX_ERROR),
               "Query error: " + next.error_message);
     return SQL_ERROR;

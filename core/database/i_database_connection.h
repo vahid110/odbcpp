@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <string_view>
+#include <optional>
 #include <vector>
 #include <span>
 #include <memory>
@@ -18,6 +19,9 @@
 
 namespace rs::core::database {
 
+// Semantic context only; no ODBC statement codes cross the backend boundary.
+enum class ErrorContext { Unknown, CreateTable, CreateView, CreateIndex, DropIndex };
+
 struct ConnectionSettings {
   std::string host;
   std::string user;
@@ -30,6 +34,12 @@ struct ConnectionSettings {
   std::string ssl_ca_dir;
 };
 
+// Synchronous internal interface, serialized by the ODBC handle layer. Backends
+// must not retain input views/spans after return. Returned QueryResult values own
+// their storage. Metadata views have the lifetimes documented on each method.
+// Every operation receives one absolute steady-clock deadline; nested I/O must
+// reuse it, never restart the timeout. Session reuse is reported by is_connected,
+// independently of diagnostic SQLSTATE. See BACKEND_BOUNDARY.md for retirement.
 class IDatabaseConnection {
 public:
   virtual ~IDatabaseConnection() = default;
@@ -63,6 +73,12 @@ public:
 
   // Pure metadata snapshot: no I/O or session mutation.
   virtual BackendCapabilities capabilities() const = 0;
+
+  // No I/O. Interpret a native server state using known statement context.
+  // Return an owned, normalized five-character SQLSTATE, or no mapping so the
+  // caller retains its operation-specific fallback. Never infer reuse from it.
+  virtual std::optional<std::string> normalize_error_sqlstate(
+      std::string_view native_state, ErrorContext context) const = 0;
 
   virtual TransactionCapabilities transaction_capabilities() const = 0;
   // Execute exactly one backend transaction command using the caller's deadline.

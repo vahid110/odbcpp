@@ -27,6 +27,9 @@ public:
 
   BackendCapabilities capabilities() const override { return {}; }
 
+  std::optional<std::string> normalize_error_sqlstate(
+      std::string_view, ErrorContext) const override { return std::nullopt; }
+
   TransactionCapabilities transaction_capabilities() const override;
   rs::util::Result<void> transaction(TransactionAction action,
       rs::util::Deadline deadline) override;

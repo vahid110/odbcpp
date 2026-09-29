@@ -4443,3 +4443,29 @@ TEST_F(MetadataIntegrationTest, BackendScalarMetadataAgreesBeforeAndAfterExecuti
         ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
     }
 }
+
+TEST_F(MetadataIntegrationTest, BackendDiagnosticFallbackAndRecoveryAcrossExecutionPaths) {
+    for (const auto native_state : {"22012", "P0001"}) {
+        SCOPED_TRACE(native_state);
+        const std::string sql = "DO $$ BEGIN RAISE EXCEPTION 'backend contract error' "
+            "USING ERRCODE = '" + std::string(native_state) + "'; END $$";
+        const std::string expected = std::string(native_state) == "22012"
+            ? "22012" : "42000";
+        EXPECT_EQ(SQL_ERROR, SQLExecDirect(hstmt, (SQLCHAR*)sql.c_str(), SQL_NTS));
+        EXPECT_EQ(expected, diagnostic_state(SQL_HANDLE_STMT, hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)sql.c_str(), SQL_NTS));
+        EXPECT_EQ(SQL_ERROR, SQLExecute(hstmt));
+        EXPECT_EQ(expected, diagnostic_state(SQL_HANDLE_STMT, hstmt));
+        const std::string batch = "SELECT 17; " + sql;
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)batch.c_str(), SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(17, integer_cell(hstmt, 1));
+        EXPECT_EQ(SQL_ERROR, SQLMoreResults(hstmt));
+        EXPECT_EQ(expected, diagnostic_state(SQL_HANDLE_STMT, hstmt));
+        EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 19", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(19, integer_cell(hstmt, 1));
+        ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_CLOSE));
+    }
+}
