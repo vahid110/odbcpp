@@ -3,6 +3,13 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      run_linked_server:
+        description: Run the heavy SQL Server linked-server acceptance job
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -272,6 +279,7 @@ jobs:
             ${{ runner.temp }}/odbcpp-postgres.log
 
   windows-linked-server:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_linked_server
     timeout-minutes: 45
     needs: windows-live
     runs-on: windows-2025
