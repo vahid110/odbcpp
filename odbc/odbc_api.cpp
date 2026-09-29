@@ -390,7 +390,7 @@ namespace {
     if (!output || buffer_length <= 0) return SQL_SUCCESS;
     const auto copied = std::min<std::size_t>(
         value.size(), static_cast<std::size_t>(buffer_length - 1));
-    std::memcpy(output, value.data(), copied);
+    if (copied > 0) std::memcpy(output, value.data(), copied);
     output[copied] = 0;
     if (copied < value.size()) {
       handle->set_error(SQLSTATE_STRING_DATA_TRUNCATED,

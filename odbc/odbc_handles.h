@@ -7,6 +7,8 @@
 #include <array>
 #include <cstdint>
 #include <initializer_list>
+#include <functional>
+#include "core/transport/i_transport.h"
 #include <limits>
 #include <memory>
 #include <string>
@@ -205,7 +207,11 @@ private:
 // Connection handle
 class ODBCConnection : public ODBCHandle {
 public:
-  explicit ODBCConnection(ODBCEnvironment* env);
+  using BackendFactory = std::function<std::unique_ptr<rs::core::database::IDatabaseConnection>(
+      std::unique_ptr<rs::core::transport::ITransport>)>;
+  // Internal per-connection selection seam; default uses the compiled backend.
+  // Factories must return a backend and transfer or release the supplied transport.
+  explicit ODBCConnection(ODBCEnvironment* env, BackendFactory factory = {});
   
   SQLRETURN connect(
       const std::string& dsn,
@@ -247,6 +253,8 @@ private:
   void close_connection();
 
   const rs::core::database::IDatabaseConnection& metadata_backend() const;
+  BackendFactory backend_factory_;
+  mutable std::unique_ptr<rs::core::database::IDatabaseConnection> metadata_conn_;
   std::unique_ptr<rs::core::database::IDatabaseConnection> db_conn_;
   bool connected_ = false;
   SQLUINTEGER login_timeout_seconds_ = 30;

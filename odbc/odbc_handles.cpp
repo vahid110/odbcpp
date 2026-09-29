@@ -1253,15 +1253,20 @@ bool is_character_column_attribute(SQLUSMALLINT field_identifier) {
   return contains_attribute(field_identifier, attributes);
 }
 
-ODBCConnection::ODBCConnection(ODBCEnvironment*)
+ODBCConnection::ODBCConnection(ODBCEnvironment*, BackendFactory factory)
     : ODBCHandle(HandleType::Connection),
+      backend_factory_(factory ? std::move(factory) : BackendFactory{
+          [](std::unique_ptr<rs::core::transport::ITransport> transport) {
+            return rs::core::database::DatabaseFactory::create_connection(std::move(transport));
+          }}),
       connection_id_(next_connection_id.fetch_add(1)) {}
 
 const rs::core::database::IDatabaseConnection& ODBCConnection::metadata_backend() const {
   if (db_conn_) return *db_conn_;
   // Metadata is available before connect through the configured backend.
-  static const auto unconnected = rs::core::database::DatabaseFactory::create_connection();
-  return *unconnected;
+  if (!metadata_conn_) metadata_conn_ = backend_factory_(nullptr);
+  if (!metadata_conn_) throw std::runtime_error("Backend factory returned no connection");
+  return *metadata_conn_;
 }
 
 std::span<const rs::core::database::TypeDefinition> ODBCConnection::type_catalog() const {
@@ -1399,8 +1404,8 @@ SQLRETURN ODBCConnection::connect(
                                  transport_options.deadline_model))}});
     auto transport = rs::core::transport::TransportFactory::create(
         transport_options, settings.use_ssl);
-    db_conn_ = rs::core::database::DatabaseFactory::create_connection(
-        std::move(transport));
+    db_conn_ = backend_factory_(std::move(transport));
+    if (!db_conn_) throw std::runtime_error("Backend factory returned no connection");
     
     // Connect synchronously for ODBC compatibility
     auto result = db_conn_->connect(settings);
