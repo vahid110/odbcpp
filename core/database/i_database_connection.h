@@ -13,6 +13,7 @@
 #include "native_type_info.h"
 #include "type_definition.h"
 #include "transaction.h"
+#include "backend_capabilities.h"
 #include "catalog_request.h"
 
 namespace rs::core::database {
@@ -59,6 +60,9 @@ public:
   // On failure no partial map is returned; callers must not update their cache.
   virtual rs::util::Result<ResolvedTypeMap> resolve_types(
       std::span<const std::uint32_t> ids, rs::util::Deadline deadline) = 0;
+
+  // Pure metadata snapshot: no I/O or session mutation.
+  virtual BackendCapabilities capabilities() const = 0;
 
   virtual TransactionCapabilities transaction_capabilities() const = 0;
   // Execute exactly one backend transaction command using the caller's deadline.

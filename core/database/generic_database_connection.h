@@ -25,6 +25,8 @@ public:
 
   std::span<const TypeDefinition> type_catalog() const override { return {}; }
 
+  BackendCapabilities capabilities() const override { return {}; }
+
   TransactionCapabilities transaction_capabilities() const override;
   rs::util::Result<void> transaction(TransactionAction action,
       rs::util::Deadline deadline) override;

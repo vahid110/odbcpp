@@ -270,3 +270,44 @@ TEST(TypeCatalogTest, GenericBackendDoesNotAdvertisePostgresTypes) {
   EXPECT_TRUE(backend.type_catalog().empty());
   EXPECT_FALSE(backend.is_connected());
 }
+
+TEST(BackendCapabilitiesTest, PostgresProfileIsAvailableWithoutIo) {
+  auto backend = DatabaseFactory::create_connection();
+  const auto profile = backend->capabilities();
+  EXPECT_EQ("PostgreSQL", profile.dbms_name);
+  EXPECT_EQ(63, profile.max_identifier_length);
+  EXPECT_EQ(IdentifierCase::Lower, profile.identifier_case);
+  EXPECT_EQ(IdentifierCase::Sensitive, profile.quoted_identifier_case);
+  EXPECT_EQ(NullCollation::High, profile.null_collation);
+  EXPECT_EQ("\"", profile.identifier_quote);
+  EXPECT_TRUE(profile.concat_null_yields_null);
+  EXPECT_TRUE(profile.union_distinct);
+  EXPECT_TRUE(profile.union_all);
+  EXPECT_FALSE(profile.order_by_requires_select);
+  EXPECT_FALSE(profile.read_only);
+  backend->disconnect();
+  EXPECT_EQ("PostgreSQL", profile.dbms_name);
+  EXPECT_EQ(profile.identifier_quote, backend->capabilities().identifier_quote);
+  EXPECT_FALSE(backend->is_connected());
+}
+
+TEST(BackendCapabilitiesTest, GenericBackendDoesNotInheritPostgresClaims) {
+  GenericDatabaseConnection backend(std::make_unique<odbcpp::test::MockProtocolParser>());
+  const auto profile = backend.capabilities();
+  EXPECT_TRUE(profile.dbms_name.empty());
+  EXPECT_TRUE(profile.identifier_quote.empty());
+  EXPECT_EQ(0, profile.max_identifier_length);
+  EXPECT_EQ(CorrelationNames::None, profile.correlation_names);
+  EXPECT_EQ(GroupBySupport::None, profile.group_by);
+  EXPECT_FALSE(profile.catalog_names);
+  EXPECT_FALSE(profile.column_aliases);
+  EXPECT_FALSE(profile.describe_parameters);
+  EXPECT_FALSE(profile.procedures);
+  EXPECT_FALSE(profile.create_index);
+  EXPECT_FALSE(profile.insert_literals);
+  EXPECT_FALSE(profile.sql92_entry);
+  EXPECT_FALSE(profile.union_all);
+  EXPECT_FALSE(profile.schema_in_dml);
+  EXPECT_TRUE(profile.read_only);
+  EXPECT_FALSE(backend.is_connected());
+}
