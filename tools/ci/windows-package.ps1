@@ -49,6 +49,7 @@ try {
     New-ItemProperty $driverKey -Name UnrelatedValue -Value 'keep' -Force | Out-Null
     New-ItemProperty $driversKey -Name 'ODBCPP unrelated fixture' -Value Installed -Force | Out-Null
     Msi '1.0.2' '/i' 'failed-upgrade-rollback' 1603
+    Assert (Select-String -Path (Join-Path $logs 'failed-upgrade-rollback.log') -SimpleMatch 'Intentional rollback acceptance failure.' -Quiet) 'Upgrade failed before the rollback injection point'
     Assert ((Get-ItemProperty $ownerKey).Version -eq '1.0.0') 'Failed upgrade did not restore previous version'
     & "$artifactsPath/it_package_load.exe" $install
     & "$artifactsPath/it_driver_manager.exe"

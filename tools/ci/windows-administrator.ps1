@@ -9,6 +9,23 @@ using System.Runtime.InteropServices;
 public static class SetupUiMessages {
     [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
+    private delegate bool EnumCallback(IntPtr window, IntPtr parameter);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumCallback callback, IntPtr parameter);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
+    public static IntPtr VisibleDialog(int process) {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows(delegate(IntPtr window, IntPtr parameter) {
+            uint owner; Rect rect;
+            GetWindowThreadProcessId(window, out owner);
+            if (owner == process && IsWindowVisible(window) && GetWindowRect(window, out rect) &&
+                rect.Right - rect.Left > 200 && rect.Bottom - rect.Top > 200) {
+                found = window; return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
     [DllImport("user32.dll", SetLastError=true)]
     public static extern bool PostMessage(IntPtr window, uint message, IntPtr wparam, IntPtr lparam);
@@ -35,7 +52,7 @@ function Wait-Named($Parent, [string]$Name) {
     $handle = [IntPtr]$Parent.Current.NativeWindowHandle
     if ($handle -ne [IntPtr]::Zero) {
         $rect = New-Object SetupUiMessages+Rect
-        if ([SetupUiMessages]::GetWindowRect($handle,[ref]$rect)) {
+        if ([SetupUiMessages]::GetWindowRect($handle,[ref]$rect) -and $rect.Right -gt $rect.Left -and $rect.Bottom -gt $rect.Top) {
             $bitmap = New-Object System.Drawing.Bitmap ($rect.Right-$rect.Left),($rect.Bottom-$rect.Top)
             $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
             $dc = $graphics.GetHdc()
@@ -59,9 +76,9 @@ $process = Start-Process "$env:SystemRoot/System32/odbcad32.exe" -PassThru
 try {
     $deadline = (Get-Date).AddSeconds(20)
     do {
-        $process.Refresh()
-        if ($process.MainWindowHandle -ne [IntPtr]::Zero) {
-            $window = [System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
+        $handle = [SetupUiMessages]::VisibleDialog($process.Id)
+        if ($handle -ne [IntPtr]::Zero) {
+            $window = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
             break
         }
         Start-Sleep -Milliseconds 200
