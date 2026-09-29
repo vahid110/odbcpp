@@ -194,6 +194,35 @@ jobs:
         shell: pwsh
         run: ./tools/ci/windows-system-dsn.ps1
 
+      - name: Build x64 beta MSI and upgrade fixtures
+        shell: pwsh
+        run: |
+          ./packaging/windows/test-inputs.ps1
+          ./packaging/windows/build.ps1 -Version 1.0.0
+          ./packaging/windows/build.ps1 -Version 1.0.1
+          ./packaging/windows/build.ps1 -Version 1.0.2 -FailureFixture
+          New-Item build-windows/package-acceptance -ItemType Directory | Out-Null
+          Copy-Item build-windows/package/*.msi build-windows/package-acceptance
+          Copy-Item build-windows/tests/Release/it_driver_manager.exe,build-windows/tests/Release/it_setup.exe,build-windows/tests/Release/it_package_load.exe build-windows/package-acceptance
+
+      - name: Preserve beta installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: odbcpp-postgresql-beta-x64
+          path: |
+            build-windows/package/odbcpp-postgresql-1.0.0-x64.msi
+            build-windows/package/odbcpp-postgresql-1.0.0-x64.msi.sha256
+            build-windows/package/payload-1.0.0/inventory.json
+            packaging/windows/README.md
+          if-no-files-found: error
+
+      - name: Pass packages to fresh-runner acceptance
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-package-acceptance-inputs
+          path: build-windows/package-acceptance
+          if-no-files-found: error
+
       - name: Stop PostgreSQL
         if: always()
         shell: pwsh
@@ -211,6 +240,34 @@ jobs:
             ${{ runner.temp }}/odbcpp-system-dsn.log
             ${{ runner.temp }}/odbcpp-setup-*.bmp
           retention-days: 7
+
+  windows-package:
+    needs: windows-live
+    runs-on: windows-2025
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGDATABASE: postgres
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-package-acceptance-inputs
+          path: package-artifacts
+      - name: Validate fresh-runner package lifecycle
+        shell: pwsh
+        run: ./tools/ci/windows-package.ps1
+      - name: Preserve package acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-package-evidence
+          path: |
+            ${{ runner.temp }}/package-logs
+            ${{ runner.temp }}/odbcpp-setup-*.bmp
+            ${{ runner.temp }}/odbcpp-postgres.log
 
   linux-sanitizers:
     runs-on: ubuntu-latest

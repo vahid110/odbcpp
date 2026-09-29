@@ -358,3 +358,20 @@ workflow, dependency deployment, upgrades and uninstall. This does not close G8 
 require application hosts yet. See WINDOWS_DSN.md for password and write-recovery
 boundaries. Persistent registry write failures have best-effort recovery; no
 transactional registry or concurrent-editor guarantee is claimed.
+
+## W4 implementation checkpoint — batch 16
+
+W3 closed at 29a22a4 (CI 36584852239, five jobs green and dialog captures reviewed).
+W4 adds a pinned WiX x64 MSI recipe, app-local OpenSSL/MSVC runtime deployment,
+checksums and per-file inventory. A separate fresh Windows runner must accept
+install, native Administrator setup, live connection, failed-upgrade rollback,
+upgrade, downgrade rejection, ownership protection and uninstall preserving DSNs.
+The rollback fixture is a separate test-only MSI, not the beta artifact.
+
+Exact-revision six-job CI is required before W4 closes. The build recipe records
+inputs but does not claim byte-identical MSIs across toolchains. No public license
+is declared in the repository and no signing identity is configured: artifacts
+are internal unsigned beta validation packages, not a public release. Resolve
+licensing/signing under G11 before external distribution. G8 application acceptance
+remains separate; once package acceptance is green, application-host readiness
+becomes actionable. No Redshift-specific packaging changes are included.

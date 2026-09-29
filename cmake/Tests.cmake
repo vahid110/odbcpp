@@ -141,3 +141,10 @@ if(WIN32)
   add_test(NAME it_setup COMMAND it_setup)
   set_tests_properties(it_setup PROPERTIES LABELS "integration" TIMEOUT 90)
 endif()
+
+if(WIN32)
+  add_executable(it_package_load tests/windows/it_package_load.cpp)
+  # The probe must not preload the system's C++ runtime before inspecting the DLLs.
+  set_property(TARGET it_package_load PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  set_target_properties(it_package_load PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+endif()

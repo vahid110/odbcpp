@@ -502,3 +502,19 @@ Six portable model cases passed focused testing. All four local gates passed:
 sanitizer settings. Windows-only installer/dialog tests and captured rendering
 require exact-revision CI validation before W3 closes. Packaging, clean-machine
 Administrator execution and G8 application acceptance remain W4/G8 work.
+
+## Batch 16 — W4 Windows beta packaging
+
+W3 closed at 29a22a4 (CI 36584852239, all five jobs green; rendered tabs reviewed).
+W4 implements a pinned x64 MSI build with driver/setup registration, app-local
+runtime DLLs, dependency/license inventory and SHA-256 checksums. Input checks
+reject x86 and malformed PE payloads. A separate fresh-runner job validates the
+installed DLL/dependency paths, real Administrator entry, live ODBC connections,
+failed-upgrade rollback, successful upgrade, downgrade rejection, foreign
+registration protection and uninstall preserving DSNs/unrelated values.
+
+All four local gates passed: 38 executables, 820 GoogleTest cases each, zero skips,
+with the established macOS sanitizer settings. MSI building and the fresh-runner
+lifecycle remain Windows-only acceptance: require all six exact-revision CI jobs
+to pass before W4 closure. G8 host/application checks and G11 project licensing/
+signing remain open; this package is an unsigned internal beta validation artifact.

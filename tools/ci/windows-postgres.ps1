@@ -1,4 +1,4 @@
-param([ValidateSet('Start', 'Stop')][string]$Action)
+param([ValidateSet('Start', 'Stop')][string]$Action, [switch]$UseInstalledDriver)
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 $pgBin = Join-Path $env:PGBIN 'pg_ctl.exe'
@@ -20,6 +20,12 @@ try {
 & $pgBin -D $pgData -l "$env:RUNNER_TEMP/odbcpp-postgres.log" -o '-p 5432 -h 127.0.0.1' -w start
 & "$env:PGBIN/psql.exe" -X -v ON_ERROR_STOP=1 -c 'SELECT version()'
 
+if ($UseInstalledDriver) {
+    $driverName = 'ODBCPP PostgreSQL'
+    $driverKey = "HKLM:\SOFTWARE\ODBC\ODBCINST.INI\$driverName"
+    $driver = (Get-ItemProperty $driverKey).Driver
+    if (!(Test-Path $driver)) { throw 'Installed driver is missing' }
+} else {
 $driver = (Resolve-Path 'build-windows/Release/odbcpp.dll').Path
 $driverName = 'ODBCPP PostgreSQL'
 $driverKey = "HKLM:\SOFTWARE\ODBC\ODBCINST.INI\$driverName"
@@ -30,6 +36,7 @@ New-ItemProperty $driverKey -Name Driver -Value $driver -PropertyType String -Fo
 $driversKey = 'HKLM:\SOFTWARE\ODBC\ODBCINST.INI\ODBC Drivers'
 New-Item $driversKey -Force | Out-Null
 New-ItemProperty $driversKey -Name $driverName -Value Installed -PropertyType String -Force | Out-Null
+}
 $dsnKey = 'HKLM:\SOFTWARE\ODBC\ODBC.INI\RedshiftProd'
 New-Item $dsnKey -Force | Out-Null
 New-ItemProperty $dsnKey -Name Driver -Value $driver -PropertyType String -Force | Out-Null
@@ -49,7 +56,7 @@ foreach ($entry in @{ TransportMode = 'Sync'; DeadlineModel = 'Strict' }.GetEnum
     New-ItemProperty $driverKey -Name $entry.Key -Value $entry.Value -PropertyType String -Force | Out-Null
 }
 foreach ($file in @($env:ODBCINI, $env:ODBCINSTINI)) {
-    if (Test-Path $file) { Remove-Item $file }
+    if ($file -and (Test-Path $file)) { Remove-Item $file }
 }
 # Conflicting 32-bit System DSN: the x64 driver/DM must use their own view.
 $registry32 = [Microsoft.Win32.RegistryKey]::OpenBaseKey(

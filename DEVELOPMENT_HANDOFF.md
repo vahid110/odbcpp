@@ -19,9 +19,11 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
 - W1 closed at d1e8d0b: CI 36570790247 passed all five jobs, including registry-only
   live connections and LocalSystem visibility.
 - W2 closed at 5ed113a: CI 36572088585 passed all five jobs.
-- Batch 15 implements W3 native tabbed setup DLL and installer/API/dialog tests.
-  Confirm exact-revision Windows CI and review captured dialogs before closing W3.
-  W4 x64 installer follows; packaged Administrator acceptance and G8 remain later.
+- W3 closed at 29a22a4: CI 36584852239 passed all five jobs and both rendered
+  tabs were reviewed. Native setup/API/dialog acceptance passed.
+- Batch 16 implements W4 x64 MSI and fresh-runner package lifecycle tests.
+  Confirm the exact-revision six-job CI, including windows-package, before closure.
+  Release licensing/signing and G8 real applications remain explicit gates.
 - PostgreSQL first; live Redshift validation comes later. Application-host
   reminder is not due until G8 acceptance is actionable.
 - Graphify was evaluated and declined. Use narrow `rg` searches and source reads.
