@@ -8,20 +8,17 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
 - Hosted Windows live gate added after batch 8: preinstalled PostgreSQL, native
   odbc32 Driver Manager and zero-skip integration enforcement. CI 36555245322
   passed at b5f9d0b: 365 live cases, zero skips plus standalone DM.
-  After batch 12 CI confirms G9a, implement W1–W4 configuration/delivery before final
+  W1 is implemented in batch 13; W2–W4 configuration/delivery precede final
   G8 acceptance. See RELEASE_PLAN.md for scope, estimates and dependencies.
 
-- **Batch 12 implements all remaining A4 work:** backend result normalization,
-  independent fake-backend acceptance through real ODBC APIs, and final dependency
-  review in BACKEND_BOUNDARY.md. Full validation evidence is in PG_BETA_CHECKLIST.md.
-  Batch 11 CI 36563755007 passed all five jobs at 72cbfd1.
+- **Batch 13 implements W1:** native Windows registry User/System DSNs and driver
+  defaults; explicit alias/attribute precedence; registry-only and LocalSystem CI
+  acceptance. See WINDOWS_DSN.md for resolution and failure behavior.
+- A4/G9a is closed: batch 12 CI 36565977327 passed all five jobs at 160cb23.
 - Branch: `codex/transport-foundation`. Implementation scheduler stays paused.
-- A1–A4 implementation and G9a acceptance coverage are complete. Confirm the
-  batch 12 pushed revision's CI before treating G9a as closed. Do not reopen the
-  historical A4 inventories or add optional SDK work to this milestone.
-- Next after green CI: W1 native Windows User/System DSNs, then W2 connection
-  strings, W3 minimal ODBC Administrator GUI and W4 x64 installer. Preserve the
-  Windows plan's acceptance tests and effort boundaries. G8 applications follow.
+- Confirm batch 13's exact-revision Windows CI before closing W1. After that,
+  W2 native DM A/W connection-string tests are next; W3 GUI and W4 x64 installer
+  follow, with the planned effort review before W3. G8 applications remain later.
 - PostgreSQL first; live Redshift validation comes later. Application-host
   reminder is not due until G8 acceptance is actionable.
 - Graphify was evaluated and declined. Use narrow `rg` searches and source reads.

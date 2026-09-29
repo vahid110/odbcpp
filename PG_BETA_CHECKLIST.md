@@ -452,3 +452,21 @@ revision, including Windows live PostgreSQL/Driver Manager coverage.
 After that confirmation, G9a is closed and W1 native Windows DSNs is next.
 W2–W4 and G8 application acceptance still precede PG-BETA. Redshift G9b and public
 SDK G12 remain later milestones; this checkpoint does not certify either.
+
+## Batch 13 — W1 native Windows DSNs
+
+Native User/System DSN and driver-default reading uses the process registry view.
+User DSNs shadow same-named System DSNs without attribute merging or fallback on
+malformed/denied entries. UTF-16 strings, empty values, numeric DWORD metadata and
+explicit attribute/alias precedence are covered. WINDOWS_DSN.md documents source
+selection, legacy explicit INI fallback and failure behavior.
+
+Focused connection-string, transport-resolution and logging suites passed. All
+four full local gates passed: 37 executables, 812 GoogleTest cases each, zero
+skips, with the documented macOS sanitizer settings. Four additional native
+registry cases compile/run only on Windows; local results do not validate them.
+Windows CI now uses registry-only DSNs for live integration, with a conflicting
+32-bit entry, and runs the native Driver Manager suite under LocalSystem while
+a same-named runner User DSN has unusable settings. Exact-revision Windows CI
+confirmation is required to close W1. SQL Server/OPENQUERY remains a separate G8
+application gate, and W2 A/W connection-string acceptance is next afterward.

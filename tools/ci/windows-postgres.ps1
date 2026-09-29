@@ -35,24 +35,28 @@ $dsnsKey = 'HKLM:\SOFTWARE\ODBC\ODBC.INI\ODBC Data Sources'
 New-Item $dsnsKey -Force | Out-Null
 New-ItemProperty $dsnsKey -Name RedshiftProd -Value $driverName -PropertyType String -Force | Out-Null
 
-# The driver currently reads DSN attributes from INI files; Windows Driver
-# Manager uses the registry above to locate and load the actual driver DLL.
-New-Item $env:ODBCSYSINI -ItemType Directory -Force | Out-Null
-@"
-[RedshiftProd]
-Driver=$driverName
-Server=127.0.0.1
-Port=5432
-Database=postgres
-UID=postgres
-PWD=postgres
-SSL=0
-TransportMode=Sync
-DeadlineModel=Strict
-"@ | Set-Content $env:ODBCINI -Encoding utf8
-@"
-[$driverName]
-Driver=$driver
-TransportMode=Sync
-DeadlineModel=Strict
-"@ | Set-Content $env:ODBCINSTINI -Encoding utf8
+# Native registry attributes only. No INI files may mask a broken registry reader.
+$attributes = @{
+    Server = '127.0.0.1'; Port = '5432'; Database = 'postgres'
+    UID = 'postgres'; PWD = 'postgres'; SSL = '0'
+}
+foreach ($entry in $attributes.GetEnumerator()) {
+    New-ItemProperty $dsnKey -Name $entry.Key -Value $entry.Value -PropertyType String -Force | Out-Null
+}
+foreach ($entry in @{ TransportMode = 'Sync'; DeadlineModel = 'Strict' }.GetEnumerator()) {
+    New-ItemProperty $driverKey -Name $entry.Key -Value $entry.Value -PropertyType String -Force | Out-Null
+}
+foreach ($file in @($env:ODBCINI, $env:ODBCINSTINI)) {
+    if (Test-Path $file) { Remove-Item $file }
+}
+# Conflicting 32-bit System DSN: the x64 driver/DM must use their own view.
+$registry32 = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+    [Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry32)
+try {
+    $wrong = $registry32.CreateSubKey('SOFTWARE\ODBC\ODBC.INI\RedshiftProd')
+    try {
+        $wrong.SetValue('Server', 'wrong-view.invalid')
+        $wrong.SetValue('Port', '1')
+        $wrong.SetValue('Driver', 'C:\missing-32-bit-driver.dll')
+    } finally { $wrong.Dispose() }
+} finally { $registry32.Dispose() }

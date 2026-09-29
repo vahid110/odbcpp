@@ -190,6 +190,10 @@ jobs:
             }
           }
 
+      - name: Verify registry-only System DSN under a service identity
+        shell: pwsh
+        run: ./tools/ci/windows-system-dsn.ps1
+
       - name: Stop PostgreSQL
         if: always()
         shell: pwsh
@@ -204,6 +208,7 @@ jobs:
             build-windows/Testing/Temporary/LastTest.log
             ${{ runner.temp }}/odbcpp-integration-results
             ${{ runner.temp }}/odbcpp-postgres.log
+            ${{ runner.temp }}/odbcpp-system-dsn.log
           retention-days: 7
 
   linux-sanitizers:

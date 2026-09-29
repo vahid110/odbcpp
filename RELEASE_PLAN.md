@@ -96,9 +96,9 @@ in-process integration suite. Reject skipped live integration cases.
 Next, prototype SQL Server Developer installation and scripted MSDASQL/System
 DSN/OPENQUERY assertions on a standard hosted Windows runner. This is a separate
 application gate, not evidence supplied by the PostgreSQL integration job.
-Check service-account access to the driver's current INI-based DSN attributes;
-registry registration currently locates the DLL but does not replace that file
-configuration. Record installation/runtime costs and keep the first workload
+Use the native registry System DSN reader from W1. Registry-only and LocalSystem
+visibility checks are part of Windows CI; actual SQL Server service-account
+permissions and application behavior still require this G8 track. Record installation/runtime costs and keep the first workload
 read-only. SQL Server acceptance has not yet run.
 
 Power BI Desktop remains a separate feasibility task: verify installation,
@@ -311,3 +311,18 @@ exact-revision CI (including Windows live tests) to close G9a. The next work is
 W1–W4 under the existing estimates and checkpoints above, then G8 application
 acceptance before PG-BETA. This does not claim PostgreSQL beta, real Redshift
 compatibility or a packaged public SDK. No additional A4 feature work is planned.
+
+
+## W1 implementation checkpoint — batch 13
+
+Native Windows User/System DSNs, architecture-view selection, driver defaults,
+Unicode/malformed/denied-read handling and explicit attribute/alias precedence are
+implemented. See WINDOWS_DSN.md for source-selection rules and supported registry
+data types. Windows CI is the acceptance gate for native reading, registry-only
+live integration, conflicting registry views and LocalSystem visibility. Upon
+its successful confirmation, W1 closes and W2 native Driver Manager A/W connection
+string coverage is next. SQL Server-specific application acceptance remains G8;
+this does not complete W2, W3 or W4 or require the user to supply hosts now.
+
+W1 stayed within its bounded reader/configuration scope. Retain the existing
+W2–W4 estimates; review delivery effort again before W3 as planned.
