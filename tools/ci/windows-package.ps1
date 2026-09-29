@@ -42,7 +42,10 @@ try {
     # The fixture configures DSNs only; MSI supplies driver/setup registration.
     & "$artifactsPath/it_driver_manager.exe"
     & "$artifactsPath/it_setup.exe"
-    & "$env:SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$PSScriptRoot/windows-administrator.ps1"
+    $administratorFailure = $null
+    try {
+        & "$env:SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$PSScriptRoot/windows-administrator.ps1"
+    } catch { $administratorFailure = $_; Write-Warning 'Administrator UI failed; continuing independent lifecycle checks before reporting failure.' }
     New-ItemProperty $driverKey -Name UnrelatedValue -Value 'keep' -Force | Out-Null
     New-ItemProperty $driversKey -Name 'ODBCPP unrelated fixture' -Value Installed -Force | Out-Null
     Msi '1.0.2' '/i' 'failed-upgrade-rollback' 1603
@@ -65,6 +68,7 @@ try {
     Assert ((Get-ItemProperty $driversKey).'ODBCPP unrelated fixture' -eq 'Installed') 'Other driver listing removed'
     Assert (Test-Path 'HKLM:\SOFTWARE\ODBC\ODBC.INI\RedshiftProd') 'Uninstall deleted a DSN'
     Assert (!(Get-ItemProperty $ownerKey -Name OwnedDriver -ErrorAction SilentlyContinue)) 'Package ownership marker remains'
+    if ($administratorFailure) { throw $administratorFailure }
     Write-Host 'Fresh-runner MSI install/configure/connect/rollback/upgrade/uninstall acceptance passed.'
 } finally {
     & "$PSScriptRoot/windows-postgres.ps1" -Action Stop

@@ -267,6 +267,7 @@ jobs:
           name: windows-package-evidence
           path: |
             ${{ runner.temp }}/package-logs
+            ${{ runner.temp }}/odbcpp-administrator-*.png
             ${{ runner.temp }}/odbcpp-setup-*.bmp
             ${{ runner.temp }}/odbcpp-postgres.log
 

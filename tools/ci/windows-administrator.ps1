@@ -2,10 +2,14 @@
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName System.Drawing
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class SetupUiMessages {
+    [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
+    [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
     [DllImport("user32.dll", SetLastError=true)]
     public static extern bool PostMessage(IntPtr window, uint message, IntPtr wparam, IntPtr lparam);
 }
@@ -24,6 +28,23 @@ function Wait-Named($Parent, [string]$Name) {
         if ($element) { return $element }
         Start-Sleep -Milliseconds 200
     } while ((Get-Date) -lt $deadline)
+    Write-Host "UI tree while waiting for '$Name':"
+    $Parent.FindAll($scope,[System.Windows.Automation.Condition]::TrueCondition) | Select-Object -First 80 | ForEach-Object {
+        Write-Host ($_.Current.ControlType.ProgrammaticName + ': ' + $_.Current.Name)
+    }
+    $handle = [IntPtr]$Parent.Current.NativeWindowHandle
+    if ($handle -ne [IntPtr]::Zero) {
+        $rect = New-Object SetupUiMessages+Rect
+        if ([SetupUiMessages]::GetWindowRect($handle,[ref]$rect)) {
+            $bitmap = New-Object System.Drawing.Bitmap ($rect.Right-$rect.Left),($rect.Bottom-$rect.Top)
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $dc = $graphics.GetHdc()
+            [void][SetupUiMessages]::PrintWindow($handle,$dc,2)
+            $graphics.ReleaseHdc($dc); $graphics.Dispose()
+            $bitmap.Save("$env:RUNNER_TEMP/odbcpp-administrator-failure.png")
+            $bitmap.Dispose()
+        }
+    }
     throw "Administrator UI element not found: $Name"
 }
 function Invoke-Button($Parent, [string]$Name) {
@@ -37,14 +58,16 @@ function Invoke-Button($Parent, [string]$Name) {
 $process = Start-Process "$env:SystemRoot/System32/odbcad32.exe" -PassThru
 try {
     $deadline = (Get-Date).AddSeconds(20)
-    $condition = [System.Windows.Automation.PropertyCondition]::new(
-        [System.Windows.Automation.AutomationElement]::ProcessIdProperty, $process.Id)
     do {
-        $window = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $condition)
-        if ($window) { break }
+        $process.Refresh()
+        if ($process.MainWindowHandle -ne [IntPtr]::Zero) {
+            $window = [System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
+            break
+        }
         Start-Sleep -Milliseconds 200
     } while ((Get-Date) -lt $deadline)
     if (!$window) { throw '64-bit ODBC Administrator did not open' }
+    Write-Host ('Administrator window: ' + $window.Current.Name)
     $tab = Wait-Named $window 'User DSN'
     $tab.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
     Invoke-Button $window 'Add...'
