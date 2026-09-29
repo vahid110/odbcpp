@@ -5,6 +5,11 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
 
 ## Current scope
 
+- Hosted Windows live gate added after batch 8: preinstalled PostgreSQL, native
+  odbc32 Driver Manager and zero-skip integration enforcement. Follow its CI
+  before declaring Windows coverage. SQL Server/OPENQUERY is the next hosted
+  application prototype; Power BI feasibility remains separate. See RELEASE_PLAN.md.
+
 - **Batch 8 implemented and locally validated:** typed backend transaction commands and
   transaction capability reporting, with five unit and two live regression cases.
   All four full local gates pass: 36 executables, 785 GoogleTest cases and zero

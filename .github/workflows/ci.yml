@@ -128,8 +128,18 @@ jobs:
           assert all("PWD=" not in line for line in path.read_text().splitlines())
           PY
 
-  windows-unit:
-    runs-on: windows-latest
+  windows-live:
+    runs-on: windows-2025
+
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGDATABASE: postgres
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      ODBCINI: ${{ github.workspace }}/.ci-odbc/odbc.ini
+      ODBCINSTINI: ${{ github.workspace }}/.ci-odbc/odbcinst.ini
+      ODBCSYSINI: ${{ github.workspace }}/.ci-odbc
 
     steps:
       - uses: actions/checkout@v5
@@ -147,6 +157,7 @@ jobs:
           -DTARGET_DATABASE=POSTGRESQL
           -DOPENSSL_USE_STATIC_LIBS=OFF
           -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2
+          -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
           -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL"
 
       - name: Build
@@ -158,6 +169,42 @@ jobs:
         run: >-
           ctest --test-dir build-windows -C Release -L unit
           --timeout 30 --output-on-failure
+
+
+      - name: Start PostgreSQL and register Windows ODBC driver
+        shell: pwsh
+        run: ./tools/ci/windows-postgres.ps1 -Action Start
+
+      - name: Run live PostgreSQL and Windows Driver Manager tests
+        shell: pwsh
+        run: |
+          $env:GTEST_OUTPUT = "xml:$env:RUNNER_TEMP/odbcpp-integration-results/"
+          ctest --test-dir build-windows -C Release -L integration --timeout 90 --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "Windows integration tests failed" }
+          $reports = @(Get-ChildItem "$env:RUNNER_TEMP/odbcpp-integration-results" -Filter *.xml)
+          if ($reports.Count -ne 9) { throw "Expected all nine GoogleTest integration reports" }
+          foreach ($report in $reports) {
+            [xml]$result = Get-Content $report.FullName
+            if ([int]$result.testsuites.tests -eq 0 -or [int]$result.testsuites.skipped -ne 0) {
+              throw "Empty or skipped integration cases in $($report.Name)"
+            }
+          }
+
+      - name: Stop PostgreSQL
+        if: always()
+        shell: pwsh
+        run: ./tools/ci/windows-postgres.ps1 -Action Stop
+
+      - name: Preserve Windows test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-live-test-evidence
+          path: |
+            build-windows/Testing/Temporary/LastTest.log
+            ${{ runner.temp }}/odbcpp-integration-results
+            ${{ runner.temp }}/odbcpp-postgres.log
+          retention-days: 7
 
   linux-sanitizers:
     runs-on: ubuntu-latest

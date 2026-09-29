@@ -55,8 +55,10 @@ endforeach()
 # Exercise the shared driver through the platform ODBC Driver Manager. This
 # deliberately does not link odbcpp_core, so missing exports or registration
 # problems cannot be hidden by the in-process integration tests.
-if(UNIX)
-  if(ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "IODBC")
+if(UNIX OR WIN32)
+  if(WIN32)
+    set(_odbc_driver_manager_names odbc32)
+  elseif(ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "IODBC")
     set(_odbc_driver_manager_names iodbc)
     if(NOT ODBC_DRIVER_MANAGER_INCLUDE_DIR)
       find_path(_odbc_driver_manager_include_dir sql.h
@@ -86,16 +88,22 @@ if(UNIX)
       "ODBC_DRIVER_MANAGER_FLAVOR must be AUTO, UNIXODBC, or IODBC")
   endif()
 
-  if(NOT ODBC_DRIVER_MANAGER_INCLUDE_DIR)
+  if(NOT WIN32 AND NOT ODBC_DRIVER_MANAGER_INCLUDE_DIR)
     message(FATAL_ERROR
       "ODBC driver-manager headers were not found for ${ODBC_DRIVER_MANAGER_FLAVOR}")
   endif()
 
-  find_library(ODBC_DRIVER_MANAGER_LIBRARY NAMES ${_odbc_driver_manager_names})
+  if(WIN32)
+    set(ODBC_DRIVER_MANAGER_LIBRARY odbc32)
+  else()
+    find_library(ODBC_DRIVER_MANAGER_LIBRARY NAMES ${_odbc_driver_manager_names})
+  endif()
   if(ODBC_DRIVER_MANAGER_LIBRARY)
     add_executable(it_driver_manager tests/driver_manager/it_driver_manager.cpp)
-    target_include_directories(it_driver_manager PRIVATE
-      ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
+    if(ODBC_DRIVER_MANAGER_INCLUDE_DIR)
+      target_include_directories(it_driver_manager PRIVATE
+        ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
+    endif()
     target_link_libraries(it_driver_manager PRIVATE ${ODBC_DRIVER_MANAGER_LIBRARY})
     if(ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "IODBC")
       target_compile_definitions(it_driver_manager PRIVATE

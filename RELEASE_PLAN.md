@@ -84,6 +84,32 @@ application suite on a release candidate and after relevant metadata, dialect,
 type or packaging changes. Manual app evidence is acceptable initially; missing
 apps must be reported as untested, not a passing or silently skipped gate.
 
+### Hosted Windows approach — agreed 2026-09-29
+
+Use standard GitHub-hosted Windows x64 runners first. No paid custom images or
+self-hosted machines are required for the initial Windows PostgreSQL/ODBC gate.
+The Windows Server 2025 runner already supplies PostgreSQL 17 binaries; create a
+disposable cluster per job rather than downloading a database installer. Build
+and exercise the driver through Windows' odbc32 Driver Manager as well as the
+in-process integration suite. Reject skipped live integration cases.
+
+Next, prototype SQL Server Developer installation and scripted MSDASQL/System
+DSN/OPENQUERY assertions on a standard hosted Windows runner. This is a separate
+application gate, not evidence supplied by the PostgreSQL integration job.
+Check service-account access to the driver's current INI-based DSN attributes;
+registry registration currently locates the DLL but does not replace that file
+configuration. Record installation/runtime costs and keep the first workload
+read-only. SQL Server acceptance has not yet run.
+
+Power BI Desktop remains a separate feasibility task: verify installation,
+interactive-session availability and a real generic-ODBC import/refresh before
+choosing hosted automation or a manual desktop run. Do not provision paid hosts
+or claim Desktop compatibility from API-only tests. Excel acceptance is unchanged.
+
+References: [Windows runner image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md),
+[MSDASQL linked-server configuration](https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/sp-addlinkedserver-transact-sql),
+[Power BI Desktop requirements](https://learn.microsoft.com/en-us/power-bi/fundamentals/desktop-get-the-desktop).
+
 **Estimate impact:** M1's 14–23 base days included only one application and
 2–3 days for application/delivery. That is now a pre-expansion baseline, not a
 validated forecast for all three tracks. Size Windows live setup and each app

@@ -1,3 +1,7 @@
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#endif
 #include <sql.h>
 #include <sqlext.h>
 #ifdef ODBCPP_TEST_IODBC
@@ -25,7 +29,7 @@ void print_diagnostic(SQLSMALLINT handle_type, SQLHANDLE handle) {
   SQLSMALLINT message_length = 0;
   if (SQLGetDiagRec(handle_type, handle, 1, state, &native_error, message,
                     sizeof(message), &message_length) == SQL_SUCCESS) {
-    std::fprintf(stderr, "%s: %s (%d)\n", state, message, native_error);
+    std::fprintf(stderr, "%s: %s (%d)\n", state, message, static_cast<int>(native_error));
   }
 }
 

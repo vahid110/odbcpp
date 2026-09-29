@@ -328,3 +328,20 @@ each configuration during development. `git diff --check` passes.
 Local macOS leak detection remains disabled; Linux CI retains it. The completion
 report records the ensuing CI run. A4 and G9a remain open for the bounded work
 identified above.
+
+## Windows live gate — 2026-09-29
+
+The standard Windows Server 2025 GitHub-hosted runner now starts a disposable
+SCRAM-authenticated PostgreSQL cluster using its preinstalled PostgreSQL binaries.
+The standalone Driver Manager executable builds against Windows odbc32 and loads
+the registered driver DLL. All nine in-process integration executables run too;
+the job rejects missing XML reports and skipped integration cases. Test and
+server logs are retained for seven days. Native registry DSN attribute reading
+remains a delivery gap: the fixture supplies the driver's current INI files as
+well as registry registration for DLL discovery.
+
+Local regression evidence: all four complete configurations pass, 36 executables,
+785 GoogleTest cases each, zero skips. The completion report must record the
+Windows CI result; local macOS runs alone cannot establish Windows compatibility.
+SQL Server/OPENQUERY and Power BI acceptance remain unexecuted and are described
+in RELEASE_PLAN.md's hosted Windows approach. A4/G9a remain open.
