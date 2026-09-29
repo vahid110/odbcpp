@@ -217,6 +217,12 @@ if(WIN32)
   target_link_libraries(${PROJECT_NAME}_driver PRIVATE ws2_32 crypt32 advapi32)
 endif()
 
+if(WIN32)
+  enable_language(RC)
+  add_library(odbcpp_setup SHARED odbc/setup/setup.cpp odbc/setup/setup_dialog.cpp odbc/setup/setup.rc odbc/setup/setup.def)
+  target_link_libraries(odbcpp_setup PRIVATE odbccp32 odbc32 user32 comctl32)
+endif()
+
 # ---- Compiler Settings ----
 include(cmake/CompilerSettings.cmake)
 apply_compiler_settings(${PROJECT_NAME}_core)

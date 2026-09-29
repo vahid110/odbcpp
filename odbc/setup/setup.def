@@ -1,0 +1,4 @@
+LIBRARY odbcpp_setup
+EXPORTS
+ ConfigDSN
+ ConfigDSNW

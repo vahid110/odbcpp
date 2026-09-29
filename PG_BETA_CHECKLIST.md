@@ -487,3 +487,18 @@ Focused parser/resolution tests passed. All four full local gates passed with
 sanitizer settings. Native Windows cases require exact-revision CI confirmation;
 local execution cannot validate them. On green CI, W2 closes; the pre-W3 effort
 review and W3/W4 delivery follow. Actual G8 application acceptance remains open.
+
+## Batch 15 — W3 native Administrator setup
+
+W2 closed at 5ed113a with all five jobs green (CI 36572088585). W3 adds a separate
+native setup DLL with Connection/Authentication tabs, installer A/W entry points,
+validated fields, transient masked passwords, test login and cancel without writes.
+The persistence allowlist excludes credentials and removes legacy PWD/PASSWORD on
+Save; partial edits retain other values, and ownership/scope checks protect other
+DSNs. Windows tests exercise the real installer, dialog and Driver Manager.
+
+Six portable model cases passed focused testing. All four local gates passed:
+38 executables, 820 GoogleTest cases each, zero skips with the existing macOS
+sanitizer settings. Windows-only installer/dialog tests and captured rendering
+require exact-revision CI validation before W3 closes. Packaging, clean-machine
+Administrator execution and G8 application acceptance remain W4/G8 work.

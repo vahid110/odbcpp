@@ -340,3 +340,21 @@ Next is the planned pre-W3 effort review, then the minimal Administrator setup G
 and x64 delivery. Retain W3's 2–3 and W4's 1–2 base-day estimates plus the existing
 30% contingency until implementation evidence changes them. W2 introduces no new
 parser, packaging dependency or application-host requirement. G8 remains separate.
+
+## Pre-W3 review and W3 implementation checkpoint — batch 15
+
+W2 closed at 5ed113a (CI 36572088585, all five jobs green). The pre-W3 review kept
+scope within the existing 2–3 base-day allowance: native setup DLL, add/configure/
+remove, validated connection fields, password masking, test login and cancel.
+Connection/Authentication tabs and separate UI/model/persistence code accommodate
+future settings and authentication methods; unsupported methods are not exposed.
+No .NET or third-party GUI runtime is introduced. The W4 1–2 base-day estimate and
+30% contingency remain provisional until clean-machine packaging evidence.
+
+W3 implementation uses real installer APIs and hosted native dialog automation.
+Exact-revision Windows CI and rendered-dialog review are required before closure.
+W4 must install/register the setup component and verify the packaged Administrator
+workflow, dependency deployment, upgrades and uninstall. This does not close G8 or
+require application hosts yet. See WINDOWS_DSN.md for password and write-recovery
+boundaries. Persistent registry write failures have best-effort recovery; no
+transactional registry or concurrent-editor guarantee is claimed.

@@ -209,6 +209,7 @@ jobs:
             ${{ runner.temp }}/odbcpp-integration-results
             ${{ runner.temp }}/odbcpp-postgres.log
             ${{ runner.temp }}/odbcpp-system-dsn.log
+            ${{ runner.temp }}/odbcpp-setup-*.bmp
           retention-days: 7
 
   linux-sanitizers:

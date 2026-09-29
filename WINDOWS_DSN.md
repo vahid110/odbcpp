@@ -76,3 +76,38 @@ roles and DSNs exist only in the disposable CI fixture. Direct parser tests cove
 first-occurrence duplicate handling and empty credentials because Windows DM can
 rewrite duplicates before the driver sees them. This does not introduce a second
 Windows parser or promise arbitrary non-ASCII ANSI code-page conversion.
+
+## Administrator setup component (W3)
+
+`odbcpp_setup.dll` exports ConfigDSN/ConfigDSNW and is registered as the driver's
+Setup library. It uses native C++/Win32 controls, without C++/CLI, .NET or a GUI
+framework runtime. Connection and Authentication tabs leave room for future
+settings and auth methods. Only database-password authentication is exposed today;
+new methods require backend support, validation and tests before appearing here.
+The dialog code is separate from persistence; the portable model owns validation
+and connection-string quoting. Future settings must extend this model and its
+persistence allowlist rather than introduce a second connection parser.
+
+Add/configure/remove use the Windows installer API and its User/System config
+mode. A supplied DSN name cannot be renamed in the dialog. Duplicate adds, orphan
+sections, invalid settings and foreign-driver edits/removals are rejected.
+Partial edits retain omitted fields and unrecognized existing settings. Save
+writes server, port, database, user and TLS selection, removes legacy PWD/PASSWORD,
+and never persists the test password. Cancel and connection testing do not save.
+The test uses a DSN-less W connection through the native manager with a five-second
+login timeout and generic status messages that do not echo credentials.
+
+Validation completes before writes. A failed write attempts to restore the
+previous owned values (or remove a newly created DSN); this is best-effort recovery,
+not a transactional registry guarantee under persistent access failure or concurrent
+external edits. Installation/upgrade rollback belongs to W4. System DSN changes
+require suitable Windows permissions; this component does not elevate itself.
+
+Hosted Windows CI invokes the real installer API and automates both tabs to check
+masking, invalid input, failed/successful test login, cancel, save, Unicode/ANSI
+entry points and User/System/foreign-driver deletion isolation. Dialog captures
+are retained with the Windows evidence. W4 must still validate the packaged setup
+component from ODBC Administrator on a clean Windows environment.
+
+The setup entry-point contract follows Microsoft's
+[ConfigDSN documentation](https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/configdsn-function).

@@ -24,6 +24,8 @@ $driver = (Resolve-Path 'build-windows/Release/odbcpp.dll').Path
 $driverName = 'ODBCPP PostgreSQL'
 $driverKey = "HKLM:\SOFTWARE\ODBC\ODBCINST.INI\$driverName"
 New-Item $driverKey -Force | Out-Null
+$setup = (Resolve-Path 'build-windows/Release/odbcpp_setup.dll').Path
+New-ItemProperty $driverKey -Name Setup -Value $setup -PropertyType String -Force | Out-Null
 New-ItemProperty $driverKey -Name Driver -Value $driver -PropertyType String -Force | Out-Null
 $driversKey = 'HKLM:\SOFTWARE\ODBC\ODBCINST.INI\ODBC Drivers'
 New-Item $driversKey -Force | Out-Null
