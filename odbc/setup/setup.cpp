@@ -67,13 +67,20 @@ bool save(const Fields& f,bool add) {
   const auto values=persisted(f);
   std::map<std::wstring,std::optional<std::wstring>> before;
   if(!add) for(auto key:keys) before[key]=read(f.dsn,key);
-  if(add && !SQLWriteDSNToIniW(f.dsn.c_str(),driver_name)) return false;
+  if(add && !SQLWriteDSNToIniW(f.dsn.c_str(),driver_name)) throw std::runtime_error("Cannot register DSN with the installer.");
   bool ok=true;
   for(const auto& [key,value]:values) if(!SQLWritePrivateProfileStringW(f.dsn.c_str(),key.c_str(),value.c_str(),ini)) {ok=false;break;}
-  if(ok) for(auto key:{L"PWD",L"PASSWORD"}) if(!SQLWritePrivateProfileStringW(f.dsn.c_str(),key,nullptr,ini)) {ok=false;break;}
+  bool password_failure=false;
+  if(ok) for(auto key:{L"PWD",L"PASSWORD"}) {
+    // Deleting an absent registry value is not a failed save.
+    if(read(f.dsn,key) && !SQLWritePrivateProfileStringW(f.dsn.c_str(),key,nullptr,ini)) {
+      ok=false;password_failure=true;break;
+    }
+  }
   if(!ok) {
     if(add) SQLRemoveDSNFromIniW(f.dsn.c_str());
     else for(const auto& [key,value]:before) SQLWritePrivateProfileStringW(f.dsn.c_str(),key.c_str(),value?value->c_str():nullptr,ini);
+    throw std::runtime_error(password_failure ? "Cannot remove legacy stored credentials." : "Cannot write DSN connection attributes.");
   }
   return ok;
 }
