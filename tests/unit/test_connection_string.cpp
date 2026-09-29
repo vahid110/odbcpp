@@ -152,9 +152,21 @@ TEST_F(NativeDsnTest, MalformedUserEntryDoesNotFallBackToSystem) {
   EXPECT_EQ(ERROR_SUCCESS, RegSetValueExW(key, L"Server", 0, REG_BINARY,
       reinterpret_cast<const BYTE*>(&numeric), sizeof(numeric)));
   EXPECT_THROW(ConnectionString::load_dsn("Malformed"), std::invalid_argument);
-  const wchar_t unterminated = L'a';
+  // Keep a nonzero character after the supplied byte range: Windows can
+  // include an adjacent terminator when writing REG_SZ data.
+  const wchar_t unterminated[] = L"ab";
   EXPECT_EQ(ERROR_SUCCESS, RegSetValueExW(key, L"Server", 0, REG_SZ,
-      reinterpret_cast<const BYTE*>(&unterminated), sizeof(unterminated)));
+      reinterpret_cast<const BYTE*>(unterminated), sizeof(wchar_t)));
+  DWORD stored_bytes = 0;
+  EXPECT_EQ(ERROR_SUCCESS, RegQueryValueExW(key, L"Server", nullptr, nullptr,
+      nullptr, &stored_bytes));
+  EXPECT_EQ(sizeof(wchar_t), stored_bytes);
+  wchar_t stored = L'\0';
+  DWORD read_bytes = sizeof(stored);
+  EXPECT_EQ(ERROR_SUCCESS, RegQueryValueExW(key, L"Server", nullptr, nullptr,
+      reinterpret_cast<BYTE*>(&stored), &read_bytes));
+  EXPECT_EQ(sizeof(wchar_t), read_bytes);
+  EXPECT_EQ(L'a', stored);
   EXPECT_THROW(ConnectionString::load_dsn("Malformed"), std::invalid_argument);
   EXPECT_EQ(ERROR_SUCCESS, RegSetValueExW(key, L"Server", 0, REG_DWORD,
       reinterpret_cast<const BYTE*>(&numeric), sizeof(numeric)));
