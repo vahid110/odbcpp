@@ -213,7 +213,7 @@ int main() {
 #endif
       "SSL=off;"
       "DESCRIPTION={note;INJECTED=ignored}";
-  SQLCHAR completed_connection_string[sizeof(connection_string)]{};
+  SQLCHAR completed_connection_string[1024]{};
   SQLSMALLINT completed_length = 0;
   const auto connect_result = SQLDriverConnect(
       connection, nullptr, connection_string, SQL_NTS,
@@ -226,7 +226,15 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
-  if (completed_length != sizeof(connection_string) - 1) {
+  // Windows DM can normalize/expand the input before it reaches the driver.
+#ifdef _WIN32
+  const auto expected_completed_length = std::strlen(
+      reinterpret_cast<const char*>(completed_connection_string));
+#else
+  const auto expected_completed_length = sizeof(connection_string) - 1;
+#endif
+  if (completed_length <= 0 ||
+      static_cast<std::size_t>(completed_length) != expected_completed_length) {
     std::fprintf(stderr, "Unexpected completed connection string length\n");
     SQLDisconnect(connection);
     SQLFreeHandle(SQL_HANDLE_DBC, connection);
@@ -879,16 +887,24 @@ int main() {
 #endif
       "SSL=no;"
       "DESCRIPTION={note;INJECTED=ignored}");
-  SQLWCHAR completed_wide_connection_string[256]{};
+  SQLWCHAR completed_wide_connection_string[1024]{};
   SQLSMALLINT completed_wide_length = 0;
   const auto wide_connect_result = SQLDriverConnectW(
       wide_connection, nullptr, wide_connection_string.data(), SQL_NTS,
-      completed_wide_connection_string, 256, &completed_wide_length,
+      completed_wide_connection_string, 1024, &completed_wide_length,
       SQL_DRIVER_NOPROMPT);
+#ifdef _WIN32
+  const auto expected_completed_wide_length = std::find(
+      std::begin(completed_wide_connection_string),
+      std::end(completed_wide_connection_string), SQLWCHAR{}) -
+      std::begin(completed_wide_connection_string);
+#else
+  const auto expected_completed_wide_length = wide_connection_string.size() - 1;
+#endif
   if (!result_is(wide_connect_result, SQL_SUCCESS,
                  "SQLDriverConnectW with braced semicolon") ||
-      completed_wide_length !=
-          static_cast<SQLSMALLINT>(wide_connection_string.size() - 1)) {
+      completed_wide_length <= 0 || completed_wide_length !=
+          static_cast<SQLSMALLINT>(expected_completed_wide_length)) {
     print_diagnostic(SQL_HANDLE_DBC, wide_connection);
     SQLFreeHandle(SQL_HANDLE_DBC, wide_connection);
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
