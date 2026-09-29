@@ -555,7 +555,7 @@ TEST_F(AttributeApisTest, EndTransactionValidatesState) {
   EXPECT_EQ("HY012", diagnostic_state(SQL_HANDLE_ENV, environment_));
 }
 
-TEST_F(AttributeApisTest, OnlyOdbcVersionIsAvailableBeforeConnect) {
+TEST_F(AttributeApisTest, ConnectionInformationRequiresConnect) {
   SQLCHAR odbc_version[8]{};
   SQLSMALLINT version_length = -1;
   ASSERT_EQ(SQL_SUCCESS,
@@ -1399,3 +1399,30 @@ TEST(AttributeDeadlineTest, SaturatesUnlimitedTimeoutWithoutOverflow) {
 }
 
 } // namespace
+
+TEST_F(AttributeApisTest, DriverVersionProbeBeforeBackendConnect) {
+  SQLCHAR version[8]{};
+  SQLSMALLINT length = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, SQL_DRIVER_ODBC_VER,
+      version, sizeof(version), &length));
+  EXPECT_STREQ("03.80", reinterpret_cast<const char*>(version));
+  EXPECT_EQ(5, length);
+  SQLWCHAR wide[8]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfoW(connection_, SQL_DRIVER_ODBC_VER,
+      wide, sizeof(wide), &length));
+  EXPECT_EQ(5 * sizeof(SQLWCHAR), static_cast<std::size_t>(length));
+  for (std::size_t i = 0; i < 6; ++i) EXPECT_EQ(version[i], wide[i]);
+}
+
+TEST_F(AttributeApisTest, DriverVersionProbePreservesBufferValidation) {
+  SQLCHAR value[3]{};
+  SQLSMALLINT length = -1;
+  EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetInfo(connection_, SQL_DRIVER_ODBC_VER,
+      value, sizeof(value), &length));
+  EXPECT_STREQ("03", reinterpret_cast<const char*>(value));
+  EXPECT_EQ(5, length);
+  EXPECT_EQ("01004", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR, SQLGetInfoW(connection_, SQL_DRIVER_ODBC_VER,
+      nullptr, -1, &length));
+  EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
+}

@@ -1466,7 +1466,11 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
   auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
 
-  if (info_type != SQL_ODBC_VER && !conn->is_connected()) {
+  // The Driver Manager probes the driver's ODBC version while loading it,
+  // before SQLDriverConnect opens the backend session. The DM owns the
+  // application-facing preconnection restriction for this probe.
+  if (info_type != SQL_ODBC_VER && info_type != SQL_DRIVER_ODBC_VER &&
+      !conn->is_connected()) {
     conn->set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
     return SQL_ERROR;
   }
@@ -1745,7 +1749,11 @@ static SQLRETURN SQLGetInfoW_impl(SQLHDBC connection_handle, SQLUSMALLINT info_t
                       SQLSMALLINT* string_length) {
   auto conn = get_valid_handle<ODBCConnection>(connection_handle);
   if (!conn) return SQL_INVALID_HANDLE;
-  if (info_type != SQL_ODBC_VER && !conn->is_connected()) {
+  // The Driver Manager probes the driver's ODBC version while loading it,
+  // before SQLDriverConnect opens the backend session. The DM owns the
+  // application-facing preconnection restriction for this probe.
+  if (info_type != SQL_ODBC_VER && info_type != SQL_DRIVER_ODBC_VER &&
+      !conn->is_connected()) {
     conn->set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
     return SQL_ERROR;
   }

@@ -345,3 +345,10 @@ Local regression evidence: all four complete configurations pass, 36 executables
 Windows CI result; local macOS runs alone cannot establish Windows compatibility.
 SQL Server/OPENQUERY and Power BI acceptance remain unexecuted and are described
 in RELEASE_PLAN.md's hosted Windows approach. A4/G9a remain open.
+
+The first Windows run passed all nine direct integration executables but exposed
+an 08003 failure during Driver Manager connection loading. The repair permits
+SQL_DRIVER_ODBC_VER before backend connection (ANSI and wide), while retaining
+preconnection rejection for session/database information. Two regression cases
+exercise version output and buffer validation. All four full local gates pass
+again with 787 GoogleTest cases each and zero skips; Windows confirmation follows.
