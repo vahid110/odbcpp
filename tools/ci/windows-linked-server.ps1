@@ -46,7 +46,7 @@ function Wait-SqlServer {
 Assert ($driverMsi.Count -eq 1) 'Expected exactly one PostgreSQL beta MSI'
 $msi = $driverMsi[0].FullName
 $msiProcess = Start-Process msiexec.exe -ArgumentList @(
-    '/i', "`"$msi`"", '/qn', '/norestart', '/l*v', "`"$installLog`"
+    '/i', "`"$msi`"", '/qn', '/norestart', '/l*v', "`"$installLog`""
 ) -Wait -PassThru
 Assert ($msiProcess.ExitCode -eq 0) "Driver MSI installation returned $($msiProcess.ExitCode)"
 
