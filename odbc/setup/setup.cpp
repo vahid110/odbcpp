@@ -34,11 +34,17 @@ Attributes attributes(const wchar_t* input) {
   return result;
 }
 std::optional<std::wstring> read(const std::wstring& section, const wchar_t* key) {
-  constexpr auto missing=L"\x01";
+  constexpr auto missing=L"ODBCPP_MISSING_VALUE_A";
   wchar_t value[32768]{};
   const auto size=SQLGetPrivateProfileStringW(section.c_str(),key,missing,value,32768,ini);
   if(size>=32767) throw std::runtime_error("Stored setting is too long.");
-  if(std::wstring(value)==missing) return std::nullopt;
+  if(std::wstring(value)==missing) {
+    // Profile APIs normalize defaults; avoid control-character sentinels and
+    // distinguish a stored value equal to the sentinel with a second default.
+    constexpr auto second=L"ODBCPP_MISSING_VALUE_B";
+    SQLGetPrivateProfileStringW(section.c_str(),key,second,value,32768,ini);
+    if(std::wstring(value)==second) return std::nullopt;
+  }
   return std::wstring(value);
 }
 void overlay(Fields& f,const Attributes& a) {
@@ -75,7 +81,7 @@ BOOL configure(HWND parent,WORD request,const wchar_t* driver,const wchar_t* inp
   std::lock_guard lock(mutex);
   UWORD original=ODBC_BOTH_DSN;
   if(!SQLGetConfigMode(&original)) return FALSE;
-  struct Restore { UWORD mode; ~Restore(){SQLSetConfigMode(mode);} } restore{original};
+  struct Restore { UWORD mode; bool active=true; ~Restore(){if(active)SQLSetConfigMode(mode);} } restore{original};
   auto mode=original==ODBC_SYSTEM_DSN?ODBC_SYSTEM_DSN:ODBC_USER_DSN;
   if(request>=ODBC_ADD_SYS_DSN && request<=ODBC_REMOVE_SYS_DSN) {mode=ODBC_SYSTEM_DSN;request-=ODBC_ADD_SYS_DSN-ODBC_ADD_DSN;}
   try {
@@ -120,6 +126,8 @@ BOOL configure(HWND parent,WORD request,const wchar_t* driver,const wchar_t* inp
     // All setup exceptions use fixed descriptions, never field values/passwords.
     const std::string reason(error.what());
     const std::wstring message(reason.begin(),reason.end());
+    // SQLSetConfigMode clears installer diagnostics; restore before posting.
+    SQLSetConfigMode(original);restore.active=false;
     SQLPostInstallerErrorW(ODBC_ERROR_REQUEST_FAILED,message.c_str());
     if(parent) MessageBoxW(parent,L"Could not save the data source. Check its name and registry permissions.",L"ODBCPP PostgreSQL Setup",MB_OK|MB_ICONERROR);
     return FALSE;
