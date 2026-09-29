@@ -205,7 +205,13 @@ int main() {
 
   SQLCHAR connection_string[] =
       "DRIVER={ODBCPP PostgreSQL};SERVER=127.0.0.1;PORT=5432;"
-      "DATABASE=postgres;UID=postgres;PWD=postgres;PWD=wrong;SSL=off;"
+      "DATABASE=postgres;UID=postgres;PWD=postgres;"
+#ifndef _WIN32
+      // Windows DM rewrites duplicate credentials before invoking the driver.
+      // Parser precedence is tested directly by KeepsFirstRepeatedOption.
+      "PWD=wrong;"
+#endif
+      "SSL=off;"
       "DESCRIPTION={note;INJECTED=ignored}";
   SQLCHAR completed_connection_string[sizeof(connection_string)]{};
   SQLSMALLINT completed_length = 0;
@@ -867,7 +873,11 @@ int main() {
   }
   auto wide_connection_string = wide_ascii(
       "DRIVER={ODBCPP PostgreSQL};SERVER=127.0.0.1;PORT=5432;"
-      "DATABASE=postgres;UID=postgres;PWD=postgres;PWD=wrong;SSL=no;"
+      "DATABASE=postgres;UID=postgres;PWD=postgres;"
+#ifndef _WIN32
+      "PWD=wrong;"
+#endif
+      "SSL=no;"
       "DESCRIPTION={note;INJECTED=ignored}");
   SQLWCHAR completed_wide_connection_string[256]{};
   SQLSMALLINT completed_wide_length = 0;
