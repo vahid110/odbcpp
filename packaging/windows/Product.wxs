@@ -2,7 +2,7 @@
   <Package Name="ODBCPP PostgreSQL Beta (x64)" Manufacturer="ODBCPP"
            Version="$(var.Version)" UpgradeCode="BC23230D-B189-4CF8-81D2-11ED5F55FC6F"
            Scope="perMachine" InstallerVersion="500" Language="1033">
-    <MajorUpgrade Schedule="afterInstallInitialize" DowngradeErrorMessage="A newer ODBCPP package is already installed." />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize" DowngradeErrorMessage="A newer ODBCPP package is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <Property Id="ARPNOMODIFY" Value="1" />
     <Property Id="REGISTERED_DRIVER">

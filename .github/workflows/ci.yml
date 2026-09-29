@@ -242,6 +242,7 @@ jobs:
           retention-days: 7
 
   windows-package:
+    timeout-minutes: 15
     needs: windows-live
     runs-on: windows-2025
     env:

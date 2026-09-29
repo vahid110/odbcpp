@@ -32,10 +32,11 @@ foreach ($file in @('odbcpp.dll','odbcpp_setup.dll')) {
 # Only the runtime libraries imported by our OpenSSL 3 build; never copy tools,
 # private keys, configuration files or the PostgreSQL runner installation.
 foreach ($name in @('libssl-3-x64.dll','libcrypto-3-x64.dll')) {
-    $opensslCandidates = @(Get-ChildItem $OpenSslRoot -Filter $name -Recurse -File)
-    if ($opensslCandidates.Count -ne 1) { throw "Expected one OpenSSL runtime $name, found $($opensslCandidates.Count)" }
-    Assert-X64 $opensslCandidates[0].FullName
-    Copy-Item $opensslCandidates[0].FullName $stage
+    $runtime = Join-Path $OpenSslRoot "bin/$name"
+    if (!(Test-Path $runtime)) { $runtime = Join-Path $OpenSslRoot $name }
+    if (!(Test-Path $runtime)) { throw "OpenSSL runtime directory is missing $name" }
+    Assert-X64 $runtime
+    Copy-Item $runtime $stage
 }
 $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
 $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -48,12 +49,22 @@ Copy-Item $license[0].FullName (Join-Path $stage 'OpenSSL-LICENSE.txt')
 Copy-Item "$build/_deps/spdlog-src/LICENSE" (Join-Path $stage 'spdlog-LICENSE.txt')
 Copy-Item "$build/_deps/spdlog-src/include/spdlog/fmt/bundled/fmt.license.rst" (Join-Path $stage 'fmt-LICENSE.txt')
 Copy-Item "$PSScriptRoot/README.md" (Join-Path $stage 'README.txt')
+function Macro([string]$Path, [string]$Name) {
+    $match = [regex]::Match((Get-Content $Path -Raw), '(?m)^#define ' + [regex]::Escape($Name) + '\s+(\d+)\s*$')
+    if (!$match.Success) { throw "Missing dependency version macro $Name" }
+    return [int]$match.Groups[1].Value
+}
+$spdlogVersion = (@('MAJOR','MINOR','PATCH') | ForEach-Object { Macro "$build/_deps/spdlog-src/include/spdlog/version.h" "SPDLOG_VER_$_" }) -join '.'
+$fmtNumber = Macro "$build/_deps/spdlog-src/include/spdlog/fmt/bundled/base.h" 'FMT_VERSION'
+$fmtVersion = '{0}.{1}.{2}' -f [math]::Floor($fmtNumber / 10000), [math]::Floor(($fmtNumber % 10000) / 100), ($fmtNumber % 100)
 $inventory = @(Get-ChildItem $stage -Filter *.dll | Sort-Object Name | ForEach-Object {
     @{ file = $_.Name; version = $_.VersionInfo.FileVersion; sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash }
 })
 @{
     packageVersion = $Version; architecture = 'x64'; wixVersion = '6.0.2'
     sourceRevision = (& git rev-parse HEAD); files = $inventory
+    headerOnlyDependencies = @{ spdlog = $spdlogVersion; fmt = $fmtVersion }
+    runnerImageVersion = $env:ImageVersion
     licenses = @{
         OpenSSL = 'OpenSSL-LICENSE.txt'; spdlog = 'spdlog-LICENSE.txt'; fmt = 'fmt-LICENSE.txt'
         MSVC = 'https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution'
