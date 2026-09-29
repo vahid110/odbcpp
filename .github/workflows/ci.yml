@@ -189,7 +189,13 @@ jobs:
           ctest --test-dir build-windows -C Release -L integration --timeout 90 --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw "Windows integration tests failed" }
           $reports = @(Get-ChildItem "$env:RUNNER_TEMP/odbcpp-integration-results" -Filter *.xml)
-          if ($reports.Count -ne 9) { throw "Expected all nine GoogleTest integration reports" }
+          $expectedReports = @(
+            Get-ChildItem tests/integration -Filter *.cpp |
+              Where-Object Name -ne 'it_redshift_real.cpp'
+          ).Count
+          if ($reports.Count -ne $expectedReports) {
+            throw "Expected $expectedReports PostgreSQL GoogleTest integration reports, found $($reports.Count)"
+          }
           foreach ($report in $reports) {
             [xml]$result = Get-Content $report.FullName
             if ([int]$result.testsuites.tests -eq 0 -or [int]$result.testsuites.skipped -ne 0) {
