@@ -165,7 +165,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     EmptyQueryResponse, DescriptionNoData,
     DescriptionMissingParse, DescriptionMissingParameters,
     DescriptionMissingResult, DescriptionOutOfOrder,
-    DescriptionServerError
+    DescriptionServerError, OwnedResultCells
   };
 
   explicit ScriptedBackendTransport(
@@ -432,6 +432,21 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('t', "\0\0", 2);
       append_message('1', "", 0);
       append_message('n', "", 0);
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::OwnedResultCells) {
+      constexpr char description[] =
+          "\0\1value\0" "\0\0\0\0" "\0\0" "\0\0\0\31"
+          "\377\377" "\377\377\377\377" "\0\0";
+      append_message('T', description, sizeof(description) - 1);
+      constexpr char null_row[] = "\0\1\377\377\377\377";
+      constexpr char empty_row[] = "\0\1\0\0\0\0";
+      constexpr char text_row[] = "\0\1\0\0\0\3abc";
+      append_message('D', null_row, sizeof(null_row) - 1);
+      append_message('D', empty_row, sizeof(empty_row) - 1);
+      append_message('D', text_row, sizeof(text_row) - 1);
+      append_message('C', "SELECT 3", sizeof("SELECT 3"));
+      constexpr char error[] = "SERROR\0C22012\0Mdivision by zero\0";
+      append_message('E', error, sizeof(error));
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::DescriptionServerError) {
       constexpr char error[] = "SERROR\0C42601\0Msyntax error\0";
@@ -1726,4 +1741,34 @@ TEST(BackendTransactionTest, GenericBackendDoesNotAssumeTransactionSupport) {
     EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature), result.error());
   }
   EXPECT_FALSE(backend.is_connected());
+}
+
+TEST(BackendResultContractTest, RowsMetadataAndDeferredErrorsOutliveConnection) {
+  rs::core::database::QueryResult retained;
+  {
+    rs::core::database::postgres::PgDatabaseConnection backend(
+        std::make_unique<ScriptedBackendTransport>(
+            ScriptedBackendTransport::ResponseMode::OwnedResultCells));
+    rs::core::database::ConnectionSettings settings;
+    settings.use_ssl = false;
+    ASSERT_TRUE(backend.connect(settings).has_value());
+    auto result = backend.execute_query("scripted result", rs::util::Deadline::max());
+    ASSERT_TRUE(result.has_value()) << result.error_message();
+    EXPECT_TRUE(backend.is_connected());
+    retained = std::move(*result);
+    backend.disconnect();
+  }
+  ASSERT_EQ(1u, retained.columns.size());
+  EXPECT_EQ("value", retained.columns[0].name);
+  EXPECT_EQ(25u, retained.columns[0].type_id);
+  ASSERT_EQ(3u, retained.rows.size());
+  for (const auto& row : retained.rows) ASSERT_EQ(1u, row.size());
+  EXPECT_FALSE(retained.rows[0][0].has_value());
+  ASSERT_TRUE(retained.rows[1][0].has_value());
+  EXPECT_TRUE(retained.rows[1][0]->empty());
+  EXPECT_EQ(std::optional<std::string>("abc"), retained.rows[2][0]);
+  ASSERT_EQ(1u, retained.additional_results.size());
+  EXPECT_EQ("22012", retained.additional_results[0].error_sqlstate);
+  EXPECT_NE(std::string::npos,
+            retained.additional_results[0].error_message.find("division by zero"));
 }

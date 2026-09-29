@@ -260,3 +260,62 @@ review/document native versus normalized result/parameter representations,
 error/SQLSTATE and connection reuse/retirement contracts; exercise a differing
 fake backend through shared ODBC orchestration (including these capabilities),
 then close architecture acceptance only after the dependency review and gates.
+
+## A4 diagnostic and ownership contract — batch 10
+
+`normalize_error_sqlstate` now interprets native server states in the selected
+backend. It accepts a neutral statement context and returns an owned normalized
+SQLSTATE or no mapping. PostgreSQL owns its vendor codes and context-sensitive
+DDL mappings; the generic backend makes no PostgreSQL assumptions. Shared ODBC
+validates the returned state's shape, chooses operation-specific fallbacks and
+maps transport/timeout/unsupported errors. Immediate execution, preparation and
+SQLMoreResults use this boundary. Deferred results lack reliable per-statement
+DDL context, so their existing conservative fallback remains intentional.
+
+The internal synchronous contract is:
+
+- Input strings/views/spans are borrowed only until the call returns. ODBC handle
+  serialization protects mutable session state; the interface does not promise
+  independent concurrent calls on one connection.
+- QueryResult owns rows, column names, native metadata, command tags and nested
+  results/errors. They survive subsequent calls, disconnect and backend destruction.
+  A nullopt cell is NULL; an engaged empty string is a distinct non-NULL value.
+  Type/catalog/capability views use their documented connection-lifetime storage.
+- Native type IDs, modifiers, table provenance, parameter type IDs, format codes
+  and command tags belong to the backend. Shared metadata uses describe_type,
+  resolve_types or explicit normalized_type. PostgreSQL binary wire results are
+  rejected; supported text-format values still include native encodings below.
+- A top-level Result error prevents exposing partial results. Successfully buffered
+  earlier results can instead carry a deferred error in additional_results. Its
+  native SQLSTATE travels with that result, independent of mutable last-error state.
+  get_last_server_sqlstate supplies the immediately failed server operation, not
+  a persistent diagnostic history. Callers use it only for QueryFailed.
+- One absolute steady-clock deadline covers an operation and its nested I/O;
+  metadata resolution and transaction commands preserve the supplied deadline.
+  The shared caller owns timeout selection. Timeouts retire the ODBC connection;
+  the PostgreSQL-family session also closes on failed/framing-invalid transport.
+- A drained server error with a complete ReadyForQuery can leave the session
+  reusable, although an explicit transaction may still require rollback. Protocol
+  corruption and network failure retire the backend. COPY streaming is unsupported
+  and retires the session; unsupported binary results rejected after draining do
+  not by themselves retire it. SQLSTATE mapping never decides session reuse.
+
+Tests verify normalized errors including malformed/unknown/ambiguous states,
+owned diagnostic storage, direct/prepared/deferred mapping and recovery. A scripted
+real PostgreSQL parser/session test retains NULL, empty and nonempty rows, metadata
+and a deferred error after destruction. Existing liveness/deadline tests remain
+required, rather than replacing them with contract-only assertions.
+
+### Explicit remaining dependency review
+
+A4/G9a remains open. Shared binary conversion still understands bytea text and
+binary parameters still carry its encoding; boolean conversion also accepts native
+PostgreSQL representations. These must be normalized or moved behind the backend
+boundary, with existing binding/get-data/parameter tests preserved. Shared apply_query_result still classifies native command_tag text into ODBC
+dynamic-function diagnostics; move that interpretation to normalized backend
+metadata as part of the same remaining value/result work. GenericDatabaseConnection and
+IProtocolParser are PostgreSQL-family protocol/session internals despite their
+names; they are not a universal protocol SDK. A differing fake IDatabaseConnection
+must exercise shared ODBC selection, results/NULL, diagnostics, unsupported features
+and capability reporting after those leaks are addressed. No work is waived or
+moved to public SDK packaging by this documentation.

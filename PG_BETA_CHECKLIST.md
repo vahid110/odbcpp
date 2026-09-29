@@ -385,3 +385,25 @@ report records the ensuing CI run, including mandatory Windows live tests.
 A4/G9a remain open for normalized/native result, error/deadline/lifetime contract
 review and a differing fake backend through shared ODBC orchestration. W1–W4
 follow architecture closure and precede final Windows application acceptance.
+
+## Batch 10 — A4 diagnostics and ownership contract
+
+Native server SQLSTATE interpretation now belongs to the selected backend;
+shared ODBC retains transport/timeout mapping and validates normalized states.
+PostgreSQL direct/prepared/deferred diagnostics and conservative ambiguous DDL
+fallbacks are preserved. Four unit cases cover mappings, invalid/unknown/context
+edges, a generic backend and owned diagnostic storage. One live case exercises
+mapped/fallback errors across execution paths with subsequent recovery. A scripted
+session case verifies retained NULL/empty/text rows, metadata and a deferred error
+after backend destruction. Result/parameter/lifetime/deadline and session reuse
+contracts are recorded in BACKEND_BOUNDARY.md and the public internal headers.
+
+Focused native-type, connection-liveness and live metadata suites passed.
+All four complete local gates passed: 36 executables and 797 GoogleTest cases
+per configuration, zero skips. Sanitizers use the documented macOS leak-detection
+setting; Linux CI retains leak coverage. The completion report records the pushed
+SHA's five-job CI result, including hosted Windows live integration.
+
+A4/G9a remains open: binary/boolean value and binary parameter encodings, native
+command-tag interpretation, and differing fake-backend ODBC acceptance are the
+bounded remaining architecture work. W1–W4 follow architecture closure.

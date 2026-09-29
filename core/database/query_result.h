@@ -9,6 +9,9 @@
 
 namespace rs::core::database {
 
+// Names and normalized_type are common metadata. IDs, size/modifier, table
+// provenance and format_code are opaque backend fields; shared callers must use
+// describe_type/resolve_types rather than interpreting native numeric values.
 struct ResultColumnMetadata {
   std::string name;
   std::uint32_t table_id{0};
@@ -21,10 +24,17 @@ struct ResultColumnMetadata {
   std::optional<NativeTypeInfo> normalized_type{};
 };
 
+// Owning bytes: nullopt is SQL NULL; an engaged empty string is a non-NULL empty
+// value. Current PostgreSQL results use text format, including native bytea and
+// boolean representations (normalization of those remains an A4 work item).
 using ResultCell = std::optional<std::string>;
 using ResultRow = std::vector<ResultCell>;
 using ResultRows = std::vector<ResultRow>;
 
+// Fully owning snapshot: rows, metadata and additional results survive later
+// calls, disconnect and backend destruction. Deferred server errors belong to
+// their result; error_sqlstate is native and must be normalized by the backend.
+// command_tag and parameter_type_ids are native, not portable SQL semantics.
 struct QueryResult {
   ResultRows rows;
   std::vector<ResultColumnMetadata> columns;
