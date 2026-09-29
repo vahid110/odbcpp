@@ -21,7 +21,7 @@ public:
   // Parse connection string: "DSN=mydsn;UID=user;PWD=pass" or "DRIVER={ODBCPP};SERVER=host;..."
   static std::map<std::string, std::string> parse(const std::string& conn_str);
   
-  // Load DSN from system DSN files
+  // Load native Windows User/System DSN or platform INI configuration
   static std::map<std::string, std::string> load_dsn(const std::string& dsn_name);
 
   // Resolve a DSN name or connection string without losing the individual
@@ -41,7 +41,7 @@ public:
   static std::string to_upper(const std::string& str);
 };
 
-// DSN file reader for cross-platform DSN support
+// Platform DSN and driver configuration access
 class DSNReader {
 public:
   // Read DSN configuration from file
@@ -50,7 +50,7 @@ public:
   // Check if DSN exists in system
   static bool dsn_exists(const std::string& dsn_name);
   
-  // Read driver configuration from odbcinst.ini
+  // Read native Windows registration or platform odbcinst.ini defaults
   static std::map<std::string, std::string> read_driver_config(const std::string& driver_name);
   
   // Check if driver exists in system

@@ -138,6 +138,10 @@ list(APPEND CORE_SOURCES
   "odbc/unicode.cpp"
 )
 
+if(WIN32)
+  list(APPEND CORE_SOURCES "odbc/windows_registry.cpp" "odbc/windows_registry.h")
+endif()
+
 # Build static library for linking examples/tests
 add_library(${PROJECT_NAME}_core STATIC ${CORE_SOURCES})
 add_library(${PROJECT_NAME}::core ALIAS ${PROJECT_NAME}_core)
@@ -209,8 +213,8 @@ if(ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE)
 endif()
 
 if(WIN32)
-  target_link_libraries(${PROJECT_NAME}_core PRIVATE ws2_32 crypt32)
-  target_link_libraries(${PROJECT_NAME}_driver PRIVATE ws2_32 crypt32)
+  target_link_libraries(${PROJECT_NAME}_core PRIVATE ws2_32 crypt32 advapi32)
+  target_link_libraries(${PROJECT_NAME}_driver PRIVATE ws2_32 crypt32 advapi32)
 endif()
 
 # ---- Compiler Settings ----

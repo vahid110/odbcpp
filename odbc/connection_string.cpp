@@ -1,4 +1,5 @@
 #include "connection_string.h"
+#include "windows_registry.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -12,6 +13,15 @@ namespace {
 void overlay(std::map<std::string, std::string>& target,
              const std::map<std::string, std::string>& source) {
   for (const auto& [key, value] : source) target[key] = value;
+  // Normalize aliases per precedence layer. Within a layer the existing primary
+  // spelling wins; an explicit alias still overrides a lower-priority primary.
+  for (const auto& [primary, alias] : {std::pair{"SERVER", "HOST"},
+       {"DATABASE", "DB"}, {"UID", "USER"}, {"PWD", "PASSWORD"}}) {
+    const auto preferred = source.find(primary);
+    const auto alternate = source.find(alias);
+    if (preferred != source.end()) target[primary] = preferred->second;
+    else if (alternate != source.end()) target[primary] = alternate->second;
+  }
 }
 
 std::string environment_value(const char* name) {
@@ -95,6 +105,12 @@ std::map<std::string, std::string> ConnectionString::parse(const std::string& co
 }
 
 std::map<std::string, std::string> ConnectionString::load_dsn(const std::string& dsn_name) {
+#ifdef _WIN32
+  if (!dsn_name.empty()) {
+    const auto native = windows_registry::load_dsn(dsn_name);
+    if (native) return *native;
+  }
+#endif
   auto dsn_paths = get_dsn_file_paths();
   
   for (const auto& path : dsn_paths) {
@@ -135,11 +151,20 @@ ResolvedConnectionParameters ConnectionString::resolve(
     resolved.driver_parameters =
         DSNReader::read_driver_config(resolved.driver_name);
   }
+#ifdef _WIN32
+  if (resolved.driver_parameters.empty() && resolved.driver_name != default_driver_name) {
+    resolved.driver_parameters = DSNReader::read_driver_config(default_driver_name);
+  }
+#endif
   // Keep the generic legacy registration useful for direct connections.
   if (resolved.driver_parameters.empty() && resolved.driver_name != "ODBCPP") {
     resolved.driver_parameters = DSNReader::read_driver_config("ODBCPP");
   }
 
+  resolved.effective_parameters.clear();
+  overlay(resolved.effective_parameters, resolved.driver_parameters);
+  overlay(resolved.effective_parameters, resolved.dsn_parameters);
+  overlay(resolved.effective_parameters, resolved.connection_parameters);
   return resolved;
 }
 
@@ -153,9 +178,8 @@ std::vector<std::string> ConnectionString::get_dsn_file_paths() {
   if (!odbcsysini.empty()) paths.push_back(odbcsysini + "/odbc.ini");
 
 #ifdef _WIN32
-  // Windows: Registry-based DSNs (simplified file-based approach for now)
-  paths.push_back("C:\\Windows\\odbc.ini");
-  paths.push_back("odbcpp.dsn"); // Local DSN file
+  // Native registry sources are preferred. Only explicit environment INI paths
+  // remain as legacy/test fallback; never discover implicit working-directory files.
 #else
   // Unix/Linux/macOS: unixODBC standard locations
   // Standard unixODBC locations
@@ -193,8 +217,7 @@ std::vector<std::string> ConnectionString::get_driver_file_paths() {
   if (!odbcsysini.empty()) paths.push_back(odbcsysini + "/odbcinst.ini");
 
 #ifdef _WIN32
-  // Windows: Registry-based drivers (simplified file-based approach for now)
-  paths.push_back("C:\\Windows\\odbcinst.ini");
+  // Driver defaults use native registry registration before explicit INI fallback.
 #else
   // Unix/Linux/macOS: unixODBC standard locations
   // Standard unixODBC locations
@@ -235,19 +258,16 @@ std::map<std::string, std::string> DSNReader::read_dsn_file(const std::string& f
 }
 
 bool DSNReader::dsn_exists(const std::string& dsn_name) {
-  auto paths = ConnectionString::get_dsn_file_paths();
-  
-  for (const auto& path : paths) {
-    auto params = read_dsn_file(path, dsn_name);
-    if (!params.empty()) {
-      return true;
-    }
-  }
-  
-  return false;
+  return !ConnectionString::load_dsn(dsn_name).empty();
 }
 
 std::map<std::string, std::string> DSNReader::read_driver_config(const std::string& driver_name) {
+#ifdef _WIN32
+  if (!driver_name.empty()) {
+    const auto native = windows_registry::load_driver(driver_name);
+    if (native) return *native;
+  }
+#endif
   auto paths = ConnectionString::get_driver_file_paths();
   
   for (const auto& path : paths) {

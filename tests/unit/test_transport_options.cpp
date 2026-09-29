@@ -330,4 +330,26 @@ TEST_F(ConnectionResolutionTest, DsnOverridesInvalidDriverDefault) {
   EXPECT_EQ(options.mode, TransportMode::Async);
 }
 
+TEST_F(ConnectionResolutionTest, DriverDefaultsAndAliasesRespectLayerPrecedence) {
+  std::ofstream driver(directory_ / "odbcinst.ini", std::ios::trunc);
+  driver << "[ODBCPP Test Driver]\nServer=driver.example\nDatabase=driver_db\n"
+            "UID=driver_user\nPWD=driver_password\nPort=6543\n";
+  driver.close();
+  const auto defaults = rs::odbc::ConnectionString::resolve("DSN=TransportOptionsTest", "Unused Default");
+  EXPECT_EQ("dsn.example", defaults.effective_parameters.at("SERVER"));
+  EXPECT_EQ("driver_db", defaults.effective_parameters.at("DATABASE"));
+  EXPECT_EQ("6543", defaults.effective_parameters.at("PORT"));
+  const auto overridden = rs::odbc::ConnectionString::resolve(
+      "DSN=TransportOptionsTest;HOST=explicit.example;DB=explicit_db;USER=alice;PASSWORD={}",
+      "Unused Default");
+  EXPECT_EQ("explicit.example", overridden.effective_parameters.at("SERVER"));
+  EXPECT_EQ("explicit_db", overridden.effective_parameters.at("DATABASE"));
+  EXPECT_EQ("alice", overridden.effective_parameters.at("UID"));
+  EXPECT_EQ("", overridden.effective_parameters.at("PWD"));
+  const auto same_layer = rs::odbc::ConnectionString::resolve(
+      "SERVER=primary;HOST=alias;UID=primary;USER=alias", "Unused Default");
+  EXPECT_EQ("primary", same_layer.effective_parameters.at("SERVER"));
+  EXPECT_EQ("primary", same_layer.effective_parameters.at("UID"));
+}
+
 } // namespace
