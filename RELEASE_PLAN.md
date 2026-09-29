@@ -110,6 +110,33 @@ References: [Windows runner image inventory](https://github.com/actions/runner-i
 [MSDASQL linked-server configuration](https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/sp-addlinkedserver-transact-sql),
 [Power BI Desktop requirements](https://learn.microsoft.com/en-us/power-bi/fundamentals/desktop-get-the-desktop).
 
+### Windows delivery work packages — approved 2026-09-29
+
+These are required PostgreSQL beta work, not deferred SDK or Redshift work.
+Retain the sequence: A4/G9a closure, native Windows configuration and basic
+packaging, then G8 application acceptance on packaged artifacts, then Redshift.
+The hosted Windows API gate is already green at `b5f9d0b`; it does not close G11.
+
+| ID | Gate / acceptance | Provisional base engineering days |
+|---|---|---:|
+| W1 | G5/G11: read native User/System DSNs and driver defaults in the matching registry view; explicit connection attributes override DSN values; define same-name User/System precedence. Test absent/malformed entries, Unicode, denied access and SQL Server service-account visibility. No dependency on CI INI files for native DSNs | 1–2 |
+| W2 | G5: preserve one parser; test DSN-less and DSN-plus-overrides through native Windows DM in A/W paths, braces/semicolons, empty values, normalization, credential handling and failure recovery. Retain direct parser tests where DM rewrites input | 0.5–1 |
+| W3 | G11: Windows ODBC Administrator setup component with add/configure/remove, minimal validated connection fields, masked credentials, connection test and cancel without persistence. Test successful edits, bad inputs, failed login and deletion isolation. No persisted plaintext passwords by default | 2–3 |
+| W4 | G11: reproducible x64 beta installer/uninstaller registers driver and setup component, deploys runtime dependencies, handles upgrade/rollback and architecture mismatch; clean-machine install/configure/connect/uninstall evidence. Remove only owned registration and explicitly selected DSNs | 1–2 |
+
+W1/W2 precede SQL Server/Power BI acceptance. W3/W4 precede final packaged G8
+acceptance and PG-BETA; scripted application prototyping may run earlier.
+Initial Windows scope is x64; x86/ARM64 delivery requires separate sizing.
+ODBC Administrator DSN configuration is included; SQLDriverConnect interactive
+login prompts remain deferred unless a selected application requires them.
+
+Windows subtotal: **4.5–8 base engineering days**, plus **1.35–2.4 days (30%)**
+contingency. These are planning estimates, not elapsed-time promises. Replace
+the Windows portion of the old unsized delivery allowance with these packages;
+do not add both allowances or absorb this scope into contingency. The total M1
+forecast remains provisional until the three application tracks are sized. Review
+after W1 and before W3; bounded investigation rules still apply.
+
 **Estimate impact:** M1's 14–23 base days included only one application and
 2–3 days for application/delivery. That is now a pre-expansion baseline, not a
 validated forecast for all three tracks. Size Windows live setup and each app
@@ -252,7 +279,7 @@ its residual backlog with test references. It does not promote a row to Verified
 | T2 | SQLCancel and data-at-execution APIs; currently not part of the exported surface | Application needs cancellation/streamed input. Verify bounded deadlines/cleanup now; if required, promote and estimate before beta |
 | T3 | Exhaustive conversion cross-product, intervals and backend-specific types beyond frozen scalar list | Concrete required column/query, interoperability defect, or proven missing safety boundary |
 | T4 | Extra catalog precision/origin fields, statistics accuracy, restricted-user scenarios beyond the selected permission model | Promised catalog behavior or selected application fails; security/visibility defects in supported paths are immediate blockers |
-| T5 | Windows DSN GUI, polished MSI and distribution-specific installers | Product distribution requires them; documented clean installation remains G11 |
+| T5 | SQLDriverConnect interactive login prompts, cosmetic installer polish and extra distribution-specific packages | Selected workflow needs them. Native Windows DSNs, minimal ODBC Administrator GUI and a usable x64 beta installer are required W1–W4/G11, not deferred |
 | T6 | Additional IAM/SSO providers, browser auth, automatic credential refresh beyond selected method | User-selected enterprise authentication or credential lifecycle requires it; chosen auth never deferred |
 | T7 | Native handling for Redshift SUPER/spatial/sketch types and other extensions | Selected workload uses them. Only offer a text fallback if its metadata and representation are verified on real Redshift |
 | T8 | Binary wire-format acceleration, prepared cache, pooling tuning, transport micro-optimizations | G10 measurements identify a bottleneck; no unmeasured speedup target |

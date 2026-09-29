@@ -120,3 +120,14 @@ in a supported path may be deferred to meet a date.
 The scheduler remains paused. This plan does not resume it or authorize cloud
 resource creation. On an explicit resume, its saved instructions should be
 updated to select work by these gates and stop at the agreed milestone.
+
+### Windows delivery scope clarification — 2026-09-29
+
+PG-BETA now explicitly requires W1–W4 from RELEASE_PLAN.md: native Windows DSNs,
+connection-string interoperability, a minimal ODBC Administrator setup GUI and
+x64 installer/uninstaller. Estimate 4.5–8 base engineering days plus separate 30%
+contingency, replacing overlapping Windows delivery allowance. The earlier M1
+range remains historical, not a revised completion forecast. Complete A4/G9a
+first; then W1/W2 before Windows applications, and W3/W4 before packaged G8
+acceptance. Redshift remains after PG-BETA. Broader installer polish and
+interactive connection prompts remain conditional, not part of these packages.

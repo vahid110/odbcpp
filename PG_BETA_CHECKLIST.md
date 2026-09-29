@@ -31,6 +31,21 @@ The application expansion on 2026-09-26 supersedes the one-application
 assumption: this range is a pre-expansion baseline, pending separate sizing of
 the three tracks in RELEASE_PLAN.md. Added scope is not contingency.
 
+## Windows delivery addition
+
+Required W1–W4 in RELEASE_PLAN.md cover native registry DSNs, connection-string
+interoperability, the minimal ODBC Administrator GUI and x64 beta installation.
+Subtotal 4.5–8 base days plus separate 30% contingency; replaces overlapping
+Windows delivery allowance and does not make the old M1 total a current forecast.
+A4/G9a is next. W1/W2 precede Windows application acceptance; W3/W4 and packaged
+application reruns precede PG-BETA. Interactive SQLDriverConnect prompting stays
+out of the frozen scope unless a chosen application demonstrates a need.
+
+Hosted Windows evidence: [CI 36555245322](https://github.com/vahid110/odbcpp/actions/runs/36555245322)
+passed at `b5f9d0b`, including all 365 live GoogleTest cases without skips and the
+standalone odbc32 Driver Manager executable. PostgreSQL setup took 10 seconds;
+live tests took 21 seconds. This does not close native DSN/GUI/installer acceptance.
+
 ## All 38 partial operations: proposed scope and evidence
 
 Each row is classified once. Evidence names refer to existing test executables;
