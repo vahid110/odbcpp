@@ -6,6 +6,8 @@ Add-Type -AssemblyName System.Drawing
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.ComponentModel;
 public static class SetupUiMessages {
     [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
@@ -25,6 +27,58 @@ public static class SetupUiMessages {
             return true;
         }, IntPtr.Zero);
         return found;
+    }
+    [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr window, EnumCallback callback, IntPtr parameter);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetClassName(IntPtr window, StringBuilder name, int size);
+    [DllImport("user32.dll", EntryPoint="SendMessageW")] private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wp, IntPtr lp);
+    [DllImport("user32.dll", EntryPoint="SendMessageW", CharSet=CharSet.Unicode)] private static extern IntPtr SendText(IntPtr window, uint message, IntPtr wp, string text);
+    [DllImport("user32.dll")] private static extern int GetDlgCtrlID(IntPtr window);
+    [DllImport("user32.dll")] private static extern IntPtr GetParent(IntPtr window);
+    [DllImport("kernel32.dll", SetLastError=true)] private static extern IntPtr OpenProcess(uint access, bool inherit, uint process);
+    [DllImport("kernel32.dll", SetLastError=true)] private static extern IntPtr VirtualAllocEx(IntPtr process, IntPtr address, IntPtr size, uint allocation, uint protection);
+    [DllImport("kernel32.dll", SetLastError=true)] private static extern bool WriteProcessMemory(IntPtr process, IntPtr address, byte[] data, IntPtr size, out IntPtr written);
+    [DllImport("kernel32.dll")] private static extern bool VirtualFreeEx(IntPtr process, IntPtr address, IntPtr size, uint type);
+    [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
+    private static IntPtr Child(IntPtr parent, string wanted) {
+        IntPtr found=IntPtr.Zero;
+        EnumChildWindows(parent,delegate(IntPtr window,IntPtr parameter) {
+            var name=new StringBuilder(128);GetClassName(window,name,name.Capacity);
+            if(name.ToString()==wanted){found=window;return false;}return true;
+        },IntPtr.Zero);
+        return found;
+    }
+    public static int TabCount(IntPtr parent) {
+        return SendMessage(Child(parent,"SysTabControl32"),0x1304,IntPtr.Zero,IntPtr.Zero).ToInt32();
+    }
+    public static void SelectDriver(IntPtr dialog,string name) {
+        var list=Child(dialog,"SysListView32");
+        if(list==IntPtr.Zero) {
+            list=Child(dialog,"ListBox");
+            if(list==IntPtr.Zero)throw new Exception("Native driver list not found.");
+            var index=SendText(list,0x1A2,new IntPtr(-1),name);
+            if(index.ToInt64()<0)throw new Exception("Packaged driver not listed in Administrator.");
+            SendMessage(list,0x186,index,IntPtr.Zero);
+            SendMessage(GetParent(list),0x111,new IntPtr(GetDlgCtrlID(list)|(1<<16)),list);
+            return;
+        }
+        uint owner;GetWindowThreadProcessId(list,out owner);
+        var process=OpenProcess(0x428,false,owner);if(process==IntPtr.Zero)throw new Win32Exception();
+        var memory=IntPtr.Zero;
+        try {
+            memory=VirtualAllocEx(process,IntPtr.Zero,new IntPtr(512),0x3000,4);
+            if(memory==IntPtr.Zero)throw new Win32Exception();
+            // x64 LVFINDINFOW plus UTF-16 text, in memory owned by our launched app.
+            var data=new byte[512];BitConverter.GetBytes(2u).CopyTo(data,0);
+            BitConverter.GetBytes(memory.ToInt64()+128).CopyTo(data,8);
+            Encoding.Unicode.GetBytes(name+"\0").CopyTo(data,128);IntPtr written;
+            if(!WriteProcessMemory(process,memory,data,new IntPtr(data.Length),out written))throw new Win32Exception();
+            var index=SendMessage(list,0x1053,new IntPtr(-1),memory);
+            if(index.ToInt64()<0)throw new Exception("Packaged driver not listed in Administrator.");
+            data=new byte[512];BitConverter.GetBytes(3u).CopyTo(data,12);BitConverter.GetBytes(3u).CopyTo(data,16);
+            if(!WriteProcessMemory(process,memory,data,new IntPtr(data.Length),out written))throw new Win32Exception();
+            if(SendMessage(list,0x102B,index,memory)==IntPtr.Zero)throw new Exception("Cannot select packaged driver.");
+            SendMessage(list,0x1013,index,IntPtr.Zero);
+        } finally {if(memory!=IntPtr.Zero)VirtualFreeEx(process,memory,IntPtr.Zero,0x8000);CloseHandle(process);}
     }
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
     [DllImport("user32.dll", SetLastError=true)]
@@ -85,16 +139,16 @@ try {
     } while ((Get-Date) -lt $deadline)
     if (!$window) { throw '64-bit ODBC Administrator did not open' }
     Write-Host ('Administrator window: ' + $window.Current.Name)
-    $tab = Wait-Named $window 'User DSN'
-    $tab.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+    # The fresh Administrator starts on User DSN. Generic accessibility proxies
+    # expose the page label but not individual native tab/list items.
+    [void](Wait-Named $window 'User Data Sources:')
     Invoke-Button $window 'Add...'
     $create = Wait-Named $root 'Create New Data Source'
-    $driver = Wait-Named $create 'ODBCPP PostgreSQL'
-    $driver.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+    [SetupUiMessages]::SelectDriver([IntPtr]$create.Current.NativeWindowHandle,'ODBCPP PostgreSQL')
     Invoke-Button $create 'Finish'
     $setup = Wait-Named $root 'ODBCPP PostgreSQL Setup'
-    [void](Wait-Named $setup 'Connection')
-    [void](Wait-Named $setup 'Authentication')
+    if ([SetupUiMessages]::TabCount([IntPtr]$setup.Current.NativeWindowHandle) -ne 2) { throw 'Installed setup tabs are missing' }
+    [void](Wait-Named $setup 'Data source name')
     Invoke-Button $setup 'Cancel'
     Write-Host 'Installed setup opened through 64-bit ODBC Administrator; both tabs found and Add canceled.'
 } finally {
