@@ -1,3 +1,4 @@
+#include "core/util/hex.h"
 #include <gtest/gtest.h>
 
 #include "core/database/database_factory.h"
@@ -364,4 +365,15 @@ TEST(BackendErrorsTest, NormalizedStateOwnsItsStorage) {
     backend.disconnect();
   }
   EXPECT_EQ(std::optional<std::string>("22012"), normalized);
+}
+
+TEST(BinaryParameterContractTest, PlainHexRoundTripsAllOctetsAndRejectsNativeEscapes) {
+  std::string raw;
+  for (int i = 0; i < 256; ++i) raw.push_back(static_cast<char>(i));
+  EXPECT_EQ(std::optional<std::string>(raw), rs::util::decode_hex(rs::util::encode_hex(raw)));
+  EXPECT_EQ(std::optional<std::string>(""), rs::util::decode_hex(""));
+  EXPECT_EQ(std::optional<std::string>(std::string("\0\xab\xff", 3)), rs::util::decode_hex("00aBFF"));
+  for (const auto invalid : {"0", "gg", "\\x00", "\\000", " 00", "0 "}) {
+    EXPECT_FALSE(rs::util::decode_hex(invalid));
+  }
 }

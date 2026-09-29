@@ -1,3 +1,4 @@
+#include "core/util/hex.h"
 #include "odbc_handles.h"
 #include "transaction_metadata.h"
 #include "connection_string.h"
@@ -3712,9 +3713,9 @@ SQLRETURN ODBCStatement::execute() {
                     "Binary parameter exceeds SQL binary length");
           return complete_parameter_set(SQL_ERROR);
         }
-        value = TextDataConverter::encode_binary(std::span<const std::byte>(
-            static_cast<const std::byte*>(application.data_ptr),
-            static_cast<std::size_t>(length)));
+        value.assign(static_cast<const char*>(application.data_ptr),
+                     static_cast<std::size_t>(length));
+        query_param.binary_input = true;
       } else {
         set_error(SQLSTATE_GENERAL_ERROR,
                   "Unsupported C parameter type");
@@ -3995,9 +3996,8 @@ SQLRETURN ODBCStatement::execute() {
           hex_length = character_count % 2 == 0
               ? value.size() : last_character_start;
         }
-        std::string binary_value("\\x");
-        binary_value.append(value, 0, hex_length);
-        const auto decoded = TextDataConverter::decode_binary(binary_value);
+        const auto decoded = rs::util::decode_hex(
+            std::string_view(value).substr(0, hex_length));
         if (!decoded) {
           set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
                     "Character binary parameter is not hexadecimal");
@@ -4008,7 +4008,7 @@ SQLRETURN ODBCStatement::execute() {
                     "Character binary parameter exceeds SQL binary length");
           return complete_parameter_set(SQL_ERROR);
         }
-        value = std::move(binary_value);
+        value = *decoded;
       }
       if (character_input &&
           (query_param.type == QueryParameterType::Date ||

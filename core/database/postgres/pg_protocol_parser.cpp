@@ -1,3 +1,4 @@
+#include "core/util/hex.h"
 #include "pg_sql_dialect.h"
 #include "pg_protocol_parser.h"
 #include <algorithm>
@@ -592,14 +593,21 @@ std::vector<std::byte> PgProtocolParser::create_prepared_query(
       append_u32(out, std::numeric_limits<std::uint32_t>::max());
       continue;
     }
-    if (param.value->size() >
-        static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
+    const bool binary = param.type == QueryParameterType::Binary ||
+        param.binary_input;
+    const auto maximum = static_cast<std::size_t>(
+        std::numeric_limits<std::int32_t>::max());
+    if (param.value->size() > (binary ? (maximum - 2) / 2 : maximum)) {
       throw std::length_error("PostgreSQL parameter value is too large");
     }
-    append_u32(out, static_cast<std::uint32_t>(param.value->size()));
-    if (!param.value->empty()) {
-      const auto* first = reinterpret_cast<const std::byte*>(param.value->data());
-      out.insert(out.end(), first, first + param.value->size());
+    const std::string encoded = binary
+        ? "\\x" + rs::util::encode_hex(*param.value) : std::string{};
+    const std::string_view value = binary
+        ? std::string_view(encoded) : std::string_view(*param.value);
+    append_u32(out, static_cast<std::uint32_t>(value.size()));
+    if (!value.empty()) {
+      const auto* first = reinterpret_cast<const std::byte*>(value.data());
+      out.insert(out.end(), first, first + value.size());
     }
   }
   append_u16(out, 0); // all result columns use text format

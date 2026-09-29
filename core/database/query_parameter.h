@@ -26,11 +26,14 @@ enum class QueryParameterType {
 // Values own their storage; the caller keeps the parameter span alive until the
 // synchronous call returns. nullopt and engaged empty strings remain distinct.
 // Text/numeric/temporal values use the current textual conversion contract.
-// Binary currently carries PostgreSQL bytea text, not arbitrary raw bytes; moving
-// that encoding below the backend boundary remains required before G9a closure.
+// Binary values contain raw bytes, including embedded NUL. The backend alone
+// chooses their wire encoding.
 struct QueryParameter {
   std::optional<std::string> value;
   QueryParameterType type{QueryParameterType::Unspecified};
+  // Preserve binary C input when the declared SQL type is not Binary. This is
+  // still raw data; the backend owns any conversion to its textual wire format.
+  bool binary_input{false};
 };
 
 } // namespace rs::core::database

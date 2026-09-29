@@ -5426,3 +5426,23 @@ TEST_F(PreparedStatementIntegrationTest, NegativeTests) {
     ret = SQLBindParameter(nullptr, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &param, 0, nullptr);
     EXPECT_EQ(SQL_INVALID_HANDLE, ret);
 }
+
+TEST_F(PreparedStatementIntegrationTest, BinaryParameterPreservesLiteralEscapeBytesOnServer) {
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT encode(?::bytea, 'hex')", SQL_NTS));
+    unsigned char input[]{0, 255, '\\', 'x', '4', '1'};
+    SQLLEN length = sizeof(input);
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+        SQL_C_BINARY, SQL_VARBINARY, sizeof(input), 0, input, sizeof(input), &length));
+    for (const auto size : {SQLLEN{6}, SQLLEN{0}, SQLLEN{SQL_NULL_DATA}, SQLLEN{6}}) {
+        length = size;
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        char output[32] = "unchanged";
+        SQLLEN actual = 99;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR, output, sizeof(output), &actual));
+        EXPECT_EQ(size == SQL_NULL_DATA ? SQL_NULL_DATA : size * 2, actual);
+        EXPECT_STREQ(size == SQL_NULL_DATA ? "unchanged" : size == 0 ? "" : "00ff5c783431", output);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    }
+}

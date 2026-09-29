@@ -915,3 +915,36 @@ TEST(PgProtocolParserTest, RowDescriptionRejectsUnknownFormatCodes) {
 }
 
 } // namespace
+
+TEST(PgParameterContractTest, RawBinaryIsEncodedOnlyByPostgresAndNullStaysDistinct) {
+  PgProtocolParser parser;
+  const std::string raw("\0\xff\\x41", 6);
+  const std::vector<QueryParameter> params{
+      {raw, QueryParameterType::Binary},
+      {"", QueryParameterType::Binary},
+      {std::nullopt, QueryParameterType::Binary},
+      {"\\x41", QueryParameterType::Text},
+      {raw, QueryParameterType::Text, true}};
+  const auto frames = split_frames(parser.create_prepared_query("SELECT ?, ?, ?, ?, ?", params));
+  ASSERT_EQ(6u, frames.size());
+  const auto& bind = frames[2].payload;
+  std::size_t offset = 0;
+  EXPECT_TRUE(read_cstring(bind, offset).empty());
+  EXPECT_TRUE(read_cstring(bind, offset).empty());
+  EXPECT_EQ(0, read_u16(bind, offset)); offset += 2;
+  EXPECT_EQ(5, read_u16(bind, offset)); offset += 2;
+  const std::vector<std::optional<std::string>> expected{
+      "\\x00ff5c783431", "\\x", std::nullopt, "\\x41", "\\x00ff5c783431"};
+  for (const auto& value : expected) {
+    ASSERT_LE(offset + 4, bind.size());
+    const auto length = read_u32(bind, offset); offset += 4;
+    if (!value) { EXPECT_EQ(0xffffffffu, length); continue; }
+    ASSERT_EQ(value->size(), length);
+    ASSERT_LE(offset + length, bind.size());
+    EXPECT_EQ(*value, std::string(reinterpret_cast<const char*>(bind.data() + offset), length));
+    offset += length;
+  }
+  ASSERT_EQ(offset + 2, bind.size());
+  EXPECT_EQ(0, read_u16(bind, offset));
+  EXPECT_EQ(raw, *params[0].value);
+}
