@@ -470,3 +470,20 @@ Windows CI now uses registry-only DSNs for live integration, with a conflicting
 a same-named runner User DSN has unusable settings. Exact-revision Windows CI
 confirmation is required to close W1. SQL Server/OPENQUERY remains a separate G8
 application gate, and W2 A/W connection-string acceptance is next afterward.
+
+## Batch 14 — W2 native Windows connection strings
+
+W1 closed with all five CI jobs green at d1e8d0b (run 36570790247).
+W2 preserves the shared parser and adds native DM A/W acceptance: DSN-less and
+DSN overrides, normalization, braced/escaped passwords, explicit input lengths,
+completed lengths, Unicode W credentials, empty/wrong-password rejection without
+credential disclosure, and successful recovery on the same handle. Eleven happy
+paths and four rejection/recovery sequences run under both runner and LocalSystem
+identities. Two direct parser cases retain normalization and empty-first-duplicate
+behavior independently of Windows DM rewriting.
+
+Focused parser/resolution tests passed. All four full local gates passed with
+37 executables, 814 GoogleTest cases each, zero skips and the documented macOS
+sanitizer settings. Native Windows cases require exact-revision CI confirmation;
+local execution cannot validate them. On green CI, W2 closes; the pre-W3 effort
+review and W3/W4 delivery follow. Actual G8 application acceptance remains open.

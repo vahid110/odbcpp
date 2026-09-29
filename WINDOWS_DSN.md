@@ -59,3 +59,20 @@ replace the machine's actual ODBC configuration.
 Registry layout and architecture behavior follow Microsoft's
 [registry entries for data sources](https://learn.microsoft.com/en-us/sql/odbc/reference/install/registry-entries-for-data-sources)
 and [32-bit/64-bit ODBC administration guidance](https://learn.microsoft.com/en-us/troubleshoot/sql/connect/odbc-tool-displays-32-bit-64-bit).
+
+## Native connection-string acceptance (W2)
+
+The Windows Driver Manager suite checks 11 successful connections and four
+credential rejection/recovery sequences across SQLDriverConnectA/W. It verifies
+actual database/user identity, DSN overrides against deliberately wrong defaults,
+case-normalized keys, braced semicolons and escaped braces in SCRAM passwords,
+Unicode passwords on W, explicit input lengths and completed-output lengths.
+Empty passwords override stored credentials and must fail authentication; a valid
+retry on the same handle must clear old diagnostics. Failure messages must not
+contain the rejected password. Test connection strings are never printed.
+
+The same executable runs under the runner identity and LocalSystem. Dedicated
+roles and DSNs exist only in the disposable CI fixture. Direct parser tests cover
+first-occurrence duplicate handling and empty credentials because Windows DM can
+rewrite duplicates before the driver sees them. This does not introduce a second
+Windows parser or promise arbitrary non-ASCII ANSI code-page conversion.

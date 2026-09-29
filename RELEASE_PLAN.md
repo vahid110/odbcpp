@@ -319,10 +319,24 @@ Native Windows User/System DSNs, architecture-view selection, driver defaults,
 Unicode/malformed/denied-read handling and explicit attribute/alias precedence are
 implemented. See WINDOWS_DSN.md for source-selection rules and supported registry
 data types. Windows CI is the acceptance gate for native reading, registry-only
-live integration, conflicting registry views and LocalSystem visibility. Upon
-its successful confirmation, W1 closes and W2 native Driver Manager A/W connection
-string coverage is next. SQL Server-specific application acceptance remains G8;
+live integration, conflicting registry views and LocalSystem visibility. CI 36570790247 passed all five jobs at d1e8d0b, closing W1.
+W2 native Driver Manager A/W connection-string coverage follows. SQL Server-specific application acceptance remains G8;
 this does not complete W2, W3 or W4 or require the user to supply hosts now.
 
 W1 stayed within its bounded reader/configuration scope. Retain the existing
 W2–W4 estimates; review delivery effort again before W3 as planned.
+
+## W2 implementation checkpoint — batch 14
+
+The existing parser remains shared. Native Windows DM acceptance now covers A/W
+DSN-less and DSN-plus-override connections, normalized keys, braced delimiters and
+escaped closing braces in real passwords, explicit lengths, completed-string
+lengths, explicit empty password rejection, diagnostic credential handling and
+same-handle recovery. A Unicode password additionally checks W-path conversion
+and UTF-16 length units. Direct parser tests retain first-duplicate and empty-value
+semantics where the DM rewrites input. Exact-revision Windows CI closes this gate.
+
+Next is the planned pre-W3 effort review, then the minimal Administrator setup GUI
+and x64 delivery. Retain W3's 2–3 and W4's 1–2 base-day estimates plus the existing
+30% contingency until implementation evidence changes them. W2 introduces no new
+parser, packaging dependency or application-host requirement. G8 remains separate.

@@ -60,3 +60,13 @@ try {
         $wrong.SetValue('Driver', 'C:\missing-32-bit-driver.dll')
     } finally { $wrong.Dispose() }
 } finally { $registry32.Dispose() }
+
+# W2 deliberately unusable defaults prove that explicit attributes override DSNs.
+$w2Key = 'HKLM:\SOFTWARE\ODBC\ODBC.INI\ODBCPP_W2'
+New-Item $w2Key -Force | Out-Null
+foreach ($entry in @{ Driver = $driver; Server = '127.0.0.1'; Port = '1'; Database = 'wrong'; UID = 'wrong'; PWD = 'wrong'; SSL = '0' }.GetEnumerator()) {
+    New-ItemProperty $w2Key -Name $entry.Key -Value $entry.Value -PropertyType String -Force | Out-Null
+}
+New-ItemProperty $dsnsKey -Name ODBCPP_W2 -Value $driverName -PropertyType String -Force | Out-Null
+& "$env:PGBIN/psql.exe" -X -v ON_ERROR_STOP=1 -c "CREATE ROLE odbcpp_w2 LOGIN PASSWORD 'w2;secret}tail'"
+& "$env:PGBIN/psql.exe" -X -v ON_ERROR_STOP=1 -c "CREATE ROLE odbcpp_w2_unicode LOGIN PASSWORD U&'caf\00e9;secret}tail'"

@@ -8,7 +8,7 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
 - Hosted Windows live gate added after batch 8: preinstalled PostgreSQL, native
   odbc32 Driver Manager and zero-skip integration enforcement. CI 36555245322
   passed at b5f9d0b: 365 live cases, zero skips plus standalone DM.
-  W1 is implemented in batch 13; W2–W4 configuration/delivery precede final
+  W1 is closed in batch 13; W2–W4 configuration/delivery precede final
   G8 acceptance. See RELEASE_PLAN.md for scope, estimates and dependencies.
 
 - **Batch 13 implements W1:** native Windows registry User/System DSNs and driver
@@ -16,9 +16,11 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
   acceptance. See WINDOWS_DSN.md for resolution and failure behavior.
 - A4/G9a is closed: batch 12 CI 36565977327 passed all five jobs at 160cb23.
 - Branch: `codex/transport-foundation`. Implementation scheduler stays paused.
-- Confirm batch 13's exact-revision Windows CI before closing W1. After that,
-  W2 native DM A/W connection-string tests are next; W3 GUI and W4 x64 installer
-  follow, with the planned effort review before W3. G8 applications remain later.
+- W1 closed at d1e8d0b: CI 36570790247 passed all five jobs, including registry-only
+  live connections and LocalSystem visibility.
+- Batch 14 implements W2 native DM A/W connection-string acceptance; confirm its
+  exact-revision Windows CI before closing W2. W3 GUI and W4 x64 installer follow,
+  with the planned effort review before W3. G8 applications remain later.
 - PostgreSQL first; live Redshift validation comes later. Application-host
   reminder is not due until G8 acceptance is actionable.
 - Graphify was evaluated and declined. Use narrow `rg` searches and source reads.

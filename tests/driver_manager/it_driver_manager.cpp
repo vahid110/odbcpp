@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -136,6 +137,110 @@ std::vector<SQLWCHAR> wide_text(std::u32string_view input) {
   output.push_back(0);
   return output;
 }
+
+
+#ifdef _WIN32
+// Exercise the native manager, including its connection-string rewriting. Never
+// print input/output strings: these deliberately contain fixture credentials.
+bool windows_connection_strings(SQLHENV environment) {
+  struct Case { const char* name; const char* input; const char* user; bool explicit_length; bool wide_only = false; };
+  constexpr Case cases[]{
+      {"DSN defaults", "DSN=RedshiftProd;", "postgres", false},
+      {"DSN overrides", "DSN=ODBCPP_W2;SERVER=127.0.0.1;PORT=5432;DATABASE=postgres;UID=postgres;PWD=postgres;SSL=off;", "postgres", true},
+      {"normalized keys and braces", "driver={ODBCPP PostgreSQL};server=127.0.0.1;port=5432;database={postgres};uid={postgres};pwd={postgres};ssl=off;description={note;UID=wrong};", "postgres", false},
+      {"DSN-less escaped password", "DRIVER={ODBCPP PostgreSQL};SERVER=127.0.0.1;PORT=5432;DATABASE=postgres;UID=odbcpp_w2;PWD={w2;secret}}tail};SSL=off;", "odbcpp_w2", true},
+      {"DSN credential overrides", "DSN=RedshiftProd;UID=odbcpp_w2;PWD={w2;secret}}tail};", "odbcpp_w2", false},
+      {"Unicode credentials", "DSN=RedshiftProd;UID=odbcpp_w2_unicode;PWD={caf\xc3\xa9;secret}}tail};", "odbcpp_w2_unicode", true, true}};
+  for (const bool wide : {false, true}) {
+    SQLHDBC connection = SQL_NULL_HDBC;
+    if (!succeeded(SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection))) return false;
+    const auto connect = [&](const char* input, bool explicit_length) -> SQLRETURN {
+      const auto to_wide = [](const std::string& value) {
+        const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.c_str(), -1, nullptr, 0);
+        std::vector<SQLWCHAR> result(static_cast<std::size_t>(size));
+        if (size) MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.c_str(), -1,
+                                    reinterpret_cast<wchar_t*>(result.data()), size);
+        return result;
+      };
+      auto text = to_wide(input);
+      if (text.empty()) return SQL_ERROR;
+      // With an explicit length, trailing garbage must never reach the parser.
+      const auto length = static_cast<SQLSMALLINT>(wide ? text.size() - 1 : std::strlen(input));
+      std::string narrow(input);
+      if (explicit_length) {
+        narrow += ";DESCRIPTION={unterminated";
+        text = to_wide(narrow);
+      }
+      SQLCHAR output[2048]{};
+      SQLWCHAR output_w[2048]{};
+      SQLSMALLINT output_length = -1;
+      const auto result = wide
+          ? SQLDriverConnectW(connection, nullptr, text.data(),
+                explicit_length ? length : SQL_NTS, output_w, 2048,
+                &output_length, SQL_DRIVER_NOPROMPT)
+          : SQLDriverConnectA(connection, nullptr,
+                reinterpret_cast<SQLCHAR*>(narrow.data()),
+                explicit_length ? length : SQL_NTS, output, 2048,
+                &output_length, SQL_DRIVER_NOPROMPT);
+      if (succeeded(result)) {
+        const auto actual = wide
+            ? std::find(std::begin(output_w), std::end(output_w), SQLWCHAR{}) - std::begin(output_w)
+            : std::find(std::begin(output), std::end(output), SQLCHAR{}) - std::begin(output);
+        if (output_length <= 0 || output_length != actual || actual >= 2048) {
+          std::fprintf(stderr, "W2 completed-string length mismatch (%s)\n", wide ? "W" : "A");
+          SQLDisconnect(connection);
+          return SQL_ERROR;
+        }
+      }
+      return result;
+    };
+    for (const auto& test : cases) {
+      if (test.wide_only && !wide) continue; // ANSI code-page behavior is a separate contract.
+      bool ok = succeeded(connect(test.input, test.explicit_length));
+      SQLHSTMT statement = SQL_NULL_HSTMT;
+      SQLCHAR user[64]{}, database[64]{};
+      SQLCHAR query[] = "SELECT current_user, current_database()";
+      if (ok) ok = succeeded(SQLAllocHandle(SQL_HANDLE_STMT, connection, &statement)) &&
+          succeeded(SQLExecDirectA(statement, query, SQL_NTS)) && succeeded(SQLFetch(statement)) &&
+          succeeded(SQLGetData(statement, 1, SQL_C_CHAR, user, sizeof(user), nullptr)) &&
+          succeeded(SQLGetData(statement, 2, SQL_C_CHAR, database, sizeof(database), nullptr)) &&
+          std::strcmp(reinterpret_cast<char*>(user), test.user) == 0 &&
+          std::strcmp(reinterpret_cast<char*>(database), "postgres") == 0;
+      if (statement) SQLFreeHandle(SQL_HANDLE_STMT, statement);
+      if (!ok) {
+        std::fprintf(stderr, "W2 %s failed (%s)\n", test.name, wide ? "W" : "A");
+        print_diagnostic(SQL_HANDLE_DBC, connection);
+        SQLDisconnect(connection); SQLFreeHandle(SQL_HANDLE_DBC, connection); return false;
+      }
+      if (!succeeded(SQLDisconnect(connection))) { SQLFreeHandle(SQL_HANDLE_DBC, connection); return false; }
+    }
+    for (const auto input : {"DSN=RedshiftProd;PWD=wrong-w2-password;",
+                             "DSN=RedshiftProd;PWD={};"}) {
+      const auto result = connect(input, false);
+      SQLCHAR state[6]{}, message[1024]{};
+      const auto diagnostic = SQLGetDiagRecA(SQL_HANDLE_DBC, connection, 1,
+          state, nullptr, message, sizeof(message), nullptr);
+      const bool ok = result == SQL_ERROR && succeeded(diagnostic) &&
+          state[0] == '2' && state[1] == '8' &&
+          std::strstr(reinterpret_cast<char*>(message), "wrong-w2-password") == nullptr;
+      if (!ok) {
+        std::fprintf(stderr, "W2 credential rejection/redaction failed (%s), state %.5s\n", wide ? "W" : "A", state);
+        SQLDisconnect(connection); SQLFreeHandle(SQL_HANDLE_DBC, connection); return false;
+      }
+      // Same DBC must recover, with stale authentication diagnostics cleared.
+      if (!succeeded(connect("DSN=RedshiftProd;PWD=postgres;", false)) ||
+          SQLGetDiagRecA(SQL_HANDLE_DBC, connection, 1, state, nullptr, nullptr, 0, nullptr) != SQL_NO_DATA ||
+          !succeeded(SQLDisconnect(connection))) {
+        std::fprintf(stderr, "W2 recovery failed (%s)\n", wide ? "W" : "A");
+        SQLFreeHandle(SQL_HANDLE_DBC, connection); return false;
+      }
+    }
+    SQLFreeHandle(SQL_HANDLE_DBC, connection);
+  }
+  std::puts("W2 native A/W connection-string acceptance passed (11 success, 4 rejection/recovery cases).");
+  return true;
+}
+#endif
 
 } // namespace
 
@@ -988,6 +1093,12 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
+#ifdef _WIN32
+  if (!windows_connection_strings(environment)) {
+    SQLFreeHandle(SQL_HANDLE_ENV, environment);
+    return 1;
+  }
+#endif
   SQLFreeHandle(SQL_HANDLE_ENV, environment);
   return 0;
 }
