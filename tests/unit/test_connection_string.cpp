@@ -54,6 +54,26 @@ TEST(ConnectionStringTest, KeepsFirstRepeatedOption) {
   EXPECT_EQ(parsed.size(), 2u);
 }
 
+TEST(ConnectionStringTest, NormalizesKeysWithoutChangingCredentialCase) {
+  const auto parsed = ConnectionString::parse(
+      " driver = {ODBCPP PostgreSQL} ; uId = MixedCase ; pWd={ w2;secret}}Tail };"
+      "UID=ignored;pwd=ignored");
+  EXPECT_EQ(parsed.at("DRIVER"), "ODBCPP PostgreSQL");
+  EXPECT_EQ(parsed.at("UID"), "MixedCase");
+  EXPECT_EQ(parsed.at("PWD"), " w2;secret}Tail ");
+  EXPECT_EQ(parsed.size(), 3u);
+}
+
+TEST(ConnectionStringTest, ExplicitEmptyCredentialsRemainPresentAndFirst) {
+  for (const auto input : {"UID=;PWD=;UID=other;PWD=other;",
+                           "UID={};PWD={};UID=other;PWD=other;"}) {
+    const auto parsed = ConnectionString::parse(input);
+    EXPECT_EQ(parsed.at("UID"), "");
+    EXPECT_EQ(parsed.at("PWD"), "");
+    EXPECT_EQ(parsed.size(), 2u);
+  }
+}
+
 } // namespace
 
 #ifdef _WIN32
