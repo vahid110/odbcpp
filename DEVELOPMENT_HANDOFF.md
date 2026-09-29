@@ -11,19 +11,17 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
   Complete A4/G9a next, then W1–W4 Windows configuration/delivery before final
   G8 acceptance. See RELEASE_PLAN.md for scope, estimates and dependencies.
 
-- **Batch 10 implemented:** backend-owned native SQLSTATE normalization and
-  documented result/parameter/lifetime/deadline/reuse contracts. New coverage
-  includes malformed/ambiguous diagnostics, execution-path recovery and owned
-  NULL/empty/text results with deferred errors after backend destruction.
-  Full batch validation evidence is recorded in PG_BETA_CHECKLIST.md.
-  Batch 9 CI 36558898690 passed all five jobs at 717d2f5.
+- **Batch 11 implemented:** raw binary parameter contract and backend-owned
+  wire encoding; normalized completed-statement kinds replace shared native tag
+  interpretation. Full validation evidence is in PG_BETA_CHECKLIST.md.
+  Batch 10 CI 36561452003 passed all five jobs at 379084a.
 
 - Branch: `codex/transport-foundation`. Implementation scheduler stays paused.
 - A1/A2 and A3 extraction are implemented after batch 7. G9a is not closed.
-- Next: A4 binary/boolean value and binary parameter encodings, then native
-  command-tag interpretation. These are identified boundary leaks, not optional
-  features. Preserve all conversion/parameter/diagnostic tests. Then exercise a
-  differing fake backend through shared ODBC orchestration before closing G9a.
+- Next: A4 result-side binary/boolean normalization and remaining conversion
+  dependencies, then a differing fake backend through shared ODBC orchestration.
+  Parameter encoding and native command-tag extraction are implemented. Preserve
+  binding/get-data, parameter and diagnostic tests; close G9a only after acceptance.
   BACKEND_BOUNDARY.md records the reviewed lifetime/deadline/error contract.
 - PostgreSQL first; live Redshift validation comes later. Application-host
   reminder is not due until G8 acceptance is actionable.

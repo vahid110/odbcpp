@@ -319,3 +319,34 @@ names; they are not a universal protocol SDK. A differing fake IDatabaseConnecti
 must exercise shared ODBC selection, results/NULL, diagnostics, unsupported features
 and capability reporting after those leaks are addressed. No work is waived or
 moved to public SDK packaging by this documentation.
+
+## A4 binary parameters and completion metadata — batch 11
+
+Binary QueryParameter values now contain raw bytes, including embedded NUL, and
+preserve NULL versus engaged empty values. Shared binding converts ODBC character
+hexadecimal input with a plain-hex utility and passes binary C buffers unchanged.
+The binary_input flag preserves binary C input when the logical SQL type is not
+Binary. PostgreSQL alone encodes those bytes as bytea hex for its text Bind format;
+text parameters remain untouched. Wire-length limits account for expansion before
+allocating encoded data. Existing indicator/length, Unicode, odd-character handling,
+truncation and recovery behavior is preserved.
+
+QueryResult now carries an optional normalized StatementKind. PostgreSQL interprets
+CommandComplete tags while extracting each result, including additional results.
+Shared ODBC maps the kind to dynamic-function names/codes and no longer reads the
+native command_tag. Absent completion metadata preserves the caller's diagnostic
+context; explicit Unknown clears it. The native tag remains available to backend
+consumers and parser tests. Shared classification of application SQL for pre-execution
+and failure diagnostics remains separate from native result interpretation.
+
+Tests cover raw binary framing, NUL/high-bit/escape-like bytes, NULL/empty distinctions,
+all-octet plain-hex round trips, malformed hex, and server-observed parameter bytes.
+Completion tests cover recognized tags, prefix lookalikes, absent metadata and
+per-result diagnostics for a CTE SELECT followed by an unclassified command and
+another SELECT. Existing parameter and diagnostic integration suites remain gates.
+
+This closes binary parameter and command-tag ownership extraction. The batch 10
+remaining-work inventory is superseded for those two items. A4/G9a remains open
+for result-side bytea/boolean representations, remaining conversion dependencies,
+and differing fake-backend acceptance through shared ODBC orchestration. These
+remain PostgreSQL-stage work; no Redshift compatibility claim is added.

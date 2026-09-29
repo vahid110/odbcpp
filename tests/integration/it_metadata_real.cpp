@@ -4469,3 +4469,25 @@ TEST_F(MetadataIntegrationTest, BackendDiagnosticFallbackAndRecoveryAcrossExecut
         ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_CLOSE));
     }
 }
+
+TEST_F(MetadataIntegrationTest, CompletionKindsDriveEachBatchResultDiagnostic) {
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
+        (SQLCHAR*)"WITH item AS (SELECT 1) SELECT * FROM item; "
+                   "SET application_name = 'odbcpp'; SELECT 2", SQL_NTS));
+    const auto expect_kind = [&](SQLINTEGER expected, const char* name) {
+        SQLINTEGER code = -1;
+        SQLCHAR text[40]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(SQL_HANDLE_STMT, hstmt, 0,
+            SQL_DIAG_DYNAMIC_FUNCTION_CODE, &code, 0, nullptr));
+        EXPECT_EQ(expected, code);
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(SQL_HANDLE_STMT, hstmt, 0,
+            SQL_DIAG_DYNAMIC_FUNCTION, text, sizeof(text), nullptr));
+        EXPECT_STREQ(name, reinterpret_cast<char*>(text));
+    };
+    expect_kind(SQL_DIAG_SELECT_CURSOR, "SELECT CURSOR");
+    ASSERT_EQ(SQL_SUCCESS, SQLMoreResults(hstmt));
+    expect_kind(SQL_DIAG_UNKNOWN_STATEMENT, "");
+    ASSERT_EQ(SQL_SUCCESS, SQLMoreResults(hstmt));
+    expect_kind(SQL_DIAG_SELECT_CURSOR, "SELECT CURSOR");
+    EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(hstmt));
+}

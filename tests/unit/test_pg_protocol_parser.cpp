@@ -948,3 +948,26 @@ TEST(PgParameterContractTest, RawBinaryIsEncodedOnlyByPostgresAndNullStaysDistin
   EXPECT_EQ(0, read_u16(bind, offset));
   EXPECT_EQ(raw, *params[0].value);
 }
+
+TEST(PgCommandContractTest, NormalizesCompletionAndRejectsPrefixLookalikes) {
+  using rs::core::database::StatementKind;
+  PgProtocolParser parser;
+  struct Case { const char* tag; StatementKind kind; };
+  for (const auto& item : {
+      Case{"SELECT 12", StatementKind::SelectCursor},
+      Case{"INSERT 0 2", StatementKind::Insert},
+      Case{"UPDATE 3", StatementKind::UpdateWhere},
+      Case{"CREATE TABLE", StatementKind::CreateTable},
+      Case{"CREATE INDEX", StatementKind::CreateIndex},
+      Case{"DROP INDEX", StatementKind::DropIndex},
+      Case{"SELECTED 1", StatementKind::Unknown},
+      Case{"CREATE TABLESPACE", StatementKind::Unknown},
+      Case{"SET", StatementKind::Unknown}}) {
+    SCOPED_TRACE(item.tag);
+    Message complete{'C', {}};
+    append_cstring(complete.payload, item.tag);
+    const auto result = parser.extract_query_result({complete});
+    EXPECT_EQ(std::optional<StatementKind>(item.kind), result.statement_kind);
+  }
+  EXPECT_FALSE(parser.extract_query_result({}).statement_kind);
+}

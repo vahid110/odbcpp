@@ -407,3 +407,24 @@ SHA's five-job CI result, including hosted Windows live integration.
 A4/G9a remains open: binary/boolean value and binary parameter encodings, native
 command-tag interpretation, and differing fake-backend ODBC acceptance are the
 bounded remaining architecture work. W1–W4 follow architecture closure.
+
+## Batch 11 — A4 binary parameters and completed-statement kinds
+
+Binary parameters cross the backend boundary as raw bytes; PostgreSQL owns bytea
+wire encoding. Shared ODBC uses plain hexadecimal conversion only for character
+input. Normalized StatementKind metadata now supplies completed-result dynamic
+function diagnostics, including multiple results, without parsing native tags.
+
+Five new cases cover parameter framing and type distinctions, plain-hex edge cases
+and all octets, command-tag boundaries/unknown metadata, server-observed binary
+bytes with NULL/empty/reuse, and per-result diagnostics. Existing ANSI/wide, binary
+binding, length/truncation and prepared-query tests remain required.
+Focused parser/native-type and live parameter/metadata/diagnostic suites passed.
+All four full local gates passed: 36 executables, 802 GoogleTest cases each,
+zero skips. macOS sanitizer settings retain the documented leak-detection limit;
+Linux CI continues leak coverage. The completion report records the ensuing
+five-job CI result for the pushed SHA, including Windows live integration.
+
+A4/G9a remains open for result-side binary/boolean conversion and differing fake
+backend acceptance. Binary parameter and native command-tag ownership extraction
+are implemented; no Redshift-specific behavior is introduced.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "native_type_info.h"
+#include "statement_kind.h"
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -44,6 +45,9 @@ struct QueryResult {
   std::string error_sqlstate;
   std::size_t affected_rows{0};
   std::vector<QueryResult> additional_results;
+  // Absent means no completion metadata; explicit Unknown clears prior dynamic
+  // function diagnostics. Shared consumers never parse native command_tag.
+  std::optional<StatementKind> statement_kind;
 };
 
 } // namespace rs::core::database

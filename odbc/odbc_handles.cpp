@@ -654,6 +654,41 @@ struct DynamicFunction {
   SQLINTEGER code{SQL_DIAG_UNKNOWN_STATEMENT};
 };
 
+DynamicFunction completed_dynamic_function(rs::core::database::StatementKind kind) {
+  using rs::core::database::StatementKind;
+  switch (kind) {
+    case StatementKind::SelectCursor: return {"SELECT CURSOR", SQL_DIAG_SELECT_CURSOR};
+    case StatementKind::Insert: return {"INSERT", SQL_DIAG_INSERT};
+    case StatementKind::UpdateWhere: return {"UPDATE WHERE", SQL_DIAG_UPDATE_WHERE};
+    case StatementKind::DeleteWhere: return {"DELETE WHERE", SQL_DIAG_DELETE_WHERE};
+    case StatementKind::Call: return {"CALL", SQL_DIAG_CALL};
+    case StatementKind::Grant: return {"GRANT", SQL_DIAG_GRANT};
+    case StatementKind::Revoke: return {"REVOKE", SQL_DIAG_REVOKE};
+    case StatementKind::AlterDomain: return {"ALTER DOMAIN", SQL_DIAG_ALTER_DOMAIN};
+    case StatementKind::AlterTable: return {"ALTER TABLE", SQL_DIAG_ALTER_TABLE};
+    case StatementKind::CreateAssertion: return {"CREATE ASSERTION", SQL_DIAG_CREATE_ASSERTION};
+    case StatementKind::CreateCharacterSet: return {"CREATE CHARACTER SET", SQL_DIAG_CREATE_CHARACTER_SET};
+    case StatementKind::CreateCollation: return {"CREATE COLLATION", SQL_DIAG_CREATE_COLLATION};
+    case StatementKind::CreateDomain: return {"CREATE DOMAIN", SQL_DIAG_CREATE_DOMAIN};
+    case StatementKind::CreateIndex: return {"CREATE INDEX", SQL_DIAG_CREATE_INDEX};
+    case StatementKind::CreateSchema: return {"CREATE SCHEMA", SQL_DIAG_CREATE_SCHEMA};
+    case StatementKind::CreateTable: return {"CREATE TABLE", SQL_DIAG_CREATE_TABLE};
+    case StatementKind::CreateTranslation: return {"CREATE TRANSLATION", SQL_DIAG_CREATE_TRANSLATION};
+    case StatementKind::CreateView: return {"CREATE VIEW", SQL_DIAG_CREATE_VIEW};
+    case StatementKind::DropAssertion: return {"DROP ASSERTION", SQL_DIAG_DROP_ASSERTION};
+    case StatementKind::DropCharacterSet: return {"DROP CHARACTER SET", SQL_DIAG_DROP_CHARACTER_SET};
+    case StatementKind::DropCollation: return {"DROP COLLATION", SQL_DIAG_DROP_COLLATION};
+    case StatementKind::DropDomain: return {"DROP DOMAIN", SQL_DIAG_DROP_DOMAIN};
+    case StatementKind::DropIndex: return {"DROP INDEX", SQL_DIAG_DROP_INDEX};
+    case StatementKind::DropSchema: return {"DROP SCHEMA", SQL_DIAG_DROP_SCHEMA};
+    case StatementKind::DropTable: return {"DROP TABLE", SQL_DIAG_DROP_TABLE};
+    case StatementKind::DropTranslation: return {"DROP TRANSLATION", SQL_DIAG_DROP_TRANSLATION};
+    case StatementKind::DropView: return {"DROP VIEW", SQL_DIAG_DROP_VIEW};
+    case StatementKind::Unknown: return {};
+  }
+  return {};
+}
+
 DynamicFunction classify_dynamic_function(std::string_view statement) {
   const auto first = statement.find_first_not_of(" \t\r\n");
   if (first == std::string_view::npos) return {};
@@ -4333,7 +4368,7 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
 void ODBCStatement::apply_query_result(
     rs::core::database::QueryResult result,
     bool include_parameter_metadata) {
-  const auto command_tag = result.command_tag;
+  const auto statement_kind = result.statement_kind;
   if (!result.additional_results.empty()) {
     pending_results_.reserve(
         pending_results_.size() + result.additional_results.size());
@@ -4358,8 +4393,8 @@ void ODBCStatement::apply_query_result(
       ? std::numeric_limits<SQLLEN>::max()
       : static_cast<SQLLEN>(result.affected_rows);
   auto diagnostic_header = get_diagnostic_header();
-  if (!command_tag.empty()) {
-    const auto dynamic_function = classify_dynamic_function(command_tag);
+  if (statement_kind) {
+    const auto dynamic_function = completed_dynamic_function(*statement_kind);
     diagnostic_header.dynamic_function = dynamic_function.name;
     diagnostic_header.dynamic_function_code = dynamic_function.code;
   }

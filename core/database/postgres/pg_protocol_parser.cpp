@@ -1,3 +1,4 @@
+#include "pg_command.h"
 #include "core/util/hex.h"
 #include "pg_sql_dialect.h"
 #include "pg_protocol_parser.h"
@@ -823,6 +824,7 @@ QueryResult PgProtocolParser::extract_query_result(
     } else if (message.tag == 'C') { // CommandComplete
       std::size_t offset = 0;
       current.command_tag = read_cstring(payload, offset);
+      current.statement_kind = classify_command_tag(current.command_tag);
       if (offset != payload.size()) {
         throw std::runtime_error("invalid PostgreSQL CommandComplete length");
       }
