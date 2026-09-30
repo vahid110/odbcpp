@@ -43,6 +43,7 @@ class Handles {
   }
 
   SQLHDBC connection() const { return connection_; }
+  SQLHENV environment() const { return environment_; }
 
  private:
   SQLHENV environment_{SQL_NULL_HENV};
@@ -121,37 +122,43 @@ TEST(CryptoProfileLiveTest, CompletesVerifiedTlsScramQuery) {
 }
 
 TEST(CryptoProfileLiveTest, RejectsUntrustedCertificate) {
-  Handles handles;
+  Handles keeper;
   ASSERT_TRUE(SQL_SUCCEEDED(connect(
-      handles.connection(),
+      keeper.connection(),
       required_connection("ODBCPP_CRYPTO_PROFILE_TEST_CONNECTION"))));
-  ASSERT_TRUE(SQL_SUCCEEDED(SQLDisconnect(handles.connection())));
+  SQLHDBC rejected = SQL_NULL_HDBC;
+  ASSERT_EQ(SQLAllocHandle(SQL_HANDLE_DBC, keeper.environment(), &rejected),
+            SQL_SUCCESS);
   ASSERT_EQ(connect(
-                handles.connection(),
+                rejected,
                 required_connection("ODBCPP_CRYPTO_PROFILE_WRONG_CA_CONNECTION")),
             SQL_ERROR);
-  const auto records = diagnostics(handles.connection());
+  const auto records = diagnostics(rejected);
   const auto normalized = lowercase(records);
   EXPECT_NE(normalized.find("certificate verify failed"), std::string::npos)
       << records;
   EXPECT_TRUE(normalized.find("ssl_connect") != std::string::npos ||
               normalized.find("tls") != std::string::npos)
       << records;
+  EXPECT_EQ(SQLFreeHandle(SQL_HANDLE_DBC, rejected), SQL_SUCCESS);
 }
 
 TEST(CryptoProfileLiveTest, RejectsHostnameMismatch) {
-  Handles handles;
+  Handles keeper;
   ASSERT_TRUE(SQL_SUCCEEDED(connect(
-      handles.connection(),
+      keeper.connection(),
       required_connection("ODBCPP_CRYPTO_PROFILE_TEST_CONNECTION"))));
-  ASSERT_TRUE(SQL_SUCCEEDED(SQLDisconnect(handles.connection())));
+  SQLHDBC rejected = SQL_NULL_HDBC;
+  ASSERT_EQ(SQLAllocHandle(SQL_HANDLE_DBC, keeper.environment(), &rejected),
+            SQL_SUCCESS);
   ASSERT_EQ(connect(
-                handles.connection(),
+                rejected,
                 required_connection("ODBCPP_CRYPTO_PROFILE_WRONG_HOST_CONNECTION")),
             SQL_ERROR);
-  const auto records = diagnostics(handles.connection());
+  const auto records = diagnostics(rejected);
   EXPECT_NE(records.find("TLS hostname verification failed"),
             std::string::npos) << records;
+  EXPECT_EQ(SQLFreeHandle(SQL_HANDLE_DBC, rejected), SQL_SUCCESS);
 }
 
 }  // namespace
