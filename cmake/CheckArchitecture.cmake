@@ -27,6 +27,12 @@ foreach(_file IN LISTS _transport_files)
   if(_contents MATCHES "#[ \t]*include[ \t]*[<\"].*database/")
     message(FATAL_ERROR "Transport depends on database layer: ${_file}")
   endif()
+  if(_contents MATCHES "#[ \t]*include[ \t]*[<\"](openssl|aws-lc|boringssl)/" OR
+     _contents MATCHES "(^|[^A-Za-z0-9_])(SSL_CTX|SSL|BIO|X509|EVP_[A-Za-z0-9_]+)[ \t]*[*&(]" OR
+     _contents MATCHES "::(SSL|BIO|X509|ERR)_[A-Za-z0-9_]+")
+    message(FATAL_ERROR
+      "Transport bypasses the private cryptography adapter: ${_file}")
+  endif()
 endforeach()
 
 file(GLOB _database_root
@@ -85,8 +91,7 @@ endforeach()
 
 file(GLOB_RECURSE _installed_core_headers "${SOURCE_DIR}/core/*.h")
 foreach(_file IN LISTS _installed_core_headers)
-  if(_file MATCHES "/core/security/" OR
-     _file MATCHES "/(tls_io|tls_peer_identity)\\.h$")
+  if(_file MATCHES "/core/security/")
     continue()
   endif()
   file(READ "${_file}" _contents)

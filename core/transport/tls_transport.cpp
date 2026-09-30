@@ -1,15 +1,13 @@
 #include "tls_transport.h"
-#include "core/transport/tls_io.h"
-#include "core/transport/tls_peer_identity.h"
+
+#include "core/security/tls_client.h"
+#include "core/transport/socket_wait.h"
 #include "core/util/exception_adapter.h"
+#include "core/util/platform.h"
 
-#include <stdexcept>
-#include <array>
+#include <chrono>
 #include <memory>
-#include <vector>
-#include <cassert>
-
-#include <openssl/err.h>
+#include <stdexcept>
 
 using rs::util::Deadline;
 using rs::util::IOError;
@@ -20,117 +18,57 @@ namespace rs::core::transport {
 
 class TLSTransport::ProviderState {
 public:
-  ~ProviderState() {
-    if (session) SSL_free(session);
-    if (context) SSL_CTX_free(context);
-  }
-
-  SSL_CTX* context{nullptr};
-  SSL* session{nullptr};
+  rs::core::security::TlsClient client;
 };
 
 namespace {
 
-std::string tls_setup_error(std::string message) {
-  const unsigned long error = ERR_get_error();
-  if (error == 0) return message;
+using rs::core::security::TlsStep;
+using rs::core::security::TlsStepState;
 
-  std::array<char, 256> detail{};
-  ERR_error_string_n(error, detail.data(), detail.size());
-  while (ERR_get_error() != 0) {} // Do not leave stale errors for SSL_get_error.
-  return message + ": " + detail.data();
+bool deadline_expired(Deadline deadline) {
+  return rs::util::remaining(deadline) <= std::chrono::milliseconds::zero();
 }
 
-std::string tls_operation_error(const char* operation, const Error& error) {
-  std::string message = "TLS ";
-  message += operation;
-  message += " failed";
-  if (error.detail[0] != '\0') {
-    message += " (";
-    message += error.detail;
-    message += ')';
+void wait_for_tls(SocketTransport::socket_t socket, TlsStepState state,
+                  Deadline deadline, std::string_view operation) {
+  const auto waited = wait_for_socket(
+      socket, state == TlsStepState::WantRead,
+      state == TlsStepState::WantWrite, deadline);
+  if (waited == SocketWaitResult::Timeout) {
+    throw TimeoutError("TLS " + std::string(operation) + " timeout");
   }
-  if (error.ssl_err != 0) {
-    std::array<char, 256> detail{};
-    ERR_error_string_n(static_cast<unsigned long>(error.ssl_err),
-                       detail.data(), detail.size());
-    message += ": ";
-    message += detail.data();
+  if (waited == SocketWaitResult::Failed) {
+    throw IOError("TLS " + std::string(operation) + " socket wait failed");
   }
-  while (ERR_get_error() != 0) {}
-  return message;
 }
 
-} // namespace
-
-TLSTransport::TLSTransport(DeadlineModel deadline_model)
-    : tcp_(deadline_model), provider_(std::make_unique<ProviderState>()) {
-  // Lazy SSL_CTX creation in ensure_ctx()
-}
-
-TLSTransport::~TLSTransport() {
-  close();
-}
-
-void TLSTransport::ensure_ctx() {
-  if (context_dirty_) {
-    if (provider_->context) SSL_CTX_free(provider_->context);
-    provider_->context = nullptr;
-    context_dirty_ = false;
-  }
-  if (provider_->context) return;
-
-  const SSL_METHOD* method = TLS_client_method();
-  std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> context(
-      SSL_CTX_new(method), SSL_CTX_free);
-  if (!context) {
-    throw TLSError(tls_setup_error("SSL_CTX_new failed"));
-  }
-
-  // Protocol bounds
-  if (SSL_CTX_set_min_proto_version(
-          context.get(), static_cast<int>(min_version_)) != 1) {
-    throw TLSError(tls_setup_error("Failed to set minimum TLS version"));
-  }
-#ifdef TLS1_3_VERSION
-  if (SSL_CTX_set_max_proto_version(context.get(), TLS1_3_VERSION) != 1) {
-    throw TLSError(tls_setup_error("Failed to set maximum TLS version"));
-  }
-#endif
-
-  // Chain verification on/off
-  SSL_CTX_set_verify(context.get(), verify_ ? SSL_VERIFY_PEER : SSL_VERIFY_NONE,
-                     nullptr);
-
-  if (verify_) {
-    // Load CA trust (file -> dir -> defaults) only when the connection will
-    // actually verify its peer. This can involve filesystem or platform trust
-    // store I/O, especially on Windows.
-    if (!ca_file_.empty()) {
-      if (SSL_CTX_load_verify_locations(
-              context.get(), ca_file_.c_str(), nullptr) != 1) {
-        throw TLSError(tls_setup_error("Failed to load CA file: " + ca_file_));
-      }
-    } else if (!ca_dir_.empty()) {
-      if (SSL_CTX_load_verify_locations(
-              context.get(), nullptr, ca_dir_.c_str()) != 1) {
-        throw TLSError(tls_setup_error("Failed to load CA directory: " + ca_dir_));
-      }
-    } else {
-      if (SSL_CTX_set_default_verify_paths(context.get()) != 1) {
-        throw TLSError(tls_setup_error("Failed to load default CA paths"));
-      }
+[[noreturn]] void throw_tls_step(
+    const TlsStep& step, std::string_view operation) {
+  if (step.state == TlsStepState::SystemError) {
+    if (socket_error_is_timeout(step.system_error)) {
+      throw TimeoutError("TLS " + std::string(operation) + " timeout");
+    }
+    if (operation != "handshake") {
+      throw IOError(step.message.empty()
+          ? "TLS " + std::string(operation) + " I/O error"
+          : step.message);
     }
   }
-
-#ifdef SSL_MODE_AUTO_RETRY
-  // Avoid spurious SSL_ERROR_WANT_READ after writes on some stacks.
-  SSL_CTX_set_mode(context.get(), SSL_MODE_AUTO_RETRY);
-#endif
-  provider_->context = context.release();
+  throw TLSError(step.message.empty()
+      ? "TLS " + std::string(operation) + " failed"
+      : step.message);
 }
 
-rs::util::Result<void> TLSTransport::connect(std::string_view host, uint16_t port, Deadline deadline) {
+}  // namespace
+
+TLSTransport::TLSTransport(DeadlineModel deadline_model)
+    : tcp_(deadline_model), provider_(std::make_unique<ProviderState>()) {}
+
+TLSTransport::~TLSTransport() { close(); }
+
+rs::util::Result<void> TLSTransport::connect(
+    std::string_view host, uint16_t port, Deadline deadline) {
   auto result = connect_plain(host, port, deadline);
   if (result.has_error()) return result;
   return upgrade_to_tls(host, deadline);
@@ -154,9 +92,10 @@ rs::util::Result<void> TLSTransport::upgrade_to_tls(
   return result;
 }
 
-void TLSTransport::upgrade_from(socket_t s, std::string_view host, Deadline deadline) {
+void TLSTransport::upgrade_from(
+    socket_t socket, std::string_view host, Deadline deadline) {
   close();
-  tcp_.adopt(s);
+  tcp_.adopt(socket);
   try {
     upgrade_impl(host, deadline);
   } catch (...) {
@@ -170,136 +109,96 @@ void TLSTransport::upgrade_impl(std::string_view host, Deadline deadline) {
   if (host.find('\0') != std::string_view::npos) {
     throw TLSError("TLS host contains an embedded NUL byte");
   }
-  if (provider_->session) throw TLSError("TLS session is already active");
+  if (provider_->client.active()) {
+    throw TLSError("TLS session is already active");
+  }
   tcp_.prepare_for_io(deadline);
-  ensure_ctx();
-  sni_host_ = std::string(host);
-
-  provider_->session = SSL_new(provider_->context);
-  if (!provider_->session) {
-    throw TLSError(tls_setup_error("SSL_new failed"));
+  provider_->client.configure({
+      min_version_, verify_, verify_host_, ca_file_, ca_dir_});
+  const auto started = provider_->client.begin_socket(
+      static_cast<std::intptr_t>(tcp_.native()), host);
+  if (started.state != TlsStepState::Complete) {
+    throw_tls_step(started, "setup");
   }
 
-#ifdef _WIN32
-  if (SSL_set_fd(provider_->session, static_cast<int>(tcp_.native())) != 1)
-#else
-  if (SSL_set_fd(provider_->session, tcp_.native()) != 1)
-#endif
-  {
-    const auto message = tls_setup_error("SSL_set_fd failed");
-    SSL_free(provider_->session); provider_->session = nullptr;
-    throw TLSError(message);
-  }
-
-  if (tls_host_uses_sni(sni_host_)) {
-    if (SSL_set_tlsext_host_name(provider_->session, sni_host_.c_str()) != 1) {
-      const auto message = tls_setup_error("Failed to set SNI");
-      SSL_free(provider_->session); provider_->session = nullptr;
-      throw TLSError(message);
+  for (;;) {
+    if (deadline_expired(deadline)) {
+      throw TimeoutError("TLS handshake timeout");
     }
-  }
-
-  // Deadline-aware TLS handshake with WANT_{READ,WRITE} handling
-  if (auto e = tls_handshake_with_deadline(
-          provider_->session, tcp_.native(), deadline);
-      e.code != Errc::Ok) {
-    SSL_free(provider_->session); provider_->session = nullptr;
-    if (e.code == Errc::Timeout) throw TimeoutError("TLS handshake timeout");
-    if (e.code == Errc::HandshakeFailed) {
-      throw TLSError(tls_operation_error("handshake", e));
+    const auto step = provider_->client.handshake();
+    if (step.state == TlsStepState::Complete) break;
+    if (step.state == TlsStepState::WantRead ||
+        step.state == TlsStepState::WantWrite) {
+      wait_for_tls(tcp_.native(), step.state, deadline, "handshake");
+      continue;
     }
-    throw IOError("TLS handshake I/O error");
+    throw_tls_step(step, "handshake");
   }
-
-  if (verify_) {
-    X509* cert = SSL_get1_peer_certificate(provider_->session);
-    if (!cert) throw TLSError("No peer certificate");
-
-    long v = SSL_get_verify_result(provider_->session);
-    if (v != X509_V_OK) {
-      X509_free(cert);
-      throw TLSError("Certificate verify failed: " + std::to_string(v));
-    }
-
-    if (verify_host_) {
-      if (!tls_certificate_matches_host(cert, sni_host_)) {
-        X509_free(cert);
-        throw TLSError("Hostname verification failed for " + sni_host_);
-      }
-    }
-    X509_free(cert);
-    peer_identity_verified_ = verify_host_;
-  }
+  peer_identity_verified_ = provider_->client.peer_identity_verified();
 }
 
 void TLSTransport::close() noexcept {
   peer_identity_verified_ = false;
-  if (provider_->session) {
-    // Closing the socket ends this client session. SSL_shutdown can write a
-    // close_notify to an already-closed peer and raise SIGPIPE on Unix.
-    SSL_free(provider_->session);
-    provider_->session = nullptr;
-  }
+  provider_->client.reset_session();
   tcp_.close();
 }
 
-rs::util::Result<IOResult> TLSTransport::send(std::span<const std::byte> buf, Deadline dl) {
-  if (!provider_->session) return tcp_.send(buf, dl);
+rs::util::Result<IOResult> TLSTransport::send(
+    std::span<const std::byte> buffer, Deadline deadline) {
+  if (!provider_->client.active()) return tcp_.send(buffer, deadline);
   return rs::util::try_catch([&]() {
-  tcp_.prepare_for_io(dl);
-  if (buf.empty()) return IOResult{0, false};
+    tcp_.prepare_for_io(deadline);
+    if (buffer.empty()) return IOResult{0, false};
 
-  size_t n = 0;
-  auto e = tls_write_all(
-      provider_->session, tcp_.native(),
-      reinterpret_cast<const uint8_t*>(buf.data()),
-      buf.size(),
-      dl,
-      n);
-
-  if (e.code != Errc::Ok) {
-    if (e.code == Errc::Timeout) throw TimeoutError("TLS send timeout");
-    if (e.code == Errc::TlsFailed) {
-      throw TLSError(tls_operation_error("send", e));
+    std::size_t written = 0;
+    while (written < buffer.size()) {
+      if (deadline_expired(deadline)) throw TimeoutError("TLS send timeout");
+      const auto step = provider_->client.write(buffer.subspan(written));
+      written += step.processed;
+      if (step.state == TlsStepState::Complete) {
+        if (step.processed == 0 && written < buffer.size()) {
+          throw IOError("TLS send made no progress");
+        }
+        continue;
+      }
+      if (step.state == TlsStepState::WantRead ||
+          step.state == TlsStepState::WantWrite) {
+        wait_for_tls(tcp_.native(), step.state, deadline, "send");
+        continue;
+      }
+      throw_tls_step(step, "send");
     }
-    throw IOError(tls_operation_error("send", e));
-  }
-
-    return IOResult{ n, false };
+    return IOResult{written, false};
   });
 }
 
-rs::util::Result<IOResult> TLSTransport::recv(std::span<std::byte> buf, Deadline dl) {
-  if (!provider_->session) return tcp_.recv(buf, dl);
+rs::util::Result<IOResult> TLSTransport::recv(
+    std::span<std::byte> buffer, Deadline deadline) {
+  if (!provider_->client.active()) return tcp_.recv(buffer, deadline);
   return rs::util::try_catch([&]() {
-  tcp_.prepare_for_io(dl);
-  if (buf.empty()) return IOResult{0, false};
+    tcp_.prepare_for_io(deadline);
+    if (buffer.empty()) return IOResult{0, false};
 
-  size_t got = 0;
-  bool eof = false;
-  auto e = tls_read_some(
-      provider_->session, tcp_.native(),
-      reinterpret_cast<uint8_t*>(buf.data()),
-      buf.size(),
-      dl,
-      got,
-      eof);
-
-  if (e.code != Errc::Ok) {
-    if (e.code == Errc::Timeout) throw TimeoutError("TLS recv timeout");
-    if (e.code == Errc::TlsFailed) {
-      throw TLSError(tls_operation_error("recv", e));
+    for (;;) {
+      if (deadline_expired(deadline)) throw TimeoutError("TLS recv timeout");
+      const auto step = provider_->client.read(buffer);
+      if (step.state == TlsStepState::Complete) {
+        return IOResult{step.processed, false};
+      }
+      if (step.state == TlsStepState::Closed) return IOResult{0, true};
+      if (step.state == TlsStepState::WantRead ||
+          step.state == TlsStepState::WantWrite) {
+        wait_for_tls(tcp_.native(), step.state, deadline, "recv");
+        continue;
+      }
+      throw_tls_step(step, "recv");
     }
-    throw IOError(tls_operation_error("recv", e));
-  }
-
-    return IOResult{ got, eof };
   });
 }
 
-void TLSTransport::set_min_tls_version(long v) {
-  min_version_ = v;
-  context_dirty_ = true;
+void TLSTransport::set_min_tls_version(long version) {
+  min_version_ = version;
+  provider_->client.reset_context_if_inactive();
 }
 
-} // namespace rs::core::transport
+}  // namespace rs::core::transport

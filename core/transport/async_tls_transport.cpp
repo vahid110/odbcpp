@@ -1,9 +1,5 @@
 #include "async_tls_transport.h"
-#include "tls_peer_identity.h"
-
-#include <openssl/err.h>
-#include <openssl/ssl.h>
-#include <openssl/x509v3.h>
+#include "core/security/tls_client.h"
 
 #include <algorithm>
 #include <array>
@@ -99,28 +95,6 @@ void invoke_safely(Callback& callback, ResultType result) noexcept {
   }
 }
 
-std::string openssl_error_text(const char* operation) {
-  const unsigned long error = ::ERR_get_error();
-  if (error == 0) return operation;
-  std::array<char, 256> message{};
-  ::ERR_error_string_n(error, message.data(), message.size());
-  return std::string(operation) + ": " + message.data();
-}
-
-struct SslCallStatus {
-  int error{SSL_ERROR_NONE};
-  std::string message;
-};
-
-SslCallStatus capture_ssl_call(SSL* ssl, int result, const char* operation) {
-  if (result == 1) return {};
-  const int error = ::SSL_get_error(ssl, result);
-  if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) {
-    return {error, {}};
-  }
-  return {error, openssl_error_text(operation)};
-}
-
 template<typename T>
 rs::util::Result<T> cancelled_result() {
   return rs::util::Result<T>{rs::util::DbErrorCode::NetworkError,
@@ -170,7 +144,6 @@ public:
     shutdown();
     std::lock_guard lock(tls_mutex_);
     reset_ssl_locked();
-    if (context_) ::SSL_CTX_free(context_);
   }
 
   void start() {
@@ -286,14 +259,14 @@ public:
   void set_min_tls_version(long version) {
     std::lock_guard lock(tls_mutex_);
     min_tls_version_ = version;
-    reset_context_if_disconnected_locked();
+    tls_.reset_context_if_inactive();
   }
 
   void set_verify(bool enabled) {
     std::lock_guard lock(tls_mutex_);
     verify_ = enabled;
     if (!enabled) peer_identity_verified_ = false;
-    reset_context_if_disconnected_locked();
+    tls_.reset_context_if_inactive();
   }
 
   void set_hostname_verification(bool enabled) {
@@ -306,7 +279,7 @@ public:
     std::lock_guard lock(tls_mutex_);
     ca_file_ = std::move(file);
     ca_directory_ = std::move(directory);
-    reset_context_if_disconnected_locked();
+    tls_.reset_context_if_inactive();
   }
 
   bool peer_identity_verified() noexcept {
@@ -471,7 +444,7 @@ private:
     if (task.state->cancellation_requested()) {
       return cancelled_result<IOResult>();
     }
-    if (!ssl_) return transport_->send(task.send_buffer, task.deadline);
+    if (!tls_.active()) return transport_->send(task.send_buffer, task.deadline);
     if (task.send_buffer.empty()) {
       return transport_->send(task.send_buffer, task.deadline);
     }
@@ -483,22 +456,22 @@ private:
         return {rs::util::DbErrorCode::Timeout, "TLS send deadline expired"};
       }
 
-      std::size_t written = 0;
-      ::ERR_clear_error();
-      const int result = ::SSL_write_ex(
-          ssl_, task.send_buffer.data() + written_total,
-          task.send_buffer.size() - written_total, &written);
-      const auto status = capture_ssl_call(ssl_, result, "SSL_write_ex");
+      const auto status = tls_.write(
+          std::span<const std::byte>(task.send_buffer).subspan(written_total));
       auto flushed = flush_ciphertext_locked(task.deadline);
       if (flushed.has_error()) {
         return {flushed.error(), flushed.error_message()};
       }
-      if (result == 1) {
-        written_total += written;
+      if (status.state == rs::core::security::TlsStepState::Complete) {
+        if (status.processed == 0) {
+          return {rs::util::DbErrorCode::NetworkError,
+                  "TLS plaintext send made no progress"};
+        }
+        written_total += status.processed;
         continue;
       }
 
-      if (status.error == SSL_ERROR_WANT_READ) {
+      if (status.state == rs::core::security::TlsStepState::WantRead) {
         auto received = receive_ciphertext_locked(task.deadline);
         if (received.has_error()) {
           return {received.error(), received.error_message()};
@@ -507,7 +480,7 @@ private:
           return {rs::util::DbErrorCode::TLSError,
                   "TLS peer closed during send"};
         }
-      } else if (status.error != SSL_ERROR_WANT_WRITE) {
+      } else if (status.state != rs::core::security::TlsStepState::WantWrite) {
         return {rs::util::DbErrorCode::TLSError,
                 status.message};
       }
@@ -520,7 +493,7 @@ private:
     if (task.state->cancellation_requested()) {
       return cancelled_result<IOResult>();
     }
-    if (!ssl_) return transport_->recv(task.recv_storage, task.deadline);
+    if (!tls_.active()) return transport_->recv(task.recv_storage, task.deadline);
     if (task.recv_storage.empty()) {
       return transport_->recv(task.recv_storage, task.deadline);
     }
@@ -532,20 +505,19 @@ private:
                 "TLS receive deadline expired"};
       }
 
-      std::size_t received_plaintext = 0;
-      ::ERR_clear_error();
-      const int result = ::SSL_read_ex(
-          ssl_, task.recv_storage.data(), task.recv_storage.size(),
-          &received_plaintext);
-      const auto status = capture_ssl_call(ssl_, result, "SSL_read_ex");
+      const auto status = tls_.read(task.recv_storage);
       auto flushed = flush_ciphertext_locked(task.deadline);
       if (flushed.has_error()) {
         return {flushed.error(), flushed.error_message()};
       }
-      if (result == 1) return IOResult{received_plaintext, false};
+      if (status.state == rs::core::security::TlsStepState::Complete) {
+        return IOResult{status.processed, false};
+      }
 
-      if (status.error == SSL_ERROR_ZERO_RETURN) return IOResult{0, true};
-      if (status.error == SSL_ERROR_WANT_READ) {
+      if (status.state == rs::core::security::TlsStepState::Closed) {
+        return IOResult{0, true};
+      }
+      if (status.state == rs::core::security::TlsStepState::WantRead) {
         auto received = receive_ciphertext_locked(task.deadline);
         if (received.has_error()) {
           return {received.error(), received.error_message()};
@@ -554,93 +526,22 @@ private:
           return {rs::util::DbErrorCode::TLSError,
                   "TLS peer closed without close_notify"};
         }
-      } else if (status.error != SSL_ERROR_WANT_WRITE) {
+      } else if (status.state != rs::core::security::TlsStepState::WantWrite) {
         return {rs::util::DbErrorCode::TLSError,
                 status.message};
       }
     }
   }
 
-  rs::util::Result<void> ensure_context_locked() {
-    if (context_) return {};
-    auto fail = [this](std::string message) {
-      if (context_) ::SSL_CTX_free(context_);
-      context_ = nullptr;
-      return rs::util::Result<void>{rs::util::DbErrorCode::TLSError,
-                                    std::move(message)};
-    };
-    context_ = ::SSL_CTX_new(::TLS_client_method());
-    if (!context_) {
-      return fail(openssl_error_text("SSL_CTX_new"));
-    }
-
-    if (::SSL_CTX_set_min_proto_version(
-            context_, static_cast<int>(min_tls_version_)) != 1) {
-      return fail(openssl_error_text("SSL_CTX_set_min_proto_version"));
-    }
-#ifdef TLS1_3_VERSION
-    if (::SSL_CTX_set_max_proto_version(context_, TLS1_3_VERSION) != 1) {
-      return fail(openssl_error_text("SSL_CTX_set_max_proto_version"));
-    }
-#endif
-    ::SSL_CTX_set_verify(context_, verify_ ? SSL_VERIFY_PEER : SSL_VERIFY_NONE,
-                         nullptr);
-
-    if (!verify_) return {};
-    int loaded = 0;
-    if (!ca_file_.empty()) {
-      loaded = ::SSL_CTX_load_verify_locations(context_, ca_file_.c_str(),
-                                                nullptr);
-    } else if (!ca_directory_.empty()) {
-      loaded = ::SSL_CTX_load_verify_locations(
-          context_, nullptr, ca_directory_.c_str());
-    } else {
-      loaded = ::SSL_CTX_set_default_verify_paths(context_);
-    }
-    if (loaded != 1) {
-      return fail(openssl_error_text("load TLS trust store"));
-    }
-    return {};
-  }
-
-  rs::util::Result<void> create_ssl_locked(std::string_view host) {
-    reset_ssl_locked();
-    auto context_result = ensure_context_locked();
-    if (context_result.has_error()) return context_result;
-
-    ssl_ = ::SSL_new(context_);
-    if (!ssl_) {
-      return {rs::util::DbErrorCode::TLSError,
-              openssl_error_text("SSL_new")};
-    }
-    BIO* read_bio = ::BIO_new(::BIO_s_mem());
-    BIO* write_bio = ::BIO_new(::BIO_s_mem());
-    if (!read_bio || !write_bio) {
-      if (read_bio) ::BIO_free(read_bio);
-      if (write_bio) ::BIO_free(write_bio);
-      reset_ssl_locked();
-      return {rs::util::DbErrorCode::TLSError,
-              openssl_error_text("BIO_new")};
-    }
-    ::SSL_set_bio(ssl_, read_bio, write_bio);
-    read_bio_ = read_bio;
-    write_bio_ = write_bio;
-    ::SSL_set_connect_state(ssl_);
-
-    server_name_ = std::string(host);
-    if (tls_host_uses_sni(server_name_) &&
-        ::SSL_set_tlsext_host_name(ssl_, server_name_.c_str()) != 1) {
-      reset_ssl_locked();
-      return {rs::util::DbErrorCode::TLSError,
-              openssl_error_text("set TLS server name")};
-    }
-    return {};
-  }
-
   rs::util::Result<void> handshake_locked(
       std::string_view host, rs::util::Deadline deadline) {
-    auto created = create_ssl_locked(host);
-    if (created.has_error()) return created;
+    reset_ssl_locked();
+    tls_.configure({min_tls_version_, verify_, verify_hostname_,
+                    ca_file_, ca_directory_});
+    const auto created = tls_.begin_memory(host);
+    if (created.state != rs::core::security::TlsStepState::Complete) {
+      return {rs::util::DbErrorCode::TLSError, created.message};
+    }
 
     for (;;) {
       if (rs::util::remaining(deadline) <=
@@ -650,17 +551,15 @@ private:
                 "TLS handshake deadline expired"};
       }
 
-      ::ERR_clear_error();
-      const int result = ::SSL_connect(ssl_);
-      const auto status = capture_ssl_call(ssl_, result, "SSL_connect");
+      const auto status = tls_.handshake();
       auto flushed = flush_ciphertext_locked(deadline);
       if (flushed.has_error()) {
         reset_ssl_locked();
         return flushed;
       }
-      if (result == 1) break;
+      if (status.state == rs::core::security::TlsStepState::Complete) break;
 
-      if (status.error == SSL_ERROR_WANT_READ) {
+      if (status.state == rs::core::security::TlsStepState::WantRead) {
         auto received = receive_ciphertext_locked(deadline);
         if (received.has_error()) {
           reset_ssl_locked();
@@ -671,47 +570,31 @@ private:
           return {rs::util::DbErrorCode::TLSError,
                   "TLS peer closed during handshake"};
         }
-      } else if (status.error != SSL_ERROR_WANT_WRITE) {
+      } else if (status.state != rs::core::security::TlsStepState::WantWrite) {
         const auto message = status.message;
         reset_ssl_locked();
         return {rs::util::DbErrorCode::TLSError, message};
       }
     }
 
-    if (!verify_) return {};
-    X509* certificate = ::SSL_get1_peer_certificate(ssl_);
-    if (!certificate) {
-      reset_ssl_locked();
-      return {rs::util::DbErrorCode::TLSError,
-              "TLS peer did not provide a certificate"};
-    }
-    const long verification = ::SSL_get_verify_result(ssl_);
-    const bool hostname_matches = !verify_hostname_ ||
-        tls_certificate_matches_host(certificate, server_name_);
-    ::X509_free(certificate);
-    if (verification != X509_V_OK || !hostname_matches) {
-      reset_ssl_locked();
-      return {rs::util::DbErrorCode::TLSError,
-              verification != X509_V_OK
-                  ? "TLS certificate verification failed"
-                  : "TLS hostname verification failed"};
-    }
-    peer_identity_verified_ = verify_hostname_;
+    peer_identity_verified_ = tls_.peer_identity_verified();
     return {};
   }
 
   rs::util::Result<void> flush_ciphertext_locked(
       rs::util::Deadline deadline) {
     std::array<std::byte, 16 * 1024> buffer{};
-    while (::BIO_ctrl_pending(write_bio_) > 0) {
-      const int count = ::BIO_read(write_bio_, buffer.data(),
-                                   static_cast<int>(buffer.size()));
-      if (count <= 0) {
+    while (tls_.ciphertext_pending()) {
+      const auto drained = tls_.drain_ciphertext(buffer);
+      if (drained.state != rs::core::security::TlsStepState::Complete ||
+          drained.processed == 0) {
         return {rs::util::DbErrorCode::TLSError,
-                openssl_error_text("BIO_read")};
+                drained.message.empty()
+                    ? "TLS ciphertext drain made no progress"
+                    : drained.message};
       }
       std::size_t offset = 0;
-      const auto size = static_cast<std::size_t>(count);
+      const auto size = drained.processed;
       while (offset < size) {
         auto sent = transport_->send(
             std::span<const std::byte>(buffer.data() + offset, size - offset),
@@ -740,31 +623,24 @@ private:
 
     std::size_t offset = 0;
     while (offset < received->n) {
-      const int count = ::BIO_write(
-          read_bio_, buffer.data() + offset,
-          static_cast<int>(received->n - offset));
-      if (count <= 0) {
+      const auto supplied = tls_.provide_ciphertext(
+          std::span<const std::byte>(buffer).subspan(
+              offset, received->n - offset));
+      if (supplied.state != rs::core::security::TlsStepState::Complete ||
+          supplied.processed == 0) {
         return {rs::util::DbErrorCode::TLSError,
-                openssl_error_text("BIO_write")};
+                supplied.message.empty()
+                    ? "TLS ciphertext supply made no progress"
+                    : supplied.message};
       }
-      offset += static_cast<std::size_t>(count);
+      offset += supplied.processed;
     }
     return false;
   }
 
   void reset_ssl_locked() noexcept {
     peer_identity_verified_ = false;
-    if (ssl_) ::SSL_free(ssl_);
-    ssl_ = nullptr;
-    read_bio_ = nullptr;
-    write_bio_ = nullptr;
-    server_name_.clear();
-  }
-
-  void reset_context_if_disconnected_locked() noexcept {
-    if (ssl_ || !context_) return;
-    ::SSL_CTX_free(context_);
-    context_ = nullptr;
+    tls_.reset_session();
   }
 
   std::unique_ptr<IAsyncTransport> transport_;
@@ -779,15 +655,11 @@ private:
   std::thread worker_;
 
   std::mutex tls_mutex_;
-  SSL_CTX* context_{nullptr};
-  SSL* ssl_{nullptr};
-  BIO* read_bio_{nullptr};
-  BIO* write_bio_{nullptr};
-  std::string server_name_;
+  rs::core::security::TlsClient tls_;
   bool verify_{true};
   bool verify_hostname_{true};
   bool peer_identity_verified_{false};
-  long min_tls_version_{TLS1_2_VERSION};
+  long min_tls_version_{0x0303};
   std::string ca_file_;
   std::string ca_directory_;
 };

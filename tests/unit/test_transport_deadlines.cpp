@@ -3,8 +3,6 @@
 #include "core/transport/socket_transport.h"
 #include "core/transport/socket_wait.h"
 #include "core/transport/thread_pool_transport.h"
-#include "core/transport/tls_io.h"
-#include "core/transport/tls_peer_identity.h"
 #include "core/transport/tls_transport.h"
 #include "core/util/deadline.h"
 #include "core/util/platform.h"
@@ -1127,35 +1125,7 @@ TEST(TLSTransportDeadlineTest, RejectsEmbeddedNulUpgradeAndClosesPlainSocket) {
   EXPECT_TRUE(transport.send(plaintext, rs::util::make_deadline(100ms)).has_error());
 }
 
-TEST(TLSPeerIdentityTest, UsesIpSanWithoutFallingBackToDnsNames) {
-  std::unique_ptr<X509, decltype(&X509_free)> certificate(X509_new(), X509_free);
-  ASSERT_NE(nullptr, certificate);
-  char san_text[] = "IP:127.0.0.1,IP:::1,DNS:db.example.test,DNS:127.0.0.2";
-  std::unique_ptr<X509_EXTENSION, decltype(&X509_EXTENSION_free)> san(
-      X509V3_EXT_conf_nid(nullptr, nullptr, NID_subject_alt_name, san_text),
-      X509_EXTENSION_free);
-  ASSERT_NE(nullptr, san);
-  ASSERT_EQ(1, X509_add_ext(certificate.get(), san.get(), -1));
-
-  using rs::core::transport::tls_certificate_matches_host;
-  EXPECT_TRUE(tls_certificate_matches_host(certificate.get(), "127.0.0.1"));
-  EXPECT_FALSE(tls_certificate_matches_host(certificate.get(), "127.0.0.2"));
-  EXPECT_TRUE(tls_certificate_matches_host(certificate.get(), "::1"));
-  EXPECT_FALSE(tls_certificate_matches_host(certificate.get(), "::2"));
-  EXPECT_TRUE(tls_certificate_matches_host(certificate.get(), "db.example.test"));
-  EXPECT_FALSE(tls_certificate_matches_host(certificate.get(), "other.example.test"));
-  EXPECT_FALSE(tls_certificate_matches_host(
-      certificate.get(), std::string_view("127.0.0.1\0invalid", 17)));
-}
-
 TEST(TLSPeerIdentityTest, SendsSniOnlyForDnsNames) {
-  using rs::core::transport::tls_host_uses_sni;
-  EXPECT_TRUE(tls_host_uses_sni("db.example.test"));
-  EXPECT_FALSE(tls_host_uses_sni("127.0.0.1"));
-  EXPECT_FALSE(tls_host_uses_sni("::1"));
-  EXPECT_FALSE(tls_host_uses_sni(""));
-  EXPECT_FALSE(tls_host_uses_sni(std::string_view("db.example.test\0x", 17)));
-
   TLSSleepingServer ip_server(100ms);
   TLSTransport transport(DeadlineModel::Strict);
   transport.set_verify(false);
@@ -1246,30 +1216,6 @@ TEST(TLSTransportDeadlineTest, AcceptsPeerCloseNotifyAsCleanEof) {
   EXPECT_TRUE(result->eof);
 }
 
-TEST(TLSTransportDeadlineTest, DistinguishesLegacyTlsEofFromSocketFailure) {
-  using rs::core::transport::classify_tls_read_failure;
-  using rs::core::transport::Errc;
-
-  EXPECT_EQ(classify_tls_read_failure(SSL_ERROR_SSL, -1, 1), Errc::TlsFailed);
-  EXPECT_EQ(classify_tls_read_failure(SSL_ERROR_SYSCALL, 0, 0), Errc::TlsFailed);
-  EXPECT_EQ(classify_tls_read_failure(SSL_ERROR_SYSCALL, -1, 0), Errc::SyscallFailed);
-  EXPECT_EQ(classify_tls_read_failure(SSL_ERROR_SYSCALL, 0, 1), Errc::SyscallFailed);
-}
-
-TEST(TLSTransportDeadlineTest, ZeroResultIgnoresStaleSocketTimeout) {
-#ifdef _WIN32
-  constexpr int timeout = WSAETIMEDOUT;
-  constexpr int network_error = WSAECONNRESET;
-#else
-  constexpr int timeout = ETIMEDOUT;
-  constexpr int network_error = ECONNRESET;
-#endif
-  using rs::core::transport::tls_syscall_timed_out;
-  EXPECT_FALSE(tls_syscall_timed_out(0, timeout));
-  EXPECT_TRUE(tls_syscall_timed_out(-1, timeout));
-  EXPECT_FALSE(tls_syscall_timed_out(-1, network_error));
-}
-
 TEST(TLSTransportDeadlineTest, EmptyTlsIoChecksConnectionAndDeadline) {
   TLSTransport transport(DeadlineModel::Strict);
   auto disconnected_send = transport.send(
@@ -1311,15 +1257,6 @@ TEST(TLSTransportDeadlineTest, EmptyTlsIoChecksConnectionAndDeadline) {
       rs::util::DbErrorCode::Timeout));
   EXPECT_EQ(expired_recv.error(), rs::util::make_error_code(
       rs::util::DbErrorCode::Timeout));
-}
-
-TEST(TLSTransportDeadlineTest, OpenSslIoLengthsStayWithinSignedInt) {
-  const auto maximum = std::numeric_limits<int>::max();
-  EXPECT_EQ(rs::core::transport::tls_io_chunk_size(1), 1);
-  EXPECT_EQ(rs::core::transport::tls_io_chunk_size(
-                static_cast<std::size_t>(maximum)), maximum);
-  EXPECT_EQ(rs::core::transport::tls_io_chunk_size(
-                static_cast<std::size_t>(maximum) + 1), maximum);
 }
 
 } // namespace
