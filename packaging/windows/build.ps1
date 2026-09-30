@@ -31,9 +31,21 @@ Assert ($cryptoManifest.configurationEvidenceOnly -eq $true) 'Crypto manifest mu
 Assert ($cryptoManifest.actualArtifactLinkageVerified -eq $false) 'Packaging cannot accept a pre-claimed crypto artifact'
 Assert ($cryptoManifest.fipsClaimed -eq $false) 'The Windows beta package does not claim FIPS'
 $trimSeparators = [char[]]@('\','/')
+function Assert-NoReparsePoints([string]$Path) {
+    $current = [IO.Path]::GetFullPath((Resolve-Path $Path).Path)
+    while ($current) {
+        $item = Get-Item -LiteralPath $current -Force
+        Assert (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) "Controlled crypto path contains a reparse point: $current"
+        $parent = [IO.Directory]::GetParent($current)
+        if (!$parent) { break }
+        $current = $parent.FullName
+    }
+}
+Assert-NoReparsePoints $OpenSslRoot
 $expectedRoot = [IO.Path]::GetFullPath($OpenSslRoot).TrimEnd($trimSeparators)
 $manifestRoot = [IO.Path]::GetFullPath([string]$cryptoManifest.dependencyRoot).TrimEnd($trimSeparators)
 Assert ($expectedRoot -ieq $manifestRoot) 'Crypto manifest dependency root does not match the packaging input'
+Assert-NoReparsePoints ([string]$cryptoManifest.dependencyRoot)
 $driverSource = Join-Path $build 'Release/odbcpp.dll'
 Assert-X64 $driverSource
 $inspectorMatch = Select-String -Path "$build/CMakeCache.txt" -Pattern '^ODBCPP_CRYPTO_INSPECTOR:FILEPATH=(.+)$'
@@ -69,6 +81,7 @@ foreach ($file in @('odbcpp.dll','odbcpp_setup.dll')) {
 # Only the runtime libraries imported by our OpenSSL 3 build; never copy tools,
 # private keys, configuration files or the PostgreSQL runner installation.
 function Assert-InsideRoot([string]$Path, [string]$Root) {
+    Assert-NoReparsePoints $Path
     $canonicalPath = [IO.Path]::GetFullPath((Resolve-Path $Path).Path)
     $canonicalRoot = [IO.Path]::GetFullPath((Resolve-Path $Root).Path).TrimEnd($trimSeparators) + [IO.Path]::DirectorySeparatorChar
     Assert ($canonicalPath.StartsWith($canonicalRoot, [StringComparison]::OrdinalIgnoreCase)) "Crypto runtime escaped the controlled dependency root: $canonicalPath"

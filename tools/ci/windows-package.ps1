@@ -71,9 +71,14 @@ foreach ($dependency in $cryptoDependencies) {
 }
 # Remove every development dependency directory from the acceptance process PATH.
 $hostile = Join-Path $env:RUNNER_TEMP 'hostile-crypto-path'
-New-Item $hostile -ItemType Directory -Force | Out-Null
-foreach ($dependency in $cryptoDependencies) { Set-Content (Join-Path $hostile $dependency.file) 'not a PE image' }
-$env:PATH = "$hostile;$env:SystemRoot/System32;$env:SystemRoot;${env:ProgramFiles}/PowerShell/7"
+$validFallback = Join-Path $env:RUNNER_TEMP 'valid-crypto-path-fallback'
+New-Item $hostile,$validFallback -ItemType Directory -Force | Out-Null
+foreach ($dependency in $cryptoDependencies) {
+    Set-Content (Join-Path $hostile $dependency.file) 'not a PE image'
+    Copy-Item (Join-Path $install $dependency.file) $validFallback
+}
+$basePath = "$env:SystemRoot/System32;$env:SystemRoot;${env:ProgramFiles}/PowerShell/7"
+$env:PATH = "$hostile;$basePath"
 function Invoke-PackageLoad {
     $previousNativePreference = $PSNativeCommandUseErrorActionPreference
     $PSNativeCommandUseErrorActionPreference = $false
@@ -84,18 +89,20 @@ function Invoke-PackageLoad {
     if ($exitCode -ne 0) { throw "Package loader failed ($exitCode): $($lines -join [Environment]::NewLine)" }
     return $lines
 }
-# A missing app-local runtime must fail even when PATH contains a same-name decoy.
+# A missing app-local runtime must fail even when PATH contains a valid copy.
 $missingRuntime = Join-Path $install $cryptoDependency[0].file
 $heldRuntime = "$missingRuntime.odbcpp-held"
 Move-Item $missingRuntime $heldRuntime
 try {
+    $env:PATH = "$validFallback;$basePath"
     $previousNativePreference = $PSNativeCommandUseErrorActionPreference
     $PSNativeCommandUseErrorActionPreference = $false
     $null = & "$artifactsPath/it_package_load.exe" $install $sslDependency[0].file $cryptoDependency[0].file 2>&1
     $missingExit = $LASTEXITCODE
-    Assert ($missingExit -ne 0) 'Package loader accepted a PATH decoy for a missing app-local crypto runtime'
+    Assert ($missingExit -ne 0) 'Package loader fell back to a valid PATH copy for a missing app-local crypto runtime'
 } finally {
     $PSNativeCommandUseErrorActionPreference = $previousNativePreference
+    $env:PATH = "$hostile;$basePath"
     Move-Item $heldRuntime $missingRuntime
 }
 $loaderOutput = @(Invoke-PackageLoad)
@@ -106,19 +113,31 @@ foreach ($dependency in $cryptoDependencies) {
     Assert ($match.Count -eq 1) "Loader evidence is missing $($dependency.file)"
     $loadedPath = $match[0].ToString().Substring($prefix.Length)
     Assert ([IO.Path]::GetFullPath($loadedPath) -ieq [IO.Path]::GetFullPath((Join-Path $install $dependency.file))) 'Loaded crypto runtime path differs from the installed package path'
-    $loadedModules += @{ role = $dependency.role; file = $dependency.file; path = $loadedPath; sha256 = (Get-FileHash $loadedPath -Algorithm SHA256).Hash }
+    $loadedHash = (Get-FileHash $loadedPath -Algorithm SHA256).Hash
+    Assert ($loadedHash -eq $dependency.sha256) 'Loaded crypto runtime hash differs from the package inventory'
+    $loadedModules += @{
+        role = $dependency.role; file = $dependency.file; path = $loadedPath
+        expectedSha256 = $dependency.sha256; loadedSha256 = $loadedHash; hashMatched = $true
+    }
 }
 $versionLines = @($loaderOutput | Where-Object { $_.ToString().StartsWith('VERSION|') })
 Assert ($versionLines.Count -eq 1) 'Loader evidence is missing the OpenSSL runtime version'
+$runtimeVersion = $versionLines[0].ToString().Substring('VERSION|'.Length)
+$versionMatch = [regex]::Match($runtimeVersion, '^OpenSSL\s+(\d+\.\d+\.\d+)(?:\s|$)')
+Assert ($versionMatch.Success) 'Loaded crypto runtime reported an unexpected provider/version string'
+Assert ($versionMatch.Groups[1].Value -eq $cryptoManifest.compileVersion) 'Loaded OpenSSL version differs from the configured build version'
 @{
     schemaVersion = 1
     driverSha256 = (Get-FileHash "$install/odbcpp.dll" -Algorithm SHA256).Hash
     artifactEvidenceSha256 = (Get-FileHash $installedArtifactEvidence -Algorithm SHA256).Hash
     importedDependencies = @($artifactEvidence.runtimeDependencies)
     loadedModules = $loadedModules
-    runtimeVersion = $versionLines[0].ToString().Substring('VERSION|'.Length)
+    compileVersion = $cryptoManifest.compileVersion
+    runtimeVersion = $runtimeVersion
+    compileRuntimeVersionMatched = $true
     loaderSearchFlags = @('LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR','LOAD_LIBRARY_SEARCH_SYSTEM32')
-    hostilePathDecoyRejected = $true
+    hostilePathOverrideRejected = $true
+    missingLocalValidPathFallbackRejected = $true
     packagedLoaderOriginVerified = $true
     preloadedModuleCoexistenceVerified = $false
     qualificationClaimed = $false
