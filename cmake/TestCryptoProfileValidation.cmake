@@ -44,3 +44,8 @@ expect_profile_failure(invalid-root
 expect_profile_failure(legacy-option
   "OPENSSL_USE_STATIC_LIBS is no longer a product option"
   -DOPENSSL_USE_STATIC_LIBS=OFF)
+expect_profile_failure(stale-profile
+  "crypto profile changed in an existing build directory"
+  "-DODBCPP_CRYPTO_PROFILE_FINGERPRINT=OPENSSL|SYSTEM_SHARED|"
+  -DODBCPP_CRYPTO_LINKAGE=BUNDLED_SHARED
+  -DODBCPP_CRYPTO_ROOT=${SOURCE_DIR})
