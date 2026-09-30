@@ -71,6 +71,37 @@ add_test(
           -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckCryptoManifest.cmake)
 set_tests_properties(test_crypto_manifest PROPERTIES LABELS "unit;architecture")
 
+if(WIN32)
+  get_filename_component(_linker_directory "${CMAKE_LINKER}" DIRECTORY)
+  find_program(ODBCPP_CRYPTO_INSPECTOR dumpbin
+    HINTS "${_linker_directory}")
+elseif(APPLE)
+  find_program(ODBCPP_CRYPTO_INSPECTOR otool)
+elseif(UNIX)
+  find_program(ODBCPP_CRYPTO_INSPECTOR readelf)
+endif()
+add_test(
+  NAME test_crypto_artifact_dependency_form
+  COMMAND ${CMAKE_COMMAND}
+          -DARTIFACT=$<TARGET_FILE:${PROJECT_NAME}_driver>
+          -DEXPECTED_PROVIDER=${ODBCPP_CRYPTO_PROVIDER}
+          -DEXPECTED_LINKAGE=${ODBCPP_CRYPTO_LINKAGE}
+          -DPLATFORM=${CMAKE_SYSTEM_NAME}
+          -DINSPECTOR=${ODBCPP_CRYPTO_INSPECTOR}
+          -DEVIDENCE=${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-artifact-evidence.json
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/InspectCryptoArtifact.cmake)
+set_tests_properties(test_crypto_artifact_dependency_form
+  PROPERTIES LABELS "unit;architecture")
+
+add_test(
+  NAME test_crypto_artifact_inspection_rules
+  COMMAND ${CMAKE_COMMAND}
+          -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+          -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestCryptoArtifactInspection.cmake)
+set_tests_properties(test_crypto_artifact_inspection_rules
+  PROPERTIES LABELS "unit;architecture")
+
 if(TARGET test_driver_capabilities)
   add_dependencies(test_driver_capabilities odbcpp_driver)
   target_compile_definitions(test_driver_capabilities PRIVATE
