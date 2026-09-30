@@ -44,9 +44,85 @@ Assert ($cryptoManifest.requestedLinkage -eq 'BUNDLED_SHARED') 'Installed crypto
 Assert ($cryptoManifest.configurationEvidenceOnly -eq $true -and
         $cryptoManifest.actualArtifactLinkageVerified -eq $false -and
         $cryptoManifest.fipsClaimed -eq $false) 'Installed crypto manifest makes an unsupported claim'
+$artifactEvidenceEntry = $inventory.cryptoArtifactEvidence
+Assert ($artifactEvidenceEntry.file -eq 'odbcpp-crypto-artifact-evidence.json') 'Crypto artifact evidence inventory entry is missing'
+$installedArtifactEvidence = Join-Path $install $artifactEvidenceEntry.file
+Assert ((Get-FileHash $installedArtifactEvidence -Algorithm SHA256).Hash -eq $artifactEvidenceEntry.sha256) 'Installed crypto artifact evidence hash differs from inventory'
+$artifactEvidence = Get-Content $installedArtifactEvidence -Raw | ConvertFrom-Json
+Assert ($artifactEvidence.schemaVersion -eq 2 -and $artifactEvidence.provider -eq 'OPENSSL' -and
+        $artifactEvidence.requestedLinkage -eq 'BUNDLED_SHARED') 'Installed crypto artifact evidence profile is invalid'
+Assert ($artifactEvidence.dependencyFormVerified -eq $true -and
+        $artifactEvidence.dependencyOriginVerified -eq $false -and
+        $artifactEvidence.configuredLinkInputsVerified -eq $false -and
+        $artifactEvidence.qualificationClaimed -eq $false) 'Installed crypto artifact evidence makes an unsupported claim'
+Assert ((Get-FileHash "$install/odbcpp.dll" -Algorithm SHA256).Hash -eq $artifactEvidence.artifactSha256) 'Installed artifact evidence does not describe the installed driver'
+$cryptoDependencies = @($inventory.cryptoDependencies)
+Assert ($cryptoDependencies.Count -eq 2) 'Package inventory must contain exactly two crypto dependencies'
+$sslDependency = @($cryptoDependencies | Where-Object role -eq 'ssl')
+$cryptoDependency = @($cryptoDependencies | Where-Object role -eq 'crypto')
+Assert ($sslDependency.Count -eq 1 -and $cryptoDependency.Count -eq 1) 'Package inventory crypto dependency roles are invalid'
+foreach ($dependency in $cryptoDependencies) {
+    Assert ([IO.Path]::GetFileName([string]$dependency.file) -ceq [string]$dependency.file) 'Package inventory contains a path-bearing crypto dependency'
+    $import = @($artifactEvidence.runtimeDependencies | Where-Object {
+        $_.role -eq $dependency.role -and $_.file -ceq $dependency.file
+    })
+    Assert ($import.Count -eq 1) 'Package crypto inventory differs from the inspected PE imports'
+    Assert ((Get-FileHash (Join-Path $install $dependency.file) -Algorithm SHA256).Hash -eq $dependency.sha256) 'Installed crypto runtime hash differs from crypto inventory'
+}
 # Remove every development dependency directory from the acceptance process PATH.
-$env:PATH = "$env:SystemRoot/System32;$env:SystemRoot;${env:ProgramFiles}/PowerShell/7"
-& "$artifactsPath/it_package_load.exe" $install
+$hostile = Join-Path $env:RUNNER_TEMP 'hostile-crypto-path'
+New-Item $hostile -ItemType Directory -Force | Out-Null
+foreach ($dependency in $cryptoDependencies) { Set-Content (Join-Path $hostile $dependency.file) 'not a PE image' }
+$env:PATH = "$hostile;$env:SystemRoot/System32;$env:SystemRoot;${env:ProgramFiles}/PowerShell/7"
+function Invoke-PackageLoad {
+    $previousNativePreference = $PSNativeCommandUseErrorActionPreference
+    $PSNativeCommandUseErrorActionPreference = $false
+    try {
+        $lines = @(& "$artifactsPath/it_package_load.exe" $install $sslDependency[0].file $cryptoDependency[0].file 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally { $PSNativeCommandUseErrorActionPreference = $previousNativePreference }
+    if ($exitCode -ne 0) { throw "Package loader failed ($exitCode): $($lines -join [Environment]::NewLine)" }
+    return $lines
+}
+# A missing app-local runtime must fail even when PATH contains a same-name decoy.
+$missingRuntime = Join-Path $install $cryptoDependency[0].file
+$heldRuntime = "$missingRuntime.odbcpp-held"
+Move-Item $missingRuntime $heldRuntime
+try {
+    $previousNativePreference = $PSNativeCommandUseErrorActionPreference
+    $PSNativeCommandUseErrorActionPreference = $false
+    $null = & "$artifactsPath/it_package_load.exe" $install $sslDependency[0].file $cryptoDependency[0].file 2>&1
+    $missingExit = $LASTEXITCODE
+    Assert ($missingExit -ne 0) 'Package loader accepted a PATH decoy for a missing app-local crypto runtime'
+} finally {
+    $PSNativeCommandUseErrorActionPreference = $previousNativePreference
+    Move-Item $heldRuntime $missingRuntime
+}
+$loaderOutput = @(Invoke-PackageLoad)
+$loadedModules = @()
+foreach ($dependency in $cryptoDependencies) {
+    $prefix = "MODULE|$($dependency.file)|"
+    $match = @($loaderOutput | Where-Object { $_.ToString().StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) })
+    Assert ($match.Count -eq 1) "Loader evidence is missing $($dependency.file)"
+    $loadedPath = $match[0].ToString().Substring($prefix.Length)
+    Assert ([IO.Path]::GetFullPath($loadedPath) -ieq [IO.Path]::GetFullPath((Join-Path $install $dependency.file))) 'Loaded crypto runtime path differs from the installed package path'
+    $loadedModules += @{ role = $dependency.role; file = $dependency.file; path = $loadedPath; sha256 = (Get-FileHash $loadedPath -Algorithm SHA256).Hash }
+}
+$versionLines = @($loaderOutput | Where-Object { $_.ToString().StartsWith('VERSION|') })
+Assert ($versionLines.Count -eq 1) 'Loader evidence is missing the OpenSSL runtime version'
+@{
+    schemaVersion = 1
+    driverSha256 = (Get-FileHash "$install/odbcpp.dll" -Algorithm SHA256).Hash
+    artifactEvidenceSha256 = (Get-FileHash $installedArtifactEvidence -Algorithm SHA256).Hash
+    importedDependencies = @($artifactEvidence.runtimeDependencies)
+    loadedModules = $loadedModules
+    runtimeVersion = $versionLines[0].ToString().Substring('VERSION|'.Length)
+    loaderSearchFlags = @('LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR','LOAD_LIBRARY_SEARCH_SYSTEM32')
+    hostilePathDecoyRejected = $true
+    packagedLoaderOriginVerified = $true
+    preloadedModuleCoexistenceVerified = $false
+    qualificationClaimed = $false
+} | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $logs 'crypto-loader-evidence.json') -Encoding utf8
 & "$PSScriptRoot/windows-postgres.ps1" -Action Start -UseInstalledDriver
 try {
     # The fixture configures DSNs only; MSI supplies driver/setup registration.
@@ -61,7 +137,7 @@ try {
     Msi '1.0.2' '/i' 'failed-upgrade-rollback' 1603
     Assert (Select-String -Path (Join-Path $logs 'failed-upgrade-rollback.log') -SimpleMatch 'Intentional rollback acceptance failure.' -Quiet) 'Upgrade failed before the rollback injection point'
     Assert ((Get-ItemProperty $ownerKey).Version -eq '1.0.0') 'Failed upgrade did not restore previous version'
-    & "$artifactsPath/it_package_load.exe" $install
+    $null = Invoke-PackageLoad
     & "$artifactsPath/it_driver_manager.exe"
     Msi '1.0.1' '/i' 'upgrade'
     Assert ((Get-ItemProperty $ownerKey).Version -eq '1.0.1') 'Upgrade version missing'

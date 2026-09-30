@@ -8,7 +8,10 @@ CMake, .NET SDK and the OpenSSL 3 build dependency:
 The build pins WiX 6.0.2, rejects non-x64 PE payloads, stages only runtime files
 and notices, and emits an MSI, SHA-256 checksum and per-file dependency inventory.
 The generated crypto manifest is validated against the Windows `OPENSSL` +
-`BUNDLED_SHARED` profile, installed with the driver and hashed in that inventory.
+`BUNDLED_SHARED` profile. Packaging also inspects the finished driver, records
+the exact imported OpenSSL DLL basenames, copies only those files from the
+controlled dependency root, and binds the resulting evidence to driver and
+runtime SHA-256 hashes. Both manifests are installed and hashed in the inventory.
 This is a repeatable build recipe with recorded inputs, not a claim of byte-for-byte
 MSI reproducibility across compiler/SDK versions. The source revision, tool version
 and payload hashes accompany every artifact. Packages are currently unsigned.
@@ -43,9 +46,16 @@ a workaround. Use verbose MSI logging to diagnose failures:
     msiexec /i odbcpp-postgresql-1.0.0-x64.msi /l*v install.log
 
 CI uses a separate fresh Windows runner for package acceptance, excluding build
-paths from PATH, checking loaded runtime module paths, connecting through the
+paths from PATH, adding hostile same-name PATH decoys, checking actual loaded
+runtime module paths and version, rejecting a decoy when an app-local runtime is
+missing, connecting through the
 installed driver, invoking the setup dialog, upgrading, forcing rollback with a
 separate test-only MSI, rejecting downgrade and foreign registration, and
 uninstalling while checking DSN/unrelated-registration preservation. The failure
 custom action is absent from the beta MSI. SQL Server, Power BI and Excel remain
 G8 real-application checks.
+
+This proves exact-import staging and fresh-process app-local loader origin for
+the packaged OpenSSL profile. It does not prove coexistence when another module
+has already loaded a same-basename crypto provider, symbol isolation, FIPS, or a
+qualified provider/linkage row. Those remain separate S2C gates.

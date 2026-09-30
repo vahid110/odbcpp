@@ -34,6 +34,28 @@ $trimSeparators = [char[]]@('\','/')
 $expectedRoot = [IO.Path]::GetFullPath($OpenSslRoot).TrimEnd($trimSeparators)
 $manifestRoot = [IO.Path]::GetFullPath([string]$cryptoManifest.dependencyRoot).TrimEnd($trimSeparators)
 Assert ($expectedRoot -ieq $manifestRoot) 'Crypto manifest dependency root does not match the packaging input'
+$driverSource = Join-Path $build 'Release/odbcpp.dll'
+Assert-X64 $driverSource
+$inspectorMatch = Select-String -Path "$build/CMakeCache.txt" -Pattern '^ODBCPP_CRYPTO_INSPECTOR:FILEPATH=(.+)$'
+Assert ($inspectorMatch.Count -eq 1) 'The configured PE dependency inspector is required for packaging'
+$inspector = $inspectorMatch.Matches[0].Groups[1].Value
+Assert (Test-Path $inspector) 'The configured PE dependency inspector is missing'
+$artifactEvidencePath = Join-Path $build 'Release/odbcpp-crypto-artifact-evidence.json'
+& cmake "-DARTIFACT=$driverSource" '-DEXPECTED_PROVIDER=OPENSSL' '-DEXPECTED_LINKAGE=BUNDLED_SHARED' `
+    '-DPLATFORM=Windows' "-DINSPECTOR=$inspector" "-DCONFIG_MANIFEST=$manifestPath" `
+    "-DEVIDENCE=$artifactEvidencePath" -P (Join-Path $PSScriptRoot '../../cmake/InspectCryptoArtifact.cmake')
+try { $artifactEvidence = Get-Content $artifactEvidencePath -Raw | ConvertFrom-Json }
+catch { throw "The crypto artifact evidence is invalid JSON: $_" }
+Assert ($artifactEvidence.schemaVersion -eq 2) 'Unsupported crypto artifact evidence schema'
+Assert ($artifactEvidence.provider -eq 'OPENSSL' -and $artifactEvidence.requestedLinkage -eq 'BUNDLED_SHARED') 'Crypto artifact evidence profile differs from package profile'
+Assert ($artifactEvidence.dependencyFormVerified -eq $true) 'Crypto artifact dependency form is unverified'
+Assert ($artifactEvidence.dependencyOriginVerified -eq $false -and $artifactEvidence.configuredLinkInputsVerified -eq $false) 'Windows artifact evidence makes an unsupported origin claim'
+Assert ($artifactEvidence.qualificationClaimed -eq $false) 'Windows artifact evidence cannot pre-claim qualification'
+Assert ($artifactEvidence.artifactSha256 -eq (Get-FileHash $driverSource -Algorithm SHA256).Hash) 'Crypto artifact evidence is not bound to the packaged driver'
+$runtimeDependencies = @($artifactEvidence.runtimeDependencies)
+Assert ($runtimeDependencies.Count -eq 2) 'Crypto artifact evidence must identify exactly two runtime dependencies'
+Assert (@($runtimeDependencies | Where-Object role -eq 'ssl').Count -eq 1) 'Crypto artifact evidence must identify one SSL runtime'
+Assert (@($runtimeDependencies | Where-Object role -eq 'crypto').Count -eq 1) 'Crypto artifact evidence must identify one Crypto runtime'
 New-Item $OutputDirectory -ItemType Directory -Force | Out-Null
 $output = (Resolve-Path $OutputDirectory).Path
 $stage = Join-Path $output "payload-$Version"
@@ -46,12 +68,29 @@ foreach ($file in @('odbcpp.dll','odbcpp_setup.dll')) {
 }
 # Only the runtime libraries imported by our OpenSSL 3 build; never copy tools,
 # private keys, configuration files or the PostgreSQL runner installation.
-foreach ($name in @('libssl-3-x64.dll','libcrypto-3-x64.dll')) {
+function Assert-InsideRoot([string]$Path, [string]$Root) {
+    $canonicalPath = [IO.Path]::GetFullPath((Resolve-Path $Path).Path)
+    $canonicalRoot = [IO.Path]::GetFullPath((Resolve-Path $Root).Path).TrimEnd($trimSeparators) + [IO.Path]::DirectorySeparatorChar
+    Assert ($canonicalPath.StartsWith($canonicalRoot, [StringComparison]::OrdinalIgnoreCase)) "Crypto runtime escaped the controlled dependency root: $canonicalPath"
+    return $canonicalPath
+}
+$cryptoDependencies = @()
+foreach ($dependency in $runtimeDependencies) {
+    $name = [string]$dependency.file
+    Assert ([IO.Path]::GetFileName($name) -ceq $name) 'Crypto artifact evidence contains a path-bearing runtime dependency'
     $runtime = Join-Path $OpenSslRoot "bin/$name"
     if (!(Test-Path $runtime)) { $runtime = Join-Path $OpenSslRoot $name }
     if (!(Test-Path $runtime)) { throw "OpenSSL runtime directory is missing $name" }
+    $runtime = Assert-InsideRoot $runtime $OpenSslRoot
     Assert-X64 $runtime
     Copy-Item $runtime $stage
+    $stagedRuntime = Join-Path $stage $name
+    $runtimeHash = (Get-FileHash $runtime -Algorithm SHA256).Hash
+    Assert ((Get-FileHash $stagedRuntime -Algorithm SHA256).Hash -eq $runtimeHash) 'Staged crypto runtime hash differs from its controlled source'
+    $cryptoDependencies += @{
+        role = [string]$dependency.role; file = $name; source = $runtime
+        version = (Get-Item $runtime).VersionInfo.FileVersion; sha256 = $runtimeHash
+    }
 }
 $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
 $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -65,6 +104,7 @@ Copy-Item "$build/_deps/spdlog-src/LICENSE" (Join-Path $stage 'spdlog-LICENSE.tx
 Copy-Item "$build/_deps/spdlog-src/include/spdlog/fmt/bundled/fmt.license.rst" (Join-Path $stage 'fmt-LICENSE.txt')
 Copy-Item "$PSScriptRoot/README.md" (Join-Path $stage 'README.txt')
 Copy-Item $manifestPath (Join-Path $stage 'odbcpp-crypto-manifest.json')
+Copy-Item $artifactEvidencePath (Join-Path $stage 'odbcpp-crypto-artifact-evidence.json')
 function Macro([string]$Path, [string]$Name) {
     $match = [regex]::Match((Get-Content $Path -Raw), '(?m)^#define ' + [regex]::Escape($Name) + '\s+(\d+)\s*$')
     if (!$match.Success) { throw "Missing dependency version macro $Name" }
@@ -77,6 +117,7 @@ $inventory = @(Get-ChildItem $stage -Filter *.dll | Sort-Object Name | ForEach-O
     @{ file = $_.Name; version = $_.VersionInfo.FileVersion; sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash }
 })
 $cryptoEvidence = Get-Item (Join-Path $stage 'odbcpp-crypto-manifest.json')
+$artifactEvidenceFile = Get-Item (Join-Path $stage 'odbcpp-crypto-artifact-evidence.json')
 @{
     packageVersion = $Version; architecture = 'x64'; wixVersion = '6.0.2'
     sourceRevision = (& git rev-parse HEAD); files = $inventory
@@ -88,6 +129,14 @@ $cryptoEvidence = Get-Item (Join-Path $stage 'odbcpp-crypto-manifest.json')
         provider = $cryptoManifest.provider
         requestedLinkage = $cryptoManifest.requestedLinkage
     }
+    cryptoArtifactEvidence = @{
+        file = $artifactEvidenceFile.Name
+        sha256 = (Get-FileHash $artifactEvidenceFile.FullName -Algorithm SHA256).Hash
+        provider = $artifactEvidence.provider
+        requestedLinkage = $artifactEvidence.requestedLinkage
+        artifactSha256 = $artifactEvidence.artifactSha256
+    }
+    cryptoDependencies = $cryptoDependencies
     licenses = @{
         OpenSSL = 'OpenSSL-LICENSE.txt'; spdlog = 'spdlog-LICENSE.txt'; fmt = 'fmt-LICENSE.txt'
         MSVC = 'https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution'
