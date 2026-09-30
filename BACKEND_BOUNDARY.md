@@ -83,11 +83,20 @@ not required to implement and verify the PostgreSQL boundary.
   Driver Manager width, Windows and sanitizer gates remain green.
 - Backend author contract tests and an out-of-tree sample prove extension
   mechanics without editing shared ODBC wrappers.
+- The S1 architecture-quality review accepts cohesive responsibilities,
+  dependency direction, ownership/concurrency/error semantics and the future
+  columnar attachment point before interface extraction proceeds.
+- The S4 clean-room exercise uses only staged SDK materials. It adds a minimal
+  backend and passes contract tests with zero shared ODBC workflow edits and no
+  undocumented knowledge; all friction and test-message gaps are recorded.
 - The result contract supports the current row-oriented ODBC path without
   preventing a later Arrow columnar path. No Arrow or ADBC implementation is
   required for G12.
 - Interfaces remain explicitly unstable. Public versioning, compatibility and
   distribution are G13.
+- Automated forbidden-dependency checks reject backend-to-ODBC dependencies,
+  protocol/native-type leakage into shared orchestration and dependency cycles.
+  Functional tests cannot waive these architecture failures.
 
 ## What remains later
 

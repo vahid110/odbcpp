@@ -33,6 +33,10 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
 - G12 is the internal SDK/MySQL proof. G13 owns later public SDK packaging,
   stability, licensing and ADBC product decisions. Do not expand MS1 into a
   MySQL beta.
+- G12 also has an explicit engineering-quality bar: S1 architecture review,
+  automated forbidden-dependency checks and an S4 clean-room backend exercise.
+  Undocumented internal knowledge or any shared ODBC workflow edit required by
+  the sample blocks closure even when functional tests pass.
 - Graphify was evaluated and declined. Use narrow `rg` searches and source reads.
 
 ## Navigation

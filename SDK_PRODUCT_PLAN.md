@@ -41,10 +41,10 @@ access returns; MS1 does not silently replace or waive Redshift acceptance.
 
 | Package | Scope | Base estimate | Exit evidence |
 |---|---|---:|---|
-| S1 | Freeze SDK boundary, dependency direction, ownership/error/deadline rules, internal versioning policy and extension lifecycle; inventory current PostgreSQL dependencies; pin the MySQL 8 test version and initial `caching_sha2_password`-over-TLS profile | 2–4 days | Contract document and dependency audit reviewed; no behavior change |
+| S1 | Freeze SDK boundary, dependency direction, ownership/error/deadline rules, internal versioning policy and extension lifecycle; inventory current PostgreSQL dependencies; pin the MySQL 8 test version and initial `caching_sha2_password`-over-TLS profile | 2–4 days | Contract document and dependency audit pass the architecture-quality review below; no behavior change |
 | S2 | Evolve the smallest necessary interfaces and reusable conformance harness; keep PostgreSQL behavior and ABI-facing ODBC paths green | 4–6 days | PostgreSQL plus synthetic-backend contract tests pass; no PostgreSQL/native ODBC concepts cross the documented boundary |
 | S3 | MySQL 8 protocol vertical slice: verified TLS, one password method appropriate to the test server, connect/disconnect, direct and prepared execution, scalar/NULL fetch, parameters, transactions, essential table/column metadata, server errors and recovery | 10–16 days | Unit edge cases and live container tests pass through the same shared ODBC orchestration used by PostgreSQL |
-| S4 | Backend author test kit, MySQL/PostgreSQL comparison review, extension guide and one minimal out-of-tree sample backend | 4–6 days | A clean consumer can build the sample without editing shared ODBC wrappers; limitations and unstable interfaces are explicit |
+| S4 | Backend author test kit, MySQL/PostgreSQL comparison review, extension guide and one minimal out-of-tree sample backend | 4–6 days | The clean-room backend-author exercise below passes; limitations and unstable interfaces are explicit |
 
 Total: **20–32 base engineering days**, plus **6–10 days of 30% contingency**,
 for a buffered working range of **26–42 engineering days**. These are focused
@@ -72,6 +72,80 @@ features.
   supported, and a future columnar-batch path can be added without exposing
   ODBC types to backend implementations.
 
+## Engineering quality bar
+
+G12 is intended to establish an SDK that an independent C++ engineer can
+understand, extend and diagnose without learning PostgreSQL internals. Passing
+functional driver tests is necessary but insufficient. The following qualities
+are release conditions:
+
+- The architecture has a concise dependency model with one-way flow from client
+  adapters to SDK contracts to backend implementations and transport/security
+  primitives. Dependency cycles and backend-to-ODBC dependencies are rejected.
+- Each public-to-backend contract has one coherent responsibility. Large
+  interfaces must be split by demonstrated capability or justified in the S1
+  review; optional behavior uses explicit capabilities rather than empty stubs,
+  downcasts or backend switches.
+- Ownership, borrowing, lifetime, thread-safety, cancellation, deadlines, error
+  translation, connection retirement and recovery are documented for every
+  extension-facing operation.
+- Adding a backend does not require editing shared ODBC workflows. Backend
+  selection and build registration may use a documented product-registration
+  point; protocol, type, authentication and catalog behavior must not require
+  scattered core changes.
+- Backend contract tests report the violated operation and expected lifecycle or
+  capability rule. A generic crash, timeout or opaque assertion is not adequate
+  author feedback.
+- The examples use the same supported interfaces as real backends and expose
+  essential complexity. They must not depend on test-only friends, private
+  headers, repository-relative source paths or undocumented initialization.
+- Duplication between PostgreSQL and MySQL is reviewed explicitly. Shared code
+  is extracted only when semantics agree; coincidentally similar protocol logic
+  remains backend-owned.
+- Architectural claims are backed by automated forbidden-dependency checks,
+  common contract tests and the clean-room exercise. Narrative documentation
+  alone cannot close the gate.
+
+### S1 architecture-quality review
+
+Before S2 implementation, review the proposed dependency diagram and each
+extension-facing interface from the perspective of an SDK consumer. The review
+must record:
+
+1. responsibility and dependency direction;
+2. ownership, concurrency, deadline and error semantics;
+3. required versus optional capabilities;
+4. evidence from PostgreSQL and the anticipated MySQL use;
+5. how row results work now and where a future columnar result path attaches;
+6. rejected alternatives and remaining unstable decisions.
+
+Reject an interface that merely renames PostgreSQL concepts, combines unrelated
+responsibilities, requires backend-specific branching in shared code, or exists
+only for hypothetical future use. Record the accepted design in a concise SDK
+architecture document and architecture decision records where a tradeoff is not
+obvious.
+
+### S4 clean-room backend-author exercise
+
+Use a fresh external build directory and only the installed or staged SDK
+headers, libraries, extension guide, sample and backend test kit. The exercise
+must not rely on reading PostgreSQL/MySQL implementation sources or receiving
+undocumented instructions from their authors. Prefer a reviewer who did not
+author the relevant interface; otherwise run the exercise in a separate clean
+checkout and record that limitation.
+
+The participant must be able to register a minimal synthetic backend, connect,
+execute, return metadata plus NULL/scalar rows, report a server error, declare an
+unsupported capability and cleanly disconnect. It must build and pass contract
+tests without editing shared ODBC wrappers or private SDK files. Record every
+documentation gap, surprising dependency, required workaround and test message.
+Unresolved reliance on internal knowledge blocks G12.
+
+The final G12 evidence includes the dependency diagram, accepted interface
+inventory, forbidden-dependency results, contract-test report, clean-room log,
+core files changed by the sample, and a short friction review. The expected
+number of shared ODBC workflow files changed by the sample is **zero**.
+
 ### Explicit non-goals
 
 - A production or generally available MySQL driver.
@@ -87,9 +161,10 @@ features.
 
 ## Gates and stop rules
 
-G12 closes when S1–S4 and the required proof above pass. It establishes a
-credible internal SDK and a real unrelated-protocol reference backend. It does
-not establish a public stable SDK or MySQL beta.
+G12 closes when S1–S4, the required proof and the engineering quality bar above
+pass. It establishes a credible internal SDK and a real unrelated-protocol
+reference backend. Functional success cannot waive a failed architecture review
+or clean-room exercise. G12 does not establish a public stable SDK or MySQL beta.
 
 G13 is the later public SDK preview: versioned installable SDK artifacts, API
 stability policy, compatibility testing, complete reference documentation,
