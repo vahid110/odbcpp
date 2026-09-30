@@ -1,3 +1,7 @@
+if(POLICY CMP0057)
+  cmake_policy(SET CMP0057 NEW)
+endif()
+
 if(WIN32)
   set(_odbcpp_default_crypto_linkage BUNDLED_SHARED)
 else()
