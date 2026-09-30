@@ -265,6 +265,7 @@ jobs:
             build-windows/package/odbcpp-postgresql-1.0.0-x64.msi
             build-windows/package/odbcpp-postgresql-1.0.0-x64.msi.sha256
             build-windows/package/payload-1.0.0/inventory.json
+            build-windows/package/payload-1.0.0/odbcpp-crypto-manifest.json
             packaging/windows/README.md
           if-no-files-found: error
 

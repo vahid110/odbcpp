@@ -34,6 +34,16 @@ $inventory = Get-Content "$install/inventory.json" -Raw | ConvertFrom-Json
 foreach ($file in $inventory.files) {
     Assert ((Get-FileHash (Join-Path $install $file.file) -Algorithm SHA256).Hash -eq $file.sha256) 'Installed runtime hash differs from inventory'
 }
+$cryptoEvidence = $inventory.cryptoManifest
+Assert ($cryptoEvidence.file -eq 'odbcpp-crypto-manifest.json') 'Crypto manifest inventory entry is missing'
+$installedManifest = Join-Path $install $cryptoEvidence.file
+Assert ((Get-FileHash $installedManifest -Algorithm SHA256).Hash -eq $cryptoEvidence.sha256) 'Installed crypto manifest hash differs from inventory'
+$cryptoManifest = Get-Content $installedManifest -Raw | ConvertFrom-Json
+Assert ($cryptoManifest.provider -eq 'OPENSSL') 'Installed crypto provider differs from package profile'
+Assert ($cryptoManifest.requestedLinkage -eq 'BUNDLED_SHARED') 'Installed crypto linkage differs from package profile'
+Assert ($cryptoManifest.configurationEvidenceOnly -eq $true -and
+        $cryptoManifest.actualArtifactLinkageVerified -eq $false -and
+        $cryptoManifest.fipsClaimed -eq $false) 'Installed crypto manifest makes an unsupported claim'
 # Remove every development dependency directory from the acceptance process PATH.
 $env:PATH = "$env:SystemRoot/System32;$env:SystemRoot;${env:ProgramFiles}/PowerShell/7"
 & "$artifactsPath/it_package_load.exe" $install

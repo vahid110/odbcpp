@@ -482,3 +482,22 @@ safe-reuse batches remain open.
 Legacy direct session/factory paths can still bypass provider default resolution;
 their migration belongs to the live-session batch and they remain compatibility
 paths rather than the extension contract.
+
+## First S2C crypto-profile batch — 2026-09-30
+
+Cryptography selection now uses strict build-time `ODBCPP_CRYPTO_PROVIDER`,
+`ODBCPP_CRYPTO_LINKAGE` and `ODBCPP_CRYPTO_ROOT` profiles. OpenSSL system-shared,
+bundled-shared and bundled-static discovery is explicit; bundled discovery must
+remain inside its canonical controlled prefix. Unknown values, stale profile
+changes, the removed public `OPENSSL_USE_STATIC_LIBS` knob and premature AWS-LC
+selection fail configuration.
+
+Every configured build emits a versioned crypto manifest containing the
+requested profile and resolved configure-time inputs. It explicitly records
+that artifact linkage remains unverified and makes no FIPS claim. Windows beta
+packaging accepts only its OpenSSL bundled-shared profile, installs and hashes
+the manifest, and rejects mismatched profile evidence before staging.
+
+This batch establishes configuration and evidence plumbing only. It does not
+qualify any matrix row, introduce AWS-LC, isolate OpenSSL source APIs, prove
+runtime linkage, or make a FIPS claim. Those S2C gates remain open.

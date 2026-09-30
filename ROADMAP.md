@@ -196,3 +196,13 @@ product composition. Automated architecture checks protect these boundaries and
 unimplemented backend selections fail during configuration. Later S2 batches
 still split internal targets and session facets and establish the final S4
 extension-header allowlist.
+
+### First S2C crypto-profile batch — 2026-09-30
+
+Strict provider/linkage/root build profiles replace the public legacy OpenSSL
+hint. Configure-time validation rejects unsupported or ambiguous profiles and
+prevents bundled discovery outside its controlled prefix. A generated manifest
+records requested and resolved build evidence without claiming verified artifact
+linkage or FIPS. Windows packaging validates, installs and inventories that
+manifest. Provider-neutral crypto adapters, artifact inspection and the AWS-LC
+Linux proof remain the next S2C work.

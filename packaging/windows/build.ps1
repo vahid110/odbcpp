@@ -7,6 +7,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+function Assert([bool]$Condition, [string]$Message) { if (!$Condition) { throw $Message } }
 function Assert-X64([string]$Path) {
     $bytes = [IO.File]::ReadAllBytes($Path)
     if ($bytes.Length -lt 64 -or $bytes[0] -ne 77 -or $bytes[1] -ne 90) { throw "Invalid PE file: $Path" }
@@ -19,6 +20,20 @@ $build = (Resolve-Path $BuildDirectory).Path
 if (!(Select-String -Path "$build/CMakeCache.txt" -Pattern '^TARGET_DATABASE:STRING=POSTGRESQL$' -Quiet)) {
     throw 'The beta package requires a PostgreSQL build'
 }
+$manifestPath = Join-Path $build 'odbcpp-crypto-manifest.json'
+if (!(Test-Path $manifestPath)) { throw 'The generated crypto manifest is required for packaging' }
+try { $cryptoManifest = Get-Content $manifestPath -Raw | ConvertFrom-Json }
+catch { throw "The generated crypto manifest is invalid JSON: $_" }
+Assert ($cryptoManifest.schemaVersion -eq 1) 'Unsupported crypto manifest schema'
+Assert ($cryptoManifest.provider -eq 'OPENSSL') 'The Windows beta package requires the OPENSSL provider'
+Assert ($cryptoManifest.requestedLinkage -eq 'BUNDLED_SHARED') 'The Windows beta package requires BUNDLED_SHARED crypto'
+Assert ($cryptoManifest.configurationEvidenceOnly -eq $true) 'Crypto manifest must identify configure-time evidence'
+Assert ($cryptoManifest.actualArtifactLinkageVerified -eq $false) 'Packaging cannot accept a pre-claimed crypto artifact'
+Assert ($cryptoManifest.fipsClaimed -eq $false) 'The Windows beta package does not claim FIPS'
+$trimSeparators = [char[]]@('\','/')
+$expectedRoot = [IO.Path]::GetFullPath($OpenSslRoot).TrimEnd($trimSeparators)
+$manifestRoot = [IO.Path]::GetFullPath([string]$cryptoManifest.dependencyRoot).TrimEnd($trimSeparators)
+Assert ($expectedRoot -ieq $manifestRoot) 'Crypto manifest dependency root does not match the packaging input'
 New-Item $OutputDirectory -ItemType Directory -Force | Out-Null
 $output = (Resolve-Path $OutputDirectory).Path
 $stage = Join-Path $output "payload-$Version"
@@ -49,6 +64,7 @@ Copy-Item $license[0].FullName (Join-Path $stage 'OpenSSL-LICENSE.txt')
 Copy-Item "$build/_deps/spdlog-src/LICENSE" (Join-Path $stage 'spdlog-LICENSE.txt')
 Copy-Item "$build/_deps/spdlog-src/include/spdlog/fmt/bundled/fmt.license.rst" (Join-Path $stage 'fmt-LICENSE.txt')
 Copy-Item "$PSScriptRoot/README.md" (Join-Path $stage 'README.txt')
+Copy-Item $manifestPath (Join-Path $stage 'odbcpp-crypto-manifest.json')
 function Macro([string]$Path, [string]$Name) {
     $match = [regex]::Match((Get-Content $Path -Raw), '(?m)^#define ' + [regex]::Escape($Name) + '\s+(\d+)\s*$')
     if (!$match.Success) { throw "Missing dependency version macro $Name" }
@@ -60,11 +76,18 @@ $fmtVersion = '{0}.{1}.{2}' -f [math]::Floor($fmtNumber / 10000), [math]::Floor(
 $inventory = @(Get-ChildItem $stage -Filter *.dll | Sort-Object Name | ForEach-Object {
     @{ file = $_.Name; version = $_.VersionInfo.FileVersion; sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash }
 })
+$cryptoEvidence = Get-Item (Join-Path $stage 'odbcpp-crypto-manifest.json')
 @{
     packageVersion = $Version; architecture = 'x64'; wixVersion = '6.0.2'
     sourceRevision = (& git rev-parse HEAD); files = $inventory
     headerOnlyDependencies = @{ spdlog = $spdlogVersion; fmt = $fmtVersion }
     runnerImageVersion = $env:ImageVersion
+    cryptoManifest = @{
+        file = $cryptoEvidence.Name
+        sha256 = (Get-FileHash $cryptoEvidence.FullName -Algorithm SHA256).Hash
+        provider = $cryptoManifest.provider
+        requestedLinkage = $cryptoManifest.requestedLinkage
+    }
     licenses = @{
         OpenSSL = 'OpenSSL-LICENSE.txt'; spdlog = 'spdlog-LICENSE.txt'; fmt = 'fmt-LICENSE.txt'
         MSVC = 'https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution'

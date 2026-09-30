@@ -7,6 +7,8 @@ CMake, .NET SDK and the OpenSSL 3 build dependency:
 
 The build pins WiX 6.0.2, rejects non-x64 PE payloads, stages only runtime files
 and notices, and emits an MSI, SHA-256 checksum and per-file dependency inventory.
+The generated crypto manifest is validated against the Windows `OPENSSL` +
+`BUNDLED_SHARED` profile, installed with the driver and hashed in that inventory.
 This is a repeatable build recipe with recorded inputs, not a claim of byte-for-byte
 MSI reproducibility across compiler/SDK versions. The source revision, tool version
 and payload hashes accompany every artifact. Packages are currently unsigned.
