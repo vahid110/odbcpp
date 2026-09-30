@@ -1,5 +1,6 @@
 // POSIX-only probe for the isolated Linux/macOS adapter experiment.
 #include "core/security/tls_client.h"
+#include "core/security/crypto.h"
 #include "core/util/platform.h"
 
 #include <array>
@@ -10,6 +11,15 @@
 using namespace rs::core::security;
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::string(argv[1]) == "--identity") {
+    const auto identity = crypto_provider_identity();
+    const TlsClientConfig config;
+    std::cout << identity.provider << '\n' << identity.compile_version << '\n'
+              << identity.runtime_version << '\n' << identity.fips_enabled << '\n'
+              << config.minimum_version << '\n' << config.verify_peer << '\n'
+              << config.verify_hostname << '\n';
+    return 0;
+  }
   if (argc != 5) return 2;
   const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) return 2;

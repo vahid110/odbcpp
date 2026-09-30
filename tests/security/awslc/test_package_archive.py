@@ -7,6 +7,7 @@ import tarfile
 import tempfile
 import unittest
 
+from record_provider_identity import validate as validate_identity
 from test_relocated_package import extract_verified, inventory, validate_manifest, validate_loaded_providers
 
 
@@ -203,6 +204,25 @@ class ProviderOriginTests(unittest.TestCase):
                 validate_loaded_providers([str(selected), str(external)], [str(selected)])
             with self.assertRaisesRegex(RuntimeError, "origin mismatch"):
                 validate_loaded_providers([], [str(selected)])
+
+
+class IdentityEvidenceTests(unittest.TestCase):
+    def test_identity_and_policy_match(self):
+        lines = ["AWS_LC", "OpenSSL 1.1.1 (compatible; AWS-LC 5.10.0)",
+                 "AWS-LC 5.10.0", "0", "771", "1", "1"]
+        evidence = validate_identity(lines, {"compileVersion": "AWS-LC 5.10.0"})
+        self.assertFalse(evidence["activeFips"])
+        for index, bad in ((0, "OPENSSL"), (1, "wrong compile version"),
+                           (1, "OpenSSL 1.1.1 (compatible; AWS-LC 5.10.01)"),
+                           (2, "AWS-LC 5.9.0"), (3, "1"), (4, "770"),
+                           (5, "0"), (6, "0")):
+            with self.subTest(index=index):
+                altered = list(lines)
+                altered[index] = bad
+                with self.assertRaisesRegex(RuntimeError, "mismatch"):
+                    validate_identity(altered, {"compileVersion": "AWS-LC 5.10.0"})
+        with self.assertRaisesRegex(RuntimeError, "Incomplete"):
+            validate_identity(lines[:-1], {"compileVersion": "AWS-LC 5.10.0"})
 
 
 if __name__ == "__main__":

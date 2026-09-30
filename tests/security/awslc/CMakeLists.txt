@@ -105,10 +105,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_definitions(test_provider_coexistence PRIVATE
     "ODBCPP_HOST_CRYPTO=\"${ODBCPP_HOST_CRYPTO}\""
     "ODBCPP_HOST_SSL=\"${ODBCPP_HOST_SSL}\"")
+  add_test(NAME provider_identity_evidence COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/record_provider_identity.py"
+    --probe $<TARGET_FILE:tls_probe>
+    --manifest "${CMAKE_CURRENT_BINARY_DIR}/package-manifest.json"
+    --output "${CMAKE_CURRENT_BINARY_DIR}/provider-identity-evidence.json")
   add_test(NAME provider_coexistence COMMAND test_provider_coexistence)
   add_test(NAME preloaded_crypto_primitives COMMAND test_crypto_primitives)
   add_test(NAME preloaded_async_tls COMMAND test_async_tls_transport)
-  set(_preload_tests provider_coexistence preloaded_crypto_primitives preloaded_async_tls)
+  set(_preload_tests provider_identity_evidence provider_coexistence preloaded_crypto_primitives preloaded_async_tls)
   if(ODBCPP_AWSLC_LIVE_TESTS)
     add_test(NAME preloaded_postgres_tls_scram COMMAND test_postgres_live)
     list(APPEND _preload_tests preloaded_postgres_tls_scram)

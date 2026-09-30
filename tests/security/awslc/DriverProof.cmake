@@ -101,6 +101,12 @@ foreach(_dependency IN ITEMS AWSLC SPDLOG)
     set(${_dependency}_SOURCE_OVERRIDE false)
   endif()
 endforeach()
+file(STRINGS "${awslc_SOURCE_DIR}/include/openssl/base.h" _aws_version_line
+  REGEX "^#define AWSLC_VERSION_NUMBER_STRING ")
+if(NOT _aws_version_line MATCHES "^#define AWSLC_VERSION_NUMBER_STRING \"([0-9]+\\.[0-9]+\\.[0-9]+)\"$")
+  message(FATAL_ERROR "AWS-LC compile version could not be identified")
+endif()
+set(AWSLC_COMPILE_VERSION "AWS-LC ${CMAKE_MATCH_1}")
 configure_file("${CMAKE_CURRENT_LIST_DIR}/package-manifest.json.in"
   "${CMAKE_CURRENT_BINARY_DIR}/package-manifest.json" @ONLY)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/package-manifest.json"

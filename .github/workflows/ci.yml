@@ -757,6 +757,8 @@ jobs:
             build-awslc-proof/driver-link.map
             build-awslc-proof/awslc-driver-proof.tar.gz
             build-awslc-proof/relocation-evidence.json
+            build-awslc-proof/provider-identity-evidence.json
+            build-awslc-proof/tls_probe
             build-awslc-proof/_deps/awslc-build/ssl/libssl*
             build-awslc-proof/_deps/awslc-build/crypto/libcrypto*
           if-no-files-found: error

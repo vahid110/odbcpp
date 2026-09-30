@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "scope": "internal-driver-package-dependency-inputs",
   "provider": "AWS_LC",
+  "compileVersion": "@AWSLC_COMPILE_VERSION@",
   "linkage": "@_proof_linkage@",
   "fipsRequested": false,
   "qualificationClaimed": false,

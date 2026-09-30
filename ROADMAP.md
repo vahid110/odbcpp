@@ -320,3 +320,17 @@ whose `OUTPUT` record names that artifact and whose trace shows both controlled,
 hashed archives contributed members. The gate rejects stale or incomplete maps.
 This does not prove embedded-byte ancestry; that work, cross-implementation
 coexistence and AWS-LC remain open, so the row is still unqualified.
+
+### Current S2C closure sequence — 2026-10-01
+
+The bounded non-FIPS AWS-LC Linux proof now includes functional, identity,
+artifact, coexistence, extracted-package and loader-origin evidence, with
+explicit trusted-loader, directory-ownership and dependency-update assumptions.
+Acceptance is conditional on the final closure commit's complete green CI run;
+see CRYPTO_PROVIDER_PLAN.md. This closes the bounded AWS-LC proof only.
+
+Next, audit the OpenSSL rows against the existing finite qualification contract,
+implement demonstrated gaps, and record matrix acceptance. Main-build AWS-LC
+integration is still separate and disabled. Then continue the accepted S2
+error/lifecycle, results and session/facet migration before S3 MySQL. G12 and
+PostgreSQL G8 remain open; public SDK/FIPS scope stays deferred.

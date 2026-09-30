@@ -736,3 +736,13 @@ static drivers must map none separately. Shared-profile library-path and preload
 canaries require detection of external byte-identical provider copies. Evidence
 explicitly distinguishes origin detection from runtime prevention. Final loader
 trust/deployment policy and provider qualification remain open.
+
+## S2C AWS-LC bounded-proof closure — 2026-10-01
+
+The remaining recorded-identity and deployment-responsibility items are now
+explicit in CRYPTO_PROVIDER_PLAN.md. The final exact-revision CI run must pass
+both Linux linkage proofs and all protected gates before this bounded proof is
+accepted. G12, the OpenSSL matrix and main-build AWS-LC enablement remain open.
+Further AWS-LC proof expansion requires a demonstrated failed gate or contract
+change. Next, reconcile the finite OpenSSL qualification evidence and return to
+S2 error/lifecycle migration after the S2C matrix review.

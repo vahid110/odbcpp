@@ -498,3 +498,52 @@ The final qualification decision must define trusted host/loader configuration,
 package-directory ownership and dependency update responsibility. `$ORIGIN`
 alone does not enforce that trust boundary. The main AWS-LC option stays disabled
 until that decision and the remaining profile evidence are accepted.
+
+## S2C bounded AWS-LC proof acceptance — 2026-10-01
+
+Acceptance scope is the pinned non-FIPS Linux experiment, in both static and
+shared linkage jobs, under the disposable PostgreSQL 17 and system-OpenSSL host
+fixtures. The package manifest records the compile version. A retained adapter
+probe record binds compile/runtime versions, inactive FIPS state and the TLS
+probe's effective defaults (TLS 1.2 minimum, peer and hostname verification,
+explicit CA in live cases) to probe and manifest hashes. Mandatory negative
+checks reject missing fields, version/provider mismatches and weaker policy.
+This record describes the adapter probe, not arbitrary end-user connections or
+production-driver runtime identity enforcement.
+
+Within this proof, the complete evidence set is now finite: private boundaries,
+primitive/SCRAM vectors and cleansing, verified TLS 1.2/1.3 and controlled legacy
+rejection, sync/thread-pool/epoll sessions and recovery, ODBC TLS queries and
+rejections, export/linkage inspection, system-OpenSSL coexistence, extracted
+packages with dependency/license inventories, and loaded-origin/substitution
+checks. Acceptance requires both Linux linkage jobs and all protected platform
+gates to pass for the commit containing this closure record. Earlier green
+checkpoints are supporting evidence, not a substitute for that final run.
+
+Deployment assumptions and responsibility:
+
+- The embedding application and administrator control loader environment,
+  native preload modules and driver registration. Ambient providers may coexist
+  only within the tested symbol-isolation boundary. Arbitrary hostile native
+  code in the host is outside this in-process proof's protection scope.
+- The package directory and its parents are owned by the deployment administrator
+  and are not writable by untrusted users. Shared provider origins must remain
+  inside the controlled package. External overrides fail qualification origin
+  checks; runtime prevention is not claimed.
+- ODBCPP maintainers own the pinned provider/logging recipe updates and license
+  inventory. A dependency or compiler/linkage recipe update reruns the complete
+  proof and regenerates hashes. Consumers must replace/redeploy the matching
+  package; replacing one bundled provider is not a qualified update.
+
+After the final run is green, the bounded AWS-LC Linux proof is accepted for the
+S2C/G12 architecture milestone. This does not qualify a public product matrix
+row, enable `AWS_LC` in the main build or close all S2C/G12 work. Public variant
+support, complete SBOM/attestation/signing and expanded platform/host coverage
+remain G13 decisions; FIPS stays deferred. No further unplanned AWS-LC proof
+expansion is required unless a gate fails or the accepted contract changes.
+
+Remaining S2C closure work: reconcile each OpenSSL row against the same finite
+requirements, fill only demonstrated missing evidence, then perform one matrix
+acceptance review before returning to S2 error/lifecycle migration. The AWS-LC
+source tree is still composed separately for this experiment; main-build provider
+selection remains a separately reviewable integration step before product use.
