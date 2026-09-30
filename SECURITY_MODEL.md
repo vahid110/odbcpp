@@ -109,6 +109,14 @@ and the qualification matrix in
 [CRYPTO_PROVIDER_PLAN.md](CRYPTO_PROVIDER_PLAN.md). FIPS is an independent exact
 module/profile claim and is never inferred from provider selection.
 
+Reported FIPS mode is informational, not evidence that every operation is
+approved. Future FIPS work must follow the selected module's security policy
+and distinguish module validation from driver integration claims. Preserve
+explicit initialization, host-process policy isolation and session reuse
+boundaries now; implementation and qualification remain deferred under the
+future-readiness section of the crypto plan. This adds no current FIPS claim
+or change to supported authentication methods.
+
 ### Credentials
 
 Credentials use a move-oriented owning type/provider with redacted description,

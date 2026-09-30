@@ -294,6 +294,7 @@ its residual backlog with test references. It does not promote a row to Verified
 | T9 | Public SDK stability/versioning promises, full MySQL beta breadth and TDS | Bounded G12 proof passes and public SDK/MySQL product scope is selected with funded requirements |
 | T10 | Broad file splitting, universal plugin registry, broad static-analysis cleanup | A release defect/change needs broader cleanup; focused A1–A4/G9a extraction is mandatory in PostgreSQL M1, with G9b refinement in Redshift M3 |
 | T11 | Extra PostgreSQL versions/features beyond frozen validation baseline | Customer deployment needs them or a shared/Redshift defect reproduces there |
+| T12 | FIPS implementation and per-driver/platform qualification; preserve architectural flexibility during S2/S2C reviews only, per CRYPTO_PROVIDER_PLAN.md | Concrete customer/deployment requirement or explicit reprioritization; separately estimate module selection, approved-operation policy, integration evidence and compliance review before activation |
 
 A deferred item records owner, rationale, known risk, revisit trigger and evidence
 when instantiated as work. It may not hide a serious supported-path defect.

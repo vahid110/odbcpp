@@ -242,6 +242,13 @@ verified-channel evidence; only private security/transport adapters see provider
 types. The required profiles, artifact evidence and AWS-LC proof are defined in
 [CRYPTO_PROVIDER_PLAN.md](CRYPTO_PROVIDER_PLAN.md).
 
+Existing S2/S2C reviews also preserve future FIPS flexibility: separate provider
+selection from operation policy, keep security initialization/lifetime explicit,
+and allow richer module/approval evidence without backend or ODBC leakage.
+Session reuse must respect immutable security policy. These are design review
+criteria, not authorization to implement FIPS APIs or qualify a FIPS profile;
+the deferred scope is defined in the crypto plan.
+
 G12 needs one documented compile-time provider registration point. Adding the
 clean-room backend may add its own sources and one product registration record;
 it changes zero shared ODBC workflow files. Runtime discovery, dynamic plugins,

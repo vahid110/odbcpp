@@ -72,6 +72,45 @@ embedded bytes' origin. Windows packaged-loader origin, static provenance,
 symbol visibility and coexistence evidence remain required before any matrix
 row is qualified.
 
+## Future FIPS readiness — architecture now, implementation deferred
+
+FIPS is low-priority deferred product scope, not an additional S2/S2C delivery
+or G12 qualification requirement. Preserve the following design properties
+during existing architecture reviews; do not introduce speculative interfaces
+or change current authentication behavior solely for a future FIPS profile:
+
+- Keep cryptographic operations behind the shared private adapters across all
+  drivers. Provider selection and security policy are distinct: selecting
+  AWS-LC or OpenSSL does not select an approved-operation policy.
+- Keep policy enforcement centralized, with backend-owned authentication
+  method mappings. Future restrictions must not require scattered provider or
+  FIPS conditionals in ODBC workflows or backend code.
+- Leave identity/evidence reporting extensible to exact module/version,
+  operating mode and operation approval evidence. Today's `fips_enabled` state
+  is informational; it proves neither approved services nor driver compliance.
+- Keep security context initialization and lifetime explicit. A future strict
+  profile must initialize its module before sessions and fail closed on required
+  initialization or self-test failures. Per-connection changes must not mutate
+  process-global policy for other drivers sharing the host.
+- Preserve immutable session security policy and reuse isolation. A future
+  stricter policy must not inherit a pooled session established under weaker
+  policy. Artifact identity and linkage evidence must remain attributable to
+  the actual packaged/loaded module.
+
+Revisit implementation only for a concrete customer/deployment requirement or
+explicit reprioritization. At that point, separately scope validated-module and
+operating-environment selection, permitted TLS/authentication operations,
+approved-service evidence, fail-closed tests, module integrity/self-tests,
+packaging and update rules, and specialist compliance review. Qualify each
+claimed driver/platform profile against the selected module's security policy.
+AWS-LC and OpenSSL remain candidates, not commitments to a validated profile.
+Do not make FIPS mandatory for ordinary users or claim the whole driver is a
+validated cryptographic module merely because it uses one.
+
+Current milestone order, estimates and non-FIPS qualification gates are
+unchanged. FIPS implementation and qualification receive a separate estimate
+when activated; they must not consume the existing S2C contingency.
+
 ## Linkage profiles
 
 - `SYSTEM_SHARED` resolves a supported installed provider and records the exact

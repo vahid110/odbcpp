@@ -87,6 +87,13 @@ not consume contingency on added features.
   [CRYPTO_PROVIDER_PLAN.md](CRYPTO_PROVIDER_PLAN.md) pass. Provider and linkage
   are build choices, while DSNs remain provider-neutral runtime policy.
 
+FIPS readiness is a lightweight architecture-review criterion within S2/S2C,
+as defined in [CRYPTO_PROVIDER_PLAN.md](CRYPTO_PROVIDER_PLAN.md). FIPS
+implementation and profile qualification are deferred until concrete demand or
+explicit reprioritization; they add no work package, delivery promise or budget
+to this milestone. The existing PostgreSQL, SDK/MySQL and Redshift sequence
+remains unchanged.
+
 ## Pooling and caching boundary
 
 Connection reuse is a core correctness concern even when the ODBC Driver Manager
