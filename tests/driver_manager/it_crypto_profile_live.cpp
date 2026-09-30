@@ -15,14 +15,31 @@
 #include <cstdlib>
 #include <algorithm>
 #include <cctype>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
 namespace {
 
-std::string required_connection(const char* variable) {
+std::string environment_value(const char* variable) {
+#ifdef _WIN32
+  char* value = nullptr;
+  std::size_t size = 0;
+  const auto status = _dupenv_s(&value, &size, variable);
+  const std::unique_ptr<char, decltype(&std::free)> owned(value, &std::free);
+  if (status != 0) {
+    throw std::runtime_error(std::string("failed to read environment variable: ") + variable);
+  }
+  return value ? value : "";
+#else
   const char* value = std::getenv(variable);
-  if (!value || !*value) {
+  return value ? value : "";
+#endif
+}
+
+std::string required_connection(const char* variable) {
+  const auto value = environment_value(variable);
+  if (value.empty()) {
     throw std::runtime_error(std::string(variable) + " is required");
   }
   return value;
@@ -73,8 +90,8 @@ class DirectDriver {
   using FreeHandle = SQLRETURN (*)(SQLSMALLINT, SQLHANDLE);
 
   DirectDriver() {
-    const char* override_path = std::getenv("ODBCPP_CRYPTO_PROFILE_DRIVER_PATH");
-    const char* path = override_path && *override_path ? override_path : ODBCPP_DRIVER_LIBRARY_PATH;
+    const auto override_path = environment_value("ODBCPP_CRYPTO_PROFILE_DRIVER_PATH");
+    const char* path = override_path.empty() ? ODBCPP_DRIVER_LIBRARY_PATH : override_path.c_str();
 #ifdef _WIN32
     module_ = LoadLibraryA(path);
     if (!module_) throw std::runtime_error("failed to load direct driver: " + std::to_string(GetLastError()));
