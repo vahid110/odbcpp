@@ -37,6 +37,13 @@ TEST(CryptoPrimitivesTest, MatchesStandardDigestAndMacVectors) {
             "ef4d59a14946175997479dbc2d1a3cd8");
 }
 
+TEST(CryptoPrimitivesTest, ReportsCompileAndRuntimeProviderIdentity) {
+  const auto identity = rs::core::security::crypto_provider_identity();
+  EXPECT_EQ(identity.provider, "OPENSSL");
+  EXPECT_FALSE(identity.compile_version.empty());
+  EXPECT_FALSE(identity.runtime_version.empty());
+}
+
 TEST(CryptoPrimitivesTest, MatchesPbkdf2VectorAndRejectsZeroIterations) {
   EXPECT_EQ(hex(rs::core::security::pbkdf2_hmac_sha256(
                 "password", bytes("salt"), 1)),

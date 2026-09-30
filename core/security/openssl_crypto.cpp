@@ -6,6 +6,7 @@
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
+#include <openssl/opensslv.h>
 #include <openssl/rand.h>
 
 namespace rs::core::security {
@@ -41,6 +42,17 @@ int checked_int_size(std::size_t size, std::string_view input_name) {
 }
 
 }  // namespace
+
+CryptoProviderIdentity crypto_provider_identity() {
+  CryptoProviderIdentity identity;
+  identity.provider = "OPENSSL";
+  identity.compile_version = OPENSSL_VERSION_TEXT;
+  identity.runtime_version = OpenSSL_version(OPENSSL_VERSION);
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+  identity.fips_enabled = EVP_default_properties_is_fips_enabled(nullptr) == 1;
+#endif
+  return identity;
+}
 
 Md5Digest md5(std::span<const unsigned char> input) {
   return digest<Md5Digest{}.size()>(EVP_md5(), input, "MD5");
