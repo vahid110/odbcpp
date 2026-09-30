@@ -567,3 +567,26 @@ This fills the demonstrated Linux TLS gate gap only. The OpenSSL rows remain
 unqualified pending their finite coexistence/identity/package acceptance work;
 macOS and Windows TLS fixtures are the next platform gaps. No additional AWS-LC
 proof or public/FIPS scope is introduced.
+
+## S2C macOS OpenSSL mandatory TLS evidence — 2026-10-01
+
+Both macOS iODBC Unicode build variants now opt into the common independent TLS
+peer suite and the dedicated real-driver TLS/SCRAM query plus wrong-CA/hostname
+rejection gate. The disposable PostgreSQL cluster uses SCRAM authentication
+rather than trust authentication. Existing Unicode integration suites continue
+with their explicit non-TLS DSN before the separate mandatory TLS gate.
+
+The native TLS setup operates only on a stopped disposable cluster with absolute
+paths, installs a same-owner private key with mode 0600, and uses an IP-only SAN.
+The negative hostname case connects through localhost without editing host DNS
+configuration. An explicit Python 3.12 interpreter supplies an independent modern
+OpenSSL peer. Tests and driver/probe/manifest artifacts are retained separately
+for each Unicode build. The dedicated TLS suite uses ANSI ODBC calls; it does
+not claim an additional Unicode-call TLS matrix beyond the existing suites.
+
+Local focused checks pass for both builds, including successful authenticated
+TLS, certificate/hostname rejection and controlled TLS downgrade rejection.
+Fixture negatives reject relative paths and a running-cluster PID file before
+writing TLS inputs. Final exact-revision CI is mandatory. The macOS row remains
+unqualified pending the documented identity/coexistence acceptance evidence;
+Windows TLS qualification is the next platform gap.

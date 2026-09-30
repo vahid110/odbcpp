@@ -753,3 +753,11 @@ Both Linux OpenSSL linkage rows run the shared independent TLS acceptance and
 controlled downgrade fixture. System-shared also gains mandatory live driver
 TLS/SCRAM and wrong-CA/hostname rejection with no skipped cases. Retained results
 and binaries support later matrix acceptance; OpenSSL qualification remains open.
+
+## S2C macOS OpenSSL TLS batch — 2026-10-01
+
+Both iODBC Unicode builds gain mandatory independent TLS and live driver
+TLS/SCRAM acceptance/rejection gates. Their disposable PostgreSQL fixture now
+uses SCRAM rather than trust authentication. Stopped-cluster and private-key
+permission guards protect fixture setup. Retained artifacts support later row
+acceptance; macOS qualification and Windows TLS evidence remain open.
