@@ -1,9 +1,15 @@
 #include "pg_database_connection.h"
+#include "pg_backend_provider.h"
 
 namespace rs::core::database::postgres {
 
+TransactionCapabilities pg_transaction_capabilities() noexcept {
+  return {true, true, TransactionIsolation::ReadCommitted,
+          {true, true, true, true}};
+}
+
 TransactionCapabilities PgDatabaseConnection::transaction_capabilities() const {
-  return {true, true, TransactionIsolation::ReadCommitted, {true, true, true, true}};
+  return pg_transaction_capabilities();
 }
 
 rs::util::Result<void> PgDatabaseConnection::transaction(

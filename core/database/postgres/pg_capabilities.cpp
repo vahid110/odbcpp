@@ -1,14 +1,10 @@
+#include "pg_backend_provider.h"
 #include "pg_database_connection.h"
 
 namespace rs::core::database::postgres {
-BackendCapabilities PgDatabaseConnection::capabilities() const {
+BackendCapabilities pg_backend_capabilities(std::string_view display_name) noexcept {
   BackendCapabilities result;
-#ifdef ODBCPP_ENABLE_REDSHIFT
-  // Preserve the existing build identity; live Redshift acceptance is separate.
-  result.dbms_name = "Amazon Redshift";
-#else
-  result.dbms_name = "PostgreSQL";
-#endif
+  result.dbms_name = display_name;
   result.identifier_quote = "\"";
   result.catalog_separator = ".";
   result.catalog_term = "database";
@@ -33,5 +29,9 @@ BackendCapabilities PgDatabaseConnection::capabilities() const {
   result.schema_in_table_definitions = result.schema_in_index_definitions = true;
   result.schema_in_privileges = true;
   return result;
+}
+
+BackendCapabilities PgDatabaseConnection::capabilities() const {
+  return pg_backend_capabilities(display_name_);
 }
 } // namespace rs::core::database::postgres

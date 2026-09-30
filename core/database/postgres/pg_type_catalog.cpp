@@ -1,4 +1,5 @@
 #include "pg_database_connection.h"
+#include "pg_backend_provider.h"
 
 #include <array>
 #include <charconv>
@@ -32,13 +33,18 @@ constexpr auto modern_definitions = [] {
 }();
 } // namespace
 
-std::span<const TypeDefinition> PgDatabaseConnection::type_catalog() const {
-  const auto version = get_parameter("server_version");
+std::span<const TypeDefinition> pg_type_catalog(
+    std::string_view version) noexcept {
+  if (version.empty()) return definitions;
   int major = 0;
   const auto parsed = std::from_chars(version.data(), version.data() + version.size(), major);
   return parsed.ec == std::errc{} && major >= 15
       ? std::span<const TypeDefinition>(modern_definitions)
       : std::span<const TypeDefinition>(definitions);
+}
+
+std::span<const TypeDefinition> PgDatabaseConnection::type_catalog() const {
+  return pg_type_catalog(get_parameter("server_version"));
 }
 
 } // namespace rs::core::database::postgres

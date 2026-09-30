@@ -1,5 +1,6 @@
 #pragma once
 #include "odbc_types.h"
+#include "core/database/backend_provider.h"
 #include "core/database/i_database_connection.h"
 #include "core/database/connection_pool.h"
 #include "core/util/driver_logging.h"
@@ -207,11 +208,10 @@ private:
 // Connection handle
 class ODBCConnection : public ODBCHandle {
 public:
-  using BackendFactory = std::function<std::unique_ptr<rs::core::database::IDatabaseConnection>(
-      std::unique_ptr<rs::core::transport::ITransport>)>;
-  // Internal per-connection selection seam; default uses the compiled backend.
-  // Factories must return a backend and transfer or release the supplied transport.
-  explicit ODBCConnection(ODBCEnvironment* env, BackendFactory factory = {});
+  // Internal per-connection product seam; default uses the compiled provider.
+  explicit ODBCConnection(
+      ODBCEnvironment* env,
+      std::shared_ptr<const rs::core::database::IBackendProvider> provider = {});
   
   SQLRETURN connect(
       const std::string& dsn,
@@ -252,9 +252,7 @@ public:
 private:
   void close_connection();
 
-  const rs::core::database::IDatabaseConnection& metadata_backend() const;
-  BackendFactory backend_factory_;
-  mutable std::unique_ptr<rs::core::database::IDatabaseConnection> metadata_conn_;
+  std::shared_ptr<const rs::core::database::IBackendProvider> backend_provider_;
   std::unique_ptr<rs::core::database::IDatabaseConnection> db_conn_;
   bool connected_ = false;
   SQLUINTEGER login_timeout_seconds_ = 30;

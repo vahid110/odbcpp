@@ -6,7 +6,6 @@
 #include "core/database/sql_translation.h"
 #include "text_data_converter.h"
 #include "unicode.h"
-#include "core/database/database_factory.h"
 #include "core/transport/transport_factory.h"
 #include "core/transport/transport_options.h"
 #include "core/util/deadline.h"
@@ -363,20 +362,6 @@ bool has_temporal_timezone_suffix(const std::string& value) {
 bool has_temporal_t_separator(const std::string& value) {
   const auto text = ConnectionString::trim(value);
   return text.size() >= 19 && text[10] == 'T';
-}
-
-std::string default_driver_name() {
-#ifdef ODBCPP_ENABLE_REDSHIFT
-  return "ODBCPP Redshift";
-#elif defined(ODBCPP_ENABLE_POSTGRESQL)
-  return "ODBCPP PostgreSQL";
-#elif defined(ODBCPP_ENABLE_MYSQL)
-  return "ODBCPP MySQL";
-#elif defined(ODBCPP_ENABLE_SQLSERVER)
-  return "ODBCPP SQLServer";
-#else
-  return "ODBCPP";
-#endif
 }
 
 bool parse_ssl(const std::string& value) {
@@ -1253,32 +1238,27 @@ bool is_character_column_attribute(SQLUSMALLINT field_identifier) {
   return contains_attribute(field_identifier, attributes);
 }
 
-ODBCConnection::ODBCConnection(ODBCEnvironment*, BackendFactory factory)
+ODBCConnection::ODBCConnection(
+    ODBCEnvironment*,
+    std::shared_ptr<const rs::core::database::IBackendProvider> provider)
     : ODBCHandle(HandleType::Connection),
-      backend_factory_(factory ? std::move(factory) : BackendFactory{
-          [](std::unique_ptr<rs::core::transport::ITransport> transport) {
-            return rs::core::database::DatabaseFactory::create_connection(std::move(transport));
-          }}),
+      backend_provider_(provider ? std::move(provider)
+          : std::shared_ptr<const rs::core::database::IBackendProvider>(
+                &rs::core::database::configured_backend_provider(),
+                [](const rs::core::database::IBackendProvider*) {})),
       connection_id_(next_connection_id.fetch_add(1)) {}
 
-const rs::core::database::IDatabaseConnection& ODBCConnection::metadata_backend() const {
-  if (db_conn_) return *db_conn_;
-  // Metadata is available before connect through the configured backend.
-  if (!metadata_conn_) metadata_conn_ = backend_factory_(nullptr);
-  if (!metadata_conn_) throw std::runtime_error("Backend factory returned no connection");
-  return *metadata_conn_;
-}
-
 std::span<const rs::core::database::TypeDefinition> ODBCConnection::type_catalog() const {
-  return metadata_backend().type_catalog();
+  return db_conn_ ? db_conn_->type_catalog() : backend_provider_->type_catalog();
 }
 
 rs::core::database::BackendCapabilities ODBCConnection::capabilities() const {
-  return metadata_backend().capabilities();
+  return db_conn_ ? db_conn_->capabilities() : backend_provider_->capabilities();
 }
 
 rs::core::database::TransactionCapabilities ODBCConnection::transaction_capabilities() const {
-  return metadata_backend().transaction_capabilities();
+  return db_conn_ ? db_conn_->transaction_capabilities()
+                  : backend_provider_->transaction_capabilities();
 }
 
 void ODBCConnection::log(
@@ -1349,7 +1329,8 @@ SQLRETURN ODBCConnection::connect(
     require_no_nul(dsn, "Connection string or DSN");
     if (user) require_no_nul(*user, "User name");
     if (password) require_no_nul(*password, "Password");
-    const auto resolved = ConnectionString::resolve(dsn, default_driver_name());
+    const auto resolved = ConnectionString::resolve(
+        dsn, std::string(backend_provider_->identity().driver_name));
     const auto logging_options = rs::core::logging::LoggingOptions::resolve(
         resolved.driver_parameters, resolved.dsn_parameters,
         resolved.connection_parameters);
@@ -1365,41 +1346,31 @@ SQLRETURN ODBCConnection::connect(
       return SQL_ERROR;
     }
 
-    rs::core::database::ConnectionSettings settings;
-    settings.host = params.count("SERVER") ? params.at("SERVER") :
-                    (params.count("HOST") ? params.at("HOST") : "localhost");
-    settings.port = params.count("PORT") ? parse_port(params.at("PORT")) : 5432;
-    settings.database = params.count("DATABASE") ? params.at("DATABASE") :
-                        (params.count("DB") ? params.at("DB") :
-                         (!resolved.dsn_name.empty() ? resolved.dsn_name : "postgres"));
-    if (requested_catalog_) settings.database = *requested_catalog_;
-    settings.user = user ? *user :
-                    (params.count("UID") ? params.at("UID") :
-                     (params.count("USER") ? params.at("USER") : ""));
-    settings.password = password ? *password :
-                        (params.count("PWD") ? params.at("PWD") :
-                         (params.count("PASSWORD") ? params.at("PASSWORD") : ""));
-    require_no_nul(settings.host, "Server name");
-    require_no_nul(settings.database, "Database name");
-    require_no_nul(settings.user, "User name");
-    require_no_nul(settings.password, "Password");
-    settings.use_ssl = !params.count("SSL") || parse_ssl(params.at("SSL"));
-    settings.ssl_ca_file = params.count("SSLCAFILE")
-        ? params.at("SSLCAFILE") : std::string{};
-    settings.ssl_ca_dir = params.count("SSLCADIR")
-        ? params.at("SSLCADIR") : std::string{};
-    require_no_nul(settings.ssl_ca_file, "TLS CA file");
-    require_no_nul(settings.ssl_ca_dir, "TLS CA directory");
-    if (!settings.ssl_ca_file.empty() && !settings.ssl_ca_dir.empty()) {
-      throw std::invalid_argument(
-          "SSLCAFILE and SSLCADIR cannot both be specified");
+    rs::core::database::ConnectionOptions options;
+    if (params.count("SERVER")) options.host = params.at("SERVER");
+    else if (params.count("HOST")) options.host = params.at("HOST");
+    if (params.count("PORT")) options.port = parse_port(params.at("PORT"));
+    if (params.count("DATABASE")) options.database = params.at("DATABASE");
+    else if (params.count("DB")) options.database = params.at("DB");
+    else if (!resolved.dsn_name.empty()) options.database = resolved.dsn_name;
+    if (requested_catalog_) options.database = *requested_catalog_;
+    if (user) options.user = *user;
+    else if (params.count("UID")) options.user = params.at("UID");
+    else if (params.count("USER")) options.user = params.at("USER");
+    if (password) options.password = *password;
+    else if (params.count("PWD")) options.password = params.at("PWD");
+    else if (params.count("PASSWORD")) options.password = params.at("PASSWORD");
+    if (params.count("SSL")) options.use_ssl = parse_ssl(params.at("SSL"));
+    if (params.count("SSLCAFILE")) options.ssl_ca_file = params.at("SSLCAFILE");
+    if (params.count("SSLCADIR")) options.ssl_ca_dir = params.at("SSLCADIR");
+    options.timeout = timeout_duration(login_timeout_seconds_);
+
+    auto resolved_settings =
+        backend_provider_->resolve_connection_options(std::move(options));
+    if (resolved_settings.has_error()) {
+      throw std::invalid_argument(resolved_settings.error_message());
     }
-    if (!settings.use_ssl &&
-        (!settings.ssl_ca_file.empty() || !settings.ssl_ca_dir.empty())) {
-      throw std::invalid_argument(
-          "SSLCAFILE and SSLCADIR require SSL=true");
-    }
-    settings.timeout = timeout_duration(login_timeout_seconds_);
+    auto settings = std::move(*resolved_settings);
 
     const auto transport_options = rs::core::transport::TransportOptions::resolve(
         resolved.driver_parameters, resolved.dsn_parameters,
@@ -1419,8 +1390,8 @@ SQLRETURN ODBCConnection::connect(
                                  transport_options.deadline_model))}});
     auto transport = rs::core::transport::TransportFactory::create(
         transport_options, settings.use_ssl);
-    db_conn_ = backend_factory_(std::move(transport));
-    if (!db_conn_) throw std::runtime_error("Backend factory returned no connection");
+    db_conn_ = backend_provider_->create_session(std::move(transport));
+    if (!db_conn_) throw std::runtime_error("Backend provider returned no session");
     
     // Connect synchronously for ODBC compatibility
     auto result = db_conn_->connect(settings);

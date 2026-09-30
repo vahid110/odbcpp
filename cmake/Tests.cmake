@@ -35,6 +35,22 @@ foreach(test_file ${UNIT_TEST_SOURCES})
   set_tests_properties(${test_name} PROPERTIES LABELS "unit")
 endforeach()
 
+add_test(
+  NAME test_architecture_boundaries
+  COMMAND ${CMAKE_COMMAND}
+          -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckArchitecture.cmake)
+set_tests_properties(test_architecture_boundaries PROPERTIES LABELS "unit;architecture")
+
+add_test(
+  NAME test_unimplemented_backend_rejected
+  COMMAND ${CMAKE_COMMAND}
+          -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+          -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/unsupported-backend-check
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestUnsupportedBackend.cmake)
+set_tests_properties(test_unimplemented_backend_rejected
+  PROPERTIES LABELS "unit;architecture")
+
 if(TARGET test_driver_capabilities)
   add_dependencies(test_driver_capabilities odbcpp_driver)
   target_compile_definitions(test_driver_capabilities PRIVATE

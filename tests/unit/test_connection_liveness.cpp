@@ -1719,6 +1719,7 @@ TEST(DatabaseDialectTest, GenericConnectionHonorsDifferentParserDialect) {
 namespace {
 class TransactionProbe final : public rs::core::database::postgres::PgDatabaseConnection {
 public:
+  TransactionProbe() : PgDatabaseConnection("PostgreSQL") {}
   std::string command;
   rs::util::Deadline observed_deadline{};
   std::optional<rs::util::DbErrorCode> failure;
@@ -1825,6 +1826,7 @@ TEST(BackendResultContractTest, RowsMetadataAndDeferredErrorsOutliveConnection) 
   rs::core::database::QueryResult retained;
   {
     rs::core::database::postgres::PgDatabaseConnection backend(
+        "PostgreSQL",
         std::make_unique<ScriptedBackendTransport>(
             ScriptedBackendTransport::ResponseMode::OwnedResultCells));
     rs::core::database::ConnectionSettings settings;

@@ -242,8 +242,8 @@ int main() {
 |--------|-------------|
 | `-DTARGET_DATABASE=REDSHIFT` | Build Redshift ODBC driver |
 | `-DTARGET_DATABASE=POSTGRESQL` | Build PostgreSQL ODBC driver |
-| `-DTARGET_DATABASE=MYSQL` | Build MySQL ODBC driver (future) |
-| `-DTARGET_DATABASE=SQLSERVER` | Build SQL Server ODBC driver (future) |
+| `-DTARGET_DATABASE=MYSQL` | Reserved for the bounded MySQL SDK proof; configuration is rejected until its provider exists |
+| `-DTARGET_DATABASE=SQLSERVER` | Reserved future product; configuration is rejected until implemented |
 
 ### Additional Options
 

@@ -456,3 +456,29 @@ The accepted boundary, S2C package, compatibility risks, qualification matrix
 and stop rules are in [CRYPTO_PROVIDER_PLAN.md](CRYPTO_PROVIDER_PLAN.md). S2C
 adds 5–9 base engineering days and revises MS1 to 25–41 base, 33–54 buffered.
 FIPS and untested platform/provider combinations remain separate claims.
+
+## S2 provider/composition batch — 2026-09-30
+
+The compiled driver now has one C++ product-registration point that supplies an
+immutable backend provider. The provider owns product identity, driver lookup
+name, connection defaults, static capabilities, transaction profile, baseline
+type catalog, option resolution and live-session construction. Shared ODBC no
+longer selects a backend through build macros or constructs a disconnected
+PostgreSQL session merely to answer pre-connect metadata calls.
+
+PostgreSQL and Redshift are separate product profiles over the PostgreSQL-family
+session. The session owns its copied display identity, so it cannot retain a
+dangling provider string. Backend selection definitions are private build
+details, and architecture tests reject selection macros or concrete backend
+dependencies in shared ODBC, selection outside product composition, backend to
+ODBC includes, sibling-backend includes and exported selection definitions.
+Unimplemented MySQL and SQL Server product values now fail configuration instead
+of producing placeholder artifacts.
+
+This closes the narrow provider/composition batch, not the full S2 architecture.
+The build remains monolithic, installed headers still need the S4 allowlist, and
+the live-session/facet, normalized-result, structured-error/resource-budget and
+safe-reuse batches remain open.
+Legacy direct session/factory paths can still bypass provider default resolution;
+their migration belongs to the live-session batch and they remain compatibility
+paths rather than the extension contract.

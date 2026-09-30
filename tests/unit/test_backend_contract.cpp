@@ -132,6 +132,56 @@ class FakeBackend final : public IDatabaseConnection {
   std::string last_state_;
 };
 
+class FakeProvider final : public IBackendProvider {
+ public:
+  explicit FakeProvider(std::shared_ptr<Observations> seen)
+      : seen_(std::move(seen)) {}
+
+  const BackendIdentity& identity() const noexcept override {
+    static const BackendIdentity identity{
+        "contract", "ContractDB", "ODBCPP Contract"};
+    return identity;
+  }
+  const BackendConnectionDefaults& connection_defaults() const noexcept override {
+    static const BackendConnectionDefaults defaults{
+        "contract-host", 6543, "contract-default", true};
+    return defaults;
+  }
+  BackendCapabilities capabilities() const noexcept override {
+    return FakeBackend(seen_).capabilities();
+  }
+  std::span<const TypeDefinition> type_catalog() const noexcept override {
+    return FakeBackend(seen_).type_catalog();
+  }
+  TransactionCapabilities transaction_capabilities() const noexcept override {
+    return {};
+  }
+  Result<ConnectionSettings> resolve_connection_options(
+      ConnectionOptions options) const override {
+    ConnectionSettings settings;
+    const auto& defaults = connection_defaults();
+    settings.host = options.host.value_or(defaults.host);
+    settings.port = options.port.value_or(defaults.port);
+    settings.database = options.database.value_or(*defaults.database);
+    settings.user = options.user.value_or(std::string{});
+    settings.password = options.password.value_or(std::string{});
+    settings.use_ssl = options.use_ssl.value_or(defaults.use_ssl);
+    settings.ssl_ca_file = options.ssl_ca_file.value_or(std::string{});
+    settings.ssl_ca_dir = options.ssl_ca_dir.value_or(std::string{});
+    settings.timeout = options.timeout;
+    return settings;
+  }
+  std::unique_ptr<IDatabaseConnection> create_session(
+      std::unique_ptr<rs::core::transport::ITransport> transport) const override {
+    ++seen_->created;
+    if (transport) ++seen_->transports;
+    return std::make_unique<FakeBackend>(seen_);
+  }
+
+ private:
+  std::shared_ptr<Observations> seen_;
+};
+
 class BackendContractTest : public ::testing::Test {
  protected:
   std::shared_ptr<Observations> seen = std::make_shared<Observations>();
@@ -140,11 +190,8 @@ class BackendContractTest : public ::testing::Test {
     ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &env));
     ASSERT_EQ(SQL_SUCCESS, SQLSetEnvAttr(env, SQL_ATTR_ODBC_VERSION,
         reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
-    auto connection = std::make_unique<rs::odbc::ODBCConnection>(nullptr,
-        [state = seen](std::unique_ptr<rs::core::transport::ITransport> transport) {
-          ++state->created; if (transport) ++state->transports;
-          return std::make_unique<FakeBackend>(state);
-        });
+    auto connection = std::make_unique<rs::odbc::ODBCConnection>(
+        nullptr, std::make_shared<FakeProvider>(seen));
     dbc = reinterpret_cast<SQLHDBC>(connection.get());
     rs::odbc::HandleRegistry::instance().register_handle(dbc, std::move(connection), env);
   }
@@ -195,9 +242,9 @@ TEST_F(BackendContractTest, PassesOneCustomTlsTrustLocationToBackend) {
 TEST_F(BackendContractTest, SelectsSameBackendBeforeAndAfterLoginAndReportsCapabilities) {
   auto connection = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc);
   EXPECT_EQ("octets", connection->type_catalog()[0].name);
-  EXPECT_EQ(1, seen->created); EXPECT_EQ(0, seen->transports);
+  EXPECT_EQ(0, seen->created); EXPECT_EQ(0, seen->transports);
   connect();
-  EXPECT_EQ(2, seen->created); EXPECT_EQ(1, seen->transports);
+  EXPECT_EQ(1, seen->created); EXPECT_EQ(1, seen->transports);
   EXPECT_EQ("fake", seen->settings.host); EXPECT_EQ(9999, seen->settings.port);
   EXPECT_EQ("contract", seen->settings.database);
   char name[32]{}; SQLSMALLINT length = -1;
@@ -220,6 +267,14 @@ TEST_F(BackendContractTest, SelectsSameBackendBeforeAndAfterLoginAndReportsCapab
   EXPECT_EQ("HYC00", state(SQL_HANDLE_DBC, dbc));
   EXPECT_EQ(SQL_ERROR, execute("unsupported")); EXPECT_EQ("HYC00", state());
   EXPECT_EQ(0, seen->queries);
+}
+
+TEST_F(BackendContractTest, ProviderOwnsConnectionDefaultsWithoutCreatingSession) {
+  connect_with("UID=test;SSL=0");
+  EXPECT_EQ(1, seen->created);
+  EXPECT_EQ("contract-host", seen->settings.host);
+  EXPECT_EQ(6543, seen->settings.port);
+  EXPECT_EQ("contract-default", seen->settings.database);
 }
 
 TEST_F(BackendContractTest, FetchAndGetDataUseBackendValuesMetadataAndNullSemantics) {

@@ -2,12 +2,19 @@
 
 #include "core/database/generic_database_connection.h"
 
+#include <string>
+#include <utility>
+
 namespace rs::core::database::postgres {
 
 // PostgreSQL session with backend-specific metadata discovery.
 class PgDatabaseConnection : public GenericDatabaseConnection {
 public:
   explicit PgDatabaseConnection(
+      std::unique_ptr<rs::core::transport::ITransport> transport = nullptr)
+      : PgDatabaseConnection("PostgreSQL", std::move(transport)) {}
+  PgDatabaseConnection(
+      std::string display_name,
       std::unique_ptr<rs::core::transport::ITransport> transport = nullptr);
 
   rs::util::Result<std::string> catalog_query(
@@ -31,6 +38,9 @@ public:
 
   rs::util::Result<ResolvedTypeMap> resolve_types(
       std::span<const std::uint32_t> ids, rs::util::Deadline deadline) override;
+
+private:
+  std::string display_name_;
 };
 
 } // namespace rs::core::database::postgres

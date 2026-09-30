@@ -185,3 +185,14 @@ authentication, apply or reject one custom CA trust source, and remove implicit
 current/parent-directory configuration discovery. Explicit plaintext remains a
 documented opt-out for intentional local profiles. PostgreSQL, both iODBC width
 matrices and the sanitizer matrix each passed all 37 local tests.
+
+### S2 provider/composition batch — 2026-09-30
+
+One immutable provider now owns compiled product identity, defaults, static
+metadata, option resolution and session creation. Shared ODBC has no backend
+selection macros or concrete PostgreSQL dependency, pre-connect metadata creates
+no dummy live session, and PostgreSQL versus Redshift identity is supplied by
+product composition. Automated architecture checks protect these boundaries and
+unimplemented backend selections fail during configuration. Later S2 batches
+still split internal targets and session facets and establish the final S4
+extension-header allowlist.

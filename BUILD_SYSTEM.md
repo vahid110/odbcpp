@@ -52,7 +52,7 @@ cmake --build build-dynamic
 | `OPENSSL_USE_STATIC_LIBS` | `ON` | Link OpenSSL statically for portability |
 | `BUILD_EXAMPLES` | `ON` | Build example applications |
 | `BUILD_TESTING` | `ON` | Build unit and integration tests |
-| `TARGET_DATABASE` | `REDSHIFT` | Target database (REDSHIFT/POSTGRESQL/MYSQL/SQLSERVER) |
+| `TARGET_DATABASE` | `REDSHIFT` | Implemented product (`REDSHIFT` or `POSTGRESQL`); reserved future values fail configuration |
 
 **Note**: ODBC drivers are always built as shared libraries (.dylib/.so/.dll) as required by the ODBC specification.
 

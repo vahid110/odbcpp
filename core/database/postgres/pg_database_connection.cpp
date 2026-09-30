@@ -1,4 +1,5 @@
 #include "pg_database_connection.h"
+#include "pg_backend_provider.h"
 #include "pg_protocol_parser.h"
 
 #include <algorithm>
@@ -8,9 +9,11 @@
 namespace rs::core::database::postgres {
 
 PgDatabaseConnection::PgDatabaseConnection(
+    std::string display_name,
     std::unique_ptr<rs::core::transport::ITransport> transport)
     : GenericDatabaseConnection(std::make_unique<PgProtocolParser>(),
-                                std::move(transport)) {}
+                                std::move(transport)),
+      display_name_(std::move(display_name)) {}
 
 rs::util::Result<ResolvedTypeMap> PgDatabaseConnection::resolve_types(
     std::span<const std::uint32_t> ids, rs::util::Deadline deadline) {

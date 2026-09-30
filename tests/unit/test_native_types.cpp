@@ -87,6 +87,7 @@ TEST(NativeTypeTest, GenericConnectionUsesSelectedParserTypeSemantics) {
 namespace {
 class MetadataLookupConnection : public postgres::PgDatabaseConnection {
 public:
+  MetadataLookupConnection() : PgDatabaseConnection("PostgreSQL") {}
   QueryResult response;
   std::optional<rs::util::DbErrorCode> failure;
   std::string query;
@@ -208,6 +209,7 @@ TEST(NativeTypeLookupTest, GenericBackendUsesItsOwnFallbackWithoutPostgresDiscov
 namespace {
 class VersionedTypeCatalogConnection : public postgres::PgDatabaseConnection {
 public:
+  VersionedTypeCatalogConnection() : PgDatabaseConnection("PostgreSQL") {}
   std::string version;
   std::string get_parameter(std::string_view key) const override {
     return key == "server_version" ? version : std::string{};
@@ -340,7 +342,7 @@ TEST(BackendErrorsTest, PostgresNormalizesNativeStatesWithoutIo) {
 }
 
 TEST(BackendErrorsTest, InvalidUnknownAndAmbiguousStatesKeepCallerFallback) {
-  postgres::PgDatabaseConnection backend;
+  postgres::PgDatabaseConnection backend{"PostgreSQL"};
   for (const auto state : {"", "22P0", "22P020", "22p02", "22!02", "XXXXX",
                            "P0001", "42P07", "42704"}) {
     SCOPED_TRACE(state);
@@ -362,7 +364,7 @@ TEST(BackendErrorsTest, GenericBackendDoesNotInterpretPostgresStates) {
 TEST(BackendErrorsTest, NormalizedStateOwnsItsStorage) {
   std::optional<std::string> normalized;
   {
-    postgres::PgDatabaseConnection backend;
+    postgres::PgDatabaseConnection backend{"PostgreSQL"};
     std::string native = "22012";
     normalized = backend.normalize_error_sqlstate(native, ErrorContext::Unknown);
     native.assign("XXXXX");
@@ -383,7 +385,7 @@ TEST(BinaryParameterContractTest, PlainHexRoundTripsAllOctetsAndRejectsNativeEsc
 }
 
 TEST(BackendValueTest, PostgresNormalizesHexLegacyAndBooleanWithoutIo) {
-  postgres::PgDatabaseConnection backend;
+  postgres::PgDatabaseConnection backend{"PostgreSQL"};
   const auto binary = [&](std::string_view text) {
     return backend.normalize_result_value(ScalarType::Binary, text);
   };

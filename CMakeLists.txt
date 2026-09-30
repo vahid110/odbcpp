@@ -35,7 +35,14 @@ message(STATUS "  Testing: ${BUILD_TESTING}")
 
 # ---- Database Selection (Single Database Per Build) ----
 set(TARGET_DATABASE "REDSHIFT" CACHE STRING "Target database for this build")
-set_property(CACHE TARGET_DATABASE PROPERTY STRINGS "POSTGRESQL" "REDSHIFT" "MYSQL" "SQLSERVER")
+set_property(CACHE TARGET_DATABASE PROPERTY STRINGS "POSTGRESQL" "REDSHIFT")
+
+if(NOT TARGET_DATABASE STREQUAL "POSTGRESQL" AND
+   NOT TARGET_DATABASE STREQUAL "REDSHIFT")
+  message(FATAL_ERROR
+    "TARGET_DATABASE=${TARGET_DATABASE} is not implemented. "
+    "Supported build products are POSTGRESQL and REDSHIFT.")
+endif()
 
 message(STATUS "Building ODBC driver for: ${TARGET_DATABASE}")
 
@@ -79,6 +86,7 @@ file(GLOB CORE_BASE_SOURCES
 )
 
 set(CORE_SOURCES ${CORE_BASE_SOURCES})
+list(APPEND CORE_SOURCES "product/compiled_backend.cpp")
 
 # Add database-specific sources based on TARGET_DATABASE
 if(TARGET_DATABASE STREQUAL "POSTGRESQL" OR TARGET_DATABASE STREQUAL "REDSHIFT")
@@ -173,8 +181,7 @@ target_link_libraries(${PROJECT_NAME}_core
     OpenSSL::Crypto
 )
 
-target_compile_definitions(${PROJECT_NAME}_core PUBLIC 
-  ODBCPP_TARGET_DATABASE="${TARGET_DATABASE}"
+target_compile_definitions(${PROJECT_NAME}_core PRIVATE
   ODBCPP_ENABLE_${TARGET_DATABASE}=1
 )
 
@@ -200,10 +207,20 @@ target_link_libraries(${PROJECT_NAME}_driver
     OpenSSL::Crypto
 )
 
-target_compile_definitions(${PROJECT_NAME}_driver PUBLIC 
-  ODBCPP_TARGET_DATABASE="${TARGET_DATABASE}"
+target_compile_definitions(${PROJECT_NAME}_driver PRIVATE
   ODBCPP_ENABLE_${TARGET_DATABASE}=1
 )
+
+foreach(_target IN ITEMS ${PROJECT_NAME}_core ${PROJECT_NAME}_driver)
+  get_target_property(_interface_definitions ${_target}
+                      INTERFACE_COMPILE_DEFINITIONS)
+  if(_interface_definitions AND
+     _interface_definitions MATCHES
+       "ODBCPP_(ENABLE_(POSTGRESQL|REDSHIFT|MYSQL|SQLSERVER)|TARGET_DATABASE)")
+    message(FATAL_ERROR
+      "${_target} exports private backend selection: ${_interface_definitions}")
+  endif()
+endforeach()
 
 if(ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE)
   target_compile_definitions(${PROJECT_NAME}_core PUBLIC
