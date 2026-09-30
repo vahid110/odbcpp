@@ -105,6 +105,40 @@ add_test(
 set_tests_properties(test_crypto_artifact_inspection_rules
   PROPERTIES LABELS "unit;architecture")
 
+if(WIN32)
+  set(ODBCPP_DRIVER_EXPORT_INSPECTOR "${ODBCPP_CRYPTO_INSPECTOR}")
+else()
+  find_program(ODBCPP_DRIVER_EXPORT_INSPECTOR nm REQUIRED)
+endif()
+add_test(
+  NAME test_driver_export_surface
+  COMMAND ${CMAKE_COMMAND}
+          -DARTIFACT=$<TARGET_FILE:${PROJECT_NAME}_driver>
+          -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/odbc/odbcpp.exports
+          -DPLATFORM=${CMAKE_SYSTEM_NAME}
+          -DINSPECTOR=${ODBCPP_DRIVER_EXPORT_INSPECTOR}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckDriverExports.cmake)
+set_tests_properties(test_driver_export_surface
+  PROPERTIES LABELS "unit;architecture")
+
+add_test(
+  NAME test_driver_export_rules
+  COMMAND ${CMAKE_COMMAND}
+          -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+          -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestDriverExports.cmake)
+set_tests_properties(test_driver_export_rules
+  PROPERTIES LABELS "unit;architecture")
+
+add_test(
+  NAME test_driver_export_inventory
+  COMMAND ${CMAKE_COMMAND}
+          -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/odbc/odbcpp.exports
+          -DINVENTORY=${CMAKE_CURRENT_SOURCE_DIR}/tests/test_driver_exports.h
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckDriverExportInventory.cmake)
+set_tests_properties(test_driver_export_inventory
+  PROPERTIES LABELS "unit;architecture")
+
 if(TARGET test_driver_capabilities)
   add_dependencies(test_driver_capabilities odbcpp_driver)
   target_compile_definitions(test_driver_capabilities PRIVATE

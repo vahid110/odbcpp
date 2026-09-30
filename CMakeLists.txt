@@ -160,8 +160,56 @@ add_library(${PROJECT_NAME}::core ALIAS ${PROJECT_NAME}_core)
 
 # Build shared library for ODBC Driver Manager
 add_library(${PROJECT_NAME}_driver SHARED ${CORE_SOURCES})
+set(_driver_exports_file "${CMAKE_CURRENT_SOURCE_DIR}/odbc/odbcpp.exports")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${_driver_exports_file}")
+file(STRINGS "${_driver_exports_file}" _driver_exports)
+list(FILTER _driver_exports EXCLUDE REGEX "^[ \t]*(#.*)?$")
+set(_validated_driver_exports "")
+foreach(_export IN LISTS _driver_exports)
+  string(STRIP "${_export}" _export)
+  if(NOT _export MATCHES "^SQL[A-Za-z0-9_]+$")
+    message(FATAL_ERROR "Invalid ODBC driver export: ${_export}")
+  endif()
+  if(_export IN_LIST _validated_driver_exports)
+    message(FATAL_ERROR "Duplicate ODBC driver export: ${_export}")
+  endif()
+  list(APPEND _validated_driver_exports "${_export}")
+endforeach()
+list(LENGTH _validated_driver_exports _driver_export_count)
+if(NOT _driver_export_count EQUAL 76)
+  message(FATAL_ERROR
+    "ODBC driver export allowlist must contain 76 entries, found ${_driver_export_count}")
+endif()
+
 if(WIN32)
-  target_sources(${PROJECT_NAME}_driver PRIVATE "odbc/odbcpp.def")
+  set(_driver_export_control "${CMAKE_CURRENT_BINARY_DIR}/odbcpp.def")
+  file(WRITE "${_driver_export_control}" "LIBRARY odbcpp\nEXPORTS\n")
+  foreach(_export IN LISTS _validated_driver_exports)
+    file(APPEND "${_driver_export_control}" "  ${_export}\n")
+  endforeach()
+  target_sources(${PROJECT_NAME}_driver PRIVATE "${_driver_export_control}")
+elseif(APPLE)
+  set(_driver_export_control "${CMAKE_CURRENT_BINARY_DIR}/odbcpp.exports.macos")
+  file(WRITE "${_driver_export_control}" "")
+  foreach(_export IN LISTS _validated_driver_exports)
+    file(APPEND "${_driver_export_control}" "_${_export}\n")
+  endforeach()
+  target_link_options(${PROJECT_NAME}_driver PRIVATE
+    "LINKER:-exported_symbols_list,${_driver_export_control}")
+  set_property(TARGET ${PROJECT_NAME}_driver APPEND PROPERTY
+    LINK_DEPENDS "${_driver_export_control}")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(_driver_export_control "${CMAKE_CURRENT_BINARY_DIR}/odbcpp.exports.map")
+  file(WRITE "${_driver_export_control}" "{\n  global:\n")
+  foreach(_export IN LISTS _validated_driver_exports)
+    file(APPEND "${_driver_export_control}" "    ${_export};\n")
+  endforeach()
+  file(APPEND "${_driver_export_control}" "  local: *;\n};\n")
+  target_link_options(${PROJECT_NAME}_driver PRIVATE
+    "LINKER:--version-script,${_driver_export_control}")
+  set_property(TARGET ${PROJECT_NAME}_driver APPEND PROPERTY
+    LINK_DEPENDS "${_driver_export_control}")
 endif()
 set_target_properties(${PROJECT_NAME}_driver PROPERTIES
   OUTPUT_NAME "odbcpp"
@@ -205,8 +253,8 @@ target_include_directories(${PROJECT_NAME}_driver SYSTEM PRIVATE
   ${SPDLOG_INCLUDE_DIR}
 )
 
-target_link_libraries(${PROJECT_NAME}_driver 
-  PUBLIC 
+target_link_libraries(${PROJECT_NAME}_driver
+  PRIVATE
     OpenSSL::SSL 
     OpenSSL::Crypto
 )
