@@ -59,6 +59,7 @@ endif()
 
 # ---- Dependencies ----
 include(cmake/FindDependencies.cmake)
+include(cmake/GenerateCryptoManifest.cmake)
 
 # Find ODBC headers
 if(APPLE)

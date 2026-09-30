@@ -62,6 +62,15 @@ add_test(
 set_tests_properties(test_crypto_profile_validation
   PROPERTIES LABELS "unit;architecture")
 
+add_test(
+  NAME test_crypto_manifest
+  COMMAND ${CMAKE_COMMAND}
+          -DMANIFEST=${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-manifest.json
+          -DEXPECTED_PROVIDER=${ODBCPP_CRYPTO_PROVIDER}
+          -DEXPECTED_LINKAGE=${ODBCPP_CRYPTO_LINKAGE}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckCryptoManifest.cmake)
+set_tests_properties(test_crypto_manifest PROPERTIES LABELS "unit;architecture")
+
 if(TARGET test_driver_capabilities)
   add_dependencies(test_driver_capabilities odbcpp_driver)
   target_compile_definitions(test_driver_capabilities PRIVATE
