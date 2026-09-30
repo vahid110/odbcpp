@@ -79,6 +79,7 @@ elseif(APPLE)
   find_program(ODBCPP_CRYPTO_INSPECTOR otool)
 elseif(UNIX)
   find_program(ODBCPP_CRYPTO_INSPECTOR readelf)
+  find_program(ODBCPP_CRYPTO_RESOLVER ldd)
 endif()
 add_test(
   NAME test_crypto_artifact_dependency_form
@@ -88,6 +89,8 @@ add_test(
           -DEXPECTED_LINKAGE=${ODBCPP_CRYPTO_LINKAGE}
           -DPLATFORM=${CMAKE_SYSTEM_NAME}
           -DINSPECTOR=${ODBCPP_CRYPTO_INSPECTOR}
+          -DRESOLVER=${ODBCPP_CRYPTO_RESOLVER}
+          -DCONFIG_MANIFEST=${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-manifest.json
           -DEVIDENCE=${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-artifact-evidence.json
           -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/InspectCryptoArtifact.cmake)
 set_tests_properties(test_crypto_artifact_dependency_form
