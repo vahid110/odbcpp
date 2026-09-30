@@ -574,3 +574,16 @@ app-local runtime must fail instead of using a PATH decoy.
 
 This does not close qualification. Preloaded same-basename coexistence and
 symbol-isolation evidence remain required, and AWS-LC/FIPS claims remain absent.
+
+## S2C driver export isolation — 2026-09-30
+
+The shared driver now exposes exactly 76 canonical ODBC entry points across PE,
+Mach-O and ELF builds. A single allowlist generates platform linker controls;
+artifact checks compare the resulting export table exactly and negative fixtures
+cover missing, unexpected and forwarded symbols. OpenSSL is a private link
+dependency of the shared driver, and the static core's test-facing surface is
+unchanged.
+
+This is driver-binary symbol evidence, not provider-profile qualification.
+Bundled shared-library and preloaded-provider coexistence checks, AWS-LC and
+FIPS evidence remain open.

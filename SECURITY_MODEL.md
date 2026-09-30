@@ -228,3 +228,11 @@ The S1 review is not penetration testing, a vulnerability certification, a
 public support promise or evidence that current binaries meet the controls above.
 Runtime plugins are not sandboxed. Redshift security behavior remains unverified
 until real endpoint evidence exists.
+
+## S2C driver export isolation checkpoint — 2026-09-30
+
+The finished shared ODBC driver is now constrained and verified to the canonical
+76-entry ODBC C ABI on Linux, macOS and Windows. This prevents private C++, SDK
+and statically incorporated provider symbols from becoming part of the driver
+dynamic export surface. It does not establish bundled shared-provider or
+preloaded-module coexistence, so provider/linkage qualification remains open.

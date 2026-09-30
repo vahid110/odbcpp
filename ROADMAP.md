@@ -277,3 +277,14 @@ app-local runtime cannot fall back to a same-name PATH decoy.
 This is packaged-loader evidence only. Preloaded-module coexistence, symbol
 isolation and provider/linkage qualification remain open, and no AWS-LC or FIPS
 claim is made.
+
+### S2C driver export isolation — 2026-09-30
+
+Linux, macOS and Windows shared-driver builds now expose exactly the canonical
+76-entry ODBC C surface. Platform linker controls come from one allowlist, and
+artifact tests reject missing or private exports while keeping the static core
+available to internal tests.
+
+This closes driver-binary export isolation only. Bundled shared-provider symbol
+behavior, preloaded-provider coexistence, completed profile qualification and
+the bounded AWS-LC Linux proof remain open.

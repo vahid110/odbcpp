@@ -168,3 +168,18 @@ This closes controlled staging and fresh-process packaged-loader evidence for
 the Windows OpenSSL `BUNDLED_SHARED` candidate. Preloaded same-basename module
 coexistence, symbol isolation and the remaining matrix evidence are still open;
 `qualificationClaimed` remains false. No AWS-LC or FIPS claim is made.
+
+## S2C driver export isolation — 2026-09-30
+
+The shared ODBC driver now exports exactly the 76 canonical ODBC entry points
+on Linux, macOS and Windows. One allowlist generates the GNU linker script,
+Mach-O exported-symbol list and PE definition file; artifact inspection compares
+the finished binary against it exactly and rejects missing, unexpected, aliased
+or forwarded exports. The static core remains unchanged, while the shared
+driver's provider libraries are private link dependencies.
+
+This closes the driver-binary export portion of symbol isolation, including the
+requirement that statically incorporated provider symbols stay out of the
+driver's dynamic export table. It does not prove bundled shared-library symbol
+coexistence or a process that preloaded a same-basename provider. Qualification,
+AWS-LC and FIPS claims remain open.
