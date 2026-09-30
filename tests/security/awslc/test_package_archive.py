@@ -1,11 +1,13 @@
 """Positive and adversarial checks for the internal package evidence fixture."""
 import io
+import hashlib
+import json
 from pathlib import Path
 import tarfile
 import tempfile
 import unittest
 
-from test_relocated_package import extract_verified, inventory
+from test_relocated_package import extract_verified, inventory, validate_manifest
 
 
 class PackageArchiveTests(unittest.TestCase):
@@ -94,6 +96,87 @@ class PackageArchiveTests(unittest.TestCase):
         self.pack(link)
         with self.assertRaises(tarfile.FilterError):
             self.extract()
+
+
+class PackageManifestTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        licenses = {}
+        for name in ("aws-lc/LICENSE", "aws-lc/NOTICE", "spdlog/LICENSE", "fmt/LICENSE"):
+            path = self.root / "licenses" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(("license: " + name).encode())
+            licenses["licenses/" + name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.manifest = {
+            "schemaVersion": 1, "provider": "AWS_LC", "linkage": "BUNDLED_SHARED",
+            "fipsRequested": False, "qualificationClaimed": False,
+            "sourceProvenanceVerified": False, "licenseFiles": licenses,
+            "declaredSourceRecipes": {
+                "aws-lc": {"commit": "a" * 40, "archiveSha256": "b" * 64,
+                           "sourceOverride": False},
+                "spdlog": {"version": "1.17.0", "archiveSha256": "c" * 64,
+                           "sourceOverride": True},
+                "fmt": {"bundledBy": "spdlog", "versionNumber": 120100},
+            },
+        }
+        self.save()
+
+    def save(self):
+        (self.root / "package-manifest.json").write_text(json.dumps(self.manifest))
+
+    def test_shared_and_static_profiles(self):
+        validate_manifest(self.root, True)
+        self.manifest["linkage"] = "BUNDLED_STATIC"
+        self.save()
+        validate_manifest(self.root, False)
+
+    def test_wrong_profile_and_premature_claims(self):
+        for field, value in (("provider", "OPENSSL"), ("linkage", "BUNDLED_STATIC"),
+                             ("qualificationClaimed", True), ("fipsRequested", True),
+                             ("sourceProvenanceVerified", True)):
+            with self.subTest(field=field):
+                original = self.manifest[field]
+                self.manifest[field] = value
+                self.save()
+                with self.assertRaisesRegex(RuntimeError, "profile"):
+                    validate_manifest(self.root, True)
+                self.manifest[field] = original
+
+    def test_missing_and_malformed_recipes(self):
+        for name, field, bad in (("aws-lc", "commit", "bad"),
+                                 ("spdlog", "archiveSha256", "bad"),
+                                 ("spdlog", "sourceOverride", "false"),
+                                 ("fmt", "versionNumber", True)):
+            with self.subTest(field=field):
+                recipe = self.manifest["declaredSourceRecipes"][name]
+                original = recipe[field]
+                recipe[field] = bad
+                self.save()
+                with self.assertRaisesRegex(RuntimeError, "recipe"):
+                    validate_manifest(self.root, True)
+                recipe[field] = original
+        del self.manifest["declaredSourceRecipes"]
+        self.save()
+        with self.assertRaisesRegex(RuntimeError, "recipe"):
+            validate_manifest(self.root, True)
+
+    def test_changed_license_rejected(self):
+        (self.root / "licenses/aws-lc/LICENSE").write_bytes(b"changed")
+        with self.assertRaisesRegex(RuntimeError, "hash mismatch"):
+            validate_manifest(self.root, True)
+
+    def test_missing_license_rejected(self):
+        (self.root / "licenses/aws-lc/NOTICE").unlink()
+        with self.assertRaisesRegex(RuntimeError, "missing"):
+            validate_manifest(self.root, True)
+
+    def test_incomplete_inventory_rejected(self):
+        del self.manifest["licenseFiles"]["licenses/fmt/LICENSE"]
+        self.save()
+        with self.assertRaisesRegex(RuntimeError, "inventory"):
+            validate_manifest(self.root, True)
 
 
 if __name__ == "__main__":

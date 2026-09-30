@@ -459,3 +459,21 @@ security level. Production configuration is unchanged. A peer runtime unable to
 complete the control fails this mandatory proof rather than silently skipping.
 This supplies the below-minimum-version rejection evidence; it does not close
 loader-substitution or final profile qualification.
+
+## S2C internal package dependency manifest — 2026-10-01
+
+The AWS-LC proof package now installs a machine-readable dependency manifest
+with the selected linkage, non-FIPS/unqualified status, declared AWS-LC and
+spdlog archive recipes, bundled fmt version, and hashes of each required license
+text. Source overrides are recorded explicitly; declared recipe identities are
+not asserted to verify an overridden source tree. The existing dependency pins
+remain unchanged and are shared with manifest generation.
+
+The extracted-package gate requires the manifest's provider/linkage and scope
+claims to match the proof, and verifies all four license texts against their
+recorded hashes. Focused negatives reject altered/missing licenses, incomplete
+inventories, wrong profiles and premature qualification/provenance claims.
+The retained relocation evidence includes the packaged manifest and its file
+hash. This is dependency/license input evidence, not a complete SBOM, a source
+attestation or final profile qualification. Loader substitution and the final
+qualification review remain open.

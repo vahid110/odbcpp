@@ -54,6 +54,45 @@ def extract_verified(archive, destination, expected):
     return package
 
 
+def validate_manifest(package, shared):
+    manifest = json.loads((package / "package-manifest.json").read_text())
+    expected_linkage = "BUNDLED_SHARED" if shared else "BUNDLED_STATIC"
+    if (manifest.get("schemaVersion") != 1 or manifest.get("provider") != "AWS_LC"
+            or manifest.get("linkage") != expected_linkage
+            or manifest.get("fipsRequested") is not False
+            or manifest.get("qualificationClaimed") is not False
+            or manifest.get("sourceProvenanceVerified") is not False):
+        raise RuntimeError("Package manifest profile or qualification mismatch")
+    recipes = manifest.get("declaredSourceRecipes", {})
+    if set(recipes) != {"aws-lc", "spdlog", "fmt"}:
+        raise RuntimeError("Package source recipe inventory mismatch")
+    for name in ("aws-lc", "spdlog"):
+        recipe = recipes[name]
+        if (not isinstance(recipe, dict)
+                or not re.fullmatch(r"[0-9a-f]{64}", str(recipe.get("archiveSha256", "")))
+                or type(recipe.get("sourceOverride")) is not bool):
+            raise RuntimeError("Package source recipe is malformed: " + name)
+    if (not re.fullmatch(r"[0-9a-f]{40}", str(recipes["aws-lc"].get("commit", "")))
+            or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", str(recipes["spdlog"].get("version", "")))
+            or not isinstance(recipes["fmt"], dict)
+            or recipes["fmt"].get("bundledBy") != "spdlog"
+            or type(recipes["fmt"].get("versionNumber")) is not int
+            or recipes["fmt"]["versionNumber"] <= 0):
+        raise RuntimeError("Package source recipe identity is malformed")
+    required = {"licenses/aws-lc/LICENSE", "licenses/aws-lc/NOTICE",
+                "licenses/spdlog/LICENSE", "licenses/fmt/LICENSE"}
+    licenses = manifest.get("licenseFiles", {})
+    if set(licenses) != required:
+        raise RuntimeError("Package manifest license inventory mismatch")
+    for name, expected_hash in licenses.items():
+        path = package / name
+        if not path.is_file() or not path.stat().st_size:
+            raise RuntimeError("Package license missing or empty: " + name)
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected_hash:
+            raise RuntimeError("Package license hash mismatch: " + name)
+    return manifest
+
+
 def main():
     parser = argparse.ArgumentParser()
     for name in ("build", "cmake", "readelf", "shared", "test"):
@@ -82,6 +121,7 @@ def main():
                 raise RuntimeError(f"Missing package input: {path}")
         libraries = list((package / "lib").glob("lib*-awslc.so*"))
         shared = args.shared.upper() in ("ON", "TRUE", "1")
+        manifest = validate_manifest(package, shared)
         if bool(libraries) != shared:
             raise RuntimeError("Packaged provider files do not match requested linkage")
         for path in [driver, *libraries]:
@@ -117,6 +157,7 @@ def main():
                     hidden.rename(library)
         evidence = {
             "scope": "internal-relocated-driver-proof", "files": files,
+            "packageManifest": manifest,
             "archiveSha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
             "linkage": "shared" if shared else "static", "relocatedLiveTestsPassed": True,
             "extractedArchiveTested": True,

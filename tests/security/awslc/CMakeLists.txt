@@ -23,9 +23,11 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_link_options("-Wl,--exclude-libs,ALL")
 endif()
+set(ODBCPP_AWSLC_COMMIT "574fbd729ca31aeebe80a98d35742c0402435790")
+set(ODBCPP_AWSLC_ARCHIVE_SHA256 "c56d5a8517c0b9b5f79c7a850c0867dbfb3790dae17b447cd9174a0ebf2d037a")
 FetchContent_Declare(awslc
-  URL https://codeload.github.com/aws/aws-lc/tar.gz/574fbd729ca31aeebe80a98d35742c0402435790
-  URL_HASH SHA256=c56d5a8517c0b9b5f79c7a850c0867dbfb3790dae17b447cd9174a0ebf2d037a
+  URL https://codeload.github.com/aws/aws-lc/tar.gz/${ODBCPP_AWSLC_COMMIT}
+  URL_HASH SHA256=${ODBCPP_AWSLC_ARCHIVE_SHA256}
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(awslc)
 FetchContent_Declare(googletest

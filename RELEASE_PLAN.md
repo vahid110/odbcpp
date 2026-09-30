@@ -720,3 +720,11 @@ Both isolated linkage proofs require TLS 1.1 rejection, preceded by a successful
 independent TLS 1.1 control handshake and binary exchange. Existing TLS 1.2/1.3
 acceptance and invalid-certificate/hostname checks remain mandatory. No production
 TLS policy is weakened and AWS-LC profile qualification remains open.
+
+## S2C packaged dependency inventory gate — 2026-10-01
+
+The internal AWS-LC archive includes its provider/linkage manifest, declared
+source recipes and override flags, bundled fmt identity, and required license
+hashes. Extraction tests verify those license bytes and reject wrong profiles
+or premature qualification claims. Existing dependency versions remain pinned;
+complete SBOM/provenance and final provider qualification are still open.

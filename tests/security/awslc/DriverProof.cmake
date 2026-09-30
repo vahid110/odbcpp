@@ -81,6 +81,31 @@ string(SUBSTRING "${_fmt_header}" 0 ${_fmt_license_length} _fmt_license)
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/fmt-LICENSE" "${_fmt_license}\n")
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/fmt-LICENSE"
   DESTINATION licenses/fmt RENAME LICENSE COMPONENT awslc-proof)
+
+file(SHA256 "${awslc_SOURCE_DIR}/LICENSE" AWSLC_LICENSE_HASH)
+file(SHA256 "${awslc_SOURCE_DIR}/NOTICE" AWSLC_NOTICE_HASH)
+file(SHA256 "${spdlog_SOURCE_DIR}/LICENSE" SPDLOG_LICENSE_HASH)
+file(SHA256 "${CMAKE_CURRENT_BINARY_DIR}/fmt-LICENSE" FMT_LICENSE_HASH)
+file(STRINGS "${SPDLOG_INCLUDE_DIR}/spdlog/fmt/bundled/base.h" _fmt_version_line
+  REGEX "^#define FMT_VERSION [0-9]+$")
+if(NOT _fmt_version_line MATCHES "^#define FMT_VERSION ([0-9]+)$")
+  message(FATAL_ERROR "Pinned bundled fmt version could not be identified")
+endif()
+set(FMT_VERSION_NUMBER "${CMAKE_MATCH_1}")
+# Declared archive recipes are distinct from a verified source-tree provenance
+# claim, especially when FetchContent source overrides are used locally.
+foreach(_dependency IN ITEMS AWSLC SPDLOG)
+  if(FETCHCONTENT_SOURCE_DIR_${_dependency})
+    set(${_dependency}_SOURCE_OVERRIDE true)
+  else()
+    set(${_dependency}_SOURCE_OVERRIDE false)
+  endif()
+endforeach()
+configure_file("${CMAKE_CURRENT_LIST_DIR}/package-manifest.json.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/package-manifest.json" @ONLY)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/package-manifest.json"
+  DESTINATION . COMPONENT awslc-proof)
+
 if(ODBCPP_AWSLC_LIVE_TESTS)
   add_test(NAME relocated_odbc_package COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_LIST_DIR}/test_relocated_package.py"

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "scope": "internal-driver-package-dependency-inputs",
+  "provider": "AWS_LC",
+  "linkage": "@_proof_linkage@",
+  "fipsRequested": false,
+  "qualificationClaimed": false,
+  "sourceProvenanceVerified": false,
+  "declaredSourceRecipes": {
+    "aws-lc": {
+      "commit": "@ODBCPP_AWSLC_COMMIT@",
+      "archiveSha256": "@ODBCPP_AWSLC_ARCHIVE_SHA256@",
+      "sourceOverride": @AWSLC_SOURCE_OVERRIDE@
+    },
+    "spdlog": {
+      "version": "@ODBCPP_SPDLOG_VERSION@",
+      "archiveSha256": "@ODBCPP_SPDLOG_ARCHIVE_SHA256@",
+      "sourceOverride": @SPDLOG_SOURCE_OVERRIDE@
+    },
+    "fmt": {"bundledBy": "spdlog", "versionNumber": @FMT_VERSION_NUMBER@}
+  },
+  "licenseFiles": {
+    "licenses/aws-lc/LICENSE": "@AWSLC_LICENSE_HASH@",
+    "licenses/aws-lc/NOTICE": "@AWSLC_NOTICE_HASH@",
+    "licenses/spdlog/LICENSE": "@SPDLOG_LICENSE_HASH@",
+    "licenses/fmt/LICENSE": "@FMT_LICENSE_HASH@"
+  }
+}
