@@ -678,3 +678,12 @@ lifecycle/deadline/cancellation tests. The live negative cases still require
 connection retirement and successful fresh authentication. This covers internal
 transport behavior only; genuine asynchronous ODBC APIs, driver packaging and
 provider coexistence are not claimed. See CRYPTO_PROVIDER_PLAN.md.
+
+## S2C AWS-LC preloaded-provider gate — 2026-09-30
+
+Both Linux AWS-LC proofs now require system-OpenSSL preload coexistence checks,
+including distinct provider identities and repeated crypto/TLS/live PostgreSQL
+behavior. Shared AWS-LC uses upstream suffixed names and ELF symbol versions;
+static archive symbols stay private. Evidence remains limited to probe
+executables and the selected system OpenSSL 3 build, with ODBC-driver loading,
+packaging and broader coexistence still unqualified. See CRYPTO_PROVIDER_PLAN.md.

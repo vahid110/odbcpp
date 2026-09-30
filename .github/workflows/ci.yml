@@ -729,7 +729,7 @@ jobs:
       - name: Build adapter and common tests
         run: >-
           cmake --build build-awslc-proof --parallel 4
-          --target test_crypto_primitives test_scram_sha256 test_tls_client tls_probe test_postgres_live test_async_tls_transport
+          --target test_crypto_primitives test_scram_sha256 test_tls_client tls_probe test_postgres_live test_async_tls_transport test_provider_coexistence
       - name: Run mandatory common adapter tests
         run: >-
           ctest --test-dir build-awslc-proof --output-on-failure
@@ -745,6 +745,8 @@ jobs:
             build-awslc-proof/postgres-artifact-evidence.json
             build-awslc-proof/postgres-link.map
             build-awslc-proof/test_postgres_live
+            build-awslc-proof/test_provider_coexistence
+            build-awslc-proof/preload-host.json
             build-awslc-proof/_deps/awslc-build/ssl/libssl*
             build-awslc-proof/_deps/awslc-build/crypto/libcrypto*
           if-no-files-found: error

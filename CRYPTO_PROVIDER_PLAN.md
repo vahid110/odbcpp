@@ -370,3 +370,22 @@ live probe. Local macOS checks cover synchronous/thread-pool paths; Linux CI
 adds the native epoll path. This is internal transport evidence, not support for
 asynchronous ODBC APIs or qualification of AWS-LC packaging/coexistence. Main
 AWS-LC driver selection remains disabled.
+
+## S2C AWS-LC system-OpenSSL preload proof — 2026-09-30
+
+The isolated Linux shared build now uses the pinned upstream distribution mode:
+suffixed AWS-LC library names and ELF symbol versions. Linux proof executables
+hide archive exports. Mandatory coexistence checks preload system OpenSSL 3 SSL
+and crypto libraries before the executable starts, verify the host crypto path,
+identity, SHA-256 operation and TLS context/cipher setup before and after AWS-LC
+operations, and require AWS-LC identity and operations to
+remain distinct. A missing-preload canary must fail rather than silently test a
+different load order.
+
+Crypto primitives, async TLS lifecycle and all live PostgreSQL transport cases
+also run under that preload in both static/shared jobs. The host paths and hashes,
+requested upstream modes, test results and probe artifacts are retained. This
+is bounded executable-level evidence with the runner's OpenSSL 3 provider. It
+does not prove loading a finished ODBC shared driver, arbitrary provider versions,
+reverse load order, or relocatable packaging. Those driver-level gates and
+qualification remain open; the main AWS-LC profile is still disabled.

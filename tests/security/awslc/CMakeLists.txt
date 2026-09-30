@@ -12,6 +12,17 @@ set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(BUILD_TOOL OFF CACHE BOOL "" FORCE)
 set(FIPS OFF CACHE BOOL "" FORCE)
 set(ENABLE_SOURCE_MODIFICATION OFF CACHE BOOL "" FORCE)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND BUILD_SHARED_LIBS)
+  # Upstream cohabitant SONAMEs and ELF symbol versions isolate system OpenSSL.
+  set(ENABLE_DIST_PKG ON CACHE BOOL "" FORCE)
+  set(ENABLE_SYMBOL_VERSIONING ON CACHE BOOL "" FORCE)
+else()
+  set(ENABLE_DIST_PKG OFF CACHE BOOL "" FORCE)
+  set(ENABLE_SYMBOL_VERSIONING OFF CACHE BOOL "" FORCE)
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_link_options("-Wl,--exclude-libs,ALL")
+endif()
 FetchContent_Declare(awslc
   URL https://codeload.github.com/aws/aws-lc/tar.gz/574fbd729ca31aeebe80a98d35742c0402435790
   URL_HASH SHA256=c56d5a8517c0b9b5f79c7a850c0867dbfb3790dae17b447cd9174a0ebf2d037a
@@ -77,6 +88,33 @@ if(ODBCPP_AWSLC_LIVE_TESTS)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_library(ODBCPP_HOST_CRYPTO NAMES libcrypto.so.3 REQUIRED)
+  find_library(ODBCPP_HOST_SSL NAMES libssl.so.3 REQUIRED)
+  file(REAL_PATH "${ODBCPP_HOST_CRYPTO}" _host_crypto_path)
+  file(REAL_PATH "${ODBCPP_HOST_SSL}" _host_ssl_path)
+  file(SHA256 "${_host_crypto_path}" _host_crypto_hash)
+  file(SHA256 "${_host_ssl_path}" _host_ssl_hash)
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/preload-host.json"
+    "{\"cryptoPath\":\"${_host_crypto_path}\",\"cryptoSha256\":\"${_host_crypto_hash}\",\"sslPath\":\"${_host_ssl_path}\",\"sslSha256\":\"${_host_ssl_hash}\",\"qualificationClaimed\":false}\n")
+  add_executable(test_provider_coexistence test_provider_coexistence.cpp)
+  target_link_libraries(test_provider_coexistence PRIVATE adapter GTest::gtest_main ${CMAKE_DL_LIBS})
+  target_compile_definitions(test_provider_coexistence PRIVATE
+    "ODBCPP_HOST_CRYPTO=\"${ODBCPP_HOST_CRYPTO}\""
+    "ODBCPP_HOST_SSL=\"${ODBCPP_HOST_SSL}\"")
+  add_test(NAME provider_coexistence COMMAND test_provider_coexistence)
+  add_test(NAME preloaded_crypto_primitives COMMAND test_crypto_primitives)
+  add_test(NAME preloaded_async_tls COMMAND test_async_tls_transport)
+  set(_preload_tests provider_coexistence preloaded_crypto_primitives preloaded_async_tls)
+  if(ODBCPP_AWSLC_LIVE_TESTS)
+    add_test(NAME preloaded_postgres_tls_scram COMMAND test_postgres_live)
+    list(APPEND _preload_tests preloaded_postgres_tls_scram)
+  endif()
+  set_tests_properties(${_preload_tests} PROPERTIES
+    ENVIRONMENT "LD_PRELOAD=${ODBCPP_HOST_SSL}:${ODBCPP_HOST_CRYPTO}" TIMEOUT 90)
+  add_test(NAME coexistence_requires_preload
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_preload_required.py"
+      $<TARGET_FILE:test_provider_coexistence>)
+  set_tests_properties(coexistence_requires_preload PROPERTIES TIMEOUT 30)
   find_program(READELF_EXECUTABLE readelf REQUIRED)
   find_program(LDD_EXECUTABLE ldd REQUIRED)
   if(BUILD_SHARED_LIBS)
@@ -111,4 +149,6 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/adapter-proof.json"
   "\"sourceArchiveSha256\":\"c56d5a8517c0b9b5f79c7a850c0867dbfb3790dae17b447cd9174a0ebf2d037a\","
   "\"requestedSharedBuild\":\"${BUILD_SHARED_LIBS}\","
   "\"requestedPostgresLiveTests\":\"${ODBCPP_AWSLC_LIVE_TESTS}\","
+  "\"distributionPackagingRequested\":\"${ENABLE_DIST_PKG}\","
+  "\"symbolVersioningRequested\":\"${ENABLE_SYMBOL_VERSIONING}\","
   "\"scope\":\"adapter-and-postgres-session-tests\",\"qualificationClaimed\":false}\n")
