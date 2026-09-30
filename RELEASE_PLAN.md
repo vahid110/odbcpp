@@ -564,3 +564,13 @@ The next package-evidence step must bind Windows PE import names to byte-identic
 controlled-prefix DLLs and fresh-runner loaded paths. Preloaded-module
 coexistence, symbol visibility, completed OpenSSL qualification and AWS-LC are
 still open, so this checkpoint adds no support claim.
+
+## S2C Windows packaged-loader evidence — 2026-09-30
+
+The Windows `BUNDLED_SHARED` package binds exact PE import names to the driver
+hash, stages only matching controlled-root DLLs, and records fresh-runner loaded
+paths, hashes and provider version under hostile PATH conditions. A missing
+app-local runtime must fail instead of using a PATH decoy.
+
+This does not close qualification. Preloaded same-basename coexistence and
+symbol-isolation evidence remain required, and AWS-LC/FIPS claims remain absent.

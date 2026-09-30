@@ -266,3 +266,14 @@ It does not qualify a matrix row. Windows must still bind exact PE imports to
 the controlled-prefix DLLs and fresh-runner loaded paths; static provenance,
 symbol visibility, preloaded-provider coexistence, OpenSSL matrix qualification
 and the bounded AWS-LC Linux proof remain open.
+
+### S2C Windows packaged-loader evidence — 2026-09-30
+
+Windows packaging now derives exact OpenSSL runtime names from PE artifact
+evidence, stages them from the controlled root, and verifies their actual loaded
+paths and version on a fresh runner under hostile PATH conditions. A missing
+app-local runtime cannot fall back to a same-name PATH decoy.
+
+This is packaged-loader evidence only. Preloaded-module coexistence, symbol
+isolation and provider/linkage qualification remain open, and no AWS-LC or FIPS
+claim is made.

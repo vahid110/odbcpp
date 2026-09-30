@@ -153,3 +153,18 @@ AWS-LC documents OpenSSL-compatible headers and libraries, CMake integration,
 shared/static builds, cohabitation packaging and collision constraints in its
 official [incorporation](https://github.com/aws/aws-lc/blob/main/INCORPORATING.md)
 and [build](https://github.com/aws/aws-lc/blob/main/BUILDING.md) guides.
+
+## S2C Windows packaged-loader evidence — 2026-09-30
+
+Windows packaging consumes exact OpenSSL 3 PE import basenames from
+artifact-hash-bound evidence instead of assuming DLL names. It stages those
+files only from the controlled dependency root, verifies source and staged
+hashes, and records the relationship in the package inventory. Fresh-runner
+acceptance verifies actual loaded paths and runtime version with hostile
+same-name PATH decoys present, and proves that a missing app-local runtime is
+not replaced by a PATH copy.
+
+This closes controlled staging and fresh-process packaged-loader evidence for
+the Windows OpenSSL `BUNDLED_SHARED` candidate. Preloaded same-basename module
+coexistence, symbol isolation and the remaining matrix evidence are still open;
+`qualificationClaimed` remains false. No AWS-LC or FIPS claim is made.
