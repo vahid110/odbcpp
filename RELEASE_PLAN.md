@@ -669,3 +669,12 @@ within the controlled build root; static archives require complete GNU ld input
 and member records. The inspector's fixtures reject foreign/missing dependencies
 and incomplete or misleading maps. This qualifies neither the ODBC driver nor
 packaging/coexistence; see CRYPTO_PROVIDER_PLAN.md for remaining boundaries.
+
+## S2C AWS-LC async transport gate — 2026-09-30
+
+Static/shared AWS-LC proof jobs now run verified PostgreSQL sessions through
+sync, thread-pool and Linux epoll TLS paths, and reuse the existing async TLS
+lifecycle/deadline/cancellation tests. The live negative cases still require
+connection retirement and successful fresh authentication. This covers internal
+transport behavior only; genuine asynchronous ODBC APIs, driver packaging and
+provider coexistence are not claimed. See CRYPTO_PROVIDER_PLAN.md.

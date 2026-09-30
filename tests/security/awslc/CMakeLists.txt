@@ -50,7 +50,7 @@ set_tests_properties(verified_tls_interop PROPERTIES TIMEOUT 90)
 
 # Compile the real PostgreSQL session path, without enabling the main driver
 # profile or introducing a second implementation of its protocol in the probe.
-add_executable(test_postgres_live test_postgres_live.cpp
+add_library(postgres_session STATIC
   ${ODBCPP_SOURCE}/core/database/generic_database_connection.cpp
   ${ODBCPP_SOURCE}/core/database/postgres/pg_protocol_parser.cpp
   ${ODBCPP_SOURCE}/core/database/postgres/pg_command.cpp
@@ -58,8 +58,18 @@ add_executable(test_postgres_live test_postgres_live.cpp
   ${ODBCPP_SOURCE}/core/database/postgres/pg_type_info.cpp
   ${ODBCPP_SOURCE}/core/transport/socket_transport.cpp
   ${ODBCPP_SOURCE}/core/transport/tls_transport.cpp
+  ${ODBCPP_SOURCE}/core/transport/async_tls_transport.cpp
+  ${ODBCPP_SOURCE}/core/transport/thread_pool_transport.cpp
+  ${ODBCPP_SOURCE}/core/transport/epoll_transport.cpp
   ${ODBCPP_SOURCE}/core/util/utf8.cpp)
-target_link_libraries(test_postgres_live PRIVATE adapter GTest::gtest_main)
+find_package(Threads REQUIRED)
+target_link_libraries(postgres_session PUBLIC adapter Threads::Threads)
+add_executable(test_postgres_live test_postgres_live.cpp)
+target_link_libraries(test_postgres_live PRIVATE postgres_session GTest::gtest_main)
+add_executable(test_async_tls_transport "${ODBCPP_SOURCE}/tests/unit/test_async_tls_transport.cpp")
+target_link_libraries(test_async_tls_transport PRIVATE postgres_session ssl crypto GTest::gtest_main)
+add_test(NAME test_async_tls_transport COMMAND test_async_tls_transport)
+set_tests_properties(test_async_tls_transport PROPERTIES TIMEOUT 90)
 option(ODBCPP_AWSLC_LIVE_TESTS "Require the configured live PostgreSQL TLS/SCRAM fixture" OFF)
 if(ODBCPP_AWSLC_LIVE_TESTS)
   add_test(NAME postgres_tls_scram COMMAND test_postgres_live)

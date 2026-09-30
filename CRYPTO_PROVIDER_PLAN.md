@@ -354,3 +354,19 @@ actual-runtime symbol binding, ODBC export isolation, relocatable packaging or
 cross-provider coexistence. Provider identity still requires the companion
 runtime adapter tests. Qualification remains false and main-build AWS-LC
 selection remains disabled.
+
+## S2C AWS-LC asynchronous transport proof — 2026-09-30
+
+The isolated PostgreSQL live suite now runs the same verified TLS/SCRAM,
+direct/prepared query and rejection/reconnect cases through synchronous socket,
+thread-pool TLS and Linux epoll TLS transports. This exercises the production
+memory-BIO TLS path without changing provider-neutral session contracts.
+
+Both AWS-LC variants also compile and run the existing asynchronous TLS suite,
+covering handshake deadlines, cancellation, queued-request capacity release,
+error-queue isolation and clean versus abrupt TLS closure. The isolated session
+library shares the actual transport/parser sources between those tests and the
+live probe. Local macOS checks cover synchronous/thread-pool paths; Linux CI
+adds the native epoll path. This is internal transport evidence, not support for
+asynchronous ODBC APIs or qualification of AWS-LC packaging/coexistence. Main
+AWS-LC driver selection remains disabled.

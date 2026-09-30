@@ -1,6 +1,11 @@
 #include <gtest/gtest.h>
 #include "core/database/generic_database_connection.h"
 #include "core/database/postgres/pg_protocol_parser.h"
+#include "core/transport/async_tls_transport.h"
+#include "core/transport/thread_pool_transport.h"
+#ifdef __linux__
+#include "core/transport/epoll_transport.h"
+#endif
 #include <array>
 #include <cstdlib>
 #include <stdexcept>
@@ -27,7 +32,7 @@ public:
   }
 };
 
-class AwsLcPostgresLive : public ::testing::Test {
+class AwsLcPostgresLive : public ::testing::TestWithParam<std::string> {
 protected:
   ConnectionSettings settings;
   ObservedParser* parser = nullptr;
@@ -46,7 +51,20 @@ protected:
     settings.timeout = 5s;
     auto owned = std::make_unique<ObservedParser>();
     parser = owned.get();
-    connection = std::make_unique<GenericDatabaseConnection>(std::move(owned));
+    std::unique_ptr<rs::core::transport::ITransport> transport;
+    using namespace rs::core::transport;
+    if (GetParam() == "ThreadPool") {
+      transport = std::make_unique<AsyncTlsTransport>(std::make_unique<ThreadPoolTransport>());
+    }
+#ifdef __linux__
+    else if (GetParam() == "Epoll") {
+      transport = std::make_unique<AsyncTlsTransport>(std::make_unique<EpollTransport>());
+    }
+#endif
+    else {
+      ASSERT_EQ(GetParam(), "Sync");
+    }
+    connection = std::make_unique<GenericDatabaseConnection>(std::move(owned), std::move(transport));
   }
   void TearDown() override { if (connection) connection->disconnect(); }
 
@@ -65,7 +83,7 @@ protected:
   }
 };
 
-TEST_F(AwsLcPostgresLive, VerifiedScramAndPreparedQuery) {
+TEST_P(AwsLcPostgresLive, VerifiedScramAndPreparedQuery) {
   const auto connected = connection->connect(settings);
   ASSERT_TRUE(connected.has_value()) << connected.error_message();
   verify_query();
@@ -83,7 +101,7 @@ TEST_F(AwsLcPostgresLive, VerifiedScramAndPreparedQuery) {
   EXPECT_FALSE(connection->is_connected());
 }
 
-TEST_F(AwsLcPostgresLive, WrongPasswordRetiresSessionAndAllowsFreshScram) {
+TEST_P(AwsLcPostgresLive, WrongPasswordRetiresSessionAndAllowsFreshScram) {
   auto rejected = settings;
   rejected.password += "-incorrect";
   const auto result = connection->connect(rejected);
@@ -96,7 +114,7 @@ TEST_F(AwsLcPostgresLive, WrongPasswordRetiresSessionAndAllowsFreshScram) {
   EXPECT_EQ(parser->sasl, 2u);
 }
 
-TEST_F(AwsLcPostgresLive, RejectsWrongTrustBeforeAuthenticationAndRecovers) {
+TEST_P(AwsLcPostgresLive, RejectsWrongTrustBeforeAuthenticationAndRecovers) {
   auto rejected = settings;
   rejected.ssl_ca_file = required("ODBCPP_AWSLC_PG_WRONG_CA");
   const auto result = connection->connect(rejected);
@@ -110,7 +128,7 @@ TEST_F(AwsLcPostgresLive, RejectsWrongTrustBeforeAuthenticationAndRecovers) {
   verify_query();
 }
 
-TEST_F(AwsLcPostgresLive, RejectsHostnameBeforeAuthenticationAndRecovers) {
+TEST_P(AwsLcPostgresLive, RejectsHostnameBeforeAuthenticationAndRecovers) {
   auto rejected = settings;
   // The fixture certificate contains only IP:127.0.0.1, never DNS:localhost.
   rejected.host = "localhost";
@@ -124,4 +142,10 @@ TEST_F(AwsLcPostgresLive, RejectsHostnameBeforeAuthenticationAndRecovers) {
   ASSERT_TRUE(connected.has_value()) << connected.error_message();
   verify_query();
 }
+INSTANTIATE_TEST_SUITE_P(Transports, AwsLcPostgresLive,
+    ::testing::Values(std::string("Sync"), std::string("ThreadPool")
+#ifdef __linux__
+                      , std::string("Epoll")
+#endif
+    ), [](const ::testing::TestParamInfo<std::string>& info) { return info.param; });
 } // namespace

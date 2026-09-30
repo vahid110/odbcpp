@@ -729,7 +729,7 @@ jobs:
       - name: Build adapter and common tests
         run: >-
           cmake --build build-awslc-proof --parallel 4
-          --target test_crypto_primitives test_scram_sha256 test_tls_client tls_probe test_postgres_live
+          --target test_crypto_primitives test_scram_sha256 test_tls_client tls_probe test_postgres_live test_async_tls_transport
       - name: Run mandatory common adapter tests
         run: >-
           ctest --test-dir build-awslc-proof --output-on-failure
