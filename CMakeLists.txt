@@ -77,82 +77,8 @@ elseif(UNIX)
 endif()
 
 # ---- Core Library ----
-# Base sources (always included)
-file(GLOB CORE_BASE_SOURCES
-  "core/database/*.cpp"
-  "core/database/*.h"
-  "core/transport/*.cpp"
-  "core/transport/*.h"
-  "core/security/*.cpp"
-  "core/security/*.h"
-  "core/util/*.h"
-  "core/util/*.cpp"
-)
-
-set(CORE_SOURCES ${CORE_BASE_SOURCES})
-list(APPEND CORE_SOURCES "product/compiled_backend.cpp")
-
-# Add database-specific sources based on TARGET_DATABASE
-if(TARGET_DATABASE STREQUAL "POSTGRESQL" OR TARGET_DATABASE STREQUAL "REDSHIFT")
-  # Core database protocol
-  file(GLOB DB_SOURCES "core/database/postgres/*.cpp" "core/database/postgres/*.h")
-  list(APPEND CORE_SOURCES ${DB_SOURCES})
-  
-  # Database-specific ODBC layer
-  if(TARGET_DATABASE STREQUAL "REDSHIFT")
-    file(GLOB ODBC_DB_SOURCES "odbc/redshift/*.cpp" "odbc/redshift/*.h")
-    list(APPEND CORE_SOURCES ${ODBC_DB_SOURCES})
-  else()
-    file(GLOB ODBC_DB_SOURCES "odbc/postgresql/*.cpp" "odbc/postgresql/*.h")
-    list(APPEND CORE_SOURCES ${ODBC_DB_SOURCES})
-  endif()
-  
-elseif(TARGET_DATABASE STREQUAL "MYSQL")
-  file(GLOB DB_SOURCES "core/database/mysql/*.cpp" "core/database/mysql/*.h")
-  file(GLOB ODBC_DB_SOURCES "odbc/mysql/*.cpp" "odbc/mysql/*.h")
-  list(APPEND CORE_SOURCES ${DB_SOURCES} ${ODBC_DB_SOURCES})
-  
-elseif(TARGET_DATABASE STREQUAL "SQLSERVER")
-  file(GLOB DB_SOURCES "core/database/sqlserver/*.cpp" "core/database/sqlserver/*.h")
-  file(GLOB ODBC_DB_SOURCES "odbc/sqlserver/*.cpp" "odbc/sqlserver/*.h")
-  list(APPEND CORE_SOURCES ${DB_SOURCES} ${ODBC_DB_SOURCES})
-  
-else()
-  message(FATAL_ERROR "Unknown TARGET_DATABASE: ${TARGET_DATABASE}")
-endif()
-
-# Add connection pool
-list(APPEND CORE_SOURCES "core/database/connection_pool.cpp" "core/database/connection_pool.h")
-
-# Add async transport
-list(APPEND CORE_SOURCES 
-  "core/transport/async_transport.h"
-  "core/transport/thread_pool_transport.h"
-  "core/transport/thread_pool_transport.cpp"
-)
-
-# Add ODBC layer
-list(APPEND CORE_SOURCES
-  "odbc/odbc_types.h"
-  "odbc/odbc_handles.h"
-  "odbc/odbc_handles.cpp"
-  "odbc/odbc_api.h"
-  "odbc/c_api_guard.h"
-  "odbc/odbc_api.cpp"
-  "odbc/connection_string.h"
-  "odbc/connection_string.cpp"
-  "odbc/result_types.h"
-  "odbc/result_types.cpp"
-  "odbc/text_data_converter.h"
-  "odbc/text_data_converter.cpp"
-  "odbc/testing_hooks.h"
-  "odbc/unicode.h"
-  "odbc/unicode.cpp"
-)
-
-if(WIN32)
-  list(APPEND CORE_SOURCES "odbc/windows_registry.cpp" "odbc/windows_registry.h")
-endif()
+include(cmake/DriverSources.cmake)
+odbcpp_collect_driver_sources(CORE_SOURCES "${TARGET_DATABASE}")
 
 # Build static library for linking examples/tests
 add_library(${PROJECT_NAME}_core STATIC ${CORE_SOURCES})
