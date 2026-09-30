@@ -599,3 +599,16 @@ inside the prefix.
 
 This is a candidate artifact gate. Static embedded-byte provenance, live
 profile qualification, provider coexistence, AWS-LC and FIPS remain open.
+
+## S2C Linux OpenSSL static live gate — 2026-09-30
+
+The Linux `BUNDLED_STATIC` candidate now completes a required query through
+unixODBC, PostgreSQL verified TLS and SCRAM. Separate mandatory cases reject an
+untrusted CA and hostname mismatch. The same run preloads the system shared
+OpenSSL, loads and uses the static driver, verifies that provider identity is
+unchanged, and rejects unresolved provider symbols in the driver.
+
+Evidence is retained against exact driver and shared-library hashes. This is
+same-package duplicate-instance cohabitation evidence, not cross-version or
+cross-implementation proof. Static provenance and the AWS-LC comparison remain
+open, and the matrix row is not yet qualified.

@@ -299,3 +299,15 @@ archive hashes. The prefix rejects residual header symlinks.
 
 The row remains unqualified until provenance, live qualification and coexistence
 evidence are complete. AWS-LC and FIPS remain unclaimed.
+
+### S2C Linux OpenSSL static live gate — 2026-09-30
+
+The static candidate now has mandatory unixODBC evidence for a verified-TLS,
+SCRAM-authenticated PostgreSQL query plus rejection of an untrusted CA and a
+hostname mismatch. A shared OpenSSL instance is preloaded while the static
+driver is loaded and used; its identity remains stable, and unresolved provider
+symbols are rejected alongside the existing dependency and export checks.
+
+This proves same-package duplicate-instance cohabitation. Cross-version and
+cross-implementation coexistence, embedded static provenance and AWS-LC remain
+open, so no qualification claim is made.

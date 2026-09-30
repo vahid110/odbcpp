@@ -236,3 +236,15 @@ The finished shared ODBC driver is now constrained and verified to the canonical
 and statically incorporated provider symbols from becoming part of the driver
 dynamic export surface. It does not establish bundled shared-provider or
 preloaded-module coexistence, so provider/linkage qualification remains open.
+
+## S2C Linux static live-security checkpoint — 2026-09-30
+
+The Linux OpenSSL static candidate now requires a successful verified-TLS and
+SCRAM query through unixODBC, and requires rejection of both an untrusted CA and
+a hostname mismatch. Its test host preloads the shared provider before loading
+and using the static driver; the shared provider identity must remain stable,
+and the driver must contain no unresolved provider symbols.
+
+The preloaded and embedded instances originate from one package version. This
+is duplicate-instance cohabitation evidence, while cross-version and
+cross-implementation coexistence and embedded-byte provenance remain open.

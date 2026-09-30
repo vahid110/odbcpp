@@ -198,3 +198,19 @@ dependency, and keeps embedded-byte origin and qualification false.
 This establishes a repeatable artifact gate for the matrix candidate. It does
 not complete provenance, live TLS/ODBC qualification, coexistence or the AWS-LC
 proof, so the Linux OpenSSL static row remains unqualified.
+
+## S2C Linux OpenSSL static live gate — 2026-09-30
+
+The static candidate now runs mandatory unixODBC tests against PostgreSQL 17
+using verified TLS, a private trust root and SCRAM authentication. A successful
+query is required; an untrusted certificate and a hostname mismatch must both
+fail. The test process preloads the system shared OpenSSL before the statically
+linked driver is loaded and used, then checks that the preloaded provider
+identity stays in place. The artifact gate also rejects unresolved provider
+symbols, in addition to dynamic dependencies and non-ODBC exports.
+
+Retained evidence binds these results to the driver and preloaded-library
+hashes. Because the shared and static OpenSSL instances come from the same
+package version, this proves duplicate-instance cohabitation only. It does not
+prove cross-version or cross-implementation coexistence, embedded-byte
+provenance, or AWS-LC compatibility, so `qualificationClaimed` remains false.
