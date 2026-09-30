@@ -219,8 +219,8 @@ The synchronous TLS public header now owns its provider state through an
 incomplete private type. Provider-specific TLS helper headers and the crypto
 adapter are excluded from installation, and architecture checks reject direct
 provider includes in backends or provider types in installed core headers.
-Transport implementations still need the common private TLS adapter; artifact
-inspection and every qualification row remain open.
+The common private TLS adapter is the next source-boundary step; artifact
+inspection and every qualification row remain open at this checkpoint.
 
 ### S2C runtime identity and artifact-form evidence — 2026-09-30
 
@@ -233,5 +233,21 @@ dependencies in a static profile.
 
 The evidence deliberately records that dependency origin is unverified and
 makes no qualification claim. Controlled-prefix resolution, packaged loader
-behavior, symbol visibility, coexistence and the common private TLS adapter are
-still required before any profile is qualified.
+behavior, symbol visibility and coexistence are still required before any
+profile is qualified. The following checkpoint closes the common TLS adapter.
+
+### S2C common private TLS adapter — 2026-09-30
+
+Synchronous socket TLS and asynchronous memory-BIO TLS now use one private,
+provider-neutral client contract. Provider objects, certificate/hostname
+verification, SNI selection, error queues and ciphertext BIO operations are
+confined to the security implementation. Architecture checks prevent transport
+code from bypassing that boundary, and the obsolete provider-specific transport
+helpers have been removed.
+
+Existing deadline, cancellation, custom trust, hostname, SNI, clean shutdown,
+truncated-stream and PostgreSQL behavior remain protected by the transport and
+integration suites. This closes the common-adapter source boundary only.
+OpenSSL profile qualification, dependency origin, loader/coexistence evidence
+and the bounded AWS-LC Linux proof remain open; no new provider or linkage
+profile is claimed.

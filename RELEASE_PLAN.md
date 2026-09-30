@@ -529,5 +529,23 @@ dependencies in a static profile.
 
 This evidence does not yet prove dependency origin, packaged loader behavior,
 symbol isolation or coexistence and explicitly makes no qualification claim.
-Those checks, the common private TLS adapter, OpenSSL matrix qualification and
-the bounded AWS-LC Linux proof remain open.
+Those checks, OpenSSL matrix qualification and the bounded AWS-LC Linux proof
+remain open. The following checkpoint closes the common TLS adapter.
+
+## S2C common private TLS adapter — 2026-09-30
+
+One private client contract now serves synchronous socket TLS and asynchronous
+memory-BIO TLS. It owns provider context/session lifetimes, trust and peer-name
+verification, SNI, provider error capture, clean versus truncated EOF handling,
+and ciphertext ingress/egress. Transport workflows retain their deadlines,
+cancellation, socket readiness and queue ownership without provider APIs.
+
+Provider-specific transport helpers were removed and architecture validation
+now rejects provider includes, types or calls anywhere in the transport layer.
+Focused adapter lifecycle tests and the existing synchronous/asynchronous TLS
+suites cover happy paths and misuse, SNI, trust, timeout and EOF edges.
+
+This is a source-boundary milestone only. It does not qualify AWS-LC, OpenSSL or
+any linkage profile. Dependency origin, packaged loader behavior, symbol
+visibility/coexistence, the qualified OpenSSL matrix and the bounded AWS-LC
+Linux proof remain required for G12.

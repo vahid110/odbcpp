@@ -53,13 +53,14 @@ error codes cannot cross the private boundary. Runtime workflows contain no
 provider switch. PostgreSQL, MySQL and later Redshift receive the same security
 contracts regardless of the selected implementation.
 
-The authentication primitives now use a provider-neutral private adapter, and
-PostgreSQL SCRAM/MD5 code no longer includes provider headers. Installed core
-headers no longer expose OpenSSL types: synchronous TLS owns provider state
-behind an incomplete type, and provider-specific TLS helpers are private.
-Transport implementation files still invoke OpenSSL-compatible APIs directly,
-so the provider boundary remains incomplete. AWS-LC is therefore still an
-implementation and qualification task, not a relink-only claim.
+The authentication primitives and both synchronous and asynchronous TLS
+workflows now use provider-neutral private adapters. PostgreSQL SCRAM/MD5 and
+transport code no longer include provider headers or invoke provider APIs.
+OpenSSL objects, certificate matching, SNI selection, error-queue handling and
+memory-BIO operations are owned by one private security implementation. An
+automated architecture check rejects provider includes, types and calls in the
+transport layer. AWS-LC remains an implementation and qualification task, not a
+relink-only claim.
 
 The private primitive adapter reports compile-time and loaded runtime provider
 versions plus active FIPS state. A cross-platform binary inspector now verifies
