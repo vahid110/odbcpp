@@ -39,7 +39,8 @@ public:
   std::vector<std::byte> create_auth_response(
     const AuthenticationRequest& request,
     const std::string& password,
-    const std::string& user) override {
+    const std::string& user,
+    bool peer_identity_verified) override {
     // MySQL auth response (native password, caching_sha2_password, etc.)
     throw std::runtime_error("MySQL auth response not implemented yet");
   }

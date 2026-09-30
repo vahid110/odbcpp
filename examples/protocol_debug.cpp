@@ -77,7 +77,8 @@ int main() {
         std::cout << "🔐 MD5 authentication required\n";
         
         // Create MD5 auth response
-        auto auth_response = parser.create_auth_response(auth_req, "Testing1234", "awsuser");
+        auto auth_response = parser.create_auth_response(
+            auth_req, "Testing1234", "awsuser", false);
         print_bytes(auth_response, "MD5 auth response");
         
         // Send auth response

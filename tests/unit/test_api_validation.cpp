@@ -474,9 +474,13 @@ TEST_F(ApiValidationTest, RejectsInvalidConnectionOptionsWithoutConnecting) {
            InvalidOption{"PORT", "5432x"},
            InvalidOption{"PORT", "1844674407370955161600"},
            InvalidOption{"PORT", "{ 5432}"},
-           InvalidOption{"SSL", "require"}, InvalidOption{"SSL", "maybe"},
+           InvalidOption{"SSL", ""}, InvalidOption{"SSL", "require"},
+           InvalidOption{"SSL", "maybe"},
            InvalidOption{"SSL", "2"}, InvalidOption{"SSL", "1x"},
-           InvalidOption{"SSL", "{false;TransportMode=Sync}"}}) {
+           InvalidOption{"SSL", "{false;TransportMode=Sync}"},
+           InvalidOption{"SSLCAFILE", "/test/ca.pem;SSL=0"},
+           InvalidOption{"SSLCADIR", "/test/certs;SSL=off"},
+           InvalidOption{"SSLCAFILE", "/test/ca.pem;SSLCADIR=/test/certs"}}) {
     std::string input = std::string("SERVER=127.0.0.1;") +
         option.keyword + "=" + option.value;
     auto* narrow = reinterpret_cast<SQLCHAR*>(input.data());

@@ -400,7 +400,8 @@ AuthenticationRequest PgProtocolParser::parse_auth_request(const std::vector<std
 std::vector<std::byte> PgProtocolParser::create_auth_response(
     const AuthenticationRequest& request,
     const std::string& password,
-    const std::string& user) {
+    const std::string& user,
+    bool peer_identity_verified) {
   if (password.find('\0') != std::string::npos ||
       user.find('\0') != std::string::npos) {
     throw std::invalid_argument(
@@ -425,6 +426,11 @@ std::vector<std::byte> PgProtocolParser::create_auth_response(
       return {};
       
     case AuthenticationRequest::Type::Cleartext:
+      if (!peer_identity_verified) {
+        throw std::runtime_error(
+            "PostgreSQL cleartext password authentication requires "
+            "verified TLS");
+      }
       auth_string = password;
       break;
       

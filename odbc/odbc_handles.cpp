@@ -383,7 +383,7 @@ bool parse_ssl(const std::string& value) {
   const auto normalized = ConnectionString::to_upper(ConnectionString::trim(value));
   if (normalized == "1" || normalized == "TRUE" || normalized == "YES" ||
       normalized == "ON") return true;
-  if (normalized.empty() || normalized == "0" || normalized == "FALSE" ||
+  if (normalized == "0" || normalized == "FALSE" ||
       normalized == "NO" || normalized == "OFF") return false;
   throw std::invalid_argument(
       "SSL must be true or false (1/0, yes/no, on/off)");
@@ -1383,7 +1383,22 @@ SQLRETURN ODBCConnection::connect(
     require_no_nul(settings.database, "Database name");
     require_no_nul(settings.user, "User name");
     require_no_nul(settings.password, "Password");
-    settings.use_ssl = params.count("SSL") && parse_ssl(params.at("SSL"));
+    settings.use_ssl = !params.count("SSL") || parse_ssl(params.at("SSL"));
+    settings.ssl_ca_file = params.count("SSLCAFILE")
+        ? params.at("SSLCAFILE") : std::string{};
+    settings.ssl_ca_dir = params.count("SSLCADIR")
+        ? params.at("SSLCADIR") : std::string{};
+    require_no_nul(settings.ssl_ca_file, "TLS CA file");
+    require_no_nul(settings.ssl_ca_dir, "TLS CA directory");
+    if (!settings.ssl_ca_file.empty() && !settings.ssl_ca_dir.empty()) {
+      throw std::invalid_argument(
+          "SSLCAFILE and SSLCADIR cannot both be specified");
+    }
+    if (!settings.use_ssl &&
+        (!settings.ssl_ca_file.empty() || !settings.ssl_ca_dir.empty())) {
+      throw std::invalid_argument(
+          "SSLCAFILE and SSLCADIR require SSL=true");
+    }
     settings.timeout = timeout_duration(login_timeout_seconds_);
 
     const auto transport_options = rs::core::transport::TransportOptions::resolve(

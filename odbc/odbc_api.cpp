@@ -50,9 +50,10 @@ namespace {
 
   std::optional<std::string> first_unknown_connection_keyword(
       const std::string& connection_string) {
-    static constexpr std::array<std::string_view, 26> supported{{
+    static constexpr std::array<std::string_view, 28> supported{{
         "DSN", "DRIVER", "SERVER", "HOST", "PORT", "DATABASE", "DB",
-        "UID", "USER", "PWD", "PASSWORD", "SSL", "DESCRIPTION",
+        "UID", "USER", "PWD", "PASSWORD", "SSL", "SSLCAFILE", "SSLCADIR",
+        "DESCRIPTION",
         "TRANSPORTMODE", "ASYNCMAXINFLIGHT", "ASYNCQUEUEDEPTH",
         "ASYNCENGINE", "DEADLINEMODEL", "LOGLEVEL", "LOGFORMAT",
         "LOGSINK", "LOGFILE", "LOGMAXSIZE", "LOGMAXFILES", "LOGASYNC",

@@ -2,6 +2,7 @@
 
 #include "async_transport.h"
 #include "start_tls_transport.h"
+#include "tls_configurable_transport.h"
 
 #include <cstddef>
 #include <memory>
@@ -11,7 +12,8 @@ namespace rs::core::transport {
 
 // TLS wrapper for asynchronous transports. OpenSSL uses memory BIOs;
 // encrypted records are pumped through the wrapped transport.
-class AsyncTlsTransport : public IAsyncTransport, public IStartTlsTransport {
+class AsyncTlsTransport : public IAsyncTransport, public IStartTlsTransport,
+                          public ITlsConfigurableTransport {
 public:
   explicit AsyncTlsTransport(
       std::unique_ptr<IAsyncTransport> transport,
@@ -35,6 +37,7 @@ public:
       rs::util::Deadline deadline) override;
   rs::util::Result<void> upgrade_to_tls(
       std::string_view host, rs::util::Deadline deadline) override;
+  bool peer_identity_verified() noexcept override;
 
   std::unique_ptr<AsyncOperation> connect_async(
       std::string_view host, uint16_t port, rs::util::Deadline deadline,
@@ -57,7 +60,8 @@ public:
   void set_min_tls_version(long version);
   void set_verify(bool enabled);
   void set_hostname_verification(bool enabled);
-  void set_ca_locations(std::string file, std::string directory);
+  void set_ca_locations(const std::string& file,
+                        const std::string& directory) override;
 
   std::size_t max_inflight() const noexcept;
   std::size_t queue_depth() const noexcept;

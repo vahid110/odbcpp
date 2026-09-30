@@ -68,6 +68,7 @@ private:
   std::string last_error_;
   std::string last_server_sqlstate_;
   bool connected_ = false;
+  bool peer_identity_verified_ = false;
   
   // Exception-based methods (for backward compatibility)
   void write_all(const std::vector<std::byte>& data, rs::util::Deadline deadline);

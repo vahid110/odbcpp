@@ -321,6 +321,7 @@ TEST(AsyncTlsTransportTest, SupportsDirectTlsRoundTrip) {
   auto connected = transport.connect(
       "127.0.0.1", server.port(), rs::util::make_deadline(15s));
   ASSERT_TRUE(connected.has_value()) << connected.error_message();
+  EXPECT_FALSE(transport.peer_identity_verified());
 
   std::array<std::byte, 0> empty{};
   auto empty_receive = transport.recv(empty, rs::util::make_deadline(5s));

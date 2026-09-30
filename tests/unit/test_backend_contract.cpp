@@ -154,6 +154,12 @@ class BackendContractTest : public ::testing::Test {
         nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
     ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
   }
+  void connect_with(std::string_view connection_string) {
+    std::string input(connection_string);
+    ASSERT_EQ(SQL_SUCCESS, SQLDriverConnect(
+        dbc, nullptr, reinterpret_cast<SQLCHAR*>(input.data()), SQL_NTS,
+        nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  }
   SQLRETURN execute(const char* sql) { return SQLExecDirect(stmt, (SQLCHAR*)sql, SQL_NTS); }
   std::string state(SQLSMALLINT kind = SQL_HANDLE_STMT, SQLHANDLE handle = nullptr) {
     SQLCHAR text[6]{};
@@ -166,6 +172,25 @@ class BackendContractTest : public ::testing::Test {
     if (env) SQLFreeHandle(SQL_HANDLE_ENV, env);
   }
 };
+
+TEST_F(BackendContractTest, UsesVerifiedTlsByDefaultAndAllowsExplicitPlaintext) {
+  connect_with("SERVER=fake;PORT=9999;DATABASE=contract;UID=test");
+  EXPECT_TRUE(seen->settings.use_ssl);
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+
+  connect_with(
+      "SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=false");
+  EXPECT_FALSE(seen->settings.use_ssl);
+}
+
+TEST_F(BackendContractTest, PassesOneCustomTlsTrustLocationToBackend) {
+  connect_with(
+      "SERVER=fake;PORT=9999;DATABASE=contract;UID=test;"
+      "SSLCAFILE=/test/private-ca.pem");
+  EXPECT_TRUE(seen->settings.use_ssl);
+  EXPECT_EQ(seen->settings.ssl_ca_file, "/test/private-ca.pem");
+  EXPECT_TRUE(seen->settings.ssl_ca_dir.empty());
+}
 
 TEST_F(BackendContractTest, SelectsSameBackendBeforeAndAfterLoginAndReportsCapabilities) {
   auto connection = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc);

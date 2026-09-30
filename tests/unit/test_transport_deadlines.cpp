@@ -975,6 +975,7 @@ TEST(TLSTransportDeadlineTest, StaleOpenSslErrorDoesNotBreakHandshake) {
   const auto remaining_errors = ERR_peek_error();
   ERR_clear_error();
   ASSERT_TRUE(connected.has_value()) << connected.error_message();
+  EXPECT_FALSE(transport.peer_identity_verified());
   EXPECT_EQ(remaining_errors, 0UL);
 }
 

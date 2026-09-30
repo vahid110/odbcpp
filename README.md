@@ -444,9 +444,13 @@ SSL upgrade. `Auto` falls back to the synchronous transport for
 With strict deadlines, an explicit `AsyncEngine` must be available on the
 current platform; `Auto` does not silently substitute synchronous transport.
 `SSL` accepts `true/false`, `1/0`, `yes/no`, or `on/off` (case-insensitive).
-An omitted or empty value disables TLS; any other value is rejected rather
-than silently selecting a plaintext connection. `SSL=true` requires TLS and
-peer certificate/hostname verification; it does not fall back to plaintext.
+Omitting `SSL` enables TLS with peer certificate and hostname verification.
+`SSL=false` is the explicit plaintext opt-out; empty and invalid values are
+rejected.
+`SSLCAFILE` or `SSLCADIR` selects one custom trust source and requires TLS.
+They follow normal driver, DSN, and connection-string precedence and cannot be
+set together.
+Requested TLS never falls back to plaintext.
 PostgreSQL sessions request UTF-8 client encoding and ISO/YMD DateStyle at
 startup, so Unicode and date/time results remain decodable when database
 defaults differ.

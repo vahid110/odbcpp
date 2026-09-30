@@ -158,6 +158,7 @@ void TLSTransport::upgrade_from(socket_t s, std::string_view host, Deadline dead
 }
 
 void TLSTransport::upgrade_impl(std::string_view host, Deadline deadline) {
+  peer_identity_verified_ = false;
   if (host.find('\0') != std::string_view::npos) {
     throw TLSError("TLS host contains an embedded NUL byte");
   }
@@ -216,6 +217,7 @@ void TLSTransport::upgrade_impl(std::string_view host, Deadline deadline) {
       catch (...) { X509_free(cert); throw; }
     }
     X509_free(cert);
+    peer_identity_verified_ = verify_host_;
   }
 }
 
@@ -230,6 +232,7 @@ void TLSTransport::verify_hostname(X509* cert) {
 }
 
 void TLSTransport::close() noexcept {
+  peer_identity_verified_ = false;
   if (ssl_) {
     // Closing the socket ends this client session. SSL_shutdown can write a
     // close_notify to an already-closed peer and raise SIGPIPE on Unix.

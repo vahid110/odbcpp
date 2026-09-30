@@ -2,6 +2,7 @@
 #include "i_transport.h"
 #include "socket_transport.h"
 #include "start_tls_transport.h"
+#include "tls_configurable_transport.h"
 #include "core/util/errors.h"
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
@@ -9,7 +10,8 @@
 
 namespace rs::core::transport {
 
-class TLSTransport : public ITransport, public IStartTlsTransport {
+class TLSTransport : public ITransport, public IStartTlsTransport,
+                     public ITlsConfigurableTransport {
 public:
   explicit TLSTransport(DeadlineModel deadline_model = DeadlineModel::Strict);
   ~TLSTransport() override;
@@ -24,12 +26,23 @@ public:
       rs::util::Deadline deadline) override;
   rs::util::Result<void> upgrade_to_tls(
       std::string_view host, rs::util::Deadline deadline) override;
+  bool peer_identity_verified() noexcept override {
+    return peer_identity_verified_;
+  }
 
   // configuration
   void set_min_tls_version(long v); // e.g., TLS1_2_VERSION
-  void set_verify(bool on) { verify_ = on; context_dirty_ = true; }
-  void set_hostname_verification(bool on) { verify_host_ = on; }
-  void set_ca_locations(const std::string& file, const std::string& dir) {
+  void set_verify(bool on) {
+    verify_ = on;
+    if (!on) peer_identity_verified_ = false;
+    context_dirty_ = true;
+  }
+  void set_hostname_verification(bool on) {
+    verify_host_ = on;
+    if (!on) peer_identity_verified_ = false;
+  }
+  void set_ca_locations(const std::string& file,
+                        const std::string& dir) override {
     ca_file_ = file; ca_dir_ = dir; context_dirty_ = true;
   }
   void set_deadline_model(DeadlineModel model) { tcp_.set_deadline_model(model); }
@@ -50,6 +63,7 @@ private:
   std::string sni_host_;
   bool verify_ {true};
   bool verify_host_ {true}; 
+  bool peer_identity_verified_ {false};
   long min_version_ {TLS1_2_VERSION};
   std::string ca_file_, ca_dir_;
 

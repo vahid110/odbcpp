@@ -2,6 +2,7 @@
 #include "core/transport/socket_transport.h"
 #include "core/transport/start_tls_transport.h"
 #include "core/transport/tls_transport.h"
+#include "core/transport/tls_configurable_transport.h"
 #include "core/util/exception_adapter.h"
 
 #include <algorithm>
@@ -89,6 +90,15 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
             "PostgreSQL authentication credential contains an "
             "embedded NUL byte"};
   }
+  if (!settings.ssl_ca_file.empty() && !settings.ssl_ca_dir.empty()) {
+    return {rs::util::DbErrorCode::InvalidParameter,
+            "TLS CA file and directory cannot both be specified"};
+  }
+  if (!settings.use_ssl &&
+      (!settings.ssl_ca_file.empty() || !settings.ssl_ca_dir.empty())) {
+    return {rs::util::DbErrorCode::InvalidParameter,
+            "TLS CA settings require TLS"};
+  }
   std::map<std::string, std::string> params;
   params["application_name"] = "odbcpp";
   params["client_encoding"] = "UTF8";
@@ -104,6 +114,7 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
   settings_ = settings;
   server_params_.clear();
   last_server_sqlstate_.clear();
+  peer_identity_verified_ = false;
   
   if (!transport_) {
     if (settings.use_ssl) {
@@ -134,6 +145,15 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
       return rs::util::Result<void>{
           rs::util::DbErrorCode::InvalidParameter,
           "selected transport does not support PostgreSQL TLS upgrade"};
+    }
+    auto* tls_configuration = dynamic_cast<
+        rs::core::transport::ITlsConfigurableTransport*>(transport_.get());
+    if (tls_configuration != nullptr) {
+      tls_configuration->set_ca_locations(
+          settings.ssl_ca_file, settings.ssl_ca_dir);
+    } else if (!settings.ssl_ca_file.empty() || !settings.ssl_ca_dir.empty()) {
+      return {rs::util::DbErrorCode::InvalidParameter,
+              "selected TLS transport does not support custom CA settings"};
     }
 
     auto connect_result = start_tls->connect_plain(
@@ -181,6 +201,7 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
     
     auto upgrade_result = start_tls->upgrade_to_tls(settings.host, deadline);
     if (upgrade_result.has_error()) return upgrade_result;
+    peer_identity_verified_ = start_tls->peer_identity_verified();
   } else {
     auto connect_result = transport_->connect(settings.host, settings.port, deadline);
     if (connect_result.has_error()) {
@@ -214,6 +235,7 @@ void GenericDatabaseConnection::disconnect() {
   connected_ = false;
   server_params_.clear();
   last_server_sqlstate_.clear();
+  peer_identity_verified_ = false;
 }
 
 bool GenericDatabaseConnection::is_connected() const {
@@ -626,7 +648,8 @@ rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(
         }
       
         auto auth_response = parser_->create_auth_response(
-            auth_req, settings_.password, settings_.user);
+            auth_req, settings_.password, settings_.user,
+            peer_identity_verified_);
         if (!auth_response.empty()) {
           auto write_result = write_all_result(auth_response, deadline);
           if (write_result.has_error()) {

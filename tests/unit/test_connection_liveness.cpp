@@ -6,6 +6,7 @@
 #include "core/database/postgres/pg_database_connection.h"
 #include "core/transport/i_transport.h"
 #include "core/transport/start_tls_transport.h"
+#include "core/transport/tls_configurable_transport.h"
 #include "tests/mock_protocol_parser.h"
 
 #include <algorithm>
@@ -57,7 +58,8 @@ class FailingQueryTransport final : public rs::core::transport::ITransport {
 };
 
 class ScriptedTlsTransport final : public rs::core::transport::ITransport,
-                                   public rs::core::transport::IStartTlsTransport {
+                                   public rs::core::transport::IStartTlsTransport,
+                                   public rs::core::transport::ITlsConfigurableTransport {
  public:
   enum class Mode {
     Refused, OverreportedWrite, NoProgress, Eof, EofWithAccept,
@@ -95,6 +97,12 @@ class ScriptedTlsTransport final : public rs::core::transport::ITransport,
             "unexpected TLS upgrade after refusal"};
   }
 
+  void set_ca_locations(const std::string& file,
+                        const std::string& directory) override {
+    ca_file_ = file;
+    ca_directory_ = directory;
+  }
+
   rs::util::Result<rs::core::transport::IOResult> send(
       std::span<const std::byte> buffer, rs::util::Deadline) override {
     return rs::core::transport::IOResult{
@@ -128,16 +136,21 @@ class ScriptedTlsTransport final : public rs::core::transport::ITransport,
 
   void close() noexcept override { ++close_count_; }
   std::size_t close_count() const noexcept { return close_count_; }
+  const std::string& ca_file() const noexcept { return ca_file_; }
+  const std::string& ca_directory() const noexcept { return ca_directory_; }
 
  private:
   Mode mode_;
   std::size_t close_count_{0};
+  std::string ca_file_;
+  std::string ca_directory_;
 };
 
 class ScriptedBackendTransport final : public rs::core::transport::ITransport {
  public:
   enum class ResponseMode {
     ValidStartup, MalformedStartup, MalformedAuth, AuthRejected,
+    CleartextAuthentication,
     AuthenticationTimeout,
     MalformedQuery, MalformedStartupReady, MalformedQueryReady,
     MalformedQueryError, MalformedBackendKey, ReadyWithoutAuth,
@@ -183,6 +196,10 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       constexpr char error[] =
           "SFATAL\0C28P01\0Mpassword authentication failed\0";
       append_message('E', error, sizeof(error));
+      return;
+    }
+    if (mode == ResponseMode::CleartextAuthentication) {
+      append_message('R', "\0\0\0\3", 4);
       return;
     }
     if (mode == ResponseMode::AuthenticationTimeout) {
@@ -574,6 +591,30 @@ TEST(DatabaseFactoryTest, SelectedBackendPreservesAuthenticationFailureCleanup) 
   }
 }
 
+TEST(DatabaseFactoryTest,
+     SelectedBackendDoesNotSendCleartextPasswordWithoutVerifiedTls) {
+  auto transport = std::make_unique<ScriptedBackendTransport>(
+      ScriptedBackendTransport::ResponseMode::CleartextAuthentication);
+  auto* observed = transport.get();
+  auto connection = rs::core::database::DatabaseFactory::create_connection(
+      std::move(transport));
+  rs::core::database::ConnectionSettings settings;
+  settings.user = "alice";
+  settings.password = "top-secret";
+  settings.use_ssl = false;
+
+  const auto result = connection->connect(settings);
+
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+            result.error());
+  EXPECT_NE(std::string::npos,
+            result.error_message().find("requires verified TLS"));
+  EXPECT_EQ(1u, observed->send_count());
+  EXPECT_FALSE(connection->is_connected());
+  EXPECT_EQ(1u, observed->close_count());
+}
+
 TEST(DatabaseFactoryTest, SelectedBackendDoesNotDowngradeRefusedTls) {
   auto transport = std::make_unique<ScriptedTlsTransport>();
   auto* observed = transport.get();
@@ -587,6 +628,43 @@ TEST(DatabaseFactoryTest, SelectedBackendDoesNotDowngradeRefusedTls) {
             result.error());
   EXPECT_FALSE(connection->is_connected());
   EXPECT_EQ(1u, observed->close_count());
+}
+
+TEST(DatabaseFactoryTest, SelectedBackendAppliesCustomCaBeforeTlsNegotiation) {
+  auto transport = std::make_unique<ScriptedTlsTransport>();
+  auto* observed = transport.get();
+  auto connection = rs::core::database::DatabaseFactory::create_connection(
+      std::move(transport));
+  rs::core::database::ConnectionSettings settings;
+  settings.use_ssl = true;
+  settings.ssl_ca_file = "/test/private-ca.pem";
+
+  const auto result = connection->connect(settings);
+
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ("/test/private-ca.pem", observed->ca_file());
+  EXPECT_TRUE(observed->ca_directory().empty());
+}
+
+TEST(DatabaseFactoryTest, SelectedBackendRejectsAmbiguousOrPlaintextCaPolicy) {
+  for (const bool plaintext : {false, true}) {
+    auto transport = std::make_unique<ScriptedBackendTransport>(
+        ScriptedBackendTransport::ResponseMode::ValidStartup);
+    auto* observed = transport.get();
+    auto connection = rs::core::database::DatabaseFactory::create_connection(
+        std::move(transport));
+    rs::core::database::ConnectionSettings settings;
+    settings.use_ssl = !plaintext;
+    settings.ssl_ca_file = "/test/private-ca.pem";
+    settings.ssl_ca_dir = plaintext ? std::string{} : "/test/certs";
+
+    const auto result = connection->connect(settings);
+
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter),
+              result.error());
+    EXPECT_EQ(0u, observed->send_count());
+  }
 }
 
 TEST(DatabaseFactoryTest, MarkerCountingUsesBackendLexicalRulesWithoutConnecting) {

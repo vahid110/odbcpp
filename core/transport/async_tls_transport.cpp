@@ -292,12 +292,14 @@ public:
   void set_verify(bool enabled) {
     std::lock_guard lock(tls_mutex_);
     verify_ = enabled;
+    if (!enabled) peer_identity_verified_ = false;
     reset_context_if_disconnected_locked();
   }
 
   void set_hostname_verification(bool enabled) {
     std::lock_guard lock(tls_mutex_);
     verify_hostname_ = enabled;
+    if (!enabled) peer_identity_verified_ = false;
   }
 
   void set_ca_locations(std::string file, std::string directory) {
@@ -305,6 +307,11 @@ public:
     ca_file_ = std::move(file);
     ca_directory_ = std::move(directory);
     reset_context_if_disconnected_locked();
+  }
+
+  bool peer_identity_verified() noexcept {
+    std::lock_guard lock(tls_mutex_);
+    return peer_identity_verified_;
   }
 
   std::size_t max_inflight() const noexcept { return max_inflight_; }
@@ -689,6 +696,7 @@ private:
                   ? "TLS certificate verification failed"
                   : "TLS hostname verification failed"};
     }
+    peer_identity_verified_ = verify_hostname_;
     return {};
   }
 
@@ -745,6 +753,7 @@ private:
   }
 
   void reset_ssl_locked() noexcept {
+    peer_identity_verified_ = false;
     if (ssl_) ::SSL_free(ssl_);
     ssl_ = nullptr;
     read_bio_ = nullptr;
@@ -777,6 +786,7 @@ private:
   std::string server_name_;
   bool verify_{true};
   bool verify_hostname_{true};
+  bool peer_identity_verified_{false};
   long min_tls_version_{TLS1_2_VERSION};
   std::string ca_file_;
   std::string ca_directory_;
@@ -870,6 +880,10 @@ rs::util::Result<void> AsyncTlsTransport::upgrade_to_tls(
   auto result = future.get();
   if (result.has_error()) core_->close_transport();
   return result;
+}
+
+bool AsyncTlsTransport::peer_identity_verified() noexcept {
+  return core_->peer_identity_verified();
 }
 
 std::unique_ptr<AsyncOperation> AsyncTlsTransport::connect_async(
@@ -1004,8 +1018,8 @@ void AsyncTlsTransport::set_hostname_verification(bool enabled) {
 }
 
 void AsyncTlsTransport::set_ca_locations(
-    std::string file, std::string directory) {
-  core_->set_ca_locations(std::move(file), std::move(directory));
+    const std::string& file, const std::string& directory) {
+  core_->set_ca_locations(file, directory);
 }
 
 std::size_t AsyncTlsTransport::max_inflight() const noexcept {

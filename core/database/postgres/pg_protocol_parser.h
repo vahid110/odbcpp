@@ -23,7 +23,8 @@ public:
   std::vector<std::byte> create_auth_response(
     const AuthenticationRequest& request,
     const std::string& password,
-    const std::string& user) override;
+    const std::string& user,
+    bool peer_identity_verified) override;
   
   SqlTranslationResult translate_sql(std::string_view sql) const override;
   NativeTypeInfo describe_type(std::uint32_t id, std::int16_t size,

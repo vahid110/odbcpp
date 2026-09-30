@@ -64,7 +64,7 @@ class MockProtocolParser final
 
   std::vector<std::byte> create_auth_response(
       const rs::core::database::AuthenticationRequest&,
-      const std::string&, const std::string&) override {
+      const std::string&, const std::string&, bool) override {
     return {};
   }
 

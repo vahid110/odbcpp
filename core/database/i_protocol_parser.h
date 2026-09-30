@@ -38,10 +38,14 @@ public:
   
   // Authentication
   virtual AuthenticationRequest parse_auth_request(const std::vector<std::byte>& data) = 0;
+  // peer_identity_verified is true only when the active transport has verified
+  // both its certificate chain and peer host identity. Authentication methods
+  // that expose reusable credentials must fail closed when it is false.
   virtual std::vector<std::byte> create_auth_response(
     const AuthenticationRequest& request,
     const std::string& password,
-    const std::string& user) = 0;
+    const std::string& user,
+    bool peer_identity_verified) = 0;
   
   // Query execution
   virtual std::size_t count_parameter_markers(std::string_view sql) const = 0;

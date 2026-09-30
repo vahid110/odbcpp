@@ -58,10 +58,30 @@ TEST(PgProtocolParserTest, RejectsEmbeddedNulInAuthenticationCredentials) {
   request.type = AuthenticationRequest::Type::Cleartext;
   const std::string malformed("alice\0admin", sizeof("alice\0admin") - 1);
 
-  EXPECT_THROW(parser.create_auth_response(request, malformed, "alice"),
+  EXPECT_THROW(parser.create_auth_response(request, malformed, "alice", true),
                std::invalid_argument);
-  EXPECT_THROW(parser.create_auth_response(request, "password", malformed),
+  EXPECT_THROW(parser.create_auth_response(request, "password", malformed, true),
                std::invalid_argument);
+}
+
+TEST(PgProtocolParserTest, CleartextPasswordRequiresVerifiedPeerIdentity) {
+  PgProtocolParser parser;
+  AuthenticationRequest request;
+  request.type = AuthenticationRequest::Type::Cleartext;
+
+  EXPECT_THROW(
+      parser.create_auth_response(request, "top-secret", "alice", false),
+      std::runtime_error);
+
+  const auto response =
+      parser.create_auth_response(request, "top-secret", "alice", true);
+  ASSERT_EQ(response.size(), 1u + 4u + std::string_view("top-secret").size() + 1u);
+  EXPECT_EQ(response.front(), std::byte{'p'});
+  EXPECT_EQ(response.back(), std::byte{0});
+  const std::string serialized(
+      reinterpret_cast<const char*>(response.data() + 5),
+      response.size() - 6);
+  EXPECT_EQ(serialized, "top-secret");
 }
 
 TEST(PgProtocolParserTest, AuthenticationOkAndCleartextHaveExactLengths) {
@@ -89,7 +109,8 @@ TEST(PgProtocolParserTest, Md5AuthenticationRequiresExactlyFourSaltBytes) {
   ASSERT_EQ(parsed.type, AuthenticationRequest::Type::MD5);
   ASSERT_EQ(parsed.challenge_data.size(), 4u);
 
-  const auto response = parser.create_auth_response(parsed, "password", "alice");
+  const auto response =
+      parser.create_auth_response(parsed, "password", "alice", false);
   ASSERT_EQ(response.size(), 41u);
   EXPECT_EQ(response[0], std::byte{'p'});
   EXPECT_EQ(response[4], std::byte{40});
@@ -108,7 +129,8 @@ TEST(PgProtocolParserTest, Md5AuthenticationRequiresExactlyFourSaltBytes) {
   direct.type = AuthenticationRequest::Type::MD5;
   for (const std::size_t salt_size : {0u, 3u, 5u}) {
     direct.challenge_data.resize(salt_size);
-    EXPECT_THROW(parser.create_auth_response(direct, "password", "alice"),
+    EXPECT_THROW(parser.create_auth_response(
+                     direct, "password", "alice", false),
                  std::invalid_argument);
   }
 }
@@ -123,7 +145,8 @@ TEST(PgProtocolParserTest, ScramRequiresServerFinalAndRejectsDowngrade) {
   offer.push_back(std::byte{0});
   offer.push_back(std::byte{0});
   const auto request = parser.parse_auth_request(offer);
-  ASSERT_FALSE(parser.create_auth_response(request, "postgres", "postgres")
+  ASSERT_FALSE(parser.create_auth_response(
+                         request, "postgres", "postgres", false)
                    .empty());
   const std::vector<std::byte> auth_ok(4, std::byte{0});
   EXPECT_THROW(parser.parse_auth_request(auth_ok), std::runtime_error);
@@ -133,7 +156,7 @@ TEST(PgProtocolParserTest, ScramRequiresServerFinalAndRejectsDowngrade) {
   AuthenticationRequest forged_cleartext;
   forged_cleartext.type = AuthenticationRequest::Type::Cleartext;
   EXPECT_THROW(parser.create_auth_response(
-                   forged_cleartext, "postgres", "postgres"),
+                   forged_cleartext, "postgres", "postgres", true),
                std::runtime_error);
 
   parser.create_startup_message("postgres", "postgres", {});
@@ -392,7 +415,7 @@ TEST(PgProtocolParserTest, CreatesPostgreSqlScramMessages) {
   EXPECT_EQ(request.type,
             rs::core::database::AuthenticationRequest::Type::SASL);
   const auto initial_frames = split_frames(
-      parser.create_auth_response(request, "pencil", "user"));
+      parser.create_auth_response(request, "pencil", "user", false));
   ASSERT_EQ(initial_frames.size(), 1u);
   EXPECT_EQ(initial_frames[0].tag, 'p');
 
@@ -421,7 +444,7 @@ TEST(PgProtocolParserTest, CreatesPostgreSqlScramMessages) {
   EXPECT_EQ(continuation.type,
             rs::core::database::AuthenticationRequest::Type::SASLContinue);
   const auto final_frames = split_frames(
-      parser.create_auth_response(continuation, "pencil", "user"));
+      parser.create_auth_response(continuation, "pencil", "user", false));
   ASSERT_EQ(final_frames.size(), 1u);
   EXPECT_EQ(final_frames[0].tag, 'p');
   const std::string final(
