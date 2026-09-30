@@ -1,5 +1,8 @@
 # Run before packaging: negative PE checks and schema safeguards need no installer.
-param([string]$BuildDirectory = 'build-windows')
+param(
+    [string]$BuildDirectory = 'build-windows',
+    [string]$OpenSslRoot = 'C:/Program Files/OpenSSL'
+)
 $ErrorActionPreference = 'Stop'
 $root = Join-Path $env:RUNNER_TEMP 'odbcpp-invalid-package'
 New-Item "$root/Release" -ItemType Directory -Force | Out-Null
@@ -32,3 +35,15 @@ try { & "$PSScriptRoot/build.ps1" -BuildDirectory $root -OutputDirectory "$root/
 catch { if ($_.Exception.Message -notmatch 'requires BUNDLED_SHARED crypto') { throw }; $rejected = $true }
 if (!$rejected) { throw 'Wrong crypto package profile was accepted' }
 Write-Host 'Package crypto-profile rejection passed.'
+
+Copy-Item "$BuildDirectory/odbcpp-crypto-manifest.json" "$root/odbcpp-crypto-manifest.json" -Force
+$junction = Join-Path $root 'openssl-junction'
+New-Item -ItemType Junction -Path $junction -Target $OpenSslRoot | Out-Null
+$manifest = Get-Content "$root/odbcpp-crypto-manifest.json" -Raw | ConvertFrom-Json
+$manifest.dependencyRoot = $junction
+$manifest | ConvertTo-Json -Depth 5 | Set-Content "$root/odbcpp-crypto-manifest.json" -Encoding utf8
+$rejected = $false
+try { & "$PSScriptRoot/build.ps1" -BuildDirectory $root -OutputDirectory "$root/reparse-root" -OpenSslRoot $junction }
+catch { if ($_.Exception.Message -notmatch 'contains a reparse point') { throw }; $rejected = $true }
+if (!$rejected) { throw 'Reparse-point crypto dependency root was accepted' }
+Write-Host 'Package crypto reparse-point rejection passed.'
