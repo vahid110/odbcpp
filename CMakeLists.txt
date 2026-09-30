@@ -83,6 +83,8 @@ file(GLOB CORE_BASE_SOURCES
   "core/database/*.h"
   "core/transport/*.cpp"
   "core/transport/*.h"
+  "core/security/*.cpp"
+  "core/security/*.h"
   "core/util/*.h"
   "core/util/*.cpp"
 )

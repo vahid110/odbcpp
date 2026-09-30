@@ -1,5 +1,6 @@
 #include "pg_command.h"
 #include "core/util/hex.h"
+#include "core/security/crypto.h"
 #include "pg_sql_dialect.h"
 #include "pg_protocol_parser.h"
 #include <algorithm>
@@ -8,7 +9,6 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
-#include <openssl/evp.h>
 
 namespace {
 
@@ -861,19 +861,13 @@ QueryResult PgProtocolParser::extract_query_result(
 }
 
 std::string PgProtocolParser::md5_hex(const void* data, size_t n) {
-  unsigned char md[EVP_MAX_MD_SIZE];
-  unsigned int mdlen = 0;
-  
-  EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-  EVP_DigestInit_ex(ctx, EVP_md5(), nullptr);
-  EVP_DigestUpdate(ctx, data, n);
-  EVP_DigestFinal_ex(ctx, md, &mdlen);
-  EVP_MD_CTX_free(ctx);
+  const auto md = rs::core::security::md5({
+      static_cast<const unsigned char*>(data), n});
   
   static const char hexd[] = "0123456789abcdef";
   std::string out;
-  out.resize(mdlen * 2);
-  for (unsigned i = 0; i < mdlen; i++) {
+  out.resize(md.size() * 2);
+  for (std::size_t i = 0; i < md.size(); i++) {
     out[2*i] = hexd[(md[i] >> 4) & 0xF];
     out[2*i+1] = hexd[md[i] & 0xF];
   }
