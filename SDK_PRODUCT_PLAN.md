@@ -41,7 +41,7 @@ access returns; MS1 does not silently replace or waive Redshift acceptance.
 
 | Package | Scope | Base estimate | Exit evidence |
 |---|---|---:|---|
-| S1 | Freeze SDK boundary, dependency direction, ownership/error/deadline rules, internal versioning policy and extension lifecycle; inventory current PostgreSQL dependencies; pin the MySQL 8 test version and initial `caching_sha2_password`-over-TLS profile | 2–4 days | Contract document and dependency audit pass the architecture-quality review below; no behavior change |
+| S1 | Freeze SDK boundary, dependency direction, ownership/error/deadline rules, pooling/reuse and cache lifecycle contracts, internal versioning policy and extension lifecycle; inventory current PostgreSQL dependencies; pin the MySQL 8 test version and initial `caching_sha2_password`-over-TLS profile | 2–4 days | Contract document and dependency audit pass the architecture-quality review below; no behavior change |
 | S2 | Evolve the smallest necessary interfaces and reusable conformance harness; keep PostgreSQL behavior and ABI-facing ODBC paths green | 4–6 days | PostgreSQL plus synthetic-backend contract tests pass; no PostgreSQL/native ODBC concepts cross the documented boundary |
 | S3 | MySQL 8 protocol vertical slice: verified TLS, one password method appropriate to the test server, connect/disconnect, direct and prepared execution, scalar/NULL fetch, parameters, transactions, essential table/column metadata, server errors and recovery | 10–16 days | Unit edge cases and live container tests pass through the same shared ODBC orchestration used by PostgreSQL |
 | S4 | Backend author test kit, MySQL/PostgreSQL comparison review, extension guide and one minimal out-of-tree sample backend | 4–6 days | The clean-room backend-author exercise below passes; limitations and unstable interfaces are explicit |
@@ -71,6 +71,47 @@ features.
 - The result contract remains representation-neutral: the current row path is
   supported, and a future columnar-batch path can be added without exposing
   ODBC types to backend implementations.
+- Shared contract tests prove that a session can be reused only after required
+  transaction/session cleanup and a successful backend health/reset decision;
+  dead, timed-out or credential-expired sessions are retired.
+- Existing metadata caches preserve correctness across reconnect, reprepare and
+  server-identity changes. Caching must never change diagnostics, transaction
+  visibility or advertised capabilities.
+
+## Pooling and caching boundary
+
+Connection reuse is a core correctness concern even when the ODBC Driver Manager
+owns the pool. S1 must document the backend hooks and shared decisions for health
+checking, reset, reuse, retirement and credential expiry. G12 must exercise safe
+reuse and rejection/retirement paths for PostgreSQL and MySQL, including open or
+failed transactions, server-side session state, disconnects, timeouts and invalid
+or expired credentials. The exact Driver Manager attributes and claimed pooling
+modes are frozen from specification and platform evidence during S1; unverified
+modes remain unadvertised.
+
+An SDK-managed pool is optional and initially internal. Its policy belongs in a
+separate shared component; backends report health/reset outcomes and must not
+embed independent pool implementations. Public pool APIs, sizing defaults and
+advanced policies require later measured product scope.
+
+Every cache must declare:
+
+- owner and scope: process, pool, physical connection, logical connection or
+  statement;
+- key inputs, size bound and concurrency rules;
+- invalidation on reconnect, server identity/version change, transaction or
+  session reset, schema-affecting events and credential expiry where applicable;
+- whether entries contain credentials or other sensitive values, with no
+  plaintext-secret persistence and no secret-bearing logs;
+- observable hit, miss, eviction, invalidation and stale-entry rejection events
+  without exposing user data.
+
+Metadata/type and prepared-statement caches are permitted only behind these
+contracts. Existing caches receive correctness tests in G12. New prepared-cache
+behavior, eviction tuning, pool sizing and transport optimizations require G10
+measurements before enablement or support claims. General query-result caching is
+outside the SDK: its consistency and invalidation policy belong to applications
+or a separately scoped data service.
 
 ## Engineering quality bar
 
@@ -89,6 +130,9 @@ are release conditions:
 - Ownership, borrowing, lifetime, thread-safety, cancellation, deadlines, error
   translation, connection retirement and recovery are documented for every
   extension-facing operation.
+- Pooling and cache contracts make physical versus logical connection lifetime,
+  reset responsibility, cache scope and invalidation explicit. Hidden global
+  caches and backend-owned pool policies are rejected.
 - Adding a backend does not require editing shared ODBC workflows. Backend
   selection and build registration may use a documented product-registration
   point; protocol, type, authentication and catalog behavior must not require
@@ -114,10 +158,12 @@ must record:
 
 1. responsibility and dependency direction;
 2. ownership, concurrency, deadline and error semantics;
-3. required versus optional capabilities;
-4. evidence from PostgreSQL and the anticipated MySQL use;
-5. how row results work now and where a future columnar result path attaches;
-6. rejected alternatives and remaining unstable decisions.
+3. physical/logical connection reuse, reset, retirement and credential-expiry
+   behavior plus every cache's scope and invalidation contract;
+4. required versus optional capabilities;
+5. evidence from PostgreSQL and the anticipated MySQL use;
+6. how row results work now and where a future columnar result path attaches;
+7. rejected alternatives and remaining unstable decisions.
 
 Reject an interface that merely renames PostgreSQL concepts, combines unrelated
 responsibilities, requires backend-specific branching in shared code, or exists
@@ -155,6 +201,8 @@ number of shared ODBC workflow files changed by the sample is **zero**.
 - Runtime-loadable plugins, a frozen C++ ABI, semantic-version compatibility
   guarantees, or broad source compatibility for third parties.
 - Arrow integration, an ADBC driver, Flight SQL, or ADBC packaging.
+- General query-result caching, a public pooling API, or unmeasured cache/pool
+  performance tuning.
 - SQL Server/TDS, Athena, Aurora or another backend.
 - Deferring a serious PostgreSQL regression or a supported-path safety defect
   in order to complete the proof.

@@ -102,7 +102,8 @@ required. No extra application scope is charged to contingency.
 ## Next implementation sequence
 
 1. **S1 contract freeze:** inventory dependency direction and publish the SDK
-   ownership, lifecycle, result and extension contracts without behavior changes.
+   ownership, lifecycle, pooling/reuse, cache, result and extension contracts
+   without behavior changes.
 2. **S2 shared proof harness:** make only the extractions required by the audit;
    keep PostgreSQL, iODBC, Windows and sanitizer gates green.
 3. **S3 MySQL vertical slice:** implement and live-test the bounded MySQL 8

@@ -21,6 +21,7 @@ extraction later. Public SDK packaging and stability guarantees remain G13.
 | Common conversion rules, NULL and truncation handling | SQL dialect, parameter-marker syntax and native parameter encoding |
 | Common catalog argument validation and ODBC output shape | Catalog SQL, type discovery, visibility and backend-specific metadata |
 | Deadline propagation, transport primitives and logging infrastructure | Backend session/deadline recovery decisions and connection retirement |
+| Optional shared pool policy, cache policy/limits and logical-connection lifecycle | Physical-session health/reset outcome, credential expiry, native prepared handles and backend-specific invalidation signals |
 | Contract-test harness and shared regression suites | Live backend fixtures and backend-specific expected results |
 
 Common text conversions may be shared where their semantics agree. PostgreSQL
@@ -97,6 +98,13 @@ not required to implement and verify the PostgreSQL boundary.
 - Automated forbidden-dependency checks reject backend-to-ODBC dependencies,
   protocol/native-type leakage into shared orchestration and dependency cycles.
   Functional tests cannot waive these architecture failures.
+- Driver Manager reuse and any internal SDK pool use the same documented health,
+  reset and retirement contract. PostgreSQL/MySQL tests cover transaction/session
+  cleanup, failure and credential-expiry paths; backends do not own pool policy.
+- Each metadata/type/prepared cache declares scope, bounds, concurrency,
+  invalidation, sensitive-data handling and observability. G12 proves correctness;
+  G10 measurements gate new performance behavior. Query-result caching is out of
+  scope.
 
 ## What remains later
 

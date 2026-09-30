@@ -37,6 +37,10 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
   automated forbidden-dependency checks and an S4 clean-room backend exercise.
   Undocumented internal knowledge or any shared ODBC workflow edit required by
   the sample blocks closure even when functional tests pass.
+- S1 must also freeze pooling/reuse and cache lifecycles. Driver Manager reuse
+  correctness is required; an SDK pool remains optional/internal. Existing
+  metadata caches need invalidation evidence. New prepared caching and tuning
+  wait for G10 measurements; query-result caching is out of scope.
 - Graphify was evaluated and declined. Use narrow `rg` searches and source reads.
 
 ## Navigation
