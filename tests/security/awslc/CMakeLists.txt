@@ -56,10 +56,10 @@ find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
 add_test(NAME package_archive_integrity
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_package_archive.py")
 find_program(OPENSSL_EXECUTABLE openssl REQUIRED)
-add_executable(tls_probe tls_probe.cpp)
+add_executable(tls_probe "${ODBCPP_SOURCE}/tests/security/tls_probe.cpp")
 target_link_libraries(tls_probe PRIVATE adapter)
 add_test(NAME verified_tls_interop
-  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_verified_tls.py"
+  COMMAND "${Python3_EXECUTABLE}" "${ODBCPP_SOURCE}/tests/security/test_verified_tls.py"
     --probe "$<TARGET_FILE:tls_probe>" --openssl "${OPENSSL_EXECUTABLE}")
 set_tests_properties(verified_tls_interop PROPERTIES TIMEOUT 90)
 

@@ -547,3 +547,23 @@ requirements, fill only demonstrated missing evidence, then perform one matrix
 acceptance review before returning to S2 error/lifecycle migration. The AWS-LC
 source tree is still composed separately for this experiment; main-build provider
 selection remains a separately reviewable integration step before product use.
+
+## S2C Linux OpenSSL mandatory TLS evidence — 2026-10-01
+
+The production OpenSSL adapter now reuses the same independent peer/probe as the
+accepted AWS-LC proof. Linux system-shared and bundled-static CI explicitly enable
+`ODBCPP_CRYPTO_TLS_PROOF`: TLS 1.2/1.3 acceptance, custom trust, DNS/IP mismatch,
+unrelated CA rejection and controlled TLS 1.1 rejection are mandatory. Provider
+error spelling differences are handled only in the shared test probe.
+
+Linux system-shared additionally enables the existing actual-driver unixODBC
+TLS/SCRAM query and wrong-CA/hostname rejection cases against a disposable TLS
+PostgreSQL fixture. The runner verifies exactly those cases passed without skips.
+Existing sync/epoll/auto non-TLS suites still run before this dedicated fixture.
+JUnit results and probe/driver/manifest artifacts are retained for both Linux rows.
+The probe switch is opt-in test infrastructure, not a runtime driver option.
+
+This fills the demonstrated Linux TLS gate gap only. The OpenSSL rows remain
+unqualified pending their finite coexistence/identity/package acceptance work;
+macOS and Windows TLS fixtures are the next platform gaps. No additional AWS-LC
+proof or public/FIPS scope is introduced.

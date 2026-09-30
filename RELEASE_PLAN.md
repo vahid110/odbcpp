@@ -746,3 +746,10 @@ accepted. G12, the OpenSSL matrix and main-build AWS-LC enablement remain open.
 Further AWS-LC proof expansion requires a demonstrated failed gate or contract
 change. Next, reconcile the finite OpenSSL qualification evidence and return to
 S2 error/lifecycle migration after the S2C matrix review.
+
+## S2C Linux OpenSSL TLS qualification batch — 2026-10-01
+
+Both Linux OpenSSL linkage rows run the shared independent TLS acceptance and
+controlled downgrade fixture. System-shared also gains mandatory live driver
+TLS/SCRAM and wrong-CA/hostname rejection with no skipped cases. Retained results
+and binaries support later matrix acceptance; OpenSSL qualification remains open.

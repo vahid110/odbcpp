@@ -1,4 +1,4 @@
-"""Exercise the AWS-LC client against an independent Python/OpenSSL TLS peer."""
+"""Exercise the production TLS client against an independent Python/OpenSSL TLS peer."""
 import argparse
 import concurrent.futures
 import pathlib

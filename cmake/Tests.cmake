@@ -27,6 +27,24 @@ function(add_test_executable test_name test_file)
   )
 endfunction()
 
+option(ODBCPP_CRYPTO_TLS_PROOF "Run the independent POSIX TLS qualification peer" OFF)
+if(ODBCPP_CRYPTO_TLS_PROOF)
+  if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$")
+    message(FATAL_ERROR "The independent TLS qualification peer requires POSIX")
+  endif()
+  find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
+  find_program(ODBCPP_TLS_PEER_OPENSSL openssl REQUIRED)
+  add_executable(crypto_tls_probe tests/security/tls_probe.cpp)
+  target_link_libraries(crypto_tls_probe PRIVATE ${PROJECT_NAME}::core)
+  apply_compiler_settings(crypto_tls_probe)
+  set_target_properties(crypto_tls_probe PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+  add_test(NAME verified_crypto_tls_interop COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/security/test_verified_tls.py"
+    --probe $<TARGET_FILE:crypto_tls_probe> --openssl "${ODBCPP_TLS_PEER_OPENSSL}")
+  set_tests_properties(verified_crypto_tls_interop PROPERTIES LABELS "unit;security" TIMEOUT 90)
+endif()
+
 # ---- Unit Tests ----
 file(GLOB UNIT_TEST_SOURCES "tests/unit/*.cpp")
 foreach(test_file ${UNIT_TEST_SOURCES})
@@ -275,9 +293,10 @@ if(UNIX OR WIN32)
     endif()
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
-       ODBCPP_CRYPTO_LINKAGE STREQUAL "BUNDLED_STATIC" AND
-       ODBCPP_CRYPTO_COHABITATION_SSL_LIBRARY AND
-       ODBCPP_CRYPTO_COHABITATION_CRYPTO_LIBRARY)
+       (ODBCPP_CRYPTO_TLS_PROOF OR
+        (ODBCPP_CRYPTO_LINKAGE STREQUAL "BUNDLED_STATIC" AND
+         ODBCPP_CRYPTO_COHABITATION_SSL_LIBRARY AND
+         ODBCPP_CRYPTO_COHABITATION_CRYPTO_LIBRARY)))
       add_executable(it_crypto_profile_live
         tests/driver_manager/it_crypto_profile_live.cpp)
       target_include_directories(it_crypto_profile_live PRIVATE

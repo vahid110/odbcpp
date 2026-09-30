@@ -97,6 +97,7 @@ jobs:
           -DTARGET_DATABASE=POSTGRESQL
           -DODBCPP_CRYPTO_PROVIDER=OPENSSL
           -DODBCPP_CRYPTO_LINKAGE=SYSTEM_SHARED
+          -DODBCPP_CRYPTO_TLS_PROOF=ON
           -DODBC_DRIVER_MANAGER_FLAVOR=UNIXODBC
           -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2
           -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
@@ -106,21 +107,31 @@ jobs:
         run: cmake --build build -- -j
 
       - name: Run unit tests
-        run: ctest --test-dir build -L unit --output-on-failure
+        run: ctest --test-dir build -L unit --output-on-failure --output-junit openssl-system-shared-unit.xml
 
       - name: Run integration tests
-        run: ctest --test-dir build -L integration --output-on-failure
+        run: ctest --test-dir build -L integration -E '^it_crypto_profile_live$' --output-on-failure
 
       - name: Run integration tests with Linux epoll transport
         run: |
           sed -i '/^TransportMode=Sync$/c\TransportMode=Async\nAsyncEngine=Epoll' "$ODBCINI"
-          ctest --test-dir build -L integration --output-on-failure
+          ctest --test-dir build -L integration -E '^it_crypto_profile_live$' --output-on-failure
 
       - name: Run integration tests with Auto-selected transport
         run: |
           sed -i 's/^TransportMode=Async$/TransportMode=Auto/' "$ODBCINI"
           sed -i 's/^AsyncEngine=Epoll$/AsyncEngine=Auto/' "$ODBCINI"
-          ctest --test-dir build -L integration --output-on-failure
+          ctest --test-dir build -L integration -E '^it_crypto_profile_live$' --output-on-failure
+
+      - name: Prepare mandatory TLS qualification fixture
+        run: |
+          tls="$RUNNER_TEMP/postgres-system-shared-tls"
+          bash tools/ci/prepare-postgres-tls.sh "${{ job.services.postgres.id }}" "$tls"
+          echo '127.0.0.1 wrong-host.invalid' | sudo tee -a /etc/hosts
+          echo "ODBCPP_POSTGRES_TLS_DIR=$tls" >> "$GITHUB_ENV"
+
+      - name: Run mandatory system-shared TLS and SCRAM profile tests
+        run: tools/ci/run-crypto-profile-live.sh build openssl-system-shared-live.xml
 
       - name: Verify production logging
         run: |
@@ -135,6 +146,20 @@ jobs:
           assert all("sql" not in record.get("record", {}) for record in records)
           assert all("PWD=" not in line for line in path.read_text().splitlines())
           PY
+
+      - name: Retain system-shared TLS qualification inputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openssl-system-shared-tls-proof
+          path: |
+            build/openssl-system-shared-unit.xml
+            openssl-system-shared-live.xml
+            build/tests/crypto_tls_probe
+            build/libodbcpp.so
+            build/odbcpp-crypto-manifest.json
+            build/odbcpp-crypto-artifact-evidence.json
+          if-no-files-found: error
 
   redshift-build:
     runs-on: ubuntu-latest
@@ -540,6 +565,7 @@ jobs:
           -DTARGET_DATABASE=POSTGRESQL
           -DODBCPP_CRYPTO_PROVIDER=OPENSSL
           -DODBCPP_CRYPTO_LINKAGE=BUNDLED_STATIC
+          -DODBCPP_CRYPTO_TLS_PROOF=ON
           -DODBCPP_CRYPTO_ROOT="$ODBCPP_STATIC_OPENSSL_ROOT"
           -DODBCPP_CRYPTO_COHABITATION_SSL_LIBRARY="$ODBCPP_COHABITATION_SSL_LIBRARY"
           -DODBCPP_CRYPTO_COHABITATION_CRYPTO_LIBRARY="$ODBCPP_COHABITATION_CRYPTO_LIBRARY"
@@ -553,7 +579,7 @@ jobs:
           cmake --build build-openssl-static --parallel
           ctest --test-dir build-openssl-static -L unit \
             -E '^test_static_crypto_cohabitation$' \
-            --timeout 60 --output-on-failure
+            --timeout 60 --output-on-failure --output-junit openssl-static-unit.xml
           LD_PRELOAD="$ODBCPP_COHABITATION_CRYPTO_LIBRARY:$ODBCPP_COHABITATION_SSL_LIBRARY" \
             build-openssl-static/tests/test_static_crypto_cohabitation \
               --gtest_output=xml:openssl-static-cohabitation.xml
@@ -677,6 +703,8 @@ jobs:
         with:
           name: linux-openssl-static-evidence
           path: |
+            build-openssl-static/tests/crypto_tls_probe
+            build-openssl-static/openssl-static-unit.xml
             build-openssl-static/odbcpp-crypto-manifest.json
             build-openssl-static/odbcpp-crypto-artifact-evidence.json
             build-openssl-static/odbcpp-crypto-static-link.map

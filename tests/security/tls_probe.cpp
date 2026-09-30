@@ -1,4 +1,4 @@
-// POSIX-only probe for the isolated Linux/macOS adapter experiment.
+// POSIX probe shared by the production OpenSSL and isolated AWS-LC proofs.
 #include "core/security/tls_client.h"
 #include "core/security/crypto.h"
 #include "core/util/platform.h"
@@ -51,9 +51,12 @@ int main(int argc, char** argv) {
           step.message.find("hostname verification failed") == std::string::npos)
         throw std::runtime_error("wrong hostname rejection reason: " + step.message);
       if (expected == "protocol" &&
-          step.message.find("TLSV1_ALERT_PROTOCOL_VERSION") == std::string::npos)
+          step.message.find("TLSV1_ALERT_PROTOCOL_VERSION") == std::string::npos &&
+          step.message.find("tlsv1 alert protocol version") == std::string::npos)
         throw std::runtime_error("wrong protocol rejection reason: " + step.message);
-      if (expected == "trust" && step.message.find("CERTIFICATE_VERIFY_FAILED") == std::string::npos)
+      if (expected == "trust" &&
+          step.message.find("CERTIFICATE_VERIFY_FAILED") == std::string::npos &&
+          step.message.find("certificate verify failed") == std::string::npos)
         throw std::runtime_error("wrong trust rejection reason: " + step.message);
     } else {
       if (step.state != TlsStepState::Complete || !client.peer_identity_verified())
