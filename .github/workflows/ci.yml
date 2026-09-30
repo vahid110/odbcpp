@@ -714,6 +714,11 @@ jobs:
         shared: ["OFF", "ON"]
     steps:
       - uses: actions/checkout@v5
+      - name: Install ODBC development dependencies
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+          sudo apt-get update
+          sudo apt-get install -y unixodbc-dev libssl-dev
       - name: Configure PostgreSQL verified-TLS fixture
         run: |
           tls="$RUNNER_TEMP/awslc-postgres-tls"
@@ -729,7 +734,7 @@ jobs:
       - name: Build adapter and common tests
         run: >-
           cmake --build build-awslc-proof --parallel 4
-          --target test_crypto_primitives test_scram_sha256 test_tls_client tls_probe test_postgres_live test_async_tls_transport test_provider_coexistence
+          --target test_crypto_primitives test_scram_sha256 test_tls_client tls_probe test_postgres_live test_async_tls_transport test_provider_coexistence test_odbc_driver_live
       - name: Run mandatory common adapter tests
         run: >-
           ctest --test-dir build-awslc-proof --output-on-failure
@@ -747,6 +752,9 @@ jobs:
             build-awslc-proof/test_postgres_live
             build-awslc-proof/test_provider_coexistence
             build-awslc-proof/preload-host.json
+            build-awslc-proof/libawslc_odbc_driver.so
+            build-awslc-proof/driver-artifact-evidence.json
+            build-awslc-proof/driver-link.map
             build-awslc-proof/_deps/awslc-build/ssl/libssl*
             build-awslc-proof/_deps/awslc-build/crypto/libcrypto*
           if-no-files-found: error

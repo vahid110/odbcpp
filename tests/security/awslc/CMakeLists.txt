@@ -144,6 +144,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
       -P "${ODBCPP_SOURCE}/cmake/InspectCryptoArtifact.cmake")
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  include("${CMAKE_CURRENT_SOURCE_DIR}/DriverProof.cmake")
+endif()
+
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/adapter-proof.json"
   "{\"sourceCommit\":\"574fbd729ca31aeebe80a98d35742c0402435790\","
   "\"sourceArchiveSha256\":\"c56d5a8517c0b9b5f79c7a850c0867dbfb3790dae17b447cd9174a0ebf2d037a\","
@@ -151,4 +155,4 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/adapter-proof.json"
   "\"requestedPostgresLiveTests\":\"${ODBCPP_AWSLC_LIVE_TESTS}\","
   "\"distributionPackagingRequested\":\"${ENABLE_DIST_PKG}\","
   "\"symbolVersioningRequested\":\"${ENABLE_SYMBOL_VERSIONING}\","
-  "\"scope\":\"adapter-and-postgres-session-tests\",\"qualificationClaimed\":false}\n")
+  "\"scope\":\"isolated-driver-and-session-tests\",\"qualificationClaimed\":false}\n")

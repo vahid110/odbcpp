@@ -389,3 +389,22 @@ is bounded executable-level evidence with the runner's OpenSSL 3 provider. It
 does not prove loading a finished ODBC shared driver, arbitrary provider versions,
 reverse load order, or relocatable packaging. Those driver-level gates and
 qualification remain open; the main AWS-LC profile is still disabled.
+
+## S2C isolated AWS-LC ODBC driver proof — 2026-09-30
+
+The Linux proof now builds a real PostgreSQL ODBC shared library from the same
+production source inventory and pinned logging dependency setup as the main
+build. The product option remains disabled: this target is an isolated
+qualification artifact. Both provider linkage variants require the canonical
+ODBC export surface and artifact-hash-bound linkage inspection of that DSO.
+
+The existing common live crypto-profile test loads this driver through unixODBC
+under system OpenSSL preload, verifies a TLS query, and rejects unrelated trust
+and hostname mismatch through the Driver Manager and direct driver entry points.
+Temporary registration selects only the built proof driver. Test diagnostics
+accept the equivalent OpenSSL and AWS-LC certificate-verification spellings.
+The DSO and linkage evidence are retained alongside the session proof artifacts.
+
+This supplies driver-level loading/ODBC evidence for the selected Linux setup.
+It is not a relocated package or public SDK artifact; loader-path hardening,
+package dependency/license inventory and final profile qualification remain open.

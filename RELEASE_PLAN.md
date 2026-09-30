@@ -687,3 +687,12 @@ behavior. Shared AWS-LC uses upstream suffixed names and ELF symbol versions;
 static archive symbols stay private. Evidence remains limited to probe
 executables and the selected system OpenSSL 3 build, with ODBC-driver loading,
 packaging and broader coexistence still unqualified. See CRYPTO_PROVIDER_PLAN.md.
+
+## S2C AWS-LC ODBC shared-driver gate — 2026-09-30
+
+The isolated Linux proof now builds the real PostgreSQL ODBC driver from the
+shared production source inventory. Both linkage variants require export and
+linkage inspection plus common unixODBC live TLS acceptance under OpenSSL preload,
+including certificate/hostname rejection. Main-build behavior remains protected;
+the AWS-LC product option stays disabled pending package/loader and final
+qualification evidence. See CRYPTO_PROVIDER_PLAN.md for scope.

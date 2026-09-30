@@ -237,7 +237,8 @@ TEST(CryptoProfileLiveTest, RejectsUntrustedCertificate) {
             SQL_ERROR);
   const auto records = direct_diagnostics(driver, direct_handles.connection());
   const auto normalized = lowercase(records);
-  EXPECT_NE(normalized.find("certificate verify failed"), std::string::npos)
+  EXPECT_TRUE(normalized.find("certificate verify failed") != std::string::npos ||
+              normalized.find("certificate_verify_failed") != std::string::npos)
       << records;
   EXPECT_TRUE(normalized.find("ssl_connect") != std::string::npos ||
               normalized.find("tls") != std::string::npos)
