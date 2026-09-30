@@ -288,3 +288,14 @@ available to internal tests.
 This closes driver-binary export isolation only. Bundled shared-provider symbol
 behavior, preloaded-provider coexistence, completed profile qualification and
 the bounded AWS-LC Linux proof remain open.
+
+### S2C Linux OpenSSL static artifact gate — 2026-09-30
+
+A dedicated Linux CI build now exercises the OpenSSL `BUNDLED_STATIC` candidate
+from an ephemeral controlled prefix. It runs the common TLS/authentication and
+architecture suite, verifies the final ELF dependency and export surfaces, and
+retains the source package identity and archive hashes alongside driver-bound
+archive hashes. The prefix rejects residual header symlinks.
+
+The row remains unqualified until provenance, live qualification and coexistence
+evidence are complete. AWS-LC and FIPS remain unclaimed.

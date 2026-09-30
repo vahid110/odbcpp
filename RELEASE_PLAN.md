@@ -587,3 +587,15 @@ unchanged.
 This is driver-binary symbol evidence, not provider-profile qualification.
 Bundled shared-library and preloaded-provider coexistence checks, AWS-LC and
 FIPS evidence remain open.
+
+## S2C Linux OpenSSL static artifact gate — 2026-09-30
+
+The release workflow now builds the Linux OpenSSL `BUNDLED_STATIC` candidate
+from a controlled ephemeral prefix, runs the shared TLS/authentication and
+architecture tests, verifies the final ELF has no dynamic OpenSSL dependency,
+and retains the source package version and archive hashes alongside hashes bound
+to the driver artifact. Copied headers are dereferenced and checked to remain
+inside the prefix.
+
+This is a candidate artifact gate. Static embedded-byte provenance, live
+profile qualification, provider coexistence, AWS-LC and FIPS remain open.

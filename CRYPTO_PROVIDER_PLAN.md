@@ -183,3 +183,18 @@ requirement that statically incorporated provider symbols stay out of the
 driver's dynamic export table. It does not prove bundled shared-library symbol
 coexistence or a process that preloaded a same-basename provider. Qualification,
 AWS-LC and FIPS claims remain open.
+
+## S2C Linux OpenSSL static artifact gate — 2026-09-30
+
+CI now creates an ephemeral controlled OpenSSL prefix containing the installed
+headers and static archives, configures the Linux `BUNDLED_STATIC` candidate,
+and runs the common unit, TLS, authentication, architecture and export-surface
+suite. The gate dereferences and bounds copied headers, selects both archives
+from the active multiarch `libssl-dev` package, and retains its package version,
+source paths and hashes. Artifact evidence binds copied archive hashes to the
+driver, verifies that the finished ELF artifact has no dynamic OpenSSL
+dependency, and keeps embedded-byte origin and qualification false.
+
+This establishes a repeatable artifact gate for the matrix candidate. It does
+not complete provenance, live TLS/ODBC qualification, coexistence or the AWS-LC
+proof, so the Linux OpenSSL static row remains unqualified.
