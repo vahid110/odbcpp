@@ -40,6 +40,9 @@ int main(int argc, char** argv) {
       if (expected == "hostname" &&
           step.message.find("hostname verification failed") == std::string::npos)
         throw std::runtime_error("wrong hostname rejection reason: " + step.message);
+      if (expected == "protocol" &&
+          step.message.find("TLSV1_ALERT_PROTOCOL_VERSION") == std::string::npos)
+        throw std::runtime_error("wrong protocol rejection reason: " + step.message);
       if (expected == "trust" && step.message.find("CERTIFICATE_VERIFY_FAILED") == std::string::npos)
         throw std::runtime_error("wrong trust rejection reason: " + step.message);
     } else {

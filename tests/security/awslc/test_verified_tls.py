@@ -48,7 +48,10 @@ def run_case(probe, context, ca, host, expected):
                     # after TLS negotiation and may close without close_notify.
                     if expected == "accept":
                         raise
-                    if error.reason not in ("TLSV1_ALERT_UNKNOWN_CA", "SSLV3_ALERT_BAD_CERTIFICATE",
+                    if expected == "protocol":
+                        if error.reason != "UNSUPPORTED_PROTOCOL":
+                            raise
+                    elif error.reason not in ("TLSV1_ALERT_UNKNOWN_CA", "SSLV3_ALERT_BAD_CERTIFICATE",
                                             "UNEXPECTED_EOF_WHILE_READING"):
                         raise
                 except (ConnectionResetError, BrokenPipeError):
@@ -60,11 +63,31 @@ def run_case(probe, context, ca, host, expected):
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             server = pool.submit(serve)
-            result = subprocess.run([probe, str(listener.getsockname()[1]), host,
-                                     str(ca), expected], capture_output=True, text=True, timeout=15)
+            if probe is None:
+                # A successful independent legacy client rules out a disabled
+                # server/cipher fixture masquerading as client-policy rejection.
+                control = ssl.create_default_context(cafile=str(ca))
+                control.minimum_version = control.maximum_version = ssl.TLSVersion.TLSv1_1
+                control.set_ciphers("DEFAULT:@SECLEVEL=0")
+                with socket.create_connection(listener.getsockname(), timeout=5) as raw:
+                    with control.wrap_socket(raw, server_hostname=host) as peer:
+                        if peer.version() != "TLSv1.1":
+                            raise AssertionError("legacy control negotiated another protocol")
+                        peer.sendall(b"p\x00\xffg")
+                        received = b""
+                        while len(received) < 4:
+                            part = peer.recv(4 - len(received))
+                            if not part:
+                                raise AssertionError("legacy control closed before echo")
+                            received += part
+                        if received != b"p\x00\xffg":
+                            raise AssertionError("legacy control payload mismatch")
+            else:
+                result = subprocess.run([probe, str(listener.getsockname()[1]), host,
+                                         str(ca), expected], capture_output=True, text=True, timeout=15)
+                if result.returncode != 0:
+                    raise AssertionError(result.stdout + result.stderr)
             server.result(timeout=10)
-            if result.returncode != 0:
-                raise AssertionError(result.stdout + result.stderr)
 
 
 def main():
@@ -79,6 +102,13 @@ def main():
         root = pathlib.Path(directory)
         cert, key = certificate(args.openssl, root, "trusted")
         other, _ = certificate(args.openssl, root, "unrelated")
+        legacy = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        legacy.minimum_version = legacy.maximum_version = ssl.TLSVersion.TLSv1_1
+        legacy.set_ciphers("DEFAULT:@SECLEVEL=0")
+        legacy.load_cert_chain(cert, key)
+        run_case(None, legacy, cert, "localhost", "accept")
+        run_case(args.probe, legacy, cert, "localhost", "protocol")
+        print("TLSv1_1: control accepted; production client rejected downgrade", flush=True)
         for version in (ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_3):
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             context.minimum_version = context.maximum_version = version

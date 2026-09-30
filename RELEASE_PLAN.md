@@ -713,3 +713,10 @@ live TLS acceptance after extraction, with the original staging tree removed.
 Negative fixture tests cover changed/missing/extra files, duplicate members and
 escaping archive paths/links. This strengthens package evidence without claiming
 archive authenticity, hostile-loader protection or AWS-LC profile qualification.
+
+## S2C AWS-LC protocol downgrade gate — 2026-10-01
+
+Both isolated linkage proofs require TLS 1.1 rejection, preceded by a successful
+independent TLS 1.1 control handshake and binary exchange. Existing TLS 1.2/1.3
+acceptance and invalid-certificate/hostname checks remain mandatory. No production
+TLS policy is weakened and AWS-LC profile qualification remains open.

@@ -444,3 +444,18 @@ This closes the archive-versus-staging evidence gap only. Inventory comparison
 is not package signing or an authenticity claim. Hostile loader substitution,
 final profile qualification and the disabled main-build AWS-LC option are
 unchanged.
+
+## S2C AWS-LC downgrade rejection gate — 2026-10-01
+
+The independent TLS peer fixture now requires a TLS 1.1 control connection to
+negotiate that exact protocol and complete a binary round trip. The production
+adapter must then reject the same peer with the protocol-version alert and
+retain no verified peer identity. This prevents a server with disabled legacy
+TLS from creating a false-positive client-policy test. TLS 1.2/1.3 acceptance
+and certificate/hostname rejection still run afterward in both linkage jobs.
+
+Only the independent control fixture permits legacy TLS and lowers its cipher
+security level. Production configuration is unchanged. A peer runtime unable to
+complete the control fails this mandatory proof rather than silently skipping.
+This supplies the below-minimum-version rejection evidence; it does not close
+loader-substitution or final profile qualification.
