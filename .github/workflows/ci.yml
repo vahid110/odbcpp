@@ -396,6 +396,115 @@ jobs:
           ctest --test-dir build-sanitize -L unit
           --timeout 60 --output-on-failure
 
+  linux-openssl-static:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install deps
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+            /etc/apt/sources.list.d/google-chrome.sources
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev
+
+      - name: Prepare controlled static OpenSSL prefix
+        run: |
+          root="$RUNNER_TEMP/openssl-static"
+          mkdir -p "$root/include" "$root/lib"
+          cp -aL /usr/include/openssl "$root/include/"
+          multiarch="$(gcc -print-multiarch)"
+          if [[ -d "/usr/include/$multiarch/openssl" ]]; then
+            cp -aL "/usr/include/$multiarch/openssl/." "$root/include/openssl/"
+          fi
+          ssl_archive="/usr/lib/$multiarch/libssl.a"
+          crypto_archive="/usr/lib/$multiarch/libcrypto.a"
+          test -f "$ssl_archive"
+          test -f "$crypto_archive"
+          test "$(dirname "$(realpath -e "$ssl_archive")")" = \
+            "$(dirname "$(realpath -e "$crypto_archive")")"
+          package_files="$RUNNER_TEMP/libssl-dev-files"
+          dpkg-query -L libssl-dev > "$package_files"
+          grep -Fx "$ssl_archive" "$package_files"
+          grep -Fx "$crypto_archive" "$package_files"
+          package_version="$(dpkg-query -W -f='${Version}' libssl-dev)"
+          cp -L "$ssl_archive" "$crypto_archive" "$root/lib/"
+          test -z "$(find "$root" -type l -print -quit)"
+          python3 - "$package_version" "$multiarch" \
+            "$ssl_archive" "$crypto_archive" <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import sys
+          package_version, multiarch, *archives = sys.argv[1:]
+          evidence = {
+              "package": "libssl-dev",
+              "packageVersion": package_version,
+              "multiarch": multiarch,
+              "sourceArchives": {
+                  Path(path).name: {
+                      "path": str(Path(path).resolve(strict=True)),
+                      "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+                  }
+                  for path in archives
+              },
+          }
+          Path("openssl-static-source-evidence.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+          echo "ODBCPP_STATIC_OPENSSL_ROOT=$root" >> "$GITHUB_ENV"
+
+      - name: Configure controlled static profile
+        run: >-
+          cmake -S . -B build-openssl-static
+          -DBUILD_EXAMPLES=OFF
+          -DBUILD_TESTING=ON
+          -DTARGET_DATABASE=POSTGRESQL
+          -DODBCPP_CRYPTO_PROVIDER=OPENSSL
+          -DODBCPP_CRYPTO_LINKAGE=BUNDLED_STATIC
+          -DODBCPP_CRYPTO_ROOT="$ODBCPP_STATIC_OPENSSL_ROOT"
+          -DODBC_DRIVER_MANAGER_FLAVOR=UNIXODBC
+          -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2
+          -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build and run common crypto tests
+        run: |
+          cmake --build build-openssl-static --parallel
+          ctest --test-dir build-openssl-static -L unit --timeout 60 --output-on-failure
+
+      - name: Verify bounded static evidence
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("build-openssl-static")
+          manifest = json.loads((root / "odbcpp-crypto-manifest.json").read_text())
+          evidence = json.loads((root / "odbcpp-crypto-artifact-evidence.json").read_text())
+          assert manifest["provider"] == "OPENSSL"
+          assert manifest["requestedLinkage"] == "BUNDLED_STATIC"
+          assert manifest["dependencyRoot"] == str(Path(__import__('os').environ["ODBCPP_STATIC_OPENSSL_ROOT"]))
+          assert evidence["observedDependencyForm"] == "static"
+          assert evidence["dependencyFormVerified"] is True
+          assert evidence["configuredLinkInputsVerified"] is True
+          assert evidence["dependencyOriginVerified"] is False
+          assert evidence["qualificationClaimed"] is False
+          assert evidence["runtimeDependencies"] == []
+          assert evidence["sslLinkInputSha256"] and evidence["cryptoLinkInputSha256"]
+          PY
+
+      - name: Preserve static-profile evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-openssl-static-evidence
+          path: |
+            build-openssl-static/odbcpp-crypto-manifest.json
+            build-openssl-static/odbcpp-crypto-artifact-evidence.json
+            openssl-static-source-evidence.json
+          if-no-files-found: error
+
   iodbc-unicode:
     runs-on: macos-latest
 
