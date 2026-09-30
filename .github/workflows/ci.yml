@@ -741,6 +741,12 @@ jobs:
           path: |
             build-awslc-proof/adapter-results.xml
             build-awslc-proof/adapter-proof.json
+            build-awslc-proof/linkage-manifest.json
+            build-awslc-proof/postgres-artifact-evidence.json
+            build-awslc-proof/postgres-link.map
+            build-awslc-proof/test_postgres_live
+            build-awslc-proof/_deps/awslc-build/ssl/libssl*
+            build-awslc-proof/_deps/awslc-build/crypto/libcrypto*
           if-no-files-found: error
 
   iodbc-unicode:

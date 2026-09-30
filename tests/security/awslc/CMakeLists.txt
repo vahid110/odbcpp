@@ -66,6 +66,36 @@ if(ODBCPP_AWSLC_LIVE_TESTS)
   set_tests_properties(postgres_tls_scram PROPERTIES TIMEOUT 90)
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_program(READELF_EXECUTABLE readelf REQUIRED)
+  find_program(LDD_EXECUTABLE ldd REQUIRED)
+  if(BUILD_SHARED_LIBS)
+    set(_proof_linkage BUNDLED_SHARED)
+  else()
+    set(_proof_linkage BUNDLED_STATIC)
+    execute_process(COMMAND "${CMAKE_LINKER}" --version
+      OUTPUT_VARIABLE _linker_version COMMAND_ERROR_IS_FATAL ANY)
+    string(REGEX MATCH "^[^\n]+" _linker_identity "${_linker_version}")
+    if(NOT _linker_identity MATCHES "^GNU ld ")
+      message(FATAL_ERROR "Static proof artifact evidence requires GNU ld")
+    endif()
+    target_link_options(test_postgres_live PRIVATE
+      "-Wl,-Map,${CMAKE_CURRENT_BINARY_DIR}/postgres-link.map")
+  endif()
+  file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/linkage-manifest.json" CONTENT
+    "{\"provider\":\"AWS_LC\",\"requestedLinkage\":\"${_proof_linkage}\",\"dependencyRoot\":\"${awslc_BINARY_DIR}\",\"sslLinkInput\":\"$<TARGET_FILE:ssl>\",\"cryptoLinkInput\":\"$<TARGET_FILE:crypto>\"}\n")
+  add_test(NAME postgres_artifact_linkage
+    COMMAND "${CMAKE_COMMAND}"
+      "-DARTIFACT=$<TARGET_FILE:test_postgres_live>"
+      -DEXPECTED_PROVIDER=AWS_LC "-DEXPECTED_LINKAGE=${_proof_linkage}"
+      -DPLATFORM=Linux "-DINSPECTOR=${READELF_EXECUTABLE}" "-DRESOLVER=${LDD_EXECUTABLE}"
+      "-DCONFIG_MANIFEST=${CMAKE_CURRENT_BINARY_DIR}/linkage-manifest.json"
+      "-DSTATIC_LINK_MAP=${CMAKE_CURRENT_BINARY_DIR}/postgres-link.map"
+      "-DSTATIC_LINKER_IDENTITY=${_linker_identity}"
+      "-DEVIDENCE=${CMAKE_CURRENT_BINARY_DIR}/postgres-artifact-evidence.json"
+      -P "${ODBCPP_SOURCE}/cmake/InspectCryptoArtifact.cmake")
+endif()
+
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/adapter-proof.json"
   "{\"sourceCommit\":\"574fbd729ca31aeebe80a98d35742c0402435790\","
   "\"sourceArchiveSha256\":\"c56d5a8517c0b9b5f79c7a850c0867dbfb3790dae17b447cd9174a0ebf2d037a\","

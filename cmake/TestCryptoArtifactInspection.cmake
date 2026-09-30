@@ -7,6 +7,10 @@ file(WRITE "${_artifact}" "fixture")
 set(_script "${SOURCE_DIR}/cmake/InspectCryptoArtifact.cmake")
 
 function(run_fixture name linkage output resolution expect_success static_map_mode)
+  set(_provider OPENSSL)
+  if(ARGC GREATER 6)
+    set(_provider "${ARGV6}")
+  endif()
   set(_fixture_dir "${BINARY_DIR}/crypto-origin-${name}")
   file(MAKE_DIRECTORY "${_fixture_dir}")
   set(_ssl "${_fixture_dir}/libssl.so.3")
@@ -17,16 +21,26 @@ function(run_fixture name linkage output resolution expect_success static_map_mo
   string(REPLACE "@CRYPTO@" "${_crypto}" resolution "${resolution}")
   set(_manifest "${_fixture_dir}/manifest.json")
   file(WRITE "${_manifest}"
-    "{\"provider\":\"OPENSSL\",\"requestedLinkage\":\"${linkage}\","
+    "{\"provider\":\"${_provider}\",\"requestedLinkage\":\"${linkage}\","
     "\"dependencyRoot\":\"${_fixture_dir}\","
     "\"sslLinkInput\":\"${_ssl}\",\"cryptoLinkInput\":\"${_crypto}\"}\n")
   set(_static_map_argument "")
-  if(static_map_mode STREQUAL "GOOD")
+  if(static_map_mode MATCHES "^(GOOD|RELATIVE|PREFIX_ONLY)$")
     set(_static_map "${_fixture_dir}/static-link.map")
     file(WRITE "${_static_map}"
       "OUTPUT(${_artifact} elf64-x86-64)\n"
       "${_ssl}(ssl_member.o)\n${_crypto}(crypto_member.o)\n"
       "LOAD ${_ssl}\nLOAD ${_crypto}\n")
+    if(static_map_mode STREQUAL "RELATIVE")
+      file(RELATIVE_PATH _relative_root "${BINARY_DIR}" "${_fixture_dir}")
+      file(READ "${_static_map}" _map_text)
+      string(REPLACE "${_fixture_dir}/" "${_relative_root}/" _map_text "${_map_text}")
+      file(WRITE "${_static_map}" "${_map_text}")
+    elseif(static_map_mode STREQUAL "PREFIX_ONLY")
+      file(READ "${_static_map}" _map_text)
+      string(REPLACE "LOAD ${_ssl}\n" "LOAD ${_ssl}-different\n" _map_text "${_map_text}")
+      file(WRITE "${_static_map}" "${_map_text}")
+    endif()
     set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
   elseif(static_map_mode STREQUAL "SSL_ONLY")
     set(_static_map "${_fixture_dir}/static-link.map")
@@ -42,10 +56,17 @@ function(run_fixture name linkage output resolution expect_success static_map_mo
       "LOAD ${_ssl}\nLOAD ${_crypto}\n")
     set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
   endif()
+  if(static_map_mode STREQUAL "WRONG_TARGET")
+    file(WRITE "${_fixture_dir}/other-ssl.so" "different ssl")
+    file(READ "${_manifest}" _manifest_text)
+    string(JSON _manifest_text SET "${_manifest_text}" sslLinkInput
+      "\"${_fixture_dir}/other-ssl.so\"")
+    file(WRITE "${_manifest}" "${_manifest_text}")
+  endif()
   execute_process(
     COMMAND "${CMAKE_COMMAND}"
             -DARTIFACT=${_artifact}
-            -DEXPECTED_PROVIDER=OPENSSL
+            -DEXPECTED_PROVIDER=${_provider}
             -DEXPECTED_LINKAGE=${linkage}
             -DPLATFORM=Linux
             "-DINSPECTION_OUTPUT=${output}"
@@ -66,6 +87,7 @@ function(run_fixture name linkage output resolution expect_success static_map_mo
   if(expect_success)
     file(READ "${_fixture_dir}/evidence.json" _evidence)
     string(JSON _schema GET "${_evidence}" schemaVersion)
+    string(JSON _reported_provider GET "${_evidence}" provider)
     string(JSON _origin GET "${_evidence}" dependencyOriginVerified)
     string(JSON _inputs GET "${_evidence}" configuredLinkInputsVerified)
     string(JSON _map GET "${_evidence}" staticLinkMapVerified)
@@ -79,7 +101,8 @@ function(run_fixture name linkage output resolution expect_success static_map_mo
     elseif(NOT _origin OR _inputs OR _map OR _members)
       set(_claims_wrong true)
     endif()
-    if(NOT _schema EQUAL 2 OR _claims_wrong OR _qualified)
+    if(NOT _schema EQUAL 2 OR _claims_wrong OR _qualified OR
+       NOT _reported_provider STREQUAL _provider)
       message(FATAL_ERROR "${name} emitted incorrect origin evidence")
     endif()
   endif()
@@ -92,6 +115,26 @@ run_fixture(static_ok BUNDLED_STATIC "NEEDED libc.so.6" "" true GOOD)
 run_fixture(static_missing_map BUNDLED_STATIC "NEEDED libc.so.6" "" false NONE)
 run_fixture(static_incomplete_map BUNDLED_STATIC "NEEDED libc.so.6" "" false SSL_ONLY)
 run_fixture(static_wrong_output BUNDLED_STATIC "NEEDED libc.so.6" "" false WRONG_OUTPUT)
+run_fixture(static_relative BUNDLED_STATIC "NEEDED libc.so.6" "" true RELATIVE)
+run_fixture(static_prefix_only BUNDLED_STATIC "NEEDED libc.so.6" "" false PREFIX_ONLY)
+run_fixture(awslc_shared BUNDLED_SHARED
+  "NEEDED libssl.so\nNEEDED libcrypto.so"
+  "libssl.so => @SSL@\nlibcrypto.so => @CRYPTO@" true NONE AWS_LC)
+run_fixture(awslc_static BUNDLED_STATIC "NEEDED libc.so.6" "" true RELATIVE AWS_LC)
+run_fixture(awslc_wrong_target BUNDLED_SHARED
+  "NEEDED libssl.so\nNEEDED libcrypto.so"
+  "libssl.so => @SSL@\nlibcrypto.so => @CRYPTO@" false WRONG_TARGET AWS_LC)
+run_fixture(awslc_missing_crypto BUNDLED_SHARED "NEEDED libssl.so" "" false NONE AWS_LC)
+run_fixture(awslc_static_dynamic BUNDLED_STATIC "NEEDED libcrypto.so" "" false GOOD AWS_LC)
+run_fixture(awslc_incomplete_map BUNDLED_STATIC "NEEDED libc.so.6" "" false SSL_ONLY AWS_LC)
+run_fixture(awslc_wrong_output BUNDLED_STATIC "NEEDED libc.so.6" "" false WRONG_OUTPUT AWS_LC)
+run_fixture(awslc_system_disallowed SYSTEM_SHARED
+  "NEEDED libssl.so\nNEEDED libcrypto.so"
+  "libssl.so => @SSL@\nlibcrypto.so => @CRYPTO@" false NONE AWS_LC)
+run_fixture(awslc_foreign_shared BUNDLED_SHARED
+  "NEEDED libssl.so\nNEEDED libcrypto.so"
+  "libssl.so => ${BINARY_DIR}/crypto-origin-awslc_shared/libssl.so.3\nlibcrypto.so => @CRYPTO@"
+  false NONE AWS_LC)
 run_fixture(shared_missing_crypto SYSTEM_SHARED "NEEDED libssl.so.3" "" false NONE)
 run_fixture(static_has_crypto BUNDLED_STATIC
   "NEEDED libssl.so.3\nNEEDED libcrypto.so.3" "" false GOOD)

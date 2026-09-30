@@ -335,3 +335,22 @@ the OpenSSL static gate through `tools/ci/prepare-postgres-tls.sh`.
 This closes the isolated synchronous PostgreSQL TLS/SCRAM proof gap. It does not
 qualify an ODBC AWS-LC driver, asynchronous transport, artifact linkage,
 packaging or provider coexistence. Main-build AWS-LC selection remains disabled.
+
+## S2C AWS-LC probe linkage evidence — 2026-09-30
+
+Linux CI now inspects the exact executable used by the isolated live PostgreSQL
+proof. Shared builds require SSL and crypto dynamic dependencies resolved to
+the exact selected targets inside the controlled AWS-LC build root; static builds
+require no dynamic crypto reference and a GNU ld map binding both archives and extracted members to that
+executable. The inspector accepts exact absolute or build-relative archive
+records and rejects filename-prefix lookalikes. Fixtures cover missing libraries,
+foreign shared origins, incomplete/wrong-output maps and unsupported system
+linkage. AWS-LC inspection is limited to Linux bundled profiles with a manifest.
+
+The retained executable, provider libraries/archives, manifest and static map
+are accompanied by artifact/input/resolved-file hashes. These are linkage and
+link-input evidence for the session probe, not byte-level static provenance,
+actual-runtime symbol binding, ODBC export isolation, relocatable packaging or
+cross-provider coexistence. Provider identity still requires the companion
+runtime adapter tests. Qualification remains false and main-build AWS-LC
+selection remains disabled.

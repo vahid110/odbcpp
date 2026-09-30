@@ -660,3 +660,12 @@ reconnection. Both CI variants require the live fixture and retain CTest evidenc
 The OpenSSL static gate and AWS-LC jobs share disposable TLS fixture setup.
 AWS-LC driver linkage, packaging and coexistence remain unqualified; the main
 AWS-LC profile is still disabled. See CRYPTO_PROVIDER_PLAN.md for exact scope.
+
+## S2C AWS-LC probe artifact gate — 2026-09-30
+
+The Linux static/shared AWS-LC jobs now retain artifact-hash-bound linkage
+evidence for their live PostgreSQL executable. Shared dependencies must resolve
+within the controlled build root; static archives require complete GNU ld input
+and member records. The inspector's fixtures reject foreign/missing dependencies
+and incomplete or misleading maps. This qualifies neither the ODBC driver nor
+packaging/coexistence; see CRYPTO_PROVIDER_PLAN.md for remaining boundaries.
