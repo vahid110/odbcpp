@@ -2552,6 +2552,20 @@ PostgreSQL or Redshift gate, add a MySQL support claim, or replace the existing
 test policy. MySQL behavior must obtain its own live, failure, Driver Manager and
 sanitizer evidence as applicable; PostgreSQL evidence cannot satisfy it.
 
+Four read-only S1 audits subsequently accepted SDK_ARCHITECTURE.md and
+SECURITY_MODEL.md. They found that `GenericDatabaseConnection` and
+`IProtocolParser` are PostgreSQL-family session machinery, the result/error
+boundary remains native-shaped, backend registration is scattered, and the
+prototype pool lacks exclusive leases/reset/isolation. MySQL therefore requires
+an independent session behind smaller provider/session/facet contracts.
+
+The security review found a concrete plaintext credential path when omitted or
+disabled TLS meets PostgreSQL cleartext-password authentication, implicit
+working-directory configuration in production, missing aggregate result budgets
+and unsafe prototype-pool ownership. These are S2 blockers and do not alter the
+operation classifications below. No conformance or security claim closes through
+the documentation review alone.
+
 ## Priority findings
 
 ### P0 — correctness and safety

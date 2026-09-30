@@ -101,10 +101,10 @@ required. No extra application scope is charged to contingency.
 
 ## Next implementation sequence
 
-1. **S1 contract freeze:** inventory dependency direction and publish the SDK
-   ownership, lifecycle, pooling/reuse, cache, result and extension contracts
-   without behavior changes.
-2. **S2 shared proof harness:** make only the extractions required by the audit;
+1. **S1 contract freeze — complete:** four read-only audits produced
+   `SDK_ARCHITECTURE.md` and `SECURITY_MODEL.md`; no behavior changed.
+2. **S2 contract implementation and shared proof harness:** begin with the
+   security prerequisites, then make only the accepted extractions;
    keep PostgreSQL, iODBC, Windows and sanitizer gates green.
 3. **S3 MySQL vertical slice:** implement and live-test the bounded MySQL 8
    workflow through shared ODBC orchestration.
@@ -155,3 +155,18 @@ applications. The application-host reminder is not due while Windows delivery
 work is still next. That work is now complete; G8 remains open and host-dependent.
 The 2026-09-30 reprioritization permits bounded MS1 work during the Redshift
 access wait. Public SDK packaging remains G13.
+
+### S1 architecture/security checkpoint — 2026-09-30
+
+S1 accepts the provider/session/facet architecture, independent PostgreSQL and
+MySQL session engines, normalized result/error boundary, product-composition
+registration point, replacement pool lease model, cache lifecycle and future
+ADBC batch seam. `GenericDatabaseConnection` and `IProtocolParser` are recognized
+as PostgreSQL-family internals rather than a universal parser architecture.
+
+The security model makes verified transport the credential-authentication
+default, rejects cleartext-password authentication without verified encryption,
+removes implicit production working-directory configuration, bounds hostile
+server input and requires secret-safe diagnostics, session isolation, fuzzing,
+supply-chain checks and release hardening. S2 implementation is next. S1 closes
+planning only; it does not close G12 or change a current support claim.

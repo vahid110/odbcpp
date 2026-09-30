@@ -1,8 +1,9 @@
 # Shared ODBC and database backend boundary
 
 Planning baseline: 2026-09-23, implementation inspected at `4f6de2a`.
-Status: A1–A4 and G9a are complete. The 2026-09-30 plan adds a bounded MySQL 8
-reference slice to prove the SDK boundary across an unrelated protocol.
+Status: A1–A4 and G9a are complete. The 2026-09-30 S1 review accepts the
+[SDK architecture](SDK_ARCHITECTURE.md) and [security model](SECURITY_MODEL.md)
+for a bounded MySQL 8 proof across an unrelated protocol.
 Scope: PostgreSQL production reference, MySQL SDK proof, Redshift family
 specialization. See [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md).
 
@@ -98,6 +99,12 @@ not required to implement and verify the PostgreSQL boundary.
 - Automated forbidden-dependency checks reject backend-to-ODBC dependencies,
   protocol/native-type leakage into shared orchestration and dependency cycles.
   Functional tests cannot waive these architecture failures.
+- The current generic connection/parser is kept private to the PostgreSQL
+  family during migration. MySQL owns an independent session and protocol state
+  machine; no universal parser or protocol conditionals are accepted.
+- Verified channel/authentication, configuration provenance, secret lifecycle,
+  resource budgets, logging classification and extension trust satisfy
+  [SECURITY_MODEL.md](SECURITY_MODEL.md).
 - Driver Manager reuse and any internal SDK pool use the same documented health,
   reset and retirement contract. PostgreSQL/MySQL tests cover transaction/session
   cleanup, failure and credential-expiry paths; backends do not own pool policy.

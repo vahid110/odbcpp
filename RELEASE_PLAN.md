@@ -49,6 +49,7 @@ Sources: [database differences](https://docs.aws.amazon.com/redshift/latest/dg/c
 | D5: workload | Forward-only, one row/parameter set at a time; declared scalar types and bounded result sizes | Arrays, streaming, cancellation, or larger workloads required by D1 must be promoted explicitly before freezing scope |
 | D6: SDK product | ODBC is the first mature client adapter; PostgreSQL and MySQL are sibling reference backends; Redshift is a PostgreSQL-family specialization. ADBC is a future adapter whose columnar needs constrain the boundary now | G12 must prove an unrelated protocol without implementing ADBC or promising a stable public ABI; G13 owns public SDK productization |
 | D7: pooling/cache policy | Driver Manager pooling compatibility and safe physical-session reuse are correctness requirements. An SDK-managed pool is optional/internal. Metadata/type and prepared caches require explicit scope/invalidation; general result caching is excluded | S1 freezes lifecycle contracts; G12 proves correctness for PostgreSQL/MySQL; G10 measurements gate new caching, sizing and performance tuning |
+| D8: security architecture | Verified transport is the default for credential authentication; backend sessions enforce method/channel policy, resource budgets, secret lifecycles, borrower isolation and typed logging. Native extensions are trusted in-process code | S2 begins with the blockers in [SECURITY_MODEL.md](SECURITY_MODEL.md); G12 requires hostile-input, fuzz, isolation, supply-chain and hardening evidence; G13 adds independent review, signing and response policy |
 
 These assumptions allow planning, not a silent product decision. G0 is closed separately for each backend; PostgreSQL decisions are required
 first. Redshift endpoint/authentication decisions do not block the PostgreSQL
@@ -212,7 +213,7 @@ are committed.
 | G9b | Reuse gate / M3 | Redshift implements and refines the G9a contract with observed differences; no duplicate shared ODBC wrappers. Common contract tests and live acceptance pass for both backends. Evidence and limitations are recorded under [G9b acceptance](BACKEND_BOUNDARY.md#g9b--redshift-reuse-acceptance-required-before-redshift-beta) |
 | G10 | Reliability/performance gate / M4 | Execute the frozen workload below; establish time/memory/throughput baselines and timeout behavior. No observed leak trend, corruption, crash, deadlock, or silently wrong result. Compare like-for-like against a pinned vendor-driver baseline for triage, not a promised speedup |
 | G11 | Basic beta delivery M1; full delivery M4 | Clean install/configure/uninstall on each claimed OS; exact dependency versions and license inventory, TLS/auth and limitations guide, diagnostics troubleshooting, versioned artifacts/checksums, rollback instructions. Re-run application acceptance on packaged artifacts; all applicable G0–G10 remain green |
-| G12 | SDK/MySQL proof gate / MS1 | Complete S1–S4 and the engineering quality bar in [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md): pass the S1 architecture review including pool/reuse/cache lifecycles, preserve PostgreSQL behavior, prove safe reset/reuse/retirement and cache invalidation for PostgreSQL/MySQL, pass reusable contract and forbidden-dependency checks, run the real MySQL 8 slice through shared ODBC orchestration, and pass the S4 clean-room backend-author exercise with zero shared ODBC workflow edits. Publish the test kit, extension guide and evidence. Undocumented internal knowledge blocks closure. Mark interfaces unstable; this is not a MySQL beta |
+| G12 | SDK/MySQL proof gate / MS1 | Complete S1–S4 and the engineering quality bar in [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md): implement [SDK_ARCHITECTURE.md](SDK_ARCHITECTURE.md), pass [SECURITY_MODEL.md](SECURITY_MODEL.md), preserve PostgreSQL behavior, prove safe reset/reuse/retirement and cache invalidation for PostgreSQL/MySQL, pass reusable contract and forbidden-dependency checks, run the real MySQL 8 slice, and pass the S4 clean-room exercise with zero shared ODBC workflow edits. Publish the test kit, extension guide and evidence. Undocumented internal knowledge blocks closure. Mark interfaces unstable; this is not a MySQL beta |
 | G13 | Deferred public SDK preview gate | Build/install a versioned SDK for external consumers; define API/ABI compatibility and support lifecycle; complete licensing, reference documentation and compatibility testing. ADBC implementation, Arrow integration and commercial availability require separately approved scope |
 
 ### Bounded workload for G10 (proposal to freeze in G0)
@@ -420,3 +421,25 @@ ABI and ADBC packaging remain outside scope. Exact work packages, 20–32 base
 engineering-day estimate, 30% contingency, tests, non-goals and stop rules are
 in [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md). No release or conformance status
 changed through this planning-only checkpoint.
+
+## S1 architecture and security review — 2026-09-30
+
+Four read-only audits examined dependency direction, MySQL/external-author
+usability, pooling/cache lifecycles and security at baseline `089e085`. The
+accepted contract is [SDK_ARCHITECTURE.md](SDK_ARCHITECTURE.md); the threat model
+and required controls are [SECURITY_MODEL.md](SECURITY_MODEL.md).
+
+The current `GenericDatabaseConnection`/`IProtocolParser` pair is PostgreSQL-
+family machinery and will not be extended with MySQL branches. S2 introduces a
+provider/live-session split, normalized result and structured error boundaries,
+one composition registration point, internal target boundaries and explicit
+reuse/cache contracts. The existing pool remains unadvertised prototype code
+and its copyable/manual-release model will be replaced before any reuse claim.
+
+The review also found supported-path security blockers: omitted TLS currently
+disables encryption while PostgreSQL cleartext-password authentication is
+accepted; production configuration searches working-directory files; aggregate
+server results lack a resource budget; and the prototype pool cannot isolate
+borrowers. S2 starts with the transport/authentication and configuration fixes,
+then migrates the contracts in reviewable batches. No current binary or support
+claim changed through the documentation-only S1 review.

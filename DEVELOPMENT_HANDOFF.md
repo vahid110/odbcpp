@@ -27,7 +27,8 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
 - The user reported AWS/Redshift account access unavailable on 2026-09-30.
   Live M2 waits for restored access; never substitute PostgreSQL evidence.
 - **Active planned engineering milestone: MS1 SDK foundation and bounded MySQL
-  proof.** Start with S1 in SDK_PRODUCT_PLAN.md. PostgreSQL and MySQL are sibling
+  proof.** S1 is complete; start with the S2 migration order in
+  SDK_ARCHITECTURE.md. PostgreSQL and MySQL are sibling
   backends; Redshift is a PostgreSQL-family specialization. ODBC remains the
   implemented client API. ADBC constrains the boundary but is not implemented.
 - G12 is the internal SDK/MySQL proof. G13 owns later public SDK packaging,
@@ -41,12 +42,19 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
   correctness is required; an SDK pool remains optional/internal. Existing
   metadata caches need invalidation evidence. New prepared caching and tuning
   wait for G10 measurements; query-result caching is out of scope.
+- S1's four read-only audits are consolidated in SDK_ARCHITECTURE.md and
+  SECURITY_MODEL.md. First S2 batch: secure transport/authentication and trusted
+  configuration prerequisites. Omitted TLS currently disables encryption while
+  PostgreSQL cleartext-password auth is accepted; do not bury that fix in a
+  mechanical refactor.
 - Graphify was evaluated and declined. Use narrow `rg` searches and source reads.
 
 ## Navigation
 
 - Active SDK scope, estimates and stops: `SDK_PRODUCT_PLAN.md`; milestone order:
   `ROADMAP.md`; gates and deferrals: `RELEASE_PLAN.md`.
+- Accepted S1 contracts: `SDK_ARCHITECTURE.md`; threat model and security gates:
+  `SECURITY_MODEL.md`.
 - Contracts: `core/database/i_database_connection.h`, `query_result.h`,
   `native_type_info.h`, `type_definition.h`, `catalog_request.h`,
   `backend_capabilities.h` and `transaction.h`.

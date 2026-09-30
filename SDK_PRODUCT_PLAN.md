@@ -1,7 +1,8 @@
 # Connectivity SDK product plan
 
 Decision date: 2026-09-30.
-Status: approved planning direction; implementation has not started.
+Status: S1 architecture and security contracts accepted; S2 implementation has
+not started.
 
 ## Product intent
 
@@ -41,7 +42,7 @@ access returns; MS1 does not silently replace or waive Redshift acceptance.
 
 | Package | Scope | Base estimate | Exit evidence |
 |---|---|---:|---|
-| S1 | Freeze SDK boundary, dependency direction, ownership/error/deadline rules, pooling/reuse and cache lifecycle contracts, internal versioning policy and extension lifecycle; inventory current PostgreSQL dependencies; pin the MySQL 8 test version and initial `caching_sha2_password`-over-TLS profile | 2–4 days | Contract document and dependency audit pass the architecture-quality review below; no behavior change |
+| S1 | Freeze SDK boundary, dependency direction, ownership/error/deadline rules, pooling/reuse, cache and security lifecycle contracts; inventory current PostgreSQL dependencies; pin the MySQL 8 test version and initial `caching_sha2_password`-over-TLS profile | 2–4 days | [Architecture](SDK_ARCHITECTURE.md) and [security](SECURITY_MODEL.md) baselines accepted after four read-only audits; no runtime behavior change |
 | S2 | Evolve the smallest necessary interfaces and reusable conformance harness; keep PostgreSQL behavior and ABI-facing ODBC paths green | 4–6 days | PostgreSQL plus synthetic-backend contract tests pass; no PostgreSQL/native ODBC concepts cross the documented boundary |
 | S3 | MySQL 8 protocol vertical slice: verified TLS, one password method appropriate to the test server, connect/disconnect, direct and prepared execution, scalar/NULL fetch, parameters, transactions, essential table/column metadata, server errors and recovery | 10–16 days | Unit edge cases and live container tests pass through the same shared ODBC orchestration used by PostgreSQL |
 | S4 | Backend author test kit, MySQL/PostgreSQL comparison review, extension guide and one minimal out-of-tree sample backend | 4–6 days | The clean-room backend-author exercise below passes; limitations and unstable interfaces are explicit |
@@ -77,6 +78,10 @@ features.
 - Existing metadata caches preserve correctness across reconnect, reprepare and
   server-identity changes. Caching must never change diagnostics, transaction
   visibility or advertised capabilities.
+- The security invariants and G12 evidence in
+  [SECURITY_MODEL.md](SECURITY_MODEL.md) pass. In particular, credential
+  authentication cannot disclose a password over an unverified channel, server
+  input is resource-bounded and logical borrowers are isolated.
 
 ## Pooling and caching boundary
 
@@ -171,6 +176,13 @@ only for hypothetical future use. Record the accepted design in a concise SDK
 architecture document and architecture decision records where a tradeoff is not
 obvious.
 
+The 2026-09-30 review is recorded in
+[SDK_ARCHITECTURE.md](SDK_ARCHITECTURE.md). Independent read-only audits covered
+dependency direction, MySQL/external-author usability, pooling/cache lifecycle
+and security. The accepted design reclassifies the current generic session as
+PostgreSQL-family internals, defines an independent MySQL session, replaces the
+prototype pool contract and makes security/resource limits part of the SDK.
+
 ### S4 clean-room backend-author exercise
 
 Use a fresh external build directory and only the installed or staged SDK
@@ -233,7 +245,8 @@ review before considering any MySQL beta plan.
   the user has deferred those host-dependent runs while other work proceeds.
 - The Redshift pilot implementation and non-live CI gate are ready. Live M2 is
   waiting on restored AWS/Redshift access and cannot be simulated by PostgreSQL.
-- MS1 is the active bounded engineering milestone during that wait.
+- MS1 is the active bounded engineering milestone during that wait. S1 is
+  complete; S2 contract implementation is next.
 - When Redshift access returns, finish the current coherent MS1 batch, preserve
   its evidence, and run M2 before expanding MySQL scope. Re-estimate whether to
   finish the remaining MS1 packages or proceed directly to Redshift M3 based on
