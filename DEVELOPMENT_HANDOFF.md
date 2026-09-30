@@ -5,15 +5,6 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
 
 ## Current scope
 
-- Hosted Windows live gate added after batch 8: preinstalled PostgreSQL, native
-  odbc32 Driver Manager and zero-skip integration enforcement. CI 36555245322
-  passed at b5f9d0b: 365 live cases, zero skips plus standalone DM.
-  W1 is closed in batch 13; W2–W4 configuration/delivery precede final
-  G8 acceptance. See RELEASE_PLAN.md for scope, estimates and dependencies.
-
-- **Batch 13 implements W1:** native Windows registry User/System DSNs and driver
-  defaults; explicit alias/attribute precedence; registry-only and LocalSystem CI
-  acceptance. See WINDOWS_DSN.md for resolution and failure behavior.
 - A4/G9a is closed: batch 12 CI 36565977327 passed all five jobs at 160cb23.
 - Branch: `codex/transport-foundation`. Implementation scheduler stays paused.
 - W1 closed at d1e8d0b: CI 36570790247 passed all five jobs, including registry-only
@@ -33,10 +24,21 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
   The Redshift target's 28 unit executables run in CI, followed by a check that
   the live pilot fails when no endpoint is supplied. A real endpoint plus
   schema/table fixture is still required to close G1.
+- The user reported AWS/Redshift account access unavailable on 2026-09-30.
+  Live M2 waits for restored access; never substitute PostgreSQL evidence.
+- **Active planned engineering milestone: MS1 SDK foundation and bounded MySQL
+  proof.** Start with S1 in SDK_PRODUCT_PLAN.md. PostgreSQL and MySQL are sibling
+  backends; Redshift is a PostgreSQL-family specialization. ODBC remains the
+  implemented client API. ADBC constrains the boundary but is not implemented.
+- G12 is the internal SDK/MySQL proof. G13 owns later public SDK packaging,
+  stability, licensing and ADBC product decisions. Do not expand MS1 into a
+  MySQL beta.
 - Graphify was evaluated and declined. Use narrow `rg` searches and source reads.
 
 ## Navigation
 
+- Active SDK scope, estimates and stops: `SDK_PRODUCT_PLAN.md`; milestone order:
+  `ROADMAP.md`; gates and deferrals: `RELEASE_PLAN.md`.
 - Contracts: `core/database/i_database_connection.h`, `query_result.h`,
   `native_type_info.h`, `type_definition.h`, `catalog_request.h`,
   `backend_capabilities.h` and `transaction.h`.

@@ -2538,6 +2538,20 @@ success tracing, and disabled-logging overhead benchmarks remain; logging is
   Compiler warnings, sanitizers, focused source inspection, and behavioral
   tests were used instead; CI should add a pinned static-analysis tool later.
 
+## SDK planning checkpoint — 2026-09-30
+
+The product plan now includes a bounded MySQL 8 reference slice to validate the
+shared connectivity SDK against an unrelated protocol while live Redshift access
+is unavailable. PostgreSQL and MySQL are sibling backends; Redshift remains a
+PostgreSQL-family specialization. ODBC is the first client adapter, and future
+ADBC/Arrow support constrains the boundary without entering current implementation
+scope. See SDK_PRODUCT_PLAN.md and G12/G13 in RELEASE_PLAN.md.
+
+This planning change does not alter any operation classification, close any
+PostgreSQL or Redshift gate, add a MySQL support claim, or replace the existing
+test policy. MySQL behavior must obtain its own live, failure, Driver Manager and
+sanitizer evidence as applicable; PostgreSQL evidence cannot satisfy it.
+
 ## Priority findings
 
 ### P0 — correctness and safety

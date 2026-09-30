@@ -1,15 +1,17 @@
 # Shared ODBC and database backend boundary
 
 Planning baseline: 2026-09-23, implementation inspected at `4f6de2a`.
-Status: A1–A4 implementation and acceptance cases complete in batch 12;
-G9a closure requires that batch's full gates and exact-revision CI confirmation.
-Scope: PostgreSQL first, Redshift second. No other backend is added here.
+Status: A1–A4 and G9a are complete. The 2026-09-30 plan adds a bounded MySQL 8
+reference slice to prove the SDK boundary across an unrelated protocol.
+Scope: PostgreSQL production reference, MySQL SDK proof, Redshift family
+specialization. See [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md).
 
 ## Requirement and ownership
 
 The shared framework must become reusable during PostgreSQL consolidation.
-Redshift must exercise that boundary, not trigger a wholesale extraction after
-both drivers are finished. Public SDK packaging and stability guarantees come later.
+MySQL must now prove that boundary against an unrelated protocol. Redshift must
+exercise PostgreSQL-family specialization rather than trigger a wholesale
+extraction later. Public SDK packaging and stability guarantees remain G13.
 
 | Shared framework owns | Database backend owns |
 |---|---|
@@ -70,14 +72,31 @@ not required to implement and verify the PostgreSQL boundary.
 - Record which components are shared and which differ. This proves reuse within
   the PostgreSQL family, not arbitrary-protocol portability.
 
+## G12 — unrelated-protocol SDK proof
+
+- PostgreSQL and MySQL are sibling implementations selected through the same
+  backend contract; neither backend wraps or depends on the other.
+- Shared client orchestration contains no PostgreSQL or MySQL packet formats,
+  native type identifiers, authentication messages or catalog SQL.
+- MySQL passes the bounded live and failure workflow in
+  [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md), while all PostgreSQL regression,
+  Driver Manager width, Windows and sanitizer gates remain green.
+- Backend author contract tests and an out-of-tree sample prove extension
+  mechanics without editing shared ODBC wrappers.
+- The result contract supports the current row-oriented ODBC path without
+  preventing a later Arrow columnar path. No Arrow or ADBC implementation is
+  required for G12.
+- Interfaces remain explicitly unstable. Public versioning, compatibility and
+  distribution are G13.
+
 ## What remains later
 
-G12 covers independent SDK consumption, out-of-tree examples, extension tutorials,
-package/version compatibility, and an explicit API stability policy. It does not
-own A1–A4: those cannot be postponed under a label such as “SDK work.”
+G13 covers public SDK packaging, external compatibility, complete reference
+documentation, licensing/support lifecycle and an explicit API stability policy.
+It does not own A1–A4 or the G12 unrelated-protocol proof.
 
-No generic plugin registry, ABI guarantee, additional protocol implementation,
-or universal authentication framework is required for G9a. Apply the investigation
+No generic plugin registry, ABI guarantee or universal authentication framework
+is required for G9a or G12. Apply the investigation
 limits in [RELEASE_PLAN.md](RELEASE_PLAN.md). If a necessary extraction exceeds
 its budget, report the impact and re-estimate the milestone; do not silently
 waive architecture acceptance or hide the extra work in contingency.
@@ -409,9 +428,11 @@ architecture gate, not full ODBC conformance certification.
 | Result/parameter encodings and completions (A4) | Native cell decoding, binary Bind encoding and command-tag interpretation are backend-owned. Shared byte/bit conversions and normalized StatementKind mapping are database-independent. |
 | Lifetimes, deadlines, reuse (A4) | Owning QueryResult/QueryParameter and documented borrowed views; caller deadline propagation, backend liveness and timeout retirement are covered by existing and fake tests. |
 | Protocol internals | GenericDatabaseConnection/IProtocolParser still implement PostgreSQL-family framing/authentication below IDatabaseConnection. The direct fake proves shared ODBC does not require them; a universal protocol abstraction is not a G9a requirement. |
-| Product configuration | Compiled PostgreSQL identity, default endpoint/database values and PostgreSQL build adapters remain product defaults. They are not native query/type interpretation; explicit settings and a different backend are exercised. Runtime plugins and arbitrary-protocol packaging remain G12, as originally scoped. |
+| Product configuration | Compiled PostgreSQL identity, default endpoint/database values and PostgreSQL build adapters remain product defaults. They are not native query/type interpretation; explicit settings and a different backend are exercised. The bounded compiled MySQL target is G12; runtime plugins and public packaging remain G13. |
 
-No known required A1–A4 extraction is deferred to SDK packaging. G9b still requires
-real Redshift reuse/compatibility evidence. G12 still owns independent SDK packaging,
-examples and API stability. W1–W4 Windows DSN/configuration/GUI/installer work and
-G8 real-application acceptance remain necessary before PG-BETA.
+No known required A1–A4 extraction is deferred. G12 now owns the independent
+MySQL protocol proof, backend test kit and unstable out-of-tree example. G9b
+still requires real Redshift reuse/compatibility evidence; G13 owns public SDK
+packaging and stability. W1–W4 are complete. G8 real-application acceptance
+remains necessary before PG-BETA, although its host-dependent execution is
+explicitly deferred while MS1 proceeds.

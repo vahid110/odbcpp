@@ -1,12 +1,16 @@
 # Release assessment and bounded scope
 
 Assessment date: 2026-09-23. Code baseline: `4f6de2a`.
-Status: PostgreSQL-first planning baseline; application targets updated 2026-09-26.
+Status: PostgreSQL technical baseline established; SDK/MySQL proof approved
+2026-09-30 while Redshift live access is unavailable.
 Exact versions, access and detailed workflows remain open.
-Active implementation scope is PostgreSQL and Redshift only. RDS, Aurora and
-Athena are not included. SDK architecture is mandatory during PostgreSQL
-consolidation (G9a), exercised by Redshift (G9b); only SDK productization is
-deferred (G12). The mandatory PostgreSQL handoff is PG-BETA in ROADMAP.md.
+Active implementation scope is PostgreSQL, Redshift and the bounded MySQL 8
+proof defined in [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md). RDS, Aurora, Athena,
+MariaDB and SQL Server/TDS are not included. SDK architecture is mandatory
+during PostgreSQL consolidation (G9a), proven across an unrelated protocol by
+MySQL (G12), and refined through Redshift (G9b). Public SDK productization is
+deferred (G13). PG-BETA remains open in ROADMAP.md; host-dependent G8 evidence
+is deferred by explicit product decision, not waived.
 No implementation or external Redshift validation was performed for this assessment.
 
 ## Assessment: what the evidence establishes
@@ -43,6 +47,7 @@ Sources: [database differences](https://docs.aws.amazon.com/redshift/latest/dg/c
 | D3: authentication | Database credentials over certificate- and hostname-verified TLS for initial pilot | If IAM/SSO is mandatory, it becomes a gate before beta and requires a fresh estimate; do not ship an unusable credential-only beta |
 | D4: supported systems | Linux/macOS driver gates plus Windows live validation required for linked-server and Power BI targets | Windows units alone cannot close these targets. Pin Windows, SQL Server/provider, Power BI, macOS/Excel and process/driver architectures |
 | D5: workload | Forward-only, one row/parameter set at a time; declared scalar types and bounded result sizes | Arrays, streaming, cancellation, or larger workloads required by D1 must be promoted explicitly before freezing scope |
+| D6: SDK product | ODBC is the first mature client adapter; PostgreSQL and MySQL are sibling reference backends; Redshift is a PostgreSQL-family specialization. ADBC is a future adapter whose columnar needs constrain the boundary now | G12 must prove an unrelated protocol without implementing ADBC or promising a stable public ABI; G13 owns public SDK productization |
 
 These assumptions allow planning, not a silent product decision. G0 is closed separately for each backend; PostgreSQL decisions are required
 first. Redshift endpoint/authentication decisions do not block the PostgreSQL
@@ -206,7 +211,8 @@ are committed.
 | G9b | Reuse gate / M3 | Redshift implements and refines the G9a contract with observed differences; no duplicate shared ODBC wrappers. Common contract tests and live acceptance pass for both backends. Evidence and limitations are recorded under [G9b acceptance](BACKEND_BOUNDARY.md#g9b--redshift-reuse-acceptance-required-before-redshift-beta) |
 | G10 | Reliability/performance gate / M4 | Execute the frozen workload below; establish time/memory/throughput baselines and timeout behavior. No observed leak trend, corruption, crash, deadlock, or silently wrong result. Compare like-for-like against a pinned vendor-driver baseline for triage, not a promised speedup |
 | G11 | Basic beta delivery M1; full delivery M4 | Clean install/configure/uninstall on each claimed OS; exact dependency versions and license inventory, TLS/auth and limitations guide, diagnostics troubleshooting, versioned artifacts/checksums, rollback instructions. Re-run application acceptance on packaged artifacts; all applicable G0–G10 remain green |
-| G12 | Deferred SDK preview gate | Build/install the library and an out-of-tree sample backend without editing shared ODBC wrappers. Document ownership, errors, deadlines, capabilities, types and extension points. Run reusable backend contract tests against PostgreSQL, Redshift and a synthetic backend; mark public API unstable. A fake backend proves wiring only, not a new database protocol |
+| G12 | SDK/MySQL proof gate / MS1 | Complete S1–S4 in [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md): freeze the SDK boundary, preserve PostgreSQL behavior, pass reusable contract tests, and run a real MySQL 8 TLS/direct/prepared/parameter/result/transaction/metadata/error slice through shared ODBC orchestration. Publish the backend test kit, extension guide and out-of-tree sample. Mark interfaces unstable; this is not a MySQL beta |
+| G13 | Deferred public SDK preview gate | Build/install a versioned SDK for external consumers; define API/ABI compatibility and support lifecycle; complete licensing, reference documentation and compatibility testing. ADBC implementation, Arrow integration and commercial availability require separately approved scope |
 
 ### Bounded workload for G10 (proposal to freeze in G0)
 
@@ -283,7 +289,7 @@ its residual backlog with test references. It does not promote a row to Verified
 | T6 | Additional IAM/SSO providers, browser auth, automatic credential refresh beyond selected method | User-selected enterprise authentication or credential lifecycle requires it; chosen auth never deferred |
 | T7 | Native handling for Redshift SUPER/spatial/sketch types and other extensions | Selected workload uses them. Only offer a text fallback if its metadata and representation are verified on real Redshift |
 | T8 | Binary wire-format acceleration, prepared cache, pooling tuning, transport micro-optimizations | G10 measurements identify a bottleneck; no unmeasured speedup target |
-| T9 | Public SDK stability/versioning promises and actual MySQL/TDS implementations | Internal preview G12 passes and an unrelated backend is selected with funded scope |
+| T9 | Public SDK stability/versioning promises, full MySQL beta breadth and TDS | Bounded G12 proof passes and public SDK/MySQL product scope is selected with funded requirements |
 | T10 | Broad file splitting, universal plugin registry, broad static-analysis cleanup | A release defect/change needs broader cleanup; focused A1–A4/G9a extraction is mandatory in PostgreSQL M1, with G9b refinement in Redshift M3 |
 | T11 | Extra PostgreSQL versions/features beyond frozen validation baseline | Customer deployment needs them or a shared/Redshift defect reproduces there |
 
@@ -293,14 +299,17 @@ when instantiated as work. It may not hide a serious supported-path defect.
 ## Completion and scheduling
 
 The milestone sequence, base effort and buffered estimates are in
-[ROADMAP.md](ROADMAP.md). PostgreSQL consolidation and the PG-BETA checkpoint precede Redshift
-implementation. Preparatory access work may happen earlier. Work waiting on a
-Redshift endpoint must be reported as waiting,
-not replaced indefinitely by new PostgreSQL edge-case permutations.
+[ROADMAP.md](ROADMAP.md). PostgreSQL technical consolidation, G9a and W1–W4 are
+complete, while PG-BETA remains open on G8 application evidence. The user
+explicitly deferred those host-dependent runs and approved bounded MS1 SDK/MySQL
+work on 2026-09-30. The real Redshift pilot is waiting on restored account
+access; it must be reported as waiting and resumes before any expansion of the
+MySQL proof into a product driver.
 
 The scheduler is paused and remains paused. On an explicitly authorized resume,
-use PostgreSQL G0 and PG-BETA first and stop at the agreed milestone. No automation is changed by
-this assessment. The new plan supersedes the old unbounded batch-selection policy.
+use the currently approved milestone and stop at its gate. No automation is
+changed by this assessment. The new plan supersedes the old unbounded
+batch-selection policy.
 
 
 ## Architecture checkpoint — batch 12
@@ -393,3 +402,20 @@ not close G1; execution still waits on a real user-supplied endpoint.
 The non-live Redshift target build and unit suite are now a normal CI gate, along
 with an expected-failure check for absent pilot configuration. This is compile
 and contract coverage only, not a substitute for the M2 endpoint run.
+
+## SDK/MySQL planning checkpoint — 2026-09-30
+
+Live Redshift M2 is temporarily blocked because the user's AWS/Redshift account
+access is being restored. The user approved MS1 as bounded engineering work
+during that wait. G12 now requires a real MySQL 8 reference slice to prove the
+shared SDK against an unrelated protocol; G13 retains public SDK stability and
+distribution work. PostgreSQL and MySQL are sibling backends. Redshift remains
+a PostgreSQL-family specialization and resumes at M2 when access returns.
+
+ADBC is recorded as a future client adapter and an architectural constraint,
+not an implementation claim. The MS1 result contract must permit a later
+columnar path without importing ODBC types into backends, but Arrow, the ADBC
+ABI and ADBC packaging remain outside scope. Exact work packages, 20–32 base
+engineering-day estimate, 30% contingency, tests, non-goals and stop rules are
+in [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md). No release or conformance status
+changed through this planning-only checkpoint.

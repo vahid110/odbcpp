@@ -450,8 +450,8 @@ The completion report must identify the green five-job CI run for the pushed
 revision, including Windows live PostgreSQL/Driver Manager coverage.
 
 After that confirmation, G9a is closed and W1 native Windows DSNs is next.
-W2–W4 and G8 application acceptance still precede PG-BETA. Redshift G9b and public
-SDK G12 remain later milestones; this checkpoint does not certify either.
+W2–W4 and G8 application acceptance still precede PG-BETA. This historical
+checkpoint does not certify Redshift G9b or an SDK product.
 
 ## Batch 13 — W1 native Windows DSNs
 
@@ -557,3 +557,17 @@ from the compiled backend instead of hard-coding PostgreSQL. All 28 Redshift-bui
 unit executables pass locally. CI builds the Redshift target, runs those unit
 tests and verifies that the real pilot cannot pass without endpoint configuration;
 it does not run or simulate live Redshift compatibility.
+
+## SDK/MySQL reprioritization — 2026-09-30
+
+W1–W4 and G9a are complete, but PG-BETA remains open because G8 application
+acceptance is not complete. The user explicitly deferred the host-dependent SQL
+Server/OPENQUERY, Power BI Desktop and Excel runs while other work proceeds.
+This preserves every G8 requirement and support-claim boundary.
+
+Live Redshift M2 is waiting on restored AWS/Redshift account access. During that
+external wait, the active bounded milestone is MS1 in SDK_PRODUCT_PLAN.md: freeze
+the connectivity SDK boundary, preserve PostgreSQL, and use a real MySQL 8 slice
+to prove an unrelated backend. ADBC is a future adapter constraint only. This
+planning decision changes no PostgreSQL conformance classification, test result
+or beta claim.

@@ -1,6 +1,7 @@
-# ODBCPP roadmap: shared foundation → Redshift → driver SDK
+# ODBCPP roadmap: shared foundation → connectivity SDK proof → Redshift
 
-Replanned 2026-09-23 against `4f6de2a`. This replaces the old milestone dates,
+Replanned 2026-09-30 after the PostgreSQL Windows delivery and Redshift pilot
+preparation. This replaces the old milestone dates,
 completion percentages, and open-ended conversion checklist. Historical plans
 remain in Git history. The detailed [conformance audit](ODBC_CONFORMANCE_AUDIT.md)
 remains evidence, not the release stopping rule.
@@ -9,16 +10,23 @@ remains evidence, not the release stopping rule.
 
 1. A dependable PostgreSQL implementation to validate shared ODBC and transport behavior.
 2. A usable Redshift driver, adapted after the PostgreSQL beta checkpoint.
-3. A reusable C++20 driver framework, with database-specific behavior outside the shared ODBC core.
+3. A reusable C++20 connectivity SDK, with database-specific behavior outside
+   client API adapters and a path to both ODBC and ADBC.
+4. A bounded MySQL 8 reference slice proving that the SDK supports an unrelated
+   wire protocol before public SDK stability is promised.
 
-Active implementation scope is PostgreSQL and Redshift only. RDS, Aurora and
-Athena are not added to this plan. SDK architecture is a required part of
-PostgreSQL consolidation (G9a), proven through Redshift (G9b). Only separate SDK
-packaging and public stability guarantees are deferred (G12). See the
+Active implementation scope is PostgreSQL, Redshift and the bounded MySQL SDK
+proof in [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md). RDS, Aurora, Athena, MariaDB
+and SQL Server/TDS are not added. SDK architecture began in PostgreSQL
+consolidation (G9a), is tested across unrelated protocols by MySQL (G12), and is
+refined through Redshift specialization (G9b). ADBC shapes the internal boundary
+but its API, Arrow integration and packaging are deferred. Public SDK stability
+and distribution remain G13. See the
 [backend boundary and acceptance criteria](BACKEND_BOUNDARY.md).
 
-Finish a coherent, scoped PostgreSQL beta before shifting implementation to
-Redshift. This does not require exhaustive PostgreSQL conformance. Work must
+The PostgreSQL technical and Windows delivery baseline may support SDK work while
+host-dependent G8 application acceptance is deferred by explicit product
+decision. This does not close PG-BETA or waive its evidence. Work must
 close a release gate, fix a material defect, or establish a reusable boundary
 needed by these products. Extra test permutations alone do not justify a batch.
 
@@ -51,9 +59,10 @@ not additional features. Re-estimate after the real Redshift pilot.
 |---|---|---:|---:|---|
 | M0 | Freeze the supported release profile and evidence inventory | 2–3 days | 3–4 days | G0 closed; target application/auth/platforms named; A1–A4 inventoried and estimated |
 | M1 | PostgreSQL consolidation and usable beta checkpoint | 14–23 days | 21–34 days | PG-BETA below closed; G9a architecture, coherent behavior, application demonstration and installable artifact |
-| M2 | Real Redshift pilot and compatibility assessment | 3–5 days | 25–41 days | G1 closed on a real Redshift endpoint |
-| M3 | Usable Redshift beta | 8–12 days | 36–56 days | G6–G8 and G9b closed; PostgreSQL regression gates remain green |
-| M4 | Scoped production release candidate | 8–12 days | 46–72 days | G10–G11 closed; both scoped beta baselines remain green |
+| MS1 | SDK foundation and bounded MySQL proof | 20–32 days | 26–42 days for MS1 | G12 closed; two real sibling backends use the shared contract; no MySQL beta or public ABI claim |
+| M2 | Real Redshift pilot and compatibility assessment | 3–5 days | Prior cumulative target resumes when access exists | G1 closed on a real Redshift endpoint |
+| M3 | Usable Redshift beta | 8–12 days | Re-estimate after M2 | G6–G8 and G9b closed; PostgreSQL regression gates remain green |
+| M4 | Scoped production release candidate | 8–12 days | Re-estimate after M2 | G10–G11 closed; both scoped beta baselines remain green |
 
 The [M0 working inventory](PG_BETA_CHECKLIST.md) sizes architecture at 9–15
 days within M1, revising M1 to 14–23 days. These estimates remain provisional,
@@ -64,9 +73,10 @@ that the earlier foundation-only estimate omitted. M0 must explicitly estimate
 A1–A4/G9a and revise the M1 range if needed; architecture effort must not be
 treated as free work or hidden in contingency. The sequence is sequential;
 external waiting is excluded. Re-estimate at PG-BETA and after the Redshift pilot.
-Redshift access preparation and documentation review may proceed earlier, but
-must not displace PostgreSQL consolidation. A separate SDK release and unrelated
-database backends have no delivery commitment in this plan.
+The live Redshift pilot is currently waiting on restored user account access.
+MS1 is approved bounded work during that external wait. It does not replace M2
+or authorize a full MySQL driver. Its package estimates, gates and stop rules are
+in [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md).
 
 ### PG-BETA: mandatory handoff checkpoint
 
@@ -89,19 +99,18 @@ The effort table is the prior one-application baseline; M1 and cumulative dates
 require re-estimation for these three tracks. Windows live validation is now
 required. No extra application scope is charged to contingency.
 
-## Next three implementation batches
+## Next implementation sequence
 
-1. **PostgreSQL consistency inventory (G0):** classify all partial audit rows,
-   identify required workflows, inconsistencies and A1–A4 backend coupling, and estimate the finite
-   PG-BETA checklist. Reuse existing evidence; avoid new permutations without
-   an identified contract gap.
-2. **Close PostgreSQL beta and architecture blockers (G1–G5/G8/G9a):** implement
-   the bounded backend extractions alongside correctness work; prioritize incorrect results,
-   state/diagnostic inconsistencies, truthful capabilities and required metadata.
-   Missing database access must fail release validation rather than skip tests.
-3. **Package and demonstrate PG-BETA (G8/basic G11):** clean installation,
-   examples, application workflow, limitations, and a recorded beta checkpoint.
-   Redshift implementation starts after this checkpoint passes.
+1. **S1 contract freeze:** inventory dependency direction and publish the SDK
+   ownership, lifecycle, result and extension contracts without behavior changes.
+2. **S2 shared proof harness:** make only the extractions required by the audit;
+   keep PostgreSQL, iODBC, Windows and sanitizer gates green.
+3. **S3 MySQL vertical slice:** implement and live-test the bounded MySQL 8
+   workflow through shared ODBC orchestration.
+4. **S4 SDK usability proof:** publish the backend test kit, extension guide and
+   minimal out-of-tree sample; stop and review G12.
+5. **M2 Redshift pilot:** run as soon as valid endpoint access is available.
+   PostgreSQL G8 application evidence remains open and recorded meanwhile.
 
 ## Execution and stop rules
 
@@ -110,9 +119,12 @@ checks during development and the full relevant gates before an implementation
 push. Do not rerun database gates for prose-only changes. Record new discoveries
 in the [decision/backlog table](RELEASE_PLAN.md#deferred-work-and-revisit-triggers).
 
-PostgreSQL consolidation ends at PG-BETA, including G9a. Redshift beta ends when
+PostgreSQL consolidation ends at PG-BETA, including G9a. The explicit 2026-09-30
+reprioritization permits MS1 before host-dependent G8 evidence is available;
+PG-BETA remains open. Redshift beta ends when
 G0–G8 plus G9a/G9b pass for its frozen profile and no known blocker remains. Release-candidate work
-ends when G10–G11 also pass. G12 is a deferred SDK acceptance definition.
+ends when G10–G11 also pass. G12 is the bounded internal SDK/MySQL proof; G13 is
+the deferred public SDK preview.
 A remaining `Partial` audit row is acceptable only if its residual behavior is
 explicitly outside the release profile and safely handled. No serious defect
 in a supported path may be deferred to meet a date.
@@ -139,4 +151,6 @@ A1–A4 implementation and fake-backend acceptance are complete; the dependency
 review is recorded in BACKEND_BOUNDARY.md. Close G9a upon this batch's green full
 local gates and exact-revision CI. Next is Windows W1–W4, followed by G8 real
 applications. The application-host reminder is not due while Windows delivery
-work is still next. Redshift remains after PG-BETA; public SDK packaging remains G12.
+work is still next. That work is now complete; G8 remains open and host-dependent.
+The 2026-09-30 reprioritization permits bounded MS1 work during the Redshift
+access wait. Public SDK packaging remains G13.
