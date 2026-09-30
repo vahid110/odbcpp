@@ -48,8 +48,27 @@ add_test(NAME verified_tls_interop
     --probe "$<TARGET_FILE:tls_probe>" --openssl "${OPENSSL_EXECUTABLE}")
 set_tests_properties(verified_tls_interop PROPERTIES TIMEOUT 90)
 
+# Compile the real PostgreSQL session path, without enabling the main driver
+# profile or introducing a second implementation of its protocol in the probe.
+add_executable(test_postgres_live test_postgres_live.cpp
+  ${ODBCPP_SOURCE}/core/database/generic_database_connection.cpp
+  ${ODBCPP_SOURCE}/core/database/postgres/pg_protocol_parser.cpp
+  ${ODBCPP_SOURCE}/core/database/postgres/pg_command.cpp
+  ${ODBCPP_SOURCE}/core/database/postgres/pg_sql_dialect.cpp
+  ${ODBCPP_SOURCE}/core/database/postgres/pg_type_info.cpp
+  ${ODBCPP_SOURCE}/core/transport/socket_transport.cpp
+  ${ODBCPP_SOURCE}/core/transport/tls_transport.cpp
+  ${ODBCPP_SOURCE}/core/util/utf8.cpp)
+target_link_libraries(test_postgres_live PRIVATE adapter GTest::gtest_main)
+option(ODBCPP_AWSLC_LIVE_TESTS "Require the configured live PostgreSQL TLS/SCRAM fixture" OFF)
+if(ODBCPP_AWSLC_LIVE_TESTS)
+  add_test(NAME postgres_tls_scram COMMAND test_postgres_live)
+  set_tests_properties(postgres_tls_scram PROPERTIES TIMEOUT 90)
+endif()
+
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/adapter-proof.json"
   "{\"sourceCommit\":\"574fbd729ca31aeebe80a98d35742c0402435790\","
   "\"sourceArchiveSha256\":\"c56d5a8517c0b9b5f79c7a850c0867dbfb3790dae17b447cd9174a0ebf2d037a\","
   "\"requestedSharedBuild\":\"${BUILD_SHARED_LIBS}\","
-  "\"scope\":\"adapter-tests-only\",\"qualificationClaimed\":false}\n")
+  "\"requestedPostgresLiveTests\":\"${ODBCPP_AWSLC_LIVE_TESTS}\","
+  "\"scope\":\"adapter-and-postgres-session-tests\",\"qualificationClaimed\":false}\n")

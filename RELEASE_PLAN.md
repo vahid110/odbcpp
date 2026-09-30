@@ -650,3 +650,13 @@ DNS/IP identity and unrelated-CA rejection, and cleared verification state
 after reset. This is adapter evidence only; PostgreSQL live authentication,
 driver artifact linkage and coexistence remain open before AWS-LC qualification.
 See CRYPTO_PROVIDER_PLAN.md for fixture prerequisites and exact scope.
+
+## S2C AWS-LC live PostgreSQL session gate — 2026-09-30
+
+The isolated static/shared proof now exercises PostgreSQL 17 through existing
+session/parser/transport sources: verified TLS, observed SCRAM authentication,
+direct and prepared results, authentication/trust/hostname rejection and fresh
+reconnection. Both CI variants require the live fixture and retain CTest evidence.
+The OpenSSL static gate and AWS-LC jobs share disposable TLS fixture setup.
+AWS-LC driver linkage, packaging and coexistence remain unqualified; the main
+AWS-LC profile is still disabled. See CRYPTO_PROVIDER_PLAN.md for exact scope.

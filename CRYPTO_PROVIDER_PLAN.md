@@ -313,3 +313,25 @@ This adds adapter-level handshake/verification evidence to both Linux CI
 variants. It does not establish PostgreSQL startup/authentication over TLS,
 ODBC driver linkage, provider coexistence or a qualified AWS-LC driver profile.
 The main AWS-LC build selection remains disabled.
+
+## S2C AWS-LC live PostgreSQL session proof — 2026-09-30
+
+Both isolated Linux AWS-LC variants now register mandatory PostgreSQL 17 live
+checks in CI. The probe compiles the existing PostgreSQL parser, generic session
+and synchronous TLS transport sources against the private AWS-LC adapters; it
+does not implement a second test-only PostgreSQL client. It observes actual SASL
+and SASLFinal exchanges to reject a fixture that silently uses trust or MD5,
+checks server-side TLS state, and verifies direct/prepared results including NULL.
+
+Wrong password, unrelated CA and hostname mismatch must leave the session
+unconnected; certificate failures must precede authentication. Each failed
+connection is followed by a fresh successful SCRAM query on the same session
+object. Missing fixture settings fail tests rather than skip. Local standalone
+builds opt into the fixture using `ODBCPP_AWSLC_LIVE_TESTS`; both CI variants
+require it. The retained manifest records that selection, while CTest results
+supply execution evidence. The disposable PostgreSQL TLS setup is shared with
+the OpenSSL static gate through `tools/ci/prepare-postgres-tls.sh`.
+
+This closes the isolated synchronous PostgreSQL TLS/SCRAM proof gap. It does not
+qualify an ODBC AWS-LC driver, asynchronous transport, artifact linkage,
+packaging or provider coexistence. Main-build AWS-LC selection remains disabled.

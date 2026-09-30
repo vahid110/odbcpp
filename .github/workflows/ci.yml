@@ -437,30 +437,7 @@ jobs:
       - name: Configure PostgreSQL verified-TLS fixture
         run: |
           tls="$RUNNER_TEMP/postgres-tls"
-          mkdir -p "$tls"
-          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
-            -keyout "$tls/server.key" -out "$tls/server.crt" \
-            -subj '/CN=127.0.0.1' \
-            -addext 'subjectAltName=IP:127.0.0.1'
-          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
-            -keyout "$tls/wrong.key" -out "$tls/wrong.crt" \
-            -subj '/CN=untrusted.invalid'
-          container="${{ job.services.postgres.id }}"
-          docker cp "$tls/server.key" "$container:/tmp/server.key"
-          docker cp "$tls/server.crt" "$container:/tmp/server.crt"
-          docker exec -u 0 "$container" sh -c '
-            cp /tmp/server.key "$PGDATA/server.key"
-            cp /tmp/server.crt "$PGDATA/server.crt"
-            chown postgres:postgres "$PGDATA/server.key" "$PGDATA/server.crt"
-            chmod 600 "$PGDATA/server.key"
-            printf "ssl=on\nssl_cert_file=\047server.crt\047\nssl_key_file=\047server.key\047\n" >> "$PGDATA/postgresql.conf"
-          '
-          docker restart "$container"
-          for attempt in {1..30}; do
-            pg_isready -h 127.0.0.1 -U postgres && break
-            if [[ "$attempt" == 30 ]]; then exit 1; fi
-            sleep 1
-          done
+          bash tools/ci/prepare-postgres-tls.sh "${{ job.services.postgres.id }}" "$tls"
           echo '127.0.0.1 wrong-host.invalid' | sudo tee -a /etc/hosts
           echo "ODBCPP_POSTGRES_TLS_DIR=$tls" >> "$GITHUB_ENV"
 
@@ -712,21 +689,47 @@ jobs:
 
   awslc-adapter-proof:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+          POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+          POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      ODBCPP_AWSLC_PG_PORT: 5432
+      ODBCPP_AWSLC_PG_USER: postgres
+      ODBCPP_AWSLC_PG_PASSWORD: postgres
     strategy:
       fail-fast: false
       matrix:
         shared: ["OFF", "ON"]
     steps:
       - uses: actions/checkout@v5
+      - name: Configure PostgreSQL verified-TLS fixture
+        run: |
+          tls="$RUNNER_TEMP/awslc-postgres-tls"
+          bash tools/ci/prepare-postgres-tls.sh "${{ job.services.postgres.id }}" "$tls"
+          echo "ODBCPP_AWSLC_PG_CA=$tls/server.crt" >> "$GITHUB_ENV"
+          echo "ODBCPP_AWSLC_PG_WRONG_CA=$tls/wrong.crt" >> "$GITHUB_ENV"
       - name: Configure pinned non-FIPS adapter proof
         run: >-
           cmake -S tests/security/awslc -B build-awslc-proof
           -DCMAKE_BUILD_TYPE=Release
+          -DODBCPP_AWSLC_LIVE_TESTS=ON
           -DBUILD_SHARED_LIBS=${{ matrix.shared }}
       - name: Build adapter and common tests
         run: >-
           cmake --build build-awslc-proof --parallel 4
-          --target test_crypto_primitives test_scram_sha256 test_tls_client tls_probe
+          --target test_crypto_primitives test_scram_sha256 test_tls_client tls_probe test_postgres_live
       - name: Run mandatory common adapter tests
         run: >-
           ctest --test-dir build-awslc-proof --output-on-failure
