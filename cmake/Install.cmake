@@ -14,6 +14,9 @@ install(TARGETS ${PROJECT_NAME}_core ${PROJECT_NAME}_driver
 install(DIRECTORY core/
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}/core
   FILES_MATCHING PATTERN "*.h"
+  PATTERN "security" EXCLUDE
+  PATTERN "tls_io.h" EXCLUDE
+  PATTERN "tls_peer_identity.h" EXCLUDE
 )
 
 # Install examples (optional)

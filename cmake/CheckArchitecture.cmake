@@ -57,6 +57,10 @@ foreach(_file IN LISTS _backend_files)
   if(_contents MATCHES "#[ \t]*include[ \t]*[<\"]odbc/")
     message(FATAL_ERROR "Backend depends on ODBC adapter: ${_file}")
   endif()
+  if(_contents MATCHES "#[ \t]*include[ \t]*[<\"]openssl/")
+    message(FATAL_ERROR
+      "Backend bypasses the private cryptography adapter: ${_file}")
+  endif()
   if(_file MATCHES "/postgres/" AND
      _contents MATCHES "(mysql|sqlserver)/")
     message(FATAL_ERROR "PostgreSQL backend depends on a sibling: ${_file}")
@@ -66,5 +70,29 @@ foreach(_file IN LISTS _backend_files)
   elseif(_file MATCHES "/sqlserver/" AND
          _contents MATCHES "(postgres|mysql)/")
     message(FATAL_ERROR "SQL Server backend depends on a sibling: ${_file}")
+  endif()
+endforeach()
+
+file(GLOB _security_headers "${SOURCE_DIR}/core/security/*.h")
+foreach(_file IN LISTS _security_headers)
+  file(READ "${_file}" _contents)
+  if(_contents MATCHES "#[ \t]*include[ \t]*[<\"](openssl|aws-lc|boringssl)/" OR
+     _contents MATCHES "(^|[^A-Za-z0-9_])(SSL_CTX|SSL|X509|EVP_[A-Za-z0-9_]+)[ \t]*[*&]")
+    message(FATAL_ERROR
+      "Provider type leaked into private cryptography contract: ${_file}")
+  endif()
+endforeach()
+
+file(GLOB_RECURSE _installed_core_headers "${SOURCE_DIR}/core/*.h")
+foreach(_file IN LISTS _installed_core_headers)
+  if(_file MATCHES "/core/security/" OR
+     _file MATCHES "/(tls_io|tls_peer_identity)\\.h$")
+    continue()
+  endif()
+  file(READ "${_file}" _contents)
+  if(_contents MATCHES "#[ \t]*include[ \t]*[<\"](openssl|aws-lc|boringssl)/" OR
+     _contents MATCHES "(^|[^A-Za-z0-9_])(SSL_CTX|SSL|X509|EVP_[A-Za-z0-9_]+)[ \t]*[*&]")
+    message(FATAL_ERROR
+      "Cryptography provider API leaked into an installed core header: ${_file}")
   endif()
 endforeach()

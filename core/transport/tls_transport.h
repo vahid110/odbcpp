@@ -4,8 +4,6 @@
 #include "start_tls_transport.h"
 #include "tls_configurable_transport.h"
 #include "core/util/errors.h"
-#include <openssl/ssl.h>
-#include <openssl/x509v3.h>
 #include <memory>
 
 namespace rs::core::transport {
@@ -56,20 +54,20 @@ public:
                     rs::util::Deadline deadline);
 
 private:
+  class ProviderState;
+
   SocketTransport tcp_;
-  SSL_CTX* ctx_ {nullptr};
-  SSL* ssl_ {nullptr};
+  std::unique_ptr<ProviderState> provider_;
   bool context_dirty_ {false};
   std::string sni_host_;
   bool verify_ {true};
   bool verify_host_ {true}; 
   bool peer_identity_verified_ {false};
-  long min_version_ {TLS1_2_VERSION};
+  long min_version_ {0x0303};  // TLS 1.2 protocol version.
   std::string ca_file_, ca_dir_;
 
   void ensure_ctx();
   void upgrade_impl(std::string_view host, rs::util::Deadline deadline);
-  void verify_hostname(X509* cert);
 };
 
 } // namespace rs::core::transport
