@@ -728,3 +728,11 @@ source recipes and override flags, bundled fmt identity, and required license
 hashes. Extraction tests verify those license bytes and reject wrong profiles
 or premature qualification claims. Existing dependency versions remain pinned;
 complete SBOM/provenance and final provider qualification are still open.
+
+## S2C AWS-LC loaded-origin gate — 2026-10-01
+
+Fresh Linux hosts must map the shared proof's exact packaged AWS-LC libraries;
+static drivers must map none separately. Shared-profile library-path and preload
+canaries require detection of external byte-identical provider copies. Evidence
+explicitly distinguishes origin detection from runtime prevention. Final loader
+trust/deployment policy and provider qualification remain open.

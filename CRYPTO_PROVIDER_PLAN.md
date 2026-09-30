@@ -477,3 +477,24 @@ The retained relocation evidence includes the packaged manifest and its file
 hash. This is dependency/license input evidence, not a complete SBOM, a source
 attestation or final profile qualification. Loader substitution and the final
 qualification review remain open.
+
+## S2C Linux loaded-provider origin and substitution evidence — 2026-10-01
+
+The extracted driver proof now inspects `/proc/self/maps` after loading the DSO
+in a fresh host process. Shared AWS-LC mappings must match the exact packaged
+provider paths; the static proof must map no separate AWS-LC provider libraries.
+This adds actual-host origin evidence to the earlier dependency resolver checks.
+
+Shared-profile canaries copy the known provider bytes outside the package, then
+exercise `LD_LIBRARY_PATH` and `LD_PRELOAD` separately. Each must demonstrably map
+an external provider and fail the qualification fixture's origin comparison.
+Identical bytes do not bypass this origin check. These are detection tests using
+trusted copies, not execution of attacker code or production runtime enforcement.
+Evidence distinguishes `loaderSubstitutionDetected` from
+`loaderSubstitutionPrevented=false`; qualification remains false. Static builds
+record these shared-provider substitution canaries as not applicable.
+
+The final qualification decision must define trusted host/loader configuration,
+package-directory ownership and dependency update responsibility. `$ORIGIN`
+alone does not enforce that trust boundary. The main AWS-LC option stays disabled
+until that decision and the remaining profile evidence are accepted.

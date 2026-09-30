@@ -266,3 +266,14 @@ sources. The archives, map and exact driver hashes are retained together, and
 stale or partial maps fail closed. This is bounded link-input evidence; it does
 not establish embedded-byte ancestry, cross-implementation coexistence or
 AWS-LC qualification.
+
+## S2C Linux loader configuration boundary — 2026-10-01
+
+The AWS-LC qualification fixture observes provider mappings in fresh hosts and
+rejects origins outside the extracted package. Explicit library-path and preload
+canaries prove the detector notices external copies even with identical bytes.
+This is qualification-time detection, not a driver runtime security control.
+An in-process driver cannot sandbox a host that intentionally preloads native
+code. Deployment qualification must therefore state who controls the host's
+loader environment and writable package directories, alongside update ownership.
+The evidence makes no protection claim against arbitrary hostile native code.

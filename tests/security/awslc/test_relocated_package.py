@@ -93,6 +93,64 @@ def validate_manifest(package, shared):
     return manifest
 
 
+def validate_loaded_providers(paths, expected):
+    actual = {Path(path).resolve(strict=True) for path in paths}
+    selected = {Path(path).resolve(strict=True) for path in expected}
+    if actual != selected:
+        raise RuntimeError("Loaded AWS-LC provider origin mismatch")
+
+
+def loaded_providers(driver, env):
+    # Inspect a fresh host after dlopen; ldd alone cannot establish the libraries
+    # actually mapped into a host with LD_PRELOAD overrides.
+    probe = """
+import ctypes,json,pathlib,sys
+ctypes.CDLL(sys.argv[1])
+paths = set()
+for line in pathlib.Path('/proc/self/maps').read_text().splitlines():
+    fields = line.split(None, 5)
+    if len(fields) != 6:
+        continue
+    path = fields[5]
+    if pathlib.Path(path).name.startswith(('libssl-awslc', 'libcrypto-awslc')):
+        paths.add(path)
+print(json.dumps(sorted(paths)))
+"""
+    return json.loads(run([sys.executable, "-c", probe, str(driver)], env))
+
+
+def substitution_canaries(driver, resolved, root, env):
+    external = root / "external-providers"
+    external.mkdir()
+    for soname, path in resolved:
+        shutil.copy2(Path(path).resolve(strict=True), external / soname)
+    expected = [path for _, path in resolved]
+    detected = {}
+    for mode in ("libraryPath", "preload"):
+        injected = env.copy()
+        if mode == "libraryPath":
+            injected["LD_LIBRARY_PATH"] = str(external)
+        else:
+            injected["LD_PRELOAD"] = ":".join(
+                str(external / soname) for soname, _ in resolved)
+            if env.get("LD_PRELOAD"):
+                injected["LD_PRELOAD"] += ":" + env["LD_PRELOAD"]
+        paths = loaded_providers(driver, injected)
+        # First prove the override was exercised, using known byte-identical
+        # libraries rather than loading any untrusted replacement code.
+        if not any(Path(path).resolve(strict=True).is_relative_to(external) for path in paths):
+            raise RuntimeError("Loader substitution canary did not map an external provider")
+        try:
+            validate_loaded_providers(paths, expected)
+        except RuntimeError as error:
+            if str(error) != "Loaded AWS-LC provider origin mismatch":
+                raise
+            detected[mode] = True
+        else:
+            raise RuntimeError("External provider substitution escaped origin detection")
+    return detected
+
+
 def main():
     parser = argparse.ArgumentParser()
     for name in ("build", "cmake", "readelf", "shared", "test"):
@@ -138,6 +196,8 @@ def main():
         for _, path in resolved:
             if not Path(path).resolve(strict=True).is_relative_to(package):
                 raise RuntimeError("Provider resolved outside relocated package: " + path)
+        validate_loaded_providers(loaded_providers(driver, env), [path for _, path in resolved])
+        substitutions = substitution_canaries(driver, resolved, root, env) if shared else None
         run([sys.executable, str(Path(__file__).with_name("test_odbc_driver.py")),
              args.test, str(driver)], env)
         if shared:
@@ -162,7 +222,9 @@ def main():
             "linkage": "shared" if shared else "static", "relocatedLiveTestsPassed": True,
             "extractedArchiveTested": True,
             "missingProviderRejected": True if shared else None,
-            "hostileLoaderPathTested": False, "qualificationClaimed": False,
+            "hostileLoaderPathTested": shared,
+            "loaderSubstitutionDetected": substitutions,
+            "loaderSubstitutionPrevented": False, "qualificationClaimed": False,
         }
         (build / "relocation-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
 

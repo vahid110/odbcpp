@@ -7,7 +7,7 @@ import tarfile
 import tempfile
 import unittest
 
-from test_relocated_package import extract_verified, inventory, validate_manifest
+from test_relocated_package import extract_verified, inventory, validate_manifest, validate_loaded_providers
 
 
 class PackageArchiveTests(unittest.TestCase):
@@ -177,6 +177,32 @@ class PackageManifestTests(unittest.TestCase):
         self.save()
         with self.assertRaisesRegex(RuntimeError, "inventory"):
             validate_manifest(self.root, True)
+
+
+class ProviderOriginTests(unittest.TestCase):
+    def test_selected_paths_and_aliases_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            provider = root / "provider.so.1"
+            provider.write_bytes(b"provider")
+            alias = root / "provider.so"
+            alias.symlink_to(provider.name)
+            validate_loaded_providers([str(provider)], [str(alias)])
+            validate_loaded_providers([], [])
+
+    def test_identical_external_copy_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            selected = root / "selected.so"
+            external = root / "external.so"
+            selected.write_bytes(b"same bytes")
+            external.write_bytes(selected.read_bytes())
+            with self.assertRaisesRegex(RuntimeError, "origin mismatch"):
+                validate_loaded_providers([str(external)], [str(selected)])
+            with self.assertRaisesRegex(RuntimeError, "origin mismatch"):
+                validate_loaded_providers([str(selected), str(external)], [str(selected)])
+            with self.assertRaisesRegex(RuntimeError, "origin mismatch"):
+                validate_loaded_providers([], [str(selected)])
 
 
 if __name__ == "__main__":
