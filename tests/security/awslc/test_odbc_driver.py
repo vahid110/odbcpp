@@ -17,6 +17,7 @@ with tempfile.TemporaryDirectory(prefix="odbcpp-awslc-dm-") as directory:
         "[ODBCPP PostgreSQL]\nDriver=" + driver + "\nDriverUnicodeType=UTF16\n")
     (root / "odbc.ini").write_text("")
     env = os.environ.copy()
+    env["ODBCPP_CRYPTO_PROFILE_DRIVER_PATH"] = driver
     env.update(ODBCSYSINI=directory, ODBCINI=str(root / "odbc.ini"), ODBCINSTINI="odbcinst.ini")
     common = "DRIVER={ODBCPP PostgreSQL};DATABASE=postgres;SSL=1;"
     for key, variable in (("PORT", "ODBCPP_AWSLC_PG_PORT"), ("UID", "ODBCPP_AWSLC_PG_USER"),

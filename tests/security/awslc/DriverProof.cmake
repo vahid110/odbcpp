@@ -57,3 +57,36 @@ if(ODBCPP_AWSLC_LIVE_TESTS)
   set_tests_properties(odbc_driver_live PROPERTIES TIMEOUT 90
     ENVIRONMENT "LD_PRELOAD=${ODBCPP_HOST_SSL}:${ODBCPP_HOST_CRYPTO}")
 endif()
+
+# Component installation keeps this experiment separate from upstream headers,
+# tools and the project's production package. Runtime paths are package-relative.
+set_target_properties(awslc_odbc_driver PROPERTIES INSTALL_RPATH "$ORIGIN"
+  INSTALL_RPATH_USE_LINK_PATH FALSE)
+install(TARGETS awslc_odbc_driver LIBRARY DESTINATION lib COMPONENT awslc-proof)
+if(BUILD_SHARED_LIBS)
+  set_target_properties(ssl crypto PROPERTIES INSTALL_RPATH "$ORIGIN"
+    INSTALL_RPATH_USE_LINK_PATH FALSE)
+  install(TARGETS ssl crypto LIBRARY DESTINATION lib COMPONENT awslc-proof)
+endif()
+install(FILES "${awslc_SOURCE_DIR}/LICENSE" "${awslc_SOURCE_DIR}/NOTICE"
+  DESTINATION licenses/aws-lc COMPONENT awslc-proof)
+install(FILES "${spdlog_SOURCE_DIR}/LICENSE" DESTINATION licenses/spdlog COMPONENT awslc-proof)
+file(READ "${SPDLOG_INCLUDE_DIR}/spdlog/fmt/bundled/format.h" _fmt_header)
+string(FIND "${_fmt_header}" "*/" _fmt_license_end)
+if(NOT _fmt_header MATCHES "^/\\*" OR _fmt_license_end LESS 0)
+  message(FATAL_ERROR "Pinned fmt license header could not be identified")
+endif()
+math(EXPR _fmt_license_length "${_fmt_license_end} + 2")
+string(SUBSTRING "${_fmt_header}" 0 ${_fmt_license_length} _fmt_license)
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/fmt-LICENSE" "${_fmt_license}\n")
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/fmt-LICENSE"
+  DESTINATION licenses/fmt RENAME LICENSE COMPONENT awslc-proof)
+if(ODBCPP_AWSLC_LIVE_TESTS)
+  add_test(NAME relocated_odbc_package COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_LIST_DIR}/test_relocated_package.py"
+    --build "${CMAKE_CURRENT_BINARY_DIR}" --cmake "${CMAKE_COMMAND}"
+    --readelf "${READELF_EXECUTABLE}" --shared "${BUILD_SHARED_LIBS}"
+    --test $<TARGET_FILE:test_odbc_driver_live>)
+  set_tests_properties(relocated_odbc_package PROPERTIES TIMEOUT 120
+    ENVIRONMENT "LD_PRELOAD=${ODBCPP_HOST_SSL}:${ODBCPP_HOST_CRYPTO}")
+endif()

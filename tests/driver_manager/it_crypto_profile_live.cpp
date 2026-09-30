@@ -66,7 +66,9 @@ class DirectDriver {
   using FreeHandle = SQLRETURN (*)(SQLSMALLINT, SQLHANDLE);
 
   DirectDriver() {
-    module_ = dlopen(ODBCPP_DRIVER_LIBRARY_PATH, RTLD_NOW | RTLD_LOCAL);
+    const char* override_path = std::getenv("ODBCPP_CRYPTO_PROFILE_DRIVER_PATH");
+    module_ = dlopen(override_path && *override_path ? override_path : ODBCPP_DRIVER_LIBRARY_PATH,
+                     RTLD_NOW | RTLD_LOCAL);
     if (!module_) throw std::runtime_error(dlerror());
     try {
       alloc_handle = load<AllocHandle>("SQLAllocHandle");

@@ -696,3 +696,12 @@ linkage inspection plus common unixODBC live TLS acceptance under OpenSSL preloa
 including certificate/hostname rejection. Main-build behavior remains protected;
 the AWS-LC product option stays disabled pending package/loader and final
 qualification evidence. See CRYPTO_PROVIDER_PLAN.md for scope.
+
+## S2C AWS-LC relocated driver package gate — 2026-09-30
+
+The isolated Linux proof now stages a runtime-only package with dependency
+license texts, relocates it, verifies package-relative ELF search paths and
+provider resolution, and reruns ODBC TLS acceptance. Shared packages must reject
+fresh loads with either provider missing and no override search path. Archives
+and byte inventories are retained. Hostile loader paths and final release
+qualification remain explicitly open; see CRYPTO_PROVIDER_PLAN.md.

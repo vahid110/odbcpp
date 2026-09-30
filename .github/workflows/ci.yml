@@ -755,6 +755,8 @@ jobs:
             build-awslc-proof/libawslc_odbc_driver.so
             build-awslc-proof/driver-artifact-evidence.json
             build-awslc-proof/driver-link.map
+            build-awslc-proof/awslc-driver-proof.tar.gz
+            build-awslc-proof/relocation-evidence.json
             build-awslc-proof/_deps/awslc-build/ssl/libssl*
             build-awslc-proof/_deps/awslc-build/crypto/libcrypto*
           if-no-files-found: error

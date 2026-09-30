@@ -408,3 +408,23 @@ The DSO and linkage evidence are retained alongside the session proof artifacts.
 This supplies driver-level loading/ODBC evidence for the selected Linux setup.
 It is not a relocated package or public SDK artifact; loader-path hardening,
 package dependency/license inventory and final profile qualification remain open.
+
+## S2C internal AWS-LC relocated package proof — 2026-09-30
+
+A dedicated install component stages only the PostgreSQL driver, required shared
+AWS-LC libraries for the shared variant, and AWS-LC/spdlog/bundled-fmt license
+texts. Static driver packages omit provider archives and headers. Installed ELF
+runtime paths must be exactly `$ORIGIN`, with no build-directory search path.
+
+The mandatory Linux fixture moves the installed tree to a different directory,
+resolves shared providers inside that tree, and runs the common unixODBC TLS
+query and rejection suite under system-OpenSSL preload. Both Driver Manager and
+direct diagnostic calls use the relocated DSO. Removing each packaged provider
+must prevent a fresh load when no library-path override is supplied. The package
+archive and per-file/symlink hashes are retained with relocation test evidence.
+
+This is an internal package experiment, not a public distribution or complete
+SBOM/legal review. Hostile `LD_LIBRARY_PATH`/preload substitution, host ABI breadth,
+update policy and final provider/profile qualification remain open. The evidence
+explicitly leaves hostile-loader-path coverage and qualification false; the main
+AWS-LC product option remains disabled.
