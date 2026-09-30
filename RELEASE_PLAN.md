@@ -501,3 +501,19 @@ the manifest, and rejects mismatched profile evidence before staging.
 This batch establishes configuration and evidence plumbing only. It does not
 qualify any matrix row, introduce AWS-LC, isolate OpenSSL source APIs, prove
 runtime linkage, or make a FIPS claim. Those S2C gates remain open.
+
+## S2C private cryptography boundary — 2026-09-30
+
+PostgreSQL SCRAM and legacy MD5 authentication now use a private,
+provider-neutral primitive adapter for digests, HMAC, PBKDF2, randomness,
+constant-time comparison and cleansing. Strict portable Base64 decoding rejects
+malformed and non-canonical authentication inputs. SCRAM secret intermediates
+are cleansed on both success and exception paths.
+
+The installed synchronous TLS header no longer exposes OpenSSL handles.
+Provider-specific TLS helpers and the primitive adapter are not installed, and
+architecture checks reject direct provider includes in backend code and
+provider types in installed core headers. This closes the authentication
+primitive and installed-header portions of S2C only. The common private TLS
+adapter, artifact linkage inspection, runtime diagnostics, OpenSSL qualification
+and bounded AWS-LC Linux proof remain open.

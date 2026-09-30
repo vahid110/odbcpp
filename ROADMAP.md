@@ -206,3 +206,18 @@ records requested and resolved build evidence without claiming verified artifact
 linkage or FIPS. Windows packaging validates, installs and inventories that
 manifest. Provider-neutral crypto adapters, artifact inspection and the AWS-LC
 Linux proof remain the next S2C work.
+
+### S2C private cryptography boundary — 2026-09-30
+
+PostgreSQL authentication now obtains MD5, SHA-256, HMAC, PBKDF2, random bytes,
+constant-time comparison and secure cleansing through a private
+provider-neutral adapter. Portable strict Base64 handling removes the remaining
+OpenSSL dependency from SCRAM. Secret intermediate values are cleansed during
+exception unwinding as well as successful exchanges.
+
+The synchronous TLS public header now owns its provider state through an
+incomplete private type. Provider-specific TLS helper headers and the crypto
+adapter are excluded from installation, and architecture checks reject direct
+provider includes in backends or provider types in installed core headers.
+Transport implementations still need the common private TLS adapter; artifact
+inspection and every qualification row remain open.

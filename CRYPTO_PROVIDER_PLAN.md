@@ -26,9 +26,9 @@ migration, but it is insufficient evidence of which library was actually
 linked. The ODBC driver itself remains a shared library required by the Driver
 Manager; this decision controls its cryptography dependency independently.
 
-The current implementation directly uses OpenSSL; none of these
-provider/linkage profiles is implemented or qualified yet. `AWS_LC` is planned
-and remains unsupported until it passes the qualification matrix below.
+Strict provider/linkage profiles and the configure-time evidence manifest are
+implemented. No matrix row is qualified yet. `AWS_LC` is planned and remains
+unsupported until it passes the qualification matrix below.
 Selecting an unknown provider, an impossible linkage mode, or headers and
 libraries from different installations must fail configuration.
 
@@ -53,9 +53,13 @@ error codes cannot cross the private boundary. Runtime workflows contain no
 provider switch. PostgreSQL, MySQL and later Redshift receive the same security
 contracts regardless of the selected implementation.
 
-The current tree is not yet at this boundary: TLS code and public-installed core
-headers contain OpenSSL types, and SCRAM uses OpenSSL 3-specific APIs. AWS-LC is
-therefore an implementation and qualification task, not a relink-only claim.
+The authentication primitives now use a provider-neutral private adapter, and
+PostgreSQL SCRAM/MD5 code no longer includes provider headers. Installed core
+headers no longer expose OpenSSL types: synchronous TLS owns provider state
+behind an incomplete type, and provider-specific TLS helpers are private.
+Transport implementation files still invoke OpenSSL-compatible APIs directly,
+so the provider boundary remains incomplete. AWS-LC is therefore still an
+implementation and qualification task, not a relink-only claim.
 
 ## Linkage profiles
 
