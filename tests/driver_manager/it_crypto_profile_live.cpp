@@ -116,12 +116,16 @@ TEST(CryptoProfileLiveTest, CompletesVerifiedTlsScramQuery) {
   SQLCHAR tls_active[8]{};
   ASSERT_TRUE(SQL_SUCCEEDED(SQLGetData(statement, 1, SQL_C_CHAR, tls_active,
                                        sizeof(tls_active), nullptr)));
-  EXPECT_STREQ(reinterpret_cast<const char*>(tls_active), "t");
+  EXPECT_STREQ(reinterpret_cast<const char*>(tls_active), "1");
   EXPECT_EQ(SQLFreeHandle(SQL_HANDLE_STMT, statement), SQL_SUCCESS);
 }
 
 TEST(CryptoProfileLiveTest, RejectsUntrustedCertificate) {
   Handles handles;
+  ASSERT_TRUE(SQL_SUCCEEDED(connect(
+      handles.connection(),
+      required_connection("ODBCPP_CRYPTO_PROFILE_TEST_CONNECTION"))));
+  ASSERT_TRUE(SQL_SUCCEEDED(SQLDisconnect(handles.connection())));
   ASSERT_EQ(connect(
                 handles.connection(),
                 required_connection("ODBCPP_CRYPTO_PROFILE_WRONG_CA_CONNECTION")),
@@ -137,6 +141,10 @@ TEST(CryptoProfileLiveTest, RejectsUntrustedCertificate) {
 
 TEST(CryptoProfileLiveTest, RejectsHostnameMismatch) {
   Handles handles;
+  ASSERT_TRUE(SQL_SUCCEEDED(connect(
+      handles.connection(),
+      required_connection("ODBCPP_CRYPTO_PROFILE_TEST_CONNECTION"))));
+  ASSERT_TRUE(SQL_SUCCEEDED(SQLDisconnect(handles.connection())));
   ASSERT_EQ(connect(
                 handles.connection(),
                 required_connection("ODBCPP_CRYPTO_PROFILE_WRONG_HOST_CONNECTION")),
