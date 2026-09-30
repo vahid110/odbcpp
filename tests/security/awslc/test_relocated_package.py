@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -18,6 +19,41 @@ def run(command, env):
     return result.stdout
 
 
+def inventory(package):
+    package = package.resolve(strict=True)
+    files = {}
+    for path in sorted(package.rglob("*")):
+        actual = path.resolve(strict=True)
+        if not actual.is_relative_to(package):
+            raise RuntimeError("Package symlink escaped root")
+        if path.is_symlink() and not actual.is_file():
+            raise RuntimeError("Package symlink must target a regular file")
+        if path.is_dir():
+            continue
+        if not path.is_file() or path.suffix in (".h", ".a"):
+            raise RuntimeError("Driver-only package contains an unsupported file")
+        files[str(path.relative_to(package))] = {
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "symlink": os.readlink(path) if path.is_symlink() else None,
+            "mode": path.stat().st_mode & 0o777,
+        }
+    return files
+
+
+def extract_verified(archive, destination, expected):
+    # This consumes our own archive, with an independent pre-archive inventory.
+    # The standard data filter rejects paths/links outside the extraction root.
+    with tarfile.open(archive, "r:gz") as source:
+        names = [member.name for member in source.getmembers()]
+        if len(names) != len(set(names)):
+            raise RuntimeError("Duplicate package archive member")
+        source.extractall(destination, filter="data")
+    package = destination / "odbcpp-awslc-proof"
+    if set(destination.iterdir()) != {package} or inventory(package) != expected:
+        raise RuntimeError("Extracted package differs from staged inventory")
+    return package
+
+
 def main():
     parser = argparse.ArgumentParser()
     for name in ("build", "cmake", "readelf", "shared", "test"):
@@ -28,12 +64,16 @@ def main():
     env.pop("LD_LIBRARY_PATH", None)
     # The system OpenSSL preload remains; no AWS-LC path is supplied to the loader.
     with tempfile.TemporaryDirectory(prefix="odbcpp-package-") as directory:
-        root = Path(directory)
+        root = Path(directory).resolve(strict=True)
         staged = root / "staged"
         run([args.cmake, "--install", str(build), "--component", "awslc-proof",
              "--prefix", str(staged)], env)
-        package = root / "relocated"
-        staged.rename(package)
+        files = inventory(staged)
+        archive = build / "awslc-driver-proof.tar.gz"
+        with tarfile.open(archive, "w:gz") as output:
+            output.add(staged, arcname="odbcpp-awslc-proof")
+        shutil.rmtree(staged)
+        package = extract_verified(archive, root / "extracted", files)
         driver = package / "lib/libawslc_odbc_driver.so"
         required = [driver, *(package / "licenses" / path for path in
                     ("aws-lc/LICENSE", "aws-lc/NOTICE", "spdlog/LICENSE", "fmt/LICENSE"))]
@@ -75,26 +115,11 @@ def main():
                         raise RuntimeError("Missing provider did not fail as expected: " + result.stderr)
                 finally:
                     hidden.rename(library)
-        files = {}
-        for path in sorted(package.rglob("*")):
-            if path.is_dir():
-                continue
-            actual = path.resolve(strict=True)
-            if not actual.is_relative_to(package):
-                raise RuntimeError("Package symlink escaped root")
-            if path.suffix in (".h", ".a"):
-                raise RuntimeError("Driver-only package contains development files")
-            files[str(path.relative_to(package))] = {
-                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                "symlink": os.readlink(path) if path.is_symlink() else None,
-            }
-        archive = build / "awslc-driver-proof.tar.gz"
-        with tarfile.open(archive, "w:gz") as output:
-            output.add(package, arcname="odbcpp-awslc-proof")
         evidence = {
             "scope": "internal-relocated-driver-proof", "files": files,
             "archiveSha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
             "linkage": "shared" if shared else "static", "relocatedLiveTestsPassed": True,
+            "extractedArchiveTested": True,
             "missingProviderRejected": True if shared else None,
             "hostileLoaderPathTested": False, "qualificationClaimed": False,
         }

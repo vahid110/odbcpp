@@ -705,3 +705,11 @@ provider resolution, and reruns ODBC TLS acceptance. Shared packages must reject
 fresh loads with either provider missing and no override search path. Archives
 and byte inventories are retained. Hostile loader paths and final release
 qualification remain explicitly open; see CRYPTO_PROVIDER_PLAN.md.
+
+## S2C AWS-LC archive round-trip gate — 2026-09-30
+
+The retained internal driver archive must now pass inventory verification and
+live TLS acceptance after extraction, with the original staging tree removed.
+Negative fixture tests cover changed/missing/extra files, duplicate members and
+escaping archive paths/links. This strengthens package evidence without claiming
+archive authenticity, hostile-loader protection or AWS-LC profile qualification.

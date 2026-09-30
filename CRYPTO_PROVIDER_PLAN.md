@@ -428,3 +428,19 @@ SBOM/legal review. Hostile `LD_LIBRARY_PATH`/preload substitution, host ABI brea
 update policy and final provider/profile qualification remain open. The evidence
 explicitly leaves hostile-loader-path coverage and qualification false; the main
 AWS-LC product option remains disabled.
+
+## S2C extracted AWS-LC archive evidence — 2026-09-30
+
+The internal package proof now creates the retained archive before testing,
+removes the staging tree, and runs the existing live TLS and missing-provider
+checks against a fresh extraction. An independent pre-archive inventory must
+match extracted bytes, symlink targets and file permission modes. The fixture
+rejects duplicate archive entries, traversal and external symlinks, and tests
+changed bytes, missing and unexpected files. The isolated proof requires Python
+3.12 or newer for explicit standard-library data-filtered extraction; this is
+not a driver runtime dependency.
+
+This closes the archive-versus-staging evidence gap only. Inventory comparison
+is not package signing or an authenticity claim. Hostile loader substitution,
+final profile qualification and the disabled main-build AWS-LC option are
+unchanged.

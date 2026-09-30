@@ -50,7 +50,9 @@ foreach(test IN ITEMS test_crypto_primitives test_scram_sha256 test_tls_client)
   add_test(NAME ${test} COMMAND ${test})
 endforeach()
 
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
+add_test(NAME package_archive_integrity
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_package_archive.py")
 find_program(OPENSSL_EXECUTABLE openssl REQUIRED)
 add_executable(tls_probe tls_probe.cpp)
 target_link_libraries(tls_probe PRIVATE adapter)
