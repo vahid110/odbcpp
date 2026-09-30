@@ -2,6 +2,11 @@
 
 #include "odbc/connection_string.h"
 
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <optional>
 #include <stdexcept>
 
 namespace {
@@ -73,6 +78,97 @@ TEST(ConnectionStringTest, ExplicitEmptyCredentialsRemainPresentAndFirst) {
     EXPECT_EQ(parsed.size(), 2u);
   }
 }
+
+#ifndef _WIN32
+class UnixIniDiscoveryTest : public ::testing::Test {
+ protected:
+  class EnvironmentGuard {
+   public:
+    explicit EnvironmentGuard(const char* name) : name_(name) {
+      if (const auto* value = std::getenv(name)) original_ = value;
+    }
+    ~EnvironmentGuard() {
+      if (original_) setenv(name_.c_str(), original_->c_str(), 1);
+      else unsetenv(name_.c_str());
+    }
+
+   private:
+    std::string name_;
+    std::optional<std::string> original_;
+  };
+
+  EnvironmentGuard odbcini_{"ODBCINI"};
+  EnvironmentGuard odbcsysini_{"ODBCSYSINI"};
+  EnvironmentGuard odbcinstini_{"ODBCINSTINI"};
+  EnvironmentGuard home_{"HOME"};
+  std::filesystem::path original_directory_{std::filesystem::current_path()};
+  std::filesystem::path root_;
+
+  void SetUp() override {
+    root_ = std::filesystem::temp_directory_path() /
+        ("odbcpp-ini-discovery-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directories(root_ / "work" / "child"));
+    ASSERT_TRUE(std::filesystem::create_directories(root_ / "home"));
+    unsetenv("ODBCINI");
+    unsetenv("ODBCSYSINI");
+    unsetenv("ODBCINSTINI");
+    ASSERT_EQ(0, setenv("HOME", (root_ / "home").c_str(), 1));
+  }
+
+  void TearDown() override {
+    std::filesystem::current_path(original_directory_);
+    std::error_code ignored;
+    std::filesystem::remove_all(root_, ignored);
+  }
+
+  static void write(const std::filesystem::path& path, std::string_view text) {
+    std::ofstream output(path);
+    ASSERT_TRUE(output.is_open());
+    output << text;
+    ASSERT_TRUE(output.good());
+  }
+};
+
+TEST_F(UnixIniDiscoveryTest, IgnoresCurrentAndParentDirectoryIniFiles) {
+  constexpr auto dsn = "ODBCPP_CwdFixture_MustNotLoad";
+  constexpr auto driver = "ODBCPP Cwd Driver Must Not Load";
+  const auto dsn_contents = std::string("[") + dsn + "]\nSERVER=untrusted\n";
+  const auto driver_contents =
+      std::string("[") + driver + "]\nPORT=6543\n";
+
+  write(root_ / "work" / "child" / "odbc.ini", dsn_contents);
+  write(root_ / "work" / "odbc.ini", dsn_contents);
+  write(root_ / "work" / "child" / "odbcpp.dsn", dsn_contents);
+  write(root_ / "work" / "odbcpp.dsn", dsn_contents);
+  write(root_ / "work" / "child" / "odbcinst.ini", driver_contents);
+  write(root_ / "work" / "odbcinst.ini", driver_contents);
+  std::filesystem::current_path(root_ / "work" / "child");
+
+  EXPECT_TRUE(ConnectionString::load_dsn(dsn).empty());
+  EXPECT_TRUE(rs::odbc::DSNReader::read_driver_config(driver).empty());
+}
+
+TEST_F(UnixIniDiscoveryTest, HonorsExplicitDsnAndDriverManagerIniPaths) {
+  constexpr auto dsn = "ODBCPP_ExplicitFixture";
+  constexpr auto driver = "ODBCPP Explicit Driver";
+  const auto dsn_path = root_ / "trusted-dsn.ini";
+  write(dsn_path, std::string("[") + dsn + "]\nSERVER=trusted\n");
+  write(root_ / "drivers.ini",
+        std::string("[") + driver + "]\nPORT=6543\n");
+
+  ASSERT_EQ(0, setenv("ODBCINI", dsn_path.c_str(), 1));
+  ASSERT_EQ(0, setenv("ODBCSYSINI", root_.c_str(), 1));
+  ASSERT_EQ(0, setenv("ODBCINSTINI", "drivers.ini", 1));
+
+  const auto loaded_dsn = ConnectionString::load_dsn(dsn);
+  ASSERT_EQ(1u, loaded_dsn.size());
+  EXPECT_EQ("trusted", loaded_dsn.at("SERVER"));
+  const auto loaded_driver = rs::odbc::DSNReader::read_driver_config(driver);
+  ASSERT_EQ(1u, loaded_driver.size());
+  EXPECT_EQ("6543", loaded_driver.at("PORT"));
+}
+#endif
 
 } // namespace
 

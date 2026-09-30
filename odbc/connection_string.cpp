@@ -181,8 +181,7 @@ std::vector<std::string> ConnectionString::get_dsn_file_paths() {
   // Native registry sources are preferred. Only explicit environment INI paths
   // remain as legacy/test fallback; never discover implicit working-directory files.
 #else
-  // Unix/Linux/macOS: unixODBC standard locations
-  // Standard unixODBC locations
+  // Unix/Linux/macOS standard locations.
   paths.push_back("/etc/odbc.ini");           // System DSNs
   paths.push_back("/usr/local/etc/odbc.ini"); // Homebrew location
   
@@ -190,11 +189,6 @@ std::vector<std::string> ConnectionString::get_dsn_file_paths() {
   const auto home = environment_value("HOME");
   if (!home.empty()) paths.push_back(home + "/.odbc.ini");
   
-  // Local project files (for testing)
-  paths.push_back("odbc.ini");        // Current directory
-  paths.push_back("../odbc.ini");     // From build directory
-  paths.push_back("odbcpp.dsn");      // Legacy file
-  paths.push_back("../odbcpp.dsn");   // Legacy from build directory
 #endif
   
   return paths;
@@ -219,14 +213,10 @@ std::vector<std::string> ConnectionString::get_driver_file_paths() {
 #ifdef _WIN32
   // Driver defaults use native registry registration before explicit INI fallback.
 #else
-  // Unix/Linux/macOS: unixODBC standard locations
-  // Standard unixODBC locations
+  // Unix/Linux/macOS standard locations.
   paths.push_back("/etc/odbcinst.ini");           // System drivers
   paths.push_back("/usr/local/etc/odbcinst.ini"); // Homebrew location
   
-  // Local project files (for testing)
-  paths.push_back("odbcinst.ini");     // Current directory
-  paths.push_back("../odbcinst.ini");  // From build directory
 #endif
   
   return paths;

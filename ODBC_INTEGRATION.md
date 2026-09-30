@@ -21,7 +21,8 @@
 ## Current ODBCPP Integration Status
 
 ### ✅ What Works Now
-- **Custom DSN files**: `odbcpp.dsn` format
+- **Explicit configuration files**: `ODBCINI`, `ODBCSYSINI`, and
+  `ODBCINSTINI` select test or application-managed files
 - **Connection strings**: Direct parameter format
 - **Standard locations**: Checks `/etc/odbc.ini`, `~/.odbc.ini`
 - **Shared driver**: CMake builds and installs `libodbcpp`
@@ -70,11 +71,14 @@ odbcinst -i -s -f install/odbc.ini.example
 ## Implementation Status
 
 ### Current DSN Search Order
-1. `/etc/odbc.ini` (system-wide)
-2. `/usr/local/etc/odbc.ini` (Homebrew)
-3. `~/.odbc.ini` (user-specific)
-4. `odbcpp.dsn` (local file)
-5. `~/odbcpp.dsn` (user local file)
+1. `ODBCINI` when explicitly set
+2. `ODBCSYSINI/odbc.ini` when explicitly set
+3. `/etc/odbc.ini` (system-wide)
+4. `/usr/local/etc/odbc.ini` (Homebrew)
+5. `~/.odbc.ini` (user-specific)
+
+The driver does not search the current or parent directory implicitly.
+Development fixtures must use the explicit environment variables above.
 
 ### Connection Methods Supported
 ```cpp
