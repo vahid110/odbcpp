@@ -571,3 +571,11 @@ the connectivity SDK boundary, preserve PostgreSQL, and use a real MySQL 8 slice
 to prove an unrelated backend. ADBC is a future adapter constraint only. This
 planning decision changes no PostgreSQL conformance classification, test result
 or beta claim.
+
+## First S2 security batch — 2026-09-30
+
+Commits `df8a67e` and `179f6a6` close the supported plaintext credential path,
+apply or reject custom CA trust, and remove implicit current/parent-directory
+configuration discovery. Each complete local PostgreSQL, iODBC UTF-16/UCS-4,
+iODBC UCS-4 and sanitizer gate passed 37 executables with zero failures. This
+does not close G8, G12, Windows exact-revision evidence or any Redshift gate.

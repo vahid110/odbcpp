@@ -103,8 +103,9 @@ required. No extra application scope is charged to contingency.
 
 1. **S1 contract freeze — complete:** four read-only audits produced
    `SDK_ARCHITECTURE.md` and `SECURITY_MODEL.md`; no behavior changed.
-2. **S2 contract implementation and shared proof harness:** begin with the
-   security prerequisites, then make only the accepted extractions;
+2. **S2 contract implementation and shared proof harness — in progress:** the
+   verified authentication/CA and trusted configuration prerequisites are
+   complete; proceed with only the accepted extractions;
    keep PostgreSQL, iODBC, Windows and sanitizer gates green.
 3. **S3 MySQL vertical slice:** implement and live-test the bounded MySQL 8
    workflow through shared ODBC orchestration.
@@ -170,3 +171,12 @@ removes implicit production working-directory configuration, bounds hostile
 server input and requires secret-safe diagnostics, session isolation, fuzzing,
 supply-chain checks and release hardening. S2 implementation is next. S1 closes
 planning only; it does not close G12 or change a current support claim.
+
+### First S2 security batch — 2026-09-30
+
+Commits `df8a67e` and `179f6a6` make verified TLS the omitted-SSL default,
+require verified peer identity before PostgreSQL cleartext-password
+authentication, apply or reject one custom CA trust source, and remove implicit
+current/parent-directory configuration discovery. Explicit plaintext remains a
+documented opt-out for intentional local profiles. PostgreSQL, both iODBC width
+matrices and the sanitizer matrix each passed all 37 local tests.

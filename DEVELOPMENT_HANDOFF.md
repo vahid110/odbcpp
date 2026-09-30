@@ -43,10 +43,9 @@ This is a navigation summary; source, tests and PG_BETA_CHECKLIST.md remain auth
   metadata caches need invalidation evidence. New prepared caching and tuning
   wait for G10 measurements; query-result caching is out of scope.
 - S1's four read-only audits are consolidated in SDK_ARCHITECTURE.md and
-  SECURITY_MODEL.md. First S2 batch: secure transport/authentication and trusted
-  configuration prerequisites. Omitted TLS currently disables encryption while
-  PostgreSQL cleartext-password auth is accepted; do not bury that fix in a
-  mechanical refactor.
+  SECURITY_MODEL.md. The first S2 batch (`df8a67e`, `179f6a6`) completed secure
+  transport/authentication, custom CA and trusted configuration prerequisites.
+  Continue with the provider/composition batch in SDK_ARCHITECTURE.md.
 - Graphify was evaluated and declined. Use narrow `rg` searches and source reads.
 
 ## Navigation

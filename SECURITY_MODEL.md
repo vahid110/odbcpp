@@ -2,7 +2,8 @@
 
 Decision date: 2026-09-30.
 Audit baseline: `089e085`.
-Status: S1 security architecture accepted; implementation evidence remains open.
+Status: S1 security architecture accepted. The first S2 security batch resolves
+SEC-1 and SEC-2; SEC-3, SEC-4 and the remaining G12 evidence stay open.
 
 This model applies to PostgreSQL, the MySQL SDK proof and later Redshift work.
 It records concrete current risks, mandatory contracts and release evidence. It
@@ -31,6 +32,12 @@ is not a claim that the current driver has completed a security review.
 
 ### SEC-1: password authentication without verified TLS
 
+Implementation status: resolved by `df8a67e`. Omitted `SSL` now selects verified
+TLS, plaintext requires an explicit false value, and PostgreSQL cleartext-password
+authentication requires transport evidence that both the certificate chain and
+host identity were verified. Custom CA file/directory settings are applied to
+sync and async TLS transports or rejected before connection.
+
 Current ODBC behavior treats omitted `SSL` as disabled, while the PostgreSQL
 parser accepts cleartext-password authentication and can serialize the password.
 This creates a concrete credential-disclosure path to a configured, redirected
@@ -48,6 +55,10 @@ Before general S2 refactoring:
   weaken production defaults.
 
 ### SEC-2: implicit working-directory configuration
+
+Implementation status: resolved by `179f6a6`. Production Unix/macOS discovery no
+longer searches current or parent directory files. Explicit environment,
+system, Homebrew and user DSN locations remain covered by focused tests.
 
 Production Unix/macOS resolution currently searches current and parent directory
 INI/DSN files. An unexpected working directory can redirect a missing DSN or

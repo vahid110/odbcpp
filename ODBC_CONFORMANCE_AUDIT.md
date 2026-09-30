@@ -2566,6 +2566,15 @@ and unsafe prototype-pool ownership. These are S2 blockers and do not alter the
 operation classifications below. No conformance or security claim closes through
 the documentation review alone.
 
+The first S2 security batch closed the plaintext credential and implicit
+working-directory configuration paths. Omitted `SSL` now means verified TLS;
+plaintext is an explicit false value; cleartext-password authentication requires
+verified chain and host identity; and `SSLCAFILE`/`SSLCADIR` are applied to the
+selected sync/async TLS transport or rejected. Unix/macOS runtime discovery no
+longer searches current or parent directories. Focused edge tests and all 37
+tests in each local PostgreSQL, iODBC UTF-16/UCS-4, iODBC UCS-4 and sanitizer
+matrix passed. GitHub/Windows evidence remains tied to the pushed revision.
+
 ## Priority findings
 
 ### P0 — correctness and safety

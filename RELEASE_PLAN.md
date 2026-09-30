@@ -436,10 +436,9 @@ one composition registration point, internal target boundaries and explicit
 reuse/cache contracts. The existing pool remains unadvertised prototype code
 and its copyable/manual-release model will be replaced before any reuse claim.
 
-The review also found supported-path security blockers: omitted TLS currently
-disables encryption while PostgreSQL cleartext-password authentication is
-accepted; production configuration searches working-directory files; aggregate
-server results lack a resource budget; and the prototype pool cannot isolate
-borrowers. S2 starts with the transport/authentication and configuration fixes,
-then migrates the contracts in reviewable batches. No current binary or support
-claim changed through the documentation-only S1 review.
+The review also found supported-path security blockers. The first S2 batch
+(`df8a67e`, `179f6a6`) resolved omitted-TLS/cleartext-password authentication,
+custom CA application and working-directory configuration discovery. Aggregate
+server results still lack a resource budget, and the prototype pool cannot
+isolate borrowers. S2 continues through the remaining contracts in reviewable
+batches; G12 remains open.

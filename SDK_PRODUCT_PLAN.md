@@ -1,8 +1,8 @@
 # Connectivity SDK product plan
 
 Decision date: 2026-09-30.
-Status: S1 architecture and security contracts accepted; S2 implementation has
-not started.
+Status: S1 architecture and security contracts accepted; S2 implementation is
+in progress.
 
 ## Product intent
 
@@ -246,7 +246,8 @@ review before considering any MySQL beta plan.
 - The Redshift pilot implementation and non-live CI gate are ready. Live M2 is
   waiting on restored AWS/Redshift access and cannot be simulated by PostgreSQL.
 - MS1 is the active bounded engineering milestone during that wait. S1 is
-  complete; S2 contract implementation is next.
+  complete; S2 began with verified authentication/CA policy and trusted
+  configuration discovery. Provider/composition extraction is next.
 - When Redshift access returns, finish the current coherent MS1 batch, preserve
   its evidence, and run M2 before expanding MySQL scope. Re-estimate whether to
   finish the remaining MS1 packages or proceed directly to Redshift M3 based on
