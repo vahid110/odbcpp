@@ -67,7 +67,7 @@ std::string diagnostics(SQLHDBC connection) {
     SQLCHAR message[1024]{};
     SQLINTEGER native_error = 0;
     SQLSMALLINT message_length = 0;
-    const auto result = SQLGetDiagRec(
+    const auto result = SQLGetDiagRecA(
         SQL_HANDLE_DBC, connection, record, state, &native_error, message,
         static_cast<SQLSMALLINT>(sizeof(message)), &message_length);
     if (result == SQL_NO_DATA) break;
