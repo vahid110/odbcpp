@@ -549,3 +549,18 @@ This is a source-boundary milestone only. It does not qualify AWS-LC, OpenSSL or
 any linkage profile. Dependency origin, packaged loader behavior, symbol
 visibility/coexistence, the qualified OpenSSL matrix and the bounded AWS-LC
 Linux proof remain required for G12.
+
+## S2C dependency-origin evidence — 2026-09-30
+
+The artifact inspector now resolves shared OpenSSL dependencies on Linux and
+macOS to canonical files and records their hashes with the driver hash. For a
+bundled-static profile it verifies both configured archives remain under the
+controlled dependency root and records their hashes, while keeping embedded
+code origin unverified. Evidence schema 2 keeps dependency form, resolved
+origin, configured inputs and qualification claims independent; qualification
+remains false.
+
+The next package-evidence step must bind Windows PE import names to byte-identical
+controlled-prefix DLLs and fresh-runner loaded paths. Preloaded-module
+coexistence, symbol visibility, completed OpenSSL qualification and AWS-LC are
+still open, so this checkpoint adds no support claim.

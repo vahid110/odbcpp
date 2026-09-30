@@ -63,11 +63,14 @@ transport layer. AWS-LC remains an implementation and qualification task, not a
 relink-only claim.
 
 The private primitive adapter reports compile-time and loaded runtime provider
-versions plus active FIPS state. A cross-platform binary inspector now verifies
-whether the driver has shared crypto dependencies or embeds them and records
-hashed evidence without claiming dependency origin or profile qualification.
-Origin resolution, packaged loader behavior, symbol visibility and coexistence
-evidence remain required before any matrix row is qualified.
+versions plus active FIPS state. A cross-platform binary inspector verifies
+whether the driver has shared crypto dependencies or embeds them. On Linux and
+macOS it also resolves shared provider libraries to canonical paths and hashes
+the loaded files. Bundled-static evidence separately hashes the configured
+controlled-prefix link inputs without treating those inputs as proof of the
+embedded bytes' origin. Windows packaged-loader origin, static provenance,
+symbol visibility and coexistence evidence remain required before any matrix
+row is qualified.
 
 ## Linkage profiles
 

@@ -251,3 +251,18 @@ integration suites. This closes the common-adapter source boundary only.
 OpenSSL profile qualification, dependency origin, loader/coexistence evidence
 and the bounded AWS-LC Linux proof remain open; no new provider or linkage
 profile is claimed.
+
+### S2C dependency-origin evidence — 2026-09-30
+
+Artifact evidence now resolves OpenSSL shared-library paths on Linux and macOS,
+canonicalizes them and records hashes bound to the inspected driver. The static
+profile separately verifies and hashes both configured link inputs beneath its
+controlled dependency root, without claiming that this proves embedded-byte
+origin. Negative fixtures reject unresolved shared libraries, profile
+mismatches and static inputs outside the controlled root.
+
+This closes dependency-origin evidence for the exercised Unix profiles only.
+It does not qualify a matrix row. Windows must still bind exact PE imports to
+the controlled-prefix DLLs and fresh-runner loaded paths; static provenance,
+symbol visibility, preloaded-provider coexistence, OpenSSL matrix qualification
+and the bounded AWS-LC Linux proof remain open.
