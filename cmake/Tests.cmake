@@ -35,6 +35,49 @@ foreach(test_file ${UNIT_TEST_SOURCES})
   set_tests_properties(${test_name} PROPERTIES LABELS "unit")
 endforeach()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+   ODBCPP_CRYPTO_LINKAGE STREQUAL "BUNDLED_STATIC" AND
+   ((ODBCPP_CRYPTO_COHABITATION_SSL_LIBRARY AND
+     NOT ODBCPP_CRYPTO_COHABITATION_CRYPTO_LIBRARY) OR
+    (ODBCPP_CRYPTO_COHABITATION_CRYPTO_LIBRARY AND
+     NOT ODBCPP_CRYPTO_COHABITATION_SSL_LIBRARY)))
+  message(FATAL_ERROR
+    "Both crypto cohabitation libraries must be provided together")
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+   ODBCPP_CRYPTO_LINKAGE STREQUAL "BUNDLED_STATIC" AND
+   ODBCPP_CRYPTO_COHABITATION_SSL_LIBRARY AND
+   ODBCPP_CRYPTO_COHABITATION_CRYPTO_LIBRARY)
+  foreach(_cohabitation_library IN ITEMS
+      "${ODBCPP_CRYPTO_COHABITATION_SSL_LIBRARY}"
+      "${ODBCPP_CRYPTO_COHABITATION_CRYPTO_LIBRARY}")
+    if(NOT IS_ABSOLUTE "${_cohabitation_library}" OR
+       NOT EXISTS "${_cohabitation_library}")
+      message(FATAL_ERROR
+        "Crypto cohabitation libraries must be existing absolute files")
+    endif()
+  endforeach()
+  add_executable(test_static_crypto_cohabitation
+    tests/security/test_static_crypto_cohabitation.cpp)
+  target_include_directories(test_static_crypto_cohabitation PRIVATE
+    ${ODBC_INCLUDE_DIR})
+  target_link_libraries(test_static_crypto_cohabitation PRIVATE
+    GTest::gtest_main ${CMAKE_DL_LIBS})
+  target_compile_definitions(test_static_crypto_cohabitation PRIVATE
+    ODBCPP_COHABITATION_SSL_LIBRARY="${ODBCPP_CRYPTO_COHABITATION_SSL_LIBRARY}"
+    ODBCPP_COHABITATION_CRYPTO_LIBRARY="${ODBCPP_CRYPTO_COHABITATION_CRYPTO_LIBRARY}"
+    ODBCPP_DRIVER_LIBRARY_PATH="$<TARGET_FILE:${PROJECT_NAME}_driver>")
+  apply_compiler_settings(test_static_crypto_cohabitation)
+  add_dependencies(test_static_crypto_cohabitation ${PROJECT_NAME}_driver)
+  add_test(NAME test_static_crypto_cohabitation
+    COMMAND test_static_crypto_cohabitation)
+  set_tests_properties(test_static_crypto_cohabitation
+    PROPERTIES LABELS "unit;architecture")
+  set_target_properties(test_static_crypto_cohabitation PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+endif()
+
 add_test(
   NAME test_architecture_boundaries
   COMMAND ${CMAKE_COMMAND}
@@ -228,6 +271,26 @@ if(UNIX OR WIN32)
       target_compile_definitions(it_driver_manager PRIVATE
         ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})
     endif()
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+       ODBCPP_CRYPTO_LINKAGE STREQUAL "BUNDLED_STATIC" AND
+       ODBCPP_CRYPTO_COHABITATION_SSL_LIBRARY AND
+       ODBCPP_CRYPTO_COHABITATION_CRYPTO_LIBRARY)
+      add_executable(it_crypto_profile_live
+        tests/driver_manager/it_crypto_profile_live.cpp)
+      target_include_directories(it_crypto_profile_live PRIVATE
+        ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
+      target_link_libraries(it_crypto_profile_live PRIVATE
+        GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY})
+      apply_compiler_settings(it_crypto_profile_live)
+      add_dependencies(it_crypto_profile_live ${PROJECT_NAME}_driver)
+      add_test(NAME it_crypto_profile_live COMMAND it_crypto_profile_live)
+      set_tests_properties(it_crypto_profile_live
+        PROPERTIES LABELS "integration")
+      set_target_properties(it_crypto_profile_live PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+    endif()
+
     apply_compiler_settings(it_driver_manager)
     add_test(NAME it_driver_manager COMMAND it_driver_manager)
     set_tests_properties(it_driver_manager PROPERTIES LABELS "integration")

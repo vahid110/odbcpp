@@ -399,6 +399,31 @@ jobs:
   linux-openssl-static:
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+          POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+          POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGDATABASE: postgres
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      ODBCSYSINI: ${{ github.workspace }}/.ci-openssl-static
+      ODBCINI: ${{ github.workspace }}/.ci-openssl-static/odbc.ini
+
     steps:
       - uses: actions/checkout@v5
 
@@ -408,6 +433,58 @@ jobs:
             /etc/apt/sources.list.d/google-chrome.sources
           sudo apt-get update
           sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev
+
+      - name: Configure PostgreSQL verified-TLS fixture
+        run: |
+          tls="$RUNNER_TEMP/postgres-tls"
+          mkdir -p "$tls"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout "$tls/server.key" -out "$tls/server.crt" \
+            -subj '/CN=127.0.0.1' \
+            -addext 'subjectAltName=IP:127.0.0.1'
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout "$tls/wrong.key" -out "$tls/wrong.crt" \
+            -subj '/CN=untrusted.invalid'
+          container="${{ job.services.postgres.id }}"
+          docker cp "$tls/server.key" "$container:/tmp/server.key"
+          docker cp "$tls/server.crt" "$container:/tmp/server.crt"
+          docker exec -u 0 "$container" sh -c '
+            cp /tmp/server.key "$PGDATA/server.key"
+            cp /tmp/server.crt "$PGDATA/server.crt"
+            chown postgres:postgres "$PGDATA/server.key" "$PGDATA/server.crt"
+            chmod 600 "$PGDATA/server.key"
+            printf "ssl=on\nssl_cert_file=\047server.crt\047\nssl_key_file=\047server.key\047\n" >> "$PGDATA/postgresql.conf"
+          '
+          docker restart "$container"
+          for attempt in {1..30}; do
+            pg_isready -h 127.0.0.1 -U postgres && break
+            if [[ "$attempt" == 30 ]]; then exit 1; fi
+            sleep 1
+          done
+          echo '127.0.0.1 wrong-host.invalid' | sudo tee -a /etc/hosts
+          echo "ODBCPP_POSTGRES_TLS_DIR=$tls" >> "$GITHUB_ENV"
+
+      - name: Configure static-profile ODBC registration
+        run: |
+          mkdir -p "$ODBCSYSINI"
+          cat > "$ODBCINI" <<'EOF'
+          [RedshiftProd]
+          Driver=ODBCPP PostgreSQL
+          Server=127.0.0.1
+          Port=5432
+          Database=postgres
+          UID=postgres
+          PWD=postgres
+          SSL=0
+          TransportMode=Sync
+          DeadlineModel=Strict
+          EOF
+          cat > "$ODBCSYSINI/odbcinst.ini" <<'EOF'
+          [ODBCPP PostgreSQL]
+          Driver=${{ github.workspace }}/build-openssl-static/libodbcpp.so
+          Setup=${{ github.workspace }}/build-openssl-static/libodbcpp.so
+          DriverUnicodeType=UTF16
+          EOF
 
       - name: Prepare controlled static OpenSSL prefix
         run: |
@@ -420,8 +497,12 @@ jobs:
           fi
           ssl_archive="/usr/lib/$multiarch/libssl.a"
           crypto_archive="/usr/lib/$multiarch/libcrypto.a"
+          shared_ssl="$(realpath -e "/usr/lib/$multiarch/libssl.so.3")"
+          shared_crypto="$(realpath -e "/usr/lib/$multiarch/libcrypto.so.3")"
           test -f "$ssl_archive"
           test -f "$crypto_archive"
+          test -f "$shared_ssl"
+          test -f "$shared_crypto"
           test "$(dirname "$(realpath -e "$ssl_archive")")" = \
             "$(dirname "$(realpath -e "$crypto_archive")")"
           package_files="$RUNNER_TEMP/libssl-dev-files"
@@ -429,19 +510,35 @@ jobs:
           grep -Fx "$ssl_archive" "$package_files"
           grep -Fx "$crypto_archive" "$package_files"
           package_version="$(dpkg-query -W -f='${Version}' libssl-dev)"
+          ssl_runtime_package="$(dpkg-query -S "$shared_ssl" | cut -d: -f1)"
+          crypto_runtime_package="$(dpkg-query -S "$shared_crypto" | cut -d: -f1)"
+          test "$ssl_runtime_package" = "$crypto_runtime_package"
+          runtime_package_version="$(dpkg-query -W -f='${Version}' "$ssl_runtime_package")"
+          test "$runtime_package_version" = "$package_version"
           cp -L "$ssl_archive" "$crypto_archive" "$root/lib/"
           test -z "$(find "$root" -type l -print -quit)"
-          python3 - "$package_version" "$multiarch" \
-            "$ssl_archive" "$crypto_archive" <<'PY'
+          python3 - "$package_version" "$ssl_runtime_package" \
+            "$runtime_package_version" "$multiarch" "$shared_ssl" \
+            "$shared_crypto" "$ssl_archive" "$crypto_archive" <<'PY'
           import hashlib
           import json
           from pathlib import Path
           import sys
-          package_version, multiarch, *archives = sys.argv[1:]
+          (package_version, runtime_package, runtime_package_version, multiarch,
+           shared_ssl, shared_crypto, *archives) = sys.argv[1:]
           evidence = {
               "package": "libssl-dev",
               "packageVersion": package_version,
+              "runtimePackage": runtime_package,
+              "runtimePackageVersion": runtime_package_version,
               "multiarch": multiarch,
+              "cohabitationLibraries": {
+                  Path(path).name: {
+                      "path": str(Path(path).resolve(strict=True)),
+                      "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+                  }
+                  for path in (shared_ssl, shared_crypto)
+              },
               "sourceArchives": {
                   Path(path).name: {
                       "path": str(Path(path).resolve(strict=True)),
@@ -455,6 +552,8 @@ jobs:
           )
           PY
           echo "ODBCPP_STATIC_OPENSSL_ROOT=$root" >> "$GITHUB_ENV"
+          echo "ODBCPP_COHABITATION_SSL_LIBRARY=$shared_ssl" >> "$GITHUB_ENV"
+          echo "ODBCPP_COHABITATION_CRYPTO_LIBRARY=$shared_crypto" >> "$GITHUB_ENV"
 
       - name: Configure controlled static profile
         run: >-
@@ -465,6 +564,8 @@ jobs:
           -DODBCPP_CRYPTO_PROVIDER=OPENSSL
           -DODBCPP_CRYPTO_LINKAGE=BUNDLED_STATIC
           -DODBCPP_CRYPTO_ROOT="$ODBCPP_STATIC_OPENSSL_ROOT"
+          -DODBCPP_CRYPTO_COHABITATION_SSL_LIBRARY="$ODBCPP_COHABITATION_SSL_LIBRARY"
+          -DODBCPP_CRYPTO_COHABITATION_CRYPTO_LIBRARY="$ODBCPP_COHABITATION_CRYPTO_LIBRARY"
           -DODBC_DRIVER_MANAGER_FLAVOR=UNIXODBC
           -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2
           -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
@@ -473,7 +574,79 @@ jobs:
       - name: Build and run common crypto tests
         run: |
           cmake --build build-openssl-static --parallel
-          ctest --test-dir build-openssl-static -L unit --timeout 60 --output-on-failure
+          ctest --test-dir build-openssl-static -L unit \
+            -E '^test_static_crypto_cohabitation$' \
+            --timeout 60 --output-on-failure
+          LD_PRELOAD="$ODBCPP_COHABITATION_CRYPTO_LIBRARY:$ODBCPP_COHABITATION_SSL_LIBRARY" \
+            build-openssl-static/tests/test_static_crypto_cohabitation \
+              --gtest_output=xml:openssl-static-cohabitation.xml
+
+      - name: Run mandatory live TLS, SCRAM, and cohabitation tests
+        run: |
+          trusted="DRIVER={ODBCPP PostgreSQL};SERVER=127.0.0.1;PORT=5432;DATABASE=postgres;UID=postgres;PWD=postgres;SSL=1;SSLCAFILE=$ODBCPP_POSTGRES_TLS_DIR/server.crt;"
+          wrong_ca="DRIVER={ODBCPP PostgreSQL};SERVER=127.0.0.1;PORT=5432;DATABASE=postgres;UID=postgres;PWD=postgres;SSL=1;SSLCAFILE=$ODBCPP_POSTGRES_TLS_DIR/wrong.crt;"
+          wrong_host="DRIVER={ODBCPP PostgreSQL};SERVER=wrong-host.invalid;PORT=5432;DATABASE=postgres;UID=postgres;PWD=postgres;SSL=1;SSLCAFILE=$ODBCPP_POSTGRES_TLS_DIR/server.crt;"
+          LD_PRELOAD="$ODBCPP_COHABITATION_CRYPTO_LIBRARY:$ODBCPP_COHABITATION_SSL_LIBRARY" \
+            ctest --test-dir build-openssl-static -L integration \
+              -E '^it_crypto_profile_live$' \
+              --timeout 60 --output-on-failure
+          ODBCPP_CRYPTO_PROFILE_TEST_CONNECTION="$trusted" \
+          ODBCPP_CRYPTO_PROFILE_WRONG_CA_CONNECTION="$wrong_ca" \
+          ODBCPP_CRYPTO_PROFILE_WRONG_HOST_CONNECTION="$wrong_host" \
+          LD_PRELOAD="$ODBCPP_COHABITATION_CRYPTO_LIBRARY:$ODBCPP_COHABITATION_SSL_LIBRARY" \
+            build-openssl-static/tests/it_crypto_profile_live \
+              --gtest_output=xml:openssl-static-live.xml
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          expected = {
+              "openssl-static-cohabitation.xml": {
+                  "StaticCryptoCohabitationTest.PreservesPreloadedProviderAndLoadsOnlyOdbcSurface"
+              },
+              "openssl-static-live.xml": {
+                  "CryptoProfileLiveTest.CompletesVerifiedTlsScramQuery",
+                  "CryptoProfileLiveTest.RejectsUntrustedCertificate",
+                  "CryptoProfileLiveTest.RejectsHostnameMismatch",
+              },
+          }
+          for path, expected_cases in expected.items():
+              root = ET.parse(path).getroot()
+              cases = {
+                  f'{case.attrib["classname"]}.{case.attrib["name"]}'
+                  for case in root.iter("testcase")
+              }
+              assert cases == expected_cases, (path, cases)
+              assert not list(root.iter("failure")), path
+              assert not list(root.iter("error")), path
+              assert not list(root.iter("skipped")), path
+          driver = Path("build-openssl-static/libodbcpp.so")
+          shared_ssl = Path(os.environ["ODBCPP_COHABITATION_SSL_LIBRARY"])
+          shared_crypto = Path(os.environ["ODBCPP_COHABITATION_CRYPTO_LIBRARY"])
+          evidence = {
+              "schemaVersion": 1,
+              "profile": "OPENSSL/BUNDLED_STATIC/Linux",
+              "driverSha256": hashlib.sha256(driver.read_bytes()).hexdigest(),
+              "preloadedLibraries": {
+                  shared.name: {
+                      "path": str(shared.resolve(strict=True)),
+                      "sha256": hashlib.sha256(shared.read_bytes()).hexdigest(),
+                  }
+                  for shared in (shared_ssl, shared_crypto)
+              },
+              "verifiedTlsScramQuery": True,
+              "untrustedCertificateRejected": True,
+              "hostnameMismatchRejected": True,
+              "sameProviderCohabitationVerified": True,
+              "crossImplementationCohabitationVerified": False,
+              "qualificationClaimed": False,
+          }
+          Path("openssl-static-live-evidence.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+          )
+          PY
 
       - name: Verify bounded static evidence
         run: |
@@ -494,6 +667,19 @@ jobs:
           assert evidence["runtimeDependencies"] == []
           assert evidence["sslLinkInputSha256"] and evidence["cryptoLinkInputSha256"]
           PY
+          nm -D --undefined-only --format=posix \
+            build-openssl-static/libodbcpp.so | awk '$2 == "U" {print $1}' | \
+            sed 's/@.*$//' | \
+            sort -u > "$RUNNER_TEMP/driver-undefined-symbols"
+          nm -g --defined-only --format=posix \
+            "$ODBCPP_STATIC_OPENSSL_ROOT/lib/libssl.a" \
+            "$ODBCPP_STATIC_OPENSSL_ROOT/lib/libcrypto.a" | \
+            awk '$2 ~ /^[A-Z]$/ {print $1}' | sort -u \
+            > "$RUNNER_TEMP/provider-defined-symbols"
+          comm -12 "$RUNNER_TEMP/driver-undefined-symbols" \
+            "$RUNNER_TEMP/provider-defined-symbols" \
+            > "$RUNNER_TEMP/unresolved-provider-symbols"
+          test ! -s "$RUNNER_TEMP/unresolved-provider-symbols"
 
       - name: Preserve static-profile evidence
         uses: actions/upload-artifact@v4
@@ -503,6 +689,9 @@ jobs:
             build-openssl-static/odbcpp-crypto-manifest.json
             build-openssl-static/odbcpp-crypto-artifact-evidence.json
             openssl-static-source-evidence.json
+            openssl-static-live-evidence.json
+            openssl-static-cohabitation.xml
+            openssl-static-live.xml
           if-no-files-found: error
 
   iodbc-unicode:
