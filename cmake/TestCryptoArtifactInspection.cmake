@@ -111,3 +111,50 @@ execute_process(
 if(_mismatch_result EQUAL 0)
   message(FATAL_ERROR "Artifact evidence accepted a mismatched configure profile")
 endif()
+
+function(run_windows_fixture name output expect_success)
+  set(_fixture_dir "${BINARY_DIR}/crypto-windows-${name}")
+  file(MAKE_DIRECTORY "${_fixture_dir}")
+  set(_manifest "${_fixture_dir}/manifest.json")
+  file(WRITE "${_manifest}"
+    "{\"provider\":\"OPENSSL\",\"requestedLinkage\":\"BUNDLED_SHARED\"}\n")
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+            -DARTIFACT=${_artifact}
+            -DEXPECTED_PROVIDER=OPENSSL
+            -DEXPECTED_LINKAGE=BUNDLED_SHARED
+            -DPLATFORM=Windows
+            "-DINSPECTION_OUTPUT=${output}"
+            -DCONFIG_MANIFEST=${_manifest}
+            -DEVIDENCE=${_fixture_dir}/evidence.json
+            -P "${_script}"
+    RESULT_VARIABLE _result
+    OUTPUT_VARIABLE _stdout
+    ERROR_VARIABLE _stderr)
+  if(expect_success AND NOT _result EQUAL 0)
+    message(FATAL_ERROR "${name} unexpectedly failed: ${_stderr}${_stdout}")
+  elseif(NOT expect_success AND _result EQUAL 0)
+    message(FATAL_ERROR "${name} unexpectedly passed")
+  endif()
+  if(expect_success)
+    file(READ "${_fixture_dir}/evidence.json" _evidence)
+    string(JSON _count LENGTH "${_evidence}" runtimeDependencies)
+    string(JSON _first_role GET "${_evidence}" runtimeDependencies 0 role)
+    string(JSON _first_file GET "${_evidence}" runtimeDependencies 0 file)
+    string(JSON _origin GET "${_evidence}" dependencyOriginVerified)
+    if(NOT _count EQUAL 2 OR NOT _first_role STREQUAL "ssl" OR
+       NOT _first_file STREQUAL "LiBsSl-3-X64.DlL" OR _origin)
+      message(FATAL_ERROR "${name} emitted incorrect PE import evidence")
+    endif()
+  endif()
+endfunction()
+
+run_windows_fixture(pe_imports_ok
+  "Image has dependencies:\n  LiBsSl-3-X64.DlL\n  libcrypto-3-x64.dll\n  KERNEL32.dll" true)
+run_windows_fixture(pe_missing_crypto "  libssl-3-x64.dll" false)
+run_windows_fixture(pe_duplicate_ssl
+  "  libssl-3-x64.dll\n  LIBSSL-3-X64.DLL\n  libcrypto-3-x64.dll" false)
+run_windows_fixture(pe_lookalike
+  "  libssl-helper.dll\n  libcrypto-3-x64.dll" false)
+run_windows_fixture(pe_path_bearing
+  "  C:/foreign/libssl-3-x64.dll\n  libcrypto-3-x64.dll" false)
