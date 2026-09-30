@@ -281,7 +281,9 @@ if(UNIX OR WIN32)
       target_include_directories(it_crypto_profile_live PRIVATE
         ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
       target_link_libraries(it_crypto_profile_live PRIVATE
-        GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY})
+        GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY} ${CMAKE_DL_LIBS})
+      target_compile_definitions(it_crypto_profile_live PRIVATE
+        ODBCPP_DRIVER_LIBRARY_PATH="$<TARGET_FILE:${PROJECT_NAME}_driver>")
       apply_compiler_settings(it_crypto_profile_live)
       add_dependencies(it_crypto_profile_live ${PROJECT_NAME}_driver)
       add_test(NAME it_crypto_profile_live COMMAND it_crypto_profile_live)

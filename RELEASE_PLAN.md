@@ -604,7 +604,8 @@ profile qualification, provider coexistence, AWS-LC and FIPS remain open.
 
 The Linux `BUNDLED_STATIC` candidate now completes a required query through
 unixODBC, PostgreSQL verified TLS and SCRAM. Separate mandatory cases reject an
-untrusted CA and hostname mismatch. The same run preloads the system shared
+untrusted CA and hostname mismatch through unixODBC and confirm their precise
+TLS diagnostics through the driver entry points. The same run preloads the system shared
 OpenSSL, loads and uses the static driver, verifies that provider identity is
 unchanged, and rejects unresolved provider symbols in the driver.
 

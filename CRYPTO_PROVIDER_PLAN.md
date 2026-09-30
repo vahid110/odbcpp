@@ -204,7 +204,8 @@ proof, so the Linux OpenSSL static row remains unqualified.
 The static candidate now runs mandatory unixODBC tests against PostgreSQL 17
 using verified TLS, a private trust root and SCRAM authentication. A successful
 query is required; an untrusted certificate and a hostname mismatch must both
-fail. The test process preloads the system shared OpenSSL before the statically
+fail through unixODBC, while direct driver calls retain the precise TLS failure
+diagnostics as additional evidence. The test process preloads the system shared OpenSSL before the statically
 linked driver is loaded and used, then checks that the preloaded provider
 identity stays in place. The artifact gate also rejects unresolved provider
 symbols, in addition to dynamic dependencies and non-ODBC exports.

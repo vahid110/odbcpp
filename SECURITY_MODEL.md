@@ -241,7 +241,8 @@ preloaded-module coexistence, so provider/linkage qualification remains open.
 
 The Linux OpenSSL static candidate now requires a successful verified-TLS and
 SCRAM query through unixODBC, and requires rejection of both an untrusted CA and
-a hostname mismatch. Its test host preloads the shared provider before loading
+a hostname mismatch through unixODBC, with direct driver calls preserving exact
+TLS failure diagnostics. Its test host preloads the shared provider before loading
 and using the static driver; the shared provider identity must remain stable,
 and the driver must contain no unresolved provider symbols.
 

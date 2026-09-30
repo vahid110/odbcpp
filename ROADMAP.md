@@ -304,7 +304,8 @@ evidence are complete. AWS-LC and FIPS remain unclaimed.
 
 The static candidate now has mandatory unixODBC evidence for a verified-TLS,
 SCRAM-authenticated PostgreSQL query plus rejection of an untrusted CA and a
-hostname mismatch. A shared OpenSSL instance is preloaded while the static
+hostname mismatch through unixODBC; direct driver calls also retain the exact
+TLS failure diagnostics. A shared OpenSSL instance is preloaded while the static
 driver is loaded and used; its identity remains stable, and unresolved provider
 symbols are rejected alongside the existing dependency and export checks.
 
