@@ -297,3 +297,19 @@ cross-provider coexistence; all remain required before qualification. Local
 macOS runs are development checks, not an additional supported profile.
 
 Source reference: [AWS-LC incorporation guide at the pinned revision](https://github.com/aws/aws-lc/blob/574fbd729ca31aeebe80a98d35742c0402435790/INCORPORATING.md).
+
+## S2C AWS-LC verified TLS interoperability — 2026-09-30
+
+The isolated static/shared adapter proof now requires complete TLS 1.2 and 1.3
+handshakes against an independent Python/OpenSSL peer. Fresh temporary
+certificates exercise trusted DNS/IP identities, encrypted binary round trips,
+wrong DNS/IP identity rejection and unrelated trust-root rejection. Negative
+cases require an unverified client state and no application bytes received by
+the peer; reset must clear active/verified session state. Socket, subprocess
+and CTest deadlines bound failures. Python TLS 1.3 support and the OpenSSL CLI
+are required fixture dependencies; unsupported runtimes fail rather than skip.
+
+This adds adapter-level handshake/verification evidence to both Linux CI
+variants. It does not establish PostgreSQL startup/authentication over TLS,
+ODBC driver linkage, provider coexistence or a qualified AWS-LC driver profile.
+The main AWS-LC build selection remains disabled.

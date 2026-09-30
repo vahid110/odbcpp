@@ -641,3 +641,12 @@ cross-provider coexistence; all remain required before qualification. Local
 macOS runs are development checks, not an additional supported profile.
 
 Source reference: [AWS-LC incorporation guide at the pinned revision](https://github.com/aws/aws-lc/blob/574fbd729ca31aeebe80a98d35742c0402435790/INCORPORATING.md).
+
+## S2C AWS-LC verified TLS adapter gate — 2026-09-30
+
+Both isolated AWS-LC linkage variants now require TLS 1.2/1.3 interoperability
+with an independent Python/OpenSSL server: trusted DNS/IP round trips, wrong
+DNS/IP identity and unrelated-CA rejection, and cleared verification state
+after reset. This is adapter evidence only; PostgreSQL live authentication,
+driver artifact linkage and coexistence remain open before AWS-LC qualification.
+See CRYPTO_PROVIDER_PLAN.md for fixture prerequisites and exact scope.

@@ -39,6 +39,15 @@ foreach(test IN ITEMS test_crypto_primitives test_scram_sha256 test_tls_client)
   add_test(NAME ${test} COMMAND ${test})
 endforeach()
 
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_program(OPENSSL_EXECUTABLE openssl REQUIRED)
+add_executable(tls_probe tls_probe.cpp)
+target_link_libraries(tls_probe PRIVATE adapter)
+add_test(NAME verified_tls_interop
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_verified_tls.py"
+    --probe "$<TARGET_FILE:tls_probe>" --openssl "${OPENSSL_EXECUTABLE}")
+set_tests_properties(verified_tls_interop PROPERTIES TIMEOUT 90)
+
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/adapter-proof.json"
   "{\"sourceCommit\":\"574fbd729ca31aeebe80a98d35742c0402435790\","
   "\"sourceArchiveSha256\":\"c56d5a8517c0b9b5f79c7a850c0867dbfb3790dae17b447cd9174a0ebf2d037a\","
