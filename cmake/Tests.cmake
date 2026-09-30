@@ -27,6 +27,7 @@ function(add_test_executable test_name test_file)
   )
 endfunction()
 
+option(ODBCPP_CRYPTO_PROFILE_LIVE_TESTS "Build mandatory real-driver TLS profile tests" OFF)
 option(ODBCPP_CRYPTO_TLS_PROOF "Run the independent POSIX TLS qualification peer" OFF)
 if(ODBCPP_CRYPTO_TLS_PROOF)
   if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$")
@@ -292,11 +293,12 @@ if(UNIX OR WIN32)
         ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})
     endif()
 
-    if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$" AND
-       (ODBCPP_CRYPTO_TLS_PROOF OR
-        (ODBCPP_CRYPTO_LINKAGE STREQUAL "BUNDLED_STATIC" AND
-         ODBCPP_CRYPTO_COHABITATION_SSL_LIBRARY AND
-         ODBCPP_CRYPTO_COHABITATION_CRYPTO_LIBRARY)))
+    if(ODBCPP_CRYPTO_PROFILE_LIVE_TESTS OR
+       (CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$" AND
+        (ODBCPP_CRYPTO_TLS_PROOF OR
+         (ODBCPP_CRYPTO_LINKAGE STREQUAL "BUNDLED_STATIC" AND
+          ODBCPP_CRYPTO_COHABITATION_SSL_LIBRARY AND
+          ODBCPP_CRYPTO_COHABITATION_CRYPTO_LIBRARY))))
       add_executable(it_crypto_profile_live
         tests/driver_manager/it_crypto_profile_live.cpp)
       target_include_directories(it_crypto_profile_live PRIVATE

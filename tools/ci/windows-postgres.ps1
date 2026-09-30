@@ -1,4 +1,4 @@
-param([ValidateSet('Start', 'Stop')][string]$Action, [switch]$UseInstalledDriver)
+param([ValidateSet('Start', 'Stop')][string]$Action, [switch]$UseInstalledDriver, [switch]$EnableTls)
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 $pgBin = Join-Path $env:PGBIN 'pg_ctl.exe'
@@ -16,6 +16,17 @@ try {
     & "$env:PGBIN/initdb.exe" -D $pgData -U postgres --auth=scram-sha-256 --pwfile=$passwordFile --no-locale --encoding=UTF8
 } finally {
     Remove-Item $passwordFile -ErrorAction SilentlyContinue
+}
+if ($EnableTls) {
+    $tls = Join-Path $env:RUNNER_TEMP 'odbcpp-postgres-tls'
+    New-Item $tls -ItemType Directory -Force | Out-Null
+    & openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=odbcpp-ci-postgres' `
+        -addext 'subjectAltName=IP:127.0.0.1' -keyout "$tls/server.key" -out "$tls/server.crt"
+    & openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=odbcpp-ci-unrelated' `
+        -keyout "$tls/wrong.key" -out "$tls/wrong.crt"
+    Copy-Item "$tls/server.key" "$pgData/server.key"
+    Copy-Item "$tls/server.crt" "$pgData/server.crt"
+    Add-Content "$pgData/postgresql.conf" "`nssl=on`nssl_cert_file='server.crt'`nssl_key_file='server.key'" -Encoding ascii
 }
 & $pgBin -D $pgData -l "$env:RUNNER_TEMP/odbcpp-postgres.log" -o '-p 5432 -h 127.0.0.1' -w start
 & "$env:PGBIN/psql.exe" -X -v ON_ERROR_STOP=1 -c 'SELECT version()'

@@ -761,3 +761,11 @@ TLS/SCRAM acceptance/rejection gates. Their disposable PostgreSQL fixture now
 uses SCRAM rather than trust authentication. Stopped-cluster and private-key
 permission guards protect fixture setup. Retained artifacts support later row
 acceptance; macOS qualification and Windows TLS evidence remain open.
+
+## S2C Windows live TLS batch — 2026-10-01
+
+The Windows x64 hosted gate now runs mandatory Driver Manager TLS/SCRAM,
+wrong-CA and hostname-rejection cases with retained no-skip results. Its
+PostgreSQL setup adds an opt-in TLS fixture before startup. The shared test gains
+native module loading while preserving POSIX gates. Windows row qualification
+remains open for independent downgrade and identity/coexistence evidence.

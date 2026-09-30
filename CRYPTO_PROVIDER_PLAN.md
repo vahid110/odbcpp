@@ -590,3 +590,21 @@ Fixture negatives reject relative paths and a running-cluster PID file before
 writing TLS inputs. Final exact-revision CI is mandatory. The macOS row remains
 unqualified pending the documented identity/coexistence acceptance evidence;
 Windows TLS qualification is the next platform gap.
+
+## S2C Windows mandatory live TLS evidence — 2026-10-01
+
+Windows x64 CI now opts into the common actual-driver TLS profile suite. Its
+hosted PostgreSQL SCRAM fixture can enable TLS before startup with an IP-only
+certificate and unrelated CA. Ordinary registry/DSN/integration tests keep their
+explicit non-TLS settings; the separate mandatory gate verifies a TLS/SCRAM query
+through the Windows Driver Manager and rejects unrelated trust and hostname
+mismatch through Driver Manager and direct-driver entry points.
+
+The shared test uses native Windows module loading and retains POSIX loading
+for existing profiles. The Windows runner requires exactly all three cases with
+no failures, errors or skips, and retains the XML beside package evidence.
+Local shared-path TLS tests and full protected regression suites pass; Windows
+compilation and native execution require the exact-revision hosted CI run.
+This batch covers actual-driver live TLS only. The independent legacy-protocol
+peer remains POSIX-only; Windows downgrade, identity/coexistence acceptance and
+final row qualification remain explicit follow-up gaps.

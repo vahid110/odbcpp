@@ -1,9 +1,16 @@
+#if defined(_WIN32) && !defined(NOMINMAX)
+#define NOMINMAX
+#endif
 #include <gtest/gtest.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 #include <sql.h>
 #include <sqlext.h>
-
-#include <dlfcn.h>
 
 #include <cstdlib>
 #include <algorithm>
@@ -67,9 +74,14 @@ class DirectDriver {
 
   DirectDriver() {
     const char* override_path = std::getenv("ODBCPP_CRYPTO_PROFILE_DRIVER_PATH");
-    module_ = dlopen(override_path && *override_path ? override_path : ODBCPP_DRIVER_LIBRARY_PATH,
-                     RTLD_NOW | RTLD_LOCAL);
+    const char* path = override_path && *override_path ? override_path : ODBCPP_DRIVER_LIBRARY_PATH;
+#ifdef _WIN32
+    module_ = LoadLibraryA(path);
+    if (!module_) throw std::runtime_error("failed to load direct driver: " + std::to_string(GetLastError()));
+#else
+    module_ = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     if (!module_) throw std::runtime_error(dlerror());
+#endif
     try {
       alloc_handle = load<AllocHandle>("SQLAllocHandle");
       set_env_attr = load<SetEnvAttr>("SQLSetEnvAttr");
@@ -78,14 +90,14 @@ class DirectDriver {
       disconnect = load<Disconnect>("SQLDisconnect");
       free_handle = load<FreeHandle>("SQLFreeHandle");
     } catch (...) {
-      dlclose(module_);
+      close_module();
       module_ = nullptr;
       throw;
     }
   }
 
   ~DirectDriver() {
-    if (module_) dlclose(module_);
+    if (module_) close_module();
   }
 
   DirectDriver(const DirectDriver&) = delete;
@@ -101,13 +113,29 @@ class DirectDriver {
  private:
   template <typename Function>
   Function load(const char* name) {
+#ifdef _WIN32
+    auto symbol = GetProcAddress(module_, name);
+    if (!symbol) throw std::runtime_error("missing direct driver export: " + std::string(name));
+#else
     dlerror();
     auto* symbol = dlsym(module_, name);
     if (const char* error = dlerror()) throw std::runtime_error(error);
+#endif
     return reinterpret_cast<Function>(symbol);
   }
 
+  void close_module() {
+#ifdef _WIN32
+    FreeLibrary(module_);
+#else
+    dlclose(module_);
+#endif
+  }
+#ifdef _WIN32
+  HMODULE module_{};
+#else
   void* module_{};
+#endif
 };
 
 class DirectHandles {
