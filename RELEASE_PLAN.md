@@ -517,3 +517,17 @@ provider types in installed core headers. This closes the authentication
 primitive and installed-header portions of S2C only. The common private TLS
 adapter, artifact linkage inspection, runtime diagnostics, OpenSSL qualification
 and bounded AWS-LC Linux proof remain open.
+
+## S2C runtime identity and artifact-form evidence — 2026-09-30
+
+The private crypto adapter reports compile-time and loaded runtime provider
+versions and active FIPS state. A platform-aware test inspects the completed
+driver with `readelf`, `otool` or `dumpbin`, verifies shared versus embedded
+crypto dependency form, and writes evidence tied to the artifact SHA-256.
+Negative fixtures cover missing shared dependencies and unexpected dynamic
+dependencies in a static profile.
+
+This evidence does not yet prove dependency origin, packaged loader behavior,
+symbol isolation or coexistence and explicitly makes no qualification claim.
+Those checks, the common private TLS adapter, OpenSSL matrix qualification and
+the bounded AWS-LC Linux proof remain open.

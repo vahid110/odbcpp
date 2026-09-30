@@ -221,3 +221,17 @@ adapter are excluded from installation, and architecture checks reject direct
 provider includes in backends or provider types in installed core headers.
 Transport implementations still need the common private TLS adapter; artifact
 inspection and every qualification row remain open.
+
+### S2C runtime identity and artifact-form evidence — 2026-09-30
+
+The private crypto adapter now reports its compile-time and loaded runtime
+provider versions and active FIPS state. Linux, macOS and Windows test builds
+inspect the finished driver with the platform binary tool, verify shared versus
+embedded crypto dependency form, and write evidence bound to the artifact hash.
+Negative fixtures reject missing shared dependencies and unexpected dynamic
+dependencies in a static profile.
+
+The evidence deliberately records that dependency origin is unverified and
+makes no qualification claim. Controlled-prefix resolution, packaged loader
+behavior, symbol visibility, coexistence and the common private TLS adapter are
+still required before any profile is qualified.

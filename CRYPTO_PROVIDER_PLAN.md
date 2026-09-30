@@ -61,6 +61,13 @@ Transport implementation files still invoke OpenSSL-compatible APIs directly,
 so the provider boundary remains incomplete. AWS-LC is therefore still an
 implementation and qualification task, not a relink-only claim.
 
+The private primitive adapter reports compile-time and loaded runtime provider
+versions plus active FIPS state. A cross-platform binary inspector now verifies
+whether the driver has shared crypto dependencies or embeds them and records
+hashed evidence without claiming dependency origin or profile qualification.
+Origin resolution, packaged loader behavior, symbol visibility and coexistence
+evidence remain required before any matrix row is qualified.
+
 ## Linkage profiles
 
 - `SYSTEM_SHARED` resolves a supported installed provider and records the exact
