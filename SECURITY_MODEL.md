@@ -27,6 +27,9 @@ is not a claim that the current driver has completed a security review.
    installers, hashes, signatures and provenance are supply-chain inputs.
 8. Backend extension to host process: native extensions are trusted in-process
    code with the application's privileges; SDK validation is not a sandbox.
+9. Cryptography dependency to host process: provider selection, linkage, loader
+   paths, symbol visibility, version/update ownership and coexistence with crypto
+   already loaded by an ODBC host are supply-chain and runtime boundaries.
 
 ## Current blockers
 
@@ -97,6 +100,14 @@ for full authentication: [MySQL 8.4 authentication](https://dev.mysql.com/doc/re
 PostgreSQL authentication policy is method-specific. CA file/directory inputs
 must be applied or rejected. Hostname/IP verification and TLS 1.2 minimum remain
 mandatory when verified TLS is selected.
+
+Cryptography provider and dependency linkage are immutable build profiles, not
+connection properties. Provider-neutral security contracts preserve the same
+verification and authentication behavior across implementations. Each claimed
+profile requires artifact inspection, dependency identity, coexistence evidence
+and the qualification matrix in
+[CRYPTO_PROVIDER_PLAN.md](CRYPTO_PROVIDER_PLAN.md). FIPS is an independent exact
+module/profile claim and is never inferred from provider selection.
 
 ### Credentials
 
@@ -190,6 +201,9 @@ G12 cannot close without:
 10. dependency review/OSV scanning, hashes for fetched archives, pinned CI action
     revisions and an internal dependency/SBOM inventory;
 11. release hardening flags plus artifact inspection on Linux, macOS and Windows.
+12. provider/linkage matrix evidence for each claimed artifact, including common
+    TLS/auth tests, binary dependency and symbol inspection, manifest accuracy,
+    provider coexistence and dependency-license/SBOM inputs.
 
 These gates are introduced incrementally in S2/S3. A missing tool may be recorded
 while developing, but it cannot be reported as passing evidence.

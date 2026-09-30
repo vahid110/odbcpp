@@ -24,6 +24,7 @@ PostgreSQL behavior remains protected by its complete regression gates.
 | A7 | The current `ConnectionPool` is prototype code and will not define the SDK pool contract | Replace its shared-pointer/manual-release model before any reuse claim; keep it internal and unadvertised meanwhile |
 | A8 | ODBC is the first client adapter; ADBC attaches later through a batch-result seam | No Arrow or ADBC dependency enters G12 |
 | A9 | Secure transport/authentication, resource budgets and extension trust are architecture concerns | The mandatory rules are in [SECURITY_MODEL.md](SECURITY_MODEL.md) |
+| A10 | Cryptography provider and linkage are explicit build-time product profiles behind private adapters | DSNs cannot select libraries; provider types do not enter SDK/backend contracts; see [CRYPTO_PROVIDER_PLAN.md](CRYPTO_PROVIDER_PLAN.md) |
 
 ## Dependency model
 
@@ -235,6 +236,12 @@ orchestration, PostgreSQL-family backend, MySQL backend, ODBC adapter and produc
 composition. Concrete protocol headers are private. Backend macros and compiled
 identity remain in composition or backend-family code.
 
+Cryptography implementation and shared/static dependency linkage are independent
+build-time product choices. The provider-neutral SDK accepts security policy and
+verified-channel evidence; only private security/transport adapters see provider
+types. The required profiles, artifact evidence and AWS-LC proof are defined in
+[CRYPTO_PROVIDER_PLAN.md](CRYPTO_PROVIDER_PLAN.md).
+
 G12 needs one documented compile-time provider registration point. Adding the
 clean-room backend may add its own sources and one product registration record;
 it changes zero shared ODBC workflow files. Runtime discovery, dynamic plugins,
@@ -253,15 +260,18 @@ iODBC UTF-16/UCS-4, Windows, sanitizer and package gates green.
    settings, and remove production current/parent-directory DSN discovery.
 2. **Provider/composition:** centralize identity, defaults, options, static
    capabilities and the single compile-time registration point.
-3. **Error/lifecycle:** introduce structured errors, disposition and resource
+3. **Crypto provider/linkage:** introduce the private provider boundary and
+   strict build profiles, preserve OpenSSL, then qualify the bounded AWS-LC
+   Linux proof and artifact inspection.
+4. **Error/lifecycle:** introduce structured errors, disposition and resource
    budgets; migrate PostgreSQL without mutable error side channels.
-4. **Normalized results:** make PostgreSQL normalize schema/cells and ordered
+5. **Normalized results:** make PostgreSQL normalize schema/cells and ordered
    execution items before the ODBC boundary.
-5. **Session/facets:** split the live session from static dialect/type/catalog
+6. **Session/facets:** split the live session from static dialect/type/catalog
    services; reclassify PostgreSQL-family parser/session code.
-6. **Build/dependency gates:** split internal targets, make protocol headers
+7. **Build/dependency gates:** split internal targets, make protocol headers
    private and automate forbidden-dependency checks.
-7. **Reuse contract:** introduce exclusive lease/reset/health test fixtures and
+8. **Reuse contract:** introduce exclusive lease/reset/health test fixtures and
    quarantine or replace the prototype pool before any pooling claim.
 
 Do not combine these into a wholesale rewrite. Compatibility adapters may exist

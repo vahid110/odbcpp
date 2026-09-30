@@ -59,7 +59,7 @@ not additional features. Re-estimate after the real Redshift pilot.
 |---|---|---:|---:|---|
 | M0 | Freeze the supported release profile and evidence inventory | 2–3 days | 3–4 days | G0 closed; target application/auth/platforms named; A1–A4 inventoried and estimated |
 | M1 | PostgreSQL consolidation and usable beta checkpoint | 14–23 days | 21–34 days | PG-BETA below closed; G9a architecture, coherent behavior, application demonstration and installable artifact |
-| MS1 | SDK foundation and bounded MySQL proof | 20–32 days | 26–42 days for MS1 | G12 closed; two real sibling backends use the shared contract; no MySQL beta or public ABI claim |
+| MS1 | SDK foundation and bounded MySQL proof | 25–41 days | 33–54 days for MS1 | G12 closed; two real sibling backends use the shared contract; qualified crypto build profiles; no MySQL beta or public ABI claim |
 | M2 | Real Redshift pilot and compatibility assessment | 3–5 days | Prior cumulative target resumes when access exists | G1 closed on a real Redshift endpoint |
 | M3 | Usable Redshift beta | 8–12 days | Re-estimate after M2 | G6–G8 and G9b closed; PostgreSQL regression gates remain green |
 | M4 | Scoped production release candidate | 8–12 days | Re-estimate after M2 | G10–G11 closed; both scoped beta baselines remain green |
@@ -77,6 +77,11 @@ The live Redshift pilot is currently waiting on restored user account access.
 MS1 is approved bounded work during that external wait. It does not replace M2
 or authorize a full MySQL driver. Its package estimates, gates and stop rules are
 in [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md).
+
+MS1 includes the bounded S2C cryptography-provider package. Provider and
+dependency linkage are explicit build profiles; OpenSSL is preserved and AWS-LC
+receives a non-FIPS Linux proof before any support claim. See
+[CRYPTO_PROVIDER_PLAN.md](CRYPTO_PROVIDER_PLAN.md).
 
 ### PG-BETA: mandatory handoff checkpoint
 

@@ -43,15 +43,16 @@ access returns; MS1 does not silently replace or waive Redshift acceptance.
 | Package | Scope | Base estimate | Exit evidence |
 |---|---|---:|---|
 | S1 | Freeze SDK boundary, dependency direction, ownership/error/deadline rules, pooling/reuse, cache and security lifecycle contracts; inventory current PostgreSQL dependencies; pin the MySQL 8 test version and initial `caching_sha2_password`-over-TLS profile | 2–4 days | [Architecture](SDK_ARCHITECTURE.md) and [security](SECURITY_MODEL.md) baselines accepted after four read-only audits; no runtime behavior change |
-| S2 | Evolve the smallest necessary interfaces and reusable conformance harness; keep PostgreSQL behavior and ABI-facing ODBC paths green | 4–6 days | PostgreSQL plus synthetic-backend contract tests pass; no PostgreSQL/native ODBC concepts cross the documented boundary |
+| S2 | Evolve the smallest necessary non-cryptography interfaces and reusable conformance harness; keep PostgreSQL behavior and ABI-facing ODBC paths green | 4–6 days | PostgreSQL plus synthetic-backend contract tests pass; no PostgreSQL/native ODBC concepts cross the documented boundary; crypto-provider isolation is estimated only in S2C |
+| S2C | Make the cryptography implementation and shared/static dependency linkage explicit build profiles; isolate provider APIs; preserve OpenSSL and qualify a bounded AWS-LC Linux proof | 5–9 days | Requested provider/linkage is verified from artifacts; common TLS/auth tests pass; no provider types leak through SDK contracts; manifest and packaging match the binary |
 | S3 | MySQL 8 protocol vertical slice: verified TLS, one password method appropriate to the test server, connect/disconnect, direct and prepared execution, scalar/NULL fetch, parameters, transactions, essential table/column metadata, server errors and recovery | 10–16 days | Unit edge cases and live container tests pass through the same shared ODBC orchestration used by PostgreSQL |
 | S4 | Backend author test kit, MySQL/PostgreSQL comparison review, extension guide and one minimal out-of-tree sample backend | 4–6 days | The clean-room backend-author exercise below passes; limitations and unstable interfaces are explicit |
 
-Total: **20–32 base engineering days**, plus **6–10 days of 30% contingency**,
-for a buffered working range of **26–42 engineering days**. These are focused
-engineering days, not elapsed calendar promises. Review the estimate after S1
-and after the first live MySQL handshake; do not consume contingency on added
-features.
+Total: **25–41 base engineering days**, plus **8–13 days of 30% contingency**,
+for a buffered working range of **33–54 engineering days**. These are focused
+engineering days, not elapsed calendar promises. Review the estimate after the
+first S2C OpenSSL artifact proof and after the first live MySQL handshake; do
+not consume contingency on added features.
 
 ### Required proof
 
@@ -82,6 +83,9 @@ features.
   [SECURITY_MODEL.md](SECURITY_MODEL.md) pass. In particular, credential
   authentication cannot disclose a password over an unverified channel, server
   input is resource-bounded and logical borrowers are isolated.
+- The cryptography provider/linkage profiles and qualification evidence in
+  [CRYPTO_PROVIDER_PLAN.md](CRYPTO_PROVIDER_PLAN.md) pass. Provider and linkage
+  are build choices, while DSNs remain provider-neutral runtime policy.
 
 ## Pooling and caching boundary
 

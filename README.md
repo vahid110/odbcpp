@@ -251,7 +251,7 @@ int main() {
 |--------|---------|-------------|
 | `BUILD_EXAMPLES` | ON | Build example applications |
 | `BUILD_TESTING` | ON | Build unit and integration tests |
-| `OPENSSL_USE_STATIC_LIBS` | OFF | Link OpenSSL statically |
+| `OPENSSL_USE_STATIC_LIBS` | ON | Legacy hint to prefer static OpenSSL; superseded by the planned verified provider/linkage profiles in [CRYPTO_PROVIDER_PLAN.md](CRYPTO_PROVIDER_PLAN.md) |
 | `ODBC_DRIVER_MANAGER_FLAVOR` | AUTO | Driver manager for the external integration test: `AUTO`, `UNIXODBC`, or `IODBC` |
 | `ODBC_DRIVER_MANAGER_INCLUDE_DIR` | — | Application-side ODBC headers for mixed-ABI driver-manager tests |
 | `ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE` | — | Fail the build unless the driver headers define a 2- or 4-byte `SQLWCHAR` as expected |

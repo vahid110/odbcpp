@@ -417,7 +417,7 @@ a PostgreSQL-family specialization and resumes at M2 when access returns.
 ADBC is recorded as a future client adapter and an architectural constraint,
 not an implementation claim. The MS1 result contract must permit a later
 columnar path without importing ODBC types into backends, but Arrow, the ADBC
-ABI and ADBC packaging remain outside scope. Exact work packages, 20–32 base
+ABI and ADBC packaging remain outside scope. Exact work packages, 25–41 base
 engineering-day estimate, 30% contingency, tests, non-goals and stop rules are
 in [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md). No release or conformance status
 changed through this planning-only checkpoint.
@@ -442,3 +442,17 @@ custom CA application and working-directory configuration discovery. Aggregate
 server results still lack a resource budget, and the prototype pool cannot
 isolate borrowers. S2 continues through the remaining contracts in reviewable
 batches; G12 remains open.
+
+## Cryptography provider and linkage checkpoint — 2026-09-30
+
+The product must support a build-time choice of cryptography implementation and
+dependency linkage. OpenSSL remains the current implementation. AWS-LC is a
+bounded G12 Linux qualification target because vendors may require it; it is not
+yet a support claim. Runtime DSNs select security policy and trust, never a
+library. Static versus system-shared versus bundled-shared crypto is independent
+of the shared ODBC driver artifact and must be proven by binary inspection.
+
+The accepted boundary, S2C package, compatibility risks, qualification matrix
+and stop rules are in [CRYPTO_PROVIDER_PLAN.md](CRYPTO_PROVIDER_PLAN.md). S2C
+adds 5–9 base engineering days and revises MS1 to 25–41 base, 33–54 buffered.
+FIPS and untested platform/provider combinations remain separate claims.
