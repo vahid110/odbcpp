@@ -229,3 +229,15 @@ which extracted sections survived linker garbage collection or byte-level
 ancestry of embedded code. Embedded-byte provenance, cross-implementation
 coexistence and AWS-LC compatibility remain open, so the matrix row and
 `qualificationClaimed` remain open.
+
+## S2C provider header identity — 2026-09-30
+
+OpenSSL discovery now compiles the selected headers to reject known compatible
+providers, versions below OpenSSL 3.0, and version text that does not identify
+OpenSSL. Both identity headers must exist within the selected include root.
+The probe is repeated
+on reconfiguration so a cached success cannot hide changed headers. Fixtures
+cover OpenSSL, AWS-LC, BoringSSL, LibreSSL, old versions, incomplete headers,
+unknown identity and recovery in the
+same build directory. This verifies header identity only; it does not qualify
+AWS-LC or prove the identity of a library selected by the runtime loader.

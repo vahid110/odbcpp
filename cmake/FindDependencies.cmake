@@ -16,6 +16,7 @@ endif()
 
 find_package(OpenSSL REQUIRED)
 include(${CMAKE_CURRENT_LIST_DIR}/VerifyCryptoDiscovery.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/VerifyCryptoIdentity.cmake)
 
 message(STATUS "OpenSSL ${OPENSSL_VERSION} found")
 message(STATUS "  Include: ${OPENSSL_INCLUDE_DIR}")
