@@ -1,11 +1,10 @@
 # ODBCPP Build System Configuration
 
 > **Current versus planned:** the implementation currently links through
-> OpenSSL CMake targets and uses `OPENSSL_USE_STATIC_LIBS` as a discovery hint.
-> It does not yet verify or expose a supported cryptography-provider/linkage
-> matrix. The accepted replacement contract is
+> OpenSSL CMake targets selected by a strict build-time provider/linkage
+> profile. Artifact inspection and AWS-LC qualification remain open. The full contract is
 > [CRYPTO_PROVIDER_PLAN.md](CRYPTO_PROVIDER_PLAN.md). Examples below describe
-> the legacy OpenSSL build until S2C lands and must not be read as AWS-LC,
+> the OpenSSL build and must not be read as AWS-LC,
 > linkage, packaging or FIPS support claims.
 
 ## Static vs Dynamic Linking
@@ -13,8 +12,8 @@
 ### Current Configuration (Default)
 - **ODBC Driver**: ✅ **SHARED** (`libodbcpp.dylib` - for ODBC Driver Manager)
 - **Core Library**: ✅ **STATIC** (`libodbcpp_core.a` - for examples/tests)
-- **OpenSSL request**: **STATIC preferred** (legacy default:
-  `OPENSSL_USE_STATIC_LIBS=ON`; resulting linkage is not currently verified)
+- **OpenSSL request**: system-shared by default on Linux/macOS and bundled-shared
+  on Windows; resulting linkage is not yet artifact-verified
 - **System Libraries**: Dynamic (libc++, libSystem - required by OS)
 
 ### Build Outputs
@@ -29,15 +28,16 @@ cmake --build build
 - `libodbcpp.dylib` (5.3MB) - **ODBC Driver** for system integration
 - `libodbcpp_core.a` (455KB) - Static library for development
 
-**Intended legacy ODBC Driver Dependencies (inspect the built artifact):**
+**Intended ODBC Driver Dependencies (inspect the built artifact):**
 - `libc++.1.dylib` (system C++ runtime)
 - `libSystem.B.dylib` (system library)
-- **OpenSSL**: requested as static; discovery can still select an unexpected
-  artifact, which is why S2C adds strict profiles and binary inspection
+- **OpenSSL**: selected by the requested profile; binary inspection remains a
+  separate qualification step
 
 #### Dynamic OpenSSL Build (Optional)
 ```bash
-cmake -DOPENSSL_USE_STATIC_LIBS=OFF -B build-dynamic
+cmake -DODBCPP_CRYPTO_PROVIDER=OPENSSL \
+      -DODBCPP_CRYPTO_LINKAGE=SYSTEM_SHARED -B build-dynamic
 cmake --build build-dynamic
 ```
 
@@ -49,7 +49,9 @@ cmake --build build-dynamic
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `OPENSSL_USE_STATIC_LIBS` | `ON` | Link OpenSSL statically for portability |
+| `ODBCPP_CRYPTO_PROVIDER` | `OPENSSL` | Provider selected for the artifact; AWS-LC is rejected until qualified |
+| `ODBCPP_CRYPTO_LINKAGE` | platform default | `SYSTEM_SHARED`, `BUNDLED_SHARED`, or `BUNDLED_STATIC` |
+| `ODBCPP_CRYPTO_ROOT` | empty | Existing absolute provider prefix required for bundled profiles |
 | `BUILD_EXAMPLES` | `ON` | Build example applications |
 | `BUILD_TESTING` | `ON` | Build unit and integration tests |
 | `TARGET_DATABASE` | `REDSHIFT` | Implemented product (`REDSHIFT` or `POSTGRESQL`); reserved future values fail configuration |
@@ -121,19 +123,24 @@ libodbcpp_core.a (455KB) - Development Library
 
 ### Production Build (Static)
 ```bash
-cmake -DCMAKE_BUILD_TYPE=Release -DOPENSSL_USE_STATIC_LIBS=ON -B build-release
+cmake -DCMAKE_BUILD_TYPE=Release \
+      -DODBCPP_CRYPTO_LINKAGE=SYSTEM_SHARED -B build-release
 cmake --build build-release --config Release
 ```
 
 ### Development Build (Dynamic)
 ```bash
-cmake -DCMAKE_BUILD_TYPE=Debug -DOPENSSL_USE_STATIC_LIBS=OFF -B build-debug
+cmake -DCMAKE_BUILD_TYPE=Debug \
+      -DODBCPP_CRYPTO_LINKAGE=SYSTEM_SHARED -B build-debug
 cmake --build build-debug --config Debug
 ```
 
 ### Distribution Build (Minimal)
 ```bash
-cmake -DCMAKE_BUILD_TYPE=Release -DOPENSSL_USE_STATIC_LIBS=ON -DBUILD_TESTING=OFF -B build-dist
+cmake -DCMAKE_BUILD_TYPE=Release \
+      -DODBCPP_CRYPTO_LINKAGE=BUNDLED_STATIC \
+      -DODBCPP_CRYPTO_ROOT=/absolute/provider/prefix \
+      -DBUILD_TESTING=OFF -B build-dist
 cmake --build build-dist --config Release
 ```
 

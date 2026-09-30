@@ -47,8 +47,19 @@ add_test(
   COMMAND ${CMAKE_COMMAND}
           -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
           -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/unsupported-backend-check
+          -DCRYPTO_PROVIDER=${ODBCPP_CRYPTO_PROVIDER}
+          -DCRYPTO_LINKAGE=${ODBCPP_CRYPTO_LINKAGE}
+          -DCRYPTO_ROOT=${ODBCPP_CRYPTO_ROOT}
           -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestUnsupportedBackend.cmake)
 set_tests_properties(test_unimplemented_backend_rejected
+  PROPERTIES LABELS "unit;architecture")
+
+add_test(
+  NAME test_crypto_profile_validation
+  COMMAND ${CMAKE_COMMAND}
+          -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestCryptoProfileValidation.cmake)
+set_tests_properties(test_crypto_profile_validation
   PROPERTIES LABELS "unit;architecture")
 
 if(TARGET test_driver_capabilities)

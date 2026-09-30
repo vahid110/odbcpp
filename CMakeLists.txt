@@ -4,7 +4,7 @@ project(odbcpp VERSION 1.0.0 LANGUAGES CXX)
 # ---- Project Options ----
 option(BUILD_EXAMPLES "Build examples" ON)
 option(BUILD_TESTING "Build tests" ON)
-option(OPENSSL_USE_STATIC_LIBS "Link OpenSSL statically when available" ON)
+include(cmake/CryptoProfile.cmake)
 set(ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE "" CACHE STRING
     "Expected driver-side SQLWCHAR size (2 or 4; empty disables the ABI check)")
 set_property(CACHE ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE PROPERTY STRINGS "" "2" "4")
@@ -29,7 +29,8 @@ endif()
 
 # ---- Build Configuration Info ----
 message(STATUS "Build Configuration:")
-message(STATUS "  Static OpenSSL: ${OPENSSL_USE_STATIC_LIBS}")
+message(STATUS "  Crypto provider: ${ODBCPP_CRYPTO_PROVIDER}")
+message(STATUS "  Crypto linkage: ${ODBCPP_CRYPTO_LINKAGE}")
 message(STATUS "  Examples: ${BUILD_EXAMPLES}")
 message(STATUS "  Testing: ${BUILD_TESTING}")
 
