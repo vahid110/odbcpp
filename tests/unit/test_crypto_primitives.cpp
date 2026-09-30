@@ -39,7 +39,13 @@ TEST(CryptoPrimitivesTest, MatchesStandardDigestAndMacVectors) {
 
 TEST(CryptoPrimitivesTest, ReportsCompileAndRuntimeProviderIdentity) {
   const auto identity = rs::core::security::crypto_provider_identity();
+#ifdef ODBCPP_TEST_AWS_LC
+  EXPECT_EQ(identity.provider, "AWS_LC");
+  EXPECT_EQ(identity.runtime_version.find("AWS-LC"), 0u);
+  EXPECT_FALSE(identity.fips_enabled);
+#else
   EXPECT_EQ(identity.provider, "OPENSSL");
+#endif
   EXPECT_FALSE(identity.compile_version.empty());
   EXPECT_FALSE(identity.runtime_version.empty());
 }

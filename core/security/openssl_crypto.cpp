@@ -45,10 +45,16 @@ int checked_int_size(std::size_t size, std::string_view input_name) {
 
 CryptoProviderIdentity crypto_provider_identity() {
   CryptoProviderIdentity identity;
+#if defined(OPENSSL_IS_AWSLC)
+  identity.provider = "AWS_LC";
+#else
   identity.provider = "OPENSSL";
+#endif
   identity.compile_version = OPENSSL_VERSION_TEXT;
   identity.runtime_version = OpenSSL_version(OPENSSL_VERSION);
-#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+#if defined(OPENSSL_IS_AWSLC)
+  identity.fips_enabled = FIPS_mode() == 1;
+#elif OPENSSL_VERSION_NUMBER >= 0x30000000L
   identity.fips_enabled = EVP_default_properties_is_fips_enabled(nullptr) == 1;
 #endif
   return identity;

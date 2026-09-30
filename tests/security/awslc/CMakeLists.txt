@@ -1,0 +1,46 @@
+cmake_minimum_required(VERSION 3.20)
+project(odbcpp_awslc_adapter_proof LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$")
+  message(FATAL_ERROR "The AWS-LC adapter proof runs only on Linux or local macOS")
+endif()
+# An isolated adapter experiment: the main driver profile stays disabled.
+include(FetchContent)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(BUILD_TOOL OFF CACHE BOOL "" FORCE)
+set(FIPS OFF CACHE BOOL "" FORCE)
+set(ENABLE_SOURCE_MODIFICATION OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(awslc
+  URL https://codeload.github.com/aws/aws-lc/tar.gz/574fbd729ca31aeebe80a98d35742c0402435790
+  URL_HASH SHA256=c56d5a8517c0b9b5f79c7a850c0867dbfb3790dae17b447cd9174a0ebf2d037a
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(awslc)
+FetchContent_Declare(googletest
+  URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+  URL_HASH SHA256=1f357c27ca988c3f7c6b4bf68a9395005ac6761f034046e9dde0896e3aba00e4
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
+get_filename_component(ODBCPP_SOURCE "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+add_library(adapter STATIC
+  ${ODBCPP_SOURCE}/core/security/openssl_crypto.cpp
+  ${ODBCPP_SOURCE}/core/security/openssl_tls_client.cpp
+  ${ODBCPP_SOURCE}/core/database/postgres/scram_sha256.cpp
+  ${ODBCPP_SOURCE}/core/util/base64.cpp)
+target_include_directories(adapter PUBLIC "${ODBCPP_SOURCE}")
+target_link_libraries(adapter PRIVATE ssl crypto)
+enable_testing()
+foreach(test IN ITEMS test_crypto_primitives test_scram_sha256 test_tls_client)
+  add_executable(${test} "${ODBCPP_SOURCE}/tests/unit/${test}.cpp")
+  target_compile_definitions(${test} PRIVATE ODBCPP_TEST_AWS_LC=1)
+  target_link_libraries(${test} PRIVATE adapter GTest::gtest_main)
+  add_test(NAME ${test} COMMAND ${test})
+endforeach()
+
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/adapter-proof.json"
+  "{\"sourceCommit\":\"574fbd729ca31aeebe80a98d35742c0402435790\","
+  "\"sourceArchiveSha256\":\"c56d5a8517c0b9b5f79c7a850c0867dbfb3790dae17b447cd9174a0ebf2d037a\","
+  "\"requestedSharedBuild\":\"${BUILD_SHARED_LIBS}\","
+  "\"scope\":\"adapter-tests-only\",\"qualificationClaimed\":false}\n")

@@ -710,6 +710,36 @@ jobs:
             openssl-static-live.xml
           if-no-files-found: error
 
+  awslc-adapter-proof:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shared: ["OFF", "ON"]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure pinned non-FIPS adapter proof
+        run: >-
+          cmake -S tests/security/awslc -B build-awslc-proof
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_SHARED_LIBS=${{ matrix.shared }}
+      - name: Build adapter and common tests
+        run: >-
+          cmake --build build-awslc-proof --parallel 4
+          --target test_crypto_primitives test_scram_sha256 test_tls_client
+      - name: Run mandatory common adapter tests
+        run: >-
+          ctest --test-dir build-awslc-proof --output-on-failure
+          --timeout 90 --no-tests=error --output-junit adapter-results.xml
+      - name: Preserve bounded proof evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: awslc-adapter-shared-${{ matrix.shared }}
+          path: |
+            build-awslc-proof/adapter-results.xml
+            build-awslc-proof/adapter-proof.json
+          if-no-files-found: error
+
   iodbc-unicode:
     runs-on: macos-latest
 

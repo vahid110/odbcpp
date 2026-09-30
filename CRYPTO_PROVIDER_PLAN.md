@@ -241,3 +241,20 @@ cover OpenSSL, AWS-LC, BoringSSL, LibreSSL, old versions, incomplete headers,
 unknown identity and recovery in the
 same build directory. This verifies header identity only; it does not qualify
 AWS-LC or prove the identity of a library selected by the runtime loader.
+
+## S2C pinned AWS-LC adapter proof — 2026-09-30
+
+An isolated CMake project under `tests/security/awslc` pins AWS-LC revision
+`574fbd729ca31aeebe80a98d35742c0402435790` and verifies the downloaded archive
+SHA-256. Linux CI builds its non-FIPS static and shared variants and runs the
+existing cryptographic primitive, SCRAM vector/error and TLS adapter lifecycle
+tests against the same private adapter sources used by the driver. Provider
+identity and FIPS-state reporting are selected inside the private adapter.
+
+This is an adapter compatibility experiment. `ODBCPP_CRYPTO_PROVIDER=AWS_LC`
+remains rejected by the main build. The proof does not cover a live PostgreSQL
+TLS handshake, certificate/hostname verification, driver artifact linkage or
+cross-provider coexistence; all remain required before qualification. Local
+macOS runs are development checks, not an additional supported profile.
+
+Source reference: [AWS-LC incorporation guide at the pinned revision](https://github.com/aws/aws-lc/blob/574fbd729ca31aeebe80a98d35742c0402435790/INCORPORATING.md).
