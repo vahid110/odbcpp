@@ -249,3 +249,12 @@ and the driver must contain no unresolved provider symbols.
 The preloaded and embedded instances originate from one package version. This
 is duplicate-instance cohabitation evidence, while cross-version and
 cross-implementation coexistence and embedded-byte provenance remain open.
+
+## S2C static dependency link-trace checkpoint — 2026-09-30
+
+CI Linux bundled-static evidence now includes a GNU ld map that must name the
+inspected output and both controlled archives as loaded inputs and member
+sources. The archives, map and exact driver hashes are retained together, and
+stale or partial maps fail closed. This is bounded link-input evidence; it does
+not establish embedded-byte ancestry, cross-implementation coexistence or
+AWS-LC qualification.

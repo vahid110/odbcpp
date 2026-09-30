@@ -134,6 +134,8 @@ add_test(
           -DINSPECTOR=${ODBCPP_CRYPTO_INSPECTOR}
           -DRESOLVER=${ODBCPP_CRYPTO_RESOLVER}
           -DCONFIG_MANIFEST=${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-manifest.json
+          -DSTATIC_LINK_MAP=${ODBCPP_CRYPTO_STATIC_LINK_MAP}
+          -DSTATIC_LINKER_IDENTITY=${ODBCPP_CRYPTO_STATIC_LINKER_IDENTITY}
           -DEVIDENCE=${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-artifact-evidence.json
           -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/InspectCryptoArtifact.cmake)
 set_tests_properties(test_crypto_artifact_dependency_form

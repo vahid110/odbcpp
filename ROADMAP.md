@@ -312,3 +312,11 @@ symbols are rejected alongside the existing dependency and export checks.
 This proves same-package duplicate-instance cohabitation. Cross-version and
 cross-implementation coexistence, embedded static provenance and AWS-LC remain
 open, so no qualification claim is made.
+
+### S2C Linux OpenSSL static link-trace gate — 2026-09-30
+
+The CI static candidate now retains its exact hashed driver with a GNU ld map
+whose `OUTPUT` record names that artifact and whose trace shows both controlled,
+hashed archives contributed members. The gate rejects stale or incomplete maps.
+This does not prove embedded-byte ancestry; that work, cross-implementation
+coexistence and AWS-LC remain open, so the row is still unqualified.

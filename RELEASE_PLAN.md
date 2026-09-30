@@ -613,3 +613,13 @@ Evidence is retained against exact driver and shared-library hashes. This is
 same-package duplicate-instance cohabitation evidence, not cross-version or
 cross-implementation proof. Static provenance and the AWS-LC comparison remain
 open, and the matrix row is not yet qualified.
+
+## S2C Linux OpenSSL static link-trace gate — 2026-09-30
+
+The CI static candidate now retains a hashed GNU ld linker map and requires both
+controlled OpenSSL archives to be loaded and to contribute archive members.
+Its `OUTPUT` record, map hash and exact archive hashes are bound to a retained
+copy of the inspected driver; a stale or incomplete map fails the build. This is
+link-input/member-extraction evidence, while embedded-byte provenance,
+cross-implementation coexistence and the AWS-LC proof remain open. It does not
+qualify the matrix row.

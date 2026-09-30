@@ -210,6 +210,27 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     "LINKER:--version-script,${_driver_export_control}")
   set_property(TARGET ${PROJECT_NAME}_driver APPEND PROPERTY
     LINK_DEPENDS "${_driver_export_control}")
+  if(ODBCPP_CRYPTO_LINKAGE STREQUAL "BUNDLED_STATIC")
+    execute_process(
+      COMMAND "${CMAKE_LINKER}" --version
+      RESULT_VARIABLE _static_linker_result
+      OUTPUT_VARIABLE ODBCPP_CRYPTO_STATIC_LINKER_IDENTITY
+      ERROR_VARIABLE _static_linker_error
+      OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(NOT _static_linker_result EQUAL 0 OR
+       NOT ODBCPP_CRYPTO_STATIC_LINKER_IDENTITY MATCHES "^GNU ld ")
+      message(FATAL_ERROR
+        "Linux BUNDLED_STATIC evidence currently requires GNU ld: "
+        "${_static_linker_error}${ODBCPP_CRYPTO_STATIC_LINKER_IDENTITY}")
+    endif()
+    string(REGEX MATCH "^[^\r\n]+"
+      ODBCPP_CRYPTO_STATIC_LINKER_IDENTITY
+      "${ODBCPP_CRYPTO_STATIC_LINKER_IDENTITY}")
+    set(ODBCPP_CRYPTO_STATIC_LINK_MAP
+        "${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-static-link.map")
+    target_link_options(${PROJECT_NAME}_driver PRIVATE
+      "LINKER:-Map,${ODBCPP_CRYPTO_STATIC_LINK_MAP}")
+  endif()
 endif()
 set_target_properties(${PROJECT_NAME}_driver PROPERTIES
   OUTPUT_NAME "odbcpp"

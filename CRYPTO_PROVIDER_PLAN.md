@@ -215,3 +215,17 @@ hashes. Because the shared and static OpenSSL instances come from the same
 package version, this proves duplicate-instance cohabitation only. It does not
 prove cross-version or cross-implementation coexistence, embedded-byte
 provenance, or AWS-LC compatibility, so `qualificationClaimed` remains false.
+
+## S2C Linux OpenSSL static link-trace gate — 2026-09-30
+
+The CI Linux static build now emits and retains a GNU ld linker map. Artifact
+inspection requires both controlled, hashed archives to appear as loaded inputs
+and as sources of extracted members, and binds the map hash plus archive hashes
+to a retained copy of the exact hashed driver. The map's `OUTPUT` record must
+resolve to that inspected driver; missing, stale or incomplete maps fail closed.
+
+This is bounded link-input and member-extraction evidence. It does not prove
+which extracted sections survived linker garbage collection or byte-level
+ancestry of embedded code. Embedded-byte provenance, cross-implementation
+coexistence and AWS-LC compatibility remain open, so the matrix row and
+`qualificationClaimed` remain open.

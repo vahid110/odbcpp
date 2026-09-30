@@ -6,7 +6,7 @@ set(_artifact "${BINARY_DIR}/crypto-inspection-fixture.bin")
 file(WRITE "${_artifact}" "fixture")
 set(_script "${SOURCE_DIR}/cmake/InspectCryptoArtifact.cmake")
 
-function(run_fixture name linkage output resolution expect_success)
+function(run_fixture name linkage output resolution expect_success static_map_mode)
   set(_fixture_dir "${BINARY_DIR}/crypto-origin-${name}")
   file(MAKE_DIRECTORY "${_fixture_dir}")
   set(_ssl "${_fixture_dir}/libssl.so.3")
@@ -20,6 +20,28 @@ function(run_fixture name linkage output resolution expect_success)
     "{\"provider\":\"OPENSSL\",\"requestedLinkage\":\"${linkage}\","
     "\"dependencyRoot\":\"${_fixture_dir}\","
     "\"sslLinkInput\":\"${_ssl}\",\"cryptoLinkInput\":\"${_crypto}\"}\n")
+  set(_static_map_argument "")
+  if(static_map_mode STREQUAL "GOOD")
+    set(_static_map "${_fixture_dir}/static-link.map")
+    file(WRITE "${_static_map}"
+      "OUTPUT(${_artifact} elf64-x86-64)\n"
+      "${_ssl}(ssl_member.o)\n${_crypto}(crypto_member.o)\n"
+      "LOAD ${_ssl}\nLOAD ${_crypto}\n")
+    set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
+  elseif(static_map_mode STREQUAL "SSL_ONLY")
+    set(_static_map "${_fixture_dir}/static-link.map")
+    file(WRITE "${_static_map}"
+      "OUTPUT(${_artifact} elf64-x86-64)\n"
+      "${_ssl}(ssl_member.o)\nLOAD ${_ssl}\nLOAD ${_crypto}\n")
+    set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
+  elseif(static_map_mode STREQUAL "WRONG_OUTPUT")
+    set(_static_map "${_fixture_dir}/static-link.map")
+    file(WRITE "${_static_map}"
+      "OUTPUT(${_fixture_dir}/another-driver.so elf64-x86-64)\n"
+      "${_ssl}(ssl_member.o)\n${_crypto}(crypto_member.o)\n"
+      "LOAD ${_ssl}\nLOAD ${_crypto}\n")
+    set(_static_map_argument "-DSTATIC_LINK_MAP=${_static_map}")
+  endif()
   execute_process(
     COMMAND "${CMAKE_COMMAND}"
             -DARTIFACT=${_artifact}
@@ -29,6 +51,8 @@ function(run_fixture name linkage output resolution expect_success)
             "-DINSPECTION_OUTPUT=${output}"
             "-DRESOLUTION_OUTPUT=${resolution}"
             -DCONFIG_MANIFEST=${_manifest}
+            ${_static_map_argument}
+            "-DSTATIC_LINKER_IDENTITY=GNU ld (fixture) 2.42"
             -DEVIDENCE=${_fixture_dir}/evidence.json
             -P "${_script}"
     RESULT_VARIABLE _result
@@ -44,13 +68,15 @@ function(run_fixture name linkage output resolution expect_success)
     string(JSON _schema GET "${_evidence}" schemaVersion)
     string(JSON _origin GET "${_evidence}" dependencyOriginVerified)
     string(JSON _inputs GET "${_evidence}" configuredLinkInputsVerified)
+    string(JSON _map GET "${_evidence}" staticLinkMapVerified)
+    string(JSON _members GET "${_evidence}" staticArchiveMemberEvidenceVerified)
     string(JSON _qualified GET "${_evidence}" qualificationClaimed)
     set(_claims_wrong false)
     if(linkage STREQUAL "BUNDLED_STATIC")
-      if(_origin OR NOT _inputs)
+      if(_origin OR NOT _inputs OR NOT _map OR NOT _members)
         set(_claims_wrong true)
       endif()
-    elseif(NOT _origin OR _inputs)
+    elseif(NOT _origin OR _inputs OR _map OR _members)
       set(_claims_wrong true)
     endif()
     if(NOT _schema EQUAL 2 OR _claims_wrong OR _qualified)
@@ -61,14 +87,17 @@ endfunction()
 
 run_fixture(shared_ok SYSTEM_SHARED
   "NEEDED libssl.so.3\nNEEDED libcrypto.so.3"
-  "libssl.so.3 => @SSL@\nlibcrypto.so.3 => @CRYPTO@" true)
-run_fixture(static_ok BUNDLED_STATIC "NEEDED libc.so.6" "" true)
-run_fixture(shared_missing_crypto SYSTEM_SHARED "NEEDED libssl.so.3" "" false)
+  "libssl.so.3 => @SSL@\nlibcrypto.so.3 => @CRYPTO@" true NONE)
+run_fixture(static_ok BUNDLED_STATIC "NEEDED libc.so.6" "" true GOOD)
+run_fixture(static_missing_map BUNDLED_STATIC "NEEDED libc.so.6" "" false NONE)
+run_fixture(static_incomplete_map BUNDLED_STATIC "NEEDED libc.so.6" "" false SSL_ONLY)
+run_fixture(static_wrong_output BUNDLED_STATIC "NEEDED libc.so.6" "" false WRONG_OUTPUT)
+run_fixture(shared_missing_crypto SYSTEM_SHARED "NEEDED libssl.so.3" "" false NONE)
 run_fixture(static_has_crypto BUNDLED_STATIC
-  "NEEDED libssl.so.3\nNEEDED libcrypto.so.3" "" false)
+  "NEEDED libssl.so.3\nNEEDED libcrypto.so.3" "" false GOOD)
 run_fixture(shared_unresolved SYSTEM_SHARED
   "NEEDED libssl.so.3\nNEEDED libcrypto.so.3"
-  "libssl.so.3 => not-found\nlibcrypto.so.3 => @CRYPTO@" false)
+  "libssl.so.3 => not-found\nlibcrypto.so.3 => @CRYPTO@" false NONE)
 
 set(_controlled "${BINARY_DIR}/crypto-origin-static-escape/controlled")
 set(_outside "${BINARY_DIR}/crypto-origin-static-escape/outside")

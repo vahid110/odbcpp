@@ -651,11 +651,14 @@ jobs:
       - name: Verify bounded static evidence
         run: |
           python3 - <<'PY'
+          import hashlib
           import json
           from pathlib import Path
+          import shutil
           root = Path("build-openssl-static")
           manifest = json.loads((root / "odbcpp-crypto-manifest.json").read_text())
           evidence = json.loads((root / "odbcpp-crypto-artifact-evidence.json").read_text())
+          source = json.loads(Path("openssl-static-source-evidence.json").read_text())
           assert manifest["provider"] == "OPENSSL"
           assert manifest["requestedLinkage"] == "BUNDLED_STATIC"
           assert manifest["dependencyRoot"] == str(Path(__import__('os').environ["ODBCPP_STATIC_OPENSSL_ROOT"]))
@@ -664,8 +667,19 @@ jobs:
           assert evidence["configuredLinkInputsVerified"] is True
           assert evidence["dependencyOriginVerified"] is False
           assert evidence["qualificationClaimed"] is False
+          assert evidence["staticLinkMapVerified"] is True
+          assert evidence["staticArchiveMemberEvidenceVerified"] is True
+          assert evidence["staticLinkerIdentity"].startswith("GNU ld ")
+          assert evidence["staticLinkMapSha256"]
           assert evidence["runtimeDependencies"] == []
-          assert evidence["sslLinkInputSha256"] and evidence["cryptoLinkInputSha256"]
+          assert evidence["sslLinkInputSha256"] == \
+            source["sourceArchives"]["libssl.a"]["sha256"]
+          assert evidence["cryptoLinkInputSha256"] == \
+            source["sourceArchives"]["libcrypto.a"]["sha256"]
+          retained_driver = Path("openssl-static-driver.so")
+          shutil.copyfile(root / "libodbcpp.so", retained_driver)
+          assert hashlib.sha256(retained_driver.read_bytes()).hexdigest() == \
+            evidence["artifactSha256"]
           PY
           nm -D --undefined-only --format=posix \
             build-openssl-static/libodbcpp.so | awk '$2 == "U" {print $1}' | \
@@ -688,6 +702,8 @@ jobs:
           path: |
             build-openssl-static/odbcpp-crypto-manifest.json
             build-openssl-static/odbcpp-crypto-artifact-evidence.json
+            build-openssl-static/odbcpp-crypto-static-link.map
+            openssl-static-driver.so
             openssl-static-source-evidence.json
             openssl-static-live-evidence.json
             openssl-static-cohabitation.xml
