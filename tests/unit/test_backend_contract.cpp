@@ -646,7 +646,7 @@ TEST_F(BackendContractTest, ParameterCopiesRejectOverflowAndRecoverAtExactBounda
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
   char input[] = "abcd";
-  for (const auto type : {SQL_C_CHAR, SQL_C_BINARY}) {
+  for (const SQLSMALLINT type : {SQLSMALLINT(SQL_C_CHAR), SQLSMALLINT(SQL_C_BINARY)}) {
     for (const SQLLEN initial_length : {SQLLEN(4), SQLLEN(SQL_NTS)}) {
       if (type == SQL_C_BINARY && initial_length == SQL_NTS) continue;
       SQLLEN length = initial_length;
