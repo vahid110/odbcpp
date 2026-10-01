@@ -45,7 +45,7 @@ class IDatabaseConnection {
 public:
   virtual ~IDatabaseConnection() = default;
   
-  virtual rs::util::Result<void> connect(const ConnectionSettings& settings) = 0;
+  virtual BackendResult<void> connect(const ConnectionSettings& settings) = 0;
   virtual void disconnect() = 0;
   virtual bool is_connected() const = 0;
   // Passive protocol state, never a network probe or a pooling guarantee.
@@ -120,8 +120,6 @@ public:
   }
   
   virtual std::string get_parameter(std::string_view key) const = 0;
-  // Legacy setup/transaction migration only. Query diagnostics use BackendError.
-  virtual std::string get_last_error() const = 0;
 };
 
 } // namespace rs::core::database

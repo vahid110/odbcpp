@@ -784,7 +784,7 @@ TEST(ConnectionLivenessTest, MalformedCredentialsFailBeforeConnectingAndAllowRet
           "secret\0other", sizeof("secret\0other") - 1);
     }
 
-    rs::util::Result<void> result;
+    rs::core::database::BackendResult<void> result;
     EXPECT_NO_THROW(result = connection.connect(settings));
     ASSERT_TRUE(result.has_error());
     EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter),
@@ -2058,4 +2058,86 @@ TEST(BackendTransactionTest, AmbiguousFailuresRetainRetirementAndOperationContex
       EXPECT_FALSE(backend.is_connected());
     }
   }
+}
+
+TEST(ConnectionLivenessTest, SetupErrorsOwnNativeDetailsAndLifecyclePhaseAfterCleanup) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::AuthRejected, Mode::StartupRejectedAfterAuth, Mode::LoginRejectedAfterAuth,
+                         Mode::AuthenticationTimeout, Mode::MalformedAuth, Mode::MalformedStartupReady}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    BackendResult<void> saved;
+    {
+      auto transport = std::make_unique<ScriptedBackendTransport>(mode);
+      auto* observed = transport.get();
+      GenericDatabaseConnection backend(std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
+      ConnectionSettings settings;
+      settings.use_ssl = false;
+      auto result = backend.connect(settings);
+      ASSERT_TRUE(result.has_error());
+      EXPECT_EQ(observed->close_count(), 1U);
+      EXPECT_FALSE(backend.is_connected());
+      EXPECT_EQ(result.backend_error().session_state, SessionState::Disconnected);
+      EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Retire);
+      EXPECT_FALSE(result.backend_error().retry_safe);
+      // MalformedStartupReady is delivered before AuthenticationOk.
+      const bool startup = mode == Mode::StartupRejectedAfterAuth;
+      EXPECT_EQ(result.backend_error().operation, startup ? BackendOperation::Startup : BackendOperation::Authenticate);
+      if (mode == Mode::AuthRejected || mode == Mode::LoginRejectedAfterAuth) {
+        EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::Authentication);
+        EXPECT_EQ(result.backend_error().native_state, mode == Mode::AuthRejected ? "28P01" : "28000");
+      } else if (mode == Mode::StartupRejectedAfterAuth) {
+        EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::Connection);
+        EXPECT_EQ(result.backend_error().native_state, "22023");
+      } else {
+        EXPECT_FALSE(result.backend_error().native_state);
+        EXPECT_EQ(result.backend_error().error_class, mode == Mode::AuthenticationTimeout ? BackendErrorClass::Timeout : BackendErrorClass::Protocol);
+      }
+      saved = result;
+      auto moved = std::move(result);
+      EXPECT_EQ(moved.error_message(), saved.error_message());
+      backend.disconnect();
+    }
+    ASSERT_TRUE(saved.has_error());
+    EXPECT_FALSE(saved.error_message().empty());
+    EXPECT_EQ(saved.backend_error().session_state, SessionState::Disconnected);
+    EXPECT_EQ(saved.backend_error().disposition, SessionDisposition::Retire);
+  }
+}
+
+TEST(ConnectionLivenessTest, InvalidReconnectKeepsExistingSessionAndPriorFailureSnapshot) {
+  using namespace rs::core::database;
+  auto transport = std::make_unique<ScriptedBackendTransport>();
+  auto* observed = transport.get();
+  GenericDatabaseConnection backend(std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
+  ConnectionSettings settings;
+  settings.use_ssl = false;
+  auto invalid = settings;
+  invalid.password = std::string("secret\0hidden", 13);
+  const auto first = backend.connect(invalid);
+  ASSERT_TRUE(first.has_error());
+  EXPECT_EQ(first.backend_error().operation, BackendOperation::Connect);
+  EXPECT_EQ(first.backend_error().disposition, SessionDisposition::Retire);
+  EXPECT_EQ(observed->connect_count(), 0U);
+  EXPECT_EQ(observed->close_count(), 0U);
+  EXPECT_EQ(first.error_message().find("secret"), std::string::npos);
+  ASSERT_TRUE(backend.connect(settings));
+  EXPECT_EQ(backend.session_state(), SessionState::Idle);
+  const auto sends = observed->send_count();
+  const auto connects = observed->connect_count();
+  const auto closes = observed->close_count();
+  const auto second = backend.connect(invalid);
+  ASSERT_TRUE(second.has_error());
+  EXPECT_EQ(second.backend_error().operation, BackendOperation::Connect);
+  EXPECT_EQ(second.backend_error().error_class, BackendErrorClass::InvalidInput);
+  EXPECT_EQ(second.backend_error().session_state, SessionState::Idle);
+  EXPECT_EQ(second.backend_error().disposition, SessionDisposition::Reusable);
+  EXPECT_FALSE(second.backend_error().native_state);
+  EXPECT_TRUE(backend.is_connected());
+  EXPECT_EQ(observed->send_count(), sends);
+  EXPECT_EQ(observed->connect_count(), connects);
+  EXPECT_EQ(observed->close_count(), closes);
+  backend.disconnect();
+  EXPECT_EQ(first.backend_error().session_state, SessionState::Disconnected);
+  EXPECT_EQ(second.backend_error().session_state, SessionState::Idle);
 }

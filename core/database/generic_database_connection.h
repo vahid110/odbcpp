@@ -12,7 +12,7 @@ public:
     std::unique_ptr<IProtocolParser> parser,
     std::unique_ptr<rs::core::transport::ITransport> transport = nullptr);
   
-  rs::util::Result<void> connect(const ConnectionSettings& settings) override;
+  BackendResult<void> connect(const ConnectionSettings& settings) override;
   void disconnect() override;
   bool is_connected() const override;
   SessionState session_state() const override { return session_state_; }
@@ -57,9 +57,9 @@ public:
       rs::util::Deadline deadline) override;
   
   std::string get_parameter(std::string_view key) const override;
-  std::string get_last_error() const override;
 
 private:
+  BackendResult<void> connect_impl(const ConnectionSettings& settings);
   SessionState session_state_{SessionState::Disconnected};
   BackendResult<QueryResult> finish_operation(BackendResult<QueryResult> result,
       BackendOperation operation);
@@ -74,19 +74,17 @@ private:
   std::unique_ptr<rs::core::transport::ITransport> transport_;
   ConnectionSettings settings_;
   std::map<std::string, std::string> server_params_;
-  std::string last_error_;
   bool connected_ = false;
   bool peer_identity_verified_ = false;
   
   // Exception-based methods (for backward compatibility)
   void write_all(const std::vector<std::byte>& data, rs::util::Deadline deadline);
   std::vector<std::byte> read_message(rs::util::Deadline deadline);
-  void perform_authentication(rs::util::Deadline deadline);
   
   // Result-based methods (internal implementation)
   rs::util::Result<void> write_all_result(const std::vector<std::byte>& data, rs::util::Deadline deadline);
   rs::util::Result<std::vector<std::byte>> read_message_result(rs::util::Deadline deadline);
-  rs::util::Result<void> perform_authentication_result(rs::util::Deadline deadline);
+  BackendResult<void> perform_authentication_result(rs::util::Deadline deadline);
   rs::util::Result<void> record_parameter_status(const Message& msg);
   BackendResult<QueryResult> read_query_result(
       rs::util::Deadline deadline, ResponseKind kind);

@@ -11,7 +11,8 @@ namespace rs::core::database {
 
 enum class BackendOperation {
   Unknown, ExecuteDirect, ExecutePrepared, Describe, Transaction,
-  BeginTransaction, CommitTransaction, RollbackTransaction, SetTransactionIsolation
+  BeginTransaction, CommitTransaction, RollbackTransaction, SetTransactionIsolation,
+  Connect, Authenticate, Startup
 };
 enum class SessionState { Disconnected, Idle, Transaction, FailedTransaction, Unknown };
 enum class SessionDisposition { Reusable, ResetRequired, Retire };

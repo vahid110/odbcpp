@@ -17,7 +17,7 @@ class ThreadSafeConnection {
 public:
   explicit ThreadSafeConnection(std::unique_ptr<IDatabaseConnection> conn);
   
-  rs::util::Result<void> connect(const ConnectionSettings& settings);
+  BackendResult<void> connect(const ConnectionSettings& settings);
   void disconnect();
   bool is_connected() const;
   
@@ -27,7 +27,6 @@ public:
                                                 rs::util::Deadline deadline);
   
   std::string get_parameter(std::string_view key) const;
-  std::string get_last_error() const;
 
 private:
   std::unique_ptr<IDatabaseConnection> conn_;

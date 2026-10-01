@@ -8,7 +8,7 @@ namespace rs::core::database {
 ThreadSafeConnection::ThreadSafeConnection(std::unique_ptr<IDatabaseConnection> conn)
   : conn_(std::move(conn)) {}
 
-rs::util::Result<void> ThreadSafeConnection::connect(const ConnectionSettings& settings) {
+BackendResult<void> ThreadSafeConnection::connect(const ConnectionSettings& settings) {
   std::unique_lock lock(mutex_);
   return conn_->connect(settings);
 }
@@ -38,11 +38,6 @@ BackendResult<QueryResult> ThreadSafeConnection::execute_prepared(std::string_vi
 std::string ThreadSafeConnection::get_parameter(std::string_view key) const {
   std::shared_lock lock(mutex_);
   return conn_->get_parameter(key);
-}
-
-std::string ThreadSafeConnection::get_last_error() const {
-  std::shared_lock lock(mutex_);
-  return conn_->get_last_error();
 }
 
 // ConnectionPool implementation

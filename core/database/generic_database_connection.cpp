@@ -84,7 +84,19 @@ rs::util::Result<ResolvedTypeMap> GenericDatabaseConnection::resolve_types(
   return types;
 }
 
-rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettings& settings) {
+BackendResult<void> GenericDatabaseConnection::connect(const ConnectionSettings& settings) {
+  auto result = connect_impl(settings);
+  if (result.has_error()) {
+    auto& error = result.backend_error();
+    if (error.operation == BackendOperation::Unknown) error.operation = BackendOperation::Connect;
+    error.session_state = session_state_;
+    error.disposition = !connected_ ? SessionDisposition::Retire :
+        session_state_ == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired;
+  }
+  return result;
+}
+
+BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSettings& settings) {
   if (settings.password.find('\0') != std::string::npos) {
     return {rs::util::DbErrorCode::InvalidParameter,
             "PostgreSQL authentication credential contains an "
@@ -141,7 +153,7 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
     auto* start_tls = dynamic_cast<
         rs::core::transport::IStartTlsTransport*>(transport_.get());
     if (start_tls == nullptr) {
-      return rs::util::Result<void>{
+      return BackendResult<void>{
           rs::util::DbErrorCode::InvalidParameter,
           "selected transport does not support PostgreSQL TLS upgrade"};
     }
@@ -158,7 +170,7 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
     auto connect_result = start_tls->connect_plain(
         settings.host, settings.port, deadline);
     if (connect_result.has_error()) {
-      return rs::util::Result<void>{
+      return BackendResult<void>{
           connect_error_code(connect_result.error()),
           connect_result.error_message()};
     }
@@ -167,14 +179,14 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
     auto ssl_req = parser_->create_ssl_request();
     auto write_result = write_all_result(ssl_req, deadline);
     if (write_result.has_error()) {
-      return write_result;
+      return {write_result.error(), write_result.error_message()};
     }
     
     // Read SSL response
     std::vector<std::byte> response(1);
     auto recv_result = transport_->recv(response, deadline);
     if (recv_result.has_error()) {
-      return rs::util::Result<void>{
+      return BackendResult<void>{
           recv_result.error(), recv_result.error_message()};
     }
     if (recv_result->n > response.size()) {
@@ -199,12 +211,12 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
     }
     
     auto upgrade_result = start_tls->upgrade_to_tls(settings.host, deadline);
-    if (upgrade_result.has_error()) return upgrade_result;
+    if (upgrade_result.has_error()) return {upgrade_result.error(), upgrade_result.error_message()};
     peer_identity_verified_ = start_tls->peer_identity_verified();
   } else {
     auto connect_result = transport_->connect(settings.host, settings.port, deadline);
     if (connect_result.has_error()) {
-      return rs::util::Result<void>{
+      return BackendResult<void>{
           connect_error_code(connect_result.error()),
           connect_result.error_message()};
     }
@@ -213,7 +225,7 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
   // Send startup message
   auto write_result = write_all_result(startup, deadline);
   if (write_result.has_error()) {
-    return write_result;
+    return {write_result.error(), write_result.error_message()};
   }
   
   // Handle authentication
@@ -224,7 +236,7 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
   
   connected_ = true;
   cleanup.complete = true;
-  return rs::util::Result<void>{};
+  return BackendResult<void>{};
 }
 
 void GenericDatabaseConnection::disconnect() {
@@ -496,9 +508,8 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
     }
     if (query_error &&
         (!result.error_message.empty() || result.additional_results.empty())) {
-      last_error_ = *query_error;
       BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),
-                         "Query error: " + last_error_};
+                         "Query error: " + *query_error};
       error.native_state = std::move(query_error_sqlstate);
       return error;
     }
@@ -513,10 +524,6 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
 std::string GenericDatabaseConnection::get_parameter(std::string_view key) const {
   auto it = server_params_.find(std::string(key));
   return (it != server_params_.end()) ? it->second : std::string{};
-}
-
-std::string GenericDatabaseConnection::get_last_error() const {
-  return last_error_;
 }
 
 void GenericDatabaseConnection::write_all(const std::vector<std::byte>& data, rs::util::Deadline deadline) {
@@ -650,29 +657,27 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
   return rs::util::Result<std::vector<std::byte>>{std::move(message)};
 }
 
-void GenericDatabaseConnection::perform_authentication(rs::util::Deadline deadline) {
-  auto result = perform_authentication_result(deadline);
-  if (result.has_error()) {
-    rs::util::unwrap_or_throw(std::move(result));
-  }
-}
-
-rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(rs::util::Deadline deadline) {
+BackendResult<void> GenericDatabaseConnection::perform_authentication_result(rs::util::Deadline deadline) {
   bool authenticated = false;
+  auto failure = [&](auto code, std::string message) {
+    BackendResult<void> result{code, std::move(message)};
+    result.backend_error().operation = authenticated ? BackendOperation::Startup : BackendOperation::Authenticate;
+    return result;
+  };
   try {
     while (true) {
       auto msg_result = read_message_result(deadline);
       if (msg_result.has_error()) {
-        return rs::util::Result<void>{msg_result.error(), msg_result.error_message()};
+        return failure(msg_result.error(), msg_result.error_message());
       }
     
       auto msg = parser_->parse_message(*msg_result);
     
       if (msg.tag == 'R') { // Authentication
         if (authenticated) {
-          return rs::util::Result<void>{
+          return failure(
               rs::util::DbErrorCode::ProtocolError,
-              "Authentication request arrived after AuthenticationOk"};
+              "Authentication request arrived after AuthenticationOk");
         }
         auto auth_req = parser_->parse_auth_request(msg.payload);
       
@@ -687,43 +692,46 @@ rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(
         if (!auth_response.empty()) {
           auto write_result = write_all_result(auth_response, deadline);
           if (write_result.has_error()) {
-            return write_result;
+            return failure(write_result.error(), write_result.error_message());
           }
         }
       }
       else if (msg.tag == 'S') { // ParameterStatus
         if (!authenticated) {
-          return rs::util::Result<void>{
+          return failure(
               rs::util::DbErrorCode::ProtocolError,
-              "ParameterStatus arrived before AuthenticationOk"};
+              "ParameterStatus arrived before AuthenticationOk");
         }
         auto status_result = record_parameter_status(msg);
-        if (status_result.has_error()) return status_result;
+        if (status_result.has_error()) return failure(status_result.error(), status_result.error_message());
       }
       else if (msg.tag == 'K') { // BackendKeyData
         if (!authenticated) {
-          return rs::util::Result<void>{
+          return failure(
               rs::util::DbErrorCode::ProtocolError,
-              "BackendKeyData arrived before AuthenticationOk"};
+              "BackendKeyData arrived before AuthenticationOk");
         }
       }
       else if (parser_->is_error_response(msg)) {
-        last_error_ = parser_->extract_error_message(msg);
+        const auto message = parser_->extract_error_message(msg);
         const auto sqlstate = parser_->extract_error_sqlstate(msg);
         const bool authentication_error =
             !authenticated || sqlstate.starts_with("28");
-        return rs::util::Result<void>{
+        auto result = failure(
             authentication_error ? rs::util::DbErrorCode::AuthenticationFailed
                                  : rs::util::DbErrorCode::ConnectionFailed,
             (authentication_error ? "Authentication failed: "
                                   : "Startup failed: ") +
-                last_error_};
+                message);
+        result.backend_error().native_state = sqlstate;
+        result.backend_error().operation = authentication_error ? BackendOperation::Authenticate : BackendOperation::Startup;
+        return result;
       }
       else if (parser_->is_ready_for_query(msg)) {
         if (!authenticated) {
-          return rs::util::Result<void>{
+          return failure(
               rs::util::DbErrorCode::ProtocolError,
-              "ReadyForQuery arrived before AuthenticationOk"};
+              "ReadyForQuery arrived before AuthenticationOk");
         }
         session_state_ = msg.payload.size() != 1 ? SessionState::Unknown :
             msg.payload[0] == std::byte{'I'} ? SessionState::Idle :
@@ -735,18 +743,17 @@ rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(
         continue; // NoticeResponse may accompany backend startup
       }
       else {
-        return rs::util::Result<void>{
+        return failure(
             rs::util::DbErrorCode::ProtocolError,
-            "Unexpected PostgreSQL startup message"};
+            "Unexpected PostgreSQL startup message");
       }
     }
   } catch (const std::exception& error) {
-    last_error_ = error.what();
-    return rs::util::Result<void>{
+    return failure(
         rs::util::DbErrorCode::ProtocolError,
-        "Invalid authentication exchange: " + last_error_};
+        std::string("Invalid authentication exchange: ") + error.what());
   }
-  return rs::util::Result<void>{};
+  return {};
 }
 
 rs::util::Result<void> GenericDatabaseConnection::record_parameter_status(

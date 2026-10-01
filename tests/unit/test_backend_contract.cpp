@@ -27,7 +27,7 @@ struct Observations {
 class FakeBackend final : public IDatabaseConnection {
  public:
   explicit FakeBackend(std::shared_ptr<Observations> seen) : seen_(std::move(seen)) {}
-  Result<void> connect(const ConnectionSettings& settings) override {
+  BackendResult<void> connect(const ConnectionSettings& settings) override {
     seen_->settings = settings; connected_ = true; return {};
   }
   void disconnect() override { connected_ = false; ++seen_->disconnects; }
@@ -131,7 +131,6 @@ class FakeBackend final : public IDatabaseConnection {
     return result;
   }
   std::string get_parameter(std::string_view key) const override { return key == "server_version" ? "1.0" : ""; }
-  std::string get_last_error() const override { return "fake error"; }
  private:
   std::shared_ptr<Observations> seen_;
   bool connected_{};
