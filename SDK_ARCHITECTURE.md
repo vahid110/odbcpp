@@ -315,3 +315,18 @@ fallback. This is the first normalized-schema migration stage: native fields are
 still present in parser/result migration storage, parameter IDs still use the
 existing resolver/cache, and cell normalization still occurs during ODBC fetch.
 No complete A5 or normalized-result gate is claimed by this checkpoint.
+
+## S2 normalized parameter descriptions checkpoint — 2026-10-01
+
+Prepared execution and statement description now return ordered, owning normalized
+parameter types. The PostgreSQL-family backend performs native/domain resolution
+after draining the response, retaining the caller's absolute deadline. Incomplete
+resolution returns an owning InvalidMetadata error with no partial result; domain
+lookup failures retain ResolveTypes provenance and prior ODBC diagnostic fallback.
+Shared ODBC maps only normalized descriptions and validates the described count.
+Its native-ID cache and resolver orchestration are removed. Existing ODBC
+normalized descriptor/revision caching remains. The backend resolves returned
+parameter metadata afresh; a replacement native cache waits for the accepted
+ownership/invalidation/epoch contracts and measurements. Repeated domain lookups
+may cost an extra catalog round trip. Native IDs remain only in parser migration
+storage; cell normalization and session facets remain separate S2 stages.

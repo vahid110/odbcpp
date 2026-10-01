@@ -631,3 +631,15 @@ contract before result metadata is applied. Tests cover owning snapshots after
 disconnect, multi-result/description schemas, independent-backend types and
 missing-metadata recovery. Native field removal, parameter description migration,
 canonical cells, ordered execution and session facets remain S2 work.
+
+### S2 normalized parameter descriptions — 2026-10-01
+
+Prepared/description results carry owning normalized parameter types, resolved by
+the backend using the original deadline. ODBC no longer reads parameter native
+IDs, invokes type resolution or stores a native-ID map. Description counts,
+application bindings and metadata-error diagnostic behavior are preserved.
+Tests cover independent normalized types, owned snapshots, original deadlines,
+incomplete/failed resolution, output preservation and same-session recovery.
+Native caches are deferred pending explicit epochs/invalidation; fresh domain
+resolution may add catalog I/O. Canonical cells, native migration-field removal,
+ordered execution and session facets remain S2 work.
