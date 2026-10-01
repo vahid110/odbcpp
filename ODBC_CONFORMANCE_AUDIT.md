@@ -2735,3 +2735,18 @@ Redshift build/absent-endpoint gates pass. Nine focused test executables and
 all 20 credential/ownership tests under ThreadSanitizer pass. Read-only review
 found no remaining actionable finding. Windows/packaging and cross-platform
 crypto evidence remain subject to exact-head CI.
+
+## S2 coordinator reset evidence — 2026-10-01
+
+Explicit private lease reset now retires on missing profile, expired/late deadline,
+backend errors/exceptions and non-Idle/Reusable or inconsistent passive success.
+The same exclusive borrow survives only verified cleanup; all returns remain
+terminal. Unit/race cases and real PG success/expired-deadline physical closure
+support this private composition step. Direct raw reset remains a bypass to guard
+before cache/reuse qualification. No ODBC attribute or compliance status changes.
+
+Validation: focused ownership tests and all 27 credential/ownership tests under
+ThreadSanitizer pass. Full local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan
+and Redshift build/absent-endpoint gates pass. Read-only review found no
+actionable issue. Windows/packaging and cross-platform crypto evidence remain
+subject to exact-head CI.

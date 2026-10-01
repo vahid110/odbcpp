@@ -1305,3 +1305,22 @@ work items and G14 acceptance. No completion or implementation claim is added.
 Current S2/S2C/MS1 work continues. M2/M3 estimates are unchanged as baseline-only
 estimates; full parity and advanced S3 are extra scope to estimate at M2, not
 consume from the existing reserve. Live Redshift access remains required.
+
+## S2 coordinator lease cleanup — 2026-10-01
+
+Added explicit private lease reset with the original deadline, exact declared
+profile, success snapshot and passive-state validation. All failed, unsupported,
+throwing, inconsistent or late cleanup retires; success keeps only the current
+exclusive borrow and every return stays terminal. Tests cover owned failure
+normalization, all invalid snapshots, moved/retired leases, disconnect exceptions,
+reentrant admission and owner destruction/credential revocation during cleanup.
+PG live coverage uses the coordinator and checks expired-deadline physical closure.
+
+Raw reset access still needs routing/guarding before cache scope/invalidation or
+reusable return. S2/G12 remain open; no ODBC/pool or new crypto claim is added.
+
+Validation: focused ownership tests and all 27 credential/ownership tests under
+ThreadSanitizer pass. Full local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan
+and Redshift build/absent-endpoint gates pass. Read-only review found no
+actionable issue. Windows/packaging and cross-platform crypto evidence remain
+subject to exact-head CI.

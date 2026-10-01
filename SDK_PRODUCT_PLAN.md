@@ -268,7 +268,7 @@ review before considering any MySQL beta plan.
   have bounded evidence accepted in [S2C_MATRIX_REVIEW.md](S2C_MATRIX_REVIEW.md).
   S2 now includes owning errors/session disposition, private dependency gates,
   optional active health and the narrow PostgreSQL reset primitive. Continue
-  coordinator-observable reset/cache isolation and reusable-return policy next; crypto qualification
+  guard/route borrower reset before cache isolation and reusable-return policy; crypto qualification
   follow-ups remain open and do not disappear from G12.
 - When Redshift access returns, finish the current coherent MS1 batch, preserve
   its evidence, and run M2 before expanding MySQL scope. Re-estimate whether to
@@ -313,3 +313,16 @@ Next is coordinator-observable reset/cache invalidation, before introducing cach
 tokens and reusable return. A direct backend reset cannot currently notify the
 owner, so asserting automatic cache invalidation now would overstate evidence.
 No new cache, pool tuning, public API or Driver Manager behavior is introduced.
+
+## S2 coordinator cleanup progress — 2026-10-01
+
+Private lease cleanup now validates reset profile, original deadline, exact
+success snapshot and passive state, and retires on all failures/exceptions or
+late completion. Success preserves only the current exclusive borrower; all
+returns still retire. Credential revocation/owner destruction during cleanup do
+not interrupt that borrower. PostgreSQL live evidence includes successful cleanup
+and physical retirement after an expired cleanup deadline.
+
+Next: guard/route raw borrower reset before cache scope/invalidation and reusable
+return. No cache, pool, credential refresh or Driver Manager qualification is
+added, and S2/G12 remain open.

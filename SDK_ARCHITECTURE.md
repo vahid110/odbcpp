@@ -965,3 +965,29 @@ on every reset. The next prerequisite is a coordinator-observable reset/cache
 invalidation path; reusable return must then combine reset outcome, current
 credential binding and cache scope before it can be enabled. No cache, pool,
 Driver Manager reuse or complete authentication-provider qualification is claimed.
+
+## S2 coordinator cleanup path — 2026-10-01
+
+Private `SessionLease::reset_session(deadline)` now coordinates explicit cleanup
+of the active borrow. It forwards one original absolute deadline without health
+probing, reconnect/replay or a replacement timeout. Expired deadlines, absent or
+wrong reset profiles, returned failures, thrown exceptions, inconsistent success
+snapshots/passive state and late completion all retire and destroy the physical
+session. An armed scope guard also retires on exceptional diagnostic construction.
+Returned failures own their diagnostics, normalize operation to ResetSession and
+state/disposition to Disconnected/Retire, and contain no retry authorization.
+Arbitrary exception text is not copied into diagnostics.
+
+Only exact SameAuthenticatedServerSession profile and Idle/Reusable success plus
+connected/Idle passive state can preserve the active lease. Backend I/O and
+passive checks execute outside owner/authority locks. Caller serialization still
+applies to all operations on one lease. Owner destruction or credential revocation
+can close admission during cleanup without interrupting this active borrower.
+Success is cleanup evidence for the same borrower; return/destruction remains
+terminal, never a requeue or new-borrower grant.
+
+The raw session reset facet remains reachable and can bypass this coordinator
+path. Therefore cache tickets, automatic cache invalidation and reusable return
+are still disabled. Next must guard/route every borrower reset and define cache
+invalidation before caches or reusable admission can be qualified. This private
+method changes neither ODBC behavior nor backend reset/crypto qualification.

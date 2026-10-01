@@ -472,3 +472,16 @@ Cache-generation claims remain open because direct backend resets are not yet
 observable by the owner. A coordinator-owned reset/invalidation boundary is
 required before cache tokens or reusable return are accepted. Existing ODBC
 workflows and prototype pooling remain unchanged.
+
+## S2 coordinator cleanup evidence — 2026-10-01
+
+Explicit private lease cleanup retires on unsupported/failed/ambiguous/throwing
+or late reset outcomes. It cannot turn a backend retry hint or a protocol-ready
+snapshot into new-borrower authorization. Same-borrower success requires exact
+Idle/Reusable plus connected/Idle passive state within the original deadline.
+No backend calls run under ownership or credential mutexes. Exception diagnostics
+use fixed text; backend errors stay owning trusted-consumer diagnostics.
+
+Every lease return remains terminal. This is not cache isolation or pool reuse
+qualification: direct raw-facet reset remains possible and must be guarded/routed
+before issuing cache scope tokens or enabling any reusable-return path.

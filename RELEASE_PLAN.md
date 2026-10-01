@@ -872,3 +872,17 @@ This is a bounded primitive with unit, race/TSan and PG live evidence, not compl
 credential-provider or reuse qualification. Cache tokens wait for observable
 coordinator reset/invalidation. G12 still requires integrated credential/cache
 isolation and safe reusable return; S2/S2C and real-application gates remain open.
+
+## S2 coordinator cleanup checkpoint — 2026-10-01
+
+The private lease now has an explicit bounded reset path: exact profile and
+Idle/Reusable plus passive connected/Idle success preserve the active borrower;
+missing profile, expiry, failures, exceptions, inconsistent state or late
+completion retire. Owning failure details retain no retry grant. Return still
+retires even after cleanup success. Unit fixtures cover reentrant admission,
+owner destruction/revocation during reset and misleading backend outcomes; real
+PostgreSQL checks success and expired-deadline physical closure.
+
+S2/G12 remain open. Direct raw reset can bypass the coordinator; guard/route that
+path before qualifying cache invalidation or reusable return. No ODBC behavior,
+Redshift reset, authentication-provider or linkage claim changes.
