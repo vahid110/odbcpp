@@ -497,7 +497,6 @@ private:
   rs::core::database::ResultRows result_rows_;
   std::vector<ColumnInfo> column_info_;        // IRD storage
   std::vector<ParameterMetadata> param_metadata_; // IPD storage
-  rs::core::database::ResolvedTypeMap parameter_type_cache_;
   std::size_t get_data_offset_ = 0;
   SQLUSMALLINT get_data_column_ = 0;
   SQLSMALLINT get_data_target_type_ = 0;
@@ -530,9 +529,6 @@ private:
   SQLRETURN ensure_result_metadata();
   SQLRETURN describe_prepared_metadata();
   SQLRETURN execute_catalog(const rs::core::database::CatalogRequest& request);
-  SQLRETURN resolve_parameter_types(
-      const rs::core::database::QueryResult& result,
-      rs::util::Deadline deadline);
   void clear_current_result();
   SQLRETURN complete_parameter_set(SQLRETURN result);
   SQLHDESC create_implicit_descriptor(DescriptorKind kind);

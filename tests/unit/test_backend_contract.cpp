@@ -27,6 +27,7 @@ struct Observations {
   bool malformed_value{}, malformed_state{};
   std::string failure_message = "fake error";
   bool setup_allocation_failure{false};
+  bool missing_parameter_metadata{}, parameter_metadata_error{};
 };
 
 // Deliberately implements only the database boundary: no PG parser or session.
@@ -146,7 +147,16 @@ class FakeBackend final : public IDatabaseConnection {
     ++seen_->descriptions;
     seen_->sql = sql;
     QueryResult result = rows(); result.rows.clear();
-    result.parameter_type_ids.assign(types.size(), 23);
+    result.parameter_type_ids.assign(types.size(), 23); // Deliberately irrelevant to ODBC.
+    result.normalized_parameter_types.assign(types.size(),
+        NativeTypeInfo{ScalarType::Binary, 8, 0, true});
+    if (seen_->missing_parameter_metadata) result.normalized_parameter_types.clear();
+    if (seen_->parameter_metadata_error) {
+      BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), "fake metadata error"};
+      error.operation = BackendOperation::ResolveTypes;
+      error.native_state = "FAKE_ERROR";
+      return error;
+    }
     return result;
   }
   std::string get_parameter(std::string_view key) const override { return key == "server_version" ? "1.0" : ""; }
@@ -974,4 +984,31 @@ TEST_F(BackendContractTest, MissingNormalizedColumnMetadataRejectsContractAndAll
   ASSERT_EQ(SQL_SUCCESS, execute("rows"));
   ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
   EXPECT_EQ(0, seen->native_descriptions);
+}
+
+
+TEST_F(BackendContractTest, ParameterDescriptionsUseNormalizedMetadataWithoutNativeLookup) {
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLSMALLINT type{}, digits{}, nullable{}; SQLULEN size{};
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+  EXPECT_EQ(SQL_VARBINARY, type); EXPECT_EQ(8u, size);
+  EXPECT_EQ(0, seen->native_descriptions); EXPECT_EQ(1, seen->descriptions);
+}
+
+TEST_F(BackendContractTest, InvalidParameterDescriptionsPreserveOutputAndRecover) {
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLSMALLINT type = 77, digits = 78, nullable = 79; SQLULEN size = 80;
+  for (const bool resolver_error : {false, true}) {
+    seen->missing_parameter_metadata = !resolver_error;
+    seen->parameter_metadata_error = resolver_error;
+    EXPECT_EQ(SQL_ERROR, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+    EXPECT_EQ("HY000", state());
+    EXPECT_EQ(77, type); EXPECT_EQ(78, digits); EXPECT_EQ(79, nullable); EXPECT_EQ(80u, size);
+    EXPECT_EQ(0, seen->native_descriptions); EXPECT_EQ(0, seen->disconnects);
+  }
+  seen->missing_parameter_metadata = false; seen->parameter_metadata_error = false;
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+  EXPECT_EQ(SQL_VARBINARY, type); EXPECT_EQ(8u, size);
 }

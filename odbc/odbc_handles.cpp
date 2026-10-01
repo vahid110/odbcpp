@@ -578,6 +578,9 @@ std::string query_failure_sqlstate(
     const rs::core::database::IDatabaseConnection& connection,
     const rs::core::database::BackendError& error, const char* fallback,
     SQLINTEGER statement_code) {
+  if (error.operation == rs::core::database::BackendOperation::ResolveTypes) {
+    return request_sqlstate(error.code, SQLSTATE_GENERAL_ERROR);
+  }
   const auto* default_state = request_sqlstate(error.code, fallback);
   if (error.code != rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed)) {
     return default_state;
@@ -3340,7 +3343,6 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
     return SQL_ERROR;
   }
   prepared_sql_ = *native_sql;
-  parameter_type_cache_.clear();
   parameter_count_ = static_cast<SQLSMALLINT>(marker_count);
   param_metadata_.clear();
   clear_current_result();
@@ -4209,10 +4211,6 @@ SQLRETURN ODBCStatement::execute() {
       return complete_parameter_set(SQL_ERROR);
     }
 
-    if (resolve_parameter_types(*result, deadline) != SQL_SUCCESS) {
-      return complete_parameter_set(SQL_ERROR);
-    }
-
     const auto row_count = result->rows.size();
     const auto affected_rows = result->affected_rows;
     apply_query_result(std::move(*result), true);
@@ -4473,18 +4471,13 @@ void ODBCStatement::apply_result_metadata(
   }
 
   param_metadata_.clear();
-  param_metadata_.reserve(result.parameter_type_ids.size());
+  param_metadata_.reserve(result.normalized_parameter_types.size());
   for (std::size_t index = 0;
-       index < result.parameter_type_ids.size(); ++index) {
+       index < result.normalized_parameter_types.size(); ++index) {
     const auto* prior_record = index < implementation_descriptor->record_count()
         ? implementation_descriptor->record(index) : nullptr;
-    const auto oid = result.parameter_type_ids[index];
-    const auto resolved = parameter_type_cache_.find(oid);
     param_metadata_.push_back(parameter_metadata_for(
-        resolved == parameter_type_cache_.end()
-            ? conn_->get_db_connection()->describe_type(oid, -1, -1)
-            : resolved->second,
-        prior_record));
+        result.normalized_parameter_types[index], prior_record));
   }
   std::vector<DescriptorRecord> parameter_descriptor_records;
   parameter_descriptor_records.reserve(param_metadata_.size());
@@ -4566,35 +4559,6 @@ SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target
 }
 
 // Metadata functions implementation
-SQLRETURN ODBCStatement::resolve_parameter_types(
-    const rs::core::database::QueryResult& result,
-    rs::util::Deadline deadline) {
-  std::vector<std::uint32_t> unresolved;
-  for (const auto id : result.parameter_type_ids) {
-    if (!parameter_type_cache_.contains(id)) unresolved.push_back(id);
-  }
-  if (unresolved.empty()) return SQL_SUCCESS;
-
-  auto types = conn_->get_db_connection()->resolve_types(unresolved, deadline);
-  if (types.has_error()) {
-    const auto timeout = is_timeout_error(types.error());
-    set_error(request_sqlstate(types.error(), SQLSTATE_GENERAL_ERROR),
-              types.error_message());
-    if (timeout) conn_->disconnect();
-    return SQL_ERROR;
-  }
-  // Validate the entire response before changing the statement cache.
-  for (const auto id : unresolved) {
-    if (!types->contains(id)) {
-      set_error(SQLSTATE_GENERAL_ERROR,
-                "Data source returned incomplete parameter type metadata");
-      return SQL_ERROR;
-    }
-  }
-  parameter_type_cache_.insert(types->begin(), types->end());
-  return SQL_SUCCESS;
-}
-
 SQLRETURN ODBCStatement::describe_prepared_metadata() {
   const auto implementation_descriptor = descriptor(imp_param_descriptor_);
   if (prepared_metadata_available_ &&
@@ -4630,14 +4594,10 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
     if (timeout) conn_->disconnect();
     return SQL_ERROR;
   }
-  if (result->parameter_type_ids.size() !=
+  if (result->normalized_parameter_types.size() !=
       static_cast<std::size_t>(parameter_count_)) {
     set_error(SQLSTATE_GENERAL_ERROR,
               "Data source returned an inconsistent parameter count");
-    return SQL_ERROR;
-  }
-
-  if (resolve_parameter_types(*result, deadline) != SQL_SUCCESS) {
     return SQL_ERROR;
   }
 
