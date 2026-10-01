@@ -156,6 +156,8 @@ jobs:
             build/openssl-system-shared-unit.xml
             openssl-system-shared-live.xml
             build/tests/crypto_tls_probe
+            build/tests/crypto_identity_probe
+            build/odbcpp-crypto-identity-evidence.json
             build/libodbcpp.so
             build/odbcpp-crypto-manifest.json
             build/odbcpp-crypto-artifact-evidence.json
@@ -296,6 +298,8 @@ jobs:
             build-windows/package/odbcpp-postgresql-1.0.0-x64.msi.sha256
             build-windows/package/payload-1.0.0/inventory.json
             windows-crypto-profile-live.xml
+            build-windows/tests/Release/crypto_identity_probe.exe
+            build-windows/odbcpp-crypto-identity-evidence.json
             build-windows/package/payload-1.0.0/odbcpp-crypto-manifest.json
             build-windows/package/payload-1.0.0/odbcpp-crypto-artifact-evidence.json
             packaging/windows/README.md
@@ -710,6 +714,8 @@ jobs:
           name: linux-openssl-static-evidence
           path: |
             build-openssl-static/tests/crypto_tls_probe
+            build-openssl-static/tests/crypto_identity_probe
+            build-openssl-static/odbcpp-crypto-identity-evidence.json
             build-openssl-static/openssl-static-unit.xml
             build-openssl-static/odbcpp-crypto-manifest.json
             build-openssl-static/odbcpp-crypto-artifact-evidence.json
@@ -906,6 +912,8 @@ jobs:
             build-iodbc/macos-openssl-unit.xml
             macos-openssl-live.xml
             build-iodbc/tests/crypto_tls_probe
+            build-iodbc/tests/crypto_identity_probe
+            build-iodbc/odbcpp-crypto-identity-evidence.json
             build-iodbc/libodbcpp.dylib
             build-iodbc/odbcpp-crypto-manifest.json
             build-iodbc/odbcpp-crypto-artifact-evidence.json

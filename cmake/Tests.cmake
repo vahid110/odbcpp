@@ -29,6 +29,28 @@ endfunction()
 
 option(ODBCPP_CRYPTO_PROFILE_LIVE_TESTS "Build mandatory real-driver TLS profile tests" OFF)
 option(ODBCPP_CRYPTO_TLS_PROOF "Run the independent POSIX TLS qualification peer" OFF)
+add_executable(crypto_identity_probe tests/security/crypto_identity_probe.cpp)
+target_link_libraries(crypto_identity_probe PRIVATE ${PROJECT_NAME}::core)
+apply_compiler_settings(crypto_identity_probe)
+set_target_properties(crypto_identity_probe PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+add_test(NAME test_crypto_runtime_identity COMMAND ${CMAKE_COMMAND}
+  -DPROBE=$<TARGET_FILE:crypto_identity_probe>
+  -DMANIFEST=${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-manifest.json
+  -DARTIFACT=$<TARGET_FILE:${PROJECT_NAME}_driver>
+  -DEVIDENCE=${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-identity-evidence.json
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RecordCryptoIdentity.cmake)
+add_test(NAME test_crypto_identity_evidence_rules COMMAND ${CMAKE_COMMAND}
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestCryptoIdentityEvidence.cmake)
+add_test(NAME test_crypto_identity_evidence_recording COMMAND ${CMAKE_COMMAND}
+  -DPROBE=$<TARGET_FILE:crypto_identity_probe>
+  -DMANIFEST=${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-manifest.json
+  -DARTIFACT=$<TARGET_FILE:${PROJECT_NAME}_driver>
+  -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestCryptoIdentityRecording.cmake)
+set_tests_properties(test_crypto_runtime_identity test_crypto_identity_evidence_rules
+  test_crypto_identity_evidence_recording
+  PROPERTIES LABELS "unit;security" TIMEOUT 30)
 if(ODBCPP_CRYPTO_TLS_PROOF)
   if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$")
     message(FATAL_ERROR "The independent TLS qualification peer requires POSIX")
