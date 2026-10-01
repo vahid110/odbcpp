@@ -366,3 +366,18 @@ This is text-cell validation, not transcoding or metadata-name normalization.
 Numeric/temporal canonical forms, native migration-field removal, ordered
 execution and session/reuse facets remain S2 work. Existing wire/count ceilings
 apply; no exact heap quota or additional provider qualification is claimed.
+
+## S2 native metadata service boundary — 2026-10-01
+
+Native type interpretation and domain resolution are removed from the required
+IDatabaseConnection API. PostgreSQL retains its private parser/resolver hooks
+and original deadline/error rules; the ID-keyed resolver map is moved out of
+the normalized scalar header. Independent backend contract tests now implement
+only normalized metadata services, with compile-time checks proving the SDK
+has no native-ID lookup methods. PostgreSQL mapping, domain happy/error cases,
+metadata output preservation and recovery remain regression gates.
+
+QueryResult parser migration fields, ordered execution, richer numeric/temporal
+canonical forms, metadata-name validation and session/reuse facets remain open.
+This is an internal C++ contract change; it changes no external ODBC entry point
+or supported PostgreSQL behavior and makes no crypto qualification claim.

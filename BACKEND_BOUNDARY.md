@@ -326,9 +326,11 @@ The internal synchronous contract is:
   A nullopt cell is NULL; an engaged empty string is a distinct non-NULL value.
   Type/catalog/capability views use their documented connection-lifetime storage.
 - Native type IDs, modifiers, table provenance, parameter type IDs, format codes
-  and command tags belong to the backend. Shared metadata uses describe_type,
-  resolve_types or explicit normalized_type. PostgreSQL binary wire results are
-  rejected; supported text-format values still include native encodings below.
+  and command tags belong to the backend. Shared metadata requires normalized_type
+  and normalized_parameter_types; native interpretation/resolution hooks are absent
+  from IDatabaseConnection. PostgreSQL binary wire results are rejected. Known
+  binary/Boolean/text cells are normalized before return; richer scalar forms
+  remain a documented migration step.
 - A top-level Result error prevents exposing partial results. Successfully buffered
   earlier results can instead carry a deferred error in additional_results. Its
   native SQLSTATE travels with that result, independent of mutable last-error state.
@@ -447,7 +449,7 @@ architecture gate, not full ODBC conformance certification.
 | Area | Reviewed ownership / evidence |
 |---|---|
 | Creation and dialect (A1/A2) | DatabaseFactory/per-connection selection; no PostgreSQL parser include in shared ODBC; marker/translation calls use the backend. Fake SQL translation dispatch is observed. |
-| Native IDs, domains, catalogs (A3) | Shared IDs remain opaque map keys; describe_type/resolve_types and TypeDefinition/CatalogRequest own interpretation/query construction. No PostgreSQL OID switch or pg_catalog SQL remains in shared ODBC. |
+| Native IDs, domains, catalogs (A3) | Shared ODBC consumes normalized column/parameter metadata only. Native interpretation/resolution hooks and ID-keyed map storage belong to the private PostgreSQL-family implementation. TypeDefinition/CatalogRequest remain normalized SDK services. |
 | Capabilities, transactions and diagnostics (A4) | Neutral records/context and backend normalization; shared ODBC constants, fallbacks, handles and output validation remain shared. |
 | Result/parameter encodings and completions (A4) | Native cell decoding, binary Bind encoding and command-tag interpretation are backend-owned. Shared byte/bit conversions and normalized StatementKind mapping are database-independent. |
 | Lifetimes, deadlines, reuse (A4) | Owning QueryResult/QueryParameter and documented borrowed views; caller deadline propagation, backend liveness and timeout retirement are covered by existing and fake tests. |
@@ -710,3 +712,18 @@ metadata and invalid reconnect without I/O. Defaults/configuration are SDK-only;
 no public profile support claim or exact heap quota is made. Aggregate metadata
 entries/names, diagnostics, outbound input, product exposure and allocation
 boundaries remain SEC-4 work. Native normalization and safe reuse remain S2 work.
+
+## S2 native metadata hooks removed from SDK — 2026-10-01
+
+The earlier A3 native-ID service adapter is superseded: IDatabaseConnection no
+longer requires describe_type or resolve_types. Backend implementations supply
+normalized_type and normalized_parameter_types directly. PostgreSQL-family
+parser interpretation and atomic domain resolution retain their private hooks,
+original deadlines, owned errors and same-session recovery. ResolvedTypeMap now
+lives in a separate private header, outside the normalized scalar metadata
+header. The independent backend compiles without any native-ID service, and
+compile-time checks reject their reintroduction on the SDK interface.
+
+This removes unused SDK service requirements without changing ODBC behavior.
+QueryResult native migration fields still exist until parser/result storage is
+split; ordered execution, richer canonical values and session facets remain open.
