@@ -482,11 +482,12 @@ borrower; pool isolation still requires its separate reset contract.
 The transitional default passive state for other implementations is `Unknown`
 when connected, never an implicit idle/reuse claim.
 
-This batch migrates immediate query errors only. Setup/authentication and type resolution still use the legacy result/error paths;
-transactions now use owning void results as described below;
+This batch migrates immediate query errors only. Type resolution still uses the
+legacy result path; setup/authentication and transactions now use owning void
+results as described below;
 ordered/deferred result errors remain in owning QueryResult until the normalized
-results migration. The mutable SQLSTATE getter/storage has been removed; the legacy setup error-message
-getter remains for that incremental transition.
+results migration. Mutable SQLSTATE and error-message getters/storage have been
+removed from the backend connection interface.
 Primary messages preserve existing server diagnostic behavior; this does not
 complete the safe-message/logging security contract. Internal C++ interfaces are
 unstable; the exported ODBC surface and diagnostics remain protected.
@@ -506,5 +507,27 @@ transaction/failed-transaction/unknown sessions ResetRequired. The local helper
 accepts only validation/unsupported failure kinds, not transport/protocol errors.
 Copy/move and later-success tests verify error ownership; actual protocol
 fixtures verify state and ambiguous-failure retirement through both adapters.
-Setup/authentication, type-resolution and safe-message/logging migration remain
-open. This does not implement a reset/pool facet or complete A5.
+Type-resolution and safe-message/logging migration remain open. This does not
+implement a reset/pool facet or complete A5.
+
+## S2 owning setup and authentication failures — 2026-10-01
+
+Connection setup now returns `BackendResult<void>` with Connect, Authenticate
+or Startup context. Server failures retain native SQLSTATE in the returned
+snapshot; existing error codes and ODBC diagnostic mapping are preserved.
+Authentication-phase errors and later SQLSTATE class 28 login rejections retain
+authentication classification. Other failures after AuthenticationOk carry
+Startup context. Cleanup completes before recording passive state/disposition,
+so failed transport/authentication attempts report Disconnected/Retire.
+
+Local validation occurs before transport mutation. Invalid reconnect settings
+leave a previously idle session available to its current owner and report
+Idle/Reusable without I/O; this is not a reset or pool-isolation guarantee.
+Tests cover successful setup, server rejection, authentication timeout,
+malformed exchanges, cleanup, copy/move/destruction ownership and invalid
+reconnect snapshots. No automatic retry or replay is introduced.
+
+The last mutable error-message side channel is removed from connection and
+prototype wrapper interfaces. Primary messages still preserve existing server
+diagnostics; safe-message/logging, type resolution and deferred-result
+normalization remain separate work. Internal C++ interfaces remain unstable.

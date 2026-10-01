@@ -348,7 +348,7 @@ longer read mutable SQLSTATE. Focused tests cover copy/move and ownership across
 later operations and backend destruction, idle/transaction/aborted-state errors,
 read timeouts, malformed responses and partial writes with retirement.
 
-Continue A5 with setup/transaction/type-resolution error migration and the
+Continue A5 with the remaining type-resolution error migration and the
 safe-message/logging boundary; immediate query errors do not complete A5 or S2.
 Ordered result normalization, resource budgets and safe reuse facets remain
 separate batches. Existing crypto qualification blockers and all protected
@@ -363,6 +363,20 @@ existing diagnostic mapping and caller deadlines. Invalid local selections are
 classified without I/O; server-state and timeout/partial-write retirement are
 covered through both adapters, alongside existing successful command tests.
 
-Next is setup/authentication error migration, followed by type-resolution and
+Setup/authentication migration is recorded below. Next is type-resolution and
 safe-message/logging work. A5 and S2 remain open; pool/reset facets, aggregate
 budgets, normalized results and the MySQL proof remain separate steps.
+
+### S2 owning setup/authentication errors — 2026-10-01
+
+Connection setup preserves native server state in owning errors, labels connect,
+authentication and startup phases, and snapshots disposition after failed-attempt
+cleanup. Local validation keeps an existing valid session intact without I/O.
+The final mutable connection error-message getter/storage is removed. Focused
+tests cover ownership, phase classification, rejection/timeout/malformed startup,
+cleanup and invalid reconnect alongside existing successful TLS/auth paths.
+
+Continue A5 with type resolution and safe-message/logging. This batch preserves
+existing ODBC diagnostics and TLS policy; it does not qualify pooling, close S2
+or change crypto qualification blockers. Normalized results and resource budgets
+remain planned work before the bounded MySQL proof.
