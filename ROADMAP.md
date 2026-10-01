@@ -543,3 +543,20 @@ markers and invalid reconnect ceilings cover the contract. Temporary SQL rewrite
 storage remains bounded by input limits, not by the wire ceiling. Startup/auth
 encoded limits, earlier ODBC conversion/helpers, exact heap accounting and product
 configuration remain SEC-4 work. S2/native metadata/session migration remains open.
+
+### S2 startup/authentication wire ceilings — 2026-10-01
+
+SDK startup and per-authentication-response ceilings default to 1 MiB each and
+accept configured values up to 1 GiB. Startup fields and framing are counted
+before field copies/wire allocation; an overflow performs no transport I/O or
+session mutation. Cleartext/MD5 and SCRAM initial/continuation packets are bounded
+before outgoing wire allocation. Authentication overflow retains its login phase,
+sends no oversized packet and retires through failed-connect cleanup. Existing
+verified-channel policy is unchanged.
+
+Exact/overflow tests cover startup/options, password packet framing, escaped
+SCRAM usernames and continuation proofs, zero/no-response authentication,
+invalid ceilings and reconnect preservation. SCRAM intermediate crypto/string
+allocations and provider TLS handshake buffers remain separate from these caps.
+Earlier ODBC conversions/helpers and product configuration remain SEC-4 work;
+S2/native metadata/session migration and crypto qualification remain open.

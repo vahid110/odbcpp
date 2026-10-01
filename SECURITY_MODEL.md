@@ -331,3 +331,17 @@ requests return a local ResourceLimit error without request I/O or retirement.
 Temporary SQL rewriting is still controlled by the input ceiling; vector/string
 capacity, earlier ODBC conversions, startup/auth buffers and exact heap quotas
 remain separate unfinished boundaries. This does not close SEC-4 or G12.
+
+### Startup/authentication wire ceilings (S2 implementation evidence)
+
+SDK startup and per-authentication-response wire ceilings are independently
+configurable (1 MiB defaults, at most 1 GiB each). Startup counts length/protocol,
+keys, values and terminators before field copies and wire allocation. Startup
+limit rejection preserves an existing owner. Cleartext/MD5 and SCRAM initial
+and continuation responses count complete password/SASL framing before outgoing
+wire allocation; authentication limit failure sends no oversized response and
+retires with phase-preserving failed-connect cleanup. This does not relax any
+channel/authentication policy. SCRAM intermediate string/crypto allocations,
+provider handshake buffers and complete heap accounting remain separate;
+product-profile configuration and earlier ODBC conversion/helper limits remain
+unfinished. SEC-4 and G12 stay open.
