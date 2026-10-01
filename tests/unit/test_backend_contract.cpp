@@ -429,6 +429,7 @@ TEST_F(BackendContractTest, BackendDiagnosticStaysDetailedWhileFailureLogUsesPub
   dbc = nullptr;
   std::ifstream input(path);
   const std::string contents((std::istreambuf_iterator<char>(input)), {});
+  input.close();
   EXPECT_NE(std::string::npos, contents.find("Database server rejected the operation"));
   EXPECT_EQ(std::string::npos, contents.find("server-secret-981724"));
   EXPECT_EQ(std::string::npos, contents.find("private SQL and identifiers"));
