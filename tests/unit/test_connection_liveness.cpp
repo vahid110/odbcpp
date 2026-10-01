@@ -509,6 +509,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
   std::size_t send_count() const noexcept { return send_count_; }
   std::size_t connect_count() const noexcept { return connect_count_; }
   std::size_t close_count() const noexcept { return close_count_; }
+  std::size_t bytes_read() const noexcept { return offset_; }
 
   rs::util::Result<rs::core::transport::IOResult> recv(
       std::span<std::byte> buffer, rs::util::Deadline) override {
@@ -2240,5 +2241,104 @@ TEST(BackendResultContractTest, DeferredErrorsRetainOperationAndFinalStateAcross
     EXPECT_EQ(saved.additional_results[0].error->message, "Query error: division by zero");
     EXPECT_EQ(saved.additional_results[0].error->native_state, "22012");
     EXPECT_EQ(saved.additional_results[0].error->operation, BackendOperation::ExecuteDirect);
+  }
+}
+
+TEST(ResponseBudgetTest, ExactBoundariesSucceedAndOverflowRetiresWithoutPartialResults) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  std::size_t response_bytes = 0;
+  {
+    auto transport = std::make_unique<ScriptedBackendTransport>(Mode::OwnedResultCells);
+    auto* observed = transport.get();
+    postgres::PgDatabaseConnection backend("PostgreSQL", std::move(transport));
+    ConnectionSettings settings;
+    settings.use_ssl = false;
+    ASSERT_TRUE(backend.connect(settings));
+    const auto before = observed->bytes_read();
+    ASSERT_TRUE(backend.execute_query("baseline", rs::util::Deadline::max()));
+    response_bytes = observed->bytes_read() - before;
+  }
+  ASSERT_GT(response_bytes, 5u);
+  for (const bool byte_limit : {false, true}) {
+    for (const bool exact : {false, true}) {
+      auto transport = std::make_unique<ScriptedBackendTransport>(Mode::OwnedResultCells);
+      auto* observed = transport.get();
+      postgres::PgDatabaseConnection backend("PostgreSQL", std::move(transport));
+      ConnectionSettings settings;
+      settings.use_ssl = false;
+      if (byte_limit) settings.response_limits.max_wire_bytes = response_bytes - (exact ? 0 : 1);
+      else settings.response_limits.max_messages = exact ? 7 : 6; // T, three D, C, E, Z
+      ASSERT_TRUE(backend.connect(settings));
+      const auto result = backend.execute_query("bounded", rs::util::Deadline::max());
+      EXPECT_EQ(exact, result.has_value());
+      if (exact) {
+        ASSERT_TRUE(result);
+        EXPECT_EQ(3u, result->rows.size());
+        EXPECT_EQ(1u, result->additional_results.size());
+        EXPECT_EQ(observed->close_count(), 0u);
+      } else {
+        ASSERT_TRUE(result.has_error());
+        EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::ResourceLimit);
+        EXPECT_EQ(result.backend_error().operation, BackendOperation::ExecuteDirect);
+        EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Retire);
+        EXPECT_EQ(result.backend_error().session_state, SessionState::Disconnected);
+        EXPECT_FALSE(result.backend_error().native_state);
+        EXPECT_FALSE(result.backend_error().retry_safe);
+        EXPECT_FALSE(backend.is_connected());
+        EXPECT_EQ(observed->close_count(), 1u);
+        const auto sends = observed->send_count();
+        EXPECT_FALSE(backend.execute_query("again", rs::util::Deadline::max()));
+        EXPECT_EQ(observed->send_count(), sends);
+      }
+    }
+  }
+}
+
+TEST(ResponseBudgetTest, RejectsDeclaredOversizeBeforePayloadAcrossAllOperations) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto operation : {BackendOperation::ExecuteDirect, BackendOperation::ExecutePrepared, BackendOperation::Describe}) {
+    auto transport = std::make_unique<ScriptedBackendTransport>(
+        operation == BackendOperation::Describe ? Mode::DescriptionServerError : Mode::OwnedResultCells);
+    auto* observed = transport.get();
+    postgres::PgDatabaseConnection backend("PostgreSQL", std::move(transport));
+    ConnectionSettings settings;
+    settings.use_ssl = false;
+    settings.response_limits.max_wire_bytes = 5;
+    ASSERT_TRUE(backend.connect(settings));
+    const auto before = observed->bytes_read();
+    const auto result = operation == BackendOperation::ExecuteDirect ? backend.execute_query("bounded", rs::util::Deadline::max()) :
+        operation == BackendOperation::ExecutePrepared ? backend.execute_prepared("bounded", std::span<const QueryParameter>{}, rs::util::Deadline::max()) :
+        backend.describe_statement("bounded", {}, rs::util::Deadline::max());
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(observed->bytes_read() - before, 5u);
+    EXPECT_EQ(result.backend_error().operation, operation);
+    EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::ResourceLimit);
+    EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Retire);
+    EXPECT_EQ(observed->close_count(), 1u);
+  }
+}
+
+TEST(ResponseBudgetTest, InvalidLimitsDoNotMutateAnExistingSession) {
+  using namespace rs::core::database;
+  auto transport = std::make_unique<ScriptedBackendTransport>();
+  auto* observed = transport.get();
+  postgres::PgDatabaseConnection backend("PostgreSQL", std::move(transport));
+  ConnectionSettings settings;
+  settings.use_ssl = false;
+  ASSERT_TRUE(backend.connect(settings));
+  for (const bool bytes : {false, true}) {
+    auto invalid = settings;
+    if (bytes) invalid.response_limits.max_wire_bytes = 4;
+    else invalid.response_limits.max_messages = 0;
+    const auto connects = observed->connect_count();
+    const auto result = backend.connect(invalid);
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::InvalidInput);
+    EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Reusable);
+    EXPECT_EQ(observed->connect_count(), connects);
+    EXPECT_EQ(observed->close_count(), 0u);
+    EXPECT_TRUE(backend.is_connected());
   }
 }

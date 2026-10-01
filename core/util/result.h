@@ -17,7 +17,8 @@ enum class DbErrorCode {
   InvalidParameter,
   NotConnected,
   ProtocolError,
-  UnsupportedFeature
+  UnsupportedFeature,
+  ResourceLimit
 };
 
 // Error category for database errors
@@ -38,6 +39,7 @@ public:
       case DbErrorCode::NotConnected: return "Not connected";
       case DbErrorCode::ProtocolError: return "Protocol error";
       case DbErrorCode::UnsupportedFeature: return "Unsupported feature";
+      case DbErrorCode::ResourceLimit: return "Resource limit exceeded";
       default: return "Unknown error";
     }
   }

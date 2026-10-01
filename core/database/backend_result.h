@@ -19,7 +19,7 @@ enum class SessionState { Disconnected, Idle, Transaction, FailedTransaction, Un
 enum class SessionDisposition { Reusable, ResetRequired, Retire };
 enum class BackendErrorClass {
   Unknown, Connection, Authentication, Server, Timeout, Transport, Tls,
-  InvalidInput, NotConnected, Protocol, Unsupported, InvalidMetadata
+  InvalidInput, NotConnected, Protocol, Unsupported, InvalidMetadata, ResourceLimit
 };
 
 inline BackendErrorClass classify_backend_error(const std::error_code& code) {
@@ -37,6 +37,7 @@ inline BackendErrorClass classify_backend_error(const std::error_code& code) {
     case DbErrorCode::NotConnected: return BackendErrorClass::NotConnected;
     case DbErrorCode::ProtocolError: return BackendErrorClass::Protocol;
     case DbErrorCode::UnsupportedFeature: return BackendErrorClass::Unsupported;
+    case DbErrorCode::ResourceLimit: return BackendErrorClass::ResourceLimit;
     default: return BackendErrorClass::Unknown;
   }
 }
@@ -71,6 +72,7 @@ struct BackendError {
       case BackendErrorClass::Protocol: return "Database protocol exchange failed";
       case BackendErrorClass::Unsupported: return "Database operation is unsupported";
       case BackendErrorClass::InvalidMetadata: return "Database metadata validation failed";
+      case BackendErrorClass::ResourceLimit: return "Database response resource limit exceeded";
       case BackendErrorClass::Unknown: return "Database operation failed";
     }
     return "Database operation failed";

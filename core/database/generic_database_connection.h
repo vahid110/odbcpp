@@ -83,7 +83,8 @@ private:
   
   // Result-based methods (internal implementation)
   rs::util::Result<void> write_all_result(const std::vector<std::byte>& data, rs::util::Deadline deadline);
-  rs::util::Result<std::vector<std::byte>> read_message_result(rs::util::Deadline deadline);
+  rs::util::Result<std::vector<std::byte>> read_message_result(rs::util::Deadline deadline,
+      std::size_t remaining_bytes = static_cast<std::size_t>(-1));
   BackendResult<void> perform_authentication_result(rs::util::Deadline deadline);
   rs::util::Result<void> record_parameter_status(const Message& msg);
   BackendResult<QueryResult> read_query_result(

@@ -541,6 +541,7 @@ std::optional<std::string> statement_sql(
 const char* request_sqlstate(const std::error_code& error,
                              const char* fallback) {
   if (is_timeout_error(error)) return SQLSTATE_TIMEOUT;
+  if (error == rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit)) return SQLSTATE_GENERAL_ERROR;
   if (error == rs::util::make_error_code(
                    rs::util::DbErrorCode::UnsupportedFeature)) {
     return SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED;

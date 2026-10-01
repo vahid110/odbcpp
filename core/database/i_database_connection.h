@@ -23,6 +23,14 @@ namespace rs::core::database {
 // Semantic context only; no ODBC statement codes cross the backend boundary.
 enum class ErrorContext { Unknown, CreateTable, CreateView, CreateIndex, DropIndex };
 
+// Limits for one fully buffered query/description exchange, including control
+// frames. Counts wire bytes, not decoded heap overhead. Product/ODBC exposure
+// and row/cell/metadata budgets remain separate contracts.
+struct ResponseLimits {
+  std::size_t max_wire_bytes{64 * 1024 * 1024};
+  std::size_t max_messages{100000};
+};
+
 struct ConnectionSettings {
   std::string host;
   std::string user;
@@ -33,6 +41,7 @@ struct ConnectionSettings {
   bool use_ssl = true;
   std::string ssl_ca_file;
   std::string ssl_ca_dir;
+  ResponseLimits response_limits;
 };
 
 // Synchronous internal interface, serialized by the ODBC handle layer. Backends

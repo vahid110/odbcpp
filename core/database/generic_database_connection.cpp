@@ -97,6 +97,9 @@ BackendResult<void> GenericDatabaseConnection::connect(const ConnectionSettings&
 }
 
 BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSettings& settings) {
+  if (settings.response_limits.max_wire_bytes < 5 || settings.response_limits.max_messages == 0) {
+    return {rs::util::DbErrorCode::InvalidParameter, "Response limits must allow a header and at least one message"};
+  }
   if (settings.password.find('\0') != std::string::npos) {
     return {rs::util::DbErrorCode::InvalidParameter,
             "PostgreSQL authentication credential contains an "
@@ -269,7 +272,8 @@ BackendResult<QueryResult> GenericDatabaseConnection::finish_operation(
         error.error_class == BackendErrorClass::Transport ||
         error.error_class == BackendErrorClass::Protocol ||
         error.error_class == BackendErrorClass::Tls ||
-        error.error_class == BackendErrorClass::Unknown;
+        error.error_class == BackendErrorClass::Unknown ||
+        error.error_class == BackendErrorClass::ResourceLimit;
     if (ambiguous) mark_transport_failed();
     error.session_state = session_state_;
     error.disposition = !connected_ ? SessionDisposition::Retire :
@@ -379,12 +383,20 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
   bool saw_completion = false;
   auto description_phase = DescriptionPhase::Parse;
 
+  std::size_t wire_bytes = 0;
+  std::size_t message_count = 0;
   while (true) {
-    auto msg_result = read_message_result(deadline);
+    if (message_count == settings_.response_limits.max_messages) {
+      mark_transport_failed();
+      return {rs::util::DbErrorCode::ResourceLimit, "Database response message limit exceeded"};
+    }
+    auto msg_result = read_message_result(deadline, settings_.response_limits.max_wire_bytes - wire_bytes);
     if (msg_result.has_error()) {
       return BackendResult<QueryResult>{msg_result.error(), msg_result.error_message()};
     }
     
+    wire_bytes += msg_result->size();
+    ++message_count;
     try {
       auto msg = parser_->parse_message(*msg_result);
       if (query_error && msg.tag != 'N' && msg.tag != 'S' &&
@@ -575,7 +587,11 @@ std::vector<std::byte> GenericDatabaseConnection::read_message(rs::util::Deadlin
   return std::move(*result);
 }
 
-rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message_result(rs::util::Deadline deadline) {
+rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message_result(rs::util::Deadline deadline, std::size_t remaining_bytes) {
+  if (remaining_bytes < 5) {
+    mark_transport_failed();
+    return {rs::util::DbErrorCode::ResourceLimit, "Database response byte limit exceeded"};
+  }
   // Read message header (1 byte tag + 4 bytes length)
   std::vector<std::byte> header(5);
   size_t offset = 0;
@@ -628,6 +644,10 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
   
   // Grow only as bytes arrive; an untrusted length must not preallocate it.
   const auto total_length = static_cast<std::size_t>(len) + 1;
+  if (total_length > remaining_bytes) {
+    mark_transport_failed();
+    return {rs::util::DbErrorCode::ResourceLimit, "Database response byte limit exceeded"};
+  }
   std::vector<std::byte> message;
   message.reserve(std::min<std::size_t>(total_length, 8192));
   message.insert(message.end(), header.begin(), header.end());

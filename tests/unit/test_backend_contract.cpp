@@ -107,6 +107,7 @@ class FakeBackend final : public IDatabaseConnection {
   }
   BackendResult<QueryResult> execute_query(std::string_view sql, Deadline deadline) override {
     ++seen_->queries; seen_->sql = sql; seen_->deadline = deadline;
+    if (sql.ends_with("limit")) { connected_ = false; return {DbErrorCode::ResourceLimit, "Database response byte limit exceeded"}; }
     if (sql.ends_with("timeout")) return {DbErrorCode::Timeout, "fake deadline"};
     if (sql.ends_with("network")) { connected_ = false; return {DbErrorCode::NetworkError, "fake loss"}; }
     if (sql.ends_with("error")) {
@@ -447,7 +448,7 @@ TEST(BackendErrorSummaryTest, PublicSummaryNeverDependsOnOwnedSensitiveDetails) 
       BackendErrorClass::Authentication, BackendErrorClass::Server, BackendErrorClass::Timeout,
       BackendErrorClass::Transport, BackendErrorClass::Tls, BackendErrorClass::InvalidInput,
       BackendErrorClass::NotConnected, BackendErrorClass::Protocol, BackendErrorClass::Unsupported,
-      BackendErrorClass::InvalidMetadata, static_cast<BackendErrorClass>(999)}) {
+      BackendErrorClass::InvalidMetadata, BackendErrorClass::ResourceLimit, static_cast<BackendErrorClass>(999)}) {
     BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), "password=private-marker"};
     error.error_class = kind;
     error.native_state = "private-native-state";
@@ -463,5 +464,14 @@ TEST(BackendErrorSummaryTest, PublicSummaryNeverDependsOnOwnedSensitiveDetails) 
     auto moved = std::move(copy);
     EXPECT_EQ(saved, moved.safe_summary());
   }
+}
+
+TEST_F(BackendContractTest, ResourceLimitReportsGeneralErrorAndDeadConnection) {
+  connect();
+  EXPECT_EQ(SQL_ERROR, execute("limit"));
+  EXPECT_EQ("HY000", state());
+  SQLUINTEGER dead = SQL_CD_FALSE;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, &dead, 0, nullptr));
+  EXPECT_EQ(SQL_CD_TRUE, dead);
 }
 } // namespace
