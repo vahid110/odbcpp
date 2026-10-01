@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "core/database/backend_provider.h"
 
 #include "core/database/generic_database_connection.h"
 #include "core/database/database_factory.h"
@@ -812,9 +813,10 @@ TEST(DatabaseFactoryTest, SelectedBackendRejectsAmbiguousOrPlaintextCaPolicy) {
 TEST(DatabaseFactoryTest, MarkerCountingUsesBackendLexicalRulesWithoutConnecting) {
   auto connection = rs::core::database::DatabaseFactory::create_connection();
   EXPECT_FALSE(connection->is_connected());
-  EXPECT_EQ(0u, connection->count_parameter_markers("SELECT 1"));
-  EXPECT_EQ(2u, connection->count_parameter_markers("SELECT ?, ?"));
-  EXPECT_EQ(1u, connection->count_parameter_markers(
+  const auto& dialect = rs::core::database::configured_backend_provider().sql_dialect();
+  EXPECT_EQ(0u, dialect.count_parameter_markers("SELECT 1"));
+  EXPECT_EQ(2u, dialect.count_parameter_markers("SELECT ?, ?"));
+  EXPECT_EQ(1u, dialect.count_parameter_markers(
       R"sql(SELECT '?', "?", $$?$$, $tag$?$tag$, ? /* ? /* ? */ */ -- ?
 )sql"));
   EXPECT_FALSE(connection->is_connected());
@@ -1833,18 +1835,19 @@ TEST(ConnectionLivenessTest, MalformedQueryResultClosesLogicalConnection) {
 TEST(DatabaseDialectTest, SelectedBackendTranslatesAndRecoversAfterErrorsWithoutIo) {
   using rs::core::database::SqlTranslationError;
   auto backend = rs::core::database::DatabaseFactory::create_connection();
-  const auto good = backend->translate_sql("SELECT {fn UCASE('ok')}");
+  const auto& dialect = rs::core::database::configured_backend_provider().sql_dialect();
+  const auto good = dialect.translate_sql("SELECT {fn UCASE('ok')}");
   ASSERT_TRUE(good);
   EXPECT_EQ("SELECT UPPER('ok')", good.sql);
   for (const auto& [sql, expected] : {
       std::pair{"SELECT {d '2023-02-29'}", SqlTranslationError::InvalidDatetime},
       std::pair{"SELECT {fn UCASE('ok')", SqlTranslationError::InvalidSyntax},
       std::pair{"{?= call answer()}", SqlTranslationError::Unsupported}}) {
-    const auto bad = backend->translate_sql(sql);
+    const auto bad = dialect.translate_sql(sql);
     EXPECT_FALSE(bad);
     EXPECT_EQ(expected, bad.error);
     EXPECT_FALSE(bad.message.empty());
-    EXPECT_TRUE(backend->translate_sql("SELECT {d '2024-02-29'}"));
+    EXPECT_TRUE(dialect.translate_sql("SELECT {d '2024-02-29'}"));
   }
   EXPECT_FALSE(backend->is_connected());
 }

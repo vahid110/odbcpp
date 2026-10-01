@@ -1,11 +1,30 @@
 #include "pg_backend_provider.h"
 
 #include "pg_database_connection.h"
+#include "pg_protocol_parser.h"
+#include "pg_sql_dialect.h"
 
 #include <string_view>
 #include <utility>
 
 namespace rs::core::database::postgres {
+namespace {
+class PgSqlDialect final : public ISqlDialect {
+ public:
+  std::size_t count_parameter_markers(std::string_view sql) const override {
+    return PgProtocolParser::parameter_marker_count(sql);
+  }
+  SqlTranslationResult translate_sql(std::string_view sql) const override {
+    return translate_odbc_sql(sql);
+  }
+};
+} // namespace
+
+const ISqlDialect& PgBackendProvider::sql_dialect() const noexcept {
+  static const PgSqlDialect dialect;
+  return dialect;
+}
+
 
 PgBackendProvider::PgBackendProvider(
     BackendIdentity identity, BackendConnectionDefaults connection_defaults)

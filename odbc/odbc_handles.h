@@ -245,6 +245,9 @@ public:
                     : std::string{};
   }
   
+  const rs::core::database::ISqlDialect& sql_dialect() const noexcept {
+    return backend_provider_->sql_dialect();
+  }
   std::span<const rs::core::database::TypeDefinition> type_catalog() const;
   rs::core::database::BackendCapabilities capabilities() const;
   rs::core::database::TransactionCapabilities transaction_capabilities() const;

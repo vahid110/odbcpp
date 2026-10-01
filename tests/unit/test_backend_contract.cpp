@@ -61,6 +61,10 @@ static_assert(!HasNativeTypeSize<ResultColumnMetadata>);
 static_assert(!HasNativeTypeModifier<ResultColumnMetadata>);
 static_assert(!HasNativeFormatCode<ResultColumnMetadata>);
 static_assert(!HasNativeParameterIds<QueryResult>);
+template <typename T> concept HasSessionSqlTranslation = requires(const T& session) { session.translate_sql("SELECT 1"); };
+template <typename T> concept HasSessionMarkerCounting = requires(const T& session) { session.count_parameter_markers("?"); };
+static_assert(!HasSessionSqlTranslation<IDatabaseConnection>);
+static_assert(!HasSessionMarkerCounting<IDatabaseConnection>);
 static_assert(!HasNativeServerParameters<IDatabaseConnection>);
 static_assert(!HasNativeTypeInterpretation<IDatabaseConnection>);
 static_assert(!HasNativeTypeResolution<IDatabaseConnection>);
@@ -75,14 +79,6 @@ class FakeBackend final : public IDatabaseConnection {
   }
   void disconnect() override { connected_ = false; ++seen_->disconnects; }
   bool is_connected() const override { return connected_; }
-  std::size_t count_parameter_markers(std::string_view sql) const override {
-    return std::count(sql.begin(), sql.end(), '?');
-  }
-  SqlTranslationResult translate_sql(std::string_view sql) const override {
-    ++seen_->translations;
-    if (sql == "unsupported") return {{}, SqlTranslationError::Unsupported, "fake unsupported SQL"};
-    return {"native:" + std::string(sql), SqlTranslationError::None, {}};
-  }
   Result<std::string> catalog_query(const CatalogRequest&) const override {
     return {DbErrorCode::UnsupportedFeature, "fake has no catalogs"};
   }
@@ -252,11 +248,27 @@ class FakeBackend final : public IDatabaseConnection {
   bool connected_{};
 };
 
+class FakeSqlDialect final : public ISqlDialect {
+ public:
+  explicit FakeSqlDialect(std::shared_ptr<Observations> seen) : seen_(std::move(seen)) {}
+  std::size_t count_parameter_markers(std::string_view sql) const override {
+    return std::count(sql.begin(), sql.end(), '?');
+  }
+  SqlTranslationResult translate_sql(std::string_view sql) const override {
+    ++seen_->translations;
+    if (sql == "unsupported") return {{}, SqlTranslationError::Unsupported, "fake unsupported SQL"};
+    return {"native:" + std::string(sql), SqlTranslationError::None, {}};
+  }
+ private:
+  std::shared_ptr<Observations> seen_;
+};
+
 class FakeProvider final : public IBackendProvider {
  public:
   explicit FakeProvider(std::shared_ptr<Observations> seen)
-      : seen_(std::move(seen)) {}
+      : seen_(std::move(seen)), dialect_(seen_) {}
 
+  const ISqlDialect& sql_dialect() const noexcept override { return dialect_; }
   const BackendIdentity& identity() const noexcept override {
     static const BackendIdentity identity{
         "contract", "ContractDB", "ODBCPP Contract"};
@@ -305,6 +317,7 @@ class FakeProvider final : public IBackendProvider {
 
  private:
   std::shared_ptr<Observations> seen_;
+  FakeSqlDialect dialect_;
 };
 
 class BackendContractTest : public ::testing::Test {
@@ -1311,4 +1324,24 @@ TEST_F(BackendContractTest, InvalidDescriptionSequencePreservesOutputsAndRetries
     ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
   }
+}
+
+TEST_F(BackendContractTest, ProviderDialectWorksBeforeSessionCreationAndOwnsResults) {
+  SqlTranslationResult retained;
+  {
+    FakeProvider provider{seen};
+    const auto& dialect = provider.sql_dialect();
+    EXPECT_EQ(0, seen->created); EXPECT_EQ(0, seen->transports);
+    std::string input = "hello ?";
+    EXPECT_EQ(1u, dialect.count_parameter_markers(input));
+    retained = dialect.translate_sql(input);
+    ASSERT_TRUE(retained); EXPECT_EQ("native:hello ?", retained.sql);
+    input.assign("overwritten"); EXPECT_EQ("native:hello ?", retained.sql);
+    const auto rejected = dialect.translate_sql("unsupported");
+    EXPECT_FALSE(rejected); EXPECT_EQ(SqlTranslationError::Unsupported, rejected.error);
+    const auto recovered = dialect.translate_sql("again");
+    ASSERT_TRUE(recovered); EXPECT_EQ("native:again", recovered.sql);
+    EXPECT_EQ(0, seen->created); EXPECT_EQ(0, seen->queries); EXPECT_EQ(0, seen->descriptions);
+  }
+  EXPECT_EQ("native:hello ?", retained.sql);
 }

@@ -102,10 +102,6 @@ public:
     return is_connected() ? SessionState::Unknown : SessionState::Disconnected;
   }
 
-  // Count bind markers using this backend's SQL lexical rules, without I/O.
-  virtual std::size_t count_parameter_markers(std::string_view sql) const = 0;
-  // Pure translation: no network I/O or mutation of connection state.
-  virtual SqlTranslationResult translate_sql(std::string_view sql) const = 0;
   // Construct backend SQL without I/O; execution retains the caller's normal
   // deadline, diagnostics and cursor handling. Unsupported catalogs return an error.
   virtual rs::util::Result<std::string> catalog_query(

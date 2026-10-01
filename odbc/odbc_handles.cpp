@@ -518,10 +518,10 @@ bool is_recognized_unsupported_statement_attribute(SQLINTEGER attribute) {
 
 std::optional<std::string> statement_sql(
     ODBCHandle& handle,
-    const rs::core::database::IDatabaseConnection& backend,
+    const rs::core::database::ISqlDialect& dialect,
     std::string_view sql, bool no_scan) {
   if (no_scan) return std::string(sql);
-  auto translated = backend.translate_sql(sql);
+  auto translated = dialect.translate_sql(sql);
   if (translated) return std::move(translated.sql);
   switch (translated.error) {
     case SqlTranslationError::InvalidDatetime:
@@ -2397,7 +2397,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
     return SQL_ERROR;
   }
   const auto native_sql = statement_sql(
-      *this, *conn_->get_db_connection(), sql, no_scan_);
+      *this, conn_->sql_dialect(), sql, no_scan_);
   if (!native_sql) return SQL_ERROR;
   if (conn_->logs_queries()) {
     conn_->log(rs::core::logging::LogLevel::Debug, "query_text",
@@ -3335,11 +3335,11 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
     return SQL_ERROR;
   }
   const auto native_sql = statement_sql(
-      *this, *conn_->get_db_connection(), sql, no_scan_);
+      *this, conn_->sql_dialect(), sql, no_scan_);
   if (!native_sql) return SQL_ERROR;
   
   const auto marker_count =
-      conn_->get_db_connection()->count_parameter_markers(*native_sql);
+      conn_->sql_dialect().count_parameter_markers(*native_sql);
   if (marker_count > conn_->input_limits().max_parameters ||
       marker_count > static_cast<std::size_t>(
           std::numeric_limits<SQLSMALLINT>::max())) {

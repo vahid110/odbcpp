@@ -149,3 +149,27 @@ TEST(BackendProviderTest, ResolvesResourceProfilesAndRejectsUnsafeCeilings) {
   options.response_limits.max_wire_bytes = 4;
   EXPECT_FALSE(provider.resolve_connection_options(options));
 }
+
+TEST(BackendProviderTest, DialectIsImmutableAndIndependentOfSessionCreation) {
+  const auto& provider = configured_backend_provider();
+  const auto& dialect = provider.sql_dialect();
+  const auto* address = &dialect;
+  EXPECT_EQ(1u, dialect.count_parameter_markers(
+      R"sql(SELECT '?', "?", $$?$$, $tag$?$tag$, ? /* ? /* ? */ */ -- ?
+)sql"));
+  EXPECT_EQ(0u, dialect.count_parameter_markers(""));
+  auto translated = dialect.translate_sql("SELECT {fn UCASE('x')}, {d '2024-02-29'}");
+  ASSERT_TRUE(translated); EXPECT_EQ("SELECT UPPER('x'), DATE '2024-02-29'", translated.sql);
+  const auto invalid = dialect.translate_sql("SELECT {d '2023-02-29'}");
+  EXPECT_FALSE(invalid); EXPECT_EQ(SqlTranslationError::InvalidDatetime, invalid.error);
+  const auto unsupported = dialect.translate_sql("{?= call answer()}");
+  EXPECT_FALSE(unsupported); EXPECT_EQ(SqlTranslationError::Unsupported, unsupported.error);
+  {
+    auto session = provider.create_session(nullptr);
+    ASSERT_TRUE(session); EXPECT_FALSE(session->is_connected());
+    EXPECT_EQ(address, &provider.sql_dialect());
+    EXPECT_TRUE(dialect.translate_sql("SELECT {d '2024-02-29'}"));
+  }
+  EXPECT_EQ(address, &provider.sql_dialect());
+  EXPECT_EQ("SELECT UPPER('x'), DATE '2024-02-29'", translated.sql);
+}

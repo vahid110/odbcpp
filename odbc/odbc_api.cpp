@@ -1924,7 +1924,7 @@ static SQLRETURN SQLNativeSql_impl(
                     "SQL text contains an embedded NUL byte");
     return SQL_ERROR;
   }
-  const auto native_sql = conn->get_db_connection()->translate_sql(input_sql);
+  const auto native_sql = conn->sql_dialect().translate_sql(input_sql);
   if (!native_sql) return set_sql_escape_error(*conn, native_sql);
   if (text_length2) {
     const auto length = static_cast<SQLINTEGER>(std::min(
@@ -1991,7 +1991,7 @@ static SQLRETURN SQLNativeSqlW_impl(
                     "SQL text contains an embedded NUL byte");
     return SQL_ERROR;
   }
-  const auto translated = conn->get_db_connection()->translate_sql(*native_sql);
+  const auto translated = conn->sql_dialect().translate_sql(*native_sql);
   if (!translated) return set_sql_escape_error(*conn, translated);
   if (output_statement && buffer_length == 0 && !translated.sql.empty()) {
     if (text_length2) {

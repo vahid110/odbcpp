@@ -17,8 +17,9 @@ public:
   void disconnect() override;
   bool is_connected() const override;
   SessionState session_state() const override { return session_state_; }
-  std::size_t count_parameter_markers(std::string_view sql) const override;
-  SqlTranslationResult translate_sql(std::string_view sql) const override;
+  // Private parser-composition helpers, absent from the SDK session interface.
+  std::size_t count_parameter_markers(std::string_view sql) const;
+  SqlTranslationResult translate_sql(std::string_view sql) const;
   // Private PostgreSQL-family codec/resolver hooks; never called by ODBC.
   virtual NativeTypeInfo describe_type(std::uint32_t id, std::int16_t size,
                                        std::int32_t modifier) const;

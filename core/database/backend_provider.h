@@ -1,6 +1,7 @@
 #pragma once
 
 #include "backend_capabilities.h"
+#include "sql_dialect.h"
 #include "i_database_connection.h"
 
 #include <chrono>
@@ -53,6 +54,7 @@ class IBackendProvider {
 
   virtual const BackendIdentity& identity() const noexcept = 0;
   virtual const BackendConnectionDefaults& connection_defaults() const noexcept = 0;
+  virtual const ISqlDialect& sql_dialect() const noexcept = 0;
   virtual BackendCapabilities capabilities() const noexcept = 0;
   virtual std::span<const TypeDefinition> type_catalog() const noexcept = 0;
   virtual TransactionCapabilities transaction_capabilities() const noexcept = 0;
