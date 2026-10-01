@@ -321,12 +321,13 @@ The internal synchronous contract is:
 - Input strings/views/spans are borrowed only until the call returns. ODBC handle
   serialization protects mutable session state; the interface does not promise
   independent concurrent calls on one connection.
-- QueryResult owns rows, column names, native metadata, command tags and nested
+- QueryResult owns rows, column names, normalized completions and nested
   results/errors. They survive subsequent calls, disconnect and backend destruction.
   A nullopt cell is NULL; an engaged empty string is a distinct non-NULL value.
   Type/catalog/capability views use their documented connection-lifetime storage.
-- Native type IDs, modifiers, table provenance, parameter type IDs, format codes
-  and command tags belong to the backend. Shared metadata requires normalized_type
+- Native completion tags and table provenance IDs never cross the result boundary.
+  Type IDs, modifiers, parameter type IDs and format codes remain private-parser
+  migration storage. Shared metadata requires normalized_type
   and normalized_parameter_types; native interpretation/resolution hooks are absent
   from IDatabaseConnection. PostgreSQL binary wire results are rejected. Known
   binary/Boolean/text cells are normalized before return; richer scalar forms

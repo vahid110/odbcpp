@@ -728,3 +728,20 @@ prepared/error smoke tests and failed-connect exit behavior pass. This is
 not a complete server-identity/cache-epoch facet,
 and does not repair or qualify the prototype pool. Session/facet splitting,
 ordered execution and native result migration fields remain S2 work.
+
+## S2 native completion/provenance fields removed — 2026-10-01
+
+QueryResult no longer exposes command_tag, and column metadata no longer carries
+PostgreSQL table OIDs/attribute numbers. The private parser validates and consumes
+those wire fields, classifies an ephemeral completion tag, and returns only
+StatementKind and affected-row counts. No ODBC provenance feature used these
+fields, so supported ODBC behavior is unchanged; future provenance must use
+normalized semantics instead of native identifiers. Compile-time contract checks
+prevent these fields from returning to the SDK result structures.
+
+Parser tests retain type-field offset checks with nonzero provenance, completion
+kind/count/order checks and owning snapshots; edge cases cover truncated
+provenance and missing/trailing completion terminators followed by parser recovery.
+Type IDs, widths/modifiers, format codes and parameter IDs still require a private
+parser-result split. Ordered execution items, richer scalar forms and session/
+reuse facets remain S2 work; no pooling/provider qualification is added.
