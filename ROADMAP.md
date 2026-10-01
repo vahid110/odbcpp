@@ -745,3 +745,30 @@ provenance and missing/trailing completion terminators followed by parser recove
 Type IDs, widths/modifiers, format codes and parameter IDs still require a private
 parser-result split. Ordered execution items, richer scalar forms and session/
 reuse facets remain S2 work; no pooling/provider qualification is added.
+
+## S2 private parser-result split — 2026-10-01
+
+SDK `QueryResult` now exposes only normalized column and ordered parameter
+metadata. Native type IDs, sizes/modifiers and wire format codes reside in private
+`ParsedQueryResult`; PostgreSQL-family parsing and decoding stay below the session
+boundary. Each drained response is validated and converted to an owning SDK
+snapshot before publication. Additional parser results must be flat and ordered;
+nested private results fail atomically as invalid metadata.
+
+Prepared/description parameter resolution uses the original absolute deadline.
+Resolver errors preserve their owning session/disposition snapshot, including local
+input-limit rejection without I/O; incomplete resolution returns no partial result
+and records the drained session state. Direct execution never triggers parameter
+resolution, so catalog lookups cannot recurse through this conversion.
+
+Compile-time SDK tests forbid native metadata fields. Parser tests retain native
+wire-offset/format coverage; session/ODBC tests cover normalized ownership, primary
+and additional results, malformed metadata/cells, binary-format rejection, lookup
+failures and reusable-session recovery. Ordered execution items, richer scalar
+forms, session/reuse facets and provider qualification remain open S2 work.
+
+Validation for this split: focused parser/backend/session/native-type tests;
+complete PostgreSQL, iODBC UTF-16 and UCS-4, ASan/UBSan, Redshift unit/build-contract
+and missing-endpoint checks; all examples compile. Focused review verified
+resolver-error disposition preservation and allocation cleanup. Windows/live and
+packaging validation are required on the pushed commit in CI.

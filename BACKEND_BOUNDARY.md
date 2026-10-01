@@ -326,8 +326,8 @@ The internal synchronous contract is:
   A nullopt cell is NULL; an engaged empty string is a distinct non-NULL value.
   Type/catalog/capability views use their documented connection-lifetime storage.
 - Native completion tags and table provenance IDs never cross the result boundary.
-  Type IDs, modifiers, parameter type IDs and format codes remain private-parser
-  migration storage. Shared metadata requires normalized_type
+  Type IDs, sizes/modifiers, parameter type IDs and format codes exist only in
+  private ParsedQueryResult storage. Shared metadata requires normalized_type
   and normalized_parameter_types; native interpretation/resolution hooks are absent
   from IDatabaseConnection. PostgreSQL binary wire results are rejected. Known
   binary/Boolean/text cells are normalized before return; richer scalar forms
@@ -728,3 +728,24 @@ compile-time checks reject their reintroduction on the SDK interface.
 This removes unused SDK service requirements without changing ODBC behavior.
 QueryResult native migration fields still exist until parser/result storage is
 split; ordered execution, richer canonical values and session facets remain open.
+
+## S2 private parser-result split — 2026-10-01
+
+SDK `QueryResult` now exposes only normalized column and ordered parameter
+metadata. Native type IDs, sizes/modifiers and wire format codes reside in private
+`ParsedQueryResult`; PostgreSQL-family parsing and decoding stay below the session
+boundary. Each drained response is validated and converted to an owning SDK
+snapshot before publication. Additional parser results must be flat and ordered;
+nested private results fail atomically as invalid metadata.
+
+Prepared/description parameter resolution uses the original absolute deadline.
+Resolver errors preserve their owning session/disposition snapshot, including local
+input-limit rejection without I/O; incomplete resolution returns no partial result
+and records the drained session state. Direct execution never triggers parameter
+resolution, so catalog lookups cannot recurse through this conversion.
+
+Compile-time SDK tests forbid native metadata fields. Parser tests retain native
+wire-offset/format coverage; session/ODBC tests cover normalized ownership, primary
+and additional results, malformed metadata/cells, binary-format rejection, lookup
+failures and reusable-session recovery. Ordered execution items, richer scalar
+forms, session/reuse facets and provider qualification remain open S2 work.
