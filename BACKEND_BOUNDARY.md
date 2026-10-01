@@ -482,8 +482,8 @@ borrower; pool isolation still requires its separate reset contract.
 The transitional default passive state for other implementations is `Unknown`
 when connected, never an implicit idle/reuse claim.
 
-This batch migrates immediate query errors only. Type resolution still uses the
-legacy result path; setup/authentication and transactions now use owning void
+This batch migrates immediate query errors only. Type resolution now uses owning
+map results; setup/authentication and transactions use owning void
 results as described below;
 ordered/deferred result errors remain in owning QueryResult until the normalized
 results migration. Mutable SQLSTATE and error-message getters/storage have been
@@ -507,7 +507,7 @@ transaction/failed-transaction/unknown sessions ResetRequired. The local helper
 accepts only validation/unsupported failure kinds, not transport/protocol errors.
 Copy/move and later-success tests verify error ownership; actual protocol
 fixtures verify state and ambiguous-failure retirement through both adapters.
-Type-resolution and safe-message/logging migration remain open. This does not
+Safe-message/logging migration remains open. This does not
 implement a reset/pool facet or complete A5.
 
 ## S2 owning setup and authentication failures — 2026-10-01
@@ -529,5 +529,29 @@ reconnect snapshots. No automatic retry or replay is introduced.
 
 The last mutable error-message side channel is removed from connection and
 prototype wrapper interfaces. Primary messages still preserve existing server
-diagnostics; safe-message/logging, type resolution and deferred-result
-normalization remain separate work. Internal C++ interfaces remain unstable.
+diagnostics; safe-message/logging and deferred-result normalization remain
+separate work. Internal C++ interfaces remain unstable.
+
+## S2 owning type-resolution failures — 2026-10-01
+
+`resolve_types` now returns `BackendResult<ResolvedTypeMap>`. PostgreSQL
+preserves the complete underlying query error and labels ResolveTypes context,
+including native state/code, classification, passive state and disposition.
+Timeout, partial-write and malformed-wire failures retain physical retirement;
+there is no automatic retry. Empty/known types and generic parser fallbacks
+still require no catalog query. Caller deadlines, domain resolution and missing
+native-type fallback behavior are unchanged.
+
+Invalid catalog rows return no partial map. They retain the existing QueryFailed
+code/message used by ODBC, with InvalidMetadata classification and a passive
+snapshot. This is distinct from an ambiguous wire-protocol failure.
+Because the query has drained, this validation failure does not itself retire
+an idle session. Transaction or unknown state still requires ResetRequired;
+disconnected state reports Retire. Native details and retry evidence are absent
+for locally detected invalid metadata. Tests cover all passive states, owning
+snapshots across later success/destruction, real protocol server errors,
+rollback recovery and no additional sends after ambiguous-failure retirement.
+
+ODBC parameter-cache updates remain atomic after complete-map validation, and
+its existing diagnostics are preserved. Safe-message/logging and normalized
+ordered/deferred results remain open; this does not complete A5 or S2.

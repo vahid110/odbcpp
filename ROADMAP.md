@@ -380,3 +380,16 @@ Continue A5 with type resolution and safe-message/logging. This batch preserves
 existing ODBC diagnostics and TLS policy; it does not qualify pooling, close S2
 or change crypto qualification blockers. Normalized results and resource budgets
 remain planned work before the bounded MySQL proof.
+
+### S2 owning type-resolution errors — 2026-10-01
+
+Type discovery now returns owning map/error results and preserves native query
+failure details with ResolveTypes context. Malformed fully drained metadata
+reports passive state without inferring transport ambiguity; partial maps never
+reach the statement cache. Known/empty types, domain resolution, caller deadlines
+and ODBC diagnostics are unchanged. Focused tests cover normal resolution,
+invalid rows, all passive states, ownership, server errors and retirement.
+
+Next is the safe-message/logging boundary and normalized deferred-result errors.
+A5/S2 remain open; aggregate budgets, safe reuse and MySQL proof remain separate
+planned steps, with existing crypto qualification blockers unchanged.
