@@ -41,6 +41,8 @@ class QualificationTests(unittest.TestCase):
             case = ET.SubElement(self.xml, 'testcase', name=name, status='run')
             if name == 'verified_crypto_tls_interop':
                 ET.SubElement(case, 'system-out').text = '\n'.join(sorted(q.TLS_MARKERS))
+        host = ET.SubElement(self.xml, 'testcase', name='test_shared_crypto_cohabitation', status='run')
+        ET.SubElement(host, 'system-out').text = '\n'.join(sorted(q.COHABITATION_MARKERS))
 
     def write(self, kind, data):
         (self.root / f'odbcpp-crypto-{kind}.json').write_text(json.dumps(data))
@@ -65,6 +67,21 @@ class QualificationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'hash mismatch'):
                 self.collect()
             path.write_bytes(original)
+
+    def test_shared_host_evidence_missing_duplicate_and_filtered_cases_rejected(self):
+        host = self.xml[-1]
+        self.xml.remove(host)
+        with self.assertRaisesRegex(RuntimeError, 'Mandatory unit case'):
+            self.collect()
+        self.xml.append(host)
+        output = host.find('system-out')
+        valid = output.text
+        for text in ('', valid + '\n' + sorted(q.COHABITATION_MARKERS)[0]):
+            output.text = text
+            with self.assertRaisesRegex(RuntimeError, 'cohabitation output'):
+                self.collect()
+        output.text = valid
+        self.assertTrue(self.collect()['sharedProviderHostLifecycleEvaluated'])
 
     def test_weaker_policy_wrong_version_and_unsupported_claim_rejected(self):
         for field, value in (('activeFips', True), ('verifyPeer', False), ('verifyHostname', False),

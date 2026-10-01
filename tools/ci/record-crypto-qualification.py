@@ -19,6 +19,10 @@ for version in ('TLSv1_2', 'TLSv1_3'):
         TLS_MARKERS.add(f'{version}: {host}: {outcome} passed')
 PROFILES = {('Linux', 'SYSTEM_SHARED'), ('Linux', 'BUNDLED_STATIC'),
             ('Darwin', 'SYSTEM_SHARED'), ('Windows', 'BUNDLED_SHARED')}
+COHABITATION_MARKERS = {
+    'COHABITATION: host operations across driver lifetime passed',
+    'COHABITATION: repeated driver references passed',
+}
 
 
 def sha(path):
@@ -61,7 +65,10 @@ def collect(build, driver, probe, report, platform):
         raise RuntimeError('Inconsistent or unsuccessful unit report totals')
     if any(list(root.iter(tag)) for tag in ('failure', 'error', 'skipped')):
         raise RuntimeError('Unit report contains failed or skipped tests')
-    for name in REQUIRED_TESTS:
+    required_tests = set(REQUIRED_TESTS)
+    if linkage == 'SYSTEM_SHARED':
+        required_tests.add('test_shared_crypto_cohabitation')
+    for name in required_tests:
         matching = [case for case in cases if case.get('name') == name]
         if len(matching) != 1 or matching[0].get('status') != 'run':
             raise RuntimeError(f'Mandatory unit case missing, duplicate or not run: {name}')
@@ -69,12 +76,18 @@ def collect(build, driver, probe, report, platform):
     lines = (peer.findtext('system-out') or '').splitlines()
     if any(lines.count(marker) != 1 for marker in TLS_MARKERS):
         raise RuntimeError('Independent TLS case/control output missing or duplicated')
+    if linkage == 'SYSTEM_SHARED':
+        host = next(case for case in cases if case.get('name') == 'test_shared_crypto_cohabitation')
+        host_lines = (host.findtext('system-out') or '').splitlines()
+        if any(host_lines.count(marker) != 1 for marker in COHABITATION_MARKERS):
+            raise RuntimeError('Shared-provider cohabitation output missing or duplicated')
     return {
         'schemaVersion': 1, 'profile': f'OPENSSL/{linkage}/{platform}',
         'qualificationClaimed': False,
         'scope': 'Unit identity, default policy, artifact/export checks and independent TLS peer only',
         'liveDriverPackageCoexistenceAcceptanceEvaluated': False,
-        'mandatoryUnitTests': sorted(REQUIRED_TESTS),
+        'mandatoryUnitTests': sorted(required_tests),
+        'sharedProviderHostLifecycleEvaluated': linkage == 'SYSTEM_SHARED',
         'mandatoryTlsPeerCases': sorted(TLS_MARKERS),
         'inputs': {name: sha(path) for name, path in (
             ('driver', driver), ('probe', probe), ('manifest', manifest_path),

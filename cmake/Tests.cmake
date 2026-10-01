@@ -88,6 +88,26 @@ foreach(test_file ${UNIT_TEST_SOURCES})
   set_tests_properties(${test_name} PROPERTIES LABELS "unit")
 endforeach()
 
+if((CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin") AND
+   ODBCPP_CRYPTO_LINKAGE STREQUAL "SYSTEM_SHARED")
+  add_executable(test_shared_crypto_cohabitation
+    tests/security/test_shared_crypto_cohabitation.cpp)
+  target_include_directories(test_shared_crypto_cohabitation PRIVATE
+    ${ODBC_INCLUDE_DIR} ${OPENSSL_INCLUDE_DIR})
+  target_link_libraries(test_shared_crypto_cohabitation PRIVATE GTest::gtest_main ${CMAKE_DL_LIBS})
+  target_compile_definitions(test_shared_crypto_cohabitation PRIVATE
+    ODBCPP_COHABITATION_SSL_LIBRARY="${OPENSSL_SSL_LIBRARY}"
+    ODBCPP_COHABITATION_CRYPTO_LIBRARY="${OPENSSL_CRYPTO_LIBRARY}"
+    ODBCPP_COHABITATION_VERSION="${OPENSSL_VERSION}"
+    ODBCPP_DRIVER_LIBRARY_PATH="$<TARGET_FILE:${PROJECT_NAME}_driver>")
+  apply_compiler_settings(test_shared_crypto_cohabitation)
+  add_dependencies(test_shared_crypto_cohabitation ${PROJECT_NAME}_driver)
+  add_test(NAME test_shared_crypto_cohabitation COMMAND test_shared_crypto_cohabitation)
+  set_tests_properties(test_shared_crypto_cohabitation PROPERTIES LABELS "unit;architecture;security" TIMEOUT 30)
+  set_target_properties(test_shared_crypto_cohabitation PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+endif()
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
    ODBCPP_CRYPTO_LINKAGE STREQUAL "BUNDLED_STATIC" AND
    ((ODBCPP_CRYPTO_COHABITATION_SSL_LIBRARY AND
