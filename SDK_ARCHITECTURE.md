@@ -330,3 +330,21 @@ parameter metadata afresh; a replacement native cache waits for the accepted
 ownership/invalidation/epoch contracts and measurements. Repeated domain lookups
 may cost an extra catalog round trip. Native IDs remain only in parser migration
 storage; cell normalization and session facets remain separate S2 stages.
+
+## S2 canonical binary/Boolean cells checkpoint — 2026-10-01
+
+The PostgreSQL-family session converts known Binary columns to raw bytes and
+Boolean columns to "0"/"1" before returning primary/additional results. Shared
+ODBC no longer invokes backend cell decoders; that method is removed from the
+IDatabaseConnection contract and remains PostgreSQL-family implementation code.
+Malformed native values discard their native encoding and carry an owning,
+sorted, unique zero-based cell-error coordinate snapshot plus a non-NULL empty
+placeholder. This keeps bound-fetch/GetData 22018 timing and output preservation;
+unrequested cells do not cause eager execution failure. NULL and ordinary empty
+values remain distinct. ODBC validates error coordinates before applying state
+and filters errors for rows removed by MaxRows. Errors are immutable snapshots:
+later session changes cannot repair an already returned malformed cell.
+This completes the known binary/Boolean decoding move, not all A5: UTF-8 text
+validation, richer numeric/temporal canonical forms, native migration fields and
+ordered execution/session facets remain open. Existing count/wire limits bound
+this storage, but no exact aggregate heap quota is claimed.

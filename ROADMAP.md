@@ -643,3 +643,12 @@ incomplete/failed resolution, output preservation and same-session recovery.
 Native caches are deferred pending explicit epochs/invalidation; fresh domain
 resolution may add catalog I/O. Canonical cells, native migration-field removal,
 ordered execution and session facets remain S2 work.
+
+### S2 canonical binary/Boolean cells — 2026-10-01
+
+Known binary/Boolean result values are normalized in the backend once; shared
+ODBC decoders are removed. Owning cell-error coordinates preserve fetch/GetData
+22018 timing, row status and affected outputs without retaining malformed native
+bytes. Tests cover wire encodings, NULL/empty, multiple results, immutable snapshots,
+malformed coordinate rejection and recovery. Text UTF-8/richer scalar forms,
+native migration-field removal and ordered execution/session facets remain open.
