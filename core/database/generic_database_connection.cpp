@@ -388,6 +388,7 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
   std::size_t wire_bytes = 0;
   std::size_t message_count = 0;
   std::size_t rows = 0, cells = 0, results = 0;
+  std::size_t metadata_entries = 0, metadata_name_bytes = 0;
   while (true) {
     if (message_count == settings_.response_limits.max_messages) {
       mark_transport_failed();
@@ -490,7 +491,30 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
       };
       bool exceeded = false;
       if (msg.tag == 'T' || msg.tag == 't') {
-        exceeded = count() > limits.max_columns_per_description;
+        const auto columns = count();
+        exceeded = columns > limits.max_columns_per_description ||
+            columns > limits.max_metadata_entries - metadata_entries;
+        if (!exceeded) metadata_entries += columns;
+        if (!exceeded && msg.tag == 'T') {
+          std::size_t offset = 2;
+          for (std::size_t column = 0; column < columns; ++column) {
+            const auto start = offset;
+            while (offset < msg.payload.size() && msg.payload[offset] != std::byte{0}) ++offset;
+            if (offset == msg.payload.size()) throw std::runtime_error("Unterminated PostgreSQL column name");
+            const auto name_bytes = offset - start;
+            if (name_bytes > limits.max_column_name_bytes ||
+                name_bytes > limits.max_metadata_name_bytes - metadata_name_bytes) {
+              exceeded = true;
+              break;
+            }
+            metadata_name_bytes += name_bytes;
+            ++offset;
+            // PostgreSQL RowDescription has 18 fixed bytes after each name.
+            if (msg.payload.size() - offset < 18) throw std::runtime_error("Incomplete PostgreSQL column metadata");
+            offset += 18;
+          }
+          if (!exceeded && offset != msg.payload.size()) throw std::runtime_error("Trailing PostgreSQL column metadata");
+        }
       } else if (msg.tag == 'D') {
         const auto columns = count();
         exceeded = rows == limits.max_rows || columns > limits.max_cells - cells;
@@ -673,6 +697,11 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
   if (total_length > remaining_bytes) {
     mark_transport_failed();
     return {rs::util::DbErrorCode::ResourceLimit, "Database response byte limit exceeded"};
+  }
+  if ((header[0] == std::byte{'E'} || header[0] == std::byte{'N'}) &&
+      static_cast<std::size_t>(len - 4) > settings_.result_limits.max_diagnostic_bytes) {
+    mark_transport_failed();
+    return {rs::util::DbErrorCode::ResourceLimit, "Database diagnostic byte limit exceeded"};
   }
   std::vector<std::byte> message;
   message.reserve(std::min<std::size_t>(total_length, 8192));

@@ -36,6 +36,11 @@ struct ResultLimits {
   std::size_t max_cells{4000000};
   std::size_t max_columns_per_description{4096};
   std::size_t max_results{1024};
+  std::size_t max_metadata_entries{65536};
+  std::size_t max_column_name_bytes{1024};
+  std::size_t max_metadata_name_bytes{1024 * 1024};
+  // Per ErrorResponse/NoticeResponse payload, during startup and queries.
+  std::size_t max_diagnostic_bytes{16 * 1024};
 };
 
 struct ConnectionSettings {

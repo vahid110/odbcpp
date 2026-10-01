@@ -180,6 +180,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     DescriptionMissingResult, DescriptionOutOfOrder,
     DescriptionServerError, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
     OwnedErrorIdle, OwnedErrorTransaction, OwnedErrorAborted,
+    UnterminatedColumnName, TruncatedColumnMetadata, TrailingColumnMetadata, EmptyColumnName,
     QueryReadTimeout, PartialQueryWrite
   };
 
@@ -457,6 +458,16 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('t', "\0\0", 2);
       append_message('1', "", 0);
       append_message('n', "", 0);
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::UnterminatedColumnName || mode == ResponseMode::TruncatedColumnMetadata ||
+               mode == ResponseMode::TrailingColumnMetadata || mode == ResponseMode::EmptyColumnName) {
+      constexpr char description[] =
+          "\0\1\0" "\0\0\0\0" "\0\0" "\0\0\0\31"
+          "\377\377" "\377\377\377\377" "\0\0";
+      if (mode == ResponseMode::UnterminatedColumnName) append_message('T', "\0\1value", 7);
+      else if (mode == ResponseMode::TruncatedColumnMetadata) append_message('T', description, sizeof(description) - 2);
+      else append_message('T', description, sizeof(description) - (mode == ResponseMode::EmptyColumnName ? 1 : 0));
+      append_message('C', "SELECT 0", sizeof("SELECT 0"));
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::OwnedResultCells ||
                mode == ResponseMode::OwnedResultCellsTransaction || mode == ResponseMode::OwnedResultCellsAborted ||
@@ -2587,4 +2598,149 @@ TEST(ResultBudgetTest, ZeroDataBudgetsPermitNoDataAndInvalidResultLimitPreserves
   EXPECT_EQ(observed->bytes_read(), reads);
   EXPECT_EQ(observed->connect_count(), connects);
   EXPECT_EQ(observed->close_count(), 0u);
+}
+
+TEST(ResultBudgetTest, MetadataNamesAndEntriesAccumulateAcrossResults) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const int dimension : {0, 1, 2}) {
+    for (const bool exact : {false, true}) {
+      auto transport = std::make_unique<ScriptedBackendTransport>(Mode::OwnedTwoResultSets);
+      auto* observed = transport.get();
+      postgres::PgDatabaseConnection backend("PostgreSQL", std::move(transport));
+      ConnectionSettings settings;
+      settings.use_ssl = false;
+      if (dimension == 0) settings.result_limits.max_metadata_entries = exact ? 2 : 1;
+      if (dimension == 1) settings.result_limits.max_column_name_bytes = exact ? 5 : 4;
+      if (dimension == 2) settings.result_limits.max_metadata_name_bytes = exact ? 10 : 9;
+      ASSERT_TRUE(backend.connect(settings));
+      const auto result = backend.execute_query("bounded", rs::util::Deadline::max());
+      EXPECT_EQ(exact, result.has_value());
+      if (exact) {
+        ASSERT_TRUE(result);
+        EXPECT_EQ(result->columns[0].name, "value");
+        ASSERT_EQ(result->additional_results.size(), 1u);
+        EXPECT_EQ(result->additional_results[0].columns[0].name, "value");
+      } else {
+        ASSERT_TRUE(result.has_error());
+        EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::ResourceLimit);
+        EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Retire);
+        EXPECT_EQ(observed->close_count(), 1u);
+        const auto sends = observed->send_count();
+        EXPECT_FALSE(backend.execute_query("later", rs::util::Deadline::max()));
+        EXPECT_EQ(observed->send_count(), sends);
+      }
+    }
+  }
+}
+
+TEST(ResultBudgetTest, ParameterEntriesUseAggregateMetadataBudget) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const bool exact : {false, true}) {
+    postgres::PgDatabaseConnection backend("PostgreSQL", std::make_unique<ScriptedBackendTransport>(Mode::DescriptionOneParameter));
+    ConnectionSettings settings;
+    settings.use_ssl = false;
+    settings.result_limits.max_metadata_entries = exact ? 1 : 0;
+    settings.result_limits.max_metadata_name_bytes = 0;
+    settings.result_limits.max_column_name_bytes = 0;
+    ASSERT_TRUE(backend.connect(settings));
+    const auto result = backend.describe_statement("bounded", {}, rs::util::Deadline::max());
+    EXPECT_EQ(exact, result.has_value());
+    if (exact) {
+      ASSERT_TRUE(result);
+      EXPECT_EQ(result->parameter_type_ids, std::vector<std::uint32_t>{23});
+    } else {
+      ASSERT_TRUE(result.has_error());
+      EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::ResourceLimit);
+      EXPECT_EQ(result.backend_error().operation, BackendOperation::Describe);
+      EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Retire);
+    }
+  }
+}
+
+TEST(ResultBudgetTest, DiagnosticPayloadLimitRejectsQueryErrorBeforeBodyRead) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  constexpr char error[] = "SERROR\0C42601\0Msyntax error\0";
+  for (const bool exact : {false, true}) {
+    auto transport = std::make_unique<ScriptedBackendTransport>(Mode::OwnedErrorIdle);
+    auto* observed = transport.get();
+    postgres::PgDatabaseConnection backend("PostgreSQL", std::move(transport));
+    ConnectionSettings settings;
+    settings.use_ssl = false;
+    settings.result_limits.max_diagnostic_bytes = exact ? sizeof(error) : sizeof(error) - 1;
+    ASSERT_TRUE(backend.connect(settings));
+    const auto startup_bytes = observed->bytes_read();
+    const auto result = backend.execute_query("bounded", rs::util::Deadline::max());
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(result.backend_error().error_class, exact ? BackendErrorClass::Server : BackendErrorClass::ResourceLimit);
+    if (exact) {
+      EXPECT_EQ(result.backend_error().native_state, "42601");
+      EXPECT_TRUE(backend.is_connected());
+    } else {
+      EXPECT_EQ(observed->bytes_read(), startup_bytes + 5);
+      EXPECT_FALSE(result.backend_error().native_state);
+      EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Retire);
+      EXPECT_EQ(observed->close_count(), 1u);
+    }
+  }
+}
+
+TEST(ResultBudgetTest, DiagnosticLimitCoversAuthenticationErrorsAndStartupNotices) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  constexpr char error[] = "SFATAL\0C28P01\0Mpassword authentication failed\0";
+  constexpr char notice[] = "SNOTICE\0C00000\0Mstartup notice\0";
+  for (const bool authentication : {false, true}) {
+    for (const bool exact : {false, true}) {
+      auto transport = std::make_unique<ScriptedBackendTransport>(authentication ? Mode::AuthRejected : Mode::NoticeAfterAuthenticationOk);
+      auto* observed = transport.get();
+      postgres::PgDatabaseConnection backend("PostgreSQL", std::move(transport));
+      ConnectionSettings settings;
+      settings.use_ssl = false;
+      const auto payload_bytes = authentication ? sizeof(error) : sizeof(notice);
+      settings.result_limits.max_diagnostic_bytes = exact ? payload_bytes : payload_bytes - 1;
+      const auto result = backend.connect(settings);
+      if (exact && !authentication) {
+        ASSERT_TRUE(result);
+        EXPECT_TRUE(backend.is_connected());
+      } else {
+        ASSERT_TRUE(result.has_error());
+        EXPECT_EQ(result.backend_error().error_class, exact ? BackendErrorClass::Authentication : BackendErrorClass::ResourceLimit);
+        EXPECT_EQ(result.backend_error().operation, authentication ? BackendOperation::Authenticate : BackendOperation::Startup);
+        EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Retire);
+        EXPECT_EQ(observed->close_count(), 1u);
+        if (!exact) EXPECT_EQ(observed->bytes_read(), authentication ? 5u : 14u);
+      }
+    }
+  }
+}
+
+TEST(ResultBudgetTest, MalformedMetadataRetiresAndEmptyNamesFitZeroByteBudgets) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::UnterminatedColumnName, Mode::TruncatedColumnMetadata, Mode::TrailingColumnMetadata, Mode::EmptyColumnName}) {
+    auto transport = std::make_unique<ScriptedBackendTransport>(mode);
+    auto* observed = transport.get();
+    postgres::PgDatabaseConnection backend("PostgreSQL", std::move(transport));
+    ConnectionSettings settings;
+    settings.use_ssl = false;
+    if (mode == Mode::EmptyColumnName) {
+      settings.result_limits.max_column_name_bytes = 0;
+      settings.result_limits.max_metadata_name_bytes = 0;
+    }
+    ASSERT_TRUE(backend.connect(settings));
+    const auto result = backend.execute_query("bounded", rs::util::Deadline::max());
+    if (mode == Mode::EmptyColumnName) {
+      ASSERT_TRUE(result);
+      ASSERT_EQ(result->columns.size(), 1u);
+      EXPECT_TRUE(result->columns[0].name.empty());
+    } else {
+      ASSERT_TRUE(result.has_error());
+      EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::Protocol);
+      EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Retire);
+      EXPECT_EQ(observed->close_count(), 1u);
+    }
+  }
 }
