@@ -351,6 +351,22 @@ BackendResult<QueryResult> GenericDatabaseConnection::execute_query(
   }
 }
 
+BackendResult<QueryResult> GenericDatabaseConnection::execute_cleanup_query(
+    std::string_view sql, std::string_view expected_completion, rs::util::Deadline deadline) {
+  if (connected_ && sql.size() > settings_.input_limits.max_sql_bytes) {
+    return reject_request_limit(BackendOperation::ResetSession);
+  }
+  try {
+    return finish_operation(execute_query_impl(sql, deadline, expected_completion), BackendOperation::ResetSession);
+  } catch (const RequestWireLimitExceeded&) {
+    return reject_request_limit(BackendOperation::ResetSession);
+  } catch (const std::bad_alloc&) {
+    // Request I/O may have started; never expose an ambiguous session as live.
+    mark_transport_failed();
+    return finish_operation({rs::util::DbErrorCode::AllocationFailure, {}}, BackendOperation::ResetSession);
+  }
+}
+
 BackendResult<QueryResult> GenericDatabaseConnection::execute_prepared(
     std::string_view sql, std::span<const QueryParameter> params, rs::util::Deadline deadline) {
   const auto& limits = settings_.input_limits;
@@ -395,7 +411,7 @@ BackendResult<QueryResult> GenericDatabaseConnection::describe_statement(
   }
 }
 
-BackendResult<QueryResult> GenericDatabaseConnection::execute_query_impl(std::string_view sql, rs::util::Deadline deadline) {
+BackendResult<QueryResult> GenericDatabaseConnection::execute_query_impl(std::string_view sql, rs::util::Deadline deadline, std::string_view expected_completion) {
   if (!connected_) {
     return BackendResult<QueryResult>{rs::util::DbErrorCode::NotConnected, "Not connected"};
   }
@@ -416,7 +432,7 @@ BackendResult<QueryResult> GenericDatabaseConnection::execute_query_impl(std::st
     return BackendResult<QueryResult>{write_result.error(), write_result.error_message()};
   }
 
-  return read_query_result(deadline, ResponseKind::SimpleExecution);
+  return read_query_result(deadline, ResponseKind::SimpleExecution, expected_completion);
 }
 
 BackendResult<QueryResult> GenericDatabaseConnection::execute_prepared_impl(std::string_view sql,
@@ -474,12 +490,13 @@ BackendResult<QueryResult> GenericDatabaseConnection::describe_statement_impl(
 }
 
 BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
-    rs::util::Deadline deadline, ResponseKind kind) {
+    rs::util::Deadline deadline, ResponseKind kind, std::string_view expected_completion) {
   enum class DescriptionPhase { Parse, Parameters, Result, Complete, Error };
   std::vector<Message> messages;
   std::optional<std::string> query_error;
   std::string query_error_sqlstate;
   bool saw_completion = false;
+  bool saw_expected_completion = false;
   auto description_phase = DescriptionPhase::Parse;
 
   std::size_t wire_bytes = 0;
@@ -576,6 +593,22 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
           default:
             throw std::runtime_error(
                 "Unexpected PostgreSQL query response frame");
+        }
+      }
+      if (!expected_completion.empty()) {
+        if (msg.tag == 'C') {
+          if (saw_expected_completion || msg.payload.size() != expected_completion.size() + 1) {
+            throw std::runtime_error("Unexpected PostgreSQL reset completion");
+          }
+          const auto tag = std::string_view(reinterpret_cast<const char*>(msg.payload.data()), msg.payload.size());
+          if (
+              tag.back() != '\0' || tag.substr(0, tag.size() - 1) != expected_completion) {
+            throw std::runtime_error("Unexpected PostgreSQL reset completion");
+          }
+          saw_expected_completion = true;
+        } else if (msg.tag == 'T' || msg.tag == 'D' || msg.tag == 'I' ||
+                   (msg.tag == 'Z' && !query_error && !saw_expected_completion)) {
+          throw std::runtime_error("Unexpected PostgreSQL reset response");
         }
       }
       // This session implements PostgreSQL-family framing. Count before

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/database/backend_provider.h"
+#include "core/database/session_reset.h"
 
 namespace rs::core::database::postgres {
 
@@ -11,7 +12,8 @@ TransactionCapabilities pg_transaction_capabilities() noexcept;
 class PgBackendProvider final : public IBackendProvider {
  public:
   PgBackendProvider(BackendIdentity identity,
-                    BackendConnectionDefaults connection_defaults);
+                    BackendConnectionDefaults connection_defaults,
+                    std::optional<SessionResetProfile> reset_profile = std::nullopt);
   PgBackendProvider(const PgBackendProvider&) = delete;
   PgBackendProvider& operator=(const PgBackendProvider&) = delete;
   PgBackendProvider(PgBackendProvider&&) = delete;
@@ -37,6 +39,7 @@ class PgBackendProvider final : public IBackendProvider {
   BackendIdentity identity_;
   BackendConnectionDefaults connection_defaults_;
   BackendCapabilities capabilities_;
+  const std::optional<SessionResetProfile> reset_profile_;
 };
 
 }  // namespace rs::core::database::postgres

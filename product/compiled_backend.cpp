@@ -13,7 +13,8 @@ const IBackendProvider& configured_backend_provider() {
 #if defined(ODBCPP_ENABLE_POSTGRESQL)
   static const postgres::PgBackendProvider provider{
       BackendIdentity{"postgresql", "PostgreSQL", "ODBCPP PostgreSQL"},
-      BackendConnectionDefaults{"localhost", 5432, "postgres", true}};
+      BackendConnectionDefaults{"localhost", 5432, "postgres", true},
+      SessionResetProfile::SameAuthenticatedServerSession};
   return provider;
 #elif defined(ODBCPP_ENABLE_REDSHIFT)
   static const postgres::PgBackendProvider provider{

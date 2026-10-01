@@ -3,6 +3,7 @@
 #include "core/database/backend_provider.h"
 #include "core/database/database_factory.h"
 #include "core/database/postgres/pg_backend_provider.h"
+#include "core/database/postgres/pg_database_connection.h"
 
 #include <chrono>
 #include <memory>
@@ -171,4 +172,21 @@ TEST(BackendProviderTest, DialectIsImmutableAndIndependentOfSessionCreation) {
   }
   EXPECT_EQ(address, &provider.sql_dialect());
   EXPECT_EQ("SELECT UPPER('x'), DATE '2024-02-29'", translated.sql);
+}
+
+TEST(BackendProviderTest, ResetProfileIsPostgreSqlOnlyAndNotInferredForRedshift) {
+  using namespace rs::core::database;
+  postgres::PgBackendProvider pg{{"renamed-provider", "PostgreSQL", "ODBCPP PostgreSQL"},
+      {"localhost", 5432, "postgres", true}, SessionResetProfile::SameAuthenticatedServerSession};
+  postgres::PgBackendProvider redshift{{"redshift", "Amazon Redshift", "ODBCPP Redshift"},
+      {"localhost", 5439, std::nullopt, true}};
+  postgres::PgBackendProvider default_profile{{"postgresql", "PostgreSQL", "ODBCPP PostgreSQL"},
+      {"localhost", 5432, "postgres", true}};
+  EXPECT_EQ(nullptr, default_profile.create_session(nullptr)->session_reset());
+  EXPECT_EQ(nullptr, postgres::PgDatabaseConnection{}.session_reset());
+  auto pg_session = pg.create_session(nullptr);
+  auto rs_session = redshift.create_session(nullptr);
+  ASSERT_NE(nullptr, pg_session->session_reset());
+  EXPECT_EQ(nullptr, rs_session->session_reset());
+  EXPECT_EQ(SessionResetProfile::SameAuthenticatedServerSession, pg_session->session_reset()->reset_profile());
 }

@@ -182,7 +182,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     DescriptionServerError, Utf8ColumnNames, MalformedColumnName, MalformedAdditionalColumnName, Utf8TextCells, NativeCells, MalformedNativeCells, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
     OwnedErrorIdle, OwnedErrorTransaction, OwnedErrorAborted,
     UnterminatedColumnName, TruncatedColumnMetadata, TrailingColumnMetadata, EmptyColumnName,
-    QueryReadTimeout, PartialQueryWrite, PreparedCommand, TransactionCompletions, QueryAllocationFailure, Md5Authentication
+    QueryReadTimeout, PartialQueryWrite, PreparedCommand, ResetCompletions, TransactionCompletions, QueryAllocationFailure, Md5Authentication
   };
 
   explicit ScriptedBackendTransport(
@@ -434,6 +434,17 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::EmptyQueryResponse) {
       append_message('I', "", 0);
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::ResetCompletions) {
+      // T: genuine transaction cleanup; B: wrong rollback completion.
+      if (extended_query_tag == 'T' || extended_query_tag == 'B') {
+        append_message('C', "BEGIN", sizeof("BEGIN")); append_message('Z', "T", 1);
+        const char* rollback = extended_query_tag == 'B' ? "SET" : "ROLLBACK";
+        append_message('C', rollback, std::strlen(rollback) + 1); append_message('Z', "I", 1);
+      }
+      const char* completion = extended_query_tag == 'W' ? "SET" : "DISCARD ALL";
+      append_message('C', completion, extended_query_tag == 'E' ? 0 : std::strlen(completion) + (extended_query_tag == 'N' ? 0 : 1));
+      if (extended_query_tag == 'D') append_message('C', completion, std::strlen(completion) + 1);
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::TransactionCompletions) {
       append_message('C', "BEGIN", sizeof("BEGIN")); append_message('Z', "T", 1);
@@ -3867,4 +3878,43 @@ TEST(SessionHealthTest, GenericFamilyMachineryDoesNotAdvertiseActiveProbe) {
   rs::core::database::GenericDatabaseConnection session(
       std::make_unique<rs::core::database::postgres::PgProtocolParser>());
   EXPECT_EQ(nullptr, session.session_health());
+}
+
+TEST(SessionResetTest, NativeTransportAndServerFailuresAlwaysRetire) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::QueryReadTimeout, Mode::PartialQueryWrite, Mode::OwnedErrorIdle}) {
+    postgres::PgDatabaseConnection session(std::make_unique<ScriptedBackendTransport>(mode), SessionResetProfile::SameAuthenticatedServerSession);
+    ConnectionSettings settings; settings.use_ssl = false;
+    ASSERT_TRUE(session.connect(settings));
+    const auto result = session.session_reset()->reset_session(rs::util::make_deadline(std::chrono::seconds(1)));
+    ASSERT_FALSE(result);
+    EXPECT_EQ(BackendOperation::ResetSession, result.backend_error().operation);
+    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), result.session_snapshot());
+    EXPECT_FALSE(session.is_connected());
+  }
+}
+
+TEST(SessionResetTest, ExactNativeCleanupTagsAreRequiredBeforeNormalization) {
+  using namespace rs::core::database;
+  for (const char profile : {'I', 'T', 'W', 'B', 'D', 'N', 'E'}) {
+    SCOPED_TRACE(profile);
+    postgres::PgDatabaseConnection session(std::make_unique<ScriptedBackendTransport>(
+        ScriptedBackendTransport::ResponseMode::ResetCompletions, profile),
+        SessionResetProfile::SameAuthenticatedServerSession);
+    ConnectionSettings settings; settings.use_ssl = false;
+    ASSERT_TRUE(session.connect(settings));
+    const auto deadline = rs::util::make_deadline(std::chrono::seconds(1));
+    if (profile == 'T' || profile == 'B') ASSERT_TRUE(session.execute_query("BEGIN", deadline));
+    const auto result = session.session_reset()->reset_session(deadline);
+    if (profile == 'I' || profile == 'T') {
+      ASSERT_TRUE(result) << result.error_message();
+      EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), result.session_snapshot());
+    } else {
+      ASSERT_FALSE(result);
+      EXPECT_EQ(BackendErrorClass::Protocol, result.backend_error().error_class);
+      EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), result.session_snapshot());
+      EXPECT_FALSE(session.is_connected());
+    }
+  }
 }

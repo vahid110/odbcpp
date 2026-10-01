@@ -8,10 +8,17 @@
 namespace rs::core::database::postgres {
 
 // PostgreSQL session with backend-specific metadata discovery.
-class PgDatabaseConnection : public GenericDatabaseConnection, public ITransactionSession, public ICatalogQueries, public ISessionHealth {
+class PgDatabaseConnection : public GenericDatabaseConnection, public ITransactionSession, public ICatalogQueries, public ISessionHealth, public ISessionReset {
 public:
   explicit PgDatabaseConnection(
-      std::unique_ptr<rs::core::transport::ITransport> transport = nullptr);
+      std::unique_ptr<rs::core::transport::ITransport> transport = nullptr,
+      std::optional<SessionResetProfile> reset_profile = std::nullopt);
+
+  ISessionReset* session_reset() noexcept override { return reset_profile_ ? this : nullptr; }
+  SessionResetProfile reset_profile() const noexcept override {
+    return SessionResetProfile::SameAuthenticatedServerSession;
+  }
+  BackendResult<void> reset_session(rs::util::Deadline deadline) override;
 
   ISessionHealth* session_health() noexcept override { return this; }
   BackendResult<void> check_health(rs::util::Deadline deadline) override;
@@ -33,6 +40,8 @@ public:
   BackendResult<ResolvedTypeMap> resolve_types(
       std::span<const std::uint32_t> ids, rs::util::Deadline deadline) override;
 
+private:
+  const std::optional<SessionResetProfile> reset_profile_;
 };
 
 } // namespace rs::core::database::postgres

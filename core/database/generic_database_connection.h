@@ -48,6 +48,11 @@ public:
   // Private PostgreSQL ParameterStatus storage; not a portable SDK service.
   virtual std::string get_parameter(std::string_view key) const;
 
+protected:
+  // PostgreSQL-family cleanup: native completion tags stay outside SDK results.
+  virtual BackendResult<QueryResult> execute_cleanup_query(std::string_view sql,
+      std::string_view expected_completion, rs::util::Deadline deadline);
+
 private:
   BackendResult<QueryResult> reject_request_limit(BackendOperation operation) const;
   BackendResult<void> connect_impl(const ConnectionSettings& settings);
@@ -55,7 +60,7 @@ private:
   BackendResult<QueryResult> finish_operation(BackendResult<QueryResult> result,
       BackendOperation operation);
   BackendResult<QueryResult> execute_query_impl(std::string_view sql,
-      rs::util::Deadline deadline);
+      rs::util::Deadline deadline, std::string_view expected_completion = {});
   BackendResult<QueryResult> execute_prepared_impl(std::string_view sql,
       std::span<const QueryParameter> params, rs::util::Deadline deadline);
   BackendResult<QueryResult> describe_statement_impl(std::string_view sql,
@@ -79,7 +84,7 @@ private:
   BackendResult<void> perform_authentication_result(rs::util::Deadline deadline);
   rs::util::Result<void> record_parameter_status(const Message& msg);
   BackendResult<QueryResult> read_query_result(
-      rs::util::Deadline deadline, ResponseKind kind);
+      rs::util::Deadline deadline, ResponseKind kind, std::string_view expected_completion = {});
   void mark_transport_failed() noexcept;
 };
 
