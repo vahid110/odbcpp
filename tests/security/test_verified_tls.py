@@ -54,10 +54,12 @@ def run_case(probe, context, ca, host, expected):
                     elif error.reason not in ("TLSV1_ALERT_UNKNOWN_CA", "SSLV3_ALERT_BAD_CERTIFICATE",
                                             "UNEXPECTED_EOF_WHILE_READING"):
                         raise
-                except (ConnectionResetError, BrokenPipeError):
+                except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
                     # A rejected client can close while the TLS 1.3 peer is
                     # sending session tickets. The probe must still report the
                     # specific verification failure before this case passes.
+                    # Winsock can report the same rejected TLS 1.3 close as
+                    # WSAECONNABORTED rather than WSAECONNRESET.
                     if expected == "accept":
                         raise
 
