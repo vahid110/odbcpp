@@ -39,12 +39,9 @@ TEST(BackendProviderTest, StaticProfileMatchesNewSessionWithoutConnecting) {
   EXPECT_FALSE(session->is_connected());
 
   const auto provider_capabilities = provider.capabilities();
-  const auto session_capabilities = session->capabilities();
-  EXPECT_EQ(provider_capabilities.dbms_name, session_capabilities.dbms_name);
-  EXPECT_EQ(provider_capabilities.identifier_quote,
-            session_capabilities.identifier_quote);
-  EXPECT_EQ(provider_capabilities.max_identifier_length,
-            session_capabilities.max_identifier_length);
+  EXPECT_EQ(provider.identity().display_name, provider_capabilities.dbms_name);
+  EXPECT_FALSE(provider_capabilities.identifier_quote.empty());
+  EXPECT_EQ(63, provider_capabilities.max_identifier_length);
   ASSERT_NE(nullptr, session->transaction_session());
   EXPECT_EQ(provider.transaction_capabilities().supported,
             session->transaction_session()->transaction_capabilities().supported);
@@ -66,10 +63,8 @@ TEST(BackendProviderTest, PostgreSqlFamilyProfilesStayIndependent) {
   EXPECT_EQ("Amazon Redshift", redshift.capabilities().dbms_name);
   EXPECT_EQ("pg-host", postgresql.connection_defaults().host);
   EXPECT_EQ(5439, redshift.connection_defaults().port);
-  EXPECT_EQ("PostgreSQL",
-            postgresql.create_session(nullptr)->capabilities().dbms_name);
-  EXPECT_EQ("Amazon Redshift",
-            redshift.create_session(nullptr)->capabilities().dbms_name);
+  EXPECT_FALSE(postgresql.create_session(nullptr)->is_connected());
+  EXPECT_FALSE(redshift.create_session(nullptr)->is_connected());
 }
 
 TEST(BackendProviderTest, ResolvesDefaultsOverridesAndTlsPolicy) {
@@ -114,7 +109,7 @@ TEST(BackendProviderTest, ResolvesDefaultsOverridesAndTlsPolicy) {
   EXPECT_TRUE(provider.resolve_connection_options(std::move(plaintext)).has_error());
 }
 
-TEST(BackendProviderTest, SessionOwnsProductIdentityAfterProviderDestruction) {
+TEST(BackendProviderTest, ProviderOwnsIdentityAndSessionDoesNotBorrowStaticPolicy) {
   std::unique_ptr<IDatabaseConnection> session;
   {
     std::string display = "Temporary PostgreSQL";
@@ -123,9 +118,12 @@ TEST(BackendProviderTest, SessionOwnsProductIdentityAfterProviderDestruction) {
         BackendConnectionDefaults{"localhost", 5432, "postgres", true}};
     session = provider.create_session(nullptr);
     display.assign("changed");
+    EXPECT_EQ("Temporary PostgreSQL", provider.capabilities().dbms_name);
   }
   ASSERT_NE(nullptr, session);
-  EXPECT_EQ("Temporary PostgreSQL", session->capabilities().dbms_name);
+  EXPECT_FALSE(session->is_connected());
+  ASSERT_NE(nullptr, session->catalog_queries());
+  EXPECT_TRUE(session->catalog_queries()->catalog_query(TablesCatalogRequest{}));
 }
 
 }  // namespace

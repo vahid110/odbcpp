@@ -1282,7 +1282,7 @@ std::span<const rs::core::database::TypeDefinition> ODBCConnection::type_catalog
 }
 
 rs::core::database::BackendCapabilities ODBCConnection::capabilities() const {
-  auto result = db_conn_ ? db_conn_->capabilities() : backend_provider_->capabilities();
+  auto result = backend_provider_->capabilities();
   if (db_conn_ && db_conn_->is_connected() && !db_conn_->statement_description()) {
     result.describe_parameters = false;
   }

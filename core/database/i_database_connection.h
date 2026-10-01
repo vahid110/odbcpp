@@ -16,7 +16,6 @@
 #include "transaction.h"
 #include "transaction_session.h"
 #include "statement_description.h"
-#include "backend_capabilities.h"
 #include "catalog_queries.h"
 
 namespace rs::core::database {
@@ -105,9 +104,6 @@ public:
 
   // Optional catalog-query construction; absence does not restrict execution.
   virtual const ICatalogQueries* catalog_queries() const noexcept { return nullptr; }
-
-  // Pure metadata snapshot: no I/O or session mutation.
-  virtual BackendCapabilities capabilities() const = 0;
 
   // No I/O. Interpret a native server state using known statement context.
   // Return an owned, normalized five-character SQLSTATE, or no mapping so the

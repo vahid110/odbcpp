@@ -29,8 +29,6 @@ public:
     return parser_->normalize_result_value(type, value);
   }
 
-  BackendCapabilities capabilities() const override { return {}; }
-
   std::optional<std::string> normalize_error_sqlstate(
       std::string_view, ErrorContext) const override { return std::nullopt; }
 

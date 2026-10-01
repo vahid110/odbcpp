@@ -70,6 +70,8 @@ template <typename T> concept HasRequiredIsolation = requires(T& session) { sess
 template <typename T> concept HasRequiredDescription = requires(T& session) { session.describe_statement("SELECT ?", std::span<const QueryParameterType>{}, Deadline::max()); };
 template <typename T> concept HasRequiredCatalog = requires(const T& session) { session.catalog_query(CatalogRequest{TablesCatalogRequest{}}); };
 template <typename T> concept HasSessionTypeCatalog = requires(const T& session) { session.type_catalog(); };
+template <typename T> concept HasSessionCapabilities = requires(const T& session) { session.capabilities(); };
+static_assert(!HasSessionCapabilities<IDatabaseConnection>);
 static_assert(!HasSessionTypeCatalog<IDatabaseConnection>);
 static_assert(!HasRequiredCatalog<IDatabaseConnection>);
 static_assert(!HasRequiredDescription<IDatabaseConnection>);
@@ -92,15 +94,6 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
   }
   void disconnect() override { connected_ = false; ++seen_->disconnects; }
   bool is_connected() const override { return connected_; }
-  BackendCapabilities capabilities() const override {
-    BackendCapabilities result;
-    result.dbms_name = "ContractDB";
-    result.describe_parameters = true;
-    result.max_identifier_length = 117;
-    result.identifier_case = IdentifierCase::Upper;
-    result.null_collation = NullCollation::Low;
-    return result;
-  }
   std::optional<std::string> normalize_error_sqlstate(std::string_view state, ErrorContext) const override {
     if (seen_->malformed_state) return "bad";
     if (state == "FAKE_ERROR") return "22018";
@@ -281,7 +274,13 @@ class FakeProvider final : public IBackendProvider {
     return defaults;
   }
   BackendCapabilities capabilities() const noexcept override {
-    return FakeBackend(seen_).capabilities();
+    BackendCapabilities result;
+    result.dbms_name = "ContractDB";
+    result.describe_parameters = true;
+    result.max_identifier_length = 117;
+    result.identifier_case = IdentifierCase::Upper;
+    result.null_collation = NullCollation::Low;
+    return result;
   }
   std::span<const TypeDefinition> type_catalog(std::string_view version = {}) const noexcept override {
     static const TypeDefinition types[]{
@@ -1501,4 +1500,24 @@ TEST_F(BackendContractTest, ProviderTypePolicyUsesAdvertisedVersionWithoutCatalo
   seen->server_version.clear();
   ASSERT_FALSE(connection->type_catalog().empty());
   EXPECT_EQ(8u, connection->type_catalog().front().column_size);
+}
+
+TEST_F(BackendContractTest, ProviderCapabilitiesRemainStableAcrossSessionAndFacetLifecycle) {
+  seen->absent_description = true;
+  auto* connection = static_cast<rs::odbc::ODBCConnection*>(dbc);
+  const auto before = connection->capabilities();
+  EXPECT_TRUE(before.describe_parameters);
+  EXPECT_EQ("ContractDB", before.dbms_name);
+  connect();
+  const auto live = connection->capabilities();
+  EXPECT_FALSE(live.describe_parameters);
+  EXPECT_EQ(before.dbms_name, live.dbms_name);
+  EXPECT_EQ(before.max_identifier_length, live.max_identifier_length);
+  EXPECT_TRUE(before.describe_parameters); // Adapter masks a copy, not provider policy.
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  const auto closed = connection->capabilities();
+  EXPECT_TRUE(closed.describe_parameters);
+  EXPECT_EQ(before.dbms_name, closed.dbms_name);
+  EXPECT_EQ(before.max_identifier_length, closed.max_identifier_length);
+  EXPECT_EQ(0, seen->queries); EXPECT_EQ(0, seen->descriptions);
 }

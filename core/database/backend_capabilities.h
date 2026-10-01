@@ -10,7 +10,7 @@ enum class CorrelationNames { None, Different, Any };
 enum class GroupBySupport { None, EqualsSelect, ContainsSelect, Unrelated };
 
 // No ODBC identifiers or native protocol IDs. Zero limits mean unknown/no
-// declared limit. Strings must remain valid for the connection lifetime.
+// declared limit. Strings must remain valid for the provider lifetime.
 // These describe the exposed backend profile, not every server feature.
 struct BackendCapabilities {
   std::string_view dbms_name{};

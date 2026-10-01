@@ -11,10 +11,6 @@ namespace rs::core::database::postgres {
 class PgDatabaseConnection : public GenericDatabaseConnection, public ITransactionSession, public ICatalogQueries {
 public:
   explicit PgDatabaseConnection(
-      std::unique_ptr<rs::core::transport::ITransport> transport = nullptr)
-      : PgDatabaseConnection("PostgreSQL", std::move(transport)) {}
-  PgDatabaseConnection(
-      std::string display_name,
       std::unique_ptr<rs::core::transport::ITransport> transport = nullptr);
 
   const ICatalogQueries* catalog_queries() const noexcept override { return this; }
@@ -23,8 +19,6 @@ public:
 
   std::optional<std::string> normalize_result_value(
       ScalarType type, std::string_view value) const override;
-
-  BackendCapabilities capabilities() const override;
 
   std::optional<std::string> normalize_error_sqlstate(
       std::string_view native_state, ErrorContext context) const override;
@@ -39,8 +33,6 @@ public:
   BackendResult<ResolvedTypeMap> resolve_types(
       std::span<const std::uint32_t> ids, rs::util::Deadline deadline) override;
 
-private:
-  std::string display_name_;
 };
 
 } // namespace rs::core::database::postgres

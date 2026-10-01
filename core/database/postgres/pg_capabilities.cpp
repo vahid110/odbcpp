@@ -1,5 +1,4 @@
 #include "pg_backend_provider.h"
-#include "pg_database_connection.h"
 
 namespace rs::core::database::postgres {
 BackendCapabilities pg_backend_capabilities(std::string_view display_name) noexcept {
@@ -31,7 +30,4 @@ BackendCapabilities pg_backend_capabilities(std::string_view display_name) noexc
   return result;
 }
 
-BackendCapabilities PgDatabaseConnection::capabilities() const {
-  return pg_backend_capabilities(display_name_);
-}
 } // namespace rs::core::database::postgres

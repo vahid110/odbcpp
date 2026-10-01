@@ -12,7 +12,7 @@
 using namespace rs::core::database;
 
 TEST(NativeTypeTest, PostgresFamilyNormalizesFixedScalarMetadata) {
-  auto backend = std::make_unique<postgres::PgDatabaseConnection>("PostgreSQL");
+  auto backend = std::make_unique<postgres::PgDatabaseConnection>();
   struct Case { std::uint32_t id; ScalarType type; std::uint64_t size; };
   for (const auto& item : {Case{16, ScalarType::Boolean, 1},
        Case{20, ScalarType::BigInt, 19}, Case{21, ScalarType::SmallInt, 5},
@@ -29,7 +29,7 @@ TEST(NativeTypeTest, PostgresFamilyNormalizesFixedScalarMetadata) {
 }
 
 TEST(NativeTypeTest, PreservesNumericAndTemporalModifiers) {
-  auto backend = std::make_unique<postgres::PgDatabaseConnection>("PostgreSQL");
+  auto backend = std::make_unique<postgres::PgDatabaseConnection>();
   const auto numeric = backend->describe_type(1700, -1, (12 << 16) + 3 + 4);
   EXPECT_EQ(ScalarType::Numeric, numeric.type);
   EXPECT_EQ(12u, numeric.column_size);
@@ -56,7 +56,7 @@ TEST(NativeTypeTest, PreservesNumericAndTemporalModifiers) {
 }
 
 TEST(NativeTypeTest, PreservesCharacterBinaryAndUnknownFallbackSizes) {
-  auto backend = std::make_unique<postgres::PgDatabaseConnection>("PostgreSQL");
+  auto backend = std::make_unique<postgres::PgDatabaseConnection>();
   for (const auto id : {1042u, 1043u}) {
     EXPECT_EQ(0u, backend->describe_type(id, -1, -1).column_size);
     EXPECT_EQ(0u, backend->describe_type(id, -1, 3).column_size);
@@ -88,7 +88,7 @@ TEST(NativeTypeTest, GenericConnectionUsesSelectedParserTypeSemantics) {
 namespace {
 class MetadataLookupConnection : public postgres::PgDatabaseConnection {
 public:
-  MetadataLookupConnection() : PgDatabaseConnection("PostgreSQL") {}
+  MetadataLookupConnection() : PgDatabaseConnection() {}
   QueryResult response;
   std::optional<rs::util::DbErrorCode> failure;
   std::string query;
@@ -267,7 +267,7 @@ TEST(TypeCatalogTest, NumericScaleTracksServerVersionWithoutInvalidatingPriorVie
 
 TEST(BackendCapabilitiesTest, SelectedBackendProfileIsAvailableWithoutIo) {
   auto backend = DatabaseFactory::create_connection();
-  const auto profile = backend->capabilities();
+  const auto profile = configured_backend_provider().capabilities();
   const auto expected_name =
       DatabaseFactory::get_compiled_database_type() == DatabaseType::Redshift
           ? "Amazon Redshift"
@@ -285,13 +285,13 @@ TEST(BackendCapabilitiesTest, SelectedBackendProfileIsAvailableWithoutIo) {
   EXPECT_FALSE(profile.read_only);
   backend->disconnect();
   EXPECT_EQ(expected_name, profile.dbms_name);
-  EXPECT_EQ(profile.identifier_quote, backend->capabilities().identifier_quote);
+  EXPECT_EQ(profile.identifier_quote, configured_backend_provider().capabilities().identifier_quote);
   EXPECT_FALSE(backend->is_connected());
 }
 
-TEST(BackendCapabilitiesTest, GenericBackendDoesNotInheritPostgresClaims) {
+TEST(BackendCapabilitiesTest, UnspecifiedProfileDoesNotInheritPostgresClaims) {
   GenericDatabaseConnection backend(std::make_unique<odbcpp::test::MockProtocolParser>());
-  const auto profile = backend.capabilities();
+  const BackendCapabilities profile{};
   EXPECT_TRUE(profile.dbms_name.empty());
   EXPECT_TRUE(profile.identifier_quote.empty());
   EXPECT_EQ(0, profile.max_identifier_length);
@@ -333,7 +333,7 @@ TEST(BackendErrorsTest, PostgresNormalizesNativeStatesWithoutIo) {
 }
 
 TEST(BackendErrorsTest, InvalidUnknownAndAmbiguousStatesKeepCallerFallback) {
-  postgres::PgDatabaseConnection backend{"PostgreSQL"};
+  postgres::PgDatabaseConnection backend{};
   for (const auto state : {"", "22P0", "22P020", "22p02", "22!02", "XXXXX",
                            "P0001", "42P07", "42704"}) {
     SCOPED_TRACE(state);
@@ -355,7 +355,7 @@ TEST(BackendErrorsTest, GenericBackendDoesNotInterpretPostgresStates) {
 TEST(BackendErrorsTest, NormalizedStateOwnsItsStorage) {
   std::optional<std::string> normalized;
   {
-    postgres::PgDatabaseConnection backend{"PostgreSQL"};
+    postgres::PgDatabaseConnection backend{};
     std::string native = "22012";
     normalized = backend.normalize_error_sqlstate(native, ErrorContext::Unknown);
     native.assign("XXXXX");
@@ -376,7 +376,7 @@ TEST(BinaryParameterContractTest, PlainHexRoundTripsAllOctetsAndRejectsNativeEsc
 }
 
 TEST(BackendValueTest, PostgresNormalizesHexLegacyAndBooleanWithoutIo) {
-  postgres::PgDatabaseConnection backend{"PostgreSQL"};
+  postgres::PgDatabaseConnection backend{};
   const auto binary = [&](std::string_view text) {
     return backend.normalize_result_value(ScalarType::Binary, text);
   };

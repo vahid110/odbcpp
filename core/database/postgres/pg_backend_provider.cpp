@@ -85,8 +85,7 @@ PgBackendProvider::resolve_connection_options(ConnectionOptions options) const {
 
 std::unique_ptr<IDatabaseConnection> PgBackendProvider::create_session(
     std::unique_ptr<rs::core::transport::ITransport> transport) const {
-  return std::make_unique<PgDatabaseConnection>(identity_.display_name,
-                                                 std::move(transport));
+  return std::make_unique<PgDatabaseConnection>(std::move(transport));
 }
 
 }  // namespace rs::core::database::postgres
