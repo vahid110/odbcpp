@@ -812,3 +812,28 @@ advertised by this addition. Reset, exclusive leases, credential generations,
 cache invalidation, ordered execution items and warnings remain open S2 work.
 The SDK header manifest and each private component closure include this neutral
 contract; concrete probing SQL stays inside the PostgreSQL backend.
+
+## S2 prototype pool quarantine — 2026-10-01
+
+The legacy copyable/manual-release pool is removed from both production source
+inventory and object-target partitioning, including the shared inventory used by
+provider proofs. Only the private `odbcpp_prototype_pool` test/example target builds
+it. Production composition no longer sees its header; a compiler probe rejects
+that include. Source, partition and target guards reject accidental reinsertion.
+Neither its target nor header nor example source is installed/exported. Existing
+internal pool fixtures remain available, so quarantine does not remove tests.
+
+Prototype `ThreadSafeConnection` now serializes direct and prepared exchanges with
+exclusive locks. The coordinated concurrency regression holds a first operation
+while a second attempts entry and checks all direct/prepared pairings. Its bounded
+scheduling observation is not a mathematical proof of all thread schedules.
+Copyable ownership, manual release and missing reset remain unsafe; the prototype
+is not the SDK reuse implementation or public SDK API.
+
+Acceptance includes full private-prefix installation checks and artifact inspection:
+Unix checks static archive and full DLL/shared-library symbols; Windows checks the
+static archive symbol table and DLL exports, combined with object/source guards
+for hidden implementation. A positive-control prototype archive must expose both
+known prototype classes to the inspector. Reset/credential generations/cache
+invalidation and exclusive RAII leases remain the next S2 reuse work; no Driver
+Manager or SDK pooling qualification is implied.

@@ -72,9 +72,9 @@ documented precedence rather than silently falling through.
 
 ### SEC-3: unsafe internal pool ownership
 
-The current pool exposes copyable physical-session pointers, manual release,
-shared-lock protocol execution and no reset. It cannot be exposed or used as
-pooling evidence. The replacement contract requires one move-only lease per
+The quarantined prototype pool exposes copyable physical-session pointers and
+manual release, with no reset. Its wrapper serializes protocol execution, but it
+cannot be exposed or used as pooling evidence. The replacement contract requires one move-only lease per
 physical session, serialized operations, reset/retirement under deadline and
 credential/cache isolation.
 
@@ -410,3 +410,14 @@ within-budget malformed-wide 22018 remain intact. Tests cover exact/overflow,
 expansion, empty/zero budgets, validation precedence and recovery. This bounds
 raw input only; translated output and translator-internal allocation budgets,
 configuration-file ingestion and complete heap accounting remain open.
+
+### SEC-3 quarantine checkpoint — 2026-10-01
+
+The legacy pool is now test/example-only: production source/object partitions,
+shipped core/driver libraries and installed header/example surfaces exclude it.
+Negative build/install guards and artifact inspection protect the quarantine;
+existing fixtures remain enabled. This supersedes its former production exposure,
+not the unsafe copyable/manual-release ownership model. Exclusive protocol locks
+remove concurrent exchange overlap in its wrapper. Replacement move-only leases,
+reset/retirement, credential generations and cache isolation remain required
+before any SDK/Driver Manager pooling claim.

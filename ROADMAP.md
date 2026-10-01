@@ -1200,3 +1200,24 @@ build/absent-endpoint gates pass; examples compile. Read-only review confirmed
 outcome behavior; caller serialization and recovery/deadline assertions were
 clarified. Windows live/package and the cross-platform crypto matrix remain
 subject to the exact-head hosted gate.
+
+## S2 prototype quarantine and serialized exchanges — 2026-10-01
+
+Quarantined the legacy pool into a private test/example-only target. Production
+core/driver sources, object partitions, composition headers and installed headers/
+examples exclude it. Existing pool fixtures still run. Inventory/partition/target
+negative cases, actual private-prefix installation and prototype-controlled
+artifact inspection guard the boundary. The legacy wrapper serializes direct and
+prepared protocol exchanges; all four pairings have a coordinated overlap test.
+
+This removes a production exposure, not the need for the new reuse design.
+Move-only leases, reset, credential/cache isolation and pooling acceptance remain
+open. PostgreSQL ODBC behavior and provider/linkage claims are unchanged.
+
+Validation: focused serialization, partition, installation and positive-control
+artifact checks pass. Full local PostgreSQL, iODBC UTF-16/UCS-4, sanitizer and
+Redshift build/absent-endpoint gates pass; examples compile. The failed initial
+quarantine fixture used CMake's reserved `clean` name; repaired before the final
+gates. Read-only review closed partition and driver-only object injection bypasses;
+no remaining blocker/high finding. Windows packaging and cross-platform crypto
+profiles remain subject to the exact-head CI gate.
