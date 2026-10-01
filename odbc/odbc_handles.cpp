@@ -1406,7 +1406,7 @@ SQLRETURN ODBCConnection::connect(
                                : SQLSTATE_CONNECTION_FAILURE),
                 result.error_message());
       log(rs::core::logging::LogLevel::Error, "connection_failed",
-          "Database connection failed",
+          result.backend_error().safe_summary(),
           {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public},
            {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
       return SQL_ERROR;
@@ -1424,7 +1424,7 @@ SQLRETURN ODBCConnection::connect(
                                              SQLSTATE_CONNECTION_FAILURE),
                   isolation_result.error_message());
         log(rs::core::logging::LogLevel::Error, "connection_failed",
-            "Database connection failed",
+            isolation_result.backend_error().safe_summary(),
             {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public},
              {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
         db_conn_->disconnect();
@@ -2388,7 +2388,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
       set_error(request_sqlstate(transaction.error(), SQLSTATE_GENERAL_ERROR),
                 transaction.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
-                 "Database operation failed",
+                 transaction.backend_error().safe_summary(),
                  {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "direct", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
       if (timeout) conn_->disconnect();
@@ -2404,7 +2404,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
                                        dynamic_function.code),
                 result.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
-                 "Database operation failed",
+                 result.backend_error().safe_summary(),
                  {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "direct", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
       if (timeout) conn_->disconnect();
@@ -4145,7 +4145,7 @@ SQLRETURN ODBCStatement::execute() {
       set_error(request_sqlstate(transaction.error(), SQLSTATE_GENERAL_ERROR),
                 transaction.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
-                 "Database operation failed",
+                 transaction.backend_error().safe_summary(),
                  {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "prepared", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
       if (timeout) conn_->disconnect();
@@ -4160,7 +4160,7 @@ SQLRETURN ODBCStatement::execute() {
                                        dynamic_function.code),
                 result.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
-                 "Database operation failed",
+                 result.backend_error().safe_summary(),
                  {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "prepared", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
       if (timeout) conn_->disconnect();

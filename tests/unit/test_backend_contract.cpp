@@ -7,6 +7,10 @@
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <atomic>
 
 namespace {
 using namespace rs::core::database;
@@ -21,6 +25,7 @@ struct Observations {
   std::vector<QueryParameter> parameters;
   Deadline deadline{};
   bool malformed_value{}, malformed_state{};
+  std::string failure_message = "fake error";
 };
 
 // Deliberately implements only the database boundary: no PG parser or session.
@@ -105,7 +110,7 @@ class FakeBackend final : public IDatabaseConnection {
     if (sql.ends_with("timeout")) return {DbErrorCode::Timeout, "fake deadline"};
     if (sql.ends_with("network")) { connected_ = false; return {DbErrorCode::NetworkError, "fake loss"}; }
     if (sql.ends_with("error")) {
-      BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), "fake error"};
+      BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), seen_->failure_message};
       error.native_state = "FAKE_ERROR";
       error.disposition = SessionDisposition::Reusable;
       error.session_state = SessionState::Idle;
@@ -390,5 +395,66 @@ TEST_F(BackendContractTest, TransportLossReportsBackendLiveness) {
   SQLUINTEGER dead = SQL_CD_FALSE;
   ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, &dead, 0, nullptr));
   EXPECT_EQ(SQL_CD_TRUE, dead);
+}
+
+TEST_F(BackendContractTest, BackendDiagnosticStaysDetailedWhileFailureLogUsesPublicSummary) {
+  static std::atomic<unsigned> sequence{0};
+  const auto directory = std::filesystem::temp_directory_path() /
+      ("odbcpp-backend-secret-log-" + std::to_string(
+          std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
+       std::to_string(sequence.fetch_add(1)));
+  std::filesystem::create_directories(directory);
+  const auto path = directory / "driver.log";
+  seen->failure_message = "credential=server-secret-981724\nprivate SQL and identifiers";
+  connect_with("SERVER=fake;SSL=0;LogLevel=Trace;LogQueries=false;LogAsync=false;LogSink=File;LogFile=" + path.string());
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  for (const bool prepared : {false, true}) {
+    if (prepared) {
+      ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"error", SQL_NTS));
+      EXPECT_EQ(SQL_ERROR, SQLExecute(stmt));
+    } else {
+      EXPECT_EQ(SQL_ERROR, execute("error"));
+    }
+    SQLCHAR diagnostic[1024]{};
+    SQLCHAR native_state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1, native_state,
+        nullptr, diagnostic, sizeof(diagnostic), nullptr));
+    EXPECT_EQ(seen->failure_message, reinterpret_cast<char*>(diagnostic));
+    EXPECT_STREQ("22018", reinterpret_cast<char*>(native_state));
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt));
+  stmt = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, dbc));
+  dbc = nullptr;
+  std::ifstream input(path);
+  const std::string contents((std::istreambuf_iterator<char>(input)), {});
+  EXPECT_NE(std::string::npos, contents.find("Database server rejected the operation"));
+  EXPECT_EQ(std::string::npos, contents.find("server-secret-981724"));
+  EXPECT_EQ(std::string::npos, contents.find("private SQL and identifiers"));
+  std::filesystem::remove_all(directory);
+}
+
+TEST(BackendErrorSummaryTest, PublicSummaryNeverDependsOnOwnedSensitiveDetails) {
+  for (const auto kind : {BackendErrorClass::Unknown, BackendErrorClass::Connection,
+      BackendErrorClass::Authentication, BackendErrorClass::Server, BackendErrorClass::Timeout,
+      BackendErrorClass::Transport, BackendErrorClass::Tls, BackendErrorClass::InvalidInput,
+      BackendErrorClass::NotConnected, BackendErrorClass::Protocol, BackendErrorClass::Unsupported,
+      BackendErrorClass::InvalidMetadata, static_cast<BackendErrorClass>(999)}) {
+    BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), "password=private-marker"};
+    error.error_class = kind;
+    error.native_state = "private-native-state";
+    error.native_code = 981724;
+    const std::string saved(error.safe_summary());
+    EXPECT_FALSE(saved.empty());
+    EXPECT_EQ(std::string::npos, saved.find("private"));
+    EXPECT_EQ(std::string::npos, saved.find("981724"));
+    error.message.assign(4096, 'x');
+    error.native_state.reset();
+    EXPECT_EQ(saved, error.safe_summary());
+    auto copy = error;
+    auto moved = std::move(copy);
+    EXPECT_EQ(saved, moved.safe_summary());
+  }
 }
 } // namespace

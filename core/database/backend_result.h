@@ -4,6 +4,7 @@
 #include <optional>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 
@@ -53,6 +54,27 @@ struct BackendError {
   SessionState session_state{SessionState::Unknown};
   SessionDisposition disposition{SessionDisposition::Retire};
   std::optional<bool> retry_safe;
+
+  // Public fixed text only: never includes message, native state/code, SQL,
+  // identifiers, provider diagnostics or credential material. Detailed message
+  // remains an owning diagnostic for explicitly trusted consumers, not logs.
+  std::string_view safe_summary() const noexcept {
+    switch (error_class) {
+      case BackendErrorClass::Connection: return "Database connection failed";
+      case BackendErrorClass::Authentication: return "Database authentication failed";
+      case BackendErrorClass::Server: return "Database server rejected the operation";
+      case BackendErrorClass::Timeout: return "Database operation timed out";
+      case BackendErrorClass::Transport: return "Database transport failed";
+      case BackendErrorClass::Tls: return "Database secure transport failed";
+      case BackendErrorClass::InvalidInput: return "Database operation received invalid input";
+      case BackendErrorClass::NotConnected: return "Database session is not connected";
+      case BackendErrorClass::Protocol: return "Database protocol exchange failed";
+      case BackendErrorClass::Unsupported: return "Database operation is unsupported";
+      case BackendErrorClass::InvalidMetadata: return "Database metadata validation failed";
+      case BackendErrorClass::Unknown: return "Database operation failed";
+    }
+    return "Database operation failed";
+  }
 
   BackendError(std::error_code error, std::string text)
       : code(error), message(std::move(text)), error_class(classify_backend_error(error)) {}
