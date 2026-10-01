@@ -320,3 +320,14 @@ Phase-specific injected failures prove these boundaries, not full recovery under
 sustained memory exhaustion. Earlier ODBC conversion/local exception handlers,
 standalone SQL helpers, encoded-buffer ceilings and product-profile limits are
 still open. No exact heap quota or general pooling readiness is claimed.
+
+### Encoded query exchange ceilings (S2 implementation evidence)
+
+The SDK input profile also supplies a complete query-request wire ceiling:
+128 MiB by default, configurable up to 1 GiB. PostgreSQL direct, prepared and
+statement-description encoders include rewritten SQL, all frame/type/length
+fields and binary expansion before allocating wire/value buffers. Over-limit
+requests return a local ResourceLimit error without request I/O or retirement.
+Temporary SQL rewriting is still controlled by the input ceiling; vector/string
+capacity, earlier ODBC conversions, startup/auth buffers and exact heap quotas
+remain separate unfinished boundaries. This does not close SEC-4 or G12.

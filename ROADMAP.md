@@ -527,3 +527,19 @@ and C API lock recovery. This is exception classification and containment,
 not a complete heap quota or proof of recovery under sustained exhaustion.
 Earlier ODBC conversions/local catches, encoded buffer budgets and product
 configuration remain SEC-4 work; S2 and crypto qualification remain open.
+
+### S2 encoded query exchange ceilings — 2026-10-01
+
+PostgreSQL-family query encoders receive the SDK request-wire ceiling (128 MiB
+default, configurable up to 1 GiB). Direct, prepared and description requests
+count complete framing, rewritten SQL, type/length fields and binary hex
+expansion before allocating outgoing wire/value buffers. Encoder-limit failures
+return local ResourceLimit/HY000 without I/O or session retirement. The internal
+parser signature changed; PostgreSQL, placeholder MySQL and test adapters compile
+against the same contract, with no new MySQL functionality or public SDK claim.
+
+Exact/one-byte-over, NULL/empty/binary values, binary input hints, multi-digit
+markers and invalid reconnect ceilings cover the contract. Temporary SQL rewrite
+storage remains bounded by input limits, not by the wire ceiling. Startup/auth
+encoded limits, earlier ODBC conversion/helpers, exact heap accounting and product
+configuration remain SEC-4 work. S2/native metadata/session migration remains open.
