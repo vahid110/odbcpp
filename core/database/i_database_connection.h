@@ -31,6 +31,13 @@ struct ResponseLimits {
   std::size_t max_messages{100000};
 };
 
+struct ResultLimits {
+  std::size_t max_rows{1000000};
+  std::size_t max_cells{4000000};
+  std::size_t max_columns_per_description{4096};
+  std::size_t max_results{1024};
+};
+
 struct ConnectionSettings {
   std::string host;
   std::string user;
@@ -42,6 +49,7 @@ struct ConnectionSettings {
   std::string ssl_ca_file;
   std::string ssl_ca_dir;
   ResponseLimits response_limits;
+  ResultLimits result_limits;
   ResponseLimits startup_response_limits{1024 * 1024, 10000};
 };
 

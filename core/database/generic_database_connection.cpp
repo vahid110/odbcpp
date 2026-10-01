@@ -98,8 +98,9 @@ BackendResult<void> GenericDatabaseConnection::connect(const ConnectionSettings&
 
 BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSettings& settings) {
   if (settings.response_limits.max_wire_bytes < 5 || settings.response_limits.max_messages == 0 ||
-      settings.startup_response_limits.max_wire_bytes < 5 || settings.startup_response_limits.max_messages == 0) {
-    return {rs::util::DbErrorCode::InvalidParameter, "Response limits must allow a header and at least one message"};
+      settings.startup_response_limits.max_wire_bytes < 5 || settings.startup_response_limits.max_messages == 0 ||
+      settings.result_limits.max_results == 0) {
+    return {rs::util::DbErrorCode::InvalidParameter, "Response limits must allow a header, at least one message and one result"};
   }
   if (settings.password.find('\0') != std::string::npos) {
     return {rs::util::DbErrorCode::InvalidParameter,
@@ -386,6 +387,7 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
 
   std::size_t wire_bytes = 0;
   std::size_t message_count = 0;
+  std::size_t rows = 0, cells = 0, results = 0;
   while (true) {
     if (message_count == settings_.response_limits.max_messages) {
       mark_transport_failed();
@@ -477,6 +479,29 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
             throw std::runtime_error(
                 "Unexpected PostgreSQL query response frame");
         }
+      }
+      // This session implements PostgreSQL-family framing. Count before
+      // retaining frames and before the parser reserves decoded containers.
+      const auto& limits = settings_.result_limits;
+      const auto count = [&]() -> std::size_t {
+        if (msg.payload.size() < 2) throw std::runtime_error("Incomplete PostgreSQL result count");
+        return (std::to_integer<unsigned>(msg.payload[0]) << 8) |
+            std::to_integer<unsigned>(msg.payload[1]);
+      };
+      bool exceeded = false;
+      if (msg.tag == 'T' || msg.tag == 't') {
+        exceeded = count() > limits.max_columns_per_description;
+      } else if (msg.tag == 'D') {
+        const auto columns = count();
+        exceeded = rows == limits.max_rows || columns > limits.max_cells - cells;
+        if (!exceeded) { ++rows; cells += columns; }
+      } else if (msg.tag == 'C' || msg.tag == 'E' || msg.tag == 'I') {
+        exceeded = results == limits.max_results;
+        if (!exceeded) ++results;
+      }
+      if (exceeded) {
+        mark_transport_failed();
+        return {rs::util::DbErrorCode::ResourceLimit, "Database decoded result count limit exceeded"};
       }
       if (msg.tag == 'S') {
         auto status_result = record_parameter_status(msg);
