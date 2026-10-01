@@ -736,6 +736,14 @@ jobs:
             > "$RUNNER_TEMP/unresolved-provider-symbols"
           test ! -s "$RUNNER_TEMP/unresolved-provider-symbols"
 
+      - name: Prove relocated static runtime archive and dependency licenses
+        run: |
+          python3 tools/ci/test_openssl_static_package.py
+          python3 tools/ci/prove-openssl-static-package.py \
+            --build build-openssl-static \
+            --openssl-license /usr/share/doc/libssl-dev/copyright \
+            --output openssl-static-package-proof
+
       - name: Bind static-profile unit qualification evidence
         run: >-
           python3 tools/ci/record-crypto-qualification.py --build build-openssl-static
@@ -762,6 +770,10 @@ jobs:
             openssl-static-live-evidence.json
             openssl-static-cohabitation.xml
             openssl-static-live.xml
+            openssl-static-package-proof/driver-only.tar.gz
+            openssl-static-package-proof/package-evidence.json
+            openssl-static-package-proof/extracted-driver-live.xml
+            openssl-static-package-proof/extracted/odbcpp-openssl-static-proof/package-manifest.json
           if-no-files-found: error
 
   awslc-adapter-proof:

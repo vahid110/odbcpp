@@ -40,7 +40,9 @@ def inventory(package):
     return files
 
 
-def extract_verified(archive, destination, expected):
+def extract_verified(archive, destination, expected, root_name="odbcpp-awslc-proof"):
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", root_name):
+        raise RuntimeError("Package archive root must be a simple directory name")
     # This consumes our own archive, with an independent pre-archive inventory.
     # The standard data filter rejects paths/links outside the extraction root.
     with tarfile.open(archive, "r:gz") as source:
@@ -48,7 +50,7 @@ def extract_verified(archive, destination, expected):
         if len(names) != len(set(names)):
             raise RuntimeError("Duplicate package archive member")
         source.extractall(destination, filter="data")
-    package = destination / "odbcpp-awslc-proof"
+    package = destination / root_name
     if set(destination.iterdir()) != {package} or inventory(package) != expected:
         raise RuntimeError("Extracted package differs from staged inventory")
     return package
