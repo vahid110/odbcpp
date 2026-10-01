@@ -4,6 +4,7 @@
 #include "backend_result.h"
 #include "statement_kind.h"
 #include <cstddef>
+#include <compare>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -27,9 +28,9 @@ struct ResultColumnMetadata {
   std::optional<NativeTypeInfo> normalized_type{};
 };
 
-// Owning bytes: nullopt is SQL NULL; an engaged empty string is a non-NULL empty
-// value. Backend cell bytes remain opaque until normalize_result_value converts
-// binary/boolean values to raw bytes or "0"/"1" for shared ODBC conversion.
+// Owning canonical bytes: nullopt is SQL NULL; an engaged empty string is a
+// non-NULL empty value. Binary is raw bytes, Boolean is "0"/"1". Malformed
+// native binary/Boolean cells use an empty placeholder and a cell_errors entry.
 using ResultCell = std::optional<std::string>;
 using ResultRow = std::vector<ResultCell>;
 using ResultRows = std::vector<ResultRow>;
@@ -38,6 +39,15 @@ using ResultRows = std::vector<ResultRow>;
 // calls, disconnect and backend destruction. Deferred server errors belong to
 // their result as BackendError; native_state must be normalized by the backend.
 // command_tag and parameter_type_ids are native, not portable SQL semantics.
+// Deferred data errors preserve fetch/GetData timing without retaining native
+// encodings. Coordinates are zero-based, sorted, unique and refer to non-NULL
+// cells. The whole error snapshot owns its storage independently of the session.
+struct CellEncodingError {
+  std::size_t row{};
+  std::size_t column{};
+  auto operator<=>(const CellEncodingError&) const = default;
+};
+
 struct QueryResult {
   ResultRows rows;
   std::vector<ResultColumnMetadata> columns;
@@ -52,6 +62,7 @@ struct QueryResult {
   // Owning, ordered parameter descriptions supplied by the backend. Native IDs
   // above remain parser migration storage and are never consumed by ODBC.
   std::vector<NativeTypeInfo> normalized_parameter_types;
+  std::vector<CellEncodingError> cell_errors;
 
 };
 

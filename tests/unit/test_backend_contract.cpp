@@ -28,6 +28,7 @@ struct Observations {
   std::string failure_message = "fake error";
   bool setup_allocation_failure{false};
   bool missing_parameter_metadata{}, parameter_metadata_error{};
+  int invalid_cell_errors{};
 };
 
 // Deliberately implements only the database boundary: no PG parser or session.
@@ -53,19 +54,6 @@ class FakeBackend final : public IDatabaseConnection {
     if (id == 23) return {ScalarType::Binary, 8, 0, true}; // PG integer ID!
     if (id == 17) return {ScalarType::Boolean, 1, 0, true}; // PG bytea ID!
     return {ScalarType::VarChar, 32, 0, true};
-  }
-  std::optional<std::string> normalize_result_value(ScalarType type, std::string_view value) const override {
-    if (seen_->malformed_value) return std::nullopt;
-    if (type == ScalarType::Binary) {
-      if (!value.starts_with("bytes:")) return std::nullopt;
-      return rs::util::decode_hex(value.substr(6));
-    }
-    if (type == ScalarType::Boolean) {
-      if (value == "yes") return "1";
-      if (value == "no") return "0";
-      return std::nullopt;
-    }
-    return std::string(value);
   }
   Result<std::string> catalog_query(const CatalogRequest&) const override {
     return {DbErrorCode::UnsupportedFeature, "fake has no catalogs"};
@@ -108,7 +96,19 @@ class FakeBackend final : public IDatabaseConnection {
     result.columns[0].normalized_type = NativeTypeInfo{ScalarType::Binary, 8, 0, true};
     result.columns[1].normalized_type = NativeTypeInfo{ScalarType::Boolean, 1, 0, true};
     result.columns[2].normalized_type = NativeTypeInfo{ScalarType::VarChar, 32, 0, true};
-    result.rows = {{"bytes:00ff5c", "yes", std::nullopt}, {"bytes:", "no", ""}};
+    result.rows = {{std::string("\0\xff\\", 3), "1", std::nullopt}, {"", "0", ""}};
+    if (seen_->malformed_value) {
+      result.rows[0][0] = "";
+      result.cell_errors.push_back({0, 0});
+    }
+    switch (seen_->invalid_cell_errors) {
+      case 1: result.cell_errors = {{99, 0}}; break;
+      case 2: result.cell_errors = {{0, 99}}; break;
+      case 3: result.cell_errors = {{0, 2}}; break; // NULL
+      case 4: result.cell_errors = {{1, 0}, {0, 0}}; break;
+      case 5: result.cell_errors = {{0, 0}, {0, 0}}; break;
+      default: break;
+    }
     result.command_tag = "deliberately not SQL";
     result.statement_kind = StatementKind::SelectCursor;
     return result;
@@ -362,13 +362,17 @@ TEST_F(BackendContractTest, ErrorsNormalizeAndRecoverWithoutPostgresStates) {
       nullptr, deferred_message, sizeof(deferred_message), nullptr));
   EXPECT_STREQ("Query error: later error", reinterpret_cast<char*>(deferred_message));
   EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(stmt));
-  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
   seen->malformed_value = true;
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
   ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
   char output[16] = "untouched"; SQLLEN length = 73;
   EXPECT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_CHAR, output, sizeof(output), &length));
   EXPECT_EQ("22018", state()); EXPECT_STREQ("untouched", output); EXPECT_EQ(73, length);
   seen->malformed_value = false;
+  EXPECT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_CHAR, output, sizeof(output), &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
   EXPECT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_CHAR, output, sizeof(output), &length));
   EXPECT_STREQ("00ff5c", output);
 }
@@ -412,8 +416,8 @@ TEST_F(BackendContractTest, InvalidBoundValuePreservesOutputAndReportsRowError) 
   SQLUSMALLINT row_status = SQL_ROW_SUCCESS;
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, &row_status, 0));
   ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, output, sizeof(output), &length));
-  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
   seen->malformed_value = true;
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
   EXPECT_EQ(SQL_ERROR, SQLFetch(stmt)); EXPECT_EQ("22018", state());
   EXPECT_EQ(SQL_ROW_ERROR, row_status); EXPECT_EQ(73, length); EXPECT_EQ(7, output[0]);
   seen->malformed_value = false;
@@ -1011,4 +1015,19 @@ TEST_F(BackendContractTest, InvalidParameterDescriptionsPreserveOutputAndRecover
   seen->missing_parameter_metadata = false; seen->parameter_metadata_error = false;
   ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
   EXPECT_EQ(SQL_VARBINARY, type); EXPECT_EQ(8u, size);
+}
+
+
+TEST_F(BackendContractTest, InvalidCellErrorCoordinatesRejectContractAndRecover) {
+  connect();
+  for (int invalid = 1; invalid <= 5; ++invalid) {
+    seen->invalid_cell_errors = invalid;
+    EXPECT_EQ(SQL_ERROR, execute("rows")); EXPECT_EQ("HY000", state());
+    EXPECT_EQ(0, seen->disconnects);
+  }
+  seen->invalid_cell_errors = 0;
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  unsigned char output[3]{}; SQLLEN length{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_BINARY, output, 3, &length));
+  EXPECT_EQ(3, length); EXPECT_EQ(0, output[0]); EXPECT_EQ(255, output[1]);
 }

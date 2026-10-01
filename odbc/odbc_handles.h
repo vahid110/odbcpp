@@ -495,6 +495,7 @@ public:
 private:
   std::shared_ptr<ODBCConnection> conn_;
   rs::core::database::ResultRows result_rows_;
+  std::vector<rs::core::database::CellEncodingError> result_cell_errors_;
   std::vector<ColumnInfo> column_info_;        // IRD storage
   std::vector<ParameterMetadata> param_metadata_; // IPD storage
   std::size_t get_data_offset_ = 0;

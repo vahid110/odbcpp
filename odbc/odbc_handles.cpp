@@ -825,6 +825,16 @@ OdbcTypeInfo odbc_type_info(const rs::core::database::NativeTypeInfo& native) {
 }
 
 void require_normalized_columns(const rs::core::database::QueryResult& result) {
+  if (!std::is_sorted(result.cell_errors.begin(), result.cell_errors.end()) ||
+      std::adjacent_find(result.cell_errors.begin(), result.cell_errors.end()) != result.cell_errors.end()) {
+    throw std::invalid_argument("Data source returned invalid cell error coordinates");
+  }
+  for (const auto& error : result.cell_errors) {
+    if (error.row >= result.rows.size() || error.column >= result.rows[error.row].size() ||
+        !result.rows[error.row][error.column]) {
+      throw std::invalid_argument("Data source returned invalid cell error coordinates");
+    }
+  }
   for (const auto& column : result.columns) {
     if (!column.normalized_type) {
       throw std::invalid_argument("Data source returned unnormalized column metadata");
@@ -2894,20 +2904,13 @@ SQLRETURN ODBCStatement::fetch() {
         continue;
       }
 
-      std::optional<std::string> normalized_cell;
-      if (sql_type == SQL_BIT || sql_type == SQL_BINARY ||
-          sql_type == SQL_VARBINARY || sql_type == SQL_LONGVARBINARY) {
-        normalized_cell = conn_->get_db_connection()->normalize_result_value(
-            sql_type == SQL_BIT ? rs::core::database::ScalarType::Boolean
-                                 : rs::core::database::ScalarType::Binary, *cell);
-        if (!normalized_cell) {
-          set_error(SQLSTATE_INVALID_CHARACTER_VALUE, "Invalid backend result encoding");
-          if (row_status) store_application_value(
-              row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
-          return SQL_ERROR;
-        }
+      if (std::binary_search(result_cell_errors_.begin(), result_cell_errors_.end(),
+              rs::core::database::CellEncodingError{current_row_ - 1, i})) {
+        set_error(SQLSTATE_INVALID_CHARACTER_VALUE, "Invalid backend result encoding");
+        if (row_status) store_application_value(row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
+        return SQL_ERROR;
       }
-      const auto& value = normalized_cell ? *normalized_cell : *cell;
+      const auto& value = *cell;
 
       const bool binary_as_text =
           (sql_type == SQL_BINARY || sql_type == SQL_VARBINARY ||
@@ -3116,18 +3119,12 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     return SQL_SUCCESS;
   }
   
-  std::optional<std::string> normalized_cell;
-  if (sql_type == SQL_BIT || sql_type == SQL_BINARY ||
-      sql_type == SQL_VARBINARY || sql_type == SQL_LONGVARBINARY) {
-    normalized_cell = conn_->get_db_connection()->normalize_result_value(
-        sql_type == SQL_BIT ? rs::core::database::ScalarType::Boolean
-                             : rs::core::database::ScalarType::Binary, *cell);
-    if (!normalized_cell) {
-      set_error(SQLSTATE_INVALID_CHARACTER_VALUE, "Invalid backend result encoding");
-      return SQL_ERROR;
-    }
+  if (std::binary_search(result_cell_errors_.begin(), result_cell_errors_.end(),
+          rs::core::database::CellEncodingError{current_row_ - 1, static_cast<std::size_t>(col - 1)})) {
+    set_error(SQLSTATE_INVALID_CHARACTER_VALUE, "Invalid backend result encoding");
+    return SQL_ERROR;
   }
-  const auto& value = normalized_cell ? *normalized_cell : *cell;
+  const auto& value = *cell;
 
   const bool binary_as_text =
       (sql_type == SQL_BINARY || sql_type == SQL_VARBINARY ||
@@ -4406,8 +4403,10 @@ void ODBCStatement::apply_query_result(
     }
   }
   result_rows_ = std::move(result.rows);
+  result_cell_errors_ = std::move(result.cell_errors);
   if (max_rows_ > 0 && result_rows_.size() > max_rows_) {
     result_rows_.resize(static_cast<std::size_t>(max_rows_));
+    std::erase_if(result_cell_errors_, [&](const auto& error) { return error.row >= result_rows_.size(); });
   }
   current_row_ = 0;
   row_positioned_ = false;
@@ -4497,6 +4496,7 @@ void ODBCStatement::apply_result_metadata(
 
 void ODBCStatement::clear_current_result() {
   result_rows_.clear();
+  result_cell_errors_.clear();
   column_info_.clear();
   descriptor(imp_row_descriptor_)->replace_records({});
   get_data_column_ = 0;

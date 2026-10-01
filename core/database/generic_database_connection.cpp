@@ -721,8 +721,28 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
         }
       }
     };
+    const auto normalize_cells = [&](QueryResult& item) {
+      for (std::size_t row = 0; row < item.rows.size(); ++row) {
+        for (std::size_t column = 0; column < item.rows[row].size() && column < item.columns.size(); ++column) {
+          auto& cell = item.rows[row][column];
+          if (!cell) continue;
+          const auto type = item.columns[column].normalized_type->type;
+          if (type != ScalarType::Binary && type != ScalarType::Boolean) continue;
+          auto canonical = normalize_result_value(type, *cell);
+          if (canonical) cell = std::move(*canonical);
+          else {
+            cell = std::string{};
+            item.cell_errors.push_back({row, column});
+          }
+        }
+      }
+    };
     normalize_columns(result);
-    for (auto& item : result.additional_results) normalize_columns(item);
+    normalize_cells(result);
+    for (auto& item : result.additional_results) {
+      normalize_columns(item);
+      normalize_cells(item);
+    }
     return BackendResult<QueryResult>{std::move(result)};
   } catch (const std::bad_alloc&) {
     mark_transport_failed();

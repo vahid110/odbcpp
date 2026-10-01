@@ -178,7 +178,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     EmptyQueryResponse, DescriptionNoData, DescriptionOneParameter, DescriptionRepeatedParameter, DescriptionOneColumn,
     DescriptionMissingParse, DescriptionMissingParameters,
     DescriptionMissingResult, DescriptionOutOfOrder,
-    DescriptionServerError, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
+    DescriptionServerError, NativeCells, MalformedNativeCells, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
     OwnedErrorIdle, OwnedErrorTransaction, OwnedErrorAborted,
     UnterminatedColumnName, TruncatedColumnMetadata, TrailingColumnMetadata, EmptyColumnName,
     QueryReadTimeout, PartialQueryWrite, PreparedCommand, QueryAllocationFailure, Md5Authentication
@@ -489,6 +489,23 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       else if (mode == ResponseMode::TruncatedColumnMetadata) append_message('T', description, sizeof(description) - 2);
       else append_message('T', description, sizeof(description) - (mode == ResponseMode::EmptyColumnName ? 1 : 0));
       append_message('C', "SELECT 0", sizeof("SELECT 0"));
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::NativeCells || mode == ResponseMode::MalformedNativeCells) {
+      constexpr char description[] =
+          "\0\2octets\0" "\0\0\0\0" "\0\0" "\0\0\0\21" "\377\377" "\377\377\377\377" "\0\0"
+          "flag\0" "\0\0\0\0" "\0\0" "\0\0\0\20" "\0\1" "\377\377\377\377" "\0\0";
+      constexpr char valid[] = "\0\2\0\0\0\10\\x00ff5c\0\0\0\1t";
+      constexpr char malformed[] = "\0\2\0\0\0\4\\xzz\0\0\0\1?";
+      constexpr char nulls[] = "\0\2\377\377\377\377\377\377\377\377";
+      constexpr char empty[] = "\0\2\0\0\0\2\\x\0\0\0\1f";
+      for (int result = 0; result < 2; ++result) {
+        append_message('T', description, sizeof(description) - 1);
+        if (mode == ResponseMode::MalformedNativeCells) append_message('D', malformed, sizeof(malformed) - 1);
+        else append_message('D', valid, sizeof(valid) - 1);
+        append_message('D', nulls, sizeof(nulls) - 1);
+        append_message('D', empty, sizeof(empty) - 1);
+        append_message('C', "SELECT 3", sizeof("SELECT 3"));
+      }
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::OwnedResultCells ||
                mode == ResponseMode::OwnedResultCellsTransaction || mode == ResponseMode::OwnedResultCellsAborted ||
@@ -3349,5 +3366,40 @@ TEST(NormalizedParameterTest, IncompleteAndFailedResolutionReturnNoPartialResult
     auto recovered = backend.describe_statement("SELECT ?", hints, deadline);
     ASSERT_TRUE(recovered); ASSERT_EQ(1u, recovered->normalized_parameter_types.size());
     EXPECT_EQ(2, backend.lookups);
+  }
+}
+
+
+TEST(NormalizedCellTest, BackendReturnsCanonicalOwnedCellsAndDeferredEncodingErrors) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const bool malformed : {false, true}) {
+    QueryResult snapshot;
+    {
+      postgres::PgDatabaseConnection backend("PostgreSQL",
+          std::make_unique<ScriptedBackendTransport>(malformed ? Mode::MalformedNativeCells : Mode::NativeCells));
+      ConnectionSettings settings; settings.use_ssl = false;
+      ASSERT_TRUE(backend.connect(settings));
+      auto result = backend.execute_query("SELECT octets, flag; SELECT octets, flag", rs::util::Deadline::max());
+      ASSERT_TRUE(result); EXPECT_TRUE(backend.is_connected());
+      snapshot = std::move(*result); backend.disconnect();
+    }
+    ASSERT_EQ(1u, snapshot.additional_results.size());
+    for (const auto* result : {&snapshot, &snapshot.additional_results[0]}) {
+      ASSERT_EQ(3u, result->rows.size());
+      ASSERT_EQ(2u, result->rows[0].size());
+      if (malformed) {
+        EXPECT_EQ((std::vector<CellEncodingError>{{0, 0}, {0, 1}}), result->cell_errors);
+        EXPECT_EQ(std::optional<std::string>(""), result->rows[0][0]);
+        EXPECT_EQ(std::optional<std::string>(""), result->rows[0][1]);
+      } else {
+        EXPECT_TRUE(result->cell_errors.empty());
+        EXPECT_EQ(std::optional<std::string>(std::string("\0\xff\\", 3)), result->rows[0][0]);
+        EXPECT_EQ(std::optional<std::string>("1"), result->rows[0][1]);
+      }
+      EXPECT_EQ(std::nullopt, result->rows[1][0]); EXPECT_EQ(std::nullopt, result->rows[1][1]);
+      EXPECT_EQ(std::optional<std::string>(""), result->rows[2][0]);
+      EXPECT_EQ(std::optional<std::string>("0"), result->rows[2][1]);
+    }
   }
 }

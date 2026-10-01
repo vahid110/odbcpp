@@ -26,8 +26,8 @@ public:
 
   std::span<const TypeDefinition> type_catalog() const override { return {}; }
 
-  std::optional<std::string> normalize_result_value(
-      ScalarType type, std::string_view value) const override {
+  virtual std::optional<std::string> normalize_result_value(
+      ScalarType type, std::string_view value) const {
     if (type == ScalarType::Boolean && value != "0" && value != "1") return std::nullopt;
     return std::string(value);
   }
