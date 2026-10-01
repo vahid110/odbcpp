@@ -31,8 +31,8 @@ bool allows_large_frame(char tag) {
   }
 }
 
-bool has_binary_columns(const QueryResult& result) {
-  const auto binary = [](const ResultColumnMetadata& column) {
+bool has_binary_columns(const ParsedQueryResult& result) {
+  const auto binary = [](const ParsedColumnMetadata& column) {
     return column.format_code == 1;
   };
   if (std::any_of(result.columns.begin(), result.columns.end(), binary)) {
@@ -287,6 +287,10 @@ BackendResult<QueryResult> GenericDatabaseConnection::finish_operation(
     BackendResult<QueryResult> result, BackendOperation operation) {
   if (result.has_error()) {
     auto& error = result.backend_error();
+    // Resolution owns its session snapshot, including passive preflight errors.
+    // Reclassifying a local lookup limit as ambiguous would retire a drained
+    // session even though the resolver performed no I/O.
+    if (error.operation == BackendOperation::ResolveTypes) return result;
     error.operation = operation;
     const bool ambiguous = error.error_class == BackendErrorClass::Timeout ||
         error.error_class == BackendErrorClass::Transport ||
@@ -309,45 +313,6 @@ BackendResult<QueryResult> GenericDatabaseConnection::finish_operation(
     };
     annotate(*result);
     for (auto& item : result->additional_results) annotate(item);
-  }
-  return result;
-}
-
-BackendResult<QueryResult> GenericDatabaseConnection::normalize_parameter_metadata(
-    BackendResult<QueryResult> result, rs::util::Deadline deadline) {
-  if (result.has_error()) return result;
-  const auto normalize = [&](QueryResult& item) -> BackendResult<void> {
-    if (item.parameter_type_ids.empty()) return {};
-    auto types = resolve_types(item.parameter_type_ids, deadline);
-    if (types.has_error()) {
-      auto error = std::move(types.backend_error());
-      error.operation = BackendOperation::ResolveTypes;
-      return error;
-    }
-    std::vector<NativeTypeInfo> normalized;
-    normalized.reserve(item.parameter_type_ids.size());
-    for (const auto id : item.parameter_type_ids) {
-      const auto found = types->find(id);
-      if (found == types->end()) {
-        BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),
-            "Data source returned incomplete parameter type metadata"};
-        error.error_class = BackendErrorClass::InvalidMetadata;
-        error.operation = BackendOperation::ResolveTypes;
-        error.session_state = session_state_;
-        error.disposition = !connected_ ? SessionDisposition::Retire :
-            session_state_ == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired;
-        return error;
-      }
-      normalized.push_back(found->second);
-    }
-    item.normalized_parameter_types = std::move(normalized);
-    return {};
-  };
-  auto normalized = normalize(*result);
-  if (normalized.has_error()) return std::move(normalized.backend_error());
-  for (auto& item : result->additional_results) {
-    normalized = normalize(item);
-    if (normalized.has_error()) return std::move(normalized.backend_error());
   }
   return result;
 }
@@ -396,8 +361,7 @@ BackendResult<QueryResult> GenericDatabaseConnection::execute_prepared(
     }
   }
   try {
-    return normalize_parameter_metadata(
-        finish_operation(execute_prepared_impl(sql, params, deadline), BackendOperation::ExecutePrepared), deadline);
+    return finish_operation(execute_prepared_impl(sql, params, deadline), BackendOperation::ExecutePrepared);
   } catch (const RequestWireLimitExceeded&) {
     return reject_request_limit(BackendOperation::ExecutePrepared);
   } catch (const std::bad_alloc&) {
@@ -414,8 +378,7 @@ BackendResult<QueryResult> GenericDatabaseConnection::describe_statement(
     return reject_request_limit(BackendOperation::Describe);
   }
   try {
-    return normalize_parameter_metadata(
-        finish_operation(describe_statement_impl(sql, types, deadline), BackendOperation::Describe), deadline);
+    return finish_operation(describe_statement_impl(sql, types, deadline), BackendOperation::Describe);
   } catch (const RequestWireLimitExceeded&) {
     return reject_request_limit(BackendOperation::Describe);
   } catch (const std::bad_alloc&) {
@@ -717,19 +680,47 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
     }
     if (!valid_result_structure(result) ||
         std::any_of(result.additional_results.begin(), result.additional_results.end(),
-            [](const auto& item) { return !valid_result_structure(item); })) {
+            [](const auto& item) { return !item.additional_results.empty() || !valid_result_structure(item); })) {
       BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),
           "Data source returned invalid result metadata"};
       error.error_class = BackendErrorClass::InvalidMetadata;
       return error;
     }
-    const auto normalize_columns = [&](QueryResult& item) {
-      for (auto& column : item.columns) {
-        if (!column.normalized_type) {
-          column.normalized_type = describe_type(
-              column.type_id, column.type_size, column.type_modifier);
+    const auto normalize_item = [&](ParsedQueryResult& parsed) -> BackendResult<QueryResult> {
+      QueryResult item;
+      item.rows = std::move(parsed.rows);
+      item.error = std::move(parsed.error);
+      item.affected_rows = parsed.affected_rows;
+      item.statement_kind = parsed.statement_kind;
+      item.columns.reserve(parsed.columns.size());
+      for (auto& column : parsed.columns) {
+        item.columns.push_back({std::move(column.name),
+            describe_type(column.type_id, column.type_size, column.type_modifier)});
+      }
+      if (kind != ResponseKind::SimpleExecution && !parsed.parameter_type_ids.empty()) {
+        auto types = resolve_types(parsed.parameter_type_ids, deadline);
+        if (types.has_error()) {
+          auto error = std::move(types.backend_error());
+          error.operation = BackendOperation::ResolveTypes;
+          return error;
+        }
+        item.normalized_parameter_types.reserve(parsed.parameter_type_ids.size());
+        for (const auto id : parsed.parameter_type_ids) {
+          const auto found = types->find(id);
+          if (found == types->end()) {
+            BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),
+                "Data source returned incomplete parameter type metadata"};
+            error.error_class = BackendErrorClass::InvalidMetadata;
+            error.operation = BackendOperation::ResolveTypes;
+            error.session_state = session_state_;
+            error.disposition = !connected_ ? SessionDisposition::Retire :
+                session_state_ == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired;
+            return error;
+          }
+          item.normalized_parameter_types.push_back(found->second);
         }
       }
+      return item;
     };
     const auto normalize_cells = [&](QueryResult& item) {
       for (std::size_t row = 0; row < item.rows.size(); ++row) {
@@ -756,13 +747,17 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
         }
       }
     };
-    normalize_columns(result);
-    normalize_cells(result);
-    for (auto& item : result.additional_results) {
-      normalize_columns(item);
-      normalize_cells(item);
+    auto normalized = normalize_item(result);
+    if (normalized.has_error()) return std::move(normalized.backend_error());
+    normalize_cells(*normalized);
+    normalized->additional_results.reserve(result.additional_results.size());
+    for (auto& parsed : result.additional_results) {
+      auto item = normalize_item(parsed);
+      if (item.has_error()) return std::move(item.backend_error());
+      normalize_cells(*item);
+      normalized->additional_results.push_back(std::move(*item));
     }
-    return BackendResult<QueryResult>{std::move(result)};
+    return normalized;
   } catch (const std::bad_alloc&) {
     mark_transport_failed();
     return {rs::util::DbErrorCode::AllocationFailure, {}};

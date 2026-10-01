@@ -57,7 +57,7 @@ public:
   std::string extract_error_sqlstate(const Message& msg) override;
   ResultRows extract_query_results(
     const std::vector<Message>& messages) override;
-  QueryResult extract_query_result(const std::vector<Message>& messages) override;
+  ParsedQueryResult extract_query_result(const std::vector<Message>& messages) override;
 
 private:
   static std::string md5_hex(const void* data, size_t n);

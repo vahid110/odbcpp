@@ -12,18 +12,12 @@
 
 namespace rs::core::database {
 
-// Names and normalized_type are common metadata. Type IDs, size/modifier and
-// format_code remain parser/backend migration fields. Shared
-// ODBC column mapping uses normalized_type exclusively, never these native IDs.
+// Backend-neutral, owning metadata. Native descriptors remain inside the backend.
 struct ResultColumnMetadata {
   // UTF-8, without embedded NULs; empty names are valid.
   std::string name;
-  std::uint32_t type_id{0};
-  std::int16_t type_size{-1};
-  std::int32_t type_modifier{-1};
-  std::int16_t format_code{0};
   // Backend/session results and locally synthesized results must provide this
-  // normalized metadata. Shared ODBC code never interprets column native IDs.
+  // normalized metadata.
   std::optional<NativeTypeInfo> normalized_type{};
 };
 
@@ -39,7 +33,6 @@ using ResultRows = std::vector<ResultRow>;
 // Fully owning snapshot: rows, metadata and additional results survive later
 // calls, disconnect and backend destruction. Deferred server errors belong to
 // their result as BackendError; native_state must be normalized by the backend.
-// parameter_type_ids remain private-parser migration storage.
 // Deferred data errors preserve fetch/GetData timing without retaining native
 // encodings. Coordinates are zero-based, sorted, unique and refer to non-NULL
 // cells. The whole error snapshot owns its storage independently of the session.
@@ -52,15 +45,13 @@ struct CellEncodingError {
 struct QueryResult {
   ResultRows rows;
   std::vector<ResultColumnMetadata> columns;
-  std::vector<std::uint32_t> parameter_type_ids;
   std::optional<BackendError> error;
   std::size_t affected_rows{0};
   std::vector<QueryResult> additional_results;
   // Absent means no completion metadata; explicit Unknown clears prior dynamic
   // function diagnostics. Native completion tags never cross this boundary.
   std::optional<StatementKind> statement_kind;
-  // Owning, ordered parameter descriptions supplied by the backend. Native IDs
-  // above remain parser migration storage and are never consumed by ODBC.
+  // Owning, ordered parameter descriptions supplied by the backend.
   std::vector<NativeTypeInfo> normalized_parameter_types;
   std::vector<CellEncodingError> cell_errors;
 

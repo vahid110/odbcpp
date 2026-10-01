@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include "core/util/deadline.h"
 #include "query_parameter.h"
-#include "query_result.h"
+#include "parsed_query_result.h"
 #include "sql_translation.h"
 #include "native_type_info.h"
 
@@ -87,8 +87,8 @@ public:
   virtual std::string extract_error_sqlstate(const Message&) { return {}; }
   virtual ResultRows extract_query_results(
     const std::vector<Message>& messages) = 0;
-  virtual QueryResult extract_query_result(const std::vector<Message>& messages) {
-    QueryResult result;
+  virtual ParsedQueryResult extract_query_result(const std::vector<Message>& messages) {
+    ParsedQueryResult result;
     result.rows = extract_query_results(messages);
     return result;
   }

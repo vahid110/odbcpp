@@ -786,10 +786,10 @@ ResultRows PgProtocolParser::extract_query_results(
   return rows;
 }
 
-QueryResult PgProtocolParser::extract_query_result(
+ParsedQueryResult PgProtocolParser::extract_query_result(
     const std::vector<Message>& messages) {
-  QueryResult current;
-  std::vector<QueryResult> completed;
+  ParsedQueryResult current;
+  std::vector<ParsedQueryResult> completed;
   bool has_row_description = false;
   bool bind_complete_since_description = false;
 
@@ -806,10 +806,10 @@ QueryResult PgProtocolParser::extract_query_result(
       std::size_t offset = 0;
       const auto count = read_u16(payload, offset);
       offset += 2;
-      std::vector<ResultColumnMetadata> columns;
+      std::vector<ParsedColumnMetadata> columns;
       columns.reserve(count);
       for (std::uint16_t i = 0; i < count; ++i) {
-        ResultColumnMetadata column;
+        ParsedColumnMetadata column;
         column.name = read_cstring(payload, offset);
         // Validate/consume native provenance without publishing backend IDs.
         (void)read_u32(payload, offset);
@@ -872,24 +872,24 @@ QueryResult PgProtocolParser::extract_query_result(
       }
       current.affected_rows = command_affected_rows(command_tag);
       completed.push_back(std::move(current));
-      current = QueryResult{};
+      current = ParsedQueryResult{};
       has_row_description = false;
       bind_complete_since_description = false;
     } else if (message.tag == 'E') { // ErrorResponse
-      current = QueryResult{};
+      current = ParsedQueryResult{};
       const auto error = decode_error_fields(message.payload);
       current.error.emplace(rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),
                             "Query error: " + error.message());
       current.error->native_state = error.code();
       completed.push_back(std::move(current));
-      current = QueryResult{};
+      current = ParsedQueryResult{};
       has_row_description = false;
       bind_complete_since_description = false;
     }
   }
   if (completed.empty()) return current;
 
-  QueryResult result = std::move(completed.front());
+  ParsedQueryResult result = std::move(completed.front());
   result.additional_results.reserve(completed.size() - 1);
   for (std::size_t i = 1; i < completed.size(); ++i) {
     result.additional_results.push_back(std::move(completed[i]));

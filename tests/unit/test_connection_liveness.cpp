@@ -1991,7 +1991,8 @@ TEST(BackendResultContractTest, RowsMetadataAndDeferredErrorsOutliveConnection) 
   }
   ASSERT_EQ(1u, retained.columns.size());
   EXPECT_EQ("value", retained.columns[0].name);
-  EXPECT_EQ(25u, retained.columns[0].type_id);
+  ASSERT_TRUE(retained.columns[0].normalized_type);
+  EXPECT_EQ(rs::core::database::ScalarType::VarChar, retained.columns[0].normalized_type->type);
   ASSERT_EQ(3u, retained.rows.size());
   for (const auto& row : retained.rows) ASSERT_EQ(1u, row.size());
   EXPECT_FALSE(retained.rows[0][0].has_value());
@@ -2625,7 +2626,8 @@ TEST(ResultBudgetTest, ParameterDescriptionAndAggregateMultiResultCountsAreBound
     EXPECT_EQ(exact, result.has_value());
     if (exact) {
       ASSERT_TRUE(result);
-      EXPECT_EQ(result->parameter_type_ids, std::vector<std::uint32_t>{23});
+      ASSERT_EQ(1u, result->normalized_parameter_types.size());
+      EXPECT_EQ(ScalarType::Integer, result->normalized_parameter_types[0].type);
     } else {
       ASSERT_TRUE(result.has_error());
       EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::ResourceLimit);
@@ -2673,7 +2675,7 @@ TEST(ResultBudgetTest, ZeroDataBudgetsPermitNoDataAndInvalidResultLimitPreserves
   ASSERT_TRUE(description);
   EXPECT_TRUE(description->rows.empty());
   EXPECT_TRUE(description->columns.empty());
-  EXPECT_TRUE(description->parameter_type_ids.empty());
+  EXPECT_TRUE(description->normalized_parameter_types.empty());
   const auto reads = observed->bytes_read();
   const auto connects = observed->connect_count();
   auto invalid = settings;
@@ -2737,7 +2739,8 @@ TEST(ResultBudgetTest, ParameterEntriesUseAggregateMetadataBudget) {
     EXPECT_EQ(exact, result.has_value());
     if (exact) {
       ASSERT_TRUE(result);
-      EXPECT_EQ(result->parameter_type_ids, std::vector<std::uint32_t>{23});
+      ASSERT_EQ(1u, result->normalized_parameter_types.size());
+      EXPECT_EQ(ScalarType::Integer, result->normalized_parameter_types[0].type);
     } else {
       ASSERT_TRUE(result.has_error());
       EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::ResourceLimit);
@@ -3095,7 +3098,7 @@ class AllocationFaultParser final : public rs::core::database::postgres::PgProto
     fail(Stage::Parse);
     return PgProtocolParser::parse_message(bytes);
   }
-  rs::core::database::QueryResult extract_query_result(const std::vector<rs::core::database::Message>& messages) override {
+  rs::core::database::ParsedQueryResult extract_query_result(const std::vector<rs::core::database::Message>& messages) override {
     fail(Stage::Extract);
     return PgProtocolParser::extract_query_result(messages);
   }
@@ -3351,12 +3354,18 @@ class ParameterNormalizationConnection final : public rs::core::database::Generi
           std::make_unique<ScriptedBackendTransport>(ScriptedBackendTransport::ResponseMode::DescriptionRepeatedParameter)) {}
   bool incomplete{};
   bool fail{};
+  bool passive_limit{};
   rs::util::Deadline observed{};
   int lookups{};
   rs::core::database::BackendResult<rs::core::database::ResolvedTypeMap> resolve_types(
       std::span<const std::uint32_t> ids, rs::util::Deadline deadline) override {
     using namespace rs::core::database;
     observed = deadline; ++lookups;
+    if (passive_limit) {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), "local lookup input limit"};
+      error.session_state = session_state(); error.disposition = SessionDisposition::Reusable;
+      return error;
+    }
     if (fail) {
       BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "type lookup failed"};
       error.session_state = session_state(); error.disposition = SessionDisposition::Reusable;
@@ -3538,4 +3547,53 @@ TEST(NormalizedMetadataTest, Utf8NamesAreOwnedAndMalformedNamesRejectAllResultsW
       EXPECT_EQ("\xe2\x82\xac\xf0\x9f\x98\x80", result->columns[0].name);
     }
   }
+}
+
+TEST(NormalizedParameterTest, PassiveLookupLimitPreservesDrainedSessionAndRecovers) {
+  using namespace rs::core::database;
+  ParameterNormalizationConnection backend;
+  ConnectionSettings settings; settings.use_ssl = false;
+  ASSERT_TRUE(backend.connect(settings));
+  backend.passive_limit = true;
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds(2));
+  const QueryParameterType hints[]{QueryParameterType::Numeric};
+  auto result = backend.describe_statement("SELECT ?", hints, deadline);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(BackendErrorClass::ResourceLimit, result.backend_error().error_class);
+  EXPECT_EQ(BackendOperation::ResolveTypes, result.backend_error().operation);
+  EXPECT_EQ(SessionState::Idle, result.backend_error().session_state);
+  EXPECT_EQ(SessionDisposition::Reusable, result.backend_error().disposition);
+  EXPECT_TRUE(backend.is_connected());
+  EXPECT_EQ(deadline, backend.observed);
+  backend.passive_limit = false;
+  auto recovered = backend.describe_statement("SELECT ?", hints, deadline);
+  ASSERT_TRUE(recovered);
+  ASSERT_EQ(1u, recovered->normalized_parameter_types.size());
+}
+
+TEST(NormalizedMetadataTest, NestedPrivateResultsAreRejectedAfterDrainAndRecover) {
+  using namespace rs::core::database;
+  class NestedParser final : public postgres::PgProtocolParser {
+   public:
+    bool nested = true;
+    ParsedQueryResult extract_query_result(const std::vector<Message>& messages) override {
+      auto result = PgProtocolParser::extract_query_result(messages);
+      if (nested) {
+        result.additional_results.emplace_back();
+        result.additional_results.back().additional_results.emplace_back();
+        nested = false;
+      }
+      return result;
+    }
+  };
+  GenericDatabaseConnection backend(std::make_unique<NestedParser>(),
+      std::make_unique<ScriptedBackendTransport>(ScriptedBackendTransport::ResponseMode::Utf8ColumnNames));
+  ConnectionSettings settings; settings.use_ssl = false;
+  ASSERT_TRUE(backend.connect(settings));
+  auto result = backend.execute_query("SELECT value; SELECT value", rs::util::Deadline::max());
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(BackendErrorClass::InvalidMetadata, result.backend_error().error_class);
+  EXPECT_EQ(SessionDisposition::Reusable, result.backend_error().disposition);
+  EXPECT_TRUE(backend.is_connected());
+  ASSERT_TRUE(backend.execute_query("SELECT 0", rs::util::Deadline::max()));
 }

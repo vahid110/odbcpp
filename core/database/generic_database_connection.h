@@ -63,8 +63,6 @@ public:
   virtual std::string get_parameter(std::string_view key) const;
 
 private:
-  BackendResult<QueryResult> normalize_parameter_metadata(
-      BackendResult<QueryResult> result, rs::util::Deadline deadline);
   BackendResult<QueryResult> reject_request_limit(BackendOperation operation) const;
   BackendResult<void> connect_impl(const ConnectionSettings& settings);
   SessionState session_state_{SessionState::Disconnected};

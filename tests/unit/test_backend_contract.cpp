@@ -51,6 +51,16 @@ template <typename T>
 concept HasNativeTableProvenance = requires(T column) { column.table_id; column.table_column; };
 static_assert(!HasNativeCompletionTag<QueryResult>);
 static_assert(!HasNativeTableProvenance<ResultColumnMetadata>);
+template <typename T> concept HasNativeTypeId = requires(T value) { value.type_id; };
+template <typename T> concept HasNativeTypeSize = requires(T value) { value.type_size; };
+template <typename T> concept HasNativeTypeModifier = requires(T value) { value.type_modifier; };
+template <typename T> concept HasNativeFormatCode = requires(T value) { value.format_code; };
+template <typename T> concept HasNativeParameterIds = requires(T value) { value.parameter_type_ids; };
+static_assert(!HasNativeTypeId<ResultColumnMetadata>);
+static_assert(!HasNativeTypeSize<ResultColumnMetadata>);
+static_assert(!HasNativeTypeModifier<ResultColumnMetadata>);
+static_assert(!HasNativeFormatCode<ResultColumnMetadata>);
+static_assert(!HasNativeParameterIds<QueryResult>);
 static_assert(!HasNativeServerParameters<IDatabaseConnection>);
 static_assert(!HasNativeTypeInterpretation<IDatabaseConnection>);
 static_assert(!HasNativeTypeResolution<IDatabaseConnection>);
@@ -105,7 +115,7 @@ class FakeBackend final : public IDatabaseConnection {
   }
   QueryResult rows() const {
     QueryResult result;
-    result.columns = {{"binary", 23}, {"flag", 17}, {"text", 999}};
+    result.columns = {{"binary", {}}, {"flag", {}}, {"text", {}}};
     result.columns[0].normalized_type = NativeTypeInfo{ScalarType::Binary, 8, 0, true};
     result.columns[1].normalized_type = NativeTypeInfo{ScalarType::Boolean, 1, 0, true};
     result.columns[2].normalized_type = NativeTypeInfo{ScalarType::VarChar, 32, 0, true};
@@ -191,7 +201,6 @@ class FakeBackend final : public IDatabaseConnection {
     ++seen_->descriptions;
     seen_->sql = sql;
     QueryResult result = rows(); result.rows.clear();
-    result.parameter_type_ids.assign(types.size(), 23); // Deliberately irrelevant to ODBC.
     result.normalized_parameter_types.assign(types.size(),
         NativeTypeInfo{ScalarType::Binary, 8, 0, true});
     if (seen_->missing_parameter_metadata) result.normalized_parameter_types.clear();

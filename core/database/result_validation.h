@@ -7,7 +7,8 @@ namespace rs::core::database {
 
 // Empty names are valid; embedded NULs are not representable in ODBC names.
 // Validate before publishing any result state. Cell encoding errors are separate.
-inline bool valid_result_structure(const QueryResult& result) {
+template <typename Result>
+inline bool valid_result_structure(const Result& result) {
   for (const auto& column : result.columns) {
     if (column.name.find('\0') != std::string::npos ||
         !rs::util::utf8_code_point_count(column.name)) return false;
