@@ -872,3 +872,43 @@ credential generations/expiry, cache epochs/invalidation and exclusive RAII
 leases remain open. Shared policy must invalidate its cached statements and
 metadata after reset before any new borrower; ODBC does not invoke the facet yet.
 No ODBC pooling capability, Redshift reset or public SDK stability is claimed.
+
+## S2 internal exclusive ownership primitive — 2026-10-01
+
+`SessionOwner` and `SessionLease` establish single-session ownership in the shared
+composition layer. They are internal implementation, excluded from installed
+headers and the SDK contract manifest. Backend and shared ODBC component include
+trees cannot see them. The quarantined prototype pool is unchanged.
+
+A uniquely adopted, non-null session admits at most one move-only lease. Concurrent
+`try_acquire()` calls coordinate under a short ownership mutex; checkout performs
+no network operation and does not wait for a borrower to return. It does not infer
+authentication, health, credential freshness or reuse permission. Moving or
+destroying the same owner or lease requires external ordering. Operations on an
+active lease and borrowed session/facet pointers must be serialized by the caller;
+pointers cannot escape the lease lifetime. C++ cannot prevent deliberate sharing
+of a raw borrowed pointer.
+
+Owner destruction closes admission and retires an idle session. An active lease
+pins its physical session even if its owner is destroyed or replaced. Lease
+destruction, explicit retirement and replacement by move assignment remove the
+session exactly once under the mutex, then disconnect and destroy it outside the
+mutex. Disconnect exceptions are contained during noexcept teardown; external
+backends remain responsible for releasing transport resources in their destructor.
+Owner and lease moves leave their sources inert; self-moves preserve ownership.
+There is no manual return token, foreign-owner return, raw ownership extraction,
+new-session adoption or requeue API.
+
+Retirement is terminal even after successful backend reset. Teardown never invokes
+reset, health, reconnect or replay and carries no hidden network-cleanup deadline.
+This deliberately narrower first step proves exclusivity/lifetime, not reusable
+pooling. A later shared policy must establish credential generations/expiry, cache
+epochs/invalidation and a bounded reset decision before adding reusable return.
+No ODBC behavior or pooling capability changes.
+
+Evidence includes move/type checks, concurrent checkout, repeated owner-destruction
+versus lease-retirement races, reentrant disconnect, exception unwinding and
+throwing-backend teardown. Focused ThreadSanitizer runs cover the ownership code.
+Mandatory PostgreSQL live evidence verifies lease survival after owner destruction
+and physical-session disappearance after retirement, including after a successful
+reset. The live suite is PG-only; it grants no Redshift reset claim.

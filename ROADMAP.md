@@ -1245,3 +1245,23 @@ packaging and cross-platform crypto checks remain subject to exact-head CI.
 The first CI attempt exposed GCC-only test portability errors: missing explicit
 `<cstring>` and unbraced GoogleTest assertion expansion. Both are repaired
 without production-code changes; all local gates passed again before repair push.
+
+## S2 single-session exclusive ownership — 2026-10-01
+
+Added private `SessionOwner`/`SessionLease` composition primitives, with one
+move-only borrower, safe owner/lease lifetimes and terminal retirement. No reusable
+return or pool policy is implemented. ODBC and the quarantined prototype pool
+are unchanged; installed headers and SDK/backend/ODBC boundaries exclude the API.
+
+Focused tests cover ownership traits, concurrent checkout, moves, unwinding,
+throwing disconnect and reentrant teardown. Repeated owner-destruction/retirement
+races run under focused ThreadSanitizer. Mandatory PG-only live evidence checks
+owner-independent borrowing and physical session closure even after successful
+reset. Credential generations/expiry, cache epochs/invalidation and bounded
+reusable return remain next S2 policy work.
+
+Validation: full local PostgreSQL, iODBC UTF-16/UCS-4, sanitizer and
+Redshift build/absent-endpoint gates pass. Focused final ownership/boundary
+rechecks and all ten ownership tests under ThreadSanitizer pass. Read-only
+review found no remaining blocker/high finding. Windows/packaging and
+cross-platform crypto evidence remain subject to exact-head CI.

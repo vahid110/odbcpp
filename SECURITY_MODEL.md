@@ -435,3 +435,19 @@ authorization, credential freshness/generations, shared cache invalidation and
 exclusive leases remain required. The prototype pool stays quarantined. The live
 PostgreSQL reset suite is mandatory when selected and cannot skip connection
 failures; no pooling or Driver Manager reuse qualification follows from it.
+
+## S2 fail-closed exclusive ownership — 2026-10-01
+
+The internal composition-owned `SessionOwner`/`SessionLease` primitive uniquely
+adopts one session and admits at most one move-only borrower. An active borrower
+survives owner destruction; all returns/abandonment retire and destroy the physical
+session. Backend disconnect/destruction occurs outside the ownership mutex and
+noexcept teardown contains disconnect failures. No reset/probe/reconnect or replay
+is hidden in teardown. Borrowed pointers and operations require caller serialization.
+
+Concurrent checkout and owner-destruction/retirement races have focused TSan
+evidence; mandatory PostgreSQL live tests verify physical-session retirement.
+This closes the initial ownership primitive portion of SEC-3, not reuse safety.
+Credential expiry/generations, cache isolation/invalidation and reusable return
+policy remain open. The API is neither installed nor part of SDK contracts, and
+ODBC/the prototype pool do not consume it.

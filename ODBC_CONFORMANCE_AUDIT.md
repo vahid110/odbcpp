@@ -2691,3 +2691,21 @@ PostgreSQL, iODBC UTF-16/UCS-4, sanitizer and Redshift build/absent-endpoint
 gates pass. PostgreSQL and UTF-16 were repeated after the final malformed-empty
 completion fix. Read-only review found no remaining blocker/high issue. Windows,
 packaging and cross-platform crypto checks remain subject to exact-head CI.
+
+## S2 internal exclusive ownership evidence — 2026-10-01
+
+Private composition-owned move-only leases now enforce one borrower per adopted
+session and safe owner/lease lifetime, with terminal retirement on every return.
+Type, concurrency, repeated close/retire race, move, unwind and reentrant/throwing
+teardown fixtures accompany focused TSan evidence. PG-only mandatory live tests
+verify physical retirement after an owner-independent borrow and successful reset.
+
+No ODBC workflow or capability changes. Credential/cache isolation and reusable
+return remain open, as do SDK/Driver Manager pooling qualification and public
+SDK packaging.
+
+Validation: full local PostgreSQL, iODBC UTF-16/UCS-4, sanitizer and
+Redshift build/absent-endpoint gates pass. Focused final ownership/boundary
+rechecks and all ten ownership tests under ThreadSanitizer pass. Read-only
+review found no remaining blocker/high finding. Windows/packaging and
+cross-platform crypto evidence remain subject to exact-head CI.

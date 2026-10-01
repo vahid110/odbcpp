@@ -835,3 +835,13 @@ This is partial lifecycle evidence for G12, not closure. RAII exclusive leases,
 credential/cache isolation and reuse acceptance remain open. Redshift reset is
 unavailable pending its own live profile; provider/linkage qualification and
 real-application PG-BETA gates are unchanged.
+
+## S2 exclusive ownership checkpoint — 2026-10-01
+
+An internal, composition-owned move-only session lease now protects one physical
+session from duplicate borrowers and handles moves, owner destruction and
+exception unwinding. Every return is terminal retirement; reset success cannot
+authorize requeue. Focused concurrency/TSan and mandatory PG live evidence support
+this narrow lifecycle step. Credential/cache policy and reusable return remain
+required for G12. S2/S2C, Driver Manager pooling, PG-BETA and Redshift live gates
+remain open; no public SDK API is added.

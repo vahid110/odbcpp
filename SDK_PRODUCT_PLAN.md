@@ -262,7 +262,7 @@ review before considering any MySQL beta plan.
   have bounded evidence accepted in [S2C_MATRIX_REVIEW.md](S2C_MATRIX_REVIEW.md).
   S2 now includes owning errors/session disposition, private dependency gates,
   optional active health and the narrow PostgreSQL reset primitive. Continue
-  exclusive leases and credential/cache isolation next; crypto qualification
+  reusable-return policy and credential/cache isolation next; crypto qualification
   follow-ups remain open and do not disappear from G12.
 - When Redshift access returns, finish the current coherent MS1 batch, preserve
   its evidence, and run M2 before expanding MySQL scope. Re-estimate whether to
@@ -285,3 +285,11 @@ freshness or new-borrower authorization promise. Shared policy must still provid
 exclusive leases, credential generations/expiry and cache invalidation before
 reuse acceptance. Redshift is opted out. This advances S2 lifecycle contracts
 without closing S2/G12 or starting MySQL implementation.
+
+## S2 exclusive ownership progress — 2026-10-01
+
+The first internal RAII lease primitive now proves exclusive borrowing and safe
+owner/lease lifetime. All returns retire, including after successful backend
+reset. Public SDK exposure and reusable return remain deferred until shared
+credential generation/expiry and cache epoch/invalidation policy have evidence.
+No pool sizing, waiting, throughput claim or Driver Manager behavior is added.
