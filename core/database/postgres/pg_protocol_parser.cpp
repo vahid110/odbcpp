@@ -285,10 +285,20 @@ namespace rs::core::database::postgres {
 std::vector<std::byte> PgProtocolParser::create_startup_message(
     const std::string& user, 
     const std::string& database,
-    const std::map<std::string, std::string>& params) {
+    const std::map<std::string, std::string>& params, std::size_t max_wire_bytes) {
   scram_client_.reset();
   scram_server_verified_ = false;
   
+  std::size_t bytes = 9;
+  const auto add = [&](std::size_t size) {
+    if (bytes > max_wire_bytes || size > max_wire_bytes - bytes) throw RequestWireLimitExceeded{};
+    bytes += size;
+  };
+  add(6); add(user.size()); add(10); add(database.size());
+  for (const auto& [key, value] : params) {
+    add(key.size()); add(1); add(value.size()); add(1);
+  }
+  if (bytes > std::numeric_limits<std::uint32_t>::max()) throw RequestWireLimitExceeded{};
   std::vector<std::pair<std::string, std::string>> kv;
   kv.push_back({"user", user});
   kv.push_back({"database", database});
@@ -304,10 +314,6 @@ std::vector<std::byte> PgProtocolParser::create_startup_message(
     }
   }
   
-  size_t bytes = 4 + 4 + 1; // len + protocol + terminator
-  for (const auto& p : kv) {
-    bytes += p.first.size() + 1 + p.second.size() + 1;
-  }
   
   std::vector<std::byte> buf(bytes);
   auto* data = reinterpret_cast<unsigned char*>(buf.data());
@@ -401,7 +407,7 @@ std::vector<std::byte> PgProtocolParser::create_auth_response(
     const AuthenticationRequest& request,
     const std::string& password,
     const std::string& user,
-    bool peer_identity_verified) {
+    bool peer_identity_verified, std::size_t max_wire_bytes) {
   if (password.find('\0') != std::string::npos ||
       user.find('\0') != std::string::npos) {
     throw std::invalid_argument(
@@ -431,10 +437,12 @@ std::vector<std::byte> PgProtocolParser::create_auth_response(
             "PostgreSQL cleartext password authentication requires "
             "verified TLS");
       }
+      if (max_wire_bytes < 6 || password.size() > max_wire_bytes - 6) throw RequestWireLimitExceeded{};
       auth_string = password;
       break;
       
     case AuthenticationRequest::Type::MD5: {
+      if (max_wire_bytes < 41) throw RequestWireLimitExceeded{};
       if (request.challenge_data.size() != 4) {
         throw std::invalid_argument("PostgreSQL MD5 salt must be four bytes");
       }
@@ -480,6 +488,7 @@ std::vector<std::byte> PgProtocolParser::create_auth_response(
       scram_client_ = std::make_unique<ScramSha256Client>(
           user, password, generate_scram_nonce());
       const auto initial = scram_client_->client_first_message();
+      if (max_wire_bytes < 23 || initial.size() > max_wire_bytes - 23) throw RequestWireLimitExceeded{};
       std::vector<std::byte> response;
       const auto start = begin_message(response, 'p');
       append_cstring(response, "SCRAM-SHA-256");
@@ -498,6 +507,7 @@ std::vector<std::byte> PgProtocolParser::create_auth_response(
           reinterpret_cast<const char*>(request.challenge_data.data()),
           request.challenge_data.size());
       const auto final = scram_client_->receive_server_first(challenge);
+      if (max_wire_bytes < 5 || final.size() > max_wire_bytes - 5) throw RequestWireLimitExceeded{};
       std::vector<std::byte> response;
       const auto start = begin_message(response, 'p');
       response.insert(

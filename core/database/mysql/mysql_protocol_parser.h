@@ -21,7 +21,7 @@ public:
   std::vector<std::byte> create_startup_message(
     const std::string& user, 
     const std::string& database,
-    const std::map<std::string, std::string>& params) override {
+    const std::map<std::string, std::string>& params, std::size_t max_wire_bytes = 1024 * 1024) override {
     // MySQL handshake protocol implementation
     throw std::runtime_error("MySQL protocol not implemented yet");
   }
@@ -40,7 +40,7 @@ public:
     const AuthenticationRequest& request,
     const std::string& password,
     const std::string& user,
-    bool peer_identity_verified) override {
+    bool peer_identity_verified, std::size_t max_wire_bytes = 1024 * 1024) override {
     // MySQL auth response (native password, caching_sha2_password, etc.)
     throw std::runtime_error("MySQL auth response not implemented yet");
   }

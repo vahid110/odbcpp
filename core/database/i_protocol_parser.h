@@ -39,7 +39,7 @@ public:
   virtual std::vector<std::byte> create_startup_message(
     const std::string& user, 
     const std::string& database,
-    const std::map<std::string, std::string>& params) = 0;
+    const std::map<std::string, std::string>& params, std::size_t max_wire_bytes = 1024 * 1024) = 0;
   
   virtual std::vector<std::byte> create_ssl_request() = 0;
   
@@ -52,7 +52,7 @@ public:
     const AuthenticationRequest& request,
     const std::string& password,
     const std::string& user,
-    bool peer_identity_verified) = 0;
+    bool peer_identity_verified, std::size_t max_wire_bytes = 1024 * 1024) = 0;
   
   // Query execution
   virtual std::size_t count_parameter_markers(std::string_view sql) const = 0;

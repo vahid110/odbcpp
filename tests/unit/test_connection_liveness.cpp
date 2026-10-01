@@ -181,7 +181,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     DescriptionServerError, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
     OwnedErrorIdle, OwnedErrorTransaction, OwnedErrorAborted,
     UnterminatedColumnName, TruncatedColumnMetadata, TrailingColumnMetadata, EmptyColumnName,
-    QueryReadTimeout, PartialQueryWrite, PreparedCommand, QueryAllocationFailure
+    QueryReadTimeout, PartialQueryWrite, PreparedCommand, QueryAllocationFailure, Md5Authentication
   };
 
   explicit ScriptedBackendTransport(
@@ -200,6 +200,9 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
           "SFATAL\0C28P01\0Mpassword authentication failed\0";
       append_message('E', error, sizeof(error));
       return;
+    }
+    if (mode == ResponseMode::Md5Authentication) {
+      append_message('R', "\0\0\0\5\1\2\3\4", 8);
     }
     if (mode == ResponseMode::CleartextAuthentication) {
       append_message('R', "\0\0\0\3", 4);
@@ -2944,7 +2947,7 @@ TEST(InputBudgetTest, ExcessiveConfiguredCeilingsPreserveConnectedSession) {
   const auto sends = observed->send_count();
   for (const Limit field : {&InputLimits::max_sql_bytes, &InputLimits::max_parameters,
                            &InputLimits::max_parameter_bytes, &InputLimits::max_parameter_total_bytes,
-                           &InputLimits::max_connection_field_bytes, &InputLimits::max_request_wire_bytes}) {
+                           &InputLimits::max_connection_field_bytes, &InputLimits::max_request_wire_bytes, &InputLimits::max_startup_wire_bytes, &InputLimits::max_auth_wire_bytes}) {
     auto invalid = settings;
     invalid.input_limits.*field = static_cast<std::size_t>(-1);
     const auto result = backend.connect(invalid);
@@ -2995,9 +2998,9 @@ class AllocationFaultParser final : public rs::core::database::postgres::PgProto
     }
   }
   std::vector<std::byte> create_startup_message(const std::string& user, const std::string& database,
-      const std::map<std::string, std::string>& params) override {
+      const std::map<std::string, std::string>& params, std::size_t limit) override {
     fail(Stage::StartupEncoding);
-    return PgProtocolParser::create_startup_message(user, database, params);
+    return PgProtocolParser::create_startup_message(user, database, params, limit);
   }
   std::vector<std::byte> create_simple_query(std::string_view sql, std::size_t limit) override {
     fail(Stage::Direct);
@@ -3168,6 +3171,59 @@ TEST(InputBudgetTest, EncodedWireLimitsPreflightAndPreserveSessionAcrossAllOpera
         EXPECT_EQ(observed->close_count(), 0u);
         EXPECT_TRUE(backend.is_connected());
       }
+    }
+  }
+}
+
+TEST(InputBudgetTest, StartupWireLimitRejectsBeforeConnectAndPreservesExistingOwner) {
+  using namespace rs::core::database;
+  auto transport = std::make_unique<ScriptedBackendTransport>();
+  auto* observed = transport.get();
+  GenericDatabaseConnection backend(std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
+  ConnectionSettings settings;
+  settings.use_ssl = false;
+  settings.input_limits.max_startup_wire_bytes = 0;
+  const auto rejected = backend.connect(settings);
+  ASSERT_TRUE(rejected.has_error());
+  EXPECT_EQ(rejected.backend_error().error_class, BackendErrorClass::ResourceLimit);
+  EXPECT_EQ(observed->connect_count(), 0u);
+  EXPECT_EQ(observed->send_count(), 0u);
+  settings.input_limits.max_startup_wire_bytes = 1024;
+  ASSERT_TRUE(backend.connect(settings));
+  const auto sends = observed->send_count();
+  const auto reads = observed->bytes_read();
+  settings.input_limits.max_startup_wire_bytes = 0;
+  const auto reconnect = backend.connect(settings);
+  ASSERT_TRUE(reconnect.has_error());
+  EXPECT_EQ(reconnect.backend_error().disposition, SessionDisposition::Reusable);
+  EXPECT_EQ(observed->connect_count(), 1u);
+  EXPECT_EQ(observed->send_count(), sends);
+  EXPECT_EQ(observed->bytes_read(), reads);
+  EXPECT_EQ(observed->close_count(), 0u);
+}
+
+TEST(InputBudgetTest, AuthenticationWireLimitRetiresWithoutSendingOversizedPasswordPacket) {
+  using namespace rs::core::database;
+  for (const bool exact : {false, true}) {
+    auto transport = std::make_unique<ScriptedBackendTransport>(ScriptedBackendTransport::ResponseMode::Md5Authentication);
+    auto* observed = transport.get();
+    GenericDatabaseConnection backend(std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
+    ConnectionSettings settings;
+    settings.use_ssl = false;
+    settings.password = "secret";
+    settings.input_limits.max_auth_wire_bytes = exact ? 41 : 40;
+    const auto result = backend.connect(settings);
+    EXPECT_EQ(exact, result.has_value());
+    if (!exact) {
+      ASSERT_TRUE(result.has_error());
+      EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::ResourceLimit);
+      EXPECT_EQ(result.backend_error().operation, BackendOperation::Authenticate);
+      EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Retire);
+      EXPECT_EQ(observed->send_count(), 1u);
+      EXPECT_EQ(observed->close_count(), 1u);
+    } else {
+      EXPECT_EQ(observed->send_count(), 2u);
+      EXPECT_TRUE(backend.is_connected());
     }
   }
 }

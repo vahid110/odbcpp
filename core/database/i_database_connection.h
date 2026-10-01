@@ -51,6 +51,8 @@ struct InputLimits {
   std::size_t max_parameter_total_bytes{64 * 1024 * 1024};
   std::size_t max_connection_field_bytes{64 * 1024};
   std::size_t max_request_wire_bytes{128 * 1024 * 1024};
+  std::size_t max_startup_wire_bytes{1024 * 1024};
+  std::size_t max_auth_wire_bytes{1024 * 1024};
 };
 
 struct ConnectionSettings {

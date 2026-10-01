@@ -1032,3 +1032,62 @@ TEST(PgRequestBudgetTest, MultiDigitMarkersAndBinaryInputHintsFitExactWireBudget
   EXPECT_EQ(wire, parser.create_prepared_query(sql, params, wire.size()));
   EXPECT_THROW(parser.create_prepared_query(sql, params, wire.size() - 1), RequestWireLimitExceeded);
 }
+
+TEST(PgRequestBudgetTest, StartupAndAuthenticationPacketsFitExactWireLimits) {
+  using namespace rs::core::database;
+  postgres::PgProtocolParser parser;
+  const std::map<std::string, std::string> options{{"application_name", "odbcpp"}};
+  const auto startup = parser.create_startup_message("user", "db", options);
+  EXPECT_EQ(startup, parser.create_startup_message("user", "db", options, startup.size()));
+  EXPECT_THROW(parser.create_startup_message("user", "db", options, startup.size() - 1), RequestWireLimitExceeded);
+  EXPECT_THROW(parser.create_startup_message("", "", {}, 0), RequestWireLimitExceeded);
+  AuthenticationRequest request;
+  request.type = AuthenticationRequest::Type::Cleartext;
+  const auto cleartext = parser.create_auth_response(request, "secret", "user", true);
+  EXPECT_EQ(cleartext, parser.create_auth_response(request, "secret", "user", true, cleartext.size()));
+  EXPECT_THROW(parser.create_auth_response(request, "secret", "user", true, cleartext.size() - 1), RequestWireLimitExceeded);
+  request.type = AuthenticationRequest::Type::MD5;
+  request.challenge_data = {std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}};
+  const auto md5 = parser.create_auth_response(request, "secret", "user", false);
+  ASSERT_EQ(md5.size(), 41u);
+  EXPECT_EQ(md5, parser.create_auth_response(request, "secret", "user", false, 41));
+  EXPECT_THROW(parser.create_auth_response(request, "secret", "user", false, 40), RequestWireLimitExceeded);
+  request.type = AuthenticationRequest::Type::None;
+  EXPECT_TRUE(parser.create_auth_response(request, "secret", "user", false, 0).empty());
+}
+
+TEST(PgRequestBudgetTest, ScramInitialResponseLimitIncludesEscapedUsername) {
+  using namespace rs::core::database;
+  AuthenticationRequest request;
+  request.type = AuthenticationRequest::Type::SASL;
+  constexpr char mechanisms[] = "SCRAM-SHA-256\0";
+  for (const char ch : std::string_view(mechanisms, sizeof(mechanisms))) request.challenge_data.push_back(static_cast<std::byte>(ch));
+  postgres::PgProtocolParser baseline;
+  const auto wire = baseline.create_auth_response(request, "secret", "user,=", true);
+  postgres::PgProtocolParser exact;
+  EXPECT_EQ(exact.create_auth_response(request, "secret", "user,=", true, wire.size()).size(), wire.size());
+  postgres::PgProtocolParser over;
+  EXPECT_THROW(over.create_auth_response(request, "secret", "user,=", true, wire.size() - 1), RequestWireLimitExceeded);
+}
+
+TEST(PgRequestBudgetTest, ScramContinuationResponseFitsExactWireLimit) {
+  using namespace rs::core::database;
+  const auto continuation = [](std::size_t limit) {
+    postgres::PgProtocolParser parser;
+    AuthenticationRequest offer;
+    offer.type = AuthenticationRequest::Type::SASL;
+    constexpr char mechanisms[] = "SCRAM-SHA-256\0";
+    for (const char ch : std::string_view(mechanisms, sizeof(mechanisms))) offer.challenge_data.push_back(static_cast<std::byte>(ch));
+    const auto initial_wire = parser.create_auth_response(offer, "pencil", "user", true);
+    const std::string initial(reinterpret_cast<const char*>(initial_wire.data() + 23), initial_wire.size() - 23);
+    const auto nonce = initial.substr(initial.find(",r=") + 3);
+    const auto server = "r=" + nonce + "server,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096";
+    AuthenticationRequest challenge;
+    challenge.type = AuthenticationRequest::Type::SASLContinue;
+    for (const char ch : server) challenge.challenge_data.push_back(static_cast<std::byte>(ch));
+    return parser.create_auth_response(challenge, "pencil", "user", true, limit);
+  };
+  const auto baseline = continuation(4096);
+  EXPECT_EQ(continuation(baseline.size()).size(), baseline.size());
+  EXPECT_THROW(continuation(baseline.size() - 1), RequestWireLimitExceeded);
+}

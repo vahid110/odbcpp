@@ -23,7 +23,7 @@ class MockProtocolParser final
   }
   std::vector<std::byte> create_startup_message(
       const std::string&, const std::string&,
-      const std::map<std::string, std::string>&) override {
+      const std::map<std::string, std::string>&, std::size_t) override {
     return {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
   }
 
@@ -64,7 +64,7 @@ class MockProtocolParser final
 
   std::vector<std::byte> create_auth_response(
       const rs::core::database::AuthenticationRequest&,
-      const std::string&, const std::string&, bool) override {
+      const std::string&, const std::string&, bool, std::size_t) override {
     return {};
   }
 

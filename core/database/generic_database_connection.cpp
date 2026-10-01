@@ -110,7 +110,8 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
       input.max_parameter_bytes > 64 * 1024 * 1024 ||
       input.max_parameter_total_bytes > 256 * 1024 * 1024 ||
       input.max_connection_field_bytes > 1024 * 1024 ||
-      input.max_request_wire_bytes > 1024 * 1024 * 1024) {
+      input.max_request_wire_bytes > 1024 * 1024 * 1024 ||
+      input.max_startup_wire_bytes > 1024 * 1024 * 1024 || input.max_auth_wire_bytes > 1024 * 1024 * 1024) {
     return {rs::util::DbErrorCode::InvalidParameter, "Input limits exceed supported encoding ceilings"};
   }
   for (const auto* field : {&settings.host, &settings.user, &settings.password,
@@ -145,7 +146,9 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
   std::vector<std::byte> startup;
   try {
     startup = parser_->create_startup_message(
-        settings.user, settings.database, params);
+        settings.user, settings.database, params, settings.input_limits.max_startup_wire_bytes);
+  } catch (const RequestWireLimitExceeded&) {
+    return {rs::util::DbErrorCode::ResourceLimit, "Database startup request limit exceeded"};
   } catch (const std::bad_alloc&) {
     return {rs::util::DbErrorCode::AllocationFailure, {}};
   } catch (const std::invalid_argument& error) {
@@ -879,7 +882,7 @@ BackendResult<void> GenericDatabaseConnection::perform_authentication_result(rs:
       
         auto auth_response = parser_->create_auth_response(
             auth_req, settings_.password, settings_.user,
-            peer_identity_verified_);
+            peer_identity_verified_, settings_.input_limits.max_auth_wire_bytes);
         if (!auth_response.empty()) {
           auto write_result = write_all_result(auth_response, deadline);
           if (write_result.has_error()) {
@@ -939,6 +942,8 @@ BackendResult<void> GenericDatabaseConnection::perform_authentication_result(rs:
             "Unexpected PostgreSQL startup message");
       }
     }
+  } catch (const RequestWireLimitExceeded&) {
+    return failure(rs::util::DbErrorCode::ResourceLimit, "Database authentication request limit exceeded");
   } catch (const std::bad_alloc&) {
     return failure(rs::util::DbErrorCode::AllocationFailure, {});
   } catch (const std::exception& error) {
