@@ -262,7 +262,7 @@ review before considering any MySQL beta plan.
   have bounded evidence accepted in [S2C_MATRIX_REVIEW.md](S2C_MATRIX_REVIEW.md).
   S2 now includes owning errors/session disposition, private dependency gates,
   optional active health and the narrow PostgreSQL reset primitive. Continue
-  reusable-return policy and credential/cache isolation next; crypto qualification
+  coordinator-observable reset/cache isolation and reusable-return policy next; crypto qualification
   follow-ups remain open and do not disappear from G12.
 - When Redshift access returns, finish the current coherent MS1 batch, preserve
   its evidence, and run M2 before expanding MySQL scope. Re-estimate whether to
@@ -293,3 +293,17 @@ owner/lease lifetime. All returns retire, including after successful backend
 reset. Public SDK exposure and reusable return remain deferred until shared
 credential generation/expiry and cache epoch/invalidation policy have evidence.
 No pool sizing, waiting, throughput claim or Driver Manager behavior is added.
+
+## S2 credential admission progress — 2026-10-01
+
+Opaque private credential authorities and optional exact-generation admission
+now cover rotation, revocation, monotonic expiry and authority lifetime. Missing
+or mismatched tokens cannot disrupt another valid owner; every return still
+retires. Trusted composition must mint and bind authority only after validated
+authentication for one complete immutable security context. Real credential
+provider integration remains open.
+
+Next is coordinator-observable reset/cache invalidation, before introducing cache
+tokens and reusable return. A direct backend reset cannot currently notify the
+owner, so asserting automatic cache invalidation now would overstate evidence.
+No new cache, pool tuning, public API or Driver Manager behavior is introduced.

@@ -845,3 +845,15 @@ authorize requeue. Focused concurrency/TSan and mandatory PG live evidence suppo
 this narrow lifecycle step. Credential/cache policy and reusable return remain
 required for G12. S2/S2C, Driver Manager pooling, PG-BETA and Redshift live gates
 remain open; no public SDK API is added.
+
+## S2 credential authority checkpoint — 2026-10-01
+
+Added private opaque generation/expiry authorities and optional exact-token
+session admission. Rotation/revocation/expiry/orphaning prevent new admission;
+foreign/wrong-generation tokens cannot retire valid owners. Allocation failure
+revokes previous authority. Active borrowers finish and all returns retire.
+
+This is a bounded primitive with unit, race/TSan and PG live evidence, not complete
+credential-provider or reuse qualification. Cache tokens wait for observable
+coordinator reset/invalidation. G12 still requires integrated credential/cache
+isolation and safe reusable return; S2/S2C and real-application gates remain open.

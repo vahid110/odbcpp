@@ -130,6 +130,7 @@ surfaces above; until then this is not a frozen release profile.
 - `test_transport_deadlines`
 - `test_session_reset`
 - `test_session_owner`
+- `test_credential_context`
 - `test_transport_options`
 - `test_unicode`
 - `it_bind_col_real`

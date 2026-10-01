@@ -912,3 +912,56 @@ throwing-backend teardown. Focused ThreadSanitizer runs cover the ownership code
 Mandatory PostgreSQL live evidence verifies lease survival after owner destruction
 and physical-session disappearance after retirement, including after a successful
 reset. The live suite is PG-only; it grants no Redshift reset claim.
+
+## S2 private credential authority and admission — 2026-10-01
+
+`CredentialContext` starts revoked. A trusted composition coordinator publishes a
+fresh opaque generation only after authentication/refresh validation for the same
+complete immutable server, principal, authentication and TLS/security policy
+context. The authority is an in-process capability, not proof that those semantic
+inputs match and not a hostile-plugin sandbox. Issuer/context selection and real
+credential-provider integration remain coordinator responsibilities. Tokens have
+no secret/principal strings, printable identifiers, serialization or numeric epoch.
+
+Each generation has a distinct allocation identity and optional monotonic expiry.
+Tokens weakly reference their authority and retain only the immutable non-secret
+generation. Publish clears the previous generation before allocation; allocation
+failure or a null private test-factory result leaves the authority revoked.
+Rotation/revoke/destruction invalidate old copies permanently; no integer wrap or
+address-based public identity is used. Move assignment revokes the replaced
+authority. Publish/revoke/current-token operations serialize on the authority
+mutex; same-object moves/destruction require external ordering. Production expiry
+validation reads time after locking, and `now == expiry` is invalid. A caller must
+translate any external credential expiry conservatively into this monotonic bound.
+
+`SessionOwner` can optionally bind the authenticated physical session to an exact
+authority/generation token. The coordinator must establish that binding; it is
+not inferred from username, endpoint, passive connectivity or token possession.
+Bound owners require token-bearing checkout. Missing, foreign and same-authority
+wrong-generation tokens are denied without disconnecting a valid owner. An exact
+bound token that is rotated, revoked, expired or orphaned closes admission and
+retires an idle session. An active lease remains usable and retires normally;
+there is no forced interruption of in-flight work. Matching stale detection is
+on admission, not a background expiry/eviction service. Admission can linearize
+just before rotation/expiry; later changes do not revoke an already-issued lease.
+
+Lock order is owner then authority, with no authority-to-owner callbacks or
+backend calls under either lock. The private generation factory is local allocation
+only; its fault-injection fixture cannot reenter. Existing unbound owners keep
+the original one-shot semantics and cannot use token-bearing checkout. Every
+return still retires: a newer credential token cannot reauthenticate or requeue
+an old physical session. No public/installed SDK contract or ODBC behavior changes.
+
+Focused evidence covers copy invalidation, no resurrection, exact expiry, moves,
+allocation failure, concurrent publish/revoke/validation, wrong-token nondisruption,
+idle retirement and active-lease survival. Focused TSan covers authority/admission
+races. Mandatory PG live evidence publishes only after successful connection,
+then verifies an active borrower survives authority revocation and eventually
+retires the physical session.
+
+Cache tokens are deliberately deferred. Reset remains directly callable through
+a borrowed backend facet, so the owner cannot yet guarantee automatic invalidation
+on every reset. The next prerequisite is a coordinator-observable reset/cache
+invalidation path; reusable return must then combine reset outcome, current
+credential binding and cache scope before it can be enabled. No cache, pool,
+Driver Manager reuse or complete authentication-provider qualification is claimed.

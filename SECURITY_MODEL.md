@@ -451,3 +451,24 @@ This closes the initial ownership primitive portion of SEC-3, not reuse safety.
 Credential expiry/generations, cache isolation/invalidation and reusable return
 policy remain open. The API is neither installed nor part of SDK contracts, and
 ODBC/the prototype pool do not consume it.
+
+## S2 credential-generation admission primitive — 2026-10-01
+
+Private, composition-owned authorities start revoked, publish opaque generations
+after trusted authentication validation, and invalidate prior tokens on rotate,
+revoke, expiry, destruction or allocation failure. Tokens carry no secret-bearing
+strings or serialized IDs. Expiry uses a strict monotonic boundary sampled under
+the authority lock. Authorities represent complete immutable security contexts
+chosen by trusted composition; tokens do not verify that semantic binding or
+isolate hostile in-process plugins.
+
+A bound SessionOwner checks exact authority/generation before currentness. Missing,
+foreign and wrong-generation inputs cannot disconnect another valid owner. Exact
+stale binding detection closes admission and retires idle sessions outside locks.
+Active leases are not interrupted; every return still retires. This is admission
+policy evidence, not production credential-provider integration or pooled reuse.
+
+Cache-generation claims remain open because direct backend resets are not yet
+observable by the owner. A coordinator-owned reset/invalidation boundary is
+required before cache tokens or reusable return are accepted. Existing ODBC
+workflows and prototype pooling remain unchanged.

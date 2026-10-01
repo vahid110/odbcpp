@@ -2709,3 +2709,23 @@ Redshift build/absent-endpoint gates pass. Focused final ownership/boundary
 rechecks and all ten ownership tests under ThreadSanitizer pass. Read-only
 review found no remaining blocker/high finding. Windows/packaging and
 cross-platform crypto evidence remain subject to exact-head CI.
+
+## S2 private credential admission evidence — 2026-10-01
+
+Opaque initially-revoked authorities now protect optional exact-generation
+SessionOwner admission. Copy/move, strict expiry, lifetime, fail-closed allocation,
+rotation/revoke and concurrent admission fixtures accompany focused TSan. Foreign
+or wrong-generation tokens cannot retire valid owners. Exact stale binding
+detection retires idle sessions, while active leases remain usable until terminal
+return. PG-only live evidence binds after authentication and tests revocation
+without interrupting an active borrow.
+
+ODBC does not consume this policy; no attribute/compliance or pooling claim changes.
+Production credential-provider integration, coordinator-observable reset/cache
+invalidation and reusable return remain open.
+
+Validation: all full local PostgreSQL, iODBC UTF-16/UCS-4, sanitizer and
+Redshift build/absent-endpoint gates pass. Nine focused test executables and
+all 20 credential/ownership tests under ThreadSanitizer pass. Read-only review
+found no remaining actionable finding. Windows/packaging and cross-platform
+crypto evidence remain subject to exact-head CI.

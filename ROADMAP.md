@@ -1265,3 +1265,28 @@ Redshift build/absent-endpoint gates pass. Focused final ownership/boundary
 rechecks and all ten ownership tests under ThreadSanitizer pass. Read-only
 review found no remaining blocker/high finding. Windows/packaging and
 cross-platform crypto evidence remain subject to exact-head CI.
+
+## S2 opaque credential authority and admission — 2026-10-01
+
+Added initially revoked, private composition credential authorities with opaque
+generation identity, strict monotonic expiry and fail-closed allocation/rotation.
+Optional bound session admission requires exact authority/generation; mismatched
+tokens are nondisruptive, matching stale credentials retire idle sessions, and
+active leases finish safely. The unbound one-shot path is preserved.
+
+Unit and race fixtures cover authority lifetimes, copies/moves, exact expiry,
+rotation/revoke, allocation/null-factory failure and admission nondisruption.
+Focused TSan covers credential and ownership races. PG live evidence mints a
+token after authentication and proves revocation does not interrupt its active
+borrower. Installed/SDK/backend/ODBC boundaries exclude the new policy header.
+
+Cache tokens are deferred until reset/invalidation is coordinator-observable;
+direct facet reset currently bypasses owner observation. Real credential-provider
+integration, cache isolation and reusable return remain open. No ODBC/pool or
+new provider/linkage capability is advertised.
+
+Validation: all full local PostgreSQL, iODBC UTF-16/UCS-4, sanitizer and
+Redshift build/absent-endpoint gates pass. Nine focused test executables and
+all 20 credential/ownership tests under ThreadSanitizer pass. Read-only review
+found no remaining actionable finding. Windows/packaging and cross-platform
+crypto evidence remain subject to exact-head CI.
