@@ -640,3 +640,27 @@ unless supplied explicitly; safe summaries are available on deferred errors.
 This removes the legacy result error-string side channel. Native metadata fields,
 materialized result buffering, aggregate budgets and session/reset facets remain
 separate migration work; A5/S2 and provider qualification gates stay open.
+
+## S2 buffered response wire budgets — 2026-10-01
+
+ConnectionSettings carries ResponseLimits for one query/description exchange:
+64 MiB cumulative wire bytes and 100000 messages by default, including control
+frames. SDK callers may choose finite ceilings; byte limits must allow a five-byte
+header and message limits must be positive. Invalid limits are rejected before
+connection mutation. ODBC profile/connection-string exposure remains separate.
+
+The session checks message count before reading the next frame and passes the
+remaining byte allowance to the frame reader. A declared frame exceeding that
+allowance is rejected after its header and before allocating/reading its payload.
+Subtraction-based remaining capacity avoids cumulative overflow. Limit failures
+return typed ResourceLimit with fixed detail/public summary, no partial results,
+and mandatory physical retirement because the exchange is not drained. ODBC maps
+this new error to HY000 and connection liveness reports dead; no retry is implied.
+
+Tests cover exact/one-less byte and frame limits, direct/prepared/description
+oversize rejection after only five read bytes, cleanup/no later sends, and invalid
+reconnect preserving a valid session. Wire budgets bound input and frame-count
+buffer growth, not exact decoded heap consumption or caller allocations.
+Authentication/startup, rows/cells/columns/results, metadata/diagnostic lengths,
+configuration exposure and allocation-failure contracts remain open SEC-4 work.
+This batch does not close SEC-4, A5/S2 or a reuse/crypto qualification gate.

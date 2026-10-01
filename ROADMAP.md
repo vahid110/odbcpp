@@ -439,3 +439,16 @@ backend destruction. Parallel raw result error strings are removed.
 Next: remaining result/resource budgets and session/reuse contracts. Native result
 metadata normalization and invalid-source encoding remain explicit work. This
 batch does not close A5/S2, G12 or crypto qualification follow-ups.
+
+### S2 buffered response wire budgets — 2026-10-01
+
+Query/description exchanges now enforce SDK-configurable cumulative wire-byte and
+message ceilings (defaults 64 MiB/100000). Declared oversize payloads are rejected
+before body allocation/read; limits return typed ResourceLimit/HY000, retire the
+session and expose no partial results. Exact/overflow, all operation paths,
+invalid-reconnect and ODBC dead-connection tests cover the new contract.
+
+Continue SEC-4 with rows/cells/columns/results, metadata/diagnostic and startup
+budgets plus product configuration and allocation boundaries. These are not exact
+heap quotas; session/reset facets and native result normalization remain S2 work.
+A5/S2, G12 and provider qualification follow-ups remain open.
