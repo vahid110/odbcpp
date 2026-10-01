@@ -821,12 +821,17 @@ OdbcTypeInfo odbc_type_info(const rs::core::database::NativeTypeInfo& native) {
           native.decimal_digits};
 }
 
+void require_normalized_columns(const rs::core::database::QueryResult& result) {
+  for (const auto& column : result.columns) {
+    if (!column.normalized_type) {
+      throw std::invalid_argument("Data source returned unnormalized column metadata");
+    }
+  }
+}
+
 ColumnInfo column_info_for(
-    const rs::core::database::IDatabaseConnection& backend,
     const rs::core::database::ResultColumnMetadata& metadata) {
-  const auto type = odbc_type_info(metadata.normalized_type
-      ? *metadata.normalized_type
-      : backend.describe_type(metadata.type_id, metadata.type_size, metadata.type_modifier));
+  const auto type = odbc_type_info(*metadata.normalized_type);
   return ColumnInfo{metadata.name, type.sql_type, type.column_size,
                     type.decimal_digits, SQL_NULLABLE_UNKNOWN};
 }
@@ -4392,6 +4397,8 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
 void ODBCStatement::apply_query_result(
     rs::core::database::QueryResult result,
     bool include_parameter_metadata) {
+  require_normalized_columns(result);
+  for (const auto& item : result.additional_results) require_normalized_columns(item);
   const auto statement_kind = result.statement_kind;
   if (!result.additional_results.empty()) {
     pending_results_.reserve(
@@ -4436,10 +4443,11 @@ void ODBCStatement::apply_result_metadata(
     const rs::core::database::QueryResult& result,
     bool include_parameter_metadata) {
 
+  require_normalized_columns(result);
   column_info_.clear();
   column_info_.reserve(result.columns.size());
   for (const auto& column : result.columns) {
-    column_info_.push_back(column_info_for(*conn_->get_db_connection(), column));
+    column_info_.push_back(column_info_for(column));
   }
   if (column_info_.empty() && !result_rows_.empty()) {
     column_info_.reserve(result_rows_.front().size());

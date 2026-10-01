@@ -19,7 +19,7 @@ using rs::util::DbErrorCode;
 using rs::util::Deadline;
 
 struct Observations {
-  int created{}, transports{}, disconnects{}, queries{}, descriptions{}, translations{};
+  int created{}, transports{}, disconnects{}, queries{}, descriptions{}, translations{}, native_descriptions{};
   ConnectionSettings settings;
   std::string sql;
   std::vector<QueryParameter> parameters;
@@ -48,6 +48,7 @@ class FakeBackend final : public IDatabaseConnection {
     return {"native:" + std::string(sql), SqlTranslationError::None, {}};
   }
   NativeTypeInfo describe_type(std::uint32_t id, std::int16_t, std::int32_t) const override {
+    ++seen_->native_descriptions;
     if (id == 23) return {ScalarType::Binary, 8, 0, true}; // PG integer ID!
     if (id == 17) return {ScalarType::Boolean, 1, 0, true}; // PG bytea ID!
     return {ScalarType::VarChar, 32, 0, true};
@@ -103,6 +104,9 @@ class FakeBackend final : public IDatabaseConnection {
   QueryResult rows() const {
     QueryResult result;
     result.columns = {{"binary", 0, 0, 23}, {"flag", 0, 0, 17}, {"text", 0, 0, 999}};
+    result.columns[0].normalized_type = NativeTypeInfo{ScalarType::Binary, 8, 0, true};
+    result.columns[1].normalized_type = NativeTypeInfo{ScalarType::Boolean, 1, 0, true};
+    result.columns[2].normalized_type = NativeTypeInfo{ScalarType::VarChar, 32, 0, true};
     result.rows = {{"bytes:00ff5c", "yes", std::nullopt}, {"bytes:", "no", ""}};
     result.command_tag = "deliberately not SQL";
     result.statement_kind = StatementKind::SelectCursor;
@@ -123,6 +127,7 @@ class FakeBackend final : public IDatabaseConnection {
       return error;
     }
     auto result = rows();
+    if (sql.ends_with("unnormalized")) result.columns[0].normalized_type.reset();
     if (sql.ends_with("deferred")) {
       QueryResult error;
       error.error.emplace(rs::util::make_error_code(DbErrorCode::QueryFailed), "Query error: later error");
@@ -946,4 +951,27 @@ TEST_F(BackendContractTest, NativeSqlZeroBudgetAllowsEmptyAndKeepsValidationPrec
   ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
   EXPECT_EQ(SQL_ERROR, SQLNativeSql(dbc, input, SQL_NTS, nullptr, 0, &output_length));
   EXPECT_EQ("08003", state(SQL_HANDLE_DBC, dbc)); EXPECT_EQ(2, seen->translations);
+}
+
+
+TEST_F(BackendContractTest, ColumnMetadataUsesNormalizedTypesWithoutNativeInterpretation) {
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+  SQLCHAR name[32]{}; SQLSMALLINT name_length{}, type{}, digits{}, nullable{}; SQLULEN size{};
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, 1, name, 32, &name_length, &type, &size, &digits, &nullable));
+  EXPECT_EQ(SQL_VARBINARY, type); EXPECT_EQ(8u, size);
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, 2, name, 32, &name_length, &type, &size, &digits, &nullable));
+  EXPECT_EQ(SQL_BIT, type); EXPECT_EQ(1u, size);
+  EXPECT_EQ(0, seen->native_descriptions);
+}
+
+TEST_F(BackendContractTest, MissingNormalizedColumnMetadataRejectsContractAndAllowsRecovery) {
+  connect();
+  EXPECT_EQ(SQL_ERROR, execute("unnormalized")); EXPECT_EQ("HY000", state());
+  EXPECT_EQ(0, seen->native_descriptions); EXPECT_EQ(0, seen->disconnects);
+  SQLSMALLINT columns = 99;
+  EXPECT_EQ(SQL_ERROR, SQLNumResultCols(stmt, &columns)); EXPECT_EQ(99, columns);
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  EXPECT_EQ(0, seen->native_descriptions);
 }
