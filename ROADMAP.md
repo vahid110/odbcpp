@@ -452,3 +452,16 @@ Continue SEC-4 with rows/cells/columns/results, metadata/diagnostic and startup
 budgets plus product configuration and allocation boundaries. These are not exact
 heap quotas; session/reset facets and native result normalization remain S2 work.
 A5/S2, G12 and provider qualification follow-ups remain open.
+
+### S2 authentication/startup response budgets — 2026-10-01
+
+Authentication/startup responses have independent SDK wire-byte/message ceilings
+(defaults 1 MiB/10000). Notices and control frames consume the budget; declared
+oversize payloads fail after only the header. Typed failures retain login phase,
+cleanup once and retire; invalid reconnect settings preserve the existing session.
+Exact/overflow, notice, huge-frame and incremental-read tests cover the scope.
+
+Continue SEC-4 with rows/cells/columns/results and metadata/diagnostic limits,
+product configuration and allocation boundaries. TLS-provider handshake and
+outgoing-packet budgets are separate; native metadata and reuse facets remain S2
+work. No security, SDK or crypto qualification gate is closed by this batch.

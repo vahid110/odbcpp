@@ -664,3 +664,27 @@ buffer growth, not exact decoded heap consumption or caller allocations.
 Authentication/startup, rows/cells/columns/results, metadata/diagnostic lengths,
 configuration exposure and allocation-failure contracts remain open SEC-4 work.
 This batch does not close SEC-4, A5/S2 or a reuse/crypto qualification gate.
+
+## S2 authentication/startup response budgets — 2026-10-01
+
+ConnectionSettings has independent startup_response_limits, defaulting to 1 MiB
+wire bytes and 10000 messages for the authentication/startup response exchange.
+Counts include authentication messages, notices, parameter status, backend key
+and final ready state; they do not include TLS-provider handshake traffic or
+outgoing credentials/startup packets. The same absolute login deadline applies.
+SDK overrides remain finite and validate before connection mutation; product
+configuration exposure remains separate.
+
+Remaining byte allowance reaches the header reader, rejecting declared oversized
+payloads before body allocation/read. Message overflow stops before the next
+frame. Errors retain Authenticate or Startup context and owning ResourceLimit
+classification; existing failed-connect cleanup closes once and snapshots
+Disconnected/Retire. Exact limits succeed without weakening TLS/auth policy.
+Tests cover exact/one-less bytes/messages, notice accounting, default huge-frame
+header-only rejection, cleanup and invalid reconnect without transport mutation.
+The incremental-read regression test uses an explicit larger ceiling so it still
+verifies no allocation based solely on a declared frame length.
+
+These are input budgets, not exact heap quotas. Rows/cells/columns/results,
+metadata/diagnostic limits, product exposure and allocation-failure boundaries
+remain SEC-4 work. A5/S2, G12 and provider qualification gates remain open.
