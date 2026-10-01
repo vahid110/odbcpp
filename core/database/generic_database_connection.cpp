@@ -4,6 +4,7 @@
 #include "core/transport/tls_transport.h"
 #include "core/transport/tls_configurable_transport.h"
 #include "core/util/exception_adapter.h"
+#include "core/util/utf8.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -727,6 +728,15 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
           auto& cell = item.rows[row][column];
           if (!cell) continue;
           const auto type = item.columns[column].normalized_type->type;
+          if (type == ScalarType::Char || type == ScalarType::VarChar ||
+              type == ScalarType::LongVarChar) {
+            // Validate in place: valid text keeps its exact bytes, including NULs.
+            if (!rs::util::utf8_code_point_count(*cell)) {
+              cell = std::string{};
+              item.cell_errors.push_back({row, column});
+            }
+            continue;
+          }
           if (type != ScalarType::Binary && type != ScalarType::Boolean) continue;
           auto canonical = normalize_result_value(type, *cell);
           if (canonical) cell = std::move(*canonical);

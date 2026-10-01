@@ -178,7 +178,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     EmptyQueryResponse, DescriptionNoData, DescriptionOneParameter, DescriptionRepeatedParameter, DescriptionOneColumn,
     DescriptionMissingParse, DescriptionMissingParameters,
     DescriptionMissingResult, DescriptionOutOfOrder,
-    DescriptionServerError, NativeCells, MalformedNativeCells, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
+    DescriptionServerError, Utf8TextCells, NativeCells, MalformedNativeCells, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
     OwnedErrorIdle, OwnedErrorTransaction, OwnedErrorAborted,
     UnterminatedColumnName, TruncatedColumnMetadata, TrailingColumnMetadata, EmptyColumnName,
     QueryReadTimeout, PartialQueryWrite, PreparedCommand, QueryAllocationFailure, Md5Authentication
@@ -488,6 +488,32 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       if (mode == ResponseMode::UnterminatedColumnName) append_message('T', "\0\1value", 7);
       else if (mode == ResponseMode::TruncatedColumnMetadata) append_message('T', description, sizeof(description) - 2);
       else append_message('T', description, sizeof(description) - (mode == ResponseMode::EmptyColumnName ? 1 : 0));
+      append_message('C', "SELECT 0", sizeof("SELECT 0"));
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::Utf8TextCells) {
+      constexpr char description[] =
+          "\0\3fixed\0" "\0\0\0\0" "\0\0" "\0\0\4\22" "\377\377" "\377\377\377\377" "\0\0"
+          "varying\0" "\0\0\0\0" "\0\0" "\0\0\4\23" "\377\377" "\377\377\377\377" "\0\0"
+          "text\0" "\0\0\0\0" "\0\0" "\0\0\0\31" "\377\377" "\377\377\377\377" "\0\0";
+      const std::vector<std::optional<std::string>> values{
+          "ascii", "", std::nullopt, "\xe2\x82\xac\xf0\x9f\x98\x80",
+          std::string("a\0\xf4\x8f\xbf\xbf", 6), "\xc0\x80", "\xed\xa0\x80",
+          "\xf4\x90\x80\x80", "\xe2\x82", "\x80"};
+      for (int result = 0; result < 2; ++result) {
+        append_message('T', description, sizeof(description) - 1);
+        for (const auto& value : values) {
+          std::string payload("\0\3", 2);
+          for (int column = 0; column < 3; ++column) {
+            const auto length = value ? static_cast<std::uint32_t>(value->size()) : UINT32_MAX;
+            for (const int shift : {24, 16, 8, 0}) payload.push_back(static_cast<char>((length >> shift) & 0xff));
+            if (value) payload += *value;
+          }
+          append_message('D', payload.data(), payload.size());
+        }
+        append_message('C', "SELECT 10", sizeof("SELECT 10"));
+      }
+      append_message('Z', "I", 1);
+      // A later exchange proves malformed text did not corrupt framing/liveness.
       append_message('C', "SELECT 0", sizeof("SELECT 0"));
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::NativeCells || mode == ResponseMode::MalformedNativeCells) {
@@ -3410,6 +3436,55 @@ TEST(NormalizedCellTest, BackendReturnsCanonicalOwnedCellsAndDeferredEncodingErr
         EXPECT_EQ(std::nullopt, result->rows[1][0]); EXPECT_EQ(std::nullopt, result->rows[1][1]);
         EXPECT_EQ(std::optional<std::string>(""), result->rows[2][0]);
         EXPECT_EQ(std::optional<std::string>("0"), result->rows[2][1]);
+      }
+    }
+  }
+}
+
+TEST(NormalizedCellTest, TextUtf8IsValidatedBeforeReturningOwnedSnapshots) {
+  using namespace rs::core::database;
+  class LongTextParser final : public postgres::PgProtocolParser {
+    NativeTypeInfo describe_type(std::uint32_t id, std::int16_t size, std::int32_t modifier) const override {
+      auto type = PgProtocolParser::describe_type(id, size, modifier);
+      if (id == 25) type.type = ScalarType::LongVarChar;
+      return type;
+    }
+  };
+  for (const int composition : {0, 1, 2}) {
+    SCOPED_TRACE(composition);
+    QueryResult snapshot;
+    {
+      auto transport = std::make_unique<ScriptedBackendTransport>(ScriptedBackendTransport::ResponseMode::Utf8TextCells);
+      std::unique_ptr<GenericDatabaseConnection> owned;
+      if (composition == 2) {
+        owned = std::make_unique<GenericDatabaseConnection>(std::make_unique<LongTextParser>(), std::move(transport));
+      } else if (composition == 1) {
+        owned = std::make_unique<GenericDatabaseConnection>(std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
+      } else {
+        owned = std::make_unique<postgres::PgDatabaseConnection>("PostgreSQL", std::move(transport));
+      }
+      ConnectionSettings settings; settings.use_ssl = false;
+      ASSERT_TRUE(owned->connect(settings));
+      auto result = owned->execute_query("SELECT text; SELECT text", rs::util::Deadline::max());
+      ASSERT_TRUE(result); EXPECT_EQ(SessionState::Idle, owned->session_state());
+      snapshot = std::move(*result);
+      auto recovered = owned->execute_query("SELECT 0", rs::util::Deadline::max());
+      ASSERT_TRUE(recovered); EXPECT_TRUE(recovered->cell_errors.empty());
+      EXPECT_TRUE(owned->is_connected()); owned->disconnect();
+    }
+    ASSERT_EQ(1u, snapshot.additional_results.size());
+    for (const auto* result : {&snapshot, &snapshot.additional_results[0]}) {
+      ASSERT_EQ(10u, result->rows.size()); ASSERT_EQ(15u, result->cell_errors.size());
+      for (std::size_t column = 0; column < 3; ++column) {
+        EXPECT_EQ(std::optional<std::string>("ascii"), result->rows[0][column]);
+        EXPECT_EQ(std::optional<std::string>(""), result->rows[1][column]);
+        EXPECT_FALSE(result->rows[2][column]);
+        EXPECT_EQ(std::optional<std::string>("\xe2\x82\xac\xf0\x9f\x98\x80"), result->rows[3][column]);
+        EXPECT_EQ(std::optional<std::string>(std::string("a\0\xf4\x8f\xbf\xbf", 6)), result->rows[4][column]);
+        for (std::size_t row = 5; row < 10; ++row) {
+          EXPECT_EQ((CellEncodingError{row, column}), result->cell_errors[(row - 5) * 3 + column]);
+          EXPECT_EQ(std::optional<std::string>(""), result->rows[row][column]);
+        }
       }
     }
   }

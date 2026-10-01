@@ -29,8 +29,9 @@ struct ResultColumnMetadata {
 };
 
 // Owning canonical bytes: nullopt is SQL NULL; an engaged empty string is a
-// non-NULL empty value. Binary is raw bytes, Boolean is "0"/"1". Malformed
-// native binary/Boolean cells use an empty placeholder and a cell_errors entry.
+// non-NULL empty value. Binary is raw bytes, Boolean is "0"/"1";
+// text is valid UTF-8, including embedded NULs. Malformed native binary/Boolean
+// or text cells use an empty placeholder and a cell_errors entry.
 using ResultCell = std::optional<std::string>;
 using ResultRow = std::vector<ResultCell>;
 using ResultRows = std::vector<ResultRow>;
