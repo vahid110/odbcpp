@@ -611,3 +611,13 @@ field limits still apply later. Tests cover exact/overflow, expansion, malformed
 Unicode, explicit slices/empty values, untouched output and session recovery.
 Configuration-file ingestion, standalone helpers, complete heap accounting,
 native metadata/session migration and crypto qualification remain open.
+
+### S2 ODBC SQLNativeSql capture budgets — 2026-10-01
+
+ANSI/wide SQLNativeSql now shares the accepted MaxSqlBytes raw-input ceiling
+with execution/preparation capture. Exact/overflow NTS and explicit inputs,
+UTF-8 expansion, malformed Unicode, output preservation, recovery and zero-budget
+validation precedence are covered by contract tests. No translation or I/O
+occurs on capture rejection. Translated-output/internal helper allocations and
+configuration-file ingestion remain separate security boundaries; normalized
+results/session migration and crypto qualification remain S2 work.

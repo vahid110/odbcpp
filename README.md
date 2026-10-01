@@ -600,8 +600,8 @@ the outgoing wire ceiling. Startup responses include authentication/control
 frames; `MaxAuthWireBytes` limits each outgoing password/SASL packet, excluding
 TLS-provider handshake traffic. Input rejection before I/O preserves the current
 owner's session; response/authentication overflow retires. These limits are not
-an exact heap quota. They bound ANSI/wide SQL capture for direct execution and
-preparation, including UTF-8 expansion. Bound parameter text/binary copies and
+an exact heap quota. They bound ANSI/wide SQL capture for direct execution,
+preparation and SQLNativeSql, including UTF-8 expansion. Bound parameter text/binary copies and
 wide UTF-8 conversion use per-value and aggregate byte limits; normalized scalar
 values are checked before backend execution. ANSI/wide SQLDriverConnect inputs
 and each SQLConnect DSN/user/password have a fixed 1 MiB UTF-8 capture ceiling

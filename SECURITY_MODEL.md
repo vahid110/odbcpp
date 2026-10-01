@@ -398,3 +398,15 @@ budget retains 22018 and invalid lengths retain HY090. Contract tests cover
 exact/overflow capture, expansion, all three fields, explicit slices/empty,
 output preservation and recovery. Configuration-file ingestion, standalone
 helpers and exact heap accounting remain outside this evidence; SEC-4 stays open.
+
+### ODBC SQLNativeSql capture budgets (S2 implementation evidence)
+
+ANSI/wide SQLNativeSql uses the accepted connection MaxSqlBytes before input
+copy/conversion and dialect translation. NTS/explicit capture counts UTF-8 bytes,
+including wide expansion. Overflow reports HY000 without translation calls,
+backend execution, disconnect, output writes or length writes. Existing null,
+length and not-connected validation order, embedded-NUL syntax errors and
+within-budget malformed-wide 22018 remain intact. Tests cover exact/overflow,
+expansion, empty/zero budgets, validation precedence and recovery. This bounds
+raw input only; translated output and translator-internal allocation budgets,
+configuration-file ingestion and complete heap accounting remain open.
