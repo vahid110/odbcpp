@@ -11,6 +11,9 @@
 
 namespace {
 using namespace rs::core::database;
+template<class T> concept ExposesRawSession = requires(T& lease) { lease.session(); };
+template<class T> concept ExposesPhysicalSession = requires(T& lease) { lease.physical_session(); };
+static_assert(!ExposesRawSession<SessionLease> && !ExposesPhysicalSession<SessionLease>);
 static_assert(!std::is_copy_constructible_v<SessionOwner> && !std::is_copy_assignable_v<SessionOwner>);
 static_assert(!std::is_copy_constructible_v<SessionLease> && !std::is_copy_assignable_v<SessionLease>);
 static_assert(std::is_nothrow_move_constructible_v<SessionOwner> && std::is_nothrow_move_assignable_v<SessionOwner>);
@@ -23,6 +26,9 @@ struct Observed {
   rs::util::Deadline reset_deadline{};
   std::function<void()> on_reset;
   std::optional<SessionSnapshot> reset_snapshot;
+  std::optional<BackendResult<QueryResult>> execution_result;
+  int execution_exception{};
+  std::function<void(std::string_view, std::span<const QueryParameter>, rs::util::Deadline, bool)> on_execution;
   std::function<void()> on_disconnect;
 };
 class FakeSession final : public IDatabaseConnection, public ISessionHealth, public ISessionReset {
@@ -44,11 +50,13 @@ class FakeSession final : public IDatabaseConnection, public ISessionHealth, pub
     return !connected_ ? SessionState::Disconnected :
         observed_->reset_mode == 7 ? SessionState::Transaction : SessionState::Idle;
   }
-  BackendResult<QueryResult> execute_query(std::string_view, rs::util::Deadline) override {
-    ++observed_->queries; return QueryResult{};
+  BackendResult<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline) override {
+    return execute(sql, {}, deadline, false);
   }
-  BackendResult<QueryResult> execute_prepared(std::string_view,
-      std::span<const QueryParameter>, rs::util::Deadline) override { return QueryResult{}; }
+  BackendResult<QueryResult> execute_prepared(std::string_view sql,
+      std::span<const QueryParameter> params, rs::util::Deadline deadline) override {
+    return execute(sql, params, deadline, true);
+  }
   std::string server_version() const override { return "fixture"; }
   ISessionHealth* session_health() noexcept override { return this; }
   ISessionReset* session_reset() noexcept override { return observed_->missing_reset ? nullptr : this; }
@@ -76,6 +84,16 @@ class FakeSession final : public IDatabaseConnection, public ISessionHealth, pub
     return BackendResult<void>{SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}};
   }
  private:
+  BackendResult<QueryResult> execute(std::string_view sql, std::span<const QueryParameter> params,
+      rs::util::Deadline deadline, bool prepared) {
+    ++observed_->queries;
+    if (observed_->on_execution) observed_->on_execution(sql, params, deadline, prepared);
+    if (observed_->execution_exception == 1) throw std::bad_alloc{};
+    if (observed_->execution_exception == 2) throw std::runtime_error("original execution fixture");
+    if (observed_->execution_exception == 3) throw 42;
+    if (observed_->execution_result) return *observed_->execution_result;
+    return BackendResult<QueryResult>{QueryResult{}, {SessionState::Idle, SessionDisposition::Reusable}};
+  }
   std::shared_ptr<Observed> observed_;
   bool connected_{true};
 };
@@ -91,8 +109,8 @@ TEST(SessionOwnerTest, OnlyOneBorrowerAndReturnIsTerminal) {
   auto owner = owner_for(observed);
   auto lease = owner.try_acquire(); ASSERT_TRUE(lease); ASSERT_TRUE(*lease);
   EXPECT_FALSE(owner.try_acquire());
-  ASSERT_TRUE(lease->session()->execute_query("fixture", rs::util::Deadline::max()));
-  lease->retire(); EXPECT_FALSE(*lease); EXPECT_EQ(nullptr, lease->session());
+  ASSERT_TRUE(lease->execute_query("fixture", rs::util::Deadline::max()));
+  lease->retire(); EXPECT_FALSE(*lease);
   lease->retire(); lease.reset();
   EXPECT_FALSE(owner.try_acquire()); retired_once(*observed);
 }
@@ -119,7 +137,7 @@ TEST(SessionOwnerTest, OwnerCanDieBeforeItsBorrowerWithoutInterruptingIt) {
     auto owner = owner_for(observed); lease = owner.try_acquire(); ASSERT_TRUE(lease);
   }
   EXPECT_EQ(0, observed->disconnects); EXPECT_EQ(0, observed->destructions);
-  ASSERT_TRUE(lease->session()->execute_query("fixture", rs::util::Deadline::max()));
+  ASSERT_TRUE(lease->execute_query("fixture", rs::util::Deadline::max()));
   EXPECT_EQ(1, observed->queries); lease.reset(); retired_once(*observed);
 }
 TEST(SessionOwnerTest, IdleOwnerAndUnwindingRetireWithoutResetOrHealth) {
@@ -134,11 +152,13 @@ TEST(SessionOwnerTest, LeaseMoveAssignmentRetiresDestinationAndTransfersBorrow) 
   auto owner1 = owner_for(first); auto owner2 = owner_for(second);
   auto lease1 = owner1.try_acquire(); auto lease2 = owner2.try_acquire();
   ASSERT_TRUE(lease1); ASSERT_TRUE(lease2);
-  auto* physical = lease1->session(); SessionLease moved{std::move(*lease1)};
-  EXPECT_FALSE(*lease1); EXPECT_EQ(physical, moved.session());
-  *lease2 = std::move(moved); EXPECT_FALSE(moved); EXPECT_EQ(physical, lease2->session());
+  SessionLease moved{std::move(*lease1)};
+  EXPECT_FALSE(*lease1); EXPECT_TRUE(moved);
+  *lease2 = std::move(moved); EXPECT_FALSE(moved); EXPECT_TRUE(*lease2);
+  ASSERT_TRUE(lease2->execute_query("transferred", rs::util::Deadline::max()));
+  EXPECT_EQ(1, first->queries); EXPECT_EQ(0, second->queries);
   retired_once(*second); EXPECT_EQ(0, first->disconnects);
-  auto& same = *lease2; same = std::move(*lease2); EXPECT_EQ(physical, same.session());
+  auto& same = *lease2; same = std::move(*lease2); EXPECT_TRUE(*lease2);
   lease1.reset(); lease2.reset(); retired_once(*first);
   EXPECT_FALSE(owner1.try_acquire()); EXPECT_FALSE(owner2.try_acquire());
 }
@@ -148,7 +168,7 @@ TEST(SessionOwnerTest, OwnerMovesClosePriorAdmissionAndKeepLiveLeaseValid) {
   auto lease1 = owner1.try_acquire(); ASSERT_TRUE(lease1);
   SessionOwner moved{std::move(owner2)}; EXPECT_FALSE(owner2.try_acquire());
   owner1 = std::move(moved); EXPECT_FALSE(moved.try_acquire());
-  EXPECT_EQ(0, first->disconnects); EXPECT_TRUE(lease1->session()->is_connected());
+  EXPECT_EQ(0, first->disconnects); EXPECT_TRUE(*lease1);
   auto lease2 = owner1.try_acquire(); ASSERT_TRUE(lease2);
   auto& same = owner1; same = std::move(owner1); EXPECT_FALSE(owner1.try_acquire());
   lease1.reset(); lease2.reset(); retired_once(*first); retired_once(*second);
@@ -224,8 +244,8 @@ TEST(SessionOwnerCredentialsTest, RevocationClosesAdmissionWithoutInterruptingAc
   auto lease = owner.try_acquire(token); ASSERT_TRUE(lease);
   context.revoke(); EXPECT_FALSE(owner.try_acquire(token));
   EXPECT_EQ(0, observed->disconnects); EXPECT_EQ(0, observed->destructions);
-  EXPECT_TRUE(lease->session()->is_connected());
-  ASSERT_TRUE(lease->session()->execute_query("fixture", rs::util::Deadline::max()));
+  EXPECT_TRUE(*lease);
+  ASSERT_TRUE(lease->execute_query("fixture", rs::util::Deadline::max()));
   (void)context.publish_authenticated(); EXPECT_FALSE(owner.try_acquire(token));
   lease.reset(); retired_once(*observed);
 }
@@ -271,7 +291,7 @@ TEST(SessionLeaseResetTest, SuccessUsesOneDeadlineAndKeepsExclusiveBorrowWithout
   EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), result.session_snapshot());
   EXPECT_EQ(deadline, observed->reset_deadline); EXPECT_EQ(1, observed->resets);
   EXPECT_TRUE(*lease); EXPECT_EQ(0, observed->disconnects);
-  ASSERT_TRUE(lease->session()->execute_query("fixture", deadline));
+  ASSERT_TRUE(lease->execute_query("fixture", deadline));
   lease->retire(); EXPECT_FALSE(owner.try_acquire(token));
   EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
 }
@@ -297,7 +317,7 @@ TEST(SessionLeaseResetTest, AllAmbiguousAndThrowingOutcomesRetireAndSuppressRetr
     auto result = lease->reset_session(rs::util::Deadline::max()); ASSERT_FALSE(result);
     EXPECT_EQ(BackendOperation::ResetSession, result.backend_error().operation);
     EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), result.session_snapshot());
-    EXPECT_FALSE(result.backend_error().retry_safe); EXPECT_FALSE(*lease); EXPECT_EQ(nullptr, lease->session());
+    EXPECT_FALSE(result.backend_error().retry_safe); EXPECT_FALSE(*lease);
     EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions); EXPECT_EQ(1, observed->resets);
     if (mode == 1) {
       EXPECT_EQ("owned fixture error", result.error_message()); EXPECT_EQ("XX000", result.backend_error().native_state);
@@ -361,7 +381,117 @@ TEST(SessionLeaseResetTest, OwnerDestructionAndRevocationDuringResetLeaveActiveB
   entered.arrive_and_wait(); owner.reset(); credentials.revoke();
   EXPECT_EQ(0, observed->disconnects); EXPECT_EQ(0, observed->destructions);
   resume.arrive_and_wait(); resetting.join(); ASSERT_TRUE(result); ASSERT_TRUE(*result);
-  EXPECT_TRUE(*lease); ASSERT_TRUE(lease->session()->execute_query("fixture", rs::util::Deadline::max()));
+  EXPECT_TRUE(*lease); ASSERT_TRUE(lease->execute_query("fixture", rs::util::Deadline::max()));
   lease->retire(); EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
+}
+} // namespace
+
+namespace {
+TEST(SessionLeaseExecutionTest, DirectAndPreparedInputsAndDeadlineAreForwardedUnchanged) {
+  auto observed = std::make_shared<Observed>(); auto owner = owner_for(observed);
+  auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+  const std::string sql{"SELECT ?\0tail", 13};
+  const std::array<QueryParameter, 3> params{{
+    {std::nullopt, QueryParameterType::Text}, {std::string{}, QueryParameterType::Text},
+    {std::string{"a\0b", 3}, QueryParameterType::Binary, true}}};
+  // No lease preflight changes the deadline: the backend owns operation policy.
+  const auto deadline = rs::util::Deadline::min();
+  int calls = 0;
+  observed->on_execution = [&](std::string_view received_sql, std::span<const QueryParameter> received,
+      rs::util::Deadline received_deadline, bool prepared) {
+    ++calls; EXPECT_EQ(sql.data(), received_sql.data()); EXPECT_EQ(sql.size(), received_sql.size());
+    EXPECT_EQ(sql, received_sql); EXPECT_EQ(deadline, received_deadline);
+    if (prepared) {
+      ASSERT_EQ(params.data(), received.data()); ASSERT_EQ(params.size(), received.size());
+      for (std::size_t index = 0; index < params.size(); ++index) {
+        EXPECT_EQ(params[index].value, received[index].value); EXPECT_EQ(params[index].type, received[index].type);
+        EXPECT_EQ(params[index].binary_input, received[index].binary_input);
+      }
+    } else { EXPECT_TRUE(received.empty()); }
+    EXPECT_FALSE(owner.try_acquire()); // Reentrant callback must be unlocked.
+  };
+  ASSERT_TRUE(lease->execute_query(sql, deadline)); ASSERT_TRUE(lease->execute_prepared(sql, params, deadline));
+  EXPECT_EQ(2, calls); EXPECT_TRUE(*lease); EXPECT_EQ(0, observed->disconnects);
+  observed->on_execution = {};
+}
+TEST(SessionLeaseExecutionTest, OwningResultsAndErrorsSurviveEveryDispositionAndRetirement) {
+  for (const bool prepared : {false, true}) {
+    for (const bool failure : {false, true}) {
+      for (const auto disposition : {SessionDisposition::Reusable, SessionDisposition::ResetRequired, SessionDisposition::Retire}) {
+        auto observed = std::make_shared<Observed>();
+        const auto state = disposition == SessionDisposition::Reusable ? SessionState::Idle :
+            disposition == SessionDisposition::ResetRequired ? SessionState::FailedTransaction : SessionState::Disconnected;
+        if (failure) {
+          BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "owned execution failure"};
+          error.native_state = "XX000"; error.native_code = 17; error.retry_safe = true;
+          error.operation = prepared ? BackendOperation::ExecutePrepared : BackendOperation::ExecuteDirect;
+          error.session_state = state; error.disposition = disposition;
+          observed->execution_result = BackendResult<QueryResult>{std::move(error)};
+        } else {
+          QueryResult value; value.rows = {{std::string{"owned\0row", 9}}};
+          value.columns.push_back({"owned_column", std::nullopt});
+          observed->execution_result = BackendResult<QueryResult>{std::move(value), {state, disposition}};
+        }
+        auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+        auto result = prepared ? lease->execute_prepared("fixture", std::span<const QueryParameter>{}, rs::util::Deadline::max()) :
+            lease->execute_query("fixture", rs::util::Deadline::max());
+        EXPECT_EQ(!failure, result.has_value()); EXPECT_EQ((SessionSnapshot{state, disposition}), result.session_snapshot());
+        EXPECT_EQ(disposition != SessionDisposition::Retire, static_cast<bool>(*lease));
+        EXPECT_EQ(disposition == SessionDisposition::Retire ? 1 : 0, observed->disconnects);
+        EXPECT_FALSE(owner.try_acquire()); lease->retire(); observed->execution_result.reset();
+        retired_once(*observed);
+        if (failure) {
+          EXPECT_EQ("owned execution failure", result.error_message()); EXPECT_EQ("XX000", result.backend_error().native_state);
+          EXPECT_EQ(17, result.backend_error().native_code); EXPECT_EQ(true, result.backend_error().retry_safe);
+          EXPECT_EQ(prepared ? BackendOperation::ExecutePrepared : BackendOperation::ExecuteDirect, result.backend_error().operation);
+        } else {
+          ASSERT_EQ(1u, result->rows.size()); EXPECT_EQ(std::string("owned\0row", 9), result->rows[0][0]);
+          ASSERT_EQ(1u, result->columns.size()); EXPECT_EQ("owned_column", result->columns[0].name);
+        }
+      }
+    }
+  }
+}
+TEST(SessionLeaseExecutionTest, AllExceptionCategoriesRetireBeforeRethrowingOriginalException) {
+  for (const bool prepared : {false, true}) {
+    for (int category = 1; category <= 3; ++category) {
+      auto observed = std::make_shared<Observed>(); observed->execution_exception = category; observed->throw_disconnect = true;
+      auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+      observed->on_disconnect = [&] { EXPECT_FALSE(owner.try_acquire()); };
+      const auto invoke = [&] {
+        return prepared ? lease->execute_prepared("fixture", std::span<const QueryParameter>{}, rs::util::Deadline::max()) :
+            lease->execute_query("fixture", rs::util::Deadline::max());
+      };
+      if (category == 1) { EXPECT_THROW(invoke(), std::bad_alloc); }
+      if (category == 2) {
+        try { (void)invoke(); FAIL() << "Expected original execution exception"; }
+        catch (const std::runtime_error& error) { EXPECT_STREQ("original execution fixture", error.what()); }
+      }
+      if (category == 3) {
+        try { (void)invoke(); FAIL() << "Expected non-standard execution exception"; }
+        catch (int value) { EXPECT_EQ(42, value); }
+      }
+      EXPECT_FALSE(*lease); retired_once(*observed); observed->on_disconnect = {};
+    }
+  }
+}
+TEST(SessionLeaseExecutionTest, MovedAndRetiredLeasesReturnOperationSpecificErrorsWithoutBackendIO) {
+  auto observed = std::make_shared<Observed>(); auto owner = owner_for(observed);
+  auto lease = owner.try_acquire(); ASSERT_TRUE(lease); SessionLease moved{std::move(*lease)};
+  const auto check_missing = [&](SessionLease& missing) {
+    auto direct = missing.execute_query("fixture", rs::util::Deadline::max());
+    auto prepared = missing.execute_prepared("fixture", std::span<const QueryParameter>{}, rs::util::Deadline::max());
+    ASSERT_FALSE(direct); ASSERT_FALSE(prepared);
+    for (const auto* result : {&direct, &prepared}) {
+      EXPECT_EQ(BackendErrorClass::NotConnected, result->backend_error().error_class);
+      EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), result->session_snapshot());
+      EXPECT_FALSE(result->backend_error().retry_safe);
+    }
+    EXPECT_EQ(BackendOperation::ExecuteDirect, direct.backend_error().operation);
+    EXPECT_EQ(BackendOperation::ExecutePrepared, prepared.backend_error().operation);
+  };
+  check_missing(*lease); EXPECT_EQ(0, observed->queries); EXPECT_EQ(0, observed->disconnects);
+  ASSERT_TRUE(moved.execute_query("fixture", rs::util::Deadline::max()));
+  moved.retire(); check_missing(moved); EXPECT_EQ(1, observed->queries); retired_once(*observed);
 }
 } // namespace

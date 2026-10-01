@@ -5,6 +5,7 @@
 #include "odbc/connection_string.h"
 #include "tests/test_connection_config.h"
 #include <algorithm>
+#include <array>
 #include <thread>
 
 namespace {
@@ -40,7 +41,7 @@ TEST(SessionOwnerIntegrationTest, LiveBorrowSurvivesOwnerAndRetirementClosesPhys
   // Neither owner destruction nor credential revocation interrupts this borrower.
   credentials.revoke(); EXPECT_FALSE(token.is_current());
   const auto deadline = rs::util::make_deadline(std::chrono::seconds(5));
-  auto pid_result = lease->session()->execute_query("SELECT pg_backend_pid()", deadline);
+  auto pid_result = lease->execute_query("SELECT pg_backend_pid()", deadline);
   ASSERT_TRUE(pid_result); ASSERT_EQ(1u, pid_result->rows.size()); ASSERT_EQ(1u, pid_result->rows[0].size());
   ASSERT_TRUE(pid_result->rows[0][0]); const auto pid = *pid_result->rows[0][0];
   ASSERT_FALSE(pid.empty()); ASSERT_TRUE(std::all_of(pid.begin(), pid.end(), [](char c) { return c >= '0' && c <= '9'; }));
@@ -48,9 +49,12 @@ TEST(SessionOwnerIntegrationTest, LiveBorrowSurvivesOwnerAndRetirementClosesPhys
   auto active = observer->execute_query("SELECT count(*) FROM pg_stat_activity WHERE pid = " + pid, deadline);
   ASSERT_TRUE(active); ASSERT_EQ("1", active->rows.at(0).at(0));
   // Even successful backend reset cannot grant return/requeue in this primitive.
-  ASSERT_NE(nullptr, lease->session()->session_reset());
   ASSERT_TRUE(lease->reset_session(deadline));
-  lease->retire(); EXPECT_FALSE(*lease); EXPECT_EQ(nullptr, lease->session());
+  const std::array<QueryParameter, 1> prepared_params{{{std::string("retained borrower"), QueryParameterType::Text}}};
+  auto prepared = lease->execute_prepared("SELECT $1::text", prepared_params, deadline);
+  ASSERT_TRUE(prepared); ASSERT_EQ(1u, prepared->rows.size());
+  EXPECT_EQ("retained borrower", prepared->rows[0].at(0));
+  lease->retire(); EXPECT_FALSE(*lease);
   bool gone = false;
   while (std::chrono::steady_clock::now() < deadline) {
     auto inactive = observer->execute_query("SELECT count(*) FROM pg_stat_activity WHERE pid = " + pid, deadline);
@@ -65,7 +69,7 @@ TEST(SessionOwnerIntegrationTest, LiveBorrowSurvivesOwnerAndRetirementClosesPhys
   SessionOwner rejected_owner{std::move(rejected_physical)};
   auto rejected_lease = rejected_owner.try_acquire(); ASSERT_TRUE(rejected_lease);
   const auto rejection_deadline = rs::util::make_deadline(std::chrono::seconds(5));
-  auto rejected_pid = rejected_lease->session()->execute_query("SELECT pg_backend_pid()", rejection_deadline);
+  auto rejected_pid = rejected_lease->execute_query("SELECT pg_backend_pid()", rejection_deadline);
   ASSERT_TRUE(rejected_pid); ASSERT_EQ(1u, rejected_pid->rows.size()); ASSERT_EQ(1u, rejected_pid->rows[0].size());
   ASSERT_TRUE(rejected_pid->rows[0][0]); const auto rejected_pid_text = *rejected_pid->rows[0][0];
   ASSERT_FALSE(rejected_pid_text.empty());

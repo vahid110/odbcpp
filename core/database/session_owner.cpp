@@ -90,7 +90,7 @@ SessionLease& SessionLease::operator=(SessionLease&& other) noexcept {
   return *this;
 }
 SessionLease::~SessionLease() { retire(); }
-IDatabaseConnection* SessionLease::session() const noexcept {
+IDatabaseConnection* SessionLease::physical_session() const noexcept {
   // Only this move-only borrower can remove the session while leased. Owner
   // destruction changes admission, not the active borrower's physical session.
   return state_ ? state_->session.get() : nullptr;
@@ -126,7 +126,7 @@ BackendResult<void> SessionLease::reset_session(rs::util::Deadline deadline) {
     return error;
   };
   try {
-    auto* physical = session();
+    auto* physical = physical_session();
     if (!physical) return fail(rs::util::DbErrorCode::NotConnected, "No active session lease");
     if (rs::util::Clock::now() >= deadline)
       return fail(rs::util::DbErrorCode::Timeout, "Session reset deadline expired");
@@ -155,5 +155,40 @@ BackendResult<void> SessionLease::reset_session(rs::util::Deadline deadline) {
   } catch (...) {
     return fail(rs::util::DbErrorCode::ProtocolError, "Session reset backend threw");
   }
+}
+} // namespace rs::core::database
+
+namespace rs::core::database {
+namespace {
+template<class Request>
+BackendResult<QueryResult> execute_borrowed(SessionLease& lease, IDatabaseConnection* physical,
+    BackendOperation operation, Request&& request) {
+  if (!physical) {
+    BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::NotConnected), "No active session lease"};
+    error.operation = operation;
+    error.session_state = SessionState::Disconnected;
+    return error;
+  }
+  try {
+    auto result = request(*physical);
+    // The result already owns its storage, including failure/native details.
+    // No backend callback runs under an ownership or credential mutex.
+    if (result.session_snapshot().disposition == SessionDisposition::Retire) lease.retire();
+    return result;
+  } catch (...) {
+    // Preserve the original exception while preventing ambiguous session reuse.
+    lease.retire();
+    throw;
+  }
+}
+}
+BackendResult<QueryResult> SessionLease::execute_query(std::string_view sql, rs::util::Deadline deadline) {
+  return execute_borrowed(*this, physical_session(), BackendOperation::ExecuteDirect,
+      [&](IDatabaseConnection& physical) { return physical.execute_query(sql, deadline); });
+}
+BackendResult<QueryResult> SessionLease::execute_prepared(std::string_view sql,
+    std::span<const QueryParameter> params, rs::util::Deadline deadline) {
+  return execute_borrowed(*this, physical_session(), BackendOperation::ExecutePrepared,
+      [&](IDatabaseConnection& physical) { return physical.execute_prepared(sql, params, deadline); });
 }
 } // namespace rs::core::database

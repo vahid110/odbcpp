@@ -8,8 +8,8 @@ namespace rs::core::database {
 namespace detail { struct SessionOwnershipState; }
 
 // Internal ownership primitive, not an installed SDK or pool API. A borrowed
-// session/facet pointer is valid only while its lease remains active. Callers
-// must serialize operations on one lease and must not retain escaped pointers.
+// session is accessed only through lease operations: no raw session/facet escape.
+// Callers must serialize operations and moves/retirement on one lease.
 class SessionLease final {
  public:
   SessionLease(const SessionLease&) = delete;
@@ -18,19 +18,24 @@ class SessionLease final {
   SessionLease& operator=(SessionLease&&) noexcept;
   ~SessionLease();
 
-  IDatabaseConnection* session() const noexcept;
-  explicit operator bool() const noexcept { return session() != nullptr; }
+  explicit operator bool() const noexcept { return physical_session() != nullptr; }
+  // Execution preserves owning results/errors. A Retire snapshot or exception
+  // destroys the physical session; other outcomes remain same-borrower only.
+  BackendResult<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline);
+  BackendResult<QueryResult> execute_prepared(std::string_view sql,
+      std::span<const QueryParameter> params, rs::util::Deadline deadline);
   // No I/O cleanup/reset/reconnect is attempted. Returning or abandoning the
   // lease retires and destroys the physical session, even after reset success.
   void retire() noexcept;
   // Explicit coordinator cleanup of this active borrow, using the original
   // deadline. Any failed/unsupported/ambiguous cleanup retires the lease.
-  // Success keeps exclusive ownership, never grants return/requeue. Direct raw
-  // facet calls remain outside this path; cache tokens/reuse are not enabled.
+  // Success keeps exclusive ownership, never grants return/requeue. Borrowers
+  // cannot access the raw reset facet; cache tokens/reuse are not enabled.
   BackendResult<void> reset_session(rs::util::Deadline deadline);
 
  private:
   friend class SessionOwner;
+  IDatabaseConnection* physical_session() const noexcept;
   explicit SessionLease(std::shared_ptr<detail::SessionOwnershipState>) noexcept;
   std::shared_ptr<detail::SessionOwnershipState> state_;
 };
