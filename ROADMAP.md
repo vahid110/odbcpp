@@ -928,3 +928,39 @@ iODBC UTF-16/UCS-4, ASan/UBSan, Redshift unit/build-contract and absent-endpoint
 gates; all examples compile. Focused review verified borrowed facet lifetime,
 null dispatch, capability selection and failed-open retry. Windows live/packaging
 and provider-proof validation run on the pushed batch in CI.
+
+## S2 optional statement-description facet — 2026-10-01
+
+Pre-execution statement description now lives on IStatementDescription, a
+session-owned optional facet discovered through IDatabaseConnection. The required
+session interface no longer needs a description stub. The borrowed facet remains
+stable through open/disconnect for its session lifetime; calls retain the original
+absolute deadline, borrow inputs only until return and return owning normalized
+metadata and passive session snapshots. Existing metadata-only shape validation
+remains mandatory.
+
+The PostgreSQL-family session implements the facet using its existing description
+exchange and type resolution. Shared ODBC checks facet presence before preparing
+metadata inputs or dispatching I/O. Absence returns HYC00 without changing outputs,
+marking metadata cached or disconnecting. Live SQL_DESCRIBE_PARAMETER cannot
+advertise support without the facet; execution metadata remains available after
+normal execution even when pre-execution description is absent.
+
+Tests cover repeated absent-facet rejection with unchanged parameter/column
+outputs and no I/O, capability suppression, prepared/direct execution recovery,
+and stable facet lifetime before open and after disconnect. Successful description
+retains the original deadline and an owning metadata/session snapshot that survives
+session destruction; closed-session failures retain operation and retirement state.
+Existing malformed metadata, allocation/input limits, native description and ODBC
+suites continue to protect PostgreSQL behavior.
+
+This closes optional statement-description extraction only. Catalog/reuse facets,
+static type services, internal build targets, dedicated ordered execution items and
+warning delivery remain open S2 work. No pooling, MySQL or provider qualification
+claim is added.
+
+Validation: full local PostgreSQL, iODBC UTF-16 and UCS-4, sanitizer and Redshift
+build/absent-endpoint gates pass; examples compile. Focused read-only review found
+no blockers in facet ownership, adapter dispatch, capability suppression or
+metadata-cache publication. Windows/live/package evidence is supplied by the
+exact-head GitHub Actions run after this batch push.

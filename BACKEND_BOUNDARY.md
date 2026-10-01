@@ -876,3 +876,10 @@ transaction and ODBC suites protect happy-path and failure behavior.
 This extracts transaction behavior only. Statement-description/catalog/reuse
 facets, static type services, internal build targets and the ordered execution
 representation remain S2 work. No reset/health/pooling guarantee is added.
+
+Statement description is optional through IStatementDescription. Facet discovery
+is passive and borrowed for the session lifetime, including disconnected state;
+returned metadata and operation snapshots remain owning. Missing pre-execution
+description rejects metadata discovery without I/O and does not prevent execution
+or access to metadata from a completed execution. Live capability reporting must
+not overadvertise absent description behavior.

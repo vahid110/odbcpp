@@ -583,3 +583,33 @@ transaction and ODBC suites protect happy-path and failure behavior.
 This extracts transaction behavior only. Statement-description/catalog/reuse
 facets, static type services, internal build targets and the ordered execution
 representation remain S2 work. No reset/health/pooling guarantee is added.
+
+## S2 optional statement-description facet — 2026-10-01
+
+Pre-execution statement description now lives on IStatementDescription, a
+session-owned optional facet discovered through IDatabaseConnection. The required
+session interface no longer needs a description stub. The borrowed facet remains
+stable through open/disconnect for its session lifetime; calls retain the original
+absolute deadline, borrow inputs only until return and return owning normalized
+metadata and passive session snapshots. Existing metadata-only shape validation
+remains mandatory.
+
+The PostgreSQL-family session implements the facet using its existing description
+exchange and type resolution. Shared ODBC checks facet presence before preparing
+metadata inputs or dispatching I/O. Absence returns HYC00 without changing outputs,
+marking metadata cached or disconnecting. Live SQL_DESCRIBE_PARAMETER cannot
+advertise support without the facet; execution metadata remains available after
+normal execution even when pre-execution description is absent.
+
+Tests cover repeated absent-facet rejection with unchanged parameter/column
+outputs and no I/O, capability suppression, prepared/direct execution recovery,
+and stable facet lifetime before open and after disconnect. Successful description
+retains the original deadline and an owning metadata/session snapshot that survives
+session destruction; closed-session failures retain operation and retirement state.
+Existing malformed metadata, allocation/input limits, native description and ODBC
+suites continue to protect PostgreSQL behavior.
+
+This closes optional statement-description extraction only. Catalog/reuse facets,
+static type services, internal build targets, dedicated ordered execution items and
+warning delivery remain open S2 work. No pooling, MySQL or provider qualification
+claim is added.
