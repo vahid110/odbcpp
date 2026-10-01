@@ -1,8 +1,9 @@
 # Cryptography provider and linkage plan
 
 Decision date: 2026-09-30.
-Status: accepted build and SDK contract; implementation and qualification are
-open in S2C.
+Status: accepted build and SDK contract; bounded internal evidence reviewed;
+implementation and qualification remain open in S2C. Current matrix status and
+follow-up boundaries are in [S2C_MATRIX_REVIEW.md](S2C_MATRIX_REVIEW.md).
 
 ## Decision
 
