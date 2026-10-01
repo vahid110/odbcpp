@@ -779,3 +779,12 @@ qualification record. This is probe evidence, not loaded-driver identity
 enforcement; exact-revision CI and remaining coexistence/package/downgrade
 evidence are still required before matrix acceptance. S2 migration and bounded
 MySQL sequencing are unchanged.
+
+## S2C Windows independent TLS proof batch — 2026-10-01
+
+Windows now opts into the common independent TLS qualification peer using a
+Winsock test probe. The gate requires TLS 1.2/1.3 success, trust/identity rejection
+and TLS 1.1 rejection after a successful independent legacy control. It preserves
+production behavior and retains native proof inputs/logs. Exact-revision Windows
+CI is required; coexistence/package/matrix acceptance remain the finite S2C
+follow-up work.

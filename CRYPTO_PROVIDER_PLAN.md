@@ -639,3 +639,25 @@ modification. This selects their intended test dependency; it is not packaged
 loader isolation or host substitution prevention. The strict mismatch check
 remains and the observed mismatch is a regression fixture. Fresh-runner package
 origin tests continue independently.
+
+## S2C Windows independent TLS/downgrade gate — 2026-10-01
+
+The shared qualification probe now uses native Winsock sockets on Windows and
+retains the existing POSIX path. Winsock startup/cleanup, socket close and native
+millisecond receive/send timeouts are confined to this test probe. Production
+security and transport code are unchanged.
+
+Windows bundled-shared CI enables the same independent Python/OpenSSL peer as
+Linux and macOS. TLS 1.2/1.3 acceptance and binary echo, custom trust, DNS/IP
+mismatch and unrelated CA rejection are mandatory. The TLS 1.1 server must first
+complete an independent legacy-client control exchange; the production adapter
+must then reject that server specifically for protocol version without retaining
+verified identity. Unsupported fixtures fail rather than skip. Session reset
+must clear active/verified state. CTest selects the configured provider prefix
+for the build-tree probe, and the executable and test log are retained with
+Windows evidence.
+
+This fills the Windows independent-peer/downgrade gap only after exact-revision
+CI passes. Same-basename preloaded-provider coexistence, remaining package
+requirements and final matrix acceptance remain open. Probe prefix selection is
+not packaged-loader isolation, and no new public provider or FIPS claim is made.
