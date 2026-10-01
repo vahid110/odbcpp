@@ -805,3 +805,10 @@ host load without shared crypto mappings and real extracted-driver TLS/SCRAM
 success/rejection cases. Existing archive checks are reused without changing
 their AWS-LC default root. Public installer/static SDK and source-attestation
 scope remain deferred; matrix acceptance is still separate.
+
+Unix shared OpenSSL acceptance now retains host lifecycle evidence in mandatory
+unit reports: configured-provider identity, host SHA-256/TLS operations across
+actual-driver load/release, ODBC handle allocation, and overlapping loader
+references. Missing or incomplete evidence fails the summary gate. This is a
+bounded configured-provider sharing check; Windows same-basename preload
+coexistence and the final S2C matrix acceptance remain open.

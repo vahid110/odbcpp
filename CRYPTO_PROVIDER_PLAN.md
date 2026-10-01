@@ -710,3 +710,24 @@ archive root names. CI retains the archive, manifest, inventory evidence and
 extracted-driver live report. This closes the demonstrated Linux static runtime
 package/license gap only after exact-revision CI passes. It does not qualify the
 entire OpenSSL matrix or expand the public variant/SDK/FIPS scope.
+
+## S2C Unix shared-provider host lifecycle evidence — 2026-10-01
+
+Linux and macOS `OPENSSL/SYSTEM_SHARED` now require a host-side coexistence
+case in their retained unit reports. The host explicitly loads the configured
+shared crypto and TLS libraries before loading the actual driver, checks the
+configured runtime version and provider function identity, and executes a known
+SHA-256 vector and TLS context creation before, during, and after driver handle
+lifetimes. A second case exercises repeated overlapping driver references and
+verifies host operations after an intermediate reference is released. Driver
+ODBC environment allocation/free is exercised through dynamically resolved
+exports. The test links no OpenSSL libraries itself; headers provide exact ABI
+types and the host loads libraries explicitly.
+
+The unit evidence recorder requires both executed case markers, rejects missing
+or duplicated output, and binds the existing driver and report hashes. The
+summary records `sharedProviderHostLifecycleEvaluated` separately from final
+matrix acceptance. This evidence covers sharing the configured provider; it does
+not claim support for arbitrary incompatible host versions, live-query behavior
+in the same host, Windows preloaded DLL collisions, or public SDK qualification.
+The existing actual-driver TLS/SCRAM gates remain separate requirements.
