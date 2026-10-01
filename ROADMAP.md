@@ -807,3 +807,33 @@ PostgreSQL, iODBC UTF-16/UCS-4, sanitizer, Redshift unit/build-contract and
 missing-endpoint gates pass; all examples compile. Focused review covered
 pre-publication ordering and description retry/caching. Windows live/packaging
 checks run on the pushed batch in CI.
+
+## S2 owning operation session snapshots — 2026-10-01
+
+BackendResult now provides a passive, owning SessionSnapshot for both success and
+failure. Successful PostgreSQL query, prepared execution and statement description
+outcomes record their final state/disposition after response drain and parameter
+resolution. The snapshot belongs to the operation envelope, not individual
+rowsets; callers retaining only QueryResult deliberately retain data rather than
+the operation status. Deferred errors retain the same final session context.
+
+Failures derive the snapshot from the existing owning BackendError, so later
+internal error annotation has one source of truth. Successes that do not report a
+snapshot default to Unknown/Retire. Void results support explicit snapshots, but
+connect/transaction/health/reset success annotation remains later session-facet
+work; no blanket success-status or production pooling claim is made.
+
+Reusable means protocol-ready for the current owner at operation completion. It
+is not a health probe, reset completion, permission to pool or a promise that a
+later call cannot fail. Transaction/failed-transaction outcomes require reset.
+Copy/move, later ambiguous retirement, disconnect and backend destruction cannot
+rewrite retained success snapshots. Tests cover all three PostgreSQL states,
+prepared/description completion, deferred-error agreement, conservative defaults
+and the error record's single source of truth. Dedicated ordered ExecutionItems,
+warning delivery and separate parameter descriptions remain open S2 work.
+
+Validation: focused backend/session/parser tests; complete PostgreSQL, iODBC
+UTF-16/UCS-4, ASan/UBSan, Redshift unit/build-contract and absent-endpoint gates;
+all examples compile. Focused review confirmed lifetime, final-resolution timing
+and conservative unstamped void results. Windows live/packaging and provider
+proof checks run on the pushed batch in CI.
