@@ -788,3 +788,11 @@ and TLS 1.1 rejection after a successful independent legacy control. It preserve
 production behavior and retains native proof inputs/logs. Exact-revision Windows
 CI is required; coexistence/package/matrix acceptance remain the finite S2C
 follow-up work.
+
+## S2C unit-evidence retention and binding batch — 2026-10-01
+
+Windows preserves its unit JUnit report before integration overwrites temporary
+CTest logs. All bounded OpenSSL rows retain a common hash-bound unit evidence
+summary that rejects missing/skipped/failed cases, incomplete peer/control output
+and inconsistent identity/artifact inputs. This supports the existing matrix
+review without qualifying a row or replacing live/package/coexistence acceptance.

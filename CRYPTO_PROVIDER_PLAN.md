@@ -661,3 +661,27 @@ This fills the Windows independent-peer/downgrade gap only after exact-revision
 CI passes. Same-basename preloaded-provider coexistence, remaining package
 requirements and final matrix acceptance remain open. Probe prefix selection is
 not packaged-loader isolation, and no new public provider or FIPS claim is made.
+
+## S2C retained unit-evidence consistency — 2026-10-01
+
+Windows now retains a dedicated unit JUnit report before later integration runs
+overwrite CTest's LastTest.log. The report preserves the independent TLS peer's
+successful legacy control and every TLS 1.2/1.3 acceptance/rejection case. Both
+success and failure uploads retain this report alongside the probe and identity
+inputs.
+
+A common CI recorder binds the unit report, driver, identity probe, configure
+manifest, runtime identity record and artifact inspection through SHA-256 hashes.
+It requires the existing unique executed identity/parser/recording, independent
+TLS, linkage and export checks; every peer/control marker must occur exactly
+once. Failed/skipped/inconsistent reports, mismatched inputs, weaker policy and
+unsupported claims cannot produce a usable summary. Adversarial tests exercise
+these failures, including removal of stale output after unsuccessful recording.
+Linux shared/static, both macOS Unicode builds and Windows retain the same
+bounded summary format.
+
+This consolidates already-required evidence for matrix review. Its scope is unit
+identity/default policy, artifact/export checks and the independent TLS peer;
+actual live-driver, runtime package, coexistence and row acceptance are explicitly
+unevaluated by this summary. qualificationClaimed remains false. Existing finite
+closure requirements and public/FIPS non-goals are unchanged.
