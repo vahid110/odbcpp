@@ -311,6 +311,45 @@ BackendResult<QueryResult> GenericDatabaseConnection::finish_operation(
   return result;
 }
 
+BackendResult<QueryResult> GenericDatabaseConnection::normalize_parameter_metadata(
+    BackendResult<QueryResult> result, rs::util::Deadline deadline) {
+  if (result.has_error()) return result;
+  const auto normalize = [&](QueryResult& item) -> BackendResult<void> {
+    if (item.parameter_type_ids.empty()) return {};
+    auto types = resolve_types(item.parameter_type_ids, deadline);
+    if (types.has_error()) {
+      auto error = std::move(types.backend_error());
+      error.operation = BackendOperation::ResolveTypes;
+      return error;
+    }
+    std::vector<NativeTypeInfo> normalized;
+    normalized.reserve(item.parameter_type_ids.size());
+    for (const auto id : item.parameter_type_ids) {
+      const auto found = types->find(id);
+      if (found == types->end()) {
+        BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),
+            "Data source returned incomplete parameter type metadata"};
+        error.error_class = BackendErrorClass::InvalidMetadata;
+        error.operation = BackendOperation::ResolveTypes;
+        error.session_state = session_state_;
+        error.disposition = !connected_ ? SessionDisposition::Retire :
+            session_state_ == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired;
+        return error;
+      }
+      normalized.push_back(found->second);
+    }
+    item.normalized_parameter_types = std::move(normalized);
+    return {};
+  };
+  auto normalized = normalize(*result);
+  if (normalized.has_error()) return std::move(normalized.backend_error());
+  for (auto& item : result->additional_results) {
+    normalized = normalize(item);
+    if (normalized.has_error()) return std::move(normalized.backend_error());
+  }
+  return result;
+}
+
 BackendResult<QueryResult> GenericDatabaseConnection::reject_request_limit(BackendOperation operation) const {
   BackendResult<QueryResult> result{rs::util::DbErrorCode::ResourceLimit, "Database request input limit exceeded"};
   auto& error = result.backend_error();
@@ -355,7 +394,8 @@ BackendResult<QueryResult> GenericDatabaseConnection::execute_prepared(
     }
   }
   try {
-    return finish_operation(execute_prepared_impl(sql, params, deadline), BackendOperation::ExecutePrepared);
+    return normalize_parameter_metadata(
+        finish_operation(execute_prepared_impl(sql, params, deadline), BackendOperation::ExecutePrepared), deadline);
   } catch (const RequestWireLimitExceeded&) {
     return reject_request_limit(BackendOperation::ExecutePrepared);
   } catch (const std::bad_alloc&) {
@@ -372,7 +412,8 @@ BackendResult<QueryResult> GenericDatabaseConnection::describe_statement(
     return reject_request_limit(BackendOperation::Describe);
   }
   try {
-    return finish_operation(describe_statement_impl(sql, types, deadline), BackendOperation::Describe);
+    return normalize_parameter_metadata(
+        finish_operation(describe_statement_impl(sql, types, deadline), BackendOperation::Describe), deadline);
   } catch (const RequestWireLimitExceeded&) {
     return reject_request_limit(BackendOperation::Describe);
   } catch (const std::bad_alloc&) {

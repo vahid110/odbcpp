@@ -175,7 +175,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     UnsolicitedCopyData, UnsolicitedCopyDone,
     OversizedUnsolicitedCopyData, BinaryResultRow,
     BinaryAdditionalResultRow, ReadyOnlyQuery, RowsWithoutCompletion,
-    EmptyQueryResponse, DescriptionNoData, DescriptionOneParameter, DescriptionOneColumn,
+    EmptyQueryResponse, DescriptionNoData, DescriptionOneParameter, DescriptionRepeatedParameter, DescriptionOneColumn,
     DescriptionMissingParse, DescriptionMissingParameters,
     DescriptionMissingResult, DescriptionOutOfOrder,
     DescriptionServerError, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
@@ -455,12 +455,14 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
           "\377\377" "\377\377\377\377" "\0\0";
       append_message('T', description, sizeof(description) - 1);
       append_message('Z', "I", 1);
-    } else if (mode == ResponseMode::DescriptionOneParameter) {
-      append_message('1', "", 0);
-      constexpr char parameters[] = "\0\1\0\0\0\27";
-      append_message('t', parameters, sizeof(parameters) - 1);
-      append_message('n', "", 0);
-      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::DescriptionOneParameter || mode == ResponseMode::DescriptionRepeatedParameter) {
+      for (int response = 0; response < (mode == ResponseMode::DescriptionRepeatedParameter ? 2 : 1); ++response) {
+        append_message('1', "", 0);
+        constexpr char parameters[] = "\0\1\0\0\0\27";
+        append_message('t', parameters, sizeof(parameters) - 1);
+        append_message('n', "", 0);
+        append_message('Z', "I", 1);
+      }
     } else if (mode == ResponseMode::DescriptionMissingParse) {
       append_message('t', "\0\0", 2);
       append_message('n', "", 0);
@@ -3272,5 +3274,80 @@ TEST(NormalizedColumnTest, SessionOwnsPrimaryAdditionalAndDescriptionMetadata) {
       EXPECT_EQ(std::optional<std::string>(""), snapshot.rows[1][0]);
       EXPECT_EQ(std::optional<std::string>("abc"), snapshot.rows[2][0]);
     }
+  }
+}
+
+
+namespace {
+class ParameterNormalizationConnection final : public rs::core::database::GenericDatabaseConnection {
+ public:
+  ParameterNormalizationConnection()
+      : GenericDatabaseConnection(
+          std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+          std::make_unique<ScriptedBackendTransport>(ScriptedBackendTransport::ResponseMode::DescriptionRepeatedParameter)) {}
+  bool incomplete{};
+  bool fail{};
+  rs::util::Deadline observed{};
+  int lookups{};
+  rs::core::database::BackendResult<rs::core::database::ResolvedTypeMap> resolve_types(
+      std::span<const std::uint32_t> ids, rs::util::Deadline deadline) override {
+    using namespace rs::core::database;
+    observed = deadline; ++lookups;
+    if (fail) {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "type lookup failed"};
+      error.session_state = session_state(); error.disposition = SessionDisposition::Reusable;
+      error.native_state = "22012";
+      return error;
+    }
+    ResolvedTypeMap resolved;
+    if (!incomplete) {
+      for (const auto id : ids) resolved.emplace(id, NativeTypeInfo{ScalarType::Numeric, 18, 2, true});
+    }
+    return resolved;
+  }
+};
+}
+
+TEST(NormalizedParameterTest, BackendOwnsResolvedDescriptionsAndReusesAbsoluteDeadline) {
+  using namespace rs::core::database;
+  QueryResult snapshot;
+  {
+    ParameterNormalizationConnection backend;
+    ConnectionSettings settings; settings.use_ssl = false;
+    ASSERT_TRUE(backend.connect(settings));
+    const auto deadline = rs::util::make_deadline(std::chrono::seconds(2));
+    const QueryParameterType hints[]{QueryParameterType::Numeric};
+    auto result = backend.describe_statement("SELECT ?", hints, deadline);
+    ASSERT_TRUE(result); EXPECT_EQ(deadline, backend.observed); EXPECT_EQ(1, backend.lookups);
+    snapshot = std::move(*result);
+    backend.disconnect();
+  }
+  ASSERT_EQ(1u, snapshot.normalized_parameter_types.size());
+  EXPECT_EQ(ScalarType::Numeric, snapshot.normalized_parameter_types[0].type);
+  EXPECT_EQ(18u, snapshot.normalized_parameter_types[0].column_size);
+  EXPECT_EQ(2, snapshot.normalized_parameter_types[0].decimal_digits);
+}
+
+TEST(NormalizedParameterTest, IncompleteAndFailedResolutionReturnNoPartialResultAndRecover) {
+  using namespace rs::core::database;
+  for (const bool resolver_error : {false, true}) {
+    ParameterNormalizationConnection backend;
+    ConnectionSettings settings; settings.use_ssl = false;
+    ASSERT_TRUE(backend.connect(settings));
+    backend.incomplete = !resolver_error; backend.fail = resolver_error;
+    const QueryParameterType hints[]{QueryParameterType::Numeric};
+    const auto deadline = rs::util::make_deadline(std::chrono::seconds(2));
+    auto result = backend.describe_statement("SELECT ?", hints, deadline);
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(BackendOperation::ResolveTypes, result.backend_error().operation);
+    EXPECT_EQ(resolver_error ? BackendErrorClass::Server : BackendErrorClass::InvalidMetadata,
+        result.backend_error().error_class);
+    EXPECT_EQ(SessionDisposition::Reusable, result.backend_error().disposition);
+    EXPECT_EQ(SessionState::Idle, result.backend_error().session_state);
+    EXPECT_EQ(deadline, backend.observed); EXPECT_TRUE(backend.is_connected());
+    backend.incomplete = false; backend.fail = false;
+    auto recovered = backend.describe_statement("SELECT ?", hints, deadline);
+    ASSERT_TRUE(recovered); ASSERT_EQ(1u, recovered->normalized_parameter_types.size());
+    EXPECT_EQ(2, backend.lookups);
   }
 }

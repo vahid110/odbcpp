@@ -49,6 +49,10 @@ struct QueryResult {
   // Absent means no completion metadata; explicit Unknown clears prior dynamic
   // function diagnostics. Shared consumers never parse native command_tag.
   std::optional<StatementKind> statement_kind;
+  // Owning, ordered parameter descriptions supplied by the backend. Native IDs
+  // above remain parser migration storage and are never consumed by ODBC.
+  std::vector<NativeTypeInfo> normalized_parameter_types;
+
 };
 
 } // namespace rs::core::database
