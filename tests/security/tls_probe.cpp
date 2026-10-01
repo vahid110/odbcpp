@@ -1,4 +1,4 @@
-// POSIX probe shared by the production OpenSSL and isolated AWS-LC proofs.
+// Native socket probe shared by the production OpenSSL and isolated AWS-LC proofs.
 #include "core/security/tls_client.h"
 #include "core/security/crypto.h"
 #include "core/util/platform.h"
@@ -21,13 +21,29 @@ int main(int argc, char** argv) {
     return 0;
   }
   if (argc != 5) return 2;
+#ifdef _WIN32
+  WSADATA data{};
+  if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return 2;
+  struct WinsockGuard { ~WinsockGuard() { WSACleanup(); } } winsock;
+  const SOCKET fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (fd == INVALID_SOCKET) return 2;
+  struct SocketGuard { SOCKET fd; ~SocketGuard() { ::closesocket(fd); } } guard{fd};
+#else
   const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) return 2;
   struct SocketGuard { int fd; ~SocketGuard() { ::close(fd); } } guard{fd};
+#endif
   try {
+#ifdef _WIN32
+    const DWORD timeout = 5000;
+    const auto* timeout_bytes = reinterpret_cast<const char*>(&timeout);
+    if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, timeout_bytes, sizeof(timeout)) ||
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, timeout_bytes, sizeof(timeout)))
+#else
     timeval timeout{5, 0};
     if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) ||
         ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)))
+#endif
       throw std::runtime_error("socket timeout setup failed");
     sockaddr_in address{};
     address.sin_family = AF_INET;
@@ -39,7 +55,7 @@ int main(int argc, char** argv) {
     TlsClientConfig config;
     config.ca_file = argv[3];
     client.configure(config);
-    auto step = client.begin_socket(fd, argv[2]);
+    auto step = client.begin_socket(static_cast<std::intptr_t>(fd), argv[2]);
     if (step.state != TlsStepState::Complete)
       throw std::runtime_error("TLS initialization failed: " + step.message);
     step = client.handshake();
