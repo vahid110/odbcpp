@@ -731,3 +731,30 @@ matrix acceptance. This evidence covers sharing the configured provider; it does
 not claim support for arbitrary incompatible host versions, live-query behavior
 in the same host, Windows preloaded DLL collisions, or public SDK qualification.
 The existing actual-driver TLS/SCRAM gates remain separate requirements.
+
+## S2C Windows same-basename preload constraint — 2026-10-01
+
+The Windows package probe now resolves crypto dependency origins from the
+loaded driver's bound import addresses. Basename-only `GetModuleHandle` lookup
+cannot establish which copy serves the driver when multiple modules are present.
+The unchanged normal package case must still resolve both imports to installed
+files and match their inventory hashes and runtime version.
+
+Three fresh-process cases are mandatory: preloading the exact installed provider
+files succeeds; preloading byte-identical copies from a foreign directory must
+produce a specific bound-import origin collision; missing preload files must
+fail before the driver load rather than silently weaken the experiment. Retained
+logs and the package loader JSON bind report hashes and provider input hashes.
+The foreign-copy canary uses identical bytes deliberately: version or content
+hash matching alone cannot establish app-local dependency ownership.
+
+This records a known Windows shared-DLL limitation, not a prevention mechanism.
+The probe detects the foreign binding after driver loading; production entry
+points do not yet reject it. `foreignPreloadPreventedByDriver`, general
+`preloadedModuleCoexistenceVerified`, and `qualificationClaimed` remain false.
+Public qualification of this Windows row remains blocked on an explicit strategy
+for same-basename host modules (for example an isolated static profile or a
+supported private DLL naming strategy), with its own live and packaging tests.
+Do not add speculative loader-lock work to this probe or treat detection as
+secure rejection. The finite S2C matrix review must record this blocker and can
+separate further Windows isolation work from the shared SDK migration.

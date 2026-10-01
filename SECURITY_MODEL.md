@@ -277,3 +277,14 @@ An in-process driver cannot sandbox a host that intentionally preloads native
 code. Deployment qualification must therefore state who controls the host's
 loader environment and writable package directories, alongside update ownership.
 The evidence makes no protection claim against arbitrary hostile native code.
+
+Windows bundled-shared provider origin must be checked against bound driver
+imports, rather than a basename-only module lookup. The package preload canary
+now distinguishes identical installed files from byte-identical foreign copies,
+with an explicit missing-input failure. A detected foreign binding is a known
+qualification blocker: the test harness detects it after loading, and the driver
+has no production rejection mechanism for that case yet. DLL search flags and
+matching version/hash alone do not establish isolation from preloaded modules.
+A future prevention strategy needs separate implementation and live/package
+qualification; no loader-lock mitigation or safe-coexistence claim is inferred
+from the canary.

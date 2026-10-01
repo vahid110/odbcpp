@@ -812,3 +812,12 @@ actual-driver load/release, ODBC handle allocation, and overlapping loader
 references. Missing or incomplete evidence fails the summary gate. This is a
 bounded configured-provider sharing check; Windows same-basename preload
 coexistence and the final S2C matrix acceptance remain open.
+
+Windows bundled-shared preload acceptance has an explicit limitation: search
+flags do not establish app-local ownership when a host has already loaded a
+same-basename provider from another directory. Package CI requires a positive
+same-installed-file preload, a specific foreign bound-import collision canary,
+and a missing-preload canary, retaining input/report hashes. These checks are
+harness detection after load, not production prevention. Windows public provider
+qualification remains open for a reviewed isolation strategy; final S2C review
+must carry that blocker without extending SDK migration indefinitely.
