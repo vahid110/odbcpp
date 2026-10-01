@@ -3822,3 +3822,29 @@ TEST(NormalizedParameterTest, DescriptionFacetIsStableAndOwnsMetadataAcrossSessi
   EXPECT_EQ(18u, retained->normalized_parameter_types[0].column_size);
   EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), retained.session_snapshot());
 }
+
+TEST(CatalogQueryTest, OptionalCatalogFacetIsStableAndQueryOwnsBorrowedFilters) {
+  using namespace rs::core::database;
+  std::string retained;
+  {
+    postgres::PgDatabaseConnection backend("PostgreSQL", std::make_unique<ScriptedBackendTransport>(
+        ScriptedBackendTransport::ResponseMode::TransactionCompletions));
+    const IDatabaseConnection& session = backend;
+    const auto* facet = session.catalog_queries(); ASSERT_NE(nullptr, facet);
+    TablesCatalogRequest request; request.schema = "s'chema"; request.table = "t\\_%";
+    auto query = facet->catalog_query(request); ASSERT_TRUE(query);
+    retained = std::move(*query); request.schema = "overwritten"; request.table.reset();
+    EXPECT_NE(std::string::npos, retained.find("s''chema"));
+    EXPECT_EQ(std::string::npos, retained.find("overwritten"));
+    EXPECT_FALSE(session.is_connected()); EXPECT_EQ(SessionState::Disconnected, session.session_state());
+    ConnectionSettings settings; settings.use_ssl = false;
+    ASSERT_TRUE(backend.connect(settings)); EXPECT_EQ(facet, session.catalog_queries());
+    auto live = facet->catalog_query(ColumnsCatalogRequest{}); ASSERT_TRUE(live);
+    EXPECT_EQ(SessionState::Idle, session.session_state());
+    backend.disconnect(); EXPECT_EQ(facet, session.catalog_queries());
+    auto closed = facet->catalog_query(ColumnsCatalogRequest{}); ASSERT_TRUE(closed);
+    EXPECT_EQ(*live, *closed);
+  }
+  EXPECT_NE(std::string::npos, retained.find("s''chema"));
+  EXPECT_NE(std::string::npos, retained.find("table_name LIKE"));
+}

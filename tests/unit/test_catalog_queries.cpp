@@ -5,34 +5,23 @@
 
 using namespace rs::core::database;
 
-TEST(CatalogQueryTest, GenericBackendReportsUnsupportedWithoutConnection) {
+TEST(CatalogQueryTest, GenericBackendHasNoCatalogFacetWithoutUnsupportedStubs) {
   GenericDatabaseConnection backend(std::make_unique<odbcpp::test::MockProtocolParser>());
-  for (const CatalogRequest& request : {CatalogRequest{TablesCatalogRequest{}},
-       CatalogRequest{PrimaryKeysCatalogRequest{}},
-       CatalogRequest{ForeignKeysCatalogRequest{}},
-       CatalogRequest{ColumnsCatalogRequest{}},
-       CatalogRequest{StatisticsCatalogRequest{}},
-       CatalogRequest{ProceduresCatalogRequest{}},
-       CatalogRequest{ProcedureColumnsCatalogRequest{}},
-       CatalogRequest{SpecialColumnsCatalogRequest{}}}) {
-    const auto query = backend.catalog_query(request);
-    ASSERT_TRUE(query.has_error());
-    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature),
-              query.error());
-  }
-  EXPECT_FALSE(backend.is_connected());
+  const IDatabaseConnection& session = backend;
+  EXPECT_EQ(nullptr, session.catalog_queries());
+  EXPECT_FALSE(session.is_connected());
 }
 
 TEST(CatalogQueryTest, TablePatternsPreserveOmittedEmptyAndQuotedValues) {
   auto backend = DatabaseFactory::create_connection();
   TablesCatalogRequest request;
-  auto query = backend->catalog_query(request);
+  auto query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
   EXPECT_EQ(std::string::npos, query->find(" AND table_cat LIKE"));
   request.catalog = "";
   request.schema = "s'chema";
   request.table = "x\\_%";
-  query = backend->catalog_query(request);
+  query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
   EXPECT_NE(std::string::npos, query->find(" AND table_cat LIKE ''"));
   EXPECT_NE(std::string::npos, query->find(" AND table_schem LIKE 's''chema'"));
@@ -43,16 +32,16 @@ TEST(CatalogQueryTest, TablePatternsPreserveOmittedEmptyAndQuotedValues) {
 TEST(CatalogQueryTest, TableTypesDistinguishAllNoneAndExplicitList) {
   auto backend = DatabaseFactory::create_connection();
   TablesCatalogRequest request;
-  auto query = backend->catalog_query(request);
+  auto query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
   EXPECT_EQ(std::string::npos, query->find(" AND table_type IN"));
   EXPECT_EQ(std::string::npos, query->find(" AND FALSE"));
   request.types = std::vector<std::string>{};
-  query = backend->catalog_query(request);
+  query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
   EXPECT_NE(std::string::npos, query->find(" AND FALSE"));
   request.types = std::vector<std::string>{"TABLE", "VIEW"};
-  query = backend->catalog_query(request);
+  query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
   EXPECT_NE(std::string::npos, query->find(" AND table_type IN ('TABLE','VIEW')"));
 }
@@ -67,7 +56,7 @@ TEST(CatalogQueryTest, EnumerationModesDoNotApplyOrdinaryFilters) {
   for (const auto mode : {TablesCatalogRequest::Mode::Catalogs,
        TablesCatalogRequest::Mode::Schemas, TablesCatalogRequest::Mode::TableTypes}) {
     request.mode = mode;
-    const auto query = backend->catalog_query(request);
+    const auto query = backend->catalog_queries()->catalog_query(request);
     ASSERT_FALSE(query.has_error());
     EXPECT_EQ(std::string::npos, query->find("ignored"));
     EXPECT_EQ(std::string::npos, query->find(" AND FALSE"));
@@ -78,7 +67,7 @@ TEST(CatalogQueryTest, EnumerationModesDoNotApplyOrdinaryFilters) {
 
 TEST(CatalogQueryTest, PrimaryKeyFiltersUseLiteralNames) {
   auto backend = DatabaseFactory::create_connection();
-  const auto query = backend->catalog_query(PrimaryKeysCatalogRequest{
+  const auto query = backend->catalog_queries()->catalog_query(PrimaryKeysCatalogRequest{
       "", "s'%", "t'_%"});
   ASSERT_FALSE(query.has_error());
   EXPECT_NE(std::string::npos, query->find("keys.table_catalog = ''"));
@@ -92,7 +81,7 @@ TEST(CatalogQueryTest, ForeignKeyFiltersAndOrderingFollowRequestedSide) {
   auto backend = DatabaseFactory::create_connection();
   ForeignKeysCatalogRequest request;
   request.foreign_table = "f'_%";
-  auto query = backend->catalog_query(request);
+  auto query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
   EXPECT_NE(std::string::npos, query->find("fk_tables.relname = 'f''_%'"));
   EXPECT_EQ(std::string::npos, query->find("pk_tables.relname ="));
@@ -102,7 +91,7 @@ TEST(CatalogQueryTest, ForeignKeyFiltersAndOrderingFollowRequestedSide) {
   request.primary_schema = "";
   request.foreign_catalog = "db'";
   request.foreign_schema = "fs'";
-  query = backend->catalog_query(request);
+  query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
   EXPECT_NE(std::string::npos, query->find("pk_tables.relname = 'p''_%'"));
   EXPECT_NE(std::string::npos, query->find("current_database() = ''"));
@@ -115,10 +104,10 @@ TEST(CatalogQueryTest, ForeignKeyFiltersAndOrderingFollowRequestedSide) {
 
 TEST(CatalogQueryTest, ColumnsKeepLiteralCatalogAndPatternFilters) {
   auto backend = DatabaseFactory::create_connection();
-  const auto all = backend->catalog_query(ColumnsCatalogRequest{});
+  const auto all = backend->catalog_queries()->catalog_query(ColumnsCatalogRequest{});
   ASSERT_FALSE(all.has_error());
   EXPECT_EQ(std::string::npos, all->find(" AND table_cat ="));
-  const auto query = backend->catalog_query(ColumnsCatalogRequest{
+  const auto query = backend->catalog_queries()->catalog_query(ColumnsCatalogRequest{
       "db'%", "", "t\\_%", "c'%"});
   ASSERT_FALSE(query.has_error());
   EXPECT_NE(std::string::npos, query->find(" AND table_cat = 'db''%'"));
@@ -131,7 +120,7 @@ TEST(CatalogQueryTest, ColumnsKeepLiteralCatalogAndPatternFilters) {
 TEST(CatalogQueryTest, StatisticsKeepLiteralNamesAndUniqueFilter) {
   auto backend = DatabaseFactory::create_connection();
   StatisticsCatalogRequest request{"", "s'%", "t'_%", false};
-  auto query = backend->catalog_query(request);
+  auto query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
   EXPECT_NE(std::string::npos, query->find("current_database() = ''"));
   EXPECT_NE(std::string::npos, query->find("namespaces.nspname = 's''%'"));
@@ -139,7 +128,7 @@ TEST(CatalogQueryTest, StatisticsKeepLiteralNamesAndUniqueFilter) {
   EXPECT_EQ(std::string::npos, query->find(" LIKE "));
   EXPECT_EQ(std::string::npos, query->find(" AND indexes.indisunique"));
   request.unique_only = true;
-  query = backend->catalog_query(request);
+  query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
   EXPECT_NE(std::string::npos, query->find(" AND indexes.indisunique"));
   EXPECT_TRUE(query->ends_with("ORDER BY non_unique, type, index_qualifier, index_name, ordinal_position"));
@@ -147,10 +136,10 @@ TEST(CatalogQueryTest, StatisticsKeepLiteralNamesAndUniqueFilter) {
 
 TEST(CatalogQueryTest, ProceduresKeepOmittedEmptyAndEscapedPatterns) {
   auto backend = DatabaseFactory::create_connection();
-  const auto all = backend->catalog_query(ProceduresCatalogRequest{});
+  const auto all = backend->catalog_queries()->catalog_query(ProceduresCatalogRequest{});
   ASSERT_FALSE(all.has_error());
   EXPECT_EQ(std::string::npos, all->find(" AND current_database() ="));
-  const auto query = backend->catalog_query(ProceduresCatalogRequest{
+  const auto query = backend->catalog_queries()->catalog_query(ProceduresCatalogRequest{
       "db'%", "", "p'\\_%"});
   ASSERT_FALSE(query.has_error());
   EXPECT_NE(std::string::npos, query->find("current_database() = 'db''%'"));
@@ -161,10 +150,10 @@ TEST(CatalogQueryTest, ProceduresKeepOmittedEmptyAndEscapedPatterns) {
 
 TEST(CatalogQueryTest, ProcedureColumnsKeepLiteralCatalogAndColumnPatterns) {
   auto backend = DatabaseFactory::create_connection();
-  const auto all = backend->catalog_query(ProcedureColumnsCatalogRequest{});
+  const auto all = backend->catalog_queries()->catalog_query(ProcedureColumnsCatalogRequest{});
   ASSERT_FALSE(all.has_error());
   EXPECT_EQ(std::string::npos, all->find(" AND columns.column_name LIKE"));
-  const auto query = backend->catalog_query(ProcedureColumnsCatalogRequest{
+  const auto query = backend->catalog_queries()->catalog_query(ProcedureColumnsCatalogRequest{
       "db'%", "s\\_%", "p'%", ""});
   ASSERT_FALSE(query.has_error());
   EXPECT_NE(std::string::npos, query->find("columns.procedure_cat = 'db''%'"));
@@ -180,20 +169,20 @@ TEST(CatalogQueryTest, SpecialColumnsKeepScopeNullabilityAndLiteralNames) {
   request.catalog = "";
   request.schema = "s'%";
   request.table = "t'_%";
-  auto query = backend->catalog_query(request);
+  auto query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
   EXPECT_NE(std::string::npos, query->find("current_database() = ''"));
   EXPECT_NE(std::string::npos, query->find("schemas.nspname = 's''%'"));
   EXPECT_NE(std::string::npos, query->find("tables.relname = 't''_%'"));
   EXPECT_EQ(std::string::npos, query->find("AND NOT key_attributes.attnotnull"));
   request.require_non_nullable = true;
-  query = backend->catalog_query(request);
+  query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
   EXPECT_NE(std::string::npos, query->find("AND NOT key_attributes.attnotnull"));
   for (const auto scope : {SpecialColumnsCatalogRequest::Scope::Transaction,
                           SpecialColumnsCatalogRequest::Scope::Session}) {
     request.scope = scope;
-    query = backend->catalog_query(request);
+    query = backend->catalog_queries()->catalog_query(request);
     ASSERT_FALSE(query.has_error());
     EXPECT_TRUE(query->ends_with("WHERE FALSE"));
     EXPECT_NE(std::string::npos, query->find("AS pseudo_column"));
@@ -201,7 +190,7 @@ TEST(CatalogQueryTest, SpecialColumnsKeepScopeNullabilityAndLiteralNames) {
   }
   request.scope = SpecialColumnsCatalogRequest::Scope::CurrentRow;
   request.identifier = SpecialColumnsCatalogRequest::Identifier::RowVersion;
-  query = backend->catalog_query(request);
+  query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
   EXPECT_TRUE(query->ends_with("WHERE FALSE"));
 }

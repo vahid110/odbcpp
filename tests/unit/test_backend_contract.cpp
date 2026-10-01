@@ -68,6 +68,8 @@ template <typename T> concept HasSessionMarkerCounting = requires(const T& sessi
 template <typename T> concept HasRequiredTransaction = requires(T& session) { session.transaction(TransactionAction::Commit, Deadline::max()); };
 template <typename T> concept HasRequiredIsolation = requires(T& session) { session.set_transaction_isolation(TransactionIsolation::Serializable, Deadline::max()); };
 template <typename T> concept HasRequiredDescription = requires(T& session) { session.describe_statement("SELECT ?", std::span<const QueryParameterType>{}, Deadline::max()); };
+template <typename T> concept HasRequiredCatalog = requires(const T& session) { session.catalog_query(CatalogRequest{TablesCatalogRequest{}}); };
+static_assert(!HasRequiredCatalog<IDatabaseConnection>);
 static_assert(!HasRequiredDescription<IDatabaseConnection>);
 static_assert(!HasRequiredTransaction<IDatabaseConnection>);
 static_assert(!HasRequiredIsolation<IDatabaseConnection>);
@@ -88,9 +90,6 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
   }
   void disconnect() override { connected_ = false; ++seen_->disconnects; }
   bool is_connected() const override { return connected_; }
-  Result<std::string> catalog_query(const CatalogRequest&) const override {
-    return {DbErrorCode::UnsupportedFeature, "fake has no catalogs"};
-  }
   std::span<const TypeDefinition> type_catalog() const override {
     static const TypeDefinition types[]{
         {ScalarType::Binary, "octets", 8, {}, {}, {}, false, {}, {}, {}, 0},
@@ -1417,4 +1416,63 @@ TEST_F(BackendContractTest, AbsentDescriptionFacetRejectsMetadataWithoutIoAndExe
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
   ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
   EXPECT_EQ(0, seen->descriptions); EXPECT_EQ(2, seen->queries); EXPECT_EQ(0, seen->disconnects);
+}
+
+TEST_F(BackendContractTest, AbsentCatalogFacetRejectsAllCatalogApisAndPreservesCursor) {
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+  SQLCHAR name[] = "table";
+  SQLWCHAR wide_name[]{'t', 'a', 'b', 'l', 'e', 0};
+  const SQLUSMALLINT functions[]{SQL_API_SQLTABLES, SQL_API_SQLCOLUMNS,
+      SQL_API_SQLPRIMARYKEYS, SQL_API_SQLFOREIGNKEYS, SQL_API_SQLSTATISTICS,
+      SQL_API_SQLPROCEDURES, SQL_API_SQLPROCEDURECOLUMNS, SQL_API_SQLSPECIALCOLUMNS};
+  SQLUSMALLINT legacy[100]{}, bitmap[SQL_API_ODBC3_ALL_FUNCTIONS_SIZE]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(dbc, SQL_API_ALL_FUNCTIONS, legacy));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(dbc, SQL_API_ODBC3_ALL_FUNCTIONS, bitmap));
+  for (const auto function : functions) {
+    SCOPED_TRACE(function);
+    SQLUSMALLINT supported = SQL_TRUE;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(dbc, function, &supported));
+    EXPECT_EQ(SQL_FALSE, supported); EXPECT_EQ(SQL_FALSE, legacy[function]);
+    EXPECT_FALSE(SQL_FUNC_EXISTS(bitmap, function));
+    for (const bool wide : {false, true}) {
+      const auto invoke = [&]() -> SQLRETURN {
+        switch (function) {
+          case SQL_API_SQLTABLES: return wide
+              ? SQLTablesW(stmt, nullptr, 0, nullptr, 0, wide_name, SQL_NTS, nullptr, 0)
+              : SQLTables(stmt, nullptr, 0, nullptr, 0, name, SQL_NTS, nullptr, 0);
+          case SQL_API_SQLCOLUMNS: return wide
+              ? SQLColumnsW(stmt, nullptr, 0, nullptr, 0, wide_name, SQL_NTS, nullptr, 0)
+              : SQLColumns(stmt, nullptr, 0, nullptr, 0, name, SQL_NTS, nullptr, 0);
+          case SQL_API_SQLPRIMARYKEYS: return wide
+              ? SQLPrimaryKeysW(stmt, nullptr, 0, nullptr, 0, wide_name, SQL_NTS)
+              : SQLPrimaryKeys(stmt, nullptr, 0, nullptr, 0, name, SQL_NTS);
+          case SQL_API_SQLFOREIGNKEYS: return wide
+              ? SQLForeignKeysW(stmt, nullptr, 0, nullptr, 0, wide_name, SQL_NTS, nullptr, 0, nullptr, 0, nullptr, 0)
+              : SQLForeignKeys(stmt, nullptr, 0, nullptr, 0, name, SQL_NTS, nullptr, 0, nullptr, 0, nullptr, 0);
+          case SQL_API_SQLSTATISTICS: return wide
+              ? SQLStatisticsW(stmt, nullptr, 0, nullptr, 0, wide_name, SQL_NTS, SQL_INDEX_ALL, SQL_QUICK)
+              : SQLStatistics(stmt, nullptr, 0, nullptr, 0, name, SQL_NTS, SQL_INDEX_ALL, SQL_QUICK);
+          case SQL_API_SQLPROCEDURES: return wide
+              ? SQLProceduresW(stmt, nullptr, 0, nullptr, 0, wide_name, SQL_NTS)
+              : SQLProcedures(stmt, nullptr, 0, nullptr, 0, name, SQL_NTS);
+          case SQL_API_SQLPROCEDURECOLUMNS: return wide
+              ? SQLProcedureColumnsW(stmt, nullptr, 0, nullptr, 0, wide_name, SQL_NTS, nullptr, 0)
+              : SQLProcedureColumns(stmt, nullptr, 0, nullptr, 0, name, SQL_NTS, nullptr, 0);
+          default: return wide
+              ? SQLSpecialColumnsW(stmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0, wide_name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NULLABLE)
+              : SQLSpecialColumns(stmt, SQL_BEST_ROWID, nullptr, 0, nullptr, 0, name, SQL_NTS, SQL_SCOPE_CURROW, SQL_NULLABLE);
+        }
+      };
+      EXPECT_EQ(SQL_ERROR, invoke()); EXPECT_EQ("HYC00", state());
+      EXPECT_EQ(1, seen->queries); EXPECT_EQ(0, seen->descriptions); EXPECT_EQ(0, seen->disconnects);
+    }
+  }
+  SQLUSMALLINT supported{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(dbc, SQL_API_SQLEXECDIRECT, &supported)); EXPECT_EQ(SQL_TRUE, supported);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  EXPECT_EQ(2, seen->queries); EXPECT_EQ(0, seen->disconnects);
 }

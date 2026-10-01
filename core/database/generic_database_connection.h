@@ -24,9 +24,6 @@ public:
   virtual NativeTypeInfo describe_type(std::uint32_t id, std::int16_t size,
                                        std::int32_t modifier) const;
   
-  rs::util::Result<std::string> catalog_query(
-      const CatalogRequest& request) const override;
-
   std::span<const TypeDefinition> type_catalog() const override { return {}; }
 
   virtual std::optional<std::string> normalize_result_value(

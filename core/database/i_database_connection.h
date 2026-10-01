@@ -18,7 +18,7 @@
 #include "transaction_session.h"
 #include "statement_description.h"
 #include "backend_capabilities.h"
-#include "catalog_request.h"
+#include "catalog_queries.h"
 
 namespace rs::core::database {
 
@@ -104,10 +104,8 @@ public:
     return is_connected() ? SessionState::Unknown : SessionState::Disconnected;
   }
 
-  // Construct backend SQL without I/O; execution retains the caller's normal
-  // deadline, diagnostics and cursor handling. Unsupported catalogs return an error.
-  virtual rs::util::Result<std::string> catalog_query(
-      const CatalogRequest& request) const = 0;
+  // Optional catalog-query construction; absence does not restrict execution.
+  virtual const ICatalogQueries* catalog_queries() const noexcept { return nullptr; }
 
   // No I/O. Returned definitions and strings remain valid for the connection lifetime.
   // An empty catalog means the backend advertises no types.

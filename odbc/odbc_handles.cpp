@@ -4781,7 +4781,12 @@ SQLRETURN ODBCStatement::execute_catalog(
     set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
     return SQL_ERROR;
   }
-  auto query = conn_->get_db_connection()->catalog_query(request);
+  const auto* catalog = conn_->get_db_connection()->catalog_queries();
+  if (!catalog) {
+    set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED, "Data source does not support catalog discovery");
+    return SQL_ERROR;
+  }
+  auto query = catalog->catalog_query(request);
   if (query.has_error()) {
     set_error(request_sqlstate(query.error(), SQLSTATE_GENERAL_ERROR),
               query.error_message());
