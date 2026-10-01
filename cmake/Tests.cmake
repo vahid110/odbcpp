@@ -51,6 +51,14 @@ add_test(NAME test_crypto_identity_evidence_recording COMMAND ${CMAKE_COMMAND}
 set_tests_properties(test_crypto_runtime_identity test_crypto_identity_evidence_rules
   test_crypto_identity_evidence_recording
   PROPERTIES LABELS "unit;security" TIMEOUT 30)
+if(WIN32 AND ODBCPP_CRYPTO_LINKAGE STREQUAL "BUNDLED_SHARED")
+  # Build-tree probes have no packaged DLL siblings. Select their configured
+  # runtime prefix explicitly rather than whichever OpenSSL another tool puts
+  # first on the host PATH. Packaged-driver loader tests remain independent.
+  set_tests_properties(test_crypto_runtime_identity test_crypto_identity_evidence_recording
+    PROPERTIES ENVIRONMENT_MODIFICATION
+      "PATH=path_list_prepend:${ODBCPP_CRYPTO_ROOT_CANONICAL}/bin")
+endif()
 if(ODBCPP_CRYPTO_TLS_PROOF)
   if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$")
     message(FATAL_ERROR "The independent TLS qualification peer requires POSIX")

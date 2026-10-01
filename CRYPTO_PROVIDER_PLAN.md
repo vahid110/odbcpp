@@ -631,3 +631,11 @@ inside a loaded driver or loader-origin enforcement. Existing artifact-origin,
 TLS/live-driver and coexistence gates supply their separate evidence. OpenSSL
 rows remain open for their finite coexistence, Windows independent downgrade,
 package and matrix acceptance gaps. No public profile or FIPS claim is added.
+
+The first Windows gate detected an ambient runtime mismatch: configured/header
+OpenSSL 3.6.4 versus loaded 3.5.5. Bundled-shared build-tree identity probes now
+prepend the configured canonical prefix's bin directory through CTest environment
+modification. This selects their intended test dependency; it is not packaged
+loader isolation or host substitution prevention. The strict mismatch check
+remains and the observed mismatch is a regression fixture. Fresh-runner package
+origin tests continue independently.
