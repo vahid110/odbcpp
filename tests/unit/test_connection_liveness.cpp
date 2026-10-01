@@ -2711,7 +2711,9 @@ TEST(ResultBudgetTest, DiagnosticLimitCoversAuthenticationErrorsAndStartupNotice
         EXPECT_EQ(result.backend_error().operation, authentication ? BackendOperation::Authenticate : BackendOperation::Startup);
         EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Retire);
         EXPECT_EQ(observed->close_count(), 1u);
-        if (!exact) EXPECT_EQ(observed->bytes_read(), authentication ? 5u : 14u);
+        if (!exact) {
+          EXPECT_EQ(observed->bytes_read(), authentication ? 5u : 14u);
+        }
       }
     }
   }
