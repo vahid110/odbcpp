@@ -12,6 +12,8 @@
 
 namespace rs::core::database {
 
+// Quarantined test/example prototype; not installed or linked into shipped libraries.
+// Serializes protocol operations, but does not provide SDK reset/lease isolation.
 // Thread-safe wrapper for database connections
 class ThreadSafeConnection {
 public:

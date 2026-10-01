@@ -15,13 +15,15 @@ install(DIRECTORY core/
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}/core
   FILES_MATCHING PATTERN "*.h"
   PATTERN "security" EXCLUDE
+  PATTERN "connection_pool.h" EXCLUDE
 )
 
 # Install examples (optional)
 if(BUILD_EXAMPLES)
   install(DIRECTORY examples/
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/examples
-    FILES_MATCHING PATTERN "*.cpp"
+      FILES_MATCHING PATTERN "*.cpp"
+    PATTERN "connection_pool_example.cpp" EXCLUDE
   )
 endif()
 

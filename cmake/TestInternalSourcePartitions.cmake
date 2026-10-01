@@ -12,7 +12,6 @@ set(_base
   "${_root}/odbc/odbc_api.cpp")
 include("${_module}")
 odbcpp_partition_driver_sources(probe "${_root}" ${_base}
-  "${_root}/core/database/connection_pool.cpp"
   "${_root}/odbc/windows_registry.cpp"
   "${_root}/core/database/postgres/pg_protocol_parser.cpp"
   "${_root}/core/database/query_result.h"
@@ -22,13 +21,12 @@ list(LENGTH probe_backend _backend_count)
 list(LENGTH probe_composition _composition_count)
 list(LENGTH probe_odbc _odbc_count)
 if(NOT _runtime_count EQUAL 1 OR NOT _backend_count EQUAL 2 OR
-   NOT _composition_count EQUAL 2 OR NOT _odbc_count EQUAL 2)
+   NOT _composition_count EQUAL 1 OR NOT _odbc_count EQUAL 2)
   message(FATAL_ERROR "Partition ownership or duplicate normalization changed")
 endif()
 if(NOT "${_root}/core/database/generic_database_connection.cpp" IN_LIST probe_backend OR
-   NOT "${_root}/core/database/connection_pool.cpp" IN_LIST probe_composition OR
    NOT "${_root}/odbc/windows_registry.cpp" IN_LIST probe_odbc)
-  message(FATAL_ERROR "PostgreSQL-family, legacy pool or Windows ownership changed")
+  message(FATAL_ERROR "PostgreSQL-family or Windows ownership changed")
 endif()
 function(reject_fixture name sources expected)
   set(_script "${FIXTURE_DIR}/${name}.cmake")
@@ -43,3 +41,5 @@ reject_fixture(unknown "${_base};${_root}/core/database/new_session.cpp" "Unclas
 reject_fixture(escape "${_base};${_root}/../outside.cpp" "Unclassified internal source")
 reject_fixture(resource "${_base};${_root}/odbc/setup.rc" "Unsupported internal source")
 reject_fixture(empty "${_root}/core/transport/socket_transport.cpp" "Empty internal source partition: backend")
+
+reject_fixture(prototype "${_base};${_root}/core/database/connection_pool.cpp" "Prototype pool leaked into production partition")

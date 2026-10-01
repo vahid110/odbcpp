@@ -26,3 +26,4 @@ probe(odbc_parser "${INCLUDE_ROOT}/odbc" core/database/postgres/pg_protocol_pars
 probe(odbc_pool "${INCLUDE_ROOT}/odbc" core/database/connection_pool.h FALSE)
 probe(backend_odbc "${INCLUDE_ROOT}/backend" odbc/odbc_types.h FALSE)
 probe(composition_parser "${INCLUDE_ROOT}/composition" core/database/i_protocol_parser.h FALSE)
+probe(composition_pool "${INCLUDE_ROOT}/composition" core/database/connection_pool.h FALSE)

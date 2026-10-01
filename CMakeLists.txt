@@ -255,6 +255,17 @@ include(cmake/CompilerSettings.cmake)
 apply_compiler_settings(${PROJECT_NAME}_core)
 apply_compiler_settings(${PROJECT_NAME}_driver)
 
+# Quarantined legacy pool: only test/example clients may link this target.
+if(BUILD_TESTING OR BUILD_EXAMPLES)
+  set(ODBCPP_PARTITION_prototype "${CMAKE_CURRENT_SOURCE_DIR}/core/database/connection_pool.cpp")
+  odbcpp_stage_internal_includes(prototype)
+  add_library(odbcpp_prototype_pool STATIC ${ODBCPP_PARTITION_prototype})
+  target_compile_features(odbcpp_prototype_pool PRIVATE cxx_std_20)
+  target_include_directories(odbcpp_prototype_pool PRIVATE "${ODBCPP_INTERNAL_INCLUDE_prototype}")
+  target_link_libraries(odbcpp_prototype_pool PRIVATE "$<LINK_ONLY:odbcpp_core>")
+  apply_compiler_settings(odbcpp_prototype_pool)
+endif()
+
 # ---- Examples ----
 if(BUILD_EXAMPLES)
   include(cmake/Examples.cmake)
@@ -265,6 +276,14 @@ if(BUILD_TESTING)
   include(CTest)
   include(cmake/Tests.cmake)
 endif()
+
+odbcpp_check_prototype_target(${PROJECT_NAME}_core)
+odbcpp_check_prototype_target(${PROJECT_NAME}_driver)
+foreach(_artifact IN ITEMS ${PROJECT_NAME}_core ${PROJECT_NAME}_driver)
+  foreach(_part IN ITEMS runtime backend composition odbc)
+    odbcpp_check_prototype_target(${_artifact}_${_part})
+  endforeach()
+endforeach()
 
 # ---- Installation ----
 include(cmake/Install.cmake)

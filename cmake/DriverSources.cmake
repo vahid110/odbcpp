@@ -14,6 +14,8 @@ file(GLOB CORE_BASE_SOURCES
   "${_root}/core/util/*.cpp"
 )
 
+# Prototype pooling is test/example scaffolding, never a production artifact.
+list(FILTER CORE_BASE_SOURCES EXCLUDE REGEX "/connection_pool\\.(cpp|h)$")
 set(CORE_SOURCES ${CORE_BASE_SOURCES})
 list(APPEND CORE_SOURCES "${_root}/product/compiled_backend.cpp")
 
@@ -46,9 +48,6 @@ else()
   message(FATAL_ERROR "Unknown TARGET_DATABASE: ${TARGET_DATABASE}")
 endif()
 
-# Add connection pool
-list(APPEND CORE_SOURCES "${_root}/core/database/connection_pool.cpp" "${_root}/core/database/connection_pool.h")
-
 # Add async transport
 list(APPEND CORE_SOURCES 
   "${_root}/core/transport/async_transport.h"
@@ -79,5 +78,7 @@ if(WIN32)
   list(APPEND CORE_SOURCES "${_root}/odbc/windows_registry.cpp" "${_root}/odbc/windows_registry.h")
 endif()
 
+  include("${_root}/cmake/PrototypePool.cmake")
+  odbcpp_check_prototype_quarantine(${CORE_SOURCES})
   set(${output} "${CORE_SOURCES}" PARENT_SCOPE)
 endfunction()

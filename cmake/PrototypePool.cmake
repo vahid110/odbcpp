@@ -1,0 +1,17 @@
+# Prototype code is never part of shipped core/driver sources or link interfaces.
+function(odbcpp_check_prototype_quarantine)
+  foreach(_source IN LISTS ARGN)
+    if(_source MATCHES "(^|/)connection_pool\\.(cpp|h)$")
+      message(FATAL_ERROR "Prototype pool leaked into production source inventory: ${_source}")
+    endif()
+  endforeach()
+endfunction()
+
+function(odbcpp_check_prototype_target target)
+  foreach(_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES SOURCES INTERFACE_SOURCES)
+    get_target_property(_values "${target}" "${_property}")
+    if("${_values}" MATCHES "odbcpp_prototype_pool|connection_pool\\.(cpp|h)")
+      message(FATAL_ERROR "Prototype pool leaked into production target ${target}: ${_property}")
+    endif()
+  endforeach()
+endfunction()

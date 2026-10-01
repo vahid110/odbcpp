@@ -37,7 +37,4 @@ public:
   static DatabaseType detect_from_port(uint16_t port);
 };
 
-// Forward declaration
-class ConnectionPool;
-
 } // namespace rs::core::database

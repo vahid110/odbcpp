@@ -6,6 +6,9 @@ foreach(example_file ${EXAMPLE_SOURCES})
   
   add_executable(${example_name} ${example_file})
   target_link_libraries(${example_name} PRIVATE ${PROJECT_NAME}::core)
+  if(example_name STREQUAL "connection_pool_example")
+    target_link_libraries(${example_name} PRIVATE odbcpp_prototype_pool)
+  endif()
   apply_compiler_settings(${example_name})
   
   # Set output directory

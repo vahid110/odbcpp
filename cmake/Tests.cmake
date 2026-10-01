@@ -17,6 +17,9 @@ function(add_test_executable test_name test_file)
     ${PROJECT_NAME}::core 
     GTest::gtest_main
   )
+  if(test_name MATCHES "^(test_connection_pool|test_thread_safety|it_connection_pool)$")
+    target_link_libraries(${test_name} PRIVATE odbcpp_prototype_pool)
+  endif()
   apply_compiler_settings(${test_name})
   
   add_test(NAME ${test_name} COMMAND ${test_name})
@@ -423,3 +426,15 @@ set(INCLUDE_ROOT "${CMAKE_CURRENT_BINARY_DIR}/internal-include")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ProbeInternalIncludes.cmake")
 set_tests_properties(test_internal_include_closure
   PROPERTIES LABELS "unit;architecture" TIMEOUT 90)
+
+add_test(NAME test_prototype_pool_quarantine COMMAND "${CMAKE_COMMAND}"
+  "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+  "-DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}" "-DCONFIG=$<CONFIG>"
+  -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestPrototypePool.cmake")
+set_tests_properties(test_prototype_pool_quarantine PROPERTIES LABELS "unit;architecture" TIMEOUT 60)
+add_test(NAME test_prototype_pool_artifacts COMMAND "${CMAKE_COMMAND}"
+  "-DCORE=$<TARGET_FILE:odbcpp_core>" "-DDRIVER=$<TARGET_FILE:odbcpp_driver>"
+  "-DPROTOTYPE=$<TARGET_FILE:odbcpp_prototype_pool>"
+  "-DINSPECTOR=${ODBCPP_DRIVER_EXPORT_INSPECTOR}" "-DPLATFORM=${CMAKE_SYSTEM_NAME}"
+  -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckPrototypeArtifacts.cmake")
+set_tests_properties(test_prototype_pool_artifacts PROPERTIES LABELS "unit;architecture" TIMEOUT 60)
