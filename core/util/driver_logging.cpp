@@ -158,10 +158,23 @@ spdlog::level::level_enum spdlog_level(LogLevel level) noexcept {
   return spdlog::level::off;
 }
 
+// Keep valid UTF-8 intact at a byte boundary. Invalid source bytes remain a
+// separate input-validation concern; this helper never splits a valid character.
+std::string_view bounded_component(std::string_view value, std::size_t limit) {
+  if (value.size() <= limit) return value;
+  auto end = limit;
+  if ((static_cast<unsigned char>(value[end]) & 0xc0) == 0x80) {
+    while (end > 0 && (static_cast<unsigned char>(value[end]) & 0xc0) == 0x80) --end;
+  }
+  return value.substr(0, end);
+}
+
 std::string json_escape(std::string_view value) {
   static constexpr char hex[] = "0123456789abcdef";
+  const bool truncated = value.size() > max_log_value_bytes;
+  value = bounded_component(value, max_log_value_bytes);
   std::string result;
-  result.reserve(value.size() + 8);
+  result.reserve(value.size() + 16);
   for (const unsigned char character : value) {
     switch (character) {
       case '"': result += "\\\""; break;
@@ -181,22 +194,34 @@ std::string json_escape(std::string_view value) {
         }
     }
   }
+  if (truncated) result += "[truncated]";
   return result;
 }
 
 std::string text_escape(std::string_view value) {
+  static constexpr char hex[] = "0123456789abcdef";
+  const bool truncated = value.size() > max_log_value_bytes;
+  value = bounded_component(value, max_log_value_bytes);
   std::string result;
-  result.reserve(value.size() + 8);
-  for (const char character : value) {
+  result.reserve(value.size() + 16);
+  for (const unsigned char character : value) {
     switch (character) {
       case '"': result += "\\\""; break;
       case '\\': result += "\\\\"; break;
       case '\n': result += "\\n"; break;
       case '\r': result += "\\r"; break;
       case '\t': result += "\\t"; break;
-      default: result.push_back(character); break;
+      default:
+        if (character < 0x20 || character == 0x7f) {
+          result += "\\x";
+          result.push_back(hex[character >> 4]);
+          result.push_back(hex[character & 0x0f]);
+        } else {
+          result.push_back(static_cast<char>(character));
+        }
     }
   }
+  if (truncated) result += "[truncated]";
   return result;
 }
 
@@ -348,19 +373,19 @@ void DriverLogger::log(LogLevel level, std::string_view event,
   try {
     std::ostringstream output;
     if (options_.format == LogFormat::Json) {
-      output << "{\"event\":\"" << json_escape(event)
+      output << "{\"event\":\"" << json_escape(bounded_component(event, max_log_key_bytes))
              << "\",\"connection_id\":" << connection_id_
              << ",\"message\":\"" << json_escape(message) << '"';
       for (const auto& field : fields) {
-        output << ",\"" << json_escape(field.key) << "\":\""
+        output << ",\"" << json_escape(bounded_component(field.key, max_log_key_bytes)) << "\":\""
                << json_escape(field.value) << '"';
       }
       output << '}';
     } else {
-      output << "event=" << event << " connection_id=" << connection_id_
+      output << "event=" << text_escape(bounded_component(event, max_log_key_bytes)) << " connection_id=" << connection_id_
              << " message=\"" << text_escape(message) << '"';
       for (const auto& field : fields) {
-        output << ' ' << field.key << "=\"" << text_escape(field.value)
+        output << ' ' << text_escape(bounded_component(field.key, max_log_key_bytes)) << "=\"" << text_escape(field.value)
                << '"';
       }
     }

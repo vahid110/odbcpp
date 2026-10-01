@@ -15,6 +15,10 @@ enum class LogLevel { Off, Error, Warn, Info, Debug, Trace };
 enum class LogFormat { Text, Json };
 enum class LogSink { File, Stderr, Syslog };
 
+// Input byte bounds apply before escaping; truncation never appends raw bytes.
+inline constexpr std::size_t max_log_value_bytes = 1024;
+inline constexpr std::size_t max_log_key_bytes = 64;
+
 struct LoggingOptions {
   LogLevel level{LogLevel::Off};
   LogFormat format{LogFormat::Text};

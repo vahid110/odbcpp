@@ -398,3 +398,95 @@ TEST(DriverLoggerTest, DeliversAsynchronousRecords) {
 }
 
 } // namespace
+
+TEST(DriverLoggerTest, BoundsAndEscapesUntrustedRecordComponents) {
+  for (const auto format : {LogFormat::Text, LogFormat::Json}) {
+    const auto directory = temporary_directory("odbcpp-bounded-log");
+    const auto path = directory / "driver.log";
+    LoggingOptions options;
+    options.level = LogLevel::Info;
+    options.format = format;
+    options.sinks = {LogSink::File};
+    options.file = path.string();
+    options.asynchronous = false;
+    auto logger = DriverLogger::create(options, 42);
+    std::string hostile("line\n\0", 6);
+    hostile.push_back('\x1b');
+    hostile += std::string(2048, 'a') + "unbounded-tail";
+    logger->log(LogLevel::Info, "event\nforged", hostile,
+                {{"key\nforged", hostile}});
+    logger->flush();
+    logger.reset();
+    const auto contents = read_file(path);
+    EXPECT_EQ(std::string::npos, contents.find('\0'));
+    EXPECT_EQ(std::string::npos, contents.find('\x1b'));
+    EXPECT_EQ(std::string::npos, contents.find("\nforged"));
+    EXPECT_EQ(std::string::npos, contents.find("unbounded-tail"));
+    EXPECT_NE(std::string::npos, contents.find("[truncated]"));
+    EXPECT_EQ(1, std::count(contents.begin(), contents.end(), '\n'));
+    EXPECT_LT(contents.size(), 3000u);
+    std::filesystem::remove_all(directory);
+  }
+}
+
+TEST(DriverLoggerTest, FailureSummaryKeepsSensitiveDsnOnlyInOdbcDiagnostic) {
+  const auto directory = temporary_directory("odbcpp-safe-failure-log");
+  const auto path = directory / "driver.log";
+  SQLHENV environment = SQL_NULL_HENV;
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+      reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+  const std::string marker = "odbcpp-secret-dsn-928174";
+  const std::string input = "DSN=" + marker + ";LogLevel=Trace;LogSink=File;LogFile=" +
+      path.string() + ";LogAsync=false";
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnect(connection, nullptr,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(input.c_str())), SQL_NTS,
+      nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  SQLCHAR message[1024]{};
+  SQLCHAR state[6]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, connection, 1, state,
+      nullptr, message, sizeof(message), nullptr));
+  EXPECT_NE(std::string::npos, std::string(reinterpret_cast<char*>(message)).find(marker));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+  const auto contents = read_file(path);
+  EXPECT_NE(std::string::npos, contents.find("Database connection failed"));
+  EXPECT_EQ(std::string::npos, contents.find(marker));
+  std::filesystem::remove_all(directory);
+}
+
+TEST(DriverLoggerTest, JsonBoundsPreserveMultibyteCharacterBoundaries) {
+  const auto directory = temporary_directory("odbcpp-utf8-log");
+  const auto path = directory / "driver.log";
+  LoggingOptions options;
+  options.level = LogLevel::Info;
+  options.format = LogFormat::Json;
+  options.sinks = {LogSink::File};
+  options.file = path.string();
+  options.asynchronous = false;
+  auto logger = DriverLogger::create(options, 42);
+  for (const std::string& character : {std::string("\xc3\xa9"), std::string("\xe2\x82\xac"), std::string("\xf0\x9f\x98\x80")}) {
+    for (std::size_t split = 1; split < character.size(); ++split) {
+      const std::string event = std::string(64 - split, 'k') + character;
+      const std::string value = std::string(1024 - split, 'v') + character;
+      logger->log(LogLevel::Info, event, value, {{event, value}});
+    }
+    const auto exact = std::string(1024 - character.size(), 'v') + character;
+    logger->log(LogLevel::Info, "exact", exact);
+  }
+  logger->flush();
+  logger.reset();
+  const auto contents = read_file(path);
+  for (const std::string& character : {std::string("\xc3\xa9"), std::string("\xe2\x82\xac"), std::string("\xf0\x9f\x98\x80")}) {
+    for (std::size_t split = 1; split < character.size(); ++split) {
+      EXPECT_NE(std::string::npos, contents.find("\"event\":\"" + std::string(64 - split, 'k') + "\""));
+      EXPECT_NE(std::string::npos, contents.find("\"message\":\"" + std::string(1024 - split, 'v') + "[truncated]\""));
+    }
+    EXPECT_NE(std::string::npos, contents.find(std::string(1024 - character.size(), 'v') + character + "\""));
+  }
+  RecordProperty("utf8_json", contents);
+  EXPECT_EQ(9, std::count(contents.begin(), contents.end(), '\n'));
+  std::filesystem::remove_all(directory);
+}
