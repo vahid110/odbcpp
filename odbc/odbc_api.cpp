@@ -5,6 +5,7 @@
 #include "odbc_handles.h"
 #include "core/database/sql_translation.h"
 #include "unicode.h"
+#include "resource_limits.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -48,27 +49,43 @@ namespace {
     return std::string(reinterpret_cast<char*>(str), length);
   }
 
-  std::optional<std::string> bounded_sql_text(ODBCStatement& statement,
-      const SQLCHAR* text, SQLINTEGER length) {
-    const auto limit = statement.sql_input_limit();
+  std::optional<std::string> bounded_narrow_input(ODBCHandle& handle,
+      const SQLCHAR* text, SQLINTEGER length, std::size_t limit,
+      const char* limit_message) {
+    if (!text) return std::string{};
     std::size_t bytes = 0;
     if (length == SQL_NTS) {
-      while (text[bytes] != 0) {
-        if (bytes == limit) break;
-        ++bytes;
-      }
+      while (bytes < limit && text[bytes] != 0) ++bytes;
       if (bytes == limit && text[bytes] != 0) {
-        statement.set_error(SQLSTATE_GENERAL_ERROR, "SQL input byte limit exceeded");
+        handle.set_error(SQLSTATE_GENERAL_ERROR, limit_message);
         return std::nullopt;
       }
     } else {
       bytes = static_cast<std::size_t>(length);
       if (bytes > limit) {
-        statement.set_error(SQLSTATE_GENERAL_ERROR, "SQL input byte limit exceeded");
+        handle.set_error(SQLSTATE_GENERAL_ERROR, limit_message);
         return std::nullopt;
       }
     }
     return std::string(reinterpret_cast<const char*>(text), bytes);
+  }
+
+  std::optional<std::string> bounded_sql_text(ODBCStatement& statement,
+      const SQLCHAR* text, SQLINTEGER length) {
+    return bounded_narrow_input(statement, text, length,
+        statement.sql_input_limit(), "SQL input byte limit exceeded");
+  }
+
+  std::optional<std::string> bounded_connection_wide(ODBCConnection& connection,
+      const SQLWCHAR* text, SQLSMALLINT length) {
+    bool exceeded = false;
+    auto value = sqlwchar_to_utf8_bounded(
+        text, length, connection_capture_max_bytes, exceeded);
+    if (!value) {
+      connection.set_error(exceeded ? SQLSTATE_GENERAL_ERROR : SQLSTATE_INVALID_CHARACTER_VALUE,
+          exceeded ? "Connection input byte limit exceeded" : "Invalid wide-character connection input");
+    }
+    return value;
   }
 
   std::optional<std::string> first_unknown_connection_keyword(
@@ -727,15 +744,23 @@ static SQLRETURN SQLConnect_impl(SQLHDBC connection_handle,
     return SQL_ERROR;
   }
   
-  std::string dsn = sqlchar_to_string(server_name, name_length1);
+  const auto dsn = bounded_narrow_input(*conn, server_name, name_length1,
+      connection_capture_max_bytes, "Connection input byte limit exceeded");
+  if (!dsn) return SQL_ERROR;
   std::optional<std::string> user;
   std::optional<std::string> password;
-  if (user_name) user = sqlchar_to_string(user_name, name_length2);
-  if (authentication) {
-    password = sqlchar_to_string(authentication, name_length3);
+  if (user_name) {
+    user = bounded_narrow_input(*conn, user_name, name_length2,
+        connection_capture_max_bytes, "Connection input byte limit exceeded");
+    if (!user) return SQL_ERROR;
   }
-  
-  return conn->connect(dsn, user, password);
+  if (authentication) {
+    password = bounded_narrow_input(*conn, authentication, name_length3,
+        connection_capture_max_bytes, "Connection input byte limit exceeded");
+    if (!password) return SQL_ERROR;
+  }
+
+  return conn->connect(*dsn, user, password);
 }
 
 static SQLRETURN SQLConnectW_impl(SQLHDBC connection_handle,
@@ -752,17 +777,17 @@ static SQLRETURN SQLConnectW_impl(SQLHDBC connection_handle,
     return SQL_ERROR;
   }
 
-  const auto dsn = sqlwchar_to_utf8(server_name, name_length1);
-  const auto user = user_name
-      ? sqlwchar_to_utf8(user_name, name_length2)
-      : std::optional<std::string>{};
-  const auto password = authentication
-      ? sqlwchar_to_utf8(authentication, name_length3)
-      : std::optional<std::string>{};
-  if (!dsn || (user_name && !user) || (authentication && !password)) {
-    conn->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Invalid wide-character connection input");
-    return SQL_ERROR;
+  const auto dsn = bounded_connection_wide(*conn, server_name, name_length1);
+  if (!dsn) return SQL_ERROR;
+  std::optional<std::string> user;
+  std::optional<std::string> password;
+  if (user_name) {
+    user = bounded_connection_wide(*conn, user_name, name_length2);
+    if (!user) return SQL_ERROR;
+  }
+  if (authentication) {
+    password = bounded_connection_wide(*conn, authentication, name_length3);
+    if (!password) return SQL_ERROR;
   }
   return conn->connect(*dsn, user, password);
 }
@@ -803,8 +828,10 @@ static SQLRETURN SQLDriverConnect_impl(
     return SQL_ERROR;
   }
 
-  const auto connection_string =
-      sqlchar_to_string(connection_string_in, string_length1);
+  const auto captured = bounded_narrow_input(*conn, connection_string_in,
+      string_length1, connection_capture_max_bytes, "Connection input byte limit exceeded");
+  if (!captured) return SQL_ERROR;
+  const auto& connection_string = *captured;
   const auto connect_result = conn->connect(connection_string);
   if (connect_result != SQL_SUCCESS) return connect_result;
   const auto unknown = first_unknown_connection_keyword(connection_string);
@@ -861,12 +888,8 @@ static SQLRETURN SQLDriverConnectW_impl(
   }
 
   const auto connection_string =
-      sqlwchar_to_utf8(connection_string_in, string_length1);
-  if (!connection_string) {
-    conn->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Invalid wide-character connection string");
-    return SQL_ERROR;
-  }
+      bounded_connection_wide(*conn, connection_string_in, string_length1);
+  if (!connection_string) return SQL_ERROR;
   const auto connect_result = conn->connect(*connection_string);
   if (connect_result != SQL_SUCCESS) return connect_result;
   const auto unknown = first_unknown_connection_keyword(*connection_string);

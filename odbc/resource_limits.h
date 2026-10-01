@@ -8,6 +8,10 @@
 
 namespace rs::odbc {
 
+// Configuration is unavailable before capture; the input cannot raise its own
+// parsing ceiling. This is independent of the resolved per-field SDK limit.
+inline constexpr std::size_t connection_capture_max_bytes = 1024 * 1024;
+
 // Apply the resolver's already merged, uppercase configuration keys.
 inline void parse_resource_limits(const std::map<std::string, std::string>& parameters,
                                  rs::core::database::ConnectionOptions& options) {

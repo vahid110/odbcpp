@@ -764,3 +764,118 @@ TEST_F(BackendContractTest, ZeroParameterCountAllowsUnparameterizedPreparation) 
   EXPECT_TRUE(seen->parameters.empty());
   EXPECT_EQ("native:rows", seen->sql);
 }
+
+TEST_F(BackendContractTest, NarrowConnectionCaptureRejectsOversizeBeforeCreationAndOutput) {
+  constexpr std::size_t cap = 1024 * 1024;
+  std::string input = "SSL=0;DESCRIPTION=";
+  input.resize(cap + 1, 'x');
+  SQLCHAR output[]{'o', 'k', 0}; SQLSMALLINT output_length = 77;
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnect(dbc, nullptr, (SQLCHAR*)input.data(), SQL_NTS,
+      output, sizeof(output), &output_length, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc));
+  EXPECT_EQ(0, seen->created); EXPECT_EQ(0, seen->transports);
+  EXPECT_EQ(77, output_length); EXPECT_STREQ("ok", (const char*)output);
+  input.resize(cap);
+  ASSERT_EQ(SQL_SUCCESS, SQLDriverConnect(dbc, nullptr, (SQLCHAR*)input.data(), SQL_NTS,
+      nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ(1, seen->created);
+  const auto disconnects = seen->disconnects;
+  input.push_back('x');
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnect(dbc, nullptr, (SQLCHAR*)input.data(), SQL_NTS,
+      output, sizeof(output), &output_length, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc));
+  EXPECT_EQ(disconnects, seen->disconnects);
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  EXPECT_EQ(SQL_SUCCESS, execute("rows"));
+}
+
+TEST_F(BackendContractTest, WideConnectionCaptureBoundsActualUtf8Expansion) {
+  constexpr std::size_t cap = 1024 * 1024;
+  const std::string prefix = "SSL=0;DESCRIPTION=";
+  std::vector<SQLWCHAR> input(prefix.begin(), prefix.end());
+  const auto euro_count = (cap - prefix.size()) / 3;
+  input.insert(input.end(), euro_count, SQLWCHAR(0x20ac));
+  input.insert(input.end(), (cap - prefix.size()) % 3, SQLWCHAR('x'));
+  input.push_back('x'); input.push_back(0);
+  SQLWCHAR output[]{'o', 'k', 0}; SQLSMALLINT output_length = 77;
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnectW(dbc, nullptr, input.data(), SQL_NTS,
+      output, 3, &output_length, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc));
+  EXPECT_EQ(0, seen->created); EXPECT_EQ(77, output_length);
+  EXPECT_EQ(SQLWCHAR('o'), output[0]); EXPECT_EQ(SQLWCHAR('k'), output[1]);
+  input[input.size() - 2] = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLDriverConnectW(dbc, nullptr, input.data(), SQL_NTS,
+      nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ(1, seen->created);
+}
+
+TEST_F(BackendContractTest, ConnectFieldCaptureBoundsEachAnsiAndWideInput) {
+  constexpr std::size_t cap = 1024 * 1024;
+  std::string excessive(cap + 1, 'x');
+  std::vector<SQLWCHAR> wide_excessive(cap + 2, 'x'); wide_excessive.back() = 0;
+  SQLCHAR dsn[] = "SSL=0", user[] = "test", password[] = "secret";
+  SQLWCHAR wide_dsn[]{'S','S','L','=','0',0}, wide_user[]{'t',0}, wide_password[]{'s',0};
+  for (int field = 0; field < 3; ++field) {
+    EXPECT_EQ(SQL_ERROR, SQLConnect(dbc,
+        field == 0 ? (SQLCHAR*)excessive.data() : dsn, SQL_NTS,
+        field == 1 ? (SQLCHAR*)excessive.data() : user, SQL_NTS,
+        field == 2 ? (SQLCHAR*)excessive.data() : password, SQL_NTS));
+    EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(0, seen->created);
+    EXPECT_EQ(SQL_ERROR, SQLConnectW(dbc,
+        field == 0 ? wide_excessive.data() : wide_dsn, SQL_NTS,
+        field == 1 ? wide_excessive.data() : wide_user, SQL_NTS,
+        field == 2 ? wide_excessive.data() : wide_password, SQL_NTS));
+    EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(0, seen->created);
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLConnect(dbc, dsn, SQL_NTS, user, 2, password, 3));
+  EXPECT_EQ("te", seen->settings.user); EXPECT_EQ("sec", seen->settings.password);
+}
+
+TEST_F(BackendContractTest, ConnectFieldsAcceptExactBootstrapLimit) {
+  constexpr std::size_t cap = 1024 * 1024;
+  std::string dsn = "SSL=0;MaxConnectionFieldBytes=1048576;DESCRIPTION=";
+  dsn.resize(cap, 'x');
+  std::string field(cap, 'u');
+  ASSERT_EQ(SQL_SUCCESS, SQLConnect(dbc, (SQLCHAR*)dsn.data(), SQL_NTS,
+      (SQLCHAR*)field.data(), SQL_NTS, (SQLCHAR*)field.data(), SQL_NTS));
+  EXPECT_EQ(cap, seen->settings.user.size()); EXPECT_EQ(cap, seen->settings.password.size());
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  std::vector<SQLWCHAR> wide_dsn(dsn.begin(), dsn.end()); wide_dsn.push_back(0);
+  std::vector<SQLWCHAR> wide_field(field.begin(), field.end()); wide_field.push_back(0);
+  ASSERT_EQ(SQL_SUCCESS, SQLConnectW(dbc, wide_dsn.data(), SQL_NTS,
+      wide_field.data(), SQL_NTS, wide_field.data(), SQL_NTS));
+  EXPECT_EQ(cap, seen->settings.user.size()); EXPECT_EQ(cap, seen->settings.password.size());
+}
+
+TEST_F(BackendContractTest, WideConnectFieldsKeepMalformedAndExplicitEmptySemantics) {
+  SQLWCHAR dsn[]{'S','S','L','=','0',0}, malformed[]{0xd800,0}, text[]{'x',0};
+  for (int field = 0; field < 3; ++field) {
+    EXPECT_EQ(SQL_ERROR, SQLConnectW(dbc,
+        field == 0 ? malformed : dsn, static_cast<SQLSMALLINT>(field == 0 ? 1 : SQL_NTS),
+        field == 1 ? malformed : text, 1,
+        field == 2 ? malformed : text, 1));
+    EXPECT_EQ("22018", state(SQL_HANDLE_DBC, dbc)); EXPECT_EQ(0, seen->created);
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLConnectW(dbc, dsn, SQL_NTS, text, 0, text, 0));
+  EXPECT_EQ("", seen->settings.user); EXPECT_EQ("", seen->settings.password);
+}
+
+TEST_F(BackendContractTest, WideDriverCapturePreservesUnicodeAndLengthErrors) {
+  SQLWCHAR invalid[]{0xd800, 0};
+  SQLWCHAR output[]{'o', 0}; SQLSMALLINT output_length = 77;
+  for (const SQLSMALLINT length : {SQLSMALLINT(1), SQLSMALLINT(SQL_NTS)}) {
+    EXPECT_EQ(SQL_ERROR, SQLDriverConnectW(dbc, nullptr, invalid, length,
+        output, 2, &output_length, SQL_DRIVER_NOPROMPT));
+    EXPECT_EQ("22018", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(0, seen->created); EXPECT_EQ(77, output_length); EXPECT_EQ(SQLWCHAR('o'), output[0]);
+  }
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnectW(dbc, nullptr, invalid, -2,
+      output, 2, &output_length, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("HY090", state(SQL_HANDLE_DBC, dbc)); EXPECT_EQ(0, seen->created);
+  SQLWCHAR valid[]{'S','S','L','=','0','x'};
+  ASSERT_EQ(SQL_SUCCESS, SQLDriverConnectW(dbc, nullptr, valid, 5,
+      nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  EXPECT_FALSE(seen->settings.use_ssl);
+}
