@@ -657,3 +657,21 @@ The private PostgreSQL codec is shared by the PostgreSQL session and the
 lower-level session/parser composition used by provider proofs. Both paths
 have valid/malformed wire snapshot tests; the AWS-LC live proof checks canonical
 Boolean output and an empty cell-error ledger.
+
+## S2 canonical UTF-8 text cells — 2026-10-01
+
+The PostgreSQL-family session validates Char, VarChar and LongVarChar cells
+before returning primary/additional results. Valid UTF-8 bytes are preserved
+in place, including embedded NULs; empty and NULL remain distinct. Malformed
+text is discarded and represented by the same owning deferred cell-error
+coordinates used for binary/Boolean values. Fetch/GetData reports 22018 for
+requested cells, preserving affected buffers and indicators for ANSI, wide and
+binary targets; unrequested malformed cells do not fail execution or fetch.
+Tests cover both session compositions, all three text families, Unicode limits,
+overlong/surrogate/out-of-range/truncated encodings, immutable snapshots and
+protocol/next-row recovery. Binary bytes bypass UTF-8 validation.
+
+This is text-cell validation, not transcoding or metadata-name normalization.
+Numeric/temporal canonical forms, native migration-field removal, ordered
+execution and session/reuse facets remain S2 work. Existing wire/count ceilings
+apply; no exact heap quota or additional provider qualification is claimed.

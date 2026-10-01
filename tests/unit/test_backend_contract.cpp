@@ -3,6 +3,7 @@
 #include "odbc/odbc_handles.h"
 #include "tests/test_handle_helpers.h"
 #include "core/util/hex.h"
+#include "odbc/unicode.h"
 
 #include <algorithm>
 #include <cstring>
@@ -24,7 +25,7 @@ struct Observations {
   std::string sql;
   std::vector<QueryParameter> parameters;
   Deadline deadline{};
-  bool malformed_value{}, malformed_state{};
+  bool malformed_value{}, malformed_state{}, malformed_text{};
   std::string failure_message = "fake error";
   bool setup_allocation_failure{false};
   bool missing_parameter_metadata{}, parameter_metadata_error{};
@@ -100,6 +101,11 @@ class FakeBackend final : public IDatabaseConnection {
     if (seen_->malformed_value) {
       result.rows[0][0] = "";
       result.cell_errors.push_back({0, 0});
+    }
+    if (seen_->malformed_text) {
+      result.rows[0][2] = "";
+      result.rows[1][2] = "\xe2\x82\xac\xf0\x9f\x98\x80";
+      result.cell_errors.push_back({0, 2});
     }
     switch (seen_->invalid_cell_errors) {
       case 1: result.cell_errors = {{99, 0}}; break;
@@ -1030,4 +1036,56 @@ TEST_F(BackendContractTest, InvalidCellErrorCoordinatesRejectContractAndRecover)
   unsigned char output[3]{}; SQLLEN length{};
   ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_BINARY, output, 3, &length));
   EXPECT_EQ(3, length); EXPECT_EQ(0, output[0]); EXPECT_EQ(255, output[1]);
+}
+
+TEST_F(BackendContractTest, TextEncodingErrorsAreDeferredForAllCharacterTargets) {
+  connect();
+  seen->malformed_text = true;
+  for (const SQLSMALLINT target : {SQLSMALLINT(SQL_C_CHAR), SQLSMALLINT(SQL_C_WCHAR), SQLSMALLINT(SQL_C_BINARY)}) {
+    SCOPED_TRACE(target);
+    alignas(SQLWCHAR) unsigned char output[32];
+    std::fill(std::begin(output), std::end(output), 0x5a);
+    SQLLEN length = 73;
+    ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt)); // unrequested malformed text is deferred
+    EXPECT_EQ(SQL_ERROR, SQLGetData(stmt, 3, target, output, sizeof(output), &length));
+    EXPECT_EQ("22018", state()); EXPECT_EQ(73, length);
+    EXPECT_TRUE(std::all_of(std::begin(output), std::end(output), [](auto byte) { return byte == 0x5a; }));
+    EXPECT_EQ(SQL_ERROR, SQLGetData(stmt, 3, target, output, sizeof(output), &length));
+    EXPECT_EQ(73, length); // no chunk offset or indicator is advanced by failure
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 3, target, output, sizeof(output), &length));
+    const std::string text = "\xe2\x82\xac\xf0\x9f\x98\x80";
+    if (target == SQL_C_WCHAR) {
+      const auto wide = rs::odbc::utf8_to_wide(text); ASSERT_TRUE(wide);
+      EXPECT_EQ(static_cast<SQLLEN>(wide->size() * sizeof(SQLWCHAR)), length);
+      EXPECT_EQ(0, std::memcmp(output, wide->data(), static_cast<std::size_t>(length)));
+    } else {
+      EXPECT_EQ(static_cast<SQLLEN>(text.size()), length);
+      EXPECT_EQ(0, std::memcmp(output, text.data(), text.size()));
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+}
+
+TEST_F(BackendContractTest, BoundTextEncodingErrorsPreserveBuffersAndRecoverOnNextRow) {
+  connect();
+  seen->malformed_text = true;
+  SQLUSMALLINT row_status = SQL_ROW_SUCCESS;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, &row_status, 0));
+  for (const SQLSMALLINT target : {SQLSMALLINT(SQL_C_CHAR), SQLSMALLINT(SQL_C_WCHAR), SQLSMALLINT(SQL_C_BINARY)}) {
+    SCOPED_TRACE(target);
+    alignas(SQLWCHAR) unsigned char output[32];
+    std::fill(std::begin(output), std::end(output), 0x5a);
+    SQLLEN length = 73;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 3, target, output, sizeof(output), &length));
+    ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+    EXPECT_EQ(SQL_ERROR, SQLFetch(stmt)); EXPECT_EQ("22018", state());
+    EXPECT_EQ(SQL_ROW_ERROR, row_status); EXPECT_EQ(73, length);
+    EXPECT_TRUE(std::all_of(std::begin(output), std::end(output), [](auto byte) { return byte == 0x5a; }));
+    EXPECT_EQ(SQL_SUCCESS, SQLFetch(stmt)); EXPECT_EQ(SQL_ROW_SUCCESS, row_status);
+    EXPECT_GT(length, 0);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+  }
 }
