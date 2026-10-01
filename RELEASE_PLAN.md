@@ -295,6 +295,8 @@ its residual backlog with test references. It does not promote a row to Verified
 | T10 | Broad file splitting, universal plugin registry, broad static-analysis cleanup | A release defect/change needs broader cleanup; focused A1–A4/G9a extraction is mandatory in PostgreSQL M1, with G9b refinement in Redshift M3 |
 | T11 | Extra PostgreSQL versions/features beyond frozen validation baseline | Customer deployment needs them or a shared/Redshift defect reproduces there |
 | T12 | FIPS implementation and per-driver/platform qualification; preserve architectural flexibility during S2/S2C reviews only, per CRYPTO_PROVIDER_PLAN.md | Concrete customer/deployment requirement or explicit reprioritization; separately estimate module selection, approved-operation policy, integration evidence and compliance review before activation |
+| T13 | Integration owner: Windows bundled-shared same-basename preload isolation; current harness detects foreign binding after load, but production does not prevent it. Qualifying this path is blocked | Before qualifying/releasing the Windows crypto profile or closing any gate requiring it; separately select and estimate one prevention strategy, then run live/package acceptance. S2 noncrypto migration may proceed; no qualification waiver |
+| T14 | Integration owner: explicit finite OpenSSL row signoff, including supported host compatibility and static provenance scope; see S2C_MATRIX_REVIEW.md | Before closing S2C/G12 requirements for the matrix. Missing mandatory evidence remains a blocker; broader public distribution requirements stay in G13 |
 
 A deferred item records owner, rationale, known risk, revisit trigger and evidence
 when instantiated as work. It may not hide a serious supported-path defect.

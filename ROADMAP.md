@@ -136,9 +136,9 @@ A remaining `Partial` audit row is acceptable only if its residual behavior is
 explicitly outside the release profile and safely handled. No serious defect
 in a supported path may be deferred to meet a date.
 
-The scheduler remains paused. This plan does not resume it or authorize cloud
-resource creation. On an explicit resume, its saved instructions should be
-updated to select work by these gates and stop at the agreed milestone.
+Execution follows the user's current resume and implementation-heartbeat
+instructions, selecting bounded work by these gates. This plan does not authorize
+cloud resource creation or resume separate paused application reminders.
 
 ### Windows delivery scope clarification — 2026-09-29
 
@@ -329,8 +329,12 @@ explicit trusted-loader, directory-ownership and dependency-update assumptions.
 Acceptance is conditional on the final closure commit's complete green CI run;
 see CRYPTO_PROVIDER_PLAN.md. This closes the bounded AWS-LC proof only.
 
-Next, audit the OpenSSL rows against the existing finite qualification contract,
-implement demonstrated gaps, and record matrix acceptance. Main-build AWS-LC
-integration is still separate and disabled. Then continue the accepted S2
-error/lifecycle, results and session/facet migration before S3 MySQL. G12 and
+The finite evidence review is now recorded in
+[S2C_MATRIX_REVIEW.md](S2C_MATRIX_REVIEW.md). Bounded internal architecture evidence
+is accepted, but the matrix is not fully qualified: Windows same-basename preload
+isolation is a known blocker, and explicit OpenSSL row signoff remains open.
+Main-build AWS-LC integration is still separate and disabled. Resume accepted S2
+work with structured owning errors and session disposition, followed by results
+and session/facet migration before S3 MySQL. Keep crypto regression gates and
+the named qualification follow-ups; no G12 criterion is waived. G12 and
 PostgreSQL G8 remain open; public SDK/FIPS scope stays deferred.

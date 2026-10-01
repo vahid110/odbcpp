@@ -258,7 +258,10 @@ review before considering any MySQL beta plan.
   waiting on restored AWS/Redshift access and cannot be simulated by PostgreSQL.
 - MS1 is the active bounded engineering milestone during that wait. S1 is
   complete; S2 began with verified authentication/CA policy and trusted
-  configuration discovery. Provider/composition extraction is next.
+  configuration discovery. Provider/composition and private crypto extraction
+  have bounded evidence accepted in [S2C_MATRIX_REVIEW.md](S2C_MATRIX_REVIEW.md).
+  Resume S2 structured errors/session disposition next; crypto qualification
+  follow-ups remain open and do not disappear from G12.
 - When Redshift access returns, finish the current coherent MS1 batch, preserve
   its evidence, and run M2 before expanding MySQL scope. Re-estimate whether to
   finish the remaining MS1 packages or proceed directly to Redshift M3 based on
