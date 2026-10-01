@@ -709,3 +709,26 @@ This closes the remaining static capability/error service extraction in S2.
 Health/reset/lease facets, internal build targets, dedicated ordered execution
 items, warning delivery and richer normalized values remain open. No pooling,
 public SDK qualification or ADBC readiness claim is added.
+
+## S2 isolated internal SDK contract target — 2026-10-01
+
+The internal `odbcpp::sdk_contracts` C++20 interface target exposes an explicit
+20-header manifest through a freshly generated allowlisted include tree. It carries
+no ODBC, PostgreSQL, crypto-provider or other external include/link dependencies.
+`cmake -S sdk -B <build>` configures this surface independently of driver dependency
+discovery. Every header compiles as the first and only include in a separate unit;
+a minimal independent session consumer verifies closed-session failure, successful
+execution and owning results/snapshots after input mutation and disconnect.
+
+Configuration and unit gates enforce the manifest's transitive closure, reject
+private/unlisted includes, external headers, unverifiable macro includes, path
+escapes, duplicate/missing entries and known backend-selection/ODBC/crypto types.
+Negative fixtures check actionable rejection diagnostics, while ordinary TLS/SSL
+text in diagnostics remains permitted. These lexical guards complement compilation
+and review; they are not a complete semantic security or dependency audit.
+
+The root build includes the same checks on its supported platforms. This is an
+internal build-only contract boundary: no installation/export, stable public ABI,
+complete runtime target split or S4 clean-room author qualification is claimed.
+Runtime implementation isolation, health/reset/exclusive leases, dedicated ordered
+execution items, warning delivery and richer normalized values remain open S2 work.

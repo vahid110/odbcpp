@@ -902,3 +902,12 @@ masks copies for missing live facets. Sessions do not borrow product identity or
 policy from the provider. Native mapping borrows inputs only until return and
 returns owning SQLSTATE text or no mapping; it never grants retry/reuse safety or
 overrides class-first and operation-specific diagnostic fallbacks.
+
+
+The internal `odbcpp::sdk_contracts` build target exposes only the explicit
+`sdk/contract_headers.txt` manifest in a generated include tree. Contract headers
+must form a closed dependency graph using only allowlisted standard C++ headers;
+ODBC, concrete backend, parser and crypto-provider dependencies belong outside
+this surface. Individual-header compilation and negative boundary fixtures enforce
+this rule. The target is independently configurable from `sdk/`; runtime target
+separation, public SDK packaging and external-author qualification remain open.
