@@ -94,9 +94,9 @@ public:
   virtual TransactionCapabilities transaction_capabilities() const = 0;
   // Execute exactly one backend transaction command using the caller's deadline.
   // Return the backend error unchanged; the shared layer owns ODBC state changes.
-  virtual rs::util::Result<void> transaction(TransactionAction action,
+  virtual BackendResult<void> transaction(TransactionAction action,
       rs::util::Deadline deadline) = 0;
-  virtual rs::util::Result<void> set_transaction_isolation(TransactionIsolation level,
+  virtual BackendResult<void> set_transaction_isolation(TransactionIsolation level,
       rs::util::Deadline deadline) = 0;
 
   virtual BackendResult<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline) = 0;

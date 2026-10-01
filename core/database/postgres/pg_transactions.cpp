@@ -12,21 +12,27 @@ TransactionCapabilities PgDatabaseConnection::transaction_capabilities() const {
   return pg_transaction_capabilities();
 }
 
-rs::util::Result<void> PgDatabaseConnection::transaction(
+BackendResult<void> PgDatabaseConnection::transaction(
     TransactionAction action, rs::util::Deadline deadline) {
   std::string_view command;
+  auto operation = BackendOperation::Transaction;
   switch (action) {
-    case TransactionAction::Begin: command = "BEGIN"; break;
-    case TransactionAction::Commit: command = "COMMIT"; break;
-    case TransactionAction::Rollback: command = "ROLLBACK"; break;
-    default: return {rs::util::DbErrorCode::InvalidParameter, "Invalid transaction action"};
+    case TransactionAction::Begin: command = "BEGIN"; operation = BackendOperation::BeginTransaction; break;
+    case TransactionAction::Commit: command = "COMMIT"; operation = BackendOperation::CommitTransaction; break;
+    case TransactionAction::Rollback: command = "ROLLBACK"; operation = BackendOperation::RollbackTransaction; break;
+    default: return local_backend_error(LocalFailure::InvalidInput,
+        "Invalid transaction action", operation, session_state());
   }
   auto result = execute_query(command, deadline);
-  if (result.has_error()) return {result.error(), result.error_message()};
+  if (result.has_error()) {
+    auto error = std::move(result.backend_error());
+    error.operation = operation;
+    return error;
+  }
   return {};
 }
 
-rs::util::Result<void> PgDatabaseConnection::set_transaction_isolation(
+BackendResult<void> PgDatabaseConnection::set_transaction_isolation(
     TransactionIsolation level, rs::util::Deadline deadline) {
   std::string_view name;
   switch (level) {
@@ -34,12 +40,17 @@ rs::util::Result<void> PgDatabaseConnection::set_transaction_isolation(
     case TransactionIsolation::ReadCommitted: name = "READ COMMITTED"; break;
     case TransactionIsolation::RepeatableRead: name = "REPEATABLE READ"; break;
     case TransactionIsolation::Serializable: name = "SERIALIZABLE"; break;
-    default: return {rs::util::DbErrorCode::InvalidParameter, "Invalid transaction isolation"};
+    default: return local_backend_error(LocalFailure::InvalidInput,
+        "Invalid transaction isolation", BackendOperation::SetTransactionIsolation, session_state());
   }
   auto result = execute_query(
       std::string("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL ") +
       std::string(name), deadline);
-  if (result.has_error()) return {result.error(), result.error_message()};
+  if (result.has_error()) {
+    auto error = std::move(result.backend_error());
+    error.operation = BackendOperation::SetTransactionIsolation;
+    return error;
+  }
   return {};
 }
 

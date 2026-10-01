@@ -1748,7 +1748,18 @@ public:
     ++calls;
     command = sql;
     observed_deadline = deadline;
-    if (failure) return {*failure, "injected transaction failure"};
+    if (failure) {
+      rs::core::database::BackendError error{rs::util::make_error_code(*failure), "injected transaction failure"};
+      if (*failure == rs::util::DbErrorCode::QueryFailed) {
+        error.native_state = "40P01";
+        error.native_code = 1234;  // Synthetic backend detail, not a PostgreSQL code.
+        error.session_state = rs::core::database::SessionState::FailedTransaction;
+        error.disposition = rs::core::database::SessionDisposition::ResetRequired;
+      } else {
+        error.session_state = rs::core::database::SessionState::Disconnected;
+      }
+      return error;
+    }
     return rs::core::database::QueryResult{};
   }
 };
@@ -1945,5 +1956,106 @@ TEST(ConnectionLivenessTest, AmbiguousQueryFailuresRetireAndNeverRetainServerSta
     EXPECT_EQ(again.backend_error().error_class, BackendErrorClass::NotConnected);
     EXPECT_EQ(again.backend_error().disposition, SessionDisposition::Retire);
     EXPECT_EQ(observed->send_count(), sends);
+  }
+}
+
+TEST(BackendTransactionTest, OwningFailuresKeepContextAndDetailsAcrossBackendDestruction) {
+  using namespace rs::core::database;
+  BackendResult<void> saved;
+  {
+    TransactionProbe backend;
+    backend.failure = rs::util::DbErrorCode::QueryFailed;
+    for (const auto action : {TransactionAction::Begin, TransactionAction::Commit, TransactionAction::Rollback}) {
+      auto result = backend.transaction(action, rs::util::Deadline::max());
+      ASSERT_TRUE(result.has_error());
+      EXPECT_EQ(result.backend_error().operation, action == TransactionAction::Begin ? BackendOperation::BeginTransaction :
+          action == TransactionAction::Commit ? BackendOperation::CommitTransaction : BackendOperation::RollbackTransaction);
+      EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::Server);
+      EXPECT_EQ(result.backend_error().native_state, "40P01");
+      EXPECT_EQ(result.backend_error().native_code, 1234);
+      EXPECT_EQ(result.backend_error().session_state, SessionState::FailedTransaction);
+      EXPECT_EQ(result.backend_error().disposition, SessionDisposition::ResetRequired);
+      EXPECT_FALSE(result.backend_error().retry_safe);
+      saved = result;
+      auto moved = std::move(result);
+      EXPECT_EQ(moved.backend_error().native_state, "40P01");
+    }
+    saved = backend.set_transaction_isolation(TransactionIsolation::Serializable, rs::util::Deadline::max());
+    backend.failure.reset();
+    EXPECT_TRUE(backend.transaction(TransactionAction::Rollback, rs::util::Deadline::max()));
+  }
+  ASSERT_TRUE(saved.has_error());
+  EXPECT_EQ(saved.backend_error().operation, BackendOperation::SetTransactionIsolation);
+  EXPECT_EQ(saved.backend_error().native_state, "40P01");
+  EXPECT_EQ(saved.backend_error().native_code, 1234);
+  EXPECT_EQ(saved.error_message(), "injected transaction failure");
+  saved = BackendResult<void>{};
+  EXPECT_TRUE(saved.has_value());
+}
+
+TEST(BackendTransactionTest, RealProtocolStateSurvivesTransactionAndIsolationAdapters) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::OwnedErrorIdle, Mode::OwnedErrorTransaction, Mode::OwnedErrorAborted}) {
+    for (const auto operation : {BackendOperation::BeginTransaction, BackendOperation::CommitTransaction,
+         BackendOperation::RollbackTransaction, BackendOperation::SetTransactionIsolation}) {
+      SCOPED_TRACE(static_cast<int>(mode));
+      SCOPED_TRACE(static_cast<int>(operation));
+      auto transport = std::make_unique<ScriptedBackendTransport>(mode);
+      auto* observed = transport.get();
+      postgres::PgDatabaseConnection backend("PostgreSQL", std::move(transport));
+      ConnectionSettings settings;
+      settings.use_ssl = false;
+      ASSERT_TRUE(backend.connect(settings));
+      const auto deadline = rs::util::make_deadline(std::chrono::seconds(1));
+      auto result = operation == BackendOperation::SetTransactionIsolation ? backend.set_transaction_isolation(TransactionIsolation::Serializable, deadline) :
+          backend.transaction(operation == BackendOperation::BeginTransaction ? TransactionAction::Begin :
+              operation == BackendOperation::CommitTransaction ? TransactionAction::Commit : TransactionAction::Rollback, deadline);
+      ASSERT_TRUE(result.has_error());
+      EXPECT_EQ(result.backend_error().operation, operation);
+      EXPECT_EQ(result.backend_error().native_state, "42601");
+      EXPECT_EQ(result.backend_error().disposition, mode == Mode::OwnedErrorIdle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired);
+      const auto state = backend.session_state();
+      const auto sends = observed->send_count();
+      auto invalid = backend.transaction(static_cast<TransactionAction>(99), deadline);
+      ASSERT_TRUE(invalid.has_error());
+      EXPECT_EQ(invalid.backend_error().operation, BackendOperation::Transaction);
+      EXPECT_EQ(invalid.backend_error().error_class, BackendErrorClass::InvalidInput);
+      EXPECT_EQ(invalid.backend_error().session_state, state);
+      EXPECT_FALSE(invalid.backend_error().native_state);
+      invalid = backend.set_transaction_isolation(static_cast<TransactionIsolation>(99), deadline);
+      EXPECT_EQ(invalid.backend_error().operation, BackendOperation::SetTransactionIsolation);
+      EXPECT_EQ(invalid.backend_error().session_state, state);
+      EXPECT_EQ(observed->send_count(), sends);
+      ASSERT_TRUE(backend.transaction(TransactionAction::Rollback, deadline));
+      EXPECT_EQ(backend.session_state(), SessionState::Idle);
+      EXPECT_EQ(result.backend_error().session_state, state);
+      EXPECT_EQ(result.backend_error().native_state, "42601");
+    }
+  }
+}
+
+TEST(BackendTransactionTest, AmbiguousFailuresRetainRetirementAndOperationContext) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::QueryReadTimeout, Mode::PartialQueryWrite}) {
+    for (const bool isolation : {false, true}) {
+      auto transport = std::make_unique<ScriptedBackendTransport>(mode);
+      auto* observed = transport.get();
+      postgres::PgDatabaseConnection backend("PostgreSQL", std::move(transport));
+      ConnectionSettings settings;
+      settings.use_ssl = false;
+      ASSERT_TRUE(backend.connect(settings));
+      const auto deadline = rs::util::make_deadline(std::chrono::seconds(1));
+      auto result = isolation ? backend.set_transaction_isolation(TransactionIsolation::Serializable, deadline) : backend.transaction(TransactionAction::Commit, deadline);
+      ASSERT_TRUE(result.has_error());
+      EXPECT_EQ(result.backend_error().operation, isolation ? BackendOperation::SetTransactionIsolation : BackendOperation::CommitTransaction);
+      EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Retire);
+      EXPECT_EQ(result.backend_error().session_state, SessionState::Disconnected);
+      EXPECT_FALSE(result.backend_error().native_state);
+      EXPECT_FALSE(result.backend_error().retry_safe);
+      EXPECT_EQ(observed->close_count(), 1U);
+      EXPECT_FALSE(backend.is_connected());
+    }
   }
 }

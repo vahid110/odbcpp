@@ -9,7 +9,10 @@
 
 namespace rs::core::database {
 
-enum class BackendOperation { Unknown, ExecuteDirect, ExecutePrepared, Describe };
+enum class BackendOperation {
+  Unknown, ExecuteDirect, ExecutePrepared, Describe, Transaction,
+  BeginTransaction, CommitTransaction, RollbackTransaction, SetTransactionIsolation
+};
 enum class SessionState { Disconnected, Idle, Transaction, FailedTransaction, Unknown };
 enum class SessionDisposition { Reusable, ResetRequired, Retire };
 enum class BackendErrorClass {
@@ -54,6 +57,20 @@ struct BackendError {
       : code(error), message(std::move(text)), error_class(classify_backend_error(error)) {}
 };
 
+// Only local validation/unsupported failures perform no I/O and preserve state.
+enum class LocalFailure { InvalidInput, Unsupported };
+inline BackendError local_backend_error(LocalFailure kind,
+    std::string message, BackendOperation operation, SessionState state) {
+  const auto code = kind == LocalFailure::InvalidInput ? rs::util::DbErrorCode::InvalidParameter :
+      rs::util::DbErrorCode::UnsupportedFeature;
+  BackendError error{rs::util::make_error_code(code), std::move(message)};
+  error.operation = operation;
+  error.session_state = state;
+  error.disposition = state == SessionState::Disconnected ? SessionDisposition::Retire :
+      state == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired;
+  return error;
+}
+
 // Internal migration contract. The std::error_code/message accessors preserve
 // existing diagnostic callers; backend_error() carries the owning SDK detail.
 // Accessing the wrong alternative throws rather than reading an inactive union.
@@ -83,5 +100,25 @@ class BackendResult {
   const std::string& error_message() const { return backend_error().message; }
  private:
   std::variant<T, BackendError> data_;
+};
+
+template<>
+class BackendResult<void> {
+ public:
+  BackendResult() = default;
+  BackendResult(BackendError error) : error_(std::move(error)) {}
+  BackendResult(std::error_code code, std::string message = {})
+      : error_(BackendError{code, std::move(message)}) {}
+  BackendResult(rs::util::DbErrorCode code, std::string message = {})
+      : BackendResult(rs::util::make_error_code(code), std::move(message)) {}
+  bool has_value() const noexcept { return !error_; }
+  bool has_error() const noexcept { return error_.has_value(); }
+  explicit operator bool() const noexcept { return has_value(); }
+  BackendError& backend_error() { return error_.value(); }
+  const BackendError& backend_error() const { return error_.value(); }
+  const std::error_code& error() const { return backend_error().code; }
+  const std::string& error_message() const { return backend_error().message; }
+ private:
+  std::optional<BackendError> error_;
 };
 }  // namespace rs::core::database

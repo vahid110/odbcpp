@@ -224,7 +224,7 @@ public:
   SQLRETURN set_current_catalog(std::string catalog);
   std::string get_current_catalog() const;
   SQLRETURN end_transaction(SQLSMALLINT completion_type);
-  rs::util::Result<void> begin_transaction_if_needed(
+  rs::core::database::BackendResult<void> begin_transaction_if_needed(
       rs::util::Deadline deadline);
   void log(rs::core::logging::LogLevel level, std::string_view event,
            std::string_view message,

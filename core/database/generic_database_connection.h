@@ -38,9 +38,9 @@ public:
       std::string_view, ErrorContext) const override { return std::nullopt; }
 
   TransactionCapabilities transaction_capabilities() const override;
-  rs::util::Result<void> transaction(TransactionAction action,
+  BackendResult<void> transaction(TransactionAction action,
       rs::util::Deadline deadline) override;
-  rs::util::Result<void> set_transaction_isolation(TransactionIsolation level,
+  BackendResult<void> set_transaction_isolation(TransactionIsolation level,
       rs::util::Deadline deadline) override;
 
   rs::util::Result<ResolvedTypeMap> resolve_types(

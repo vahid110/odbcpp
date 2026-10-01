@@ -1695,7 +1695,7 @@ std::string ODBCConnection::get_current_catalog() const {
   return current_catalog_;
 }
 
-rs::util::Result<void> ODBCConnection::begin_transaction_if_needed(
+rs::core::database::BackendResult<void> ODBCConnection::begin_transaction_if_needed(
     rs::util::Deadline deadline) {
   if (autocommit_ == SQL_AUTOCOMMIT_ON || transaction_active_) {
     return {};
@@ -1703,7 +1703,7 @@ rs::util::Result<void> ODBCConnection::begin_transaction_if_needed(
   auto result = db_conn_->transaction(
       rs::core::database::TransactionAction::Begin, deadline);
   if (result.has_error()) {
-    return {result.error(), result.error_message()};
+    return result;
   }
   transaction_active_ = true;
   return {};

@@ -86,10 +86,10 @@ class FakeBackend final : public IDatabaseConnection {
     return std::nullopt;
   }
   TransactionCapabilities transaction_capabilities() const override { return {}; }
-  Result<void> transaction(TransactionAction, Deadline) override {
+  BackendResult<void> transaction(TransactionAction, Deadline) override {
     return {DbErrorCode::UnsupportedFeature, "fake has no transactions"};
   }
-  Result<void> set_transaction_isolation(TransactionIsolation, Deadline) override {
+  BackendResult<void> set_transaction_isolation(TransactionIsolation, Deadline) override {
     return {DbErrorCode::UnsupportedFeature, "fake has no isolation levels"};
   }
   QueryResult rows() const {
