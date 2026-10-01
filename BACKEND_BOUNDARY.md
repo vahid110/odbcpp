@@ -599,3 +599,23 @@ expansion, excessive field count, later usable records and complete JSON output.
 Safe BackendError summaries, adversarial backend diagnostic fixtures, invalid
 source-encoding handling and aggregate result budgets remain planned work.
 This does not close the complete logging security contract, A5 or S2.
+
+## S2 public BackendError summaries — 2026-10-01
+
+BackendError now exposes safe_summary(), a noexcept view of fixed public text
+selected only by its error class. It never formats detailed message, native
+state/code, SQL, identifiers or credential material. Unknown classes use a fixed
+fallback. The owned message remains explicitly diagnostic detail for trusted
+consumers; error_message() compatibility and ODBC diagnostic behavior remain.
+Summary storage is static and survives error mutation/copy/move/destruction.
+
+Typed setup/isolation/begin/direct/prepared failure log paths consume this summary.
+Exception paths retain fixed summaries because no BackendError exists there.
+Tests inject a secret-bearing backend message through direct and prepared ODBC
+execution: diagnostics keep exact text and normalization while Trace logs contain
+only the fixed summary. Class coverage verifies summaries ignore sensitive fields.
+
+This strengthens the immediate-error boundary, not deferred-result normalization.
+Raw diagnostics may contain sensitive data and must not be passed to log messages.
+Invalid-source encoding, deferred errors, aggregate budgets and safe reuse remain
+planned work; A5/S2 and crypto qualification gates remain open.

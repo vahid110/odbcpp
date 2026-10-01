@@ -416,3 +416,14 @@ expansion and subsequent records. ODBC diagnostics remain protected.
 Next: safe BackendError summaries and normalized deferred-result errors. Invalid
 source encoding, aggregate result budgets and safe reuse remain explicit work;
 this batch does not close A5/S2 or any crypto qualification blocker.
+
+### S2 public backend-error summaries — 2026-10-01
+
+BackendError provides fixed class-based public summaries; typed ODBC failure logs
+consume them while diagnostics preserve existing detailed messages/native mapping.
+Direct/prepared fake-backend tests prove secret-bearing diagnostics stay out of
+Trace logs; all error classes and unknown fallback ignore sensitive fields.
+
+Next is normalized deferred-result errors, then remaining result/resource budgets
+and reuse contracts. Invalid-source encoding remains a separate logging item.
+A5/S2 and existing provider qualification blockers remain open.
