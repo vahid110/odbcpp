@@ -1341,7 +1341,7 @@ SQLRETURN ODBCConnection::connect(
       set_error(SQLSTATE_CONNECTION_FAILURE,
                 "DSN '" + resolved.dsn_name + "' not found");
       log(rs::core::logging::LogLevel::Error, "connection_failed",
-          get_error_message(), {{"sqlstate", get_sqlstate()},
+          "Database connection failed", {{"sqlstate", get_sqlstate()},
                                 {"duration_ms", elapsed_milliseconds(started)}});
       return SQL_ERROR;
     }
@@ -1406,7 +1406,7 @@ SQLRETURN ODBCConnection::connect(
                                : SQLSTATE_CONNECTION_FAILURE),
                 result.error_message());
       log(rs::core::logging::LogLevel::Error, "connection_failed",
-          result.error_message(),
+          "Database connection failed",
           {{"sqlstate", get_sqlstate()},
            {"duration_ms", elapsed_milliseconds(started)}});
       return SQL_ERROR;
@@ -1424,7 +1424,7 @@ SQLRETURN ODBCConnection::connect(
                                              SQLSTATE_CONNECTION_FAILURE),
                   isolation_result.error_message());
         log(rs::core::logging::LogLevel::Error, "connection_failed",
-            isolation_result.error_message(),
+            "Database connection failed",
             {{"sqlstate", get_sqlstate()},
              {"duration_ms", elapsed_milliseconds(started)}});
         db_conn_->disconnect();
@@ -1445,7 +1445,7 @@ SQLRETURN ODBCConnection::connect(
     
   } catch (const std::exception& e) {
     set_error(SQLSTATE_GENERAL_ERROR, e.what());
-    log(rs::core::logging::LogLevel::Error, "connection_failed", e.what(),
+    log(rs::core::logging::LogLevel::Error, "connection_failed", "Database connection failed",
         {{"sqlstate", get_sqlstate()},
          {"duration_ms", elapsed_milliseconds(started)}});
     return SQL_ERROR;
@@ -2355,7 +2355,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
   if (!conn_->is_connected()) {
     set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
     conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
-               get_error_message(), {{"sqlstate", get_sqlstate()},
+               "Database operation failed", {{"sqlstate", get_sqlstate()},
                                      {"kind", "direct"}});
     return SQL_ERROR;
   }
@@ -2388,7 +2388,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
       set_error(request_sqlstate(transaction.error(), SQLSTATE_GENERAL_ERROR),
                 transaction.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
-                 transaction.error_message(),
+                 "Database operation failed",
                  {{"sqlstate", get_sqlstate()}, {"kind", "direct"},
                   {"duration_ms", elapsed_milliseconds(started)}});
       if (timeout) conn_->disconnect();
@@ -2404,7 +2404,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
                                        dynamic_function.code),
                 result.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
-                 result.error_message(),
+                 "Database operation failed",
                  {{"sqlstate", get_sqlstate()}, {"kind", "direct"},
                   {"duration_ms", elapsed_milliseconds(started)}});
       if (timeout) conn_->disconnect();
@@ -2424,7 +2424,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
     
   } catch (const std::exception& e) {
     set_error(SQLSTATE_GENERAL_ERROR, e.what());
-    conn_->log(rs::core::logging::LogLevel::Error, "query_failed", e.what(),
+    conn_->log(rs::core::logging::LogLevel::Error, "query_failed", "Database operation failed",
                {{"sqlstate", get_sqlstate()}, {"kind", "direct"},
                 {"duration_ms", elapsed_milliseconds(started)}});
     return SQL_ERROR;
@@ -3392,7 +3392,7 @@ SQLRETURN ODBCStatement::execute() {
   if (!prepared_) {
     set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "Statement not prepared");
     conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
-               get_error_message(), {{"sqlstate", get_sqlstate()},
+               "Database operation failed", {{"sqlstate", get_sqlstate()},
                                      {"kind", "prepared"}});
     return SQL_ERROR;
   }
@@ -3405,7 +3405,7 @@ SQLRETURN ODBCStatement::execute() {
   if (!conn_->is_connected()) {
     set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
     conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
-               get_error_message(), {{"sqlstate", get_sqlstate()},
+               "Database operation failed", {{"sqlstate", get_sqlstate()},
                                      {"kind", "prepared"}});
     return SQL_ERROR;
   }
@@ -4145,7 +4145,7 @@ SQLRETURN ODBCStatement::execute() {
       set_error(request_sqlstate(transaction.error(), SQLSTATE_GENERAL_ERROR),
                 transaction.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
-                 transaction.error_message(),
+                 "Database operation failed",
                  {{"sqlstate", get_sqlstate()}, {"kind", "prepared"},
                   {"duration_ms", elapsed_milliseconds(started)}});
       if (timeout) conn_->disconnect();
@@ -4160,7 +4160,7 @@ SQLRETURN ODBCStatement::execute() {
                                        dynamic_function.code),
                 result.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
-                 result.error_message(),
+                 "Database operation failed",
                  {{"sqlstate", get_sqlstate()}, {"kind", "prepared"},
                   {"duration_ms", elapsed_milliseconds(started)}});
       if (timeout) conn_->disconnect();
@@ -4185,7 +4185,7 @@ SQLRETURN ODBCStatement::execute() {
     
   } catch (const std::exception& e) {
     set_error(SQLSTATE_GENERAL_ERROR, e.what());
-    conn_->log(rs::core::logging::LogLevel::Error, "query_failed", e.what(),
+    conn_->log(rs::core::logging::LogLevel::Error, "query_failed", "Database operation failed",
                {{"sqlstate", get_sqlstate()}, {"kind", "prepared"},
                 {"duration_ms", elapsed_milliseconds(started)}});
     return complete_parameter_set(SQL_ERROR);
