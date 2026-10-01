@@ -769,3 +769,13 @@ wrong-CA and hostname-rejection cases with retained no-skip results. Its
 PostgreSQL setup adds an opt-in TLS fixture before startup. The shared test gains
 native module loading while preserving POSIX gates. Windows row qualification
 remains open for independent downgrade and identity/coexistence evidence.
+
+## S2C OpenSSL identity evidence batch — 2026-10-01
+
+The OpenSSL rows gain mandatory portable production-adapter identity/default TLS
+policy checks against their manifests, retained alongside driver/probe hashes.
+Parser negatives and end-to-end stale-evidence/hash-binding tests protect the
+qualification record. This is probe evidence, not loaded-driver identity
+enforcement; exact-revision CI and remaining coexistence/package/downgrade
+evidence are still required before matrix acceptance. S2 migration and bounded
+MySQL sequencing are unchanged.

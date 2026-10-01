@@ -608,3 +608,26 @@ compilation and native execution require the exact-revision hosted CI run.
 This batch covers actual-driver live TLS only. The independent legacy-protocol
 peer remains POSIX-only; Windows downgrade, identity/coexistence acceptance and
 final row qualification remain explicit follow-up gaps.
+
+## S2C OpenSSL retained runtime identity evidence — 2026-10-01
+
+All main-build OpenSSL test profiles now run a portable production-adapter probe
+without a socket or database. The gate compares the reported provider and exact
+numeric/letter-patch compile/runtime versions against the configured manifest,
+requires the current non-FIPS profile and TLS 1.2 minimum with peer/hostname
+verification enabled, and retains the versions, policy scope and hashes of the
+probe, manifest and companion driver artifact. Windows multi-configuration
+paths and CRLF output are covered. CI retains the evidence and probe for Linux
+shared/static, both macOS Unicode builds and Windows bundled-shared.
+
+Negative tests reject version/prefix/provider mismatches, unexpected FIPS state,
+weaker defaults, truncated/extra/delimiter-containing output and malformed
+manifests. Recording tests bind all input hashes and prove a failed run deletes
+stale evidence before allowing a later successful record.
+
+This establishes probe identity/default-policy evidence only. The companion
+driver hash identifies the tested build; it does not prove runtime identity
+inside a loaded driver or loader-origin enforcement. Existing artifact-origin,
+TLS/live-driver and coexistence gates supply their separate evidence. OpenSSL
+rows remain open for their finite coexistence, Windows independent downgrade,
+package and matrix acceptance gaps. No public profile or FIPS claim is added.
