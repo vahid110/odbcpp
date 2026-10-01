@@ -338,3 +338,18 @@ work with structured owning errors and session disposition, followed by results
 and session/facet migration before S3 MySQL. Keep crypto regression gates and
 the named qualification follow-ups; no G12 criterion is waived. G12 and
 PostgreSQL G8 remain open; public SDK/FIPS scope stays deferred.
+
+### S2 owning query errors and passive disposition — 2026-10-01
+
+Direct, prepared and description operations now return owning BackendError
+snapshots, including optional native detail, operation and protocol-derived
+session disposition. ODBC query diagnostics consume these snapshots and no
+longer read mutable SQLSTATE. Focused tests cover copy/move and ownership across
+later operations and backend destruction, idle/transaction/aborted-state errors,
+read timeouts, malformed responses and partial writes with retirement.
+
+Continue A5 with setup/transaction/type-resolution error migration and the
+safe-message/logging boundary; immediate query errors do not complete A5 or S2.
+Ordered result normalization, resource budgets and safe reuse facets remain
+separate batches. Existing crypto qualification blockers and all protected
+PostgreSQL/platform gates remain unchanged.

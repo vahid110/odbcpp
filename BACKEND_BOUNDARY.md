@@ -460,3 +460,33 @@ still requires real Redshift reuse/compatibility evidence; G13 owns public SDK
 packaging and stability. W1–W4 are complete. G8 real-application acceptance
 remains necessary before PG-BETA, although its host-dependent execution is
 explicitly deferred while MS1 proceeds.
+
+## S2 owning query failures — 2026-10-01
+
+`execute_query`, `execute_prepared` and `describe_statement` now return
+`BackendResult<QueryResult>`. Each immediate failure owns a `BackendError` with
+its error class, message, optional native state/code, operation, passive session
+state and disposition. Retry evidence is absent by default. Existing error-code
+and message accessors preserve diagnostic compatibility; ODBC maps the returned
+native-state snapshot instead of asking the connection for mutable SQLSTATE.
+Errors survive subsequent calls, disconnect and backend destruction.
+
+PostgreSQL derives passive state from validated ReadyForQuery: idle,
+transaction, or failed transaction. An idle completed server failure is
+`Reusable`; transaction/failed-transaction or unknown ready state requires
+`ResetRequired`. Transport, timeout, malformed-protocol and ambiguous partial
+write failures physically retire the session and return `Retire`. Disposition is
+not inferred from SQLSTATE and does not imply that a pool/reset facet exists.
+`Reusable` means protocol-ready for the current owner, not clean for another
+borrower; pool isolation still requires its separate reset contract.
+The transitional default passive state for other implementations is `Unknown`
+when connected, never an implicit idle/reuse claim.
+
+This batch migrates immediate query errors only. Setup/authentication,
+transactions and type resolution still use the legacy result/error paths;
+ordered/deferred result errors remain in owning QueryResult until the normalized
+results migration. The mutable SQLSTATE getter/storage has been removed; the legacy setup error-message
+getter remains for that incremental transition.
+Primary messages preserve existing server diagnostic behavior; this does not
+complete the safe-message/logging security contract. Internal C++ interfaces are
+unstable; the exported ODBC surface and diagnostics remain protected.
