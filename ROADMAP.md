@@ -465,3 +465,16 @@ Continue SEC-4 with rows/cells/columns/results and metadata/diagnostic limits,
 product configuration and allocation boundaries. TLS-provider handshake and
 outgoing-packet budgets are separate; native metadata and reuse facets remain S2
 work. No security, SDK or crypto qualification gate is closed by this batch.
+
+### S2 decoded result count budgets — 2026-10-01
+
+SDK row/cell, per-description column/parameter and result-completion ceilings now
+apply before decoded extraction in the PostgreSQL-family session. Counts span
+ordered results; overflows retire with ResourceLimit/HY000 and no partial result.
+Exact/overflow, two-result aggregation, parameter metadata, null/empty cells,
+zero-data and invalid-reconnect tests cover the scope.
+
+Continue SEC-4 with aggregate metadata/name and diagnostic limits, outgoing input,
+product configuration and allocation boundaries. Wire/count budgets are not exact
+heap quotas; native metadata and session/reuse migration remain S2 work. A5/S2,
+G12 and crypto qualification follow-ups stay open.

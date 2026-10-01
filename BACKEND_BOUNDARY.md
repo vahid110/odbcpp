@@ -688,3 +688,25 @@ verifies no allocation based solely on a declared frame length.
 These are input budgets, not exact heap quotas. Rows/cells/columns/results,
 metadata/diagnostic limits, product exposure and allocation-failure boundaries
 remain SEC-4 work. A5/S2, G12 and provider qualification gates remain open.
+
+## S2 decoded result count budgets — 2026-10-01
+
+ResultLimits adds SDK ceilings per query/description exchange: 1000000 rows,
+4000000 cells, 4096 columns per RowDescription or parameters per
+ParameterDescription, and 1024 completed results. Rows/cells and completions are
+cumulative across ordered results, including SQL NULL/empty cells and error or
+empty-query completions. Zero row/cell/description ceilings permit no-data work;
+max_results must be positive and validates before connection mutation.
+
+The PostgreSQL-family session reads only bounded count headers to account frames
+before retaining them for decoded extraction. Exceeding a ceiling returns owning
+ResourceLimit/HY000, retires the undrained exchange, and exposes no partial result.
+Protocol ordering validation remains in force. These checks are backend framing
+work, not PostgreSQL tags leaking into shared ODBC workflows.
+
+Tests cover exact/one-less limits in all four dimensions, parameter description,
+aggregate counts across two row-bearing results, null/empty cells, zero-data
+metadata and invalid reconnect without I/O. Defaults/configuration are SDK-only;
+no public profile support claim or exact heap quota is made. Aggregate metadata
+entries/names, diagnostics, outbound input, product exposure and allocation
+boundaries remain SEC-4 work. Native normalization and safe reuse remain S2 work.
