@@ -97,7 +97,8 @@ BackendResult<void> GenericDatabaseConnection::connect(const ConnectionSettings&
 }
 
 BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSettings& settings) {
-  if (settings.response_limits.max_wire_bytes < 5 || settings.response_limits.max_messages == 0) {
+  if (settings.response_limits.max_wire_bytes < 5 || settings.response_limits.max_messages == 0 ||
+      settings.startup_response_limits.max_wire_bytes < 5 || settings.startup_response_limits.max_messages == 0) {
     return {rs::util::DbErrorCode::InvalidParameter, "Response limits must allow a header and at least one message"};
   }
   if (settings.password.find('\0') != std::string::npos) {
@@ -694,13 +695,21 @@ BackendResult<void> GenericDatabaseConnection::perform_authentication_result(rs:
     result.backend_error().operation = authenticated ? BackendOperation::Startup : BackendOperation::Authenticate;
     return result;
   };
+  std::size_t wire_bytes = 0;
+  std::size_t message_count = 0;
   try {
     while (true) {
-      auto msg_result = read_message_result(deadline);
+      if (message_count == settings_.startup_response_limits.max_messages) {
+        return failure(rs::util::DbErrorCode::ResourceLimit, "Database startup message limit exceeded");
+      }
+      auto msg_result = read_message_result(deadline,
+          settings_.startup_response_limits.max_wire_bytes - wire_bytes);
       if (msg_result.has_error()) {
         return failure(msg_result.error(), msg_result.error_message());
       }
     
+      wire_bytes += msg_result->size();
+      ++message_count;
       auto msg = parser_->parse_message(*msg_result);
     
       if (msg.tag == 'R') { // Authentication
