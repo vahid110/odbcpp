@@ -24,14 +24,14 @@ bool ThreadSafeConnection::is_connected() const {
 }
 
 BackendResult<QueryResult> ThreadSafeConnection::execute_query(std::string_view sql, rs::util::Deadline deadline) {
-  std::shared_lock lock(mutex_);
+  std::unique_lock lock(mutex_);
   return conn_->execute_query(sql, deadline);
 }
 
 BackendResult<QueryResult> ThreadSafeConnection::execute_prepared(std::string_view sql,
                                                                     std::span<const QueryParameter> params,
                                                                     rs::util::Deadline deadline) {
-  std::shared_lock lock(mutex_);
+  std::unique_lock lock(mutex_);
   return conn_->execute_prepared(sql, params, deadline);
 }
 
