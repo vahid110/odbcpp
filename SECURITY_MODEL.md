@@ -305,3 +305,18 @@ matching version/hash alone do not establish isolation from preloaded modules.
 A future prevention strategy needs separate implementation and live/package
 qualification; no loader-lock mitigation or safe-coexistence claim is inferred
 from the canary.
+
+### Allocation failure containment (S2 implementation evidence)
+
+PostgreSQL-family request/startup encoders distinguish bad_alloc from malformed
+input. Failures caught before request I/O preserve the current owner's session;
+response I/O, parsing and extraction failures retire. Startup authentication
+failures retain their phase and run connection cleanup. Typed allocation errors
+carry empty detailed text and a fixed public summary; request diagnostics use
+HY001. The exported C API guard also distinguishes bad_alloc and attempts an
+HY001 diagnostic without allowing diagnostic allocation failures to escape.
+
+Phase-specific injected failures prove these boundaries, not full recovery under
+sustained memory exhaustion. Earlier ODBC conversion/local exception handlers,
+standalone SQL helpers, encoded-buffer ceilings and product-profile limits are
+still open. No exact heap quota or general pooling readiness is claimed.

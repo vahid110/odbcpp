@@ -509,3 +509,21 @@ state, startup fields, invalid reconnect ceilings and zero budgets. SEC-4 remain
 open for earlier ODBC conversion, standalone SQL helpers, allocation/encoded
 buffer limits and product configuration. S2 native metadata/session facets and
 crypto qualification remain open.
+
+### S2 allocation failure boundaries — 2026-10-01
+
+Allocation failures now have a distinct owning backend classification and map
+to HY001 in request diagnostics. Request/startup encoder allocation failures
+before I/O preserve the current owner's session; response I/O, parsing and
+result extraction failures retire without partial results. Startup failures
+retain authentication phase and cleanup behavior. Backend allocation errors
+use empty detailed text plus a fixed public summary to avoid constructing a
+long error string during memory pressure. The C API guard catches bad_alloc
+separately and records HY001 when diagnostic storage remains available.
+
+Injected failures cover encoding/recovery, reconnect preservation, startup,
+response I/O/parse/extraction, no further sends after retirement, ODBC SQLSTATE
+and C API lock recovery. This is exception classification and containment,
+not a complete heap quota or proof of recovery under sustained exhaustion.
+Earlier ODBC conversions/local catches, encoded buffer budgets and product
+configuration remain SEC-4 work; S2 and crypto qualification remain open.
