@@ -80,13 +80,16 @@ foreach ($dependency in $cryptoDependencies) {
 $basePath = "$env:SystemRoot/System32;$env:SystemRoot;${env:ProgramFiles}/PowerShell/7"
 $env:PATH = "$hostile;$basePath"
 function Invoke-PackageLoad {
+    param([string]$Preload = '', [int]$ExpectedExit = 0)
     $previousNativePreference = $PSNativeCommandUseErrorActionPreference
     $PSNativeCommandUseErrorActionPreference = $false
     try {
-        $lines = @(& "$artifactsPath/it_package_load.exe" $install $sslDependency[0].file $cryptoDependency[0].file 2>&1)
+        $arguments = @($install, $sslDependency[0].file, $cryptoDependency[0].file)
+        if ($Preload) { $arguments += $Preload }
+        $lines = @(& "$artifactsPath/it_package_load.exe" @arguments 2>&1)
         $exitCode = $LASTEXITCODE
     } finally { $PSNativeCommandUseErrorActionPreference = $previousNativePreference }
-    if ($exitCode -ne 0) { throw "Package loader failed ($exitCode): $($lines -join [Environment]::NewLine)" }
+    if ($exitCode -ne $ExpectedExit) { throw "Package loader returned $exitCode, expected ${ExpectedExit}: $($lines -join [Environment]::NewLine)" }
     return $lines
 }
 # A missing app-local runtime must fail even when PATH contains a valid copy.
@@ -106,6 +109,24 @@ try {
     Move-Item $heldRuntime $missingRuntime
 }
 $loaderOutput = @(Invoke-PackageLoad)
+# Fresh processes distinguish supported same-file preloading from a host copy
+# with identical bytes but a different origin. This is a detector, not a driver
+# mitigation: the foreign case loads the driver before inspecting its bound IAT.
+$samePreloadOutput = @(Invoke-PackageLoad -Preload $install)
+Assert (@($samePreloadOutput | Where-Object { $_.ToString() -eq 'PRELOAD_READY' }).Count -eq 1) 'Same-package preload was not exercised'
+$samePreloadOutput | Set-Content (Join-Path $logs 'crypto-same-package-preload.log') -Encoding utf8
+$foreignPreloadOutput = @(Invoke-PackageLoad -Preload $validFallback -ExpectedExit 3)
+Assert (@($foreignPreloadOutput | Where-Object { $_.ToString() -eq 'PRELOAD_READY' }).Count -eq 1) 'Foreign preload did not complete before driver load'
+Assert (@($foreignPreloadOutput | Where-Object { $_.ToString() -eq 'FOREIGN_PRELOAD_BOUND_TO_DRIVER' }).Count -eq 1) 'Foreign preload failure did not identify a bound driver import collision'
+$foreignPreloadOutput | Set-Content (Join-Path $logs 'crypto-foreign-package-preload.log') -Encoding utf8
+foreach ($dependency in $cryptoDependencies) {
+    Assert ((Get-FileHash (Join-Path $validFallback $dependency.file) -Algorithm SHA256).Hash -eq $dependency.sha256) 'Foreign preload fixture differs from installed provider bytes'
+}
+$missingPreload = Join-Path $env:RUNNER_TEMP 'missing-crypto-preload'
+New-Item $missingPreload -ItemType Directory -Force | Out-Null
+$missingPreloadOutput = @(Invoke-PackageLoad -Preload $missingPreload -ExpectedExit 2)
+Assert (@($missingPreloadOutput | Where-Object { $_.ToString() -eq 'PRELOAD_READY' }).Count -eq 0) 'Missing-provider canary silently degraded to ordinary driver loading'
+$missingPreloadOutput | Set-Content (Join-Path $logs 'crypto-missing-preload.log') -Encoding utf8
 $loadedModules = @()
 foreach ($dependency in $cryptoDependencies) {
     $prefix = "MODULE|$($dependency.file)|"
@@ -139,6 +160,18 @@ Assert ($versionMatch.Groups[1].Value -eq $cryptoManifest.compileVersion) 'Loade
     hostilePathOverrideRejected = $true
     missingLocalValidPathFallbackRejected = $true
     packagedLoaderOriginVerified = $true
+    originResolvedFromDriverImportAddresses = $true
+    samePackagePreloadVerified = $true
+    foreignSameBasenamePreloadCollisionDetected = $true
+    missingPreloadCanaryVerified = $true
+    foreignPreloadPreventedByDriver = $false
+    preloadInputs = @($cryptoDependencies | ForEach-Object {
+        @{ file = $_.file; installedSha256 = $_.sha256
+           foreignCopySha256 = (Get-FileHash (Join-Path $validFallback $_.file) -Algorithm SHA256).Hash }
+    })
+    preloadReports = @(@('crypto-same-package-preload.log','crypto-foreign-package-preload.log','crypto-missing-preload.log') | ForEach-Object {
+        @{ file = $_; sha256 = (Get-FileHash (Join-Path $logs $_) -Algorithm SHA256).Hash }
+    })
     preloadedModuleCoexistenceVerified = $false
     qualificationClaimed = $false
 } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $logs 'crypto-loader-evidence.json') -Encoding utf8
