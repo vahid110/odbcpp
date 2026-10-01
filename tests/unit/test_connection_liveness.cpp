@@ -178,7 +178,9 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     EmptyQueryResponse, DescriptionNoData,
     DescriptionMissingParse, DescriptionMissingParameters,
     DescriptionMissingResult, DescriptionOutOfOrder,
-    DescriptionServerError, OwnedResultCells
+    DescriptionServerError, OwnedResultCells,
+    OwnedErrorIdle, OwnedErrorTransaction, OwnedErrorAborted,
+    QueryReadTimeout, PartialQueryWrite
   };
 
   explicit ScriptedBackendTransport(
@@ -465,6 +467,16 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       constexpr char error[] = "SERROR\0C22012\0Mdivision by zero\0";
       append_message('E', error, sizeof(error));
       append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::OwnedErrorIdle ||
+               mode == ResponseMode::OwnedErrorTransaction ||
+               mode == ResponseMode::OwnedErrorAborted) {
+      constexpr char error[] = "SERROR\0C42601\0Msyntax error\0";
+      append_message('E', error, sizeof(error));
+      const char state = mode == ResponseMode::OwnedErrorIdle ? 'I' :
+                         mode == ResponseMode::OwnedErrorTransaction ? 'T' : 'E';
+      append_message('Z', &state, 1);
+      append_message('C', "ROLLBACK", sizeof("ROLLBACK"));
+      append_message('Z', "I", 1);
     } else if (mode == ResponseMode::DescriptionServerError) {
       constexpr char error[] = "SERROR\0C42601\0Msyntax error\0";
       append_message('E', error, sizeof(error));
@@ -481,6 +493,10 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
   rs::util::Result<rs::core::transport::IOResult> send(
       std::span<const std::byte> buffer, rs::util::Deadline) override {
     ++send_count_;
+    if (mode_ == ResponseMode::PartialQueryWrite && send_count_ > 1) {
+      if (send_count_ == 2) return rs::core::transport::IOResult{1, false};
+      return {rs::util::DbErrorCode::NetworkError, "injected partial query write"};
+    }
     if (mode_ == ResponseMode::OverreportedStartupWrite) {
       return rs::core::transport::IOResult{buffer.size() + 1, false};
     }
@@ -507,6 +523,9 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
               "injected repeated read"};
     }
     const auto available = input_.size() - offset_;
+    if (mode_ == ResponseMode::QueryReadTimeout && available == 0) {
+      return {rs::util::DbErrorCode::Timeout, "injected query read timeout"};
+    }
     if (available == 0) return rs::core::transport::IOResult{0, true};
     const auto count = std::min(buffer.size(), available);
     std::copy_n(input_.begin() + static_cast<std::ptrdiff_t>(offset_), count,
@@ -1633,7 +1652,7 @@ TEST(ConnectionLivenessTest, DescriptionServerErrorRemainsQueryFailure) {
   ASSERT_TRUE(result.has_error());
   EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),
             result.error());
-  EXPECT_EQ("42601", connection.get_last_server_sqlstate());
+  EXPECT_EQ(result.backend_error().native_state, "42601");
   EXPECT_TRUE(connection.is_connected());
 }
 
@@ -1724,7 +1743,7 @@ public:
   rs::util::Deadline observed_deadline{};
   std::optional<rs::util::DbErrorCode> failure;
   int calls = 0;
-  rs::util::Result<rs::core::database::QueryResult> execute_query(
+  rs::core::database::BackendResult<rs::core::database::QueryResult> execute_query(
       std::string_view sql, rs::util::Deadline deadline) override {
     ++calls;
     command = sql;
@@ -1851,4 +1870,80 @@ TEST(BackendResultContractTest, RowsMetadataAndDeferredErrorsOutliveConnection) 
   EXPECT_EQ("22012", retained.additional_results[0].error_sqlstate);
   EXPECT_NE(std::string::npos,
             retained.additional_results[0].error_message.find("division by zero"));
+}
+
+TEST(ConnectionLivenessTest, OwningErrorsPreserveNativeDetailAndProtocolDisposition) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::OwnedErrorIdle, Mode::OwnedErrorTransaction, Mode::OwnedErrorAborted}) {
+    for (const auto operation : {BackendOperation::ExecuteDirect, BackendOperation::ExecutePrepared, BackendOperation::Describe}) {
+      SCOPED_TRACE(static_cast<int>(mode));
+      SCOPED_TRACE(static_cast<int>(operation));
+      BackendResult<QueryResult> saved(QueryResult{});
+      {
+        GenericDatabaseConnection connection(std::make_unique<postgres::PgProtocolParser>(),
+            std::make_unique<ScriptedBackendTransport>(mode));
+        EXPECT_EQ(connection.session_state(), SessionState::Disconnected);
+        ConnectionSettings settings;
+        settings.use_ssl = false;
+        ASSERT_TRUE(connection.connect(settings));
+        EXPECT_EQ(connection.session_state(), SessionState::Idle);
+        const auto deadline = rs::util::make_deadline(std::chrono::seconds(1));
+        auto result = operation == BackendOperation::ExecuteDirect ? connection.execute_query("broken", deadline) :
+                      operation == BackendOperation::ExecutePrepared ? connection.execute_prepared("broken", std::span<const QueryParameter>{}, deadline) :
+                      connection.describe_statement("broken", {}, deadline);
+        ASSERT_TRUE(result.has_error());
+        const auto& error = result.backend_error();
+        EXPECT_EQ(error.error_class, BackendErrorClass::Server);
+        EXPECT_EQ(error.native_state, "42601");
+        EXPECT_EQ(error.operation, operation);
+        EXPECT_FALSE(error.native_code);
+        EXPECT_FALSE(error.retry_safe);
+        const auto state = mode == Mode::OwnedErrorIdle ? SessionState::Idle :
+                           mode == Mode::OwnedErrorTransaction ? SessionState::Transaction : SessionState::FailedTransaction;
+        EXPECT_EQ(error.session_state, state);
+        EXPECT_EQ(connection.session_state(), state);
+        EXPECT_EQ(error.disposition, mode == Mode::OwnedErrorIdle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired);
+        saved = result;
+        auto moved = std::move(result);
+        ASSERT_TRUE(connection.execute_query("ROLLBACK", deadline));
+        EXPECT_EQ(connection.session_state(), SessionState::Idle);
+        EXPECT_EQ(moved.backend_error().native_state, "42601");
+        EXPECT_EQ(moved.backend_error().session_state, state);
+        connection.disconnect();
+        EXPECT_EQ(connection.session_state(), SessionState::Disconnected);
+      }
+      EXPECT_EQ(saved.backend_error().native_state, "42601");
+      EXPECT_EQ(saved.backend_error().message, "Query error: syntax error");
+      EXPECT_EQ(saved.backend_error().operation, operation);
+    }
+  }
+}
+
+TEST(ConnectionLivenessTest, AmbiguousQueryFailuresRetireAndNeverRetainServerState) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::QueryReadTimeout, Mode::PartialQueryWrite, Mode::MalformedQueryReady}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    auto transport = std::make_unique<ScriptedBackendTransport>(mode);
+    auto* observed = transport.get();
+    GenericDatabaseConnection connection(std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
+    ConnectionSettings settings;
+    settings.use_ssl = false;
+    ASSERT_TRUE(connection.connect(settings));
+    const auto result = connection.execute_query("SELECT 1", rs::util::make_deadline(std::chrono::seconds(1)));
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Retire);
+    EXPECT_EQ(result.backend_error().session_state, SessionState::Disconnected);
+    EXPECT_EQ(result.backend_error().operation, BackendOperation::ExecuteDirect);
+    EXPECT_FALSE(result.backend_error().native_state);
+    EXPECT_FALSE(connection.is_connected());
+    EXPECT_EQ(observed->close_count(), 1U);
+    const auto sends = observed->send_count();
+    const auto again = connection.execute_query("SELECT 2", rs::util::make_deadline(std::chrono::seconds(1)));
+    ASSERT_TRUE(again.has_error());
+    EXPECT_EQ(again.backend_error().error_class, BackendErrorClass::NotConnected);
+    EXPECT_EQ(again.backend_error().disposition, SessionDisposition::Retire);
+    EXPECT_EQ(observed->send_count(), sends);
+  }
 }

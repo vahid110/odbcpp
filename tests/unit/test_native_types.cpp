@@ -94,7 +94,7 @@ public:
   rs::util::Deadline observed_deadline{};
   int queries = 0;
 
-  rs::util::Result<QueryResult> execute_query(
+  rs::core::database::BackendResult<QueryResult> execute_query(
       std::string_view sql, rs::util::Deadline deadline) override {
     ++queries;
     query = sql;

@@ -113,7 +113,6 @@ rs::util::Result<void> GenericDatabaseConnection::connect(const ConnectionSettin
 
   settings_ = settings;
   server_params_.clear();
-  last_server_sqlstate_.clear();
   peer_identity_verified_ = false;
   
   if (!transport_) {
@@ -233,8 +232,8 @@ void GenericDatabaseConnection::disconnect() {
     transport_->close();
   }
   connected_ = false;
+  session_state_ = SessionState::Disconnected;
   server_params_.clear();
-  last_server_sqlstate_.clear();
   peer_identity_verified_ = false;
 }
 
@@ -245,57 +244,92 @@ bool GenericDatabaseConnection::is_connected() const {
 void GenericDatabaseConnection::mark_transport_failed() noexcept {
   const bool was_connected = connected_;
   connected_ = false;
+  session_state_ = SessionState::Disconnected;
   if (was_connected && transport_) transport_->close();
 }
 
-rs::util::Result<QueryResult> GenericDatabaseConnection::execute_query(std::string_view sql, rs::util::Deadline deadline) {
+BackendResult<QueryResult> GenericDatabaseConnection::finish_operation(
+    BackendResult<QueryResult> result, BackendOperation operation) {
+  if (result.has_error()) {
+    auto& error = result.backend_error();
+    error.operation = operation;
+    const bool ambiguous = error.error_class == BackendErrorClass::Timeout ||
+        error.error_class == BackendErrorClass::Transport ||
+        error.error_class == BackendErrorClass::Protocol ||
+        error.error_class == BackendErrorClass::Tls ||
+        error.error_class == BackendErrorClass::Unknown;
+    if (ambiguous) mark_transport_failed();
+    error.session_state = session_state_;
+    error.disposition = !connected_ ? SessionDisposition::Retire :
+        session_state_ == SessionState::Idle ? SessionDisposition::Reusable :
+        SessionDisposition::ResetRequired;
+  }
+  return result;
+}
+
+BackendResult<QueryResult> GenericDatabaseConnection::execute_query(
+    std::string_view sql, rs::util::Deadline deadline) {
+  return finish_operation(execute_query_impl(sql, deadline), BackendOperation::ExecuteDirect);
+}
+
+BackendResult<QueryResult> GenericDatabaseConnection::execute_prepared(
+    std::string_view sql, std::span<const QueryParameter> params, rs::util::Deadline deadline) {
+  return finish_operation(execute_prepared_impl(sql, params, deadline), BackendOperation::ExecutePrepared);
+}
+
+BackendResult<QueryResult> GenericDatabaseConnection::describe_statement(
+    std::string_view sql, std::span<const QueryParameterType> types, rs::util::Deadline deadline) {
+  return finish_operation(describe_statement_impl(sql, types, deadline), BackendOperation::Describe);
+}
+
+BackendResult<QueryResult> GenericDatabaseConnection::execute_query_impl(std::string_view sql, rs::util::Deadline deadline) {
   if (!connected_) {
-    return rs::util::Result<QueryResult>{rs::util::DbErrorCode::NotConnected, "Not connected"};
+    return BackendResult<QueryResult>{rs::util::DbErrorCode::NotConnected, "Not connected"};
   }
   
   std::vector<std::byte> query_msg;
   try {
     query_msg = parser_->create_simple_query(sql);
   } catch (const std::exception& error) {
-    return rs::util::Result<QueryResult>{
+    return BackendResult<QueryResult>{
         rs::util::DbErrorCode::InvalidParameter, error.what()};
   }
   auto write_result = write_all_result(query_msg, deadline);
   if (write_result.has_error()) {
-    return rs::util::Result<QueryResult>{write_result.error(), write_result.error_message()};
+    return BackendResult<QueryResult>{write_result.error(), write_result.error_message()};
   }
 
   return read_query_result(deadline, ResponseKind::SimpleExecution);
 }
 
-rs::util::Result<QueryResult> GenericDatabaseConnection::execute_prepared(std::string_view sql, 
+BackendResult<QueryResult> GenericDatabaseConnection::execute_prepared_impl(std::string_view sql,
                                                                             std::span<const QueryParameter> params,
                                                                             rs::util::Deadline deadline) {
   if (!connected_) {
-    return rs::util::Result<QueryResult>{rs::util::DbErrorCode::NotConnected, "Not connected"};
+    return BackendResult<QueryResult>{rs::util::DbErrorCode::NotConnected, "Not connected"};
   }
   
   std::vector<std::byte> query_msg;
   try {
     query_msg = parser_->create_prepared_query(sql, params);
   } catch (const std::exception& error) {
-    return rs::util::Result<QueryResult>{
+    return BackendResult<QueryResult>{
         rs::util::DbErrorCode::InvalidParameter, error.what()};
   }
   auto write_result = write_all_result(query_msg, deadline);
   if (write_result.has_error()) {
-    return rs::util::Result<QueryResult>{write_result.error(), write_result.error_message()};
+    return BackendResult<QueryResult>{write_result.error(), write_result.error_message()};
   }
   
   return read_query_result(deadline, ResponseKind::PreparedExecution);
 }
 
-rs::util::Result<QueryResult> GenericDatabaseConnection::describe_statement(
+BackendResult<QueryResult> GenericDatabaseConnection::describe_statement_impl(
     std::string_view sql,
     std::span<const QueryParameterType> parameter_types,
     rs::util::Deadline deadline) {
   if (!connected_) {
-    return rs::util::Result<QueryResult>{
+    return BackendResult<QueryResult>{
         rs::util::DbErrorCode::NotConnected, "Not connected"};
   }
 
@@ -303,18 +337,18 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::describe_statement(
   try {
     request = parser_->create_statement_description(sql, parameter_types);
   } catch (const std::exception& error) {
-    return rs::util::Result<QueryResult>{
+    return BackendResult<QueryResult>{
         rs::util::DbErrorCode::InvalidParameter, error.what()};
   }
   auto write_result = write_all_result(request, deadline);
   if (write_result.has_error()) {
-    return rs::util::Result<QueryResult>{
+    return BackendResult<QueryResult>{
         write_result.error(), write_result.error_message()};
   }
   return read_query_result(deadline, ResponseKind::Description);
 }
 
-rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
+BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
     rs::util::Deadline deadline, ResponseKind kind) {
   enum class DescriptionPhase { Parse, Parameters, Result, Complete, Error };
   std::vector<Message> messages;
@@ -322,12 +356,11 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
   std::string query_error_sqlstate;
   bool saw_completion = false;
   auto description_phase = DescriptionPhase::Parse;
-  last_server_sqlstate_.clear();
 
   while (true) {
     auto msg_result = read_message_result(deadline);
     if (msg_result.has_error()) {
-      return rs::util::Result<QueryResult>{msg_result.error(), msg_result.error_message()};
+      return BackendResult<QueryResult>{msg_result.error(), msg_result.error_message()};
     }
     
     try {
@@ -339,13 +372,13 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
       }
       if (msg.tag == 'G' || msg.tag == 'H' || msg.tag == 'W') {
         disconnect();
-        return rs::util::Result<QueryResult>{
+        return BackendResult<QueryResult>{
             rs::util::DbErrorCode::UnsupportedFeature,
             "PostgreSQL COPY streaming is not supported"};
       }
       if (msg.tag == 'R' || msg.tag == 'K') {
         mark_transport_failed();
-        return rs::util::Result<QueryResult>{
+        return BackendResult<QueryResult>{
             rs::util::DbErrorCode::ProtocolError,
             "PostgreSQL startup frame arrived during query"};
       }
@@ -414,7 +447,7 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
         auto status_result = record_parameter_status(msg);
         if (status_result.has_error()) {
           mark_transport_failed();
-          return rs::util::Result<QueryResult>{
+          return BackendResult<QueryResult>{
               status_result.error(), status_result.error_message()};
         }
       }
@@ -427,9 +460,13 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
       }
       messages.push_back(msg);
       if (parser_->is_ready_for_query(msg)) {
+        session_state_ = msg.payload.size() != 1 ? SessionState::Unknown :
+            msg.payload[0] == std::byte{'I'} ? SessionState::Idle :
+            msg.payload[0] == std::byte{'T'} ? SessionState::Transaction :
+            SessionState::FailedTransaction;
         if (kind != ResponseKind::Description && !saw_completion) {
           mark_transport_failed();
-          return rs::util::Result<QueryResult>{
+          return BackendResult<QueryResult>{
               rs::util::DbErrorCode::ProtocolError,
               "PostgreSQL query ended without a completion response"};
         }
@@ -437,7 +474,7 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
             description_phase != DescriptionPhase::Complete &&
             description_phase != DescriptionPhase::Error) {
           mark_transport_failed();
-          return rs::util::Result<QueryResult>{
+          return BackendResult<QueryResult>{
               rs::util::DbErrorCode::ProtocolError,
               "PostgreSQL statement description was incomplete"};
         }
@@ -445,7 +482,7 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
       }
     } catch (const std::exception& error) {
       mark_transport_failed();
-      return rs::util::Result<QueryResult>{
+      return BackendResult<QueryResult>{
           rs::util::DbErrorCode::ProtocolError, error.what()};
     }
   }
@@ -453,21 +490,22 @@ rs::util::Result<QueryResult> GenericDatabaseConnection::read_query_result(
   try {
     auto result = parser_->extract_query_result(messages);
     if (has_binary_columns(result)) {
-      return rs::util::Result<QueryResult>{
+      return BackendResult<QueryResult>{
           rs::util::DbErrorCode::UnsupportedFeature,
           "PostgreSQL binary result format is not supported"};
     }
     if (query_error &&
         (!result.error_message.empty() || result.additional_results.empty())) {
       last_error_ = *query_error;
-      last_server_sqlstate_ = std::move(query_error_sqlstate);
-      return rs::util::Result<QueryResult>{
-          rs::util::DbErrorCode::QueryFailed, "Query error: " + last_error_};
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),
+                         "Query error: " + last_error_};
+      error.native_state = std::move(query_error_sqlstate);
+      return error;
     }
-    return rs::util::Result<QueryResult>{std::move(result)};
+    return BackendResult<QueryResult>{std::move(result)};
   } catch (const std::exception& error) {
     mark_transport_failed();
-    return rs::util::Result<QueryResult>{
+    return BackendResult<QueryResult>{
         rs::util::DbErrorCode::ProtocolError, error.what()};
   }
 }
@@ -479,10 +517,6 @@ std::string GenericDatabaseConnection::get_parameter(std::string_view key) const
 
 std::string GenericDatabaseConnection::get_last_error() const {
   return last_error_;
-}
-
-std::string GenericDatabaseConnection::get_last_server_sqlstate() const {
-  return last_server_sqlstate_;
 }
 
 void GenericDatabaseConnection::write_all(const std::vector<std::byte>& data, rs::util::Deadline deadline) {
@@ -691,6 +725,10 @@ rs::util::Result<void> GenericDatabaseConnection::perform_authentication_result(
               rs::util::DbErrorCode::ProtocolError,
               "ReadyForQuery arrived before AuthenticationOk"};
         }
+        session_state_ = msg.payload.size() != 1 ? SessionState::Unknown :
+            msg.payload[0] == std::byte{'I'} ? SessionState::Idle :
+            msg.payload[0] == std::byte{'T'} ? SessionState::Transaction :
+            SessionState::FailedTransaction;
         break; // Ready for queries
       }
       else if (msg.tag == 'N' && authenticated) {

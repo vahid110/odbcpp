@@ -573,14 +573,14 @@ std::string mapped_backend_sqlstate(
 
 std::string query_failure_sqlstate(
     const rs::core::database::IDatabaseConnection& connection,
-    const std::error_code& error, const char* fallback,
+    const rs::core::database::BackendError& error, const char* fallback,
     SQLINTEGER statement_code) {
-  const auto* default_state = request_sqlstate(error, fallback);
-  if (error != rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed)) {
+  const auto* default_state = request_sqlstate(error.code, fallback);
+  if (error.code != rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed)) {
     return default_state;
   }
   return mapped_backend_sqlstate(
-      connection, connection.get_last_server_sqlstate(), default_state, statement_code);
+      connection, error.native_state.value_or(""), default_state, statement_code);
 }
 
 std::chrono::milliseconds timeout_duration(SQLULEN seconds) {
@@ -2400,7 +2400,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
     if (result.has_error()) {
       const auto timeout = is_timeout_error(result.error());
       set_error(query_failure_sqlstate(*conn_->get_db_connection(),
-                                       result.error(), SQLSTATE_SYNTAX_ERROR,
+                                       result.backend_error(), SQLSTATE_SYNTAX_ERROR,
                                        dynamic_function.code),
                 result.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
@@ -4156,7 +4156,7 @@ SQLRETURN ODBCStatement::execute() {
     if (result.has_error()) {
       const auto timeout = is_timeout_error(result.error());
       set_error(query_failure_sqlstate(*conn_->get_db_connection(),
-                                       result.error(), SQLSTATE_SYNTAX_ERROR,
+                                       result.backend_error(), SQLSTATE_SYNTAX_ERROR,
                                        dynamic_function.code),
                 result.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
@@ -4579,7 +4579,7 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
   if (result.has_error()) {
     const auto timeout = is_timeout_error(result.error());
     set_error(query_failure_sqlstate(*conn_->get_db_connection(),
-                                     result.error(), SQLSTATE_SYNTAX_ERROR,
+                                     result.backend_error(), SQLSTATE_SYNTAX_ERROR,
                                      classify_dynamic_function(prepared_sql_).code),
               result.error_message());
     if (timeout) conn_->disconnect();

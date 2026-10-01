@@ -21,8 +21,8 @@ public:
   void disconnect();
   bool is_connected() const;
   
-  rs::util::Result<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline);
-  rs::util::Result<QueryResult> execute_prepared(std::string_view sql, 
+  BackendResult<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline);
+  BackendResult<QueryResult> execute_prepared(std::string_view sql,
                                                 std::span<const QueryParameter> params,
                                                 rs::util::Deadline deadline);
   

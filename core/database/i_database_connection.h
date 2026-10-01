@@ -10,6 +10,7 @@
 #include "core/util/result.h"
 #include "query_parameter.h"
 #include "query_result.h"
+#include "backend_result.h"
 #include "sql_translation.h"
 #include "native_type_info.h"
 #include "type_definition.h"
@@ -47,6 +48,10 @@ public:
   virtual rs::util::Result<void> connect(const ConnectionSettings& settings) = 0;
   virtual void disconnect() = 0;
   virtual bool is_connected() const = 0;
+  // Passive protocol state, never a network probe or a pooling guarantee.
+  virtual SessionState session_state() const {
+    return is_connected() ? SessionState::Unknown : SessionState::Disconnected;
+  }
 
   // Count bind markers using this backend's SQL lexical rules, without I/O.
   virtual std::size_t count_parameter_markers(std::string_view sql) const = 0;
@@ -94,16 +99,16 @@ public:
   virtual rs::util::Result<void> set_transaction_isolation(TransactionIsolation level,
       rs::util::Deadline deadline) = 0;
 
-  virtual rs::util::Result<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline) = 0;
-  virtual rs::util::Result<QueryResult> execute_prepared(std::string_view sql, 
+  virtual BackendResult<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline) = 0;
+  virtual BackendResult<QueryResult> execute_prepared(std::string_view sql,
                                                        std::span<const QueryParameter> params,
                                                        rs::util::Deadline deadline) = 0;
-  virtual rs::util::Result<QueryResult> describe_statement(
+  virtual BackendResult<QueryResult> describe_statement(
       std::string_view sql,
       std::span<const QueryParameterType> parameter_types,
       rs::util::Deadline deadline) = 0;
 
-  rs::util::Result<QueryResult> execute_prepared(
+  BackendResult<QueryResult> execute_prepared(
       std::string_view sql, std::span<const std::string> params,
       rs::util::Deadline deadline) {
     std::vector<QueryParameter> converted;
@@ -115,8 +120,8 @@ public:
   }
   
   virtual std::string get_parameter(std::string_view key) const = 0;
+  // Legacy setup/transaction migration only. Query diagnostics use BackendError.
   virtual std::string get_last_error() const = 0;
-  virtual std::string get_last_server_sqlstate() const { return {}; }
 };
 
 } // namespace rs::core::database

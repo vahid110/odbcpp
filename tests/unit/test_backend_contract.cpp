@@ -100,11 +100,18 @@ class FakeBackend final : public IDatabaseConnection {
     result.statement_kind = StatementKind::SelectCursor;
     return result;
   }
-  Result<QueryResult> execute_query(std::string_view sql, Deadline deadline) override {
-    ++seen_->queries; seen_->sql = sql; seen_->deadline = deadline; last_state_.clear();
+  BackendResult<QueryResult> execute_query(std::string_view sql, Deadline deadline) override {
+    ++seen_->queries; seen_->sql = sql; seen_->deadline = deadline;
     if (sql.ends_with("timeout")) return {DbErrorCode::Timeout, "fake deadline"};
     if (sql.ends_with("network")) { connected_ = false; return {DbErrorCode::NetworkError, "fake loss"}; }
-    if (sql.ends_with("error")) { last_state_ = "FAKE_ERROR"; return {DbErrorCode::QueryFailed, "fake error"}; }
+    if (sql.ends_with("error")) {
+      BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), "fake error"};
+      error.native_state = "FAKE_ERROR";
+      error.disposition = SessionDisposition::Reusable;
+      error.session_state = SessionState::Idle;
+      error.operation = BackendOperation::ExecuteDirect;
+      return error;
+    }
     auto result = rows();
     if (sql.ends_with("deferred")) {
       QueryResult error; error.error_message = "later error"; error.error_sqlstate = "FAKE_ERROR";
@@ -112,12 +119,12 @@ class FakeBackend final : public IDatabaseConnection {
     }
     return result;
   }
-  Result<QueryResult> execute_prepared(std::string_view sql, std::span<const QueryParameter> params,
+  BackendResult<QueryResult> execute_prepared(std::string_view sql, std::span<const QueryParameter> params,
                                       Deadline deadline) override {
     seen_->parameters.assign(params.begin(), params.end());
     return execute_query(sql, deadline);
   }
-  Result<QueryResult> describe_statement(std::string_view, std::span<const QueryParameterType> types,
+  BackendResult<QueryResult> describe_statement(std::string_view, std::span<const QueryParameterType> types,
                                         Deadline) override {
     QueryResult result = rows(); result.rows.clear();
     result.parameter_type_ids.assign(types.size(), 23);
@@ -125,11 +132,9 @@ class FakeBackend final : public IDatabaseConnection {
   }
   std::string get_parameter(std::string_view key) const override { return key == "server_version" ? "1.0" : ""; }
   std::string get_last_error() const override { return "fake error"; }
-  std::string get_last_server_sqlstate() const override { return last_state_; }
  private:
   std::shared_ptr<Observations> seen_;
   bool connected_{};
-  std::string last_state_;
 };
 
 class FakeProvider final : public IBackendProvider {
