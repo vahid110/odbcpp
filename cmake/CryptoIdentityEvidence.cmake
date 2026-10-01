@@ -1,4 +1,7 @@
 # Validate qualification evidence, not a runtime driver compatibility policy.
+# Standalone -P scripts do not inherit the main project's policy version.
+# Quoted field names must stay literals even when variables share those names.
+cmake_policy(SET CMP0054 NEW)
 function(validate_crypto_identity raw manifest result error)
   set(${result} "" PARENT_SCOPE)
   set(${error} "Provider identity or TLS default policy mismatch" PARENT_SCOPE)
