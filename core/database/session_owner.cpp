@@ -8,15 +8,30 @@ namespace rs::core::database {
 namespace detail {
 struct SessionCacheGeneration {};
 struct SessionOwnershipState {
+  using NowFactory = rs::util::Deadline(*)() noexcept;
   using CacheFactory = std::shared_ptr<const SessionCacheGeneration>(*)();
   explicit SessionOwnershipState(std::unique_ptr<IDatabaseConnection> value, std::optional<CredentialToken> token,
-      CacheFactory factory)
-      : session(std::move(value)), credential(std::move(token)), cache_factory(factory) {}
+      CacheFactory factory, std::optional<SessionReusePolicy> policy, NowFactory clock)
+      : session(std::move(value)), credential(std::move(token)), cache_factory(factory), reuse_policy(policy), now(clock), idle_since(clock()) {
+    if (policy && (policy->retire_at == rs::util::Deadline::max() ||
+        policy->max_idle <= rs::util::Clock::duration::zero()))
+      throw std::invalid_argument("Session reuse policy requires finite lifetime and positive idle limit");
+  }
   std::mutex mutex;
   std::unique_ptr<IDatabaseConnection> session;
   const std::optional<CredentialToken> credential;
   const CacheFactory cache_factory;
   std::shared_ptr<const SessionCacheGeneration> cache_generation;
+  const std::optional<SessionReusePolicy> reuse_policy;
+  const NowFactory now; // Local noexcept clock only; private fixtures must not reenter.
+  rs::util::Deadline idle_since;
+  bool lifetime_expired(rs::util::Deadline sample) const noexcept {
+    return reuse_policy && sample >= reuse_policy->retire_at;
+  }
+  bool idle_expired(rs::util::Deadline sample) const noexcept {
+    // Subtract only real monotonic samples, never user-supplied extrema/durations.
+    return reuse_policy && !leased && sample >= idle_since && sample - idle_since >= reuse_policy->max_idle;
+  }
   bool accepting{true};
   bool leased{false};
 };
@@ -34,9 +49,11 @@ SessionOwner::SessionOwner(std::unique_ptr<IDatabaseConnection> session)
     : SessionOwner(std::move(session), std::nullopt) {}
 SessionOwner::SessionOwner(std::unique_ptr<IDatabaseConnection> session, CredentialToken token)
     : SessionOwner(std::move(session), std::optional{std::move(token)}) {}
+SessionOwner::SessionOwner(std::unique_ptr<IDatabaseConnection> session, CredentialToken token, SessionReusePolicy policy)
+    : SessionOwner(std::move(session), std::optional{std::move(token)}, &make_cache_generation, policy) {}
 SessionOwner::SessionOwner(std::unique_ptr<IDatabaseConnection> session, std::optional<CredentialToken> token,
-    CacheGenerationFactory factory)
-    : state_(std::make_shared<detail::SessionOwnershipState>(std::move(session), std::move(token), factory)) {
+    CacheGenerationFactory factory, std::optional<SessionReusePolicy> policy, NowFactory clock)
+    : state_(std::make_shared<detail::SessionOwnershipState>(std::move(session), std::move(token), factory, policy, clock)) {
   if (!state_->session) throw std::invalid_argument("SessionOwner requires a physical session");
 }
 SessionOwner::SessionOwner(SessionOwner&& other) noexcept
@@ -74,7 +91,8 @@ std::optional<SessionLease> SessionOwner::try_acquire_impl(const CredentialToken
       // Denials cannot be used to retire another context or newer generation.
       if (!token || !state_->credential->same_generation(*token)) return std::nullopt;
       // Lock order: owner -> authority. Authorities never call back into owners.
-      if (!state_->credential->is_current()) {
+      if (!state_->credential->is_current() || state_->lifetime_expired(state_->now()) ||
+          state_->idle_expired(state_->now())) {
         state_->accepting = false;
         state_->cache_generation.reset();
         if (!state_->leased) retired = std::move(state_->session);
@@ -214,7 +232,7 @@ bool cache_current(const std::shared_ptr<detail::SessionOwnershipState>& state,
   // Fixed lock order: owner -> credential authority; no backend calls here.
   if (!state->accepting || !state->leased || !state->session ||
       state->cache_generation != generation || !state->credential) return false;
-  if (!state->credential->is_current()) {
+  if (!state->credential->is_current() || state->lifetime_expired(state->now())) {
     state->accepting = false;
     state->cache_generation.reset();
     return false;
@@ -237,7 +255,7 @@ std::optional<SessionCacheToken> SessionLease::cache_token() {
   {
     std::lock_guard lock(state_->mutex);
     if (!state_->accepting || !state_->leased || !state_->session || !state_->credential) return std::nullopt;
-    if (!state_->credential->is_current()) {
+    if (!state_->credential->is_current() || state_->lifetime_expired(state_->now())) {
       state_->accepting = false; state_->cache_generation.reset(); return std::nullopt;
     }
     physical = state_->session.get();
@@ -252,7 +270,7 @@ std::optional<SessionCacheToken> SessionLease::cache_token() {
   if (!idle || !state_->accepting || !state_->leased || state_->session.get() != physical) {
     state_->cache_generation.reset(); return std::nullopt;
   }
-  if (!state_->credential->is_current()) {
+  if (!state_->credential->is_current() || state_->lifetime_expired(state_->now())) {
     state_->accepting = false; state_->cache_generation.reset(); return std::nullopt;
   }
   if (!state_->cache_generation) {
@@ -272,6 +290,7 @@ void SessionLease::invalidate_cache() noexcept {
   if (!state_) return;
   std::lock_guard lock(state_->mutex);
   state_->cache_generation.reset();
+  if (state_->lifetime_expired(state_->now())) state_->accepting = false;
 }
 } // namespace rs::core::database
 
@@ -292,22 +311,25 @@ BackendResult<void> SessionLease::return_reusable(rs::util::Deadline deadline) {
   };
   if (!state_) return fail(rs::util::DbErrorCode::NotConnected, "No active session lease");
   auto state = state_;
-  bool eligible{};
+  bool eligible{}, lifetime_expired{};
   IDatabaseConnection* physical{};
   {
     std::lock_guard lock(state->mutex);
+    lifetime_expired = state->lifetime_expired(state->now());
     eligible = state->accepting && state->leased && state->session && state->credential &&
-        state->credential->is_current();
+        state->credential->is_current() && !lifetime_expired;
     physical = state->session.get();
   }
   // Never retire or invoke the backend while holding an ownership lock.
-  if (!eligible) return fail(rs::util::DbErrorCode::AuthenticationFailed, "Session return admission unavailable");
+  if (!eligible) return fail(lifetime_expired ? rs::util::DbErrorCode::Timeout : rs::util::DbErrorCode::AuthenticationFailed,
+      "Session return admission unavailable");
   auto reset = reset_session(deadline);
   if (!reset) return reset;
   bool expired{};
   {
     std::lock_guard lock(state->mutex);
-    expired = rs::util::Clock::now() >= deadline;
+    const auto now = state->now();
+    expired = rs::util::Clock::now() >= deadline || state->lifetime_expired(now);
     eligible = !expired && state_ == state && state->accepting && state->leased &&
         state->session.get() == physical && state->credential &&
         state->credential->is_current();
@@ -315,6 +337,7 @@ BackendResult<void> SessionLease::return_reusable(rs::util::Deadline deadline) {
       // Publication linearizes here. A concurrent rotation after this point is
       // detected on the next checkout; it never rebinds the physical session.
       state->cache_generation.reset();
+      state->idle_since = now;
       state->leased = false;
       state_.reset();
     }

@@ -148,6 +148,25 @@ TEST(SessionOwnerIntegrationTest, LiveBorrowSurvivesOwnerAndRetirementClosesPhys
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   EXPECT_TRUE(gone) << "Revoked returned physical session remained active";
+  // Policy observes idle expiry at checkout; no background timer is implied.
+  auto timed_physical = provider.create_session(nullptr); ASSERT_TRUE(timed_physical->connect(*settings));
+  CredentialContext timed_credentials; auto timed_token = timed_credentials.publish_authenticated();
+  SessionOwner timed_owner{std::move(timed_physical), timed_token,
+      {rs::util::make_deadline(std::chrono::seconds(10)), std::chrono::milliseconds(100)}};
+  auto timed_lease = timed_owner.try_acquire(timed_token); ASSERT_TRUE(timed_lease);
+  const auto timed_deadline = rs::util::make_deadline(std::chrono::seconds(5));
+  auto timed_pid = timed_lease->execute_query("SELECT pg_backend_pid()", timed_deadline); ASSERT_TRUE(timed_pid);
+  const auto timed_pid_text = timed_pid->rows.at(0).at(0); ASSERT_TRUE(timed_pid_text);
+  ASSERT_TRUE(timed_lease->return_reusable(timed_deadline));
+  std::this_thread::sleep_for(std::chrono::milliseconds(110)); EXPECT_FALSE(timed_owner.try_acquire(timed_token));
+  gone = false;
+  while (std::chrono::steady_clock::now() < timed_deadline) {
+    auto inactive = observer->execute_query("SELECT count(*) FROM pg_stat_activity WHERE pid = " + *timed_pid_text, timed_deadline);
+    ASSERT_TRUE(inactive);
+    if (inactive->rows.at(0).at(0) == "0") { gone = true; break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(gone) << "Expired idle physical session survived matching checkout";
   observer->disconnect();
 }
 } // namespace

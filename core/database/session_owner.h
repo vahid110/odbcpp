@@ -79,12 +79,20 @@ class SessionLease final {
 // Owner destruction prevents checkout but cannot interrupt an active borrower.
 // The lease keeps the physical session alive until retirement. Retirement is
 // terminal unless explicit return_reusable succeeds; no raw ownership extraction.
+// Opt-in private policy: finite absolute monotonic lifetime and positive idle
+// duration. Idle starts at adoption and successful return only; no eviction timer.
+struct SessionReusePolicy {
+  rs::util::Deadline retire_at;
+  rs::util::Clock::duration max_idle;
+};
+
 class SessionOwner final {
  public:
   explicit SessionOwner(std::unique_ptr<IDatabaseConnection>);
   // Trusted composition must bind this token to the adopted authenticated
   // session. Matching stale credentials close admission; active leases survive.
   SessionOwner(std::unique_ptr<IDatabaseConnection>, CredentialToken);
+  SessionOwner(std::unique_ptr<IDatabaseConnection>, CredentialToken, SessionReusePolicy);
   SessionOwner(const SessionOwner&) = delete;
   SessionOwner& operator=(const SessionOwner&) = delete;
   SessionOwner(SessionOwner&&) noexcept;
@@ -97,10 +105,11 @@ class SessionOwner final {
 
  private:
   friend struct detail::SessionOwnershipTestAccess;
+  using NowFactory = rs::util::Deadline(*)() noexcept;
   using CacheGenerationFactory = std::shared_ptr<const detail::SessionCacheGeneration>(*)();
   static std::shared_ptr<const detail::SessionCacheGeneration> make_cache_generation();
   SessionOwner(std::unique_ptr<IDatabaseConnection>, std::optional<CredentialToken>,
-      CacheGenerationFactory = &make_cache_generation);
+      CacheGenerationFactory = &make_cache_generation, std::optional<SessionReusePolicy> = std::nullopt, NowFactory = &rs::util::Clock::now);
   std::optional<SessionLease> try_acquire_impl(const CredentialToken*);
   void close() noexcept;
   std::shared_ptr<detail::SessionOwnershipState> state_;

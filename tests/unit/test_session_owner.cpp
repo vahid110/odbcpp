@@ -15,6 +15,10 @@ struct SessionOwnershipTestAccess {
       std::shared_ptr<const SessionCacheGeneration>(*factory)()) {
     return SessionOwner{std::move(session), std::optional{std::move(token)}, factory};
   }
+  static SessionOwner with_policy(std::unique_ptr<IDatabaseConnection> session, CredentialToken token,
+      SessionReusePolicy policy, rs::util::Deadline(*now)() noexcept) {
+    return SessionOwner{std::move(session), std::optional{std::move(token)}, &SessionOwner::make_cache_generation, policy, now};
+  }
   static std::shared_ptr<const SessionCacheGeneration> generate() { return SessionOwner::make_cache_generation(); }
 };
 }
@@ -828,5 +832,111 @@ TEST(SessionReturnTest, BlockedResetAllowsCheckoutDenialAndConcurrentRevocation)
   });
   auto result = lease->return_reusable(rs::util::Deadline::max()); other.join(); EXPECT_FALSE(result);
   EXPECT_FALSE(owner.try_acquire(token)); EXPECT_EQ(1, observed->resets); EXPECT_EQ(1, observed->disconnects);
+}
+
+std::atomic<rs::util::Clock::rep> policy_ticks{};
+rs::util::Deadline policy_now() noexcept { return rs::util::Deadline{rs::util::Clock::duration{policy_ticks.load()}}; }
+void policy_time(std::chrono::seconds time) { policy_ticks = std::chrono::duration_cast<rs::util::Clock::duration>(time).count(); }
+SessionOwner policy_owner(std::shared_ptr<Observed> observed, CredentialToken token, SessionReusePolicy policy) {
+  return detail::SessionOwnershipTestAccess::with_policy(std::make_unique<FakeSession>(observed), token, policy, &policy_now);
+}
+TEST(SessionReusePolicyTest, RejectsUnboundedLifetimeAndNonpositiveIdleLimits) {
+  CredentialContext credentials; auto token = credentials.publish_authenticated();
+  for (auto policy : {SessionReusePolicy{rs::util::Deadline::max(), std::chrono::seconds(1)},
+       SessionReusePolicy{rs::util::Deadline::min(), rs::util::Clock::duration::zero()},
+       SessionReusePolicy{rs::util::Deadline::min(), -std::chrono::seconds(1)}}) {
+    auto observed = std::make_shared<Observed>();
+    EXPECT_THROW((SessionOwner{std::make_unique<FakeSession>(observed), token, policy}), std::invalid_argument);
+    EXPECT_EQ(1, observed->destructions); EXPECT_EQ(0, observed->health); EXPECT_EQ(0, observed->resets);
+  }
+}
+TEST(SessionReusePolicyTest, ExactLifetimeAndIdleEqualityExpireOnlyForMatchingToken) {
+  for (bool idle : {false, true}) {
+    policy_time(std::chrono::seconds(0)); CredentialContext credentials, foreign;
+    auto wrong_generation = credentials.publish_authenticated(); auto token = credentials.publish_authenticated();
+    auto observed = std::make_shared<Observed>();
+    auto owner = policy_owner(observed, token, {rs::util::Deadline{} + std::chrono::seconds(idle ? 100 : 10), std::chrono::seconds(10)});
+    policy_time(std::chrono::seconds(10));
+    EXPECT_FALSE(owner.try_acquire()); EXPECT_FALSE(owner.try_acquire(foreign.publish_authenticated()));
+    EXPECT_FALSE(owner.try_acquire(wrong_generation));
+    EXPECT_EQ(0, observed->disconnects); EXPECT_FALSE(owner.try_acquire(token)); retired_once(*observed);
+  }
+}
+TEST(SessionReusePolicyTest, ReturnedIdleWindowStartsAtPublicationAndDenialsCannotExtendIt) {
+  policy_time(std::chrono::seconds(0)); CredentialContext credentials, foreign; auto token = credentials.publish_authenticated();
+  auto observed = std::make_shared<Observed>();
+  auto owner = policy_owner(observed, token, {rs::util::Deadline{} + std::chrono::seconds(100), std::chrono::seconds(10)});
+  policy_time(std::chrono::seconds(9)); auto lease = owner.try_acquire(token); ASSERT_TRUE(lease);
+  policy_time(std::chrono::seconds(30)); // Active borrow ignores idle timeout.
+  ASSERT_TRUE(lease->return_reusable(rs::util::Deadline::max()));
+  policy_time(std::chrono::seconds(39)); auto next = owner.try_acquire(token); ASSERT_TRUE(next);
+  observed->on_reset = [] { policy_time(std::chrono::seconds(45)); };
+  ASSERT_TRUE(next->return_reusable(rs::util::Deadline::max()));
+  auto wrong = foreign.publish_authenticated();
+  policy_time(std::chrono::seconds(54)); EXPECT_FALSE(owner.try_acquire(wrong)); EXPECT_FALSE(owner.try_acquire());
+  policy_time(std::chrono::seconds(55)); EXPECT_FALSE(owner.try_acquire(token));
+  EXPECT_EQ(2, observed->resets); EXPECT_EQ(0, observed->health); EXPECT_EQ(1, observed->disconnects);
+}
+TEST(SessionReusePolicyTest, LifetimeExpiryInvalidatesScopesWithoutInterruptingBorrow) {
+  for (bool observe_cache : {false, true}) {
+    policy_time(std::chrono::seconds(0)); CredentialContext credentials; auto token = credentials.publish_authenticated();
+    auto observed = std::make_shared<Observed>();
+    auto owner = policy_owner(observed, token, {rs::util::Deadline{} + std::chrono::seconds(10), std::chrono::seconds(1)});
+    auto lease = owner.try_acquire(token); ASSERT_TRUE(lease); auto scope = lease->cache_token(); ASSERT_TRUE(scope);
+    policy_time(std::chrono::seconds(10));
+    if (observe_cache) { EXPECT_FALSE(scope->is_current()); EXPECT_FALSE(lease->cache_token()); }
+    ASSERT_TRUE(lease->execute_query("existing borrower", rs::util::Deadline::max()));
+    EXPECT_FALSE(scope->is_current()); EXPECT_EQ(0, observed->disconnects);
+    auto result = lease->return_reusable(rs::util::Deadline::max()); ASSERT_FALSE(result);
+    EXPECT_EQ(BackendErrorClass::Timeout, result.backend_error().error_class); EXPECT_FALSE(*lease);
+    retired_once(*observed); EXPECT_EQ(1, observed->queries); EXPECT_FALSE(owner.try_acquire(token));
+  }
+}
+TEST(SessionReusePolicyTest, LifetimeCrossingDuringResetPreventsPublication) {
+  policy_time(std::chrono::seconds(0)); CredentialContext credentials; auto token = credentials.publish_authenticated();
+  auto observed = std::make_shared<Observed>();
+  auto owner = policy_owner(observed, token, {rs::util::Deadline{} + std::chrono::seconds(10), std::chrono::seconds(1)});
+  auto lease = owner.try_acquire(token); ASSERT_TRUE(lease);
+  observed->on_reset = [&] { policy_time(std::chrono::seconds(10)); EXPECT_EQ(0, observed->disconnects); };
+  auto result = lease->return_reusable(rs::util::Deadline::max()); ASSERT_FALSE(result);
+  EXPECT_EQ(BackendErrorClass::Timeout, result.backend_error().error_class);
+  EXPECT_FALSE(owner.try_acquire(token)); EXPECT_EQ(1, observed->resets); EXPECT_EQ(1, observed->disconnects);
+}
+TEST(SessionReusePolicyTest, HugeIdleLimitDoesNotOverflowAndReturnNeverRenewsLifetime) {
+  policy_time(std::chrono::seconds(0)); CredentialContext credentials; auto token = credentials.publish_authenticated();
+  auto observed = std::make_shared<Observed>();
+  auto owner = policy_owner(observed, token, {rs::util::Deadline{} + std::chrono::seconds(100), rs::util::Clock::duration::max()});
+  policy_time(std::chrono::seconds(50)); auto lease = owner.try_acquire(token); ASSERT_TRUE(lease);
+  ASSERT_TRUE(lease->return_reusable(rs::util::Deadline::max()));
+  policy_time(std::chrono::seconds(99)); auto next = owner.try_acquire(token); ASSERT_TRUE(next);
+  ASSERT_TRUE(next->return_reusable(rs::util::Deadline::max()));
+  policy_time(std::chrono::seconds(100)); EXPECT_FALSE(owner.try_acquire(token));
+  EXPECT_EQ(2, observed->resets); EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
+}
+
+TEST(SessionReusePolicyTest, PassiveCacheCheckCrossingLifetimeAndMovesPreservePolicy) {
+  policy_time(std::chrono::seconds(0)); CredentialContext credentials; auto token = credentials.publish_authenticated();
+  auto observed = std::make_shared<Observed>();
+  auto original = policy_owner(observed, token, {rs::util::Deadline{} + std::chrono::seconds(10), std::chrono::seconds(1)});
+  SessionOwner owner{std::move(original)}; auto lease = owner.try_acquire(token); ASSERT_TRUE(lease);
+  SessionLease moved{std::move(*lease)};
+  observed->on_passive = [] { policy_time(std::chrono::seconds(10)); };
+  EXPECT_FALSE(moved.cache_token()); EXPECT_EQ(0, observed->disconnects);
+  ASSERT_TRUE(moved.reset_session(rs::util::Deadline::max())); // Explicit cleanup remains available for active borrow.
+  EXPECT_FALSE(moved.return_reusable(rs::util::Deadline::max())); EXPECT_FALSE(owner.try_acquire(token));
+  EXPECT_EQ(1, observed->resets); EXPECT_EQ(1, observed->disconnects);
+}
+TEST(SessionReusePolicyTest, ConcurrentExpiryAndCheckoutCannotDuplicatePhysicalOwnership) {
+  for (int i = 0; i < 30; ++i) {
+    policy_time(std::chrono::seconds(0)); CredentialContext credentials; auto token = credentials.publish_authenticated();
+    auto observed = std::make_shared<Observed>();
+    auto owner = policy_owner(observed, token, {rs::util::Deadline{} + std::chrono::seconds(10), std::chrono::seconds(10)});
+    std::barrier start(3); std::optional<SessionLease> lease;
+    std::thread checkout([&] { start.arrive_and_wait(); lease = owner.try_acquire(token); });
+    std::thread expiry([&] { start.arrive_and_wait(); policy_time(std::chrono::seconds(10)); });
+    start.arrive_and_wait(); checkout.join(); expiry.join(); EXPECT_FALSE(owner.try_acquire(token));
+    if (lease) { EXPECT_EQ(0, observed->disconnects); ASSERT_TRUE(lease->execute_query("active borrower", rs::util::Deadline::max())); lease->retire(); }
+    retired_once(*observed);
+  }
 }
 } // namespace
