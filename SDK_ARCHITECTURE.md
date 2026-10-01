@@ -991,3 +991,31 @@ path. Therefore cache tickets, automatic cache invalidation and reusable return
 are still disabled. Next must guard/route every borrower reset and define cache
 invalidation before caches or reusable admission can be qualified. This private
 method changes neither ODBC behavior nor backend reset/crypto qualification.
+
+## S2 closed borrower access boundary — 2026-10-02
+
+Private SessionLease no longer exposes a raw session or mutable/const backend
+facet. Its public operation surface is direct execution, typed prepared
+execution, coordinated reset, terminal retirement and an ownership boolean.
+There are no current product/ODBC consumers of this internal primitive. Future
+health/transaction/description/catalog access needs an explicit policy-aware
+lease contract; do not restore a generic raw accessor as a shortcut.
+
+Execution forwards the SQL view, typed parameter span and original deadline
+unchanged. Results/errors remain owning and unchanged, including operation-time
+snapshots, native details and retry hints; a hint never causes automatic replay.
+Either success or failure with Retire disposition destroys the physical session
+before returning the owning outcome. Any execution exception retires before
+rethrowing the original exception. Reusable/ResetRequired remain usable only
+by the same exclusive borrower; they grant no return/requeue. Moved/retired lease
+operations fail locally with operation-specific NotConnected/Disconnected/Retire.
+No external backend callbacks run under ownership or credential mutexes.
+
+Ordinary borrower reset now has only the coordinator path, which closes the
+previous raw-facet bypass. This is a trusted native C++ contract, not a sandbox
+against malicious code or pre-adoption escaped pointers. Trusted composition
+must not retain physical pointers after unique adoption. Cache tokens/reuse are
+still disabled: arbitrary SQL can change session/schema state, so classification
+and invalidation must cover execution as well as reset and credential rotation.
+Define conservative cache scopes and invalidation next, before reusable return.
+ODBC behavior and provider/linkage qualification do not change.

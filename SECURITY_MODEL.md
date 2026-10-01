@@ -485,3 +485,17 @@ use fixed text; backend errors stay owning trusted-consumer diagnostics.
 Every lease return remains terminal. This is not cache isolation or pool reuse
 qualification: direct raw-facet reset remains possible and must be guarded/routed
 before issuing cache scope tokens or enabling any reusable-return path.
+
+## S2 borrower mutation boundary — 2026-10-02
+
+The private lease exposes no raw physical session/facet. Borrower execution goes
+through typed lease methods and reset through the coordinator. Retire outcomes
+or thrown execution exceptions destroy the physical session before the outcome
+returns/rethrows; returned owned diagnostics retain their original operation-time
+meaning. There is no automatic retry/replay. Same-borrower outcomes do not permit
+sharing/requeue. Trusted composition must not retain pre-adoption pointers;
+this encapsulation is not an in-process plugin sandbox.
+
+Raw reset access is closed for ordinary callers. Cache isolation/reusable return
+remain unqualified: SQL-driven session/schema changes, resets, retirement and
+credential rotation require conservative cache scope/invalidation evidence.

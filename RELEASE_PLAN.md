@@ -886,3 +886,18 @@ PostgreSQL checks success and expired-deadline physical closure.
 S2/G12 remain open. Direct raw reset can bypass the coordinator; guard/route that
 path before qualifying cache invalidation or reusable return. No ODBC behavior,
 Redshift reset, authentication-provider or linkage claim changes.
+
+## S2 closed borrower facade checkpoint — 2026-10-02
+
+Private leases no longer expose raw session/facet pointers. Direct and typed
+prepared execution preserve inputs/deadlines and owning backend outcomes;
+Retire snapshots or exceptions retire before returning/rethrowing. Coordinated
+reset is the only borrower reset path, closing the prior ordinary-call bypass.
+Same-borrower Reusable/ResetRequired remain distinct from cross-borrower reuse.
+Unit cases cover input identity, disposition/error/exception handling, owning
+results after destruction and moved/retired operations; PG live execution uses
+the facade, including prepared execution after coordinator cleanup.
+
+S2/G12 remain open pending cache invalidation (including SQL-driven changes),
+credential-provider integration and reusable return. New facets need narrow
+policy-aware lease methods. No ODBC or backend/provider qualification changes.

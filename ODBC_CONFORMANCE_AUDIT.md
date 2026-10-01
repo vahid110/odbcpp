@@ -2750,3 +2750,20 @@ ThreadSanitizer pass. Full local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan
 and Redshift build/absent-endpoint gates pass. Read-only review found no
 actionable issue. Windows/packaging and cross-platform crypto evidence remain
 subject to exact-head CI.
+
+## S2 borrower facade evidence — 2026-10-02
+
+The private lease now exposes direct/prepared execution and coordinated reset,
+with no raw session/facet pointer. Explicit Retire outcomes and thrown exceptions
+close physical ownership before returning/rethrowing owning results. Tests cover
+unchanged input/deadline forwarding, independent diagnostic/result lifetime,
+dispositions and moved/retired operations; PG live prepared execution follows
+coordinator reset. The raw reset bypass is closed for ordinary borrowers, but
+SQL-driven cache invalidation and reusable return still require evidence.
+No ODBC attribute/capability/compliance status changes.
+
+Validation: focused ownership tests and all 31 credential/ownership tests under
+ThreadSanitizer pass. Full local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan
+and Redshift build/absent-endpoint gates pass. Read-only review found no
+implementation defect; whitespace findings were fixed. Windows/packaging and
+cross-platform crypto evidence remain subject to exact-head CI.
