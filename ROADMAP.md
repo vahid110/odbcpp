@@ -427,3 +427,15 @@ Trace logs; all error classes and unknown fallback ignore sensitive fields.
 Next is normalized deferred-result errors, then remaining result/resource budgets
 and reuse contracts. Invalid-source encoding remains a separate logging item.
 A5/S2 and existing provider qualification blockers remain open.
+
+### S2 owning deferred errors — 2026-10-01
+
+Ordered results now carry optional owning BackendError, with PostgreSQL diagnostic
+prefix/native state and exchange-end operation/disposition snapshots. MoreResults
+preserves diagnostics and pending-result cleanup. Tests cover first/deferred errors,
+ODBC text/state, three session states and ownership across later retirement and
+backend destruction. Parallel raw result error strings are removed.
+
+Next: remaining result/resource budgets and session/reuse contracts. Native result
+metadata normalization and invalid-source encoding remain explicit work. This
+batch does not close A5/S2, G12 or crypto qualification follow-ups.

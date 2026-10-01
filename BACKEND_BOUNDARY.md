@@ -619,3 +619,24 @@ This strengthens the immediate-error boundary, not deferred-result normalization
 Raw diagnostics may contain sensitive data and must not be passed to log messages.
 Invalid-source encoding, deferred errors, aggregate budgets and safe reuse remain
 planned work; A5/S2 and crypto qualification gates remain open.
+
+## S2 owning deferred errors — 2026-10-01
+
+QueryResult now carries optional BackendError rather than parallel raw error
+message/native-state strings. PostgreSQL parser errors own the existing diagnostic
+prefix and native state. An engaged error is detected independently of message
+emptiness. After the whole response drains, the session annotates deferred errors
+with originating operation and final passive state/disposition; it never infers
+reuse from SQLSTATE. These are exchange-end snapshots, not the state at each
+individual statement inside a batch. Additional results are an ordered flat list.
+
+SQLMoreResults consumes the owned error, preserves diagnostic normalization/text,
+and clears remaining pending results on error as before. Tests cover parser first
+and deferred errors, direct ODBC diagnostic compatibility, null/empty/value rows,
+idle/transaction/failed-transaction snapshots, copy/move, later connection
+retirement and backend destruction. Retry/native-code evidence remains absent
+unless supplied explicitly; safe summaries are available on deferred errors.
+
+This removes the legacy result error-string side channel. Native metadata fields,
+materialized result buffering, aggregate budgets and session/reset facets remain
+separate migration work; A5/S2 and provider qualification gates stay open.
