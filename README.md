@@ -568,3 +568,40 @@ core/
 - **Issues**: [GitHub Issues](https://github.com/your-repo/issues)
 - **Documentation**: See `examples/` directory
 - **Architecture**: See `docs/` directory (if available)
+
+### Resource limit connection options
+
+The following options can be set in driver configuration, a DSN or a connection
+string, with connection-string values taking precedence. Values are unsigned
+decimal integers in bytes or counts; signs, suffixes and overflow are rejected.
+Unbraced surrounding whitespace follows normal connection-string trimming.
+Invalid profiles fail before a backend session is created.
+
+| Options | Defaults, in the same order |
+| --- | --- |
+| `MaxResponseBytes`, `MaxResponseMessages` | 67108864, 100000 |
+| `MaxStartupResponseBytes`, `MaxStartupResponseMessages` | 1048576, 10000 |
+| `MaxRows`, `MaxCells`, `MaxColumns`, `MaxResults` | 1000000, 4000000, 4096, 1024 |
+| `MaxMetadataEntries`, `MaxColumnNameBytes`, `MaxMetadataNameBytes`, `MaxDiagnosticBytes` | 65536, 1024, 1048576, 16384 |
+| `MaxSqlBytes`, `MaxParameters`, `MaxParameterBytes`, `MaxParameterTotalBytes` | 1048576, 65535, 16777216, 67108864 |
+| `MaxConnectionFieldBytes`, `MaxRequestWireBytes`, `MaxStartupWireBytes`, `MaxAuthWireBytes` | 65536, 134217728, 1048576, 1048576 |
+
+Response byte limits must be at least 5; response message counts and `MaxResults`
+must be positive. Other zero limits allow only empty content/counts. Maximum
+supported input ceilings are 67108864 for SQL/per-parameter bytes, 65535 parameters,
+268435456 aggregate parameter bytes, 1048576 connection-field bytes and 1073741824
+for each outgoing wire ceiling. Response/count ceilings are limited by the
+platform's unsigned size range; increasing them permits more resource use.
+
+Rows/cells/metadata/result counts accumulate across a query exchange, including
+additional results. Column-name bytes exclude terminators; NULL/empty parameters
+consume entries but zero input bytes. Prepared binary expansion counts against
+the outgoing wire ceiling. Startup responses include authentication/control
+frames; `MaxAuthWireBytes` limits each outgoing password/SASL packet, excluding
+TLS-provider handshake traffic. Input rejection before I/O preserves the current
+owner's session; response/authentication overflow retires. These limits are not
+an exact heap quota, and do not yet bound earlier ODBC conversions or standalone
+SQL helper allocations. Windows setup GUI fields for these advanced options
+are deferred; DSN/connection-string processing supports them.
+
+Example: `MaxResponseBytes=8388608;MaxRows=10000;MaxSqlBytes=262144`.

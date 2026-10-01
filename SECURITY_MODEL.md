@@ -345,3 +345,16 @@ channel/authentication policy. SCRAM intermediate string/crypto allocations,
 provider handshake buffers and complete heap accounting remain separate;
 product-profile configuration and earlier ODBC conversion/helper limits remain
 unfinished. SEC-4 and G12 stay open.
+
+### Resource profile configuration (S2 implementation evidence)
+
+The implemented SDK ceilings are available through documented Max* driver,
+DSN and connection-string options, with the resolver's existing precedence.
+Unsigned decimal parsing rejects malformed/overflowing values without echoing
+raw input. Shared profile validation runs during PostgreSQL-provider resolution
+before session creation and again for direct SDK connection callers. Omitted
+options preserve SDK defaults; explicitly larger supported ceilings permit
+larger resource use. This closes configuration exposure for these specific
+limits, not SEC-4: earlier ODBC conversions/helpers, intermediate crypto/provider
+allocations and complete heap accounting remain unfinished. Windows GUI controls
+for advanced resource options are deferred.

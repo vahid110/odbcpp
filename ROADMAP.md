@@ -560,3 +560,18 @@ invalid ceilings and reconnect preservation. SCRAM intermediate crypto/string
 allocations and provider TLS handshake buffers remain separate from these caps.
 Earlier ODBC conversions/helpers and product configuration remain SEC-4 work;
 S2/native metadata/session migration and crypto qualification remain open.
+
+### S2 resource profile configuration — 2026-10-01
+
+Completed SDK limits are exposed as documented Max* driver/DSN/connection-string
+options. Parsing rejects signs, suffixes, overflow and invalid numeric bounds
+before backend session creation. Provider resolution preserves defaults and
+passes the profile to the session; shared validation prevents product/SDK drift.
+Existing driver < DSN < connection-string precedence applies. No shared ODBC
+backend branching or additional protocol feature is introduced.
+
+Tests cover option propagation, malformed/unsafe values, recovery, defaults,
+zero-data profiles and PostgreSQL-provider validation. Advanced Windows GUI
+fields are deferred. SEC-4 remains open for earlier ODBC conversion/SQL-helper
+allocations, SCRAM intermediates/provider buffers and complete heap accounting;
+S2 native metadata/session migration and crypto qualification remain open.
