@@ -16,6 +16,7 @@ namespace rs::core::database {
 // provenance and format_code remain parser/backend migration fields. Shared
 // ODBC column mapping uses normalized_type exclusively, never these native IDs.
 struct ResultColumnMetadata {
+  // UTF-8, without embedded NULs; empty names are valid.
   std::string name;
   std::uint32_t table_id{0};
   std::int16_t table_column{0};
@@ -33,6 +34,7 @@ struct ResultColumnMetadata {
 // text is valid UTF-8, including embedded NULs. Malformed native binary/Boolean
 // or text cells use an empty placeholder and a cell_errors entry.
 using ResultCell = std::optional<std::string>;
+// Every row has exactly one cell per schema column.
 using ResultRow = std::vector<ResultCell>;
 using ResultRows = std::vector<ResultRow>;
 

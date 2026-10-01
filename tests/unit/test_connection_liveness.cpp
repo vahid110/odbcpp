@@ -178,7 +178,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     EmptyQueryResponse, DescriptionNoData, DescriptionOneParameter, DescriptionRepeatedParameter, DescriptionOneColumn,
     DescriptionMissingParse, DescriptionMissingParameters,
     DescriptionMissingResult, DescriptionOutOfOrder,
-    DescriptionServerError, Utf8TextCells, NativeCells, MalformedNativeCells, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
+    DescriptionServerError, Utf8ColumnNames, MalformedColumnName, MalformedAdditionalColumnName, Utf8TextCells, NativeCells, MalformedNativeCells, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
     OwnedErrorIdle, OwnedErrorTransaction, OwnedErrorAborted,
     UnterminatedColumnName, TruncatedColumnMetadata, TrailingColumnMetadata, EmptyColumnName,
     QueryReadTimeout, PartialQueryWrite, PreparedCommand, QueryAllocationFailure, Md5Authentication
@@ -488,6 +488,23 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       if (mode == ResponseMode::UnterminatedColumnName) append_message('T', "\0\1value", 7);
       else if (mode == ResponseMode::TruncatedColumnMetadata) append_message('T', description, sizeof(description) - 2);
       else append_message('T', description, sizeof(description) - (mode == ResponseMode::EmptyColumnName ? 1 : 0));
+      append_message('C', "SELECT 0", sizeof("SELECT 0"));
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::Utf8ColumnNames || mode == ResponseMode::MalformedColumnName ||
+               mode == ResponseMode::MalformedAdditionalColumnName) {
+      constexpr char metadata[] = "\0\0\0\0\0\0\0\0\0\31\377\377\377\377\377\377\0\0";
+      for (int result = 0; result < 2; ++result) {
+        const bool malformed = (mode == ResponseMode::MalformedColumnName && result == 0) ||
+            (mode == ResponseMode::MalformedAdditionalColumnName && result == 1);
+        const std::string name = malformed ? "\xed\xa0\x80" : "\xe2\x82\xac\xf0\x9f\x98\x80";
+        std::string description("\0\1", 2); description += name; description.push_back('\0');
+        description.append(metadata, sizeof(metadata) - 1);
+        append_message('T', description.data(), description.size());
+        constexpr char row[] = "\0\1\0\0\0\1x";
+        append_message('D', row, sizeof(row) - 1);
+        append_message('C', "SELECT 1", sizeof("SELECT 1"));
+      }
+      append_message('Z', "I", 1);
       append_message('C', "SELECT 0", sizeof("SELECT 0"));
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::Utf8TextCells) {
@@ -3487,5 +3504,32 @@ TEST(NormalizedCellTest, TextUtf8IsValidatedBeforeReturningOwnedSnapshots) {
         }
       }
     }
+  }
+}
+
+TEST(NormalizedMetadataTest, Utf8NamesAreOwnedAndMalformedNamesRejectAllResultsWithoutRetirement) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::Utf8ColumnNames, Mode::MalformedColumnName, Mode::MalformedAdditionalColumnName}) {
+    postgres::PgDatabaseConnection backend("PostgreSQL", std::make_unique<ScriptedBackendTransport>(mode));
+    ConnectionSettings settings; settings.use_ssl = false;
+    ASSERT_TRUE(backend.connect(settings));
+    auto result = backend.execute_query("SELECT name; SELECT name", rs::util::Deadline::max());
+    if (mode == Mode::Utf8ColumnNames) {
+      ASSERT_TRUE(result); ASSERT_EQ(1u, result->additional_results.size());
+      const auto name = result->columns[0].name;
+      EXPECT_EQ("\xe2\x82\xac\xf0\x9f\x98\x80", name);
+      EXPECT_EQ(name, result->additional_results[0].columns[0].name);
+    } else {
+      ASSERT_FALSE(result);
+      EXPECT_EQ(BackendErrorClass::InvalidMetadata, result.backend_error().error_class);
+      EXPECT_EQ(SessionDisposition::Reusable, result.backend_error().disposition);
+      EXPECT_EQ(SessionState::Idle, result.backend_error().session_state);
+      EXPECT_EQ("Data source returned invalid result metadata", result.error_message());
+    }
+    EXPECT_TRUE(backend.is_connected());
+    ASSERT_TRUE(backend.execute_query("SELECT 0", rs::util::Deadline::max()));
+    backend.disconnect();
+    if (result) EXPECT_EQ("\xe2\x82\xac\xf0\x9f\x98\x80", result->columns[0].name);
   }
 }

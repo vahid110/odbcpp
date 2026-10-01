@@ -1,4 +1,5 @@
 #include "generic_database_connection.h"
+#include "result_validation.h"
 #include "core/transport/socket_transport.h"
 #include "core/transport/start_tls_transport.h"
 #include "core/transport/tls_transport.h"
@@ -712,6 +713,14 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
       BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),
                          "Query error: " + *query_error};
       error.native_state = std::move(query_error_sqlstate);
+      return error;
+    }
+    if (!valid_result_structure(result) ||
+        std::any_of(result.additional_results.begin(), result.additional_results.end(),
+            [](const auto& item) { return !valid_result_structure(item); })) {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),
+          "Data source returned invalid result metadata"};
+      error.error_class = BackendErrorClass::InvalidMetadata;
       return error;
     }
     const auto normalize_columns = [&](QueryResult& item) {
