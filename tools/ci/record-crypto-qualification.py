@@ -1,4 +1,4 @@
-"""Bind existing OpenSSL unit qualification evidence; never qualify a matrix row."""
+"""Bind bounded OpenSSL unit/live evidence; never qualify a matrix row."""
 import argparse
 import hashlib
 import json
@@ -24,12 +24,31 @@ COHABITATION_MARKERS = {
     'COHABITATION: repeated driver references passed',
 }
 
+LIVE_TESTS = {'CryptoProfileLiveTest.' + name for name in (
+    'CompletesVerifiedTlsScramQuery', 'RejectsUntrustedCertificate', 'RejectsHostnameMismatch')}
+
+
+def validate_live_report(report):
+    root = ET.parse(report).getroot()
+    cases = list(root.iter('testcase'))
+    names = [f'{case.get("classname")}.{case.get("name")}' for case in cases]
+    if (root.tag not in ('testsuites', 'testsuite') or len(names) != len(LIVE_TESTS)
+            or set(names) != LIVE_TESTS or any(case.get('status') != 'run'
+                                             or case.get('result') != 'completed' for case in cases)):
+        raise RuntimeError('Mandatory live cases missing, duplicate, unexpected or not completed')
+    for suite in (node for node in root.iter() if node.tag in ('testsuites', 'testsuite')):
+        if (any(int(suite.get(field, '0')) != 0 for field in ('failures', 'errors', 'disabled', 'skipped'))
+                or int(suite.get('tests', str(len(list(suite.iter('testcase')))))) != len(list(suite.iter('testcase')))):
+            raise RuntimeError('Inconsistent or unsuccessful live report totals')
+    if any(list(root.iter(tag)) for tag in ('failure', 'error', 'skipped')):
+        raise RuntimeError('Live report contains failed or skipped tests')
+
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def collect(build, driver, probe, report, platform):
+def collect(build, driver, probe, report, platform, live_report=None):
     manifest_path = build / 'odbcpp-crypto-manifest.json'
     identity_path = build / 'odbcpp-crypto-identity-evidence.json'
     artifact_path = build / 'odbcpp-crypto-artifact-evidence.json'
@@ -81,11 +100,17 @@ def collect(build, driver, probe, report, platform):
         host_lines = (host.findtext('system-out') or '').splitlines()
         if any(host_lines.count(marker) != 1 for marker in COHABITATION_MARKERS):
             raise RuntimeError('Shared-provider cohabitation output missing or duplicated')
-    return {
+    if live_report is not None:
+        if (platform, linkage) != ('Linux', 'SYSTEM_SHARED'):
+            raise RuntimeError('Live summary binding is limited to Linux SYSTEM_SHARED')
+        validate_live_report(live_report)
+    evidence = {
         'schemaVersion': 1, 'profile': f'OPENSSL/{linkage}/{platform}',
         'qualificationClaimed': False,
-        'scope': 'Unit identity, default policy, artifact/export checks and independent TLS peer only',
+        'scope': 'Unit identity, default policy, artifact/export checks and independent TLS peer',
         'liveDriverPackageCoexistenceAcceptanceEvaluated': False,
+        'liveDriverTlsAcceptanceEvaluated': live_report is not None,
+        'mandatoryLiveDriverTests': sorted(LIVE_TESTS) if live_report is not None else [],
         'mandatoryUnitTests': sorted(required_tests),
         'sharedProviderHostLifecycleEvaluated': linkage == 'SYSTEM_SHARED',
         'mandatoryTlsPeerCases': sorted(TLS_MARKERS),
@@ -93,17 +118,23 @@ def collect(build, driver, probe, report, platform):
             ('driver', driver), ('probe', probe), ('manifest', manifest_path),
             ('identity', identity_path), ('artifact', artifact_path), ('unitReport', report))},
     }
+    if live_report is not None:
+        evidence['scope'] += '; live driver verified TLS/SCRAM query, trust and hostname rejection'
+        evidence['inputs']['liveReport'] = sha(live_report)
+    return evidence
 
 
 def main():
     parser = argparse.ArgumentParser()
     for name in ('build', 'driver', 'probe', 'unit-report', 'platform', 'output'):
         parser.add_argument('--' + name, required=True)
+    parser.add_argument('--live-report')
     args = parser.parse_args()
     output = Path(args.output)
     output.unlink(missing_ok=True)
     evidence = collect(Path(args.build), Path(args.driver), Path(args.probe),
-                       Path(args.unit_report), args.platform)
+                       Path(args.unit_report), args.platform,
+                       Path(args.live_report) if args.live_report else None)
     output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + '\n')
 
 

@@ -141,6 +141,14 @@ jobs:
       - name: Run mandatory system-shared TLS and SCRAM profile tests
         run: tools/ci/run-crypto-profile-live.sh build openssl-system-shared-live.xml
 
+      - name: Bind system-shared live qualification evidence
+        run: |
+          python3 tools/ci/record-crypto-qualification.py --build build \
+          --driver build/libodbcpp.so --probe build/tests/crypto_identity_probe \
+          --unit-report build/openssl-system-shared-unit.xml --platform Linux \
+          --live-report openssl-system-shared-live.xml \
+          --output build/odbcpp-crypto-live-qualification.json
+
       - name: Verify production logging
         run: |
           python3 - <<'PY'
@@ -167,6 +175,7 @@ jobs:
             build/tests/crypto_identity_probe
             build/odbcpp-crypto-identity-evidence.json
             build/odbcpp-crypto-unit-qualification.json
+            build/odbcpp-crypto-live-qualification.json
             build/libodbcpp.so
             build/odbcpp-crypto-manifest.json
             build/odbcpp-crypto-artifact-evidence.json

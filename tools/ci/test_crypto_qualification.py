@@ -47,11 +47,11 @@ class QualificationTests(unittest.TestCase):
     def write(self, kind, data):
         (self.root / f'odbcpp-crypto-{kind}.json').write_text(json.dumps(data))
 
-    def collect(self):
+    def collect(self, live_report=None):
         self.write('identity-evidence', self.identity)
         self.write('artifact-evidence', self.artifact)
         ET.ElementTree(self.xml).write(self.report)
-        return q.collect(self.root, self.driver, self.probe, self.report, 'Linux')
+        return q.collect(self.root, self.driver, self.probe, self.report, 'Linux', live_report)
 
     def test_valid_record_has_bound_inputs_and_no_qualification_claim(self):
         result = self.collect()
@@ -140,6 +140,85 @@ class QualificationTests(unittest.TestCase):
         output.text = original + '\n' + sorted(q.TLS_MARKERS)[0]
         with self.assertRaises(RuntimeError):
             self.collect()
+
+    def live_fixture(self):
+        root = ET.Element('testsuites', tests='3', failures='0', disabled='0')
+        suite = ET.SubElement(root, 'testsuite', tests='3', failures='0', skipped='0')
+        for full_name in sorted(q.LIVE_TESTS):
+            classname, name = full_name.split('.')
+            ET.SubElement(suite, 'testcase', classname=classname, name=name,
+                          status='run', result='completed')
+        path = self.root / 'live.xml'
+        ET.ElementTree(root).write(path)
+        return root, suite, path
+
+    def test_live_report_is_bound_without_package_or_coexistence_claim(self):
+        _, _, path = self.live_fixture()
+        result = self.collect(path)
+        self.assertTrue(result['liveDriverTlsAcceptanceEvaluated'])
+        self.assertEqual(result['mandatoryLiveDriverTests'], sorted(q.LIVE_TESTS))
+        self.assertEqual(result['inputs']['liveReport'], q.sha(path))
+        self.assertFalse(result['qualificationClaimed'])
+        self.assertFalse(result['liveDriverPackageCoexistenceAcceptanceEvaluated'])
+        unit_only = self.collect()
+        self.assertFalse(unit_only['liveDriverTlsAcceptanceEvaluated'])
+        self.assertNotIn('liveReport', unit_only['inputs'])
+
+    def test_live_missing_duplicate_unexpected_and_incomplete_cases_rejected(self):
+        for mutation in ('missing', 'duplicate', 'unexpected', 'notrun', 'suppressed'):
+            with self.subTest(mutation=mutation):
+                root, suite, path = self.live_fixture()
+                case = suite[0]
+                if mutation == 'missing':
+                    suite.remove(case)
+                elif mutation == 'duplicate':
+                    suite.append(case)
+                elif mutation == 'unexpected':
+                    case.set('name', 'Unknown')
+                elif mutation == 'notrun':
+                    case.set('status', 'notrun')
+                else:
+                    case.set('result', 'suppressed')
+                ET.ElementTree(root).write(path)
+                with self.assertRaisesRegex(RuntimeError, 'Mandatory live cases'):
+                    self.collect(path)
+
+    def test_live_failure_skip_and_inconsistent_totals_rejected(self):
+        for tag in ('failure', 'error', 'skipped'):
+            root, suite, path = self.live_fixture()
+            ET.SubElement(suite[0], tag)
+            ET.ElementTree(root).write(path)
+            with self.assertRaisesRegex(RuntimeError, 'failed or skipped'):
+                self.collect(path)
+        for field in ('tests', 'failures', 'errors', 'disabled', 'skipped'):
+            root, suite, path = self.live_fixture()
+            suite.set(field, '1')
+            ET.ElementTree(root).write(path)
+            with self.assertRaisesRegex(RuntimeError, 'live report totals'):
+                self.collect(path)
+
+    def test_live_binding_rejects_unsupported_profile(self):
+        _, _, path = self.live_fixture()
+        self.manifest['requestedLinkage'] = 'BUNDLED_STATIC'
+        self.write('manifest', self.manifest)
+        self.identity['manifestSha256'] = q.sha(self.root / 'odbcpp-crypto-manifest.json')
+        self.identity['requestedLinkage'] = 'BUNDLED_STATIC'
+        self.artifact['requestedLinkage'] = 'BUNDLED_STATIC'
+        self.artifact['observedDependencyForm'] = 'static'
+        with self.assertRaisesRegex(RuntimeError, 'limited to Linux SYSTEM_SHARED'):
+            self.collect(path)
+
+    def test_cli_removes_stale_summary_for_missing_live_report(self):
+        self.collect()
+        output = self.root / 'live-summary.json'
+        output.write_text('stale success')
+        result = subprocess.run([sys.executable, str(Path(q.__file__)),
+                                 '--build', str(self.root), '--driver', str(self.driver),
+                                 '--probe', str(self.probe), '--unit-report', str(self.report),
+                                 '--platform', 'Linux', '--live-report', str(self.root / 'missing.xml'),
+                                 '--output', str(output)], capture_output=True, text=True, timeout=15)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(output.exists())
 
     def test_cli_removes_stale_summary_after_failed_validation(self):
         self.collect()
