@@ -707,3 +707,24 @@ names, short/long/zero-schema rows, invalid additional results, untouched metada
 outputs and direct/prepared/deferred recovery. Native parser migration fields,
 ordered execution, richer scalar forms and session/reuse facets remain open;
 this batch adds no provider qualification or pooling claim.
+
+## S2 typed server-version service — 2026-10-01
+
+IDatabaseConnection exposes an owning, no-I/O server_version() value instead of
+a named native server-parameter map. Empty means unknown/unavailable. PostgreSQL
+ParameterStatus keys remain private implementation details, including its
+version-dependent type catalog. ODBC and the existing internal synchronized
+wrapper consume only the typed version service. Compile-time contract coverage
+prevents reintroducing get_parameter on the SDK session interface.
+
+Tests preserve ODBC ANSI/wide SQL_DBMS_VER formatting for normal, vendor-suffixed,
+empty and malformed advertised versions without metadata I/O. Factory/session
+tests cover pre-open emptiness, negotiated values, unrelated parameter updates,
+disconnect clearing and owning snapshots; existing type-catalog and wrapper-read
+tests remain green. Factory-based examples use the typed accessor, and the
+main CI build now compiles examples to protect their SDK call sites. SDK
+examples check owning backend results explicitly; PostgreSQL handshake/query/
+prepared/error smoke tests and failed-connect exit behavior pass. This is
+not a complete server-identity/cache-epoch facet,
+and does not repair or qualify the prototype pool. Session/facet splitting,
+ordered execution and native result migration fields remain S2 work.

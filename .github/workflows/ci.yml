@@ -92,7 +92,7 @@ jobs:
       - name: Configure
         run: >-
           cmake -S . -B build
-          -DBUILD_EXAMPLES=OFF
+          -DBUILD_EXAMPLES=ON
           -DBUILD_TESTING=ON
           -DTARGET_DATABASE=POSTGRESQL
           -DODBCPP_CRYPTO_PROVIDER=OPENSSL

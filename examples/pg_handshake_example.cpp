@@ -4,7 +4,7 @@ Example usage :
 */
 #include "core/database/database_factory.h"
 #include "core/util/deadline.h"
-#include "core/util/exception_adapter.h"
+#include <stdexcept>
 #include <iostream>
 
 using namespace rs::core::database;
@@ -36,12 +36,11 @@ int main(int argc, char** argv) {
     settings.timeout = std::chrono::milliseconds(timeout_ms);
     settings.use_ssl = (sslmode != "disable");
 
-    rs::util::unwrap_or_throw(conn->connect(settings));
+    const auto opened = conn->connect(settings);
+    if (!opened) throw std::runtime_error(std::string(opened.backend_error().safe_summary()));
 
     std::cout << "Connected OK.\n";
-    std::cout << "server_version=" << conn->get_parameter("server_version") << "\n";
-    std::cout << "client_encoding=" << conn->get_parameter("client_encoding") << "\n";
-    std::cout << "DateStyle=" << conn->get_parameter("DateStyle") << "\n";
+    std::cout << "server_version=" << conn->server_version() << "\n";
     return 0;
   } catch (const std::exception& e) {
     std::cerr << "ERROR: " << e.what() << "\n";

@@ -4,7 +4,8 @@ Example usage:
 */
 #include "core/database/database_factory.h"
 #include "core/util/deadline.h"
-#include "core/util/exception_adapter.h"
+#include <stdexcept>
+#include <utility>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -12,6 +13,12 @@ Example usage:
 #include <chrono>
 
 using namespace rs::core::database;
+
+// Example-only exception boundary; the SDK itself returns owning results.
+static QueryResult require_query_result(BackendResult<QueryResult> result) {
+  if (!result) throw std::runtime_error(std::string(result.backend_error().safe_summary()));
+  return std::move(*result);
+}
 
 static void print_rows(const ResultRows& rows) {
   std::cout << "Rows: " << rows.size() << "\n";
@@ -55,11 +62,11 @@ int main(int argc, char** argv) {
     settings.use_ssl = (sslm != "disable");
     if (!caf.empty()) settings.ssl_ca_file = caf;
 
-    conn->connect(settings);
+    const auto opened = conn->connect(settings);
+    if (!opened) throw std::runtime_error(std::string(opened.backend_error().safe_summary()));
 
     std::cout << "Connected.\n";
-    std::cout << "server_version=" << conn->get_parameter("server_version") << "\n";
-    std::cout << "client_encoding=" << conn->get_parameter("client_encoding") << "\n";
+    std::cout << "server_version=" << conn->server_version() << "\n";
 
     auto dl = rs::util::make_deadline(std::chrono::milliseconds(timeout_ms));
 
@@ -67,7 +74,7 @@ int main(int argc, char** argv) {
     {
       std::cout << "\n-- Param exec: SELECT $1::int4 + $2::int4 --\n";
       std::array<std::string,2> params = {"7","35"};
-      auto result = rs::util::unwrap_or_throw(conn->execute_prepared("SELECT $1::int4 + $2::int4", params, dl));
+      auto result = require_query_result(conn->execute_prepared("SELECT $1::int4 + $2::int4", params, dl));
       print_rows(result.rows); // expect a single row "42"
     }
 
@@ -80,7 +87,7 @@ int main(int argc, char** argv) {
         "UNION ALL SELECT 4 UNION ALL SELECT 5) t ORDER BY n";
       std::vector<std::string> no_params;
       // With max_rows=2 the helper returns only first 2 rows (we didn’t loop Execute)
-      auto result = rs::util::unwrap_or_throw(conn->execute_query(sql, dl));
+      auto result = require_query_result(conn->execute_query(sql, dl));
       print_rows(result.rows); // expect 5 rows: 1..5
     }
 
@@ -89,7 +96,7 @@ int main(int argc, char** argv) {
       std::cout << "\n-- Intentional error: bad SQL --\n";
       try {
         std::vector<std::string> none;
-        (void)rs::util::unwrap_or_throw(conn->execute_query("SELECT nope_from_nowhere", dl));
+        (void)require_query_result(conn->execute_query("SELECT nope_from_nowhere", dl));
         std::cout << "UNEXPECTED: error did not occur\n";
       } catch (const std::exception& ex) {
         std::cout << "Caught error as expected: " << ex.what() << "\n";
@@ -99,13 +106,13 @@ int main(int argc, char** argv) {
     // 4) Transaction flow
     {
       std::cout << "\n-- Transaction demo --\n";
-      rs::util::unwrap_or_throw(conn->execute_query("BEGIN", dl));
+      require_query_result(conn->execute_query("BEGIN", dl));
       std::cout << "Transaction started\n";
 
-      auto r = rs::util::unwrap_or_throw(conn->execute_query("SELECT 1", dl));
+      auto r = require_query_result(conn->execute_query("SELECT 1", dl));
       print_rows(r.rows);
 
-      rs::util::unwrap_or_throw(conn->execute_query("ROLLBACK", dl));
+      require_query_result(conn->execute_query("ROLLBACK", dl));
       std::cout << "Transaction rolled back\n";
     }
 
