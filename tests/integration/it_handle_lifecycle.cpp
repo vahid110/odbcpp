@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "odbc/odbc_api.h"
+#include "odbc/odbc_handles.h"
 #include "tests/test_connection_config.h"
 
 #include <array>
@@ -632,3 +633,54 @@ TEST(EnvironmentTransactionIntegrationTest,
 }
 
 }  // namespace
+
+TEST_F(HandleLifecycleIntegrationTest, ActiveHealthProbePreservesTransactionState) {
+  using namespace rs::core::database;
+  auto handle = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(connection_);
+  ASSERT_NE(nullptr, handle);
+  auto* session = handle->get_db_connection();
+  ASSERT_NE(nullptr, session);
+  auto* health = session->session_health();
+  ASSERT_NE(nullptr, health);
+  auto* transaction = session->transaction_session();
+  ASSERT_NE(nullptr, transaction);
+  const auto deadline = [] { return rs::util::make_deadline(std::chrono::seconds(5)); };
+  const auto idle = health->check_health(deadline());
+  ASSERT_TRUE(idle);
+  EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), idle.session_snapshot());
+  ASSERT_TRUE(transaction->transaction(TransactionAction::Begin, deadline()));
+  const auto in_transaction = health->check_health(deadline());
+  ASSERT_TRUE(in_transaction);
+  EXPECT_EQ((SessionSnapshot{SessionState::Transaction, SessionDisposition::ResetRequired}), in_transaction.session_snapshot());
+  ASSERT_FALSE(session->execute_query("SELECT 1 / 0", deadline()));
+  const auto failed = health->check_health(deadline());
+  ASSERT_FALSE(failed);
+  EXPECT_EQ(BackendOperation::CheckHealth, failed.backend_error().operation);
+  EXPECT_EQ((SessionSnapshot{SessionState::FailedTransaction, SessionDisposition::ResetRequired}), failed.session_snapshot());
+  EXPECT_TRUE(session->is_connected());
+  ASSERT_TRUE(transaction->transaction(TransactionAction::Rollback, deadline()));
+  const auto recovered = health->check_health(deadline());
+  ASSERT_TRUE(recovered);
+  EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), recovered.session_snapshot());
+  EXPECT_EQ((SessionSnapshot{SessionState::Transaction, SessionDisposition::ResetRequired}), in_transaction.session_snapshot());
+}
+
+TEST_F(HandleLifecycleIntegrationTest, ExpiredHealthDeadlineRetiresWithoutReconnect) {
+  using namespace rs::core::database;
+  auto handle = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(connection_);
+  ASSERT_NE(nullptr, handle);
+  auto* session = handle->get_db_connection();
+  ASSERT_NE(nullptr, session);
+  auto* health = session->session_health();
+  ASSERT_NE(nullptr, health);
+  const auto expired = health->check_health(rs::util::Deadline::min());
+  ASSERT_FALSE(expired);
+  EXPECT_EQ(BackendErrorClass::Timeout, expired.backend_error().error_class);
+  EXPECT_EQ(BackendOperation::CheckHealth, expired.backend_error().operation);
+  EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), expired.session_snapshot());
+  EXPECT_FALSE(session->is_connected());
+  const auto closed = health->check_health(rs::util::Deadline::max());
+  ASSERT_FALSE(closed);
+  EXPECT_EQ(BackendErrorClass::NotConnected, closed.backend_error().error_class);
+  EXPECT_EQ(BackendOperation::CheckHealth, closed.backend_error().operation);
+}

@@ -8,10 +8,13 @@
 namespace rs::core::database::postgres {
 
 // PostgreSQL session with backend-specific metadata discovery.
-class PgDatabaseConnection : public GenericDatabaseConnection, public ITransactionSession, public ICatalogQueries {
+class PgDatabaseConnection : public GenericDatabaseConnection, public ITransactionSession, public ICatalogQueries, public ISessionHealth {
 public:
   explicit PgDatabaseConnection(
       std::unique_ptr<rs::core::transport::ITransport> transport = nullptr);
+
+  ISessionHealth* session_health() noexcept override { return this; }
+  BackendResult<void> check_health(rs::util::Deadline deadline) override;
 
   const ICatalogQueries* catalog_queries() const noexcept override { return this; }
   rs::util::Result<std::string> catalog_query(

@@ -13,6 +13,32 @@ PgDatabaseConnection::PgDatabaseConnection(
     : GenericDatabaseConnection(std::make_unique<PgProtocolParser>(),
                                 std::move(transport)) {}
 
+BackendResult<void> PgDatabaseConnection::check_health(rs::util::Deadline deadline) {
+  auto result = execute_query("SELECT 1", deadline);
+  if (result.has_error()) {
+    auto error = std::move(result.backend_error());
+    error.operation = BackendOperation::CheckHealth;
+    return error;
+  }
+  const auto snapshot = result.session_snapshot();
+  // Validate the fixed probe, not merely receipt of ReadyForQuery. Unexpected
+  // successful payload/state is a protocol failure and cannot authorize reuse.
+  if (result->columns.size() != 1 || result->rows.size() != 1 ||
+      result->rows[0].size() != 1 || result->rows[0][0] != "1" ||
+      !result->cell_errors.empty() || !result->additional_results.empty() ||
+      result->error || (snapshot.state != SessionState::Idle &&
+                        snapshot.state != SessionState::Transaction)) {
+    disconnect();
+    BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+                       "Unexpected health probe response"};
+    error.operation = BackendOperation::CheckHealth;
+    error.session_state = SessionState::Disconnected;
+    error.disposition = SessionDisposition::Retire;
+    return error;
+  }
+  return BackendResult<void>{snapshot};
+}
+
 BackendResult<ResolvedTypeMap> PgDatabaseConnection::resolve_types(
     std::span<const std::uint32_t> ids, rs::util::Deadline deadline) {
   ResolvedTypeMap resolved;

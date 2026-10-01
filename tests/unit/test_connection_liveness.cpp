@@ -3845,3 +3845,26 @@ TEST(CatalogQueryTest, OptionalCatalogFacetIsStableAndQueryOwnsBorrowedFilters) 
   EXPECT_NE(std::string::npos, retained.find("s''chema"));
   EXPECT_NE(std::string::npos, retained.find("table_name LIKE"));
 }
+
+TEST(SessionHealthTest, NativeTransportInterruptionRetiresWithHealthContext) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::QueryReadTimeout, Mode::PartialQueryWrite, Mode::UnknownQueryFrame}) {
+    postgres::PgDatabaseConnection session(std::make_unique<ScriptedBackendTransport>(mode));
+    ConnectionSettings settings; settings.use_ssl = false;
+    ASSERT_TRUE(session.connect(settings));
+    auto* health = session.session_health();
+    const auto result = health->check_health(rs::util::make_deadline(std::chrono::seconds(1)));
+    ASSERT_FALSE(result);
+    EXPECT_EQ(BackendOperation::CheckHealth, result.backend_error().operation);
+    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), result.session_snapshot());
+    EXPECT_FALSE(session.is_connected());
+    EXPECT_EQ(health, session.session_health());
+  }
+}
+
+TEST(SessionHealthTest, GenericFamilyMachineryDoesNotAdvertiseActiveProbe) {
+  rs::core::database::GenericDatabaseConnection session(
+      std::make_unique<rs::core::database::postgres::PgProtocolParser>());
+  EXPECT_EQ(nullptr, session.session_health());
+}
