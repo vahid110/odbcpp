@@ -803,3 +803,24 @@ rewrite retained success snapshots. Tests cover all three PostgreSQL states,
 prepared/description completion, deferred-error agreement, conservative defaults
 and the error record's single source of truth. Dedicated ordered ExecutionItems,
 warning delivery and separate parameter descriptions remain open S2 work.
+
+## S2 connection and transaction success snapshots — 2026-10-01
+
+Successful PostgreSQL connection outcomes now own the final passive startup
+state/disposition. Successful transaction and isolation adapters preserve the
+underlying command outcome's SessionSnapshot rather than discarding it or
+recomputing it from a later mutable session reading. Existing failure records,
+operation context and absolute deadlines remain unchanged.
+
+Tests cover BEGIN/COMMIT/ROLLBACK/isolation wire completions, all adapter actions
+and isolation levels, conservative Unknown/Retire propagation and reported states
+differing from the probe's current state. Connection tests retain snapshots across
+copy/move, invalid reconnect rejected before I/O, later ambiguous loss, disconnect
+and backend destruction. Invalid reconnect preserves the current owner's state;
+it neither changes the earlier connection outcome nor grants a pooling lease.
+
+This supersedes the earlier deferral of connection/transaction success annotation.
+Health/reset/lease facets, optional service separation, ordered execution items
+and warning delivery remain open S2 work. A completed BEGIN requires reset even
+though it succeeded; no automatic replay, health check or production pooling
+support is added.
