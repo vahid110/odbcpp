@@ -883,3 +883,9 @@ returned metadata and operation snapshots remain owning. Missing pre-execution
 description rejects metadata discovery without I/O and does not prevent execution
 or access to metadata from a completed execution. Live capability reporting must
 not overadvertise absent description behavior.
+
+Catalog discovery is optional through ICatalogQueries. Its stable session-owned
+facet builds owning SQL without I/O; generated queries execute through the ordinary
+execution path. Missing discovery rejects catalog calls before cursor mutation or
+I/O. SQLGetFunctions must suppress absent catalog functions in every support format;
+SQL namespace features and static advertised types are independent contracts.

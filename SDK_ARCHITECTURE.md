@@ -613,3 +613,35 @@ This closes optional statement-description extraction only. Catalog/reuse facets
 static type services, internal build targets, dedicated ordered execution items and
 warning delivery remain open S2 work. No pooling, MySQL or provider qualification
 claim is added.
+
+## S2 optional catalog-query facet — 2026-10-01
+
+Catalog SQL construction now lives on the optional ICatalogQueries facet.
+IDatabaseConnection supplies passive const discovery defaulting to absence;
+GenericDatabaseConnection and the independent synthetic backend no longer require
+unsupported catalog stubs. PostgreSQL supplies a stable session-owned facet using
+its existing query builders. Construction performs no I/O or mutation, borrows
+requests only until return and returns owning SQL. The facet remains valid through
+open/disconnect for its session lifetime; presence does not promise every request
+is supported. Execution still uses the normal deadline, diagnostics and normalized
+result-validation path.
+
+Shared ODBC rejects missing catalog discovery with HYC00 before modifying the
+statement cursor or dispatching execution. SQLGetFunctions suppresses all eight
+catalog functions when the live backend lacks the facet, consistently in scalar,
+ODBC 2 array and ODBC 3 bitmap formats. General namespace and SQL-language capability
+flags retain their meanings; they do not independently grant catalog discovery.
+SQLGetTypeInfo still uses the separate advertised type catalog.
+
+Tests cover all eight ANSI and wide catalog entry points with absent support,
+no extra I/O or disconnect, preservation of the existing cursor and subsequent
+prepared execution. They check all function-support formats and continued direct
+execution support. PostgreSQL facet tests verify stable discovery before open,
+while connected and after disconnect; owned SQL survives filter mutation and
+session destruction. Existing catalog-pattern/quoting and live catalog suites
+protect the supported PostgreSQL behavior.
+
+This closes optional catalog-query extraction only. Static type services,
+health/reset/lease facets, internal build targets, dedicated ordered execution
+items and warning delivery remain open S2 work. No pooling or provider qualification
+claim is added.
