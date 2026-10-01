@@ -3631,3 +3631,76 @@ TEST(NormalizedMetadataTest, ContradictoryPrivateErrorItemsRejectAfterDrainAndRe
     ASSERT_TRUE(backend.execute_query("SELECT 0", rs::util::Deadline::max()));
   }
 }
+
+TEST(BackendResultContractTest, SuccessSnapshotsOwnFinalStateAcrossFailureAndDestruction) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::OwnedResultCells, Mode::OwnedResultCellsTransaction, Mode::OwnedResultCellsAborted}) {
+    const SessionSnapshot expected{
+        mode == Mode::OwnedResultCells ? SessionState::Idle :
+        mode == Mode::OwnedResultCellsTransaction ? SessionState::Transaction : SessionState::FailedTransaction,
+        mode == Mode::OwnedResultCells ? SessionDisposition::Reusable : SessionDisposition::ResetRequired};
+    BackendResult<QueryResult> saved{QueryResult{}};
+    {
+      postgres::PgDatabaseConnection backend("PostgreSQL", std::make_unique<ScriptedBackendTransport>(mode));
+      ConnectionSettings settings; settings.use_ssl = false;
+      ASSERT_TRUE(backend.connect(settings));
+      auto result = backend.execute_query("first", rs::util::Deadline::max());
+      ASSERT_TRUE(result); EXPECT_EQ(expected, result.session_snapshot());
+      ASSERT_EQ(1u, result->additional_results.size());
+      ASSERT_TRUE(result->additional_results[0].error);
+      EXPECT_EQ(expected.state, result->additional_results[0].error->session_state);
+      EXPECT_EQ(expected.disposition, result->additional_results[0].error->disposition);
+      saved = result;
+      auto moved = std::move(result);
+      EXPECT_EQ(expected, moved.session_snapshot());
+      const auto later = backend.execute_query("later", rs::util::Deadline::max());
+      ASSERT_TRUE(later.has_error());
+      EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), later.session_snapshot());
+      EXPECT_EQ(expected, moved.session_snapshot());
+      backend.disconnect();
+    }
+    EXPECT_EQ(expected, saved.session_snapshot());
+    EXPECT_EQ(3u, saved->rows.size());
+  }
+}
+
+TEST(BackendResultContractTest, PreparedAndDescriptionSuccessReportFinalIdleState) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const bool describe : {false, true}) {
+    GenericDatabaseConnection backend(std::make_unique<postgres::PgProtocolParser>(),
+        std::make_unique<ScriptedBackendTransport>(describe ? Mode::DescriptionOneColumn : Mode::PreparedCommand));
+    ConnectionSettings settings; settings.use_ssl = false;
+    ASSERT_TRUE(backend.connect(settings));
+    const QueryParameter parameters[]{
+        {"a", QueryParameterType::Text}, {"b", QueryParameterType::Text},
+        {"c", QueryParameterType::Text}, {std::string("x"), QueryParameterType::Binary}};
+    auto result = describe
+        ? backend.describe_statement("SELECT value", {}, rs::util::Deadline::max())
+        : backend.execute_prepared("?,?,?,?", parameters, rs::util::Deadline::max());
+    ASSERT_TRUE(result) << result.error_message();
+    EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), result.session_snapshot());
+    backend.disconnect();
+    EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), result.session_snapshot());
+  }
+}
+
+TEST(BackendResultContractTest, UnreportedSuccessIsConservativeAndErrorSnapshotHasOneSource) {
+  using namespace rs::core::database;
+  const SessionSnapshot unknown{};
+  BackendResult<QueryResult> value{QueryResult{}};
+  BackendResult<void> empty;
+  EXPECT_EQ(unknown, value.session_snapshot()); EXPECT_EQ(unknown, empty.session_snapshot());
+  const SessionSnapshot idle{SessionState::Idle, SessionDisposition::Reusable};
+  BackendResult<void> completed{idle}; EXPECT_EQ(idle, completed.session_snapshot());
+  BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "owned"};
+  error.session_state = SessionState::Transaction; error.disposition = SessionDisposition::ResetRequired;
+  BackendResult<QueryResult> failed{error}; BackendResult<void> failed_void{error};
+  const SessionSnapshot transaction{SessionState::Transaction, SessionDisposition::ResetRequired};
+  EXPECT_EQ(transaction, failed.session_snapshot()); EXPECT_EQ(transaction, failed_void.session_snapshot());
+  // Existing internal error annotation remains authoritative, with no stale copy.
+  failed.backend_error().session_state = SessionState::Disconnected;
+  failed.backend_error().disposition = SessionDisposition::Retire;
+  EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), failed.session_snapshot());
+}

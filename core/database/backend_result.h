@@ -17,6 +17,14 @@ enum class BackendOperation {
 };
 enum class SessionState { Disconnected, Idle, Transaction, FailedTransaction, Unknown };
 enum class SessionDisposition { Reusable, ResetRequired, Retire };
+// Owning passive outcome for this owner, not a probe, reset or pooling lease.
+// Unreported success stays conservative: Unknown/Retire never grants reuse.
+struct SessionSnapshot {
+  SessionState state{SessionState::Unknown};
+  SessionDisposition disposition{SessionDisposition::Retire};
+  bool operator==(const SessionSnapshot&) const = default;
+};
+
 enum class BackendErrorClass {
   Unknown, Connection, Authentication, Server, Timeout, Transport, Tls,
   InvalidInput, NotConnected, Protocol, Unsupported, InvalidMetadata, ResourceLimit, AllocationFailure
@@ -104,7 +112,8 @@ inline BackendError local_backend_error(LocalFailure kind,
 template<class T>
 class BackendResult {
  public:
-  BackendResult(T value) : data_(std::move(value)) {}
+  BackendResult(T value, SessionSnapshot session = {})
+      : data_(std::move(value)), success_session_(session) {}
   BackendResult(BackendError error) : data_(std::move(error)) {}
   BackendResult(std::error_code code, std::string message = {})
       : data_(BackendError{code, std::move(message)}) {}
@@ -113,6 +122,11 @@ class BackendResult {
   bool has_value() const noexcept { return std::holds_alternative<T>(data_); }
   bool has_error() const noexcept { return !has_value(); }
   explicit operator bool() const noexcept { return has_value(); }
+  // Failures derive the snapshot from their single owning error record.
+  SessionSnapshot session_snapshot() const noexcept {
+    if (has_error()) return {backend_error().session_state, backend_error().disposition};
+    return success_session_;
+  }
   T& value() & { return std::get<T>(data_); }
   const T& value() const& { return std::get<T>(data_); }
   T&& value() && { return std::get<T>(std::move(data_)); }
@@ -127,12 +141,14 @@ class BackendResult {
   const std::string& error_message() const { return backend_error().message; }
  private:
   std::variant<T, BackendError> data_;
+  SessionSnapshot success_session_;
 };
 
 template<>
 class BackendResult<void> {
  public:
   BackendResult() = default;
+  explicit BackendResult(SessionSnapshot session) : success_session_(session) {}
   BackendResult(BackendError error) : error_(std::move(error)) {}
   BackendResult(std::error_code code, std::string message = {})
       : error_(BackendError{code, std::move(message)}) {}
@@ -141,11 +157,17 @@ class BackendResult<void> {
   bool has_value() const noexcept { return !error_; }
   bool has_error() const noexcept { return error_.has_value(); }
   explicit operator bool() const noexcept { return has_value(); }
+  // Failures derive the snapshot from their single owning error record.
+  SessionSnapshot session_snapshot() const noexcept {
+    if (has_error()) return {backend_error().session_state, backend_error().disposition};
+    return success_session_;
+  }
   BackendError& backend_error() { return error_.value(); }
   const BackendError& backend_error() const { return error_.value(); }
   const std::error_code& error() const { return backend_error().code; }
   const std::string& error_message() const { return backend_error().message; }
  private:
   std::optional<BackendError> error_;
+  SessionSnapshot success_session_;
 };
 }  // namespace rs::core::database

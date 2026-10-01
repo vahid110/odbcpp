@@ -87,8 +87,9 @@ inline bool valid_resource_limits(const ConnectionSettings& settings) noexcept {
 // must not retain input views/spans after return. Returned QueryResult values own
 // their storage. Metadata views have the lifetimes documented on each method.
 // Every operation receives one absolute steady-clock deadline; nested I/O must
-// reuse it, never restart the timeout. Session reuse is reported by is_connected,
-// independently of diagnostic SQLSTATE. See BACKEND_BOUNDARY.md for retirement.
+// reuse it, never restart the timeout. Query outcomes own their final passive
+// session snapshot; is_connected reports current status independently of that
+// snapshot and diagnostic SQLSTATE. See BACKEND_BOUNDARY.md for retirement.
 class IDatabaseConnection {
 public:
   virtual ~IDatabaseConnection() = default;

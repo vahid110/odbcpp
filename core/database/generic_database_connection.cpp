@@ -313,6 +313,9 @@ BackendResult<QueryResult> GenericDatabaseConnection::finish_operation(
     };
     annotate(*result);
     for (auto& item : result->additional_results) annotate(item);
+    return {std::move(*result), SessionSnapshot{session_state_,
+        !connected_ ? SessionDisposition::Retire :
+        session_state_ == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired}};
   }
   return result;
 }
