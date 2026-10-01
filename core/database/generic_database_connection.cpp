@@ -275,6 +275,16 @@ BackendResult<QueryResult> GenericDatabaseConnection::finish_operation(
     error.disposition = !connected_ ? SessionDisposition::Retire :
         session_state_ == SessionState::Idle ? SessionDisposition::Reusable :
         SessionDisposition::ResetRequired;
+  } else {
+    const auto annotate = [&](QueryResult& item) {
+      if (!item.error) return;
+      item.error->operation = operation;
+      item.error->session_state = session_state_;
+      item.error->disposition = !connected_ ? SessionDisposition::Retire :
+          session_state_ == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired;
+    };
+    annotate(*result);
+    for (auto& item : result->additional_results) annotate(item);
   }
   return result;
 }
@@ -507,7 +517,7 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
           "PostgreSQL binary result format is not supported"};
     }
     if (query_error &&
-        (!result.error_message.empty() || result.additional_results.empty())) {
+        (result.error.has_value() || result.additional_results.empty())) {
       BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),
                          "Query error: " + *query_error};
       error.native_state = std::move(query_error_sqlstate);

@@ -842,8 +842,9 @@ QueryResult PgProtocolParser::extract_query_result(
     } else if (message.tag == 'E') { // ErrorResponse
       current = QueryResult{};
       const auto error = decode_error_fields(message.payload);
-      current.error_message = error.message();
-      current.error_sqlstate = error.code();
+      current.error.emplace(rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),
+                            "Query error: " + error.message());
+      current.error->native_state = error.code();
       completed.push_back(std::move(current));
       current = QueryResult{};
       has_row_description = false;

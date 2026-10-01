@@ -178,7 +178,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     EmptyQueryResponse, DescriptionNoData,
     DescriptionMissingParse, DescriptionMissingParameters,
     DescriptionMissingResult, DescriptionOutOfOrder,
-    DescriptionServerError, OwnedResultCells,
+    DescriptionServerError, OwnedResultCells, OwnedResultCellsTransaction, OwnedResultCellsAborted,
     OwnedErrorIdle, OwnedErrorTransaction, OwnedErrorAborted,
     QueryReadTimeout, PartialQueryWrite
   };
@@ -452,7 +452,8 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('1', "", 0);
       append_message('n', "", 0);
       append_message('Z', "I", 1);
-    } else if (mode == ResponseMode::OwnedResultCells) {
+    } else if (mode == ResponseMode::OwnedResultCells ||
+               mode == ResponseMode::OwnedResultCellsTransaction || mode == ResponseMode::OwnedResultCellsAborted) {
       constexpr char description[] =
           "\0\1value\0" "\0\0\0\0" "\0\0" "\0\0\0\31"
           "\377\377" "\377\377\377\377" "\0\0";
@@ -466,7 +467,9 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('C', "SELECT 3", sizeof("SELECT 3"));
       constexpr char error[] = "SERROR\0C22012\0Mdivision by zero\0";
       append_message('E', error, sizeof(error));
-      append_message('Z', "I", 1);
+      const char state = mode == ResponseMode::OwnedResultCells ? 'I' :
+          mode == ResponseMode::OwnedResultCellsTransaction ? 'T' : 'E';
+      append_message('Z', &state, 1);
     } else if (mode == ResponseMode::OwnedErrorIdle ||
                mode == ResponseMode::OwnedErrorTransaction ||
                mode == ResponseMode::OwnedErrorAborted) {
@@ -1878,9 +1881,10 @@ TEST(BackendResultContractTest, RowsMetadataAndDeferredErrorsOutliveConnection) 
   EXPECT_TRUE(retained.rows[1][0]->empty());
   EXPECT_EQ(std::optional<std::string>("abc"), retained.rows[2][0]);
   ASSERT_EQ(1u, retained.additional_results.size());
-  EXPECT_EQ("22012", retained.additional_results[0].error_sqlstate);
+  ASSERT_TRUE(retained.additional_results[0].error);
+  EXPECT_EQ("22012", retained.additional_results[0].error->native_state);
   EXPECT_NE(std::string::npos,
-            retained.additional_results[0].error_message.find("division by zero"));
+            retained.additional_results[0].error->message.find("division by zero"));
 }
 
 TEST(ConnectionLivenessTest, OwningErrorsPreserveNativeDetailAndProtocolDisposition) {
@@ -2194,5 +2198,47 @@ TEST(NativeTypeLookupLivenessTest, PreservesOwnedServerAndAmbiguousFailureSnapsh
     ASSERT_TRUE(saved);
     EXPECT_EQ(saved->operation, BackendOperation::ResolveTypes);
     EXPECT_FALSE(saved->message.empty());
+  }
+}
+
+TEST(BackendResultContractTest, DeferredErrorsRetainOperationAndFinalStateAcrossLaterCalls) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::OwnedResultCells, Mode::OwnedResultCellsTransaction, Mode::OwnedResultCellsAborted}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    QueryResult saved;
+    {
+      postgres::PgDatabaseConnection backend("PostgreSQL", std::make_unique<ScriptedBackendTransport>(mode));
+      ConnectionSettings settings;
+      settings.use_ssl = false;
+      ASSERT_TRUE(backend.connect(settings));
+      auto result = backend.execute_query("first", rs::util::Deadline::max());
+      ASSERT_TRUE(result);
+      EXPECT_FALSE(result->error);
+      ASSERT_EQ(1u, result->additional_results.size());
+      ASSERT_TRUE(result->additional_results[0].error);
+      saved = *result;
+      auto moved = std::move(*result);
+      const auto& error = *moved.additional_results[0].error;
+      EXPECT_EQ(error.operation, BackendOperation::ExecuteDirect);
+      EXPECT_EQ(error.error_class, BackendErrorClass::Server);
+      EXPECT_EQ(error.native_state, "22012");
+      EXPECT_FALSE(error.native_code);
+      EXPECT_FALSE(error.retry_safe);
+      EXPECT_EQ(error.session_state, mode == Mode::OwnedResultCells ? SessionState::Idle :
+          mode == Mode::OwnedResultCellsTransaction ? SessionState::Transaction : SessionState::FailedTransaction);
+      EXPECT_EQ(error.disposition, mode == Mode::OwnedResultCells ? SessionDisposition::Reusable : SessionDisposition::ResetRequired);
+      EXPECT_EQ(error.safe_summary(), "Database server rejected the operation");
+      EXPECT_TRUE(backend.is_connected());
+      // This fixture has no second response: the later ambiguous failure must
+      // retire the session without rewriting the first result snapshot.
+      EXPECT_FALSE(backend.execute_query("later", rs::util::Deadline::max()));
+      EXPECT_EQ(backend.session_state(), SessionState::Disconnected);
+      backend.disconnect();
+    }
+    ASSERT_TRUE(saved.additional_results[0].error);
+    EXPECT_EQ(saved.additional_results[0].error->message, "Query error: division by zero");
+    EXPECT_EQ(saved.additional_results[0].error->native_state, "22012");
+    EXPECT_EQ(saved.additional_results[0].error->operation, BackendOperation::ExecuteDirect);
   }
 }

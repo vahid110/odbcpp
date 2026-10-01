@@ -1,6 +1,7 @@
 #pragma once
 
 #include "native_type_info.h"
+#include "backend_result.h"
 #include "statement_kind.h"
 #include <cstddef>
 #include <cstdint>
@@ -34,15 +35,14 @@ using ResultRows = std::vector<ResultRow>;
 
 // Fully owning snapshot: rows, metadata and additional results survive later
 // calls, disconnect and backend destruction. Deferred server errors belong to
-// their result; error_sqlstate is native and must be normalized by the backend.
+// their result as BackendError; native_state must be normalized by the backend.
 // command_tag and parameter_type_ids are native, not portable SQL semantics.
 struct QueryResult {
   ResultRows rows;
   std::vector<ResultColumnMetadata> columns;
   std::vector<std::uint32_t> parameter_type_ids;
   std::string command_tag;
-  std::string error_message;
-  std::string error_sqlstate;
+  std::optional<BackendError> error;
   std::size_t affected_rows{0};
   std::vector<QueryResult> additional_results;
   // Absent means no completion metadata; explicit Unknown clears prior dynamic

@@ -331,12 +331,14 @@ TEST(PgProtocolParserTest, ErrorAfterCommandIsASeparatePendingResult) {
   const auto result = parser.extract_query_result({command, error});
   EXPECT_EQ("SELECT 1", result.command_tag);
   ASSERT_EQ(1u, result.additional_results.size());
-  EXPECT_EQ("division by zero",
-            result.additional_results.front().error_message);
-  EXPECT_EQ("22012", result.additional_results.front().error_sqlstate);
+  ASSERT_TRUE(result.additional_results.front().error);
+  EXPECT_EQ("Query error: division by zero",
+            result.additional_results.front().error->message);
+  EXPECT_EQ("22012", result.additional_results.front().error->native_state);
 
   const auto first_error = parser.extract_query_result({error});
-  EXPECT_EQ("division by zero", first_error.error_message);
+  ASSERT_TRUE(first_error.error);
+  EXPECT_EQ("Query error: division by zero", first_error.error->message);
   EXPECT_TRUE(first_error.additional_results.empty());
 }
 

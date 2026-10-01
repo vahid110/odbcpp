@@ -3005,12 +3005,12 @@ SQLRETURN ODBCStatement::more_results() {
 
   auto next = std::move(pending_results_.front());
   pending_results_.erase(pending_results_.begin());
-  if (!next.error_message.empty()) {
+  if (next.error) {
     pending_results_.clear();
     set_error(mapped_backend_sqlstate(*conn_->get_db_connection(),
-                                      next.error_sqlstate,
+                                      next.error->native_state.value_or(""),
                                       SQLSTATE_SYNTAX_ERROR),
-              "Query error: " + next.error_message);
+              next.error->message);
     return SQL_ERROR;
   }
   apply_query_result(std::move(next), false);

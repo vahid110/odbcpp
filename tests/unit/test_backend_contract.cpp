@@ -119,7 +119,9 @@ class FakeBackend final : public IDatabaseConnection {
     }
     auto result = rows();
     if (sql.ends_with("deferred")) {
-      QueryResult error; error.error_message = "later error"; error.error_sqlstate = "FAKE_ERROR";
+      QueryResult error;
+      error.error.emplace(rs::util::make_error_code(DbErrorCode::QueryFailed), "Query error: later error");
+      error.error->native_state = "FAKE_ERROR";
       result.additional_results.push_back(std::move(error));
     }
     return result;
@@ -328,6 +330,10 @@ TEST_F(BackendContractTest, ErrorsNormalizeAndRecoverWithoutPostgresStates) {
   seen->malformed_state = false;
   ASSERT_EQ(SQL_SUCCESS, execute("deferred"));
   EXPECT_EQ(SQL_ERROR, SQLMoreResults(stmt)); EXPECT_EQ("22018", state());
+  SQLCHAR deferred_message[128]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1, nullptr,
+      nullptr, deferred_message, sizeof(deferred_message), nullptr));
+  EXPECT_STREQ("Query error: later error", reinterpret_cast<char*>(deferred_message));
   EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(stmt));
   ASSERT_EQ(SQL_SUCCESS, execute("rows"));
   seen->malformed_value = true;
