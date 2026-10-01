@@ -864,3 +864,34 @@ UTF-16/UCS-4, ASan/UBSan, Redshift unit/build-contract and absent-endpoint gates
 all examples compile. Focused review confirmed startup timing, adapter snapshot
 propagation and unchanged failures. Windows live/packaging checks run on the
 pushed batch in CI.
+
+## S2 provider-owned SQL dialect service — 2026-10-01
+
+ISqlDialect is a pure provider-owned service for parameter-marker counting and
+SQL escape translation. IDatabaseConnection no longer requires either method.
+PostgreSQL-family providers expose an immutable service using the existing lexer
+and translator; native parser composition helpers remain private implementation
+code. SQL dialect rules do not require credentials, a transport or a live session.
+
+ODBC direct/prepared execution and SQLNativeSql A/W now use the selected provider
+service. Existing connection, buffer/Unicode, SQL byte-budget, marker-budget,
+NoScan and diagnostic guards retain their order and behavior. Translation strings
+are owning snapshots; service references last for the provider lifetime.
+
+The independent synthetic backend session compiles without dialect methods; its
+provider owns the dialect. Tests cover use before session creation, borrowed
+input overwritten after translation, retained results after provider destruction,
+error/recovery, PostgreSQL quotes/comments/dollar quotes and stable service
+identity across session creation/destruction. Compile-time checks prevent SQL
+services returning to the SDK session interface.
+
+This closes the pure SQL-dialect extraction within S2 session/service separation.
+Type/catalog and optional transaction/description/reuse facets, internal target
+separation, ordered execution representation and warning delivery remain open.
+No MySQL protocol or speculative Redshift specialization is introduced.
+
+Validation: focused backend/provider/session/parser tests; complete PostgreSQL,
+iODBC UTF-16/UCS-4, ASan/UBSan, Redshift unit/build-contract and absent-endpoint
+gates; all examples compile. Focused review checked provider lifetime, owning
+translations, unchanged ODBC guards and all callers. Windows live/packaging and
+provider-proof validation run on the pushed batch in CI.
