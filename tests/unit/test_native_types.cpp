@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 
 #include "core/database/database_factory.h"
+#include "core/database/postgres/pg_backend_provider.h"
 #include "core/database/generic_database_connection.h"
 #include "core/database/postgres/pg_database_connection.h"
 #include "tests/mock_protocol_parser.h"
@@ -213,20 +214,9 @@ TEST(NativeTypeLookupTest, GenericBackendUsesItsOwnFallbackWithoutPostgresDiscov
   }
 }
 
-namespace {
-class VersionedTypeCatalogConnection : public postgres::PgDatabaseConnection {
-public:
-  VersionedTypeCatalogConnection() : PgDatabaseConnection("PostgreSQL") {}
-  std::string version;
-  std::string get_parameter(std::string_view key) const override {
-    return key == "server_version" ? version : std::string{};
-  }
-};
-}
-
 TEST(TypeCatalogTest, AdvertisesNativeNamesAndNullablePropertiesWithoutIo) {
   auto backend = DatabaseFactory::create_connection();
-  const auto catalog = backend->type_catalog();
+  const auto catalog = configured_backend_provider().type_catalog(backend->server_version());
   ASSERT_EQ(15u, catalog.size());
   for (const auto& type : catalog) {
     EXPECT_FALSE(type.name.empty());
@@ -252,14 +242,14 @@ TEST(TypeCatalogTest, AdvertisesNativeNamesAndNullablePropertiesWithoutIo) {
 }
 
 TEST(TypeCatalogTest, NumericScaleTracksServerVersionWithoutInvalidatingPriorViews) {
-  VersionedTypeCatalogConnection backend;
-  const auto original = backend.type_catalog();
+  const auto& provider = configured_backend_provider();
+  const auto original = provider.type_catalog();
   for (const auto* version : {"", "14.18", "15.0", "17.11 (package)",
                               "invalid", "999999999999999999999"}) {
-    backend.version = version;
-    const bool modern = backend.version.starts_with("15.") || backend.version.starts_with("17.");
+    const std::string_view version_view = version;
+    const bool modern = version_view.starts_with("15.") || version_view.starts_with("17.");
     int numerics = 0;
-    for (const auto& type : backend.type_catalog()) {
+    for (const auto& type : provider.type_catalog(version_view)) {
       if (type.type == ScalarType::Numeric || type.type == ScalarType::Decimal) {
         ++numerics;
         EXPECT_EQ(std::optional<std::int16_t>(modern ? -1000 : 0), type.minimum_scale);
@@ -273,12 +263,6 @@ TEST(TypeCatalogTest, NumericScaleTracksServerVersionWithoutInvalidatingPriorVie
       EXPECT_EQ(std::optional<std::int16_t>(0), type.minimum_scale);
     }
   }
-}
-
-TEST(TypeCatalogTest, GenericBackendDoesNotAdvertisePostgresTypes) {
-  GenericDatabaseConnection backend(std::make_unique<odbcpp::test::MockProtocolParser>());
-  EXPECT_TRUE(backend.type_catalog().empty());
-  EXPECT_FALSE(backend.is_connected());
 }
 
 TEST(BackendCapabilitiesTest, SelectedBackendProfileIsAvailableWithoutIo) {
@@ -462,4 +446,28 @@ TEST(NativeTypeLookupTest, InvalidDrainedMetadataPreservesPassiveStateAndOwnsErr
     EXPECT_EQ(saved->error_class, BackendErrorClass::InvalidMetadata);
     EXPECT_EQ(saved->message, "Data source returned invalid parameter type metadata");
   }
+}
+
+TEST(TypeCatalogTest, ProviderPolicyDoesNotRetainVersionInputOrInvalidateProfiles) {
+  using namespace rs::core::database;
+  postgres::PgBackendProvider provider{
+      BackendIdentity{"postgresql", "PostgreSQL", "ODBCPP PostgreSQL"},
+      BackendConnectionDefaults{"localhost", 5432, "postgres", true}};
+  std::string version = "17.11";
+  const auto modern = provider.type_catalog(version);
+  version.assign("14.18");
+  const auto legacy = provider.type_catalog(version);
+  const auto fallback = provider.type_catalog("999999999999999999999999");
+  ASSERT_EQ(legacy.size(), modern.size()); ASSERT_EQ(legacy.size(), fallback.size());
+  for (std::size_t index = 0; index < legacy.size(); ++index) {
+    EXPECT_EQ(legacy[index].name, modern[index].name);
+    EXPECT_EQ(legacy[index].name, fallback[index].name);
+    if (legacy[index].type == ScalarType::Numeric || legacy[index].type == ScalarType::Decimal) {
+      EXPECT_EQ(std::optional<std::int16_t>(-1000), modern[index].minimum_scale);
+      EXPECT_EQ(std::optional<std::int16_t>(0), legacy[index].minimum_scale);
+      EXPECT_EQ(legacy[index].minimum_scale, fallback[index].minimum_scale);
+    }
+  }
+  EXPECT_EQ(legacy.data(), provider.type_catalog().data());
+  EXPECT_EQ(modern.data(), provider.type_catalog("15.0").data());
 }

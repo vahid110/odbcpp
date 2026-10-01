@@ -21,8 +21,6 @@ public:
   rs::util::Result<std::string> catalog_query(
       const CatalogRequest& request) const override;
 
-  std::span<const TypeDefinition> type_catalog() const override;
-
   std::optional<std::string> normalize_result_value(
       ScalarType type, std::string_view value) const override;
 

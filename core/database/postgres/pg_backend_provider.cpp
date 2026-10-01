@@ -32,8 +32,8 @@ PgBackendProvider::PgBackendProvider(
       connection_defaults_(std::move(connection_defaults)),
       capabilities_(pg_backend_capabilities(identity_.display_name)) {}
 
-std::span<const TypeDefinition> PgBackendProvider::type_catalog() const noexcept {
-  return pg_type_catalog({});
+std::span<const TypeDefinition> PgBackendProvider::type_catalog(std::string_view server_version) const noexcept {
+  return pg_type_catalog(server_version);
 }
 
 TransactionCapabilities PgBackendProvider::transaction_capabilities() const noexcept {

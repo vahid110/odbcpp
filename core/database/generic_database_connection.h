@@ -24,8 +24,6 @@ public:
   virtual NativeTypeInfo describe_type(std::uint32_t id, std::int16_t size,
                                        std::int32_t modifier) const;
   
-  std::span<const TypeDefinition> type_catalog() const override { return {}; }
-
   virtual std::optional<std::string> normalize_result_value(
       ScalarType type, std::string_view value) const {
     return parser_->normalize_result_value(type, value);

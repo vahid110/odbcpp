@@ -1277,7 +1277,8 @@ ODBCConnection::ODBCConnection(
       connection_id_(next_connection_id.fetch_add(1)) {}
 
 std::span<const rs::core::database::TypeDefinition> ODBCConnection::type_catalog() const {
-  return db_conn_ ? db_conn_->type_catalog() : backend_provider_->type_catalog();
+  return backend_provider_->type_catalog(
+      db_conn_ ? db_conn_->server_version() : std::string{});
 }
 
 rs::core::database::BackendCapabilities ODBCConnection::capabilities() const {

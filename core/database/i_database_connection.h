@@ -13,7 +13,6 @@
 #include "backend_result.h"
 #include "sql_translation.h"
 #include "native_type_info.h"
-#include "type_definition.h"
 #include "transaction.h"
 #include "transaction_session.h"
 #include "statement_description.h"
@@ -106,10 +105,6 @@ public:
 
   // Optional catalog-query construction; absence does not restrict execution.
   virtual const ICatalogQueries* catalog_queries() const noexcept { return nullptr; }
-
-  // No I/O. Returned definitions and strings remain valid for the connection lifetime.
-  // An empty catalog means the backend advertises no types.
-  virtual std::span<const TypeDefinition> type_catalog() const = 0;
 
   // Pure metadata snapshot: no I/O or session mutation.
   virtual BackendCapabilities capabilities() const = 0;

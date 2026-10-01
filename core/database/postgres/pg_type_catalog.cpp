@@ -1,4 +1,3 @@
-#include "pg_database_connection.h"
 #include "pg_backend_provider.h"
 
 #include <array>
@@ -41,10 +40,6 @@ std::span<const TypeDefinition> pg_type_catalog(
   return parsed.ec == std::errc{} && major >= 15
       ? std::span<const TypeDefinition>(modern_definitions)
       : std::span<const TypeDefinition>(definitions);
-}
-
-std::span<const TypeDefinition> PgDatabaseConnection::type_catalog() const {
-  return pg_type_catalog(get_parameter("server_version"));
 }
 
 } // namespace rs::core::database::postgres

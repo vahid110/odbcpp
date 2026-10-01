@@ -23,7 +23,8 @@ class PgBackendProvider final : public IBackendProvider {
   }
   const ISqlDialect& sql_dialect() const noexcept override;
   BackendCapabilities capabilities() const noexcept override { return capabilities_; }
-  std::span<const TypeDefinition> type_catalog() const noexcept override;
+  std::span<const TypeDefinition> type_catalog(
+      std::string_view server_version = {}) const noexcept override;
   TransactionCapabilities transaction_capabilities() const noexcept override;
   rs::util::Result<ConnectionSettings> resolve_connection_options(
       ConnectionOptions options) const override;

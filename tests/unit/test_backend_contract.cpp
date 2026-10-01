@@ -69,6 +69,8 @@ template <typename T> concept HasRequiredTransaction = requires(T& session) { se
 template <typename T> concept HasRequiredIsolation = requires(T& session) { session.set_transaction_isolation(TransactionIsolation::Serializable, Deadline::max()); };
 template <typename T> concept HasRequiredDescription = requires(T& session) { session.describe_statement("SELECT ?", std::span<const QueryParameterType>{}, Deadline::max()); };
 template <typename T> concept HasRequiredCatalog = requires(const T& session) { session.catalog_query(CatalogRequest{TablesCatalogRequest{}}); };
+template <typename T> concept HasSessionTypeCatalog = requires(const T& session) { session.type_catalog(); };
+static_assert(!HasSessionTypeCatalog<IDatabaseConnection>);
 static_assert(!HasRequiredCatalog<IDatabaseConnection>);
 static_assert(!HasRequiredDescription<IDatabaseConnection>);
 static_assert(!HasRequiredTransaction<IDatabaseConnection>);
@@ -90,13 +92,6 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
   }
   void disconnect() override { connected_ = false; ++seen_->disconnects; }
   bool is_connected() const override { return connected_; }
-  std::span<const TypeDefinition> type_catalog() const override {
-    static const TypeDefinition types[]{
-        {ScalarType::Binary, "octets", 8, {}, {}, {}, false, {}, {}, {}, 0},
-        {ScalarType::Boolean, "truth", 1, {}, {}, {}, false, {}, {}, {}, 0},
-        {ScalarType::VarChar, "words", 32, {}, {}, {}, true, {}, {}, {}, 0}};
-    return types;
-  }
   BackendCapabilities capabilities() const override {
     BackendCapabilities result;
     result.dbms_name = "ContractDB";
@@ -288,8 +283,15 @@ class FakeProvider final : public IBackendProvider {
   BackendCapabilities capabilities() const noexcept override {
     return FakeBackend(seen_).capabilities();
   }
-  std::span<const TypeDefinition> type_catalog() const noexcept override {
-    return FakeBackend(seen_).type_catalog();
+  std::span<const TypeDefinition> type_catalog(std::string_view version = {}) const noexcept override {
+    static const TypeDefinition types[]{
+        {ScalarType::Binary, "octets", 8, {}, {}, {}, false, {}, {}, {}, 0},
+        {ScalarType::Boolean, "truth", 1, {}, {}, {}, false, {}, {}, {}, 0},
+        {ScalarType::VarChar, "words", 32, {}, {}, {}, true, {}, {}, {}, 0}};
+    static const TypeDefinition modern[]{
+        {ScalarType::Binary, "octets", 16, {}, {}, {}, false, {}, {}, {}, 0},
+        types[1], types[2]};
+    return version == "2.0" ? std::span<const TypeDefinition>(modern) : std::span<const TypeDefinition>(types);
   }
   TransactionCapabilities transaction_capabilities() const noexcept override {
     return seen_->advertised_transactions
@@ -1475,4 +1477,28 @@ TEST_F(BackendContractTest, AbsentCatalogFacetRejectsAllCatalogApisAndPreservesC
   ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows", SQL_NTS));
   ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
   EXPECT_EQ(2, seen->queries); EXPECT_EQ(0, seen->disconnects);
+}
+
+TEST_F(BackendContractTest, ProviderTypePolicyUsesAdvertisedVersionWithoutCatalogIo) {
+  auto* connection = static_cast<rs::odbc::ODBCConnection*>(dbc);
+  const auto before = connection->type_catalog();
+  ASSERT_FALSE(before.empty()); EXPECT_EQ(8u, before.front().column_size);
+  seen->server_version = "2.0";
+  connect();
+  const auto live = connection->type_catalog();
+  ASSERT_FALSE(live.empty()); EXPECT_EQ(16u, live.front().column_size);
+  EXPECT_EQ(8u, before.front().column_size);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfo(stmt, SQL_VARBINARY));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  SQLUINTEGER size{}; SQLLEN indicator{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 3, SQL_C_ULONG, &size, sizeof(size), &indicator));
+  EXPECT_EQ(16u, size);
+  EXPECT_EQ(0, seen->queries); EXPECT_EQ(0, seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  EXPECT_EQ(16u, live.front().column_size);
+  EXPECT_EQ(16u, connection->type_catalog().front().column_size);
+  seen->server_version.clear();
+  ASSERT_FALSE(connection->type_catalog().empty());
+  EXPECT_EQ(8u, connection->type_catalog().front().column_size);
 }

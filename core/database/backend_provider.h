@@ -1,6 +1,7 @@
 #pragma once
 
 #include "backend_capabilities.h"
+#include "type_definition.h"
 #include "sql_dialect.h"
 #include "i_database_connection.h"
 
@@ -10,6 +11,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 
 namespace rs::core::transport {
 class ITransport;
@@ -56,7 +58,11 @@ class IBackendProvider {
   virtual const BackendConnectionDefaults& connection_defaults() const noexcept = 0;
   virtual const ISqlDialect& sql_dialect() const noexcept = 0;
   virtual BackendCapabilities capabilities() const noexcept = 0;
-  virtual std::span<const TypeDefinition> type_catalog() const noexcept = 0;
+  // Pure advertised-type policy. Empty version selects the conservative profile.
+  // Input is borrowed only until return; definitions and strings are immutable
+  // and remain valid for the provider lifetime across all subsequent selections.
+  virtual std::span<const TypeDefinition> type_catalog(
+      std::string_view server_version = {}) const noexcept = 0;
   virtual TransactionCapabilities transaction_capabilities() const noexcept = 0;
   virtual rs::util::Result<ConnectionSettings> resolve_connection_options(
       ConnectionOptions options) const = 0;

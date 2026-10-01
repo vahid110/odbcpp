@@ -49,9 +49,9 @@ TEST(BackendProviderTest, StaticProfileMatchesNewSessionWithoutConnecting) {
   EXPECT_EQ(provider.transaction_capabilities().supported,
             session->transaction_session()->transaction_capabilities().supported);
   ASSERT_FALSE(provider.type_catalog().empty());
-  ASSERT_EQ(provider.type_catalog().size(), session->type_catalog().size());
+  ASSERT_EQ(provider.type_catalog().size(), provider.type_catalog(session->server_version()).size());
   EXPECT_EQ(provider.type_catalog().front().name,
-            session->type_catalog().front().name);
+            provider.type_catalog(session->server_version()).front().name);
 }
 
 TEST(BackendProviderTest, PostgreSqlFamilyProfilesStayIndependent) {
