@@ -901,3 +901,16 @@ the facade, including prepared execution after coordinator cleanup.
 S2/G12 remain open pending cache invalidation (including SQL-driven changes),
 credential-provider integration and reusable return. New facets need narrow
 policy-aware lease methods. No ODBC or backend/provider qualification changes.
+
+## S2 conservative cache-scope checkpoint — 2026-10-02
+
+Private weak scope tokens now bind credential-current Idle leases and exact origin.
+All execution/reset attempts invalidate before callbacks, and closure, retirement
+and credential staleness invalidate without keeping sessions alive. Unbound,
+non-Idle, unknown, failed-passive or allocation-failed issuance grants no scope.
+Unit/race/TSan and PG live query-error/reset/closure evidence accompany this step.
+No cache storage or external-schema freshness claim is made.
+
+S2/G12 remain open: bounded reusable return, cache payload limits/keys/secret and
+external-change policies, and production credential-provider integration still
+need evidence. No ODBC, Redshift reset, provider/linkage or FIPS claim changes.

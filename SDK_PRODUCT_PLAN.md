@@ -268,7 +268,7 @@ review before considering any MySQL beta plan.
   have bounded evidence accepted in [S2C_MATRIX_REVIEW.md](S2C_MATRIX_REVIEW.md).
   S2 now includes owning errors/session disposition, private dependency gates,
   optional active health and the narrow PostgreSQL reset primitive. Continue
-  conservative cache scope/invalidation and reusable-return policy next; crypto qualification
+  bounded reusable-return policy next, with actual cache/provider qualification still open; crypto qualification
   follow-ups remain open and do not disappear from G12.
 - When Redshift access returns, finish the current coherent MS1 batch, preserve
   its evidence, and run M2 before expanding MySQL scope. Re-estimate whether to
@@ -339,3 +339,16 @@ Next: conservative cache scopes/invalidation across execution, reset, retirement
 and credential rotation, then bounded reusable return. Future facets require
 policy-aware lease entry points. No cache, pool, public SDK or Driver Manager
 qualification is added, and S2/G12 remain open.
+
+## S2 cache scope progress — 2026-10-02
+
+Private credential-bound Idle leases now issue weak opaque local cache scopes.
+Origin/generation checks and conservative invalidation cover all execution/reset
+attempts, owner close, retirement and credential lifecycle; tokens do not retain
+sessions. Unit/race/TSan and real PostgreSQL cases include recoverable query errors,
+reset, weak lifetime and terminal physical closure. No cache storage is added.
+
+Next: bounded reusable return combining reset, credential freshness and invalidated
+scope, while actual cache payload policies/external-change revalidation and real
+credential-provider integration remain open. S2/G12 and Driver Manager pooling
+qualification remain open; cache performance still requires G10 measurement.

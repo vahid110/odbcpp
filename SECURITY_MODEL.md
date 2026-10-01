@@ -499,3 +499,18 @@ this encapsulation is not an in-process plugin sandbox.
 Raw reset access is closed for ordinary callers. Cache isolation/reusable return
 remain unqualified: SQL-driven session/schema changes, resets, retirement and
 credential rotation require conservative cache scope/invalidation evidence.
+
+## S2 local cache validity evidence — 2026-10-02
+
+Weak opaque tokens bind one authenticated Idle lease and generation; requesting
+leases must validate origin affinity as well as current scope. They retain no
+physical session, identity object or secret payload. Execution/reset attempts,
+closure, retirement and credential staleness invalidate conservatively. Passive
+eligibility checks run unlocked and are revalidated under the fixed owner-to-
+authority order; unknown/non-Idle/throwing checks deny scope without interrupting
+an active borrower. Factory failure leaves no new capability.
+
+Validation is point-in-time, not a reservation or a proof of external catalog
+freshness. Real caches still require bounded payloads, secret exclusion, keys,
+external-change revalidation and observability. Reusable return and production
+credential-provider integration remain unqualified.

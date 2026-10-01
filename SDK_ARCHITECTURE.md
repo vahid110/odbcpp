@@ -1019,3 +1019,41 @@ still disabled: arbitrary SQL can change session/schema state, so classification
 and invalidation must cover execution as well as reset and credential rotation.
 Define conservative cache scopes and invalidation next, before reusable return.
 ODBC behavior and provider/linkage qualification do not change.
+
+## S2 conservative local cache scopes — 2026-10-02
+
+Private SessionCacheToken is an opaque, copyable/movable local validity capability
+with weak owner-state and weak generation references. It contains no payload,
+secret, SQL, principal string, serialized identifier or numeric epoch and cannot
+keep a physical session or generation object alive. Old weak control blocks
+prevent identity reuse from resurrecting a token. No public SDK surface is added.
+
+Only an active credential-bound lease can mint a scope after connected/Idle
+passive checks. Those backend calls run outside ownership locks; a second check
+under the owner lock revalidates admission, ownership, physical identity and
+credential freshness before issuing/reusing a generation. Unbound, non-Idle,
+closed and stale contexts cannot mint. Passive inspection failure clears scope
+without interrupting the borrower. Generation allocation/null-factory failure
+leaves scope absent and can fall back to uncached work; it grants no validity.
+The private test factory is non-reentrant and production only allocates identity.
+
+Every direct/prepared/reset attempt clears scope before validation or backend
+access, including recoverable errors, exceptions and expired/unsupported resets.
+Owner closure, terminal retirement and observed credential staleness also clear
+scope. Authority expiry/revoke/rotation is consulted under the fixed owner-to-
+authority lock order, without backend calls or interruption of an active borrow.
+Moves preserve the same scope; replacement destroys the old destination scope.
+
+`token.is_current()` validates its origin at one point in time. Consumers must
+also call the requesting `lease.accepts_cache(token)` to enforce exact origin
+and current generation. Foreign scopes deny without disrupting either borrower.
+Validation is not a reservation; issuance alone is not permission to consume a
+later stale token. Observing stale credentials closes future admission but never
+moves the active physical session. Same-lease operations remain caller-serialized.
+
+This intentionally invalidates on all SQL, without classifying mutations. It is
+not query-result caching, cache storage, external-schema freshness, health/reuse
+qualification or Driver Manager pooling. Payload ownership, hard bounds, keys,
+secret handling, TTL/revalidation for external changes and observable cache policy
+remain separate requirements; selective preservation/performance needs G10 proof.
+Bounded reusable return and real credential-provider integration remain open.

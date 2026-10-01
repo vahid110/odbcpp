@@ -1343,3 +1343,21 @@ ThreadSanitizer pass. Full local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan
 and Redshift build/absent-endpoint gates pass. Read-only review found no
 implementation defect; whitespace findings were fixed. Windows/packaging and
 cross-platform crypto evidence remain subject to exact-head CI.
+
+## S2 conservative local cache scope — 2026-10-02
+
+Added weak opaque scope identity for credential-bound Idle leases with exact-origin
+acceptance. Every execution/reset attempt invalidates before backend access;
+closure/retirement/credential staleness invalidate without retaining a session.
+Two-phase passive checks stay outside ownership locks. Tests cover foreign scopes,
+moves, failures/allocation, expiry and validation races; PG live covers query-error,
+reset and terminal physical closure. No actual cache or ODBC behavior is added.
+
+Next is bounded reusable return; real cache payload/refresh policies and credential
+provider integration remain open. S2/G12 and pool qualification remain open.
+
+Validation: focused ownership tests, live PostgreSQL ownership checks and all 41
+credential/ownership tests under ThreadSanitizer pass. Full local PostgreSQL,
+iODBC UTF-16/UCS-4, ASan/UBSan and Redshift build/absent-endpoint gates pass.
+Read-only review found no actionable defect. Windows/packaging and cross-platform
+crypto checks remain subject to exact-head CI.

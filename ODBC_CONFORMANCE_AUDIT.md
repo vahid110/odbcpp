@@ -2767,3 +2767,17 @@ ThreadSanitizer pass. Full local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan
 and Redshift build/absent-endpoint gates pass. Read-only review found no
 implementation defect; whitespace findings were fixed. Windows/packaging and
 cross-platform crypto evidence remain subject to exact-head CI.
+
+## S2 local cache scope evidence — 2026-10-02
+
+Private weak scope tokens require credential-current Idle ownership and exact
+lease-origin acceptance. All execution/reset attempts, closure/retirement and
+credential staleness invalidate; tokens cannot retain physical sessions. Unit,
+allocation, lifetime/race and real PG recoverable-error/reset/closure cases cover
+this local capability. Cache payloads, external-schema freshness, reusable return
+and actual credential-provider integration remain open. No ODBC status changes.
+
+Local validation passed: focused unit/live ownership checks, 41 credential/ownership
+ThreadSanitizer tests, complete PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and
+Redshift build/absent-endpoint gates. Windows/packaging validation awaits exact-head
+CI; this adds no product cache, pooling or Redshift live qualification claim.
