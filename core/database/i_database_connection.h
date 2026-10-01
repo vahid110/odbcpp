@@ -43,6 +43,15 @@ struct ResultLimits {
   std::size_t max_diagnostic_bytes{16 * 1024};
 };
 
+// Pre-encoding input bounds. Zero allows only empty values/counts.
+struct InputLimits {
+  std::size_t max_sql_bytes{1024 * 1024};
+  std::size_t max_parameters{65535};
+  std::size_t max_parameter_bytes{16 * 1024 * 1024};
+  std::size_t max_parameter_total_bytes{64 * 1024 * 1024};
+  std::size_t max_connection_field_bytes{64 * 1024};
+};
+
 struct ConnectionSettings {
   std::string host;
   std::string user;
@@ -55,6 +64,7 @@ struct ConnectionSettings {
   std::string ssl_ca_dir;
   ResponseLimits response_limits;
   ResultLimits result_limits;
+  InputLimits input_limits;
   ResponseLimits startup_response_limits{1024 * 1024, 10000};
 };
 

@@ -97,6 +97,20 @@ BackendResult<void> GenericDatabaseConnection::connect(const ConnectionSettings&
 }
 
 BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSettings& settings) {
+  // Keep even caller-supplied ceilings within safe PostgreSQL encoding sizes.
+  const auto& input = settings.input_limits;
+  if (input.max_sql_bytes > 64 * 1024 * 1024 || input.max_parameters > 65535 ||
+      input.max_parameter_bytes > 64 * 1024 * 1024 ||
+      input.max_parameter_total_bytes > 256 * 1024 * 1024 ||
+      input.max_connection_field_bytes > 1024 * 1024) {
+    return {rs::util::DbErrorCode::InvalidParameter, "Input limits exceed supported encoding ceilings"};
+  }
+  for (const auto* field : {&settings.host, &settings.user, &settings.password,
+                           &settings.database, &settings.ssl_ca_file, &settings.ssl_ca_dir}) {
+    if (field->size() > input.max_connection_field_bytes) {
+      return {rs::util::DbErrorCode::ResourceLimit, "Database connection input limit exceeded"};
+    }
+  }
   if (settings.response_limits.max_wire_bytes < 5 || settings.response_limits.max_messages == 0 ||
       settings.startup_response_limits.max_wire_bytes < 5 || settings.startup_response_limits.max_messages == 0 ||
       settings.result_limits.max_results == 0) {
@@ -295,18 +309,50 @@ BackendResult<QueryResult> GenericDatabaseConnection::finish_operation(
   return result;
 }
 
+BackendResult<QueryResult> GenericDatabaseConnection::reject_request_limit(BackendOperation operation) const {
+  BackendResult<QueryResult> result{rs::util::DbErrorCode::ResourceLimit, "Database request input limit exceeded"};
+  auto& error = result.backend_error();
+  error.operation = operation;
+  error.session_state = session_state_;
+  // Preflight has performed no I/O; the current owner's session is unchanged.
+  error.disposition = !connected_ ? SessionDisposition::Retire :
+      session_state_ == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired;
+  return result;
+}
+
 BackendResult<QueryResult> GenericDatabaseConnection::execute_query(
     std::string_view sql, rs::util::Deadline deadline) {
+  if (connected_ && sql.size() > settings_.input_limits.max_sql_bytes) {
+    return reject_request_limit(BackendOperation::ExecuteDirect);
+  }
   return finish_operation(execute_query_impl(sql, deadline), BackendOperation::ExecuteDirect);
 }
 
 BackendResult<QueryResult> GenericDatabaseConnection::execute_prepared(
     std::string_view sql, std::span<const QueryParameter> params, rs::util::Deadline deadline) {
+  const auto& limits = settings_.input_limits;
+  if (connected_) {
+    if (sql.size() > limits.max_sql_bytes || params.size() > limits.max_parameters) {
+      return reject_request_limit(BackendOperation::ExecutePrepared);
+    }
+    std::size_t bytes = 0;
+    for (const auto& param : params) {
+      const auto size = param.value ? param.value->size() : 0;
+      if (size > limits.max_parameter_bytes || size > limits.max_parameter_total_bytes - bytes) {
+        return reject_request_limit(BackendOperation::ExecutePrepared);
+      }
+      bytes += size;
+    }
+  }
   return finish_operation(execute_prepared_impl(sql, params, deadline), BackendOperation::ExecutePrepared);
 }
 
 BackendResult<QueryResult> GenericDatabaseConnection::describe_statement(
     std::string_view sql, std::span<const QueryParameterType> types, rs::util::Deadline deadline) {
+  if (connected_ && (sql.size() > settings_.input_limits.max_sql_bytes ||
+                    types.size() > settings_.input_limits.max_parameters)) {
+    return reject_request_limit(BackendOperation::Describe);
+  }
   return finish_operation(describe_statement_impl(sql, types, deadline), BackendOperation::Describe);
 }
 

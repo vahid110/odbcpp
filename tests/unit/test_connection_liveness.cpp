@@ -181,7 +181,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     DescriptionServerError, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
     OwnedErrorIdle, OwnedErrorTransaction, OwnedErrorAborted,
     UnterminatedColumnName, TruncatedColumnMetadata, TrailingColumnMetadata, EmptyColumnName,
-    QueryReadTimeout, PartialQueryWrite
+    QueryReadTimeout, PartialQueryWrite, PreparedCommand
   };
 
   explicit ScriptedBackendTransport(
@@ -430,6 +430,14 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::EmptyQueryResponse) {
       append_message('I', "", 0);
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::PreparedCommand) {
+      append_message('1', "", 0);
+      constexpr char parameters[] = "\0\4\0\0\0\31\0\0\0\31\0\0\0\31\0\0\0\21";
+      append_message('t', parameters, sizeof(parameters) - 1);
+      append_message('2', "", 0);
+      append_message('n', "", 0);
+      append_message('C', "UPDATE 1", sizeof("UPDATE 1"));
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::DescriptionNoData) {
       append_message('1', "", 0);
@@ -2745,4 +2753,229 @@ TEST(ResultBudgetTest, MalformedMetadataRetiresAndEmptyNamesFitZeroByteBudgets) 
       EXPECT_EQ(observed->close_count(), 1u);
     }
   }
+}
+
+TEST(InputBudgetTest, SqlLimitPreflightsEveryRequestAndAllowsRecovery) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto operation : {BackendOperation::ExecuteDirect, BackendOperation::ExecutePrepared, BackendOperation::Describe}) {
+    const bool describe = operation == BackendOperation::Describe;
+    auto transport = std::make_unique<ScriptedBackendTransport>(describe ? Mode::DescriptionNoData : Mode::EmptyQueryResponse);
+    auto* observed = transport.get();
+    postgres::PgDatabaseConnection backend("PostgreSQL", std::move(transport));
+    ConnectionSettings settings;
+    settings.use_ssl = false;
+    settings.input_limits.max_sql_bytes = 3;
+    ASSERT_TRUE(backend.connect(settings));
+    const auto invoke = [&](std::string_view sql) {
+      if (operation == BackendOperation::ExecuteDirect) return backend.execute_query(sql, rs::util::Deadline::max());
+      if (operation == BackendOperation::ExecutePrepared) return backend.execute_prepared(sql, std::span<const QueryParameter>{}, rs::util::Deadline::max());
+      return backend.describe_statement(sql, {}, rs::util::Deadline::max());
+    };
+    const auto sends = observed->send_count();
+    const auto reads = observed->bytes_read();
+    const auto rejected = invoke("1234");
+    ASSERT_TRUE(rejected.has_error());
+    EXPECT_EQ(rejected.backend_error().error_class, BackendErrorClass::ResourceLimit);
+    EXPECT_EQ(rejected.backend_error().operation, operation);
+    EXPECT_EQ(rejected.backend_error().session_state, SessionState::Idle);
+    EXPECT_EQ(rejected.backend_error().disposition, SessionDisposition::Reusable);
+    EXPECT_FALSE(rejected.backend_error().native_state);
+    EXPECT_FALSE(rejected.backend_error().retry_safe);
+    EXPECT_EQ(observed->send_count(), sends);
+    EXPECT_EQ(observed->bytes_read(), reads);
+    EXPECT_EQ(observed->close_count(), 0u);
+    EXPECT_TRUE(invoke("123"));
+  }
+}
+
+TEST(InputBudgetTest, ParameterCountsValuesAndAggregateBytesAreBoundedBeforeEncoding) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  const std::vector<QueryParameter> parameters{
+      {std::nullopt, QueryParameterType::Text}, {std::string{}, QueryParameterType::Text},
+      {std::string{"ab"}, QueryParameterType::Text}, {std::string{"\0x", 2}, QueryParameterType::Binary}};
+  for (const int dimension : {0, 1, 2}) {
+    auto transport = std::make_unique<ScriptedBackendTransport>(Mode::PreparedCommand);
+    auto* observed = transport.get();
+    postgres::PgDatabaseConnection backend("PostgreSQL", std::move(transport));
+    ConnectionSettings settings;
+    settings.use_ssl = false;
+    settings.input_limits.max_parameters = 4;
+    settings.input_limits.max_parameter_bytes = 2;
+    settings.input_limits.max_parameter_total_bytes = 4;
+    ASSERT_TRUE(backend.connect(settings));
+    auto over = parameters;
+    if (dimension == 0) over.push_back({std::nullopt, QueryParameterType::Text});
+    if (dimension == 1) over[3].value = std::string{"\0xy", 3};
+    if (dimension == 2) over[1].value = "x";
+    const auto sends = observed->send_count();
+    const auto reads = observed->bytes_read();
+    const auto rejected = backend.execute_prepared("?,?,?,?", over, rs::util::Deadline::max());
+    ASSERT_TRUE(rejected.has_error());
+    EXPECT_EQ(rejected.backend_error().error_class, BackendErrorClass::ResourceLimit);
+    EXPECT_EQ(rejected.backend_error().disposition, SessionDisposition::Reusable);
+    EXPECT_EQ(observed->send_count(), sends);
+    EXPECT_EQ(observed->bytes_read(), reads);
+    EXPECT_EQ(observed->close_count(), 0u);
+    const auto result = backend.execute_prepared("?,?,?,?", parameters, rs::util::Deadline::max());
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->affected_rows, 1);
+  }
+}
+
+TEST(InputBudgetTest, DescriptionParameterCountLimitAllowsExactBoundary) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  auto transport = std::make_unique<ScriptedBackendTransport>(Mode::DescriptionOneParameter);
+  auto* observed = transport.get();
+  postgres::PgDatabaseConnection backend("PostgreSQL", std::move(transport));
+  ConnectionSettings settings;
+  settings.use_ssl = false;
+  settings.input_limits.max_parameters = 1;
+  ASSERT_TRUE(backend.connect(settings));
+  const std::vector<QueryParameterType> over{QueryParameterType::Text, QueryParameterType::Text};
+  const auto sends = observed->send_count();
+  const auto rejected = backend.describe_statement("?,?", over, rs::util::Deadline::max());
+  ASSERT_TRUE(rejected.has_error());
+  EXPECT_EQ(rejected.backend_error().error_class, BackendErrorClass::ResourceLimit);
+  EXPECT_EQ(rejected.backend_error().operation, BackendOperation::Describe);
+  EXPECT_EQ(rejected.backend_error().disposition, SessionDisposition::Reusable);
+  EXPECT_EQ(observed->send_count(), sends);
+  const std::vector<QueryParameterType> exact{QueryParameterType::Int32};
+  EXPECT_TRUE(backend.describe_statement("?", exact, rs::util::Deadline::max()));
+}
+
+TEST(InputBudgetTest, RejectionPreservesTransactionAndDisconnectedPrecedence) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::OwnedErrorTransaction, Mode::OwnedErrorAborted}) {
+    auto transport = std::make_unique<ScriptedBackendTransport>(mode);
+    auto* observed = transport.get();
+    postgres::PgDatabaseConnection backend("PostgreSQL", std::move(transport));
+    ConnectionSettings settings;
+    settings.use_ssl = false;
+    settings.input_limits.max_sql_bytes = 6;
+    ASSERT_TRUE(backend.connect(settings));
+    EXPECT_FALSE(backend.execute_query("broken", rs::util::Deadline::max()));
+    const auto sends = observed->send_count();
+    const auto reads = observed->bytes_read();
+    const auto rejected = backend.execute_query("too long", rs::util::Deadline::max());
+    ASSERT_TRUE(rejected.has_error());
+    EXPECT_EQ(rejected.backend_error().error_class, BackendErrorClass::ResourceLimit);
+    EXPECT_EQ(rejected.backend_error().session_state, mode == Mode::OwnedErrorTransaction ? SessionState::Transaction : SessionState::FailedTransaction);
+    EXPECT_EQ(rejected.backend_error().disposition, SessionDisposition::ResetRequired);
+    EXPECT_EQ(observed->send_count(), sends);
+    EXPECT_EQ(observed->bytes_read(), reads);
+    EXPECT_EQ(observed->close_count(), 0u);
+    backend.disconnect();
+    const auto disconnected = backend.execute_query("too long", rs::util::Deadline::max());
+    ASSERT_TRUE(disconnected.has_error());
+    EXPECT_EQ(disconnected.backend_error().error_class, BackendErrorClass::NotConnected);
+  }
+}
+
+TEST(InputBudgetTest, ConnectionFieldsAreBoundedBeforeTransportAndReconnectMutation) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  using Field = std::string ConnectionSettings::*;
+  for (const Field field : {&ConnectionSettings::host, &ConnectionSettings::user,
+                           &ConnectionSettings::password, &ConnectionSettings::database}) {
+    auto transport = std::make_unique<ScriptedBackendTransport>(Mode::ValidStartup);
+    auto* observed = transport.get();
+    postgres::PgDatabaseConnection backend("PostgreSQL", std::move(transport));
+    ConnectionSettings settings;
+    settings.use_ssl = false;
+    settings.input_limits.max_connection_field_bytes = 3;
+    settings.*field = "1234";
+    const auto rejected = backend.connect(settings);
+    ASSERT_TRUE(rejected.has_error());
+    EXPECT_EQ(rejected.backend_error().error_class, BackendErrorClass::ResourceLimit);
+    EXPECT_EQ(rejected.backend_error().operation, BackendOperation::Connect);
+    EXPECT_EQ(rejected.backend_error().disposition, SessionDisposition::Retire);
+    EXPECT_EQ(observed->connect_count(), 0u);
+    EXPECT_EQ(observed->send_count(), 0u);
+    EXPECT_EQ(observed->bytes_read(), 0u);
+    EXPECT_EQ(observed->close_count(), 0u);
+    settings.*field = "123";
+    ASSERT_TRUE(backend.connect(settings));
+    const auto reads = observed->bytes_read();
+    const auto sends = observed->send_count();
+    settings.*field = "1234";
+    const auto reconnect = backend.connect(settings);
+    ASSERT_TRUE(reconnect.has_error());
+    EXPECT_EQ(reconnect.backend_error().error_class, BackendErrorClass::ResourceLimit);
+    EXPECT_EQ(reconnect.backend_error().disposition, SessionDisposition::Reusable);
+    EXPECT_TRUE(backend.is_connected());
+    EXPECT_EQ(observed->connect_count(), 1u);
+    EXPECT_EQ(observed->bytes_read(), reads);
+    EXPECT_EQ(observed->send_count(), sends);
+    EXPECT_EQ(observed->close_count(), 0u);
+  }
+  for (const Field field : {&ConnectionSettings::ssl_ca_file, &ConnectionSettings::ssl_ca_dir}) {
+    auto transport = std::make_unique<ScriptedBackendTransport>();
+    auto* observed = transport.get();
+    postgres::PgDatabaseConnection backend("PostgreSQL", std::move(transport));
+    ConnectionSettings settings;
+    settings.input_limits.max_connection_field_bytes = 3;
+    settings.*field = "1234";
+    const auto result = backend.connect(settings);
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::ResourceLimit);
+    EXPECT_EQ(observed->connect_count(), 0u);
+    EXPECT_EQ(observed->send_count(), 0u);
+  }
+}
+
+TEST(InputBudgetTest, ExcessiveConfiguredCeilingsPreserveConnectedSession) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  using Limit = std::size_t InputLimits::*;
+  auto transport = std::make_unique<ScriptedBackendTransport>(Mode::ValidStartup);
+  auto* observed = transport.get();
+  postgres::PgDatabaseConnection backend("PostgreSQL", std::move(transport));
+  ConnectionSettings settings;
+  settings.use_ssl = false;
+  ASSERT_TRUE(backend.connect(settings));
+  const auto reads = observed->bytes_read();
+  const auto sends = observed->send_count();
+  for (const Limit field : {&InputLimits::max_sql_bytes, &InputLimits::max_parameters,
+                           &InputLimits::max_parameter_bytes, &InputLimits::max_parameter_total_bytes,
+                           &InputLimits::max_connection_field_bytes}) {
+    auto invalid = settings;
+    invalid.input_limits.*field = static_cast<std::size_t>(-1);
+    const auto result = backend.connect(invalid);
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::InvalidInput);
+    EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Reusable);
+    EXPECT_TRUE(backend.is_connected());
+    EXPECT_EQ(observed->connect_count(), 1u);
+    EXPECT_EQ(observed->send_count(), sends);
+    EXPECT_EQ(observed->bytes_read(), reads);
+    EXPECT_EQ(observed->close_count(), 0u);
+  }
+}
+
+TEST(InputBudgetTest, ZeroBudgetsAllowEmptySqlNullAndEmptyParameters) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  postgres::PgDatabaseConnection direct("PostgreSQL", std::make_unique<ScriptedBackendTransport>(Mode::EmptyQueryResponse));
+  ConnectionSettings settings;
+  settings.use_ssl = false;
+  settings.input_limits.max_sql_bytes = 0;
+  settings.input_limits.max_parameters = 0;
+  settings.input_limits.max_parameter_bytes = 0;
+  settings.input_limits.max_parameter_total_bytes = 0;
+  settings.input_limits.max_connection_field_bytes = 0;
+  ASSERT_TRUE(direct.connect(settings));
+  EXPECT_TRUE(direct.execute_query("", rs::util::Deadline::max()));
+  auto transport = std::make_unique<ScriptedBackendTransport>(Mode::PreparedCommand);
+  postgres::PgDatabaseConnection prepared("PostgreSQL", std::move(transport));
+  settings.input_limits.max_sql_bytes = 7;
+  settings.input_limits.max_parameters = 4;
+  ASSERT_TRUE(prepared.connect(settings));
+  const std::vector<QueryParameter> params{
+      {std::nullopt, QueryParameterType::Text}, {std::string{}, QueryParameterType::Text},
+      {std::string{}, QueryParameterType::Text}, {std::string{}, QueryParameterType::Binary}};
+  EXPECT_TRUE(prepared.execute_prepared("?,?,?,?", params, rs::util::Deadline::max()));
 }

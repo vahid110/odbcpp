@@ -59,6 +59,7 @@ public:
   std::string get_parameter(std::string_view key) const override;
 
 private:
+  BackendResult<QueryResult> reject_request_limit(BackendOperation operation) const;
   BackendResult<void> connect_impl(const ConnectionSettings& settings);
   SessionState session_state_{SessionState::Disconnected};
   BackendResult<QueryResult> finish_operation(BackendResult<QueryResult> result,

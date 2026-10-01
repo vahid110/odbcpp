@@ -72,7 +72,7 @@ struct BackendError {
       case BackendErrorClass::Protocol: return "Database protocol exchange failed";
       case BackendErrorClass::Unsupported: return "Database operation is unsupported";
       case BackendErrorClass::InvalidMetadata: return "Database metadata validation failed";
-      case BackendErrorClass::ResourceLimit: return "Database response resource limit exceeded";
+      case BackendErrorClass::ResourceLimit: return "Database resource limit exceeded";
       case BackendErrorClass::Unknown: return "Database operation failed";
     }
     return "Database operation failed";
