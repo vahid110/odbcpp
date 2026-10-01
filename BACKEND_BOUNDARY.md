@@ -555,3 +555,25 @@ rollback recovery and no additional sends after ambiguous-failure retirement.
 ODBC parameter-cache updates remain atomic after complete-map validation, and
 its existing diagnostics are preserved. Safe-message/logging and normalized
 ordered/deferred results remain open; this does not complete A5 or S2.
+
+## S2 failure-log summaries and component bounds — 2026-10-01
+
+ODBC connection/direct/prepared failure logs now use fixed public summaries,
+with SQLSTATE and operation/timing context. Raw server, transport and exception
+messages remain available through the existing ODBC diagnostic path, not those
+failure-log messages. Debug/Trace does not enable raw diagnostic logging.
+Tests verify an attacker-controlled DSN marker remains in its diagnostic and is
+absent from the log, alongside existing diagnostic-retrieval compatibility tests.
+
+Logger message/field values are bounded to 1024 input bytes before escaping;
+event/field keys are bounded to 64 input bytes. Text output escapes control bytes,
+including NUL/ESC/DEL, and keys/events as well as values. JSON retains its control
+escaping and receives the same input bounds. Long values carry a truncation
+marker; truncation preserves valid UTF-8 character boundaries. Tests verify
+hostile records stay on one line, exclude oversized tails, and retain multibyte
+characters that fit exactly while dropping split tails.
+
+This is a partial security-contract migration. Typed Public/Sensitive/Secret
+fields, default sensitive-field redaction, total-record budgets and safe BackendError
+summaries remain open. Existing opt-in query logging can expose SQL and is not a
+sensitive-diagnostic mode. No logging security gate or A5 closure is claimed.

@@ -393,3 +393,14 @@ invalid rows, all passive states, ownership, server errors and retirement.
 Next is the safe-message/logging boundary and normalized deferred-result errors.
 A5/S2 remain open; aggregate budgets, safe reuse and MySQL proof remain separate
 planned steps, with existing crypto qualification blockers unchanged.
+
+### S2 failure-log summaries and component bounds — 2026-10-01
+
+Connection and direct/prepared failure log messages now use fixed summaries while
+ODBC diagnostics retain their original detail. Text/JSON components have input
+byte bounds; text control bytes and keys/events are escaped. Tests cover diagnostic
+preservation, secret-bearing missing DSN text, hostile controls and long tails.
+
+Continue with typed sensitivity/redaction, safe BackendError summaries and record
+budgets before claiming the full logging boundary; deferred-result normalization,
+aggregate result budgets and safe reuse remain separate S2 batches. A5 stays open.
