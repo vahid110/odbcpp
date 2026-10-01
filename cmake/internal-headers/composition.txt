@@ -3,6 +3,7 @@ core/database/backend_provider.h
 core/database/backend_result.h
 core/database/catalog_queries.h
 core/database/catalog_request.h
+core/database/credential_context.h
 core/database/database_factory.h
 core/database/error_policy.h
 core/database/i_database_connection.h

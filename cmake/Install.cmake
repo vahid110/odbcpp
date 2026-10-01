@@ -17,6 +17,7 @@ install(DIRECTORY core/
   PATTERN "security" EXCLUDE
   PATTERN "connection_pool.h" EXCLUDE
   PATTERN "session_owner.h" EXCLUDE
+  PATTERN "credential_context.h" EXCLUDE
 )
 
 # Install examples (optional)

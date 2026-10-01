@@ -31,3 +31,7 @@ probe(composition_pool "${INCLUDE_ROOT}/composition" core/database/connection_po
 probe(composition_session_owner "${INCLUDE_ROOT}/composition" core/database/session_owner.h TRUE)
 probe(backend_session_owner "${INCLUDE_ROOT}/backend" core/database/session_owner.h FALSE)
 probe(odbc_session_owner "${INCLUDE_ROOT}/odbc" core/database/session_owner.h FALSE)
+
+probe(composition_credentials "${INCLUDE_ROOT}/composition" core/database/credential_context.h TRUE)
+probe(backend_credentials "${INCLUDE_ROOT}/backend" core/database/credential_context.h FALSE)
+probe(odbc_credentials "${INCLUDE_ROOT}/odbc" core/database/credential_context.h FALSE)
