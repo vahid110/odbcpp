@@ -911,3 +911,16 @@ ODBC, concrete backend, parser and crypto-provider dependencies belong outside
 this surface. Individual-header compilation and negative boundary fixtures enforce
 this rule. The target is independently configurable from `sdk/`; runtime target
 separation, public SDK packaging and external-author qualification remain open.
+
+### S2 active health facet checkpoint — 2026-10-01
+
+The optional `ISessionHealth` facet supersedes earlier statements that all health
+facets are still unimplemented. PostgreSQL-family sessions probe with fixed
+`SELECT 1`, preserving the caller's absolute deadline and owning final outcome.
+Callers must serialize the probe with other physical-session operations. Success
+checks one exchange for this owner; open/failed transactions remain unreset and
+require cleanup. Unexpected successful response shape/state and ambiguous
+transport failures retire the session. No reconnect or replay occurs. Facet
+absence remains valid for independent backends. Passive ODBC liveness behavior
+is unchanged. Reset, credential expiry/generation, exclusive leases, cache epochs
+and pool integration remain open; this is not a pooling or Redshift live claim.

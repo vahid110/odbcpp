@@ -1177,3 +1177,26 @@ fixture passes, including repeated symlink checks. Fifteen crypto evidence tests
 pass. Independent read-only reviews found no remaining material blockers after
 closing the incremental-source bypass. Windows/live/package and cross-platform
 results remain subject to the exact-head CI gate.
+
+## S2 active session health checkpoint — 2026-10-01
+
+Added an optional, session-owned, deadline-bound active health facet, with one
+PostgreSQL probe and owning outcomes. A backend without the facet remains valid.
+Probes preserve transaction state and failure details, never reset/reconnect or
+replay, and retire malformed response/ambiguous transport outcomes. Health success
+is distinct from reset and pool eligibility. ODBC passive liveness is unchanged.
+
+Focused contract tests cover deadline forwarding, owning snapshots, malformed
+success retirement, error context/details and absent facets. Real PostgreSQL
+checks cover idle/open/failed transactions, rollback recovery, deadline retirement
+and subsequent disconnected probing. Native injected timeout, partial write and
+malformed protocol paths retain retirement. Full regression and hosted gates are
+required before accepting this batch. No MySQL/Redshift live qualification or
+pool support is claimed; reset/exclusive leases and remaining S2 contracts stay open.
+
+Validation: focused contract/liveness/SDK tests and real PostgreSQL health probes
+pass. Complete local PostgreSQL, iODBC UTF-16/UCS-4, sanitizer and Redshift
+build/absent-endpoint gates pass; examples compile. Read-only review confirmed
+outcome behavior; caller serialization and recovery/deadline assertions were
+clarified. Windows live/package and the cross-platform crypto matrix remain
+subject to the exact-head hosted gate.

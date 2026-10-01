@@ -786,3 +786,29 @@ installed protocol-header exposure and public SDK packaging are still open work.
 The separate AWS-LC qualification build retains its existing bounded profile.
 Health/reset/exclusive leases, ordered execution items and warning delivery remain
 open S2 contracts.
+
+## S2 optional active health facet — 2026-10-01
+
+`IDatabaseConnection::session_health()` now returns an optional session-owned
+`ISessionHealth` facet. Absence is explicit; a minimal external backend need not
+implement it. The facet pointer remains valid for the session lifetime, including
+disconnected state. Callers serialize probes with all other session operations.
+`check_health` accepts the original absolute deadline and returns an owning
+success/failure session snapshot. No reconnect or operation replay is performed.
+
+PostgreSQL implements one `SELECT 1` exchange through its existing bounded
+execution path. It validates the fixed result shape/value and protocol-ready
+state before returning success. An unexpected successful response retires the
+session. Failures preserve their owning diagnostic details and final disposition,
+with `CheckHealth` operation context. A transaction probe leaves the transaction
+open; a failed transaction remains `ResetRequired` and is not silently rolled
+back. Deadline, transport and malformed-protocol failures retain retirement.
+
+This facet separates active health from the later reset/reuse contract. Success
+establishes one exchange for the current owner, not credential freshness, cleanup,
+a pool lease or future liveness. Passive `is_connected` remains unchanged; ODBC
+`SQL_ATTR_CONNECTION_DEAD` behavior is unchanged. No pool or ODBC capability is
+advertised by this addition. Reset, exclusive leases, credential generations,
+cache invalidation, ordered execution items and warnings remain open S2 work.
+The SDK header manifest and each private component closure include this neutral
+contract; concrete probing SQL stays inside the PostgreSQL backend.
