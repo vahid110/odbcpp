@@ -15,16 +15,18 @@ odbcpp_partition_driver_sources(probe "${_root}" ${_base}
   "${_root}/odbc/windows_registry.cpp"
   "${_root}/core/database/postgres/pg_protocol_parser.cpp"
   "${_root}/core/database/query_result.h"
+  "${_root}/core/database/session_owner.cpp"
   "${_root}/core/transport/socket_transport.cpp")
 list(LENGTH probe_runtime _runtime_count)
 list(LENGTH probe_backend _backend_count)
 list(LENGTH probe_composition _composition_count)
 list(LENGTH probe_odbc _odbc_count)
 if(NOT _runtime_count EQUAL 1 OR NOT _backend_count EQUAL 2 OR
-   NOT _composition_count EQUAL 1 OR NOT _odbc_count EQUAL 2)
+   NOT _composition_count EQUAL 2 OR NOT _odbc_count EQUAL 2)
   message(FATAL_ERROR "Partition ownership or duplicate normalization changed")
 endif()
-if(NOT "${_root}/core/database/generic_database_connection.cpp" IN_LIST probe_backend OR
+if(NOT "${_root}/core/database/session_owner.cpp" IN_LIST probe_composition OR
+   NOT "${_root}/core/database/generic_database_connection.cpp" IN_LIST probe_backend OR
    NOT "${_root}/odbc/windows_registry.cpp" IN_LIST probe_odbc)
   message(FATAL_ERROR "PostgreSQL-family or Windows ownership changed")
 endif()

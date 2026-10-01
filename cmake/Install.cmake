@@ -16,6 +16,7 @@ install(DIRECTORY core/
   FILES_MATCHING PATTERN "*.h"
   PATTERN "security" EXCLUDE
   PATTERN "connection_pool.h" EXCLUDE
+  PATTERN "session_owner.h" EXCLUDE
 )
 
 # Install examples (optional)

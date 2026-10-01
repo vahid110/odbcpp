@@ -38,5 +38,6 @@ check_fixture(odbc_type "using Token = SQLHANDLE;\n" "${_one}" "type or selectio
 check_fixture(duplicate "#pragma once\n" "${_one}${_one}" "duplicate entries")
 check_fixture(missing "#pragma once\n" "core/database/missing.h\n" "Missing SDK contract header")
 check_fixture(private "#pragma once\n" "core/database/parsed_query_result.h\n" "Private implementation")
+check_fixture(private_owner "#pragma once\n" "core/database/session_owner.h\n" "Private implementation")
 check_fixture(invalid_entry "#pragma once\n" "../outside.h\n" "Invalid SDK contract manifest entry")
 check_fixture(empty "#pragma once\n" "" "manifest is empty")

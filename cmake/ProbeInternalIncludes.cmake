@@ -27,3 +27,7 @@ probe(odbc_pool "${INCLUDE_ROOT}/odbc" core/database/connection_pool.h FALSE)
 probe(backend_odbc "${INCLUDE_ROOT}/backend" odbc/odbc_types.h FALSE)
 probe(composition_parser "${INCLUDE_ROOT}/composition" core/database/i_protocol_parser.h FALSE)
 probe(composition_pool "${INCLUDE_ROOT}/composition" core/database/connection_pool.h FALSE)
+
+probe(composition_session_owner "${INCLUDE_ROOT}/composition" core/database/session_owner.h TRUE)
+probe(backend_session_owner "${INCLUDE_ROOT}/backend" core/database/session_owner.h FALSE)
+probe(odbc_session_owner "${INCLUDE_ROOT}/odbc" core/database/session_owner.h FALSE)

@@ -21,7 +21,7 @@ function(odbcpp_partition_driver_sources prefix root)
            _relative MATCHES "^core/database/(postgres|mysql|sqlserver)/")
       list(APPEND _backend "${_source}")
     elseif(_relative STREQUAL "product/compiled_backend.cpp" OR
-           _relative MATCHES "^core/database/(database_factory)\\.cpp$")
+           _relative MATCHES "^core/database/(database_factory|session_owner)\\.cpp$")
       list(APPEND _composition "${_source}")
     elseif(_relative MATCHES "^odbc/")
       list(APPEND _odbc "${_source}")
