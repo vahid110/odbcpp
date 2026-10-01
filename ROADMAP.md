@@ -590,3 +590,14 @@ multibyte expansion, invalid Unicode, recovery and existing prepared statements,
 plus zero/empty conversion budgets. Parameter conversion, connection-string
 capture and standalone SQL helpers remain separate SEC-4 boundaries. Exact heap
 quotas and S2 native metadata/session migration remain open.
+
+### S2 ODBC bound-parameter budgets — 2026-10-01
+
+ODBC preparation now enforces MaxParameters before prepared-state replacement.
+Execution applies per-value and aggregate limits before ANSI/binary copies and
+during wide UTF-8 conversion, and rechecks normalized values before backend or
+transaction work. NULL/empty distinctions and supported parameter-set error
+reporting remain intact. Contract tests cover exact/overflow, NTS/explicit,
+Unicode expansion/malformed input, aggregate text/scalars, zero budgets and
+recovery. Connection-string capture, standalone helpers, exact heap accounting,
+native metadata/session migration and crypto qualification remain open.

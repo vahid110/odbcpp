@@ -369,3 +369,17 @@ Within-budget malformed wide input remains 22018. UTF-16/UCS-4 gates cover the
 same conversion contract. Parameter conversion, connection-string capture,
 standalone SQL helpers and complete heap accounting remain separate unfinished
 boundaries. This does not close SEC-4, S2 or G12.
+
+### ODBC bound-parameter budgets (S2 implementation evidence)
+
+Preparation checks MaxParameters before replacing prepared state; execution
+checks it before parameter-vector reservation. ANSI/binary explicit lengths and
+ANSI NTS scans are bounded before copies. Wide input uses a bounded UTF-8
+conversion, including expansion, and returns no partial value. Each value is
+also checked after normalization, then counted against MaxParameterTotalBytes.
+NULL consumes an entry and no bytes; explicit empty values remain distinct.
+Limit failure reports HY000 and completes the supported parameter-set status
+as error before transaction start or backend execution, preserving the session.
+Malformed wide values within budget retain 22018. Fixed-size scalar formatting,
+connection-string capture, standalone helpers and exact heap accounting remain
+outside this evidence; SEC-4, S2 and G12 remain open.

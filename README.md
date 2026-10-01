@@ -601,8 +601,10 @@ frames; `MaxAuthWireBytes` limits each outgoing password/SASL packet, excluding
 TLS-provider handshake traffic. Input rejection before I/O preserves the current
 owner's session; response/authentication overflow retires. These limits are not
 an exact heap quota. They bound ANSI/wide SQL capture for direct execution and
-preparation, including UTF-8 expansion, but do not yet bound parameter conversion
-or standalone SQL helper allocations. Windows setup GUI fields for these advanced options
+preparation, including UTF-8 expansion. Bound parameter text/binary copies and
+wide UTF-8 conversion use per-value and aggregate byte limits; normalized scalar
+values are checked before backend execution. Connection-string capture and
+standalone SQL helper allocations remain separate boundaries. Windows setup GUI fields for these advanced options
 are deferred; DSN/connection-string processing supports them.
 
 Example: `MaxResponseBytes=8388608;MaxRows=10000;MaxSqlBytes=262144`.
