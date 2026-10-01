@@ -268,3 +268,23 @@ TEST(Utf8CoreTest, DecoderAdvancesAcrossValidScalarsAndStopsAtEnd) {
   EXPECT_EQ(text.size(), offset);
   EXPECT_FALSE(rs::util::next_utf8_code_point(text, offset));
 }
+
+TEST(UnicodeInputBudgetTest, BoundedConversionHandlesExactUtf8ExpansionAndNoPartialOutput) {
+  using namespace rs::odbc;
+  const SQLWCHAR input[]{0x20ac, 'x', 0};
+  bool exceeded = true;
+  const auto exact = sqlwchar_to_utf8_bounded(input, SQL_NTS, 4, exceeded);
+  ASSERT_TRUE(exact);
+  EXPECT_EQ(*exact, std::string("\xe2\x82\xac") + "x");
+  EXPECT_FALSE(exceeded);
+  EXPECT_FALSE(sqlwchar_to_utf8_bounded(input, 2, 3, exceeded));
+  EXPECT_TRUE(exceeded);
+  EXPECT_FALSE(sqlwchar_to_utf8_bounded(input, SQL_NTS, 0, exceeded));
+  EXPECT_TRUE(exceeded);
+  const SQLWCHAR empty[]{0};
+  EXPECT_EQ(sqlwchar_to_utf8_bounded(empty, SQL_NTS, 0, exceeded), std::string{});
+  EXPECT_FALSE(exceeded);
+  const SQLWCHAR invalid[]{0xd800, 0};
+  EXPECT_FALSE(sqlwchar_to_utf8_bounded(invalid, SQL_NTS, 4, exceeded));
+  EXPECT_FALSE(exceeded);
+}

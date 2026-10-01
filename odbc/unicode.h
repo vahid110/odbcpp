@@ -13,6 +13,9 @@ namespace rs::odbc {
 std::optional<std::string> wide_to_utf8(std::span<const SQLWCHAR> input);
 std::optional<std::string> sqlwchar_to_utf8(
     const void* input, SQLINTEGER length);
+std::optional<std::string> sqlwchar_to_utf8_bounded(
+    const void* input, SQLINTEGER length, std::size_t max_bytes,
+    bool& exceeded);
 std::optional<std::vector<SQLWCHAR>> utf8_to_wide(std::string_view input);
 std::optional<std::size_t> utf8_code_point_count(std::string_view input);
 

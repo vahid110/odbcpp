@@ -2,6 +2,7 @@
 #include "core/util/utf8.h"
 
 #include <cstdint>
+#include <algorithm>
 #include <cstring>
 #include <limits>
 
@@ -37,10 +38,11 @@ SQLWCHAR read_wide_unit(const unsigned char* bytes, std::size_t index) {
 }
 
 std::optional<std::string> decode_wide_bytes(
-    const void* input, std::size_t units) {
+    const void* input, std::size_t units,
+    std::size_t max_bytes = std::numeric_limits<std::size_t>::max(), bool* exceeded = nullptr) {
   const auto* bytes = static_cast<const unsigned char*>(input);
   std::string output;
-  output.reserve(units);
+  output.reserve(std::min(units, max_bytes));
   for (std::size_t i = 0; i < units; ++i) {
     std::uint32_t code_point = read_wide_unit(bytes, i);
     if constexpr (sizeof(SQLWCHAR) == 2) {
@@ -53,6 +55,12 @@ std::optional<std::string> decode_wide_bytes(
       } else if (code_point >= 0xdc00 && code_point <= 0xdfff) {
         return std::nullopt;
       }
+    }
+    if (code_point > 0x10ffff || (code_point >= 0xd800 && code_point <= 0xdfff)) return std::nullopt;
+    const std::size_t bytes_needed = code_point <= 0x7f ? 1 : code_point <= 0x7ff ? 2 : code_point <= 0xffff ? 3 : 4;
+    if (bytes_needed > max_bytes - output.size()) {
+      if (exceeded) *exceeded = true;
+      return std::nullopt;
     }
     if (!append_utf8(output, code_point)) return std::nullopt;
   }
@@ -77,6 +85,25 @@ std::optional<std::string> sqlwchar_to_utf8(
     units = static_cast<std::size_t>(length);
   }
   return decode_wide_bytes(input, units);
+}
+
+std::optional<std::string> sqlwchar_to_utf8_bounded(
+    const void* input, SQLINTEGER length, std::size_t max_bytes, bool& exceeded) {
+  exceeded = false;
+  if (!input) return std::string{};
+  std::size_t units = 0;
+  if (length == SQL_NTS) {
+    const auto* bytes = static_cast<const unsigned char*>(input);
+    while (read_wide_unit(bytes, units) != 0) {
+      if (units == max_bytes) { exceeded = true; return std::nullopt; }
+      ++units;
+    }
+  } else {
+    if (length < 0) return std::nullopt;
+    units = static_cast<std::size_t>(length);
+    if (units > max_bytes) { exceeded = true; return std::nullopt; }
+  }
+  return decode_wide_bytes(input, units, max_bytes, &exceeded);
 }
 
 std::optional<std::vector<SQLWCHAR>> utf8_to_wide(

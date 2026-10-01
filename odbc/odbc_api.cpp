@@ -48,6 +48,29 @@ namespace {
     return std::string(reinterpret_cast<char*>(str), length);
   }
 
+  std::optional<std::string> bounded_sql_text(ODBCStatement& statement,
+      const SQLCHAR* text, SQLINTEGER length) {
+    const auto limit = statement.sql_input_limit();
+    std::size_t bytes = 0;
+    if (length == SQL_NTS) {
+      while (text[bytes] != 0) {
+        if (bytes == limit) break;
+        ++bytes;
+      }
+      if (bytes == limit && text[bytes] != 0) {
+        statement.set_error(SQLSTATE_GENERAL_ERROR, "SQL input byte limit exceeded");
+        return std::nullopt;
+      }
+    } else {
+      bytes = static_cast<std::size_t>(length);
+      if (bytes > limit) {
+        statement.set_error(SQLSTATE_GENERAL_ERROR, "SQL input byte limit exceeded");
+        return std::nullopt;
+      }
+    }
+    return std::string(reinterpret_cast<const char*>(text), bytes);
+  }
+
   std::optional<std::string> first_unknown_connection_keyword(
       const std::string& connection_string) {
     static constexpr std::array<std::string_view, 48> supported{{
@@ -1036,7 +1059,8 @@ static SQLRETURN SQLExecDirect_impl(SQLHSTMT statement_handle, SQLCHAR* statemen
                     "Invalid SQL statement length");
     return SQL_ERROR;
   }
-  return stmt->execute_direct(sqlchar_to_string(statement_text, text_length));
+  const auto sql = bounded_sql_text(*stmt, statement_text, text_length);
+  return sql ? stmt->execute_direct(*sql) : SQL_ERROR;
 }
 
 static SQLRETURN SQLExecDirectW_impl(SQLHSTMT statement_handle,
@@ -1053,10 +1077,11 @@ static SQLRETURN SQLExecDirectW_impl(SQLHSTMT statement_handle,
     return SQL_ERROR;
   }
 
-  const auto sql = sqlwchar_to_utf8(statement_text, text_length);
+  bool exceeded = false;
+  const auto sql = sqlwchar_to_utf8_bounded(statement_text, text_length, stmt->sql_input_limit(), exceeded);
   if (!sql) {
-    stmt->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Invalid wide-character SQL statement");
+    stmt->set_error(exceeded ? SQLSTATE_GENERAL_ERROR : SQLSTATE_INVALID_CHARACTER_VALUE,
+                    exceeded ? "SQL input byte limit exceeded" : "Invalid wide-character SQL statement");
     return SQL_ERROR;
   }
   return stmt->execute_direct(*sql);
@@ -2696,7 +2721,8 @@ static SQLRETURN SQLPrepare_impl(SQLHSTMT statement_handle, SQLCHAR* statement_t
                     "Invalid SQL statement length");
     return SQL_ERROR;
   }
-  return stmt->prepare(sqlchar_to_string(statement_text, text_length));
+  const auto sql = bounded_sql_text(*stmt, statement_text, text_length);
+  return sql ? stmt->prepare(*sql) : SQL_ERROR;
 }
 
 static SQLRETURN SQLPrepareW_impl(SQLHSTMT statement_handle,
@@ -2713,10 +2739,11 @@ static SQLRETURN SQLPrepareW_impl(SQLHSTMT statement_handle,
     return SQL_ERROR;
   }
 
-  const auto sql = sqlwchar_to_utf8(statement_text, text_length);
+  bool exceeded = false;
+  const auto sql = sqlwchar_to_utf8_bounded(statement_text, text_length, stmt->sql_input_limit(), exceeded);
   if (!sql) {
-    stmt->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Invalid wide-character SQL statement");
+    stmt->set_error(exceeded ? SQLSTATE_GENERAL_ERROR : SQLSTATE_INVALID_CHARACTER_VALUE,
+                    exceeded ? "SQL input byte limit exceeded" : "Invalid wide-character SQL statement");
     return SQL_ERROR;
   }
   return stmt->prepare(*sql);

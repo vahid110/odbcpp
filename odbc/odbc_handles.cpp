@@ -1438,6 +1438,7 @@ SQLRETURN ODBCConnection::connect(
       }
     }
     
+    input_limits_ = settings.input_limits;
     connected_ = true;
     transaction_active_ = false;
     current_catalog_ = settings.database;

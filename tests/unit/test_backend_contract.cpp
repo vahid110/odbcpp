@@ -19,7 +19,7 @@ using rs::util::DbErrorCode;
 using rs::util::Deadline;
 
 struct Observations {
-  int created{}, transports{}, disconnects{}, queries{};
+  int created{}, transports{}, disconnects{}, queries{}, descriptions{};
   ConnectionSettings settings;
   std::string sql;
   std::vector<QueryParameter> parameters;
@@ -135,8 +135,10 @@ class FakeBackend final : public IDatabaseConnection {
     seen_->parameters.assign(params.begin(), params.end());
     return execute_query(sql, deadline);
   }
-  BackendResult<QueryResult> describe_statement(std::string_view, std::span<const QueryParameterType> types,
+  BackendResult<QueryResult> describe_statement(std::string_view sql, std::span<const QueryParameterType> types,
                                         Deadline) override {
+    ++seen_->descriptions;
+    seen_->sql = sql;
     QueryResult result = rows(); result.rows.clear();
     result.parameter_type_ids.assign(types.size(), 23);
     return result;
@@ -568,4 +570,56 @@ TEST_F(BackendContractTest, WideConnectionStringsAcceptResourceOptionsWithoutKey
       nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
   EXPECT_EQ(seen->settings.result_limits.max_rows, 17u);
   EXPECT_EQ(seen->settings.input_limits.max_sql_bytes, 1024u);
+}
+
+TEST_F(BackendContractTest, SqlInputLimitsApplyBeforeAnsiAndWideCopiesAndAllowRecovery) {
+  connect_with("SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=0;MaxSqlBytes=4");
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  for (const bool prepare : {false, true}) {
+    for (const bool wide : {false, true}) {
+      for (const SQLINTEGER length : {SQLINTEGER{SQL_NTS}, SQLINTEGER{5}}) {
+        const auto queries = seen->queries;
+        const auto descriptions = seen->descriptions;
+        SQLCHAR narrow[] = "12345";
+        SQLWCHAR text[]{'1', '2', '3', '4', '5', 0};
+        const auto result = wide ? (prepare ? SQLPrepareW(stmt, text, length) : SQLExecDirectW(stmt, text, length)) :
+            (prepare ? SQLPrepare(stmt, narrow, length) : SQLExecDirect(stmt, narrow, length));
+        EXPECT_EQ(result, SQL_ERROR);
+        EXPECT_EQ(state(), "HY000");
+        EXPECT_EQ(seen->queries, queries);
+        EXPECT_EQ(seen->descriptions, descriptions);
+        EXPECT_EQ(seen->disconnects, 0u);
+      }
+    }
+  }
+  SQLCHAR exact[] = "rows";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, exact, 4));
+  EXPECT_EQ(seen->queries, 1u);
+}
+
+TEST_F(BackendContractTest, WideSqlLimitCountsUtf8ExpansionAndPreservesUnicodeErrors) {
+  connect_with("SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=0;MaxSqlBytes=4");
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  SQLWCHAR over[]{0x20ac, 0x20ac, 0}; // two units, six UTF-8 bytes
+  EXPECT_EQ(SQL_ERROR, SQLExecDirectW(stmt, over, SQL_NTS));
+  EXPECT_EQ(state(), "HY000");
+  EXPECT_EQ(seen->queries, 0u);
+  SQLWCHAR invalid[]{0xd800, 0};
+  EXPECT_EQ(SQL_ERROR, SQLPrepareW(stmt, invalid, SQL_NTS));
+  EXPECT_EQ(state(), "22018");
+  SQLWCHAR exact[]{0x20ac, 'x', 0};
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepareW(stmt, exact, SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(seen->sql, std::string("native:\xe2\x82\xac") + "x");
+}
+
+TEST_F(BackendContractTest, RejectedSqlInputPreservesPreviouslyPreparedStatement) {
+  connect_with("SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=0;MaxSqlBytes=4");
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows", SQL_NTS));
+  EXPECT_EQ(SQL_ERROR, SQLPrepare(stmt, (SQLCHAR*)"too long", SQL_NTS));
+  EXPECT_EQ(state(), "HY000");
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(seen->sql, "native:rows");
+  EXPECT_EQ(seen->queries, 1u);
 }

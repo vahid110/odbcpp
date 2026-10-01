@@ -219,6 +219,7 @@ public:
       const std::optional<std::string>& password = std::nullopt);
   SQLRETURN disconnect();
   bool is_connected() const { return connected_; }
+  std::size_t sql_input_limit() const noexcept { return input_limits_.max_sql_bytes; }
   SQLRETURN set_attribute(SQLINTEGER attribute, SQLULEN value);
   SQLRETURN get_attribute(SQLINTEGER attribute, SQLPOINTER value);
   SQLRETURN set_current_catalog(std::string catalog);
@@ -251,6 +252,7 @@ public:
 
 private:
   void close_connection();
+  rs::core::database::InputLimits input_limits_;
 
   std::shared_ptr<const rs::core::database::IBackendProvider> backend_provider_;
   std::unique_ptr<rs::core::database::IDatabaseConnection> db_conn_;
@@ -406,6 +408,7 @@ private:
 // Statement handle
 class ODBCStatement : public ODBCHandle {
 public:
+  std::size_t sql_input_limit() const noexcept { return conn_->sql_input_limit(); }
   explicit ODBCStatement(std::shared_ptr<ODBCConnection> conn);
   ~ODBCStatement() override;
   
