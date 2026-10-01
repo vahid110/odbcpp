@@ -22,6 +22,7 @@ core/database/query_parameter.h
 core/database/query_result.h
 core/database/result_validation.h
 core/database/session_health.h
+core/database/session_reset.h
 core/database/sql_dialect.h
 core/database/sql_translation.h
 core/database/statement_description.h

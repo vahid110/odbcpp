@@ -18,6 +18,7 @@
 #include "statement_description.h"
 #include "catalog_queries.h"
 #include "session_health.h"
+#include "session_reset.h"
 
 namespace rs::core::database {
 
@@ -99,6 +100,9 @@ public:
   virtual SessionState session_state() const {
     return is_connected() ? SessionState::Unknown : SessionState::Disconnected;
   }
+
+  // Optional declared cleanup profile; absence never permits pooled reuse.
+  virtual ISessionReset* session_reset() noexcept { return nullptr; }
 
   // Optional active probe; absence never implies a healthy or reusable session.
   virtual ISessionHealth* session_health() noexcept { return nullptr; }
