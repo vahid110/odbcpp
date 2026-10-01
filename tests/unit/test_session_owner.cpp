@@ -9,11 +9,23 @@
 #include <thread>
 #include <type_traits>
 
+namespace rs::core::database::detail {
+struct SessionOwnershipTestAccess {
+  static SessionOwner make(std::unique_ptr<IDatabaseConnection> session, CredentialToken token,
+      std::shared_ptr<const SessionCacheGeneration>(*factory)()) {
+    return SessionOwner{std::move(session), std::optional{std::move(token)}, factory};
+  }
+  static std::shared_ptr<const SessionCacheGeneration> generate() { return SessionOwner::make_cache_generation(); }
+};
+}
 namespace {
 using namespace rs::core::database;
 template<class T> concept ExposesRawSession = requires(T& lease) { lease.session(); };
 template<class T> concept ExposesPhysicalSession = requires(T& lease) { lease.physical_session(); };
 static_assert(!ExposesRawSession<SessionLease> && !ExposesPhysicalSession<SessionLease>);
+static_assert(!std::is_default_constructible_v<SessionCacheToken>);
+static_assert(std::is_copy_constructible_v<SessionCacheToken> && std::is_copy_assignable_v<SessionCacheToken>);
+static_assert(std::is_nothrow_move_constructible_v<SessionCacheToken> && std::is_nothrow_move_assignable_v<SessionCacheToken>);
 static_assert(!std::is_copy_constructible_v<SessionOwner> && !std::is_copy_assignable_v<SessionOwner>);
 static_assert(!std::is_copy_constructible_v<SessionLease> && !std::is_copy_assignable_v<SessionLease>);
 static_assert(std::is_nothrow_move_constructible_v<SessionOwner> && std::is_nothrow_move_assignable_v<SessionOwner>);
@@ -25,6 +37,8 @@ struct Observed {
   int reset_mode{};
   rs::util::Deadline reset_deadline{};
   std::function<void()> on_reset;
+  std::function<void()> on_passive;
+  std::optional<SessionState> passive_state;
   std::optional<SessionSnapshot> reset_snapshot;
   std::optional<BackendResult<QueryResult>> execution_result;
   int execution_exception{};
@@ -46,6 +60,8 @@ class FakeSession final : public IDatabaseConnection, public ISessionHealth, pub
     return connected_;
   }
   SessionState session_state() const override {
+    if (observed_->on_passive) observed_->on_passive();
+    if (observed_->passive_state) return *observed_->passive_state;
     if (observed_->reset_mode == 8) throw std::runtime_error("private passive-state fixture");
     return !connected_ ? SessionState::Disconnected :
         observed_->reset_mode == 7 ? SessionState::Transaction : SessionState::Idle;
@@ -493,5 +509,189 @@ TEST(SessionLeaseExecutionTest, MovedAndRetiredLeasesReturnOperationSpecificErro
   check_missing(*lease); EXPECT_EQ(0, observed->queries); EXPECT_EQ(0, observed->disconnects);
   ASSERT_TRUE(moved.execute_query("fixture", rs::util::Deadline::max()));
   moved.retire(); check_missing(moved); EXPECT_EQ(1, observed->queries); retired_once(*observed);
+}
+} // namespace
+
+namespace {
+std::atomic<int> cache_allocations{};
+std::atomic<bool> fail_cache_generation{}, null_cache_generation{};
+std::shared_ptr<const detail::SessionCacheGeneration> cache_factory() {
+  ++cache_allocations;
+  if (fail_cache_generation) throw std::bad_alloc{};
+  if (null_cache_generation) return {};
+  return detail::SessionOwnershipTestAccess::generate();
+}
+TEST(SessionCacheScopeTest, RequiresBoundIdleLeaseAndExactScopeAffinity) {
+  CredentialContext credentials; auto credential = credentials.publish_authenticated();
+  auto first = std::make_shared<Observed>(); auto second = std::make_shared<Observed>();
+  SessionOwner owner1{std::make_unique<FakeSession>(first), credential};
+  SessionOwner owner2{std::make_unique<FakeSession>(second), credential};
+  auto lease1 = owner1.try_acquire(credential); auto lease2 = owner2.try_acquire(credential);
+  ASSERT_TRUE(lease1); ASSERT_TRUE(lease2);
+  first->on_passive = [&] { EXPECT_FALSE(owner1.try_acquire(credential)); };
+  auto ticket1 = lease1->cache_token(); auto ticket2 = lease2->cache_token(); ASSERT_TRUE(ticket1); ASSERT_TRUE(ticket2);
+  auto again = lease1->cache_token(); ASSERT_TRUE(again); auto copy = *ticket1;
+  EXPECT_TRUE(ticket1->is_current()); EXPECT_TRUE(copy.is_current()); EXPECT_TRUE(lease1->accepts_cache(*again));
+  SessionCacheToken moved_copy{std::move(copy)}; EXPECT_FALSE(copy.is_current());
+  EXPECT_TRUE(lease1->accepts_cache(moved_copy));
+  EXPECT_FALSE(lease1->accepts_cache(*ticket2)); EXPECT_FALSE(lease2->accepts_cache(*ticket1));
+  EXPECT_TRUE(ticket1->is_current()); EXPECT_TRUE(ticket2->is_current());
+  auto legacy_observed = std::make_shared<Observed>(); auto legacy = owner_for(legacy_observed);
+  auto legacy_lease = legacy.try_acquire(); ASSERT_TRUE(legacy_lease);
+  EXPECT_FALSE(legacy_lease->cache_token()); EXPECT_FALSE(legacy_lease->accepts_cache(*ticket1));
+  EXPECT_EQ(0, first->queries); EXPECT_EQ(0, first->disconnects); first->on_passive = {};
+}
+TEST(SessionCacheScopeTest, EveryExecutionAndResetAttemptInvalidatesBeforeBackendAccess) {
+  CredentialContext credentials; auto credential = credentials.publish_authenticated();
+  auto observed = std::make_shared<Observed>(); SessionOwner owner{std::make_unique<FakeSession>(observed), credential};
+  auto lease = owner.try_acquire(credential); ASSERT_TRUE(lease);
+  auto ticket = lease->cache_token(); ASSERT_TRUE(ticket);
+  observed->on_execution = [&](std::string_view, std::span<const QueryParameter>, rs::util::Deadline, bool) {
+    EXPECT_FALSE(ticket->is_current()); EXPECT_FALSE(lease->accepts_cache(*ticket));
+  };
+  ASSERT_TRUE(lease->execute_query("DDL or session mutation", rs::util::Deadline::max()));
+  auto old = *ticket; ticket = lease->cache_token(); ASSERT_TRUE(ticket); EXPECT_FALSE(old.is_current());
+  ASSERT_TRUE(lease->execute_prepared("prepared mutation", std::span<const QueryParameter>{}, rs::util::Deadline::max()));
+  EXPECT_FALSE(ticket->is_current()); ticket = lease->cache_token(); ASSERT_TRUE(ticket);
+  observed->on_reset = [&] { EXPECT_FALSE(ticket->is_current()); };
+  ASSERT_TRUE(lease->reset_session(rs::util::Deadline::max())); EXPECT_FALSE(ticket->is_current());
+  auto fresh = lease->cache_token(); ASSERT_TRUE(fresh); EXPECT_TRUE(fresh->is_current());
+  EXPECT_FALSE(lease->accepts_cache(old)); EXPECT_FALSE(lease->accepts_cache(*ticket));
+  observed->on_execution = {}; observed->on_reset = {};
+  lease->retire(); EXPECT_FALSE(fresh->is_current()); EXPECT_FALSE(lease->cache_token());
+}
+TEST(SessionCacheScopeTest, FailedUnsupportedExpiredAndThrowingOperationsCannotPreserveTokens) {
+  for (int mode = 0; mode < 6; ++mode) {
+    CredentialContext credentials; auto credential = credentials.publish_authenticated();
+    auto observed = std::make_shared<Observed>(); SessionOwner owner{std::make_unique<FakeSession>(observed), credential};
+    auto lease = owner.try_acquire(credential); ASSERT_TRUE(lease); auto ticket = lease->cache_token(); ASSERT_TRUE(ticket);
+    if (mode == 0) {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "recoverable query failure"};
+      error.session_state = SessionState::Idle; error.disposition = SessionDisposition::Reusable;
+      observed->execution_result = BackendResult<QueryResult>{error};
+      EXPECT_FALSE(lease->execute_query("invalid", rs::util::Deadline::max())); EXPECT_TRUE(*lease);
+    } else if (mode == 1) {
+      observed->execution_exception = 1;
+      EXPECT_THROW(lease->execute_query("throw", rs::util::Deadline::max()), std::bad_alloc);
+    } else {
+      observed->missing_reset = mode == 2; observed->reset_mode = mode == 4 ? 1 : mode == 5 ? 3 : 0;
+      EXPECT_FALSE(lease->reset_session(mode == 3 ? rs::util::Deadline::min() : rs::util::Deadline::max()));
+    }
+    EXPECT_FALSE(ticket->is_current()); EXPECT_FALSE(lease->accepts_cache(*ticket));
+    if (mode == 0) { auto fresh = lease->cache_token(); ASSERT_TRUE(fresh); EXPECT_TRUE(fresh->is_current()); }
+    else { EXPECT_FALSE(lease->cache_token()); }
+  }
+}
+TEST(SessionCacheScopeTest, PassiveNonIdleAndThrowingEligibilityDeniesWithoutInterruptingBorrower) {
+  CredentialContext credentials; auto credential = credentials.publish_authenticated();
+  auto observed = std::make_shared<Observed>(); SessionOwner owner{std::make_unique<FakeSession>(observed), credential};
+  auto lease = owner.try_acquire(credential); ASSERT_TRUE(lease);
+  for (const auto state : {SessionState::Transaction, SessionState::FailedTransaction, SessionState::Unknown, SessionState::Disconnected}) {
+    auto ticket = lease->cache_token(); ASSERT_TRUE(ticket);
+    observed->passive_state = state; EXPECT_FALSE(lease->cache_token()); EXPECT_FALSE(ticket->is_current());
+    EXPECT_TRUE(*lease); EXPECT_EQ(0, observed->disconnects); observed->passive_state.reset();
+  }
+  for (const int mode : {8, 11}) {
+    auto ticket = lease->cache_token(); ASSERT_TRUE(ticket); observed->reset_mode = mode;
+    EXPECT_FALSE(lease->cache_token()); EXPECT_FALSE(ticket->is_current());
+    EXPECT_TRUE(*lease); EXPECT_EQ(0, observed->disconnects); observed->reset_mode = 0;
+  }
+}
+TEST(SessionCacheScopeTest, MovesPreserveOriginWhileDestinationAndOwnerCloseInvalidate) {
+  CredentialContext credentials; auto credential = credentials.publish_authenticated();
+  auto first = std::make_shared<Observed>(); auto second = std::make_shared<Observed>();
+  SessionOwner owner1{std::make_unique<FakeSession>(first), credential};
+  SessionOwner owner2{std::make_unique<FakeSession>(second), credential};
+  auto lease1 = owner1.try_acquire(credential); auto lease2 = owner2.try_acquire(credential);
+  ASSERT_TRUE(lease1); ASSERT_TRUE(lease2); auto ticket1 = lease1->cache_token(); auto ticket2 = lease2->cache_token();
+  ASSERT_TRUE(ticket1); ASSERT_TRUE(ticket2);
+  SessionOwner moved_owner{std::move(owner1)}; SessionLease moved{std::move(*lease1)};
+  EXPECT_TRUE(ticket1->is_current()); EXPECT_TRUE(moved.accepts_cache(*ticket1));
+  EXPECT_FALSE(lease1->cache_token()); EXPECT_FALSE(lease1->accepts_cache(*ticket1));
+  *lease2 = std::move(moved); EXPECT_FALSE(ticket2->is_current()); EXPECT_TRUE(lease2->accepts_cache(*ticket1));
+  auto& same = *lease2; same = std::move(*lease2); EXPECT_TRUE(lease2->accepts_cache(*ticket1));
+  // Replacing the owner closes its old scope without interrupting the lease.
+  auto idle = owner_for(std::make_shared<Observed>()); moved_owner = std::move(idle);
+  EXPECT_FALSE(ticket1->is_current()); EXPECT_FALSE(lease2->cache_token()); EXPECT_TRUE(*lease2);
+  ASSERT_TRUE(lease2->execute_query("active borrower", rs::util::Deadline::max()));
+}
+TEST(SessionCacheScopeTest, CredentialRevokeRotateDestroyAndExpiryInvalidateWithoutDisconnect) {
+  for (int mode = 0; mode < 4; ++mode) {
+    auto credentials = std::make_unique<CredentialContext>();
+    const auto expiry = rs::util::make_deadline(std::chrono::seconds(1));
+    auto credential = credentials->publish_authenticated(mode == 3 ? std::optional{expiry} : std::nullopt);
+    auto observed = std::make_shared<Observed>(); SessionOwner owner{std::make_unique<FakeSession>(observed), credential};
+    auto lease = owner.try_acquire(credential); ASSERT_TRUE(lease); auto ticket = lease->cache_token(); ASSERT_TRUE(ticket);
+    if (mode == 0) credentials->revoke();
+    if (mode == 1) { (void)credentials->publish_authenticated(); }
+    if (mode == 2) credentials.reset();
+    if (mode == 3) std::this_thread::sleep_until(expiry);
+    EXPECT_FALSE(ticket->is_current()); EXPECT_FALSE(lease->accepts_cache(*ticket)); EXPECT_FALSE(lease->cache_token());
+    EXPECT_TRUE(*lease); EXPECT_EQ(0, observed->disconnects);
+    ASSERT_TRUE(lease->execute_query("same borrower", rs::util::Deadline::max()));
+  }
+}
+TEST(SessionCacheScopeTest, FailedGenerationAllocationLeavesAbsentScopeAndCanRecover) {
+  cache_allocations = 0; fail_cache_generation = false; null_cache_generation = false;
+  CredentialContext credentials; auto credential = credentials.publish_authenticated(); auto observed = std::make_shared<Observed>();
+  auto owner = detail::SessionOwnershipTestAccess::make(std::make_unique<FakeSession>(observed), credential, &cache_factory);
+  auto lease = owner.try_acquire(credential); ASSERT_TRUE(lease); auto ticket = lease->cache_token(); ASSERT_TRUE(ticket);
+  auto again = lease->cache_token(); ASSERT_TRUE(again); EXPECT_EQ(1, cache_allocations);
+  ASSERT_TRUE(lease->execute_query("invalidate", rs::util::Deadline::max())); EXPECT_FALSE(ticket->is_current());
+  fail_cache_generation = true; EXPECT_THROW(lease->cache_token(), std::bad_alloc);
+  EXPECT_FALSE(ticket->is_current()); EXPECT_EQ(0, observed->disconnects); EXPECT_EQ(1, observed->queries);
+  fail_cache_generation = false; null_cache_generation = true; EXPECT_THROW(lease->cache_token(), std::bad_alloc);
+  EXPECT_FALSE(again->is_current()); EXPECT_TRUE(*lease); null_cache_generation = false;
+  auto fresh = lease->cache_token(); ASSERT_TRUE(fresh); EXPECT_TRUE(fresh->is_current()); EXPECT_EQ(4, cache_allocations);
+}
+TEST(SessionCacheScopeTest, OwnerClosureDuringUnlockedEligibilityCannotPublishScope) {
+  CredentialContext credentials; auto credential = credentials.publish_authenticated(); auto observed = std::make_shared<Observed>();
+  auto owner = std::make_unique<SessionOwner>(std::make_unique<FakeSession>(observed), credential);
+  auto lease = owner->try_acquire(credential); ASSERT_TRUE(lease);
+  auto ticket = lease->cache_token(); ASSERT_TRUE(ticket);
+  std::barrier entered(2); std::barrier resume(2);
+  observed->on_passive = [&] { entered.arrive_and_wait(); resume.arrive_and_wait(); };
+  std::optional<SessionCacheToken> raced;
+  std::thread minting([&] { raced = lease->cache_token(); });
+  entered.arrive_and_wait(); owner.reset(); resume.arrive_and_wait(); minting.join();
+  EXPECT_FALSE(raced); EXPECT_FALSE(ticket->is_current()); EXPECT_TRUE(*lease); EXPECT_EQ(0, observed->disconnects);
+  observed->on_passive = {};
+}
+TEST(SessionCacheScopeTest, ConcurrentValidationCannotResurrectInvalidatedScopeOrKeepSessionAlive) {
+  std::optional<SessionCacheToken> orphan;
+  for (int iteration = 0; iteration < 50; ++iteration) {
+    CredentialContext credentials; auto credential = credentials.publish_authenticated(); auto observed = std::make_shared<Observed>();
+    SessionOwner owner{std::make_unique<FakeSession>(observed), credential}; auto lease = owner.try_acquire(credential); ASSERT_TRUE(lease);
+    auto ticket = lease->cache_token(); ASSERT_TRUE(ticket); std::barrier start(3);
+    std::thread checking([&] { start.arrive_and_wait(); for (int read = 0; read < 500; ++read) (void)ticket->is_current(); });
+    std::thread invalidating([&] { start.arrive_and_wait(); (void)lease->execute_query("invalidate", rs::util::Deadline::max()); });
+    start.arrive_and_wait(); checking.join(); invalidating.join(); EXPECT_FALSE(ticket->is_current());
+    auto fresh = lease->cache_token(); ASSERT_TRUE(fresh); EXPECT_TRUE(fresh->is_current()); EXPECT_FALSE(lease->accepts_cache(*ticket));
+    orphan = *fresh; lease->retire(); retired_once(*observed); EXPECT_FALSE(orphan->is_current());
+  }
+  ASSERT_TRUE(orphan); EXPECT_FALSE(orphan->is_current());
+}
+} // namespace
+
+namespace {
+TEST(SessionCacheScopeTest, ValidationRacingOwnerCloseCredentialRotationAndRetirementIsSafe) {
+  for (int mode = 0; mode < 3; ++mode) {
+    for (int iteration = 0; iteration < 15; ++iteration) {
+      CredentialContext credentials; auto credential = credentials.publish_authenticated(); auto observed = std::make_shared<Observed>();
+      auto owner = std::make_unique<SessionOwner>(std::make_unique<FakeSession>(observed), credential);
+      auto lease = owner->try_acquire(credential); ASSERT_TRUE(lease); auto ticket = lease->cache_token(); ASSERT_TRUE(ticket);
+      std::barrier start(3);
+      std::thread checking([&] { start.arrive_and_wait(); for (int read = 0; read < 500; ++read) (void)ticket->is_current(); });
+      std::thread invalidating([&] {
+        start.arrive_and_wait();
+        if (mode == 0) owner.reset();
+        if (mode == 1) { (void)credentials.publish_authenticated(); }
+        if (mode == 2) lease->retire();
+      });
+      start.arrive_and_wait(); checking.join(); invalidating.join(); EXPECT_FALSE(ticket->is_current());
+      if (mode != 2) { EXPECT_TRUE(*lease); EXPECT_EQ(0, observed->disconnects); }
+      lease->retire(); retired_once(*observed);
+    }
+  }
 }
 } // namespace

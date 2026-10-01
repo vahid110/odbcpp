@@ -5,7 +5,29 @@
 #include <optional>
 
 namespace rs::core::database {
-namespace detail { struct SessionOwnershipState; }
+namespace detail {
+struct SessionOwnershipState;
+struct SessionCacheGeneration;
+struct SessionOwnershipTestAccess;
+}
+
+// Private local scope identity, not cached data or a freshness guarantee for
+// external schema changes. Validation is point-in-time, not a reservation.
+// Consumers must also use the requesting lease's accepts_cache() affinity check.
+class SessionCacheToken final {
+ public:
+  SessionCacheToken(const SessionCacheToken&) = default;
+  SessionCacheToken& operator=(const SessionCacheToken&) = default;
+  SessionCacheToken(SessionCacheToken&&) noexcept = default;
+  SessionCacheToken& operator=(SessionCacheToken&&) noexcept = default;
+  bool is_current() const noexcept;
+ private:
+  friend class SessionLease;
+  SessionCacheToken(std::weak_ptr<detail::SessionOwnershipState>,
+      std::weak_ptr<const detail::SessionCacheGeneration>) noexcept;
+  std::weak_ptr<detail::SessionOwnershipState> state_;
+  std::weak_ptr<const detail::SessionCacheGeneration> generation_;
+};
 
 // Internal ownership primitive, not an installed SDK or pool API. A borrowed
 // session is accessed only through lease operations: no raw session/facet escape.
@@ -19,6 +41,12 @@ class SessionLease final {
   ~SessionLease();
 
   explicit operator bool() const noexcept { return physical_session() != nullptr; }
+  // Bound authenticated Idle leases only, established by passive checks without
+  // backend calls under ownership locks. Every execution/reset attempt invalidates
+  // all copies before backend access; closure/retirement/credential staleness
+  // also invalidate. No payload, cache policy or reusable return is provided.
+  std::optional<SessionCacheToken> cache_token();
+  bool accepts_cache(const SessionCacheToken&) const noexcept;
   // Execution preserves owning results/errors. A Retire snapshot or exception
   // destroys the physical session; other outcomes remain same-borrower only.
   BackendResult<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline);
@@ -30,12 +58,13 @@ class SessionLease final {
   // Explicit coordinator cleanup of this active borrow, using the original
   // deadline. Any failed/unsupported/ambiguous cleanup retires the lease.
   // Success keeps exclusive ownership, never grants return/requeue. Borrowers
-  // cannot access the raw reset facet; cache tokens/reuse are not enabled.
+  // cannot access the raw reset facet; cache storage/reuse are not enabled.
   BackendResult<void> reset_session(rs::util::Deadline deadline);
 
  private:
   friend class SessionOwner;
   IDatabaseConnection* physical_session() const noexcept;
+  void invalidate_cache() noexcept;
   explicit SessionLease(std::shared_ptr<detail::SessionOwnershipState>) noexcept;
   std::shared_ptr<detail::SessionOwnershipState> state_;
 };
@@ -62,7 +91,11 @@ class SessionOwner final {
   std::optional<SessionLease> try_acquire(const CredentialToken&);
 
  private:
-  SessionOwner(std::unique_ptr<IDatabaseConnection>, std::optional<CredentialToken>);
+  friend struct detail::SessionOwnershipTestAccess;
+  using CacheGenerationFactory = std::shared_ptr<const detail::SessionCacheGeneration>(*)();
+  static std::shared_ptr<const detail::SessionCacheGeneration> make_cache_generation();
+  SessionOwner(std::unique_ptr<IDatabaseConnection>, std::optional<CredentialToken>,
+      CacheGenerationFactory = &make_cache_generation);
   std::optional<SessionLease> try_acquire_impl(const CredentialToken*);
   void close() noexcept;
   std::shared_ptr<detail::SessionOwnershipState> state_;

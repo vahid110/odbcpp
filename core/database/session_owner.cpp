@@ -6,12 +6,17 @@
 
 namespace rs::core::database {
 namespace detail {
+struct SessionCacheGeneration {};
 struct SessionOwnershipState {
-  explicit SessionOwnershipState(std::unique_ptr<IDatabaseConnection> value, std::optional<CredentialToken> token)
-      : session(std::move(value)), credential(std::move(token)) {}
+  using CacheFactory = std::shared_ptr<const SessionCacheGeneration>(*)();
+  explicit SessionOwnershipState(std::unique_ptr<IDatabaseConnection> value, std::optional<CredentialToken> token,
+      CacheFactory factory)
+      : session(std::move(value)), credential(std::move(token)), cache_factory(factory) {}
   std::mutex mutex;
   std::unique_ptr<IDatabaseConnection> session;
   const std::optional<CredentialToken> credential;
+  const CacheFactory cache_factory;
+  std::shared_ptr<const SessionCacheGeneration> cache_generation;
   bool accepting{true};
   bool leased{false};
 };
@@ -29,8 +34,9 @@ SessionOwner::SessionOwner(std::unique_ptr<IDatabaseConnection> session)
     : SessionOwner(std::move(session), std::nullopt) {}
 SessionOwner::SessionOwner(std::unique_ptr<IDatabaseConnection> session, CredentialToken token)
     : SessionOwner(std::move(session), std::optional{std::move(token)}) {}
-SessionOwner::SessionOwner(std::unique_ptr<IDatabaseConnection> session, std::optional<CredentialToken> token)
-    : state_(std::make_shared<detail::SessionOwnershipState>(std::move(session), std::move(token))) {
+SessionOwner::SessionOwner(std::unique_ptr<IDatabaseConnection> session, std::optional<CredentialToken> token,
+    CacheGenerationFactory factory)
+    : state_(std::make_shared<detail::SessionOwnershipState>(std::move(session), std::move(token), factory)) {
   if (!state_->session) throw std::invalid_argument("SessionOwner requires a physical session");
 }
 SessionOwner::SessionOwner(SessionOwner&& other) noexcept
@@ -47,6 +53,7 @@ void SessionOwner::close() noexcept {
   {
     std::lock_guard lock(state->mutex);
     state->accepting = false;
+    state->cache_generation.reset();
     if (!state->leased) retired = std::move(state->session);
   }
   // Never call an external backend under the ownership mutex.
@@ -69,6 +76,7 @@ std::optional<SessionLease> SessionOwner::try_acquire_impl(const CredentialToken
       // Lock order: owner -> authority. Authorities never call back into owners.
       if (!state_->credential->is_current()) {
         state_->accepting = false;
+        state_->cache_generation.reset();
         if (!state_->leased) retired = std::move(state_->session);
       } else if (!state_->leased) {
         state_->leased = true; lease = SessionLease{state_};
@@ -102,6 +110,7 @@ void SessionLease::retire() noexcept {
   {
     std::lock_guard lock(state->mutex);
     state->accepting = false;
+    state->cache_generation.reset();
     state->leased = false;
     retired = std::move(state->session);
   }
@@ -116,6 +125,7 @@ BackendResult<void> SessionLease::reset_session(rs::util::Deadline deadline) {
     bool completed{false};
     ~RetirementGuard() { if (!completed) lease.retire(); }
   } guard{*this};
+  invalidate_cache();
   const auto fail = [this](rs::util::DbErrorCode code, const char* message) -> BackendResult<void> {
     // Retire before constructing the diagnostic: even allocation failure cannot
     // leave a failed reset borrow accessible. Backend callbacks run unlocked.
@@ -183,12 +193,84 @@ BackendResult<QueryResult> execute_borrowed(SessionLease& lease, IDatabaseConnec
 }
 }
 BackendResult<QueryResult> SessionLease::execute_query(std::string_view sql, rs::util::Deadline deadline) {
+  invalidate_cache();
   return execute_borrowed(*this, physical_session(), BackendOperation::ExecuteDirect,
       [&](IDatabaseConnection& physical) { return physical.execute_query(sql, deadline); });
 }
 BackendResult<QueryResult> SessionLease::execute_prepared(std::string_view sql,
     std::span<const QueryParameter> params, rs::util::Deadline deadline) {
+  invalidate_cache();
   return execute_borrowed(*this, physical_session(), BackendOperation::ExecutePrepared,
       [&](IDatabaseConnection& physical) { return physical.execute_prepared(sql, params, deadline); });
+}
+} // namespace rs::core::database
+
+namespace rs::core::database {
+namespace {
+bool cache_current(const std::shared_ptr<detail::SessionOwnershipState>& state,
+    const std::shared_ptr<const detail::SessionCacheGeneration>& generation) noexcept {
+  if (!state || !generation) return false;
+  std::lock_guard lock(state->mutex);
+  // Fixed lock order: owner -> credential authority; no backend calls here.
+  if (!state->accepting || !state->leased || !state->session ||
+      state->cache_generation != generation || !state->credential) return false;
+  if (!state->credential->is_current()) {
+    state->accepting = false;
+    state->cache_generation.reset();
+    return false;
+  }
+  return true;
+}
+}
+SessionCacheToken::SessionCacheToken(std::weak_ptr<detail::SessionOwnershipState> state,
+    std::weak_ptr<const detail::SessionCacheGeneration> generation) noexcept
+    : state_(std::move(state)), generation_(std::move(generation)) {}
+bool SessionCacheToken::is_current() const noexcept {
+  return cache_current(state_.lock(), generation_.lock());
+}
+std::shared_ptr<const detail::SessionCacheGeneration> SessionOwner::make_cache_generation() {
+  return std::make_shared<const detail::SessionCacheGeneration>();
+}
+std::optional<SessionCacheToken> SessionLease::cache_token() {
+  if (!state_) return std::nullopt;
+  IDatabaseConnection* physical{};
+  {
+    std::lock_guard lock(state_->mutex);
+    if (!state_->accepting || !state_->leased || !state_->session || !state_->credential) return std::nullopt;
+    if (!state_->credential->is_current()) {
+      state_->accepting = false; state_->cache_generation.reset(); return std::nullopt;
+    }
+    physical = state_->session.get();
+  }
+  // Passive backend calls must not execute under the ownership/authority lock.
+  // Owner close cannot remove this leased session; same-lease operations remain
+  // caller-serialized. This is local Idle scope eligibility, not a health probe.
+  bool idle{};
+  try { idle = physical->is_connected() && physical->session_state() == SessionState::Idle; }
+  catch (...) { invalidate_cache(); return std::nullopt; }
+  std::lock_guard lock(state_->mutex);
+  if (!idle || !state_->accepting || !state_->leased || state_->session.get() != physical) {
+    state_->cache_generation.reset(); return std::nullopt;
+  }
+  if (!state_->credential->is_current()) {
+    state_->accepting = false; state_->cache_generation.reset(); return std::nullopt;
+  }
+  if (!state_->cache_generation) {
+    // No old scope exists here. Allocation/null-factory failure leaves it absent.
+    // Production factory only allocates identity; private test factories must
+    // never reenter or call backend/owner/credential operations under this lock.
+    state_->cache_generation = state_->cache_factory();
+    if (!state_->cache_generation) throw std::bad_alloc{};
+  }
+  return SessionCacheToken{state_, state_->cache_generation};
+}
+bool SessionLease::accepts_cache(const SessionCacheToken& token) const noexcept {
+  if (!state_ || state_ != token.state_.lock()) return false;
+  return cache_current(state_, token.generation_.lock());
+}
+void SessionLease::invalidate_cache() noexcept {
+  if (!state_) return;
+  std::lock_guard lock(state_->mutex);
+  state_->cache_generation.reset();
 }
 } // namespace rs::core::database

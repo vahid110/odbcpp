@@ -33,11 +33,14 @@ TEST(SessionOwnerIntegrationTest, LiveBorrowSurvivesOwnerAndRetirementClosesPhys
   // Trusted coordinator publishes only after this physical authentication.
   CredentialContext credentials; auto token = credentials.publish_authenticated();
   std::optional<SessionLease> lease;
+  std::optional<SessionCacheToken> owner_ticket;
   {
     SessionOwner owner{std::move(physical), token};
     EXPECT_FALSE(owner.try_acquire());
     lease = owner.try_acquire(token); ASSERT_TRUE(lease); EXPECT_FALSE(owner.try_acquire(token));
+    owner_ticket = lease->cache_token(); ASSERT_TRUE(owner_ticket); EXPECT_TRUE(owner_ticket->is_current());
   }
+  EXPECT_FALSE(owner_ticket->is_current());
   // Neither owner destruction nor credential revocation interrupts this borrower.
   credentials.revoke(); EXPECT_FALSE(token.is_current());
   const auto deadline = rs::util::make_deadline(std::chrono::seconds(5));
@@ -86,6 +89,34 @@ TEST(SessionOwnerIntegrationTest, LiveBorrowSurvivesOwnerAndRetirementClosesPhys
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   EXPECT_TRUE(gone) << "Rejected reset left a live physical PostgreSQL session";
+  // Fresh authenticated physical scope: every query/reset attempt invalidates
+  // prior metadata/statement scope, including recoverable server errors.
+  auto cache_physical = provider.create_session(nullptr); ASSERT_TRUE(cache_physical->connect(*settings));
+  auto cache_credential = credentials.publish_authenticated();
+  SessionOwner cache_owner{std::move(cache_physical), cache_credential};
+  auto cache_lease = cache_owner.try_acquire(cache_credential); ASSERT_TRUE(cache_lease);
+  auto scope = cache_lease->cache_token(); ASSERT_TRUE(scope); EXPECT_TRUE(scope->is_current());
+  const auto cache_deadline = rs::util::make_deadline(std::chrono::seconds(5));
+  auto cache_pid = cache_lease->execute_query("SELECT pg_backend_pid()", cache_deadline);
+  ASSERT_TRUE(cache_pid); ASSERT_EQ(1u, cache_pid->rows.size()); ASSERT_EQ(1u, cache_pid->rows[0].size());
+  ASSERT_TRUE(cache_pid->rows[0][0]); const auto cache_pid_text = *cache_pid->rows[0][0];
+  ASSERT_FALSE(cache_pid_text.empty());
+  ASSERT_TRUE(std::all_of(cache_pid_text.begin(), cache_pid_text.end(), [](char c) { return c >= '0' && c <= '9'; }));
+  EXPECT_FALSE(scope->is_current()); auto prior = *scope;
+  scope = cache_lease->cache_token(); ASSERT_TRUE(scope); EXPECT_TRUE(scope->is_current());
+  ASSERT_TRUE(cache_lease->reset_session(cache_deadline)); EXPECT_FALSE(scope->is_current());
+  scope = cache_lease->cache_token(); ASSERT_TRUE(scope); EXPECT_TRUE(scope->is_current());
+  EXPECT_FALSE(cache_lease->execute_query("SELECT (", cache_deadline)); EXPECT_FALSE(scope->is_current());
+  scope = cache_lease->cache_token(); ASSERT_TRUE(scope); EXPECT_TRUE(scope->is_current());
+  EXPECT_FALSE(cache_lease->accepts_cache(prior)); cache_lease->retire(); EXPECT_FALSE(scope->is_current());
+  gone = false;
+  while (std::chrono::steady_clock::now() < cache_deadline) {
+    auto inactive = observer->execute_query("SELECT count(*) FROM pg_stat_activity WHERE pid = " + cache_pid_text, cache_deadline);
+    ASSERT_TRUE(inactive);
+    if (inactive->rows.at(0).at(0) == "0") { gone = true; break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(gone) << "Cache token retained a retired physical PostgreSQL session";
   observer->disconnect();
 }
 } // namespace
