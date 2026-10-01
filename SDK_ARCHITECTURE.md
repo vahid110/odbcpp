@@ -759,3 +759,30 @@ This establishes internal build ownership, not complete compile-time dependency
 isolation: private include restrictions, installed protocol-header exposure and
 legacy public wrapper includes remain step 7 work. Health/reset/exclusive leases,
 ordered execution items, warning delivery and public SDK qualification remain open.
+
+## S2 per-target private include closure — 2026-10-01
+
+Each root-build runtime, backend, composition and ODBC object target now compiles
+against its own explicit staged header manifest, without the full repository root
+on its include path. Runtime cannot include database sessions; backend cannot
+include ODBC; composition sees provider/factory/pool integration but not parser
+machinery; ODBC sees contracts and its needed runtime helpers but no concrete
+provider, protocol parser or prototype pool. An unused pool include was removed
+from the ODBC handle header.
+
+Configure-time checks enforce transitive quoted-include closure for every staged
+header and component source. They reject unlisted headers, escapes, macro includes,
+project angle-include bypasses including case/backslash/dot variants, duplicates,
+missing entries and source-root escapes through header symlinks. Fresh generated
+trees remove stale entries. Source edits trigger automatic reconfiguration, with
+an incremental-build regression fixture covering source-local include bypasses. Compiler probes run inside the parent configuration,
+using its generator/toolchain/platform, and verify allowed headers compile while
+forbidden cross-component headers do not. Negative fixtures also run under paths
+containing spaces; the symlink fixture runs where link creation is supported.
+
+These are source dependency gates, not a compiler/filesystem security sandbox.
+Legacy core/test include interfaces and installed header layout remain unchanged;
+installed protocol-header exposure and public SDK packaging are still open work.
+The separate AWS-LC qualification build retains its existing bounded profile.
+Health/reset/exclusive leases, ordered execution items and warning delivery remain
+open S2 contracts.

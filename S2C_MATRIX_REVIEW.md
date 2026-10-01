@@ -75,3 +75,20 @@ ownership, SEC-4 aggregate limits and the remaining security evidence are open.
 S3 MySQL, S4 conformance/clean-room usability and G12 follow; PostgreSQL G8 remains
 host-dependent and Redshift live M2 waits for restored access. Original effort
 ranges are estimates, not a fresh remaining-work completion date.
+
+
+## Linux shared live-report binding — 2026-10-01
+
+The Linux OpenSSL SYSTEM_SHARED job now records a separate bounded live summary
+only after its mandatory TLS fixture tests pass. It binds the live XML hash and
+exact successful verified TLS/SCRAM query, trust rejection and hostname rejection
+case inventory to the existing driver/probe/manifest/unit evidence. Missing,
+duplicate, unexpected, incomplete, failed/skipped cases and inconsistent totals
+are rejected; failed CLI validation removes stale output. Unit-only recording for
+other profiles is preserved. Both live XML and summary are retained in CI.
+
+This does not evaluate live queries within the cohabitation host, packaged-driver
+acceptance, different-provider coexistence, Windows loader isolation or row signoff.
+Qualification and combined package/coexistence acceptance remain false; T13/T14
+and the S2C gate stay open. The new live-summary option is intentionally limited
+to this Linux shared row until other row-specific live formats are reviewed.

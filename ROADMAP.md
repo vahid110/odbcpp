@@ -1143,3 +1143,37 @@ iODBC UTF-16/UCS-4, sanitizer and Redshift build/absent-endpoint gates pass;
 examples compile. Read-only review found a test-fixture quoting issue, repaired
 and verified with spaces in the fixture path; no production blockers were found.
 Windows/live/package and cross-platform validation remains the exact-head CI gate.
+
+## S2 per-target private include closure — 2026-10-01
+
+Each root-build runtime, backend, composition and ODBC object target now compiles
+against its own explicit staged header manifest, without the full repository root
+on its include path. Runtime cannot include database sessions; backend cannot
+include ODBC; composition sees provider/factory/pool integration but not parser
+machinery; ODBC sees contracts and its needed runtime helpers but no concrete
+provider, protocol parser or prototype pool. An unused pool include was removed
+from the ODBC handle header.
+
+Configure-time checks enforce transitive quoted-include closure for every staged
+header and component source. They reject unlisted headers, escapes, macro includes,
+project angle-include bypasses including case/backslash/dot variants, duplicates,
+missing entries and source-root escapes through header symlinks. Fresh generated
+trees remove stale entries. Source edits trigger automatic reconfiguration, with
+an incremental-build regression fixture covering source-local include bypasses. Compiler probes run inside the parent configuration,
+using its generator/toolchain/platform, and verify allowed headers compile while
+forbidden cross-component headers do not. Negative fixtures also run under paths
+containing spaces; the symlink fixture runs where link creation is supported.
+
+These are source dependency gates, not a compiler/filesystem security sandbox.
+Legacy core/test include interfaces and installed header layout remain unchanged;
+installed protocol-header exposure and public SDK packaging are still open work.
+The separate AWS-LC qualification build retains its existing bounded profile.
+Health/reset/exclusive leases, ordered execution items and warning delivery remain
+open S2 contracts.
+
+Validation: full local PostgreSQL, iODBC UTF-16/UCS-4, sanitizer and Redshift
+build/absent-endpoint gates pass; examples compile. The final incremental closure
+fixture passes, including repeated symlink checks. Fifteen crypto evidence tests
+pass. Independent read-only reviews found no remaining material blockers after
+closing the incremental-source bypass. Windows/live/package and cross-platform
+results remain subject to the exact-head CI gate.
