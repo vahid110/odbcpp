@@ -80,8 +80,15 @@ credential/cache isolation.
 
 ### SEC-4: unbounded aggregate server results
 
-Per-frame checks exist, but accepted frames can be very large and complete
-operations have no cumulative byte/message/row/column/result limit. Each backend
+The PostgreSQL-family session now enforces SDK startup/query wire-byte and
+message budgets, query row/cell/result and metadata-entry/name budgets, and
+per-error/notice payload limits before diagnostic decoding. Metadata entries
+count every row/parameter description across an exchange; name bytes exclude
+terminators and count every row description, including replacements. Defaults
+are 65536 entries, 1024 bytes per column name, 1 MiB aggregate names and 16 KiB
+per diagnostic payload. Zero permits only empty names/metadata/diagnostics.
+These are input/count bounds, not exact heap quotas. Outgoing input, allocation
+boundaries and product-profile configuration remain open. Each backend
 must enforce configurable hard ceilings and return a resource-limit error with
 mandatory retirement when protocol synchronization or memory safety is uncertain.
 

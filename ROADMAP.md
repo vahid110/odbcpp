@@ -478,3 +478,17 @@ Continue SEC-4 with aggregate metadata/name and diagnostic limits, outgoing inpu
 product configuration and allocation boundaries. Wire/count budgets are not exact
 heap quotas; native metadata and session/reuse migration remain S2 work. A5/S2,
 G12 and crypto qualification follow-ups stay open.
+
+### S2 metadata/name and diagnostic budgets — 2026-10-01
+
+Row/parameter metadata entries and column-name bytes now accumulate across one
+query exchange before decoded extraction. Per-name and aggregate limits reject
+oversize metadata; malformed names/fixed fields remain protocol errors. Error
+and Notice payload ceilings apply during authentication, startup and queries,
+rejecting after the header before reading or allocating the body. All overflows
+retire without partial results or server text in the resource diagnostic.
+
+Exact/overflow, multi-result aggregation, parameter entries, empty names,
+malformed metadata and startup/query diagnostic tests cover the scope. SEC-4
+still needs outgoing input, allocation and product configuration boundaries;
+S2 native metadata/session facets and crypto qualification remain open.
