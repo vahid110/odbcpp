@@ -1109,3 +1109,37 @@ focused root provider/backend/architecture tests, full PostgreSQL, iODBC UTF-16
 and UCS-4, sanitizer and Redshift build/absent-endpoint gates pass; examples compile.
 Focused read-only review found no blockers. Windows/live/package and cross-platform
 validation follows the exact-head GitHub Actions batch run.
+
+## S2 internal runtime target ownership — 2026-10-01
+
+Production compilation now uses separate internal OBJECT targets for runtime
+primitives, backend implementation, product/legacy composition and the ODBC adapter.
+GenericDatabaseConnection stays in the PostgreSQL-family backend partition; the
+prototype pool stays with composition because it calls DatabaseFactory. No pool
+qualification or backend-independent session claim follows from target names.
+
+Core/test and production-driver objects compile separately. Test hooks are enabled
+only on the core ODBC objects; backend-selection macros belong only to composition.
+C++20, compiler warnings, PIC, SQLWCHAR ABI checks and private dependency includes
+are applied where compilation actually occurs. Objects are flattened into the same
+static archive and shared driver, preserving final exports, OpenSSL linkage,
+Windows system libraries, static-crypto link maps and installed-target interfaces.
+The isolated AWS-LC proof retains its existing source collector and build profile.
+
+Source-partition fixtures verify PostgreSQL-family, prototype pool and Windows
+ownership, normalize repeated inventory entries, and reject unknown sources,
+resource entries, path escapes and empty partitions. Fixtures run under a build
+path containing spaces. Existing behavior, test-hook, export, package and crypto
+gates protect the resulting artifacts.
+
+This establishes internal build ownership, not complete compile-time dependency
+isolation: private include restrictions, installed protocol-header exposure and
+legacy public wrapper includes remain step 7 work. Health/reset/exclusive leases,
+ordered execution items, warning delivery and public SDK qualification remain open.
+
+
+Validation: focused partition/SDK/provider/backend tests, full local PostgreSQL,
+iODBC UTF-16/UCS-4, sanitizer and Redshift build/absent-endpoint gates pass;
+examples compile. Read-only review found a test-fixture quoting issue, repaired
+and verified with spaces in the fixture path; no production blockers were found.
+Windows/live/package and cross-platform validation remains the exact-head CI gate.
