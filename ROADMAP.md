@@ -404,3 +404,15 @@ preservation, secret-bearing missing DSN text, hostile controls and long tails.
 Continue with typed sensitivity/redaction, safe BackendError summaries and record
 budgets before claiming the full logging boundary; deferred-result normalization,
 aggregate result budgets and safe reuse remain separate S2 batches. A5 stays open.
+
+### S2 typed log fields and record payload budgets — 2026-10-01
+
+Structured fields now default to sensitive redaction; secrets (including keys)
+are dropped, public telemetry is explicit and QueryText keeps its separate opt-in.
+Encoded payload/field-count budgets bound escaped output and preserve closing
+syntax. Tests cover both formats, Trace/query isolation, excess fields/escaped
+expansion and subsequent records. ODBC diagnostics remain protected.
+
+Next: safe BackendError summaries and normalized deferred-result errors. Invalid
+source encoding, aggregate result budgets and safe reuse remain explicit work;
+this batch does not close A5/S2 or any crypto qualification blocker.

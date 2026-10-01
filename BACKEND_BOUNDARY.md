@@ -577,3 +577,25 @@ This is a partial security-contract migration. Typed Public/Sensitive/Secret
 fields, default sensitive-field redaction, total-record budgets and safe BackendError
 summaries remain open. Existing opt-in query logging can expose SQL and is not a
 sensitive-diagnostic mode. No logging security gate or A5 closure is claimed.
+
+## S2 typed log fields and encoded payload budgets — 2026-10-01
+
+LogField now carries Public, Sensitive, Secret or QueryText classification.
+Unclassified fields default to Sensitive and emit only [redacted]. Secret fields
+are omitted with their keys; Debug/Trace and query opt-in do not override either
+rule. Public ODBC operation/state/timing and numeric counters are explicitly
+annotated. Host/database identifiers remain sensitive. QueryText is emitted only
+when the existing LogQueries opt-in and Debug-level availability both hold.
+No sensitive-diagnostic debug mode is introduced.
+
+Encoded record payloads are capped at 8192 bytes with at most 32 emitted fields,
+including expansion from escaping. Space is reserved for complete closing syntax
+and a fixed fields_truncated indicator. These bounds apply to serialization,
+not prior caller allocation or the sink's timestamp/process/thread envelope.
+Default logging-off behavior and ODBC diagnostics remain unchanged. Tests cover
+Trace/query-opt-in isolation, implicit sensitivity, secret key removal, escaped
+expansion, excessive field count, later usable records and complete JSON output.
+
+Safe BackendError summaries, adversarial backend diagnostic fixtures, invalid
+source-encoding handling and aggregate result budgets remain planned work.
+This does not close the complete logging security contract, A5 or S2.
