@@ -575,3 +575,18 @@ zero-data profiles and PostgreSQL-provider validation. Advanced Windows GUI
 fields are deferred. SEC-4 remains open for earlier ODBC conversion/SQL-helper
 allocations, SCRAM intermediates/provider buffers and complete heap accounting;
 S2 native metadata/session migration and crypto qualification remain open.
+
+### S2 ODBC SQL capture budgets — 2026-10-01
+
+SQLExecDirect/SQLPrepare ANSI and wide APIs now apply the accepted MaxSqlBytes
+before input copies. SQL_NTS scans stop at the configured bound; explicit lengths
+are checked before allocation. Wide capture counts actual UTF-8 expansion during
+conversion and returns no partial string. Limit failure reports HY000 without
+backend work, disconnect or prepared-state mutation; malformed wide input retains
+22018 when it fits the bound. The SDK still validates translated native SQL.
+
+Tests cover all four APIs with NTS/explicit lengths, exact/overflow inputs,
+multibyte expansion, invalid Unicode, recovery and existing prepared statements,
+plus zero/empty conversion budgets. Parameter conversion, connection-string
+capture and standalone SQL helpers remain separate SEC-4 boundaries. Exact heap
+quotas and S2 native metadata/session migration remain open.

@@ -600,8 +600,9 @@ the outgoing wire ceiling. Startup responses include authentication/control
 frames; `MaxAuthWireBytes` limits each outgoing password/SASL packet, excluding
 TLS-provider handshake traffic. Input rejection before I/O preserves the current
 owner's session; response/authentication overflow retires. These limits are not
-an exact heap quota, and do not yet bound earlier ODBC conversions or standalone
-SQL helper allocations. Windows setup GUI fields for these advanced options
+an exact heap quota. They bound ANSI/wide SQL capture for direct execution and
+preparation, including UTF-8 expansion, but do not yet bound parameter conversion
+or standalone SQL helper allocations. Windows setup GUI fields for these advanced options
 are deferred; DSN/connection-string processing supports them.
 
 Example: `MaxResponseBytes=8388608;MaxRows=10000;MaxSqlBytes=262144`.

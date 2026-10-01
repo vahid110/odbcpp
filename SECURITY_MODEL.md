@@ -358,3 +358,14 @@ larger resource use. This closes configuration exposure for these specific
 limits, not SEC-4: earlier ODBC conversions/helpers, intermediate crypto/provider
 allocations and complete heap accounting remain unfinished. Windows GUI controls
 for advanced resource options are deferred.
+
+### ODBC SQL capture budgets (S2 implementation evidence)
+
+ANSI/wide SQLExecDirect and SQLPrepare use the accepted connection profile's
+MaxSqlBytes before copying input. Explicit lengths and NTS scans are bounded;
+wide conversion checks UTF-8 expansion before appending code points. Overflow
+returns HY000 with no partial SQL, backend work or prepared-state mutation.
+Within-budget malformed wide input remains 22018. UTF-16/UCS-4 gates cover the
+same conversion contract. Parameter conversion, connection-string capture,
+standalone SQL helpers and complete heap accounting remain separate unfinished
+boundaries. This does not close SEC-4, S2 or G12.
