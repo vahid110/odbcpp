@@ -45,6 +45,12 @@ template <typename T>
 concept HasNativeServerParameters = requires(const T& backend) {
   backend.get_parameter("server_version");
 };
+template <typename T>
+concept HasNativeCompletionTag = requires(T result) { result.command_tag; };
+template <typename T>
+concept HasNativeTableProvenance = requires(T column) { column.table_id; column.table_column; };
+static_assert(!HasNativeCompletionTag<QueryResult>);
+static_assert(!HasNativeTableProvenance<ResultColumnMetadata>);
 static_assert(!HasNativeServerParameters<IDatabaseConnection>);
 static_assert(!HasNativeTypeInterpretation<IDatabaseConnection>);
 static_assert(!HasNativeTypeResolution<IDatabaseConnection>);
@@ -99,7 +105,7 @@ class FakeBackend final : public IDatabaseConnection {
   }
   QueryResult rows() const {
     QueryResult result;
-    result.columns = {{"binary", 0, 0, 23}, {"flag", 0, 0, 17}, {"text", 0, 0, 999}};
+    result.columns = {{"binary", 23}, {"flag", 17}, {"text", 999}};
     result.columns[0].normalized_type = NativeTypeInfo{ScalarType::Binary, 8, 0, true};
     result.columns[1].normalized_type = NativeTypeInfo{ScalarType::Boolean, 1, 0, true};
     result.columns[2].normalized_type = NativeTypeInfo{ScalarType::VarChar, 32, 0, true};
@@ -139,7 +145,6 @@ class FakeBackend final : public IDatabaseConnection {
       case 9: result.columns[0].name = "\xe2\x82\xac\xf0\x9f\x98\x80"; break;
       default: break;
     }
-    result.command_tag = "deliberately not SQL";
     result.statement_kind = StatementKind::SelectCursor;
     return result;
   }

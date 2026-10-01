@@ -329,7 +329,7 @@ TEST(PgProtocolParserTest, ErrorAfterCommandIsASeparatePendingResult) {
   error.payload.push_back(std::byte{0});
 
   const auto result = parser.extract_query_result({command, error});
-  EXPECT_EQ("SELECT 1", result.command_tag);
+  EXPECT_EQ(rs::core::database::StatementKind::SelectCursor, result.statement_kind);
   ASSERT_EQ(1u, result.additional_results.size());
   ASSERT_TRUE(result.additional_results.front().error);
   EXPECT_EQ("Query error: division by zero",
@@ -797,11 +797,9 @@ TEST(PgProtocolParserTest, ExtractsResultAndParameterMetadata) {
   EXPECT_EQ(result.columns[0].type_id, 25u);
   EXPECT_EQ(result.columns[0].type_size, -1);
   EXPECT_EQ(result.columns[1].name, "answer");
-  EXPECT_EQ(result.columns[1].table_id, 1234u);
-  EXPECT_EQ(result.columns[1].table_column, 2);
   EXPECT_EQ(result.columns[1].type_id, 23u);
   EXPECT_EQ(result.columns[1].type_size, 4);
-  EXPECT_EQ(result.command_tag, "UPDATE 7");
+  EXPECT_EQ(rs::core::database::StatementKind::UpdateWhere, result.statement_kind);
   EXPECT_EQ(result.affected_rows, 7u);
 }
 
@@ -836,7 +834,7 @@ TEST(PgProtocolParserTest, PreservesOrderedQueryResults) {
   const auto& update = result.additional_results[0];
   EXPECT_TRUE(update.columns.empty());
   EXPECT_TRUE(update.rows.empty());
-  EXPECT_EQ(update.command_tag, "UPDATE 2");
+  EXPECT_EQ(rs::core::database::StatementKind::UpdateWhere, update.statement_kind);
   EXPECT_EQ(update.affected_rows, 2u);
 
   const auto& last = result.additional_results[1];
@@ -1090,4 +1088,37 @@ TEST(PgRequestBudgetTest, ScramContinuationResponseFitsExactWireLimit) {
   const auto baseline = continuation(4096);
   EXPECT_EQ(continuation(baseline.size()).size(), baseline.size());
   EXPECT_THROW(continuation(baseline.size() - 1), RequestWireLimitExceeded);
+}
+
+TEST(PgProtocolParserTest, CompletionSnapshotsKeepKindsAndCountsWithoutNativeTags) {
+  PgProtocolParser parser;
+  const auto result = parser.extract_query_result({command_complete("UPDATE 7"),
+      command_complete("DELETE 0"), command_complete("SET")});
+  ASSERT_EQ(2u, result.additional_results.size());
+  EXPECT_EQ(rs::core::database::StatementKind::UpdateWhere, result.statement_kind);
+  EXPECT_EQ(7u, result.affected_rows);
+  EXPECT_EQ(rs::core::database::StatementKind::DeleteWhere, result.additional_results[0].statement_kind);
+  EXPECT_EQ(0u, result.additional_results[0].affected_rows);
+  EXPECT_EQ(rs::core::database::StatementKind::Unknown, result.additional_results[1].statement_kind);
+  EXPECT_EQ(0u, result.additional_results[1].affected_rows);
+  EXPECT_EQ(rs::core::database::StatementKind::SelectCursor,
+      parser.extract_query_result({command_complete("SELECT 1")}).statement_kind);
+  EXPECT_EQ(7u, result.affected_rows); // later decoding cannot alter an owning completion
+}
+
+TEST(PgProtocolParserTest, DiscardedProvenanceAndCompletionBytesStillRequireValidFraming) {
+  PgProtocolParser parser;
+  const auto description = one_column_description("name");
+  // Two-byte count plus five-byte name precede table OID and attribute number.
+  for (std::size_t size = 7; size < 13; ++size) {
+    auto truncated = description; truncated.payload.resize(size);
+    EXPECT_THROW(parser.extract_query_result({truncated}), std::runtime_error);
+  }
+  auto unterminated = command_complete("UPDATE 7"); unterminated.payload.pop_back();
+  EXPECT_THROW(parser.extract_query_result({unterminated}), std::runtime_error);
+  auto trailing = command_complete("UPDATE 7"); trailing.payload.push_back(std::byte{'x'});
+  EXPECT_THROW(parser.extract_query_result({trailing}), std::runtime_error);
+  const auto recovered = parser.extract_query_result({description, command_complete("SELECT 0")});
+  ASSERT_EQ(1u, recovered.columns.size()); EXPECT_EQ("name", recovered.columns[0].name);
+  EXPECT_EQ(0u, recovered.affected_rows);
 }

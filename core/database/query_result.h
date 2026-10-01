@@ -12,14 +12,12 @@
 
 namespace rs::core::database {
 
-// Names and normalized_type are common metadata. IDs, size/modifier, table
-// provenance and format_code remain parser/backend migration fields. Shared
+// Names and normalized_type are common metadata. Type IDs, size/modifier and
+// format_code remain parser/backend migration fields. Shared
 // ODBC column mapping uses normalized_type exclusively, never these native IDs.
 struct ResultColumnMetadata {
   // UTF-8, without embedded NULs; empty names are valid.
   std::string name;
-  std::uint32_t table_id{0};
-  std::int16_t table_column{0};
   std::uint32_t type_id{0};
   std::int16_t type_size{-1};
   std::int32_t type_modifier{-1};
@@ -41,7 +39,7 @@ using ResultRows = std::vector<ResultRow>;
 // Fully owning snapshot: rows, metadata and additional results survive later
 // calls, disconnect and backend destruction. Deferred server errors belong to
 // their result as BackendError; native_state must be normalized by the backend.
-// command_tag and parameter_type_ids are native, not portable SQL semantics.
+// parameter_type_ids remain private-parser migration storage.
 // Deferred data errors preserve fetch/GetData timing without retaining native
 // encodings. Coordinates are zero-based, sorted, unique and refer to non-NULL
 // cells. The whole error snapshot owns its storage independently of the session.
@@ -55,12 +53,11 @@ struct QueryResult {
   ResultRows rows;
   std::vector<ResultColumnMetadata> columns;
   std::vector<std::uint32_t> parameter_type_ids;
-  std::string command_tag;
   std::optional<BackendError> error;
   std::size_t affected_rows{0};
   std::vector<QueryResult> additional_results;
   // Absent means no completion metadata; explicit Unknown clears prior dynamic
-  // function diagnostics. Shared consumers never parse native command_tag.
+  // function diagnostics. Native completion tags never cross this boundary.
   std::optional<StatementKind> statement_kind;
   // Owning, ordered parameter descriptions supplied by the backend. Native IDs
   // above remain parser migration storage and are never consumed by ODBC.

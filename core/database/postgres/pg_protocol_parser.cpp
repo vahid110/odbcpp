@@ -811,9 +811,10 @@ QueryResult PgProtocolParser::extract_query_result(
       for (std::uint16_t i = 0; i < count; ++i) {
         ResultColumnMetadata column;
         column.name = read_cstring(payload, offset);
-        column.table_id = read_u32(payload, offset);
+        // Validate/consume native provenance without publishing backend IDs.
+        (void)read_u32(payload, offset);
         offset += 4;
-        column.table_column = static_cast<std::int16_t>(read_u16(payload, offset));
+        (void)read_u16(payload, offset);
         offset += 2;
         column.type_id = read_u32(payload, offset);
         offset += 4;
@@ -864,12 +865,12 @@ QueryResult PgProtocolParser::extract_query_result(
       current.parameter_type_ids = std::move(parameter_types);
     } else if (message.tag == 'C') { // CommandComplete
       std::size_t offset = 0;
-      current.command_tag = read_cstring(payload, offset);
-      current.statement_kind = classify_command_tag(current.command_tag);
+      const auto command_tag = read_cstring(payload, offset);
+      current.statement_kind = classify_command_tag(command_tag);
       if (offset != payload.size()) {
         throw std::runtime_error("invalid PostgreSQL CommandComplete length");
       }
-      current.affected_rows = command_affected_rows(current.command_tag);
+      current.affected_rows = command_affected_rows(command_tag);
       completed.push_back(std::move(current));
       current = QueryResult{};
       has_row_description = false;
