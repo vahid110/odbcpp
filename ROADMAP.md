@@ -492,3 +492,20 @@ Exact/overflow, multi-result aggregation, parameter entries, empty names,
 malformed metadata and startup/query diagnostic tests cover the scope. SEC-4
 still needs outgoing input, allocation and product configuration boundaries;
 S2 native metadata/session facets and crypto qualification remain open.
+
+### S2 outgoing request/startup input budgets — 2026-10-01
+
+SQL and prepared parameter count/per-value/aggregate input limits now apply
+before request encoding; descriptions share the SQL/count checks. Connection
+host, user, password, database and CA paths are bounded before startup encoding,
+settings replacement or transport setup. Configured ceilings are themselves
+bounded for the PostgreSQL-family encoder. Resource-limit diagnostics contain
+no input values; preflight failures preserve the current owner's session and
+transaction state because no I/O occurred. Response overflows still retire.
+
+Tests cover exact/overflow SQL for all three operations, parameter counts,
+null/empty/binary values, aggregate bytes, recovery after rejection, transaction
+state, startup fields, invalid reconnect ceilings and zero budgets. SEC-4 remains
+open for earlier ODBC conversion, standalone SQL helpers, allocation/encoded
+buffer limits and product configuration. S2 native metadata/session facets and
+crypto qualification remain open.

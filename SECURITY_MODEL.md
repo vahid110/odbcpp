@@ -87,8 +87,18 @@ count every row/parameter description across an exchange; name bytes exclude
 terminators and count every row description, including replacements. Defaults
 are 65536 entries, 1024 bytes per column name, 1 MiB aggregate names and 16 KiB
 per diagnostic payload. Zero permits only empty names/metadata/diagnostics.
-These are input/count bounds, not exact heap quotas. Outgoing input, allocation
-boundaries and product-profile configuration remain open. Each backend
+Outgoing SQL and parameter count/value/aggregate bytes are now bounded before
+request encoding; connection fields are bounded before startup encoding or
+transport setup. Defaults are 1 MiB SQL, 65535 parameters, 16 MiB per value,
+64 MiB total values and 64 KiB per connection field. Null values contribute zero
+bytes but consume a parameter entry. Binary input is counted before wire-format
+expansion. Configured ceilings cannot exceed 64 MiB SQL, 65535 parameters,
+64 MiB per value, 256 MiB total values or 1 MiB per connection field. Local
+preflight failures perform no I/O and preserve the current owner's session and
+transaction state; response limit failures still retire. These are input/count
+bounds, not exact encoded-byte or heap quotas. Earlier ODBC conversion, marker
+count/translation helpers, allocation boundaries and product-profile
+configuration remain open. Each backend
 must enforce configurable hard ceilings and return a resource-limit error with
 mandatory retirement when protocol synchronization or memory safety is uncertain.
 
