@@ -40,7 +40,7 @@ function(odbcpp_add_internal_objects artifact)
     add_library(${_object} OBJECT ${ODBCPP_PARTITION_${_part}})
     target_compile_features(${_object} PRIVATE cxx_std_20)
     set_target_properties(${_object} PROPERTIES POSITION_INDEPENDENT_CODE ON)
-    target_include_directories(${_object} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_include_directories(${_object} PRIVATE "${ODBCPP_INTERNAL_INCLUDE_${_part}}")
     target_include_directories(${_object} SYSTEM PRIVATE "${SPDLOG_INCLUDE_DIR}")
     # Provider usage requirements remain private to compilation; final linkage
     # continues to use the existing artifact's OpenSSL profile and export controls.

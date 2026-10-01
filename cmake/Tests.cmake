@@ -414,3 +414,12 @@ add_test(NAME test_internal_source_partitions COMMAND "${CMAKE_COMMAND}"
   "-DFIXTURE_DIR=${CMAKE_CURRENT_BINARY_DIR}/internal partition fixtures"
   -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestInternalSourcePartitions.cmake")
 set_tests_properties(test_internal_source_partitions PROPERTIES LABELS "unit;architecture" TIMEOUT 30)
+
+add_test(NAME test_internal_include_closure COMMAND "${CMAKE_COMMAND}"
+  "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+  "-DFIXTURE_DIR=${CMAKE_CURRENT_BINARY_DIR}/internal include fixtures"
+  -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestInternalIncludes.cmake")
+set(INCLUDE_ROOT "${CMAKE_CURRENT_BINARY_DIR}/internal-include")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ProbeInternalIncludes.cmake")
+set_tests_properties(test_internal_include_closure
+  PROPERTIES LABELS "unit;architecture" TIMEOUT 90)

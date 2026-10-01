@@ -2,7 +2,6 @@
 #include "odbc_types.h"
 #include "core/database/backend_provider.h"
 #include "core/database/i_database_connection.h"
-#include "core/database/connection_pool.h"
 #include "core/util/driver_logging.h"
 #include "core/util/result.h"
 #include <array>
