@@ -49,7 +49,7 @@ TEST(SessionOwnerIntegrationTest, LiveBorrowSurvivesOwnerAndRetirementClosesPhys
   ASSERT_TRUE(active); ASSERT_EQ("1", active->rows.at(0).at(0));
   // Even successful backend reset cannot grant return/requeue in this primitive.
   ASSERT_NE(nullptr, lease->session()->session_reset());
-  ASSERT_TRUE(lease->session()->session_reset()->reset_session(deadline));
+  ASSERT_TRUE(lease->reset_session(deadline));
   lease->retire(); EXPECT_FALSE(*lease); EXPECT_EQ(nullptr, lease->session());
   bool gone = false;
   while (std::chrono::steady_clock::now() < deadline) {
@@ -59,6 +59,29 @@ TEST(SessionOwnerIntegrationTest, LiveBorrowSurvivesOwnerAndRetirementClosesPhys
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   EXPECT_TRUE(gone) << "Retired physical PostgreSQL session remained active";
+  // An expired coordinator cleanup deadline must retire a real physical session,
+  // even though its backend reset facet exists and its socket is still healthy.
+  auto rejected_physical = provider.create_session(nullptr); ASSERT_TRUE(rejected_physical->connect(*settings));
+  SessionOwner rejected_owner{std::move(rejected_physical)};
+  auto rejected_lease = rejected_owner.try_acquire(); ASSERT_TRUE(rejected_lease);
+  const auto rejection_deadline = rs::util::make_deadline(std::chrono::seconds(5));
+  auto rejected_pid = rejected_lease->session()->execute_query("SELECT pg_backend_pid()", rejection_deadline);
+  ASSERT_TRUE(rejected_pid); ASSERT_EQ(1u, rejected_pid->rows.size()); ASSERT_EQ(1u, rejected_pid->rows[0].size());
+  ASSERT_TRUE(rejected_pid->rows[0][0]); const auto rejected_pid_text = *rejected_pid->rows[0][0];
+  ASSERT_FALSE(rejected_pid_text.empty());
+  ASSERT_TRUE(std::all_of(rejected_pid_text.begin(), rejected_pid_text.end(), [](char c) { return c >= '0' && c <= '9'; }));
+  auto rejection = rejected_lease->reset_session(rs::util::Deadline::min()); ASSERT_FALSE(rejection);
+  EXPECT_EQ(BackendErrorClass::Timeout, rejection.backend_error().error_class);
+  EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), rejection.session_snapshot());
+  EXPECT_FALSE(*rejected_lease); EXPECT_FALSE(rejected_owner.try_acquire());
+  gone = false;
+  while (std::chrono::steady_clock::now() < rejection_deadline) {
+    auto inactive = observer->execute_query("SELECT count(*) FROM pg_stat_activity WHERE pid = " + rejected_pid_text, rejection_deadline);
+    ASSERT_TRUE(inactive);
+    if (inactive->rows.at(0).at(0) == "0") { gone = true; break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(gone) << "Rejected reset left a live physical PostgreSQL session";
   observer->disconnect();
 }
 } // namespace

@@ -1,5 +1,6 @@
 #include "session_owner.h"
 #include <mutex>
+#include <new>
 #include <stdexcept>
 #include <utility>
 
@@ -105,5 +106,54 @@ void SessionLease::retire() noexcept {
     retired = std::move(state->session);
   }
   retire_session(std::move(retired));
+}
+} // namespace rs::core::database
+
+namespace rs::core::database {
+BackendResult<void> SessionLease::reset_session(rs::util::Deadline deadline) {
+  struct RetirementGuard {
+    SessionLease& lease;
+    bool completed{false};
+    ~RetirementGuard() { if (!completed) lease.retire(); }
+  } guard{*this};
+  const auto fail = [this](rs::util::DbErrorCode code, const char* message) -> BackendResult<void> {
+    // Retire before constructing the diagnostic: even allocation failure cannot
+    // leave a failed reset borrow accessible. Backend callbacks run unlocked.
+    retire();
+    BackendError error{rs::util::make_error_code(code), message};
+    error.operation = BackendOperation::ResetSession;
+    error.session_state = SessionState::Disconnected;
+    return error;
+  };
+  try {
+    auto* physical = session();
+    if (!physical) return fail(rs::util::DbErrorCode::NotConnected, "No active session lease");
+    if (rs::util::Clock::now() >= deadline)
+      return fail(rs::util::DbErrorCode::Timeout, "Session reset deadline expired");
+    auto* reset = physical->session_reset();
+    if (!reset || reset->reset_profile() != SessionResetProfile::SameAuthenticatedServerSession)
+      return fail(rs::util::DbErrorCode::UnsupportedFeature, "Session reset profile unavailable");
+    auto result = reset->reset_session(deadline);
+    if (!result) {
+      auto error = std::move(result.backend_error());
+      retire();
+      error.operation = BackendOperation::ResetSession;
+      error.session_state = SessionState::Disconnected;
+      error.disposition = SessionDisposition::Retire;
+      error.retry_safe.reset();
+      return error;
+    }
+    if (result.session_snapshot() != SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable} ||
+        !physical->is_connected() || physical->session_state() != SessionState::Idle)
+      return fail(rs::util::DbErrorCode::ProtocolError, "Session reset outcome is inconsistent");
+    if (rs::util::Clock::now() >= deadline)
+      return fail(rs::util::DbErrorCode::Timeout, "Session reset exceeded deadline");
+    guard.completed = true;
+    return result;
+  } catch (const std::bad_alloc&) {
+    return fail(rs::util::DbErrorCode::AllocationFailure, "");
+  } catch (...) {
+    return fail(rs::util::DbErrorCode::ProtocolError, "Session reset backend threw");
+  }
 }
 } // namespace rs::core::database

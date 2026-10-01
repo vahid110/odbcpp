@@ -23,6 +23,11 @@ class SessionLease final {
   // No I/O cleanup/reset/reconnect is attempted. Returning or abandoning the
   // lease retires and destroys the physical session, even after reset success.
   void retire() noexcept;
+  // Explicit coordinator cleanup of this active borrow, using the original
+  // deadline. Any failed/unsupported/ambiguous cleanup retires the lease.
+  // Success keeps exclusive ownership, never grants return/requeue. Direct raw
+  // facet calls remain outside this path; cache tokens/reuse are not enabled.
+  BackendResult<void> reset_session(rs::util::Deadline deadline);
 
  private:
   friend class SessionOwner;

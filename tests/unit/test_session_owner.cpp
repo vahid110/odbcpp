@@ -4,6 +4,7 @@
 #include <atomic>
 #include <barrier>
 #include <functional>
+#include <new>
 #include <stdexcept>
 #include <thread>
 #include <type_traits>
@@ -17,6 +18,11 @@ static_assert(std::is_nothrow_move_constructible_v<SessionLease> && std::is_noth
 struct Observed {
   std::atomic<int> disconnects{}, destructions{}, queries{}, health{}, resets{};
   bool throw_disconnect{};
+  bool missing_reset{};
+  int reset_mode{};
+  rs::util::Deadline reset_deadline{};
+  std::function<void()> on_reset;
+  std::optional<SessionSnapshot> reset_snapshot;
   std::function<void()> on_disconnect;
 };
 class FakeSession final : public IDatabaseConnection, public ISessionHealth, public ISessionReset {
@@ -29,7 +35,15 @@ class FakeSession final : public IDatabaseConnection, public ISessionHealth, pub
     if (observed_->on_disconnect) observed_->on_disconnect();
     if (observed_->throw_disconnect) throw std::runtime_error("disconnect fixture");
   }
-  bool is_connected() const override { return connected_; }
+  bool is_connected() const override {
+    if (observed_->reset_mode == 11) throw std::runtime_error("private connected fixture");
+    return connected_;
+  }
+  SessionState session_state() const override {
+    if (observed_->reset_mode == 8) throw std::runtime_error("private passive-state fixture");
+    return !connected_ ? SessionState::Disconnected :
+        observed_->reset_mode == 7 ? SessionState::Transaction : SessionState::Idle;
+  }
   BackendResult<QueryResult> execute_query(std::string_view, rs::util::Deadline) override {
     ++observed_->queries; return QueryResult{};
   }
@@ -37,10 +51,30 @@ class FakeSession final : public IDatabaseConnection, public ISessionHealth, pub
       std::span<const QueryParameter>, rs::util::Deadline) override { return QueryResult{}; }
   std::string server_version() const override { return "fixture"; }
   ISessionHealth* session_health() noexcept override { return this; }
-  ISessionReset* session_reset() noexcept override { return this; }
-  SessionResetProfile reset_profile() const noexcept override { return SessionResetProfile::SameAuthenticatedServerSession; }
+  ISessionReset* session_reset() noexcept override { return observed_->missing_reset ? nullptr : this; }
+  SessionResetProfile reset_profile() const noexcept override {
+    return observed_->reset_mode == 9 ? static_cast<SessionResetProfile>(99) : SessionResetProfile::SameAuthenticatedServerSession;
+  }
   BackendResult<void> check_health(rs::util::Deadline) override { ++observed_->health; return {}; }
-  BackendResult<void> reset_session(rs::util::Deadline) override { ++observed_->resets; return {}; }
+  BackendResult<void> reset_session(rs::util::Deadline deadline) override {
+    ++observed_->resets; observed_->reset_deadline = deadline;
+    if (observed_->on_reset) observed_->on_reset();
+    if (observed_->reset_mode == 1) {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "owned fixture error"};
+      error.native_state = "XX000"; error.native_code = 42;
+      error.operation = BackendOperation::ExecuteDirect; error.session_state = SessionState::Idle;
+      error.disposition = SessionDisposition::Reusable; error.retry_safe = true;
+      return error;
+    }
+    if (observed_->reset_mode == 2) throw std::bad_alloc{};
+    if (observed_->reset_mode == 3) throw std::runtime_error("SECRET fixture detail");
+    if (observed_->reset_mode == 10) throw 42;
+    if (observed_->reset_snapshot) return BackendResult<void>{*observed_->reset_snapshot};
+    if (observed_->reset_mode == 4) return {};
+    if (observed_->reset_mode == 5) return BackendResult<void>{SessionSnapshot{SessionState::Idle, SessionDisposition::ResetRequired}};
+    if (observed_->reset_mode == 6) connected_ = false;
+    return BackendResult<void>{SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}};
+  }
  private:
   std::shared_ptr<Observed> observed_;
   bool connected_{true};
@@ -221,5 +255,113 @@ TEST(SessionOwnerCredentialsTest, NewGenerationCannotRetireOldBindingUntilExactS
   EXPECT_FALSE(owner.try_acquire(fresh)); EXPECT_EQ(0, observed->disconnects);
   EXPECT_EQ(0, observed->destructions); EXPECT_TRUE(fresh.is_current());
   EXPECT_FALSE(owner.try_acquire(bound)); retired_once(*observed);
+}
+} // namespace
+
+namespace {
+TEST(SessionLeaseResetTest, SuccessUsesOneDeadlineAndKeepsExclusiveBorrowWithoutReturn) {
+  CredentialContext credentials; auto token = credentials.publish_authenticated();
+  auto observed = std::make_shared<Observed>();
+  SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+  auto lease = owner.try_acquire(token); ASSERT_TRUE(lease);
+  credentials.revoke(); // Cleanup of this borrower is not new-borrower admission.
+  observed->on_reset = [&] { EXPECT_FALSE(owner.try_acquire(token)); };
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds(5));
+  auto result = lease->reset_session(deadline); ASSERT_TRUE(result);
+  EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), result.session_snapshot());
+  EXPECT_EQ(deadline, observed->reset_deadline); EXPECT_EQ(1, observed->resets);
+  EXPECT_TRUE(*lease); EXPECT_EQ(0, observed->disconnects);
+  ASSERT_TRUE(lease->session()->execute_query("fixture", deadline));
+  lease->retire(); EXPECT_FALSE(owner.try_acquire(token));
+  EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
+}
+TEST(SessionLeaseResetTest, UnsupportedProfileAndExpiredDeadlineRetireWithoutCleanupIO) {
+  for (int mode = 0; mode < 3; ++mode) {
+    auto observed = std::make_shared<Observed>();
+    observed->missing_reset = mode == 0; observed->reset_mode = mode == 1 ? 9 : 0;
+    auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+    auto result = lease->reset_session(mode == 2 ? rs::util::Deadline::min() : rs::util::Deadline::max());
+    ASSERT_FALSE(result); EXPECT_EQ(mode == 2 ? BackendErrorClass::Timeout : BackendErrorClass::Unsupported,
+                                   result.backend_error().error_class);
+    EXPECT_EQ(BackendOperation::ResetSession, result.backend_error().operation);
+    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), result.session_snapshot());
+    EXPECT_FALSE(result.backend_error().retry_safe); EXPECT_FALSE(*lease); EXPECT_FALSE(owner.try_acquire());
+    retired_once(*observed);
+  }
+}
+TEST(SessionLeaseResetTest, AllAmbiguousAndThrowingOutcomesRetireAndSuppressRetry) {
+  for (const int mode : {1, 2, 3, 4, 5, 6, 7, 8, 10, 11}) {
+    auto observed = std::make_shared<Observed>(); observed->reset_mode = mode; observed->throw_disconnect = true;
+    auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+    observed->on_disconnect = [&] { EXPECT_FALSE(owner.try_acquire()); };
+    auto result = lease->reset_session(rs::util::Deadline::max()); ASSERT_FALSE(result);
+    EXPECT_EQ(BackendOperation::ResetSession, result.backend_error().operation);
+    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), result.session_snapshot());
+    EXPECT_FALSE(result.backend_error().retry_safe); EXPECT_FALSE(*lease); EXPECT_EQ(nullptr, lease->session());
+    EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions); EXPECT_EQ(1, observed->resets);
+    if (mode == 1) {
+      EXPECT_EQ("owned fixture error", result.error_message()); EXPECT_EQ("XX000", result.backend_error().native_state);
+      EXPECT_EQ(42, result.backend_error().native_code);
+    } else if (mode == 2) {
+      EXPECT_EQ(BackendErrorClass::AllocationFailure, result.backend_error().error_class);
+    } else {
+      EXPECT_EQ(BackendErrorClass::Protocol, result.backend_error().error_class);
+      EXPECT_EQ(std::string::npos, result.error_message().find("SECRET"));
+    }
+    EXPECT_FALSE(lease->reset_session(rs::util::Deadline::max()));
+    EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->resets);
+    observed->on_disconnect = {};
+  }
+}
+TEST(SessionLeaseResetTest, BackendCannotTurnLateCompletionIntoSuccessfulCleanup) {
+  auto observed = std::make_shared<Observed>(); auto owner = owner_for(observed);
+  auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds(1));
+  observed->on_reset = [&] { std::this_thread::sleep_until(deadline); };
+  auto result = lease->reset_session(deadline); ASSERT_FALSE(result);
+  EXPECT_EQ(BackendErrorClass::Timeout, result.backend_error().error_class);
+  EXPECT_FALSE(*lease); EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->resets);
+}
+TEST(SessionLeaseResetTest, MovedAndRetiredLeasesRejectResetWithoutTouchingTransferredSession) {
+  auto observed = std::make_shared<Observed>(); auto owner = owner_for(observed);
+  auto lease = owner.try_acquire(); ASSERT_TRUE(lease); SessionLease moved{std::move(*lease)};
+  auto missing = lease->reset_session(rs::util::Deadline::max()); ASSERT_FALSE(missing);
+  EXPECT_EQ(BackendErrorClass::NotConnected, missing.backend_error().error_class);
+  EXPECT_EQ(0, observed->disconnects); EXPECT_EQ(0, observed->resets);
+  ASSERT_TRUE(moved.reset_session(rs::util::Deadline::max())); moved.retire();
+  EXPECT_FALSE(moved.reset_session(rs::util::Deadline::max())); EXPECT_EQ(1, observed->disconnects);
+}
+} // namespace
+
+namespace {
+TEST(SessionLeaseResetTest, EveryNonIdleOrNonReusableSuccessSnapshotIsRejected) {
+  for (const auto state : {SessionState::Disconnected, SessionState::Idle, SessionState::Transaction,
+                           SessionState::FailedTransaction, SessionState::Unknown}) {
+    for (const auto disposition : {SessionDisposition::Reusable, SessionDisposition::ResetRequired,
+                                  SessionDisposition::Retire}) {
+      if (state == SessionState::Idle && disposition == SessionDisposition::Reusable) continue;
+      auto observed = std::make_shared<Observed>(); observed->reset_snapshot = SessionSnapshot{state, disposition};
+      auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+      auto result = lease->reset_session(rs::util::Deadline::max()); ASSERT_FALSE(result);
+      EXPECT_EQ(BackendErrorClass::Protocol, result.backend_error().error_class);
+      EXPECT_FALSE(*lease); EXPECT_EQ(1, observed->resets); EXPECT_EQ(1, observed->disconnects);
+      EXPECT_EQ(1, observed->destructions); EXPECT_FALSE(owner.try_acquire());
+    }
+  }
+}
+TEST(SessionLeaseResetTest, OwnerDestructionAndRevocationDuringResetLeaveActiveBorrowerIntact) {
+  CredentialContext credentials; auto token = credentials.publish_authenticated();
+  auto observed = std::make_shared<Observed>();
+  auto owner = std::make_unique<SessionOwner>(std::make_unique<FakeSession>(observed), token);
+  auto lease = owner->try_acquire(token); ASSERT_TRUE(lease);
+  std::barrier entered(2); std::barrier resume(2);
+  observed->on_reset = [&] { entered.arrive_and_wait(); resume.arrive_and_wait(); };
+  std::optional<BackendResult<void>> result;
+  std::thread resetting([&] { result = lease->reset_session(rs::util::Deadline::max()); });
+  entered.arrive_and_wait(); owner.reset(); credentials.revoke();
+  EXPECT_EQ(0, observed->disconnects); EXPECT_EQ(0, observed->destructions);
+  resume.arrive_and_wait(); resetting.join(); ASSERT_TRUE(result); ASSERT_TRUE(*result);
+  EXPECT_TRUE(*lease); ASSERT_TRUE(lease->session()->execute_query("fixture", rs::util::Deadline::max()));
+  lease->retire(); EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
 }
 } // namespace
