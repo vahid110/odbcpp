@@ -1,5 +1,6 @@
 #pragma once
 #include "i_database_connection.h"
+#include "credential_context.h"
 #include <memory>
 #include <optional>
 
@@ -37,6 +38,9 @@ class SessionLease final {
 class SessionOwner final {
  public:
   explicit SessionOwner(std::unique_ptr<IDatabaseConnection>);
+  // Trusted composition must bind this token to the adopted authenticated
+  // session. Matching stale credentials close admission; active leases survive.
+  SessionOwner(std::unique_ptr<IDatabaseConnection>, CredentialToken);
   SessionOwner(const SessionOwner&) = delete;
   SessionOwner& operator=(const SessionOwner&) = delete;
   SessionOwner(SessionOwner&&) noexcept;
@@ -44,8 +48,12 @@ class SessionOwner final {
   ~SessionOwner();
 
   std::optional<SessionLease> try_acquire();
+  // Missing, foreign and wrong-generation tokens cannot disrupt a valid owner.
+  std::optional<SessionLease> try_acquire(const CredentialToken&);
 
  private:
+  SessionOwner(std::unique_ptr<IDatabaseConnection>, std::optional<CredentialToken>);
+  std::optional<SessionLease> try_acquire_impl(const CredentialToken*);
   void close() noexcept;
   std::shared_ptr<detail::SessionOwnershipState> state_;
 };

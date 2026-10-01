@@ -6,10 +6,11 @@
 namespace rs::core::database {
 namespace detail {
 struct SessionOwnershipState {
-  explicit SessionOwnershipState(std::unique_ptr<IDatabaseConnection> value)
-      : session(std::move(value)) {}
+  explicit SessionOwnershipState(std::unique_ptr<IDatabaseConnection> value, std::optional<CredentialToken> token)
+      : session(std::move(value)), credential(std::move(token)) {}
   std::mutex mutex;
   std::unique_ptr<IDatabaseConnection> session;
+  const std::optional<CredentialToken> credential;
   bool accepting{true};
   bool leased{false};
 };
@@ -24,7 +25,11 @@ void retire_session(std::unique_ptr<IDatabaseConnection> session) noexcept {
 }
 
 SessionOwner::SessionOwner(std::unique_ptr<IDatabaseConnection> session)
-    : state_(std::make_shared<detail::SessionOwnershipState>(std::move(session))) {
+    : SessionOwner(std::move(session), std::nullopt) {}
+SessionOwner::SessionOwner(std::unique_ptr<IDatabaseConnection> session, CredentialToken token)
+    : SessionOwner(std::move(session), std::optional{std::move(token)}) {}
+SessionOwner::SessionOwner(std::unique_ptr<IDatabaseConnection> session, std::optional<CredentialToken> token)
+    : state_(std::make_shared<detail::SessionOwnershipState>(std::move(session), std::move(token))) {
   if (!state_->session) throw std::invalid_argument("SessionOwner requires a physical session");
 }
 SessionOwner::SessionOwner(SessionOwner&& other) noexcept
@@ -46,12 +51,33 @@ void SessionOwner::close() noexcept {
   // Never call an external backend under the ownership mutex.
   retire_session(std::move(retired));
 }
-std::optional<SessionLease> SessionOwner::try_acquire() {
+std::optional<SessionLease> SessionOwner::try_acquire() { return try_acquire_impl(nullptr); }
+std::optional<SessionLease> SessionOwner::try_acquire(const CredentialToken& token) {
+  return try_acquire_impl(&token);
+}
+std::optional<SessionLease> SessionOwner::try_acquire_impl(const CredentialToken* token) {
   if (!state_) return std::nullopt;
-  std::lock_guard lock(state_->mutex);
-  if (!state_->accepting || state_->leased || !state_->session) return std::nullopt;
-  state_->leased = true;
-  return SessionLease{state_};
+  std::unique_ptr<IDatabaseConnection> retired;
+  std::optional<SessionLease> lease;
+  {
+    std::lock_guard lock(state_->mutex);
+    if (!state_->accepting || !state_->session) return std::nullopt;
+    if (state_->credential) {
+      // Denials cannot be used to retire another context or newer generation.
+      if (!token || !state_->credential->same_generation(*token)) return std::nullopt;
+      // Lock order: owner -> authority. Authorities never call back into owners.
+      if (!state_->credential->is_current()) {
+        state_->accepting = false;
+        if (!state_->leased) retired = std::move(state_->session);
+      } else if (!state_->leased) {
+        state_->leased = true; lease = SessionLease{state_};
+      }
+    } else if (!token && !state_->leased) {
+      state_->leased = true; lease = SessionLease{state_};
+    }
+  }
+  retire_session(std::move(retired));
+  return lease;
 }
 
 SessionLease::SessionLease(std::shared_ptr<detail::SessionOwnershipState> state) noexcept

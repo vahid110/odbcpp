@@ -156,3 +156,70 @@ TEST(SessionOwnerTest, NullRejectedAndDisconnectExceptionsContained) {
   }
 }
 } // namespace
+
+namespace {
+TEST(SessionOwnerCredentialsTest, BoundAdmissionRequiresExactAuthorityAndGeneration) {
+  CredentialContext context; CredentialContext foreign;
+  auto old = context.publish_authenticated(); auto current = context.publish_authenticated();
+  auto foreign_token = foreign.publish_authenticated();
+  auto observed = std::make_shared<Observed>();
+  SessionOwner owner{std::make_unique<FakeSession>(observed), current};
+  EXPECT_FALSE(owner.try_acquire()); EXPECT_FALSE(owner.try_acquire(foreign_token)); EXPECT_FALSE(owner.try_acquire(old));
+  EXPECT_EQ(0, observed->disconnects);
+  auto lease = owner.try_acquire(current); ASSERT_TRUE(lease); EXPECT_FALSE(owner.try_acquire(current));
+  lease.reset(); retired_once(*observed);
+  auto legacy_observed = std::make_shared<Observed>(); auto legacy = owner_for(legacy_observed);
+  EXPECT_FALSE(legacy.try_acquire(current)); auto legacy_lease = legacy.try_acquire(); ASSERT_TRUE(legacy_lease);
+}
+TEST(SessionOwnerCredentialsTest, MatchingRevokedRotatedExpiredAndOrphanedCredentialsRetireIdle) {
+  for (int mode = 0; mode < 4; ++mode) {
+    auto context = std::make_unique<CredentialContext>();
+    auto token = context->publish_authenticated(mode == 2 ? std::optional{rs::util::Deadline::min()} : std::nullopt);
+    auto observed = std::make_shared<Observed>(); observed->throw_disconnect = mode == 3;
+    SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+    if (mode == 0) context->revoke();
+    if (mode == 1) { (void)context->publish_authenticated(); }
+    if (mode == 3) context.reset();
+    EXPECT_FALSE(owner.try_acquire(token)); EXPECT_FALSE(owner.try_acquire(token)); retired_once(*observed);
+  }
+}
+TEST(SessionOwnerCredentialsTest, RevocationClosesAdmissionWithoutInterruptingActiveBorrower) {
+  CredentialContext context; auto token = context.publish_authenticated();
+  auto observed = std::make_shared<Observed>();
+  SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+  auto lease = owner.try_acquire(token); ASSERT_TRUE(lease);
+  context.revoke(); EXPECT_FALSE(owner.try_acquire(token));
+  EXPECT_EQ(0, observed->disconnects); EXPECT_EQ(0, observed->destructions);
+  EXPECT_TRUE(lease->session()->is_connected());
+  ASSERT_TRUE(lease->session()->execute_query("fixture", rs::util::Deadline::max()));
+  (void)context.publish_authenticated(); EXPECT_FALSE(owner.try_acquire(token));
+  lease.reset(); retired_once(*observed);
+}
+TEST(SessionOwnerCredentialsTest, RotationRacingCheckoutOrRetirementNeverDuplicatesOwnership) {
+  for (int iteration = 0; iteration < 100; ++iteration) {
+    CredentialContext context; auto token = context.publish_authenticated();
+    auto observed = std::make_shared<Observed>();
+    SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+    std::optional<SessionLease> lease;
+    std::barrier start(3);
+    std::thread acquiring([&] { start.arrive_and_wait(); lease = owner.try_acquire(token); });
+    std::thread rotating([&] { start.arrive_and_wait(); (void)context.publish_authenticated(); });
+    start.arrive_and_wait(); acquiring.join(); rotating.join();
+    EXPECT_FALSE(token.is_current()); EXPECT_FALSE(owner.try_acquire(token));
+    if (lease) { EXPECT_EQ(0, observed->disconnects); lease.reset(); }
+    retired_once(*observed);
+  }
+}
+} // namespace
+
+namespace {
+TEST(SessionOwnerCredentialsTest, NewGenerationCannotRetireOldBindingUntilExactStaleTokenIsPresented) {
+  CredentialContext context; auto bound = context.publish_authenticated();
+  auto observed = std::make_shared<Observed>();
+  SessionOwner owner{std::make_unique<FakeSession>(observed), bound};
+  auto fresh = context.publish_authenticated();
+  EXPECT_FALSE(owner.try_acquire(fresh)); EXPECT_EQ(0, observed->disconnects);
+  EXPECT_EQ(0, observed->destructions); EXPECT_TRUE(fresh.is_current());
+  EXPECT_FALSE(owner.try_acquire(bound)); retired_once(*observed);
+}
+} // namespace

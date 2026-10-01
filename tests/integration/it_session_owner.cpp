@@ -29,12 +29,16 @@ TEST(SessionOwnerIntegrationTest, LiveBorrowSurvivesOwnerAndRetirementClosesPhys
   ASSERT_TRUE(settings) << "Mandatory PostgreSQL ownership fixture configuration failed";
   auto physical = provider.create_session(nullptr);
   ASSERT_TRUE(physical->connect(*settings)) << "Mandatory PostgreSQL ownership fixture connection failed";
+  // Trusted coordinator publishes only after this physical authentication.
+  CredentialContext credentials; auto token = credentials.publish_authenticated();
   std::optional<SessionLease> lease;
   {
-    SessionOwner owner{std::move(physical)};
-    lease = owner.try_acquire(); ASSERT_TRUE(lease); EXPECT_FALSE(owner.try_acquire());
+    SessionOwner owner{std::move(physical), token};
+    EXPECT_FALSE(owner.try_acquire());
+    lease = owner.try_acquire(token); ASSERT_TRUE(lease); EXPECT_FALSE(owner.try_acquire(token));
   }
-  // Owner destruction must not interrupt this still-exclusive borrower.
+  // Neither owner destruction nor credential revocation interrupts this borrower.
+  credentials.revoke(); EXPECT_FALSE(token.is_current());
   const auto deadline = rs::util::make_deadline(std::chrono::seconds(5));
   auto pid_result = lease->session()->execute_query("SELECT pg_backend_pid()", deadline);
   ASSERT_TRUE(pid_result); ASSERT_EQ(1u, pid_result->rows.size()); ASSERT_EQ(1u, pid_result->rows[0].size());
