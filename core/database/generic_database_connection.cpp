@@ -757,6 +757,13 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
       normalize_cells(*item);
       normalized->additional_results.push_back(std::move(*item));
     }
+    if (!valid_execution_structure(*normalized) ||
+        (kind == ResponseKind::Description && !valid_description_structure(*normalized))) {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),
+          "Data source returned invalid execution sequence"};
+      error.error_class = BackendErrorClass::InvalidMetadata;
+      return error;
+    }
     return normalized;
   } catch (const std::bad_alloc&) {
     mark_transport_failed();

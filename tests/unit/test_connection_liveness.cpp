@@ -3597,3 +3597,37 @@ TEST(NormalizedMetadataTest, NestedPrivateResultsAreRejectedAfterDrainAndRecover
   EXPECT_TRUE(backend.is_connected());
   ASSERT_TRUE(backend.execute_query("SELECT 0", rs::util::Deadline::max()));
 }
+
+TEST(NormalizedMetadataTest, ContradictoryPrivateErrorItemsRejectAfterDrainAndRecover) {
+  using namespace rs::core::database;
+  class ContradictoryParser final : public postgres::PgProtocolParser {
+   public:
+    explicit ContradictoryParser(bool primary) : primary_(primary) {}
+    ParsedQueryResult extract_query_result(const std::vector<Message>& messages) override {
+      auto result = PgProtocolParser::extract_query_result(messages);
+      if (corrupt_) {
+        auto& item = primary_ ? result : result.additional_results.at(0);
+        item.error.emplace(rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "contradictory error");
+        corrupt_ = false;
+      }
+      return result;
+    }
+   private:
+    bool primary_;
+    bool corrupt_ = true;
+  };
+  for (const bool primary : {false, true}) {
+    GenericDatabaseConnection backend(std::make_unique<ContradictoryParser>(primary),
+        std::make_unique<ScriptedBackendTransport>(ScriptedBackendTransport::ResponseMode::Utf8ColumnNames));
+    ConnectionSettings settings; settings.use_ssl = false;
+    ASSERT_TRUE(backend.connect(settings));
+    auto result = backend.execute_query("SELECT value; SELECT value", rs::util::Deadline::max());
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(BackendErrorClass::InvalidMetadata, result.backend_error().error_class);
+    EXPECT_EQ(SessionState::Idle, result.backend_error().session_state);
+    EXPECT_EQ(SessionDisposition::Reusable, result.backend_error().disposition);
+    EXPECT_EQ("Data source returned invalid execution sequence", result.error_message());
+    EXPECT_TRUE(backend.is_connected());
+    ASSERT_TRUE(backend.execute_query("SELECT 0", rs::util::Deadline::max()));
+  }
+}

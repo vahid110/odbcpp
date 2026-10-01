@@ -31,8 +31,12 @@ using ResultRow = std::vector<ResultCell>;
 using ResultRows = std::vector<ResultRow>;
 
 // Fully owning snapshot: rows, metadata and additional results survive later
-// calls, disconnect and backend destruction. Deferred server errors belong to
-// their result as BackendError; native_state must be normalized by the backend.
+// calls, disconnect and backend destruction. Additional results form a flat,
+// ordered sequence; nested additional results are invalid. A primary error uses
+// BackendResult rather than the success alternative. Deferred server errors belong to
+// an error-only additional result as BackendError; native_state must be normalized
+// by the backend. Error-only items carry no schema, rows, parameter descriptions,
+// cell errors or completion metadata.
 // Deferred data errors preserve fetch/GetData timing without retaining native
 // encodings. Coordinates are zero-based, sorted, unique and refer to non-NULL
 // cells. The whole error snapshot owns its storage independently of the session.

@@ -4399,6 +4399,9 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
 void ODBCStatement::apply_query_result(
     rs::core::database::QueryResult result,
     bool include_parameter_metadata) {
+  if (!rs::core::database::valid_execution_structure(result)) {
+    throw std::invalid_argument("Data source returned invalid execution sequence");
+  }
   require_normalized_columns(result);
   for (const auto& item : result.additional_results) require_normalized_columns(item);
   const auto statement_kind = result.statement_kind;
@@ -4599,6 +4602,10 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
                                      classify_dynamic_function(prepared_sql_).code),
               result.error_message());
     if (timeout) conn_->disconnect();
+    return SQL_ERROR;
+  }
+  if (!rs::core::database::valid_description_structure(*result)) {
+    set_error(SQLSTATE_GENERAL_ERROR, "Data source returned invalid description sequence");
     return SQL_ERROR;
   }
   if (result->normalized_parameter_types.size() !=

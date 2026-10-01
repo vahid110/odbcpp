@@ -30,7 +30,7 @@ struct Observations {
   std::string server_version = "1.0";
   bool setup_allocation_failure{false};
   bool missing_parameter_metadata{}, parameter_metadata_error{};
-  int invalid_cell_errors{}, invalid_result_structure{};
+  int invalid_cell_errors{}, invalid_result_structure{}, invalid_execution_shape{}, invalid_description_shape{};
 };
 
 template <typename T>
@@ -189,6 +189,33 @@ class FakeBackend final : public IDatabaseConnection {
       if (sql.ends_with("deferred_metadata")) error.error->error_class = BackendErrorClass::InvalidMetadata;
       result.additional_results.push_back(std::move(error));
     }
+    if (sql.ends_with("ordered")) {
+      result = QueryResult{};
+      result.affected_rows = 7; result.statement_kind = StatementKind::UpdateWhere;
+      auto empty_rowset = rows(); empty_rowset.rows.clear();
+      result.additional_results.push_back(std::move(empty_rowset));
+      QueryResult zero_count; zero_count.statement_kind = StatementKind::DeleteWhere;
+      result.additional_results.push_back(std::move(zero_count));
+      QueryResult error;
+      error.error.emplace(rs::util::make_error_code(DbErrorCode::QueryFailed), "ordered later error");
+      error.error->native_state = "FAKE_ERROR";
+      result.additional_results.push_back(std::move(error));
+    }
+    if (seen_->invalid_execution_shape != 0) {
+      QueryResult later;
+      later.error.emplace(rs::util::make_error_code(DbErrorCode::QueryFailed), "invalid item");
+      switch (seen_->invalid_execution_shape) {
+        case 1: result.error = later.error; break;
+        case 2: later.error.reset(); later.additional_results.emplace_back(); break;
+        case 3: later.columns = result.columns; break;
+        case 4: later.rows = result.rows; break;
+        case 5: later.cell_errors = {{0, 0}}; break;
+        case 6: later.normalized_parameter_types.push_back({ScalarType::Integer, 10, 0, true}); break;
+        case 7: later.affected_rows = 1; break;
+        case 8: later.statement_kind = StatementKind::Unknown; break;
+      }
+      if (seen_->invalid_execution_shape != 1) result.additional_results.push_back(std::move(later));
+    }
     return result;
   }
   BackendResult<QueryResult> execute_prepared(std::string_view sql, std::span<const QueryParameter> params,
@@ -203,6 +230,13 @@ class FakeBackend final : public IDatabaseConnection {
     QueryResult result = rows(); result.rows.clear();
     result.normalized_parameter_types.assign(types.size(),
         NativeTypeInfo{ScalarType::Binary, 8, 0, true});
+    switch (seen_->invalid_description_shape) {
+      case 1: result.error.emplace(rs::util::make_error_code(DbErrorCode::QueryFailed), "invalid description"); break;
+      case 2: result.additional_results.emplace_back(); break;
+      case 3: result.additional_results.emplace_back(); result.additional_results.back().additional_results.emplace_back(); break;
+      case 4: result.rows = {{"a", "1", "b"}}; break;
+      case 5: result.cell_errors = {{0, 0}}; break;
+    }
     if (seen_->missing_parameter_metadata) result.normalized_parameter_types.clear();
     if (seen_->parameter_metadata_error) {
       BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), "fake metadata error"};
@@ -1207,5 +1241,74 @@ TEST_F(BackendContractTest, ServerVersionUsesTypedBackendServiceForAnsiAndWideIn
     EXPECT_TRUE(std::equal(expected_wide->begin(), expected_wide->end(), wide));
     EXPECT_EQ(0, wide[10]);
     EXPECT_EQ(0, seen->queries); EXPECT_EQ(0, seen->descriptions);
+  }
+}
+
+TEST_F(BackendContractTest, InvalidExecutionSequenceRejectsAtomicallyAndRecovers) {
+  connect();
+  for (const bool prepared : {false, true}) {
+    for (const int invalid : {1, 2, 3, 4, 5, 6, 7, 8}) {
+      SCOPED_TRACE(prepared);
+      SCOPED_TRACE(invalid);
+      seen->invalid_execution_shape = invalid;
+      if (prepared) {
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows", SQL_NTS));
+        EXPECT_EQ(SQL_ERROR, SQLExecute(stmt));
+      } else {
+        EXPECT_EQ(SQL_ERROR, execute("rows"));
+      }
+      EXPECT_EQ("HY000", state()); EXPECT_EQ(0, seen->disconnects);
+      EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(stmt));
+      seen->invalid_execution_shape = 0;
+      ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+      ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    }
+  }
+}
+
+TEST_F(BackendContractTest, OrderedCountsEmptyRowsetAndDeferredErrorRemainDistinct) {
+  connect();
+  for (const bool prepared : {false, true}) {
+    if (prepared) {
+      ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"ordered", SQL_NTS));
+      ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    } else {
+      ASSERT_EQ(SQL_SUCCESS, execute("ordered"));
+    }
+    SQLLEN count = -1; SQLSMALLINT columns = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLRowCount(stmt, &count)); EXPECT_EQ(7, count);
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(stmt, &columns)); EXPECT_EQ(0, columns);
+    ASSERT_EQ(SQL_SUCCESS, SQLMoreResults(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(stmt, &columns)); EXPECT_EQ(3, columns);
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLMoreResults(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLRowCount(stmt, &count)); EXPECT_EQ(0, count);
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(stmt, &columns)); EXPECT_EQ(0, columns);
+    EXPECT_EQ(SQL_ERROR, SQLMoreResults(stmt)); EXPECT_EQ("22018", state());
+    EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(stmt)); EXPECT_EQ(0, seen->disconnects);
+    ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+}
+
+TEST_F(BackendContractTest, InvalidDescriptionSequencePreservesOutputsAndRetriesWithoutCachedSuccess) {
+  connect();
+  for (const int invalid : {1, 2, 3, 4, 5}) {
+    SCOPED_TRACE(invalid);
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+    seen->invalid_description_shape = invalid;
+    SQLSMALLINT type = -17, digits = -19, nullable = -23, columns = -29;
+    SQLULEN size = 12345;
+    EXPECT_EQ(SQL_ERROR, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+    EXPECT_EQ("HY000", state());
+    EXPECT_EQ(-17, type); EXPECT_EQ(12345u, size); EXPECT_EQ(-19, digits); EXPECT_EQ(-23, nullable);
+    EXPECT_EQ(SQL_ERROR, SQLNumResultCols(stmt, &columns)); EXPECT_EQ(-29, columns);
+    EXPECT_EQ(0, seen->disconnects);
+    seen->invalid_description_shape = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+    EXPECT_EQ(SQL_VARBINARY, type);
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(stmt, &columns)); EXPECT_EQ(3, columns);
+    ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
   }
 }
