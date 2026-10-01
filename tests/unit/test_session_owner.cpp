@@ -772,7 +772,7 @@ TEST(SessionReturnTest, ClosureRotationAndExpiryDuringResetRetireBeforePublicati
     };
     auto result = lease->return_reusable(rs::util::Deadline::max()); EXPECT_FALSE(result); EXPECT_FALSE(*lease);
     EXPECT_EQ(1, observed->resets); EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
-    if (owner) EXPECT_FALSE(owner->try_acquire(token));
+    if (owner) { EXPECT_FALSE(owner->try_acquire(token)); }
   }
 }
 TEST(SessionReturnTest, LateResetAndRepeatedReturnCannotGrantReuse) {
