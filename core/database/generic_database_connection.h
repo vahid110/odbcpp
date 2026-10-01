@@ -7,7 +7,7 @@
 
 namespace rs::core::database {
 
-class GenericDatabaseConnection : public IDatabaseConnection {
+class GenericDatabaseConnection : public IDatabaseConnection, public IStatementDescription {
 public:
   GenericDatabaseConnection(
     std::unique_ptr<IProtocolParser> parser,
@@ -48,6 +48,7 @@ public:
   BackendResult<QueryResult> execute_prepared(std::string_view sql,
                                                 std::span<const QueryParameter> params,
                                                 rs::util::Deadline deadline) override;
+  IStatementDescription* statement_description() noexcept override { return this; }
   BackendResult<QueryResult> describe_statement(
       std::string_view sql,
       std::span<const QueryParameterType> parameter_types,

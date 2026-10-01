@@ -3793,3 +3793,32 @@ TEST(BackendTransactionTest, OptionalFacetIsStableAcrossConnectionAndDisconnect)
   EXPECT_EQ(BackendErrorClass::NotConnected, disconnected.backend_error().error_class);
   EXPECT_EQ(BackendOperation::SetTransactionIsolation, disconnected.backend_error().operation);
 }
+
+TEST(NormalizedParameterTest, DescriptionFacetIsStableAndOwnsMetadataAcrossSessionLifetime) {
+  using namespace rs::core::database;
+  BackendResult<QueryResult> retained{QueryResult{}};
+  {
+    ParameterNormalizationConnection backend;
+    IDatabaseConnection& session = backend;
+    auto* facet = session.statement_description(); ASSERT_NE(nullptr, facet);
+    const QueryParameterType hints[]{QueryParameterType::Numeric};
+    const auto closed = facet->describe_statement("SELECT ?", hints, rs::util::Deadline::max());
+    ASSERT_TRUE(closed.has_error()); EXPECT_EQ(BackendErrorClass::NotConnected, closed.backend_error().error_class);
+    EXPECT_EQ(BackendOperation::Describe, closed.backend_error().operation);
+    ConnectionSettings settings; settings.use_ssl = false;
+    ASSERT_TRUE(session.connect(settings)); EXPECT_EQ(facet, session.statement_description());
+    const auto deadline = rs::util::make_deadline(std::chrono::seconds(2));
+    retained = facet->describe_statement("SELECT ?", hints, deadline);
+    ASSERT_TRUE(retained); EXPECT_EQ(deadline, backend.observed);
+    EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), retained.session_snapshot());
+    EXPECT_TRUE(retained->rows.empty()); EXPECT_TRUE(retained->additional_results.empty());
+    session.disconnect(); EXPECT_EQ(facet, session.statement_description());
+    const auto disconnected = facet->describe_statement("SELECT ?", hints, deadline);
+    ASSERT_TRUE(disconnected.has_error());
+    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), disconnected.session_snapshot());
+  }
+  ASSERT_EQ(1u, retained->normalized_parameter_types.size());
+  EXPECT_EQ(ScalarType::Numeric, retained->normalized_parameter_types[0].type);
+  EXPECT_EQ(18u, retained->normalized_parameter_types[0].column_size);
+  EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), retained.session_snapshot());
+}

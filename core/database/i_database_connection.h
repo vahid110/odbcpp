@@ -16,6 +16,7 @@
 #include "type_definition.h"
 #include "transaction.h"
 #include "transaction_session.h"
+#include "statement_description.h"
 #include "backend_capabilities.h"
 #include "catalog_request.h"
 
@@ -129,10 +130,8 @@ public:
   virtual BackendResult<QueryResult> execute_prepared(std::string_view sql,
                                                        std::span<const QueryParameter> params,
                                                        rs::util::Deadline deadline) = 0;
-  virtual BackendResult<QueryResult> describe_statement(
-      std::string_view sql,
-      std::span<const QueryParameterType> parameter_types,
-      rs::util::Deadline deadline) = 0;
+  // Optional pre-execution metadata discovery; execution does not require it.
+  virtual IStatementDescription* statement_description() noexcept { return nullptr; }
 
   BackendResult<QueryResult> execute_prepared(
       std::string_view sql, std::span<const std::string> params,

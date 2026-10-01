@@ -30,6 +30,7 @@ struct Observations {
   std::string server_version = "1.0";
   bool setup_allocation_failure{false};
   bool advertised_transactions{false};
+  bool absent_description{false};
   bool missing_parameter_metadata{}, parameter_metadata_error{};
   int invalid_cell_errors{}, invalid_result_structure{}, invalid_execution_shape{}, invalid_description_shape{};
 };
@@ -66,6 +67,8 @@ template <typename T> concept HasSessionSqlTranslation = requires(const T& sessi
 template <typename T> concept HasSessionMarkerCounting = requires(const T& session) { session.count_parameter_markers("?"); };
 template <typename T> concept HasRequiredTransaction = requires(T& session) { session.transaction(TransactionAction::Commit, Deadline::max()); };
 template <typename T> concept HasRequiredIsolation = requires(T& session) { session.set_transaction_isolation(TransactionIsolation::Serializable, Deadline::max()); };
+template <typename T> concept HasRequiredDescription = requires(T& session) { session.describe_statement("SELECT ?", std::span<const QueryParameterType>{}, Deadline::max()); };
+static_assert(!HasRequiredDescription<IDatabaseConnection>);
 static_assert(!HasRequiredTransaction<IDatabaseConnection>);
 static_assert(!HasRequiredIsolation<IDatabaseConnection>);
 static_assert(!HasSessionSqlTranslation<IDatabaseConnection>);
@@ -75,9 +78,10 @@ static_assert(!HasNativeTypeInterpretation<IDatabaseConnection>);
 static_assert(!HasNativeTypeResolution<IDatabaseConnection>);
 
 // Deliberately implements only the database boundary: no PG parser or session.
-class FakeBackend final : public IDatabaseConnection {
+class FakeBackend final : public IDatabaseConnection, public IStatementDescription {
  public:
-  explicit FakeBackend(std::shared_ptr<Observations> seen) : seen_(std::move(seen)) {}
+  explicit FakeBackend(std::shared_ptr<Observations> seen)
+      : seen_(std::move(seen)), absent_description_(seen_->absent_description) {}
   BackendResult<void> connect(const ConnectionSettings& settings) override {
     if (seen_->setup_allocation_failure) return {DbErrorCode::AllocationFailure, {}};
     seen_->settings = settings; connected_ = true; return {};
@@ -97,6 +101,7 @@ class FakeBackend final : public IDatabaseConnection {
   BackendCapabilities capabilities() const override {
     BackendCapabilities result;
     result.dbms_name = "ContractDB";
+    result.describe_parameters = true;
     result.max_identifier_length = 117;
     result.identifier_case = IdentifierCase::Upper;
     result.null_collation = NullCollation::Low;
@@ -217,6 +222,9 @@ class FakeBackend final : public IDatabaseConnection {
     seen_->parameters.assign(params.begin(), params.end());
     return execute_query(sql, deadline);
   }
+  IStatementDescription* statement_description() noexcept override {
+    return absent_description_ ? nullptr : this;
+  }
   BackendResult<QueryResult> describe_statement(std::string_view sql, std::span<const QueryParameterType> types,
                                         Deadline) override {
     ++seen_->descriptions;
@@ -244,6 +252,7 @@ class FakeBackend final : public IDatabaseConnection {
  private:
   std::shared_ptr<Observations> seen_;
   bool connected_{};
+  const bool absent_description_;
 };
 
 class FakeSqlDialect final : public ISqlDialect {
@@ -1380,4 +1389,32 @@ TEST_F(BackendContractTest, AbsentFacetRejectsDeferredIsolationDuringOpenAndAllo
       (SQLPOINTER)SQL_TXN_READ_COMMITTED, 0));
   connect();
   ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+}
+
+TEST_F(BackendContractTest, AbsentDescriptionFacetRejectsMetadataWithoutIoAndExecutionStillWorks) {
+  seen->absent_description = true;
+  connect();
+  SQLCHAR advertised[2]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DESCRIBE_PARAMETER, advertised, sizeof(advertised), nullptr));
+  EXPECT_STREQ("N", reinterpret_cast<char*>(advertised));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLSMALLINT type = -17, digits = -19, nullable = -23, columns = -29;
+  SQLULEN size = 12345;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    EXPECT_EQ(SQL_ERROR, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+    EXPECT_EQ("HYC00", state());
+    EXPECT_EQ(-17, type); EXPECT_EQ(12345u, size); EXPECT_EQ(-19, digits); EXPECT_EQ(-23, nullable);
+    EXPECT_EQ(SQL_ERROR, SQLNumResultCols(stmt, &columns));
+    EXPECT_EQ("HYC00", state()); EXPECT_EQ(-29, columns);
+  }
+  EXPECT_EQ(0, seen->descriptions); EXPECT_EQ(0, seen->queries); EXPECT_EQ(0, seen->disconnects);
+  unsigned char input[]{0, 255}; SQLLEN length = sizeof(input);
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BINARY,
+      SQL_VARBINARY, sizeof(input), 0, input, sizeof(input), &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(stmt, &columns)); EXPECT_EQ(3, columns);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  EXPECT_EQ(0, seen->descriptions); EXPECT_EQ(2, seen->queries); EXPECT_EQ(0, seen->disconnects);
 }

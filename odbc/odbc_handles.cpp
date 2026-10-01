@@ -1281,7 +1281,11 @@ std::span<const rs::core::database::TypeDefinition> ODBCConnection::type_catalog
 }
 
 rs::core::database::BackendCapabilities ODBCConnection::capabilities() const {
-  return db_conn_ ? db_conn_->capabilities() : backend_provider_->capabilities();
+  auto result = db_conn_ ? db_conn_->capabilities() : backend_provider_->capabilities();
+  if (db_conn_ && db_conn_->is_connected() && !db_conn_->statement_description()) {
+    result.describe_parameters = false;
+  }
+  return result;
 }
 
 rs::core::database::TransactionCapabilities ODBCConnection::transaction_capabilities() const {
@@ -4600,6 +4604,12 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
     return SQL_SUCCESS;
   }
 
+  auto* description = conn_->get_db_connection()->statement_description();
+  if (!description) {
+    set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED, "Data source does not support statement description");
+    return SQL_ERROR;
+  }
+
   std::vector<rs::core::database::QueryParameterType> parameter_types(
       static_cast<std::size_t>(parameter_count_),
       rs::core::database::QueryParameterType::Unspecified);
@@ -4616,7 +4626,7 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
 
   auto deadline = rs::util::make_deadline(
       timeout_duration(query_timeout_seconds_));
-  auto result = conn_->get_db_connection()->describe_statement(
+  auto result = description->describe_statement(
       prepared_sql_, parameter_types, deadline);
   if (result.has_error()) {
     const auto timeout = is_timeout_error(result.error());
