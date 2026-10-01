@@ -37,7 +37,7 @@ class ConsumerSession final : public IDatabaseConnection {
 int main() {
   ConsumerSession concrete;
   IDatabaseConnection& session = concrete;
-  if (session.catalog_queries() || session.transaction_session() || session.statement_description()) return 1;
+  if (session.session_health() || session.catalog_queries() || session.transaction_session() || session.statement_description()) return 1;
   auto closed = session.execute_query("before open", rs::util::Deadline::max());
   if (!closed.has_error() || closed.session_snapshot().disposition != SessionDisposition::Retire) return 2;
   if (!session.connect(ConnectionSettings{})) return 3;

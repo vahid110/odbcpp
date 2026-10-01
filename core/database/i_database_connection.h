@@ -17,6 +17,7 @@
 #include "transaction_session.h"
 #include "statement_description.h"
 #include "catalog_queries.h"
+#include "session_health.h"
 
 namespace rs::core::database {
 
@@ -98,6 +99,9 @@ public:
   virtual SessionState session_state() const {
     return is_connected() ? SessionState::Unknown : SessionState::Disconnected;
   }
+
+  // Optional active probe; absence never implies a healthy or reusable session.
+  virtual ISessionHealth* session_health() noexcept { return nullptr; }
 
   // Optional catalog-query construction; absence does not restrict execution.
   virtual const ICatalogQueries* catalog_queries() const noexcept { return nullptr; }
