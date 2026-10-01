@@ -1,4 +1,5 @@
 #include "core/util/hex.h"
+#include "core/database/result_validation.h"
 #include "odbc_handles.h"
 #include "transaction_metadata.h"
 #include "connection_string.h"
@@ -578,6 +579,9 @@ std::string query_failure_sqlstate(
     const rs::core::database::IDatabaseConnection& connection,
     const rs::core::database::BackendError& error, const char* fallback,
     SQLINTEGER statement_code) {
+  if (error.error_class == rs::core::database::BackendErrorClass::InvalidMetadata) {
+    return SQLSTATE_GENERAL_ERROR;
+  }
   if (error.operation == rs::core::database::BackendOperation::ResolveTypes) {
     return request_sqlstate(error.code, SQLSTATE_GENERAL_ERROR);
   }
@@ -825,6 +829,9 @@ OdbcTypeInfo odbc_type_info(const rs::core::database::NativeTypeInfo& native) {
 }
 
 void require_normalized_columns(const rs::core::database::QueryResult& result) {
+  if (!rs::core::database::valid_result_structure(result)) {
+    throw std::invalid_argument("Data source returned invalid result metadata");
+  }
   if (!std::is_sorted(result.cell_errors.begin(), result.cell_errors.end()) ||
       std::adjacent_find(result.cell_errors.begin(), result.cell_errors.end()) != result.cell_errors.end()) {
     throw std::invalid_argument("Data source returned invalid cell error coordinates");
@@ -3025,9 +3032,9 @@ SQLRETURN ODBCStatement::more_results() {
   pending_results_.erase(pending_results_.begin());
   if (next.error) {
     pending_results_.clear();
-    set_error(mapped_backend_sqlstate(*conn_->get_db_connection(),
-                                      next.error->native_state.value_or(""),
-                                      SQLSTATE_SYNTAX_ERROR),
+    set_error(query_failure_sqlstate(*conn_->get_db_connection(),
+                                     *next.error, SQLSTATE_SYNTAX_ERROR,
+                                     SQL_DIAG_UNKNOWN_STATEMENT),
               next.error->message);
     return SQL_ERROR;
   }

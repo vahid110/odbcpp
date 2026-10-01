@@ -29,7 +29,7 @@ struct Observations {
   std::string failure_message = "fake error";
   bool setup_allocation_failure{false};
   bool missing_parameter_metadata{}, parameter_metadata_error{};
-  int invalid_cell_errors{};
+  int invalid_cell_errors{}, invalid_result_structure{};
 };
 
 template <typename T>
@@ -115,6 +115,24 @@ class FakeBackend final : public IDatabaseConnection {
       case 5: result.cell_errors = {{0, 0}, {0, 0}}; break;
       default: break;
     }
+    switch (seen_->invalid_result_structure) {
+      case 1: result.rows[0].pop_back(); break;
+      case 2: result.rows[0].push_back(std::nullopt); break;
+      case 3: result.columns.clear(); break;
+      case 4: result.columns[0].name = "\xc0\x80"; break;
+      case 5: result.columns[0].name = std::string("a\0b", 3); break;
+      case 6: {
+        QueryResult later; later.columns = result.columns; later.rows = {{"x"}};
+        result.additional_results.push_back(std::move(later)); break;
+      }
+      case 7: {
+        QueryResult later; later.columns = result.columns; later.columns[0].name = "\x80";
+        result.additional_results.push_back(std::move(later)); break;
+      }
+      case 8: result.columns[0].name = ""; break;
+      case 9: result.columns[0].name = "\xe2\x82\xac\xf0\x9f\x98\x80"; break;
+      default: break;
+    }
     result.command_tag = "deliberately not SQL";
     result.statement_kind = StatementKind::SelectCursor;
     return result;
@@ -125,6 +143,14 @@ class FakeBackend final : public IDatabaseConnection {
     if (sql.ends_with("allocation")) { connected_ = false; return {DbErrorCode::AllocationFailure, {}}; }
     if (sql.ends_with("timeout")) return {DbErrorCode::Timeout, "fake deadline"};
     if (sql.ends_with("network")) { connected_ = false; return {DbErrorCode::NetworkError, "fake loss"}; }
+    if (sql.ends_with("metadata_failure")) {
+      BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), "invalid normalized metadata"};
+      error.error_class = BackendErrorClass::InvalidMetadata;
+      error.native_state = "FAKE_ERROR"; // must not turn a contract failure into server SQLSTATE
+      error.disposition = SessionDisposition::Reusable;
+      error.session_state = SessionState::Idle;
+      return error;
+    }
     if (sql.ends_with("error")) {
       BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), seen_->failure_message};
       error.native_state = "FAKE_ERROR";
@@ -135,10 +161,11 @@ class FakeBackend final : public IDatabaseConnection {
     }
     auto result = rows();
     if (sql.ends_with("unnormalized")) result.columns[0].normalized_type.reset();
-    if (sql.ends_with("deferred")) {
+    if (sql.ends_with("deferred") || sql.ends_with("deferred_metadata")) {
       QueryResult error;
       error.error.emplace(rs::util::make_error_code(DbErrorCode::QueryFailed), "Query error: later error");
       error.error->native_state = "FAKE_ERROR";
+      if (sql.ends_with("deferred_metadata")) error.error->error_class = BackendErrorClass::InvalidMetadata;
       result.additional_results.push_back(std::move(error));
     }
     return result;
@@ -1086,4 +1113,59 @@ TEST_F(BackendContractTest, BoundTextEncodingErrorsPreserveBuffersAndRecoverOnNe
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
     ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
   }
+}
+
+TEST_F(BackendContractTest, InvalidResultStructureRejectsPrimaryAndAdditionalResultsAndRecovers) {
+  connect();
+  for (const int invalid : {1, 2, 3, 4, 5, 6, 7}) {
+    SCOPED_TRACE(invalid);
+    seen->invalid_result_structure = invalid;
+    EXPECT_EQ(SQL_ERROR, execute("rows")); EXPECT_EQ("HY000", state());
+    EXPECT_EQ(0, seen->disconnects);
+    SQLSMALLINT columns = 99;
+    EXPECT_EQ(SQL_ERROR, SQLNumResultCols(stmt, &columns)); EXPECT_EQ(99, columns);
+    seen->invalid_result_structure = 0;
+    ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+}
+
+TEST_F(BackendContractTest, EmptyAndUnicodeColumnNamesMapToAnsiAndWideMetadata) {
+  connect();
+  for (const int name_kind : {8, 9}) {
+    seen->invalid_result_structure = name_kind;
+    ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+    const std::string expected = name_kind == 8 ? "" : "\xe2\x82\xac\xf0\x9f\x98\x80";
+    SQLCHAR name[32]{}; SQLSMALLINT length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, 1, name, sizeof(name), &length, nullptr, nullptr, nullptr, nullptr));
+    EXPECT_EQ(static_cast<SQLSMALLINT>(expected.size()), length);
+    EXPECT_EQ(expected, reinterpret_cast<const char*>(name));
+    SQLWCHAR wide[32]{}; length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeColW(stmt, 1, wide, 32, &length, nullptr, nullptr, nullptr, nullptr));
+    const auto expected_wide = rs::odbc::utf8_to_wide(expected); ASSERT_TRUE(expected_wide);
+    EXPECT_EQ(static_cast<SQLSMALLINT>(expected_wide->size()), length);
+    EXPECT_TRUE(std::equal(expected_wide->begin(), expected_wide->end(), wide));
+    EXPECT_EQ(0, wide[expected_wide->size()]);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+}
+
+TEST_F(BackendContractTest, BackendMetadataErrorsUseGeneralStateAndAllowDirectAndPreparedRecovery) {
+  connect();
+  EXPECT_EQ(SQL_ERROR, execute("metadata_failure")); EXPECT_EQ("HY000", state());
+  EXPECT_EQ(0, seen->disconnects);
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"metadata_failure", SQL_NTS));
+  EXPECT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HY000", state());
+  EXPECT_EQ(0, seen->disconnects);
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+}
+
+TEST_F(BackendContractTest, DeferredMetadataErrorUsesGeneralStateAndClearsPendingResults) {
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, execute("deferred_metadata")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  EXPECT_EQ(SQL_ERROR, SQLMoreResults(stmt)); EXPECT_EQ("HY000", state());
+  EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(stmt)); EXPECT_EQ(0, seen->disconnects);
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
 }

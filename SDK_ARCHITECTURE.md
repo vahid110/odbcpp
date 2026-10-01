@@ -381,3 +381,20 @@ QueryResult parser migration fields, ordered execution, richer numeric/temporal
 canonical forms, metadata-name validation and session/reuse facets remain open.
 This is an internal C++ contract change; it changes no external ODBC entry point
 or supported PostgreSQL behavior and makes no crypto qualification claim.
+
+## S2 result structure and column-name validation — 2026-10-01
+
+Column names must be valid UTF-8 without embedded NULs; empty names are valid.
+Every row must have exactly one cell per schema column. A shared validation
+helper checks primary/additional results before publication at the PostgreSQL
+backend and before ODBC applies synthetic-backend results. Fully drained invalid
+metadata returns an owning InvalidMetadata error and preserves same-owner
+protocol reuse. ODBC reports HY000 for structural/name contract failures and
+owning metadata errors, including SQLMoreResults, without allowing native
+SQLSTATE to override that classification. No partial result schema is exposed.
+
+Tests cover Unicode/empty names through ANSI/wide metadata, malformed UTF-8/NUL
+names, short/long/zero-schema rows, invalid additional results, untouched metadata
+outputs and direct/prepared/deferred recovery. Native parser migration fields,
+ordered execution, richer scalar forms and session/reuse facets remain open;
+this batch adds no provider qualification or pooling claim.
