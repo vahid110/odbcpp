@@ -28,8 +28,7 @@ public:
 
   virtual std::optional<std::string> normalize_result_value(
       ScalarType type, std::string_view value) const {
-    if (type == ScalarType::Boolean && value != "0" && value != "1") return std::nullopt;
-    return std::string(value);
+    return parser_->normalize_result_value(type, value);
   }
 
   BackendCapabilities capabilities() const override { return {}; }

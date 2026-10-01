@@ -3373,33 +3373,44 @@ TEST(NormalizedParameterTest, IncompleteAndFailedResolutionReturnNoPartialResult
 TEST(NormalizedCellTest, BackendReturnsCanonicalOwnedCellsAndDeferredEncodingErrors) {
   using namespace rs::core::database;
   using Mode = ScriptedBackendTransport::ResponseMode;
-  for (const bool malformed : {false, true}) {
-    QueryResult snapshot;
-    {
-      postgres::PgDatabaseConnection backend("PostgreSQL",
-          std::make_unique<ScriptedBackendTransport>(malformed ? Mode::MalformedNativeCells : Mode::NativeCells));
-      ConnectionSettings settings; settings.use_ssl = false;
-      ASSERT_TRUE(backend.connect(settings));
-      auto result = backend.execute_query("SELECT octets, flag; SELECT octets, flag", rs::util::Deadline::max());
-      ASSERT_TRUE(result); EXPECT_TRUE(backend.is_connected());
-      snapshot = std::move(*result); backend.disconnect();
-    }
-    ASSERT_EQ(1u, snapshot.additional_results.size());
-    for (const auto* result : {&snapshot, &snapshot.additional_results[0]}) {
-      ASSERT_EQ(3u, result->rows.size());
-      ASSERT_EQ(2u, result->rows[0].size());
-      if (malformed) {
-        EXPECT_EQ((std::vector<CellEncodingError>{{0, 0}, {0, 1}}), result->cell_errors);
-        EXPECT_EQ(std::optional<std::string>(""), result->rows[0][0]);
-        EXPECT_EQ(std::optional<std::string>(""), result->rows[0][1]);
-      } else {
-        EXPECT_TRUE(result->cell_errors.empty());
-        EXPECT_EQ(std::optional<std::string>(std::string("\0\xff\\", 3)), result->rows[0][0]);
-        EXPECT_EQ(std::optional<std::string>("1"), result->rows[0][1]);
+  for (const bool parser_composition : {false, true}) {
+    SCOPED_TRACE(parser_composition ? "Generic/PgParser" : "PgSession");
+    for (const bool malformed : {false, true}) {
+      QueryResult snapshot;
+      {
+        auto transport = std::make_unique<ScriptedBackendTransport>(
+            malformed ? Mode::MalformedNativeCells : Mode::NativeCells);
+        std::unique_ptr<GenericDatabaseConnection> owned;
+        if (parser_composition) {
+          owned = std::make_unique<GenericDatabaseConnection>(
+              std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
+        } else {
+          owned = std::make_unique<postgres::PgDatabaseConnection>("PostgreSQL", std::move(transport));
+        }
+        auto& backend = *owned;
+        ConnectionSettings settings; settings.use_ssl = false;
+        ASSERT_TRUE(backend.connect(settings));
+        auto result = backend.execute_query("SELECT octets, flag; SELECT octets, flag", rs::util::Deadline::max());
+        ASSERT_TRUE(result); EXPECT_TRUE(backend.is_connected());
+        snapshot = std::move(*result); backend.disconnect();
       }
-      EXPECT_EQ(std::nullopt, result->rows[1][0]); EXPECT_EQ(std::nullopt, result->rows[1][1]);
-      EXPECT_EQ(std::optional<std::string>(""), result->rows[2][0]);
-      EXPECT_EQ(std::optional<std::string>("0"), result->rows[2][1]);
+      ASSERT_EQ(1u, snapshot.additional_results.size());
+      for (const auto* result : {&snapshot, &snapshot.additional_results[0]}) {
+        ASSERT_EQ(3u, result->rows.size());
+        ASSERT_EQ(2u, result->rows[0].size());
+        if (malformed) {
+          EXPECT_EQ((std::vector<CellEncodingError>{{0, 0}, {0, 1}}), result->cell_errors);
+          EXPECT_EQ(std::optional<std::string>(""), result->rows[0][0]);
+          EXPECT_EQ(std::optional<std::string>(""), result->rows[0][1]);
+        } else {
+          EXPECT_TRUE(result->cell_errors.empty());
+          EXPECT_EQ(std::optional<std::string>(std::string("\0\xff\\", 3)), result->rows[0][0]);
+          EXPECT_EQ(std::optional<std::string>("1"), result->rows[0][1]);
+        }
+        EXPECT_EQ(std::nullopt, result->rows[1][0]); EXPECT_EQ(std::nullopt, result->rows[1][1]);
+        EXPECT_EQ(std::optional<std::string>(""), result->rows[2][0]);
+        EXPECT_EQ(std::optional<std::string>("0"), result->rows[2][1]);
+      }
     }
   }
 }

@@ -652,3 +652,8 @@ ODBC decoders are removed. Owning cell-error coordinates preserve fetch/GetData
 bytes. Tests cover wire encodings, NULL/empty, multiple results, immutable snapshots,
 malformed coordinate rejection and recovery. Text UTF-8/richer scalar forms,
 native migration-field removal and ordered execution/session facets remain open.
+
+The private PostgreSQL codec is shared by the PostgreSQL session and the
+lower-level session/parser composition used by provider proofs. Both paths
+have valid/malformed wire snapshot tests; the AWS-LC live proof checks canonical
+Boolean output and an empty cell-error ledger.

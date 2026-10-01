@@ -1,6 +1,7 @@
 #pragma once
 #include "core/database/i_protocol_parser.h"
 #include "pg_messages.h"
+#include "pg_value.h"
 #include "scram_sha256.h"
 #include <map>
 #include <memory>
@@ -10,6 +11,11 @@ namespace rs::core::database::postgres {
 
 class PgProtocolParser : public IProtocolParser {
 public:
+  std::optional<std::string> normalize_result_value(
+      ScalarType type, std::string_view value) const override {
+    return normalize_pg_result_value(type, value);
+  }
+
   // Connection establishment
   std::vector<std::byte> create_startup_message(
     const std::string& user, 

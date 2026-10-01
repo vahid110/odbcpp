@@ -77,7 +77,8 @@ protected:
     ASSERT_EQ(result->rows[0].size(), 3u);
     EXPECT_EQ(result->rows[0][0], "42");
     EXPECT_FALSE(result->rows[0][1].has_value());
-    EXPECT_EQ(result->rows[0][2], "t");
+    EXPECT_EQ(result->rows[0][2], "1");
+    EXPECT_TRUE(result->cell_errors.empty());
     EXPECT_GT(parser->sasl, 0u) << "fixture must negotiate SCRAM, not trust/MD5";
     EXPECT_GT(parser->final, 0u) << "fixture must complete the SCRAM exchange";
   }
