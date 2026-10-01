@@ -19,7 +19,7 @@ using rs::util::DbErrorCode;
 using rs::util::Deadline;
 
 struct Observations {
-  int created{}, transports{}, disconnects{}, queries{}, descriptions{};
+  int created{}, transports{}, disconnects{}, queries{}, descriptions{}, translations{};
   ConnectionSettings settings;
   std::string sql;
   std::vector<QueryParameter> parameters;
@@ -43,6 +43,7 @@ class FakeBackend final : public IDatabaseConnection {
     return std::count(sql.begin(), sql.end(), '?');
   }
   SqlTranslationResult translate_sql(std::string_view sql) const override {
+    ++seen_->translations;
     if (sql == "unsupported") return {{}, SqlTranslationError::Unsupported, "fake unsupported SQL"};
     return {"native:" + std::string(sql), SqlTranslationError::None, {}};
   }
@@ -878,4 +879,71 @@ TEST_F(BackendContractTest, WideDriverCapturePreservesUnicodeAndLengthErrors) {
   ASSERT_EQ(SQL_SUCCESS, SQLDriverConnectW(dbc, nullptr, valid, 5,
       nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
   EXPECT_FALSE(seen->settings.use_ssl);
+}
+
+
+TEST_F(BackendContractTest, NativeSqlCaptureLimitsPreserveOutputsAndSkipTranslation) {
+  connect_with("SSL=0;MaxSqlBytes=4");
+  SQLCHAR narrow_output[]{'o', 'k', 0};
+  SQLWCHAR wide_output[]{'o', 'k', 0};
+  SQLINTEGER output_length = 77;
+  SQLCHAR input[]{'r', 'o', 'w', 's', 'x', 0};
+  SQLWCHAR wide_input[]{'r', 'o', 'w', 's', 'x', 0};
+  for (const SQLINTEGER length : {SQLINTEGER(5), SQLINTEGER(SQL_NTS)}) {
+    EXPECT_EQ(SQL_ERROR, SQLNativeSql(dbc, input, length,
+        narrow_output, 3, &output_length));
+    EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(0, seen->translations); EXPECT_EQ(77, output_length);
+    EXPECT_STREQ("ok", (const char*)narrow_output);
+    EXPECT_EQ(SQL_ERROR, SQLNativeSqlW(dbc, wide_input, length,
+        wide_output, 3, &output_length));
+    EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(0, seen->translations); EXPECT_EQ(77, output_length);
+    EXPECT_EQ(SQLWCHAR('o'), wide_output[0]); EXPECT_EQ(SQLWCHAR('k'), wide_output[1]);
+  }
+  input[4] = 0; wide_input[4] = 0;
+  for (const SQLINTEGER length : {SQLINTEGER(4), SQLINTEGER(SQL_NTS)}) {
+    SQLCHAR result[32]{}; SQLWCHAR wide_result[32]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLNativeSql(dbc, input, length, result, 32, &output_length));
+    EXPECT_STREQ("native:rows", (const char*)result); EXPECT_EQ(11, output_length);
+    ASSERT_EQ(SQL_SUCCESS, SQLNativeSqlW(dbc, wide_input, length, wide_result, 32, &output_length));
+    EXPECT_EQ(11, output_length); EXPECT_EQ(SQLWCHAR('n'), wide_result[0]);
+  }
+  EXPECT_EQ(4, seen->translations); EXPECT_EQ(0, seen->queries); EXPECT_EQ(0, seen->disconnects);
+}
+
+TEST_F(BackendContractTest, NativeSqlWideLimitsCountExpansionAndKeepUnicodeErrors) {
+  connect_with("SSL=0;MaxSqlBytes=4");
+  SQLWCHAR input[]{0x20ac, 0x20ac, 0}, output[]{'o', 0};
+  SQLINTEGER output_length = 77;
+  for (const SQLINTEGER length : {SQLINTEGER(2), SQLINTEGER(SQL_NTS)}) {
+    EXPECT_EQ(SQL_ERROR, SQLNativeSqlW(dbc, input, length, output, 2, &output_length));
+    EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(0, seen->translations); EXPECT_EQ(77, output_length); EXPECT_EQ(SQLWCHAR('o'), output[0]);
+  }
+  input[0] = 0xd800; input[1] = 0;
+  EXPECT_EQ(SQL_ERROR, SQLNativeSqlW(dbc, input, 1, output, 2, &output_length));
+  EXPECT_EQ("22018", state(SQL_HANDLE_DBC, dbc)); EXPECT_EQ(0, seen->translations);
+  input[0] = 0x20ac; input[1] = 'x';
+  SQLWCHAR result[32]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLNativeSqlW(dbc, input, SQL_NTS, result, 32, &output_length));
+  EXPECT_EQ(9, output_length); EXPECT_EQ(SQLWCHAR(0x20ac), result[7]); EXPECT_EQ(SQLWCHAR('x'), result[8]);
+  EXPECT_EQ(1, seen->translations);
+}
+
+TEST_F(BackendContractTest, NativeSqlZeroBudgetAllowsEmptyAndKeepsValidationPrecedence) {
+  connect_with("SSL=0;MaxSqlBytes=0");
+  SQLCHAR empty[]{0}; SQLWCHAR wide_empty[]{0}; SQLINTEGER output_length = 77;
+  ASSERT_EQ(SQL_SUCCESS, SQLNativeSql(dbc, empty, SQL_NTS, nullptr, 0, &output_length));
+  EXPECT_EQ(7, output_length);
+  ASSERT_EQ(SQL_SUCCESS, SQLNativeSqlW(dbc, wide_empty, 0, nullptr, 0, &output_length));
+  EXPECT_EQ(7, output_length);
+  SQLCHAR input[]{'x', 0};
+  EXPECT_EQ(SQL_ERROR, SQLNativeSql(dbc, input, SQL_NTS, nullptr, 0, &output_length));
+  EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc)); EXPECT_EQ(2, seen->translations);
+  EXPECT_EQ(SQL_ERROR, SQLNativeSql(dbc, input, -2, nullptr, 0, &output_length));
+  EXPECT_EQ("HY090", state(SQL_HANDLE_DBC, dbc));
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  EXPECT_EQ(SQL_ERROR, SQLNativeSql(dbc, input, SQL_NTS, nullptr, 0, &output_length));
+  EXPECT_EQ("08003", state(SQL_HANDLE_DBC, dbc)); EXPECT_EQ(2, seen->translations);
 }

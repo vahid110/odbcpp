@@ -1915,7 +1915,10 @@ static SQLRETURN SQLNativeSql_impl(
     return SQL_ERROR;
   }
 
-  const auto input_sql = sqlchar_to_string(input_statement, text_length1);
+  const auto captured = bounded_narrow_input(*conn, input_statement, text_length1,
+      conn->sql_input_limit(), "SQL input byte limit exceeded");
+  if (!captured) return SQL_ERROR;
+  const auto& input_sql = *captured;
   if (input_sql.find('\0') != std::string::npos) {
     conn->set_error(SQLSTATE_SYNTAX_ERROR,
                     "SQL text contains an embedded NUL byte");
@@ -1975,10 +1978,12 @@ static SQLRETURN SQLNativeSqlW_impl(
     return SQL_ERROR;
   }
 
-  const auto native_sql = sqlwchar_to_utf8(input_statement, text_length1);
+  bool exceeded = false;
+  const auto native_sql = sqlwchar_to_utf8_bounded(
+      input_statement, text_length1, conn->sql_input_limit(), exceeded);
   if (!native_sql) {
-    conn->set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Invalid wide-character SQL statement");
+    conn->set_error(exceeded ? SQLSTATE_GENERAL_ERROR : SQLSTATE_INVALID_CHARACTER_VALUE,
+        exceeded ? "SQL input byte limit exceeded" : "Invalid wide-character SQL statement");
     return SQL_ERROR;
   }
   if (native_sql->find('\0') != std::string::npos) {
