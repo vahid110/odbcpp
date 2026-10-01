@@ -18,6 +18,12 @@ Authoritative references:
 - [ODBC state transition tables](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/appendix-b-odbc-state-transition-tables)
 - [Environment, connection, and statement attributes](https://learn.microsoft.com/en-us/sql/odbc/reference/develop-app/environment-connection-and-statement-attributes)
 
+Redshift source and binary comparison is future RS4/RS5/RS7 work in
+[REDSHIFT_FEATURE_PLAN.md](REDSHIFT_FEATURE_PLAN.md). The ODBC audit remains the
+specification evidence ledger; the planned Redshift parity matrices will link
+its rows and tests without treating upstream behavior as automatic conformance.
+No audit status changes follow from recording these requirements.
+
 ## Status rules
 
 - **Verified**: supported behavior, failure behavior, diagnostics, and relevant

@@ -63,6 +63,7 @@ not additional features. Re-estimate after the real Redshift pilot.
 | M2 | Real Redshift pilot and compatibility assessment | 3–5 days | Prior cumulative target resumes when access exists | G1 closed on a real Redshift endpoint |
 | M3 | Usable Redshift beta | 8–12 days | Re-estimate after M2 | G6–G8 and G9b closed; PostgreSQL regression gates remain green |
 | M4 | Scoped production release candidate | 8–12 days | Re-estimate after M2 | G10–G11 closed; both scoped beta baselines remain green |
+| RP1 | Redshift official-driver parity expansion (RS1–RS7) | Estimate at M2 inventory | Placement relative to M4 decided at M2 scope review | G14 closed, including all user-approved exceptions; RS8 separately scoped |
 
 The [M0 working inventory](PG_BETA_CHECKLIST.md) sizes architecture at 9–15
 days within M1, revising M1 to 14–23 days. These estimates remain provisional,
@@ -1290,3 +1291,17 @@ Redshift build/absent-endpoint gates pass. Nine focused test executables and
 all 20 credential/ownership tests under ThreadSanitizer pass. Read-only review
 found no remaining actionable finding. Windows/packaging and cross-platform
 crypto evidence remain subject to exact-head CI.
+
+## Redshift requested feature planning — 2026-10-01
+
+[REDSHIFT_FEATURE_PLAN.md](REDSHIFT_FEATURE_PLAN.md) records all eight requested
+areas. P0 M2 inventory and source/behavior comparison guide P1 beta priorities;
+P2 RP1 covers remaining official-driver parity with no unapproved exclusions.
+P3 S3 COPY/UNLOAD/transparent-transfer modes await a separate design discussion.
+Sharing, authentication and metadata had partial gate coverage; comprehensive
+parity, declare/fetch, SHOW alternatives and legacy API mapping now have explicit
+work items and G14 acceptance. No completion or implementation claim is added.
+
+Current S2/S2C/MS1 work continues. M2/M3 estimates are unchanged as baseline-only
+estimates; full parity and advanced S3 are extra scope to estimate at M2, not
+consume from the existing reserve. Live Redshift access remains required.

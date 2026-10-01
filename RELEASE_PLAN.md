@@ -186,6 +186,18 @@ No blanket claim of complete ODBC, full Redshift feature parity, or public SDK
 compatibility. Unsupported features must fail predictably and must not be
 advertised as supported. Required workflows cannot be narrowed silently.
 
+## Redshift feature and parity backlog
+
+The user's eight Redshift requirements, priorities, source baseline, evidence
+matrices and exception policy are recorded in
+[REDSHIFT_FEATURE_PLAN.md](REDSHIFT_FEATURE_PLAN.md). M2 inventories all official
+driver features/settings and explicit observable behaviors; M3 remains a scoped
+beta. RS1–RS7 coverage continues in separately estimated RP1 parity batches;
+exceptions require user approval. RS8 transparent S3 bulk transfer requires a
+later design discussion and approval. This does not change active S2/S2C/MS1.
+The existing M3 range excludes comprehensive parity and advanced S3 work; revise
+the forecast at M2 rather than spending contingency on this additional scope.
+
 ## Finite release gates
 
 All gates are **OPEN** at planning baseline, meaning release evidence is not
@@ -215,6 +227,7 @@ are committed.
 | G11 | Basic beta delivery M1; full delivery M4 | Clean install/configure/uninstall on each claimed OS; exact dependency versions and license inventory, TLS/auth and limitations guide, diagnostics troubleshooting, versioned artifacts/checksums, rollback instructions. Re-run application acceptance on packaged artifacts; all applicable G0–G10 remain green |
 | G12 | SDK/MySQL proof gate / MS1 | Complete S1–S4 and the engineering quality bar in [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md): implement [SDK_ARCHITECTURE.md](SDK_ARCHITECTURE.md), pass [SECURITY_MODEL.md](SECURITY_MODEL.md), preserve PostgreSQL behavior, prove safe reset/reuse/retirement and cache invalidation for PostgreSQL/MySQL, pass reusable contract and forbidden-dependency checks, run the real MySQL 8 slice, and pass the S4 clean-room exercise with zero shared ODBC workflow edits. Publish the test kit, extension guide and evidence. Undocumented internal knowledge blocks closure. Mark interfaces unstable; this is not a MySQL beta |
 | G13 | Deferred public SDK preview gate | Build/install a versioned SDK for external consumers; define API/ABI compatibility and support lifecycle; complete licensing, reference documentation and compatibility testing. ADBC implementation, Arrow integration and commercial availability require separately approved scope |
+| G14 | Redshift parity expansion / RP1 | Close RS1–RS7 feature/configuration and observable-behavior inventories in [REDSHIFT_FEATURE_PLAN.md](REDSHIFT_FEATURE_PLAN.md), including source coverage, differential/live evidence and user-approved exceptions. A scoped M3 beta does not imply G14 closure. RS8 advanced S3 modes need separate approval |
 
 ### Bounded workload for G10 (proposal to freeze in G0)
 
@@ -288,7 +301,7 @@ its residual backlog with test references. It does not promote a row to Verified
 | T3 | Exhaustive conversion cross-product, intervals and backend-specific types beyond frozen scalar list | Concrete required column/query, interoperability defect, or proven missing safety boundary |
 | T4 | Extra catalog precision/origin fields, statistics accuracy, restricted-user scenarios beyond the selected permission model | Promised catalog behavior or selected application fails; security/visibility defects in supported paths are immediate blockers |
 | T5 | SQLDriverConnect interactive login prompts, cosmetic installer polish and extra distribution-specific packages | Selected workflow needs them. Native Windows DSNs, minimal ODBC Administrator GUI and a usable x64 beta installer are required W1–W4/G11, not deferred |
-| T6 | Additional IAM/SSO providers, browser auth, automatic credential refresh beyond selected method | User-selected enterprise authentication or credential lifecycle requires it; chosen auth never deferred |
+| T6 | Additional IAM/SSO providers, browser auth, automatic credential refresh beyond selected method; planned Redshift RS2 parity breadth | M2 inventory/estimate, then RP1 batches in REDSHIFT_FEATURE_PLAN.md; promote required methods to G7 before beta. Chosen auth never deferred; omission from parity requires user approval |
 | T7 | Native handling for Redshift SUPER/spatial/sketch types and other extensions | Selected workload uses them. Only offer a text fallback if its metadata and representation are verified on real Redshift |
 | T8 | Binary wire-format acceleration, new prepared-cache behavior, public/advanced pool policy, sizing/eviction tuning and transport micro-optimizations | G10 measurements identify a bottleneck; S1/G12 lifecycle correctness is mandatory, but no unmeasured speedup target is promoted |
 | T9 | Public SDK stability/versioning promises, full MySQL beta breadth and TDS | Bounded G12 proof passes and public SDK/MySQL product scope is selected with funded requirements |
@@ -297,6 +310,8 @@ its residual backlog with test references. It does not promote a row to Verified
 | T12 | FIPS implementation and per-driver/platform qualification; preserve architectural flexibility during S2/S2C reviews only, per CRYPTO_PROVIDER_PLAN.md | Concrete customer/deployment requirement or explicit reprioritization; separately estimate module selection, approved-operation policy, integration evidence and compliance review before activation |
 | T13 | Integration owner: Windows bundled-shared same-basename preload isolation; current harness detects foreign binding after load, but production does not prevent it. Qualifying this path is blocked | Before qualifying/releasing the Windows crypto profile or closing any gate requiring it; separately select and estimate one prevention strategy, then run live/package acceptance. S2 noncrypto migration may proceed; no qualification waiver |
 | T14 | Integration owner: explicit finite OpenSSL row signoff, including supported host compatibility and static provenance scope; see S2C_MATRIX_REVIEW.md | Before closing S2C/G12 requirements for the matrix. Missing mandatory evidence remains a blocker; broader public distribution requirements stay in G13 |
+| T15 | Redshift RS1–RS7 sharing, auth breadth, fetch modes, behavior/feature parity, SHOW metadata and legacy compatibility | M2 scope/inventory checkpoint; required beta cases go to M3, remainder to RP1/G14. Integration owner tracks evidence; user approves exceptions. See REDSHIFT_FEATURE_PLAN.md |
+| T16 | Redshift RS8 explicit/automatic S3 COPY/UNLOAD and staged ODBC transfer modes | Separate user design/scope approval after baseline assessment; estimate semantics, security, cleanup and cost before implementation |
 
 A deferred item records owner, rationale, known risk, revisit trigger and evidence
 when instantiated as work. It may not hide a serious supported-path defect.

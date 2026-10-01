@@ -4,6 +4,12 @@ Decision date: 2026-09-30.
 Status: S1 architecture and security contracts accepted; S2 implementation is
 in progress.
 
+Future Redshift parity requirements are tracked in
+[REDSHIFT_FEATURE_PLAN.md](REDSHIFT_FEATURE_PLAN.md). They preserve independent
+backend/auth/catalog extensions and shared ODBC contracts, without adding
+Redshift feature work to S2/S2C or the bounded MySQL proof. RP1/G14 scope and
+advanced S3 transfer are estimated separately at their Redshift checkpoints.
+
 ## Product intent
 
 ODBCPP will be developed as a database-connectivity SDK, with ODBC as its first
