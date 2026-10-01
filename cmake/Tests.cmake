@@ -408,3 +408,9 @@ add_test(NAME test_crypto_header_identity
     -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestCryptoIdentity.cmake)
 set_tests_properties(test_crypto_header_identity PROPERTIES LABELS "unit;architecture")
+
+add_test(NAME test_internal_source_partitions COMMAND "${CMAKE_COMMAND}"
+  "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+  "-DFIXTURE_DIR=${CMAKE_CURRENT_BINARY_DIR}/internal partition fixtures"
+  -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestInternalSourcePartitions.cmake")
+set_tests_properties(test_internal_source_partitions PROPERTIES LABELS "unit;architecture" TIMEOUT 30)

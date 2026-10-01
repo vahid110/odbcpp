@@ -87,11 +87,16 @@ include(cmake/DriverSources.cmake)
 odbcpp_collect_driver_sources(CORE_SOURCES "${TARGET_DATABASE}")
 
 # Build static library for linking examples/tests
-add_library(${PROJECT_NAME}_core STATIC ${CORE_SOURCES})
+add_library(${PROJECT_NAME}_core STATIC)
 add_library(${PROJECT_NAME}::core ALIAS ${PROJECT_NAME}_core)
 
 # Build shared library for ODBC Driver Manager
-add_library(${PROJECT_NAME}_driver SHARED ${CORE_SOURCES})
+add_library(${PROJECT_NAME}_driver SHARED)
+include(cmake/CompilerSettings.cmake)
+include(cmake/InternalTargets.cmake)
+odbcpp_partition_driver_sources(ODBCPP_PARTITION "${CMAKE_CURRENT_SOURCE_DIR}" ${CORE_SOURCES})
+odbcpp_add_internal_objects(${PROJECT_NAME}_core)
+odbcpp_add_internal_objects(${PROJECT_NAME}_driver)
 set(_driver_exports_file "${CMAKE_CURRENT_SOURCE_DIR}/odbc/odbcpp.exports")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${_driver_exports_file}")
@@ -186,10 +191,6 @@ target_link_libraries(${PROJECT_NAME}_core
     OpenSSL::Crypto
 )
 
-target_compile_definitions(${PROJECT_NAME}_core PRIVATE
-  ODBCPP_ENABLE_${TARGET_DATABASE}=1
-)
-
 if(BUILD_TESTING)
   target_compile_definitions(${PROJECT_NAME}_core PUBLIC
     ODBCPP_ENABLE_TEST_HOOKS=1)
@@ -210,10 +211,6 @@ target_link_libraries(${PROJECT_NAME}_driver
   PRIVATE
     OpenSSL::SSL 
     OpenSSL::Crypto
-)
-
-target_compile_definitions(${PROJECT_NAME}_driver PRIVATE
-  ODBCPP_ENABLE_${TARGET_DATABASE}=1
 )
 
 foreach(_target IN ITEMS ${PROJECT_NAME}_core ${PROJECT_NAME}_driver)
