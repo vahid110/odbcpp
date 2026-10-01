@@ -27,19 +27,19 @@ class MockProtocolParser final
     return {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
   }
 
-  std::vector<std::byte> create_simple_query(std::string_view) override {
+  std::vector<std::byte> create_simple_query(std::string_view, std::size_t) override {
     return {std::byte{0x51}};
   }
 
   std::vector<std::byte> create_prepared_query(
       std::string_view,
-      std::span<const rs::core::database::QueryParameter>) override {
+      std::span<const rs::core::database::QueryParameter>, std::size_t) override {
     return {std::byte{0x50}};
   }
 
   std::vector<std::byte> create_statement_description(
       std::string_view,
-      std::span<const rs::core::database::QueryParameterType>) override {
+      std::span<const rs::core::database::QueryParameterType>, std::size_t) override {
     return {std::byte{0x44}};
   }
 

@@ -539,7 +539,9 @@ std::vector<std::byte> PgProtocolParser::create_auth_response(
   return buf;
 }
 
-std::vector<std::byte> PgProtocolParser::create_simple_query(std::string_view sql) {
+std::vector<std::byte> PgProtocolParser::create_simple_query(std::string_view sql, std::size_t max_wire_bytes) {
+  if (max_wire_bytes < 6 || sql.size() > std::min<std::size_t>(max_wire_bytes - 6,
+          std::numeric_limits<std::uint32_t>::max() - 5)) throw RequestWireLimitExceeded{};
   reject_sql_nul(sql);
   size_t total_len = 1 + 4 + sql.size() + 1;
   std::vector<std::byte> buf(total_len);
@@ -560,7 +562,7 @@ std::vector<std::byte> PgProtocolParser::create_simple_query(std::string_view sq
 
 std::vector<std::byte> PgProtocolParser::create_prepared_query(
     std::string_view sql,
-    std::span<const QueryParameter> params) {
+    std::span<const QueryParameter> params, std::size_t max_wire_bytes) {
   reject_sql_nul(sql);
   if (params.size() > std::numeric_limits<std::uint16_t>::max()) {
     throw std::length_error("too many PostgreSQL query parameters");
@@ -572,8 +574,27 @@ std::vector<std::byte> PgProtocolParser::create_prepared_query(
         "parameter marker count does not match bound parameter count");
   }
   const auto& rewritten_sql = rewritten.sql;
+  // Count the complete Parse/Describe/Bind/Describe/Execute/Sync exchange,
+  // including binary hex expansion, before allocating wire or value buffers.
+  std::size_t wire_bytes = 0;
+  const auto add = [&](std::size_t bytes) {
+    if (bytes > max_wire_bytes - wire_bytes) throw RequestWireLimitExceeded{};
+    wire_bytes += bytes;
+  };
+  add(51);
+  add(rewritten_sql.size());
+  add(8 * params.size());
+  for (const auto& param : params) {
+    if (!param.value) continue;
+    const bool binary = param.type == QueryParameterType::Binary || param.binary_input;
+    const auto maximum = static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max());
+    if (param.value->size() > (binary ? (maximum - 2) / 2 : maximum)) {
+      throw std::length_error("PostgreSQL parameter value is too large");
+    }
+    add(binary ? 2 + 2 * param.value->size() : param.value->size());
+  }
   std::vector<std::byte> out;
-  out.reserve(rewritten_sql.size() + 64);
+  out.reserve(wire_bytes);
 
   // Parse the unnamed statement and supply protocol-native type hints.
   auto start = begin_message(out, 'P');
@@ -637,7 +658,7 @@ std::vector<std::byte> PgProtocolParser::create_prepared_query(
 
 std::vector<std::byte> PgProtocolParser::create_statement_description(
     std::string_view sql,
-    std::span<const QueryParameterType> parameter_types) {
+    std::span<const QueryParameterType> parameter_types, std::size_t max_wire_bytes) {
   reject_sql_nul(sql);
   if (parameter_types.size() > std::numeric_limits<std::uint16_t>::max()) {
     throw std::length_error("too many PostgreSQL query parameters");
@@ -649,8 +670,12 @@ std::vector<std::byte> PgProtocolParser::create_statement_description(
         "parameter marker count does not match described parameter count");
   }
 
+  const auto overhead = 21 + 4 * parameter_types.size();
+  if (overhead > max_wire_bytes || rewritten.sql.size() > max_wire_bytes - overhead) {
+    throw RequestWireLimitExceeded{};
+  }
   std::vector<std::byte> out;
-  out.reserve(rewritten.sql.size() + 32);
+  out.reserve(overhead + rewritten.sql.size());
   auto start = begin_message(out, 'P');
   append_cstring(out, {});
   append_cstring(out, rewritten.sql);

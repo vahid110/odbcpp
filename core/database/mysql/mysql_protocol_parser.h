@@ -45,21 +45,21 @@ public:
     throw std::runtime_error("MySQL auth response not implemented yet");
   }
   
-  std::vector<std::byte> create_simple_query(std::string_view sql) override {
+  std::vector<std::byte> create_simple_query(std::string_view sql, std::size_t max_wire_bytes = 256 * 1024 * 1024) override {
     // MySQL COM_QUERY packet
     throw std::runtime_error("MySQL query not implemented yet");
   }
   
   std::vector<std::byte> create_prepared_query(
     std::string_view sql,
-    std::span<const QueryParameter> params) override {
+    std::span<const QueryParameter> params, std::size_t max_wire_bytes = 256 * 1024 * 1024) override {
     // MySQL COM_STMT_PREPARE + COM_STMT_EXECUTE
     throw std::runtime_error("MySQL prepared statements not implemented yet");
   }
 
   std::vector<std::byte> create_statement_description(
     std::string_view sql,
-    std::span<const QueryParameterType> parameter_types) override {
+    std::span<const QueryParameterType> parameter_types, std::size_t max_wire_bytes = 256 * 1024 * 1024) override {
     throw std::runtime_error("MySQL statement description not implemented yet");
   }
   

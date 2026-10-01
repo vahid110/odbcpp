@@ -2944,7 +2944,7 @@ TEST(InputBudgetTest, ExcessiveConfiguredCeilingsPreserveConnectedSession) {
   const auto sends = observed->send_count();
   for (const Limit field : {&InputLimits::max_sql_bytes, &InputLimits::max_parameters,
                            &InputLimits::max_parameter_bytes, &InputLimits::max_parameter_total_bytes,
-                           &InputLimits::max_connection_field_bytes}) {
+                           &InputLimits::max_connection_field_bytes, &InputLimits::max_request_wire_bytes}) {
     auto invalid = settings;
     invalid.input_limits.*field = static_cast<std::size_t>(-1);
     const auto result = backend.connect(invalid);
@@ -2999,19 +2999,19 @@ class AllocationFaultParser final : public rs::core::database::postgres::PgProto
     fail(Stage::StartupEncoding);
     return PgProtocolParser::create_startup_message(user, database, params);
   }
-  std::vector<std::byte> create_simple_query(std::string_view sql) override {
+  std::vector<std::byte> create_simple_query(std::string_view sql, std::size_t limit) override {
     fail(Stage::Direct);
-    return PgProtocolParser::create_simple_query(sql);
+    return PgProtocolParser::create_simple_query(sql, limit);
   }
   std::vector<std::byte> create_prepared_query(std::string_view sql,
-      std::span<const rs::core::database::QueryParameter> params) override {
+      std::span<const rs::core::database::QueryParameter> params, std::size_t limit) override {
     fail(Stage::Prepared);
-    return PgProtocolParser::create_prepared_query(sql, params);
+    return PgProtocolParser::create_prepared_query(sql, params, limit);
   }
   std::vector<std::byte> create_statement_description(std::string_view sql,
-      std::span<const rs::core::database::QueryParameterType> types) override {
+      std::span<const rs::core::database::QueryParameterType> types, std::size_t limit) override {
     fail(Stage::Describe);
-    return PgProtocolParser::create_statement_description(sql, types);
+    return PgProtocolParser::create_statement_description(sql, types, limit);
   }
   rs::core::database::Message parse_message(const std::vector<std::byte>& bytes) override {
     fail(Stage::StartupParse);
@@ -3136,4 +3136,38 @@ TEST(AllocationBoundaryTest, StartupEncodingFailurePreservesExistingSession) {
   EXPECT_EQ(observed->bytes_read(), reads);
   EXPECT_EQ(observed->close_count(), 0u);
   EXPECT_TRUE(backend.is_connected());
+}
+
+TEST(InputBudgetTest, EncodedWireLimitsPreflightAndPreserveSessionAcrossAllOperations) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto operation : {BackendOperation::ExecuteDirect, BackendOperation::ExecutePrepared, BackendOperation::Describe}) {
+    for (const bool exact : {false, true}) {
+      auto transport = std::make_unique<ScriptedBackendTransport>(operation == BackendOperation::Describe ? Mode::DescriptionNoData : Mode::EmptyQueryResponse);
+      auto* observed = transport.get();
+      GenericDatabaseConnection backend(std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
+      ConnectionSettings settings;
+      settings.use_ssl = false;
+      const std::size_t wire_bytes = operation == BackendOperation::ExecuteDirect ? 6 :
+          operation == BackendOperation::ExecutePrepared ? 51 : 21;
+      settings.input_limits.max_request_wire_bytes = exact ? wire_bytes : wire_bytes - 1;
+      ASSERT_TRUE(backend.connect(settings));
+      const auto sends = observed->send_count();
+      const auto reads = observed->bytes_read();
+      const auto result = operation == BackendOperation::ExecuteDirect ? backend.execute_query("", rs::util::Deadline::max()) :
+          operation == BackendOperation::ExecutePrepared ? backend.execute_prepared("", std::span<const QueryParameter>{}, rs::util::Deadline::max()) :
+          backend.describe_statement("", {}, rs::util::Deadline::max());
+      EXPECT_EQ(exact, result.has_value());
+      if (!exact) {
+        ASSERT_TRUE(result.has_error());
+        EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::ResourceLimit);
+        EXPECT_EQ(result.backend_error().operation, operation);
+        EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Reusable);
+        EXPECT_EQ(observed->send_count(), sends);
+        EXPECT_EQ(observed->bytes_read(), reads);
+        EXPECT_EQ(observed->close_count(), 0u);
+        EXPECT_TRUE(backend.is_connected());
+      }
+    }
+  }
 }

@@ -996,3 +996,39 @@ TEST(PgCommandContractTest, NormalizesCompletionAndRejectsPrefixLookalikes) {
   }
   EXPECT_FALSE(parser.extract_query_result({}).statement_kind);
 }
+
+TEST(PgRequestBudgetTest, ExactWireSizesCoverHeadersMarkersNullAndBinaryExpansion) {
+  using namespace rs::core::database;
+  postgres::PgProtocolParser parser;
+  const auto direct = parser.create_simple_query("SELECT 1");
+  EXPECT_EQ(direct, parser.create_simple_query("SELECT 1", direct.size()));
+  EXPECT_THROW(parser.create_simple_query("SELECT 1", direct.size() - 1), RequestWireLimitExceeded);
+  const std::vector<QueryParameter> params{
+      {std::nullopt, QueryParameterType::Text}, {std::string{}, QueryParameterType::Text},
+      {std::string{"\0x", 2}, QueryParameterType::Binary}};
+  const auto prepared = parser.create_prepared_query("SELECT ?, ?, ?", params);
+  EXPECT_EQ(prepared, parser.create_prepared_query("SELECT ?, ?, ?", params, prepared.size()));
+  EXPECT_THROW(parser.create_prepared_query("SELECT ?, ?, ?", params, prepared.size() - 1), RequestWireLimitExceeded);
+  const std::vector<QueryParameterType> types{QueryParameterType::Text, QueryParameterType::Text, QueryParameterType::Binary};
+  const auto description = parser.create_statement_description("SELECT ?, ?, ?", types);
+  EXPECT_EQ(description, parser.create_statement_description("SELECT ?, ?, ?", types, description.size()));
+  EXPECT_THROW(parser.create_statement_description("SELECT ?, ?, ?", types, description.size() - 1), RequestWireLimitExceeded);
+  EXPECT_THROW(parser.create_simple_query("", 0), RequestWireLimitExceeded);
+  EXPECT_THROW(parser.create_prepared_query("", {}, 0), RequestWireLimitExceeded);
+  EXPECT_THROW(parser.create_statement_description("", {}, 0), RequestWireLimitExceeded);
+}
+
+TEST(PgRequestBudgetTest, MultiDigitMarkersAndBinaryInputHintsFitExactWireBudget) {
+  using namespace rs::core::database;
+  postgres::PgProtocolParser parser;
+  std::vector<QueryParameter> params;
+  std::string sql = "SELECT ";
+  for (int i = 0; i < 10; ++i) {
+    if (i != 0) sql += ',';
+    sql += '?';
+    params.push_back({std::string{"\0x", 2}, QueryParameterType::Text, true});
+  }
+  const auto wire = parser.create_prepared_query(sql, params);
+  EXPECT_EQ(wire, parser.create_prepared_query(sql, params, wire.size()));
+  EXPECT_THROW(parser.create_prepared_query(sql, params, wire.size() - 1), RequestWireLimitExceeded);
+}

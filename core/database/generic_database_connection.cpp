@@ -109,7 +109,8 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
   if (input.max_sql_bytes > 64 * 1024 * 1024 || input.max_parameters > 65535 ||
       input.max_parameter_bytes > 64 * 1024 * 1024 ||
       input.max_parameter_total_bytes > 256 * 1024 * 1024 ||
-      input.max_connection_field_bytes > 1024 * 1024) {
+      input.max_connection_field_bytes > 1024 * 1024 ||
+      input.max_request_wire_bytes > 1024 * 1024 * 1024) {
     return {rs::util::DbErrorCode::InvalidParameter, "Input limits exceed supported encoding ceilings"};
   }
   for (const auto* field : {&settings.host, &settings.user, &settings.password,
@@ -336,6 +337,8 @@ BackendResult<QueryResult> GenericDatabaseConnection::execute_query(
   }
   try {
     return finish_operation(execute_query_impl(sql, deadline), BackendOperation::ExecuteDirect);
+  } catch (const RequestWireLimitExceeded&) {
+    return reject_request_limit(BackendOperation::ExecuteDirect);
   } catch (const std::bad_alloc&) {
     // Request I/O may have started; never expose an ambiguous session as live.
     mark_transport_failed();
@@ -361,6 +364,8 @@ BackendResult<QueryResult> GenericDatabaseConnection::execute_prepared(
   }
   try {
     return finish_operation(execute_prepared_impl(sql, params, deadline), BackendOperation::ExecutePrepared);
+  } catch (const RequestWireLimitExceeded&) {
+    return reject_request_limit(BackendOperation::ExecutePrepared);
   } catch (const std::bad_alloc&) {
     // Request I/O may have started; never expose an ambiguous session as live.
     mark_transport_failed();
@@ -376,6 +381,8 @@ BackendResult<QueryResult> GenericDatabaseConnection::describe_statement(
   }
   try {
     return finish_operation(describe_statement_impl(sql, types, deadline), BackendOperation::Describe);
+  } catch (const RequestWireLimitExceeded&) {
+    return reject_request_limit(BackendOperation::Describe);
   } catch (const std::bad_alloc&) {
     // Request I/O may have started; never expose an ambiguous session as live.
     mark_transport_failed();
@@ -390,7 +397,9 @@ BackendResult<QueryResult> GenericDatabaseConnection::execute_query_impl(std::st
   
   std::vector<std::byte> query_msg;
   try {
-    query_msg = parser_->create_simple_query(sql);
+    query_msg = parser_->create_simple_query(sql, settings_.input_limits.max_request_wire_bytes);
+  } catch (const RequestWireLimitExceeded&) {
+    throw;
   } catch (const std::bad_alloc&) {
     return {rs::util::DbErrorCode::AllocationFailure, {}};
   } catch (const std::exception& error) {
@@ -414,7 +423,9 @@ BackendResult<QueryResult> GenericDatabaseConnection::execute_prepared_impl(std:
   
   std::vector<std::byte> query_msg;
   try {
-    query_msg = parser_->create_prepared_query(sql, params);
+    query_msg = parser_->create_prepared_query(sql, params, settings_.input_limits.max_request_wire_bytes);
+  } catch (const RequestWireLimitExceeded&) {
+    throw;
   } catch (const std::bad_alloc&) {
     return {rs::util::DbErrorCode::AllocationFailure, {}};
   } catch (const std::exception& error) {
@@ -440,7 +451,9 @@ BackendResult<QueryResult> GenericDatabaseConnection::describe_statement_impl(
 
   std::vector<std::byte> request;
   try {
-    request = parser_->create_statement_description(sql, parameter_types);
+    request = parser_->create_statement_description(sql, parameter_types, settings_.input_limits.max_request_wire_bytes);
+  } catch (const RequestWireLimitExceeded&) {
+    throw;
   } catch (const std::bad_alloc&) {
     return {rs::util::DbErrorCode::AllocationFailure, {}};
   } catch (const std::exception& error) {

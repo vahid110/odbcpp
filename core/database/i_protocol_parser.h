@@ -5,6 +5,7 @@
 #include <span>
 #include <cstddef>
 #include <map>
+#include <stdexcept>
 #include "core/util/deadline.h"
 #include "query_parameter.h"
 #include "query_result.h"
@@ -12,6 +13,12 @@
 #include "native_type_info.h"
 
 namespace rs::core::database {
+
+// Only request encoders throw this, before any request bytes are sent.
+class RequestWireLimitExceeded : public std::length_error {
+public:
+  RequestWireLimitExceeded() : std::length_error("Database encoded request limit exceeded") {}
+};
 
 struct AuthenticationRequest {
   enum class Type { None, Cleartext, MD5, SASL, SASLContinue, SASLFinal }
@@ -54,13 +61,16 @@ public:
   // Pure native-to-normalized metadata interpretation, without I/O.
   virtual NativeTypeInfo describe_type(std::uint32_t id, std::int16_t size,
                                        std::int32_t modifier) const = 0;
-  virtual std::vector<std::byte> create_simple_query(std::string_view sql) = 0;
+  virtual std::vector<std::byte> create_simple_query(std::string_view sql,
+      std::size_t max_wire_bytes = 256 * 1024 * 1024) = 0;
   virtual std::vector<std::byte> create_prepared_query(
     std::string_view sql,
-    std::span<const QueryParameter> params) = 0;
+    std::span<const QueryParameter> params,
+    std::size_t max_wire_bytes = 256 * 1024 * 1024) = 0;
   virtual std::vector<std::byte> create_statement_description(
     std::string_view sql,
-    std::span<const QueryParameterType> parameter_types) = 0;
+    std::span<const QueryParameterType> parameter_types,
+    std::size_t max_wire_bytes = 256 * 1024 * 1024) = 0;
   
   // Message parsing
   virtual Message parse_message(const std::vector<std::byte>& data) = 0;

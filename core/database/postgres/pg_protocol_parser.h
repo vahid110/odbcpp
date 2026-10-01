@@ -34,13 +34,13 @@ public:
   std::size_t count_parameter_markers(std::string_view sql) const override {
     return parameter_marker_count(sql);
   }
-  std::vector<std::byte> create_simple_query(std::string_view sql) override;
+  std::vector<std::byte> create_simple_query(std::string_view sql, std::size_t max_wire_bytes = 256 * 1024 * 1024) override;
   std::vector<std::byte> create_prepared_query(
     std::string_view sql,
-    std::span<const QueryParameter> params) override;
+    std::span<const QueryParameter> params, std::size_t max_wire_bytes = 256 * 1024 * 1024) override;
   std::vector<std::byte> create_statement_description(
     std::string_view sql,
-    std::span<const QueryParameterType> parameter_types) override;
+    std::span<const QueryParameterType> parameter_types, std::size_t max_wire_bytes = 256 * 1024 * 1024) override;
   static std::size_t parameter_marker_count(std::string_view sql);
   
   // Message parsing
