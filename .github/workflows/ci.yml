@@ -109,6 +109,14 @@ jobs:
       - name: Run unit tests
         run: ctest --test-dir build -L unit --output-on-failure --output-junit openssl-system-shared-unit.xml
 
+      - name: Bind system-shared unit qualification evidence
+        run: |
+          python3 tools/ci/test_crypto_qualification.py
+          python3 tools/ci/record-crypto-qualification.py --build build \
+          --driver build/libodbcpp.so --probe build/tests/crypto_identity_probe \
+          --unit-report build/openssl-system-shared-unit.xml --platform Linux \
+          --output build/odbcpp-crypto-unit-qualification.json
+
       - name: Run integration tests
         run: ctest --test-dir build -L integration -E '^it_crypto_profile_live$' --output-on-failure
 
@@ -158,6 +166,7 @@ jobs:
             build/tests/crypto_tls_probe
             build/tests/crypto_identity_probe
             build/odbcpp-crypto-identity-evidence.json
+            build/odbcpp-crypto-unit-qualification.json
             build/libodbcpp.so
             build/odbcpp-crypto-manifest.json
             build/odbcpp-crypto-artifact-evidence.json
@@ -243,7 +252,16 @@ jobs:
         shell: pwsh
         run: >-
           ctest --test-dir build-windows -C Release -L unit
-          --timeout 30 --output-on-failure
+          --timeout 30 --output-on-failure --output-junit windows-openssl-unit.xml
+
+      - name: Bind Windows unit qualification evidence
+        shell: pwsh
+        run: >-
+          python tools/ci/record-crypto-qualification.py --build build-windows
+          --driver build-windows/Release/odbcpp.dll
+          --probe build-windows/tests/Release/crypto_identity_probe.exe
+          --unit-report build-windows/windows-openssl-unit.xml --platform Windows
+          --output build-windows/odbcpp-crypto-unit-qualification.json
 
 
       - name: Start PostgreSQL and register Windows ODBC driver
@@ -299,6 +317,8 @@ jobs:
             build-windows/package/odbcpp-postgresql-1.0.0-x64.msi.sha256
             build-windows/package/payload-1.0.0/inventory.json
             windows-crypto-profile-live.xml
+            build-windows/windows-openssl-unit.xml
+            build-windows/odbcpp-crypto-unit-qualification.json
             build-windows/tests/Release/crypto_identity_probe.exe
             build-windows/tests/Release/crypto_tls_probe.exe
             build-windows/odbcpp-crypto-identity-evidence.json
@@ -326,6 +346,8 @@ jobs:
           name: windows-live-test-evidence
           path: |
             build-windows/Testing/Temporary/LastTest.log
+            build-windows/windows-openssl-unit.xml
+            build-windows/odbcpp-crypto-unit-qualification.json
             build-windows/tests/Release/crypto_tls_probe.exe
             build-windows/tests/Release/crypto_identity_probe.exe
             build-windows/odbcpp-crypto-manifest.json
@@ -714,6 +736,14 @@ jobs:
             > "$RUNNER_TEMP/unresolved-provider-symbols"
           test ! -s "$RUNNER_TEMP/unresolved-provider-symbols"
 
+      - name: Bind static-profile unit qualification evidence
+        run: >-
+          python3 tools/ci/record-crypto-qualification.py --build build-openssl-static
+          --driver build-openssl-static/libodbcpp.so
+          --probe build-openssl-static/tests/crypto_identity_probe
+          --unit-report build-openssl-static/openssl-static-unit.xml --platform Linux
+          --output build-openssl-static/odbcpp-crypto-unit-qualification.json
+
       - name: Preserve static-profile evidence
         uses: actions/upload-artifact@v4
         with:
@@ -722,6 +752,7 @@ jobs:
             build-openssl-static/tests/crypto_tls_probe
             build-openssl-static/tests/crypto_identity_probe
             build-openssl-static/odbcpp-crypto-identity-evidence.json
+            build-openssl-static/odbcpp-crypto-unit-qualification.json
             build-openssl-static/openssl-static-unit.xml
             build-openssl-static/odbcpp-crypto-manifest.json
             build-openssl-static/odbcpp-crypto-artifact-evidence.json
@@ -903,6 +934,14 @@ jobs:
       - name: Run unit tests
         run: ctest --test-dir build-iodbc -L unit --output-on-failure --output-junit macos-openssl-unit.xml
 
+      - name: Bind macOS unit qualification evidence
+        run: >-
+          "$(brew --prefix python@3.12)/bin/python3.12" tools/ci/record-crypto-qualification.py
+          --build build-iodbc --driver build-iodbc/libodbcpp.dylib
+          --probe build-iodbc/tests/crypto_identity_probe
+          --unit-report build-iodbc/macos-openssl-unit.xml --platform Darwin
+          --output build-iodbc/odbcpp-crypto-unit-qualification.json
+
       - name: Run PostgreSQL integration tests
         run: ctest --test-dir build-iodbc -L integration -E '^it_crypto_profile_live$' --output-on-failure
 
@@ -920,6 +959,7 @@ jobs:
             build-iodbc/tests/crypto_tls_probe
             build-iodbc/tests/crypto_identity_probe
             build-iodbc/odbcpp-crypto-identity-evidence.json
+            build-iodbc/odbcpp-crypto-unit-qualification.json
             build-iodbc/libodbcpp.dylib
             build-iodbc/odbcpp-crypto-manifest.json
             build-iodbc/odbcpp-crypto-artifact-evidence.json
