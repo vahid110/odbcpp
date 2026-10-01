@@ -895,3 +895,10 @@ using an explicit server-version snapshot. Borrowed input is not retained, and
 returned spans/strings remain valid for the provider lifetime across selections.
 An empty version selects a conservative profile; a retained advertisement does not
 imply connectivity or reuse safety. Live native type resolution remains backend-private.
+
+Static capabilities and native-state diagnostic policy belong to the immutable
+provider. Capability string views last for the provider lifetime; the ODBC adapter
+masks copies for missing live facets. Sessions do not borrow product identity or
+policy from the provider. Native mapping borrows inputs only until return and
+returns owning SQLSTATE text or no mapping; it never grants retry/reuse safety or
+overrides class-first and operation-specific diagnostic fallbacks.

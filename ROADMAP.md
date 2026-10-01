@@ -1039,3 +1039,43 @@ PostgreSQL, iODBC UTF-16/UCS-4, sanitizer and Redshift build/absent-endpoint gat
 pass; examples compile. Focused read-only review found no blockers in immutable
 view lifetime, borrowed inputs, advertised-version lifecycle or adapter selection.
 Windows/live/package evidence follows the exact-head GitHub Actions batch run.
+
+## S2 provider-owned capability and diagnostic policy — 2026-10-01
+
+Static capability declarations and native-state diagnostic mapping now belong to
+IBackendProvider. IDatabaseConnection no longer requires either policy method;
+GenericDatabaseConnection and independent synthetic sessions need no unsupported
+policy stubs. PostgreSQL's session no longer accepts or stores a product display
+name. The provider owns product identity and the capability strings remain valid
+for its lifetime. Sessions can outlive their creating provider without borrowing
+its static policy. ODBC retains its provider and derives live capability reporting
+by masking a copy for absent facets, never mutating the declaration.
+
+Pure native-state mapping receives borrowed native text and semantic ErrorContext,
+returns owning normalized SQLSTATE text or no mapping for the caller's fallback,
+and performs no I/O. The default provider policy supplies no mapping. PostgreSQL's
+existing context-sensitive duplicate object/index and conversion/integrity mappings
+are unchanged. ODBC validates mapped states and preserves class-first invalid
+metadata, ResolveTypes and operation-specific fallback precedence. Diagnostic policy
+never overrides the owning operation's session state, retirement or retry rules.
+
+Tests cover provider identity ownership despite caller input mutation, independent
+session use after provider destruction, stable static capability snapshots across
+open/disconnect and absent-facet masking, and provider error policy before session
+creation with owning results after provider destruction. Existing contextual native
+state mappings, malformed/unknown state fallback, direct/prepared/deferred errors,
+metadata failures and passive session-snapshot tests protect both happy-path and
+failure behavior. Compile-time checks keep both policy methods off the required
+session interface.
+
+This closes the remaining static capability/error service extraction in S2.
+Health/reset/lease facets, internal build targets, dedicated ordered execution
+items, warning delivery and richer normalized values remain open. No pooling,
+public SDK qualification or ADBC readiness claim is added.
+
+Validation: focused provider/backend/capability/native/diagnostic/liveness checks
+and full local PostgreSQL, iODBC UTF-16/UCS-4, sanitizer and Redshift
+build/absent-endpoint gates pass; examples compile. Focused read-only review found
+no blockers in provider ownership, live masking, mapped-state validation or
+fallback precedence. Windows/live/package validation follows the exact-head
+GitHub Actions batch run.
