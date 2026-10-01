@@ -837,3 +837,38 @@ for hidden implementation. A positive-control prototype archive must expose both
 known prototype classes to the inspector. Reset/credential generations/cache
 invalidation and exclusive RAII leases remain the next S2 reuse work; no Driver
 Manager or SDK pooling qualification is implied.
+
+## S2 narrow PostgreSQL reset facet — 2026-10-01
+
+`IDatabaseConnection::session_reset()` is an optional, session-owned `ISessionReset`
+facet. Its pointer is stable for the session lifetime; callers serialize it with
+all session operations. `SameAuthenticatedServerSession` cleans the original
+authenticated physical session, without reconnect, replay or authorizing another
+borrower. Results own their final snapshot and errors carry `ResetSession` context.
+
+The PostgreSQL product explicitly opts into an immutable provider profile. The
+PostgreSQL-family implementation and provider default to no reset profile; names
+and identity strings do not enable it. Redshift does not opt in. Minimal external
+backends remain valid without this facet.
+
+PostgreSQL rolls back active/failed transactions, then executes `DISCARD ALL`,
+using one caller-supplied absolute deadline. Exact native `ROLLBACK` and
+`DISCARD ALL` completion tags are checked inside the private protocol path, before
+normalization; they never enter SDK results. Wrong, duplicate, unterminated or
+row-bearing completions fail. Success requires an idle, empty cleanup result. Any
+cleanup failure, unknown state or malformed success closes the session, returns
+`Disconnected/Retire`, and clears any replay-safety hint. A missing profile reports
+unsupported without I/O.
+
+The server baseline follows [PostgreSQL DISCARD ALL semantics](https://www.postgresql.org/docs/17/sql-discard.html),
+which require execution outside a transaction. Live evidence covers changed
+application name/isolation, temporary objects, prepared statements, advisory
+locks, failed transactions and expired deadlines. The mandatory live executable
+is PostgreSQL-only. Wire/unit fixtures also cover both cleanup steps, original
+deadline forwarding, owning diagnostics/snapshots and failure retirement.
+
+This is a backend cleanup primitive, not safe pooling acceptance. Shared
+credential generations/expiry, cache epochs/invalidation and exclusive RAII
+leases remain open. Shared policy must invalidate its cached statements and
+metadata after reset before any new borrower; ODBC does not invoke the facet yet.
+No ODBC pooling capability, Redshift reset or public SDK stability is claimed.

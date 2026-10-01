@@ -1221,3 +1221,23 @@ quarantine fixture used CMake's reserved `clean` name; repaired before the final
 gates. Read-only review closed partition and driver-only object injection bypasses;
 no remaining blocker/high finding. Windows packaging and cross-platform crypto
 profiles remain subject to the exact-head CI gate.
+
+## S2 explicit PostgreSQL reset profile — 2026-10-01
+
+Added optional reset contracts and explicit PostgreSQL product opt-in. The backend
+rolls back active/failed transactions and discards server session resources under
+the original deadline; exact native completion tags remain private. Failure
+retires without reconnect or replay. Redshift remains opted out.
+
+Focused fixtures cover cleanup ordering/deadlines, malformed responses, transport
+and server failures, allocation failures and stable owning outcomes. Mandatory
+PostgreSQL live tests cover baseline/resource cleanup, failed-transaction recovery
+and timeout retirement. Full local and exact-head CI evidence is recorded after
+the batch gates. Exclusive leases and credential/cache isolation remain next S2
+work; S2, S2C, G12 and pooling qualification stay open.
+
+Validation: focused reset/provider/wire and SDK contract checks pass. Full local
+PostgreSQL, iODBC UTF-16/UCS-4, sanitizer and Redshift build/absent-endpoint
+gates pass. PostgreSQL and UTF-16 were repeated after the final malformed-empty
+completion fix. Read-only review found no remaining blocker/high issue. Windows,
+packaging and cross-platform crypto checks remain subject to exact-head CI.

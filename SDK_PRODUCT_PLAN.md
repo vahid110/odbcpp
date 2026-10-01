@@ -260,7 +260,9 @@ review before considering any MySQL beta plan.
   complete; S2 began with verified authentication/CA policy and trusted
   configuration discovery. Provider/composition and private crypto extraction
   have bounded evidence accepted in [S2C_MATRIX_REVIEW.md](S2C_MATRIX_REVIEW.md).
-  Resume S2 structured errors/session disposition next; crypto qualification
+  S2 now includes owning errors/session disposition, private dependency gates,
+  optional active health and the narrow PostgreSQL reset primitive. Continue
+  exclusive leases and credential/cache isolation next; crypto qualification
   follow-ups remain open and do not disappear from G12.
 - When Redshift access returns, finish the current coherent MS1 batch, preserve
   its evidence, and run M2 before expanding MySQL scope. Re-estimate whether to
@@ -274,3 +276,12 @@ partners among database and analytics vendors and test the value of commercial
 SDK licensing, OEM distribution, paid driver development, compatibility
 certification and enterprise support. Product discovery does not change the
 technical release claims or authorize public distribution.
+
+## S2 reset progress — 2026-10-01
+
+The backend server-cleanup primitive now has an optional explicit profile and
+PostgreSQL evidence. `SameAuthenticatedServerSession` makes no credential
+freshness or new-borrower authorization promise. Shared policy must still provide
+exclusive leases, credential generations/expiry and cache invalidation before
+reuse acceptance. Redshift is opted out. This advances S2 lifecycle contracts
+without closing S2/G12 or starting MySQL implementation.

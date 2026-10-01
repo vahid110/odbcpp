@@ -2671,3 +2671,23 @@ The audit is complete only when the matrix is accurate, not when every optional
 ODBC feature is implemented. Unsupported features may remain unsupported as
 long as that behavior is standards-compatible, tested, logged appropriately,
 and advertised honestly.
+
+## S2 PostgreSQL reset evidence — 2026-10-01
+
+The optional SDK reset facet now has explicit PostgreSQL-only product selection,
+exact private native completion checks, one absolute cleanup deadline and
+retirement on any failure. Mandatory PG-only live tests cover baseline/resource
+cleanup, rollback of a failed transaction and expired-deadline retirement; unit
+and wire fixtures cover wrong/duplicate/truncated completions, allocation,
+transport and server failures.
+
+ODBC workflows do not invoke reset yet. No connection attribute, pooling
+capability or ODBC compliance row is promoted. Shared cache/credential isolation
+and exclusive leases remain open; existing prototype pool tests are not reuse
+qualification.
+
+Validation: focused reset/provider/wire and SDK contract checks pass. Full local
+PostgreSQL, iODBC UTF-16/UCS-4, sanitizer and Redshift build/absent-endpoint
+gates pass. PostgreSQL and UTF-16 were repeated after the final malformed-empty
+completion fix. Read-only review found no remaining blocker/high issue. Windows,
+packaging and cross-platform crypto checks remain subject to exact-head CI.

@@ -421,3 +421,17 @@ not the unsafe copyable/manual-release ownership model. Exclusive protocol locks
 remove concurrent exchange overlap in its wrapper. Replacement move-only leases,
 reset/retirement, credential generations and cache isolation remain required
 before any SDK/Driver Manager pooling claim.
+
+## S2 PostgreSQL cleanup evidence — 2026-10-01
+
+The explicit same-authenticated-session reset profile uses ROLLBACK where needed
+and DISCARD ALL under one absolute deadline. Native completion validation occurs
+before SDK normalization; every cleanup failure retires the connection and
+removes replay-safety hints. Wrong or ambiguous completions cannot authorize
+reuse. Redshift and unconfigured providers expose no reset facet.
+
+This closes only the server-cleanup primitive portion of SEC-3. Cross-borrower
+authorization, credential freshness/generations, shared cache invalidation and
+exclusive leases remain required. The prototype pool stays quarantined. The live
+PostgreSQL reset suite is mandatory when selected and cannot skip connection
+failures; no pooling or Driver Manager reuse qualification follows from it.

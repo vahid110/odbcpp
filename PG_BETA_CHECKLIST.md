@@ -128,6 +128,7 @@ surfaces above; until then this is not a frozen release profile.
 - `test_sql_escape`
 - `test_thread_safety`
 - `test_transport_deadlines`
+- `test_session_reset`
 - `test_transport_options`
 - `test_unicode`
 - `it_bind_col_real`
@@ -135,6 +136,7 @@ surfaces above; until then this is not a frozen release profile.
 - `it_diagnostics`
 - `it_get_info`
 - `it_handle_lifecycle`
+- `it_session_reset` (mandatory PostgreSQL-only reset profile evidence)
 - `it_metadata_real`
 - `it_native_sql`
 - `it_prepared_statements_real`

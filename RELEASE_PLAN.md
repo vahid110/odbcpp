@@ -823,3 +823,15 @@ and a missing-preload canary, retaining input/report hashes. These checks are
 harness detection after load, not production prevention. Windows public provider
 qualification remains open for a reviewed isolation strategy; final S2C review
 must carry that blocker without extending SDK migration indefinitely.
+
+## S2 PostgreSQL reset checkpoint — 2026-10-01
+
+An optional `SameAuthenticatedServerSession` reset facet is explicitly enabled
+only for the PostgreSQL product. Backend-private exact completion validation and
+mandatory PostgreSQL live tests protect ROLLBACK plus DISCARD ALL cleanup. All
+cleanup failures retire; reset never reconnects or replays.
+
+This is partial lifecycle evidence for G12, not closure. RAII exclusive leases,
+credential/cache isolation and reuse acceptance remain open. Redshift reset is
+unavailable pending its own live profile; provider/linkage qualification and
+real-application PG-BETA gates are unchanged.
