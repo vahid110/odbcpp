@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "odbc/connection_string.h"
+#include "odbc/resource_limits.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -167,6 +168,20 @@ TEST_F(UnixIniDiscoveryTest, HonorsExplicitDsnAndDriverManagerIniPaths) {
   const auto loaded_driver = rs::odbc::DSNReader::read_driver_config(driver);
   ASSERT_EQ(1u, loaded_driver.size());
   EXPECT_EQ("6543", loaded_driver.at("PORT"));
+}
+TEST_F(UnixIniDiscoveryTest, ResourceLimitsFollowDriverDsnAndConnectionPrecedence) {
+  const auto dsn_path = root_ / "trusted-dsn.ini";
+  write(dsn_path, "[LimitFixture]\nDRIVER=LimitDriver\nMaxRows=20\nMaxSqlBytes=512\n");
+  write(root_ / "drivers.ini", "[LimitDriver]\nMaxRows=30\nMaxCells=90\n");
+  ASSERT_EQ(0, setenv("ODBCINI", dsn_path.c_str(), 1));
+  ASSERT_EQ(0, setenv("ODBCSYSINI", root_.c_str(), 1));
+  ASSERT_EQ(0, setenv("ODBCINSTINI", "drivers.ini", 1));
+  const auto resolved = ConnectionString::resolve("DSN=LimitFixture;MaxRows=10", "LimitDriver");
+  rs::core::database::ConnectionOptions options;
+  rs::odbc::parse_resource_limits(resolved.effective_parameters, options);
+  EXPECT_EQ(options.result_limits.max_rows, 10u);
+  EXPECT_EQ(options.result_limits.max_cells, 90u);
+  EXPECT_EQ(options.input_limits.max_sql_bytes, 512u);
 }
 #endif
 

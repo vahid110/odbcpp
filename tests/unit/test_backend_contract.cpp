@@ -184,6 +184,11 @@ class FakeProvider final : public IBackendProvider {
     settings.ssl_ca_file = options.ssl_ca_file.value_or(std::string{});
     settings.ssl_ca_dir = options.ssl_ca_dir.value_or(std::string{});
     settings.timeout = options.timeout;
+    settings.response_limits = options.response_limits;
+    settings.startup_response_limits = options.startup_response_limits;
+    settings.result_limits = options.result_limits;
+    settings.input_limits = options.input_limits;
+    if (!valid_resource_limits(settings)) return {DbErrorCode::InvalidParameter, "Invalid resource limits"};
     return settings;
   }
   std::unique_ptr<IDatabaseConnection> create_session(
@@ -500,4 +505,67 @@ TEST_F(BackendContractTest, StartupAllocationFailureReportsMemoryStateAndAllowsF
   EXPECT_EQ("HY001", state(SQL_HANDLE_DBC, dbc));
   seen->setup_allocation_failure = false;
   connect();
+}
+
+TEST_F(BackendContractTest, ResourceLimitOptionsReachBackendSession) {
+  connect_with("SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=0;MaxResponseBytes=8192;MaxResponseMessages=16;"
+      "MaxStartupResponseBytes=2048;MaxStartupResponseMessages=8;MaxRows=7;MaxCells=21;"
+      "MaxColumns=3;MaxResults=2;MaxMetadataEntries=6;MaxColumnNameBytes=32;"
+      "MaxMetadataNameBytes=192;MaxDiagnosticBytes=256;MaxSqlBytes=1024;MaxParameters=4;"
+      "MaxParameterBytes=32;MaxParameterTotalBytes=128;MaxConnectionFieldBytes=64;"
+      "MaxRequestWireBytes=4096;MaxStartupWireBytes=512;MaxAuthWireBytes=256");
+  const auto& settings = seen->settings;
+  EXPECT_EQ(settings.response_limits.max_wire_bytes, 8192u);
+  EXPECT_EQ(settings.response_limits.max_messages, 16u);
+  EXPECT_EQ(settings.startup_response_limits.max_wire_bytes, 2048u);
+  EXPECT_EQ(settings.startup_response_limits.max_messages, 8u);
+  EXPECT_EQ(settings.result_limits.max_rows, 7u);
+  EXPECT_EQ(settings.result_limits.max_cells, 21u);
+  EXPECT_EQ(settings.result_limits.max_columns_per_description, 3u);
+  EXPECT_EQ(settings.result_limits.max_results, 2u);
+  EXPECT_EQ(settings.result_limits.max_metadata_entries, 6u);
+  EXPECT_EQ(settings.result_limits.max_column_name_bytes, 32u);
+  EXPECT_EQ(settings.result_limits.max_metadata_name_bytes, 192u);
+  EXPECT_EQ(settings.result_limits.max_diagnostic_bytes, 256u);
+  EXPECT_EQ(settings.input_limits.max_sql_bytes, 1024u);
+  EXPECT_EQ(settings.input_limits.max_parameters, 4u);
+  EXPECT_EQ(settings.input_limits.max_parameter_bytes, 32u);
+  EXPECT_EQ(settings.input_limits.max_parameter_total_bytes, 128u);
+  EXPECT_EQ(settings.input_limits.max_connection_field_bytes, 64u);
+  EXPECT_EQ(settings.input_limits.max_request_wire_bytes, 4096u);
+  EXPECT_EQ(settings.input_limits.max_startup_wire_bytes, 512u);
+  EXPECT_EQ(settings.input_limits.max_auth_wire_bytes, 256u);
+}
+
+TEST_F(BackendContractTest, InvalidResourceOptionsFailBeforeSessionCreationAndPermitRecovery) {
+  for (const auto suffix : {"MaxSqlBytes=", "MaxSqlBytes=-1", "MaxSqlBytes=+1", "MaxSqlBytes=12x",
+       "MaxSqlBytes=184467440737095516160", "MaxSqlBytes=67108865", "MaxParameters=65536",
+       "MaxResponseBytes=4", "MaxResponseMessages=0", "MaxStartupResponseMessages=0", "MaxResults=0"}) {
+    const std::string input = std::string("SERVER=fake;SSL=0;") + suffix;
+    EXPECT_EQ(SQL_ERROR, SQLDriverConnect(dbc, nullptr, (SQLCHAR*)input.c_str(), SQL_NTS,
+        nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+    EXPECT_EQ(seen->created, 0u);
+    EXPECT_EQ(seen->transports, 0u);
+  }
+  connect();
+}
+
+TEST_F(BackendContractTest, OmittedResourceOptionsPreserveSdkDefaultsAndZeroDataBudgetsAreAccepted) {
+  connect_with("SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=0");
+  EXPECT_EQ(seen->settings.response_limits.max_wire_bytes, ConnectionSettings{}.response_limits.max_wire_bytes);
+  EXPECT_EQ(seen->settings.input_limits.max_request_wire_bytes, ConnectionSettings{}.input_limits.max_request_wire_bytes);
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  connect_with("SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=0;MaxRows=0;MaxCells=0;MaxColumns=0;MaxSqlBytes=0;MaxParameters=0");
+  EXPECT_EQ(seen->settings.result_limits.max_rows, 0u);
+  EXPECT_EQ(seen->settings.input_limits.max_parameters, 0u);
+}
+
+TEST_F(BackendContractTest, WideConnectionStringsAcceptResourceOptionsWithoutKeywordWarning) {
+  const std::string text = "SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=0;MaxRows=17;MaxSqlBytes=1024";
+  std::vector<SQLWCHAR> input(text.begin(), text.end());
+  input.push_back(0);
+  ASSERT_EQ(SQL_SUCCESS, SQLDriverConnectW(dbc, nullptr, input.data(), SQL_NTS,
+      nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ(seen->settings.result_limits.max_rows, 17u);
+  EXPECT_EQ(seen->settings.input_limits.max_sql_bytes, 1024u);
 }

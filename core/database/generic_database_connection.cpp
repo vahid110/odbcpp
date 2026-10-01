@@ -104,26 +104,15 @@ BackendResult<void> GenericDatabaseConnection::connect(const ConnectionSettings&
 }
 
 BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSettings& settings) {
-  // Keep even caller-supplied ceilings within safe PostgreSQL encoding sizes.
-  const auto& input = settings.input_limits;
-  if (input.max_sql_bytes > 64 * 1024 * 1024 || input.max_parameters > 65535 ||
-      input.max_parameter_bytes > 64 * 1024 * 1024 ||
-      input.max_parameter_total_bytes > 256 * 1024 * 1024 ||
-      input.max_connection_field_bytes > 1024 * 1024 ||
-      input.max_request_wire_bytes > 1024 * 1024 * 1024 ||
-      input.max_startup_wire_bytes > 1024 * 1024 * 1024 || input.max_auth_wire_bytes > 1024 * 1024 * 1024) {
-    return {rs::util::DbErrorCode::InvalidParameter, "Input limits exceed supported encoding ceilings"};
+  if (!valid_resource_limits(settings)) {
+    return {rs::util::DbErrorCode::InvalidParameter, "Resource limits are outside supported bounds"};
   }
+  const auto& input = settings.input_limits;
   for (const auto* field : {&settings.host, &settings.user, &settings.password,
                            &settings.database, &settings.ssl_ca_file, &settings.ssl_ca_dir}) {
     if (field->size() > input.max_connection_field_bytes) {
       return {rs::util::DbErrorCode::ResourceLimit, "Database connection input limit exceeded"};
     }
-  }
-  if (settings.response_limits.max_wire_bytes < 5 || settings.response_limits.max_messages == 0 ||
-      settings.startup_response_limits.max_wire_bytes < 5 || settings.startup_response_limits.max_messages == 0 ||
-      settings.result_limits.max_results == 0) {
-    return {rs::util::DbErrorCode::InvalidParameter, "Response limits must allow a header, at least one message and one result"};
   }
   if (settings.password.find('\0') != std::string::npos) {
     return {rs::util::DbErrorCode::InvalidParameter,

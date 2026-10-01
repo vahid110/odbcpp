@@ -44,6 +44,13 @@ PgBackendProvider::resolve_connection_options(ConnectionOptions options) const {
   settings.ssl_ca_file = options.ssl_ca_file.value_or(std::string{});
   settings.ssl_ca_dir = options.ssl_ca_dir.value_or(std::string{});
   settings.timeout = options.timeout;
+  settings.response_limits = options.response_limits;
+  settings.startup_response_limits = options.startup_response_limits;
+  settings.result_limits = options.result_limits;
+  settings.input_limits = options.input_limits;
+  if (!valid_resource_limits(settings)) {
+    return {rs::util::DbErrorCode::InvalidParameter, "Resource limits are outside supported bounds"};
+  }
 
   if (!settings.ssl_ca_file.empty() && !settings.ssl_ca_dir.empty()) {
     return {rs::util::DbErrorCode::InvalidParameter,

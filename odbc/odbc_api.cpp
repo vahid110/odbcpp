@@ -50,8 +50,12 @@ namespace {
 
   std::optional<std::string> first_unknown_connection_keyword(
       const std::string& connection_string) {
-    static constexpr std::array<std::string_view, 28> supported{{
+    static constexpr std::array<std::string_view, 48> supported{{
         "DSN", "DRIVER", "SERVER", "HOST", "PORT", "DATABASE", "DB",
+        "MAXRESPONSEBYTES", "MAXRESPONSEMESSAGES", "MAXSTARTUPRESPONSEBYTES", "MAXSTARTUPRESPONSEMESSAGES",
+        "MAXROWS", "MAXCELLS", "MAXCOLUMNS", "MAXRESULTS", "MAXMETADATAENTRIES", "MAXCOLUMNNAMEBYTES",
+        "MAXMETADATANAMEBYTES", "MAXDIAGNOSTICBYTES", "MAXSQLBYTES", "MAXPARAMETERS", "MAXPARAMETERBYTES",
+        "MAXPARAMETERTOTALBYTES", "MAXCONNECTIONFIELDBYTES", "MAXREQUESTWIREBYTES", "MAXSTARTUPWIREBYTES", "MAXAUTHWIREBYTES",
         "UID", "USER", "PWD", "PASSWORD", "SSL", "SSLCAFILE", "SSLCADIR",
         "DESCRIPTION",
         "TRANSPORTMODE", "ASYNCMAXINFLIGHT", "ASYNCQUEUEDEPTH",

@@ -2,6 +2,7 @@
 #include "odbc_handles.h"
 #include "transaction_metadata.h"
 #include "connection_string.h"
+#include "resource_limits.h"
 #include "result_types.h"
 #include "core/database/sql_translation.h"
 #include "text_data_converter.h"
@@ -1366,6 +1367,7 @@ SQLRETURN ODBCConnection::connect(
     if (params.count("SSLCAFILE")) options.ssl_ca_file = params.at("SSLCAFILE");
     if (params.count("SSLCADIR")) options.ssl_ca_dir = params.at("SSLCADIR");
     options.timeout = timeout_duration(login_timeout_seconds_);
+    parse_resource_limits(params, options);
 
     auto resolved_settings =
         backend_provider_->resolve_connection_options(std::move(options));

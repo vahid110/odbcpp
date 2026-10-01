@@ -71,6 +71,18 @@ struct ConnectionSettings {
   ResponseLimits startup_response_limits{1024 * 1024, 10000};
 };
 
+// Shared validation for SDK callers and product option resolution.
+inline bool valid_resource_limits(const ConnectionSettings& settings) noexcept {
+  const auto& input = settings.input_limits;
+  return settings.response_limits.max_wire_bytes >= 5 && settings.response_limits.max_messages > 0 &&
+      settings.startup_response_limits.max_wire_bytes >= 5 && settings.startup_response_limits.max_messages > 0 &&
+      settings.result_limits.max_results > 0 &&
+      input.max_sql_bytes <= 64 * 1024 * 1024 && input.max_parameters <= 65535 &&
+      input.max_parameter_bytes <= 64 * 1024 * 1024 && input.max_parameter_total_bytes <= 256 * 1024 * 1024 &&
+      input.max_connection_field_bytes <= 1024 * 1024 && input.max_request_wire_bytes <= 1024 * 1024 * 1024 &&
+      input.max_startup_wire_bytes <= 1024 * 1024 * 1024 && input.max_auth_wire_bytes <= 1024 * 1024 * 1024;
+}
+
 // Synchronous internal interface, serialized by the ODBC handle layer. Backends
 // must not retain input views/spans after return. Returned QueryResult values own
 // their storage. Metadata views have the lifetimes documented on each method.

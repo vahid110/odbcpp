@@ -39,6 +39,10 @@ struct ConnectionOptions {
   std::optional<std::string> ssl_ca_file;
   std::optional<std::string> ssl_ca_dir;
   std::chrono::milliseconds timeout{15000};
+  ResponseLimits response_limits;
+  ResponseLimits startup_response_limits{1024 * 1024, 10000};
+  ResultLimits result_limits;
+  InputLimits input_limits;
 };
 
 // Immutable product definition. A provider owns identity and static behavior;

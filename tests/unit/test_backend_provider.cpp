@@ -128,3 +128,24 @@ TEST(BackendProviderTest, SessionOwnsProductIdentityAfterProviderDestruction) {
 }
 
 }  // namespace
+
+TEST(BackendProviderTest, ResolvesResourceProfilesAndRejectsUnsafeCeilings) {
+  using namespace rs::core::database;
+  const auto& provider = configured_backend_provider();
+  ConnectionOptions options;
+  options.input_limits.max_sql_bytes = 32;
+  options.response_limits.max_wire_bytes = 4096;
+  options.startup_response_limits.max_messages = 7;
+  options.result_limits.max_metadata_entries = 11;
+  const auto resolved = provider.resolve_connection_options(options);
+  ASSERT_TRUE(resolved);
+  EXPECT_EQ(resolved->input_limits.max_sql_bytes, 32u);
+  EXPECT_EQ(resolved->response_limits.max_wire_bytes, 4096u);
+  EXPECT_EQ(resolved->startup_response_limits.max_messages, 7u);
+  EXPECT_EQ(resolved->result_limits.max_metadata_entries, 11u);
+  options.input_limits.max_parameters = 65536;
+  EXPECT_FALSE(provider.resolve_connection_options(options));
+  options.input_limits.max_parameters = 0;
+  options.response_limits.max_wire_bytes = 4;
+  EXPECT_FALSE(provider.resolve_connection_options(options));
+}
