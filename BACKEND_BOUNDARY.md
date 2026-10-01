@@ -889,3 +889,9 @@ facet builds owning SQL without I/O; generated queries execute through the ordin
 execution path. Missing discovery rejects catalog calls before cursor mutation or
 I/O. SQLGetFunctions must suppress absent catalog functions in every support format;
 SQL namespace features and static advertised types are independent contracts.
+
+Advertised normalized type definitions are provider-owned immutable policy selected
+using an explicit server-version snapshot. Borrowed input is not retained, and
+returned spans/strings remain valid for the provider lifetime across selections.
+An empty version selects a conservative profile; a retained advertisement does not
+imply connectivity or reuse safety. Live native type resolution remains backend-private.

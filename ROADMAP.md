@@ -1002,3 +1002,40 @@ iODBC UTF-16/UCS-4, sanitizer and Redshift build/absent-endpoint gates pass;
 examples compile. Focused read-only review found no blockers in pure construction,
 facet lifetime, cursor preservation or all three support-reporting formats.
 Windows/live/package validation follows the exact-head GitHub Actions batch run.
+
+## S2 provider-owned advertised type policy — 2026-10-01
+
+Advertised normalized type definitions now belong exclusively to the immutable
+provider. IDatabaseConnection no longer requires type_catalog; the PostgreSQL-family
+session and independent synthetic backend no longer duplicate that service.
+IBackendProvider::type_catalog accepts an explicit advertised server-version view,
+retained only until return, and selects immutable definitions whose spans and strings
+remain valid for the provider lifetime across later profile selections. An empty
+version selects the conservative profile. Native live type resolution remains
+private backend behavior and is not moved onto the provider.
+
+Shared ODBC selects types through its provider using the session's owning
+server_version snapshot when available. PostgreSQL's existing version policy is
+unchanged: numeric/decimal negative scales are advertised from major version 15,
+while missing, unparseable or overflowing versions select the conservative range.
+Normal PostgreSQL disconnect clears its advertisement; ambiguous retirement can
+retain the last known version. Policy selection follows the advertised value, never
+infers session reuse or substitutes a health probe.
+
+Tests verify default/modern/legacy/overflow profiles, immutable prior views across
+version selections and overwritten borrowed version inputs. The synthetic provider
+owns its type definitions without a session method; ODBC SQLGetTypeInfo uses its
+version-selected column size without catalog/query I/O, preserves earlier views,
+and falls back when the advertised version becomes empty. Existing PostgreSQL
+metadata and descriptor/type-info suites protect public behavior.
+
+This closes advertised-type service extraction. Static capability/error policy,
+health/reset/lease facets, internal build targets, dedicated ordered execution
+items and warning delivery remain open S2 work. This is an advertised-type policy,
+not a new canonical scalar/Arrow representation or an ADBC readiness claim.
+
+Validation: focused backend/provider/type/metadata/capability tests and full local
+PostgreSQL, iODBC UTF-16/UCS-4, sanitizer and Redshift build/absent-endpoint gates
+pass; examples compile. Focused read-only review found no blockers in immutable
+view lifetime, borrowed inputs, advertised-version lifecycle or adapter selection.
+Windows/live/package evidence follows the exact-head GitHub Actions batch run.
