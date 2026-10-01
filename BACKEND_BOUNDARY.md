@@ -482,11 +482,29 @@ borrower; pool isolation still requires its separate reset contract.
 The transitional default passive state for other implementations is `Unknown`
 when connected, never an implicit idle/reuse claim.
 
-This batch migrates immediate query errors only. Setup/authentication,
-transactions and type resolution still use the legacy result/error paths;
+This batch migrates immediate query errors only. Setup/authentication and type resolution still use the legacy result/error paths;
+transactions now use owning void results as described below;
 ordered/deferred result errors remain in owning QueryResult until the normalized
 results migration. The mutable SQLSTATE getter/storage has been removed; the legacy setup error-message
 getter remains for that incremental transition.
 Primary messages preserve existing server diagnostic behavior; this does not
 complete the safe-message/logging security contract. Internal C++ interfaces are
 unstable; the exported ODBC surface and diagnostics remain protected.
+
+## S2 owning transaction and isolation failures — 2026-10-01
+
+Transaction control and isolation changes now return `BackendResult<void>`.
+PostgreSQL preserves the complete query BackendError snapshot, including native
+state/code, classification and disposition, and labels begin, commit, rollback
+or isolation context explicitly. The shared ODBC begin-transaction helper also
+preserves that complete error; existing ODBC diagnostic codes and timeout
+handling are unchanged. There is no automatic retry or replay.
+
+Local invalid-enum and unsupported-operation failures snapshot passive state
+without I/O: disconnected sessions report Retire, idle sessions Reusable, and
+transaction/failed-transaction/unknown sessions ResetRequired. The local helper
+accepts only validation/unsupported failure kinds, not transport/protocol errors.
+Copy/move and later-success tests verify error ownership; actual protocol
+fixtures verify state and ambiguous-failure retirement through both adapters.
+Setup/authentication, type-resolution and safe-message/logging migration remain
+open. This does not implement a reset/pool facet or complete A5.

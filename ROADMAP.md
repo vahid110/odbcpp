@@ -353,3 +353,16 @@ safe-message/logging boundary; immediate query errors do not complete A5 or S2.
 Ordered result normalization, resource budgets and safe reuse facets remain
 separate batches. Existing crypto qualification blockers and all protected
 PostgreSQL/platform gates remain unchanged.
+
+### S2 owning transaction/isolation errors — 2026-10-01
+
+Transaction control and isolation changes preserve owning native error details
+and protocol disposition, with explicit begin/commit/rollback/isolation context.
+The ODBC begin-transaction helper preserves that snapshot while retaining
+existing diagnostic mapping and caller deadlines. Invalid local selections are
+classified without I/O; server-state and timeout/partial-write retirement are
+covered through both adapters, alongside existing successful command tests.
+
+Next is setup/authentication error migration, followed by type-resolution and
+safe-message/logging work. A5 and S2 remain open; pool/reset facets, aggregate
+budgets, normalized results and the MySQL proof remain separate steps.
