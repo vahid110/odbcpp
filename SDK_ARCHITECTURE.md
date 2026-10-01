@@ -556,3 +556,30 @@ This closes the pure SQL-dialect extraction within S2 session/service separation
 Type/catalog and optional transaction/description/reuse facets, internal target
 separation, ordered execution representation and warning delivery remain open.
 No MySQL protocol or speculative Redshift specialization is introduced.
+
+## S2 optional transaction-session facet — 2026-10-01
+
+Transaction control and isolation now live on the optional ITransactionSession
+facet. IDatabaseConnection exposes stable borrowed facet discovery, defaulting to
+absence, and no longer requires transaction/capability/isolation methods.
+PostgreSQL implements the facet; the generic PostgreSQL-family machinery and
+independent synthetic backend no longer need unsupported transaction stubs.
+
+Shared ODBC obtains transaction capabilities from a live facet when connected.
+Before connection, or after an unsuccessful open has disconnected its session,
+the immutable provider declaration supports attribute planning. A provider
+advertisement cannot grant missing live behavior: guarded adapter dispatch
+returns an owning unsupported error without I/O. A failed deferred-isolation
+open can correct its settings and retry. Existing PostgreSQL command/deadline,
+error annotation and success snapshots are preserved.
+
+Tests cover absent facet discovery, stable PostgreSQL facet lifetime across
+open/disconnect, closed-session failures, live capability suppression despite
+provider overadvertisement, no-I/O autocommit/isolation rejection, safe command
+recovery and failed-open setting correction/retry. Compile-time checks keep
+transaction operations off the required SDK session interface. Existing native
+transaction and ODBC suites protect happy-path and failure behavior.
+
+This extracts transaction behavior only. Statement-description/catalog/reuse
+facets, static type services, internal build targets and the ordered execution
+representation remain S2 work. No reset/health/pooling guarantee is added.
