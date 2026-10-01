@@ -15,7 +15,7 @@ PgDatabaseConnection::PgDatabaseConnection(
                                 std::move(transport)),
       display_name_(std::move(display_name)) {}
 
-rs::util::Result<ResolvedTypeMap> PgDatabaseConnection::resolve_types(
+BackendResult<ResolvedTypeMap> PgDatabaseConnection::resolve_types(
     std::span<const std::uint32_t> ids, rs::util::Deadline deadline) {
   ResolvedTypeMap resolved;
   std::vector<std::uint32_t> unresolved;
@@ -47,7 +47,11 @@ rs::util::Result<ResolvedTypeMap> PgDatabaseConnection::resolve_types(
       "WHERE base_oid = 0";
 
   auto types = execute_query(query, deadline);
-  if (types.has_error()) return {types.error(), types.error_message()};
+  if (types.has_error()) {
+    auto error = std::move(types.backend_error());
+    error.operation = BackendOperation::ResolveTypes;
+    return error;
+  }
 
   const auto parse_number = [](const std::string& value, auto& number) {
     const auto [end, error] = std::from_chars(
@@ -63,8 +67,16 @@ rs::util::Result<ResolvedTypeMap> PgDatabaseConnection::resolve_types(
         !parse_number(*row[2], modifier) || base == 0 ||
         !std::binary_search(unresolved.begin(), unresolved.end(), original) ||
         !seen.insert(original).second) {
-      return {rs::util::DbErrorCode::QueryFailed,
-              "Data source returned invalid parameter type metadata"};
+      // The query has completed and drained. Invalid metadata does not itself
+      // imply an ambiguous transport or justify retiring an idle session.
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),
+                        "Data source returned invalid parameter type metadata"};
+      error.error_class = BackendErrorClass::InvalidMetadata;
+      error.operation = BackendOperation::ResolveTypes;
+      error.session_state = session_state();
+      error.disposition = error.session_state == SessionState::Disconnected ? SessionDisposition::Retire :
+          error.session_state == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired;
+      return error;
     }
     resolved.at(original) = describe_type(base, -1, modifier);
   }

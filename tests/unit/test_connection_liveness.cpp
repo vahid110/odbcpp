@@ -2141,3 +2141,58 @@ TEST(ConnectionLivenessTest, InvalidReconnectKeepsExistingSessionAndPriorFailure
   EXPECT_EQ(first.backend_error().session_state, SessionState::Disconnected);
   EXPECT_EQ(second.backend_error().session_state, SessionState::Idle);
 }
+
+TEST(NativeTypeLookupLivenessTest, PreservesOwnedServerAndAmbiguousFailureSnapshots) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  const std::uint32_t ids[]{90000};
+  for (const auto mode : {Mode::OwnedErrorIdle, Mode::OwnedErrorTransaction, Mode::OwnedErrorAborted,
+                         Mode::QueryReadTimeout, Mode::PartialQueryWrite, Mode::MalformedQueryReady}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    std::optional<BackendError> saved;
+    {
+      auto transport = std::make_unique<ScriptedBackendTransport>(mode);
+      auto* observed = transport.get();
+      postgres::PgDatabaseConnection backend("PostgreSQL", std::move(transport));
+      ConnectionSettings settings;
+      settings.use_ssl = false;
+      ASSERT_TRUE(backend.connect(settings));
+      auto result = backend.resolve_types(ids, rs::util::make_deadline(std::chrono::seconds(1)));
+      ASSERT_TRUE(result.has_error());
+      EXPECT_EQ(result.backend_error().operation, BackendOperation::ResolveTypes);
+      EXPECT_FALSE(result.backend_error().native_code);
+      EXPECT_FALSE(result.backend_error().retry_safe);
+      const bool server = mode == Mode::OwnedErrorIdle || mode == Mode::OwnedErrorTransaction || mode == Mode::OwnedErrorAborted;
+      if (server) {
+        EXPECT_EQ(result.backend_error().native_state, "42601");
+        EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::Server);
+        EXPECT_EQ(result.backend_error().session_state, mode == Mode::OwnedErrorIdle ? SessionState::Idle :
+            mode == Mode::OwnedErrorTransaction ? SessionState::Transaction : SessionState::FailedTransaction);
+        EXPECT_EQ(result.backend_error().disposition, mode == Mode::OwnedErrorIdle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired);
+        saved = result.backend_error();
+        EXPECT_TRUE(backend.transaction(TransactionAction::Rollback, rs::util::Deadline::max()));
+        EXPECT_EQ(backend.session_state(), SessionState::Idle);
+      } else {
+        EXPECT_FALSE(result.backend_error().native_state);
+        EXPECT_EQ(result.backend_error().session_state, SessionState::Disconnected);
+        EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Retire);
+        EXPECT_FALSE(backend.is_connected());
+        EXPECT_EQ(observed->close_count(), 1U);
+        saved = result.backend_error();
+        const auto sends = observed->send_count();
+        auto again = backend.resolve_types(ids, rs::util::Deadline::max());
+        ASSERT_TRUE(again.has_error());
+        EXPECT_EQ(again.backend_error().operation, BackendOperation::ResolveTypes);
+        EXPECT_EQ(again.backend_error().error_class, BackendErrorClass::NotConnected);
+        EXPECT_EQ(observed->send_count(), sends);
+      }
+      auto moved = std::move(result);
+      EXPECT_EQ(moved.backend_error().native_state, saved->native_state);
+      EXPECT_EQ(moved.error_message(), saved->message);
+      backend.disconnect();
+    }
+    ASSERT_TRUE(saved);
+    EXPECT_EQ(saved->operation, BackendOperation::ResolveTypes);
+    EXPECT_FALSE(saved->message.empty());
+  }
+}

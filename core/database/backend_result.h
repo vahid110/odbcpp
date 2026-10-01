@@ -12,13 +12,13 @@ namespace rs::core::database {
 enum class BackendOperation {
   Unknown, ExecuteDirect, ExecutePrepared, Describe, Transaction,
   BeginTransaction, CommitTransaction, RollbackTransaction, SetTransactionIsolation,
-  Connect, Authenticate, Startup
+  Connect, Authenticate, Startup, ResolveTypes
 };
 enum class SessionState { Disconnected, Idle, Transaction, FailedTransaction, Unknown };
 enum class SessionDisposition { Reusable, ResetRequired, Retire };
 enum class BackendErrorClass {
   Unknown, Connection, Authentication, Server, Timeout, Transport, Tls,
-  InvalidInput, NotConnected, Protocol, Unsupported
+  InvalidInput, NotConnected, Protocol, Unsupported, InvalidMetadata
 };
 
 inline BackendErrorClass classify_backend_error(const std::error_code& code) {

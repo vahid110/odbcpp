@@ -67,7 +67,7 @@ class FakeBackend final : public IDatabaseConnection {
         {ScalarType::VarChar, "words", 32, {}, {}, {}, true, {}, {}, {}, 0}};
     return types;
   }
-  Result<ResolvedTypeMap> resolve_types(std::span<const std::uint32_t> ids, Deadline) override {
+  BackendResult<ResolvedTypeMap> resolve_types(std::span<const std::uint32_t> ids, Deadline) override {
     ResolvedTypeMap result;
     for (const auto id : ids) result.emplace(id, describe_type(id, -1, -1));
     return result;

@@ -43,7 +43,7 @@ public:
   BackendResult<void> set_transaction_isolation(TransactionIsolation level,
       rs::util::Deadline deadline) override;
 
-  rs::util::Result<ResolvedTypeMap> resolve_types(
+  BackendResult<ResolvedTypeMap> resolve_types(
       std::span<const std::uint32_t> ids, rs::util::Deadline deadline) override;
 
   BackendResult<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline) override;

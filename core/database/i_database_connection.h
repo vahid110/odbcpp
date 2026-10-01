@@ -79,7 +79,7 @@ public:
   // Resolve every requested native ID, retaining a fallback for missing types.
   // May perform backend metadata I/O using the caller's existing deadline.
   // On failure no partial map is returned; callers must not update their cache.
-  virtual rs::util::Result<ResolvedTypeMap> resolve_types(
+  virtual BackendResult<ResolvedTypeMap> resolve_types(
       std::span<const std::uint32_t> ids, rs::util::Deadline deadline) = 0;
 
   // Pure metadata snapshot: no I/O or session mutation.

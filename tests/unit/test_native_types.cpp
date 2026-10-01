@@ -93,6 +93,8 @@ public:
   std::string query;
   rs::util::Deadline observed_deadline{};
   int queries = 0;
+  SessionState state = SessionState::Disconnected;
+  SessionState session_state() const override { return state; }
 
   rs::core::database::BackendResult<QueryResult> execute_query(
       std::string_view sql, rs::util::Deadline deadline) override {
@@ -170,6 +172,11 @@ TEST(NativeTypeLookupTest, RejectsMalformedRowsWithoutReturningPartialMetadata) 
     ASSERT_TRUE(bad.has_error());
     EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), bad.error());
     EXPECT_NE(std::string::npos, bad.error_message().find("invalid parameter type metadata"));
+    EXPECT_EQ(bad.backend_error().operation, BackendOperation::ResolveTypes);
+    EXPECT_EQ(bad.backend_error().error_class, BackendErrorClass::InvalidMetadata);
+    EXPECT_EQ(bad.backend_error().session_state, SessionState::Disconnected);
+    EXPECT_EQ(bad.backend_error().disposition, SessionDisposition::Retire);
+    EXPECT_FALSE(bad.backend_error().native_state);
     backend.response.rows = {{"90000", "23", "-1"}, {"90001", "1043", "21"}};
     const auto recovered = backend.resolve_types(ids, rs::util::Deadline::max());
     ASSERT_TRUE(recovered.has_value());
@@ -422,4 +429,37 @@ TEST(BackendValueTest, GenericBackendUsesNormalizedBytesAndStrictBoolean) {
             backend.normalize_result_value(ScalarType::Binary, std::string("\0\xff", 2)));
   EXPECT_EQ(std::optional<std::string>("0"), backend.normalize_result_value(ScalarType::Boolean, "0"));
   EXPECT_FALSE(backend.normalize_result_value(ScalarType::Boolean, "f"));
+}
+
+TEST(NativeTypeLookupTest, InvalidDrainedMetadataPreservesPassiveStateAndOwnsError) {
+  const std::uint32_t ids[]{90000};
+  for (const auto state : {SessionState::Disconnected, SessionState::Idle, SessionState::Transaction,
+                           SessionState::FailedTransaction, SessionState::Unknown}) {
+    SCOPED_TRACE(static_cast<int>(state));
+    std::optional<BackendError> saved;
+    {
+      MetadataLookupConnection backend;
+      backend.state = state;
+      backend.response.rows = {{"90000", "0", "-1"}};
+      auto failed = backend.resolve_types(ids, rs::util::Deadline::max());
+      ASSERT_TRUE(failed.has_error());
+      saved = failed.backend_error();
+      EXPECT_EQ(saved->session_state, state);
+      EXPECT_EQ(saved->disposition, state == SessionState::Disconnected ? SessionDisposition::Retire :
+          state == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired);
+      EXPECT_FALSE(saved->native_code);
+      EXPECT_FALSE(saved->native_state);
+      EXPECT_FALSE(saved->retry_safe);
+      auto moved = std::move(failed);
+      EXPECT_EQ(moved.error_message(), saved->message);
+      backend.response.rows = {{"90000", "23", "-1"}};
+      auto recovered = backend.resolve_types(ids, rs::util::Deadline::max());
+      ASSERT_TRUE(recovered);
+      EXPECT_EQ(recovered->at(90000).type, ScalarType::Integer);
+      EXPECT_EQ(backend.state, state);
+    }
+    EXPECT_EQ(saved->operation, BackendOperation::ResolveTypes);
+    EXPECT_EQ(saved->error_class, BackendErrorClass::InvalidMetadata);
+    EXPECT_EQ(saved->message, "Data source returned invalid parameter type metadata");
+  }
 }
