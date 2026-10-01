@@ -303,3 +303,15 @@ S1 found implementation blockers but no reason to abandon the SDK direction.
 The accepted structure is smaller than the current `IDatabaseConnection`, maps
 to two real protocols, preserves PostgreSQL, and leaves clear extension points
 for Redshift specialization and later ADBC delivery.
+
+## S2 normalized column metadata checkpoint — 2026-10-01
+
+The PostgreSQL-family session supplies owning normalized column types for direct,
+prepared, additional-result and description schemas before returning them. Shared
+ODBC column mapping requires that metadata and no longer calls describe_type on
+native column IDs. Synthesized catalogs follow the same requirement. Missing
+normalized column metadata is a backend-contract error, not an implicit native
+fallback. This is the first normalized-schema migration stage: native fields are
+still present in parser/result migration storage, parameter IDs still use the
+existing resolver/cache, and cell normalization still occurs during ODBC fetch.
+No complete A5 or normalized-result gate is claimed by this checkpoint.

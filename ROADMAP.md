@@ -621,3 +621,13 @@ validation precedence are covered by contract tests. No translation or I/O
 occurs on capture rejection. Translated-output/internal helper allocations and
 configuration-file ingestion remain separate security boundaries; normalized
 results/session migration and crypto qualification remain S2 work.
+
+### S2 normalized column metadata — 2026-10-01
+
+PostgreSQL-family results now carry owning normalized column types across primary,
+additional and description schemas. ODBC maps these exclusively; native column
+ID interpretation no longer occurs there. Missing normalized metadata fails the
+contract before result metadata is applied. Tests cover owning snapshots after
+disconnect, multi-result/description schemas, independent-backend types and
+missing-metadata recovery. Native field removal, parameter description migration,
+canonical cells, ordered execution and session facets remain S2 work.
