@@ -685,3 +685,28 @@ identity/default policy, artifact/export checks and the independent TLS peer;
 actual live-driver, runtime package, coexistence and row acceptance are explicitly
 unevaluated by this summary. qualificationClaimed remains false. Existing finite
 closure requirements and public/FIPS non-goals are unchanged.
+
+## S2C Linux static runtime archive and licenses — 2026-10-01
+
+The Linux OpenSSL bundled-static qualification job now stages an internal
+runtime-only archive containing the inspected driver, one package manifest and
+OpenSSL distribution, spdlog and bundled-fmt licenses. It binds the driver and
+configure/artifact/source records, the distro archive hashes, logging recipe,
+fmt version and license bytes. Full source ancestry, public installer/SDK
+packaging and FIPS claims remain outside this proof.
+
+The job inventories the staging tree, creates a tar archive, deletes staging
+and extracts with the existing filtered archive verifier using a distinct root.
+The extracted tree must preserve all bytes/modes and contain exactly the allowed
+runtime files. A fresh host must load the extracted driver without any shared
+libssl/libcrypto mappings, and the existing Driver Manager/direct-driver cases
+must complete verified TLS/SCRAM and reject unrelated CA and hostname inputs
+using the extracted library. Ambient provider preload/search overrides are
+removed for this runtime-package check; coexistence remains a separate gate.
+
+Positive/adversarial tests cover archive round-trip, license availability,
+source/driver mismatch, altered bytes, development/unlisted files and unsafe
+archive root names. CI retains the archive, manifest, inventory evidence and
+extracted-driver live report. This closes the demonstrated Linux static runtime
+package/license gap only after exact-revision CI passes. It does not qualify the
+entire OpenSSL matrix or expand the public variant/SDK/FIPS scope.

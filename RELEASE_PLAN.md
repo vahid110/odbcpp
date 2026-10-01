@@ -796,3 +796,12 @@ CTest logs. All bounded OpenSSL rows retain a common hash-bound unit evidence
 summary that rejects missing/skipped/failed cases, incomplete peer/control output
 and inconsistent identity/artifact inputs. This supports the existing matrix
 review without qualifying a row or replacing live/package/coexistence acceptance.
+
+## S2C Linux static runtime archive batch — 2026-10-01
+
+The bundled-static OpenSSL row gains a driver-only relocated archive proof with
+bound distro/logging dependency licenses, exact extraction integrity, a fresh
+host load without shared crypto mappings and real extracted-driver TLS/SCRAM
+success/rejection cases. Existing archive checks are reused without changing
+their AWS-LC default root. Public installer/static SDK and source-attestation
+scope remain deferred; matrix acceptance is still separate.
