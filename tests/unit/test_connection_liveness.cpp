@@ -3530,6 +3530,8 @@ TEST(NormalizedMetadataTest, Utf8NamesAreOwnedAndMalformedNamesRejectAllResultsW
     EXPECT_TRUE(backend.is_connected());
     ASSERT_TRUE(backend.execute_query("SELECT 0", rs::util::Deadline::max()));
     backend.disconnect();
-    if (result) EXPECT_EQ("\xe2\x82\xac\xf0\x9f\x98\x80", result->columns[0].name);
+    if (result) {
+      EXPECT_EQ("\xe2\x82\xac\xf0\x9f\x98\x80", result->columns[0].name);
+    }
   }
 }
