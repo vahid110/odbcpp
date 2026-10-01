@@ -76,6 +76,12 @@ elseif(UNIX)
   endif()
 endif()
 
+# ---- Internal dependency-free SDK contract surface ----
+if(BUILD_TESTING)
+  include(CTest)
+endif()
+add_subdirectory(sdk)
+
 # ---- Core Library ----
 include(cmake/DriverSources.cmake)
 odbcpp_collect_driver_sources(CORE_SOURCES "${TARGET_DATABASE}")
