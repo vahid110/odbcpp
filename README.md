@@ -603,8 +603,11 @@ owner's session; response/authentication overflow retires. These limits are not
 an exact heap quota. They bound ANSI/wide SQL capture for direct execution and
 preparation, including UTF-8 expansion. Bound parameter text/binary copies and
 wide UTF-8 conversion use per-value and aggregate byte limits; normalized scalar
-values are checked before backend execution. Connection-string capture and
-standalone SQL helper allocations remain separate boundaries. Windows setup GUI fields for these advanced options
+values are checked before backend execution. ANSI/wide SQLDriverConnect inputs
+and each SQLConnect DSN/user/password have a fixed 1 MiB UTF-8 capture ceiling
+before parsing. This bootstrap ceiling cannot be raised by an input option;
+resolved `MaxConnectionFieldBytes` still applies afterward. Standalone SQL helper
+allocations remain a separate boundary. Windows setup GUI fields for these advanced options
 are deferred; DSN/connection-string processing supports them.
 
 Example: `MaxResponseBytes=8388608;MaxRows=10000;MaxSqlBytes=262144`.

@@ -383,3 +383,18 @@ as error before transaction start or backend execution, preserving the session.
 Malformed wide values within budget retain 22018. Fixed-size scalar formatting,
 connection-string capture, standalone helpers and exact heap accounting remain
 outside this evidence; SEC-4, S2 and G12 remain open.
+
+### ODBC connection capture budgets (S2 implementation evidence)
+
+ANSI/wide SQLDriverConnect captures at most 1 MiB of UTF-8 input before parsing;
+SQLConnect applies the same fixed bootstrap ceiling independently to DSN, user
+and password. NTS scans and explicit lengths are bounded before copies; wide
+conversion checks actual UTF-8 expansion before append. This limit cannot be
+raised by options in the input being captured and is separate from the later
+resolved MaxConnectionFieldBytes limit. Limit rejection returns HY000 before
+configuration lookup, provider/session creation or output writes. Existing
+connected sessions survive rejected captures; malformed wide input within
+budget retains 22018 and invalid lengths retain HY090. Contract tests cover
+exact/overflow capture, expansion, all three fields, explicit slices/empty,
+output preservation and recovery. Configuration-file ingestion, standalone
+helpers and exact heap accounting remain outside this evidence; SEC-4 stays open.

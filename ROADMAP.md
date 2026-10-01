@@ -601,3 +601,13 @@ reporting remain intact. Contract tests cover exact/overflow, NTS/explicit,
 Unicode expansion/malformed input, aggregate text/scalars, zero budgets and
 recovery. Connection-string capture, standalone helpers, exact heap accounting,
 native metadata/session migration and crypto qualification remain open.
+
+### S2 ODBC connection capture budgets — 2026-10-01
+
+Connection API input is bounded before conversion/parsing using a fixed 1 MiB
+UTF-8 bootstrap ceiling for SQLDriverConnect input and each SQLConnect field.
+ANSI/wide capture cannot raise its own ceiling via configuration; resolved SDK
+field limits still apply later. Tests cover exact/overflow, expansion, malformed
+Unicode, explicit slices/empty values, untouched output and session recovery.
+Configuration-file ingestion, standalone helpers, complete heap accounting,
+native metadata/session migration and crypto qualification remain open.
