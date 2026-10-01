@@ -672,6 +672,16 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
       error.native_state = std::move(query_error_sqlstate);
       return error;
     }
+    const auto normalize_columns = [&](QueryResult& item) {
+      for (auto& column : item.columns) {
+        if (!column.normalized_type) {
+          column.normalized_type = describe_type(
+              column.type_id, column.type_size, column.type_modifier);
+        }
+      }
+    };
+    normalize_columns(result);
+    for (auto& item : result.additional_results) normalize_columns(item);
     return BackendResult<QueryResult>{std::move(result)};
   } catch (const std::bad_alloc&) {
     mark_transport_failed();

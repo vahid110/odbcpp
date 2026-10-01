@@ -12,8 +12,8 @@
 namespace rs::core::database {
 
 // Names and normalized_type are common metadata. IDs, size/modifier, table
-// provenance and format_code are opaque backend fields; shared callers must use
-// describe_type/resolve_types rather than interpreting native numeric values.
+// provenance and format_code remain parser/backend migration fields. Shared
+// ODBC column mapping uses normalized_type exclusively, never these native IDs.
 struct ResultColumnMetadata {
   std::string name;
   std::uint32_t table_id{0};
@@ -22,7 +22,8 @@ struct ResultColumnMetadata {
   std::int16_t type_size{-1};
   std::int32_t type_modifier{-1};
   std::int16_t format_code{0};
-  // Locally synthesized results can provide normalized metadata without native IDs.
+  // Backend/session results and locally synthesized results must provide this
+  // normalized metadata. Shared ODBC code never interprets column native IDs.
   std::optional<NativeTypeInfo> normalized_type{};
 };
 

@@ -175,7 +175,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     UnsolicitedCopyData, UnsolicitedCopyDone,
     OversizedUnsolicitedCopyData, BinaryResultRow,
     BinaryAdditionalResultRow, ReadyOnlyQuery, RowsWithoutCompletion,
-    EmptyQueryResponse, DescriptionNoData, DescriptionOneParameter,
+    EmptyQueryResponse, DescriptionNoData, DescriptionOneParameter, DescriptionOneColumn,
     DescriptionMissingParse, DescriptionMissingParameters,
     DescriptionMissingResult, DescriptionOutOfOrder,
     DescriptionServerError, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
@@ -446,6 +446,14 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('1', "", 0);
       append_message('t', "\0\0", 2);
       append_message('n', "", 0);
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::DescriptionOneColumn) {
+      append_message('1', "", 0);
+      append_message('t', "\0\0", 2);
+      constexpr char description[] =
+          "\0\1value\0" "\0\0\0\0" "\0\0" "\0\0\0\31"
+          "\377\377" "\377\377\377\377" "\0\0";
+      append_message('T', description, sizeof(description) - 1);
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::DescriptionOneParameter) {
       append_message('1', "", 0);
@@ -3224,6 +3232,45 @@ TEST(InputBudgetTest, AuthenticationWireLimitRetiresWithoutSendingOversizedPassw
     } else {
       EXPECT_EQ(observed->send_count(), 2u);
       EXPECT_TRUE(backend.is_connected());
+    }
+  }
+}
+
+
+TEST(NormalizedColumnTest, SessionOwnsPrimaryAdditionalAndDescriptionMetadata) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const bool describe : {false, true}) {
+    QueryResult snapshot;
+    {
+      postgres::PgDatabaseConnection backend("PostgreSQL",
+          std::make_unique<ScriptedBackendTransport>(describe ? Mode::DescriptionOneColumn : Mode::OwnedTwoResultSets));
+      ConnectionSettings settings; settings.use_ssl = false;
+      ASSERT_TRUE(backend.connect(settings));
+      auto result = describe
+          ? backend.describe_statement("SELECT value", {}, rs::util::Deadline::max())
+          : backend.execute_query("SELECT value; SELECT value", rs::util::Deadline::max());
+      ASSERT_TRUE(result);
+      snapshot = std::move(*result);
+      backend.disconnect();
+    }
+    ASSERT_EQ(1u, snapshot.columns.size());
+    ASSERT_TRUE(snapshot.columns[0].normalized_type);
+    EXPECT_EQ("value", snapshot.columns[0].name);
+    EXPECT_EQ(ScalarType::VarChar, snapshot.columns[0].normalized_type->type);
+    EXPECT_TRUE(snapshot.columns[0].normalized_type->known);
+    EXPECT_EQ(0u, snapshot.columns[0].normalized_type->column_size);
+    if (describe) {
+      EXPECT_TRUE(snapshot.rows.empty()); EXPECT_TRUE(snapshot.additional_results.empty());
+    } else {
+      ASSERT_EQ(1u, snapshot.additional_results.size());
+      ASSERT_EQ(1u, snapshot.additional_results[0].columns.size());
+      ASSERT_TRUE(snapshot.additional_results[0].columns[0].normalized_type);
+      EXPECT_EQ(ScalarType::VarChar, snapshot.additional_results[0].columns[0].normalized_type->type);
+      ASSERT_EQ(3u, snapshot.rows.size());
+      EXPECT_EQ(std::nullopt, snapshot.rows[0][0]);
+      EXPECT_EQ(std::optional<std::string>(""), snapshot.rows[1][0]);
+      EXPECT_EQ(std::optional<std::string>("abc"), snapshot.rows[2][0]);
     }
   }
 }
