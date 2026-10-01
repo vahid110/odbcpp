@@ -1241,3 +1241,7 @@ PostgreSQL, iODBC UTF-16/UCS-4, sanitizer and Redshift build/absent-endpoint
 gates pass. PostgreSQL and UTF-16 were repeated after the final malformed-empty
 completion fix. Read-only review found no remaining blocker/high issue. Windows,
 packaging and cross-platform crypto checks remain subject to exact-head CI.
+
+The first CI attempt exposed GCC-only test portability errors: missing explicit
+`<cstring>` and unbraced GoogleTest assertion expansion. Both are repaired
+without production-code changes; all local gates passed again before repair push.

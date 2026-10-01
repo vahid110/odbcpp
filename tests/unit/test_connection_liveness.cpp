@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <cstring>
 #include "core/database/backend_provider.h"
 
 #include "core/database/generic_database_connection.h"
@@ -3905,7 +3906,9 @@ TEST(SessionResetTest, ExactNativeCleanupTagsAreRequiredBeforeNormalization) {
     ConnectionSettings settings; settings.use_ssl = false;
     ASSERT_TRUE(session.connect(settings));
     const auto deadline = rs::util::make_deadline(std::chrono::seconds(1));
-    if (profile == 'T' || profile == 'B') ASSERT_TRUE(session.execute_query("BEGIN", deadline));
+    if (profile == 'T' || profile == 'B') {
+      ASSERT_TRUE(session.execute_query("BEGIN", deadline));
+    }
     const auto result = session.session_reset()->reset_session(deadline);
     if (profile == 'I' || profile == 'T') {
       ASSERT_TRUE(result) << result.error_message();
