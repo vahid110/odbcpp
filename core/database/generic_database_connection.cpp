@@ -10,6 +10,7 @@
 #include <cstring>
 #include <iterator>
 #include <optional>
+#include <new>
 #include <stdexcept>
 
 namespace rs::core::database {
@@ -85,7 +86,13 @@ BackendResult<ResolvedTypeMap> GenericDatabaseConnection::resolve_types(
 }
 
 BackendResult<void> GenericDatabaseConnection::connect(const ConnectionSettings& settings) {
-  auto result = connect_impl(settings);
+  BackendResult<void> result;
+  try {
+    result = connect_impl(settings);
+  } catch (const std::bad_alloc&) {
+    mark_transport_failed();
+    result = {rs::util::DbErrorCode::AllocationFailure, {}};
+  }
   if (result.has_error()) {
     auto& error = result.backend_error();
     if (error.operation == BackendOperation::Unknown) error.operation = BackendOperation::Connect;
@@ -138,6 +145,8 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
   try {
     startup = parser_->create_startup_message(
         settings.user, settings.database, params);
+  } catch (const std::bad_alloc&) {
+    return {rs::util::DbErrorCode::AllocationFailure, {}};
   } catch (const std::invalid_argument& error) {
     return {rs::util::DbErrorCode::InvalidParameter, error.what()};
   }
@@ -325,7 +334,13 @@ BackendResult<QueryResult> GenericDatabaseConnection::execute_query(
   if (connected_ && sql.size() > settings_.input_limits.max_sql_bytes) {
     return reject_request_limit(BackendOperation::ExecuteDirect);
   }
-  return finish_operation(execute_query_impl(sql, deadline), BackendOperation::ExecuteDirect);
+  try {
+    return finish_operation(execute_query_impl(sql, deadline), BackendOperation::ExecuteDirect);
+  } catch (const std::bad_alloc&) {
+    // Request I/O may have started; never expose an ambiguous session as live.
+    mark_transport_failed();
+    return finish_operation({rs::util::DbErrorCode::AllocationFailure, {}}, BackendOperation::ExecuteDirect);
+  }
 }
 
 BackendResult<QueryResult> GenericDatabaseConnection::execute_prepared(
@@ -344,7 +359,13 @@ BackendResult<QueryResult> GenericDatabaseConnection::execute_prepared(
       bytes += size;
     }
   }
-  return finish_operation(execute_prepared_impl(sql, params, deadline), BackendOperation::ExecutePrepared);
+  try {
+    return finish_operation(execute_prepared_impl(sql, params, deadline), BackendOperation::ExecutePrepared);
+  } catch (const std::bad_alloc&) {
+    // Request I/O may have started; never expose an ambiguous session as live.
+    mark_transport_failed();
+    return finish_operation({rs::util::DbErrorCode::AllocationFailure, {}}, BackendOperation::ExecutePrepared);
+  }
 }
 
 BackendResult<QueryResult> GenericDatabaseConnection::describe_statement(
@@ -353,7 +374,13 @@ BackendResult<QueryResult> GenericDatabaseConnection::describe_statement(
                     types.size() > settings_.input_limits.max_parameters)) {
     return reject_request_limit(BackendOperation::Describe);
   }
-  return finish_operation(describe_statement_impl(sql, types, deadline), BackendOperation::Describe);
+  try {
+    return finish_operation(describe_statement_impl(sql, types, deadline), BackendOperation::Describe);
+  } catch (const std::bad_alloc&) {
+    // Request I/O may have started; never expose an ambiguous session as live.
+    mark_transport_failed();
+    return finish_operation({rs::util::DbErrorCode::AllocationFailure, {}}, BackendOperation::Describe);
+  }
 }
 
 BackendResult<QueryResult> GenericDatabaseConnection::execute_query_impl(std::string_view sql, rs::util::Deadline deadline) {
@@ -364,6 +391,8 @@ BackendResult<QueryResult> GenericDatabaseConnection::execute_query_impl(std::st
   std::vector<std::byte> query_msg;
   try {
     query_msg = parser_->create_simple_query(sql);
+  } catch (const std::bad_alloc&) {
+    return {rs::util::DbErrorCode::AllocationFailure, {}};
   } catch (const std::exception& error) {
     return BackendResult<QueryResult>{
         rs::util::DbErrorCode::InvalidParameter, error.what()};
@@ -386,6 +415,8 @@ BackendResult<QueryResult> GenericDatabaseConnection::execute_prepared_impl(std:
   std::vector<std::byte> query_msg;
   try {
     query_msg = parser_->create_prepared_query(sql, params);
+  } catch (const std::bad_alloc&) {
+    return {rs::util::DbErrorCode::AllocationFailure, {}};
   } catch (const std::exception& error) {
     return BackendResult<QueryResult>{
         rs::util::DbErrorCode::InvalidParameter, error.what()};
@@ -410,6 +441,8 @@ BackendResult<QueryResult> GenericDatabaseConnection::describe_statement_impl(
   std::vector<std::byte> request;
   try {
     request = parser_->create_statement_description(sql, parameter_types);
+  } catch (const std::bad_alloc&) {
+    return {rs::util::DbErrorCode::AllocationFailure, {}};
   } catch (const std::exception& error) {
     return BackendResult<QueryResult>{
         rs::util::DbErrorCode::InvalidParameter, error.what()};
@@ -610,6 +643,9 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
         }
         break;
       }
+    } catch (const std::bad_alloc&) {
+      mark_transport_failed();
+      return {rs::util::DbErrorCode::AllocationFailure, {}};
     } catch (const std::exception& error) {
       mark_transport_failed();
       return BackendResult<QueryResult>{
@@ -632,6 +668,9 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
       return error;
     }
     return BackendResult<QueryResult>{std::move(result)};
+  } catch (const std::bad_alloc&) {
+    mark_transport_failed();
+    return {rs::util::DbErrorCode::AllocationFailure, {}};
   } catch (const std::exception& error) {
     mark_transport_failed();
     return BackendResult<QueryResult>{
@@ -887,6 +926,8 @@ BackendResult<void> GenericDatabaseConnection::perform_authentication_result(rs:
             "Unexpected PostgreSQL startup message");
       }
     }
+  } catch (const std::bad_alloc&) {
+    return failure(rs::util::DbErrorCode::AllocationFailure, {});
   } catch (const std::exception& error) {
     return failure(
         rs::util::DbErrorCode::ProtocolError,

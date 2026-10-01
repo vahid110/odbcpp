@@ -26,6 +26,7 @@ struct Observations {
   Deadline deadline{};
   bool malformed_value{}, malformed_state{};
   std::string failure_message = "fake error";
+  bool setup_allocation_failure{false};
 };
 
 // Deliberately implements only the database boundary: no PG parser or session.
@@ -33,6 +34,7 @@ class FakeBackend final : public IDatabaseConnection {
  public:
   explicit FakeBackend(std::shared_ptr<Observations> seen) : seen_(std::move(seen)) {}
   BackendResult<void> connect(const ConnectionSettings& settings) override {
+    if (seen_->setup_allocation_failure) return {DbErrorCode::AllocationFailure, {}};
     seen_->settings = settings; connected_ = true; return {};
   }
   void disconnect() override { connected_ = false; ++seen_->disconnects; }
@@ -108,6 +110,7 @@ class FakeBackend final : public IDatabaseConnection {
   BackendResult<QueryResult> execute_query(std::string_view sql, Deadline deadline) override {
     ++seen_->queries; seen_->sql = sql; seen_->deadline = deadline;
     if (sql.ends_with("limit")) { connected_ = false; return {DbErrorCode::ResourceLimit, "Database response byte limit exceeded"}; }
+    if (sql.ends_with("allocation")) { connected_ = false; return {DbErrorCode::AllocationFailure, {}}; }
     if (sql.ends_with("timeout")) return {DbErrorCode::Timeout, "fake deadline"};
     if (sql.ends_with("network")) { connected_ = false; return {DbErrorCode::NetworkError, "fake loss"}; }
     if (sql.ends_with("error")) {
@@ -448,7 +451,7 @@ TEST(BackendErrorSummaryTest, PublicSummaryNeverDependsOnOwnedSensitiveDetails) 
       BackendErrorClass::Authentication, BackendErrorClass::Server, BackendErrorClass::Timeout,
       BackendErrorClass::Transport, BackendErrorClass::Tls, BackendErrorClass::InvalidInput,
       BackendErrorClass::NotConnected, BackendErrorClass::Protocol, BackendErrorClass::Unsupported,
-      BackendErrorClass::InvalidMetadata, BackendErrorClass::ResourceLimit, static_cast<BackendErrorClass>(999)}) {
+      BackendErrorClass::InvalidMetadata, BackendErrorClass::ResourceLimit, BackendErrorClass::AllocationFailure, static_cast<BackendErrorClass>(999)}) {
     BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), "password=private-marker"};
     error.error_class = kind;
     error.native_state = "private-native-state";
@@ -475,3 +478,26 @@ TEST_F(BackendContractTest, ResourceLimitReportsGeneralErrorAndDeadConnection) {
   EXPECT_EQ(SQL_CD_TRUE, dead);
 }
 } // namespace
+
+TEST_F(BackendContractTest, AllocationFailureReportsMemoryErrorAndDeadConnection) {
+  connect();
+  EXPECT_EQ(SQL_ERROR, execute("allocation"));
+  SQLCHAR state[6]{};
+  SQLCHAR message[128]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1, state, nullptr,
+                                     message, sizeof(message), nullptr));
+  EXPECT_STREQ("HY001", reinterpret_cast<const char*>(state));
+  SQLUINTEGER dead = SQL_CD_FALSE;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, &dead, 0, nullptr));
+  EXPECT_EQ(SQL_CD_TRUE, dead);
+}
+
+TEST_F(BackendContractTest, StartupAllocationFailureReportsMemoryStateAndAllowsFreshConnect) {
+  seen->setup_allocation_failure = true;
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnect(dbc, nullptr,
+      (SQLCHAR*)"SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=0", SQL_NTS,
+      nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("HY001", state(SQL_HANDLE_DBC, dbc));
+  seen->setup_allocation_failure = false;
+  connect();
+}

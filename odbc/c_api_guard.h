@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <initializer_list>
+#include <new>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -23,13 +24,14 @@ private:
   bool outermost_;
 };
 
-inline void record_unexpected_exception(SQLHANDLE diagnostic_handle) noexcept {
+inline void record_unexpected_exception(SQLHANDLE diagnostic_handle,
+                                       bool allocation_failure = false) noexcept {
   if (!diagnostic_handle) return;
   try {
     auto handle = HandleRegistry::instance().get_handle(diagnostic_handle);
     if (handle) {
-      handle->set_error(SQLSTATE_GENERAL_ERROR,
-                        "Unexpected internal driver exception");
+      handle->set_error(allocation_failure ? "HY001" : SQLSTATE_GENERAL_ERROR,
+                        allocation_failure ? "Memory allocation failed" : "Unexpected internal driver exception");
     }
   } catch (...) {
     // Returning an ODBC error is still safe if diagnostics cannot be allocated.
@@ -108,6 +110,14 @@ SQLRETURN invoke_c_api_with_handles(
                        include_diagnostic);
       }
       return result;
+    } catch (const std::bad_alloc&) {
+      record_unexpected_exception(diagnostic_handle, true);
+      record_return_code(diagnostic_handle, SQL_ERROR);
+      if (call_scope.outermost()) {
+        log_api_result(log_handle, operation_name, SQL_ERROR, started,
+                       include_diagnostic);
+      }
+      return SQL_ERROR;
     } catch (...) {
       record_unexpected_exception(diagnostic_handle);
       record_return_code(diagnostic_handle, SQL_ERROR);
@@ -117,6 +127,14 @@ SQLRETURN invoke_c_api_with_handles(
       }
       return SQL_ERROR;
     }
+  } catch (const std::bad_alloc&) {
+    record_unexpected_exception(diagnostic_handle, true);
+    record_return_code(diagnostic_handle, SQL_ERROR);
+    if (call_scope.outermost()) {
+      log_api_result(log_handle, operation_name, SQL_ERROR, started,
+                     include_diagnostic);
+    }
+    return SQL_ERROR;
   } catch (...) {
     record_unexpected_exception(diagnostic_handle);
     record_return_code(diagnostic_handle, SQL_ERROR);

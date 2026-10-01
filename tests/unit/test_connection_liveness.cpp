@@ -181,7 +181,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     DescriptionServerError, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
     OwnedErrorIdle, OwnedErrorTransaction, OwnedErrorAborted,
     UnterminatedColumnName, TruncatedColumnMetadata, TrailingColumnMetadata, EmptyColumnName,
-    QueryReadTimeout, PartialQueryWrite, PreparedCommand
+    QueryReadTimeout, PartialQueryWrite, PreparedCommand, QueryAllocationFailure
   };
 
   explicit ScriptedBackendTransport(
@@ -547,6 +547,9 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
 
   rs::util::Result<rs::core::transport::IOResult> recv(
       std::span<std::byte> buffer, rs::util::Deadline) override {
+    if (mode_ == ResponseMode::QueryAllocationFailure && send_count_ > 1) {
+      throw std::bad_alloc{};
+    }
     if (mode_ == ResponseMode::AuthenticationTimeout) {
       return {rs::util::DbErrorCode::Timeout,
               "injected authentication timeout"};
@@ -2978,4 +2981,159 @@ TEST(InputBudgetTest, ZeroBudgetsAllowEmptySqlNullAndEmptyParameters) {
       {std::nullopt, QueryParameterType::Text}, {std::string{}, QueryParameterType::Text},
       {std::string{}, QueryParameterType::Text}, {std::string{}, QueryParameterType::Binary}};
   EXPECT_TRUE(prepared.execute_prepared("?,?,?,?", params, rs::util::Deadline::max()));
+}
+
+namespace {
+class AllocationFaultParser final : public rs::core::database::postgres::PgProtocolParser {
+ public:
+  enum class Stage { None, StartupEncoding, StartupParse, Direct, Prepared, Describe, Parse, Extract };
+  Stage stage{Stage::None};
+  void fail(Stage point) {
+    if (stage == point) {
+      stage = Stage::None;
+      throw std::bad_alloc{};
+    }
+  }
+  std::vector<std::byte> create_startup_message(const std::string& user, const std::string& database,
+      const std::map<std::string, std::string>& params) override {
+    fail(Stage::StartupEncoding);
+    return PgProtocolParser::create_startup_message(user, database, params);
+  }
+  std::vector<std::byte> create_simple_query(std::string_view sql) override {
+    fail(Stage::Direct);
+    return PgProtocolParser::create_simple_query(sql);
+  }
+  std::vector<std::byte> create_prepared_query(std::string_view sql,
+      std::span<const rs::core::database::QueryParameter> params) override {
+    fail(Stage::Prepared);
+    return PgProtocolParser::create_prepared_query(sql, params);
+  }
+  std::vector<std::byte> create_statement_description(std::string_view sql,
+      std::span<const rs::core::database::QueryParameterType> types) override {
+    fail(Stage::Describe);
+    return PgProtocolParser::create_statement_description(sql, types);
+  }
+  rs::core::database::Message parse_message(const std::vector<std::byte>& bytes) override {
+    fail(Stage::StartupParse);
+    fail(Stage::Parse);
+    return PgProtocolParser::parse_message(bytes);
+  }
+  rs::core::database::QueryResult extract_query_result(const std::vector<rs::core::database::Message>& messages) override {
+    fail(Stage::Extract);
+    return PgProtocolParser::extract_query_result(messages);
+  }
+};
+}
+
+TEST(AllocationBoundaryTest, EncodingFailuresPreserveSessionAndAllowRecovery) {
+  using namespace rs::core::database;
+  using Stage = AllocationFaultParser::Stage;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto stage : {Stage::Direct, Stage::Prepared, Stage::Describe}) {
+    auto parser = std::make_unique<AllocationFaultParser>();
+    auto* fault = parser.get();
+    auto transport = std::make_unique<ScriptedBackendTransport>(stage == Stage::Describe ? Mode::DescriptionNoData : Mode::EmptyQueryResponse);
+    auto* observed = transport.get();
+    GenericDatabaseConnection backend(std::move(parser), std::move(transport));
+    ConnectionSettings settings;
+    settings.use_ssl = false;
+    ASSERT_TRUE(backend.connect(settings));
+    const auto invoke = [&] {
+      if (stage == Stage::Direct) return backend.execute_query("", rs::util::Deadline::max());
+      if (stage == Stage::Prepared) return backend.execute_prepared("", std::span<const QueryParameter>{}, rs::util::Deadline::max());
+      return backend.describe_statement("", {}, rs::util::Deadline::max());
+    };
+    fault->stage = stage;
+    const auto sends = observed->send_count();
+    const auto reads = observed->bytes_read();
+    const auto result = invoke();
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::AllocationFailure);
+    EXPECT_EQ(result.backend_error().operation, stage == Stage::Direct ? BackendOperation::ExecuteDirect :
+        stage == Stage::Prepared ? BackendOperation::ExecutePrepared : BackendOperation::Describe);
+    EXPECT_EQ(result.backend_error().session_state, SessionState::Idle);
+    EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Reusable);
+    EXPECT_TRUE(result.error_message().empty());
+    EXPECT_FALSE(result.backend_error().native_state);
+    EXPECT_EQ(observed->send_count(), sends);
+    EXPECT_EQ(observed->bytes_read(), reads);
+    EXPECT_EQ(observed->close_count(), 0u);
+    EXPECT_TRUE(invoke());
+  }
+}
+
+TEST(AllocationBoundaryTest, ResponseFailuresRetireWithoutPartialResults) {
+  using namespace rs::core::database;
+  using Stage = AllocationFaultParser::Stage;
+  for (const auto stage : {Stage::None, Stage::Parse, Stage::Extract}) {
+    auto parser = std::make_unique<AllocationFaultParser>();
+    auto* fault = parser.get();
+    auto transport = std::make_unique<ScriptedBackendTransport>(stage == Stage::None ?
+        ScriptedBackendTransport::ResponseMode::QueryAllocationFailure : ScriptedBackendTransport::ResponseMode::OwnedTwoResultSets);
+    auto* observed = transport.get();
+    GenericDatabaseConnection backend(std::move(parser), std::move(transport));
+    ConnectionSettings settings;
+    settings.use_ssl = false;
+    ASSERT_TRUE(backend.connect(settings));
+    fault->stage = stage;
+    const auto result = backend.execute_query("bounded", rs::util::Deadline::max());
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::AllocationFailure);
+    EXPECT_EQ(result.backend_error().session_state, SessionState::Disconnected);
+    EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Retire);
+    EXPECT_FALSE(result.backend_error().retry_safe);
+    EXPECT_EQ(observed->close_count(), 1u);
+    const auto sends = observed->send_count();
+    EXPECT_FALSE(backend.execute_query("later", rs::util::Deadline::max()));
+    EXPECT_EQ(observed->send_count(), sends);
+  }
+}
+
+TEST(AllocationBoundaryTest, StartupFailuresRespectPhaseAndCleanup) {
+  using namespace rs::core::database;
+  using Stage = AllocationFaultParser::Stage;
+  for (const auto stage : {Stage::StartupEncoding, Stage::StartupParse}) {
+    auto parser = std::make_unique<AllocationFaultParser>();
+    auto* fault = parser.get();
+    fault->stage = stage;
+    auto transport = std::make_unique<ScriptedBackendTransport>();
+    auto* observed = transport.get();
+    GenericDatabaseConnection backend(std::move(parser), std::move(transport));
+    ConnectionSettings settings;
+    settings.use_ssl = false;
+    const auto result = backend.connect(settings);
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::AllocationFailure);
+    EXPECT_EQ(result.backend_error().operation, stage == Stage::StartupEncoding ? BackendOperation::Connect : BackendOperation::Authenticate);
+    EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Retire);
+    EXPECT_EQ(observed->connect_count(), stage == Stage::StartupEncoding ? 0u : 1u);
+    EXPECT_EQ(observed->close_count(), stage == Stage::StartupEncoding ? 0u : 1u);
+    if (stage == Stage::StartupEncoding) {
+      EXPECT_TRUE(backend.connect(settings));
+    }
+  }
+}
+
+TEST(AllocationBoundaryTest, StartupEncodingFailurePreservesExistingSession) {
+  using namespace rs::core::database;
+  auto parser = std::make_unique<AllocationFaultParser>();
+  auto* fault = parser.get();
+  auto transport = std::make_unique<ScriptedBackendTransport>();
+  auto* observed = transport.get();
+  GenericDatabaseConnection backend(std::move(parser), std::move(transport));
+  ConnectionSettings settings;
+  settings.use_ssl = false;
+  ASSERT_TRUE(backend.connect(settings));
+  fault->stage = AllocationFaultParser::Stage::StartupEncoding;
+  const auto reads = observed->bytes_read();
+  const auto sends = observed->send_count();
+  const auto result = backend.connect(settings);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(result.backend_error().error_class, BackendErrorClass::AllocationFailure);
+  EXPECT_EQ(result.backend_error().disposition, SessionDisposition::Reusable);
+  EXPECT_EQ(observed->connect_count(), 1u);
+  EXPECT_EQ(observed->send_count(), sends);
+  EXPECT_EQ(observed->bytes_read(), reads);
+  EXPECT_EQ(observed->close_count(), 0u);
+  EXPECT_TRUE(backend.is_connected());
 }

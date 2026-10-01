@@ -172,3 +172,22 @@ TEST(CApiGuardTest, KeepsIndependentConnectionsConcurrent) {
 }
 
 }  // namespace
+
+TEST(CApiGuardTest, AllocationFailureReportsMemoryStateAndReleasesHandleLock) {
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  EXPECT_EQ(SQL_ERROR, rs::odbc::detail::invoke_c_api(environment, []() -> SQLRETURN {
+    throw std::bad_alloc{};
+  }));
+  SQLCHAR state[6]{};
+  SQLCHAR message[128]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_ENV, environment, 1, state, nullptr,
+                                     message, sizeof(message), nullptr));
+  EXPECT_STREQ("HY001", reinterpret_cast<const char*>(state));
+  EXPECT_STREQ("Memory allocation failed", reinterpret_cast<const char*>(message));
+  EXPECT_EQ(SQL_SUCCESS, rs::odbc::detail::invoke_c_api(environment, [] { return SQL_SUCCESS; }));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+  EXPECT_EQ(SQL_ERROR, rs::odbc::detail::invoke_c_api(SQL_NULL_HANDLE, []() -> SQLRETURN {
+    throw std::bad_alloc{};
+  }));
+}

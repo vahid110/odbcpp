@@ -541,6 +541,7 @@ std::optional<std::string> statement_sql(
 const char* request_sqlstate(const std::error_code& error,
                              const char* fallback) {
   if (is_timeout_error(error)) return SQLSTATE_TIMEOUT;
+  if (error == rs::util::make_error_code(rs::util::DbErrorCode::AllocationFailure)) return "HY001";
   if (error == rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit)) return SQLSTATE_GENERAL_ERROR;
   if (error == rs::util::make_error_code(
                    rs::util::DbErrorCode::UnsupportedFeature)) {
@@ -1401,7 +1402,9 @@ SQLRETURN ODBCConnection::connect(
       const auto authentication_failed =
           result.error() == rs::util::make_error_code(
                                 rs::util::DbErrorCode::AuthenticationFailed);
-      set_error(timeout ? SQLSTATE_TIMEOUT
+      const auto allocation_failed = result.error() == rs::util::make_error_code(
+          rs::util::DbErrorCode::AllocationFailure);
+      set_error(allocation_failed ? "HY001" : timeout ? SQLSTATE_TIMEOUT
                         : (authentication_failed
                                ? SQLSTATE_INVALID_AUTHORIZATION
                                : SQLSTATE_CONNECTION_FAILURE),
