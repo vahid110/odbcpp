@@ -3328,7 +3328,8 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
   
   const auto marker_count =
       conn_->get_db_connection()->count_parameter_markers(*native_sql);
-  if (marker_count > static_cast<std::size_t>(
+  if (marker_count > conn_->input_limits().max_parameters ||
+      marker_count > static_cast<std::size_t>(
           std::numeric_limits<SQLSMALLINT>::max())) {
     set_error(SQLSTATE_GENERAL_ERROR, "Too many parameter markers");
     return SQL_ERROR;
@@ -3454,6 +3455,16 @@ SQLRETURN ODBCStatement::execute() {
                 "Not all statement parameters are bound");
       return complete_parameter_set(SQL_ERROR);
     }
+    const auto& input_limits = conn_->input_limits();
+    if (static_cast<std::size_t>(parameter_count_) > input_limits.max_parameters) {
+      set_error(SQLSTATE_GENERAL_ERROR, "Parameter count exceeds configured limit");
+      return complete_parameter_set(SQL_ERROR);
+    }
+    std::size_t parameter_bytes = 0;
+    const auto reject_parameter_limit = [&]() {
+      set_error(SQLSTATE_GENERAL_ERROR, "Parameter bytes exceed configured limit");
+      return complete_parameter_set(SQL_ERROR);
+    };
     std::vector<rs::core::database::QueryParameter> param_values;
     param_values.reserve(static_cast<std::size_t>(parameter_count_));
     
@@ -3500,6 +3511,8 @@ SQLRETURN ODBCStatement::execute() {
         continue;
       }
 
+      const auto parameter_limit = std::min(input_limits.max_parameter_bytes,
+          input_limits.max_parameter_total_bytes - parameter_bytes);
       std::string value;
       std::optional<SQLBIGINT> signed_number;
       std::optional<SQLUBIGINT> unsigned_number;
@@ -3510,8 +3523,16 @@ SQLRETURN ODBCStatement::execute() {
           length = load_application_value<SQLLEN>(length_or_indicator);
         }
         if (length == SQL_NTS || (length == 0 && !length_or_indicator)) {
-          value.assign(text);
+          std::size_t bytes = 0;
+          while (bytes < parameter_limit && text[bytes] != '\0') ++bytes;
+          if (bytes == parameter_limit && text[bytes] != '\0') {
+            return reject_parameter_limit();
+          }
+          value.assign(text, bytes);
         } else if (length >= 0) {
+          if (static_cast<std::size_t>(length) > parameter_limit) {
+            return reject_parameter_limit();
+          }
           value.assign(text, static_cast<std::size_t>(length));
         } else {
           set_error(SQLSTATE_GENERAL_ERROR,
@@ -3535,13 +3556,16 @@ SQLRETURN ODBCStatement::execute() {
           }
           units = static_cast<SQLINTEGER>(length / sizeof(SQLWCHAR));
         }
-        const auto converted = sqlwchar_to_utf8(application.data_ptr, units);
+        bool exceeded = false;
+        auto converted = sqlwchar_to_utf8_bounded(
+            application.data_ptr, units, parameter_limit, exceeded);
+        if (exceeded) return reject_parameter_limit();
         if (!converted) {
           set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
                     "Invalid wide-character parameter value");
           return complete_parameter_set(SQL_ERROR);
         }
-        value = *converted;
+        value = std::move(*converted);
       } else if (value_type == SQL_C_STINYINT) {
         signed_number = load_application_value<SQLSCHAR>(application.data_ptr);
         value = std::to_string(*signed_number);
@@ -3734,6 +3758,9 @@ SQLRETURN ODBCStatement::execute() {
           set_error(SQLSTATE_INVALID_STRING_LENGTH,
                     "Invalid binary parameter length");
           return complete_parameter_set(SQL_ERROR);
+        }
+        if (static_cast<std::size_t>(length) > parameter_limit) {
+          return reject_parameter_limit();
         }
         if (query_param.type ==
                 rs::core::database::QueryParameterType::Binary &&
@@ -4139,6 +4166,9 @@ SQLRETURN ODBCStatement::execute() {
         }
       }
 
+      // Normalization can expand a value (for example a time into a timestamp).
+      if (value.size() > parameter_limit) return reject_parameter_limit();
+      parameter_bytes += value.size();
       query_param.value = std::move(value);
       param_values.push_back(std::move(query_param));
     }

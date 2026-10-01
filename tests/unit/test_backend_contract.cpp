@@ -623,3 +623,144 @@ TEST_F(BackendContractTest, RejectedSqlInputPreservesPreviouslyPreparedStatement
   EXPECT_EQ(seen->sql, "native:rows");
   EXPECT_EQ(seen->queries, 1u);
 }
+
+TEST_F(BackendContractTest, ParameterCountLimitPreservesPreparedStatement) {
+  connect_with("SSL=0;MaxParameters=1");
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  EXPECT_EQ(SQL_ERROR, SQLPrepare(stmt, (SQLCHAR*)"rows ??", SQL_NTS));
+  EXPECT_EQ("HY000", state());
+  char input[] = "ok"; SQLLEN length = 2;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_VARCHAR, 16, 0, input, sizeof(input), &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ("native:rows ?", seen->sql);
+  EXPECT_EQ(1u, seen->parameters.size());
+}
+
+TEST_F(BackendContractTest, ParameterCopiesRejectOverflowAndRecoverAtExactBoundary) {
+  connect_with("SSL=0;MaxParameterBytes=3;MaxParameterTotalBytes=3");
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLULEN processed = 99; SQLUSMALLINT status = SQL_PARAM_UNUSED;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  char input[] = "abcd";
+  for (const auto type : {SQL_C_CHAR, SQL_C_BINARY}) {
+    for (const SQLLEN initial_length : {SQLLEN(4), SQLLEN(SQL_NTS)}) {
+      if (type == SQL_C_BINARY && initial_length == SQL_NTS) continue;
+      SQLLEN length = initial_length;
+      ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, type,
+          type == SQL_C_BINARY ? SQL_VARBINARY : SQL_VARCHAR,
+          16, 0, input, sizeof(input), &length));
+      const auto queries = seen->queries;
+      const auto disconnects = seen->disconnects;
+      EXPECT_EQ(SQL_ERROR, SQLExecute(stmt));
+      EXPECT_EQ("HY000", state());
+      EXPECT_EQ(queries, seen->queries);
+      EXPECT_EQ(disconnects, seen->disconnects);
+      EXPECT_EQ(1u, processed); EXPECT_EQ(SQL_PARAM_ERROR, status);
+      length = initial_length == SQL_NTS ? SQL_NTS : 3;
+      input[3] = '\0';
+      ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+      ASSERT_EQ(1u, seen->parameters.size());
+      EXPECT_EQ(std::optional<std::string>("abc"), seen->parameters[0].value);
+      EXPECT_EQ(SQL_PARAM_SUCCESS, status);
+      ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+      input[3] = 'd';
+    }
+  }
+}
+
+TEST_F(BackendContractTest, WideParameterBudgetMeasuresUtf8Bytes) {
+  connect_with("SSL=0;MaxParameterBytes=4;MaxParameterTotalBytes=4");
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLWCHAR input[]{0x20ac, 0x20ac, 0};
+  for (const SQLLEN initial_length : {SQLLEN(2 * sizeof(SQLWCHAR)), SQLLEN(SQL_NTS)}) {
+    SQLLEN length = initial_length;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_WCHAR,
+        SQL_VARCHAR, 16, 0, input, sizeof(input), &length));
+    const auto queries = seen->queries;
+    EXPECT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HY000", state());
+    EXPECT_EQ(queries, seen->queries);
+    input[1] = 'x';
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    EXPECT_EQ(std::optional<std::string>("\xe2\x82\xac" "x"), seen->parameters[0].value);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    input[1] = 0x20ac;
+  }
+  input[0] = 0xd800; input[1] = 0;
+  SQLLEN length = sizeof(SQLWCHAR);
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_WCHAR,
+      SQL_VARCHAR, 16, 0, input, sizeof(input), &length));
+  EXPECT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("22018", state());
+}
+
+TEST_F(BackendContractTest, AggregateParameterBudgetIncludesNormalizedScalars) {
+  connect_with("SSL=0;MaxParameterBytes=4;MaxParameterTotalBytes=4");
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ??", SQL_NTS));
+  char input[] = "abc"; SQLLEN length = 3; SQLINTEGER number = 12;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_VARCHAR, 16, 0, input, sizeof(input), &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 2, SQL_PARAM_INPUT, SQL_C_SLONG,
+      SQL_INTEGER, 10, 0, &number, sizeof(number), nullptr));
+  const auto queries = seen->queries;
+  EXPECT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HY000", state());
+  EXPECT_EQ(queries, seen->queries);
+  number = 1;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(2u, seen->parameters.size());
+  EXPECT_EQ(std::optional<std::string>("1"), seen->parameters[1].value);
+}
+
+TEST_F(BackendContractTest, ZeroParameterByteBudgetAllowsNullAndExplicitEmpty) {
+  connect_with("SSL=0;MaxParameterBytes=0;MaxParameterTotalBytes=0");
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ??", SQL_NTS));
+  char input[] = "ignored"; SQLLEN empty = 0, null = SQL_NULL_DATA;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_VARCHAR, 16, 0, input, sizeof(input), &empty));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 2, SQL_PARAM_INPUT, SQL_C_BINARY,
+      SQL_VARBINARY, 16, 0, nullptr, 0, &null));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(2u, seen->parameters.size());
+  EXPECT_EQ(std::optional<std::string>(""), seen->parameters[0].value);
+  EXPECT_EQ(std::nullopt, seen->parameters[1].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  empty = SQL_NTS;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_VARCHAR, 16, 0, input, sizeof(input), &empty));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 2, SQL_PARAM_INPUT, SQL_C_BINARY,
+      SQL_VARBINARY, 16, 0, nullptr, 0, &null));
+  EXPECT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HY000", state());
+}
+
+TEST_F(BackendContractTest, AggregateBudgetRejectsLaterTextBeforeBackendWork) {
+  connect_with("SSL=0;MaxParameterBytes=3;MaxParameterTotalBytes=4");
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ??", SQL_NTS));
+  char first[] = "abc", second[] = "de"; SQLLEN length = SQL_NTS;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_VARCHAR, 16, 0, first, sizeof(first), &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 2, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_VARCHAR, 16, 0, second, sizeof(second), &length));
+  const auto queries = seen->queries;
+  EXPECT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HY000", state());
+  EXPECT_EQ(queries, seen->queries);
+  second[1] = '\0';
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(std::optional<std::string>("d"), seen->parameters[1].value);
+}
+
+TEST_F(BackendContractTest, ZeroParameterCountAllowsUnparameterizedPreparation) {
+  connect_with("SSL=0;MaxParameters=0");
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows", SQL_NTS));
+  EXPECT_EQ(SQL_ERROR, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  EXPECT_EQ("HY000", state());
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_TRUE(seen->parameters.empty());
+  EXPECT_EQ("native:rows", seen->sql);
+}

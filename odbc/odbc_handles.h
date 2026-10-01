@@ -220,6 +220,7 @@ public:
   SQLRETURN disconnect();
   bool is_connected() const { return connected_; }
   std::size_t sql_input_limit() const noexcept { return input_limits_.max_sql_bytes; }
+  const rs::core::database::InputLimits& input_limits() const noexcept { return input_limits_; }
   SQLRETURN set_attribute(SQLINTEGER attribute, SQLULEN value);
   SQLRETURN get_attribute(SQLINTEGER attribute, SQLPOINTER value);
   SQLRETURN set_current_catalog(std::string catalog);
