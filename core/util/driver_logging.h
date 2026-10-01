@@ -18,6 +18,10 @@ enum class LogSink { File, Stderr, Syslog };
 // Input byte bounds apply before escaping; truncation never appends raw bytes.
 inline constexpr std::size_t max_log_value_bytes = 1024;
 inline constexpr std::size_t max_log_key_bytes = 64;
+inline constexpr std::size_t max_log_record_bytes = 8192;
+inline constexpr std::size_t max_log_fields = 32;
+
+enum class FieldSensitivity { Public, Sensitive, Secret, QueryText };
 
 struct LoggingOptions {
   LogLevel level{LogLevel::Off};
@@ -38,6 +42,7 @@ struct LoggingOptions {
 struct LogField {
   std::string_view key;
   std::string value;
+  FieldSensitivity sensitivity{FieldSensitivity::Sensitive};
 };
 
 class DriverLogger {

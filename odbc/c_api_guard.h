@@ -74,12 +74,12 @@ inline void log_api_result(
         return_code == SQL_ERROR ? "odbc_api_error" : "odbc_api_warning",
         return_code == SQL_ERROR ? "ODBC API call failed"
                                  : "ODBC API call completed with a warning",
-        {{"operation", std::string(operation)},
-         {"return_code", std::to_string(return_code)},
-         {"sqlstate", diagnostic ? diagnostic->sqlstate : ""},
+        {{"operation", std::string(operation), rs::core::logging::FieldSensitivity::Public},
+         {"return_code", std::to_string(return_code), rs::core::logging::FieldSensitivity::Public},
+         {"sqlstate", diagnostic ? diagnostic->sqlstate : "", rs::core::logging::FieldSensitivity::Public},
          {"native_error", std::to_string(
-                              diagnostic ? diagnostic->native_error : 0)},
-         {"duration_us", std::to_string(elapsed)}});
+                              diagnostic ? diagnostic->native_error : 0), rs::core::logging::FieldSensitivity::Public},
+         {"duration_us", std::to_string(elapsed), rs::core::logging::FieldSensitivity::Public}});
   } catch (...) {
     // Observability must not alter the ODBC result.
   }

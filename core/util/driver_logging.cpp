@@ -371,25 +371,44 @@ void DriverLogger::log(LogLevel level, std::string_view event,
                        std::initializer_list<LogField> fields) const noexcept {
   if (!enabled(level)) return;
   try {
-    std::ostringstream output;
-    if (options_.format == LogFormat::Json) {
-      output << "{\"event\":\"" << json_escape(bounded_component(event, max_log_key_bytes))
-             << "\",\"connection_id\":" << connection_id_
-             << ",\"message\":\"" << json_escape(message) << '"';
-      for (const auto& field : fields) {
-        output << ",\"" << json_escape(bounded_component(field.key, max_log_key_bytes)) << "\":\""
-               << json_escape(field.value) << '"';
-      }
-      output << '}';
+    const bool json = options_.format == LogFormat::Json;
+    const auto escape = [json](std::string_view value) {
+      return json ? json_escape(value) : text_escape(value);
+    };
+    std::string output;
+    if (json) {
+      output = "{\"event\":\"" + escape(bounded_component(event, max_log_key_bytes)) +
+          "\",\"connection_id\":" + std::to_string(connection_id_) +
+          ",\"message\":\"" + escape(message) + "\"";
     } else {
-      output << "event=" << text_escape(bounded_component(event, max_log_key_bytes)) << " connection_id=" << connection_id_
-             << " message=\"" << text_escape(message) << '"';
-      for (const auto& field : fields) {
-        output << ' ' << text_escape(bounded_component(field.key, max_log_key_bytes)) << "=\"" << text_escape(field.value)
-               << '"';
-      }
+      output = "event=" + escape(bounded_component(event, max_log_key_bytes)) +
+          " connection_id=" + std::to_string(connection_id_) +
+          " message=\"" + escape(message) + "\"";
     }
-    impl_->logger->log(spdlog_level(level), "{}", output.str());
+    std::size_t count = 0;
+    bool truncated = false;
+    for (const auto& field : fields) {
+      // Secret fields are absent, including their keys. QueryText requires the
+      // separate existing opt-in and Debug-level availability; Trace alone is insufficient.
+      if (field.sensitivity == FieldSensitivity::Secret) continue;
+      if (field.sensitivity == FieldSensitivity::QueryText && !logs_queries()) continue;
+      if (count == max_log_fields) { truncated = true; break; }
+      const auto value = field.sensitivity == FieldSensitivity::Sensitive ?
+          std::string_view("[redacted]") : std::string_view(field.value);
+      const auto key = escape(bounded_component(field.key, max_log_key_bytes));
+      const auto encoded = json ? ",\"" + key + "\":\"" + escape(value) + "\"" :
+          " " + key + "=\"" + escape(value) + "\"";
+      // Reserve space for closing syntax and the fixed truncation indicator.
+      if (output.size() + encoded.size() > max_log_record_bytes - 64) {
+        truncated = true;
+        break;
+      }
+      output += encoded;
+      ++count;
+    }
+    if (truncated) output += json ? ",\"fields_truncated\":true" : " fields_truncated=true";
+    if (json) output += '}';
+    impl_->logger->log(spdlog_level(level), "{}", output);
   } catch (...) {
     // Logging must never change ODBC behavior.
   }

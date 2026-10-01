@@ -151,7 +151,7 @@ TEST(DriverLoggerTest, WritesEscapedStructuredJson) {
 
   auto logger = DriverLogger::create(options, 42);
   logger->log(LogLevel::Info, "test_event", "line one\n\"line two\"",
-              {{"field", "value\\with-tab\t"}});
+              {{"field", "value\\with-tab\t", rs::core::logging::FieldSensitivity::Public}});
   logger->flush();
   logger.reset();
 
@@ -332,7 +332,7 @@ TEST(DriverLoggerTest, RotatesFilesAtConfiguredSize) {
   for (int index = 0; index < 20; ++index) {
     logger->log(LogLevel::Info, "rotation_test",
                 "A deliberately long logging record used to force rotation",
-                {{"index", std::to_string(index)}});
+                {{"index", std::to_string(index), rs::core::logging::FieldSensitivity::Public}});
   }
   logger->flush();
   logger.reset();
@@ -358,8 +358,8 @@ TEST(DriverLoggerTest, SerializesConcurrentWriters) {
     writers.emplace_back([logger, writer] {
       for (int record = 0; record < 100; ++record) {
         logger->log(LogLevel::Info, "concurrent_record", "record",
-                    {{"writer", std::to_string(writer)},
-                     {"record", std::to_string(record)}});
+                    {{"writer", std::to_string(writer), rs::core::logging::FieldSensitivity::Public},
+                     {"record", std::to_string(record), rs::core::logging::FieldSensitivity::Public}});
       }
     });
   }
@@ -414,7 +414,7 @@ TEST(DriverLoggerTest, BoundsAndEscapesUntrustedRecordComponents) {
     hostile.push_back('\x1b');
     hostile += std::string(2048, 'a') + "unbounded-tail";
     logger->log(LogLevel::Info, "event\nforged", hostile,
-                {{"key\nforged", hostile}});
+                {{"key\nforged", hostile, rs::core::logging::FieldSensitivity::Public}});
     logger->flush();
     logger.reset();
     const auto contents = read_file(path);
@@ -471,7 +471,7 @@ TEST(DriverLoggerTest, JsonBoundsPreserveMultibyteCharacterBoundaries) {
     for (std::size_t split = 1; split < character.size(); ++split) {
       const std::string event = std::string(64 - split, 'k') + character;
       const std::string value = std::string(1024 - split, 'v') + character;
-      logger->log(LogLevel::Info, event, value, {{event, value}});
+      logger->log(LogLevel::Info, event, value, {{event, value, rs::core::logging::FieldSensitivity::Public}});
     }
     const auto exact = std::string(1024 - character.size(), 'v') + character;
     logger->log(LogLevel::Info, "exact", exact);
@@ -489,4 +489,103 @@ TEST(DriverLoggerTest, JsonBoundsPreserveMultibyteCharacterBoundaries) {
   RecordProperty("utf8_json", contents);
   EXPECT_EQ(9, std::count(contents.begin(), contents.end(), '\n'));
   std::filesystem::remove_all(directory);
+}
+
+TEST(DriverLoggerTest, SensitivityIsIndependentOfTraceAndQueryOptIn) {
+  using rs::core::logging::FieldSensitivity;
+  for (const auto format : {LogFormat::Text, LogFormat::Json}) {
+    for (const bool queries : {false, true}) {
+      const auto directory = temporary_directory("odbcpp-sensitive-log");
+      const auto path = directory / "driver.log";
+      LoggingOptions options;
+      options.level = LogLevel::Trace;
+      options.format = format;
+      options.sinks = {LogSink::File};
+      options.file = path.string();
+      options.asynchronous = false;
+      options.log_queries = queries;
+      auto logger = DriverLogger::create(options, 42);
+      logger->log(LogLevel::Info, "sensitivity", "Safe summary",
+          {{"public", "public-value", FieldSensitivity::Public},
+           {"default", "implicit-sensitive"},
+           {"sensitive", "sensitive-value", FieldSensitivity::Sensitive},
+           {"secret-key", "secret-value", FieldSensitivity::Secret},
+           {"sql", "query-literal", FieldSensitivity::QueryText}});
+      logger->flush();
+      logger.reset();
+      const auto contents = read_file(path);
+      EXPECT_NE(std::string::npos, contents.find("public-value"));
+      EXPECT_NE(std::string::npos, contents.find("[redacted]"));
+      for (const auto* forbidden : {"implicit-sensitive", "sensitive-value", "secret-key", "secret-value"})
+        EXPECT_EQ(std::string::npos, contents.find(forbidden));
+      EXPECT_EQ(queries, contents.find("query-literal") != std::string::npos);
+      std::filesystem::remove_all(directory);
+    }
+  }
+}
+
+TEST(DriverLoggerTest, EncodedRecordBudgetKeepsJsonCompleteAndDropsExcessFields) {
+  using rs::core::logging::FieldSensitivity;
+  for (const auto format : {LogFormat::Text, LogFormat::Json}) {
+    const auto directory = temporary_directory("odbcpp-record-budget-log");
+    const auto path = directory / "driver.log";
+    LoggingOptions options;
+    options.level = LogLevel::Info;
+    options.format = format;
+    options.sinks = {LogSink::File};
+    options.file = path.string();
+    options.asynchronous = false;
+    auto logger = DriverLogger::create(options, 42);
+    const std::string escaped(1024, '\0');
+    logger->log(LogLevel::Info, "budget", escaped,
+        {{"first", escaped, FieldSensitivity::Public},
+         {"excess", "excess-marker", FieldSensitivity::Public}});
+    logger->log(LogLevel::Info, "field-count", "Many small fields",
+        {{"f0", "ok", FieldSensitivity::Public},
+         {"f1", "ok", FieldSensitivity::Public},
+         {"f2", "ok", FieldSensitivity::Public},
+         {"f3", "ok", FieldSensitivity::Public},
+         {"f4", "ok", FieldSensitivity::Public},
+         {"f5", "ok", FieldSensitivity::Public},
+         {"f6", "ok", FieldSensitivity::Public},
+         {"f7", "ok", FieldSensitivity::Public},
+         {"f8", "ok", FieldSensitivity::Public},
+         {"f9", "ok", FieldSensitivity::Public},
+         {"f10", "ok", FieldSensitivity::Public},
+         {"f11", "ok", FieldSensitivity::Public},
+         {"f12", "ok", FieldSensitivity::Public},
+         {"f13", "ok", FieldSensitivity::Public},
+         {"f14", "ok", FieldSensitivity::Public},
+         {"f15", "ok", FieldSensitivity::Public},
+         {"f16", "ok", FieldSensitivity::Public},
+         {"f17", "ok", FieldSensitivity::Public},
+         {"f18", "ok", FieldSensitivity::Public},
+         {"f19", "ok", FieldSensitivity::Public},
+         {"f20", "ok", FieldSensitivity::Public},
+         {"f21", "ok", FieldSensitivity::Public},
+         {"f22", "ok", FieldSensitivity::Public},
+         {"f23", "ok", FieldSensitivity::Public},
+         {"f24", "ok", FieldSensitivity::Public},
+         {"f25", "ok", FieldSensitivity::Public},
+         {"f26", "ok", FieldSensitivity::Public},
+         {"f27", "ok", FieldSensitivity::Public},
+         {"f28", "ok", FieldSensitivity::Public},
+         {"f29", "ok", FieldSensitivity::Public},
+         {"f30", "ok", FieldSensitivity::Public},
+         {"f31", "ok", FieldSensitivity::Public},
+         {"f32", "count-excess-marker", FieldSensitivity::Public}});
+    logger->log(LogLevel::Info, "normal", "Still usable",
+        {{"status", "public-ok", FieldSensitivity::Public}});
+    logger->flush();
+    logger.reset();
+    const auto contents = read_file(path);
+    EXPECT_NE(std::string::npos, contents.find("fields_truncated"));
+    EXPECT_EQ(std::string::npos, contents.find("excess-marker"));
+    EXPECT_NE(std::string::npos, contents.find("public-ok"));
+    EXPECT_EQ(3, std::count(contents.begin(), contents.end(), '\n'));
+    EXPECT_EQ(std::string::npos, contents.find("count-excess-marker"));
+    EXPECT_LT(contents.size(), rs::core::logging::max_log_record_bytes + 512);
+    if (format == LogFormat::Json) RecordProperty("budget_json", contents);
+    std::filesystem::remove_all(directory);
+  }
 }
