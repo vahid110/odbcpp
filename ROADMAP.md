@@ -1361,3 +1361,21 @@ credential/ownership tests under ThreadSanitizer pass. Full local PostgreSQL,
 iODBC UTF-16/UCS-4, ASan/UBSan and Redshift build/absent-endpoint gates pass.
 Read-only review found no actionable defect. Windows/packaging and cross-platform
 crypto checks remain subject to exact-head CI.
+
+## S2 explicit same-owner reusable return — 2026-10-02
+
+Added opt-in return through mandatory reset using one original deadline, current
+bound credentials and atomic lease detachment. All failures and implicit returns
+retire; cache scopes never survive handoff. Tests cover reissue/exclusivity, old
+lease destruction, reset failures, deadline, moves, credential expiry/rotation,
+closure and checkout races. PostgreSQL live checks same backend PID, cleared TEMP
+and session setting after transaction cleanup, then revoked idle retirement.
+
+Next: bounded reuse health/lifetime policy and production credential-provider
+integration. S2/G12, actual cache payload policy and pool qualification stay open.
+
+Validation: focused unit and mandatory PostgreSQL live ownership checks passed;
+all 49 credential/ownership tests passed under ThreadSanitizer. Complete local
+PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and Redshift build/absent-endpoint
+gates passed. Read-only review found no actionable issue. Windows/packaging and
+cross-platform crypto checks await exact-head CI.

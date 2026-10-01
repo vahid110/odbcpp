@@ -514,3 +514,18 @@ Validation is point-in-time, not a reservation or a proof of external catalog
 freshness. Real caches still require bounded payloads, secret exclusion, keys,
 external-change revalidation and observability. Reusable return and production
 credential-provider integration remain unqualified.
+
+## Explicit credential-bound return checkpoint — 2026-10-02
+
+Only successful private `return_reusable(deadline)` permits same-owner reissue;
+implicit return, unbound owners and every failed cleanup remain terminal. The
+original bound credential generation must be current before and after cleanup.
+Reset is mandatory even for passive Idle sessions, with the original deadline
+and exact same-authenticated-session profile. Closure/rotation/expiry during reset
+retires after I/O. Atomic lease detachment prevents the previous borrower from
+closing a newly issued borrow; scopes are cleared again at publication.
+
+No new generation can reauthenticate an old physical session. Checkout rechecks
+credentials after publication; normal in-flight survival rules still apply.
+There is no forced credential refresh, cross-principal reuse, pool qualification,
+reconnect/replay, query-result caching or production provider binding claim.

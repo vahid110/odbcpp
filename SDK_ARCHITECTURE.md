@@ -1057,3 +1057,30 @@ qualification or Driver Manager pooling. Payload ownership, hard bounds, keys,
 secret handling, TTL/revalidation for external changes and observable cache policy
 remain separate requirements; selective preservation/performance needs G10 proof.
 Bounded reusable return and real credential-provider integration remain open.
+
+## S2 explicit same-owner reusable return — 2026-10-02
+
+Private `SessionLease::return_reusable(deadline)` is the only opt-in handoff.
+Ordinary destruction/retire and every failed return remain terminal. Unbound
+one-shot owners cannot reissue sessions. Return requires open admission and the
+original authenticated credential generation to be current, invalidates all local
+cache scopes, and always calls coordinated backend reset exactly once with the
+original absolute deadline. Passive Idle alone never authorizes handoff.
+
+After exact SameAuthenticatedServerSession reset, Idle/Reusable outcome and
+passive consistency checks, the coordinator rechecks physical identity, open
+admission, current bound credentials and the deadline under the ownership lock.
+Success clears even scopes minted by a backend callback during reset, marks the
+session unleased and detaches the old lease atomically before any checkout can
+win. The old lease then cannot retire its successor. Failure retires outside locks;
+owned reset diagnostics remain intact and synthetic failures expose no credentials.
+No backend callback runs under ownership/credential locks.
+
+Rotation/expiry during cleanup prevents reissue. Rotation after publication is
+checked again at checkout and cannot bind a new generation to an old physical
+session. Owner closure during cleanup does not interrupt I/O; return then retires.
+Admission is a point-in-time decision, not a guarantee against later network loss.
+No reconnect, replay, reauthentication, cross-owner queue, health shortcut or cache
+payload is added. This is private single-owner reuse evidence, not an ODBC Driver
+Manager pool or public SDK qualification. Production credential-provider binding,
+pool health/age/capacity policy and real cache refresh/isolation remain open.

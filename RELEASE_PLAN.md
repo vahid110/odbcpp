@@ -914,3 +914,14 @@ No cache storage or external-schema freshness claim is made.
 S2/G12 remain open: bounded reusable return, cache payload limits/keys/secret and
 external-change policies, and production credential-provider integration still
 need evidence. No ODBC, Redshift reset, provider/linkage or FIPS claim changes.
+
+## S2 explicit same-owner return checkpoint — 2026-10-02
+
+Private reusable return is opt-in, credential-bound and reset-gated. It reissues
+only the original authenticated physical session to its existing owner; failed or
+implicit return retires. Credentials/deadline/admission are rechecked atomically,
+old scopes invalidated and the old lease detached before checkout. PostgreSQL live
+evidence must prove same PID and cleared temporary/session/transaction state.
+S2/G12 remain open: production provider integration, bounded pool policy, real
+cache policies and public SDK conformance are not supplied by this primitive.
+G8 real applications and crypto-provider qualification are unchanged.

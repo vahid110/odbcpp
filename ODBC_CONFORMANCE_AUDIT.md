@@ -2781,3 +2781,18 @@ Local validation passed: focused unit/live ownership checks, 41 credential/owner
 ThreadSanitizer tests, complete PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and
 Redshift build/absent-endpoint gates. Windows/packaging validation awaits exact-head
 CI; this adds no product cache, pooling or Redshift live qualification claim.
+
+## Private explicit session return checkpoint — 2026-10-02
+
+`return_reusable` can explicitly reissue the same authenticated physical session
+to one owner only after mandatory reset, final current credential/deadline/admission
+checks and atomic old-lease detachment. Every failure/implicit return remains
+terminal. No ODBC caller, Driver Manager pool, reconnect/replay, public SDK contract
+or Redshift live behavior is changed. S2/G12 remain open. PostgreSQL live evidence
+covers backend identity, cleanup and retirement; real application gates remain open.
+
+Validation: focused unit and mandatory PostgreSQL live ownership checks passed;
+all 49 credential/ownership tests passed under ThreadSanitizer. Complete local
+PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and Redshift build/absent-endpoint
+gates passed. Read-only review found no actionable issue. Windows/packaging and
+cross-platform crypto checks await exact-head CI.
