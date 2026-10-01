@@ -457,3 +457,32 @@ wire-offset/format coverage; session/ODBC tests cover normalized ownership, prim
 and additional results, malformed metadata/cells, binary-format rejection, lookup
 failures and reusable-session recovery. Ordered execution items, richer scalar
 forms, session/reuse facets and provider qualification remain open S2 work.
+
+## S2 execution-sequence validation — 2026-10-01
+
+The materialized SDK execution contract now explicitly requires a flat ordered
+sequence. A primary operation failure uses BackendResult's error alternative;
+additional deferred errors are error-only items and cannot also carry schema,
+rows, cell errors, parameter descriptions or completion metadata. This prevents
+silent item loss or publication of contradictory success/error results.
+
+PostgreSQL validates the normalized sequence after response drain and before
+return. Shared ODBC validates the entire sequence before queuing additional items
+or publishing result state. Contract violations return fixed metadata diagnostics;
+a protocol-ready session stays available to its current owner. This does not add
+replay or pooling guarantees.
+
+Tests cover direct and prepared rejection/recovery for nested sequences, root
+errors and every contradictory deferred-item payload, plus native-parser
+contradictions with post-drain recovery. Happy-path ordering distinguishes a
+nonzero update count, an empty rowset with schema, a zero update count and a
+deferred server error. Existing native multi-result tests protect PostgreSQL
+ordering. A dedicated ExecutionItem/ExecutionResult representation, warning items,
+final execution disposition and separate parameter-description delivery remain
+open; this checkpoint enforces the current materialized contract rather than
+closing the whole ordered-execution milestone.
+
+Statement description has a separate metadata-only gate: primary errors, additional
+items, rows and cell-error ledgers are rejected before parameter/column metadata
+is published or cached. SQLDescribeParam/SQLNumResultCols rejection leaves caller
+outputs unchanged and a later valid description can retry on the same session.
