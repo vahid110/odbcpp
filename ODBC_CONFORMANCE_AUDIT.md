@@ -2796,3 +2796,18 @@ all 49 credential/ownership tests passed under ThreadSanitizer. Complete local
 PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and Redshift build/absent-endpoint
 gates passed. Read-only review found no actionable issue. Windows/packaging and
 cross-platform crypto checks await exact-head CI.
+
+## Private bounded reuse timing checkpoint — 2026-10-02
+
+Credential-bound ownership optionally enforces finite monotonic lifetime and
+positive idle limits. Exact-token expiry retires idle sessions; active leases
+survive with future admission closed and cache scopes invalidated. Explicit return
+cannot renew lifetime. Deterministic equality/race tests and PG returned-idle live
+retirement support this primitive only. No product/ODBC consumer, health/pool claim,
+background eviction or Redshift live behavior is added. S2/G12 remain open.
+
+Validation: focused ownership unit/live checks and all 57 credential/ownership
+ThreadSanitizer tests passed. Complete local PostgreSQL, iODBC UTF-16/UCS-4,
+ASan/UBSan and Redshift build/absent-endpoint gates passed. Read-only review
+found no actionable issue. Windows/packaging and cross-platform crypto evidence
+await exact-head CI.

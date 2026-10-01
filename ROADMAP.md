@@ -1379,3 +1379,22 @@ all 49 credential/ownership tests passed under ThreadSanitizer. Complete local
 PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and Redshift build/absent-endpoint
 gates passed. Read-only review found no actionable issue. Windows/packaging and
 cross-platform crypto checks await exact-head CI.
+
+## S2 bounded lifetime and idle reuse policy — 2026-10-02
+
+Added opt-in finite lifetime/positive idle limits to private credential-bound
+owners. Expiry at equality closes admission and invalidates scope without
+interrupting an active borrower. Idle timing applies only while unleased and
+restarts solely on successful return; absolute lifetime never renews. Deterministic
+clock tests cover equality, races, moves, malformed policy, large limits and
+non-extending denials. PG live verifies returned idle expiry closes the backend.
+
+Next: coordinated active-health eligibility, then production credential-provider
+binding and real cache policy. No background eviction, capacity or ODBC reuse
+qualification; S2/G12 remain open.
+
+Validation: focused ownership unit/live checks and all 57 credential/ownership
+ThreadSanitizer tests passed. Complete local PostgreSQL, iODBC UTF-16/UCS-4,
+ASan/UBSan and Redshift build/absent-endpoint gates passed. Read-only review
+found no actionable issue. Windows/packaging and cross-platform crypto evidence
+await exact-head CI.

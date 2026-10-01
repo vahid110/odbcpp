@@ -268,7 +268,7 @@ review before considering any MySQL beta plan.
   have bounded evidence accepted in [S2C_MATRIX_REVIEW.md](S2C_MATRIX_REVIEW.md).
   S2 now includes owning errors/session disposition, private dependency gates,
   optional active health and the narrow PostgreSQL reset primitive. Continue
-  bounded reuse health/lifetime policy next, with actual cache/provider qualification still open; crypto qualification
+  coordinated active-health eligibility next, with actual cache/provider qualification still open; crypto qualification
   follow-ups remain open and do not disappear from G12.
 - When Redshift access returns, finish the current coherent MS1 batch, preserve
   its evidence, and run M2 before expanding MySQL scope. Re-estimate whether to
@@ -363,3 +363,13 @@ session-state cleanup, and credential retirement. This does not close S2/G12 or
 qualify pooling/ODBC reuse. Next: bounded shared composition policy for reuse
 eligibility/health and lifetime, then production provider integration and cache
 payload policy; crypto qualification remains independently gated.
+
+## S2 opt-in bounded lifetime/idle policy — 2026-10-02
+
+Private same-owner reuse now has optional finite lifetime and positive idle limits,
+with deterministic boundary/race tests and PG live returned-idle retirement.
+Active borrowers are not forcibly interrupted; expiry invalidates scope/admission
+and prevents further reuse. Legacy/no-policy constructors preserve prior behavior.
+Next: coordinated active-health eligibility, then production credential-provider
+binding and actual cache payload/refresh policies. Pool capacity/defaults and
+public SDK/ODBC reuse qualification remain open; S2/G12 are not closed.

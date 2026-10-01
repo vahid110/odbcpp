@@ -1084,3 +1084,29 @@ No reconnect, replay, reauthentication, cross-owner queue, health shortcut or ca
 payload is added. This is private single-owner reuse evidence, not an ODBC Driver
 Manager pool or public SDK qualification. Production credential-provider binding,
 pool health/age/capacity policy and real cache refresh/isolation remain open.
+
+## S2 opt-in lifetime and idle retirement — 2026-10-02
+
+Private credential-bound owners may adopt immutable `SessionReusePolicy` with a
+finite absolute monotonic `retire_at` and positive `max_idle` duration. Existing
+constructors retain their prior semantics; no production caller chooses defaults
+here. Equality expires. Idle timing starts at adoption and restarts solely when
+successful explicit return publishes the unleased session. Active leases are not
+idle-timed; queries, cache operations, denied checkouts and standalone reset cannot
+extend either limit. Elapsed-time comparison avoids adding arbitrary durations to
+clock samples, including very large idle limits.
+
+Missing/foreign/wrong-generation tokens remain nondisruptive and are rejected
+before policy observation. Exact-token checkout closes expired admission, clears
+scopes and destroys an idle session outside locks. An active lifetime-expired
+borrow remains usable; cache validation/minting and lease operations close future
+admission and invalidate scopes without interrupting it. Reusable return requires
+lifetime validity before and after mandatory reset and reports terminal timeout
+when that lifetime has expired. Successful return never renews absolute lifetime.
+
+The private noexcept test clock permits deterministic equality/race evidence and
+must be a local monotonic source without allocation, callbacks or reentry under
+ownership locks. Production uses steady_clock. Original I/O deadlines still use
+the real monotonic clock. No background eviction is supplied: an unobserved expired
+idle session may remain allocated until matching checkout or owner destruction.
+No active health, pool capacity, queue, ODBC reuse or provider qualification follows.

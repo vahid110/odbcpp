@@ -925,3 +925,12 @@ evidence must prove same PID and cleared temporary/session/transaction state.
 S2/G12 remain open: production provider integration, bounded pool policy, real
 cache policies and public SDK conformance are not supplied by this primitive.
 G8 real applications and crypto-provider qualification are unchanged.
+
+## S2 lifetime/idle policy checkpoint — 2026-10-02
+
+Opt-in private owner policy prevents same-owner reuse after finite lifetime or
+idle expiry. Equality, active borrow survival, return-time expiry, large duration,
+non-extending denial and checkout races have focused evidence; PG live checks
+retirement of an expired returned session. This is no ODBC/pool/health capability
+claim. Active health, product defaults, capacity and production credential binding
+remain open alongside real cache policy. S2/G12 and application gates stay open.

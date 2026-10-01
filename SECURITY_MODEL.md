@@ -529,3 +529,17 @@ No new generation can reauthenticate an old physical session. Checkout rechecks
 credentials after publication; normal in-flight survival rules still apply.
 There is no forced credential refresh, cross-principal reuse, pool qualification,
 reconnect/replay, query-result caching or production provider binding claim.
+
+## Bounded reuse retirement checkpoint — 2026-10-02
+
+Opt-in private ownership policy enforces finite monotonic lifetime and positive
+idle timeout. Exact-token admission observes expiry; foreign/wrong tokens cannot
+retire another session or extend its idle window. Active lifetime expiry closes
+admission and invalidates cache scope without forced interruption. Return retires
+on expiry before/after reset. Successful return resets idle time only, never
+credential generation or absolute lifetime. Backend destruction stays outside
+locks; no eviction thread or forced credential refresh is introduced.
+
+The policy is not a live-health guarantee or pool capacity qualification. Existing
+constructors remain unchanged, product policy defaults/provider binding are still
+open, and expired idle resources are released only on observation/destruction.
