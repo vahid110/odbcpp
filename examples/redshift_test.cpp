@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cstring>
 #include <cstdlib>
+#include <vector>
 
 void print_error(SQLSMALLINT handle_type, SQLHANDLE handle) {
   SQLCHAR sqlstate[6];

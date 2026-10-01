@@ -85,7 +85,6 @@ int main(int argc, char **argv)
       return 1;
     }
 
-    auto deadline = rs::util::make_deadline(std::chrono::milliseconds(timeout_ms));
 
     // Minimal HTTP/1.1 GET
     std::string req = "GET / HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n";

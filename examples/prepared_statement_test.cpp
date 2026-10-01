@@ -1,6 +1,7 @@
 #include <sql.h>
 #include <sqlext.h>
 #include <iostream>
+#include <cstring>
 
 int main() {
     std::cout << "🔧 ODBC Prepared Statement Test\n";
