@@ -151,7 +151,9 @@ public:
     return execute_prepared(sql, converted, deadline);
   }
   
-  virtual std::string get_parameter(std::string_view key) const = 0;
+  // No I/O. Owning advertised server version; empty means unknown/unavailable.
+  // Later calls, disconnect and destruction cannot invalidate a returned value.
+  virtual std::string server_version() const = 0;
 };
 
 } // namespace rs::core::database

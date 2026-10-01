@@ -688,18 +688,22 @@ TEST(DatabaseFactoryTest, SelectedBackendUsesConfiguredTransportForStartupAndQue
         : DatabaseFactory::create_connection(std::move(transport));
     rs::core::database::ConnectionSettings settings;
     settings.use_ssl = false;
+    EXPECT_TRUE(connection->server_version().empty());
     ASSERT_TRUE(connection->connect(settings).has_value());
     EXPECT_TRUE(connection->is_connected());
-    EXPECT_EQ("17.6", connection->get_parameter("server_version"));
+    EXPECT_EQ("17.6", connection->server_version());
     EXPECT_EQ(1u, observed->connect_count());
     EXPECT_EQ(1u, observed->send_count());
     ASSERT_TRUE(connection->execute_query(
         "SET application_name = 'changed'",
         rs::util::make_deadline(std::chrono::seconds(1))).has_value());
-    EXPECT_EQ("changed", connection->get_parameter("application_name"));
+    EXPECT_EQ("17.6", connection->server_version());
+    const auto owned_version = connection->server_version();
     EXPECT_EQ(2u, observed->send_count());
     connection->disconnect();
     EXPECT_FALSE(connection->is_connected());
+    EXPECT_TRUE(connection->server_version().empty());
+    EXPECT_EQ("17.6", owned_version);
     EXPECT_EQ(1u, observed->close_count());
   }
 }

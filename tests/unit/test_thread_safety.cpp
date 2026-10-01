@@ -34,7 +34,7 @@ TEST_F(ThreadSafetyTest, ConcurrentReads) {
         try {
           // These should be safe concurrent reads
           bool connected = thread_safe_conn_->is_connected();
-          std::string param = thread_safe_conn_->get_parameter("application_name");
+          std::string param = thread_safe_conn_->server_version();
           
           successful_reads++;
         } catch (...) {

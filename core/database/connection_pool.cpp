@@ -35,9 +35,9 @@ BackendResult<QueryResult> ThreadSafeConnection::execute_prepared(std::string_vi
   return conn_->execute_prepared(sql, params, deadline);
 }
 
-std::string ThreadSafeConnection::get_parameter(std::string_view key) const {
+std::string ThreadSafeConnection::server_version() const {
   std::shared_lock lock(mutex_);
-  return conn_->get_parameter(key);
+  return conn_->server_version();
 }
 
 // ConnectionPool implementation

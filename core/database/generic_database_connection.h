@@ -58,7 +58,9 @@ public:
       std::span<const QueryParameterType> parameter_types,
       rs::util::Deadline deadline) override;
   
-  std::string get_parameter(std::string_view key) const override;
+  std::string server_version() const override { return get_parameter("server_version"); }
+  // Private PostgreSQL ParameterStatus storage; not a portable SDK service.
+  virtual std::string get_parameter(std::string_view key) const;
 
 private:
   BackendResult<QueryResult> normalize_parameter_metadata(

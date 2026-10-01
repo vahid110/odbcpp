@@ -26,7 +26,7 @@ public:
                                                 std::span<const QueryParameter> params,
                                                 rs::util::Deadline deadline);
   
-  std::string get_parameter(std::string_view key) const;
+  std::string server_version() const;
 
 private:
   std::unique_ptr<IDatabaseConnection> conn_;

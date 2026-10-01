@@ -241,7 +241,7 @@ public:
   const std::string& server_name() const noexcept { return server_name_; }
   const std::string& user_name() const noexcept { return user_name_; }
   std::string dbms_version() const {
-    return db_conn_ ? db_conn_->get_parameter("server_version")
+    return db_conn_ ? db_conn_->server_version()
                     : std::string{};
   }
   

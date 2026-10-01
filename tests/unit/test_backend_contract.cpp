@@ -27,6 +27,7 @@ struct Observations {
   Deadline deadline{};
   bool malformed_value{}, malformed_state{}, malformed_text{};
   std::string failure_message = "fake error";
+  std::string server_version = "1.0";
   bool setup_allocation_failure{false};
   bool missing_parameter_metadata{}, parameter_metadata_error{};
   int invalid_cell_errors{}, invalid_result_structure{};
@@ -40,6 +41,11 @@ template <typename T>
 concept HasNativeTypeResolution = requires(T& backend) {
   backend.resolve_types(std::span<const std::uint32_t>{}, Deadline::max());
 };
+template <typename T>
+concept HasNativeServerParameters = requires(const T& backend) {
+  backend.get_parameter("server_version");
+};
+static_assert(!HasNativeServerParameters<IDatabaseConnection>);
 static_assert(!HasNativeTypeInterpretation<IDatabaseConnection>);
 static_assert(!HasNativeTypeResolution<IDatabaseConnection>);
 
@@ -192,7 +198,7 @@ class FakeBackend final : public IDatabaseConnection {
     }
     return result;
   }
-  std::string get_parameter(std::string_view key) const override { return key == "server_version" ? "1.0" : ""; }
+  std::string server_version() const override { return seen_->server_version; }
  private:
   std::shared_ptr<Observations> seen_;
   bool connected_{};
@@ -1168,4 +1174,24 @@ TEST_F(BackendContractTest, DeferredMetadataErrorUsesGeneralStateAndClearsPendin
   EXPECT_EQ(SQL_ERROR, SQLMoreResults(stmt)); EXPECT_EQ("HY000", state());
   EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(stmt)); EXPECT_EQ(0, seen->disconnects);
   ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+}
+
+TEST_F(BackendContractTest, ServerVersionUsesTypedBackendServiceForAnsiAndWideInfo) {
+  connect();
+  for (const auto& [raw, expected] : {
+      std::pair{"1.0", "01.00.0000"}, std::pair{"17.11 (vendor)", "17.11.0000"},
+      std::pair{"", "00.00.0000"}, std::pair{"invalid", "00.00.0000"}}) {
+    SCOPED_TRACE(raw);
+    seen->server_version = raw;
+    SQLCHAR version[16]{}; SQLSMALLINT length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DBMS_VER, version, sizeof(version), &length));
+    EXPECT_STREQ(expected, reinterpret_cast<const char*>(version)); EXPECT_EQ(10, length);
+    SQLWCHAR wide[16]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfoW(dbc, SQL_DBMS_VER, wide, sizeof(wide), &length));
+    EXPECT_EQ(10 * sizeof(SQLWCHAR), static_cast<std::size_t>(length));
+    const auto expected_wide = rs::odbc::utf8_to_wide(expected); ASSERT_TRUE(expected_wide);
+    EXPECT_TRUE(std::equal(expected_wide->begin(), expected_wide->end(), wide));
+    EXPECT_EQ(0, wide[10]);
+    EXPECT_EQ(0, seen->queries); EXPECT_EQ(0, seen->descriptions);
+  }
 }
