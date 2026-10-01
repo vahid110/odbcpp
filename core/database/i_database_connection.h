@@ -105,10 +105,6 @@ public:
   virtual std::size_t count_parameter_markers(std::string_view sql) const = 0;
   // Pure translation: no network I/O or mutation of connection state.
   virtual SqlTranslationResult translate_sql(std::string_view sql) const = 0;
-  // Pure native-to-normalized metadata interpretation, without I/O.
-  virtual NativeTypeInfo describe_type(std::uint32_t id, std::int16_t size,
-                                       std::int32_t modifier) const = 0;
-  
   // Construct backend SQL without I/O; execution retains the caller's normal
   // deadline, diagnostics and cursor handling. Unsupported catalogs return an error.
   virtual rs::util::Result<std::string> catalog_query(
@@ -117,12 +113,6 @@ public:
   // No I/O. Returned definitions and strings remain valid for the connection lifetime.
   // An empty catalog means the backend advertises no types.
   virtual std::span<const TypeDefinition> type_catalog() const = 0;
-
-  // Resolve every requested native ID, retaining a fallback for missing types.
-  // May perform backend metadata I/O using the caller's existing deadline.
-  // On failure no partial map is returned; callers must not update their cache.
-  virtual BackendResult<ResolvedTypeMap> resolve_types(
-      std::span<const std::uint32_t> ids, rs::util::Deadline deadline) = 0;
 
   // Pure metadata snapshot: no I/O or session mutation.
   virtual BackendCapabilities capabilities() const = 0;

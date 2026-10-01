@@ -1,6 +1,7 @@
 #pragma once
 #include "i_database_connection.h"
 #include "i_protocol_parser.h"
+#include "native_type_resolution.h"
 #include "core/transport/i_transport.h"
 #include <memory>
 
@@ -18,8 +19,9 @@ public:
   SessionState session_state() const override { return session_state_; }
   std::size_t count_parameter_markers(std::string_view sql) const override;
   SqlTranslationResult translate_sql(std::string_view sql) const override;
-  NativeTypeInfo describe_type(std::uint32_t id, std::int16_t size,
-                               std::int32_t modifier) const override;
+  // Private PostgreSQL-family codec/resolver hooks; never called by ODBC.
+  virtual NativeTypeInfo describe_type(std::uint32_t id, std::int16_t size,
+                                       std::int32_t modifier) const;
   
   rs::util::Result<std::string> catalog_query(
       const CatalogRequest& request) const override;
@@ -42,8 +44,9 @@ public:
   BackendResult<void> set_transaction_isolation(TransactionIsolation level,
       rs::util::Deadline deadline) override;
 
-  BackendResult<ResolvedTypeMap> resolve_types(
-      std::span<const std::uint32_t> ids, rs::util::Deadline deadline) override;
+  // Resolve all native IDs atomically using the original operation deadline.
+  virtual BackendResult<ResolvedTypeMap> resolve_types(
+      std::span<const std::uint32_t> ids, rs::util::Deadline deadline);
 
   BackendResult<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline) override;
   using IDatabaseConnection::execute_prepared;

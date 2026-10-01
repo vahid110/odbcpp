@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <unordered_map>
 
 namespace rs::core::database {
 
@@ -18,7 +17,5 @@ struct NativeTypeInfo {
   // False means the backend used its fallback, e.g. an unresolved user type.
   bool known{false};
 };
-
-using ResolvedTypeMap = std::unordered_map<std::uint32_t, NativeTypeInfo>;
 
 } // namespace rs::core::database

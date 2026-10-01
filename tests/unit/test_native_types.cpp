@@ -10,8 +10,8 @@
 
 using namespace rs::core::database;
 
-TEST(NativeTypeTest, SelectedBackendNormalizesFixedScalarMetadata) {
-  auto backend = DatabaseFactory::create_connection();
+TEST(NativeTypeTest, PostgresFamilyNormalizesFixedScalarMetadata) {
+  auto backend = std::make_unique<postgres::PgDatabaseConnection>("PostgreSQL");
   struct Case { std::uint32_t id; ScalarType type; std::uint64_t size; };
   for (const auto& item : {Case{16, ScalarType::Boolean, 1},
        Case{20, ScalarType::BigInt, 19}, Case{21, ScalarType::SmallInt, 5},
@@ -28,7 +28,7 @@ TEST(NativeTypeTest, SelectedBackendNormalizesFixedScalarMetadata) {
 }
 
 TEST(NativeTypeTest, PreservesNumericAndTemporalModifiers) {
-  auto backend = DatabaseFactory::create_connection();
+  auto backend = std::make_unique<postgres::PgDatabaseConnection>("PostgreSQL");
   const auto numeric = backend->describe_type(1700, -1, (12 << 16) + 3 + 4);
   EXPECT_EQ(ScalarType::Numeric, numeric.type);
   EXPECT_EQ(12u, numeric.column_size);
@@ -55,7 +55,7 @@ TEST(NativeTypeTest, PreservesNumericAndTemporalModifiers) {
 }
 
 TEST(NativeTypeTest, PreservesCharacterBinaryAndUnknownFallbackSizes) {
-  auto backend = DatabaseFactory::create_connection();
+  auto backend = std::make_unique<postgres::PgDatabaseConnection>("PostgreSQL");
   for (const auto id : {1042u, 1043u}) {
     EXPECT_EQ(0u, backend->describe_type(id, -1, -1).column_size);
     EXPECT_EQ(0u, backend->describe_type(id, -1, 3).column_size);

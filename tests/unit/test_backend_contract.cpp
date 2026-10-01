@@ -20,7 +20,7 @@ using rs::util::DbErrorCode;
 using rs::util::Deadline;
 
 struct Observations {
-  int created{}, transports{}, disconnects{}, queries{}, descriptions{}, translations{}, native_descriptions{};
+  int created{}, transports{}, disconnects{}, queries{}, descriptions{}, translations{};
   ConnectionSettings settings;
   std::string sql;
   std::vector<QueryParameter> parameters;
@@ -31,6 +31,17 @@ struct Observations {
   bool missing_parameter_metadata{}, parameter_metadata_error{};
   int invalid_cell_errors{};
 };
+
+template <typename T>
+concept HasNativeTypeInterpretation = requires(const T& backend) {
+  backend.describe_type(23, -1, -1);
+};
+template <typename T>
+concept HasNativeTypeResolution = requires(T& backend) {
+  backend.resolve_types(std::span<const std::uint32_t>{}, Deadline::max());
+};
+static_assert(!HasNativeTypeInterpretation<IDatabaseConnection>);
+static_assert(!HasNativeTypeResolution<IDatabaseConnection>);
 
 // Deliberately implements only the database boundary: no PG parser or session.
 class FakeBackend final : public IDatabaseConnection {
@@ -50,12 +61,6 @@ class FakeBackend final : public IDatabaseConnection {
     if (sql == "unsupported") return {{}, SqlTranslationError::Unsupported, "fake unsupported SQL"};
     return {"native:" + std::string(sql), SqlTranslationError::None, {}};
   }
-  NativeTypeInfo describe_type(std::uint32_t id, std::int16_t, std::int32_t) const override {
-    ++seen_->native_descriptions;
-    if (id == 23) return {ScalarType::Binary, 8, 0, true}; // PG integer ID!
-    if (id == 17) return {ScalarType::Boolean, 1, 0, true}; // PG bytea ID!
-    return {ScalarType::VarChar, 32, 0, true};
-  }
   Result<std::string> catalog_query(const CatalogRequest&) const override {
     return {DbErrorCode::UnsupportedFeature, "fake has no catalogs"};
   }
@@ -65,11 +70,6 @@ class FakeBackend final : public IDatabaseConnection {
         {ScalarType::Boolean, "truth", 1, {}, {}, {}, false, {}, {}, {}, 0},
         {ScalarType::VarChar, "words", 32, {}, {}, {}, true, {}, {}, {}, 0}};
     return types;
-  }
-  BackendResult<ResolvedTypeMap> resolve_types(std::span<const std::uint32_t> ids, Deadline) override {
-    ResolvedTypeMap result;
-    for (const auto id : ids) result.emplace(id, describe_type(id, -1, -1));
-    return result;
   }
   BackendCapabilities capabilities() const override {
     BackendCapabilities result;
@@ -982,18 +982,16 @@ TEST_F(BackendContractTest, ColumnMetadataUsesNormalizedTypesWithoutNativeInterp
   EXPECT_EQ(SQL_VARBINARY, type); EXPECT_EQ(8u, size);
   ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, 2, name, 32, &name_length, &type, &size, &digits, &nullable));
   EXPECT_EQ(SQL_BIT, type); EXPECT_EQ(1u, size);
-  EXPECT_EQ(0, seen->native_descriptions);
 }
 
 TEST_F(BackendContractTest, MissingNormalizedColumnMetadataRejectsContractAndAllowsRecovery) {
   connect();
   EXPECT_EQ(SQL_ERROR, execute("unnormalized")); EXPECT_EQ("HY000", state());
-  EXPECT_EQ(0, seen->native_descriptions); EXPECT_EQ(0, seen->disconnects);
+  EXPECT_EQ(0, seen->disconnects);
   SQLSMALLINT columns = 99;
   EXPECT_EQ(SQL_ERROR, SQLNumResultCols(stmt, &columns)); EXPECT_EQ(99, columns);
   ASSERT_EQ(SQL_SUCCESS, execute("rows"));
   ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
-  EXPECT_EQ(0, seen->native_descriptions);
 }
 
 
@@ -1003,7 +1001,7 @@ TEST_F(BackendContractTest, ParameterDescriptionsUseNormalizedMetadataWithoutNat
   SQLSMALLINT type{}, digits{}, nullable{}; SQLULEN size{};
   ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
   EXPECT_EQ(SQL_VARBINARY, type); EXPECT_EQ(8u, size);
-  EXPECT_EQ(0, seen->native_descriptions); EXPECT_EQ(1, seen->descriptions);
+  EXPECT_EQ(1, seen->descriptions);
 }
 
 TEST_F(BackendContractTest, InvalidParameterDescriptionsPreserveOutputAndRecover) {
@@ -1016,7 +1014,7 @@ TEST_F(BackendContractTest, InvalidParameterDescriptionsPreserveOutputAndRecover
     EXPECT_EQ(SQL_ERROR, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
     EXPECT_EQ("HY000", state());
     EXPECT_EQ(77, type); EXPECT_EQ(78, digits); EXPECT_EQ(79, nullable); EXPECT_EQ(80u, size);
-    EXPECT_EQ(0, seen->native_descriptions); EXPECT_EQ(0, seen->disconnects);
+    EXPECT_EQ(0, seen->disconnects);
   }
   seen->missing_parameter_metadata = false; seen->parameter_metadata_error = false;
   ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
