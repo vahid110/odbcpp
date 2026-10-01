@@ -324,6 +324,9 @@ jobs:
           name: windows-live-test-evidence
           path: |
             build-windows/Testing/Temporary/LastTest.log
+            build-windows/tests/Release/crypto_identity_probe.exe
+            build-windows/odbcpp-crypto-manifest.json
+            build-windows/odbcpp-crypto-identity-evidence.json
             ${{ runner.temp }}/odbcpp-integration-results
             ${{ runner.temp }}/odbcpp-postgres.log
             ${{ runner.temp }}/odbcpp-system-dsn.log
