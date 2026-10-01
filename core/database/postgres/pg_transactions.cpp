@@ -29,7 +29,7 @@ BackendResult<void> PgDatabaseConnection::transaction(
     error.operation = operation;
     return error;
   }
-  return {};
+  return BackendResult<void>{result.session_snapshot()};
 }
 
 BackendResult<void> PgDatabaseConnection::set_transaction_isolation(
@@ -51,7 +51,7 @@ BackendResult<void> PgDatabaseConnection::set_transaction_isolation(
     error.operation = BackendOperation::SetTransactionIsolation;
     return error;
   }
-  return {};
+  return BackendResult<void>{result.session_snapshot()};
 }
 
 } // namespace rs::core::database::postgres

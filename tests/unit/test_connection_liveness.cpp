@@ -181,7 +181,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     DescriptionServerError, Utf8ColumnNames, MalformedColumnName, MalformedAdditionalColumnName, Utf8TextCells, NativeCells, MalformedNativeCells, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
     OwnedErrorIdle, OwnedErrorTransaction, OwnedErrorAborted,
     UnterminatedColumnName, TruncatedColumnMetadata, TrailingColumnMetadata, EmptyColumnName,
-    QueryReadTimeout, PartialQueryWrite, PreparedCommand, QueryAllocationFailure, Md5Authentication
+    QueryReadTimeout, PartialQueryWrite, PreparedCommand, TransactionCompletions, QueryAllocationFailure, Md5Authentication
   };
 
   explicit ScriptedBackendTransport(
@@ -434,6 +434,11 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     } else if (mode == ResponseMode::EmptyQueryResponse) {
       append_message('I', "", 0);
       append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::TransactionCompletions) {
+      append_message('C', "BEGIN", sizeof("BEGIN")); append_message('Z', "T", 1);
+      append_message('C', "COMMIT", sizeof("COMMIT")); append_message('Z', "I", 1);
+      append_message('C', "ROLLBACK", sizeof("ROLLBACK")); append_message('Z', "I", 1);
+      append_message('C', "SET", sizeof("SET")); append_message('Z', "I", 1);
     } else if (mode == ResponseMode::PreparedCommand) {
       append_message('1', "", 0);
       constexpr char parameters[] = "\0\4\0\0\0\31\0\0\0\31\0\0\0\31\0\0\0\21";
@@ -1864,6 +1869,7 @@ public:
   rs::util::Deadline observed_deadline{};
   std::optional<rs::util::DbErrorCode> failure;
   int calls = 0;
+  rs::core::database::SessionSnapshot snapshot;
   rs::core::database::BackendResult<rs::core::database::QueryResult> execute_query(
       std::string_view sql, rs::util::Deadline deadline) override {
     ++calls;
@@ -1881,7 +1887,7 @@ public:
       }
       return error;
     }
-    return rs::core::database::QueryResult{};
+    return {rs::core::database::QueryResult{}, snapshot};
   }
 };
 }
@@ -3703,4 +3709,74 @@ TEST(BackendResultContractTest, UnreportedSuccessIsConservativeAndErrorSnapshotH
   failed.backend_error().session_state = SessionState::Disconnected;
   failed.backend_error().disposition = SessionDisposition::Retire;
   EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), failed.session_snapshot());
+}
+
+TEST(BackendResultContractTest, ConnectSnapshotSurvivesLocalReconnectRejectionAndLaterLoss) {
+  using namespace rs::core::database;
+  BackendResult<void> saved;
+  const SessionSnapshot idle{SessionState::Idle, SessionDisposition::Reusable};
+  {
+    auto transport = std::make_unique<ScriptedBackendTransport>(ScriptedBackendTransport::ResponseMode::QueryReadTimeout);
+    auto* observed = transport.get();
+    GenericDatabaseConnection backend(std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
+    ConnectionSettings settings; settings.use_ssl = false;
+    auto opened = backend.connect(settings);
+    ASSERT_TRUE(opened); EXPECT_EQ(idle, opened.session_snapshot());
+    saved = opened;
+    auto moved = std::move(opened); EXPECT_EQ(idle, moved.session_snapshot());
+    const auto sends = observed->send_count();
+    auto invalid = settings; invalid.password = std::string("a\0b", 3);
+    const auto rejected = backend.connect(invalid);
+    ASSERT_TRUE(rejected.has_error()); EXPECT_EQ(idle, rejected.session_snapshot());
+    EXPECT_EQ(sends, observed->send_count()); EXPECT_EQ(0u, observed->close_count());
+    const auto lost = backend.execute_query("later", rs::util::Deadline::max());
+    ASSERT_TRUE(lost.has_error());
+    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), lost.session_snapshot());
+    EXPECT_EQ(idle, moved.session_snapshot()); backend.disconnect();
+  }
+  EXPECT_EQ(idle, saved.session_snapshot());
+}
+
+TEST(BackendTransactionTest, SuccessAdaptersPreserveReportedSnapshotRatherThanCurrentProbeState) {
+  using namespace rs::core::database;
+  TransactionProbe backend;
+  const auto deadline = rs::util::Deadline::min();
+  for (const auto state : {SessionState::Idle, SessionState::Transaction, SessionState::FailedTransaction, SessionState::Unknown}) {
+    backend.snapshot = {state, state == SessionState::Idle ? SessionDisposition::Reusable :
+        state == SessionState::Unknown ? SessionDisposition::Retire : SessionDisposition::ResetRequired};
+    for (const auto action : {TransactionAction::Begin, TransactionAction::Commit, TransactionAction::Rollback}) {
+      const auto result = backend.transaction(action, deadline);
+      ASSERT_TRUE(result); EXPECT_EQ(backend.snapshot, result.session_snapshot());
+      EXPECT_EQ(deadline, backend.observed_deadline);
+    }
+    for (const auto level : transaction_isolations) {
+      const auto result = backend.set_transaction_isolation(level, deadline);
+      ASSERT_TRUE(result); EXPECT_EQ(backend.snapshot, result.session_snapshot());
+      EXPECT_EQ(deadline, backend.observed_deadline);
+    }
+    EXPECT_EQ(SessionState::Disconnected, backend.session_state());
+  }
+}
+
+TEST(BackendTransactionTest, NativeSuccessSnapshotsTrackBeginCommitRollbackAndIsolation) {
+  using namespace rs::core::database;
+  postgres::PgDatabaseConnection backend("PostgreSQL", std::make_unique<ScriptedBackendTransport>(
+      ScriptedBackendTransport::ResponseMode::TransactionCompletions));
+  ConnectionSettings settings; settings.use_ssl = false;
+  ASSERT_TRUE(backend.connect(settings));
+  const auto deadline = rs::util::Deadline::max();
+  const auto begun = backend.transaction(TransactionAction::Begin, deadline);
+  ASSERT_TRUE(begun);
+  EXPECT_EQ((SessionSnapshot{SessionState::Transaction, SessionDisposition::ResetRequired}), begun.session_snapshot());
+  const auto committed = backend.transaction(TransactionAction::Commit, deadline);
+  ASSERT_TRUE(committed);
+  const SessionSnapshot idle{SessionState::Idle, SessionDisposition::Reusable};
+  EXPECT_EQ(idle, committed.session_snapshot());
+  const auto rolled_back = backend.transaction(TransactionAction::Rollback, deadline);
+  ASSERT_TRUE(rolled_back); EXPECT_EQ(idle, rolled_back.session_snapshot());
+  const auto isolation = backend.set_transaction_isolation(TransactionIsolation::Serializable, deadline);
+  ASSERT_TRUE(isolation); EXPECT_EQ(idle, isolation.session_snapshot());
+  backend.disconnect();
+  EXPECT_EQ((SessionSnapshot{SessionState::Transaction, SessionDisposition::ResetRequired}), begun.session_snapshot());
+  EXPECT_EQ(idle, committed.session_snapshot()); EXPECT_EQ(idle, isolation.session_snapshot());
 }

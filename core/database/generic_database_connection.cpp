@@ -101,6 +101,10 @@ BackendResult<void> GenericDatabaseConnection::connect(const ConnectionSettings&
     error.session_state = session_state_;
     error.disposition = !connected_ ? SessionDisposition::Retire :
         session_state_ == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired;
+  } else {
+    return BackendResult<void>{SessionSnapshot{session_state_,
+        !connected_ ? SessionDisposition::Retire :
+        session_state_ == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired}};
   }
   return result;
 }
