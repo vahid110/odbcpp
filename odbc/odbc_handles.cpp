@@ -554,7 +554,7 @@ const char* request_sqlstate(const std::error_code& error,
 }
 
 std::string mapped_backend_sqlstate(
-    const rs::core::database::IDatabaseConnection& connection,
+    const rs::core::database::IBackendProvider& provider,
     std::string_view server_state, const char* fallback,
     SQLINTEGER statement_code = SQL_DIAG_UNKNOWN_STATEMENT) {
   using rs::core::database::ErrorContext;
@@ -566,7 +566,7 @@ std::string mapped_backend_sqlstate(
     case SQL_DIAG_DROP_INDEX: context = ErrorContext::DropIndex; break;
     default: break;
   }
-  const auto state = connection.normalize_error_sqlstate(server_state, context);
+  const auto state = provider.normalize_error_sqlstate(server_state, context);
   // Validate the backend contract before exposing a diagnostic to applications.
   if (!state || state->size() != 5 ||
       !std::all_of(state->begin(), state->end(), [](char ch) {
@@ -576,7 +576,7 @@ std::string mapped_backend_sqlstate(
 }
 
 std::string query_failure_sqlstate(
-    const rs::core::database::IDatabaseConnection& connection,
+    const rs::core::database::IBackendProvider& provider,
     const rs::core::database::BackendError& error, const char* fallback,
     SQLINTEGER statement_code) {
   if (error.error_class == rs::core::database::BackendErrorClass::InvalidMetadata) {
@@ -590,7 +590,7 @@ std::string query_failure_sqlstate(
     return default_state;
   }
   return mapped_backend_sqlstate(
-      connection, error.native_state.value_or(""), default_state, statement_code);
+      provider, error.native_state.value_or(""), default_state, statement_code);
 }
 
 std::chrono::milliseconds timeout_duration(SQLULEN seconds) {
@@ -2459,7 +2459,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
     
     if (result.has_error()) {
       const auto timeout = is_timeout_error(result.error());
-      set_error(query_failure_sqlstate(*conn_->get_db_connection(),
+      set_error(query_failure_sqlstate(conn_->backend_provider(),
                                        result.backend_error(), SQLSTATE_SYNTAX_ERROR,
                                        dynamic_function.code),
                 result.error_message());
@@ -3060,7 +3060,7 @@ SQLRETURN ODBCStatement::more_results() {
   pending_results_.erase(pending_results_.begin());
   if (next.error) {
     pending_results_.clear();
-    set_error(query_failure_sqlstate(*conn_->get_db_connection(),
+    set_error(query_failure_sqlstate(conn_->backend_provider(),
                                      *next.error, SQLSTATE_SYNTAX_ERROR,
                                      SQL_DIAG_UNKNOWN_STATEMENT),
               next.error->message);
@@ -4231,7 +4231,7 @@ SQLRETURN ODBCStatement::execute() {
     
     if (result.has_error()) {
       const auto timeout = is_timeout_error(result.error());
-      set_error(query_failure_sqlstate(*conn_->get_db_connection(),
+      set_error(query_failure_sqlstate(conn_->backend_provider(),
                                        result.backend_error(), SQLSTATE_SYNTAX_ERROR,
                                        dynamic_function.code),
                 result.error_message());
@@ -4631,7 +4631,7 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
       prepared_sql_, parameter_types, deadline);
   if (result.has_error()) {
     const auto timeout = is_timeout_error(result.error());
-    set_error(query_failure_sqlstate(*conn_->get_db_connection(),
+    set_error(query_failure_sqlstate(conn_->backend_provider(),
                                      result.backend_error(), SQLSTATE_SYNTAX_ERROR,
                                      classify_dynamic_function(prepared_sql_).code),
               result.error_message());

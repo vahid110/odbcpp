@@ -29,9 +29,6 @@ public:
     return parser_->normalize_result_value(type, value);
   }
 
-  std::optional<std::string> normalize_error_sqlstate(
-      std::string_view, ErrorContext) const override { return std::nullopt; }
-
   // Resolve all native IDs atomically using the original operation deadline.
   virtual BackendResult<ResolvedTypeMap> resolve_types(
       std::span<const std::uint32_t> ids, rs::util::Deadline deadline);

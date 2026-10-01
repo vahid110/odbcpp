@@ -327,13 +327,13 @@ TEST(BackendErrorsTest, PostgresNormalizesNativeStatesWithoutIo) {
       Case{"42703", ErrorContext::Unknown, "42S22"}}) {
     SCOPED_TRACE(item.native);
     EXPECT_EQ(std::optional<std::string>(item.expected),
-              backend->normalize_error_sqlstate(item.native, item.context));
+              configured_backend_provider().normalize_error_sqlstate(item.native, item.context));
   }
   EXPECT_FALSE(backend->is_connected());
 }
 
 TEST(BackendErrorsTest, InvalidUnknownAndAmbiguousStatesKeepCallerFallback) {
-  postgres::PgDatabaseConnection backend{};
+  const auto& backend = configured_backend_provider();
   for (const auto state : {"", "22P0", "22P020", "22p02", "22!02", "XXXXX",
                            "P0001", "42P07", "42704"}) {
     SCOPED_TRACE(state);
@@ -345,21 +345,15 @@ TEST(BackendErrorsTest, InvalidUnknownAndAmbiguousStatesKeepCallerFallback) {
                                                 ErrorContext::Unknown));
 }
 
-TEST(BackendErrorsTest, GenericBackendDoesNotInterpretPostgresStates) {
-  GenericDatabaseConnection backend(std::make_unique<odbcpp::test::MockProtocolParser>());
-  for (const auto state : {"22P02", "22012", "23505", "42P07", "42704"}) {
-    EXPECT_FALSE(backend.normalize_error_sqlstate(state, ErrorContext::CreateIndex));
-  }
-}
-
 TEST(BackendErrorsTest, NormalizedStateOwnsItsStorage) {
   std::optional<std::string> normalized;
   {
-    postgres::PgDatabaseConnection backend{};
+    postgres::PgBackendProvider backend{
+        BackendIdentity{"postgresql", "PostgreSQL", "ODBCPP PostgreSQL"},
+        BackendConnectionDefaults{"localhost", 5432, "postgres", true}};
     std::string native = "22012";
     normalized = backend.normalize_error_sqlstate(native, ErrorContext::Unknown);
     native.assign("XXXXX");
-    backend.disconnect();
   }
   EXPECT_EQ(std::optional<std::string>("22012"), normalized);
 }

@@ -1,10 +1,10 @@
-#include "pg_database_connection.h"
+#include "pg_backend_provider.h"
 
 #include <algorithm>
 
 namespace rs::core::database::postgres {
 
-std::optional<std::string> PgDatabaseConnection::normalize_error_sqlstate(
+std::optional<std::string> PgBackendProvider::normalize_error_sqlstate(
     std::string_view server_state, ErrorContext context) const {
   if (server_state.size() != 5 ||
       !std::all_of(server_state.begin(), server_state.end(), [](char ch) {

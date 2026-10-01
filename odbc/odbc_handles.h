@@ -245,6 +245,9 @@ public:
                     : std::string{};
   }
   
+  const rs::core::database::IBackendProvider& backend_provider() const noexcept {
+    return *backend_provider_;
+  }
   const rs::core::database::ISqlDialect& sql_dialect() const noexcept {
     return backend_provider_->sql_dialect();
   }

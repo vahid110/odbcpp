@@ -71,6 +71,8 @@ template <typename T> concept HasRequiredDescription = requires(T& session) { se
 template <typename T> concept HasRequiredCatalog = requires(const T& session) { session.catalog_query(CatalogRequest{TablesCatalogRequest{}}); };
 template <typename T> concept HasSessionTypeCatalog = requires(const T& session) { session.type_catalog(); };
 template <typename T> concept HasSessionCapabilities = requires(const T& session) { session.capabilities(); };
+template <typename T> concept HasSessionErrorPolicy = requires(const T& session) { session.normalize_error_sqlstate("22012", ErrorContext::Unknown); };
+static_assert(!HasSessionErrorPolicy<IDatabaseConnection>);
 static_assert(!HasSessionCapabilities<IDatabaseConnection>);
 static_assert(!HasSessionTypeCatalog<IDatabaseConnection>);
 static_assert(!HasRequiredCatalog<IDatabaseConnection>);
@@ -94,11 +96,6 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
   }
   void disconnect() override { connected_ = false; ++seen_->disconnects; }
   bool is_connected() const override { return connected_; }
-  std::optional<std::string> normalize_error_sqlstate(std::string_view state, ErrorContext) const override {
-    if (seen_->malformed_state) return "bad";
-    if (state == "FAKE_ERROR") return "22018";
-    return std::nullopt;
-  }
   QueryResult rows() const {
     QueryResult result;
     result.columns = {{"binary", {}}, {"flag", {}}, {"text", {}}};
@@ -291,6 +288,11 @@ class FakeProvider final : public IBackendProvider {
         {ScalarType::Binary, "octets", 16, {}, {}, {}, false, {}, {}, {}, 0},
         types[1], types[2]};
     return version == "2.0" ? std::span<const TypeDefinition>(modern) : std::span<const TypeDefinition>(types);
+  }
+  std::optional<std::string> normalize_error_sqlstate(std::string_view state, ErrorContext) const override {
+    if (seen_->malformed_state) return "bad";
+    if (state == "FAKE_ERROR") return "22018";
+    return std::nullopt;
   }
   TransactionCapabilities transaction_capabilities() const noexcept override {
     return seen_->advertised_transactions
@@ -1520,4 +1522,19 @@ TEST_F(BackendContractTest, ProviderCapabilitiesRemainStableAcrossSessionAndFace
   EXPECT_EQ(before.dbms_name, closed.dbms_name);
   EXPECT_EQ(before.max_identifier_length, closed.max_identifier_length);
   EXPECT_EQ(0, seen->queries); EXPECT_EQ(0, seen->descriptions);
+}
+
+TEST_F(BackendContractTest, ProviderErrorPolicyWorksWithoutSessionAndOwnsReturnedState) {
+  std::optional<std::string> retained;
+  {
+    FakeProvider provider{seen};
+    EXPECT_FALSE(provider.IBackendProvider::normalize_error_sqlstate("FAKE_ERROR", ErrorContext::Unknown));
+    std::string native = "FAKE_ERROR";
+    retained = provider.normalize_error_sqlstate(native, ErrorContext::Unknown);
+    native.assign("overwritten");
+    ASSERT_EQ(std::optional<std::string>("22018"), retained);
+    EXPECT_FALSE(provider.normalize_error_sqlstate(native, ErrorContext::Unknown));
+    EXPECT_EQ(0, seen->created); EXPECT_EQ(0, seen->transports); EXPECT_EQ(0, seen->queries);
+  }
+  EXPECT_EQ(std::optional<std::string>("22018"), retained);
 }

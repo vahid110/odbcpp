@@ -1,6 +1,7 @@
 #pragma once
 
 #include "backend_capabilities.h"
+#include "error_policy.h"
 #include "type_definition.h"
 #include "sql_dialect.h"
 #include "i_database_connection.h"
@@ -58,6 +59,11 @@ class IBackendProvider {
   virtual const BackendConnectionDefaults& connection_defaults() const noexcept = 0;
   virtual const ISqlDialect& sql_dialect() const noexcept = 0;
   virtual BackendCapabilities capabilities() const noexcept = 0;
+  // Pure diagnostic policy, no I/O or retained inputs. Return an owning
+  // five-character SQLSTATE or no mapping for the caller's fallback.
+  // Mapping must never imply connectivity, retry or reuse safety.
+  virtual std::optional<std::string> normalize_error_sqlstate(
+      std::string_view, ErrorContext) const { return std::nullopt; }
   // Pure advertised-type policy. Empty version selects the conservative profile.
   // Input is borrowed only until return; definitions and strings are immutable
   // and remain valid for the provider lifetime across all subsequent selections.

@@ -20,9 +20,6 @@
 
 namespace rs::core::database {
 
-// Semantic context only; no ODBC statement codes cross the backend boundary.
-enum class ErrorContext { Unknown, CreateTable, CreateView, CreateIndex, DropIndex };
-
 // Limits for one response exchange, including control
 // frames. Counts wire bytes, not decoded heap overhead. Product/ODBC exposure
 // and row/cell/metadata budgets remain separate contracts.
@@ -104,12 +101,6 @@ public:
 
   // Optional catalog-query construction; absence does not restrict execution.
   virtual const ICatalogQueries* catalog_queries() const noexcept { return nullptr; }
-
-  // No I/O. Interpret a native server state using known statement context.
-  // Return an owned, normalized five-character SQLSTATE, or no mapping so the
-  // caller retains its operation-specific fallback. Never infer reuse from it.
-  virtual std::optional<std::string> normalize_error_sqlstate(
-      std::string_view native_state, ErrorContext context) const = 0;
 
   // Optional transaction behavior; absence never advertises live support.
   // The borrowed facet remains owned by this session, never by the caller.

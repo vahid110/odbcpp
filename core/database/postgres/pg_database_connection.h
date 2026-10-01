@@ -20,9 +20,6 @@ public:
   std::optional<std::string> normalize_result_value(
       ScalarType type, std::string_view value) const override;
 
-  std::optional<std::string> normalize_error_sqlstate(
-      std::string_view native_state, ErrorContext context) const override;
-
   ITransactionSession* transaction_session() noexcept override { return this; }
   TransactionCapabilities transaction_capabilities() const override;
   BackendResult<void> transaction(TransactionAction action,
