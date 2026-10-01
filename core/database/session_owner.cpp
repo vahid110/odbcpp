@@ -274,3 +274,54 @@ void SessionLease::invalidate_cache() noexcept {
   state_->cache_generation.reset();
 }
 } // namespace rs::core::database
+
+namespace rs::core::database {
+BackendResult<void> SessionLease::return_reusable(rs::util::Deadline deadline) {
+  struct RetirementGuard {
+    SessionLease& lease;
+    bool completed{false};
+    ~RetirementGuard() { if (!completed) lease.retire(); }
+  } guard{*this};
+  invalidate_cache();
+  const auto fail = [this](rs::util::DbErrorCode code, const char* message) -> BackendResult<void> {
+    retire();
+    BackendError error{rs::util::make_error_code(code), message};
+    error.operation = BackendOperation::ResetSession;
+    error.session_state = SessionState::Disconnected;
+    return error;
+  };
+  if (!state_) return fail(rs::util::DbErrorCode::NotConnected, "No active session lease");
+  auto state = state_;
+  bool eligible{};
+  IDatabaseConnection* physical{};
+  {
+    std::lock_guard lock(state->mutex);
+    eligible = state->accepting && state->leased && state->session && state->credential &&
+        state->credential->is_current();
+    physical = state->session.get();
+  }
+  // Never retire or invoke the backend while holding an ownership lock.
+  if (!eligible) return fail(rs::util::DbErrorCode::AuthenticationFailed, "Session return admission unavailable");
+  auto reset = reset_session(deadline);
+  if (!reset) return reset;
+  bool expired{};
+  {
+    std::lock_guard lock(state->mutex);
+    expired = rs::util::Clock::now() >= deadline;
+    eligible = !expired && state_ == state && state->accepting && state->leased &&
+        state->session.get() == physical && state->credential &&
+        state->credential->is_current();
+    if (eligible) {
+      // Publication linearizes here. A concurrent rotation after this point is
+      // detected on the next checkout; it never rebinds the physical session.
+      state->cache_generation.reset();
+      state->leased = false;
+      state_.reset();
+    }
+  }
+  if (!eligible) return fail(expired ? rs::util::DbErrorCode::Timeout : rs::util::DbErrorCode::AuthenticationFailed,
+      "Session return admission expired or closed");
+  guard.completed = true;
+  return reset;
+}
+} // namespace rs::core::database

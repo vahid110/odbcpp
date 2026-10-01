@@ -44,7 +44,7 @@ class SessionLease final {
   // Bound authenticated Idle leases only, established by passive checks without
   // backend calls under ownership locks. Every execution/reset attempt invalidates
   // all copies before backend access; closure/retirement/credential staleness
-  // also invalidate. No payload, cache policy or reusable return is provided.
+  // also invalidate. No payload or cache policy is provided.
   std::optional<SessionCacheToken> cache_token();
   bool accepts_cache(const SessionCacheToken&) const noexcept;
   // Execution preserves owning results/errors. A Retire snapshot or exception
@@ -58,8 +58,13 @@ class SessionLease final {
   // Explicit coordinator cleanup of this active borrow, using the original
   // deadline. Any failed/unsupported/ambiguous cleanup retires the lease.
   // Success keeps exclusive ownership, never grants return/requeue. Borrowers
-  // cannot access the raw reset facet; cache storage/reuse are not enabled.
+  // cannot access the raw reset facet; cache storage is not enabled.
   BackendResult<void> reset_session(rs::util::Deadline deadline);
+  // Explicit opt-in return to this same credential-bound owner only. Always
+  // performs reset with the original deadline, then rechecks admission and
+  // credential freshness. Success consumes the lease and invalidates scopes;
+  // every failure retires. Destruction/retire remain terminal. No pool/reconnect.
+  BackendResult<void> return_reusable(rs::util::Deadline deadline);
 
  private:
   friend class SessionOwner;
@@ -73,7 +78,7 @@ class SessionLease final {
 // supported; moving/destroying the same owner/lease requires external ordering.
 // Owner destruction prevents checkout but cannot interrupt an active borrower.
 // The lease keeps the physical session alive until retirement. Retirement is
-// terminal: there is no adoption/requeue/reuse API or raw ownership extraction.
+// terminal unless explicit return_reusable succeeds; no raw ownership extraction.
 class SessionOwner final {
  public:
   explicit SessionOwner(std::unique_ptr<IDatabaseConnection>);

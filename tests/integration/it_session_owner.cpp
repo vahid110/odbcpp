@@ -117,6 +117,37 @@ TEST(SessionOwnerIntegrationTest, LiveBorrowSurvivesOwnerAndRetirementClosesPhys
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   EXPECT_TRUE(gone) << "Cache token retained a retired physical PostgreSQL session";
+  // Explicit return proves reuse of the same authenticated backend, while
+  // clearing transaction-local and session state before the next borrower.
+  auto reusable_physical = provider.create_session(nullptr); ASSERT_TRUE(reusable_physical->connect(*settings));
+  CredentialContext reusable_credentials; auto reusable_token = reusable_credentials.publish_authenticated();
+  SessionOwner reusable_owner{std::move(reusable_physical), reusable_token};
+  auto first = reusable_owner.try_acquire(reusable_token); ASSERT_TRUE(first);
+  const auto reuse_deadline = rs::util::make_deadline(std::chrono::seconds(5));
+  auto first_pid = first->execute_query("SELECT pg_backend_pid()", reuse_deadline); ASSERT_TRUE(first_pid);
+  const auto reuse_pid = first_pid->rows.at(0).at(0);
+  ASSERT_TRUE(first->execute_query("CREATE TEMP TABLE odbcpp_return_fixture(v int)", reuse_deadline));
+  ASSERT_TRUE(first->execute_query("SET application_name = 'odbcpp dirty borrower'", reuse_deadline));
+  auto first_scope = first->cache_token(); ASSERT_TRUE(first_scope);
+  ASSERT_TRUE(first->execute_query("BEGIN", reuse_deadline));
+  ASSERT_TRUE(first->return_reusable(reuse_deadline)); EXPECT_FALSE(*first); EXPECT_FALSE(first_scope->is_current());
+  auto second = reusable_owner.try_acquire(reusable_token); ASSERT_TRUE(second);
+  first.reset(); // Old borrower destruction cannot close the returned connection.
+  auto second_pid = second->execute_query("SELECT pg_backend_pid()", reuse_deadline); ASSERT_TRUE(second_pid);
+  EXPECT_EQ(reuse_pid, second_pid->rows.at(0).at(0));
+  auto clean = second->execute_query("SELECT to_regclass('pg_temp.odbcpp_return_fixture') IS NULL, "
+      "current_setting('application_name') <> 'odbcpp dirty borrower'", reuse_deadline);
+  ASSERT_TRUE(clean); EXPECT_EQ("1", clean->rows.at(0).at(0)); EXPECT_EQ("1", clean->rows.at(0).at(1));
+  ASSERT_TRUE(second->return_reusable(reuse_deadline));
+  reusable_credentials.revoke(); EXPECT_FALSE(reusable_owner.try_acquire(reusable_token));
+  gone = false;
+  while (std::chrono::steady_clock::now() < reuse_deadline) {
+    auto inactive = observer->execute_query("SELECT count(*) FROM pg_stat_activity WHERE pid = " + *reuse_pid, reuse_deadline);
+    ASSERT_TRUE(inactive);
+    if (inactive->rows.at(0).at(0) == "0") { gone = true; break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(gone) << "Revoked returned physical session remained active";
   observer->disconnect();
 }
 } // namespace

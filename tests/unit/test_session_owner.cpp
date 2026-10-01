@@ -694,4 +694,139 @@ TEST(SessionCacheScopeTest, ValidationRacingOwnerCloseCredentialRotationAndRetir
     }
   }
 }
+
+TEST(SessionReturnTest, ResetConsumesBorrowAndAllowsExclusiveSameOwnerCheckout) {
+  CredentialContext credentials; auto token = credentials.publish_authenticated();
+  auto observed = std::make_shared<Observed>(); SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+  auto lease = owner.try_acquire(token); ASSERT_TRUE(lease);
+  auto old_scope = lease->cache_token(); ASSERT_TRUE(old_scope);
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds(5));
+  observed->on_reset = [&] {
+    EXPECT_FALSE(old_scope->is_current()); EXPECT_FALSE(owner.try_acquire(token));
+  };
+  auto result = lease->return_reusable(deadline); ASSERT_TRUE(result);
+  EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), result.session_snapshot());
+  EXPECT_FALSE(*lease); EXPECT_FALSE(old_scope->is_current()); EXPECT_EQ(deadline, observed->reset_deadline);
+  EXPECT_EQ(1, observed->resets); EXPECT_EQ(0, observed->health); EXPECT_EQ(0, observed->disconnects);
+  auto next = owner.try_acquire(token); ASSERT_TRUE(next); EXPECT_FALSE(owner.try_acquire(token));
+  lease->retire(); lease.reset(); // Detached old lease cannot retire its successor.
+  ASSERT_TRUE(*next); auto new_scope = next->cache_token(); ASSERT_TRUE(new_scope);
+  EXPECT_FALSE(next->accepts_cache(*old_scope)); EXPECT_TRUE(new_scope->is_current());
+  ASSERT_TRUE(next->execute_query("new borrower", deadline));
+  observed->on_reset = {}; ASSERT_TRUE(next->return_reusable(deadline));
+  auto last = owner.try_acquire(token); ASSERT_TRUE(last); last.reset();
+  EXPECT_EQ(2, observed->resets); EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
+}
+TEST(SessionReturnTest, UnboundClosedRevokedRotatedExpiredAndOrphanedCannotReturn) {
+  for (int mode = 0; mode < 6; ++mode) {
+    SCOPED_TRACE(mode); auto credentials = std::make_unique<CredentialContext>();
+    auto token = credentials->publish_authenticated(); auto observed = std::make_shared<Observed>();
+    auto owner = mode == 0 ? std::make_unique<SessionOwner>(std::make_unique<FakeSession>(observed)) :
+        std::make_unique<SessionOwner>(std::make_unique<FakeSession>(observed), token);
+    auto lease = mode == 0 ? owner->try_acquire() : owner->try_acquire(token); ASSERT_TRUE(lease);
+    if (mode == 1) owner.reset();
+    if (mode == 2) credentials->revoke();
+    if (mode == 3) (void)credentials->publish_authenticated();
+    if (mode == 4) credentials.reset();
+    if (mode == 5) { // A token already expired cannot be admitted at all.
+      lease->retire(); token = credentials->publish_authenticated(rs::util::Deadline::min());
+      SessionOwner expired{std::make_unique<FakeSession>(observed), token}; EXPECT_FALSE(expired.try_acquire(token));
+      continue;
+    }
+    auto result = lease->return_reusable(rs::util::Deadline::max()); EXPECT_FALSE(result); EXPECT_FALSE(*lease);
+    EXPECT_EQ(BackendErrorClass::Authentication, result.backend_error().error_class);
+    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), result.session_snapshot());
+    retired_once(*observed);
+  }
+}
+TEST(SessionReturnTest, AllResetFailuresRemainTerminal) {
+  for (int mode = 0; mode < 13; ++mode) {
+    SCOPED_TRACE(mode); CredentialContext credentials; auto token = credentials.publish_authenticated();
+    auto observed = std::make_shared<Observed>(); SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+    auto lease = owner.try_acquire(token); ASSERT_TRUE(lease); auto scope = lease->cache_token(); ASSERT_TRUE(scope);
+    observed->reset_mode = mode;
+    if (mode == 0) observed->missing_reset = true;
+    if (mode == 12) observed->reset_snapshot = SessionSnapshot{SessionState::Unknown, SessionDisposition::Reusable};
+    auto deadline = mode == 10 ? rs::util::Deadline::min() : rs::util::Deadline::max();
+    auto result = lease->return_reusable(deadline); EXPECT_FALSE(result); EXPECT_FALSE(*lease);
+    EXPECT_FALSE(scope->is_current()); EXPECT_FALSE(owner.try_acquire(token));
+    EXPECT_EQ(BackendOperation::ResetSession, result.backend_error().operation);
+    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), result.session_snapshot());
+    EXPECT_FALSE(result.backend_error().retry_safe); EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
+  }
+}
+TEST(SessionReturnTest, ClosureRotationAndExpiryDuringResetRetireBeforePublication) {
+  for (int mode = 0; mode < 4; ++mode) {
+    SCOPED_TRACE(mode); CredentialContext credentials;
+    const auto expiry = rs::util::make_deadline(std::chrono::seconds(1));
+    auto token = credentials.publish_authenticated(mode == 3 ? std::optional{expiry} : std::nullopt);
+    auto observed = std::make_shared<Observed>();
+    auto owner = std::make_unique<SessionOwner>(std::make_unique<FakeSession>(observed), token);
+    auto lease = owner->try_acquire(token); ASSERT_TRUE(lease);
+    observed->on_reset = [&] {
+      if (mode == 0) owner.reset();
+      if (mode == 1) credentials.revoke();
+      if (mode == 2) (void)credentials.publish_authenticated();
+      if (mode == 3) std::this_thread::sleep_until(expiry);
+      EXPECT_EQ(0, observed->disconnects);
+    };
+    auto result = lease->return_reusable(rs::util::Deadline::max()); EXPECT_FALSE(result); EXPECT_FALSE(*lease);
+    EXPECT_EQ(1, observed->resets); EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
+    if (owner) EXPECT_FALSE(owner->try_acquire(token));
+  }
+}
+TEST(SessionReturnTest, LateResetAndRepeatedReturnCannotGrantReuse) {
+  CredentialContext credentials; auto token = credentials.publish_authenticated();
+  auto observed = std::make_shared<Observed>(); SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+  auto lease = owner.try_acquire(token); ASSERT_TRUE(lease);
+  auto deadline = rs::util::make_deadline(std::chrono::milliseconds(50));
+  observed->on_reset = [&] { std::this_thread::sleep_until(deadline); };
+  auto late = lease->return_reusable(deadline); ASSERT_FALSE(late);
+  EXPECT_EQ(BackendErrorClass::Timeout, late.backend_error().error_class);
+  auto repeated = lease->return_reusable(rs::util::Deadline::max()); EXPECT_FALSE(repeated);
+  EXPECT_EQ(BackendErrorClass::NotConnected, repeated.backend_error().error_class);
+  EXPECT_FALSE(owner.try_acquire(token)); EXPECT_EQ(1, observed->resets); EXPECT_EQ(1, observed->disconnects);
+}
+TEST(SessionReturnTest, CheckoutAndCredentialRotationRaceNeverDuplicateOrRebind) {
+  for (int round = 0; round < 30; ++round) {
+    CredentialContext credentials; auto token = credentials.publish_authenticated();
+    auto observed = std::make_shared<Observed>(); SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+    auto lease = owner.try_acquire(token); ASSERT_TRUE(lease);
+    std::barrier start(3); std::optional<SessionLease> next;
+    std::thread checkout([&] { start.arrive_and_wait(); next = owner.try_acquire(token); });
+    std::thread rotation([&] { start.arrive_and_wait(); (void)credentials.publish_authenticated(); });
+    start.arrive_and_wait(); auto result = lease->return_reusable(rs::util::Deadline::max());
+    checkout.join(); rotation.join(); EXPECT_FALSE(*lease);
+    EXPECT_FALSE(owner.try_acquire(token)); auto fresh = credentials.current_token(); ASSERT_TRUE(fresh);
+    EXPECT_FALSE(owner.try_acquire(*fresh)); // New generations cannot reauthenticate an old socket.
+    if (next) { ASSERT_TRUE(result); EXPECT_TRUE(*next); next->retire(); }
+    EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
+  }
+}
+
+TEST(SessionReturnTest, ScopesRemintedDuringResetCannotEscapeHandoff) {
+  CredentialContext credentials; auto token = credentials.publish_authenticated();
+  auto observed = std::make_shared<Observed>(); SessionOwner original{std::make_unique<FakeSession>(observed), token};
+  auto lease = original.try_acquire(token); ASSERT_TRUE(lease); SessionLease moved{std::move(*lease)};
+  SessionOwner owner{std::move(original)}; std::optional<SessionCacheToken> during_reset;
+  observed->on_reset = [&] { during_reset = moved.cache_token(); ASSERT_TRUE(during_reset); };
+  ASSERT_TRUE(moved.return_reusable(rs::util::Deadline::max())); EXPECT_FALSE(during_reset->is_current());
+  auto next = owner.try_acquire(token); ASSERT_TRUE(next); EXPECT_FALSE(next->accepts_cache(*during_reset));
+  EXPECT_FALSE(lease->return_reusable(rs::util::Deadline::max()));
+  EXPECT_FALSE(moved.return_reusable(rs::util::Deadline::max()));
+  ASSERT_TRUE(*next); next->retire(); EXPECT_EQ(1, observed->disconnects);
+}
+TEST(SessionReturnTest, BlockedResetAllowsCheckoutDenialAndConcurrentRevocation) {
+  CredentialContext credentials; auto token = credentials.publish_authenticated();
+  auto observed = std::make_shared<Observed>(); SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+  auto lease = owner.try_acquire(token); ASSERT_TRUE(lease);
+  std::barrier entered(2), release(2);
+  observed->on_reset = [&] { entered.arrive_and_wait(); release.arrive_and_wait(); };
+  std::thread other([&] {
+    entered.arrive_and_wait(); EXPECT_FALSE(owner.try_acquire(token)); credentials.revoke();
+    EXPECT_EQ(0, observed->disconnects); release.arrive_and_wait();
+  });
+  auto result = lease->return_reusable(rs::util::Deadline::max()); other.join(); EXPECT_FALSE(result);
+  EXPECT_FALSE(owner.try_acquire(token)); EXPECT_EQ(1, observed->resets); EXPECT_EQ(1, observed->disconnects);
+}
 } // namespace
