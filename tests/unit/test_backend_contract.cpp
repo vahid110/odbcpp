@@ -29,6 +29,7 @@ struct Observations {
   std::string failure_message = "fake error";
   std::string server_version = "1.0";
   bool setup_allocation_failure{false};
+  bool advertised_transactions{false};
   bool missing_parameter_metadata{}, parameter_metadata_error{};
   int invalid_cell_errors{}, invalid_result_structure{}, invalid_execution_shape{}, invalid_description_shape{};
 };
@@ -63,6 +64,10 @@ static_assert(!HasNativeFormatCode<ResultColumnMetadata>);
 static_assert(!HasNativeParameterIds<QueryResult>);
 template <typename T> concept HasSessionSqlTranslation = requires(const T& session) { session.translate_sql("SELECT 1"); };
 template <typename T> concept HasSessionMarkerCounting = requires(const T& session) { session.count_parameter_markers("?"); };
+template <typename T> concept HasRequiredTransaction = requires(T& session) { session.transaction(TransactionAction::Commit, Deadline::max()); };
+template <typename T> concept HasRequiredIsolation = requires(T& session) { session.set_transaction_isolation(TransactionIsolation::Serializable, Deadline::max()); };
+static_assert(!HasRequiredTransaction<IDatabaseConnection>);
+static_assert(!HasRequiredIsolation<IDatabaseConnection>);
 static_assert(!HasSessionSqlTranslation<IDatabaseConnection>);
 static_assert(!HasSessionMarkerCounting<IDatabaseConnection>);
 static_assert(!HasNativeServerParameters<IDatabaseConnection>);
@@ -101,13 +106,6 @@ class FakeBackend final : public IDatabaseConnection {
     if (seen_->malformed_state) return "bad";
     if (state == "FAKE_ERROR") return "22018";
     return std::nullopt;
-  }
-  TransactionCapabilities transaction_capabilities() const override { return {}; }
-  BackendResult<void> transaction(TransactionAction, Deadline) override {
-    return {DbErrorCode::UnsupportedFeature, "fake has no transactions"};
-  }
-  BackendResult<void> set_transaction_isolation(TransactionIsolation, Deadline) override {
-    return {DbErrorCode::UnsupportedFeature, "fake has no isolation levels"};
   }
   QueryResult rows() const {
     QueryResult result;
@@ -286,7 +284,9 @@ class FakeProvider final : public IBackendProvider {
     return FakeBackend(seen_).type_catalog();
   }
   TransactionCapabilities transaction_capabilities() const noexcept override {
-    return {};
+    return seen_->advertised_transactions
+        ? TransactionCapabilities{true, true, TransactionIsolation::ReadCommitted, {true, true, true, true}}
+        : TransactionCapabilities{};
   }
   Result<ConnectionSettings> resolve_connection_options(
       ConnectionOptions options) const override {
@@ -1344,4 +1344,40 @@ TEST_F(BackendContractTest, ProviderDialectWorksBeforeSessionCreationAndOwnsResu
     EXPECT_EQ(0, seen->created); EXPECT_EQ(0, seen->queries); EXPECT_EQ(0, seen->descriptions);
   }
   EXPECT_EQ("native:hello ?", retained.sql);
+}
+
+TEST_F(BackendContractTest, AbsentTransactionFacetSuppressesLiveCapabilitiesAndRecoversWithoutIo) {
+  seen->advertised_transactions = true;
+  // A static provider declaration cannot grant a missing live facet.
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      (SQLPOINTER)SQL_AUTOCOMMIT_OFF, 0));
+  connect();
+  SQLUSMALLINT capability = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_TXN_CAPABLE, &capability, sizeof(capability), nullptr));
+  EXPECT_EQ(SQL_TC_NONE, capability);
+  EXPECT_EQ(SQL_ERROR, execute("rows")); EXPECT_EQ("HYC00", state());
+  EXPECT_EQ(0, seen->queries); EXPECT_EQ(0, seen->disconnects);
+  EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(dbc, SQL_ATTR_TXN_ISOLATION,
+      (SQLPOINTER)SQL_TXN_SERIALIZABLE, 0));
+  EXPECT_EQ("HYC00", state(SQL_HANDLE_DBC, dbc)); EXPECT_EQ(0, seen->queries);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      (SQLPOINTER)SQL_AUTOCOMMIT_ON, 0));
+  EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      (SQLPOINTER)SQL_AUTOCOMMIT_OFF, 0));
+  EXPECT_EQ("HYC00", state(SQL_HANDLE_DBC, dbc));
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+}
+
+TEST_F(BackendContractTest, AbsentFacetRejectsDeferredIsolationDuringOpenAndAllowsRetry) {
+  seen->advertised_transactions = true;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_TXN_ISOLATION,
+      (SQLPOINTER)SQL_TXN_SERIALIZABLE, 0));
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnect(dbc, nullptr,
+      (SQLCHAR*)"SERVER=fake;SSL=0", SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("HYC00", state(SQL_HANDLE_DBC, dbc));
+  EXPECT_EQ(0, seen->queries);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_TXN_ISOLATION,
+      (SQLPOINTER)SQL_TXN_READ_COMMITTED, 0));
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
 }

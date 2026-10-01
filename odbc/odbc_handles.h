@@ -256,6 +256,10 @@ public:
 
 private:
   void close_connection();
+  rs::core::database::BackendResult<void> backend_transaction(
+      rs::core::database::TransactionAction action, rs::util::Deadline deadline);
+  rs::core::database::BackendResult<void> backend_isolation(
+      rs::core::database::TransactionIsolation level, rs::util::Deadline deadline);
   rs::core::database::InputLimits input_limits_;
 
   std::shared_ptr<const rs::core::database::IBackendProvider> backend_provider_;

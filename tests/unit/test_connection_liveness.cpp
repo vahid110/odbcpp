@@ -1965,20 +1965,7 @@ TEST(BackendTransactionTest, PropagatesErrorsAndAllowsSuccessfulRetry) {
 TEST(BackendTransactionTest, GenericBackendDoesNotAssumeTransactionSupport) {
   using namespace rs::core::database;
   GenericDatabaseConnection backend(std::make_unique<odbcpp::test::MockProtocolParser>());
-  const auto capabilities = backend.transaction_capabilities();
-  EXPECT_FALSE(capabilities.supported);
-  EXPECT_FALSE(capabilities.transactional_ddl);
-  for (const auto isolation : transaction_isolations) {
-    EXPECT_FALSE(capabilities.supports(isolation));
-    const auto result = backend.set_transaction_isolation(isolation, rs::util::Deadline::max());
-    ASSERT_TRUE(result.has_error());
-    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature), result.error());
-  }
-  for (const auto action : {TransactionAction::Begin, TransactionAction::Commit, TransactionAction::Rollback}) {
-    const auto result = backend.transaction(action, rs::util::Deadline::max());
-    ASSERT_TRUE(result.has_error());
-    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature), result.error());
-  }
+  EXPECT_EQ(nullptr, backend.transaction_session());
   EXPECT_FALSE(backend.is_connected());
 }
 
@@ -3782,4 +3769,27 @@ TEST(BackendTransactionTest, NativeSuccessSnapshotsTrackBeginCommitRollbackAndIs
   backend.disconnect();
   EXPECT_EQ((SessionSnapshot{SessionState::Transaction, SessionDisposition::ResetRequired}), begun.session_snapshot());
   EXPECT_EQ(idle, committed.session_snapshot()); EXPECT_EQ(idle, isolation.session_snapshot());
+}
+
+TEST(BackendTransactionTest, OptionalFacetIsStableAcrossConnectionAndDisconnect) {
+  using namespace rs::core::database;
+  postgres::PgDatabaseConnection backend("PostgreSQL", std::make_unique<ScriptedBackendTransport>(
+      ScriptedBackendTransport::ResponseMode::TransactionCompletions));
+  IDatabaseConnection& session = backend;
+  auto* facet = session.transaction_session(); ASSERT_NE(nullptr, facet);
+  EXPECT_TRUE(facet->transaction_capabilities().supported);
+  const auto closed = facet->transaction(TransactionAction::Begin, rs::util::Deadline::max());
+  ASSERT_TRUE(closed.has_error());
+  EXPECT_EQ(BackendErrorClass::NotConnected, closed.backend_error().error_class);
+  EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), closed.session_snapshot());
+  ConnectionSettings settings; settings.use_ssl = false;
+  ASSERT_TRUE(session.connect(settings)); EXPECT_EQ(facet, session.transaction_session());
+  const auto begun = facet->transaction(TransactionAction::Begin, rs::util::Deadline::max());
+  ASSERT_TRUE(begun);
+  EXPECT_EQ((SessionSnapshot{SessionState::Transaction, SessionDisposition::ResetRequired}), begun.session_snapshot());
+  session.disconnect(); EXPECT_EQ(facet, session.transaction_session());
+  const auto disconnected = facet->set_transaction_isolation(TransactionIsolation::Serializable, rs::util::Deadline::max());
+  ASSERT_TRUE(disconnected.has_error());
+  EXPECT_EQ(BackendErrorClass::NotConnected, disconnected.backend_error().error_class);
+  EXPECT_EQ(BackendOperation::SetTransactionIsolation, disconnected.backend_error().operation);
 }

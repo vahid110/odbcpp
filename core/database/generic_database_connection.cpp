@@ -1074,20 +1074,4 @@ rs::util::Result<std::string> GenericDatabaseConnection::catalog_query(
           "Catalog discovery is not supported by this backend"};
 }
 
-TransactionCapabilities GenericDatabaseConnection::transaction_capabilities() const {
-  return {};
-}
-
-BackendResult<void> GenericDatabaseConnection::transaction(
-    TransactionAction, rs::util::Deadline) {
-  return local_backend_error(LocalFailure::Unsupported,
-      "Transactions are not supported by this backend", BackendOperation::Transaction, session_state());
-}
-
-BackendResult<void> GenericDatabaseConnection::set_transaction_isolation(
-    TransactionIsolation, rs::util::Deadline) {
-  return local_backend_error(LocalFailure::Unsupported,
-      "Transaction isolation is not supported by this backend", BackendOperation::SetTransactionIsolation, session_state());
-}
-
 } // namespace rs::core::database

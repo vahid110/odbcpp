@@ -15,6 +15,7 @@
 #include "native_type_info.h"
 #include "type_definition.h"
 #include "transaction.h"
+#include "transaction_session.h"
 #include "backend_capabilities.h"
 #include "catalog_request.h"
 
@@ -120,13 +121,9 @@ public:
   virtual std::optional<std::string> normalize_error_sqlstate(
       std::string_view native_state, ErrorContext context) const = 0;
 
-  virtual TransactionCapabilities transaction_capabilities() const = 0;
-  // Execute exactly one backend transaction command using the caller's deadline.
-  // Return the backend error unchanged; the shared layer owns ODBC state changes.
-  virtual BackendResult<void> transaction(TransactionAction action,
-      rs::util::Deadline deadline) = 0;
-  virtual BackendResult<void> set_transaction_isolation(TransactionIsolation level,
-      rs::util::Deadline deadline) = 0;
+  // Optional transaction behavior; absence never advertises live support.
+  // The borrowed facet remains owned by this session, never by the caller.
+  virtual ITransactionSession* transaction_session() noexcept { return nullptr; }
 
   virtual BackendResult<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline) = 0;
   virtual BackendResult<QueryResult> execute_prepared(std::string_view sql,

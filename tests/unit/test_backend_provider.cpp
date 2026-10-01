@@ -45,8 +45,9 @@ TEST(BackendProviderTest, StaticProfileMatchesNewSessionWithoutConnecting) {
             session_capabilities.identifier_quote);
   EXPECT_EQ(provider_capabilities.max_identifier_length,
             session_capabilities.max_identifier_length);
+  ASSERT_NE(nullptr, session->transaction_session());
   EXPECT_EQ(provider.transaction_capabilities().supported,
-            session->transaction_capabilities().supported);
+            session->transaction_session()->transaction_capabilities().supported);
   ASSERT_FALSE(provider.type_catalog().empty());
   ASSERT_EQ(provider.type_catalog().size(), session->type_catalog().size());
   EXPECT_EQ(provider.type_catalog().front().name,

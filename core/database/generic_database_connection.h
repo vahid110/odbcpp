@@ -39,12 +39,6 @@ public:
   std::optional<std::string> normalize_error_sqlstate(
       std::string_view, ErrorContext) const override { return std::nullopt; }
 
-  TransactionCapabilities transaction_capabilities() const override;
-  BackendResult<void> transaction(TransactionAction action,
-      rs::util::Deadline deadline) override;
-  BackendResult<void> set_transaction_isolation(TransactionIsolation level,
-      rs::util::Deadline deadline) override;
-
   // Resolve all native IDs atomically using the original operation deadline.
   virtual BackendResult<ResolvedTypeMap> resolve_types(
       std::span<const std::uint32_t> ids, rs::util::Deadline deadline);

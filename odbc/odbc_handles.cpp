@@ -1285,8 +1285,9 @@ rs::core::database::BackendCapabilities ODBCConnection::capabilities() const {
 }
 
 rs::core::database::TransactionCapabilities ODBCConnection::transaction_capabilities() const {
-  return db_conn_ ? db_conn_->transaction_capabilities()
-                  : backend_provider_->transaction_capabilities();
+  if (!db_conn_ || !db_conn_->is_connected()) return backend_provider_->transaction_capabilities();
+  const auto* facet = db_conn_->transaction_session();
+  return facet ? facet->transaction_capabilities() : rs::core::database::TransactionCapabilities{};
 }
 
 void ODBCConnection::log(
@@ -1444,8 +1445,8 @@ SQLRETURN ODBCConnection::connect(
     }
 
     if (transaction_isolation_ != transaction_isolation_to_odbc(
-            db_conn_->transaction_capabilities().default_isolation)) {
-      auto isolation_result = db_conn_->set_transaction_isolation(
+            transaction_capabilities().default_isolation)) {
+      auto isolation_result = backend_isolation(
           *transaction_isolation_from_odbc(transaction_isolation_),
           rs::util::make_deadline(settings.timeout));
       if (isolation_result.has_error()) {
@@ -1583,7 +1584,7 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
       return SQL_ERROR;
     }
     if (connected_) {
-      auto result = db_conn_->set_transaction_isolation(
+      auto result = backend_isolation(
           *isolation, rs::util::make_deadline(
                        timeout_duration(connection_timeout_seconds_)));
       if (result.has_error()) {
@@ -1727,12 +1728,34 @@ std::string ODBCConnection::get_current_catalog() const {
   return current_catalog_;
 }
 
+rs::core::database::BackendResult<void> ODBCConnection::backend_transaction(
+    rs::core::database::TransactionAction action, rs::util::Deadline deadline) {
+  using namespace rs::core::database;
+  if (auto* facet = db_conn_ ? db_conn_->transaction_session() : nullptr) {
+    return facet->transaction(action, deadline);
+  }
+  return local_backend_error(LocalFailure::Unsupported,
+      "Transactions are not supported by this backend", BackendOperation::Transaction,
+      db_conn_ ? db_conn_->session_state() : SessionState::Disconnected);
+}
+
+rs::core::database::BackendResult<void> ODBCConnection::backend_isolation(
+    rs::core::database::TransactionIsolation level, rs::util::Deadline deadline) {
+  using namespace rs::core::database;
+  if (auto* facet = db_conn_ ? db_conn_->transaction_session() : nullptr) {
+    return facet->set_transaction_isolation(level, deadline);
+  }
+  return local_backend_error(LocalFailure::Unsupported,
+      "Transaction isolation is not supported by this backend", BackendOperation::SetTransactionIsolation,
+      db_conn_ ? db_conn_->session_state() : SessionState::Disconnected);
+}
+
 rs::core::database::BackendResult<void> ODBCConnection::begin_transaction_if_needed(
     rs::util::Deadline deadline) {
   if (autocommit_ == SQL_AUTOCOMMIT_ON || transaction_active_) {
     return {};
   }
-  auto result = db_conn_->transaction(
+  auto result = backend_transaction(
       rs::core::database::TransactionAction::Begin, deadline);
   if (result.has_error()) {
     return result;
@@ -1757,7 +1780,7 @@ SQLRETURN ODBCConnection::end_transaction(SQLSMALLINT completion_type) {
   const auto action = completion_type == SQL_COMMIT
       ? rs::core::database::TransactionAction::Commit
       : rs::core::database::TransactionAction::Rollback;
-  auto result = db_conn_->transaction(
+  auto result = backend_transaction(
       action, rs::util::make_deadline(
                    timeout_duration(connection_timeout_seconds_)));
   if (result.has_error()) {
