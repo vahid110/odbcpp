@@ -1582,3 +1582,22 @@ gates passed. Final focused diagnostic assertions also passed. Windows/packaging
 and crypto evidence await exact-head CI. S2/G12 remain open;
 credential-bound product reuse, cache policy and SDK qualification are subsequent
 work. MySQL, Redshift live access and crypto qualification are unchanged.
+
+## S2 credential-authority header isolation — 2026-10-02
+
+The follow-up from ODBC ownership adoption is closed: `session_owner.h` now
+forward-declares credential types instead of importing authority definitions.
+Only trusted composition/implementation and explicitly bound test fixtures
+include `credential_context.h`; the ODBC staged include tree excludes it.
+Positive C++20 probes require the ownership header to compile independently,
+keep both credential types incomplete, and preserve move/unbound-construction
+contracts. Negative probes reject direct ODBC/backend authority includes while
+composition still compiles its authority header. Runtime ownership, authentication,
+reuse and ODBC behavior are unchanged; this is private header isolation, not a
+hostile-plugin security boundary or public SDK/ABI qualification.
+
+Focused ownership/backend and architecture tests pass; read-only review found no
+blocker. All 83 ownership/credential ThreadSanitizer tests and complete local
+PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and Redshift build/absent-endpoint
+gates passed. Windows/packaging and crypto evidence await exact-head hosted CI.
+S2/G12, product reuse/cache policy, MySQL proof and crypto qualification remain open.
