@@ -89,3 +89,28 @@ After the audit, the user explicitly resumed the SDK continuation timer and
 requested 15-minute intervals. The saved timer is now ACTIVE at that interval;
 this supersedes the earlier observed pause and 30-minute audit setting. The
 other ODBCPP timers remain paused. Notification and batching policy is unchanged.
+
+## Parallel Redshift kickoff — 2026-10-02
+
+At integration baseline `d403241`, the user authorized the bounded R0–R3
+activation sequence in `REDSHIFT_LIVE_TEST_PLAN.md`. The existing Redshift agent
+is assigned only the R0 offline preflight and lock package in refreshed worktree
+`/Users/vahidsbr/odbcpp-redshift-parity`, branch `codex/redshift-live-runner`.
+Its previous untracked research was preserved before switching baselines.
+It owns only `tools/redshift/pilot_preflight.py` and its offline test file;
+shared interfaces, build/CI files, commits and integration remain central.
+The existing S2C strategy agent performs a finite read-only runner/fixture
+activation review, without changing S2C scope or qualifying any provider.
+
+The SDK timer is temporarily paused during this kickoff. Its updated prompt
+includes the authorized parallel activation packages and retains the 15-minute
+interval, global allowance and fail-closed live gates. Re-enable one continuation
+timer once ownership and the next safe package are established; environment
+readiness must be independently recorded before that timer admits a live test.
+No per-agent or CI polling timer is added.
+
+After establishing the two finite assignments and recording the next safe
+packages, the same 15-minute timer was resumed with the updated prompt. It may
+continue offline R0/R1 and MySQL work while infrastructure is unavailable;
+paid Redshift admission remains blocked until R1 and R2 are independently
+qualified. This avoids leaving parallel work waiting for another manual nudge.

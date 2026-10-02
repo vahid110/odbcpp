@@ -106,3 +106,38 @@ References checked for planning:
 [Stockholm 4-RPU support and capacity controls](https://docs.aws.amazon.com/redshift/latest/mgmt/serverless-capacity.html),
 [usage-limit actions](https://docs.aws.amazon.com/redshift/latest/mgmt/serverless-workgroup-max-rpu.html),
 [Serverless billing and metering](https://docs.aws.amazon.com/redshift/latest/mgmt/serverless-billing.html).
+
+## Authorized parallel activation packages — 2026-10-02
+
+The user authorized a bounded parallel Redshift activation track. MySQL S3
+remains primary; this authorization does not bypass the activation gate or
+increase the shared USD 15 allowance. One integration owner reviews isolated
+packages before accepting them. Infrastructure remains owned by the
+account-preparation chat; do not duplicate its resources or ledger.
+
+| Package | Deliverable | Stopping condition |
+| --- | --- | --- |
+| R0: offline admission foundation | Strict verified-observation schema, conservative reservation arithmetic and canonical nonblocking lock helpers, with temporary-directory safety tests | Reviewed tests pass; no live launcher, AWS calls or live-enable claim |
+| R1: qualified shared runner | Fresh AWS control/usage readback, protected configuration loading, fixed executable/filter admission, durable reservations, bounded process-tree execution, private output and verified server cleanup | Offline happy-path and adversarial tests pass; unresolved cleanup and unknown costs block further windows |
+| R2: environment admission | Independently verified account/pricing, one workgroup, capacity and usage limits, alerts, restricted access, dedicated user, tiny fixture and private configuration | Readback evidence satisfies all activation gates; no credentials in Git/chat/logs |
+| R3: first live baseline | One reserved short window running connection, Redshift identity and scalar/row baseline checks; reconcile usage and cleanup | Record sanitized evidence and M2 scope review before IAM, metadata expansion, parity or fetch work |
+
+R0 is necessary but insufficient for paid testing. Caller-supplied observations
+are not AWS verification, an offline lock test is not a qualified live runner,
+and a client exit does not verify server cleanup. R1 and R2 may be prepared in
+parallel, but both must pass before R3. No unattended paid retry is permitted.
+
+The current fixture emits user identity and native diagnostic text and lacks
+explicit per-connection/query timeout settings. R1 must address its output and
+deadline behavior before any live execution; private capture alone must not be
+mistaken for safe shared evidence.
+
+R1 review also requires an explicit final `SQL_NO_DATA` assertion in the
+five-row fetch test, exact fixture metadata assertions, and checked handle
+cleanup results. Server identity must pass in a separate first phase before
+admitting the bounded baseline phase, since GoogleTest otherwise continues
+running other cases after an identity failure. Pin executable identity, exact
+case inventory and filters; reject skipped, missing or repeated cases. Persist
+the reservation before the first connection, keep one bound across both phases,
+and retain uncertain charges until independently reconciled. Client-side
+cleanup checks complement, rather than replace, server-side cancellation proof.
