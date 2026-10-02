@@ -1155,3 +1155,19 @@ and UTF-16 rechecks passed after removing the unnecessary connect-time marker
 allocation. Windows/packaging and crypto evidence await exact-head hosted CI. External
 schema-change freshness remains unqualified; pooling, cross-session/prepared
 payload caches, G10 tuning and public SDK claims are not enabled. S2/G12 remain open.
+
+## S2 session baseline release evidence — 2026-10-02
+
+An SDK-contract-only internal runner is shared by standalone synthetic and
+mandatory PostgreSQL integration targets. It verifies normalized owning results,
+prepared parameter behavior, recoverable-error state and recovery, passive state
+agreement, disconnect and ownership after destruction. Fixed check IDs avoid
+leaking SQL, settings or native diagnostics. Fault fixtures exercise rejection
+and cleanup. Redshift builds exclude the PostgreSQL live adapter.
+
+Validation: focused synthetic/live tests and complete local PostgreSQL, iODBC
+UTF-16/UCS-4, ASan/UBSan, and Redshift build/absent-endpoint gates passed.
+The final-source PostgreSQL recheck passed. Exact-head hosted Windows/packaging
+and crypto profile gates await CI.
+This does not close S2/G12, PG-BETA/G8, S4, provider/pool qualification, or any
+Redshift live gate.

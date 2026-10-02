@@ -1658,3 +1658,18 @@ and UTF-16 rechecks passed after removing the unnecessary connect-time marker
 allocation. Windows/packaging and crypto evidence await exact-head hosted CI. External
 schema-change freshness remains unqualified; pooling, cross-session/prepared
 payload caches, G10 tuning and public SDK claims are not enabled. S2/G12 remain open.
+
+## S2 internal harness checkpoint — 2026-10-02
+
+Added a bounded shared session baseline with isolated SDK-only compilation, an
+independent synthetic backend and mandatory live PostgreSQL fixture. Its SQL and
+authenticated configuration remain adapter-owned. Success and fault tests cover
+state, canonical scalar/NULL/empty results, normalized types, prepared parameters,
+recoverable error/recovery and retained ownership after destruction.
+
+Validation: focused synthetic/live tests and complete local PostgreSQL, iODBC
+UTF-16/UCS-4, ASan/UBSan, and Redshift build/absent-endpoint gates passed.
+The final-source PostgreSQL recheck passed. Exact-head hosted Windows/packaging
+and crypto profile gates await CI.
+The wider S2 stopping review and S4 author-kit/extension exercise remain required;
+MySQL S3 has not started and Redshift live work still waits for restored access.

@@ -1375,3 +1375,20 @@ and UTF-16 rechecks passed after removing the unnecessary connect-time marker
 allocation. Windows/packaging and crypto evidence await exact-head hosted CI. External
 schema-change freshness remains unqualified; pooling, cross-session/prepared
 payload caches, G10 tuning and public SDK claims are not enabled. S2/G12 remain open.
+
+## S2 internal session baseline — 2026-10-02
+
+A framework-independent test runner in `sdk/tests/session_baseline` now compiles
+solely against the staged SDK contract headers. A standalone synthetic session
+and a separate mandatory PostgreSQL adapter run the same checks. The adapter
+provides settings, session construction and SQL; the runner contains no backend
+SQL, native protocol, ODBC or crypto dependency. Checks cover exact Idle/Reusable
+outcomes and passive agreement, known normalized types, scalar/NULL/empty cells,
+typed prepared results, recoverable server-error classification/operation,
+subsequent recovery, disconnect and retained owning results/diagnostics after
+session destruction. Every execution uses a fresh finite deadline; early failures
+disconnect through RAII. Reports contain fixed check IDs only.
+
+This narrow baseline does not qualify provider/composition, optional facets,
+transactions, pooling, ODBC, complete malformed-result handling, or the S4
+backend-author kit. S2/G12 remain open.

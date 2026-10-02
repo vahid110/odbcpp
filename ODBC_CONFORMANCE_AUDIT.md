@@ -3063,3 +3063,21 @@ and UTF-16 rechecks passed after removing the unnecessary connect-time marker
 allocation. Windows/packaging and crypto evidence await exact-head hosted CI. External
 schema-change freshness remains unqualified; pooling, cross-session/prepared
 payload caches, G10 tuning and public SDK claims are not enabled. S2/G12 remain open.
+
+## Internal backend session baseline — 2026-10-02
+
+The same isolated test runner now checks a synthetic session and mandatory live
+PostgreSQL below the ODBC facade. It adds independent evidence for known normalized
+results, scalar/NULL/empty distinction, typed prepared values, exact session
+outcomes, recoverable server errors and recovery, disconnect and result/diagnostic
+ownership after destruction. Negative synthetic cases verify that the runner
+rejects broken contracts and cleans up early failures. Fixed reports disclose no
+fixture data or native messages.
+
+Validation: focused synthetic/live tests and complete local PostgreSQL, iODBC
+UTF-16/UCS-4, ASan/UBSan, and Redshift build/absent-endpoint gates passed.
+The final-source PostgreSQL recheck passed. Exact-head hosted Windows/packaging
+and crypto profile gates await CI.
+This adds backend evidence only; it does not establish new ODBC function/attribute,
+application, pooling, provider, complete malformed-result, or S4 kit compliance.
+S2/G12 and existing release/application blockers remain open.

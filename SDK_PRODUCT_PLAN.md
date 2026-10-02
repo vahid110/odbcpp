@@ -595,3 +595,20 @@ and UTF-16 rechecks passed after removing the unnecessary connect-time marker
 allocation. Windows/packaging and crypto evidence await exact-head hosted CI. External
 schema-change freshness remains unqualified; pooling, cross-session/prepared
 payload caches, G10 tuning and public SDK claims are not enabled. S2/G12 remain open.
+
+## S2 reusable baseline progress — 2026-10-02
+
+The first reusable **internal session baseline** runs against an independent
+synthetic implementation and mandatory live PostgreSQL through caller-supplied
+SQL. Isolated compilation proves the runner consumes only SDK contracts.
+Synthetic negative modes reject incorrect snapshots, missing/fallback/wrong
+types, malformed rows, contradictory root errors, broken prepared results, false
+reuse after server errors, failed recovery and disconnect, and invalid deadlines.
+Cleanup on early rejection is checked. This is bounded S2 harness evidence, not
+S4 kit delivery or a stable public SDK claim; MySQL will supply its own fixtures.
+S2/G12, production pooling, full extension qualification and S3 remain open.
+
+Validation: focused synthetic/live tests and complete local PostgreSQL, iODBC
+UTF-16/UCS-4, ASan/UBSan, and Redshift build/absent-endpoint gates passed.
+The final-source PostgreSQL recheck passed. Exact-head hosted Windows/packaging
+and crypto profile gates await CI.
