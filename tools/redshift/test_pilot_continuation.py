@@ -33,7 +33,7 @@ class ContinuationTests(unittest.TestCase):
             base_rpus=4,max_rpus=4,usd_per_rpu_hour='.374',no_additional_resources=True,
             no_other_billable_activity=True,controls_verified=True,network_verified=True,
             other_tax_usd=50,additional_metering_seconds=1200,additional_cleanup_seconds=60,
-            cleanup_evidence=self.previous_cleanup)
+            cleanup_evidence=self.previous_cleanup,state_digest=r.digest(self.f.path.read_text()))
 
     def cleanup(self):
         return dict(verified=True,observed_at=self.f.stamp(self.f.now),anchor=self.current.record(self.f.now),

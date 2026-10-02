@@ -99,11 +99,13 @@ class ContinuationSession(r.RecoverySession):
             anchor=self._fixed(current,now)
             e=r0._record(evidence,{'verified','observed_at','anchor','base_rpus','max_rpus','usd_per_rpu_hour',
                 'no_additional_resources','no_other_billable_activity','controls_verified','network_verified',
-                'other_tax_usd','additional_metering_seconds','additional_cleanup_seconds','cleanup_evidence'},
+                'other_tax_usd','additional_metering_seconds','additional_cleanup_seconds','cleanup_evidence','state_digest'},
                 'invalid_admission_evidence')
             r0._need(e['verified'] is True and e['anchor']==anchor
                 and all(e[k] is True for k in ('no_additional_resources','no_other_billable_activity',
                     'controls_verified','network_verified')),'admission_unverified')
+            raw=self._read_raw('setup.json')
+            r0._need(r.digest(raw)==e['state_digest'] and r.decode(raw)==state,'continuation_source_changed')
             r0._timestamp(e['observed_at'],now,Decimal(300),'stale_admission')
             r0._need(r0._number(e['base_rpus'],'invalid_capacity')==4
                 and r0._number(e['max_rpus'],'invalid_capacity')==4

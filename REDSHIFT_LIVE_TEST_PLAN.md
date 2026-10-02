@@ -472,3 +472,17 @@ Keep paid qualification stopped until a separately reviewed runner and required
 green CI, followed by root's explicit admission of a new finite scope. Later-day
 admission still requires cumulative billing/usage reconciliation; do not extend
 the accounting horizon by editing an anchor or creating a new pilot period.
+
+
+The explicit continuation runner candidate `pilot_continuation_live.py` accepts
+only007/008 against separately initialized v6 state. The original v4 entry point
+still rejects later schemas. A reviewed request binds current runner sources,
+executable hash and exact current v6 state bytes; reservation verifies the state
+binding inside its durable operation after fresh control reads. Shared execution
+keeps identity before fixed profile cases, IAM provenance/expiry/private child
+environments and independent final cleanup. No automatic migration or retry is
+introduced. Independent review accepted the integration. All189 offline tests
+pass, including both007 and008 composition, stale bindings, source mutation
+during controls, entry isolation, identity failure and cleanup failure before
+exchange. No canonical initialization or paid qualification occurred in this
+batch. Full required CI and root's separate fresh admission still precede007.

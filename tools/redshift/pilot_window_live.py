@@ -133,7 +133,7 @@ def save_report(path, report, directory_fd):
     os.fsync(directory_fd)
 
 
-def execute(sequence, directory=r0.CANONICAL_DIRECTORY):
+def _execute(sequence, directory, session_factory, validate_request, *, sequence_offset=0):
     r0._need(type(sequence) is int and 1<=sequence<=8, 'invalid_window_sequence')
     directory = Path(directory)
     original = b.BootstrapAnchor(**live.private_json(directory/'bootstrap-anchor.json'))
@@ -144,11 +144,11 @@ def execute(sequence, directory=r0.CANONICAL_DIRECTORY):
     r0._need(not report_path.exists() and not report_path.is_symlink(), 'window_already_reported')
     report = dict(status='blocked',reason=None,cleanup_verified=False,results=[],
                   actual_spend_usd=None,remaining_allowance_usd=None,sequence=sequence)
-    with windows.window_session(directory/'setup.json',original) as ledger:
-        now = utcnow(); current = request_record(request,original,now)
+    with session_factory(directory/'setup.json',original) as ledger:
+        now = utcnow(); current = validate_request(request,original,now)
         r0._need(request['sequence']==sequence, 'window_sequence_mismatch')
         state = ledger._load(); overlay = ledger._v2(state,now)
-        r0._need(sequence==len(overlay['attempts'])+1, 'window_already_consumed')
+        r0._need(sequence==len(overlay['attempts'])+1+sequence_offset, 'window_already_consumed')
         r0._need(not overlay['attempts'] or overlay['attempts'][-1]['phase']=='cleaned_pending_billing',
                  'prior_attempt_unresolved')
         prior_cleanup = dict(verified=True,
@@ -158,12 +158,14 @@ def execute(sequence, directory=r0.CANONICAL_DIRECTORY):
             no_active_queries=True,no_active_sessions=True,transactions_closed=True)
         fresh_controls(current,config,request['admission'])
         # Revalidate after network calls: a preflight must not consume the SQL deadline.
-        current = request_record(request,original,utcnow())
+        current = validate_request(request,original,utcnow())
         evidence = dict(verified=True,observed_at=utcnow().isoformat().replace('+00:00','Z'),
             anchor=current.record(utcnow()),base_rpus=4,max_rpus=4,usd_per_rpu_hour='.374',
             no_additional_resources=True,no_other_billable_activity=True,controls_verified=True,
             network_verified=True,other_tax_usd='50',additional_metering_seconds=1200,
             additional_cleanup_seconds=60,cleanup_evidence=prior_cleanup)
+        if sequence_offset:
+            evidence['state_digest']=request['state_digest']
         passed(ledger.reserve(evidence,current))
         remaining = (b._time(current.hard_deadline,utcnow(),True)-utcnow()).total_seconds()
         is_iam = request['profile'] == 'iam'
@@ -204,6 +206,11 @@ def execute(sequence, directory=r0.CANONICAL_DIRECTORY):
             # Reservation remains consumed even if reporting fails after clean SQL.
             raise r0.Blocked('window_report_persistence_failed') from None
         return report
+
+
+def execute(sequence, directory=r0.CANONICAL_DIRECTORY):
+    # Original v4 entry point stays isolated: no migration or v6 acceptance.
+    return _execute(sequence,directory,windows.window_session,request_record)
 
 
 if __name__=='__main__':
