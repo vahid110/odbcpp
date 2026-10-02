@@ -30,6 +30,8 @@ static_assert(!ExposesRawSession<SessionLease> && !ExposesPhysicalSession<Sessio
 static_assert(!std::is_default_constructible_v<SessionCacheToken>);
 static_assert(std::is_copy_constructible_v<SessionCacheToken> && std::is_copy_assignable_v<SessionCacheToken>);
 static_assert(std::is_nothrow_move_constructible_v<SessionCacheToken> && std::is_nothrow_move_assignable_v<SessionCacheToken>);
+static_assert(!std::is_copy_constructible_v<BackendResult<SessionLease>>);
+static_assert(std::is_move_constructible_v<BackendResult<SessionLease>>);
 static_assert(!std::is_copy_constructible_v<SessionOwner> && !std::is_copy_assignable_v<SessionOwner>);
 static_assert(!std::is_copy_constructible_v<SessionLease> && !std::is_copy_assignable_v<SessionLease>);
 static_assert(std::is_nothrow_move_constructible_v<SessionOwner> && std::is_nothrow_move_assignable_v<SessionOwner>);
@@ -38,6 +40,11 @@ struct Observed {
   std::atomic<int> disconnects{}, destructions{}, queries{}, health{}, resets{};
   bool throw_disconnect{};
   bool missing_reset{};
+  bool missing_health{};
+  int health_mode{};
+  rs::util::Deadline health_deadline{};
+  std::function<void()> on_health;
+  std::optional<SessionSnapshot> health_snapshot;
   int reset_mode{};
   rs::util::Deadline reset_deadline{};
   std::function<void()> on_reset;
@@ -78,12 +85,27 @@ class FakeSession final : public IDatabaseConnection, public ISessionHealth, pub
     return execute(sql, params, deadline, true);
   }
   std::string server_version() const override { return "fixture"; }
-  ISessionHealth* session_health() noexcept override { return this; }
+  ISessionHealth* session_health() noexcept override { return observed_->missing_health ? nullptr : this; }
   ISessionReset* session_reset() noexcept override { return observed_->missing_reset ? nullptr : this; }
   SessionResetProfile reset_profile() const noexcept override {
     return observed_->reset_mode == 9 ? static_cast<SessionResetProfile>(99) : SessionResetProfile::SameAuthenticatedServerSession;
   }
-  BackendResult<void> check_health(rs::util::Deadline) override { ++observed_->health; return {}; }
+  BackendResult<void> check_health(rs::util::Deadline deadline) override {
+    ++observed_->health; observed_->health_deadline = deadline;
+    if (observed_->on_health) observed_->on_health();
+    if (observed_->health_mode == 1) {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "owned health error"};
+      error.native_state = "XX001"; error.native_code = 73; error.retry_safe = true;
+      error.operation = BackendOperation::ExecuteDirect; error.session_state = SessionState::Idle;
+      error.disposition = SessionDisposition::Reusable; return error;
+    }
+    if (observed_->health_mode == 2) throw std::bad_alloc{};
+    if (observed_->health_mode == 3) throw std::runtime_error("SECRET health fixture");
+    if (observed_->health_mode == 4) throw 42;
+    if (observed_->health_mode == 5) connected_ = false;
+    if (observed_->health_snapshot) return BackendResult<void>{*observed_->health_snapshot};
+    return BackendResult<void>{SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}};
+  }
   BackendResult<void> reset_session(rs::util::Deadline deadline) override {
     ++observed_->resets; observed_->reset_deadline = deadline;
     if (observed_->on_reset) observed_->on_reset();
@@ -938,5 +960,123 @@ TEST(SessionReusePolicyTest, ConcurrentExpiryAndCheckoutCannotDuplicatePhysicalO
     if (lease) { EXPECT_EQ(0, observed->disconnects); ASSERT_TRUE(lease->execute_query("active borrower", rs::util::Deadline::max())); lease->retire(); }
     retired_once(*observed);
   }
+}
+
+TEST(SessionHealthAdmissionTest, ProbeDeliversExclusiveLeaseWithOriginalDeadlineAndNoReset) {
+  CredentialContext credentials; auto token = credentials.publish_authenticated(); auto observed = std::make_shared<Observed>();
+  SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds(5));
+  observed->on_health = [&] { EXPECT_FALSE(owner.try_acquire(token)); };
+  auto result = owner.acquire_healthy(token, deadline); ASSERT_TRUE(result); EXPECT_TRUE(*result);
+  EXPECT_EQ(deadline, observed->health_deadline); EXPECT_EQ(1, observed->health); EXPECT_EQ(0, observed->resets);
+  EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), result.session_snapshot());
+  EXPECT_FALSE(owner.try_acquire(token)); auto scope = result->cache_token(); ASSERT_TRUE(scope);
+  ASSERT_TRUE(result->execute_query("checked borrower", deadline));
+  ASSERT_TRUE(result->return_reusable(deadline)); EXPECT_FALSE(*result); EXPECT_FALSE(scope->is_current());
+  auto next = owner.acquire_healthy(token, deadline); ASSERT_TRUE(next); EXPECT_EQ(2, observed->health);
+  result->retire(); EXPECT_TRUE(*next); next->retire(); EXPECT_EQ(1, observed->disconnects);
+}
+TEST(SessionHealthAdmissionTest, ForeignWrongBusyUnboundAndExpiredAdmissionPerformNoProbe) {
+  CredentialContext credentials, foreign; auto older = credentials.publish_authenticated(); auto token = credentials.publish_authenticated();
+  auto observed = std::make_shared<Observed>(); SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+  for (auto denied : {older, foreign.publish_authenticated()}) {
+    auto result = owner.acquire_healthy(denied, rs::util::Deadline::max()); EXPECT_FALSE(result);
+    EXPECT_EQ(BackendOperation::CheckHealth, result.backend_error().operation);
+  }
+  auto lease = owner.try_acquire(token); ASSERT_TRUE(lease);
+  EXPECT_FALSE(owner.acquire_healthy(token, rs::util::Deadline::max())); EXPECT_EQ(0, observed->disconnects);
+  EXPECT_EQ(0, observed->health); lease->retire();
+  auto unbound_observed = std::make_shared<Observed>(); auto unbound = owner_for(unbound_observed);
+  EXPECT_FALSE(unbound.acquire_healthy(token, rs::util::Deadline::max())); EXPECT_EQ(0, unbound_observed->disconnects);
+  auto unbound_lease = unbound.try_acquire(); ASSERT_TRUE(unbound_lease); unbound_lease->retire();
+  policy_time(std::chrono::seconds(0)); auto expired_observed = std::make_shared<Observed>();
+  auto expired = policy_owner(expired_observed, token, {rs::util::Deadline{}, std::chrono::seconds(1)});
+  EXPECT_FALSE(expired.acquire_healthy(token, rs::util::Deadline::max())); retired_once(*expired_observed);
+}
+TEST(SessionHealthAdmissionTest, MissingExpiredMalformedPassiveAndThrownProbesRetire) {
+  for (int mode = 0; mode < 16; ++mode) {
+    SCOPED_TRACE(mode); CredentialContext credentials; auto token = credentials.publish_authenticated();
+    auto observed = std::make_shared<Observed>(); SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+    if (mode == 0) observed->missing_health = true;
+    if (mode >= 1 && mode <= 5) observed->health_mode = mode;
+    if (mode == 6) observed->health_snapshot = SessionSnapshot{SessionState::Unknown, SessionDisposition::Reusable};
+    if (mode == 7) observed->health_snapshot = SessionSnapshot{SessionState::Idle, SessionDisposition::ResetRequired};
+    if (mode == 8) observed->health_snapshot = SessionSnapshot{SessionState::Transaction, SessionDisposition::Reusable};
+    if (mode == 9) observed->passive_state = SessionState::Transaction;
+    if (mode == 10) observed->reset_mode = 8; // Passive state throws.
+    if (mode == 11) observed->reset_mode = 11; // Passive connectivity throws.
+    if (mode == 13) observed->health_snapshot = SessionSnapshot{SessionState::Idle, SessionDisposition::Retire};
+    if (mode == 14) observed->health_snapshot = SessionSnapshot{SessionState::FailedTransaction, SessionDisposition::Reusable};
+    if (mode == 15) observed->health_snapshot = SessionSnapshot{SessionState::Disconnected, SessionDisposition::Reusable};
+    auto result = owner.acquire_healthy(token, mode == 12 ? rs::util::Deadline::min() : rs::util::Deadline::max());
+    ASSERT_FALSE(result); EXPECT_FALSE(owner.try_acquire(token));
+    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), result.session_snapshot());
+    EXPECT_EQ(BackendOperation::CheckHealth, result.backend_error().operation); EXPECT_FALSE(result.backend_error().retry_safe);
+    EXPECT_EQ(std::string::npos, result.error_message().find("SECRET"));
+    if (mode == 1) { EXPECT_EQ("XX001", result.backend_error().native_state); EXPECT_EQ(73, result.backend_error().native_code); EXPECT_EQ("owned health error", result.error_message()); }
+    if (mode == 2) { EXPECT_EQ(BackendErrorClass::AllocationFailure, result.backend_error().error_class); }
+    if (mode == 12) { EXPECT_EQ(BackendErrorClass::Timeout, result.backend_error().error_class); }
+    EXPECT_EQ(0, observed->resets); EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
+  }
+}
+TEST(SessionHealthAdmissionTest, ClosureRotationRevocationAndLifetimeCrossingDuringProbeFailClosed) {
+  for (int mode = 0; mode < 4; ++mode) {
+    SCOPED_TRACE(mode); policy_time(std::chrono::seconds(0)); CredentialContext credentials; auto token = credentials.publish_authenticated();
+    auto observed = std::make_shared<Observed>();
+    auto owner = std::make_unique<SessionOwner>(policy_owner(observed, token,
+        {rs::util::Deadline{} + std::chrono::seconds(10), std::chrono::seconds(1)}));
+    observed->on_health = [&] {
+      if (mode == 0) owner.reset();
+      if (mode == 1) credentials.revoke();
+      if (mode == 2) (void)credentials.publish_authenticated();
+      if (mode == 3) policy_time(std::chrono::seconds(10));
+      EXPECT_EQ(0, observed->disconnects);
+    };
+    auto result = owner->acquire_healthy(token, rs::util::Deadline::max()); ASSERT_FALSE(result);
+    if (owner) { EXPECT_FALSE(owner->try_acquire(token)); }
+    EXPECT_EQ(1, observed->health); EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
+  }
+}
+TEST(SessionHealthAdmissionTest, DeadlineCrossingAndConcurrentCheckoutCannotDeliverUncheckedLease) {
+  for (bool expire : {false, true}) {
+    CredentialContext credentials; auto token = credentials.publish_authenticated(); auto observed = std::make_shared<Observed>();
+    SessionOwner owner{std::make_unique<FakeSession>(observed), token}; std::barrier entered(2), release(2);
+    const auto deadline = rs::util::make_deadline(std::chrono::milliseconds(50));
+    observed->on_health = [&] { entered.arrive_and_wait(); release.arrive_and_wait(); };
+    std::thread other([&] {
+      entered.arrive_and_wait(); EXPECT_FALSE(owner.try_acquire(token));
+      if (expire) std::this_thread::sleep_until(deadline);
+      release.arrive_and_wait();
+    });
+    auto result = owner.acquire_healthy(token, expire ? deadline : rs::util::Deadline::max()); other.join();
+    EXPECT_EQ(!expire, bool(result));
+    if (expire) { EXPECT_EQ(BackendErrorClass::Timeout, result.backend_error().error_class); }
+    else { result->retire(); }
+    EXPECT_EQ(1, observed->health); EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
+  }
+}
+
+TEST(SessionHealthAdmissionTest, ConcurrentHealthyAdmissionsHaveOnlyOneProbeAndOwningResult) {
+  CredentialContext credentials; auto token = credentials.publish_authenticated(); auto observed = std::make_shared<Observed>();
+  SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+  constexpr int count = 8; std::barrier start(count + 1);
+  std::array<std::optional<BackendResult<SessionLease>>, count> results;
+  std::array<std::thread, count> threads;
+  for (int i = 0; i < count; ++i) threads[i] = std::thread([&, i] { start.arrive_and_wait(); results[i] = owner.acquire_healthy(token, rs::util::Deadline::max()); });
+  start.arrive_and_wait(); for (auto& thread : threads) thread.join();
+  int winners{};
+  for (auto& result : results) {
+    ASSERT_TRUE(result);
+    if (*result) { ++winners; SessionLease lease = std::move(*result).value(); ASSERT_TRUE(lease); lease.retire(); }
+  }
+  EXPECT_EQ(1, winners); EXPECT_EQ(1, observed->health); EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
+}
+TEST(SessionHealthAdmissionTest, CredentialExpiryDuringProbeCannotDeliverLease) {
+  CredentialContext credentials; const auto expiry = rs::util::make_deadline(std::chrono::seconds(1));
+  auto token = credentials.publish_authenticated(expiry); auto observed = std::make_shared<Observed>();
+  SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+  observed->on_health = [&] { std::this_thread::sleep_until(expiry); EXPECT_EQ(0, observed->disconnects); };
+  auto result = owner.acquire_healthy(token, rs::util::Deadline::max()); EXPECT_FALSE(result);
+  EXPECT_FALSE(owner.try_acquire(token)); EXPECT_EQ(1, observed->health); EXPECT_EQ(1, observed->disconnects);
 }
 } // namespace

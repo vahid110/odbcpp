@@ -348,3 +348,63 @@ BackendResult<void> SessionLease::return_reusable(rs::util::Deadline deadline) {
   return reset;
 }
 } // namespace rs::core::database
+
+namespace rs::core::database {
+BackendResult<SessionLease> SessionOwner::acquire_healthy(const CredentialToken& token, rs::util::Deadline deadline) {
+  auto lease = try_acquire(token);
+  const auto fail = [&lease](rs::util::DbErrorCode code, const char* message) -> BackendResult<SessionLease> {
+    if (lease) lease->retire();
+    BackendError error{rs::util::make_error_code(code), message};
+    error.operation = BackendOperation::CheckHealth;
+    error.session_state = SessionState::Disconnected;
+    return error;
+  };
+  if (!lease) return fail(rs::util::DbErrorCode::AuthenticationFailed, "Session health admission unavailable");
+  // Local RAII lease retires on every failure or exception, including diagnostic
+  // allocation. Success transfers it exactly once; no physical pointer escapes.
+  auto state = lease->state_;
+  auto* physical = lease->physical_session();
+  const auto admitted = [&] {
+    std::lock_guard lock(state->mutex);
+    const bool current = state->credential && state->credential->is_current();
+    const bool expired = rs::util::Clock::now() >= deadline || state->lifetime_expired(state->now());
+    return std::pair{!expired && state->accepting && state->leased && state->session.get() == physical && current, expired};
+  };
+  try {
+    lease->invalidate_cache();
+    const auto [initial_eligible, initially_expired] = admitted();
+    if (!initial_eligible) return fail(initially_expired ? rs::util::DbErrorCode::Timeout : rs::util::DbErrorCode::AuthenticationFailed,
+        "Session health admission expired or closed");
+    auto* health = physical->session_health();
+    if (!health) return fail(rs::util::DbErrorCode::UnsupportedFeature, "Session health facet unavailable");
+    auto result = health->check_health(deadline);
+    if (!result) {
+      auto error = std::move(result.backend_error());
+      lease->retire();
+      error.operation = BackendOperation::CheckHealth;
+      error.session_state = SessionState::Disconnected;
+      error.disposition = SessionDisposition::Retire;
+      error.retry_safe.reset();
+      return error;
+    }
+    if (result.session_snapshot() != SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable} ||
+        !physical->is_connected() || physical->session_state() != SessionState::Idle)
+      return fail(rs::util::DbErrorCode::ProtocolError, "Session health outcome is inconsistent");
+    bool eligible{}, expired{};
+    {
+      std::lock_guard lock(state->mutex);
+      const bool current = state->credential && state->credential->is_current();
+      expired = rs::util::Clock::now() >= deadline || state->lifetime_expired(state->now());
+      eligible = !expired && state->accepting && state->leased && state->session.get() == physical && current;
+      state->cache_generation.reset();
+    }
+    if (!eligible) return fail(expired ? rs::util::DbErrorCode::Timeout : rs::util::DbErrorCode::AuthenticationFailed,
+        "Session health admission expired or closed");
+    return BackendResult<SessionLease>{std::move(*lease), result.session_snapshot()};
+  } catch (const std::bad_alloc&) {
+    return fail(rs::util::DbErrorCode::AllocationFailure, "");
+  } catch (...) {
+    return fail(rs::util::DbErrorCode::ProtocolError, "Session health backend threw");
+  }
+}
+} // namespace rs::core::database

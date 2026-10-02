@@ -102,6 +102,10 @@ class SessionOwner final {
   std::optional<SessionLease> try_acquire();
   // Missing, foreign and wrong-generation tokens cannot disrupt a valid owner.
   std::optional<SessionLease> try_acquire(const CredentialToken&);
+  // Coordinated checked admission for a bound owner. Reserves exclusive ownership,
+  // probes once with the original deadline, and delivers only Idle/Reusable with
+  // current credentials/admission/lifetime. Failed probes retire. No reset/replay.
+  BackendResult<SessionLease> acquire_healthy(const CredentialToken&, rs::util::Deadline);
 
  private:
   friend struct detail::SessionOwnershipTestAccess;

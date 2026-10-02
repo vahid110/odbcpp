@@ -167,6 +167,36 @@ TEST(SessionOwnerIntegrationTest, LiveBorrowSurvivesOwnerAndRetirementClosesPhys
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   EXPECT_TRUE(gone) << "Expired idle physical session survived matching checkout";
+  // Checked admission probes a real backend without resetting/reconnecting it.
+  // A terminated returned backend must fail the next probe and never reissue.
+  auto health_physical = provider.create_session(nullptr); ASSERT_TRUE(health_physical->connect(*settings));
+  CredentialContext health_credentials; auto health_token = health_credentials.publish_authenticated();
+  SessionOwner health_owner{std::move(health_physical), health_token};
+  const auto health_deadline = rs::util::make_deadline(std::chrono::seconds(5));
+  auto checked = health_owner.acquire_healthy(health_token, health_deadline); ASSERT_TRUE(checked);
+  EXPECT_FALSE(health_owner.try_acquire(health_token));
+  auto health_pid = checked->execute_query("SELECT pg_backend_pid()", health_deadline); ASSERT_TRUE(health_pid);
+  const auto health_pid_text = health_pid->rows.at(0).at(0); ASSERT_TRUE(health_pid_text);
+  ASSERT_TRUE(checked->return_reusable(health_deadline));
+  auto checked_again = health_owner.acquire_healthy(health_token, health_deadline); ASSERT_TRUE(checked_again);
+  auto same_health_pid = checked_again->execute_query("SELECT pg_backend_pid()", health_deadline); ASSERT_TRUE(same_health_pid);
+  EXPECT_EQ(health_pid_text, same_health_pid->rows.at(0).at(0));
+  ASSERT_TRUE(checked_again->return_reusable(health_deadline));
+  auto killed = observer->execute_query("SELECT pg_terminate_backend(" + *health_pid_text + ")", health_deadline);
+  ASSERT_TRUE(killed); EXPECT_EQ("1", killed->rows.at(0).at(0));
+  // SIGTERM delivery is asynchronous; confirm exit before probing the socket.
+  gone = false;
+  while (std::chrono::steady_clock::now() < health_deadline) {
+    auto inactive = observer->execute_query("SELECT count(*) FROM pg_stat_activity WHERE pid = " + *health_pid_text, health_deadline);
+    ASSERT_TRUE(inactive);
+    if (inactive->rows.at(0).at(0) == "0") { gone = true; break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(gone) << "PostgreSQL health fixture backend did not exit after termination";
+  auto rejected_health = health_owner.acquire_healthy(health_token, health_deadline); ASSERT_FALSE(rejected_health);
+  EXPECT_EQ(BackendOperation::CheckHealth, rejected_health.backend_error().operation);
+  EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), rejected_health.session_snapshot());
+  EXPECT_FALSE(health_owner.try_acquire(health_token));
   observer->disconnect();
 }
 } // namespace
