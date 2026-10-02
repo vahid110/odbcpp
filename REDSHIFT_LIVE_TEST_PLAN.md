@@ -555,3 +555,27 @@ justify a refund or a fresh balance. The original24h horizon must not be silentl
 extended. Continue the M2 inventory/profile assessment and offline repairs while
 that separate accounting package is prepared; no further warehouse, capacity
 increase or unrelated IAM expansion is authorized by this checkpoint.
+
+## Read-only accounting assessment checkpoint
+
+Opaque-token repair CI37076687940/980199d is green across required gates.
+The next offline helper, `tools/redshift/pilot_accounting_review.py`, assesses
+the exact locked, exhausted v6 state without writing, migrating, reserving or
+launching anything. It validates nested history, both consumed continuation
+windows' cleanup, the source-byte digest and the unchanged resource, horizon,
+capacity and cumulative-bound rules. Another1200s metering allowance exceeds
+the existing12000s ceiling: this is a blocked assessment, not authorization to
+widen the ceiling or create009. All prior liabilities and unknown actual/remaining
+values remain intact. A later versioned amendment requires separate review.
+
+Read-only Cost Explorer returned `DataUnavailableException`; no permission
+denial was observed. A CloudWatch `ChargedSeconds` observation for the fixed
+workgroup returned639 datapoints with sum3600 and unit `Count`. Private raw
+evidence is retained. These values are not reconciled costs: metric aggregation,
+coverage/completeness, reporting delay and separate charges still need review.
+The helper checks normalized observation syntax and resource/time binding only;
+it cannot authenticate provenance or promote a metric sum, including zero, into
+actual spend, remaining allowance or admission. AWS recommends the distinct
+[`SYS_SERVERLESS_USAGE.charged_seconds`](https://docs.aws.amazon.com/redshift/latest/dg/SYS_SERVERLESS_USAGE.html)
+for compute-cost calculation; obtaining that SQL evidence would itself require
+an explicitly reserved, bounded scope. No such query is authorized or run here.
