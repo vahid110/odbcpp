@@ -95,7 +95,7 @@ TEST_F(SessionResetIntegrationTest, ResetRollsBackFailedTransactionAndTimeoutRet
   EXPECT_EQ(BackendOperation::ResetSession, timed_out.backend_error().operation);
   EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), timed_out.session_snapshot());
   EXPECT_FALSE(session.is_connected());
-  EXPECT_TRUE(session.has_reset());
+  EXPECT_FALSE(session.has_reset()); // Terminal lease retired and destroyed the backend.
 }
 
 } // namespace

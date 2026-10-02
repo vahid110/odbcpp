@@ -38,6 +38,8 @@ struct SessionObservation {
   // Presence only: an individual request may still be unsupported.
   bool has_statement_description_facet{false};
   bool has_catalog_query_facet{false};
+  bool has_health_facet{false};
+  bool has_reset_facet{false};
 };
 
 // Internal ownership primitive, not an installed SDK or pool API. A borrowed
@@ -74,6 +76,8 @@ class SessionLease final {
   // reads and local catalog errors preserve cache scopes; exceptions and passive
   // disconnection retire. Neither result grants health or return authority.
   BackendResult<SessionObservation> inspect();
+  // Active probe for this borrower only; no reset, replay or return authority.
+  BackendResult<void> check_health(rs::util::Deadline);
   BackendResult<std::string> catalog_query(const CatalogRequest&);
   // No I/O cleanup/reset/reconnect is attempted. Returning or abandoning the
   // lease retires and destroys the physical session, even after reset success.

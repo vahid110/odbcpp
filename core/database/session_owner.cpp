@@ -54,8 +54,11 @@ SessionOwner::SessionOwner(std::unique_ptr<IDatabaseConnection> session, Credent
     : SessionOwner(std::move(session), std::optional{std::move(token)}, &make_cache_generation, policy) {}
 SessionOwner::SessionOwner(std::unique_ptr<IDatabaseConnection> session, std::optional<CredentialToken> token,
     CacheGenerationFactory factory, std::optional<SessionReusePolicy> policy, NowFactory clock)
-    : state_(std::make_shared<detail::SessionOwnershipState>(std::move(session), std::move(token), factory, policy, clock)) {
+    try : state_(std::make_shared<detail::SessionOwnershipState>(std::move(session), std::move(token), factory, policy, clock)) {
   if (!state_->session) throw std::invalid_argument("SessionOwner requires a physical session");
+} catch (...) {
+  retire_session(std::move(session));
+  throw;
 }
 SessionOwner::SessionOwner(SessionOwner&& other) noexcept
     : state_(std::move(other.state_)) {}
@@ -246,8 +249,19 @@ BackendResult<SessionObservation> SessionLease::inspect() {
         if (auto* facet = physical.transaction_session()) value.transactions = facet->transaction_capabilities();
         value.has_statement_description_facet = physical.statement_description() != nullptr;
         value.has_catalog_query_facet = physical.catalog_queries() != nullptr;
+        value.has_health_facet = physical.session_health() != nullptr;
+        value.has_reset_facet = physical.session_reset() != nullptr;
         const auto outcome = passive_outcome(value.connected, value.state);
         return BackendResult<SessionObservation>{std::move(value), outcome};
+      });
+}
+BackendResult<void> SessionLease::check_health(rs::util::Deadline deadline) {
+  invalidate_cache();
+  return invoke_borrowed<void>(*this, physical_session(), BackendOperation::CheckHealth,
+      [&](IDatabaseConnection& physical) -> BackendResult<void> {
+        if (auto* facet = physical.session_health()) return facet->check_health(deadline);
+        return local_backend_error(LocalFailure::Unsupported, "Session health facet unavailable",
+            BackendOperation::CheckHealth, physical.session_state());
       });
 }
 BackendResult<std::string> SessionLease::catalog_query(const CatalogRequest& request) {

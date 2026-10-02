@@ -1278,21 +1278,20 @@ ODBCConnection::ODBCConnection(
 
 std::span<const rs::core::database::TypeDefinition> ODBCConnection::type_catalog() const {
   return backend_provider_->type_catalog(
-      db_conn_ ? db_conn_->server_version() : std::string{});
+      backend_observation_.server_version);
 }
 
 rs::core::database::BackendCapabilities ODBCConnection::capabilities() const {
   auto result = backend_provider_->capabilities();
-  if (db_conn_ && db_conn_->is_connected() && !db_conn_->statement_description()) {
+  if (backend_lease_ && !backend_observation_.has_statement_description_facet) {
     result.describe_parameters = false;
   }
   return result;
 }
 
 rs::core::database::TransactionCapabilities ODBCConnection::transaction_capabilities() const {
-  if (!db_conn_ || !db_conn_->is_connected()) return backend_provider_->transaction_capabilities();
-  const auto* facet = db_conn_->transaction_session();
-  return facet ? facet->transaction_capabilities() : rs::core::database::TransactionCapabilities{};
+  if (!backend_lease_) return backend_provider_->transaction_capabilities();
+  return backend_observation_.transactions;
 }
 
 void ODBCConnection::log(
@@ -1425,11 +1424,23 @@ SQLRETURN ODBCConnection::connect(
                                  transport_options.deadline_model)), rs::core::logging::FieldSensitivity::Public}});
     auto transport = rs::core::transport::TransportFactory::create(
         transport_options, settings.use_ssl);
-    db_conn_ = backend_provider_->create_session(std::move(transport));
-    if (!db_conn_) throw std::runtime_error("Backend provider returned no session");
-    
-    // Connect synchronously for ODBC compatibility
-    auto result = db_conn_->connect(settings);
+    struct AttemptCleanup {
+      ODBCConnection& connection;
+      std::unique_ptr<rs::core::database::IDatabaseConnection> physical;
+      bool completed{false};
+      ~AttemptCleanup() {
+        if (completed) return;
+        if (physical) { try { physical->disconnect(); } catch (...) {} }
+        connection.backend_lease_.reset(); connection.backend_owner_.reset();
+        connection.backend_observation_ = {};
+        connection.connected_ = false; connection.transaction_active_ = false;
+      }
+    } attempt{*this, backend_provider_->create_session(std::move(transport))};
+    if (!attempt.physical) throw std::runtime_error("Backend provider returned no session");
+
+    // One authentication followed by one terminal unbound borrow. No pool,
+    // credential rebind, extra health I/O or lifetime/idle defaults are introduced.
+    auto result = attempt.physical->connect(settings);
     if (result.has_error()) {
       const auto timeout = is_timeout_error(result.error());
       const auto authentication_failed =
@@ -1449,6 +1460,20 @@ SQLRETURN ODBCConnection::connect(
       return SQL_ERROR;
     }
 
+    if (result.session_snapshot().state != rs::core::database::SessionState::Idle ||
+        result.session_snapshot().disposition != rs::core::database::SessionDisposition::Reusable)
+      throw std::runtime_error("Backend authentication did not establish an idle session");
+    backend_owner_.emplace(std::move(attempt.physical));
+    backend_lease_ = backend_owner_->try_acquire();
+    if (!backend_lease_) throw std::runtime_error("Backend session adoption failed");
+    auto observation = backend_lease_->inspect();
+    if (!observation || !observation->connected ||
+        observation->state != rs::core::database::SessionState::Idle ||
+        observation.session_snapshot().state != rs::core::database::SessionState::Idle ||
+        observation.session_snapshot().disposition != rs::core::database::SessionDisposition::Reusable)
+      throw std::runtime_error("Backend session observation failed");
+    backend_observation_ = std::move(*observation);
+
     if (transaction_isolation_ != transaction_isolation_to_odbc(
             transaction_capabilities().default_isolation)) {
       auto isolation_result = backend_isolation(
@@ -1464,11 +1489,20 @@ SQLRETURN ODBCConnection::connect(
             isolation_result.backend_error().safe_summary(),
             {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public},
              {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
-        db_conn_->disconnect();
         return SQL_ERROR;
       }
+      if (isolation_result.session_snapshot() != rs::core::database::SessionSnapshot{
+              rs::core::database::SessionState::Idle, rs::core::database::SessionDisposition::Reusable})
+        throw std::runtime_error("Backend isolation did not preserve an idle session");
+      auto final_observation = backend_lease_->inspect();
+      if (!final_observation || !final_observation->connected ||
+          final_observation->state != rs::core::database::SessionState::Idle ||
+          final_observation.session_snapshot() != rs::core::database::SessionSnapshot{
+              rs::core::database::SessionState::Idle, rs::core::database::SessionDisposition::Reusable})
+        throw std::runtime_error("Backend isolation left an invalid session");
     }
     
+    if (!*backend_lease_) throw std::runtime_error("Backend retired during connection setup");
     input_limits_ = settings.input_limits;
     connected_ = true;
     transaction_active_ = false;
@@ -1479,8 +1513,14 @@ SQLRETURN ODBCConnection::connect(
     log(rs::core::logging::LogLevel::Info, "connection_opened",
         "Database connection established",
         {{"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
+    attempt.completed = true;
     return SQL_SUCCESS;
-    
+
+  } catch (const std::bad_alloc&) {
+    set_error("HY001", "Connection memory allocation failed");
+    log(rs::core::logging::LogLevel::Error, "connection_failed", "Database memory allocation failed",
+        {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}});
+    return SQL_ERROR;
   } catch (const std::exception& e) {
     set_error(SQLSTATE_GENERAL_ERROR, e.what());
     log(rs::core::logging::LogLevel::Error, "connection_failed", "Database connection failed",
@@ -1684,7 +1724,7 @@ SQLRETURN ODBCConnection::get_attribute(SQLINTEGER attribute,
         set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
         return SQL_ERROR;
       }
-      write_uinteger(db_conn_ && db_conn_->is_connected()
+      write_uinteger(backend_connected()
                          ? SQL_CD_FALSE : SQL_CD_TRUE);
       return SQL_SUCCESS;
     case SQL_ATTR_METADATA_ID:
@@ -1735,7 +1775,7 @@ std::string ODBCConnection::get_current_catalog() const {
 
 rs::core::database::BackendResult<rs::core::database::QueryResult> ODBCConnection::backend_query(
     std::string_view sql, rs::util::Deadline deadline) {
-  if (db_conn_) return db_conn_->execute_query(sql, deadline);
+  if (backend_lease_) return backend_lease_->execute_query(sql, deadline);
   rs::core::database::BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::NotConnected), "Connection is not open"};
   error.operation = rs::core::database::BackendOperation::ExecuteDirect;
   error.session_state = rs::core::database::SessionState::Disconnected;
@@ -1743,7 +1783,7 @@ rs::core::database::BackendResult<rs::core::database::QueryResult> ODBCConnectio
 }
 rs::core::database::BackendResult<rs::core::database::QueryResult> ODBCConnection::backend_prepared(
     std::string_view sql, std::span<const rs::core::database::QueryParameter> params, rs::util::Deadline deadline) {
-  if (db_conn_) return db_conn_->execute_prepared(sql, params, deadline);
+  if (backend_lease_) return backend_lease_->execute_prepared(sql, params, deadline);
   rs::core::database::BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::NotConnected), "Connection is not open"};
   error.operation = rs::core::database::BackendOperation::ExecutePrepared;
   error.session_state = rs::core::database::SessionState::Disconnected;
@@ -1752,37 +1792,35 @@ rs::core::database::BackendResult<rs::core::database::QueryResult> ODBCConnectio
 rs::core::database::BackendResult<rs::core::database::QueryResult> ODBCConnection::backend_description(
     std::string_view sql, std::span<const rs::core::database::QueryParameterType> types, rs::util::Deadline deadline) {
   using namespace rs::core::database;
-  if (auto* facet = db_conn_ ? db_conn_->statement_description() : nullptr)
-    return facet->describe_statement(sql, types, deadline);
+  if (backend_lease_) return backend_lease_->describe_statement(sql, types, deadline);
   return local_backend_error(LocalFailure::Unsupported, "Data source does not support statement description",
-      BackendOperation::Describe, db_conn_ ? db_conn_->session_state() : SessionState::Disconnected);
+      BackendOperation::Describe, SessionState::Disconnected);
 }
 rs::util::Result<std::string> ODBCConnection::backend_catalog(const rs::core::database::CatalogRequest& request) {
-  const auto* facet = db_conn_ ? db_conn_->catalog_queries() : nullptr;
-  if (facet) return facet->catalog_query(request);
+  if (backend_lease_) {
+    auto result = backend_lease_->catalog_query(request);
+    if (result) return std::move(*result);
+    return {result.error(), result.error_message()};
+  }
   return {rs::util::DbErrorCode::UnsupportedFeature, "Data source does not support catalog discovery"};
 }
 
 rs::core::database::BackendResult<void> ODBCConnection::backend_transaction(
     rs::core::database::TransactionAction action, rs::util::Deadline deadline) {
   using namespace rs::core::database;
-  if (auto* facet = db_conn_ ? db_conn_->transaction_session() : nullptr) {
-    return facet->transaction(action, deadline);
-  }
+  if (backend_lease_) return backend_lease_->transaction(action, deadline);
   return local_backend_error(LocalFailure::Unsupported,
       "Transactions are not supported by this backend", BackendOperation::Transaction,
-      db_conn_ ? db_conn_->session_state() : SessionState::Disconnected);
+      SessionState::Disconnected);
 }
 
 rs::core::database::BackendResult<void> ODBCConnection::backend_isolation(
     rs::core::database::TransactionIsolation level, rs::util::Deadline deadline) {
   using namespace rs::core::database;
-  if (auto* facet = db_conn_ ? db_conn_->transaction_session() : nullptr) {
-    return facet->set_transaction_isolation(level, deadline);
-  }
+  if (backend_lease_) return backend_lease_->set_transaction_isolation(level, deadline);
   return local_backend_error(LocalFailure::Unsupported,
       "Transaction isolation is not supported by this backend", BackendOperation::SetTransactionIsolation,
-      db_conn_ ? db_conn_->session_state() : SessionState::Disconnected);
+      SessionState::Disconnected);
 }
 
 rs::core::database::BackendResult<void> ODBCConnection::begin_transaction_if_needed(
@@ -1834,7 +1872,7 @@ SQLRETURN ODBCConnection::disconnect() {
     set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
     return SQL_ERROR;
   }
-  if (transaction_active_ && db_conn_ && db_conn_->is_connected()) {
+  if (transaction_active_ && backend_connected()) {
     set_error(SQLSTATE_INVALID_TRANSACTION_STATE,
               "An active transaction must be committed or rolled back before disconnecting");
     return SQL_ERROR;
@@ -1843,12 +1881,15 @@ SQLRETURN ODBCConnection::disconnect() {
   return SQL_SUCCESS;
 }
 
+bool ODBCConnection::backend_connected() {
+  if (!backend_lease_ || !*backend_lease_) return false;
+  auto observation = backend_lease_->inspect();
+  return observation && observation->connected;
+}
+
 void ODBCConnection::close_connection() {
-  if (db_conn_) {
-    db_conn_->disconnect();
-    connected_ = false;
-    transaction_active_ = false;
-  }
+  backend_lease_.reset(); backend_owner_.reset(); backend_observation_ = {};
+  connected_ = false; transaction_active_ = false;
   log(rs::core::logging::LogLevel::Info, "connection_closed",
       "Database connection closed");
   if (logger_) logger_->flush();

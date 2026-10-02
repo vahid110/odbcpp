@@ -1494,3 +1494,38 @@ TEST(SessionLeaseObservationTest, ContradictoryConnectedStateRetiresBeforeFacetA
   }
 }
 }
+
+namespace {
+TEST(SessionLeaseFacetsTest, ActiveHealthPreservesBorrowerTransactionStateAndInvalidatesScope) {
+  auto observed = std::make_shared<Observed>();
+  CredentialContext credentials; auto token = credentials.publish_authenticated();
+  SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+  auto lease = owner.try_acquire(token); ASSERT_TRUE(lease);
+  auto scope = lease->cache_token(); ASSERT_TRUE(scope);
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds(2));
+  observed->health_snapshot = SessionSnapshot{SessionState::Transaction, SessionDisposition::ResetRequired};
+  observed->on_health = [&] { EXPECT_FALSE(scope->is_current()); EXPECT_FALSE(owner.try_acquire(token)); };
+  auto health = lease->check_health(deadline); ASSERT_TRUE(health);
+  EXPECT_EQ(deadline, observed->health_deadline); EXPECT_EQ(1, observed->health);
+  EXPECT_EQ((SessionSnapshot{SessionState::Transaction, SessionDisposition::ResetRequired}), health.session_snapshot());
+  EXPECT_TRUE(*lease); EXPECT_EQ(0, observed->disconnects);
+}
+TEST(SessionLeaseFacetsTest, ActiveHealthMissingFacetAndTerminalErrorsRespectExclusiveLifetime) {
+  for (int mode : {0, 2, 3, 4, 6}) {
+    auto observed = std::make_shared<Observed>(); observed->missing_health = mode == 0;
+    observed->health_mode = mode;
+    if (mode == 6) observed->health_snapshot = SessionSnapshot{};
+    auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+    if (mode == 0) {
+      auto result = lease->check_health(rs::util::Deadline::max()); ASSERT_FALSE(result);
+      EXPECT_EQ(BackendErrorClass::Unsupported, result.backend_error().error_class); EXPECT_TRUE(*lease);
+    } else if (mode == 2) { EXPECT_THROW(lease->check_health(rs::util::Deadline::max()), std::bad_alloc); }
+    else if (mode == 3) { EXPECT_THROW(lease->check_health(rs::util::Deadline::max()), std::runtime_error); }
+    else if (mode == 4) { EXPECT_THROW(lease->check_health(rs::util::Deadline::max()), int); }
+    else { ASSERT_TRUE(lease->check_health(rs::util::Deadline::max())); EXPECT_FALSE(*lease); }
+    lease->retire(); EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
+    auto closed = lease->check_health(rs::util::Deadline::max()); ASSERT_FALSE(closed);
+    EXPECT_EQ(BackendOperation::CheckHealth, closed.backend_error().operation);
+  }
+}
+}

@@ -1,3 +1,4 @@
+#include "core/database/transaction_session.h"
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_handles.h"
@@ -23,7 +24,9 @@ template<class T> concept ExposesRawPhysicalSession = requires(T& connection) { 
 static_assert(!ExposesRawPhysicalSession<rs::odbc::ODBCConnection>);
 
 struct Observations {
-  int created{}, transports{}, disconnects{}, queries{}, descriptions{}, translations{};
+  int created{}, transports{}, disconnects{}, destructions{}, queries{}, descriptions{}, translations{};
+  int terminal_execution{}, connect_exception{};
+  bool observation_exception{};
   ConnectionSettings settings;
   std::string sql;
   std::vector<QueryParameter> parameters;
@@ -35,6 +38,7 @@ struct Observations {
   bool advertised_transactions{false};
   bool absent_description{false};
   bool missing_parameter_metadata{}, parameter_metadata_error{};
+  int isolation_mode{};
   int invalid_cell_errors{}, invalid_result_structure{}, invalid_execution_shape{}, invalid_description_shape{};
 };
 
@@ -89,16 +93,36 @@ static_assert(!HasNativeTypeInterpretation<IDatabaseConnection>);
 static_assert(!HasNativeTypeResolution<IDatabaseConnection>);
 
 // Deliberately implements only the database boundary: no PG parser or session.
-class FakeBackend final : public IDatabaseConnection, public IStatementDescription {
+class FakeBackend final : public IDatabaseConnection, public IStatementDescription, public ITransactionSession {
  public:
   explicit FakeBackend(std::shared_ptr<Observations> seen)
       : seen_(std::move(seen)), absent_description_(seen_->absent_description) {}
+  ~FakeBackend() override { ++seen_->destructions; }
   BackendResult<void> connect(const ConnectionSettings& settings) override {
+    if (seen_->connect_exception == 1) throw std::bad_alloc{};
+    if (seen_->connect_exception == 2) throw std::runtime_error("fixture connect exception");
     if (seen_->setup_allocation_failure) return {DbErrorCode::AllocationFailure, {}};
-    seen_->settings = settings; connected_ = true; return {};
+    seen_->settings = settings; connected_ = true;
+    if (seen_->connect_exception == 4) return BackendResult<void>{};
+    if (seen_->connect_exception == 5) return BackendResult<void>{{SessionState::Transaction, SessionDisposition::ResetRequired}};
+    return BackendResult<void>{{SessionState::Idle, SessionDisposition::Reusable}};
+  }
+  ITransactionSession* transaction_session() noexcept override { return seen_->isolation_mode ? this : nullptr; }
+  TransactionCapabilities transaction_capabilities() const override {
+    return {true, true, TransactionIsolation::ReadCommitted, {true, true, true, true}};
+  }
+  BackendResult<void> transaction(TransactionAction, Deadline) override {
+    return BackendResult<void>{{SessionState::Idle, SessionDisposition::Reusable}};
+  }
+  BackendResult<void> set_transaction_isolation(TransactionIsolation, Deadline) override {
+    if (seen_->isolation_mode == 2) return BackendResult<void>{};
+    if (seen_->isolation_mode == 3) return BackendResult<void>{{SessionState::Idle, SessionDisposition::ResetRequired}};
+    if (seen_->isolation_mode == 4) seen_->connect_exception = 6;
+    return BackendResult<void>{{SessionState::Idle, SessionDisposition::Reusable}};
   }
   void disconnect() override { connected_ = false; ++seen_->disconnects; }
   bool is_connected() const override { return connected_; }
+  SessionState session_state() const override { return connected_ ? (seen_->connect_exception == 6 ? SessionState::Transaction : seen_->connect_exception == 7 ? SessionState::Unknown : SessionState::Idle) : SessionState::Disconnected; }
   QueryResult rows() const {
     QueryResult result;
     result.columns = {{"binary", {}}, {"flag", {}}, {"text", {}}};
@@ -146,6 +170,14 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
   }
   BackendResult<QueryResult> execute_query(std::string_view sql, Deadline deadline) override {
     ++seen_->queries; seen_->sql = sql; seen_->deadline = deadline;
+    if (seen_->terminal_execution == 1) return BackendResult<QueryResult>{rows(), {SessionState::Unknown, SessionDisposition::Retire}};
+    if (seen_->terminal_execution == 2) {
+      BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), seen_->failure_message};
+      error.native_state = "FAKE_ERROR"; error.operation = BackendOperation::ExecuteDirect;
+      return error;
+    }
+    if (seen_->terminal_execution == 3) throw std::runtime_error("fixture execution exception");
+    if (seen_->terminal_execution == 4) return BackendResult<QueryResult>{rows()};
     if (sql.ends_with("limit")) { connected_ = false; return {DbErrorCode::ResourceLimit, "Database response byte limit exceeded"}; }
     if (sql.ends_with("allocation")) { connected_ = false; return {DbErrorCode::AllocationFailure, {}}; }
     if (sql.ends_with("timeout")) return {DbErrorCode::Timeout, "fake deadline"};
@@ -202,7 +234,7 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
       }
       if (seen_->invalid_execution_shape != 1) result.additional_results.push_back(std::move(later));
     }
-    return result;
+    return BackendResult<QueryResult>{std::move(result), {SessionState::Idle, SessionDisposition::Reusable}};
   }
   BackendResult<QueryResult> execute_prepared(std::string_view sql, std::span<const QueryParameter> params,
                                       Deadline deadline) override {
@@ -230,12 +262,16 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
     if (seen_->parameter_metadata_error) {
       BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), "fake metadata error"};
       error.operation = BackendOperation::ResolveTypes;
+      error.session_state = SessionState::Idle; error.disposition = SessionDisposition::Reusable;
       error.native_state = "FAKE_ERROR";
       return error;
     }
-    return result;
+    return BackendResult<QueryResult>{std::move(result), {SessionState::Idle, SessionDisposition::Reusable}};
   }
-  std::string server_version() const override { return seen_->server_version; }
+  std::string server_version() const override {
+    if (seen_->observation_exception) throw std::runtime_error("fixture observation exception");
+    return seen_->server_version;
+  }
  private:
   std::shared_ptr<Observations> seen_;
   bool connected_{};
@@ -1252,12 +1288,13 @@ TEST_F(BackendContractTest, DeferredMetadataErrorUsesGeneralStateAndClearsPendin
 }
 
 TEST_F(BackendContractTest, ServerVersionUsesTypedBackendServiceForAnsiAndWideInfo) {
-  connect();
   for (const auto& [raw, expected] : {
       std::pair{"1.0", "01.00.0000"}, std::pair{"17.11 (vendor)", "17.11.0000"},
       std::pair{"", "00.00.0000"}, std::pair{"invalid", "00.00.0000"}}) {
     SCOPED_TRACE(raw);
     seen->server_version = raw;
+    connect();
+    seen->server_version = "changed after adoption"; // The negotiated observation is owned.
     SQLCHAR version[16]{}; SQLSMALLINT length = -1;
     ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DBMS_VER, version, sizeof(version), &length));
     EXPECT_STREQ(expected, reinterpret_cast<const char*>(version)); EXPECT_EQ(10, length);
@@ -1268,6 +1305,7 @@ TEST_F(BackendContractTest, ServerVersionUsesTypedBackendServiceForAnsiAndWideIn
     EXPECT_TRUE(std::equal(expected_wide->begin(), expected_wide->end(), wide));
     EXPECT_EQ(0, wide[10]);
     EXPECT_EQ(0, seen->queries); EXPECT_EQ(0, seen->descriptions);
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
   }
 }
 
@@ -1501,7 +1539,7 @@ TEST_F(BackendContractTest, ProviderTypePolicyUsesAdvertisedVersionWithoutCatalo
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
   ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
   EXPECT_EQ(16u, live.front().column_size);
-  EXPECT_EQ(16u, connection->type_catalog().front().column_size);
+  EXPECT_EQ(8u, connection->type_catalog().front().column_size); // Disconnected provider defaults.
   seen->server_version.clear();
   ASSERT_FALSE(connection->type_catalog().empty());
   EXPECT_EQ(8u, connection->type_catalog().front().column_size);
@@ -1540,4 +1578,117 @@ TEST_F(BackendContractTest, ProviderErrorPolicyWorksWithoutSessionAndOwnsReturne
     EXPECT_EQ(0, seen->created); EXPECT_EQ(0, seen->transports); EXPECT_EQ(0, seen->queries);
   }
   EXPECT_EQ(std::optional<std::string>("22018"), retained);
+}
+
+TEST_F(BackendContractTest, TerminalLeaseSuccessKeepsOwningRowsAndDisconnectsExactlyOnce) {
+  for (int mode : {1, 4}) {
+    connect(); seen->terminal_execution = mode;
+    const auto retired_before = seen->destructions;
+    const auto disconnected_before = seen->disconnects;
+    ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+    EXPECT_EQ(retired_before + 1, seen->destructions);
+    EXPECT_EQ(disconnected_before + 1, seen->disconnects);
+    SQLUINTEGER dead = SQL_CD_FALSE;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, &dead, 0, nullptr));
+    EXPECT_EQ(SQL_CD_TRUE, dead);
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    char output[16]{}; SQLLEN length{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_CHAR, output, sizeof(output), &length));
+    EXPECT_STREQ("00ff5c", output); // Stored rows survive physical destruction.
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+    EXPECT_EQ(disconnected_before + 1, seen->disconnects);
+    seen->terminal_execution = 0;
+  }
+}
+TEST_F(BackendContractTest, TerminalErrorAndBackendExceptionRetireAndAllowExplicitReconnect) {
+  for (int mode : {2, 3}) {
+    connect(); seen->terminal_execution = mode; seen->failure_message = "owned terminal error";
+    const auto retired_before = seen->destructions;
+    const auto disconnected_before = seen->disconnects;
+    ASSERT_EQ(SQL_ERROR, execute("rows"));
+    EXPECT_EQ(mode == 2 ? "22018" : "HY000", state());
+    EXPECT_EQ(retired_before + 1, seen->destructions);
+    EXPECT_EQ(disconnected_before + 1, seen->disconnects);
+    SQLUINTEGER dead = SQL_CD_FALSE;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, &dead, 0, nullptr));
+    EXPECT_EQ(SQL_CD_TRUE, dead);
+    seen->failure_message.clear();
+    SQLCHAR message[128]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1, nullptr, nullptr, message, sizeof(message), nullptr));
+    EXPECT_NE(std::string::npos, std::string(reinterpret_cast<char*>(message)).find(mode == 2 ? "owned terminal error" : "fixture execution exception"));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+    EXPECT_EQ(disconnected_before + 1, seen->disconnects); seen->terminal_execution = 0;
+  }
+  connect(); ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+}
+TEST_F(BackendContractTest, NegotiatedCapabilitiesSurviveTerminalRetirementUntilDisconnect) {
+  connect();
+  auto* connection = static_cast<rs::odbc::ODBCConnection*>(dbc);
+  const auto before = connection->capabilities();
+  const auto transactions = connection->transaction_capabilities();
+  SQLUSMALLINT supported_before{}, supported_after{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(dbc, SQL_API_SQLDESCRIBEPARAM, &supported_before));
+  seen->terminal_execution = 1;
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+  EXPECT_EQ(before.describe_parameters, connection->capabilities().describe_parameters);
+  EXPECT_EQ(transactions.supported, connection->transaction_capabilities().supported);
+  EXPECT_TRUE(connection->has_statement_description_facet());
+  ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(dbc, SQL_API_SQLDESCRIBEPARAM, &supported_after));
+  EXPECT_EQ(supported_before, supported_after);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  SQLSMALLINT type{}, digits{}, nullable{}; SQLULEN size{};
+  EXPECT_EQ(SQL_ERROR, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+  EXPECT_EQ("08S01", state());
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  EXPECT_FALSE(connection->has_statement_description_facet());
+}
+
+TEST_F(BackendContractTest, FailedAuthenticationOrObservationCleansAttemptAndPermitsRetry) {
+  for (int mode : {1, 2, 3, 4, 5, 6, 7}) {
+    seen->connect_exception = mode == 3 ? 0 : mode;
+    seen->observation_exception = mode == 3;
+    const auto retired_before = seen->destructions;
+    const auto disconnected_before = seen->disconnects;
+    EXPECT_EQ(SQL_ERROR, SQLDriverConnect(dbc, nullptr, (SQLCHAR*)"SERVER=fake;SSL=0", SQL_NTS,
+        nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+    EXPECT_EQ(mode == 1 ? "HY001" : "HY000", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(retired_before + 1, seen->destructions);
+    EXPECT_EQ(disconnected_before + 1, seen->disconnects);
+    seen->connect_exception = 0; seen->observation_exception = false;
+    connect(); ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  }
+}
+TEST_F(BackendContractTest, DeferredIsolationMustPreserveIdleAdmissionAndPermitRetry) {
+  seen->advertised_transactions = true;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_TXN_ISOLATION,
+      (SQLPOINTER)SQL_TXN_SERIALIZABLE, 0));
+  for (int mode : {2, 3, 4}) {
+    seen->isolation_mode = mode;
+    const auto before = seen->disconnects;
+    EXPECT_EQ(SQL_ERROR, SQLDriverConnect(dbc, nullptr, (SQLCHAR*)"SERVER=fake;SSL=0", SQL_NTS,
+        nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+    EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(before + 1, seen->disconnects); EXPECT_EQ(before + 1, seen->destructions);
+    seen->connect_exception = 0; seen->isolation_mode = 1;
+    connect(); ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  }
+  seen->isolation_mode = 0;
+}
+
+TEST_F(BackendContractTest, FreeingConnectionRetiresActiveLeaseExactlyOnce) {
+  connect(); ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+  EXPECT_EQ(0, seen->disconnects); EXPECT_EQ(0, seen->destructions);
+  EXPECT_EQ(SQL_ERROR, SQLFreeHandle(SQL_HANDLE_DBC, dbc)); // A logical open cannot be freed.
+  EXPECT_EQ(0, seen->disconnects); EXPECT_EQ(0, seen->destructions);
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, dbc)); dbc = nullptr;
+  EXPECT_EQ(1, seen->disconnects); EXPECT_EQ(1, seen->destructions);
 }

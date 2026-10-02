@@ -3,6 +3,7 @@ core/database/backend_provider.h
 core/database/backend_result.h
 core/database/catalog_queries.h
 core/database/catalog_request.h
+core/database/credential_context.h
 core/database/error_policy.h
 core/database/i_database_connection.h
 core/database/native_type_info.h
@@ -10,6 +11,7 @@ core/database/query_parameter.h
 core/database/query_result.h
 core/database/result_validation.h
 core/database/session_health.h
+core/database/session_owner.h
 core/database/session_reset.h
 core/database/sql_dialect.h
 core/database/sql_translation.h

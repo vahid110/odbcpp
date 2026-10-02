@@ -1,7 +1,7 @@
 #pragma once
 #include "odbc_types.h"
 #include "core/database/backend_provider.h"
-#include "core/database/i_database_connection.h"
+#include "core/database/session_owner.h"
 #include "core/util/driver_logging.h"
 #include "core/util/result.h"
 #include <array>
@@ -241,8 +241,7 @@ public:
   const std::string& server_name() const noexcept { return server_name_; }
   const std::string& user_name() const noexcept { return user_name_; }
   std::string dbms_version() const {
-    return db_conn_ ? db_conn_->server_version()
-                    : std::string{};
+    return backend_observation_.server_version;
   }
   
   const rs::core::database::IBackendProvider& backend_provider() const noexcept {
@@ -255,8 +254,8 @@ public:
   rs::core::database::BackendCapabilities capabilities() const;
   rs::core::database::TransactionCapabilities transaction_capabilities() const;
   // Facet presence only; individual requests may still be unsupported.
-  bool has_catalog_query_facet() const noexcept { return db_conn_ && db_conn_->catalog_queries(); }
-  bool has_statement_description_facet() const noexcept { return db_conn_ && db_conn_->statement_description(); }
+  bool has_catalog_query_facet() const noexcept { return backend_lease_ && backend_observation_.has_catalog_query_facet; }
+  bool has_statement_description_facet() const noexcept { return backend_lease_ && backend_observation_.has_statement_description_facet; }
 
 private:
   friend class ODBCStatement;
@@ -269,6 +268,7 @@ private:
       std::string_view, std::span<const rs::core::database::QueryParameterType>, rs::util::Deadline);
   rs::util::Result<std::string> backend_catalog(const rs::core::database::CatalogRequest&);
 
+  bool backend_connected();
   void close_connection();
   rs::core::database::BackendResult<void> backend_transaction(
       rs::core::database::TransactionAction action, rs::util::Deadline deadline);
@@ -277,7 +277,11 @@ private:
   rs::core::database::InputLimits input_limits_;
 
   std::shared_ptr<const rs::core::database::IBackendProvider> backend_provider_;
-  std::unique_ptr<rs::core::database::IDatabaseConnection> db_conn_;
+  // One unbound exclusive borrow, terminal at disconnect; no return/reissue.
+  // Lease destroys before owner. Backend information is an owned passive value.
+  std::optional<rs::core::database::SessionOwner> backend_owner_;
+  std::optional<rs::core::database::SessionLease> backend_lease_;
+  rs::core::database::SessionObservation backend_observation_;
   bool connected_ = false;
   SQLUINTEGER login_timeout_seconds_ = 30;
   SQLUINTEGER connection_timeout_seconds_ = 0;

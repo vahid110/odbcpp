@@ -23,24 +23,23 @@ struct ODBCBackendTestAccess {
     auto transaction(rs::core::database::TransactionAction action, rs::util::Deadline deadline) {
       return connection_->backend_transaction(action, deadline);
     }
-    bool is_connected() const { return connection_->db_conn_ && connection_->db_conn_->is_connected(); }
-    bool has_health() const { return connection_->db_conn_ && connection_->db_conn_->session_health(); }
-    bool has_reset() const { return connection_->db_conn_ && connection_->db_conn_->session_reset(); }
+    bool is_connected() const { return connection_->backend_connected(); }
+    bool has_health() const { return connection_->backend_lease_ && bool(*connection_->backend_lease_) && connection_->backend_observation_.has_health_facet; }
+    bool has_reset() const { return connection_->backend_lease_ && bool(*connection_->backend_lease_) && connection_->backend_observation_.has_reset_facet; }
     rs::core::database::BackendResult<void> check_health(rs::util::Deadline deadline) {
-      auto* facet = connection_->db_conn_ ? connection_->db_conn_->session_health() : nullptr;
-      if (facet) return facet->check_health(deadline);
-      return rs::core::database::local_backend_error(rs::core::database::LocalFailure::Unsupported,
-          "Test health facet unavailable", rs::core::database::BackendOperation::CheckHealth,
-          rs::core::database::SessionState::Disconnected);
+      if (connection_->backend_lease_) return connection_->backend_lease_->check_health(deadline);
+      return closed(rs::core::database::BackendOperation::CheckHealth);
     }
     rs::core::database::BackendResult<void> reset_session(rs::util::Deadline deadline) {
-      auto* facet = connection_->db_conn_ ? connection_->db_conn_->session_reset() : nullptr;
-      if (facet) return facet->reset_session(deadline);
-      return rs::core::database::local_backend_error(rs::core::database::LocalFailure::Unsupported,
-          "Test reset facet unavailable", rs::core::database::BackendOperation::ResetSession,
-          rs::core::database::SessionState::Disconnected);
+      if (connection_->backend_lease_) return connection_->backend_lease_->reset_session(deadline);
+      return closed(rs::core::database::BackendOperation::ResetSession);
     }
    private:
+    static rs::core::database::BackendResult<void> closed(rs::core::database::BackendOperation operation) {
+      rs::core::database::BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::NotConnected), "Test connection is closed"};
+      error.operation = operation; error.session_state = rs::core::database::SessionState::Disconnected;
+      return error;
+    }
     std::shared_ptr<ODBCConnection> connection_;
   };
   static View view(std::shared_ptr<ODBCConnection> connection) { return View{std::move(connection)}; }
