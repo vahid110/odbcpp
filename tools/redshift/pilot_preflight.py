@@ -123,12 +123,32 @@ def validate_private_file(path) -> None:
         raise Blocked('private_config_unavailable') from None
 
 
+def assert_locked_directory(directory: Path, folder_fd: int) -> None:
+    """Fail closed if the canonical path diverges from the borrowed directory."""
+    try:
+        directory = Path(directory)
+        _private_components(directory)
+        opened = os.fstat(folder_fd)
+        current = os.stat(directory, follow_symlinks=False)
+        _need(stat.S_ISDIR(opened.st_mode) and opened.st_uid == os.getuid()
+              and stat.S_IMODE(opened.st_mode) == 0o700, 'unsafe_private_directory')
+        _need((opened.st_dev, opened.st_ino) == (current.st_dev, current.st_ino), 'directory_identity_changed')
+    except Blocked:
+        raise
+    except (OSError, ValueError, TypeError):
+        raise Blocked('directory_identity_changed') from None
+
+
 @contextmanager
-def pilot_lock(directory: Path = CANONICAL_DIRECTORY) -> Iterator[None]:
+def pilot_lock(directory: Path = CANONICAL_DIRECTORY) -> Iterator[int]:
     """Nonblocking stable lock inode; never delete, truncate or stale-reap it.
 
     Tests pass a private temporary directory. Production defaults to the single
     canonical path, independent of cwd/worktree. Directory must already exist.
+    Yields the exact verified directory fd, borrowed only until context exit.
+    Consumers must not close/retain it, reopen the pathname, or unlink the lock.
+    Consumers ignoring the yielded value remain compatible. Use
+    assert_locked_directory before/after directory-relative state operations.
     """
     folder_fd = lock_fd = None
     try:
@@ -138,6 +158,7 @@ def pilot_lock(directory: Path = CANONICAL_DIRECTORY) -> Iterator[None]:
         folder_info = os.fstat(folder_fd)
         _need(folder_info.st_uid == os.getuid() and stat.S_IMODE(folder_info.st_mode) == 0o700,
               'unsafe_private_directory')
+        assert_locked_directory(directory, folder_fd)
         flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
         try:
             lock_fd = os.open(LOCK_NAME, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=folder_fd)
@@ -151,7 +172,13 @@ def pilot_lock(directory: Path = CANONICAL_DIRECTORY) -> Iterator[None]:
         current = os.stat(LOCK_NAME, dir_fd=folder_fd, follow_symlinks=False)
         _need((current.st_dev, current.st_ino) == (os.fstat(lock_fd).st_dev, os.fstat(lock_fd).st_ino),
               'lock_identity_changed')
-        yield
+        assert_locked_directory(directory, folder_fd)
+        yield folder_fd
+        assert_locked_directory(directory, folder_fd)
+        _private_file(os.fstat(lock_fd))
+        current = os.stat(LOCK_NAME, dir_fd=folder_fd, follow_symlinks=False)
+        _need((current.st_dev, current.st_ino) == (os.fstat(lock_fd).st_dev, os.fstat(lock_fd).st_ino),
+              'lock_identity_changed')
     except Blocked:
         raise
     except (OSError, ValueError, TypeError):

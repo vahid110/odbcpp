@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import unittest
@@ -251,6 +252,51 @@ except p.Blocked as e: print(e.code)
         os.link(self.config, lock)
         with self.assertRaises(pilot.Blocked):
             with pilot.pilot_lock(self.directory): pass
+
+    def test_borrowed_lock_directory_fd_lifetime(self):
+        with pilot.pilot_lock(self.directory) as fd:
+            self.assertIsInstance(fd, int)
+            self.assertEqual(os.fstat(fd).st_ino, self.directory.stat().st_ino)
+            pilot.assert_locked_directory(self.directory, fd)
+        with self.assertRaises(OSError):
+            os.fstat(fd)
+        with self.assertRaises(pilot.Blocked):
+            pilot.assert_locked_directory(self.directory, fd)
+
+    def test_directory_replacement_and_symlink_block_lock_exit(self):
+        for symlink in (False, True):
+            moved = self.directory.with_name(self.directory.name+'-moved')
+            try:
+                with self.assertRaises(pilot.Blocked):
+                    with pilot.pilot_lock(self.directory) as fd:
+                        self.directory.rename(moved)
+                        if symlink:
+                            self.directory.symlink_to(moved, target_is_directory=True)
+                        else:
+                            self.directory.mkdir(mode=0o700)
+                        with self.assertRaises(pilot.Blocked):
+                            pilot.assert_locked_directory(self.directory, fd)
+            finally:
+                if self.directory.is_symlink(): self.directory.unlink()
+                elif self.directory.exists(): shutil.rmtree(self.directory)
+                moved.rename(self.directory)
+
+    def test_directory_replaced_during_open_is_not_yielded(self):
+        from unittest.mock import patch
+        moved = self.directory.with_name(self.directory.name+'-moved')
+        original_open = os.open
+        def race_open(path, flags, *args, **kwargs):
+            fd = original_open(path, flags, *args, **kwargs)
+            if Path(path) == self.directory and flags & os.O_DIRECTORY:
+                self.directory.rename(moved)
+                self.directory.mkdir(mode=0o700)
+            return fd
+        try:
+            with patch.object(pilot.os, 'open', side_effect=race_open), self.assertRaises(pilot.Blocked):
+                with pilot.pilot_lock(self.directory): self.fail('divergent descriptor yielded')
+        finally:
+            shutil.rmtree(self.directory)
+            moved.rename(self.directory)
 
     def test_cli_malformed_secret_input_is_sanitized(self):
         record = self.directory/'record.json'
