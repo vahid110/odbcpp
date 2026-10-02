@@ -603,3 +603,19 @@ the actual transport, retain identical negotiated flags in the credential packet
 and validate the full authentication state machine before publishing a session.
 Pinned MySQL 8.4.11 live integration remains required before S3 handshake acceptance.
 S2C/G12 qualification, PostgreSQL/Redshift behavior and public scope are unchanged.
+
+## MySQL authenticated connection proof — 2026-10-02
+
+The S3 private exchange implements `caching_sha2_password` cached and full
+authentication under verified TLS. Full authentication is password transmission
+inside that verified channel, never an unencrypted/RSA fallback. Peer identity
+is rechecked before every partial credential write, final OK is mandatory,
+packet/credential inputs are bounded and uncertain/failed exchanges retire the
+transport. Scoped owned secret packets are cleansed, with no universal temporary
+or caller-owned credential cleansing claim. Negotiation and authentication have
+separate, transferred cleanup ownership, including exceptions.
+
+The digest-pinned 8.4.11 private-CA Linux fixture exercises cold and cached login,
+wrong credentials, wrong trust and wrong hostname. It must pass exact-head CI
+before live connection evidence is accepted. This adds no reusable SDK session,
+MySQL ODBC registration, production pool, Redshift or provider qualification.

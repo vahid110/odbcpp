@@ -711,3 +711,48 @@ assertions under GCC's dangling-else warning-as-error policy. Explicit braces
 repair the test source without weakening warnings or altering driver behavior.
 Focused tests and the complete local gate set passed again on the repaired
 source; replacement exact-head hosted CI remains required.
+
+## S3 bounded authentication exchange and live fixture — 2026-10-02
+
+The private MySQL connection proof now sends protocol-41 HandshakeResponse
+under the previously verified TLS transport with the identical negotiated
+capabilities, supports cached and full `caching_sha2_password` authentication,
+and admits success only after the expected final OK. Full authentication sends
+the NUL-terminated password only inside the verified TLS channel; it is not
+an RSA or unencrypted fallback. AuthSwitch and unsupported auth-more responses
+fail closed. Credentials and server packets are bounded; username/password NUL
+inputs are rejected. The original deadline remains unchanged throughout.
+
+Every partial credential write rechecks peer verification. Outgoing derived-
+credential and full-password packet storage is scoped and cleansed on return or
+exception; borrowed caller credentials remain caller-owned. Cleanup ownership
+passes from TLS negotiation to authentication exactly once. Errors return fixed
+messages; server/native error text is not logged or echoed. This does not claim
+universal cleansing of compiler/provider temporaries or caller-owned strings.
+
+Unit tests cover immediate/cached/full success, final-OK and exact-sequence
+admission, empty and over-limit/NUL credentials, all truncated final packets,
+unsupported/repeated exchanges, malformed errors and OK, peer-verification loss
+before and during both credential writes, zero/EOF/oversize progress, preserved
+transport error codes and exception cleanup. Independent review identified a
+nested-cleanup issue; its fix and requested failure tests passed re-review.
+
+The Linux build-and-test job invokes a new private core probe against official
+MySQL 8.4.11 image digest
+`sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242`.
+The disposable private-CA fixture requires TLS, verifies the actual version and
+authentication plugin, waits for the final TCP-enabled server, clears the auth
+cache and proves cold full then warm cached login, wrong password, wrong CA and
+wrong hostname. It publishes success evidence only after all cases pass; stale
+evidence is removed first. Live acceptance is pending exact-head hosted CI.
+
+This is a backend-private connection-phase proof, not an SDK session or MySQL
+ODBC driver. Database selection, command/prepared execution, normalized results,
+transactions, metadata, provider registration and shared ODBC orchestration
+remain the subsequent bounded S3 work. S2C/T13/T14, G12 and live Redshift claims
+remain open; no crypto profile or release gate is narrowed.
+
+Complete local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan, Redshift unit/build
+and missing-endpoint contract gates passed for this authentication batch.
+The pinned live-container cases and Windows/package gates still require the
+exact-head hosted run before acceptance.
