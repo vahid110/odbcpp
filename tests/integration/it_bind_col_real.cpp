@@ -3704,7 +3704,8 @@ TEST_F(BindColIntegrationTest, NegativeTests) {
 }
 
 TEST_F(BindColIntegrationTest, LegacySignedIntegerTargetsFetchBindAndNull) {
-    for (SQLSMALLINT type : {SQL_C_LONG, SQL_C_SHORT, SQL_C_TINYINT}) {
+    for (const auto type : std::array<SQLSMALLINT, 3>{
+             SQL_C_LONG, SQL_C_SHORT, SQL_C_TINYINT}) {
         std::array<unsigned char, 8> value{};
         SQLLEN length = 0;
         const auto expect_value = [&](SQLINTEGER expected) {

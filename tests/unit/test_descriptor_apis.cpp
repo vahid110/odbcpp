@@ -877,7 +877,8 @@ TEST_F(DescriptorAPITest, UnconnectedDescriptorUsesConfiguredBackendTypeCatalog)
 TEST_F(DescriptorAPITest, LegacyIntegerBindingsPreserveDescriptorTypes) {
     SQLINTEGER value = -7;
     SQLLEN length = 0;
-    for (SQLSMALLINT type : {SQL_C_LONG, SQL_C_SHORT, SQL_C_TINYINT}) {
+    for (const auto type : std::array<SQLSMALLINT, 3>{
+             SQL_C_LONG, SQL_C_SHORT, SQL_C_TINYINT}) {
         ASSERT_EQ(SQL_SUCCESS, stmt->bind_col(1, type, &value, sizeof(value), &length));
         ASSERT_EQ(SQL_SUCCESS, stmt->bind_parameter(1, SQL_PARAM_INPUT, type,
             SQL_INTEGER, 10, 0, &value, sizeof(value), &length));
