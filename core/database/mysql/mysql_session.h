@@ -27,7 +27,8 @@ class MySqlSession final : public IDatabaseConnection {
         settings.host.empty() || settings.host.find('\0')!=std::string::npos || !settings.port ||
         settings.user.empty() || settings.user.find('\0')!=std::string::npos ||
         settings.password.find('\0')!=std::string::npos || settings.ssl_ca_file.find('\0')!=std::string::npos ||
-        settings.ssl_ca_dir.find('\0')!=std::string::npos || settings.database.find('\0')!=std::string::npos)
+        settings.ssl_ca_dir.find('\0')!=std::string::npos || settings.database.find('\0')!=std::string::npos ||
+        !rs::util::utf8_code_point_count(settings.database))
       return failure(rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter),BackendOperation::Connect);
     if (settings.user.size()>256 || settings.password.size()>=connection_packet_limit ||
         settings.ssl_ca_file.size()>settings.input_limits.max_connection_field_bytes ||
@@ -37,8 +38,6 @@ class MySqlSession final : public IDatabaseConnection {
         settings.user.size()>settings.input_limits.max_connection_field_bytes ||
         settings.password.size()>settings.input_limits.max_connection_field_bytes)
       return failure(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),BackendOperation::Connect);
-    if (!settings.database.empty()) return local_backend_error(LocalFailure::Unsupported,
-        "MySQL database selection is not implemented",BackendOperation::Connect,state_);
     // Authentication has a fixed five-packet bound, separate from command limits.
     // Reject tighter startup budgets until the authentication helper accepts them.
     constexpr std::size_t authentication_bound=5*(connection_packet_limit+4);
@@ -46,24 +45,46 @@ class MySqlSession final : public IDatabaseConnection {
         settings.startup_response_limits.max_messages<5 || settings.input_limits.max_auth_wire_bytes<authentication_bound ||
         settings.input_limits.max_startup_wire_bytes<authentication_bound)
       return failure(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),BackendOperation::Connect);
+    const auto selection_wire=settings.database.empty()?0:settings.database.size()+5;
+    if (!settings.database.empty() && (settings.database.size()>=connection_packet_limit ||
+        selection_wire>settings.input_limits.max_request_wire_bytes ||
+        selection_wire>settings.input_limits.max_startup_wire_bytes-authentication_bound ||
+        settings.startup_response_limits.max_messages<=5 ||
+        settings.startup_response_limits.max_wire_bytes-authentication_bound<11))
+      return failure(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),BackendOperation::Connect);
     bool authentication_owns_cleanup=false;
+    bool authenticated_live=false;
     try {
       auto* configurable=dynamic_cast<rs::core::transport::ITlsConfigurableTransport*>(transport_.get());
       if (!configurable) return failure(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature),BackendOperation::Connect);
       configurable->set_ca_locations(settings.ssl_ca_file,settings.ssl_ca_dir);
+      const auto deadline=rs::util::make_deadline(settings.timeout);
       authentication_owns_cleanup=true;
       auto authenticated=authenticate_verified_tls(*transport_,settings.host,settings.port,settings.user,settings.password,
-          rs::util::make_deadline(settings.timeout));
+          deadline);
       if (!authenticated) return failure(authenticated.error(),BackendOperation::Authenticate);
+      authenticated_live=true;
+      result_limits_=settings.result_limits;
+      if (!settings.database.empty()) {
+        auto selected=select_database(settings.database,deadline,
+            ResponseLimits{settings.startup_response_limits.max_wire_bytes-authentication_bound,
+                           settings.startup_response_limits.max_messages-5});
+        if (!selected) {
+          transport_->close();authenticated_live=false;
+          return failure(selected.error(),BackendOperation::Startup);
+        }
+      }
       connected_=true;state_=SessionState::Idle;
       version_=std::move(authenticated->verified.greeting.server_version);
       response_limits_=settings.response_limits;result_limits_=settings.result_limits;input_limits_=settings.input_limits;
       return BackendResult<void>{snapshot()};
     } catch (const std::bad_alloc&) {
-      if (!authentication_owns_cleanup) transport_->close();
+      if (!authentication_owns_cleanup || authenticated_live) transport_->close();
+      connected_=false;state_=SessionState::Disconnected;version_.clear();
       return failure(rs::util::make_error_code(rs::util::DbErrorCode::AllocationFailure),BackendOperation::Connect);
     } catch (...) {
-      if (!authentication_owns_cleanup) transport_->close();
+      if (!authentication_owns_cleanup || authenticated_live) transport_->close();
+      connected_=false;state_=SessionState::Disconnected;version_.clear();
       return failure(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),BackendOperation::Connect);
     }
   }
@@ -134,6 +155,26 @@ class MySqlSession final : public IDatabaseConnection {
       read=exact(packet);if (!read) return {read.error()};return packet;
     }
   };
+  // COM_INIT_DB sends the schema as a native protocol field, never SQL text.
+  // Authentication and selection share one deadline and a bounded startup budget.
+  rs::util::Result<void> select_database(std::string_view database,rs::util::Deadline deadline,
+                                      ResponseLimits limits) {
+    using rs::util::DbErrorCode;
+    std::vector<std::byte> request(database.size()+5);
+    authentication_detail::frame(request,0);request[4]=std::byte{2};
+    for (std::size_t i=0;i<database.size();++i) request[5+i]=static_cast<std::byte>(database[i]);
+    auto sent=authentication_detail::send_all(*transport_,request,deadline);
+    if (!sent) return {sent.error()};
+    Reader reader{*transport_,deadline,limits};
+    auto packet=reader.next();if (!packet) return {packet.error()};
+    if ((*packet)[0]==std::byte{255}) return {server_error(*packet).error()};
+    auto done=query_detail::completion(*packet,false);if (!done) return {done.error()};
+    if (done->affected || done->insert_id || (done->status&1)) return {DbErrorCode::ProtocolError};
+    if (rs::util::Clock::now()>=deadline) return {DbErrorCode::Timeout};
+    auto* tls=dynamic_cast<rs::core::transport::IStartTlsTransport*>(transport_.get());
+    if (!tls || !tls->peer_identity_verified()) return {DbErrorCode::TLSError};
+    return {};
+  }
   rs::util::Result<QueryResult> read_result(Reader& reader) {
     using rs::util::DbErrorCode;
     auto first=reader.next();if (!first) return {first.error()};

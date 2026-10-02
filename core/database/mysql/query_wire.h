@@ -42,7 +42,7 @@ class Cursor {
  private:
   std::span<const std::byte> bytes_;std::size_t offset_{};
 };
-struct Completion { std::size_t affected{};std::uint16_t status{}; };
+struct Completion { std::size_t affected{};std::uint16_t status{};std::uint64_t insert_id{}; };
 inline rs::util::Result<Completion> completion(std::span<const std::byte> bytes,bool eof) {
   Cursor c(bytes);std::uint64_t tag{},affected{},insert{},status{},warnings{};
   if (!c.integer(1,tag)) return {DbErrorCode::ProtocolError};
@@ -56,7 +56,7 @@ inline rs::util::Result<Completion> completion(std::span<const std::byte> bytes,
   if (affected>std::numeric_limits<std::size_t>::max()) return {DbErrorCode::ResourceLimit};
   // Warning delivery and multiple-result draining require their own contracts.
   if (warnings || (status&(8|0x40|0x80|0x1000|0x4000))) return {DbErrorCode::UnsupportedFeature};
-  return Completion{static_cast<std::size_t>(affected),static_cast<std::uint16_t>(status)};
+  return Completion{static_cast<std::size_t>(affected),static_cast<std::uint16_t>(status),insert};
 }
 inline rs::util::Result<ResultColumnMetadata> column(std::span<const std::byte> bytes,const ResultLimits& limits,std::size_t* metadata_bytes=nullptr) {
   Cursor c(bytes);std::string_view fields[6];std::size_t names{};

@@ -1769,3 +1769,12 @@ results, retirement policy and exact acceptance requirements. Prepared execution
 database selection, provider/ODBC registration and the full S3/S4 proof remain
 open. The authenticated connection batch passed CI `36978825121`; this batch
 requires its own complete gates and exact-head hosted live session evidence.
+
+## S3 native database selection — 2026-10-02
+
+The private MySQL session admits the requested database through COM_INIT_DB
+before publishing connection success, with one authentication/startup deadline,
+bounded budgets and retirement on rejected or malformed startup responses. See
+[SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md#s3-native-database-admission--2026-10-02)
+for scope and acceptance evidence. Prepared execution is the next bounded S3
+step; provider/ODBC registration and full S3/S4 acceptance remain open.

@@ -41,6 +41,7 @@ class FakeTransport : public rs::core::transport::ITransport,
   void set_ca_locations(const std::string&,const std::string&) override { ++configuration_calls; }
   Bytes input=packet(greeting()), output;
   std::size_t configuration_calls{}, offset{}, chunk{1}, calls{}, closes{}, upgrades{};
+  std::optional<std::size_t> throw_recv_offset;
   int fail_at{-1}; bool verified{true}, throw_io{}, zero{}, oversize{}, eof{}; int bad_send{-1};
   rs::util::Deadline expected{};
   std::vector<rs::util::Deadline> deadlines;
@@ -54,7 +55,7 @@ class FakeTransport : public rs::core::transport::ITransport,
   }
   rs::util::Result<rs::core::transport::IOResult> recv(std::span<std::byte> out, rs::util::Deadline dl) override {
     deadlines.push_back(dl); ++calls;
-    if (throw_io) throw std::runtime_error("test failure");
+    if (throw_io || (throw_recv_offset && offset>=*throw_recv_offset)) throw std::runtime_error("test failure");
     if (fail_at==1) return {DbErrorCode::Timeout,"unsafe native detail"};
     if (zero || oversize || eof) return rs::core::transport::IOResult{oversize?out.size()+1:0,eof};
     const auto n=std::min({chunk,out.size(),input.size()-offset});
@@ -187,11 +188,11 @@ TEST(MySqlSessionTest, DeadlineAndPeerLossCannotAdmitSuccessOrSendQuery) {
   Fixture lost;lost.transport->verified=false;result=lost.execute();ASSERT_FALSE(result);
   EXPECT_EQ(DbErrorCode::TLSError,result.error());EXPECT_TRUE(lost.transport->output.empty());
 }
-TEST(MySqlSessionTest, ConnectRejectsUnsupportedSecurityDatabaseAndTightStartupBudgets) {
+TEST(MySqlSessionTest, ConnectRejectsUnsupportedSecurityInvalidDatabaseAndTightStartupBudgets) {
   for (unsigned mode=0;mode<3;++mode) {
     auto t=std::make_unique<FakeTransport>();auto* observed=t.get();MySqlSession session(std::move(t));auto config=settings();
     if (mode==0) config.use_ssl=false;
-    if (mode==1) config.database="odbcpp";
+    if (mode==1) config.database=std::string(1,static_cast<char>(255));
     if (mode==2) config.startup_response_limits.max_messages=1;
     EXPECT_FALSE(session.connect(config));EXPECT_TRUE(observed->output.empty());EXPECT_EQ(0u,observed->calls);
   }
@@ -285,3 +286,73 @@ TEST(MySqlSessionTest, OversizedConnectionFieldsReportResourceLimitsWithoutIo) {
   }
 }
 } // namespace
+
+TEST(MySqlSessionTest, NativeDatabaseSelectionUsesOriginalDeadlineAndLiteralUtf8Name) {
+  auto owned=std::make_unique<FakeTransport>();auto* t=owned.get();
+  append(*t,ok(),3);append(*t,ok(),1);
+  MySqlSession session(std::move(owned));auto config=settings();config.database="db`'; SELECT secret;--é";
+  auto result=session.connect(config);ASSERT_TRUE(result);EXPECT_TRUE(session.is_connected());
+  ASSERT_GT(t->output.size(),config.database.size()+5);
+  const auto start=t->output.size()-config.database.size()-5;
+  EXPECT_EQ(std::byte{0},t->output[start+3]);EXPECT_EQ(std::byte{2},t->output[start+4]);
+  const std::string actual(reinterpret_cast<const char*>(t->output.data()+start+5),config.database.size());
+  EXPECT_EQ(config.database,actual);
+  for (const auto dl:t->deadlines) EXPECT_EQ(t->deadlines.front(),dl);
+  append(*t,ok(),1);EXPECT_TRUE(session.execute_query("SELECT 1",rs::util::make_deadline(std::chrono::seconds(10))));
+  EXPECT_EQ(0u,t->closes);
+}
+TEST(MySqlSessionTest, DatabaseSelectionRejectionNeverPublishesSessionAndReconnectsCleanly) {
+  for (unsigned mode=0;mode<8;++mode) {
+    auto owned=std::make_unique<FakeTransport>();auto* t=owned.get();append(*t,ok(),3);
+    if (mode==0) append(*t,{std::byte{255},std::byte{1},std::byte{0},std::byte{'#'},std::byte{'4'},std::byte{'2'},std::byte{'0'},std::byte{'0'},std::byte{'0'}},1);
+    if (mode==1) append(*t,ok(),2);
+    if (mode==2) append(*t,{std::byte{0}},1);
+    if (mode>=3 && mode<=5) { auto bytes=ok();bytes[mode==3?3:mode==4?5:1]=std::byte{1};append(*t,bytes,1); }
+    if (mode==7) { auto bytes=ok();bytes[2]=std::byte{1};append(*t,bytes,1); }
+    // mode 6: EOF after authentication, without a selection response.
+    MySqlSession session(std::move(owned));auto config=settings();config.database="odbcpp";
+    auto result=session.connect(config);ASSERT_FALSE(result);EXPECT_FALSE(session.is_connected());
+    EXPECT_TRUE(session.server_version().empty());EXPECT_EQ(1u,t->closes);
+    EXPECT_EQ(rs::core::database::BackendOperation::Startup,result.backend_error().operation);
+    EXPECT_EQ(rs::core::database::SessionState::Disconnected,result.session_snapshot().state);
+    EXPECT_EQ(rs::core::database::SessionDisposition::Retire,result.session_snapshot().disposition);
+    t->input=packet(greeting());t->offset=0;append(*t,ok(),3);append(*t,ok(),1);
+    EXPECT_TRUE(session.connect(config));EXPECT_EQ(1u,t->closes);
+  }
+}
+TEST(MySqlSessionTest, DatabaseStartupBudgetsAreCheckedBeforeCredentialsAndBodyAdmission) {
+  constexpr std::size_t auth_bound=5*(connection_packet_limit+4);
+  for (unsigned mode=0;mode<5;++mode) {
+    auto owned=std::make_unique<FakeTransport>();auto* t=owned.get();MySqlSession session(std::move(owned));
+    auto config=settings();config.database="odbcpp";
+    if (mode==0) config.input_limits.max_request_wire_bytes=10;
+    if (mode==1) config.input_limits.max_startup_wire_bytes=auth_bound+10;
+    if (mode==2) config.startup_response_limits.max_wire_bytes=auth_bound+10;
+    if (mode==3) config.startup_response_limits.max_messages=5;
+    if (mode==4) config.database=std::string(connection_packet_limit,'a');
+    auto result=session.connect(config);ASSERT_FALSE(result);EXPECT_EQ(DbErrorCode::ResourceLimit,result.error());
+    EXPECT_TRUE(t->output.empty());EXPECT_EQ(0u,t->calls);EXPECT_EQ(0u,t->configuration_calls);
+  }
+  auto owned=std::make_unique<FakeTransport>();auto* t=owned.get();append(*t,ok(),3);
+  auto oversized=ok();oversized.resize(20);append(*t,oversized,1);
+  MySqlSession session(std::move(owned));auto config=settings();config.database="odbcpp";
+  config.startup_response_limits.max_wire_bytes=auth_bound+11;
+  auto result=session.connect(config);ASSERT_FALSE(result);EXPECT_EQ(DbErrorCode::ResourceLimit,result.error());
+  EXPECT_EQ(t->input.size()-20,t->offset);EXPECT_EQ(1u,t->closes);
+}
+
+TEST(MySqlSessionTest, DatabaseResponseTruncationAndPostAuthenticationExceptionCloseExactlyOnce) {
+  for (std::size_t size=0;size<ok().size()+4;++size) {
+    auto owned=std::make_unique<FakeTransport>();auto* t=owned.get();append(*t,ok(),3);
+    const auto start=t->input.size();const auto response=packet(ok(),1);
+    t->input.insert(t->input.end(),response.begin(),response.begin()+size);
+    MySqlSession session(std::move(owned));auto config=settings();config.database="odbcpp";
+    auto result=session.connect(config);ASSERT_FALSE(result);EXPECT_EQ(1u,t->closes);
+    EXPECT_FALSE(session.is_connected());EXPECT_TRUE(session.server_version().empty());EXPECT_GE(t->offset,start);
+  }
+  auto owned=std::make_unique<FakeTransport>();auto* t=owned.get();append(*t,ok(),3);
+  t->throw_recv_offset=t->input.size();append(*t,ok(),1);
+  MySqlSession session(std::move(owned));auto config=settings();config.database="odbcpp";
+  auto result=session.connect(config);ASSERT_FALSE(result);EXPECT_EQ(DbErrorCode::ProtocolError,result.error());
+  EXPECT_FALSE(session.is_connected());EXPECT_EQ(1u,t->closes);session.disconnect();EXPECT_EQ(1u,t->closes);
+}

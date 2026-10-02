@@ -833,3 +833,24 @@ NULL/empty/binary assertions. Fixed probe check/query IDs and numeric error code
 are allowlisted by the Python harness so another failure is actionable without
 echoing SQL, credentials, values or native diagnostics. The repaired hosted live
 run remains required before this session slice is accepted.
+
+### S3 native database admission — 2026-10-02
+
+The private MySQL SDK session now selects a nonempty requested database using
+[COM_INIT_DB](https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_init_db.html)
+after verified authentication and before publishing connection success. Schema
+names are native UTF-8 protocol fields, never SQL interpolation. Authentication
+and selection share the original absolute deadline. Conservative authentication
+reservations leave selection a bounded startup request/response allowance;
+requests exceeding the packet or configured limits fail before credentials are
+sent. Selection requires a zero-counter, warning-free, idle OK response.
+
+Rejected schemas, malformed/truncated replies, sequence errors, unsupported
+status and resource exhaustion retire the unpublished transport. Tests cover
+literal punctuation/UTF-8 names, every truncated reply prefix, post-authentication
+exceptions, exact cleanup, budget boundaries and successful reconnect. The
+pinned hosted fixture now selects `odbcpp`, uses unqualified temporary-table
+queries and rejects a missing database before reconnecting. Complete local gates
+and exact-head hosted acceptance are required for this code batch. This closes
+database selection only; prepared execution, transactions/metadata facets,
+provider/ODBC registration and full S3/S4 acceptance remain open.

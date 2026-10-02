@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
       const auto fail=[](unsigned id) { std::cerr<<"FAIL session-check-"<<id<<'\n';return 1; };
       rs::core::database::ConnectionSettings settings;
       settings.host=argv[1];settings.port=static_cast<std::uint16_t>(port);
-      settings.user=username.value;settings.password=password.value;settings.ssl_ca_file=argv[3];
+      settings.user=username.value;settings.password=password.value;settings.ssl_ca_file=argv[3];settings.database="odbcpp";
       struct CleanPassword {
         std::string& value;
         ~CleanPassword() { rs::core::security::secure_cleanse({reinterpret_cast<unsigned char*>(value.data()),value.size()}); }
@@ -62,19 +62,25 @@ int main(int argc, char** argv) {
       const auto& row=result->rows[0];
       if (row[0]!=std::optional<std::string>{"42"} || row[1]!=std::optional<std::string>{"a"} || row[2] ||
           !row[3] || !row[3]->empty() || row[4]!=std::optional<std::string>{std::string("\0\xff",2)}) return fail(3);
-      if (!query("CREATE TEMPORARY TABLE odbcpp.sdk_session (id BIGINT, value VARCHAR(16))")) return fail(4);
-      auto inserted=query("INSERT INTO odbcpp.sdk_session VALUES (1,'fixture'),(2,NULL)");
+      if (!query("CREATE TEMPORARY TABLE sdk_session (id BIGINT, value VARCHAR(16))")) return fail(4);
+      auto inserted=query("INSERT INTO sdk_session VALUES (1,'fixture'),(2,NULL)");
       if (!inserted || inserted->affected_rows!=2) return fail(5);
-      auto rows=query("SELECT id,value FROM odbcpp.sdk_session ORDER BY id");
+      auto rows=query("SELECT id,value FROM sdk_session ORDER BY id");
       if (!rows || rows->rows.size()!=2 || rows->rows[0][0]!=std::optional<std::string>{"1"} ||
           rows->rows[0][1]!=std::optional<std::string>{"fixture"} || rows->rows[1][1]) return fail(6);
-      auto empty=query("SELECT id FROM odbcpp.sdk_session WHERE id=0");
+      auto empty=query("SELECT id FROM sdk_session WHERE id=0");
       if (!empty || empty->columns.size()!=1 || !empty->rows.empty()) return fail(7);
-      auto invalid=query("SELECT * FROM odbcpp.sdk_missing_table");
+      auto invalid=query("SELECT * FROM sdk_missing_table");
       if (invalid || invalid.error()!=DbErrorCode::QueryFailed || session.is_connected()) return fail(8);
       session.disconnect();
       if (result->rows[0][0]!=std::optional<std::string>{"42"} || rows->rows[0][1]!=std::optional<std::string>{"fixture"}) return fail(9);
       if (!session.connect(settings) || !query("SELECT 1")) return fail(10);
+      session.disconnect();settings.database="odbcpp_missing_database";
+      auto missing=session.connect(settings);
+      if (missing || missing.error()!=DbErrorCode::QueryFailed || session.is_connected() ||
+          !session.server_version().empty()) return fail(11);
+      settings.database="odbcpp";
+      if (!session.connect(settings) || !query("SELECT 1")) return fail(12);
       session.disconnect();std::cout<<"PASS session\n";return 0;
     }
     rs::core::transport::TLSTransport transport;
