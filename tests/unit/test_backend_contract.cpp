@@ -19,6 +19,9 @@ using rs::util::Result;
 using rs::util::DbErrorCode;
 using rs::util::Deadline;
 
+template<class T> concept ExposesRawPhysicalSession = requires(T& connection) { connection.get_db_connection(); };
+static_assert(!ExposesRawPhysicalSession<rs::odbc::ODBCConnection>);
+
 struct Observations {
   int created{}, transports{}, disconnects{}, queries{}, descriptions{}, translations{};
   ConnectionSettings settings;

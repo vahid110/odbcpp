@@ -1733,6 +1733,36 @@ std::string ODBCConnection::get_current_catalog() const {
   return current_catalog_;
 }
 
+rs::core::database::BackendResult<rs::core::database::QueryResult> ODBCConnection::backend_query(
+    std::string_view sql, rs::util::Deadline deadline) {
+  if (db_conn_) return db_conn_->execute_query(sql, deadline);
+  rs::core::database::BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::NotConnected), "Connection is not open"};
+  error.operation = rs::core::database::BackendOperation::ExecuteDirect;
+  error.session_state = rs::core::database::SessionState::Disconnected;
+  return error;
+}
+rs::core::database::BackendResult<rs::core::database::QueryResult> ODBCConnection::backend_prepared(
+    std::string_view sql, std::span<const rs::core::database::QueryParameter> params, rs::util::Deadline deadline) {
+  if (db_conn_) return db_conn_->execute_prepared(sql, params, deadline);
+  rs::core::database::BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::NotConnected), "Connection is not open"};
+  error.operation = rs::core::database::BackendOperation::ExecutePrepared;
+  error.session_state = rs::core::database::SessionState::Disconnected;
+  return error;
+}
+rs::core::database::BackendResult<rs::core::database::QueryResult> ODBCConnection::backend_description(
+    std::string_view sql, std::span<const rs::core::database::QueryParameterType> types, rs::util::Deadline deadline) {
+  using namespace rs::core::database;
+  if (auto* facet = db_conn_ ? db_conn_->statement_description() : nullptr)
+    return facet->describe_statement(sql, types, deadline);
+  return local_backend_error(LocalFailure::Unsupported, "Data source does not support statement description",
+      BackendOperation::Describe, db_conn_ ? db_conn_->session_state() : SessionState::Disconnected);
+}
+rs::util::Result<std::string> ODBCConnection::backend_catalog(const rs::core::database::CatalogRequest& request) {
+  const auto* facet = db_conn_ ? db_conn_->catalog_queries() : nullptr;
+  if (facet) return facet->catalog_query(request);
+  return {rs::util::DbErrorCode::UnsupportedFeature, "Data source does not support catalog discovery"};
+}
+
 rs::core::database::BackendResult<void> ODBCConnection::backend_transaction(
     rs::core::database::TransactionAction action, rs::util::Deadline deadline) {
   using namespace rs::core::database;
@@ -2454,7 +2484,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
       if (timeout) conn_->disconnect();
       return SQL_ERROR;
     }
-    auto result = conn_->get_db_connection()->execute_query(*native_sql,
+    auto result = conn_->backend_query(*native_sql,
                                                             deadline);
     
     if (result.has_error()) {
@@ -4227,7 +4257,7 @@ SQLRETURN ODBCStatement::execute() {
       if (timeout) conn_->disconnect();
       return complete_parameter_set(SQL_ERROR);
     }
-    auto result = conn_->get_db_connection()->execute_prepared(prepared_sql_, param_values, deadline);
+    auto result = conn_->backend_prepared(prepared_sql_, param_values, deadline);
     
     if (result.has_error()) {
       const auto timeout = is_timeout_error(result.error());
@@ -4605,12 +4635,10 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
     return SQL_SUCCESS;
   }
 
-  auto* description = conn_->get_db_connection()->statement_description();
-  if (!description) {
+  if (!conn_->has_statement_description_facet()) {
     set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED, "Data source does not support statement description");
     return SQL_ERROR;
   }
-
   std::vector<rs::core::database::QueryParameterType> parameter_types(
       static_cast<std::size_t>(parameter_count_),
       rs::core::database::QueryParameterType::Unspecified);
@@ -4627,7 +4655,7 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
 
   auto deadline = rs::util::make_deadline(
       timeout_duration(query_timeout_seconds_));
-  auto result = description->describe_statement(
+  auto result = conn_->backend_description(
       prepared_sql_, parameter_types, deadline);
   if (result.has_error()) {
     const auto timeout = is_timeout_error(result.error());
@@ -4782,12 +4810,7 @@ SQLRETURN ODBCStatement::execute_catalog(
     set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
     return SQL_ERROR;
   }
-  const auto* catalog = conn_->get_db_connection()->catalog_queries();
-  if (!catalog) {
-    set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED, "Data source does not support catalog discovery");
-    return SQL_ERROR;
-  }
-  auto query = catalog->catalog_query(request);
+  auto query = conn_->backend_catalog(request);
   if (query.has_error()) {
     set_error(request_sqlstate(query.error(), SQLSTATE_GENERAL_ERROR),
               query.error_message());

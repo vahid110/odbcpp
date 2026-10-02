@@ -1871,7 +1871,7 @@ static SQLRETURN SQLGetFunctions_impl(SQLHDBC connection_handle, SQLUSMALLINT fu
       case SQL_API_SQLPROCEDURES:
       case SQL_API_SQLPROCEDURECOLUMNS:
       case SQL_API_SQLSPECIALCOLUMNS:
-        if (!conn->get_db_connection()->catalog_queries()) return false;
+        if (!conn->has_catalog_query_facet()) return false;
         break;
       default: break;
     }

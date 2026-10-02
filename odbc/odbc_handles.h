@@ -23,6 +23,7 @@
 namespace rs::odbc {
 
 class HandleRegistry;
+namespace detail { struct ODBCBackendTestAccess; }
 
 // Diagnostic record for ODBC error handling
 struct DiagnosticRecord {
@@ -253,10 +254,21 @@ public:
   std::span<const rs::core::database::TypeDefinition> type_catalog() const;
   rs::core::database::BackendCapabilities capabilities() const;
   rs::core::database::TransactionCapabilities transaction_capabilities() const;
-
-  rs::core::database::IDatabaseConnection* get_db_connection() { return db_conn_.get(); }
+  // Facet presence only; individual requests may still be unsupported.
+  bool has_catalog_query_facet() const noexcept { return db_conn_ && db_conn_->catalog_queries(); }
+  bool has_statement_description_facet() const noexcept { return db_conn_ && db_conn_->statement_description(); }
 
 private:
+  friend class ODBCStatement;
+  friend struct detail::ODBCBackendTestAccess;
+  rs::core::database::BackendResult<rs::core::database::QueryResult> backend_query(
+      std::string_view, rs::util::Deadline);
+  rs::core::database::BackendResult<rs::core::database::QueryResult> backend_prepared(
+      std::string_view, std::span<const rs::core::database::QueryParameter>, rs::util::Deadline);
+  rs::core::database::BackendResult<rs::core::database::QueryResult> backend_description(
+      std::string_view, std::span<const rs::core::database::QueryParameterType>, rs::util::Deadline);
+  rs::util::Result<std::string> backend_catalog(const rs::core::database::CatalogRequest&);
+
   void close_connection();
   rs::core::database::BackendResult<void> backend_transaction(
       rs::core::database::TransactionAction action, rs::util::Deadline deadline);
