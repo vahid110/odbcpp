@@ -420,3 +420,32 @@ ThreadSanitizer tests passed. Read-only review found no implementation blocker;
 its passive-state and owning-description test suggestions are covered. Complete
 local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and Redshift build/absent-endpoint
 gates passed. Exact-head Windows/packaging and crypto CI evidence awaits the run.
+
+## S2 owned passive observation and catalog construction — 2026-10-02
+
+SessionLease::inspect returns owning connection/state/version information,
+transaction capabilities and optional description/catalog presence. It performs
+no network I/O or health probe. SessionLease::catalog_query borrows the request
+only until return and returns owning SQL or diagnostics, without executing it.
+Neither operation exposes the physical session or a facet pointer.
+
+Successful passive reads and local catalog errors preserve cache scopes because
+these facet contracts perform no session mutation. Contradictory connection/state
+observations and exceptions retire; passive Disconnected outcomes retire. Idle
+snapshots retain only the same borrower, while Transaction/FailedTransaction/Unknown
+remain ResetRequired. No passive snapshot proves health or grants return/requeue.
+All callbacks run outside ownership locks and no retries/replay are introduced.
+
+Focused unit/live tests cover owned values after retirement, request forwarding,
+exclusive callback access, absent facets, local diagnostic ownership, cache
+preservation, passive-state matrices, inconsistent observations and exception kinds.
+The live PostgreSQL fixture executes generated catalog SQL through ordinary query
+execution and verifies advertised version and capability values.
+
+ODBC lifecycle adoption is next; production pooling/defaults, cache payload policy
+and S2/G12 remain open. MySQL scope, Redshift live access and crypto qualification
+are unchanged. Read-only review found no blocker; facet flags explicitly denote
+presence, not universal request support. All 81 credential/ownership ThreadSanitizer
+tests passed. Complete local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and
+Redshift build/absent-endpoint gates passed. Windows/packaging and crypto evidence
+await exact-head CI.
