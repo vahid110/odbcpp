@@ -200,7 +200,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Verify offline Redshift pilot admission safeguards
-        run: python3 -m unittest discover -s tools/redshift -p 'test_pilot_preflight.py'
+        run: python3 -m unittest discover -s tools/redshift -p 'test_pilot_*.py'
       - name: Install deps
         run: |
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list \

@@ -32,15 +32,21 @@ protected:
     ASSERT_EQ(SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &henv_), SQL_SUCCESS);
     ASSERT_EQ(SQLSetEnvAttr(henv_, SQL_ATTR_ODBC_VERSION, reinterpret_cast<void*>(SQL_OV_ODBC3), 0), SQL_SUCCESS);
     ASSERT_EQ(SQLAllocHandle(SQL_HANDLE_DBC, henv_, &hdbc_), SQL_SUCCESS);
+    ASSERT_EQ(SQLSetConnectAttr(hdbc_, SQL_ATTR_LOGIN_TIMEOUT,
+                              reinterpret_cast<void*>(std::uintptr_t{15}), 0),
+              SQL_SUCCESS);
+    ASSERT_EQ(SQLSetConnectAttr(hdbc_, SQL_ATTR_CONNECTION_TIMEOUT,
+                              reinterpret_cast<void*>(std::uintptr_t{15}), 0),
+              SQL_SUCCESS);
   }
   
   void TearDown() override {
-    if (hstmt_) SQLFreeHandle(SQL_HANDLE_STMT, hstmt_);
+    if (hstmt_) EXPECT_EQ(SQLFreeHandle(SQL_HANDLE_STMT, hstmt_), SQL_SUCCESS);
     if (hdbc_) {
-      SQLDisconnect(hdbc_);
-      SQLFreeHandle(SQL_HANDLE_DBC, hdbc_);
+      if (connected_) EXPECT_EQ(SQLDisconnect(hdbc_), SQL_SUCCESS);
+      EXPECT_EQ(SQLFreeHandle(SQL_HANDLE_DBC, hdbc_), SQL_SUCCESS);
     }
-    if (henv_) SQLFreeHandle(SQL_HANDLE_ENV, henv_);
+    if (henv_) EXPECT_EQ(SQLFreeHandle(SQL_HANDLE_ENV, henv_), SQL_SUCCESS);
   }
   
   bool connect() {
@@ -49,26 +55,27 @@ protected:
         SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
     
     if (ret == SQL_SUCCESS || ret == SQL_SUCCESS_WITH_INFO) {
-      EXPECT_EQ(SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt_), SQL_SUCCESS);
-      return true;
+      connected_ = true;
+      if (SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt_) != SQL_SUCCESS)
+        return false;
+      return SQLSetStmtAttr(hstmt_, SQL_ATTR_QUERY_TIMEOUT,
+                            reinterpret_cast<void*>(std::uintptr_t{15}), 0)
+             == SQL_SUCCESS;
     }
     return false;
   }
   
   std::string get_error(SQLSMALLINT handle_type, SQLHANDLE handle) {
-    SQLCHAR sqlstate[6];
-    SQLCHAR message[256];
-    SQLINTEGER native_error;
-    SQLSMALLINT text_length;
-    
-    if (SQLGetDiagRec(handle_type, handle, 1, sqlstate, &native_error, 
-                     message, sizeof(message), &text_length) == SQL_SUCCESS) {
-      return std::string(reinterpret_cast<char*>(sqlstate)) + " - " + 
-             std::string(reinterpret_cast<char*>(message));
-    }
-    return "Unknown error";
+    SQLCHAR sqlstate[6]{};
+    const auto result = SQLGetDiagRec(handle_type, handle, 1, sqlstate,
+                                      nullptr, nullptr, 0, nullptr);
+    if (result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO)
+      return std::string(reinterpret_cast<char*>(sqlstate));
+    return "diagnostic unavailable";
   }
-  
+
+  bool connected_ = false;
+
   SQLHENV henv_ = nullptr;
   SQLHDBC hdbc_ = nullptr;
   SQLHSTMT hstmt_ = nullptr;
@@ -102,7 +109,7 @@ TEST_F(RedshiftRealTest, VersionQuery) {
                    return static_cast<char>(std::tolower(c));
                  });
   EXPECT_NE(server_identity.find("redshift"), std::string::npos)
-      << "Connected endpoint is not Amazon Redshift: " << version;
+      << "Connected endpoint is not Amazon Redshift";
 }
 
 TEST_F(RedshiftRealTest, CurrentUserQuery) {
@@ -122,7 +129,7 @@ TEST_F(RedshiftRealTest, CurrentUserQuery) {
   ASSERT_EQ(ret, SQL_SUCCESS);
   
   EXPECT_STRNE(current_user, "");
-  std::cout << "Current user: " << current_user << std::endl;
+
 }
 
 TEST_F(RedshiftRealTest, MultipleRowQuery) {
@@ -149,6 +156,7 @@ TEST_F(RedshiftRealTest, MultipleRowQuery) {
     EXPECT_EQ(num, row_count);
   }
   
+  EXPECT_EQ(ret, SQL_NO_DATA);
   EXPECT_EQ(row_count, 5);
 }
 
@@ -199,6 +207,16 @@ TEST_F(RedshiftRealTest, ConfiguredFixtureMetadata) {
                       SQL_NTS, nullptr, 0));
   ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_))
       << "Configured Redshift fixture table was not discovered";
+  char discovered_schema[256]{};
+  char discovered_table[256]{};
+  SQLLEN length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 2, SQL_C_CHAR, discovered_schema,
+                                   sizeof(discovered_schema), &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 3, SQL_C_CHAR, discovered_table,
+                                   sizeof(discovered_table), &length));
+  EXPECT_STREQ(schema, discovered_schema);
+  EXPECT_STREQ(table, discovered_table);
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
 
   ASSERT_EQ(SQL_SUCCESS,
@@ -207,8 +225,15 @@ TEST_F(RedshiftRealTest, ConfiguredFixtureMetadata) {
                        SQL_NTS,
                        reinterpret_cast<SQLCHAR*>(const_cast<char*>(table)),
                        SQL_NTS, nullptr, 0));
-  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_))
-      << "Configured Redshift fixture exposed no column metadata";
+  for (const auto* expected_column : {"id", "value"}) {
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_))
+        << "Configured Redshift fixture exposed incomplete column metadata";
+    char column[256]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 4, SQL_C_CHAR, column,
+                                     sizeof(column), &length));
+    EXPECT_STREQ(expected_column, column);
+  }
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
 }
 
 TEST_F(RedshiftRealTest, ErrorHandling) {
@@ -222,7 +247,8 @@ TEST_F(RedshiftRealTest, ErrorHandling) {
   
   std::string error = get_error(SQL_HANDLE_STMT, hstmt_);
   EXPECT_FALSE(error.empty());
-  std::cout << "Expected error: " << error << std::endl;
+  // ODBC maps the native undefined-table state to table/view not found.
+  EXPECT_EQ(error, "42S02");
 
   ret = SQLExecDirect(
       hstmt_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 1")),

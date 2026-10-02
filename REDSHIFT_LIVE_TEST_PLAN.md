@@ -1,9 +1,78 @@
 # Initial Redshift live-test handoff
 
-Recorded 2026-10-02 from the user's account-preparation chat. This is planning
-and local coordination only. No AWS resource, live test, charge, pricing or
-account verification was performed by this chat. The provisioning chat owns
-infrastructure setup; this chat owns driver tests and integration evidence.
+Recorded 2026-10-02 from the user's account-preparation chat. The user subsequently
+paused other implementation and assigned environment completion to this chat.
+Provisioning and admission now share this integration owner and the existing
+canonical state; do not create duplicate infrastructure in another chat.
+
+## Environment preparation status — 2026-10-02
+
+A dedicated named AWS CLI profile has passed a fresh-process identity check with
+ambient AWS environment variables removed. Its protected local credentials do
+not depend on the root browser session. One Stockholm namespace/workgroup exists;
+AWS readback confirms base and maximum capacity both 4 RPUs, required TLS, a
+single-host IPv4 ingress rule on port 5439, and a 20 RPU-hour monthly usage limit
+whose breach action deactivates queries. The USD 15 pilot budget and USD 10/12/15
+alert thresholds have been read back. Resource IDs, credentials, policy drafts
+and observations remain in the protected canonical directory.
+
+The user confirmed the scoped IAM update. Exact-resource operator access,
+immutable permissions boundary, fixed test-role trust and unattended STS role
+assumption are verified. One-time IAM creation grants were removed. Some regional
+usage-limit APIs do not support resource ARN scoping; their caller must pin the
+canonical limit ID. Budget/capacity increases still require user authorization.
+
+The environment has completed unattended live setup. Verified evidence includes
+`verify-full` certificate/hostname checks, an ODBC driver connection to Redshift,
+Redshift identity, the dedicated restricted test user, the two-row fixture,
+prepared scalar/NULL results, row fetching and recovery after invalid SQL. All
+six admitted test cases executed. Fresh SYS monitoring independently verified
+zero active pilot sessions and queries after cleanup. The fixed IAM role also
+successfully generated Serverless credentials without browser/MFA or a SQL call.
+Temporary credential generation is qualified; IAM-authenticated SQL remains a
+later driver test, not a completed claim.
+
+The initial fixture script exceeded an overly short whole-script bound. The
+corrected script handles partial setup, preserves existing pilot users, recreates
+only the owned fixture table and has a 90-second whole-script bound with the
+existing 30-second server ceiling. Driver query limits remain 15 seconds.
+STV monitoring was replaced by Serverless SYS views; termination executes on the
+leader independently from the system scan, and monitoring verification allows
+the existing 30-second server ceiling.
+
+Live driver evidence exposed one catalog gap: `SQLTables` succeeded but
+`SQLColumns` failed for the configured fixture. Record this as Redshift driver
+work before catalog/parity acceptance; environment readiness does not close that
+gate. The error-path test expected native `42P01`, although the existing ODBC
+mapping correctly returned `42S02`; its assertion is corrected and needs the
+next admitted driver run. Recovery itself completed successfully. Do not report
+the full driver baseline as green.
+
+The protected original anchor and v1 reservation are preserved verbatim inside
+an explicit v2 cumulative overlay in the SAME `setup.json`. Its single increasing
+cost bound includes all elapsed time from original resource creation, retained
+minimum-metering and cleanup headroom, and the full USD 5 other/tax reserve.
+Actual spend and remaining allowance remain null while billing is unavailable;
+no refund or period reset occurs. Latest conservative total bound is USD 8.76,
+not an actual-charge or remaining-balance claim. Both recorded attempts retain
+cleanup and failure history. Fresh resource/price/network checks, durable
+reservation before SQL and fresh cleanup before activation are required. No
+automatic failed-SQL retry or additional warehouse is allowed. The finite ledger
+supports separately reviewed admissions; the corrected qualification entrypoint
+itself permits only one attempt.
+
+Protected JSON rejects duplicate keys and unreviewed admission fields. Processes
+receive minimal environments; local process-group cleanup and exact completed
+case inventories are independently checked. Offline safety tests pass (116 cases),
+and the fresh Redshift build passed 65 unit tests before the live qualification.
+Pending source changes still need the complete pushed-batch gates and CI; no new
+CI-green claim is made here.
+
+AWS access no longer requires the user's browser or passkey. The Mac must remain
+online and awake. General SDK work remains paused during final setup handoff;
+the existing 15-minute timer is scoped to environment completion and must not
+restart SDK work or repeatedly relaunch failed driver tests. The initial USD 15
+allowance remains shared and unchanged; expanding it needs user authorization.
 
 ## Shared allowance and source of truth
 
@@ -56,8 +125,10 @@ as reported by the user; no authentication changes are authorized here.
 
 ## Required shared runner
 
-**Not implemented or qualified yet.** This handoff does not enable paid test
-execution, scheduler retries or a cloud integration job.
+Implemented and exercised through the two recorded bounded setup windows.
+The admission is finite: this does not enable general paid test execution,
+scheduler retries or a cloud integration job. Historical requirements follow;
+the cumulative overlay above governs the reviewed unknown-billing exception.
 
 - Use one canonical cross-chat/worktree lock and ledger. Acquire the lock before
   usage checking or reserving a window; fail closed when another runner owns it.
@@ -96,10 +167,10 @@ snapshots/storage/network/logging charges. Record actual resource IDs and
 teardown commands after provisioning, not guessed names or destructive generic
 commands now. Stop future test windows and reconcile delayed charges.
 
-Account access is reported restored; **Redshift M2 remains blocked on verified
-infrastructure and runner readiness**. The bounded MySQL SDK proof continues
-until that gate is ready. Then run the small Redshift baseline and its M2 scope
-review before expanding parity, IAM or fetch-mode implementation. S2C, PostgreSQL
+Infrastructure and bounded runner readiness are verified. **Redshift M2 remains
+open on the driver catalog failure and baseline acceptance**, not AWS sign-in.
+General implementation is paused during setup handoff. After handoff, review M2
+scope before expanding parity, IAM or fetch-mode implementation. S2C, PostgreSQL
 application acceptance and existing protected gates are unchanged.
 
 References checked for planning:
@@ -109,11 +180,12 @@ References checked for planning:
 
 ## Authorized parallel activation packages — 2026-10-02
 
-The user authorized a bounded parallel Redshift activation track. MySQL S3
-remains primary; this authorization does not bypass the activation gate or
+The user initially authorized a bounded parallel Redshift activation track, then
+prioritized setup completion and paused MySQL S3. Authorization does not bypass
+the activation gate or
 increase the shared USD 15 allowance. One integration owner reviews isolated
-packages before accepting them. Infrastructure remains owned by the
-account-preparation chat; do not duplicate its resources or ledger.
+packages before accepting them. Infrastructure completion is now owned by this integration chat; do not
+duplicate its resources or ledger.
 
 | Package | Deliverable | Stopping condition |
 | --- | --- | --- |
@@ -127,10 +199,9 @@ are not AWS verification, an offline lock test is not a qualified live runner,
 and a client exit does not verify server cleanup. R1 and R2 may be prepared in
 parallel, but both must pass before R3. No unattended paid retry is permitted.
 
-The current fixture emits user identity and native diagnostic text and lacks
-explicit per-connection/query timeout settings. R1 must address its output and
-deadline behavior before any live execution; private capture alone must not be
-mistaken for safe shared evidence.
+The fixture now suppresses user identity/native diagnostic output and checks
+explicit connection/query timeout settings. Private capture remains required
+and must not be mistaken for safe shared evidence.
 
 R1 review also requires an explicit final `SQL_NO_DATA` assertion in the
 five-row fetch test, exact fixture metadata assertions, and checked handle
