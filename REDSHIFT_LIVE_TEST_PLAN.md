@@ -524,3 +524,34 @@ and execution are qualified. Migration must retain shared cumulative cost contro
 coordination across machines, scoped credential/network access, hard execution
 bounds, independently verified cleanup and sanitized per-platform test evidence.
 No immediate change to the active IAM/catalog path or AWS authorization is made.
+
+
+## IAM window008 opaque-token validation failure
+
+Expiry repair CI37074374065/a0d090f passed all required gates. Root separately
+reviewed/admitted008 with fresh controls, exact state/source/binary hashes and
+durable retained headroom. Credential processing then failed
+`iam_credential_invalid` before driver results. Independent final cleanup
+verified absence;008 is consumed and cleaned_pending_billing. All eight original
+windows are now consumed. Retained bounds USD21.37 compute/USD71.37 total are
+conservative reservations, not billing or remaining balance. Do not create009,
+replay008 or remove the finite limit to continue paid testing.
+
+The historical protected AWS GetCredentials proof contains a printable opaque
+DB password of1761 characters; only length/character-class metadata was inspected.
+Our external-credential runner capped it at256 in both its factory and connection
+encoder. The offline repair gives temporary database tokens a finite16KiB bound
+at both paths, below the driver's64KiB connection-field limit. It does not alter
+ordinary configuration passwords or role secret-key limits. Full-length tokens
+are preserved and brace escaped, never truncated or exposed. Tests cover1761
+and maximum-size values, escaping, redacted representations, and oversized/control
+character rejection at both factory and dispatch. Independent review accepted the
+repair; all191 offline tests passed. Live IAM SQL remains unqualified.
+
+Before further paid qualification, independently review cumulative billing/usage
+and a new finite accounting admission that preserves every original window,
+recovery, period, resource and retained liability. Unknown actual spend cannot
+justify a refund or a fresh balance. The original24h horizon must not be silently
+extended. Continue the M2 inventory/profile assessment and offline repairs while
+that separate accounting package is prepared; no further warehouse, capacity
+increase or unrelated IAM expansion is authorized by this checkpoint.

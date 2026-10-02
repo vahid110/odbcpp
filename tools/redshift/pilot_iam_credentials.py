@@ -15,6 +15,9 @@ ROLE_NAME = 'odbcpp-redshift-test-runtime'
 SESSION_NAME = 'odbcpp-redshift-qualification'
 DB_USER = live.IAM_DB_USER
 DATABASE = 'odbcpp_pilot'
+# Temporary AWS DB credentials are opaque tokens, not ordinary short passwords.
+# Keep a finite bound below the driver's64KiB connection-field limit.
+MAX_DB_PASSWORD_BYTES = 16 * 1024
 
 
 def need(condition, reason):
@@ -110,7 +113,7 @@ def database_credentials(response, now, execution_end):
     if 'nextRefreshTime' in response:
         # Record no refresh promise, but reject malformed provenance.
         timestamp(response['nextRefreshTime'])
-    return DatabaseCredentials(DB_USER, secret(response.get('dbPassword'), 20, 256), expires)
+    return DatabaseCredentials(DB_USER, secret(response.get('dbPassword'), 20, MAX_DB_PASSWORD_BYTES), expires)
 
 
 def brace(value):
@@ -125,7 +128,7 @@ def connection_string(config, credentials, now, execution_end):
          'iam_db_principal_mismatch')
     validity(credentials.expires.isoformat(), now, execution_end)
     return (f"SERVER={config['host']};PORT=5439;DATABASE={DATABASE};"
-            f"UID={brace(credentials.user)};PWD={brace(secret(credentials.password,20,256))};"
+            f"UID={brace(credentials.user)};PWD={brace(secret(credentials.password,20,MAX_DB_PASSWORD_BYTES))};"
             f"SSL=1;SSLCAFILE={config['ca_file']};")
 
 

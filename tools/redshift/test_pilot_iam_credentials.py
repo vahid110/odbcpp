@@ -62,7 +62,7 @@ class IAMContractTests(unittest.TestCase):
                 with self.assertRaises(Blocked) as error:
                     iam.role_credentials(response,self.now,self.end)
                 self.assertNotIn('secret',str(error.exception))
-        for value in (None,'','x\x00canary','x'*257):
+        for value in (None,'','x\x00canary','x'*(iam.MAX_DB_PASSWORD_BYTES+1)):
             response=dict(self.db);response['dbPassword']=value
             with self.assertRaises(Blocked):iam.database_credentials(response,self.now,self.end)
 
@@ -87,6 +87,23 @@ class IAMContractTests(unittest.TestCase):
         with self.assertRaises(Blocked):iam.connection_string(self.config,c,later,later+timedelta(seconds=180))
         response=dict(self.db);response['nextRefreshTime']='bad'
         with self.assertRaises(Blocked):iam.database_credentials(response,self.now,self.end)
+
+    def test_long_opaque_database_token_survives_factory_and_brace_encoding(self):
+        for length in (1761,iam.MAX_DB_PASSWORD_BYTES):
+            token='x'*(length-4)+';}=!'
+            response=dict(self.db);response['dbPassword']=token
+            c=iam.database_credentials(response,self.now,self.end)
+            self.assertEqual(c.password,token)
+            encoded=iam.connection_string(self.config,c,self.now,self.end)
+            self.assertIn('PWD={'+token.replace('}','}}')+'};',encoded)
+            self.assertNotIn(token,repr(c))
+        for value in ('x'*(iam.MAX_DB_PASSWORD_BYTES+1),'x'*1760+'\n'):
+            response=dict(self.db);response['dbPassword']=value
+            with self.assertRaises(Blocked) as error:
+                iam.database_credentials(response,self.now,self.end)
+            self.assertNotIn(value,str(error.exception))
+            c=iam.DatabaseCredentials(iam.DB_USER,value,self.now+timedelta(seconds=900))
+            with self.assertRaises(Blocked):iam.connection_string(self.config,c,self.now,self.end)
 
     def test_cli_offset_expiration_preserves_instant_and_validity_limits(self):
         for offset in (timedelta(hours=2),timedelta(hours=-7),timedelta(hours=5,minutes=30)):
