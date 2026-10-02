@@ -59,7 +59,7 @@ def aws(args):
         raise Blocked('aws_readback_failed') from None
 
 
-def validate_controls(identity, workgroup, namespace, usage, network, budget, anchor, config, admission):
+def validate_controls(identity, workgroup, namespace, usage, network, budget, anchor, config, admission, *, amended=False):
     if (anchor.account_id != ACCOUNT or anchor.region != REGION
             or identity.get('Account') != ACCOUNT or identity.get('Arn') != f'arn:aws:iam::{ACCOUNT}:user/{NAME}'):
         raise Blocked('aws_identity_mismatch')
@@ -76,7 +76,7 @@ def validate_controls(identity, workgroup, namespace, usage, network, budget, an
         raise Blocked('workgroup_controls_mismatch')
     limits = usage['usageLimits']
     if (len(limits) != 1 or limits[0]['resourceArn'] != w['workgroupArn']
-            or limits[0]['amount'] != 20 or limits[0]['period'] != 'monthly'
+            or limits[0]['amount'] != (267 if amended else 20) or limits[0]['period'] != 'monthly'
             or limits[0]['usageType'] != 'serverless-compute' or limits[0]['breachAction'] != 'deactivate'):
         raise Blocked('usage_controls_mismatch')
     groups = network['SecurityGroups']
@@ -91,13 +91,13 @@ def validate_controls(identity, workgroup, namespace, usage, network, budget, an
             or rules[0].get('Ipv6Ranges') or rules[0].get('UserIdGroupPairs') or rules[0].get('PrefixListIds')):
         raise Blocked('network_controls_mismatch')
     b = budget['Budget']
-    if (Decimal(b['BudgetLimit']['Amount']) != 15 or b['BudgetLimit']['Unit'] != 'USD'
+    if (Decimal(b['BudgetLimit']['Amount']) != (150 if amended else 15) or b['BudgetLimit']['Unit'] != 'USD'
             or not b['TimePeriod']['Start'].startswith('2026-10-02')
             or not b['TimePeriod']['End'].startswith('2026-10-12')):
         raise Blocked('budget_controls_mismatch')
 
 
-def validate_admission(a, anchor, now):
+def validate_admission(a, anchor, now, *, amended=False):
     required = ('earliest_start_verified', 'no_other_billable_activity', 'other_tax_bound_verified')
     keys = {'account_id','region','workgroup_id','namespace_id','earliest_billable_start',
             'observed_at','usd_per_rpu_hour','other_tax_usd','price_source','initial_inventory_basis',
@@ -108,7 +108,7 @@ def validate_admission(a, anchor, now):
             or a.get('workgroup_id') != anchor.workgroup_id or a.get('namespace_id') != anchor.namespace_id
             or a.get('earliest_billable_start') != anchor.earliest_billable_start
             or any(a.get(k) is not True for k in required)
-            or a.get('usd_per_rpu_hour') != '.374' or a.get('other_tax_usd') != '5'
+            or a.get('usd_per_rpu_hour') != '.374' or a.get('other_tax_usd') != ('50' if amended else '5')
             or a.get('price_source') != 'https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonRedshift/current/eu-north-1/index.json'
             or not all(isinstance(a.get(k), str) and a[k] for k in ('initial_inventory_basis','other_tax_basis','vpc_id','security_group_id'))
             or not re.fullmatch(r'(?:[0-9]{1,3}\.){3}[0-9]{1,3}/32', a.get('allowed_ipv4_cidr',''))):
@@ -184,6 +184,7 @@ class Window:
             '--gtest_repeat=1', '--gtest_output=xml:'+str(report)], env=env,
             seconds=self.seconds(90), output=output)
         summary = test_summary(report, cases)
+        self.last_driver_summary = summary
         if result.timed_out or result.returncode or summary['failed']:
             raise Blocked('driver_baseline_failed')
         return summary

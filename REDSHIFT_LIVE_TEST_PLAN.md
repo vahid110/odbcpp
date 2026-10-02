@@ -41,8 +41,14 @@ and requires fresh cleanup after reservation before activation. Ten synthetic
 window tests cover migration, retained costs, full launcher headroom, finite
 attempts, timestamp ordering, restart and interrupted persistence; all 134
 pilot tests pass locally. This ledger grants no live SQL permission. The bounded
-launcher, its composition tests and the combined package CI remain pending;
-canonical protected state stays v3 until that review is complete.
+launcher has also passed independent offline review and 12 composition/control
+tests (146 total pilot tests). It admits one private sequence-bound request at a
+time, pins identity and a finite scalar/catalog/baseline inventory, obtains fresh
+AWS controls plus official pricing and the test machine IPv4 address, reserves
+before any cleanup SQL, and verifies independent final cleanup. It performs no
+fixture DDL or automatic retry. Native logs/XML stay private; reports expose only
+case counts and fixed reasons. The combined package CI and paid qualification
+remain pending; canonical protected state stays v3 until those checks complete.
 
 The bootstrap accounting horizon remains 24 hours from original resource
 creation. Continuing beyond it requires a separate reviewed cumulative
