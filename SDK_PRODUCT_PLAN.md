@@ -3,7 +3,7 @@
 Decision date: 2026-09-30.
 Status: S1 accepted; bounded S2 noncrypto migration implementation-complete,
 with acceptance conditional on the protected gates for the
-[S2 stopping review](S2_MIGRATION_REVIEW.md). S2C/G12 and S3/S4 remain open.
+[S2 stopping review](S2_MIGRATION_REVIEW.md). S2C/G12 and S4 remain open; S3 has begun with private connection-phase codecs.
 
 Future Redshift parity requirements are tracked in
 [REDSHIFT_FEATURE_PLAN.md](REDSHIFT_FEATURE_PLAN.md). They preserve independent
@@ -611,3 +611,30 @@ Validation: focused synthetic/live tests and complete local PostgreSQL, iODBC
 UTF-16/UCS-4, ASan/UBSan, and Redshift build/absent-endpoint gates passed.
 The final-source PostgreSQL recheck passed. Exact-head hosted Windows/packaging
 and crypto profile gates await CI.
+
+## S3 connection-phase codec foundation — 2026-10-02
+
+Private MySQL code now decodes one bounded connection-phase packet and the
+protocol-v10 greeting shape for caching_sha2_password and SSL capability.
+Version eligibility and verified TLS remain later session-policy decisions before
+credential responses; parsing alone never admits a server.
+The decoder stops at coalesced packet boundaries, checks the caller's expected
+sequence before payload allocation, and rejects over-limit/continuation packets.
+Completed/rejected decoders cannot resume. Greeting parsing requires protocol-41,
+SSL, secure-connection and plugin-auth capabilities, the 20-byte challenge and
+exact supported plugin; malformed fields, reserved bytes and trailing data fail
+with fixed messages. Unknown capability bits are retained, not negotiated.
+
+Tests cover every packet split and greeting truncation, byte fragments, coalesced
+packets, explicit sequence wrap, zero/exact/overflow budgets, terminal failures,
+unsupported capability/plugin and owned greeting data. Focused tests passed;
+complete local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and Redshift
+build/absent-endpoint gates passed. Exact-head hosted Windows/package and crypto
+regression gates await CI. Production PostgreSQL/Redshift behavior
+and exports are unchanged. No MySQL session/provider/product build, TLS upgrade,
+password exchange, live handshake or MySQL compatibility is claimed. The old
+MySQLProtocolParser placeholder is not the new backend's extension point.
+
+Next: verified TLS request/upgrade and bounded authentication exchanges, then
+pinned MySQL 8.4.11 live CI before S3 handshake acceptance. Continuation framing,
+EOF/timeout handling, execution and additional MySQL features remain unqualified.

@@ -3094,3 +3094,30 @@ The [S2 stopping review](S2_MIGRATION_REVIEW.md) records bounded noncrypto migra
 evidence and explicit S3/S4, security and S2C/G12 handoffs. Acceptance requires
 all protected gates on this review's commit. PG-BETA/G8, Redshift live access,
 S2C T13/T14, public SDK/FIPS/ADBC and pooling claims remain unchanged.
+
+## S3 connection-phase codec foundation — 2026-10-02
+
+Private MySQL code now decodes one bounded connection-phase packet and the
+protocol-v10 greeting shape for caching_sha2_password and SSL capability.
+Version eligibility and verified TLS remain later session-policy decisions before
+credential responses; parsing alone never admits a server.
+The decoder stops at coalesced packet boundaries, checks the caller's expected
+sequence before payload allocation, and rejects over-limit/continuation packets.
+Completed/rejected decoders cannot resume. Greeting parsing requires protocol-41,
+SSL, secure-connection and plugin-auth capabilities, the 20-byte challenge and
+exact supported plugin; malformed fields, reserved bytes and trailing data fail
+with fixed messages. Unknown capability bits are retained, not negotiated.
+
+Tests cover every packet split and greeting truncation, byte fragments, coalesced
+packets, explicit sequence wrap, zero/exact/overflow budgets, terminal failures,
+unsupported capability/plugin and owned greeting data. Focused tests passed;
+complete local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and Redshift
+build/absent-endpoint gates passed. Exact-head hosted Windows/package and crypto
+regression gates await CI. Production PostgreSQL/Redshift behavior
+and exports are unchanged. No MySQL session/provider/product build, TLS upgrade,
+password exchange, live handshake or MySQL compatibility is claimed. The old
+MySQLProtocolParser placeholder is not the new backend's extension point.
+
+Next: verified TLS request/upgrade and bounded authentication exchanges, then
+pinned MySQL 8.4.11 live CI before S3 handshake acceptance. Continuation framing,
+EOF/timeout handling, execution and additional MySQL features remain unqualified.
