@@ -5,6 +5,32 @@ paused other implementation and assigned environment completion to this chat.
 Provisioning and admission now share this integration owner and the existing
 canonical state; do not create duplicate infrastructure in another chat.
 
+## Current bounded evidence and next qualification package
+
+At105cc87, CI37047693730 passed all required gates. Catalog window005 passed
+identity and the configured fixture metadata case, including legacy SQL_C_LONG
+numeric reads; independent cleanup succeeded and the reservation remains
+retained. Scalar4/4 was qualified separately atfbbefbb. These are narrow fixture
+observations, not full catalog/type/datashare/SHOW parity or G1/M2 completion.
+
+The next package starts with an offline fixed-role temporary database credential
+contract. It performs no AWS calls, SQL, refresh, admission or launcher enablement.
+It fixes role/account/session, database/workgroup and expected IAM-derived DB
+principal; validates expiry against the execution deadline plus cleanup margin;
+keeps secret representations redacted and encodes connection-string delimiters.
+Before live qualification, integrate fresh role identity/GetCredentials, include
+that exact principal in independent cleanup, add exact IAM case inventory and
+adversarial offline runner tests, then complete review and CI. One future reviewed
+window may qualify externally supplied temporary credentials through ODBC;
+it cannot establish native SDK IAM discovery, renewal or server expiry behavior.
+GetCredentials minimum900-second validity exceeds a180-second window, so expiry
+refusal is an offline gate and actual server-expiry semantics remain open.
+
+Five of eight finite v4 windows are consumed. No automatic006 or replay001-005.
+The original24-hour horizon is unchanged; independently review cumulative
+billing/usage reconciliation before subsequent-day admissions. No additional
+warehouse, capacity or IAM privilege expansion is part of this package.
+
 ## Approved allowance amendment and work priority — 2026-10-02
 
 The user increased the shared initial Redshift allowance from **USD 15 to USD
@@ -279,7 +305,9 @@ teardown commands after provisioning, not guessed names or destructive generic
 commands now. Stop future test windows and reconcile delayed charges.
 
 Infrastructure and bounded runner readiness are verified. **Redshift M2 remains
-open on the driver catalog failure and baseline acceptance**, not AWS sign-in.
+open on compatibility assessment and scope acceptance**, not AWS sign-in. The
+configured fixture catalog failure is repaired and narrowly qualified by005;
+chosen IAM SQL evidence and full parity are not established by that result.
 General implementation is paused during setup handoff. After handoff, review M2
 scope before expanding parity, IAM or fetch-mode implementation. S2C, PostgreSQL
 application acceptance and existing protected gates are unchanged.

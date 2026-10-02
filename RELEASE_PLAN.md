@@ -425,12 +425,13 @@ and contract coverage only, not a substitute for the M2 endpoint run.
 
 ## SDK/MySQL planning checkpoint — 2026-09-30
 
-Live Redshift M2 is temporarily blocked because the user's AWS/Redshift account
-access is being restored. The user approved MS1 as bounded engineering work
-during that wait. G12 now requires a real MySQL 8 reference slice to prove the
-shared SDK against an unrelated protocol; G13 retains public SDK stability and
-distribution work. PostgreSQL and MySQL are sibling backends. Redshift remains
-a PostgreSQL-family specialization and resumes at M2 when access returns.
+AWS access and unattended bounded Redshift testing are restored. Scalar cases
+and configured fixture metadata have separate real-endpoint evidence; M2 remains
+open on compatibility assessment and scope acceptance. Redshift is now the
+user-prioritized track and MySQL proof work is deferred. Temporary credentials
+issued by GetCredentials require a separate bounded SQL qualification; this is
+not evidence of native SDK IAM providers or refresh. Preserve S2/MS1 architecture
+and protected PostgreSQL gates while completing that assessment.
 
 ADBC is recorded as a future client adapter and an architectural constraint,
 not an implementation claim. The MS1 result contract must permit a later
