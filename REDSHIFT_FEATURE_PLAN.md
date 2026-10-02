@@ -125,3 +125,13 @@ behavioral acceptance or an exhaustive parity claim. The next independent
 research package is RP-INV-02 fetch-mode decisions; runtime and live estimates
 remain separate. All existing scope approvals, security constraints and live
 gates remain intact.
+
+## Fetch-mode research checkpoint — 2026-10-02
+
+[REDSHIFT_FETCH_MODE_REVIEW.md](REDSHIFT_FETCH_MODE_REVIEW.md) records RP-INV-02:
+34 atomic source-review rows and finite differential fixtures for settings,
+eligibility, batching, transaction ownership, cleanup and cancellation. Source
+default conflicts and close/refill/cancel semantics are explicit live-dependent
+decision items. No runtime change, feature exception, fetch profile or parity
+acceptance is approved. The research package stops here until the named M2
+profile/test decision or restored access; active MySQL scope is unchanged.
