@@ -141,3 +141,21 @@ case inventory and filters; reject skipped, missing or repeated cases. Persist
 the reservation before the first connection, keep one bound across both phases,
 and retain uncertain charges until independently reconciled. Client-side
 cleanup checks complement, rather than replace, server-side cancellation proof.
+
+### R0 offline foundation candidate
+
+`tools/redshift/pilot_preflight.py` provides sanitized strict observation and
+accounting validation, conservative max-capacity reservation arithmetic and a
+stable nonblocking POSIX lock at the canonical pilot path. Its CLI only validates
+supplied records and always returns `live_enabled=false`; it neither verifies
+AWS evidence nor mutates the canonical ledger. Nineteen focused tests exercise
+budget boundaries, unknown/delayed liabilities, freshness, unsafe paths and
+permissions, cross-process contention, secret-bearing invalid inputs and nested
+duplicate JSON fields. The existing Redshift build job runs these offline tests.
+
+Reservations contain conservative upper bounds, not actual billing. R1 must
+enforce the outstanding-to-reconciled transition through its locked atomic
+writer and matched billing evidence; a caller changing a status field does not
+prove reconciliation. Admission must bind the original pilot period and account
+to protected canonical state, rather than accepting a new caller-defined period
+as a budget reset. No live runner or environment qualification is claimed here.
