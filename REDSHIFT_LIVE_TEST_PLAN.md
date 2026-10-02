@@ -447,3 +447,28 @@ All177 offline safety tests passed and independent review accepted the corrected
 binding and persistence paths. This is an offline candidate: no recovery request,
 canonical migration, AWS call or SQL ran while developing it. Live recovery needs
 required green CI and a separate explicit admission of this exact cleanup scope.
+
+
+## Remaining original windows after cleanup recovery
+
+The cleanup-only runner at a6d8b7e passed all required CI gates. A separately
+reviewed live recovery terminated owned sessions and both independent session
+and query EXISTS checks returned false. V5 records successful recovery separately;
+its exact frozen v4 and006 result retain006 as uncertain. Conservative retained
+bounds are USD18.10 compute/USD68.10 total, not actual billing or remaining
+balance. No IAM exchange, driver cases or window007 ran in recovery.
+
+The offline `pilot_continuation.py` candidate explicitly freezes complete v5
+raw history and its digest into a v6 overlay in the same canonical state file.
+It retains recovery and prior headroom and admits only the original remaining
+sequences007/008, each adding1200s metering and60s cleanup under unchanged
+100compute/150total caps and original24h horizon. Successful recovery is the
+migration prerequisite; unresolved continuation attempts block new reservations.
+Fresh matching cleanup after durable reservation still precedes activation.
+Recovery cannot be restarted through this interface. Six additional tests and
+independent review accepted the accounting candidate; all183 offline tests pass.
+This adds no continuation launcher, verified admission or canonical migration.
+Keep paid qualification stopped until a separately reviewed runner and required
+green CI, followed by root's explicit admission of a new finite scope. Later-day
+admission still requires cumulative billing/usage reconciliation; do not extend
+the accounting horizon by editing an anchor or creating a new pilot period.
