@@ -25,8 +25,12 @@ Bytes greeting(std::uint32_t capabilities = client_protocol_41 | client_ssl | cl
   return bytes;
 }
 Bytes packet(const Bytes& payload, std::uint8_t sequence = 0) {
-  Bytes bytes; number(bytes, static_cast<std::uint32_t>(payload.size()), 3); number(bytes, sequence, 1);
-  bytes.insert(bytes.end(), payload.begin(), payload.end()); return bytes;
+  Bytes bytes(payload.size() + 4);
+  for (std::size_t i = 0; i < 3; ++i)
+    bytes[i] = static_cast<std::byte>((payload.size() >> (8 * i)) & 255);
+  bytes[3] = static_cast<std::byte>(sequence);
+  std::copy(payload.begin(), payload.end(), bytes.begin() + 4);
+  return bytes;
 }
 TEST(MySqlHandshakeWireTest, EverySplitAndByteFragmentRetainsExactOwnedGreeting) {
   const auto expected = greeting();
