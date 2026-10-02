@@ -20,6 +20,7 @@ struct SessionOwnershipState {
   std::mutex mutex;
   std::unique_ptr<IDatabaseConnection> session;
   const std::optional<CredentialToken> credential;
+  std::unique_ptr<CredentialContext> authentication;
   const CacheFactory cache_factory;
   std::shared_ptr<const SessionCacheGeneration> cache_generation;
   const std::optional<SessionReusePolicy> reuse_policy;
@@ -71,6 +72,7 @@ void SessionOwner::close() noexcept {
     std::lock_guard lock(state->mutex);
     state->accepting = false;
     state->cache_generation.reset();
+    if (state->authentication) state->authentication->revoke();
     if (!state->leased) retired = std::move(state->session);
   }
   // Never call an external backend under the ownership mutex.
@@ -406,5 +408,91 @@ BackendResult<SessionLease> SessionOwner::acquire_healthy(const CredentialToken&
   } catch (...) {
     return fail(rs::util::DbErrorCode::ProtocolError, "Session health backend threw");
   }
+}
+} // namespace rs::core::database
+
+namespace rs::core::database {
+BackendResult<SessionOwner> SessionOwner::connect_authenticated(std::unique_ptr<IDatabaseConnection> physical,
+    const ConnectionSettings& settings, SessionReusePolicy policy, std::optional<rs::util::Deadline> credential_expiry) {
+  return connect_authenticated_impl(std::move(physical), settings, policy, credential_expiry,
+      +[]() -> std::unique_ptr<CredentialContext> { return std::make_unique<CredentialContext>(); });
+}
+BackendResult<SessionOwner> SessionOwner::connect_authenticated_impl(std::unique_ptr<IDatabaseConnection> physical,
+    const ConnectionSettings& settings, SessionReusePolicy policy, std::optional<rs::util::Deadline> credential_expiry,
+    AuthorityFactory create_authority) {
+  struct RetirementGuard {
+    std::unique_ptr<IDatabaseConnection>& physical;
+    ~RetirementGuard() { retire_session(std::move(physical)); }
+  } guard{physical};
+  const auto fail = [](rs::util::DbErrorCode code, const char* message) -> BackendResult<SessionOwner> {
+    BackendError error{rs::util::make_error_code(code), message};
+    error.operation = BackendOperation::Connect;
+    error.session_state = SessionState::Disconnected;
+    return error;
+  };
+  const auto deadline = rs::util::make_deadline(settings.timeout);
+  try {
+    if (!physical) return fail(rs::util::DbErrorCode::InvalidParameter, "No provider session");
+    if (policy.retire_at == rs::util::Deadline::max() || policy.max_idle <= rs::util::Clock::duration::zero())
+      return fail(rs::util::DbErrorCode::InvalidParameter, "Invalid authenticated session reuse policy");
+    const auto expired = [&] {
+      const auto now = rs::util::Clock::now();
+      return now >= deadline || now >= policy.retire_at || (credential_expiry && now >= *credential_expiry);
+    };
+    if (expired()) return fail(rs::util::DbErrorCode::Timeout, "Authenticated session admission expired");
+    if (physical->is_connected() || physical->session_state() != SessionState::Disconnected)
+      return fail(rs::util::DbErrorCode::InvalidParameter, "Provider session must be fresh and disconnected");
+    auto connected = physical->connect(settings);
+    if (!connected) {
+      auto error = std::move(connected.backend_error());
+      error.operation = BackendOperation::Connect;
+      error.session_state = SessionState::Disconnected;
+      error.disposition = SessionDisposition::Retire;
+      error.retry_safe.reset();
+      return error;
+    }
+    if (connected.session_snapshot() != SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable} ||
+        !physical->is_connected() || physical->session_state() != SessionState::Idle)
+      return fail(rs::util::DbErrorCode::ProtocolError, "Authenticated session connection outcome is inconsistent");
+    if (expired()) return fail(rs::util::DbErrorCode::Timeout, "Authenticated session connection exceeded admission lifetime");
+    auto authority = create_authority();
+    if (!authority) return fail(rs::util::DbErrorCode::AllocationFailure, "");
+    auto token = authority->publish_authenticated(credential_expiry);
+    // Allocation/publication may itself cross a bound. Never expose that owner.
+    if (expired() || !token.is_current()) return fail(rs::util::DbErrorCode::Timeout, "Authenticated session publication expired");
+    SessionOwner owner{std::move(physical), token, policy};
+    owner.state_->authentication = std::move(authority);
+    if (expired()) return fail(rs::util::DbErrorCode::Timeout, "Authenticated session construction expired");
+    return BackendResult<SessionOwner>{std::move(owner), connected.session_snapshot()};
+  } catch (const std::bad_alloc&) {
+    return fail(rs::util::DbErrorCode::AllocationFailure, "");
+  } catch (...) {
+    return fail(rs::util::DbErrorCode::ProtocolError, "Authenticated session backend threw");
+  }
+}
+BackendResult<SessionLease> SessionOwner::acquire_healthy(rs::util::Deadline deadline) {
+  std::optional<CredentialToken> token;
+  if (state_) {
+    std::lock_guard lock(state_->mutex);
+    if (state_->authentication && state_->credential) token = state_->credential;
+  }
+  if (token) return acquire_healthy(*token, deadline);
+  BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::AuthenticationFailed), "Managed session authentication unavailable"};
+  error.operation = BackendOperation::CheckHealth;
+  error.session_state = SessionState::Disconnected;
+  return error;
+}
+void SessionOwner::revoke_credentials() noexcept {
+  if (!state_) return;
+  std::unique_ptr<IDatabaseConnection> retired;
+  {
+    std::lock_guard lock(state_->mutex);
+    if (!state_->authentication) return;
+    state_->authentication->revoke();
+    state_->accepting = false;
+    state_->cache_generation.reset();
+    if (!state_->leased) retired = std::move(state_->session);
+  }
+  retire_session(std::move(retired));
 }
 } // namespace rs::core::database

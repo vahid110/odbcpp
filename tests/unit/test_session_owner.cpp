@@ -15,6 +15,10 @@ struct SessionOwnershipTestAccess {
       std::shared_ptr<const SessionCacheGeneration>(*factory)()) {
     return SessionOwner{std::move(session), std::optional{std::move(token)}, factory};
   }
+  static BackendResult<SessionOwner> connect(std::unique_ptr<IDatabaseConnection> session, const ConnectionSettings& settings,
+      SessionReusePolicy policy, std::unique_ptr<CredentialContext>(*factory)()) {
+    return SessionOwner::connect_authenticated_impl(std::move(session), settings, policy, std::nullopt, factory);
+  }
   static SessionOwner with_policy(std::unique_ptr<IDatabaseConnection> session, CredentialToken token,
       SessionReusePolicy policy, rs::util::Deadline(*now)() noexcept) {
     return SessionOwner{std::move(session), std::optional{std::move(token)}, &SessionOwner::make_cache_generation, policy, now};
@@ -39,6 +43,11 @@ static_assert(std::is_nothrow_move_constructible_v<SessionLease> && std::is_noth
 struct Observed {
   std::atomic<int> disconnects{}, destructions{}, queries{}, health{}, resets{};
   bool throw_disconnect{};
+  bool initially_connected{true};
+  std::atomic<int> connects{};
+  int connect_mode{};
+  std::function<void(const ConnectionSettings&)> on_connect;
+  std::optional<SessionSnapshot> connect_snapshot;
   bool missing_reset{};
   bool missing_health{};
   int health_mode{};
@@ -58,9 +67,22 @@ struct Observed {
 };
 class FakeSession final : public IDatabaseConnection, public ISessionHealth, public ISessionReset {
  public:
-  explicit FakeSession(std::shared_ptr<Observed> observed) : observed_(std::move(observed)) {}
+  explicit FakeSession(std::shared_ptr<Observed> observed) : observed_(std::move(observed)), connected_(observed_->initially_connected) {}
   ~FakeSession() override { ++observed_->destructions; }
-  BackendResult<void> connect(const ConnectionSettings&) override { return {}; }
+  BackendResult<void> connect(const ConnectionSettings& settings) override {
+    ++observed_->connects; if (observed_->on_connect) observed_->on_connect(settings);
+    if (observed_->connect_mode == 1) {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::AuthenticationFailed), "owned connect error"};
+      error.native_state = "28P01"; error.native_code = 23; error.retry_safe = true;
+      error.session_state = SessionState::Idle; error.disposition = SessionDisposition::Reusable; return error;
+    }
+    if (observed_->connect_mode == 2) throw std::bad_alloc{};
+    if (observed_->connect_mode == 3) throw std::runtime_error("SECRET connect fixture");
+    if (observed_->connect_mode == 4) throw 42;
+    connected_ = observed_->connect_mode != 5;
+    if (observed_->connect_snapshot) return BackendResult<void>{*observed_->connect_snapshot};
+    return BackendResult<void>{SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}};
+  }
   void disconnect() override {
     ++observed_->disconnects; connected_ = false;
     if (observed_->on_disconnect) observed_->on_disconnect();
@@ -1078,5 +1100,87 @@ TEST(SessionHealthAdmissionTest, CredentialExpiryDuringProbeCannotDeliverLease) 
   observed->on_health = [&] { std::this_thread::sleep_until(expiry); EXPECT_EQ(0, observed->disconnects); };
   auto result = owner.acquire_healthy(token, rs::util::Deadline::max()); EXPECT_FALSE(result);
   EXPECT_FALSE(owner.try_acquire(token)); EXPECT_EQ(1, observed->health); EXPECT_EQ(1, observed->disconnects);
+}
+
+SessionReusePolicy managed_policy() { return {rs::util::make_deadline(std::chrono::seconds(10)), std::chrono::seconds(5)}; }
+std::shared_ptr<Observed> fresh_observed() { auto observed = std::make_shared<Observed>(); observed->initially_connected = false; return observed; }
+TEST(ManagedSessionTest, AuthenticationPrecedesAuthorityAndSettingsAreBorrowedUnchanged) {
+  auto observed = fresh_observed(); ConnectionSettings settings{}; settings.timeout = std::chrono::seconds(5);
+  observed->on_connect = [&](const auto& input) { EXPECT_EQ(&settings, &input); EXPECT_EQ(0, observed->health); };
+  auto result = SessionOwner::connect_authenticated(std::make_unique<FakeSession>(observed), settings, managed_policy());
+  ASSERT_TRUE(result); EXPECT_EQ(1, observed->connects); EXPECT_EQ(0, observed->health);
+  EXPECT_FALSE(result->try_acquire()); auto lease = result->acquire_healthy(rs::util::Deadline::max()); ASSERT_TRUE(lease);
+  ASSERT_TRUE(lease->return_reusable(rs::util::Deadline::max()));
+  SessionOwner moved = std::move(result).value(); result->revoke_credentials();
+  auto next = moved.acquire_healthy(rs::util::Deadline::max()); ASSERT_TRUE(next);
+  moved.revoke_credentials(); EXPECT_EQ(0, observed->disconnects);
+  ASSERT_TRUE(next->execute_query("surviving borrower", rs::util::Deadline::max()));
+  EXPECT_FALSE(next->return_reusable(rs::util::Deadline::max())); EXPECT_FALSE(moved.acquire_healthy(rs::util::Deadline::max()));
+  EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
+}
+TEST(ManagedSessionTest, IdleRevocationAndOwnerDestructionRetireWhileActiveBorrowSurvives) {
+  for (bool active : {false, true}) {
+    auto observed = fresh_observed(); std::optional<SessionLease> lease;
+    {
+      auto owner = SessionOwner::connect_authenticated(std::make_unique<FakeSession>(observed), ConnectionSettings{}, managed_policy()); ASSERT_TRUE(owner);
+      if (active) { auto result = owner->acquire_healthy(rs::util::Deadline::max()); ASSERT_TRUE(result); lease = std::move(result).value(); }
+      else { owner->revoke_credentials(); EXPECT_EQ(1, observed->disconnects); EXPECT_FALSE(owner->acquire_healthy(rs::util::Deadline::max())); }
+    }
+    if (active) { EXPECT_EQ(0, observed->disconnects); ASSERT_TRUE(lease->execute_query("owner gone", rs::util::Deadline::max())); lease.reset(); }
+    EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
+  }
+}
+TEST(ManagedSessionTest, NullDirtyInvalidPolicyAndPreexpiredBoundsNeverAuthenticate) {
+  ConnectionSettings settings{};
+  EXPECT_FALSE(SessionOwner::connect_authenticated(nullptr, settings, managed_policy()));
+  for (int mode = 0; mode < 5; ++mode) {
+    auto observed = fresh_observed(); auto policy = managed_policy(); std::optional<rs::util::Deadline> expiry;
+    if (mode == 0) observed->initially_connected = true;
+    if (mode == 1) policy.retire_at = rs::util::Deadline::min();
+    if (mode == 2) policy.max_idle = rs::util::Clock::duration::zero();
+    if (mode == 3) expiry = rs::util::Deadline::min();
+    if (mode == 4) settings.timeout = std::chrono::milliseconds::zero();
+    auto result = SessionOwner::connect_authenticated(std::make_unique<FakeSession>(observed), settings, policy, expiry);
+    ASSERT_FALSE(result); EXPECT_EQ(0, observed->connects); EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
+    EXPECT_EQ(BackendOperation::Connect, result.backend_error().operation);
+  }
+}
+TEST(ManagedSessionTest, FailedMalformedAndThrownAuthenticationNeverPublishesOwner) {
+  for (int mode = 1; mode < 10; ++mode) {
+    SCOPED_TRACE(mode); auto observed = fresh_observed(); observed->connect_mode = mode;
+    if (mode == 6) observed->connect_snapshot = SessionSnapshot{};
+    if (mode == 7) observed->connect_snapshot = SessionSnapshot{SessionState::Idle, SessionDisposition::ResetRequired};
+    if (mode == 8) observed->on_connect = [&](const auto&) { observed->reset_mode = 8; };
+    if (mode == 9) observed->on_connect = [&](const auto&) { observed->reset_mode = 11; };
+    auto result = SessionOwner::connect_authenticated(std::make_unique<FakeSession>(observed), ConnectionSettings{}, managed_policy());
+    ASSERT_FALSE(result); EXPECT_EQ(1, observed->connects); EXPECT_EQ(0, observed->health); EXPECT_EQ(1, observed->disconnects);
+    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), result.session_snapshot());
+    EXPECT_FALSE(result.backend_error().retry_safe); EXPECT_EQ(BackendOperation::Connect, result.backend_error().operation);
+    EXPECT_EQ(std::string::npos, result.error_message().find("SECRET"));
+    if (mode == 1) { EXPECT_EQ("28P01", result.backend_error().native_state); EXPECT_EQ(23, result.backend_error().native_code); }
+    if (mode == 2) { EXPECT_EQ(BackendErrorClass::AllocationFailure, result.backend_error().error_class); }
+  }
+}
+TEST(ManagedSessionTest, AuthorityAllocationFailureAndNullFactoryRetireAuthenticatedPhysical) {
+  for (bool null_factory : {false, true}) {
+    auto observed = fresh_observed();
+    auto factory = null_factory ? +[]() -> std::unique_ptr<CredentialContext> { return {}; } :
+        +[]() -> std::unique_ptr<CredentialContext> { throw std::bad_alloc{}; };
+    auto result = detail::SessionOwnershipTestAccess::connect(std::make_unique<FakeSession>(observed), ConnectionSettings{}, managed_policy(), factory);
+    ASSERT_FALSE(result); EXPECT_EQ(BackendErrorClass::AllocationFailure, result.backend_error().error_class);
+    EXPECT_EQ(1, observed->connects); EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
+  }
+}
+TEST(ManagedSessionTest, CredentialLifetimeAndConnectionDeadlineCrossingPreventPublication) {
+  for (bool credential : {false, true}) {
+    auto observed = fresh_observed(); ConnectionSettings settings{}; settings.timeout = std::chrono::milliseconds(50);
+    const auto expiry = rs::util::make_deadline(std::chrono::milliseconds(50));
+    if (credential) settings.timeout = std::chrono::seconds(5);
+    observed->on_connect = [&](const auto&) { std::this_thread::sleep_until(expiry + std::chrono::milliseconds(20)); };
+    auto result = SessionOwner::connect_authenticated(std::make_unique<FakeSession>(observed), settings, managed_policy(),
+        credential ? std::optional{expiry} : std::nullopt);
+    ASSERT_FALSE(result); EXPECT_EQ(BackendErrorClass::Timeout, result.backend_error().error_class);
+    EXPECT_EQ(1, observed->connects); EXPECT_EQ(1, observed->disconnects); EXPECT_EQ(1, observed->destructions);
+  }
 }
 } // namespace

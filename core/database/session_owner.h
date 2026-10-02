@@ -98,6 +98,14 @@ class SessionOwner final {
   SessionOwner(SessionOwner&&) noexcept;
   SessionOwner& operator=(SessionOwner&&) noexcept;
   ~SessionOwner();
+  // Owns a fresh disconnected provider session and its credential authority.
+  // Publishes only after exact authenticated Idle/Reusable connection success.
+  // Settings are borrowed for this call, never retained by the coordinator.
+  static BackendResult<SessionOwner> connect_authenticated(std::unique_ptr<IDatabaseConnection>,
+      const ConnectionSettings&, SessionReusePolicy, std::optional<rs::util::Deadline> credential_expiry = std::nullopt);
+  BackendResult<SessionLease> acquire_healthy(rs::util::Deadline);
+  // Managed authority only; active borrowers survive revocation until retirement.
+  void revoke_credentials() noexcept;
 
   std::optional<SessionLease> try_acquire();
   // Missing, foreign and wrong-generation tokens cannot disrupt a valid owner.
@@ -109,6 +117,9 @@ class SessionOwner final {
 
  private:
   friend struct detail::SessionOwnershipTestAccess;
+  using AuthorityFactory = std::unique_ptr<CredentialContext>(*)();
+  static BackendResult<SessionOwner> connect_authenticated_impl(std::unique_ptr<IDatabaseConnection>,
+      const ConnectionSettings&, SessionReusePolicy, std::optional<rs::util::Deadline>, AuthorityFactory);
   using NowFactory = rs::util::Deadline(*)() noexcept;
   using CacheGenerationFactory = std::shared_ptr<const detail::SessionCacheGeneration>(*)();
   static std::shared_ptr<const detail::SessionCacheGeneration> make_cache_generation();

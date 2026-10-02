@@ -197,6 +197,34 @@ TEST(SessionOwnerIntegrationTest, LiveBorrowSurvivesOwnerAndRetirementClosesPhys
   EXPECT_EQ(BackendOperation::CheckHealth, rejected_health.backend_error().operation);
   EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), rejected_health.session_snapshot());
   EXPECT_FALSE(health_owner.try_acquire(health_token));
+  // Managed binding publishes its own authority only after real authentication.
+  auto managed = SessionOwner::connect_authenticated(provider.create_session(nullptr), *settings,
+      {rs::util::make_deadline(std::chrono::seconds(10)), std::chrono::seconds(5)});
+  ASSERT_TRUE(managed); EXPECT_FALSE(managed->try_acquire());
+  const auto managed_deadline = rs::util::make_deadline(std::chrono::seconds(5));
+  auto managed_lease = managed->acquire_healthy(managed_deadline); ASSERT_TRUE(managed_lease);
+  auto managed_pid = managed_lease->execute_query("SELECT pg_backend_pid()", managed_deadline); ASSERT_TRUE(managed_pid);
+  const auto managed_pid_text = managed_pid->rows.at(0).at(0); ASSERT_TRUE(managed_pid_text);
+  ASSERT_TRUE(managed_lease->return_reusable(managed_deadline));
+  auto managed_next = managed->acquire_healthy(managed_deadline); ASSERT_TRUE(managed_next);
+  auto same_managed_pid = managed_next->execute_query("SELECT pg_backend_pid()", managed_deadline); ASSERT_TRUE(same_managed_pid);
+  EXPECT_EQ(managed_pid_text, same_managed_pid->rows.at(0).at(0));
+  managed->revoke_credentials(); ASSERT_TRUE(managed_next->execute_query("SELECT 1", managed_deadline));
+  EXPECT_FALSE(managed_next->return_reusable(managed_deadline)); EXPECT_FALSE(managed->acquire_healthy(managed_deadline));
+  gone = false;
+  while (std::chrono::steady_clock::now() < managed_deadline) {
+    auto inactive = observer->execute_query("SELECT count(*) FROM pg_stat_activity WHERE pid = " + *managed_pid_text, managed_deadline);
+    ASSERT_TRUE(inactive);
+    if (inactive->rows.at(0).at(0) == "0") { gone = true; break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(gone) << "Revoked managed authenticated session remained active";
+  auto invalid_settings = *settings; invalid_settings.user = "odbcpp_missing_managed_auth";
+  auto failed_managed = SessionOwner::connect_authenticated(provider.create_session(nullptr), invalid_settings,
+      {rs::util::make_deadline(std::chrono::seconds(10)), std::chrono::seconds(5)});
+  ASSERT_FALSE(failed_managed);
+  EXPECT_EQ(BackendOperation::Connect, failed_managed.backend_error().operation);
+  EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), failed_managed.session_snapshot());
   observer->disconnect();
 }
 } // namespace
