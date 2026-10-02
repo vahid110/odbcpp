@@ -2949,3 +2949,41 @@ after preserving the original configured-transport fixtures. Complete local
 PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and Redshift build/absent-endpoint
 gates passed. Final focused PostgreSQL checks passed after narrowing test authority.
 Windows/packaging and crypto evidence await exact-head CI.
+
+## S2 ODBC exclusive ownership adoption — 2026-10-02
+
+ODBC now adopts an authenticated physical session into a private, unbound
+SessionOwner and retains one exclusive terminal lease for the connection lifetime.
+Execution, descriptions, catalogs, transactions and isolation use bounded lease
+operations. No return/reissue, pooling, automatic reconnect, replay, cache payloads
+or lifetime defaults are introduced. Exact credential binding remains mandatory
+before future reuse. Backend default Unknown/Retire snapshots remain terminal;
+ODBC-facing mocks now report explicit truthful Idle/Reusable snapshots.
+
+Negotiated server version and capability/facet observations are owned at adoption;
+SQL_ATTR_CONNECTION_DEAD uses passive lease observation without network I/O.
+Logical ODBC-open state remains separate from physical liveness, so terminal rows
+and diagnostics remain readable and explicit disconnect/reconnect remains required.
+Disconnect clears observations back to provider defaults. Authentication and passive admission require exact Idle/Reusable evidence;
+dirty or terminal successful setup results are rejected. Negotiated feature answers
+remain stable while logically open after retirement. Setup exceptions clean
+up the attempt, allocation failures report HY001, and a retired setup lease cannot
+be published as an open connection. Lease retirement destroys the physical session
+once; freeing a logically open connection remains a sequence error.
+
+The private test view routes active health through a bounded borrower operation:
+it invalidates local cache authority, preserves transaction-state results and
+retires on terminal results or exceptions. It does not grant checked admission or
+reuse authority. Timed-out reset retires its facet along with the physical session.
+ODBC's internal include manifest/probes now permit ownership contracts while
+continuing to deny protocol and prototype-pool headers. Credential header visibility
+is a transitive owner-header requirement, not qualification for ODBC credential
+authority use; separating those header surfaces remains follow-up work.
+
+Validation: focused backend/ownership unit and live lifecycle/reset tests pass,
+and all 83 credential/ownership tests pass under ThreadSanitizer. Complete local
+PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and Redshift build/absent-endpoint
+gates passed. Final focused diagnostic assertions also passed. Windows/packaging
+and crypto evidence await exact-head CI. S2/G12 remain open;
+credential-bound product reuse, cache policy and SDK qualification are subsequent
+work. MySQL, Redshift live access and crypto qualification are unchanged.
