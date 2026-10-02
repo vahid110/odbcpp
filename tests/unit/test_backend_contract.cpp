@@ -27,7 +27,7 @@ struct Observations {
   int created{}, transports{}, disconnects{}, destructions{}, queries{}, descriptions{}, translations{};
   int terminal_execution{}, connect_exception{};
   SQLULEN description_size{8};
-  bool observation_exception{};
+  bool observation_exception{}, terminal_description{};
   ConnectionSettings settings;
   std::string sql;
   std::vector<QueryParameter> parameters;
@@ -267,6 +267,7 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
       error.native_state = "FAKE_ERROR";
       return error;
     }
+    if (seen_->terminal_description) return BackendResult<QueryResult>{std::move(result)};
     return BackendResult<QueryResult>{std::move(result), {SessionState::Idle, SessionDisposition::Reusable}};
   }
   std::string server_version() const override {
@@ -621,6 +622,34 @@ TEST_F(BackendContractTest, BackendDiagnosticStaysDetailedWhileFailureLogUsesPub
   EXPECT_NE(std::string::npos, contents.find("Database server rejected the operation"));
   EXPECT_EQ(std::string::npos, contents.find("server-secret-981724"));
   EXPECT_EQ(std::string::npos, contents.find("private SQL and identifiers"));
+  std::filesystem::remove_all(directory);
+}
+
+TEST_F(BackendContractTest, MetadataCacheEventsExposeNoSqlContents) {
+  const auto directory = std::filesystem::temp_directory_path() /
+      ("odbcpp-metadata-log-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(directory);
+  const auto path = directory / "driver.log";
+  connect_with("SERVER=fake;SSL=0;LogLevel=Debug;LogQueries=false;LogAsync=false;LogSink=File;LogFile=" + path.string());
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"private_sql_canary_781 ?", SQL_NTS));
+  SQLSMALLINT type{}, digits{}, nullable{}; SQLULEN size{};
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+  SQLHSTMT other{}; ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &other));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(other, (SQLCHAR*)"rows", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, other));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, dbc)); dbc = nullptr;
+  std::ifstream input(path);
+  const std::string contents((std::istreambuf_iterator<char>(input)), {}); input.close();
+  for (const char* event : {"prepared_metadata_cache_miss", "prepared_metadata_cache_hit",
+      "prepared_metadata_cache_invalidation", "prepared_metadata_cache_stale", "prepared_metadata_cache_publish"}) {
+    EXPECT_NE(std::string::npos, contents.find(event));
+  }
+  EXPECT_EQ(std::string::npos, contents.find("private_sql_canary_781"));
   std::filesystem::remove_all(directory);
 }
 
@@ -1191,6 +1220,63 @@ TEST_F(BackendContractTest, TerminalRetirementRejectsCachedPreparedMetadataButKe
   ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(other, &columns)); EXPECT_EQ(3, columns);
   ASSERT_EQ(SQL_SUCCESS, SQLFetch(other));
   ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, other));
+}
+
+TEST_F(BackendContractTest, PreparedMetadataInvalidatesOnSuccessRecoverableFailureAndOtherDescription) {
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLHSTMT other{}; ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &other));
+  SQLSMALLINT type{}, digits{}, nullable{}; SQLULEN size{};
+  auto describe = [&](SQLHSTMT handle) {
+    return SQLDescribeParam(handle, 1, &type, &size, &digits, &nullable);
+  };
+  ASSERT_EQ(SQL_SUCCESS, describe(stmt)); EXPECT_EQ(1, seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS, describe(stmt)); EXPECT_EQ(1, seen->descriptions);
+  seen->description_size = 16;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(other, (SQLCHAR*)"rows", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, describe(stmt)); EXPECT_EQ(16u, size); EXPECT_EQ(2, seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(other));
+  seen->description_size = 32;
+  ASSERT_EQ(SQL_ERROR, SQLExecDirect(other, (SQLCHAR*)"metadata_failure", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, describe(stmt)); EXPECT_EQ(32u, size); EXPECT_EQ(3, seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(other, (SQLCHAR*)"rows ?", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, describe(other)); EXPECT_EQ(4, seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS, describe(other)); EXPECT_EQ(4, seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS, describe(stmt)); EXPECT_EQ(5, seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, other));
+}
+
+TEST_F(BackendContractTest, MetadataEpochPreservesPassiveObservationAndInvalidatesPrivateControlAttempts) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1;
+  connect();
+  auto view = rs::odbc::detail::ODBCBackendTestAccess::view(
+      rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLSMALLINT type{}, digits{}, nullable{}; SQLULEN size{};
+  auto describe = [&] { return SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable); };
+  ASSERT_EQ(SQL_SUCCESS, describe()); EXPECT_EQ(1, seen->descriptions);
+  EXPECT_TRUE(view.is_connected());
+  SQLUINTEGER dead{}; ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, &dead, 0, nullptr));
+  ASSERT_EQ(SQL_SUCCESS, describe()); EXPECT_EQ(1, seen->descriptions);
+  EXPECT_TRUE(view.transaction(TransactionAction::Commit, Deadline::max()));
+  ASSERT_EQ(SQL_SUCCESS, describe()); EXPECT_EQ(2, seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_TXN_ISOLATION, (SQLPOINTER)SQL_TXN_SERIALIZABLE, 0));
+  ASSERT_EQ(SQL_SUCCESS, describe()); EXPECT_EQ(3, seen->descriptions);
+  EXPECT_FALSE(view.check_health(Deadline::max())); // Missing facet preserves active lease.
+  ASSERT_EQ(SQL_SUCCESS, describe()); EXPECT_EQ(4, seen->descriptions);
+  EXPECT_FALSE(view.reset_session(Deadline::max())); // Missing reset retires.
+  size = 80; EXPECT_EQ(SQL_ERROR, describe()); EXPECT_EQ(80u, size); EXPECT_EQ("08S01", state());
+}
+
+TEST_F(BackendContractTest, TerminalSuccessfulDescriptionReturnsOwnedMetadataWithoutCachePublication) {
+  connect(); seen->terminal_description = true;
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLSMALLINT type{}, digits{}, nullable{}; SQLULEN size{};
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+  EXPECT_EQ(8u, size); EXPECT_EQ(1, seen->descriptions); EXPECT_EQ(1, seen->destructions);
+  size = 80;
+  EXPECT_EQ(SQL_ERROR, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+  EXPECT_EQ("08S01", state()); EXPECT_EQ(80u, size); EXPECT_EQ(1, seen->descriptions);
 }
 
 TEST_F(BackendContractTest, InvalidParameterDescriptionsPreserveOutputAndRecover) {

@@ -27,19 +27,12 @@ struct ODBCBackendTestAccess {
     bool has_health() const { return connection_->backend_lease_ && bool(*connection_->backend_lease_) && connection_->backend_observation_.has_health_facet; }
     bool has_reset() const { return connection_->backend_lease_ && bool(*connection_->backend_lease_) && connection_->backend_observation_.has_reset_facet; }
     rs::core::database::BackendResult<void> check_health(rs::util::Deadline deadline) {
-      if (connection_->backend_lease_) return connection_->backend_lease_->check_health(deadline);
-      return closed(rs::core::database::BackendOperation::CheckHealth);
+      return connection_->backend_health(deadline);
     }
     rs::core::database::BackendResult<void> reset_session(rs::util::Deadline deadline) {
-      if (connection_->backend_lease_) return connection_->backend_lease_->reset_session(deadline);
-      return closed(rs::core::database::BackendOperation::ResetSession);
+      return connection_->backend_reset(deadline);
     }
    private:
-    static rs::core::database::BackendResult<void> closed(rs::core::database::BackendOperation operation) {
-      rs::core::database::BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::NotConnected), "Test connection is closed"};
-      error.operation = operation; error.session_state = rs::core::database::SessionState::Disconnected;
-      return error;
-    }
     std::shared_ptr<ODBCConnection> connection_;
   };
   static View view(std::shared_ptr<ODBCConnection> connection) { return View{std::move(connection)}; }

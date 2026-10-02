@@ -23,7 +23,7 @@
 namespace rs::odbc {
 
 class HandleRegistry;
-namespace detail { struct ODBCBackendTestAccess; struct MetadataSessionIdentity; }
+namespace detail { struct ODBCBackendTestAccess; struct MetadataEpochIdentity; }
 
 // Diagnostic record for ODBC error handling
 struct DiagnosticRecord {
@@ -269,6 +269,9 @@ private:
   rs::util::Result<std::string> backend_catalog(const rs::core::database::CatalogRequest&);
 
   bool backend_connected();
+  void invalidate_metadata_epoch() noexcept;
+  rs::core::database::BackendResult<void> backend_health(rs::util::Deadline);
+  rs::core::database::BackendResult<void> backend_reset(rs::util::Deadline);
   void close_connection();
   rs::core::database::BackendResult<void> backend_transaction(
       rs::core::database::TransactionAction action, rs::util::Deadline deadline);
@@ -282,8 +285,8 @@ private:
   std::optional<rs::core::database::SessionOwner> backend_owner_;
   std::optional<rs::core::database::SessionLease> backend_lease_;
   rs::core::database::SessionObservation backend_observation_;
-  // Private logical-session identity; no reusable-session/cache authority.
-  std::shared_ptr<const detail::MetadataSessionIdentity> metadata_session_;
+  // Private logical-session metadata epoch; no reusable-session/cache authority.
+  std::shared_ptr<const detail::MetadataEpochIdentity> metadata_epoch_;
   bool connected_ = false;
   SQLUINTEGER login_timeout_seconds_ = 30;
   SQLUINTEGER connection_timeout_seconds_ = 0;
@@ -536,7 +539,7 @@ private:
   bool prepared_ = false;
   bool prepared_metadata_available_ = false;
   std::uint64_t prepared_metadata_ipd_revision_{0};
-  std::weak_ptr<const detail::MetadataSessionIdentity> prepared_metadata_session_;
+  std::weak_ptr<const detail::MetadataEpochIdentity> prepared_metadata_epoch_;
   SQLSMALLINT parameter_count_ = 0;
   SQLLEN affected_rows_ = 0;
   SQLULEN query_timeout_seconds_ = 0;

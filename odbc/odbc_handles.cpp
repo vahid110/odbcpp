@@ -28,7 +28,7 @@
 #include <stdexcept>
 
 namespace rs::odbc {
-namespace detail { struct MetadataSessionIdentity {}; }
+namespace detail { struct MetadataEpochIdentity {}; }
 using rs::core::database::SqlTranslationError;
 namespace {
 
@@ -1432,8 +1432,9 @@ SQLRETURN ODBCConnection::connect(
       ~AttemptCleanup() {
         if (completed) return;
         if (physical) { try { physical->disconnect(); } catch (...) {} }
+        connection.metadata_epoch_.reset();
         connection.backend_lease_.reset(); connection.backend_owner_.reset();
-        connection.backend_observation_ = {}; connection.metadata_session_.reset();
+        connection.backend_observation_ = {};
         connection.connected_ = false; connection.transaction_active_ = false;
       }
     } attempt{*this, backend_provider_->create_session(std::move(transport))};
@@ -1504,7 +1505,6 @@ SQLRETURN ODBCConnection::connect(
     }
     
     if (!*backend_lease_) throw std::runtime_error("Backend retired during connection setup");
-    metadata_session_ = std::make_shared<const detail::MetadataSessionIdentity>();
     input_limits_ = settings.input_limits;
     connected_ = true;
     transaction_active_ = false;
@@ -1777,6 +1777,7 @@ std::string ODBCConnection::get_current_catalog() const {
 
 rs::core::database::BackendResult<rs::core::database::QueryResult> ODBCConnection::backend_query(
     std::string_view sql, rs::util::Deadline deadline) {
+  invalidate_metadata_epoch();
   if (backend_lease_) return backend_lease_->execute_query(sql, deadline);
   rs::core::database::BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::NotConnected), "Connection is not open"};
   error.operation = rs::core::database::BackendOperation::ExecuteDirect;
@@ -1785,6 +1786,7 @@ rs::core::database::BackendResult<rs::core::database::QueryResult> ODBCConnectio
 }
 rs::core::database::BackendResult<rs::core::database::QueryResult> ODBCConnection::backend_prepared(
     std::string_view sql, std::span<const rs::core::database::QueryParameter> params, rs::util::Deadline deadline) {
+  invalidate_metadata_epoch();
   if (backend_lease_) return backend_lease_->execute_prepared(sql, params, deadline);
   rs::core::database::BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::NotConnected), "Connection is not open"};
   error.operation = rs::core::database::BackendOperation::ExecutePrepared;
@@ -1794,6 +1796,7 @@ rs::core::database::BackendResult<rs::core::database::QueryResult> ODBCConnectio
 rs::core::database::BackendResult<rs::core::database::QueryResult> ODBCConnection::backend_description(
     std::string_view sql, std::span<const rs::core::database::QueryParameterType> types, rs::util::Deadline deadline) {
   using namespace rs::core::database;
+  invalidate_metadata_epoch();
   if (backend_lease_) return backend_lease_->describe_statement(sql, types, deadline);
   return local_backend_error(LocalFailure::Unsupported, "Data source does not support statement description",
       BackendOperation::Describe, SessionState::Disconnected);
@@ -1810,6 +1813,7 @@ rs::util::Result<std::string> ODBCConnection::backend_catalog(const rs::core::da
 rs::core::database::BackendResult<void> ODBCConnection::backend_transaction(
     rs::core::database::TransactionAction action, rs::util::Deadline deadline) {
   using namespace rs::core::database;
+  invalidate_metadata_epoch();
   if (backend_lease_) return backend_lease_->transaction(action, deadline);
   return local_backend_error(LocalFailure::Unsupported,
       "Transactions are not supported by this backend", BackendOperation::Transaction,
@@ -1819,6 +1823,7 @@ rs::core::database::BackendResult<void> ODBCConnection::backend_transaction(
 rs::core::database::BackendResult<void> ODBCConnection::backend_isolation(
     rs::core::database::TransactionIsolation level, rs::util::Deadline deadline) {
   using namespace rs::core::database;
+  invalidate_metadata_epoch();
   if (backend_lease_) return backend_lease_->set_transaction_isolation(level, deadline);
   return local_backend_error(LocalFailure::Unsupported,
       "Transaction isolation is not supported by this backend", BackendOperation::SetTransactionIsolation,
@@ -1883,6 +1888,32 @@ SQLRETURN ODBCConnection::disconnect() {
   return SQL_SUCCESS;
 }
 
+void ODBCConnection::invalidate_metadata_epoch() noexcept {
+  if (metadata_epoch_) {
+    metadata_epoch_.reset();
+    log(rs::core::logging::LogLevel::Debug, "prepared_metadata_cache_invalidation",
+        "Prepared metadata epoch invalidated");
+  }
+}
+
+rs::core::database::BackendResult<void> ODBCConnection::backend_health(rs::util::Deadline deadline) {
+  invalidate_metadata_epoch();
+  if (backend_lease_) return backend_lease_->check_health(deadline);
+  rs::core::database::BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::NotConnected), "Connection is not open"};
+  error.operation = rs::core::database::BackendOperation::CheckHealth;
+  error.session_state = rs::core::database::SessionState::Disconnected;
+  return error;
+}
+
+rs::core::database::BackendResult<void> ODBCConnection::backend_reset(rs::util::Deadline deadline) {
+  invalidate_metadata_epoch();
+  if (backend_lease_) return backend_lease_->reset_session(deadline);
+  rs::core::database::BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::NotConnected), "Connection is not open"};
+  error.operation = rs::core::database::BackendOperation::ResetSession;
+  error.session_state = rs::core::database::SessionState::Disconnected;
+  return error;
+}
+
 bool ODBCConnection::backend_connected() {
   if (!backend_lease_ || !*backend_lease_) return false;
   auto observation = backend_lease_->inspect();
@@ -1890,8 +1921,8 @@ bool ODBCConnection::backend_connected() {
 }
 
 void ODBCConnection::close_connection() {
+  invalidate_metadata_epoch();
   backend_lease_.reset(); backend_owner_.reset(); backend_observation_ = {};
-  metadata_session_.reset();
   connected_ = false; transaction_active_ = false;
   log(rs::core::logging::LogLevel::Info, "connection_closed",
       "Database connection closed");
@@ -4620,7 +4651,7 @@ void ODBCStatement::clear_current_result() {
   executed_ = false;
   prepared_metadata_available_ = false;
   prepared_metadata_ipd_revision_ = 0;
-  prepared_metadata_session_.reset();
+  prepared_metadata_epoch_.reset();
 }
 
 // Column binding implementation
@@ -4675,11 +4706,16 @@ SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target
 SQLRETURN ODBCStatement::describe_prepared_metadata() {
   const auto implementation_descriptor = descriptor(imp_param_descriptor_);
   if (prepared_metadata_available_ && conn_->backend_lease_ && *conn_->backend_lease_ &&
-      conn_->metadata_session_ && prepared_metadata_session_.lock() == conn_->metadata_session_ &&
+      conn_->metadata_epoch_ && prepared_metadata_epoch_.lock() == conn_->metadata_epoch_ &&
       prepared_metadata_ipd_revision_ ==
           implementation_descriptor->revision()) {
+    conn_->log(rs::core::logging::LogLevel::Debug, "prepared_metadata_cache_hit",
+        "Prepared metadata reused within current epoch");
     return SQL_SUCCESS;
   }
+  conn_->log(rs::core::logging::LogLevel::Debug,
+      prepared_metadata_available_ ? "prepared_metadata_cache_stale" : "prepared_metadata_cache_miss",
+      "Prepared metadata requires a fresh description");
 
   if (!conn_->has_statement_description_facet()) {
     set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED, "Data source does not support statement description");
@@ -4723,9 +4759,17 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
     return SQL_ERROR;
   }
 
+  std::shared_ptr<const detail::MetadataEpochIdentity> epoch;
+  if (conn_->backend_lease_ && *conn_->backend_lease_)
+    epoch = std::make_shared<const detail::MetadataEpochIdentity>();
   apply_result_metadata(*result, true);
+  if (epoch) {
+    conn_->metadata_epoch_ = std::move(epoch);
+    conn_->log(rs::core::logging::LogLevel::Debug, "prepared_metadata_cache_publish",
+        "Prepared metadata epoch published");
+  }
   prepared_metadata_available_ = true;
-  prepared_metadata_session_ = conn_->metadata_session_;
+  prepared_metadata_epoch_ = conn_->metadata_epoch_;
   prepared_metadata_ipd_revision_ = implementation_descriptor->revision();
   return SQL_SUCCESS;
 }

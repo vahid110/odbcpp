@@ -3,6 +3,7 @@
 #include "odbc/odbc_types.h"
 #include "odbc/unicode.h"
 #include "tests/test_connection_config.h"
+#include "tests/test_handle_helpers.h"
 
 #include <array>
 #include <cstddef>
@@ -4514,4 +4515,29 @@ TEST_F(MetadataIntegrationTest, PreparedMetadataRefreshesAfterTimeoutReconnect) 
         (SQLCHAR*)"CREATE TEMP TABLE metadata_session_scope (value text, extra boolean)", SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(2, columns);
     ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(2, columns);
+}
+
+TEST_F(MetadataIntegrationTest, PreparedMetadataRefreshesAfterLocalSchemaMutationAndReset) {
+    SQLHSTMT other{};
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &other));
+    struct Cleanup { SQLHSTMT value; ~Cleanup() { SQLFreeHandle(SQL_HANDLE_STMT, value); } } cleanup{other};
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(other,
+        (SQLCHAR*)"CREATE TEMP TABLE metadata_epoch_scope (value integer)", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT * FROM metadata_epoch_scope", SQL_NTS));
+    SQLSMALLINT columns{};
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(1, columns);
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(other,
+        (SQLCHAR*)"ALTER TABLE metadata_epoch_scope ADD COLUMN extra boolean", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(2, columns);
+    auto view = rs::odbc::detail::ODBCBackendTestAccess::view(
+        rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(hdbc));
+    ASSERT_TRUE(view.check_health(rs::util::make_deadline(std::chrono::seconds(3))));
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(2, columns);
+    ASSERT_TRUE(view.reset_session(rs::util::make_deadline(std::chrono::seconds(3))));
+    columns = 77;
+    EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(77, columns);
+    EXPECT_EQ("42S02", diagnostic_state(SQL_HANDLE_STMT, hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(other,
+        (SQLCHAR*)"CREATE TEMP TABLE metadata_epoch_scope (value text, extra boolean, third integer)", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(3, columns);
 }
