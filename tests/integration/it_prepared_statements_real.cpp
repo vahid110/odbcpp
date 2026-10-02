@@ -5446,3 +5446,21 @@ TEST_F(PreparedStatementIntegrationTest, BinaryParameterPreservesLiteralEscapeBy
         ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
     }
 }
+
+TEST_F(PreparedStatementIntegrationTest, LegacySignedIntegerParametersRoundTrip) {
+    SQLINTEGER a = -7; SQLSMALLINT b = -8; SQLSCHAR c = -9;
+    struct Input { SQLSMALLINT type; void* data; SQLLEN width; SQLINTEGER expected; };
+    for (const auto input : {Input{SQL_C_LONG,&a,sizeof(a),a},
+             Input{SQL_C_SHORT,&b,sizeof(b),b}, Input{SQL_C_TINYINT,&c,sizeof(c),c}}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT ?::integer", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT,
+            input.type, SQL_INTEGER, 10, 0, input.data, input.width, nullptr));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQLINTEGER value = 0; SQLLEN length = 0;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_LONG, &value, sizeof(value), &length));
+        EXPECT_EQ(input.expected,value); EXPECT_EQ(sizeof(value),length);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_RESET_PARAMS));
+    }
+}

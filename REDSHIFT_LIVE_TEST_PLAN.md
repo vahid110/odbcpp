@@ -97,6 +97,15 @@ unqualified live; do not label this as an SQLColumns failure or automatically
 retry the consumed request. Complete the offline/platform batch and review a
 separate bounded catalog request before further paid work.
 
+Window004 passed pre-activation, identity and execution of the repaired catalog
+SQL. Numeric metadata reads then exposed shared ODBC rejection of the legacy
+SQL_C_LONG target; the live metadata case remains unqualified. Independent
+cleanup succeeded and the request is consumed. The next bounded code package
+supports legacy signed C targets through the existing checked shared conversions,
+preserving descriptor identifiers and the original live assertions. After its
+platform gates pass, review a new catalog request with the current binary hash;
+never automatically retry004 or reopen earlier windows.
+
 AWS documents the fields available in
 [SVV_COLUMNS](https://docs.aws.amazon.com/redshift/latest/dg/r_SVV_COLUMNS.html),
 and recommends SHOW COLUMNS for discovery across local, datashare and external

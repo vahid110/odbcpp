@@ -1059,3 +1059,41 @@ TEST_F(RedshiftDataConverterTest, UnsupportedType) {
     // Unsupported C type
     EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data("42", 999, &result, 0, &indicator));
 }
+
+namespace {
+template <typename T>
+void check_legacy_integer(SQLSMALLINT legacy, SQLSMALLINT canonical) {
+    using rs::odbc::ResultTypes;
+    EXPECT_TRUE(ResultTypes::is_valid_c_type(legacy));
+    EXPECT_TRUE(ResultTypes::is_supported_parameter_c_type(legacy));
+    EXPECT_FALSE(ResultTypes::is_conversion_supported(SQL_TYPE_DATE, legacy));
+    EXPECT_FALSE(ResultTypes::is_conversion_supported(SQL_BINARY, legacy));
+    for (const auto& text : {std::string("-7"),
+             std::to_string(std::numeric_limits<T>::min()),
+             std::to_string(std::numeric_limits<T>::max()),
+             std::string("3.5"), std::string("bad"),
+             std::to_string(static_cast<long long>(std::numeric_limits<T>::max()) + 1)}) {
+        std::array<unsigned char, sizeof(T) + 2> a, b;
+        a.fill(0xa5); b.fill(0xa5);
+        SQLLEN al = -1, bl = -1;
+        rs::odbc::ConversionIssue ai{}, bi{};
+        const auto ar = RedshiftDataConverter::convert_data(
+            text, legacy, a.data() + 1, sizeof(T), &al, &ai);
+        const auto br = RedshiftDataConverter::convert_data(
+            text, canonical, b.data() + 1, sizeof(T), &bl, &bi);
+        EXPECT_EQ(br, ar); EXPECT_EQ(b, a); EXPECT_EQ(bl, al); EXPECT_EQ(bi, ai);
+        EXPECT_EQ(0xa5, a.front()); EXPECT_EQ(0xa5, a.back());
+        if (ar == SQL_SUCCESS || ar == SQL_SUCCESS_WITH_INFO) {
+            EXPECT_EQ(sizeof(T), static_cast<std::size_t>(al));
+        } else {
+            for (auto byte : a) EXPECT_EQ(0xa5, byte);
+            EXPECT_EQ(-1, al);
+        }
+    }
+}
+}
+TEST_F(RedshiftDataConverterTest, LegacySignedIntegerTargetsUseCheckedFixedWidths) {
+    check_legacy_integer<SQLINTEGER>(SQL_C_LONG, SQL_C_SLONG);
+    check_legacy_integer<SQLSMALLINT>(SQL_C_SHORT, SQL_C_SSHORT);
+    check_legacy_integer<SQLSCHAR>(SQL_C_TINYINT, SQL_C_STINYINT);
+}

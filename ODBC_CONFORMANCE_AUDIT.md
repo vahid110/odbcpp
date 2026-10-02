@@ -3154,3 +3154,32 @@ the actual transport, retain identical negotiated flags in the credential packet
 and validate the full authentication state machine before publishing a session.
 Pinned MySQL 8.4.11 live integration remains required before S3 handshake acceptance.
 S2C/G12 qualification, PostgreSQL/Redshift behavior and public scope are unchanged.
+
+## Legacy signed C targets — Redshift catalog follow-up
+
+Redshift catalog window004 reached the repaired SQLColumns result but numeric
+metadata retrieval failed because valid ODBC 2.x SQL_C_LONG was rejected with
+HY003. Microsoft documents that a 3.x driver supporting older applications
+must accept the legacy C targets passed through by the Driver Manager:
+[Backward compatibility of C data types](https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/backward-compatibility-of-c-data-types).
+
+The bounded repair maps SQL_C_LONG/SHORT/TINYINT to the existing checked signed
+operational conversions. Result validation, bound fetch, SQLGetData (including
+SQL_ARD_TYPE), and input parameter execution share this normalization. ARD/APD
+concise types retain the caller's identifier; defaults, SQL descriptor sizing,
+unsigned targets and unsupported conversion restrictions stay unchanged.
+Values use SQLINTEGER/SQLSMALLINT/SQLSCHAR widths, including on LP64 hosts.
+
+Regression coverage compares alias and signed conversions at boundaries,
+overflow, malformed and fractional values with unaligned buffers, unchanged
+error outputs and exact indicators. API tests retain descriptor identifiers;
+live PostgreSQL tests exercise negative GetData/bound values, NULL, descriptor
+resolution, BIT, overflow and negative prepared parameter round trips. The
+Redshift metadata case retains SQL_C_LONG and all dimension assertions.
+Focused checks and full local PostgreSQL, iODBC UTF-16/UCS-4 unit/integration/TLS,
+ASan/UBSan unit gates, Redshift build/focused units/absent-endpoint rejection,
+and all146 offline pilot tests passed. The local pinned MySQL fixture cannot
+start because no Docker engine is available; hosted MySQL and Windows/package
+gates await CI. A separately admitted Redshift catalog run is still required
+before live qualification. This closes no claim of complete ODBC 3.8 or full
+Redshift parity.

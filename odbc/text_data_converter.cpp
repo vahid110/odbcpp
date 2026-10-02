@@ -1,4 +1,5 @@
 #include "text_data_converter.h"
+#include "result_types.h"
 #include "unicode.h"
 
 #include <algorithm>
@@ -759,7 +760,7 @@ SQLRETURN TextDataConverter::convert_data(const std::string& value,
                                           SQLSMALLINT numeric_scale) {
   if (issue) *issue = ConversionIssue::None;
   if (!buffer) return SQL_ERROR;
-  switch (target_c_type) {
+  switch (ResultTypes::canonical_c_type(target_c_type)) {
     case SQL_C_CHAR:
       return convert_string(value, buffer, buffer_length, indicator);
     case SQL_C_WCHAR:

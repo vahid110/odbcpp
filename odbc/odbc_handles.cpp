@@ -3017,8 +3017,9 @@ SQLRETURN ODBCStatement::fetch() {
       const auto& cell = row[i];
       const SQLSMALLINT sql_type = i < column_info_.size()
           ? column_info_[i].sql_type : static_cast<SQLSMALLINT>(SQL_VARCHAR);
-      const SQLSMALLINT target_type = binding.concise_type == SQL_C_DEFAULT
-          ? ResultTypes::default_c_type(sql_type) : binding.concise_type;
+      const SQLSMALLINT target_type = ResultTypes::canonical_c_type(
+          binding.concise_type == SQL_C_DEFAULT
+              ? ResultTypes::default_c_type(sql_type) : binding.concise_type);
       if (!ResultTypes::is_conversion_supported(sql_type, target_type)) {
         set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
                   "Unsupported result data type conversion");
@@ -3212,6 +3213,7 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     effective_target_type = record->concise_type == SQL_C_DEFAULT
         ? ResultTypes::default_c_type(sql_type) : record->concise_type;
   }
+  effective_target_type = ResultTypes::canonical_c_type(effective_target_type);
   if (!ResultTypes::is_supported_c_type(effective_target_type)) {
     set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
               "SQLGetData target type is not supported");
@@ -3646,6 +3648,7 @@ SQLRETURN ODBCStatement::execute() {
       if (value_type == SQL_C_DEFAULT) {
         value_type = ResultTypes::default_c_type(declared_sql_type);
       }
+      value_type = ResultTypes::canonical_c_type(value_type);
       rs::core::database::QueryParameter query_param;
       query_param.type = parameter_type_for(
           implementation.concise_type, value_type);

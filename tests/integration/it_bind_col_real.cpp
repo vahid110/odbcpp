@@ -3702,3 +3702,64 @@ TEST_F(BindColIntegrationTest, NegativeTests) {
     ret = SQLGetData(hstmt, 999, SQL_C_CHAR, buffer, sizeof(buffer), &len);
     EXPECT_EQ(SQL_ERROR, ret);
 }
+
+TEST_F(BindColIntegrationTest, LegacySignedIntegerTargetsFetchBindAndNull) {
+    for (SQLSMALLINT type : {SQL_C_LONG, SQL_C_SHORT, SQL_C_TINYINT}) {
+        std::array<unsigned char, 8> value{};
+        SQLLEN length = 0;
+        const auto expect_value = [&](SQLINTEGER expected) {
+            if (type == SQL_C_LONG) {
+                SQLINTEGER actual;
+                std::memcpy(&actual, value.data(), sizeof(actual));
+                EXPECT_EQ(expected, actual);
+                EXPECT_EQ(sizeof(actual), length);
+            } else if (type == SQL_C_SHORT) {
+                SQLSMALLINT actual;
+                std::memcpy(&actual, value.data(), sizeof(actual));
+                EXPECT_EQ(expected, actual);
+                EXPECT_EQ(sizeof(actual), length);
+            } else {
+                SQLSCHAR actual;
+                std::memcpy(&actual, value.data(), sizeof(actual));
+                EXPECT_EQ(expected, actual);
+                EXPECT_EQ(sizeof(actual), length);
+            }
+        };
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT -7::integer", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, type, value.data(), value.size(), &length));
+        expect_value(-7);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, type, value.data(), value.size(), &length));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT NULL::integer", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt)); EXPECT_EQ(SQL_NULL_DATA,length);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        value.fill(0xa5);
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT -7::integer", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_NE(SQL_NULL_DATA,length);
+        expect_value(-7);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_UNBIND));
+        // Resolve the legacy target from the ARD without rewriting its type.
+        SQLHDESC ard = SQL_NULL_HDESC;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt, SQL_ATTR_APP_ROW_DESC,
+            &ard, 0, nullptr));
+        ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_CONCISE_TYPE,
+            reinterpret_cast<SQLPOINTER>(static_cast<std::intptr_t>(type)), 0));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 1::bit", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_ARD_TYPE,
+            value.data(), value.size(), &length));
+        expect_value(1);
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)"SELECT 2147483648::bigint", SQL_NTS));
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt, 1, type, value.data(), value.size(), &length));
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    }
+}

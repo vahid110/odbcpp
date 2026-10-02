@@ -873,3 +873,21 @@ TEST_F(DescriptorAPITest, UnconnectedDescriptorUsesConfiguredBackendTypeCatalog)
     EXPECT_TRUE(descriptor.record(0)->local_type_name.empty());
     EXPECT_FALSE(conn->is_connected());
 }
+
+TEST_F(DescriptorAPITest, LegacyIntegerBindingsPreserveDescriptorTypes) {
+    SQLINTEGER value = -7;
+    SQLLEN length = 0;
+    for (SQLSMALLINT type : {SQL_C_LONG, SQL_C_SHORT, SQL_C_TINYINT}) {
+        ASSERT_EQ(SQL_SUCCESS, stmt->bind_col(1, type, &value, sizeof(value), &length));
+        ASSERT_EQ(SQL_SUCCESS, stmt->bind_parameter(1, SQL_PARAM_INPUT, type,
+            SQL_INTEGER, 10, 0, &value, sizeof(value), &length));
+        for (auto attr : {SQL_ATTR_APP_ROW_DESC, SQL_ATTR_APP_PARAM_DESC}) {
+            SQLHDESC desc = SQL_NULL_HDESC;
+            ASSERT_EQ(SQL_SUCCESS, stmt->get_attribute(attr, &desc));
+            SQLSMALLINT actual = 0;
+            ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(desc, 1,
+                SQL_DESC_CONCISE_TYPE, &actual, 0, nullptr));
+            EXPECT_EQ(type, actual);
+        }
+    }
+}

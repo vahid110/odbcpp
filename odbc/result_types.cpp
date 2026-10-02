@@ -2,6 +2,15 @@
 
 namespace rs::odbc {
 
+SQLSMALLINT ResultTypes::canonical_c_type(SQLSMALLINT c_type) {
+  switch (c_type) {
+    case SQL_C_LONG: return SQL_C_SLONG;
+    case SQL_C_SHORT: return SQL_C_SSHORT;
+    case SQL_C_TINYINT: return SQL_C_STINYINT;
+    default: return c_type;
+  }
+}
+
 SQLSMALLINT ResultTypes::default_c_type(SQLSMALLINT sql_type) {
   switch (sql_type) {
     case SQL_TINYINT: return SQL_C_STINYINT;
@@ -26,6 +35,7 @@ SQLSMALLINT ResultTypes::default_c_type(SQLSMALLINT sql_type) {
 }
 
 bool ResultTypes::is_supported_c_type(SQLSMALLINT c_type) {
+  c_type = canonical_c_type(c_type);
   return c_type == SQL_C_DEFAULT || c_type == SQL_C_CHAR ||
       c_type == SQL_C_WCHAR || c_type == SQL_C_STINYINT ||
       c_type == SQL_C_UTINYINT || c_type == SQL_C_USHORT ||
@@ -61,6 +71,7 @@ bool ResultTypes::is_valid_c_type(SQLSMALLINT c_type) {
 }
 
 bool ResultTypes::is_supported_parameter_c_type(SQLSMALLINT c_type) {
+  c_type = canonical_c_type(c_type);
   return c_type == SQL_C_DEFAULT || c_type == SQL_C_CHAR ||
       c_type == SQL_C_WCHAR || c_type == SQL_C_STINYINT ||
       c_type == SQL_C_SSHORT ||
@@ -114,6 +125,7 @@ bool ResultTypes::is_valid_sql_type(SQLSMALLINT sql_type) {
 
 bool ResultTypes::is_conversion_supported(SQLSMALLINT sql_type,
                                           SQLSMALLINT c_type) {
+  c_type = canonical_c_type(c_type);
   if (sql_type == SQL_BINARY || sql_type == SQL_VARBINARY ||
       sql_type == SQL_LONGVARBINARY) {
     return c_type == SQL_C_CHAR || c_type == SQL_C_WCHAR ||
