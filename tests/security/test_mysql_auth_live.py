@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pinned MySQL connection-phase proof; no ODBC/SDK session claim."""
+"""Pinned authentication and bounded SDK direct-query proof; no ODBC driver claim."""
 import argparse
 import json
 import os
@@ -80,6 +80,7 @@ def main():
             for case, host, trust, password in (
                 ('full', 'localhost', 'ca.pem', PASSWORD),
                 ('cached', 'localhost', 'ca.pem', PASSWORD),
+                ('session', 'localhost', 'ca.pem', PASSWORD),
                 ('reject-auth', 'localhost', 'ca.pem', 'invalid-public-fixture-password'),
                 ('reject-tls', 'localhost', 'wrong-ca.pem', PASSWORD),
                 ('reject-tls', '127.0.0.1', 'ca.pem', PASSWORD),
@@ -93,7 +94,7 @@ def main():
                 print('PASS MySQL ' + case + ' (' + host + ', ' + trust + ')', flush=True)
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(json.dumps({'image': IMAGE, 'version': version, 'plugin': plugin,
-                                          'cases': results, 'odbcSessionClaimed': False}, indent=2) + '\n')
+                                          'cases': results, 'sdkDirectSessionProven': True, 'odbcSessionClaimed': False}, indent=2) + '\n')
         finally:
             if started:
                 subprocess.run(['docker', 'rm', '--force', name], capture_output=True, timeout=30)

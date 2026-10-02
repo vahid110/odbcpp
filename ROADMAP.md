@@ -1760,3 +1760,12 @@ and teardown. Verified infrastructure/cost controls and runner readiness replace
 account access as the M2 activation dependency. No paid test execution or
 provisioning occurred here; the runner is not implemented/qualified. The bounded
 MySQL SDK proof continues until that activation gate is ready.
+
+## S3 bounded direct SDK session — 2026-10-02
+
+See [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md#s3-bounded-sdk-session-and-direct-query-results--2026-10-02)
+for the private MySQL session, bounded direct-query codec, normalized owning
+results, retirement policy and exact acceptance requirements. Prepared execution,
+database selection, provider/ODBC registration and the full S3/S4 proof remain
+open. The authenticated connection batch passed CI `36978825121`; this batch
+requires its own complete gates and exact-head hosted live session evidence.

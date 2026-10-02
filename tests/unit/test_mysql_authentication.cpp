@@ -199,4 +199,11 @@ TEST(MySqlAuthenticationTest, RejectionClassificationDoesNotEchoServerBytes) {
   }
 }
 
+TEST(MySqlAuthenticationTest, ProtocolActiveStatusAndWarningsCannotPublishSession) {
+  for (const unsigned status:{1u,8u,0x40u,0x80u,0x1000u,0x4000u}) {
+    FakeTransport t;auto reply=ok();reply[3]=static_cast<std::byte>(status&255);reply[4]=static_cast<std::byte>(status>>8);
+    append(t,reply,3);auto result=authenticate(t);ASSERT_FALSE(result);EXPECT_EQ(DbErrorCode::UnsupportedFeature,result.error());EXPECT_EQ(1u,t.closes);
+  }
+  FakeTransport t;auto reply=ok();reply[5]=std::byte{1};append(t,reply,3);EXPECT_FALSE(authenticate(t));EXPECT_EQ(1u,t.closes);
+}
 }

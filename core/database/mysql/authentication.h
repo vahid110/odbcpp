@@ -149,6 +149,8 @@ inline rs::util::Result<AuthenticatedGreeting> authenticate_verified_tls(
   }
   if (!reply->empty() && (*reply)[0]==std::byte{254}) return reject(DbErrorCode::UnsupportedFeature);
   if (!authentication_detail::final_ok(*reply)) return reject(DbErrorCode::ProtocolError);
+  if (((std::to_integer<unsigned>((*reply)[3]) | (std::to_integer<unsigned>((*reply)[4])<<8)) & (9|0x40|0x80|0x1000|0x4000)) ||
+      (*reply)[5]!=std::byte{0} || (*reply)[6]!=std::byte{0}) return reject(DbErrorCode::UnsupportedFeature);
   if (rs::util::Clock::now()>=deadline) return reject(DbErrorCode::Timeout);
   if (!tls->peer_identity_verified()) return reject(DbErrorCode::TLSError);
   cleanup.accepted=true;

@@ -776,3 +776,53 @@ and teardown. Verified infrastructure/cost controls and runner readiness replace
 account access as the M2 activation dependency. No paid test execution or
 provisioning occurred here; the runner is not implemented/qualified. The bounded
 MySQL SDK proof continues until that activation gate is ready.
+
+## S3 bounded SDK session and direct-query results — 2026-10-02
+
+The preceding authentication batch passed exact-head CI `36978825121` at
+`46f607a`. The next bounded slice adds a backend-private `MySqlSession`
+implementing the shared `IDatabaseConnection` contract and owned transport
+lifecycle. Clean authentication publishes Idle/Reusable for the same owner;
+`SessionOwner::connect_authenticated` adoption is tested. This is not reset,
+health, pooling or ODBC driver qualification. Credentials/settings are borrowed
+for connect; only the server version and non-secret numeric limits are retained.
+CA paths and all connection fields are NUL/size-checked before configuring TLS.
+A conservative fixed authentication ceiling rejects tighter startup budgets
+until the helper accepts per-exchange budgets. Database selection remains an
+explicit unsupported operation in this slice.
+
+Direct COM_QUERY uses the original deadline, verified peer, exact sequence
+numbers (including rollover), bounded header/body reads and complete legacy
+protocol-41 EOF termination. Request, response bytes/messages, columns, metadata,
+rows, cells and diagnostics are bounded. Local input failures preserve the owner;
+wire/protocol failures, unsupported result flows and server query errors retire
+conservatively without retry or replay. Explicit status flags establish the
+passive Idle/Transaction state; transaction/reset/health facets remain absent.
+
+The intentionally narrow type profile includes integer families, unsigned BIGINT
+as Numeric, supported UTF-8 char/varchar, binary bytes and NULL expressions.
+Rows distinguish NULL, empty text, embedded NUL and binary bytes. Metadata and
+results own their storage; invalid text/integer cells become ordered deferred
+cell errors. Unsupported types/collations fail closed rather than being guessed.
+Warnings, multiple results, local-infile transfers, cursor/out-parameter/session-
+tracking flows and prepared execution are not implemented. Active unsupported
+completion flags and warnings cannot publish a reusable session.
+
+Unit tests cover metadata/row/completion truncation, length-encoded values,
+integer range and UTF-8 failures, unsupported types/collations, sequence rollover,
+trust-path validation, resource limits before I/O/allocation/admission, local
+recovery, SDK-owner adoption, preserved deadlines and retirement after bad
+progress, transport exceptions, peer loss or interrupted responses.
+The pinned Linux MySQL 8.4.11 fixture adds direct SELECT, typed/null/empty/binary
+results, temporary-table DDL/DML and affected counts, empty results, server-error
+retirement, reconnect and result ownership after disconnect. Acceptance requires
+focused tests, the complete local protected gates and exact-head hosted CI.
+MySQL provider registration, ODBC integration, prepared execution and the wider
+S3/S4 contract kit remain subsequent work; S2C/T13/T14 and G12 stay open.
+
+Protocol references (design evidence, not live acceptance):
+[COM_QUERY](https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_query.html),
+[text resultsets](https://dev.mysql.com/doc/dev/mysql-server/8.4.11/page_protocol_com_query_response_text_resultset.html),
+[column definitions](https://dev.mysql.com/doc/dev/mysql-server/8.4.11/page_protocol_com_query_response_text_resultset_column_definition.html),
+[OK](https://dev.mysql.com/doc/dev/mysql-server/8.4.11/page_protocol_basic_ok_packet.html)
+and [EOF](https://dev.mysql.com/doc/dev/mysql-server/8.4.11/page_protocol_basic_eof_packet.html).

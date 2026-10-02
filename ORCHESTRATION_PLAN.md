@@ -82,3 +82,10 @@ the timer scope was stale, worktrees were not refreshed after integration, and
 completed research could be mistaken for ongoing parallel development. More
 always-running agents would not fix those issues. Finite ownership, current
 baselines and explicit completion/integration records are the improvement.
+
+## User scheduling override — 2026-10-02
+
+After the audit, the user explicitly resumed the SDK continuation timer and
+requested 15-minute intervals. The saved timer is now ACTIVE at that interval;
+this supersedes the earlier observed pause and 30-minute audit setting. The
+other ODBCPP timers remain paused. Notification and batching policy is unchanged.
