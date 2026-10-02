@@ -705,3 +705,9 @@ CI remains required for this batch. No credentials are sent and no authenticated
 MySQL integration, provider registration or S3 handshake acceptance is claimed.
 Next: authentication exchange and pinned live fixture, not further speculative
 connection codec expansion.
+
+The initial hosted run rejected two unbraced conditionals around GoogleTest
+assertions under GCC's dangling-else warning-as-error policy. Explicit braces
+repair the test source without weakening warnings or altering driver behavior.
+Focused tests and the complete local gate set passed again on the repaired
+source; replacement exact-head hosted CI remains required.

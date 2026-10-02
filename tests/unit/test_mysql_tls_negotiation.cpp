@@ -122,8 +122,8 @@ TEST(MySqlTlsNegotiationTest, AllTransportFailuresRetireWithoutLeakingNativeDeta
   for(int stage=0;stage<4;++stage) {
     FakeTransport t; t.fail_at=stage; auto result=run(t); ASSERT_FALSE(result);
     EXPECT_EQ("MySQL verified TLS negotiation failed",result.error_message()); EXPECT_EQ(1u,t.closes);
-    if(stage<2) EXPECT_TRUE(t.output.empty());
-    if(stage<3) EXPECT_EQ(0u,t.upgrades);
+    if(stage<2) { EXPECT_TRUE(t.output.empty()); }
+    if(stage<3) { EXPECT_EQ(0u,t.upgrades); }
   }
   FakeTransport unverified; unverified.verified=false;
   auto rejected=run(unverified); ASSERT_FALSE(rejected); EXPECT_EQ(DbErrorCode::TLSError,rejected.error());
