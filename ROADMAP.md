@@ -1787,3 +1787,13 @@ parameters, owning binary rows, cumulative budgets and explicit retirement.
 See [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md#s3-bounded-native-prepared-execution--2026-10-02)
 for limits and required acceptance evidence. Transaction/catalog facets, wider
 scalar coverage, shared ODBC registration and final S3 proof remain open.
+
+## S3 MySQL transaction and isolation facet — 2026-10-02
+
+Prepared execution passed CI `36993383466` at `4edcc37`. The private session now
+implements explicit InnoDB transactions and four session isolation levels through
+the shared facet. Nested begin cannot implicitly commit; commit/rollback suppress
+CHAIN/RELEASE settings and strict control responses require truthful state.
+See [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md#s3-mysql-transaction-and-isolation-facet--2026-10-02)
+for profile limits and mandatory local/live gates. Essential catalog metadata and
+shared ODBC registration remain queued; no S3/G12 or pooling qualification closes.

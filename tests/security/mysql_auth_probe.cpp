@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
       const auto& row=result->rows[0];
       if (row[0]!=std::optional<std::string>{"42"} || row[1]!=std::optional<std::string>{"a"} || row[2] ||
           !row[3] || !row[3]->empty() || row[4]!=std::optional<std::string>{std::string("\0\xff",2)}) return fail(3);
-      if (!query("CREATE TEMPORARY TABLE sdk_session (id BIGINT, value VARCHAR(16))")) return fail(4);
+      if (!query("CREATE TEMPORARY TABLE sdk_session (id BIGINT, value VARCHAR(16)) ENGINE=InnoDB")) return fail(4);
       auto inserted=query("INSERT INTO sdk_session VALUES (1,'fixture'),(2,NULL)");
       if (!inserted || inserted->affected_rows!=2) return fail(5);
       auto rows=query("SELECT id,value FROM sdk_session ORDER BY id");
@@ -88,6 +88,42 @@ int main(int argc, char** argv) {
       if (mismatch || mismatch.error()!=DbErrorCode::InvalidParameter || !session.is_connected() || !query("SELECT 1")) return fail(15);
       auto no_parameters=prepared("SELECT CAST(7 AS SIGNED) AS n",{});
       if (!no_parameters || no_parameters->rows.size()!=1 || no_parameters->rows[0][0]!=std::optional<std::string>{"7"}) return fail(16);
+      auto* transactions=session.transaction_session();
+      if (!transactions || !transactions->transaction_capabilities().supported ||
+          transactions->transaction_capabilities().transactional_ddl) return fail(17);
+      const auto control=[&](rs::core::database::TransactionAction action) {
+        return transactions->transaction(action,rs::util::make_deadline(std::chrono::seconds(10)));
+      };
+      using Action=rs::core::database::TransactionAction;
+      auto begun=control(Action::Begin);
+      if (!begun || begun.session_snapshot().state!=rs::core::database::SessionState::Transaction ||
+          !query("INSERT INTO sdk_session VALUES (4,'committed')")) return fail(18);
+      if (!query("SET SESSION completion_type=1")) return fail(26);
+      auto committed=control(Action::Commit);
+      if (!committed || committed.session_snapshot().state!=rs::core::database::SessionState::Idle) return fail(19);
+      if (!control(Action::Begin) || !query("INSERT INTO sdk_session VALUES (5,'rolled_back')")) return fail(20);
+      auto nested=control(Action::Begin);
+      if (nested || nested.error()!=DbErrorCode::InvalidParameter || !session.is_connected() ||
+          session.session_state()!=rs::core::database::SessionState::Transaction) return fail(21);
+      if (!query("SET SESSION completion_type=2")) return fail(27);
+      auto rolled_back=control(Action::Rollback);
+      if (!rolled_back || rolled_back.session_snapshot().state!=rs::core::database::SessionState::Idle) return fail(22);
+      if (!query("SET SESSION completion_type=0")) return fail(28);
+      auto count_committed=query("SELECT CAST(COUNT(*) AS SIGNED) AS n FROM sdk_session WHERE id=4");
+      auto count_rolled_back=query("SELECT CAST(COUNT(*) AS SIGNED) AS n FROM sdk_session WHERE id=5");
+      if (!count_committed || !count_rolled_back || count_committed->rows.size()!=1 || count_rolled_back->rows.size()!=1 ||
+          count_committed->rows[0][0]!=std::optional<std::string>{"1"} ||
+          count_rolled_back->rows[0][0]!=std::optional<std::string>{"0"}) return fail(23);
+      const std::array isolation_names{"READ-UNCOMMITTED","READ-COMMITTED","REPEATABLE-READ","SERIALIZABLE"};
+      for (std::size_t i=0;i<isolation_names.size();++i) {
+        auto changed=transactions->set_transaction_isolation(rs::core::database::transaction_isolations[i],
+            rs::util::make_deadline(std::chrono::seconds(10)));
+        auto isolation=query("SELECT CAST(@@SESSION.transaction_isolation AS CHAR CHARACTER SET utf8mb4) AS isolation_value");
+        if (!changed || !isolation || isolation->rows.size()!=1 ||
+            isolation->rows[0][0]!=std::optional<std::string>{isolation_names[i]}) return fail(24);
+      }
+      if (!transactions->set_transaction_isolation(rs::core::database::TransactionIsolation::RepeatableRead,
+          rs::util::make_deadline(std::chrono::seconds(10)))) return fail(25);
       auto empty=query("SELECT id FROM sdk_session WHERE id=0");
       if (!empty || empty->columns.size()!=1 || !empty->rows.empty()) return fail(7);
       auto invalid=query("SELECT * FROM sdk_missing_table");
