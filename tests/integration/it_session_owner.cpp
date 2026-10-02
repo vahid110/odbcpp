@@ -233,6 +233,17 @@ TEST(SessionOwnerIntegrationTest, LiveBorrowSurvivesOwnerAndRetirementClosesPhys
   auto facet_lease = facet_owner.try_acquire(facet_token); ASSERT_TRUE(facet_lease);
   const auto facet_deadline = rs::util::make_deadline(std::chrono::seconds(5));
   auto facet_scope = facet_lease->cache_token(); ASSERT_TRUE(facet_scope);
+  auto passive = facet_lease->inspect(); ASSERT_TRUE(passive);
+  EXPECT_TRUE(passive->connected); EXPECT_EQ(SessionState::Idle, passive->state);
+  EXPECT_FALSE(passive->server_version.empty()); EXPECT_TRUE(passive->transactions.supported);
+  EXPECT_TRUE(passive->has_statement_description_facet); EXPECT_TRUE(passive->has_catalog_query_facet);
+  TablesCatalogRequest catalogs; catalogs.mode = TablesCatalogRequest::Mode::Catalogs;
+  auto catalog_sql = facet_lease->catalog_query(catalogs); ASSERT_TRUE(catalog_sql);
+  EXPECT_TRUE(facet_scope->is_current());
+  auto catalog_rows = facet_lease->execute_query(*catalog_sql, facet_deadline);
+  ASSERT_TRUE(catalog_rows); EXPECT_FALSE(catalog_rows->rows.empty());
+  const auto retained_version = passive->server_version;
+  const auto retained_catalog_sql = *catalog_sql;
   ASSERT_TRUE(facet_lease->set_transaction_isolation(TransactionIsolation::Serializable, facet_deadline));
   EXPECT_FALSE(facet_scope->is_current());
   ASSERT_TRUE(facet_lease->transaction(TransactionAction::Begin, facet_deadline));
@@ -254,6 +265,8 @@ TEST(SessionOwnerIntegrationTest, LiveBorrowSurvivesOwnerAndRetirementClosesPhys
   facet_lease->retire(); EXPECT_FALSE(*facet_lease);
   EXPECT_EQ("lease_column", description->columns[0].name);
   EXPECT_EQ("42P01", rejected_description.backend_error().native_state);
+  EXPECT_EQ(retained_version, passive->server_version);
+  EXPECT_EQ(retained_catalog_sql, *catalog_sql);
   observer->disconnect();
 }
 } // namespace

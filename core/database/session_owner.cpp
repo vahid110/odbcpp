@@ -223,6 +223,57 @@ BackendResult<QueryResult> SessionLease::execute_prepared(std::string_view sql,
   return invoke_borrowed<QueryResult>(*this, physical_session(), BackendOperation::ExecutePrepared,
       [&](IDatabaseConnection& physical) { return physical.execute_prepared(sql, params, deadline); });
 }
+namespace {
+SessionSnapshot passive_outcome(bool connected, SessionState state) {
+  return {state, !connected ? SessionDisposition::Retire :
+      state == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired};
+}
+BackendError inconsistent_observation(BackendOperation operation) {
+  BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError), "Inconsistent passive session state"};
+  error.operation = operation;
+  error.session_state = SessionState::Unknown;
+  return error;
+}
+}
+BackendResult<SessionObservation> SessionLease::inspect() {
+  return invoke_borrowed<SessionObservation>(*this, physical_session(), BackendOperation::InspectSession,
+      [](IDatabaseConnection& physical) -> BackendResult<SessionObservation> {
+        SessionObservation value;
+        value.connected = physical.is_connected(); value.state = physical.session_state();
+        if (value.connected == (value.state == SessionState::Disconnected))
+          return inconsistent_observation(BackendOperation::InspectSession);
+        value.server_version = physical.server_version();
+        if (auto* facet = physical.transaction_session()) value.transactions = facet->transaction_capabilities();
+        value.has_statement_description_facet = physical.statement_description() != nullptr;
+        value.has_catalog_query_facet = physical.catalog_queries() != nullptr;
+        const auto outcome = passive_outcome(value.connected, value.state);
+        return BackendResult<SessionObservation>{std::move(value), outcome};
+      });
+}
+BackendResult<std::string> SessionLease::catalog_query(const CatalogRequest& request) {
+  return invoke_borrowed<std::string>(*this, physical_session(), BackendOperation::BuildCatalogQuery,
+      [&](IDatabaseConnection& physical) -> BackendResult<std::string> {
+        const auto connected = physical.is_connected(); const auto state = physical.session_state();
+        if (connected == (state == SessionState::Disconnected))
+          return inconsistent_observation(BackendOperation::BuildCatalogQuery);
+        const auto outcome = passive_outcome(connected, state);
+        if (!connected) {
+          BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::NotConnected), "Session is disconnected"};
+          error.operation = BackendOperation::BuildCatalogQuery; error.session_state = state; return error;
+        }
+        const auto* facet = physical.catalog_queries();
+        if (!facet) return local_backend_error(LocalFailure::Unsupported, "Session catalog facet unavailable",
+            BackendOperation::BuildCatalogQuery, state);
+        auto query = facet->catalog_query(request);
+        if (!query) {
+          BackendError error{query.error(), query.error_message()};
+          error.operation = BackendOperation::BuildCatalogQuery;
+          error.session_state = state; error.disposition = outcome.disposition;
+          return error;
+        }
+        return BackendResult<std::string>{std::move(*query), outcome};
+      });
+}
 BackendResult<void> SessionLease::transaction(TransactionAction action, rs::util::Deadline deadline) {
   invalidate_cache();
   return invoke_borrowed<void>(*this, physical_session(), BackendOperation::Transaction,

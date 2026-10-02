@@ -41,6 +41,12 @@ static_assert(!std::is_copy_constructible_v<SessionLease> && !std::is_copy_assig
 static_assert(std::is_nothrow_move_constructible_v<SessionOwner> && std::is_nothrow_move_assignable_v<SessionOwner>);
 static_assert(std::is_nothrow_move_constructible_v<SessionLease> && std::is_nothrow_move_assignable_v<SessionLease>);
 struct Observed {
+  bool catalog_facet{false};
+  TransactionCapabilities transactions{true, true, TransactionIsolation::Serializable, {true, true, true, true}};
+  std::string advertised_version{"fixture"};
+  std::optional<rs::util::Result<std::string>> catalog_result;
+  std::function<void(const CatalogRequest&)> on_catalog;
+  int observation_exception{};
   bool operation_facets{false};
   int facet_exception{};
   std::optional<BackendResult<void>> transaction_result;
@@ -66,13 +72,14 @@ struct Observed {
   std::function<void()> on_reset;
   std::function<void()> on_passive;
   std::optional<SessionState> passive_state;
+  std::optional<bool> passive_connected;
   std::optional<SessionSnapshot> reset_snapshot;
   std::optional<BackendResult<QueryResult>> execution_result;
   int execution_exception{};
   std::function<void(std::string_view, std::span<const QueryParameter>, rs::util::Deadline, bool)> on_execution;
   std::function<void()> on_disconnect;
 };
-class FakeSession final : public IDatabaseConnection, public ISessionHealth, public ISessionReset, public ITransactionSession, public IStatementDescription {
+class FakeSession final : public IDatabaseConnection, public ISessionHealth, public ISessionReset, public ITransactionSession, public IStatementDescription, public ICatalogQueries {
  public:
   explicit FakeSession(std::shared_ptr<Observed> observed) : observed_(std::move(observed)), connected_(observed_->initially_connected) {}
   ~FakeSession() override { ++observed_->destructions; }
@@ -97,7 +104,7 @@ class FakeSession final : public IDatabaseConnection, public ISessionHealth, pub
   }
   bool is_connected() const override {
     if (observed_->reset_mode == 11) throw std::runtime_error("private connected fixture");
-    return connected_;
+    return observed_->passive_connected.value_or(connected_);
   }
   SessionState session_state() const override {
     if (observed_->on_passive) observed_->on_passive();
@@ -113,7 +120,15 @@ class FakeSession final : public IDatabaseConnection, public ISessionHealth, pub
       std::span<const QueryParameter> params, rs::util::Deadline deadline) override {
     return execute(sql, params, deadline, true);
   }
-  std::string server_version() const override { return "fixture"; }
+  std::string server_version() const override {
+    throw_observation(); return observed_->advertised_version;
+  }
+  const ICatalogQueries* catalog_queries() const noexcept override { return observed_->catalog_facet ? this : nullptr; }
+  rs::util::Result<std::string> catalog_query(const CatalogRequest& request) const override {
+    if (observed_->on_catalog) observed_->on_catalog(request);
+    throw_observation();
+    return observed_->catalog_result.value_or(rs::util::Result<std::string>{std::string("SELECT fixture")});
+  }
   ISessionHealth* session_health() noexcept override { return observed_->missing_health ? nullptr : this; }
   ISessionReset* session_reset() noexcept override { return observed_->missing_reset ? nullptr : this; }
   SessionResetProfile reset_profile() const noexcept override {
@@ -156,7 +171,7 @@ class FakeSession final : public IDatabaseConnection, public ISessionHealth, pub
   }
   ITransactionSession* transaction_session() noexcept override { return observed_->operation_facets ? this : nullptr; }
   IStatementDescription* statement_description() noexcept override { return observed_->operation_facets ? this : nullptr; }
-  TransactionCapabilities transaction_capabilities() const override { return {}; }
+  TransactionCapabilities transaction_capabilities() const override { throw_observation(); return observed_->transactions; }
   BackendResult<void> transaction(TransactionAction action, rs::util::Deadline deadline) override {
     if (observed_->on_transaction) observed_->on_transaction(action, deadline);
     throw_facet();
@@ -174,6 +189,11 @@ class FakeSession final : public IDatabaseConnection, public ISessionHealth, pub
     return observed_->description_result.value_or(BackendResult<QueryResult>{QueryResult{}, {SessionState::Idle, SessionDisposition::Reusable}});
   }
  private:
+  void throw_observation() const {
+    if (observed_->observation_exception == 1) throw std::bad_alloc{};
+    if (observed_->observation_exception == 2) throw std::runtime_error("original observation fixture");
+    if (observed_->observation_exception == 3) throw 42;
+  }
   void throw_facet() {
     if (observed_->facet_exception == 1) throw std::bad_alloc{};
     if (observed_->facet_exception == 2) throw std::runtime_error("original facet fixture");
@@ -1355,5 +1375,122 @@ TEST(SessionLeaseFacetsTest, DescriptionMetadataSurvivesAutomaticRetirement) {
   ASSERT_TRUE(result); EXPECT_FALSE(*lease); retired_once(*observed);
   observed->description_result.reset(); metadata.columns.clear();
   ASSERT_EQ(1u, result->columns.size()); EXPECT_EQ("owned schema", result->columns[0].name);
+}
+}
+
+namespace {
+TEST(SessionLeaseObservationTest, OwnedReadAndCatalogConstructionPreserveScopeAndExclusiveBorrow) {
+  auto observed = std::make_shared<Observed>(); observed->operation_facets = true; observed->catalog_facet = true;
+  CredentialContext credentials; auto token = credentials.publish_authenticated();
+  SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+  auto lease = owner.try_acquire(token); ASSERT_TRUE(lease);
+  auto scope = lease->cache_token(); ASSERT_TRUE(scope);
+  TablesCatalogRequest request; request.schema = "literal schema"; request.table = "pattern%";
+  observed->on_catalog = [&](const CatalogRequest& actual) {
+    EXPECT_EQ(request.schema, std::get<TablesCatalogRequest>(actual).schema);
+    EXPECT_EQ(request.table, std::get<TablesCatalogRequest>(actual).table);
+    EXPECT_TRUE(scope->is_current()); EXPECT_FALSE(owner.try_acquire(token));
+  };
+  observed->on_passive = [&] { EXPECT_FALSE(owner.try_acquire(token)); };
+  auto inspection = lease->inspect(); ASSERT_TRUE(inspection);
+  EXPECT_TRUE(inspection->connected); EXPECT_EQ(SessionState::Idle, inspection->state);
+  EXPECT_EQ("fixture", inspection->server_version); EXPECT_TRUE(inspection->transactions.supported);
+  EXPECT_TRUE(inspection->transactions.supports(TransactionIsolation::Serializable));
+  EXPECT_TRUE(inspection->has_statement_description_facet); EXPECT_TRUE(inspection->has_catalog_query_facet);
+  auto query = lease->catalog_query(request); ASSERT_TRUE(query); EXPECT_EQ("SELECT fixture", *query);
+  EXPECT_TRUE(scope->is_current()); EXPECT_EQ(0, observed->queries);
+  observed->on_passive = {}; lease->retire(); retired_once(*observed);
+  observed->advertised_version.clear(); observed->transactions = {};
+  EXPECT_EQ("fixture", inspection->server_version); EXPECT_TRUE(inspection->transactions.supported);
+  EXPECT_EQ("SELECT fixture", *query);
+}
+TEST(SessionLeaseObservationTest, MissingFacetsAndLocalErrorsDoNotClaimSupportOrInvalidateScopes) {
+  auto observed = std::make_shared<Observed>();
+  CredentialContext credentials; auto token = credentials.publish_authenticated();
+  SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+  auto lease = owner.try_acquire(token); ASSERT_TRUE(lease);
+  auto scope = lease->cache_token(); ASSERT_TRUE(scope);
+  auto inspection = lease->inspect(); ASSERT_TRUE(inspection);
+  EXPECT_FALSE(inspection->transactions.supported); EXPECT_FALSE(inspection->has_statement_description_facet);
+  EXPECT_FALSE(inspection->has_catalog_query_facet);
+  auto missing = lease->catalog_query(TablesCatalogRequest{}); ASSERT_FALSE(missing);
+  EXPECT_EQ(BackendErrorClass::Unsupported, missing.backend_error().error_class);
+  EXPECT_TRUE(scope->is_current()); EXPECT_TRUE(*lease);
+  observed->catalog_facet = true;
+  for (auto code : {rs::util::DbErrorCode::InvalidParameter, rs::util::DbErrorCode::UnsupportedFeature}) {
+    observed->catalog_result = rs::util::Result<std::string>{code, "owned construction error"};
+    auto failure = lease->catalog_query(TablesCatalogRequest{}); ASSERT_FALSE(failure);
+    EXPECT_EQ(rs::util::make_error_code(code), failure.error());
+    EXPECT_EQ(BackendOperation::BuildCatalogQuery, failure.backend_error().operation);
+    EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), failure.session_snapshot());
+    EXPECT_TRUE(scope->is_current()); EXPECT_TRUE(*lease);
+    observed->catalog_result.reset(); EXPECT_EQ("owned construction error", failure.error_message());
+  }
+}
+TEST(SessionLeaseObservationTest, PassiveStatesAreConservativeAndDisconnectedReadsRetire) {
+  for (bool catalog : {false, true}) {
+    for (auto state : {SessionState::Idle, SessionState::Transaction, SessionState::FailedTransaction,
+                       SessionState::Unknown, SessionState::Disconnected}) {
+      auto observed = std::make_shared<Observed>(); observed->catalog_facet = true;
+      auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+      observed->passive_state = state;
+      observed->passive_connected = state != SessionState::Disconnected;
+      if (catalog) {
+        auto result = lease->catalog_query(TablesCatalogRequest{});
+        if (state == SessionState::Disconnected) { EXPECT_FALSE(result); EXPECT_EQ(BackendErrorClass::NotConnected, result.backend_error().error_class); }
+        else { ASSERT_TRUE(result); EXPECT_EQ(state, result.session_snapshot().state);
+          EXPECT_EQ(state == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired, result.session_snapshot().disposition); }
+      } else {
+        auto result = lease->inspect();
+        ASSERT_TRUE(result); EXPECT_EQ(state, result->state);
+        EXPECT_EQ(state == SessionState::Disconnected ? SessionDisposition::Retire :
+            state == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired, result.session_snapshot().disposition);
+      }
+      EXPECT_EQ(state != SessionState::Disconnected, bool(*lease));
+      EXPECT_FALSE(owner.try_acquire()); lease->retire(); retired_once(*observed);
+    }
+  }
+}
+TEST(SessionLeaseObservationTest, ExceptionsRetireAndEmptyLeasesReturnTypedNotConnected) {
+  for (bool catalog : {false, true}) {
+    for (int exception = 1; exception != 4; ++exception) {
+      auto observed = std::make_shared<Observed>(); observed->catalog_facet = true;
+      auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+      observed->observation_exception = exception;
+      auto invoke = [&] { if (catalog) (void)lease->catalog_query(TablesCatalogRequest{}); else (void)lease->inspect(); };
+      if (exception == 1) { EXPECT_THROW(invoke(), std::bad_alloc); }
+      else if (exception == 2) { EXPECT_THROW(invoke(), std::runtime_error); }
+      else { EXPECT_THROW(invoke(), int); }
+      EXPECT_FALSE(*lease); retired_once(*observed);
+      if (catalog) {
+        auto result = lease->catalog_query(TablesCatalogRequest{}); ASSERT_FALSE(result);
+        EXPECT_EQ(BackendOperation::BuildCatalogQuery, result.backend_error().operation);
+      } else {
+        auto result = lease->inspect(); ASSERT_FALSE(result);
+        EXPECT_EQ(BackendOperation::InspectSession, result.backend_error().operation);
+      }
+    }
+  }
+}
+}
+
+namespace {
+TEST(SessionLeaseObservationTest, ContradictoryConnectedStateRetiresBeforeFacetAccess) {
+  for (bool catalog : {false, true}) {
+    for (bool connected : {false, true}) {
+      auto observed = std::make_shared<Observed>(); observed->catalog_facet = true;
+      auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+      observed->passive_connected = connected;
+      observed->passive_state = connected ? SessionState::Disconnected : SessionState::Idle;
+      observed->on_catalog = [](const CatalogRequest&) { FAIL() << "Contradictory state must not build SQL"; };
+      const auto check = [](auto result) {
+        ASSERT_FALSE(result); EXPECT_EQ(BackendErrorClass::Protocol, result.backend_error().error_class);
+        EXPECT_EQ(SessionDisposition::Retire, result.session_snapshot().disposition);
+      };
+      if (catalog) check(lease->catalog_query(TablesCatalogRequest{}));
+      else check(lease->inspect());
+      EXPECT_FALSE(*lease); retired_once(*observed);
+    }
+  }
 }
 }

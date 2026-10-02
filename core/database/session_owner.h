@@ -29,6 +29,17 @@ class SessionCacheToken final {
   std::weak_ptr<const detail::SessionCacheGeneration> generation_;
 };
 
+// Owned passive information only; no health, freshness or requeue authority.
+struct SessionObservation {
+  bool connected{false};
+  SessionState state{SessionState::Disconnected};
+  std::string server_version;
+  TransactionCapabilities transactions;
+  // Presence only: an individual request may still be unsupported.
+  bool has_statement_description_facet{false};
+  bool has_catalog_query_facet{false};
+};
+
 // Internal ownership primitive, not an installed SDK or pool API. A borrowed
 // session is accessed only through lease operations: no raw session/facet escape.
 // Callers must serialize operations and moves/retirement on one lease.
@@ -59,6 +70,11 @@ class SessionLease final {
   BackendResult<void> set_transaction_isolation(TransactionIsolation, rs::util::Deadline);
   BackendResult<QueryResult> describe_statement(std::string_view,
       std::span<const QueryParameterType>, rs::util::Deadline);
+  // No I/O or mutation. Owned observations/SQL survive retirement. Successful
+  // reads and local catalog errors preserve cache scopes; exceptions and passive
+  // disconnection retire. Neither result grants health or return authority.
+  BackendResult<SessionObservation> inspect();
+  BackendResult<std::string> catalog_query(const CatalogRequest&);
   // No I/O cleanup/reset/reconnect is attempted. Returning or abandoning the
   // lease retires and destroys the physical session, even after reset success.
   void retire() noexcept;
