@@ -538,3 +538,28 @@ blocker. All 83 ownership/credential ThreadSanitizer tests and complete local
 PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and Redshift build/absent-endpoint
 gates passed. Windows/packaging and crypto evidence await exact-head hosted CI.
 S2/G12, product reuse/cache policy, MySQL proof and crypto qualification remain open.
+
+## S2 prepared metadata session affinity — 2026-10-02
+
+The existing statement-local description cache now keys successful metadata to
+an opaque weak logical-session identity, in addition to preparation and IPD
+revision. Cache hits require the same identity and an active exclusive lease.
+Fresh successful connection setup creates the identity; failed setup and close
+clear it. No credential, principal, SQL text or numeric generation is added to
+this identity. It grants no backend reuse or cross-session cache authority.
+
+Tests cover same-session hits without extra descriptions, timeout-close retaining
+statement handles, failed opens preserving output arguments, reconnect with changed
+parameter metadata, and terminal retirement rejecting stale prepared metadata.
+A live PostgreSQL test changes temporary-table shape across timeout/reconnect and
+requires fresh column metadata on the retained statement. Already-executed owning
+rows/metadata remain readable after retirement. Public SQLDisconnect continues to
+unregister its child handles. Read-only review found no blocker.
+
+This closes connection-lifecycle affinity only. External schema freshness,
+same-session mutation/reset invalidation, cache observability and full G12 cache
+qualification remain open; no new prepared-statement payload cache, pooling,
+performance or public SDK claim is made. Focused backend-contract and live metadata
+tests passed. Complete local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and
+Redshift build/absent-endpoint gates passed. Windows/packaging and crypto evidence
+await exact-head hosted CI.
