@@ -33,6 +33,24 @@ evidence, not the newly authorized ceiling. All 124 offline pilot tests pass;
 8 new amendment tests cover history preservation, wrong authority/caps, uncertain
 prior attempts, stale/wrong controls, duplicate migration and crash uncertainty.
 
+The allowance amendment CI (37027761397 for 7cf8bc7) is green. The next
+package has an independently reviewed offline v4 ledger: explicit v3-to-v4
+migration preserves the complete allowance and original history; it permits at
+most eight additional reservations, retains every metering/cleanup allowance,
+and requires fresh cleanup after reservation before activation. Ten synthetic
+window tests cover migration, retained costs, full launcher headroom, finite
+attempts, timestamp ordering, restart and interrupted persistence; all 134
+pilot tests pass locally. This ledger grants no live SQL permission. The bounded
+launcher, its composition tests and the combined package CI remain pending;
+canonical protected state stays v3 until that review is complete.
+
+The bootstrap accounting horizon remains 24 hours from original resource
+creation. Continuing beyond it requires a separate reviewed cumulative
+billing/usage reconciliation; the weekly absence and larger allowance do not
+silently extend that horizon or reset unknown liabilities. A launcher must add
+1,200 seconds of conservative minimum-metering headroom and 60 seconds of
+cleanup headroom per finite window; successful cleanup releases neither.
+
 CI run 37024167587 for 47b2c13 is green across required platform gates. Prioritize
 bounded Redshift baseline/catalog work. MySQL remains deferred. The user asked
 for no questions during the coming week; record work needing further authority

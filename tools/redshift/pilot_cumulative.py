@@ -32,6 +32,16 @@ def _digest(record):
 
 
 class CumulativeSession(b.BootstrapSession):
+    def _reservation_other_tax(self):
+        return Decimal(5)
+
+    def _max_additional_metering(self):
+        return Decimal(300)
+
+    def _prior_anchor(self, overlay):
+        return (b.BootstrapAnchor(**overlay['attempts'][-1]['anchor'])
+                if overlay['attempts'] else self.anchor)
+
     def _cleanup(self, evidence, anchor, now, after, *, fresh=True):
         e = r0._record(evidence, {'verified','observed_at','anchor','no_active_queries',
             'no_active_sessions','transactions_closed'}, 'invalid_cleanup_evidence')
@@ -154,15 +164,15 @@ class CumulativeSession(b.BootstrapSession):
             r0._timestamp(e['observed_at'],now,Decimal(300),'stale_admission')
             r0._need(r0._number(e['base_rpus'],'invalid_capacity')==4 and r0._number(e['max_rpus'],'invalid_capacity')==4
                      and r0._number(e['usd_per_rpu_hour'],'invalid_price')==Decimal('.374')
-                     and r0._number(e['other_tax_usd'],'invalid_headroom')==5, 'fixed_controls_mismatch')
+                     and r0._number(e['other_tax_usd'],'invalid_headroom')==self._reservation_other_tax(), 'fixed_controls_mismatch')
             last=o['attempts'][-1] if o['attempts'] else None
-            previous_anchor=b.BootstrapAnchor(**last['anchor']) if last else self.anchor
+            previous_anchor=self._prior_anchor(o)
             self._cleanup(e['cleanup_evidence'],previous_anchor,now,
                 last['cleanup_at'] if last else o['migration_cleanup_at'],fresh=False)
             r0._need(b._time(current_anchor.hard_deadline,now,True)>now, 'deadline_expired')
             am=r0._number(e['additional_metering_seconds'],'invalid_headroom')
             ac=r0._number(e['additional_cleanup_seconds'],'invalid_headroom')
-            r0._need(60<=am<=300 and 60<=ac<=300,'invalid_headroom')
+            r0._need(60<=am<=self._max_additional_metering() and 60<=ac<=300,'invalid_headroom')
             m=r0._number(o['metering_seconds'],'invalid_headroom')+am
             c=r0._number(o['cleanup_seconds'],'invalid_headroom')+ac
             compute,total=self._amounts(current_anchor.hard_deadline,m,c,
