@@ -2864,3 +2864,27 @@ idempotent disconnect and fresh SCRAM startup. Read-only review found no product
 blocker; the fixture now records only nonsecret observations. Complete local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and Redshift
 build/absent-endpoint gates passed. Windows/packaging and cross-platform crypto
 evidence await exact-head CI.
+
+## S2 bounded operation lease facade checkpoint — 2026-10-02
+
+Transaction, isolation and description operations now stay inside the exclusive
+lease, with unchanged deadlines and owning outcomes. Cache scopes invalidate
+before every attempt; exceptions/Retire outcomes retire, while recoverable errors
+retain only the same borrower. Optional facet absence preserves passive state and
+never grants return. No raw facet pointer is exposed.
+
+Focused coverage includes forwarding, exclusive callback access, cache invalidation,
+missing-facet passive states, exception kinds, ambiguous success and owned metadata
+and native diagnostics after retirement. Live PostgreSQL covers Serializable,
+begin/commit/rollback, failed-transaction recovery and description ownership.
+
+Bounded authentication retention cleanup is complete, with parser-local intermediates
+and allocator copies outside its claim. Next: owned catalog/capability/status
+interfaces and ODBC lifecycle adoption. S2/G12, product pool/defaults and real cache
+policy remain open; MySQL and Redshift live work are unchanged.
+
+Validation: focused unit/live PostgreSQL tests and all 76 credential/ownership
+ThreadSanitizer tests passed. Read-only review found no implementation blocker;
+its passive-state and owning-description test suggestions are covered. Complete
+local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and Redshift build/absent-endpoint
+gates passed. Exact-head Windows/packaging and crypto CI evidence awaits the run.

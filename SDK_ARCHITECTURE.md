@@ -1167,8 +1167,10 @@ and cannot return for reuse. External-authority constructors remain unchanged.
 
 The coordinator retains no additional connection settings or secrets. This is not
 an end-to-end secret-erasure claim: the PostgreSQL-family backend currently copies
-settings including password during authentication; post-authentication scrubbing
-is a separate open hardening requirement. A private authority-construction seam
+settings including password during authentication; the bounded authentication
+cleanup checkpoint now clears that retained copy, returned response buffers and
+persistent SCRAM state. Parser-local intermediates and allocator copies remain
+outside that checkpoint. A private authority-construction seam
 covers allocation/null failure without exposing a configurable production factory.
 
 This is production-capable internal composition, validated through the real backend,
@@ -1176,3 +1178,25 @@ not ODBC adoption or public SDK qualification. The ODBC adapter still owns raw
 transaction/description/catalog facets; its migration requires bounded lease
 facades and lifetime rules before replacing its session owner. Product defaults,
 pool capacity, cache payload/refresh policy and S2/G12 remain open.
+
+## S2 transaction and description lease facades — 2026-10-02
+
+Private SessionLease now mediates transaction actions, isolation changes and
+statement description through its exclusive physical borrow. Inputs are borrowed
+for the call and the original deadline is forwarded unchanged. Facet pointers
+never escape. Each attempt invalidates cache scopes before backend access, even
+when the optional facet is absent. Missing facets return owning Unsupported errors
+with the passive state; disconnected leases return NotConnected/Retire. Backend
+results and native errors remain owned and unchanged. Retire snapshots and all
+exception kinds retire exactly once; Reusable/ResetRequired only retain the same
+borrower, never implicitly return it. Callbacks run outside ownership locks.
+
+This is migration groundwork. Catalog construction, value-returning capability
+and passive-status access, and ODBC lifecycle migration remain open. There is no
+ODBC adoption, public SDK/pooling claim, retry/replay or Redshift live change.
+
+Validation: focused unit/live PostgreSQL tests and all 76 credential/ownership
+ThreadSanitizer tests passed. Read-only review found no implementation blocker;
+its passive-state and owning-description test suggestions are covered. Complete
+local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and Redshift build/absent-endpoint
+gates passed. Exact-head Windows/packaging and crypto CI evidence awaits the run.
