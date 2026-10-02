@@ -429,3 +429,21 @@ and interruption or failure prevents replay. Old v4 qualification launchers
 reject v5 even after recovery success. Independent offline review accepted this
 accounting package. It supplies no launcher, controls verification, SQL admission
 or permission to run007; those remain a separate finite review package.
+
+
+The offline cleanup-only launcher candidate, `pilot_recovery_live.py`, binds its
+request to the exact source ledger/result byte digests and a digest of the fixed
+runner source inventory. Fresh read-only AWS/control/price/network verification
+precedes reservation; request/deadline/code are checked again after these reads.
+The reservation itself checks both expected source digests against the bytes it
+freezes, preventing changes during control reads from migrating unreviewed
+history. One durable consumed start precedes one cleanup call. All SQL shares
+one remaining deadline of at most60s, with no deadline reset, exchange, driver
+cases, second cleanup or retries. Failed reservation/start persistence prevents
+SQL; failure after dispatch retains liability. Report failure cannot permit
+re-entry. Tests include mutation of both source files during controls, failed
+persistence, missing report, scope/hash/controls rejection and interruption.
+All177 offline safety tests passed and independent review accepted the corrected
+binding and persistence paths. This is an offline candidate: no recovery request,
+canonical migration, AWS call or SQL ran while developing it. Live recovery needs
+required green CI and a separate explicit admission of this exact cleanup scope.

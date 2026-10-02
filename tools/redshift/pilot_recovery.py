@@ -106,10 +106,13 @@ class RecoverySession(w.WindowSession):
             anchor=self._fixed(current,now)
             e=r0._record(evidence,{'verified','observed_at','anchor','base_rpus','max_rpus',
                 'usd_per_rpu_hour','no_additional_resources','no_other_billable_activity',
-                'controls_verified','network_verified','other_tax_usd','scope'},'invalid_recovery_evidence')
+                'controls_verified','network_verified','other_tax_usd','scope',
+                'source_state_digest','source_result_digest'},'invalid_recovery_evidence')
             r0._need(e['verified'] is True and e['anchor']==anchor and e['scope']=='cleanup_only'
                 and all(e[k] is True for k in ('no_additional_resources','no_other_billable_activity',
                     'controls_verified','network_verified')),'recovery_unverified')
+            r0._need(e['source_state_digest']==digest(source)
+                and e['source_result_digest']==digest(result),'recovery_source_changed')
             r0._timestamp(e['observed_at'],now,Decimal(300),'stale_recovery_evidence')
             r0._need(r0._number(e['base_rpus'],'invalid_capacity')==4
                 and r0._number(e['max_rpus'],'invalid_capacity')==4

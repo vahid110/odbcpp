@@ -41,7 +41,8 @@ class RecoveryTests(unittest.TestCase):
         return dict(verified=True,observed_at=self.f.stamp(self.f.now),anchor=self.current.record(self.f.now),
             base_rpus=4,max_rpus=4,usd_per_rpu_hour='.374',no_additional_resources=True,
             no_other_billable_activity=True,controls_verified=True,network_verified=True,
-            other_tax_usd='50',scope='cleanup_only')
+            other_tax_usd='50',scope='cleanup_only',source_state_digest=r.digest(self.source),
+            source_result_digest=r.digest(self.report))
 
     def cleanup(self):
         return dict(verified=True,observed_at=self.f.stamp(self.f.now),anchor=self.current.record(self.f.now),
@@ -74,7 +75,8 @@ class RecoveryTests(unittest.TestCase):
     def test_verbatim_history_preserves_crlf_bytes(self):
         source=self.source.replace('\n','\r\n');report=self.report.replace('\n','\r\n')
         self.f.path.write_bytes(source.encode());self.result.write_bytes(report.encode())
-        with self.session() as s:self.f.passed(s.reserve_recovery(self.evidence(),self.current))
+        e=self.evidence();e.update(source_state_digest=r.digest(source),source_result_digest=r.digest(report))
+        with self.session() as s:self.f.passed(s.reserve_recovery(e,self.current))
         o=self.f.read()[b.OVERLAY]
         self.assertEqual(o['source_state_raw'].encode(),source.encode())
         self.assertEqual(o['source_result_raw'].encode(),report.encode())
