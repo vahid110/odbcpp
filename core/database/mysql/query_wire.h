@@ -58,7 +58,8 @@ inline rs::util::Result<Completion> completion(std::span<const std::byte> bytes,
   if (warnings || (status&(8|0x40|0x80|0x1000|0x4000))) return {DbErrorCode::UnsupportedFeature};
   return Completion{static_cast<std::size_t>(affected),static_cast<std::uint16_t>(status),insert};
 }
-inline rs::util::Result<ResultColumnMetadata> column(std::span<const std::byte> bytes,const ResultLimits& limits,std::size_t* metadata_bytes=nullptr) {
+inline rs::util::Result<ResultColumnMetadata> column(std::span<const std::byte> bytes,const ResultLimits& limits,std::size_t* metadata_bytes=nullptr,
+    std::uint8_t* native_type=nullptr,bool* native_unsigned=nullptr) {
   Cursor c(bytes);std::string_view fields[6];std::size_t names{};
   for (auto& field:fields) {
     if (!c.text(field)) return {DbErrorCode::ProtocolError};
@@ -81,7 +82,7 @@ inline rs::util::Result<ResultColumnMetadata> column(std::span<const std::byte> 
     case 8: info={unsigned_value?ScalarType::Numeric:ScalarType::BigInt,unsigned_value?20u:19u,0,true};break;
     case 9: info={ScalarType::Integer,8,0,true};break;
     case 6: info={ScalarType::VarChar,0,0,true};break; // NULL expression.
-    case 15: case 253: case 254:
+    case 15: case 252: case 253: case 254:
       if (charset==63) info={ScalarType::Binary,size,0,true};
       else if (charset==45 || charset==46 || charset==255)
         info={type==254?ScalarType::Char:ScalarType::VarChar,size/4,0,true};
@@ -89,6 +90,8 @@ inline rs::util::Result<ResultColumnMetadata> column(std::span<const std::byte> 
       break;
     default:return {DbErrorCode::UnsupportedFeature};
   }
+  if (native_type) *native_type=static_cast<std::uint8_t>(type);
+  if (native_unsigned) *native_unsigned=unsigned_value;
   if (metadata_bytes) *metadata_bytes=names;
   return ResultColumnMetadata{std::string(fields[4]),info};
 }
