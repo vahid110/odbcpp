@@ -21,7 +21,8 @@ const IBackendProvider& configured_backend_provider() {
       BackendIdentity{"redshift", "Amazon Redshift", "ODBCPP Redshift"},
       // Preserve the existing PostgreSQL-shaped defaults until a real Redshift
       // pilot establishes a supported product profile.
-      BackendConnectionDefaults{"localhost", 5432, "postgres", true}};
+      BackendConnectionDefaults{"localhost", 5432, "postgres", true}, std::nullopt,
+      postgres::PgCatalogProfile::Redshift};
   return provider;
 #else
 #error "No implemented database provider selected"

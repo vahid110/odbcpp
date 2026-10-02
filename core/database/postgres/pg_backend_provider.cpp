@@ -28,10 +28,11 @@ const ISqlDialect& PgBackendProvider::sql_dialect() const noexcept {
 
 PgBackendProvider::PgBackendProvider(
     BackendIdentity identity, BackendConnectionDefaults connection_defaults,
-    std::optional<SessionResetProfile> reset_profile)
+    std::optional<SessionResetProfile> reset_profile, PgCatalogProfile catalog_profile)
     : identity_(std::move(identity)),
       connection_defaults_(std::move(connection_defaults)),
-      capabilities_(pg_backend_capabilities(identity_.display_name)), reset_profile_(reset_profile) {}
+      capabilities_(pg_backend_capabilities(identity_.display_name)),
+      reset_profile_(reset_profile), catalog_profile_(catalog_profile) {}
 
 std::span<const TypeDefinition> PgBackendProvider::type_catalog(std::string_view server_version) const noexcept {
   return pg_type_catalog(server_version);
@@ -89,7 +90,7 @@ PgBackendProvider::resolve_connection_options(ConnectionOptions options) const {
 
 std::unique_ptr<IDatabaseConnection> PgBackendProvider::create_session(
     std::unique_ptr<rs::core::transport::ITransport> transport) const {
-  return std::make_unique<PgDatabaseConnection>(std::move(transport), reset_profile_);
+  return std::make_unique<PgDatabaseConnection>(std::move(transport), reset_profile_, catalog_profile_);
 }
 
 }  // namespace rs::core::database::postgres

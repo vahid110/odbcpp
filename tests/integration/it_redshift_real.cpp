@@ -246,15 +246,56 @@ TEST_F(RedshiftRealTest, ConfiguredFixtureMetadata) {
                        SQL_NTS,
                        reinterpret_cast<SQLCHAR*>(const_cast<char*>(table)),
                        SQL_NTS, nullptr, 0)) << metadata_diagnostic();
+  SQLSMALLINT result_columns = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt_, &result_columns));
+  ASSERT_EQ(18, result_columns);
+  int ordinal = 0;
   for (const auto* expected_column : {"id", "value"}) {
+    ++ordinal;
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_))
         << "Configured Redshift fixture exposed incomplete column metadata";
     char column[256]{};
     ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 4, SQL_C_CHAR, column,
                                      sizeof(column), &length));
     EXPECT_STREQ(expected_column, column);
+    const auto number = [&](SQLUSMALLINT index, SQLINTEGER expected) {
+      SQLINTEGER value = 0;
+      SQLLEN indicator = 0;
+      EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, index, SQL_C_LONG, &value,
+                                       sizeof(value), &indicator));
+      EXPECT_NE(SQL_NULL_DATA, indicator);
+      EXPECT_EQ(expected, value);
+    };
+    number(5, ordinal == 1 ? SQL_INTEGER : SQL_VARCHAR);
+    number(7, ordinal == 1 ? 10 : 32);
+    number(8, ordinal == 1 ? 4 : 32);
+    number(11, SQL_NULLABLE);
+    if (ordinal == 2) number(16, 32);
+    number(17, ordinal);
   }
   EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+  // An explicitly empty pattern is distinct from an omitted column filter.
+  const char empty[] = "";
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLColumns(hstmt_, nullptr, 0,
+                       reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema)), SQL_NTS,
+                       reinterpret_cast<SQLCHAR*>(const_cast<char*>(table)), SQL_NTS,
+                       reinterpret_cast<SQLCHAR*>(const_cast<char*>(empty)), SQL_NTS))
+      << metadata_diagnostic();
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  // Unescaped v%lue and v_lue match value; escaped wildcard literals must not.
+  for (const auto* escaped : {"v\\%lue", "v\\_lue"}) {
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+    ASSERT_EQ(SQL_SUCCESS,
+              SQLColumns(hstmt_, nullptr, 0,
+                         reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema)), SQL_NTS,
+                         reinterpret_cast<SQLCHAR*>(const_cast<char*>(table)), SQL_NTS,
+                         reinterpret_cast<SQLCHAR*>(const_cast<char*>(escaped)), SQL_NTS))
+        << metadata_diagnostic();
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  }
+
 }
 
 TEST_F(RedshiftRealTest, ErrorHandling) {

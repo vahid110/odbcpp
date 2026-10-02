@@ -10,9 +10,9 @@ namespace rs::core::database::postgres {
 
 PgDatabaseConnection::PgDatabaseConnection(
     std::unique_ptr<rs::core::transport::ITransport> transport,
-    std::optional<SessionResetProfile> reset_profile)
+    std::optional<SessionResetProfile> reset_profile, PgCatalogProfile catalog_profile)
     : GenericDatabaseConnection(std::make_unique<PgProtocolParser>(),
-                                std::move(transport)), reset_profile_(reset_profile) {}
+                                std::move(transport)), reset_profile_(reset_profile), catalog_profile_(catalog_profile) {}
 
 BackendResult<void> PgDatabaseConnection::check_health(rs::util::Deadline deadline) {
   auto result = execute_query("SELECT 1", deadline);

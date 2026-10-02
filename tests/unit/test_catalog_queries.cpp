@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "core/database/database_factory.h"
 #include "core/database/generic_database_connection.h"
+#include "core/database/postgres/pg_database_connection.h"
+#include "core/database/postgres/pg_backend_provider.h"
 #include "tests/mock_protocol_parser.h"
 
 using namespace rs::core::database;
@@ -102,8 +104,8 @@ TEST(CatalogQueryTest, ForeignKeyFiltersAndOrderingFollowRequestedSide) {
   EXPECT_TRUE(query->ends_with("ORDER BY fktable_cat, fktable_schem, fktable_name, key_seq"));
 }
 
-TEST(CatalogQueryTest, ColumnsKeepLiteralCatalogAndPatternFilters) {
-  auto backend = DatabaseFactory::create_connection();
+TEST(CatalogQueryTest, PostgreSQLColumnsKeepLiteralCatalogAndPatternFilters) {
+  auto backend = std::make_unique<postgres::PgDatabaseConnection>();
   const auto all = backend->catalog_queries()->catalog_query(ColumnsCatalogRequest{});
   ASSERT_FALSE(all.has_error());
   EXPECT_EQ(std::string::npos, all->find(" AND table_cat ="));
@@ -193,4 +195,69 @@ TEST(CatalogQueryTest, SpecialColumnsKeepScopeNullabilityAndLiteralNames) {
   query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
   EXPECT_TRUE(query->ends_with("WHERE FALSE"));
+}
+
+TEST(CatalogQueryTest, ExplicitRedshiftProfileIsolatesColumnsFromPostgresDomainSql) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection pg;
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  const auto pg_query = pg.catalog_query(ColumnsCatalogRequest{});
+  const auto rs_query = redshift.catalog_query(ColumnsCatalogRequest{});
+  ASSERT_FALSE(pg_query.has_error());
+  ASSERT_FALSE(rs_query.has_error());
+  EXPECT_NE(std::string::npos, pg_query->find("WITH RECURSIVE domain_chain"));
+  EXPECT_NE(std::string::npos, rs_query->find("FROM svv_columns AS columns"));
+  for (const auto* forbidden : {"domain_chain", "LATERAL", "pg_catalog", "udt_name"}) {
+    EXPECT_EQ(std::string::npos, rs_query->find(forbidden));
+  }
+  EXPECT_NE(std::string::npos, rs_query->find("ELSE 0 END::smallint AS data_type"));
+  EXPECT_NE(std::string::npos, rs_query->find("WHEN 'NO' THEN 0 ELSE 2 END::smallint AS nullable"));
+  EXPECT_NE(std::string::npos, rs_query->find("WHEN 'integer' THEN 4"));
+  EXPECT_NE(std::string::npos, rs_query->find("THEN columns.character_maximum_length ELSE NULL END::integer AS char_octet_length"));
+  EXPECT_EQ(*pg.catalog_query(TablesCatalogRequest{}), *redshift.catalog_query(TablesCatalogRequest{}));
+  EXPECT_FALSE(pg.is_connected());
+  EXPECT_FALSE(redshift.is_connected());
+}
+
+TEST(CatalogQueryTest, RedshiftColumnsPreserveExactOutputShapeAndPatternSemantics) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  const auto all = redshift.catalog_query(ColumnsCatalogRequest{});
+  ASSERT_FALSE(all.has_error());
+  EXPECT_TRUE(all->starts_with("SELECT table_cat, table_schem, table_name, column_name, data_type, "
+      "type_name, column_size, buffer_length, decimal_digits, num_prec_radix, "
+      "nullable, remarks, column_def, sql_data_type, sql_datetime_sub, "
+      "char_octet_length, ordinal_position, is_nullable FROM"));
+  EXPECT_EQ(std::string::npos, all->find(" AND table_cat ="));
+  const auto filtered = redshift.catalog_query(ColumnsCatalogRequest{"db'%", "", "t\\_%", "c'%"});
+  ASSERT_FALSE(filtered.has_error());
+  EXPECT_NE(std::string::npos, filtered->find(" AND table_cat = 'db''%'"));
+  EXPECT_NE(std::string::npos, filtered->find(" AND table_schem LIKE ''"));
+  EXPECT_NE(std::string::npos, filtered->find(" AND table_name LIKE 't\\\\_%'"));
+  EXPECT_NE(std::string::npos, filtered->find(" AND column_name LIKE 'c''%'"));
+  EXPECT_TRUE(filtered->ends_with("ORDER BY table_cat, table_schem, table_name, ordinal_position"));
+}
+
+TEST(CatalogQueryTest, RedshiftProviderPropagatesProfileAndEscapesLiteralBackslashes) {
+  using namespace rs::core::database::postgres;
+  PgBackendProvider provider({"redshift", "Amazon Redshift", "ODBCPP Redshift"},
+      {"localhost", 5432, "postgres", true}, std::nullopt, PgCatalogProfile::Redshift);
+  auto session = provider.create_session(nullptr);
+  ASSERT_NE(nullptr, session->catalog_queries());
+  ColumnsCatalogRequest request;
+  request.column = "v\\%lue";
+  auto query = session->catalog_queries()->catalog_query(request);
+  ASSERT_FALSE(query.has_error());
+  EXPECT_NE(std::string::npos, query->find("FROM svv_columns AS columns"));
+  EXPECT_NE(std::string::npos, query->find("column_name LIKE 'v\\\\%lue'"));
+  request.column = "v\\_lue";
+  query = session->catalog_queries()->catalog_query(request);
+  ASSERT_FALSE(query.has_error());
+  EXPECT_NE(std::string::npos, query->find("column_name LIKE 'v\\\\_lue'"));
+  request.catalog = "a\\'b";
+  request.column = "x\\\\y";
+  query = session->catalog_queries()->catalog_query(request);
+  ASSERT_FALSE(query.has_error());
+  EXPECT_NE(std::string::npos, query->find("table_cat = 'a\\\\''b'"));
+  EXPECT_NE(std::string::npos, query->find("column_name LIKE 'x\\\\\\\\y'"));
 }

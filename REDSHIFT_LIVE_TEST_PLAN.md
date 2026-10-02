@@ -77,6 +77,26 @@ by product composition, a separate Redshift builder, and PostgreSQL regression
 protection; shared ODBC/SDK orchestration must not infer the backend from names,
 ports or versions. PostgreSQL domain-resolution SQL remains unchanged.
 
+The repair introduces a private immutable PostgreSQL-wire-family catalog
+profile selected explicitly by product composition and propagated by the
+provider into the session. PostgreSQL column construction retains its existing
+domain resolution; Redshift column construction uses a separate SVV_COLUMNS
+projection into the same 18 ODBC fields. Quotes and backslashes are escaped
+according to Redshift literal rules. Unit tests protect profile propagation,
+PostgreSQL isolation, ordering, empty/omitted filters and escaped patterns. The
+fixed live case checks field count, integer/varchar types and dimensions,
+nullability, ordinals, and empty/escaped-wildcard no-match cases. This is a bounded
+local-table repair: other catalog requests still use existing builders; numeric,
+temporal, unknown types, external/datashare and SHOW behavior remain unqualified.
+
+Window003 was consumed during attempted repaired baseline qualification, but
+its pre-activation cleanup-count query was cancelled at the 30-second server
+limit. No driver cases ran. Independent final cleanup then verified zero active
+sessions/queries and retained the reservation. The repaired catalog remains
+unqualified live; do not label this as an SQLColumns failure or automatically
+retry the consumed request. Complete the offline/platform batch and review a
+separate bounded catalog request before further paid work.
+
 AWS documents the fields available in
 [SVV_COLUMNS](https://docs.aws.amazon.com/redshift/latest/dg/r_SVV_COLUMNS.html),
 and recommends SHOW COLUMNS for discovery across local, datashare and external

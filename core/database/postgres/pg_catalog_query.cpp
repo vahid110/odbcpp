@@ -1,4 +1,5 @@
 #include "pg_database_connection.h"
+#include "redshift_catalog_query.h"
 
 namespace rs::core::database::postgres {
 namespace {
@@ -747,6 +748,10 @@ std::string build_query(const SpecialColumnsCatalogRequest& request) {
 
 rs::util::Result<std::string> PgDatabaseConnection::catalog_query(
     const CatalogRequest& request) const {
+  if (catalog_profile_ == PgCatalogProfile::Redshift) {
+    if (const auto* columns = std::get_if<ColumnsCatalogRequest>(&request))
+      return redshift_columns_query(*columns);
+  }
   return std::visit([](const auto& catalog) { return build_query(catalog); }, request);
 }
 

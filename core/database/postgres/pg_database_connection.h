@@ -1,5 +1,7 @@
 #pragma once
 
+#include "pg_catalog_profile.h"
+
 #include "core/database/generic_database_connection.h"
 
 #include <string>
@@ -12,7 +14,8 @@ class PgDatabaseConnection : public GenericDatabaseConnection, public ITransacti
 public:
   explicit PgDatabaseConnection(
       std::unique_ptr<rs::core::transport::ITransport> transport = nullptr,
-      std::optional<SessionResetProfile> reset_profile = std::nullopt);
+      std::optional<SessionResetProfile> reset_profile = std::nullopt,
+      PgCatalogProfile catalog_profile = PgCatalogProfile::PostgreSQL);
 
   ISessionReset* session_reset() noexcept override { return reset_profile_ ? this : nullptr; }
   SessionResetProfile reset_profile() const noexcept override {
@@ -42,6 +45,7 @@ public:
 
 private:
   const std::optional<SessionResetProfile> reset_profile_;
+  const PgCatalogProfile catalog_profile_;
 };
 
 } // namespace rs::core::database::postgres

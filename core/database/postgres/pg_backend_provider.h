@@ -1,5 +1,7 @@
 #pragma once
 
+#include "pg_catalog_profile.h"
+
 #include "core/database/backend_provider.h"
 #include "core/database/session_reset.h"
 
@@ -13,7 +15,8 @@ class PgBackendProvider final : public IBackendProvider {
  public:
   PgBackendProvider(BackendIdentity identity,
                     BackendConnectionDefaults connection_defaults,
-                    std::optional<SessionResetProfile> reset_profile = std::nullopt);
+                    std::optional<SessionResetProfile> reset_profile = std::nullopt,
+      PgCatalogProfile catalog_profile = PgCatalogProfile::PostgreSQL);
   PgBackendProvider(const PgBackendProvider&) = delete;
   PgBackendProvider& operator=(const PgBackendProvider&) = delete;
   PgBackendProvider(PgBackendProvider&&) = delete;
@@ -40,6 +43,7 @@ class PgBackendProvider final : public IBackendProvider {
   BackendConnectionDefaults connection_defaults_;
   BackendCapabilities capabilities_;
   const std::optional<SessionResetProfile> reset_profile_;
+  const PgCatalogProfile catalog_profile_;
 };
 
 }  // namespace rs::core::database::postgres

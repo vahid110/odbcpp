@@ -24,3 +24,4 @@ core/database/type_definition.h
 core/transport/i_transport.h
 core/util/deadline.h
 core/util/result.h
+core/database/postgres/pg_catalog_profile.h
