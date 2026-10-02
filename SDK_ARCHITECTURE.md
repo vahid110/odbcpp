@@ -1343,3 +1343,35 @@ performance or public SDK claim is made. Focused backend-contract and live metad
 tests passed. Complete local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and
 Redshift build/absent-endpoint gates passed. Windows/packaging and crypto evidence
 await exact-head hosted CI.
+
+## S2 conservative metadata epochs and control routing — 2026-10-02
+
+Prepared description validity now uses a private connection-owned metadata epoch.
+Direct/prepared execution, transaction/isolation, description, health and reset
+attempts invalidate it before dispatch, including recoverable errors and absent
+facets. Test-only health/reset views use private ODBC wrappers, closing an
+invalidation bypass. Passive observation and local catalog construction preserve
+it; executing catalog SQL still passes through execution invalidation.
+
+Successful validated descriptions publish a fresh weak statement epoch only after
+metadata application and only with an active lease. Terminal successful descriptions
+return their owned metadata without publication; failed operations never restore
+the previous epoch. Same-statement hits remain possible within an unchanged epoch.
+Describing statement B deliberately invalidates statement A, so alternating
+statements refetch; this conservative policy makes no performance claim. Already
+executed results retain their owned metadata. The scope remains one logical
+connection, one current epoch, existing statement payload/resource bounds and
+serialized handle operations; no credentials or serialized identity are added.
+
+Fixed Debug events expose hit, miss, stale rejection, invalidation and publication
+without SQL, identifiers, principal, credential, pointer or epoch values. A SQL
+canary regression verifies cache events do not disclose query contents. Unit tests
+cover passive reads, control attempts, success/recoverable failure, alternating
+statements and terminal descriptions. Live PostgreSQL tests prove same-session DDL
+refresh, health/reset routing, DISCARD-related missing-table diagnostics and recovery.
+Focused unit/live checks and complete local PostgreSQL, iODBC UTF-16/UCS-4,
+ASan/UBSan and Redshift build/absent-endpoint gates passed. Final-source PostgreSQL
+and UTF-16 rechecks passed after removing the unnecessary connect-time marker
+allocation. Windows/packaging and crypto evidence await exact-head hosted CI. External
+schema-change freshness remains unqualified; pooling, cross-session/prepared
+payload caches, G10 tuning and public SDK claims are not enabled. S2/G12 remain open.
