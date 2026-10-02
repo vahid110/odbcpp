@@ -473,3 +473,77 @@ TEST(MySqlSessionTest, PreparedExpiredDeadlineAndUnverifiedPeerNeverSendSql) {
     EXPECT_TRUE(f.transport->output.empty());EXPECT_EQ(1u,f.transport->closes);EXPECT_FALSE(f.session->is_connected());
   }
 }
+
+TEST(MySqlSessionTest, TransactionFacetDeclaresInnoDbSemanticsAndBorrowsStablePointer) {
+  Fixture f;auto* facet=f.session->transaction_session();ASSERT_NE(nullptr,facet);
+  auto caps=facet->transaction_capabilities();EXPECT_TRUE(caps.supported);EXPECT_FALSE(caps.transactional_ddl);
+  EXPECT_EQ(rs::core::database::TransactionIsolation::RepeatableRead,caps.default_isolation);
+  for (auto level:rs::core::database::transaction_isolations) { EXPECT_TRUE(caps.supports(level)); }
+  auto begin=ok();begin[3]=std::byte{3};append(*f.transport,begin,1);
+  const auto deadline=rs::util::make_deadline(std::chrono::seconds(10));
+  auto result=facet->transaction(rs::core::database::TransactionAction::Begin,deadline);ASSERT_TRUE(result);
+  EXPECT_EQ(rs::core::database::SessionState::Transaction,result.session_snapshot().state);
+  EXPECT_EQ(rs::core::database::SessionDisposition::ResetRequired,result.session_snapshot().disposition);
+  const std::string sent(reinterpret_cast<const char*>(f.transport->output.data()+5),f.transport->output.size()-5);
+  EXPECT_EQ("START TRANSACTION",sent);
+  const auto size=f.transport->output.size();
+  auto nested=facet->transaction(rs::core::database::TransactionAction::Begin,deadline);ASSERT_FALSE(nested);
+  EXPECT_EQ(rs::core::database::BackendOperation::BeginTransaction,nested.backend_error().operation);
+  EXPECT_EQ(rs::core::database::SessionState::Transaction,nested.session_snapshot().state);
+  EXPECT_EQ(rs::core::database::SessionDisposition::ResetRequired,nested.session_snapshot().disposition);
+  auto isolation=facet->set_transaction_isolation(rs::core::database::TransactionIsolation::ReadCommitted,deadline);ASSERT_FALSE(isolation);
+  EXPECT_EQ(rs::core::database::BackendOperation::SetTransactionIsolation,isolation.backend_error().operation);
+  EXPECT_EQ(rs::core::database::SessionState::Transaction,isolation.session_snapshot().state);
+  EXPECT_EQ(size,f.transport->output.size());EXPECT_EQ(0u,f.transport->closes);
+  append(*f.transport,ok(),1);result=facet->transaction(rs::core::database::TransactionAction::Rollback,deadline);ASSERT_TRUE(result);
+  EXPECT_EQ(rs::core::database::SessionState::Idle,result.session_snapshot().state);
+  for (const auto dl:f.transport->deadlines) { EXPECT_EQ(deadline,dl); }
+  f.session->disconnect();EXPECT_EQ(facet,f.session->transaction_session());
+  result=facet->transaction(rs::core::database::TransactionAction::Commit,deadline);ASSERT_FALSE(result);
+  EXPECT_EQ(DbErrorCode::NotConnected,result.error());
+  EXPECT_EQ(rs::core::database::BackendOperation::CommitTransaction,result.backend_error().operation);
+}
+TEST(MySqlSessionTest, IsolationCommandsAreFixedAndInvalidEnumsDoNotMutateOwner) {
+  Fixture f;auto* facet=f.session->transaction_session();const auto deadline=rs::util::make_deadline(std::chrono::seconds(10));
+  const std::array names{"READ UNCOMMITTED","READ COMMITTED","REPEATABLE READ","SERIALIZABLE"};
+  for (std::size_t i=0;i<names.size();++i) {
+    f.transport->output.clear();append(*f.transport,ok(),1);
+    EXPECT_TRUE(facet->set_transaction_isolation(rs::core::database::transaction_isolations[i],deadline));
+    const std::string sent(reinterpret_cast<const char*>(f.transport->output.data()+5),f.transport->output.size()-5);
+    EXPECT_EQ(std::string("SET SESSION TRANSACTION ISOLATION LEVEL ")+names[i],sent);
+  }
+  const auto size=f.transport->output.size();
+  EXPECT_FALSE(facet->set_transaction_isolation(static_cast<rs::core::database::TransactionIsolation>(99),deadline));
+  EXPECT_FALSE(facet->transaction(static_cast<rs::core::database::TransactionAction>(99),deadline));
+  EXPECT_EQ(size,f.transport->output.size());EXPECT_TRUE(f.session->is_connected());EXPECT_EQ(0u,f.transport->closes);
+}
+TEST(MySqlSessionTest, TransactionCompletionStateWarningsAndServerFailuresRetire) {
+  for (unsigned mode=0;mode<6;++mode) {
+    Fixture f;
+    if (mode==0) append(*f.transport,ok(),1); // BEGIN must report IN_TRANS.
+    if (mode==1) { auto bytes=ok();bytes[1]=std::byte{1};bytes[3]=std::byte{3};append(*f.transport,bytes,1); }
+    if (mode==2) { auto bytes=ok();bytes[5]=std::byte{1};append(*f.transport,bytes,1); }
+    if (mode==3) append(*f.transport,{std::byte{255},std::byte{1},std::byte{0},std::byte{'#'},std::byte{'4'},std::byte{'2'},std::byte{'0'},std::byte{'0'},std::byte{'0'}},1);
+    if (mode==4) f.rows();
+    if (mode==5) { auto bytes=ok();bytes[2]=std::byte{1};bytes[3]=std::byte{3};append(*f.transport,bytes,1); }
+    auto result=f.session->transaction_session()->transaction(rs::core::database::TransactionAction::Begin,
+        rs::util::make_deadline(std::chrono::seconds(10)));
+    ASSERT_FALSE(result);EXPECT_FALSE(f.session->is_connected());EXPECT_EQ(1u,f.transport->closes);
+    EXPECT_EQ(rs::core::database::BackendOperation::BeginTransaction,result.backend_error().operation);
+    EXPECT_EQ(rs::core::database::SessionDisposition::Retire,result.session_snapshot().disposition);
+  }
+}
+
+TEST(MySqlSessionTest, CommitAndRollbackOverrideChainAndReleaseAndRequireIdleCompletion) {
+  for (auto action:{rs::core::database::TransactionAction::Commit,rs::core::database::TransactionAction::Rollback}) {
+    for (bool in_transaction:{false,true}) {
+      Fixture f;auto response=ok();if (in_transaction) response[3]=std::byte{3};append(*f.transport,response,1);
+      auto result=f.session->transaction_session()->transaction(action,rs::util::make_deadline(std::chrono::seconds(10)));
+      const std::string sent(reinterpret_cast<const char*>(f.transport->output.data()+5),f.transport->output.size()-5);
+      EXPECT_EQ(action==rs::core::database::TransactionAction::Commit?"COMMIT AND NO CHAIN NO RELEASE":
+          "ROLLBACK AND NO CHAIN NO RELEASE",sent);
+      if (in_transaction) { EXPECT_FALSE(result);EXPECT_EQ(1u,f.transport->closes);EXPECT_FALSE(f.session->is_connected()); }
+      else { ASSERT_TRUE(result);EXPECT_EQ(rs::core::database::SessionState::Idle,result.session_snapshot().state); }
+    }
+  }
+}

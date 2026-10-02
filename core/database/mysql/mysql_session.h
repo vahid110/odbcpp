@@ -7,7 +7,7 @@
 namespace rs::core::database::mysql {
 // Bounded internal S3 session. No provider/ODBC registration, statement caching,
 // warning delivery, pooling, or multi-result support. Owns the transport exclusively.
-class MySqlSession final : public IDatabaseConnection {
+class MySqlSession final : public IDatabaseConnection, public ITransactionSession {
  public:
   explicit MySqlSession(std::unique_ptr<rs::core::transport::ITransport> transport)
       : transport_(std::move(transport)) {}
@@ -89,6 +89,40 @@ class MySqlSession final : public IDatabaseConnection {
       return failure(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),BackendOperation::Connect);
     }
   }
+  ITransactionSession* transaction_session() noexcept override { return this; }
+  TransactionCapabilities transaction_capabilities() const override {
+    // Pinned InnoDB proof profile. DDL can implicitly commit in MySQL.
+    return {true,false,TransactionIsolation::RepeatableRead,{true,true,true,true}};
+  }
+  BackendResult<void> transaction(TransactionAction action,rs::util::Deadline deadline) override {
+    std::string_view command;auto operation=BackendOperation::Transaction;
+    SessionState expected=SessionState::Idle;
+    switch (action) {
+      case TransactionAction::Begin:
+        command="START TRANSACTION";operation=BackendOperation::BeginTransaction;expected=SessionState::Transaction;break;
+      case TransactionAction::Commit: command="COMMIT AND NO CHAIN NO RELEASE";operation=BackendOperation::CommitTransaction;break;
+      case TransactionAction::Rollback: command="ROLLBACK AND NO CHAIN NO RELEASE";operation=BackendOperation::RollbackTransaction;break;
+      default:return local_backend_error(LocalFailure::InvalidInput,"Invalid MySQL transaction action",operation,state_);
+    }
+    if (connected_ && action==TransactionAction::Begin && state_!=SessionState::Idle)
+      // A second START TRANSACTION would implicitly commit the active transaction.
+      return local_backend_error(LocalFailure::InvalidInput,"MySQL transaction is already active",operation,state_);
+    return transaction_command(command,operation,expected,deadline);
+  }
+  BackendResult<void> set_transaction_isolation(TransactionIsolation level,rs::util::Deadline deadline) override {
+    constexpr auto operation=BackendOperation::SetTransactionIsolation;
+    std::string_view command;
+    switch (level) {
+      case TransactionIsolation::ReadUncommitted:command="SET SESSION TRANSACTION ISOLATION LEVEL READ UNCOMMITTED";break;
+      case TransactionIsolation::ReadCommitted:command="SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED";break;
+      case TransactionIsolation::RepeatableRead:command="SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ";break;
+      case TransactionIsolation::Serializable:command="SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE";break;
+      default:return local_backend_error(LocalFailure::InvalidInput,"Invalid MySQL isolation level",operation,state_);
+    }
+    if (connected_ && state_!=SessionState::Idle)
+      return local_backend_error(LocalFailure::InvalidInput,"MySQL isolation change requires idle session",operation,state_);
+    return transaction_command(command,operation,SessionState::Idle,deadline);
+  }
   BackendResult<QueryResult> execute_prepared(std::string_view sql,std::span<const QueryParameter> parameters,
                                              rs::util::Deadline deadline) override {
     using rs::util::DbErrorCode;
@@ -165,6 +199,10 @@ class MySqlSession final : public IDatabaseConnection {
       catch (...) { return retiring_failure(rs::util::make_error_code(DbErrorCode::ProtocolError),operation); }
   }
   BackendResult<QueryResult> execute_query(std::string_view sql,rs::util::Deadline deadline) override {
+    return execute_direct(sql,deadline,false);
+  }
+ private:
+  BackendResult<QueryResult> execute_direct(std::string_view sql,rs::util::Deadline deadline,bool control) {
     using rs::util::DbErrorCode;
     if (!connected_) return failure(rs::util::make_error_code(DbErrorCode::NotConnected),BackendOperation::ExecuteDirect);
     if (sql.empty() || sql.find('\0')!=std::string_view::npos || !rs::util::utf8_code_point_count(sql))
@@ -186,7 +224,7 @@ class MySqlSession final : public IDatabaseConnection {
       auto sent=authentication_detail::send_all(*transport_,request,deadline);
       if (!sent) return retiring_failure(sent.error());
       Reader reader{*transport_,deadline,response_limits_};
-      auto result=read_result(reader);
+      auto result=read_result(reader,false,nullptr,nullptr,control);
       if (!result) return retiring_failure(result.error());
       if (rs::util::Clock::now()>=deadline) return retiring_failure(rs::util::make_error_code(DbErrorCode::Timeout));
       auto* tls=dynamic_cast<rs::core::transport::IStartTlsTransport*>(transport_.get());
@@ -275,15 +313,17 @@ class MySqlSession final : public IDatabaseConnection {
     return {};
   }
   rs::util::Result<QueryResult> read_result(Reader& reader,bool binary=false,
-      std::size_t* accumulated_names=nullptr,std::size_t* accumulated_entries=nullptr) {
+      std::size_t* accumulated_names=nullptr,std::size_t* accumulated_entries=nullptr,bool control=false) {
     using rs::util::DbErrorCode;
     auto first=reader.next();if (!first) return {first.error()};
     if ((*first)[0]==std::byte{255}) return server_error(*first);
     QueryResult result;
     if ((*first)[0]==std::byte{0}) {
       auto done=query_detail::completion(*first,false);if (!done) return {done.error()};
+      if (control && done->insert_id) return {DbErrorCode::ProtocolError};
       result.affected_rows=done->affected;result.statement_kind=StatementKind::Unknown;set_state(done->status);return result;
     }
+    if (control) return {DbErrorCode::ProtocolError};
     query_detail::Cursor c(*first);std::uint64_t count{};
     if (!c.length(count) || c.remaining() || !count) return {DbErrorCode::ProtocolError};
     if (count>result_limits_.max_columns_per_description || count>result_limits_.max_metadata_entries/6)
@@ -332,6 +372,18 @@ class MySqlSession final : public IDatabaseConnection {
   BackendError failure(std::error_code code,BackendOperation operation) const {
     BackendError error{code,"MySQL session operation failed"};error.operation=operation;
     error.session_state=state_;error.disposition=SessionDisposition::Retire;return error;
+  }
+  BackendResult<void> transaction_command(std::string_view command,BackendOperation operation,
+      SessionState expected,rs::util::Deadline deadline) {
+    auto result=execute_direct(command,deadline,true);
+    if (!result) {
+      auto error=std::move(result.backend_error());error.operation=operation;return error;
+    }
+    if (!result->columns.empty() || !result->rows.empty() || result->affected_rows ||
+        !result->cell_errors.empty() || result.session_snapshot().state!=expected) {
+      disconnect();return failure(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),operation);
+    }
+    return BackendResult<void>{result.session_snapshot()};
   }
   BackendError local_failure(std::error_code code,BackendOperation operation) const {
     auto error=failure(code,operation);error.disposition=snapshot().disposition;return error;

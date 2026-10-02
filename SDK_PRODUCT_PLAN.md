@@ -897,3 +897,36 @@ GCC requires braces around a conditional Google Test assertion, and MSVC require
 the packet sequence fixture counter to use its native uint8_t type. Both are
 corrected without changing compiler policy or runtime behavior. Repaired full
 gates and hosted live acceptance are required before closing this slice.
+
+### S3 MySQL transaction and isolation facet — 2026-10-02
+
+Bounded native prepared execution passed exact-head CI `36993383466` at
+`4edcc37`. The next private session slice implements the shared session-owned
+ITransactionSession facet for the pinned InnoDB profile. It declares the nominal
+RepeatableRead default and all four isolation levels, with transactional DDL
+false. This is a profile capability, not discovery of arbitrary server defaults
+or a guarantee for nontransactional storage engines.
+
+Begin uses START TRANSACTION only while idle: a nested begin is rejected locally
+because MySQL would implicitly commit the active transaction. Commit/rollback
+explicitly use AND NO CHAIN NO RELEASE so session completion_type settings cannot
+chain a new transaction or disconnect the client. Idle-only isolation changes
+use fixed SET SESSION TRANSACTION ISOLATION LEVEL commands. Invalid enum/state
+requests cause no I/O and preserve the owning session; transport/server failures
+retain precise transaction operation tags and the existing retirement policy.
+Control completions must be warning-free, have zero affected/insert counters,
+contain no resultset and report the expected IN_TRANS/Idle state.
+
+Unit tests cover stable facet borrowing after disconnect, declared capabilities,
+all isolation commands, nested begin prevention, idle-only isolation, exact
+completion SQL, malformed counters/resultsets/status, server errors and operation
+snapshots. Hosted live acceptance requires InnoDB commit persistence, rollback
+removal after a rejected nested begin, completion_type CHAIN/RELEASE overrides,
+all four observed session isolation values and restoration of fixture settings.
+Complete protected local and exact-head hosted gates remain required. Essential
+catalog metadata, wider scalar types, health/reset/recovery policy and shared
+ODBC registration remain subsequent S3 work; S3/G12 is not closed.
+
+Semantic references:
+[MySQL transaction completion](https://dev.mysql.com/doc/refman/8.4/en/commit.html),
+[session isolation](https://dev.mysql.com/doc/refman/8.4/en/set-transaction.html).
