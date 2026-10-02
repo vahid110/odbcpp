@@ -1,4 +1,5 @@
 #include "session_owner.h"
+#include "credential_context.h"
 #include <mutex>
 #include <new>
 #include <stdexcept>

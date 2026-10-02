@@ -1,7 +1,11 @@
 # Configured in the parent build so generator, toolchain and platform match.
 function(probe name tree header expected)
   set(_source "${CMAKE_CURRENT_BINARY_DIR}/${name}.cpp")
-  file(WRITE "${_source}" "#include <${header}>\nint main() { return 0; }\n")
+  set(_checks "")
+  if(ARGC GREATER 4)
+    set(_checks "${ARGV4}")
+  endif()
+  file(WRITE "${_source}" "#include <${header}>\n${_checks}\nint main() { return 0; }\n")
   try_compile(_compiled "${CMAKE_CURRENT_BINARY_DIR}/${name}-build" "${_source}"
     CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${tree}" OUTPUT_VARIABLE _output)
   if(expected)
@@ -30,9 +34,9 @@ probe(composition_pool "${INCLUDE_ROOT}/composition" core/database/connection_po
 
 probe(composition_session_owner "${INCLUDE_ROOT}/composition" core/database/session_owner.h TRUE)
 probe(backend_session_owner "${INCLUDE_ROOT}/backend" core/database/session_owner.h FALSE)
-probe(odbc_session_owner "${INCLUDE_ROOT}/odbc" core/database/session_owner.h TRUE)
+probe(odbc_session_owner "${INCLUDE_ROOT}/odbc" core/database/session_owner.h TRUE
+  "#include <type_traits>\ntemplate<class T> concept Complete = requires { sizeof(T); };\nstatic_assert(!Complete<rs::core::database::CredentialContext>);\nstatic_assert(!Complete<rs::core::database::CredentialToken>);\nstatic_assert(std::is_move_constructible_v<rs::core::database::SessionOwner>);\nstatic_assert(std::is_move_constructible_v<rs::core::database::SessionLease>);\nstatic_assert(std::is_constructible_v<rs::core::database::SessionOwner, std::unique_ptr<rs::core::database::IDatabaseConnection>>);")
 
 probe(composition_credentials "${INCLUDE_ROOT}/composition" core/database/credential_context.h TRUE)
 probe(backend_credentials "${INCLUDE_ROOT}/backend" core/database/credential_context.h FALSE)
-# credential_context.h is visible only as a session_owner.h transitive dependency.
-# ODBC adoption is unbound; direct credential-authority use is not qualified.
+probe(odbc_credentials "${INCLUDE_ROOT}/odbc" core/database/credential_context.h FALSE)

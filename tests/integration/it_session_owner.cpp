@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "core/database/backend_provider.h"
 #include "core/database/session_owner.h"
+#include "core/database/credential_context.h"
 #include "core/transport/i_transport.h"
 #include "odbc/connection_string.h"
 #include "tests/test_connection_config.h"

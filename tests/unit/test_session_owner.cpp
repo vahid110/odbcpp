@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "core/database/session_owner.h"
+#include "core/database/credential_context.h"
 #include <array>
 #include <atomic>
 #include <barrier>

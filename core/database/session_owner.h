@@ -1,10 +1,12 @@
 #pragma once
 #include "i_database_connection.h"
-#include "credential_context.h"
 #include <memory>
 #include <optional>
 
 namespace rs::core::database {
+// Credential authority definitions belong to trusted composition, not borrowers.
+class CredentialToken;
+class CredentialContext;
 namespace detail {
 struct SessionOwnershipState;
 struct SessionCacheGeneration;
