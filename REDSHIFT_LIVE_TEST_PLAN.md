@@ -5,6 +5,39 @@ paused other implementation and assigned environment completion to this chat.
 Provisioning and admission now share this integration owner and the existing
 canonical state; do not create duplicate infrastructure in another chat.
 
+## Approved allowance amendment and work priority — 2026-10-02
+
+The user increased the shared initial Redshift allowance from **USD 15 to USD
+150 total**, and prioritized Redshift over MySQL for the coming week. This is
+one cumulative allowance across all chats, including prior costs/reservations;
+it is not a fresh USD 150 balance, monthly budget or per-chat allowance. Plan a
+USD 100 compute envelope with USD 50 retained for other charges/tax. Keep the
+existing 4/4-RPU capacity and single workgroup. No additional infrastructure or
+capacity increase is authorized by the allowance change.
+
+The protected `allowance-amendment-150.json` records the user's authorization
+under the canonical lock. A tested, independently reviewed v3 amendment now
+preserves the entire v2 history and original USD 15 anchors verbatim in the same
+ledger. Unknown actual spend/remaining allowance remain null; all compute bounds
+are retained and the full USD 50 other/tax reserve is added. AWS readback verifies
+a USD 150 budget, USD 100/125/150 alerts with subscribers preserved, and a 267
+RPU-hour monthly deactivate limit (USD 99.858 at the verified rate). One workgroup
+and base/max capacity 4/4 are unchanged. These delayed cloud controls are not a
+hard USD cap and monthly resets cannot reset cumulative pilot accounting.
+
+The migration and cloud controls grant no SQL admission. Old launchers fail
+closed on v3. The next bounded package must add reviewed v3 window admission,
+then repair/test the catalog baseline; do not reuse old expired anchors, hashes
+or paid one-shot launchers. Historical status below describes original setup
+evidence, not the newly authorized ceiling. All 124 offline pilot tests pass;
+8 new amendment tests cover history preservation, wrong authority/caps, uncertain
+prior attempts, stale/wrong controls, duplicate migration and crash uncertainty.
+
+CI run 37024167587 for 47b2c13 is green across required platform gates. Prioritize
+bounded Redshift baseline/catalog work. MySQL remains deferred. The user asked
+for no questions during the coming week; record work needing further authority
+and continue useful work within the approved scope instead of prompting them.
+
 ## Environment preparation status — 2026-10-02
 
 A dedicated named AWS CLI profile has passed a fresh-process identity check with
@@ -65,18 +98,21 @@ Protected JSON rejects duplicate keys and unreviewed admission fields. Processes
 receive minimal environments; local process-group cleanup and exact completed
 case inventories are independently checked. Offline safety tests pass (116 cases),
 and the fresh Redshift build passed 65 unit tests before the live qualification.
-Pending source changes still need the complete pushed-batch gates and CI; no new
-CI-green claim is made here.
+The setup code is committed and CI run 37024167587 is green. This includes the
+Linux pinned MySQL fixture, PostgreSQL, sanitizer, crypto, iODBC and Windows live
+and packaging gates; SQL Server linked-server acceptance was skipped as planned.
+The separately added Python allowance amendment needs its own CI qualification.
 
 AWS access no longer requires the user's browser or passkey. The Mac must remain
 online and awake. General SDK work remains paused during final setup handoff;
-the existing 15-minute timer is scoped to environment completion and must not
-restart SDK work or repeatedly relaunch failed driver tests. The initial USD 15
-allowance remains shared and unchanged; expanding it needs user authorization.
+the existing 15-minute timer now prioritizes Redshift under the USD 150
+amendment above. It must not restart MySQL work or repeatedly relaunch failed
+driver tests without reviewed admission. The original USD 15 evidence remains
+historical and immutable.
 
 ## Shared allowance and source of truth
 
-The approved allowance is **USD 15 total for one initial testing period across
+The original setup allowance was **USD 15 total for one initial testing period across
 all chats**, never per chat, month, scheduler invocation or CI run. Target a
 USD 10 compute envelope and reserve USD 5 for other charges and tax. Do not
 increase limits, create additional warehouses or exceed the allowance without
