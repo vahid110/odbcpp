@@ -190,8 +190,8 @@ BackendResult<void> SessionLease::reset_session(rs::util::Deadline deadline) {
 
 namespace rs::core::database {
 namespace {
-template<class Request>
-BackendResult<QueryResult> execute_borrowed(SessionLease& lease, IDatabaseConnection* physical,
+template<class T, class Request>
+BackendResult<T> invoke_borrowed(SessionLease& lease, IDatabaseConnection* physical,
     BackendOperation operation, Request&& request) {
   if (!physical) {
     BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::NotConnected), "No active session lease"};
@@ -214,14 +214,42 @@ BackendResult<QueryResult> execute_borrowed(SessionLease& lease, IDatabaseConnec
 }
 BackendResult<QueryResult> SessionLease::execute_query(std::string_view sql, rs::util::Deadline deadline) {
   invalidate_cache();
-  return execute_borrowed(*this, physical_session(), BackendOperation::ExecuteDirect,
+  return invoke_borrowed<QueryResult>(*this, physical_session(), BackendOperation::ExecuteDirect,
       [&](IDatabaseConnection& physical) { return physical.execute_query(sql, deadline); });
 }
 BackendResult<QueryResult> SessionLease::execute_prepared(std::string_view sql,
     std::span<const QueryParameter> params, rs::util::Deadline deadline) {
   invalidate_cache();
-  return execute_borrowed(*this, physical_session(), BackendOperation::ExecutePrepared,
+  return invoke_borrowed<QueryResult>(*this, physical_session(), BackendOperation::ExecutePrepared,
       [&](IDatabaseConnection& physical) { return physical.execute_prepared(sql, params, deadline); });
+}
+BackendResult<void> SessionLease::transaction(TransactionAction action, rs::util::Deadline deadline) {
+  invalidate_cache();
+  return invoke_borrowed<void>(*this, physical_session(), BackendOperation::Transaction,
+      [&](IDatabaseConnection& physical) -> BackendResult<void> {
+        if (auto* facet = physical.transaction_session()) return facet->transaction(action, deadline);
+        return local_backend_error(LocalFailure::Unsupported, "Session transaction facet unavailable",
+            BackendOperation::Transaction, physical.session_state());
+      });
+}
+BackendResult<void> SessionLease::set_transaction_isolation(TransactionIsolation level, rs::util::Deadline deadline) {
+  invalidate_cache();
+  return invoke_borrowed<void>(*this, physical_session(), BackendOperation::SetTransactionIsolation,
+      [&](IDatabaseConnection& physical) -> BackendResult<void> {
+        if (auto* facet = physical.transaction_session()) return facet->set_transaction_isolation(level, deadline);
+        return local_backend_error(LocalFailure::Unsupported, "Session transaction facet unavailable",
+            BackendOperation::SetTransactionIsolation, physical.session_state());
+      });
+}
+BackendResult<QueryResult> SessionLease::describe_statement(std::string_view sql,
+    std::span<const QueryParameterType> types, rs::util::Deadline deadline) {
+  invalidate_cache();
+  return invoke_borrowed<QueryResult>(*this, physical_session(), BackendOperation::Describe,
+      [&](IDatabaseConnection& physical) -> BackendResult<QueryResult> {
+        if (auto* facet = physical.statement_description()) return facet->describe_statement(sql, types, deadline);
+        return local_backend_error(LocalFailure::Unsupported, "Session description facet unavailable",
+            BackendOperation::Describe, physical.session_state());
+      });
 }
 } // namespace rs::core::database
 

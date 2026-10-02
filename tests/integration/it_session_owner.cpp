@@ -225,6 +225,35 @@ TEST(SessionOwnerIntegrationTest, LiveBorrowSurvivesOwnerAndRetirementClosesPhys
   ASSERT_FALSE(failed_managed);
   EXPECT_EQ(BackendOperation::Connect, failed_managed.backend_error().operation);
   EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), failed_managed.session_snapshot());
+  // Optional backend operations stay inside the exclusive lease. Successful
+  // descriptions own their schema even after the physical session is retired.
+  auto facet_physical = provider.create_session(nullptr); ASSERT_TRUE(facet_physical->connect(*settings));
+  CredentialContext facet_credentials; auto facet_token = facet_credentials.publish_authenticated();
+  SessionOwner facet_owner{std::move(facet_physical), facet_token};
+  auto facet_lease = facet_owner.try_acquire(facet_token); ASSERT_TRUE(facet_lease);
+  const auto facet_deadline = rs::util::make_deadline(std::chrono::seconds(5));
+  auto facet_scope = facet_lease->cache_token(); ASSERT_TRUE(facet_scope);
+  ASSERT_TRUE(facet_lease->set_transaction_isolation(TransactionIsolation::Serializable, facet_deadline));
+  EXPECT_FALSE(facet_scope->is_current());
+  ASSERT_TRUE(facet_lease->transaction(TransactionAction::Begin, facet_deadline));
+  auto isolation = facet_lease->execute_query("SHOW transaction_isolation", facet_deadline);
+  ASSERT_TRUE(isolation); EXPECT_EQ("serializable", isolation->rows.at(0).at(0));
+  const std::array<QueryParameterType, 1> description_types{QueryParameterType::Text};
+  auto description = facet_lease->describe_statement("SELECT ?::text AS lease_column", description_types, facet_deadline);
+  ASSERT_TRUE(description) << description.error_message(); ASSERT_EQ(1u, description->columns.size());
+  EXPECT_EQ("lease_column", description->columns[0].name); EXPECT_TRUE(description->rows.empty());
+  auto rejected_description = facet_lease->describe_statement(
+      "SELECT * FROM odbcpp_missing_lease_description_table", {}, facet_deadline);
+  ASSERT_FALSE(rejected_description);
+  EXPECT_EQ("42P01", rejected_description.backend_error().native_state);
+  EXPECT_EQ(SessionState::FailedTransaction, rejected_description.session_snapshot().state);
+  EXPECT_TRUE(*facet_lease);
+  ASSERT_TRUE(facet_lease->transaction(TransactionAction::Rollback, facet_deadline));
+  ASSERT_TRUE(facet_lease->transaction(TransactionAction::Begin, facet_deadline));
+  ASSERT_TRUE(facet_lease->transaction(TransactionAction::Commit, facet_deadline));
+  facet_lease->retire(); EXPECT_FALSE(*facet_lease);
+  EXPECT_EQ("lease_column", description->columns[0].name);
+  EXPECT_EQ("42P01", rejected_description.backend_error().native_state);
   observer->disconnect();
 }
 } // namespace

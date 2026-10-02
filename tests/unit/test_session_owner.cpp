@@ -41,6 +41,13 @@ static_assert(!std::is_copy_constructible_v<SessionLease> && !std::is_copy_assig
 static_assert(std::is_nothrow_move_constructible_v<SessionOwner> && std::is_nothrow_move_assignable_v<SessionOwner>);
 static_assert(std::is_nothrow_move_constructible_v<SessionLease> && std::is_nothrow_move_assignable_v<SessionLease>);
 struct Observed {
+  bool operation_facets{false};
+  int facet_exception{};
+  std::optional<BackendResult<void>> transaction_result;
+  std::optional<BackendResult<QueryResult>> description_result;
+  std::function<void(TransactionAction, rs::util::Deadline)> on_transaction;
+  std::function<void(TransactionIsolation, rs::util::Deadline)> on_isolation;
+  std::function<void(std::string_view, std::span<const QueryParameterType>, rs::util::Deadline)> on_description;
   std::atomic<int> disconnects{}, destructions{}, queries{}, health{}, resets{};
   bool throw_disconnect{};
   bool initially_connected{true};
@@ -65,7 +72,7 @@ struct Observed {
   std::function<void(std::string_view, std::span<const QueryParameter>, rs::util::Deadline, bool)> on_execution;
   std::function<void()> on_disconnect;
 };
-class FakeSession final : public IDatabaseConnection, public ISessionHealth, public ISessionReset {
+class FakeSession final : public IDatabaseConnection, public ISessionHealth, public ISessionReset, public ITransactionSession, public IStatementDescription {
  public:
   explicit FakeSession(std::shared_ptr<Observed> observed) : observed_(std::move(observed)), connected_(observed_->initially_connected) {}
   ~FakeSession() override { ++observed_->destructions; }
@@ -147,7 +154,31 @@ class FakeSession final : public IDatabaseConnection, public ISessionHealth, pub
     if (observed_->reset_mode == 6) connected_ = false;
     return BackendResult<void>{SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}};
   }
+  ITransactionSession* transaction_session() noexcept override { return observed_->operation_facets ? this : nullptr; }
+  IStatementDescription* statement_description() noexcept override { return observed_->operation_facets ? this : nullptr; }
+  TransactionCapabilities transaction_capabilities() const override { return {}; }
+  BackendResult<void> transaction(TransactionAction action, rs::util::Deadline deadline) override {
+    if (observed_->on_transaction) observed_->on_transaction(action, deadline);
+    throw_facet();
+    return observed_->transaction_result.value_or(BackendResult<void>{{SessionState::Transaction, SessionDisposition::ResetRequired}});
+  }
+  BackendResult<void> set_transaction_isolation(TransactionIsolation level, rs::util::Deadline deadline) override {
+    if (observed_->on_isolation) observed_->on_isolation(level, deadline);
+    throw_facet();
+    return observed_->transaction_result.value_or(BackendResult<void>{{SessionState::Idle, SessionDisposition::Reusable}});
+  }
+  BackendResult<QueryResult> describe_statement(std::string_view sql,
+      std::span<const QueryParameterType> types, rs::util::Deadline deadline) override {
+    if (observed_->on_description) observed_->on_description(sql, types, deadline);
+    throw_facet();
+    return observed_->description_result.value_or(BackendResult<QueryResult>{QueryResult{}, {SessionState::Idle, SessionDisposition::Reusable}});
+  }
  private:
+  void throw_facet() {
+    if (observed_->facet_exception == 1) throw std::bad_alloc{};
+    if (observed_->facet_exception == 2) throw std::runtime_error("original facet fixture");
+    if (observed_->facet_exception == 3) throw 42;
+  }
   BackendResult<QueryResult> execute(std::string_view sql, std::span<const QueryParameter> params,
       rs::util::Deadline deadline, bool prepared) {
     ++observed_->queries;
@@ -1184,3 +1215,145 @@ TEST(ManagedSessionTest, CredentialLifetimeAndConnectionDeadlineCrossingPreventP
   }
 }
 } // namespace
+
+namespace {
+template<class Check>
+void check_facet_result(SessionLease& lease, int operation, rs::util::Deadline deadline, Check&& check) {
+  const std::array<QueryParameterType, 1> types{QueryParameterType::Text};
+  if (operation == 0) check(lease.transaction(TransactionAction::Begin, deadline));
+  else if (operation == 1) check(lease.set_transaction_isolation(TransactionIsolation::Serializable, deadline));
+  else check(lease.describe_statement("SELECT ?", types, deadline));
+}
+TEST(SessionLeaseFacetsTest, ForwardsInputsAndDeadlineExclusivelyAndInvalidatesCacheBeforeCalls) {
+  for (int operation = 0; operation != 3; ++operation) {
+    auto observed = std::make_shared<Observed>(); observed->operation_facets = true;
+    CredentialContext credentials; auto token = credentials.publish_authenticated();
+    SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+    auto lease = owner.try_acquire(token); ASSERT_TRUE(lease);
+    auto scope = lease->cache_token(); ASSERT_TRUE(scope);
+    const auto deadline = rs::util::make_deadline(std::chrono::seconds(2));
+    int calls = 0;
+    const auto during_call = [&](rs::util::Deadline actual) {
+      ++calls; EXPECT_EQ(deadline, actual); EXPECT_FALSE(scope->is_current());
+      EXPECT_FALSE(owner.try_acquire(token)); // Callback must run outside owner locks.
+    };
+    observed->on_transaction = [&](TransactionAction action, auto actual) {
+      EXPECT_EQ(TransactionAction::Begin, action); during_call(actual);
+    };
+    observed->on_isolation = [&](TransactionIsolation level, auto actual) {
+      EXPECT_EQ(TransactionIsolation::Serializable, level); during_call(actual);
+    };
+    observed->on_description = [&](auto sql, auto types, auto actual) {
+      EXPECT_EQ("SELECT ?", sql); ASSERT_EQ(1u, types.size());
+      EXPECT_EQ(QueryParameterType::Text, types[0]); during_call(actual);
+    };
+    check_facet_result(*lease, operation, deadline, [&](auto result) {
+      ASSERT_TRUE(result); EXPECT_NE(SessionDisposition::Retire, result.session_snapshot().disposition);
+    });
+    EXPECT_EQ(1, calls); EXPECT_TRUE(*lease); EXPECT_EQ(0, observed->disconnects);
+  }
+}
+TEST(SessionLeaseFacetsTest, MissingFacetsPreserveBorrowButInvalidateScopeAndEmptyLeaseReturnsNotConnected) {
+  for (int operation = 0; operation != 3; ++operation) {
+    auto observed = std::make_shared<Observed>();
+    CredentialContext credentials; auto token = credentials.publish_authenticated();
+    SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+    auto lease = owner.try_acquire(token); ASSERT_TRUE(lease);
+    auto scope = lease->cache_token(); ASSERT_TRUE(scope);
+    check_facet_result(*lease, operation, rs::util::Deadline::max(), [&](auto result) {
+      ASSERT_FALSE(result); EXPECT_EQ(BackendErrorClass::Unsupported, result.backend_error().error_class);
+      EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), result.session_snapshot());
+    });
+    EXPECT_TRUE(*lease); EXPECT_FALSE(scope->is_current()); EXPECT_EQ(0, observed->disconnects);
+    lease->retire();
+    check_facet_result(*lease, operation, rs::util::Deadline::max(), [&](auto result) {
+      ASSERT_FALSE(result); EXPECT_EQ(BackendErrorClass::NotConnected, result.backend_error().error_class);
+      EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), result.session_snapshot());
+      EXPECT_EQ(operation == 0 ? BackendOperation::Transaction : operation == 1 ?
+          BackendOperation::SetTransactionIsolation : BackendOperation::Describe, result.backend_error().operation);
+    });
+    retired_once(*observed);
+  }
+}
+TEST(SessionLeaseFacetsTest, OwningNativeErrorsPreserveSameBorrowOrRetireExactlyAsReported) {
+  for (int operation = 0; operation != 3; ++operation) {
+    for (auto disposition : {SessionDisposition::Reusable, SessionDisposition::ResetRequired, SessionDisposition::Retire}) {
+      auto observed = std::make_shared<Observed>(); observed->operation_facets = true;
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "owned facet error"};
+      error.native_state = "XX123"; error.native_code = 321; error.retry_safe = false;
+      error.operation = BackendOperation::CommitTransaction;
+      error.session_state = SessionState::FailedTransaction; error.disposition = disposition;
+      observed->transaction_result = error; observed->description_result = error;
+      auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+      check_facet_result(*lease, operation, rs::util::Deadline::max(), [&](auto result) {
+        ASSERT_FALSE(result);
+        EXPECT_EQ(disposition != SessionDisposition::Retire, bool(*lease));
+        EXPECT_EQ(disposition == SessionDisposition::Retire ? 1 : 0, observed->disconnects);
+        lease->retire(); observed->transaction_result.reset(); observed->description_result.reset();
+        EXPECT_EQ("owned facet error", result.backend_error().message);
+        EXPECT_EQ("XX123", result.backend_error().native_state); EXPECT_EQ(321, result.backend_error().native_code);
+        EXPECT_EQ(false, result.backend_error().retry_safe);
+        EXPECT_EQ(BackendOperation::CommitTransaction, result.backend_error().operation);
+        EXPECT_EQ(disposition, result.session_snapshot().disposition);
+      });
+      retired_once(*observed);
+    }
+  }
+}
+TEST(SessionLeaseFacetsTest, AmbiguousSuccessAndAllExceptionKindsRetireWithoutReplay) {
+  for (int operation = 0; operation != 3; ++operation) {
+    for (int exception = 0; exception != 4; ++exception) {
+      auto observed = std::make_shared<Observed>(); observed->operation_facets = true;
+      observed->facet_exception = exception;
+      observed->transaction_result = BackendResult<void>{};
+      observed->description_result = BackendResult<QueryResult>{QueryResult{}};
+      auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+      auto invoke = [&] { check_facet_result(*lease, operation, rs::util::Deadline::max(), [](auto result) {
+        EXPECT_TRUE(result); EXPECT_EQ(SessionDisposition::Retire, result.session_snapshot().disposition);
+      }); };
+      if (exception == 0) invoke();
+      else if (exception == 1) { EXPECT_THROW(invoke(), std::bad_alloc); }
+      else if (exception == 2) { EXPECT_THROW(invoke(), std::runtime_error); }
+      else { EXPECT_THROW(invoke(), int); }
+      EXPECT_FALSE(*lease); EXPECT_FALSE(owner.try_acquire()); retired_once(*observed);
+    }
+  }
+}
+}
+
+namespace {
+TEST(SessionLeaseFacetsTest, MissingFacetPassiveStateAndAccessorExceptionNeverGrantReturn) {
+  for (int operation = 0; operation != 3; ++operation) {
+    for (auto state : {SessionState::Idle, SessionState::Transaction, SessionState::FailedTransaction,
+                       SessionState::Unknown, SessionState::Disconnected}) {
+      auto observed = std::make_shared<Observed>();
+      auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+      observed->passive_state = state;
+      check_facet_result(*lease, operation, rs::util::Deadline::max(), [&](auto result) {
+        ASSERT_FALSE(result); EXPECT_EQ(state, result.session_snapshot().state);
+        EXPECT_EQ(state == SessionState::Disconnected ? SessionDisposition::Retire :
+            state == SessionState::Idle ? SessionDisposition::Reusable : SessionDisposition::ResetRequired,
+            result.session_snapshot().disposition);
+      });
+      EXPECT_EQ(state != SessionState::Disconnected, bool(*lease));
+      EXPECT_FALSE(owner.try_acquire()); // No implicit return, even for Idle/Reusable.
+      lease->retire(); retired_once(*observed);
+    }
+    auto observed = std::make_shared<Observed>();
+    auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+    observed->reset_mode = 8; // Passive-state accessor throws.
+    EXPECT_THROW(check_facet_result(*lease, operation, rs::util::Deadline::max(), [](auto) {}), std::runtime_error);
+    EXPECT_FALSE(*lease); retired_once(*observed);
+  }
+}
+TEST(SessionLeaseFacetsTest, DescriptionMetadataSurvivesAutomaticRetirement) {
+  auto observed = std::make_shared<Observed>(); observed->operation_facets = true;
+  QueryResult metadata; metadata.columns.push_back({"owned schema", std::nullopt});
+  observed->description_result = BackendResult<QueryResult>{metadata, {SessionState::Unknown, SessionDisposition::Retire}};
+  auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+  auto result = lease->describe_statement("SELECT 1", {}, rs::util::Deadline::max());
+  ASSERT_TRUE(result); EXPECT_FALSE(*lease); retired_once(*observed);
+  observed->description_result.reset(); metadata.columns.clear();
+  ASSERT_EQ(1u, result->columns.size()); EXPECT_EQ("owned schema", result->columns[0].name);
+}
+}

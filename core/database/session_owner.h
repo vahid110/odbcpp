@@ -52,6 +52,13 @@ class SessionLease final {
   BackendResult<QueryResult> execute_query(std::string_view sql, rs::util::Deadline deadline);
   BackendResult<QueryResult> execute_prepared(std::string_view sql,
       std::span<const QueryParameter> params, rs::util::Deadline deadline);
+  // Optional facets are invoked within this exclusive borrow, never returned.
+  // Every attempt invalidates cache scopes. Missing facets preserve passive
+  // state with an owning Unsupported error; Retire outcomes/exceptions are terminal.
+  BackendResult<void> transaction(TransactionAction, rs::util::Deadline);
+  BackendResult<void> set_transaction_isolation(TransactionIsolation, rs::util::Deadline);
+  BackendResult<QueryResult> describe_statement(std::string_view,
+      std::span<const QueryParameterType>, rs::util::Deadline);
   // No I/O cleanup/reset/reconnect is attempted. Returning or abandoning the
   // lease retires and destroys the physical session, even after reset success.
   void retire() noexcept;
