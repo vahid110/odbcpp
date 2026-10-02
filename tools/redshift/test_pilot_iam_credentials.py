@@ -88,6 +88,24 @@ class IAMContractTests(unittest.TestCase):
         response=dict(self.db);response['nextRefreshTime']='bad'
         with self.assertRaises(Blocked):iam.database_credentials(response,self.now,self.end)
 
+    def test_cli_offset_expiration_preserves_instant_and_validity_limits(self):
+        for offset in (timedelta(hours=2),timedelta(hours=-7),timedelta(hours=5,minutes=30)):
+            zone=timezone(offset)
+            expires=self.now+timedelta(seconds=900)
+            rendered=expires.astimezone(zone).isoformat()
+            self.assertEqual(iam.timestamp(rendered),expires)
+            response=copy.deepcopy(self.role);response['Credentials']['Expiration']=rendered
+            self.assertEqual(iam.role_credentials(response,self.now,self.end).expires,expires)
+            response=dict(self.db);response['expiration']=rendered
+            self.assertEqual(iam.database_credentials(response,self.now,self.end).expires,expires)
+            for instant in (self.now-timedelta(seconds=1),self.end+timedelta(seconds=59),
+                            self.now+timedelta(seconds=961)):
+                response['expiration']=instant.astimezone(zone).isoformat()
+                with self.assertRaisesRegex(Blocked,'iam_credential_validity_insufficient'):
+                    iam.database_credentials(response,self.now,self.end)
+        for invalid in ('2026-10-02T16:54:37.132000','2026-10-02T16:54:37+25:00'):
+            with self.assertRaisesRegex(Blocked,'iam_expiration_invalid'):iam.timestamp(invalid)
+
     def test_verified_endpoint_tls_and_credential_delimiters(self):
         response=dict(self.db);response['dbPassword']='synthetic;password}=!canary'
         c=iam.database_credentials(response,self.now,self.end)

@@ -486,3 +486,27 @@ pass, including both007 and008 composition, stale bindings, source mutation
 during controls, entry isolation, identity failure and cleanup failure before
 exchange. No canonical initialization or paid qualification occurred in this
 batch. Full required CI and root's separate fresh admission still precede007.
+
+
+## IAM window007 credential-format failure
+
+Continuation CI37071688856/5e2eaae passed all required gates. Root explicitly
+initialized v6 under the canonical lock, preserving exact v5 bytes, then admitted
+one fresh bounded IAM007 request. Its reservation and preactivation cleanup
+passed, but temporary-credential validation rejected the expiration format with
+`iam_expiration_invalid`. No driver cases ran. Independent final cleanup
+verified absence;007 remains consumed with retained liability and phase
+cleaned_pending_billing. Conservative bounds USD20.17 compute/USD70.17 total
+remain reservations, not bills or balance. Do not replay007 or automatically
+admit008. IAM SQL remains unqualified.
+
+The timestamp parser required a zero UTC offset, while the protected historical
+AWS CLI GetCredentials proof contains a valid aware ISO timestamp with +02:00.
+The offline repair normalizes any valid aware ISO timestamp to the same UTC
+instant. Naive and malformed timestamps remain rejected; the execution-plus60s
+cleanup margin and960s upper bound remain unchanged. Regression tests cover
+positive/negative/fractional-hour offsets for role and database expirations and
+expired, too-short and overlong values. All190 offline tests pass. A new required
+full green CI and separately reviewed finite008 request precede further paid
+qualification. The AWS field is a timestamp, not a timezone-free local time:
+[GetCredentials response](https://docs.aws.amazon.com/redshift-serverless/latest/APIReference/API_GetCredentials.html).

@@ -26,9 +26,11 @@ def timestamp(value):
     try:
         need(isinstance(value, str) and len(value) <= 64, 'iam_expiration_invalid')
         parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
-        need(parsed.tzinfo is not None and parsed.utcoffset() == timezone.utc.utcoffset(parsed),
+        need(parsed.tzinfo is not None and parsed.utcoffset() is not None,
              'iam_expiration_invalid')
-        return parsed
+        # AWS CLI may render timestamps in the local zone. Compare the same
+        # absolute instant in UTC; offset acceptance changes no expiry margin.
+        return parsed.astimezone(timezone.utc)
     except (ValueError, TypeError):
         raise Blocked('iam_expiration_invalid') from None
 
