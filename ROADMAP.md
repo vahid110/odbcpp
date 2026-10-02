@@ -1437,3 +1437,25 @@ Redshift build/absent-endpoint gates passed. Review found no blocking issue; dir
 authority construction/null failures are tested, while generation allocation
 failure is covered separately at the credential layer. Windows/packaging and
 cross-platform crypto checks await exact-head CI.
+
+## S2 authentication retention cleanup — 2026-10-02
+
+Connection completion and failure now cleanse the backend-owned password bytes
+and clear parser authentication state; disconnect applies the same idempotent
+cleanup. Returned authentication response buffers are cleansed after synchronous
+write or failure, and interrupted PostgreSQL SCRAM state releases its cleansed
+password and expected server signature. Caller-owned settings remain unchanged.
+Stateful authentication parsers must implement the private cleanup hook.
+
+This checkpoint is limited to current buffer sizes and persistent SCRAM state.
+It does not certify zeroization of spare capacity, allocator history, caller copies
+or parser-local MD5/SCRAM intermediate copies. No authentication policy, refresh,
+ODBC ownership, pool or public SDK qualification changes. S2/G12 remain open.
+Next: bounded transaction/metadata lease facades for ODBC ownership migration.
+
+Validation: focused connection, parser and SCRAM tests pass, covering success,
+server rejection, timeout, malformed auth, interrupted SCRAM, exception cleanup,
+idempotent disconnect and fresh SCRAM startup. Read-only review found no production
+blocker; the fixture now records only nonsecret observations. Complete local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and Redshift
+build/absent-endpoint gates passed. Windows/packaging and cross-platform crypto
+evidence await exact-head CI.
