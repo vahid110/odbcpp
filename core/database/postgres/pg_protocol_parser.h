@@ -25,6 +25,7 @@ public:
   std::vector<std::byte> create_ssl_request() override;
   
   // Authentication
+  void clear_authentication_state() noexcept override;
   AuthenticationRequest parse_auth_request(const std::vector<std::byte>& data) override;
   std::vector<std::byte> create_auth_response(
     const AuthenticationRequest& request,

@@ -105,6 +105,7 @@ ScramSha256Client::ScramSha256Client(
 ScramSha256Client::~ScramSha256Client() {
   rs::core::security::secure_cleanse({
       reinterpret_cast<unsigned char*>(password_.data()), password_.size()});
+  rs::core::security::secure_cleanse(expected_server_signature_);
 }
 
 std::string ScramSha256Client::client_first_message() const {

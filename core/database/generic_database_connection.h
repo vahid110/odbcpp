@@ -6,6 +6,7 @@
 #include <memory>
 
 namespace rs::core::database {
+namespace detail { struct ConnectionAuthenticationTestAccess; }
 
 class GenericDatabaseConnection : public IDatabaseConnection, public IStatementDescription {
 public:
@@ -54,6 +55,8 @@ protected:
       std::string_view expected_completion, rs::util::Deadline deadline);
 
 private:
+  friend struct detail::ConnectionAuthenticationTestAccess;
+  void clear_authentication_state() noexcept;
   BackendResult<QueryResult> reject_request_limit(BackendOperation operation) const;
   BackendResult<void> connect_impl(const ConnectionSettings& settings);
   SessionState session_state_{SessionState::Disconnected};

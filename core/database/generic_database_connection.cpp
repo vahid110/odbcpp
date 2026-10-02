@@ -1,3 +1,4 @@
+#include "core/security/crypto.h"
 #include "generic_database_connection.h"
 #include "result_validation.h"
 #include "core/transport/socket_transport.h"
@@ -88,6 +89,10 @@ BackendResult<ResolvedTypeMap> GenericDatabaseConnection::resolve_types(
 }
 
 BackendResult<void> GenericDatabaseConnection::connect(const ConnectionSettings& settings) {
+  struct AuthenticationCleanup {
+    GenericDatabaseConnection& connection;
+    ~AuthenticationCleanup() { connection.clear_authentication_state(); }
+  } cleanup{*this};
   BackendResult<void> result;
   try {
     result = connect_impl(settings);
@@ -150,6 +155,7 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
     return {rs::util::DbErrorCode::InvalidParameter, error.what()};
   }
 
+  clear_authentication_state();
   settings_ = settings;
   server_params_.clear();
   peer_identity_verified_ = false;
@@ -266,7 +272,15 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
   return BackendResult<void>{};
 }
 
+void GenericDatabaseConnection::clear_authentication_state() noexcept {
+  rs::core::security::secure_cleanse({
+      reinterpret_cast<unsigned char*>(settings_.password.data()), settings_.password.size()});
+  settings_.password.clear();
+  if (parser_) parser_->clear_authentication_state();
+}
+
 void GenericDatabaseConnection::disconnect() {
+  clear_authentication_state();
   if (transport_) {
     transport_->close();
   }
@@ -1004,6 +1018,12 @@ BackendResult<void> GenericDatabaseConnection::perform_authentication_result(rs:
         auto auth_response = parser_->create_auth_response(
             auth_req, settings_.password, settings_.user,
             peer_identity_verified_, settings_.input_limits.max_auth_wire_bytes);
+        struct ResponseCleanup {
+          std::vector<std::byte>& bytes;
+          ~ResponseCleanup() {
+            rs::core::security::secure_cleanse({reinterpret_cast<unsigned char*>(bytes.data()), bytes.size()});
+          }
+        } response_cleanup{auth_response};
         if (!auth_response.empty()) {
           auto write_result = write_all_result(auth_response, deadline);
           if (write_result.has_error()) {

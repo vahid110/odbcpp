@@ -1122,3 +1122,28 @@ TEST(PgProtocolParserTest, DiscardedProvenanceAndCompletionBytesStillRequireVali
   ASSERT_EQ(1u, recovered.columns.size()); EXPECT_EQ("name", recovered.columns[0].name);
   EXPECT_EQ(0u, recovered.affected_rows);
 }
+
+TEST(PgProtocolParserTest, AuthenticationCleanupDropsInterruptedScramAndAllowsFreshExchange) {
+  PgProtocolParser parser;
+  AuthenticationRequest offer;
+  offer.type = AuthenticationRequest::Type::SASL;
+  constexpr char mechanisms[] = "SCRAM-SHA-256\0";
+  for (const char ch : std::string_view(mechanisms, sizeof(mechanisms))) {
+    offer.challenge_data.push_back(static_cast<std::byte>(ch));
+  }
+  ASSERT_FALSE(parser.create_auth_response(offer, "secret", "user", true).empty());
+  const std::vector<std::byte> auth_ok(4, std::byte{0});
+  EXPECT_THROW(parser.parse_auth_request(auth_ok), std::runtime_error);
+  parser.clear_authentication_state();
+  parser.clear_authentication_state();
+  for (auto type : {AuthenticationRequest::Type::SASLContinue,
+                    AuthenticationRequest::Type::SASLFinal}) {
+    AuthenticationRequest stale;
+    stale.type = type;
+    EXPECT_THROW(parser.create_auth_response(stale, "secret", "user", true), std::runtime_error);
+  }
+  EXPECT_EQ(parser.parse_auth_request(auth_ok).type, AuthenticationRequest::Type::None);
+  ASSERT_FALSE(parser.create_auth_response(offer, "new-secret", "user", true).empty());
+  EXPECT_THROW(parser.parse_auth_request(auth_ok), std::runtime_error);
+  parser.clear_authentication_state();
+}

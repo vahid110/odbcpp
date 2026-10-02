@@ -61,6 +61,12 @@ public:
     const std::string& user,
     bool peer_identity_verified, std::size_t max_wire_bytes = 1024 * 1024) = 0;
   
+  // Private parser lifecycle hook. Drop transient authentication
+  // state on connection completion/failure/disconnect; no I/O or allocation.
+  // Parsers retaining authentication material must override this hook; the
+  // default is only suitable for parsers without authentication state.
+  virtual void clear_authentication_state() noexcept {}
+
   // Query execution
   virtual std::size_t count_parameter_markers(std::string_view sql) const = 0;
   // Pure translation: no network I/O or mutation of connection state.

@@ -19,6 +19,11 @@
 #include <utility>
 #include <vector>
 
+namespace rs::core::database::detail {
+struct ConnectionAuthenticationTestAccess {
+  static const std::string& password(const GenericDatabaseConnection& connection) { return connection.settings_.password; }
+};
+}
 namespace {
 
 class FailingQueryTransport final : public rs::core::transport::ITransport {
@@ -3919,5 +3924,72 @@ TEST(SessionResetTest, ExactNativeCleanupTagsAreRequiredBeforeNormalization) {
       EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), result.session_snapshot());
       EXPECT_FALSE(session.is_connected());
     }
+  }
+}
+
+TEST(ConnectionAuthenticationRetentionTest, SuccessFailureAndDisconnectDropOnlyBackendPasswordCopy) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (auto mode : {Mode::ValidStartup, Mode::AuthRejected, Mode::AuthenticationTimeout, Mode::MalformedAuth, Mode::ScramOkWithoutServerFinal}) {
+    for (std::size_t size : {std::size_t{8}, std::size_t{128}}) {
+      auto parser = std::make_unique<postgres::PgProtocolParser>();
+      auto* observer = parser.get();
+      GenericDatabaseConnection connection(std::move(parser), std::make_unique<ScriptedBackendTransport>(mode));
+      ConnectionSettings settings; settings.use_ssl = false; settings.password = std::string(size, 's');
+      const auto expected_password = settings.password;
+      auto result = connection.connect(settings);
+      EXPECT_EQ(mode == Mode::ValidStartup, bool(result));
+      EXPECT_TRUE(detail::ConnectionAuthenticationTestAccess::password(connection).empty());
+      EXPECT_EQ(expected_password, settings.password);
+      EXPECT_EQ(observer->parse_auth_request(std::vector<std::byte>(4, std::byte{0})).type,
+                AuthenticationRequest::Type::None);
+      connection.disconnect(); EXPECT_TRUE(detail::ConnectionAuthenticationTestAccess::password(connection).empty());
+    }
+  }
+}
+
+namespace {
+class AuthenticationCleanupParser : public rs::core::database::postgres::PgProtocolParser {
+public:
+  unsigned cleanup_count{0};
+  std::size_t observed_password_size{0};
+  bool observed_expected_password{false};
+  bool allocation_failure{false};
+  void clear_authentication_state() noexcept override {
+    ++cleanup_count;
+    PgProtocolParser::clear_authentication_state();
+  }
+  std::vector<std::byte> create_auth_response(
+      const rs::core::database::AuthenticationRequest&, const std::string& password,
+      const std::string&, bool, std::size_t) override {
+    // Fixture observes delivery to the parser, then fails without emitting credentials.
+    observed_password_size = password.size();
+    observed_expected_password = password == std::string(128, 's');
+    if (allocation_failure) throw std::bad_alloc();
+    throw std::runtime_error("synthetic authentication failure");
+  }
+};
+}
+
+TEST(ConnectionAuthenticationRetentionTest, ParserExceptionsClearCopiedPasswordAndAuthenticationState) {
+  using namespace rs::core::database;
+  for (bool allocation_failure : {false, true}) {
+    auto parser = std::make_unique<AuthenticationCleanupParser>();
+    auto* observer = parser.get();
+    observer->allocation_failure = allocation_failure;
+    GenericDatabaseConnection connection(std::move(parser), std::make_unique<ScriptedBackendTransport>(
+        ScriptedBackendTransport::ResponseMode::Md5Authentication));
+    ConnectionSettings settings;
+    settings.use_ssl = false;
+    settings.password = std::string(128, 's');
+    const auto result = connection.connect(settings);
+    EXPECT_FALSE(result);
+    EXPECT_EQ(observer->observed_password_size, settings.password.size());
+    EXPECT_TRUE(observer->observed_expected_password);
+    EXPECT_TRUE(detail::ConnectionAuthenticationTestAccess::password(connection).empty());
+    EXPECT_GE(observer->cleanup_count, 2u);
+    const auto before_disconnect = observer->cleanup_count;
+    connection.disconnect();
+    EXPECT_GT(observer->cleanup_count, before_disconnect);
   }
 }

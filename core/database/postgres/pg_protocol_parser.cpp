@@ -282,13 +282,17 @@ ParameterMarkerRewrite replace_parameter_markers(std::string_view sql) {
 
 namespace rs::core::database::postgres {
 
+void PgProtocolParser::clear_authentication_state() noexcept {
+  scram_client_.reset();
+  scram_server_verified_ = false;
+}
+
 std::vector<std::byte> PgProtocolParser::create_startup_message(
     const std::string& user, 
     const std::string& database,
     const std::map<std::string, std::string>& params, std::size_t max_wire_bytes) {
-  scram_client_.reset();
-  scram_server_verified_ = false;
-  
+  clear_authentication_state();
+
   std::size_t bytes = 9;
   const auto add = [&](std::size_t size) {
     if (bytes > max_wire_bytes || size > max_wire_bytes - bytes) throw RequestWireLimitExceeded{};
