@@ -47,8 +47,10 @@ time, pins identity and a finite scalar/catalog/baseline inventory, obtains fres
 AWS controls plus official pricing and the test machine IPv4 address, reserves
 before any cleanup SQL, and verifies independent final cleanup. It performs no
 fixture DDL or automatic retry. Native logs/XML stay private; reports expose only
-case counts and fixed reasons. The combined package CI and paid qualification
-remain pending; canonical protected state stays v3 until those checks complete.
+case counts and fixed reasons. CI37032653550 for fbbefbb passed all required gates. Canonical state is now
+v4, and window001 passed identity plus all four scalar cases with independent
+cleanup. Actual spending and remaining allowance remain unknown; successful
+cleanup retains reservations.
 
 The bootstrap accounting horizon remains 24 hours from original resource
 creation. Continuing beyond it requires a separate reviewed cumulative
@@ -61,6 +63,26 @@ CI run 37024167587 for 47b2c13 is green across required platform gates. Prioriti
 bounded Redshift baseline/catalog work. MySQL remains deferred. The user asked
 for no questions during the coming week; record work needing further authority
 and continue useful work within the approved scope instead of prompting them.
+
+## First catalog diagnostic — 2026-10-02
+
+A separately reviewed window002 ran the rebuilt fixed metadata case once,
+following successful Redshift identity and fresh controls/reservation. SQLTables
+passed; SQLColumns failed with SQLSTATE `42000`, a native syntax error near the
+PostgreSQL-only `domain_chain` subquery. Raw diagnostic/XML stays private. Final
+remote cleanup passed and the window remains consumed with all liability retained.
+This is useful failure evidence, not a qualified catalog baseline or an automatic
+paid retry. The next package needs an explicit immutable catalog profile selected
+by product composition, a separate Redshift builder, and PostgreSQL regression
+protection; shared ODBC/SDK orchestration must not infer the backend from names,
+ports or versions. PostgreSQL domain-resolution SQL remains unchanged.
+
+AWS documents the fields available in
+[SVV_COLUMNS](https://docs.aws.amazon.com/redshift/latest/dg/r_SVV_COLUMNS.html),
+and recommends SHOW COLUMNS for discovery across local, datashare and external
+contexts. A bounded local-fixture repair may use an explicit view-backed profile;
+SHOW adaptation, datashare/external behavior and full feature/behavior parity
+remain separate planned work and must not be claimed from two fixture columns.
 
 ## Environment preparation status — 2026-10-02
 

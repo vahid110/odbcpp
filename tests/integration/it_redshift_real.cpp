@@ -80,6 +80,21 @@ protected:
     return "diagnostic unavailable";
   }
 
+  // Used only for the fixed pilot metadata query. The bounded pilot runner
+  // keeps assertion/XML output private and exports case counts, never this text.
+  std::string metadata_diagnostic() {
+    SQLCHAR state[6]{};
+    SQLCHAR message[1024]{};
+    SQLINTEGER native = 0;
+    SQLSMALLINT length = 0;
+    const auto result = SQLGetDiagRec(SQL_HANDLE_STMT, hstmt_, 1, state,
+                                     &native, message, sizeof(message), &length);
+    if (result != SQL_SUCCESS && result != SQL_SUCCESS_WITH_INFO)
+      return "metadata diagnostic unavailable";
+    return std::string(reinterpret_cast<char*>(state)) + ": " +
+           std::string(reinterpret_cast<char*>(message));
+  }
+
   bool connected_ = false;
 
   SQLHENV henv_ = nullptr;
@@ -230,7 +245,7 @@ TEST_F(RedshiftRealTest, ConfiguredFixtureMetadata) {
                        reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema)),
                        SQL_NTS,
                        reinterpret_cast<SQLCHAR*>(const_cast<char*>(table)),
-                       SQL_NTS, nullptr, 0));
+                       SQL_NTS, nullptr, 0)) << metadata_diagnostic();
   for (const auto* expected_column : {"id", "value"}) {
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_))
         << "Configured Redshift fixture exposed incomplete column metadata";
