@@ -3,13 +3,36 @@
 #include <cstdlib>
 #include <iostream>
 
+namespace {
+struct EnvironmentValue {
+  const char* value{};
+#ifdef _WIN32
+  char* owned{};
+  std::size_t size{};
+  explicit EnvironmentValue(const char* name) {
+    if (_dupenv_s(&owned,&size,name)==0) value=owned;
+  }
+  ~EnvironmentValue() {
+    if (owned) {
+      rs::core::security::secure_cleanse({reinterpret_cast<unsigned char*>(owned),size});
+      std::free(owned);
+    }
+  }
+#else
+  explicit EnvironmentValue(const char* name) : value(std::getenv(name)) {}
+#endif
+  EnvironmentValue(const EnvironmentValue&)=delete;
+  EnvironmentValue& operator=(const EnvironmentValue&)=delete;
+};
+}
+
 int main(int argc, char** argv) {
   using namespace rs::core::database::mysql;
   using rs::util::DbErrorCode;
   if (argc != 5) return 2; // host, port, CA, expected result
-  const char* username=std::getenv("ODBCPP_MYSQL_TEST_USER");
-  const char* password=std::getenv("ODBCPP_MYSQL_TEST_PASSWORD");
-  if (!username || !password) return 2;
+  const EnvironmentValue username{"ODBCPP_MYSQL_TEST_USER"};
+  const EnvironmentValue password{"ODBCPP_MYSQL_TEST_PASSWORD"};
+  if (!username.value || !password.value) return 2;
   try {
     const auto port=std::stoul(argv[2]);
     if (port==0 || port>65535) return 2;
@@ -17,7 +40,7 @@ int main(int argc, char** argv) {
     transport.set_ca_locations(argv[3],"");
     const std::string_view expected=argv[4];
     auto result=authenticate_verified_tls(transport,argv[1],static_cast<std::uint16_t>(port),
-        username,password,rs::util::make_deadline(std::chrono::seconds(15)));
+        username.value,password.value,rs::util::make_deadline(std::chrono::seconds(15)));
     if (expected=="reject-auth" || expected=="reject-tls") {
       if (result) { transport.close(); return 1; }
       const auto error=expected=="reject-auth"?DbErrorCode::AuthenticationFailed:DbErrorCode::TLSError;

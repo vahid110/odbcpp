@@ -756,3 +756,12 @@ Complete local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan, Redshift unit/build
 and missing-endpoint contract gates passed for this authentication batch.
 The pinned live-container cases and Windows/package gates still require the
 exact-head hosted run before acceptance.
+
+The initial hosted Linux run retained five passing MySQL 8.4.11 cases: cold full
+authentication, cached authentication, wrong password, wrong CA and wrong host.
+Windows rejected `getenv` in the private probe under the existing MSVC warning
+policy. The probe now uses `_dupenv_s` on Windows with scoped cleansing/freeing
+of its owned environment buffers; other platforms keep borrowed environment
+values. Compiler policy and driver behavior are unchanged. Focused tests and
+all local protected gates passed again; the repaired exact-head hosted run is
+still required for batch acceptance.
