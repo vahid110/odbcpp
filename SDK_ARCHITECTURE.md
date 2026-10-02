@@ -1143,3 +1143,36 @@ evidence covers checked same-session reissue and rejection after server terminat
 ODBC connection-dead semantics, Driver Manager pooling and public SDK qualification
 remain unchanged. Product credential binding/defaults/capacity and cache payload
 policies remain open before S2/G12 can close.
+
+## S2 managed authenticated binding coordinator — 2026-10-02
+
+Private `SessionOwner::connect_authenticated` uniquely takes one fresh disconnected
+provider-created session, borrows resolved settings for one `connect` call and
+requires exact Idle/Reusable with passive connected/Idle state. Finite lifetime,
+positive idle limit, optional credential expiry and connection timeout are checked
+before I/O and after connection/publication/owner construction. No owner is exposed
+on failure, malformed success, exception or crossed bound. Cleanup retires the
+physical session and normalized owned errors report Connect, Disconnected/Retire,
+without retry authority or arbitrary exception text.
+
+Only after successful physical authentication does the coordinator create and
+publish its own credential authority for that one immutable physical/security
+context. It retains the exact bound token privately, including after revocation or
+expiry, so managed `acquire_healthy(deadline)` can still detect stale binding and
+retire idle state. No token is exported; no refresh, reauthentication, reconnect or
+new-generation rebinding is available. Owner moves carry authority and session
+together. Closing/revoking managed credentials closes admission and invalidates
+scopes; idle state retires immediately, active borrowers continue until retirement
+and cannot return for reuse. External-authority constructors remain unchanged.
+
+The coordinator retains no additional connection settings or secrets. This is not
+an end-to-end secret-erasure claim: the PostgreSQL-family backend currently copies
+settings including password during authentication; post-authentication scrubbing
+is a separate open hardening requirement. A private authority-construction seam
+covers allocation/null failure without exposing a configurable production factory.
+
+This is production-capable internal composition, validated through the real backend,
+not ODBC adoption or public SDK qualification. The ODBC adapter still owns raw
+transaction/description/catalog facets; its migration requires bounded lease
+facades and lifetime rules before replacing its session owner. Product defaults,
+pool capacity, cache payload/refresh policy and S2/G12 remain open.

@@ -945,3 +945,14 @@ same-session reissue and rejection after server-side termination. No health clai
 is implied by primitive no-I/O checkout. S2/G12 still require production credential
 binding, bounded composition/product policy and actual cache policy; pool/ODBC
 reuse, real application gates and crypto qualification remain independently open.
+
+## S2 managed authentication coordinator checkpoint — 2026-10-02
+
+Private managed connection binds an owned credential authority only after fresh
+physical authentication succeeds with exact validated Idle/Reusable state. Owned
+exact tokens permit fail-closed expiry/revocation without token export or rebind.
+PG live evidence covers successful managed reuse, active revoke survival/retirement
+and failed authentication. ODBC still uses its existing session owner/facets;
+required lease facades, backend password scrubbing, product defaults/capacity and
+cache policy remain open before S2/G12 closure. No pool/public SDK/provider crypto
+qualification follows from this helper.

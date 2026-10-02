@@ -268,7 +268,7 @@ review before considering any MySQL beta plan.
   have bounded evidence accepted in [S2C_MATRIX_REVIEW.md](S2C_MATRIX_REVIEW.md).
   S2 now includes owning errors/session disposition, private dependency gates,
   optional active health and the narrow PostgreSQL reset primitive. Continue
-  production credential binding/composition next, with actual cache/provider qualification still open; crypto qualification
+  secret scrubbing/lease facade migration next, with actual cache/provider qualification still open; crypto qualification
   follow-ups remain open and do not disappear from G12.
 - When Redshift access returns, finish the current coherent MS1 batch, preserve
   its evidence, and run M2 before expanding MySQL scope. Re-estimate whether to
@@ -384,3 +384,15 @@ No-I/O checkout remains an explicit internal primitive, not health qualification
 Next: production credential-provider binding and bounded composition/defaults,
 then actual cache payload/refresh policy. Pool capacity, ODBC reuse and public SDK
 qualification remain open; S2/G12 are not closed.
+
+## S2 managed physical authentication binding — 2026-10-02
+
+Added an internal connection coordinator owning its credential authority and exact
+bound token. It authenticates one fresh provider-created session, validates outcome
+and bounds, then publishes. Managed checked checkout needs no external token;
+revocation retires idle state and prevents reuse while active borrowers survive.
+Unit/fault and PG live evidence cover connection failure, same-PID reuse and revoke.
+This is not ODBC adoption or a public SDK feature. Next: backend post-authentication
+secret scrubbing and required bounded lease facets before ODBC ownership migration.
+Product defaults/capacity and actual cache payload/refresh policy remain open; S2/G12
+are not closed.

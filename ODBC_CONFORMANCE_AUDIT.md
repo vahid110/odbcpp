@@ -2826,3 +2826,19 @@ ThreadSanitizer tests passed. Complete local PostgreSQL, iODBC UTF-16/UCS-4,
 ASan/UBSan and Redshift build/absent-endpoint gates passed. Review found one
 asynchronous-termination test race, repaired with bounded PID-exit polling before
 probe rejection. Windows/packaging and cross-platform crypto checks await exact-head CI.
+
+## Managed authenticated composition checkpoint — 2026-10-02
+
+Internal managed connection authenticates a fresh provider-created physical session
+before owning/publishing credential authority. Exact private tokens allow stale
+binding retirement after expiry/revoke; active borrowers survive but cannot reuse.
+PG live covers managed same-session reissue, revoke and failed authentication.
+ODBC ownership remains unchanged pending bounded transaction/metadata lease facades;
+backend password scrubbing and product/cache policy remain open. S2/G12 stay open.
+
+Validation: focused unit/live checks and all 70 credential/ownership ThreadSanitizer
+tests passed. Complete local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and
+Redshift build/absent-endpoint gates passed. Review found no blocking issue; direct
+authority construction/null failures are tested, while generation allocation
+failure is covered separately at the credential layer. Windows/packaging and
+cross-platform crypto checks await exact-head CI.

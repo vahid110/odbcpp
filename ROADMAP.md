@@ -1417,3 +1417,23 @@ ThreadSanitizer tests passed. Complete local PostgreSQL, iODBC UTF-16/UCS-4,
 ASan/UBSan and Redshift build/absent-endpoint gates passed. Review found one
 asynchronous-termination test race, repaired with bounded PID-exit polling before
 probe rejection. Windows/packaging and cross-platform crypto checks await exact-head CI.
+
+## S2 managed authenticated connection composition — 2026-10-02
+
+Added a private coordinator that connects a fresh provider-created session once,
+validates exact outcome/bounds and publishes its own credential authority only
+after authentication. Managed checked checkout retains the exact token internally;
+revoke/close retire idle state while active borrowers survive and cannot reissue.
+Tests cover failure/exception/native diagnostics, expiry, authority allocation/null,
+moves and lifecycle. PG live verifies managed auth/reuse/revoke and rejected role.
+
+Next: backend post-authentication secret scrubbing and bounded lease facades required
+for ODBC ownership migration. No ODBC migration, refresh/rebind, pool or public SDK
+qualification is claimed. S2/G12, product policy and real cache payload remain open.
+
+Validation: focused unit/live checks and all 70 credential/ownership ThreadSanitizer
+tests passed. Complete local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and
+Redshift build/absent-endpoint gates passed. Review found no blocking issue; direct
+authority construction/null failures are tested, while generation allocation
+failure is covered separately at the credential layer. Windows/packaging and
+cross-platform crypto checks await exact-head CI.

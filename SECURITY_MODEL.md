@@ -555,3 +555,18 @@ contained and no retry authority survives. No reset, reconnect, credential refre
 or query replay is attempted. Production callers must not treat no-I/O checkout
 as proof of health. This remains private composition evidence, not pool/ODBC or
 public SDK qualification, and health success is no future-liveness guarantee.
+
+## Managed authenticated binding checkpoint — 2026-10-02
+
+The internal coordinator publishes an owned credential authority only after a fresh
+provider session completes exact authenticated Idle/Reusable connection with
+consistent passive state. Expired policy/credentials/connection budget, malformed
+responses, exceptions and authority failure never expose an owner. It retains the
+exact bound token without export, enabling idle retirement even after revocation.
+No refresh/rebind/reconnect is supplied. Close/revoke preserves active borrowers
+while closing admission and invalidating scopes; failed return remains terminal.
+
+Only the coordinator avoids retaining additional settings/secrets. The existing
+backend settings copy still includes a password; post-authentication scrubbing
+remains open and must be proven before a broader secret-retention claim. ODBC
+ownership/facet migration, product policy and cache qualification remain open.
