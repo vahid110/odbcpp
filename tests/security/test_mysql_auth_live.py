@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -87,7 +88,14 @@ def main():
             ):
                 env = os.environ.copy()
                 env.update(ODBCPP_MYSQL_TEST_USER='sdk', ODBCPP_MYSQL_TEST_PASSWORD=password)
-                result = run([str(Path(args.probe).resolve()), host, port, str(certs / trust), case], env=env)
+                try:
+                    result = run([str(Path(args.probe).resolve()), host, port, str(certs / trust), case], env=env)
+                except subprocess.CalledProcessError as failure:
+                    # Only fixed check IDs and numeric codes; never dump native stderr.
+                    for line in (failure.stderr or '').splitlines():
+                        if re.fullmatch(r'FAIL session-(?:check|query)-[0-9]+(?: code [0-9]+)?', line):
+                            print(line, flush=True)
+                    raise RuntimeError('MySQL probe rejected fixture') from None
                 if result.stdout.strip() != 'PASS ' + case:
                     raise RuntimeError('Unexpected MySQL probe result')
                 results.append({'case': case, 'host': host, 'trust': trust, 'passed': True})

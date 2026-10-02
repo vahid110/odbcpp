@@ -826,3 +826,10 @@ Protocol references (design evidence, not live acceptance):
 [column definitions](https://dev.mysql.com/doc/dev/mysql-server/8.4.11/page_protocol_com_query_response_text_resultset_column_definition.html),
 [OK](https://dev.mysql.com/doc/dev/mysql-server/8.4.11/page_protocol_basic_ok_packet.html)
 and [EOF](https://dev.mysql.com/doc/dev/mysql-server/8.4.11/page_protocol_basic_eof_packet.html).
+
+The first hosted session fixture failed. Its SELECT used unquoted `empty`, a
+reserved MySQL 8.4 keyword; the fixture now uses `empty_value`, preserving all
+NULL/empty/binary assertions. Fixed probe check/query IDs and numeric error codes
+are allowlisted by the Python harness so another failure is actionable without
+echoing SQL, credentials, values or native diagnostics. The repaired hosted live
+run remains required before this session slice is accepted.
