@@ -1749,3 +1749,14 @@ the actual transport, retain identical negotiated flags in the credential packet
 and validate the full authentication state machine before publishing a session.
 Pinned MySQL 8.4.11 live integration remains required before S3 handshake acceptance.
 S2C/G12 qualification, PostgreSQL/Redshift behavior and public scope are unchanged.
+
+## Redshift account-preparation handoff — 2026-10-02
+
+The user reports account access restored; no Redshift infrastructure exists yet.
+[REDSHIFT_LIVE_TEST_PLAN.md](REDSHIFT_LIVE_TEST_PLAN.md) now governs the one
+USD 15 initial testing allowance shared across all chats, protected configuration,
+provisioning/driver ownership, canonical local ledger, required shared runner
+and teardown. Verified infrastructure/cost controls and runner readiness replace
+account access as the M2 activation dependency. No paid test execution or
+provisioning occurred here; the runner is not implemented/qualified. The bounded
+MySQL SDK proof continues until that activation gate is ready.

@@ -765,3 +765,14 @@ of its owned environment buffers; other platforms keep borrowed environment
 values. Compiler policy and driver behavior are unchanged. Focused tests and
 all local protected gates passed again; the repaired exact-head hosted run is
 still required for batch acceptance.
+
+## Redshift account-preparation handoff — 2026-10-02
+
+The user reports account access restored; no Redshift infrastructure exists yet.
+[REDSHIFT_LIVE_TEST_PLAN.md](REDSHIFT_LIVE_TEST_PLAN.md) now governs the one
+USD 15 initial testing allowance shared across all chats, protected configuration,
+provisioning/driver ownership, canonical local ledger, required shared runner
+and teardown. Verified infrastructure/cost controls and runner readiness replace
+account access as the M2 activation dependency. No paid test execution or
+provisioning occurred here; the runner is not implemented/qualified. The bounded
+MySQL SDK proof continues until that activation gate is ready.

@@ -135,3 +135,14 @@ default conflicts and close/refill/cancel semantics are explicit live-dependent
 decision items. No runtime change, feature exception, fetch profile or parity
 acceptance is approved. The research package stops here until the named M2
 profile/test decision or restored access; active MySQL scope is unchanged.
+
+## Redshift account-preparation handoff — 2026-10-02
+
+The user reports account access restored; no Redshift infrastructure exists yet.
+[REDSHIFT_LIVE_TEST_PLAN.md](REDSHIFT_LIVE_TEST_PLAN.md) now governs the one
+USD 15 initial testing allowance shared across all chats, protected configuration,
+provisioning/driver ownership, canonical local ledger, required shared runner
+and teardown. Verified infrastructure/cost controls and runner readiness replace
+account access as the M2 activation dependency. No paid test execution or
+provisioning occurred here; the runner is not implemented/qualified. The bounded
+MySQL SDK proof continues until that activation gate is ready.
