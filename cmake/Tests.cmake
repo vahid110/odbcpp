@@ -85,6 +85,13 @@ if(ODBCPP_CRYPTO_TLS_PROOF)
   endif()
 endif()
 
+# Private live MySQL connection proof; invoked explicitly by the pinned fixture.
+add_executable(mysql_auth_probe tests/security/mysql_auth_probe.cpp)
+target_link_libraries(mysql_auth_probe PRIVATE ${PROJECT_NAME}::core)
+apply_compiler_settings(mysql_auth_probe)
+set_target_properties(mysql_auth_probe PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+
 # ---- Unit Tests ----
 file(GLOB UNIT_TEST_SOURCES "tests/unit/*.cpp")
 foreach(test_file ${UNIT_TEST_SOURCES})
@@ -92,7 +99,7 @@ foreach(test_file ${UNIT_TEST_SOURCES})
   add_test_executable(${test_name} ${test_file})
   set_tests_properties(${test_name} PROPERTIES LABELS "unit")
 endforeach()
-set_tests_properties(test_mysql_handshake_wire test_mysql_connection_security test_mysql_tls_negotiation
+set_tests_properties(test_mysql_handshake_wire test_mysql_connection_security test_mysql_tls_negotiation test_mysql_authentication
   PROPERTIES LABELS "unit;security" TIMEOUT 30)
 
 if((CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin") AND
