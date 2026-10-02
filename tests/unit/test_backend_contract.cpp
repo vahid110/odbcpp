@@ -26,6 +26,7 @@ static_assert(!ExposesRawPhysicalSession<rs::odbc::ODBCConnection>);
 struct Observations {
   int created{}, transports{}, disconnects{}, destructions{}, queries{}, descriptions{}, translations{};
   int terminal_execution{}, connect_exception{};
+  SQLULEN description_size{8};
   bool observation_exception{};
   ConnectionSettings settings;
   std::string sql;
@@ -250,7 +251,7 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
     seen_->sql = sql;
     QueryResult result = rows(); result.rows.clear();
     result.normalized_parameter_types.assign(types.size(),
-        NativeTypeInfo{ScalarType::Binary, 8, 0, true});
+        NativeTypeInfo{ScalarType::Binary, seen_->description_size, 0, true});
     switch (seen_->invalid_description_shape) {
       case 1: result.error.emplace(rs::util::make_error_code(DbErrorCode::QueryFailed), "invalid description"); break;
       case 2: result.additional_results.emplace_back(); break;
@@ -1146,6 +1147,50 @@ TEST_F(BackendContractTest, ParameterDescriptionsUseNormalizedMetadataWithoutNat
   ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
   EXPECT_EQ(SQL_VARBINARY, type); EXPECT_EQ(8u, size);
   EXPECT_EQ(1, seen->descriptions);
+}
+
+TEST_F(BackendContractTest, PreparedMetadataCacheIsSessionBoundAcrossReconnectAndFailedOpen) {
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLSMALLINT type{}, digits{}, nullable{}; SQLULEN size{};
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+  EXPECT_EQ(8u, size); EXPECT_EQ(1, seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+  EXPECT_EQ(1, seen->descriptions); // Same-session reuse remains local and I/O-free.
+  SQLHSTMT other{}; ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &other));
+  ASSERT_EQ(SQL_ERROR, SQLExecDirect(other, (SQLCHAR*)"timeout", SQL_NTS)); // Internal close retains children.
+  seen->connect_exception = 2;
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnect(dbc, nullptr, (SQLCHAR*)"SERVER=fake;SSL=0", SQL_NTS,
+      nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  type = 77; size = 80;
+  EXPECT_EQ(SQL_ERROR, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+  EXPECT_EQ(77, type); EXPECT_EQ(80u, size); EXPECT_EQ(1, seen->descriptions);
+  seen->connect_exception = 0; seen->description_size = 32;
+  ASSERT_EQ(SQL_SUCCESS, SQLDriverConnect(dbc, nullptr, (SQLCHAR*)"SERVER=fake;SSL=0", SQL_NTS,
+      nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+  EXPECT_EQ(32u, size); EXPECT_EQ(2, seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+  EXPECT_EQ(2, seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, other));
+}
+
+TEST_F(BackendContractTest, TerminalRetirementRejectsCachedPreparedMetadataButKeepsExecutedMetadata) {
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLSMALLINT type{}, digits{}, nullable{}; SQLULEN size{};
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+  SQLHSTMT other{}; ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &other));
+  seen->terminal_execution = 1;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(other, (SQLCHAR*)"rows", SQL_NTS));
+  type = 77; size = 80;
+  EXPECT_EQ(SQL_ERROR, SQLDescribeParam(stmt, 1, &type, &size, &digits, &nullable));
+  EXPECT_EQ("08S01", state()); EXPECT_EQ(77, type); EXPECT_EQ(80u, size);
+  EXPECT_EQ(1, seen->descriptions);
+  SQLSMALLINT columns{};
+  ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(other, &columns)); EXPECT_EQ(3, columns);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(other));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, other));
 }
 
 TEST_F(BackendContractTest, InvalidParameterDescriptionsPreserveOutputAndRecover) {

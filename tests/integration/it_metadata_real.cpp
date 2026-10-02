@@ -4491,3 +4491,27 @@ TEST_F(MetadataIntegrationTest, CompletionKindsDriveEachBatchResultDiagnostic) {
     expect_kind(SQL_DIAG_SELECT_CURSOR, "SELECT CURSOR");
     EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(hstmt));
 }
+
+TEST_F(MetadataIntegrationTest, PreparedMetadataRefreshesAfterTimeoutReconnect) {
+    SQLHSTMT other{};
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &other));
+    struct Cleanup { SQLHSTMT value; ~Cleanup() { SQLFreeHandle(SQL_HANDLE_STMT, value); } } cleanup{other};
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(other,
+        (SQLCHAR*)"CREATE TEMP TABLE metadata_session_scope (value integer)", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT * FROM metadata_session_scope", SQL_NTS));
+    SQLSMALLINT columns{};
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(1, columns);
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(1, columns);
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(other, SQL_ATTR_QUERY_TIMEOUT, (SQLPOINTER)1, 0));
+    ASSERT_EQ(SQL_ERROR, SQLExecDirect(other, (SQLCHAR*)"SELECT pg_sleep(2)", SQL_NTS));
+    EXPECT_EQ("HYT00", diagnostic_state(SQL_HANDLE_STMT, other));
+    // Internal timeout close preserves child handles, unlike public SQLDisconnect.
+    ASSERT_EQ(SQL_SUCCESS, SQLConnect(hdbc,
+        odbcpp::test::configured_connection_string_data(), SQL_NTS, nullptr, 0, nullptr, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(other, SQL_ATTR_QUERY_TIMEOUT, nullptr, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(other,
+        (SQLCHAR*)"CREATE TEMP TABLE metadata_session_scope (value text, extra boolean)", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(2, columns);
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt, &columns)); EXPECT_EQ(2, columns);
+}

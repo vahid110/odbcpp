@@ -28,6 +28,7 @@
 #include <stdexcept>
 
 namespace rs::odbc {
+namespace detail { struct MetadataSessionIdentity {}; }
 using rs::core::database::SqlTranslationError;
 namespace {
 
@@ -1432,7 +1433,7 @@ SQLRETURN ODBCConnection::connect(
         if (completed) return;
         if (physical) { try { physical->disconnect(); } catch (...) {} }
         connection.backend_lease_.reset(); connection.backend_owner_.reset();
-        connection.backend_observation_ = {};
+        connection.backend_observation_ = {}; connection.metadata_session_.reset();
         connection.connected_ = false; connection.transaction_active_ = false;
       }
     } attempt{*this, backend_provider_->create_session(std::move(transport))};
@@ -1503,6 +1504,7 @@ SQLRETURN ODBCConnection::connect(
     }
     
     if (!*backend_lease_) throw std::runtime_error("Backend retired during connection setup");
+    metadata_session_ = std::make_shared<const detail::MetadataSessionIdentity>();
     input_limits_ = settings.input_limits;
     connected_ = true;
     transaction_active_ = false;
@@ -1889,6 +1891,7 @@ bool ODBCConnection::backend_connected() {
 
 void ODBCConnection::close_connection() {
   backend_lease_.reset(); backend_owner_.reset(); backend_observation_ = {};
+  metadata_session_.reset();
   connected_ = false; transaction_active_ = false;
   log(rs::core::logging::LogLevel::Info, "connection_closed",
       "Database connection closed");
@@ -4617,6 +4620,7 @@ void ODBCStatement::clear_current_result() {
   executed_ = false;
   prepared_metadata_available_ = false;
   prepared_metadata_ipd_revision_ = 0;
+  prepared_metadata_session_.reset();
 }
 
 // Column binding implementation
@@ -4670,7 +4674,8 @@ SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target
 // Metadata functions implementation
 SQLRETURN ODBCStatement::describe_prepared_metadata() {
   const auto implementation_descriptor = descriptor(imp_param_descriptor_);
-  if (prepared_metadata_available_ &&
+  if (prepared_metadata_available_ && conn_->backend_lease_ && *conn_->backend_lease_ &&
+      conn_->metadata_session_ && prepared_metadata_session_.lock() == conn_->metadata_session_ &&
       prepared_metadata_ipd_revision_ ==
           implementation_descriptor->revision()) {
     return SQL_SUCCESS;
@@ -4720,6 +4725,7 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
 
   apply_result_metadata(*result, true);
   prepared_metadata_available_ = true;
+  prepared_metadata_session_ = conn_->metadata_session_;
   prepared_metadata_ipd_revision_ = implementation_descriptor->revision();
   return SQL_SUCCESS;
 }
