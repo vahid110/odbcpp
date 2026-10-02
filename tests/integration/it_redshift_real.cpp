@@ -41,12 +41,18 @@ protected:
   }
   
   void TearDown() override {
-    if (hstmt_) EXPECT_EQ(SQLFreeHandle(SQL_HANDLE_STMT, hstmt_), SQL_SUCCESS);
+    if (hstmt_) {
+      EXPECT_EQ(SQLFreeHandle(SQL_HANDLE_STMT, hstmt_), SQL_SUCCESS);
+    }
     if (hdbc_) {
-      if (connected_) EXPECT_EQ(SQLDisconnect(hdbc_), SQL_SUCCESS);
+      if (connected_) {
+        EXPECT_EQ(SQLDisconnect(hdbc_), SQL_SUCCESS);
+      }
       EXPECT_EQ(SQLFreeHandle(SQL_HANDLE_DBC, hdbc_), SQL_SUCCESS);
     }
-    if (henv_) EXPECT_EQ(SQLFreeHandle(SQL_HANDLE_ENV, henv_), SQL_SUCCESS);
+    if (henv_) {
+      EXPECT_EQ(SQLFreeHandle(SQL_HANDLE_ENV, henv_), SQL_SUCCESS);
+    }
   }
   
   bool connect() {
