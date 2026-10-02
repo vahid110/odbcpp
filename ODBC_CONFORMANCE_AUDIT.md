@@ -2917,3 +2917,35 @@ presence, not universal request support. All 81 credential/ownership ThreadSanit
 tests passed. Complete local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and
 Redshift build/absent-endpoint gates passed. Windows/packaging and crypto evidence
 await exact-head CI.
+
+## S2 ODBC operation containment before ownership adoption — 2026-10-02
+
+ODBCConnection no longer exposes get_db_connection or a replacement physical/facet
+pointer. Statement direct/prepared execution, description and catalog construction
+use private typed connection methods returning owning values/errors. SQLGetFunctions
+uses a boolean catalog-facet presence query. Missing description remains rejected
+before parameter-vector construction; existing diagnostic and execution timing are
+preserved. Live health/reset tests retain their original ODBC configuration/transport
+fixtures through a test-only view that owns the handle and returns values/errors,
+never a physical session/facet pointer. An exact-name compile
+regression guard rejects restoration of get_db_connection; it is not a general
+scan for every possible renamed pointer escape. The test view is move-only,
+requires serialized use before handle unregistration and has friendship only
+with ODBCConnection.
+
+This checkpoint deliberately retains the existing private unique physical owner.
+The next ownership swap will adopt once into an unbound SessionOwner and retain
+one terminal lease for the ODBC connection lifetime, without cache scopes,
+return/reissue, probes at connect, or invented lifetime/idle product defaults.
+Exact credential binding is mandatory before future reuse/pooling. ODBC-facing
+mock successes must first gain truthful explicit snapshots; default Unknown/Retire
+must remain terminal at the lease boundary. Active-health test routing also needs
+a bounded lease operation or independent backend fixtures, never a raw ODBC escape.
+
+No pooling, SDK/public qualification, MySQL expansion or Redshift live change is
+claimed. S2/G12 and lifecycle adoption remain open. Focused backend-contract,
+live handle-lifecycle and reset checks passed; read-only review found no blocker
+after preserving the original configured-transport fixtures. Complete local
+PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and Redshift build/absent-endpoint
+gates passed. Final focused PostgreSQL checks passed after narrowing test authority.
+Windows/packaging and crypto evidence await exact-head CI.
