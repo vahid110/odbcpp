@@ -39,6 +39,53 @@ recorded delta assessment rather than expanding an active batch automatically.
 | RS6 / 6: SHOW metadata alternatives | P0 capability/permission assessment; P1 selected metadata APIs; P2 broader RP1 coverage | Design SHOW-based discovery alongside applicable SVV/catalog queries. Select by demonstrated server capabilities and permissions with explicit fallback rules. Normalize outputs into the same ODBC metadata contract. Verify current/all-database scope, shared objects, identifiers/escaping, patterns, ordering, metadata-ID behavior, privileges and ordinary-user access across both paths. Do not turn permission, transport or malformed-result failures into silent catalog fallback or fabricated empty success. |
 | RS7 / 7: backward-compatible APIs | P0 mapping audit; P1 required legacy callers; P2 remaining RP1 coverage | Map replaced ODBC 2.x calls/options to ODBC 3.x/3.8 behavior and determine which mappings are supplied by each Driver Manager versus require driver exports. Cover handle allocation/free, transaction calls, option/attribute mappings, binding, extended fetch, column attributes and diagnostic APIs as applicable. Exercise negotiated ODBC versions and ANSI/wide/32-/64-bit rules through Windows DM, unixODBC and both iODBC widths. Preserve version-specific semantics without duplicating shared workflows. This is not a blanket full-ODBC-3.8 claim. |
 | RS8 / 8: transparent S3 bulk transfer | P3 discussion after M2/RP1 baseline, or earlier only on explicit reprioritization | Explore COPY for S3-to-Redshift bulk loading and UNLOAD for Redshift-to-S3 export, with optional staged result delivery through ordinary ODBC fetch APIs. Distinguish database import/export from querying S3-backed external data. Discuss explicit modes and any automatic selection before coding; no invisible query/write rerouting is approved. Define eligibility, transaction/atomicity limits, row counts/diagnostics, format/type fidelity, IAM/KMS and bucket policy, staging cleanup, cancellation, retry/idempotency and cost boundaries. If ordinary API semantics cannot be preserved, expose a documented explicit opt-in or reject that path. |
+| RS9 / live CI and platform coverage | P0 coverage design; P2 medium-term delivery, with mandatory CI gates before claiming the corresponding platform/profile | Migrate Redshift live GoogleTest integration to CI across supported Linux, Windows and macOS targets, Driver Managers, Unicode widths, process architectures and qualified crypto/linkage profiles. Include the full supported Redshift feature/behavior and negative/recovery matrix, with dedicated fixtures for authentication, sharing, external data and S3 where applicable. Track provisioned/Serverless applicability, reference-driver differential tests and packaging/application acceptance separately. Local paid testing is a temporary qualification stage, not the final CI architecture. See the coverage and migration contract below. |
+
+## Medium-term Redshift CI coverage commitment
+
+User confirmed that the current local live runner is acceptable temporarily and
+requested full Redshift CI coverage, including multiple operating systems, in
+the medium term. This is an explicit planned deliverable, not a promise that the
+current small fixture or a build-only green run provides that coverage.
+
+- Run live GoogleTest integration on Linux/unixODBC, Windows Driver Manager,
+  and macOS/iODBC with the supported UTF-16/UCS-4 configurations. Pin OS,
+  architecture, Driver Manager, driver/server versions and connection profile;
+  qualify supported x64/ARM64 targets and crypto/linkage combinations according
+  to their declared support matrix. A passing PostgreSQL run cannot qualify
+  the corresponding Redshift combination.
+- Maintain a feature-to-test matrix for RS1–RS8 and the shared ODBC contract,
+  covering successful, boundary, denied-access, malformed/error and interruption
+  paths. Add isolated fixtures for data sharing, supported authentication methods,
+  external catalogs and approved S3 transfer designs as those features enter
+  scope. Exercise applicable provisioned and Serverless configurations; record
+  inapplicability explicitly instead of silently skipping a required feature.
+- Preserve the single shared spending authority, cumulative accounting, exclusive
+  execution, protected scoped AWS credentials, restricted networking, bounded
+  client/server execution and independently verified cleanup across local and
+  CI callers. Select hosted versus dedicated runners during implementation;
+  runner-local locks alone cannot coordinate multiple CI machines. CI migration
+  does not authorize new warehouses, spending or IAM expansion now.
+- Publish sanitized GoogleTest results tied to the exact source/artifact/profile
+  and fixture versions. Required live jobs must fail or report a blocked
+  qualification when admission, environment or cleanup fails; skipped/absent
+  live evidence must not produce a Redshift-qualified green result. Keep fast
+  offline checks separate from paid live gates, choosing PR, scheduled and
+  release frequency deliberately after cost and reliability measurements.
+- Add the official-driver differential suites and the planned real-application
+  acceptance tracks to the release evidence. Headless integration alone does
+  not substitute for Windows Power BI/linked-server or macOS Excel workflows;
+  dedicated application automation or recorded acceptance remains necessary
+  until each workflow is reliably automated.
+
+Deliver in bounded stages: qualify shared remote admission/cleanup first,
+move the current baseline to one CI platform, expand the supported OS/profile
+matrix, then add the broader feature fixtures and application gates. Estimate
+and prioritize each stage with RP1 after the current bounded IAM/catalog work.
+Close RS9 only when every supported platform/feature row has passing evidence
+or an explicitly documented, user-approved scope exception. Advanced RS8 scope
+still needs its design discussion; this coverage commitment does not approve
+transparent S3 behavior before that decision.
 
 ## Reference baseline and known discrepancy
 

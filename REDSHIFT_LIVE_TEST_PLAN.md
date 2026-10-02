@@ -510,3 +510,17 @@ expired, too-short and overlong values. All190 offline tests pass. A new require
 full green CI and separately reviewed finite008 request precede further paid
 qualification. The AWS field is a timestamp, not a timezone-free local time:
 [GetCredentials response](https://docs.aws.amazon.com/redshift-serverless/latest/APIReference/API_GetCredentials.html).
+
+
+## Local runner is a temporary stage; full CI coverage is planned
+
+The user explicitly confirmed medium-term migration to full Redshift live CI
+coverage across supported Linux, Windows and macOS profiles. Track this as RS9
+in [REDSHIFT_FEATURE_PLAN.md](REDSHIFT_FEATURE_PLAN.md), including the complete
+supported feature/behavior matrix and additional fixtures as features are added.
+The present local GoogleTest runner remains the temporary approach; current CI
+build/offline results and local live results stay distinct until live CI admission
+and execution are qualified. Migration must retain shared cumulative cost controls,
+coordination across machines, scoped credential/network access, hard execution
+bounds, independently verified cleanup and sanitized per-platform test evidence.
+No immediate change to the active IAM/catalog path or AWS authorization is made.
