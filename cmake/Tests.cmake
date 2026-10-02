@@ -11,6 +11,8 @@ set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 # ---- Test Discovery and Setup ----
+# MySQL connection-phase codec tests are backend-private and intentionally run
+# in the protected PostgreSQL/Redshift builds before MySQL product composition.
 function(add_test_executable test_name test_file)
   add_executable(${test_name} ${test_file})
   target_link_libraries(${test_name} PRIVATE 
@@ -90,6 +92,7 @@ foreach(test_file ${UNIT_TEST_SOURCES})
   add_test_executable(${test_name} ${test_file})
   set_tests_properties(${test_name} PROPERTIES LABELS "unit")
 endforeach()
+set_tests_properties(test_mysql_handshake_wire PROPERTIES LABELS "unit;security" TIMEOUT 30)
 
 if((CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin") AND
    ODBCPP_CRYPTO_LINKAGE STREQUAL "SYSTEM_SHARED")
