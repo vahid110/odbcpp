@@ -416,3 +416,16 @@ Failure or interruption retains the additional liability and blocks admission.
 Do not rewrite006 to imply its original cleanup succeeded. Recovery neither
 qualifies IAM SQL nor authorizes window007. Later-day admissions still require
 independent cumulative billing/usage reconciliation.
+
+
+The next offline accounting candidate, `tools/redshift/pilot_recovery.py`, uses
+one explicit v5 overlay in the same canonical setup file. Reservation snapshots
+the exact original v4 and006 result UTF-8 bytes (including line endings), with
+SHA-256 digests, then appends one cleanup-only record targeting uncertain006.
+The original result file remains unchanged. Start requires a durable reservation;
+completion requires fresh explicit absence evidence within its60s deadline.
+Unknown billing stays null, successful cleanup retains all additional headroom,
+and interruption or failure prevents replay. Old v4 qualification launchers
+reject v5 even after recovery success. Independent offline review accepted this
+accounting package. It supplies no launcher, controls verification, SQL admission
+or permission to run007; those remain a separate finite review package.
