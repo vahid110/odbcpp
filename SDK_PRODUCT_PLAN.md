@@ -1,8 +1,9 @@
 # Connectivity SDK product plan
 
 Decision date: 2026-09-30.
-Status: S1 architecture and security contracts accepted; S2 implementation is
-in progress.
+Status: S1 accepted; bounded S2 noncrypto migration implementation-complete,
+with acceptance conditional on the protected gates for the
+[S2 stopping review](S2_MIGRATION_REVIEW.md). S2C/G12 and S3/S4 remain open.
 
 Future Redshift parity requirements are tracked in
 [REDSHIFT_FEATURE_PLAN.md](REDSHIFT_FEATURE_PLAN.md). They preserve independent
@@ -262,14 +263,12 @@ review before considering any MySQL beta plan.
   the user has deferred those host-dependent runs while other work proceeds.
 - The Redshift pilot implementation and non-live CI gate are ready. Live M2 is
   waiting on restored AWS/Redshift access and cannot be simulated by PostgreSQL.
-- MS1 is the active bounded engineering milestone during that wait. S1 is
-  complete; S2 began with verified authentication/CA policy and trusted
-  configuration discovery. Provider/composition and private crypto extraction
-  have bounded evidence accepted in [S2C_MATRIX_REVIEW.md](S2C_MATRIX_REVIEW.md).
-  S2 now includes owning errors/session disposition, private dependency gates,
-  optional active health and the narrow PostgreSQL reset primitive. Continue
-  secret scrubbing/lease facade migration next, with actual cache/provider qualification still open; crypto qualification
-  follow-ups remain open and do not disappear from G12.
+- MS1 remains active. S1 is complete. The bounded noncrypto S2 migration is
+  implementation-complete, conditionally accepted only when the protected gates
+  for [its stopping review](S2_MIGRATION_REVIEW.md) pass. Next is S3 preparation
+  and the smallest MySQL TLS/auth handshake batch. Cache/reuse comparison and
+  security evidence remain in G12; S4 author usability and S2C provider
+  qualification remain separate and are not waived.
 - When Redshift access returns, finish the current coherent MS1 batch, preserve
   its evidence, and run M2 before expanding MySQL scope. Re-estimate whether to
   finish the remaining MS1 packages or proceed directly to Redshift M3 based on

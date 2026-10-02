@@ -3081,3 +3081,16 @@ and crypto profile gates await CI.
 This adds backend evidence only; it does not establish new ODBC function/attribute,
 application, pooling, provider, complete malformed-result, or S4 kit compliance.
 S2/G12 and existing release/application blockers remain open.
+
+## S2 neutral endpoint and stopping review — 2026-10-02
+
+SDK `ConnectionSettings::port` now defaults to unresolved 0. PostgreSQL-family
+provider resolution and direct connect reject 0 before transport I/O; defaults
+remain provider-owned. Direct wire fixtures supply their port explicitly.
+Isolated, provider and no-I/O/recovery tests protect the boundary and unchanged
+product defaults. No speculative Redshift default or protocol change is made.
+
+The [S2 stopping review](S2_MIGRATION_REVIEW.md) records bounded noncrypto migration
+evidence and explicit S3/S4, security and S2C/G12 handoffs. Acceptance requires
+all protected gates on this review's commit. PG-BETA/G8, Redshift live access,
+S2C T13/T14, public SDK/FIPS/ADBC and pooling claims remain unchanged.

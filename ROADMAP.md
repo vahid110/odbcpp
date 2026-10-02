@@ -30,7 +30,7 @@ decision. This does not close PG-BETA or waive its evidence. Work must
 close a release gate, fix a material defect, or establish a reusable boundary
 needed by these products. Extra test permutations alone do not justify a batch.
 
-## Current position
+## Historical replanning baseline
 
 The PostgreSQL foundation works and has substantial hardening evidence. At the
 baseline, 76 exported symbols cover 49 operations: 11 are fully verified under
@@ -45,6 +45,10 @@ constructs PostgreSQL components and contains PostgreSQL catalog/type logic.
 
 See [the assessment and release gates](RELEASE_PLAN.md) for evidence, scope,
 acceptance criteria, investigation budgets, and deferred work.
+
+Current migration status is recorded in [S2_MIGRATION_REVIEW.md](S2_MIGRATION_REVIEW.md).
+The above describes the historical assessment, not today's dependency or CI state.
+Windows live/package gates and provider-based ODBC construction are now present.
 
 ## Milestones and working estimates
 
@@ -109,12 +113,11 @@ required. No extra application scope is charged to contingency.
 
 1. **S1 contract freeze — complete:** four read-only audits produced
    `SDK_ARCHITECTURE.md` and `SECURITY_MODEL.md`; no behavior changed.
-2. **S2 contract implementation and shared proof harness — in progress:** the
-   verified authentication/CA and trusted configuration prerequisites are
-   complete; proceed with only the accepted extractions;
-   keep PostgreSQL, iODBC, Windows and sanitizer gates green.
-3. **S3 MySQL vertical slice:** implement and live-test the bounded MySQL 8
-   workflow through shared ODBC orchestration.
+2. **S2 noncrypto migration — implementation-complete:** acceptance requires
+   the protected gates in [S2_MIGRATION_REVIEW.md](S2_MIGRATION_REVIEW.md).
+   S2C/G12 qualification and security obligations remain open.
+3. **S3 MySQL vertical slice — next:** prepare the pinned TLS/auth handshake,
+   then implement and live-test the bounded workflow through shared ODBC.
 4. **S4 SDK usability proof:** publish the backend test kit, extension guide and
    minimal out-of-tree sample; stop and review G12.
 5. **M2 Redshift pilot:** run as soon as valid endpoint access is available.
@@ -1673,3 +1676,16 @@ The final-source PostgreSQL recheck passed. Exact-head hosted Windows/packaging
 and crypto profile gates await CI.
 The wider S2 stopping review and S4 author-kit/extension exercise remain required;
 MySQL S3 has not started and Redshift live work still waits for restored access.
+
+## S2 neutral endpoint and stopping review — 2026-10-02
+
+SDK `ConnectionSettings::port` now defaults to unresolved 0. PostgreSQL-family
+provider resolution and direct connect reject 0 before transport I/O; defaults
+remain provider-owned. Direct wire fixtures supply their port explicitly.
+Isolated, provider and no-I/O/recovery tests protect the boundary and unchanged
+product defaults. No speculative Redshift default or protocol change is made.
+
+The [S2 stopping review](S2_MIGRATION_REVIEW.md) records bounded noncrypto migration
+evidence and explicit S3/S4, security and S2C/G12 handoffs. Acceptance requires
+all protected gates on this review's commit. PG-BETA/G8, Redshift live access,
+S2C T13/T14, public SDK/FIPS/ADBC and pooling claims remain unchanged.
