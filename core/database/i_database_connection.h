@@ -59,7 +59,8 @@ struct ConnectionSettings {
   std::string user;
   std::string password;
   std::string database;
-  uint16_t port = 5432;
+  // Resolved by the selected provider; zero is an unresolved endpoint.
+  uint16_t port = 0;
   std::chrono::milliseconds timeout{15000};
   bool use_ssl = true;
   std::string ssl_ca_file;

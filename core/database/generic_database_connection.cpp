@@ -115,6 +115,9 @@ BackendResult<void> GenericDatabaseConnection::connect(const ConnectionSettings&
 }
 
 BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSettings& settings) {
+  if (settings.port == 0) {
+    return {rs::util::DbErrorCode::InvalidParameter, "Database connection port is unresolved"};
+  }
   if (!valid_resource_limits(settings)) {
     return {rs::util::DbErrorCode::InvalidParameter, "Resource limits are outside supported bounds"};
   }

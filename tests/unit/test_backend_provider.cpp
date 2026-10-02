@@ -53,6 +53,7 @@ TEST(BackendProviderTest, StaticProfileMatchesNewSessionWithoutConnecting) {
 }
 
 TEST(BackendProviderTest, PostgreSqlFamilyProfilesStayIndependent) {
+  EXPECT_EQ(0, ConnectionSettings{}.port);
   postgres::PgBackendProvider postgresql{
       BackendIdentity{"postgresql", "PostgreSQL", "ODBCPP PostgreSQL"},
       BackendConnectionDefaults{"pg-host", 5432, "postgres", true}};
@@ -66,6 +67,11 @@ TEST(BackendProviderTest, PostgreSqlFamilyProfilesStayIndependent) {
   EXPECT_EQ(5439, redshift.connection_defaults().port);
   EXPECT_FALSE(postgresql.create_session(nullptr)->is_connected());
   EXPECT_FALSE(redshift.create_session(nullptr)->is_connected());
+  auto pg_settings = postgresql.resolve_connection_options({});
+  auto rs_settings = redshift.resolve_connection_options({});
+  ASSERT_TRUE(pg_settings); ASSERT_TRUE(rs_settings);
+  EXPECT_EQ(5432, pg_settings->port);
+  EXPECT_EQ(5439, rs_settings->port);
 }
 
 TEST(BackendProviderTest, ResolvesDefaultsOverridesAndTlsPolicy) {
@@ -98,6 +104,13 @@ TEST(BackendProviderTest, ResolvesDefaultsOverridesAndTlsPolicy) {
   EXPECT_EQ("secret", selected->password);
   EXPECT_EQ("/ca.pem", selected->ssl_ca_file);
   EXPECT_EQ(std::chrono::milliseconds{321}, selected->timeout);
+  ConnectionOptions unresolved;
+  unresolved.port = 0;
+  EXPECT_TRUE(provider.resolve_connection_options(unresolved).has_error());
+  unresolved.port = 65535;
+  auto maximum_port = provider.resolve_connection_options(unresolved);
+  ASSERT_TRUE(maximum_port);
+  EXPECT_EQ(65535, maximum_port->port);
 
   ConnectionOptions ambiguous;
   ambiguous.ssl_ca_file = "/ca.pem";

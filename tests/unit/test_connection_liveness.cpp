@@ -25,6 +25,12 @@ struct ConnectionAuthenticationTestAccess {
 };
 }
 namespace {
+// Wire fixtures supply PostgreSQL endpoint policy explicitly, outside SDK defaults.
+rs::core::database::ConnectionSettings pg_fixture_settings() {
+  rs::core::database::ConnectionSettings settings;
+  settings.port = 5432;
+  return settings;
+}
 
 class FailingQueryTransport final : public rs::core::transport::ITransport {
  public:
@@ -709,7 +715,7 @@ TEST(DatabaseFactoryTest, SelectedBackendUsesConfiguredTransportForStartupAndQue
         ? DatabaseFactory::create_connection(
               DatabaseFactory::get_compiled_database_type(), std::move(transport))
         : DatabaseFactory::create_connection(std::move(transport));
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     EXPECT_TRUE(connection->server_version().empty());
     ASSERT_TRUE(connection->connect(settings).has_value());
@@ -741,7 +747,7 @@ TEST(DatabaseFactoryTest, SelectedBackendPreservesAuthenticationFailureCleanup) 
     auto* observed = transport.get();
     auto connection = rs::core::database::DatabaseFactory::create_connection(
         std::move(transport));
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     const auto result = connection->connect(settings);
     ASSERT_TRUE(result.has_error());
@@ -758,7 +764,7 @@ TEST(DatabaseFactoryTest,
   auto* observed = transport.get();
   auto connection = rs::core::database::DatabaseFactory::create_connection(
       std::move(transport));
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.user = "alice";
   settings.password = "top-secret";
   settings.use_ssl = false;
@@ -780,7 +786,7 @@ TEST(DatabaseFactoryTest, SelectedBackendDoesNotDowngradeRefusedTls) {
   auto* observed = transport.get();
   auto connection = rs::core::database::DatabaseFactory::create_connection(
       std::move(transport));
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = true;
   const auto result = connection->connect(settings);
   ASSERT_TRUE(result.has_error());
@@ -795,7 +801,7 @@ TEST(DatabaseFactoryTest, SelectedBackendAppliesCustomCaBeforeTlsNegotiation) {
   auto* observed = transport.get();
   auto connection = rs::core::database::DatabaseFactory::create_connection(
       std::move(transport));
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = true;
   settings.ssl_ca_file = "/test/private-ca.pem";
 
@@ -813,7 +819,7 @@ TEST(DatabaseFactoryTest, SelectedBackendRejectsAmbiguousOrPlaintextCaPolicy) {
     auto* observed = transport.get();
     auto connection = rs::core::database::DatabaseFactory::create_connection(
         std::move(transport));
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = !plaintext;
     settings.ssl_ca_file = "/test/private-ca.pem";
     settings.ssl_ca_dir = plaintext ? std::string{} : "/test/certs";
@@ -891,7 +897,7 @@ TEST(ConnectionLivenessTest, FailedAuthenticationClosesTransport) {
     rs::core::database::GenericDatabaseConnection connection(
         std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
         std::move(transport));
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
 
     const auto result = connection.connect(settings);
@@ -911,7 +917,7 @@ TEST(ConnectionLivenessTest, MalformedCredentialsFailBeforeConnectingAndAllowRet
     rs::core::database::GenericDatabaseConnection connection(
         std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
         std::move(transport));
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     settings.user = "alice";
     settings.database = "postgres";
@@ -954,7 +960,7 @@ TEST(ConnectionLivenessTest, FailedStartupWriteClosesTransport) {
   rs::core::database::GenericDatabaseConnection connection(
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
       std::move(transport));
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
 
   const auto result = connection.connect(settings);
@@ -971,7 +977,7 @@ TEST(ConnectionLivenessTest, RefusedTlsClosesTransport) {
   rs::core::database::GenericDatabaseConnection connection(
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
       std::move(transport));
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = true;
 
   const auto result = connection.connect(settings);
@@ -989,7 +995,7 @@ TEST(ConnectionLivenessTest, OverreportedSslRequestWriteIsProtocolError) {
   rs::core::database::GenericDatabaseConnection connection(
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
       std::move(transport));
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = true;
 
   const auto result = connection.connect(settings);
@@ -1015,7 +1021,7 @@ TEST(ConnectionLivenessTest, InvalidSslNegotiationReadsKeepTheirErrorClass) {
     rs::core::database::GenericDatabaseConnection connection(
         std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
         std::move(transport));
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = true;
 
     const auto result = connection.connect(settings);
@@ -1043,7 +1049,7 @@ TEST(ConnectionLivenessTest, ConnectErrorClassesSurvivePlainAndTlsPaths) {
       rs::core::database::GenericDatabaseConnection connection(
           std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
           std::move(transport));
-      rs::core::database::ConnectionSettings settings;
+      auto settings = pg_fixture_settings();
       settings.use_ssl = use_ssl;
 
       const auto result = connection.connect(settings);
@@ -1063,7 +1069,7 @@ TEST(ConnectionLivenessTest, FailedServerTripMarksConnectionDead) {
       std::make_unique<odbcpp::test::MockProtocolParser>(),
       std::move(transport));
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   ASSERT_TRUE(connection.connect(settings).has_value());
   ASSERT_TRUE(connection.is_connected());
@@ -1083,7 +1089,7 @@ TEST(ConnectionLivenessTest, RetainsPostgresqlStartupParameters) {
           rs::core::database::postgres::PgProtocolParser>(),
       std::make_unique<ScriptedBackendTransport>());
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   ASSERT_TRUE(connection.connect(settings).has_value());
   EXPECT_EQ("17.6", connection.get_parameter("server_version"));
@@ -1097,7 +1103,7 @@ TEST(ConnectionLivenessTest, QueryParameterStatusUpdatesNegotiatedValue) {
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::QueryParameterStatus));
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   ASSERT_TRUE(connection.connect(settings).has_value());
   EXPECT_EQ("odbcpp", connection.get_parameter("application_name"));
@@ -1115,7 +1121,7 @@ TEST(ConnectionLivenessTest, MalformedQueryParameterStatusClosesConnection) {
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::MalformedQueryParameterStatus));
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   ASSERT_TRUE(connection.connect(settings).has_value());
   const auto result = connection.execute_query(
@@ -1133,7 +1139,7 @@ TEST(ConnectionLivenessTest, InvalidSqlDoesNotEscapeOrDisconnect) {
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
       std::make_unique<ScriptedBackendTransport>());
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   ASSERT_TRUE(connection.connect(settings).has_value());
   const std::string sql("SELECT 1\0;SELECT 2",
@@ -1154,7 +1160,7 @@ TEST(ConnectionLivenessTest, RejectsMalformedStartupParameters) {
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::MalformedStartup));
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   const auto result = connection.connect(settings);
   ASSERT_TRUE(result.has_error());
@@ -1169,7 +1175,7 @@ TEST(ConnectionLivenessTest, MalformedAuthIsNotReportedAsBadCredentials) {
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::MalformedAuth));
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   const auto result = connection.connect(settings);
   ASSERT_TRUE(result.has_error());
@@ -1184,7 +1190,7 @@ TEST(ConnectionLivenessTest, OversizedControlFrameClosesConnection) {
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::OversizedStartupReady));
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   const auto result = connection.connect(settings);
   ASSERT_TRUE(result.has_error());
@@ -1200,7 +1206,7 @@ TEST(ConnectionLivenessTest, LargeDataRowLengthsDoNotPreallocatePayload) {
     rs::core::database::GenericDatabaseConnection connection(
         std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
         std::make_unique<ScriptedBackendTransport>(mode));
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     // Exercise incremental body reads independently of the smaller startup
     // policy ceiling; the default ceiling is tested separately below.
@@ -1222,7 +1228,7 @@ TEST(ConnectionLivenessTest, ServerAuthRejectionRemainsCredentialFailure) {
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::AuthRejected));
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   const auto result = connection.connect(settings);
   ASSERT_TRUE(result.has_error());
@@ -1239,7 +1245,7 @@ TEST(ConnectionLivenessTest, ReadyWithoutAuthenticationOkIsProtocolError) {
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::ReadyWithoutAuth));
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   const auto result = connection.connect(settings);
   ASSERT_TRUE(result.has_error());
@@ -1254,7 +1260,7 @@ TEST(ConnectionLivenessTest, ScramOkWithoutServerFinalIsProtocolError) {
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::ScramOkWithoutServerFinal));
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   settings.user = "postgres";
   settings.password = "postgres";
@@ -1273,7 +1279,7 @@ TEST(ConnectionLivenessTest, ScramCannotDowngradeToCleartext) {
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
       std::move(transport));
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   settings.user = "postgres";
   settings.password = "postgres";
@@ -1293,7 +1299,7 @@ TEST(ConnectionLivenessTest, ZeroProgressFrameReadsFailPromptly) {
     rs::core::database::GenericDatabaseConnection connection(
         std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
         std::make_unique<ScriptedBackendTransport>(mode));
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     const auto result = connection.connect(settings);
     ASSERT_TRUE(result.has_error());
@@ -1313,7 +1319,7 @@ TEST(ConnectionLivenessTest, OverreportedTransportCountsAreProtocolErrors) {
     rs::core::database::GenericDatabaseConnection connection(
         std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
         std::make_unique<ScriptedBackendTransport>(mode));
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     const auto result = connection.connect(settings);
     ASSERT_TRUE(result.has_error());
@@ -1339,7 +1345,7 @@ TEST(ConnectionLivenessTest, OutOfPhaseStartupMessagesAreProtocolErrors) {
         std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
         std::make_unique<ScriptedBackendTransport>(mode));
 
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     const auto result = connection.connect(settings);
     ASSERT_TRUE(result.has_error());
@@ -1355,7 +1361,7 @@ TEST(ConnectionLivenessTest, NoticeAfterAuthenticationOkAllowsStartup) {
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::NoticeAfterAuthenticationOk));
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   ASSERT_TRUE(connection.connect(settings).has_value());
   EXPECT_TRUE(connection.is_connected());
@@ -1372,7 +1378,7 @@ TEST(ConnectionLivenessTest, MalformedNoticeCannotCompleteStartup) {
         std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
         std::make_unique<ScriptedBackendTransport>(mode));
 
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     const auto result = connection.connect(settings);
     ASSERT_TRUE(result.has_error());
@@ -1388,7 +1394,7 @@ TEST(ConnectionLivenessTest, ErrorAfterAuthenticationIsStartupFailure) {
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::StartupRejectedAfterAuth));
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   const auto result = connection.connect(settings);
   ASSERT_TRUE(result.has_error());
@@ -1405,7 +1411,7 @@ TEST(ConnectionLivenessTest, AuthenticationSqlstateAfterOkIsCredentialFailure) {
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::LoginRejectedAfterAuth));
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   const auto result = connection.connect(settings);
   ASSERT_TRUE(result.has_error());
@@ -1422,7 +1428,7 @@ TEST(ConnectionLivenessTest, MalformedStartupReadyCannotOpenConnection) {
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::MalformedStartupReady));
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   const auto result = connection.connect(settings);
   ASSERT_TRUE(result.has_error());
@@ -1437,7 +1443,7 @@ TEST(ConnectionLivenessTest, MalformedBackendKeyCannotOpenConnection) {
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::MalformedBackendKey));
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   const auto result = connection.connect(settings);
   ASSERT_TRUE(result.has_error());
@@ -1452,7 +1458,7 @@ TEST(ConnectionLivenessTest, MalformedQueryReadyClosesLogicalConnection) {
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::MalformedQueryReady));
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   ASSERT_TRUE(connection.connect(settings).has_value());
   const auto result = connection.execute_query(
@@ -1471,7 +1477,7 @@ TEST(ConnectionLivenessTest, StartupOnlyFramesCannotAppearDuringQuery) {
     rs::core::database::GenericDatabaseConnection connection(
         std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
         std::make_unique<ScriptedBackendTransport>(mode));
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     ASSERT_TRUE(connection.connect(settings).has_value());
     const auto result = connection.execute_query(
@@ -1488,7 +1494,7 @@ TEST(ConnectionLivenessTest, MismatchedDataRowClosesLogicalConnection) {
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::MismatchedDataRow));
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   ASSERT_TRUE(connection.connect(settings).has_value());
   const auto result = connection.execute_query(
@@ -1506,7 +1512,7 @@ TEST(ConnectionLivenessTest, UnannouncedDataRowClosesConnection) {
   rs::core::database::GenericDatabaseConnection connection(
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
       std::move(transport));
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   ASSERT_TRUE(connection.connect(settings).has_value());
 
@@ -1526,7 +1532,7 @@ TEST(ConnectionLivenessTest, DuplicateRowDescriptionClosesConnection) {
   rs::core::database::GenericDatabaseConnection connection(
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
       std::move(transport));
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   ASSERT_TRUE(connection.connect(settings).has_value());
 
@@ -1546,7 +1552,7 @@ TEST(ConnectionLivenessTest, UnknownQueryFrameClosesConnection) {
   rs::core::database::GenericDatabaseConnection connection(
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
       std::move(transport));
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   ASSERT_TRUE(connection.connect(settings).has_value());
 
@@ -1569,7 +1575,7 @@ TEST(ConnectionLivenessTest, ExtendedFrameDuringSimpleQueryClosesConnection) {
     rs::core::database::GenericDatabaseConnection connection(
         std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
         std::move(transport));
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     ASSERT_TRUE(connection.connect(settings).has_value());
 
@@ -1590,7 +1596,7 @@ TEST(ConnectionLivenessTest, ResultAfterErrorClosesConnection) {
   rs::core::database::GenericDatabaseConnection connection(
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
       std::move(transport));
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   ASSERT_TRUE(connection.connect(settings).has_value());
 
@@ -1614,7 +1620,7 @@ TEST(ConnectionLivenessTest, NotificationPayloadMustBeComplete) {
     rs::core::database::GenericDatabaseConnection connection(
         std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
         std::move(transport));
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     ASSERT_TRUE(connection.connect(settings).has_value());
 
@@ -1638,7 +1644,7 @@ TEST(ConnectionLivenessTest, MalformedEmptyQueryResponseClosesConnection) {
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::MalformedEmptyQueryResponse));
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   ASSERT_TRUE(connection.connect(settings).has_value());
   const auto result = connection.execute_query(
@@ -1658,7 +1664,7 @@ TEST(ConnectionLivenessTest, CopyStreamingFailsPromptlyAsUnsupported) {
     rs::core::database::GenericDatabaseConnection connection(
         std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
         std::make_unique<ScriptedBackendTransport>(mode));
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     ASSERT_TRUE(connection.connect(settings).has_value());
     const auto result = connection.execute_query(
@@ -1680,7 +1686,7 @@ TEST(ConnectionLivenessTest, UnsolicitedCopyFramesFailBeforePayloadRead) {
     rs::core::database::GenericDatabaseConnection connection(
         std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
         std::make_unique<ScriptedBackendTransport>(mode));
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     ASSERT_TRUE(connection.connect(settings).has_value());
     const auto result = connection.execute_query(
@@ -1700,7 +1706,7 @@ TEST(ConnectionLivenessTest, BinaryResultRowsAreNotExposedAsText) {
     rs::core::database::GenericDatabaseConnection connection(
         std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
         std::make_unique<ScriptedBackendTransport>(mode));
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     ASSERT_TRUE(connection.connect(settings).has_value());
     const auto result = connection.execute_query(
@@ -1722,7 +1728,7 @@ TEST(ConnectionLivenessTest, QueryNeedsACompletionBeforeReady) {
       rs::core::database::GenericDatabaseConnection connection(
           std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
           std::make_unique<ScriptedBackendTransport>(mode));
-      rs::core::database::ConnectionSettings settings;
+      auto settings = pg_fixture_settings();
       settings.use_ssl = false;
       ASSERT_TRUE(connection.connect(settings).has_value());
       const auto deadline = rs::util::make_deadline(std::chrono::seconds(1));
@@ -1747,7 +1753,7 @@ TEST(ConnectionLivenessTest, EmptyQueryAndDescribeRemainValid) {
     rs::core::database::GenericDatabaseConnection connection(
         std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
         std::make_unique<ScriptedBackendTransport>(mode));
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     ASSERT_TRUE(connection.connect(settings).has_value());
     const auto deadline = rs::util::make_deadline(std::chrono::seconds(1));
@@ -1771,7 +1777,7 @@ TEST(ConnectionLivenessTest, DescriptionRequiresCompleteMetadataSequence) {
     rs::core::database::GenericDatabaseConnection connection(
         std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
         std::make_unique<ScriptedBackendTransport>(mode));
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     ASSERT_TRUE(connection.connect(settings).has_value());
     const auto result = connection.describe_statement(
@@ -1789,7 +1795,7 @@ TEST(ConnectionLivenessTest, DescriptionServerErrorRemainsQueryFailure) {
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::DescriptionServerError));
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   ASSERT_TRUE(connection.connect(settings).has_value());
   const auto result = connection.describe_statement(
@@ -1807,7 +1813,7 @@ TEST(ConnectionLivenessTest, MalformedErrorCannotBecomeSuccessfulQuery) {
       std::make_unique<ScriptedBackendTransport>(
           ScriptedBackendTransport::ResponseMode::MalformedQueryError));
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   ASSERT_TRUE(connection.connect(settings).has_value());
   const auto result = connection.execute_query(
@@ -1826,7 +1832,7 @@ TEST(ConnectionLivenessTest, MalformedQueryResultClosesLogicalConnection) {
       std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
       std::move(transport));
 
-  rs::core::database::ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   const auto connected = connection.connect(settings);
   ASSERT_TRUE(connected.has_value()) << connected.error_message();
@@ -1991,7 +1997,7 @@ TEST(BackendResultContractTest, RowsMetadataAndDeferredErrorsOutliveConnection) 
   {
     rs::core::database::postgres::PgDatabaseConnection backend(std::make_unique<ScriptedBackendTransport>(
             ScriptedBackendTransport::ResponseMode::OwnedResultCells));
-    rs::core::database::ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     ASSERT_TRUE(backend.connect(settings).has_value());
     auto result = backend.execute_query("scripted result", rs::util::Deadline::max());
@@ -2029,7 +2035,7 @@ TEST(ConnectionLivenessTest, OwningErrorsPreserveNativeDetailAndProtocolDisposit
         GenericDatabaseConnection connection(std::make_unique<postgres::PgProtocolParser>(),
             std::make_unique<ScriptedBackendTransport>(mode));
         EXPECT_EQ(connection.session_state(), SessionState::Disconnected);
-        ConnectionSettings settings;
+        auto settings = pg_fixture_settings();
         settings.use_ssl = false;
         ASSERT_TRUE(connection.connect(settings));
         EXPECT_EQ(connection.session_state(), SessionState::Idle);
@@ -2073,7 +2079,7 @@ TEST(ConnectionLivenessTest, AmbiguousQueryFailuresRetireAndNeverRetainServerSta
     auto transport = std::make_unique<ScriptedBackendTransport>(mode);
     auto* observed = transport.get();
     GenericDatabaseConnection connection(std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     ASSERT_TRUE(connection.connect(settings));
     const auto result = connection.execute_query("SELECT 1", rs::util::make_deadline(std::chrono::seconds(1)));
@@ -2138,7 +2144,7 @@ TEST(BackendTransactionTest, RealProtocolStateSurvivesTransactionAndIsolationAda
       auto transport = std::make_unique<ScriptedBackendTransport>(mode);
       auto* observed = transport.get();
       postgres::PgDatabaseConnection backend(std::move(transport));
-      ConnectionSettings settings;
+      auto settings = pg_fixture_settings();
       settings.use_ssl = false;
       ASSERT_TRUE(backend.connect(settings));
       const auto deadline = rs::util::make_deadline(std::chrono::seconds(1));
@@ -2177,7 +2183,7 @@ TEST(BackendTransactionTest, AmbiguousFailuresRetainRetirementAndOperationContex
       auto transport = std::make_unique<ScriptedBackendTransport>(mode);
       auto* observed = transport.get();
       postgres::PgDatabaseConnection backend(std::move(transport));
-      ConnectionSettings settings;
+      auto settings = pg_fixture_settings();
       settings.use_ssl = false;
       ASSERT_TRUE(backend.connect(settings));
       const auto deadline = rs::util::make_deadline(std::chrono::seconds(1));
@@ -2205,7 +2211,7 @@ TEST(ConnectionLivenessTest, SetupErrorsOwnNativeDetailsAndLifecyclePhaseAfterCl
       auto transport = std::make_unique<ScriptedBackendTransport>(mode);
       auto* observed = transport.get();
       GenericDatabaseConnection backend(std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
-      ConnectionSettings settings;
+      auto settings = pg_fixture_settings();
       settings.use_ssl = false;
       auto result = backend.connect(settings);
       ASSERT_TRUE(result.has_error());
@@ -2244,7 +2250,7 @@ TEST(ConnectionLivenessTest, InvalidReconnectKeepsExistingSessionAndPriorFailure
   auto transport = std::make_unique<ScriptedBackendTransport>();
   auto* observed = transport.get();
   GenericDatabaseConnection backend(std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
-  ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   auto invalid = settings;
   invalid.password = std::string("secret\0hidden", 13);
@@ -2288,7 +2294,7 @@ TEST(NativeTypeLookupLivenessTest, PreservesOwnedServerAndAmbiguousFailureSnapsh
       auto transport = std::make_unique<ScriptedBackendTransport>(mode);
       auto* observed = transport.get();
       postgres::PgDatabaseConnection backend(std::move(transport));
-      ConnectionSettings settings;
+      auto settings = pg_fixture_settings();
       settings.use_ssl = false;
       ASSERT_TRUE(backend.connect(settings));
       auto result = backend.resolve_types(ids, rs::util::make_deadline(std::chrono::seconds(1)));
@@ -2339,7 +2345,7 @@ TEST(BackendResultContractTest, DeferredErrorsRetainOperationAndFinalStateAcross
     QueryResult saved;
     {
       postgres::PgDatabaseConnection backend(std::make_unique<ScriptedBackendTransport>(mode));
-      ConnectionSettings settings;
+      auto settings = pg_fixture_settings();
       settings.use_ssl = false;
       ASSERT_TRUE(backend.connect(settings));
       auto result = backend.execute_query("first", rs::util::Deadline::max());
@@ -2381,7 +2387,7 @@ TEST(ResponseBudgetTest, ExactBoundariesSucceedAndOverflowRetiresWithoutPartialR
     auto transport = std::make_unique<ScriptedBackendTransport>(Mode::OwnedResultCells);
     auto* observed = transport.get();
     postgres::PgDatabaseConnection backend(std::move(transport));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     ASSERT_TRUE(backend.connect(settings));
     const auto before = observed->bytes_read();
@@ -2394,7 +2400,7 @@ TEST(ResponseBudgetTest, ExactBoundariesSucceedAndOverflowRetiresWithoutPartialR
       auto transport = std::make_unique<ScriptedBackendTransport>(Mode::OwnedResultCells);
       auto* observed = transport.get();
       postgres::PgDatabaseConnection backend(std::move(transport));
-      ConnectionSettings settings;
+      auto settings = pg_fixture_settings();
       settings.use_ssl = false;
       if (byte_limit) settings.response_limits.max_wire_bytes = response_bytes - (exact ? 0 : 1);
       else settings.response_limits.max_messages = exact ? 7 : 6; // T, three D, C, E, Z
@@ -2432,7 +2438,7 @@ TEST(ResponseBudgetTest, RejectsDeclaredOversizeBeforePayloadAcrossAllOperations
         operation == BackendOperation::Describe ? Mode::DescriptionServerError : Mode::OwnedResultCells);
     auto* observed = transport.get();
     postgres::PgDatabaseConnection backend(std::move(transport));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     settings.response_limits.max_wire_bytes = 5;
     ASSERT_TRUE(backend.connect(settings));
@@ -2454,7 +2460,7 @@ TEST(ResponseBudgetTest, InvalidLimitsDoNotMutateAnExistingSession) {
   auto transport = std::make_unique<ScriptedBackendTransport>();
   auto* observed = transport.get();
   postgres::PgDatabaseConnection backend(std::move(transport));
-  ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   ASSERT_TRUE(backend.connect(settings));
   for (const bool bytes : {false, true}) {
@@ -2479,7 +2485,7 @@ TEST(StartupBudgetTest, ExactAndOverflowLimitsPreservePhaseAndCleanup) {
     auto transport = std::make_unique<ScriptedBackendTransport>();
     auto* observed = transport.get();
     postgres::PgDatabaseConnection backend(std::move(transport));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     ASSERT_TRUE(backend.connect(settings));
     startup_bytes = observed->bytes_read();
@@ -2490,7 +2496,7 @@ TEST(StartupBudgetTest, ExactAndOverflowLimitsPreservePhaseAndCleanup) {
       auto transport = std::make_unique<ScriptedBackendTransport>();
       auto* observed = transport.get();
       postgres::PgDatabaseConnection backend(std::move(transport));
-      ConnectionSettings settings;
+      auto settings = pg_fixture_settings();
       settings.use_ssl = false;
       if (bytes) settings.startup_response_limits.max_wire_bytes = startup_bytes - (exact ? 0 : 1);
       else settings.startup_response_limits.max_messages = exact ? 5 : 4; // R, S, S, K, Z
@@ -2517,7 +2523,7 @@ TEST(StartupBudgetTest, ExactAndOverflowLimitsPreservePhaseAndCleanup) {
     auto transport = std::make_unique<ScriptedBackendTransport>();
     auto* observed = transport.get();
     postgres::PgDatabaseConnection backend(std::move(transport));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     settings.startup_response_limits.max_wire_bytes = 5;
     auto result = backend.connect(settings);
@@ -2536,7 +2542,7 @@ TEST(StartupBudgetTest, NoticesConsumeBudgetAndInvalidReconnectDoesNotTouchTrans
     auto transport = std::make_unique<ScriptedBackendTransport>(Mode::NoticeAfterAuthenticationOk);
     auto* observed = transport.get();
     postgres::PgDatabaseConnection backend(std::move(transport));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     settings.startup_response_limits.max_messages = messages;
     auto result = backend.connect(settings);
@@ -2572,7 +2578,7 @@ TEST(StartupBudgetTest, DefaultCeilingRejectsHugeDeclaredFrameBeforePayload) {
       ScriptedBackendTransport::ResponseMode::IncompleteLargeDataRow);
   auto* observed = transport.get();
   postgres::PgDatabaseConnection backend(std::move(transport));
-  ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   const auto result = backend.connect(settings);
   ASSERT_TRUE(result.has_error());
@@ -2591,7 +2597,7 @@ TEST(ResultBudgetTest, ExactCountsSucceedAndOverflowsReturnNoPartialResult) {
       auto transport = std::make_unique<ScriptedBackendTransport>(Mode::OwnedResultCells);
       auto* observed = transport.get();
       postgres::PgDatabaseConnection backend(std::move(transport));
-      ConnectionSettings settings;
+      auto settings = pg_fixture_settings();
       settings.use_ssl = false;
       if (dimension == 0) settings.result_limits.max_rows = exact ? 3 : 2;
       if (dimension == 1) settings.result_limits.max_cells = exact ? 3 : 2;
@@ -2629,7 +2635,7 @@ TEST(ResultBudgetTest, ParameterDescriptionAndAggregateMultiResultCountsAreBound
   for (const bool exact : {false, true}) {
     auto transport = std::make_unique<ScriptedBackendTransport>(Mode::DescriptionOneParameter);
     postgres::PgDatabaseConnection backend(std::move(transport));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     settings.result_limits.max_columns_per_description = exact ? 1 : 0;
     ASSERT_TRUE(backend.connect(settings));
@@ -2649,7 +2655,7 @@ TEST(ResultBudgetTest, ParameterDescriptionAndAggregateMultiResultCountsAreBound
   for (const bool cells : {false, true}) {
     for (const bool exact : {false, true}) {
       postgres::PgDatabaseConnection backend(std::make_unique<ScriptedBackendTransport>(Mode::OwnedTwoResultSets));
-      ConnectionSettings settings;
+      auto settings = pg_fixture_settings();
       settings.use_ssl = false;
       if (cells) settings.result_limits.max_cells = exact ? 6 : 5;
       else settings.result_limits.max_rows = exact ? 6 : 5;
@@ -2676,7 +2682,7 @@ TEST(ResultBudgetTest, ZeroDataBudgetsPermitNoDataAndInvalidResultLimitPreserves
       ScriptedBackendTransport::ResponseMode::DescriptionNoData);
   auto* observed = transport.get();
   postgres::PgDatabaseConnection backend(std::move(transport));
-  ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   settings.result_limits.max_rows = 0;
   settings.result_limits.max_cells = 0;
@@ -2709,7 +2715,7 @@ TEST(ResultBudgetTest, MetadataNamesAndEntriesAccumulateAcrossResults) {
       auto transport = std::make_unique<ScriptedBackendTransport>(Mode::OwnedTwoResultSets);
       auto* observed = transport.get();
       postgres::PgDatabaseConnection backend(std::move(transport));
-      ConnectionSettings settings;
+      auto settings = pg_fixture_settings();
       settings.use_ssl = false;
       if (dimension == 0) settings.result_limits.max_metadata_entries = exact ? 2 : 1;
       if (dimension == 1) settings.result_limits.max_column_name_bytes = exact ? 5 : 4;
@@ -2740,7 +2746,7 @@ TEST(ResultBudgetTest, ParameterEntriesUseAggregateMetadataBudget) {
   using Mode = ScriptedBackendTransport::ResponseMode;
   for (const bool exact : {false, true}) {
     postgres::PgDatabaseConnection backend(std::make_unique<ScriptedBackendTransport>(Mode::DescriptionOneParameter));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     settings.result_limits.max_metadata_entries = exact ? 1 : 0;
     settings.result_limits.max_metadata_name_bytes = 0;
@@ -2769,7 +2775,7 @@ TEST(ResultBudgetTest, DiagnosticPayloadLimitRejectsQueryErrorBeforeBodyRead) {
     auto transport = std::make_unique<ScriptedBackendTransport>(Mode::OwnedErrorIdle);
     auto* observed = transport.get();
     postgres::PgDatabaseConnection backend(std::move(transport));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     settings.result_limits.max_diagnostic_bytes = exact ? sizeof(error) : sizeof(error) - 1;
     ASSERT_TRUE(backend.connect(settings));
@@ -2799,7 +2805,7 @@ TEST(ResultBudgetTest, DiagnosticLimitCoversAuthenticationErrorsAndStartupNotice
       auto transport = std::make_unique<ScriptedBackendTransport>(authentication ? Mode::AuthRejected : Mode::NoticeAfterAuthenticationOk);
       auto* observed = transport.get();
       postgres::PgDatabaseConnection backend(std::move(transport));
-      ConnectionSettings settings;
+      auto settings = pg_fixture_settings();
       settings.use_ssl = false;
       const auto payload_bytes = authentication ? sizeof(error) : sizeof(notice);
       settings.result_limits.max_diagnostic_bytes = exact ? payload_bytes : payload_bytes - 1;
@@ -2828,7 +2834,7 @@ TEST(ResultBudgetTest, MalformedMetadataRetiresAndEmptyNamesFitZeroByteBudgets) 
     auto transport = std::make_unique<ScriptedBackendTransport>(mode);
     auto* observed = transport.get();
     postgres::PgDatabaseConnection backend(std::move(transport));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     if (mode == Mode::EmptyColumnName) {
       settings.result_limits.max_column_name_bytes = 0;
@@ -2857,7 +2863,7 @@ TEST(InputBudgetTest, SqlLimitPreflightsEveryRequestAndAllowsRecovery) {
     auto transport = std::make_unique<ScriptedBackendTransport>(describe ? Mode::DescriptionNoData : Mode::EmptyQueryResponse);
     auto* observed = transport.get();
     postgres::PgDatabaseConnection backend(std::move(transport));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     settings.input_limits.max_sql_bytes = 3;
     ASSERT_TRUE(backend.connect(settings));
@@ -2893,7 +2899,7 @@ TEST(InputBudgetTest, ParameterCountsValuesAndAggregateBytesAreBoundedBeforeEnco
     auto transport = std::make_unique<ScriptedBackendTransport>(Mode::PreparedCommand);
     auto* observed = transport.get();
     postgres::PgDatabaseConnection backend(std::move(transport));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     settings.input_limits.max_parameters = 4;
     settings.input_limits.max_parameter_bytes = 2;
@@ -2924,7 +2930,7 @@ TEST(InputBudgetTest, DescriptionParameterCountLimitAllowsExactBoundary) {
   auto transport = std::make_unique<ScriptedBackendTransport>(Mode::DescriptionOneParameter);
   auto* observed = transport.get();
   postgres::PgDatabaseConnection backend(std::move(transport));
-  ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   settings.input_limits.max_parameters = 1;
   ASSERT_TRUE(backend.connect(settings));
@@ -2947,7 +2953,7 @@ TEST(InputBudgetTest, RejectionPreservesTransactionAndDisconnectedPrecedence) {
     auto transport = std::make_unique<ScriptedBackendTransport>(mode);
     auto* observed = transport.get();
     postgres::PgDatabaseConnection backend(std::move(transport));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     settings.input_limits.max_sql_bytes = 6;
     ASSERT_TRUE(backend.connect(settings));
@@ -2978,7 +2984,7 @@ TEST(InputBudgetTest, ConnectionFieldsAreBoundedBeforeTransportAndReconnectMutat
     auto transport = std::make_unique<ScriptedBackendTransport>(Mode::ValidStartup);
     auto* observed = transport.get();
     postgres::PgDatabaseConnection backend(std::move(transport));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     settings.input_limits.max_connection_field_bytes = 3;
     settings.*field = "1234";
@@ -3010,7 +3016,7 @@ TEST(InputBudgetTest, ConnectionFieldsAreBoundedBeforeTransportAndReconnectMutat
     auto transport = std::make_unique<ScriptedBackendTransport>();
     auto* observed = transport.get();
     postgres::PgDatabaseConnection backend(std::move(transport));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.input_limits.max_connection_field_bytes = 3;
     settings.*field = "1234";
     const auto result = backend.connect(settings);
@@ -3028,7 +3034,7 @@ TEST(InputBudgetTest, ExcessiveConfiguredCeilingsPreserveConnectedSession) {
   auto transport = std::make_unique<ScriptedBackendTransport>(Mode::ValidStartup);
   auto* observed = transport.get();
   postgres::PgDatabaseConnection backend(std::move(transport));
-  ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   ASSERT_TRUE(backend.connect(settings));
   const auto reads = observed->bytes_read();
@@ -3054,7 +3060,7 @@ TEST(InputBudgetTest, ZeroBudgetsAllowEmptySqlNullAndEmptyParameters) {
   using namespace rs::core::database;
   using Mode = ScriptedBackendTransport::ResponseMode;
   postgres::PgDatabaseConnection direct(std::make_unique<ScriptedBackendTransport>(Mode::EmptyQueryResponse));
-  ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   settings.input_limits.max_sql_bytes = 0;
   settings.input_limits.max_parameters = 0;
@@ -3126,7 +3132,7 @@ TEST(AllocationBoundaryTest, EncodingFailuresPreserveSessionAndAllowRecovery) {
     auto transport = std::make_unique<ScriptedBackendTransport>(stage == Stage::Describe ? Mode::DescriptionNoData : Mode::EmptyQueryResponse);
     auto* observed = transport.get();
     GenericDatabaseConnection backend(std::move(parser), std::move(transport));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     ASSERT_TRUE(backend.connect(settings));
     const auto invoke = [&] {
@@ -3163,7 +3169,7 @@ TEST(AllocationBoundaryTest, ResponseFailuresRetireWithoutPartialResults) {
         ScriptedBackendTransport::ResponseMode::QueryAllocationFailure : ScriptedBackendTransport::ResponseMode::OwnedTwoResultSets);
     auto* observed = transport.get();
     GenericDatabaseConnection backend(std::move(parser), std::move(transport));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     ASSERT_TRUE(backend.connect(settings));
     fault->stage = stage;
@@ -3190,7 +3196,7 @@ TEST(AllocationBoundaryTest, StartupFailuresRespectPhaseAndCleanup) {
     auto transport = std::make_unique<ScriptedBackendTransport>();
     auto* observed = transport.get();
     GenericDatabaseConnection backend(std::move(parser), std::move(transport));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     const auto result = backend.connect(settings);
     ASSERT_TRUE(result.has_error());
@@ -3212,7 +3218,7 @@ TEST(AllocationBoundaryTest, StartupEncodingFailurePreservesExistingSession) {
   auto transport = std::make_unique<ScriptedBackendTransport>();
   auto* observed = transport.get();
   GenericDatabaseConnection backend(std::move(parser), std::move(transport));
-  ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   ASSERT_TRUE(backend.connect(settings));
   fault->stage = AllocationFaultParser::Stage::StartupEncoding;
@@ -3237,7 +3243,7 @@ TEST(InputBudgetTest, EncodedWireLimitsPreflightAndPreserveSessionAcrossAllOpera
       auto transport = std::make_unique<ScriptedBackendTransport>(operation == BackendOperation::Describe ? Mode::DescriptionNoData : Mode::EmptyQueryResponse);
       auto* observed = transport.get();
       GenericDatabaseConnection backend(std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
-      ConnectionSettings settings;
+      auto settings = pg_fixture_settings();
       settings.use_ssl = false;
       const std::size_t wire_bytes = operation == BackendOperation::ExecuteDirect ? 6 :
           operation == BackendOperation::ExecutePrepared ? 51 : 21;
@@ -3268,7 +3274,7 @@ TEST(InputBudgetTest, StartupWireLimitRejectsBeforeConnectAndPreservesExistingOw
   auto transport = std::make_unique<ScriptedBackendTransport>();
   auto* observed = transport.get();
   GenericDatabaseConnection backend(std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
-  ConnectionSettings settings;
+  auto settings = pg_fixture_settings();
   settings.use_ssl = false;
   settings.input_limits.max_startup_wire_bytes = 0;
   const auto rejected = backend.connect(settings);
@@ -3296,7 +3302,7 @@ TEST(InputBudgetTest, AuthenticationWireLimitRetiresWithoutSendingOversizedPassw
     auto transport = std::make_unique<ScriptedBackendTransport>(ScriptedBackendTransport::ResponseMode::Md5Authentication);
     auto* observed = transport.get();
     GenericDatabaseConnection backend(std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     settings.password = "secret";
     settings.input_limits.max_auth_wire_bytes = exact ? 41 : 40;
@@ -3324,7 +3330,7 @@ TEST(NormalizedColumnTest, SessionOwnsPrimaryAdditionalAndDescriptionMetadata) {
     QueryResult snapshot;
     {
       postgres::PgDatabaseConnection backend(std::make_unique<ScriptedBackendTransport>(describe ? Mode::DescriptionOneColumn : Mode::OwnedTwoResultSets));
-      ConnectionSettings settings; settings.use_ssl = false;
+      auto settings = pg_fixture_settings(); settings.use_ssl = false;
       ASSERT_TRUE(backend.connect(settings));
       auto result = describe
           ? backend.describe_statement("SELECT value", {}, rs::util::Deadline::max())
@@ -3396,7 +3402,7 @@ TEST(NormalizedParameterTest, BackendOwnsResolvedDescriptionsAndReusesAbsoluteDe
   QueryResult snapshot;
   {
     ParameterNormalizationConnection backend;
-    ConnectionSettings settings; settings.use_ssl = false;
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
     ASSERT_TRUE(backend.connect(settings));
     const auto deadline = rs::util::make_deadline(std::chrono::seconds(2));
     const QueryParameterType hints[]{QueryParameterType::Numeric};
@@ -3415,7 +3421,7 @@ TEST(NormalizedParameterTest, IncompleteAndFailedResolutionReturnNoPartialResult
   using namespace rs::core::database;
   for (const bool resolver_error : {false, true}) {
     ParameterNormalizationConnection backend;
-    ConnectionSettings settings; settings.use_ssl = false;
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
     ASSERT_TRUE(backend.connect(settings));
     backend.incomplete = !resolver_error; backend.fail = resolver_error;
     const QueryParameterType hints[]{QueryParameterType::Numeric};
@@ -3454,7 +3460,7 @@ TEST(NormalizedCellTest, BackendReturnsCanonicalOwnedCellsAndDeferredEncodingErr
           owned = std::make_unique<postgres::PgDatabaseConnection>(std::move(transport));
         }
         auto& backend = *owned;
-        ConnectionSettings settings; settings.use_ssl = false;
+        auto settings = pg_fixture_settings(); settings.use_ssl = false;
         ASSERT_TRUE(backend.connect(settings));
         auto result = backend.execute_query("SELECT octets, flag; SELECT octets, flag", rs::util::Deadline::max());
         ASSERT_TRUE(result); EXPECT_TRUE(backend.is_connected());
@@ -3503,7 +3509,7 @@ TEST(NormalizedCellTest, TextUtf8IsValidatedBeforeReturningOwnedSnapshots) {
       } else {
         owned = std::make_unique<postgres::PgDatabaseConnection>(std::move(transport));
       }
-      ConnectionSettings settings; settings.use_ssl = false;
+      auto settings = pg_fixture_settings(); settings.use_ssl = false;
       ASSERT_TRUE(owned->connect(settings));
       auto result = owned->execute_query("SELECT text; SELECT text", rs::util::Deadline::max());
       ASSERT_TRUE(result); EXPECT_EQ(SessionState::Idle, owned->session_state());
@@ -3535,7 +3541,7 @@ TEST(NormalizedMetadataTest, Utf8NamesAreOwnedAndMalformedNamesRejectAllResultsW
   using Mode = ScriptedBackendTransport::ResponseMode;
   for (const auto mode : {Mode::Utf8ColumnNames, Mode::MalformedColumnName, Mode::MalformedAdditionalColumnName}) {
     postgres::PgDatabaseConnection backend(std::make_unique<ScriptedBackendTransport>(mode));
-    ConnectionSettings settings; settings.use_ssl = false;
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
     ASSERT_TRUE(backend.connect(settings));
     auto result = backend.execute_query("SELECT name; SELECT name", rs::util::Deadline::max());
     if (mode == Mode::Utf8ColumnNames) {
@@ -3562,7 +3568,7 @@ TEST(NormalizedMetadataTest, Utf8NamesAreOwnedAndMalformedNamesRejectAllResultsW
 TEST(NormalizedParameterTest, PassiveLookupLimitPreservesDrainedSessionAndRecovers) {
   using namespace rs::core::database;
   ParameterNormalizationConnection backend;
-  ConnectionSettings settings; settings.use_ssl = false;
+  auto settings = pg_fixture_settings(); settings.use_ssl = false;
   ASSERT_TRUE(backend.connect(settings));
   backend.passive_limit = true;
   const auto deadline = rs::util::make_deadline(std::chrono::seconds(2));
@@ -3598,7 +3604,7 @@ TEST(NormalizedMetadataTest, NestedPrivateResultsAreRejectedAfterDrainAndRecover
   };
   GenericDatabaseConnection backend(std::make_unique<NestedParser>(),
       std::make_unique<ScriptedBackendTransport>(ScriptedBackendTransport::ResponseMode::Utf8ColumnNames));
-  ConnectionSettings settings; settings.use_ssl = false;
+  auto settings = pg_fixture_settings(); settings.use_ssl = false;
   ASSERT_TRUE(backend.connect(settings));
   auto result = backend.execute_query("SELECT value; SELECT value", rs::util::Deadline::max());
   ASSERT_TRUE(result.has_error());
@@ -3629,7 +3635,7 @@ TEST(NormalizedMetadataTest, ContradictoryPrivateErrorItemsRejectAfterDrainAndRe
   for (const bool primary : {false, true}) {
     GenericDatabaseConnection backend(std::make_unique<ContradictoryParser>(primary),
         std::make_unique<ScriptedBackendTransport>(ScriptedBackendTransport::ResponseMode::Utf8ColumnNames));
-    ConnectionSettings settings; settings.use_ssl = false;
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
     ASSERT_TRUE(backend.connect(settings));
     auto result = backend.execute_query("SELECT value; SELECT value", rs::util::Deadline::max());
     ASSERT_TRUE(result.has_error());
@@ -3653,7 +3659,7 @@ TEST(BackendResultContractTest, SuccessSnapshotsOwnFinalStateAcrossFailureAndDes
     BackendResult<QueryResult> saved{QueryResult{}};
     {
       postgres::PgDatabaseConnection backend(std::make_unique<ScriptedBackendTransport>(mode));
-      ConnectionSettings settings; settings.use_ssl = false;
+      auto settings = pg_fixture_settings(); settings.use_ssl = false;
       ASSERT_TRUE(backend.connect(settings));
       auto result = backend.execute_query("first", rs::util::Deadline::max());
       ASSERT_TRUE(result); EXPECT_EQ(expected, result.session_snapshot());
@@ -3681,7 +3687,7 @@ TEST(BackendResultContractTest, PreparedAndDescriptionSuccessReportFinalIdleStat
   for (const bool describe : {false, true}) {
     GenericDatabaseConnection backend(std::make_unique<postgres::PgProtocolParser>(),
         std::make_unique<ScriptedBackendTransport>(describe ? Mode::DescriptionOneColumn : Mode::PreparedCommand));
-    ConnectionSettings settings; settings.use_ssl = false;
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
     ASSERT_TRUE(backend.connect(settings));
     const QueryParameter parameters[]{
         {"a", QueryParameterType::Text}, {"b", QueryParameterType::Text},
@@ -3723,7 +3729,7 @@ TEST(BackendResultContractTest, ConnectSnapshotSurvivesLocalReconnectRejectionAn
     auto transport = std::make_unique<ScriptedBackendTransport>(ScriptedBackendTransport::ResponseMode::QueryReadTimeout);
     auto* observed = transport.get();
     GenericDatabaseConnection backend(std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
-    ConnectionSettings settings; settings.use_ssl = false;
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
     auto opened = backend.connect(settings);
     ASSERT_TRUE(opened); EXPECT_EQ(idle, opened.session_snapshot());
     saved = opened;
@@ -3766,7 +3772,7 @@ TEST(BackendTransactionTest, NativeSuccessSnapshotsTrackBeginCommitRollbackAndIs
   using namespace rs::core::database;
   postgres::PgDatabaseConnection backend(std::make_unique<ScriptedBackendTransport>(
       ScriptedBackendTransport::ResponseMode::TransactionCompletions));
-  ConnectionSettings settings; settings.use_ssl = false;
+  auto settings = pg_fixture_settings(); settings.use_ssl = false;
   ASSERT_TRUE(backend.connect(settings));
   const auto deadline = rs::util::Deadline::max();
   const auto begun = backend.transaction(TransactionAction::Begin, deadline);
@@ -3796,7 +3802,7 @@ TEST(BackendTransactionTest, OptionalFacetIsStableAcrossConnectionAndDisconnect)
   ASSERT_TRUE(closed.has_error());
   EXPECT_EQ(BackendErrorClass::NotConnected, closed.backend_error().error_class);
   EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), closed.session_snapshot());
-  ConnectionSettings settings; settings.use_ssl = false;
+  auto settings = pg_fixture_settings(); settings.use_ssl = false;
   ASSERT_TRUE(session.connect(settings)); EXPECT_EQ(facet, session.transaction_session());
   const auto begun = facet->transaction(TransactionAction::Begin, rs::util::Deadline::max());
   ASSERT_TRUE(begun);
@@ -3819,7 +3825,7 @@ TEST(NormalizedParameterTest, DescriptionFacetIsStableAndOwnsMetadataAcrossSessi
     const auto closed = facet->describe_statement("SELECT ?", hints, rs::util::Deadline::max());
     ASSERT_TRUE(closed.has_error()); EXPECT_EQ(BackendErrorClass::NotConnected, closed.backend_error().error_class);
     EXPECT_EQ(BackendOperation::Describe, closed.backend_error().operation);
-    ConnectionSettings settings; settings.use_ssl = false;
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
     ASSERT_TRUE(session.connect(settings)); EXPECT_EQ(facet, session.statement_description());
     const auto deadline = rs::util::make_deadline(std::chrono::seconds(2));
     retained = facet->describe_statement("SELECT ?", hints, deadline);
@@ -3851,7 +3857,7 @@ TEST(CatalogQueryTest, OptionalCatalogFacetIsStableAndQueryOwnsBorrowedFilters) 
     EXPECT_NE(std::string::npos, retained.find("s''chema"));
     EXPECT_EQ(std::string::npos, retained.find("overwritten"));
     EXPECT_FALSE(session.is_connected()); EXPECT_EQ(SessionState::Disconnected, session.session_state());
-    ConnectionSettings settings; settings.use_ssl = false;
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
     ASSERT_TRUE(backend.connect(settings)); EXPECT_EQ(facet, session.catalog_queries());
     auto live = facet->catalog_query(ColumnsCatalogRequest{}); ASSERT_TRUE(live);
     EXPECT_EQ(SessionState::Idle, session.session_state());
@@ -3868,7 +3874,7 @@ TEST(SessionHealthTest, NativeTransportInterruptionRetiresWithHealthContext) {
   using Mode = ScriptedBackendTransport::ResponseMode;
   for (const auto mode : {Mode::QueryReadTimeout, Mode::PartialQueryWrite, Mode::UnknownQueryFrame}) {
     postgres::PgDatabaseConnection session(std::make_unique<ScriptedBackendTransport>(mode));
-    ConnectionSettings settings; settings.use_ssl = false;
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
     ASSERT_TRUE(session.connect(settings));
     auto* health = session.session_health();
     const auto result = health->check_health(rs::util::make_deadline(std::chrono::seconds(1)));
@@ -3891,7 +3897,7 @@ TEST(SessionResetTest, NativeTransportAndServerFailuresAlwaysRetire) {
   using Mode = ScriptedBackendTransport::ResponseMode;
   for (const auto mode : {Mode::QueryReadTimeout, Mode::PartialQueryWrite, Mode::OwnedErrorIdle}) {
     postgres::PgDatabaseConnection session(std::make_unique<ScriptedBackendTransport>(mode), SessionResetProfile::SameAuthenticatedServerSession);
-    ConnectionSettings settings; settings.use_ssl = false;
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
     ASSERT_TRUE(session.connect(settings));
     const auto result = session.session_reset()->reset_session(rs::util::make_deadline(std::chrono::seconds(1)));
     ASSERT_FALSE(result);
@@ -3908,7 +3914,7 @@ TEST(SessionResetTest, ExactNativeCleanupTagsAreRequiredBeforeNormalization) {
     postgres::PgDatabaseConnection session(std::make_unique<ScriptedBackendTransport>(
         ScriptedBackendTransport::ResponseMode::ResetCompletions, profile),
         SessionResetProfile::SameAuthenticatedServerSession);
-    ConnectionSettings settings; settings.use_ssl = false;
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
     ASSERT_TRUE(session.connect(settings));
     const auto deadline = rs::util::make_deadline(std::chrono::seconds(1));
     if (profile == 'T' || profile == 'B') {
@@ -3935,7 +3941,7 @@ TEST(ConnectionAuthenticationRetentionTest, SuccessFailureAndDisconnectDropOnlyB
       auto parser = std::make_unique<postgres::PgProtocolParser>();
       auto* observer = parser.get();
       GenericDatabaseConnection connection(std::move(parser), std::make_unique<ScriptedBackendTransport>(mode));
-      ConnectionSettings settings; settings.use_ssl = false; settings.password = std::string(size, 's');
+      auto settings = pg_fixture_settings(); settings.use_ssl = false; settings.password = std::string(size, 's');
       const auto expected_password = settings.password;
       auto result = connection.connect(settings);
       EXPECT_EQ(mode == Mode::ValidStartup, bool(result));
@@ -3979,7 +3985,7 @@ TEST(ConnectionAuthenticationRetentionTest, ParserExceptionsClearCopiedPasswordA
     observer->allocation_failure = allocation_failure;
     GenericDatabaseConnection connection(std::move(parser), std::make_unique<ScriptedBackendTransport>(
         ScriptedBackendTransport::ResponseMode::Md5Authentication));
-    ConnectionSettings settings;
+    auto settings = pg_fixture_settings();
     settings.use_ssl = false;
     settings.password = std::string(128, 's');
     const auto result = connection.connect(settings);
@@ -3992,4 +3998,28 @@ TEST(ConnectionAuthenticationRetentionTest, ParserExceptionsClearCopiedPasswordA
     connection.disconnect();
     EXPECT_GT(observer->cleanup_count, before_disconnect);
   }
+}
+
+TEST(DatabaseFactoryTest, UnresolvedPortFailsBeforeTransportAndAllowsExplicitRecovery) {
+  using namespace rs::core::database;
+  auto transport = std::make_unique<ScriptedBackendTransport>(
+      ScriptedBackendTransport::ResponseMode::QueryParameterStatus);
+  auto* observed = transport.get();
+  auto connection = DatabaseFactory::create_connection(std::move(transport));
+  ConnectionSettings settings;
+  settings.use_ssl = false;
+  auto rejected = connection->connect(settings);
+  ASSERT_FALSE(rejected);
+  EXPECT_EQ(BackendErrorClass::InvalidInput, rejected.backend_error().error_class);
+  EXPECT_EQ(BackendOperation::Connect, rejected.backend_error().operation);
+  EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}),
+            rejected.session_snapshot());
+  EXPECT_EQ(0u, observed->connect_count());
+  EXPECT_EQ(0u, observed->send_count());
+  EXPECT_FALSE(connection->is_connected());
+  settings.port = 5432;
+  ASSERT_TRUE(connection->connect(settings));
+  EXPECT_EQ(1u, observed->connect_count());
+  EXPECT_EQ(1u, observed->send_count());
+  connection->disconnect();
 }

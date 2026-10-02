@@ -56,6 +56,9 @@ PgBackendProvider::resolve_connection_options(ConnectionOptions options) const {
   ConnectionSettings settings;
   settings.host = options.host.value_or(connection_defaults_.host);
   settings.port = options.port.value_or(connection_defaults_.port);
+  if (settings.port == 0) {
+    return {rs::util::DbErrorCode::InvalidParameter, "Database connection port is unresolved"};
+  }
   settings.database = options.database.value_or(
       connection_defaults_.database.value_or(std::string{}));
   settings.user = options.user.value_or(std::string{});

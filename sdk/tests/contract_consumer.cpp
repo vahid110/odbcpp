@@ -35,6 +35,7 @@ class ConsumerSession final : public IDatabaseConnection {
 };
 
 int main() {
+  if (ConnectionSettings{}.port != 0) return 5;
   ConsumerSession concrete;
   IDatabaseConnection& session = concrete;
   if (session.session_reset() || session.session_health() || session.catalog_queries() || session.transaction_session() || session.statement_description()) return 1;
