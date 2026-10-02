@@ -26,6 +26,19 @@ it cannot establish native SDK IAM discovery, renewal or server expiry behavior.
 GetCredentials minimum900-second validity exceeds a180-second window, so expiry
 refusal is an offline gate and actual server-expiry semantics remain open.
 
+The next candidate runner now integrates a fixed `iam` inventory. After durable
+reservation and IAM-inclusive pre-activation cleanup, it assumes the existing
+role once, verifies fresh STS identity, and obtains one900-second GetCredentials
+response. AWS secrets stay in memory/ephemeral child environments; DB credentials
+are revalidated and passed only to private driver environments. Identity runs
+first, followed by exact principal/scalar/NULL/timeout/disconnect and invalid
+password rejection cases. No refresh, fixture grants or permanent-config mutation
+is added. Independent cleanup resolves the exact approved IAM-derived principal
+alongside admin/test users for termination and both active-session/query counts.
+Exchange, expiry, identity and driver failures retain consumed liability and run
+independent cleanup. This remains offline-reviewed candidate code until full CI
+and a separately reviewed request; no006 has run and no IAM SQL is claimed.
+
 Five of eight finite v4 windows are consumed. No automatic006 or replay001-005.
 The original24-hour horizon is unchanged; independently review cumulative
 billing/usage reconciliation before subsequent-day admissions. No additional

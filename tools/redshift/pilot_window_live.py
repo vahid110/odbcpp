@@ -18,9 +18,11 @@ from tools.redshift import pilot_bootstrap as b
 from tools.redshift import pilot_live as live
 from tools.redshift import pilot_preflight as r0
 from tools.redshift import pilot_windows as windows
+from tools.redshift import pilot_iam_credentials as iam
 
 PROFILES = {'scalar': tuple(x for x in live.BASELINE if not x.endswith('ConfiguredFixtureMetadata')),
-            'catalog': ('RedshiftRealTest.ConfiguredFixtureMetadata',), 'baseline': live.BASELINE}
+            'catalog': ('RedshiftRealTest.ConfiguredFixtureMetadata',), 'baseline': live.BASELINE,
+            'iam': ('RedshiftRealTest.IAMPrincipalScalar','RedshiftRealTest.IAMInvalidPassword')}
 PRICE_URL = 'https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonRedshift/current/eu-north-1/index.json'
 
 
@@ -164,15 +166,24 @@ def execute(sequence, directory=r0.CANONICAL_DIRECTORY):
             additional_cleanup_seconds=60,cleanup_evidence=prior_cleanup)
         passed(ledger.reserve(evidence,current))
         remaining = (b._time(current.hard_deadline,utcnow(),True)-utcnow()).total_seconds()
-        window = live.Window(directory,config,time.monotonic()+max(0,remaining));window.seq=sequence*1000
+        is_iam = request['profile'] == 'iam'
+        kwargs = {'cleanup_principal': iam.DB_USER} if is_iam else {}
+        window = live.Window(directory,config,time.monotonic()+max(0,remaining),**kwargs)
+        window.seq=sequence*1000
         try:
             window.cleanup()
             passed(ledger.transition('active',cleanup_evidence(current)))
-            r0._need(window.sql('SHOW statement_timeout;',admin=False)=='15000', 'server_timeout_unverified')
-            report['results'].append(window.driver(request['manifest'],live.IDENTITY))
+            dispatch = {}
+            if is_iam:
+                end = b._time(current.hard_deadline,utcnow(),True)
+                credentials = iam.acquire(end,window.deadline)
+                dispatch = {'credentials': credentials, 'execution_end': end}
+            else:
+                r0._need(window.sql('SHOW statement_timeout;',admin=False)=='15000', 'server_timeout_unverified')
+            report['results'].append(window.driver(request['manifest'],live.IDENTITY,**dispatch))
             # Identity failure never reaches the profile cases; nothing retries them.
             window.last_driver_summary = None
-            report['results'].append(window.driver(request['manifest'],PROFILES[request['profile']]))
+            report['results'].append(window.driver(request['manifest'],PROFILES[request['profile']],**dispatch))
             report['status']='passed'
         except BaseException as error:
             report['reason']=error.code if isinstance(error,r0.Blocked) else 'execution_interrupted'

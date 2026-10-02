@@ -216,5 +216,49 @@ class LiveCompositionTests(unittest.TestCase):
         with self.assertRaisesRegex(Blocked,'database_config_mismatch'):self.execute()
         self.assertFalse(self.launched)
 
+    def test_iam_cleanup_covers_exact_principal_in_termination_and_both_counts(self):
+        w=live.Window(self.directory,self.config,0,cleanup_principal=live.IAM_DB_USER)
+        statements=[]
+        def sql(text,**kwargs):
+            statements.append(text);return '0|0' if 'COUNT(*)' in text else ''
+        with patch.object(w,'sql',side_effect=sql):w.cleanup()
+        self.assertEqual(len(statements),2)
+        for text in statements:
+            self.assertIn("usename='"+live.IAM_DB_USER+"'",text)
+            self.assertIn(':admin_id,:test_id,:iam_id',text)
+        self.assertEqual(statements[1].count(':admin_id,:test_id,:iam_id'),2)
+        with patch.object(w,'sql',side_effect=['','0|1']):
+            with self.assertRaisesRegex(Blocked,'remote_cleanup_unverified'):w.cleanup()
+        with self.assertRaises(Blocked):
+            live.Window(self.directory,self.config,0,cleanup_principal='unrelated')
+
+    def test_iam_driver_private_env_fixed_inventory_and_expiry_refusal(self):
+        import time
+        from types import SimpleNamespace
+        from tools.redshift import pilot_iam_credentials as iam
+        now=datetime.now(timezone.utc);end=now+timedelta(seconds=180)
+        credentials=iam.DatabaseCredentials(iam.DB_USER,'synthetic-driver-password-canary',
+            now+timedelta(seconds=900))
+        w=live.Window(self.directory,self.config,time.monotonic()+180,
+                      cleanup_principal=iam.DB_USER)
+        summary=dict(cases=list(live.IDENTITY),passed=1,failed=0)
+        with patch.object(live,'bounded_process',return_value=SimpleNamespace(timed_out=False,returncode=0)) as process, \
+             patch.object(live,'test_summary',return_value=summary):
+            self.assertEqual(w.driver(self.manifest,live.IDENTITY,credentials=credentials,
+                execution_end=end),summary)
+        args,kwargs=process.call_args
+        self.assertNotIn(credentials.password,' '.join(args[0]))
+        self.assertNotIn('AWS_ACCESS_KEY_ID',kwargs['env'])
+        self.assertIn('SSL=1;',kwargs['env']['ODBCPP_REDSHIFT_TEST_CONNECTION'])
+        self.assertIn('ODBCPP_IAM_NEGATIVE_INVALID_PASSWORD',
+            kwargs['env']['ODBCPP_REDSHIFT_IAM_INVALID_CONNECTION'])
+        expired=iam.DatabaseCredentials(iam.DB_USER,credentials.password,now+timedelta(seconds=100))
+        with patch.object(live,'bounded_process') as process:
+            with self.assertRaisesRegex(Blocked,'iam_credential_validity_insufficient'):
+                w.driver(self.manifest,live.IDENTITY,credentials=expired,execution_end=end)
+            process.assert_not_called()
+            with self.assertRaisesRegex(Blocked,'iam_inventory_mismatch'):
+                w.driver(self.manifest,('arbitrary',),credentials=credentials,execution_end=end)
+
 
 if __name__=='__main__':unittest.main()

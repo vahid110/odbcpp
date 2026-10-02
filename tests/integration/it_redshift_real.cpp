@@ -400,3 +400,56 @@ TEST_F(RedshiftRealTest, NegativeTests) {
   ret = SQLGetData(nullptr, 1, SQL_C_CHAR, buffer, sizeof(buffer), &len);
   EXPECT_EQ(SQL_INVALID_HANDLE, ret);
 }
+
+// Externally issued temporary credentials only; no native IAM provider/refresh.
+TEST_F(RedshiftRealTest, IAMPrincipalScalar) {
+  ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC, hdbc_);
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(
+      const_cast<char*>("SET statement_timeout TO 15000")), SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(
+      const_cast<char*>("SHOW statement_timeout")), SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  char timeout[32]{};
+  SQLLEN length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 1, SQL_C_CHAR, timeout,
+                                   sizeof(timeout), &length));
+  EXPECT_STREQ("15000", timeout);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(
+      const_cast<char*>("SELECT current_user, 7::integer, NULL::integer")), SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  char principal[128]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 1, SQL_C_CHAR, principal,
+                                   sizeof(principal), &length));
+  EXPECT_STREQ("IAMR:odbcpp-redshift-test-runtime", principal);
+  SQLINTEGER value = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 2, SQL_C_LONG, &value,
+                                   sizeof(value), &length));
+  EXPECT_EQ(7, value);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 3, SQL_C_LONG, &value,
+                                   sizeof(value), &length));
+  EXPECT_EQ(SQL_NULL_DATA, length);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, hstmt_));
+  hstmt_ = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(hdbc_));
+  connected_ = false;
+}
+
+TEST_F(RedshiftRealTest, IAMInvalidPassword) {
+  const char* invalid = std::getenv("ODBCPP_REDSHIFT_IAM_INVALID_CONNECTION");
+  ASSERT_NE(nullptr, invalid);
+  const auto valid_fields = rs::odbc::ConnectionString::parse(connection_string_);
+  const auto invalid_fields = rs::odbc::ConnectionString::parse(invalid);
+  for (const auto* key : {"SERVER", "PORT", "DATABASE", "UID", "SSL", "SSLCAFILE"}) {
+    ASSERT_TRUE(valid_fields.count(key) != 0 && invalid_fields.count(key) != 0);
+    // Boolean comparison keeps connection values out of assertion output.
+    ASSERT_TRUE(valid_fields.at(key) == invalid_fields.at(key));
+  }
+  ASSERT_TRUE(valid_fields.at("UID") == "IAMR:odbcpp-redshift-test-runtime");
+  ASSERT_TRUE(invalid_fields.count("PWD") != 0 && valid_fields.count("PWD") != 0);
+  ASSERT_TRUE(invalid_fields.at("PWD") != valid_fields.at("PWD"));
+  connection_string_ = invalid;
+  EXPECT_FALSE(connect());
+  EXPECT_EQ("28000", get_error(SQL_HANDLE_DBC, hdbc_));
+}

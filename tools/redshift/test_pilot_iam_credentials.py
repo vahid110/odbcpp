@@ -109,6 +109,54 @@ class IAMContractTests(unittest.TestCase):
         for end in (self.now,self.now+timedelta(seconds=181),self.end.replace(tzinfo=None)):
             with self.assertRaises(Blocked):iam.database_credentials(self.db,self.now,end)
 
+    def test_acquire_fixed_calls_private_env_and_no_secret_arguments(self):
+        import json,time
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        now=datetime.now(timezone.utc);end=now+timedelta(seconds=180)
+        role=copy.deepcopy(self.role);db=dict(self.db)
+        expiry=(now+timedelta(seconds=900)).isoformat()
+        role['Credentials']['Expiration']=expiry;db['expiration']=expiry
+        results=[SimpleNamespace(returncode=0,stdout=json.dumps(x).encode())
+                 for x in (role,self.identity,db)]
+        with patch('subprocess.run',side_effect=results) as process:
+            credential=iam.acquire(end,time.monotonic()+180)
+        self.assertEqual(credential.user,iam.DB_USER)
+        self.assertEqual(process.call_count,3)
+        calls=process.call_args_list
+        self.assertIn(iam.ROLE_ARN,calls[0].args[0])
+        self.assertIn(iam.SESSION_NAME,calls[0].args[0])
+        for call in calls:
+            text=' '.join(call.args[0])
+            self.assertNotIn(db['dbPassword'],text)
+            self.assertNotIn(role['Credentials']['SessionToken'],text)
+            self.assertLessEqual(call.kwargs['timeout'],20)
+        for call in calls[1:]:
+            self.assertNotIn('--profile',call.args[0])
+            self.assertEqual(call.kwargs['env']['AWS_SESSION_TOKEN'],role['Credentials']['SessionToken'])
+            self.assertEqual(call.kwargs['env']['AWS_MAX_ATTEMPTS'],'1')
+
+    def test_acquire_failure_has_no_retry_or_raw_diagnostic(self):
+        import time
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        with patch('subprocess.run',return_value=SimpleNamespace(returncode=1,
+            stdout=b'secret-output-canary',stderr=b'secret-error-canary')) as process:
+            with self.assertRaisesRegex(Blocked,'iam_exchange_failed') as error:
+                iam.acquire(datetime.now(timezone.utc)+timedelta(seconds=180),time.monotonic()+180)
+        self.assertEqual(process.call_count,1)
+        self.assertNotIn('canary',str(error.exception))
+
+    def test_acquire_timeout_is_sanitized_and_not_retried(self):
+        import time,subprocess
+        from unittest.mock import patch
+        with patch('subprocess.run',side_effect=subprocess.TimeoutExpired('aws',1,
+                   output=b'secret-timeout-canary',stderr=b'secret-stderr-canary')) as process:
+            with self.assertRaisesRegex(Blocked,'iam_exchange_failed') as error:
+                iam.acquire(datetime.now(timezone.utc)+timedelta(seconds=180),time.monotonic()+180)
+        self.assertEqual(process.call_count,1)
+        self.assertNotIn('canary',str(error.exception))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -24,6 +24,7 @@ PSQL = '/opt/homebrew/bin/psql'
 ACCOUNT = '385207570137'
 REGION = 'eu-north-1'
 NAME = 'odbcpp-redshift-pilot'
+IAM_DB_USER = 'IAMR:odbcpp-redshift-test-runtime'
 IDENTITY = ('RedshiftRealTest.VersionQuery',)
 BASELINE = ('RedshiftRealTest.ConnectionTest', 'RedshiftRealTest.MultipleRowQuery',
             'RedshiftRealTest.PreparedScalarAndNull', 'RedshiftRealTest.ConfiguredFixtureMetadata',
@@ -140,7 +141,10 @@ def validate_config(c):
 
 
 class Window:
-    def __init__(self, directory, config, deadline):
+    def __init__(self, directory, config, deadline, *, cleanup_principal=None):
+        if cleanup_principal not in (None, IAM_DB_USER):
+            raise Blocked('iam_db_principal_mismatch')
+        self.cleanup_principal = cleanup_principal
         self.directory, self.config, self.deadline = directory, config, deadline
         self.seq = 0
 
@@ -171,13 +175,26 @@ class Window:
             raise Blocked('sql_step_failed')
         return output.read_text().strip()
 
-    def driver(self, manifest, cases):
+    def driver(self, manifest, cases, *, credentials=None, execution_end=None):
         c = self.config; executable = Path(manifest['path'])
         verify_executable(executable, manifest['sha256'])
         env = clean_env()
         env['ODBCPP_REDSHIFT_TEST_CONNECTION'] = (f"SERVER={c['host']};PORT=5439;DATABASE={c['database']};"
             f"UID={c['test_user']};PWD={c['test_password']};SSL=1;SSLCAFILE={c['ca_file']};")
         env['ODBCPP_REDSHIFT_TEST_SCHEMA'] = c['schema']; env['ODBCPP_REDSHIFT_TEST_TABLE'] = c['table']
+        if credentials is not None:
+            from dataclasses import replace
+            from tools.redshift import pilot_iam_credentials as iam
+            allowed = (IDENTITY, ('RedshiftRealTest.IAMPrincipalScalar',
+                                 'RedshiftRealTest.IAMInvalidPassword'))
+            if self.cleanup_principal != IAM_DB_USER or cases not in allowed:
+                raise Blocked('iam_inventory_mismatch')
+            env['ODBCPP_REDSHIFT_TEST_CONNECTION'] = iam.connection_string(
+                c, credentials, datetime.now(timezone.utc), execution_end)
+            invalid = replace(credentials, password='ODBCPP_IAM_NEGATIVE_INVALID_PASSWORD')
+            env['ODBCPP_REDSHIFT_IAM_INVALID_CONNECTION'] = iam.connection_string(
+                c, invalid, datetime.now(timezone.utc), execution_end)
+
         output = self.output('driver'); report = output.with_suffix('.xml')
         fd = os.open(report, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600); os.close(fd)
         result = bounded_process([str(executable), '--gtest_filter='+':'.join(cases),
@@ -221,15 +238,21 @@ class Window:
             "COALESCE(MAX(CASE WHEN usename='odbcpp_pilot_admin' THEN usesysid END),-1) AS admin_id, "
             "COALESCE(MAX(CASE WHEN usename='odbcpp_pilot_test' THEN usesysid END),-1) AS test_id "
             "FROM pg_user\n\\gset\n")
+        ids = ':admin_id,:test_id'
+        if self.cleanup_principal is not None:
+            bind = bind.replace(" AS test_id ", " AS test_id, "
+                "COALESCE(MAX(CASE WHEN usename='" + IAM_DB_USER +
+                "' THEN usesysid END),-1) AS iam_id ")
+            ids += ',:iam_id'
         self.sql(bind + "SELECT 'SELECT pg_terminate_backend(' || session_id || ');' "
             "FROM sys_session_history WHERE database_name='odbcpp_pilot' AND status='active' "
-            "AND CAST(user_id AS INTEGER) IN (:admin_id,:test_id) AND session_id<>:own_pid\n\\gexec")
+            f"AND CAST(user_id AS INTEGER) IN ({ids}) AND session_id<>:own_pid\n\\gexec")
         counts = self.sql(bind + "SELECT "
             "(SELECT COUNT(*) FROM sys_session_history WHERE database_name='odbcpp_pilot' "
-            "AND status='active' AND CAST(user_id AS INTEGER) IN (:admin_id,:test_id) AND session_id<>:own_pid), "
+            f"AND status='active' AND CAST(user_id AS INTEGER) IN ({ids}) AND session_id<>:own_pid), "
             "(SELECT COUNT(*) FROM sys_query_history WHERE database_name='odbcpp_pilot' "
             "AND status IN ('planning','queued','running','returning') "
-            "AND user_id IN (:admin_id,:test_id) AND session_id<>:own_pid);",limit=35,statement_timeout_ms=30000)
+            f"AND user_id IN ({ids}) AND session_id<>:own_pid);",limit=35,statement_timeout_ms=30000)
         if counts != '0|0':
             raise Blocked('remote_cleanup_unverified')
 

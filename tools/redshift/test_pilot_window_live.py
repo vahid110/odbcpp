@@ -34,7 +34,10 @@ class LauncherTests(unittest.TestCase):
         self.events=[];self.fail=None;self.cleanups=0
         outer=self
         class FakeWindow:
-            def __init__(self,*args):
+            def __init__(self,*args,**kwargs):
+                self.deadline=args[2]
+                self.cleanup_principal=kwargs.get("cleanup_principal")
+                outer.iam_principal=self.cleanup_principal
                 outer.assertEqual(outer.f.read()[b.OVERLAY]['attempts'][-1]['phase'],'reserved')
                 outer.events.append('reserved')
             def cleanup(self):
@@ -44,7 +47,10 @@ class LauncherTests(unittest.TestCase):
                 outer.assertEqual(outer.f.read()[b.OVERLAY]['attempts'][-1]['phase'],'active')
                 if outer.fail=='timeout':return '0'
                 return '15000'
-            def driver(self,manifest,cases):
+            def driver(self,manifest,cases,**kwargs):
+                if outer.request["profile"]=="iam":
+                    outer.assertEqual(self.cleanup_principal,launch.iam.DB_USER)
+                    outer.assertEqual(kwargs["credentials"].user,launch.iam.DB_USER)
                 outer.events.append(tuple(cases));self.last_driver_summary=None
                 if outer.fail=='interrupt':raise KeyboardInterrupt()
                 if outer.fail=='identity' and cases==live.IDENTITY:raise Blocked('driver_baseline_failed')
@@ -132,6 +138,29 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(self.events,[])
         (self.directory/'window-001-result.json').symlink_to(self.directory/'missing')
         with self.assertRaisesRegex(Blocked,'window_already_reported'):self.execute()
+
+    def test_iam_exact_inventory_reserved_before_exchange_and_cleanup(self):
+        self.request['profile']='iam';self.write_request()
+        credential=launch.iam.DatabaseCredentials(launch.iam.DB_USER,'synthetic-password-canary',
+            self.f.now+timedelta(seconds=900))
+        def acquire(end,deadline):
+            self.assertEqual(self.f.read()[b.OVERLAY]['attempts'][-1]['phase'],'active')
+            self.assertEqual(self.iam_principal,launch.iam.DB_USER)
+            self.events.append('iam_exchange');return credential
+        with patch.object(launch.iam,'acquire',side_effect=acquire):result=self.execute()
+        self.assertEqual(result['status'],'passed')
+        self.assertEqual(self.events,['reserved','cleanup','iam_exchange',live.IDENTITY,
+            launch.PROFILES['iam'],'cleanup'])
+        self.assertNotIn(credential.password,json.dumps(result))
+
+    def test_iam_exchange_failure_consumed_and_cleaned_without_driver_or_retry(self):
+        self.request['profile']='iam';self.write_request()
+        with patch.object(launch.iam,'acquire',side_effect=Blocked('iam_exchange_failed')) as exchange:
+            result=self.execute();self.assertEqual(exchange.call_count,1)
+        self.assertEqual(result['reason'],'iam_exchange_failed')
+        self.assertTrue(result['cleanup_verified'])
+        self.assertEqual(self.events,['reserved','cleanup','cleanup'])
+        self.assertEqual(self.f.read()[b.OVERLAY]['attempts'][-1]['phase'],'cleaned_pending_billing')
 
 
 class FreshControlsTests(unittest.TestCase):

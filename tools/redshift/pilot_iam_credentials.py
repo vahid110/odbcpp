@@ -1,6 +1,6 @@
-"""Offline contract for one fixed externally supplied IAM DB credential profile.
+"""Fixed externally supplied IAM DB credential exchange for the reserved launcher.
 
-No AWS calls, SQL, renewal or admission. The reviewed launcher must reserve first,
+No SQL, renewal or admission here. The reviewed launcher must reserve first,
 keep credential values private, and include this principal in independent cleanup.
 This is not a native driver IAM provider.
 """
@@ -13,7 +13,7 @@ from tools.redshift.pilot_preflight import Blocked
 ROLE_ARN = 'arn:aws:iam::385207570137:role/odbcpp-redshift-test/odbcpp-redshift-test-runtime'
 ROLE_NAME = 'odbcpp-redshift-test-runtime'
 SESSION_NAME = 'odbcpp-redshift-qualification'
-DB_USER = 'IAMR:odbcpp-redshift-test-runtime'
+DB_USER = live.IAM_DB_USER
 DATABASE = 'odbcpp_pilot'
 
 
@@ -34,7 +34,8 @@ def timestamp(value):
 
 
 def validity(expiration, now, execution_end):
-    need(now.tzinfo is not None and execution_end.tzinfo is not None,
+    need(isinstance(now, datetime) and isinstance(execution_end, datetime)
+         and now.tzinfo is not None and execution_end.tzinfo is not None,
          'iam_clock_invalid')
     remaining = (execution_end - now).total_seconds()
     need(0 < remaining <= 180, 'iam_execution_bound_invalid')
@@ -122,7 +123,7 @@ def connection_string(config, credentials, now, execution_end):
          'iam_db_principal_mismatch')
     validity(credentials.expires.isoformat(), now, execution_end)
     return (f"SERVER={config['host']};PORT=5439;DATABASE={DATABASE};"
-            f"UID={brace(credentials.user)};PWD={brace(credentials.password)};"
+            f"UID={brace(credentials.user)};PWD={brace(secret(credentials.password,20,256))};"
             f"SSL=1;SSLCAFILE={config['ca_file']};")
 
 
@@ -130,3 +131,35 @@ def credential_request():
     # Exact request inventory for the future reserved launcher, not executable here.
     return ['redshift-serverless', 'get-credentials', '--workgroup-name', live.NAME,
             '--db-name', DATABASE, '--duration-seconds', '900']
+
+
+def acquire(execution_end, deadline):
+    """One fixed credential exchange, called only after durable window reservation."""
+    import json
+    import subprocess
+    import time
+    from tools.redshift.pilot_preflight import _unique_object
+
+    def call(args, env):
+        seconds = min(20, int(deadline - time.monotonic()))
+        need(seconds >= 1, 'execution_deadline')
+        try:
+            result = subprocess.run([live.AWS, '--region', live.REGION, '--no-cli-pager'] + args,
+                                    env=env, capture_output=True, timeout=seconds)
+            need(result.returncode == 0 and len(result.stdout) <= 65536,
+                 'iam_exchange_failed')
+            return json.loads(result.stdout, object_pairs_hook=_unique_object,
+                parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        except (OSError, ValueError, subprocess.SubprocessError):
+            raise Blocked('iam_exchange_failed') from None
+
+    env = live.clean_env(); env.update(AWS_PAGER='', AWS_MAX_ATTEMPTS='1')
+    role = role_credentials(call(['--profile',live.NAME,'sts','assume-role',
+        '--role-arn',ROLE_ARN,'--role-session-name',SESSION_NAME,'--duration-seconds','900'],env),
+        datetime.now(timezone.utc),execution_end)
+    role_env = role.environment()
+    validity(role.expires.isoformat(),datetime.now(timezone.utc),execution_end)
+    verify_role_identity(call(['sts','get-caller-identity'],role_env))
+    validity(role.expires.isoformat(),datetime.now(timezone.utc),execution_end)
+    response = call(credential_request(),role_env)
+    return database_credentials(response,datetime.now(timezone.utc),execution_end)
