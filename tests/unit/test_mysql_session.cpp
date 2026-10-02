@@ -41,7 +41,7 @@ class FakeTransport : public rs::core::transport::ITransport,
   void set_ca_locations(const std::string&,const std::string&) override { ++configuration_calls; }
   Bytes input=packet(greeting()), output;
   std::size_t configuration_calls{}, offset{}, chunk{1}, calls{}, closes{}, upgrades{};
-  std::optional<std::size_t> throw_recv_offset;
+  std::optional<std::size_t> throw_recv_offset,fail_send_offset,lose_peer_after_output;
   int fail_at{-1}; bool verified{true}, throw_io{}, zero{}, oversize{}, eof{}; int bad_send{-1};
   rs::util::Deadline expected{};
   std::vector<rs::util::Deadline> deadlines;
@@ -64,9 +64,11 @@ class FakeTransport : public rs::core::transport::ITransport,
   }
   rs::util::Result<rs::core::transport::IOResult> send(std::span<const std::byte> in, rs::util::Deadline dl) override {
     deadlines.push_back(dl);
+    if (fail_send_offset && output.size()>=*fail_send_offset) return {DbErrorCode::NetworkError};
     if (fail_at==2) return {DbErrorCode::NetworkError,"unsafe native detail"};
     if (bad_send>=0 && !output.empty()) return rs::core::transport::IOResult{bad_send==1?in.size()+1:0,bad_send==2};
     const auto n=std::min(chunk,in.size()); output.insert(output.end(),in.begin(),in.begin()+n);
+    if (lose_peer_after_output && output.size()>=*lose_peer_after_output) verified=false;
     return rs::core::transport::IOResult{n,false};
   }
   rs::util::Result<void> upgrade_to_tls(std::string_view host, rs::util::Deadline dl) override {
@@ -140,7 +142,8 @@ TEST(MySqlSessionTest, LocalFailuresPreserveConnectedSessionWithoutIo) {
   Fixture f;const auto calls=f.transport->calls;
   EXPECT_FALSE(f.execute(""));EXPECT_FALSE(f.execute(std::string_view("x\0y",3)));
   EXPECT_FALSE(f.execute(std::string(1,static_cast<char>(255))));
-  EXPECT_FALSE(f.session->execute_prepared("SELECT ?",std::span<const rs::core::database::QueryParameter>{},f.transport->expected));
+  const std::array unsupported{rs::core::database::QueryParameter{"1",rs::core::database::QueryParameterType::Numeric}};
+  EXPECT_FALSE(f.session->execute_prepared("SELECT ?",unsupported,f.transport->expected));
   EXPECT_FALSE(f.session->connect(settings()));EXPECT_EQ(calls,f.transport->calls);
   EXPECT_TRUE(f.transport->output.empty());EXPECT_EQ(0u,f.transport->closes);
   EXPECT_TRUE(f.session->is_connected());
@@ -355,4 +358,118 @@ TEST(MySqlSessionTest, DatabaseResponseTruncationAndPostAuthenticationExceptionC
   MySqlSession session(std::move(owned));auto config=settings();config.database="odbcpp";
   auto result=session.connect(config);ASSERT_FALSE(result);EXPECT_EQ(DbErrorCode::ProtocolError,result.error());
   EXPECT_FALSE(session.is_connected());EXPECT_EQ(1u,t->closes);session.disconnect();EXPECT_EQ(1u,t->closes);
+}
+
+namespace {
+void prepared_metadata(FakeTransport& t,unsigned parameters=1,unsigned columns=1) {
+  Bytes first{std::byte{0}};number(first,17,4);number(first,columns,2);number(first,parameters,2);
+  number(first,0,1);number(first,0,2);append(t,first,1);unsigned seq=2;
+  for (unsigned i=0;i<parameters;++i) append(t,column_packet("?",253,45),seq++);
+  if (parameters) append(t,eof_packet(),seq++);
+  for (unsigned i=0;i<columns;++i) append(t,column_packet("id"),seq++);
+  if (columns) append(t,eof_packet(),seq++);
+}
+void binary_result(FakeTransport& t,bool null=false) {
+  append(t,{std::byte{1}},1);append(t,column_packet("id"),2);append(t,eof_packet(),3);
+  Bytes row{std::byte{0},static_cast<std::byte>(null?4:0)};
+  if (!null) { number(row,42,4);number(row,0,4); }
+  append(t,row,4);append(t,eof_packet(),5);
+}
+std::vector<unsigned> commands(const Bytes& bytes) {
+  std::vector<unsigned> result;std::size_t offset{};
+  while (offset<bytes.size()) {
+    EXPECT_GE(bytes.size()-offset,5u);if (bytes.size()-offset<5) break;
+    const auto size=std::to_integer<std::size_t>(bytes[offset])|
+        (std::to_integer<std::size_t>(bytes[offset+1])<<8)|(std::to_integer<std::size_t>(bytes[offset+2])<<16);
+    EXPECT_EQ(std::byte{0},bytes[offset+3]);result.push_back(std::to_integer<unsigned>(bytes[offset+4]));
+    offset+=size+4;
+  }
+  EXPECT_EQ(bytes.size(),offset);return result;
+}
+}
+TEST(MySqlSessionTest, PreparedExecuteBindsTypedParametersClosesAndPreservesOwnedRows) {
+  for (bool null:{false,true}) {
+    Fixture f;prepared_metadata(*f.transport);binary_result(*f.transport,null);
+    const std::array params{rs::core::database::QueryParameter{null?std::nullopt:std::optional<std::string>{"42"},
+        rs::core::database::QueryParameterType::Int32}};
+    const auto deadline=rs::util::make_deadline(std::chrono::seconds(10));
+    auto result=f.session->execute_prepared("SELECT CAST(? AS SIGNED) AS id",params,deadline);ASSERT_TRUE(result);
+    ASSERT_EQ(1u,result->rows.size());EXPECT_EQ(params[0].value,result->rows[0][0]);
+    ASSERT_EQ(1u,result->normalized_parameter_types.size());
+    EXPECT_EQ((std::vector<unsigned>{22,23,25}),commands(f.transport->output));
+    EXPECT_EQ(std::byte{17},f.transport->output[f.transport->output.size()-4]);
+    for (const auto dl:f.transport->deadlines) EXPECT_EQ(deadline,dl);
+    append(*f.transport,ok(),1);EXPECT_TRUE(f.execute());f.session->disconnect();
+    EXPECT_EQ(params[0].value,result->rows[0][0]);EXPECT_EQ(1u,f.transport->closes);
+  }
+}
+TEST(MySqlSessionTest, PreparedParameterMismatchClosesStatementAndPreservesOwner) {
+  Fixture f;prepared_metadata(*f.transport);
+  auto result=f.session->execute_prepared("SELECT ?",{},rs::util::make_deadline(std::chrono::seconds(10)));
+  ASSERT_FALSE(result);EXPECT_EQ(DbErrorCode::InvalidParameter,result.error());
+  EXPECT_EQ((std::vector<unsigned>{22,25}),commands(f.transport->output));EXPECT_TRUE(f.session->is_connected());
+  EXPECT_EQ(rs::core::database::SessionDisposition::Reusable,result.session_snapshot().disposition);
+  append(*f.transport,ok(),1);EXPECT_TRUE(f.execute());
+}
+TEST(MySqlSessionTest, PreparedLocalValidationDoesNotSendOrRetire) {
+  Fixture f;const std::array params{rs::core::database::QueryParameter{"2147483648",rs::core::database::QueryParameterType::Int32}};
+  auto result=f.session->execute_prepared("SELECT ?",params,rs::util::make_deadline(std::chrono::seconds(10)));
+  ASSERT_FALSE(result);EXPECT_EQ(DbErrorCode::InvalidParameter,result.error());
+  EXPECT_TRUE(f.transport->output.empty());EXPECT_EQ(0u,f.transport->closes);EXPECT_TRUE(f.session->is_connected());
+}
+TEST(MySqlSessionTest, PreparedMalformedMetadataBinaryRowsAndAggregateBudgetsRetire) {
+  for (unsigned mode=0;mode<5;++mode) {
+    auto config=settings();if (mode==3) config.response_limits.max_messages=9;
+    if (mode==4) config.result_limits.max_metadata_entries=12;
+    Fixture f(config);
+    if (mode==0) append(*f.transport,{std::byte{0}},1);
+    else {
+      prepared_metadata(*f.transport);
+      if (mode==1) append(*f.transport,ok(),2);
+      else if (mode==2) { append(*f.transport,{std::byte{1}},1);append(*f.transport,column_packet("id"),2);
+        append(*f.transport,eof_packet(),3);append(*f.transport,{std::byte{0},std::byte{0},std::byte{42}},4); }
+      else binary_result(*f.transport);
+    }
+    const std::array params{rs::core::database::QueryParameter{"42",rs::core::database::QueryParameterType::Int32}};
+    auto result=f.session->execute_prepared("SELECT ?",params,rs::util::make_deadline(std::chrono::seconds(10)));
+    ASSERT_FALSE(result);EXPECT_FALSE(f.session->is_connected());EXPECT_EQ(1u,f.transport->closes);
+    EXPECT_EQ(rs::core::database::BackendOperation::ExecutePrepared,result.backend_error().operation);
+    EXPECT_EQ(rs::core::database::SessionDisposition::Retire,result.session_snapshot().disposition);
+    if (mode>=3) EXPECT_EQ(DbErrorCode::ResourceLimit,result.error());
+  }
+}
+TEST(MySqlSessionTest, PreparedCloseFailureAndPeerLossRetireSuccessfulExecution) {
+  for (bool peer_loss:{false,true}) {
+    Fixture f;prepared_metadata(*f.transport);binary_result(*f.transport);
+    // SELECT ? prepare = 13 bytes; one Int32 execute = 22 bytes; close = 9 bytes.
+    if (peer_loss) f.transport->lose_peer_after_output=44;else f.transport->fail_send_offset=35;
+    const std::array params{rs::core::database::QueryParameter{"42",rs::core::database::QueryParameterType::Int32}};
+    auto result=f.session->execute_prepared("SELECT ?",params,rs::util::make_deadline(std::chrono::seconds(10)));
+    ASSERT_FALSE(result);EXPECT_EQ(peer_loss?DbErrorCode::TLSError:DbErrorCode::NetworkError,result.error());
+    EXPECT_FALSE(f.session->is_connected());EXPECT_EQ(1u,f.transport->closes);
+  }
+}
+TEST(MySqlSessionTest, PreparedNoParameterDmlClosesWithoutReadingCloseAcknowledgement) {
+  Fixture f;prepared_metadata(*f.transport,0,0);auto response=ok();response[1]=std::byte{2};append(*f.transport,response,1);
+  auto result=f.session->execute_prepared("UPDATE fixture SET id=1",{},rs::util::make_deadline(std::chrono::seconds(10)));
+  ASSERT_TRUE(result);EXPECT_EQ(2u,result->affected_rows);EXPECT_TRUE(result->rows.empty());
+  EXPECT_EQ((std::vector<unsigned>{22,23,25}),commands(f.transport->output));EXPECT_EQ(f.transport->input.size(),f.transport->offset);
+}
+
+TEST(MySqlSessionTest, PreparedAggregateRequestLimitPreservesOwnerBeforeAnyCommand) {
+  auto config=settings();config.input_limits.max_request_wire_bytes=43;Fixture f(config);
+  const std::array params{rs::core::database::QueryParameter{"42",rs::core::database::QueryParameterType::Int32}};
+  auto result=f.session->execute_prepared("SELECT ?",params,rs::util::make_deadline(std::chrono::seconds(10)));
+  ASSERT_FALSE(result);EXPECT_EQ(DbErrorCode::ResourceLimit,result.error());EXPECT_TRUE(f.transport->output.empty());
+  EXPECT_EQ(0u,f.transport->closes);EXPECT_TRUE(f.session->is_connected());
+  append(*f.transport,ok(),1);EXPECT_TRUE(f.execute());
+}
+TEST(MySqlSessionTest, PreparedExpiredDeadlineAndUnverifiedPeerNeverSendSql) {
+  for (bool expired:{true,false}) {
+    Fixture f;if (!expired) f.transport->verified=false;
+    const auto deadline=expired?rs::util::Clock::now():rs::util::make_deadline(std::chrono::seconds(10));
+    auto result=f.session->execute_prepared("SELECT 1",{},deadline);ASSERT_FALSE(result);
+    EXPECT_EQ(expired?DbErrorCode::Timeout:DbErrorCode::TLSError,result.error());
+    EXPECT_TRUE(f.transport->output.empty());EXPECT_EQ(1u,f.transport->closes);EXPECT_FALSE(f.session->is_connected());
+  }
 }

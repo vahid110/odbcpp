@@ -68,6 +68,26 @@ int main(int argc, char** argv) {
       auto rows=query("SELECT id,value FROM sdk_session ORDER BY id");
       if (!rows || rows->rows.size()!=2 || rows->rows[0][0]!=std::optional<std::string>{"1"} ||
           rows->rows[0][1]!=std::optional<std::string>{"fixture"} || rows->rows[1][1]) return fail(6);
+      const auto prepared=[&](std::string_view sql,std::span<const rs::core::database::QueryParameter> parameters) {
+        auto value=session.execute_prepared(sql,parameters,rs::util::make_deadline(std::chrono::seconds(10)));
+        if (!value) std::cerr<<"FAIL session-query-"<<++query_id<<" code "<<value.error().value()<<'\n';
+        return value;
+      };
+      using Parameter=rs::core::database::QueryParameter;
+      using Type=rs::core::database::QueryParameterType;
+      const std::array bound{Parameter{"-42",Type::Int32},Parameter{std::string("a'\0é",5),Type::Text},
+          Parameter{std::string("\0\xff",2),Type::Binary},Parameter{std::nullopt,Type::Int64}};
+      auto selected=prepared("SELECT CAST(? AS SIGNED) AS n, CAST(? AS CHAR CHARACTER SET utf8mb4) AS txt, CAST(? AS BINARY) AS bin, CAST(? AS SIGNED) AS missing",bound);
+      if (!selected || selected->rows.size()!=1 || selected->columns.size()!=4 || !selected->cell_errors.empty() ||
+          selected->rows[0][0]!=bound[0].value || selected->rows[0][1]!=bound[1].value ||
+          selected->rows[0][2]!=bound[2].value || selected->rows[0][3]) return fail(13);
+      const std::array inserted_parameters{Parameter{"3",Type::Int16},Parameter{"",Type::Text}};
+      auto prepared_insert=prepared("INSERT INTO sdk_session VALUES (?,?)",inserted_parameters);
+      if (!prepared_insert || prepared_insert->affected_rows!=1) return fail(14);
+      auto mismatch=prepared("SELECT CAST(? AS SIGNED)",{});
+      if (mismatch || mismatch.error()!=DbErrorCode::InvalidParameter || !session.is_connected() || !query("SELECT 1")) return fail(15);
+      auto no_parameters=prepared("SELECT CAST(7 AS SIGNED) AS n",{});
+      if (!no_parameters || no_parameters->rows.size()!=1 || no_parameters->rows[0][0]!=std::optional<std::string>{"7"}) return fail(16);
       auto empty=query("SELECT id FROM sdk_session WHERE id=0");
       if (!empty || empty->columns.size()!=1 || !empty->rows.empty()) return fail(7);
       auto invalid=query("SELECT * FROM sdk_missing_table");

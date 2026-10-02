@@ -1,10 +1,11 @@
 #pragma once
 #include "authentication.h"
 #include "query_wire.h"
+#include "prepared_wire.h"
 #include "core/transport/tls_configurable_transport.h"
 
 namespace rs::core::database::mysql {
-// Bounded internal S3 session. No provider/ODBC registration, prepared statements,
+// Bounded internal S3 session. No provider/ODBC registration, statement caching,
 // warning delivery, pooling, or multi-result support. Owns the transport exclusively.
 class MySqlSession final : public IDatabaseConnection {
  public:
@@ -88,9 +89,80 @@ class MySqlSession final : public IDatabaseConnection {
       return failure(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),BackendOperation::Connect);
     }
   }
-  BackendResult<QueryResult> execute_prepared(std::string_view,std::span<const QueryParameter>,rs::util::Deadline) override {
-    return local_backend_error(LocalFailure::Unsupported,"MySQL prepared execution is not implemented",
-        BackendOperation::ExecutePrepared,state_);
+  BackendResult<QueryResult> execute_prepared(std::string_view sql,std::span<const QueryParameter> parameters,
+                                             rs::util::Deadline deadline) override {
+    using rs::util::DbErrorCode;
+    constexpr auto operation=BackendOperation::ExecutePrepared;
+    if (!connected_) return failure(rs::util::make_error_code(DbErrorCode::NotConnected),operation);
+    if (sql.empty() || sql.find('\0')!=std::string_view::npos || !rs::util::utf8_code_point_count(sql))
+      return local_backend_error(LocalFailure::InvalidInput,"Invalid MySQL prepared input",operation,state_);
+    if (sql.size()>input_limits_.max_sql_bytes || sql.size()>=connection_packet_limit)
+      return local_failure(rs::util::make_error_code(DbErrorCode::ResourceLimit),operation);
+    struct Retire {
+      MySqlSession& session;bool accepted{};
+      ~Retire() { if (!accepted) session.disconnect(); }
+    } retire{*this};
+    try {
+      // Validate and encode parameters before any protocol mutation. No SQL substitution.
+      const auto prepare_size=sql.size()+5;
+      if (prepare_size>input_limits_.max_request_wire_bytes ||
+          input_limits_.max_request_wire_bytes-prepare_size<9) {
+        BackendResult<QueryResult> rejected{local_failure(rs::util::make_error_code(DbErrorCode::ResourceLimit),operation)};
+        retire.accepted=true;return rejected;
+      }
+      auto execution_limits=input_limits_;
+      execution_limits.max_request_wire_bytes-=prepare_size+9;
+      auto execution=prepared_detail::execute_request(0,parameters,execution_limits);
+      if (!execution) {
+        BackendResult<QueryResult> rejected{local_failure(execution.error(),operation)};
+        retire.accepted=true;return rejected;
+      }
+      std::vector<std::byte> request(prepare_size);
+      authentication_detail::frame(request,0);request[4]=std::byte{22};
+      for (std::size_t i=0;i<sql.size();++i) request[5+i]=static_cast<std::byte>(sql[i]);
+      auto sent=authentication_detail::send_all(*transport_,request,deadline);
+      if (!sent) return retiring_failure(sent.error(),operation);
+      Reader reader{*transport_,deadline,response_limits_};
+      auto first=reader.next();if (!first) return retiring_failure(first.error(),operation);
+      if ((*first)[0]==std::byte{255}) return retiring_failure(server_error(*first).error(),operation);
+      auto prepared=prepared_detail::parse_prepare(*first);
+      if (!prepared) return retiring_failure(prepared.error(),operation);
+      if (prepared->parameters>input_limits_.max_parameters ||
+          prepared->columns>result_limits_.max_columns_per_description ||
+          static_cast<std::size_t>(prepared->columns)+prepared->parameters>result_limits_.max_metadata_entries/6)
+        return retiring_failure(rs::util::make_error_code(DbErrorCode::ResourceLimit),operation);
+      std::size_t names{},entries{};
+      std::vector<NativeTypeInfo> parameter_types;
+      auto metadata=read_prepared_metadata(reader,prepared->parameters,names,entries,&parameter_types);
+      if (!metadata) return retiring_failure(metadata.error(),operation);
+      metadata=read_prepared_metadata(reader,prepared->columns,names,entries,nullptr);
+      if (!metadata) return retiring_failure(metadata.error(),operation);
+      std::array<std::byte,9> close{};authentication_detail::frame(close,0);close[4]=std::byte{25};
+      for (std::size_t i=0;i<4;++i) {
+        const auto byte=static_cast<std::byte>((prepared->statement_id>>(8*i))&255);
+        (*execution)[5+i]=byte;close[5+i]=byte;
+      }
+      if (prepared->parameters!=parameters.size()) {
+        sent=authentication_detail::send_all(*transport_,close,deadline);
+        if (!sent) return retiring_failure(sent.error(),operation);
+        auto checked=verified_completion(deadline);if (!checked) return retiring_failure(checked.error(),operation);
+        BackendResult<QueryResult> rejected{local_backend_error(LocalFailure::InvalidInput,
+            "MySQL parameter count mismatch",operation,state_)};
+        retire.accepted=true;return rejected;
+      }
+      sent=authentication_detail::send_all(*transport_,*execution,deadline);
+      if (!sent) return retiring_failure(sent.error(),operation);
+      reader.sequence=1; // New command, same cumulative response budget and deadline.
+      auto result=read_result(reader,true,&names,&entries);
+      if (!result) return retiring_failure(result.error(),operation);
+      result->normalized_parameter_types=std::move(parameter_types);
+      sent=authentication_detail::send_all(*transport_,close,deadline);
+      if (!sent) return retiring_failure(sent.error(),operation);
+      auto checked=verified_completion(deadline);if (!checked) return retiring_failure(checked.error(),operation);
+      BackendResult<QueryResult> completed{std::move(*result),snapshot()};
+      retire.accepted=true;return completed;
+    } catch (const std::bad_alloc&) { return retiring_failure(rs::util::make_error_code(DbErrorCode::AllocationFailure),operation); }
+      catch (...) { return retiring_failure(rs::util::make_error_code(DbErrorCode::ProtocolError),operation); }
   }
   BackendResult<QueryResult> execute_query(std::string_view sql,rs::util::Deadline deadline) override {
     using rs::util::DbErrorCode;
@@ -175,7 +247,35 @@ class MySqlSession final : public IDatabaseConnection {
     if (!tls || !tls->peer_identity_verified()) return {DbErrorCode::TLSError};
     return {};
   }
-  rs::util::Result<QueryResult> read_result(Reader& reader) {
+  rs::util::Result<void> verified_completion(rs::util::Deadline deadline) const {
+    if (rs::util::Clock::now()>=deadline) return {rs::util::DbErrorCode::Timeout};
+    auto* tls=dynamic_cast<rs::core::transport::IStartTlsTransport*>(transport_.get());
+    if (!tls || !tls->peer_identity_verified()) return {rs::util::DbErrorCode::TLSError};
+    return {};
+  }
+  rs::util::Result<void> read_prepared_metadata(Reader& reader,std::size_t count,
+      std::size_t& names,std::size_t& entries,std::vector<NativeTypeInfo>* types) {
+    using rs::util::DbErrorCode;
+    for (std::size_t i=0;i<count;++i) {
+      auto packet=reader.next();if (!packet) return {packet.error()};
+      if ((*packet)[0]==std::byte{255}) return {server_error(*packet).error()};
+      std::size_t bytes{};
+      auto column=query_detail::column(*packet,result_limits_,&bytes);
+      if (!column) return {column.error()};
+      if (bytes>result_limits_.max_metadata_name_bytes-names ||
+          result_limits_.max_metadata_entries-entries<6) return {DbErrorCode::ResourceLimit};
+      names+=bytes;entries+=6;
+      if (types) types->push_back(*column->normalized_type);
+    }
+    if (count) {
+      auto packet=reader.next();if (!packet) return {packet.error()};
+      auto done=query_detail::completion(*packet,true);if (!done) return {done.error()};
+      set_state(done->status);
+    }
+    return {};
+  }
+  rs::util::Result<QueryResult> read_result(Reader& reader,bool binary=false,
+      std::size_t* accumulated_names=nullptr,std::size_t* accumulated_entries=nullptr) {
     using rs::util::DbErrorCode;
     auto first=reader.next();if (!first) return {first.error()};
     if ((*first)[0]==std::byte{255}) return server_error(*first);
@@ -188,14 +288,19 @@ class MySqlSession final : public IDatabaseConnection {
     if (!c.length(count) || c.remaining() || !count) return {DbErrorCode::ProtocolError};
     if (count>result_limits_.max_columns_per_description || count>result_limits_.max_metadata_entries/6)
       return {DbErrorCode::ResourceLimit};
-    std::size_t names{};
+    std::size_t names=accumulated_names?*accumulated_names:0;
+    std::size_t entries=accumulated_entries?*accumulated_entries:0;
+    std::vector<prepared_detail::NativeColumn> native;
     for (std::uint64_t i=0;i<count;++i) {
       auto packet=reader.next();if (!packet) return {packet.error()};
       if ((*packet)[0]==std::byte{255}) return server_error(*packet);
       std::size_t metadata_bytes{};
-      auto column=query_detail::column(*packet,result_limits_,&metadata_bytes);if (!column) return {column.error()};
+      prepared_detail::NativeColumn wire;
+      auto column=query_detail::column(*packet,result_limits_,&metadata_bytes,&wire.type,&wire.unsigned_value);if (!column) return {column.error()};
       if (metadata_bytes>result_limits_.max_metadata_name_bytes-names) return {DbErrorCode::ResourceLimit};
-      names+=metadata_bytes;result.columns.push_back(std::move(*column));
+      if (result_limits_.max_metadata_entries-entries<6) return {DbErrorCode::ResourceLimit};
+      names+=metadata_bytes;entries+=6;result.columns.push_back(std::move(*column));
+      if (binary) native.push_back(wire);
     }
     auto metadata_end=reader.next();if (!metadata_end) return {metadata_end.error()};
     auto end=query_detail::completion(*metadata_end,true);if (!end) return {end.error()};
@@ -208,7 +313,8 @@ class MySqlSession final : public IDatabaseConnection {
       }
       if (result.rows.size()>=result_limits_.max_rows ||
           result.rows.size()>=result_limits_.max_cells/result.columns.size()) return {DbErrorCode::ResourceLimit};
-      auto row=query_detail::row(*packet,result.columns,result.rows.size(),result.cell_errors);
+      auto row=binary?prepared_detail::binary_row(*packet,native,result.columns,result.rows.size(),result.cell_errors):
+          query_detail::row(*packet,result.columns,result.rows.size(),result.cell_errors);
       if (!row) return {row.error()};
       result.rows.push_back(std::move(*row));
     }
@@ -227,9 +333,12 @@ class MySqlSession final : public IDatabaseConnection {
     BackendError error{code,"MySQL session operation failed"};error.operation=operation;
     error.session_state=state_;error.disposition=SessionDisposition::Retire;return error;
   }
-  BackendError retiring_failure(std::error_code code) {
+  BackendError local_failure(std::error_code code,BackendOperation operation) const {
+    auto error=failure(code,operation);error.disposition=snapshot().disposition;return error;
+  }
+  BackendError retiring_failure(std::error_code code,BackendOperation operation=BackendOperation::ExecuteDirect) {
     // Snapshot reflects the retirement performed by the guard before return.
-    auto error=failure(code,BackendOperation::ExecuteDirect);error.session_state=SessionState::Disconnected;return error;
+    auto error=failure(code,operation);error.session_state=SessionState::Disconnected;return error;
   }
   std::unique_ptr<rs::core::transport::ITransport> transport_;
   bool connected_{};SessionState state_{SessionState::Disconnected};std::string version_;

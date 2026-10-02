@@ -1778,3 +1778,12 @@ bounded budgets and retirement on rejected or malformed startup responses. See
 [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md#s3-native-database-admission--2026-10-02)
 for scope and acceptance evidence. Prepared execution is the next bounded S3
 step; provider/ODBC registration and full S3/S4 acceptance remain open.
+
+## S3 bounded native prepared execution — 2026-10-02
+
+Native database selection passed CI `36988920504` at `54ed895`. The next slice
+adds native prepare/execute/close with typed integer/Boolean/text/binary/NULL
+parameters, owning binary rows, cumulative budgets and explicit retirement.
+See [SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md#s3-bounded-native-prepared-execution--2026-10-02)
+for limits and required acceptance evidence. Transaction/catalog facets, wider
+scalar coverage, shared ODBC registration and final S3 proof remain open.

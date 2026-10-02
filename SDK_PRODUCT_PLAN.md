@@ -854,3 +854,40 @@ queries and rejects a missing database before reconnecting. Complete local gates
 and exact-head hosted acceptance are required for this code batch. This closes
 database selection only; prepared execution, transactions/metadata facets,
 provider/ODBC registration and full S3/S4 acceptance remain open.
+
+### S3 bounded native prepared execution — 2026-10-02
+
+Native database admission passed exact-head CI `36988920504` at `54ed895`.
+The next private SDK slice uses COM_STMT_PREPARE, COM_STMT_EXECUTE and
+COM_STMT_CLOSE, with no SQL substitution and no server-statement cache. Supported
+parameter hints are signed Int16/Int32/Int64, Boolean (`0`/`1`), UTF-8 Text and
+Unspecified, Binary and typed NULL. Embedded NULs remain data; binary input is
+accepted only for Binary. Floating, decimal and temporal hints remain explicitly
+unsupported in this slice. Parameter count, per-value/total bytes and full
+prepare+execute+close request bytes are checked before protocol mutation.
+
+Preparation drains bounded parameter/result metadata; execution consumes fresh
+metadata and owning binary rows. Native type identifiers remain backend-private.
+NULL bitmaps, signed/unsigned integers, length-encoded text/binary and normalized
+cell errors are covered. Prepare and execute share one absolute deadline and
+cumulative response byte/message and metadata entry/name budgets. Successful
+execution closes the statement without expecting a close acknowledgement.
+Parameter-count mismatch closes it and preserves the same owner; malformed
+responses, server errors, unsupported flows and cleanup failure retire the
+transport without replay. Owning outcomes are constructed before cleanup guards
+are disarmed, so allocation exceptions cannot publish contradictory state.
+
+Focused tests cover codec truncation, bitmap boundaries, numeric range, invalid
+UTF-8, unsupported hints, exact cleanup, aggregate limits, mismatch recovery,
+no-parameter DML, deadline expiry and peer loss. The pinned Linux fixture adds
+typed prepared SELECT/INSERT, NULL/empty/binary/literal text, no-parameter SELECT
+and mismatch recovery. Complete protected local gates and exact-head hosted
+live/platform acceptance remain mandatory for this batch. No MySQL ODBC product,
+public prepared cache, complete scalar support or S3 completion is claimed;
+transaction/catalog facets and shared ODBC registration remain next work.
+
+Protocol references:
+[prepare](https://dev.mysql.com/doc/dev/mysql-server/8.4.11/page_protocol_com_stmt_prepare.html),
+[execute](https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_stmt_execute.html),
+[binary resultsets](https://dev.mysql.com/doc/dev/mysql-server/8.4.11/page_protocol_binary_resultset.html),
+[close](https://dev.mysql.com/doc/dev/mysql-server/8.4.11/page_protocol_com_stmt_close.html).
