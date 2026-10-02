@@ -115,3 +115,13 @@ Do not start RS implementation from this planning update, extend MS1/MySQL scope
 or put Redshift branches in shared ODBC orchestration. Keep SDK extension and
 security boundaries intact. Review discoveries at batch boundaries and replan
 rather than absorbing unlimited parity work into the existing buffer.
+
+## First parallel inventory — 2026-10-02
+
+[REDSHIFT_PARITY_INVENTORY.md](REDSHIFT_PARITY_INVENTORY.md) records the first
+bounded official-source pass across RS1–RS8, separates observations from proposed
+tests, and retains an explicit unreviewed-source ledger. It is preparation, not
+behavioral acceptance or an exhaustive parity claim. The next independent
+research package is RP-INV-02 fetch-mode decisions; runtime and live estimates
+remain separate. All existing scope approvals, security constraints and live
+gates remain intact.

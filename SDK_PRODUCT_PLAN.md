@@ -671,3 +671,37 @@ the actual transport, retain identical negotiated flags in the credential packet
 and validate the full authentication state machine before publishing a session.
 Pinned MySQL 8.4.11 live integration remains required before S3 handshake acceptance.
 S2C/G12 qualification, PostgreSQL/Redshift behavior and public scope are unchanged.
+
+## Parallel preparation and MySQL TLS composition — 2026-10-02
+
+The integration owner keeps S3 MySQL implementation on
+`codex/transport-foundation`. Redshift source inventory and S2C qualification
+strategy review run in isolated worktrees; neither workstream may edit shared
+runtime code, launch redundant CI, or claim live acceptance. Results are reviewed
+and integrated centrally. Redshift runtime development still requires its named
+live gates; account access remains unavailable.
+
+[S2C_QUALIFICATION_STRATEGY.md](S2C_QUALIFICATION_STRATEGY.md) records the finite
+Windows isolation proposal, alternatives, estimate and installed-package test
+obligations. It is a recommendation pending integration-owner design selection,
+not accepted implementation evidence. T13/T14 remain open; main-build AWS-LC
+stays disabled until its separately scheduled integration is qualified.
+
+The private MySQL TLS composition now connects in plaintext, reads exactly one
+bounded sequence-zero greeting, admits only the pinned 8.4.11 proof profile,
+sends the credential-free SSLRequest with partial-write handling and upgrades
+the same transport under the original deadline. Success requires actual peer
+identity verification and a post-upgrade deadline check. Failure and exception
+unwinding retire the socket; returned diagnostics do not expose native text.
+
+Focused tests cover fragmented input/output, unread bytes at the TLS boundary,
+all greeting truncations, malformed length/sequence/capabilities/version, invalid
+progress on receive and after partial send, transport errors, unverified TLS,
+exception cleanup, expired deadline, invalid host/port and missing TLS extension.
+Independent review found no source blocker; its three requested failure tests
+were added. Complete local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan,
+Redshift unit/build and absent-endpoint contract gates passed. Exact-head hosted
+CI remains required for this batch. No credentials are sent and no authenticated MySQL session, live
+MySQL integration, provider registration or S3 handshake acceptance is claimed.
+Next: authentication exchange and pinned live fixture, not further speculative
+connection codec expansion.
