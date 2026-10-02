@@ -891,3 +891,9 @@ Protocol references:
 [execute](https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_stmt_execute.html),
 [binary resultsets](https://dev.mysql.com/doc/dev/mysql-server/8.4.11/page_protocol_binary_resultset.html),
 [close](https://dev.mysql.com/doc/dev/mysql-server/8.4.11/page_protocol_com_stmt_close.html).
+
+The initial hosted prepared batch caught two test-fixture portability warnings:
+GCC requires braces around a conditional Google Test assertion, and MSVC requires
+the packet sequence fixture counter to use its native uint8_t type. Both are
+corrected without changing compiler policy or runtime behavior. Repaired full
+gates and hosted live acceptance are required before closing this slice.

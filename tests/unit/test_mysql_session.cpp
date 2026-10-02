@@ -363,7 +363,7 @@ TEST(MySqlSessionTest, DatabaseResponseTruncationAndPostAuthenticationExceptionC
 namespace {
 void prepared_metadata(FakeTransport& t,unsigned parameters=1,unsigned columns=1) {
   Bytes first{std::byte{0}};number(first,17,4);number(first,columns,2);number(first,parameters,2);
-  number(first,0,1);number(first,0,2);append(t,first,1);unsigned seq=2;
+  number(first,0,1);number(first,0,2);append(t,first,1);std::uint8_t seq=2;
   for (unsigned i=0;i<parameters;++i) append(t,column_packet("?",253,45),seq++);
   if (parameters) append(t,eof_packet(),seq++);
   for (unsigned i=0;i<columns;++i) append(t,column_packet("id"),seq++);
@@ -435,7 +435,7 @@ TEST(MySqlSessionTest, PreparedMalformedMetadataBinaryRowsAndAggregateBudgetsRet
     ASSERT_FALSE(result);EXPECT_FALSE(f.session->is_connected());EXPECT_EQ(1u,f.transport->closes);
     EXPECT_EQ(rs::core::database::BackendOperation::ExecutePrepared,result.backend_error().operation);
     EXPECT_EQ(rs::core::database::SessionDisposition::Retire,result.session_snapshot().disposition);
-    if (mode>=3) EXPECT_EQ(DbErrorCode::ResourceLimit,result.error());
+    if (mode>=3) { EXPECT_EQ(DbErrorCode::ResourceLimit,result.error()); }
   }
 }
 TEST(MySqlSessionTest, PreparedCloseFailureAndPeerLossRetireSuccessfulExecution) {
