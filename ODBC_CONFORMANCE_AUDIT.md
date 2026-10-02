@@ -3121,3 +3121,36 @@ MySQLProtocolParser placeholder is not the new backend's extension point.
 Next: verified TLS request/upgrade and bounded authentication exchanges, then
 pinned MySQL 8.4.11 live CI before S3 handshake acceptance. Continuation framing,
 EOF/timeout handling, execution and additional MySQL features remain unqualified.
+
+## S3 SSLRequest and derived credential material — 2026-10-02
+
+Private MySQL helpers construct the fixed protocol-41 SSLRequest packet with
+sequence 1, the four required supported capabilities, explicit bounded packet
+budget and UTF8MB4 collation 45. Unknown server flags are not advertised and
+reserved bytes remain zero. No username/password/database appears in this request.
+The request does not perform or establish verified TLS.
+
+The caching_sha2_password helper uses the existing private SHA-256 adapter and
+requires the caller's verified-peer observation before hashing, including for
+empty passwords. Password input is borrowed, bounded and NUL-checked; the
+challenge must have 20 bytes. Empty passwords yield empty material. Returned
+derived material is move-only; move/clear/destruction cleanse its retained
+32-byte buffer. Named digest/combine work buffers have exception-safe cleanup.
+This is not a universal compiler-temporary, allocator or provider-buffer scrub
+claim. No RSA/plaintext fallback or provider-specific header is added.
+
+Focused tests compare exact wire bytes and independent Python hashlib vectors,
+including UTF-8 password and binary challenge; cover capability/budget failures,
+TLS rejection, empty/exact/over-limit/NUL/invalid-challenge inputs, unchanged
+borrowed data and observable source cleansing on move/clear. Focused checks
+passed; complete local PostgreSQL, iODBC UTF-16/UCS-4, ASan/UBSan and
+Redshift build/absent-endpoint gates passed. Exact-head Windows/package and
+existing hosted crypto regression gates await CI.
+
+No MySQL session, TLS upgrade, authentication exchange, final OK admission or
+live connection is claimed. The future session must check supported server
+version policy, upgrade under the original deadline, obtain verification from
+the actual transport, retain identical negotiated flags in the credential packet,
+and validate the full authentication state machine before publishing a session.
+Pinned MySQL 8.4.11 live integration remains required before S3 handshake acceptance.
+S2C/G12 qualification, PostgreSQL/Redshift behavior and public scope are unchanged.
