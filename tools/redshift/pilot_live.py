@@ -247,13 +247,20 @@ class Window:
         self.sql(bind + "SELECT 'SELECT pg_terminate_backend(' || session_id || ');' "
             "FROM sys_session_history WHERE database_name='odbcpp_pilot' AND status='active' "
             f"AND CAST(user_id AS INTEGER) IN ({ids}) AND session_id<>:own_pid\n\\gexec")
-        counts = self.sql(bind + "SELECT "
-            "(SELECT COUNT(*) FROM sys_session_history WHERE database_name='odbcpp_pilot' "
-            f"AND status='active' AND CAST(user_id AS INTEGER) IN ({ids}) AND session_id<>:own_pid), "
-            "(SELECT COUNT(*) FROM sys_query_history WHERE database_name='odbcpp_pilot' "
+        # Separate EXISTS checks can stop at the first active row; COUNT scans
+        # historical views to completion. Both explicit false results are needed.
+        sessions = self.sql(bind + "SELECT EXISTS(SELECT 1 FROM sys_session_history "
+            "WHERE database_name='odbcpp_pilot' AND status='active' "
+            f"AND CAST(user_id AS INTEGER) IN ({ids}) AND session_id<>:own_pid);",
+            limit=20,statement_timeout_ms=15000)
+        if sessions != 'f':
+            raise Blocked('remote_cleanup_unverified')
+        queries = self.sql(bind + "SELECT EXISTS(SELECT 1 FROM sys_query_history "
+            "WHERE database_name='odbcpp_pilot' "
             "AND status IN ('planning','queued','running','returning') "
-            f"AND user_id IN ({ids}) AND session_id<>:own_pid);",limit=35,statement_timeout_ms=30000)
-        if counts != '0|0':
+            f"AND user_id IN ({ids}) AND session_id<>:own_pid);",
+            limit=20,statement_timeout_ms=15000)
+        if queries != 'f':
             raise Blocked('remote_cleanup_unverified')
 
 

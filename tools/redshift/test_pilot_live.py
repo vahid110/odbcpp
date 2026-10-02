@@ -196,14 +196,20 @@ class LiveCompositionTests(unittest.TestCase):
         w=live.Window(self.directory,self.config,0)
         def sql(text,**kw):
             calls.append((text,kw))
-            return '' if len(calls)==1 else '0|0'
+            return '' if len(calls)==1 else 'f'
         with patch.object(w,'sql',side_effect=sql):w.cleanup()
         self.assertIn('sys_session_history',calls[0][0])
         self.assertIn('\\gexec',calls[0][0])
         self.assertNotIn('stv_sessions',calls[0][0])
-        self.assertIn('sys_query_history',calls[1][0])
-        self.assertIn("'planning','queued','running','returning'",calls[1][0])
-        self.assertEqual(calls[1][1],dict(limit=35,statement_timeout_ms=30000))
+        self.assertIn('sys_session_history',calls[1][0])
+        self.assertIn('sys_query_history',calls[2][0])
+        self.assertIn("'planning','queued','running','returning'",calls[2][0])
+        for text, options in calls[1:]:
+            self.assertIn('SELECT EXISTS(SELECT 1',text)
+            self.assertNotIn('COUNT(*)',text)
+            self.assertNotIn('start_time',text)
+            self.assertIn('session_id<>:own_pid',text)
+            self.assertEqual(options,dict(limit=20,statement_timeout_ms=15000))
 
     def test_changed_executable_blocks_before_reservation(self):
         self.exe.write_bytes(b'changed')
@@ -216,21 +222,35 @@ class LiveCompositionTests(unittest.TestCase):
         with self.assertRaisesRegex(Blocked,'database_config_mismatch'):self.execute()
         self.assertFalse(self.launched)
 
-    def test_iam_cleanup_covers_exact_principal_in_termination_and_both_counts(self):
+    def test_iam_cleanup_covers_exact_principal_in_termination_and_both_checks(self):
         w=live.Window(self.directory,self.config,0,cleanup_principal=live.IAM_DB_USER)
         statements=[]
         def sql(text,**kwargs):
-            statements.append(text);return '0|0' if 'COUNT(*)' in text else ''
+            statements.append(text);return 'f' if 'SELECT EXISTS' in text else ''
         with patch.object(w,'sql',side_effect=sql):w.cleanup()
-        self.assertEqual(len(statements),2)
+        self.assertEqual(len(statements),3)
         for text in statements:
             self.assertIn("usename='"+live.IAM_DB_USER+"'",text)
             self.assertIn(':admin_id,:test_id,:iam_id',text)
-        self.assertEqual(statements[1].count(':admin_id,:test_id,:iam_id'),2)
-        with patch.object(w,'sql',side_effect=['','0|1']):
+        for text in statements[1:]:
+            self.assertEqual(text.count(':admin_id,:test_id,:iam_id'),1)
+        with patch.object(w,'sql',side_effect=['','f','t']):
             with self.assertRaisesRegex(Blocked,'remote_cleanup_unverified'):w.cleanup()
         with self.assertRaises(Blocked):
             live.Window(self.directory,self.config,0,cleanup_principal='unrelated')
+
+    def test_cleanup_requires_both_explicit_absence_results(self):
+        w=live.Window(self.directory,self.config,0,cleanup_principal=live.IAM_DB_USER)
+        for failed_check in (1,2):
+            for value in ('t','','0','0|0','f\nf','false',Blocked('sql_step_failed')):
+                answers=['','f','f'];answers[failed_check]=value
+                with self.subTest(check=failed_check,value=repr(value)):
+                    with patch.object(w,'sql',side_effect=answers) as sql:
+                        with self.assertRaises(Blocked):w.cleanup()
+                    self.assertEqual(sql.call_count,failed_check+1)
+        with patch.object(w,'sql',side_effect=Blocked('sql_step_failed')) as sql:
+            with self.assertRaises(Blocked):w.cleanup()
+        self.assertEqual(sql.call_count,1)
 
     def test_iam_driver_private_env_fixed_inventory_and_expiry_refusal(self):
         import time

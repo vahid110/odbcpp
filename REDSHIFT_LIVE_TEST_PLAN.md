@@ -382,3 +382,37 @@ writer and matched billing evidence; a caller changing a status field does not
 prove reconciliation. Admission must bind the original pilot period and account
 to protected canonical state, rather than accepting a new caller-defined period
 as a budget reset. No live runner or environment qualification is claimed here.
+
+
+## Cleanup-only recovery after IAM window006 — 2026-10-02
+
+CI37056942333 at1bede4e passed all required gates. Window006 was reserved
+once, but preactivation cleanup verification and final termination timed out.
+No IAM credential exchange or driver cases ran. Its phase remains uncertain,
+with all liability retained; further paid qualification is stopped. Successful
+termination before the first timeout does not prove zero active sessions or
+queries. Windows001–006 must not be replayed.
+
+The offline query repair separates session and query absence into two
+`SELECT EXISTS` checks with unchanged exact database/admin/test/IAM principal
+predicates and own-session exclusion. Both must explicitly return false.
+Termination failure, timeout, empty or malformed output stops cleanup. No
+historical cutoff is allowed. This permits early exit when activity exists;
+absence can still require a historical scan, so performance and live recovery
+remain unqualified. Independent review accepted the query repair and all162
+offline safety tests passed.
+
+Before any further SQL, implement and review one cleanup-only accounting path:
+preserve the complete v4 state and006 result verbatim with digests, append a
+separate recovery reservation under the canonical lock, and durably add1200s
+metering plus60s cleanup before dispatch. Recompute the continuous conservative
+bound from original resource creation, retaining every prior reservation and
+unknown cost, under unchanged100compute/150total caps and original24h horizon.
+Use fresh fixed-resource, control, official price and exact-host network evidence.
+Allow one cleanup-only operation under a single60s monotonic deadline; allow no
+credential exchange, driver cases, provisioning, grants or retries. Record
+success separately only after termination and both absence checks succeed.
+Failure or interruption retains the additional liability and blocks admission.
+Do not rewrite006 to imply its original cleanup succeeded. Recovery neither
+qualifies IAM SQL nor authorizes window007. Later-day admissions still require
+independent cumulative billing/usage reconciliation.
