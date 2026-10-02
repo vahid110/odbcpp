@@ -1110,3 +1110,36 @@ ownership locks. Production uses steady_clock. Original I/O deadlines still use
 the real monotonic clock. No background eviction is supplied: an unobserved expired
 idle session may remain allocated until matching checkout or owner destruction.
 No active health, pool capacity, queue, ODBC reuse or provider qualification follows.
+
+## S2 coordinated active-health admission — 2026-10-02
+
+Private `SessionOwner::acquire_healthy(token, deadline)` returns an owning move-only
+`BackendResult<SessionLease>`. Exact-token no-I/O admission first reserves an
+exclusive local lease. A denied reservation does not probe or disrupt an existing
+borrower/foreign context; existing exact stale credential/policy retirement rules
+still apply. The existing `try_acquire` methods remain explicit internal primitives,
+not proof of health and not product pool entry points.
+
+After reservation the coordinator clears scopes, validates current credentials,
+open admission, physical identity, lifetime and the unchanged real I/O deadline,
+then invokes the optional session health facet once outside ownership/authority
+locks. It requires exact Idle/Reusable and immediate passive connected/Idle state.
+After probing it rechecks credentials, physical/admission/lifetime and deadline
+under the ownership lock before transferring the lease into the result. Time is
+sampled after credential validation; no replacement timeout is introduced.
+
+Missing facet, failed exchange, malformed success, passive mismatch, exception,
+late completion or closed/expired eligibility retires the reserved session.
+Backend errors retain owning class/message/native details but become CheckHealth,
+Disconnected/Retire with retry authorization cleared. Arbitrary exception text
+is not exposed. The local RAII lease also covers exceptional diagnostic creation.
+Success transfers ownership exactly once; result destruction otherwise retires.
+A later credential/lifetime/owner change does not interrupt an admitted borrower.
+
+No reset, reconnect, reauthentication, retry, replay, fallback probe SQL or pool
+queue is added. Concrete probing remains backend-owned. Successful exchange proves
+health only at that instant; the next operation can still fail. PostgreSQL live
+evidence covers checked same-session reissue and rejection after server termination.
+ODBC connection-dead semantics, Driver Manager pooling and public SDK qualification
+remain unchanged. Product credential binding/defaults/capacity and cache payload
+policies remain open before S2/G12 can close.

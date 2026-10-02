@@ -543,3 +543,15 @@ locks; no eviction thread or forced credential refresh is introduced.
 The policy is not a live-health guarantee or pool capacity qualification. Existing
 constructors remain unchanged, product policy defaults/provider binding are still
 open, and expired idle resources are released only on observation/destruction.
+
+## Active-health checked admission checkpoint — 2026-10-02
+
+Private checked checkout reserves one exact-bound lease, probes once outside locks
+and transfers it only after current credential/lifetime/deadline/admission checks
+and exact Idle/Reusable/passive-state validation. Wrong-generation/foreign/busy
+admission denial never disrupts a valid owner. Any failure after reservation
+retires; owned error details survive normalization, arbitrary exception text is
+contained and no retry authority survives. No reset, reconnect, credential refresh
+or query replay is attempted. Production callers must not treat no-I/O checkout
+as proof of health. This remains private composition evidence, not pool/ODBC or
+public SDK qualification, and health success is no future-liveness guarantee.

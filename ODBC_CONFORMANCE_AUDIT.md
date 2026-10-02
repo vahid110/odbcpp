@@ -2811,3 +2811,18 @@ ThreadSanitizer tests passed. Complete local PostgreSQL, iODBC UTF-16/UCS-4,
 ASan/UBSan and Redshift build/absent-endpoint gates passed. Read-only review
 found no actionable issue. Windows/packaging and cross-platform crypto evidence
 await exact-head CI.
+
+## Private checked health admission checkpoint — 2026-10-02
+
+Explicit checked checkout reserves a bound exclusive lease, probes once and
+requires exact Idle/Reusable/passive state plus current credentials, admission,
+lifetime and original deadline before delivery. Probe/eligibility failures retire;
+reservation denial is nondisruptive. PG live covers checked reissue and termination
+rejection. No ODBC caller/connection-dead behavior, Driver Manager pool, public SDK
+contract or Redshift live behavior is changed. S2/G12 remain open.
+
+Validation: focused unit/live ownership checks and all 64 credential/ownership
+ThreadSanitizer tests passed. Complete local PostgreSQL, iODBC UTF-16/UCS-4,
+ASan/UBSan and Redshift build/absent-endpoint gates passed. Review found one
+asynchronous-termination test race, repaired with bounded PID-exit polling before
+probe rejection. Windows/packaging and cross-platform crypto checks await exact-head CI.

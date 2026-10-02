@@ -934,3 +934,14 @@ non-extending denial and checkout races have focused evidence; PG live checks
 retirement of an expired returned session. This is no ODBC/pool/health capability
 claim. Active health, product defaults, capacity and production credential binding
 remain open alongside real cache policy. S2/G12 and application gates stay open.
+
+## S2 checked active-health checkpoint — 2026-10-02
+
+Coordinated private checkout reserves an exclusive bound lease, probes once with
+the original deadline, validates exact Idle/Reusable/passive state and rechecks
+admission/credentials/lifetime before delivery. Every probe/eligibility failure
+after reservation retires; admission denial is nondisruptive. PG live exercises
+same-session reissue and rejection after server-side termination. No health claim
+is implied by primitive no-I/O checkout. S2/G12 still require production credential
+binding, bounded composition/product policy and actual cache policy; pool/ODBC
+reuse, real application gates and crypto qualification remain independently open.

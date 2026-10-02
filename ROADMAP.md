@@ -1398,3 +1398,22 @@ ThreadSanitizer tests passed. Complete local PostgreSQL, iODBC UTF-16/UCS-4,
 ASan/UBSan and Redshift build/absent-endpoint gates passed. Read-only review
 found no actionable issue. Windows/packaging and cross-platform crypto evidence
 await exact-head CI.
+
+## S2 coordinated active-health eligibility — 2026-10-02
+
+Added explicit checked checkout returning an owning move-only lease after one
+backend probe, exact Idle/Reusable/passive validation and fresh credential,
+admission, lifetime and deadline checks. Reserved-session failures retire;
+foreign/wrong/busy denials remain nondisruptive. Tests cover error ownership,
+exceptions, races, expiry and late completion; PG live rejects a terminated returned
+backend after proving checked same-PID reissue. No reset/reconnect/replay is added.
+
+Next: production credential-provider binding and bounded composition/defaults,
+then actual cache payload/refresh policies. S2/G12 and pool/ODBC qualification stay
+open; no-I/O checkout remains an explicit internal primitive.
+
+Validation: focused unit/live ownership checks and all 64 credential/ownership
+ThreadSanitizer tests passed. Complete local PostgreSQL, iODBC UTF-16/UCS-4,
+ASan/UBSan and Redshift build/absent-endpoint gates passed. Review found one
+asynchronous-termination test race, repaired with bounded PID-exit polling before
+probe rejection. Windows/packaging and cross-platform crypto checks await exact-head CI.
