@@ -114,13 +114,19 @@ int main(int argc, char** argv) {
       if (!count_committed || !count_rolled_back || count_committed->rows.size()!=1 || count_rolled_back->rows.size()!=1 ||
           count_committed->rows[0][0]!=std::optional<std::string>{"1"} ||
           count_rolled_back->rows[0][0]!=std::optional<std::string>{"0"}) return fail(23);
-      const std::array isolation_names{"READ-UNCOMMITTED","READ-COMMITTED","REPEATABLE-READ","SERIALIZABLE"};
-      for (std::size_t i=0;i<isolation_names.size();++i) {
+      // Compare on the server and return the already-qualified signed integer
+      // type; system-variable string metadata is outside this bounded profile.
+      const std::array isolation_checks{
+          "SELECT CAST(@@SESSION.transaction_isolation = 'READ-UNCOMMITTED' AS SIGNED) AS isolation_matches",
+          "SELECT CAST(@@SESSION.transaction_isolation = 'READ-COMMITTED' AS SIGNED) AS isolation_matches",
+          "SELECT CAST(@@SESSION.transaction_isolation = 'REPEATABLE-READ' AS SIGNED) AS isolation_matches",
+          "SELECT CAST(@@SESSION.transaction_isolation = 'SERIALIZABLE' AS SIGNED) AS isolation_matches"};
+      for (std::size_t i=0;i<isolation_checks.size();++i) {
         auto changed=transactions->set_transaction_isolation(rs::core::database::transaction_isolations[i],
             rs::util::make_deadline(std::chrono::seconds(10)));
-        auto isolation=query("SELECT CAST(@@SESSION.transaction_isolation AS CHAR CHARACTER SET utf8mb4) AS isolation_value");
+        auto isolation=query(isolation_checks[i]);
         if (!changed || !isolation || isolation->rows.size()!=1 ||
-            isolation->rows[0][0]!=std::optional<std::string>{isolation_names[i]}) return fail(24);
+            isolation->rows[0][0]!=std::optional<std::string>{"1"}) return fail(24);
       }
       if (!transactions->set_transaction_isolation(rs::core::database::TransactionIsolation::RepeatableRead,
           rs::util::make_deadline(std::chrono::seconds(10)))) return fail(25);
