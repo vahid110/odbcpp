@@ -28,6 +28,8 @@ class ContinuationSession(r.RecoverySession):
 
     def next_sequence(self,overlay):return 7+len(overlay['attempts'])
 
+    def _attempt_limit(self):return 2
+
     def _v2(self,state,now):
         o=r0._record(state.get(b.OVERLAY),{'schema_version','source_recovery_raw','source_recovery_digest',
             'legacy_digest','migration_cleanup_at','attempts','metering_seconds','cleanup_seconds',
@@ -94,7 +96,7 @@ class ContinuationSession(r.RecoverySession):
     def reserve(self,evidence,current):
         def change(state,now):
             o=self._v2(state,now)
-            r0._need(len(o['attempts'])<2,'attempt_limit')
+            r0._need(len(o['attempts'])<self._attempt_limit(),'attempt_limit')
             r0._need(not o['attempts'] or o['attempts'][-1]['phase']=='cleaned_pending_billing','prior_attempt_unresolved')
             anchor=self._fixed(current,now)
             e=r0._record(evidence,{'verified','observed_at','anchor','base_rpus','max_rpus','usd_per_rpu_hour',

@@ -579,3 +579,29 @@ actual spend, remaining allowance or admission. AWS recommends the distinct
 [`SYS_SERVERLESS_USAGE.charged_seconds`](https://docs.aws.amazon.com/redshift/latest/dg/SYS_SERVERLESS_USAGE.html)
 for compute-cost calculation; obtaining that SQL evidence would itself require
 an explicitly reserved, bounded scope. No such query is authorized or run here.
+
+## Explicit finite amendment candidate (offline only)
+
+Read-only assessment CI37079535271/b43d25d is green. The next candidate,
+`tools/redshift/pilot_finite_amendment.py`, supplies an explicit v7 accounting
+overlay with no runtime entry point. Initialization freezes complete exact v6
+bytes and requires an independent conservative-accounting review bound to the
+source state, code and evidence digests. Review syntax is operator-trusted,
+not proof of AWS provenance or reconciled billing. It accepts only the validated
+exhausted baseline11160s metering/660s cleanup, preserving all earlier history,
+uncertain006 and its separate successful recovery, liabilities and null billing.
+
+This candidate explicitly declares a12360s metering/720s cleanup ceiling for
+exactly one additional fixed IAM inventory. It does not alter old validators,
+replenish the original eight windows, refund reservations or extend the original
+24h horizon. The4/4 capacity, `.374` price, USD100 compute/USD150 total caps and
+USD50 other/tax envelope remain fixed. Reservation binds current exact state
+bytes and fresh control evidence, durably adds1200s+60s before any future SQL,
+and requires fresh matching cleanup before activation. Replay, uncertainty,
+interrupted persistence and expired deadlines block activation or further use.
+
+All methods return `live_enabled=false`. This package provides no launcher,
+canonical migration or live IAM qualification. The current protected state
+remains exhausted v6. Even a green run does not authorize009: a subsequent
+runtime package and a separately explicit integration-owner admission would
+be required. Later-day reconciliation/extension remains outside this candidate.
