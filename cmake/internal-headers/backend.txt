@@ -57,3 +57,4 @@ core/util/result.h
 core/util/utf8.h
 core/database/postgres/pg_catalog_profile.h
 core/database/postgres/redshift_catalog_query.h
+core/database/postgres/redshift_primary_key_contract.h

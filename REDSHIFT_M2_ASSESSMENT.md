@@ -464,3 +464,31 @@ are NULL. Those differences are diagnostic evidence about inherited behavior,
 not observed Redshift failures or live qualification. Prior key and empty-catalog
 surrogate regressions still pass. No procedure is invoked, fixture activated,
 grant added or paid launcher inventory enabled by these tests.
+
+### Modern SHOW execution boundary
+
+Pinned upstream modern catalog discovery uses dependent commands, including
+schema/table enumeration and signature-specific routine parameters. The current
+pure catalog facet returns one SQL string and cannot represent that workflow.
+A future execution facet must run under the session lease with one absolute
+deadline, bounded discovery, owning results and original failure propagation.
+It must negotiate `show_discovery` explicitly, preserve ordinary-user visibility
+and distinguish exact identifiers from LIKE patterns. Missing or unsupported
+capabilities must not silently select inherited PostgreSQL SQL or fabricate empty
+success. That execution wiring remains a separate reviewed package.
+
+The first offline candidate is a pure exact-table primary-key command-plan value
+and SHOW-result normalizer. It owns database/schema/table names without rendering
+or executing SQL, validates the six named input columns and builds six normalized
+ODBC fields. It retains source row order, NULL constraint names and failure
+diagnostics; malformed identities, duplicate keys/columns, inconsistent constraint
+names and noncontiguous key sequences reject the whole result. Text widths remain
+unknown. Pinned source bindings establish text and signed-smallint consumption,
+not native SHOW OIDs/widths: accepted known normalized text and integer families
+are an offline input contract only. No adapter, default catalog, broad discovery,
+session capability selection or live compatibility is enabled by this candidate.
+Independent review found no functional blocker and corrected a pinned-source
+line reference. Nine focused tests cover accepted text/integer families, owned
+output, reversed key order, nullable names, malformed input/native failures and
+the signed sequence boundary. Local PostgreSQL/Redshift unit, Unicode integration,
+TLS and sanitizer gates pass; these are offline regression evidence only.
