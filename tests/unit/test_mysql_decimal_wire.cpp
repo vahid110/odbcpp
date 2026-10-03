@@ -39,7 +39,7 @@ TEST(MySqlDecimalWireTest, ActualMetadataDerivesPrecisionAndChecksProfileWithout
     auto result=query_detail::column(definition(c.width,c.scale),ResultLimits{});ASSERT_FALSE(result);
     EXPECT_EQ(DbErrorCode::UnsupportedFeature,result.error());
   }
-  for (unsigned type:{0u,4u,5u,7u,10u,11u,12u}) {
+  for (unsigned type:{0u,4u,5u,7u,11u,12u}) {
     auto result=query_detail::column(definition(7,2,false,type),ResultLimits{});ASSERT_FALSE(result);
     EXPECT_EQ(DbErrorCode::UnsupportedFeature,result.error());
   }

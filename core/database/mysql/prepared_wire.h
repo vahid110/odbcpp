@@ -4,6 +4,7 @@
 #include "core/database/mysql/handshake_wire.h"
 
 #include <array>
+#include <algorithm>
 #include <bit>
 #include <charconv>
 #include <limits>
@@ -287,9 +288,14 @@ inline rs::util::Result<ResultRow> binary_row(
   for (std::size_t i = 0; i < columns.size(); ++i) {
     if (!columns[i].normalized_type) return {DbErrorCode::ProtocolError};
     switch (native[i].type) {
-      case 1: case 2: case 3: case 6: case 8: case 9:
+      case 1: case 2: case 3: case 6: case 8: case 9: case 10:
       case 15: case 252: case 253: case 254: case 246: break;
       default: return {DbErrorCode::UnsupportedFeature};
+    }
+    if (native[i].type==10 || columns[i].normalized_type->type==ScalarType::Date) {
+      const auto& info=*columns[i].normalized_type;
+      if (native[i].type!=10 || !info.known || info.type!=ScalarType::Date || info.column_size!=10 || info.decimal_digits!=0)
+        return {DbErrorCode::ProtocolError};
     }
     const bool null = (std::to_integer<unsigned>(bitmap[(i + 2) / 8]) &
                        (1u << ((i + 2) % 8))) != 0;
@@ -301,6 +307,19 @@ inline rs::util::Result<ResultRow> binary_row(
       case 3: case 9: width = 4; break;
       case 8: width = 8; break;
       case 6: return {DbErrorCode::ProtocolError};
+      case 10: {
+        std::span<const std::byte> length_byte,payload;
+        if (!cursor.bytes(1,length_byte)) return {DbErrorCode::ProtocolError};
+        const auto length=std::to_integer<unsigned>(length_byte[0]);
+        if (length!=0 && length!=4 && length!=7 && length!=11) return {DbErrorCode::ProtocolError};
+        if (!cursor.bytes(length,payload)) return {DbErrorCode::ProtocolError};
+        std::array<std::byte,12> framed{};framed[0]=length_byte[0];
+        std::copy(payload.begin(),payload.end(),framed.begin()+1);
+        auto cell=date_detail::binary_cell(std::span<const std::byte>(framed).first(length+1));
+        if (!cell) return {cell.error()};
+        if (cell->encoding_error) errors.push_back({row_index,i});
+        row.emplace_back(std::move(cell->value));continue;
+      }
       case 15: case 253: case 254: case 252: case 246: {
         std::span<const std::byte> value;
         if (!cursor.length_bytes(value)) return {DbErrorCode::ProtocolError};

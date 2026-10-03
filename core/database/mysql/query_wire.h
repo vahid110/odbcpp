@@ -1,6 +1,7 @@
 #pragma once
 #include "core/database/query_result.h"
 #include "core/database/mysql/decimal_wire.h"
+#include "core/database/mysql/date_wire.h"
 #include "core/database/i_database_connection.h"
 #include "core/util/utf8.h"
 #include <limits>
@@ -83,6 +84,7 @@ inline rs::util::Result<ResultColumnMetadata> column(std::span<const std::byte> 
     case 3: info={unsigned_value?ScalarType::BigInt:ScalarType::Integer,10,0,true};break;
     case 8: info={unsigned_value?ScalarType::Numeric:ScalarType::BigInt,unsigned_value?20u:19u,0,true};break;
     case 9: info={ScalarType::Integer,8,0,true};break;
+    case 10: info={ScalarType::Date,10,0,true};break;
     case 6: info={ScalarType::VarChar,0,0,true};break; // NULL expression.
     case 246: {
       auto decimal=decimal_detail::metadata(size,decimals,unsigned_value);
@@ -104,6 +106,7 @@ inline rs::util::Result<ResultColumnMetadata> column(std::span<const std::byte> 
 }
 inline bool valid_cell(std::string_view value,ScalarType type) {
   if (type==ScalarType::Binary) return true;
+  if (type==ScalarType::Date) return date_detail::valid_cell(value);
   if (!rs::util::utf8_code_point_count(value)) return false;
   if (type==ScalarType::BigInt || type==ScalarType::Integer || type==ScalarType::SmallInt) {
     std::int64_t number{};const auto parsed=std::from_chars(value.data(),value.data()+value.size(),number);
@@ -123,6 +126,10 @@ inline rs::util::Result<ResultRow> row(std::span<const std::byte> bytes,const st
   for (std::size_t i=0;i<columns.size();++i) {
     if (!columns[i].normalized_type) return {DbErrorCode::ProtocolError};
     const auto& info=*columns[i].normalized_type;
+    if (info.type==ScalarType::Date || (!native.empty() && native[i].type==10)) {
+      if (!info.known || info.type!=ScalarType::Date || info.column_size!=10 || info.decimal_digits!=0 ||
+          native.empty() || native[i].type!=10) return {DbErrorCode::ProtocolError};
+    }
     const bool decimal=info.type==ScalarType::Decimal;
     if (decimal && (native.empty() || native[i].type!=246)) return {DbErrorCode::ProtocolError};
     if (c.null_cell()) { result.emplace_back(std::nullopt);continue; }
