@@ -23,6 +23,9 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
     connected_=false;state_=SessionState::Disconnected;version_.clear();
   }
   BackendResult<void> connect(const ConnectionSettings& settings) override {
+    if (settings.redshift_catalog_mode)
+      return local_backend_error(LocalFailure::InvalidInput,
+          "RedshiftCatalogMode requires Redshift", BackendOperation::Connect, session_state());
     if (connected_) return local_backend_error(LocalFailure::InvalidInput,
         "MySQL session is already connected",BackendOperation::Connect,state_);
     if (!transport_ || !settings.use_ssl || !valid_resource_limits(settings) || settings.timeout.count()<=0 ||

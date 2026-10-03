@@ -35,6 +35,32 @@ class Fake:
 
 
 class ProvisionedCatalogFixtureTests(unittest.TestCase):
+    def test_modes_inventory_parent_only_and_failed_cases_keep_cleanup_evidence(self):
+        f = Fake(); objects, cases = PROFILES['primary_key_modes']
+        self.assertEqual((OBJECTS[0],), objects)
+        self.assertEqual(6, len(cases)); self.assertEqual(6, len(set(cases)))
+        f.summary = {'cases': list(cases), 'passed': 4, 'failed': 2}
+        result = f.run(profile='primary_key_modes')
+        self.assertEqual('qualification_failed', result['phase'])
+        self.assertTrue(result['objects_cleaned']); self.assertTrue(result['activity_verified'])
+        self.assertEqual(list(cases), f.events[0]['cases'])
+        self.assertEqual([OBJECTS[0]], result['created'])
+        sql = '\n'.join(q for _, q, _ in f.calls)
+        for forbidden in (OBJECTS[1], OBJECTS[2], 'GRANT EXECUTE', 'CALL ', 'CASCADE'):
+            self.assertNotIn(forbidden, sql)
+        self.assertEqual(1, len([s for s, _, _ in f.calls if s.startswith('grant_')]))
+        self.assertEqual(['drop_' + OBJECTS[0]], [s for s, _, _ in f.calls if s.startswith('drop_')])
+
+    def test_modes_inventory_rejects_prior_missing_duplicate_and_substituted_reports(self):
+        cases = PROFILES['primary_key_modes'][1]
+        for inventory in (CASES, PROFILES['modern_primary_key_execution'][1],
+                cases[:-1], cases[:-1] + (cases[0],), cases[:-1] + ('RedshiftRealTest.VersionQuery',)):
+            f = Fake(); f.summary = {'cases': list(inventory), 'passed': len(inventory), 'failed': 0}
+            result = f.run(profile='primary_key_modes')
+            self.assertEqual('blocked', result['phase'])
+            self.assertTrue(result['objects_cleaned']); self.assertTrue(result['activity_verified'])
+            self.assertIsNone(result['cases'])
+
     def test_modern_primary_key_profile_creates_only_parent_and_runs_fixed_new_inventory(self):
         f = Fake(); objects, cases = PROFILES['modern_primary_key']
         f.summary = {'cases': list(cases), 'passed': 2, 'failed': 0}

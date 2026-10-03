@@ -23,6 +23,12 @@ CASES = tuple('RedshiftRealTest.' + n for n in (
     'CompositeForeignKeyCatalogContract', 'ProcedureCatalogContract',
     'ProcedureParameterCatalogContract'))
 PROFILES = {
+    # Distinct future mode/ODBC proof; requires a fresh owner-reviewed admission.
+    'primary_key_modes': ((PARENT,), tuple('RedshiftRealTest.' + n for n in (
+        'ConnectionTest', 'LegacyPrimaryKeyExecutionContract',
+        'LegacyPrimaryKeyExecutionInvalidExactNamesPreserveSession',
+        'OdbcPrimaryKeyDefaultShowOptionContract', 'OdbcPrimaryKeyExplicitShowOptionContract',
+        'OdbcPrimaryKeyExplicitLegacyOptionContract'))),
     'catalog_contracts': (OBJECTS, CASES),
     # Future checked-in native SHOW proof only; no failed catalog replay and
     # no child/procedure creation or EXECUTE grant in this smaller scope.

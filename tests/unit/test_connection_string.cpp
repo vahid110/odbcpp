@@ -14,6 +14,15 @@ namespace {
 
 using rs::odbc::ConnectionString;
 
+TEST(ConnectionStringTest, RedshiftCatalogModeKeyCasingBracesEmptyAndDuplicatePolicy) {
+  const auto parsed = ConnectionString::parse(
+      "redshiftcatalogmode={LeGaCy};REDSHIFTCATALOGMODE=SHOW");
+  EXPECT_EQ("LeGaCy", parsed.at("REDSHIFTCATALOGMODE"));
+  EXPECT_EQ("LEGACY", ConnectionString::parse("RedshiftCatalogMode= LEGACY ").at("REDSHIFTCATALOGMODE"));
+  EXPECT_EQ("", ConnectionString::parse("RedshiftCatalogMode={}").at("REDSHIFTCATALOGMODE"));
+  EXPECT_EQ(" LEGACY ", ConnectionString::parse("RedshiftCatalogMode={ LEGACY }").at("REDSHIFTCATALOGMODE"));
+}
+
 TEST(ConnectionStringTest, BracedSemicolonsCannotIntroduceNewOptions) {
   const auto parsed = ConnectionString::parse(
       "PWD={secret;SERVER=attacker.example;TransportMode=Sync};"
@@ -169,6 +178,18 @@ TEST_F(UnixIniDiscoveryTest, HonorsExplicitDsnAndDriverManagerIniPaths) {
   ASSERT_EQ(1u, loaded_driver.size());
   EXPECT_EQ("6543", loaded_driver.at("PORT"));
 }
+TEST_F(UnixIniDiscoveryTest, RedshiftCatalogModeFollowsDriverDsnAndConnectionPrecedence) {
+  const auto dsn_path = root_ / "trusted-dsn.ini";
+  write(dsn_path, "[ModeFixture]\nDRIVER=ModeDriver\nRedshiftCatalogMode=LEGACY\n");
+  write(root_ / "drivers.ini", "[ModeDriver]\nRedshiftCatalogMode=SHOW\n");
+  ASSERT_EQ(0, setenv("ODBCINI", dsn_path.c_str(), 1));
+  ASSERT_EQ(0, setenv("ODBCSYSINI", root_.c_str(), 1));
+  ASSERT_EQ(0, setenv("ODBCINSTINI", "drivers.ini", 1));
+  EXPECT_EQ("LEGACY", ConnectionString::resolve("DSN=ModeFixture", "ModeDriver").effective_parameters.at("REDSHIFTCATALOGMODE"));
+  EXPECT_EQ("SHOW", ConnectionString::resolve("DSN=ModeFixture;RedshiftCatalogMode=SHOW", "ModeDriver").effective_parameters.at("REDSHIFTCATALOGMODE"));
+  EXPECT_EQ("", ConnectionString::resolve("DSN=ModeFixture;RedshiftCatalogMode={}", "ModeDriver").effective_parameters.at("REDSHIFTCATALOGMODE"));
+}
+
 TEST_F(UnixIniDiscoveryTest, ResourceLimitsFollowDriverDsnAndConnectionPrecedence) {
   const auto dsn_path = root_ / "trusted-dsn.ini";
   write(dsn_path, "[LimitFixture]\nDRIVER=LimitDriver\nMaxRows=20\nMaxSqlBytes=512\n");

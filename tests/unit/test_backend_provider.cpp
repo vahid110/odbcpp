@@ -236,3 +236,32 @@ TEST(BackendProviderTest, RedshiftPolicyRequiresExplicitProfileAndIgnoresPgVersi
     EXPECT_EQ(1000, type.maximum_scale);
   }
 }
+
+TEST(BackendProviderTest, RedshiftCatalogModeDefaultExplicitInvalidAndProviderIsolation) {
+  postgres::PgBackendProvider redshift{
+      BackendIdentity{"redshift", "Amazon Redshift", "ODBCPP Redshift"},
+      BackendConnectionDefaults{"host", 5439, "db", true}, std::nullopt,
+      postgres::PgCatalogProfile::Redshift};
+  postgres::PgBackendProvider postgres{
+      BackendIdentity{"postgresql", "PostgreSQL", "ODBCPP PostgreSQL"},
+      BackendConnectionDefaults{"host", 5432, "db", true}};
+  auto defaults = redshift.resolve_connection_options({});
+  ASSERT_TRUE(defaults); EXPECT_EQ(RedshiftCatalogMode::Show, defaults->redshift_catalog_mode);
+  auto pg_defaults = postgres.resolve_connection_options({});
+  ASSERT_TRUE(pg_defaults); EXPECT_FALSE(pg_defaults->redshift_catalog_mode);
+  for (const auto& [value, expected] : {std::pair{"SHOW", RedshiftCatalogMode::Show},
+       std::pair{"show", RedshiftCatalogMode::Show}, std::pair{"LEGACY", RedshiftCatalogMode::Legacy},
+       std::pair{"LeGaCy", RedshiftCatalogMode::Legacy}}) {
+    ConnectionOptions options; options.redshift_catalog_mode = value;
+    auto result = redshift.resolve_connection_options(options);
+    ASSERT_TRUE(result); EXPECT_EQ(expected, result->redshift_catalog_mode);
+    EXPECT_FALSE(postgres.resolve_connection_options(options));
+  }
+  for (const auto& value : {std::string{}, std::string{"AUTO"}, std::string{"SHOW LEGACY"},
+       std::string{" SHOW"}, std::string("SHOW\0", 5)}) {
+    ConnectionOptions options; options.redshift_catalog_mode = value;
+    EXPECT_FALSE(redshift.resolve_connection_options(options));
+  }
+  auto again = redshift.resolve_connection_options({});
+  ASSERT_TRUE(again); EXPECT_EQ(RedshiftCatalogMode::Show, again->redshift_catalog_mode);
+}

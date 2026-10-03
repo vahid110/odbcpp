@@ -15,6 +15,20 @@ PgDatabaseConnection::PgDatabaseConnection(
     : GenericDatabaseConnection(std::make_unique<PgProtocolParser>(),
                                 std::move(transport)), reset_profile_(reset_profile), catalog_profile_(catalog_profile) {}
 
+BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& settings) {
+  if (catalog_profile_ == PgCatalogProfile::Redshift && is_connected()) return local_backend_error(LocalFailure::InvalidInput,
+      "Database connection is already open", BackendOperation::Connect, session_state());
+  if (settings.redshift_catalog_mode &&
+      (catalog_profile_ != PgCatalogProfile::Redshift ||
+       (*settings.redshift_catalog_mode != RedshiftCatalogMode::Show &&
+        *settings.redshift_catalog_mode != RedshiftCatalogMode::Legacy)))
+    return local_backend_error(LocalFailure::InvalidInput,
+        "Invalid Redshift catalog mode for this provider", BackendOperation::Connect, session_state());
+  auto result = GenericDatabaseConnection::connect(settings);
+  if (result) catalog_mode_ = settings.redshift_catalog_mode.value_or(RedshiftCatalogMode::Show);
+  return result;
+}
+
 BackendResult<void> PgDatabaseConnection::check_health(rs::util::Deadline deadline) {
   auto result = execute_query("SELECT 1", deadline);
   if (result.has_error()) {
@@ -63,6 +77,24 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
     return local_backend_error(LocalFailure::InvalidInput,
         "Exact database, schema and table identifiers are required",
         BackendOperation::ExecuteCatalog, session_state());
+  }
+  if (catalog_mode() == RedshiftCatalogMode::Legacy) {
+    // Exact equality and index-attribute order are this scoped legacy contract.
+    // No capability probe, identifier interpolation or SHOW retry is allowed.
+    const std::vector<QueryParameter> values{
+        {plan->database, QueryParameterType::Text},
+        {plan->schema, QueryParameterType::Text},
+        {plan->table, QueryParameterType::Text}};
+    return normalize_redshift_primary_keys(*plan, execute_prepared(
+        "SELECT current_database() AS database_name, n.nspname AS schema_name, "
+        "ct.relname AS table_name, a.attname AS column_name, "
+        "a.attnum AS key_seq, ci.relname AS pk_name "
+        "FROM pg_catalog.pg_namespace n, pg_catalog.pg_class ct, "
+        "pg_catalog.pg_class ci, pg_catalog.pg_attribute a, pg_catalog.pg_index i "
+        "WHERE ct.oid=i.indrelid AND ci.oid=i.indexrelid AND a.attrelid=ci.oid "
+        "AND i.indisprimary AND ct.relnamespace=n.oid "
+        "AND current_database()=? AND n.nspname=? AND ct.relname=? "
+        "ORDER BY schema_name, table_name, key_seq", values, deadline));
   }
   // Only authenticated ParameterStatus selects this path. No discovery SQL,
   // default identifiers or inherited PostgreSQL fallback is permitted.

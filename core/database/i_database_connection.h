@@ -55,6 +55,8 @@ struct InputLimits {
   std::size_t max_auth_wire_bytes{1024 * 1024};
 };
 
+enum class RedshiftCatalogMode { Show, Legacy };
+
 struct ConnectionSettings {
   std::string host;
   std::string user;
@@ -70,6 +72,7 @@ struct ConnectionSettings {
   ResultLimits result_limits;
   InputLimits input_limits;
   ResponseLimits startup_response_limits{1024 * 1024, 10000};
+  std::optional<RedshiftCatalogMode> redshift_catalog_mode;
 };
 
 // Shared validation for SDK callers and product option resolution.

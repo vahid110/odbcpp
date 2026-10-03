@@ -1398,6 +1398,7 @@ SQLRETURN ODBCConnection::connect(
     if (params.count("SSL")) options.use_ssl = parse_ssl(params.at("SSL"));
     if (params.count("SSLCAFILE")) options.ssl_ca_file = params.at("SSLCAFILE");
     if (params.count("SSLCADIR")) options.ssl_ca_dir = params.at("SSLCADIR");
+    if (params.count("REDSHIFTCATALOGMODE")) options.redshift_catalog_mode = params.at("REDSHIFTCATALOGMODE");
     options.timeout = timeout_duration(login_timeout_seconds_);
     parse_resource_limits(params, options);
 
@@ -4925,11 +4926,11 @@ SQLRETURN ODBCStatement::execute_catalog(
       set_error(SQLSTATE_INVALID_CURSOR_STATE, "Cannot execute while results are pending");
       return SQL_ERROR;
     }
-    // Staged modern catalog support is autocommit/Idle only. No BEGIN is issued
+    // Staged catalog support is autocommit/Idle only. No BEGIN is issued
     // before the backend validates exact identifiers and authenticated capability.
     if (conn_->autocommit_ != SQL_AUTOCOMMIT_ON || conn_->transaction_active_) {
       set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
-                "Modern primary-key discovery requires autocommit");
+                "Primary-key discovery requires autocommit");
       return SQL_ERROR;
     }
     try {
@@ -4937,7 +4938,7 @@ SQLRETURN ODBCStatement::execute_catalog(
       if (!observation || !observation->connected ||
           observation->state != rs::core::database::SessionState::Idle) {
         set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
-                  "Modern primary-key discovery requires an idle connection");
+                  "Primary-key discovery requires an idle connection");
         if (!observation || !observation->connected) conn_->close_connection();
         return SQL_ERROR;
       }

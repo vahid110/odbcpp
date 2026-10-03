@@ -47,6 +47,7 @@ struct ConnectionOptions {
   ResponseLimits startup_response_limits{1024 * 1024, 10000};
   ResultLimits result_limits;
   InputLimits input_limits;
+  std::optional<std::string> redshift_catalog_mode;
 };
 
 // Immutable product definition. A provider owns identity and static behavior;

@@ -17,6 +17,8 @@ public:
       std::optional<SessionResetProfile> reset_profile = std::nullopt,
       PgCatalogProfile catalog_profile = PgCatalogProfile::PostgreSQL);
 
+  BackendResult<void> connect(const ConnectionSettings& settings) override;
+
   ISessionReset* session_reset() noexcept override { return reset_profile_ ? this : nullptr; }
   SessionResetProfile reset_profile() const noexcept override {
     return SessionResetProfile::SameAuthenticatedServerSession;
@@ -51,7 +53,11 @@ public:
   BackendResult<ResolvedTypeMap> resolve_types(
       std::span<const std::uint32_t> ids, rs::util::Deadline deadline) override;
 
+protected:
+  virtual RedshiftCatalogMode catalog_mode() const noexcept { return catalog_mode_; }
+
 private:
+  RedshiftCatalogMode catalog_mode_{RedshiftCatalogMode::Show};
   const std::optional<SessionResetProfile> reset_profile_;
   const PgCatalogProfile catalog_profile_;
 };

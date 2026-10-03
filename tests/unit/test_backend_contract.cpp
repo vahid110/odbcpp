@@ -26,6 +26,7 @@ static_assert(!ExposesRawPhysicalSession<rs::odbc::ODBCConnection>);
 
 struct Observations {
   int created{}, transports{}, disconnects{}, destructions{}, queries{}, descriptions{}, translations{};
+  bool validate_redshift_mode{false};
   bool catalog_executor{false}, catalog_builder{false};
   int catalog_calls{}, catalog_builds{}, catalog_error{};
   bool catalog_retire{}, catalog_throw{};
@@ -372,6 +373,13 @@ class FakeProvider final : public IBackendProvider {
   }
   Result<ConnectionSettings> resolve_connection_options(
       ConnectionOptions options) const override {
+    if (seen_->validate_redshift_mode) {
+      rs::core::database::postgres::PgBackendProvider provider{
+          BackendIdentity{"redshift", "Amazon Redshift", "ODBCPP Redshift"},
+          BackendConnectionDefaults{"host", 5439, "db", true}, std::nullopt,
+          rs::core::database::postgres::PgCatalogProfile::Redshift};
+      return provider.resolve_connection_options(std::move(options));
+    }
     ConnectionSettings settings;
     const auto& defaults = connection_defaults();
     settings.host = options.host.value_or(defaults.host);
@@ -2030,4 +2038,17 @@ TEST_F(BackendContractTest, LongBinaryMalformedCellPreservesOutputAndIndicator) 
   EXPECT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_BINARY, bytes, sizeof(bytes), &length));
   EXPECT_EQ("22018", state()); EXPECT_EQ(73, length);
   EXPECT_EQ(7, bytes[0]); EXPECT_EQ(8, bytes[1]); EXPECT_EQ(9, bytes[2]);
+}
+
+TEST_F(BackendContractTest, CatalogModeEffectiveOptionReachesResolverAndInvalidNeverCreatesSession) {
+  seen->validate_redshift_mode = true;
+  std::string invalid = "SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=0;RedshiftCatalogMode=AUTO";
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnect(dbc, nullptr,
+      reinterpret_cast<SQLCHAR*>(invalid.data()), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ(0, seen->created); EXPECT_EQ(0, seen->transports);
+  connect_with("SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=0;redshiftcatalogmode={LeGaCy}");
+  EXPECT_EQ(RedshiftCatalogMode::Legacy, seen->settings.redshift_catalog_mode);
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  connect_with("SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=0");
+  EXPECT_EQ(RedshiftCatalogMode::Show, seen->settings.redshift_catalog_mode);
 }

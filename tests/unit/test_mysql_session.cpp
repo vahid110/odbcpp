@@ -809,3 +809,15 @@ TEST(MySqlSessionTest, CommitAndRollbackOverrideChainAndReleaseAndRequireIdleCom
     }
   }
 }
+
+TEST(MySqlSessionTest, RedshiftCatalogModeRejectsBeforeTransportConfigurationOrIo) {
+  auto transport = std::make_unique<FakeTransport>(); auto* spy = transport.get();
+  MySqlSession session(std::move(transport));
+  rs::core::database::ConnectionSettings settings;
+  settings.redshift_catalog_mode = rs::core::database::RedshiftCatalogMode::Legacy;
+  auto result = session.connect(settings);
+  ASSERT_FALSE(result); EXPECT_EQ(rs::util::make_error_code(DbErrorCode::InvalidParameter), result.error());
+  EXPECT_TRUE(spy->deadlines.empty()); EXPECT_EQ(0u, spy->configuration_calls);
+  EXPECT_EQ(0u, spy->calls); EXPECT_EQ(0u, spy->upgrades); EXPECT_TRUE(spy->output.empty());
+  EXPECT_FALSE(session.is_connected());
+}

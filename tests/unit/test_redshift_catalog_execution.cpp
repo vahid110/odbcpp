@@ -1,6 +1,7 @@
 #include "core/database/postgres/pg_database_connection.h"
 #include <gtest/gtest.h>
 #include <array>
+#include <algorithm>
 
 using namespace rs::core::database;
 using namespace rs::core::database::postgres;
@@ -19,6 +20,8 @@ class SpySession : public PgDatabaseConnection {
  public:
   explicit SpySession(PgCatalogProfile profile = PgCatalogProfile::Redshift)
       : PgDatabaseConnection(nullptr, std::nullopt, profile) {}
+  std::optional<RedshiftCatalogMode> mode;
+  RedshiftCatalogMode catalog_mode() const noexcept override { return mode.value_or(PgDatabaseConnection::catalog_mode()); }
   bool connected{true};
   SessionSnapshot snapshot{SessionState::Idle, SessionDisposition::Reusable};
   std::string capability{"4"};
@@ -55,6 +58,100 @@ class SpySession : public PgDatabaseConnection {
 };
 void no_execution(const SpySession& spy) {
   EXPECT_EQ(0u, spy.prepared_calls); EXPECT_EQ(0u, spy.direct_calls); EXPECT_EQ(0u, spy.catalog_builds);
+}
+
+// Private, in-memory protocol fixture: each connection receives authenticated
+// startup followed by a successful empty, known-type prepared result. No mode,
+// query, parameter, or type-resolution method is overridden on the real session.
+class CatalogWireTransport final : public rs::core::transport::ITransport {
+ public:
+  std::vector<std::vector<std::byte>> writes;
+  std::vector<rs::util::Deadline> write_deadlines, read_deadlines;
+  unsigned connects{0}, closes{0};
+  rs::util::Result<void> connect(std::string_view, uint16_t,
+      rs::util::Deadline) override {
+    ++connects; input_.clear(); offset_ = 0;
+    frame('R', {std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}});
+    std::vector<std::byte> status;
+    text(status, "show_discovery"); text(status, "4"); frame('S', status);
+    frame('Z', {std::byte{'I'}});
+    frame('1', {});
+    std::vector<std::byte> parameters; integer(parameters, 3, 2);
+    for (unsigned i = 0; i < 3; ++i) integer(parameters, 25, 4);
+    frame('t', parameters); frame('2', {});
+    std::vector<std::byte> description; integer(description, 6, 2);
+    for (const auto* name : {"database_name", "schema_name", "table_name",
+                            "pk_name", "column_name", "key_seq"}) {
+      text(description, name); integer(description, 0, 4); integer(description, 0, 2);
+      const bool sequence = std::string_view(name) == "key_seq";
+      integer(description, sequence ? 21 : 1043, 4);
+      integer(description, sequence ? 2 : 65535, 2);
+      integer(description, 0xffffffffu, 4); integer(description, 0, 2);
+    }
+    frame('T', description);
+    std::vector<std::byte> completion; text(completion, "SELECT 0"); frame('C', completion);
+    frame('Z', {std::byte{'I'}});
+    return {};
+  }
+  rs::util::Result<rs::core::transport::IOResult> send(
+      std::span<const std::byte> bytes, rs::util::Deadline deadline) override {
+    writes.emplace_back(bytes.begin(), bytes.end()); write_deadlines.push_back(deadline);
+    return rs::core::transport::IOResult{bytes.size(), false};
+  }
+  rs::util::Result<rs::core::transport::IOResult> recv(
+      std::span<std::byte> bytes, rs::util::Deadline deadline) override {
+    read_deadlines.push_back(deadline);
+    const auto count = std::min(bytes.size(), input_.size() - offset_);
+    std::copy_n(input_.begin() + static_cast<std::ptrdiff_t>(offset_), count, bytes.begin());
+    offset_ += count;
+    return rs::core::transport::IOResult{count, count == 0};
+  }
+  void close() noexcept override { ++closes; }
+ private:
+  static void integer(std::vector<std::byte>& out, uint32_t value, unsigned width) {
+    for (unsigned i = width; i > 0; --i)
+      out.push_back(static_cast<std::byte>((value >> ((i - 1) * 8)) & 255u));
+  }
+  static void text(std::vector<std::byte>& out, std::string_view value) {
+    for (const auto byte : value) out.push_back(static_cast<std::byte>(byte));
+    out.push_back(std::byte{0});
+  }
+  void frame(char tag, const std::vector<std::byte>& body) {
+    input_.push_back(static_cast<std::byte>(tag));
+    integer(input_, static_cast<uint32_t>(body.size() + 4), 4);
+    input_.insert(input_.end(), body.begin(), body.end());
+  }
+  std::vector<std::byte> input_;
+  std::size_t offset_{0};
+};
+
+// Read the first unnamed Parse from a combined prepared exchange. Inspecting
+// actual transport bytes also catches an accidental direct-query fallback.
+void expect_parse(const std::vector<std::byte>& packet, bool legacy) {
+  ASSERT_GE(packet.size(), 8u); ASSERT_EQ(std::byte{'P'}, packet[0]);
+  ASSERT_EQ(std::byte{0}, packet[5]);
+  const auto end = std::find(packet.begin() + 6, packet.end(), std::byte{0});
+  ASSERT_NE(packet.end(), end);
+  std::string sql;
+  for (auto it = packet.begin() + 6; it != end; ++it) sql.push_back(static_cast<char>(*it));
+  if (legacy) {
+    EXPECT_NE(std::string::npos, sql.find("a.attrelid=ci.oid"));
+    EXPECT_NE(std::string::npos, sql.find("current_database()=$1"));
+    EXPECT_NE(std::string::npos, sql.find("n.nspname=$2"));
+    EXPECT_NE(std::string::npos, sql.find("ct.relname=$3"));
+    EXPECT_EQ(std::string::npos, sql.find("SHOW"));
+  } else {
+    EXPECT_EQ("SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE $1.$2.$3;", sql);
+  }
+  const auto position = static_cast<std::size_t>(end - packet.begin()) + 1;
+  ASSERT_GE(packet.size() - position, 14u);
+  EXPECT_EQ(std::byte{0}, packet[position]); EXPECT_EQ(std::byte{3}, packet[position + 1]);
+  for (std::size_t i = 0; i < 3; ++i) {
+    const auto oid = position + 2 + i * 4;
+    EXPECT_EQ(std::byte{0}, packet[oid]); EXPECT_EQ(std::byte{0}, packet[oid + 1]);
+    EXPECT_EQ(std::byte{0}, packet[oid + 2]);
+    EXPECT_EQ(static_cast<std::byte>(legacy ? 25 : 0), packet[oid + 3]);
+  }
 }
 }  // namespace
 
@@ -175,4 +272,104 @@ TEST(RedshiftCatalogExecution, MalformedPartialResultsBlockWithoutFallback) {
     ASSERT_FALSE(result); EXPECT_EQ(BackendErrorClass::InvalidMetadata, result.backend_error().error_class);
     EXPECT_EQ(1u, spy.prepared_calls); EXPECT_EQ(0u, spy.direct_calls); EXPECT_EQ(0u, spy.catalog_builds);
   }
+}
+
+TEST(RedshiftCatalogExecution, LegacyUsesExactParametersOriginalDeadlineWithoutCapabilityOrFallback) {
+  SpySession spy; spy.mode = RedshiftCatalogMode::Legacy; spy.capability = "malformed";
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{1});
+  auto result = spy.execute_catalog(request(), deadline);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(0u, spy.capability_reads); EXPECT_EQ(1u, spy.prepared_calls);
+  EXPECT_EQ(0u, spy.direct_calls); EXPECT_EQ(0u, spy.catalog_builds);
+  EXPECT_EQ(deadline, spy.received_deadline);
+  ASSERT_EQ(3u, spy.parameters.size());
+  EXPECT_EQ("db'._%", spy.parameters[0].value); EXPECT_EQ("schema'._%", spy.parameters[1].value);
+  EXPECT_EQ("table'._%", spy.parameters[2].value);
+  for (const auto& value : spy.parameters) EXPECT_EQ(QueryParameterType::Text, value.type);
+  EXPECT_NE(std::string::npos, spy.sql.find("a.attrelid=ci.oid"));
+  EXPECT_NE(std::string::npos, spy.sql.find("a.attnum AS key_seq"));
+  EXPECT_NE(std::string::npos, spy.sql.find("current_database()=?"));
+  EXPECT_EQ(std::string::npos, spy.sql.find("SHOW"));
+  EXPECT_EQ(std::string::npos, spy.sql.find("information_schema"));
+  EXPECT_EQ(std::string::npos, spy.sql.find("table'._%"));
+  spy.failure = local_backend_error(LocalFailure::Unsupported, "native failure",
+      BackendOperation::ExecuteCatalog, SessionState::Idle);
+  auto failed = spy.execute_catalog(request(), deadline);
+  ASSERT_FALSE(failed); EXPECT_EQ(spy.failure->code, failed.error());
+  EXPECT_EQ(2u, spy.prepared_calls); EXPECT_EQ(0u, spy.capability_reads);
+}
+
+TEST(RedshiftCatalogExecution, RejectedReconnectCannotChangeActiveMode) {
+  SpySession spy;
+  ConnectionSettings settings; settings.redshift_catalog_mode = RedshiftCatalogMode::Legacy;
+  auto connected = spy.connect(settings);
+  ASSERT_FALSE(connected);
+  auto result = spy.execute_catalog(request(), rs::util::make_deadline(std::chrono::seconds{1}));
+  ASSERT_TRUE(result); EXPECT_EQ(1u, spy.capability_reads);
+  EXPECT_EQ("SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE ?.?.?;", spy.sql);
+}
+
+TEST(RedshiftCatalogExecution, LegacyInvalidIdentifiersRejectBeforeSqlAndKeepShowSessionIndependent) {
+  SpySession legacy, show; legacy.mode = RedshiftCatalogMode::Legacy;
+  auto invalid = request(); invalid.table = std::string("bad\0name", 8);
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{1});
+  ASSERT_FALSE(legacy.execute_catalog(invalid, deadline));
+  no_execution(legacy); EXPECT_EQ(0u, legacy.capability_reads);
+  ASSERT_TRUE(show.execute_catalog(request(), deadline));
+  EXPECT_EQ("SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE ?.?.?;", show.sql);
+}
+
+TEST(RedshiftCatalogExecution, RealSessionLegacyConnectDisconnectThenDefaultShowReconnect) {
+  auto transport = std::make_unique<CatalogWireTransport>();
+  auto* wire = transport.get();
+  PgDatabaseConnection session(std::move(transport), std::nullopt, PgCatalogProfile::Redshift);
+  ConnectionSettings settings;
+  settings.host = "in-memory.invalid"; settings.port = 5439;
+  settings.database = "db'._%"; settings.user = "fixture"; settings.use_ssl = false;
+  settings.redshift_catalog_mode = RedshiftCatalogMode::Legacy;
+  ASSERT_TRUE(session.connect(settings)); ASSERT_TRUE(session.is_connected());
+  const auto legacy_deadline = rs::util::make_deadline(std::chrono::seconds{3});
+  const auto legacy_reads = wire->read_deadlines.size();
+  auto legacy = session.execute_catalog(request(), legacy_deadline);
+  ASSERT_TRUE(legacy); ASSERT_EQ(6u, legacy->columns.size()); EXPECT_TRUE(legacy->rows.empty());
+  EXPECT_EQ(SessionState::Idle, legacy.session_snapshot().state);
+  ASSERT_EQ(2u, wire->writes.size()); expect_parse(wire->writes[1], true);
+  EXPECT_EQ(legacy_deadline, wire->write_deadlines[1]);
+  for (auto i = legacy_reads; i < wire->read_deadlines.size(); ++i)
+    EXPECT_EQ(legacy_deadline, wire->read_deadlines[i]);
+  session.disconnect(); EXPECT_FALSE(session.is_connected()); EXPECT_EQ(1u, wire->closes);
+
+  settings.redshift_catalog_mode.reset();
+  ASSERT_TRUE(session.connect(settings)); ASSERT_TRUE(session.is_connected());
+  const auto show_deadline = rs::util::make_deadline(std::chrono::seconds{3});
+  const auto show_reads = wire->read_deadlines.size();
+  auto show = session.execute_catalog(request(), show_deadline);
+  ASSERT_TRUE(show); ASSERT_EQ(6u, show->columns.size()); EXPECT_TRUE(show->rows.empty());
+  ASSERT_EQ(4u, wire->writes.size()); expect_parse(wire->writes[3], false);
+  EXPECT_EQ(show_deadline, wire->write_deadlines[3]);
+  for (auto i = show_reads; i < wire->read_deadlines.size(); ++i)
+    EXPECT_EQ(show_deadline, wire->read_deadlines[i]);
+  EXPECT_EQ(2u, wire->connects);
+  session.disconnect(); EXPECT_FALSE(session.is_connected()); EXPECT_EQ(2u, wire->closes);
+  // The first owning metadata result survives reconnect and transport teardown.
+  EXPECT_EQ("TABLE_CAT", legacy->columns[0].name);
+  EXPECT_EQ("KEY_SEQ", legacy->columns[4].name);
+}
+
+TEST(RedshiftCatalogExecution, RealPostgresSessionRejectsForeignModeBeforeTransportIo) {
+  auto transport = std::make_unique<CatalogWireTransport>();
+  auto* wire = transport.get();
+  PgDatabaseConnection session(std::move(transport), std::nullopt, PgCatalogProfile::PostgreSQL);
+  ConnectionSettings settings;
+  settings.host = "in-memory.invalid"; settings.port = 5432; settings.use_ssl = false;
+  for (const auto mode : {RedshiftCatalogMode::Show, RedshiftCatalogMode::Legacy}) {
+    settings.redshift_catalog_mode = mode;
+    auto result = session.connect(settings);
+    ASSERT_FALSE(result);
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter), result.error());
+    EXPECT_FALSE(session.is_connected());
+    EXPECT_EQ(0u, wire->connects); EXPECT_TRUE(wire->writes.empty());
+    EXPECT_TRUE(wire->read_deadlines.empty()); EXPECT_EQ(0u, wire->closes);
+  }
+  EXPECT_EQ(nullptr, session.catalog_execution());
 }

@@ -58,6 +58,18 @@ PgBackendProvider::resolve_connection_options(ConnectionOptions options) const {
   }
 
   ConnectionSettings settings;
+  if (options.redshift_catalog_mode && catalog_profile_ != PgCatalogProfile::Redshift)
+    return {rs::util::DbErrorCode::InvalidParameter, "RedshiftCatalogMode requires Redshift"};
+  if (catalog_profile_ == PgCatalogProfile::Redshift) {
+    settings.redshift_catalog_mode = RedshiftCatalogMode::Show;
+    if (options.redshift_catalog_mode) {
+      auto mode = *options.redshift_catalog_mode;
+      for (auto& c : mode) if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+      if (mode == "LEGACY") settings.redshift_catalog_mode = RedshiftCatalogMode::Legacy;
+      else if (mode != "SHOW")
+        return {rs::util::DbErrorCode::InvalidParameter, "RedshiftCatalogMode must be SHOW or LEGACY"};
+    }
+  }
   settings.host = options.host.value_or(connection_defaults_.host);
   settings.port = options.port.value_or(connection_defaults_.port);
   if (settings.port == 0) {

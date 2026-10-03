@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
 #include "odbc/connection_string.h"
+#include "core/database/backend_provider.h"
 #include "core/database/postgres/pg_database_connection.h"
 #include "core/database/postgres/redshift_primary_key_contract.h"
 #include <charconv>
@@ -182,7 +183,8 @@ protected:
   SQLHDBC hdbc_ = nullptr;
   SQLHSTMT hstmt_ = nullptr;
   
-  void modern_primary_key_contract(bool use_executor, bool invalid_names = false);
+  void modern_primary_key_contract(bool use_executor, bool invalid_names = false, bool legacy = false);
+  void odbc_primary_key_mode_contract(const char* explicit_mode);
   std::string connection_string_;
 };
 
@@ -383,6 +385,99 @@ TEST_F(RedshiftRealTest, CompositePrimaryKeyCatalogContract) {
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
 }
 
+// Future ODBC option-to-execution proof only; registration does not admit SQL.
+// The fixed fixture declares (key_b,key_a), reversing physical column order.
+// Each ODBC operation has its existing 15s timeout; the future reviewed runner
+// must impose its outer bound. No shared SDK deadline across ODBC calls claimed.
+void RedshiftRealTest::odbc_primary_key_mode_contract(const char* explicit_mode) {
+  const auto base = rs::odbc::ConnectionString::parse(connection_string_);
+  ASSERT_FALSE(base.contains("REDSHIFTCATALOGMODE"))
+      << "Base configuration must omit the catalog mode to avoid duplicate-option ambiguity";
+  for (const auto* field : {"SERVER", "PORT", "DATABASE", "UID", "PWD", "SSLCAFILE"}) {
+    ASSERT_TRUE(base.contains(field));
+    ASSERT_TRUE(!base.at(field).empty());
+    ASSERT_TRUE(base.at(field).find('\0') == std::string::npos);
+  }
+  // Bind the separately reviewed ordinary-user fixture without printing private
+  // endpoint, principal, CA path or credential-bearing connection settings.
+  ASSERT_TRUE(base.at("DATABASE") == "odbcpp_pilot");
+  ASSERT_TRUE(base.at("UID") == "odbcpp_pilot_test");
+  if (!explicit_mode) {
+    const auto resolved = rs::odbc::ConnectionString::resolve(
+        connection_string_, std::string(rs::core::database::configured_backend_provider().identity().driver_name));
+    ASSERT_FALSE(resolved.effective_parameters.contains("REDSHIFTCATALOGMODE"))
+        << "Default-mode qualification requires absence of driver and DSN overrides";
+  }
+  if (explicit_mode) {
+    ASSERT_TRUE(std::string_view(explicit_mode) == "SHOW" ||
+                std::string_view(explicit_mode) == "LEGACY");
+    connection_string_ += ";RedshiftCatalogMode=";
+    connection_string_ += explicit_mode;
+    connection_string_ += ';';
+  }
+  ASSERT_TRUE(connect()); // Fixture teardown owns partially allocated handles.
+  constexpr char database[] = "odbcpp_pilot";
+  constexpr char schema[] = "odbcpp_fixture";
+  constexpr char parent[] = "m2_catalog_parent_20261003_c01";
+  constexpr std::array<CatalogField, 6> fields{{
+      {"table_cat", SQL_VARCHAR}, {"table_schem", SQL_VARCHAR},
+      {"table_name", SQL_VARCHAR}, {"column_name", SQL_VARCHAR},
+      {"key_seq", SQL_SMALLINT}, {"pk_name", SQL_VARCHAR}}};
+  // On an original catalog failure, catalog_succeeded preserves that failure
+  // and executes one SELECT1 recovery only. It never retries another mode.
+  ASSERT_TRUE(catalog_succeeded(SQLPrimaryKeys(hstmt_,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(database)), SQL_NTS,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema)), SQL_NTS,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(parent)), SQL_NTS)));
+  expect_catalog_fields(fields);
+  ASSERT_FALSE(HasFatalFailure());
+  constexpr std::array<const char*, 2> keys{"key_b", "key_a"};
+  std::string observed_constraint;
+  for (std::size_t row = 0; row < keys.size(); ++row) {
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+    const std::array<const char*, 4> expected{database, schema, parent, keys[row]};
+    for (SQLUSMALLINT column = 1; column <= 4; ++column) {
+      std::array<char, 1024> value{}; SQLLEN indicator = SQL_NULL_DATA;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, column, SQL_C_CHAR,
+          value.data(), static_cast<SQLLEN>(value.size()), &indicator));
+      ASSERT_NE(SQL_NULL_DATA, indicator);
+      EXPECT_EQ(static_cast<SQLLEN>(std::strlen(expected[column - 1])), indicator);
+      EXPECT_STREQ(expected[column - 1], value.data());
+    }
+    SQLSMALLINT sequence = 0; SQLLEN indicator = SQL_NULL_DATA;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 5, SQL_C_SSHORT,
+        &sequence, sizeof(sequence), &indicator));
+    ASSERT_NE(SQL_NULL_DATA, indicator);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(sequence)), indicator);
+    EXPECT_EQ(static_cast<SQLSMALLINT>(row + 1), sequence);
+    // The server-generated constraint name is observed, never guessed. The
+    // buffer is a local test bound, not an assertion of native maximum width.
+    std::array<char, 1024> constraint{}; indicator = SQL_NULL_DATA;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 6, SQL_C_CHAR, constraint.data(),
+        static_cast<SQLLEN>(constraint.size()), &indicator));
+    ASSERT_NE(SQL_NULL_DATA, indicator);
+    ASSERT_GT(indicator, 0);
+    ASSERT_LT(static_cast<std::size_t>(indicator), constraint.size());
+    EXPECT_EQ(static_cast<std::size_t>(indicator), std::strlen(constraint.data()));
+    if (row == 0) observed_constraint.assign(constraint.data(), static_cast<std::size_t>(indicator));
+    else EXPECT_EQ(observed_constraint, std::string(constraint.data(), static_cast<std::size_t>(indicator)));
+  }
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+}
+
+TEST_F(RedshiftRealTest, OdbcPrimaryKeyExplicitShowOptionContract) {
+  odbc_primary_key_mode_contract("SHOW");
+}
+
+TEST_F(RedshiftRealTest, OdbcPrimaryKeyExplicitLegacyOptionContract) {
+  odbc_primary_key_mode_contract("LEGACY");
+}
+
+TEST_F(RedshiftRealTest, OdbcPrimaryKeyDefaultShowOptionContract) {
+  odbc_primary_key_mode_contract(nullptr);
+}
+
 // FUTURE proof only: separately admitted fixture/endpoint, never auto-enabled.
 // Dispatch one fixed SHOW through the real production Redshift session. Existing
 // parameter type-resolution reads may occur under the SAME absolute deadline;
@@ -391,7 +486,7 @@ TEST_F(RedshiftRealTest, CompositePrimaryKeyCatalogContract) {
 // Pinned upstream56d35297f9bee0cc31c0148581c87ca455639a39:
 // rsMetadataAPIHelper.cpp:186; rsMetadataServerProxyHelper.cpp:806-810;
 // rsutil.c:16303-16325 (Unspecified OID0 alternative, not default VARCHAR1043).
-void RedshiftRealTest::modern_primary_key_contract(bool use_executor, bool invalid_names) {
+void RedshiftRealTest::modern_primary_key_contract(bool use_executor, bool invalid_names, bool legacy) {
   using namespace rs::core::database;
   using namespace rs::core::database::postgres;
   const auto fields = rs::odbc::ConnectionString::parse(connection_string_);
@@ -421,10 +516,12 @@ void RedshiftRealTest::modern_primary_key_contract(bool use_executor, bool inval
   settings.use_ssl = true;
   settings.ssl_ca_file = fields.at("SSLCAFILE");
   settings.timeout = std::chrono::seconds{15};
+  if (legacy) settings.redshift_catalog_mode = RedshiftCatalogMode::Legacy;
   PgDatabaseConnection session(nullptr, std::nullopt, PgCatalogProfile::Redshift);
   auto connected = session.connect(settings);
   ASSERT_TRUE(connected) << (connected ? "" : connected.backend_error().safe_summary());
 
+  if (!legacy) {
   // Authenticated ParameterStatus only. Entire bounded unsigned value required.
   const auto capability = session.get_parameter("show_discovery");
   ASSERT_FALSE(capability.empty()) << "Authenticated SHOW capability missing";
@@ -436,6 +533,9 @@ void RedshiftRealTest::modern_primary_key_contract(bool use_executor, bool inval
   ASSERT_TRUE(parsed.ec == std::errc{} && parsed.ptr == capability.data() + capability.size())
       << "Malformed SHOW capability";
   ASSERT_GE(version, 4u) << "Modern SHOW discovery unavailable";
+  } else {
+    ASSERT_TRUE(use_executor);
+  }
   auto plan = redshift_primary_key_plan("odbcpp_pilot", "odbcpp_fixture", "m2_catalog_parent_20261003_c01");
   ASSERT_TRUE(plan);
   const std::vector<QueryParameter> parameters{
@@ -471,7 +571,7 @@ void RedshiftRealTest::modern_primary_key_contract(bool use_executor, bool inval
       EXPECT_EQ(expected, rejected.session_snapshot());
       EXPECT_EQ(SessionState::Idle, session.session_state());
     }
-    // Real-session recovery is qualified by the one valid SHOW below. Absence
+    // Real-session recovery is qualified by the one valid catalog execution below. Absence
     // of SQL for local rejections is established separately by spy unit tests.
   }
   // Keep the previously qualified direct exchange and the future backend facet
@@ -530,6 +630,14 @@ TEST_F(RedshiftRealTest, ModernPrimaryKeyExecutionContract) {
 
 TEST_F(RedshiftRealTest, ModernPrimaryKeyExecutionInvalidExactNamesPreserveSession) {
   modern_primary_key_contract(true, true);
+}
+
+TEST_F(RedshiftRealTest, LegacyPrimaryKeyExecutionContract) {
+  modern_primary_key_contract(true, false, true);
+}
+
+TEST_F(RedshiftRealTest, LegacyPrimaryKeyExecutionInvalidExactNamesPreserveSession) {
+  modern_primary_key_contract(true, true, true);
 }
 
 TEST_F(RedshiftRealTest, CompositeForeignKeyCatalogContract) {
