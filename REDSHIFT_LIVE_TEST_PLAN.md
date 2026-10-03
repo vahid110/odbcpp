@@ -653,3 +653,21 @@ isolation and direct ODBC regression tests. See REDSHIFT_M2_ASSESSMENT.md for th
 catalog claim matrix, remaining type/profile gaps and finite stopping point.
 This batch performs no paid SQL, accounting migration or new admission. Runtime
 numeric fidelity, complete catalogs and native IAM remain unqualified.
+
+
+## Exact type-case preparation
+
+Static-profile CI37084444992/8550fe7 passed all required gates. The subsequent
+finite test package adds five real-target GoogleTests: IntegerBoundariesAndNarrowing,
+ExactDecimalAndNull, UnicodeRoundTrip, TemporalExactAndNull and
+TypedNullAndOutputPreservation. They assert exact values, lengths, descriptor
+scale/precision, fixed temporal fields, diagnostics and preserved output rather
+than loose string smoke checks. VARBYTE remains outside this inventory until its
+OID/wire contract is audited. Existing admitted pilot case inventories are unchanged.
+
+These cases compile and their test mechanics are checked against an ephemeral
+local PostgreSQL surrogate with TLS. This is not live Redshift proof: no Redshift
+SQL, new window or accounting change is performed by preparing the tests. A
+future owner-reviewed finite request must bind the rebuilt binary and exact cases
+before any paid execution. G1's earlier endpoint evidence remains cross-artifact;
+M2/beta/native IAM/full parity closure is not implied by new tests existing.

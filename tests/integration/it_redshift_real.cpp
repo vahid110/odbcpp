@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
 #include "odbc/connection_string.h"
+#include <vector>
+#include <array>
+#include <limits>
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -452,4 +455,175 @@ TEST_F(RedshiftRealTest, IAMInvalidPassword) {
   connection_string_ = invalid;
   EXPECT_FALSE(connect());
   EXPECT_EQ("28000", get_error(SQL_HANDLE_DBC, hdbc_));
+}
+
+
+// These finite type cases are not part of the admitted pilot inventory merely
+// because they compile. Live qualification requires a separately reviewed batch.
+TEST_F(RedshiftRealTest, IntegerBoundariesAndNarrowing) {
+  ASSERT_TRUE(connect());
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(
+      const_cast<char*>("SELECT CAST('-9223372036854775808' AS BIGINT), "
+                        "CAST('9223372036854775807' AS BIGINT), "
+                        "CAST(32768 AS INTEGER)")), SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  const SQLBIGINT expected[]{std::numeric_limits<SQLBIGINT>::min(),
+                             std::numeric_limits<SQLBIGINT>::max()};
+  for (SQLUSMALLINT column = 1; column <= 2; ++column) {
+    SQLBIGINT value{}; SQLLEN length{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, column, SQL_C_SBIGINT,
+        &value, sizeof(value), &length));
+    EXPECT_EQ(expected[column - 1], value);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+  }
+  SQLSMALLINT sentinel = 17; SQLLEN length = 93;
+  EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt_, 3, SQL_C_SSHORT,
+      &sentinel, sizeof(sentinel), &length));
+  EXPECT_EQ("22003", get_error(SQL_HANDLE_STMT, hstmt_));
+  EXPECT_EQ(17, sentinel);
+  EXPECT_EQ(93, length);
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+}
+
+TEST_F(RedshiftRealTest, ExactDecimalAndNull) {
+  ASSERT_TRUE(connect());
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(
+      const_cast<char*>("SELECT CAST('123.45' AS DECIMAL(5,2)), "
+                        "CAST('-123.45' AS DECIMAL(5,2)), "
+                        "CAST('99999999999999999999999999999999999999' AS DECIMAL(38,0)), "
+                        "CAST(NULL AS DECIMAL(5,2))")), SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  SQLHDESC ard = SQL_NULL_HDESC;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt_, SQL_ATTR_APP_ROW_DESC,
+      &ard, 0, nullptr));
+  const std::array<unsigned char, 16> maximum_magnitude{
+      255, 255, 255, 255, 63, 34, 138, 9, 122, 196, 134, 90, 168, 76, 59, 75};
+  for (SQLSMALLINT column = 1; column <= 4; ++column) {
+    const std::uintptr_t precision = column == 3 ? 38 : 5;
+    const std::uintptr_t scale = column == 3 ? 0 : 2;
+    SQLCHAR name[64]{}; SQLSMALLINT type{}, digits{}, nullable{}; SQLULEN size{};
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt_, static_cast<SQLUSMALLINT>(column),
+        name, sizeof(name), nullptr, &type, &size, &digits, &nullable));
+    EXPECT_EQ(SQL_NUMERIC, type);
+    EXPECT_EQ(precision, size);
+    EXPECT_EQ(scale, digits);
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, column, SQL_DESC_CONCISE_TYPE,
+        reinterpret_cast<SQLPOINTER>(std::uintptr_t{SQL_C_NUMERIC}), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, column, SQL_DESC_PRECISION,
+        reinterpret_cast<SQLPOINTER>(precision), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, column, SQL_DESC_SCALE,
+        reinterpret_cast<SQLPOINTER>(scale), 0));
+    SQL_NUMERIC_STRUCT value;
+    std::memset(&value, 0x5a, sizeof(value));
+    SQLLEN length = 93;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, static_cast<SQLUSMALLINT>(column),
+        SQL_ARD_TYPE, &value, sizeof(value), &length));
+    if (column == 4) {
+      EXPECT_EQ(SQL_NULL_DATA, length);
+      EXPECT_TRUE(std::all_of(reinterpret_cast<const unsigned char*>(&value),
+          reinterpret_cast<const unsigned char*>(&value) + sizeof(value),
+          [](unsigned char byte) { return byte == 0x5a; }));
+      continue;
+    }
+    EXPECT_EQ(precision, value.precision);
+    EXPECT_EQ(scale, value.scale);
+    EXPECT_EQ(column == 2 ? 0 : 1, value.sign);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+    std::array<unsigned char, 16> magnitude{};
+    if (column == 3) magnitude = maximum_magnitude;
+    else { magnitude[0] = 0x39; magnitude[1] = 0x30; }
+    EXPECT_TRUE(std::equal(magnitude.begin(), magnitude.end(), value.val));
+  }
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+}
+
+TEST_F(RedshiftRealTest, UnicodeRoundTrip) {
+  ASSERT_TRUE(connect());
+  const std::string expected = "Gr\xc3\xbc\xc3\x9f" "e \xf0\x9f\x99\x82";
+  // Escapes above are UTF-8 bytes, independent of compiler source encoding.
+  std::vector<SQLWCHAR> wide{'G', 'r', 0xfc, 0xdf, 'e', ' '};
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    wide.push_back(0xd83d); wide.push_back(0xde42);
+  } else {
+    static_assert(sizeof(SQLWCHAR) == 2 || sizeof(SQLWCHAR) == 4);
+    wide.push_back(static_cast<SQLWCHAR>(0x1f642));
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt_, reinterpret_cast<SQLCHAR*>(
+      const_cast<char*>("SELECT CAST(? AS VARCHAR(64)), CAST(? AS VARCHAR(64))")), SQL_NTS));
+  SQLLEN input_length = static_cast<SQLLEN>(expected.size());
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_VARCHAR, 64, 0, const_cast<char*>(expected.data()),
+      static_cast<SQLLEN>(expected.size()), &input_length));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 2, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_VARCHAR, 64, 0, const_cast<char*>(expected.data()),
+      static_cast<SQLLEN>(expected.size()), &input_length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  char narrow[64]{}; SQLLEN length{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 1, SQL_C_CHAR, narrow, sizeof(narrow), &length));
+  EXPECT_EQ(expected, narrow);
+  EXPECT_EQ(12, length);
+  SQLWCHAR output[32]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 2, SQL_C_WCHAR, output, sizeof(output), &length));
+  EXPECT_EQ(static_cast<SQLLEN>(wide.size() * sizeof(SQLWCHAR)), length);
+  EXPECT_TRUE(std::equal(wide.begin(), wide.end(), output));
+  EXPECT_EQ(SQLWCHAR{}, output[wide.size()]);
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+}
+
+TEST_F(RedshiftRealTest, TemporalExactAndNull) {
+  ASSERT_TRUE(connect());
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(
+      const_cast<char*>("SELECT CAST('2024-02-29' AS DATE), "
+                        "CAST('2024-02-29 12:34:56.123456' AS TIMESTAMP), "
+                        "CAST('12:34:56.123456' AS TIME), CAST(NULL AS TIMESTAMP)")), SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  SQLLEN length{}; SQL_DATE_STRUCT date{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 1, SQL_C_TYPE_DATE, &date, sizeof(date), &length));
+  EXPECT_EQ(2024, date.year); EXPECT_EQ(2, date.month); EXPECT_EQ(29, date.day);
+  EXPECT_EQ(static_cast<SQLLEN>(sizeof(date)), length);
+  SQL_TIMESTAMP_STRUCT timestamp{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 2, SQL_C_TYPE_TIMESTAMP,
+      &timestamp, sizeof(timestamp), &length));
+  EXPECT_EQ(2024, timestamp.year); EXPECT_EQ(2, timestamp.month); EXPECT_EQ(29, timestamp.day);
+  EXPECT_EQ(12, timestamp.hour); EXPECT_EQ(34, timestamp.minute); EXPECT_EQ(56, timestamp.second);
+  EXPECT_EQ(123456000u, timestamp.fraction);
+  EXPECT_EQ(static_cast<SQLLEN>(sizeof(timestamp)), length);
+  SQL_TIME_STRUCT time{};
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(hstmt_, 3, SQL_C_TYPE_TIME,
+      &time, sizeof(time), &length));
+  EXPECT_EQ("01S07", get_error(SQL_HANDLE_STMT, hstmt_));
+  EXPECT_EQ(12, time.hour); EXPECT_EQ(34, time.minute); EXPECT_EQ(56, time.second);
+  EXPECT_EQ(static_cast<SQLLEN>(sizeof(time)), length);
+  std::memset(&timestamp, 0x5a, sizeof(timestamp));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 4, SQL_C_TYPE_TIMESTAMP,
+      &timestamp, sizeof(timestamp), &length));
+  EXPECT_EQ(SQL_NULL_DATA, length);
+  EXPECT_TRUE(std::all_of(reinterpret_cast<const unsigned char*>(&timestamp),
+      reinterpret_cast<const unsigned char*>(&timestamp) + sizeof(timestamp),
+      [](unsigned char byte) { return byte == 0x5a; }));
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+}
+
+TEST_F(RedshiftRealTest, TypedNullAndOutputPreservation) {
+  ASSERT_TRUE(connect());
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(
+      const_cast<char*>("SELECT CAST(NULL AS INTEGER), CAST(NULL AS DECIMAL(5,2)), "
+                        "CAST(NULL AS VARCHAR(8)), CAST(NULL AS TIMESTAMP), "
+                        "CAST('' AS VARCHAR(8))")), SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  const SQLSMALLINT targets[]{SQL_C_SLONG, SQL_C_NUMERIC, SQL_C_CHAR, SQL_C_TYPE_TIMESTAMP};
+  for (SQLUSMALLINT column = 1; column <= 4; ++column) {
+    std::array<unsigned char, 64> output;
+    output.fill(0x5a); SQLLEN length = 93;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, column, targets[column - 1],
+        output.data(), static_cast<SQLLEN>(output.size()), &length));
+    EXPECT_EQ(SQL_NULL_DATA, length);
+    EXPECT_TRUE(std::all_of(output.begin(), output.end(),
+        [](unsigned char byte) { return byte == 0x5a; }));
+  }
+  char empty[8]; std::memset(empty, 0x5a, sizeof(empty)); SQLLEN length = 93;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 5, SQL_C_CHAR, empty, sizeof(empty), &length));
+  EXPECT_EQ(0, length); EXPECT_EQ('\0', empty[0]);
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
 }

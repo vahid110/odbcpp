@@ -76,6 +76,51 @@ the backend has a catalog facet. A bounded correction must reconcile the claim
 with each request's supported implementation without treating a pending parity
 item as a user-approved omission.
 
+## Runtime type evidence and proposed finite inventory
+
+Source audit at8550fe7 distinguishes actual endpoint evidence from shared offline
+conversion tests. `DataTypes` only checks ASCII/integer text and a float substring;
+it selects NOW() without reading the timestamp. It is not an exact type-fidelity
+gate, and its presence alone is not evidence of an admitted live execution.
+
+| Family | Actual Redshift evidence | Missing endpoint proof |
+|---|---|---|
+| Integer | Ordered1–5 as text, prepared42 as SQL_C_SLONG, IAM7 as SQL_C_LONG | Bigint extremes and checked narrowing diagnostics/output preservation |
+| Decimal/floating point | No exact decimal or typed float result recorded | Precision38, descriptor scale, exact numeric magnitude/sign, overflow/truncation |
+| Unicode | No multibyte/supplementary result recorded | Narrow/wide retrieval, prepared input, byte versus SQLWCHAR-unit lengths |
+| Temporal | None; selected NOW() is not retrieved | Fixed leap date/fractional timestamp, temporal structs and lost-field warnings |
+| Binary | None | Redshift VARBYTE OID/wire representation first; PostgreSQL bytea tests are insufficient |
+| NULL | Prepared varchar NULL and IAM integer NULL | Decimal/temporal NULLs, bound columns, output preservation and empty-string distinction |
+
+Existing converter tests cover numeric structures/exponents/checked narrowing,
+UTF-8/wide conversion, leap dates/fractions, malformed-input preservation and
+normalized binary copying (`tests/unit/test_redshift_data_conversion.cpp`).
+Native decoder tests exercise PostgreSQL-family OIDs/modifiers and bytea escapes
+(`tests/unit/test_native_types.cpp`); neither suite proves Redshift wire fidelity.
+
+The next five GTests are implemented and compile in the real-target executable;
+they still require their own reviewed Redshift admission:
+
+1. `IntegerBoundariesAndNarrowing`: bigint min/max through SQL_C_SBIGINT;
+  32768 narrowed to SQL_C_SSHORT must report22003 and preserve sentinel output.
+2. `ExactDecimalAndNull`: DECIMAL(5,2) ±123.45 with explicit descriptor scale2,
+   magnitude bytes39 30 and signs1/0; a38-digit value and a typed NULL. Avoid
+   accidental scale0 retrieval, which would test truncation instead of fidelity.
+3. `UnicodeRoundTrip`: Grüße plus a supplementary character through narrow/wide
+   retrieval and prepared input; compare exact UTF-8 and compute wide length
+   using the compiled SQLWCHAR width.
+4. `TemporalExactAndNull`: fixed2024-02-29 date and timestamp
+  2024-02-29 12:34:56.123456, fraction123456000 nanoseconds; test fractional-time
+   loss separately with01S07. Timezone cases require another explicit inventory.
+5. `TypedNullAndOutputPreservation`: integer/decimal/varchar/timestamp NULLs,
+   SQL_NULL_DATA and preserved sentinel buffers, distinct from empty text.
+
+These are executable test expectations, not newly qualified Redshift behavior.
+A local PostgreSQL surrogate validates syntax and ODBC test mechanics only; its
+results cannot satisfy Redshift identity or runtime-fidelity qualification. No binary
+case is admitted until the VARBYTE decoding contract is audited. No schema writes,
+new authentication methods or additional paid window are authorized here.
+
 ## Next finite proof packages
 
 | Package | Result required | Stop condition / planning effort |
@@ -89,6 +134,21 @@ promise to finish the beta in that time. ROADMAP's original M2 estimate is3–5
 days and M3 is8–12 days; reassess implementation effort when the matrices expose
 concrete defects. Exhaustive RP1 estimates require a fuller source inventory.
 Do not hide that unknown work inside M2's baseline estimate.
+
+## G1 review and remaining assessment deliverables
+
+Independent source/evidence review at8550fe7 accepted that001/005/009 collectively
+cover the selected real-endpoint G1 behaviors. This is cross-artifact evidence,
+not one combined live acceptance on8550fe7. Before formal closure, retain a
+manifest binding each case to its tested source/binary, profile and private result;
+no paid rerun solely to consolidate evidence is needed. The8550fe7 platform CI
+remains a separate gate.
+
+Remaining finite assessment work: freeze the selected type/conversion dispositions,
+complete the advertised API/capability claim matrix, record deployment/auth/
+platform/application beta proposal and RS1–RS7 boundaries, and size M3/RP1
+checkpoints with dependencies. Exhaustive official parity remains a later phase;
+this proposal must neither claim it nor silently approve exceptions.
 
 ## Stopping point
 
