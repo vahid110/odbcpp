@@ -4,11 +4,13 @@ import argparse
 import json
 import os
 import re
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
 import time
 import uuid
+import xml.etree.ElementTree as ET
 
 IMAGE = 'mysql:8.4.11@sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242'
 PASSWORD = 'odbcpp-public-mysql-fixture-password'
@@ -17,11 +19,66 @@ def run(args, **kw):
     return subprocess.run(args, check=True, text=True, capture_output=True,
                           timeout=kw.pop('timeout', 30), **kw)
 
+DECIMAL_SUITE = 'MySqlDecimalResultsIntegrationTest'
+DECIMAL_CASE = 'DeclaredSignedBoundsNullAndOwnershipAgreeAcrossProtocols'
+
+def validate_decimal_xml(path):
+    root = ET.parse(path).getroot()
+    suites = list(root) if root.tag == 'testsuites' else [root]
+    if len(suites) != 1 or suites[0].tag != 'testsuite':
+        raise RuntimeError('Unexpected MySQL decimal inventory')
+    suite = suites[0]
+    cases = list(suite)
+    if (suite.get('name') != DECIMAL_SUITE or suite.get('tests') != '1'
+            or any(suite.get(k, '0') != '0' for k in ('failures', 'errors', 'disabled', 'skipped'))
+            or len(cases) != 1 or cases[0].tag != 'testcase'
+            or cases[0].get('name') != DECIMAL_CASE
+            or cases[0].get('classname') != DECIMAL_SUITE
+            or cases[0].get('status') != 'run'
+            or cases[0].get('result') != 'completed'
+            or any(c.tag in ('failure', 'error', 'skipped') for c in cases[0])):
+        raise RuntimeError('Unexpected MySQL decimal inventory')
+
+def run_decimal(binary, junit, port, ca):
+    env = os.environ.copy()
+    for key in list(env):
+        if key.startswith('GTEST_'):
+            del env[key]
+    env.update(ODBCPP_MYSQL_TEST_USER='sdk', ODBCPP_MYSQL_TEST_PASSWORD=PASSWORD,
+               ODBCPP_MYSQL_TEST_HOST='localhost', ODBCPP_MYSQL_TEST_PORT=port,
+               ODBCPP_MYSQL_TEST_CA_FILE=str(ca.resolve()),
+               ODBCPP_MYSQL_DECIMAL_FIXTURE_ADMITTED='pinned-8.4.11-temporary-decimal')
+    try:
+        run([str(binary), '--gtest_filter=' + DECIMAL_SUITE + '.' + DECIMAL_CASE,
+             '--gtest_repeat=1', '--gtest_output=xml:' + str(junit)], env=env, timeout=60)
+        validate_decimal_xml(junit)
+    except Exception:
+        raise RuntimeError('MySQL decimal result proof failed') from None
+
+def cleanup_fixture(name):
+    # A failed/timed-out create may still have created this exact owned name.
+    subprocess.run(['docker', 'rm', '--force', name], capture_output=True, timeout=30)
+    remaining = run(['docker', 'ps', '--all', '--filter', 'name=^/' + name + '$',
+                     '--format', '{{.ID}}'], timeout=10)
+    if remaining.stdout.strip():
+        raise RuntimeError('MySQL fixture cleanup failed')
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--probe', required=True)
     parser.add_argument('--output', required=True)
+    parser.add_argument('--decimal-test-binary')
+    parser.add_argument('--decimal-junit')
     args = parser.parse_args()
+    if bool(args.decimal_test_binary) != bool(args.decimal_junit):
+        parser.error('decimal binary and JUnit must be supplied together')
+    decimal_binary = Path(args.decimal_test_binary).resolve() if args.decimal_test_binary else None
+    decimal_junit = Path(args.decimal_junit).resolve() if args.decimal_junit else None
+    if decimal_binary is not None:
+        if not decimal_binary.is_file() or not os.access(decimal_binary, os.X_OK):
+            parser.error('decimal binary must be executable')
+        decimal_junit.parent.mkdir(parents=True, exist_ok=True)
+        decimal_junit.unlink(missing_ok=True)
     output = Path(args.output)
     output.unlink(missing_ok=True)
     name = 'odbcpp-mysql-' + uuid.uuid4().hex[:12]
@@ -45,9 +102,10 @@ def main():
         for file in ('ca.pem', 'server.pem', 'server.key'):
             (served / file).write_bytes((certs / file).read_bytes())
             (served / file).chmod(0o644)
-        started = False
+        create_attempted = False
         try:
             run(['docker', 'pull', IMAGE], timeout=300)
+            create_attempted = True
             run(['docker', 'run', '--detach', '--name', name, '--publish', '127.0.0.1::3306',
                  '--mount', 'type=bind,src=' + str(served) + ',dst=/odbcpp-tls,readonly',
                  '--env', 'MYSQL_ROOT_PASSWORD=' + PASSWORD,
@@ -55,7 +113,6 @@ def main():
                  '--env', 'MYSQL_PASSWORD=' + PASSWORD, IMAGE,
                  '--ssl-ca=/odbcpp-tls/ca.pem', '--ssl-cert=/odbcpp-tls/server.pem',
                  '--ssl-key=/odbcpp-tls/server.key', '--require-secure-transport=ON'], timeout=60)
-            started = True
             port = run(['docker', 'port', name, '3306/tcp']).stdout.strip().rsplit(':', 1)[1]
             sql_prefix = ['docker', 'exec', '--env', 'MYSQL_PWD=' + PASSWORD, name,
                           'mysql', '--batch', '--skip-column-names', '--user=root']
@@ -100,12 +157,21 @@ def main():
                     raise RuntimeError('Unexpected MySQL probe result')
                 results.append({'case': case, 'host': host, 'trust': trust, 'passed': True})
                 print('PASS MySQL ' + case + ' (' + host + ', ' + trust + ')', flush=True)
+            if decimal_binary is not None:
+                run_decimal(decimal_binary, decimal_junit, port, certs / 'ca.pem')
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text(json.dumps({'image': IMAGE, 'version': version, 'plugin': plugin,
-                                          'cases': results, 'sdkDirectSessionProven': True, 'odbcSessionClaimed': False}, indent=2) + '\n')
+            evidence = {'image': IMAGE, 'version': version, 'plugin': plugin,
+                                          'cases': results, 'sdkDecimalResultsProven': decimal_binary is not None,
+                                          'sdkDirectSessionProven': True, 'odbcSessionClaimed': False}
         finally:
-            if started:
-                subprocess.run(['docker', 'rm', '--force', name], capture_output=True, timeout=30)
+            original_failure = sys.exc_info()[0] is not None
+            if create_attempted:
+                try:
+                    cleanup_fixture(name)
+                except Exception:
+                    if not original_failure:
+                        raise RuntimeError('MySQL fixture cleanup failed') from None
+        output.write_text(json.dumps(evidence, indent=2) + '\n')
 
 if __name__ == '__main__':
     try:

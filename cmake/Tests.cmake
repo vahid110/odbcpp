@@ -92,6 +92,16 @@ apply_compiler_settings(mysql_auth_probe)
 set_target_properties(mysql_auth_probe PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
 
+# Explicit pinned-fixture executable; never admitted by default CTest.
+option(ODBCPP_MYSQL_DECIMAL_LIVE_TESTS "Build pinned MySQL decimal result qualification" OFF)
+if(ODBCPP_MYSQL_DECIMAL_LIVE_TESTS)
+  add_executable(it_mysql_decimal_results tests/integration/it_mysql_decimal_results.cpp)
+  target_link_libraries(it_mysql_decimal_results PRIVATE ${PROJECT_NAME}::core GTest::gtest_main)
+  apply_compiler_settings(it_mysql_decimal_results)
+  set_target_properties(it_mysql_decimal_results PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+endif()
+
 # ---- Unit Tests ----
 file(GLOB UNIT_TEST_SOURCES "tests/unit/*.cpp")
 foreach(test_file ${UNIT_TEST_SOURCES})
@@ -284,6 +294,9 @@ endif()
 file(GLOB INTEGRATION_TEST_SOURCES "tests/integration/*.cpp")
 foreach(test_file ${INTEGRATION_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
+  if(test_name STREQUAL "it_mysql_decimal_results")
+    continue()
+  endif()
   # This executable is release evidence for a real Redshift endpoint. Running
   # it against the PostgreSQL fixture would turn a green PostgreSQL job into a
   # false Redshift compatibility claim.

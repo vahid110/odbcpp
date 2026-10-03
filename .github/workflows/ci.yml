@@ -92,6 +92,7 @@ jobs:
       - name: Configure
         run: >-
           cmake -S . -B build
+          -DODBCPP_MYSQL_DECIMAL_LIVE_TESTS=ON
           -DBUILD_EXAMPLES=ON
           -DBUILD_TESTING=ON
           -DTARGET_DATABASE=POSTGRESQL
@@ -109,18 +110,23 @@ jobs:
       - name: Run unit tests
         run: ctest --test-dir build -L unit --output-on-failure --output-junit openssl-system-shared-unit.xml
 
-      - name: Prove pinned MySQL verified TLS authentication
+      - name: Prove pinned MySQL verified TLS authentication and decimal results
+        timeout-minutes: 15
         run: >-
           python3 tests/security/test_mysql_auth_live.py
           --probe build/tests/mysql_auth_probe
           --output build/mysql-auth-live.json
+          --decimal-test-binary build/tests/it_mysql_decimal_results
+          --decimal-junit build/mysql-decimal-live.xml
 
       - name: Preserve MySQL authentication evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mysql-auth-live
-          path: build/mysql-auth-live.json
+          path: |
+            build/mysql-auth-live.json
+            build/mysql-decimal-live.xml
           if-no-files-found: ignore
 
       - name: Bind system-shared unit qualification evidence
@@ -302,7 +308,7 @@ jobs:
           $reports = @(Get-ChildItem "$env:RUNNER_TEMP/odbcpp-integration-results" -Filter *.xml)
           $expectedReports = @(
             Get-ChildItem tests/integration -Filter *.cpp |
-              Where-Object Name -ne 'it_redshift_real.cpp'
+              Where-Object { $_.Name -notin @('it_redshift_real.cpp', 'it_mysql_decimal_results.cpp') }
           ).Count
           if ($reports.Count -ne $expectedReports) {
             throw "Expected $expectedReports PostgreSQL GoogleTest integration reports, found $($reports.Count)"
