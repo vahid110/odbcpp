@@ -33,7 +33,7 @@ struct Observations {
   std::string sql;
   std::vector<QueryParameter> parameters;
   Deadline deadline{};
-  bool malformed_value{}, malformed_state{}, malformed_text{};
+  bool malformed_value{}, malformed_state{}, malformed_text{}, long_binary{};
   std::string failure_message = "fake error";
   std::string server_version = "1.0";
   bool setup_allocation_failure{false};
@@ -128,10 +128,12 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
   QueryResult rows() const {
     QueryResult result;
     result.columns = {{"binary", {}}, {"flag", {}}, {"text", {}}};
-    result.columns[0].normalized_type = NativeTypeInfo{ScalarType::Binary, 8, 0, true};
+    result.columns[0].normalized_type = NativeTypeInfo{seen_->long_binary ? ScalarType::LongVarBinary : ScalarType::Binary,
+        seen_->long_binary ? 0u : 8u, 0, true};
     result.columns[1].normalized_type = NativeTypeInfo{ScalarType::Boolean, 1, 0, true};
     result.columns[2].normalized_type = NativeTypeInfo{ScalarType::VarChar, 32, 0, true};
     result.rows = {{std::string("\0\xff\\", 3), "1", std::nullopt}, {"", "0", ""}};
+    if (seen_->long_binary) result.rows.push_back({std::nullopt, "0", ""});
     if (seen_->malformed_value) {
       result.rows[0][0] = "";
       result.cell_errors.push_back({0, 0});
@@ -1870,4 +1872,49 @@ TEST_F(BackendContractTest, ExplicitRedshiftProfileReportsBoundedNumericAndNoInd
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt));
     ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
   }
+}
+
+TEST_F(BackendContractTest, LongBinaryResultPreservesUnknownMetadataAndChunkNullEmptySemantics) {
+  seen->long_binary = true; connect();
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+  SQLSMALLINT type = 0; SQLULEN size = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, 1, nullptr, 0, nullptr, &type, &size, nullptr, nullptr));
+  EXPECT_EQ(SQL_LONGVARBINARY, type); EXPECT_EQ(0u, size);
+  SQLLEN metadata = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 1, SQL_DESC_OCTET_LENGTH,
+      nullptr, 0, nullptr, &metadata));
+  EXPECT_EQ(SQL_NO_TOTAL, metadata);
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 1, SQL_DESC_DISPLAY_SIZE,
+      nullptr, 0, nullptr, &metadata));
+  EXPECT_EQ(SQL_NO_TOTAL, metadata);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  unsigned char bytes[3]{9,9,9}; SQLLEN length = -9;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(stmt, 1, SQL_C_BINARY, bytes, 1, &length));
+  EXPECT_EQ("01004", state()); EXPECT_EQ(3, length); EXPECT_EQ(0, bytes[0]); EXPECT_EQ(9, bytes[1]);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_BINARY, bytes, 2, &length));
+  EXPECT_EQ(2, length); EXPECT_EQ(255, bytes[0]); EXPECT_EQ('\\', bytes[1]);
+  EXPECT_EQ(SQL_NO_DATA, SQLGetData(stmt, 1, SQL_C_BINARY, bytes, 2, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  bytes[0] = 9;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_BINARY, bytes, 2, &length));
+  EXPECT_EQ(0, length);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  bytes[0] = 9;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_BINARY, bytes, 2, &length));
+  EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(9, bytes[0]);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  char text[16]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_CHAR, text, sizeof(text), &length));
+  EXPECT_STREQ("00ff5c", text); EXPECT_EQ(6, length);
+}
+
+TEST_F(BackendContractTest, LongBinaryMalformedCellPreservesOutputAndIndicator) {
+  seen->long_binary = true; seen->malformed_value = true; connect();
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  unsigned char bytes[]{7, 8, 9}; SQLLEN length = 73;
+  EXPECT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_BINARY, bytes, sizeof(bytes), &length));
+  EXPECT_EQ("22018", state()); EXPECT_EQ(73, length);
+  EXPECT_EQ(7, bytes[0]); EXPECT_EQ(8, bytes[1]); EXPECT_EQ(9, bytes[2]);
 }

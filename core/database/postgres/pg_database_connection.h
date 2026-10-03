@@ -32,6 +32,8 @@ public:
 
   std::optional<std::string> normalize_result_value(
       ScalarType type, std::string_view value) const override;
+  NativeTypeInfo describe_type(std::uint32_t id, std::int16_t size,
+                              std::int32_t modifier) const override;
 
   ITransactionSession* transaction_session() noexcept override { return this; }
   TransactionCapabilities transaction_capabilities() const override;

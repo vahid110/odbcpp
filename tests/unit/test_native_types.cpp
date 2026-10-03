@@ -467,3 +467,50 @@ TEST(TypeCatalogTest, ProviderPolicyDoesNotRetainVersionInputOrInvalidateProfile
   EXPECT_EQ(legacy.data(), provider.type_catalog().data());
   EXPECT_EQ(modern.data(), provider.type_catalog("15.0").data());
 }
+
+TEST(NativeTypeTest, RedshiftVarbyteResultFamilyKeepsPostgresOidSemanticsIsolated) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection pg;
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  EXPECT_FALSE(pg.describe_type(6551, -1, -1).known);
+  EXPECT_EQ(ScalarType::VarChar, pg.describe_type(6551, -1, -1).type);
+  for (const auto modifier : {-1, 0, 1028}) {
+    const auto native = redshift.describe_type(6551, -1, modifier);
+    EXPECT_TRUE(native.known);
+    EXPECT_EQ(ScalarType::LongVarBinary, native.type);
+    EXPECT_EQ(0u, native.column_size); // Unknown, not an invented maximum.
+  }
+  EXPECT_EQ(ScalarType::Binary, redshift.describe_type(17, -1, -1).type);
+  EXPECT_FALSE(redshift.describe_type(999999, -1, -1).known);
+  EXPECT_FALSE(pg.is_connected()); EXPECT_FALSE(redshift.is_connected());
+}
+
+TEST(BackendValueTest, RedshiftVarbyteDecodesOnlyStrictPlainHexAndPreservesBytea) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection pg;
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  EXPECT_EQ(std::optional<std::string>(std::string("\0\1\x7f\xff", 4)),
+      redshift.normalize_result_value(ScalarType::LongVarBinary, "00017fFF"));
+  EXPECT_EQ(std::optional<std::string>(""),
+      redshift.normalize_result_value(ScalarType::LongVarBinary, ""));
+  for (const auto* invalid : {"a", "xyz", "ab ", " ab", "\\xab", "\\377"})
+    EXPECT_FALSE(redshift.normalize_result_value(ScalarType::LongVarBinary, invalid));
+  EXPECT_EQ(std::optional<std::string>("ab"), pg.normalize_result_value(ScalarType::Binary, "ab"));
+  EXPECT_EQ(std::optional<std::string>(std::string("\xab", 1)),
+      redshift.normalize_result_value(ScalarType::LongVarBinary, "ab"));
+  EXPECT_FALSE(pg.normalize_result_value(ScalarType::LongVarBinary, "ab"));
+  EXPECT_EQ(pg.normalize_result_value(ScalarType::Binary, "\\x00ff"),
+      redshift.normalize_result_value(ScalarType::Binary, "\\x00ff"));
+}
+
+TEST(NativeTypeTest, RedshiftVarbyteParameterMetadataFailsLocallyWithoutDiscoverySql) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  const std::uint32_t ids[]{23, 6551};
+  const auto result = redshift.resolve_types(ids, rs::util::Deadline{});
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(BackendErrorClass::Unsupported, result.backend_error().error_class);
+  EXPECT_EQ(BackendOperation::ResolveTypes, result.backend_error().operation);
+  EXPECT_EQ(SessionState::Disconnected, result.backend_error().session_state);
+  EXPECT_FALSE(redshift.is_connected());
+}

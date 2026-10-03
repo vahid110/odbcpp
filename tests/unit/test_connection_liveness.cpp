@@ -191,10 +191,10 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     EmptyQueryResponse, DescriptionNoData, DescriptionOneParameter, DescriptionRepeatedParameter, DescriptionOneColumn,
     DescriptionMissingParse, DescriptionMissingParameters,
     DescriptionMissingResult, DescriptionOutOfOrder,
-    DescriptionServerError, Utf8ColumnNames, MalformedColumnName, MalformedAdditionalColumnName, Utf8TextCells, NativeCells, MalformedNativeCells, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
+    DescriptionServerError, Utf8ColumnNames, MalformedColumnName, MalformedAdditionalColumnName, Utf8TextCells, NativeCells, MalformedNativeCells, RedshiftVarbyteCells, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
     OwnedErrorIdle, OwnedErrorTransaction, OwnedErrorAborted,
     UnterminatedColumnName, TruncatedColumnMetadata, TrailingColumnMetadata, EmptyColumnName,
-    QueryReadTimeout, PartialQueryWrite, PreparedCommand, ResetCompletions, TransactionCompletions, QueryAllocationFailure, Md5Authentication
+    QueryReadTimeout, PartialQueryWrite, PreparedCommand, PreparedVarbyteParameter, ResetCompletions, TransactionCompletions, QueryAllocationFailure, Md5Authentication
   };
 
   explicit ScriptedBackendTransport(
@@ -463,6 +463,14 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('C', "COMMIT", sizeof("COMMIT")); append_message('Z', "I", 1);
       append_message('C', "ROLLBACK", sizeof("ROLLBACK")); append_message('Z', "I", 1);
       append_message('C', "SET", sizeof("SET")); append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::PreparedVarbyteParameter) {
+      append_message('1', "", 0);
+      constexpr char parameters[] = "\0\1\0\0\31\227";
+      append_message('t', parameters, sizeof(parameters) - 1);
+      append_message('2', "", 0);
+      append_message('n', "", 0);
+      append_message('C', "UPDATE 1", sizeof("UPDATE 1"));
+      append_message('Z', "I", 1);
     } else if (mode == ResponseMode::PreparedCommand) {
       append_message('1', "", 0);
       constexpr char parameters[] = "\0\4\0\0\0\31\0\0\0\31\0\0\0\31\0\0\0\21";
@@ -561,6 +569,23 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('Z', "I", 1);
       // A later exchange proves malformed text did not corrupt framing/liveness.
       append_message('C', "SELECT 0", sizeof("SELECT 0"));
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::RedshiftVarbyteCells) {
+      constexpr char description[] =
+          "\0\1octets\0" "\0\0\0\0" "\0\0" "\0\0\31\227"
+          "\377\377" "\377\377\377\377" "\0\0";
+      constexpr char valid[] = "\0\1\0\0\0\10" "00017fFF";
+      constexpr char nulls[] = "\0\1\377\377\377\377";
+      constexpr char empty[] = "\0\1\0\0\0\0";
+      constexpr char malformed[] = "\0\1\0\0\0\3" "xyz";
+      for (int result = 0; result < 2; ++result) {
+        append_message('T', description, sizeof(description) - 1);
+        append_message('D', valid, sizeof(valid) - 1);
+        append_message('D', nulls, sizeof(nulls) - 1);
+        append_message('D', empty, sizeof(empty) - 1);
+        append_message('D', malformed, sizeof(malformed) - 1);
+        append_message('C', "SELECT 4", sizeof("SELECT 4"));
+      }
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::NativeCells || mode == ResponseMode::MalformedNativeCells) {
       constexpr char description[] =
@@ -4022,4 +4047,65 @@ TEST(DatabaseFactoryTest, UnresolvedPortFailsBeforeTransportAndAllowsExplicitRec
   EXPECT_EQ(1u, observed->connect_count());
   EXPECT_EQ(1u, observed->send_count());
   connection->disconnect();
+}
+
+TEST(NormalizedCellTest, ExplicitRedshiftVarbyteOwnsDecodedResultsAndDeferredErrors) {
+  using namespace rs::core::database;
+  using namespace rs::core::database::postgres;
+  QueryResult snapshot;
+  {
+    auto transport = std::make_unique<ScriptedBackendTransport>(
+        ScriptedBackendTransport::ResponseMode::RedshiftVarbyteCells);
+    PgDatabaseConnection backend(std::move(transport), std::nullopt, PgCatalogProfile::Redshift);
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
+    ASSERT_TRUE(backend.connect(settings));
+    auto result = backend.execute_query("SELECT octets; SELECT octets", rs::util::Deadline::max());
+    ASSERT_TRUE(result);
+    snapshot = std::move(*result); backend.disconnect();
+  }
+  ASSERT_EQ(1u, snapshot.additional_results.size());
+  for (const auto* result : {&snapshot, &snapshot.additional_results[0]}) {
+    ASSERT_EQ(1u, result->columns.size());
+    EXPECT_EQ(ScalarType::LongVarBinary, result->columns[0].normalized_type->type);
+    ASSERT_EQ(4u, result->rows.size());
+    EXPECT_EQ(std::optional<std::string>(std::string("\0\1\x7f\xff", 4)), result->rows[0][0]);
+    EXPECT_EQ(std::nullopt, result->rows[1][0]);
+    EXPECT_EQ(std::optional<std::string>(""), result->rows[2][0]);
+    EXPECT_EQ((std::vector<CellEncodingError>{{3, 0}}), result->cell_errors);
+  }
+}
+
+TEST(NormalizedParameterTest, RedshiftVarbyteMetadataRejectionOccursAfterPreparedExchange) {
+  using namespace rs::core::database;
+  using namespace rs::core::database::postgres;
+  auto transport = std::make_unique<ScriptedBackendTransport>(
+      ScriptedBackendTransport::ResponseMode::PreparedVarbyteParameter);
+  auto* observed = transport.get();
+  PgDatabaseConnection backend(std::move(transport), std::nullopt, PgCatalogProfile::Redshift);
+  auto settings = pg_fixture_settings(); settings.use_ssl = false;
+  ASSERT_TRUE(backend.connect(settings));
+  const auto before = observed->send_count();
+  const QueryParameter parameters[]{{"00", QueryParameterType::Text}};
+  const auto result = backend.execute_prepared("UPDATE sample SET value=?", parameters,
+      rs::util::Deadline::max());
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(BackendErrorClass::Unsupported, result.backend_error().error_class);
+  EXPECT_EQ(before + 1, observed->send_count()); // This is not pre-execution validation.
+  EXPECT_TRUE(backend.is_connected());
+}
+
+TEST(NormalizedCellTest, PostgresDoesNotInterpretRedshiftVarbyteOidOrHex) {
+  using namespace rs::core::database;
+  auto transport = std::make_unique<ScriptedBackendTransport>(
+      ScriptedBackendTransport::ResponseMode::RedshiftVarbyteCells);
+  postgres::PgDatabaseConnection backend(std::move(transport));
+  auto settings = pg_fixture_settings(); settings.use_ssl = false;
+  ASSERT_TRUE(backend.connect(settings));
+  const auto result = backend.execute_query("SELECT octets; SELECT octets", rs::util::Deadline::max());
+  ASSERT_TRUE(result);
+  EXPECT_EQ(ScalarType::VarChar, result->columns[0].normalized_type->type);
+  EXPECT_FALSE(result->columns[0].normalized_type->known);
+  EXPECT_EQ(std::optional<std::string>("00017fFF"), result->rows[0][0]);
+  EXPECT_EQ(std::optional<std::string>("xyz"), result->rows[3][0]);
+  EXPECT_TRUE(result->cell_errors.empty());
 }

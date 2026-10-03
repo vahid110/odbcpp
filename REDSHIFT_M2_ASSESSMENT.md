@@ -340,3 +340,41 @@ caps, and permits exactly one cleanup call with no driver/authentication tests,
 fixture changes or automatic retry.239 offline tests pass, including source
 mutation, crash/persistence, history, no-replay and cleanup-only composition.
 Independent review and separate fresh root admission remain required before SQL.
+
+### Result-only VARBYTE and startup-phase diagnostics
+
+The bounded result decoder now recognizes OID6551 only in the explicit immutable
+Redshift profile. Text-format values use strict unprefixed hex and become owned
+binary cells; NULL, empty, malformed values and additional result sets retain
+their existing ODBC distinctions. The family is SQL_LONGVARBINARY with unknown
+size, octet length and display size. No maximum width, TYPE_NAME or SQLGetTypeInfo
+claim is added. PostgreSQL OID17 bytea and unknown-OID fallback are unchanged.
+Scripted wire/profile tests and ODBC chunk/error tests are offline evidence;
+VARBYTE remains unqualified against a live Redshift endpoint.
+
+Prepared VARBYTE encoding remains unqualified and unchanged. The parameter
+metadata resolver rejects OID6551 rather than issuing PostgreSQL type-discovery
+SQL. This is not a pre-execution guard: a combined prepared exchange can send
+Execute before response metadata is rejected. A regression test records that
+timing; this package establishes no prepared VARBYTE support.
+
+The separately admitted010 cleanup recovery also timed out before SQL was
+evidenced. Its v9 uncertainty and added liability remain retained, and further
+paid qualification/recovery is blocked pending concrete startup diagnosis.
+A synthetic localhost fixture exercises the exact launcher/libpq invocation:
+verified TLS and ReadyForQuery permit SET/query, while a post-TLS startup stall
+reproduces the connection timeout with zero SQL packets. This isolates a possible
+failure phase, not the cause at the real endpoint. No timeout increase, paid
+probe, replay, or inference of zero remote activity follows from this fixture.
+
+The pinned SpecialColumns audit distinguishes `show_discovery >= 4` from the
+legacy path. Modern ROWVER returns a local empty eight-field result; modern
+BEST_ROWID discovers declared primary keys through SHOW and returns SESSION
+scope. Legacy code instead uses xmin/oid and PostgreSQL index catalogs. Current
+BEST_ROWID SQL therefore needs a separate Redshift contract; copying it or
+returning blanket empty rows would not establish parity. The next smallest
+offline candidate is an explicit modern ROWVER eight-field typed-empty builder,
+with all valid scope/nullable combinations and PostgreSQL isolation. Its SELECT
+round trip would remain distinct from upstream's local result construction.
+BEST_ROWID mode selection, key ordering, SHOW permissions, dimensions and name
+semantics remain open, requiring ordinary-user fixture evidence.

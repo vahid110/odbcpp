@@ -807,6 +807,7 @@ SQLSMALLINT odbc_scalar_type(rs::core::database::ScalarType type) {
   switch (type) {
     case ScalarType::Boolean: sql_type = SQL_BIT; break;
     case ScalarType::Binary: sql_type = SQL_VARBINARY; break;
+    case ScalarType::LongVarBinary: sql_type = SQL_LONGVARBINARY; break;
     case ScalarType::Char: sql_type = SQL_CHAR; break;
     case ScalarType::VarChar: sql_type = SQL_VARCHAR; break;
     case ScalarType::BigInt: sql_type = SQL_BIGINT; break;

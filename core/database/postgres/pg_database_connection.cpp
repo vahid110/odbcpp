@@ -42,6 +42,14 @@ BackendResult<void> PgDatabaseConnection::check_health(rs::util::Deadline deadli
 
 BackendResult<ResolvedTypeMap> PgDatabaseConnection::resolve_types(
     std::span<const std::uint32_t> ids, rs::util::Deadline deadline) {
+  if (catalog_profile_ == PgCatalogProfile::Redshift &&
+      std::find(ids.begin(), ids.end(), 6551u) != ids.end()) {
+    // This rejects unqualified parameter metadata, not execution before I/O:
+    // the combined prepared exchange may already have sent Execute.
+    return local_backend_error(LocalFailure::Unsupported,
+        "Redshift VARBYTE parameters are not qualified", BackendOperation::ResolveTypes,
+        session_state());
+  }
   ResolvedTypeMap resolved;
   std::vector<std::uint32_t> unresolved;
   for (const auto id : ids) {

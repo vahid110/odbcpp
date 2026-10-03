@@ -794,7 +794,8 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
             }
             continue;
           }
-          if (type != ScalarType::Binary && type != ScalarType::Boolean) continue;
+          if (type != ScalarType::Binary && type != ScalarType::LongVarBinary &&
+              type != ScalarType::Boolean) continue;
           auto canonical = normalize_result_value(type, *cell);
           if (canonical) cell = std::move(*canonical);
           else {
