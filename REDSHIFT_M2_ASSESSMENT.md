@@ -302,3 +302,41 @@ repairs require a separate finite package; the existing five-case type window
 excludes VARBYTE. SpecialColumns legacy upstream paths still use PostgreSQL
 xmin/oid queries, so modern SHOW behavior does not prove compatibility across
 all upstream modes. BEST_ROWID requires explicit source/fixture qualification.
+
+### M3-T1 / M3-C1 checkpoint: connectivity blocker
+
+Codebd6f220 CI37104759411 passed all required gates. One separately reviewed010
+request was durably reserved after fresh controls passed; stale host ingress
+was replaced with the current exact host /32 using existing scoped permissions.
+Both independent cleanup connections then timed out before SQL execution was
+evidenced. No driver cases ran. This is endpoint connectivity/cleanup
+verification trouble, not an observed Redshift type or authentication failure.
+
+Independent stopping review accepted the phase's explicit qualification blocker
+plus initial Statistics contract deliverable. The five exact type cases remain
+unqualified on Redshift. Protected010/result/history and34.68 compute/84.68 total
+conservative bounds remain retained; they are not actual bills or a balance.
+Any further SQL requires a separately reviewed finite cleanup-only recovery
+following connectivity investigation. No replay, automatic retry or zero-session
+inference is permitted. Runtime Statistics metadata and SQL_ENSURE, SpecialColumns,
+VARBYTE and broader parity remain open. The owner subsequently directed continuous unattended work through checkpoints.
+The15-minute timer remains active; this blocked live gate does not stop
+connectivity investigation, reviewed recovery preparation or other authorized
+offline implementation. Intermediate checkpoints are review records, not
+scheduler stopping conditions.
+
+### Connectivity investigation and finite recovery preparation
+
+Read-only AWS inspection found the existing workgroup available and publicly
+accessible, its exact host ingress intact, and VPC internet route/gateway active.
+One bounded TCP handshake subsequently succeeded without application bytes,
+credentials or SQL. The earlier timeout's precise cause is not established;
+this is current reachability evidence, not proof of cleanup or a type test.
+
+The minimal offline010 cleanup successor reuses the reviewed recovery lifecycle
+with trusted fixed policy constants. It freezes completev8 and failed010 result
+bytes intov9, adds1200s metering and60s cleanup, retains original24h and100/150
+caps, and permits exactly one cleanup call with no driver/authentication tests,
+fixture changes or automatic retry.239 offline tests pass, including source
+mutation, crash/persistence, history, no-replay and cleanup-only composition.
+Independent review and separate fresh root admission remain required before SQL.

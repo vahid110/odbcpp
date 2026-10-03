@@ -30,6 +30,14 @@ def digest(raw):
 
 
 class RecoverySession(w.WindowSession):
+    # Trusted subclass policies; old entry point retains its exact006/v5 scope.
+    TARGET_SEQUENCE = 6
+    SCHEMA_VERSION = 5
+    SOURCE_ATTEMPTS = 6
+
+    def _prior_overlay(self, original, now):
+        return w.WindowSession._v2(self, original, now)
+
     def _read_raw(self,name):
         self._guard()
         fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=self.fd)
@@ -43,12 +51,12 @@ class RecoverySession(w.WindowSession):
         return raw
 
     def _source(self,source,result,now):
-        original=decode(source);overlay=w.WindowSession._v2(self,original,now)
-        r0._need(len(overlay['attempts'])==6 and overlay['attempts'][-1]['phase']=='uncertain',
+        original=decode(source);overlay=self._prior_overlay(original,now)
+        r0._need(len(overlay['attempts'])==self.SOURCE_ATTEMPTS and overlay['attempts'][-1]['sequence']==self.TARGET_SEQUENCE and overlay['attempts'][-1]['phase']=='uncertain',
                  'recovery_target_mismatch')
         report=r0._record(decode(result),{'status','reason','cleanup_verified','results',
             'actual_spend_usd','remaining_allowance_usd','sequence'},'recovery_result_mismatch')
-        r0._need(type(report['sequence']) is int and report['sequence']==6
+        r0._need(type(report['sequence']) is int and report['sequence']==self.TARGET_SEQUENCE
             and report['status']=='blocked' and report['reason']=='remote_cleanup_unverified'
             and report['cleanup_verified'] is False and report['results']==[]
             and report['actual_spend_usd'] is None and report['remaining_allowance_usd'] is None,
@@ -58,7 +66,7 @@ class RecoverySession(w.WindowSession):
     def _recovery(self,state,now):
         o=r0._record(state.get(b.OVERLAY),{'schema_version','source_state_raw','source_state_digest',
             'source_result_raw','source_result_digest','legacy_digest','recovery'},'invalid_recovery_overlay')
-        r0._need(type(o['schema_version']) is int and o['schema_version']==5
+        r0._need(type(o['schema_version']) is int and o['schema_version']==self.SCHEMA_VERSION
             and o['source_state_digest']==digest(o['source_state_raw'])
             and o['source_result_digest']==digest(o['source_result_raw'])
             and o['legacy_digest']==b._legacy_digest(state),'recovery_history_mismatch')
@@ -68,7 +76,7 @@ class RecoverySession(w.WindowSession):
             'started_at','cleanup_at','additional_metering_seconds','additional_cleanup_seconds',
             'metering_seconds','cleanup_seconds','compute_upper_bound_usd','total_upper_bound_usd'},
             'invalid_recovery_record')
-        r0._need(type(item['target_sequence']) is int and item['target_sequence']==6
+        r0._need(type(item['target_sequence']) is int and item['target_sequence']==self.TARGET_SEQUENCE
             and item['scope']=='cleanup_only' and item['additional_metering_seconds']=='1200'
             and item['additional_cleanup_seconds']=='60','invalid_recovery_scope')
         current=b.BootstrapAnchor(**item['anchor']);self._fixed(current,now)
@@ -100,7 +108,7 @@ class RecoverySession(w.WindowSession):
 
     def reserve_recovery(self,evidence,current):
         def change(state,now):
-            source=self._read_raw('setup.json');result=self._read_raw('window-006-result.json')
+            source=self._read_raw('setup.json');result=self._read_raw(f'window-{self.TARGET_SEQUENCE:03d}-result.json')
             original,prior=self._source(source,result,now)
             r0._need(original==state,'recovery_history_mismatch')
             anchor=self._fixed(current,now)
@@ -125,9 +133,9 @@ class RecoverySession(w.WindowSession):
             compute,total=self._amounts(current.hard_deadline,metering,cleanup,
                 r0._number(prior['compute_upper_bound_usd'],'invalid_cumulative_bound'),
                 r0._number(prior['total_upper_bound_usd'],'invalid_cumulative_bound'),now)
-            state[b.OVERLAY]=dict(schema_version=5,source_state_raw=source,source_state_digest=digest(source),
+            state[b.OVERLAY]=dict(schema_version=self.SCHEMA_VERSION,source_state_raw=source,source_state_digest=digest(source),
                 source_result_raw=result,source_result_digest=digest(result),legacy_digest=b._legacy_digest(state),
-                recovery=dict(target_sequence=6,scope='cleanup_only',anchor=anchor,
+                recovery=dict(target_sequence=self.TARGET_SEQUENCE,scope='cleanup_only',anchor=anchor,
                     reserved_at=now.isoformat().replace('+00:00','Z'),phase='reserved',started_at=None,
                     cleanup_at=None,additional_metering_seconds='1200',additional_cleanup_seconds='60',
                     metering_seconds=str(metering),cleanup_seconds=str(cleanup),
