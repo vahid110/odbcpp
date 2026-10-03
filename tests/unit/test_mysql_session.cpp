@@ -449,6 +449,94 @@ TEST(MySqlSessionTest, PreparedUnsignedIntMetadataPreservesMaximumNullAndOwnedRo
   EXPECT_EQ(rs::core::database::ScalarType::BigInt,result->columns[0].normalized_type->type);
 }
 
+TEST(MySqlSessionTest, PreparedFreshMetadataPreservesUnsignedBigintBinaryNullAndDeferredTextError) {
+  Fixture f;prepared_metadata(*f.transport,1,3);
+  // Execution supplies fresh metadata instead of preparation's signed BIGINT columns.
+  append(*f.transport,{std::byte{3}},1);
+  append(*f.transport,column_packet("maximum",8,63,32),2);
+  append(*f.transport,column_packet("bytes",252,63),3);
+  append(*f.transport,column_packet("text",253,45),4);append(*f.transport,eof_packet(),5);
+  Bytes maximum{std::byte{0},std::byte{0}};
+  for (unsigned i=0;i<8;++i) maximum.push_back(std::byte{255});
+  len_text(maximum,std::string_view("\0\xff",2));len_text(maximum,std::string_view("\xff",1));
+  append(*f.transport,maximum,6);
+  // Numeric NULL, followed by two non-NULL empty length-encoded values.
+  append(*f.transport,{std::byte{0},std::byte{4},std::byte{0},std::byte{0}},7);
+  Bytes zero{std::byte{0},std::byte{24}};number(zero,0,4);number(zero,0,4);
+  append(*f.transport,zero,8);append(*f.transport,eof_packet(),9);
+  const std::array params{rs::core::database::QueryParameter{"42",rs::core::database::QueryParameterType::Int32}};
+  const auto deadline=rs::util::make_deadline(std::chrono::seconds(10));
+  auto result=f.session->execute_prepared("SELECT ?",params,deadline);ASSERT_TRUE(result);
+  ASSERT_EQ(3u,result->columns.size());
+  for (const auto& column:result->columns) { ASSERT_TRUE(column.normalized_type);EXPECT_TRUE(column.normalized_type->known); }
+  const auto& numeric=*result->columns[0].normalized_type;
+  EXPECT_EQ("maximum",result->columns[0].name);
+  EXPECT_EQ(rs::core::database::ScalarType::Numeric,numeric.type);EXPECT_EQ(20u,numeric.column_size);EXPECT_EQ(0,numeric.decimal_digits);
+  EXPECT_EQ(rs::core::database::ScalarType::Binary,result->columns[1].normalized_type->type);
+  EXPECT_EQ(rs::core::database::ScalarType::VarChar,result->columns[2].normalized_type->type);
+  ASSERT_EQ(3u,result->rows.size());for (const auto& row:result->rows) ASSERT_EQ(3u,row.size());
+  ASSERT_TRUE(result->rows[0][0]);EXPECT_EQ("18446744073709551615",*result->rows[0][0]);
+  ASSERT_TRUE(result->rows[0][1]);EXPECT_EQ(std::string("\0\xff",2),*result->rows[0][1]);
+  ASSERT_TRUE(result->rows[0][2]);EXPECT_TRUE(result->rows[0][2]->empty());
+  EXPECT_FALSE(result->rows[1][0]);
+  for (unsigned i=1;i<3;++i) { ASSERT_TRUE(result->rows[1][i]);EXPECT_TRUE(result->rows[1][i]->empty()); }
+  ASSERT_TRUE(result->rows[2][0]);EXPECT_EQ("0",*result->rows[2][0]);
+  EXPECT_FALSE(result->rows[2][1]);EXPECT_FALSE(result->rows[2][2]);
+  EXPECT_EQ((std::vector<rs::core::database::CellEncodingError>{{0,2}}),result->cell_errors);
+  EXPECT_EQ((std::vector<unsigned>{22,23,25}),commands(f.transport->output));
+  EXPECT_EQ(f.transport->input.size(),f.transport->offset);
+  for (const auto dl:f.transport->deadlines) EXPECT_EQ(deadline,dl);
+  EXPECT_TRUE(f.session->is_connected());EXPECT_EQ(0u,f.transport->closes);
+  EXPECT_EQ(rs::core::database::SessionDisposition::Reusable,result.session_snapshot().disposition);
+  append(*f.transport,ok(),1);EXPECT_TRUE(f.execute());f.session->disconnect();EXPECT_EQ(1u,f.transport->closes);
+  EXPECT_EQ("18446744073709551615",*result->rows[0][0]);EXPECT_EQ(std::string("\0\xff",2),*result->rows[0][1]);
+  EXPECT_FALSE(result->rows[1][0]);EXPECT_EQ(20u,result->columns[0].normalized_type->column_size);
+  EXPECT_EQ((std::vector<rs::core::database::CellEncodingError>{{0,2}}),result->cell_errors);
+}
+
+TEST(MySqlSessionTest, PreparedDecimalAndDateMetadataRefusalRetiresBeforeQueuedRows) {
+  for (unsigned native_type:{246u,10u}) {
+    for (bool execution_metadata:{false,true}) {
+      SCOPED_TRACE(native_type);
+      SCOPED_TRACE(execution_metadata);
+      Fixture f;
+      if (execution_metadata) {
+        prepared_metadata(*f.transport);append(*f.transport,{std::byte{1}},1);
+      } else {
+        Bytes first{std::byte{0}};number(first,17,4);number(first,1,2);number(first,1,2);
+        number(first,0,1);number(first,0,2);append(*f.transport,first,1);
+        append(*f.transport,column_packet("?",253,45),2);append(*f.transport,eof_packet(),3);
+      }
+      auto unsupported=column_packet("unsupported",native_type);
+      if (native_type==246) unsupported[unsupported.size()-3]=std::byte{2}; // Decimal scale.
+      append(*f.transport,unsupported,execution_metadata?2:4);
+      const auto rejected_at=f.transport->input.size();
+      append(*f.transport,eof_packet(),execution_metadata?3:5);
+      if (execution_metadata) {
+        // Even an all-NULL row must not turn unsupported metadata into a success.
+        append(*f.transport,{std::byte{0},std::byte{4}},4);append(*f.transport,eof_packet(),5);
+      }
+      const std::array params{rs::core::database::QueryParameter{"42",rs::core::database::QueryParameterType::Int32}};
+      const auto deadline=rs::util::make_deadline(std::chrono::seconds(10));
+      auto result=f.session->execute_prepared("SELECT ?",params,deadline);ASSERT_FALSE(result);
+      EXPECT_EQ(DbErrorCode::UnsupportedFeature,result.error());
+      EXPECT_EQ(rs::core::database::BackendOperation::ExecutePrepared,result.backend_error().operation);
+      EXPECT_EQ("MySQL session operation failed",result.error_message());
+      EXPECT_EQ(rs::core::database::SessionState::Disconnected,result.session_snapshot().state);
+      EXPECT_EQ(rs::core::database::SessionDisposition::Retire,result.session_snapshot().disposition);
+      EXPECT_FALSE(f.session->is_connected());EXPECT_EQ(1u,f.transport->closes);
+      EXPECT_EQ(rejected_at,f.transport->offset);EXPECT_LT(f.transport->offset,f.transport->input.size());
+      const auto expected_commands=execution_metadata?(std::vector<unsigned>{22,23}):(std::vector<unsigned>{22});
+      EXPECT_EQ(expected_commands,commands(f.transport->output));
+      for (const auto dl:f.transport->deadlines) EXPECT_EQ(deadline,dl);
+      const auto output=f.transport->output;const auto calls=f.transport->calls;
+      auto again=f.execute();ASSERT_FALSE(again);EXPECT_EQ(DbErrorCode::NotConnected,again.error());
+      EXPECT_EQ(output,f.transport->output);EXPECT_EQ(calls,f.transport->calls);
+      f.session->disconnect();EXPECT_EQ(1u,f.transport->closes);
+    }
+  }
+}
+
 TEST(MySqlSessionTest, PreparedMetadataAndLateRowErrorsValidateSqlstateAndRetire) {
   for (bool late_row:{false,true}) {
     for (unsigned fault=0;fault<3;++fault) {

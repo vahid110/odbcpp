@@ -963,6 +963,75 @@ TEST_F(RedshiftRealTest, IAMInvalidPassword) {
   EXPECT_EQ("28000", get_error(SQL_HANDLE_DBC, hdbc_));
 }
 
+// Future ordinary-password proof only. The reviewed runner supplies both
+// configurations and expected principal; registration does not admit live SQL.
+TEST_F(RedshiftRealTest, PasswordRejectedThenFreshValidConnection) {
+  const char* invalid = std::getenv("ODBCPP_REDSHIFT_AUTH_INVALID_CONNECTION");
+  const char* expected = std::getenv("ODBCPP_REDSHIFT_AUTH_EXPECTED_USER");
+  ASSERT_NE(nullptr, invalid);
+  ASSERT_NE(nullptr, expected);
+  const std::string invalid_connection{invalid};
+  const std::string expected_user{expected};
+  ASSERT_FALSE(expected_user.empty());
+  // Fixed output-buffer resource bound, not an asserted AWS username limit.
+  ASSERT_TRUE(expected_user.size() < 1024);
+  const auto valid_fields = rs::odbc::ConnectionString::parse(connection_string_);
+  const auto invalid_fields = rs::odbc::ConnectionString::parse(invalid_connection);
+  for (const auto* key : {"SERVER", "PORT", "DATABASE", "UID", "SSL", "SSLCAFILE", "PWD"}) {
+    ASSERT_TRUE(valid_fields.contains(key) && invalid_fields.contains(key));
+    ASSERT_TRUE(!valid_fields.at(key).empty() && !invalid_fields.at(key).empty());
+    ASSERT_TRUE(valid_fields.at(key).find('\0') == std::string::npos &&
+                invalid_fields.at(key).find('\0') == std::string::npos);
+    if (std::string_view{key} != "PWD")
+      ASSERT_TRUE(valid_fields.at(key) == invalid_fields.at(key));
+  }
+  ASSERT_TRUE(valid_fields.at("PWD") != invalid_fields.at("PWD"));
+  auto valid_policy = valid_fields;
+  auto invalid_policy = invalid_fields;
+  valid_policy.erase("PWD"); invalid_policy.erase("PWD");
+  ASSERT_TRUE(valid_policy == invalid_policy); // Only the password may differ.
+
+  const auto rejected = SQLDriverConnect(hdbc_, nullptr,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(invalid_connection.data())),
+      SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+  // Preserve teardown even if the deliberately wrong password unexpectedly works.
+  connected_ = rejected == SQL_SUCCESS || rejected == SQL_SUCCESS_WITH_INFO;
+  ASSERT_EQ(SQL_ERROR, rejected);
+  ASSERT_EQ("28000", get_error(SQL_HANDLE_DBC, hdbc_));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, hdbc_));
+  hdbc_ = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_DBC, henv_, &hdbc_));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(hdbc_, SQL_ATTR_LOGIN_TIMEOUT,
+      reinterpret_cast<void*>(std::uintptr_t{15}), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(hdbc_, SQL_ATTR_CONNECTION_TIMEOUT,
+      reinterpret_cast<void*>(std::uintptr_t{15}), 0));
+  ASSERT_TRUE(connect()); // Fixture applies the bounded query timeout.
+
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(
+      const_cast<char*>("SELECT CAST(current_user AS VARCHAR(1024)), 7::integer, NULL::integer")), SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  std::array<char, 1024> principal{};
+  SQLLEN length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 1, SQL_C_CHAR, principal.data(),
+      static_cast<SQLLEN>(principal.size()), &length));
+  ASSERT_TRUE(length == static_cast<SQLLEN>(expected_user.size()));
+  ASSERT_TRUE(std::string_view(principal.data(), expected_user.size()) == expected_user);
+  SQLINTEGER value = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 2, SQL_C_LONG, &value, sizeof(value), &length));
+  EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+  EXPECT_EQ(7, value);
+  value = 83; length = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 3, SQL_C_LONG, &value, sizeof(value), &length));
+  EXPECT_EQ(SQL_NULL_DATA, length);
+  EXPECT_EQ(83, value);
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, hstmt_));
+  hstmt_ = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(hdbc_));
+  connected_ = false;
+}
+
 
 // These finite type cases are not part of the admitted pilot inventory merely
 // because they compile. Live qualification requires a separately reviewed batch.

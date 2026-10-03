@@ -123,3 +123,22 @@ The user explicitly resumed development timers and requested parallel MySQL work
 The live tree had no active MySQL worker at verification. Root assigned `mysql_parallel` one finite MySQL-specific correctness/regression package in managed worktree `/Users/vahidsbr/.codex/worktrees/mysql-parallel/odbcpp`, baseline5862a4d. It owns only MySQL backend and MySQL-specific tests, no shared SDK/CMake/CI/crypto edits, cloud operations, commits or pushes. Root owns review/integration and required gates. Completion stops that assignment; subsequent work needs a fresh finite scope, and dormant workers must not be reported as progressing.
 
 Redshift feature qualification stays in checked-in GoogleTests shared with future live CI; Python orchestrates protected execution and independent cleanup. Local cloud proof and platform CI results remain separately reported until explicit cloud jobs are integrated.
+
+
+## Continuous parallel MySQL lane — 2026-10-03
+
+The user requires MySQL to remain included in unattended continuation, rather
+than being covered only by integrated CI gates. The active fifteen-minute SDK
+timer checks actual agent state, reviews and integrates completed finite
+packages, and assigns the next bounded nonoverlapping MySQL S3 package without
+waiting for another user prompt. Redshift retains priority; shared interfaces,
+CMake, CI, crypto and ODBC stay owned by the integration owner. No additional
+agent timer or CI watcher is created.
+
+The next MySQL package starts from exact baseline2def252 in managed worktree
+`/Users/vahidsbr/.codex/worktrees/mysql-s3-next/odbcpp`. The earlier worktree has
+local changes and remains preserved. The assignment owns only MySQL-specific
+tests, investigates evidenced prepared-result boundary coverage, and produces
+a finite patch and focused checks. A production defect must be reported with
+evidence rather than hidden by weakened assertions. Completion stops that
+assignment; root verifies status and deliberately selects the next package.
