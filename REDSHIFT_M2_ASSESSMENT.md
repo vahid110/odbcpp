@@ -386,3 +386,41 @@ and BEST_ROWID stay unchanged. This is the modern typed-empty contract only:
 server-version negotiation, legacy xmin/oid, upstream's local no-I/O construction
 and live descriptor widths/result behavior are not established. Full batch gates
 and a future separately scoped live descriptor/empty-fetch case remain required.
+
+Two exact future GoogleTests now check ROWVER's eight and SQL_QUICK Statistics'
+thirteen descriptor names/type families, repeated empty fetch and cursor closure.
+ROWVER covers six scope/nullable combinations; Statistics covers ALL/UNIQUE.
+Independent review and a verified-TLS PostgreSQL surrogate passed both cases;
+this proves test mechanics only. Neither case is enabled in a paid launcher,
+and no live Redshift catalog, descriptor width or SQL_ENSURE qualification follows.
+
+### Ordinary-user key/routine catalog audit
+
+All four remaining key/routine APIs still dispatch to inherited PostgreSQL SQL.
+PrimaryKeys' information-schema path remains unqualified rather than proved
+broken. ForeignKeys uses array containment, paired unnest/ordinality and LATERAL;
+routine builders use array expansion, comment helpers and pg_proc fields that
+AWS instead documents in [PG_PROC_INFO](https://docs.aws.amazon.com/redshift/latest/dg/r_PG_PROC_INFO.html).
+AWS's [unsupported-function list](https://docs.aws.amazon.com/redshift/latest/dg/c_unsupported-postgresql-functions.html)
+documents the array/comment dependencies; occasional successful execution is
+not support evidence. Exact runtime errors remain unobserved.
+
+The pinned modern upstream discovers constraints with SHOW, and procedures plus
+functions with signature-specific SHOW PARAMETERS. Its field families/counts
+also differ: PK six/FK fourteen fields; Procedures eight with three NULL VARCHAR
+reserved count fields; ProcedureColumns nineteen with INTEGER data-type fields.
+Legacy upstream has separate pg_index/pg_proc_info paths. No source path should
+be copied without mode, ordinary-user visibility and error-propagation contracts.
+
+The next smallest diagnostic inventory needs a separately reviewed composite
+PK/FK fixture whose key order differs from table order, imported/exported/both
+requests, one IN/INOUT routine without invocation, exact/quoted/empty/omitted
+names, missing objects and a separately prepared permission-denied object.
+SHOW constraints require ownership or schema USAGE plus table SELECT;
+routine discovery requires ownership or schema USAGE plus EXECUTE. These
+[constraint](https://docs.aws.amazon.com/redshift/latest/dg/r_SHOW_CONSTRAINTS.html)
+and [routine](https://docs.aws.amazon.com/redshift/latest/dg/r_SHOW_PROCEDURES.html)
+visibility requirements need fixture evidence; errors must not become empty rows.
+Overloads/functions, ordering, descriptor widths, datashares and broader parity
+remain separate packages. No new fixture, grant, query or runtime port is enabled
+by this audit.

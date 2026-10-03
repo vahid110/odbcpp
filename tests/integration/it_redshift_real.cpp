@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <span>
 
 class RedshiftRealTest : public ::testing::Test {
 protected:
@@ -96,6 +97,26 @@ protected:
       return "metadata diagnostic unavailable";
     return std::string(reinterpret_cast<char*>(state)) + ": " +
            std::string(reinterpret_cast<char*>(message));
+  }
+
+  struct CatalogField { const char* name; SQLSMALLINT type; };
+  void expect_empty_catalog(std::span<const CatalogField> fields) {
+    SQLSMALLINT count = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt_, &count));
+    ASSERT_EQ(fields.size(), static_cast<std::size_t>(count));
+    for (SQLUSMALLINT column = 1; column <= fields.size(); ++column) {
+      SQLCHAR name[128]{}; SQLSMALLINT type = 0;
+      ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt_, column, name, sizeof(name),
+          nullptr, &type, nullptr, nullptr, nullptr));
+      std::string actual(reinterpret_cast<char*>(name));
+      std::transform(actual.begin(), actual.end(), actual.begin(),
+          [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      EXPECT_EQ(fields[column - 1].name, actual);
+      EXPECT_EQ(fields[column - 1].type, type);
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
   }
 
   bool connected_ = false;
@@ -210,6 +231,61 @@ TEST_F(RedshiftRealTest, PreparedScalarAndNull) {
             SQLGetData(hstmt_, 2, SQL_C_CHAR, null_value,
                        sizeof(null_value), &indicator));
   EXPECT_EQ(SQL_NULL_DATA, indicator);
+}
+
+// Prepared proof inventory only: these cases are not admitted by a paid runner.
+TEST_F(RedshiftRealTest, RowVersionEmptyDescriptorContract) {
+  const char* schema = std::getenv("ODBCPP_REDSHIFT_TEST_SCHEMA");
+  const char* table = std::getenv("ODBCPP_REDSHIFT_TEST_TABLE");
+  ASSERT_NE(nullptr, schema); ASSERT_NE(nullptr, table);
+  ASSERT_NE('\0', *schema); ASSERT_NE('\0', *table);
+  ASSERT_TRUE(connect());
+  constexpr std::array<CatalogField, 8> fields{{
+      {"scope", SQL_SMALLINT}, {"column_name", SQL_VARCHAR},
+      {"data_type", SQL_SMALLINT}, {"type_name", SQL_VARCHAR},
+      {"column_size", SQL_INTEGER}, {"buffer_length", SQL_INTEGER},
+      {"decimal_digits", SQL_SMALLINT}, {"pseudo_column", SQL_SMALLINT}}};
+  constexpr std::array<SQLUSMALLINT, 3> scopes{
+      SQL_SCOPE_CURROW, SQL_SCOPE_TRANSACTION, SQL_SCOPE_SESSION};
+  constexpr std::array<SQLUSMALLINT, 2> nullability{SQL_NO_NULLS, SQL_NULLABLE};
+  for (const auto scope : scopes) {
+    for (const auto nullable : nullability) {
+      SCOPED_TRACE(scope);
+      SCOPED_TRACE(nullable);
+      ASSERT_EQ(SQL_SUCCESS, SQLSpecialColumns(hstmt_, SQL_ROWVER, nullptr, 0,
+          reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema)), SQL_NTS,
+          reinterpret_cast<SQLCHAR*>(const_cast<char*>(table)), SQL_NTS,
+          scope, nullable)) << metadata_diagnostic();
+      expect_empty_catalog(fields);
+      ASSERT_FALSE(HasFatalFailure());
+    }
+  }
+}
+
+TEST_F(RedshiftRealTest, StatisticsQuickEmptyDescriptorContract) {
+  const char* schema = std::getenv("ODBCPP_REDSHIFT_TEST_SCHEMA");
+  const char* table = std::getenv("ODBCPP_REDSHIFT_TEST_TABLE");
+  ASSERT_NE(nullptr, schema); ASSERT_NE(nullptr, table);
+  ASSERT_NE('\0', *schema); ASSERT_NE('\0', *table);
+  ASSERT_TRUE(connect());
+  constexpr std::array<CatalogField, 13> fields{{
+      {"table_cat", SQL_VARCHAR}, {"table_schem", SQL_VARCHAR},
+      {"table_name", SQL_VARCHAR}, {"non_unique", SQL_SMALLINT},
+      {"index_qualifier", SQL_VARCHAR}, {"index_name", SQL_VARCHAR},
+      {"type", SQL_SMALLINT}, {"ordinal_position", SQL_SMALLINT},
+      {"column_name", SQL_VARCHAR}, {"asc_or_desc", SQL_VARCHAR},
+      {"cardinality", SQL_INTEGER}, {"pages", SQL_INTEGER},
+      {"filter_condition", SQL_VARCHAR}}};
+  constexpr std::array<SQLUSMALLINT, 2> uniqueness{SQL_INDEX_ALL, SQL_INDEX_UNIQUE};
+  for (const auto unique : uniqueness) {
+    SCOPED_TRACE(unique);
+    ASSERT_EQ(SQL_SUCCESS, SQLStatistics(hstmt_, nullptr, 0,
+        reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema)), SQL_NTS,
+        reinterpret_cast<SQLCHAR*>(const_cast<char*>(table)), SQL_NTS,
+        unique, SQL_QUICK)) << metadata_diagnostic();
+    expect_empty_catalog(fields);
+    ASSERT_FALSE(HasFatalFailure());
+  }
 }
 
 TEST_F(RedshiftRealTest, ConfiguredFixtureMetadata) {
