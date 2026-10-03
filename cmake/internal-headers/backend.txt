@@ -2,6 +2,7 @@ core/database/backend_capabilities.h
 core/database/backend_provider.h
 core/database/backend_result.h
 core/database/catalog_queries.h
+core/database/catalog_execution.h
 core/database/catalog_request.h
 core/database/error_policy.h
 core/database/generic_database_connection.h

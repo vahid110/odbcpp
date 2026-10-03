@@ -81,6 +81,9 @@ class SessionLease final {
   // Active probe for this borrower only; no reset, replay or return authority.
   BackendResult<void> check_health(rs::util::Deadline);
   BackendResult<std::string> catalog_query(const CatalogRequest&);
+  // Active catalog execution within this borrow; invalidates cache scopes even
+  // when absent/unsupported. No facet or physical-session pointer escapes.
+  BackendResult<QueryResult> execute_catalog(const CatalogRequest&, rs::util::Deadline);
   // No I/O cleanup/reset/reconnect is attempted. Returning or abandoning the
   // lease retires and destroys the physical session, even after reset success.
   void retire() noexcept;

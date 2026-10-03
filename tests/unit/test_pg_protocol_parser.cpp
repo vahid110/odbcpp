@@ -530,6 +530,98 @@ TEST(PgProtocolParserTest, CreatesCompleteExtendedQueryExchange) {
   EXPECT_TRUE(frames[5].payload.empty());
 }
 
+// Mechanics only: pinned AWS ODBC 56d35297f9bee0cc31c0148581c87ca455639a39
+// rsMetadataAPIHelper.cpp:186 and rsMetadataServerProxyHelper.cpp:806-810 use
+// this template and database/schema/table order. rsutil.c:16303-16325 permits
+// OID0 with StringType=unspecified (default varchar instead uses OID1043).
+// Our extra Describe Statement is intentional existing behavior, not evidence
+// of Redshift server acceptance, capability negotiation or native SHOW widths.
+TEST(PgProtocolParserTest, ShowPrimaryKeysKeepsUnspecifiedIdentifiersInBindValues) {
+  PgProtocolParser parser;
+  const std::vector<QueryParameter> params{
+      {"database.'\"_%?", QueryParameterType::Unspecified},
+      {"schema.\"'_%?", QueryParameterType::Unspecified},
+      {"table.'\"_%?; --", QueryParameterType::Unspecified},
+  };
+  const auto frames = split_frames(parser.create_prepared_query(
+      "SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE ?.?.?;", params));
+  ASSERT_EQ(6u, frames.size());
+  const std::string tags = "PDBDES";
+  for (std::size_t i = 0; i < tags.size(); ++i) EXPECT_EQ(tags[i], frames[i].tag);
+
+  std::size_t offset = 0;
+  EXPECT_TRUE(read_cstring(frames[0].payload, offset).empty());
+  const auto sql = read_cstring(frames[0].payload, offset);
+  EXPECT_EQ("SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE $1.$2.$3;", sql);
+  for (const auto& param : params) EXPECT_EQ(std::string::npos, sql.find(*param.value));
+  ASSERT_EQ(offset + 14u, frames[0].payload.size());
+  ASSERT_EQ(3u, read_u16(frames[0].payload, offset));
+  offset += 2;
+  for (std::size_t i = 0; i < params.size(); ++i) {
+    EXPECT_EQ(0u, read_u32(frames[0].payload, offset));
+    offset += 4;
+  }
+  EXPECT_EQ(offset, frames[0].payload.size());
+
+  // The existing extra Describe targets the unnamed statement before Bind.
+  ASSERT_EQ(2u, frames[1].payload.size());
+  EXPECT_EQ(std::byte{'S'}, frames[1].payload[0]);
+  EXPECT_EQ(std::byte{0}, frames[1].payload[1]);
+  offset = 0;
+  EXPECT_TRUE(read_cstring(frames[2].payload, offset).empty()); // portal
+  EXPECT_TRUE(read_cstring(frames[2].payload, offset).empty()); // statement
+  ASSERT_LE(offset + 4u, frames[2].payload.size());
+  EXPECT_EQ(0u, read_u16(frames[2].payload, offset)); // text parameter format
+  offset += 2;
+  ASSERT_EQ(3u, read_u16(frames[2].payload, offset));
+  offset += 2;
+  for (const auto& param : params) {
+    ASSERT_LE(offset + 4u, frames[2].payload.size());
+    const auto length = read_u32(frames[2].payload, offset);
+    offset += 4;
+    ASSERT_EQ(param.value->size(), length);
+    ASSERT_LE(offset + length, frames[2].payload.size());
+    EXPECT_EQ(*param.value, std::string(
+        reinterpret_cast<const char*>(frames[2].payload.data() + offset), length));
+    offset += length;
+  }
+  ASSERT_EQ(offset + 2u, frames[2].payload.size());
+  EXPECT_EQ(0u, read_u16(frames[2].payload, offset)); // text result format
+  ASSERT_EQ(2u, frames[3].payload.size());
+  EXPECT_EQ(std::byte{'P'}, frames[3].payload[0]);
+  EXPECT_EQ(std::byte{0}, frames[3].payload[1]);
+  ASSERT_EQ(5u, frames[4].payload.size());
+  EXPECT_EQ(std::byte{0}, frames[4].payload[0]);
+  EXPECT_EQ(0u, read_u32(frames[4].payload, 1)); // unlimited protocol Execute
+  EXPECT_TRUE(frames[5].payload.empty());
+}
+
+TEST(PgProtocolParserTest, ShowPrimaryKeysTextHintRemainsOid25NotVarcharOrUnspecified) {
+  PgProtocolParser parser;
+  const std::vector<QueryParameter> params{
+      {"database", QueryParameterType::Text},
+      {"schema", QueryParameterType::Text},
+      {"table", QueryParameterType::Text},
+  };
+  const auto frames = split_frames(parser.create_prepared_query(
+      "SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE ?.?.?;", params));
+  ASSERT_EQ(6u, frames.size());
+  std::size_t offset = 0;
+  EXPECT_TRUE(read_cstring(frames[0].payload, offset).empty());
+  EXPECT_EQ("SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE $1.$2.$3;",
+      read_cstring(frames[0].payload, offset));
+  ASSERT_EQ(offset + 14u, frames[0].payload.size());
+  ASSERT_EQ(3u, read_u16(frames[0].payload, offset));
+  offset += 2;
+  for (std::size_t i = 0; i < params.size(); ++i) {
+    const auto oid = read_u32(frames[0].payload, offset);
+    EXPECT_EQ(25u, oid);
+    EXPECT_NE(0u, oid);
+    EXPECT_NE(1043u, oid);
+    offset += 4;
+  }
+}
+
 TEST(PgProtocolParserTest, CreatesStatementDescriptionExchange) {
   PgProtocolParser parser;
   const std::vector<QueryParameterType> parameter_types{

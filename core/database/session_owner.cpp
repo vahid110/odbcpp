@@ -289,6 +289,16 @@ BackendResult<std::string> SessionLease::catalog_query(const CatalogRequest& req
         return BackendResult<std::string>{std::move(*query), outcome};
       });
 }
+BackendResult<QueryResult> SessionLease::execute_catalog(const CatalogRequest& request,
+    rs::util::Deadline deadline) {
+  invalidate_cache();
+  return invoke_borrowed<QueryResult>(*this, physical_session(), BackendOperation::ExecuteCatalog,
+      [&](IDatabaseConnection& physical) -> BackendResult<QueryResult> {
+        if (auto* facet = physical.catalog_execution()) return facet->execute_catalog(request, deadline);
+        return local_backend_error(LocalFailure::Unsupported, "Session catalog execution facet unavailable",
+            BackendOperation::ExecuteCatalog, physical.session_state());
+      });
+}
 BackendResult<void> SessionLease::transaction(TransactionAction action, rs::util::Deadline deadline) {
   invalidate_cache();
   return invoke_borrowed<void>(*this, physical_session(), BackendOperation::Transaction,

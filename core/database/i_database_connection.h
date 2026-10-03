@@ -17,6 +17,7 @@
 #include "transaction_session.h"
 #include "statement_description.h"
 #include "catalog_queries.h"
+#include "catalog_execution.h"
 #include "session_health.h"
 #include "session_reset.h"
 
@@ -110,6 +111,9 @@ public:
 
   // Optional catalog-query construction; absence does not restrict execution.
   virtual const ICatalogQueries* catalog_queries() const noexcept { return nullptr; }
+
+  // Optional normalized catalog execution; no implicit SQL fallback.
+  virtual ICatalogExecution* catalog_execution() noexcept { return nullptr; }
 
   // Optional transaction behavior; absence never advertises live support.
   // The borrowed facet remains owned by this session, never by the caller.

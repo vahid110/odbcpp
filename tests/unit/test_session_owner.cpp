@@ -52,6 +52,7 @@ struct Observed {
   int facet_exception{};
   std::optional<BackendResult<void>> transaction_result;
   std::optional<BackendResult<QueryResult>> description_result;
+  std::function<void(const CatalogRequest&, rs::util::Deadline)> on_catalog_execution;
   std::function<void(TransactionAction, rs::util::Deadline)> on_transaction;
   std::function<void(TransactionIsolation, rs::util::Deadline)> on_isolation;
   std::function<void(std::string_view, std::span<const QueryParameterType>, rs::util::Deadline)> on_description;
@@ -80,7 +81,7 @@ struct Observed {
   std::function<void(std::string_view, std::span<const QueryParameter>, rs::util::Deadline, bool)> on_execution;
   std::function<void()> on_disconnect;
 };
-class FakeSession final : public IDatabaseConnection, public ISessionHealth, public ISessionReset, public ITransactionSession, public IStatementDescription, public ICatalogQueries {
+class FakeSession final : public IDatabaseConnection, public ISessionHealth, public ISessionReset, public ITransactionSession, public IStatementDescription, public ICatalogQueries, public ICatalogExecution {
  public:
   explicit FakeSession(std::shared_ptr<Observed> observed) : observed_(std::move(observed)), connected_(observed_->initially_connected) {}
   ~FakeSession() override { ++observed_->destructions; }
@@ -125,6 +126,13 @@ class FakeSession final : public IDatabaseConnection, public ISessionHealth, pub
     throw_observation(); return observed_->advertised_version;
   }
   const ICatalogQueries* catalog_queries() const noexcept override { return observed_->catalog_facet ? this : nullptr; }
+  ICatalogExecution* catalog_execution() noexcept override { return observed_->operation_facets ? this : nullptr; }
+  BackendResult<QueryResult> execute_catalog(const CatalogRequest& request,
+      rs::util::Deadline deadline) override {
+    if (observed_->on_catalog_execution) observed_->on_catalog_execution(request, deadline);
+    throw_facet();
+    return observed_->description_result.value_or(BackendResult<QueryResult>{QueryResult{}, {SessionState::Idle, SessionDisposition::Reusable}});
+  }
   rs::util::Result<std::string> catalog_query(const CatalogRequest& request) const override {
     if (observed_->on_catalog) observed_->on_catalog(request);
     throw_observation();
@@ -1243,10 +1251,11 @@ void check_facet_result(SessionLease& lease, int operation, rs::util::Deadline d
   const std::array<QueryParameterType, 1> types{QueryParameterType::Text};
   if (operation == 0) check(lease.transaction(TransactionAction::Begin, deadline));
   else if (operation == 1) check(lease.set_transaction_isolation(TransactionIsolation::Serializable, deadline));
-  else check(lease.describe_statement("SELECT ?", types, deadline));
+  else if (operation == 2) check(lease.describe_statement("SELECT ?", types, deadline));
+  else check(lease.execute_catalog(PrimaryKeysCatalogRequest{"exact database", "exact schema", "exact table"}, deadline));
 }
 TEST(SessionLeaseFacetsTest, ForwardsInputsAndDeadlineExclusivelyAndInvalidatesCacheBeforeCalls) {
-  for (int operation = 0; operation != 3; ++operation) {
+  for (int operation = 0; operation != 4; ++operation) {
     auto observed = std::make_shared<Observed>(); observed->operation_facets = true;
     CredentialContext credentials; auto token = credentials.publish_authenticated();
     SessionOwner owner{std::make_unique<FakeSession>(observed), token};
@@ -1268,6 +1277,11 @@ TEST(SessionLeaseFacetsTest, ForwardsInputsAndDeadlineExclusivelyAndInvalidatesC
       EXPECT_EQ("SELECT ?", sql); ASSERT_EQ(1u, types.size());
       EXPECT_EQ(QueryParameterType::Text, types[0]); during_call(actual);
     };
+    observed->on_catalog_execution = [&](const CatalogRequest& actual, auto actual_deadline) {
+      const auto& request = std::get<PrimaryKeysCatalogRequest>(actual);
+      EXPECT_EQ("exact database", request.catalog); EXPECT_EQ("exact schema", request.schema);
+      EXPECT_EQ("exact table", request.table); during_call(actual_deadline);
+    };
     check_facet_result(*lease, operation, deadline, [&](auto result) {
       ASSERT_TRUE(result); EXPECT_NE(SessionDisposition::Retire, result.session_snapshot().disposition);
     });
@@ -1275,7 +1289,7 @@ TEST(SessionLeaseFacetsTest, ForwardsInputsAndDeadlineExclusivelyAndInvalidatesC
   }
 }
 TEST(SessionLeaseFacetsTest, MissingFacetsPreserveBorrowButInvalidateScopeAndEmptyLeaseReturnsNotConnected) {
-  for (int operation = 0; operation != 3; ++operation) {
+  for (int operation = 0; operation != 4; ++operation) {
     auto observed = std::make_shared<Observed>();
     CredentialContext credentials; auto token = credentials.publish_authenticated();
     SessionOwner owner{std::make_unique<FakeSession>(observed), token};
@@ -1291,13 +1305,14 @@ TEST(SessionLeaseFacetsTest, MissingFacetsPreserveBorrowButInvalidateScopeAndEmp
       ASSERT_FALSE(result); EXPECT_EQ(BackendErrorClass::NotConnected, result.backend_error().error_class);
       EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), result.session_snapshot());
       EXPECT_EQ(operation == 0 ? BackendOperation::Transaction : operation == 1 ?
-          BackendOperation::SetTransactionIsolation : BackendOperation::Describe, result.backend_error().operation);
+          BackendOperation::SetTransactionIsolation : operation == 2 ? BackendOperation::Describe :
+          BackendOperation::ExecuteCatalog, result.backend_error().operation);
     });
     retired_once(*observed);
   }
 }
 TEST(SessionLeaseFacetsTest, OwningNativeErrorsPreserveSameBorrowOrRetireExactlyAsReported) {
-  for (int operation = 0; operation != 3; ++operation) {
+  for (int operation = 0; operation != 4; ++operation) {
     for (auto disposition : {SessionDisposition::Reusable, SessionDisposition::ResetRequired, SessionDisposition::Retire}) {
       auto observed = std::make_shared<Observed>(); observed->operation_facets = true;
       BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "owned facet error"};
@@ -1322,7 +1337,7 @@ TEST(SessionLeaseFacetsTest, OwningNativeErrorsPreserveSameBorrowOrRetireExactly
   }
 }
 TEST(SessionLeaseFacetsTest, AmbiguousSuccessAndAllExceptionKindsRetireWithoutReplay) {
-  for (int operation = 0; operation != 3; ++operation) {
+  for (int operation = 0; operation != 4; ++operation) {
     for (int exception = 0; exception != 4; ++exception) {
       auto observed = std::make_shared<Observed>(); observed->operation_facets = true;
       observed->facet_exception = exception;
@@ -1344,7 +1359,7 @@ TEST(SessionLeaseFacetsTest, AmbiguousSuccessAndAllExceptionKindsRetireWithoutRe
 
 namespace {
 TEST(SessionLeaseFacetsTest, MissingFacetPassiveStateAndAccessorExceptionNeverGrantReturn) {
-  for (int operation = 0; operation != 3; ++operation) {
+  for (int operation = 0; operation != 4; ++operation) {
     for (auto state : {SessionState::Idle, SessionState::Transaction, SessionState::FailedTransaction,
                        SessionState::Unknown, SessionState::Disconnected}) {
       auto observed = std::make_shared<Observed>();
@@ -1380,6 +1395,21 @@ TEST(SessionLeaseFacetsTest, DescriptionMetadataSurvivesAutomaticRetirement) {
 }
 
 namespace {
+TEST(SessionLeaseCatalogExecutionTest, NormalizedMetadataSurvivesAutomaticRetirementWithoutSqlFallback) {
+  auto observed = std::make_shared<Observed>(); observed->operation_facets = true;
+  QueryResult metadata; metadata.columns.push_back({"owned catalog field", std::nullopt});
+  metadata.rows = {{std::string{"owned\0row", 9}}, {std::nullopt}, {std::string{}}};
+  observed->description_result = BackendResult<QueryResult>{metadata, {SessionState::Unknown, SessionDisposition::Retire}};
+  auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+  auto result = lease->execute_catalog(PrimaryKeysCatalogRequest{"db", "schema", "table"}, rs::util::Deadline::max());
+  ASSERT_TRUE(result); EXPECT_FALSE(*lease); retired_once(*observed);
+  EXPECT_EQ(0, observed->queries); // Never routes an execution error/result to SQL.
+  observed->description_result.reset(); metadata.columns.clear(); metadata.rows.clear();
+  ASSERT_EQ(1u, result->columns.size()); EXPECT_EQ("owned catalog field", result->columns[0].name);
+  ASSERT_EQ(3u, result->rows.size()); ASSERT_TRUE(result->rows[0][0]);
+  EXPECT_EQ((std::string{"owned\0row", 9}), *result->rows[0][0]);
+  EXPECT_FALSE(result->rows[1][0]); ASSERT_TRUE(result->rows[2][0]); EXPECT_TRUE(result->rows[2][0]->empty());
+}
 TEST(SessionLeaseObservationTest, OwnedReadAndCatalogConstructionPreserveScopeAndExclusiveBorrow) {
   auto observed = std::make_shared<Observed>(); observed->operation_facets = true; observed->catalog_facet = true;
   CredentialContext credentials; auto token = credentials.publish_authenticated();
