@@ -1,6 +1,8 @@
 """Synthetic composition checks for reuse of the bounded IAM runner."""
 from contextlib import ExitStack
 from datetime import timedelta
+from pathlib import Path
+import time
 import unittest
 from unittest.mock import patch
 
@@ -14,6 +16,7 @@ from tools.redshift import pilot_window_live as windows
 from tools.redshift import test_pilot_finite_amendment as accounting_fixture
 from tools.redshift import test_pilot_continuation_live as runner_fixture
 from tools.redshift.pilot_preflight import Blocked
+from tools.redshift.pilot_runtime import bounded_process
 
 
 class FiniteLiveTests(unittest.TestCase):
@@ -92,3 +95,15 @@ class FiniteLiveTests(unittest.TestCase):
         self.c.request['state_digest']=r.digest(self.f.path.read_text());self.c.write_request()
         with self.assertRaisesRegex(Blocked,'amendment_code_review_mismatch'):self.execute()
         self.assertEqual(self.c.events,[])
+
+    def test_cleanup_recovery_logs_cannot_block_a_new_window_process(self):
+        historical=self.f.path.parent/'bootstrap-9001-sql.log'
+        historical.write_text('preserved recovery evidence');historical.chmod(0o600)
+        window=live.Window(self.f.path.parent,self.c.config.config,time.monotonic()+10)
+        window.seq=9000;window.log_prefix='window-009'
+        executable=Path('/usr/bin/true')
+        if not executable.exists():executable=Path('/bin/true')
+        result=bounded_process([str(executable)],env=live.clean_env(),seconds=5,
+            output=window.output('sql'))
+        self.assertEqual(result.returncode,0)
+        self.assertEqual(historical.read_text(),'preserved recovery evidence')

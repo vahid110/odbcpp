@@ -175,6 +175,8 @@ def _execute(sequence, directory, session_factory, validate_request, *, sequence
         kwargs = {'cleanup_principal': iam.DB_USER} if is_iam else {}
         window = live.Window(directory,config,time.monotonic()+max(0,remaining),**kwargs)
         window.seq=sequence*1000
+        if sequence > 8:
+            window.log_prefix=f'window-{sequence:03d}'
         try:
             window.cleanup()
             passed(ledger.transition('active',cleanup_evidence(current)))

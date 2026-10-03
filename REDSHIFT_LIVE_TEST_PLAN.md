@@ -616,3 +616,29 @@ remain required. After its review/tests and CI pass, the integration owner may
 explicitly initialize the already reviewed finite amendment and admit this one
 attempt within the original horizon. Subsequent work should prioritize Redshift
 behavior and M2 assessment; broader accounting machinery remains out of scope.
+
+## First external IAM live qualification
+
+Under the user's direction to improvise, the integration owner used reviewed
+focused Python safety tests and the unchanged, previously CI-qualified driver
+binary to admit one local attempt while full platform CI continued. Fresh AWS
+controls/price/network passed; v7 was explicitly initialized and the1200s+60s
+reservation retained. Initial009 stopped before SQL: its9001/9002 log filenames
+collided with preserved cleanup-recovery logs, and exclusive creation occurs
+before process launch. The blocked result remains verbatim.
+
+The owner explicitly reviewed completion of that same reservation with unique
+logs, its original execution deadline and existing cleanup headroom. No clock
+reset, new reservation, refund, warehouse or automatic retry was used. The
+supplementary private completion result passed Redshift identity1/1 and both
+`IAMPrincipalScalar` and `IAMInvalidPassword`2/2; independent session/query cleanup
+verified absence. Canonical009 is cleaned_pending_billing; all liability remains.
+The runner repair namespaces future window logs to avoid the recovery collision.
+
+This qualifies the selected externally supplied Serverless temporary-credential
+SQL path with verified TLS, exact principal, scalar/NULL retrieval, configured
+statement timeout, disconnect and invalid-password rejection. It does not qualify
+native SDK IAM discovery, credential renewal, actual server expiry, federation,
+other Redshift deployments or full parity. Full platform CI remains a separate
+gate; these local live results do not imply it has finished. Subsequent work
+prioritizes Redshift metadata/type behavior and the bounded M2 assessment.

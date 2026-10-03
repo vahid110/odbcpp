@@ -147,6 +147,7 @@ class Window:
         self.cleanup_principal = cleanup_principal
         self.directory, self.config, self.deadline = directory, config, deadline
         self.seq = 0
+        self.log_prefix = 'bootstrap'
 
     def seconds(self, limit):
         available = int(self.deadline - time.monotonic())
@@ -156,7 +157,7 @@ class Window:
 
     def output(self, name):
         self.seq += 1
-        return self.directory/f'bootstrap-{self.seq:02d}-{name}.log'
+        return self.directory/f'{self.log_prefix}-{self.seq:02d}-{name}.log'
 
     def sql(self, text, *, admin=True, limit=25, statement_timeout_ms=15000):
         if statement_timeout_ms not in (15000,30000):
