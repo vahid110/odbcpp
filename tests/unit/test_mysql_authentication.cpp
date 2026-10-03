@@ -212,6 +212,38 @@ TEST(MySqlAuthenticationTest, MalformedErrorSqlstateFailsProtocolAndCleansTransp
   }
 }
 
+TEST(MySqlAuthenticationTest, CachedAndFullFinalErrorsValidateSqlstateAndCleanTransport) {
+  for (const auto path:{AuthenticationPath::Cached,AuthenticationPath::FullOverTls}) {
+    for (unsigned fault=0;fault<3;++fault) {
+      SCOPED_TRACE(static_cast<unsigned>(path));
+      SCOPED_TRACE(fault);
+      FakeTransport t;
+      append(t,{std::byte{1},path==AuthenticationPath::Cached?std::byte{3}:std::byte{4}},3);
+      Bytes reply{std::byte{255},std::byte{21},std::byte{4},std::byte{'#'},
+          std::byte{'2'},std::byte{'8'},std::byte{'0'},std::byte{'0'},std::byte{'0'}};
+      if (fault) reply[6]=fault==1?std::byte{'a'}:std::byte{0};
+      for (const auto ch:std::string_view("native-message-canary")) reply.push_back(static_cast<std::byte>(ch));
+      reply.push_back(std::byte{255});
+      append(t,reply,path==AuthenticationPath::Cached?4:5);
+      auto result=authenticate(t);ASSERT_FALSE(result);
+      EXPECT_EQ(fault?DbErrorCode::ProtocolError:DbErrorCode::AuthenticationFailed,result.error());
+      EXPECT_EQ("MySQL authentication failed",result.error_message());EXPECT_EQ(1u,t.closes);
+      EXPECT_EQ(t.input.size(),t.offset);
+      for (const auto dl:t.deadlines) EXPECT_EQ(t.expected,dl);
+      // SSLRequest and response41 precede the optional full-TLS password packet.
+      ASSERT_GE(t.output.size(),40u);EXPECT_EQ(std::byte{1},t.output[3]);EXPECT_EQ(std::byte{2},t.output[39]);
+      const auto response_size=std::to_integer<std::size_t>(t.output[36]) |
+          (std::to_integer<std::size_t>(t.output[37])<<8) | (std::to_integer<std::size_t>(t.output[38])<<16);
+      const auto end=40+response_size;
+      ASSERT_EQ(path==AuthenticationPath::FullOverTls?end+11:end,t.output.size());
+      if (path==AuthenticationPath::FullOverTls) {
+        EXPECT_EQ(std::byte{4},t.output[end+3]);EXPECT_EQ(std::byte{0},t.output.back());
+        EXPECT_EQ("secret",std::string(reinterpret_cast<const char*>(t.output.data()+end+4),6));
+      }
+    }
+  }
+}
+
 TEST(MySqlAuthenticationTest, ProtocolActiveStatusAndWarningsCannotPublishSession) {
   for (const unsigned status:{1u,8u,0x40u,0x80u,0x1000u,0x4000u}) {
     FakeTransport t;auto reply=ok();reply[3]=static_cast<std::byte>(status&255);reply[4]=static_cast<std::byte>(status>>8);

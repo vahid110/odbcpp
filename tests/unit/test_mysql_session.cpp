@@ -420,6 +420,44 @@ TEST(MySqlSessionTest, PreparedExecuteBindsTypedParametersClosesAndPreservesOwne
     EXPECT_EQ(params[0].value,result->rows[0][0]);EXPECT_EQ(1u,f.transport->closes);
   }
 }
+TEST(MySqlSessionTest, PreparedMetadataAndLateRowErrorsValidateSqlstateAndRetire) {
+  for (bool late_row:{false,true}) {
+    for (unsigned fault=0;fault<3;++fault) {
+      SCOPED_TRACE(late_row);
+      SCOPED_TRACE(fault);
+      Fixture f;
+      if (late_row) {
+        prepared_metadata(*f.transport);
+        append(*f.transport,{std::byte{1}},1);append(*f.transport,column_packet("id"),2);
+        append(*f.transport,eof_packet(),3);
+        Bytes row{std::byte{0},std::byte{0}};number(row,42,4);number(row,0,4);append(*f.transport,row,4);
+      } else {
+        Bytes first{std::byte{0}};number(first,17,4);number(first,1,2);number(first,1,2);
+        number(first,0,1);number(first,0,2);append(*f.transport,first,1);
+      }
+      Bytes reply{std::byte{255},std::byte{40},std::byte{4},std::byte{'#'},
+          std::byte{'4'},std::byte{'2'},std::byte{'S'},std::byte{'0'},std::byte{'2'}};
+      if (fault) reply[6]=fault==1?std::byte{'s'}:std::byte{0};
+      for (const auto ch:std::string_view("native-message-canary")) reply.push_back(static_cast<std::byte>(ch));
+      reply.push_back(std::byte{255});append(*f.transport,reply,late_row?5:2);
+      const std::array params{rs::core::database::QueryParameter{"42",rs::core::database::QueryParameterType::Int32}};
+      const auto deadline=rs::util::make_deadline(std::chrono::seconds(10));
+      auto result=f.session->execute_prepared("SELECT ?",params,deadline);ASSERT_FALSE(result);
+      // Failed BackendResult carries only an error, so the previously decoded row cannot escape.
+      EXPECT_EQ(fault?DbErrorCode::ProtocolError:DbErrorCode::QueryFailed,result.error());
+      EXPECT_EQ("MySQL session operation failed",result.error_message());
+      EXPECT_EQ(rs::core::database::BackendOperation::ExecutePrepared,result.backend_error().operation);
+      EXPECT_EQ(rs::core::database::SessionState::Disconnected,result.session_snapshot().state);
+      EXPECT_EQ(rs::core::database::SessionDisposition::Retire,result.session_snapshot().disposition);
+      EXPECT_FALSE(f.session->is_connected());EXPECT_EQ(1u,f.transport->closes);
+      EXPECT_EQ(f.transport->input.size(),f.transport->offset);
+      EXPECT_EQ(late_row?(std::vector<unsigned>{22,23}):(std::vector<unsigned>{22}),commands(f.transport->output));
+      for (const auto dl:f.transport->deadlines) EXPECT_EQ(deadline,dl);
+      f.session->disconnect();EXPECT_EQ(1u,f.transport->closes);
+    }
+  }
+}
+
 TEST(MySqlSessionTest, PreparedParameterMismatchClosesStatementAndPreservesOwner) {
   Fixture f;prepared_metadata(*f.transport);
   auto result=f.session->execute_prepared("SELECT ?",{},rs::util::make_deadline(std::chrono::seconds(10)));
