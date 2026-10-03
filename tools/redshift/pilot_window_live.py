@@ -60,11 +60,12 @@ def price_and_ip():
         raise r0.Blocked('fresh_evidence_invalid') from None
 
 
-def request_record(request, anchor, now, *, maximum_sequence=8):
+def request_record(request, anchor, now, *, maximum_sequence=8, profiles=None):
+    profiles = PROFILES if profiles is None else profiles
     r0._record(request, {'sequence','reviewed','observed_at','hard_deadline','profile','manifest','admission'},
                'invalid_window_request')
     r0._need(type(request['sequence']) is int and 1 <= request['sequence'] <= maximum_sequence
-             and request['reviewed'] is True and request['profile'] in PROFILES, 'invalid_window_request')
+             and request['reviewed'] is True and request['profile'] in profiles, 'invalid_window_request')
     r0._timestamp(request['observed_at'],now,Decimal(300),'stale_window_request')
     end = b._time(request['hard_deadline'],now,True)
     r0._need(60 <= (end-now).total_seconds() <= 180, 'invalid_window_deadline')
@@ -134,7 +135,8 @@ def save_report(path, report, directory_fd):
 
 
 def _execute(sequence, directory, session_factory, validate_request, *, sequence_offset=0,
-             maximum_sequence=8, validate_overlay=None):
+             maximum_sequence=8, validate_overlay=None, profiles=None):
+    profiles = PROFILES if profiles is None else profiles
     r0._need(type(sequence) is int and 1<=sequence<=maximum_sequence, 'invalid_window_sequence')
     directory = Path(directory)
     original = b.BootstrapAnchor(**live.private_json(directory/'bootstrap-anchor.json'))
@@ -190,7 +192,7 @@ def _execute(sequence, directory, session_factory, validate_request, *, sequence
             report['results'].append(window.driver(request['manifest'],live.IDENTITY,**dispatch))
             # Identity failure never reaches the profile cases; nothing retries them.
             window.last_driver_summary = None
-            report['results'].append(window.driver(request['manifest'],PROFILES[request['profile']],**dispatch))
+            report['results'].append(window.driver(request['manifest'],profiles[request['profile']],**dispatch))
             report['status']='passed'
         except BaseException as error:
             report['reason']=error.code if isinstance(error,r0.Blocked) else 'execution_interrupted'

@@ -268,3 +268,37 @@ live CI remain distinct deliverables. Advanced S3 transfer requires its own
 approved design. Existing spending authority, protected credentials, cumulative
 reservations, bounded execution and independent cleanup remain in force; no
 additional paid attempt is authorized by this assessment.
+
+## Resumed M3-T1 / M3-C1 bounded phase
+
+The owner explicitly resumed implementation after the assessment checkpoint.
+The next exact-type proof is identity followed by the five existing GTests in
+8614ce0, using one separately reviewed finite010 request. The offline successor
+preserves completev7 history, retained liability, original24h horizon and60s
+cleanup margin. It neither migrates protected state implicitly nor exchanges
+IAM credentials. Live Redshift type qualification remains pending.
+
+Initial catalog source review found that the pinned official driver
+[SQLStatistics common path](https://github.com/aws/amazon-redshift-odbc-driver/blob/56d35297f9bee0cc31c0148581c87ca455639a39/src/odbc/rsodbc/rscatalog.cpp#L1268)
+returns an empty13-field result. The explicit Redshift builder now follows that
+bounded empty-result contract without PostgreSQL index catalogs; PostgreSQL's
+builder remains isolated. Tests cover field order/cast families and invariant
+output for valid filters/uniqueness. This is offline query evidence, not live
+column-description parity: VARCHAR widths, lengths and nullability still need
+runtime evidence. Shared API rejection of SQL_ENSURE remains a recorded parity
+gap; this repair covers SQL_QUICK only.
+
+SpecialColumns requires separate contracts: sampled modern SHOW path for upstream ROWVER is empty,
+while BEST_ROWID has metadata processing that needs further source assessment
+and an ordinary-user diagnostic. No blanket PostgreSQL catalog port or binary
+assertion is enabled. VARBYTE OID/wire evidence is under separate review.
+This resumed phase stops at reviewed exact-type evidence or an explicit live
+qualification blocker, plus the initial catalog contract deliverable.
+
+The separate pinned-source VARBYTE audit identifies OID6551 and unprefixed hex
+for text-format binary retrieval. Current runtime lacks that OID mapping and
+uses PostgreSQL binary decoding/parameter hints. Binary tests and conversion
+repairs require a separate finite package; the existing five-case type window
+excludes VARBYTE. SpecialColumns legacy upstream paths still use PostgreSQL
+xmin/oid queries, so modern SHOW behavior does not prove compatibility across
+all upstream modes. BEST_ROWID requires explicit source/fixture qualification.
