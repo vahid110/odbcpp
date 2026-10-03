@@ -114,3 +114,12 @@ packages, the same 15-minute timer was resumed with the updated prompt. It may
 continue offline R0/R1 and MySQL work while infrastructure is unavailable;
 paid Redshift admission remains blocked until R1 and R2 are independently
 qualified. This avoids leaving parallel work waiting for another manual nudge.
+
+
+## User-authorized resumption and MySQL isolation — 2026-10-03
+
+The user explicitly resumed development timers and requested parallel MySQL work. Keep one SDK continuation timer ACTIVE at15-minute intervals; duplicate legacy implementation/reminder timers remain paused. This supersedes the earlier MySQL deferral for bounded parallel packages. The12-hour shared Redshift cost monitor remains active independently.
+
+The live tree had no active MySQL worker at verification. Root assigned `mysql_parallel` one finite MySQL-specific correctness/regression package in managed worktree `/Users/vahidsbr/.codex/worktrees/mysql-parallel/odbcpp`, baseline5862a4d. It owns only MySQL backend and MySQL-specific tests, no shared SDK/CMake/CI/crypto edits, cloud operations, commits or pushes. Root owns review/integration and required gates. Completion stops that assignment; subsequent work needs a fresh finite scope, and dormant workers must not be reported as progressing.
+
+Redshift feature qualification stays in checked-in GoogleTests shared with future live CI; Python orchestrates protected execution and independent cleanup. Local cloud proof and platform CI results remain separately reported until explicit cloud jobs are integrated.

@@ -1,5 +1,6 @@
 #pragma once
 #include "tls_negotiation.h"
+#include "error_wire.h"
 
 namespace rs::core::database::mysql {
 enum class AuthenticationPath { Immediate, Cached, FullOverTls };
@@ -144,7 +145,7 @@ inline rs::util::Result<AuthenticatedGreeting> authenticate_verified_tls(
   }
   if (!reply) return {reply.error(),"MySQL authentication failed"};
   if (!reply->empty() && (*reply)[0]==std::byte{255}) {
-    if (reply->size()<9 || (*reply)[3]!=std::byte{'#'}) return reject(DbErrorCode::ProtocolError);
+    if (!valid_protocol41_error_packet(*reply)) return reject(DbErrorCode::ProtocolError);
     return reject(DbErrorCode::AuthenticationFailed);
   }
   if (!reply->empty() && (*reply)[0]==std::byte{254}) return reject(DbErrorCode::UnsupportedFeature);

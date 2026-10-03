@@ -930,3 +930,10 @@ ODBC registration remain subsequent S3 work; S3/G12 is not closed.
 Semantic references:
 [MySQL transaction completion](https://dev.mysql.com/doc/refman/8.4/en/commit.html),
 [session isolation](https://dev.mysql.com/doc/refman/8.4/en/set-transaction.html).
+
+
+## Parallel MySQL protocol-41 rejection validation — 2026-10-03
+
+The isolated MySQL package adds one private ERR header validator shared by authentication and session rejection handling. Protocol-41 errors require a complete header,0xff marker,# SQLSTATE marker and five uppercase ASCII alphanumeric SQLSTATE bytes. Malformed headers produce ProtocolError; valid native rejections preserve existing authentication/query classifications. Native message bytes remain opaque and public diagnostics stay fixed. Regression tests cover every SQLSTATE position, truncated headers, marker corruption, opaque message bytes and transport retirement. Root focused authentication/session/query-wire CMake tests passed; independent review found no functional blocker. Full code-batch and hosted pinned MySQL/Windows gates remain required before acceptance; no local live MySQL result is claimed because the Docker engine is unavailable. This does not close S3 or register a MySQL ODBC product.
+
+Combined candidate validation passed: PostgreSQL67/67unit plus full integration/verifiedTLS; UTF16/UCS4 unit/integration/verifiedTLS; sanitizer unit; Redshift67/67unit/build;241offline runner safety tests; exact absent-endpoint rejection. Hosted Windows/package and pinned live MySQL remain CI gates, not local passes. No additional paid SQL in this code batch.

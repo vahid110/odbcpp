@@ -261,8 +261,10 @@ this proposal must neither claim it nor silently approve exceptions.
 
 The agreed bounded assessment stopping point is reached: G1 behavior evidence
 was reviewed, compatibility matrices and the beta proposal are recorded, and
-M3/RP1 work is sized into finite checkpoints. Pause the current implementation
-heartbeat at this checkpoint; a subsequent phase requires its own finite scope.
+M3/RP1 work is sized into finite checkpoints. This assessment originally marked
+a pause boundary; the owner subsequently authorized continuous unattended work
+and explicitly prohibited timer pauses at intermediate checkpoints. Record each
+review and select the next finite authorized scope while keeping the timer active.
 M3 application/platform/type/catalog gates, RP1 full parity and medium-term RS9
 live CI remain distinct deliverables. Advanced S3 transfer requires its own
 approved design. Existing spending authority, protected credentials, cumulative
@@ -492,3 +494,19 @@ line reference. Nine focused tests cover accepted text/integer families, owned
 output, reversed key order, nullable names, malformed input/native failures and
 the signed sequence boundary. Local PostgreSQL/Redshift unit, Unicode integration,
 TLS and sanitizer gates pass; these are offline regression evidence only.
+
+
+## Provisioned live proof and CI alignment — 2026-10-03
+
+The user authorized one persistent provisioned RG pilot and resumed unattended development. The existing reviewed Redshift test executable passed the five exact-type GoogleTests plus ConnectionTest on that cluster (6/6), followed by a separately scoped batch containing ConnectionTest, ConfiguredFixtureMetadata, RowVersionEmptyDescriptorContract and StatisticsQuickEmptyDescriptorContract (4/4). Both batches verified exact admin identity and zero other owned sessions before and after execution over verified TLS. Private admissions/results bind executable/source/accounting hashes. These are local provisioned live results, not a new platform CI run, a reproducible build attestation, or complete parity.
+
+All feature assertions reside in `tests/integration/it_redshift_real.cpp`, including descriptor names/type families, exact integer/decimal/Unicode/temporal values, NULL output preservation and configured fixture metadata. Python performs orchestration and safety checks (credentials, finite inventory, accounting, deadlines, identity and cleanup); its offline safety tests do not replace C++ feature coverage. The planned multi-OS live CI must run these same GoogleTests and publish exact executed-case/artifact manifests, treating absent endpoints and incomplete inventory as failures. No temporary Python feature suite is a release oracle. Composite key/routine fixtures, prepared VARBYTE, native IAM renewal, data sharing and wider parity remain separate unqualified scopes.
+
+
+## Pure foreign-key contract foundation — 2026-10-03
+
+The next unwired helper owns an exact imported/exported/both table plan and validates a fourteen-field normalized SHOW FK result before producing owned ODBC rows. Named constraints group within each foreign table, so sequences may restart across different constraints or tables. Required exact identities, contiguous unique signed-smallint sequences, consistent referenced identities/names/rules and unique key pairs are enforced. Nullable PK names and source row order remain intact; NULL rule/deferrability defaults3/3/7 follow pinned source. Both-direction filtering follows validation of every source row, a deliberately conservative candidate policy. Native/deferred errors and successful session snapshots remain intact; malformed/partial result data cannot become success. Unknown native widths/OIDs are not inferred.
+
+Nine focused GoogleTests cover directions, accepted normalized families, descriptor shape, ownership, groups, source order, defaults, malformed excluded groups and preserved failures. Standalone and root CMake focused tests passed; independent review found no functional blocker and source ranges/test-copy warnings were corrected. The helper has no runtime caller or SQL renderer and does not qualify native SHOW, ordinary-user visibility or broader FK parity. Full required batch gates and hosted CI remain required before acceptance.
+
+Combined candidate validation passed: PostgreSQL67/67unit plus full integration/verifiedTLS; UTF16/UCS4 unit/integration/verifiedTLS; sanitizer unit; Redshift67/67unit/build;241offline runner safety tests; exact absent-endpoint rejection. Hosted Windows/package and pinned live MySQL remain CI gates, not local passes. No additional paid SQL in this code batch.

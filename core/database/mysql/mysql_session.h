@@ -1,5 +1,6 @@
 #pragma once
 #include "authentication.h"
+#include "error_wire.h"
 #include "query_wire.h"
 #include "prepared_wire.h"
 #include "core/transport/tls_configurable_transport.h"
@@ -361,7 +362,7 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
   }
   rs::util::Result<QueryResult> server_error(std::span<const std::byte> bytes) const {
     if (bytes.size()>result_limits_.max_diagnostic_bytes) return {rs::util::DbErrorCode::ResourceLimit};
-    if (bytes.size()<9 || bytes[3]!=std::byte{'#'}) return {rs::util::DbErrorCode::ProtocolError};
+    if (!valid_protocol41_error_packet(bytes)) return {rs::util::DbErrorCode::ProtocolError};
     return {rs::util::DbErrorCode::QueryFailed,"MySQL server rejected query"};
   }
   void set_state(std::uint16_t status) { state_=(status&1)?SessionState::Transaction:SessionState::Idle; }

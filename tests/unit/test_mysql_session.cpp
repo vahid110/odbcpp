@@ -163,6 +163,23 @@ TEST(MySqlSessionTest, WireSequenceTruncationWarningsAndMoreResultsRetire) {
     auto again=f.execute();EXPECT_FALSE(again);EXPECT_EQ(DbErrorCode::NotConnected,again.error());
   }
 }
+TEST(MySqlSessionTest, ErrorSqlstateValidationPreservesServerClassificationAndRetiresMalformedPackets) {
+  const Bytes valid{std::byte{255},std::byte{40},std::byte{4},std::byte{'#'},
+      std::byte{'4'},std::byte{'2'},std::byte{'S'},std::byte{'0'},std::byte{'2'}};
+  for (std::size_t mode=0;mode<6;++mode) {
+    Fixture f;auto reply=valid;
+    if (mode) reply[mode+3]=std::byte{'a'};
+    // Message bytes are opaque and cannot appear in the fixed public diagnostic.
+    reply.push_back(std::byte{255});len_text(reply,"native-message-canary");
+    append(*f.transport,reply,1);auto result=f.execute();ASSERT_FALSE(result);
+    EXPECT_EQ(mode?DbErrorCode::ProtocolError:DbErrorCode::QueryFailed,result.error());
+    EXPECT_EQ("MySQL session operation failed",result.error_message());
+    EXPECT_EQ(rs::core::database::SessionState::Disconnected,result.session_snapshot().state);
+    EXPECT_EQ(rs::core::database::SessionDisposition::Retire,result.session_snapshot().disposition);
+    EXPECT_FALSE(f.session->is_connected());EXPECT_EQ(1u,f.transport->closes);
+  }
+}
+
 TEST(MySqlSessionTest, ResponseAndResultBudgetsApplyBeforeBodyOrRowAdmission) {
   for (unsigned mode=0;mode<5;++mode) {
     auto config=settings();

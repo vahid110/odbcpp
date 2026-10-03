@@ -199,6 +199,19 @@ TEST(MySqlAuthenticationTest, RejectionClassificationDoesNotEchoServerBytes) {
   }
 }
 
+TEST(MySqlAuthenticationTest, MalformedErrorSqlstateFailsProtocolAndCleansTransport) {
+  const Bytes valid{std::byte{255},std::byte{21},std::byte{4},std::byte{'#'},
+      std::byte{'2'},std::byte{'8'},std::byte{'0'},std::byte{'0'},std::byte{'0'}};
+  for (std::size_t index=4;index<9;++index) {
+    for (const auto invalid:{std::byte{0},std::byte{'a'},std::byte{'/'},std::byte{255}}) {
+      auto reply=valid;reply[index]=invalid;
+      FakeTransport t;append(t,reply,3);auto result=authenticate(t);ASSERT_FALSE(result);
+      EXPECT_EQ(DbErrorCode::ProtocolError,result.error());
+      EXPECT_EQ("MySQL authentication failed",result.error_message());EXPECT_EQ(1u,t.closes);
+    }
+  }
+}
+
 TEST(MySqlAuthenticationTest, ProtocolActiveStatusAndWarningsCannotPublishSession) {
   for (const unsigned status:{1u,8u,0x40u,0x80u,0x1000u,0x4000u}) {
     FakeTransport t;auto reply=ok();reply[3]=static_cast<std::byte>(status&255);reply[4]=static_cast<std::byte>(status>>8);

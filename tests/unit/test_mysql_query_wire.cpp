@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "core/database/mysql/query_wire.h"
+#include "core/database/mysql/error_wire.h"
 namespace {
 using namespace rs::core::database;
 using namespace rs::core::database::mysql;
@@ -51,6 +52,18 @@ TEST(MySqlQueryWireTest, RowsPreserveNullEmptyBinaryAndDeferInvalidUtf8AndNumeri
   EXPECT_FALSE(query_detail::valid_cell("32768",ScalarType::SmallInt));
   EXPECT_FALSE(query_detail::valid_cell("12garbage",ScalarType::Integer));
 }
+TEST(MySqlQueryWireTest, Protocol41ErrorHeaderRequiresMarkerAndCompleteUppercaseAlphanumericState) {
+  Bytes valid{std::byte{255},std::byte{40},std::byte{4},std::byte{'#'},
+      std::byte{'4'},std::byte{'2'},std::byte{'S'},std::byte{'0'},std::byte{'2'}};
+  EXPECT_TRUE(valid_protocol41_error_packet(valid));
+  for (std::size_t n=0;n<valid.size();++n)
+    EXPECT_FALSE(valid_protocol41_error_packet(std::span(valid).first(n)))<<n;
+  auto invalid=valid;invalid[0]=std::byte{0};EXPECT_FALSE(valid_protocol41_error_packet(invalid));
+  invalid=valid;invalid[3]=std::byte{'!'};EXPECT_FALSE(valid_protocol41_error_packet(invalid));
+  valid.push_back(std::byte{0});valid.push_back(std::byte{255});
+  EXPECT_TRUE(valid_protocol41_error_packet(valid)); // No message encoding assumption.
+}
+
 TEST(MySqlQueryWireTest, CompletionUsesFullLengthEncodedCountAndRejectsMalformedEof) {
   Bytes ok{std::byte{0},std::byte{254}};number(ok,4294967296ULL,8);number(ok,0,1);number(ok,2,2);number(ok,0,2);
   auto result=query_detail::completion(ok,false);ASSERT_TRUE(result);EXPECT_EQ(4294967296ULL,result->affected);
