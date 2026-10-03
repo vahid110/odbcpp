@@ -101,4 +101,18 @@ std::string redshift_statistics_query(const StatisticsCatalogRequest&) {
       "CAST(NULL AS VARCHAR(128)) AS filter_condition WHERE 1=0";
 }
 
+// Modern AWS SHOW discovery exposes no row-version columns. This SELECT
+// establishes the field families and empty result, not its local/no-I/O path
+// or legacy xmin/oid behavior. Descriptor widths still need live qualification.
+std::string redshift_row_version_query() {
+  return "SELECT CAST(NULL AS SMALLINT) AS scope, "
+      "CAST(NULL AS VARCHAR) AS column_name, "
+      "CAST(NULL AS SMALLINT) AS data_type, "
+      "CAST(NULL AS VARCHAR) AS type_name, "
+      "CAST(NULL AS INTEGER) AS column_size, "
+      "CAST(NULL AS INTEGER) AS buffer_length, "
+      "CAST(NULL AS SMALLINT) AS decimal_digits, "
+      "CAST(NULL AS SMALLINT) AS pseudo_column WHERE 1=0";
+}
+
 }  // namespace rs::core::database::postgres

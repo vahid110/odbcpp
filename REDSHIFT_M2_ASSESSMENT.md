@@ -378,3 +378,11 @@ with all valid scope/nullable combinations and PostgreSQL isolation. Its SELECT
 round trip would remain distinct from upstream's local result construction.
 BEST_ROWID mode selection, key ordering, SHOW permissions, dimensions and name
 semantics remain open, requiring ordinary-user fixture evidence.
+
+The explicit Redshift ROWVER query candidate now has eight typed fields and an
+empty result across all six valid scope/nullable combinations. Focused catalog
+tests pass and independent source review found no blocker. PostgreSQL dispatch
+and BEST_ROWID stay unchanged. This is the modern typed-empty contract only:
+server-version negotiation, legacy xmin/oid, upstream's local no-I/O construction
+and live descriptor widths/result behavior are not established. Full batch gates
+and a future separately scoped live descriptor/empty-fetch case remain required.

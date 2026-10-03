@@ -166,7 +166,8 @@ TEST(CatalogQueryTest, ProcedureColumnsKeepLiteralCatalogAndColumnPatterns) {
 }
 
 TEST(CatalogQueryTest, SpecialColumnsKeepScopeNullabilityAndLiteralNames) {
-  auto backend = DatabaseFactory::create_connection();
+  // These assertions describe PostgreSQL's index and row-version contract.
+  auto backend = std::make_unique<postgres::PgDatabaseConnection>();
   SpecialColumnsCatalogRequest request;
   request.catalog = "";
   request.schema = "s'%";
@@ -292,4 +293,40 @@ TEST(CatalogQueryTest, RedshiftStatisticsAvoidsPostgresIndexesAndPreservesProfil
   request.unique_only = true;
   EXPECT_EQ(*selected, *redshift.catalog_query(request));
   EXPECT_EQ(*original, *pg.catalog_query(StatisticsCatalogRequest{}));
+}
+
+TEST(CatalogQueryTest, RedshiftRowVersionHasModernEmptyContractAcrossValidOptions) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection pg;
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  SpecialColumnsCatalogRequest request;
+  request.identifier = SpecialColumnsCatalogRequest::Identifier::RowVersion;
+  request.catalog = "quoted'database"; request.schema = "quoted'schema";
+  request.table = "quoted'table";
+  const auto selected = redshift.catalog_query(request);
+  ASSERT_TRUE(selected);
+  EXPECT_TRUE(selected->ends_with("WHERE 1=0"));
+  EXPECT_EQ(std::string::npos, selected->find("quoted"));
+  EXPECT_EQ(std::string::npos, selected->find("pg_catalog"));
+  size_t previous = 0;
+  for (const auto* field : {"SMALLINT) AS scope", "VARCHAR) AS column_name",
+      "SMALLINT) AS data_type", "VARCHAR) AS type_name", "INTEGER) AS column_size",
+      "INTEGER) AS buffer_length", "SMALLINT) AS decimal_digits",
+      "SMALLINT) AS pseudo_column"}) {
+    const auto position = selected->find(field);
+    ASSERT_NE(std::string::npos, position);
+    EXPECT_GE(position, previous); previous = position + std::string(field).size();
+  }
+  for (const auto scope : {SpecialColumnsCatalogRequest::Scope::CurrentRow,
+       SpecialColumnsCatalogRequest::Scope::Transaction,
+       SpecialColumnsCatalogRequest::Scope::Session}) {
+    for (const bool non_nullable : {false, true}) {
+      request.scope = scope; request.require_non_nullable = non_nullable;
+      EXPECT_EQ(*selected, *redshift.catalog_query(request));
+      const auto original = pg.catalog_query(request);
+      ASSERT_TRUE(original);
+      EXPECT_NE(std::string::npos, original->find("::text AS column_name"));
+      EXPECT_TRUE(original->ends_with("WHERE FALSE"));
+    }
+  }
 }
