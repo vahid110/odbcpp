@@ -301,6 +301,8 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
       std::size_t bytes{};
       auto column=query_detail::column(*packet,result_limits_,&bytes);
       if (!column) return {column.error()};
+      // Result-only decimal support must not admit native decimal parameters.
+      if (types && column->normalized_type->type==ScalarType::Decimal) return {DbErrorCode::UnsupportedFeature};
       if (bytes>result_limits_.max_metadata_name_bytes-names ||
           result_limits_.max_metadata_entries-entries<6) return {DbErrorCode::ResourceLimit};
       names+=bytes;entries+=6;
@@ -341,7 +343,7 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
       if (metadata_bytes>result_limits_.max_metadata_name_bytes-names) return {DbErrorCode::ResourceLimit};
       if (result_limits_.max_metadata_entries-entries<6) return {DbErrorCode::ResourceLimit};
       names+=metadata_bytes;entries+=6;result.columns.push_back(std::move(*column));
-      if (binary) native.push_back(wire);
+      native.push_back(wire);
     }
     auto metadata_end=reader.next();if (!metadata_end) return {metadata_end.error()};
     auto end=query_detail::completion(*metadata_end,true);if (!end) return {end.error()};
@@ -355,7 +357,7 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
       if (result.rows.size()>=result_limits_.max_rows ||
           result.rows.size()>=result_limits_.max_cells/result.columns.size()) return {DbErrorCode::ResourceLimit};
       auto row=binary?prepared_detail::binary_row(*packet,native,result.columns,result.rows.size(),result.cell_errors):
-          query_detail::row(*packet,result.columns,result.rows.size(),result.cell_errors);
+          query_detail::row(*packet,result.columns,result.rows.size(),result.cell_errors,native);
       if (!row) return {row.error()};
       result.rows.push_back(std::move(*row));
     }

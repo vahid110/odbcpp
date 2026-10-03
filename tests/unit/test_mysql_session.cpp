@@ -494,8 +494,99 @@ TEST(MySqlSessionTest, PreparedFreshMetadataPreservesUnsignedBigintBinaryNullAnd
   EXPECT_EQ((std::vector<rs::core::database::CellEncodingError>{{0,2}}),result->cell_errors);
 }
 
-TEST(MySqlSessionTest, PreparedDecimalAndDateMetadataRefusalRetiresBeforeQueuedRows) {
-  for (unsigned native_type:{246u,10u}) {
+namespace {
+Bytes decimal_column_packet(unsigned width=7,unsigned scale=2,bool unsigned_value=false) {
+  auto bytes=column_packet("decimal",246,63,unsigned_value?32:0);
+  for (unsigned i=0;i<4;++i) bytes[bytes.size()-10+i]=static_cast<std::byte>((width>>(8*i))&255);
+  bytes[bytes.size()-3]=static_cast<std::byte>(scale);return bytes;
+}
+void decimal_preparation(FakeTransport& t) {
+  Bytes first{std::byte{0}};number(first,17,4);number(first,1,2);number(first,1,2);
+  number(first,0,1);number(first,0,2);append(t,first,1);
+  append(t,column_packet("?",253,45),2);append(t,eof_packet(),3);
+  append(t,decimal_column_packet(),4);append(t,eof_packet(),5);
+}
+}
+TEST(MySqlSessionTest, DecimalResultsShareDirectAndPreparedErrorsDrainRecoveryAndOwnership) {
+  for (bool binary:{false,true}) {
+    SCOPED_TRACE(binary);
+    Fixture f;if (binary) decimal_preparation(*f.transport);
+    append(*f.transport,{std::byte{1}},1);append(*f.transport,decimal_column_packet(),2);
+    append(*f.transport,eof_packet(),3);
+    unsigned sequence=4;
+    for (const auto& value:{std::optional<std::string>{"-999.99"},std::optional<std::string>{},
+        std::optional<std::string>{""},std::optional<std::string>{"1.20"}}) {
+      Bytes row;
+      if (binary) row={std::byte{0},value?std::byte{0}:std::byte{4}};
+      if (value) len_text(row,*value);else if (!binary) row.push_back(std::byte{251});
+      append(*f.transport,row,sequence++);
+    }
+    append(*f.transport,eof_packet(),sequence);
+    const std::array params{rs::core::database::QueryParameter{"42",rs::core::database::QueryParameterType::Int32}};
+    const auto deadline=rs::util::make_deadline(std::chrono::seconds(10));
+    auto result=binary?f.session->execute_prepared("SELECT ?",params,deadline):f.session->execute_query("SELECT decimal",deadline);
+    ASSERT_TRUE(result);ASSERT_EQ(1u,result->columns.size());ASSERT_TRUE(result->columns[0].normalized_type);
+    const auto& info=*result->columns[0].normalized_type;
+    EXPECT_EQ(rs::core::database::ScalarType::Decimal,info.type);EXPECT_EQ(5u,info.column_size);EXPECT_EQ(2,info.decimal_digits);EXPECT_TRUE(info.known);
+    ASSERT_EQ(4u,result->rows.size());for (const auto& row:result->rows) ASSERT_EQ(1u,row.size());
+    EXPECT_EQ(std::optional<std::string>{"-999.99"},result->rows[0][0]);EXPECT_FALSE(result->rows[1][0]);
+    EXPECT_EQ(std::optional<std::string>{""},result->rows[2][0]);EXPECT_EQ(std::optional<std::string>{"1.20"},result->rows[3][0]);
+    EXPECT_EQ((std::vector<rs::core::database::CellEncodingError>{{2,0}}),result->cell_errors);
+    EXPECT_EQ(binary?(std::vector<unsigned>{22,23,25}):(std::vector<unsigned>{3}),commands(f.transport->output));
+    EXPECT_EQ(f.transport->input.size(),f.transport->offset);for (const auto dl:f.transport->deadlines) EXPECT_EQ(deadline,dl);
+    EXPECT_TRUE(f.session->is_connected());EXPECT_EQ(0u,f.transport->closes);
+    EXPECT_EQ(rs::core::database::SessionDisposition::Reusable,result.session_snapshot().disposition);
+    append(*f.transport,ok(),1);EXPECT_TRUE(f.execute());f.session->disconnect();EXPECT_EQ(1u,f.transport->closes);
+    f.session.reset();
+    EXPECT_EQ(std::optional<std::string>{"-999.99"},result->rows[0][0]);EXPECT_EQ(5u,result->columns[0].normalized_type->column_size);
+    EXPECT_EQ((std::vector<rs::core::database::CellEncodingError>{{2,0}}),result->cell_errors);
+  }
+}
+TEST(MySqlSessionTest, DecimalMalformedMetadataAndLengthFramingRetireWithoutPartialSuccess) {
+  for (bool binary:{false,true}) {
+    for (bool bad_metadata:{false,true}) {
+      SCOPED_TRACE(binary);
+      SCOPED_TRACE(bad_metadata);
+      Fixture f;if (binary) decimal_preparation(*f.transport);
+      append(*f.transport,{std::byte{1}},1);
+      append(*f.transport,bad_metadata?decimal_column_packet(1,0):decimal_column_packet(),2);
+      append(*f.transport,eof_packet(),3);
+      Bytes malformed;if (binary) malformed={std::byte{0},std::byte{0}};
+      malformed.push_back(std::byte{5});malformed.push_back(std::byte{'1'});append(*f.transport,malformed,4);
+      const std::array params{rs::core::database::QueryParameter{"42",rs::core::database::QueryParameterType::Int32}};
+      const auto deadline=rs::util::make_deadline(std::chrono::seconds(10));
+      auto result=binary?f.session->execute_prepared("SELECT ?",params,deadline):f.session->execute_query("SELECT decimal",deadline);
+      ASSERT_FALSE(result);EXPECT_EQ(DbErrorCode::ProtocolError,result.error());
+      EXPECT_EQ(binary?rs::core::database::BackendOperation::ExecutePrepared:rs::core::database::BackendOperation::ExecuteDirect,result.backend_error().operation);
+      EXPECT_EQ(rs::core::database::SessionState::Disconnected,result.session_snapshot().state);
+      EXPECT_EQ(rs::core::database::SessionDisposition::Retire,result.session_snapshot().disposition);EXPECT_EQ(1u,f.transport->closes);
+      EXPECT_EQ(binary?(std::vector<unsigned>{22,23}):(std::vector<unsigned>{3}),commands(f.transport->output));
+      for (const auto dl:f.transport->deadlines) EXPECT_EQ(deadline,dl);
+      EXPECT_FALSE(f.session->is_connected());f.session->disconnect();EXPECT_EQ(1u,f.transport->closes);
+    }
+  }
+}
+TEST(MySqlSessionTest, DecimalParameterHintsAndNativeDescriptorsRemainUnsupported) {
+  for (unsigned mode=0;mode<3;++mode) {
+    Fixture f;const auto calls=f.transport->calls;
+    if (mode==2) {
+      Bytes first{std::byte{0}};number(first,17,4);number(first,0,2);number(first,1,2);
+      number(first,0,1);number(first,0,2);append(*f.transport,first,1);append(*f.transport,decimal_column_packet(),2);
+    }
+    const std::array params{rs::core::database::QueryParameter{mode==1?std::optional<std::string>{}:std::optional<std::string>{"1.20"},
+        mode==2?rs::core::database::QueryParameterType::Text:rs::core::database::QueryParameterType::Numeric}};
+    auto result=f.session->execute_prepared("SELECT ?",params,rs::util::make_deadline(std::chrono::seconds(10)));
+    ASSERT_FALSE(result);EXPECT_EQ(DbErrorCode::UnsupportedFeature,result.error());
+    EXPECT_EQ(rs::core::database::BackendOperation::ExecutePrepared,result.backend_error().operation);
+    EXPECT_EQ(mode==2?rs::core::database::SessionDisposition::Retire:rs::core::database::SessionDisposition::Reusable,result.session_snapshot().disposition);
+    EXPECT_EQ(mode!=2,f.session->is_connected());EXPECT_EQ(mode==2?1u:0u,f.transport->closes);
+    if (mode!=2) { EXPECT_EQ(calls,f.transport->calls);EXPECT_TRUE(f.transport->output.empty()); }
+    else EXPECT_EQ((std::vector<unsigned>{22}),commands(f.transport->output));
+  }
+}
+
+TEST(MySqlSessionTest, PreparedDateMetadataRefusalRetiresBeforeQueuedRows) {
+  for (unsigned native_type:{10u}) {
     for (bool execution_metadata:{false,true}) {
       SCOPED_TRACE(native_type);
       SCOPED_TRACE(execution_metadata);
@@ -508,7 +599,6 @@ TEST(MySqlSessionTest, PreparedDecimalAndDateMetadataRefusalRetiresBeforeQueuedR
         append(*f.transport,column_packet("?",253,45),2);append(*f.transport,eof_packet(),3);
       }
       auto unsupported=column_packet("unsupported",native_type);
-      if (native_type==246) unsupported[unsupported.size()-3]=std::byte{2}; // Decimal scale.
       append(*f.transport,unsupported,execution_metadata?2:4);
       const auto rejected_at=f.transport->input.size();
       append(*f.transport,eof_packet(),execution_metadata?3:5);

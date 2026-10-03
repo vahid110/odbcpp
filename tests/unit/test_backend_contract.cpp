@@ -26,6 +26,9 @@ static_assert(!ExposesRawPhysicalSession<rs::odbc::ODBCConnection>);
 
 struct Observations {
   int created{}, transports{}, disconnects{}, destructions{}, queries{}, descriptions{}, translations{};
+  bool catalog_executor{false}, catalog_builder{false};
+  int catalog_calls{}, catalog_builds{}, catalog_error{};
+  bool catalog_retire{}, catalog_throw{};
   int terminal_execution{}, connect_exception{};
   SQLULEN description_size{8};
   bool observation_exception{}, terminal_description{};
@@ -95,7 +98,7 @@ static_assert(!HasNativeTypeInterpretation<IDatabaseConnection>);
 static_assert(!HasNativeTypeResolution<IDatabaseConnection>);
 
 // Deliberately implements only the database boundary: no PG parser or session.
-class FakeBackend final : public IDatabaseConnection, public IStatementDescription, public ITransactionSession {
+class FakeBackend final : public IDatabaseConnection, public IStatementDescription, public ITransactionSession, public ICatalogExecution, public ICatalogQueries {
  public:
   explicit FakeBackend(std::shared_ptr<Observations> seen)
       : seen_(std::move(seen)), absent_description_(seen_->absent_description) {}
@@ -108,6 +111,26 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
     if (seen_->connect_exception == 4) return BackendResult<void>{};
     if (seen_->connect_exception == 5) return BackendResult<void>{{SessionState::Transaction, SessionDisposition::ResetRequired}};
     return BackendResult<void>{{SessionState::Idle, SessionDisposition::Reusable}};
+  }
+  ICatalogExecution* catalog_execution() noexcept override { return seen_->catalog_executor ? this : nullptr; }
+  const ICatalogQueries* catalog_queries() const noexcept override { return seen_->catalog_builder || seen_->catalog_executor ? this : nullptr; }
+  rs::util::Result<std::string> catalog_query(const CatalogRequest&) const override {
+    ++seen_->catalog_builds;
+    return std::string("SELECT legacy fixture");
+  }
+  BackendResult<QueryResult> execute_catalog(const CatalogRequest& request, Deadline deadline) override {
+    ++seen_->catalog_calls; seen_->deadline = deadline;
+    if (seen_->catalog_throw) throw 42;
+    EXPECT_TRUE(std::holds_alternative<PrimaryKeysCatalogRequest>(request));
+    if (seen_->catalog_error) {
+      BackendError error{rs::util::make_error_code(seen_->catalog_error == 2 ? DbErrorCode::Timeout : seen_->catalog_error == 3 ? DbErrorCode::QueryFailed : DbErrorCode::UnsupportedFeature), "catalog fixture"};
+      error.operation = BackendOperation::ExecuteCatalog;
+      if (seen_->catalog_error == 3) error.native_state = "42501";
+      error.session_state = seen_->catalog_error == 2 ? SessionState::Disconnected : SessionState::Idle;
+      error.disposition = seen_->catalog_error == 2 ? SessionDisposition::Retire : SessionDisposition::Reusable;
+      return error;
+    }
+    return BackendResult<QueryResult>{rows(), {SessionState::Idle, seen_->catalog_retire ? SessionDisposition::Retire : SessionDisposition::Reusable}};
   }
   ITransactionSession* transaction_session() noexcept override { return seen_->isolation_mode ? this : nullptr; }
   TransactionCapabilities transaction_capabilities() const override {
@@ -339,6 +362,7 @@ class FakeProvider final : public IBackendProvider {
   std::optional<std::string> normalize_error_sqlstate(std::string_view state, ErrorContext) const override {
     if (seen_->malformed_state) return "bad";
     if (state == "FAKE_ERROR") return "22018";
+    if (state == "42501") return "42501";
     return std::nullopt;
   }
   TransactionCapabilities transaction_capabilities() const noexcept override {
@@ -416,6 +440,95 @@ class BackendContractTest : public ::testing::Test {
     if (env) SQLFreeHandle(SQL_HANDLE_ENV, env);
   }
 };
+
+TEST_F(BackendContractTest, PrimaryKeysExecutorUsesDeadlineAndPreservesPendingCursor) {
+  seen->catalog_executor = true; connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_QUERY_TIMEOUT,
+      reinterpret_cast<SQLPOINTER>(std::uintptr_t{3}), 0));
+  SQLINTEGER bound = 77; SQLLEN bound_length = 88;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 2, SQL_C_LONG, &bound, sizeof(bound), &bound_length));
+  const auto start = std::chrono::steady_clock::now();
+  ASSERT_EQ(SQL_SUCCESS, SQLPrimaryKeys(stmt, (SQLCHAR*)"contract", SQL_NTS,
+      (SQLCHAR*)"schema", SQL_NTS, (SQLCHAR*)"table", SQL_NTS));
+  EXPECT_EQ(1, seen->catalog_calls); EXPECT_EQ(0, seen->queries); EXPECT_EQ(0, seen->catalog_builds);
+  EXPECT_GE(seen->deadline, start + std::chrono::seconds{3});
+  EXPECT_LE(seen->deadline, std::chrono::steady_clock::now() + std::chrono::seconds{3});
+  ASSERT_EQ(SQL_ERROR, SQLPrimaryKeys(stmt, (SQLCHAR*)"contract", SQL_NTS,
+      (SQLCHAR*)"schema", SQL_NTS, (SQLCHAR*)"table", SQL_NTS));
+  EXPECT_EQ("24000", state()); EXPECT_EQ(1, seen->catalog_calls);
+  EXPECT_EQ(SQL_SUCCESS, SQLFetch(stmt)); // Original cursor and application binding survive refusal.
+  EXPECT_EQ(1, bound); EXPECT_EQ(static_cast<SQLLEN>(sizeof(bound)), bound_length);
+}
+
+TEST_F(BackendContractTest, PrimaryKeysExecutorNeverFallsBackAndRejectsManualTransactions) {
+  seen->catalog_executor = true; seen->advertised_transactions = true; seen->isolation_mode = 1; connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0));
+  EXPECT_EQ(SQL_ERROR, SQLPrimaryKeys(stmt, (SQLCHAR*)"contract", SQL_NTS,
+      (SQLCHAR*)"schema", SQL_NTS, (SQLCHAR*)"table", SQL_NTS));
+  EXPECT_EQ("HYC00", state()); EXPECT_EQ(0, seen->catalog_calls); EXPECT_EQ(0, seen->queries);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_ON), 0));
+  seen->catalog_error = 1;
+  EXPECT_EQ(SQL_ERROR, SQLPrimaryKeys(stmt, (SQLCHAR*)"contract", SQL_NTS,
+      (SQLCHAR*)"schema", SQL_NTS, (SQLCHAR*)"table", SQL_NTS));
+  EXPECT_EQ("HYC00", state()); EXPECT_EQ(1, seen->catalog_calls); EXPECT_EQ(0, seen->catalog_builds);
+  seen->catalog_error = 2;
+  EXPECT_EQ(SQL_ERROR, SQLPrimaryKeys(stmt, (SQLCHAR*)"contract", SQL_NTS,
+      (SQLCHAR*)"schema", SQL_NTS, (SQLCHAR*)"table", SQL_NTS));
+  EXPECT_EQ(2, seen->catalog_calls); EXPECT_EQ(0, seen->catalog_builds);
+  EXPECT_EQ(SQL_ERROR, execute("SELECT after timeout"));
+  EXPECT_EQ(0, seen->queries);
+}
+
+TEST_F(BackendContractTest, PrimaryKeysNativeErrorAndRetiredOwningResultsPreserveSemantics) {
+  seen->catalog_executor = true; connect(); seen->catalog_error = 3;
+  EXPECT_EQ(SQL_ERROR, SQLPrimaryKeys(stmt, (SQLCHAR*)"contract", SQL_NTS,
+      (SQLCHAR*)"schema", SQL_NTS, (SQLCHAR*)"table", SQL_NTS));
+  EXPECT_EQ("42501", state()); EXPECT_EQ(0, seen->catalog_builds);
+  seen->catalog_error = 0; seen->catalog_retire = true;
+  ASSERT_EQ(SQL_SUCCESS, SQLPrimaryKeys(stmt, (SQLCHAR*)"contract", SQL_NTS,
+      (SQLCHAR*)"schema", SQL_NTS, (SQLCHAR*)"table", SQL_NTS));
+  EXPECT_EQ(SQL_SUCCESS, SQLFetch(stmt)); // Installed owning result survives retirement.
+  const auto connection = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc);
+  EXPECT_FALSE(connection->is_connected());
+}
+
+TEST_F(BackendContractTest, PrimaryKeysNonStandardExceptionRetiresWithoutFallback) {
+  seen->catalog_executor = true; connect(); seen->catalog_throw = true;
+  EXPECT_EQ(SQL_ERROR, SQLPrimaryKeys(stmt, (SQLCHAR*)"contract", SQL_NTS,
+      (SQLCHAR*)"schema", SQL_NTS, (SQLCHAR*)"table", SQL_NTS));
+  EXPECT_EQ("HY000", state()); EXPECT_EQ(0, seen->catalog_builds);
+  const auto connection = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc);
+  EXPECT_FALSE(connection->is_connected());
+}
+
+TEST_F(BackendContractTest, PrimaryKeysInspectionExceptionSynchronizesConnectionRetirement) {
+  seen->catalog_executor = true; connect(); seen->observation_exception = true;
+  EXPECT_EQ(SQL_ERROR, SQLPrimaryKeys(stmt, (SQLCHAR*)"contract", SQL_NTS,
+      (SQLCHAR*)"schema", SQL_NTS, (SQLCHAR*)"table", SQL_NTS));
+  EXPECT_EQ("HY000", state()); EXPECT_EQ(0, seen->catalog_calls); EXPECT_EQ(0, seen->queries);
+  const auto connection = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc);
+  EXPECT_FALSE(connection->is_connected());
+}
+
+TEST_F(BackendContractTest, PrimaryKeysNonIdleStatesPerformNoExecutionOrFallback) {
+  seen->catalog_executor = true; connect();
+  for (int mode : {6, 7}) {
+    seen->connect_exception = mode;
+    EXPECT_EQ(SQL_ERROR, SQLPrimaryKeys(stmt, (SQLCHAR*)"contract", SQL_NTS,
+        (SQLCHAR*)"schema", SQL_NTS, (SQLCHAR*)"table", SQL_NTS));
+    EXPECT_EQ("HYC00", state());
+    EXPECT_EQ(0, seen->catalog_calls); EXPECT_EQ(0, seen->catalog_builds); EXPECT_EQ(0, seen->queries);
+  }
+}
+
+TEST_F(BackendContractTest, PrimaryKeysAbsentExecutorUsesExistingCatalogBuilder) {
+  seen->catalog_builder = true; connect();
+  EXPECT_EQ(SQL_SUCCESS, SQLPrimaryKeys(stmt, (SQLCHAR*)"contract", SQL_NTS,
+      (SQLCHAR*)"schema", SQL_NTS, (SQLCHAR*)"table", SQL_NTS));
+  EXPECT_EQ(0, seen->catalog_calls); EXPECT_EQ(1, seen->catalog_builds); EXPECT_EQ(1, seen->queries);
+}
 
 TEST_F(BackendContractTest, UsesVerifiedTlsByDefaultAndAllowsExplicitPlaintext) {
   connect_with("SERVER=fake;PORT=9999;DATABASE=contract;UID=test");

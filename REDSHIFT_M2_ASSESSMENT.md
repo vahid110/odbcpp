@@ -600,3 +600,12 @@ Windows/package and pinned MySQL responsibility.
 No-key, quoted-name and denied-access fixtures, missing-object native outcomes,
 manual transactions and timeout recovery need separately reviewed live coverage;
 current successful batches do not establish production readiness/full parity.
+
+
+### ODBC modern PrimaryKeys routing candidate (2026-10-03)
+
+The independently reviewed candidate routes only PrimaryKeys through an advertised catalog execution facet. PostgreSQL sessions without this facet retain their SQL builder. The initial modern path requires autocommit ON and a fresh passive Idle observation; manual transactions and non-Idle states return unsupported without issuing BEGIN or catalog SQL. An open cursor is preserved on refusal. Execution keeps one entry deadline, invalidates lease/ODBC metadata epochs, preserves application bindings, and installs owning normalized metadata/results. Native failures never trigger inherited SQL fallback. Exception and retirement paths synchronize ODBC connection state; owning results remain fetchable after successful retirement.
+
+This is a staged policy, not complete SQLPrimaryKeys parity. Configurable SHOW-versus-legacy selection requested by the user remains a next package; it must default to SHOW for supported Redshift operations and never silently fall back after failure. Current candidate has only presence-based selection. Seven adapter GoogleTests and passive-facet observation checks cover routing, deadlines, cursor/application binding preservation, native diagnostics, successful retirement, exceptions, non-Idle/manual transaction refusal and absent-facet behavior. Platform gates and fresh live ODBC qualification are still required.
+
+Local validation for this coherent routing/decimal batch passed: PostgreSQL and Redshift 69 unit targets, full PostgreSQL/UTF16/UCS4 integration and verified TLS, sanitizer, six focused adapter/MySQL targets, 262 offline orchestration tests, and absent-endpoint rejection. Prior GCC authentication repair CI37149752332/005f2f9 is green. This batch performs no new live SQL; hosted platform gates and fresh live ODBC qualification remain separate.

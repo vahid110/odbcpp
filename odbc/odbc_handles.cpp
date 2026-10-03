@@ -1811,6 +1811,17 @@ rs::util::Result<std::string> ODBCConnection::backend_catalog(const rs::core::da
   return {rs::util::DbErrorCode::UnsupportedFeature, "Data source does not support catalog discovery"};
 }
 
+rs::core::database::BackendResult<rs::core::database::QueryResult>
+ODBCConnection::backend_execute_catalog(
+    const rs::core::database::CatalogRequest& request, rs::util::Deadline deadline) {
+  invalidate_metadata_epoch();
+  if (backend_lease_) return backend_lease_->execute_catalog(request, deadline);
+  return rs::core::database::local_backend_error(
+      rs::core::database::LocalFailure::Unsupported,
+      "Catalog execution is unavailable", rs::core::database::BackendOperation::ExecuteCatalog,
+      rs::core::database::SessionState::Disconnected);
+}
+
 rs::core::database::BackendResult<void> ODBCConnection::backend_transaction(
     rs::core::database::TransactionAction action, rs::util::Deadline deadline) {
   using namespace rs::core::database;
@@ -4904,6 +4915,60 @@ SQLRETURN ODBCStatement::execute_catalog(
   if (!conn_->is_connected()) {
     set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
     return SQL_ERROR;
+  }
+  // Presence selects the exact execution contract; failures never fall back to
+  // generated PostgreSQL SQL. Other catalog APIs retain their existing path.
+  if (std::holds_alternative<rs::core::database::PrimaryKeysCatalogRequest>(request) &&
+      conn_->has_catalog_execution_facet()) {
+    const auto deadline = rs::util::make_deadline(timeout_duration(query_timeout_seconds_));
+    if (executed_ && (!column_info_.empty() || !pending_results_.empty())) {
+      set_error(SQLSTATE_INVALID_CURSOR_STATE, "Cannot execute while results are pending");
+      return SQL_ERROR;
+    }
+    // Staged modern catalog support is autocommit/Idle only. No BEGIN is issued
+    // before the backend validates exact identifiers and authenticated capability.
+    if (conn_->autocommit_ != SQL_AUTOCOMMIT_ON || conn_->transaction_active_) {
+      set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                "Modern primary-key discovery requires autocommit");
+      return SQL_ERROR;
+    }
+    try {
+      auto observation = conn_->backend_lease_->inspect();
+      if (!observation || !observation->connected ||
+          observation->state != rs::core::database::SessionState::Idle) {
+        set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                  "Modern primary-key discovery requires an idle connection");
+        if (!observation || !observation->connected) conn_->close_connection();
+        return SQL_ERROR;
+      }
+      clear_current_result();
+      pending_results_.clear();
+      prepared_ = false;
+      prepared_sql_.clear();
+      parameter_count_ = 0;
+      param_metadata_.clear();
+      descriptor(imp_param_descriptor_)->replace_records({});
+      auto result = conn_->backend_execute_catalog(request, deadline);
+      if (result.has_error()) {
+        set_error(query_failure_sqlstate(conn_->backend_provider(),
+            result.backend_error(), SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT), result.error_message());
+        if (is_timeout_error(result.error()) ||
+            result.session_snapshot().disposition == rs::core::database::SessionDisposition::Retire)
+          conn_->close_connection();
+        return SQL_ERROR;
+      }
+      const bool retired = result.session_snapshot().disposition ==
+          rs::core::database::SessionDisposition::Retire;
+      apply_query_result(std::move(*result), false);
+      if (retired) conn_->close_connection();
+      return SQL_SUCCESS;
+    } catch (...) {
+      clear_current_result();
+      pending_results_.clear();
+      conn_->close_connection();
+      set_error(SQLSTATE_GENERAL_ERROR, "Invalid catalog execution result");
+      return SQL_ERROR;
+    }
   }
   auto query = conn_->backend_catalog(request);
   if (query.has_error()) {

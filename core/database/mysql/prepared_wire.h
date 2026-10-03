@@ -20,10 +20,7 @@ struct PrepareInfo {
   std::uint16_t parameters{};
 };
 
-struct NativeColumn {
-  std::uint8_t type{};
-  bool unsigned_value{};
-};
+using NativeColumn=query_detail::NativeColumn;
 
 namespace detail {
 
@@ -291,7 +288,7 @@ inline rs::util::Result<ResultRow> binary_row(
     if (!columns[i].normalized_type) return {DbErrorCode::ProtocolError};
     switch (native[i].type) {
       case 1: case 2: case 3: case 6: case 8: case 9:
-      case 15: case 252: case 253: case 254: break;
+      case 15: case 252: case 253: case 254: case 246: break;
       default: return {DbErrorCode::UnsupportedFeature};
     }
     const bool null = (std::to_integer<unsigned>(bitmap[(i + 2) / 8]) &
@@ -304,11 +301,13 @@ inline rs::util::Result<ResultRow> binary_row(
       case 3: case 9: width = 4; break;
       case 8: width = 8; break;
       case 6: return {DbErrorCode::ProtocolError};
-      case 15: case 253: case 254: case 252: {
+      case 15: case 253: case 254: case 252: case 246: {
         std::span<const std::byte> value;
         if (!cursor.length_bytes(value)) return {DbErrorCode::ProtocolError};
         std::string owned(reinterpret_cast<const char*>(value.data()), value.size());
-        if (!query_detail::valid_cell(owned, columns[i].normalized_type->type)) {
+        const auto& info=*columns[i].normalized_type;
+        if (!(native[i].type==246?decimal_detail::valid_cell(owned,info,native[i].unsigned_value):
+              query_detail::valid_cell(owned,info.type))) {
           owned.clear(); errors.push_back({row_index, i});
         }
         row.emplace_back(std::move(owned));

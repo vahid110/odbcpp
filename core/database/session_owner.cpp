@@ -250,6 +250,7 @@ BackendResult<SessionObservation> SessionLease::inspect() {
         if (auto* facet = physical.transaction_session()) value.transactions = facet->transaction_capabilities();
         value.has_statement_description_facet = physical.statement_description() != nullptr;
         value.has_catalog_query_facet = physical.catalog_queries() != nullptr;
+        value.has_catalog_execution_facet = physical.catalog_execution() != nullptr;
         value.has_health_facet = physical.session_health() != nullptr;
         value.has_reset_facet = physical.session_reset() != nullptr;
         const auto outcome = passive_outcome(value.connected, value.state);

@@ -40,6 +40,7 @@ struct SessionObservation {
   // Presence only: an individual request may still be unsupported.
   bool has_statement_description_facet{false};
   bool has_catalog_query_facet{false};
+  bool has_catalog_execution_facet{false};
   bool has_health_facet{false};
   bool has_reset_facet{false};
 };

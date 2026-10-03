@@ -255,6 +255,7 @@ public:
   rs::core::database::TransactionCapabilities transaction_capabilities() const;
   // Facet presence only; individual requests may still be unsupported.
   bool has_catalog_query_facet() const noexcept { return backend_lease_ && backend_observation_.has_catalog_query_facet; }
+  bool has_catalog_execution_facet() const noexcept { return backend_lease_ && backend_observation_.has_catalog_execution_facet; }
   bool has_statement_description_facet() const noexcept { return backend_lease_ && backend_observation_.has_statement_description_facet; }
 
 private:
@@ -268,6 +269,8 @@ private:
       std::string_view, std::span<const rs::core::database::QueryParameterType>, rs::util::Deadline);
   rs::util::Result<std::string> backend_catalog(const rs::core::database::CatalogRequest&);
 
+  rs::core::database::BackendResult<rs::core::database::QueryResult> backend_execute_catalog(
+      const rs::core::database::CatalogRequest&, rs::util::Deadline);
   bool backend_connected();
   void invalidate_metadata_epoch() noexcept;
   rs::core::database::BackendResult<void> backend_health(rs::util::Deadline);

@@ -1428,6 +1428,7 @@ TEST(SessionLeaseObservationTest, OwnedReadAndCatalogConstructionPreserveScopeAn
   EXPECT_EQ("fixture", inspection->server_version); EXPECT_TRUE(inspection->transactions.supported);
   EXPECT_TRUE(inspection->transactions.supports(TransactionIsolation::Serializable));
   EXPECT_TRUE(inspection->has_statement_description_facet); EXPECT_TRUE(inspection->has_catalog_query_facet);
+  EXPECT_TRUE(inspection->has_catalog_execution_facet);
   auto query = lease->catalog_query(request); ASSERT_TRUE(query); EXPECT_EQ("SELECT fixture", *query);
   EXPECT_TRUE(scope->is_current()); EXPECT_EQ(0, observed->queries);
   observed->on_passive = {}; lease->retire(); retired_once(*observed);
@@ -1444,6 +1445,7 @@ TEST(SessionLeaseObservationTest, MissingFacetsAndLocalErrorsDoNotClaimSupportOr
   auto inspection = lease->inspect(); ASSERT_TRUE(inspection);
   EXPECT_FALSE(inspection->transactions.supported); EXPECT_FALSE(inspection->has_statement_description_facet);
   EXPECT_FALSE(inspection->has_catalog_query_facet);
+  EXPECT_FALSE(inspection->has_catalog_execution_facet);
   auto missing = lease->catalog_query(TablesCatalogRequest{}); ASSERT_FALSE(missing);
   EXPECT_EQ(BackendErrorClass::Unsupported, missing.backend_error().error_class);
   EXPECT_TRUE(scope->is_current()); EXPECT_TRUE(*lease);

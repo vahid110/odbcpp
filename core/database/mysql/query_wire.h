@@ -1,5 +1,6 @@
 #pragma once
 #include "core/database/query_result.h"
+#include "core/database/mysql/decimal_wire.h"
 #include "core/database/i_database_connection.h"
 #include "core/util/utf8.h"
 #include <limits>
@@ -10,6 +11,7 @@ namespace rs::core::database::mysql {
 // session tracking, optional metadata nor multiple results.
 namespace query_detail {
 using rs::util::DbErrorCode;
+struct NativeColumn { std::uint8_t type{};bool unsigned_value{}; };
 class Cursor {
  public:
   explicit Cursor(std::span<const std::byte> bytes) : bytes_(bytes) {}
@@ -82,6 +84,11 @@ inline rs::util::Result<ResultColumnMetadata> column(std::span<const std::byte> 
     case 8: info={unsigned_value?ScalarType::Numeric:ScalarType::BigInt,unsigned_value?20u:19u,0,true};break;
     case 9: info={ScalarType::Integer,8,0,true};break;
     case 6: info={ScalarType::VarChar,0,0,true};break; // NULL expression.
+    case 246: {
+      auto decimal=decimal_detail::metadata(size,decimals,unsigned_value);
+      if (!decimal) return {decimal.error()};
+      info=*decimal;break;
+    }
     case 15: case 252: case 253: case 254:
       if (charset==63) info={ScalarType::Binary,size,0,true};
       else if (charset==45 || charset==46 || charset==255)
@@ -110,13 +117,18 @@ inline bool valid_cell(std::string_view value,ScalarType type) {
   return true;
 }
 inline rs::util::Result<ResultRow> row(std::span<const std::byte> bytes,const std::vector<ResultColumnMetadata>& columns,
-    std::size_t index,std::vector<CellEncodingError>& errors) {
+    std::size_t index,std::vector<CellEncodingError>& errors,std::span<const NativeColumn> native={}) {
+  if (!native.empty() && native.size()!=columns.size()) return {DbErrorCode::ProtocolError};
   Cursor c(bytes);ResultRow result;result.reserve(columns.size());
   for (std::size_t i=0;i<columns.size();++i) {
+    if (!columns[i].normalized_type) return {DbErrorCode::ProtocolError};
+    const auto& info=*columns[i].normalized_type;
+    const bool decimal=info.type==ScalarType::Decimal;
+    if (decimal && (native.empty() || native[i].type!=246)) return {DbErrorCode::ProtocolError};
     if (c.null_cell()) { result.emplace_back(std::nullopt);continue; }
     std::string_view value;
     if (!c.text(value)) return {DbErrorCode::ProtocolError};
-    if (!valid_cell(value,columns[i].normalized_type->type)) {
+    if (!(decimal?decimal_detail::valid_cell(value,info,native[i].unsigned_value):valid_cell(value,info.type))) {
       result.emplace_back(std::string{});errors.push_back({index,i});
     } else result.emplace_back(std::string(value));
   }
