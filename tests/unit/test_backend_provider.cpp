@@ -42,7 +42,8 @@ TEST(BackendProviderTest, StaticProfileMatchesNewSessionWithoutConnecting) {
   const auto provider_capabilities = provider.capabilities();
   EXPECT_EQ(provider.identity().display_name, provider_capabilities.dbms_name);
   EXPECT_FALSE(provider_capabilities.identifier_quote.empty());
-  EXPECT_EQ(63, provider_capabilities.max_identifier_length);
+  EXPECT_EQ(DatabaseFactory::get_compiled_database_type() == DatabaseType::Redshift ? 127 : 63,
+      provider_capabilities.max_identifier_length);
   ASSERT_NE(nullptr, session->transaction_session());
   EXPECT_EQ(provider.transaction_capabilities().supported,
             session->transaction_session()->transaction_capabilities().supported);
@@ -202,4 +203,36 @@ TEST(BackendProviderTest, ResetProfileIsPostgreSqlOnlyAndNotInferredForRedshift)
   ASSERT_NE(nullptr, pg_session->session_reset());
   EXPECT_EQ(nullptr, rs_session->session_reset());
   EXPECT_EQ(SessionResetProfile::SameAuthenticatedServerSession, pg_session->session_reset()->reset_profile());
+}
+
+TEST(BackendProviderTest, RedshiftPolicyRequiresExplicitProfileAndIgnoresPgVersion) {
+  using namespace rs::core::database;
+  const BackendIdentity identity{"redshift", "Amazon Redshift", "ODBCPP Redshift"};
+  const BackendConnectionDefaults defaults{"localhost", 5439, std::nullopt, true};
+  postgres::PgBackendProvider labelled_pg{identity, defaults};
+  postgres::PgBackendProvider redshift{identity, defaults, std::nullopt,
+      postgres::PgCatalogProfile::Redshift};
+  EXPECT_EQ(63, labelled_pg.capabilities().max_identifier_length);
+  EXPECT_TRUE(labelled_pg.capabilities().create_index);
+  EXPECT_EQ(127, redshift.capabilities().max_identifier_length);
+  EXPECT_FALSE(redshift.capabilities().create_index);
+  EXPECT_FALSE(redshift.capabilities().drop_index);
+  EXPECT_FALSE(redshift.capabilities().schema_in_index_definitions);
+  for (const auto version : {"", "15.0", "17.11", "invalid"}) {
+    int matched = 0;
+    for (const auto& type : redshift.type_catalog(version)) {
+      if (type.type != ScalarType::Numeric && type.type != ScalarType::Decimal) continue;
+      ++matched;
+      EXPECT_EQ(38u, type.column_size);
+      EXPECT_EQ(0, type.minimum_scale);
+      EXPECT_EQ(37, type.maximum_scale);
+    }
+    EXPECT_EQ(2, matched);
+  }
+  for (const auto& type : labelled_pg.type_catalog("15.0")) {
+    if (type.type != ScalarType::Numeric && type.type != ScalarType::Decimal) continue;
+    EXPECT_EQ(1000u, type.column_size);
+    EXPECT_EQ(-1000, type.minimum_scale);
+    EXPECT_EQ(1000, type.maximum_scale);
+  }
 }

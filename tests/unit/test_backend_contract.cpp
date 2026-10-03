@@ -1,4 +1,5 @@
 #include "core/database/transaction_session.h"
+#include "core/database/postgres/pg_backend_provider.h"
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_handles.h"
@@ -297,8 +298,9 @@ class FakeSqlDialect final : public ISqlDialect {
 
 class FakeProvider final : public IBackendProvider {
  public:
-  explicit FakeProvider(std::shared_ptr<Observations> seen)
-      : seen_(std::move(seen)), dialect_(seen_) {}
+  explicit FakeProvider(std::shared_ptr<Observations> seen,
+      std::shared_ptr<const IBackendProvider> profile = {})
+      : seen_(std::move(seen)), dialect_(seen_), profile_(std::move(profile)) {}
 
   const ISqlDialect& sql_dialect() const noexcept override { return dialect_; }
   const BackendIdentity& identity() const noexcept override {
@@ -312,6 +314,7 @@ class FakeProvider final : public IBackendProvider {
     return defaults;
   }
   BackendCapabilities capabilities() const noexcept override {
+    if (profile_) return profile_->capabilities();
     BackendCapabilities result;
     result.dbms_name = "ContractDB";
     result.describe_parameters = true;
@@ -321,6 +324,7 @@ class FakeProvider final : public IBackendProvider {
     return result;
   }
   std::span<const TypeDefinition> type_catalog(std::string_view version = {}) const noexcept override {
+    if (profile_) return profile_->type_catalog(version);
     static const TypeDefinition types[]{
         {ScalarType::Binary, "octets", 8, {}, {}, {}, false, {}, {}, {}, 0},
         {ScalarType::Boolean, "truth", 1, {}, {}, {}, false, {}, {}, {}, 0},
@@ -370,6 +374,7 @@ class FakeProvider final : public IBackendProvider {
  private:
   std::shared_ptr<Observations> seen_;
   FakeSqlDialect dialect_;
+  std::shared_ptr<const IBackendProvider> profile_;
 };
 
 class BackendContractTest : public ::testing::Test {
@@ -1822,4 +1827,47 @@ TEST_F(BackendContractTest, FreeingConnectionRetiresActiveLeaseExactlyOnce) {
   ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
   ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, dbc)); dbc = nullptr;
   EXPECT_EQ(1, seen->disconnects); EXPECT_EQ(1, seen->destructions);
+}
+
+TEST_F(BackendContractTest, ExplicitRedshiftProfileReportsBoundedNumericAndNoIndexes) {
+  using postgres::PgCatalogProfile;
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, dbc));
+  dbc = nullptr;
+  auto profile = std::make_shared<postgres::PgBackendProvider>(
+      BackendIdentity{"redshift", "Amazon Redshift", "ODBCPP Redshift"},
+      BackendConnectionDefaults{"localhost", 5439, std::nullopt, true},
+      std::nullopt, PgCatalogProfile::Redshift);
+  auto connection = std::make_unique<rs::odbc::ODBCConnection>(
+      nullptr, std::make_shared<FakeProvider>(seen, profile));
+  dbc = reinterpret_cast<SQLHDBC>(connection.get());
+  rs::odbc::HandleRegistry::instance().register_handle(dbc, std::move(connection), env);
+  connect();
+  SQLUSMALLINT identifier_length{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_MAX_IDENTIFIER_LEN,
+      &identifier_length, sizeof(identifier_length), nullptr));
+  EXPECT_EQ(127, identifier_length);
+  SQLUINTEGER indexes{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DDL_INDEX,
+      &indexes, sizeof(indexes), nullptr));
+  EXPECT_EQ(0u, indexes);
+  SQLUINTEGER schema_usage{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_SCHEMA_USAGE,
+      &schema_usage, sizeof(schema_usage), nullptr));
+  EXPECT_EQ(0u, schema_usage & SQL_SU_INDEX_DEFINITION);
+  const SQLSMALLINT targets[]{SQL_NUMERIC, SQL_DECIMAL};
+  for (const auto target : targets) {
+    ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfo(stmt, target));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    const SQLUSMALLINT fields[]{3, 14, 15};
+    const SQLINTEGER expected[]{38, 0, 37};
+    for (size_t i = 0; i < 3; ++i) {
+      SQLINTEGER value{}; SQLLEN length{};
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, fields[i], SQL_C_LONG,
+          &value, sizeof(value), &length));
+      EXPECT_EQ(expected[i], value);
+      EXPECT_NE(SQL_NULL_DATA, length);
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  }
 }

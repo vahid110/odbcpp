@@ -30,4 +30,13 @@ BackendCapabilities pg_backend_capabilities(std::string_view display_name) noexc
   return result;
 }
 
+BackendCapabilities redshift_backend_capabilities(std::string_view display_name) noexcept {
+  auto result = pg_backend_capabilities(display_name);
+  // Redshift identifiers allow 127 bytes; PostgreSQL indexes do not exist.
+  result.max_identifier_length = 127;
+  result.create_index = result.drop_index = false;
+  result.schema_in_index_definitions = false;
+  return result;
+}
+
 } // namespace rs::core::database::postgres

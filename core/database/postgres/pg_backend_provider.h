@@ -8,7 +8,9 @@
 namespace rs::core::database::postgres {
 
 BackendCapabilities pg_backend_capabilities(std::string_view display_name) noexcept;
+BackendCapabilities redshift_backend_capabilities(std::string_view display_name) noexcept;
 std::span<const TypeDefinition> pg_type_catalog(std::string_view server_version) noexcept;
+std::span<const TypeDefinition> redshift_type_catalog() noexcept;
 TransactionCapabilities pg_transaction_capabilities() noexcept;
 
 class PgBackendProvider final : public IBackendProvider {

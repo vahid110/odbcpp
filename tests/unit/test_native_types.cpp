@@ -242,7 +242,8 @@ TEST(TypeCatalogTest, AdvertisesNativeNamesAndNullablePropertiesWithoutIo) {
 }
 
 TEST(TypeCatalogTest, NumericScaleTracksServerVersionWithoutInvalidatingPriorViews) {
-  const auto& provider = configured_backend_provider();
+  const postgres::PgBackendProvider provider{{"postgresql", "PostgreSQL", "ODBCPP PostgreSQL"},
+      {"localhost", 5432, "postgres", true}};
   const auto original = provider.type_catalog();
   for (const auto* version : {"", "14.18", "15.0", "17.11 (package)",
                               "invalid", "999999999999999999999"}) {
@@ -273,7 +274,8 @@ TEST(BackendCapabilitiesTest, SelectedBackendProfileIsAvailableWithoutIo) {
           ? "Amazon Redshift"
           : "PostgreSQL";
   EXPECT_EQ(expected_name, profile.dbms_name);
-  EXPECT_EQ(63, profile.max_identifier_length);
+  EXPECT_EQ(DatabaseFactory::get_compiled_database_type() == DatabaseType::Redshift ? 127 : 63,
+      profile.max_identifier_length);
   EXPECT_EQ(IdentifierCase::Lower, profile.identifier_case);
   EXPECT_EQ(IdentifierCase::Sensitive, profile.quoted_identifier_case);
   EXPECT_EQ(NullCollation::High, profile.null_collation);

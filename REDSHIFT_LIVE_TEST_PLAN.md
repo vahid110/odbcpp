@@ -642,3 +642,14 @@ native SDK IAM discovery, credential renewal, actual server expiry, federation,
 other Redshift deployments or full parity. Full platform CI remains a separate
 gate; these local live results do not imply it has finished. Subsequent work
 prioritizes Redshift metadata/type behavior and the bounded M2 assessment.
+
+
+## Bounded M2 static reporting correction
+
+Complete-batch CI37082777348 at6901734 is green across required gates. The next
+code batch corrects explicitly selected Redshift SQLGetInfo index/identifier
+claims and SQLGetTypeInfo numeric/decimal precision and scale, with provider
+isolation and direct ODBC regression tests. See REDSHIFT_M2_ASSESSMENT.md for the
+catalog claim matrix, remaining type/profile gaps and finite stopping point.
+This batch performs no paid SQL, accounting migration or new admission. Runtime
+numeric fidelity, complete catalogs and native IAM remain unqualified.

@@ -30,6 +30,17 @@ constexpr auto modern_definitions = [] {
   }
   return result;
 }();
+constexpr auto redshift_definitions = [] {
+  auto result = definitions;
+  for (auto& type : result) {
+    if (type.type == Numeric || type.type == Decimal) {
+      type.column_size = 38;
+      type.minimum_scale = 0;
+      type.maximum_scale = 37;
+    }
+  }
+  return result;
+}();
 } // namespace
 
 std::span<const TypeDefinition> pg_type_catalog(
@@ -40,6 +51,12 @@ std::span<const TypeDefinition> pg_type_catalog(
   return parsed.ec == std::errc{} && major >= 15
       ? std::span<const TypeDefinition>(modern_definitions)
       : std::span<const TypeDefinition>(definitions);
+}
+
+std::span<const TypeDefinition> redshift_type_catalog() noexcept {
+  // Never interpret a Redshift version observation as PostgreSQL's numeric
+  // negative-scale policy. Other type limits remain separately audited work.
+  return redshift_definitions;
 }
 
 } // namespace rs::core::database::postgres
