@@ -105,14 +105,18 @@ protected:
     ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt_, &count));
     ASSERT_EQ(fields.size(), static_cast<std::size_t>(count));
     for (SQLUSMALLINT column = 1; column <= fields.size(); ++column) {
-      SQLCHAR name[128]{}; SQLSMALLINT type = 0;
+      SQLCHAR name[128]{}; SQLSMALLINT type = 0, digits = 0, nullable = 0;
+      SQLULEN size = 0;
       ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt_, column, name, sizeof(name),
-          nullptr, &type, nullptr, nullptr, nullptr));
+          nullptr, &type, &size, &digits, &nullable));
       std::string actual(reinterpret_cast<char*>(name));
       std::transform(actual.begin(), actual.end(), actual.begin(),
           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
       EXPECT_EQ(fields[column - 1].name, actual);
       EXPECT_EQ(fields[column - 1].type, type);
+      RecordProperty(actual + "_column_size", std::to_string(size));
+      RecordProperty(actual + "_decimal_digits", std::to_string(digits));
+      RecordProperty(actual + "_nullable", std::to_string(nullable));
     }
   }
 
@@ -142,6 +146,31 @@ protected:
     }
     ADD_FAILURE() << "Catalog failed before qualification: " << diagnostic;
     return false;
+  }
+
+  void expect_catalog_integer(SQLUSMALLINT column, SQLINTEGER expected) {
+    SQLINTEGER value = -9876; SQLLEN length = -9;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, column, SQL_C_SLONG, &value,
+        sizeof(value), &length));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+    EXPECT_EQ(expected, value);
+  }
+
+  void expect_catalog_null(SQLUSMALLINT column) {
+    std::array<char, 16> value;
+    value.fill('!'); const auto before = value; SQLLEN length = -9;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, column, SQL_C_CHAR, value.data(),
+        static_cast<SQLLEN>(value.size()), &length));
+    EXPECT_EQ(SQL_NULL_DATA, length);
+    EXPECT_EQ(before, value);
+  }
+
+  void expect_catalog_text(SQLUSMALLINT column, const char* expected) {
+    char value[128]{}; SQLLEN length = -9;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, column, SQL_C_CHAR, value,
+        sizeof(value), &length));
+    EXPECT_EQ(static_cast<SQLLEN>(std::strlen(expected)), length);
+    EXPECT_STREQ(expected, value);
   }
 
   bool connected_ = false;
@@ -421,6 +450,119 @@ TEST_F(RedshiftRealTest, CompositeForeignKeyCatalogContract) {
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
   }
+}
+
+// Pinned modern SHOW expectations; inherited routine SQL is unqualified and
+// may fail these future cases. The fixture procedure is never invoked.
+TEST_F(RedshiftRealTest, ProcedureCatalogContract) {
+  ASSERT_TRUE(connect());
+  constexpr char schema[] = "odbcpp_fixture";
+  constexpr char procedure[] = "sp_m2_catalog_modes_20261003_c01";
+  constexpr std::array<CatalogField, 8> fields{{
+      {"procedure_cat", SQL_VARCHAR}, {"procedure_schem", SQL_VARCHAR},
+      {"procedure_name", SQL_VARCHAR}, {"num_input_params", SQL_VARCHAR},
+      {"num_output_params", SQL_VARCHAR}, {"num_result_sets", SQL_VARCHAR},
+      {"remarks", SQL_VARCHAR}, {"procedure_type", SQL_SMALLINT}}};
+  ASSERT_TRUE(catalog_succeeded(SQLProcedures(hstmt_, nullptr, 0,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema)), SQL_NTS,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(procedure)), SQL_NTS)));
+  expect_catalog_fields(fields);
+  ASSERT_FALSE(HasFatalFailure());
+  int matched = 0; bool exhausted = false;
+  for (int row = 0; row < 64; ++row) {
+    const auto fetched = SQLFetch(hstmt_);
+    if (fetched == SQL_NO_DATA) { exhausted = true; break; }
+    ASSERT_EQ(SQL_SUCCESS, fetched);
+    char actual_schema[128]{}, actual_name[128]{}; SQLLEN identity_length = -9;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 2, SQL_C_CHAR, actual_schema,
+        sizeof(actual_schema), &identity_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 3, SQL_C_CHAR, actual_name,
+        sizeof(actual_name), &identity_length));
+    if (std::strcmp(actual_schema, schema) || std::strcmp(actual_name, procedure)) continue;
+    ++matched;
+    for (const SQLUSMALLINT column : std::array<SQLUSMALLINT, 3>{4, 5, 6})
+      expect_catalog_null(column);
+    // Upstream supplies "" with length1 for this field; capture rather than
+    // inventing a zero-length/NULL disposition before real-client evidence.
+    char remarks[128]{}; SQLLEN length = -9;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 7, SQL_C_CHAR, remarks, sizeof(remarks), &length));
+    RecordProperty("procedure_remarks_indicator", std::to_string(length));
+    std::string raw_remarks;
+    constexpr char hex[] = "0123456789abcdef";
+    for (SQLLEN byte = 0; byte < std::min<SQLLEN>(length, 127); ++byte) {
+      const auto value = static_cast<unsigned char>(remarks[static_cast<std::size_t>(byte)]);
+      raw_remarks.push_back(hex[value >> 4]); raw_remarks.push_back(hex[value & 15]);
+    }
+    RecordProperty("procedure_remarks_hex", raw_remarks);
+    expect_catalog_integer(8, SQL_PT_PROCEDURE);
+    ASSERT_FALSE(HasFatalFailure());
+  }
+  EXPECT_TRUE(exhausted) << "Fixture discovery exceeded the finite64-row inventory";
+  EXPECT_EQ(1, matched);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+}
+
+TEST_F(RedshiftRealTest, ProcedureParameterCatalogContract) {
+  ASSERT_TRUE(connect());
+  constexpr char schema[] = "odbcpp_fixture";
+  constexpr char procedure[] = "sp_m2_catalog_modes_20261003_c01";
+  constexpr std::array<CatalogField, 19> fields{{
+      {"procedure_cat", SQL_VARCHAR}, {"procedure_schem", SQL_VARCHAR},
+      {"procedure_name", SQL_VARCHAR}, {"column_name", SQL_VARCHAR},
+      {"column_type", SQL_SMALLINT}, {"data_type", SQL_INTEGER},
+      {"type_name", SQL_VARCHAR}, {"column_size", SQL_INTEGER},
+      {"buffer_length", SQL_INTEGER}, {"decimal_digits", SQL_SMALLINT},
+      {"num_prec_radix", SQL_SMALLINT}, {"nullable", SQL_SMALLINT},
+      {"remarks", SQL_VARCHAR}, {"column_def", SQL_VARCHAR},
+      {"sql_data_type", SQL_INTEGER}, {"sql_datetime_sub", SQL_INTEGER},
+      {"char_octet_length", SQL_INTEGER}, {"ordinal_position", SQL_INTEGER},
+      {"is_nullable", SQL_VARCHAR}}};
+  ASSERT_TRUE(catalog_succeeded(SQLProcedureColumns(hstmt_, nullptr, 0,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema)), SQL_NTS,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(procedure)), SQL_NTS, nullptr, 0)));
+  expect_catalog_fields(fields);
+  ASSERT_FALSE(HasFatalFailure());
+  // Index rows by copied SHOW ordinal; upstream doesn't promise a final sort.
+  std::array<bool, 2> seen{}; int matched = 0; bool exhausted = false;
+  for (int row = 0; row < 64; ++row) {
+    const auto fetched = SQLFetch(hstmt_);
+    if (fetched == SQL_NO_DATA) { exhausted = true; break; }
+    ASSERT_EQ(SQL_SUCCESS, fetched);
+    char actual_schema[128]{}, actual_name[128]{}; SQLLEN identity_length = -9;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 2, SQL_C_CHAR, actual_schema,
+        sizeof(actual_schema), &identity_length));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 3, SQL_C_CHAR, actual_name,
+        sizeof(actual_name), &identity_length));
+    if (std::strcmp(actual_schema, schema) || std::strcmp(actual_name, procedure)) continue;
+    ++matched;
+    char name[128]{}; SQLLEN length = -9;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 4, SQL_C_CHAR, name, sizeof(name), &length));
+    const bool input = std::strcmp(name, "p_input") == 0;
+    ASSERT_TRUE(input || std::strcmp(name, "p_result") == 0);
+    EXPECT_EQ(static_cast<SQLLEN>(std::strlen(name)), length);
+    expect_catalog_integer(5, input ? SQL_PARAM_INPUT : SQL_PARAM_INPUT_OUTPUT);
+    expect_catalog_integer(6, SQL_INTEGER);
+    expect_catalog_text(7, "int4");
+    expect_catalog_integer(8, 10);
+    expect_catalog_integer(9, 4);
+    expect_catalog_null(10);
+    expect_catalog_integer(11, 10);
+    expect_catalog_integer(12, SQL_NULLABLE_UNKNOWN);
+    expect_catalog_text(13, "");
+    expect_catalog_null(14);
+    expect_catalog_integer(15, SQL_INTEGER);
+    expect_catalog_null(16);
+    expect_catalog_null(17);
+    const auto index = input ? 0u : 1u;
+    expect_catalog_integer(18, static_cast<SQLINTEGER>(index + 1));
+    expect_catalog_text(19, "");
+    ASSERT_FALSE(HasFatalFailure());
+    EXPECT_FALSE(seen[index]); seen[index] = true;
+  }
+  EXPECT_TRUE(seen[0]); EXPECT_TRUE(seen[1]);
+  EXPECT_TRUE(exhausted) << "Fixture discovery exceeded the finite64-row inventory";
+  EXPECT_EQ(2, matched); // INOUT once, no synthesized return for this fixture.
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
 }
 
 TEST_F(RedshiftRealTest, ConfiguredFixtureMetadata) {

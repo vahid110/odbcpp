@@ -442,5 +442,25 @@ PostgreSQL fixture passed both cases and the prior two empty-catalog regressions
 this proves fixture/test mechanics only, not Redshift compatibility. Native TEXT
 fields normalize to ODBC VARCHAR in that surrogate, so a native-field difference
 alone does not prove a returned ODBC-family mismatch. No fixture, grant, paid
-inventory or live qualification is enabled. Routine descriptor cases and
-permission-denied/quoted/empty/omitted fixtures remain future packages.
+inventory or live qualification is enabled. Permission-denied/quoted/empty/omitted
+fixtures remain future packages.
+
+Two future routine GoogleTests now describe the pinned modern upstream contract
+for the proposed never-invoked IN/INOUT procedure. Procedures checks eight fields,
+the bare procedure name, three NULL VARCHAR reserved counts and procedure kind.
+ProcedureColumns checks nineteen fields, exact parameter names/modes, INTEGER
+data-type fields, dimensions, copied ordinals and NULL/default behavior. Both
+filter actual schema/name after pattern discovery, bound fixture traversal to 64
+rows and require exact cardinality; this is a fixture bound, not a driver limit.
+NULL checks verify every byte of the output buffer remains untouched. Descriptor
+widths and procedure remarks are recorded as observations rather than invented
+expectations: upstream's remarks construction remains ambiguous.
+
+Independent review accepted the test mechanics. The strict modern expectations
+intentionally fail against a local TLS PostgreSQL surrogate: inherited reserved
+counts are numeric/non-NULL, three parameter descriptor fields are SMALLINT,
+integer type names are `integer`, decimal digits are zero and parameter remarks
+are NULL. Those differences are diagnostic evidence about inherited behavior,
+not observed Redshift failures or live qualification. Prior key and empty-catalog
+surrogate regressions still pass. No procedure is invoked, fixture activated,
+grant added or paid launcher inventory enabled by these tests.
