@@ -751,6 +751,8 @@ rs::util::Result<std::string> PgDatabaseConnection::catalog_query(
   if (catalog_profile_ == PgCatalogProfile::Redshift) {
     if (const auto* columns = std::get_if<ColumnsCatalogRequest>(&request))
       return redshift_columns_query(*columns);
+    if (const auto* statistics = std::get_if<StatisticsCatalogRequest>(&request))
+      return redshift_statistics_query(*statistics);
   }
   return std::visit([](const auto& catalog) { return build_query(catalog); }, request);
 }

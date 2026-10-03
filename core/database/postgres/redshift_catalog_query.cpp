@@ -83,4 +83,22 @@ std::string redshift_columns_query(const ColumnsCatalogRequest& request) {
   return query;
 }
 
+// Redshift has no indexes. The pinned AWS driver also returns an empty
+// 13-column SQLStatistics result rather than PostgreSQL index metadata.
+std::string redshift_statistics_query(const StatisticsCatalogRequest&) {
+  return "SELECT CAST(NULL AS VARCHAR(128)) AS table_cat, "
+      "CAST(NULL AS VARCHAR(128)) AS table_schem, "
+      "CAST(NULL AS VARCHAR(128)) AS table_name, "
+      "CAST(NULL AS SMALLINT) AS non_unique, "
+      "CAST(NULL AS VARCHAR(128)) AS index_qualifier, "
+      "CAST(NULL AS VARCHAR(128)) AS index_name, "
+      "CAST(NULL AS SMALLINT) AS type, "
+      "CAST(NULL AS SMALLINT) AS ordinal_position, "
+      "CAST(NULL AS VARCHAR(128)) AS column_name, "
+      "CAST(NULL AS VARCHAR(1)) AS asc_or_desc, "
+      "CAST(NULL AS INTEGER) AS cardinality, "
+      "CAST(NULL AS INTEGER) AS pages, "
+      "CAST(NULL AS VARCHAR(128)) AS filter_condition WHERE 1=0";
+}
+
 }  // namespace rs::core::database::postgres

@@ -5,7 +5,8 @@
 
 namespace rs::core::database::postgres {
 
-// Redshift column discovery only; SHOW/datashare/external parity is separate work.
+// Explicit Redshift catalog queries; broader parity remains separate work.
+std::string redshift_statistics_query(const StatisticsCatalogRequest& request);
 std::string redshift_columns_query(const ColumnsCatalogRequest& request);
 
 }  // namespace rs::core::database::postgres

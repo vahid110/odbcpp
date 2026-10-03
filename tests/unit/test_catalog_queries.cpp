@@ -120,7 +120,7 @@ TEST(CatalogQueryTest, PostgreSQLColumnsKeepLiteralCatalogAndPatternFilters) {
 }
 
 TEST(CatalogQueryTest, StatisticsKeepLiteralNamesAndUniqueFilter) {
-  auto backend = DatabaseFactory::create_connection();
+  auto backend = std::make_unique<postgres::PgDatabaseConnection>();
   StatisticsCatalogRequest request{"", "s'%", "t'_%", false};
   auto query = backend->catalog_queries()->catalog_query(request);
   ASSERT_FALSE(query.has_error());
@@ -260,4 +260,36 @@ TEST(CatalogQueryTest, RedshiftProviderPropagatesProfileAndEscapesLiteralBacksla
   ASSERT_FALSE(query.has_error());
   EXPECT_NE(std::string::npos, query->find("table_cat = 'a\\\\''b'"));
   EXPECT_NE(std::string::npos, query->find("column_name LIKE 'x\\\\\\\\y'"));
+}
+
+TEST(CatalogQueryTest, RedshiftStatisticsAvoidsPostgresIndexesAndPreservesProfileIsolation) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection pg;
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  StatisticsCatalogRequest request;
+  const auto original = pg.catalog_query(request);
+  const auto selected = redshift.catalog_query(request);
+  ASSERT_TRUE(original); ASSERT_TRUE(selected);
+  EXPECT_NE(std::string::npos, original->find("pg_catalog.pg_index"));
+  EXPECT_EQ(std::string::npos, selected->find("pg_catalog"));
+  EXPECT_EQ(std::string::npos, selected->find("LATERAL"));
+  EXPECT_TRUE(selected->ends_with("WHERE 1=0"));
+  size_t previous = 0;
+  for (const auto* field : {"VARCHAR(128)) AS table_cat", "VARCHAR(128)) AS table_schem",
+      "VARCHAR(128)) AS table_name", "SMALLINT) AS non_unique",
+      "VARCHAR(128)) AS index_qualifier", "VARCHAR(128)) AS index_name",
+      "SMALLINT) AS type", "SMALLINT) AS ordinal_position", "VARCHAR(128)) AS column_name",
+      "VARCHAR(1)) AS asc_or_desc", "INTEGER) AS cardinality", "INTEGER) AS pages",
+      "VARCHAR(128)) AS filter_condition"}) {
+    const auto position = selected->find(field);
+    ASSERT_NE(std::string::npos, position);
+    EXPECT_GE(position, previous);
+    previous = position + std::string(field).size();
+  }
+  request.catalog = "other_database";
+  request.schema = "quoted'schema";
+  request.table = "sample";
+  request.unique_only = true;
+  EXPECT_EQ(*selected, *redshift.catalog_query(request));
+  EXPECT_EQ(*original, *pg.catalog_query(StatisticsCatalogRequest{}));
 }
