@@ -982,8 +982,9 @@ TEST_F(RedshiftRealTest, PasswordRejectedThenFreshValidConnection) {
     ASSERT_TRUE(!valid_fields.at(key).empty() && !invalid_fields.at(key).empty());
     ASSERT_TRUE(valid_fields.at(key).find('\0') == std::string::npos &&
                 invalid_fields.at(key).find('\0') == std::string::npos);
-    if (std::string_view{key} != "PWD")
+    if (std::string_view{key} != "PWD") {
       ASSERT_TRUE(valid_fields.at(key) == invalid_fields.at(key));
+    }
   }
   ASSERT_TRUE(valid_fields.at("PWD") != invalid_fields.at("PWD"));
   auto valid_policy = valid_fields;
