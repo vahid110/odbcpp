@@ -513,7 +513,7 @@ TEST(MySqlSessionTest, DecimalResultsShareDirectAndPreparedErrorsDrainRecoveryAn
     Fixture f;if (binary) decimal_preparation(*f.transport);
     append(*f.transport,{std::byte{1}},1);append(*f.transport,decimal_column_packet(),2);
     append(*f.transport,eof_packet(),3);
-    unsigned sequence=4;
+    std::uint8_t sequence=4;
     for (const auto& value:{std::optional<std::string>{"-999.99"},std::optional<std::string>{},
         std::optional<std::string>{""},std::optional<std::string>{"1.20"}}) {
       Bytes row;
