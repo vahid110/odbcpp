@@ -605,3 +605,14 @@ canonical migration or live IAM qualification. The current protected state
 remains exhausted v6. Even a green run does not authorize009: a subsequent
 runtime package and a separately explicit integration-owner admission would
 be required. Later-day reconciliation/extension remains outside this candidate.
+
+The user's subsequent instruction to improvise prioritizes the live IAM result
+over further accounting expansion. `pilot_finite_live.py` is a thin adapter
+to the existing bounded runner for the one reviewed v7 IAM inventory; it adds
+no warehouse, automatic migration/retry, spending or capacity increase. The old
+entries retain their original limits. Exact state/code/binary binding, durable
+reservation, verified transport, identity-first execution and independent cleanup
+remain required. After its review/tests and CI pass, the integration owner may
+explicitly initialize the already reviewed finite amendment and admit this one
+attempt within the original horizon. Subsequent work should prioritize Redshift
+behavior and M2 assessment; broader accounting machinery remains out of scope.

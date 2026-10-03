@@ -60,10 +60,10 @@ def price_and_ip():
         raise r0.Blocked('fresh_evidence_invalid') from None
 
 
-def request_record(request, anchor, now):
+def request_record(request, anchor, now, *, maximum_sequence=8):
     r0._record(request, {'sequence','reviewed','observed_at','hard_deadline','profile','manifest','admission'},
                'invalid_window_request')
-    r0._need(type(request['sequence']) is int and 1 <= request['sequence'] <= 8
+    r0._need(type(request['sequence']) is int and 1 <= request['sequence'] <= maximum_sequence
              and request['reviewed'] is True and request['profile'] in PROFILES, 'invalid_window_request')
     r0._timestamp(request['observed_at'],now,Decimal(300),'stale_window_request')
     end = b._time(request['hard_deadline'],now,True)
@@ -133,8 +133,9 @@ def save_report(path, report, directory_fd):
     os.fsync(directory_fd)
 
 
-def _execute(sequence, directory, session_factory, validate_request, *, sequence_offset=0):
-    r0._need(type(sequence) is int and 1<=sequence<=8, 'invalid_window_sequence')
+def _execute(sequence, directory, session_factory, validate_request, *, sequence_offset=0,
+             maximum_sequence=8, validate_overlay=None):
+    r0._need(type(sequence) is int and 1<=sequence<=maximum_sequence, 'invalid_window_sequence')
     directory = Path(directory)
     original = b.BootstrapAnchor(**live.private_json(directory/'bootstrap-anchor.json'))
     config = live.private_json(directory/'database-config.json');live.validate_config(config)
@@ -148,6 +149,8 @@ def _execute(sequence, directory, session_factory, validate_request, *, sequence
         now = utcnow(); current = validate_request(request,original,now)
         r0._need(request['sequence']==sequence, 'window_sequence_mismatch')
         state = ledger._load(); overlay = ledger._v2(state,now)
+        if validate_overlay is not None:
+            validate_overlay(request,overlay)
         r0._need(sequence==len(overlay['attempts'])+1+sequence_offset, 'window_already_consumed')
         r0._need(not overlay['attempts'] or overlay['attempts'][-1]['phase']=='cleaned_pending_billing',
                  'prior_attempt_unresolved')
