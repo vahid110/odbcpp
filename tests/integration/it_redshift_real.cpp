@@ -182,7 +182,7 @@ protected:
   SQLHDBC hdbc_ = nullptr;
   SQLHSTMT hstmt_ = nullptr;
   
-  void modern_primary_key_contract(bool use_executor);
+  void modern_primary_key_contract(bool use_executor, bool invalid_names = false);
   std::string connection_string_;
 };
 
@@ -391,7 +391,7 @@ TEST_F(RedshiftRealTest, CompositePrimaryKeyCatalogContract) {
 // Pinned upstream56d35297f9bee0cc31c0148581c87ca455639a39:
 // rsMetadataAPIHelper.cpp:186; rsMetadataServerProxyHelper.cpp:806-810;
 // rsutil.c:16303-16325 (Unspecified OID0 alternative, not default VARCHAR1043).
-void RedshiftRealTest::modern_primary_key_contract(bool use_executor) {
+void RedshiftRealTest::modern_primary_key_contract(bool use_executor, bool invalid_names) {
   using namespace rs::core::database;
   using namespace rs::core::database::postgres;
   const auto fields = rs::odbc::ConnectionString::parse(connection_string_);
@@ -443,6 +443,37 @@ void RedshiftRealTest::modern_primary_key_contract(bool use_executor) {
       {plan->schema, QueryParameterType::Unspecified},
       {plan->table, QueryParameterType::Unspecified}};
   const auto deadline = rs::util::make_deadline(std::chrono::seconds{15});
+  if (invalid_names) {
+    ASSERT_TRUE(use_executor);
+    auto* executor = session.catalog_execution();
+    ASSERT_NE(nullptr, executor);
+    const SessionSnapshot expected{SessionState::Idle, SessionDisposition::Reusable};
+    ASSERT_EQ(SessionState::Idle, session.session_state());
+    std::vector<PrimaryKeysCatalogRequest> invalid{
+        {std::nullopt, plan->schema, plan->table},
+        {plan->database, std::nullopt, plan->table}};
+    for (const auto& bad : {std::string{}, std::string("x\0suffix", 8),
+                            std::string("\xff", 1)}) {
+      invalid.push_back({bad, plan->schema, plan->table});
+      invalid.push_back({plan->database, bad, plan->table});
+      invalid.push_back({plan->database, plan->schema, bad});
+    }
+    ASSERT_EQ(11u, invalid.size());
+    for (const auto& input : invalid) {
+      auto rejected = executor->execute_catalog(input, deadline);
+      ASSERT_FALSE(rejected);
+      EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter),
+                rejected.error());
+      EXPECT_EQ(BackendErrorClass::InvalidInput, rejected.backend_error().error_class);
+      EXPECT_EQ(BackendOperation::ExecuteCatalog, rejected.backend_error().operation);
+      EXPECT_FALSE(rejected.backend_error().native_state);
+      EXPECT_FALSE(rejected.backend_error().native_code);
+      EXPECT_EQ(expected, rejected.session_snapshot());
+      EXPECT_EQ(SessionState::Idle, session.session_state());
+    }
+    // Real-session recovery is qualified by the one valid SHOW below. Absence
+    // of SQL for local rejections is established separately by spy unit tests.
+  }
   // Keep the previously qualified direct exchange and the future backend facet
   // as distinct GoogleTests with identical fixed owning-output assertions.
   auto result = [&]() -> BackendResult<QueryResult> {
@@ -495,6 +526,10 @@ TEST_F(RedshiftRealTest, ModernPrimaryKeyShowUnspecifiedContract) {
 
 TEST_F(RedshiftRealTest, ModernPrimaryKeyExecutionContract) {
   modern_primary_key_contract(true);
+}
+
+TEST_F(RedshiftRealTest, ModernPrimaryKeyExecutionInvalidExactNamesPreserveSession) {
+  modern_primary_key_contract(true, true);
 }
 
 TEST_F(RedshiftRealTest, CompositeForeignKeyCatalogContract) {

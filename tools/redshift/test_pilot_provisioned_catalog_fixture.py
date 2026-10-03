@@ -62,6 +62,44 @@ class ProvisionedCatalogFixtureTests(unittest.TestCase):
         self.assertTrue(result['objects_cleaned'])
         self.assertIsNone(result['cases'])
 
+    def test_execution_profile_binds_three_cases_and_parent_only_lifecycle(self):
+        f = Fake(); objects, cases = PROFILES['modern_primary_key_execution']
+        self.assertEqual(('RedshiftRealTest.ConnectionTest',
+            'RedshiftRealTest.ModernPrimaryKeyExecutionContract',
+            'RedshiftRealTest.ModernPrimaryKeyExecutionInvalidExactNamesPreserveSession'), cases)
+        f.summary = {'cases': list(cases), 'passed': 3, 'failed': 0}
+        result = f.run(profile='modern_primary_key_execution')
+        self.assertEqual('qualified', result['phase'])
+        self.assertEqual(list(objects), f.events[0]['objects'])
+        self.assertEqual(list(cases), f.events[0]['cases'])
+        self.assertEqual([OBJECTS[0]], result['created'])
+        self.assertEqual(['drop_' + OBJECTS[0]], [s for s, _, _ in f.calls if s.startswith('drop_')])
+        sql = '\n'.join(q for _, q, _ in f.calls)
+        for forbidden in (OBJECTS[1], OBJECTS[2], 'GRANT EXECUTE', 'CALL ', 'CASCADE'):
+            self.assertNotIn(forbidden, sql)
+        self.assertTrue(result['activity_verified'])
+
+    def test_execution_profile_rejects_old_or_incomplete_case_reports(self):
+        cases = PROFILES['modern_primary_key_execution'][1]
+        for inventory in (CASES, PROFILES['modern_primary_key'][1], cases[:-1],
+                          (cases[0], cases[1], cases[1])):
+            f = Fake(); f.summary = {'cases': list(inventory), 'passed': len(inventory), 'failed': 0}
+            result = f.run(profile='modern_primary_key_execution')
+            self.assertEqual('blocked', result['phase'])
+            self.assertIsNone(result['cases'])
+            self.assertTrue(result['objects_cleaned'])
+            self.assertTrue(result['activity_verified'])
+
+    def test_execution_profile_keeps_edge_failure_and_still_cleans_parent(self):
+        f = Fake(); cases = PROFILES['modern_primary_key_execution'][1]
+        f.summary = {'cases': list(cases), 'passed': 2, 'failed': 1}
+        result = f.run(profile='modern_primary_key_execution')
+        self.assertEqual('qualification_failed', result['phase'])
+        self.assertEqual(1, result['cases']['failed'])
+        self.assertEqual(1, len([e for e in f.events if e['event'] == 'consumed']))
+        self.assertTrue(result['objects_cleaned'])
+        self.assertTrue(result['activity_verified'])
+
     def test_success_has_durable_consumption_before_sql_and_selective_reverse_teardown(self):
         f = Fake()
         result = f.run()

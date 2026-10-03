@@ -573,3 +573,30 @@ Redshift 68 unit targets; full PostgreSQL/UTF16/UCS4 integration and verified
 TLS; sanitizer unit; 259 offline orchestration tests; native test registration
 and absent-endpoint rejection. Hosted CI owns Windows/package and pinned MySQL
 gates. No new paid SQL accompanies this backend-only package.
+
+
+## Expanding live edge coverage
+
+The future ModernPrimaryKeyExecutionInvalidExactNamesPreserveSession GoogleTest
+uses a real verified-TLS, authenticated Redshift session. It rejects eleven
+requests: omitted catalog/schema and empty, embedded-NUL or invalid UTF-8 in each
+identifier. Assertions require the exact local error class/operation, no native
+details, and unchanged Idle/Reusable state, followed by one valid composite-key
+SHOW under the same original absolute deadline. This proves real-session
+preservation/recovery when admitted; zero SQL for invalid requests remains
+separate offline spy evidence. Existing direct/executor cases retain their
+assertions. The new case builds/registers and rejects an absent endpoint; it has
+not run on Redshift.
+
+The independently reviewed modern_primary_key_execution orchestration profile
+is distinct from the earlier direct native proof. It selects only the exact
+parent fixture and ConnectionTest, ModernPrimaryKeyExecutionContract and the
+new invalid-name case. Three lifecycle regressions bind that inventory, reject
+old/incomplete/duplicate reports and retain failures while verifying cleanup.
+All 21 lifecycle and 262 offline safety cases passed. This adds no launcher or
+admission authority, DDL breadth, grants or retry. Full local PostgreSQL/Redshift 68 unit targets, PostgreSQL/UTF16/UCS4
+integration and verified TLS, and sanitizer gates passed. Hosted CI retains
+Windows/package and pinned MySQL responsibility.
+No-key, quoted-name and denied-access fixtures, missing-object native outcomes,
+manual transactions and timeout recovery need separately reviewed live coverage;
+current successful batches do not establish production readiness/full parity.

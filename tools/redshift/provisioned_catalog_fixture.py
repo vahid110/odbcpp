@@ -28,6 +28,11 @@ PROFILES = {
     # no child/procedure creation or EXECUTE grant in this smaller scope.
     'modern_primary_key': ((PARENT,), tuple('RedshiftRealTest.' + n for n in (
         'ConnectionTest', 'ModernPrimaryKeyShowUnspecifiedContract'))),
+    # Separate backend execution/recovery proof; the direct native proof is not
+    # replayed or silently substituted into this fixed three-case inventory.
+    'modern_primary_key_execution': ((PARENT,), tuple('RedshiftRealTest.' + n for n in (
+        'ConnectionTest', 'ModernPrimaryKeyExecutionContract',
+        'ModernPrimaryKeyExecutionInvalidExactNamesPreserveSession'))),
 }
 OWNED = "user_name IN ('odbcpp_pilot_admin','odbcpp_pilot_test') AND db_name='odbcpp_pilot'"
 
