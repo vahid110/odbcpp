@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
 #include "odbc/connection_string.h"
+#include "core/database/postgres/pg_database_connection.h"
+#include "core/database/postgres/redshift_primary_key_contract.h"
+#include <charconv>
 #include <vector>
 #include <array>
 #include <limits>
@@ -377,6 +380,103 @@ TEST_F(RedshiftRealTest, CompositePrimaryKeyCatalogContract) {
   }
   EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+}
+
+// FUTURE proof only: separately admitted fixture/endpoint, never auto-enabled.
+// Dispatch one fixed SHOW through the real production Redshift session. Existing
+// parameter type-resolution reads may occur under the SAME absolute deadline;
+// their admission requires separate source review. No resolver override, catalog
+// fallback, probe, capability SQL, retry or inherited SQLPrimaryKeys execution.
+// Pinned upstream56d35297f9bee0cc31c0148581c87ca455639a39:
+// rsMetadataAPIHelper.cpp:186; rsMetadataServerProxyHelper.cpp:806-810;
+// rsutil.c:16303-16325 (Unspecified OID0 alternative, not default VARCHAR1043).
+TEST_F(RedshiftRealTest, ModernPrimaryKeyShowUnspecifiedContract) {
+  using namespace rs::core::database;
+  using namespace rs::core::database::postgres;
+  const auto fields = rs::odbc::ConnectionString::parse(connection_string_);
+  for (const auto* key : {"SERVER", "PORT", "DATABASE", "UID", "PWD", "SSLCAFILE"}) {
+    ASSERT_TRUE(fields.contains(key)) << "Required explicit connection field missing";
+    ASSERT_FALSE(fields.at(key).empty()) << "Required explicit connection field empty";
+    ASSERT_TRUE(fields.at(key).find('\0') == std::string::npos)
+        << "Required connection field contains NUL";
+  }
+  // Identity was independently verified by the reviewed runner, not discovered
+  // with additional SQL here. Boolean assertions avoid dumping private settings.
+  ASSERT_TRUE(fields.at("DATABASE") == "odbcpp_pilot") << "Unexpected pilot database";
+  ASSERT_TRUE(fields.at("UID") == "odbcpp_pilot_test") << "Unexpected pilot principal";
+  const auto& port_text = fields.at("PORT");
+  ASSERT_LE(port_text.size(), 5u);
+  ASSERT_TRUE(port_text.find_first_not_of("0123456789") == std::string::npos);
+  unsigned port = 0;
+  const auto parsed_port = std::from_chars(port_text.data(), port_text.data() + port_text.size(), port);
+  ASSERT_TRUE(parsed_port.ec == std::errc{} && parsed_port.ptr == port_text.data() + port_text.size());
+  ASSERT_TRUE(port > 0 && port <= 65535);
+  ConnectionSettings settings;
+  settings.host = fields.at("SERVER");
+  settings.port = static_cast<std::uint16_t>(port);
+  settings.database = fields.at("DATABASE");
+  settings.user = fields.at("UID");
+  settings.password = fields.at("PWD");
+  settings.use_ssl = true;
+  settings.ssl_ca_file = fields.at("SSLCAFILE");
+  settings.timeout = std::chrono::seconds{15};
+  PgDatabaseConnection session(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  auto connected = session.connect(settings);
+  ASSERT_TRUE(connected) << (connected ? "" : connected.backend_error().safe_summary());
+
+  // Authenticated ParameterStatus only. Entire bounded unsigned value required.
+  const auto capability = session.get_parameter("show_discovery");
+  ASSERT_FALSE(capability.empty()) << "Authenticated SHOW capability missing";
+  ASSERT_LE(capability.size(), 10u) << "SHOW capability exceeds bounded representation";
+  ASSERT_TRUE(capability.find_first_not_of("0123456789") == std::string::npos)
+      << "Malformed SHOW capability";
+  std::uint32_t version = 0;
+  const auto parsed = std::from_chars(capability.data(), capability.data() + capability.size(), version);
+  ASSERT_TRUE(parsed.ec == std::errc{} && parsed.ptr == capability.data() + capability.size())
+      << "Malformed SHOW capability";
+  ASSERT_GE(version, 4u) << "Modern SHOW discovery unavailable";
+  auto plan = redshift_primary_key_plan("odbcpp_pilot", "odbcpp_fixture", "m2_catalog_parent_20261003_c01");
+  ASSERT_TRUE(plan);
+  const std::vector<QueryParameter> parameters{
+      {plan->database, QueryParameterType::Unspecified},
+      {plan->schema, QueryParameterType::Unspecified},
+      {plan->table, QueryParameterType::Unspecified}};
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{15});
+  auto raw = session.execute_prepared(
+      "SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE ?.?.?;", parameters, deadline);
+  // Trusted private XML retains the original server diagnostic for this fixed
+  // statement. Connection settings and credential values are never printed.
+  ASSERT_TRUE(raw) << (raw ? "" : raw.backend_error().message);
+  auto result = normalize_redshift_primary_keys(*plan, std::move(raw));
+  ASSERT_TRUE(result) << (result ? "" : result.backend_error().message);
+  session.disconnect(); // Assertions below use the independent owning snapshot.
+  ASSERT_EQ(6u, result->columns.size());
+  constexpr std::array<const char*, 6> names{
+      "TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "COLUMN_NAME", "KEY_SEQ", "PK_NAME"};
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    EXPECT_EQ(names[i], result->columns[i].name);
+    ASSERT_TRUE(result->columns[i].normalized_type);
+    EXPECT_TRUE(result->columns[i].normalized_type->known);
+    EXPECT_EQ(i == 4 ? ScalarType::SmallInt : ScalarType::VarChar,
+        result->columns[i].normalized_type->type);
+  }
+  ASSERT_EQ(2u, result->rows.size());
+  constexpr std::array<const char*, 2> keys{"key_b", "key_a"};
+  std::string observed_pk_name;
+  for (std::size_t i = 0; i < keys.size(); ++i) {
+    const auto& row = result->rows[i];
+    ASSERT_EQ(6u, row.size());
+    for (const auto& cell : row) ASSERT_TRUE(cell.has_value());
+    EXPECT_EQ(plan->database, *row[0]); EXPECT_EQ(plan->schema, *row[1]);
+    EXPECT_EQ(plan->table, *row[2]); EXPECT_EQ(keys[i], *row[3]);
+    EXPECT_EQ(std::to_string(i + 1), *row[4]);
+    ASSERT_FALSE(row[5]->empty()); // Fixture name is generated, never guessed.
+    if (i == 0) observed_pk_name = *row[5];
+    else EXPECT_EQ(observed_pk_name, *row[5]);
+  }
+  EXPECT_TRUE(result->cell_errors.empty());
+  EXPECT_TRUE(result->additional_results.empty());
+  EXPECT_FALSE(result->error);
 }
 
 TEST_F(RedshiftRealTest, CompositeForeignKeyCatalogContract) {

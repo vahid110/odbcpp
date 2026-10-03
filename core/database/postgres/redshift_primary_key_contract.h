@@ -29,6 +29,8 @@ BackendResult<RedshiftPrimaryKeyCommandPlan> redshift_primary_key_plan(
 // unknown. Nullable pk_name is preserved; required identity/sequence NULLs,
 // inconsistent names, duplicate columns/keys, and noncontiguous sequences block.
 // Additional results never produce partial success; native failures are retained.
+// Prepared input metadata may be absent or exactly three known text-family
+// descriptions; it never becomes part of the normalized catalog output.
 BackendResult<QueryResult> normalize_redshift_primary_keys(
     const RedshiftPrimaryKeyCommandPlan& plan,
     BackendResult<QueryResult> input);

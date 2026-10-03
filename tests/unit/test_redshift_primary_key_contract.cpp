@@ -65,6 +65,22 @@ TEST(RedshiftPrimaryKeyContract, CompositeOrderMetadataAndOwnership) {
   }
 }
 
+TEST(RedshiftPrimaryKeyContract, PreparedIdentifierMetadataIsValidatedWithoutBecomingCatalogOutput) {
+  auto input = show_keys();
+  input.normalized_parameter_types = {{ScalarType::Char, 0, 0, true},
+      {ScalarType::VarChar, 0, 0, true}, {ScalarType::LongVarChar, 0, 0, true}};
+  const SessionSnapshot snapshot{SessionState::Idle, SessionDisposition::Reusable};
+  auto result = normalize_redshift_primary_keys(plan(), BackendResult<QueryResult>{input, snapshot});
+  ASSERT_TRUE(result); EXPECT_EQ(snapshot, result.session_snapshot());
+  EXPECT_TRUE(result->normalized_parameter_types.empty());
+  EXPECT_EQ("key_b", result->rows[0][3]);
+  input.normalized_parameter_types[1].known = false; blocked(input);
+  input.normalized_parameter_types[1] = {ScalarType::Integer, 0, 0, true}; blocked(input);
+  for (std::size_t count : {1u, 2u, 4u}) {
+    input.normalized_parameter_types.assign(count, {ScalarType::VarChar, 0, 0, true}); blocked(input);
+  }
+}
+
 TEST(RedshiftPrimaryKeyContract, EmptyAndNullableConstraintNameAndSourceOrder) {
   auto input = show_keys(); input.rows.clear();
   auto empty = normalize_redshift_primary_keys(plan(), input);

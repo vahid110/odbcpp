@@ -1,4 +1,5 @@
 #include "redshift_primary_key_contract.h"
+#include <algorithm>
 #include "core/database/result_validation.h"
 #include <array>
 #include <charconv>
@@ -45,8 +46,17 @@ BackendResult<QueryResult> normalize_redshift_primary_keys(
     if (extra.error) return *extra.error;
   if (!valid_plan(plan) || !valid_result_structure(source) ||
       !source.additional_results.empty() || !source.cell_errors.empty() ||
-      !source.normalized_parameter_types.empty() || source.affected_rows != 0 ||
+      source.affected_rows != 0 ||
       source.columns.size() != 6 || source.rows.size() > 32767)
+    return invalid_metadata();
+  // The real prepared exchange may retain descriptions for the three bound
+  // database/schema/table values. They are input metadata, not catalog fields.
+  // Accept only the fixed known text-family triple; never expose it as output
+  // or erase malformed/unknown metadata to manufacture catalog success.
+  if (!source.normalized_parameter_types.empty() &&
+      (source.normalized_parameter_types.size() != 3 ||
+       std::any_of(source.normalized_parameter_types.begin(), source.normalized_parameter_types.end(),
+           [](const NativeTypeInfo& type) { return !type.known || !text_family(type.type); })))
     return invalid_metadata();
 
   constexpr std::array<const char*, 6> names{

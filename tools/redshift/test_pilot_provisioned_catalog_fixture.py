@@ -2,7 +2,7 @@ import hashlib
 from pathlib import Path
 import unittest
 from tools.redshift.provisioned_catalog_fixture import (
-    CatalogFixture, FixtureBlocked, SqlReply, CASES, OBJECTS, CREATOR, statements)
+    CatalogFixture, FixtureBlocked, SqlReply, CASES, OBJECTS, CREATOR, PROFILES, statements)
 
 FIXTURE = Path(__file__).resolve().parents[2] / 'tests/fixtures/redshift/catalog_contracts.sql'
 DIGEST = hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
@@ -35,6 +35,33 @@ class Fake:
 
 
 class ProvisionedCatalogFixtureTests(unittest.TestCase):
+    def test_modern_primary_key_profile_creates_only_parent_and_runs_fixed_new_inventory(self):
+        f = Fake(); objects, cases = PROFILES['modern_primary_key']
+        f.summary = {'cases': list(cases), 'passed': 2, 'failed': 0}
+        result = f.run(profile='modern_primary_key')
+        self.assertEqual('qualified', result['phase'])
+        self.assertEqual(list(objects), result['created'])
+        self.assertEqual(list(cases), f.events[0]['cases'])
+        self.assertEqual(list(objects), f.events[0]['objects'])
+        self.assertTrue(result['activity_verified'])
+        sql = '\n'.join(q for _, q, _ in f.calls)
+        for forbidden in (OBJECTS[1], OBJECTS[2], 'GRANT EXECUTE', 'CALL '):
+            self.assertNotIn(forbidden, sql)
+        self.assertEqual(1, len([s for s, _, _ in f.calls if s.startswith('grant_')]))
+
+    def test_unknown_profile_and_original_catalog_inventory_cannot_enter_modern_scope(self):
+        for profile in ('unknown', '', None, []):
+            f = Fake()
+            with self.assertRaises(FixtureBlocked):
+                f.run(profile=profile)
+            self.assertEqual([], f.calls)
+            self.assertEqual([], f.events)
+        f = Fake()  # Original five-case report cannot stand in for the two new cases.
+        result = f.run(profile='modern_primary_key')
+        self.assertEqual('blocked', result['phase'])
+        self.assertTrue(result['objects_cleaned'])
+        self.assertIsNone(result['cases'])
+
     def test_success_has_durable_consumption_before_sql_and_selective_reverse_teardown(self):
         f = Fake()
         result = f.run()

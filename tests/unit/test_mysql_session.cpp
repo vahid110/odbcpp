@@ -420,6 +420,35 @@ TEST(MySqlSessionTest, PreparedExecuteBindsTypedParametersClosesAndPreservesOwne
     EXPECT_EQ(params[0].value,result->rows[0][0]);EXPECT_EQ(1u,f.transport->closes);
   }
 }
+TEST(MySqlSessionTest, PreparedUnsignedIntMetadataPreservesMaximumNullAndOwnedRows) {
+  Fixture f;prepared_metadata(*f.transport);
+  append(*f.transport,{std::byte{1}},1);
+  append(*f.transport,column_packet("value",3,63,32),2);
+  append(*f.transport,eof_packet(),3);
+  Bytes maximum{std::byte{0},std::byte{0}};number(maximum,0xffffffffu,4);
+  append(*f.transport,maximum,4);append(*f.transport,{std::byte{0},std::byte{4}},5);
+  append(*f.transport,eof_packet(),6);
+  const std::array params{rs::core::database::QueryParameter{"42",rs::core::database::QueryParameterType::Int32}};
+  const auto deadline=rs::util::make_deadline(std::chrono::seconds(10));
+  auto result=f.session->execute_prepared("SELECT ?",params,deadline);ASSERT_TRUE(result);
+  ASSERT_EQ(1u,result->columns.size());ASSERT_TRUE(result->columns[0].normalized_type);
+  EXPECT_TRUE(result->columns[0].normalized_type->known);
+  EXPECT_EQ(rs::core::database::ScalarType::BigInt,result->columns[0].normalized_type->type);
+  EXPECT_EQ(10u,result->columns[0].normalized_type->column_size);
+  ASSERT_EQ(2u,result->rows.size());ASSERT_EQ(1u,result->rows[0].size());ASSERT_TRUE(result->rows[0][0]);
+  EXPECT_EQ("4294967295",*result->rows[0][0]);ASSERT_EQ(1u,result->rows[1].size());EXPECT_FALSE(result->rows[1][0]);
+  EXPECT_TRUE(result->cell_errors.empty());EXPECT_TRUE(f.session->is_connected());EXPECT_EQ(0u,f.transport->closes);
+  EXPECT_EQ(rs::core::database::SessionState::Idle,result.session_snapshot().state);
+  EXPECT_EQ(rs::core::database::SessionDisposition::Reusable,result.session_snapshot().disposition);
+  EXPECT_EQ((std::vector<unsigned>{22,23,25}),commands(f.transport->output));
+  EXPECT_EQ(f.transport->input.size(),f.transport->offset);
+  for (const auto dl:f.transport->deadlines) EXPECT_EQ(deadline,dl);
+  append(*f.transport,ok(),1);EXPECT_TRUE(f.execute());
+  f.session->disconnect();EXPECT_EQ(1u,f.transport->closes);
+  EXPECT_EQ("4294967295",*result->rows[0][0]);EXPECT_FALSE(result->rows[1][0]);
+  EXPECT_EQ(rs::core::database::ScalarType::BigInt,result->columns[0].normalized_type->type);
+}
+
 TEST(MySqlSessionTest, PreparedMetadataAndLateRowErrorsValidateSqlstateAndRetire) {
   for (bool late_row:{false,true}) {
     for (unsigned fault=0;fault<3;++fault) {

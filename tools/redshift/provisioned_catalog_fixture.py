@@ -22,6 +22,13 @@ CASES = tuple('RedshiftRealTest.' + n for n in (
     'ConnectionTest', 'CompositePrimaryKeyCatalogContract',
     'CompositeForeignKeyCatalogContract', 'ProcedureCatalogContract',
     'ProcedureParameterCatalogContract'))
+PROFILES = {
+    'catalog_contracts': (OBJECTS, CASES),
+    # Future checked-in native SHOW proof only; no failed catalog replay and
+    # no child/procedure creation or EXECUTE grant in this smaller scope.
+    'modern_primary_key': ((PARENT,), tuple('RedshiftRealTest.' + n for n in (
+        'ConnectionTest', 'ModernPrimaryKeyShowUnspecifiedContract'))),
+}
 OWNED = "user_name IN ('odbcpp_pilot_admin','odbcpp_pilot_test') AND db_name='odbcpp_pilot'"
 
 
@@ -55,7 +62,10 @@ def statements(path: Path, digest: str):
 
 class CatalogFixture:
     def __init__(self, *, sql, tests, record, clock, deadline, cleanup_deadline,
-                 fixture, fixture_digest):
+                 fixture, fixture_digest, profile='catalog_contracts'):
+        if not isinstance(profile, str) or profile not in PROFILES:
+            raise FixtureBlocked('unknown_fixed_fixture_profile')
+        self.objects, self.cases = PROFILES[profile]
         self.sql, self.tests, self.record, self.clock = sql, tests, record, clock
         self.deadline, self.cleanup_deadline = deadline, cleanup_deadline
         self.fixture, self.fixture_digest = fixture, fixture_digest
@@ -110,9 +120,9 @@ class CatalogFixture:
                 0 < self.deadline - now <= 180 and
                 0 < self.cleanup_deadline - self.deadline <= 60):
             raise FixtureBlocked('invalid_absolute_deadlines')
-        ddl = statements(self.fixture, self.fixture_digest)
+        ddl = dict(zip(OBJECTS, statements(self.fixture, self.fixture_digest)))
         # Callback must fsync consumed admission before returning. No SQL if it fails.
-        self.record({'event': 'consumed', 'cases': list(CASES), 'objects': list(OBJECTS)})
+        self.record({'event': 'consumed', 'cases': list(self.cases), 'objects': list(self.objects)})
         created, uncertain = [], []
         identity_verified = False
         result = {'phase': 'blocked', 'cases': None, 'objects_cleaned': False,
@@ -121,13 +131,14 @@ class CatalogFixture:
             if self._sql('identity', 'SELECT current_database(),TRIM(current_user);') != DATABASE + '|' + CREATOR:
                 raise FixtureBlocked('identity_mismatch')
             identity_verified = True
-            if self._sql('collision_tables', "SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='odbcpp_fixture' AND c.relname IN ('" + PARENT + "','" + CHILD + "');") != '0':
+            table_names = "','".join(n for n in self.objects if n != PROCEDURE)
+            if self._sql('collision_tables', "SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='odbcpp_fixture' AND c.relname IN ('" + table_names + "');") != '0':
                 raise FixtureBlocked('fixture_collision')
-            if self._sql('collision_procedures', "SELECT COUNT(*) FROM pg_proc_info p JOIN pg_namespace n ON p.pronamespace=n.oid WHERE n.nspname='odbcpp_fixture' AND p.proname='" + PROCEDURE + "';") != '0':
+            if PROCEDURE in self.objects and self._sql('collision_procedures', "SELECT COUNT(*) FROM pg_proc_info p JOIN pg_namespace n ON p.pronamespace=n.oid WHERE n.nspname='odbcpp_fixture' AND p.proname='" + PROCEDURE + "';") != '0':
                 raise FixtureBlocked('fixture_collision')
-            for name, command in zip(OBJECTS, ddl):
+            for name in self.objects:
                 try:
-                    self._sql('create_' + name, command)
+                    self._sql('create_' + name, ddl[name])
                 except Exception:
                     uncertain.append(name)
                     raise
@@ -141,15 +152,15 @@ class CatalogFixture:
             remaining = self.deadline - self.clock()
             if remaining <= 0:
                 raise FixtureBlocked('deadline_exhausted')
-            summary = self.tests(CASES, remaining)
+            summary = self.tests(self.cases, remaining)
             if self.clock() > self.deadline:
                 raise FixtureBlocked('late_gtest_result')
             if (not isinstance(summary, dict) or type(summary.get('cases')) not in (tuple, list)
-                    or len(summary['cases']) != len(CASES)
-                    or len(set(summary['cases'])) != len(CASES) or set(summary['cases']) != set(CASES)
+                    or len(summary['cases']) != len(self.cases)
+                    or len(set(summary['cases'])) != len(self.cases) or set(summary['cases']) != set(self.cases)
                     or type(summary.get('passed')) is not int or type(summary.get('failed')) is not int
                     or min(summary['passed'], summary['failed']) < 0
-                    or summary['passed'] + summary['failed'] != len(CASES)):
+                    or summary['passed'] + summary['failed'] != len(self.cases)):
                 raise FixtureBlocked('invalid_gtest_inventory')
             result['cases'] = summary
             result['phase'] = 'qualified' if summary['failed'] == 0 else 'qualification_failed'
