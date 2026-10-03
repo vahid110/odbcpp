@@ -424,3 +424,23 @@ visibility requirements need fixture evidence; errors must not become empty rows
 Overloads/functions, ordering, descriptor widths, datashares and broader parity
 remain separate packages. No new fixture, grant, query or runtime port is enabled
 by this audit.
+
+The source-reviewed [fixture proposal](tests/fixtures/redshift/README.md) now
+defines two empty reverse-order composite-key tables and a never-invoked IN/INOUT
+procedure inside the existing schema. It creates no grants or cloud resources;
+collision refusal, confirmed-creation tracking and selective exact teardown
+remain prerequisites to any future admission. Ordinary-user access is conditional
+on naming the creator/diagnostic principal and verifying existing privileges.
+
+Two future key-catalog GoogleTests check PK six/FK fourteen descriptor families,
+table/schema identity, declared key order, non-NULL sequence/rule/deferrability
+values and observed constraint names. FK covers imported/exported/both requests.
+On catalog failure, they capture diagnostics and check one scalar recovery on
+the same connection without replaying the catalog. Independent review caught
+and resolved a stale-output false positive for a NULL rule. A local verified-TLS
+PostgreSQL fixture passed both cases and the prior two empty-catalog regressions;
+this proves fixture/test mechanics only, not Redshift compatibility. Native TEXT
+fields normalize to ODBC VARCHAR in that surrogate, so a native-field difference
+alone does not prove a returned ODBC-family mismatch. No fixture, grant, paid
+inventory or live qualification is enabled. Routine descriptor cases and
+permission-denied/quoted/empty/omitted fixtures remain future packages.

@@ -100,7 +100,7 @@ protected:
   }
 
   struct CatalogField { const char* name; SQLSMALLINT type; };
-  void expect_empty_catalog(std::span<const CatalogField> fields) {
+  void expect_catalog_fields(std::span<const CatalogField> fields) {
     SQLSMALLINT count = 0;
     ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt_, &count));
     ASSERT_EQ(fields.size(), static_cast<std::size_t>(count));
@@ -114,9 +114,34 @@ protected:
       EXPECT_EQ(fields[column - 1].name, actual);
       EXPECT_EQ(fields[column - 1].type, type);
     }
+  }
+
+  void expect_empty_catalog(std::span<const CatalogField> fields) {
+    expect_catalog_fields(fields);
+    ASSERT_FALSE(HasFatalFailure());
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+  }
+
+  bool catalog_succeeded(SQLRETURN result) {
+    if (result == SQL_SUCCESS) return true;
+    const auto diagnostic = metadata_diagnostic();
+    // Recover once on the same connection; never retry the failed catalog.
+    EXPECT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt_, SQL_CLOSE));
+    const auto recovered = SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(
+        const_cast<char*>("SELECT 1")), SQL_NTS);
+    EXPECT_EQ(SQL_SUCCESS, recovered);
+    if (recovered == SQL_SUCCESS) {
+      EXPECT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+      SQLINTEGER value = 0; SQLLEN length = 0;
+      EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 1, SQL_C_SLONG, &value,
+          sizeof(value), &length));
+      EXPECT_EQ(1, value);
+      EXPECT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+    }
+    ADD_FAILURE() << "Catalog failed before qualification: " << diagnostic;
+    return false;
   }
 
   bool connected_ = false;
@@ -285,6 +310,116 @@ TEST_F(RedshiftRealTest, StatisticsQuickEmptyDescriptorContract) {
         unique, SQL_QUICK)) << metadata_diagnostic();
     expect_empty_catalog(fields);
     ASSERT_FALSE(HasFatalFailure());
+  }
+}
+
+// Requires the separately reviewed catalog_contracts.sql fixture and principal
+// visibility. Modern descriptor expectations are intentionally not relaxed to
+// accept inherited PostgreSQL metadata; these cases can expose current gaps.
+TEST_F(RedshiftRealTest, CompositePrimaryKeyCatalogContract) {
+  ASSERT_TRUE(connect());
+  constexpr char schema[] = "odbcpp_fixture";
+  constexpr char parent[] = "m2_catalog_parent_20261003_c01";
+  constexpr std::array<CatalogField, 6> fields{{
+      {"table_cat", SQL_VARCHAR}, {"table_schem", SQL_VARCHAR},
+      {"table_name", SQL_VARCHAR}, {"column_name", SQL_VARCHAR},
+      {"key_seq", SQL_SMALLINT}, {"pk_name", SQL_VARCHAR}}};
+  ASSERT_TRUE(catalog_succeeded(SQLPrimaryKeys(hstmt_, nullptr, 0,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema)), SQL_NTS,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(parent)), SQL_NTS)));
+  expect_catalog_fields(fields);
+  ASSERT_FALSE(HasFatalFailure());
+  constexpr std::array<const char*, 2> keys{"key_b", "key_a"};
+  for (SQLSMALLINT sequence = 1; sequence <= 2; ++sequence) {
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+    char name[128]{}; SQLLEN length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 2, SQL_C_CHAR, name, sizeof(name), &length));
+    EXPECT_STREQ(schema, name);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 3, SQL_C_CHAR, name, sizeof(name), &length));
+    EXPECT_STREQ(parent, name);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 4, SQL_C_CHAR, name, sizeof(name), &length));
+    EXPECT_STREQ(keys[static_cast<std::size_t>(sequence - 1)], name);
+    SQLSMALLINT actual = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 5, SQL_C_SSHORT, &actual, sizeof(actual), &length));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(actual)), length);
+    EXPECT_EQ(sequence, actual);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 6, SQL_C_CHAR, name, sizeof(name), &length));
+    EXPECT_GT(length, 0); // Server-generated constraint name, not a fixed guess.
+  }
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+}
+
+TEST_F(RedshiftRealTest, CompositeForeignKeyCatalogContract) {
+  ASSERT_TRUE(connect());
+  constexpr char schema[] = "odbcpp_fixture";
+  constexpr char parent[] = "m2_catalog_parent_20261003_c01";
+  constexpr char child[] = "m2_catalog_child_20261003_c01";
+  constexpr std::array<CatalogField, 14> fields{{
+      {"pktable_cat", SQL_VARCHAR}, {"pktable_schem", SQL_VARCHAR},
+      {"pktable_name", SQL_VARCHAR}, {"pkcolumn_name", SQL_VARCHAR},
+      {"fktable_cat", SQL_VARCHAR}, {"fktable_schem", SQL_VARCHAR},
+      {"fktable_name", SQL_VARCHAR}, {"fkcolumn_name", SQL_VARCHAR},
+      {"key_seq", SQL_SMALLINT}, {"update_rule", SQL_SMALLINT},
+      {"delete_rule", SQL_SMALLINT}, {"fk_name", SQL_VARCHAR},
+      {"pk_name", SQL_VARCHAR}, {"deferrability", SQL_SMALLINT}}};
+  constexpr std::array<const char*, 2> pk{"key_b", "key_a"};
+  constexpr std::array<const char*, 2> fk{"ref_b", "ref_a"};
+  // Imported, exported, and both-table requests each execute exactly once.
+  for (int direction = 0; direction < 3; ++direction) {
+    SCOPED_TRACE(direction);
+    auto* pk_schema = direction == 0 ? nullptr : reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema));
+    auto* pk_table = direction == 0 ? nullptr : reinterpret_cast<SQLCHAR*>(const_cast<char*>(parent));
+    auto* fk_schema = direction == 1 ? nullptr : reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema));
+    auto* fk_table = direction == 1 ? nullptr : reinterpret_cast<SQLCHAR*>(const_cast<char*>(child));
+    ASSERT_TRUE(catalog_succeeded(SQLForeignKeys(hstmt_, nullptr, 0,
+        pk_schema, static_cast<SQLSMALLINT>(pk_schema ? SQL_NTS : 0),
+        pk_table, static_cast<SQLSMALLINT>(pk_table ? SQL_NTS : 0),
+        nullptr, 0, fk_schema, static_cast<SQLSMALLINT>(fk_schema ? SQL_NTS : 0),
+        fk_table, static_cast<SQLSMALLINT>(fk_table ? SQL_NTS : 0))));
+    expect_catalog_fields(fields);
+    ASSERT_FALSE(HasFatalFailure());
+    std::string fk_constraint, pk_constraint;
+    for (SQLSMALLINT sequence = 1; sequence <= 2; ++sequence) {
+      ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+      char name[128]{}; SQLLEN length = 0;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 2, SQL_C_CHAR, name, sizeof(name), &length));
+      EXPECT_STREQ(schema, name);
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 3, SQL_C_CHAR, name, sizeof(name), &length));
+      EXPECT_STREQ(parent, name);
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 4, SQL_C_CHAR, name, sizeof(name), &length));
+      EXPECT_STREQ(pk[static_cast<std::size_t>(sequence - 1)], name);
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 6, SQL_C_CHAR, name, sizeof(name), &length));
+      EXPECT_STREQ(schema, name);
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 7, SQL_C_CHAR, name, sizeof(name), &length));
+      EXPECT_STREQ(child, name);
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 8, SQL_C_CHAR, name, sizeof(name), &length));
+      EXPECT_STREQ(fk[static_cast<std::size_t>(sequence - 1)], name);
+      SQLSMALLINT value = 0;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 9, SQL_C_SSHORT, &value, sizeof(value), &length));
+      EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+      EXPECT_EQ(sequence, value);
+      for (const SQLUSMALLINT column : std::array<SQLUSMALLINT, 2>{10, 11}) {
+        value = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, column, SQL_C_SSHORT, &value, sizeof(value), &length));
+        EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+        EXPECT_EQ(SQL_NO_ACTION, value);
+      }
+      for (const SQLUSMALLINT column : std::array<SQLUSMALLINT, 2>{12, 13}) {
+        name[0] = '\0';
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, column, SQL_C_CHAR, name, sizeof(name), &length));
+        EXPECT_GT(length, 0);
+        auto& observed = column == 12 ? fk_constraint : pk_constraint;
+        if (sequence == 1) observed = name;
+        else EXPECT_EQ(observed, name);
+      }
+      value = -1;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 14, SQL_C_SSHORT, &value, sizeof(value), &length));
+      EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+      EXPECT_EQ(SQL_NOT_DEFERRABLE, value);
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
   }
 }
 
