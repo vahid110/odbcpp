@@ -38,6 +38,7 @@ struct Observations {
   std::vector<QueryParameter> parameters;
   Deadline deadline{};
   bool malformed_value{}, malformed_state{}, malformed_text{}, long_binary{};
+  std::optional<QueryResult> date_result;
   std::string failure_message = "fake error";
   std::string server_version = "1.0";
   bool setup_allocation_failure{false};
@@ -150,6 +151,7 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
   bool is_connected() const override { return connected_; }
   SessionState session_state() const override { return connected_ ? (seen_->connect_exception == 6 ? SessionState::Transaction : seen_->connect_exception == 7 ? SessionState::Unknown : SessionState::Idle) : SessionState::Disconnected; }
   QueryResult rows() const {
+    if (seen_->date_result) return *seen_->date_result;
     QueryResult result;
     result.columns = {{"binary", {}}, {"flag", {}}, {"text", {}}};
     result.columns[0].normalized_type = NativeTypeInfo{seen_->long_binary ? ScalarType::LongVarBinary : ScalarType::Binary,
@@ -2051,4 +2053,121 @@ TEST_F(BackendContractTest, CatalogModeEffectiveOptionReachesResolverAndInvalidN
   ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
   connect_with("SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=0");
   EXPECT_EQ(RedshiftCatalogMode::Show, seen->settings.redshift_catalog_mode);
+}
+
+namespace {
+QueryResult owning_date_contract_rows() {
+  QueryResult result;
+  result.columns={{"date",NativeTypeInfo{ScalarType::Date,10,0,true}},
+      {"neighbor",NativeTypeInfo{ScalarType::BigInt,19,0,true}}};
+  result.rows={{"1000-01-01","42"},{"9999-12-31","42"},{"2000-02-29","42"},{std::nullopt,"42"}};
+  result.statement_kind=StatementKind::SelectCursor;
+  return result;
+}
+}
+TEST_F(BackendContractTest, OwningDateMetadataDescriptorsAndAllRetrievalFormsAgree) {
+  seen->date_result=owning_date_contract_rows();connect();
+  for (SQLSMALLINT target:{SQLSMALLINT(SQL_C_TYPE_DATE),SQLSMALLINT(SQL_C_DEFAULT),SQLSMALLINT(SQL_C_CHAR),SQLSMALLINT(SQL_C_WCHAR)}) {
+    SCOPED_TRACE(target);seen->date_result=owning_date_contract_rows();
+    ASSERT_EQ(SQL_SUCCESS,execute("rows"));
+    SQLCHAR name[16]{};SQLSMALLINT name_length{},type{},digits{},nullable{};SQLULEN size{};
+    ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(stmt,1,name,sizeof(name),&name_length,&type,&size,&digits,&nullable));
+    EXPECT_STREQ("date",reinterpret_cast<char*>(name));EXPECT_EQ(4,name_length);
+    EXPECT_EQ(SQL_TYPE_DATE,type);EXPECT_EQ(10u,size);EXPECT_EQ(0,digits);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
+    SQLHDESC ird{};ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_ROW_DESC,&ird,sizeof(ird),nullptr));
+    for (const auto [field,expected]:{std::pair{SQL_DESC_CONCISE_TYPE,SQL_TYPE_DATE},std::pair{SQL_DESC_TYPE,SQL_DATETIME},
+        std::pair{SQL_DESC_DATETIME_INTERVAL_CODE,SQL_CODE_DATE},std::pair{SQL_DESC_PRECISION,0},std::pair{SQL_DESC_SCALE,0}}) {
+      SQLSMALLINT value=73;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,1,field,&value,0,nullptr));EXPECT_EQ(expected,value);
+    }
+    SQLULEN descriptor_length{};ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,1,SQL_DESC_LENGTH,&descriptor_length,0,nullptr));EXPECT_EQ(10u,descriptor_length);
+    SQLLEN octets{};ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,1,SQL_DESC_OCTET_LENGTH,&octets,0,nullptr));EXPECT_EQ(6,octets);
+    SQLLEN concise{};ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(stmt,1,SQL_DESC_CONCISE_TYPE,nullptr,0,nullptr,&concise));EXPECT_EQ(SQL_TYPE_DATE,concise);
+    // The adapter owns the returned copy; the source observation is now changed.
+    seen->date_result->rows[0][0]="changed after execution";
+    const char* expected[]{"1000-01-01","9999-12-31","2000-02-29"};
+    const SQL_DATE_STRUCT dates[]{{1000,1,1},{9999,12,31},{2000,2,29}};
+    for (unsigned row=0;row<3;++row) {
+      ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLLEN length=73;
+      if (target==SQL_C_TYPE_DATE || target==SQL_C_DEFAULT) {
+        SQL_DATE_STRUCT output{73,74,75};
+        ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,target,&output,sizeof(output),&length));
+        EXPECT_EQ(dates[row].year,output.year);EXPECT_EQ(dates[row].month,output.month);EXPECT_EQ(dates[row].day,output.day);
+        EXPECT_EQ(static_cast<SQLLEN>(sizeof(output)),length);
+      } else if (target==SQL_C_CHAR) {
+        char output[16]="untouched";ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,target,output,sizeof(output),&length));
+        EXPECT_STREQ(expected[row],output);EXPECT_EQ(10,length);
+      } else {
+        SQLWCHAR output[16]{};ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,target,output,sizeof(output),&length));
+        const auto wide=rs::odbc::utf8_to_wide(expected[row]);ASSERT_TRUE(wide);
+        EXPECT_EQ(0,std::memcmp(output,wide->data(),wide->size()*sizeof(SQLWCHAR)));EXPECT_EQ(0,output[10]);
+        EXPECT_EQ(static_cast<SQLLEN>(10*sizeof(SQLWCHAR)),length);
+      }
+    }
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  }
+}
+TEST_F(BackendContractTest, DateNullPreservesTargetsAndRequiresIndicatorWithoutConsumingValue) {
+  seen->date_result=owning_date_contract_rows();seen->date_result->rows={{std::nullopt,"42"}};connect();
+  for (SQLSMALLINT target:{SQLSMALLINT(SQL_C_TYPE_DATE),SQLSMALLINT(SQL_C_CHAR),SQLSMALLINT(SQL_C_WCHAR)}) {
+    SCOPED_TRACE(target);ASSERT_EQ(SQL_SUCCESS,execute("rows"));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+    alignas(SQL_DATE_STRUCT) unsigned char output[32];std::fill(std::begin(output),std::end(output),0x5a);SQLLEN length=73;
+    EXPECT_EQ(SQL_ERROR,SQLGetData(stmt,1,target,output,sizeof(output),nullptr));EXPECT_EQ("22002",state());
+    EXPECT_TRUE(std::all_of(std::begin(output),std::end(output),[](auto value){return value==0x5a;}));
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,target,output,sizeof(output),&length));EXPECT_EQ(SQL_NULL_DATA,length);
+    EXPECT_TRUE(std::all_of(std::begin(output),std::end(output),[](auto value){return value==0x5a;}));
+    SQLBIGINT neighbor{};ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_SBIGINT,&neighbor,sizeof(neighbor),&length));EXPECT_EQ(42,neighbor);
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  }
+}
+TEST_F(BackendContractTest, MarkedDateGetDataErrorsDifferFromUnmarkedCalendarErrorsAndRecover) {
+  connect();
+  for (bool marked:{false,true}) {
+    for (SQLSMALLINT target:{SQLSMALLINT(SQL_C_TYPE_DATE),SQLSMALLINT(SQL_C_CHAR),SQLSMALLINT(SQL_C_WCHAR)}) {
+      if (!marked && target!=SQL_C_TYPE_DATE) continue; // unmarked text is not a native cell error
+      SCOPED_TRACE(marked);
+      SCOPED_TRACE(target);
+      seen->date_result=owning_date_contract_rows();seen->date_result->rows={{marked?"":"2023-02-29","42"},{"2000-02-29","42"}};
+      if (marked) seen->date_result->cell_errors={{0,0}};
+      ASSERT_EQ(SQL_SUCCESS,execute("rows"));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+      alignas(SQL_DATE_STRUCT) alignas(SQLWCHAR) unsigned char output[std::max(11*sizeof(SQLWCHAR),sizeof(SQL_DATE_STRUCT))];std::fill(std::begin(output),std::end(output),0x5a);SQLLEN length=73;
+      for (unsigned attempt=0;attempt<2;++attempt) {
+        EXPECT_EQ(SQL_ERROR,SQLGetData(stmt,1,target,output,sizeof(output),&length));EXPECT_EQ(marked?"22018":"22007",state());
+        EXPECT_EQ(73,length);EXPECT_TRUE(std::all_of(std::begin(output),std::end(output),[](auto value){return value==0x5a;}));
+      }
+      SQLBIGINT neighbor{};ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_SBIGINT,&neighbor,sizeof(neighbor),&length));EXPECT_EQ(42,neighbor);
+      ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,target,output,sizeof(output),&length));
+      if (target==SQL_C_TYPE_DATE) {
+        SQL_DATE_STRUCT date{};std::memcpy(&date,output,sizeof(date));
+        EXPECT_EQ(2000,date.year);EXPECT_EQ(2,date.month);EXPECT_EQ(29,date.day);
+        EXPECT_EQ(static_cast<SQLLEN>(sizeof(date)),length);
+      } else if (target==SQL_C_CHAR) {
+        EXPECT_STREQ("2000-02-29",reinterpret_cast<char*>(output));EXPECT_EQ(10,length);
+      } else {
+        const auto wide=rs::odbc::utf8_to_wide("2000-02-29");ASSERT_TRUE(wide);
+        EXPECT_EQ(0,std::memcmp(output,wide->data(),wide->size()*sizeof(SQLWCHAR)));
+        SQLWCHAR terminator=1;std::memcpy(&terminator,output+10*sizeof(SQLWCHAR),sizeof(terminator));EXPECT_EQ(0,terminator);
+        EXPECT_EQ(static_cast<SQLLEN>(10*sizeof(SQLWCHAR)),length);
+      }
+      ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));EXPECT_EQ(0,seen->disconnects);
+    }
+  }
+}
+TEST_F(BackendContractTest, BoundDateErrorsPreserveFailingStructAndRecoverIncludingNull) {
+  connect();SQLUSMALLINT row_status=SQL_ROW_SUCCESS;
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_STATUS_PTR,&row_status,0));
+  for (bool marked:{false,true}) {
+    SCOPED_TRACE(marked);seen->date_result=owning_date_contract_rows();
+    seen->date_result->rows={{marked?"":"2023-02-29","42"},{"2000-02-29","42"},{std::nullopt,"42"}};
+    if (marked) seen->date_result->cell_errors={{0,0}};
+    SQL_DATE_STRUCT output{73,74,75};SQLLEN length=76;
+    ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_TYPE_DATE,&output,sizeof(output),&length));ASSERT_EQ(SQL_SUCCESS,execute("rows"));
+    EXPECT_EQ(SQL_ERROR,SQLFetch(stmt));EXPECT_EQ(marked?"22018":"22007",state());EXPECT_EQ(SQL_ROW_ERROR,row_status);
+    EXPECT_EQ(73,output.year);EXPECT_EQ(74,output.month);EXPECT_EQ(75,output.day);EXPECT_EQ(76,length);
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));EXPECT_EQ(SQL_ROW_SUCCESS,row_status);
+    EXPECT_EQ(2000,output.year);EXPECT_EQ(2,output.month);EXPECT_EQ(29,output.day);EXPECT_EQ(static_cast<SQLLEN>(sizeof(output)),length);
+    output={73,74,75};length=76;ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));EXPECT_EQ(SQL_NULL_DATA,length);EXPECT_EQ(SQL_ROW_SUCCESS,row_status);
+    EXPECT_EQ(73,output.year);EXPECT_EQ(74,output.month);EXPECT_EQ(75,output.day);
+    EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+    EXPECT_EQ(0,seen->disconnects);
+  }
 }

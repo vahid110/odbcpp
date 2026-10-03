@@ -63,3 +63,4 @@ core/database/postgres/redshift_foreign_key_contract.h
 core/database/mysql/error_wire.h
 core/database/mysql/decimal_wire.h
 core/database/mysql/date_wire.h
+core/database/mysql/time_wire.h

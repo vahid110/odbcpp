@@ -2,7 +2,7 @@ import hashlib
 from pathlib import Path
 import unittest
 from tools.redshift.provisioned_catalog_fixture import (
-    CatalogFixture, FixtureBlocked, SqlReply, CASES, OBJECTS, CREATOR, PROFILES, statements)
+    CatalogFixture, FixtureBlocked, SqlReply, CASES, OBJECTS, CREATOR, PROFILES, statements, EDGE_OBJECTS, QUOTED_KEY, edge_statements)
 
 FIXTURE = Path(__file__).resolve().parents[2] / 'tests/fixtures/redshift/catalog_contracts.sql'
 DIGEST = hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
@@ -20,6 +20,8 @@ class Fake:
             return self.overrides[step]
         if step == 'identity':
             return SqlReply(True, 'odbcpp_pilot|' + CREATOR)
+        if step == 'schema_usage':
+            return SqlReply(True, 'true')
         if step.startswith('collision_'):
             return SqlReply(True, '0')
         if step.startswith('cleanup_'):
@@ -60,6 +62,102 @@ class ProvisionedCatalogFixtureTests(unittest.TestCase):
             self.assertEqual('blocked', result['phase'])
             self.assertTrue(result['objects_cleaned']); self.assertTrue(result['activity_verified'])
             self.assertIsNone(result['cases'])
+
+    def test_edge_profile_escapes_exact_names_and_preserves_inventory(self):
+        f = Fake(); objects, cases = PROFILES['primary_key_edges']
+        fixture = FIXTURE.with_name('primary_key_edges.sql')
+        digest = hashlib.sha256(fixture.read_bytes()).hexdigest()
+        f.summary = {'cases': list(cases), 'passed': 5, 'failed': 0}
+        result = CatalogFixture(sql=f.sql, tests=lambda cases, seconds: f.summary, record=f.events.append, clock=lambda: f.time,
+            deadline=180, cleanup_deadline=240, fixture=fixture, fixture_digest=digest,
+            profile='primary_key_edges').run()
+        self.assertEqual('qualified', result['phase'])
+        self.assertEqual(list(objects), result['created'])
+        self.assertTrue(result['objects_cleaned']); self.assertTrue(result['activity_verified'])
+        self.assertEqual(list(cases), f.events[0]['cases'])
+        queries = dict((step, query) for step, query, _ in f.calls)
+        self.assertIn("a\"b%''_", queries['collision_tables'])
+        self.assertIn("a\"b%''_", queries['owner_' + QUOTED_KEY])
+        self.assertIn('a""b%', queries['grant_' + QUOTED_KEY])
+        self.assertIn('a""b%', queries['drop_' + QUOTED_KEY])
+        self.assertTrue(queries['drop_' + QUOTED_KEY].endswith(' RESTRICT;'))
+        self.assertFalse(any('CASCADE' in q or 'EXECUTE ON' in q or 'CALL ' in q for q in queries.values()))
+        self.assertEqual(2, len(edge_statements(fixture, digest)))
+
+    def test_edge_usage_refusal_occurs_before_creation(self):
+        f = Fake(); f.overrides['schema_usage'] = SqlReply(True, 'false')
+        fixture = FIXTURE.with_name('primary_key_edges.sql')
+        result = CatalogFixture(sql=f.sql, tests=lambda cases, seconds: f.summary, record=f.events.append, clock=lambda: f.time,
+            deadline=180, cleanup_deadline=240, fixture=fixture,
+            fixture_digest=hashlib.sha256(fixture.read_bytes()).hexdigest(),
+            profile='primary_key_edges').run()
+        self.assertEqual('schema_usage_unverified', result['reason'])
+        self.assertEqual([], result['created'])
+        self.assertFalse(any(step.startswith('create_') for step, _, _ in f.calls))
+        self.assertTrue(result['objects_cleaned']); self.assertTrue(result['activity_verified'])
+
+    def edge_run(self, f):
+        fixture = FIXTURE.with_name('primary_key_edges.sql')
+        return CatalogFixture(sql=f.sql, tests=lambda cases, seconds: f.summary,
+            record=f.events.append, clock=lambda: f.time, deadline=180,
+            cleanup_deadline=240, fixture=fixture,
+            fixture_digest=hashlib.sha256(fixture.read_bytes()).hexdigest(),
+            profile='primary_key_edges').run()
+
+    def test_edge_uncertain_or_late_second_create_preserves_all_objects(self):
+        for late in (False, True):
+            f = Fake(); original = f.sql
+            def sql(step, query, seconds):
+                if step == 'create_' + QUOTED_KEY:
+                    if late:
+                        f.time = 181
+                        return SqlReply(True)
+                    return SqlReply(False)
+                return original(step, query, seconds)
+            f.sql = sql
+            result = self.edge_run(f)
+            self.assertEqual([EDGE_OBJECTS[0]], result['created'])
+            self.assertEqual([QUOTED_KEY], result['uncertain_creations'])
+            self.assertEqual('cleanup_unverified', result['phase'])
+            self.assertFalse(any(step.startswith('drop_') for step, _, _ in f.calls))
+            self.assertIsNone(result['cases'])
+
+    def test_edge_second_grant_failure_cleans_confirmed_creations(self):
+        f = Fake(); f.overrides['grant_' + QUOTED_KEY] = SqlReply(False)
+        result = self.edge_run(f)
+        self.assertEqual('sql_step_failed', result['reason'])
+        self.assertEqual(list(EDGE_OBJECTS), result['created'])
+        self.assertTrue(result['objects_cleaned']); self.assertTrue(result['activity_verified'])
+        self.assertEqual(['drop_' + n for n in reversed(EDGE_OBJECTS)],
+            [step for step, _, _ in f.calls if step.startswith('drop_')])
+        self.assertIsNone(result['cases'])
+
+    def test_edge_rejects_old_incomplete_duplicate_or_substituted_inventory(self):
+        cases = list(PROFILES['primary_key_edges'][1])
+        for inventory in (list(CASES), cases[:-1], cases[:-1] + [cases[0]],
+                          cases[:-1] + ['RedshiftRealTest.ConnectionTestSubstitute']):
+            f = Fake(); f.summary = {'cases': inventory, 'passed': len(inventory), 'failed': 0}
+            result = self.edge_run(f)
+            self.assertEqual('invalid_gtest_inventory', result['reason'])
+            self.assertTrue(result['objects_cleaned']); self.assertTrue(result['activity_verified'])
+
+    def test_edge_quoted_owner_mismatch_blocks_drop(self):
+        f = Fake(); f.summary = {'cases': list(PROFILES['primary_key_edges'][1]), 'passed': 5, 'failed': 0}
+        f.overrides['owner_' + QUOTED_KEY] = SqlReply(True, 'other_owner|r')
+        result = self.edge_run(f)
+        self.assertEqual('cleanup_unverified', result['phase'])
+        self.assertFalse(any(step.startswith('drop_') for step, _, _ in f.calls))
+        self.assertFalse(result['objects_cleaned'])
+
+    def test_edge_usage_exact_true_representation_and_failures(self):
+        for reply in (SqlReply(True, 't'), SqlReply(True, ''), SqlReply(True, 'NULL'), SqlReply(False)):
+            f = Fake(); f.overrides['schema_usage'] = reply
+            result = self.edge_run(f)
+            self.assertIn(result['reason'], ('schema_usage_unverified', 'sql_step_failed'))
+            self.assertFalse(result['created'])
+        f = Fake(); f.overrides['schema_usage'] = SqlReply(True, '  true  ')
+        f.summary = {'cases': list(PROFILES['primary_key_edges'][1]), 'passed': 5, 'failed': 0}
+        self.assertEqual('qualified', self.edge_run(f)['phase'])
 
     def test_modern_primary_key_profile_creates_only_parent_and_runs_fixed_new_inventory(self):
         f = Fake(); objects, cases = PROFILES['modern_primary_key']

@@ -185,6 +185,7 @@ protected:
   
   void modern_primary_key_contract(bool use_executor, bool invalid_names = false, bool legacy = false);
   void odbc_primary_key_mode_contract(const char* explicit_mode);
+  void odbc_primary_key_edge_contract(const char* mode, bool quoted);
   std::string connection_string_;
 };
 
@@ -476,6 +477,99 @@ TEST_F(RedshiftRealTest, OdbcPrimaryKeyExplicitLegacyOptionContract) {
 
 TEST_F(RedshiftRealTest, OdbcPrimaryKeyDefaultShowOptionContract) {
   odbc_primary_key_mode_contract(nullptr);
+}
+
+// Future wider-fixture scope only: no DDL, grants or automatic admission.
+void RedshiftRealTest::odbc_primary_key_edge_contract(const char* mode, bool quoted) {
+  const auto base = rs::odbc::ConnectionString::parse(connection_string_);
+  ASSERT_FALSE(base.contains("REDSHIFTCATALOGMODE"));
+  for (const auto* field : {"SERVER", "PORT", "DATABASE", "UID", "PWD", "SSLCAFILE"}) {
+    ASSERT_TRUE(base.contains(field));
+    ASSERT_TRUE(!base.at(field).empty());
+    ASSERT_TRUE(base.at(field).find('\0') == std::string::npos);
+  }
+  ASSERT_TRUE(base.at("DATABASE") == "odbcpp_pilot");
+  ASSERT_TRUE(base.at("UID") == "odbcpp_pilot_test");
+  ASSERT_TRUE(std::string_view(mode) == "SHOW" || std::string_view(mode) == "LEGACY");
+  connection_string_ += ";RedshiftCatalogMode=";
+  connection_string_ += mode; connection_string_ += ';';
+  ASSERT_TRUE(connect());
+  constexpr char database[] = "odbcpp_pilot";
+  constexpr char schema[] = "odbcpp_fixture";
+  // Stored identifier bytes, not SQL-delimited/escaped strings. No interpolation.
+  constexpr char quoted_table[] = "m2_pk_quote_20261004_c01.a\"b%'_";
+  constexpr char no_key_table[] = "m2_pk_none_20261004_c01";
+  constexpr char constraint[] = "m2_pk_quote_constraint_20261004_c01.a\"b%_";
+  const char* table = quoted ? quoted_table : no_key_table;
+  constexpr std::array<CatalogField, 6> fields{{
+      {"table_cat", SQL_VARCHAR}, {"table_schem", SQL_VARCHAR},
+      {"table_name", SQL_VARCHAR}, {"column_name", SQL_VARCHAR},
+      {"key_seq", SQL_SMALLINT}, {"pk_name", SQL_VARCHAR}}};
+  // Existing helper retains the original failure and makes one SELECT1 recovery,
+  // never catalog replay, mode fallback or fresh-connection retry.
+  ASSERT_TRUE(catalog_succeeded(SQLPrimaryKeys(hstmt_,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(database)), SQL_NTS,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema)), SQL_NTS,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(table)), SQL_NTS)));
+  expect_catalog_fields(fields);
+  ASSERT_FALSE(HasFatalFailure());
+  if (quoted) {
+    constexpr std::array<const char*, 2> columns{"key\"b", "key.a"};
+    for (std::size_t row = 0; row < columns.size(); ++row) {
+      ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+      const std::array<const char*, 6> expected{
+          database, schema, quoted_table, columns[row], nullptr, constraint};
+      for (SQLUSMALLINT column = 1; column <= 6; ++column) {
+        SQLLEN indicator = SQL_NULL_DATA;
+        if (column == 5) {
+          SQLSMALLINT sequence = -1;
+          ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, column, SQL_C_SSHORT,
+              &sequence, sizeof(sequence), &indicator));
+          ASSERT_NE(SQL_NULL_DATA, indicator);
+          EXPECT_EQ(static_cast<SQLLEN>(sizeof(sequence)), indicator);
+          EXPECT_EQ(static_cast<SQLSMALLINT>(row + 1), sequence);
+        } else {
+          std::array<char, 1024> value{};
+          ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, column, SQL_C_CHAR, value.data(),
+              static_cast<SQLLEN>(value.size()), &indicator));
+          ASSERT_NE(SQL_NULL_DATA, indicator);
+          EXPECT_EQ(static_cast<SQLLEN>(std::strlen(expected[column - 1])), indicator);
+          EXPECT_STREQ(expected[column - 1], value.data());
+        }
+      }
+    }
+  }
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+  // One success-path recovery statement, with scalar and typed-NULL output.
+  // Per-operation15s timeout remains; future runner supplies its outer bound.
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(
+      const_cast<char*>("SELECT 1, CAST(NULL AS INTEGER)")), SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  SQLINTEGER scalar = -1; SQLLEN indicator = -9;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 1, SQL_C_SLONG,
+      &scalar, sizeof(scalar), &indicator));
+  EXPECT_EQ(1, scalar); EXPECT_EQ(static_cast<SQLLEN>(sizeof(scalar)), indicator);
+  SQLINTEGER null_sentinel = 73; indicator = -9;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 2, SQL_C_SLONG,
+      &null_sentinel, sizeof(null_sentinel), &indicator));
+  EXPECT_EQ(SQL_NULL_DATA, indicator); EXPECT_EQ(73, null_sentinel);
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+}
+
+TEST_F(RedshiftRealTest, OdbcPrimaryKeyNoKeyShowContract) {
+  odbc_primary_key_edge_contract("SHOW", false);
+}
+TEST_F(RedshiftRealTest, OdbcPrimaryKeyNoKeyLegacyContract) {
+  odbc_primary_key_edge_contract("LEGACY", false);
+}
+TEST_F(RedshiftRealTest, OdbcPrimaryKeyQuotedShowContract) {
+  odbc_primary_key_edge_contract("SHOW", true);
+}
+TEST_F(RedshiftRealTest, OdbcPrimaryKeyQuotedLegacyContract) {
+  odbc_primary_key_edge_contract("LEGACY", true);
 }
 
 // FUTURE proof only: separately admitted fixture/endpoint, never auto-enabled.

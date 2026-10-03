@@ -18,11 +18,18 @@ PARENT = 'm2_catalog_parent_20261003_c01'
 CHILD = 'm2_catalog_child_20261003_c01'
 PROCEDURE = 'sp_m2_catalog_modes_20261003_c01'
 OBJECTS = (PARENT, CHILD, PROCEDURE)
+NO_KEY = 'm2_pk_none_20261004_c01'
+QUOTED_KEY = "m2_pk_quote_20261004_c01.a\"b%'_"
+EDGE_OBJECTS = (NO_KEY, QUOTED_KEY)
 CASES = tuple('RedshiftRealTest.' + n for n in (
     'ConnectionTest', 'CompositePrimaryKeyCatalogContract',
     'CompositeForeignKeyCatalogContract', 'ProcedureCatalogContract',
     'ProcedureParameterCatalogContract'))
 PROFILES = {
+    'primary_key_edges': (EDGE_OBJECTS, tuple('RedshiftRealTest.' + n for n in (
+        'ConnectionTest', 'OdbcPrimaryKeyNoKeyShowContract',
+        'OdbcPrimaryKeyNoKeyLegacyContract', 'OdbcPrimaryKeyQuotedShowContract',
+        'OdbcPrimaryKeyQuotedLegacyContract'))),
     # Distinct future mode/ODBC proof; requires a fresh owner-reviewed admission.
     'primary_key_modes': ((PARENT,), tuple('RedshiftRealTest.' + n for n in (
         'ConnectionTest', 'LegacyPrimaryKeyExecutionContract',
@@ -71,11 +78,37 @@ def statements(path: Path, digest: str):
     return tuple(result)
 
 
+def table_reference(name):
+    if name in EDGE_OBJECTS:
+        return SCHEMA + '."' + name.replace('"', '""') + '"'
+    return SCHEMA + '.' + name
+
+
+def literal_name(name):
+    return name.replace("'", "''")
+
+
+def edge_statements(path, digest):
+    if path.is_symlink():
+        raise FixtureBlocked('fixture_changed')
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != digest:
+        raise FixtureBlocked('fixture_changed')
+    text = data.decode('utf-8')
+    result = []
+    for name in EDGE_OBJECTS:
+        start = text.index('CREATE TABLE ' + (SCHEMA + '.' + name if name == NO_KEY else table_reference(name)) + ' (')
+        end = text.index(';', start) + 1
+        result.append(text[start:end])
+    return tuple(result)
+
+
 class CatalogFixture:
     def __init__(self, *, sql, tests, record, clock, deadline, cleanup_deadline,
                  fixture, fixture_digest, profile='catalog_contracts'):
         if not isinstance(profile, str) or profile not in PROFILES:
             raise FixtureBlocked('unknown_fixed_fixture_profile')
+        self.profile = profile
         self.objects, self.cases = PROFILES[profile]
         self.sql, self.tests, self.record, self.clock = sql, tests, record, clock
         self.deadline, self.cleanup_deadline = deadline, cleanup_deadline
@@ -131,7 +164,7 @@ class CatalogFixture:
                 0 < self.deadline - now <= 180 and
                 0 < self.cleanup_deadline - self.deadline <= 60):
             raise FixtureBlocked('invalid_absolute_deadlines')
-        ddl = dict(zip(OBJECTS, statements(self.fixture, self.fixture_digest)))
+        ddl = dict(zip(EDGE_OBJECTS, edge_statements(self.fixture, self.fixture_digest))) if self.profile == 'primary_key_edges' else dict(zip(OBJECTS, statements(self.fixture, self.fixture_digest)))
         # Callback must fsync consumed admission before returning. No SQL if it fails.
         self.record({'event': 'consumed', 'cases': list(self.cases), 'objects': list(self.objects)})
         created, uncertain = [], []
@@ -142,11 +175,14 @@ class CatalogFixture:
             if self._sql('identity', 'SELECT current_database(),TRIM(current_user);') != DATABASE + '|' + CREATOR:
                 raise FixtureBlocked('identity_mismatch')
             identity_verified = True
-            table_names = "','".join(n for n in self.objects if n != PROCEDURE)
+            table_names = "','".join(literal_name(n) for n in self.objects if n != PROCEDURE)
             if self._sql('collision_tables', "SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='odbcpp_fixture' AND c.relname IN ('" + table_names + "');") != '0':
                 raise FixtureBlocked('fixture_collision')
             if PROCEDURE in self.objects and self._sql('collision_procedures', "SELECT COUNT(*) FROM pg_proc_info p JOIN pg_namespace n ON p.pronamespace=n.oid WHERE n.nspname='odbcpp_fixture' AND p.proname='" + PROCEDURE + "';") != '0':
                 raise FixtureBlocked('fixture_collision')
+            if self.profile == 'primary_key_edges':
+                if self._sql('schema_usage', "SELECT has_schema_privilege('odbcpp_pilot_test','odbcpp_fixture','USAGE');") != 'true':
+                    raise FixtureBlocked('schema_usage_unverified')
             for name in self.objects:
                 try:
                     self._sql('create_' + name, ddl[name])
@@ -157,7 +193,7 @@ class CatalogFixture:
                 self.record({'event': 'created', 'object': name})
                 grant = ('GRANT EXECUTE ON PROCEDURE ' + SCHEMA + '.' + name +
                     '(INTEGER,INTEGER) TO ' + PRINCIPAL + ';') if name == PROCEDURE else (
-                    'GRANT SELECT ON ' + SCHEMA + '.' + name + ' TO ' + PRINCIPAL + ';')
+                    'GRANT SELECT ON ' + table_reference(name) + ' TO ' + PRINCIPAL + ';')
                 self._sql('grant_' + name, grant)
                 self.record({'event': 'granted', 'object': name})
             remaining = self.deadline - self.clock()
@@ -189,9 +225,9 @@ class CatalogFixture:
                         expected = CREATOR + '|p|2|23|23'
                         drop = 'DROP PROCEDURE ' + SCHEMA + '.' + name + '(INTEGER,INTEGER);'
                     else:
-                        query = "SELECT u.usename,c.relkind FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid JOIN pg_user u ON c.relowner=u.usesysid WHERE n.nspname='odbcpp_fixture' AND c.relname='" + name + "';"
+                        query = "SELECT u.usename,c.relkind FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid JOIN pg_user u ON c.relowner=u.usesysid WHERE n.nspname='odbcpp_fixture' AND c.relname='" + literal_name(name) + "';"
                         expected = CREATOR + '|r'
-                        drop = 'DROP TABLE ' + SCHEMA + '.' + name + ' RESTRICT;'
+                        drop = 'DROP TABLE ' + table_reference(name) + ' RESTRICT;'
                     owner = '|'.join(part.strip() for part in self._sql('owner_' + name, query, True).split('|'))
                     if owner != expected:
                         raise FixtureBlocked('fixture_ownership_unverified')
