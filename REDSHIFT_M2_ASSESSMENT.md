@@ -1,7 +1,8 @@
 # Redshift M2 compatibility assessment
 
-Working assessment based on6901734, 2026-10-03. Its full platform CI37082777348
-is green. M2 is not closed; official feature/behavior inventories remain partial.
+Bounded assessment at8614ce0, 2026-10-03. Static reporting CI37084444992 and
+exact-test CI37087097081 are green across required gates. Full M2/beta scope is
+not closed; official feature/behavior inventories remain partial.
 This document proposes the next finite proof inventory, not an approved beta
 scope, feature exception or full Redshift compatibility claim.
 
@@ -36,7 +37,7 @@ are separate facts; no passed PostgreSQL job qualifies Redshift behavior.
   the proved profile. Shared/external/cross-database catalogs, fetch modes and
   official-driver option/behavior parity remain tracked in RS1–RS7, not waived.
 
-## First concrete profile defects to resolve
+## Corrected static profile and remaining defects
 
 The bounded static-profile correction selects Redshift policy only through the
 existing explicit immutable profile: numeric/decimal precision38 and scale0–37,
@@ -75,6 +76,109 @@ not execution on Redshift. SQLGetFunctions currently advertises all eight when
 the backend has a catalog facet. A bounded correction must reconcile the claim
 with each request's supported implementation without treating a pending parity
 item as a user-approved omission.
+
+## Complete provider capability grouping
+
+Source audit at8614ce0 covers every field of `BackendCapabilities`, not every
+possible SQLGetInfo identifier or official-driver option. SQLGetInfo string and
+numeric mappings are in `odbc/odbc_api.cpp:327` and `:1519`; provider values are
+in `core/database/postgres/pg_capabilities.cpp`. A returned flag is a claim, not
+proof of server behavior.
+
+| Provider field group | Advertised Redshift values | Evidence/disposition |
+|---|---|---|
+| dbms_name | Amazon Redshift | Explicit composition; independent live identity evidence |
+| identifier_quote, catalog_separator/term, schema/table/procedure_term, pattern_escape | quote, dot, database/schema/table/procedure, backslash | Inherited lexical conventions;005 selected escaped patterns only |
+| max_identifier_length, identifier_case, quoted_identifier_case |127, lower, sensitive |127 corrected/tested; configured case semantics unqualified |
+| catalog_at_start, catalog_names | At start; names supported | Current-database fixture does not prove cross-database names |
+| column_aliases, describe_parameters | Both true | Selected aliases/prepared scalar only; describe-parameter fidelity pending |
+| order_by_expressions/requires_select, correlation_names, group_by | True/false, any, unrelated | Ordered rows proved; expression/grouping breadth pending |
+| null_collation, concat_null_yields_null, non_nullable_columns | High, true, true | NULL retrieval does not qualify ordering/concatenation/non-null constraints |
+| read_only, integrity, like_escape, outer_joins, procedures | False, true, true, true, true | Escaped discovery partly proved; write/integrity/join/routine semantics pending |
+| create_index, drop_index | Both false | Corrected static reporting, direct ODBC regression |
+| insert_literals/searched, select_into | All true | Inherited; no general ODBC write qualification |
+| sql92_entry, union_distinct/all | All true | UNION DISTINCT in001; broader conformance unqualified |
+| schema_in_dml/procedures/table_definitions/index_definitions/privileges | All true except indexes | Corrected index bit tested; other usage masks pending |
+
+Transaction claims are separate: `pg_transactions.cpp:6` advertises transactions,
+transactional DDL, default READ_COMMITTED and all four ODBC isolation bits.
+SQLGetInfo additionally reports cursor preservation across commit/rollback.
+These are inherited and unqualified on Redshift. Command aliases must not be
+mistaken for distinct effective isolation semantics. Test effective isolation,
+rollback/write/DDL behavior and result lifetime before changing or qualifying
+these claims.
+
+SQLGetFunctions lists shared handle/attribute/descriptor, connection, execution,
+binding/fetch, diagnostics, transaction and information entry points in
+`odbc_api.cpp:458`. Catalog support is gated facet-wide at`:1866`, so all eight
+catalog APIs in the matrix above advertise support despite differing builder
+compatibility. A complete release-level API/option inventory is still required;
+this finite provider matrix does not stand in for RS4/RS5 source parity.
+
+## Advertised API-to-evidence matrix
+
+The49 entries in `is_supported_function()` at8614ce0 are partitioned below.
+This covers our current function advertisement, not official-driver exports,
+all attributes/options, or every return/state branch. Wide/legacy mapping parity
+and the upstream RS4/RS5 inventory stay separate work. A supported entry does not
+promise every optional mode; forward-only fetch is the current shared profile.
+
+| Group / all advertised members | Redshift evidence disposition |
+|---|---|
+| SQLAllocHandle, SQLFreeHandle, SQLFreeStmt, SQLCloseCursor | Selected successful lifecycle in existing cases; complete state/error matrix pending |
+| SQLGetEnvAttr, SQLSetEnvAttr, SQLGetStmtAttr, SQLSetStmtAttr | ODBC version/query timeout setup used; getter/attribute breadth pending |
+| SQLConnect, SQLDriverConnect, SQLDisconnect, SQLGetConnectAttr, SQLSetConnectAttr | DriverConnect/disconnect and timeout setup proved; SQLConnect/getter/other attributes unqualified |
+| SQLCopyDesc, SQLGetDescField, SQLGetDescRec, SQLSetDescField, SQLSetDescRec | Shared offline contracts; no Redshift descriptor workflow proof yet |
+| SQLColAttribute, SQLDescribeCol, SQLNumResultCols | Metadata005 proves18 result fields via NumResultCols; DescribeCol/attributes await exact type cases |
+| SQLGetInfo, SQLGetFunctions, SQLGetTypeInfo | Static direct-ODBC/profile regressions; field-specific server interpretation pending |
+| SQLNativeSql | Shared translation tests; translated execution/Redshift dialect breadth pending |
+| SQLBindParameter, SQLDescribeParam, SQLNumParams | Selected integer prepared binding proved; describe/count APIs and other parameter types pending |
+| SQLPrepare, SQLExecute, SQLExecDirect, SQLMoreResults, SQLRowCount | Selected direct/prepared execution proved; multiple results and rowcount contracts pending |
+| SQLBindCol, SQLFetch, SQLFetchScroll, SQLGetData | Forward fetch/selected GetData proved; BindCol, scroll modes and broader conversions pending |
+| SQLError, SQLGetDiagField, SQLGetDiagRec | Selected SQLGetDiagRec error recovery/invalid credentials; legacy/error-chain/field breadth pending |
+| SQLEndTran | Shared transaction contract only; Redshift transaction qualification pending |
+| SQLTables, SQLColumns, SQLPrimaryKeys, SQLForeignKeys, SQLStatistics, SQLProcedures, SQLProcedureColumns, SQLSpecialColumns | Request-specific dispositions in the eight-catalog matrix; only local Tables/Columns proved |
+
+## Candidate beta profile and checkpoint dependencies
+
+This is a proposal, not a frozen beta or user-approved feature exception:
+
+- Deployment: existing Serverless workgroup, verified TLS, bounded ordinary-user
+  local schema/table workflows first. Provisioned/shared/external/cross-database
+  applicability stays explicit future evidence, not assumed equivalence.
+- Authentication: database credentials as the baseline; external fixed-role
+  temporary credentials have selected proof. Native discovery/renewal/federation
+  remain RS2 work and cannot be advertised from the external-launcher result.
+- Types: integer, selected exact decimal, Unicode text, date/time/timestamp and
+  typed NULL contracts must pass the finite cases. VARBYTE and broader type/zone
+  behavior need their own source/fixture review before a support decision.
+- Platforms/applications: Linux/unixODBC, Windows DM and macOS/iODBC Unicode
+  targets remain planned live acceptance gates, plus selected Power BI/Excel
+  workflows. Current macOS endpoint evidence and build/platform CI are separate.
+- Metadata: local Tables/Columns have a bounded baseline; remaining advertised
+  catalogs and transaction/profile claims are blockers to a truthful frozen
+  surface. SHOW/shared/fetch/legacy/official-option breadth remains RS1–RS7.
+
+The following checkpoint estimates are engineering effort after the selected
+fixture/profile is ready, not calendar elapsed time, paid runtime or guarantees:
+
+| Checkpoint | Deliverable / stop | Initial estimate / dependency |
+|---|---|---|
+| M3-T1 | One reviewed exact five-case Redshift batch; triage failures into evidenced fixes |0.5–1 day qualification/triage; fixes sized separately. Test code is prepared; paid admission remains separate |
+| M3-C1 | Resolve Statistics/SpecialColumns index contracts and diagnose remaining ordinary-user key/routine catalogs |1–2 days source/contract diagnostics, then2–4 days selected repairs; depends on actual query evidence and fixture permissions |
+| M3-P1 | Audit remaining type/identifier/integrity/isolation claims and freeze truthful supported profile |1–2 days; depends on C1/type evidence and effective server settings |
+| M3-A1 | Native selected auth decision/provider work and renewal/cancellation evidence |1 day finite design/inventory, implementation estimate after provider scope; external token injection alone does not satisfy it |
+| M3-G1 | Selected platform/application acceptance and packaging evidence |2–3 days preparation/first runs, plus external application/runner availability; broad liveOS migration belongs to RS9 |
+| RP1-I1 | Pinned official feature/options/behavior inventory with applicability and differential-test design |2–4 days bounded inventory review; stop with prioritized count/unknowns and separate implementation estimates, not exhaustive parity closure |
+| RS9-I1 | Shared remote admission/cleanup design and first live CI platform plan |1–2 days design/source review; implementation sized separately, no new runner/IAM/spend authority implied |
+
+The original M3 estimate8–12 days remains provisional and cannot include unknown
+native auth, exhaustive RP1 or all RS9 work by assumption. Re-estimate the selected
+beta after C1/P1/A1 decisions; these checkpoints are not additive promises or
+approved omissions. RS1–RS7 remain scheduled parity obligations; RS8 requires its
+own later approved design. User scope acceptance is needed before calling this
+candidate a frozen beta, but no question or new authority is required to record
+the completed bounded assessment now.
 
 ## Runtime type evidence and proposed finite inventory
 
@@ -139,21 +243,26 @@ Do not hide that unknown work inside M2's baseline estimate.
 
 Independent source/evidence review at8550fe7 accepted that001/005/009 collectively
 cover the selected real-endpoint G1 behaviors. This is cross-artifact evidence,
-not one combined live acceptance on8550fe7. Before formal closure, retain a
-manifest binding each case to its tested source/binary, profile and private result;
-no paid rerun solely to consolidate evidence is needed. The8550fe7 platform CI
-remains a separate gate.
+not one combined live acceptance on8550fe7. A protected supplemental
+`g1-evidence-manifest-20261003.json` now binds001/005/009 request/result raw hashes,
+reviewed executable hashes, profile, case counts and cleanup outcomes. Recorded
+source revisions are owner build provenance, not reproducible-build attestations;
+no paid rerun solely to consolidate evidence is needed. The8550fe7 and8614ce0 platform CI
+passes remain separate evidence from those earlier live artifacts.
 
-Remaining finite assessment work: freeze the selected type/conversion dispositions,
-complete the advertised API/capability claim matrix, record deployment/auth/
-platform/application beta proposal and RS1–RS7 boundaries, and size M3/RP1
-checkpoints with dependencies. Exhaustive official parity remains a later phase;
+The bounded assessment now records selected type/conversion dispositions,
+all49 advertised APIs and provider capability groups, the deployment/auth/
+platform/application proposal, RS1–RS7 boundaries, and sized finite M3/RP1
+checkpoints with dependencies. Independent stopping review on2026-10-03 accepted this bounded assessment
+checkpoint. Full M2, frozen beta, parity and new paid admission remain open. Exhaustive official parity remains a later phase;
 this proposal must neither claim it nor silently approve exceptions.
 
 ## Stopping point
 
-Stop this bounded phase when G1 evidence is reviewed, the compatibility matrices
-and beta proposal are recorded, and M3/RP1 work is sized into finite checkpoints.
+The agreed bounded assessment stopping point is reached: G1 behavior evidence
+was reviewed, compatibility matrices and the beta proposal are recorded, and
+M3/RP1 work is sized into finite checkpoints. Pause the current implementation
+heartbeat at this checkpoint; a subsequent phase requires its own finite scope.
 M3 application/platform/type/catalog gates, RP1 full parity and medium-term RS9
 live CI remain distinct deliverables. Advanced S3 transfer requires its own
 approved design. Existing spending authority, protected credentials, cumulative
