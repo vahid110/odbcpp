@@ -202,9 +202,10 @@ TEST(CatalogQueryTest, ExplicitRedshiftProfileIsolatesColumnsFromPostgresDomainS
   using namespace rs::core::database::postgres;
   PgDatabaseConnection pg;
   PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
-  // The new lease execution boundary does not enable a physical catalog path.
+  // Execution is exposed only by the explicit Redshift profile; other catalog
+  // requests still use their independently selected query contracts.
   EXPECT_EQ(nullptr, pg.catalog_execution());
-  EXPECT_EQ(nullptr, redshift.catalog_execution());
+  EXPECT_NE(nullptr, redshift.catalog_execution());
   const auto pg_query = pg.catalog_query(ColumnsCatalogRequest{});
   const auto rs_query = redshift.catalog_query(ColumnsCatalogRequest{});
   ASSERT_FALSE(pg_query.has_error());

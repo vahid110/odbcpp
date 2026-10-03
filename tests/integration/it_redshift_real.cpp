@@ -182,6 +182,7 @@ protected:
   SQLHDBC hdbc_ = nullptr;
   SQLHSTMT hstmt_ = nullptr;
   
+  void modern_primary_key_contract(bool use_executor);
   std::string connection_string_;
 };
 
@@ -390,7 +391,7 @@ TEST_F(RedshiftRealTest, CompositePrimaryKeyCatalogContract) {
 // Pinned upstream56d35297f9bee0cc31c0148581c87ca455639a39:
 // rsMetadataAPIHelper.cpp:186; rsMetadataServerProxyHelper.cpp:806-810;
 // rsutil.c:16303-16325 (Unspecified OID0 alternative, not default VARCHAR1043).
-TEST_F(RedshiftRealTest, ModernPrimaryKeyShowUnspecifiedContract) {
+void RedshiftRealTest::modern_primary_key_contract(bool use_executor) {
   using namespace rs::core::database;
   using namespace rs::core::database::postgres;
   const auto fields = rs::odbc::ConnectionString::parse(connection_string_);
@@ -442,12 +443,21 @@ TEST_F(RedshiftRealTest, ModernPrimaryKeyShowUnspecifiedContract) {
       {plan->schema, QueryParameterType::Unspecified},
       {plan->table, QueryParameterType::Unspecified}};
   const auto deadline = rs::util::make_deadline(std::chrono::seconds{15});
-  auto raw = session.execute_prepared(
-      "SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE ?.?.?;", parameters, deadline);
+  // Keep the previously qualified direct exchange and the future backend facet
+  // as distinct GoogleTests with identical fixed owning-output assertions.
+  auto result = [&]() -> BackendResult<QueryResult> {
+    if (use_executor) {
+      auto* executor = session.catalog_execution();
+      if (!executor) return {rs::util::DbErrorCode::UnsupportedFeature,
+                            "Redshift catalog execution facet missing"};
+      return executor->execute_catalog(PrimaryKeysCatalogRequest{
+          plan->database, plan->schema, plan->table}, deadline);
+    }
+    return normalize_redshift_primary_keys(*plan, session.execute_prepared(
+        "SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE ?.?.?;", parameters, deadline));
+  }();
   // Trusted private XML retains the original server diagnostic for this fixed
   // statement. Connection settings and credential values are never printed.
-  ASSERT_TRUE(raw) << (raw ? "" : raw.backend_error().message);
-  auto result = normalize_redshift_primary_keys(*plan, std::move(raw));
   ASSERT_TRUE(result) << (result ? "" : result.backend_error().message);
   session.disconnect(); // Assertions below use the independent owning snapshot.
   ASSERT_EQ(6u, result->columns.size());
@@ -477,6 +487,14 @@ TEST_F(RedshiftRealTest, ModernPrimaryKeyShowUnspecifiedContract) {
   EXPECT_TRUE(result->cell_errors.empty());
   EXPECT_TRUE(result->additional_results.empty());
   EXPECT_FALSE(result->error);
+}
+
+TEST_F(RedshiftRealTest, ModernPrimaryKeyShowUnspecifiedContract) {
+  modern_primary_key_contract(false);
+}
+
+TEST_F(RedshiftRealTest, ModernPrimaryKeyExecutionContract) {
+  modern_primary_key_contract(true);
 }
 
 TEST_F(RedshiftRealTest, CompositeForeignKeyCatalogContract) {

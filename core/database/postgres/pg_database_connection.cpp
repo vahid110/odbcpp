@@ -1,6 +1,7 @@
 #include "pg_database_connection.h"
 #include "pg_backend_provider.h"
 #include "pg_protocol_parser.h"
+#include "redshift_primary_key_contract.h"
 
 #include <algorithm>
 #include <charconv>
@@ -38,6 +39,50 @@ BackendResult<void> PgDatabaseConnection::check_health(rs::util::Deadline deadli
     return error;
   }
   return BackendResult<void>{snapshot};
+}
+
+BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
+    const CatalogRequest& request, rs::util::Deadline deadline) {
+  if (!is_connected()) {
+    BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::NotConnected),
+                       "Database session is not connected"};
+    error.operation = BackendOperation::ExecuteCatalog;
+    error.session_state = SessionState::Disconnected;
+    error.disposition = SessionDisposition::Retire;
+    return error;
+  }
+  const auto unsupported = [this] {
+    return local_backend_error(LocalFailure::Unsupported,
+        "Exact modern Redshift primary-key discovery is unavailable",
+        BackendOperation::ExecuteCatalog, session_state());
+  };
+  const auto* keys = std::get_if<PrimaryKeysCatalogRequest>(&request);
+  if (catalog_profile_ != PgCatalogProfile::Redshift || !keys) return unsupported();
+  auto plan = redshift_primary_key_plan(keys->catalog, keys->schema, keys->table);
+  if (!plan) {
+    return local_backend_error(LocalFailure::InvalidInput,
+        "Exact database, schema and table identifiers are required",
+        BackendOperation::ExecuteCatalog, session_state());
+  }
+  // Only authenticated ParameterStatus selects this path. No discovery SQL,
+  // default identifiers or inherited PostgreSQL fallback is permitted.
+  const auto capability = get_parameter("show_discovery");
+  if (capability.empty() || capability.size() > 10 ||
+      capability.find_first_not_of("0123456789") != std::string::npos)
+    return unsupported();
+  std::uint32_t version = 0;
+  const auto parsed = std::from_chars(capability.data(),
+      capability.data() + capability.size(), version);
+  if (parsed.ec != std::errc{} || parsed.ptr != capability.data() + capability.size() ||
+      version < 4) return unsupported();
+  const std::vector<QueryParameter> parameters{
+      {plan->database, QueryParameterType::Unspecified},
+      {plan->schema, QueryParameterType::Unspecified},
+      {plan->table, QueryParameterType::Unspecified}};
+  // Prepared execution (including any existing type resolution) retains the
+  // caller's absolute deadline. Native errors and final snapshots stay owning.
+  return normalize_redshift_primary_keys(*plan, execute_prepared(
+      "SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE ?.?.?;", parameters, deadline));
 }
 
 BackendResult<ResolvedTypeMap> PgDatabaseConnection::resolve_types(

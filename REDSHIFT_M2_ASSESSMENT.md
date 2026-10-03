@@ -535,3 +535,41 @@ ModernPrimaryKeyShowUnspecifiedContract is a future GoogleTest using the actual 
 Source inspection exposed a deterministic preparation mismatch: GenericDatabaseConnection retains prepared parameter descriptions, while the pure PK normalizer rejected every nonempty parameter-description list. The bounded repair accepts only an absent list or exactly three known text-family descriptions, rejects unknown/nontext/wrong-count metadata and keeps input descriptions out of catalog output. Focused owning/snapshot and negative tests cover that change; this is not native server metadata proof. The independently reviewed orchestration profile creates/grants/drops only the exact parent table and runs only ConnectionTest plus the new SHOW proof, never the failed inherited catalog inventory, child table or procedure. No launcher admission or runtime catalog wiring is enabled by these candidates.
 
 Candidate validation passed:259 offline orchestration tests, PostgreSQL/Redshift67 unit targets, full PostgreSQL/UTF16/UCS4 integration and verified TLS, sanitizer unit, future SHOW test registration/build and absent-endpoint rejection. The additional MySQL unsigned INT metadata-to-binary-row regression passed all36 session cases under warning-as-error compilation across PostgreSQL, Redshift, both Unicode profiles and sanitizer builds. These are offline regression/fixture mechanics results, not a configured native SHOW run.
+
+
+## Native SHOW proof and backend execution candidate
+
+Exact-head 9c0f894 platform CI passed every required gate. Separately admitted
+provisioned-modern-pk-001 passed ConnectionTest and
+ModernPrimaryKeyShowUnspecifiedContract (2/2) in 6.324 seconds. The exact parent
+fixture was removed after ownership checks; independent owned session/query
+checks verified cleanup. Independent review accepted this fixed real-session
+SHOW exchange and normalized composite-key assertions. OID0/extra Describe are
+bound source and wire-test evidence plus the accepted exchange, not a captured
+wire trace. Resolver-query occurrence and native widths remain unqualified.
+The original inherited catalog failures remain retained separately.
+
+The next backend-only candidate exposes ICatalogExecution only for the explicit
+immutable Redshift profile and accepts exact PrimaryKeys requests. It validates
+explicit database/schema/table identifiers and authenticated bounded
+show_discovery>=4 before I/O, uses one fixed SHOW with three Unspecified inputs
+and the original caller deadline, then owns normalized output and native errors.
+Unsupported requests/capability never select inherited PostgreSQL SQL. PostgreSQL
+execution facet remains absent. ODBC routing and its autocommit/open-cursor
+semantics are unchanged and need a separate reviewed package; this candidate is
+not a live SQLPrimaryKeys qualification or broader catalog parity claim.
+
+
+Independent source review accepted the backend-only candidate. Eight executor
+GoogleTests cover explicit profile isolation, missing/malformed/old capability,
+invalid exact identifiers and unsupported requests without SQL, unchanged
+parameters/deadline, owning snapshots, native errors and malformed partial
+results without fallback. The future ModernPrimaryKeyExecutionContract reuses
+the exact verified-TLS fixture/output assertions of the direct native proof,
+but calls the actual execution facet. It is a distinct registered GoogleTest;
+no paid inventory or configured run is enabled. Local batch checks passed: eight
+executor, sixteen catalog and seventy-nine lease focused cases; PostgreSQL and
+Redshift 68 unit targets; full PostgreSQL/UTF16/UCS4 integration and verified
+TLS; sanitizer unit; 259 offline orchestration tests; native test registration
+and absent-endpoint rejection. Hosted CI owns Windows/package and pinned MySQL
+gates. No new paid SQL accompanies this backend-only package.

@@ -10,7 +10,7 @@
 namespace rs::core::database::postgres {
 
 // PostgreSQL session with backend-specific metadata discovery.
-class PgDatabaseConnection : public GenericDatabaseConnection, public ITransactionSession, public ICatalogQueries, public ISessionHealth, public ISessionReset {
+class PgDatabaseConnection : public GenericDatabaseConnection, public ITransactionSession, public ICatalogQueries, public ISessionHealth, public ISessionReset, public ICatalogExecution {
 public:
   explicit PgDatabaseConnection(
       std::unique_ptr<rs::core::transport::ITransport> transport = nullptr,
@@ -29,6 +29,12 @@ public:
   const ICatalogQueries* catalog_queries() const noexcept override { return this; }
   rs::util::Result<std::string> catalog_query(
       const CatalogRequest& request) const override;
+
+  ICatalogExecution* catalog_execution() noexcept override {
+    return catalog_profile_ == PgCatalogProfile::Redshift ? this : nullptr;
+  }
+  BackendResult<QueryResult> execute_catalog(
+      const CatalogRequest& request, rs::util::Deadline deadline) override;
 
   std::optional<std::string> normalize_result_value(
       ScalarType type, std::string_view value) const override;
