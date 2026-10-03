@@ -2075,9 +2075,9 @@ TEST_F(BackendContractTest, OwningDateMetadataDescriptorsAndAllRetrievalFormsAgr
     EXPECT_STREQ("date",reinterpret_cast<char*>(name));EXPECT_EQ(4,name_length);
     EXPECT_EQ(SQL_TYPE_DATE,type);EXPECT_EQ(10u,size);EXPECT_EQ(0,digits);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
     SQLHDESC ird{};ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_ROW_DESC,&ird,sizeof(ird),nullptr));
-    for (const auto [field,expected]:{std::pair{SQL_DESC_CONCISE_TYPE,SQL_TYPE_DATE},std::pair{SQL_DESC_TYPE,SQL_DATETIME},
+    for (const auto& [field,expected]:{std::pair{SQL_DESC_CONCISE_TYPE,SQL_TYPE_DATE},std::pair{SQL_DESC_TYPE,SQL_DATETIME},
         std::pair{SQL_DESC_DATETIME_INTERVAL_CODE,SQL_CODE_DATE},std::pair{SQL_DESC_PRECISION,0},std::pair{SQL_DESC_SCALE,0}}) {
-      SQLSMALLINT value=73;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,1,field,&value,0,nullptr));EXPECT_EQ(expected,value);
+      SQLSMALLINT value=73;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,1,static_cast<SQLSMALLINT>(field),&value,0,nullptr));EXPECT_EQ(expected,value);
     }
     SQLULEN descriptor_length{};ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,1,SQL_DESC_LENGTH,&descriptor_length,0,nullptr));EXPECT_EQ(10u,descriptor_length);
     SQLLEN octets{};ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,1,SQL_DESC_OCTET_LENGTH,&octets,0,nullptr));EXPECT_EQ(6,octets);
