@@ -650,7 +650,8 @@ TEST(MySqlSessionTest, DateStructuralMetadataAndRowFaultsRetireWithoutPartialSuc
         auto metadata=date_column_packet();metadata.pop_back();append(*f.transport,metadata,2);
       } else {
         append(*f.transport,{std::byte{2}},1);auto metadata=date_column_packet();
-        if (stage<3) metadata.pop_back();append(*f.transport,metadata,2);
+        if (stage<3) { metadata.pop_back(); }
+        append(*f.transport,metadata,2);
         if (stage>=3) { append(*f.transport,column_packet("neighbor"),3);append(*f.transport,eof_packet(),4); }
       }
       if (stage>=3) {
