@@ -29,6 +29,18 @@ BackendResult<void> PgDatabaseConnection::transaction(
     error.operation = operation;
     return error;
   }
+  const SessionSnapshot expected = action == TransactionAction::Begin
+      ? SessionSnapshot{SessionState::Transaction, SessionDisposition::ResetRequired}
+      : SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable};
+  if (result.session_snapshot() != expected) {
+    disconnect();
+    BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+                       "Unexpected transaction completion state"};
+    error.operation = operation;
+    error.session_state = SessionState::Disconnected;
+    error.disposition = SessionDisposition::Retire;
+    return error;
+  }
   return BackendResult<void>{result.session_snapshot()};
 }
 

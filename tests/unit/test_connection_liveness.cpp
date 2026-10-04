@@ -194,7 +194,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     DescriptionServerError, Utf8ColumnNames, MalformedColumnName, MalformedAdditionalColumnName, Utf8TextCells, NativeCells, MalformedNativeCells, RedshiftVarbyteCells, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
     OwnedErrorIdle, OwnedErrorTransaction, OwnedErrorAborted,
     UnterminatedColumnName, TruncatedColumnMetadata, TrailingColumnMetadata, EmptyColumnName,
-    QueryReadTimeout, PartialQueryWrite, PreparedCommand, PreparedVarbyteParameter, ResetCompletions, TransactionCompletions, QueryAllocationFailure, Md5Authentication
+    QueryReadTimeout, PartialQueryWrite, PreparedCommand, PreparedVarbyteParameter, ResetCompletions, TransactionCompletions, BeginCompletesIdle, BeginCompletesAborted, CommitCompletesTransaction, CommitCompletesAborted, RollbackCompletesTransaction, RollbackCompletesAborted, QueryAllocationFailure, Md5Authentication
   };
 
   explicit ScriptedBackendTransport(
@@ -458,6 +458,18 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('C', completion, extended_query_tag == 'E' ? 0 : std::strlen(completion) + (extended_query_tag == 'N' ? 0 : 1));
       if (extended_query_tag == 'D') append_message('C', completion, std::strlen(completion) + 1);
       append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::BeginCompletesIdle || mode == ResponseMode::BeginCompletesAborted ||
+               mode == ResponseMode::CommitCompletesTransaction || mode == ResponseMode::CommitCompletesAborted ||
+               mode == ResponseMode::RollbackCompletesTransaction || mode == ResponseMode::RollbackCompletesAborted) {
+      // A syntactically valid completion with the wrong action-specific state.
+      // These are protocol fixtures, not assertions about real server behavior.
+      const bool begin = mode == ResponseMode::BeginCompletesIdle || mode == ResponseMode::BeginCompletesAborted;
+      const bool commit = mode == ResponseMode::CommitCompletesTransaction || mode == ResponseMode::CommitCompletesAborted;
+      const char* completion = begin ? "BEGIN" : commit ? "COMMIT" : "ROLLBACK";
+      const char status = mode == ResponseMode::BeginCompletesIdle ? 'I' :
+          mode == ResponseMode::CommitCompletesTransaction || mode == ResponseMode::RollbackCompletesTransaction ? 'T' : 'E';
+      append_message('C', completion, std::strlen(completion) + 1);
+      append_message('Z', &status, 1);
     } else if (mode == ResponseMode::TransactionCompletions) {
       append_message('C', "BEGIN", sizeof("BEGIN")); append_message('Z', "T", 1);
       append_message('C', "COMMIT", sizeof("COMMIT")); append_message('Z', "I", 1);
@@ -1949,8 +1961,12 @@ TEST(BackendTransactionTest, CommandsPreserveCallerDeadline) {
   const auto deadline = rs::util::make_deadline(std::chrono::seconds(5));
   for (const auto action : {TransactionAction::Begin, TransactionAction::Commit,
                             TransactionAction::Rollback}) {
+    backend.snapshot = action == TransactionAction::Begin
+        ? rs::core::database::SessionSnapshot{rs::core::database::SessionState::Transaction, rs::core::database::SessionDisposition::ResetRequired}
+        : rs::core::database::SessionSnapshot{rs::core::database::SessionState::Idle, rs::core::database::SessionDisposition::Reusable};
     const auto result = backend.transaction(action, deadline);
     ASSERT_FALSE(result.has_error());
+    EXPECT_EQ(backend.snapshot, result.session_snapshot());
     EXPECT_EQ(action == TransactionAction::Begin ? "BEGIN"
         : action == TransactionAction::Commit ? "COMMIT" : "ROLLBACK", backend.command);
     EXPECT_EQ(deadline, backend.observed_deadline);
@@ -2006,6 +2022,7 @@ TEST(BackendTransactionTest, PropagatesErrorsAndAllowsSuccessfulRetry) {
     }
   }
   backend.failure.reset();
+  backend.snapshot = {SessionState::Idle, SessionDisposition::Reusable};
   EXPECT_FALSE(backend.transaction(TransactionAction::Rollback, deadline).has_error());
   EXPECT_FALSE(backend.set_transaction_isolation(TransactionIsolation::ReadCommitted, deadline).has_error());
 }
@@ -2147,6 +2164,7 @@ TEST(BackendTransactionTest, OwningFailuresKeepContextAndDetailsAcrossBackendDes
     }
     saved = backend.set_transaction_isolation(TransactionIsolation::Serializable, rs::util::Deadline::max());
     backend.failure.reset();
+    backend.snapshot = {SessionState::Idle, SessionDisposition::Reusable};
     EXPECT_TRUE(backend.transaction(TransactionAction::Rollback, rs::util::Deadline::max()));
   }
   ASSERT_TRUE(saved.has_error());
@@ -3772,18 +3790,13 @@ TEST(BackendResultContractTest, ConnectSnapshotSurvivesLocalReconnectRejectionAn
   EXPECT_EQ(idle, saved.session_snapshot());
 }
 
-TEST(BackendTransactionTest, SuccessAdaptersPreserveReportedSnapshotRatherThanCurrentProbeState) {
+TEST(BackendTransactionTest, IsolationSuccessPreservesReportedSnapshotRatherThanCurrentProbeState) {
   using namespace rs::core::database;
   TransactionProbe backend;
   const auto deadline = rs::util::Deadline::min();
   for (const auto state : {SessionState::Idle, SessionState::Transaction, SessionState::FailedTransaction, SessionState::Unknown}) {
     backend.snapshot = {state, state == SessionState::Idle ? SessionDisposition::Reusable :
         state == SessionState::Unknown ? SessionDisposition::Retire : SessionDisposition::ResetRequired};
-    for (const auto action : {TransactionAction::Begin, TransactionAction::Commit, TransactionAction::Rollback}) {
-      const auto result = backend.transaction(action, deadline);
-      ASSERT_TRUE(result); EXPECT_EQ(backend.snapshot, result.session_snapshot());
-      EXPECT_EQ(deadline, backend.observed_deadline);
-    }
     for (const auto level : transaction_isolations) {
       const auto result = backend.set_transaction_isolation(level, deadline);
       ASSERT_TRUE(result); EXPECT_EQ(backend.snapshot, result.session_snapshot());
@@ -3792,6 +3805,120 @@ TEST(BackendTransactionTest, SuccessAdaptersPreserveReportedSnapshotRatherThanCu
     EXPECT_EQ(SessionState::Disconnected, backend.session_state());
   }
 }
+
+TEST(BackendTransactionTest, TransactionSuccessRequiresActionSpecificFullSnapshot) {
+  using namespace rs::core::database;
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{3});
+  for (const auto action : {TransactionAction::Begin, TransactionAction::Commit, TransactionAction::Rollback}) {
+    const SessionSnapshot expected = action == TransactionAction::Begin
+        ? SessionSnapshot{SessionState::Transaction, SessionDisposition::ResetRequired}
+        : SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable};
+    const auto operation = action == TransactionAction::Begin ? BackendOperation::BeginTransaction :
+        action == TransactionAction::Commit ? BackendOperation::CommitTransaction : BackendOperation::RollbackTransaction;
+    for (const auto state : {SessionState::Disconnected, SessionState::Idle, SessionState::Transaction,
+                             SessionState::FailedTransaction, SessionState::Unknown}) {
+      for (const auto disposition : {SessionDisposition::Reusable, SessionDisposition::ResetRequired,
+                                    SessionDisposition::Retire}) {
+        SCOPED_TRACE(static_cast<int>(action));
+        SCOPED_TRACE(static_cast<int>(state));
+        SCOPED_TRACE(static_cast<int>(disposition));
+        TransactionProbe backend;
+        backend.snapshot = {state, disposition};
+        const auto result = backend.transaction(action, deadline);
+        EXPECT_EQ(1, backend.calls);
+        EXPECT_EQ(deadline, backend.observed_deadline);
+        if (backend.snapshot == expected) {
+          ASSERT_TRUE(result);
+          EXPECT_EQ(expected, result.session_snapshot());
+        } else {
+          ASSERT_TRUE(result.has_error());
+          EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError), result.error());
+          EXPECT_EQ(BackendErrorClass::Protocol, result.backend_error().error_class);
+          EXPECT_EQ(operation, result.backend_error().operation);
+          EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), result.session_snapshot());
+          EXPECT_FALSE(result.backend_error().native_state);
+          EXPECT_FALSE(result.backend_error().native_code);
+          EXPECT_FALSE(result.backend_error().retry_safe);
+        }
+      }
+    }
+  }
+}
+
+namespace {
+struct WrongTransactionCompletion {
+  ScriptedBackendTransport::ResponseMode mode;
+  rs::core::database::TransactionAction action;
+};
+class InvalidNativeTransactionSnapshotTest
+    : public ::testing::TestWithParam<WrongTransactionCompletion> {};
+}
+
+TEST_P(InvalidNativeTransactionSnapshotTest, WrongStateCompletionRetiresAndOwnsErrorWithoutFollowOnSend) {
+  using namespace rs::core::database;
+  const auto test = GetParam();
+  const auto operation = test.action == TransactionAction::Begin ? BackendOperation::BeginTransaction :
+      test.action == TransactionAction::Commit ? BackendOperation::CommitTransaction : BackendOperation::RollbackTransaction;
+  BackendResult<void> retained;
+  std::string retained_message;
+  {
+    auto transport = std::make_unique<ScriptedBackendTransport>(test.mode);
+    auto* observed = transport.get();
+    postgres::PgDatabaseConnection backend(std::move(transport));
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
+    ASSERT_TRUE(backend.connect(settings));
+    const auto sends_before = observed->send_count();
+    const auto deadline = rs::util::make_deadline(std::chrono::seconds{3});
+    auto result = backend.transaction(test.action, deadline);
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError), result.error());
+    EXPECT_EQ(BackendErrorClass::Protocol, result.backend_error().error_class);
+    EXPECT_EQ(operation, result.backend_error().operation);
+    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), result.session_snapshot());
+    EXPECT_FALSE(result.backend_error().native_state);
+    EXPECT_FALSE(result.backend_error().native_code);
+    EXPECT_FALSE(result.backend_error().retry_safe);
+    EXPECT_FALSE(backend.is_connected());
+    EXPECT_EQ(SessionState::Disconnected, backend.session_state());
+    EXPECT_EQ(1u, observed->close_count());
+    EXPECT_EQ(sends_before + 1, observed->send_count());
+    const auto sends_after = observed->send_count();
+    auto query = backend.execute_query("SELECT must_not_dispatch", deadline);
+    ASSERT_TRUE(query.has_error());
+    EXPECT_EQ(BackendErrorClass::NotConnected, query.backend_error().error_class);
+    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), query.session_snapshot());
+    auto rollback = backend.transaction(TransactionAction::Rollback, deadline);
+    ASSERT_TRUE(rollback.has_error());
+    EXPECT_EQ(BackendErrorClass::NotConnected, rollback.backend_error().error_class);
+    EXPECT_EQ(BackendOperation::RollbackTransaction, rollback.backend_error().operation);
+    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), rollback.session_snapshot());
+    EXPECT_EQ(sends_after, observed->send_count());
+    EXPECT_EQ(1u, observed->close_count());
+    retained = result;
+    retained_message = result.error_message();
+    EXPECT_FALSE(retained_message.empty());
+    result.backend_error().message = "mutated original result";
+    EXPECT_EQ(retained_message, retained.error_message());
+  }
+  ASSERT_TRUE(retained.has_error());
+  EXPECT_EQ(retained_message, retained.error_message());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError), retained.error());
+  EXPECT_EQ(BackendErrorClass::Protocol, retained.backend_error().error_class);
+  EXPECT_EQ(operation, retained.backend_error().operation);
+  EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), retained.session_snapshot());
+  EXPECT_FALSE(retained.backend_error().native_state);
+  EXPECT_FALSE(retained.backend_error().native_code);
+  EXPECT_FALSE(retained.backend_error().retry_safe);
+}
+
+INSTANTIATE_TEST_SUITE_P(ValidWireWrongState, InvalidNativeTransactionSnapshotTest,
+    ::testing::Values(
+        WrongTransactionCompletion{ScriptedBackendTransport::ResponseMode::BeginCompletesIdle, rs::core::database::TransactionAction::Begin},
+        WrongTransactionCompletion{ScriptedBackendTransport::ResponseMode::BeginCompletesAborted, rs::core::database::TransactionAction::Begin},
+        WrongTransactionCompletion{ScriptedBackendTransport::ResponseMode::CommitCompletesTransaction, rs::core::database::TransactionAction::Commit},
+        WrongTransactionCompletion{ScriptedBackendTransport::ResponseMode::CommitCompletesAborted, rs::core::database::TransactionAction::Commit},
+        WrongTransactionCompletion{ScriptedBackendTransport::ResponseMode::RollbackCompletesTransaction, rs::core::database::TransactionAction::Rollback},
+        WrongTransactionCompletion{ScriptedBackendTransport::ResponseMode::RollbackCompletesAborted, rs::core::database::TransactionAction::Rollback}));
 
 TEST(BackendTransactionTest, NativeSuccessSnapshotsTrackBeginCommitRollbackAndIsolation) {
   using namespace rs::core::database;

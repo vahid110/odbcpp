@@ -1850,11 +1850,33 @@ rs::core::database::BackendResult<void> ODBCConnection::begin_transaction_if_nee
   }
   auto result = backend_transaction(
       rs::core::database::TransactionAction::Begin, deadline);
+  using rs::core::database::SessionState;
+  using rs::core::database::SessionDisposition;
+  const auto snapshot = result.session_snapshot();
   if (result.has_error()) {
+    if (snapshot.disposition == SessionDisposition::Retire ||
+        snapshot.state == SessionState::Unknown ||
+        snapshot.state == SessionState::Disconnected) {
+      close_connection();
+    } else {
+      transaction_active_ = snapshot.state == SessionState::Transaction ||
+                            snapshot.state == SessionState::FailedTransaction;
+    }
     return result;
   }
+  if (snapshot != rs::core::database::SessionSnapshot{
+          SessionState::Transaction, SessionDisposition::ResetRequired}) {
+    close_connection();
+    rs::core::database::BackendError error{
+        rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+        "Unexpected BEGIN completion state"};
+    error.operation = rs::core::database::BackendOperation::BeginTransaction;
+    error.session_state = SessionState::Disconnected;
+    error.disposition = SessionDisposition::Retire;
+    return error;
+  }
   transaction_active_ = true;
-  return {};
+  return result;
 }
 
 SQLRETURN ODBCConnection::end_transaction(SQLSMALLINT completion_type) {
@@ -1880,7 +1902,10 @@ SQLRETURN ODBCConnection::end_transaction(SQLSMALLINT completion_type) {
     const auto timeout = is_timeout_error(result.error());
     set_error(request_sqlstate(result.error(), SQLSTATE_GENERAL_ERROR),
               result.error_message());
-    if (timeout) close_connection();
+    const auto snapshot = result.session_snapshot();
+    if (timeout || snapshot.disposition == rs::core::database::SessionDisposition::Retire ||
+        snapshot.state == rs::core::database::SessionState::Unknown ||
+        snapshot.state == rs::core::database::SessionState::Disconnected) close_connection();
     return SQL_ERROR;
   }
   transaction_active_ = false;

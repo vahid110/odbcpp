@@ -46,6 +46,12 @@ struct Observations {
   bool absent_description{false};
   bool missing_parameter_metadata{}, parameter_metadata_error{};
   int isolation_mode{};
+  // Opt-in BEGIN control only: legacy fixtures retain their original behavior.
+  std::optional<BackendResult<void>> begin_result;
+  std::optional<BackendResult<void>> end_result;
+  std::optional<SessionState> transaction_state;
+  std::vector<TransactionAction> transaction_calls;
+  std::vector<Deadline> transaction_deadlines;
   int invalid_cell_errors{}, invalid_result_structure{}, invalid_execution_shape{}, invalid_description_shape{};
 };
 
@@ -138,7 +144,18 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
   TransactionCapabilities transaction_capabilities() const override {
     return {true, true, TransactionIsolation::ReadCommitted, {true, true, true, true}};
   }
-  BackendResult<void> transaction(TransactionAction, Deadline) override {
+  BackendResult<void> transaction(TransactionAction action, Deadline deadline) override {
+    seen_->transaction_calls.push_back(action);
+    seen_->transaction_deadlines.push_back(deadline);
+    if (action == TransactionAction::Begin && seen_->begin_result) {
+      seen_->transaction_state = seen_->begin_result->session_snapshot().state;
+      return *seen_->begin_result;
+    }
+    if (action != TransactionAction::Begin && seen_->end_result) {
+      seen_->transaction_state = seen_->end_result->session_snapshot().state;
+      return *seen_->end_result;
+    }
+    if (seen_->begin_result) seen_->transaction_state = SessionState::Idle;
     return BackendResult<void>{{SessionState::Idle, SessionDisposition::Reusable}};
   }
   BackendResult<void> set_transaction_isolation(TransactionIsolation, Deadline) override {
@@ -149,7 +166,7 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
   }
   void disconnect() override { connected_ = false; ++seen_->disconnects; }
   bool is_connected() const override { return connected_; }
-  SessionState session_state() const override { return connected_ ? (seen_->connect_exception == 6 ? SessionState::Transaction : seen_->connect_exception == 7 ? SessionState::Unknown : SessionState::Idle) : SessionState::Disconnected; }
+  SessionState session_state() const override { return connected_ ? seen_->transaction_state.value_or(seen_->connect_exception == 6 ? SessionState::Transaction : seen_->connect_exception == 7 ? SessionState::Unknown : SessionState::Idle) : SessionState::Disconnected; }
   QueryResult rows() const {
     if (seen_->date_result) return *seen_->date_result;
     QueryResult result;
@@ -450,6 +467,150 @@ class BackendContractTest : public ::testing::Test {
     if (env) SQLFreeHandle(SQL_HANDLE_ENV, env);
   }
 };
+
+// These tests specify the prerequisite BEGIN boundary only. They do not enable
+// manual-transaction PrimaryKeys or model native PostgreSQL/Redshift acceptance.
+TEST_F(BackendContractTest, BeginPreservesVerifiedTransactionSnapshotAndOriginalDeadline) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1; connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0));
+  const SessionSnapshot expected{SessionState::Transaction, SessionDisposition::ResetRequired};
+  seen->begin_result = BackendResult<void>{expected};
+  const auto connection = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+  auto result = connection->begin_transaction_if_needed(deadline);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(expected, result.session_snapshot());
+  EXPECT_TRUE(connection->is_connected());
+  ASSERT_EQ(1u, seen->transaction_calls.size());
+  EXPECT_EQ(TransactionAction::Begin, seen->transaction_calls[0]);
+  ASSERT_EQ(1u, seen->transaction_deadlines.size());
+  EXPECT_EQ(deadline, seen->transaction_deadlines[0]);
+  EXPECT_EQ(0, seen->queries);
+  ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK));
+  ASSERT_EQ(2u, seen->transaction_calls.size());
+  EXPECT_EQ(TransactionAction::Rollback, seen->transaction_calls[1]);
+}
+
+class BeginSnapshotRefusalTest : public BackendContractTest,
+                                public ::testing::WithParamInterface<SessionSnapshot> {};
+
+TEST_F(BackendContractTest, RetiredEndTransactionClearsConnectionAndPreventsFurtherDispatch) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1; connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0));
+  seen->begin_result = BackendResult<void>{{SessionState::Transaction, SessionDisposition::ResetRequired}};
+  const auto connection = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc);
+  ASSERT_TRUE(connection->begin_transaction_if_needed(Deadline::max()));
+  BackendError error{rs::util::make_error_code(DbErrorCode::ProtocolError),
+                     "Unexpected transaction completion state"};
+  error.operation = BackendOperation::CommitTransaction;
+  error.session_state = SessionState::Disconnected;
+  error.disposition = SessionDisposition::Retire;
+  seen->end_result = BackendResult<void>{error};
+  EXPECT_EQ(SQL_ERROR, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_COMMIT));
+  EXPECT_FALSE(connection->is_connected());
+  ASSERT_EQ(2u, seen->transaction_calls.size());
+  EXPECT_EQ(TransactionAction::Commit, seen->transaction_calls.back());
+  EXPECT_EQ(SQL_ERROR, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK));
+  EXPECT_EQ(SQL_ERROR, execute("SELECT must_not_dispatch"));
+  EXPECT_EQ(2u, seen->transaction_calls.size());
+  EXPECT_EQ(0, seen->queries);
+}
+
+TEST_P(BeginSnapshotRefusalTest, InvalidSuccessfulBeginRetiresBeforeQuery) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1; connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0));
+  seen->begin_result = BackendResult<void>{GetParam()};
+  EXPECT_EQ(SQL_ERROR, execute("SELECT must_not_dispatch"));
+  EXPECT_EQ(0, seen->queries);
+  const auto connection = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc);
+  EXPECT_FALSE(connection->is_connected());
+  ASSERT_EQ(1u, seen->transaction_calls.size());
+  EXPECT_EQ(TransactionAction::Begin, seen->transaction_calls[0]);
+  // No false active-transaction flag may dispatch cleanup after retirement.
+  EXPECT_EQ(SQL_ERROR, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK));
+  EXPECT_EQ(1u, seen->transaction_calls.size());
+  EXPECT_EQ(SQL_ERROR, execute("SELECT still_not_dispatch"));
+  EXPECT_EQ(0, seen->queries);
+}
+
+INSTANTIATE_TEST_SUITE_P(ConservativeBeginSnapshots, BeginSnapshotRefusalTest,
+    ::testing::Values(
+        SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable},
+        SessionSnapshot{SessionState::Unknown, SessionDisposition::ResetRequired},
+        SessionSnapshot{SessionState::Disconnected, SessionDisposition::Reusable},
+        SessionSnapshot{SessionState::FailedTransaction, SessionDisposition::ResetRequired},
+        SessionSnapshot{SessionState::Transaction, SessionDisposition::Reusable},
+        SessionSnapshot{SessionState::Transaction, SessionDisposition::Retire},
+        SessionSnapshot{SessionState::Idle, SessionDisposition::Retire},
+        SessionSnapshot{SessionState::Unknown, SessionDisposition::Retire},
+        SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}));
+
+class FailedBeginSnapshotTest : public BackendContractTest,
+                               public ::testing::WithParamInterface<SessionSnapshot> {};
+
+TEST_P(FailedBeginSnapshotTest, PreservesOriginalErrorAndReconcilesWithoutExecutingQuery) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1; connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0));
+  const auto snapshot = GetParam();
+  BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), "controlled BEGIN rejection"};
+  error.native_state = "42501"; error.native_code = 731;
+  error.operation = BackendOperation::BeginTransaction;
+  error.session_state = snapshot.state; error.disposition = snapshot.disposition;
+  error.retry_safe = false;
+  seen->begin_result = BackendResult<void>{error};
+  const auto connection = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+  auto result = connection->begin_transaction_if_needed(deadline);
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(error.code, result.error());
+  EXPECT_EQ(error.message, result.error_message());
+  EXPECT_EQ(error.error_class, result.backend_error().error_class);
+  EXPECT_EQ(error.native_state, result.backend_error().native_state);
+  EXPECT_EQ(error.native_code, result.backend_error().native_code);
+  EXPECT_EQ(error.operation, result.backend_error().operation);
+  EXPECT_EQ(error.retry_safe, result.backend_error().retry_safe);
+  EXPECT_EQ(snapshot, result.session_snapshot());
+  EXPECT_EQ(0, seen->queries);
+  ASSERT_EQ(1u, seen->transaction_calls.size());
+  ASSERT_EQ(1u, seen->transaction_deadlines.size());
+  EXPECT_EQ(deadline, seen->transaction_deadlines[0]);
+  const bool terminal = snapshot.disposition == SessionDisposition::Retire ||
+      snapshot.state == SessionState::Unknown || snapshot.state == SessionState::Disconnected;
+  EXPECT_EQ(!terminal, connection->is_connected());
+  if (terminal) {
+    EXPECT_EQ(SQL_ERROR, execute("SELECT must_not_dispatch"));
+    EXPECT_EQ(SQL_ERROR, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK));
+    EXPECT_EQ(1u, seen->transaction_calls.size());
+  } else if (snapshot.state == SessionState::Idle) {
+    // A failed Idle BEGIN leaves no active flag: a second statement must BEGIN
+    // again, encounter the same original failure and never execute its query.
+    EXPECT_EQ(SQL_ERROR, execute("SELECT must_not_dispatch"));
+    EXPECT_EQ(2u, seen->transaction_calls.size());
+    EXPECT_EQ(TransactionAction::Begin, seen->transaction_calls.back());
+    EXPECT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK));
+    EXPECT_EQ(2u, seen->transaction_calls.size());
+  } else {
+    // The error may still leave a real transaction or failed transaction. Do
+    // not lose that ownership: explicit rollback must reach the backend once.
+    EXPECT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK));
+    ASSERT_EQ(2u, seen->transaction_calls.size());
+    EXPECT_EQ(TransactionAction::Rollback, seen->transaction_calls.back());
+  }
+  EXPECT_EQ(0, seen->queries);
+}
+
+INSTANTIATE_TEST_SUITE_P(OriginalBeginFailures, FailedBeginSnapshotTest,
+    ::testing::Values(
+        SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable},
+        SessionSnapshot{SessionState::Transaction, SessionDisposition::ResetRequired},
+        SessionSnapshot{SessionState::FailedTransaction, SessionDisposition::ResetRequired},
+        SessionSnapshot{SessionState::Unknown, SessionDisposition::ResetRequired},
+        SessionSnapshot{SessionState::Idle, SessionDisposition::Retire},
+        SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}));
 
 TEST_F(BackendContractTest, PrimaryKeysExecutorUsesDeadlineAndPreservesPendingCursor) {
   seen->catalog_executor = true; connect();
@@ -2307,4 +2468,127 @@ TEST_F(BackendContractTest, BoundDatetimeErrorsPreserveFailingStructAndRecoverIn
     EXPECT_EQ(73,output.year);EXPECT_EQ(74,output.month);EXPECT_EQ(75,output.day);EXPECT_EQ(76,output.hour);EXPECT_EQ(77,output.minute);EXPECT_EQ(78,output.second);EXPECT_EQ(79u,output.fraction);
     EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));EXPECT_EQ(0,seen->disconnects);
   }
+}
+
+// Fake adapter contract only. These tests never route ODBC to native MySQL;
+// its stricter year1000 boundary and native receipt proof remain separate.
+TEST_F(BackendContractTest, DateInputStructAliasesDefaultAndOwningHintAgree) {
+  connect();ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"rows ?",SQL_NTS));
+  SQLULEN processed=99;SQLUSMALLINT status=SQL_PARAM_UNUSED;
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAMS_PROCESSED_PTR,&processed,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_STATUS_PTR,&status,0));
+  for (SQLSMALLINT c_type:{SQLSMALLINT(SQL_C_TYPE_DATE),SQLSMALLINT(SQL_C_DATE),SQLSMALLINT(SQL_C_DEFAULT)}) {
+    for (const SQL_DATE_STRUCT date:{SQL_DATE_STRUCT{1000,1,1},SQL_DATE_STRUCT{9999,12,31},SQL_DATE_STRUCT{2000,2,29}}) {
+      alignas(SQL_DATE_STRUCT) std::array<std::byte,sizeof(SQL_DATE_STRUCT)+1> bytes{};
+      std::memcpy(bytes.data()+1,&date,sizeof(date));SQLLEN indicator=73;
+      ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,c_type,SQL_TYPE_DATE,10,0,bytes.data()+1,sizeof(date),&indicator));
+      ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());
+      const auto expected=date.year==1000?"1000-01-01":(date.year==9999?"9999-12-31":"2000-02-29");
+      EXPECT_EQ(QueryParameterType::Date,seen->parameters[0].type);EXPECT_FALSE(seen->parameters[0].binary_input);
+      EXPECT_EQ(std::optional<std::string>{expected},seen->parameters[0].value);
+      EXPECT_EQ(73,indicator);EXPECT_EQ(0,std::memcmp(bytes.data()+1,&date,sizeof(date)));
+      EXPECT_EQ(1u,processed);EXPECT_EQ(SQL_PARAM_SUCCESS,status);
+      std::fill(bytes.begin(),bytes.end(),std::byte{0});
+      EXPECT_EQ(std::optional<std::string>{expected},seen->parameters[0].value);
+      ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+    }
+  }
+  SQL_DATE_STRUCT date{2024,2,29};
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_TYPE_DATE,SQL_VARCHAR,10,0,&date,sizeof(date),nullptr));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Text,seen->parameters[0].type);EXPECT_EQ(std::optional<std::string>{"2024-02-29"},seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));const auto queries=seen->queries;
+  EXPECT_EQ(SQL_ERROR,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_TYPE_DATE,SQL_DATE,10,0,&date,sizeof(date),nullptr));
+  EXPECT_EQ("HYC00",state());EXPECT_EQ(queries,seen->queries);EXPECT_EQ(0u,seen->disconnects);
+}
+
+TEST_F(BackendContractTest, DateInputCharactersWideAndTypedNullNormalizeWithOwningValues) {
+  connect();ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"rows ?",SQL_NTS));
+  for (bool wide:{false,true}) for (bool nts:{false,true}) {
+    char narrow[]=" 2024-02-29 ";SQLWCHAR text[]{' ','2','0','2','4','-','0','2','-','2','9',' ',0};
+    SQLLEN indicator=nts?SQL_NTS:SQLLEN(12*(wide?sizeof(SQLWCHAR):1));const auto original=indicator;
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,wide?SQL_C_WCHAR:SQL_C_CHAR,SQL_TYPE_DATE,10,0,
+        wide?static_cast<void*>(text):static_cast<void*>(narrow),wide?sizeof(text):sizeof(narrow),&indicator));
+    ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());
+    EXPECT_EQ(QueryParameterType::Date,seen->parameters[0].type);EXPECT_FALSE(seen->parameters[0].binary_input);
+    EXPECT_EQ(std::optional<std::string>{"2024-02-29"},seen->parameters[0].value);EXPECT_EQ(original,indicator);
+    narrow[1]='x';text[1]='x';EXPECT_EQ(std::optional<std::string>{"2024-02-29"},seen->parameters[0].value);
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  }
+  SQLLEN indicator=SQL_NULL_DATA;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_TYPE_DATE,SQL_TYPE_DATE,10,0,nullptr,0,&indicator));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Date,seen->parameters[0].type);EXPECT_FALSE(seen->parameters[0].value);
+  EXPECT_FALSE(seen->parameters[0].binary_input);EXPECT_EQ(SQL_NULL_DATA,indicator);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  char empty[]="";indicator=0;const auto queries=seen->queries;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_TYPE_DATE,10,0,empty,sizeof(empty),&indicator));
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ("22018",state());EXPECT_EQ(queries,seen->queries);EXPECT_EQ(0,indicator);
+  EXPECT_FALSE(seen->parameters[0].value); // Prior owning NULL observation survives local rejection.
+  SQL_DATE_STRUCT repaired{2024,2,29};indicator=sizeof(repaired);
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_TYPE_DATE,SQL_TYPE_DATE,10,0,&repaired,sizeof(repaired),&indicator));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));EXPECT_EQ(std::optional<std::string>{"2024-02-29"},seen->parameters[0].value);
+}
+
+TEST_F(BackendContractTest, DateInputLocalCalendarErrorsPreserveStatusInputsAndRecover) {
+  connect();ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"rows ?",SQL_NTS));
+  SQLULEN processed=99;SQLUSMALLINT status=SQL_PARAM_UNUSED;
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAMS_PROCESSED_PTR,&processed,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_STATUS_PTR,&status,0));
+  SQL_DATE_STRUCT input{2000,2,29};SQLLEN indicator=73;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_TYPE_DATE,SQL_TYPE_DATE,10,0,&input,sizeof(input),&indicator));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  for (const SQL_DATE_STRUCT invalid:{SQL_DATE_STRUCT{2023,2,29},SQL_DATE_STRUCT{0,1,1},SQL_DATE_STRUCT{2024,0,1}}) {
+    input=invalid;const auto queries=seen->queries;const auto previous=seen->parameters[0].value;
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_TYPE_DATE,SQL_TYPE_DATE,10,0,&input,sizeof(input),&indicator));
+    EXPECT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ("22007",state());EXPECT_EQ(queries,seen->queries);
+    EXPECT_EQ(0,std::memcmp(&input,&invalid,sizeof(input)));EXPECT_EQ(73,indicator);
+    EXPECT_EQ(previous,seen->parameters[0].value);EXPECT_EQ(1u,processed);EXPECT_EQ(SQL_PARAM_ERROR,status);EXPECT_EQ(0u,seen->disconnects);
+    input={2024,2,29};ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));EXPECT_EQ(SQL_PARAM_SUCCESS,status);
+    EXPECT_EQ(std::optional<std::string>{"2024-02-29"},seen->parameters[0].value);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  }
+  for (auto text:{"2023-02-29","2024-02-29T00:00:00","2024-02-29 00:00:00+02:00"}) {
+    std::string value{text};SQLLEN length=static_cast<SQLLEN>(value.size());const auto queries=seen->queries;
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_TYPE_DATE,10,0,value.data(),value.size(),&length));
+    EXPECT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ("22018",state());EXPECT_EQ(queries,seen->queries);
+    EXPECT_EQ(text,value);EXPECT_EQ(static_cast<SQLLEN>(value.size()),length);EXPECT_EQ(SQL_PARAM_ERROR,status);
+  }
+  SQL_TIMESTAMP_STRUCT timestamp{2024,2,29,1,0,0,0};const auto queries=seen->queries;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_TYPE_TIMESTAMP,SQL_TYPE_DATE,10,0,&timestamp,sizeof(timestamp),nullptr));
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ("22008",state());EXPECT_EQ(queries,seen->queries);EXPECT_EQ(1,timestamp.hour);
+  timestamp.hour=0;ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));EXPECT_EQ(QueryParameterType::Date,seen->parameters[0].type);
+  EXPECT_EQ(std::optional<std::string>{"2024-02-29"},seen->parameters[0].value);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  // Generic ODBC calendar is wider than private MySQL parameter admission.
+  // This fake forwarding assertion does not claim native year0001 support.
+  input={1,1,1};
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_TYPE_DATE,SQL_TYPE_DATE,10,0,&input,sizeof(input),nullptr));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));EXPECT_EQ(QueryParameterType::Date,seen->parameters[0].type);
+  EXPECT_EQ(std::optional<std::string>{"0001-01-01"},seen->parameters[0].value);EXPECT_EQ(SQL_PARAM_SUCCESS,status);EXPECT_EQ(0u,seen->disconnects);
+}
+
+TEST_F(BackendContractTest, DateInputExecutionReceiptOwnsIpdDespiteAbsentPreDescription) {
+  seen->absent_description=true;seen->date_result=owning_date_contract_rows();
+  seen->date_result->normalized_parameter_types={{ScalarType::Date,10,0,true}};connect();
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"rows ?",SQL_NTS));
+  SQL_DATE_STRUCT input{2000,2,29};
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_TYPE_DATE,SQL_TYPE_DATE,10,0,&input,sizeof(input),nullptr));
+  SQLSMALLINT type=73,digits=74,nullable=75;SQLULEN size=76;
+  EXPECT_EQ(SQL_ERROR,SQLDescribeParam(stmt,1,&type,&size,&digits,&nullable));EXPECT_EQ("HYC00",state());
+  EXPECT_EQ(73,type);EXPECT_EQ(74,digits);EXPECT_EQ(75,nullable);EXPECT_EQ(76u,size);EXPECT_EQ(0,seen->descriptions);EXPECT_EQ(0,seen->queries);
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Date,seen->parameters[0].type);EXPECT_EQ(std::optional<std::string>{"2000-02-29"},seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLDescribeParam(stmt,1,&type,&size,&digits,&nullable));
+  EXPECT_EQ(SQL_TYPE_DATE,type);EXPECT_EQ(10u,size);EXPECT_EQ(0,digits);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);EXPECT_EQ(0,seen->descriptions);
+  SQLHDESC ipd=SQL_NULL_HDESC;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_PARAM_DESC,&ipd,0,nullptr));
+  for (const auto& [field,expected]:{std::pair{SQL_DESC_CONCISE_TYPE,SQL_TYPE_DATE},std::pair{SQL_DESC_TYPE,SQL_DATETIME},
+      std::pair{SQL_DESC_DATETIME_INTERVAL_CODE,SQL_CODE_DATE},std::pair{SQL_DESC_SCALE,0}}) {
+    SQLSMALLINT observed=77;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,1,static_cast<SQLSMALLINT>(field),&observed,0,nullptr));EXPECT_EQ(expected,observed);
+  }
+  SQLULEN length=78;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,1,SQL_DESC_LENGTH,&length,0,nullptr));EXPECT_EQ(10u,length);
+  seen->date_result->normalized_parameter_types[0]={ScalarType::BigInt,19,0,true};input={9999,12,31};
+  ASSERT_EQ(SQL_SUCCESS,SQLDescribeParam(stmt,1,&type,&size,&digits,&nullable));EXPECT_EQ(SQL_TYPE_DATE,type);EXPECT_EQ(10u,size);
+  EXPECT_EQ(std::optional<std::string>{"2000-02-29"},seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"rows ?",SQL_NTS));
+  type=73;digits=74;nullable=75;size=76;
+  EXPECT_EQ(SQL_ERROR,SQLDescribeParam(stmt,1,&type,&size,&digits,&nullable));EXPECT_EQ("HYC00",state());
+  EXPECT_EQ(73,type);EXPECT_EQ(74,digits);EXPECT_EQ(75,nullable);EXPECT_EQ(76u,size);EXPECT_EQ(0,seen->descriptions);
 }
