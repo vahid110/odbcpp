@@ -7,11 +7,11 @@ namespace query=rs::core::database::mysql::query_detail;
 namespace date=rs::core::database::mysql::date_parameter_detail;
 using rs::util::DbErrorCode;
 struct Receipt { query::NativeParameterDescriptorObservation raw;NativeTypeInfo normalized; };
-auto read(std::uint8_t type=10,std::uint32_t width=10,std::uint8_t decimals=0) {
+auto read(std::uint8_t type=10,std::uint32_t width=10,std::uint8_t decimals=0,std::uint16_t charset=63) {
   // Complete ColumnDefinition41, independent of the guarded shape predicate.
   std::vector<std::byte> bytes{std::byte{3},std::byte{'d'},std::byte{'e'},std::byte{'f'},
       std::byte{0},std::byte{0},std::byte{0},std::byte{1},std::byte{'p'},std::byte{0},
-      std::byte{12},std::byte{63},std::byte{0}};
+      std::byte{12},static_cast<std::byte>(charset&255),static_cast<std::byte>(charset>>8)};
   for (unsigned i=0;i<4;++i) bytes.push_back(static_cast<std::byte>((width>>(8*i))&255));
   bytes.insert(bytes.end(),{static_cast<std::byte>(type),std::byte{0},std::byte{0},
       static_cast<std::byte>(decimals),std::byte{0},std::byte{0}});
@@ -38,7 +38,7 @@ TEST(MySqlDateParameterDescriptorTest, EveryContradictoryRawDateShapeIsProtocolE
       SCOPED_TRACE(width);
       SCOPED_TRACE(unsigned(decimals));auto receipt=read(10,width,decimals);ASSERT_TRUE(receipt);
       const auto result=date::descriptor(QueryParameterType::Date,receipt->raw,receipt->normalized);
-      if (width==10 && decimals==0) EXPECT_TRUE(result);
+      if (width==10 && decimals==0) { EXPECT_TRUE(result); }
       else {ASSERT_FALSE(result);EXPECT_EQ(DbErrorCode::ProtocolError,result.error());}
       EXPECT_EQ(width,receipt->raw.width);EXPECT_EQ(decimals,receipt->raw.decimals);
       EXPECT_EQ(ScalarType::Date,receipt->normalized.type);EXPECT_EQ(10u,receipt->normalized.column_size);
@@ -50,7 +50,7 @@ TEST(MySqlDateParameterDescriptorTest, AllNormalizedDateShapeAndReverseAffinityF
     for (std::int16_t decimals:{std::int16_t{-1},std::int16_t{0},std::int16_t{1},std::int16_t{6}}) {
       const NativeTypeInfo normalized{ScalarType::Date,width,decimals,known};
       auto result=date::descriptor(QueryParameterType::Date,receipt->raw,normalized);
-      if (known && width==10 && decimals==0) EXPECT_TRUE(result);
+      if (known && width==10 && decimals==0) { EXPECT_TRUE(result); }
       else {ASSERT_FALSE(result);EXPECT_EQ(DbErrorCode::ProtocolError,result.error());}
     }
   for (const auto type:{ScalarType::VarChar,ScalarType::BigInt,ScalarType::Timestamp,ScalarType::Decimal}) {
@@ -93,4 +93,41 @@ TEST(MySqlDateParameterDescriptorTest, ObservationCopiesOwnFieldsAndGuardNeverMu
   ASSERT_FALSE(rejected);EXPECT_EQ(DbErrorCode::UnsupportedFeature,rejected.error());
   EXPECT_TRUE(date::descriptor(QueryParameterType::Date,owned.raw,owned.normalized));
 }
+}
+
+TEST(MySqlDateParameterDescriptorTest, ExactCharsetByteWidthPairsAcceptNullAndRejectKnownContradictions) {
+  for (const std::uint16_t charset:{std::uint16_t{63},std::uint16_t{45}}) {
+    const std::uint32_t expected=charset==63?10:40;
+    for (const std::uint32_t width:{0u,9u,10u,11u,39u,40u,41u,0xffffffffu}) {
+      auto receipt=read(10,width,0,charset);ASSERT_TRUE(receipt);
+      const auto owned=*receipt;receipt->raw.charset=0;
+      for (bool null:{false,true}) {
+        const QueryParameter caller{null?std::nullopt:std::optional<std::string>{"2000-02-29"},QueryParameterType::Date};
+        auto result=date::descriptor(caller.type,owned.raw,owned.normalized);
+        if (width==expected) { EXPECT_TRUE(result); }
+        else { ASSERT_FALSE(result);EXPECT_EQ(DbErrorCode::ProtocolError,result.error()); }
+        EXPECT_EQ(charset,owned.raw.charset);EXPECT_EQ(width,owned.raw.width);
+      }
+      if (width==expected) {
+        auto wrong=date::descriptor(QueryParameterType::Text,owned.raw,owned.normalized);
+        ASSERT_FALSE(wrong);EXPECT_EQ(DbErrorCode::UnsupportedFeature,wrong.error());
+      }
+    }
+  }
+}
+TEST(MySqlDateParameterDescriptorTest, UnknownCharsetNeverInfersFactorOrOverridesStructuralErrors) {
+  for (const std::uint16_t charset:{std::uint16_t{0},std::uint16_t{8},std::uint16_t{46},std::uint16_t{255},std::uint16_t{65535}}) {
+    for (const std::uint32_t width:{10u,40u}) {
+      auto receipt=read(10,width,0,charset);ASSERT_TRUE(receipt);
+      auto result=date::descriptor(QueryParameterType::Date,receipt->raw,receipt->normalized);
+      ASSERT_FALSE(result);EXPECT_EQ(DbErrorCode::UnsupportedFeature,result.error());
+      auto contradictory=receipt->normalized;contradictory.column_size=40;
+      auto shape=date::descriptor(QueryParameterType::Date,receipt->raw,contradictory);
+      ASSERT_FALSE(shape);EXPECT_EQ(DbErrorCode::ProtocolError,shape.error());
+    }
+  }
+  const query::NativeParameterDescriptorObservation missing_charset{10,10,0};
+  const NativeTypeInfo normalized{ScalarType::Date,10,0,true};
+  auto result=date::descriptor(QueryParameterType::Date,missing_charset,normalized);
+  ASSERT_FALSE(result);EXPECT_EQ(DbErrorCode::UnsupportedFeature,result.error());
 }

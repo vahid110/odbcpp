@@ -1131,8 +1131,8 @@ void date_retired(Fixture& f,const rs::core::database::BackendResult<rs::core::d
 }
 }
 TEST(MySqlSessionTest, DateParametersUseActualReceiptTypedNullFramesAndOwnResults) {
-  for (bool null:{false,true}) for (unsigned status:{2u,3u}) {
-    Fixture f;date_parameter_prepare(*f.transport,{exact_date_receipt()},status);date_parameter_result(*f.transport,null,false,status);
+  for (unsigned charset:{63u,45u}) for (bool null:{false,true}) for (unsigned status:{2u,3u}) {
+    Fixture f;date_parameter_prepare(*f.transport,{column_packet("?",10,charset,0,charset==63?10u:40u)},status);date_parameter_result(*f.transport,null,false,status);
     std::array params{Parameter{null?std::nullopt:std::optional<std::string>{"2000-02-29"},Hint::Date}};
     const auto deadline=rs::util::make_deadline(std::chrono::seconds(10));
     auto result=f.session->execute_prepared("SELECT ?",params,deadline);ASSERT_TRUE(result);
@@ -1183,9 +1183,9 @@ TEST(MySqlSessionTest, DateCallerInvalidAndBudgetErrorsPrecedeAllIoAndAllowRecov
   }
 }
 TEST(MySqlSessionTest, DateSupportedAffinityMismatchesDrainClosePreserveStateAndCountPrecedence) {
-  for (unsigned mode=0;mode<8;++mode) for (bool null:{false,true}) for (unsigned status:{2u,3u}) {
+  for (unsigned charset:{63u,45u}) for (unsigned mode=0;mode<8;++mode) for (bool null:{false,true}) for (unsigned status:{2u,3u}) {
     Fixture f;const bool reverse=mode>=4 && mode<7;
-    date_parameter_prepare(*f.transport,{reverse?column_packet("?",mode==4?8:(mode==5?253:6),mode==5?45:63):exact_date_receipt()},status);
+    date_parameter_prepare(*f.transport,{reverse?column_packet("?",mode==4?8:(mode==5?253:6),mode==5?45:63):column_packet("?",10,charset,0,charset==63?10u:40u)},status);
     const auto drained=f.transport->input.size();append(*f.transport,ok(),1); // unrelated next command must stay unread
     const auto hint=reverse?Hint::Date:(mode==0?Hint::Unspecified:(mode==1?Hint::Text:(mode==2?Hint::Int32:Hint::Binary)));
     const std::array params{Parameter{null?std::nullopt:std::optional<std::string>{reverse?"2000-02-29":(hint==Hint::Int32?"42":"x")},hint}};
@@ -1277,5 +1277,27 @@ TEST(MySqlSessionTest, DateExecutionCellDrainFramingAndMismatchCloseFailuresKeep
       if (mismatch || fault>=7) { EXPECT_EQ(drained,f.transport->offset); }
       EXPECT_LT(f.transport->offset,f.transport->input.size());
     }
+  }
+}
+
+TEST(MySqlSessionTest, DateCharsetUnknownOrKnownWidthContradictionRetiresAtReceiptBeforeQueuedEof) {
+  for (const unsigned charset:{0u,8u,45u,46u,63u,255u,65535u}) for (bool null:{false,true}) {
+    Fixture f;
+    const bool known=charset==45 || charset==63;
+    Bytes first{std::byte{0}};number(first,17,4);number(first,2,2);number(first,1,2);number(first,0,1);number(first,0,2);
+    append(*f.transport,first,1);
+    // Known charset with the other charset's width is structural, not a
+    // supported mismatch; unknown charset cannot borrow either width policy.
+    append(*f.transport,column_packet("?",10,charset,0,charset==63?40:10),2);
+    const auto rejected=f.transport->input.size();
+    append(*f.transport,eof_packet(),3);append(*f.transport,date_column_packet(),4);
+    append(*f.transport,column_packet("neighbor"),5);append(*f.transport,eof_packet(),6);
+    date_parameter_result(*f.transport);
+    const std::array params{Parameter{null?std::nullopt:std::optional<std::string>{"2000-02-29"},Hint::Date}};
+    const auto deadline=rs::util::make_deadline(std::chrono::seconds(10));
+    auto result=f.session->execute_prepared("SELECT ?",params,deadline);
+    date_retired(f,result,known?DbErrorCode::ProtocolError:DbErrorCode::UnsupportedFeature,deadline);
+    EXPECT_EQ((std::vector<unsigned>{22}),commands(f.transport->output));
+    EXPECT_EQ(rejected,f.transport->offset);EXPECT_LT(rejected,f.transport->input.size());
   }
 }

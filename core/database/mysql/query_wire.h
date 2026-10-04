@@ -14,12 +14,13 @@ namespace rs::core::database::mysql {
 namespace query_detail {
 using rs::util::DbErrorCode;
 struct NativeColumn { std::uint8_t type{};bool unsigned_value{}; };
-// Private raw observation for future parameter admission. Result normalization
-// is unchanged; no caller currently selects a parameter policy here.
+// Private owning raw observation for parameter admission. Default result
+// normalization is unchanged; each receipt retains its observed charset.
 struct NativeParameterDescriptorObservation {
   std::uint8_t type{};
   std::uint32_t width{};
   std::uint8_t decimals{};
+  std::uint16_t charset{};
 };
 class Cursor {
  public:
@@ -119,7 +120,7 @@ inline rs::util::Result<ResultColumnMetadata> column(std::span<const std::byte> 
   if (native_unsigned) *native_unsigned=unsigned_value;
   if (metadata_bytes) *metadata_bytes=names;
   if (observation) *observation={static_cast<std::uint8_t>(type),static_cast<std::uint32_t>(size),
-      static_cast<std::uint8_t>(decimals)};
+      static_cast<std::uint8_t>(decimals),static_cast<std::uint16_t>(charset)};
   return result;
 }
 inline rs::util::Result<datetime_detail::Profile> datetime_profile(const NativeTypeInfo& info,NativeColumn native) {

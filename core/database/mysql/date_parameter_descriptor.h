@@ -4,7 +4,7 @@
 #include "core/database/query_parameter.h"
 
 namespace rs::core::database::mysql::date_parameter_detail {
-// Private admission candidate, not selected by any session or packet writer.
+// Private DATE parameter admission policy used by the MySQL session.
 // Both inputs must come from the same successfully validated column receipt.
 // A NULL value does not change that receipt; caller-value validation is separate.
 inline rs::util::Result<void> descriptor(
@@ -13,8 +13,14 @@ inline rs::util::Result<void> descriptor(
   const bool native_date=raw.type==10;
   const bool normalized_date=normalized.type==ScalarType::Date;
   if (native_date || normalized_date) {
-    if (!native_date || !normalized_date || raw.width!=10 || raw.decimals!=0 ||
+    if (!native_date || !normalized_date || raw.decimals!=0 ||
         !normalized.known || normalized.column_size!=10 || normalized.decimal_digits!=0)
+      return {rs::util::DbErrorCode::ProtocolError};
+    // Column widths describe byte capacity for this receipt's charset. These
+    // exact representations do not assert a negotiated session charset.
+    if (raw.charset!=63 && raw.charset!=45)
+      return {rs::util::DbErrorCode::UnsupportedFeature};
+    if (raw.width!=(raw.charset==63 ? 10u : 40u))
       return {rs::util::DbErrorCode::ProtocolError};
     if (hint==QueryParameterType::Date) return {};
   }
