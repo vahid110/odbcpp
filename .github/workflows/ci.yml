@@ -94,6 +94,7 @@ jobs:
           cmake -S . -B build
           -DODBCPP_MYSQL_DECIMAL_LIVE_TESTS=ON
           -DODBCPP_MYSQL_DATETIME_LIVE_TESTS=ON
+          -DODBCPP_MYSQL_DATE_PARAMETERS_LIVE_TESTS=ON
           -DBUILD_EXAMPLES=ON
           -DBUILD_TESTING=ON
           -DTARGET_DATABASE=POSTGRESQL
@@ -114,8 +115,8 @@ jobs:
       - name: Check MySQL live admission policy offline
         run: python3 tests/security/test_mysql_decimal_admission.py
 
-      - name: Prove pinned MySQL verified TLS authentication and decimal/DATETIME results
-        timeout-minutes: 16
+      - name: Prove pinned MySQL TLS, decimal/DATETIME results and DATE parameters
+        timeout-minutes: 17
         run: >-
           python3 tests/security/test_mysql_auth_live.py
           --probe build/tests/mysql_auth_probe
@@ -124,6 +125,8 @@ jobs:
           --decimal-junit build/mysql-decimal-live.xml
           --datetime-test-binary build/tests/it_mysql_datetime_results
           --datetime-junit build/mysql-datetime-live.xml
+          --date-parameters-test-binary build/tests/it_mysql_date_parameters
+          --date-parameters-junit build/mysql-date-parameters-live.xml
 
       - name: Preserve MySQL authentication evidence
         if: always()
@@ -134,6 +137,7 @@ jobs:
             build/mysql-auth-live.json
             build/mysql-decimal-live.xml
             build/mysql-datetime-live.xml
+            build/mysql-date-parameters-live.xml
           if-no-files-found: ignore
 
       - name: Bind system-shared unit qualification evidence
@@ -315,7 +319,7 @@ jobs:
           $reports = @(Get-ChildItem "$env:RUNNER_TEMP/odbcpp-integration-results" -Filter *.xml)
           $expectedReports = @(
             Get-ChildItem tests/integration -Filter *.cpp |
-              Where-Object { $_.Name -notin @('it_redshift_real.cpp', 'it_mysql_decimal_results.cpp', 'it_mysql_datetime_results.cpp') }
+              Where-Object { $_.Name -notin @('it_redshift_real.cpp', 'it_mysql_decimal_results.cpp', 'it_mysql_datetime_results.cpp', 'it_mysql_date_parameters.cpp') }
           ).Count
           if ($reports.Count -ne $expectedReports) {
             throw "Expected $expectedReports PostgreSQL GoogleTest integration reports, found $($reports.Count)"

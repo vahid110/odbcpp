@@ -368,5 +368,398 @@ class DatetimeAdmissionTest(unittest.TestCase):
                 else:
                     self.assertEqual('MySQL fixture cleanup failed', str(error))
 
+
+# Future DATE-parameter contracts: run against the REAL reviewed runner APIs.
+# They are intentionally pending while those APIs are absent; no stub pass or
+# mocked XML below constitutes native qualification evidence.
+DATE_PARAMETERS_SUITE = 'MySqlDateParametersIntegrationTest'
+DATE_PARAMETERS_CASE = 'PhysicalDateComparisonBoundsNullAndOwningReceipts'
+DATE_PARAMETERS_VALID = ('<testsuites tests="1" failures="0" disabled="0" errors="0" name="AllTests">'
+                         '<testsuite name="' + DATE_PARAMETERS_SUITE + '" tests="1" failures="0" disabled="0" skipped="0" errors="0">'
+                         '<testcase name="' + DATE_PARAMETERS_CASE + '" classname="' + DATE_PARAMETERS_SUITE + '" status="run" result="completed"/>'
+                         '</testsuite></testsuites>')
+
+class DateParametersAdmissionTest(unittest.TestCase):
+    def test_pairs_executability_and_all_path_aliases_refuse_before_unlink_or_dispatch(self):
+        for combined in (False, True):
+            with tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary).resolve()
+                binaries = {key: directory / key for key in ('probe', 'decimal', 'datetime', 'date-parameters')}
+                outputs = {key: directory / (key + '.xml') for key in ('decimal', 'datetime', 'date-parameters')}
+                outputs['output'] = directory / 'success.json'
+                for binary in binaries.values():
+                    binary.write_bytes(b'private input artifact')
+                    binary.chmod(0o700)
+                for output in outputs.values():
+                    output.write_bytes(b'prior evidence')
+                base = ['mysql-live', '--probe', str(binaries['probe']), '--output', str(outputs['output'])]
+                if combined:
+                    for label in ('decimal', 'datetime'):
+                        base += ['--' + label + '-test-binary', str(binaries[label]),
+                                 '--' + label + '-junit', str(outputs[label])]
+                pair = ['--date-parameters-test-binary', str(binaries['date-parameters']),
+                        '--date-parameters-junit', str(outputs['date-parameters'])]
+                argv = base + pair
+                invalid = [base + pair[:2], base + pair[2:],
+                           base + ['--date-parameters-test-binary', str(directory / 'missing'),
+                                   '--date-parameters-junit', str(outputs['date-parameters'])]]
+                nonexecutable = directory / 'nonexecutable'
+                nonexecutable.write_bytes(b'nonexecutable input')
+                nonexecutable.chmod(0o600)
+                invalid.append(base + ['--date-parameters-test-binary', str(nonexecutable),
+                                       '--date-parameters-junit', str(outputs['date-parameters'])])
+                requested = ['date-parameters'] + (['decimal', 'datetime'] if combined else [])
+                input_names = ['probe'] + requested
+                output_options = ['--output'] + ['--' + label + '-junit' for label in requested]
+                serial = 0
+                for input_name in input_names:
+                    for kind in ('same', 'resolved-relative', 'symlink', 'hardlink'):
+                        serial += 1
+                        original = binaries[input_name]
+                        alias = directory / ('alias-' + str(serial))
+                        if kind == 'same':
+                            alias = original
+                        elif kind == 'resolved-relative':
+                            alias = directory / '..' / directory.name / input_name
+                        elif kind == 'symlink':
+                            alias.symlink_to(original)
+                        else:
+                            live.os.link(original, alias)
+                        for option in output_options:
+                            altered = argv.copy()
+                            altered[altered.index(option) + 1] = str(alias)
+                            invalid.append(altered)
+                # Every requested output-output alias is checked, including
+                # new XML vs JSON and existing XMLs in both directions.
+                destinations = {'--output': outputs['output']}
+                destinations.update({'--' + label + '-junit': outputs[label] for label in requested})
+                for option, destination in destinations.items():
+                    for other_option in destinations:
+                        if option == other_option:
+                            continue
+                        for kind in ('same', 'symlink', 'hardlink'):
+                            serial += 1
+                            alias = directory / ('output-alias-' + str(serial))
+                            if kind == 'same':
+                                alias = destination
+                            elif kind == 'symlink':
+                                alias.symlink_to(destination)
+                            else:
+                                live.os.link(destination, alias)
+                            altered = argv.copy()
+                            altered[altered.index(other_option) + 1] = str(alias)
+                            invalid.append(altered)
+                for arguments in invalid:
+                    with self.subTest(combined=combined, arguments=arguments), \
+                            patch.object(live.sys, 'argv', arguments), patch.object(live, 'run') as dispatch:
+                        with self.assertRaises(SystemExit) as failure:
+                            live.main()
+                        self.assertEqual(2, failure.exception.code)
+                        dispatch.assert_not_called()
+                        for binary in binaries.values():
+                            self.assertEqual(b'private input artifact', binary.read_bytes())
+                        for output in outputs.values():
+                            self.assertEqual(b'prior evidence', output.read_bytes())
+                        self.assertEqual(b'nonexecutable input', nonexecutable.read_bytes())
+
+    def test_real_emitter_inventory_requires_suite_skipped_but_not_root_skipped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'date-parameters.xml'
+            path.write_text(DATE_PARAMETERS_VALID)
+            live.validate_date_parameters_xml(path)
+            tree = ET.fromstring(DATE_PARAMETERS_VALID)
+            tree.set('skipped', '0')
+            path.write_text(ET.tostring(tree, encoding='unicode'))
+            live.validate_date_parameters_xml(path)
+
+    def test_inventory_rejects_missing_counts_names_status_errors_and_extra_cases(self):
+        invalid = [('malformed', 'not XML'), ('empty', '<testsuites/>')]
+        for scope in ('root', 'suite'):
+            for key in ('tests', 'failures', 'errors', 'disabled') + (('skipped',) if scope == 'suite' else ()):
+                for value in (None, '2' if key == 'tests' else '1'):
+                    tree = ET.fromstring(DATE_PARAMETERS_VALID)
+                    node = tree if scope == 'root' else tree[0]
+                    if value is None:
+                        del node.attrib[key]
+                    else:
+                        node.set(key, value)
+                    invalid.append((scope + '-' + key + '-' + str(value), ET.tostring(tree, encoding='unicode')))
+        for tag in ('failure', 'error', 'skipped', 'properties', 'unreviewed'):
+            tree = ET.fromstring(DATE_PARAMETERS_VALID)
+            ET.SubElement(tree[0][0], tag)
+            invalid.append((tag + '-child', ET.tostring(tree, encoding='unicode')))
+        for scope, key, value in (('root', 'skipped', '1'), ('suite', 'name', 'WrongSuite'),
+                                   ('case', 'name', 'WrongCase'), ('case', 'classname', 'WrongSuite'),
+                                   ('case', 'status', 'notrun'), ('case', 'result', 'skipped')):
+            for actual in (None, value):
+                tree = ET.fromstring(DATE_PARAMETERS_VALID)
+                node = tree if scope == 'root' else (tree[0] if scope == 'suite' else tree[0][0])
+                if actual is None:
+                    if scope == 'root':
+                        continue  # Root skipped is intentionally optional.
+                    del node.attrib[key]
+                else:
+                    node.set(key, actual)
+                invalid.append((scope + '-' + key + '-' + str(actual), ET.tostring(tree, encoding='unicode')))
+        tree = ET.fromstring(DATE_PARAMETERS_VALID)
+        invalid.append(('bare-suite', ET.tostring(tree[0], encoding='unicode')))
+        tree.append(ET.fromstring(ET.tostring(tree[0], encoding='unicode')))
+        invalid.append(('extra-suite', ET.tostring(tree, encoding='unicode')))
+        tree = ET.fromstring(DATE_PARAMETERS_VALID)
+        tree[0].append(ET.fromstring(ET.tostring(tree[0][0], encoding='unicode')))
+        invalid.append(('extra-case', ET.tostring(tree, encoding='unicode')))
+        tree = ET.fromstring(DATE_PARAMETERS_VALID)
+        ET.SubElement(tree[0][0], 'testcase', name=DATE_PARAMETERS_CASE)
+        invalid.append(('nested-case', ET.tostring(tree, encoding='unicode')))
+        # Listing XML has names/counts but no execution status or result.
+        invalid.append(('listing', '<testsuites tests="1"><testsuite name="' + DATE_PARAMETERS_SUITE +
+                        '" tests="1"><testcase name="' + DATE_PARAMETERS_CASE + '"/></testsuite></testsuites>'))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'date-parameters.xml'
+            with self.assertRaises(FileNotFoundError):
+                live.validate_date_parameters_xml(path)
+            for label, data in invalid:
+                with self.subTest(label=label):
+                    path.write_text(data)
+                    with self.assertRaises(Exception):
+                        live.validate_date_parameters_xml(path)
+
+    def test_child_overrides_private_endpoint_and_strips_all_filters_and_fixture_markers(self):
+        inherited = {'GTEST_FILTER': '*', 'GTEST_REPEAT': '99', 'GTEST_SHARD_INDEX': '3',
+                     'GTEST_TOTAL_SHARDS': '4', 'GTEST_OUTPUT': 'xml:/unowned/path', 'GTEST_RANDOM_SEED': '13', 'GTEST_UNREVIEWED_KEY': 'polluted',
+                     'ODBCPP_MYSQL_TEST_HOST': 'wrong', 'ODBCPP_MYSQL_TEST_PORT': '9999',
+                     'ODBCPP_MYSQL_TEST_CA_FILE': '/wrong/ca', 'ODBCPP_MYSQL_TEST_USER': 'wrong',
+                     'ODBCPP_MYSQL_TEST_PASSWORD': 'untrusted',
+                     'ODBCPP_MYSQL_DECIMAL_FIXTURE_ADMITTED': 'wrong',
+                     'ODBCPP_MYSQL_DATE_FIXTURE_ADMITTED': 'wrong',
+                     'ODBCPP_MYSQL_UNSIGNED_BIGINT_FIXTURE_ADMITTED': 'wrong',
+                     'ODBCPP_MYSQL_DATETIME_FIXTURE_ADMITTED': 'wrong',
+                     'ODBCPP_MYSQL_DATE_PARAMETER_FIXTURE_ADMITTED': 'wrong',
+                     'ODBCPP_MYSQL_UNREVIEWED_FIXTURE_ADMITTED': 'wrong'}
+        with tempfile.TemporaryDirectory() as directory:
+            junit = Path(directory) / 'date-parameters.xml'
+            binary = Path(directory) / 'child'
+            ca = Path(directory) / 'ca.pem'
+            def child(args, **kwargs):
+                self.assertEqual(args, [str(binary), '--gtest_filter=' + DATE_PARAMETERS_SUITE + '.' + DATE_PARAMETERS_CASE,
+                                        '--gtest_repeat=1', '--gtest_output=xml:' + str(junit)])
+                self.assertEqual(kwargs['timeout'], 60)
+                env = kwargs['env']
+                self.assertFalse(any(key.startswith('GTEST_') for key in env))
+                admitted = {key: value for key, value in env.items()
+                            if key.startswith('ODBCPP_MYSQL_') and key.endswith('_FIXTURE_ADMITTED')}
+                self.assertEqual(admitted, {'ODBCPP_MYSQL_DATE_PARAMETER_FIXTURE_ADMITTED':
+                                           'pinned-8.4.11-temporary-date-parameters-valid'})
+                for key, expected in {'HOST': 'localhost', 'PORT': '12345', 'CA_FILE': str(ca.resolve()),
+                                      'USER': 'sdk', 'PASSWORD': live.PASSWORD}.items():
+                    self.assertEqual(env['ODBCPP_MYSQL_TEST_' + key], expected)
+                junit.write_text(DATE_PARAMETERS_VALID)
+                return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
+            with patch.dict(live.os.environ, inherited):
+                with patch.object(live, 'run', side_effect=child) as invoke:
+                    live.run_date_parameters(binary, junit, '12345', ca)
+                    self.assertEqual(invoke.call_count, 1)
+
+    def test_child_failures_have_safe_error_and_never_retry_or_accept_missing_inventory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            junit = Path(directory) / 'date-parameters.xml'
+            for failure in ('timeout', 'nonzero', 'missing', 'malformed', 'wrongcase'):
+                with self.subTest(failure=failure):
+                    junit.unlink(missing_ok=True)
+                    def child(args, **kwargs):
+                        if failure == 'timeout':
+                            raise subprocess.TimeoutExpired('private command', 60, output='private output', stderr='private error')
+                        if failure == 'nonzero':
+                            raise subprocess.CalledProcessError(1, 'private command', output='private output', stderr='private error')
+                        if failure == 'malformed':
+                            junit.write_text('private malformed XML')
+                        if failure == 'wrongcase':
+                            junit.write_text(DATE_PARAMETERS_VALID.replace(DATE_PARAMETERS_CASE, 'WrongCase'))
+                        return subprocess.CompletedProcess(args, 0, stdout='private output', stderr='private error')
+                    with patch.object(live, 'run', side_effect=child) as invoke:
+                        with self.assertRaisesRegex(RuntimeError, '^MySQL DATE parameter proof failed$') as caught:
+                            live.run_date_parameters(Path('/fake/binary'), junit, '12345', Path('/fake/ca'))
+                        self.assertTrue(caught.exception.__suppress_context__)
+                        self.assertIsNone(caught.exception.__cause__)
+                        self.assertEqual(invoke.call_count, 1)
+
+
+    def _mock_main(self, *, decimal=True, datetime=True, date_parameters=True,
+                   failure=None, cleanup_failure=False):
+        # Exercise real main/child helpers/validators. ALL processes and native
+        # operations are intercepted. Mock XML is parser-test input only.
+        events = []
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            output = directory / 'success.json'
+            output.write_text('{"stale":true}')
+            binaries = {}
+            reports = {}
+            for label in ('probe', 'decimal', 'datetime', 'date-parameters'):
+                binary = directory / label
+                binary.write_text('mock-only executable')
+                binary.chmod(0o700)
+                binaries[label] = binary.resolve()
+                reports[label] = directory / (label + '.xml')
+                reports[label].write_text('stale XML')
+            enabled = {'decimal': decimal, 'datetime': datetime, 'date-parameters': date_parameters}
+            argv = ['mysql-live', '--probe', str(binaries['probe']), '--output', str(output)]
+            for label, requested in enabled.items():
+                if requested:
+                    argv += ['--' + label + '-test-binary', str(binaries[label]),
+                             '--' + label + '-junit', str(reports[label])]
+            owned_name = None
+            def process(args, **kwargs):
+                nonlocal owned_name
+                if args[0] == 'openssl':
+                    for option in ('-keyout', '-out'):
+                        if option in args:
+                            Path(args[args.index(option) + 1]).write_text('mock certificate')
+                elif args[:2] == ['docker', 'pull']:
+                    events.append('pull')
+                    self.assertEqual(live.IMAGE, args[2])
+                elif args[:2] == ['docker', 'run']:
+                    events.append('create')
+                    self.assertFalse(output.exists())
+                    for label, requested in enabled.items():
+                        if requested:
+                            self.assertFalse(reports[label].exists())
+                    self.assertIn(live.IMAGE, args)
+                    owned_name = args[args.index('--name') + 1]
+                    if failure == 'uncertain-create':
+                        raise subprocess.TimeoutExpired('private create command', 60)
+                elif args[:2] == ['docker', 'port']:
+                    self.assertEqual(owned_name, args[2])
+                    return subprocess.CompletedProcess(args, 0, stdout='127.0.0.1:12345\n')
+                elif args[:2] == ['docker', 'exec']:
+                    self.assertIn(owned_name, args)
+                    if args[-1].startswith('SELECT VERSION()'):
+                        return subprocess.CompletedProcess(args, 0, stdout='8.4.11\t0\n')
+                    if args[-1].startswith('SELECT plugin'):
+                        return subprocess.CompletedProcess(args, 0, stdout='caching_sha2_password\n')
+                    self.assertEqual('FLUSH PRIVILEGES', args[-1])
+                elif args[0] == str(binaries['probe']):
+                    events.append(('probe', args[-1], args[1], Path(args[3]).name))
+                    if failure == 'probe':
+                        raise subprocess.CalledProcessError(1, 'private probe', stderr='private')
+                    return subprocess.CompletedProcess(args, 0, stdout='PASS ' + args[-1] + '\n')
+                else:
+                    label = next((key for key in enabled if args[0] == str(binaries[key])), None)
+                    if label is None:
+                        self.fail('Unexpected mocked process kind')
+                    self.assertTrue(enabled[label])
+                    self.assertFalse(output.exists())
+                    events.append(label)
+                    if failure == label + '-child':
+                        raise subprocess.CalledProcessError(1, 'private child', stderr='private')
+                    if failure == label + '-timeout':
+                        raise subprocess.TimeoutExpired('private child', 60, stderr='private')
+                    data = {'decimal': VALID, 'datetime': DATETIME_VALID,
+                            'date-parameters': DATE_PARAMETERS_VALID}[label]
+                    if failure == label + '-xml':
+                        data = '<testsuites/>'
+                    reports[label].write_text(data)
+                return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
+            def cleanup(name):
+                self.assertEqual(owned_name, name)
+                self.assertFalse(output.exists())
+                events.append('cleanup')
+                if cleanup_failure:
+                    raise RuntimeError('private cleanup failure')
+                events.append('absence-confirmed')
+            caught = None
+            with patch.object(live.sys, 'argv', argv), patch.object(live, 'run', side_effect=process), \
+                    patch.object(live, 'cleanup_fixture', side_effect=cleanup):
+                try:
+                    live.main()
+                except Exception as error:
+                    caught = error
+            evidence = None
+            if output.exists():
+                events.append('success-written')
+                evidence = json.loads(output.read_text())
+            return events, evidence, caught
+
+    def test_main_preserves_six_probes_and_sequential_children_cleanup_before_json(self):
+        events, evidence, error = self._mock_main()
+        self.assertIsNone(error)
+        expected_probes = [('probe', 'full', 'localhost', 'ca.pem'), ('probe', 'cached', 'localhost', 'ca.pem'),
+                           ('probe', 'session', 'localhost', 'ca.pem'), ('probe', 'reject-auth', 'localhost', 'ca.pem'),
+                           ('probe', 'reject-tls', 'localhost', 'wrong-ca.pem'), ('probe', 'reject-tls', '127.0.0.1', 'ca.pem')]
+        self.assertEqual(['pull', 'create'] + expected_probes +
+                         ['decimal', 'datetime', 'date-parameters', 'cleanup', 'absence-confirmed', 'success-written'], events)
+        self.assertTrue(evidence['sdkDecimalResultsProven'])
+        self.assertTrue(evidence['sdkDatetimeValidResultsProven'])
+        self.assertTrue(evidence['sdkDateParametersProven'])
+        self.assertTrue(evidence['sdkDirectSessionProven'])
+        self.assertFalse(evidence['odbcSessionClaimed'])
+        self.assertEqual(live.IMAGE, evidence['image'])
+        self.assertEqual('8.4.11', evidence['version'])
+        self.assertEqual('caching_sha2_password', evidence['plugin'])
+        self.assertEqual([item[1] for item in expected_probes], [item['case'] for item in evidence['cases']])
+
+    def test_optional_pairs_are_independent_date_only_and_all_omitted_keep_prior_proofs(self):
+        for decimal in (False, True):
+            for datetime in (False, True):
+                for date_parameters in (False, True):
+                    events, evidence, error = self._mock_main(decimal=decimal, datetime=datetime,
+                                                              date_parameters=date_parameters)
+                    self.assertIsNone(error)
+                    self.assertEqual(decimal, evidence['sdkDecimalResultsProven'])
+                    self.assertEqual(datetime, evidence['sdkDatetimeValidResultsProven'])
+                    self.assertEqual(date_parameters, evidence['sdkDateParametersProven'])
+                    self.assertEqual(decimal, 'decimal' in events)
+                    self.assertEqual(datetime, 'datetime' in events)
+                    self.assertEqual(date_parameters, 'date-parameters' in events)
+                    self.assertEqual(['cleanup', 'absence-confirmed', 'success-written'], events[-3:])
+
+    def test_main_failures_uncertain_create_and_cleanup_never_emit_success_preserve_original_error(self):
+        expected_errors = {'uncertain-create': None, 'probe': 'MySQL probe rejected fixture',
+                           'decimal-child': 'MySQL decimal result proof failed',
+                           'datetime-child': 'MySQL DATETIME result proof failed',
+                           'date-parameters-child': 'MySQL DATE parameter proof failed',
+                           'date-parameters-timeout': 'MySQL DATE parameter proof failed',
+                           'date-parameters-xml': 'MySQL DATE parameter proof failed',
+                           None: 'MySQL fixture cleanup failed'}
+        for failure, expected in expected_errors.items():
+            for cleanup_failure in (False, True):
+                if failure is None and not cleanup_failure:
+                    continue
+                with self.subTest(failure=failure, cleanup_failure=cleanup_failure):
+                    events, evidence, error = self._mock_main(failure=failure, cleanup_failure=cleanup_failure)
+                    self.assertIsNone(evidence)
+                    self.assertIsNotNone(error)
+                    self.assertIn('cleanup', events)
+                    self.assertNotIn('success-written', events)
+                    if failure == 'uncertain-create':
+                        self.assertIsInstance(error, subprocess.TimeoutExpired)
+                        self.assertNotIn('date-parameters', events)
+                    else:
+                        self.assertIsInstance(error, RuntimeError)
+                        self.assertEqual(expected, str(error))
+                    if failure in ('probe', 'decimal-child', 'datetime-child'):
+                        self.assertNotIn('date-parameters', events)
+
+    def test_real_cleanup_requires_confirmed_exact_owned_absence(self):
+        # Test current real cleanup API separately from orchestration mocks.
+        failed_remove = subprocess.CompletedProcess([], 1)
+        for remaining in ('', 'surviving-owned-container'):
+            with patch.object(live.subprocess, 'run', return_value=failed_remove) as remove, \
+                    patch.object(live, 'run', return_value=subprocess.CompletedProcess([], 0, stdout=remaining)) as observe:
+                if remaining:
+                    with self.assertRaisesRegex(RuntimeError, 'cleanup failed'):
+                        live.cleanup_fixture('owned-name')
+                else:
+                    live.cleanup_fixture('owned-name')
+                self.assertEqual(['docker', 'rm', '--force', 'owned-name'], remove.call_args[0][0])
+                self.assertEqual(30, remove.call_args.kwargs['timeout'])
+                self.assertEqual(['docker', 'ps', '--all', '--filter', 'name=^/owned-name$', '--format', '{{.ID}}'],
+                                 observe.call_args[0][0])
+                self.assertEqual(10, observe.call_args.kwargs['timeout'])
+        with patch.object(live.subprocess, 'run', return_value=failed_remove), \
+                patch.object(live, 'run', side_effect=subprocess.CalledProcessError(1, 'private observation')):
+            with self.assertRaises(Exception):
+                live.cleanup_fixture('owned-name')
+
 if __name__ == '__main__':
     unittest.main()
