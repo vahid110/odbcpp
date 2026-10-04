@@ -118,9 +118,12 @@ TEST(BoundedResponseStream, OldEofCannotAuthorizeFlagsAfterAppendButNewEndCan) {
 TEST(BoundedResponseStream, NonEofReadInvalidatesOldEndEvidence) {
   Clock c; auto b=owner(c); auto* io=b.io(); io->write("a",1);
   char out[2]{}; io->read(out,2); ASSERT_TRUE(io->eof());
-  io->clear(); // Zero-byte successful read observes no EOF and must not retain it.
-  io->read(out,0); io->setstate(std::ios::failbit|std::ios::eofbit);
-  EXPECT_EQ(std::get<StreamFailure>(seal_response(std::move(b))),StreamFailure::StreamFailed);
+  io->clear(); // Exercise the buffer callback; istream may optimize read(out,0).
+  EXPECT_EQ(io->rdbuf()->sgetn(out,0),0);
+  io->setstate(std::ios::failbit|std::ios::eofbit);
+  auto result=seal_response(std::move(b));
+  ASSERT_TRUE(std::holds_alternative<StreamFailure>(result));
+  EXPECT_EQ(std::get<StreamFailure>(result),StreamFailure::StreamFailed);
 }
 TEST(BoundedResponseStream, MovePreservesBorrowedAddressAndSealExpiresIt) {
   Clock c; auto b=owner(c); auto* io=b.io(); auto* buffer=io->rdbuf();
