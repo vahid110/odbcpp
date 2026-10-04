@@ -379,6 +379,10 @@ class FakeProvider final : public IBackendProvider {
         types[1], types[2]};
     return version == "2.0" ? std::span<const TypeDefinition>(modern) : std::span<const TypeDefinition>(types);
   }
+  std::span<const TypeDefinition> result_type_catalog(
+      std::string_view version = {}) const noexcept override {
+    return profile_ ? profile_->result_type_catalog(version) : type_catalog(version);
+  }
   std::optional<std::string> normalize_error_sqlstate(std::string_view state, ErrorContext) const override {
     if (seen_->malformed_state) return "bad";
     if (state == "FAKE_ERROR") return "22018";
@@ -4046,4 +4050,203 @@ TEST_F(BackendContractTest, WideDriverConnectScalarTruncationPreservesConnection
   ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLDriverConnectW(dbc,nullptr,input.data(),SQL_NTS,output.data(),static_cast<SQLSMALLINT>(input.size()),&length,SQL_DRIVER_NOPROMPT));
   EXPECT_EQ("01S00",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(2,seen->created);EXPECT_EQ(static_cast<SQLSMALLINT>(input.size()-1),length);
   EXPECT_EQ(0,std::memcmp(output.data(),input.data(),input.size()*sizeof(SQLWCHAR)));EXPECT_EQ('x',output[input.size()]);
+}
+
+TEST_F(BackendContractTest, RedshiftAdvertisedCharacterBinaryCatalogUsesSelectedDdlPolicy) {
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,dbc));dbc=nullptr;
+  auto profile=std::make_shared<postgres::PgBackendProvider>(BackendIdentity{"redshift","Amazon Redshift","ODBCPP Redshift"},
+      BackendConnectionDefaults{"localhost",5439,std::nullopt,true},std::nullopt,postgres::PgCatalogProfile::Redshift);
+  auto connection=std::make_unique<rs::odbc::ODBCConnection>(nullptr,std::make_shared<FakeProvider>(seen,profile));
+  dbc=reinterpret_cast<SQLHDBC>(connection.get());rs::odbc::HandleRegistry::instance().register_handle(dbc,std::move(connection),env);
+  connect();const auto queries=seen->queries,descriptions=seen->descriptions;
+  struct Expected {SQLSMALLINT type;const char* name;SQLINTEGER size;};
+  const Expected cases[]{{SQL_CHAR,"char",4096},{SQL_VARCHAR,"varchar",65535},{SQL_LONGVARBINARY,"varbyte",16777216}};
+  for(const auto& item:cases) {
+    SCOPED_TRACE(item.name);ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(stmt,item.type));
+    SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt,&count));ASSERT_EQ(19,count);
+    const char* schema[]{"TYPE_NAME","DATA_TYPE","COLUMN_SIZE","LITERAL_PREFIX","LITERAL_SUFFIX","CREATE_PARAMS"};
+    for(SQLUSMALLINT i=1;i<=6;++i) {
+      SQLCHAR name[32]{};SQLSMALLINT length=-1;
+      ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(stmt,i,name,sizeof(name),&length,nullptr,nullptr,nullptr,nullptr));
+      ASSERT_EQ(std::strlen(schema[i-1]),static_cast<std::size_t>(length));EXPECT_EQ(0,std::memcmp(name,schema[i-1],static_cast<std::size_t>(length)+1));
+    }
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+    SQLCHAR name[32]{};SQLLEN indicator=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,name,sizeof(name),&indicator));
+    ASSERT_EQ(std::strlen(item.name),static_cast<std::size_t>(indicator));EXPECT_EQ(0,std::memcmp(name,item.name,static_cast<std::size_t>(indicator)+1));
+    for(const auto& [field,expected]:{std::pair<SQLUSMALLINT,SQLINTEGER>{2,item.type},{3,item.size},{7,SQL_NULLABLE},{8,item.type==SQL_LONGVARBINARY?SQL_FALSE:SQL_TRUE}}) {
+      SQLINTEGER value=-9;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,field,SQL_C_LONG,&value,sizeof(value),&indicator));EXPECT_EQ(sizeof(value),static_cast<std::size_t>(indicator));EXPECT_EQ(expected,value);
+    }
+    SQLCHAR params[16]{};ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,6,SQL_C_CHAR,params,sizeof(params),&indicator));ASSERT_EQ(6,indicator);EXPECT_EQ(0,std::memcmp(params,"length",7));
+    for(const SQLUSMALLINT field:{SQLUSMALLINT{4},SQLUSMALLINT{5}}) {
+      SQLCHAR literal[8]{'x','x',0};ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,field,SQL_C_CHAR,literal,sizeof(literal),&indicator));
+      if(item.type==SQL_LONGVARBINARY) { EXPECT_EQ(SQL_NULL_DATA,indicator);EXPECT_EQ('x',literal[0]); }
+      else { ASSERT_EQ(1,indicator);EXPECT_EQ('\'',literal[0]);EXPECT_EQ(0,literal[1]); }
+    }
+    for(const SQLUSMALLINT field:{SQLUSMALLINT{10},SQLUSMALLINT{14},SQLUSMALLINT{15},SQLUSMALLINT{18}}) {
+      SQLINTEGER value=71;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,field,SQL_C_LONG,&value,sizeof(value),&indicator));EXPECT_EQ(SQL_NULL_DATA,indicator);EXPECT_EQ(71,value);
+    }
+    EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+    EXPECT_EQ(0,std::memcmp(name,item.name,std::strlen(item.name)+1));
+  }
+  for(const SQLSMALLINT removed:{SQLSMALLINT{SQL_BINARY},SQLSMALLINT{SQL_VARBINARY},SQLSMALLINT{SQL_LONGVARCHAR}}) {
+    ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(stmt,removed));SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt,&count));EXPECT_EQ(19,count);
+    EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  }
+  ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(stmt,SQL_ALL_TYPES));std::size_t selected[3]{};
+  for(SQLRETURN rc=SQLFetch(stmt);rc!=SQL_NO_DATA;rc=SQLFetch(stmt)) {
+    ASSERT_EQ(SQL_SUCCESS,rc);SQLCHAR name[64]{};SQLLEN length=-1;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,name,sizeof(name),&length));ASSERT_GE(length,0);ASSERT_LT(length,static_cast<SQLLEN>(sizeof(name)));
+    const std::string owned(reinterpret_cast<char*>(name),static_cast<std::size_t>(length));EXPECT_NE("bytea",owned);EXPECT_NE("text",owned);
+    for(std::size_t i=0;i<std::size(cases);++i) { if(owned==cases[i].name) { ++selected[i]; } }
+  }
+  for(const auto count:selected) { EXPECT_EQ(1u,count); }
+  EXPECT_EQ(queries,seen->queries);EXPECT_EQ(descriptions,seen->descriptions);
+}
+
+TEST_F(BackendContractTest, RedshiftDdlCatalogIsIsolatedFromPostgresAndUnknownVarbyteResultSize) {
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,dbc));dbc=nullptr;
+  auto rs_profile=std::make_shared<postgres::PgBackendProvider>(BackendIdentity{"redshift","Amazon Redshift","ODBCPP Redshift"},
+      BackendConnectionDefaults{"localhost",5439,std::nullopt,true},std::nullopt,postgres::PgCatalogProfile::Redshift);
+  auto connection=std::make_unique<rs::odbc::ODBCConnection>(nullptr,std::make_shared<FakeProvider>(seen,rs_profile));
+  dbc=reinterpret_cast<SQLHDBC>(connection.get());rs::odbc::HandleRegistry::instance().register_handle(dbc,std::move(connection),env);
+  seen->server_version="15.0";connect();
+  auto pg_seen=std::make_shared<Observations>();pg_seen->server_version="15.0";
+  auto pg_profile=std::make_shared<postgres::PgBackendProvider>(BackendIdentity{"postgresql","PostgreSQL","ODBCPP PostgreSQL"},BackendConnectionDefaults{"localhost",5432,std::nullopt,true});
+  auto pg_connection=std::make_unique<rs::odbc::ODBCConnection>(nullptr,std::make_shared<FakeProvider>(pg_seen,pg_profile));
+  SQLHDBC pg_dbc=reinterpret_cast<SQLHDBC>(pg_connection.get());rs::odbc::HandleRegistry::instance().register_handle(pg_dbc,std::move(pg_connection),env);
+  struct Cleanup { SQLHDBC dbc;SQLHSTMT stmt{};~Cleanup(){if(stmt) SQLFreeHandle(SQL_HANDLE_STMT,stmt);SQLDisconnect(dbc);SQLFreeHandle(SQL_HANDLE_DBC,dbc);} } pg{pg_dbc};
+  SQLCHAR input[]="SERVER=fake;DATABASE=contract;UID=test;SSL=0";ASSERT_EQ(SQL_SUCCESS,SQLDriverConnect(pg.dbc,nullptr,input,SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT));ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,pg.dbc,&pg.stmt));
+  for(int repeat=0;repeat<2;++repeat) {
+    for(const auto& [type,name,size]:{std::tuple{SQLSMALLINT{SQL_CHAR},"char",SQLINTEGER{10485760}},
+        {SQLSMALLINT{SQL_VARCHAR},"varchar",SQLINTEGER{10485760}},{SQLSMALLINT{SQL_LONGVARCHAR},"text",SQLINTEGER{1073741824}},
+        {SQLSMALLINT{SQL_VARBINARY},"bytea",SQLINTEGER{1073741824}}}) {
+      ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(pg.stmt,type));ASSERT_EQ(SQL_SUCCESS,SQLFetch(pg.stmt));SQLCHAR actual[32]{};SQLLEN length=-1;
+      ASSERT_EQ(SQL_SUCCESS,SQLGetData(pg.stmt,1,SQL_C_CHAR,actual,sizeof(actual),&length));ASSERT_EQ(std::strlen(name),static_cast<std::size_t>(length));EXPECT_EQ(0,std::memcmp(actual,name,static_cast<std::size_t>(length)+1));
+      SQLINTEGER limit=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetData(pg.stmt,3,SQL_C_LONG,&limit,sizeof(limit),&length));EXPECT_EQ(size,limit);EXPECT_EQ(SQL_NO_DATA,SQLFetch(pg.stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(pg.stmt));
+      ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(stmt,SQL_VARCHAR));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,3,SQL_C_LONG,&limit,sizeof(limit),&length));EXPECT_EQ(65535,limit);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+    }
+    ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(pg.stmt,SQL_LONGVARBINARY));EXPECT_EQ(SQL_NO_DATA,SQLFetch(pg.stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(pg.stmt));
+  }
+  EXPECT_EQ(0,seen->queries);EXPECT_EQ(0,pg_seen->queries);
+  for(const SQLULEN synthetic_size:{static_cast<SQLULEN>(0),static_cast<SQLULEN>(3)}) {
+    QueryResult result;result.columns={{"bytes",NativeTypeInfo{ScalarType::LongVarBinary,synthetic_size,0,true}}};result.rows={{"abc"}};
+    seen->date_result=result;ASSERT_EQ(SQL_SUCCESS,execute("rows"));ASSERT_TRUE(seen->date_result);ASSERT_EQ(1u,seen->date_result->columns.size());ASSERT_TRUE(seen->date_result->columns[0].normalized_type);seen->date_result->columns[0].normalized_type->column_size=999;
+    SQLSMALLINT type=-1;SQLULEN size=99;ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(stmt,1,nullptr,0,nullptr,&type,&size,nullptr,nullptr));EXPECT_EQ(SQL_LONGVARBINARY,type);EXPECT_EQ(synthetic_size,size);
+    char name[16]{};SQLSMALLINT length=-1;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(stmt,1,SQL_DESC_TYPE_NAME,name,sizeof(name),&length,nullptr));
+    EXPECT_EQ(7,length);EXPECT_EQ(0,std::memcmp(name,"varbyte",8));
+    for(const auto& [field,expected]:{std::pair<SQLUSMALLINT,SQLLEN>{SQL_DESC_OCTET_LENGTH,synthetic_size==0?SQL_NO_TOTAL:3},{SQL_DESC_DISPLAY_SIZE,synthetic_size==0?SQL_NO_TOTAL:6}}) {
+      SQLLEN actual=-99;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(stmt,1,field,nullptr,0,nullptr,&actual));EXPECT_EQ(expected,actual);
+    }
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  }
+  // size3 is synthetic adapter plumbing; size0 retains unknown actual wire typmod.
+}
+
+TEST_F(BackendContractTest, ResultDefinitionsPreserveFamilyMetadataWhileRedshiftDdlRowsChange) {
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,dbc));dbc=nullptr;
+  auto profile=std::make_shared<postgres::PgBackendProvider>(BackendIdentity{"redshift","Amazon Redshift","ODBCPP Redshift"},BackendConnectionDefaults{"localhost",5439,std::nullopt,true},std::nullopt,postgres::PgCatalogProfile::Redshift);
+  auto connection=std::make_unique<rs::odbc::ODBCConnection>(nullptr,std::make_shared<FakeProvider>(seen,profile));dbc=reinterpret_cast<SQLHDBC>(connection.get());rs::odbc::HandleRegistry::instance().register_handle(dbc,std::move(connection),env);
+  struct Expected {ScalarType family;SQLULEN size;SQLSMALLINT scale;const char* name;bool quoted,sensitive;SQLINTEGER radix;SQLSMALLINT unsigned_value;};
+  const Expected cases[]{
+      {ScalarType::Binary,3,0,"bytea",true,false,0,SQL_TRUE},{ScalarType::LongVarChar,4,0,"text",true,true,0,SQL_TRUE},
+      {ScalarType::Boolean,1,0,"boolean",false,false,0,SQL_TRUE},{ScalarType::BigInt,19,0,"bigint",false,false,10,SQL_FALSE},
+      {ScalarType::Char,4,0,"char",true,true,0,SQL_TRUE},{ScalarType::Numeric,38,0,"numeric",false,false,10,SQL_FALSE},
+      {ScalarType::Decimal,5,2,"decimal",false,false,10,SQL_FALSE},{ScalarType::Integer,10,0,"integer",false,false,10,SQL_FALSE},
+      {ScalarType::SmallInt,5,0,"smallint",false,false,10,SQL_FALSE},{ScalarType::Real,7,6,"real",false,false,2,SQL_FALSE},
+      {ScalarType::Double,15,15,"double precision",false,false,2,SQL_FALSE},{ScalarType::Date,10,0,"date",true,false,0,SQL_TRUE},
+      {ScalarType::Time,15,6,"time",true,false,0,SQL_TRUE},{ScalarType::Timestamp,26,6,"timestamp",true,false,0,SQL_TRUE},
+      {ScalarType::VarChar,3,0,"varchar",true,true,0,SQL_TRUE},{ScalarType::LongVarBinary,0,0,"varbyte",false,false,0,SQL_TRUE}};
+  QueryResult result;for(const auto& item:cases) { result.columns.push_back({item.name,NativeTypeInfo{item.family,item.size,item.scale,true}}); }
+  result.rows.emplace_back(std::size(cases),std::nullopt);result.rows[0][0]=std::string("\0AB",3);result.rows[0][1]="Text";
+  seen->date_result=result;connect();ASSERT_EQ(SQL_SUCCESS,execute("rows"));
+  SQLHDESC ird=nullptr;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_ROW_DESC,&ird,0,nullptr));ASSERT_NE(nullptr,ird);
+  SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt,&count));ASSERT_EQ(std::size(cases),static_cast<std::size_t>(count));
+  ASSERT_TRUE(seen->date_result);ASSERT_EQ(std::size(cases),seen->date_result->columns.size());
+  for(auto& column:seen->date_result->columns) { column.name="poison";column.normalized_type=NativeTypeInfo{ScalarType::Binary,999,0,true}; }
+  seen->date_result->rows={{"poison"}};
+  for(std::size_t index=0;index<std::size(cases);++index) {
+    const auto column=static_cast<SQLUSMALLINT>(index+1);const auto& item=cases[index];SCOPED_TRACE(item.name);
+    for(const SQLUSMALLINT field:{SQLUSMALLINT{SQL_DESC_TYPE_NAME},SQLUSMALLINT{SQL_DESC_LOCAL_TYPE_NAME},SQLUSMALLINT{SQL_DESC_LITERAL_PREFIX},SQLUSMALLINT{SQL_DESC_LITERAL_SUFFIX}}) {
+      const char* expected=(field==SQL_DESC_TYPE_NAME||field==SQL_DESC_LOCAL_TYPE_NAME)?item.name:(item.quoted?"'":"");
+      char text[32]{};SQLSMALLINT length=-1;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(stmt,column,field,text,sizeof(text),&length,nullptr));
+      ASSERT_GE(length,0);ASSERT_LT(length,static_cast<SQLSMALLINT>(sizeof(text)));EXPECT_EQ(std::strlen(expected),static_cast<std::size_t>(length));EXPECT_EQ(0,std::memcmp(text,expected,std::strlen(expected)+1));
+      char descriptor_text[32]{};SQLINTEGER descriptor_length=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,column,field,descriptor_text,sizeof(descriptor_text),&descriptor_length));
+      ASSERT_GE(descriptor_length,0);ASSERT_LT(descriptor_length,static_cast<SQLINTEGER>(sizeof(descriptor_text)));EXPECT_EQ(std::strlen(expected),static_cast<std::size_t>(descriptor_length));EXPECT_EQ(0,std::memcmp(descriptor_text,expected,std::strlen(expected)+1));
+    }
+    for(const auto& [field,expected]:{std::pair<SQLUSMALLINT,SQLLEN>{SQL_DESC_CASE_SENSITIVE,item.sensitive?SQL_TRUE:SQL_FALSE},{SQL_DESC_NUM_PREC_RADIX,item.radix},{SQL_DESC_UNSIGNED,item.unsigned_value}}) {
+      SQLLEN value=-1;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(stmt,column,field,nullptr,0,nullptr,&value));EXPECT_EQ(expected,value);
+    }
+  }
+  SQLHSTMT metadata_stmt=nullptr;ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&metadata_stmt));
+  struct StatementCleanup {SQLHSTMT handle;~StatementCleanup(){SQLFreeHandle(SQL_HANDLE_STMT,handle);}} cleanup{metadata_stmt};
+  for(const SQLSMALLINT type:{SQLSMALLINT{SQL_VARBINARY},SQLSMALLINT{SQL_LONGVARCHAR}}) {
+    ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(metadata_stmt,type));EXPECT_EQ(SQL_NO_DATA,SQLFetch(metadata_stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(metadata_stmt));
+  }
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLCHAR binary[4]{'x','x','x','x'};SQLLEN indicator=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_BINARY,binary,3,&indicator));EXPECT_EQ(3,indicator);const SQLCHAR expected_binary[]{0,'A','B'};EXPECT_EQ(0,std::memcmp(binary,expected_binary,sizeof(expected_binary)));EXPECT_EQ('x',binary[3]);
+  char text[8]{};ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_CHAR,text,sizeof(text),&indicator));EXPECT_EQ(4,indicator);EXPECT_EQ(0,std::memcmp(text,"Text",5));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  seen->date_result.reset();ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(const_cast<char*>("rows ?")),SQL_NTS));
+  SQLSMALLINT parameter_type=-1;SQLULEN parameter_size=0;ASSERT_EQ(SQL_SUCCESS,SQLDescribeParam(stmt,1,&parameter_type,&parameter_size,nullptr,nullptr));EXPECT_EQ(SQL_VARBINARY,parameter_type);EXPECT_EQ(8u,parameter_size);EXPECT_EQ(1,seen->descriptions);
+  SQLHDESC ipd=nullptr;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_PARAM_DESC,&ipd,0,nullptr));ASSERT_NE(nullptr,ipd);
+  auto expect_ipd=[&](const char* expected,bool sensitive,bool quoted) {
+    char name[32]{};SQLINTEGER length=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,1,SQL_DESC_TYPE_NAME,name,sizeof(name),&length));ASSERT_GE(length,0);ASSERT_LT(length,static_cast<SQLINTEGER>(sizeof(name)));EXPECT_EQ(std::strlen(expected),static_cast<std::size_t>(length));EXPECT_EQ(0,std::memcmp(name,expected,std::strlen(expected)+1));
+    SQLINTEGER value=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,1,SQL_DESC_CASE_SENSITIVE,&value,0,nullptr));EXPECT_EQ(sensitive?SQL_TRUE:SQL_FALSE,value);
+    char literal[8]{};ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,1,SQL_DESC_LITERAL_PREFIX,literal,sizeof(literal),&length));EXPECT_EQ(quoted?1:0,length);EXPECT_EQ(0,std::memcmp(literal,quoted?"'":"",quoted?2:1));
+  };
+  expect_ipd("bytea",false,true);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(ipd,1,SQL_DESC_TYPE,reinterpret_cast<SQLPOINTER>(SQL_LONGVARCHAR),0));expect_ipd("text",true,true);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(ipd,1,SQL_DESC_CONCISE_TYPE,reinterpret_cast<SQLPOINTER>(SQL_VARBINARY),0));expect_ipd("bytea",false,true);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescRec(ipd,1,SQL_DATETIME,SQL_CODE_TIMESTAMP,26,0,6,nullptr,nullptr,nullptr));expect_ipd("timestamp",false,true);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(ipd,1,SQL_DESC_DATETIME_INTERVAL_CODE,reinterpret_cast<SQLPOINTER>(SQL_CODE_DATE),0));expect_ipd("date",false,true);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescRec(ipd,1,SQL_LONGVARCHAR,0,4,0,0,nullptr,nullptr,nullptr));expect_ipd("text",true,true);
+  SQLCHAR input[]{0,'A','B'};SQLLEN input_length=3;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_BINARY,SQL_VARBINARY,3,0,input,sizeof(input),&input_length));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(ipd,1,SQL_DESC_DATA_PTR,input,0));ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Binary,seen->parameters[0].type);ASSERT_TRUE(seen->parameters[0].value);EXPECT_EQ(std::string("\0AB",3),*seen->parameters[0].value);input[1]='x';EXPECT_EQ(std::string("\0AB",3),*seen->parameters[0].value);
+  auto pg_seen=std::make_shared<Observations>();pg_seen->date_result=result;
+  auto pg_profile=std::make_shared<postgres::PgBackendProvider>(BackendIdentity{"postgresql","PostgreSQL","ODBCPP PostgreSQL"},BackendConnectionDefaults{"localhost",5432,std::nullopt,true});
+  auto pg_connection=std::make_unique<rs::odbc::ODBCConnection>(nullptr,std::make_shared<FakeProvider>(pg_seen,pg_profile));
+  SQLHDBC pg_dbc=reinterpret_cast<SQLHDBC>(pg_connection.get());rs::odbc::HandleRegistry::instance().register_handle(pg_dbc,std::move(pg_connection),env);
+  struct PgCleanup {SQLHDBC dbc;SQLHSTMT stmt{};~PgCleanup(){if(stmt) SQLFreeHandle(SQL_HANDLE_STMT,stmt);SQLDisconnect(dbc);SQLFreeHandle(SQL_HANDLE_DBC,dbc);}} pg{pg_dbc};
+  SQLCHAR pg_input[]="SERVER=fake;DATABASE=contract;UID=test;SSL=0";
+  ASSERT_EQ(SQL_SUCCESS,SQLDriverConnect(pg.dbc,nullptr,pg_input,SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT));ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,pg.dbc,&pg.stmt));
+  SQLCHAR pg_sql[]="rows";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(pg.stmt,pg_sql,SQL_NTS));
+  SQLHDESC pg_ird=nullptr;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(pg.stmt,SQL_ATTR_IMP_ROW_DESC,&pg_ird,0,nullptr));ASSERT_NE(nullptr,pg_ird);
+  for(const auto& [column,name,sensitive]:{std::tuple{SQLUSMALLINT{1},"bytea",SQL_FALSE},std::tuple{SQLUSMALLINT{2},"text",SQL_TRUE}}) {
+    char actual[16]{};SQLSMALLINT length=-1;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(pg.stmt,column,SQL_DESC_TYPE_NAME,actual,sizeof(actual),&length,nullptr));ASSERT_EQ(std::strlen(name),static_cast<std::size_t>(length));EXPECT_EQ(0,std::memcmp(actual,name,static_cast<std::size_t>(length)+1));
+    SQLLEN case_sensitive=-1;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(pg.stmt,column,SQL_DESC_CASE_SENSITIVE,nullptr,0,nullptr,&case_sensitive));EXPECT_EQ(sensitive,case_sensitive);
+    SQLINTEGER descriptor_length=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(pg_ird,column,SQL_DESC_TYPE_NAME,actual,sizeof(actual),&descriptor_length));ASSERT_EQ(std::strlen(name),static_cast<std::size_t>(descriptor_length));EXPECT_EQ(0,std::memcmp(actual,name,static_cast<std::size_t>(descriptor_length)+1));
+    char literal[4]{};ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(pg_ird,column,SQL_DESC_LITERAL_PREFIX,literal,sizeof(literal),&descriptor_length));ASSERT_EQ(1,descriptor_length);EXPECT_EQ(0,std::memcmp(literal,"'",2));
+  }
+  EXPECT_EQ(1,pg_seen->queries);
+  // These bytea/text values preserve prior generic metadata; they do not advertise native DDL support.
+}
+
+TEST_F(BackendContractTest, ResultSizingAndWideDefinitionsStayIndependentFromRedshiftDdlMaxima) {
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,dbc));dbc=nullptr;
+  auto profile=std::make_shared<postgres::PgBackendProvider>(BackendIdentity{"redshift","Amazon Redshift","ODBCPP Redshift"},BackendConnectionDefaults{"localhost",5439,std::nullopt,true},std::nullopt,postgres::PgCatalogProfile::Redshift);
+  auto connection=std::make_unique<rs::odbc::ODBCConnection>(nullptr,std::make_shared<FakeProvider>(seen,profile));dbc=reinterpret_cast<SQLHDBC>(connection.get());rs::odbc::HandleRegistry::instance().register_handle(dbc,std::move(connection),env);
+  QueryResult result;result.columns={{"large",NativeTypeInfo{ScalarType::VarChar,70000,0,true}},{"unknown",NativeTypeInfo{ScalarType::LongVarBinary,0,0,true}},{"known",NativeTypeInfo{ScalarType::LongVarBinary,3,0,true}}};result.rows={{"small","ab","abc"}};
+  seen->date_result=result;connect();ASSERT_EQ(SQL_SUCCESS,execute("rows"));SQLHDESC ird=nullptr;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_ROW_DESC,&ird,0,nullptr));ASSERT_NE(nullptr,ird);
+  ASSERT_TRUE(seen->date_result);ASSERT_EQ(3u,seen->date_result->columns.size());for(auto& column:seen->date_result->columns) { column.name="poison";column.normalized_type=NativeTypeInfo{ScalarType::Binary,999,0,true}; }
+  SQLHSTMT metadata_stmt=nullptr;ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&metadata_stmt));struct Cleanup{SQLHSTMT handle;~Cleanup(){SQLFreeHandle(SQL_HANDLE_STMT,handle);}} cleanup{metadata_stmt};
+  for(const auto& [type,limit]:{std::pair<SQLSMALLINT,SQLINTEGER>{SQL_VARCHAR,65535},{SQL_LONGVARBINARY,16777216}}) {
+    ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(metadata_stmt,type));ASSERT_EQ(SQL_SUCCESS,SQLFetch(metadata_stmt));SQLINTEGER actual=-1;SQLLEN indicator=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetData(metadata_stmt,3,SQL_C_LONG,&actual,sizeof(actual),&indicator));EXPECT_EQ(limit,actual);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(metadata_stmt));
+  }
+  const SQLULEN sizes[]{70000,0,3};const SQLLEN octets[]{70000,SQL_NO_TOTAL,3};const SQLWCHAR varchar_name[]{'v','a','r','c','h','a','r',0},varbyte_name[]{'v','a','r','b','y','t','e',0};
+  for(SQLUSMALLINT column=1;column<=3;++column) {
+    SQLULEN size=99;SQLSMALLINT type=-1;ASSERT_EQ(SQL_SUCCESS,SQLDescribeColW(stmt,column,nullptr,0,nullptr,&type,&size,nullptr,nullptr));EXPECT_EQ(sizes[column-1],size);EXPECT_EQ(column==1?SQL_VARCHAR:SQL_LONGVARBINARY,type);
+    SQLULEN descriptor_size=99;ASSERT_EQ(SQL_SUCCESS,SQLGetDescFieldW(ird,column,SQL_DESC_LENGTH,&descriptor_size,0,nullptr));EXPECT_EQ(sizes[column-1],descriptor_size);
+    SQLLEN value=-1;ASSERT_EQ(SQL_SUCCESS,SQLColAttributeW(stmt,column,SQL_DESC_OCTET_LENGTH,nullptr,0,nullptr,&value));EXPECT_EQ(octets[column-1],value);
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDescFieldW(ird,column,SQL_DESC_OCTET_LENGTH,&value,0,nullptr));EXPECT_EQ(octets[column-1],value);
+    for(const bool descriptor:{false,true}) {
+      SQLWCHAR name[16];std::fill(std::begin(name),std::end(name),SQLWCHAR('x'));SQLSMALLINT short_length=-1;SQLINTEGER long_length=-1;
+      auto output=[&](SQLINTEGER bytes)->SQLRETURN { return descriptor?SQLGetDescFieldW(ird,column,SQL_DESC_TYPE_NAME,name,bytes,&long_length):SQLColAttributeW(stmt,column,SQL_DESC_TYPE_NAME,name,static_cast<SQLSMALLINT>(bytes),&short_length,nullptr); };
+      ASSERT_EQ(SQL_SUCCESS,output(sizeof(name)));EXPECT_EQ(7*sizeof(SQLWCHAR),static_cast<std::size_t>(descriptor?long_length:short_length));EXPECT_EQ(0,std::memcmp(name,column==1?varchar_name:varbyte_name,8*sizeof(SQLWCHAR)));EXPECT_EQ('x',name[8]);
+      std::fill(std::begin(name),std::end(name),SQLWCHAR('x'));ASSERT_EQ(SQL_SUCCESS_WITH_INFO,output(2*sizeof(SQLWCHAR)));EXPECT_EQ("01004",state(descriptor?SQL_HANDLE_DESC:SQL_HANDLE_STMT,descriptor?reinterpret_cast<SQLHANDLE>(ird):stmt));EXPECT_EQ('v',name[0]);EXPECT_EQ(0,name[1]);EXPECT_EQ('x',name[2]);EXPECT_EQ(7*sizeof(SQLWCHAR),static_cast<std::size_t>(descriptor?long_length:short_length));
+      std::fill(std::begin(name),std::end(name),SQLWCHAR('x'));short_length=73;long_length=73;EXPECT_EQ(SQL_ERROR,output(2*sizeof(SQLWCHAR)-1));EXPECT_EQ("HY090",state(descriptor?SQL_HANDLE_DESC:SQL_HANDLE_STMT,descriptor?reinterpret_cast<SQLHANDLE>(ird):stmt));EXPECT_EQ(73,descriptor?long_length:short_length);EXPECT_TRUE(std::all_of(std::begin(name),std::end(name),[](auto v){return v=='x';}));
+    }
+  }
+  EXPECT_EQ(1,seen->queries);ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));char value[16]{};SQLLEN indicator=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,value,sizeof(value),&indicator));EXPECT_EQ(5,indicator);EXPECT_EQ(0,std::memcmp(value,"small",6));
+  // Synthetic70000 metadata is not server large-string enablement; varbyte0 remains unknown.
 }

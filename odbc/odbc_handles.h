@@ -251,6 +251,7 @@ public:
     return backend_provider_->sql_dialect();
   }
   std::span<const rs::core::database::TypeDefinition> type_catalog() const;
+  std::span<const rs::core::database::TypeDefinition> result_type_catalog() const;
   rs::core::database::BackendCapabilities capabilities() const;
   rs::core::database::TransactionCapabilities transaction_capabilities() const;
   // Facet presence only; individual requests may still be unsupported.

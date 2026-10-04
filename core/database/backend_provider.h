@@ -70,6 +70,12 @@ class IBackendProvider {
   // and remain valid for the provider lifetime across all subsequent selections.
   virtual std::span<const TypeDefinition> type_catalog(
       std::string_view server_version = {}) const noexcept = 0;
+  // Pure result/parameter policy, independent of DDL advertisements.
+  // Definitions obey the same immutable provider-lifetime contract.
+  virtual std::span<const TypeDefinition> result_type_catalog(
+      std::string_view server_version = {}) const noexcept {
+    return type_catalog(server_version);
+  }
   virtual TransactionCapabilities transaction_capabilities() const noexcept = 0;
   virtual rs::util::Result<ConnectionSettings> resolve_connection_options(
       ConnectionOptions options) const = 0;

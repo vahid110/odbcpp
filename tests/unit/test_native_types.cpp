@@ -217,18 +217,44 @@ TEST(NativeTypeLookupTest, GenericBackendUsesItsOwnFallbackWithoutPostgresDiscov
 TEST(TypeCatalogTest, AdvertisesNativeNamesAndNullablePropertiesWithoutIo) {
   auto backend = DatabaseFactory::create_connection();
   const auto catalog = configured_backend_provider().type_catalog(backend->server_version());
-  ASSERT_EQ(15u, catalog.size());
+  const bool redshift = DatabaseFactory::get_compiled_database_type() == DatabaseType::Redshift;
+  ASSERT_EQ(redshift ? 14u : 15u, catalog.size());
+  int chars = 0;
+  int varbytes = 0;
   for (const auto& type : catalog) {
     EXPECT_FALSE(type.name.empty());
     EXPECT_GT(type.column_size, 0u);
     if (type.type == ScalarType::VarChar) {
       EXPECT_EQ("varchar", type.name);
-      EXPECT_EQ(10485760u, type.column_size);
+      EXPECT_EQ(redshift ? 65535u : 10485760u, type.column_size);
       EXPECT_EQ(std::optional<std::string_view>("'"), type.literal_prefix);
       EXPECT_EQ(std::optional<std::string_view>("length"), type.create_params);
       EXPECT_FALSE(type.minimum_scale.has_value());
       EXPECT_FALSE(type.unsigned_attribute.has_value());
       EXPECT_TRUE(type.case_sensitive);
+    }
+    if (type.type == ScalarType::Char) {
+      ++chars;
+      EXPECT_EQ("char", type.name);
+      EXPECT_EQ(redshift ? 4096u : 10485760u, type.column_size);
+      EXPECT_EQ(std::optional<std::string_view>("'"), type.literal_prefix);
+      EXPECT_EQ(std::optional<std::string_view>("'"), type.literal_suffix);
+      EXPECT_EQ(std::optional<std::string_view>("length"), type.create_params);
+      EXPECT_TRUE(type.case_sensitive);
+    }
+    if (redshift) {
+      EXPECT_NE(ScalarType::Binary, type.type);
+      EXPECT_NE(ScalarType::LongVarChar, type.type);
+    }
+    if (type.type == ScalarType::LongVarBinary) {
+      ++varbytes;
+      EXPECT_TRUE(redshift);
+      EXPECT_EQ("varbyte", type.name);
+      EXPECT_EQ(16777216u, type.column_size);
+      EXPECT_FALSE(type.literal_prefix.has_value());
+      EXPECT_FALSE(type.literal_suffix.has_value());
+      EXPECT_EQ(std::optional<std::string_view>("length"), type.create_params);
+      EXPECT_FALSE(type.case_sensitive);
     }
     if (type.type == ScalarType::Integer) {
       EXPECT_EQ("integer", type.name);
@@ -238,6 +264,8 @@ TEST(TypeCatalogTest, AdvertisesNativeNamesAndNullablePropertiesWithoutIo) {
       EXPECT_EQ(10, type.numeric_radix);
     }
   }
+  EXPECT_EQ(1, chars);
+  EXPECT_EQ(redshift ? 1 : 0, varbytes);
   EXPECT_FALSE(backend->is_connected());
 }
 

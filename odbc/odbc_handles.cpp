@@ -1298,6 +1298,10 @@ std::span<const rs::core::database::TypeDefinition> ODBCConnection::type_catalog
       backend_observation_.server_version);
 }
 
+std::span<const rs::core::database::TypeDefinition> ODBCConnection::result_type_catalog() const {
+  return backend_provider_->result_type_catalog(backend_observation_.server_version);
+}
+
 rs::core::database::BackendCapabilities ODBCConnection::capabilities() const {
   auto result = backend_provider_->capabilities();
   if (backend_lease_ && !backend_observation_.has_statement_description_facet) {
@@ -2318,12 +2322,12 @@ SQLRETURN ODBCDescriptor::set_field(
   switch (field_identifier) {
     case SQL_DESC_TYPE:
       record.concise_type = *new_concise_type;
-      complete_descriptor_record(record, owner_ ? owner_->type_catalog()
+      complete_descriptor_record(record, owner_ ? owner_->result_type_catalog()
           : std::span<const rs::core::database::TypeDefinition>{});
       break;
     case SQL_DESC_CONCISE_TYPE:
       record.concise_type = *new_concise_type;
-      complete_descriptor_record(record, owner_ ? owner_->type_catalog()
+      complete_descriptor_record(record, owner_ ? owner_->result_type_catalog()
           : std::span<const rs::core::database::TypeDefinition>{});
       break;
     case SQL_DESC_DATETIME_INTERVAL_CODE: {
@@ -2335,7 +2339,7 @@ SQLRETURN ODBCDescriptor::set_field(
         return SQL_ERROR;
       }
       record.concise_type = *concise;
-      complete_descriptor_record(record, owner_ ? owner_->type_catalog()
+      complete_descriptor_record(record, owner_ ? owner_->result_type_catalog()
           : std::span<const rs::core::database::TypeDefinition>{});
       break;
     }
@@ -2505,7 +2509,7 @@ SQLRETURN ODBCDescriptor::set_record(
     candidate = records_[static_cast<std::size_t>(record_number - 1)];
   }
   candidate.concise_type = *concise_type;
-  complete_descriptor_record(candidate, owner_ ? owner_->type_catalog()
+  complete_descriptor_record(candidate, owner_ ? owner_->result_type_catalog()
       : std::span<const rs::core::database::TypeDefinition>{});
   if (kind_ == DescriptorKind::ImplementationParameter) {
     candidate.bound_sql_type = candidate.concise_type;
@@ -4672,7 +4676,7 @@ void ODBCStatement::apply_result_metadata(
   std::vector<DescriptorRecord> row_descriptor_records;
   row_descriptor_records.reserve(column_info_.size());
   for (const auto& column : column_info_) {
-    row_descriptor_records.push_back(descriptor_record_for(column, conn_->type_catalog()));
+    row_descriptor_records.push_back(descriptor_record_for(column, conn_->result_type_catalog()));
   }
   descriptor(imp_row_descriptor_)->replace_records(
       std::move(row_descriptor_records));
@@ -4696,7 +4700,7 @@ void ODBCStatement::apply_result_metadata(
   std::vector<DescriptorRecord> parameter_descriptor_records;
   parameter_descriptor_records.reserve(param_metadata_.size());
   for (std::size_t index = 0; index < param_metadata_.size(); ++index) {
-    auto record = descriptor_record_for(param_metadata_[index], conn_->type_catalog());
+    auto record = descriptor_record_for(param_metadata_[index], conn_->result_type_catalog());
     if (const auto* prior = implementation_descriptor->record(index)) {
       record.bound_sql_type = prior->bound_sql_type;
       record.bound_sql_length = prior->bound_sql_length;

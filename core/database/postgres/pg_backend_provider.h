@@ -11,6 +11,7 @@ BackendCapabilities pg_backend_capabilities(std::string_view display_name) noexc
 BackendCapabilities redshift_backend_capabilities(std::string_view display_name) noexcept;
 std::span<const TypeDefinition> pg_type_catalog(std::string_view server_version) noexcept;
 std::span<const TypeDefinition> redshift_type_catalog() noexcept;
+std::span<const TypeDefinition> redshift_result_type_catalog() noexcept;
 TransactionCapabilities pg_transaction_capabilities() noexcept;
 
 class PgBackendProvider final : public IBackendProvider {
@@ -33,6 +34,8 @@ class PgBackendProvider final : public IBackendProvider {
   std::optional<std::string> normalize_error_sqlstate(
       std::string_view native_state, ErrorContext context) const override;
   std::span<const TypeDefinition> type_catalog(
+      std::string_view server_version = {}) const noexcept override;
+  std::span<const TypeDefinition> result_type_catalog(
       std::string_view server_version = {}) const noexcept override;
   TransactionCapabilities transaction_capabilities() const noexcept override;
   rs::util::Result<ConnectionSettings> resolve_connection_options(

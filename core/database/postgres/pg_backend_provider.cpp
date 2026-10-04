@@ -41,6 +41,12 @@ std::span<const TypeDefinition> PgBackendProvider::type_catalog(std::string_view
       ? redshift_type_catalog() : pg_type_catalog(server_version);
 }
 
+std::span<const TypeDefinition> PgBackendProvider::result_type_catalog(
+    std::string_view server_version) const noexcept {
+  return catalog_profile_ == PgCatalogProfile::Redshift
+      ? redshift_result_type_catalog() : pg_type_catalog(server_version);
+}
+
 TransactionCapabilities PgBackendProvider::transaction_capabilities() const noexcept {
   return pg_transaction_capabilities();
 }

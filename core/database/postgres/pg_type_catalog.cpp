@@ -30,15 +30,38 @@ constexpr auto modern_definitions = [] {
   }
   return result;
 }();
-constexpr auto redshift_definitions = [] {
-  auto result = definitions;
-  for (auto& type : result) {
-    if (type.type == Numeric || type.type == Decimal) {
-      type.column_size = 38;
-      type.minimum_scale = 0;
-      type.maximum_scale = 37;
+// Contemporary Redshift DDL advertisements. These maxima do not supply
+// actual result lengths or widen parameter/wire admission.
+constexpr auto redshift_definitions = std::to_array<TypeDefinition>({
+    {Boolean, "boolean", 1, {}, {}, {}, false, {}, {}, {}, 0},
+    {BigInt, "bigint", 19, {}, {}, {}, false, false, 0, 0, 10},
+    {Char, "char", 4096, "'", "'", "length", true, {}, {}, {}, 0},
+    {Numeric, "numeric", 38, {}, {}, "precision,scale", false, false, 0, 37, 10},
+    {Decimal, "decimal", 38, {}, {}, "precision,scale", false, false, 0, 37, 10},
+    {Integer, "integer", 10, {}, {}, {}, false, false, 0, 0, 10},
+    {SmallInt, "smallint", 5, {}, {}, {}, false, false, 0, 0, 10},
+    {Real, "real", 7, {}, {}, {}, false, false, {}, {}, 2},
+    {Double, "double precision", 15, {}, {}, {}, false, false, {}, {}, 2},
+    {Date, "date", 10, "'", "'", {}, false, {}, {}, {}, 0},
+    {Time, "time", 15, "'", "'", "precision", false, {}, 0, 6, 0},
+    {Timestamp, "timestamp", 26, "'", "'", "precision", false, {}, 0, 6, 0},
+    {VarChar, "varchar", 65535, "'", "'", "length", true, {}, {}, {}, 0},
+    {LongVarBinary, "varbyte", 16777216, {}, {}, "length", false, {}, {}, {}, 0},
+});
+// Preserve prior descriptor families independently of DDL advertisements.
+// Names remain selected family fallbacks, not native type-name receipts.
+constexpr auto redshift_result_definitions = [] {
+  std::array<TypeDefinition, definitions.size() + 1> result{};
+  for (std::size_t i = 0; i < definitions.size(); ++i) {
+    result[i] = definitions[i];
+    if (result[i].type == Numeric || result[i].type == Decimal) {
+      result[i].column_size = 38;
+      result[i].minimum_scale = 0;
+      result[i].maximum_scale = 37;
     }
   }
+  result.back() = {LongVarBinary, "varbyte", 16777216, {}, {}, "length",
+                   false, {}, {}, {}, 0};
   return result;
 }();
 } // namespace
@@ -55,8 +78,13 @@ std::span<const TypeDefinition> pg_type_catalog(
 
 std::span<const TypeDefinition> redshift_type_catalog() noexcept {
   // Never interpret a Redshift version observation as PostgreSQL's numeric
-  // negative-scale policy. Other type limits remain separately audited work.
+  // negative-scale policy or PostgreSQL DDL advertisements.
   return redshift_definitions;
+}
+
+std::span<const TypeDefinition> redshift_result_type_catalog() noexcept {
+  // Actual metadata supplies descriptor sizes; table maxima do not.
+  return redshift_result_definitions;
 }
 
 } // namespace rs::core::database::postgres
