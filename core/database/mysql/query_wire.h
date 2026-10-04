@@ -13,6 +13,8 @@ namespace rs::core::database::mysql {
 // session tracking, optional metadata nor multiple results.
 namespace query_detail {
 using rs::util::DbErrorCode;
+// Explicit private metadata policy; default results and all session calls stay unchanged.
+enum class ColumnContext { Result, DatetimeParameterQ6Candidate };
 struct NativeColumn { std::uint8_t type{};bool unsigned_value{}; };
 // Private owning raw observation for parameter admission. Default result
 // normalization is unchanged; each receipt retains its observed charset.
@@ -72,7 +74,8 @@ inline rs::util::Result<Completion> completion(std::span<const std::byte> bytes,
 }
 inline rs::util::Result<ResultColumnMetadata> column(std::span<const std::byte> bytes,const ResultLimits& limits,std::size_t* metadata_bytes=nullptr,
     std::uint8_t* native_type=nullptr,bool* native_unsigned=nullptr,
-    NativeParameterDescriptorObservation* observation=nullptr) {
+    NativeParameterDescriptorObservation* observation=nullptr,
+    ColumnContext context=ColumnContext::Result) {
   Cursor c(bytes);std::string_view fields[6];std::size_t names{};
   for (auto& field:fields) {
     if (!c.text(field)) return {DbErrorCode::ProtocolError};
@@ -86,6 +89,8 @@ inline rs::util::Result<ResultColumnMetadata> column(std::span<const std::byte> 
   if (fields[4].size()>limits.max_column_name_bytes) return {DbErrorCode::ResourceLimit};
   if (fields[4].find('\0')!=std::string_view::npos || !rs::util::utf8_code_point_count(fields[4]))
     return {DbErrorCode::ProtocolError};
+  if (context!=ColumnContext::Result && context!=ColumnContext::DatetimeParameterQ6Candidate)
+    return {DbErrorCode::UnsupportedFeature};
   NativeTypeInfo info;info.known=true;
   const bool unsigned_value=(flags&32)!=0;
   switch(type) {
@@ -96,6 +101,11 @@ inline rs::util::Result<ResultColumnMetadata> column(std::span<const std::byte> 
     case 9: info={ScalarType::Integer,8,0,true};break;
     case 10: info={ScalarType::Date,10,0,true};break;
     case 12: {
+      if (context==ColumnContext::DatetimeParameterQ6Candidate) {
+        if (charset!=45 || decimals!=6) return {DbErrorCode::UnsupportedFeature};
+        if (size!=104) return {DbErrorCode::ProtocolError};
+        info={ScalarType::Timestamp,26,6,true};break;
+      }
       auto profile=datetime_detail::metadata(datetime_detail::Kind::Datetime,size,decimals);
       if (!profile) return {profile.error()};
       info={ScalarType::Timestamp,size,static_cast<std::int16_t>(profile->precision),true};break;

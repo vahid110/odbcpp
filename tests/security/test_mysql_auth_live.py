@@ -27,7 +27,7 @@ except Exception:
     raise RuntimeError('MySQL DATETIME receipt validator unavailable') from None
 
 DATETIME_RECEIPT_SUITE = 'MySqlDatetimeReceiptObservationIntegrationTest'
-DATETIME_RECEIPT_CASE = 'ActualCastParameterMetadataRefusalIsObserved'
+DATETIME_RECEIPT_CASE = 'ActualQualifiedParameterStageRefusalIsObserved'
 
 def run_datetime_receipt(binary, junit, port, ca):
     env = {key: value for key, value in os.environ.items()
@@ -36,7 +36,7 @@ def run_datetime_receipt(binary, junit, port, ca):
     env.update(ODBCPP_MYSQL_TEST_USER='sdk', ODBCPP_MYSQL_TEST_PASSWORD=PASSWORD,
                ODBCPP_MYSQL_TEST_HOST='localhost', ODBCPP_MYSQL_TEST_PORT=port,
                ODBCPP_MYSQL_TEST_CA_FILE=str(ca.resolve()),
-               ODBCPP_MYSQL_DATETIME_RECEIPT_FIXTURE_ADMITTED='pinned-8.4.11-temporary-datetime-receipt-observation')
+               ODBCPP_MYSQL_DATETIME_RECEIPT_FIXTURE_ADMITTED='pinned-8.4.11-temporary-datetime-stage-receipt-v2')
     try:
         run([str(binary), '--gtest_filter=' + DATETIME_RECEIPT_SUITE + '.' + DATETIME_RECEIPT_CASE,
              '--gtest_repeat=1', '--gtest_output=xml:' + str(junit)], env=env, timeout=60)

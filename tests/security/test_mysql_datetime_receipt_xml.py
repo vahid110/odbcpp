@@ -17,7 +17,7 @@ def fixture(*, precision=6, width=104, charset=45):
     properties = ET.SubElement(case, 'properties')
     # Independent literal inventory so schema changes cannot silently alter fixtures.
     values = {
-        'observation_schema': 1, 'prepare_parameter_count': 1,
+        'observation_schema': 2, 'prepare_parameter_count': 1,
         'prepare_result_count': 2, 'observed_parameter_count': 1,
         'records_truncated': 0, 'exchange_complete': 0,
         'transport_complete_calls': 1, 'prepare_command_count': 1,
@@ -27,7 +27,7 @@ def fixture(*, precision=6, width=104, charset=45):
     }
     values.update(raw_parameter_0_charset=charset, raw_parameter_0_byte_width=width,
                   raw_parameter_0_decimals=precision,
-                  refusal_policy_code=2 if precision > 6 else (3 if width == 19 + (precision + 1 if precision else 0) else 1))
+                  refusal_policy_code=3)
     for name, value in values.items():
         ET.SubElement(properties, 'property', name=name, value=str(value))
     return root
@@ -43,22 +43,19 @@ class DatetimeReceiptXmlTest(unittest.TestCase):
             validator.validate_datetime_receipt_xml_bytes(raw)
         self.assertTrue(result.exception.__suppress_context__)
 
-    def test_valid_precision_first_matrix_has_no_invented_width_or_charset_profile(self):
-        for precision in range(7):
-            semantic = 19 + (precision + 1 if precision else 0)
-            for width in (0, semantic, 104, 4294967295):
+    def test_revision2_accepts_only_qualified_actual_fields_without_old_policy_fallback(self):
+        raw = serialized(fixture())
+        result = validator.validate_datetime_receipt_xml_bytes(raw)
+        self.assertEqual(2, result['schemaVersion']);self.assertEqual(3, result['refusalPolicyCode'])
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), result['xmlSha256'])
+        self.assertFalse(result['exchangeComplete']);self.assertFalse(result['parameterSupportClaimed'])
+        for precision in (0, 3, 6, 7, 255):
+            for width in (0, 19, 23, 26, 76, 92, 104, 4294967295):
                 for charset in (0, 45, 63, 65535):
+                    if (precision, width, charset) == (6, 104, 45):
+                        continue
                     with self.subTest(precision=precision, width=width, charset=charset):
-                        raw = serialized(fixture(precision=precision, width=width, charset=charset))
-                        result = validator.validate_datetime_receipt_xml_bytes(raw)
-                        self.assertEqual(width, result['rawParameter']['byteWidth'])
-                        self.assertEqual(charset, result['rawParameter']['charset'])
-                        self.assertFalse(result['parameterSupportClaimed'])
-                        self.assertFalse(result['exchangeComplete'])
-                        self.assertEqual(hashlib.sha256(raw).hexdigest(), result['xmlSha256'])
-        for precision in (7, 255):
-            result = validator.validate_datetime_receipt_xml_bytes(serialized(fixture(precision=precision, width=4294967295, charset=65535)))
-            self.assertEqual(2, result['refusalPolicyCode'])
+                        self.invalid(serialized(fixture(precision=precision, width=width, charset=charset)))
 
     def test_root_skipped_optional_suite_skipped_mandatory_and_property_order_unimportant(self):
         root = fixture();root.set('skipped', '0')
@@ -104,7 +101,7 @@ class DatetimeReceiptXmlTest(unittest.TestCase):
         for key, maximum in validator.RANGES.items():
             root = fixture();node = next(n for n in root[0][0][0] if n.get('name') == key)
             node.set('value', str(maximum + 1));self.invalid(serialized(root))
-        for precision, width, wrong in ((0, 19, 1), (6, 104, 3), (255, 26, 1), (6, 26, 2)):
+        for precision, width, wrong in ((6, 104, 1), (6, 104, 2), (3, 92, 2), (6, 26, 3)):
             root = fixture(precision=precision, width=width)
             node = next(n for n in root[0][0][0] if n.get('name') == 'refusal_policy_code')
             node.set('value', str(wrong));self.invalid(serialized(root))
@@ -264,7 +261,7 @@ class DatetimeReceiptXmlTest(unittest.TestCase):
                     self.parser.Parse(text[offset:offset + self.chunk], False)
                 return self.parser.Parse('', final)
 
-        root = fixture(width=26)
+        root = fixture()
         root[0][0].set('file', "synthetic-é-&-<->-\"-'.cpp")
         raw = serialized(root).replace(b'<properties>', b'<properties> \t\r\n', 1)
         expected = validator.validate_datetime_receipt_xml_bytes(raw)
@@ -308,6 +305,17 @@ class DatetimeReceiptXmlTest(unittest.TestCase):
         root[0][0].set('name', 'SyntheticOwnedRecordEmitsExactCanonicalNumericProperties')
         self.invalid(serialized(root))
 
+    def test_historical_v1_native_bytes_hash_and_old_case_are_not_reinterpreted(self):
+        self.assertEqual('fdff65252b7c1ae959c9f7052c4a3c116e1fb368fa94ca7e0bfdd11ddf40e89f',
+                         hashlib.sha256(HISTORICAL_V1_XML).hexdigest())
+        self.invalid(HISTORICAL_V1_XML)
+        root = fixture();root[0][0].set('name', 'ActualCastParameterMetadataRefusalIsObserved')
+        self.invalid(serialized(root))
+        root = fixture();root[0][0][0][0].set('value', '1');self.invalid(serialized(root))
+
+
+# Immutable supplied dbce810 CI observation, NOT revision2/native execution proof.
+HISTORICAL_V1_XML = b'<?xml version="1.0" encoding="UTF-8"?>\n<testsuites tests="1" failures="0" disabled="0" errors="0" time="0.008" timestamp="2026-10-04T10:28:15.810" name="AllTests">\n  <testsuite name="MySqlDatetimeReceiptObservationIntegrationTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.008" timestamp="2026-10-04T10:28:15.810">\n    <testcase name="ActualCastParameterMetadataRefusalIsObserved" file="/home/runner/work/odbcpp/odbcpp/tests/integration/it_mysql_datetime_parameter_receipt.cpp" line="206" status="run" result="completed" time="0.008" timestamp="2026-10-04T10:28:15.810" classname="MySqlDatetimeReceiptObservationIntegrationTest">\n      <properties>\n        <property name="observation_schema" value="1"/>\n        <property name="prepare_parameter_count" value="1"/>\n        <property name="prepare_result_count" value="2"/>\n        <property name="observed_parameter_count" value="1"/>\n        <property name="records_truncated" value="0"/>\n        <property name="exchange_complete" value="0"/>\n        <property name="transport_complete_calls" value="1"/>\n        <property name="prepare_command_count" value="1"/>\n        <property name="execute_command_count" value="0"/>\n        <property name="close_command_count" value="0"/>\n        <property name="raw_parameter_0_native_type" value="12"/>\n        <property name="raw_parameter_0_charset" value="45"/>\n        <property name="raw_parameter_0_byte_width" value="104"/>\n        <property name="raw_parameter_0_decimals" value="6"/>\n        <property name="runtime_retired" value="1"/>\n        <property name="physical_close_delta" value="1"/>\n        <property name="refusal_policy_code" value="1"/>\n        <property name="parameter_support_claimed" value="0"/>\n      </properties>\n    </testcase>\n  </testsuite>\n</testsuites>\n'
 
 if __name__ == '__main__':
     unittest.main()

@@ -14,7 +14,7 @@ using Observer=mysql::integration_detail::PrepareNumericObservation;
 using rs::util::DbErrorCode;
 // Future dedicated default-OFF diagnostic only, never native parameter support.
 // Private admission: ODBCPP_MYSQL_DATETIME_RECEIPT_FIXTURE_ADMITTED=
-// pinned-8.4.11-temporary-datetime-receipt-observation. Root excludes this source
+// pinned-8.4.11-temporary-datetime-stage-receipt-v2. Root excludes this source
 // from default discovery before copying and separately admits its pinned runner.
 struct EnvironmentValue {
   const char* value{};
@@ -37,7 +37,7 @@ struct EnvironmentValue {
 };
 
 // Private owning evidence projection. Policy code describes the unchanged
-// metadata classifier, never a native error authority or parameter support.
+// selected parameter-stage classifier, never a native error authority or parameter support.
 struct ReceiptEvidence {
   Observer::RawColumn raw;
   std::uint16_t parameter_count{},result_count{};
@@ -45,14 +45,13 @@ struct ReceiptEvidence {
   bool records_truncated{},exchange_complete{},transport_complete_calls{},runtime_retired{};
 };
 unsigned receipt_policy_code(const Observer::RawColumn& raw) {
-  const auto profile=mysql::datetime_detail::metadata(mysql::datetime_detail::Kind::Datetime,raw.width,raw.decimals);
-  if (profile) { return 3; } // Existing result-only refusal.
-  if (profile.error()==rs::util::make_error_code(DbErrorCode::UnsupportedFeature)) { return 2; }
-  return 1; // Existing width mismatch classifier.
+  if (raw.charset!=45 || raw.decimals!=6) { return 2; } // Unadmitted parameter profile.
+  if (raw.width!=104) { return 1; } // Contradictory qualified profile.
+  return 3; // Qualified parameter context reaches intentional refusal.
 }
 void record_receipt_properties(const ReceiptEvidence& evidence) {
   const std::array<std::pair<const char*,std::uint64_t>,18> fields{{
-      {"observation_schema",1},
+      {"observation_schema",2},
       {"prepare_parameter_count",evidence.parameter_count},{"prepare_result_count",evidence.result_count},
       {"observed_parameter_count",evidence.observed_count},{"records_truncated",evidence.records_truncated},
       {"exchange_complete",evidence.exchange_complete},{"transport_complete_calls",evidence.transport_complete_calls},
@@ -152,7 +151,7 @@ class MySqlDatetimeReceiptObservationIntegrationTest:public ::testing::Test {
     const EnvironmentValue marker{"ODBCPP_MYSQL_DATETIME_RECEIPT_FIXTURE_ADMITTED"},host{"ODBCPP_MYSQL_TEST_HOST"},
         port{"ODBCPP_MYSQL_TEST_PORT"},ca{"ODBCPP_MYSQL_TEST_CA_FILE"},
         user{"ODBCPP_MYSQL_TEST_USER"},password{"ODBCPP_MYSQL_TEST_PASSWORD"};
-    ASSERT_TRUE(marker.value && std::string_view(marker.value)=="pinned-8.4.11-temporary-datetime-receipt-observation")<<"datetime-receipt-admission";
+    ASSERT_TRUE(marker.value && std::string_view(marker.value)=="pinned-8.4.11-temporary-datetime-stage-receipt-v2")<<"datetime-receipt-admission";
     ASSERT_TRUE(host.value && std::string_view(host.value)=="localhost")<<"datetime-receipt-host";
     ASSERT_TRUE(user.value && std::string_view(user.value)=="sdk")<<"datetime-receipt-user";
     ASSERT_TRUE(password.value && password.value[0])<<"datetime-receipt-password-config";
@@ -203,7 +202,7 @@ class MySqlDatetimeReceiptObservationIntegrationTest:public ::testing::Test {
   }
 };
 
-TEST_F(MySqlDatetimeReceiptObservationIntegrationTest, ActualCastParameterMetadataRefusalIsObserved) {
+TEST_F(MySqlDatetimeReceiptObservationIntegrationTest, ActualQualifiedParameterStageRefusalIsObserved) {
   auto inserted=query("INSERT INTO odbcpp_datetime_receipt_fixture VALUES (1,'2024-02-29 12:34:56.123456',42)");
   ASSERT_TRUE(static_cast<bool>(inserted))<<"datetime-receipt-insert";ASSERT_EQ(1u,inserted->affected_rows);
   zero_warnings();ASSERT_FALSE(HasFailure());
@@ -236,11 +235,10 @@ TEST_F(MySqlDatetimeReceiptObservationIntegrationTest, ActualCastParameterMetada
   ASSERT_EQ(1u,count)<<"datetime-receipt-missing-parameter-observation";
   EXPECT_FALSE(transport_->observer.records_truncated());EXPECT_EQ(Observer::Progress::Inconclusive,transport_->observer.progress());
   const auto raw=raw_records[0];ASSERT_EQ(12u,raw.type)<<"datetime-receipt-unexpected-native-id";
-  // Predict only from actual received width/precision and unchanged result
-  // parser policy. Semantic receipt reaches intentional result-only refusal;
-  // mismatched width fails earlier. No actual104/q6 assumption or coercion.
-  const auto profile=mysql::datetime_detail::metadata(mysql::datetime_detail::Kind::Datetime,raw.width,raw.decimals);
-  const auto expected=profile?rs::util::make_error_code(DbErrorCode::UnsupportedFeature):profile.error();
+  // Revision2 is bound to the explicitly qualified parameter-stage profile.
+  // Unexpected actual fields fail proof; never accept an arbitrary refusal.
+  ASSERT_EQ(45u,raw.charset);ASSERT_EQ(104u,raw.width);ASSERT_EQ(6u,raw.decimals);
+  const auto expected=rs::util::make_error_code(DbErrorCode::UnsupportedFeature);
   EXPECT_TRUE(rejected.error()==expected)<<"datetime-receipt-exact-parser-policy";
   EXPECT_TRUE(rejected.error_message()=="MySQL session operation failed")<<"datetime-receipt-safe-diagnostic";
   EXPECT_EQ(BackendOperation::ExecutePrepared,rejected.backend_error().operation);

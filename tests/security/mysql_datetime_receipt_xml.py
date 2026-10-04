@@ -7,11 +7,11 @@ import stat
 from xml.parsers import expat
 
 SUITE = 'MySqlDatetimeReceiptObservationIntegrationTest'
-CASE = 'ActualCastParameterMetadataRefusalIsObserved'
+CASE = 'ActualQualifiedParameterStageRefusalIsObserved'
 MAX_XML_BYTES = 16384
 ERROR = 'Unexpected MySQL DATETIME receipt observation inventory'
 EXACT = {
-    'observation_schema': 1, 'prepare_parameter_count': 1,
+    'observation_schema': 2, 'prepare_parameter_count': 1,
     'prepare_result_count': 2, 'observed_parameter_count': 1,
     'records_truncated': 0, 'exchange_complete': 0,
     'transport_complete_calls': 1, 'prepare_command_count': 1,
@@ -149,13 +149,15 @@ def _parse(raw):
         _reject()
     precision = values['raw_parameter_0_decimals']
     width = values['raw_parameter_0_byte_width']
-    semantic = 19 + (1 + precision if precision else 0)
-    policy = 2 if precision > 6 else (3 if width == semantic else 1)
-    if values['refusal_policy_code'] != policy:
+    # Active revision2 only. Historical schema1/default-result policy is not
+    # reinterpreted or accepted as this qualified parameter-stage observation.
+    if (values['raw_parameter_0_charset'] != 45 or width != 104 or precision != 6
+            or values['refusal_policy_code'] != 3):
         _reject()
+    policy = 3
     # Only owning scalar evidence; no Element, file path or stdout authority.
     return {
-        'schemaVersion': 1, 'suite': SUITE, 'case': CASE,
+        'schemaVersion': 2, 'suite': SUITE, 'case': CASE,
         'properties': dict(values),
         'rawParameter': {'nativeType': 12, 'charset': values['raw_parameter_0_charset'],
                          'byteWidth': width, 'decimals': precision},

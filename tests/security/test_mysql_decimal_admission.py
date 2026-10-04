@@ -766,20 +766,20 @@ class DateParametersAdmissionTest(unittest.TestCase):
 from mysql_datetime_receipt_xml import validate_datetime_receipt_xml
 
 RECEIPT_SUITE = 'MySqlDatetimeReceiptObservationIntegrationTest'
-RECEIPT_CASE = 'ActualCastParameterMetadataRefusalIsObserved'
+RECEIPT_CASE = 'ActualQualifiedParameterStageRefusalIsObserved'
 
 def synthetic_receipt_xml():
     root = ET.Element('testsuites', tests='1', failures='0', errors='0', disabled='0', name='AllTests', time='0.')
     suite = ET.SubElement(root, 'testsuite', name=RECEIPT_SUITE, tests='1', failures='0', errors='0', disabled='0', skipped='0')
     case = ET.SubElement(suite, 'testcase', name=RECEIPT_CASE, classname=RECEIPT_SUITE, status='run', result='completed', file='synthetic.cpp', line='1')
     properties = ET.SubElement(case, 'properties')
-    values = {'observation_schema': 1, 'prepare_parameter_count': 1, 'prepare_result_count': 2,
+    values = {'observation_schema': 2, 'prepare_parameter_count': 1, 'prepare_result_count': 2,
               'observed_parameter_count': 1, 'records_truncated': 0, 'exchange_complete': 0,
               'transport_complete_calls': 1, 'prepare_command_count': 1, 'execute_command_count': 0,
               'close_command_count': 0, 'raw_parameter_0_native_type': 12,
-              'raw_parameter_0_charset': 65535, 'raw_parameter_0_byte_width': 4294967295,
-              'raw_parameter_0_decimals': 255, 'runtime_retired': 1, 'physical_close_delta': 1,
-              'refusal_policy_code': 2, 'parameter_support_claimed': 0}
+              'raw_parameter_0_charset': 45, 'raw_parameter_0_byte_width': 104,
+              'raw_parameter_0_decimals': 6, 'runtime_retired': 1, 'physical_close_delta': 1,
+              'refusal_policy_code': 3, 'parameter_support_claimed': 0}
     for name, value in values.items():
         ET.SubElement(properties, 'property', name=name, value=str(value))
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding='unicode')
@@ -877,7 +877,7 @@ class DatetimeReceiptAdmissionTest(unittest.TestCase):
                         self.assertEqual(b'nonexecutable input', nonexecutable.read_bytes())
 
     def test_actual_validator_return_private_environment_exact_one_observation_child(self):
-        inherited = {'GTEST_FILTER': '*', 'GTEST_REPEAT': '99', 'GTEST_SHARD_INDEX': '3',
+        inherited = {'GTEST_FILTER': 'MySqlDatetimeReceiptObservationIntegrationTest.ActualCastParameterMetadataRefusalIsObserved', 'GTEST_REPEAT': '99', 'GTEST_SHARD_INDEX': '3',
                      'GTEST_TOTAL_SHARDS': '4', 'GTEST_OUTPUT': 'xml:/unowned',
                      'GTEST_RANDOM_SEED': '13', 'GTEST_UNKNOWN': 'polluted',
                      'ODBCPP_MYSQL_TEST_HOST': 'wrong', 'ODBCPP_MYSQL_TEST_PORT': '9999',
@@ -886,6 +886,7 @@ class DatetimeReceiptAdmissionTest(unittest.TestCase):
         for label in ('DECIMAL', 'DATE', 'DATETIME', 'DATE_PARAMETER', 'UNSIGNED_BIGINT',
                       'DATETIME_RECEIPT', 'FUTURE_UNKNOWN'):
             inherited['ODBCPP_MYSQL_' + label + '_FIXTURE_ADMITTED'] = 'untrusted'
+        inherited['ODBCPP_MYSQL_DATETIME_RECEIPT_FIXTURE_ADMITTED'] = 'pinned-8.4.11-temporary-datetime-receipt-observation'
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             binary, junit, ca = (directory / name for name in ('child', 'receipt.xml', 'ca.pem'))
@@ -897,7 +898,7 @@ class DatetimeReceiptAdmissionTest(unittest.TestCase):
                 self.assertFalse(any(key.startswith('GTEST_') for key in env))
                 markers = {k: v for k, v in env.items() if k.startswith('ODBCPP_MYSQL_') and k.endswith('_FIXTURE_ADMITTED')}
                 self.assertEqual({'ODBCPP_MYSQL_DATETIME_RECEIPT_FIXTURE_ADMITTED':
-                                  'pinned-8.4.11-temporary-datetime-receipt-observation'}, markers)
+                                  'pinned-8.4.11-temporary-datetime-stage-receipt-v2'}, markers)
                 for key, value in {'HOST': 'localhost', 'PORT': '12345', 'CA_FILE': str(ca.resolve()),
                                    'USER': 'sdk', 'PASSWORD': live.PASSWORD}.items():
                     self.assertEqual(value, env['ODBCPP_MYSQL_TEST_' + key])
@@ -911,7 +912,8 @@ class DatetimeReceiptAdmissionTest(unittest.TestCase):
             self.assertFalse(observation['exchangeComplete'])
             self.assertEqual(0, observation['properties']['execute_command_count'])
             junit.unlink()
-            self.assertEqual(4294967295, observation['rawParameter']['byteWidth'])
+            self.assertEqual(104, observation['rawParameter']['byteWidth'])
+            self.assertEqual(2, observation['schemaVersion']);self.assertEqual(3, observation['refusalPolicyCode'])
 
     def test_child_timeout_failure_or_invalid_xml_never_retries_or_trusts_stdout(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -947,6 +949,51 @@ class DatetimeReceiptAdmissionTest(unittest.TestCase):
                         self.assertTrue(caught.exception.__suppress_context__)
                         self.assertIsNone(caught.exception.__cause__)
                         self.assertEqual(1, invoke.call_count)
+
+    def test_mixed_old_case_schema_policy_and_stale_zero_tests_never_fall_back(self):
+        old_case = 'ActualCastParameterMetadataRefusalIsObserved'
+        zero = '<testsuites tests="0" failures="0" errors="0" disabled="0" name="AllTests"/>'
+        with tempfile.TemporaryDirectory() as temporary:
+            junit = Path(temporary) / 'receipt.xml'
+            for mode in ('old-case', 'old-schema', 'both-old', 'old-policy', 'unqualified', 'zero-tests', 'stale-zero-tests'):
+                with self.subTest(mode=mode):
+                    root = ET.fromstring(RECEIPT_VALID)
+                    if mode in ('old-case', 'both-old'):
+                        root[0][0].set('name', old_case)
+                    if mode in ('old-schema', 'both-old'):
+                        next(n for n in root[0][0][0] if n.get('name') == 'observation_schema').set('value', '1')
+                    if mode == 'old-policy':
+                        next(n for n in root[0][0][0] if n.get('name') == 'refusal_policy_code').set('value', '1')
+                    if mode == 'unqualified':
+                        next(n for n in root[0][0][0] if n.get('name') == 'raw_parameter_0_charset').set('value', '63')
+                    data = zero if mode.endswith('zero-tests') else ET.tostring(root, encoding='unicode')
+                    junit.write_text(data)
+                    def process(args, **kwargs):
+                        self.assertEqual('--gtest_filter=' + RECEIPT_SUITE + '.' + RECEIPT_CASE, args[1])
+                        self.assertNotIn(old_case, args[1]);self.assertEqual(60, kwargs['timeout'])
+                        if mode != 'stale-zero-tests':
+                            junit.write_text(data)
+                        return subprocess.CompletedProcess(args, 0, stdout='PASS old receipt', stderr='private')
+                    with patch.object(live, 'run', side_effect=process) as invoke:
+                        with self.assertRaisesRegex(RuntimeError, '^MySQL DATETIME receipt observation failed$'):
+                            live.run_datetime_receipt(Path('/fake/child'), junit, '12345', Path('/fake/ca'))
+                        self.assertEqual(1, invoke.call_count)
+
+    def test_old_binary_rejecting_new_marker_never_retries_old_marker_or_filter(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            junit = Path(temporary) / 'receipt.xml'
+            inherited = {'GTEST_FILTER': RECEIPT_SUITE + '.ActualCastParameterMetadataRefusalIsObserved',
+                         'ODBCPP_MYSQL_DATETIME_RECEIPT_FIXTURE_ADMITTED': 'pinned-8.4.11-temporary-datetime-receipt-observation'}
+            def old_child(args, **kwargs):
+                self.assertEqual('--gtest_filter=' + RECEIPT_SUITE + '.' + RECEIPT_CASE, args[1])
+                self.assertNotIn('GTEST_FILTER', kwargs['env'])
+                self.assertEqual('pinned-8.4.11-temporary-datetime-stage-receipt-v2',
+                                 kwargs['env']['ODBCPP_MYSQL_DATETIME_RECEIPT_FIXTURE_ADMITTED'])
+                raise subprocess.CalledProcessError(1, 'synthetic old child marker refusal', stderr='private')
+            with patch.dict(live.os.environ, inherited), patch.object(live, 'run', side_effect=old_child) as invoke:
+                with self.assertRaisesRegex(RuntimeError, '^MySQL DATETIME receipt observation failed$'):
+                    live.run_datetime_receipt(Path('/fake/child'), junit, '12345', Path('/fake/ca'))
+                self.assertEqual(1, invoke.call_count);self.assertFalse(junit.exists())
 
     def _mock_main(self, *, decimal=True, datetime=True, date_parameters=True,
                    receipt=True, failure=None, cleanup_failure=False):
@@ -1069,9 +1116,10 @@ class DatetimeReceiptAdmissionTest(unittest.TestCase):
                 self.assertEqual(receipt, evidence['mysqlDatetimePrepareMetadataObserved'])
                 if receipt:
                     observed = evidence['mysqlDatetimePrepareMetadataObservation']
+                    self.assertEqual(2, observed['schemaVersion']);self.assertEqual(3, observed['refusalPolicyCode'])
                     self.assertFalse(observed['parameterSupportClaimed'])
                     self.assertFalse(observed['exchangeComplete'])
-                    self.assertEqual({'nativeType': 12, 'charset': 65535, 'byteWidth': 4294967295, 'decimals': 255}, observed['rawParameter'])
+                    self.assertEqual({'nativeType': 12, 'charset': 45, 'byteWidth': 104, 'decimals': 6}, observed['rawParameter'])
                     import hashlib
                     self.assertEqual(hashlib.sha256(RECEIPT_VALID.encode('utf-8')).hexdigest(), observed['xmlSha256'])
                     self.assertEqual(0, observed['properties']['execute_command_count'])

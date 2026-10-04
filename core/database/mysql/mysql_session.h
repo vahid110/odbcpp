@@ -325,7 +325,9 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
       if ((*packet)[0]==std::byte{255}) return {server_error(*packet).error()};
       std::size_t bytes{};
       query_detail::NativeParameterDescriptorObservation raw;
-      auto column=query_detail::column(*packet,result_limits_,&bytes,nullptr,nullptr,types?&raw:nullptr);
+      // Select only for actual parameter metadata; all result stages stay Result.
+      auto column=query_detail::column(*packet,result_limits_,&bytes,nullptr,nullptr,types?&raw:nullptr,
+          types?query_detail::ColumnContext::DatetimeParameterQ6Candidate:query_detail::ColumnContext::Result);
       if (!column) return {column.error()};
       // Decimal and Timestamp remain result-only; DATE is checked separately.
       if (types && (column->normalized_type->type==ScalarType::Decimal ||
