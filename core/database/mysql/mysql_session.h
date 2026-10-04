@@ -3,6 +3,7 @@
 #include "error_wire.h"
 #include "query_wire.h"
 #include "prepared_wire.h"
+#include "date_parameter_descriptor.h"
 #include "core/transport/tls_configurable_transport.h"
 
 namespace rs::core::database::mysql {
@@ -150,7 +151,7 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
       }
       auto execution_limits=input_limits_;
       execution_limits.max_request_wire_bytes-=prepare_size+9;
-      auto execution=prepared_detail::execute_request(0,parameters,execution_limits);
+      auto execution=prepared_detail::execute_request(0,parameters,execution_limits,prepared_detail::ParameterProfile::DateCandidate);
       if (!execution) {
         BackendResult<QueryResult> rejected{local_failure(execution.error(),operation)};
         retire.accepted=true;return rejected;
@@ -171,7 +172,8 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
         return retiring_failure(rs::util::make_error_code(DbErrorCode::ResourceLimit),operation);
       std::size_t names{},entries{};
       std::vector<NativeTypeInfo> parameter_types;
-      auto metadata=read_prepared_metadata(reader,prepared->parameters,names,entries,&parameter_types);
+      std::vector<ParameterReceipt> parameter_receipts;
+      auto metadata=read_prepared_metadata(reader,prepared->parameters,names,entries,&parameter_receipts);
       if (!metadata) return retiring_failure(metadata.error(),operation);
       metadata=read_prepared_metadata(reader,prepared->columns,names,entries,nullptr);
       if (!metadata) return retiring_failure(metadata.error(),operation);
@@ -187,6 +189,25 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
         BackendResult<QueryResult> rejected{local_backend_error(LocalFailure::InvalidInput,
             "MySQL parameter count mismatch",operation,state_)};
         retire.accepted=true;return rejected;
+      }
+      for (std::size_t i=0;i<parameters.size();++i) {
+        const auto& receipt=parameter_receipts[i];
+        // The candidate guard is DATE-only; ordinary supported pairs keep
+        // their existing admission policy.
+        if (parameters[i].type==QueryParameterType::Date || receipt.raw.type==10 ||
+            receipt.normalized.type==ScalarType::Date) {
+          auto admitted=date_parameter_detail::descriptor(parameters[i].type,receipt.raw,receipt.normalized);
+          if (!admitted) {
+            if (admitted.error()==rs::util::make_error_code(DbErrorCode::ProtocolError))
+              return retiring_failure(admitted.error(),operation);
+            sent=authentication_detail::send_all(*transport_,close,deadline);
+            if (!sent) return retiring_failure(sent.error(),operation);
+            auto checked=verified_completion(deadline);if (!checked) return retiring_failure(checked.error(),operation);
+            BackendResult<QueryResult> rejected{local_failure(admitted.error(),operation)};
+            retire.accepted=true;return rejected;
+          }
+        }
+        parameter_types.push_back(receipt.normalized);
       }
       sent=authentication_detail::send_all(*transport_,*execution,deadline);
       if (!sent) return retiring_failure(sent.error(),operation);
@@ -295,23 +316,30 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
     if (!tls || !tls->peer_identity_verified()) return {rs::util::DbErrorCode::TLSError};
     return {};
   }
+  struct ParameterReceipt { query_detail::NativeParameterDescriptorObservation raw;NativeTypeInfo normalized; };
   rs::util::Result<void> read_prepared_metadata(Reader& reader,std::size_t count,
-      std::size_t& names,std::size_t& entries,std::vector<NativeTypeInfo>* types) {
+      std::size_t& names,std::size_t& entries,std::vector<ParameterReceipt>* types) {
     using rs::util::DbErrorCode;
     for (std::size_t i=0;i<count;++i) {
       auto packet=reader.next();if (!packet) return {packet.error()};
       if ((*packet)[0]==std::byte{255}) return {server_error(*packet).error()};
       std::size_t bytes{};
-      auto column=query_detail::column(*packet,result_limits_,&bytes);
+      query_detail::NativeParameterDescriptorObservation raw;
+      auto column=query_detail::column(*packet,result_limits_,&bytes,nullptr,nullptr,types?&raw:nullptr);
       if (!column) return {column.error()};
-      // Result-only support must not admit native decimal or temporal parameters.
+      // Decimal and Timestamp remain result-only; DATE is checked separately.
       if (types && (column->normalized_type->type==ScalarType::Decimal ||
-          column->normalized_type->type==ScalarType::Date ||
           column->normalized_type->type==ScalarType::Timestamp)) return {DbErrorCode::UnsupportedFeature};
+      if (types && (raw.type==10 || column->normalized_type->type==ScalarType::Date)) {
+        // Structural DATE profile only. Actual caller-hint affinity is checked
+        // after all preparation metadata and count validation, before execute.
+        auto shape=date_parameter_detail::descriptor(QueryParameterType::Date,raw,*column->normalized_type);
+        if (!shape) return {shape.error()};
+      }
       if (bytes>result_limits_.max_metadata_name_bytes-names ||
           result_limits_.max_metadata_entries-entries<6) return {DbErrorCode::ResourceLimit};
       names+=bytes;entries+=6;
-      if (types) types->push_back(*column->normalized_type);
+      if (types) types->push_back({raw,*column->normalized_type});
     }
     if (count) {
       auto packet=reader.next();if (!packet) return {packet.error()};
