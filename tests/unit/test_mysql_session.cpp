@@ -1194,7 +1194,7 @@ TEST(MySqlSessionTest, DateSupportedAffinityMismatchesDrainClosePreserveStateAnd
     ASSERT_FALSE(result);EXPECT_EQ(mode==7?DbErrorCode::InvalidParameter:DbErrorCode::UnsupportedFeature,result.error());
     EXPECT_EQ(rs::core::database::BackendOperation::ExecutePrepared,result.backend_error().operation);
     EXPECT_EQ(status==3?rs::core::database::SessionDisposition::ResetRequired:rs::core::database::SessionDisposition::Reusable,result.session_snapshot().disposition);
-    if (mode!=7) EXPECT_EQ("MySQL session operation failed",result.error_message());
+    if (mode!=7) { EXPECT_EQ("MySQL session operation failed",result.error_message()); }
     EXPECT_EQ((std::vector<unsigned>{22,25}),commands(f.transport->output));EXPECT_EQ(drained,f.transport->offset);
     EXPECT_EQ(literal({5,0,0,0,25,17,0,0,0}),output_frame(f.transport->output,1));
     EXPECT_EQ(0u,f.transport->closes);date_deadlines(*f.transport,deadline);ASSERT_TRUE(f.execute());
@@ -1210,7 +1210,8 @@ TEST(MySqlSessionTest, DateReceiptMalformedUnsupportedAndLatePreparationFaultsRe
     Bytes receipt=exact_date_receipt();
     if (fault<4) receipt=exact_date_receipt(fault==0?0:(fault==1?9:(fault==2?11:0xffffffffu)));
     if (fault==4 || fault==5) receipt=exact_date_receipt(10,fault==4?1:255);
-    if (fault==6) receipt.pop_back();if (fault==7) receipt.push_back(std::byte{0});
+    if (fault==6) { receipt.pop_back(); }
+    if (fault==7) { receipt.push_back(std::byte{0}); }
     if (fault==8) receipt.back()=std::byte{1};
     if (fault==9) receipt=column_packet("?",12,63,0,19,0);
     if (fault==10) receipt=column_packet("?",246,63,0,7,2);
@@ -1229,7 +1230,7 @@ TEST(MySqlSessionTest, DateReceiptMalformedUnsupportedAndLatePreparationFaultsRe
     date_retired(f,result,fault>=9 && fault<=11?DbErrorCode::UnsupportedFeature:
         (fault==14 || fault==38?DbErrorCode::ResourceLimit:DbErrorCode::ProtocolError),deadline);
     EXPECT_EQ((std::vector<unsigned>{22}),commands(f.transport->output));
-    if (fault!=14) EXPECT_EQ(rejected,f.transport->offset);
+    if (fault!=14) { EXPECT_EQ(rejected,f.transport->offset); }
     EXPECT_LT(f.transport->offset,f.transport->input.size());
   }
 }
@@ -1269,11 +1270,11 @@ TEST(MySqlSessionTest, DateExecutionCellDrainFramingAndMismatchCloseFailuresKeep
     } else {
       date_retired(f,result,fault==1?DbErrorCode::ProtocolError:(fault==2?DbErrorCode::QueryFailed:
           (fault<5 || fault==7?DbErrorCode::NetworkError:(fault==5 || fault==8?DbErrorCode::TLSError:DbErrorCode::Timeout))),deadline);
-      if (fault<=2) EXPECT_EQ((std::vector<unsigned>{22,23}),commands(f.transport->output));
-      if (fault==5 || fault==6) EXPECT_EQ((std::vector<unsigned>{22,25}),commands(f.transport->output));
-      if (fault==7) EXPECT_EQ((std::vector<unsigned>{22,23}),commands(f.transport->output));
-      if (fault>=8) EXPECT_EQ((std::vector<unsigned>{22,23,25}),commands(f.transport->output));
-      if (mismatch || fault>=7) EXPECT_EQ(drained,f.transport->offset);
+      if (fault<=2) { EXPECT_EQ((std::vector<unsigned>{22,23}),commands(f.transport->output)); }
+      if (fault==5 || fault==6) { EXPECT_EQ((std::vector<unsigned>{22,25}),commands(f.transport->output)); }
+      if (fault==7) { EXPECT_EQ((std::vector<unsigned>{22,23}),commands(f.transport->output)); }
+      if (fault>=8) { EXPECT_EQ((std::vector<unsigned>{22,23,25}),commands(f.transport->output)); }
+      if (mismatch || fault>=7) { EXPECT_EQ(drained,f.transport->offset); }
       EXPECT_LT(f.transport->offset,f.transport->input.size());
     }
   }
