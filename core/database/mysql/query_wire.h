@@ -14,6 +14,13 @@ namespace rs::core::database::mysql {
 namespace query_detail {
 using rs::util::DbErrorCode;
 struct NativeColumn { std::uint8_t type{};bool unsigned_value{}; };
+// Private raw observation for future parameter admission. Result normalization
+// is unchanged; no caller currently selects a parameter policy here.
+struct NativeParameterDescriptorObservation {
+  std::uint8_t type{};
+  std::uint32_t width{};
+  std::uint8_t decimals{};
+};
 class Cursor {
  public:
   explicit Cursor(std::span<const std::byte> bytes) : bytes_(bytes) {}
@@ -63,7 +70,8 @@ inline rs::util::Result<Completion> completion(std::span<const std::byte> bytes,
   return Completion{static_cast<std::size_t>(affected),static_cast<std::uint16_t>(status),insert};
 }
 inline rs::util::Result<ResultColumnMetadata> column(std::span<const std::byte> bytes,const ResultLimits& limits,std::size_t* metadata_bytes=nullptr,
-    std::uint8_t* native_type=nullptr,bool* native_unsigned=nullptr) {
+    std::uint8_t* native_type=nullptr,bool* native_unsigned=nullptr,
+    NativeParameterDescriptorObservation* observation=nullptr) {
   Cursor c(bytes);std::string_view fields[6];std::size_t names{};
   for (auto& field:fields) {
     if (!c.text(field)) return {DbErrorCode::ProtocolError};
@@ -105,10 +113,14 @@ inline rs::util::Result<ResultColumnMetadata> column(std::span<const std::byte> 
       break;
     default:return {DbErrorCode::UnsupportedFeature};
   }
+  // Construct the owning result before publishing any successful observation.
+  rs::util::Result<ResultColumnMetadata> result{ResultColumnMetadata{std::string(fields[4]),info}};
   if (native_type) *native_type=static_cast<std::uint8_t>(type);
   if (native_unsigned) *native_unsigned=unsigned_value;
   if (metadata_bytes) *metadata_bytes=names;
-  return ResultColumnMetadata{std::string(fields[4]),info};
+  if (observation) *observation={static_cast<std::uint8_t>(type),static_cast<std::uint32_t>(size),
+      static_cast<std::uint8_t>(decimals)};
+  return result;
 }
 inline rs::util::Result<datetime_detail::Profile> datetime_profile(const NativeTypeInfo& info,NativeColumn native) {
   if (native.type!=12 || !info.known || info.type!=ScalarType::Timestamp || info.decimal_digits<0 || info.decimal_digits>6)
