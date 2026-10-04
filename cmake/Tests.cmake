@@ -102,6 +102,15 @@ if(ODBCPP_MYSQL_DECIMAL_LIVE_TESTS)
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
 endif()
 
+option(ODBCPP_MYSQL_DATETIME_LIVE_TESTS "Build pinned MySQL valid DATETIME result qualification" OFF)
+if(ODBCPP_MYSQL_DATETIME_LIVE_TESTS)
+  add_executable(it_mysql_datetime_results tests/integration/it_mysql_datetime_results.cpp)
+  target_link_libraries(it_mysql_datetime_results PRIVATE ${PROJECT_NAME}::core GTest::gtest_main)
+  apply_compiler_settings(it_mysql_datetime_results)
+  set_target_properties(it_mysql_datetime_results PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+endif()
+
 # ---- Unit Tests ----
 file(GLOB UNIT_TEST_SOURCES "tests/unit/*.cpp")
 foreach(test_file ${UNIT_TEST_SOURCES})
@@ -294,7 +303,7 @@ endif()
 file(GLOB INTEGRATION_TEST_SOURCES "tests/integration/*.cpp")
 foreach(test_file ${INTEGRATION_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
-  if(test_name STREQUAL "it_mysql_decimal_results")
+  if(test_name STREQUAL "it_mysql_decimal_results" OR test_name STREQUAL "it_mysql_datetime_results")
     continue()
   endif()
   # This executable is release evidence for a real Redshift endpoint. Running

@@ -21,6 +21,44 @@ def run(args, **kw):
 
 DECIMAL_SUITE = 'MySqlDecimalResultsIntegrationTest'
 DECIMAL_CASE = 'DeclaredSignedBoundsNullAndOwnershipAgreeAcrossProtocols'
+DATETIME_SUITE = 'MySqlDatetimeResultsIntegrationTest'
+DATETIME_CASE = 'CalendarPrecisionNullAndOwnershipAgreeAcrossProtocols'
+
+def validate_datetime_xml(path):
+    root = ET.parse(path).getroot()
+    if (root.tag != 'testsuites' or root.get('tests') != '1'
+            or any(root.get(k) != '0' for k in ('failures', 'errors', 'disabled'))
+            or root.get('skipped', '0') != '0' or len(root) != 1):
+        raise RuntimeError('Unexpected MySQL DATETIME inventory')
+    suite = root[0]
+    if (suite.tag != 'testsuite' or suite.get('name') != DATETIME_SUITE
+            or suite.get('tests') != '1'
+            or any(suite.get(k) != '0' for k in ('failures', 'errors', 'disabled', 'skipped'))
+            or len(suite) != 1):
+        raise RuntimeError('Unexpected MySQL DATETIME inventory')
+    case = suite[0]
+    if (case.tag != 'testcase' or case.get('name') != DATETIME_CASE
+            or case.get('classname') != DATETIME_SUITE or case.get('status') != 'run'
+            or case.get('result') != 'completed' or len(case) != 0):
+        raise RuntimeError('Unexpected MySQL DATETIME inventory')
+
+def run_datetime(binary, junit, port, ca):
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith('GTEST_')
+           and not (key.startswith('ODBCPP_MYSQL_') and key.endswith('_FIXTURE_ADMITTED'))}
+    env.update(ODBCPP_MYSQL_TEST_USER='sdk', ODBCPP_MYSQL_TEST_PASSWORD=PASSWORD,
+               ODBCPP_MYSQL_TEST_HOST='localhost', ODBCPP_MYSQL_TEST_PORT=port,
+               ODBCPP_MYSQL_TEST_CA_FILE=str(ca.resolve()),
+               ODBCPP_MYSQL_DATETIME_FIXTURE_ADMITTED='pinned-8.4.11-temporary-datetime-valid')
+    try:
+        run([str(binary), '--gtest_filter=' + DATETIME_SUITE + '.' + DATETIME_CASE,
+             '--gtest_repeat=1', '--gtest_output=xml:' + str(junit)], env=env, timeout=60)
+        validate_datetime_xml(junit)
+    except Exception:
+        raise RuntimeError('MySQL DATETIME result proof failed') from None
+
+def same_artifact(left, right):
+    return left == right or (left.exists() and right.exists() and os.path.samefile(left, right))
 
 def validate_decimal_xml(path):
     root = ET.parse(path).getroot()
@@ -69,17 +107,36 @@ def main():
     parser.add_argument('--output', required=True)
     parser.add_argument('--decimal-test-binary')
     parser.add_argument('--decimal-junit')
+    parser.add_argument('--datetime-test-binary')
+    parser.add_argument('--datetime-junit')
     args = parser.parse_args()
     if bool(args.decimal_test_binary) != bool(args.decimal_junit):
         parser.error('decimal binary and JUnit must be supplied together')
+    if bool(args.datetime_test_binary) != bool(args.datetime_junit):
+        parser.error('DATETIME binary and JUnit must be supplied together')
     decimal_binary = Path(args.decimal_test_binary).resolve() if args.decimal_test_binary else None
     decimal_junit = Path(args.decimal_junit).resolve() if args.decimal_junit else None
+    datetime_binary = Path(args.datetime_test_binary).resolve() if args.datetime_test_binary else None
+    datetime_junit = Path(args.datetime_junit).resolve() if args.datetime_junit else None
+    output = Path(args.output).resolve()
+    if datetime_binary is not None:
+        if not datetime_binary.is_file() or not os.access(datetime_binary, os.X_OK):
+            parser.error('DATETIME binary must be executable')
+        inputs = [Path(args.probe).resolve(), datetime_binary]
+        if decimal_binary is not None:
+            inputs.append(decimal_binary)
+        outputs = [output, datetime_junit] + ([decimal_junit] if decimal_junit is not None else [])
+        if (any(same_artifact(out, source) for out in outputs for source in inputs)
+                or any(same_artifact(left, right) for i, left in enumerate(outputs) for right in outputs[i+1:])):
+            parser.error('result paths must be distinct from inputs and other results')
     if decimal_binary is not None:
         if not decimal_binary.is_file() or not os.access(decimal_binary, os.X_OK):
             parser.error('decimal binary must be executable')
         decimal_junit.parent.mkdir(parents=True, exist_ok=True)
         decimal_junit.unlink(missing_ok=True)
-    output = Path(args.output)
+    if datetime_junit is not None:
+        datetime_junit.parent.mkdir(parents=True, exist_ok=True)
+        datetime_junit.unlink(missing_ok=True)
     output.unlink(missing_ok=True)
     name = 'odbcpp-mysql-' + uuid.uuid4().hex[:12]
     with tempfile.TemporaryDirectory(prefix='odbcpp-mysql-tls-') as temp:
@@ -159,9 +216,12 @@ def main():
                 print('PASS MySQL ' + case + ' (' + host + ', ' + trust + ')', flush=True)
             if decimal_binary is not None:
                 run_decimal(decimal_binary, decimal_junit, port, certs / 'ca.pem')
+            if datetime_binary is not None:
+                run_datetime(datetime_binary, datetime_junit, port, certs / 'ca.pem')
             output.parent.mkdir(parents=True, exist_ok=True)
             evidence = {'image': IMAGE, 'version': version, 'plugin': plugin,
                                           'cases': results, 'sdkDecimalResultsProven': decimal_binary is not None,
+                                          'sdkDatetimeValidResultsProven': datetime_binary is not None,
                                           'sdkDirectSessionProven': True, 'odbcSessionClaimed': False}
         finally:
             original_failure = sys.exc_info()[0] is not None
