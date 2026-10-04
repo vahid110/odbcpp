@@ -15,7 +15,7 @@ FetchContent_MakeAvailable(googletest)
 # in the protected PostgreSQL/Redshift builds before MySQL product composition.
 function(add_test_executable test_name test_file)
   add_executable(${test_name} ${test_file})
-  if(test_name MATCHES "^(test_auth_core|test_temporary_db_validity|test_issuer_timestamp|test_aws_db_response_fields|test_bounded_response_stream|test_aws_db_json_response)$")
+  if(test_name MATCHES "^(test_auth_core|test_temporary_db_validity|test_issuer_timestamp|test_aws_db_response_fields|test_bounded_response_stream|test_aws_db_json_response|test_aws_db_xml_response|test_redshift_serverless_response|test_redshift_provisioned_response|test_redshift_withiam_response|test_auth_raw_response_projection)$")
     target_link_libraries(${test_name} PRIVATE odbcpp_auth_core GTest::gtest_main)
     target_include_directories(${test_name} PRIVATE "${ODBCPP_INTERNAL_INCLUDE_auth}")
   else()
@@ -142,7 +142,7 @@ foreach(test_file ${UNIT_TEST_SOURCES})
   add_test_executable(${test_name} ${test_file})
   set_tests_properties(${test_name} PROPERTIES LABELS "unit")
 endforeach()
-set_tests_properties(test_auth_core test_temporary_db_validity test_issuer_timestamp test_aws_db_response_fields test_bounded_response_stream test_aws_db_json_response
+set_tests_properties(test_auth_core test_temporary_db_validity test_issuer_timestamp test_aws_db_response_fields test_bounded_response_stream test_aws_db_json_response test_aws_db_xml_response test_redshift_serverless_response test_redshift_provisioned_response test_redshift_withiam_response test_auth_raw_response_projection
   PROPERTIES LABELS "unit;security" TIMEOUT 30)
 set_tests_properties(test_mysql_handshake_wire test_mysql_connection_security test_mysql_tls_negotiation test_mysql_authentication test_mysql_session test_mysql_query_wire test_mysql_prepared_wire
   PROPERTIES LABELS "unit;security" TIMEOUT 30)

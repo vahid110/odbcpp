@@ -5,3 +5,7 @@ core/auth/issuer_timestamp.h
 core/auth/aws_db_response_fields.h
 core/auth/bounded_response_stream.h
 core/auth/aws_db_json_response.h
+core/auth/aws_db_xml_response.h
+core/auth/redshift_serverless_response.h
+core/auth/redshift_provisioned_response.h
+core/auth/redshift_withiam_response.h
