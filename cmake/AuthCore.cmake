@@ -2,7 +2,9 @@
 # or installed until real issuer integrations establish the public API boundary.
 set(ODBCPP_PARTITION_auth
   "${CMAKE_CURRENT_SOURCE_DIR}/core/auth/auth_core.cpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/core/auth/temporary_db_validity.cpp")
+  "${CMAKE_CURRENT_SOURCE_DIR}/core/auth/temporary_db_validity.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/core/auth/issuer_timestamp.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/core/auth/aws_db_response_fields.cpp")
 odbcpp_stage_internal_includes(auth)
 add_library(odbcpp_auth_core STATIC ${ODBCPP_PARTITION_auth})
 target_compile_features(odbcpp_auth_core PRIVATE cxx_std_20)

@@ -1,3 +1,5 @@
 core/auth/auth_core.h
 core/auth/temporary_db_validity.h
 core/util/deadline.h
+core/auth/issuer_timestamp.h
+core/auth/aws_db_response_fields.h
