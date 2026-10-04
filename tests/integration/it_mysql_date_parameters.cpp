@@ -36,9 +36,18 @@ struct EnvironmentValue {
   EnvironmentValue& operator=(const EnvironmentValue&)=delete;
 };
 
-// Records no packets, SQL, values or credentials. All I/O uses real verified TLS.
+// Retains only deadlines and bounded numeric metadata from complete validated
+// PREPARE column frames; no packets, names, SQL, values or credentials are kept.
+// Fragmented frames are not reconstructed or treated as evidence of absence.
 class DeadlineTransport final:public rs::core::transport::TLSTransport {
  public:
+  struct NumericColumn {
+    std::uint64_t charset{},type{},width{},decimals{},normalized_width{};
+    std::int64_t normalized_decimals{};
+  };
+  std::array<NumericColumn,3> prepare_columns{};
+  std::size_t prepare_column_count{};
+  bool observe_prepare{};
   std::vector<rs::util::Deadline> deadlines;
   std::size_t closes{};
   rs::util::Result<void> connect_plain(std::string_view host,std::uint16_t port,rs::util::Deadline deadline) override {
@@ -48,10 +57,42 @@ class DeadlineTransport final:public rs::core::transport::TLSTransport {
     deadlines.push_back(deadline);return TLSTransport::upgrade_to_tls(host,deadline);
   }
   rs::util::Result<rs::core::transport::IOResult> send(std::span<const std::byte> bytes,rs::util::Deadline deadline) override {
-    deadlines.push_back(deadline);return TLSTransport::send(bytes,deadline);
+    deadlines.push_back(deadline);
+    mysql::query_detail::Cursor cursor(bytes);
+    std::uint64_t length{},sequence{},command{};
+    if (cursor.integer(3,length) && cursor.integer(1,sequence) && sequence==0 &&
+        length && length==cursor.remaining() && cursor.integer(1,command)) {
+      observe_prepare=command==22; // Ends before EXECUTE/CLOSE; no payload retained.
+    }
+    return TLSTransport::send(bytes,deadline);
   }
   rs::util::Result<rs::core::transport::IOResult> recv(std::span<std::byte> bytes,rs::util::Deadline deadline) override {
-    deadlines.push_back(deadline);return TLSTransport::recv(bytes,deadline);
+    deadlines.push_back(deadline);
+    auto result=TLSTransport::recv(bytes,deadline);
+    if (observe_prepare && result && result->n==bytes.size() &&
+        prepare_column_count<prepare_columns.size()) {
+      try {
+        const std::span<const std::byte> frame{bytes.data(),result->n};
+        mysql::query_detail::Cursor cursor(frame);
+        std::string_view field;
+        bool fields=true;
+        for (unsigned i=0;i<6;++i) {
+          if (!cursor.text(field)) { fields=false;break; }
+        }
+        std::uint64_t fixed{},charset{};
+        if (fields && cursor.length(fixed) && fixed==12 && cursor.integer(2,charset)) {
+          mysql::query_detail::NativeParameterDescriptorObservation raw;
+          auto column=mysql::query_detail::column(frame,ResultLimits{},nullptr,nullptr,nullptr,&raw);
+          if (column && column->normalized_type) {
+            prepare_columns[prepare_column_count++]={charset,raw.type,raw.width,raw.decimals,
+              column->normalized_type->column_size,column->normalized_type->decimal_digits};
+          }
+        }
+      } catch (...) {
+        // Diagnostics cannot change the native read result or session policy.
+      }
+    }
+    return result;
   }
   void close() noexcept override { ++closes;TLSTransport::close(); }
 };
@@ -166,8 +207,10 @@ class MySqlDateParametersIntegrationTest:public ::testing::Test {
   }
   BackendResult<QueryResult> prepared(const QueryParameter& parameter) {
     transport_->deadlines.clear();
+    transport_->prepare_column_count=0;transport_->observe_prepare=false;
     const std::array parameters{parameter};
     auto result=session_->execute_prepared(parameter_sql,parameters,deadline_);
+    transport_->observe_prepare=false;
     for (const auto deadline:transport_->deadlines) EXPECT_EQ(deadline_,deadline);
     return result;
   }
@@ -221,7 +264,24 @@ TEST_F(MySqlDateParametersIntegrationTest, PhysicalDateComparisonBoundsNullAndOw
   for (std::size_t i=0;i<expected.size();++i) {
     SCOPED_TRACE(i);
     QueryParameter parameter{expected[i][0],QueryParameterType::Date};
-    auto filtered=prepared(parameter);ASSERT_TRUE(static_cast<bool>(filtered))<<"date-parameter-live-filter";
+    auto filtered=prepared(parameter);
+    std::string numeric_metadata=" complete-prepare-column-observations="+
+      std::to_string(transport_->prepare_column_count);
+    if (!filtered) {
+      for (std::size_t n=0;n<transport_->prepare_column_count;++n) {
+        const auto& column=transport_->prepare_columns[n];
+        numeric_metadata+=" ["+std::to_string(n)+":"+std::to_string(column.charset)+","+
+          std::to_string(column.type)+","+std::to_string(column.width)+","+
+          std::to_string(column.decimals)+","+std::to_string(column.normalized_width)+","+
+          std::to_string(column.normalized_decimals)+"]";
+      }
+    }
+    ASSERT_TRUE(static_cast<bool>(filtered))<<"date-parameter-live-filter "
+      <<(filtered ? std::string_view{} : filtered.backend_error().safe_summary())
+      <<" code="<<(filtered ? 0 : filtered.error().value())
+      <<" operation="<<(filtered ? 0 : static_cast<int>(filtered.backend_error().operation))
+      <<" state="<<static_cast<int>(filtered.session_snapshot().state)
+      <<" disposition="<<static_cast<int>(filtered.session_snapshot().disposition)<<numeric_metadata;
     ASSERT_FALSE(transport_->deadlines.empty());
     // Must immediately follow the successful prepared statement, before any
     // recovery/inventory query can replace its warning area.
