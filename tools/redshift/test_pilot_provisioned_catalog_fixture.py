@@ -22,6 +22,8 @@ class Fake:
             return SqlReply(True, 'odbcpp_pilot|' + CREATOR)
         if step == 'schema_usage':
             return SqlReply(True, 'schema_usage_allowed')
+        if step.startswith('absence_'):
+            return SqlReply(True, '0')
         if step.startswith('collision_'):
             return SqlReply(True, '0')
         if step.startswith('cleanup_'):
@@ -37,6 +39,78 @@ class Fake:
 
 
 class ProvisionedCatalogFixtureTests(unittest.TestCase):
+    def missing_run(self, f, tests=None):
+        return CatalogFixture(sql=f.sql, tests=tests or (lambda cases, seconds: f.summary),
+            record=f.events.append, clock=lambda: f.time, deadline=180,
+            cleanup_deadline=240, fixture=FIXTURE, fixture_digest=DIGEST,
+            profile='primary_key_missing_legacy').run()
+
+    def missing_fake(self):
+        f = Fake()
+        cases = PROFILES['primary_key_missing_legacy'][1]
+        f.summary = {'cases': list(cases), 'passed': 2, 'failed': 0}
+        return f
+
+    def test_missing_inventory_and_absence_checks_never_mutate_objects(self):
+        f = self.missing_fake(); result = self.missing_run(f)
+        self.assertEqual('qualified', result['phase'])
+        self.assertTrue(result['absence_verified']); self.assertTrue(result['activity_verified'])
+        self.assertEqual([], result['created']); self.assertEqual([], f.events[0]['objects'])
+        self.assertEqual(2, len(f.events[0]['cases']))
+        steps = [step for step, _, _ in f.calls]
+        self.assertLess(steps.index('schema_usage'), steps.index('absence_before'))
+        self.assertLess(steps.index('cleanup_queries'), steps.index('absence_before'))
+        self.assertLess(steps.index('absence_before'), steps.index('absence_after'))
+        self.assertFalse(any(word in query for _, query, _ in f.calls
+            for word in ('CREATE ', 'GRANT ', 'DROP ', 'CALL ', "IN ('')")))
+
+    def test_missing_pre_absence_refusals_do_not_run_cases(self):
+        for reply in (SqlReply(True, '1'), SqlReply(True, ''), SqlReply(True, 'NULL'),
+                SqlReply(True, '0\n0'), SqlReply(False, '0')):
+            f = self.missing_fake(); f.overrides['absence_before'] = reply
+            result = self.missing_run(f, lambda *_: self.fail('cases dispatched'))
+            self.assertEqual('blocked', result['phase'])
+            self.assertIsNone(result['cases']); self.assertTrue(result['activity_verified'])
+            self.assertFalse(result['absence_verified']); self.assertFalse(result['absence_before_verified'])
+            self.assertTrue(result['absence_after_verified'])
+
+    def test_missing_post_absence_failure_still_checks_activity_and_never_drops(self):
+        for reply in (SqlReply(True, '1'), SqlReply(False), SqlReply(True, '')):
+            f = self.missing_fake(); f.overrides['absence_after'] = reply
+            result = self.missing_run(f)
+            self.assertEqual('cleanup_unverified', result['phase'])
+            self.assertEqual('qualified', result['qualification_phase'])
+            self.assertFalse(result['absence_verified']); self.assertTrue(result['activity_verified'])
+            steps = [step for step, _, _ in f.calls]
+            self.assertIn('cleanup_queries', steps[steps.index('absence_after') + 1:])
+            self.assertFalse(any(step.startswith('drop_') for step in steps))
+
+    def test_missing_inventory_and_callback_failures_still_check_post_absence(self):
+        for kind in ('inventory', 'callback', 'late'):
+            f = self.missing_fake()
+            def tests(*_):
+                if kind == 'callback': raise RuntimeError('private')
+                if kind == 'late': f.time = 181
+                return {'cases': list(CASES), 'passed': 5, 'failed': 0}
+            result = self.missing_run(f, tests)
+            self.assertEqual('blocked', result['phase'])
+            self.assertTrue(result['absence_verified']); self.assertTrue(result['activity_verified'])
+            self.assertIn('absence_after', [step for step, _, _ in f.calls])
+
+    def test_missing_pre_activity_cannot_use_cleanup_reservation(self):
+        f = self.missing_fake(); original = f.sql
+        def sql(step, query, seconds):
+            reply = original(step, query, seconds)
+            if step == 'cleanup_pids' and f.time == 0: f.time = 181
+            return reply
+        f.sql = sql
+        result = self.missing_run(f, lambda *_: self.fail('cases dispatched'))
+        self.assertEqual('late_sql_acknowledgment', result['reason'])
+        self.assertEqual('blocked', result['phase'])
+        self.assertFalse(result['absence_verified']); self.assertTrue(result['absence_after_verified'])
+        self.assertTrue(result['activity_verified'])
+        self.assertNotIn('absence_before', [step for step, _, _ in f.calls])
+
     def test_modes_inventory_parent_only_and_failed_cases_keep_cleanup_evidence(self):
         f = Fake(); objects, cases = PROFILES['primary_key_modes']
         self.assertEqual((OBJECTS[0],), objects)

@@ -21,11 +21,14 @@ OBJECTS = (PARENT, CHILD, PROCEDURE)
 NO_KEY = 'm2_pk_none_20261004_c01'
 QUOTED_KEY = "m2_pk_quote_20261004_c01.a\"b%'_"
 EDGE_OBJECTS = (NO_KEY, QUOTED_KEY)
+MISSING_TABLE = 'm2_pk_absent_20261004_c01'
 CASES = tuple('RedshiftRealTest.' + n for n in (
     'ConnectionTest', 'CompositePrimaryKeyCatalogContract',
     'CompositeForeignKeyCatalogContract', 'ProcedureCatalogContract',
     'ProcedureParameterCatalogContract'))
 PROFILES = {
+    'primary_key_missing_legacy': ((), tuple('RedshiftRealTest.' + n for n in (
+        'ConnectionTest', 'OdbcPrimaryKeyMissingLegacyContract'))),
     'primary_key_edges': (EDGE_OBJECTS, tuple('RedshiftRealTest.' + n for n in (
         'ConnectionTest', 'OdbcPrimaryKeyNoKeyShowContract',
         'OdbcPrimaryKeyNoKeyLegacyContract', 'OdbcPrimaryKeyQuotedShowContract',
@@ -134,19 +137,19 @@ class CatalogFixture:
             raise FixtureBlocked('late_sql_acknowledgment')
         return reply.output.strip()
 
-    def _activity(self):
+    def _activity(self, cleanup=True):
         # Fetch pids first; provisioned Redshift rejects termination functions
         # embedded in queries over STV_SESSIONS. Never broaden owned principals.
         output = self._sql('cleanup_pids',
             'SELECT process FROM stv_sessions WHERE ' + OWNED +
-            ' AND process <> pg_backend_pid();', True)
+            ' AND process <> pg_backend_pid();', cleanup)
         pids = output.splitlines() if output else []
         if len(pids) > 8 or len(pids) != len(set(pids)) or any(
                 not pid.isascii() or not pid.isdigit() or not 0 < int(pid) <= 2147483647
                 for pid in pids):
             raise FixtureBlocked('invalid_owned_pid_inventory')
         for pid in pids:
-            if self._sql('terminate_' + pid, 'SELECT pg_terminate_backend(' + pid + ');', True) != 't':
+            if self._sql('terminate_' + pid, 'SELECT pg_terminate_backend(' + pid + ');', cleanup) != 't':
                 raise FixtureBlocked('termination_unverified')
         for step, table, extra in (('cleanup_sessions', 'stv_sessions', 'process'),
                                   ('cleanup_queries', 'stv_recents', 'pid')):
@@ -154,7 +157,7 @@ class CatalogFixture:
             if table == 'stv_recents':
                 query += " AND status <> 'Done'"
             query += ' AND ' + extra + ' <> pg_backend_pid());'
-            if self._sql(step, query, True) != 'f':
+            if self._sql(step, query, cleanup) != 'f':
                 raise FixtureBlocked('remote_activity_unverified')
 
     def run(self):
@@ -164,25 +167,39 @@ class CatalogFixture:
                 0 < self.deadline - now <= 180 and
                 0 < self.cleanup_deadline - self.deadline <= 60):
             raise FixtureBlocked('invalid_absolute_deadlines')
-        ddl = dict(zip(EDGE_OBJECTS, edge_statements(self.fixture, self.fixture_digest))) if self.profile == 'primary_key_edges' else dict(zip(OBJECTS, statements(self.fixture, self.fixture_digest)))
+        missing = self.profile == 'primary_key_missing_legacy'
+        if missing:
+            if self.fixture.is_symlink() or hashlib.sha256(self.fixture.read_bytes()).hexdigest() != self.fixture_digest:
+                raise FixtureBlocked('fixture_changed')
+            ddl = {}
+        else:
+            ddl = dict(zip(EDGE_OBJECTS, edge_statements(self.fixture, self.fixture_digest))) if self.profile == 'primary_key_edges' else dict(zip(OBJECTS, statements(self.fixture, self.fixture_digest)))
+        absence_query = "SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='odbcpp_fixture' AND c.relname='" + MISSING_TABLE + "';"
         # Callback must fsync consumed admission before returning. No SQL if it fails.
         self.record({'event': 'consumed', 'cases': list(self.cases), 'objects': list(self.objects)})
         created, uncertain = [], []
         identity_verified = False
         result = {'phase': 'blocked', 'cases': None, 'objects_cleaned': False,
                   'activity_verified': False}
+        if missing:
+            result.update(absence_before_verified=False, absence_after_verified=False, absence_verified=False)
         try:
             if self._sql('identity', 'SELECT current_database(),TRIM(current_user);') != DATABASE + '|' + CREATOR:
                 raise FixtureBlocked('identity_mismatch')
             identity_verified = True
             table_names = "','".join(literal_name(n) for n in self.objects if n != PROCEDURE)
-            if self._sql('collision_tables', "SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='odbcpp_fixture' AND c.relname IN ('" + table_names + "');") != '0':
+            if not missing and self._sql('collision_tables', "SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid WHERE n.nspname='odbcpp_fixture' AND c.relname IN ('" + table_names + "');") != '0':
                 raise FixtureBlocked('fixture_collision')
             if PROCEDURE in self.objects and self._sql('collision_procedures', "SELECT COUNT(*) FROM pg_proc_info p JOIN pg_namespace n ON p.pronamespace=n.oid WHERE n.nspname='odbcpp_fixture' AND p.proname='" + PROCEDURE + "';") != '0':
                 raise FixtureBlocked('fixture_collision')
-            if self.profile == 'primary_key_edges':
+            if self.profile == 'primary_key_edges' or missing:
                 if self._sql('schema_usage', "SELECT CASE WHEN has_schema_privilege('odbcpp_pilot_test','odbcpp_fixture','USAGE') THEN 'schema_usage_allowed' ELSE 'schema_usage_blocked' END;") != 'schema_usage_allowed':
                     raise FixtureBlocked('schema_usage_unverified')
+            if missing:
+                self._activity(cleanup=False)
+                if self._sql('absence_before', absence_query) != '0':
+                    raise FixtureBlocked('missing_table_absence_unverified')
+                result['absence_before_verified'] = True
             for name in self.objects:
                 try:
                     self._sql('create_' + name, ddl[name])
@@ -215,6 +232,14 @@ class CatalogFixture:
             result['reason'] = str(error) if isinstance(error, FixtureBlocked) else 'callback_failed'
         finally:
             self.cleanup_cutoff = min(self.cleanup_deadline, self.clock() + 60)
+            if missing and identity_verified:
+                try:
+                    if self._sql('absence_after', absence_query, True) != '0':
+                        raise FixtureBlocked('missing_table_absence_unverified')
+                    result['absence_after_verified'] = True
+                    result['absence_verified'] = result['absence_before_verified']
+                except Exception:
+                    result['absence_reason'] = 'missing_table_absence_unverified'
             try:
                 if not identity_verified:
                     raise FixtureBlocked('cleanup_identity_unverified')
@@ -238,7 +263,7 @@ class CatalogFixture:
                 result['objects_cleaned'] = not uncertain
             except Exception:
                 result['cleanup_reason'] = 'cleanup_unverified'
-            if not result['activity_verified'] or not result['objects_cleaned']:
+            if not result['activity_verified'] or not result['objects_cleaned'] or (missing and not result['absence_after_verified']):
                 result['qualification_phase'] = result['phase']
                 result['phase'] = 'cleanup_unverified'
             result['created'] = created

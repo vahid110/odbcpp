@@ -572,6 +572,61 @@ TEST_F(RedshiftRealTest, OdbcPrimaryKeyQuotedLegacyContract) {
   odbc_primary_key_edge_contract("LEGACY", true);
 }
 
+// Future LEGACY missing-object proof only. The separately reviewed runner must
+// confirm this exact name absent before and after the case; never create/drop it.
+// A collision or concurrent appearance invalidates proof. No SHOW outcome claim.
+TEST_F(RedshiftRealTest, OdbcPrimaryKeyMissingLegacyContract) {
+  const auto base = rs::odbc::ConnectionString::parse(connection_string_);
+  ASSERT_FALSE(base.contains("REDSHIFTCATALOGMODE"));
+  for (const auto* field : {"SERVER", "PORT", "DATABASE", "UID", "PWD", "SSLCAFILE"}) {
+    ASSERT_TRUE(base.contains(field));
+    ASSERT_TRUE(!base.at(field).empty());
+    ASSERT_TRUE(base.at(field).find('\0') == std::string::npos);
+  }
+  ASSERT_TRUE(base.at("DATABASE") == "odbcpp_pilot");
+  ASSERT_TRUE(base.at("UID") == "odbcpp_pilot_test");
+  connection_string_ += ";RedshiftCatalogMode=LEGACY;";
+  ASSERT_TRUE(connect()); // Existing fixture owns cleanup after early assertions.
+  constexpr char database[] = "odbcpp_pilot";
+  constexpr char schema[] = "odbcpp_fixture";
+  constexpr char absent[] = "m2_pk_absent_20261004_c01";
+  constexpr std::array<CatalogField, 6> fields{{
+      {"table_cat", SQL_VARCHAR}, {"table_schem", SQL_VARCHAR},
+      {"table_name", SQL_VARCHAR}, {"column_name", SQL_VARCHAR},
+      {"key_seq", SQL_SMALLINT}, {"pk_name", SQL_VARCHAR}}};
+  // Source-grounded empty expectation, native-unqualified until new admission.
+  // Original failure stays failed: existing helper preserves its diagnostic and
+  // attempts one SELECT1 recovery, never catalog replay or another mode.
+  ASSERT_TRUE(catalog_succeeded(SQLPrimaryKeys(hstmt_,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(database)), SQL_NTS,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(schema)), SQL_NTS,
+      reinterpret_cast<SQLCHAR*>(const_cast<char*>(absent)), SQL_NTS)));
+  expect_catalog_fields(fields);
+  ASSERT_FALSE(HasFatalFailure());
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+  // Existing15s per-operation bounds; no shared ODBC absolute deadline claim.
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(
+      const_cast<char*>("SELECT 1, CAST(NULL AS INTEGER)")), SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  SQLINTEGER scalar = -1; SQLLEN indicator = -9;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 1, SQL_C_SLONG,
+      &scalar, sizeof(scalar), &indicator));
+  EXPECT_EQ(1, scalar);
+  EXPECT_EQ(static_cast<SQLLEN>(sizeof(scalar)), indicator);
+  SQLINTEGER null_sentinel = 73; indicator = -9;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 2, SQL_C_SLONG,
+      &null_sentinel, sizeof(null_sentinel), &indicator));
+  EXPECT_EQ(SQL_NULL_DATA, indicator); EXPECT_EQ(73, null_sentinel);
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, hstmt_));
+  hstmt_ = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(hdbc_));
+  connected_ = false;
+}
+
 // FUTURE proof only: separately admitted fixture/endpoint, never auto-enabled.
 // Dispatch one fixed SHOW through the real production Redshift session. Existing
 // parameter type-resolution reads may occur under the SAME absolute deadline;
