@@ -3453,3 +3453,597 @@ TEST_F(BackendContractTest, DoubleRealRoundingMidpointsSpecialsAndNullOwnFloat32
   EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed); EXPECT_EQ(SQL_NULL_DATA, indicator);
   EXPECT_EQ(0, seen->disconnects);
 }
+
+// Public adapter observations only: no native embedded-NUL or VARBYTE parameter claim.
+TEST_F(BackendContractTest, PreparedTextLengthsOwnUnicodeNulAndRecoverFromLocalRefusals) {
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLULEN processed = 99; SQLUSMALLINT status = SQL_PARAM_UNUSED;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  const std::string expected("A\0\xe2\x82\xac\xf0\x9f\x98\x80", 9);
+  std::string narrow = expected; SQLLEN length = 9;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_VARCHAR, 9, 0, narrow.data(), narrow.size(), &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Text, seen->parameters[0].type);
+  EXPECT_EQ(std::optional<std::string>{expected}, seen->parameters[0].value);
+  narrow[0] = 'Z';
+  EXPECT_EQ(std::optional<std::string>{expected}, seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  narrow = expected;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_VARCHAR, 8, 0, narrow.data(), narrow.size(), &length));
+  const auto queries = seen->queries; const auto deadline = seen->deadline;
+  EXPECT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("22001", state());
+  EXPECT_EQ(queries, seen->queries); EXPECT_EQ(deadline, seen->deadline);
+  EXPECT_EQ(1u, processed); EXPECT_EQ(SQL_PARAM_ERROR, status);
+  EXPECT_EQ(expected, narrow); EXPECT_EQ(9, length);
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{expected}, seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_VARCHAR, 9, 0, narrow.data(), narrow.size(), &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_EQ(SQL_PARAM_SUCCESS, status);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  length = SQL_NTS;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_VARCHAR, 9, 0, narrow.data(), narrow.size(), &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"A"}, seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+
+  std::vector<SQLWCHAR> wide;
+  if constexpr (sizeof(SQLWCHAR) == 2) { wide = {'A', 0, 0x20ac, 0xd83d, 0xde00}; }
+  else { wide = {'A', 0, 0x20ac, static_cast<SQLWCHAR>(0x1f600)}; }
+  length = static_cast<SQLLEN>(wide.size() * sizeof(SQLWCHAR));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_WCHAR,
+      SQL_WVARCHAR, 4, 0, wide.data(), length, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{expected}, seen->parameters[0].value);
+  wide[0] = 'Z'; EXPECT_EQ(std::optional<std::string>{expected}, seen->parameters[0].value);
+  wide[0] = 'A'; ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  const auto valid_length = length;
+  length = SQL_NTS;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_WCHAR,
+      SQL_WVARCHAR, 4, 0, wide.data(), valid_length, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"A"}, seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  length = valid_length;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_WCHAR,
+      SQL_WVARCHAR, 4, 0, wide.data(), valid_length, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  for (const int error : {0, 1, 2}) {
+    SCOPED_TRACE(error);
+    length = error == 1 ? valid_length - 1 : valid_length;
+    if (error == 2) { wide[0] = static_cast<SQLWCHAR>(0xd800); }
+    const auto saved = wide;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_WCHAR,
+        SQL_WVARCHAR, error == 0 ? 3 : 4, 0, wide.data(), valid_length, &length));
+    const auto count = seen->queries; const auto prior_deadline = seen->deadline;
+    EXPECT_EQ(SQL_ERROR, SQLExecute(stmt));
+    EXPECT_EQ(error == 0 ? "22001" : error == 1 ? "HY090" : "22018", state());
+    EXPECT_EQ(count, seen->queries); EXPECT_EQ(prior_deadline, seen->deadline);
+    EXPECT_EQ(saved, wide); EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
+    ASSERT_EQ(1u, seen->parameters.size());
+    EXPECT_EQ(std::optional<std::string>{expected}, seen->parameters[0].value);
+    wide[0] = 'A'; length = valid_length;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_WCHAR,
+        SQL_WVARCHAR, 4, 0, wide.data(), valid_length, &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_EQ(SQL_PARAM_SUCCESS, status);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+  wide[0] = static_cast<SQLWCHAR>(0xd800); length = SQL_NULL_DATA;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_WCHAR,
+      SQL_WVARCHAR, 4, 0, wide.data(), valid_length, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size()); EXPECT_FALSE(seen->parameters[0].value);
+  EXPECT_EQ(static_cast<SQLWCHAR>(0xd800), wide[0]);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_WCHAR,
+      SQL_WVARCHAR, 4, 0, wide.data(), valid_length, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{""}, seen->parameters[0].value);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed); EXPECT_EQ(0, seen->disconnects);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+}
+
+TEST_F(BackendContractTest, TextGetDataChunksCountBytesAndPreserveWideScalarBoundaries) {
+  QueryResult result;
+  result.columns = {{"text", NativeTypeInfo{ScalarType::VarChar, 32, 0, true}}};
+  const std::string text("A\xe2\x82\xac\xf0\x9f\x98\x80\0B", 10);
+  result.rows = {{text}, {"ok"}}; seen->date_result = result; connect();
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  char bytes[3]{'x','x','x'}; SQLLEN length = -1; std::string reconstructed;
+  for (int part = 0; part < 5; ++part) {
+    ASSERT_EQ(part == 4 ? SQL_SUCCESS : SQL_SUCCESS_WITH_INFO,
+        SQLGetData(stmt, 1, SQL_C_CHAR, bytes, sizeof(bytes), &length));
+    EXPECT_EQ(10 - part * 2, length); EXPECT_EQ(0, bytes[2]);
+    reconstructed.append(bytes, 2);
+    if (part < 4) { EXPECT_EQ("01004", state()); }
+    if (part == 0) { EXPECT_EQ(static_cast<unsigned char>(0xe2), static_cast<unsigned char>(bytes[1])); }
+  }
+  EXPECT_EQ(text, reconstructed);
+  EXPECT_EQ(SQL_NO_DATA, SQLGetData(stmt, 1, SQL_C_CHAR, bytes, sizeof(bytes), &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  SQLWCHAR out[4]{'x','x','x','x'};
+  const SQLLEN total = (sizeof(SQLWCHAR) == 2 ? 6 : 5) * sizeof(SQLWCHAR);
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(stmt, 1, SQL_C_WCHAR, out, 2*sizeof(SQLWCHAR), &length));
+  EXPECT_EQ(total, length); EXPECT_EQ('A', out[0]); EXPECT_EQ(0, out[1]); EXPECT_EQ('x', out[2]);
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(stmt, 1, SQL_C_WCHAR, out, 2*sizeof(SQLWCHAR), &length));
+  EXPECT_EQ(total - sizeof(SQLWCHAR), length); EXPECT_EQ(0x20ac, out[0]); EXPECT_EQ(0, out[1]);
+  // Euro is consumed; the next scalar is now the supplementary smile.
+  const SQLLEN remaining = total - 2*sizeof(SQLWCHAR);
+  out[0] = 'x'; out[1] = 'x';
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(stmt, 1, SQL_C_WCHAR, out, sizeof(SQLWCHAR), &length));
+  EXPECT_EQ(remaining, length); EXPECT_EQ(0, out[0]); EXPECT_EQ('x', out[1]);
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(stmt, 1, SQL_C_WCHAR, out, 2*sizeof(SQLWCHAR), &length));
+    EXPECT_EQ(remaining, length); EXPECT_EQ(0, out[0]); EXPECT_EQ('x', out[1]);
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(stmt, 1, SQL_C_WCHAR, out, 3*sizeof(SQLWCHAR), &length));
+    EXPECT_EQ(remaining, length); EXPECT_EQ(0xd83d, out[0]); EXPECT_EQ(0xde00, out[1]); EXPECT_EQ(0, out[2]);
+  } else {
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(stmt, 1, SQL_C_WCHAR, out, 2*sizeof(SQLWCHAR), &length));
+    EXPECT_EQ(remaining, length); EXPECT_EQ(0x1f600, out[0]); EXPECT_EQ(0, out[1]);
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_WCHAR, out, 3*sizeof(SQLWCHAR), &length));
+  const SQLWCHAR tail[]{0,'B',0}; EXPECT_EQ(2*sizeof(SQLWCHAR), length);
+  EXPECT_EQ(0, std::memcmp(out, tail, sizeof(tail)));
+  EXPECT_EQ(SQL_NO_DATA, SQLGetData(stmt, 1, SQL_C_WCHAR, out, sizeof(out), &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_WCHAR, out, sizeof(out), &length));
+  EXPECT_EQ(2*sizeof(SQLWCHAR), length); EXPECT_EQ('o', out[0]); EXPECT_EQ('k', out[1]); EXPECT_EQ(0, out[2]);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+}
+
+TEST_F(BackendContractTest, BoundTextAndLongBinaryKeepFullLengthsPairBoundariesAndNull) {
+  QueryResult result;
+  result.columns = {{"text", NativeTypeInfo{ScalarType::VarChar, 32, 0, true}}};
+  result.rows = {{std::string("A\xf0\x9f\x98\x80\0B", 7)}, {""}, {std::nullopt}};
+  seen->date_result = result; connect();
+  SQLUSMALLINT status = SQL_ROW_NOROW;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, &status, 0));
+  SQLWCHAR output[6]{'x','x','x','x','x','x'}; SQLLEN length = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_WCHAR, output, 3*sizeof(SQLWCHAR), &length));
+  ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLFetch(stmt)); EXPECT_EQ("01004", state()); EXPECT_EQ(SQL_ROW_SUCCESS_WITH_INFO, status);
+  EXPECT_EQ((sizeof(SQLWCHAR) == 2 ? 5 : 4)*sizeof(SQLWCHAR), length);
+  EXPECT_EQ('A', output[0]);
+  if constexpr (sizeof(SQLWCHAR) == 2) { EXPECT_EQ(0, output[1]); EXPECT_EQ('x', output[2]); }
+  else { EXPECT_EQ(0x1f600, output[1]); EXPECT_EQ(0, output[2]); }
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt)); EXPECT_EQ(0, length); EXPECT_EQ(0, output[0]); EXPECT_EQ(SQL_ROW_SUCCESS, status);
+  std::fill(std::begin(output), std::end(output), SQLWCHAR('x'));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt)); EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(SQL_ROW_SUCCESS, status);
+  EXPECT_TRUE(std::all_of(std::begin(output), std::end(output), [](auto unit) { return unit == 'x'; }));
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt)); EXPECT_EQ(SQL_ROW_NOROW, status);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_WCHAR, output, sizeof(output), &length));
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  std::vector<SQLWCHAR> expected;
+  if constexpr (sizeof(SQLWCHAR) == 2) { expected = {'A',0xd83d,0xde00,0,'B',0}; }
+  else { expected = {'A',static_cast<SQLWCHAR>(0x1f600),0,'B',0}; }
+  EXPECT_EQ(0, std::memcmp(output, expected.data(), expected.size()*sizeof(SQLWCHAR)));
+  EXPECT_EQ(SQL_ROW_SUCCESS, status);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt)); ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+  seen->date_result.reset(); seen->long_binary = true;
+  char narrow[8]{'x','x','x','x','x','x','x','x'};
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_CHAR, narrow, 4, &length));
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLFetch(stmt));
+  EXPECT_EQ("01004", state()); EXPECT_EQ(SQL_ROW_SUCCESS_WITH_INFO, status); EXPECT_EQ(6, length);
+  EXPECT_EQ(0, std::memcmp(narrow, "00\0", 3)); EXPECT_EQ('x', narrow[3]);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt)); ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+  std::fill(std::begin(output), std::end(output), SQLWCHAR('x'));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_WCHAR, output, 4*sizeof(SQLWCHAR), &length));
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLFetch(stmt));
+  const SQLWCHAR hex_prefix[]{'0','0',0}; EXPECT_EQ(0, std::memcmp(output, hex_prefix, sizeof(hex_prefix)));
+  EXPECT_EQ('x', output[3]); EXPECT_EQ(6*sizeof(SQLWCHAR), length); EXPECT_EQ(SQL_ROW_SUCCESS_WITH_INFO, status);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt)); ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_CHAR, narrow, sizeof(narrow), &length));
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  EXPECT_EQ(0, std::memcmp(narrow, "00ff5c\0", 7)); EXPECT_EQ(6, length); EXPECT_EQ(SQL_ROW_SUCCESS, status);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+}
+
+TEST_F(BackendContractTest, PreparedBitNumericRefusalsPreserveOwningValuesAndRecover) {
+  connect(); ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLULEN processed = 99; SQLUSMALLINT status = SQL_PARAM_UNUSED;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  std::string text = "1"; SQLLEN length = 1;
+  const auto bind_text = [&] { return SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_BIT, 1, 0, text.data(), static_cast<SQLLEN>(text.size()), &length); };
+  ASSERT_EQ(SQL_SUCCESS, bind_text()); ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Boolean, seen->parameters[0].type);
+  EXPECT_EQ(std::optional<std::string>{"1"}, seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  for (const auto& invalid : std::vector<std::pair<std::string, std::string>>{
+      {"0.5","22001"},{"1.5","22001"},{"1e-100","22001"},
+      {"-1","22003"},{"2","22003"},{"maybe","22018"}}) {
+    SCOPED_TRACE(invalid.first); text = invalid.first; length = static_cast<SQLLEN>(text.size());
+    ASSERT_EQ(SQL_SUCCESS, bind_text());
+    const auto queries = seen->queries; const auto deadline = seen->deadline;
+    EXPECT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ(invalid.second, state());
+    EXPECT_EQ(queries, seen->queries); EXPECT_EQ(deadline, seen->deadline);
+    EXPECT_EQ(invalid.first, text); EXPECT_EQ(static_cast<SQLLEN>(text.size()), length);
+    EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
+    ASSERT_EQ(1u, seen->parameters.size()); EXPECT_EQ(std::optional<std::string>{"1"}, seen->parameters[0].value);
+    text = "1"; length = 1; ASSERT_EQ(SQL_SUCCESS, bind_text());
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_EQ(SQL_PARAM_SUCCESS, status);
+    text[0] = '0'; EXPECT_EQ(std::optional<std::string>{"1"}, seen->parameters[0].value);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+  SQLDOUBLE number = 0; length = sizeof(number);
+  const auto bind_number = [&] { return SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_DOUBLE,
+      SQL_BIT, 1, 0, &number, sizeof(number), &length); };
+  for (const SQLDOUBLE valid : {0.0,1.0}) {
+    number = valid; ASSERT_EQ(SQL_SUCCESS, bind_number()); ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    ASSERT_EQ(1u, seen->parameters.size());
+    EXPECT_EQ(std::optional<std::string>{valid == 0 ? "0" : "1"}, seen->parameters[0].value);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+  for (const SQLDOUBLE invalid : {0.5,-1.0,2.0,std::numeric_limits<SQLDOUBLE>::infinity(),
+                                 std::numeric_limits<SQLDOUBLE>::quiet_NaN()}) {
+    number = invalid; const auto bytes = std::bit_cast<std::uint64_t>(number);
+    ASSERT_EQ(SQL_SUCCESS, bind_number());
+    const auto queries = seen->queries; const auto deadline = seen->deadline;
+    EXPECT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ(invalid == 0.5 ? "22001" : "22003", state());
+    EXPECT_EQ(queries, seen->queries); EXPECT_EQ(deadline, seen->deadline);
+    EXPECT_EQ(bytes, std::bit_cast<std::uint64_t>(number)); EXPECT_EQ(static_cast<SQLLEN>(sizeof(number)), length);
+    EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
+    ASSERT_EQ(1u, seen->parameters.size()); EXPECT_EQ(std::optional<std::string>{"1"}, seen->parameters[0].value);
+    number = 1; ASSERT_EQ(SQL_SUCCESS, bind_number()); ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    EXPECT_EQ(SQL_PARAM_SUCCESS, status); ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+  number = std::numeric_limits<SQLDOUBLE>::quiet_NaN(); length = SQL_NULL_DATA;
+  ASSERT_EQ(SQL_SUCCESS, bind_number()); ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size()); EXPECT_EQ(QueryParameterType::Boolean, seen->parameters[0].type);
+  EXPECT_FALSE(seen->parameters[0].value); EXPECT_TRUE(std::isnan(number)); EXPECT_EQ(SQL_NULL_DATA, length);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(0, seen->disconnects); ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+}
+
+TEST_F(BackendContractTest, BooleanResultTinyBuffersPreserveValuesAndNullRetry) {
+  QueryResult result; result.columns = {{"flag",NativeTypeInfo{ScalarType::Boolean,1,0,true}}};
+  result.rows = {{"1"},{"0"},{std::nullopt}}; seen->date_result = result; connect();
+  for (const SQLSMALLINT target : {SQLSMALLINT(SQL_C_BINARY),SQLSMALLINT(SQL_C_CHAR),SQLSMALLINT(SQL_C_WCHAR)}) {
+    SCOPED_TRACE(target); ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+    SQLSMALLINT type = 0; SQLULEN size = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt,1,nullptr,0,nullptr,&type,&size,nullptr,nullptr));
+    EXPECT_EQ(SQL_BIT,type); EXPECT_EQ(1u,size);
+    for (int row = 0; row < 2; ++row) {
+      ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+      alignas(SQLWCHAR) unsigned char output[3*sizeof(SQLWCHAR)]; std::fill(std::begin(output),std::end(output),0x5a);
+      SQLLEN length = 73; const SQLLEN tiny = target == SQL_C_BINARY ? 0 : target == SQL_C_CHAR ? 1 : sizeof(SQLWCHAR);
+      EXPECT_EQ(SQL_ERROR,SQLGetData(stmt,1,target,output,tiny,&length)); EXPECT_EQ("22003",state()); EXPECT_EQ(73,length);
+      EXPECT_TRUE(std::all_of(std::begin(output),std::end(output),[](auto b){return b==0x5a;}));
+      ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,target,output,sizeof(output),&length));
+      if (target == SQL_C_BINARY) { EXPECT_EQ(row == 0 ? 1 : 0,output[0]); EXPECT_EQ(1,length); EXPECT_EQ(0x5a,output[1]); }
+      else if (target == SQL_C_CHAR) { EXPECT_EQ(row == 0 ? '1' : '0',output[0]); EXPECT_EQ(0,output[1]); EXPECT_EQ(1,length); }
+      else { SQLWCHAR units[2];std::memcpy(units,output,sizeof(units));EXPECT_EQ(row == 0 ? '1' : '0',units[0]);EXPECT_EQ(0,units[1]);EXPECT_EQ(sizeof(SQLWCHAR),length); }
+    }
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); unsigned char output[16];std::fill(std::begin(output),std::end(output),0x5a);
+    EXPECT_EQ(SQL_ERROR,SQLGetData(stmt,1,target,output,sizeof(output),nullptr));EXPECT_EQ("22002",state());
+    SQLLEN length = 73;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,target,output,sizeof(output),&length));EXPECT_EQ(SQL_NULL_DATA,length);
+    EXPECT_TRUE(std::all_of(std::begin(output),std::end(output),[](auto b){return b==0x5a;}));
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  }
+  SQLCHAR output = 73; SQLLEN length = 74;SQLUSMALLINT status = SQL_ROW_NOROW;
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_STATUS_PTR,&status,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_BINARY,&output,0,&length));ASSERT_EQ(SQL_SUCCESS,execute("rows"));
+  EXPECT_EQ(SQL_ERROR,SQLFetch(stmt));EXPECT_EQ("22003",state());EXPECT_EQ(SQL_ROW_ERROR,status);EXPECT_EQ(73,output);EXPECT_EQ(74,length);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_BINARY,&output,1,&length));
+  ASSERT_EQ(SQL_SUCCESS,execute("rows"));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));EXPECT_EQ(1,output);EXPECT_EQ(1,length);EXPECT_EQ(SQL_ROW_SUCCESS,status);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));EXPECT_EQ(0,output);output=73;
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));EXPECT_EQ(SQL_NULL_DATA,length);EXPECT_EQ(73,output);EXPECT_EQ(SQL_ROW_SUCCESS,status);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+}
+
+TEST_F(BackendContractTest, UnsupportedIntervalGuidInterfacesPreserveSupportedTextBindings) {
+  QueryResult result;result.columns={{"text",NativeTypeInfo{ScalarType::VarChar,16,0,true}}};result.rows={{"ok"}};
+  seen->date_result=result;connect();
+  std::vector<SQLSMALLINT> ctypes{SQL_C_INTERVAL_YEAR_TO_MONTH,SQL_C_INTERVAL_DAY_TO_SECOND};
+#ifdef SQL_C_GUID
+  ctypes.push_back(SQL_C_GUID);
+#endif
+  char output[16]="untouched";SQLLEN length=73;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_CHAR,output,sizeof(output),&length));
+  for (const auto unsupported : ctypes) {
+    SCOPED_TRACE(unsupported);std::memset(output,'x',sizeof(output));length=73;
+    EXPECT_EQ(SQL_ERROR,SQLBindCol(stmt,1,unsupported,output,sizeof(output),&length));EXPECT_EQ("HYC00",state());
+    ASSERT_EQ(SQL_SUCCESS,execute("rows"));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+    EXPECT_EQ(0,std::memcmp(output,"ok\0",3));EXPECT_EQ(2,length); // prior CHAR binding survived
+    char canary[16];std::fill(std::begin(canary),std::end(canary),'x');SQLLEN indicator=74;
+    EXPECT_EQ(SQL_ERROR,SQLGetData(stmt,1,unsupported,canary,sizeof(canary),&indicator));EXPECT_EQ("HYC00",state());EXPECT_EQ(74,indicator);
+    EXPECT_TRUE(std::all_of(std::begin(canary),std::end(canary),[](auto b){return b=='x';}));
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,canary,sizeof(canary),&indicator));EXPECT_EQ(0,std::memcmp(canary,"ok\0",3));EXPECT_EQ(2,indicator);
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  }
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"rows ?",SQL_NTS));
+  char input[]="ok";SQLLEN input_length=2;SQLULEN processed=99;SQLUSMALLINT status=SQL_PARAM_UNUSED;
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAMS_PROCESSED_PTR,&processed,0));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_STATUS_PTR,&status,0));
+  std::vector<SQLSMALLINT> sqltypes{SQL_INTERVAL_YEAR_TO_MONTH,SQL_INTERVAL_DAY_TO_SECOND};
+#ifdef SQL_GUID
+  sqltypes.push_back(SQL_GUID);
+#endif
+  for (std::size_t i=0;i<ctypes.size()+sqltypes.size();++i) {
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,16,0,input,sizeof(input),&input_length));
+    processed=99;status=SQL_PARAM_UNUSED;const auto queries=seen->queries;
+    const auto ctype=i<ctypes.size()?ctypes[i]:SQLSMALLINT(SQL_C_CHAR);
+    const auto sqltype=i<ctypes.size()?SQLSMALLINT(SQL_VARCHAR):sqltypes[i-ctypes.size()];
+    EXPECT_EQ(SQL_ERROR,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,ctype,sqltype,16,0,input,sizeof(input),&input_length));EXPECT_EQ("HYC00",state());
+    EXPECT_EQ(queries,seen->queries);EXPECT_EQ(99u,processed);EXPECT_EQ(SQL_PARAM_UNUSED,status);EXPECT_EQ(2,input_length);EXPECT_EQ(0,std::memcmp(input,"ok\0",3));
+    ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(std::optional<std::string>{"ok"},seen->parameters[0].value);
+    EXPECT_EQ(SQL_PARAM_SUCCESS,status);EXPECT_EQ(1u,processed);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  }
+  EXPECT_EQ(0,seen->disconnects);
+}
+
+// Deliberate precode regressions: canonical typed BIT input is a local policy.
+// Current nonzero normalization is expected to fail the invalid-byte assertions.
+TEST_F(BackendContractTest, CanonicalTypedBitRejectsInvalidBytesBeforeDispatchAndRecovers) {
+  connect(); ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt,(SQLCHAR*)"rows ?",SQL_NTS));
+  SQLULEN processed=99;SQLUSMALLINT status=SQL_PARAM_UNUSED;
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAMS_PROCESSED_PTR,&processed,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_STATUS_PTR,&status,0));
+  SQLCHAR input[]{0x5a,1,0xa5};SQLLEN length=1;
+  const auto bind = [&] { return SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_BIT,
+      SQL_BIT,1,0,&input[1],1,&length); };
+  ASSERT_EQ(SQL_SUCCESS,bind());ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));
+  ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(std::optional<std::string>{"1"},seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  for (const SQLCHAR invalid : {SQLCHAR(2),SQLCHAR(255),SQLCHAR('1'),SQLCHAR('t'),SQLCHAR('T')}) {
+    SCOPED_TRACE(static_cast<unsigned>(invalid)); input[1]=invalid;length=1;
+    ASSERT_EQ(SQL_SUCCESS,bind());const auto queries=seen->queries;const auto deadline=seen->deadline;
+    EXPECT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ("22003",state());
+    EXPECT_EQ(queries,seen->queries);EXPECT_EQ(deadline,seen->deadline);
+    EXPECT_EQ(SQL_PARAM_ERROR,status);EXPECT_EQ(1u,processed);
+    EXPECT_EQ(invalid,input[1]);EXPECT_EQ(0x5a,input[0]);EXPECT_EQ(0xa5,input[2]);EXPECT_EQ(1,length);
+    ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(QueryParameterType::Boolean,seen->parameters[0].type);
+    EXPECT_EQ(std::optional<std::string>{"1"},seen->parameters[0].value);
+    // Close a baseline's wrongly successful cursor as well as a repaired error.
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+    input[1]=0;ASSERT_EQ(SQL_SUCCESS,bind());ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));
+    ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(std::optional<std::string>{"0"},seen->parameters[0].value);
+    input[1]=1;EXPECT_EQ(std::optional<std::string>{"0"},seen->parameters[0].value);
+    EXPECT_EQ(SQL_PARAM_SUCCESS,status);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+    ASSERT_EQ(SQL_SUCCESS,bind());ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));
+    ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(std::optional<std::string>{"1"},seen->parameters[0].value);
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  }
+  input[1]=255;length=SQL_NULL_DATA;ASSERT_EQ(SQL_SUCCESS,bind());ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));
+  ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(QueryParameterType::Boolean,seen->parameters[0].type);
+  EXPECT_FALSE(seen->parameters[0].value);EXPECT_EQ(255,input[1]);EXPECT_EQ(SQL_NULL_DATA,length);
+  EXPECT_EQ(SQL_PARAM_SUCCESS,status);EXPECT_EQ(1u,processed);EXPECT_EQ(0,seen->disconnects);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+}
+
+TEST_F(BackendContractTest, CanonicalTypedBitTargetsKeepFixedSizeNullAndBindingSemantics) {
+  connect();ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"rows ?",SQL_NTS));
+  SQLULEN processed=99;SQLUSMALLINT status=SQL_PARAM_UNUSED;
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAMS_PROCESSED_PTR,&processed,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_STATUS_PTR,&status,0));
+  SQLCHAR input[]{0x5a,0,0xa5};SQLLEN length=0;
+  for (const SQLSMALLINT target : {SQLSMALLINT(SQL_BIT),SQLSMALLINT(SQL_VARCHAR),SQLSMALLINT(SQL_INTEGER),
+                                  SQLSMALLINT(SQL_DOUBLE),SQLSMALLINT(SQL_NUMERIC),SQLSMALLINT(SQL_WVARCHAR)}) {
+    SCOPED_TRACE(target);
+    const auto hint=target==SQL_BIT?QueryParameterType::Boolean:
+        (target==SQL_VARCHAR || target==SQL_WVARCHAR)?QueryParameterType::Text:
+        target==SQL_DOUBLE?QueryParameterType::Float64:
+        target==SQL_NUMERIC?QueryParameterType::Numeric:QueryParameterType::Int32;
+    const auto bind = [&] { return SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_BIT,target,
+        target==SQL_INTEGER?10:1,0,&input[1],length==0?0:1,&length); };
+    for (const SQLCHAR valid : {SQLCHAR(0),SQLCHAR(1)}) {
+      for (const SQLLEN fixed_length : {SQLLEN(0),SQLLEN(1),SQLLEN(99)}) {
+        input[1]=valid;length=fixed_length;ASSERT_EQ(SQL_SUCCESS,bind());
+        ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());
+        EXPECT_EQ(hint,seen->parameters[0].type);EXPECT_FALSE(seen->parameters[0].binary_input);
+        EXPECT_EQ(std::optional<std::string>{valid==0?"0":"1"},seen->parameters[0].value);
+        input[1]=valid==0?1:0;EXPECT_EQ(std::optional<std::string>{valid==0?"0":"1"},seen->parameters[0].value);
+        EXPECT_EQ(fixed_length,length);EXPECT_EQ(0x5a,input[0]);EXPECT_EQ(0xa5,input[2]);
+        EXPECT_EQ(SQL_PARAM_SUCCESS,status);EXPECT_EQ(1u,processed);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+      }
+    }
+    // Material must be checked before target-specific coercion for every selected SQL target.
+    input[1]=2;length=1;ASSERT_EQ(SQL_SUCCESS,bind());
+    const auto queries=seen->queries;const auto deadline=seen->deadline;
+    EXPECT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ("22003",state());EXPECT_EQ(queries,seen->queries);EXPECT_EQ(deadline,seen->deadline);
+    EXPECT_EQ(SQL_PARAM_ERROR,status);EXPECT_EQ(1u,processed);EXPECT_EQ(2,input[1]);EXPECT_EQ(1,length);
+    ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(std::optional<std::string>{"1"},seen->parameters[0].value);
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+    input[1]=1;ASSERT_EQ(SQL_SUCCESS,bind());processed=99;status=SQL_PARAM_UNUSED;
+    const auto before_bind=seen->queries;
+    EXPECT_EQ(SQL_ERROR,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_BIT,
+        static_cast<SQLSMALLINT>(32767),1,0,&input[1],1,&length));EXPECT_EQ("HY004",state());
+    EXPECT_EQ(before_bind,seen->queries);EXPECT_EQ(99u,processed);EXPECT_EQ(SQL_PARAM_UNUSED,status);
+    EXPECT_EQ(0x5a,input[0]);EXPECT_EQ(1,input[1]);EXPECT_EQ(0xa5,input[2]);EXPECT_EQ(1,length);
+    ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());
+    EXPECT_EQ(hint,seen->parameters[0].type);EXPECT_EQ(std::optional<std::string>{"1"},seen->parameters[0].value);
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+    input[1]=2;length=SQL_NULL_DATA;ASSERT_EQ(SQL_SUCCESS,bind());ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));
+    ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(hint,seen->parameters[0].type);EXPECT_FALSE(seen->parameters[0].value);
+    EXPECT_EQ(2,input[1]);EXPECT_EQ(SQL_NULL_DATA,length);EXPECT_EQ(SQL_PARAM_SUCCESS,status);
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  }
+  EXPECT_EQ(0,seen->disconnects);
+}
+
+TEST_F(BackendContractTest, NumericMetadataKeepsDigitsBitsBytesAndLegacySizesDistinct) {
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,dbc));dbc=nullptr;
+  auto profile=std::make_shared<postgres::PgBackendProvider>(BackendIdentity{"redshift","Amazon Redshift","ODBCPP Redshift"},
+      BackendConnectionDefaults{"localhost",5439,std::nullopt,true},std::nullopt,postgres::PgCatalogProfile::Redshift);
+  auto connection=std::make_unique<rs::odbc::ODBCConnection>(nullptr,std::make_shared<FakeProvider>(seen,profile));
+  dbc=reinterpret_cast<SQLHDBC>(connection.get());rs::odbc::HandleRegistry::instance().register_handle(dbc,std::move(connection),env);
+  struct Expected { ScalarType family;SQLSMALLINT type;SQLULEN size;SQLSMALLINT scale,precision;SQLLEN octets,display,radix;const char* name; };
+  const Expected cases[]{
+      {ScalarType::SmallInt,SQL_SMALLINT,5,0,5,2,6,10,"smallint"},
+      {ScalarType::Integer,SQL_INTEGER,10,0,10,4,11,10,"integer"},
+      {ScalarType::BigInt,SQL_BIGINT,19,0,19,8,20,10,"bigint"},
+      {ScalarType::Decimal,SQL_DECIMAL,5,2,5,7,7,10,"decimal"},
+      {ScalarType::Numeric,SQL_NUMERIC,38,0,38,40,40,10,"numeric"},
+      {ScalarType::Numeric,SQL_NUMERIC,0,0,0,SQL_NO_TOTAL,SQL_NO_TOTAL,10,"numeric"},
+      {ScalarType::Real,SQL_REAL,7,6,24,4,14,2,"real"},
+      {ScalarType::Double,SQL_DOUBLE,15,15,53,8,24,2,"double precision"}};
+  QueryResult result;
+  for (const auto& item:cases) { result.columns.push_back({item.name,NativeTypeInfo{item.family,item.size,item.scale,true}}); }
+  result.rows.emplace_back(std::size(cases),std::nullopt);seen->date_result=result;connect();ASSERT_EQ(SQL_SUCCESS,execute("rows"));
+  SQLHDESC ird=nullptr;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_ROW_DESC,&ird,0,nullptr));ASSERT_NE(nullptr,ird);
+  SQLSMALLINT count=0;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt,&count));ASSERT_EQ(std::size(cases),static_cast<std::size_t>(count));
+  for (std::size_t i=0;i<std::size(cases);++i) {
+    SCOPED_TRACE(i);const auto& item=cases[i];const auto column=static_cast<SQLUSMALLINT>(i+1);
+    SQLSMALLINT type=-1,scale=-1;SQLULEN size=99;
+    ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(stmt,column,nullptr,0,nullptr,&type,&size,&scale,nullptr));
+    EXPECT_EQ(item.type,type);EXPECT_EQ(item.size,size);
+    // Decimal digits are observed forwarding; REAL/DOUBLE scale6/15 is not asserted normative.
+    if (item.family!=ScalarType::Real && item.family!=ScalarType::Double) { EXPECT_EQ(item.scale,scale); }
+    const std::pair<SQLUSMALLINT,SQLLEN> fields[]{
+        {SQL_DESC_CONCISE_TYPE,item.type},{SQL_DESC_TYPE,item.type},
+        {SQL_DESC_PRECISION,item.precision},{SQL_COLUMN_PRECISION,static_cast<SQLLEN>(item.size)},
+        {SQL_DESC_OCTET_LENGTH,item.octets},{SQL_DESC_DISPLAY_SIZE,item.display},{SQL_DESC_NUM_PREC_RADIX,item.radix}};
+    for (const auto& [field,expected]:fields) {
+      SQLLEN value=99;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(stmt,column,field,nullptr,0,nullptr,&value));EXPECT_EQ(expected,value);
+    }
+    SQLSMALLINT precision=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,column,SQL_DESC_PRECISION,&precision,0,nullptr));EXPECT_EQ(item.precision,precision);
+    SQLLEN octets=-9;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,column,SQL_DESC_OCTET_LENGTH,&octets,0,nullptr));EXPECT_EQ(item.octets,octets);
+    char name[32]{};SQLSMALLINT length=-1;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(stmt,column,SQL_DESC_TYPE_NAME,name,sizeof(name),&length,nullptr));
+    ASSERT_EQ(static_cast<SQLSMALLINT>(std::strlen(item.name)),length);EXPECT_EQ(0,std::memcmp(name,item.name,static_cast<std::size_t>(length)+1));
+  }
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+}
+
+TEST_F(BackendContractTest, OwningTypeMetadataKeepsWideNameUnitsAndAttributeBytesSeparate) {
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,dbc));dbc=nullptr;
+  auto profile=std::make_shared<postgres::PgBackendProvider>(BackendIdentity{"redshift","Amazon Redshift","ODBCPP Redshift"},
+      BackendConnectionDefaults{"localhost",5439,std::nullopt,true},std::nullopt,postgres::PgCatalogProfile::Redshift);
+  auto connection=std::make_unique<rs::odbc::ODBCConnection>(nullptr,std::make_shared<FakeProvider>(seen,profile));
+  dbc=reinterpret_cast<SQLHDBC>(connection.get());rs::odbc::HandleRegistry::instance().register_handle(dbc,std::move(connection),env);
+  const std::string utf8="A\xe2\x82\xac\xf0\x9f\x98\x80";
+  QueryResult result;result.columns={{utf8,NativeTypeInfo{ScalarType::VarChar,4,0,true}}};result.rows={{"ok"}};
+  seen->date_result=result;connect();ASSERT_EQ(SQL_SUCCESS,execute("rows"));
+  seen->date_result->columns[0].name="poison";seen->date_result->columns[0].normalized_type=NativeTypeInfo{ScalarType::Binary,999,0,true};
+  SQLSMALLINT type=-1,units=-1;SQLULEN size=99;SQLWCHAR name[8];std::fill(std::begin(name),std::end(name),SQLWCHAR('x'));
+  std::vector<SQLWCHAR> literal;
+  if constexpr(sizeof(SQLWCHAR)==2) { literal={'A',0x20ac,0xd83d,0xde00,0}; }
+  else { literal={'A',0x20ac,static_cast<SQLWCHAR>(0x1f600),0}; }
+  const auto expected_units=static_cast<SQLSMALLINT>(literal.size()-1);
+  ASSERT_EQ(SQL_SUCCESS,SQLDescribeColW(stmt,1,name,8,&units,&type,&size,nullptr,nullptr));
+  EXPECT_EQ(expected_units,units);EXPECT_EQ(SQL_VARCHAR,type);EXPECT_EQ(4u,size);
+  EXPECT_EQ(0,std::memcmp(name,literal.data(),literal.size()*sizeof(SQLWCHAR)));
+  std::fill(std::begin(name),std::end(name),SQLWCHAR('x'));
+  const SQLSMALLINT truncated_units=sizeof(SQLWCHAR)==2?4:3;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLDescribeColW(stmt,1,name,truncated_units,&units,&type,&size,nullptr,nullptr));
+  EXPECT_EQ("01004",state());EXPECT_EQ(expected_units,units);
+  const SQLWCHAR prefix[]{'A',0x20ac,0};EXPECT_EQ(0,std::memcmp(name,prefix,sizeof(prefix)));EXPECT_EQ('x',name[3]);
+  SQLHDESC ird=nullptr;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_ROW_DESC,&ird,0,nullptr));ASSERT_NE(nullptr,ird);
+  SQLSMALLINT subtype=-1,precision=-1,scale=-1,nullable=-1;SQLLEN descriptor_length=-1;
+  std::fill(std::begin(name),std::end(name),SQLWCHAR('x'));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLGetDescRecW(ird,1,name,truncated_units,&units,&type,&subtype,&descriptor_length,&precision,&scale,&nullable));
+  EXPECT_EQ("01004",state(SQL_HANDLE_DESC,ird));EXPECT_EQ(expected_units,units);EXPECT_EQ(SQL_VARCHAR,type);EXPECT_EQ(0,subtype);EXPECT_EQ(4,descriptor_length);EXPECT_EQ(0,precision);EXPECT_EQ(0,scale);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
+  EXPECT_EQ(0,std::memcmp(name,prefix,sizeof(prefix)));EXPECT_EQ('x',name[3]);
+  std::fill(std::begin(name),std::end(name),SQLWCHAR('x'));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDescRecW(ird,1,name,8,&units,&type,&subtype,&descriptor_length,&precision,&scale,&nullable));
+  EXPECT_EQ(expected_units,units);EXPECT_EQ(0,std::memcmp(name,literal.data(),literal.size()*sizeof(SQLWCHAR)));EXPECT_EQ('x',name[literal.size()]);
+  // DescribeColW capacity/result lengths count units; ColAttributeW uses bytes.
+  SQLSMALLINT bytes=-1;std::fill(std::begin(name),std::end(name),SQLWCHAR('x'));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLColAttributeW(stmt,1,SQL_DESC_NAME,name,2*sizeof(SQLWCHAR),&bytes,nullptr));
+  EXPECT_EQ("01004",state());EXPECT_EQ(expected_units*sizeof(SQLWCHAR),bytes);EXPECT_EQ('A',name[0]);EXPECT_EQ(0,name[1]);EXPECT_EQ('x',name[2]);
+  std::fill(std::begin(name),std::end(name),SQLWCHAR('x'));bytes=73;
+  EXPECT_EQ(SQL_ERROR,SQLColAttributeW(stmt,1,SQL_DESC_NAME,name,2*sizeof(SQLWCHAR)-1,&bytes,nullptr));
+  EXPECT_EQ("HY090",state());EXPECT_EQ(73,bytes);EXPECT_TRUE(std::all_of(std::begin(name),std::end(name),[](auto v){return v=='x';}));
+  ASSERT_EQ(SQL_SUCCESS,SQLColAttributeW(stmt,1,SQL_DESC_NAME,name,sizeof(name),&bytes,nullptr));
+  EXPECT_EQ(expected_units*sizeof(SQLWCHAR),bytes);EXPECT_EQ(0,std::memcmp(name,literal.data(),literal.size()*sizeof(SQLWCHAR)));
+  SQLWCHAR type_name[16]{};ASSERT_EQ(SQL_SUCCESS,SQLColAttributeW(stmt,1,SQL_DESC_TYPE_NAME,type_name,sizeof(type_name),&bytes,nullptr));
+  const SQLWCHAR varchar_name[]{'v','a','r','c','h','a','r',0};ASSERT_EQ(7*sizeof(SQLWCHAR),bytes);EXPECT_EQ(0,std::memcmp(type_name,varchar_name,sizeof(varchar_name)));
+  const std::pair<SQLUSMALLINT,SQLLEN> fields[]{{SQL_DESC_LENGTH,4},{SQL_DESC_OCTET_LENGTH,4},{SQL_DESC_DISPLAY_SIZE,4},{SQL_DESC_CONCISE_TYPE,SQL_VARCHAR}};
+  for(const auto& [field,expected]:fields) {
+    SQLLEN ansi=-1,wide=-2;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(stmt,1,field,nullptr,0,nullptr,&ansi));
+    ASSERT_EQ(SQL_SUCCESS,SQLColAttributeW(stmt,1,field,nullptr,0,nullptr,&wide));EXPECT_EQ(expected,ansi);EXPECT_EQ(ansi,wide);
+  }
+  // Normalized size4 is adapter plumbing, not native Unicode storage qualification.
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+}
+
+TEST_F(BackendContractTest, WideNativeSqlAndDiagnosticsPreserveScalarBoundariesAndRequiredUnits) {
+  connect();const auto queries=seen->queries;
+  std::vector<SQLWCHAR> smile;
+  if constexpr(sizeof(SQLWCHAR)==2) { smile={0xd83d,0xde00,0}; }
+  else { smile={static_cast<SQLWCHAR>(0x1f600),0}; }
+  const SQLWCHAR native_prefix[]{'n','a','t','i','v','e',':',0};
+  const SQLINTEGER full_units=static_cast<SQLINTEGER>(7+smile.size()-1);
+  SQLWCHAR output[32];std::fill(std::begin(output),std::end(output),SQLWCHAR('x'));SQLINTEGER length=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSqlW(dbc,smile.data(),SQL_NTS,nullptr,0,&length));EXPECT_EQ(full_units,length);
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLNativeSqlW(dbc,smile.data(),SQL_NTS,output,0,&length));
+  EXPECT_EQ("01004",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(full_units,length);EXPECT_EQ('x',output[0]);
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLNativeSqlW(dbc,smile.data(),SQL_NTS,output,1,&length));
+  EXPECT_EQ("01004",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(0,output[0]);EXPECT_EQ('x',output[1]);EXPECT_EQ(full_units,length);
+  std::fill(std::begin(output),std::end(output),SQLWCHAR('x'));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLNativeSqlW(dbc,smile.data(),SQL_NTS,output,full_units,&length));
+  EXPECT_EQ("01004",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(full_units,length);
+  EXPECT_EQ(0,std::memcmp(output,native_prefix,sizeof(native_prefix)));EXPECT_EQ('x',output[8]);
+  std::vector<SQLWCHAR> full(native_prefix,native_prefix+7);full.insert(full.end(),smile.begin(),smile.end());
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSqlW(dbc,smile.data(),SQL_NTS,output,full_units+1,&length));
+  EXPECT_EQ(full_units,length);EXPECT_EQ(0,std::memcmp(output,full.data(),full.size()*sizeof(SQLWCHAR)));
+  std::fill(std::begin(output),std::end(output),SQLWCHAR('x'));length=73;
+  EXPECT_EQ(SQL_ERROR,SQLNativeSqlW(dbc,smile.data(),SQL_NTS,output,-1,&length));EXPECT_EQ("HY090",state(SQL_HANDLE_DBC,dbc));
+  EXPECT_EQ(73,length);EXPECT_TRUE(std::all_of(std::begin(output),std::end(output),[](auto v){return v=='x';}));
+  SQLWCHAR bmp[]{'X',0};const SQLWCHAR bmp_expected[]{'n','a','t','i','v','e',':','X',0};
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSqlW(dbc,bmp,SQL_NTS,output,9,&length));EXPECT_EQ(8,length);EXPECT_EQ(0,std::memcmp(output,bmp_expected,sizeof(bmp_expected)));
+  SQLWCHAR empty[]{0};ASSERT_EQ(SQL_SUCCESS,SQLNativeSqlW(dbc,empty,0,output,8,&length));EXPECT_EQ(7,length);EXPECT_EQ(0,std::memcmp(output,native_prefix,sizeof(native_prefix)));
+  EXPECT_EQ(queries,seen->queries);
+
+  const auto connection=rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc);ASSERT_NE(nullptr,connection);
+  const std::string message="A\xe2\x82\xac\xf0\x9f\x98\x80";connection->clear_diagnostics();connection->add_diagnostic("HY000",91,message);
+  const SQLSMALLINT required=sizeof(SQLWCHAR)==2?4:3;SQLSMALLINT text_length=-1;SQLWCHAR sqlstate[6]{};SQLINTEGER native_error=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDiagRecW(SQL_HANDLE_DBC,dbc,1,sqlstate,&native_error,nullptr,0,&text_length));
+  EXPECT_EQ(required,text_length);EXPECT_EQ(91,native_error);const SQLWCHAR expected_state[]{'H','Y','0','0','0',0};EXPECT_EQ(0,std::memcmp(sqlstate,expected_state,sizeof(expected_state)));
+  for(const SQLSMALLINT capacity:{SQLSMALLINT{0},SQLSMALLINT{1},required}) {
+    std::fill(std::begin(output),std::end(output),SQLWCHAR('x'));
+    const auto expected_result=capacity==0?SQL_SUCCESS:SQL_SUCCESS_WITH_INFO;
+    ASSERT_EQ(expected_result,SQLGetDiagRecW(SQL_HANDLE_DBC,dbc,1,sqlstate,&native_error,output,capacity,&text_length));
+    EXPECT_EQ(required,text_length);EXPECT_EQ(91,native_error);EXPECT_EQ(1u,connection->get_diagnostic_count());
+    const auto record=connection->get_diagnostic_record(1);ASSERT_TRUE(record);EXPECT_EQ("HY000",record->sqlstate);EXPECT_EQ(message,record->message_text);
+    if(capacity==0) { EXPECT_EQ('x',output[0]); }
+    else if(capacity==1) { EXPECT_EQ(0,output[0]);EXPECT_EQ('x',output[1]); }
+    else { const SQLWCHAR prefix[]{'A',0x20ac,0};EXPECT_EQ(0,std::memcmp(output,prefix,sizeof(prefix)));EXPECT_EQ('x',output[3]); }
+  }
+  std::vector<SQLWCHAR> expected_message;
+  if constexpr(sizeof(SQLWCHAR)==2) { expected_message={'A',0x20ac,0xd83d,0xde00,0}; }
+  else { expected_message={'A',0x20ac,static_cast<SQLWCHAR>(0x1f600),0}; }
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDiagRecW(SQL_HANDLE_DBC,dbc,1,sqlstate,&native_error,output,required+1,&text_length));
+  EXPECT_EQ(required,text_length);EXPECT_EQ(0,std::memcmp(output,expected_message.data(),expected_message.size()*sizeof(SQLWCHAR)));
+  std::fill(std::begin(output),std::end(output),SQLWCHAR('x'));text_length=73;
+  EXPECT_EQ(SQL_ERROR,SQLGetDiagRecW(SQL_HANDLE_DBC,dbc,1,nullptr,nullptr,output,-1,&text_length));
+  EXPECT_EQ(73,text_length);EXPECT_EQ('x',output[0]);EXPECT_EQ(1u,connection->get_diagnostic_count());
+  connection->clear_diagnostics();connection->add_diagnostic("HY000",91,"\xf0\x9f\x98\x80");
+  std::fill(std::begin(output),std::end(output),SQLWCHAR('x'));
+  const SQLSMALLINT first_capacity=sizeof(SQLWCHAR)==2?2:1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLGetDiagRecW(SQL_HANDLE_DBC,dbc,1,nullptr,nullptr,output,first_capacity,&text_length));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(smile.size()-1),text_length);EXPECT_EQ(0,output[0]);EXPECT_EQ('x',output[1]);
+}
+
+TEST_F(BackendContractTest, WideDriverConnectScalarTruncationPreservesConnectionAndKeywordDiagnostics) {
+  const std::string ascii="SSL=0;DESCRIPTION=";std::vector<SQLWCHAR> input(ascii.begin(),ascii.end());
+  const auto prefix_units=input.size();input.push_back('A');input.push_back(0x20ac);
+  if constexpr(sizeof(SQLWCHAR)==2) { input.push_back(0xd83d);input.push_back(0xde00); }
+  else { input.push_back(static_cast<SQLWCHAR>(0x1f600)); }
+  const std::string suffix=";BOGUS=1";input.insert(input.end(),suffix.begin(),suffix.end());input.push_back(0);
+  std::vector<SQLWCHAR> output(input.size()+3,SQLWCHAR('x'));SQLSMALLINT length=-1;
+  const SQLSMALLINT capacity=static_cast<SQLSMALLINT>(prefix_units+(sizeof(SQLWCHAR)==2?4:3));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLDriverConnectW(dbc,nullptr,input.data(),SQL_NTS,output.data(),capacity,&length,SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ(static_cast<SQLSMALLINT>(input.size()-1),length);EXPECT_EQ(1,seen->created);EXPECT_EQ("01004",state(SQL_HANDLE_DBC,dbc));
+  EXPECT_EQ(0,std::memcmp(output.data(),input.data(),(prefix_units+2)*sizeof(SQLWCHAR)));
+  EXPECT_EQ(0,output[prefix_units+2]);EXPECT_EQ('x',output[prefix_units+3]);
+  SQLCHAR second_state[6]{};ASSERT_EQ(SQL_SUCCESS,SQLGetDiagRec(SQL_HANDLE_DBC,dbc,2,second_state,nullptr,nullptr,0,nullptr));EXPECT_STREQ("01S00",reinterpret_cast<char*>(second_state));
+  ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&stmt));ASSERT_EQ(SQL_SUCCESS,execute("rows"));ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,stmt));stmt=nullptr;
+  ASSERT_EQ(SQL_SUCCESS,SQLDisconnect(dbc));std::fill(output.begin(),output.end(),SQLWCHAR('x'));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLDriverConnectW(dbc,nullptr,input.data(),SQL_NTS,output.data(),static_cast<SQLSMALLINT>(input.size()),&length,SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("01S00",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(2,seen->created);EXPECT_EQ(static_cast<SQLSMALLINT>(input.size()-1),length);
+  EXPECT_EQ(0,std::memcmp(output.data(),input.data(),input.size()*sizeof(SQLWCHAR)));EXPECT_EQ('x',output[input.size()]);
+}

@@ -3835,7 +3835,13 @@ SQLRETURN ODBCStatement::execute() {
           value = format_floating_parameter(number);
         }
       } else if (value_type == SQL_C_BIT) {
-        value = *static_cast<unsigned char*>(application.data_ptr) ? "1" : "0";
+        const auto bit = load_application_value<SQLCHAR>(application.data_ptr);
+        if (bit > 1) {
+          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                    "BIT parameter must be zero or one");
+          return complete_parameter_set(SQL_ERROR);
+        }
+        value = bit ? "1" : "0";
       } else if (value_type == SQL_C_DATE ||
                  value_type == SQL_C_TYPE_DATE) {
         const auto formatted = format_date_parameter(

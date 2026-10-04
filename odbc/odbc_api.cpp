@@ -161,8 +161,15 @@ namespace {
     }
     if (!output || buffer_length <= 0) return SQL_SUCCESS;
 
-    const auto copied = std::min<std::size_t>(
+    auto copied = std::min<std::size_t>(
         wide->size(), static_cast<std::size_t>(buffer_length - 1));
+    if constexpr (sizeof(SQLWCHAR) == 2) {
+      if (copied < wide->size() && copied > 0 &&
+          (*wide)[copied - 1] >= 0xd800 &&
+          (*wide)[copied - 1] <= 0xdbff) {
+        --copied;
+      }
+    }
     auto* output_bytes = reinterpret_cast<std::byte*>(output);
     if (copied > 0) {
       std::memcpy(output_bytes, wide->data(), copied * sizeof(SQLWCHAR));
