@@ -96,6 +96,7 @@ jobs:
           -DODBCPP_MYSQL_DATETIME_LIVE_TESTS=ON
           -DODBCPP_MYSQL_DATE_PARAMETERS_LIVE_TESTS=ON
           -DODBCPP_MYSQL_DATETIME_RECEIPT_LIVE_TESTS=ON
+          -DODBCPP_MYSQL_DECIMAL_RECEIPT_LIVE_TESTS=ON
           -DBUILD_EXAMPLES=ON
           -DBUILD_TESTING=ON
           -DTARGET_DATABASE=POSTGRESQL
@@ -117,8 +118,9 @@ jobs:
         run: |
           python3 tests/security/test_mysql_decimal_admission.py
           python3 tests/security/test_mysql_datetime_receipt_xml.py
+          python3 tests/security/test_mysql_decimal_receipt_xml.py
 
-      - name: Prove pinned MySQL TLS/results/DATE parameters and observe DATETIME metadata
+      - name: Prove pinned MySQL TLS/results/DATE parameters and observe DATETIME/DECIMAL metadata
         timeout-minutes: 17
         run: >-
           python3 tests/security/test_mysql_auth_live.py
@@ -132,6 +134,8 @@ jobs:
           --date-parameters-junit build/mysql-date-parameters-live.xml
           --datetime-receipt-test-binary build/tests/it_mysql_datetime_parameter_receipt
           --datetime-receipt-junit build/mysql-datetime-receipt-live.xml
+          --decimal-receipt-test-binary build/tests/it_mysql_decimal_parameter_receipt
+          --decimal-receipt-junit build/mysql-decimal-receipt-live.xml
 
       - name: Preserve MySQL authentication evidence
         if: always()
@@ -144,6 +148,7 @@ jobs:
             build/mysql-datetime-live.xml
             build/mysql-date-parameters-live.xml
             build/mysql-datetime-receipt-live.xml
+            build/mysql-decimal-receipt-live.xml
           if-no-files-found: ignore
 
       - name: Bind system-shared unit qualification evidence
@@ -325,7 +330,7 @@ jobs:
           $reports = @(Get-ChildItem "$env:RUNNER_TEMP/odbcpp-integration-results" -Filter *.xml)
           $expectedReports = @(
             Get-ChildItem tests/integration -Filter *.cpp |
-              Where-Object { $_.Name -notin @('it_redshift_real.cpp', 'it_mysql_decimal_results.cpp', 'it_mysql_datetime_results.cpp', 'it_mysql_date_parameters.cpp', 'it_mysql_datetime_parameter_receipt.cpp') }
+              Where-Object { $_.Name -notin @('it_redshift_real.cpp', 'it_mysql_decimal_results.cpp', 'it_mysql_datetime_results.cpp', 'it_mysql_date_parameters.cpp', 'it_mysql_datetime_parameter_receipt.cpp', 'it_mysql_decimal_parameter_receipt.cpp') }
           ).Count
           if ($reports.Count -ne $expectedReports) {
             throw "Expected $expectedReports PostgreSQL GoogleTest integration reports, found $($reports.Count)"

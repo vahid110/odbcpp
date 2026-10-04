@@ -1125,6 +1125,8 @@ except Exception as error:
             runner=owned/'test_mysql_auth_live.py'
             shutil.copy2(Path(live.__file__).resolve(),runner)
             dependency=owned/'mysql_datetime_receipt_xml.py'
+            shutil.copy2(Path(live.__file__).with_name('mysql_decimal_receipt_xml.py'),
+                         owned/'mysql_decimal_receipt_xml.py')
             for state in ('valid','missing','malformed'):
                 with self.subTest(state=state):
                     if state=='valid':
@@ -1139,6 +1141,406 @@ except Exception as error:
                     self.assertEqual(result.stderr,'')
                     self.assertEqual(result.stdout.strip(),'PASS' if state=='valid' else
                                      'MySQL DATETIME receipt validator unavailable')
+
+
+# Synthetic properties only: actual strict DECIMAL validator consumes this input,
+# never stdout or a mocked validator success. Not native endpoint evidence.
+DECIMAL_OBSERVATION_SUITE = 'MySqlDecimalReceiptObservationIntegrationTest'
+DECIMAL_OBSERVATION_CASE = 'ActualCastParameterMetadataRefusalIsObserved'
+def synthetic_decimal_observation_xml():
+    root = ET.Element('testsuites', tests='1', failures='0', errors='0', disabled='0', name='AllTests')
+    suite = ET.SubElement(root, 'testsuite', name=DECIMAL_OBSERVATION_SUITE,
+                          tests='1', failures='0', errors='0', disabled='0', skipped='0')
+    case = ET.SubElement(suite, 'testcase', name=DECIMAL_OBSERVATION_CASE,
+                         classname=DECIMAL_OBSERVATION_SUITE, status='run', result='completed')
+    properties = ET.SubElement(case, 'properties')
+    values = {'decimal_receipt_schema': 1, 'prepare_parameter_count': 1, 'prepare_result_count': 2,
+              'observed_parameter_count': 1, 'records_truncated': 0, 'exchange_complete': 0,
+              'transport_complete_calls': 1, 'prepare_command_count': 1, 'execute_command_count': 0,
+              'close_command_count': 0, 'raw_parameter_0_native_type': 246, 'runtime_retired': 1,
+              'physical_close_delta': 1, 'parameter_support_claimed': 0,
+              'raw_parameter_0_charset': 65535, 'raw_parameter_0_byte_width': 4294967295,
+              'raw_parameter_0_decimals': 255, 'raw_parameter_0_flags': 0,
+              'raw_parameter_0_unsigned': 0, 'refusal_policy_code': 2}
+    for name, value in values.items():
+        ET.SubElement(properties, 'property', name=name, value=str(value))
+    return ET.tostring(root, encoding='unicode')
+DECIMAL_OBSERVATION_VALID = synthetic_decimal_observation_xml()
+
+class DecimalReceiptAdmissionTest(unittest.TestCase):
+    def setUp(self):
+        self.assertTrue(callable(getattr(live, 'run_decimal_receipt', None)))
+
+    def test_pairs_executability_and_all_path_aliases_refuse_before_unlink_or_dispatch(self):
+        for combined in (False, True):
+            with tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary).resolve()
+                binaries = {key: directory / key for key in ('probe', 'decimal', 'datetime', 'date-parameters', 'datetime-receipt', 'decimal-receipt')}
+                outputs = {key: directory / (key + '.xml') for key in ('decimal', 'datetime', 'date-parameters', 'datetime-receipt', 'decimal-receipt')}
+                outputs['output'] = directory / 'success.json'
+                for binary in binaries.values():
+                    binary.write_bytes(b'private input artifact')
+                    binary.chmod(0o700)
+                for output in outputs.values():
+                    output.write_bytes(b'prior evidence')
+                base = ['mysql-live', '--probe', str(binaries['probe']), '--output', str(outputs['output'])]
+                if combined:
+                    for label in ('decimal', 'datetime', 'date-parameters', 'datetime-receipt'):
+                        base += ['--' + label + '-test-binary', str(binaries[label]),
+                                 '--' + label + '-junit', str(outputs[label])]
+                pair = ['--decimal-receipt-test-binary', str(binaries['decimal-receipt']),
+                        '--decimal-receipt-junit', str(outputs['decimal-receipt'])]
+                argv = base + pair
+                invalid = [base + pair[:2], base + pair[2:],
+                           base + ['--decimal-receipt-test-binary', str(directory / 'missing'),
+                                   '--decimal-receipt-junit', str(outputs['decimal-receipt'])]]
+                nonexecutable = directory / 'nonexecutable'
+                nonexecutable.write_bytes(b'nonexecutable input')
+                nonexecutable.chmod(0o600)
+                invalid.append(base + ['--decimal-receipt-test-binary', str(nonexecutable),
+                                       '--decimal-receipt-junit', str(outputs['decimal-receipt'])])
+                requested = ['decimal-receipt'] + (['decimal', 'datetime', 'date-parameters', 'datetime-receipt'] if combined else [])
+                input_names = ['probe'] + requested
+                output_options = ['--output'] + ['--' + label + '-junit' for label in requested]
+                serial = 0
+                for input_name in input_names:
+                    for kind in ('same', 'resolved-relative', 'symlink', 'hardlink'):
+                        serial += 1
+                        original = binaries[input_name]
+                        alias = directory / ('alias-' + str(serial))
+                        if kind == 'same':
+                            alias = original
+                        elif kind == 'resolved-relative':
+                            alias = directory / '..' / directory.name / input_name
+                        elif kind == 'symlink':
+                            alias.symlink_to(original)
+                        else:
+                            live.os.link(original, alias)
+                        for option in output_options:
+                            altered = argv.copy()
+                            altered[altered.index(option) + 1] = str(alias)
+                            invalid.append(altered)
+                # Every requested output-output alias is checked, including
+                # new XML vs JSON and existing XMLs in both directions.
+                destinations = {'--output': outputs['output']}
+                destinations.update({'--' + label + '-junit': outputs[label] for label in requested})
+                for option, destination in destinations.items():
+                    for other_option in destinations:
+                        if option == other_option:
+                            continue
+                        for kind in ('same', 'symlink', 'hardlink'):
+                            serial += 1
+                            alias = directory / ('output-alias-' + str(serial))
+                            if kind == 'same':
+                                alias = destination
+                            elif kind == 'symlink':
+                                alias.symlink_to(destination)
+                            else:
+                                live.os.link(destination, alias)
+                            altered = argv.copy()
+                            altered[altered.index(other_option) + 1] = str(alias)
+                            invalid.append(altered)
+                for arguments in invalid:
+                    with self.subTest(combined=combined, arguments=arguments), \
+                            patch.object(live.sys, 'argv', arguments), patch.object(live, 'run') as dispatch, \
+                            patch.object(Path, 'unlink') as unlink:
+                        with self.assertRaises(SystemExit) as failure:
+                            live.main()
+                        self.assertEqual(2, failure.exception.code)
+                        dispatch.assert_not_called()
+                        unlink.assert_not_called()
+                        for binary in binaries.values():
+                            self.assertEqual(b'private input artifact', binary.read_bytes())
+                        for output in outputs.values():
+                            self.assertEqual(b'prior evidence', output.read_bytes())
+                        self.assertEqual(b'nonexecutable input', nonexecutable.read_bytes())
+
+    def test_actual_validator_return_private_environment_exact_one_observation_child(self):
+        inherited = {'GTEST_FILTER': '*', 'GTEST_REPEAT': '99', 'GTEST_SHARD_INDEX': '3',
+                     'GTEST_TOTAL_SHARDS': '4', 'GTEST_OUTPUT': 'xml:/unowned',
+                     'GTEST_RANDOM_SEED': '13', 'GTEST_UNKNOWN': 'polluted',
+                     'ODBCPP_MYSQL_TEST_HOST': 'wrong', 'ODBCPP_MYSQL_TEST_PORT': '9999',
+                     'ODBCPP_MYSQL_TEST_CA_FILE': '/wrong', 'ODBCPP_MYSQL_TEST_USER': 'wrong',
+                     'ODBCPP_MYSQL_TEST_PASSWORD': 'wrong'}
+        for label in ('DECIMAL', 'DATE', 'DATETIME', 'DATE_PARAMETER', 'UNSIGNED_BIGINT',
+                      'DATETIME_RECEIPT', 'DECIMAL_RECEIPT', 'FUTURE_UNKNOWN'):
+            inherited['ODBCPP_MYSQL_' + label + '_FIXTURE_ADMITTED'] = 'untrusted'
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            binary, junit, ca = (directory / name for name in ('child', 'receipt.xml', 'ca.pem'))
+            def process(args, **kwargs):
+                self.assertEqual(args, [str(binary), '--gtest_filter=' + DECIMAL_OBSERVATION_SUITE + '.' + DECIMAL_OBSERVATION_CASE,
+                                        '--gtest_repeat=1', '--gtest_output=xml:' + str(junit)])
+                self.assertEqual(kwargs['timeout'], 60)
+                env = kwargs['env']
+                self.assertFalse(any(key.startswith('GTEST_') for key in env))
+                markers = {k: v for k, v in env.items() if k.startswith('ODBCPP_MYSQL_') and k.endswith('_FIXTURE_ADMITTED')}
+                self.assertEqual({'ODBCPP_MYSQL_DECIMAL_RECEIPT_FIXTURE_ADMITTED':
+                                  'pinned-8.4.11-temporary-decimal-receipt-observation'}, markers)
+                for key, value in {'HOST': 'localhost', 'PORT': '12345', 'CA_FILE': str(ca.resolve()),
+                                   'USER': 'sdk', 'PASSWORD': live.PASSWORD}.items():
+                    self.assertEqual(value, env['ODBCPP_MYSQL_TEST_' + key])
+                junit.write_text(DECIMAL_OBSERVATION_VALID, encoding='utf-8')
+                return subprocess.CompletedProcess(args, 0, stdout='NOT AUTHORITY', stderr='private')
+            with patch.dict(live.os.environ, inherited), patch.object(live, 'run', side_effect=process) as invoke:
+                observation = live.run_decimal_receipt(binary, junit, '12345', ca)
+            self.assertEqual(1, invoke.call_count)
+            self.assertEqual(live.validate_decimal_receipt_xml(junit), observation)
+            self.assertFalse(observation['parameterSupportClaimed'])
+            self.assertFalse(observation['exchangeComplete'])
+            self.assertEqual(0, observation['properties']['execute_command_count'])
+            junit.unlink()
+            self.assertEqual(4294967295, observation['rawParameter']['byteWidth'])
+
+    def test_child_timeout_failure_or_invalid_xml_never_retries_or_trusts_stdout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            junit = Path(temporary) / 'receipt.xml'
+            for failure in ('timeout', 'nonzero', 'missing', 'malformed', 'wrongcase',
+                            'bad-policy', 'support-claimed', 'execute-claimed', 'oversized', 'three-cases'):
+                with self.subTest(failure=failure):
+                    junit.unlink(missing_ok=True)
+                    def process(args, **kwargs):
+                        if failure == 'timeout':
+                            raise subprocess.TimeoutExpired('private', 60, stderr='secret')
+                        if failure == 'nonzero':
+                            raise subprocess.CalledProcessError(1, 'private', stderr='secret')
+                        data = DECIMAL_OBSERVATION_VALID
+                        if failure == 'malformed':
+                            data = 'private malformed XML'
+                        elif failure == 'wrongcase':
+                            data = data.replace(DECIMAL_OBSERVATION_CASE, 'WrongCase')
+                        elif failure in ('bad-policy', 'support-claimed', 'execute-claimed'):
+                            root = ET.fromstring(data)
+                            key = {'bad-policy': 'refusal_policy_code', 'support-claimed': 'parameter_support_claimed',
+                                   'execute-claimed': 'execute_command_count'}[failure]
+                            next(n for n in root[0][0][0] if n.get('name') == key).set('value', '1')
+                            data = ET.tostring(root, encoding='unicode')
+                        elif failure == 'oversized':
+                            data += ' ' * 16385
+                        elif failure == 'three-cases':
+                            root = ET.fromstring(data)
+                            case = root[0][0]
+                            root[0].append(ET.fromstring(ET.tostring(case)))
+                            root[0].append(ET.fromstring(ET.tostring(case)))
+                            data = ET.tostring(root, encoding='unicode')
+                        if failure != 'missing':
+                            junit.write_text(data, encoding='utf-8')
+                        return subprocess.CompletedProcess(args, 0, stdout='PASS receipt native_type=12 width=104', stderr='private')
+                    with patch.object(live, 'run', side_effect=process) as invoke:
+                        with self.assertRaisesRegex(RuntimeError, '^MySQL DECIMAL receipt observation failed$') as caught:
+                            live.run_decimal_receipt(Path('/fake/child'), junit, '12345', Path('/fake/ca'))
+                        self.assertTrue(caught.exception.__suppress_context__)
+                        self.assertIsNone(caught.exception.__cause__)
+                        self.assertEqual(1, invoke.call_count)
+
+    def _mock_main(self, *, decimal=True, datetime=True, date_parameters=True,
+                   receipt=True, decimal_receipt=True, failure=None, cleanup_failure=False):
+        # Exercise real main/child helpers/validators. ALL processes and native
+        # operations are intercepted. Mock XML is parser-test input only.
+        events = []
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            output = directory / 'success.json'
+            output.write_text('{"stale":true}')
+            binaries = {}
+            reports = {}
+            for label in ('probe', 'decimal', 'datetime', 'date-parameters', 'datetime-receipt', 'decimal-receipt'):
+                binary = directory / label
+                binary.write_text('mock-only executable')
+                binary.chmod(0o700)
+                binaries[label] = binary.resolve()
+                reports[label] = (directory / (label + '.xml')).resolve()
+                reports[label].write_text('stale XML')
+            enabled = {'decimal': decimal, 'datetime': datetime, 'date-parameters': date_parameters, 'datetime-receipt': receipt, 'decimal-receipt': decimal_receipt}
+            argv = ['mysql-live', '--probe', str(binaries['probe']), '--output', str(output)]
+            for label, requested in enabled.items():
+                if requested:
+                    argv += ['--' + label + '-test-binary', str(binaries[label]),
+                             '--' + label + '-junit', str(reports[label])]
+            owned_name = None
+            def process(args, **kwargs):
+                nonlocal owned_name
+                if args[0] == 'openssl':
+                    for option in ('-keyout', '-out'):
+                        if option in args:
+                            Path(args[args.index(option) + 1]).write_text('mock certificate')
+                elif args[:2] == ['docker', 'pull']:
+                    events.append('pull')
+                    self.assertEqual(live.IMAGE, args[2])
+                elif args[:2] == ['docker', 'run']:
+                    events.append('create')
+                    self.assertFalse(output.exists())
+                    for label, requested in enabled.items():
+                        if requested:
+                            self.assertFalse(reports[label].exists())
+                    self.assertIn(live.IMAGE, args)
+                    owned_name = args[args.index('--name') + 1]
+                    if failure == 'uncertain-create':
+                        raise subprocess.TimeoutExpired('private create command', 60)
+                elif args[:2] == ['docker', 'ps']:
+                    self.assertEqual(args, ['docker', 'ps', '--all', '--filter',
+                                            'name=^/' + owned_name + '$', '--format', '{{.ID}}'])
+                    self.assertFalse(output.exists())
+                    if cleanup_failure:
+                        return subprocess.CompletedProcess(args, 0, stdout='still-owned-id')
+                    events.append('absence-confirmed')
+                    return subprocess.CompletedProcess(args, 0, stdout='')
+                elif args[:2] == ['docker', 'port']:
+                    self.assertEqual(owned_name, args[2])
+                    return subprocess.CompletedProcess(args, 0, stdout='127.0.0.1:12345\n')
+                elif args[:2] == ['docker', 'exec']:
+                    self.assertIn(owned_name, args)
+                    if args[-1].startswith('SELECT VERSION()'):
+                        return subprocess.CompletedProcess(args, 0, stdout='8.4.11\t0\n')
+                    if args[-1].startswith('SELECT plugin'):
+                        return subprocess.CompletedProcess(args, 0, stdout='caching_sha2_password\n')
+                    self.assertEqual('FLUSH PRIVILEGES', args[-1])
+                elif args[0] == str(binaries['probe']):
+                    events.append(('probe', args[-1], args[1], Path(args[3]).name))
+                    if failure == 'probe':
+                        raise subprocess.CalledProcessError(1, 'private probe', stderr='private')
+                    return subprocess.CompletedProcess(args, 0, stdout='PASS ' + args[-1] + '\n')
+                else:
+                    label = next((key for key in enabled if args[0] == str(binaries[key])), None)
+                    if label is None:
+                        self.fail('Unexpected mocked process kind')
+                    self.assertTrue(enabled[label])
+                    self.assertFalse(output.exists())
+                    events.append(label)
+                    if label in ('datetime-receipt', 'decimal-receipt'):
+                        suite = RECEIPT_SUITE if label == 'datetime-receipt' else DECIMAL_OBSERVATION_SUITE
+                        case = RECEIPT_CASE if label == 'datetime-receipt' else DECIMAL_OBSERVATION_CASE
+                        self.assertEqual(args[1:], ['--gtest_filter=' + suite + '.' + case,
+                                                   '--gtest_repeat=1', '--gtest_output=xml:' + str(reports[label])])
+                        self.assertEqual(kwargs['timeout'], 60)
+                    if failure == label + '-child':
+                        raise subprocess.CalledProcessError(1, 'private child', stderr='private')
+                    if failure == label + '-timeout':
+                        raise subprocess.TimeoutExpired('private child', 60, stderr='private')
+                    data = {'decimal': VALID, 'datetime': DATETIME_VALID,
+                            'date-parameters': DATE_PARAMETERS_VALID, 'datetime-receipt': RECEIPT_VALID, 'decimal-receipt': DECIMAL_OBSERVATION_VALID}[label]
+                    if failure == label + '-xml':
+                        data = '<testsuites/>'
+                    reports[label].write_text(data)
+                return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
+            def remove(args, **kwargs):
+                self.assertEqual(args, ['docker', 'rm', '--force', owned_name])
+                self.assertFalse(output.exists())
+                events.append('cleanup')
+                return subprocess.CompletedProcess(args, 1 if cleanup_failure else 0)
+            caught = None
+            with patch.object(live.sys, 'argv', argv), patch.object(live, 'run', side_effect=process), \
+                    patch.object(live.subprocess, 'run', side_effect=remove):
+                try:
+                    live.main()
+                except Exception as error:
+                    caught = error
+            evidence = None
+            if output.exists():
+                events.append('success-written')
+                evidence = json.loads(output.read_text())
+            return events, evidence, caught
+
+
+    def test_main_both_receipts_and_new_only_preserve_proofs_and_absence_before_json(self):
+        import hashlib
+        for combined in (False, True):
+            for receipt in (False, True):
+                for decimal_receipt in (False, True):
+                    with self.subTest(combined=combined, receipt=receipt, decimal_receipt=decimal_receipt):
+                        events, evidence, error = self._mock_main(decimal=combined, datetime=combined,
+                            date_parameters=combined, receipt=receipt, decimal_receipt=decimal_receipt)
+                        self.assertIsNone(error)
+                        probes = [('probe', 'full', 'localhost', 'ca.pem'), ('probe', 'cached', 'localhost', 'ca.pem'),
+                                  ('probe', 'session', 'localhost', 'ca.pem'), ('probe', 'reject-auth', 'localhost', 'ca.pem'),
+                                  ('probe', 'reject-tls', 'localhost', 'wrong-ca.pem'), ('probe', 'reject-tls', '127.0.0.1', 'ca.pem')]
+                        children = (['decimal', 'datetime', 'date-parameters'] if combined else [])
+                        children += ['datetime-receipt'] if receipt else []
+                        children += ['decimal-receipt'] if decimal_receipt else []
+                        self.assertEqual(['pull', 'create'] + probes + children +
+                                         ['cleanup', 'absence-confirmed', 'success-written'], events)
+                        self.assertEqual(combined, evidence['sdkDecimalResultsProven'])
+                        self.assertEqual(combined, evidence['sdkDatetimeValidResultsProven'])
+                        self.assertEqual(combined, evidence['sdkDateParametersProven'])
+                        self.assertEqual(receipt, evidence['mysqlDatetimePrepareMetadataObserved'])
+                        self.assertEqual(decimal_receipt, evidence['mysqlDecimalPrepareMetadataObserved'])
+                        self.assertNotIn('sdkDecimalParametersProven', evidence)
+                        self.assertFalse(evidence['odbcSessionClaimed'])
+                        if decimal_receipt:
+                            observed = evidence['mysqlDecimalPrepareMetadataObservation']
+                            self.assertEqual(20, len(observed['properties']))
+                            self.assertFalse(observed['parameterSupportClaimed'])
+                            self.assertFalse(observed['exchangeComplete'])
+                            self.assertEqual(246, observed['rawParameter']['nativeType'])
+                            self.assertEqual(hashlib.sha256(DECIMAL_OBSERVATION_VALID.encode()).hexdigest(), observed['xmlSha256'])
+                        else:
+                            self.assertNotIn('mysqlDecimalPrepareMetadataObservation', evidence)
+
+    def test_main_original_failure_wins_cleanup_and_no_downstream_observation(self):
+        cases = {'uncertain-create': None, 'probe': 'MySQL probe rejected fixture',
+                 'decimal-child': 'MySQL decimal result proof failed',
+                 'datetime-child': 'MySQL DATETIME result proof failed',
+                 'date-parameters-child': 'MySQL DATE parameter proof failed',
+                 'datetime-receipt-child': 'MySQL DATETIME receipt observation failed',
+                 'decimal-receipt-child': 'MySQL DECIMAL receipt observation failed',
+                 'decimal-receipt-timeout': 'MySQL DECIMAL receipt observation failed',
+                 'decimal-receipt-xml': 'MySQL DECIMAL receipt observation failed'}
+        for failure, message in cases.items():
+            for cleanup_failure in (False, True):
+                with self.subTest(failure=failure, cleanup_failure=cleanup_failure):
+                    events, evidence, error = self._mock_main(failure=failure, cleanup_failure=cleanup_failure)
+                    self.assertIsNone(evidence)
+                    self.assertIn('cleanup', events)
+                    self.assertNotIn('success-written', events)
+                    if message is None:
+                        self.assertIsInstance(error, subprocess.TimeoutExpired)
+                    else:
+                        self.assertEqual(message, str(error))
+                    if not failure.startswith('decimal-receipt'):
+                        self.assertNotIn('decimal-receipt', events)
+        events, evidence, error = self._mock_main(cleanup_failure=True)
+        self.assertIsNone(evidence)
+        self.assertEqual('MySQL fixture cleanup failed', str(error))
+        self.assertNotIn('absence-confirmed', events)
+        self.assertNotIn('success-written', events)
+
+    def test_decimal_sibling_unrelated_cwd_shadow_missing_and_malformed_are_safe(self):
+        import os
+        import shutil
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            owned, other = base / 'owned', base / 'other'
+            owned.mkdir(); other.mkdir()
+            runner = owned / 'test_mysql_auth_live.py'
+            shutil.copy2(Path(live.__file__), runner)
+            shutil.copy2(Path(live.__file__).with_name('mysql_datetime_receipt_xml.py'),
+                         owned / 'mysql_datetime_receipt_xml.py')
+            dependency = owned / 'mysql_decimal_receipt_xml.py'
+            (other / dependency.name).write_text('raise RuntimeError("shadow sentinel")')
+            previous = Path.cwd()
+            try:
+                os.chdir(other)
+                for state in ('valid', 'missing', 'malformed'):
+                    with self.subTest(state=state):
+                        if state == 'valid':
+                            shutil.copy2(Path(live.__file__).with_name(dependency.name), dependency)
+                        elif state == 'missing':
+                            dependency.unlink()
+                        else:
+                            dependency.write_text('broken syntax @ secret sentinel')
+                        spec = importlib.util.spec_from_file_location('decimal_candidate_' + state, runner)
+                        module = importlib.util.module_from_spec(spec)
+                        if state == 'valid':
+                            spec.loader.exec_module(module)
+                            self.assertTrue(callable(module.run_decimal_receipt))
+                            self.assertTrue(module.validate_decimal_receipt_xml.__module__.endswith('mysql_decimal_receipt_xml'))
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, '^MySQL DECIMAL receipt validator unavailable$') as caught:
+                                spec.loader.exec_module(module)
+                            self.assertTrue(caught.exception.__suppress_context__)
+                            self.assertIsNone(caught.exception.__cause__)
+            finally:
+                os.chdir(previous)
 
 if __name__ == '__main__':
     unittest.main()

@@ -44,6 +44,34 @@ def run_datetime_receipt(binary, junit, port, ca):
     except Exception:
         raise RuntimeError('MySQL DATETIME receipt observation failed') from None
 
+# Load the reviewed sibling from this source directory, independent of cwd.
+try:
+    _decimal_receipt_spec = importlib.util.spec_from_file_location(
+        'odbcpp_mysql_decimal_receipt_xml', Path(__file__).resolve().with_name('mysql_decimal_receipt_xml.py'))
+    _decimal_receipt_module = importlib.util.module_from_spec(_decimal_receipt_spec)
+    _decimal_receipt_spec.loader.exec_module(_decimal_receipt_module)
+    validate_decimal_receipt_xml = _decimal_receipt_module.validate_decimal_receipt_xml
+except Exception:
+    raise RuntimeError('MySQL DECIMAL receipt validator unavailable') from None
+
+DECIMAL_RECEIPT_SUITE = 'MySqlDecimalReceiptObservationIntegrationTest'
+DECIMAL_RECEIPT_CASE = 'ActualCastParameterMetadataRefusalIsObserved'
+
+def run_decimal_receipt(binary, junit, port, ca):
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith('GTEST_')
+           and not (key.startswith('ODBCPP_MYSQL_') and key.endswith('_FIXTURE_ADMITTED'))}
+    env.update(ODBCPP_MYSQL_TEST_USER='sdk', ODBCPP_MYSQL_TEST_PASSWORD=PASSWORD,
+               ODBCPP_MYSQL_TEST_HOST='localhost', ODBCPP_MYSQL_TEST_PORT=port,
+               ODBCPP_MYSQL_TEST_CA_FILE=str(ca.resolve()),
+               ODBCPP_MYSQL_DECIMAL_RECEIPT_FIXTURE_ADMITTED='pinned-8.4.11-temporary-decimal-receipt-observation')
+    try:
+        run([str(binary), '--gtest_filter=' + DECIMAL_RECEIPT_SUITE + '.' + DECIMAL_RECEIPT_CASE,
+             '--gtest_repeat=1', '--gtest_output=xml:' + str(junit)], env=env, timeout=60)
+        return validate_decimal_receipt_xml(junit)
+    except Exception:
+        raise RuntimeError('MySQL DECIMAL receipt observation failed') from None
+
 def run(args, **kw):
     return subprocess.run(args, check=True, text=True, capture_output=True,
                           timeout=kw.pop('timeout', 30), **kw)
@@ -177,7 +205,13 @@ def main():
     parser.add_argument('--date-parameters-junit')
     parser.add_argument('--datetime-receipt-test-binary')
     parser.add_argument('--datetime-receipt-junit')
+    parser.add_argument('--decimal-receipt-test-binary')
+    parser.add_argument('--decimal-receipt-junit')
     args = parser.parse_args()
+    if bool(args.decimal_receipt_test_binary) != bool(args.decimal_receipt_junit):
+        parser.error('DECIMAL receipt binary and JUnit must be supplied together')
+    decimal_receipt_binary = Path(args.decimal_receipt_test_binary).resolve() if args.decimal_receipt_test_binary else None
+    decimal_receipt_junit = Path(args.decimal_receipt_junit).resolve() if args.decimal_receipt_junit else None
     if bool(args.datetime_receipt_test_binary) != bool(args.datetime_receipt_junit):
         parser.error('DATETIME receipt binary and JUnit must be supplied together')
     receipt_binary = Path(args.datetime_receipt_test_binary).resolve() if args.datetime_receipt_test_binary else None
@@ -195,15 +229,15 @@ def main():
     datetime_binary = Path(args.datetime_test_binary).resolve() if args.datetime_test_binary else None
     datetime_junit = Path(args.datetime_junit).resolve() if args.datetime_junit else None
     output = Path(args.output).resolve()
-    if datetime_binary is not None or date_parameters_binary is not None or receipt_binary is not None:
+    if datetime_binary is not None or date_parameters_binary is not None or receipt_binary is not None or decimal_receipt_binary is not None:
         for binary, label in ((decimal_binary, 'decimal'), (datetime_binary, 'DATETIME'),
-                              (date_parameters_binary, 'DATE parameter'), (receipt_binary, 'DATETIME receipt')):
+                              (date_parameters_binary, 'DATE parameter'), (receipt_binary, 'DATETIME receipt'), (decimal_receipt_binary, 'DECIMAL receipt')):
             if binary is not None and (not binary.is_file() or not os.access(binary, os.X_OK)):
                 parser.error(label + ' binary must be executable')
         inputs = [Path(args.probe).resolve()] + [binary for binary in
-            (decimal_binary, datetime_binary, date_parameters_binary, receipt_binary) if binary is not None]
+            (decimal_binary, datetime_binary, date_parameters_binary, receipt_binary, decimal_receipt_binary) if binary is not None]
         outputs = [output] + [junit for junit in
-            (decimal_junit, datetime_junit, date_parameters_junit, receipt_junit) if junit is not None]
+            (decimal_junit, datetime_junit, date_parameters_junit, receipt_junit, decimal_receipt_junit) if junit is not None]
         if (any(same_artifact(out, source) for out in outputs for source in inputs)
                 or any(same_artifact(left, right) for i, left in enumerate(outputs) for right in outputs[i+1:])):
             parser.error('result paths must be distinct from inputs and other results')
@@ -221,6 +255,9 @@ def main():
     if receipt_junit is not None:
         receipt_junit.parent.mkdir(parents=True, exist_ok=True)
         receipt_junit.unlink(missing_ok=True)
+    if decimal_receipt_junit is not None:
+        decimal_receipt_junit.parent.mkdir(parents=True, exist_ok=True)
+        decimal_receipt_junit.unlink(missing_ok=True)
     output.unlink(missing_ok=True)
     name = 'odbcpp-mysql-' + uuid.uuid4().hex[:12]
     with tempfile.TemporaryDirectory(prefix='odbcpp-mysql-tls-') as temp:
@@ -307,6 +344,9 @@ def main():
             receipt_observation = None
             if receipt_binary is not None:
                 receipt_observation = run_datetime_receipt(receipt_binary, receipt_junit, port, certs / 'ca.pem')
+            decimal_receipt_observation = None
+            if decimal_receipt_binary is not None:
+                decimal_receipt_observation = run_decimal_receipt(decimal_receipt_binary, decimal_receipt_junit, port, certs / 'ca.pem')
             output.parent.mkdir(parents=True, exist_ok=True)
             evidence = {'image': IMAGE, 'version': version, 'plugin': plugin,
                                           'cases': results, 'sdkDecimalResultsProven': decimal_binary is not None,
@@ -316,6 +356,9 @@ def main():
             evidence['mysqlDatetimePrepareMetadataObserved'] = receipt_observation is not None
             if receipt_observation is not None:
                 evidence['mysqlDatetimePrepareMetadataObservation'] = receipt_observation
+            evidence['mysqlDecimalPrepareMetadataObserved'] = decimal_receipt_observation is not None
+            if decimal_receipt_observation is not None:
+                evidence['mysqlDecimalPrepareMetadataObservation'] = decimal_receipt_observation
         finally:
             original_failure = sys.exc_info()[0] is not None
             if create_attempted:

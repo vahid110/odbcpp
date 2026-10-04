@@ -13,6 +13,9 @@ class PrepareNumericObservation {
     std::uint8_t type{};
     std::uint32_t width{};
     std::uint8_t decimals{};
+    std::uint16_t flags{};
+    // Raw protocol fact only, never a normalized or admitted signed profile.
+    bool unsigned_value() const noexcept { return (flags & 0x20u)!=0; }
   };
   struct Limits {
     std::size_t max_frames{64};
@@ -111,7 +114,7 @@ class PrepareNumericObservation {
     if (fields[4].find('\0')!=std::string_view::npos || !rs::util::utf8_code_point_count(fields[4]))
       return Progress::Malformed;
     raw={static_cast<std::uint16_t>(charset),static_cast<std::uint8_t>(type),
-         static_cast<std::uint32_t>(width),static_cast<std::uint8_t>(decimals)};
+         static_cast<std::uint32_t>(width),static_cast<std::uint8_t>(decimals),static_cast<std::uint16_t>(flags)};
     names=count;return Progress::Collecting;
   }
   Limits limits_{};

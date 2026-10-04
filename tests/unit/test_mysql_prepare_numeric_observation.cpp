@@ -50,7 +50,7 @@ TEST(MySqlPrepareNumericObservationTest, RawSyntheticExpandedMetadataOwnsNumbers
     if (charset==45) {
       EXPECT_FALSE(normalized);EXPECT_EQ(8u,raw.type);EXPECT_EQ(777u,raw.width);EXPECT_EQ(444u,raw.charset);
     } else {
-      ASSERT_TRUE(normalized);EXPECT_EQ(semantic,normalized->normalized_type->column_size);EXPECT_EQ(q,normalized->normalized_type->decimal_digits);
+      ASSERT_TRUE(normalized);EXPECT_EQ(semantic,normalized->normalized_type->column_size);EXPECT_EQ(static_cast<std::int16_t>(q),normalized->normalized_type->decimal_digits);
     }
   }
 }
@@ -295,6 +295,7 @@ void same_observation(const Observer& whole,const Observer& split) {
   for (std::size_t i=0;i<3;++i) {
     EXPECT_EQ(whole.records()[i].charset,split.records()[i].charset);EXPECT_EQ(whole.records()[i].type,split.records()[i].type);
     EXPECT_EQ(whole.records()[i].width,split.records()[i].width);EXPECT_EQ(whole.records()[i].decimals,split.records()[i].decimals);
+    EXPECT_EQ(whole.records()[i].flags,split.records()[i].flags);EXPECT_EQ(whole.records()[i].unsigned_value(),split.records()[i].unsigned_value());
   }
 }
 }
@@ -358,4 +359,109 @@ TEST(MySqlPrepareNumericObservationTest, NumericHeaderBudgetsAndEveryPayloadPref
     EXPECT_EQ(1u,split.record_count());EXPECT_EQ(104u,split.records()[0].width);
     split.begin();EXPECT_EQ(0u,split.record_count());EXPECT_EQ(Progress::Complete,split.observe_complete_payload(12,1,prepare(0,0)));
   }
+}
+namespace {
+Bytes flagged_column(std::uint16_t flags) {
+  auto payload=column(246,67,30,65535);
+  payload[payload.size()-5]=static_cast<std::byte>(flags&255u);
+  payload[payload.size()-4]=static_cast<std::byte>(flags>>8);
+  return payload;
+}
+}
+TEST(MySqlPrepareNumericObservationTest, LiteralFlagBytesOwnAllBitsAndDeriveOnlyTheUnsignedBit) {
+  struct Case { std::byte low,high;std::uint16_t flags;bool unsigned_value; };
+  const Case cases[]{
+      {std::byte{0},std::byte{0},0,false},{std::byte{0x20},std::byte{0},0x20,true},
+      {std::byte{1},std::byte{0},1,false},{std::byte{0},std::byte{0x80},0x8000,false},
+      {std::byte{0x21},std::byte{0x80},0x8021,true},{std::byte{0xff},std::byte{0xff},0xffff,true},
+  };
+  for (const auto c:cases) {
+    auto payload=column(246,67,30,65535);payload[payload.size()-5]=c.low;payload[payload.size()-4]=c.high;
+    Observer whole,split;start(whole);start(split);
+    EXPECT_EQ(Progress::Collecting,whole.observe_complete_frame(frame(payload,2)));
+    EXPECT_EQ(Progress::Collecting,split.observe_complete_payload(static_cast<std::uint32_t>(payload.size()),2,payload));
+    same_observation(whole,split);ASSERT_EQ(1u,split.record_count());
+    const auto raw=split.records()[0];EXPECT_EQ(c.flags,raw.flags);EXPECT_EQ(c.unsigned_value,raw.unsigned_value());
+    EXPECT_EQ(246u,raw.type);EXPECT_EQ(65535u,raw.charset);EXPECT_EQ(67u,raw.width);EXPECT_EQ(30u,raw.decimals);
+    EXPECT_EQ(Progress::Complete,whole.observe_complete_frame(frame(eof(),3)));
+    EXPECT_EQ(Progress::Complete,split.observe_complete_payload(5,3,eof()));same_observation(whole,split);
+  }
+}
+TEST(MySqlPrepareNumericObservationTest, EveryFlagAndLaterTailPrefixRejectsWithoutPartialPublication) {
+  const auto valid=flagged_column(0xffff);
+  for (std::size_t n=valid.size()-5;n<valid.size();++n) {
+    Observer whole,split;start(whole,2);start(split,2);
+    ASSERT_EQ(Progress::Collecting,whole.observe_complete_frame(frame(flagged_column(0x8021),2)));
+    ASSERT_EQ(Progress::Collecting,split.observe_complete_payload(static_cast<std::uint32_t>(valid.size()),2,flagged_column(0x8021)));
+    const auto prefix=std::span(valid).first(n);
+    EXPECT_EQ(Progress::Malformed,whole.observe_complete_frame(frame(Bytes(prefix.begin(),prefix.end()),3)));
+    EXPECT_EQ(Progress::Malformed,split.observe_complete_payload(static_cast<std::uint32_t>(n),3,prefix));same_observation(whole,split);
+    EXPECT_EQ(1u,split.record_count());EXPECT_EQ(0x8021u,split.records()[0].flags);EXPECT_EQ(0u,split.records()[1].flags);
+    Observer fragment;start(fragment);EXPECT_EQ(Progress::Inconclusive,fragment.observe_complete_payload(static_cast<std::uint32_t>(valid.size()),2,prefix));
+    EXPECT_EQ(0u,fragment.record_count());EXPECT_EQ(0u,fragment.records()[0].flags);
+  }
+  for (unsigned fault=0;fault<3;++fault) {
+    auto malformed=valid;
+    if (fault==0) { malformed.back()=std::byte{1}; }
+    if (fault==1) { malformed.push_back(std::byte{0}); }
+    if (fault==2) { malformed[8]=std::byte{0xff}; }
+    Observer o;start(o);EXPECT_EQ(Progress::Malformed,o.observe_complete_frame(frame(malformed,2)));
+    EXPECT_EQ(0u,o.record_count());EXPECT_EQ(0u,o.records()[0].flags);
+  }
+}
+TEST(MySqlPrepareNumericObservationTest, FlagsBeyondCaptureCapacityAndResultStageNeverOverwriteParameterRecords) {
+  Observer whole,split;whole.begin();split.begin();std::uint8_t sequence=1;
+  auto feed=[&](const Bytes& payload) {
+    EXPECT_EQ(whole.observe_complete_frame(frame(payload,sequence)),split.observe_complete_payload(static_cast<std::uint32_t>(payload.size()),sequence,payload));
+    ++sequence;same_observation(whole,split);
+  };
+  feed(prepare(4,1));
+  for (const std::uint16_t flags:{std::uint16_t{1},std::uint16_t{0x20},std::uint16_t{0x8000},std::uint16_t{0xffff}}) { feed(flagged_column(flags)); }
+  feed(eof());feed(flagged_column(0x8021));feed(eof());
+  EXPECT_EQ(Progress::Complete,split.progress());EXPECT_TRUE(split.records_truncated());ASSERT_EQ(3u,split.record_count());
+  EXPECT_EQ(1u,split.records()[0].flags);EXPECT_EQ(0x20u,split.records()[1].flags);EXPECT_EQ(0x8000u,split.records()[2].flags);
+  Observer result_only;result_only.begin();ASSERT_EQ(Progress::Collecting,result_only.observe_complete_frame(frame(prepare(0,1),1)));
+  ASSERT_EQ(Progress::Collecting,result_only.observe_complete_frame(frame(flagged_column(0xffff),2)));
+  EXPECT_EQ(Progress::Complete,result_only.observe_complete_frame(frame(eof(),3)));EXPECT_EQ(0u,result_only.record_count());EXPECT_EQ(0u,result_only.records()[0].flags);
+  Observer malformed;start(malformed,4);unsigned seq=2;
+  for (unsigned i=0;i<3;++i) { ASSERT_EQ(Progress::Collecting,malformed.observe_complete_frame(frame(flagged_column(0x8021),seq++))); }
+  auto fourth=flagged_column(0xffff);fourth.back()=std::byte{1};EXPECT_EQ(Progress::Malformed,malformed.observe_complete_frame(frame(fourth,seq)));
+  EXPECT_EQ(3u,malformed.record_count());EXPECT_EQ(0x8021u,malformed.records()[2].flags);
+}
+TEST(MySqlPrepareNumericObservationTest, FlagRetentionCannotBypassResourcesOrHeaderFailurePrecedence) {
+  for (unsigned boundary=0;boundary<4;++boundary) {
+    for (bool exact:{false,true}) {
+      Observer::Limits limits;
+      if (boundary==0) { limits.max_wire_bytes=exact?52:51; }
+      if (boundary==1) { limits.max_frames=exact?3:2; }
+      if (boundary==2) { limits.max_metadata_entries=exact?6:5; }
+      if (boundary==3) { limits.max_metadata_name_bytes=exact?4:3; }
+      Observer whole(limits),split(limits);whole.begin();split.begin();std::uint8_t sequence=1;
+      for (const auto& payload:{prepare(),flagged_column(0xffff),eof()}) {
+        EXPECT_EQ(whole.observe_complete_frame(frame(payload,sequence)),split.observe_complete_payload(static_cast<std::uint32_t>(payload.size()),sequence,payload));
+        ++sequence;same_observation(whole,split);
+      }
+      EXPECT_EQ(exact?Progress::Complete:Progress::LimitExceeded,split.progress());
+      if (split.record_count()) { EXPECT_EQ(0xffffu,split.records()[0].flags); }
+      else { EXPECT_EQ(0u,split.records()[0].flags); }
+    }
+  }
+  Observer::Limits small;small.max_wire_bytes=16+27;
+  Observer resource(small);start(resource,2);auto payload=flagged_column(0xffff);payload.pop_back();
+  EXPECT_EQ(Progress::LimitExceeded,resource.observe_complete_payload(28,3,payload));EXPECT_EQ(0u,resource.record_count());
+  Observer impossible;start(impossible);EXPECT_EQ(Progress::Malformed,impossible.observe_complete_payload(0x1000000u,2,flagged_column(0xffff)));
+  EXPECT_EQ(0u,impossible.record_count());EXPECT_EQ(0u,impossible.records()[0].flags);
+  Observer wrong;start(wrong);EXPECT_EQ(Progress::Malformed,wrong.observe_complete_payload(23,3,flagged_column(0xffff)));
+  EXPECT_EQ(0u,wrong.record_count());
+}
+TEST(MySqlPrepareNumericObservationTest, FlagsOwnStorageAndResetWithoutChangingFourFieldAggregateDefaults) {
+  const Observer::RawColumn prior{45,12,104,6};EXPECT_EQ(0u,prior.flags);EXPECT_FALSE(prior.unsigned_value());
+  Observer o;start(o);auto payload=flagged_column(0xffff);ASSERT_EQ(Progress::Collecting,o.observe_complete_frame(frame(payload,2)));
+  const auto owned=o.records();auto copy=o;payload.assign(payload.size(),std::byte{0});o.missing();o.begin();
+  EXPECT_EQ(0xffffu,owned[0].flags);EXPECT_TRUE(owned[0].unsigned_value());
+  ASSERT_EQ(1u,copy.record_count());EXPECT_EQ(0xffffu,copy.records()[0].flags);
+  EXPECT_EQ(0u,o.record_count());EXPECT_EQ(0u,o.records()[0].flags);EXPECT_FALSE(o.records()[0].unsigned_value());
+  EXPECT_EQ(Progress::Complete,o.observe_complete_payload(12,1,prepare(0,0)));EXPECT_EQ(0u,o.records()[0].flags);
+  EXPECT_EQ(Progress::Collecting,copy.progress());copy.missing();EXPECT_EQ(Progress::Inconclusive,copy.progress());
+  EXPECT_EQ(0xffffu,copy.records()[0].flags);copy.begin();EXPECT_EQ(0u,copy.records()[0].flags);
 }

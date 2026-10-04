@@ -135,6 +135,16 @@ if(ODBCPP_MYSQL_DATETIME_RECEIPT_LIVE_TESTS)
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
 endif()
 
+# Explicit diagnostic observation only; never admitted by default CTest.
+option(ODBCPP_MYSQL_DECIMAL_RECEIPT_LIVE_TESTS "Build pinned MySQL DECIMAL prepare metadata observation" OFF)
+if(ODBCPP_MYSQL_DECIMAL_RECEIPT_LIVE_TESTS)
+  add_executable(it_mysql_decimal_parameter_receipt tests/integration/it_mysql_decimal_parameter_receipt.cpp)
+  target_link_libraries(it_mysql_decimal_parameter_receipt PRIVATE ${PROJECT_NAME}::core GTest::gtest_main)
+  apply_compiler_settings(it_mysql_decimal_parameter_receipt)
+  set_target_properties(it_mysql_decimal_parameter_receipt PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+endif()
+
 # ---- Unit Tests ----
 file(GLOB UNIT_TEST_SOURCES "tests/unit/*.cpp")
 foreach(test_file ${UNIT_TEST_SOURCES})
@@ -329,7 +339,7 @@ endif()
 file(GLOB INTEGRATION_TEST_SOURCES "tests/integration/*.cpp")
 foreach(test_file ${INTEGRATION_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
-  if(test_name STREQUAL "it_mysql_decimal_results" OR test_name STREQUAL "it_mysql_datetime_results" OR test_name STREQUAL "it_mysql_date_parameters" OR test_name STREQUAL "it_mysql_datetime_parameter_receipt")
+  if(test_name STREQUAL "it_mysql_decimal_results" OR test_name STREQUAL "it_mysql_datetime_results" OR test_name STREQUAL "it_mysql_date_parameters" OR test_name STREQUAL "it_mysql_datetime_parameter_receipt" OR test_name STREQUAL "it_mysql_decimal_parameter_receipt")
     continue()
   endif()
   # This executable is release evidence for a real Redshift endpoint. Running
