@@ -232,7 +232,8 @@ class MySqlDateParametersIntegrationTest:public ::testing::Test {
     ASSERT_EQ(parameter_receipt?1u:0u,result.normalized_parameter_types.size());
     if (parameter_receipt) {
       // Actual owning receipt; the separately reviewed runtime guard checks
-      // raw native10/width10/decimals0 before publishing normalized metadata.
+      // native10/decimals0 and charset-bound raw byte width (63/10 or45/40)
+      // before publishing normalized Date10/0 metadata.
       const auto& receipt=result.normalized_parameter_types[0];
       EXPECT_TRUE(receipt.known);EXPECT_EQ(ScalarType::Date,receipt.type);
       EXPECT_EQ(10u,receipt.column_size);EXPECT_EQ(0,receipt.decimal_digits);

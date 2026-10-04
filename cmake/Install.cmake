@@ -15,6 +15,7 @@ install(DIRECTORY core/
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}/core
   FILES_MATCHING PATTERN "*.h"
   PATTERN "security" EXCLUDE
+  PATTERN "auth" EXCLUDE
   PATTERN "connection_pool.h" EXCLUDE
   PATTERN "session_owner.h" EXCLUDE
   PATTERN "credential_context.h" EXCLUDE

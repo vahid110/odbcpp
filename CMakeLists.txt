@@ -101,6 +101,7 @@ foreach(_part IN ITEMS runtime backend composition odbc)
 endforeach()
 odbcpp_add_internal_objects(${PROJECT_NAME}_core)
 odbcpp_add_internal_objects(${PROJECT_NAME}_driver)
+include(cmake/AuthCore.cmake)
 set(_driver_exports_file "${CMAKE_CURRENT_SOURCE_DIR}/odbc/odbcpp.exports")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${_driver_exports_file}")

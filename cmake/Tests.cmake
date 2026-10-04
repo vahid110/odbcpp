@@ -15,10 +15,15 @@ FetchContent_MakeAvailable(googletest)
 # in the protected PostgreSQL/Redshift builds before MySQL product composition.
 function(add_test_executable test_name test_file)
   add_executable(${test_name} ${test_file})
-  target_link_libraries(${test_name} PRIVATE 
-    ${PROJECT_NAME}::core 
-    GTest::gtest_main
-  )
+  if(test_name MATCHES "^(test_auth_core|test_temporary_db_validity)$")
+    target_link_libraries(${test_name} PRIVATE odbcpp_auth_core GTest::gtest_main)
+    target_include_directories(${test_name} PRIVATE "${ODBCPP_INTERNAL_INCLUDE_auth}")
+  else()
+    target_link_libraries(${test_name} PRIVATE
+      ${PROJECT_NAME}::core
+      GTest::gtest_main
+    )
+  endif()
   if(test_name MATCHES "^(test_connection_pool|test_thread_safety|it_connection_pool)$")
     target_link_libraries(${test_name} PRIVATE odbcpp_prototype_pool)
   endif()
@@ -127,6 +132,8 @@ foreach(test_file ${UNIT_TEST_SOURCES})
   add_test_executable(${test_name} ${test_file})
   set_tests_properties(${test_name} PROPERTIES LABELS "unit")
 endforeach()
+set_tests_properties(test_auth_core test_temporary_db_validity
+  PROPERTIES LABELS "unit;security" TIMEOUT 30)
 set_tests_properties(test_mysql_handshake_wire test_mysql_connection_security test_mysql_tls_negotiation test_mysql_authentication test_mysql_session test_mysql_query_wire test_mysql_prepared_wire
   PROPERTIES LABELS "unit;security" TIMEOUT 30)
 
