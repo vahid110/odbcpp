@@ -92,10 +92,11 @@ void len_text(Bytes& bytes,std::string_view value) {
   ASSERT_LT(value.size(),251u);number(bytes,static_cast<unsigned>(value.size()),1);
   for (const auto ch:value) bytes.push_back(static_cast<std::byte>(ch));
 }
-Bytes column_packet(std::string_view name,unsigned type=8,unsigned charset=63,unsigned flags=0) {
+Bytes column_packet(std::string_view name,unsigned type=8,unsigned charset=63,unsigned flags=0,
+    std::optional<unsigned> width=std::nullopt,unsigned precision=0) {
   Bytes bytes;for (const auto field:{std::string_view("def"),std::string_view{},std::string_view{},std::string_view{},name,std::string_view{}}) len_text(bytes,field);
-  number(bytes,12,1);number(bytes,charset,2);number(bytes,type==8?20:40,4);number(bytes,type,1);
-  number(bytes,flags,2);number(bytes,0,1);number(bytes,0,2);return bytes;
+  number(bytes,12,1);number(bytes,charset,2);number(bytes,width.value_or(type==8?20:40),4);number(bytes,type,1);
+  number(bytes,flags,2);number(bytes,precision,1);number(bytes,0,2);return bytes;
 }
 rs::core::database::ConnectionSettings settings() {
   rs::core::database::ConnectionSettings s;s.host="localhost";s.port=3306;s.user="sdk";s.password="secret";return s;
@@ -195,7 +196,7 @@ TEST(MySqlSessionTest, ResponseAndResultBudgetsApplyBeforeBodyOrRowAdmission) {
 TEST(MySqlSessionTest, UnsupportedColumnsMalformedRowsAndMetadataRetire) {
   for (unsigned mode=0;mode<4;++mode) {
     Fixture f;append(*f.transport,{std::byte{1}},1);
-    auto column=column_packet("id",mode==0?12:8);
+    auto column=column_packet("id",mode==0?7:8);
     if (mode==1) column.pop_back();
     append(*f.transport,column,2);append(*f.transport,eof_packet(),3);
     append(*f.transport,mode==2?Bytes{std::byte{4},std::byte{'1'}}:Bytes{std::byte{1},std::byte{'1'},std::byte{0}},4);
@@ -706,7 +707,7 @@ TEST(MySqlSessionTest, DateNativeParametersAndTemporalHintsStayUnsupported) {
 }
 
 TEST(MySqlSessionTest, PreparedOtherTemporalMetadataRefusalRetiresBeforeQueuedRows) {
-  for (unsigned native_type:{7u,11u,12u,14u}) {
+  for (unsigned native_type:{7u,11u,14u,17u,18u,19u}) {
     for (bool execution_metadata:{false,true}) {
       SCOPED_TRACE(native_type);
       SCOPED_TRACE(execution_metadata);
@@ -940,4 +941,145 @@ TEST(MySqlSessionTest, RedshiftCatalogModeRejectsBeforeTransportConfigurationOrI
   EXPECT_TRUE(spy->deadlines.empty()); EXPECT_EQ(0u, spy->configuration_calls);
   EXPECT_EQ(0u, spy->calls); EXPECT_EQ(0u, spy->upgrades); EXPECT_TRUE(spy->output.empty());
   EXPECT_FALSE(session.is_connected());
+}
+
+namespace {
+Bytes datetime_column(unsigned p=6,std::optional<unsigned> width=std::nullopt) {
+  return column_packet("datetime",12,63,0,width.value_or(19+(p?1+p:0)),p);
+}
+void datetime_preparation(FakeTransport& t,unsigned p) {
+  Bytes first{std::byte{0}};number(first,17,4);number(first,2,2);number(first,0,2);
+  number(first,0,1);number(first,0,2);append(t,first,1);
+  append(t,datetime_column(p),2);append(t,column_packet("neighbor",3),3);append(t,eof_packet(),4);
+}
+Bytes datetime_field(unsigned year,unsigned month,unsigned day,unsigned length=4,
+    unsigned hour=0,unsigned minute=0,unsigned second=0,unsigned micros=0) {
+  Bytes value{static_cast<std::byte>(length)};
+  if (length) { number(value,year,2);number(value,month,1);number(value,day,1); }
+  if (length>=7) { number(value,hour,1);number(value,minute,1);number(value,second,1); }
+  if (length==11) number(value,micros,4);
+  return value;
+}
+TEST(MySqlSessionTest, DatetimeResultsUseActualMetadataDrainCellErrorsRecoverAndOwnCalendarRows) {
+  for (bool binary:{false,true}) for (unsigned p:{0u,3u,6u}) {
+    SCOPED_TRACE(binary);
+    SCOPED_TRACE(p);Fixture f;
+    // Preparation uses p0; execution supplies fresh p3/p6 descriptors.
+    if (binary) datetime_preparation(*f.transport,0);
+    append(*f.transport,{std::byte{2}},1);append(*f.transport,datetime_column(p),2);
+    append(*f.transport,column_packet("neighbor",3),3);append(*f.transport,eof_packet(),4);
+    const auto zero=p?"."+std::string(p,'0'):"";
+    const std::vector<std::optional<std::string>> expected{
+      "2000-02-29 12:34:56"+(p?"."+std::string("123456").substr(0,p):""),
+      "1000-01-01 00:00:00"+zero,"2024-02-29 01:02:03"+zero,std::nullopt,
+      "","","","","","9999-12-31 23:59:59"+zero};
+    const std::vector<Bytes> fields{datetime_field(2000,2,29,p?11:7,12,34,56,p==3?123000:123456),
+      datetime_field(1000,1,1),datetime_field(2024,2,29,7,1,2,3),{},datetime_field(0,0,0,0),
+      datetime_field(2024,0,1),datetime_field(1900,2,29),datetime_field(2024,1,1,7,24,0,0),
+      datetime_field(2024,1,1,11,0,0,0,p==6?1000000:123456),datetime_field(9999,12,31,7,23,59,59)};
+    std::uint8_t sequence=5;
+    for (std::size_t i=0;i<expected.size();++i) {
+      Bytes row;
+      if (binary) {
+        row={std::byte{0},static_cast<std::byte>(i==3?4:0)};
+        if (i!=3) row.insert(row.end(),fields[i].begin(),fields[i].end());
+        number(row,42,4);
+      } else {
+        if (i==3) row.push_back(std::byte{251});
+        else {
+          const std::array<std::string,5> invalid{"0000-00-00 00:00:00"+zero,"2024-00-01 00:00:00"+zero,
+              "1900-02-29 00:00:00"+zero,"2024-01-01 24:00:00"+zero,"2024-01-01 00:00:00.12345"};
+          len_text(row,i>=4 && i<=8?invalid[i-4]:*expected[i]);
+        }
+        len_text(row,"42");
+      }
+      append(*f.transport,row,sequence++);
+    }
+    append(*f.transport,eof_packet(),sequence);
+    const auto deadline=rs::util::make_deadline(std::chrono::seconds(10));
+    auto result=binary?f.session->execute_prepared("SELECT datetime,neighbor",{},deadline):
+        f.session->execute_query("SELECT datetime,neighbor",deadline);
+    ASSERT_TRUE(result);ASSERT_EQ(2u,result->columns.size());const auto& info=*result->columns[0].normalized_type;
+    EXPECT_TRUE(info.known);EXPECT_EQ(rs::core::database::ScalarType::Timestamp,info.type);
+    EXPECT_EQ(19+(p?1+p:0),info.column_size);EXPECT_EQ(p,info.decimal_digits);
+    ASSERT_EQ(expected.size(),result->rows.size());
+    for (std::size_t i=0;i<expected.size();++i) {
+      ASSERT_EQ(2u,result->rows[i].size());EXPECT_EQ(expected[i],result->rows[i][0]);
+      EXPECT_EQ(std::optional<std::string>{"42"},result->rows[i][1]);
+    }
+    const std::vector<rs::core::database::CellEncodingError> errors{{4,0},{5,0},{6,0},{7,0},{8,0}};
+    EXPECT_EQ(errors,result->cell_errors);EXPECT_FALSE(result->error);EXPECT_TRUE(result->additional_results.empty());
+    EXPECT_TRUE(result->normalized_parameter_types.empty());EXPECT_EQ(f.transport->input.size(),f.transport->offset);
+    EXPECT_EQ(binary?(std::vector<unsigned>{22,23,25}):(std::vector<unsigned>{3}),commands(f.transport->output));
+    for (const auto dl:f.transport->deadlines) EXPECT_EQ(deadline,dl);
+    EXPECT_EQ(rs::core::database::SessionState::Idle,result.session_snapshot().state);
+    EXPECT_EQ(rs::core::database::SessionDisposition::Reusable,result.session_snapshot().disposition);
+    EXPECT_EQ(0u,f.transport->closes);append(*f.transport,ok(),1);EXPECT_TRUE(f.execute());
+    f.session->disconnect();EXPECT_EQ(1u,f.transport->closes);f.session.reset();
+    EXPECT_EQ(expected[0],result->rows[0][0]);EXPECT_FALSE(result->rows[3][0]);EXPECT_EQ(errors,result->cell_errors);
+    EXPECT_EQ(p,result->columns[0].normalized_type->decimal_digits);
+  }
+}
+TEST(MySqlSessionTest, DatetimeMetadataAndFramingFaultsRetireAtExactPacketWithoutPartialSuccess) {
+  // direct metadata, preparation result metadata, fresh execution metadata,
+  // direct lenenc row and prepared binary row; queued remainder stays unread.
+  for (unsigned stage=0;stage<5;++stage) for (unsigned fault=0;fault<(stage<3?2u:(stage==3?2u:5u));++fault) {
+    SCOPED_TRACE(stage);
+    SCOPED_TRACE(fault);Fixture f;const bool binary=stage==1 || stage==2 || stage==4;
+    if (binary && stage!=1) datetime_preparation(*f.transport,6);
+    if (stage==1) {
+      Bytes first{std::byte{0}};number(first,17,4);number(first,1,2);number(first,0,2);
+      number(first,0,1);number(first,0,2);append(*f.transport,first,1);
+    } else append(*f.transport,{std::byte{2}},1);
+    append(*f.transport,stage<3?(fault?datetime_column(7):datetime_column(6,25)):datetime_column(),2);
+    if (stage>=3) {
+      append(*f.transport,column_packet("neighbor",3),3);append(*f.transport,eof_packet(),4);
+      Bytes row;
+      if (stage==3) {
+        if (!fault) row={std::byte{26},std::byte{'2'}};
+        else { len_text(row,"2024-02-29 00:00:00.000000");len_text(row,"42");row.push_back(std::byte{0}); }
+      } else {
+        row={std::byte{0},std::byte{0}};
+        if (fault==0) row.push_back(std::byte{1});
+        else if (fault<4) row.push_back(static_cast<std::byte>(fault==1?4:(fault==2?7:11)));
+        else { const auto field=datetime_field(2024,2,29);row.insert(row.end(),field.begin(),field.end());number(row,42,4);row.push_back(std::byte{0}); }
+      }
+      append(*f.transport,row,5);
+    }
+    const auto rejected_at=f.transport->input.size();append(*f.transport,eof_packet(),static_cast<std::uint8_t>(stage>=3?6:3));
+    const auto deadline=rs::util::make_deadline(std::chrono::seconds(10));
+    auto result=binary?f.session->execute_prepared("SELECT datetime,neighbor",{},deadline):f.session->execute_query("SELECT datetime,neighbor",deadline);
+    ASSERT_FALSE(result);EXPECT_EQ(stage<3 && fault?DbErrorCode::UnsupportedFeature:DbErrorCode::ProtocolError,result.error());
+    EXPECT_EQ(binary?rs::core::database::BackendOperation::ExecutePrepared:rs::core::database::BackendOperation::ExecuteDirect,result.backend_error().operation);
+    EXPECT_EQ("MySQL session operation failed",result.error_message());EXPECT_EQ(rejected_at,f.transport->offset);
+    EXPECT_LT(f.transport->offset,f.transport->input.size());EXPECT_FALSE(f.session->is_connected());EXPECT_EQ(1u,f.transport->closes);
+    EXPECT_EQ(rs::core::database::SessionState::Disconnected,result.session_snapshot().state);
+    EXPECT_EQ(rs::core::database::SessionDisposition::Retire,result.session_snapshot().disposition);
+    const auto expected_commands=stage==1?std::vector<unsigned>{22}:(binary?std::vector<unsigned>{22,23}:std::vector<unsigned>{3});
+    EXPECT_EQ(expected_commands,commands(f.transport->output));for (const auto dl:f.transport->deadlines) EXPECT_EQ(deadline,dl);
+    const auto output=f.transport->output;const auto calls=f.transport->calls;
+    auto again=f.execute();ASSERT_FALSE(again);EXPECT_EQ(DbErrorCode::NotConnected,again.error());
+    EXPECT_EQ(output,f.transport->output);EXPECT_EQ(calls,f.transport->calls);f.session->disconnect();EXPECT_EQ(1u,f.transport->closes);
+  }
+}
+TEST(MySqlSessionTest, DatetimeParameterDescriptorsRemainRefusedIncludingNullInputs) {
+  for (unsigned p:{0u,3u,6u}) for (bool null:{false,true}) {
+    Fixture f;Bytes first{std::byte{0}};number(first,17,4);number(first,0,2);number(first,1,2);
+    number(first,0,1);number(first,0,2);append(*f.transport,first,1);append(*f.transport,datetime_column(p),2);
+    const auto rejected_at=f.transport->input.size();append(*f.transport,eof_packet(),3);
+    const std::array params{rs::core::database::QueryParameter{null?std::optional<std::string>{}:std::optional<std::string>{"2024-01-01 00:00:00"},rs::core::database::QueryParameterType::Text}};
+    const auto deadline=rs::util::make_deadline(std::chrono::seconds(10));
+    auto result=f.session->execute_prepared("SELECT ?",params,deadline);ASSERT_FALSE(result);
+    EXPECT_EQ(DbErrorCode::UnsupportedFeature,result.error());EXPECT_EQ("MySQL session operation failed",result.error_message());
+    EXPECT_EQ(rs::core::database::BackendOperation::ExecutePrepared,result.backend_error().operation);
+    EXPECT_EQ(rs::core::database::SessionState::Disconnected,result.session_snapshot().state);
+    EXPECT_EQ(rs::core::database::SessionDisposition::Retire,result.session_snapshot().disposition);
+    EXPECT_EQ(rejected_at,f.transport->offset);EXPECT_LT(f.transport->offset,f.transport->input.size());
+    EXPECT_EQ((std::vector<unsigned>{22}),commands(f.transport->output));EXPECT_FALSE(f.session->is_connected());EXPECT_EQ(1u,f.transport->closes);
+    for (const auto dl:f.transport->deadlines) EXPECT_EQ(deadline,dl);
+    const auto output=f.transport->output;const auto calls=f.transport->calls;
+    auto again=f.execute();ASSERT_FALSE(again);EXPECT_EQ(DbErrorCode::NotConnected,again.error());
+    EXPECT_EQ(output,f.transport->output);EXPECT_EQ(calls,f.transport->calls);f.session->disconnect();EXPECT_EQ(1u,f.transport->closes);
+  }
+}
 }

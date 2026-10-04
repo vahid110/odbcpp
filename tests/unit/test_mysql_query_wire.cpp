@@ -21,7 +21,7 @@ TEST(MySqlQueryWireTest, MetadataTruncationTrailingBytesAndUnknownTypesFailClose
   const auto bytes=column();
   for (std::size_t n=0;n<bytes.size();++n) EXPECT_FALSE(query_detail::column(std::span(bytes).first(n),ResultLimits{}))<<n;
   auto extra=bytes;extra.push_back(std::byte{0});EXPECT_FALSE(query_detail::column(extra,ResultLimits{}));
-  auto unknown=query_detail::column(column(12),ResultLimits{});ASSERT_FALSE(unknown);EXPECT_EQ(DbErrorCode::UnsupportedFeature,unknown.error());
+  auto unknown=query_detail::column(column(7),ResultLimits{});ASSERT_FALSE(unknown);EXPECT_EQ(DbErrorCode::UnsupportedFeature,unknown.error());
   auto charset=query_detail::column(column(253,8),ResultLimits{});ASSERT_FALSE(charset);EXPECT_EQ(DbErrorCode::UnsupportedFeature,charset.error());
   EXPECT_FALSE(query_detail::column(column(8,63,0,std::string_view("a\0b",3)),ResultLimits{}));
   EXPECT_FALSE(query_detail::column(column(8,63,0,std::string(1,static_cast<char>(255))),ResultLimits{}));

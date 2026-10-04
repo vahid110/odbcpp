@@ -2,6 +2,7 @@
 #include "core/database/query_result.h"
 #include "core/database/mysql/decimal_wire.h"
 #include "core/database/mysql/date_wire.h"
+#include "core/database/mysql/datetime_wire.h"
 #include "core/database/i_database_connection.h"
 #include "core/util/utf8.h"
 #include <limits>
@@ -85,6 +86,11 @@ inline rs::util::Result<ResultColumnMetadata> column(std::span<const std::byte> 
     case 8: info={unsigned_value?ScalarType::Numeric:ScalarType::BigInt,unsigned_value?20u:19u,0,true};break;
     case 9: info={ScalarType::Integer,8,0,true};break;
     case 10: info={ScalarType::Date,10,0,true};break;
+    case 12: {
+      auto profile=datetime_detail::metadata(datetime_detail::Kind::Datetime,size,decimals);
+      if (!profile) return {profile.error()};
+      info={ScalarType::Timestamp,size,static_cast<std::int16_t>(profile->precision),true};break;
+    }
     case 6: info={ScalarType::VarChar,0,0,true};break; // NULL expression.
     case 246: {
       auto decimal=decimal_detail::metadata(size,decimals,unsigned_value);
@@ -103,6 +109,14 @@ inline rs::util::Result<ResultColumnMetadata> column(std::span<const std::byte> 
   if (native_unsigned) *native_unsigned=unsigned_value;
   if (metadata_bytes) *metadata_bytes=names;
   return ResultColumnMetadata{std::string(fields[4]),info};
+}
+inline rs::util::Result<datetime_detail::Profile> datetime_profile(const NativeTypeInfo& info,NativeColumn native) {
+  if (native.type!=12 || !info.known || info.type!=ScalarType::Timestamp || info.decimal_digits<0 || info.decimal_digits>6)
+    return {DbErrorCode::ProtocolError};
+  auto profile=datetime_detail::metadata(datetime_detail::Kind::Datetime,info.column_size,
+      static_cast<unsigned>(info.decimal_digits));
+  if (!profile) return {DbErrorCode::ProtocolError};
+  return *profile;
 }
 inline bool valid_cell(std::string_view value,ScalarType type) {
   if (type==ScalarType::Binary) return true;
@@ -126,6 +140,13 @@ inline rs::util::Result<ResultRow> row(std::span<const std::byte> bytes,const st
   for (std::size_t i=0;i<columns.size();++i) {
     if (!columns[i].normalized_type) return {DbErrorCode::ProtocolError};
     const auto& info=*columns[i].normalized_type;
+    const bool datetime=info.type==ScalarType::Timestamp || (!native.empty() && native[i].type==12);
+    datetime_detail::Profile datetime_metadata;
+    if (datetime) {
+      if (native.empty()) return {DbErrorCode::ProtocolError};
+      auto profile=datetime_profile(info,native[i]);if (!profile) return {profile.error()};
+      datetime_metadata=*profile;
+    }
     if (info.type==ScalarType::Date || (!native.empty() && native[i].type==10)) {
       if (!info.known || info.type!=ScalarType::Date || info.column_size!=10 || info.decimal_digits!=0 ||
           native.empty() || native[i].type!=10) return {DbErrorCode::ProtocolError};
@@ -135,6 +156,11 @@ inline rs::util::Result<ResultRow> row(std::span<const std::byte> bytes,const st
     if (c.null_cell()) { result.emplace_back(std::nullopt);continue; }
     std::string_view value;
     if (!c.text(value)) return {DbErrorCode::ProtocolError};
+    if (datetime) {
+      auto cell=datetime_detail::text_cell(value,datetime_metadata);if (!cell) return {cell.error()};
+      if (cell->encoding_error) errors.push_back({index,i});
+      result.emplace_back(std::move(cell->value));continue;
+    }
     if (!(decimal?decimal_detail::valid_cell(value,info,native[i].unsigned_value):valid_cell(value,info.type))) {
       result.emplace_back(std::string{});errors.push_back({index,i});
     } else result.emplace_back(std::string(value));

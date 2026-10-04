@@ -304,9 +304,10 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
       std::size_t bytes{};
       auto column=query_detail::column(*packet,result_limits_,&bytes);
       if (!column) return {column.error()};
-      // Result-only support must not admit native decimal/DATE parameters.
+      // Result-only support must not admit native decimal or temporal parameters.
       if (types && (column->normalized_type->type==ScalarType::Decimal ||
-          column->normalized_type->type==ScalarType::Date)) return {DbErrorCode::UnsupportedFeature};
+          column->normalized_type->type==ScalarType::Date ||
+          column->normalized_type->type==ScalarType::Timestamp)) return {DbErrorCode::UnsupportedFeature};
       if (bytes>result_limits_.max_metadata_name_bytes-names ||
           result_limits_.max_metadata_entries-entries<6) return {DbErrorCode::ResourceLimit};
       names+=bytes;entries+=6;

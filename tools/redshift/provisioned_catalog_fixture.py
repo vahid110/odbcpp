@@ -181,7 +181,7 @@ class CatalogFixture:
             if PROCEDURE in self.objects and self._sql('collision_procedures', "SELECT COUNT(*) FROM pg_proc_info p JOIN pg_namespace n ON p.pronamespace=n.oid WHERE n.nspname='odbcpp_fixture' AND p.proname='" + PROCEDURE + "';") != '0':
                 raise FixtureBlocked('fixture_collision')
             if self.profile == 'primary_key_edges':
-                if self._sql('schema_usage', "SELECT has_schema_privilege('odbcpp_pilot_test','odbcpp_fixture','USAGE');") != 'true':
+                if self._sql('schema_usage', "SELECT CASE WHEN has_schema_privilege('odbcpp_pilot_test','odbcpp_fixture','USAGE') THEN 'schema_usage_allowed' ELSE 'schema_usage_blocked' END;") != 'schema_usage_allowed':
                     raise FixtureBlocked('schema_usage_unverified')
             for name in self.objects:
                 try:

@@ -21,7 +21,7 @@ class Fake:
         if step == 'identity':
             return SqlReply(True, 'odbcpp_pilot|' + CREATOR)
         if step == 'schema_usage':
-            return SqlReply(True, 'true')
+            return SqlReply(True, 'schema_usage_allowed')
         if step.startswith('collision_'):
             return SqlReply(True, '0')
         if step.startswith('cleanup_'):
@@ -149,15 +149,41 @@ class ProvisionedCatalogFixtureTests(unittest.TestCase):
         self.assertFalse(any(step.startswith('drop_') for step, _, _ in f.calls))
         self.assertFalse(result['objects_cleaned'])
 
-    def test_edge_usage_exact_true_representation_and_failures(self):
-        for reply in (SqlReply(True, 't'), SqlReply(True, ''), SqlReply(True, 'NULL'), SqlReply(False)):
+    def test_edge_usage_exact_canonical_marker_and_failures(self):
+        for reply in (SqlReply(True, 't'), SqlReply(True, 'true'), SqlReply(True, 'schema_usage_blocked'),
+                      SqlReply(True, ''), SqlReply(True, 'NULL'),
+                      SqlReply(True, 'schema_usage_allowed\nschema_usage_allowed'), SqlReply(False)):
             f = Fake(); f.overrides['schema_usage'] = reply
             result = self.edge_run(f)
             self.assertIn(result['reason'], ('schema_usage_unverified', 'sql_step_failed'))
             self.assertFalse(result['created'])
-        f = Fake(); f.overrides['schema_usage'] = SqlReply(True, '  true  ')
+            self.assertFalse(any(step.startswith('create_') for step, _, _ in f.calls))
+        f = Fake(); f.overrides['schema_usage'] = SqlReply(True, '  schema_usage_allowed  ')
         f.summary = {'cases': list(PROFILES['primary_key_edges'][1]), 'passed': 5, 'failed': 0}
         self.assertEqual('qualified', self.edge_run(f)['phase'])
+        query = next(query for step, query, _ in f.calls if step == 'schema_usage')
+        self.assertEqual("SELECT CASE WHEN has_schema_privilege('odbcpp_pilot_test','odbcpp_fixture','USAGE') THEN 'schema_usage_allowed' ELSE 'schema_usage_blocked' END;", query)
+
+    def test_edge_usage_exception_or_late_positive_preserves_no_creation(self):
+        for late in (False, True):
+            f = Fake(); original_sql = f.sql
+            def sql(step, query, seconds):
+                reply = original_sql(step, query, seconds)
+                if step == 'schema_usage':
+                    if late:
+                        f.time = 181
+                    else:
+                        raise OSError('schema proof callback failed')
+                return reply
+            f.sql = sql
+            result = self.edge_run(f)
+            self.assertEqual('blocked', result['phase'])
+            self.assertFalse(result['created'])
+            self.assertFalse(result['uncertain_creations'])
+            self.assertIsNone(result['cases'])
+            self.assertTrue(result['activity_verified'])
+            self.assertEqual(1, len([s for s, _, _ in f.calls if s == 'schema_usage']))
+            self.assertFalse(any(s.startswith(('create_', 'grant_', 'drop_')) for s, _, _ in f.calls))
 
     def test_modern_primary_key_profile_creates_only_parent_and_runs_fixed_new_inventory(self):
         f = Fake(); objects, cases = PROFILES['modern_primary_key']
