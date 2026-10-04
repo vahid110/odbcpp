@@ -667,7 +667,7 @@ jobs:
 
       - name: Build and run common crypto tests
         run: |
-          cmake --build build-openssl-static --parallel
+          cmake --build build-openssl-static --parallel 2
           ctest --test-dir build-openssl-static -L unit \
             -E '^test_static_crypto_cohabitation$' \
             --timeout 60 --output-on-failure --output-junit openssl-static-unit.xml
