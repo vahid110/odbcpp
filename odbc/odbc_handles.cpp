@@ -60,6 +60,21 @@ std::string format_floating_parameter(T value) {
   return {text, end};
 }
 
+std::optional<SQLREAL> narrow_real_parameter(SQLDOUBLE value) {
+  if (std::isnan(value)) return std::numeric_limits<SQLREAL>::quiet_NaN();
+  if (std::isinf(value)) {
+    return std::signbit(value) ? -std::numeric_limits<SQLREAL>::infinity()
+                               : std::numeric_limits<SQLREAL>::infinity();
+  }
+  const auto maximum = static_cast<SQLDOUBLE>(std::numeric_limits<SQLREAL>::max());
+  if (value < -maximum || value > maximum) return std::nullopt;
+  const auto narrowed = static_cast<SQLREAL>(value);
+  if (!std::isfinite(narrowed) || (value != 0 && narrowed == 0)) {
+    return std::nullopt;
+  }
+  return narrowed;
+}
+
 struct DecimalDigits {
   std::size_t whole;
   std::size_t fractional;
@@ -3807,8 +3822,18 @@ SQLRETURN ODBCStatement::execute() {
         value = format_floating_parameter(
             load_application_value<SQLREAL>(application.data_ptr));
       } else if (value_type == SQL_C_DOUBLE) {
-        value = format_floating_parameter(
-            load_application_value<SQLDOUBLE>(application.data_ptr));
+        const auto number = load_application_value<SQLDOUBLE>(application.data_ptr);
+        if (declared_sql_type == SQL_REAL) {
+          const auto narrowed = narrow_real_parameter(number);
+          if (!narrowed) {
+            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Double parameter is outside SQL_REAL range");
+            return complete_parameter_set(SQL_ERROR);
+          }
+          value = format_floating_parameter(*narrowed);
+        } else {
+          value = format_floating_parameter(number);
+        }
       } else if (value_type == SQL_C_BIT) {
         value = *static_cast<unsigned char*>(application.data_ptr) ? "1" : "0";
       } else if (value_type == SQL_C_DATE ||
