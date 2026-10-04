@@ -2592,3 +2592,404 @@ TEST_F(BackendContractTest, DateInputExecutionReceiptOwnsIpdDespiteAbsentPreDesc
   EXPECT_EQ(SQL_ERROR,SQLDescribeParam(stmt,1,&type,&size,&digits,&nullable));EXPECT_EQ("HYC00",state());
   EXPECT_EQ(73,type);EXPECT_EQ(74,digits);EXPECT_EQ(75,nullable);EXPECT_EQ(76u,size);EXPECT_EQ(0,seen->descriptions);
 }
+
+// Offline ODBC forwarding policy, not native Redshift-driver equivalence.
+TEST_F(BackendContractTest, TimestampInputPrecisionBoundariesOwnValuesAndRecover) {
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_QUERY_TIMEOUT,
+      reinterpret_cast<SQLPOINTER>(2), 0));
+  SQLULEN processed = 99;
+  SQLUSMALLINT status = SQL_PARAM_UNUSED;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  for (const SQLSMALLINT precision : {SQLSMALLINT{6}, SQLSMALLINT{3}}) {
+    SCOPED_TRACE(precision);
+    const SQLUINTEGER fraction = precision == 6 ? 123456000u : 123000000u;
+    const std::string expected = precision == 6
+        ? "2024-02-29 12:34:56.123456" : "2024-02-29 12:34:56.123000";
+    SQL_TIMESTAMP_STRUCT input{2024, 2, 29, 12, 34, 56, fraction};
+    SQLLEN indicator = sizeof(input);
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TYPE_TIMESTAMP, SQL_TYPE_TIMESTAMP, 26, precision,
+        &input, sizeof(input), &indicator));
+    const auto before = rs::util::Clock::now();
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    const auto after = rs::util::Clock::now();
+    ASSERT_EQ(1u, seen->parameters.size());
+    EXPECT_EQ(QueryParameterType::Timestamp, seen->parameters[0].type);
+    EXPECT_FALSE(seen->parameters[0].binary_input);
+    EXPECT_EQ(std::optional<std::string>{expected}, seen->parameters[0].value);
+    EXPECT_GE(seen->deadline, before + std::chrono::seconds{2});
+    EXPECT_LE(seen->deadline, after + std::chrono::seconds{2});
+    EXPECT_EQ(SQL_PARAM_SUCCESS, status);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    const auto queries = seen->queries;
+    const auto deadline = seen->deadline;
+    input.fraction = fraction + 1; // One nanosecond beyond the declared quantum.
+    const auto invalid = input;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT,
+        SQL_C_TYPE_TIMESTAMP, SQL_TYPE_TIMESTAMP, 26, precision,
+        &input, sizeof(input), &indicator));
+    EXPECT_EQ(SQL_ERROR, SQLExecute(stmt));
+    EXPECT_EQ("22008", state());
+    EXPECT_EQ(queries, seen->queries);
+    EXPECT_EQ(deadline, seen->deadline);
+    EXPECT_EQ(std::optional<std::string>{expected}, seen->parameters[0].value);
+    EXPECT_EQ(0, std::memcmp(&input, &invalid, sizeof(input)));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(input)), indicator);
+    EXPECT_EQ(1u, processed);
+    EXPECT_EQ(SQL_PARAM_ERROR, status);
+    EXPECT_EQ(0, seen->disconnects);
+    input.fraction = fraction;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    EXPECT_EQ(queries + 1, seen->queries);
+    EXPECT_EQ(SQL_PARAM_SUCCESS, status);
+    ASSERT_EQ(1u, seen->parameters.size());
+    input = {}; // Backend observation owns the value, not the application struct.
+    EXPECT_EQ(std::optional<std::string>{expected}, seen->parameters[0].value);
+    EXPECT_EQ(QueryParameterType::Timestamp, seen->parameters[0].type);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+}
+
+TEST_F(BackendContractTest, TimestampInputTypedNullRetainsTimestampHintAndRecovers) {
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLLEN indicator = SQL_NULL_DATA;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT,
+      SQL_C_TYPE_TIMESTAMP, SQL_TYPE_TIMESTAMP, 26, 6, nullptr, 0, &indicator));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Timestamp, seen->parameters[0].type);
+  EXPECT_FALSE(seen->parameters[0].value);
+  EXPECT_FALSE(seen->parameters[0].binary_input);
+  EXPECT_EQ(SQL_NULL_DATA, indicator);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  SQL_TIMESTAMP_STRUCT input{2024, 2, 29, 12, 34, 56, 123456000};
+  indicator = sizeof(input);
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT,
+      SQL_C_TYPE_TIMESTAMP, SQL_TYPE_TIMESTAMP, 26, 6, &input, sizeof(input), &indicator));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Timestamp, seen->parameters[0].type);
+  EXPECT_EQ(std::optional<std::string>{"2024-02-29 12:34:56.123456"}, seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+}
+
+TEST_F(BackendContractTest, TimestampInputDateRejectsFractionOnlyLossWithoutDispatch) {
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQL_TIMESTAMP_STRUCT input{2024, 2, 29, 0, 0, 0, 0};
+  SQLLEN indicator = sizeof(input);
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT,
+      SQL_C_TYPE_TIMESTAMP, SQL_TYPE_DATE, 10, 0, &input, sizeof(input), &indicator));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  const auto queries = seen->queries;
+  input.fraction = 1;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT,
+      SQL_C_TYPE_TIMESTAMP, SQL_TYPE_DATE, 10, 0, &input, sizeof(input), &indicator));
+  EXPECT_EQ(SQL_ERROR, SQLExecute(stmt));
+  EXPECT_EQ("22008", state());
+  EXPECT_EQ(queries, seen->queries);
+  EXPECT_EQ(1u, input.fraction);
+  EXPECT_EQ(static_cast<SQLLEN>(sizeof(input)), indicator);
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Date, seen->parameters[0].type);
+  EXPECT_EQ(std::optional<std::string>{"2024-02-29"}, seen->parameters[0].value);
+  input.fraction = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(queries + 1, seen->queries);
+  EXPECT_EQ(0, seen->disconnects);
+  EXPECT_EQ(QueryParameterType::Date, seen->parameters[0].type);
+  EXPECT_EQ(std::optional<std::string>{"2024-02-29"}, seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+}
+
+// Offline public ODBC input policy. C unsigned integers do not imply a native
+// Redshift unsigned SQL family or prove native prepared protocol acceptance.
+TEST_F(BackendContractTest, PreparedIntegerBoundariesOwnValuesAndRejectUnsignedBigintOverflow) {
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLULEN processed = 99;
+  SQLUSMALLINT status = SQL_PARAM_UNUSED;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_QUERY_TIMEOUT,
+      reinterpret_cast<SQLPOINTER>(2), 0));
+  SQLLEN indicator = sizeof(SQLBIGINT);
+  for (const SQLBIGINT boundary : {std::numeric_limits<SQLBIGINT>::min(),
+                                   std::numeric_limits<SQLBIGINT>::max()}) {
+    SQLBIGINT input = boundary;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT,
+        SQL_C_SBIGINT, SQL_BIGINT, 19, 0, &input, sizeof(input), &indicator));
+    const auto before = rs::util::Clock::now();
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    const auto after = rs::util::Clock::now();
+    ASSERT_EQ(1u, seen->parameters.size());
+    EXPECT_EQ(QueryParameterType::Int64, seen->parameters[0].type);
+    EXPECT_FALSE(seen->parameters[0].binary_input);
+    EXPECT_EQ(std::optional<std::string>{std::to_string(boundary)}, seen->parameters[0].value);
+    EXPECT_GE(seen->deadline, before + std::chrono::seconds{2});
+    EXPECT_LE(seen->deadline, after + std::chrono::seconds{2});
+    EXPECT_EQ(1u, processed);
+    EXPECT_EQ(SQL_PARAM_SUCCESS, status);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(input)), indicator);
+    input = 0;
+    EXPECT_EQ(std::optional<std::string>{std::to_string(boundary)}, seen->parameters[0].value);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+  const auto ceiling = static_cast<SQLUBIGINT>(std::numeric_limits<SQLBIGINT>::max());
+  SQLUBIGINT input = ceiling;
+  indicator = sizeof(input);
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT,
+      SQL_C_UBIGINT, SQL_BIGINT, 19, 0, &input, sizeof(input), &indicator));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Int64, seen->parameters[0].type);
+  EXPECT_EQ(std::optional<std::string>{"9223372036854775807"}, seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  for (const SQLUBIGINT invalid : {ceiling + 1, std::numeric_limits<SQLUBIGINT>::max()}) {
+    input = invalid;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT,
+        SQL_C_UBIGINT, SQL_BIGINT, 19, 0, &input, sizeof(input), &indicator));
+    const auto queries = seen->queries;
+    const auto deadline = seen->deadline;
+    EXPECT_EQ(SQL_ERROR, SQLExecute(stmt));
+    EXPECT_EQ("22003", state());
+    EXPECT_EQ(queries, seen->queries);
+    EXPECT_EQ(deadline, seen->deadline);
+    EXPECT_EQ(invalid, input);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(input)), indicator);
+    EXPECT_EQ(1u, processed);
+    EXPECT_EQ(SQL_PARAM_ERROR, status);
+    ASSERT_EQ(1u, seen->parameters.size());
+    EXPECT_EQ(QueryParameterType::Int64, seen->parameters[0].type);
+    EXPECT_EQ(std::optional<std::string>{"9223372036854775807"}, seen->parameters[0].value);
+    input = ceiling;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    EXPECT_EQ(queries + 1, seen->queries);
+    EXPECT_EQ(SQL_PARAM_SUCCESS, status);
+    EXPECT_EQ(1u, processed);
+    EXPECT_EQ(0, seen->disconnects);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+  input = std::numeric_limits<SQLUBIGINT>::max();
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT,
+      SQL_C_UBIGINT, SQL_NUMERIC, 20, 0, &input, sizeof(input), &indicator));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Numeric, seen->parameters[0].type);
+  EXPECT_FALSE(seen->parameters[0].binary_input);
+  EXPECT_EQ(std::optional<std::string>{"18446744073709551615"}, seen->parameters[0].value);
+  EXPECT_EQ(1u, processed);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, status);
+  input = 0;
+  EXPECT_EQ(std::optional<std::string>{"18446744073709551615"}, seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+}
+
+TEST_F(BackendContractTest, PreparedIntegerTypedNullRetainsInt64HintAndRecovers) {
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLULEN processed = 99;
+  SQLUSMALLINT status = SQL_PARAM_UNUSED;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  for (const SQLSMALLINT c_type : {SQLSMALLINT{SQL_C_SBIGINT}, SQLSMALLINT{SQL_C_UBIGINT}}) {
+    SCOPED_TRACE(c_type);
+    SQLLEN indicator = SQL_NULL_DATA;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT,
+        c_type, SQL_BIGINT, 19, 0, nullptr, 0, &indicator));
+    const auto queries = seen->queries;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    EXPECT_EQ(queries + 1, seen->queries);
+    ASSERT_EQ(1u, seen->parameters.size());
+    EXPECT_EQ(QueryParameterType::Int64, seen->parameters[0].type);
+    EXPECT_FALSE(seen->parameters[0].value);
+    EXPECT_FALSE(seen->parameters[0].binary_input);
+    EXPECT_EQ(SQL_NULL_DATA, indicator);
+    EXPECT_EQ(1u, processed);
+    EXPECT_EQ(SQL_PARAM_SUCCESS, status);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    SQLBIGINT signed_input = 42;
+    SQLUBIGINT unsigned_input = 42;
+    indicator = sizeof(SQLBIGINT);
+    void* input = c_type == SQL_C_SBIGINT ? static_cast<void*>(&signed_input)
+                                         : static_cast<void*>(&unsigned_input);
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT,
+        c_type, SQL_BIGINT, 19, 0, input, sizeof(SQLBIGINT), &indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    ASSERT_EQ(1u, seen->parameters.size());
+    EXPECT_EQ(QueryParameterType::Int64, seen->parameters[0].type);
+    EXPECT_EQ(std::optional<std::string>{"42"}, seen->parameters[0].value);
+    EXPECT_FALSE(seen->parameters[0].binary_input);
+    EXPECT_EQ(SQL_PARAM_SUCCESS, status);
+    EXPECT_EQ(1u, processed);
+    EXPECT_EQ(0, seen->disconnects);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+}
+
+// Historical negative-scale safety motivates strict local refusal, not native parity.
+TEST_F(BackendContractTest, NumericInputInvalidDescriptorsAndSignRefuseLocallyAndRecover) {
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_QUERY_TIMEOUT,
+      reinterpret_cast<SQLPOINTER>(2), 0));
+  SQLULEN processed = 99;
+  SQLUSMALLINT status = SQL_PARAM_UNUSED;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  SQL_NUMERIC_STRUCT input{};
+  input.precision = 5; input.scale = 2; input.sign = 0;
+  input.val[0] = 0x39; input.val[1] = 0x30; // Exact magnitude 12345.
+  SQLLEN indicator = sizeof(input);
+  SQLHDESC apd = SQL_NULL_HDESC;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_APP_PARAM_DESC, &apd, 0, nullptr));
+  const auto bind = [&](SQLSMALLINT precision, SQLSMALLINT scale) {
+    EXPECT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT,
+        SQL_C_NUMERIC, SQL_NUMERIC, 5, 2, &input, sizeof(input), &indicator));
+    EXPECT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_PRECISION,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::intptr_t>(precision)), 0));
+    EXPECT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_SCALE,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::intptr_t>(scale)), 0));
+    // Descriptor metadata edits deliberately invalidate the pointer.
+    EXPECT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, &input, 0));
+  };
+  for (const auto& [precision, scale, sign] : {
+      std::tuple{SQLSMALLINT{5}, SQLSMALLINT{-1}, SQLCHAR{0}},
+      std::tuple{SQLSMALLINT{0}, SQLSMALLINT{0}, SQLCHAR{0}},
+      std::tuple{SQLSMALLINT{39}, SQLSMALLINT{2}, SQLCHAR{0}},
+      std::tuple{SQLSMALLINT{2}, SQLSMALLINT{3}, SQLCHAR{0}},
+      std::tuple{SQLSMALLINT{5}, SQLSMALLINT{2}, SQLCHAR{2}}}) {
+    SCOPED_TRACE(precision);
+    SCOPED_TRACE(scale);
+    SCOPED_TRACE(sign);
+    input.sign = sign;
+    const auto original = input;
+    bind(precision, scale);
+    const auto queries = seen->queries;
+    const auto previous = seen->parameters;
+    const auto deadline = seen->deadline;
+    EXPECT_EQ(SQL_ERROR, SQLExecute(stmt));
+    EXPECT_EQ("22003", state());
+    EXPECT_EQ(queries, seen->queries);
+    EXPECT_EQ(deadline, seen->deadline);
+    ASSERT_EQ(previous.size(), seen->parameters.size());
+    if (!previous.empty()) {
+      EXPECT_EQ(previous[0].value, seen->parameters[0].value);
+    }
+    EXPECT_EQ(0, std::memcmp(&input, &original, sizeof(input)));
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(input)), indicator);
+    EXPECT_EQ(1u, processed); EXPECT_EQ(SQL_PARAM_ERROR, status);
+    EXPECT_EQ(0, seen->disconnects);
+    input.sign = 0;
+    bind(5, 2);
+    const auto before = rs::util::Clock::now();
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    const auto after = rs::util::Clock::now();
+    EXPECT_EQ(queries + 1, seen->queries);
+    ASSERT_EQ(1u, seen->parameters.size());
+    EXPECT_EQ(QueryParameterType::Numeric, seen->parameters[0].type);
+    EXPECT_FALSE(seen->parameters[0].binary_input);
+    EXPECT_EQ(std::optional<std::string>{"-123.45"}, seen->parameters[0].value);
+    EXPECT_GE(seen->deadline, before + std::chrono::seconds{2});
+    EXPECT_LE(seen->deadline, after + std::chrono::seconds{2});
+    EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed);
+    input.val[0] = 0;
+    EXPECT_EQ(std::optional<std::string>{"-123.45"}, seen->parameters[0].value);
+    input.val[0] = 0x39;
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+  input.sign = 2; indicator = SQL_NULL_DATA;
+  const auto original = input;
+  bind(5, -1); // NULL bypasses even invalid material/formatter metadata.
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Numeric, seen->parameters[0].type);
+  EXPECT_FALSE(seen->parameters[0].value); EXPECT_FALSE(seen->parameters[0].binary_input);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed);
+  EXPECT_EQ(SQL_NULL_DATA, indicator);
+  EXPECT_EQ(0, std::memcmp(&input, &original, sizeof(input)));
+}
+
+TEST_F(BackendContractTest, NumericInputExact38DigitMagnitudeSignsAndTargetLimits) {
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLULEN processed = 99; SQLUSMALLINT status = SQL_PARAM_UNUSED;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  SQL_NUMERIC_STRUCT input{};
+  SQLLEN indicator = sizeof(input);
+  SQLHDESC apd = SQL_NULL_HDESC;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_APP_PARAM_DESC, &apd, 0, nullptr));
+  const auto bind = [&](SQLSMALLINT apd_precision, SQLSMALLINT apd_scale,
+                        SQLULEN sql_precision, SQLSMALLINT sql_scale) {
+    EXPECT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT,
+        SQL_C_NUMERIC, SQL_NUMERIC, sql_precision, sql_scale, &input, sizeof(input), &indicator));
+    EXPECT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_PRECISION,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::intptr_t>(apd_precision)), 0));
+    EXPECT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_SCALE,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::intptr_t>(apd_scale)), 0));
+    EXPECT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, &input, 0));
+  };
+  // Independent predetermined base-256 little-endian oracles: 10^38-1 and 10^38.
+  const SQLCHAR maximum[]{255,255,255,255,63,34,138,9,122,196,134,90,168,76,59,75};
+  const SQLCHAR overflow[]{0,0,0,0,64,34,138,9,122,196,134,90,168,76,59,75};
+  const std::string digits(38, '9');
+  for (const SQLCHAR sign : {SQLCHAR{0}, SQLCHAR{1}}) {
+    input = {}; input.precision = 38; input.sign = sign;
+    std::copy(std::begin(maximum), std::end(maximum), std::begin(input.val));
+    bind(38, 0, 38, 0);
+    const auto queries = seen->queries;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    EXPECT_EQ(queries + 1, seen->queries);
+    ASSERT_EQ(1u, seen->parameters.size());
+    EXPECT_EQ(QueryParameterType::Numeric, seen->parameters[0].type);
+    EXPECT_FALSE(seen->parameters[0].binary_input);
+    const auto expected = sign ? digits : "-" + digits;
+    EXPECT_EQ(std::optional<std::string>{expected}, seen->parameters[0].value);
+    EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed);
+    input = {};
+    EXPECT_EQ(std::optional<std::string>{expected}, seen->parameters[0].value);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+  input = {}; input.precision = 38; input.sign = 1;
+  std::copy(std::begin(overflow), std::end(overflow), std::begin(input.val));
+  const auto original = input;
+  bind(38, 0, 38, 0);
+  const auto queries = seen->queries;
+  ASSERT_EQ(1u, seen->parameters.size());
+  const auto previous = seen->parameters[0].value;
+  EXPECT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("22003", state());
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(queries, seen->queries); EXPECT_EQ(previous, seen->parameters[0].value);
+  EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
+  EXPECT_EQ(0, std::memcmp(&input, &original, sizeof(input)));
+  EXPECT_EQ(static_cast<SQLLEN>(sizeof(input)), indicator);
+  input = {}; input.sign = 0;
+  bind(38, 0, 38, 0);
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"0"}, seen->parameters[0].value);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, status);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  input = {}; input.sign = 1; input.precision = 5; input.scale = 2;
+  input.val[0] = 0x39; input.val[1] = 0x30;
+  bind(5, 2, 4, 2); // Valid APD material; independent SQL target precision refusal.
+  const auto before = seen->queries;
+  EXPECT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("22003", state());
+  EXPECT_EQ(before, seen->queries); EXPECT_EQ(SQL_PARAM_ERROR, status);
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"0"}, seen->parameters[0].value);
+  bind(5, 2, 5, 2);
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(before + 1, seen->queries);
+  EXPECT_EQ(std::optional<std::string>{"123.45"}, seen->parameters[0].value);
+  EXPECT_EQ(QueryParameterType::Numeric, seen->parameters[0].type);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed);
+  EXPECT_EQ(0, seen->disconnects);
+}

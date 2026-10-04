@@ -6,6 +6,7 @@
 #include "core/database/i_database_connection.h"
 #include "core/util/utf8.h"
 #include <limits>
+#include <optional>
 #include <charconv>
 
 namespace rs::core::database::mysql {
@@ -23,6 +24,7 @@ struct NativeParameterDescriptorObservation {
   std::uint32_t width{};
   std::uint8_t decimals{};
   std::uint16_t charset{};
+  std::optional<std::uint16_t> flags{};
 };
 class Cursor {
  public:
@@ -130,7 +132,7 @@ inline rs::util::Result<ResultColumnMetadata> column(std::span<const std::byte> 
   if (native_unsigned) *native_unsigned=unsigned_value;
   if (metadata_bytes) *metadata_bytes=names;
   if (observation) *observation={static_cast<std::uint8_t>(type),static_cast<std::uint32_t>(size),
-      static_cast<std::uint8_t>(decimals),static_cast<std::uint16_t>(charset)};
+      static_cast<std::uint8_t>(decimals),static_cast<std::uint16_t>(charset),static_cast<std::uint16_t>(flags)};
   return result;
 }
 inline rs::util::Result<datetime_detail::Profile> datetime_profile(const NativeTypeInfo& info,NativeColumn native) {

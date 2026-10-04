@@ -27,6 +27,26 @@ and split it into bounded checkpoints. Existing M2/M3/M4 estimates do not includ
 comprehensive parity or transparent S3 transfer. New upstream releases enter a
 recorded delta assessment rather than expanding an active batch automatically.
 
+## Data type reference review
+
+The user's 2026-10-04 clarification applies to every data type. Before changing
+type behavior, inspect the pinned official driver's actual conversion paths,
+relevant historical fixes and tests. Record metadata, result decoding, bound
+fetch/SQLGetData, prepared parameters, NULL, limits, precision loss, diagnostics
+and recovery separately; a helper's behavior does not establish every path.
+
+The reference is evidence rather than an automatic correctness authority.
+Compare it with the applicable specification, server behavior and our checked-in
+tests. Preserve useful fixes and document deliberate differences with their
+reason and tests; do not reproduce unsafe parsing, silent loss or accidental
+mutation merely to match source. Distinguish source observations from qualified
+release-binary behavior and keep shared PostgreSQL regression in scope.
+
+Apply this review to boolean, integer, numeric/decimal, floating point, text and
+Unicode, binary/VARBYTE, temporal, interval, UUID and structured/other advertised
+types. Unsupported families need explicit inventory entries. New discoveries
+enter finite reviewed batches, with live comparison separately admitted.
+
 ## Requested work
 
 | ID / user item | Priority and timing | Planned result and acceptance |
