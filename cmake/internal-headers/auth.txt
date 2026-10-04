@@ -4,3 +4,4 @@ core/util/deadline.h
 core/auth/issuer_timestamp.h
 core/auth/aws_db_response_fields.h
 core/auth/bounded_response_stream.h
+core/auth/aws_db_json_response.h
