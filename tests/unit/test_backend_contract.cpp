@@ -4250,3 +4250,139 @@ TEST_F(BackendContractTest, ResultSizingAndWideDefinitionsStayIndependentFromRed
   EXPECT_EQ(1,seen->queries);ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));char value[16]{};SQLLEN indicator=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,value,sizeof(value),&indicator));EXPECT_EQ(5,indicator);EXPECT_EQ(0,std::memcmp(value,"small",6));
   // Synthetic70000 metadata is not server large-string enablement; varbyte0 remains unknown.
 }
+
+TEST_F(BackendContractTest, OwningTimeMetadataFractionLossAndTextChunks) {
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,dbc));dbc=nullptr;
+  auto profile=std::make_shared<postgres::PgBackendProvider>(BackendIdentity{"redshift","Amazon Redshift","ODBCPP Redshift"},BackendConnectionDefaults{"localhost",5439,std::nullopt,true},std::nullopt,postgres::PgCatalogProfile::Redshift);
+  auto connection=std::make_unique<rs::odbc::ODBCConnection>(nullptr,std::make_shared<FakeProvider>(seen,profile));dbc=reinterpret_cast<SQLHDBC>(connection.get());rs::odbc::HandleRegistry::instance().register_handle(dbc,std::move(connection),env);
+  connect();
+  const auto rows=[] { QueryResult r;r.columns={{"clock",NativeTypeInfo{ScalarType::Time,15,6,true}},{"neighbor",NativeTypeInfo{ScalarType::BigInt,19,0,true}}};r.rows={{"12:34:56.123456","42"},{"12:34:56.000000","42"},{std::nullopt,"42"}};r.statement_kind=StatementKind::SelectCursor;return r; };
+  for(SQLSMALLINT target:{SQLSMALLINT(SQL_C_DEFAULT),SQLSMALLINT(SQL_C_TIME),SQLSMALLINT(SQL_C_TYPE_TIME),SQLSMALLINT(SQL_C_CHAR),SQLSMALLINT(SQL_C_WCHAR)}) {
+    SCOPED_TRACE(target);seen->date_result=rows();ASSERT_EQ(SQL_SUCCESS,execute("rows"));
+    SQLCHAR name[16]{};SQLSMALLINT name_length{},type{},digits{},nullable{};SQLULEN size{};
+    ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(stmt,1,name,sizeof(name),&name_length,&type,&size,&digits,&nullable));EXPECT_STREQ("clock",reinterpret_cast<char*>(name));EXPECT_EQ(5,name_length);EXPECT_EQ(SQL_TYPE_TIME,type);EXPECT_EQ(15u,size);EXPECT_EQ(6,digits);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
+    SQLHDESC ird{};ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_ROW_DESC,&ird,sizeof(ird),nullptr));
+    for(const auto& field:{std::pair{SQL_DESC_CONCISE_TYPE,SQL_TYPE_TIME},std::pair{SQL_DESC_TYPE,SQL_DATETIME},std::pair{SQL_DESC_DATETIME_INTERVAL_CODE,SQL_CODE_TIME},std::pair{SQL_DESC_PRECISION,6},std::pair{SQL_DESC_SCALE,6}}) {
+      SQLSMALLINT actual=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,1,static_cast<SQLSMALLINT>(field.first),&actual,0,nullptr));EXPECT_EQ(field.second,actual);
+    }
+    SQLULEN length_field{};SQLLEN octets{};ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,1,SQL_DESC_LENGTH,&length_field,0,nullptr));EXPECT_EQ(15u,length_field);ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,1,SQL_DESC_OCTET_LENGTH,&octets,0,nullptr));EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQL_TIME_STRUCT)),octets);
+    char type_name[16]{};SQLSMALLINT type_name_length{};ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(stmt,1,SQL_DESC_TYPE_NAME,type_name,sizeof(type_name),&type_name_length,nullptr));EXPECT_STREQ("time",type_name);
+    ASSERT_TRUE(seen->date_result);ASSERT_EQ(2u,seen->date_result->columns.size());ASSERT_EQ(3u,seen->date_result->rows.size());ASSERT_EQ(2u,seen->date_result->rows[0].size());seen->date_result->columns[0].name="mutated";seen->date_result->rows[0][0]="mutated";
+    ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(stmt,1,name,sizeof(name),&name_length,&type,&size,&digits,&nullable));EXPECT_STREQ("clock",reinterpret_cast<char*>(name));EXPECT_EQ(5,name_length);EXPECT_EQ(SQL_TYPE_TIME,type);EXPECT_EQ(15u,size);EXPECT_EQ(6,digits);
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLLEN length=73;
+    if(target==SQL_C_CHAR) {
+      char output[10];std::fill(std::begin(output),std::end(output),'!');
+      ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLGetData(stmt,1,target,output,9,&length));EXPECT_EQ("01004",state());EXPECT_EQ(15,length);EXPECT_EQ(0,std::memcmp(output,"12:34:56\0",9));EXPECT_EQ('!',output[9]);
+      ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,target,output,9,&length));EXPECT_EQ(7,length);EXPECT_EQ(0,std::memcmp(output,".123456\0",8));EXPECT_EQ('!',output[9]);EXPECT_EQ(SQL_NO_DATA,SQLGetData(stmt,1,target,output,9,&length));
+    } else if(target==SQL_C_WCHAR) {
+      SQLWCHAR output[10];std::fill(std::begin(output),std::end(output),SQLWCHAR(0x5a));
+      const SQLWCHAR prefix[]{'1','2',':','3','4',':','5','6',0};const SQLWCHAR suffix[]{'.','1','2','3','4','5','6',0};
+      ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLGetData(stmt,1,target,output,9*sizeof(SQLWCHAR),&length));EXPECT_EQ("01004",state());EXPECT_EQ(static_cast<SQLLEN>(15*sizeof(SQLWCHAR)),length);EXPECT_EQ(0,std::memcmp(output,prefix,sizeof(prefix)));EXPECT_EQ(0x5a,output[9]);
+      ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,target,output,9*sizeof(SQLWCHAR),&length));EXPECT_EQ(static_cast<SQLLEN>(7*sizeof(SQLWCHAR)),length);EXPECT_EQ(0,std::memcmp(output,suffix,sizeof(suffix)));EXPECT_EQ(0x5a,output[9]);EXPECT_EQ(SQL_NO_DATA,SQLGetData(stmt,1,target,output,9*sizeof(SQLWCHAR),&length));
+    } else {
+      SQL_TIME_STRUCT output{73,74,75};ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLGetData(stmt,1,target,&output,sizeof(output),&length));EXPECT_EQ("01S07",state());EXPECT_EQ(12,output.hour);EXPECT_EQ(34,output.minute);EXPECT_EQ(56,output.second);EXPECT_EQ(static_cast<SQLLEN>(sizeof(output)),length);
+    }
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+    alignas(SQL_TIME_STRUCT) alignas(SQLWCHAR) unsigned char output[std::max(sizeof(SQL_TIME_STRUCT),16*sizeof(SQLWCHAR))];std::fill(std::begin(output),std::end(output),0x5a);
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,target,output,sizeof(output),&length));
+    if(target!=SQL_C_CHAR && target!=SQL_C_WCHAR) { SQL_TIME_STRUCT t{};std::memcpy(&t,output,sizeof(t));EXPECT_EQ(12,t.hour);EXPECT_EQ(34,t.minute);EXPECT_EQ(56,t.second); }
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));std::fill(std::begin(output),std::end(output),0x5a);length=73;
+    EXPECT_EQ(SQL_ERROR,SQLGetData(stmt,1,target,output,sizeof(output),nullptr));EXPECT_EQ("22002",state());EXPECT_TRUE(std::all_of(std::begin(output),std::end(output),[](auto c){return c==0x5a;}));
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,target,output,sizeof(output),&length));EXPECT_EQ(SQL_NULL_DATA,length);EXPECT_TRUE(std::all_of(std::begin(output),std::end(output),[](auto c){return c==0x5a;}));
+    SQLBIGINT neighbor{};ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_SBIGINT,&neighbor,sizeof(neighbor),&length));EXPECT_EQ(42,neighbor);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  }
+  // Empty temporal material is not NULL and must not become midnight.
+  QueryResult empty=rows();empty.rows={{"","42"},{"12:34:56","42"}};seen->date_result=empty;ASSERT_EQ(SQL_SUCCESS,execute("rows"));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQL_TIME_STRUCT output{73,74,75};SQLLEN length=76;
+  EXPECT_EQ(SQL_ERROR,SQLGetData(stmt,1,SQL_C_TYPE_TIME,&output,sizeof(output),&length));EXPECT_EQ("22007",state());EXPECT_EQ(73,output.hour);EXPECT_EQ(74,output.minute);EXPECT_EQ(75,output.second);EXPECT_EQ(76,length);ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_TYPE_TIME,&output,sizeof(output),&length));EXPECT_EQ(12,output.hour);EXPECT_EQ(34,output.minute);EXPECT_EQ(56,output.second);EXPECT_EQ(0,seen->disconnects);
+}
+
+TEST_F(BackendContractTest, BoundTimestampDateTimeProjectionLossAndRecovery) {
+  connect();SQLUSMALLINT status=SQL_ROW_NOROW;SQLULEN fetched=99;
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_STATUS_PTR,&status,0));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROWS_FETCHED_PTR,&fetched,0));
+  for(SQLSMALLINT target:{SQLSMALLINT(SQL_C_TYPE_DATE),SQLSMALLINT(SQL_C_TYPE_TIME)}) {
+    SCOPED_TRACE(target);
+    QueryResult r;r.columns={{"stamp",NativeTypeInfo{ScalarType::Timestamp,26,6,true}}};r.rows={{"2000-02-29 12:34:56.123456"},{"2023-02-29 12:34:56.123456"},{"2000-02-29 00:00:00.000000"},{std::nullopt}};r.statement_kind=StatementKind::SelectCursor;
+    alignas(SQL_DATE_STRUCT) alignas(SQL_TIME_STRUCT) unsigned char output[std::max(sizeof(SQL_DATE_STRUCT),sizeof(SQL_TIME_STRUCT))];SQLLEN length=73;
+    ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,target,output,sizeof(output),&length));seen->date_result=r;ASSERT_EQ(SQL_SUCCESS,execute("rows"));
+    ASSERT_TRUE(seen->date_result);ASSERT_EQ(4u,seen->date_result->rows.size());ASSERT_EQ(1u,seen->date_result->rows[0].size());seen->date_result->rows[0][0]="mutated";
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLFetch(stmt));EXPECT_EQ("01S07",state());EXPECT_EQ(SQL_ROW_SUCCESS_WITH_INFO,status);EXPECT_EQ(1u,fetched);
+    if(target==SQL_C_TYPE_DATE) {SQL_DATE_STRUCT t{};std::memcpy(&t,output,sizeof(t));EXPECT_EQ(2000,t.year);EXPECT_EQ(2,t.month);EXPECT_EQ(29,t.day);EXPECT_EQ(static_cast<SQLLEN>(sizeof(t)),length);} else {SQL_TIME_STRUCT t{};std::memcpy(&t,output,sizeof(t));EXPECT_EQ(12,t.hour);EXPECT_EQ(34,t.minute);EXPECT_EQ(56,t.second);EXPECT_EQ(static_cast<SQLLEN>(sizeof(t)),length);}
+    std::fill(std::begin(output),std::end(output),0x5a);length=73;
+    EXPECT_EQ(SQL_ERROR,SQLFetch(stmt));EXPECT_EQ("22007",state());EXPECT_EQ(SQL_ROW_ERROR,status);EXPECT_EQ(1u,fetched);EXPECT_EQ(73,length);EXPECT_TRUE(std::all_of(std::begin(output),std::end(output),[](auto c){return c==0x5a;}));
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));EXPECT_EQ(SQL_ROW_SUCCESS,status);EXPECT_EQ(1u,fetched);
+    if(target==SQL_C_TYPE_DATE) {SQL_DATE_STRUCT t{};std::memcpy(&t,output,sizeof(t));EXPECT_EQ(2000,t.year);EXPECT_EQ(2,t.month);EXPECT_EQ(29,t.day);} else {SQL_TIME_STRUCT t{};std::memcpy(&t,output,sizeof(t));EXPECT_EQ(0,t.hour);EXPECT_EQ(0,t.minute);EXPECT_EQ(0,t.second);}
+    std::fill(std::begin(output),std::end(output),0x5a);length=73;ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));EXPECT_EQ(SQL_ROW_SUCCESS,status);EXPECT_EQ(SQL_NULL_DATA,length);EXPECT_TRUE(std::all_of(std::begin(output),std::end(output),[](auto c){return c==0x5a;}));EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));EXPECT_EQ(SQL_ROW_NOROW,status);EXPECT_EQ(0u,fetched);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+    // Closing/reexecuting preserves the same application binding.
+    r.rows={{"2024-02-29 00:00:00.000000"}};seen->date_result=r;ASSERT_EQ(SQL_SUCCESS,execute("rows"));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));EXPECT_EQ(SQL_ROW_SUCCESS,status);
+    if(target==SQL_C_TYPE_DATE) {SQL_DATE_STRUCT t{};std::memcpy(&t,output,sizeof(t));EXPECT_EQ(2024,t.year);EXPECT_EQ(2,t.month);EXPECT_EQ(29,t.day);} else {SQL_TIME_STRUCT t{};std::memcpy(&t,output,sizeof(t));EXPECT_EQ(0,t.hour);EXPECT_EQ(0,t.minute);EXPECT_EQ(0,t.second);}
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));EXPECT_EQ(0,seen->disconnects);
+  }
+}
+
+TEST_F(BackendContractTest, PreparedTimeInputOwnsMaterialLocalErrorsAndRecovers) {
+  connect();ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"rows ?",SQL_NTS));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(3),0));
+  SQLULEN processed=99;SQLUSMALLINT status=SQL_PARAM_UNUSED;ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAMS_PROCESSED_PTR,&processed,0));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_STATUS_PTR,&status,0));
+  SQL_TIME_STRUCT input{23,59,59};SQLLEN indicator=73;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_TYPE_TIME,SQL_TYPE_TIME,8,0,&input,sizeof(input),&indicator));
+  const auto before=std::chrono::steady_clock::now();ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));const auto after=std::chrono::steady_clock::now();ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(QueryParameterType::Time,seen->parameters[0].type);EXPECT_EQ(std::optional<std::string>{"23:59:59"},seen->parameters[0].value);EXPECT_FALSE(seen->parameters[0].binary_input);EXPECT_EQ(SQL_PARAM_SUCCESS,status);EXPECT_EQ(1u,processed);EXPECT_GE(seen->deadline,before+std::chrono::seconds(3));EXPECT_LE(seen->deadline,after+std::chrono::seconds(3));EXPECT_NE(Deadline::max(),seen->deadline);
+  input={1,2,3};EXPECT_EQ(std::optional<std::string>{"23:59:59"},seen->parameters[0].value);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  for(const SQL_TIME_STRUCT invalid:{SQL_TIME_STRUCT{24,0,0},SQL_TIME_STRUCT{0,60,0},SQL_TIME_STRUCT{0,0,62}}) {
+    input=invalid;ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_TYPE_TIME,SQL_TYPE_TIME,8,0,&input,sizeof(input),&indicator));const auto queries=seen->queries;ASSERT_EQ(1u,seen->parameters.size());const auto previous=seen->parameters[0];const auto previous_deadline=seen->deadline;
+    EXPECT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ("22007",state());EXPECT_EQ(queries,seen->queries);EXPECT_EQ(SQL_PARAM_ERROR,status);EXPECT_EQ(1u,processed);EXPECT_EQ(0,std::memcmp(&invalid,&input,sizeof(input)));EXPECT_EQ(73,indicator);ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(previous.value,seen->parameters[0].value);EXPECT_EQ(previous.type,seen->parameters[0].type);EXPECT_EQ(previous_deadline,seen->deadline);
+    input={12,34,56};ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(std::optional<std::string>{"12:34:56"},seen->parameters[0].value);EXPECT_EQ(SQL_PARAM_SUCCESS,status);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  }
+  for(const auto& item:{std::pair{"12:34:56.000001","22008"},std::pair{"12:34:xx","22018"}}) {
+    std::string text=item.first;SQLLEN text_length=static_cast<SQLLEN>(text.size());ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_TYPE_TIME,8,0,text.data(),text.size(),&text_length));const auto queries=seen->queries;ASSERT_EQ(1u,seen->parameters.size());const auto previous=seen->parameters[0].value;
+    EXPECT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ(item.second,state());EXPECT_EQ(queries,seen->queries);EXPECT_EQ(SQL_PARAM_ERROR,status);EXPECT_EQ(1u,processed);EXPECT_EQ(item.first,text);EXPECT_EQ(static_cast<SQLLEN>(text.size()),text_length);ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(previous,seen->parameters[0].value);
+    std::string good="12:34:56.000000";SQLLEN good_length=static_cast<SQLLEN>(good.size());ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_TYPE_TIME,8,0,good.data(),good.size(),&good_length));ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(std::optional<std::string>{"12:34:56"},seen->parameters[0].value);EXPECT_EQ(QueryParameterType::Time,seen->parameters[0].type);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  }
+  input={65535,65535,65535};indicator=SQL_NULL_DATA;ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_TYPE_TIME,SQL_TYPE_TIME,8,0,&input,sizeof(input),&indicator));ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(QueryParameterType::Time,seen->parameters[0].type);EXPECT_FALSE(seen->parameters[0].value);EXPECT_EQ(SQL_PARAM_SUCCESS,status);EXPECT_EQ(1u,processed);EXPECT_EQ(65535,input.hour);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_TYPE_TIME,SQL_TYPE_TIME,8,0,nullptr,0,&indicator));ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(QueryParameterType::Time,seen->parameters[0].type);EXPECT_FALSE(seen->parameters[0].value);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  input={12,34,56};indicator=73;ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_TYPE_TIME,SQL_TYPE_TIME,8,0,&input,sizeof(input),&indicator));
+  EXPECT_EQ(SQL_ERROR,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_TYPE_TIME,SQL_TYPE_DATE,10,0,&input,sizeof(input),&indicator));EXPECT_EQ("07006",state());ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(QueryParameterType::Time,seen->parameters[0].type);EXPECT_EQ(std::optional<std::string>{"12:34:56"},seen->parameters[0].value);EXPECT_EQ(SQL_PARAM_SUCCESS,status);EXPECT_EQ(0,seen->disconnects);
+}
+
+TEST_F(BackendContractTest, PreparedLongBinaryOwnsBytesEmptyNullAndDeclaredMetadata) {
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,dbc));dbc=nullptr;
+  auto profile=std::make_shared<postgres::PgBackendProvider>(BackendIdentity{"redshift","Amazon Redshift","ODBCPP Redshift"},BackendConnectionDefaults{"localhost",5439,std::nullopt,true},std::nullopt,postgres::PgCatalogProfile::Redshift);
+  auto connection=std::make_unique<rs::odbc::ODBCConnection>(nullptr,std::make_shared<FakeProvider>(seen,profile));dbc=reinterpret_cast<SQLHDBC>(connection.get());rs::odbc::HandleRegistry::instance().register_handle(dbc,std::move(connection),env);connect();
+  QueryResult receipt;receipt.columns={{"value",NativeTypeInfo{ScalarType::BigInt,19,0,true}}};receipt.rows={{"42"}};receipt.normalized_parameter_types={{ScalarType::Binary,8,0,true}};receipt.statement_kind=StatementKind::SelectCursor;seen->date_result=receipt;
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"rows ?",SQL_NTS));SQLULEN processed=99;SQLUSMALLINT status=SQL_PARAM_UNUSED;ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAMS_PROCESSED_PTR,&processed,0));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_STATUS_PTR,&status,0));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(2),0));
+  SQLHDESC apd{},ipd{};ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_APP_PARAM_DESC,&apd,sizeof(apd),nullptr));ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_PARAM_DESC,&ipd,sizeof(ipd),nullptr));
+  SQLCHAR bytes[]{0x00,0xa1,0xff};const std::string expected("\x00\xa1\xff",3);SQLLEN length=3;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_BINARY,SQL_LONGVARBINARY,3,0,bytes,sizeof(bytes),&length));
+  SQLSMALLINT concise=-1;SQLULEN declared=99;SQLLEN octets=-1;char name[32]{};SQLINTEGER name_length=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,1,SQL_DESC_CONCISE_TYPE,&concise,0,nullptr));EXPECT_EQ(SQL_LONGVARBINARY,concise);ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,1,SQL_DESC_LENGTH,&declared,0,nullptr));EXPECT_EQ(3u,declared);ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,1,SQL_DESC_TYPE_NAME,name,sizeof(name),&name_length));EXPECT_STREQ("varbyte",name);EXPECT_EQ(7,name_length);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(apd,1,SQL_DESC_CONCISE_TYPE,&concise,0,nullptr));EXPECT_EQ(SQL_C_BINARY,concise);ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(apd,1,SQL_DESC_OCTET_LENGTH,&octets,0,nullptr));EXPECT_EQ(3,octets);
+  const auto before=rs::util::Clock::now();ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));const auto after=rs::util::Clock::now();ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(QueryParameterType::Binary,seen->parameters[0].type);ASSERT_TRUE(seen->parameters[0].value);EXPECT_EQ(expected,*seen->parameters[0].value);EXPECT_TRUE(seen->parameters[0].binary_input);EXPECT_EQ(SQL_PARAM_SUCCESS,status);EXPECT_EQ(1u,processed);EXPECT_GE(seen->deadline,before+std::chrono::seconds(2));EXPECT_LE(seen->deadline,after+std::chrono::seconds(2));bytes[0]=0x55;bytes[1]=0x66;bytes[2]=0x77;EXPECT_EQ(expected,*seen->parameters[0].value);
+  // Returned fake Binary metadata is distinct from the declared LONG type.
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,1,SQL_DESC_CONCISE_TYPE,&concise,0,nullptr));EXPECT_EQ(SQL_VARBINARY,concise);ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,1,SQL_DESC_LENGTH,&declared,0,nullptr));EXPECT_EQ(8u,declared);ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,1,SQL_DESC_TYPE_NAME,name,sizeof(name),&name_length));EXPECT_STREQ("bytea",name);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  length=0;ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_BINARY,SQL_LONGVARBINARY,3,0,bytes,sizeof(bytes),&length));ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());ASSERT_TRUE(seen->parameters[0].value);EXPECT_TRUE(seen->parameters[0].value->empty());EXPECT_TRUE(seen->parameters[0].binary_input);EXPECT_EQ(QueryParameterType::Binary,seen->parameters[0].type);EXPECT_EQ(SQL_PARAM_SUCCESS,status);EXPECT_EQ(1u,processed);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  length=SQL_NULL_DATA;
+  for(void* pointer:{static_cast<void*>(bytes),static_cast<void*>(nullptr)}) {
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_BINARY,SQL_LONGVARBINARY,3,0,pointer,pointer?sizeof(bytes):0,&length));ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());EXPECT_FALSE(seen->parameters[0].value);EXPECT_FALSE(seen->parameters[0].binary_input);EXPECT_EQ(QueryParameterType::Binary,seen->parameters[0].type);EXPECT_EQ(SQL_PARAM_SUCCESS,status);EXPECT_EQ(1u,processed);EXPECT_EQ(SQL_NULL_DATA,length);EXPECT_EQ(0x55,bytes[0]);EXPECT_EQ(0x66,bytes[1]);EXPECT_EQ(0x77,bytes[2]);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  }
+  char hex[]="00a1ff";SQLWCHAR wide[]{'0','0','a','1','f','f',0};
+  for(SQLSMALLINT target:{SQLSMALLINT(SQL_C_CHAR),SQLSMALLINT(SQL_C_WCHAR)}) {
+    SCOPED_TRACE(target);length=target==SQL_C_CHAR?6:6*sizeof(SQLWCHAR);void* pointer=target==SQL_C_CHAR?static_cast<void*>(hex):static_cast<void*>(wide);
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,target,SQL_LONGVARBINARY,3,0,pointer,length,&length));ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());ASSERT_TRUE(seen->parameters[0].value);EXPECT_EQ(expected,*seen->parameters[0].value);EXPECT_FALSE(seen->parameters[0].binary_input);EXPECT_EQ(QueryParameterType::Binary,seen->parameters[0].type);EXPECT_EQ(SQL_PARAM_SUCCESS,status);EXPECT_EQ(1u,processed);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  }
+  EXPECT_EQ(0,seen->disconnects);
+}
+
+TEST_F(BackendContractTest, PreparedLongBinaryLocalLengthAndHexErrorsPreservePriorExecution) {
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,dbc));dbc=nullptr;
+  auto profile=std::make_shared<postgres::PgBackendProvider>(BackendIdentity{"redshift","Amazon Redshift","ODBCPP Redshift"},BackendConnectionDefaults{"localhost",5439,std::nullopt,true},std::nullopt,postgres::PgCatalogProfile::Redshift);
+  auto connection=std::make_unique<rs::odbc::ODBCConnection>(nullptr,std::make_shared<FakeProvider>(seen,profile));dbc=reinterpret_cast<SQLHDBC>(connection.get());rs::odbc::HandleRegistry::instance().register_handle(dbc,std::move(connection),env);connect();ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"rows ?",SQL_NTS));
+  SQLULEN processed=99;SQLUSMALLINT status=SQL_PARAM_UNUSED;ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAMS_PROCESSED_PTR,&processed,0));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_STATUS_PTR,&status,0));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(2),0));
+  SQLCHAR bytes[]{0x00,0xa1,0xff};const std::string expected("\x00\xa1\xff",3);SQLLEN good_length=3;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_BINARY,SQL_LONGVARBINARY,3,0,bytes,sizeof(bytes),&good_length));ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(expected,seen->parameters[0].value);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  char invalid_hex[]="zz";char over_hex[]="00a1ff";
+  struct Invalid {SQLSMALLINT c_type;SQLULEN declared;void* data;SQLLEN buffer;SQLLEN length;const char* state;};
+  const Invalid failures[]{{SQL_C_BINARY,2,bytes,sizeof(bytes),3,"22001"},{SQL_C_BINARY,3,bytes,sizeof(bytes),SQL_NTS,"HY090"},{SQL_C_BINARY,3,nullptr,0,0,"07009"},{SQL_C_CHAR,3,invalid_hex,sizeof(invalid_hex),2,"22018"},{SQL_C_CHAR,2,over_hex,sizeof(over_hex),6,"22001"}};
+  for(const auto& invalid:failures) {
+    SCOPED_TRACE(invalid.state);SQLLEN length=invalid.length;ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,invalid.c_type,SQL_LONGVARBINARY,invalid.declared,0,invalid.data,invalid.buffer,&length));const auto queries=seen->queries;const auto descriptions=seen->descriptions;const auto deadline=seen->deadline;ASSERT_EQ(1u,seen->parameters.size());const auto previous=seen->parameters[0];
+    EXPECT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ(invalid.state,state());EXPECT_EQ(queries,seen->queries);EXPECT_EQ(descriptions,seen->descriptions);EXPECT_EQ(deadline,seen->deadline);EXPECT_EQ(SQL_PARAM_ERROR,status);EXPECT_EQ(1u,processed);EXPECT_EQ(invalid.length,length);EXPECT_EQ(0x00,bytes[0]);EXPECT_EQ(0xa1,bytes[1]);EXPECT_EQ(0xff,bytes[2]);EXPECT_EQ(0,std::memcmp(invalid_hex,"zz\0",3));EXPECT_EQ(0,std::memcmp(over_hex,"00a1ff\0",7));ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(previous.value,seen->parameters[0].value);EXPECT_EQ(previous.type,seen->parameters[0].type);EXPECT_EQ(previous.binary_input,seen->parameters[0].binary_input);EXPECT_EQ(0,seen->disconnects);
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_BINARY,SQL_LONGVARBINARY,3,0,bytes,sizeof(bytes),&good_length));ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(QueryParameterType::Binary,seen->parameters[0].type);ASSERT_TRUE(seen->parameters[0].value);EXPECT_EQ(expected,*seen->parameters[0].value);EXPECT_TRUE(seen->parameters[0].binary_input);EXPECT_EQ(SQL_PARAM_SUCCESS,status);EXPECT_EQ(1u,processed);EXPECT_EQ(3,good_length);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  }
+}
