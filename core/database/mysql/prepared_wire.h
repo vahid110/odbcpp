@@ -2,6 +2,7 @@
 
 #include "core/database/mysql/query_wire.h"
 #include "core/database/mysql/handshake_wire.h"
+#include "core/database/mysql/date_parameter_wire.h"
 
 #include <array>
 #include <algorithm>
@@ -22,6 +23,9 @@ struct PrepareInfo {
 };
 
 using NativeColumn=query_detail::NativeColumn;
+
+// Private packet candidate only. Live callers retain the existing profile.
+enum class ParameterProfile { ExistingOnly, DateCandidate };
 
 namespace detail {
 
@@ -76,7 +80,7 @@ inline bool parse_integer(std::string_view input, Integer& value) {
 }
 
 inline rs::util::Result<std::pair<std::uint8_t, std::size_t>> parameter_shape(
-    const QueryParameter& parameter) {
+    const QueryParameter& parameter,ParameterProfile profile=ParameterProfile::ExistingOnly) {
   if (parameter.binary_input && parameter.type != QueryParameterType::Binary)
     return {DbErrorCode::InvalidParameter};
   switch (parameter.type) {
@@ -93,10 +97,16 @@ inline rs::util::Result<std::pair<std::uint8_t, std::size_t>> parameter_shape(
     case QueryParameterType::Binary:
       return std::pair<std::uint8_t, std::size_t>{252,
           parameter.value ? length_size(parameter.value->size()) + parameter.value->size() : 0};
+    case QueryParameterType::Date: {
+      if (profile!=ParameterProfile::DateCandidate) return {DbErrorCode::UnsupportedFeature};
+      const auto date=date_parameter_detail::encode(parameter.value
+          ?std::optional<std::string_view>(*parameter.value):std::nullopt);
+      if (!date) return {date.error()};
+      return std::pair<std::uint8_t,std::size_t>{date->native_type,date->value?date->value->size():0};
+    }
     case QueryParameterType::Float32:
     case QueryParameterType::Float64:
     case QueryParameterType::Numeric:
-    case QueryParameterType::Date:
     case QueryParameterType::Time:
     case QueryParameterType::Timestamp:
       return {DbErrorCode::UnsupportedFeature};
@@ -123,7 +133,7 @@ inline bool validate_scalar(const QueryParameter& parameter) {
 }
 
 inline void append_parameter_value(std::vector<std::byte>& output,
-                                   const QueryParameter& parameter) {
+    const QueryParameter& parameter,ParameterProfile profile=ParameterProfile::ExistingOnly) {
   if (!parameter.value) return;
   switch (parameter.type) {
     case QueryParameterType::Int16: {
@@ -140,6 +150,12 @@ inline void append_parameter_value(std::vector<std::byte>& output,
     }
     case QueryParameterType::Boolean:
       output.push_back(*parameter.value == "1" ? std::byte{1} : std::byte{0}); return;
+    case QueryParameterType::Date: {
+      if (profile!=ParameterProfile::DateCandidate) return;
+      const auto date=date_parameter_detail::encode(std::string_view(*parameter.value));
+      if (date && date->value) output.insert(output.end(),date->value->begin(),date->value->end());
+      return;
+    }
     case QueryParameterType::Text:
     case QueryParameterType::Unspecified:
     case QueryParameterType::Binary:
@@ -213,7 +229,7 @@ inline rs::util::Result<PrepareInfo> parse_prepare(std::span<const std::byte> by
 
 inline rs::util::Result<std::vector<std::byte>> execute_request(
     std::uint32_t statement_id, std::span<const QueryParameter> parameters,
-    const InputLimits& limits) {
+    const InputLimits& limits,ParameterProfile profile=ParameterProfile::ExistingOnly) {
   using rs::util::DbErrorCode;
   if (parameters.size() > limits.max_parameters || parameters.size() > 65535)
     return {DbErrorCode::ResourceLimit};
@@ -225,7 +241,7 @@ inline rs::util::Result<std::vector<std::byte>> execute_request(
     if (raw > limits.max_parameter_bytes || !detail::add_size(raw_total, raw) ||
         raw_total > limits.max_parameter_total_bytes)
       return {DbErrorCode::ResourceLimit};
-    auto shape = detail::parameter_shape(parameter);
+    auto shape = detail::parameter_shape(parameter,profile);
     if (!shape) return {shape.error()};
     if (!detail::validate_scalar(parameter)) return {DbErrorCode::InvalidParameter};
     if (!detail::add_size(value_wire, parameter.value ? shape->second : 0))
@@ -257,11 +273,11 @@ inline rs::util::Result<std::vector<std::byte>> execute_request(
       output[bitmap_start + i / 8] |= static_cast<std::byte>(1u << (i % 8));
   output.push_back(std::byte{1});
   for (const auto& parameter : parameters) {
-    const auto shape = detail::parameter_shape(parameter);
+    const auto shape = detail::parameter_shape(parameter,profile);
     output.push_back(static_cast<std::byte>(shape->first));
     output.push_back(std::byte{0});
   }
-  for (const auto& parameter : parameters) detail::append_parameter_value(output, parameter);
+  for (const auto& parameter : parameters) detail::append_parameter_value(output, parameter,profile);
   return output;
 }
 
