@@ -162,7 +162,7 @@ Outcome<Material> Material::create(Binding binding, MaterialKind kind, std::stri
   if (nul) return Error{Reason::InvalidMaterial};
   Material candidate{std::move(binding), kind, std::move(principal), std::move(secret), validity};
   if (auto error = candidate.invariant_error()) return *error;
-  return std::move(candidate);
+  return candidate;
 }
 Outcome<std::unique_ptr<Authority>> Authority::create(Binding binding, TrustedIssuer& issuer, MonotonicClock& clock) {
   if (auto error = binding.invariant_error()) return *error;
@@ -216,7 +216,7 @@ Outcome<Receipt> Authority::acquire(const Request& request, const Cancellation* 
     if (auto error = check_request(request, now, cancel)) return *error;
     if (auto error = check_material(request, *receipt.material_, now)) return *error;
     if ((cancel && cancel->stop_requested())) return Error{Reason::Cancelled};
-    return std::move(receipt);
+    return receipt;
   } catch (const std::bad_alloc&) { return Error{Reason::AllocationFailed}; }
   catch (...) { return Error{Reason::IssuerFailed}; }
 }
@@ -234,7 +234,7 @@ Outcome<Material> Authority::take(Receipt&& receipt, const Cancellation* cancel)
     Material material = std::move(*receipt.material_);
     receipt.material_.reset();
     if ((cancel && cancel->stop_requested())) return Error{Reason::Cancelled};
-    return std::move(material);
+    return material;
   } catch (...) { return discard(Error{Reason::IssuerFailed}); }
 }
 } // namespace rs::core::auth
