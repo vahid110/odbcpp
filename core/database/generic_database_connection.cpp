@@ -506,8 +506,76 @@ BackendResult<QueryResult> GenericDatabaseConnection::describe_statement_impl(
   return read_query_result(deadline, ResponseKind::Description);
 }
 
+BackendResult<QueryResult> GenericDatabaseConnection::decline_prepared_description_candidate(
+    std::string_view sql, std::span<const QueryParameter> params, rs::util::Deadline deadline) {
+  constexpr auto operation = BackendOperation::ExecutePrepared;
+  if (!connected_) return finish_operation({rs::util::DbErrorCode::NotConnected, "Not connected"}, operation);
+  if (session_state_ != SessionState::Idle) return finish_operation(
+      {rs::util::DbErrorCode::UnsupportedFeature, "Prepared admission observation requires Idle"}, operation);
+  if (rs::util::Deadline::clock::now() >= deadline) return finish_operation(
+      {rs::util::DbErrorCode::Timeout, "Prepared admission deadline elapsed"}, operation);
+  const auto& limits = settings_.input_limits;
+  if (sql.size() > limits.max_sql_bytes || params.size() > limits.max_parameters)
+    return reject_request_limit(operation);
+  std::size_t bytes = 0;
+  bool has_binary = false;
+  for (const auto& parameter : params) {
+    const auto size = parameter.value ? parameter.value->size() : 0;
+    if (size > limits.max_parameter_bytes || size > limits.max_parameter_total_bytes - bytes)
+      return reject_request_limit(operation);
+    bytes += size;
+    has_binary = has_binary || parameter.type == QueryParameterType::Binary;
+  }
+  bool sent = false;
+  try {
+    // All material is owned before I/O; this candidate never exposes a usable token.
+    const std::string owned_sql(sql);
+    const std::vector<QueryParameter> owned_parameters(params.begin(), params.end());
+    if (!has_binary || owned_sql.find('\0') != std::string::npos ||
+        parser_->count_parameter_markers(owned_sql) != owned_parameters.size())
+      return finish_operation({rs::util::DbErrorCode::InvalidParameter,
+          "Invalid prepared admission observation scope"}, operation);
+    std::vector<QueryParameterType> hints;
+    hints.reserve(owned_parameters.size());
+    for (const auto& parameter : owned_parameters) hints.push_back(parameter.type);
+    // Validate the known combined encoder's potential request budget without sending it.
+    const auto potential = parser_->create_prepared_query(
+        owned_sql, owned_parameters, limits.max_request_wire_bytes);
+    (void)potential;
+    const auto request = parser_->create_statement_description(
+        owned_sql, hints, limits.max_request_wire_bytes);
+    if (rs::util::Deadline::clock::now() >= deadline) return finish_operation(
+        {rs::util::DbErrorCode::Timeout, "Prepared admission deadline elapsed"}, operation);
+    sent = true; // A failed/partial write is ambiguous and uses the existing retirement path.
+    auto write = write_all_result(request, deadline);
+    if (write.has_error()) return finish_operation({write.error(), write.error_message()}, operation);
+    auto response = read_query_result(deadline, ResponseKind::DeclinedDescription,
+        {}, owned_parameters.size());
+    // Cover every inherited response exit, including native errors and binary formats.
+    if (rs::util::Deadline::clock::now() >= deadline) {
+      mark_transport_failed();
+      return finish_operation({rs::util::DbErrorCode::Timeout,
+          "Prepared admission deadline elapsed"}, operation);
+    }
+    return finish_operation(std::move(response), operation);
+  } catch (const RequestWireLimitExceeded&) {
+    if (sent) mark_transport_failed();
+    return reject_request_limit(operation);
+  } catch (const std::bad_alloc&) {
+    if (sent) mark_transport_failed();
+    return finish_operation({rs::util::DbErrorCode::AllocationFailure, {}}, operation);
+  } catch (const std::exception&) {
+    if (sent) mark_transport_failed();
+    return finish_operation({rs::util::DbErrorCode::InvalidParameter,
+        "Invalid prepared admission observation request"}, operation);
+  }
+}
+
 BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
-    rs::util::Deadline deadline, ResponseKind kind, std::string_view expected_completion) {
+    rs::util::Deadline deadline, ResponseKind kind, std::string_view expected_completion,
+    std::size_t declined_parameter_count) {
+  const bool description_response = kind == ResponseKind::Description ||
+      kind == ResponseKind::DeclinedDescription;
   enum class DescriptionPhase { Parse, Parameters, Result, Complete, Error };
   std::vector<Message> messages;
   std::optional<std::string> query_error;
@@ -551,7 +619,7 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
             rs::util::DbErrorCode::ProtocolError,
             "PostgreSQL startup frame arrived during query"};
       }
-      if (kind == ResponseKind::Description) {
+      if (description_response) {
         switch (msg.tag) {
           case '1':
             if (description_phase != DescriptionPhase::Parse) {
@@ -695,13 +763,13 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
             msg.payload[0] == std::byte{'I'} ? SessionState::Idle :
             msg.payload[0] == std::byte{'T'} ? SessionState::Transaction :
             SessionState::FailedTransaction;
-        if (kind != ResponseKind::Description && !saw_completion) {
+        if (!description_response && !saw_completion) {
           mark_transport_failed();
           return BackendResult<QueryResult>{
               rs::util::DbErrorCode::ProtocolError,
               "PostgreSQL query ended without a completion response"};
         }
-        if (kind == ResponseKind::Description &&
+        if (description_response &&
             description_phase != DescriptionPhase::Complete &&
             description_phase != DescriptionPhase::Error) {
           mark_transport_failed();
@@ -742,6 +810,20 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
           "Data source returned invalid result metadata"};
       error.error_class = BackendErrorClass::InvalidMetadata;
       return error;
+    }
+    if (kind == ResponseKind::DeclinedDescription) {
+      // Raw IDs remain in the owning parsed response. No resolver/discovery or B/E follows.
+      if (result.parameter_type_ids.size() != declined_parameter_count ||
+          !result.rows.empty() || !result.additional_results.empty()) {
+        mark_transport_failed();
+        return {rs::util::DbErrorCode::ProtocolError, "Invalid staged parameter description"};
+      }
+      if (rs::util::Deadline::clock::now() >= deadline) {
+        mark_transport_failed();
+        return {rs::util::DbErrorCode::Timeout, "Prepared admission deadline elapsed"};
+      }
+      return {rs::util::DbErrorCode::UnsupportedFeature,
+          "Prepared binary admission is not qualified"};
     }
     const auto normalize_item = [&](ParsedQueryResult& parsed) -> BackendResult<QueryResult> {
       QueryResult item;

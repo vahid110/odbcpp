@@ -15,6 +15,14 @@ PgDatabaseConnection::PgDatabaseConnection(
     : GenericDatabaseConnection(std::make_unique<PgProtocolParser>(),
                                 std::move(transport)), reset_profile_(reset_profile), catalog_profile_(catalog_profile) {}
 
+BackendResult<QueryResult> PgDatabaseConnection::observe_and_decline_binary_prepared_for_test(
+    std::string_view sql, std::span<const QueryParameter> params, rs::util::Deadline deadline) {
+  if (catalog_profile_ != PgCatalogProfile::Redshift) return local_backend_error(
+      LocalFailure::Unsupported, "Staged binary observation requires Redshift",
+      BackendOperation::ExecutePrepared, session_state());
+  return decline_prepared_description_candidate(sql, params, deadline);
+}
+
 BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& settings) {
   if (catalog_profile_ == PgCatalogProfile::Redshift && is_connected()) return local_backend_error(LocalFailure::InvalidInput,
       "Database connection is already open", BackendOperation::Connect, session_state());

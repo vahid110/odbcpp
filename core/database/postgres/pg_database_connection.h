@@ -8,6 +8,7 @@
 #include <utility>
 
 namespace rs::core::database::postgres {
+namespace detail { struct StagedPreparedRefusalTestAccess; }
 
 // PostgreSQL session with backend-specific metadata discovery.
 class PgDatabaseConnection : public GenericDatabaseConnection, public ITransactionSession, public ICatalogQueries, public ISessionHealth, public ISessionReset, public ICatalogExecution {
@@ -57,6 +58,9 @@ protected:
   virtual RedshiftCatalogMode catalog_mode() const noexcept { return catalog_mode_; }
 
 private:
+  friend struct detail::StagedPreparedRefusalTestAccess;
+  BackendResult<QueryResult> observe_and_decline_binary_prepared_for_test(
+      std::string_view sql, std::span<const QueryParameter> params, rs::util::Deadline deadline);
   RedshiftCatalogMode catalog_mode_{RedshiftCatalogMode::Show};
   const std::optional<SessionResetProfile> reset_profile_;
   const PgCatalogProfile catalog_profile_;

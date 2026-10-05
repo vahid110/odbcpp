@@ -50,6 +50,10 @@ public:
   virtual std::string get_parameter(std::string_view key) const;
 
 protected:
+  // Isolated observation/refusal prototype; no public session admission.
+  BackendResult<QueryResult> decline_prepared_description_candidate(
+      std::string_view sql, std::span<const QueryParameter> params, rs::util::Deadline deadline);
+
   // PostgreSQL-family cleanup: native completion tags stay outside SDK results.
   virtual BackendResult<QueryResult> execute_cleanup_query(std::string_view sql,
       std::string_view expected_completion, rs::util::Deadline deadline);
@@ -68,7 +72,7 @@ private:
       std::span<const QueryParameter> params, rs::util::Deadline deadline);
   BackendResult<QueryResult> describe_statement_impl(std::string_view sql,
       std::span<const QueryParameterType> types, rs::util::Deadline deadline);
-  enum class ResponseKind { SimpleExecution, PreparedExecution, Description };
+  enum class ResponseKind { SimpleExecution, PreparedExecution, Description, DeclinedDescription };
   std::unique_ptr<IProtocolParser> parser_;
   std::unique_ptr<rs::core::transport::ITransport> transport_;
   ConnectionSettings settings_;
@@ -87,7 +91,8 @@ private:
   BackendResult<void> perform_authentication_result(rs::util::Deadline deadline);
   rs::util::Result<void> record_parameter_status(const Message& msg);
   BackendResult<QueryResult> read_query_result(
-      rs::util::Deadline deadline, ResponseKind kind, std::string_view expected_completion = {});
+      rs::util::Deadline deadline, ResponseKind kind, std::string_view expected_completion = {},
+      std::size_t declined_parameter_count = 0);
   void mark_transport_failed() noexcept;
 };
 
