@@ -1460,3 +1460,144 @@ TEST_F(RedshiftRealTest, TypedNullAndOutputPreservation) {
   EXPECT_EQ(0, length); EXPECT_EQ('\0', empty[0]);
   EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
 }
+
+
+class RedshiftCatalogVarbyteRealTest : public RedshiftRealTest {
+protected:
+  void SetUp() override {
+    const char* admission=std::getenv("ODBCPP_REDSHIFT_CATALOG_VARBYTE_ADMISSION");
+    if(admission==nullptr) { GTEST_SKIP() << "Catalog/VARBYTE no-DDL scope is not admitted"; }
+    ASSERT_TRUE(std::string_view(admission)=="catalog-varbyte-no-ddl-v1")
+        << "Invalid catalog/VARBYTE no-DDL scope marker";
+    // Scope selection only. The future owner-reviewed runner supplies authority.
+    RedshiftRealTest::SetUp();
+  }
+};
+
+// Future fixed three-case inventory: ConnectionTest plus these two cases.
+// No existing launcher/profile admits them; compiling this source grants no SQL.
+// Static DDL advertisement and generic result-family labels are not native maxima.
+TEST_F(RedshiftCatalogVarbyteRealTest, ContemporaryDdlTypeInfoPolicyContract) {
+  ASSERT_TRUE(connect());
+  SQLCHAR identity_sql[]="SELECT current_database(),TRIM(current_user)";
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(hstmt_,identity_sql,SQL_NTS));
+  SQLSMALLINT identity_columns=0;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&identity_columns));ASSERT_EQ(2,identity_columns);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+  for(SQLUSMALLINT column=1;column<=2;++column) {
+    const char* expected=column==1?"odbcpp_pilot":"odbcpp_pilot_test";
+    std::array<char,64> actual{};SQLLEN length=-1;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,column,SQL_C_CHAR,actual.data(),actual.size(),&length));
+    ASSERT_GE(length,0);ASSERT_LT(length,static_cast<SQLLEN>(actual.size()));
+    ASSERT_TRUE(static_cast<std::size_t>(length)==std::strlen(expected));
+    ASSERT_TRUE(std::memcmp(actual.data(),expected,static_cast<std::size_t>(length)+1)==0);
+  }
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  const CatalogField fields[]{
+      {"type_name",SQL_VARCHAR},{"data_type",SQL_SMALLINT},{"column_size",SQL_INTEGER},
+      {"literal_prefix",SQL_VARCHAR},{"literal_suffix",SQL_VARCHAR},{"create_params",SQL_VARCHAR},
+      {"nullable",SQL_SMALLINT},{"case_sensitive",SQL_SMALLINT},{"searchable",SQL_SMALLINT},
+      {"unsigned_attribute",SQL_SMALLINT},{"fixed_prec_scale",SQL_SMALLINT},{"auto_unique_value",SQL_SMALLINT},
+      {"local_type_name",SQL_VARCHAR},{"minimum_scale",SQL_SMALLINT},{"maximum_scale",SQL_SMALLINT},
+      {"sql_data_type",SQL_SMALLINT},{"sql_datetime_sub",SQL_SMALLINT},{"num_prec_radix",SQL_INTEGER},
+      {"interval_precision",SQL_SMALLINT}};
+  struct Expected {SQLSMALLINT type;const char* name;SQLINTEGER size;bool quoted,sensitive;};
+  const Expected cases[]{{SQL_CHAR,"char",4096,true,true},{SQL_VARCHAR,"varchar",65535,true,true},
+                         {SQL_LONGVARBINARY,"varbyte",16777216,false,false}};
+  for(const auto& item:cases) {
+    ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(hstmt_,item.type));expect_catalog_fields(fields);ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));expect_catalog_text(1,item.name);ASSERT_FALSE(HasFailure());
+    expect_catalog_integer(2,item.type);expect_catalog_integer(3,item.size);ASSERT_FALSE(HasFailure());
+    if(item.quoted) { expect_catalog_text(4,"'");expect_catalog_text(5,"'"); }
+    else { expect_catalog_null(4);expect_catalog_null(5); }
+    ASSERT_FALSE(HasFailure());expect_catalog_text(6,"length");expect_catalog_integer(7,SQL_NULLABLE);
+    expect_catalog_integer(8,item.sensitive?SQL_TRUE:SQL_FALSE);
+    expect_catalog_integer(9,item.quoted?SQL_SEARCHABLE:SQL_PRED_BASIC);ASSERT_FALSE(HasFailure());
+    for(const SQLUSMALLINT field:{SQLUSMALLINT{10},SQLUSMALLINT{12},SQLUSMALLINT{13},SQLUSMALLINT{14},SQLUSMALLINT{15},SQLUSMALLINT{17},SQLUSMALLINT{18},SQLUSMALLINT{19}}) {
+      expect_catalog_null(field);ASSERT_FALSE(HasFailure());
+    }
+    expect_catalog_integer(11,SQL_FALSE);expect_catalog_integer(16,item.type);ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  }
+  ASSERT_FALSE(HasFailure());
+  std::array<char,32> owned{};SQLLEN length=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(hstmt_,SQL_VARCHAR));ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,1,SQL_C_CHAR,owned.data(),owned.size(),&length));ASSERT_EQ(7,length);
+  const auto snapshot=owned;ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  for(const SQLSMALLINT removed:{SQLSMALLINT{SQL_BINARY},SQLSMALLINT{SQL_VARBINARY},SQLSMALLINT{SQL_LONGVARCHAR}}) {
+    ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(hstmt_,removed));expect_catalog_fields(fields);ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));EXPECT_EQ(snapshot,owned);
+  }
+  RecordProperty("type_info_policy","contemporary_static_ddl_not_native_maximum");
+}
+
+TEST_F(RedshiftCatalogVarbyteRealTest, VarbyteConstantDirectPreparedResultContract) {
+  ASSERT_TRUE(connect());
+  SQLCHAR identity_sql[]="SELECT current_database(),TRIM(current_user)";
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(hstmt_,identity_sql,SQL_NTS));
+  SQLSMALLINT identity_columns=0;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&identity_columns));ASSERT_EQ(2,identity_columns);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+  for(SQLUSMALLINT column=1;column<=2;++column) {
+    const char* expected=column==1?"odbcpp_pilot":"odbcpp_pilot_test";
+    std::array<char,64> actual{};SQLLEN length=-1;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,column,SQL_C_CHAR,actual.data(),actual.size(),&length));
+    ASSERT_GE(length,0);ASSERT_LT(length,static_cast<SQLLEN>(actual.size()));
+    ASSERT_TRUE(static_cast<std::size_t>(length)==std::strlen(expected));
+    ASSERT_TRUE(std::memcmp(actual.data(),expected,static_cast<std::size_t>(length)+1)==0);
+  }
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  SQLCHAR query[]="SELECT FROM_HEX('0041ff') AS b, FROM_HEX('0041ff') AS copy_b, CAST(NULL AS VARBYTE) AS null_b";
+  const std::array<unsigned char,3> expected{0x00,0x41,0xff};
+  const char* aliases[]{"b","copy_b","null_b"};
+  auto metadata=[&] {
+    SQLSMALLINT count=0;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&count));ASSERT_EQ(3,count);
+    SQLHDESC ird=nullptr;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_IMP_ROW_DESC,&ird,0,nullptr));ASSERT_NE(nullptr,ird);
+    for(SQLUSMALLINT column=1;column<=3;++column) {
+      char alias[16]{};SQLSMALLINT alias_length=-1,type=-1,scale=-1,nullable=-1;SQLULEN size=99;
+      ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,column,reinterpret_cast<SQLCHAR*>(alias),sizeof(alias),&alias_length,&type,&size,&scale,&nullable));
+      ASSERT_EQ(std::strlen(aliases[column-1]),static_cast<std::size_t>(alias_length));EXPECT_EQ(0,std::memcmp(alias,aliases[column-1],static_cast<std::size_t>(alias_length)+1));
+      EXPECT_EQ(SQL_LONGVARBINARY,type);EXPECT_EQ(0u,size);EXPECT_EQ(0,scale);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
+      char name[16]{};SQLSMALLINT name_length=-1;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(hstmt_,column,SQL_DESC_TYPE_NAME,name,sizeof(name),&name_length,nullptr));
+      ASSERT_EQ(7,name_length);EXPECT_EQ(0,std::memcmp(name,"varbyte",8));
+      SQLINTEGER descriptor_length=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,column,SQL_DESC_TYPE_NAME,name,sizeof(name),&descriptor_length));ASSERT_EQ(7,descriptor_length);EXPECT_EQ(0,std::memcmp(name,"varbyte",8));
+      SQLULEN descriptor_size=99;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,column,SQL_DESC_LENGTH,&descriptor_size,0,nullptr));EXPECT_EQ(0u,descriptor_size);
+      for(const SQLUSMALLINT field:{SQLUSMALLINT{SQL_DESC_OCTET_LENGTH},SQLUSMALLINT{SQL_DESC_DISPLAY_SIZE}}) {
+        SQLLEN value=99;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(hstmt_,column,field,nullptr,0,nullptr,&value));EXPECT_EQ(SQL_NO_TOTAL,value);
+        ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,column,field,&value,0,nullptr));EXPECT_EQ(SQL_NO_TOTAL,value);
+      }
+    }
+  };
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(hstmt_,query,SQL_NTS));metadata();ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+  std::array<unsigned char,4> chunk{0x5a,0x5a,0x5a,0x5a};SQLLEN length=-1;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLGetData(hstmt_,1,SQL_C_BINARY,chunk.data(),2,&length));ASSERT_EQ("01004",get_error(SQL_HANDLE_STMT,hstmt_));
+  EXPECT_EQ(3,length);EXPECT_EQ(0x00,chunk[0]);EXPECT_EQ(0x41,chunk[1]);EXPECT_EQ(0x5a,chunk[2]);EXPECT_EQ(0x5a,chunk[3]);
+  chunk.fill(0x5a);ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,1,SQL_C_BINARY,chunk.data(),2,&length));EXPECT_EQ(1,length);EXPECT_EQ(0xff,chunk[0]);EXPECT_EQ(0x5a,chunk[1]);EXPECT_EQ(0x5a,chunk[2]);EXPECT_EQ(0x5a,chunk[3]);
+  ASSERT_EQ(SQL_NO_DATA,SQLGetData(hstmt_,1,SQL_C_BINARY,chunk.data(),2,&length));
+  std::array<unsigned char,4> owned{0x5a,0x5a,0x5a,0x5a};ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,2,SQL_C_BINARY,owned.data(),3,&length));
+  EXPECT_EQ(3,length);EXPECT_EQ(0,std::memcmp(owned.data(),expected.data(),expected.size()));EXPECT_EQ(0x5a,owned[3]);const auto snapshot=owned;
+  chunk.fill(0x5a);ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,3,SQL_C_BINARY,chunk.data(),3,&length));EXPECT_EQ(SQL_NULL_DATA,length);EXPECT_TRUE(std::all_of(chunk.begin(),chunk.end(),[](auto byte){return byte==0x5a;}));
+  metadata();ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(hstmt_,query,SQL_NTS));
+  SQLULEN fetched=99;SQLUSMALLINT row_status=SQL_ROW_NOROW;
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROWS_FETCHED_PTR,&fetched,0));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_STATUS_PTR,&row_status,0));
+  std::array<unsigned char,4> first{},copy{},null_buffer{};SQLLEN first_length=-1,copy_length=-1,null_length=-1;
+  for(const bool truncate:{true,false}) {
+    ASSERT_FALSE(HasFailure());
+    first.fill(0x5a);copy.fill(0x5a);null_buffer.fill(0x5a);fetched=99;row_status=SQL_ROW_NOROW;
+    ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,1,SQL_C_BINARY,first.data(),truncate?2:3,&first_length));
+    ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,2,SQL_C_BINARY,copy.data(),3,&copy_length));ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,3,SQL_C_BINARY,null_buffer.data(),3,&null_length));
+    ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLExecute(hstmt_));metadata();ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(truncate?SQL_SUCCESS_WITH_INFO:SQL_SUCCESS,SQLFetch(hstmt_));ASSERT_EQ(1u,fetched);ASSERT_EQ(truncate?SQL_ROW_SUCCESS_WITH_INFO:SQL_ROW_SUCCESS,row_status);
+    if(truncate) { ASSERT_EQ("01004",get_error(SQL_HANDLE_STMT,hstmt_)); }
+    EXPECT_EQ(3,first_length);EXPECT_EQ(3,copy_length);EXPECT_EQ(SQL_NULL_DATA,null_length);
+    EXPECT_EQ(0,std::memcmp(first.data(),expected.data(),truncate?2:3));EXPECT_EQ(0x5a,first[truncate?2:3]);EXPECT_EQ(0x5a,first[3]);
+    EXPECT_EQ(0,std::memcmp(copy.data(),expected.data(),expected.size()));EXPECT_EQ(0x5a,copy[3]);EXPECT_TRUE(std::all_of(null_buffer.begin(),null_buffer.end(),[](auto byte){return byte==0x5a;}));EXPECT_EQ(snapshot,owned);
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_UNBIND));
+    ASSERT_FALSE(HasFailure());
+  }
+  RecordProperty("result_type_name_policy","varbyte_generic_family_fallback_not_server_native_name");
+  RecordProperty("descriptor_size_policy","unknown_zero_octet_display_no_total_not_actual_cell_length");
+}
