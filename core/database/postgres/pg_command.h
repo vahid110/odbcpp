@@ -1,5 +1,5 @@
 #pragma once
-#include "core/database/statement_kind.h"
+#include "odbcpp/database/statement_kind.h"
 #include <string_view>
 
 namespace rs::core::database::postgres {

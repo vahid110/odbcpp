@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "core/security/tls_client.h"
+#include "odbcpp/security/tls_client.h"
 
 #include <array>
 #include <string_view>

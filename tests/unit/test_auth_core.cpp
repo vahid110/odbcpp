@@ -1,4 +1,4 @@
-#include "core/auth/auth_core.h"
+#include "odbcpp/auth/auth_core.h"
 #include <gtest/gtest.h>
 #include <array>
 #include <limits>

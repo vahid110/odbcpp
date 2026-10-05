@@ -1,7 +1,7 @@
 #pragma once
 
 #include "odbc_types.h"
-#include "core/database/transaction.h"
+#include "odbcpp/database/transaction.h"
 #include <optional>
 
 namespace rs::odbc {

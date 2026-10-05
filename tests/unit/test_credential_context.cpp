@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "core/database/credential_context.h"
+#include "odbcpp/session/credential_context.h"
 #include <atomic>
 #include <barrier>
 #include <new>

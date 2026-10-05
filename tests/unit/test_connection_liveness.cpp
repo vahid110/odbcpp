@@ -1,14 +1,14 @@
 #include <gtest/gtest.h>
 #include <cstring>
-#include "core/database/backend_provider.h"
+#include "odbcpp/database/backend_provider.h"
 
 #include "core/database/generic_database_connection.h"
 #include "core/database/database_factory.h"
 #include "core/database/postgres/pg_protocol_parser.h"
 #include "core/database/postgres/pg_database_connection.h"
-#include "core/transport/i_transport.h"
-#include "core/transport/start_tls_transport.h"
-#include "core/transport/tls_configurable_transport.h"
+#include "odbcpp/transport/i_transport.h"
+#include "odbcpp/transport/start_tls_transport.h"
+#include "odbcpp/transport/tls_configurable_transport.h"
 #include "tests/mock_protocol_parser.h"
 
 #include <algorithm>

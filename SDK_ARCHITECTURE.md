@@ -26,6 +26,43 @@ PostgreSQL behavior remains protected by its complete regression gates.
 | A9 | Secure transport/authentication, resource budgets and extension trust are architecture concerns | The mandatory rules are in [SECURITY_MODEL.md](SECURITY_MODEL.md) |
 | A10 | Cryptography provider and linkage are explicit build-time product profiles behind private adapters | DSNs cannot select libraries; provider types do not enter SDK/backend contracts; see [CRYPTO_PROVIDER_PLAN.md](CRYPTO_PROVIDER_PLAN.md) |
 
+## Physical ownership and declaration surfaces
+
+The SDK consolidation uses one physical owner per reusable declaration:
+
+- `sdk/include/odbcpp/` contains the dependency-free database, transport and
+  utility contracts selected by `sdk/contract_headers.txt`.
+- `sdk/internal/odbcpp/` contains session orchestration, concrete transports,
+  security, utility implementation headers and the private authentication core.
+- `sdk/src/` contains the corresponding reusable implementation sources.
+- `core/database/` retains concrete backend and protocol implementations and
+  product composition. `odbc/` remains the adapter; prototype pooling remains
+  separate from the SDK pool contract.
+
+Canonical logical includes use `odbcpp/...`. `sdk/header_owners.txt` binds each
+logical name to its sole public or internal physical file. Component manifests
+select declarations into generated build include directories; they do not make
+all internal headers visible to every component. Authentication staging remains
+separate from backend, ODBC and wrapper surfaces. Public first-include checks and
+architecture checks enforce these boundaries.
+
+The existing broad installed declaration surface is a separate compatibility
+policy, not the SDK's supported public contract. Installation preserves exactly
+77 legacy header destinations and 22 exclusions. A generated compatibility tree
+rewrites selected canonical include tokens to their historical `core/...`
+spellings without creating a second source owner. Both exported product targets
+use `${CMAKE_INSTALL_INCLUDEDIR}/odbcpp`, matching those logical includes and
+honoring custom relative GNU installation directories. No new SDK export target,
+stable ABI or installed private authentication/security interface is introduced.
+The legacy MySqlSession declaration still references excluded private crypto;
+that installed session closure is not supported by this reorganization.
+
+Compiled installation and export metadata checks are narrower than imported
+consumer and relocation qualification. Those checks must inspect actual compiler
+inputs and package provenance; access to a source checkout cannot substitute for
+an installed dependency. Absolute installation directories and external dependency
+roots must be assessed explicitly before claiming relocatability.
+
 ## Dependency model
 
 ```mermaid
@@ -1465,3 +1502,25 @@ the actual transport, retain identical negotiated flags in the credential packet
 and validate the full authentication state machine before publishing a session.
 Pinned MySQL 8.4.11 live integration remains required before S3 handshake acceptance.
 S2C/G12 qualification, PostgreSQL/Redshift behavior and public scope are unchanged.
+
+
+### Canonical source and legacy installation preparation
+
+Reusable contracts live under `sdk/include/odbcpp`; private session, transport,
+security and authentication declarations live under `sdk/internal/odbcpp`, with
+implementation under `sdk/src`. Concrete backends and the ODBC adapter remain
+separate. Public contract staging retains the exact 23-header allowlist.
+
+The consolidation explicitly selects Python 3.9 or newer as a build preparation
+prerequisite, including configurations with `BUILD_TESTING=OFF`. It generates
+the exact historical 77 installed headers from their single canonical owners
+and registers every one of the 99 input headers as a configure dependency.
+This is an additional configure prerequisite, independent of optional TLS test
+requirements; Python is not an installed, runtime or library link dependency.
+
+The legacy header destinations and 22 exclusions remain unchanged. Generated
+compatibility headers rewrite project include tokens only. The export include root now follows GNUInstallDirs, including custom include
+directories. The omitted private crypto dependency remains a separate packaging
+limitation; consolidation does not expose private security/auth or promise
+installed MySqlSession support. Publication cleanup uncertainty refuses
+configuration rather than being accepted as clean preparation.

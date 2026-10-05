@@ -1,6 +1,6 @@
 #pragma once
-#include "i_database_connection.h"
-#include "core/util/result.h"
+#include "odbcpp/database/i_database_connection.h"
+#include "odbcpp/util/result.h"
 #include <memory>
 #include <vector>
 #include <queue>

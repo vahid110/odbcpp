@@ -1,8 +1,8 @@
 #pragma once
 
-#include "core/transport/i_transport.h"
-#include "core/transport/start_tls_transport.h"
-#include "core/transport/tls_configurable_transport.h"
+#include "odbcpp/transport/i_transport.h"
+#include "odbcpp/transport/start_tls_transport.h"
+#include "odbcpp/transport/tls_configurable_transport.h"
 #include <array>
 #include <memory>
 

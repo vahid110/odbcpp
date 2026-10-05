@@ -2,8 +2,8 @@
 
 #include "pg_catalog_profile.h"
 
-#include "core/database/backend_provider.h"
-#include "core/database/session_reset.h"
+#include "odbcpp/database/backend_provider.h"
+#include "odbcpp/database/session_reset.h"
 
 namespace rs::core::database::postgres {
 

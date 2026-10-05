@@ -15,13 +15,14 @@ function(odbcpp_partition_driver_sources prefix root)
     file(RELATIVE_PATH _relative "${root}" "${_source}")
     if(NOT _relative MATCHES "\\.cpp$")
       message(FATAL_ERROR "Unsupported internal source: ${_relative}")
-    elseif(_relative MATCHES "^core/(transport|security|util)/")
+    elseif(_relative MATCHES "^sdk/src/(transport|security|util)/")
       list(APPEND _runtime "${_source}")
     elseif(_relative STREQUAL "core/database/generic_database_connection.cpp" OR
            _relative MATCHES "^core/database/(postgres|mysql|sqlserver)/")
       list(APPEND _backend "${_source}")
     elseif(_relative STREQUAL "product/compiled_backend.cpp" OR
-           _relative MATCHES "^core/database/(database_factory|session_owner|credential_context)\\.cpp$")
+           _relative MATCHES "^core/database/database_factory\\.cpp$" OR
+           _relative MATCHES "^sdk/src/session/(session_owner|credential_context)\\.cpp$")
       list(APPEND _composition "${_source}")
     elseif(_relative MATCHES "^odbc/")
       list(APPEND _odbc "${_source}")

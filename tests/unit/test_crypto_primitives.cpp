@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "core/security/crypto.h"
+#include "odbcpp/security/crypto.h"
 
 #include <array>
 #include <string_view>

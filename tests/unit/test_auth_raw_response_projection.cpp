@@ -1,8 +1,8 @@
-#include "core/auth/aws_db_json_response.h"
-#include "core/auth/aws_db_xml_response.h"
-#include "core/auth/redshift_serverless_response.h"
-#include "core/auth/redshift_provisioned_response.h"
-#include "core/auth/redshift_withiam_response.h"
+#include "odbcpp/auth/aws_db_json_response.h"
+#include "odbcpp/auth/aws_db_xml_response.h"
+#include "odbcpp/auth/redshift_serverless_response.h"
+#include "odbcpp/auth/redshift_provisioned_response.h"
+#include "odbcpp/auth/redshift_withiam_response.h"
 #include <gtest/gtest.h>
 #include <functional>
 #include <stdexcept>

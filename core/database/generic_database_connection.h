@@ -1,8 +1,8 @@
 #pragma once
-#include "i_database_connection.h"
+#include "odbcpp/database/i_database_connection.h"
 #include "i_protocol_parser.h"
 #include "native_type_resolution.h"
-#include "core/transport/i_transport.h"
+#include "odbcpp/transport/i_transport.h"
 #include <memory>
 
 namespace rs::core::database {

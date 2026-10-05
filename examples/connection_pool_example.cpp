@@ -1,6 +1,6 @@
 #include "core/database/connection_pool.h"
-#include "core/util/deadline.h"
-#include "core/util/exception_adapter.h"
+#include "odbcpp/util/deadline.h"
+#include "odbcpp/util/exception_adapter.h"
 #include <iostream>
 #include <thread>
 #include <vector>

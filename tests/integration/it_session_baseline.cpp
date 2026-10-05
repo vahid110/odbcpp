@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "sdk/tests/session_baseline/runner.h"
-#include "core/database/backend_provider.h"
-#include "core/transport/i_transport.h"
+#include "odbcpp/database/backend_provider.h"
+#include "odbcpp/transport/i_transport.h"
 #include "odbc/connection_string.h"
 #include "tests/test_connection_config.h"
 

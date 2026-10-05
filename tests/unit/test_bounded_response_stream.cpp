@@ -1,4 +1,4 @@
-#include "core/auth/bounded_response_stream.h"
+#include "odbcpp/auth/bounded_response_stream.h"
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <chrono>

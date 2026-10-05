@@ -1,4 +1,4 @@
-#include "core/util/hex.h"
+#include "odbcpp/util/hex.h"
 #include <gtest/gtest.h>
 
 #include "core/database/database_factory.h"

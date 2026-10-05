@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
-#include "core/transport/thread_pool_transport.h"
-#include "core/util/deadline.h"
+#include "odbcpp/transport/thread_pool_transport.h"
+#include "odbcpp/util/deadline.h"
 #include <thread>
 #include <atomic>
 #include <chrono>

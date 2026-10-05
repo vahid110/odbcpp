@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
 #include "odbc/connection_string.h"
-#include "core/database/backend_provider.h"
+#include "odbcpp/database/backend_provider.h"
 #include "core/database/postgres/pg_database_connection.h"
 #include "core/database/postgres/redshift_primary_key_contract.h"
 #include <charconv>

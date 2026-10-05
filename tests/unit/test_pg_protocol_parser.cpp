@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "core/database/postgres/pg_protocol_parser.h"
-#include "core/database/query_parameter.h"
+#include "odbcpp/database/query_parameter.h"
 
 #include <cstddef>
 #include <cstdint>

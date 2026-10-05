@@ -8,7 +8,7 @@
 #include "prepared_wire.h"
 #include "date_parameter_descriptor.h"
 #include "parameter_receipt_shape.h"
-#include "core/transport/tls_configurable_transport.h"
+#include "odbcpp/transport/tls_configurable_transport.h"
 
 namespace rs::core::database::mysql {
 // Bounded internal S3 session. No provider/ODBC registration, statement caching,

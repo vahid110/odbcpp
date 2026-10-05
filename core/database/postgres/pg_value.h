@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/database/native_type_info.h"
-#include "core/util/hex.h"
+#include "odbcpp/database/native_type_info.h"
+#include "odbcpp/util/hex.h"
 
 namespace rs::core::database::postgres {
 

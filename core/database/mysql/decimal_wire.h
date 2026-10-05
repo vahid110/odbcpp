@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/database/native_type_info.h"
-#include "core/util/result.h"
+#include "odbcpp/database/native_type_info.h"
+#include "odbcpp/util/result.h"
 #include <string_view>
 
 namespace rs::core::database::mysql::decimal_detail {

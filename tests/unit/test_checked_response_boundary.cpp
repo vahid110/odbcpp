@@ -1,4 +1,4 @@
-#include "core/auth/checked_response_boundary.h"
+#include "odbcpp/auth/checked_response_boundary.h"
 #include <gtest/gtest.h>
 #include <array>
 #include <stdexcept>

@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "core/database/connection_pool.h"
-#include "core/util/exception_adapter.h"
+#include "odbcpp/util/exception_adapter.h"
 #include "odbc/connection_string.h"
 #include <thread>
 #include <vector>

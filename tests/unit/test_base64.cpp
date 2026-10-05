@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "core/util/base64.h"
+#include "odbcpp/util/base64.h"
 
 #include <string_view>
 

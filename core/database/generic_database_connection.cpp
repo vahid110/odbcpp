@@ -1,12 +1,12 @@
-#include "core/security/crypto.h"
+#include "odbcpp/security/crypto.h"
 #include "generic_database_connection.h"
 #include "result_validation.h"
-#include "core/transport/socket_transport.h"
-#include "core/transport/start_tls_transport.h"
-#include "core/transport/tls_transport.h"
-#include "core/transport/tls_configurable_transport.h"
-#include "core/util/exception_adapter.h"
-#include "core/util/utf8.h"
+#include "odbcpp/transport/socket_transport.h"
+#include "odbcpp/transport/start_tls_transport.h"
+#include "odbcpp/transport/tls_transport.h"
+#include "odbcpp/transport/tls_configurable_transport.h"
+#include "odbcpp/util/exception_adapter.h"
+#include "odbcpp/util/utf8.h"
 
 #include <algorithm>
 #include <cstdint>

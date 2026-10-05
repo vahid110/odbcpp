@@ -37,12 +37,15 @@ FetchContent_Declare(googletest
 set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 get_filename_component(ODBCPP_SOURCE "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+include("${ODBCPP_SOURCE}/cmake/InternalIncludes.cmake")
+set(ODBCPP_ADAPTER_INCLUDE "${CMAKE_CURRENT_BINARY_DIR}/adapter-include")
+odbcpp_stage_wrapper_includes("${ODBCPP_SOURCE}" "${ODBCPP_ADAPTER_INCLUDE}")
 add_library(adapter STATIC
-  ${ODBCPP_SOURCE}/core/security/openssl_crypto.cpp
-  ${ODBCPP_SOURCE}/core/security/openssl_tls_client.cpp
+  ${ODBCPP_SOURCE}/sdk/src/security/openssl_crypto.cpp
+  ${ODBCPP_SOURCE}/sdk/src/security/openssl_tls_client.cpp
   ${ODBCPP_SOURCE}/core/database/postgres/scram_sha256.cpp
-  ${ODBCPP_SOURCE}/core/util/base64.cpp)
-target_include_directories(adapter PUBLIC "${ODBCPP_SOURCE}")
+  ${ODBCPP_SOURCE}/sdk/src/util/base64.cpp)
+target_include_directories(adapter PUBLIC "${ODBCPP_SOURCE}" "${ODBCPP_ADAPTER_INCLUDE}")
 target_link_libraries(adapter PRIVATE ssl crypto)
 enable_testing()
 foreach(test IN ITEMS test_crypto_primitives test_scram_sha256 test_tls_client)
@@ -71,12 +74,12 @@ add_library(postgres_session STATIC
   ${ODBCPP_SOURCE}/core/database/postgres/pg_command.cpp
   ${ODBCPP_SOURCE}/core/database/postgres/pg_sql_dialect.cpp
   ${ODBCPP_SOURCE}/core/database/postgres/pg_type_info.cpp
-  ${ODBCPP_SOURCE}/core/transport/socket_transport.cpp
-  ${ODBCPP_SOURCE}/core/transport/tls_transport.cpp
-  ${ODBCPP_SOURCE}/core/transport/async_tls_transport.cpp
-  ${ODBCPP_SOURCE}/core/transport/thread_pool_transport.cpp
-  ${ODBCPP_SOURCE}/core/transport/epoll_transport.cpp
-  ${ODBCPP_SOURCE}/core/util/utf8.cpp)
+  ${ODBCPP_SOURCE}/sdk/src/transport/socket_transport.cpp
+  ${ODBCPP_SOURCE}/sdk/src/transport/tls_transport.cpp
+  ${ODBCPP_SOURCE}/sdk/src/transport/async_tls_transport.cpp
+  ${ODBCPP_SOURCE}/sdk/src/transport/thread_pool_transport.cpp
+  ${ODBCPP_SOURCE}/sdk/src/transport/epoll_transport.cpp
+  ${ODBCPP_SOURCE}/sdk/src/util/utf8.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(postgres_session PUBLIC adapter Threads::Threads)
 add_executable(test_postgres_live test_postgres_live.cpp)

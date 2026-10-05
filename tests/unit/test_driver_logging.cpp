@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "core/util/driver_logging.h"
+#include "odbcpp/util/driver_logging.h"
 #include "odbc/connection_string.h"
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_handles.h"

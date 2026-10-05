@@ -3,7 +3,7 @@ Example usage :
 ./build/pg_handshake_example xxx.redshift.amazonaws.com 5439 dev awsuser ppp 15000 ./root.crt
 */
 #include "core/database/database_factory.h"
-#include "core/util/deadline.h"
+#include "odbcpp/util/deadline.h"
 #include <stdexcept>
 #include <iostream>
 

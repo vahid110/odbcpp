@@ -1,10 +1,10 @@
-#include "core/database/transaction_session.h"
+#include "odbcpp/database/transaction_session.h"
 #include "core/database/postgres/pg_backend_provider.h"
 #include <gtest/gtest.h>
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_handles.h"
 #include "tests/test_handle_helpers.h"
-#include "core/util/hex.h"
+#include "odbcpp/util/hex.h"
 #include "odbc/unicode.h"
 
 #include <algorithm>

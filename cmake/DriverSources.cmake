@@ -6,12 +6,17 @@ function(odbcpp_collect_driver_sources output database)
 file(GLOB CORE_BASE_SOURCES
   "${_root}/core/database/*.cpp"
   "${_root}/core/database/*.h"
-  "${_root}/core/transport/*.cpp"
-  "${_root}/core/transport/*.h"
-  "${_root}/core/security/*.cpp"
-  "${_root}/core/security/*.h"
-  "${_root}/core/util/*.h"
-  "${_root}/core/util/*.cpp"
+  "${_root}/sdk/src/session/*.cpp"
+  "${_root}/sdk/internal/odbcpp/session/*.h"
+  "${_root}/sdk/include/odbcpp/database/*.h"
+  "${_root}/sdk/include/odbcpp/transport/*.h"
+  "${_root}/sdk/include/odbcpp/util/*.h"
+  "${_root}/sdk/src/transport/*.cpp"
+  "${_root}/sdk/internal/odbcpp/transport/*.h"
+  "${_root}/sdk/src/security/*.cpp"
+  "${_root}/sdk/internal/odbcpp/security/*.h"
+  "${_root}/sdk/internal/odbcpp/util/*.h"
+  "${_root}/sdk/src/util/*.cpp"
 )
 
 # Prototype pooling is test/example scaffolding, never a production artifact.
@@ -50,9 +55,9 @@ endif()
 
 # Add async transport
 list(APPEND CORE_SOURCES 
-  "${_root}/core/transport/async_transport.h"
-  "${_root}/core/transport/thread_pool_transport.h"
-  "${_root}/core/transport/thread_pool_transport.cpp"
+  "${_root}/sdk/internal/odbcpp/transport/async_transport.h"
+  "${_root}/sdk/internal/odbcpp/transport/thread_pool_transport.h"
+  "${_root}/sdk/src/transport/thread_pool_transport.cpp"
 )
 
 # Add ODBC layer

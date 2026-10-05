@@ -2,7 +2,7 @@
 
 #include "odbc/odbc_api.h"
 #include "odbc/unicode.h"
-#include "core/util/utf8.h"
+#include "odbcpp/util/utf8.h"
 #include "tests/test_handle_helpers.h"
 
 #include <array>

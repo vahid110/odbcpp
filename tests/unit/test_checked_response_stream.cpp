@@ -1,4 +1,4 @@
-#include "core/auth/checked_response_stream.h"
+#include "odbcpp/auth/checked_response_stream.h"
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <array>

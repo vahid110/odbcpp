@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "core/database/mysql/mysql_session.h"
-#include "core/database/session_owner.h"
+#include "odbcpp/session/session_owner.h"
 #include <thread>
 
 namespace {

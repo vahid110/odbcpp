@@ -1,4 +1,4 @@
-#include "core/auth/issuer_timestamp.h"
+#include "odbcpp/auth/issuer_timestamp.h"
 #include <gtest/gtest.h>
 #include <limits>
 

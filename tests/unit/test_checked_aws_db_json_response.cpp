@@ -1,4 +1,4 @@
-#include "core/auth/checked_aws_db_json_response.h"
+#include "odbcpp/auth/checked_aws_db_json_response.h"
 #include <gtest/gtest.h>
 #include <array>
 #include <stdexcept>

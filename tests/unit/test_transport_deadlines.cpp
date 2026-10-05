@@ -1,11 +1,11 @@
 #include <gtest/gtest.h>
 
-#include "core/transport/socket_transport.h"
-#include "core/transport/socket_wait.h"
-#include "core/transport/thread_pool_transport.h"
-#include "core/transport/tls_transport.h"
-#include "core/util/deadline.h"
-#include "core/util/platform.h"
+#include "odbcpp/transport/socket_transport.h"
+#include "odbcpp/transport/socket_wait.h"
+#include "odbcpp/transport/thread_pool_transport.h"
+#include "odbcpp/transport/tls_transport.h"
+#include "odbcpp/util/deadline.h"
+#include "odbcpp/util/platform.h"
 #include "odbc/odbc_handles.h"
 
 #include <openssl/evp.h>

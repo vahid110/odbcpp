@@ -1,6 +1,6 @@
 #include "core/database/postgres/pg_protocol_parser.h"
-#include "core/transport/socket_transport.h"
-#include "core/util/deadline.h"
+#include "odbcpp/transport/socket_transport.h"
+#include "odbcpp/util/deadline.h"
 #include <iostream>
 #include <iomanip>
 

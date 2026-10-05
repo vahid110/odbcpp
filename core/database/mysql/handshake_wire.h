@@ -1,6 +1,6 @@
 #pragma once
 // Private MySQL connection-phase codec; unrelated to the PostgreSQL parser.
-#include "core/util/result.h"
+#include "odbcpp/util/result.h"
 #include <algorithm>
 #include <array>
 #include <cstddef>

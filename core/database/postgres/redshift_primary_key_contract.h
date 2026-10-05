@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/database/query_result.h"
+#include "odbcpp/database/query_result.h"
 #include <optional>
 #include <string>
 

@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "core/database/connection_pool.h"
 #include "core/database/database_factory.h"
-#include "core/util/exception_adapter.h"
+#include "odbcpp/util/exception_adapter.h"
 #include <algorithm>
 #include <thread>
 #include <vector>

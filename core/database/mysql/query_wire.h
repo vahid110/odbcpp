@@ -1,10 +1,10 @@
 #pragma once
-#include "core/database/query_result.h"
+#include "odbcpp/database/query_result.h"
 #include "core/database/mysql/decimal_wire.h"
 #include "core/database/mysql/date_wire.h"
 #include "core/database/mysql/datetime_wire.h"
-#include "core/database/i_database_connection.h"
-#include "core/util/utf8.h"
+#include "odbcpp/database/i_database_connection.h"
+#include "odbcpp/util/utf8.h"
 #include <limits>
 #include <optional>
 #include <charconv>

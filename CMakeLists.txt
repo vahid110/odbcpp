@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(odbcpp VERSION 1.0.0 LANGUAGES CXX)
+include(GNUInstallDirs)
 
 # ---- Project Options ----
 option(BUILD_EXAMPLES "Build examples" ON)
@@ -101,6 +102,8 @@ foreach(_part IN ITEMS runtime backend composition odbc)
 endforeach()
 odbcpp_add_internal_objects(${PROJECT_NAME}_core)
 odbcpp_add_internal_objects(${PROJECT_NAME}_driver)
+set(ODBCPP_WRAPPER_INCLUDE "${CMAKE_CURRENT_BINARY_DIR}/wrapper-include")
+odbcpp_stage_wrapper_includes("${CMAKE_CURRENT_SOURCE_DIR}" "${ODBCPP_WRAPPER_INCLUDE}")
 include(cmake/AuthCore.cmake)
 set(_driver_exports_file "${CMAKE_CURRENT_SOURCE_DIR}/odbc/odbcpp.exports")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
@@ -183,7 +186,8 @@ set_target_properties(${PROJECT_NAME}_driver PROPERTIES
 target_include_directories(${PROJECT_NAME}_core
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-    $<INSTALL_INTERFACE:include>
+    $<BUILD_INTERFACE:${ODBCPP_WRAPPER_INCLUDE}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}>
     ${ODBC_INCLUDE_DIR}
 )
 target_include_directories(${PROJECT_NAME}_core SYSTEM PRIVATE
@@ -205,7 +209,8 @@ endif()
 target_include_directories(${PROJECT_NAME}_driver
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-    $<INSTALL_INTERFACE:include>
+    $<BUILD_INTERFACE:${ODBCPP_WRAPPER_INCLUDE}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}>
     ${ODBC_INCLUDE_DIR}
 )
 target_include_directories(${PROJECT_NAME}_driver SYSTEM PRIVATE

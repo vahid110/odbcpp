@@ -1,7 +1,7 @@
 // Native socket probe shared by the production OpenSSL and isolated AWS-LC proofs.
-#include "core/security/tls_client.h"
-#include "core/security/crypto.h"
-#include "core/util/platform.h"
+#include "odbcpp/security/tls_client.h"
+#include "odbcpp/security/crypto.h"
+#include "odbcpp/util/platform.h"
 
 #include <array>
 #include <iostream>

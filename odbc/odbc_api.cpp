@@ -3,7 +3,7 @@
 #include "c_api_guard.h"
 #include "connection_string.h"
 #include "odbc_handles.h"
-#include "core/database/sql_translation.h"
+#include "odbcpp/database/sql_translation.h"
 #include "unicode.h"
 #include "resource_limits.h"
 #include <algorithm>

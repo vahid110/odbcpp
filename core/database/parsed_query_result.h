@@ -1,6 +1,6 @@
 #pragma once
 
-#include "query_result.h"
+#include "odbcpp/database/query_result.h"
 #include <cstdint>
 
 namespace rs::core::database {

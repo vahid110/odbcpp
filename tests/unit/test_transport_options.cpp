@@ -1,14 +1,14 @@
 #include <gtest/gtest.h>
 
-#include "core/transport/socket_transport.h"
-#include "core/transport/async_tls_transport.h"
-#include "core/transport/tls_transport.h"
-#include "core/transport/transport_factory.h"
-#include "core/transport/transport_options.h"
+#include "odbcpp/transport/socket_transport.h"
+#include "odbcpp/transport/async_tls_transport.h"
+#include "odbcpp/transport/tls_transport.h"
+#include "odbcpp/transport/transport_factory.h"
+#include "odbcpp/transport/transport_options.h"
 #ifdef __linux__
-#include "core/transport/epoll_transport.h"
+#include "odbcpp/transport/epoll_transport.h"
 #elif defined(_WIN32)
-#include "core/transport/iocp_transport.h"
+#include "odbcpp/transport/iocp_transport.h"
 #endif
 #include "odbc/connection_string.h"
 #include "odbc/odbc_handles.h"

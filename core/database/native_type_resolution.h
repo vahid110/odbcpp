@@ -1,6 +1,6 @@
 #pragma once
 
-#include "native_type_info.h"
+#include "odbcpp/database/native_type_info.h"
 #include <unordered_map>
 
 namespace rs::core::database {

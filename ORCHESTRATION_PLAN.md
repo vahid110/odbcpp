@@ -1,5 +1,12 @@
 # ODBCPP agent and timer operating plan
 
+Current reusable operating guidance is in [AGENTS.md](AGENTS.md) and the
+[development batch skill](.agents/skills/odbcpp-development-batch/SKILL.md).
+The sections below retain dated observations and overrides; their agent states,
+allowances and timer observations are historical, not current authority. Read
+the private current handoff before continuation or any live admission. Keep
+changing statuses out of this operating plan.
+
 Reviewed 2026-10-02 against the actual agent tree, Git worktrees and saved
 automation definitions. This is coordination policy; it does not change release
 gates, authorize additional AWS spending or qualify a crypto profile.

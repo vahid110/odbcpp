@@ -1,7 +1,7 @@
-#include "core/transport/tls_transport.h"
-#include "core/transport/socket_transport.h"
-#include "core/util/deadline.h"
-#include "core/util/exception_adapter.h"
+#include "odbcpp/transport/tls_transport.h"
+#include "odbcpp/transport/socket_transport.h"
+#include "odbcpp/util/deadline.h"
+#include "odbcpp/util/exception_adapter.h"
 
 #include <chrono>
 #include <iostream>

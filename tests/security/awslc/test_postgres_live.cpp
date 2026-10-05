@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
 #include "core/database/generic_database_connection.h"
 #include "core/database/postgres/pg_protocol_parser.h"
-#include "core/transport/async_tls_transport.h"
-#include "core/transport/thread_pool_transport.h"
+#include "odbcpp/transport/async_tls_transport.h"
+#include "odbcpp/transport/thread_pool_transport.h"
 #ifdef __linux__
-#include "core/transport/epoll_transport.h"
+#include "odbcpp/transport/epoll_transport.h"
 #endif
 #include <array>
 #include <cstdlib>

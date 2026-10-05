@@ -1,7 +1,7 @@
 #pragma once
 
-#include "query_result.h"
-#include "core/util/utf8.h"
+#include "odbcpp/database/query_result.h"
+#include "odbcpp/util/utf8.h"
 
 namespace rs::core::database {
 

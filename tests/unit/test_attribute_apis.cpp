@@ -2,7 +2,7 @@
 
 #include "odbc/odbc_api.h"
 #include "odbc/odbc_types.h"
-#include "core/util/deadline.h"
+#include "odbcpp/util/deadline.h"
 #include "tests/test_handle_helpers.h"
 
 #include <array>

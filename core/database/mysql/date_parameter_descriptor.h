@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/database/mysql/query_wire.h"
-#include "core/database/query_parameter.h"
+#include "odbcpp/database/query_parameter.h"
 
 namespace rs::core::database::mysql::date_parameter_detail {
 // Private DATE parameter admission policy used by the MySQL session.

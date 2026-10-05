@@ -1,4 +1,4 @@
-#include "core/auth/aws_db_response_fields.h"
+#include "odbcpp/auth/aws_db_response_fields.h"
 #include <gtest/gtest.h>
 #include <array>
 #include <stdexcept>

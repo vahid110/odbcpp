@@ -1,6 +1,6 @@
 #include "scram_sha256.h"
-#include "core/security/crypto.h"
-#include "core/util/base64.h"
+#include "odbcpp/security/crypto.h"
+#include "odbcpp/util/base64.h"
 
 #include <charconv>
 #include <cstddef>

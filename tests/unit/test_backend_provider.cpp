@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "core/database/backend_provider.h"
+#include "odbcpp/database/backend_provider.h"
 #include "core/database/database_factory.h"
 #include "core/database/postgres/pg_backend_provider.h"
 #include "core/database/postgres/pg_database_connection.h"

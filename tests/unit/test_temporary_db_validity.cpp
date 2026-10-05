@@ -1,4 +1,4 @@
-#include "core/auth/temporary_db_validity.h"
+#include "odbcpp/auth/temporary_db_validity.h"
 #include <gtest/gtest.h>
 #include <limits>
 

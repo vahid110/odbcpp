@@ -1,6 +1,6 @@
 #pragma once
 #include "handshake_wire.h"
-#include "core/security/crypto.h"
+#include "odbcpp/security/crypto.h"
 
 namespace rs::core::database::mysql {
 struct SslRequest {

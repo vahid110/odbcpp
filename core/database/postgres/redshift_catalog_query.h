@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/database/catalog_request.h"
+#include "odbcpp/database/catalog_request.h"
 #include <string>
 
 namespace rs::core::database::postgres {

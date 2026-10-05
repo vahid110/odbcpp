@@ -1,6 +1,6 @@
-#include "core/auth/response_operation.h"
-#include "core/auth/checked_response_stream.h"
-#include "core/auth/checked_aws_db_json_response.h"
+#include "odbcpp/auth/response_operation.h"
+#include "odbcpp/auth/checked_response_stream.h"
+#include "odbcpp/auth/checked_aws_db_json_response.h"
 #include <gtest/gtest.h>
 #include <array>
 #include <stdexcept>

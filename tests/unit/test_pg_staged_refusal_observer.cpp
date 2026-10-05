@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "tests/support/pg_staged_refusal_observer.h"
-#include "core/transport/async_transport.h"
+#include "odbcpp/transport/async_transport.h"
 #include <algorithm>
 #include <functional>
 #include <limits>

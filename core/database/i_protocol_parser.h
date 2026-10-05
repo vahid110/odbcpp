@@ -6,11 +6,11 @@
 #include <cstddef>
 #include <map>
 #include <stdexcept>
-#include "core/util/deadline.h"
-#include "query_parameter.h"
+#include "odbcpp/util/deadline.h"
+#include "odbcpp/database/query_parameter.h"
 #include "parsed_query_result.h"
-#include "sql_translation.h"
-#include "native_type_info.h"
+#include "odbcpp/database/sql_translation.h"
+#include "odbcpp/database/native_type_info.h"
 
 namespace rs::core::database {
 

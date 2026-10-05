@@ -1,6 +1,6 @@
 #include "pg_command.h"
-#include "core/util/hex.h"
-#include "core/security/crypto.h"
+#include "odbcpp/util/hex.h"
+#include "odbcpp/security/crypto.h"
 #include "pg_sql_dialect.h"
 #include "pg_protocol_parser.h"
 #include <algorithm>

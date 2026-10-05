@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "core/database/mysql/mysql_session.h"
-#include "core/transport/tls_transport.h"
+#include "odbcpp/transport/tls_transport.h"
 #include "tests/integration/mysql_prepare_numeric_observation.h"
 #include <charconv>
 #include <cstdlib>

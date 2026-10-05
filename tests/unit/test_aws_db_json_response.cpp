@@ -1,4 +1,4 @@
-#include "core/auth/aws_db_json_response.h"
+#include "odbcpp/auth/aws_db_json_response.h"
 #include <gtest/gtest.h>
 #include <chrono>
 #include <string>

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/database/sql_translation.h"
+#include "odbcpp/database/sql_translation.h"
 
 namespace rs::core::database::postgres {
 

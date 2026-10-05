@@ -1,5 +1,5 @@
-#include <core/database/backend_provider.h>
-#include <core/transport/i_transport.h>
+#include "odbcpp/database/backend_provider.h"
+#include "odbcpp/transport/i_transport.h"
 
 using namespace rs::core::database;
 

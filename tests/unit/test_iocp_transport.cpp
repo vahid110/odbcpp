@@ -2,9 +2,9 @@
 
 #ifdef _WIN32
 
-#include "core/transport/iocp_transport.h"
-#include "core/util/deadline.h"
-#include "core/util/platform.h"
+#include "odbcpp/transport/iocp_transport.h"
+#include "odbcpp/util/deadline.h"
+#include "odbcpp/util/platform.h"
 
 #include <array>
 #include <atomic>

@@ -1,16 +1,16 @@
 #include <gtest/gtest.h>
 
-#include "core/transport/async_tls_transport.h"
-#include "core/transport/thread_pool_transport.h"
+#include "odbcpp/transport/async_tls_transport.h"
+#include "odbcpp/transport/thread_pool_transport.h"
 #include "core/database/generic_database_connection.h"
 #include "core/database/postgres/pg_protocol_parser.h"
 #ifdef __linux__
-#include "core/transport/epoll_transport.h"
+#include "odbcpp/transport/epoll_transport.h"
 #elif defined(_WIN32)
-#include "core/transport/iocp_transport.h"
+#include "odbcpp/transport/iocp_transport.h"
 #endif
-#include "core/util/deadline.h"
-#include "core/util/platform.h"
+#include "odbcpp/util/deadline.h"
+#include "odbcpp/util/platform.h"
 
 #include <openssl/evp.h>
 #include <openssl/err.h>

@@ -20,8 +20,9 @@ foreach(_file IN LISTS _shared_odbc)
 endforeach()
 
 file(GLOB _transport_files
-  "${SOURCE_DIR}/core/transport/*.h"
-  "${SOURCE_DIR}/core/transport/*.cpp")
+  "${SOURCE_DIR}/sdk/include/odbcpp/transport/*.h"
+  "${SOURCE_DIR}/sdk/internal/odbcpp/transport/*.h"
+  "${SOURCE_DIR}/sdk/src/transport/*.cpp")
 foreach(_file IN LISTS _transport_files)
   file(READ "${_file}" _contents)
   if(_contents MATCHES "#[ \t]*include[ \t]*[<\"].*database/")
@@ -37,6 +38,9 @@ endforeach()
 
 file(GLOB _database_root
   "${SOURCE_DIR}/core/database/*.h"
+  "${SOURCE_DIR}/sdk/include/odbcpp/database/*.h"
+  "${SOURCE_DIR}/sdk/internal/odbcpp/session/*.h"
+  "${SOURCE_DIR}/sdk/src/session/*.cpp"
   "${SOURCE_DIR}/core/database/*.cpp")
 foreach(_file IN LISTS _database_root)
   file(READ "${_file}" _contents)
@@ -79,7 +83,7 @@ foreach(_file IN LISTS _backend_files)
   endif()
 endforeach()
 
-file(GLOB _security_headers "${SOURCE_DIR}/core/security/*.h")
+file(GLOB _security_headers "${SOURCE_DIR}/sdk/internal/odbcpp/security/*.h")
 foreach(_file IN LISTS _security_headers)
   file(READ "${_file}" _contents)
   if(_contents MATCHES "#[ \t]*include[ \t]*[<\"](openssl|aws-lc|boringssl)/" OR
@@ -89,9 +93,10 @@ foreach(_file IN LISTS _security_headers)
   endif()
 endforeach()
 
-file(GLOB_RECURSE _installed_core_headers "${SOURCE_DIR}/core/*.h")
+file(GLOB_RECURSE _installed_core_headers "${SOURCE_DIR}/core/*.h"
+  "${SOURCE_DIR}/sdk/include/*.h" "${SOURCE_DIR}/sdk/internal/*.h")
 foreach(_file IN LISTS _installed_core_headers)
-  if(_file MATCHES "/core/security/")
+  if(_file MATCHES "/(core/security|sdk/internal/odbcpp/security)/")
     continue()
   endif()
   file(READ "${_file}" _contents)

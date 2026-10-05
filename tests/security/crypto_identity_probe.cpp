@@ -1,6 +1,6 @@
 // Reports the production adapters without requiring a socket or database.
-#include "core/security/crypto.h"
-#include "core/security/tls_client.h"
+#include "odbcpp/security/crypto.h"
+#include "odbcpp/security/tls_client.h"
 
 #include <iostream>
 

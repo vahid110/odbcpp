@@ -1,5 +1,5 @@
 #pragma once
-#include <core/database/i_database_connection.h>
+#include "odbcpp/database/i_database_connection.h"
 #include <chrono>
 #include <functional>
 #include <memory>

@@ -2,8 +2,8 @@
 
 #ifdef __linux__
 
-#include "core/transport/epoll_transport.h"
-#include "core/util/deadline.h"
+#include "odbcpp/transport/epoll_transport.h"
+#include "odbcpp/util/deadline.h"
 
 #include <array>
 #include <atomic>

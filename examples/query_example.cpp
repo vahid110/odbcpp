@@ -3,7 +3,7 @@ Example usage:
 ./build/query_example xxx.redshift.amazonaws.com 5439 dev awsuser yyy 15000 verify-full  ./root.crt
 */
 #include "core/database/database_factory.h"
-#include "core/util/deadline.h"
+#include "odbcpp/util/deadline.h"
 #include <stdexcept>
 #include <iostream>
 
