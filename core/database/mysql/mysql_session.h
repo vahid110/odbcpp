@@ -1,9 +1,13 @@
 #pragma once
+#include <algorithm>
+#include <array>
+#include <type_traits>
 #include "authentication.h"
 #include "error_wire.h"
 #include "query_wire.h"
 #include "prepared_wire.h"
 #include "date_parameter_descriptor.h"
+#include "parameter_receipt_shape.h"
 #include "core/transport/tls_configurable_transport.h"
 
 namespace rs::core::database::mysql {
@@ -223,6 +227,129 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
     } catch (const std::bad_alloc&) { return retiring_failure(rs::util::make_error_code(DbErrorCode::AllocationFailure),operation); }
       catch (...) { return retiring_failure(rs::util::make_error_code(DbErrorCode::ProtocolError),operation); }
   }
+  // Backend-private metadata observation only: no values, execution or admission token.
+  enum class PrepareObservationPolicy { DateDatetimeQ6Decimal65Q30ThreeByFour };
+  enum class PrepareObservationStage {
+    Unavailable, PrepareAttempted, PrepareHeaderValidated, ParameterMetadataValidated,
+    AllMetadataValidated, CountValidated, CloseSent, ClosedVerified
+  };
+  struct PrepareObservationProgress {
+    PrepareObservationStage stage{PrepareObservationStage::Unavailable};
+    bool prepare_sent{}, count_verified{};
+    std::optional<std::uint16_t> parameter_count, result_count;
+  };
+  struct ObservedParameterPair {
+    query_detail::NativeParameterDescriptorObservation raw;
+    NativeTypeInfo normalized;
+  };
+  struct CompletePrepareObservation {
+    std::uint32_t statement_id{}; // Already closed; never a reusable statement handle.
+    std::array<ObservedParameterPair,3> parameters;
+    std::array<NativeTypeInfo,4> result_types;
+    std::uint16_t parameter_count{}, result_count{};
+    bool parameter_eof{}, result_eof{}, count_verified{}, close_sent{}, verified_completion{};
+    std::size_t metadata_name_bytes{}, metadata_entries{}, response_wire_bytes{}, response_messages{};
+  };
+  struct PrepareObservationOutcome {
+    BackendResult<CompletePrepareObservation> result;
+    PrepareObservationProgress progress;
+  };
+  PrepareObservationOutcome observe_combined_prepare(std::string_view sql,rs::util::Deadline deadline,
+      PrepareObservationPolicy policy) {
+    using rs::util::DbErrorCode;
+    constexpr auto operation=BackendOperation::ExecutePrepared;
+    PrepareObservationProgress progress;
+    auto rejected=[&progress](BackendError error) {
+      return PrepareObservationOutcome{BackendResult<CompletePrepareObservation>{std::move(error)},progress};
+    };
+    if (!connected_) return rejected(failure(rs::util::make_error_code(DbErrorCode::NotConnected),operation));
+    if (policy!=PrepareObservationPolicy::DateDatetimeQ6Decimal65Q30ThreeByFour)
+      return rejected(local_failure(rs::util::make_error_code(DbErrorCode::UnsupportedFeature),operation));
+    if (state_!=SessionState::Idle)
+      return rejected(local_backend_error(LocalFailure::InvalidInput,"MySQL prepare observation requires idle session",operation,state_));
+    if (sql.empty() || sql.find('\0')!=std::string_view::npos || !rs::util::utf8_code_point_count(sql))
+      return rejected(local_backend_error(LocalFailure::InvalidInput,"Invalid MySQL prepared input",operation,state_));
+    if (sql.size()>input_limits_.max_sql_bytes || sql.size()>=connection_packet_limit)
+      return rejected(local_failure(rs::util::make_error_code(DbErrorCode::ResourceLimit),operation));
+    const auto prepare_size=sql.size()+5;
+    if (prepare_size>input_limits_.max_request_wire_bytes ||
+        input_limits_.max_request_wire_bytes-prepare_size<9)
+      return rejected(local_failure(rs::util::make_error_code(DbErrorCode::ResourceLimit),operation));
+    struct Retire {
+      MySqlSession& session;bool accepted{};
+      ~Retire() { if (!accepted) session.disconnect(); }
+    } retire{*this};
+    try {
+      std::vector<std::byte> request(prepare_size);
+      authentication_detail::frame(request,0);request[4]=std::byte{22};
+      for (std::size_t i=0;i<sql.size();++i) request[5+i]=static_cast<std::byte>(sql[i]);
+      progress.stage=PrepareObservationStage::PrepareAttempted;
+      auto sent=authentication_detail::send_all(*transport_,request,deadline);
+      if (!sent) return rejected(retiring_failure(sent.error(),operation));
+      progress.prepare_sent=true;
+      Reader reader{*transport_,deadline,response_limits_};
+      auto first=reader.next();if (!first) return rejected(retiring_failure(first.error(),operation));
+      if ((*first)[0]==std::byte{255}) return rejected(retiring_failure(server_error(*first).error(),operation));
+      auto prepared=prepared_detail::parse_prepare(*first);
+      if (!prepared) return rejected(retiring_failure(prepared.error(),operation));
+      progress.stage=PrepareObservationStage::PrepareHeaderValidated;
+      progress.parameter_count=prepared->parameters;progress.result_count=prepared->columns;
+      if (prepared->parameters>input_limits_.max_parameters ||
+          prepared->columns>result_limits_.max_columns_per_description ||
+          static_cast<std::size_t>(prepared->parameters)+prepared->columns>result_limits_.max_metadata_entries/6)
+        return rejected(retiring_failure(rs::util::make_error_code(DbErrorCode::ResourceLimit),operation));
+      std::size_t names{},entries{};
+      std::vector<ParameterReceipt> parameters;
+      std::vector<NativeTypeInfo> result_types;
+      auto metadata=read_prepared_metadata(reader,prepared->parameters,names,entries,&parameters,
+          ParameterMetadataScope::ObservationThreeByFour);
+      if (!metadata) return rejected(retiring_failure(metadata.error(),operation));
+      progress.stage=PrepareObservationStage::ParameterMetadataValidated;
+      metadata=read_prepared_metadata(reader,prepared->columns,names,entries,nullptr,
+          ParameterMetadataScope::ExistingOnly,&result_types);
+      if (!metadata) return rejected(retiring_failure(metadata.error(),operation));
+      progress.stage=PrepareObservationStage::AllMetadataValidated;
+      if (parameters.size()!=prepared->parameters || result_types.size()!=prepared->columns)
+        return rejected(retiring_failure(rs::util::make_error_code(DbErrorCode::ProtocolError),operation));
+      const bool matching=prepared->parameters==3 && prepared->columns==4;
+      if (matching) {
+        progress.count_verified=true;progress.stage=PrepareObservationStage::CountValidated;
+      }
+      std::array<std::byte,9> close{};authentication_detail::frame(close,0);close[4]=std::byte{25};
+      for (std::size_t i=0;i<4;++i)
+        close[5+i]=static_cast<std::byte>((prepared->statement_id>>(8*i))&255);
+      sent=authentication_detail::send_all(*transport_,close,deadline);
+      if (!sent) return rejected(retiring_failure(sent.error(),operation));
+      progress.stage=PrepareObservationStage::CloseSent;
+      auto checked=verified_completion(deadline);
+      if (!checked) return rejected(retiring_failure(checked.error(),operation));
+      progress.stage=PrepareObservationStage::ClosedVerified;
+      if (!matching) {
+        auto outcome=rejected(local_backend_error(LocalFailure::InvalidInput,"MySQL parameter count mismatch",operation,state_));
+        retire.accepted=true;return outcome;
+      }
+      if (snapshot().state!=SessionState::Idle || snapshot().disposition!=SessionDisposition::Reusable)
+        return rejected(retiring_failure(rs::util::make_error_code(DbErrorCode::ProtocolError),operation));
+      CompletePrepareObservation evidence;
+      evidence.statement_id=prepared->statement_id;
+      for (std::size_t i=0;i<evidence.parameters.size();++i)
+        evidence.parameters[i]={parameters[i].raw,parameters[i].normalized};
+      std::copy(result_types.begin(),result_types.end(),evidence.result_types.begin());
+      evidence.parameter_count=prepared->parameters;evidence.result_count=prepared->columns;
+      evidence.parameter_eof=true;evidence.result_eof=true;evidence.count_verified=true;
+      evidence.close_sent=true;evidence.verified_completion=true;
+      evidence.metadata_name_bytes=names;evidence.metadata_entries=entries;
+      evidence.response_wire_bytes=reader.wire;evidence.response_messages=reader.messages;
+      static_assert(std::is_nothrow_move_constructible_v<CompletePrepareObservation>);
+      static_assert(std::is_nothrow_move_constructible_v<PrepareObservationOutcome>);
+      PrepareObservationOutcome outcome{BackendResult<CompletePrepareObservation>{std::move(evidence),snapshot()},progress};
+      retire.accepted=true;return outcome;
+    } catch (const std::bad_alloc&) {
+      return rejected(retiring_failure(rs::util::make_error_code(DbErrorCode::AllocationFailure),operation));
+    } catch (...) {
+      return rejected(retiring_failure(rs::util::make_error_code(DbErrorCode::ProtocolError),operation));
+    }
+  }
   BackendResult<QueryResult> execute_query(std::string_view sql,rs::util::Deadline deadline) override {
     return execute_direct(sql,deadline,false);
   }
@@ -316,10 +443,15 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
     if (!tls || !tls->peer_identity_verified()) return {rs::util::DbErrorCode::TLSError};
     return {};
   }
+  enum class ParameterMetadataScope { ExistingOnly, ObservationThreeByFour };
   struct ParameterReceipt { query_detail::NativeParameterDescriptorObservation raw;NativeTypeInfo normalized; };
   rs::util::Result<void> read_prepared_metadata(Reader& reader,std::size_t count,
-      std::size_t& names,std::size_t& entries,std::vector<ParameterReceipt>* types) {
+      std::size_t& names,std::size_t& entries,std::vector<ParameterReceipt>* types,
+      ParameterMetadataScope scope=ParameterMetadataScope::ExistingOnly,
+      std::vector<NativeTypeInfo>* result_types=nullptr) {
     using rs::util::DbErrorCode;
+    // Collectors are stage-exclusive; reject before any I/O or mutation.
+    if (types && result_types) return {DbErrorCode::ProtocolError};
     for (std::size_t i=0;i<count;++i) {
       auto packet=reader.next();if (!packet) return {packet.error()};
       if ((*packet)[0]==std::byte{255}) return {server_error(*packet).error()};
@@ -329,19 +461,30 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
       auto column=query_detail::column(*packet,result_limits_,&bytes,nullptr,nullptr,types?&raw:nullptr,
           types?query_detail::ColumnContext::DatetimeParameterQ6Candidate:query_detail::ColumnContext::Result);
       if (!column) return {column.error()};
-      // Decimal and Timestamp remain result-only; DATE is checked separately.
-      if (types && (column->normalized_type->type==ScalarType::Decimal ||
-          column->normalized_type->type==ScalarType::Timestamp)) return {DbErrorCode::UnsupportedFeature};
-      if (types && (raw.type==10 || column->normalized_type->type==ScalarType::Date)) {
-        // Structural DATE profile only. Actual caller-hint affinity is checked
-        // after all preparation metadata and count validation, before execute.
-        auto shape=date_parameter_detail::descriptor(QueryParameterType::Date,raw,*column->normalized_type);
+      // Default diagnostic refusal remains unchanged. Observer scope is local
+      // to this parameter pass and never selects an execution writer/profile.
+      if (types && scope==ParameterMetadataScope::ExistingOnly &&
+          (column->normalized_type->type==ScalarType::Decimal ||
+           column->normalized_type->type==ScalarType::Timestamp)) return {DbErrorCode::UnsupportedFeature};
+      if (types && scope==ParameterMetadataScope::ObservationThreeByFour &&
+          (raw.type==246 || column->normalized_type->type==ScalarType::Decimal)) {
+        if (!raw.flags) return {DbErrorCode::ProtocolError};
+        auto shape=parameter_receipt_detail::decimal_65q30_shape(raw,*raw.flags,*column->normalized_type);
+        if (!shape) return {shape.error()};
+      } else if (types && (raw.type==10 || column->normalized_type->type==ScalarType::Date)) {
+        // Shape only; ordinary caller affinity remains after EOF/count.
+        auto shape=date_parameter_detail::receipt_shape(raw,*column->normalized_type);
+        if (!shape) return {shape.error()};
+      } else if (types && scope==ParameterMetadataScope::ObservationThreeByFour &&
+          (raw.type==12 || column->normalized_type->type==ScalarType::Timestamp)) {
+        auto shape=parameter_receipt_detail::datetime_q6_shape(raw,*column->normalized_type);
         if (!shape) return {shape.error()};
       }
       if (bytes>result_limits_.max_metadata_name_bytes-names ||
           result_limits_.max_metadata_entries-entries<6) return {DbErrorCode::ResourceLimit};
       names+=bytes;entries+=6;
       if (types) types->push_back({raw,*column->normalized_type});
+      if (result_types) result_types->push_back(*column->normalized_type);
     }
     if (count) {
       auto packet=reader.next();if (!packet) return {packet.error()};
