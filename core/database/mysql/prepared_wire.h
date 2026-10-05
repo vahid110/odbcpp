@@ -85,18 +85,18 @@ inline rs::util::Result<std::pair<std::uint8_t, std::size_t>> parameter_shape(
   if (parameter.binary_input && parameter.type != QueryParameterType::Binary)
     return {DbErrorCode::InvalidParameter};
   switch (parameter.type) {
-    case QueryParameterType::Int16: return std::pair<std::uint8_t, std::size_t>{2, 2};
-    case QueryParameterType::Int32: return std::pair<std::uint8_t, std::size_t>{3, 4};
-    case QueryParameterType::Int64: return std::pair<std::uint8_t, std::size_t>{8, 8};
-    case QueryParameterType::Boolean: return std::pair<std::uint8_t, std::size_t>{1, 1};
+    case QueryParameterType::Int16: return std::pair<std::uint8_t, std::size_t>{std::uint8_t{2}, std::size_t{2}};
+    case QueryParameterType::Int32: return std::pair<std::uint8_t, std::size_t>{std::uint8_t{3}, std::size_t{4}};
+    case QueryParameterType::Int64: return std::pair<std::uint8_t, std::size_t>{std::uint8_t{8}, std::size_t{8}};
+    case QueryParameterType::Boolean: return std::pair<std::uint8_t, std::size_t>{std::uint8_t{1}, std::size_t{1}};
     case QueryParameterType::Text:
     case QueryParameterType::Unspecified:
       if (parameter.value && !rs::util::utf8_code_point_count(*parameter.value))
         return {DbErrorCode::InvalidParameter};
-      return std::pair<std::uint8_t, std::size_t>{253,
+      return std::pair<std::uint8_t, std::size_t>{std::uint8_t{253},
           parameter.value ? length_size(parameter.value->size()) + parameter.value->size() : 0};
     case QueryParameterType::Binary:
-      return std::pair<std::uint8_t, std::size_t>{252,
+      return std::pair<std::uint8_t, std::size_t>{std::uint8_t{252},
           parameter.value ? length_size(parameter.value->size()) + parameter.value->size() : 0};
     case QueryParameterType::Date: {
       if (profile!=ParameterProfile::DateCandidate) return {DbErrorCode::UnsupportedFeature};
