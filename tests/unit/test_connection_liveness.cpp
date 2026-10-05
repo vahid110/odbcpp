@@ -4236,3 +4236,211 @@ TEST(NormalizedCellTest, PostgresDoesNotInterpretRedshiftVarbyteOidOrHex) {
   EXPECT_EQ(std::optional<std::string>("xyz"), result->rows[3][0]);
   EXPECT_TRUE(result->cell_errors.empty());
 }
+
+namespace {
+// Literal PostgreSQL frames, with deliberately fragmented reads/writes. Only
+// local test transport observations are recorded; no database service is used.
+class OriginalDeadlineWire final : public rs::core::transport::ITransport,
+    public rs::core::transport::IStartTlsTransport,
+    public rs::core::transport::ITlsConfigurableTransport {
+ public:
+  enum class Reply { Md5, Rejected, Cleartext };
+  explicit OriginalDeadlineWire(bool tls = false, Reply reply = Reply::Md5) : tls_(tls) { reset(reply); }
+  void reset(Reply reply = Reply::Md5) {
+    input_.clear(); offset_=0; ssl_reply_=tls_; sent.clear(); calls.clear();
+    if(reply==Reply::Rejected) {
+      static constexpr char error[]="SFATAL\0C28P01\0Mfixed authentication rejection\0";
+      frame('E',std::string_view(error,sizeof(error)));
+    } else {
+      if(reply==Reply::Md5) { frame('R',std::string_view("\0\0\0\5\1\2\3\4",8)); }
+      else { frame('R',std::string_view("\0\0\0\3",4)); }
+      frame('R',std::string_view("\0\0\0\0",4));frame('Z',"I");
+    }
+  }
+  static void exhaust(rs::util::Deadline deadline) { while(rs::util::Clock::now()<deadline) {} }
+  rs::util::Result<void> connect(std::string_view,uint16_t,rs::util::Deadline deadline) override {
+    calls.emplace_back("connect",deadline);return {};
+  }
+  rs::util::Result<void> connect_plain(std::string_view,uint16_t,rs::util::Deadline deadline) override {
+    calls.emplace_back("plain",deadline);return {};
+  }
+  rs::util::Result<void> upgrade_to_tls(std::string_view,rs::util::Deadline deadline) override {
+    calls.emplace_back("upgrade",deadline);
+    if(tls_error) { return {rs::util::DbErrorCode::TLSError,"fixed TLS rejection"}; }
+    return {};
+  }
+  bool peer_identity_verified() noexcept override { return verified; }
+  void set_ca_locations(const std::string&,const std::string&) override {
+    ++configurations;if(configuration_expiry) { exhaust(*configuration_expiry); }
+  }
+  rs::util::Result<rs::core::transport::IOResult> send(std::span<const std::byte> bytes,rs::util::Deadline deadline) override {
+    calls.emplace_back("write",deadline);const auto n=std::min<std::size_t>(3,bytes.size());
+    sent.insert(sent.end(),bytes.begin(),bytes.begin()+static_cast<std::ptrdiff_t>(n));
+    if(late_write) { exhaust(deadline); }
+    return rs::core::transport::IOResult{n,false};
+  }
+  rs::util::Result<rs::core::transport::IOResult> recv(std::span<std::byte> bytes,rs::util::Deadline deadline) override {
+    calls.emplace_back("read",deadline);
+    if(ssl_reply_) { ssl_reply_=false;bytes[0]=std::byte{'S'};return rs::core::transport::IOResult{1,false}; }
+    if(offset_==input_.size()) { return {rs::util::DbErrorCode::NetworkError,"fixture exhausted"}; }
+    bytes[0]=input_[offset_++];
+    if(late_final && offset_==input_.size()) { final_auth_delivered=true; }
+    if(late_read || final_auth_delivered) { exhaust(deadline); }
+    return rs::core::transport::IOResult{1,false};
+  }
+  void close() noexcept override { ++closes; }
+  std::vector<std::pair<std::string,rs::util::Deadline>> calls;
+  std::vector<std::byte> sent;
+  unsigned closes{},configurations{};
+  bool tls_error{},verified{true},late_final{},late_write{},late_read{},final_auth_delivered{};
+  std::optional<rs::util::Deadline> configuration_expiry;
+ private:
+  void frame(char type,std::string_view payload) {
+    input_.push_back(std::byte(static_cast<unsigned char>(type)));
+    const auto n=static_cast<unsigned>(payload.size()+4);
+    for(int shift:{24,16,8,0}) { input_.push_back(std::byte((n>>shift)&255u)); }
+    for(unsigned char c:payload) { input_.push_back(std::byte(c)); }
+  }
+  bool tls_,ssl_reply_{};std::vector<std::byte> input_;std::size_t offset_{};
+};
+class DeadlineEncodingParser final : public rs::core::database::postgres::PgProtocolParser {
+ public:
+  rs::util::Deadline expiry{};
+  std::vector<std::byte> create_startup_message(const std::string& user,const std::string& database,
+      const std::map<std::string,std::string>& params,std::size_t limit) override {
+    auto bytes=PgProtocolParser::create_startup_message(user,database,params,limit);
+    OriginalDeadlineWire::exhaust(expiry);return bytes;
+  }
+};
+void expect_original_deadline(const OriginalDeadlineWire& wire,rs::util::Deadline deadline) {
+  ASSERT_FALSE(wire.calls.empty());
+  for(const auto& [stage,observed]:wire.calls) { SCOPED_TRACE(stage);EXPECT_EQ(observed,deadline); }
+}
+void expect_retired_timeout(const rs::core::database::BackendResult<void>& result) {
+  using namespace rs::core::database;
+  ASSERT_FALSE(result);EXPECT_EQ(result.backend_error().error_class,BackendErrorClass::Timeout);
+  EXPECT_EQ(result.session_snapshot(),(SessionSnapshot{SessionState::Disconnected,SessionDisposition::Retire}));
+}
+}
+
+TEST(ConnectionOriginalDeadlineTest, PlainRealParserFragmentedMd5OwnsSameDeadlineAndSnapshot) {
+  using namespace rs::core::database;
+  auto transport=std::make_unique<OriginalDeadlineWire>();auto* wire=transport.get();
+  postgres::PgDatabaseConnection connection(std::move(transport));
+  auto settings=pg_fixture_settings();settings.use_ssl=false;settings.password="synthetic-only";
+  settings.timeout=std::chrono::seconds{0}; // Supplied deadline, not this relative timeout, controls entry.
+  const auto deadline=rs::util::make_deadline(std::chrono::seconds{2});
+  const auto result=connection.connect_until(settings,deadline);ASSERT_TRUE(result);
+  EXPECT_EQ(result.session_snapshot(),(SessionSnapshot{SessionState::Idle,SessionDisposition::Reusable}));
+  expect_original_deadline(*wire,deadline);EXPECT_EQ(wire->calls.front().first,"connect");
+  EXPECT_GT(wire->calls.size(),30u);EXPECT_TRUE(detail::ConnectionAuthenticationTestAccess::password(connection).empty());
+  const auto retained=result.session_snapshot();connection.disconnect();
+  EXPECT_EQ(retained,(SessionSnapshot{SessionState::Idle,SessionDisposition::Reusable}));EXPECT_GT(wire->closes,0u);
+}
+TEST(ConnectionOriginalDeadlineTest, TlsPlainNegotiationUpgradeAndFragmentedCleartextUseOriginalDeadline) {
+  using namespace rs::core::database;
+  auto transport=std::make_unique<OriginalDeadlineWire>(true,OriginalDeadlineWire::Reply::Cleartext);auto* wire=transport.get();
+  postgres::PgDatabaseConnection connection(std::move(transport),SessionResetProfile::SameAuthenticatedServerSession,
+      postgres::PgCatalogProfile::Redshift);
+  auto settings=pg_fixture_settings();settings.use_ssl=true;settings.ssl_ca_file="synthetic-ca";settings.password="synthetic-only";
+  const auto deadline=rs::util::make_deadline(std::chrono::seconds{2});ASSERT_TRUE(connection.connect_until(settings,deadline));
+  expect_original_deadline(*wire,deadline);EXPECT_EQ(wire->calls.front().first,"plain");EXPECT_EQ(wire->configurations,1u);
+  EXPECT_EQ(std::count_if(wire->calls.begin(),wire->calls.end(),[](const auto& c){return c.first=="upgrade";}),1);
+  const std::array<std::byte,8> ssl{std::byte{0},std::byte{0},std::byte{0},std::byte{8},std::byte{4},std::byte{210},std::byte{22},std::byte{47}};
+  ASSERT_GE(wire->sent.size(),ssl.size());EXPECT_TRUE(std::equal(ssl.begin(),ssl.end(),wire->sent.begin()));
+  EXPECT_TRUE(detail::ConnectionAuthenticationTestAccess::password(connection).empty());connection.disconnect();
+}
+TEST(ConnectionOriginalDeadlineTest, ExpiredAndEncodingOrTlsConfigurationConsumedBudgetDispatchNoIo) {
+  using namespace rs::core::database;
+  for(unsigned stage=0;stage<3;++stage) {
+    SCOPED_TRACE(stage);auto transport=std::make_unique<OriginalDeadlineWire>(stage==2);auto* wire=transport.get();
+    const auto deadline=stage==0?rs::util::Deadline::min():rs::util::make_deadline(std::chrono::milliseconds{2});
+    auto settings=pg_fixture_settings();settings.use_ssl=stage==2;settings.password="synthetic-only";
+    if(stage==2) { wire->configuration_expiry=deadline;settings.ssl_ca_file="synthetic-ca"; }
+    std::unique_ptr<postgres::PgProtocolParser> parser;
+    if(stage==1) { auto delayed=std::make_unique<DeadlineEncodingParser>();delayed->expiry=deadline;parser=std::move(delayed); }
+    else { parser=std::make_unique<postgres::PgProtocolParser>(); }
+    GenericDatabaseConnection connection(std::move(parser),std::move(transport));
+    const auto result=connection.connect_until(settings,deadline);expect_retired_timeout(result);
+    EXPECT_TRUE(wire->calls.empty());EXPECT_TRUE(wire->sent.empty());EXPECT_FALSE(connection.is_connected());
+    EXPECT_TRUE(detail::ConnectionAuthenticationTestAccess::password(connection).empty());
+  }
+}
+TEST(ConnectionOriginalDeadlineTest, LateSuccessfulFinalAuthenticationIsTimeoutRetireAndNeverConnected) {
+  using namespace rs::core::database;
+  auto transport=std::make_unique<OriginalDeadlineWire>();auto* wire=transport.get();wire->late_final=true;
+  postgres::PgDatabaseConnection connection(std::move(transport));auto settings=pg_fixture_settings();settings.use_ssl=false;
+  const auto deadline=rs::util::make_deadline(std::chrono::milliseconds{50});
+  const auto result=connection.connect_until(settings,deadline);expect_retired_timeout(result);
+  expect_original_deadline(*wire,deadline);EXPECT_TRUE(wire->final_auth_delivered);EXPECT_FALSE(connection.is_connected());EXPECT_GT(wire->closes,0u);
+  EXPECT_TRUE(detail::ConnectionAuthenticationTestAccess::password(connection).empty());
+  for(bool write:{true,false}) {
+    SCOPED_TRACE(write);auto fragment=std::make_unique<OriginalDeadlineWire>();auto* observed=fragment.get();
+    observed->late_write=write;observed->late_read=!write;postgres::PgDatabaseConnection partial(std::move(fragment));
+    const auto original=rs::util::make_deadline(std::chrono::milliseconds{50});
+    expect_retired_timeout(partial.connect_until(settings,original));expect_original_deadline(*observed,original);
+    const auto reads=std::count_if(observed->calls.begin(),observed->calls.end(),[](const auto& call){return call.first=="read";});
+    const auto writes=std::count_if(observed->calls.begin(),observed->calls.end(),[](const auto& call){return call.first=="write";});
+    EXPECT_EQ(reads,write?0:1);if(write) { EXPECT_EQ(writes,1); }
+    EXPECT_FALSE(partial.is_connected());EXPECT_GT(observed->closes,0u);
+  }
+}
+TEST(ConnectionOriginalDeadlineTest, NativeAuthenticationAndTlsFailuresOwnErrorsCleanAndPermitFreshRecovery) {
+  using namespace rs::core::database;
+  auto transport=std::make_unique<OriginalDeadlineWire>(false,OriginalDeadlineWire::Reply::Rejected);auto* wire=transport.get();
+  postgres::PgDatabaseConnection connection(std::move(transport));auto settings=pg_fixture_settings();settings.use_ssl=false;settings.password="synthetic-only";
+  const auto deadline=rs::util::make_deadline(std::chrono::seconds{2});const auto rejected=connection.connect_until(settings,deadline);
+  ASSERT_FALSE(rejected);const auto owned=rejected.backend_error();EXPECT_EQ(owned.native_state,std::optional<std::string>{"28P01"});
+  EXPECT_EQ(owned.session_state,SessionState::Disconnected);EXPECT_EQ(owned.disposition,SessionDisposition::Retire);
+  EXPECT_GT(wire->closes,0u);EXPECT_TRUE(detail::ConnectionAuthenticationTestAccess::password(connection).empty());
+  wire->reset();ASSERT_TRUE(connection.connect_until(settings,deadline));EXPECT_EQ(owned.message,"Authentication failed: fixed authentication rejection");
+  EXPECT_EQ(owned.native_state,std::optional<std::string>{"28P01"});connection.disconnect();
+  auto tls=std::make_unique<OriginalDeadlineWire>(true);auto* tls_wire=tls.get();tls_wire->tls_error=true;
+  postgres::PgDatabaseConnection tls_connection(std::move(tls));settings.use_ssl=true;
+  const auto tls_result=tls_connection.connect_until(settings,deadline);ASSERT_FALSE(tls_result);
+  EXPECT_EQ(tls_result.backend_error().error_class,BackendErrorClass::Tls);EXPECT_EQ(tls_result.backend_error().message,"fixed TLS rejection");
+  EXPECT_EQ(tls_result.session_snapshot(),(SessionSnapshot{SessionState::Disconnected,SessionDisposition::Retire}));
+  EXPECT_GT(tls_wire->closes,0u);EXPECT_TRUE(detail::ConnectionAuthenticationTestAccess::password(tls_connection).empty());
+}
+TEST(ConnectionOriginalDeadlineTest, ProfileModeAndAlreadyOpenRejectionPreserveConnectedSessionWithoutIo) {
+  using namespace rs::core::database;
+  auto transport=std::make_unique<OriginalDeadlineWire>();auto* wire=transport.get();
+  postgres::PgDatabaseConnection pg(std::move(transport));auto settings=pg_fixture_settings();settings.use_ssl=false;
+  settings.redshift_catalog_mode=RedshiftCatalogMode::Legacy;
+  const auto deadline=rs::util::make_deadline(std::chrono::seconds{2});EXPECT_FALSE(pg.connect_until(settings,deadline));EXPECT_TRUE(wire->calls.empty());
+  settings.redshift_catalog_mode.reset();ASSERT_TRUE(pg.connect_until(settings,deadline));pg.disconnect();wire->reset();
+  ASSERT_TRUE(pg.connect_until(settings,deadline));pg.disconnect();
+  auto rs_transport=std::make_unique<OriginalDeadlineWire>();auto* rs_wire=rs_transport.get();
+  postgres::PgDatabaseConnection redshift(std::move(rs_transport),SessionResetProfile::SameAuthenticatedServerSession,postgres::PgCatalogProfile::Redshift);
+  settings.redshift_catalog_mode=static_cast<RedshiftCatalogMode>(999);EXPECT_FALSE(redshift.connect_until(settings,deadline));EXPECT_TRUE(rs_wire->calls.empty());
+  settings.redshift_catalog_mode=RedshiftCatalogMode::Legacy;ASSERT_TRUE(redshift.connect_until(settings,deadline));
+  const auto calls=rs_wire->calls.size();const auto closes=rs_wire->closes;
+  const auto rejected=redshift.connect_until(settings,rs::util::Deadline::min());ASSERT_FALSE(rejected);
+  EXPECT_TRUE(redshift.is_connected());EXPECT_EQ(rejected.session_snapshot(),(SessionSnapshot{SessionState::Idle,SessionDisposition::Reusable}));
+  EXPECT_EQ(rs_wire->calls.size(),calls);EXPECT_EQ(rs_wire->closes,closes);redshift.disconnect();
+}
+TEST(ConnectionOriginalDeadlineTest, LegacyRelativeWrapperStillDerivesOneDeadlineAndReconnects) {
+  using namespace rs::core::database;
+  auto transport=std::make_unique<OriginalDeadlineWire>();auto* wire=transport.get();postgres::PgDatabaseConnection connection(std::move(transport));
+  auto settings=pg_fixture_settings();settings.use_ssl=false;settings.timeout=std::chrono::seconds{2};
+  const auto before=rs::util::Clock::now();ASSERT_TRUE(connection.connect(settings));ASSERT_FALSE(wire->calls.empty());
+  const auto derived=wire->calls.front().second;EXPECT_GE(derived,before+settings.timeout);EXPECT_LE(derived,rs::util::Clock::now()+settings.timeout);
+  expect_original_deadline(*wire,derived);connection.disconnect();wire->reset();
+  const auto explicit_deadline=rs::util::make_deadline(std::chrono::seconds{2});ASSERT_TRUE(connection.connect_until(settings,explicit_deadline));
+  expect_original_deadline(*wire,explicit_deadline);connection.disconnect();
+}
+TEST(ConnectionOriginalDeadlineTest, InvalidInputsAndUnverifiedCleartextDoNotEmitCredentialsAndRecover) {
+  using namespace rs::core::database;
+  auto transport=std::make_unique<OriginalDeadlineWire>();auto* wire=transport.get();postgres::PgDatabaseConnection connection(std::move(transport));
+  auto settings=pg_fixture_settings();settings.use_ssl=false;settings.password=std::string("a\0b",3);
+  const auto deadline=rs::util::make_deadline(std::chrono::seconds{2});EXPECT_FALSE(connection.connect_until(settings,deadline));EXPECT_TRUE(wire->calls.empty());
+  settings.password="synthetic-only";settings.database=std::string("a\0b",3);EXPECT_FALSE(connection.connect_until(settings,deadline));EXPECT_TRUE(wire->calls.empty());
+  settings.database.clear();ASSERT_TRUE(connection.connect_until(settings,deadline));connection.disconnect();
+  auto unverified=std::make_unique<OriginalDeadlineWire>(true,OriginalDeadlineWire::Reply::Cleartext);auto* peer=unverified.get();peer->verified=false;
+  postgres::PgDatabaseConnection rejected(std::move(unverified));settings.use_ssl=true;
+  const auto result=rejected.connect_until(settings,deadline);ASSERT_FALSE(result);
+  EXPECT_FALSE(rejected.is_connected());EXPECT_GT(peer->closes,0u);
+  EXPECT_TRUE(detail::ConnectionAuthenticationTestAccess::password(rejected).empty());
+  const std::string_view secret=settings.password;
+  EXPECT_EQ(std::search(peer->sent.begin(),peer->sent.end(),secret.begin(),secret.end(),[](std::byte b,char c){return std::to_integer<unsigned char>(b)==static_cast<unsigned char>(c);}),peer->sent.end());
+}

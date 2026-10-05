@@ -19,6 +19,7 @@ public:
       PgCatalogProfile catalog_profile = PgCatalogProfile::PostgreSQL);
 
   BackendResult<void> connect(const ConnectionSettings& settings) override;
+  BackendResult<void> connect_until(const ConnectionSettings& settings, rs::util::Deadline deadline);
 
   ISessionReset* session_reset() noexcept override { return reset_profile_ ? this : nullptr; }
   SessionResetProfile reset_profile() const noexcept override {

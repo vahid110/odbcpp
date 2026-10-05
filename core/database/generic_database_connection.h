@@ -15,6 +15,7 @@ public:
     std::unique_ptr<rs::core::transport::ITransport> transport = nullptr);
   
   BackendResult<void> connect(const ConnectionSettings& settings) override;
+  BackendResult<void> connect_until(const ConnectionSettings& settings, rs::util::Deadline deadline);
   void disconnect() override;
   bool is_connected() const override;
   SessionState session_state() const override { return session_state_; }
@@ -62,7 +63,7 @@ private:
   friend struct detail::ConnectionAuthenticationTestAccess;
   void clear_authentication_state() noexcept;
   BackendResult<QueryResult> reject_request_limit(BackendOperation operation) const;
-  BackendResult<void> connect_impl(const ConnectionSettings& settings);
+  BackendResult<void> connect_impl(const ConnectionSettings& settings, rs::util::Deadline deadline);
   SessionState session_state_{SessionState::Disconnected};
   BackendResult<QueryResult> finish_operation(BackendResult<QueryResult> result,
       BackendOperation operation);
@@ -85,9 +86,11 @@ private:
   std::vector<std::byte> read_message(rs::util::Deadline deadline);
   
   // Result-based methods (internal implementation)
-  rs::util::Result<void> write_all_result(const std::vector<std::byte>& data, rs::util::Deadline deadline);
+  rs::util::Result<void> write_all_result(const std::vector<std::byte>& data, rs::util::Deadline deadline,
+      bool enforce_deadline = false);
   rs::util::Result<std::vector<std::byte>> read_message_result(rs::util::Deadline deadline,
-      std::size_t remaining_bytes = static_cast<std::size_t>(-1));
+      std::size_t remaining_bytes = static_cast<std::size_t>(-1),
+      bool enforce_deadline = false);
   BackendResult<void> perform_authentication_result(rs::util::Deadline deadline);
   rs::util::Result<void> record_parameter_status(const Message& msg);
   BackendResult<QueryResult> read_query_result(

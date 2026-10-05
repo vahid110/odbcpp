@@ -89,13 +89,18 @@ BackendResult<ResolvedTypeMap> GenericDatabaseConnection::resolve_types(
 }
 
 BackendResult<void> GenericDatabaseConnection::connect(const ConnectionSettings& settings) {
+  return connect_until(settings, rs::util::make_deadline(settings.timeout));
+}
+
+BackendResult<void> GenericDatabaseConnection::connect_until(
+    const ConnectionSettings& settings, rs::util::Deadline deadline) {
   struct AuthenticationCleanup {
     GenericDatabaseConnection& connection;
     ~AuthenticationCleanup() { connection.clear_authentication_state(); }
   } cleanup{*this};
   BackendResult<void> result;
   try {
-    result = connect_impl(settings);
+    result = connect_impl(settings, deadline);
   } catch (const std::bad_alloc&) {
     mark_transport_failed();
     result = {rs::util::DbErrorCode::AllocationFailure, {}};
@@ -114,7 +119,7 @@ BackendResult<void> GenericDatabaseConnection::connect(const ConnectionSettings&
   return result;
 }
 
-BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSettings& settings) {
+BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSettings& settings, rs::util::Deadline deadline) {
   if (settings.port == 0) {
     return {rs::util::DbErrorCode::InvalidParameter, "Database connection port is unresolved"};
   }
@@ -181,7 +186,7 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
     }
   } cleanup{*this};
   
-  auto deadline = rs::util::make_deadline(settings.timeout);
+  const auto expired = [&] { return rs::util::Clock::now() >= deadline; };
   
   if (settings.use_ssl) {
     // PostgreSQL/Redshift starts in plain text, sends an SSLRequest, then
@@ -203,6 +208,7 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
               "selected TLS transport does not support custom CA settings"};
     }
 
+    if (expired()) return {rs::util::DbErrorCode::Timeout, "Database connection deadline expired"};
     auto connect_result = start_tls->connect_plain(
         settings.host, settings.port, deadline);
     if (connect_result.has_error()) {
@@ -213,13 +219,14 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
     
     // Send SSL request
     auto ssl_req = parser_->create_ssl_request();
-    auto write_result = write_all_result(ssl_req, deadline);
+    auto write_result = write_all_result(ssl_req, deadline, true);
     if (write_result.has_error()) {
       return {write_result.error(), write_result.error_message()};
     }
     
     // Read SSL response
     std::vector<std::byte> response(1);
+    if (expired()) return {rs::util::DbErrorCode::Timeout, "Database connection deadline expired"};
     auto recv_result = transport_->recv(response, deadline);
     if (recv_result.has_error()) {
       return BackendResult<void>{
@@ -246,10 +253,12 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
               "Invalid PostgreSQL SSL negotiation response"};
     }
     
+    if (expired()) return {rs::util::DbErrorCode::Timeout, "Database connection deadline expired"};
     auto upgrade_result = start_tls->upgrade_to_tls(settings.host, deadline);
     if (upgrade_result.has_error()) return {upgrade_result.error(), upgrade_result.error_message()};
     peer_identity_verified_ = start_tls->peer_identity_verified();
   } else {
+    if (expired()) return {rs::util::DbErrorCode::Timeout, "Database connection deadline expired"};
     auto connect_result = transport_->connect(settings.host, settings.port, deadline);
     if (connect_result.has_error()) {
       return BackendResult<void>{
@@ -259,7 +268,7 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
   }
   
   // Send startup message
-  auto write_result = write_all_result(startup, deadline);
+  auto write_result = write_all_result(startup, deadline, true);
   if (write_result.has_error()) {
     return {write_result.error(), write_result.error_message()};
   }
@@ -270,6 +279,7 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
     return auth_result;
   }
   
+  if (expired()) return {rs::util::DbErrorCode::Timeout, "Database connection deadline expired"};
   connected_ = true;
   cleanup.complete = true;
   return BackendResult<void>{};
@@ -927,9 +937,14 @@ void GenericDatabaseConnection::write_all(const std::vector<std::byte>& data, rs
   }
 }
 
-rs::util::Result<void> GenericDatabaseConnection::write_all_result(const std::vector<std::byte>& data, rs::util::Deadline deadline) {
+rs::util::Result<void> GenericDatabaseConnection::write_all_result(const std::vector<std::byte>& data, rs::util::Deadline deadline,
+    bool enforce_deadline) {
   size_t offset = 0;
   while (offset < data.size()) {
+    if (enforce_deadline && rs::util::Clock::now() >= deadline) {
+      mark_transport_failed();
+      return {rs::util::DbErrorCode::Timeout, "Database connection deadline expired"};
+    }
     const auto requested = data.size() - offset;
     auto result = transport_->send(std::span<const std::byte>(data.data() + offset, requested), deadline);
     if (result.has_error()) {
@@ -959,7 +974,8 @@ std::vector<std::byte> GenericDatabaseConnection::read_message(rs::util::Deadlin
   return std::move(*result);
 }
 
-rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message_result(rs::util::Deadline deadline, std::size_t remaining_bytes) {
+rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message_result(rs::util::Deadline deadline, std::size_t remaining_bytes,
+    bool enforce_deadline) {
   if (remaining_bytes < 5) {
     mark_transport_failed();
     return {rs::util::DbErrorCode::ResourceLimit, "Database response byte limit exceeded"};
@@ -969,6 +985,10 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
   size_t offset = 0;
   
   while (offset < 5) {
+    if (enforce_deadline && rs::util::Clock::now() >= deadline) {
+      mark_transport_failed();
+      return {rs::util::DbErrorCode::Timeout, "Database connection deadline expired"};
+    }
     const auto requested = header.size() - offset;
     auto result = transport_->recv(std::span<std::byte>(header.data() + offset, requested), deadline);
     if (result.has_error()) {
@@ -1030,6 +1050,10 @@ rs::util::Result<std::vector<std::byte>> GenericDatabaseConnection::read_message
   message.insert(message.end(), header.begin(), header.end());
 
   while (message.size() < total_length) {
+    if (enforce_deadline && rs::util::Clock::now() >= deadline) {
+      mark_transport_failed();
+      return {rs::util::DbErrorCode::Timeout, "Database connection deadline expired"};
+    }
     const auto message_offset = message.size();
     const auto requested = std::min<std::size_t>(
         total_length - message_offset, 8192);
@@ -1079,7 +1103,7 @@ BackendResult<void> GenericDatabaseConnection::perform_authentication_result(rs:
         return failure(rs::util::DbErrorCode::ResourceLimit, "Database startup message limit exceeded");
       }
       auto msg_result = read_message_result(deadline,
-          settings_.startup_response_limits.max_wire_bytes - wire_bytes);
+          settings_.startup_response_limits.max_wire_bytes - wire_bytes, true);
       if (msg_result.has_error()) {
         return failure(msg_result.error(), msg_result.error_message());
       }
@@ -1111,7 +1135,7 @@ BackendResult<void> GenericDatabaseConnection::perform_authentication_result(rs:
           }
         } response_cleanup{auth_response};
         if (!auth_response.empty()) {
-          auto write_result = write_all_result(auth_response, deadline);
+          auto write_result = write_all_result(auth_response, deadline, true);
           if (write_result.has_error()) {
             return failure(write_result.error(), write_result.error_message());
           }

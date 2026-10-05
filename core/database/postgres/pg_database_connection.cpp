@@ -24,6 +24,11 @@ BackendResult<QueryResult> PgDatabaseConnection::observe_and_decline_binary_prep
 }
 
 BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& settings) {
+  return connect_until(settings, rs::util::make_deadline(settings.timeout));
+}
+
+BackendResult<void> PgDatabaseConnection::connect_until(
+    const ConnectionSettings& settings, rs::util::Deadline deadline) {
   if (catalog_profile_ == PgCatalogProfile::Redshift && is_connected()) return local_backend_error(LocalFailure::InvalidInput,
       "Database connection is already open", BackendOperation::Connect, session_state());
   if (settings.redshift_catalog_mode &&
@@ -32,7 +37,7 @@ BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& sett
         *settings.redshift_catalog_mode != RedshiftCatalogMode::Legacy)))
     return local_backend_error(LocalFailure::InvalidInput,
         "Invalid Redshift catalog mode for this provider", BackendOperation::Connect, session_state());
-  auto result = GenericDatabaseConnection::connect(settings);
+  auto result = GenericDatabaseConnection::connect_until(settings, deadline);
   if (result) catalog_mode_ = settings.redshift_catalog_mode.value_or(RedshiftCatalogMode::Show);
   return result;
 }
