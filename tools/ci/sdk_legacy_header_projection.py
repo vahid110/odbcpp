@@ -92,6 +92,10 @@ def project(sources, owners=None):
             raise ProjectionError('Unsupported preprocessing whitespace')
         for directive in re.finditer(r'(?m)^[ \t]*#[ \t]*include\b[^\n]*', visible):
             raw = text[directive.start():directive.end()]
+            # The match excludes LF but includes its CR in a CRLF checkout.
+            # Remove only that terminator for grammar matching; preserve source bytes.
+            if raw.endswith('\r') and text[directive.end():directive.end() + 1] == '\n':
+                raw = raw[:-1]
             match = re.fullmatch(r'[ \t]*#[ \t]*include[ \t]+([<"])([^>"\r\n]+)([>"])([ \t]*(?://[^\n]*)?)', raw)
             if not match or (match[1], match[3]) not in (('<', '>'), ('"', '"')):
                 raise ProjectionError('Unverifiable include')

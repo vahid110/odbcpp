@@ -149,5 +149,31 @@ class ProjectionTests(unittest.TestCase):
             backups=list(Path(name).glob('.projection-*-old'));self.assertEqual(len(backups),1)
             self.assertEqual((backups[0]/p.MEMBERS[0]).read_bytes(),old[p.MEMBERS[0]])
 
+class ProjectionLineEndingTests(unittest.TestCase):
+    def sources(self):
+        return {x: b'#pragma once\n' for x in p.OWNERS.values()}
+    # Only these regressions are added; inherited tests stay in their original class.
+    def test_crlf_and_mixed_line_endings_preserve_every_non_token_byte(self):
+        source = b'#include <array>\r\n#include "odbcpp/util/deadline.h" // note\r\n#include "native_type_info.h"\n// comment\r\n'
+        sources = self.sources();sources[p.OWNERS['core/database/query_result.h']] = source
+        expected = source.replace(b'odbcpp/util/deadline.h', b'core/util/deadline.h').replace(b'"native_type_info.h"', b'"core/database/native_type_info.h"')
+        self.assertEqual(p.project(sources)['core/database/query_result.h'], expected)
+        self.assertEqual(sources[p.OWNERS['core/database/query_result.h']], source)
+
+    def test_cr_inside_token_or_directive_and_bare_terminal_cr_refused(self):
+        for source in (b'#include "odbcpp/util/dead\rline.h"\r\n',
+                       b'#include\r "odbcpp/util/deadline.h"\r\n',
+                       b'#include <array>\r', b'#include <array>\r\r\n'):
+            with self.subTest(source=source):
+                sources=self.sources();sources[p.OWNERS[p.MEMBERS[0]]]=source
+                with self.assertRaises(p.ProjectionError):p.project(sources)
+
+    def test_crlf_does_not_relax_macro_unknown_or_spliced_include_refusal(self):
+        for source in (b'#include HEADER\r\n', b'#include "odbcpp/unknown.h"\r\n',
+                       b'#inc'+bytes([92,13,10])+b'lude <array>\r\n'):
+            with self.subTest(source=source):
+                sources=self.sources();sources[p.OWNERS[p.MEMBERS[0]]]=source
+                with self.assertRaises(p.ProjectionError):p.project(sources)
+
 if __name__ == '__main__':
     unittest.main()
