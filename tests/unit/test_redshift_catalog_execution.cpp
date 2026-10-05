@@ -373,3 +373,201 @@ TEST(RedshiftCatalogExecution, RealPostgresSessionRejectsForeignModeBeforeTransp
   }
   EXPECT_EQ(nullptr, session.catalog_execution());
 }
+
+namespace {
+// Bounded fake protocol only. Production session/parser methods are untouched.
+class CatalogErrorWire final : public rs::core::transport::ITransport {
+ public:
+  enum class Scenario { PermissionThenSuccess, InvalidReady, PostErrorCompletion };
+  explicit CatalogErrorWire(Scenario scenario) : scenario_(scenario) {}
+  std::vector<std::vector<std::byte>> writes;
+  std::vector<rs::util::Deadline> sends, reads;
+  unsigned connects{}, closes{};
+  rs::util::Result<void> connect(std::string_view, uint16_t, rs::util::Deadline) override {
+    ++connects; input_.clear(); offset_ = 0; operations_ = 0;
+    frame('R', {std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}});
+    std::vector<std::byte> status; text(status, "show_discovery"); text(status, "4");
+    frame('S', status); frame('Z', {std::byte{'I'}}); return {};
+  }
+  rs::util::Result<rs::core::transport::IOResult> send(
+      std::span<const std::byte> bytes, rs::util::Deadline deadline) override {
+    if (bytes.empty() || bytes.size() > 16384 || writes.size() >= 8)
+      return {rs::util::DbErrorCode::ProtocolError, "Fake catalog send bounds exceeded"};
+    writes.emplace_back(bytes.begin(), bytes.end()); sends.push_back(deadline);
+    if (writes.size() > 1) {
+      ++operations_;
+      if (operations_ == 1) {
+        std::vector<std::byte> error;
+        error.push_back(std::byte{'S'}); text(error, "ERROR");
+        error.push_back(std::byte{'C'}); text(error, "42501");
+        error.push_back(std::byte{'M'}); text(error, "owned catalog permission denial");
+        error.push_back(std::byte{0}); frame('E', error);
+        if (scenario_ == Scenario::PostErrorCompletion) {
+          std::vector<std::byte> command; text(command, "SELECT 0"); frame('C', command);
+        }
+        frame('Z', {scenario_ == Scenario::InvalidReady ? std::byte{'?'} : std::byte{'I'}});
+      } else if (operations_ == 2 && scenario_ == Scenario::PermissionThenSuccess) {
+        success();
+      } else {
+        return {rs::util::DbErrorCode::ProtocolError, "Unexpected fake catalog exchange"};
+      }
+    }
+    return rs::core::transport::IOResult{bytes.size(), false};
+  }
+  rs::util::Result<rs::core::transport::IOResult> recv(
+      std::span<std::byte> bytes, rs::util::Deadline deadline) override {
+    if (reads.size() >= 128 || offset_ > input_.size() || input_.size() > 4096)
+      return {rs::util::DbErrorCode::ProtocolError, "Fake catalog receive bounds exceeded"};
+    reads.push_back(deadline);
+    const auto count = std::min(bytes.size(), input_.size() - offset_);
+    std::copy_n(input_.begin() + static_cast<std::ptrdiff_t>(offset_), count, bytes.begin());
+    offset_ += count;
+    return rs::core::transport::IOResult{count, count == 0};
+  }
+  void close() noexcept override { ++closes; }
+  void poison_consumed_bytes() {
+    std::fill(input_.begin(), input_.begin() + static_cast<std::ptrdiff_t>(offset_), std::byte{'X'});
+  }
+ private:
+  static void integer(std::vector<std::byte>& out, uint32_t value, unsigned width) {
+    for (unsigned i = width; i > 0; --i)
+      out.push_back(static_cast<std::byte>((value >> ((i - 1) * 8)) & 255u));
+  }
+  static void text(std::vector<std::byte>& out, std::string_view value) {
+    for (char byte : value) out.push_back(static_cast<std::byte>(byte));
+    out.push_back(std::byte{0});
+  }
+  void frame(char tag, const std::vector<std::byte>& body) {
+    input_.push_back(static_cast<std::byte>(tag));
+    integer(input_, static_cast<uint32_t>(body.size() + 4), 4);
+    input_.insert(input_.end(), body.begin(), body.end());
+  }
+  void success() {
+    frame('1', {}); std::vector<std::byte> params; integer(params, 3, 2);
+    for (unsigned i = 0; i < 3; ++i) integer(params, 25, 4);
+    frame('t', params); frame('2', {});
+    std::vector<std::byte> description; integer(description, 6, 2);
+    for (const auto* name : {"database_name", "schema_name", "table_name", "pk_name", "column_name", "key_seq"}) {
+      text(description, name); integer(description, 0, 4); integer(description, 0, 2);
+      const bool sequence = std::string_view(name) == "key_seq";
+      integer(description, sequence ? 21 : 1043, 4);
+      integer(description, sequence ? 2 : 65535, 2);
+      integer(description, 0xffffffffu, 4); integer(description, 0, 2);
+    }
+    frame('T', description); std::vector<std::byte> command; text(command, "SELECT 0");
+    frame('C', command); frame('Z', {std::byte{'I'}});
+  }
+  Scenario scenario_;
+  std::vector<std::byte> input_;
+  std::size_t offset_{};
+  unsigned operations_{};
+};
+std::optional<std::string> catalog_packet_tags(const std::vector<std::byte>& packet) {
+  if (packet.empty() || packet.size() > 16384) return std::nullopt;
+  std::string tags;
+  for (std::size_t offset = 0; offset < packet.size();) {
+    if (packet.size() - offset < 5 || tags.size() >= 16) return std::nullopt;
+    uint32_t length = 0;
+    for (std::size_t i = 1; i <= 4; ++i)
+      length = (length << 8) | std::to_integer<unsigned char>(packet[offset + i]);
+    if (length < 4 || length > packet.size() - offset - 1) return std::nullopt;
+    tags.push_back(static_cast<char>(packet[offset])); offset += std::size_t(length) + 1;
+  }
+  return tags;
+}
+ConnectionSettings catalog_error_settings(RedshiftCatalogMode mode) {
+  ConnectionSettings settings;
+  settings.host = "in-memory.invalid"; settings.port = 5439;
+  settings.database = "db'._%"; settings.user = "fixture"; settings.use_ssl = false;
+  settings.redshift_catalog_mode = mode; return settings;
+}
+void catalog_error_packet(const CatalogErrorWire& wire, std::size_t index, bool legacy) {
+  ASSERT_LT(index, wire.writes.size());
+  const auto tags = catalog_packet_tags(wire.writes[index]); ASSERT_TRUE(tags.has_value());
+  EXPECT_EQ("PDBDES", *tags); // Current combined catalog path, not private binary staged path.
+  expect_parse(wire.writes[index], legacy);
+}
+void catalog_error_deadlines(const CatalogErrorWire& wire, std::size_t start,
+    rs::util::Deadline original) {
+  ASSERT_LE(start, wire.reads.size());
+  for (std::size_t i = start; i < wire.reads.size(); ++i) { EXPECT_EQ(original, wire.reads[i]); }
+}
+}  // namespace
+
+TEST(RedshiftCatalogExecution, RealWireNativePermissionErrorPreservesModesDeadlineAndRecovery) {
+  for (const auto mode : {RedshiftCatalogMode::Show, RedshiftCatalogMode::Legacy}) {
+    SCOPED_TRACE(mode == RedshiftCatalogMode::Show ? "SHOW" : "LEGACY");
+    auto transport = std::make_unique<CatalogErrorWire>(CatalogErrorWire::Scenario::PermissionThenSuccess);
+    auto* wire = transport.get();
+    PgDatabaseConnection session(std::move(transport), std::nullopt, PgCatalogProfile::Redshift);
+    ASSERT_TRUE(session.connect(catalog_error_settings(mode))); ASSERT_EQ(1u, wire->writes.size());
+    const auto original = rs::util::make_deadline(std::chrono::seconds{3});
+    const auto reads_before = wire->reads.size(); auto names = request();
+    auto denied = session.execute_catalog(names, original);
+    ASSERT_TRUE(denied.has_error());
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), denied.error());
+    EXPECT_EQ(BackendErrorClass::Server, denied.backend_error().error_class);
+    EXPECT_EQ(std::optional<std::string>{"42501"}, denied.backend_error().native_state);
+    EXPECT_EQ("Query error: owned catalog permission denial", denied.error_message());
+    EXPECT_EQ(BackendOperation::ExecutePrepared, denied.backend_error().operation);
+    EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), denied.session_snapshot());
+    EXPECT_TRUE(session.is_connected()); EXPECT_EQ(0u, wire->closes); EXPECT_EQ(1u, wire->connects);
+    ASSERT_EQ(2u, wire->writes.size()); ASSERT_EQ(2u, wire->sends.size());
+    catalog_error_packet(*wire, 1, mode == RedshiftCatalogMode::Legacy);
+    EXPECT_EQ(original, wire->sends[1]); catalog_error_deadlines(*wire, reads_before, original);
+    names.catalog = "changed"; names.schema = "changed"; names.table.clear(); wire->poison_consumed_bytes();
+    const auto recovery_deadline = rs::util::make_deadline(std::chrono::seconds{3});
+    const auto recovery_reads = wire->reads.size();
+    auto recovered = session.execute_catalog(request(), recovery_deadline);
+    ASSERT_TRUE(recovered); ASSERT_EQ(6u, recovered->columns.size()); EXPECT_TRUE(recovered->rows.empty());
+    const std::array<std::string_view, 6> fields{"TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "COLUMN_NAME", "KEY_SEQ", "PK_NAME"};
+    for (std::size_t i = 0; i < fields.size(); ++i) {
+      EXPECT_EQ(fields[i], recovered->columns[i].name);
+      ASSERT_TRUE(recovered->columns[i].normalized_type.has_value());
+      EXPECT_EQ(i == 4 ? ScalarType::SmallInt : ScalarType::VarChar, recovered->columns[i].normalized_type->type);
+    }
+    EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), recovered.session_snapshot());
+    ASSERT_EQ(3u, wire->writes.size()); ASSERT_EQ(3u, wire->sends.size());
+    catalog_error_packet(*wire, 2, mode == RedshiftCatalogMode::Legacy);
+    EXPECT_EQ(recovery_deadline, wire->sends[2]); catalog_error_deadlines(*wire, recovery_reads, recovery_deadline);
+    EXPECT_EQ(1u, wire->connects); EXPECT_EQ(0u, wire->closes);
+    EXPECT_EQ("Query error: owned catalog permission denial", denied.error_message());
+    EXPECT_EQ(std::optional<std::string>{"42501"}, denied.backend_error().native_state);
+    EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), denied.session_snapshot());
+  }
+}
+
+TEST(RedshiftCatalogExecution, RealWireMalformedCatalogCompletionRetiresWithoutFallback) {
+  for (const auto mode : {RedshiftCatalogMode::Show, RedshiftCatalogMode::Legacy}) {
+    for (const auto scenario : {CatalogErrorWire::Scenario::InvalidReady, CatalogErrorWire::Scenario::PostErrorCompletion}) {
+      SCOPED_TRACE(mode == RedshiftCatalogMode::Show ? "SHOW" : "LEGACY");
+      SCOPED_TRACE(scenario == CatalogErrorWire::Scenario::InvalidReady ? "invalid-ready" : "post-error-C");
+      auto transport = std::make_unique<CatalogErrorWire>(scenario); auto* wire = transport.get();
+      PgDatabaseConnection session(std::move(transport), std::nullopt, PgCatalogProfile::Redshift);
+      ASSERT_TRUE(session.connect(catalog_error_settings(mode))); ASSERT_EQ(1u, wire->writes.size());
+      const auto original = rs::util::make_deadline(std::chrono::seconds{3});
+      const auto reads_before = wire->reads.size(); auto names = request();
+      auto malformed = session.execute_catalog(names, original); ASSERT_TRUE(malformed.has_error());
+      EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError), malformed.error());
+      EXPECT_EQ(BackendErrorClass::Protocol, malformed.backend_error().error_class);
+      EXPECT_EQ(BackendOperation::ExecutePrepared, malformed.backend_error().operation);
+      EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), malformed.session_snapshot());
+      EXPECT_FALSE(session.is_connected()); EXPECT_EQ(1u, wire->closes); EXPECT_EQ(1u, wire->connects);
+      ASSERT_EQ(2u, wire->writes.size()); ASSERT_EQ(2u, wire->sends.size());
+      catalog_error_packet(*wire, 1, mode == RedshiftCatalogMode::Legacy);
+      EXPECT_EQ(original, wire->sends[1]); catalog_error_deadlines(*wire, reads_before, original);
+      const std::string owning_error = malformed.error_message();
+      EXPECT_EQ(scenario == CatalogErrorWire::Scenario::InvalidReady ? "Invalid PostgreSQL ReadyForQuery payload" :
+          "PostgreSQL result frame arrived after ErrorResponse", owning_error);
+      names.catalog.reset(); names.schema.reset(); names.table.clear(); wire->poison_consumed_bytes();
+      const auto reads_after = wire->reads.size();
+      auto disconnected = session.execute_catalog(request(), original); ASSERT_TRUE(disconnected.has_error());
+      EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::NotConnected), disconnected.error());
+      EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), disconnected.session_snapshot());
+      EXPECT_EQ(2u, wire->writes.size()); EXPECT_EQ(reads_after, wire->reads.size());
+      EXPECT_EQ(1u, wire->closes); EXPECT_EQ(1u, wire->connects);
+      EXPECT_EQ(owning_error, malformed.error_message());
+      EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), malformed.session_snapshot());
+    }
+  }
+}
