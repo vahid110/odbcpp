@@ -4386,3 +4386,159 @@ TEST_F(BackendContractTest, PreparedLongBinaryLocalLengthAndHexErrorsPreservePri
     ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_BINARY,SQL_LONGVARBINARY,3,0,bytes,sizeof(bytes),&good_length));ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(QueryParameterType::Binary,seen->parameters[0].type);ASSERT_TRUE(seen->parameters[0].value);EXPECT_EQ(expected,*seen->parameters[0].value);EXPECT_TRUE(seen->parameters[0].binary_input);EXPECT_EQ(SQL_PARAM_SUCCESS,status);EXPECT_EQ(1u,processed);EXPECT_EQ(3,good_length);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
   }
 }
+
+TEST_F(BackendContractTest, ColumnsBuilderRouteOwnsEighteenMetadataFieldsAcrossAnsiWide) {
+  const char* const names[]{"table_cat", "table_schem", "table_name", "column_name",
+      "data_type", "type_name", "column_size", "buffer_length", "decimal_digits",
+      "num_prec_radix", "nullable", "remarks", "column_def", "sql_data_type",
+      "sql_datetime_sub", "char_octet_length", "ordinal_position", "is_nullable"};
+  const ScalarType families[]{ScalarType::VarChar, ScalarType::VarChar, ScalarType::VarChar,
+      ScalarType::VarChar, ScalarType::SmallInt, ScalarType::VarChar, ScalarType::Integer,
+      ScalarType::Integer, ScalarType::SmallInt, ScalarType::SmallInt, ScalarType::SmallInt,
+      ScalarType::VarChar, ScalarType::VarChar, ScalarType::SmallInt, ScalarType::SmallInt,
+      ScalarType::Integer, ScalarType::Integer, ScalarType::VarChar};
+  const SQLULEN sizes[]{16, 16, 32, 32, 5, 64, 10, 10, 5, 5, 5, 64, 64, 5, 5, 10, 10, 3};
+  const auto fixture = [&] {
+    QueryResult result;
+    for (std::size_t i = 0; i < 18; ++i) {
+      result.columns.push_back({names[i], NativeTypeInfo{families[i], sizes[i], 0, true}});
+    }
+    // Metadata-result field types are distinct from discovered DATA_TYPE values.
+    // These rows are literal adapter fixtures, not native SVV output evidence.
+    result.rows = {
+        {"contract", "public", "table", "amount", "3", "decimal", "38", "40", "10",
+         "10", "1", std::nullopt, "0.00", "3", std::nullopt, std::nullopt, "1", "YES"},
+        {"contract", "public", "table", "moment", "93", "timestamp without time zone",
+         "26", "16", "6", std::nullopt, "0", std::nullopt, std::nullopt, "9", "3",
+         std::nullopt, "2", "NO"},
+        {"contract", "public", "table", "opaque", "0", "varbyte", std::nullopt,
+         std::nullopt, std::nullopt, std::nullopt, "2", std::nullopt, std::nullopt, "0",
+         std::nullopt, std::nullopt, "3", ""}};
+    result.statement_kind = StatementKind::SelectCursor;
+    return result;
+  };
+  seen->catalog_builder = true;
+  seen->catalog_executor = true;
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_QUERY_TIMEOUT,
+      reinterpret_cast<SQLPOINTER>(2), 0));
+  SQLCHAR table[]{'t', 'a', 'b', 'l', 'e', 0};
+  SQLWCHAR wide_table[]{'t', 'a', 'b', 'l', 'e', 0};
+  for (const bool wide : {false, true}) {
+    SCOPED_TRACE(wide);
+    const auto expected = fixture();
+    ASSERT_EQ(18u, expected.columns.size());
+    ASSERT_EQ(3u, expected.rows.size());
+    for (const auto& row : expected.rows) {
+      ASSERT_EQ(18u, row.size());
+    }
+    seen->date_result = expected;
+    const auto queries = seen->queries;
+    const auto builds = seen->catalog_builds;
+    const auto before = rs::util::Clock::now();
+    const SQLRETURN status = wide
+        ? SQLColumnsW(stmt, nullptr, 0, nullptr, 0, wide_table, SQL_NTS, nullptr, 0)
+        : SQLColumns(stmt, nullptr, 0, nullptr, 0, table, SQL_NTS, nullptr, 0);
+    const auto after = rs::util::Clock::now();
+    ASSERT_EQ(SQL_SUCCESS, status);
+    EXPECT_EQ(queries + 1, seen->queries);
+    EXPECT_EQ(builds + 1, seen->catalog_builds);
+    EXPECT_EQ(0, seen->catalog_calls);
+    EXPECT_EQ("native:SELECT legacy fixture", seen->sql);
+    EXPECT_GE(seen->deadline, before + std::chrono::seconds{2});
+    EXPECT_LE(seen->deadline, after + std::chrono::seconds{2});
+    EXPECT_NE(Deadline::max(), seen->deadline);
+    SQLSMALLINT count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(stmt, &count));
+    ASSERT_EQ(18, count);
+    for (SQLUSMALLINT column = 1; column <= 18; ++column) {
+      const auto index = static_cast<std::size_t>(column - 1);
+      SQLCHAR name[64]{};
+      SQLSMALLINT length{}, type{}, digits{}, nullable{};
+      SQLULEN size{};
+      ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, column, name,
+          static_cast<SQLSMALLINT>(sizeof(name)), &length, &type, &size, &digits, &nullable));
+      EXPECT_STREQ(names[index], reinterpret_cast<char*>(name));
+      EXPECT_EQ(static_cast<SQLSMALLINT>(std::strlen(names[index])), length);
+      const SQLSMALLINT expected_type = static_cast<SQLSMALLINT>(families[index] == ScalarType::VarChar
+          ? SQL_VARCHAR : families[index] == ScalarType::SmallInt ? SQL_SMALLINT : SQL_INTEGER);
+      EXPECT_EQ(expected_type, type);
+      EXPECT_EQ(sizes[index], size);
+      EXPECT_EQ(0, digits);
+      EXPECT_EQ(SQL_NULLABLE_UNKNOWN, nullable);
+    }
+    // Source mutation before any fetch must not change owned rows or descriptors.
+    ASSERT_TRUE(seen->date_result);
+    ASSERT_EQ(18u, seen->date_result->columns.size());
+    seen->date_result->columns[0].name = "mutated";
+    seen->date_result->rows.clear();
+    seen->date_result.reset();
+    SQLCHAR owned_name[64]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, 1, owned_name,
+        static_cast<SQLSMALLINT>(sizeof(owned_name)), nullptr, nullptr, nullptr, nullptr, nullptr));
+    EXPECT_STREQ("table_cat", reinterpret_cast<char*>(owned_name));
+    for (const auto& row : expected.rows) {
+      ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+      for (SQLUSMALLINT column = 1; column <= 18; ++column) {
+        const auto index = static_cast<std::size_t>(column - 1);
+        const auto& cell = row[index];
+        SQLLEN indicator = 77;
+        if (families[index] == ScalarType::SmallInt) {
+          SQLSMALLINT value = -123;
+          ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, column, SQL_C_SHORT, &value, sizeof(value), &indicator));
+          if (!cell) {
+            EXPECT_EQ(SQL_NULL_DATA, indicator);
+            EXPECT_EQ(-123, value);
+          } else {
+            EXPECT_EQ(static_cast<SQLSMALLINT>(std::stoi(*cell)), value);
+            EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), indicator);
+          }
+        } else if (families[index] == ScalarType::Integer) {
+          SQLINTEGER value = -456;
+          ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, column, SQL_C_LONG, &value, sizeof(value), &indicator));
+          if (!cell) {
+            EXPECT_EQ(SQL_NULL_DATA, indicator);
+            EXPECT_EQ(-456, value);
+          } else {
+            EXPECT_EQ(static_cast<SQLINTEGER>(std::stoi(*cell)), value);
+            EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), indicator);
+          }
+        } else if (wide) {
+          SQLWCHAR value[64];
+          std::fill(std::begin(value), std::end(value), SQLWCHAR{0x5a});
+          ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, column, SQL_C_WCHAR, value, sizeof(value), &indicator));
+          if (!cell) {
+            EXPECT_EQ(SQL_NULL_DATA, indicator);
+            EXPECT_TRUE(std::all_of(std::begin(value), std::end(value), [](SQLWCHAR ch) { return ch == SQLWCHAR{0x5a}; }));
+          } else {
+            ASSERT_LT(cell->size(), std::size(value));
+            for (std::size_t i = 0; i < cell->size(); ++i) {
+              EXPECT_EQ(static_cast<SQLWCHAR>(static_cast<unsigned char>((*cell)[i])), value[i]);
+            }
+            EXPECT_EQ(SQLWCHAR{0}, value[cell->size()]);
+            EXPECT_EQ(static_cast<SQLLEN>(cell->size() * sizeof(SQLWCHAR)), indicator);
+          }
+        } else {
+          char value[128];
+          std::fill(std::begin(value), std::end(value), '\x5a');
+          ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, column, SQL_C_CHAR, value, sizeof(value), &indicator));
+          if (!cell) {
+            EXPECT_EQ(SQL_NULL_DATA, indicator);
+            EXPECT_TRUE(std::all_of(std::begin(value), std::end(value), [](char ch) { return ch == '\x5a'; }));
+          } else {
+            EXPECT_STREQ(cell->c_str(), value);
+            EXPECT_EQ(static_cast<SQLLEN>(cell->size()), indicator);
+          }
+        }
+      }
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    ASSERT_EQ(SQL_SUCCESS, execute("rows"));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    EXPECT_EQ(queries + 2, seen->queries);
+    EXPECT_EQ(0, seen->catalog_calls);
+    EXPECT_EQ(0, seen->disconnects);
+  }
+}

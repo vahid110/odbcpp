@@ -334,3 +334,50 @@ TEST(CatalogQueryTest, RedshiftRowVersionHasModernEmptyContractAcrossValidOption
     }
   }
 }
+
+TEST(CatalogQueryTest, RedshiftColumnsKeepQualifiedDimensionFamiliesAndUnknownFallback) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  PgDatabaseConnection pg;
+  const auto query = redshift.catalog_query(ColumnsCatalogRequest{});
+  const auto pg_query = pg.catalog_query(ColumnsCatalogRequest{});
+  ASSERT_TRUE(query);
+  ASSERT_TRUE(pg_query);
+  // Literal query boundaries: these assertions do not execute a server CASE or
+  // qualify native SVV dimensions. Source qualification prevents alias reuse.
+  for (const char* expected : {
+      "CASE LOWER(columns.data_type) WHEN 'boolean' THEN -7 WHEN 'smallint' THEN 5",
+      "WHEN 'numeric' THEN 2 WHEN 'decimal' THEN 3",
+      "ELSE 0 END::smallint AS data_type, columns.data_type::text AS type_name",
+      "WHEN 'numeric' THEN columns.numeric_precision WHEN 'decimal' THEN columns.numeric_precision",
+      "WHEN 'numeric' THEN columns.numeric_precision + 2 WHEN 'decimal' THEN columns.numeric_precision + 2",
+      "CASE WHEN LOWER(columns.data_type) IN ('numeric','decimal') THEN columns.numeric_scale",
+      "WHEN LOWER(columns.data_type) IN ('smallint','integer','bigint') THEN 0",
+      "THEN columns.datetime_precision ELSE NULL END::smallint AS decimal_digits",
+      "THEN 10 WHEN LOWER(columns.data_type) IN ('real','double precision') THEN 2 ELSE NULL END::smallint AS num_prec_radix",
+      "WHEN 'character varying' THEN columns.character_maximum_length",
+      "THEN columns.character_maximum_length ELSE NULL END::integer AS char_octet_length",
+      "WHEN 'date' THEN 6 WHEN 'time without time zone' THEN 6 WHEN 'time with time zone' THEN 6",
+      "WHEN 'timestamp without time zone' THEN 16 WHEN 'timestamp with time zone' THEN 16 ELSE NULL END::integer AS buffer_length",
+      "ELSE NULL END::integer AS column_size",
+      "WHEN 'timestamp with time zone' THEN 3 ELSE NULL END::smallint AS sql_datetime_sub"}) {
+    SCOPED_TRACE(expected);
+    EXPECT_NE(std::string::npos, query->find(expected));
+  }
+  for (const char* temporal : {
+      "WHEN 'time without time zone' THEN 8 + ",
+      "WHEN 'time with time zone' THEN 14 + ",
+      "WHEN 'timestamp without time zone' THEN 19 + ",
+      "WHEN 'timestamp with time zone' THEN 25 + "}) {
+    const std::string expected = std::string(temporal) +
+        "CASE WHEN columns.datetime_precision > 0 THEN 1 + columns.datetime_precision ELSE 0 END";
+    EXPECT_NE(std::string::npos, query->find(expected));
+  }
+  EXPECT_EQ(std::string::npos, query->find("CASE data_type"));
+  EXPECT_EQ(std::string::npos, query->find("LOWER(data_type)"));
+  EXPECT_EQ(std::string::npos, query->find("WHEN 'varbyte'"));
+  EXPECT_NE(std::string::npos, pg_query->find("WITH RECURSIVE domain_chain"));
+  EXPECT_EQ(std::string::npos, pg_query->find("FROM svv_columns"));
+  EXPECT_FALSE(redshift.is_connected());
+  EXPECT_FALSE(pg.is_connected());
+}
