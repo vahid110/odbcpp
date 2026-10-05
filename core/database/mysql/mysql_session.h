@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <optional>
 #include <type_traits>
 #include "authentication.h"
 #include "error_wire.h"
@@ -29,75 +30,11 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
     connected_=false;state_=SessionState::Disconnected;version_.clear();
   }
   BackendResult<void> connect(const ConnectionSettings& settings) override {
-    if (settings.redshift_catalog_mode)
-      return local_backend_error(LocalFailure::InvalidInput,
-          "RedshiftCatalogMode requires Redshift", BackendOperation::Connect, session_state());
-    if (connected_) return local_backend_error(LocalFailure::InvalidInput,
-        "MySQL session is already connected",BackendOperation::Connect,state_);
-    if (!transport_ || !settings.use_ssl || !valid_resource_limits(settings) || settings.timeout.count()<=0 ||
-        settings.host.empty() || settings.host.find('\0')!=std::string::npos || !settings.port ||
-        settings.user.empty() || settings.user.find('\0')!=std::string::npos ||
-        settings.password.find('\0')!=std::string::npos || settings.ssl_ca_file.find('\0')!=std::string::npos ||
-        settings.ssl_ca_dir.find('\0')!=std::string::npos || settings.database.find('\0')!=std::string::npos ||
-        !rs::util::utf8_code_point_count(settings.database))
-      return failure(rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter),BackendOperation::Connect);
-    if (settings.user.size()>256 || settings.password.size()>=connection_packet_limit ||
-        settings.ssl_ca_file.size()>settings.input_limits.max_connection_field_bytes ||
-        settings.ssl_ca_dir.size()>settings.input_limits.max_connection_field_bytes ||
-        settings.database.size()>settings.input_limits.max_connection_field_bytes ||
-        settings.host.size()>settings.input_limits.max_connection_field_bytes ||
-        settings.user.size()>settings.input_limits.max_connection_field_bytes ||
-        settings.password.size()>settings.input_limits.max_connection_field_bytes)
-      return failure(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),BackendOperation::Connect);
-    // Authentication has a fixed five-packet bound, separate from command limits.
-    // Reject tighter startup budgets until the authentication helper accepts them.
-    constexpr std::size_t authentication_bound=5*(connection_packet_limit+4);
-    if (settings.startup_response_limits.max_wire_bytes<authentication_bound ||
-        settings.startup_response_limits.max_messages<5 || settings.input_limits.max_auth_wire_bytes<authentication_bound ||
-        settings.input_limits.max_startup_wire_bytes<authentication_bound)
-      return failure(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),BackendOperation::Connect);
-    const auto selection_wire=settings.database.empty()?0:settings.database.size()+5;
-    if (!settings.database.empty() && (settings.database.size()>=connection_packet_limit ||
-        selection_wire>settings.input_limits.max_request_wire_bytes ||
-        selection_wire>settings.input_limits.max_startup_wire_bytes-authentication_bound ||
-        settings.startup_response_limits.max_messages<=5 ||
-        settings.startup_response_limits.max_wire_bytes-authentication_bound<11))
-      return failure(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),BackendOperation::Connect);
-    bool authentication_owns_cleanup=false;
-    bool authenticated_live=false;
-    try {
-      auto* configurable=dynamic_cast<rs::core::transport::ITlsConfigurableTransport*>(transport_.get());
-      if (!configurable) return failure(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature),BackendOperation::Connect);
-      configurable->set_ca_locations(settings.ssl_ca_file,settings.ssl_ca_dir);
-      const auto deadline=rs::util::make_deadline(settings.timeout);
-      authentication_owns_cleanup=true;
-      auto authenticated=authenticate_verified_tls(*transport_,settings.host,settings.port,settings.user,settings.password,
-          deadline);
-      if (!authenticated) return failure(authenticated.error(),BackendOperation::Authenticate);
-      authenticated_live=true;
-      result_limits_=settings.result_limits;
-      if (!settings.database.empty()) {
-        auto selected=select_database(settings.database,deadline,
-            ResponseLimits{settings.startup_response_limits.max_wire_bytes-authentication_bound,
-                           settings.startup_response_limits.max_messages-5});
-        if (!selected) {
-          transport_->close();authenticated_live=false;
-          return failure(selected.error(),BackendOperation::Startup);
-        }
-      }
-      connected_=true;state_=SessionState::Idle;
-      version_=std::move(authenticated->verified.greeting.server_version);
-      response_limits_=settings.response_limits;result_limits_=settings.result_limits;input_limits_=settings.input_limits;
-      return BackendResult<void>{snapshot()};
-    } catch (const std::bad_alloc&) {
-      if (!authentication_owns_cleanup || authenticated_live) transport_->close();
-      connected_=false;state_=SessionState::Disconnected;version_.clear();
-      return failure(rs::util::make_error_code(rs::util::DbErrorCode::AllocationFailure),BackendOperation::Connect);
-    } catch (...) {
-      if (!authentication_owns_cleanup || authenticated_live) transport_->close();
-      connected_=false;state_=SessionState::Disconnected;version_.clear();
-      return failure(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),BackendOperation::Connect);
-    }
+    return connect_impl(settings,std::nullopt);
+  }
+  // Backend-private absolute startup deadline; no separate phase cap or SDK widening.
+  BackendResult<void> connect_until(const ConnectionSettings& settings,rs::util::Deadline deadline) {
+    return connect_impl(settings,deadline);
   }
   ITransactionSession* transaction_session() noexcept override { return this; }
   TransactionCapabilities transaction_capabilities() const override {
@@ -468,6 +405,109 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
     return execute_direct(sql,deadline,false);
   }
  private:
+  BackendResult<void> connect_impl(const ConnectionSettings& settings,
+      std::optional<rs::util::Deadline> supplied_deadline) {
+    if (settings.redshift_catalog_mode)
+      return local_backend_error(LocalFailure::InvalidInput,
+          "RedshiftCatalogMode requires Redshift", BackendOperation::Connect, session_state());
+    if (connected_) return local_backend_error(LocalFailure::InvalidInput,
+        "MySQL session is already connected",BackendOperation::Connect,state_);
+    if (!transport_ || !settings.use_ssl || !valid_resource_limits(settings) || settings.timeout.count()<=0 ||
+        settings.host.empty() || settings.host.find('\0')!=std::string::npos || !settings.port ||
+        settings.user.empty() || settings.user.find('\0')!=std::string::npos ||
+        settings.password.find('\0')!=std::string::npos || settings.ssl_ca_file.find('\0')!=std::string::npos ||
+        settings.ssl_ca_dir.find('\0')!=std::string::npos || settings.database.find('\0')!=std::string::npos ||
+        !rs::util::utf8_code_point_count(settings.database))
+      return failure(rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter),BackendOperation::Connect);
+    if (settings.user.size()>256 || settings.password.size()>=connection_packet_limit ||
+        settings.ssl_ca_file.size()>settings.input_limits.max_connection_field_bytes ||
+        settings.ssl_ca_dir.size()>settings.input_limits.max_connection_field_bytes ||
+        settings.database.size()>settings.input_limits.max_connection_field_bytes ||
+        settings.host.size()>settings.input_limits.max_connection_field_bytes ||
+        settings.user.size()>settings.input_limits.max_connection_field_bytes ||
+        settings.password.size()>settings.input_limits.max_connection_field_bytes)
+      return failure(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),BackendOperation::Connect);
+    // Authentication has a fixed five-packet bound, separate from command limits.
+    // Reject tighter startup budgets until the authentication helper accepts them.
+    constexpr std::size_t authentication_bound=5*(connection_packet_limit+4);
+    if (settings.startup_response_limits.max_wire_bytes<authentication_bound ||
+        settings.startup_response_limits.max_messages<5 || settings.input_limits.max_auth_wire_bytes<authentication_bound ||
+        settings.input_limits.max_startup_wire_bytes<authentication_bound)
+      return failure(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),BackendOperation::Connect);
+    const auto selection_wire=settings.database.empty()?0:settings.database.size()+5;
+    if (!settings.database.empty() && (settings.database.size()>=connection_packet_limit ||
+        selection_wire>settings.input_limits.max_request_wire_bytes ||
+        selection_wire>settings.input_limits.max_startup_wire_bytes-authentication_bound ||
+        settings.startup_response_limits.max_messages<=5 ||
+        settings.startup_response_limits.max_wire_bytes-authentication_bound<11))
+      return failure(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),BackendOperation::Connect);
+    bool authentication_owns_cleanup=false;
+    bool authenticated_live=false;
+    try {
+      auto* configurable=dynamic_cast<rs::core::transport::ITlsConfigurableTransport*>(transport_.get());
+      if (!configurable) return failure(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature),BackendOperation::Connect);
+      // Validate before mutation; the absent path retains its old relative clock point.
+      if (supplied_deadline) {
+        if (*supplied_deadline==rs::util::Deadline::max())
+          return failure(rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter),BackendOperation::Connect);
+        if (rs::util::Clock::now()>=*supplied_deadline)
+          return failure(rs::util::make_error_code(rs::util::DbErrorCode::Timeout),BackendOperation::Connect);
+      }
+      configurable->set_ca_locations(settings.ssl_ca_file,settings.ssl_ca_dir);
+      const auto deadline=supplied_deadline?*supplied_deadline:rs::util::make_deadline(settings.timeout);
+      if (supplied_deadline && rs::util::Clock::now()>=deadline) {
+        auto rejected=failure(rs::util::make_error_code(rs::util::DbErrorCode::Timeout),BackendOperation::Connect);
+        transport_->close();
+        return rejected;
+      }
+      authentication_owns_cleanup=true;
+      auto authenticated=authenticate_verified_tls(*transport_,settings.host,settings.port,settings.user,settings.password,
+          deadline);
+      if (!authenticated) return failure(authenticated.error(),BackendOperation::Authenticate);
+      authenticated_live=true;
+      result_limits_=settings.result_limits;
+      if (!settings.database.empty()) {
+        auto selected=select_database(settings.database,deadline,
+            ResponseLimits{settings.startup_response_limits.max_wire_bytes-authentication_bound,
+                           settings.startup_response_limits.max_messages-5});
+        if (!selected) {
+          transport_->close();authenticated_live=false;
+          return failure(selected.error(),BackendOperation::Startup);
+        }
+      }
+      // Stage owning/throwing material before the absolute publication gate.
+      auto staged_version=std::move(authenticated->verified.greeting.server_version);
+      const auto staged_response=settings.response_limits;
+      const auto staged_results=settings.result_limits;
+      const auto staged_inputs=settings.input_limits;
+      BackendResult<void> accepted{SessionSnapshot{SessionState::Idle,SessionDisposition::Reusable}};
+      static_assert(std::is_nothrow_move_constructible_v<BackendResult<void>>);
+      if (supplied_deadline) {
+        auto* tls=dynamic_cast<rs::core::transport::IStartTlsTransport*>(transport_.get());
+        const bool peer=tls && tls->peer_identity_verified();
+        // The clock follows the peer callback: a late true callback is not success.
+        const auto code=rs::util::Clock::now()>=deadline?rs::util::DbErrorCode::Timeout:
+            !peer?rs::util::DbErrorCode::TLSError:rs::util::DbErrorCode::Success;
+        if (code!=rs::util::DbErrorCode::Success) {
+          auto rejected=failure(rs::util::make_error_code(code),BackendOperation::Connect);
+          transport_->close();authenticated_live=false;
+          return rejected;
+        }
+      }
+      version_.swap(staged_version);
+      response_limits_=staged_response;result_limits_=staged_results;input_limits_=staged_inputs;
+      connected_=true;state_=SessionState::Idle;
+      return accepted;
+    } catch (const std::bad_alloc&) {
+      if (!authentication_owns_cleanup || authenticated_live) transport_->close();
+      connected_=false;state_=SessionState::Disconnected;version_.clear();
+      return failure(rs::util::make_error_code(rs::util::DbErrorCode::AllocationFailure),BackendOperation::Connect);
+    } catch (...) {
+      if (!authentication_owns_cleanup || authenticated_live) transport_->close();
+      connected_=false;state_=SessionState::Disconnected;version_.clear();
+      return failure(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),BackendOperation::Connect);
+    }
+  }
   BackendResult<QueryResult> execute_direct(std::string_view sql,rs::util::Deadline deadline,bool control) {
     using rs::util::DbErrorCode;
     if (!connected_) return failure(rs::util::make_error_code(DbErrorCode::NotConnected),BackendOperation::ExecuteDirect);
