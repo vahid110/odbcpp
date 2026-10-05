@@ -3,6 +3,7 @@
 #include "core/database/mysql/query_wire.h"
 #include "core/database/mysql/handshake_wire.h"
 #include "core/database/mysql/date_parameter_wire.h"
+#include "core/database/mysql/datetime_parameter_wire.h"
 
 #include <array>
 #include <algorithm>
@@ -279,6 +280,119 @@ inline rs::util::Result<std::vector<std::byte>> execute_request(
   }
   for (const auto& parameter : parameters) detail::append_parameter_value(output, parameter,profile);
   return output;
+}
+
+// Explicit pure packet opt-in. No session or ordinary writer selects this.
+enum class DatetimeWriterPolicy { DateDatetimeQ6Candidate };
+struct DatetimeParameterObservation {
+  datetime_parameter_detail::Parameter encoded;
+  std::optional<unsigned> caller_precision;
+  std::optional<unsigned> micros;
+};
+using DatetimeParameterObservations=std::vector<std::optional<DatetimeParameterObservation>>;
+struct DatetimeExecution {
+  std::vector<std::byte> packet;
+  DatetimeParameterObservations datetime_observations;
+};
+inline rs::util::Result<DatetimeParameterObservation> validate_datetime_parameter(const QueryParameter& parameter) {
+  using rs::util::DbErrorCode;
+  if (parameter.type!=QueryParameterType::Timestamp) return {DbErrorCode::UnsupportedFeature};
+  if (parameter.binary_input) return {DbErrorCode::InvalidParameter};
+  unsigned precision{};
+  if (parameter.value) {
+    const auto size=parameter.value->size();
+    if (size!=19 && (size<21 || size>26)) return {DbErrorCode::InvalidParameter};
+    precision=size==19?0u:static_cast<unsigned>(size-20);
+  }
+  auto encoded=datetime_parameter_detail::encode(parameter.value
+      ?std::optional<std::string_view>(*parameter.value):std::nullopt,precision);
+  if (!encoded) return {encoded.error()};
+  unsigned micros{};
+  if (encoded->value && encoded->value->size()==12) {
+    for (unsigned i=0;i<4;++i) {
+      micros|=std::to_integer<unsigned>((*encoded->value)[8+i])<<(8*i);
+    }
+  }
+  DatetimeParameterObservation observation{std::move(*encoded),std::nullopt,std::nullopt};
+  if (parameter.value) {
+    observation.caller_precision=precision;
+    observation.micros=micros;
+  }
+  return observation;
+}
+
+inline rs::util::Result<DatetimeExecution> execute_datetime_q6_candidate_request(
+    std::uint32_t statement_id,std::span<const QueryParameter> parameters,
+    const InputLimits& limits,DatetimeWriterPolicy policy) {
+  using rs::util::DbErrorCode;
+  if (parameters.size()>limits.max_parameters || parameters.size()>65535)
+    return {DbErrorCode::ResourceLimit};
+  if (policy!=DatetimeWriterPolicy::DateDatetimeQ6Candidate)
+    return {DbErrorCode::UnsupportedFeature};
+  std::size_t raw_total{},value_wire{};
+  DatetimeParameterObservations observations;
+  observations.reserve(parameters.size());
+  std::vector<std::uint8_t> native_types;
+  native_types.reserve(parameters.size());
+  for (const auto& parameter:parameters) {
+    const auto raw=parameter.value?parameter.value->size():0;
+    if (raw>limits.max_parameter_bytes || !detail::add_size(raw_total,raw) ||
+        raw_total>limits.max_parameter_total_bytes) return {DbErrorCode::ResourceLimit};
+    if (parameter.type==QueryParameterType::Timestamp) {
+      auto observed=validate_datetime_parameter(parameter);
+      if (!observed) return {observed.error()};
+      if (!detail::add_size(value_wire,observed->encoded.value?observed->encoded.value->size():0))
+        return {DbErrorCode::ResourceLimit};
+      native_types.push_back(12);
+      observations.emplace_back(std::move(*observed));
+    } else {
+      auto shape=detail::parameter_shape(parameter,ParameterProfile::DateCandidate);
+      if (!shape) return {shape.error()};
+      if (!detail::validate_scalar(parameter)) return {DbErrorCode::InvalidParameter};
+      if (!detail::add_size(value_wire,parameter.value?shape->second:0))
+        return {DbErrorCode::ResourceLimit};
+      native_types.push_back(shape->first);
+      observations.emplace_back(std::nullopt);
+    }
+  }
+  const auto null_bytes=(parameters.size()+7)/8;
+  std::size_t payload=10;
+  if (!parameters.empty() &&
+      (!detail::add_size(payload,null_bytes) || !detail::add_size(payload,1) ||
+       !detail::add_size(payload,parameters.size()*2) || !detail::add_size(payload,value_wire)))
+    return {DbErrorCode::ResourceLimit};
+  auto framed=payload;
+  if (!detail::add_size(framed,4) || payload>connection_packet_limit ||
+      framed>limits.max_request_wire_bytes) return {DbErrorCode::ResourceLimit};
+  // Output packet allocation/publication follows every material and budget check.
+  // Bounded owning validation temporaries above are not allocation-free.
+  std::vector<std::byte> output;
+  output.reserve(framed);
+  detail::append_little(output,payload,3);
+  output.push_back(std::byte{0});output.push_back(std::byte{23});
+  detail::append_little(output,statement_id,4);
+  output.push_back(std::byte{0});detail::append_little(output,1,4);
+  if (parameters.empty()) return DatetimeExecution{std::move(output),std::move(observations)};
+  const auto bitmap=output.size();
+  output.resize(bitmap+null_bytes,std::byte{0});
+  for (std::size_t i=0;i<parameters.size();++i) {
+    if (!parameters[i].value) {
+      output[bitmap+i/8]|=static_cast<std::byte>(1u<<(i%8));
+    }
+  }
+  output.push_back(std::byte{1});
+  for (const auto type:native_types) {
+    output.push_back(static_cast<std::byte>(type));output.push_back(std::byte{0});
+  }
+  for (std::size_t i=0;i<parameters.size();++i) {
+    if (observations[i]) {
+      const auto& bytes=observations[i]->encoded.value;
+      if (bytes) { output.insert(output.end(),bytes->begin(),bytes->end()); }
+    } else {
+      detail::append_parameter_value(output,parameters[i],ParameterProfile::DateCandidate);
+    }
+  }
+  return DatetimeExecution{std::move(output),std::move(observations)};
 }
 
 inline rs::util::Result<ResultRow> binary_row(

@@ -69,3 +69,7 @@ core/database/mysql/date_parameter_descriptor.h
 core/database/mysql/time_wire.h
 core/database/mysql/datetime_wire.h
 core/database/mysql/parameter_receipt_shape.h
+core/database/mysql/datetime_parameter_wire.h
+core/database/mysql/datetime_parameter_descriptor.h
+core/database/mysql/prepared_wire.h
+core/database/mysql/handshake_wire.h

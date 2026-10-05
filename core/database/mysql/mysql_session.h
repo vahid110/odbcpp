@@ -8,6 +8,7 @@
 #include "prepared_wire.h"
 #include "date_parameter_descriptor.h"
 #include "parameter_receipt_shape.h"
+#include "datetime_parameter_descriptor.h"
 #include "odbcpp/transport/tls_configurable_transport.h"
 
 namespace rs::core::database::mysql {
@@ -214,6 +215,119 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
         parameter_types.push_back(receipt.normalized);
       }
       sent=authentication_detail::send_all(*transport_,*execution,deadline);
+      if (!sent) return retiring_failure(sent.error(),operation);
+      reader.sequence=1; // New command, same cumulative response budget and deadline.
+      auto result=read_result(reader,true,&names,&entries);
+      if (!result) return retiring_failure(result.error(),operation);
+      result->normalized_parameter_types=std::move(parameter_types);
+      sent=authentication_detail::send_all(*transport_,close,deadline);
+      if (!sent) return retiring_failure(sent.error(),operation);
+      auto checked=verified_completion(deadline);if (!checked) return retiring_failure(checked.error(),operation);
+      BackendResult<QueryResult> completed{std::move(*result),snapshot()};
+      retire.accepted=true;return completed;
+    } catch (const std::bad_alloc&) { return retiring_failure(rs::util::make_error_code(DbErrorCode::AllocationFailure),operation); }
+      catch (...) { return retiring_failure(rs::util::make_error_code(DbErrorCode::ProtocolError),operation); }
+  }
+  // Explicit private execution opt-in. Ordinary virtual/observation routes stay unchanged.
+  BackendResult<QueryResult> execute_datetime_q6_candidate(std::string_view sql,std::span<const QueryParameter> parameters,
+      rs::util::Deadline deadline,prepared_detail::DatetimeWriterPolicy policy) {
+    using rs::util::DbErrorCode;
+    constexpr auto operation=BackendOperation::ExecutePrepared;
+    if (!connected_) return failure(rs::util::make_error_code(DbErrorCode::NotConnected),operation);
+    if (state_!=SessionState::Idle)
+      return local_backend_error(LocalFailure::InvalidInput,"MySQL q6 execution requires idle session",operation,state_);
+    if (sql.empty() || sql.find('\0')!=std::string_view::npos || !rs::util::utf8_code_point_count(sql))
+      return local_backend_error(LocalFailure::InvalidInput,"Invalid MySQL prepared input",operation,state_);
+    if (sql.size()>input_limits_.max_sql_bytes || sql.size()>=connection_packet_limit)
+      return local_failure(rs::util::make_error_code(DbErrorCode::ResourceLimit),operation);
+    struct Retire {
+      MySqlSession& session;bool accepted{};
+      ~Retire() { if (!accepted) session.disconnect(); }
+    } retire{*this};
+    try {
+      // Validate and encode parameters before any protocol mutation. No SQL substitution.
+      const auto prepare_size=sql.size()+5;
+      if (prepare_size>input_limits_.max_request_wire_bytes ||
+          input_limits_.max_request_wire_bytes-prepare_size<9) {
+        BackendResult<QueryResult> rejected{local_failure(rs::util::make_error_code(DbErrorCode::ResourceLimit),operation)};
+        retire.accepted=true;return rejected;
+      }
+      auto execution_limits=input_limits_;
+      execution_limits.max_request_wire_bytes-=prepare_size+9;
+      auto execution=prepared_detail::execute_datetime_q6_candidate_request(0,parameters,execution_limits,policy);
+      if (!execution) {
+        BackendResult<QueryResult> rejected{local_failure(execution.error(),operation)};
+        retire.accepted=true;return rejected;
+      }
+      std::vector<std::byte> request(prepare_size);
+      authentication_detail::frame(request,0);request[4]=std::byte{22};
+      for (std::size_t i=0;i<sql.size();++i) request[5+i]=static_cast<std::byte>(sql[i]);
+      auto sent=authentication_detail::send_all(*transport_,request,deadline);
+      if (!sent) return retiring_failure(sent.error(),operation);
+      Reader reader{*transport_,deadline,response_limits_};
+      auto first=reader.next();if (!first) return retiring_failure(first.error(),operation);
+      if ((*first)[0]==std::byte{255}) return retiring_failure(server_error(*first).error(),operation);
+      auto prepared=prepared_detail::parse_prepare(*first);
+      if (!prepared) return retiring_failure(prepared.error(),operation);
+      if (prepared->parameters>input_limits_.max_parameters ||
+          prepared->columns>result_limits_.max_columns_per_description ||
+          static_cast<std::size_t>(prepared->columns)+prepared->parameters>result_limits_.max_metadata_entries/6)
+        return retiring_failure(rs::util::make_error_code(DbErrorCode::ResourceLimit),operation);
+      std::size_t names{},entries{};
+      std::vector<NativeTypeInfo> parameter_types;
+      std::vector<ParameterReceipt> parameter_receipts;
+      auto metadata=read_prepared_metadata(reader,prepared->parameters,names,entries,&parameter_receipts,
+          ParameterMetadataScope::DateDatetimeQ6Candidate);
+      if (!metadata) return retiring_failure(metadata.error(),operation);
+      metadata=read_prepared_metadata(reader,prepared->columns,names,entries,nullptr);
+      if (!metadata) return retiring_failure(metadata.error(),operation);
+      if (parameter_receipts.size()!=prepared->parameters ||
+          execution->datetime_observations.size()!=parameters.size())
+        return retiring_failure(rs::util::make_error_code(DbErrorCode::ProtocolError),operation);
+      std::array<std::byte,9> close{};authentication_detail::frame(close,0);close[4]=std::byte{25};
+      for (std::size_t i=0;i<4;++i) {
+        const auto byte=static_cast<std::byte>((prepared->statement_id>>(8*i))&255);
+        execution->packet[5+i]=byte;close[5+i]=byte;
+      }
+      if (prepared->parameters!=parameters.size()) {
+        sent=authentication_detail::send_all(*transport_,close,deadline);
+        if (!sent) return retiring_failure(sent.error(),operation);
+        auto checked=verified_completion(deadline);if (!checked) return retiring_failure(checked.error(),operation);
+        BackendResult<QueryResult> rejected{local_backend_error(LocalFailure::InvalidInput,
+            "MySQL parameter count mismatch",operation,state_)};
+        retire.accepted=true;return rejected;
+      }
+      for (std::size_t i=0;i<parameters.size();++i) {
+        const auto& receipt=parameter_receipts[i];
+        const auto& caller=parameters[i];
+        rs::util::Result<void> admitted;
+        // Actual family structure preceded both EOFs/count; caller order now
+        // controls affinity. NULL still requires its actual owning receipt.
+        if (caller.type==QueryParameterType::Date) {
+          admitted=date_parameter_detail::descriptor(caller.type,receipt.raw,receipt.normalized);
+        } else if (caller.type==QueryParameterType::Timestamp) {
+          if (!execution->datetime_observations[i])
+            return retiring_failure(rs::util::make_error_code(DbErrorCode::ProtocolError),operation);
+          admitted=datetime_parameter_detail::descriptor(caller.type,receipt.raw,receipt.normalized,
+              *execution->datetime_observations[i]);
+        } else if (receipt.raw.type==10 || receipt.normalized.type==ScalarType::Date) {
+          admitted=date_parameter_detail::descriptor(caller.type,receipt.raw,receipt.normalized);
+        } else if (receipt.raw.type==12 || receipt.normalized.type==ScalarType::Timestamp) {
+          auto affinity=datetime_parameter_detail::hint_affinity(caller.type,receipt.raw,receipt.normalized);
+          if (!affinity) admitted={affinity.error()};
+        }
+        if (!admitted) {
+          if (admitted.error()==rs::util::make_error_code(DbErrorCode::ProtocolError))
+            return retiring_failure(admitted.error(),operation);
+          sent=authentication_detail::send_all(*transport_,close,deadline);
+          if (!sent) return retiring_failure(sent.error(),operation);
+          auto checked=verified_completion(deadline);if (!checked) return retiring_failure(checked.error(),operation);
+          BackendResult<QueryResult> rejected{local_failure(admitted.error(),operation)};
+          retire.accepted=true;return rejected;
+        }
+        parameter_types.push_back(receipt.normalized);
+      }
+      sent=authentication_detail::send_all(*transport_,execution->packet,deadline);
       if (!sent) return retiring_failure(sent.error(),operation);
       reader.sequence=1; // New command, same cumulative response budget and deadline.
       auto result=read_result(reader,true,&names,&entries);
@@ -443,7 +557,7 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
     if (!tls || !tls->peer_identity_verified()) return {rs::util::DbErrorCode::TLSError};
     return {};
   }
-  enum class ParameterMetadataScope { ExistingOnly, ObservationThreeByFour };
+  enum class ParameterMetadataScope { ExistingOnly, ObservationThreeByFour, DateDatetimeQ6Candidate };
   struct ParameterReceipt { query_detail::NativeParameterDescriptorObservation raw;NativeTypeInfo normalized; };
   rs::util::Result<void> read_prepared_metadata(Reader& reader,std::size_t count,
       std::size_t& names,std::size_t& entries,std::vector<ParameterReceipt>* types,
@@ -463,9 +577,11 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
       if (!column) return {column.error()};
       // Default diagnostic refusal remains unchanged. Observer scope is local
       // to this parameter pass and never selects an execution writer/profile.
-      if (types && scope==ParameterMetadataScope::ExistingOnly &&
+      if (types && ((scope==ParameterMetadataScope::ExistingOnly &&
           (column->normalized_type->type==ScalarType::Decimal ||
-           column->normalized_type->type==ScalarType::Timestamp)) return {DbErrorCode::UnsupportedFeature};
+           column->normalized_type->type==ScalarType::Timestamp)) ||
+          (scope==ParameterMetadataScope::DateDatetimeQ6Candidate &&
+           column->normalized_type->type==ScalarType::Decimal))) return {DbErrorCode::UnsupportedFeature};
       if (types && scope==ParameterMetadataScope::ObservationThreeByFour &&
           (raw.type==246 || column->normalized_type->type==ScalarType::Decimal)) {
         if (!raw.flags) return {DbErrorCode::ProtocolError};
@@ -475,7 +591,8 @@ class MySqlSession final : public IDatabaseConnection, public ITransactionSessio
         // Shape only; ordinary caller affinity remains after EOF/count.
         auto shape=date_parameter_detail::receipt_shape(raw,*column->normalized_type);
         if (!shape) return {shape.error()};
-      } else if (types && scope==ParameterMetadataScope::ObservationThreeByFour &&
+      } else if (types && (scope==ParameterMetadataScope::ObservationThreeByFour ||
+          scope==ParameterMetadataScope::DateDatetimeQ6Candidate) &&
           (raw.type==12 || column->normalized_type->type==ScalarType::Timestamp)) {
         auto shape=parameter_receipt_detail::datetime_q6_shape(raw,*column->normalized_type);
         if (!shape) return {shape.error()};

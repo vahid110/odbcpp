@@ -63,6 +63,8 @@ set(_members
   "core/database/mysql/date_parameter_descriptor.h"
   "core/database/mysql/date_parameter_wire.h"
   "core/database/mysql/date_wire.h"
+  "core/database/mysql/datetime_parameter_descriptor.h"
+  "core/database/mysql/datetime_parameter_wire.h"
   "core/database/mysql/datetime_wire.h"
   "core/database/mysql/decimal_wire.h"
   "core/database/mysql/error_wire.h"
@@ -130,7 +132,7 @@ file(GLOB_RECURSE _actual RELATIVE "${INSTALLED_PREFIX}/${GNU_INCLUDEDIR}/odbcpp
 list(SORT _actual)
 list(SORT _members)
 if(NOT "${_actual}" STREQUAL "${_members}")
-  message(FATAL_ERROR "Installed legacy membership differs from exact77 policy")
+  message(FATAL_ERROR "Installed legacy membership differs from exact79 policy")
 endif()
 foreach(_header IN LISTS _members)
   if(IS_SYMLINK "${INSTALLED_PREFIX}/${GNU_INCLUDEDIR}/odbcpp/${_header}")

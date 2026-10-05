@@ -14,6 +14,8 @@ core/database/mysql/connection_security.h
 core/database/mysql/date_parameter_descriptor.h
 core/database/mysql/date_parameter_wire.h
 core/database/mysql/date_wire.h
+core/database/mysql/datetime_parameter_descriptor.h
+core/database/mysql/datetime_parameter_wire.h
 core/database/mysql/datetime_wire.h
 core/database/mysql/decimal_wire.h
 core/database/mysql/error_wire.h
