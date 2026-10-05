@@ -14,3 +14,5 @@ core/auth/checked_response_stream.h
 core/auth/checked_aws_db_json_response.h
 core/auth/detail/aws_db_json_parser.h
 core/auth/response_operation.h
+core/auth/checked_aws_db_xml_response.h
+core/auth/detail/aws_db_xml_parser.h
