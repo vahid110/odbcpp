@@ -26,7 +26,10 @@ void u32(std::vector<std::byte>& out,std::uint32_t value) {
 }
 std::vector<std::byte> frame(char tag,std::string_view payload={}) {
   std::vector<std::byte> out{std::byte(tag)};u32(out,static_cast<std::uint32_t>(payload.size()+4));
-  for(unsigned char c:payload)out.push_back(std::byte(c));return out;
+  for(unsigned char c:payload) {
+    out.push_back(std::byte(c));
+  }
+  return out;
 }
 void add(std::vector<std::byte>& out,const std::vector<std::byte>& value){out.insert(out.end(),value.begin(),value.end());}
 std::vector<std::byte> description(std::uint32_t oid,char state='I') {
