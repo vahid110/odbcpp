@@ -158,7 +158,7 @@ TEST(CheckedXmlPortable, CompleteGrammarNamespaceEntitiesUtf8AndResourceRefusals
     std::pair{valid+"x",a::XmlFailure::InvalidSyntax},std::pair{valid+std::string(1,'\0'),a::XmlFailure::InvalidSyntax},
     std::pair{wrong_namespace,a::XmlFailure::InvalidNamespace},
     std::pair{envelope("<DbPassword>&external;</DbPassword>"),a::XmlFailure::InvalidEntity},
-    std::pair{envelope("<DbPassword>"+std::string(1,char(0xc0))+"</DbPassword>"),a::XmlFailure::InvalidUtf8},
+    std::pair{envelope("<DbPassword>"+std::string("\xc0",1)+"</DbPassword>"),a::XmlFailure::InvalidUtf8},
     std::pair{std::string("<!DOCTYPE x>")+valid,a::XmlFailure::UnsupportedMarkup},
     std::pair{envelope("<p:DbUser>x</p:DbUser>"),a::XmlFailure::InvalidName}};
   for(const auto& [text,expected]:pairs) { Fixture f;error(f.parse(text),expected,a::BoundaryFailure::BodyRejected);terminal(f,a::BoundaryFailure::BodyRejected); }
