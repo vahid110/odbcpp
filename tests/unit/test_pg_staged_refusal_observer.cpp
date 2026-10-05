@@ -65,7 +65,8 @@ public:
   ++calls->recv;calls->deadline=d;
   if(mode)return outcome(b.size());
   const auto n=std::min({b.size(),chunk,response.size()-offset});std::copy_n(response.begin()+offset,n,b.begin());offset+=n;
-  if(callback)callback();return IOResult{n,false};
+  if(callback) { callback(); }
+  return IOResult{n,false};
  }
  void close()noexcept override{++calls->close;}
 private:
@@ -87,7 +88,8 @@ struct Fixture {
 void append(std::vector<std::byte>&a,const std::vector<std::byte>&b){a.insert(a.end(),b.begin(),b.end());}
 std::vector<std::byte>frame(char c,std::span<const std::byte>body={}) {
  std::vector<std::byte>out{std::byte(c)};auto n=static_cast<std::uint32_t>(body.size()+4);
- for(int shift:{24,16,8,0})out.push_back(std::byte((n>>shift)&255));append(out,{body.begin(),body.end()});return out;
+ for(int shift:{24,16,8,0}) { out.push_back(std::byte((n>>shift)&255)); }
+ append(out,{body.begin(),body.end()});return out;
 }
 std::vector<std::byte>request(){
  const unsigned char bytes[]{'P',0,0,0,21,0,'S','E','L','E','C','T',' ','$','1',0,0,1,0,0,0,17,'D',0,0,0,6,'S',0,'S',0,0,0,4};
@@ -159,6 +161,6 @@ TEST(PgStagedRefusalObserverTest, FixedResourceLimitsRejectBeforePayloadWork) {
 TEST(PgStagedRefusalObserverTest, StructuralSummaryNeverClaimsMetadataOrAdmission) {
  Fixture f;const auto d=future();ASSERT_TRUE(f.observer->arm(d));send_all(f,request(),d);auto r=description(true);const auto insert=frame('S');r.insert(r.begin(),insert.begin(),insert.end());const auto notification=frame('A');r.insert(r.begin(),notification.begin(),notification.end());const auto notice=frame('N');r.insert(r.begin()+insert.size()+5,notice.begin(),notice.end());f.mock->response=r;recv_all(f,d);const auto s=f.observer->seal();EXPECT_TRUE(s.verified);EXPECT_EQ(Observer::Evidence::TestObservationOnly,s.label);EXPECT_EQ(Observer::Completion::DescriptionIdle,s.completion);EXPECT_EQ(7u,s.received_frames);
  Fixture g;const auto gd=future();ASSERT_TRUE(g.observer->arm(gd));send_all(g,request(),gd);g.mock->response=description();g.mock->response.pop_back();recv_all(g,gd);EXPECT_FALSE(g.observer->seal().verified);g.mock->response=description();g.mock->offset=0;recv_all(g,gd);EXPECT_FALSE(g.observer->seal().verified);EXPECT_EQ(Observer::State::Fault,g.observer->state());
- for(int operation=0;operation<4;++operation){Fixture f;const auto dl=future();ASSERT_TRUE(f.observer->arm(dl));if(operation==0){ASSERT_TRUE(f.observer->connect("h",1,dl));EXPECT_EQ(1u,f.calls->connect);}if(operation==1){ASSERT_TRUE(f.observer->connect_plain("h",1,dl));EXPECT_EQ(1u,f.calls->plain);}if(operation==2){ASSERT_TRUE(f.observer->upgrade_to_tls("h",dl));EXPECT_EQ(1u,f.calls->upgrade);}if(operation==3){f.observer->set_ca_locations("f","d");EXPECT_EQ(1u,f.calls->ca);}EXPECT_EQ(Observer::Fault::Lifecycle,f.observer->summary().fault);}
+ for(int operation=0;operation<4;++operation){Fixture action_fixture;const auto dl=future();ASSERT_TRUE(action_fixture.observer->arm(dl));if(operation==0){ASSERT_TRUE(action_fixture.observer->connect("h",1,dl));EXPECT_EQ(1u,action_fixture.calls->connect);}if(operation==1){ASSERT_TRUE(action_fixture.observer->connect_plain("h",1,dl));EXPECT_EQ(1u,action_fixture.calls->plain);}if(operation==2){ASSERT_TRUE(action_fixture.observer->upgrade_to_tls("h",dl));EXPECT_EQ(1u,action_fixture.calls->upgrade);}if(operation==3){action_fixture.observer->set_ca_locations("f","d");EXPECT_EQ(1u,action_fixture.calls->ca);}EXPECT_EQ(Observer::Fault::Lifecycle,action_fixture.observer->summary().fault);}
  Fixture closed;const auto cd=future();ASSERT_TRUE(closed.observer->arm(cd));closed.observer->close();EXPECT_EQ(Observer::Fault::Lifecycle,closed.observer->summary().fault);EXPECT_EQ(1u,closed.calls->close);
 }
