@@ -10,3 +10,4 @@ core/auth/redshift_serverless_response.h
 core/auth/redshift_provisioned_response.h
 core/auth/redshift_withiam_response.h
 core/auth/checked_response_boundary.h
+core/auth/checked_response_stream.h

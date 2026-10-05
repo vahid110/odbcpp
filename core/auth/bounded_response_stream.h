@@ -37,6 +37,7 @@ class ResponseBytes final {
   }
  private:
   friend class StreamOwner;
+  friend class CheckedStreamOwner;
   friend StreamResult<ResponseBytes> seal_response(class StreamOwner&&);
   ResponseBytes(std::unique_ptr<std::byte[]> bytes, std::size_t cap, std::size_t size)
       : bytes_(std::move(bytes)), cap_(cap), size_(size) {}
