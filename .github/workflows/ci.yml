@@ -505,7 +505,7 @@ jobs:
           -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
 
       - name: Build
-        run: cmake --build build-sanitize --parallel
+        run: cmake --build build-sanitize --parallel 2
 
       - name: Run unit tests
         run: >-
