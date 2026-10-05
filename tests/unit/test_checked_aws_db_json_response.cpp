@@ -146,7 +146,7 @@ TEST(CheckedJsonPortable, CompleteGrammarUtf8EscapesAndResourceRefusals) {
   const std::array pairs{
       std::pair{std::string("{}x"),a::JsonFailure::InvalidSyntax},std::pair{std::string("{}\0",3),a::JsonFailure::InvalidSyntax},
       std::pair{std::string(R"({"x":"\uD800"})"),a::JsonFailure::InvalidEscape},std::pair{std::string(R"({"x":"\q"})"),a::JsonFailure::InvalidEscape},
-      std::pair{std::string("{\"x\":\"")+char(0xc0)+char(0x80)+"\"}",a::JsonFailure::InvalidUtf8},
+      std::pair{std::string("{\"x\":\"\xc0\x80\"}"),a::JsonFailure::InvalidUtf8},
       std::pair{std::string("{\"x\":\"\n\"}"),a::JsonFailure::InvalidSyntax},std::pair{std::string("{\"x\":[1,]}"),a::JsonFailure::InvalidSyntax}};
   for(const auto& [text,expected]:pairs) { Fixture f;error(f.parse(text),expected,a::BoundaryFailure::BodyRejected);terminal(f,a::BoundaryFailure::BodyRejected); }
   auto bounds=[](const std::string& text,bool success) {
