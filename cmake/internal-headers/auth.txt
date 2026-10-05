@@ -11,3 +11,5 @@ core/auth/redshift_provisioned_response.h
 core/auth/redshift_withiam_response.h
 core/auth/checked_response_boundary.h
 core/auth/checked_response_stream.h
+core/auth/checked_aws_db_json_response.h
+core/auth/detail/aws_db_json_parser.h
