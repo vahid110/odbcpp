@@ -73,3 +73,7 @@ core/database/mysql/datetime_parameter_wire.h
 core/database/mysql/datetime_parameter_descriptor.h
 core/database/mysql/prepared_wire.h
 core/database/mysql/handshake_wire.h
+core/database/mysql/authentication.h
+core/database/mysql/connection_security.h
+core/database/mysql/mysql_session.h
+core/database/mysql/tls_negotiation.h

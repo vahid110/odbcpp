@@ -508,6 +508,14 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ProbeInternalIncludes.cmake")
 set_tests_properties(test_internal_include_closure
   PROPERTIES LABELS "unit;architecture" TIMEOUT 90)
 
+# Backend-private first/only include; compile-only, with no source-root fallback.
+add_library(odbcpp_mysql_session_header_isolation OBJECT
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/header_isolation/mysql_session_first_include.cpp")
+target_compile_features(odbcpp_mysql_session_header_isolation PRIVATE cxx_std_20)
+target_include_directories(odbcpp_mysql_session_header_isolation PRIVATE
+  "${ODBCPP_INTERNAL_INCLUDE_backend}")
+apply_compiler_settings(odbcpp_mysql_session_header_isolation)
+
 add_test(NAME test_prototype_pool_quarantine COMMAND "${CMAKE_COMMAND}"
   "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
   "-DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}" "-DCONFIG=$<CONFIG>"
