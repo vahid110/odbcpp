@@ -2145,7 +2145,11 @@ TEST_F(RedshiftTemporalParameterRealTest, PreparedDateTimeTimestampAndNull) {
       // Whole-second C_TIME input does not alter the server's default TIME(6) result type.
       const SQLULEN sizes[]{10,15,26};const SQLSMALLINT scales[]{0,6,6};
       const SQLSMALLINT codes[]{SQL_CODE_DATE,SQL_CODE_TIME,SQL_CODE_TIMESTAMP};
+      SQLHDESC result_descriptor=SQL_NULL_HDESC;
+      ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_IMP_ROW_DESC,&result_descriptor,
+          sizeof(result_descriptor),nullptr)) << get_error(SQL_HANDLE_STMT,hstmt_);
       for(SQLUSMALLINT column=1;column<=3;++column) {
+        SCOPED_TRACE(column);
         std::array<SQLCHAR,32> name{};SQLSMALLINT name_length=-1,type=-1,digits=-1,nullable=-1;SQLULEN size=99;
         ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,column,name.data(),name.size(),&name_length,
             &type,&size,&digits,&nullable));
@@ -2155,12 +2159,20 @@ TEST_F(RedshiftTemporalParameterRealTest, PreparedDateTimeTimestampAndNull) {
         EXPECT_EQ(sizes[column-1],size);EXPECT_EQ(scales[column-1],digits);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
         for(const auto& field:{std::pair{SQL_DESC_CONCISE_TYPE,types[column-1]},
             std::pair{SQL_DESC_TYPE,SQLSMALLINT(SQL_DATETIME)},
-            std::pair{SQL_DESC_DATETIME_INTERVAL_CODE,codes[column-1]},
             std::pair{SQL_DESC_SCALE,scales[column-1]}}) {
-          SQLLEN actual=-1;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(hstmt_,column,field.first,nullptr,0,nullptr,&actual));
+          SCOPED_TRACE(field.first);
+          SQLLEN actual=-1;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(hstmt_,column,field.first,nullptr,0,nullptr,&actual))
+              << get_error(SQL_HANDLE_STMT,hstmt_);
           EXPECT_EQ(field.second,actual);
         }
-        SQLLEN display=-1;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(hstmt_,column,SQL_DESC_DISPLAY_SIZE,nullptr,0,nullptr,&display));
+        // The datetime subcode is a descriptor field, not a SQLColAttribute identifier.
+        SQLSMALLINT datetime_code=-1;
+        ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(result_descriptor,static_cast<SQLSMALLINT>(column),
+            SQL_DESC_DATETIME_INTERVAL_CODE,&datetime_code,sizeof(datetime_code),nullptr))
+            << get_error(SQL_HANDLE_DESC,result_descriptor);
+        EXPECT_EQ(codes[column-1],datetime_code);
+        SQLLEN display=-1;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(hstmt_,column,SQL_DESC_DISPLAY_SIZE,nullptr,0,nullptr,&display))
+            << get_error(SQL_HANDLE_STMT,hstmt_);
         EXPECT_EQ(static_cast<SQLLEN>(sizes[column-1]),display);
         if(trial==0) { owned_descriptors[column-1]=observed; }
         else {
