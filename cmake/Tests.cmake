@@ -15,7 +15,11 @@ FetchContent_MakeAvailable(googletest)
 # in the protected PostgreSQL/Redshift builds before MySQL product composition.
 function(add_test_executable test_name test_file)
   add_executable(${test_name} ${test_file})
-  if(test_name MATCHES "^(test_auth_core|test_temporary_db_validity|test_issuer_timestamp|test_aws_db_response_fields|test_bounded_response_stream|test_aws_db_json_response|test_aws_db_xml_response|test_redshift_serverless_response|test_redshift_provisioned_response|test_redshift_withiam_response|test_auth_raw_response_projection|test_checked_response_boundary|test_checked_response_stream|test_checked_aws_db_json_response|test_response_operation|test_checked_aws_db_xml_response)$")
+  if(test_name STREQUAL "test_pg_credential_consumer")
+    target_link_libraries(${test_name} PRIVATE odbcpp_auth_pg_consumer GTest::gtest_main)
+    target_include_directories(${test_name} PRIVATE "${ODBCPP_PG_AUTH_CONSUMER_INCLUDE}"
+      "${ODBCPP_INTERNAL_INCLUDE_auth}" "${ODBCPP_INTERNAL_INCLUDE_backend}")
+  elseif(test_name MATCHES "^(test_auth_core|test_temporary_db_validity|test_issuer_timestamp|test_aws_db_response_fields|test_bounded_response_stream|test_aws_db_json_response|test_aws_db_xml_response|test_redshift_serverless_response|test_redshift_provisioned_response|test_redshift_withiam_response|test_auth_raw_response_projection|test_checked_response_boundary|test_checked_response_stream|test_checked_aws_db_json_response|test_response_operation|test_checked_aws_db_xml_response)$")
     target_link_libraries(${test_name} PRIVATE odbcpp_auth_core GTest::gtest_main)
     target_include_directories(${test_name} PRIVATE "${ODBCPP_INTERNAL_INCLUDE_auth}")
   else()
@@ -161,7 +165,7 @@ foreach(test_file ${UNIT_TEST_SOURCES})
   add_test_executable(${test_name} ${test_file})
   set_tests_properties(${test_name} PROPERTIES LABELS "unit")
 endforeach()
-set_tests_properties(test_auth_core test_temporary_db_validity test_issuer_timestamp test_aws_db_response_fields test_bounded_response_stream test_aws_db_json_response test_aws_db_xml_response test_redshift_serverless_response test_redshift_provisioned_response test_redshift_withiam_response test_auth_raw_response_projection test_checked_response_boundary test_checked_response_stream test_checked_aws_db_json_response test_response_operation test_checked_aws_db_xml_response
+set_tests_properties(test_pg_credential_consumer test_auth_core test_temporary_db_validity test_issuer_timestamp test_aws_db_response_fields test_bounded_response_stream test_aws_db_json_response test_aws_db_xml_response test_redshift_serverless_response test_redshift_provisioned_response test_redshift_withiam_response test_auth_raw_response_projection test_checked_response_boundary test_checked_response_stream test_checked_aws_db_json_response test_response_operation test_checked_aws_db_xml_response
   PROPERTIES LABELS "unit;security" TIMEOUT 30)
 set_tests_properties(test_mysql_handshake_wire test_mysql_connection_security test_mysql_tls_negotiation test_mysql_authentication test_mysql_session test_mysql_query_wire test_mysql_prepared_wire test_mysql_connect_until test_mysql_datetime_q6_preflight_deadlines test_mysql_q6_preflight_phase_binding
   PROPERTIES LABELS "unit;security" TIMEOUT 30)

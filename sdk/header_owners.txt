@@ -68,3 +68,4 @@ odbcpp/auth/aws/native_body_capture.h|sdk/internal/odbcpp/auth/aws/native_body_c
 odbcpp/auth/aws/provisioned_native_http_ingress.h|sdk/internal/odbcpp/auth/aws/provisioned_native_http_ingress.h
 odbcpp/auth/aws/provisioned_native_owner.h|sdk/internal/odbcpp/auth/aws/provisioned_native_owner.h
 odbcpp/auth/provisioned_query_transport.h|sdk/internal/odbcpp/auth/provisioned_query_transport.h
+odbcpp/auth/pg_credential_consumer.h|sdk/internal/odbcpp/auth/pg_credential_consumer.h

@@ -105,7 +105,8 @@ foreach(_consumer it_redshift_native_auth test_named_profile_acquisition test_pr
   set_target_properties(${_consumer} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
 endforeach()
 target_include_directories(it_redshift_native_auth PRIVATE "${ODBCPP_INTERNAL_INCLUDE_backend}")
-target_link_libraries(it_redshift_native_auth PRIVATE odbcpp::core)
+target_include_directories(it_redshift_native_auth PRIVATE "${ODBCPP_PG_AUTH_CONSUMER_INCLUDE}")
+target_link_libraries(it_redshift_native_auth PRIVATE odbcpp::core odbcpp_auth_pg_consumer)
 target_link_options(it_redshift_native_auth PRIVATE
   "LINKER:-map,${CMAKE_CURRENT_BINARY_DIR}/native-provisioned-auth-link.map")
 # No add_test/discovery/postbuild execution. A manually selected build is not

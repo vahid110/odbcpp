@@ -272,6 +272,9 @@ if(BUILD_TESTING OR BUILD_EXAMPLES)
   apply_compiler_settings(odbcpp_prototype_pool)
 endif()
 
+# Private provider-free PostgreSQL-family credential consumer; never installed.
+include(cmake/PgAuthConsumer.cmake)
+
 # ---- Examples ----
 if(BUILD_EXAMPLES)
   include(cmake/Examples.cmake)

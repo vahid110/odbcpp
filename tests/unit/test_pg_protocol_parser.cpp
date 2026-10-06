@@ -1239,3 +1239,34 @@ TEST(PgProtocolParserTest, AuthenticationCleanupDropsInterruptedScramAndAllowsFr
   EXPECT_THROW(parser.parse_auth_request(auth_ok), std::runtime_error);
   parser.clear_authentication_state();
 }
+
+TEST(PgParameterContractTest, PreparedHexTextHasLiteralOwningOid25AndEmptyNullFrames) {
+  PgProtocolParser parser;
+  const unsigned char parse_bytes[]{
+      0,'S','E','L','E','C','T',' ','F','R','O','M','_','H','E','X','(',
+      '$','1',')',' ','A','S',' ','b',0,0,1,0,0,0,25};
+  const unsigned char nonempty_bytes[]{0,0,0,0,0,1,0,0,0,6,'0','0','4','1','f','f',0,0};
+  const unsigned char empty_bytes[]{0,0,0,0,0,1,0,0,0,0,0,0};
+  const unsigned char null_bytes[]{0,0,0,0,0,1,255,255,255,255,0,0};
+  const auto literal=[](std::span<const unsigned char> input) {
+    std::vector<std::byte> output;
+    for(auto byte:input) { output.push_back(static_cast<std::byte>(byte)); }
+    return output;
+  };
+  const std::vector<std::vector<std::byte>> expected_bind{
+      literal(nonempty_bytes),literal(empty_bytes),literal(null_bytes)};
+  for(unsigned trial=0;trial<3;++trial) {
+    SCOPED_TRACE(trial);
+    std::string caller="0041ff";
+    std::vector<QueryParameter> parameters{
+        {trial==2?std::nullopt:std::optional<std::string>{trial==1?"":caller},QueryParameterType::Text}};
+    caller.assign("poison"); // Parameter storage owns input before serialization.
+    const auto frames=split_frames(parser.create_prepared_query("SELECT FROM_HEX(?) AS b",parameters));
+    ASSERT_EQ(6U,frames.size());
+    EXPECT_EQ('P',frames[0].tag);EXPECT_EQ(literal(parse_bytes),frames[0].payload);
+    EXPECT_EQ('B',frames[2].tag);EXPECT_EQ(expected_bind[trial],frames[2].payload);
+    // Mutating the parameter after encoding cannot alter the owning wire bytes.
+    parameters[0].value="poison";
+    EXPECT_EQ(expected_bind[trial],frames[2].payload);
+  }
+}

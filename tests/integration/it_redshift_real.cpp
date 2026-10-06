@@ -1601,3 +1601,92 @@ TEST_F(RedshiftCatalogVarbyteRealTest, VarbyteConstantDirectPreparedResultContra
   RecordProperty("result_type_name_policy","varbyte_generic_family_fallback_not_server_native_name");
   RecordProperty("descriptor_size_policy","unknown_zero_octet_display_no_total_not_actual_cell_length");
 }
+
+// Prospective owning text-parameter checkpoint, separate from raw C_BINARY
+// VARBYTE input support and from the already qualified constant-result scope.
+class RedshiftVarbyteTextParameterRealTest : public RedshiftRealTest {
+protected:
+  void SetUp() override {
+    const char* admission=std::getenv("ODBCPP_REDSHIFT_VARBYTE_TEXT_PARAMETER_ADMISSION");
+    if(admission==nullptr) { GTEST_SKIP() << "Prepared hex-text VARBYTE scope is not admitted"; }
+    ASSERT_TRUE(std::string_view(admission)=="varbyte-hex-text-parameter-v1")
+        << "Invalid prepared hex-text VARBYTE scope marker";
+    // FIRST gate, before base configuration, handles or connection work.
+    RedshiftRealTest::SetUp();
+  }
+};
+
+TEST_F(RedshiftVarbyteTextParameterRealTest, PreparedHexTextToVarbyteBytes) {
+  ASSERT_TRUE(connect());
+  SQLCHAR identity_sql[]="SELECT current_database(),TRIM(current_user)";
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(hstmt_,identity_sql,SQL_NTS));
+  SQLSMALLINT count=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&count));ASSERT_EQ(2,count);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+  for(SQLUSMALLINT column=1;column<=2;++column) {
+    const char* expected=column==1?"odbcpp_pilot":"odbcpp_pilot_test";
+    std::array<char,64> actual{};SQLLEN length=-1;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,column,SQL_C_CHAR,actual.data(),actual.size(),&length));
+    ASSERT_GE(length,0);ASSERT_LT(length,static_cast<SQLLEN>(actual.size()));
+    ASSERT_TRUE(static_cast<std::size_t>(length)==std::strlen(expected));
+    ASSERT_TRUE(std::memcmp(actual.data(),expected,static_cast<std::size_t>(length)+1)==0);
+  }
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  SQLCHAR query[]="SELECT FROM_HEX(?) AS b";
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(hstmt_,query,SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
+  SQLSMALLINT parameters=0;ASSERT_EQ(SQL_SUCCESS,SQLNumParams(hstmt_,&parameters));ASSERT_EQ(1,parameters);
+  const std::array<unsigned char,3> expected{0x00,0x41,0xff};
+  std::array<unsigned char,5> owned{};
+  for(unsigned trial=0;trial<3;++trial) {
+    ASSERT_FALSE(HasFailure());
+    SCOPED_TRACE(trial);
+    std::array<char,6> input{'0','0','4','1','f','f'};
+    SQLLEN input_length=6;
+    if(trial!=0) { input.fill('!');input_length=trial==1?0:SQL_NULL_DATA; }
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,1,SQL_PARAM_INPUT,SQL_C_CHAR,
+        SQL_VARCHAR,6,0,input.data(),input.size(),&input_length));
+    ASSERT_EQ(SQL_SUCCESS,SQLExecute(hstmt_)) << get_error(SQL_HANDLE_STMT,hstmt_);
+    input.fill('!'); // An owning parameter/result must outlive caller mutation.
+    ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&count));ASSERT_EQ(1,count);
+    char name[8]{};SQLSMALLINT name_length=-1,type=-1,scale=-1,nullable=-1;SQLULEN size=99;
+    ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,1,reinterpret_cast<SQLCHAR*>(name),sizeof(name),
+        &name_length,&type,&size,&scale,&nullable));
+    EXPECT_EQ(1,name_length);EXPECT_EQ(0,std::memcmp(name,"b",2));
+    EXPECT_EQ(SQL_LONGVARBINARY,type);EXPECT_EQ(0u,size);EXPECT_EQ(0,scale);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
+    // Selected unknown-size result-family policy, not native parameter provenance.
+    for(const SQLUSMALLINT field:{SQLUSMALLINT{SQL_DESC_OCTET_LENGTH},SQLUSMALLINT{SQL_DESC_DISPLAY_SIZE}}) {
+      SQLLEN value=99;
+      ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(hstmt_,1,field,nullptr,0,nullptr,&value));
+      EXPECT_EQ(SQL_NO_TOTAL,value);
+    }
+    ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+    std::array<unsigned char,5> output{0x5a,0x5a,0x5a,0x5a,0x5a};SQLLEN length=99;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,1,SQL_C_BINARY,output.data(),3,&length));
+    if(trial==0) {
+      EXPECT_EQ(3,length);EXPECT_EQ(0,std::memcmp(output.data(),expected.data(),expected.size()));
+      EXPECT_EQ(0x5a,output[3]);EXPECT_EQ(0x5a,output[4]);owned=output;
+    } else {
+      EXPECT_EQ(trial==1?0:SQL_NULL_DATA,length);
+      EXPECT_TRUE(std::all_of(output.begin(),output.end(),[](auto byte){return byte==0x5a;}));
+      EXPECT_EQ(0,std::memcmp(owned.data(),expected.data(),expected.size()));
+      EXPECT_EQ(0x5a,owned[3]);EXPECT_EQ(0x5a,owned[4]);
+    }
+    ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));
+    ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(hstmt_)); // Exactly one result, no extras.
+    // MoreResults already closes the result; SQL_CLOSE is the idempotent close.
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE));
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_RESET_PARAMS));
+  }
+  ASSERT_FALSE(HasFailure());
+  SQLCHAR recovery[]="SELECT 1";
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(hstmt_,recovery,SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&count));ASSERT_EQ(1,count);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+  SQLINTEGER scalar=-99;SQLLEN scalar_length=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,1,SQL_C_SLONG,&scalar,sizeof(scalar),&scalar_length));
+  EXPECT_EQ(1,scalar);EXPECT_EQ(static_cast<SQLLEN>(sizeof(scalar)),scalar_length);
+  ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+}

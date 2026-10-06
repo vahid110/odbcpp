@@ -1149,4 +1149,39 @@ passed. Private PostgreSQL stopped successfully, and independent status, absent
 pid and shutdown-log checks confirmed cleanup. The optional provider and three
 explicit consumers compiled and linked with warnings as errors; static dependency
 inspection confirmed pinned SDK/crypto closure and no mandatory AuthCore vendor
-dependency. Hosted qualification remains pending; the reusable module is unfinished.
+dependency. Exact c2db999 hosted qualification subsequently passed all required gates;
+the reusable module remains unfinished.
+
+### Private PostgreSQL-family credential handoff — candidate
+
+A separate provider-free private consumer translates an active issuer fields borrow
+into the existing backend connection API with the original deadline. It checks exact
+target/principal/TLS intent, refuses fallback passwords, preserves native backend
+errors and wipes its temporary password copy. The embedding retains issuer/expiry
+and verified-peer duties and disconnects if the enclosing observation later fails.
+AuthCore gains no backend or vendor dependency; the consumer is not installed or
+automatically linked into ODBC. Its portable offline unit target runs in ordinary
+regression builds; the optional native case reuses the adapter. Eight focused real
+parser/fake-TLS tests and eight scoped adapter/test-TU sanitizer tests passed in the
+isolated candidate; reused backend/GTest libraries were uninstrumented. The changed
+native case compiled and linked but has not executed. Shared local qualification passed 108 unit targets in PostgreSQL, both Unicode
+widths, sanitizer and Redshift profiles; PostgreSQL/Unicode each passed twelve
+integration targets and three verified-TLS checks. All 457 offline Python checks
+passed. Independent private PostgreSQL status, absent pid and shutdown log verified
+cleanup. The actual optional native target and private portable consumer compiled
+and linked with warnings as errors. Hosted platform qualification is pending;
+prior native IAM evidence does not certify
+this new executable or arbitrary ODBC-thread acquisition.
+
+### Redshift VARBYTE prepared hex-text checkpoint — prospective
+
+A checked-in marker-selected GoogleTest now binds owning hex text through the
+existing SQL_C_CHAR/SQL_VARCHAR path into FROM_HEX(?), with six-byte, empty and
+NULL trials, result metadata/canaries and same-session recovery. Its independent
+offline wire oracle passed literal Text/OID25/format0 lengths6/0/-1; both changed
+test translation units compiled and linked with warnings as errors. The new live
+case is unrun: this does not establish raw binary VARBYTE parameter support,
+native type-name provenance or maximum storage. The earlier three-case constant
+VARBYTE/static-DDL native evidence passed separately with observed exact-principal
+cleanup and paused-cluster readback; a Python inventory mismatch was repaired via
+reviewed offline reprocessing of unchanged output, preserving the failed wrapper.
