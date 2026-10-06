@@ -2230,3 +2230,140 @@ TEST_F(RedshiftTemporalParameterRealTest, PreparedDateTimeTimestampAndNull) {
     EXPECT_EQ("calendar_day",owned_descriptors[0].name);EXPECT_EQ("clock_time",owned_descriptors[1].name);EXPECT_EQ("stamp",owned_descriptors[2].name);
   }
 }
+
+
+class RedshiftUnicodeChunkRealTest : public RedshiftRealTest {
+protected:
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_UNICODE_CHUNK_ADMISSION");
+    if(marker==nullptr) { GTEST_SKIP() << "Unicode chunk scope is not admitted"; }
+    ASSERT_TRUE(std::string_view(marker)=="unicode-chunk-result-v1") << "Invalid Unicode chunk scope marker";
+    // FIRST gate, before configuration, handles or connection work.
+    RedshiftRealTest::SetUp();
+  }
+};
+
+TEST_F(RedshiftUnicodeChunkRealTest, PreparedWideChunksBoundTruncationAndNull) {
+  ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC,hdbc_);
+  SQLCHAR query[]="SELECT CAST(? AS VARCHAR(64)) AS bound_text, CAST(? AS VARCHAR(64)) AS chunk_text";
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(hstmt_,query,SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
+  SQLSMALLINT parameters=0;ASSERT_EQ(SQL_SUCCESS,SQLNumParams(hstmt_,&parameters));ASSERT_EQ(2,parameters);
+  const std::string positive="A\xe2\x82\xac\xf0\x9f\x98\x80" "B";
+  std::vector<SQLWCHAR> expected{'A',0x20ac};
+  if constexpr(sizeof(SQLWCHAR)==2) { expected.push_back(0xd83d);expected.push_back(0xde00); }
+  else { static_assert(sizeof(SQLWCHAR)==2 || sizeof(SQLWCHAR)==4);expected.push_back(static_cast<SQLWCHAR>(0x1f600)); }
+  expected.push_back('B');
+  struct GuardedWide { std::array<unsigned char,8> before;std::array<SQLWCHAR,4> value;std::array<unsigned char,8> after; } bound{},chunk{};
+  // These buffers, strings and indicators survive a fatal trial return and recovery cleanup.
+  std::string first,second;SQLLEN first_length=0,second_length=0,bound_length=0,chunk_length=0;
+  std::vector<SQLWCHAR> owned_chunks,owned_bound;
+  struct Descriptor { std::string name;SQLSMALLINT type;SQLULEN size;SQLSMALLINT scale;SQLSMALLINT nullable; };
+  std::array<Descriptor,2> owned_descriptors{};
+  const SQLWCHAR poison=static_cast<SQLWCHAR>(0x5a);
+  const auto reset=[&](auto& buffer) { buffer.before.fill(0x5a);buffer.after.fill(0x5a);buffer.value.fill(poison); };
+  const auto guards=[](const auto& buffer) {
+    return std::all_of(buffer.before.begin(),buffer.before.end(),[](auto byte){return byte==0x5a;}) &&
+        std::all_of(buffer.after.begin(),buffer.after.end(),[](auto byte){return byte==0x5a;});
+  };
+  const auto read_chunk=[&](SQLLEN units,SQLRETURN wanted,SQLLEN remaining,std::initializer_list<SQLWCHAR> payload) {
+    SCOPED_TRACE(units); // Numeric capacity only, no connection/server message.
+    reset(chunk);chunk_length=97;
+    const auto actual=SQLGetData(hstmt_,2,SQL_C_WCHAR,chunk.value.data(),units*sizeof(SQLWCHAR),&chunk_length);
+    EXPECT_EQ(wanted,actual) << get_error(SQL_HANDLE_STMT,hstmt_);
+    if(actual!=wanted) { return false; }
+    EXPECT_EQ(remaining,chunk_length);EXPECT_TRUE(guards(chunk));
+    if(wanted==SQL_SUCCESS_WITH_INFO) { EXPECT_EQ("01004",get_error(SQL_HANDLE_STMT,hstmt_)); }
+    std::size_t index=0;
+    for(auto value:payload) { EXPECT_EQ(value,chunk.value[index++]); }
+    EXPECT_EQ(SQLWCHAR{},chunk.value[index++]);
+    for(;index<chunk.value.size();++index) { EXPECT_EQ(poison,chunk.value[index]); }
+    if(!HasFailure()) { owned_chunks.insert(owned_chunks.end(),payload.begin(),payload.end()); }
+    return !HasFailure();
+  };
+  const auto trials=[&]() {
+    for(unsigned trial=0;trial<3;++trial) {
+      SCOPED_TRACE(trial);
+      first=trial==0?positive:trial==1?"":std::string("poison\xff",7);second=first;
+      first_length=trial==2?SQL_NULL_DATA:static_cast<SQLLEN>(first.size());second_length=first_length;
+      ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,64,0,
+          first.data(),first.size(),&first_length));
+      ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,2,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,64,0,
+          second.data(),second.size(),&second_length));
+      ASSERT_EQ(SQL_SUCCESS,SQLExecute(hstmt_)) << get_error(SQL_HANDLE_STMT,hstmt_);
+      first.assign("changed");second.assign("changed"); // Fetch must reflect owning executed parameters.
+      SQLSMALLINT count=0;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&count));ASSERT_EQ(2,count);
+      for(SQLUSMALLINT column=1;column<=2;++column) {
+        SCOPED_TRACE(column);std::array<SQLCHAR,32> name{};SQLSMALLINT length=-1,type=-1,scale=-1,nullable=-1;SQLULEN size=99;
+        ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,column,name.data(),name.size(),&length,&type,&size,&scale,&nullable))
+            << get_error(SQL_HANDLE_STMT,hstmt_);
+        ASSERT_GE(length,0);ASSERT_LT(static_cast<std::size_t>(length),name.size());
+        Descriptor observed{std::string(reinterpret_cast<const char*>(name.data()),static_cast<std::size_t>(length)),type,size,scale,nullable};
+        EXPECT_EQ(column==1?"bound_text":"chunk_text",observed.name);EXPECT_EQ(SQL_VARCHAR,type);
+        EXPECT_EQ(64u,size);EXPECT_EQ(0,scale);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
+        for(const auto& field:{std::pair{SQL_DESC_CONCISE_TYPE,SQLLEN(SQL_VARCHAR)},std::pair{SQL_DESC_LENGTH,SQLLEN(64)},std::pair{SQL_DESC_SCALE,SQLLEN(0)}}) {
+          SCOPED_TRACE(field.first);SQLLEN value=-1;
+          ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(hstmt_,column,field.first,nullptr,0,nullptr,&value)) << get_error(SQL_HANDLE_STMT,hstmt_);
+          EXPECT_EQ(field.second,value);
+        }
+        if(trial==0) { owned_descriptors[column-1]=observed; }
+        else {
+          const auto& previous=owned_descriptors[column-1];EXPECT_EQ(previous.name,observed.name);
+          EXPECT_EQ(previous.type,type);EXPECT_EQ(previous.size,size);EXPECT_EQ(previous.scale,scale);EXPECT_EQ(previous.nullable,nullable);
+        }
+      }
+      reset(bound);bound_length=93;
+      ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,1,SQL_C_WCHAR,bound.value.data(),2*sizeof(SQLWCHAR),&bound_length));
+      if(HasFailure()) { return; }
+      ASSERT_EQ(trial==0?SQL_SUCCESS_WITH_INFO:SQL_SUCCESS,SQLFetch(hstmt_)) << get_error(SQL_HANDLE_STMT,hstmt_);
+      EXPECT_TRUE(guards(bound));
+      if(trial==0) {
+        EXPECT_EQ("01004",get_error(SQL_HANDLE_STMT,hstmt_));
+        EXPECT_EQ(static_cast<SQLLEN>(expected.size()*sizeof(SQLWCHAR)),bound_length);
+        EXPECT_EQ(SQLWCHAR('A'),bound.value[0]);EXPECT_EQ(SQLWCHAR{},bound.value[1]);
+        EXPECT_EQ(poison,bound.value[2]);EXPECT_EQ(poison,bound.value[3]);owned_bound={bound.value[0]};
+        owned_chunks.clear();const auto full=static_cast<SQLLEN>(expected.size()*sizeof(SQLWCHAR));
+        ASSERT_TRUE(read_chunk(2,SQL_SUCCESS_WITH_INFO,full,{'A'}));
+        ASSERT_TRUE(read_chunk(2,SQL_SUCCESS_WITH_INFO,full-sizeof(SQLWCHAR),{0x20ac}));
+        const SQLLEN remaining=full-2*sizeof(SQLWCHAR);
+        ASSERT_TRUE(read_chunk(1,SQL_SUCCESS_WITH_INFO,remaining,{}));
+        if constexpr(sizeof(SQLWCHAR)==2) {
+          ASSERT_TRUE(read_chunk(2,SQL_SUCCESS_WITH_INFO,remaining,{}));
+          ASSERT_TRUE(read_chunk(3,SQL_SUCCESS_WITH_INFO,remaining,{0xd83d,0xde00}));
+        } else { ASSERT_TRUE(read_chunk(2,SQL_SUCCESS_WITH_INFO,remaining,{static_cast<SQLWCHAR>(0x1f600)})); }
+        ASSERT_TRUE(read_chunk(2,SQL_SUCCESS,sizeof(SQLWCHAR),{'B'}));EXPECT_EQ(expected,owned_chunks);
+      } else if(trial==1) {
+        EXPECT_EQ(0,bound_length);EXPECT_EQ(SQLWCHAR{},bound.value[0]);
+        for(std::size_t index=1;index<bound.value.size();++index) { EXPECT_EQ(poison,bound.value[index]); }
+        // Empty retrieval must not replace the positive owning reconstruction.
+        ASSERT_TRUE(read_chunk(2,SQL_SUCCESS,0,{}));EXPECT_EQ(expected,owned_chunks);
+      } else {
+        EXPECT_EQ(SQL_NULL_DATA,bound_length);
+        EXPECT_TRUE(std::all_of(bound.value.begin(),bound.value.end(),[&](auto unit){return unit==poison;}));
+        reset(chunk);chunk_length=97;
+        ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,2,SQL_C_WCHAR,chunk.value.data(),2*sizeof(SQLWCHAR),&chunk_length));
+        EXPECT_EQ(SQL_NULL_DATA,chunk_length);EXPECT_TRUE(guards(chunk));
+        EXPECT_TRUE(std::all_of(chunk.value.begin(),chunk.value.end(),[&](auto unit){return unit==poison;}));
+      }
+      if(HasFailure()) { return; }
+      reset(chunk);const auto finished_length=chunk_length;
+      ASSERT_EQ(SQL_NO_DATA,SQLGetData(hstmt_,2,SQL_C_WCHAR,chunk.value.data(),2*sizeof(SQLWCHAR),&chunk_length));
+      EXPECT_EQ(finished_length,chunk_length);EXPECT_TRUE(guards(chunk));
+      EXPECT_TRUE(std::all_of(chunk.value.begin(),chunk.value.end(),[&](auto unit){return unit==poison;}));
+      ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(hstmt_));
+      ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_UNBIND));
+      ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_RESET_PARAMS));
+    }
+  };
+  trials(); // At most three applications; retain any original failure, no replay.
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_RESET_PARAMS));
+  SQLCHAR recovery[]="SELECT 1";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(hstmt_,recovery,SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));SQLINTEGER scalar=-99;SQLLEN length=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,1,SQL_C_SLONG,&scalar,sizeof(scalar),&length));
+  EXPECT_EQ(1,scalar);EXPECT_EQ(static_cast<SQLLEN>(sizeof(scalar)),length);
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  if(!HasFailure()) {
+    EXPECT_EQ(expected,owned_chunks);ASSERT_EQ(1u,owned_bound.size());EXPECT_EQ(SQLWCHAR('A'),owned_bound[0]);
+    EXPECT_EQ("bound_text",owned_descriptors[0].name);EXPECT_EQ("chunk_text",owned_descriptors[1].name);
+  }
+}
