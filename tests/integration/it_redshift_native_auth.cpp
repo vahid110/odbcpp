@@ -263,3 +263,217 @@ TEST(ProvisionedNativeAuth, GetClusterCredentialsThenVerifiedTlsLogin){
  // Independent exact-principal server cleanup is mandatory controller work.
  // No admin credentials, broad termination, accounting or self-admission here.
 }
+
+
+#include "odbcpp/auth/aws/provisioned_sdk_runtime.h"
+#include <aws/core/config/AWSConfigFileProfileConfigLoader.h>
+#include <array>
+namespace {
+// Test-local source bridge only. SDK cache reads stay on the already-selected
+// empty config; the one explicit filename read uses retained owned descriptors.
+class RuntimeNativeObserver final:public a::ResponseObservationSource {
+ public:
+  RuntimeNativeObserver(rs::util::Deadline deadline,std::shared_ptr<n::WorkerCancellation> cancel)
+      :deadline_(deadline),cancel_(std::move(cancel)){}
+  a::ResponseClockRead read_monotonic() override {
+    if(failed_)return a::ResponseReadFailure::ReadFailed;
+    try {
+      const auto now=rs::util::Clock::now();
+      if(now==rs::util::Deadline::min()||now==rs::util::Deadline::max()||
+          (highwater_&&now<*highwater_)){failed_=true;return a::ResponseReadFailure::ReadFailed;}
+      highwater_=now;return now;
+    }catch(...){failed_=true;return a::ResponseReadFailure::ReadFailed;}
+  }
+  bool cancellation_requested() override {return cancel_->cancelled();}
+  bool checkpoint() {
+    const auto now=read_monotonic();
+    if(!std::holds_alternative<rs::util::Deadline>(now)||cancel_->cancelled()||
+        std::get<rs::util::Deadline>(now)>=deadline_){failed_=true;return false;}
+    return true;
+  }
+ private:
+  rs::util::Deadline deadline_;std::shared_ptr<n::WorkerCancellation> cancel_;
+  std::optional<rs::util::Deadline> highwater_;bool failed_{};
+};
+enum class RuntimeSourceFailure { Checkpoint, StageChanged, Rewind, Load, Selection, Credentials, LocalFailure };
+const char* runtime_source_failure_name(RuntimeSourceFailure failure) noexcept {
+  switch(failure){
+    case RuntimeSourceFailure::Checkpoint:return "Checkpoint";
+    case RuntimeSourceFailure::StageChanged:return "StageChanged";
+    case RuntimeSourceFailure::Rewind:return "Rewind";
+    case RuntimeSourceFailure::Load:return "Load";
+    case RuntimeSourceFailure::Selection:return "Selection";
+    case RuntimeSourceFailure::Credentials:return "Credentials";
+    case RuntimeSourceFailure::LocalFailure:return "LocalFailure";
+  }
+  return "Unknown";
+}
+struct RuntimeSigningInputs {
+  std::optional<std::array<n::FrozenSigningSource,2>> sources;
+  std::optional<RuntimeSourceFailure> failure;
+  unsigned load_attempts{};
+};
+RuntimeSigningInputs load_runtime_signing_inputs(n::detail::ProtectedNamedStage& stage,
+    const NativeLoginSpec& spec,RuntimeNativeObserver& observer,
+    const a::ResponseSourceGeneration& generation) noexcept {
+  RuntimeSigningInputs out;
+  try {
+    const auto check=[&](){return observer.checkpoint()&&
+        std::holds_alternative<std::monostate>(generation.checkpoint());};
+    if(!check()){out.failure=RuntimeSourceFailure::Checkpoint;return out;}
+    if(!stage.unchanged()){out.failure=RuntimeSourceFailure::StageChanged;return out;}
+    if(!stage.rewind_for_provider()){out.failure=RuntimeSourceFailure::Rewind;return out;}
+    if(!check()){out.failure=RuntimeSourceFailure::Checkpoint;return out;}
+    Aws::Config::AWSConfigFileProfileConfigLoader loader{stage.credentials_path().c_str(),false};
+    ++out.load_attempts;
+    const bool loaded=loader.Load();
+    // Check even a failed parse before publishing a source category.
+    if(!check()){out.failure=RuntimeSourceFailure::Checkpoint;return out;}
+    if(!stage.unchanged()){out.failure=RuntimeSourceFailure::StageChanged;return out;}
+    if(!loaded){out.failure=RuntimeSourceFailure::Load;return out;}
+    const auto& profiles=loader.GetProfiles();const auto found=profiles.find(spec.profile.c_str());
+    if(profiles.size()!=1||found==profiles.end()){out.failure=RuntimeSourceFailure::Selection;return out;}
+    const auto& value=found->second.GetCredentials();
+    if(value.GetAWSAccessKeyId().empty()||value.GetAWSSecretKey().empty()||
+        value.GetAWSAccessKeyId().size()>n::FrozenSigningSource::max_field_bytes||
+        value.GetAWSSecretKey().size()>n::FrozenSigningSource::max_field_bytes||
+        value.GetSessionToken().size()>n::FrozenSigningSource::max_field_bytes){
+      out.failure=RuntimeSourceFailure::Credentials;return out;
+    }
+    const auto source=[&]()->std::variant<n::FrozenSigningSource,n::Failure>{
+      const auto secret=[](const Aws::String& bytes){return a::SecretBytes::create(
+          std::as_bytes(std::span{bytes.data(),bytes.size()}));};
+      auto access=secret(value.GetAWSAccessKeyId());auto key=secret(value.GetAWSSecretKey());
+      auto token=secret(value.GetSessionToken());
+      if(!access||!key||!token)return n::Failure::InvalidSource;
+      return n::FrozenSigningSource::create(spec.source,spec.generation,
+          std::move(access).value(),std::move(key).value(),std::move(token).value());
+    };
+    auto first=source();auto second=source();
+    if(!std::holds_alternative<n::FrozenSigningSource>(first)||
+        !std::holds_alternative<n::FrozenSigningSource>(second)){
+      out.failure=RuntimeSourceFailure::Credentials;return out;
+    }
+    if(!check()){out.failure=RuntimeSourceFailure::Checkpoint;return out;}
+    if(!stage.unchanged()){out.failure=RuntimeSourceFailure::StageChanged;return out;}
+    out.sources.emplace(std::array<n::FrozenSigningSource,2>{
+        std::get<n::FrozenSigningSource>(std::move(first)),std::get<n::FrozenSigningSource>(std::move(second))});
+    return out;
+    // loader/map/SDK credential strings die while runtime is active, before sends.
+  }catch(...){out.sources.reset();out.failure=RuntimeSourceFailure::LocalFailure;return out;}
+}
+}
+
+TEST(ProvisionedNativeAuth, TwoSequentialCredentialsAndTlsLoginsOneRuntime){
+  // FIRST action: no clock, selections, files or SDK before this fixed marker.
+  const char* marker=std::getenv("ODBCPP_REDSHIFT_NATIVE_RUNTIME_AUTH_ADMISSION");
+  if(!marker||std::string_view(marker)!="provisioned-runtime-two-login-v1"){
+    GTEST_SKIP()<<"Separate sequential runtime acquisition/login admission required";
+  }
+  ASSERT_TRUE(std::getenv("ODBCPP_AUTH_SDK_OFFLINE_FIXTURE")==nullptr);
+  auto spec=read_spec();ASSERT_TRUE(spec.has_value());
+  const char* config=std::getenv("AWS_CONFIG_FILE");
+  const char* credentials=std::getenv("AWS_SHARED_CREDENTIALS_FILE");
+  // These frozen paths must both select the retained snapshot's empty config,
+  // never the named credentials file. This test performs no environment mutation.
+  ASSERT_TRUE(config&&credentials&&spec->config==config&&spec->config==credentials);
+  auto context_result=n::Context::create(spec->account,spec->region,spec->cluster,
+      spec->database,spec->requested_user,spec->host,spec->source,spec->generation);
+  ASSERT_TRUE(std::holds_alternative<n::Context>(context_result));
+  const auto context=std::get<n::Context>(std::move(context_result));
+  auto binding=a::Binding::create({a::Service::Redshift,spec->host,5439,spec->database,
+      context.expected_user,context.resource_arn,spec->host,"verify-full"},
+      {a::SourceKind::TrustedTemporaryDbIssuer,spec->source,spec->generation},a::Method::TemporaryDatabasePassword);
+  ASSERT_TRUE(static_cast<bool>(binding));
+  const auto start=rs::util::Clock::now();
+  ASSERT_TRUE(start!=rs::util::Deadline::min()&&start!=rs::util::Deadline::max());
+  const auto duration=std::chrono::duration_cast<rs::util::Clock::duration>(std::chrono::seconds{60});
+  ASSERT_TRUE(start.time_since_epoch().count()<=std::numeric_limits<rs::util::Clock::rep>::max()-duration.count());
+  auto requested=a::Request::create(std::move(binding).value(),start+duration,std::chrono::seconds{1});
+  ASSERT_TRUE(static_cast<bool>(requested));const auto request=std::move(requested).value();
+  auto cancellation=std::make_shared<n::WorkerCancellation>();
+  auto observer=std::make_shared<RuntimeNativeObserver>(request.deadline(),cancellation);
+  auto generation_result=a::ResponseSourceGeneration::create(request.binding());
+  ASSERT_TRUE(std::holds_alternative<std::shared_ptr<a::ResponseSourceGeneration>>(generation_result));
+  auto generation=std::get<std::shared_ptr<a::ResponseSourceGeneration>>(std::move(generation_result));
+  ASSERT_TRUE(observer->checkpoint());
+  std::unique_ptr<n::detail::ProtectedNamedStage> stage;
+  try{stage=n::detail::ProtectedNamedStage::create(
+      {spec->profile,spec->credentials,spec->config,spec->source,spec->generation},context,request);}
+  catch(...){FAIL()<<"Runtime named source policy refused";}
+  ASSERT_TRUE(stage!=nullptr);ASSERT_TRUE(observer->checkpoint());
+  ASSERT_TRUE(stage->unchanged());ASSERT_TRUE(stage->rewind_for_cache());ASSERT_TRUE(observer->checkpoint());
+  // Declaration order retains source descriptors through global SDK destruction.
+  auto started=n::ProvisionedSdkRuntime::create();
+  ASSERT_TRUE(started.runtime!=nullptr);ASSERT_FALSE(started.failure.has_value());
+  auto& runtime=*started.runtime;
+  ASSERT_TRUE(observer->checkpoint());EXPECT_EQ(1U,runtime.counts().initializations);
+  EXPECT_EQ(0U,runtime.counts().shutdowns);EXPECT_FALSE(runtime.counts().occupied);
+  auto signing=load_runtime_signing_inputs(*stage,*spec,*observer,*generation);
+  SCOPED_TRACE(std::string("runtime_source_failure=")+
+      (signing.failure?runtime_source_failure_name(*signing.failure):"None"));
+  ASSERT_FALSE(signing.failure.has_value());ASSERT_TRUE(signing.sources.has_value());
+  EXPECT_EQ(1U,signing.load_attempts);
+  std::array<LoginOutcome,2> logins;unsigned completed=0;
+  const auto one=[&](unsigned index){
+    SCOPED_TRACE(index);
+    ASSERT_TRUE(observer->checkpoint());ASSERT_TRUE(stage->unchanged());
+    auto made=runtime.create_operation(context,request,observer,generation,cancellation,
+        std::move((*signing.sources)[index]));
+    SCOPED_TRACE(safe_counts_trace(DiagnosticPhase::Creation,made.failure,made.counts));
+    ASSERT_TRUE(made.owner!=nullptr);ASSERT_FALSE(made.failure.has_value());
+    auto acquired=made.owner->acquire_observation();
+    SCOPED_TRACE(safe_counts_trace(DiagnosticPhase::Acquisition,acquired.failure,acquired.counts));
+    ASSERT_TRUE(acquired.observation.has_value());ASSERT_FALSE(acquired.failure.has_value());
+    const auto& counts=acquired.counts;
+    EXPECT_TRUE(counts.request_exact);EXPECT_TRUE(counts.request_policy);EXPECT_TRUE(counts.model_success);
+    EXPECT_TRUE(counts.model_user_matches);EXPECT_TRUE(counts.model_password_matches);
+    EXPECT_EQ(1U,counts.requests);EXPECT_EQ(1U,counts.selected_sends);
+    EXPECT_EQ(1U,counts.delegate_returns);EXPECT_EQ(1U,counts.delegate_destructions);
+    EXPECT_EQ(0U,counts.active);EXPECT_EQ(counts.wrappers,counts.destroyed_wrappers);
+    EXPECT_EQ(0U,counts.initializations);EXPECT_EQ(0U,counts.shutdowns);EXPECT_EQ(0U,counts.named_provider_loads);
+    EXPECT_GT(counts.frozen_provider_reads,0U);EXPECT_TRUE(counts.cleanup_before_c);
+    EXPECT_EQ(1U,counts.c_samples);EXPECT_EQ(0U,counts.n_samples);EXPECT_TRUE(counts.unknown_only);
+    if(HasFailure())return;
+    login_observation(*acquired.observation,*spec,context.expected_user,request,logins[index]);
+    const auto& login=logins[index];
+    EXPECT_TRUE(login.borrow_passed);EXPECT_TRUE(login.raw_expiry_positive);EXPECT_TRUE(login.entered);
+    EXPECT_FALSE(login.unexpected_exception);EXPECT_TRUE(login.wire_identity);EXPECT_TRUE(login.password_present);
+    EXPECT_TRUE(login.connected);EXPECT_TRUE(login.peer_verified);EXPECT_TRUE(login.disconnected);
+    EXPECT_TRUE(login.observation_closed);EXPECT_EQ(1U,login.observation_counts.n_samples);
+    EXPECT_TRUE(made.owner->close());EXPECT_FALSE(runtime.counts().occupied);
+    ASSERT_TRUE(login.connection.has_value());ASSERT_TRUE(login.connection->has_value());
+    EXPECT_TRUE((login.connection->session_snapshot()==d::SessionSnapshot{d::SessionState::Idle,d::SessionDisposition::Reusable}));
+    ASSERT_TRUE(login.query.has_value());ASSERT_TRUE(login.query->has_value());
+    EXPECT_TRUE((login.query->session_snapshot()==d::SessionSnapshot{d::SessionState::Idle,d::SessionDisposition::Reusable}));
+    const auto& result=login.query->value();EXPECT_FALSE(result.error.has_value());
+    EXPECT_TRUE(result.additional_results.empty());EXPECT_TRUE(result.cell_errors.empty());
+    ASSERT_EQ(4U,result.columns.size());ASSERT_EQ(1U,result.rows.size());ASSERT_EQ(4U,result.rows[0].size());
+    EXPECT_TRUE(result.rows[0][0].has_value()&&*result.rows[0][0]==spec->database);
+    EXPECT_TRUE(result.rows[0][1].has_value()&&*result.rows[0][1]==spec->sql_user);
+    EXPECT_TRUE(result.rows[0][2].has_value()&&*result.rows[0][2]=="1");EXPECT_FALSE(result.rows[0][3].has_value());
+    for(auto column:{2U,3U}){
+      ASSERT_TRUE(result.columns[column].normalized_type.has_value());
+      EXPECT_TRUE(result.columns[column].normalized_type->known);
+      EXPECT_EQ(d::ScalarType::Integer,result.columns[column].normalized_type->type);
+    }
+    ASSERT_TRUE(observer->checkpoint());ASSERT_TRUE(stage->unchanged());
+    if(!HasFailure())++completed;
+  };
+  for(unsigned index=0;index<2;++index){one(index);if(HasFailure())break;}
+  // All per-operation locals are gone before this global shutdown. No replay.
+  signing.sources.reset();EXPECT_FALSE(runtime.counts().occupied);
+  EXPECT_EQ(1U,runtime.counts().initializations);EXPECT_EQ(0U,runtime.counts().shutdowns);
+  EXPECT_TRUE(runtime.close());EXPECT_EQ(1U,runtime.counts().shutdowns);EXPECT_TRUE(runtime.counts().closed);
+  ASSERT_TRUE(observer->checkpoint());ASSERT_TRUE(stage->unchanged());ASSERT_EQ(2U,completed);
+  // Both QueryResults remain owning after disconnect, later acquisition and SDK shutdown.
+  for(const auto& login:logins){
+    ASSERT_TRUE(login.query.has_value());ASSERT_TRUE(login.query->has_value());
+    const auto& rows=login.query->value().rows;ASSERT_EQ(1U,rows.size());ASSERT_EQ(4U,rows[0].size());
+    EXPECT_TRUE(rows[0][0].has_value()&&*rows[0][0]==spec->database);
+    EXPECT_TRUE(rows[0][1].has_value()&&*rows[0][1]==spec->sql_user);
+    EXPECT_TRUE(rows[0][2].has_value()&&*rows[0][2]=="1");EXPECT_FALSE(rows[0][3].has_value());
+  }
+  // Root controller must independently verify exact-principal zero activity,
+  // child quiescence/input teardown and pause; this case grants no admission.
+}

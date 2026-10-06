@@ -3,8 +3,14 @@
 Initial inventory recorded 2026-10-01. The human-approved delivery order below,
 updated 2026-10-06, governs subsequent Redshift work. Earlier dated sections retain
 historical evidence; they do not override this order or establish qualification.
-AUTH progresses separately in parallel. MySQL and unrelated SDK feature work
-remain parked by the user's request.
+The human-approved lane transition on 2026-10-06 finishes AUTH's current
+checkpoint: two sequential IAM acquisitions and verified-TLS Redshift logins
+under one SDK lifetime. After live qualification, independent review and cleanup,
+commit/push and green exact-head CI, AUTH is parked until the user resumes it.
+Implementation then focuses entirely on Redshift through prepared-decimal live
+qualification and the first packaged Excel acceptance on this Mac. Independent
+review, security and regression/CI/cleanup gates remain active. MySQL and unrelated
+SDK feature work remain parked by the user's request.
 
 ## Human-approved delivery order — 2026-10-06
 
