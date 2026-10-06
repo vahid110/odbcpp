@@ -1203,8 +1203,26 @@ widths, sanitizer and Redshift profiles; PostgreSQL/Unicode each passed twelve
 integration targets and three verified-TLS cases. All457 offline Python checks
 passed. Independent private PostgreSQL status3, absent pid and shutdown log verified
 cleanup. The optional native and portable consumer targets compiled and linked
-with warnings as errors in a distinct owned build. Hosted successor CI and live
-ordinary Material consumption remain separate; no method-completion claim is made.
+with warnings as errors in a distinct owned build. Exact committed20031db CI passed
+all required hosted gates. A separately source-bound Darwin native checkpoint
+then passed both ordinary Material/private-PG-consumer tests: verified TLS/SCRAM,
+identity/scalar/typed NULL/SSL and owning results after backend destruction;
+wrong-password28P01 and wrong-CA retirement followed by fresh-Material recovery
+with the original deadline. Disposable PostgreSQL shutdown was independently
+verified. The new private UNIX/PostgreSQL target and strict two-case TLS runner
+are now integrated for regression qualification, preserving the separate
+DriverManager three-case proof. Windows does not register this new native group;
+no all-platform or method-completion claim is made.
+The combined local integration batch passed108 unit targets for PostgreSQL,
+both Unicode widths, Redshift and the full sanitizer profile; PostgreSQL/Unicode
+each passed12 ordinary integration targets, the preserved three DriverManager TLS
+cases and both new ordinary Material native cases. All457 Python3.14 safety tests
+passed. Fresh private PostgreSQL status3/pid absence/shutdown-log verification
+confirmed cleanup. The optional native/portable consumer targets compiled and
+linked in a distinct owned build; portable dependency files remained SDK-free.
+Final review, commit and exact-head hosted CI follow these local gates. Normal
+ODBC password connection composition still bypasses the independent Material
+module; driver adoption is the next product-use checkpoint.
 
 ### Ordinary-user Redshift metadata-to-query workflow — candidate
 
@@ -1215,6 +1233,14 @@ They select SHOW and LEGACY settings explicitly; current table discovery still
 uses information_schema and columns use SVV_COLUMNS, so this is no modern SHOW
 TABLES/COLUMNS claim. The test TU compiled and linked with warnings as errors and
 independent source review accepted it. The combined local regression graph passed
-as recorded above; no live test body ran in those gates. Native execution remains pending fresh
-verification of the exact nullable INTEGER/VARCHAR32 two-row ordinary-user fixture
-and bounded admission. No fixture modification or broader live parity is claimed.
+as recorded above; no live test body ran in those gates. A later finite native run
+verified and reused the exact nullable INTEGER/VARCHAR32 two-row ordinary-user
+fixture without mutation. Both cases failed at schema-discovery descriptor headers:
+the new test expected text width0 while each of five SQLTables VARCHAR headers
+returned65535. The original failed run is preserved. A reviewed test-only repair
+now requires exact65535 for these selected catalog text headers; PostgreSQL OID25
+width0 and production code remain unchanged. Downstream SQLColumns, prepared
+binding and typed fetching were not reached and remain pending a fresh bounded
+successor. Post-child exact-principal zero activity, owned-input removal and
+paused-cluster readback were independently assessed. No fixture modification or
+broader live parity is claimed.

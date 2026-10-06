@@ -19,3 +19,20 @@ actual = {f'{case.attrib["classname"]}.{case.attrib["name"]}' for case in root.i
 if actual != expected or any(list(root.iter(tag)) for tag in ('failure', 'error', 'skipped')):
     raise RuntimeError('Mandatory crypto profile cases did not all pass without skips')
 PY
+
+# Private AUTH-to-backend proof uses the same explicitly selected TLS fixture.
+: "${PGPORT:?Explicit disposable fixture port required for ordinary Material TLS}"
+material_results="${results%.xml}-auth-material.xml"
+"$build_dir/tests/it_auth_pg_material_tls" --gtest_output="xml:$material_results"
+python3 - "$material_results" <<'PYRESULT'
+import sys
+import xml.etree.ElementTree as ET
+root = ET.parse(sys.argv[1]).getroot()
+expected = {'OrdinaryPgMaterialTls.' + name for name in (
+    'VerifiedScramMaterialConnectQueryOwnsAfterDisconnect',
+    'NativeRefusalRetiresAndFreshMaterialRecovers')}
+cases = list(root.iter('testcase'))
+actual = {f'{case.attrib["classname"]}.{case.attrib["name"]}' for case in cases}
+if len(cases) != 2 or actual != expected or any(list(root.iter(tag)) for tag in ('failure', 'error', 'skipped')):
+    raise RuntimeError('Mandatory ordinary Material TLS cases did not all pass without skips')
+PYRESULT

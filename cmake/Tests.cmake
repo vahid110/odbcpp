@@ -355,7 +355,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/NativeProvisionedAuth.cmake")
 file(GLOB INTEGRATION_TEST_SOURCES "tests/integration/*.cpp")
 foreach(test_file ${INTEGRATION_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
-  if(test_name STREQUAL "it_redshift_native_auth" OR test_name STREQUAL "it_mysql_decimal_results" OR test_name STREQUAL "it_mysql_datetime_results" OR test_name STREQUAL "it_mysql_date_parameters" OR test_name STREQUAL "it_mysql_datetime_parameter_receipt" OR test_name STREQUAL "it_mysql_decimal_parameter_receipt")
+  if(test_name STREQUAL "it_auth_pg_material_tls" OR test_name STREQUAL "it_redshift_native_auth" OR test_name STREQUAL "it_mysql_decimal_results" OR test_name STREQUAL "it_mysql_datetime_results" OR test_name STREQUAL "it_mysql_date_parameters" OR test_name STREQUAL "it_mysql_datetime_parameter_receipt" OR test_name STREQUAL "it_mysql_decimal_parameter_receipt")
     continue()
   endif()
   # This executable is release evidence for a real Redshift endpoint. Running
@@ -462,6 +462,18 @@ if(UNIX OR WIN32)
         PROPERTIES LABELS "integration")
       set_target_properties(it_crypto_profile_live PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+      if(UNIX AND TARGET_DATABASE STREQUAL "POSTGRESQL")
+        add_executable(it_auth_pg_material_tls tests/integration/it_auth_pg_material_tls.cpp)
+        target_link_libraries(it_auth_pg_material_tls PRIVATE odbcpp_auth_pg_consumer GTest::gtest_main)
+        target_include_directories(it_auth_pg_material_tls PRIVATE
+          "${ODBCPP_PG_AUTH_CONSUMER_INCLUDE}" "${ODBCPP_INTERNAL_INCLUDE_auth}"
+          "${ODBCPP_INTERNAL_INCLUDE_backend}" "${ODBCPP_INTERNAL_INCLUDE_runtime}")
+        apply_compiler_settings(it_auth_pg_material_tls)
+        add_test(NAME it_auth_pg_material_tls COMMAND it_auth_pg_material_tls)
+        set_tests_properties(it_auth_pg_material_tls PROPERTIES LABELS "integration;security" TIMEOUT 30)
+        set_target_properties(it_auth_pg_material_tls PROPERTIES
+          RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+      endif()
     endif()
 
     apply_compiler_settings(it_driver_manager)

@@ -160,18 +160,18 @@ jobs:
           --output build/odbcpp-crypto-unit-qualification.json
 
       - name: Run integration tests
-        run: ctest --test-dir build -L integration -E '^it_crypto_profile_live$' --output-on-failure
+        run: ctest --test-dir build -L integration -E '^(it_crypto_profile_live|it_auth_pg_material_tls)$' --output-on-failure
 
       - name: Run integration tests with Linux epoll transport
         run: |
           sed -i '/^TransportMode=Sync$/c\TransportMode=Async\nAsyncEngine=Epoll' "$ODBCINI"
-          ctest --test-dir build -L integration -E '^it_crypto_profile_live$' --output-on-failure
+          ctest --test-dir build -L integration -E '^(it_crypto_profile_live|it_auth_pg_material_tls)$' --output-on-failure
 
       - name: Run integration tests with Auto-selected transport
         run: |
           sed -i 's/^TransportMode=Async$/TransportMode=Auto/' "$ODBCINI"
           sed -i 's/^AsyncEngine=Epoll$/AsyncEngine=Auto/' "$ODBCINI"
-          ctest --test-dir build -L integration -E '^it_crypto_profile_live$' --output-on-failure
+          ctest --test-dir build -L integration -E '^(it_crypto_profile_live|it_auth_pg_material_tls)$' --output-on-failure
 
       - name: Prepare mandatory TLS qualification fixture
         run: |
@@ -330,7 +330,7 @@ jobs:
           $reports = @(Get-ChildItem "$env:RUNNER_TEMP/odbcpp-integration-results" -Filter *.xml)
           $expectedReports = @(
             Get-ChildItem tests/integration -Filter *.cpp |
-              Where-Object { $_.Name -notin @('it_redshift_real.cpp', 'it_redshift_native_auth.cpp', 'it_mysql_decimal_results.cpp', 'it_mysql_datetime_results.cpp', 'it_mysql_date_parameters.cpp', 'it_mysql_datetime_parameter_receipt.cpp', 'it_mysql_decimal_parameter_receipt.cpp') }
+              Where-Object { $_.Name -notin @('it_auth_pg_material_tls.cpp', 'it_redshift_real.cpp', 'it_redshift_native_auth.cpp', 'it_mysql_decimal_results.cpp', 'it_mysql_datetime_results.cpp', 'it_mysql_date_parameters.cpp', 'it_mysql_datetime_parameter_receipt.cpp', 'it_mysql_decimal_parameter_receipt.cpp') }
           ).Count
           if ($reports.Count -ne $expectedReports) {
             throw "Expected $expectedReports PostgreSQL GoogleTest integration reports, found $($reports.Count)"
@@ -919,6 +919,7 @@ jobs:
             driver_unicode_type: UCS4
 
     env:
+      PGPORT: 5432
       ODBCINI: ${{ github.workspace }}/.ci-iodbc/odbc.ini
       ODBCINSTINI: ${{ github.workspace }}/.ci-iodbc/odbcinst.ini
 
@@ -1008,7 +1009,7 @@ jobs:
           --output build-iodbc/odbcpp-crypto-unit-qualification.json
 
       - name: Run PostgreSQL integration tests
-        run: ctest --test-dir build-iodbc -L integration -E '^it_crypto_profile_live$' --output-on-failure
+        run: ctest --test-dir build-iodbc -L integration -E '^(it_crypto_profile_live|it_auth_pg_material_tls)$' --output-on-failure
 
       - name: Run mandatory macOS TLS and SCRAM profile tests
         run: tools/ci/run-crypto-profile-live.sh build-iodbc macos-openssl-live.xml

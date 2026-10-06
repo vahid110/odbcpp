@@ -1719,8 +1719,9 @@ protected:
       std::transform(actual.begin(),actual.end(),actual.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
       EXPECT_TRUE(actual==fields[column-1].name);EXPECT_EQ(fields[column-1].type,type);
       EXPECT_EQ(0,digits);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
-      // Widths below are descriptor-header dimensions, not DATA_TYPE row values.
-      EXPECT_EQ(type==SQL_SMALLINT?5U:type==SQL_INTEGER?10U:0U,size);
+      // Selected Redshift catalog ::text results expose VARCHAR width65535;
+      // descriptor headers are distinct from discovered id/value dimensions.
+      EXPECT_EQ(type==SQL_SMALLINT?5U:type==SQL_INTEGER?10U:type==SQL_VARCHAR?65535U:0U,size);
     }
   }
   std::string text(SQLUSMALLINT column) {
