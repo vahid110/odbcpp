@@ -341,11 +341,14 @@ if(TARGET test_driver_capabilities)
   endif()
 endif()
 
+option(ODBCPP_NATIVE_PROVISIONED_AUTH_TESTS "Build the separately admitted native provisioned auth test" OFF)
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/NativeProvisionedAuth.cmake")
+
 # ---- Integration Tests ----
 file(GLOB INTEGRATION_TEST_SOURCES "tests/integration/*.cpp")
 foreach(test_file ${INTEGRATION_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
-  if(test_name STREQUAL "it_mysql_decimal_results" OR test_name STREQUAL "it_mysql_datetime_results" OR test_name STREQUAL "it_mysql_date_parameters" OR test_name STREQUAL "it_mysql_datetime_parameter_receipt" OR test_name STREQUAL "it_mysql_decimal_parameter_receipt")
+  if(test_name STREQUAL "it_redshift_native_auth" OR test_name STREQUAL "it_mysql_decimal_results" OR test_name STREQUAL "it_mysql_datetime_results" OR test_name STREQUAL "it_mysql_date_parameters" OR test_name STREQUAL "it_mysql_datetime_parameter_receipt" OR test_name STREQUAL "it_mysql_decimal_parameter_receipt")
     continue()
   endif()
   # This executable is release evidence for a real Redshift endpoint. Running

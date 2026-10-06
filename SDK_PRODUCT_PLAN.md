@@ -1097,3 +1097,29 @@ The separate no-DDL catalog/VARBYTE fixture adds current DDL advertisement and d
 Private MySQL supplied-deadline startup prerequisite: nonvirtual connect_until uses the caller's original deadline through TLS/startup and final publication, preserving the ordinary relative-timeout wrapper and native-error precedence. Eleven new fake-transport GoogleTests cover successful startup, expired entry, late CA/peer completion, cleanup and wrapper controls. Historical isolated AppleClang checks passed 135 cases; scoped new-test-TU ASan/UBSan passed eleven with core, GTest and OpenSSL uninstrumented and leak detection off. The new target is explicitly routed through the existing MySQL security label and 30-second CTest timeout. Fresh PostgreSQL, both Unicode widths, Redshift and full ASan/UBSan checks each passed 105 unit targets. PostgreSQL and both Unicode profiles each passed twelve integration targets and three verified-TLS cases; 406 Python 3.14 offline checks passed. Private PostgreSQL stopped with status 0; independent status 3, absent postmaster.pid and its shutdown log confirm cleanup. Exact predecessor 4dcfa7d CI37367098995 attempt 3 passed all required jobs after separately reviewed infrastructure recovery; original failed attempts remain preserved. Successor hosted qualification remains required. This seam supplies no implicit ten-second cap, hard interruption, publisher admission or native MySQL execution proof.
 
 Private MySQL q6 caller-phase test prerequisite (2026-10-06): a test-private pure helper binds one overall30-second deadline, a startup cutoff of at most10 seconds and a once-frozen cleanup cutoff of at most5 seconds beyond the overall deadline. Nine GoogleTests cover checked arithmetic, ordering, equality and independent cleanup faults; eight real-parser fake-transport groups prebind startup, PREPARE/CLOSE and modeled cleanup deadlines, preserve native-error precedence and owning3x4 metadata, and reject late success. Exact accepted code bytes retain historical isolated AppleClang Werror helper9 and binding99 focused passes; scoped new binding-TU ASan/UBSan passed eight against uninstrumented core/GTest/OpenSSL with leak detection disabled. Original helper blockers and repairs, plus the first late-deadline fixture failure and corrected caller begin, remain preserved. Both units use the existing unit/security label and30-second CTest timeout. Fresh canonical PostgreSQL, both Unicode widths, Redshift and full ASan/UBSan builds each passed 107 unit targets; PostgreSQL and both Unicode profiles each passed twelve integration targets and three verified-TLS cases. All five builds compiled the staged MySqlSession OBJECT with warnings as errors and 38 project dependencies, all staged and byte-exact. Python 3.14 offline checks passed 406 cases. Private PostgreSQL stopped with status 0; fresh independent status 3, absent postmaster.pid and shutdown log confirm cleanup. Gate sessions returned terminal; their exit codes were not separately reported by the session tool, and saved complete logs confirm the checks. Final packaging audit first expected the older CTest summary spelling; current summaries say “100% tests passed out of 107”, so only that audit matcher was corrected without rerunning tests. The staged dependency audit also initially counted only core paths after SDK relocation; its filter was corrected to count every staged project dependency, with the initial audit preserved. Successor hosted qualification remains required. Exact predecessor c58552d CI37382575103 passed all required jobs before this selection. Defaults, backend/header/install policies and publisher/validator/controller sources are unchanged. Cooperative synthetic deadlines do not prove hard interruption, native TLS/MySQL execution/storage, publisher emission or controller cleanup authority; no installed MySqlSession surface or live admission is added.
+
+### First native authentication observation — optional qualification path
+
+The provider-neutral authentication core remains independent of AWS and driver
+framing. A default-OFF Darwin arm64 target builds the provisioned
+GetClusterCredentials/verified-TLS Redshift observation with an explicitly pinned
+external optional SDK foundation; it is excluded from ordinary CTest and Windows
+discovery. The selected descriptor-backed foundation passed eight synthetic SDK
+file/provider tests with OS network access denied. This is not a live AWS or TLS
+result, and the optional provider is not part of the mandatory core or install API.
+
+Fixed child execution, exact-principal cleanup and the one-use test window passed
+independent source review and meaningful pure/mock happy and failure controls.
+Local qualification passed all 107 unit targets in PostgreSQL, both Unicode
+widths, sanitizer and Redshift configurations; each PostgreSQL width also passed
+12 integration targets and three verified-TLS checks. Private PostgreSQL shutdown
+was independently verified. The 428-test offline suite and the additional eight
+window controls passed separately. The configured optional native target compiled
+and linked with static OpenSSL/SDK archives; its executable was never run or
+listed. Windows/package, pinned MySQL and crypto profiles await this batch's CI.
+
+The live observation still requires independently selected protected sources,
+verified admin visibility and AWS/TLS controls, canonical-lock finite consumption,
+separately authorized cluster resume and exact-principal remote cleanup. No paid
+SQL, renewal, federation, trusted UTC/Receipt/Material or completion of the reusable
+authentication module follows from these build and synthetic results.

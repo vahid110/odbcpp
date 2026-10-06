@@ -330,7 +330,7 @@ jobs:
           $reports = @(Get-ChildItem "$env:RUNNER_TEMP/odbcpp-integration-results" -Filter *.xml)
           $expectedReports = @(
             Get-ChildItem tests/integration -Filter *.cpp |
-              Where-Object { $_.Name -notin @('it_redshift_real.cpp', 'it_mysql_decimal_results.cpp', 'it_mysql_datetime_results.cpp', 'it_mysql_date_parameters.cpp', 'it_mysql_datetime_parameter_receipt.cpp', 'it_mysql_decimal_parameter_receipt.cpp') }
+              Where-Object { $_.Name -notin @('it_redshift_real.cpp', 'it_redshift_native_auth.cpp', 'it_mysql_decimal_results.cpp', 'it_mysql_datetime_results.cpp', 'it_mysql_date_parameters.cpp', 'it_mysql_datetime_parameter_receipt.cpp', 'it_mysql_decimal_parameter_receipt.cpp') }
           ).Count
           if ($reports.Count -ne $expectedReports) {
             throw "Expected $expectedReports PostgreSQL GoogleTest integration reports, found $($reports.Count)"
