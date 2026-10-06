@@ -1270,3 +1270,42 @@ TEST(PgParameterContractTest, PreparedHexTextHasLiteralOwningOid25AndEmptyNullFr
     EXPECT_EQ(expected_bind[trial],frames[2].payload);
   }
 }
+
+
+TEST(PgParameterContractTest, PreparedNumericHasLiteralOwningOid1700AndNullFrames) {
+  PgProtocolParser parser;
+  const unsigned char parse_bytes[]{
+      0,'S','E','L','E','C','T',' ','C','A','S','T','(', '$','1',' ','A','S',' ',
+      'D','E','C','I','M','A','L','(','5',',','2',')',')',' ','A','S',' ',
+      'a','m','o','u','n','t',0,0,1,0,0,6,164}; // 1700 big endian, literal.
+  const unsigned char positive_bytes[]{0,0,0,0,0,1,0,0,0,6,'1','2','3','.','4','5',0,0};
+  const unsigned char negative_bytes[]{0,0,0,0,0,1,0,0,0,7,'-','1','2','3','.','4','5',0,0};
+  const unsigned char null_bytes[]{0,0,0,0,0,1,255,255,255,255,0,0};
+  const auto literal=[](std::span<const unsigned char> input) {
+    std::vector<std::byte> output;
+    for(auto byte:input) { output.push_back(static_cast<std::byte>(byte)); }
+    return output;
+  };
+  const std::vector<std::vector<std::byte>> expected_bind{
+      literal(positive_bytes),literal(negative_bytes),literal(null_bytes)};
+  for(unsigned trial=0;trial<3;++trial) {
+    SCOPED_TRACE(trial);
+    std::string caller=trial==1?"-123.45":"123.45";
+    std::vector<QueryParameter> parameters{
+        {trial==2?std::nullopt:std::optional<std::string>{caller},QueryParameterType::Numeric}};
+    caller.assign("poison"); // QueryParameter owns the original text.
+    const auto wire=parser.create_prepared_query(
+        "SELECT CAST(? AS DECIMAL(5,2)) AS amount",parameters);
+    const auto frames=split_frames(wire);
+    ASSERT_EQ(6U,frames.size());
+    const char tags[]{'P','D','B','D','E','S'};
+    for(std::size_t index=0;index<6;++index) { EXPECT_EQ(tags[index],frames[index].tag); }
+    EXPECT_EQ(literal(parse_bytes),frames[0].payload);
+    EXPECT_EQ(expected_bind[trial],frames[2].payload);
+    parameters[0].value="poison";
+    const auto retained=split_frames(wire);
+    ASSERT_EQ(6U,retained.size());
+    EXPECT_EQ(expected_bind[trial],retained[2].payload);
+    EXPECT_EQ(literal(parse_bytes),retained[0].payload);
+  }
+}

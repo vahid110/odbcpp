@@ -1963,3 +1963,113 @@ protected:
 
 TEST_F(RedshiftMetadataWorkflowRealTest, MetadataToPreparedQueryShowConfigured) { workflow("SHOW"); }
 TEST_F(RedshiftMetadataWorkflowRealTest, MetadataToPreparedQueryLegacyConfigured) { workflow("LEGACY"); }
+
+
+// Prepared exact-decimal input is a separately admitted no-DDL scope; direct
+// numeric result tests above do not establish this input/owning-result path.
+class RedshiftDecimalParameterRealTest : public RedshiftRealTest {
+protected:
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_DECIMAL_PARAMETER_ADMISSION");
+    if(marker==nullptr) { GTEST_SKIP() << "Prepared decimal scope is not admitted"; }
+    ASSERT_TRUE(std::string_view(marker)=="decimal-struct-parameter-v1")
+        << "Invalid prepared decimal scope marker";
+    // FIRST gate, before configuration, handles or connection work.
+    RedshiftRealTest::SetUp();
+  }
+};
+
+TEST_F(RedshiftDecimalParameterRealTest, PreparedExactDecimalAndNull) {
+  ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC,hdbc_);
+  SQLCHAR query[]="SELECT CAST(? AS DECIMAL(5,2)) AS amount";
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(hstmt_,query,SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
+  SQLSMALLINT parameters=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLNumParams(hstmt_,&parameters));ASSERT_EQ(1,parameters);
+  SQLHDESC apd=SQL_NULL_HDESC,ard=SQL_NULL_HDESC;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_APP_PARAM_DESC,&apd,0,nullptr));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_APP_ROW_DESC,&ard,0,nullptr));
+  const std::array<unsigned char,16> magnitude{0x39,0x30}; // 12345, independently literal.
+  std::array<SQL_NUMERIC_STRUCT,2> owned{};
+  const auto trials=[&]() {
+    for(unsigned trial=0;trial<3;++trial) {
+      SCOPED_TRACE(trial);
+      SQL_NUMERIC_STRUCT input{};
+      input.precision=5;input.scale=2;input.sign=trial==1?0:1;
+      std::copy(magnitude.begin(),magnitude.end(),input.val);
+      SQLLEN input_length=sizeof(input);
+      if(trial==2) { std::memset(&input,0xff,sizeof(input));input_length=SQL_NULL_DATA; }
+      ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,1,SQL_PARAM_INPUT,SQL_C_NUMERIC,
+          SQL_NUMERIC,5,2,&input,sizeof(input),&input_length));
+      ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,1,SQL_DESC_PRECISION,
+          reinterpret_cast<SQLPOINTER>(std::uintptr_t{5}),0));
+      ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,1,SQL_DESC_SCALE,
+          reinterpret_cast<SQLPOINTER>(std::uintptr_t{2}),0));
+      // Metadata edits invalidate DATA_PTR; restore the actual bound input.
+      ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,1,SQL_DESC_DATA_PTR,&input,0));
+      ASSERT_EQ(SQL_SUCCESS,SQLExecute(hstmt_)) << get_error(SQL_HANDLE_STMT,hstmt_);
+      std::memset(&input,0xa5,sizeof(input)); // Result must own the executed input.
+      SQLSMALLINT count=0;
+      ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&count));ASSERT_EQ(1,count);
+      std::array<SQLCHAR,16> name{};
+      SQLSMALLINT name_length=-1,type=-1,digits=-1,nullable=-1;SQLULEN size=99;
+      ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,1,name.data(),name.size(),&name_length,
+          &type,&size,&digits,&nullable));
+      EXPECT_EQ(6,name_length);EXPECT_EQ(0,std::memcmp(name.data(),"amount",7));
+      EXPECT_EQ(SQL_NUMERIC,type);EXPECT_EQ(5U,size);EXPECT_EQ(2,digits);
+      // Expression nullability is not asserted as a native guarantee.
+      struct GuardedNumeric {
+        std::array<unsigned char,8> before;
+        SQL_NUMERIC_STRUCT value;
+        std::array<unsigned char,8> after;
+      } output{};
+      output.before.fill(0x5a);output.after.fill(0x5a);
+      std::memset(&output.value,0x5a,sizeof(output.value));SQLLEN length=93;
+      ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,1,SQL_C_NUMERIC,&output.value,sizeof(output.value),&length));
+      ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(ard,1,SQL_DESC_PRECISION,
+          reinterpret_cast<SQLPOINTER>(std::uintptr_t{5}),0));
+      ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(ard,1,SQL_DESC_SCALE,
+          reinterpret_cast<SQLPOINTER>(std::uintptr_t{2}),0));
+      ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(ard,1,SQL_DESC_DATA_PTR,&output.value,0));
+      if(HasFailure()) { return; }
+      ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_)) << get_error(SQL_HANDLE_STMT,hstmt_);
+      EXPECT_TRUE(std::all_of(output.before.begin(),output.before.end(),[](auto byte){return byte==0x5a;}));
+      EXPECT_TRUE(std::all_of(output.after.begin(),output.after.end(),[](auto byte){return byte==0x5a;}));
+      if(trial==2) {
+        EXPECT_EQ(SQL_NULL_DATA,length);
+        EXPECT_TRUE(std::all_of(reinterpret_cast<const unsigned char*>(&output.value),
+            reinterpret_cast<const unsigned char*>(&output.value)+sizeof(output.value),
+            [](auto byte){return byte==0x5a;}));
+      } else {
+        EXPECT_EQ(static_cast<SQLLEN>(sizeof(output.value)),length);
+        EXPECT_EQ(5,output.value.precision);EXPECT_EQ(2,output.value.scale);
+        EXPECT_EQ(trial==1?0:1,output.value.sign);
+        EXPECT_TRUE(std::equal(magnitude.begin(),magnitude.end(),output.value.val));
+        owned[trial]=output.value;
+      }
+      if(HasFailure()) { return; }
+      ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(hstmt_));
+      ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE));
+      ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_UNBIND));
+      ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_RESET_PARAMS));
+    }
+  };
+  trials(); // An assertion failure is retained; never replay a failed execution.
+  // Exactly one recovery execution, even after an earlier trial assertion.
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_RESET_PARAMS));
+  SQLCHAR recovery[]="SELECT 1";
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(hstmt_,recovery,SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
+  SQLSMALLINT count=0;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&count));ASSERT_EQ(1,count);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));SQLINTEGER scalar=-99;SQLLEN scalar_length=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,1,SQL_C_SLONG,&scalar,sizeof(scalar),&scalar_length));
+  EXPECT_EQ(1,scalar);EXPECT_EQ(static_cast<SQLLEN>(sizeof(scalar)),scalar_length);
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  if(!HasFailure()) {
+    EXPECT_EQ(1,owned[0].sign);EXPECT_EQ(0,owned[1].sign);
+    for(const auto& value:owned) {
+      EXPECT_EQ(5,value.precision);EXPECT_EQ(2,value.scale);
+      EXPECT_TRUE(std::equal(magnitude.begin(),magnitude.end(),value.val));
+    }
+  }
+}
