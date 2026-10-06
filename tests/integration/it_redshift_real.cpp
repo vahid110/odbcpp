@@ -2073,3 +2073,148 @@ TEST_F(RedshiftDecimalParameterRealTest, PreparedExactDecimalAndNull) {
     }
   }
 }
+
+
+class RedshiftTemporalParameterRealTest : public RedshiftRealTest {
+protected:
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_TEMPORAL_PARAMETER_ADMISSION");
+    if(marker==nullptr) { GTEST_SKIP() << "Prepared temporal scope is not admitted"; }
+    ASSERT_TRUE(std::string_view(marker)=="temporal-struct-parameter-v1")
+        << "Invalid prepared temporal scope marker";
+    // FIRST gate, before configuration, handles or connection work.
+    RedshiftRealTest::SetUp();
+  }
+};
+
+TEST_F(RedshiftTemporalParameterRealTest, PreparedDateTimeTimestampAndNull) {
+  ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC,hdbc_);
+  SQLCHAR query[]="SELECT CAST(? AS DATE) AS calendar_day, CAST(? AS TIME) AS clock_time, CAST(? AS TIMESTAMP) AS stamp";
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(hstmt_,query,SQL_NTS));
+  SQLSMALLINT parameter_count=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLNumParams(hstmt_,&parameter_count));ASSERT_EQ(3,parameter_count);
+  struct GuardedDate { std::array<unsigned char,8> before; SQL_DATE_STRUCT value; std::array<unsigned char,8> after; } date_out{};
+  struct GuardedTime { std::array<unsigned char,8> before; SQL_TIME_STRUCT value; std::array<unsigned char,8> after; } time_out{};
+  struct GuardedStamp { std::array<unsigned char,8> before; SQL_TIMESTAMP_STRUCT value; std::array<unsigned char,8> after; } stamp_out{};
+  // All bound storage outlives failure recovery and RESET_PARAMS/UNBIND.
+  SQL_DATE_STRUCT date_in{};SQL_TIME_STRUCT time_in{};SQL_TIMESTAMP_STRUCT stamp_in{};
+  SQLLEN date_input_length=0,time_input_length=0,stamp_input_length=0;
+  SQLLEN date_length=0,time_length=0,stamp_length=0;
+  std::array<SQL_DATE_STRUCT,2> owned_dates{};
+  std::array<SQL_TIME_STRUCT,2> owned_times{};
+  std::array<SQL_TIMESTAMP_STRUCT,2> owned_stamps{};
+  struct Descriptor {
+    std::string name; SQLSMALLINT type; SQLULEN size; SQLSMALLINT digits; SQLSMALLINT nullable;
+  };
+  std::array<Descriptor,3> owned_descriptors{};
+  const auto poison_ok=[](const auto& value) {
+    const auto* bytes=reinterpret_cast<const unsigned char*>(&value);
+    return std::all_of(bytes,bytes+sizeof(value),[](auto byte){return byte==0x5a;});
+  };
+  const auto guard_ok=[](const auto& value) {
+    return std::all_of(value.before.begin(),value.before.end(),[](auto byte){return byte==0x5a;}) &&
+        std::all_of(value.after.begin(),value.after.end(),[](auto byte){return byte==0x5a;});
+  };
+  const auto trials=[&]() {
+    for(unsigned trial=0;trial<3;++trial) {
+      SCOPED_TRACE(trial);
+      const SQL_DATE_STRUCT expected_date{static_cast<SQLSMALLINT>(trial==0?2024:2000),2,29};
+      const SQL_TIME_STRUCT expected_time{static_cast<SQLUSMALLINT>(trial==0?12:0),
+          static_cast<SQLUSMALLINT>(trial==0?34:0),static_cast<SQLUSMALLINT>(trial==0?56:0)};
+      const SQL_TIMESTAMP_STRUCT expected_stamp{expected_date.year,2,29,
+          expected_time.hour,expected_time.minute,expected_time.second,trial==0?123456000u:1000u};
+      date_in=expected_date;time_in=expected_time;stamp_in=expected_stamp;
+      date_input_length=sizeof(date_in);time_input_length=sizeof(time_in);stamp_input_length=sizeof(stamp_in);
+      if(trial==2) {
+        std::memset(&date_in,0xff,sizeof(date_in));std::memset(&time_in,0xff,sizeof(time_in));
+        std::memset(&stamp_in,0xff,sizeof(stamp_in));
+        date_input_length=SQL_NULL_DATA;time_input_length=SQL_NULL_DATA;stamp_input_length=SQL_NULL_DATA;
+      }
+      ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,1,SQL_PARAM_INPUT,SQL_C_TYPE_DATE,SQL_TYPE_DATE,
+          10,0,&date_in,sizeof(date_in),&date_input_length));
+      ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,2,SQL_PARAM_INPUT,SQL_C_TYPE_TIME,SQL_TYPE_TIME,
+          8,0,&time_in,sizeof(time_in),&time_input_length));
+      ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,3,SQL_PARAM_INPUT,SQL_C_TYPE_TIMESTAMP,SQL_TYPE_TIMESTAMP,
+          26,6,&stamp_in,sizeof(stamp_in),&stamp_input_length));
+      ASSERT_EQ(SQL_SUCCESS,SQLExecute(hstmt_)) << get_error(SQL_HANDLE_STMT,hstmt_);
+      std::memset(&date_in,0xa5,sizeof(date_in));std::memset(&time_in,0xa5,sizeof(time_in));
+      std::memset(&stamp_in,0xa5,sizeof(stamp_in));
+      SQLSMALLINT count=0;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&count));ASSERT_EQ(3,count);
+      const char* names[]{"calendar_day","clock_time","stamp"};
+      const SQLSMALLINT types[]{SQL_TYPE_DATE,SQL_TYPE_TIME,SQL_TYPE_TIMESTAMP};
+      // Whole-second C_TIME input does not alter the server's default TIME(6) result type.
+      const SQLULEN sizes[]{10,15,26};const SQLSMALLINT scales[]{0,6,6};
+      const SQLSMALLINT codes[]{SQL_CODE_DATE,SQL_CODE_TIME,SQL_CODE_TIMESTAMP};
+      for(SQLUSMALLINT column=1;column<=3;++column) {
+        std::array<SQLCHAR,32> name{};SQLSMALLINT name_length=-1,type=-1,digits=-1,nullable=-1;SQLULEN size=99;
+        ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,column,name.data(),name.size(),&name_length,
+            &type,&size,&digits,&nullable));
+        ASSERT_GE(name_length,0);ASSERT_LT(static_cast<std::size_t>(name_length),name.size());
+        Descriptor observed{std::string(reinterpret_cast<const char*>(name.data()),static_cast<std::size_t>(name_length)),type,size,digits,nullable};
+        EXPECT_EQ(names[column-1],observed.name);EXPECT_EQ(types[column-1],type);
+        EXPECT_EQ(sizes[column-1],size);EXPECT_EQ(scales[column-1],digits);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
+        for(const auto& field:{std::pair{SQL_DESC_CONCISE_TYPE,types[column-1]},
+            std::pair{SQL_DESC_TYPE,SQLSMALLINT(SQL_DATETIME)},
+            std::pair{SQL_DESC_DATETIME_INTERVAL_CODE,codes[column-1]},
+            std::pair{SQL_DESC_SCALE,scales[column-1]}}) {
+          SQLLEN actual=-1;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(hstmt_,column,field.first,nullptr,0,nullptr,&actual));
+          EXPECT_EQ(field.second,actual);
+        }
+        SQLLEN display=-1;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(hstmt_,column,SQL_DESC_DISPLAY_SIZE,nullptr,0,nullptr,&display));
+        EXPECT_EQ(static_cast<SQLLEN>(sizes[column-1]),display);
+        if(trial==0) { owned_descriptors[column-1]=observed; }
+        else {
+          const auto& previous=owned_descriptors[column-1];
+          EXPECT_EQ(previous.name,observed.name);EXPECT_EQ(previous.type,type);EXPECT_EQ(previous.size,size);
+          EXPECT_EQ(previous.digits,digits);EXPECT_EQ(previous.nullable,nullable);
+        }
+      }
+      date_out.before.fill(0x5a);date_out.after.fill(0x5a);std::memset(&date_out.value,0x5a,sizeof(date_out.value));
+      time_out.before.fill(0x5a);time_out.after.fill(0x5a);std::memset(&time_out.value,0x5a,sizeof(time_out.value));
+      stamp_out.before.fill(0x5a);stamp_out.after.fill(0x5a);std::memset(&stamp_out.value,0x5a,sizeof(stamp_out.value));
+      date_length=93;time_length=94;stamp_length=95;
+      ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,1,SQL_C_TYPE_DATE,&date_out.value,sizeof(date_out.value),&date_length));
+      ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,2,SQL_C_TYPE_TIME,&time_out.value,sizeof(time_out.value),&time_length));
+      ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,3,SQL_C_TYPE_TIMESTAMP,&stamp_out.value,sizeof(stamp_out.value),&stamp_length));
+      if(HasFailure()) { return; }
+      ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_)) << get_error(SQL_HANDLE_STMT,hstmt_);
+      EXPECT_TRUE(guard_ok(date_out));EXPECT_TRUE(guard_ok(time_out));EXPECT_TRUE(guard_ok(stamp_out));
+      if(trial==2) {
+        EXPECT_EQ(SQL_NULL_DATA,date_length);EXPECT_EQ(SQL_NULL_DATA,time_length);EXPECT_EQ(SQL_NULL_DATA,stamp_length);
+        EXPECT_TRUE(poison_ok(date_out.value));EXPECT_TRUE(poison_ok(time_out.value));EXPECT_TRUE(poison_ok(stamp_out.value));
+      } else {
+        EXPECT_EQ(static_cast<SQLLEN>(sizeof(date_out.value)),date_length);
+        EXPECT_EQ(static_cast<SQLLEN>(sizeof(time_out.value)),time_length);
+        EXPECT_EQ(static_cast<SQLLEN>(sizeof(stamp_out.value)),stamp_length);
+        EXPECT_EQ(expected_date.year,date_out.value.year);EXPECT_EQ(2,date_out.value.month);EXPECT_EQ(29,date_out.value.day);
+        EXPECT_EQ(expected_time.hour,time_out.value.hour);EXPECT_EQ(expected_time.minute,time_out.value.minute);EXPECT_EQ(expected_time.second,time_out.value.second);
+        EXPECT_EQ(expected_stamp.year,stamp_out.value.year);EXPECT_EQ(2,stamp_out.value.month);EXPECT_EQ(29,stamp_out.value.day);
+        EXPECT_EQ(expected_stamp.hour,stamp_out.value.hour);EXPECT_EQ(expected_stamp.minute,stamp_out.value.minute);
+        EXPECT_EQ(expected_stamp.second,stamp_out.value.second);EXPECT_EQ(expected_stamp.fraction,stamp_out.value.fraction);
+        owned_dates[trial]=date_out.value;owned_times[trial]=time_out.value;owned_stamps[trial]=stamp_out.value;
+      }
+      if(HasFailure()) { return; }
+      ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(hstmt_));
+      ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_UNBIND));
+      ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_RESET_PARAMS));
+    }
+  };
+  trials(); // Preserve any original failure; never replay its parameter execution.
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_RESET_PARAMS));
+  SQLCHAR recovery[]="SELECT 1";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(hstmt_,recovery,SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));SQLINTEGER scalar=-99;SQLLEN scalar_length=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,1,SQL_C_SLONG,&scalar,sizeof(scalar),&scalar_length));
+  EXPECT_EQ(1,scalar);EXPECT_EQ(static_cast<SQLLEN>(sizeof(scalar)),scalar_length);
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  if(!HasFailure()) {
+    for(unsigned index=0;index<2;++index) {
+      EXPECT_EQ(index==0?2024:2000,owned_dates[index].year);EXPECT_EQ(2,owned_dates[index].month);EXPECT_EQ(29,owned_dates[index].day);
+      EXPECT_EQ(index==0?12:0,owned_times[index].hour);EXPECT_EQ(index==0?34:0,owned_times[index].minute);EXPECT_EQ(index==0?56:0,owned_times[index].second);
+      EXPECT_EQ(owned_dates[index].year,owned_stamps[index].year);EXPECT_EQ(2,owned_stamps[index].month);EXPECT_EQ(29,owned_stamps[index].day);
+      EXPECT_EQ(owned_times[index].hour,owned_stamps[index].hour);EXPECT_EQ(owned_times[index].minute,owned_stamps[index].minute);
+      EXPECT_EQ(owned_times[index].second,owned_stamps[index].second);EXPECT_EQ(index==0?123456000u:1000u,owned_stamps[index].fraction);
+    }
+    EXPECT_EQ("calendar_day",owned_descriptors[0].name);EXPECT_EQ("clock_time",owned_descriptors[1].name);EXPECT_EQ("stamp",owned_descriptors[2].name);
+  }
+}

@@ -1309,3 +1309,46 @@ TEST(PgParameterContractTest, PreparedNumericHasLiteralOwningOid1700AndNullFrame
     EXPECT_EQ(literal(parse_bytes),retained[0].payload);
   }
 }
+
+
+TEST(PgParameterContractTest, PreparedTemporalTripletHasLiteralOwningOidsAndNullFrames) {
+  PgProtocolParser parser;
+  const unsigned char parse_bytes[]{
+      0,'S','E','L','E','C','T',' ','C','A','S','T','(','$','1',' ','A','S',' ','D','A','T','E',')',
+      ' ','A','S',' ','c','a','l','e','n','d','a','r','_','d','a','y',',',' ',
+      'C','A','S','T','(','$','2',' ','A','S',' ','T','I','M','E',')',' ','A','S',' ',
+      'c','l','o','c','k','_','t','i','m','e',',',' ',
+      'C','A','S','T','(','$','3',' ','A','S',' ','T','I','M','E','S','T','A','M','P',')',
+      ' ','A','S',' ','s','t','a','m','p',0,0,3,0,0,4,58,0,0,4,59,0,0,4,90};
+  const unsigned char value_bytes[]{0,0,0,0,0,3,
+      0,0,0,10,'2','0','2','4','-','0','2','-','2','9',
+      0,0,0,8,'1','2',':','3','4',':','5','6',
+      0,0,0,26,'2','0','2','4','-','0','2','-','2','9',' ','1','2',':','3','4',':','5','6','.','1','2','3','4','5','6',0,0};
+  const unsigned char null_bytes[]{0,0,0,0,0,3,
+      255,255,255,255,255,255,255,255,255,255,255,255,0,0};
+  const auto literal=[](std::span<const unsigned char> input) {
+    std::vector<std::byte> output;
+    for(auto byte:input) { output.push_back(static_cast<std::byte>(byte)); }
+    return output;
+  };
+  const char* query="SELECT CAST(? AS DATE) AS calendar_day, CAST(? AS TIME) AS clock_time, CAST(? AS TIMESTAMP) AS stamp";
+  for(const bool null:{false,true}) {
+    SCOPED_TRACE(null);
+    std::string date="2024-02-29",time="12:34:56",stamp="2024-02-29 12:34:56.123456";
+    std::vector<QueryParameter> parameters{
+        {null?std::nullopt:std::optional<std::string>{date},QueryParameterType::Date},
+        {null?std::nullopt:std::optional<std::string>{time},QueryParameterType::Time},
+        {null?std::nullopt:std::optional<std::string>{stamp},QueryParameterType::Timestamp}};
+    date="poison";time="poison";stamp="poison";
+    const auto wire=parser.create_prepared_query(query,parameters);
+    const auto frames=split_frames(wire);ASSERT_EQ(6U,frames.size());
+    const char tags[]{'P','D','B','D','E','S'};
+    for(std::size_t index=0;index<6;++index) { EXPECT_EQ(tags[index],frames[index].tag); }
+    EXPECT_EQ(literal(parse_bytes),frames[0].payload);
+    const auto expected_bind=null?literal(null_bytes):literal(value_bytes);
+    EXPECT_EQ(expected_bind,frames[2].payload);
+    for(auto& parameter:parameters) { parameter.value="poison"; }
+    const auto retained=split_frames(wire);ASSERT_EQ(6U,retained.size());
+    EXPECT_EQ(literal(parse_bytes),retained[0].payload);EXPECT_EQ(expected_bind,retained[2].payload);
+  }
+}
