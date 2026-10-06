@@ -381,3 +381,80 @@ TEST(CatalogQueryTest, RedshiftColumnsKeepQualifiedDimensionFamiliesAndUnknownFa
   EXPECT_FALSE(redshift.is_connected());
   EXPECT_FALSE(pg.is_connected());
 }
+
+TEST(CatalogQueryTest, RedshiftSchemasUseAccessibleCurrentDatabaseViewAndFiveFieldShape) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  TablesCatalogRequest request;
+  request.mode = TablesCatalogRequest::Mode::Schemas;
+  const auto query = redshift.catalog_query(request);
+  ASSERT_FALSE(query.has_error());
+  EXPECT_EQ(*query,
+      "SELECT NULL::text AS table_cat, schema_name::text AS table_schem, "
+      "NULL::text AS table_name, NULL::text AS table_type, NULL::text AS "
+      "remarks FROM svv_redshift_schemas WHERE database_name = current_database() "
+      "ORDER BY table_schem");
+  // The view's user visibility supplies the privilege boundary. No owner-only
+  // predicate or cross-database expansion replaces it.
+  EXPECT_EQ(std::string::npos, query->find("schema_owner"));
+  EXPECT_EQ(std::string::npos, query->find("information_schema.schemata"));
+  request.catalog = "foreign'database";
+  request.schema = "ignored'schema";
+  request.table = "ignored'table";
+  request.types = std::vector<std::string>{};
+  const auto filtered = redshift.catalog_query(request);
+  ASSERT_FALSE(filtered.has_error());
+  EXPECT_EQ(*query, *filtered);
+  EXPECT_FALSE(redshift.is_connected());
+}
+
+TEST(CatalogQueryTest, SchemaEnumerationPreservesPostgresSqlAndNonSchemaTableModes) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection postgres(nullptr, std::nullopt, PgCatalogProfile::PostgreSQL);
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  TablesCatalogRequest request;
+  request.mode = TablesCatalogRequest::Mode::Schemas;
+  const auto schemas = postgres.catalog_query(request);
+  ASSERT_FALSE(schemas.has_error());
+  EXPECT_EQ(*schemas,
+      "SELECT NULL::text AS table_cat, schema_name::text AS table_schem, "
+      "NULL::text AS table_name, NULL::text AS table_type, NULL::text AS "
+      "remarks FROM information_schema.schemata ORDER BY table_schem");
+  request.catalog = "db'";
+  request.schema = "s'";
+  request.table = "t'";
+  request.types = std::vector<std::string>{"TABLE"};
+  for (const auto mode : {TablesCatalogRequest::Mode::Tables,
+       TablesCatalogRequest::Mode::Catalogs, TablesCatalogRequest::Mode::TableTypes}) {
+    request.mode = mode;
+    const auto pg = postgres.catalog_query(request);
+    const auto rs = redshift.catalog_query(request);
+    ASSERT_FALSE(pg.has_error());
+    ASSERT_FALSE(rs.has_error());
+    EXPECT_EQ(*pg, *rs);
+    EXPECT_EQ(std::string::npos, rs->find("svv_redshift_schemas"));
+  }
+}
+
+TEST(CatalogQueryTest, SchemaEnumerationDoesNotDependOnPrimaryKeyCatalogMode) {
+  using namespace rs::core::database::postgres;
+  class ModeSession final : public PgDatabaseConnection {
+  public:
+    explicit ModeSession(RedshiftCatalogMode mode)
+        : PgDatabaseConnection(nullptr, std::nullopt, PgCatalogProfile::Redshift), mode_(mode) {}
+    RedshiftCatalogMode catalog_mode() const noexcept override { return mode_; }
+  private:
+    RedshiftCatalogMode mode_;
+  };
+  ModeSession show(RedshiftCatalogMode::Show);
+  ModeSession legacy(RedshiftCatalogMode::Legacy);
+  TablesCatalogRequest request;
+  request.mode = TablesCatalogRequest::Mode::Schemas;
+  const auto a = show.catalog_query(request);
+  const auto b = legacy.catalog_query(request);
+  ASSERT_FALSE(a.has_error());
+  ASSERT_FALSE(b.has_error());
+  EXPECT_EQ(*a, *b);
+  EXPECT_NE(std::string::npos, a->find("FROM svv_redshift_schemas"));
+  EXPECT_EQ(std::string::npos, a->find("SHOW"));
+}

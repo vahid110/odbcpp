@@ -1220,9 +1220,26 @@ cases and both new ordinary Material native cases. All457 Python3.14 safety test
 passed. Fresh private PostgreSQL status3/pid absence/shutdown-log verification
 confirmed cleanup. The optional native/portable consumer targets compiled and
 linked in a distinct owned build; portable dependency files remained SDK-free.
-Final review, commit and exact-head hosted CI follow these local gates. Normal
-ODBC password connection composition still bypasses the independent Material
-module; driver adoption is the next product-use checkpoint.
+Exact67fbfcd hosted CI subsequently passed. The next reviewed integration routes
+PG-family ordinary connections with an explicit CA file and supplied password
+through owning Material and the existing private consumer. It preserves one
+computed deadline, H0 and the nonrecursive connect_until wire entry. Other trust
+profiles and the existing oversized-password/sentinel-deadline compatibility
+slices retain their direct route before I/O; selected authentication failures
+never retry through that route. Source review accepted eight new fake-wire groups
+(24 total), scoped sanitizer24 and a third provider-created driver-route TLS
+case. Current shared PostgreSQL and both Unicode profiles passed108 unit targets,
+12 ordinary integrations and all three ordinary Material/driver TLS cases, plus
+the preserved three DriverManager TLS cases. Redshift configure/build/unit108 and
+optional native/portable compile-link passed; all457 offline checks passed. The
+installed static package configured, linked and ran a factory-only consumer after
+relocation, using its private AuthCore archive dependency with exact historical
+header membership and no installed authentication headers. Exact symbol
+inspection found one ordinary consumer definition per core/driver artifact.
+Full sanitizer108 passed and private PostgreSQL shutdown was independently
+verified by status3, absent pid and the shutdown log. Final review, commit and
+new exact-head hosted CI remain pending for this integration. This is selected
+ordinary-password driver adoption, not new AWS method or all-platform completion.
 
 ### Ordinary-user Redshift metadata-to-query workflow — candidate
 
@@ -1241,6 +1258,13 @@ returned65535. The original failed run is preserved. A reviewed test-only repair
 now requires exact65535 for these selected catalog text headers; PostgreSQL OID25
 width0 and production code remain unchanged. Downstream SQLColumns, prepared
 binding and typed fetching were not reached and remain pending a fresh bounded
-successor. Post-child exact-principal zero activity, owned-input removal and
+successor. That corrected successor passed the descriptor-width assertions but
+both cases then failed to discover the fixture schema. SQLColumns and binding
+were again not reached. The source still used PostgreSQL information_schema
+schemata for Redshift; a reviewed Redshift-only schema enumeration now selects
+SVV_REDSHIFT_SCHEMAS for the current database, preserving five fields, PostgreSQL
+and other catalog modes. All20 offline catalog query groups passed; ordinary-user
+live visibility remains unqualified until a fresh bounded successor. Both failed
+native results remain preserved. Post-child exact-principal zero activity, owned-input removal and
 paused-cluster readback were independently assessed. No fixture modification or
 broader live parity is claimed.

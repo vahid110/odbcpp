@@ -749,6 +749,9 @@ std::string build_query(const SpecialColumnsCatalogRequest& request) {
 rs::util::Result<std::string> PgDatabaseConnection::catalog_query(
     const CatalogRequest& request) const {
   if (catalog_profile_ == PgCatalogProfile::Redshift) {
+    if (const auto* tables = std::get_if<TablesCatalogRequest>(&request);
+        tables && tables->mode == TablesCatalogRequest::Mode::Schemas)
+      return redshift_schemas_query();
     if (const auto* columns = std::get_if<ColumnsCatalogRequest>(&request))
       return redshift_columns_query(*columns);
     if (const auto* statistics = std::get_if<StatisticsCatalogRequest>(&request))

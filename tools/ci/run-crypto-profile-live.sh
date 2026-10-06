@@ -30,9 +30,10 @@ import xml.etree.ElementTree as ET
 root = ET.parse(sys.argv[1]).getroot()
 expected = {'OrdinaryPgMaterialTls.' + name for name in (
     'VerifiedScramMaterialConnectQueryOwnsAfterDisconnect',
-    'NativeRefusalRetiresAndFreshMaterialRecovers')}
+    'NativeRefusalRetiresAndFreshMaterialRecovers',
+    'ProviderCreatedDriverPasswordRouteUsesVerifiedTls')}
 cases = list(root.iter('testcase'))
 actual = {f'{case.attrib["classname"]}.{case.attrib["name"]}' for case in cases}
-if len(cases) != 2 or actual != expected or any(list(root.iter(tag)) for tag in ('failure', 'error', 'skipped')):
+if len(cases) != 3 or actual != expected or any(list(root.iter(tag)) for tag in ('failure', 'error', 'skipped')):
     raise RuntimeError('Mandatory ordinary Material TLS cases did not all pass without skips')
 PYRESULT

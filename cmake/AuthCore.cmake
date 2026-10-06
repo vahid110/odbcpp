@@ -1,5 +1,5 @@
-# Private, provider-free authentication module. It is not linked into the driver
-# or installed until real issuer integrations establish the public API boundary.
+# Private, provider-free authentication archive. Installed only to close the
+# static core dependency; authentication headers remain private.
 find_package(Threads REQUIRED)
 set(ODBCPP_PARTITION_auth
   "${CMAKE_CURRENT_SOURCE_DIR}/sdk/src/auth/auth_core.cpp"
@@ -22,4 +22,5 @@ add_library(odbcpp_auth_core STATIC ${ODBCPP_PARTITION_auth})
 target_compile_features(odbcpp_auth_core PRIVATE cxx_std_20)
 target_link_libraries(odbcpp_auth_core PRIVATE Threads::Threads)
 target_include_directories(odbcpp_auth_core PRIVATE "${ODBCPP_INTERNAL_INCLUDE_auth}")
+set_target_properties(odbcpp_auth_core PROPERTIES EXPORT_NAME auth_core_private)
 apply_compiler_settings(odbcpp_auth_core)

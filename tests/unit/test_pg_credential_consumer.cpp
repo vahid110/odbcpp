@@ -291,3 +291,174 @@ TEST(PgOrdinaryCredentialConsumer, ExceptionsActiveBorrowAndFailedOuterConsumpti
   EXPECT_FALSE(f.pg.is_connected());EXPECT_TRUE(d::detail::ConnectionAuthenticationTestAccess::password(f.pg).empty());
   value.with_secret([&](auto bytes){EXPECT_EQ(18U,bytes.size());});
 }
+
+namespace {
+d::ConnectionSettings driver_settings() {
+  auto selected=ordinary_settings();selected.password="synthetic-password";
+  selected.timeout=std::chrono::seconds{10};return selected;
+}
+// Minimal no-challenge wire for compatibility profiles, including plaintext.
+// It never treats an unverified password exchange as success.
+class DriverCompatibilityWire final:public t::ITransport,public t::IStartTlsTransport,
+    public t::ITlsConfigurableTransport {
+public:
+  DriverCompatibilityWire() {
+    const unsigned char literal[]{'R',0,0,0,8,0,0,0,0,'Z',0,0,0,5,'I'};
+    for(auto byte:literal) { input.push_back(std::byte{byte}); }
+  }
+  rs::util::Result<void> connect(std::string_view,std::uint16_t,rs::util::Deadline end) override {
+    deadlines.push_back(end);return {};
+  }
+  rs::util::Result<void> connect_plain(std::string_view host,std::uint16_t port,rs::util::Deadline end) override {
+    return connect(host,port,end);
+  }
+  rs::util::Result<void> upgrade_to_tls(std::string_view,rs::util::Deadline end) override {
+    deadlines.push_back(end);return {};
+  }
+  bool peer_identity_verified() noexcept override { return true; }
+  void set_ca_locations(const std::string& file,const std::string& directory) override {
+    ca=file;dir=directory;++configured;
+  }
+  rs::util::Result<t::IOResult> send(std::span<const std::byte> bytes,rs::util::Deadline end) override {
+    deadlines.push_back(end);sent.insert(sent.end(),bytes.begin(),bytes.end());
+    const unsigned char ssl[]{0,0,0,8,4,210,22,47};
+    if(sent.size()==8) {
+      ssl_pending=true;
+      for(std::size_t i=0;i<8;++i) { ssl_pending=ssl_pending&&sent[i]==std::byte{ssl[i]}; }
+    }
+    return t::IOResult{bytes.size(),false};
+  }
+  rs::util::Result<t::IOResult> recv(std::span<std::byte> output,rs::util::Deadline end) override {
+    deadlines.push_back(end);
+    if(ssl_pending) { ssl_pending=false;output[0]=std::byte{'S'};return t::IOResult{1,false}; }
+    if(offset==input.size()) { return {rs::util::DbErrorCode::NetworkError,"fixed EOF"}; }
+    output[0]=input[offset++];return t::IOResult{1,false};
+  }
+  void close() noexcept override { ++closed; }
+  std::vector<rs::util::Deadline> deadlines;std::vector<std::byte> sent,input;
+  std::string ca,dir;unsigned configured{},closed{};std::size_t offset{};bool ssl_pending{};
+};
+}
+
+TEST(PgDriverPasswordComposition, RealParserSelectedRouteKeepsOneDeadlineAndCallerPassword) {
+  for(auto profile:{d::postgres::PgCatalogProfile::PostgreSQL,d::postgres::PgCatalogProfile::Redshift}) {
+    auto wire=std::make_unique<Wire>();auto* observed=wire.get();Pg pg(std::move(wire),std::nullopt,profile);
+    const auto selected=driver_settings();const auto before=rs::util::Clock::now()+selected.timeout;
+    const auto result=pg.connect(selected);const auto after=rs::util::Clock::now()+selected.timeout;ASSERT_TRUE(result);
+    EXPECT_EQ((d::SessionSnapshot{d::SessionState::Idle,d::SessionDisposition::Reusable}),result.session_snapshot());
+    ASSERT_GT(observed->deadlines.size(),20U);const auto original=observed->deadlines.front();
+    EXPECT_GE(original,before);EXPECT_LE(original,after);
+    for(auto value:observed->deadlines) { EXPECT_EQ(original,value); }
+    EXPECT_TRUE(selected.password=="synthetic-password");
+    EXPECT_TRUE(d::detail::ConnectionAuthenticationTestAccess::password(pg).empty());
+    EXPECT_EQ(profile==d::postgres::PgCatalogProfile::Redshift,pg.catalog_execution()!=nullptr);
+    pg.disconnect();EXPECT_FALSE(pg.is_connected());
+  }
+}
+
+TEST(PgDriverPasswordComposition, InvalidSelectedFactoriesAndNulHaveZeroIoThenRecover) {
+  for(unsigned which=0;which<4;++which) {
+    Fixture fixture;auto selected=driver_settings();
+    if(which==0) { selected.user=std::string(1025,'x'); }
+    if(which==1) { selected.host=std::string("h\0x",3); }
+    if(which==2) { selected.password=std::string("p\0x",3); }
+    if(which==3) { selected.ssl_ca_file=std::string("c\0x",3); }
+    const auto failed=fixture.pg.connect(selected);ASSERT_FALSE(failed);
+    EXPECT_EQ(d::BackendErrorClass::InvalidInput,failed.backend_error().error_class);
+    if(which!=3) { EXPECT_TRUE(failed.error_message()=="Invalid ordinary driver password composition"); }
+    EXPECT_TRUE(fixture.wire->deadlines.empty());EXPECT_EQ(0U,fixture.wire->configured);
+    EXPECT_FALSE(fixture.pg.is_connected());
+    EXPECT_TRUE(fixture.pg.connect(driver_settings()));fixture.pg.disconnect();
+  }
+}
+
+TEST(PgDriverPasswordComposition, NativeFailuresRetireOwnErrorAndFreshConnectRecovers) {
+  for(bool tls:{false,true}) {
+    Fixture fixture;if(tls) { fixture.wire->tls_error=true; } else { fixture.wire->reset(true); }
+    const auto failed=fixture.pg.connect(driver_settings());ASSERT_FALSE(failed);
+    EXPECT_EQ(tls?d::BackendErrorClass::Tls:d::BackendErrorClass::Authentication,failed.backend_error().error_class);
+    if(!tls) { EXPECT_EQ(std::optional<std::string>{"28P01"},failed.backend_error().native_state); }
+    EXPECT_EQ((d::SessionSnapshot{d::SessionState::Disconnected,d::SessionDisposition::Retire}),failed.session_snapshot());
+    auto retained=failed.backend_error();EXPECT_FALSE(fixture.pg.is_connected());
+    EXPECT_TRUE(d::detail::ConnectionAuthenticationTestAccess::password(fixture.pg).empty());
+    fixture.wire->tls_error=false;fixture.wire->reset();ASSERT_TRUE(fixture.pg.connect(driver_settings()));
+    fixture.pg.disconnect();EXPECT_EQ(retained.code,failed.backend_error().code);
+    EXPECT_EQ(retained.native_state,failed.backend_error().native_state);
+    EXPECT_TRUE(retained.message==failed.backend_error().message);
+  }
+}
+
+TEST(PgDriverPasswordComposition, AlreadyOpenRefusesWithoutIoOrRetirement) {
+  Fixture fixture;ASSERT_TRUE(fixture.pg.connect(driver_settings()));
+  const auto calls=fixture.wire->deadlines.size();const auto closes=fixture.wire->closed;
+  const auto refused=fixture.pg.connect(driver_settings());ASSERT_FALSE(refused);
+  EXPECT_EQ(d::BackendErrorClass::InvalidInput,refused.backend_error().error_class);
+  EXPECT_EQ((d::SessionSnapshot{d::SessionState::Idle,d::SessionDisposition::Reusable}),refused.session_snapshot());
+  EXPECT_TRUE(fixture.pg.is_connected());EXPECT_EQ(calls,fixture.wire->deadlines.size());EXPECT_EQ(closes,fixture.wire->closed);
+  fixture.pg.disconnect();
+}
+
+TEST(PgDriverPasswordComposition, OutsideTlsAndPasswordProfilesRetainDirectRoute) {
+  for(unsigned which=0;which<4;++which) {
+    auto wire=std::make_unique<DriverCompatibilityWire>();auto* observed=wire.get();Pg pg(std::move(wire));auto selected=driver_settings();
+    switch(which) {
+      case 0:selected.ssl_ca_file.clear();break;
+      case 1:selected.ssl_ca_file.clear();selected.ssl_ca_dir="/synthetic/directory";break;
+      case 2:selected.use_ssl=false;selected.ssl_ca_file.clear();break;
+      case 3:selected.password.clear();break;
+    }
+    const auto result=pg.connect(selected);ASSERT_TRUE(result);EXPECT_TRUE(pg.is_connected());
+    EXPECT_EQ(selected.use_ssl?1U:0U,observed->configured);
+    if(selected.use_ssl) { EXPECT_EQ(selected.ssl_ca_file,observed->ca);EXPECT_EQ(selected.ssl_ca_dir,observed->dir); }
+    // Literal AuthenticationOk uses no password challenge on these profiles.
+    EXPECT_TRUE(d::detail::ConnectionAuthenticationTestAccess::password(pg).empty());pg.disconnect();
+  }
+}
+
+TEST(PgDriverPasswordComposition, ExactSecretBoundAndLargerPasswordKeepCompatibility) {
+  for(auto size:{a::SecretBytes::max_bytes,a::SecretBytes::max_bytes+1}) {
+    auto wire=std::make_unique<DriverCompatibilityWire>();Pg pg(std::move(wire));auto selected=driver_settings();
+    selected.password.assign(size,'x');selected.input_limits.max_connection_field_bytes=128*1024;
+    ASSERT_TRUE(pg.connect(selected));EXPECT_EQ(size,selected.password.size());pg.disconnect();
+  }
+  Fixture fixture;auto selected=driver_settings();selected.password.assign(a::SecretBytes::max_bytes+1,'x');
+  selected.password[0]='\0';selected.input_limits.max_connection_field_bytes=128*1024;
+  const auto refused=fixture.pg.connect(selected);ASSERT_FALSE(refused);
+  EXPECT_TRUE(refused.error_message()=="PostgreSQL authentication credential contains an embedded NUL byte");
+  EXPECT_TRUE(fixture.wire->deadlines.empty()); // Legacy validation, no secret cap/truncation or retry.
+}
+
+TEST(PgDriverPasswordComposition, FiniteExpiredAndSentinelDeadlineRoutesPreserved) {
+  Fixture fixture;auto selected=driver_settings();selected.timeout=std::chrono::milliseconds{0};
+  const auto expired=fixture.pg.connect(selected);ASSERT_FALSE(expired);
+  EXPECT_EQ(d::BackendErrorClass::Timeout,expired.backend_error().error_class);EXPECT_TRUE(fixture.wire->deadlines.empty());
+  EXPECT_EQ(0U,fixture.wire->configured);EXPECT_TRUE(expired.error_message()=="Ordinary password handoff deadline elapsed");
+  Fixture negative;selected.timeout=std::chrono::milliseconds{-1};const auto refused=negative.pg.connect(selected);ASSERT_FALSE(refused);
+  EXPECT_EQ(d::BackendErrorClass::Timeout,refused.backend_error().error_class);EXPECT_TRUE(negative.wire->deadlines.empty());
+  EXPECT_TRUE(refused.error_message()!="Ordinary password handoff deadline elapsed");
+  auto wire=std::make_unique<DriverCompatibilityWire>();auto* observed=wire.get();Pg pg(std::move(wire));
+  selected.timeout=std::chrono::milliseconds::max();ASSERT_TRUE(pg.connect(selected));
+  ASSERT_FALSE(observed->deadlines.empty());for(auto value:observed->deadlines) { EXPECT_EQ(rs::util::Deadline::max(),value); }
+  pg.disconnect();
+}
+
+TEST(PgDriverPasswordComposition, ExplicitConnectUntilAndExceptionCleanupStayOwning) {
+  Fixture direct;auto selected=driver_settings();selected.password=std::string("p\0x",3);
+  const auto legacy=direct.pg.connect_until(selected,rs::util::make_deadline(std::chrono::seconds{10}));ASSERT_FALSE(legacy);
+  EXPECT_TRUE(legacy.error_message()=="PostgreSQL authentication credential contains an embedded NUL byte");
+  EXPECT_TRUE(direct.wire->deadlines.empty());
+  Fixture limited;auto bounded=driver_settings();bounded.input_limits.max_startup_wire_bytes=1;
+  const auto limited_result=limited.pg.connect(bounded);ASSERT_FALSE(limited_result);
+  EXPECT_EQ(d::BackendErrorClass::ResourceLimit,limited_result.backend_error().error_class);
+  EXPECT_TRUE(limited.wire->deadlines.empty());
+  auto mode_wire=std::make_unique<Wire>();auto* mode_observed=mode_wire.get();Pg foreign_mode(std::move(mode_wire));
+  auto mode=driver_settings();mode.redshift_catalog_mode=d::RedshiftCatalogMode::Legacy;
+  const auto foreign_result=foreign_mode.connect(mode);ASSERT_FALSE(foreign_result);
+  EXPECT_EQ(d::BackendErrorClass::InvalidInput,foreign_result.backend_error().error_class);
+  EXPECT_TRUE(foreign_result.error_message()=="Invalid Redshift catalog mode for this provider");
+  EXPECT_TRUE(mode_observed->deadlines.empty());
+  Fixture fixture;fixture.wire->throw_send=true;const auto failed=fixture.pg.connect(driver_settings());ASSERT_FALSE(failed);
+  EXPECT_EQ(std::string::npos,failed.error_message().find("SYNTHETIC_SECRET"));EXPECT_FALSE(fixture.pg.is_connected());
+  EXPECT_TRUE(d::detail::ConnectionAuthenticationTestAccess::password(fixture.pg).empty());
+  fixture.wire->throw_send=false;fixture.wire->reset();ASSERT_TRUE(fixture.pg.connect(driver_settings()));fixture.pg.disconnect();
+}

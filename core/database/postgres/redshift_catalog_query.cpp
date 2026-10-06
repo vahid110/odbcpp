@@ -13,6 +13,16 @@ std::string literal(const std::string& value) {
 }
 }  // namespace
 
+std::string redshift_schemas_query() {
+  // SVV_REDSHIFT_SCHEMAS lists schemas accessible to the current user.
+  // Restrict this SQL_ALL_SCHEMAS enumeration to the connected database;
+  // catalog/ordinary table filters do not apply to this enumeration mode.
+  return "SELECT NULL::text AS table_cat, schema_name::text AS table_schem, "
+      "NULL::text AS table_name, NULL::text AS table_type, NULL::text AS "
+      "remarks FROM svv_redshift_schemas WHERE database_name = current_database() "
+      "ORDER BY table_schem";
+}
+
 std::string redshift_columns_query(const ColumnsCatalogRequest& request) {
   // SVV_COLUMNS exposes Redshift's own dimensions without PostgreSQL domain,
   // LATERAL, OID or server-encoding helpers. Unsupported types remain unknown.

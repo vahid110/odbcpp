@@ -2,6 +2,8 @@
 #include "pg_backend_provider.h"
 #include "pg_protocol_parser.h"
 #include "redshift_primary_key_contract.h"
+#include "odbcpp/auth/pg_credential_consumer.h"
+#include <new>
 
 #include <algorithm>
 #include <charconv>
@@ -24,7 +26,60 @@ BackendResult<QueryResult> PgDatabaseConnection::observe_and_decline_binary_prep
 }
 
 BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& settings) {
-  return connect_until(settings, rs::util::make_deadline(settings.timeout));
+  namespace auth = rs::core::auth;
+  const auto deadline = rs::util::make_deadline(settings.timeout);
+  // Select before I/O; outside this first explicit-CA ordinary slice keeps its
+  // existing route. A selected composition failure never retries raw password.
+  if (!settings.use_ssl || settings.ssl_ca_file.empty() || !settings.ssl_ca_dir.empty() ||
+      settings.password.empty() || settings.password.size() > auth::SecretBytes::max_bytes ||
+      settings.host.empty() || settings.port == 0 || settings.database.empty() || settings.user.empty() ||
+      deadline == rs::util::Deadline::min() || deadline == rs::util::Deadline::max())
+    return connect_until(settings, deadline);
+  if (is_connected()) return local_backend_error(LocalFailure::InvalidInput,
+      "Database connection is already open", BackendOperation::Connect, session_state());
+  const auto invalid = [&]() -> BackendResult<void> {
+    return local_backend_error(LocalFailure::InvalidInput,
+        "Invalid ordinary driver password composition", BackendOperation::Connect, session_state());
+  };
+  try {
+    const auto service = catalog_profile_ == PgCatalogProfile::Redshift
+        ? auth::Service::Redshift : auth::Service::PostgreSql;
+    auto binding = auth::Binding::create({service, settings.host, settings.port,
+        settings.database, settings.user, "pg-family-driver-password", settings.host, "verify-full"},
+        {auth::SourceKind::ExternalPassword, "supplied-connection-password", "ordinary-composition-v1"},
+        auth::Method::OrdinaryPassword);
+    if (!binding) return invalid();
+    auto request = auth::Request::create(binding.value(), deadline, rs::util::Clock::duration::zero());
+    if (!request) return invalid();
+    auto secret = auth::SecretBytes::create(std::as_bytes(
+        std::span{settings.password.data(), settings.password.size()}));
+    if (!secret) return invalid();
+    auto material = auth::Material::create(binding.value(), auth::MaterialKind::OrdinaryPassword,
+        settings.user, std::move(secret).value(), auth::Validity::ordinary());
+    if (!material) return invalid();
+    // Copy every current settings field except the secret. This avoids making a
+    // transient raw password copy before an allocation-failure cleanup guard.
+    ConnectionSettings selected{.host = settings.host, .user = settings.user,
+        .password = {}, .database = settings.database, .port = settings.port,
+        .timeout = settings.timeout, .use_ssl = settings.use_ssl,
+        .ssl_ca_file = settings.ssl_ca_file, .ssl_ca_dir = settings.ssl_ca_dir,
+        .response_limits = settings.response_limits, .result_limits = settings.result_limits,
+        .input_limits = settings.input_limits, .startup_response_limits = settings.startup_response_limits,
+        .redshift_catalog_mode = settings.redshift_catalog_mode};
+    // Local binding consistency is not issuer proof, expiry, or pooling authority.
+    return auth::connect_bound_ordinary_password_until(*this, selected, request.value(), material.value());
+  } catch (const std::bad_alloc&) {
+    disconnect();
+    BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::AllocationFailure),
+                       "Ordinary driver password composition allocation failed"};
+    error.operation = BackendOperation::Connect;
+    error.session_state = SessionState::Disconnected;
+    error.disposition = SessionDisposition::Retire;
+    return error;
+  } catch (...) {
+    disconnect();
+    return invalid();
+  }
 }
 
 BackendResult<void> PgDatabaseConnection::connect_until(

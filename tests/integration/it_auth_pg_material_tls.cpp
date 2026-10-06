@@ -161,3 +161,22 @@ TEST_F(OrdinaryPgMaterialTls, NativeRefusalRetiresAndFreshMaterialRecovers) {
   EXPECT_EQ(deadline,requested.value().deadline());
 }
 } // namespace
+
+#include "odbcpp/database/backend_provider.h"
+namespace {
+TEST_F(OrdinaryPgMaterialTls, ProviderCreatedDriverPasswordRouteUsesVerifiedTls) {
+  const auto query_cutoff=rs::util::make_deadline(std::chrono::seconds{10});
+  const auto& provider=d::configured_backend_provider();ASSERT_TRUE(provider.identity().id=="postgresql");
+  auto selected=settings();selected.password="postgres";selected.timeout=std::chrono::seconds{10};
+  auto wire=transport();auto* peer=wire.get();auto session=provider.create_session(std::move(wire));ASSERT_TRUE(session);
+  struct Cleanup { d::IDatabaseConnection& session;~Cleanup() { session.disconnect(); } } cleanup{*session};
+  // This is the real driver/provider virtual connect entry. Its existing API
+  // computes one operation deadline internally; query has the earlier fixed cutoff.
+  const auto connected=session->connect(selected);ASSERT_TRUE(connected) << connected.backend_error().safe_summary();
+  EXPECT_EQ(idle,connected.session_snapshot());ASSERT_TRUE(session->is_connected());ASSERT_TRUE(peer->peer_identity_verified());
+  auto result=session->execute_query(query,query_cutoff);ASSERT_TRUE(result) << result.backend_error().safe_summary();
+  EXPECT_EQ(idle,result.session_snapshot());expect_owned(result.value());ASSERT_FALSE(HasFailure());
+  auto owned=std::move(result).value();session->disconnect();EXPECT_FALSE(session->is_connected());
+  expect_owned(owned);EXPECT_TRUE(selected.password=="postgres");
+}
+} // namespace

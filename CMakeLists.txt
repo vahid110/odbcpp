@@ -96,6 +96,10 @@ add_library(${PROJECT_NAME}_driver SHARED)
 include(cmake/CompilerSettings.cmake)
 include(cmake/InternalTargets.cmake)
 odbcpp_partition_driver_sources(ODBCPP_PARTITION "${CMAKE_CURRENT_SOURCE_DIR}" ${CORE_SOURCES})
+if(TARGET_DATABASE STREQUAL "POSTGRESQL" OR TARGET_DATABASE STREQUAL "REDSHIFT")
+  list(APPEND ODBCPP_PARTITION_backend
+    "${CMAKE_CURRENT_SOURCE_DIR}/sdk/src/adapters/pg_credential_consumer.cpp")
+endif()
 include(cmake/InternalIncludes.cmake)
 foreach(_part IN ITEMS runtime backend composition odbc)
   odbcpp_stage_internal_includes(${_part})
@@ -105,6 +109,11 @@ odbcpp_add_internal_objects(${PROJECT_NAME}_driver)
 set(ODBCPP_WRAPPER_INCLUDE "${CMAKE_CURRENT_BINARY_DIR}/wrapper-include")
 odbcpp_stage_wrapper_includes("${CMAKE_CURRENT_SOURCE_DIR}" "${ODBCPP_WRAPPER_INCLUDE}")
 include(cmake/AuthCore.cmake)
+# Private authentication archive closes both product artifact link graphs.
+if(TARGET_DATABASE STREQUAL "POSTGRESQL" OR TARGET_DATABASE STREQUAL "REDSHIFT")
+  target_link_libraries(${PROJECT_NAME}_core PRIVATE odbcpp_auth_core)
+  target_link_libraries(${PROJECT_NAME}_driver PRIVATE odbcpp_auth_core)
+endif()
 set(_driver_exports_file "${CMAKE_CURRENT_SOURCE_DIR}/odbc/odbcpp.exports")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${_driver_exports_file}")
@@ -272,7 +281,7 @@ if(BUILD_TESTING OR BUILD_EXAMPLES)
   apply_compiler_settings(odbcpp_prototype_pool)
 endif()
 
-# Private provider-free PostgreSQL-family credential consumer; never installed.
+# Build-only forwarding target for the backend-owned credential consumer.
 include(cmake/PgAuthConsumer.cmake)
 
 # ---- Examples ----

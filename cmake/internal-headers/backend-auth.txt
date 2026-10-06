@@ -1,0 +1,5 @@
+odbcpp/auth/pg_credential_consumer.h
+odbcpp/auth/auth_core.h
+odbcpp/auth/aws_db_response_fields.h
+odbcpp/auth/issuer_timestamp.h
+odbcpp/auth/temporary_db_validity.h

@@ -129,6 +129,19 @@ function(odbcpp_stage_internal_includes part)
   set(_manifest "${CMAKE_CURRENT_SOURCE_DIR}/cmake/internal-headers/${part}.txt")
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${_manifest}" "${CMAKE_CURRENT_SOURCE_DIR}/sdk/header_owners.txt" ${ODBCPP_PARTITION_${part}})
+  # Backend implementation alone receives the private authentication closure.
+  # The wrapper projection continues to read the original public backend list.
+  if(part STREQUAL "backend")
+    set(_auth_manifest "${CMAKE_CURRENT_SOURCE_DIR}/cmake/internal-headers/backend-auth.txt")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_auth_manifest}")
+    file(STRINGS "${_manifest}" _backend_headers)
+    file(STRINGS "${_auth_manifest}" _auth_headers)
+    list(APPEND _backend_headers ${_auth_headers})
+    list(REMOVE_DUPLICATES _backend_headers)
+    string(REPLACE ";" "\n" _backend_header_text "${_backend_headers}")
+    set(_manifest "${CMAKE_CURRENT_BINARY_DIR}/backend-auth-headers.txt")
+    file(WRITE "${_manifest}" "${_backend_header_text}\n")
+  endif()
   odbcpp_check_internal_includes("${CMAKE_CURRENT_SOURCE_DIR}" "${_manifest}"
     ${ODBCPP_PARTITION_${part}})
   set(_stage "${CMAKE_CURRENT_BINARY_DIR}/internal-include/${part}")
