@@ -5,7 +5,33 @@ include("${ODBCPP_SOURCE}/cmake/CompilerSettings.cmake")
 find_path(PROOF_ODBC_INCLUDE sql.h REQUIRED)
 find_library(PROOF_ODBC_LIBRARY odbc REQUIRED)
 odbcpp_collect_driver_sources(_driver_sources POSTGRESQL)
+# Pg.connect consumes the private ordinary authentication module. Stage only
+# its backend closure; the adapter/wrapper include surface remains unchanged.
+set(_proof_auth_manifest "${ODBCPP_SOURCE}/cmake/internal-headers/backend-auth.txt")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${_proof_auth_manifest}" "${ODBCPP_SOURCE}/sdk/header_owners.txt"
+  "${ODBCPP_SOURCE}/cmake/internal-headers/backend.txt")
+file(STRINGS "${ODBCPP_SOURCE}/cmake/internal-headers/backend.txt" _proof_backend_headers)
+file(STRINGS "${_proof_auth_manifest}" _proof_auth_headers)
+list(APPEND _proof_backend_headers ${_proof_auth_headers})
+list(REMOVE_DUPLICATES _proof_backend_headers)
+string(REPLACE ";" "\n" _proof_backend_text "${_proof_backend_headers}")
+set(_proof_checked_manifest "${CMAKE_CURRENT_BINARY_DIR}/driver-auth-headers.txt")
+file(WRITE "${_proof_checked_manifest}" "${_proof_backend_text}\n")
+odbcpp_check_internal_includes("${ODBCPP_SOURCE}" "${_proof_checked_manifest}")
+set(_proof_auth_include "${CMAKE_CURRENT_BINARY_DIR}/driver-auth-include")
+file(REMOVE_RECURSE "${_proof_auth_include}")
+file(STRINGS "${_proof_auth_manifest}" _proof_auth_headers)
+foreach(_header IN LISTS _proof_auth_headers)
+  odbcpp_resolve_internal_header("${ODBCPP_SOURCE}" "${_header}" _physical)
+  configure_file("${ODBCPP_SOURCE}/${_physical}"
+    "${_proof_auth_include}/${_header}" COPYONLY)
+endforeach()
+list(APPEND _driver_sources
+  "${ODBCPP_SOURCE}/sdk/src/adapters/pg_credential_consumer.cpp"
+  "${ODBCPP_SOURCE}/sdk/src/auth/auth_core.cpp")
 add_library(awslc_odbc_driver SHARED ${_driver_sources})
+target_include_directories(awslc_odbc_driver PRIVATE "${_proof_auth_include}")
 target_include_directories(awslc_odbc_driver PRIVATE "${ODBCPP_SOURCE}" "${ODBCPP_ADAPTER_INCLUDE}" "${PROOF_ODBC_INCLUDE}")
 target_include_directories(awslc_odbc_driver SYSTEM PRIVATE "${SPDLOG_INCLUDE_DIR}")
 target_compile_definitions(awslc_odbc_driver PRIVATE ODBCPP_ENABLE_POSTGRESQL=1 ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2)
