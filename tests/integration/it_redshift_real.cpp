@@ -1709,12 +1709,21 @@ protected:
     for(char c:identifier) { if(c=='\"') { output+='\"'; } output+=c; }
     return output+'\"';
   }
-  enum class DescriptorScope { Catalog, AllSchemas };
+  enum class DescriptorScope { Tables, AllSchemas, Columns };
+  struct DescriptorSnapshot {
+    std::string name;
+    SQLSMALLINT type,digits,nullable;
+    SQLULEN size;
+    bool operator==(const DescriptorSnapshot&) const = default;
+  };
+  std::vector<DescriptorSnapshot> catalog_descriptors_;
   void descriptors(std::span<const CatalogField> fields,
-                   DescriptorScope scope=DescriptorScope::Catalog) {
+                   DescriptorScope scope=DescriptorScope::Tables) {
     SQLSMALLINT count=0;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&count));
     ASSERT_EQ(fields.size(),static_cast<std::size_t>(count));
+    catalog_descriptors_.clear();
     for(SQLUSMALLINT column=1;column<=fields.size();++column) {
+      SCOPED_TRACE(fields[column-1].name); // Closed field label, never returned data.
       std::array<SQLCHAR,64> name{};SQLSMALLINT length=-1,type=-1,digits=-1,nullable=-1;SQLULEN size=99;
       ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,column,name.data(),name.size(),&length,&type,&size,&digits,&nullable));
       ASSERT_GE(length,0);ASSERT_LT(length,static_cast<SQLSMALLINT>(name.size()));
@@ -1722,11 +1731,36 @@ protected:
       std::transform(actual.begin(),actual.end(),actual.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
       EXPECT_TRUE(actual==fields[column-1].name);EXPECT_EQ(fields[column-1].type,type);
       EXPECT_EQ(0,digits);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
-      // The selected SVV schema_name::text projection retains VARCHAR(128).
-      // Other catalog/NULL::text headers remain65535; neither is a fallback.
-      const SQLULEN text_width=scope==DescriptorScope::AllSchemas&&column==2?128U:65535U;
-      EXPECT_EQ(type==SQL_SMALLINT?5U:type==SQL_INTEGER?10U:type==SQL_VARCHAR?text_width:0U,size);
+      if(type==SQL_SMALLINT) { EXPECT_EQ(5U,size); }
+      else if(type==SQL_INTEGER) { EXPECT_EQ(10U,size); }
+      else if(type==SQL_VARCHAR) {
+        if(scope==DescriptorScope::AllSchemas) {
+          // Selected schema enumeration: SVV schema_name retains VARCHAR(128).
+          const std::array<SQLULEN,5> widths{65535,128,65535,65535,65535};
+          ASSERT_LE(column,widths.size());EXPECT_EQ(widths[column-1],size);
+        } else if(scope==DescriptorScope::Tables) {
+          // This selected database expression is12; TABLE_TYPE's CASE is15.
+          // Catalog header capacity is separate from a user column's size.
+          const std::array<SQLULEN,5> widths{12,65535,65535,15,65535};
+          ASSERT_LE(column,widths.size());EXPECT_EQ(widths[column-1],size);
+        } else {
+          // SVV_COLUMNS text has no prescribed projected typmod here. Keep
+          // its declared bounded capacity (0 means unknown), not guessed65535.
+          EXPECT_LE(size,65535U);
+        }
+      } else { ADD_FAILURE() << "Unexpected catalog descriptor type"; }
+      catalog_descriptors_.push_back({std::move(actual),type,digits,nullable,size});
     }
+  }
+  void text_capacity(SQLUSMALLINT column,std::string_view value) {
+    if(catalog_descriptors_.empty()) { return; }
+    ASSERT_GE(column,1);ASSERT_LE(column,catalog_descriptors_.size());
+    const auto& descriptor=catalog_descriptors_[column-1];
+    EXPECT_EQ(SQL_VARCHAR,descriptor.type);
+    // Selected identity/fixture metadata strings are ASCII, so byte length
+    // also measures characters. Opaque non-ASCII remarks keep their own bound.
+    EXPECT_TRUE(std::all_of(value.begin(),value.end(),[](unsigned char c){return c<128;}));
+    if(descriptor.size!=0) { EXPECT_LE(value.size(),descriptor.size); }
   }
   std::string text(SQLUSMALLINT column) {
     std::array<unsigned char,1026> buffer{};buffer.fill(0x5a);SQLLEN length=-1;
@@ -1734,7 +1768,9 @@ protected:
     EXPECT_EQ(SQL_SUCCESS,result);EXPECT_GE(length,0);EXPECT_LT(length,1025);
     if(result!=SQL_SUCCESS||length<0||length>=1025) { return {}; }
     EXPECT_EQ(0,buffer[static_cast<std::size_t>(length)]);EXPECT_EQ(0x5a,buffer[1025]);
-    return {reinterpret_cast<const char*>(buffer.data()),static_cast<std::size_t>(length)};
+    std::string value(reinterpret_cast<const char*>(buffer.data()),static_cast<std::size_t>(length));
+    text_capacity(column,value);
+    return value;
   }
   void number(SQLUSMALLINT column,SQLINTEGER expected) {
     struct {SQLINTEGER before{17},value{-99},after{83};} output;
@@ -1758,6 +1794,11 @@ protected:
     } else {
       ASSERT_GE(length,0);ASSERT_LT(length,1025);
       EXPECT_EQ(0,buffer[static_cast<std::size_t>(length)]);EXPECT_EQ(0x5a,buffer[1025]);
+      ASSERT_GE(column,1);ASSERT_LE(column,catalog_descriptors_.size());
+      const auto& descriptor=catalog_descriptors_[column-1];
+      if(descriptor.size!=0&&std::all_of(buffer.begin(),buffer.begin()+length,[](auto c){return c<128;})) {
+        EXPECT_LE(static_cast<SQLULEN>(length),descriptor.size);
+      }
     }
   }
   void workflow(const char* mode) {
@@ -1828,19 +1869,23 @@ protected:
       number(17,value_column?2:1);EXPECT_TRUE(text(18)=="YES");
     };
     ASSERT_EQ(SQL_SUCCESS,SQLColumns(hstmt_,database,SQL_NTS,bytes(schema),SQL_NTS,bytes(table),SQL_NTS,nullptr,0)) << get_error(SQL_HANDLE_STMT,hstmt_);
-    descriptors(columns);ASSERT_FALSE(HasFailure());
+    descriptors(columns,DescriptorScope::Columns);ASSERT_FALSE(HasFailure());
+    const auto owned_column_descriptors=catalog_descriptors_;
     for(bool value_column:{false,true}) { ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));column_row(value_column);ASSERT_FALSE(HasFailure()); }
     ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
     for(const char* pattern:{"","v\\%lue","v\\_lue","v%lue","v_lue"}) {
       ASSERT_FALSE(HasFailure());
       ASSERT_EQ(SQL_SUCCESS,SQLColumns(hstmt_,database,SQL_NTS,bytes(schema),SQL_NTS,bytes(table),SQL_NTS,
           reinterpret_cast<SQLCHAR*>(const_cast<char*>(pattern)),SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
-      descriptors(columns);ASSERT_FALSE(HasFailure());
+      descriptors(columns,DescriptorScope::Columns);ASSERT_FALSE(HasFailure());
+      EXPECT_EQ(owned_column_descriptors,catalog_descriptors_);ASSERT_FALSE(HasFailure());
       if(std::string_view(pattern)=="v%lue"||std::string_view(pattern)=="v_lue") {
         ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));column_row(true);ASSERT_FALSE(HasFailure());
       }
       ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
     }
+    const auto owned_last_column_descriptors=catalog_descriptors_;
+    catalog_descriptors_.clear(); // Later application results have their own descriptors.
     // Query targets only the exact selected/discovered identifiers; quote before
     // construction. Mode does not change this information_schema/SVV workflow.
     const auto sql="WITH odbcpp_input AS (SELECT CAST(? AS INTEGER) AS min_id, CAST(? AS VARCHAR(32)) AS marker) "
@@ -1872,7 +1917,7 @@ protected:
         ASSERT_GE(name_length,0);ASSERT_LT(name_length,32);
         EXPECT_TRUE(std::string_view(reinterpret_cast<const char*>(name.data()),static_cast<std::size_t>(name_length))==aliases[column-1]);
         EXPECT_EQ(column==1?SQL_INTEGER:SQL_VARCHAR,type);EXPECT_EQ(0,scale);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
-        if(column==1) { EXPECT_EQ(10U,size); } else if(column==2) { EXPECT_EQ(32U,size); }
+        if(column==1) { EXPECT_EQ(10U,size); } else { EXPECT_EQ(32U,size); }
       }
       ASSERT_FALSE(HasFailure());
       for(SQLINTEGER row=1;row<=2;++row) {
@@ -1902,6 +1947,8 @@ protected:
     ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));number(1,1);ASSERT_FALSE(HasFailure());
     ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
     ASSERT_EQ(SQL_SUCCESS,SQLDisconnect(hdbc_));connected_=false;
+    EXPECT_EQ(owned_column_descriptors,owned_last_column_descriptors);
+    ASSERT_EQ(18U,owned_column_descriptors.size());
     EXPECT_TRUE(owned_columns[0]=="id");EXPECT_TRUE(owned_columns[1]=="value");ASSERT_EQ(4U,snapshots.size());
     for(std::size_t index=0;index<snapshots.size();++index) {
       const auto& row=snapshots[index];const bool second=index%2==1;

@@ -1296,3 +1296,30 @@ preserved. A reviewed test-only correction now requires128 only for the schemas
 header of SQL_ALL_SCHEMAS and retains other exact widths and all assertions.
 The corrected binary compiled and linked; schema fetching, SQLColumns, binding
 and typed fetching still require a fresh source-bound live run.
+
+### Provisioned connector native regression and workflow descriptor contract
+
+The integrated optional reusable connector passed a fresh native regression on
+2026-10-06: one GetClusterCredentials existing-user acquisition, verified-TLS
+Redshift login and fixed query, with no test skips or failures (0.630s).
+The source-bound window reported success and observed exact-principal cleanup;
+its supervisor verified process-group absence and cluster pause. Independent
+root readback confirmed the paused exact cluster, unchanged protected inputs
+and absence of the three temporary credential/configuration copies. This proves
+this standalone Darwin connector composition, not concurrent ODBC IAM use,
+credential renewal, UTC eligibility or another authentication method.
+
+The separate ordinary-user workflow passed schema enumeration and exact fixture
+schema visibility, then failed table descriptor expectations (12 and15 instead
+of an unsupported blanket65535). Its two failed native cases remain preserved.
+Independent assessment accepted cleanup, with a paused cluster and four owned
+input copies removed. A reviewed one-TU correction now keeps exact known schema
+and table header widths, scalar widths and user-column dimensions. Unobserved
+SVV catalog text capacities are bounded and checked against retrieved ASCII
+fixture values; owning descriptors must remain equal across six column-query
+patterns and after disconnect. Explicit VARCHAR(32) application projections
+remain strict. Source compile/link and fresh shared local gates passed: PostgreSQL and both
+Unicode widths each108 unit targets,12 ordinary integrations and six verified-TLS
+cases; Redshift and sanitizers each108 unit targets;457 offline checks. Private
+PostgreSQL shutdown was independently verified. The corrected full workflow still
+requires successor hosted CI and a fresh separately admitted live run.
