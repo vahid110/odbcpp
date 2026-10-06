@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <limits>
 #include <optional>
+#include <locale>
+#include <sstream>
 #include <string>
 namespace {
 namespace a=rs::core::auth;
@@ -14,6 +16,126 @@ namespace n=a::aws::provisioned_native;
 namespace d=rs::core::database;
 using Pg=d::postgres::PgDatabaseConnection;
 constexpr std::string_view admission="provisioned-native-acquisition-login001";
+// Only closed names and existing finite counters: no SDK message, config,
+// identity, raw response or model_expiry_ms may enter this diagnostic.
+const char* safe_failure_name(n::Failure failure) noexcept {
+ switch(failure){
+  case n::Failure::InvalidContext:return "InvalidContext";
+  case n::Failure::InvalidSource:return "InvalidSource";
+  case n::Failure::MainEntryRequired:return "MainEntryRequired";
+  case n::Failure::Unavailable:return "Unavailable";
+  case n::Failure::Refused:return "Refused";
+  case n::Failure::Consumed:return "Consumed";
+  case n::Failure::WrongThread:return "WrongThread";
+  case n::Failure::Reentrant:return "Reentrant";
+  case n::Failure::LocalFailure:return "LocalFailure";
+ }
+ return "Unknown";
+}
+const char* safe_boundary_name(a::BoundaryFailure failure) noexcept {
+ switch(failure){
+  case a::BoundaryFailure::InvalidBoundary:return "InvalidBoundary";
+  case a::BoundaryFailure::InvalidInput:return "InvalidInput";
+  case a::BoundaryFailure::InvalidState:return "InvalidState";
+  case a::BoundaryFailure::WrongOperation:return "WrongOperation";
+  case a::BoundaryFailure::WrongThread:return "WrongThread";
+  case a::BoundaryFailure::ReadFailed:return "ReadFailed";
+  case a::BoundaryFailure::ClockRollback:return "ClockRollback";
+  case a::BoundaryFailure::DeadlineElapsed:return "DeadlineElapsed";
+  case a::BoundaryFailure::Cancelled:return "Cancelled";
+  case a::BoundaryFailure::Overflow:return "Overflow";
+  case a::BoundaryFailure::StaleObservation:return "StaleObservation";
+  case a::BoundaryFailure::UnknownQuality:return "UnknownQuality";
+  case a::BoundaryFailure::Borrowed:return "Borrowed";
+  case a::BoundaryFailure::SourceClosed:return "SourceClosed";
+  case a::BoundaryFailure::SourceChanged:return "SourceChanged";
+  case a::BoundaryFailure::UnsafeDiagnostic:return "UnsafeDiagnostic";
+  case a::BoundaryFailure::InvalidDiagnostic:return "InvalidDiagnostic";
+  case a::BoundaryFailure::StaleDiagnostic:return "StaleDiagnostic";
+  case a::BoundaryFailure::ForeignDispatch:return "ForeignDispatch";
+  case a::BoundaryFailure::BodyRejected:return "BodyRejected";
+  case a::BoundaryFailure::AllocationFailed:return "AllocationFailed";
+ }
+ return "Unknown";
+}
+const char* safe_response_gate_name(n::ResponseGate gate) noexcept {
+ switch(gate){
+  case n::ResponseGate::None:return "None";
+  case n::ResponseGate::CaptureMissing:return "CaptureMissing";
+  case n::ResponseGate::CaptureFailure:return "CaptureFailure";
+  case n::ResponseGate::Checkpoint:return "Checkpoint";
+  case n::ResponseGate::MissingResponse:return "MissingResponse";
+  case n::ResponseGate::ForeignResponse:return "ForeignResponse";
+  case n::ResponseGate::Non200:return "Non200";
+  case n::ResponseGate::ClientError:return "ClientError";
+  case n::ResponseGate::Mime:return "Mime";
+  case n::ResponseGate::Encoding:return "Encoding";
+  case n::ResponseGate::BodyWrapper:return "BodyWrapper";
+  case n::ResponseGate::StreamFlags:return "StreamFlags";
+  case n::ResponseGate::PutSize:return "PutSize";
+  case n::ResponseGate::BodySeek:return "BodySeek";
+  case n::ResponseGate::CheckedStreamCreation:return "CheckedStreamCreation";
+  case n::ResponseGate::BodyCopy:return "BodyCopy";
+  case n::ResponseGate::CheckedStreamSeal:return "CheckedStreamSeal";
+ }
+ return "Unknown";
+}
+const char* safe_response_status_name(n::ResponseStatus status) noexcept {
+ switch(status){
+  case n::ResponseStatus::Unobserved:return "Unobserved";
+  case n::ResponseStatus::Success200:return "Success200";
+  case n::ResponseStatus::Other2xx:return "Other2xx";
+  case n::ResponseStatus::Redirect3xx:return "Redirect3xx";
+  case n::ResponseStatus::Client4xx:return "Client4xx";
+  case n::ResponseStatus::Server5xx:return "Server5xx";
+  case n::ResponseStatus::Other:return "Other";
+ }
+ return "Unknown";
+}
+enum class DiagnosticPhase { Creation, Acquisition };
+const char* safe_provider_failure_name(n::ProviderFailure failure) noexcept {
+  switch(failure) {
+    case n::ProviderFailure::AccessDenied:return "AccessDenied";
+    case n::ProviderFailure::ExpiredCredentials:return "ExpiredCredentials";
+    case n::ProviderFailure::InvalidCredentials:return "InvalidCredentials";
+    case n::ProviderFailure::InvalidRequest:return "InvalidRequest";
+    case n::ProviderFailure::Throttled:return "Throttled";
+    case n::ProviderFailure::Transport:return "Transport";
+    case n::ProviderFailure::Timeout:return "Timeout";
+    case n::ProviderFailure::Cancelled:return "Cancelled";
+    case n::ProviderFailure::Unknown:return "Unknown";
+  }
+  return "Unknown";
+}
+std::string safe_counts_trace(DiagnosticPhase phase,const std::optional<n::Failure>& failure,
+ const n::Counts& c){
+ std::ostringstream out;out.imbue(std::locale::classic());
+ out<<"native_auth "<<(phase==DiagnosticPhase::Creation?"creation":"acquisition")
+    <<" failure="<<(failure?safe_failure_name(*failure):"None")
+    <<" boundary="<<(c.boundary?safe_boundary_name(*c.boundary):"None")
+    <<" response_gate="<<safe_response_gate_name(c.first_response_gate)
+    <<" response_status="<<safe_response_status_name(c.response_status)
+    <<" response_client_error="<<(c.response_client_error?(*c.response_client_error?"True":"False"):"Unobserved")
+    <<" initializations="<<c.initializations<<" named_loads="<<c.named_provider_loads
+    <<" source_ready="<<c.named_source_ready<<" frozen_reads="<<c.frozen_provider_reads
+    <<" request_policy="<<c.request_policy<<" request_exact="<<c.request_exact
+    <<" requests="<<c.requests<<" selected_sends="<<c.selected_sends
+    <<" foreign_requests="<<c.foreign_requests<<" null_requests="<<c.null_requests
+    <<" safe_refusals="<<c.safe_refusals<<" delegate_returns="<<c.delegate_returns
+    <<" delegate_destructions="<<c.delegate_destructions<<" active="<<c.active
+    <<" wrappers="<<c.wrappers<<" destroyed_wrappers="<<c.destroyed_wrappers
+    <<" provider_failure="<<(c.provider_failure?safe_provider_failure_name(*c.provider_failure):"None")
+    <<" error_diagnostic_bytes="<<c.error_diagnostic_bytes
+    <<" validation_bytes="<<c.validation_bytes<<" model_bytes="<<c.model_bytes
+    <<" barrier="<<c.barrier<<" rewound="<<c.rewound<<" put_preserved="<<c.put_preserved
+    <<" model_success="<<c.model_success<<" safe_error="<<c.safe_error
+    <<" model_user_matches="<<c.model_user_matches<<" model_password_matches="<<c.model_password_matches
+    <<" shutdowns="<<c.shutdowns<<" cleanup_before_c="<<c.cleanup_before_c
+    <<" c_samples="<<c.c_samples<<" n_samples="<<c.n_samples<<" unknown_only="<<c.unknown_only;
+ auto text=out.str();if(text.size()>2048)return "native_auth diagnostic_limit";
+ return text;
+}
+
 // Selection values only; no environment-supplied DB password or credentials.
 struct NativeLoginSpec {
  std::string account,region,cluster,database,requested_user,sql_user,host,ca,
@@ -83,7 +205,7 @@ void login_observation(const a::ExtractedDbFields& fields,const NativeLoginSpec&
   if(!outcome.connection->has_value())return;
   outcome.connected=connection.is_connected();outcome.peer_verified=peer->peer_identity_verified();
   if(!outcome.connected||!outcome.peer_verified)return;
-  outcome.query.emplace(connection.execute_query("SELECT current_database(), current_user, CAST(1 AS INTEGER), CAST(NULL AS INTEGER)",original_deadline));
+  outcome.query.emplace(connection.execute_query("SELECT current_database(), TRIM(current_user), CAST(1 AS INTEGER), CAST(NULL AS INTEGER)",original_deadline));
   connection.disconnect();outcome.disconnected=!connection.is_connected()&&connection.session_state()==d::SessionState::Disconnected;
  }catch(...){outcome.unexpected_exception=true;}
  // No assertion, exception text or borrowed field can escape this callback.
@@ -110,9 +232,12 @@ TEST(ProvisionedNativeAuth, GetClusterCredentialsThenVerifiedTlsLogin){
  auto generation_result=a::ResponseSourceGeneration::create(request.binding());ASSERT_TRUE(std::holds_alternative<std::shared_ptr<a::ResponseSourceGeneration>>(generation_result));auto generation=std::get<std::shared_ptr<a::ResponseSourceGeneration>>(std::move(generation_result));
  const std::string expected_wire_user=context.expected_user;
  auto created=n::NativeOwner::create_from_named_source(std::move(context),std::move(request),observer,generation,cancellation,{spec->profile,spec->credentials,spec->config,spec->source,spec->generation});
+ SCOPED_TRACE(safe_counts_trace(DiagnosticPhase::Creation,created.failure,created.counts));
  ASSERT_TRUE(created.owner!=nullptr);ASSERT_FALSE(created.failure.has_value());
  EXPECT_EQ(created.counts.initializations,1U);EXPECT_EQ(created.counts.named_provider_loads,1U);EXPECT_TRUE(created.counts.named_source_ready);
- auto acquired=created.owner->acquire_observation();ASSERT_TRUE(acquired.observation.has_value());ASSERT_FALSE(acquired.failure.has_value());
+ auto acquired=created.owner->acquire_observation();
+ SCOPED_TRACE(safe_counts_trace(DiagnosticPhase::Acquisition,acquired.failure,acquired.counts));
+ ASSERT_TRUE(acquired.observation.has_value());ASSERT_FALSE(acquired.failure.has_value());
  const auto counts=acquired.counts;
  EXPECT_TRUE(counts.request_exact);EXPECT_TRUE(counts.request_policy);EXPECT_TRUE(counts.model_success);EXPECT_TRUE(counts.model_user_matches);EXPECT_TRUE(counts.model_password_matches);
  EXPECT_EQ(counts.selected_sends,1U);EXPECT_EQ(counts.delegate_returns,1U);EXPECT_EQ(counts.delegate_destructions,1U);EXPECT_EQ(counts.active,0U);EXPECT_EQ(counts.wrappers,counts.destroyed_wrappers);
@@ -127,6 +252,10 @@ TEST(ProvisionedNativeAuth, GetClusterCredentialsThenVerifiedTlsLogin){
  ASSERT_TRUE(login.connection.has_value());ASSERT_TRUE(login.connection->has_value());EXPECT_TRUE((login.connection->session_snapshot()==d::SessionSnapshot{d::SessionState::Idle,d::SessionDisposition::Reusable}));
  ASSERT_TRUE(login.query.has_value());ASSERT_TRUE(login.query->has_value());EXPECT_TRUE((login.query->session_snapshot()==d::SessionSnapshot{d::SessionState::Idle,d::SessionDisposition::Reusable}));
  const auto& result=login.query->value();EXPECT_FALSE(result.error.has_value());EXPECT_TRUE(result.additional_results.empty());EXPECT_TRUE(result.cell_errors.empty());ASSERT_EQ(result.columns.size(),4U);ASSERT_EQ(result.rows.size(),1U);ASSERT_EQ(result.rows[0].size(),4U);
+ const bool sql_principal_matches_requested=result.rows[0][1].has_value()&&*result.rows[0][1]==spec->requested_user;
+ const bool sql_principal_matches_wire=result.rows[0][1].has_value()&&*result.rows[0][1]==expected_wire_user;
+ SCOPED_TRACE(std::string("sql_principal_matches_requested=")+(sql_principal_matches_requested?"1":"0")+
+     " sql_principal_matches_wire="+(sql_principal_matches_wire?"1":"0"));
  // Owning values are asserted after disconnect and secret/Processing cleanup;
  // Boolean comparisons prevent actual principal/config values in failures.
  EXPECT_TRUE(result.rows[0][0].has_value()&&*result.rows[0][0]==spec->database);EXPECT_TRUE(result.rows[0][1].has_value()&&*result.rows[0][1]==spec->sql_user);EXPECT_TRUE(result.rows[0][2].has_value()&&*result.rows[0][2]=="1");EXPECT_FALSE(result.rows[0][3].has_value());

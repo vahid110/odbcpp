@@ -1123,3 +1123,30 @@ verified admin visibility and AWS/TLS controls, canonical-lock finite consumptio
 separately authorized cluster resume and exact-principal remote cleanup. No paid
 SQL, renewal, federation, trusted UTC/Receipt/Material or completion of the reusable
 authentication module follows from these build and synthetic results.
+
+### Optional reusable AWS authentication provider — integration checkpoint
+
+The checked-in private `odbcpp_auth_aws_provisioned` library separates the optional
+AWS provider from the provider-neutral AuthCore. It owns explicit named-profile
+acquisition, bounded response capture and validated owning credential processing;
+drivers retain wire/session integration. The existing default-OFF, explicitly
+pinned Darwin arm64 static OpenSSL qualification profile builds the library and
+three explicit test consumers, without default CTest execution or installed API.
+Closed provider error categories report useful failures without raw SDK messages,
+credentials or response bodies. Renewal, federation, other targets/platforms and
+public packaging remain separate milestones.
+
+A preceding source-bound native observation passed one GetClusterCredentials
+request (900 seconds, AutoCreate false, groups omitted), verified-TLS Redshift
+login, exact SQL principal/database, scalar/typed NULL and owning result checks.
+Independent correct-principal cleanup and paused-cluster readback were confirmed.
+That observed executable predates this combined diagnostic assembly; its success
+does not certify the new binary. The accepted error fixture separately passed
+16 synthetic cases with OS network access denied. Fresh local PostgreSQL, both Unicode widths, sanitizer and Redshift builds each
+passed 107 unit targets; PostgreSQL and both Unicode profiles each passed twelve
+integration targets and three verified-TLS checks. All 457 Python offline checks
+passed. Private PostgreSQL stopped successfully, and independent status, absent
+pid and shutdown-log checks confirmed cleanup. The optional provider and three
+explicit consumers compiled and linked with warnings as errors; static dependency
+inspection confirmed pinned SDK/crypto closure and no mandatory AuthCore vendor
+dependency. Hosted qualification remains pending; the reusable module is unfinished.

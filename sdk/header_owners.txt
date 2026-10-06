@@ -62,3 +62,9 @@ odbcpp/util/hex.h|sdk/internal/odbcpp/util/hex.h
 odbcpp/util/platform.h|sdk/internal/odbcpp/util/platform.h
 odbcpp/util/result.h|sdk/include/odbcpp/util/result.h
 odbcpp/util/utf8.h|sdk/internal/odbcpp/util/utf8.h
+odbcpp/auth/aws/explicit_profile_source.h|sdk/internal/odbcpp/auth/aws/explicit_profile_source.h
+odbcpp/auth/aws/named_profile_acquisition.h|sdk/internal/odbcpp/auth/aws/named_profile_acquisition.h
+odbcpp/auth/aws/native_body_capture.h|sdk/internal/odbcpp/auth/aws/native_body_capture.h
+odbcpp/auth/aws/provisioned_native_http_ingress.h|sdk/internal/odbcpp/auth/aws/provisioned_native_http_ingress.h
+odbcpp/auth/aws/provisioned_native_owner.h|sdk/internal/odbcpp/auth/aws/provisioned_native_owner.h
+odbcpp/auth/provisioned_query_transport.h|sdk/internal/odbcpp/auth/provisioned_query_transport.h
