@@ -16,11 +16,12 @@ class Context final {
   const std::string account,region,cluster,database,requested_user,expected_user,
       db_endpoint,source_identity,source_generation,resource_arn,api_endpoint;
  private:
-  friend struct FixedFixture;
+  friend struct FixedFixture;friend struct FixedRuntimeFixture;
   Context(std::string,std::string,std::string,std::string,std::string,std::string,std::string,std::string,bool);
 };
 struct ProtectedNamedSourceSpec;
-namespace detail {struct State; class NamedSourceAcquisitionOwner;}
+namespace detail {struct State; struct RuntimeState; class NamedSourceAcquisitionOwner;}
+class ProvisionedSdkRuntime;
 class FrozenNamedSource final {
  public:
   FrozenNamedSource(const FrozenNamedSource&)=delete;
@@ -28,7 +29,7 @@ class FrozenNamedSource final {
   FrozenNamedSource(FrozenNamedSource&&) noexcept;
   FrozenNamedSource& operator=(FrozenNamedSource&&)=delete;
  private:
-  friend class NativeOwner;friend struct FixedFixture;friend struct detail::State;
+  friend class NativeOwner;friend class ProvisionedSdkRuntime;friend struct FixedFixture;friend struct detail::State;
   friend class detail::NamedSourceAcquisitionOwner; // Future protected load, NOT implemented.
   FrozenNamedSource(Aws::Auth::AWSCredentials,std::string,std::string);
   // Explicit reset destroys SDK-allocated strings before ShutdownAPI.
@@ -81,6 +82,7 @@ class Observation final {
 };
 struct Outcome {std::optional<Observation> observation;std::optional<Failure> failure;Counts counts;};
 struct CreateOutcome;
+enum class FixedCase;
 class NativeOwner final {
  public:
   static CreateOutcome create(Context,Request,std::shared_ptr<ResponseObservationSource>,
@@ -91,7 +93,10 @@ class NativeOwner final {
   ~NativeOwner();
   Outcome acquire_observation();bool close() noexcept;Counts counts() const noexcept;
  private:
-  friend struct FixedFixture;
+  friend struct FixedFixture;friend class ProvisionedSdkRuntime;
+  static CreateOutcome create_in_runtime(std::shared_ptr<detail::RuntimeState>,Context&&,Request&&,
+      std::shared_ptr<ResponseObservationSource>,std::shared_ptr<ResponseSourceGeneration>,
+      std::shared_ptr<WorkerCancellation>,FrozenNamedSource&&,std::optional<FixedCase>);
   explicit NativeOwner(std::shared_ptr<detail::State>);
   std::shared_ptr<detail::State> state_;Counts closed_{};
 };

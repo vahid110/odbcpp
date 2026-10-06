@@ -333,6 +333,7 @@ ProviderFailure service_failure(Aws::Http::HttpResponse& response,detail::State&
 class IngressHttp final:public Aws::Http::HttpClient {
  public:
   explicit IngressHttp(detail::State& state):state_(state) {}
+  explicit IngressHttp(std::shared_ptr<detail::State> state):state_(*state),keep_(std::move(state)) {}
   ~IngressHttp() override {++state_.metrics.destroyed_clients;}
   std::shared_ptr<Aws::Http::HttpResponse> MakeRequest(const std::shared_ptr<Aws::Http::HttpRequest>& request,
       Aws::Utils::RateLimits::RateLimiterInterface* read,Aws::Utils::RateLimits::RateLimiterInterface* write) const noexcept override {
@@ -438,7 +439,7 @@ class IngressHttp final:public Aws::Http::HttpClient {
       return response;
     } catch(...) { state_.reject();return safe_response(request,state_); }
   }
- private:detail::State& state_;
+ private:detail::State& state_;std::shared_ptr<detail::State> keep_;
 };
 // SDK initialization may construct the metadata client. It is never a selected
 // service client, and no discovery send is permitted by this standalone scope.
@@ -475,8 +476,48 @@ class Factory final:public Aws::Http::HttpClientFactory {
   }
  private:detail::State& state_;
 };
+thread_local std::shared_ptr<detail::State> runtime_route;
+class RuntimeNoSend final:public Aws::Http::HttpClient {
+ public:
+  std::shared_ptr<Aws::Http::HttpResponse> MakeRequest(const std::shared_ptr<Aws::Http::HttpRequest>&,
+      Aws::Utils::RateLimits::RateLimiterInterface*,Aws::Utils::RateLimits::RateLimiterInterface*)const noexcept override {
+    try {
+      auto safe=Aws::MakeShared<Aws::Http::Standard::StandardHttpRequest>(tag,Aws::Http::URI("https://refused.fixture.invalid/"),Aws::Http::HttpMethod::HTTP_POST);
+      safe->SetResponseStreamFactory([]()->Aws::IOStream*{return Aws::New<EmptyBody>(tag);});
+      auto response=Aws::MakeShared<Aws::Http::Standard::StandardHttpResponse>(tag,safe);
+      response->SetClientErrorType(Aws::Client::CoreErrors::VALIDATION);response->SetClientErrorMessage("Unbound provisioned request refused");return response;
+    }catch(...){std::terminate();}
+  }
+};
+class RuntimeFactory final:public Aws::Http::HttpClientFactory {
+ public:explicit RuntimeFactory(std::weak_ptr<detail::RuntimeState> runtime):runtime_(std::move(runtime)){}
+  std::shared_ptr<Aws::Http::HttpClient> CreateHttpClient(const Aws::Client::ClientConfiguration&) const noexcept override {
+    try {
+      auto state=runtime_route;
+      if(state && state->service_live){++state->metrics.clients;return Aws::MakeShared<IngressHttp>(tag,std::move(state));}
+      detail::note_runtime_idle(runtime_,false);return Aws::MakeShared<RuntimeNoSend>(tag);
+    }catch(...){std::terminate();}
+  }
+  std::shared_ptr<Aws::Http::HttpRequest> CreateHttpRequest(const Aws::String& uri,Aws::Http::HttpMethod method,const Aws::IOStreamFactory& factory)const noexcept override{return CreateHttpRequest(Aws::Http::URI(uri),method,factory);}
+  std::shared_ptr<Aws::Http::HttpRequest> CreateHttpRequest(const Aws::Http::URI& uri,Aws::Http::HttpMethod method,const Aws::IOStreamFactory& factory)const noexcept override{
+    try {
+      auto state=runtime_route;
+      if(state && state->service_live)return Factory{*state}.CreateHttpRequest(uri,method,factory);
+      detail::note_runtime_idle(runtime_,true);
+      auto safe=Aws::MakeShared<Aws::Http::Standard::StandardHttpRequest>(tag,uri,method);
+      safe->SetResponseStreamFactory([]()->Aws::IOStream*{return Aws::New<EmptyBody>(tag);});return safe;
+    }catch(...){std::terminate();}
+  }
+ private:std::weak_ptr<detail::RuntimeState> runtime_;
+};
+
 }
 namespace detail {
+RuntimeRoute::RuntimeRoute(std::shared_ptr<State> state):state_(std::move(state)){
+ if(!state_||state_->creator!=std::this_thread::get_id()||runtime_route)std::terminate();runtime_route=state_;
+}
+RuntimeRoute::~RuntimeRoute(){if(state_->creator!=std::this_thread::get_id()||runtime_route!=state_)std::terminate();runtime_route.reset();}
+std::shared_ptr<Aws::Http::HttpClientFactory> make_runtime_factory(std::weak_ptr<RuntimeState> runtime){return Aws::MakeShared<RuntimeFactory>(tag,std::move(runtime));}
 std::shared_ptr<Aws::Http::HttpClientFactory> make_factory(State& s){return Aws::MakeShared<Factory>(tag,s);}
 void State::sync() noexcept {
  if(!wire) return;

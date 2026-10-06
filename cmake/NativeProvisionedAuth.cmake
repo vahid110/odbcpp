@@ -57,11 +57,12 @@ foreach(_include IN LISTS SDK_FIXTURE_INCLUDES)
     message(FATAL_ERROR "Native provisioned auth missing generated SDK include root")
   endif()
 endforeach()
-# Only the seven optional headers are staged. Ordinary AuthCore headers retain
+# Only the eight optional headers are staged. Ordinary AuthCore headers retain
 # their existing checked canonical stage; optional inputs are not installed.
 set(_native_stage "${CMAKE_CURRENT_BINARY_DIR}/native-provisioned-auth-include")
 file(REMOVE_RECURSE "${_native_stage}")
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/provisioned_native_owner.h" "${_native_stage}/odbcpp/auth/aws/provisioned_native_owner.h" COPYONLY)
+configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/provisioned_sdk_runtime.h" "${_native_stage}/odbcpp/auth/aws/provisioned_sdk_runtime.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/provisioned_native_http_ingress.h" "${_native_stage}/odbcpp/auth/aws/provisioned_native_http_ingress.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/named_profile_acquisition.h" "${_native_stage}/odbcpp/auth/aws/named_profile_acquisition.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/native_body_capture.h" "${_native_stage}/odbcpp/auth/aws/native_body_capture.h" COPYONLY)
@@ -71,6 +72,7 @@ configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/provisioned_p
 # Reusable private optional provider module; AuthCore retains no AWS dependency.
 add_library(odbcpp_auth_aws_provisioned STATIC EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/provisioned_native_owner.cpp"
+  "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/provisioned_sdk_runtime.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/provisioned_native_http_ingress.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/named_profile_acquisition.cpp"
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/native_body_capture.cpp"
@@ -112,7 +114,9 @@ add_executable(test_provisioned_native_owner EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/tests/unit/test_provisioned_native_owner.cpp")
 add_executable(test_provisioned_pg_connector EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/tests/unit/test_provisioned_pg_connector.cpp")
-foreach(_consumer it_redshift_native_auth test_named_profile_acquisition test_provisioned_native_owner test_provisioned_pg_connector)
+add_executable(test_provisioned_sdk_runtime EXCLUDE_FROM_ALL
+  "${PROJECT_SOURCE_DIR}/tests/unit/test_provisioned_sdk_runtime.cpp")
+foreach(_consumer it_redshift_native_auth test_named_profile_acquisition test_provisioned_native_owner test_provisioned_pg_connector test_provisioned_sdk_runtime)
   target_include_directories(${_consumer} PRIVATE
     "${_native_stage}" "${ODBCPP_INTERNAL_INCLUDE_auth}")
   target_include_directories(${_consumer} SYSTEM PRIVATE ${SDK_FIXTURE_INCLUDES})

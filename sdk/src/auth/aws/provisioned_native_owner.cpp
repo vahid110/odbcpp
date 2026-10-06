@@ -62,8 +62,10 @@ std::variant<Context,Failure> Context::create(std::string a,std::string r,std::s
 FrozenNamedSource::FrozenNamedSource(Aws::Auth::AWSCredentials value,std::string identity,std::string generation)
  :value_(std::move(value)),identity_(std::move(identity)),generation_(std::move(generation)){}
 FrozenNamedSource::FrozenNamedSource(FrozenNamedSource&& other) noexcept
- :value_(std::move(other.value_)),identity_(std::move(other.identity_)),generation_(std::move(other.generation_)),owns_(std::exchange(other.owns_,false)){}
+ :value_(std::move(other.value_)),identity_(std::move(other.identity_)),generation_(std::move(other.generation_)),owns_(std::exchange(other.owns_,false)){other.value_.reset();}
 namespace detail {
+bool take_sdk_scope() noexcept {return !occupied.exchange(true);}
+void release_sdk_scope() noexcept {occupied.store(false);}
 State::State(Context c,Request r,std::shared_ptr<ResponseObservationSource> read,std::shared_ptr<ResponseSourceGeneration> gen,
  std::shared_ptr<WorkerCancellation> cancel,FrozenNamedSource&& frozen_source,std::optional<FixedCase> test)
  :context(std::move(c)),request(std::move(r)),observer(std::move(read)),generation(std::move(gen)),cancellation(std::move(cancel)),
@@ -72,6 +74,7 @@ TransportBoundaryLease State::lease(){auto result=operation->transport_lease(req
 bool State::check() noexcept {
  if(creator!=std::this_thread::get_id())std::terminate();
  if(!dispatch)return false;
+ if(runtime && !runtime_usable(runtime)){reject();return false;}
  if(initialized && (!bootstrap || !*bootstrap || Aws::GetDefaultClientBootstrap()!=bootstrap.get())){reject();return false;}
  const auto result=dispatch->check();if(auto* f=std::get_if<BoundaryFailure>(&result))metrics.boundary=*f;
  return std::holds_alternative<std::monostate>(result);
@@ -84,6 +87,9 @@ void State::reject() noexcept {
 }
 void State::shutdown_sdk() noexcept {
  if(creator!=std::this_thread::get_id() || service_live)std::terminate();
+ if(runtime){
+  check_capture(*this);detach_reader(*this);source.value_.reset();source.owns_=false;bootstrap.reset();return;
+ }
  if(initialized){
   check_capture(*this);detach_reader(*this);
   source.value_.reset();source.owns_=false;
@@ -96,7 +102,12 @@ void State::cleanup() noexcept {
  if(protected_stage){protected_stage.reset();metrics.named_stage_released=true;}
  if(!staged_config.empty())::unlink(staged_config.c_str());if(!staged_credentials.empty())::unlink(staged_credentials.c_str());
  if(!staged_directory.empty())::rmdir(staged_directory.c_str());
- if(token){occupied.store(false);token=false;}
+ if(token){detail::release_sdk_scope();token=false;}
+ if(runtime){
+  sync();if(metrics.active || metrics.wrappers!=metrics.destroyed_wrappers)std::terminate();
+  fields.reset();frozen.reset();wire.reset();dispatch.reset();
+  detail::release_runtime_slot(runtime);runtime.reset();
+ }
 }
 State::~State(){cleanup();}
 class FrozenProvider final:public Aws::Auth::AWSCredentialsProvider {
@@ -122,7 +133,7 @@ std::shared_ptr<detail::State> prepare(Context c,Request r,std::shared_ptr<Respo
  if(!std::holds_alternative<std::monostate>(state->operation->begin_transport())){failure=Failure::Refused;return {};}
  state->dispatch.emplace(state->lease());
  if(!state->check()){failure=Failure::Refused;return {};}
- if(occupied.exchange(true)){failure=Failure::Unavailable;return {};}
+ if(!detail::take_sdk_scope()){failure=Failure::Unavailable;return {};}
  state->token=true;
  try{
   if(named){
@@ -215,6 +226,30 @@ CreateOutcome FixedFixture::create_for_connector(FixedCase test,rs::util::Deadli
   out.counts=state->metrics;out.owner.reset(new NativeOwner{std::move(state)});return out;
  }catch(...){out.failure=Failure::LocalFailure;return out;}
 }
+CreateOutcome NativeOwner::create_in_runtime(std::shared_ptr<detail::RuntimeState> runtime,
+ Context&& c,Request&& r,std::shared_ptr<ResponseObservationSource> read,std::shared_ptr<ResponseSourceGeneration> gen,
+ std::shared_ptr<WorkerCancellation> cancel,FrozenNamedSource&& supplied,std::optional<FixedCase> fixed){
+ // Runtime already owns the exclusive slot. State takes release duty before callbacks.
+ CreateOutcome out;auto frozen=std::move(supplied);std::shared_ptr<detail::State> state;
+ try {
+  state=std::make_shared<detail::State>(std::move(c),std::move(r),std::move(read),std::move(gen),std::move(cancel),std::move(frozen),fixed);
+  state->runtime=runtime;
+  if(!bound(state->context,state->request)||!state->observer||!state->generation||!state->cancellation){out.failure=Failure::InvalidContext;return out;}
+  auto result=ResponseOperation::begin(state->request,std::make_shared<CombinedObserver>(state->observer,state->cancellation),state->generation);
+  if(!std::holds_alternative<std::unique_ptr<ResponseOperation>>(result)){out.failure=Failure::Refused;return out;}
+  state->operation=std::get<std::unique_ptr<ResponseOperation>>(std::move(result));
+  if(!std::holds_alternative<std::monostate>(state->operation->begin_transport())){out.failure=Failure::Refused;return out;}
+  state->dispatch.emplace(state->lease());state->bootstrap=detail::runtime_bootstrap(runtime);
+  state->metrics.bootstrap_matches=true;
+  if(!state->check()){out.failure=Failure::Refused;out.counts=state->metrics;return out;}
+  out.owner.reset(new NativeOwner{state});out.counts=state->metrics;return out;
+ }catch(...){
+  // If allocation preceded State ownership, no SDK objects escape this catch.
+  if(!state){frozen.value_.reset();frozen.owns_=false;detail::release_runtime_slot(runtime);}
+  else if(state->dispatch)state->reject();
+  out.failure=Failure::LocalFailure;return out;
+ }
+}
 Outcome NativeOwner::acquire_observation(){
  Outcome out;if(!state_){out.failure=Failure::Consumed;return out;}auto& s=*state_;
  if(s.creator!=std::this_thread::get_id()){out.failure=Failure::WrongThread;return out;}
@@ -224,6 +259,7 @@ Outcome NativeOwner::acquire_observation(){
  if(!s.source_ready){s.reject();out.failure=Failure::InvalidSource;out.counts=s.metrics;return out;}
  if(!s.check()){out.failure=Failure::Refused;out.counts=s.metrics;return out;}
  try{
+  std::optional<detail::RuntimeRoute> route;if(s.runtime)route.emplace(state_);
   s.service_live=true;struct Service{bool& flag;~Service(){flag=false;}}service{s.service_live};
   {
    Aws::Client::ClientConfigurationInitValues init;init.shouldDisableIMDS=true;Aws::Redshift::RedshiftClientConfiguration config(init);config.disableIMDS=true;
