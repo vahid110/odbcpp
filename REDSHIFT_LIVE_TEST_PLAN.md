@@ -5,6 +5,29 @@ paused other implementation and assigned environment completion to this chat.
 Provisioning and admission now share this integration owner and the existing
 canonical state; do not create duplicate infrastructure in another chat.
 
+## Current execution order — human approved 2026-10-06
+
+Follow the current [delivery order](REDSHIFT_FEATURE_PLAN.md#human-approved-delivery-order--2026-10-06):
+finish the prepared hex-text-to-VARBYTE checkpoint, then qualify the representative
+metadata-to-query workflow before further narrow VARBYTE refinement. Next close
+common type path gaps and start one available packaged Power BI/Excel workflow
+with pinned official-driver comparison; operational/scale and broader parity
+follow. The dated “next” instructions below preserve history, not today's queue.
+
+The immediate finite prospective inventory is ConnectionTest plus
+RedshiftVarbyteTextParameterRealTest.PreparedHexTextToVarbyteBytes, repeat1,
+selected by ODBCPP_REDSHIFT_VARBYTE_TEXT_PARAMETER_ADMISSION=
+varbyte-hex-text-parameter-v1. Its existing private reviewed controller preserves
+original execution180s/cleanup60s, strict two-case results and exact-principal
+cleanup. Application SELECT dispatches are five; control statements are35 plus
+four per admitted PID termination, with existing bounded startup/type-resolution
+reads separately declared. The case covers six-byte owning hex text, empty and
+NULL via FROM_HEX(?), not raw binary input or maximum storage. It is currently
+unrun; fresh exact-head CI/binary/host/TLS/budget/lock/consumption controls govern
+execution, as recorded in the protected handoff. Reuse existing scripts; preserve
+original failures and verify independent cleanup. This plan creates no new
+cloud resource, IAM/network, budget or accounting-horizon authority.
+
 ## Current bounded evidence and next qualification package
 
 At105cc87, CI37047693730 passed all required gates. Catalog window005 passed

@@ -1,8 +1,46 @@
 # Redshift feature and compatibility plan
 
-Recorded 2026-10-01 from the user's eight requested areas. This is future
-Redshift planning only; active S2/S2C and the bounded SDK/MySQL proof keep their
-current sequence. No feature below is implemented or qualified by this document.
+Initial inventory recorded 2026-10-01. The human-approved delivery order below,
+updated 2026-10-06, governs subsequent Redshift work. Earlier dated sections retain
+historical evidence; they do not override this order or establish qualification.
+AUTH progresses separately in parallel. MySQL and unrelated SDK feature work
+remain parked by the user's request.
+
+## Human-approved delivery order — 2026-10-06
+
+Keep the existing backend/ODBC boundaries and reuse completed implementation and
+tests. Improve delivery by qualifying usable application workflows on real
+Redshift rather than extending narrow type refinements or orchestration chains.
+Finish the already committed prepared hex-text-to-VARBYTE checkpoint first:
+follow deed8b7 CI to completion, bind the reviewed two-case runner to the actual
+binary and run its finite native test with existing protected setup/cleanup.
+Record success or the concrete native failure; repair that failure proportionally.
+Do not make raw binary binding, maximum storage or another auth method prerequisites
+for finishing this checkpoint. Then use the following order.
+
+| Order | Bounded checkpoint | Observable acceptance |
+|---|---|---|
+| 1 | Metadata-to-query workflow | Ordinary-user schema/table discovery, SQLColumns, prepare, parameter binding and typed fetching on the same representative fixture. Exercise SHOW and LEGACY where applicable; identify and repair a missing mode/API rather than inheriting PostgreSQL success or falling back after an error. Cover exact identifiers, quoted/Unicode names, patterns/no matches, ordinals, type dimensions, NULL, diagnostics and usable recovery. Preserve existing PK evidence. |
+| 2 | Common types across their actual paths | Integers, exact decimals, Unicode/text, temporal and binary: separately qualify metadata, direct/prepared results, bound fetch/SQLGetData, input parameters, NULL, truncation/overflow/precision boundaries and recovery. Link existing live evidence before adding tests; prioritize defects that prevent checkpoint1 or real application use. Result support never proves parameter support. |
+| 3 | Early packaged-driver application acceptance | Select one available representative Power BI or Excel workflow: connect, browse metadata, import/refresh a typed result and use application-generated queries. Start the smallest application proof after checkpoint1 can support it, overlapping type completion rather than waiting for broad parity. Compare the same fixtures with a pinned official AWS driver and equivalent TLS/configuration; record binary/platform correspondence and meaningful differences. An unavailable application/reference host is an explicit dependency, not a reason to stop ready native work. |
+| 4 | Operational correctness and analytical scale | Transactions/autocommit, cancellation, timeouts, failure/reconnect, bounded large-result memory, chunked fetching and fetch-mode lifecycle. Retain existing tests, but require real Redshift evidence for backend-specific behavior and bounded resource observations before production-readiness claims. |
+| 5 | Broader parity | Shared/external catalogs, less common types, remaining metadata APIs, settings and advanced fetch behavior follow the usable baseline in finite source-backed batches. All required roadmap items remain scheduled; advanced S3 transfer retains its separate design/scope decision. |
+
+Cross-platform packaging/regression remains a gate throughout. Move the selected
+live workflow to one CI platform early, then expand supported OS/Driver Manager/
+Unicode/crypto coverage. Local native evidence does not certify other platforms.
+Use checked-in GoogleTests for feature assertions, with Python only for bounded
+setup, selection, credentials, accounting and cleanup. Run native checkpoints
+promptly when their actual source/binary/control prerequisites are ready; do not
+introduce generic proof frameworks or rerun unchanged matrices between them.
+Independent review remains focused on consequential changes and final integration.
+
+The next selected implementation package after the VARBYTE checkpoint is an
+end-to-end discovery/SQLColumns/prepared-query fixture. First reuse and assess
+current SHOW/LEGACY routing and checked-in metadata/type tests; name the smallest
+actual blocker and its happy/edge/recovery tests. Keep acceptance per API/mode/
+platform explicit. This order changes priorities, not spending, IAM/network scope,
+resource authority, existing protected admissions or the eventual parity goal.
 
 ## Scope, priorities and checkpoints
 

@@ -6,6 +6,26 @@ not closed; official feature/behavior inventories remain partial.
 This document proposes the next finite proof inventory, not an approved beta
 scope, feature exception or full Redshift compatibility claim.
 
+## Current delivery priority — human approved 2026-10-06
+
+The ordering in [REDSHIFT_FEATURE_PLAN.md](REDSHIFT_FEATURE_PLAN.md#human-approved-delivery-order--2026-10-06)
+supersedes historical “next package” paragraphs below. Finish the committed
+prepared hex-text-to-VARBYTE live checkpoint, then select an ordinary-user
+metadata-to-query workflow: schema/table discovery, SQLColumns, prepare/bind and
+typed fetch, with SHOW/LEGACY applicability explicit. Follow with common type
+path gaps, early packaged Power BI/Excel and official-driver comparison, then
+operational/large-result behavior and broader parity. Application proof can
+start as soon as the workflow supports it; broad type/parity closure is not a
+prerequisite. Reuse existing evidence and keep native/platform limits separate.
+
+Current evidence includes selected provisioned SHOW/LEGACY PrimaryKeys and
+no-key/quoted-name live proofs, common-type live cases, and the separately accepted
+2026-10-06 constant VARBYTE/static-DDL three-case results. These are not complete
+catalog/type qualification. The new FROM_HEX text-parameter case at deed8b7 is
+compiled and locally checked but remains unrun on Redshift. It does not establish
+raw binary parameters or maximum storage. Exact artifacts and changing CI state
+remain in the protected continuation handoff.
+
 ## Real endpoint evidence
 
 | Area | Observed result | Practical limit |

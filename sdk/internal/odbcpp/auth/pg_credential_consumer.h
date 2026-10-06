@@ -14,3 +14,12 @@ rs::core::database::BackendResult<void> connect_bound_temporary_db_until(
     const rs::core::database::ConnectionSettings&, const Request&,
     const ExtractedDbFields&);
 } // namespace rs::core::auth
+
+namespace rs::core::auth {
+// Ordinary material handoff; exact source/target consistency is checked locally.
+// Material construction itself is not issuer proof. The coordinator owns source
+// trust/cancellation, and the caller owns verified transport and session lifetime.
+rs::core::database::BackendResult<void> connect_bound_ordinary_password_until(
+    rs::core::database::postgres::PgDatabaseConnection&,
+    const rs::core::database::ConnectionSettings&, const Request&, const Material&);
+} // namespace rs::core::auth

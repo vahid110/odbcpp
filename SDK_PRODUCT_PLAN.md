@@ -1169,19 +1169,52 @@ widths, sanitizer and Redshift profiles; PostgreSQL/Unicode each passed twelve
 integration targets and three verified-TLS checks. All 457 offline Python checks
 passed. Independent private PostgreSQL status, absent pid and shutdown log verified
 cleanup. The actual optional native target and private portable consumer compiled
-and linked with warnings as errors. Hosted platform qualification is pending;
+and linked with warnings as errors. Exact deed8b7 hosted platform qualification passed all required jobs, including
+Windows live/package, both Unicode widths, sanitizers and crypto profiles;
 prior native IAM evidence does not certify
 this new executable or arbitrary ODBC-thread acquisition.
 
-### Redshift VARBYTE prepared hex-text checkpoint — prospective
+### Redshift VARBYTE prepared hex-text checkpoint — native milestone
 
 A checked-in marker-selected GoogleTest now binds owning hex text through the
 existing SQL_C_CHAR/SQL_VARCHAR path into FROM_HEX(?), with six-byte, empty and
 NULL trials, result metadata/canaries and same-session recovery. Its independent
 offline wire oracle passed literal Text/OID25/format0 lengths6/0/-1; both changed
-test translation units compiled and linked with warnings as errors. The new live
-case is unrun: this does not establish raw binary VARBYTE parameter support,
-native type-name provenance or maximum storage. The earlier three-case constant
+test translation units compiled and linked with warnings as errors. On 2026-10-06 the fixed ConnectionTest plus new prepared-input case passed
+on the admitted Redshift cluster in 0.886s, with child0, no skips/failures,
+exact-principal activity absent after completion and independently verified paused
+cluster/removed credential copies. Independent result review accepted this narrow
+hex-text/empty/NULL/recovery milestone. It does not establish raw binary VARBYTE
+parameter support, native type-name provenance, maximum storage or other platforms. The earlier three-case constant
 VARBYTE/static-DDL native evidence passed separately with observed exact-principal
 cleanup and paused-cluster readback; a Python inventory mismatch was repaired via
 reviewed offline reprocessing of unchanged output, preserving the failed wrapper.
+
+### Ordinary authentication Material handoff — candidate
+
+The private PG consumer additionally accepts owning ordinary-password Material,
+checking the full request/material source, target, resource and generation before
+I/O. It scopes the borrowed secret, preserves the original deadline and owning
+backend errors, and retains the existing temporary-credential API unchanged.
+Sixteen focused real-parser/fake-TLS tests and sixteen scoped adapter/test-TU
+ASan/UBSan tests passed; reused libraries were uninstrumented. Actual source
+review accepted the three-file candidate. Shared local qualification passed 108 unit targets in PostgreSQL, both Unicode
+widths, sanitizer and Redshift profiles; PostgreSQL/Unicode each passed twelve
+integration targets and three verified-TLS cases. All457 offline Python checks
+passed. Independent private PostgreSQL status3, absent pid and shutdown log verified
+cleanup. The optional native and portable consumer targets compiled and linked
+with warnings as errors in a distinct owned build. Hosted successor CI and live
+ordinary Material consumption remain separate; no method-completion claim is made.
+
+### Ordinary-user Redshift metadata-to-query workflow — candidate
+
+Two marker-selected GoogleTests join bounded schema/table discovery and full
+eighteen-field SQLColumns metadata to prepared integer/Unicode/NULL inputs, typed
+fetching, owning snapshots, cursor/parameter cleanup and same-session recovery.
+They select SHOW and LEGACY settings explicitly; current table discovery still
+uses information_schema and columns use SVV_COLUMNS, so this is no modern SHOW
+TABLES/COLUMNS claim. The test TU compiled and linked with warnings as errors and
+independent source review accepted it. The combined local regression graph passed
+as recorded above; no live test body ran in those gates. Native execution remains pending fresh
+verification of the exact nullable INTEGER/VARCHAR32 two-row ordinary-user fixture
+and bounded admission. No fixture modification or broader live parity is claimed.
