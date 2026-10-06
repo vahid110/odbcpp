@@ -1946,6 +1946,7 @@ protected:
     SQLCHAR recovery[]="SELECT 1";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(hstmt_,recovery,SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
     ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));number(1,1);ASSERT_FALSE(HasFailure());
     ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,hstmt_));hstmt_=nullptr;
     ASSERT_EQ(SQL_SUCCESS,SQLDisconnect(hdbc_));connected_=false;
     EXPECT_EQ(owned_column_descriptors,owned_last_column_descriptors);
     ASSERT_EQ(18U,owned_column_descriptors.size());
