@@ -1693,7 +1693,8 @@ TEST_F(RedshiftVarbyteTextParameterRealTest, PreparedHexTextToVarbyteBytes) {
 
 // Representative discovery -> metadata -> prepared application workflow.
 // SHOW/LEGACY currently selects PRIMARY KEYS only: SQLTables still uses
-// information_schema, SQLColumns SVV_COLUMNS. These cases do not claim modern
+// information_schema for tables, SVV_REDSHIFT_SCHEMAS for schema enumeration,
+// and SVV_COLUMNS for columns. These cases do not claim modern
 // SHOW TABLES/COLUMNS routing or grant fixture/setup authority.
 class RedshiftMetadataWorkflowRealTest : public RedshiftRealTest {
 protected:
@@ -1708,7 +1709,9 @@ protected:
     for(char c:identifier) { if(c=='\"') { output+='\"'; } output+=c; }
     return output+'\"';
   }
-  void descriptors(std::span<const CatalogField> fields) {
+  enum class DescriptorScope { Catalog, AllSchemas };
+  void descriptors(std::span<const CatalogField> fields,
+                   DescriptorScope scope=DescriptorScope::Catalog) {
     SQLSMALLINT count=0;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&count));
     ASSERT_EQ(fields.size(),static_cast<std::size_t>(count));
     for(SQLUSMALLINT column=1;column<=fields.size();++column) {
@@ -1719,9 +1722,10 @@ protected:
       std::transform(actual.begin(),actual.end(),actual.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
       EXPECT_TRUE(actual==fields[column-1].name);EXPECT_EQ(fields[column-1].type,type);
       EXPECT_EQ(0,digits);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
-      // Selected Redshift catalog ::text results expose VARCHAR width65535;
-      // descriptor headers are distinct from discovered id/value dimensions.
-      EXPECT_EQ(type==SQL_SMALLINT?5U:type==SQL_INTEGER?10U:type==SQL_VARCHAR?65535U:0U,size);
+      // The selected SVV schema_name::text projection retains VARCHAR(128).
+      // Other catalog/NULL::text headers remain65535; neither is a fallback.
+      const SQLULEN text_width=scope==DescriptorScope::AllSchemas&&column==2?128U:65535U;
+      EXPECT_EQ(type==SQL_SMALLINT?5U:type==SQL_INTEGER?10U:type==SQL_VARCHAR?text_width:0U,size);
     }
   }
   std::string text(SQLUSMALLINT column) {
@@ -1788,7 +1792,7 @@ protected:
     const CatalogField tables[]{{"table_cat",SQL_VARCHAR},{"table_schem",SQL_VARCHAR},{"table_name",SQL_VARCHAR},{"table_type",SQL_VARCHAR},{"remarks",SQL_VARCHAR}};
     SQLCHAR empty[]="";SQLCHAR all_schemas[]=SQL_ALL_SCHEMAS;
     ASSERT_EQ(SQL_SUCCESS,SQLTables(hstmt_,empty,SQL_NTS,all_schemas,SQL_NTS,empty,SQL_NTS,nullptr,0)) << get_error(SQL_HANDLE_STMT,hstmt_);
-    descriptors(tables);ASSERT_FALSE(HasFailure());
+    descriptors(tables,DescriptorScope::AllSchemas);ASSERT_FALSE(HasFailure());
     unsigned selected_schemas=0;bool exhausted=false;
     for(unsigned row=0;row<=64;++row) {
       const auto result=SQLFetch(hstmt_);if(result==SQL_NO_DATA) { exhausted=true;break; }

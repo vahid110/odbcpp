@@ -159,7 +159,7 @@ endif()
 file(GLOB UNIT_TEST_SOURCES "tests/unit/*.cpp")
 foreach(test_file ${UNIT_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
-  if(test_name MATCHES "^(test_named_profile_acquisition|test_provisioned_native_owner)$")
+  if(test_name MATCHES "^(test_named_profile_acquisition|test_provisioned_native_owner|test_provisioned_pg_connector)$")
     continue() # Optional SDK consumers are explicitly registered below.
   endif()
   add_test_executable(${test_name} ${test_file})

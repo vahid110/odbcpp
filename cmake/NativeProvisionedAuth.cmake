@@ -57,7 +57,7 @@ foreach(_include IN LISTS SDK_FIXTURE_INCLUDES)
     message(FATAL_ERROR "Native provisioned auth missing generated SDK include root")
   endif()
 endforeach()
-# Only the six optional headers are staged. Ordinary AuthCore headers retain
+# Only the seven optional headers are staged. Ordinary AuthCore headers retain
 # their existing checked canonical stage; optional inputs are not installed.
 set(_native_stage "${CMAKE_CURRENT_BINARY_DIR}/native-provisioned-auth-include")
 file(REMOVE_RECURSE "${_native_stage}")
@@ -67,6 +67,7 @@ configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/named_profile
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/native_body_capture.h" "${_native_stage}/odbcpp/auth/aws/native_body_capture.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/explicit_profile_source.h" "${_native_stage}/odbcpp/auth/aws/explicit_profile_source.h" COPYONLY)
 configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/provisioned_query_transport.h" "${_native_stage}/odbcpp/auth/provisioned_query_transport.h" COPYONLY)
+configure_file("${PROJECT_SOURCE_DIR}/sdk/internal/odbcpp/auth/aws/provisioned_pg_connector.h" "${_native_stage}/odbcpp/auth/aws/provisioned_pg_connector.h" COPYONLY)
 # Reusable private optional provider module; AuthCore retains no AWS dependency.
 add_library(odbcpp_auth_aws_provisioned STATIC EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/sdk/src/auth/aws/provisioned_native_owner.cpp"
@@ -86,6 +87,22 @@ target_link_libraries(odbcpp_auth_aws_provisioned PRIVATE
   odbcpp_auth_core Threads::Threads aws-cpp-sdk-redshift)
 apply_compiler_settings(odbcpp_auth_aws_provisioned)
 
+# Optional provider-to-session composition keeps driver dependencies out of
+# both provider-free AuthCore and the acquisition-only AWS module.
+add_library(odbcpp_auth_aws_provisioned_pg STATIC EXCLUDE_FROM_ALL
+  "${PROJECT_SOURCE_DIR}/sdk/src/adapters/provisioned_pg_connector.cpp")
+target_compile_features(odbcpp_auth_aws_provisioned_pg PRIVATE cxx_std_20)
+target_include_directories(odbcpp_auth_aws_provisioned_pg PRIVATE
+  "${_native_stage}" "${ODBCPP_INTERNAL_INCLUDE_auth}"
+  "${ODBCPP_INTERNAL_INCLUDE_backend}" "${ODBCPP_PG_AUTH_CONSUMER_INCLUDE}")
+target_include_directories(odbcpp_auth_aws_provisioned_pg SYSTEM PRIVATE ${SDK_FIXTURE_INCLUDES})
+target_compile_definitions(odbcpp_auth_aws_provisioned_pg PRIVATE
+  AWS_SDK_USE_CRT_HTTP HAVE_H2_CLIENT PLATFORM_APPLE AWS_ENABLE_DISPATCH_QUEUE
+  AWS_ENABLE_KQUEUE AWS_SDK_VERSION_MAJOR=1 AWS_SDK_VERSION_MINOR=11 AWS_SDK_VERSION_PATCH=906)
+target_link_libraries(odbcpp_auth_aws_provisioned_pg PRIVATE
+  odbcpp_auth_aws_provisioned odbcpp::core odbcpp_auth_pg_consumer)
+apply_compiler_settings(odbcpp_auth_aws_provisioned_pg)
+
 # Explicit build-only consumers. Neither native nor SDK fake tests run through
 # ordinary CTest; fake runtime uses the separately selected network-denied path.
 add_executable(it_redshift_native_auth EXCLUDE_FROM_ALL "${_native_test}")
@@ -93,7 +110,9 @@ add_executable(test_named_profile_acquisition EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/tests/unit/test_named_profile_acquisition.cpp")
 add_executable(test_provisioned_native_owner EXCLUDE_FROM_ALL
   "${PROJECT_SOURCE_DIR}/tests/unit/test_provisioned_native_owner.cpp")
-foreach(_consumer it_redshift_native_auth test_named_profile_acquisition test_provisioned_native_owner)
+add_executable(test_provisioned_pg_connector EXCLUDE_FROM_ALL
+  "${PROJECT_SOURCE_DIR}/tests/unit/test_provisioned_pg_connector.cpp")
+foreach(_consumer it_redshift_native_auth test_named_profile_acquisition test_provisioned_native_owner test_provisioned_pg_connector)
   target_include_directories(${_consumer} PRIVATE
     "${_native_stage}" "${ODBCPP_INTERNAL_INCLUDE_auth}")
   target_include_directories(${_consumer} SYSTEM PRIVATE ${SDK_FIXTURE_INCLUDES})
@@ -106,7 +125,9 @@ foreach(_consumer it_redshift_native_auth test_named_profile_acquisition test_pr
 endforeach()
 target_include_directories(it_redshift_native_auth PRIVATE "${ODBCPP_INTERNAL_INCLUDE_backend}")
 target_include_directories(it_redshift_native_auth PRIVATE "${ODBCPP_PG_AUTH_CONSUMER_INCLUDE}")
-target_link_libraries(it_redshift_native_auth PRIVATE odbcpp::core odbcpp_auth_pg_consumer)
+target_include_directories(test_provisioned_pg_connector PRIVATE "${ODBCPP_INTERNAL_INCLUDE_backend}")
+target_link_libraries(test_provisioned_pg_connector PRIVATE odbcpp_auth_aws_provisioned_pg)
+target_link_libraries(it_redshift_native_auth PRIVATE odbcpp::core odbcpp_auth_pg_consumer odbcpp_auth_aws_provisioned_pg)
 target_link_options(it_redshift_native_auth PRIVATE
   "LINKER:-map,${CMAKE_CURRENT_BINARY_DIR}/native-provisioned-auth-link.map")
 # No add_test/discovery/postbuild execution. A manually selected build is not

@@ -196,6 +196,25 @@ CreateOutcome FixedFixture::create(FixedCase test,std::shared_ptr<ResponseObserv
   if(!state){out.failure=failure;return out;}out.counts=state->metrics;out.owner.reset(new NativeOwner{std::move(state)});return out;
  }catch(...){out.failure=Failure::LocalFailure;return out;}
 }
+CreateOutcome FixedFixture::create_for_connector(FixedCase test,rs::util::Deadline original,
+ std::shared_ptr<ResponseObservationSource> read,std::shared_ptr<ResponseSourceGeneration> gen,
+ std::shared_ptr<WorkerCancellation> cancel){
+ CreateOutcome out;const char* marker=::getenv("ODBCPP_AUTH_SDK_OFFLINE_FIXTURE");
+ if(!marker||std::string_view(marker)!="synthetic-fake-http-only"||
+    static_cast<unsigned>(test)>static_cast<unsigned>(FixedCase::Reentry)||
+    original==rs::util::Deadline::min()||original==rs::util::Deadline::max()){
+  out.failure=Failure::Unavailable;return out;
+ }
+ try{
+  auto c=context();auto made=Request::create(request(c).binding(),original,std::chrono::seconds{1});
+  if(!made){out.failure=Failure::InvalidContext;return out;}
+  FrozenNamedSource frozen{Aws::Auth::AWSCredentials{"synthetic-access-key","synthetic-secret-key"},c.source_identity,c.source_generation};
+  Failure failure=Failure::LocalFailure;
+  auto state=prepare(std::move(c),std::move(made).value(),std::move(read),std::move(gen),std::move(cancel),std::move(frozen),test,failure);
+  if(!state){out.failure=failure;return out;}
+  out.counts=state->metrics;out.owner.reset(new NativeOwner{std::move(state)});return out;
+ }catch(...){out.failure=Failure::LocalFailure;return out;}
+}
 Outcome NativeOwner::acquire_observation(){
  Outcome out;if(!state_){out.failure=Failure::Consumed;return out;}auto& s=*state_;
  if(s.creator!=std::this_thread::get_id()){out.failure=Failure::WrongThread;return out;}
@@ -248,7 +267,19 @@ Counts NativeOwner::counts()const noexcept{return state_?state_->metrics:closed_
 Observation::Observation(std::shared_ptr<detail::State> s,ProcessingBoundaryLease&& keep,ExtractedDbFields&& fields):state_(std::move(s)),keep_(std::move(keep)),fields_(std::move(fields)){}
 Observation::Observation(Observation&& other){if(other.viewing_||(other.state_&&other.state_->creator!=std::this_thread::get_id()))std::terminate();state_=std::move(other.state_);if(other.keep_)keep_.emplace(std::move(*other.keep_));fields_=std::move(other.fields_);other.keep_.reset();other.fields_.reset();}
 Observation::~Observation(){(void)close();}
+const Request* Observation::bound_request() const noexcept {
+ if(!state_||!fields_||!keep_)return nullptr;
+ if(viewing_||state_->creator!=std::this_thread::get_id())std::terminate();
+ return &state_->request;
+}
 bool Observation::with_fields(const std::function<void(const ExtractedDbFields&)>& fn)const{if(!state_||!fields_||!fn)return false;if(viewing_||state_->creator!=std::this_thread::get_id())std::terminate();if(!keep_||!std::holds_alternative<std::monostate>(keep_->check()))return false;viewing_=true;struct View{bool& flag;~View(){flag=false;}}view{viewing_};fn(*fields_);return std::holds_alternative<std::monostate>(keep_->check());}
 bool Observation::close()noexcept{if(!state_||!fields_)return false;if(viewing_||state_->creator!=std::this_thread::get_id())std::terminate();fields_.reset();keep_.reset();auto n=state_->operation->finish_processing();if(std::holds_alternative<ResponseCompletion>(n))++state_->metrics.n_samples;else if(!state_->operation->fault())std::terminate();state_->observing=false;return true;}
-Counts Observation::counts()const noexcept{return state_?state_->metrics:Counts{};}
+Counts Observation::counts()const noexcept{
+ if(!state_)return Counts{};
+ auto snapshot=state_->metrics;
+ // Processing can latch after acquisition; report the same owner's current
+ // first fault without observing a clock, invoking callbacks or changing it.
+ snapshot.boundary=state_->operation->fault();
+ return snapshot;
+}
 } // namespace

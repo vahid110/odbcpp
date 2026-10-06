@@ -1268,3 +1268,31 @@ live visibility remains unqualified until a fresh bounded successor. Both failed
 native results remain preserved. Post-child exact-principal zero activity, owned-input removal and
 paused-cluster readback were independently assessed. No fixture modification or
 broader live parity is claimed.
+
+### Optional provisioned IAM-to-PostgreSQL connector — reviewed integration
+
+The optional adapter passes owning temporary credentials from the existing AWS
+operation into the private PostgreSQL consumer under the original deadline.
+A failed operation retires any opened session; neither reacquisition nor fallback
+is allowed. The native harness now finishes Processing and checks closure before
+running its fixed query. The mandatory core and installed headers remain free of
+AWS dependencies. Current configured optional fake tests passed24 cases; the
+modified native AWS harness compiled and linked but has not run live. Earlier
+IAM acquisition and verified-TLS Redshift login remains historical evidence.
+
+Fresh shared PostgreSQL and both Unicode widths each passed108 unit targets,
+12 ordinary integration targets and six verified-TLS cases, including three
+Material/driver cases. Redshift build/unit108, sanitizer108 and457 offline safety
+checks passed. Private PostgreSQL shutdown was independently confirmed by
+status3, absent pid and its shutdown log. Original validator assumptions about
+CTest formatting and separate TLS XML files were corrected in preserved helper
+successors without repeating gates. Final integration review and successor hosted
+CI remain required. This does not qualify concurrent ODBC IAM use, credential
+renewal, federation or other authentication methods.
+
+The latest ordinary-user workflow attempt reached an exact schema header width128,
+where the test incorrectly expected65535. Its failure and cleanup evidence are
+preserved. A reviewed test-only correction now requires128 only for the schemas
+header of SQL_ALL_SCHEMAS and retains other exact widths and all assertions.
+The corrected binary compiled and linked; schema fetching, SQLColumns, binding
+and typed fetching still require a fresh source-bound live run.

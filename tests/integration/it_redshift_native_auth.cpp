@@ -4,6 +4,7 @@
 #include "odbcpp/transport/tls_transport.h"
 #include "odbcpp/auth/aws/named_profile_acquisition.h"
 #include "odbcpp/auth/pg_credential_consumer.h"
+#include "odbcpp/auth/aws/provisioned_pg_connector.h"
 #include <chrono>
 #include <cstdlib>
 #include <limits>
@@ -180,31 +181,35 @@ struct Disconnect {
  Pg& connection;~Disconnect(){connection.disconnect();}
 };
 struct LoginOutcome {
- bool entered{},wire_identity{},password_present{},connected{},peer_verified{},disconnected{},unexpected_exception{};
+ bool entered{},wire_identity{},password_present{},connected{},peer_verified{},disconnected{},unexpected_exception{},
+      borrow_passed{},observation_closed{},raw_expiry_positive{};
+ n::Counts observation_counts;
  std::optional<d::BackendResult<void>> connection;
  std::optional<d::BackendResult<d::QueryResult>> query;
 };
-void login_observation(const a::ExtractedDbFields& fields,const NativeLoginSpec& spec,
+void login_observation(n::Observation& observation,const NativeLoginSpec& spec,
  const std::string& expected_user,const a::Request& request,LoginOutcome& outcome) noexcept {
- outcome.entered=true;
  try{
-  outcome.wire_identity=fields.user==expected_user;
-  outcome.password_present=!fields.password.empty()&&fields.password.size()<=65536;
-  if(!outcome.wire_identity||!outcome.password_present)return;
   d::ConnectionSettings settings;
   settings.host=spec.host;settings.port=5439;settings.database=spec.database;
-  settings.user=fields.user;settings.use_ssl=true;settings.ssl_ca_file=spec.ca;
+  settings.user=expected_user;settings.use_ssl=true;settings.ssl_ca_file=spec.ca;
   auto transport=std::make_unique<rs::core::transport::TLSTransport>();auto* peer=transport.get();
   transport->set_verify(true);transport->set_hostname_verification(true);transport->set_ca_locations(spec.ca,"");
   Pg connection{std::move(transport),std::nullopt,d::postgres::PgCatalogProfile::Redshift};Disconnect disconnect{connection};
-  outcome.connection.emplace(a::connect_bound_temporary_db_until(connection,settings,request,fields));
-  if(!outcome.connection->has_value())return;
+  auto composed=n::connect_provisioned_observation_until(connection,settings,observation);
+  outcome.entered=composed.entered;outcome.wire_identity=composed.wire_identity;
+  outcome.password_present=composed.password_present;outcome.raw_expiry_positive=composed.raw_expiry_positive;
+  outcome.borrow_passed=composed.borrow_passed;outcome.observation_closed=composed.observation_closed;
+  const bool composed_success=composed.succeeded();
+  outcome.observation_counts=composed.counts;outcome.connection=std::move(composed.connection);
+  outcome.unexpected_exception=composed.failure==n::ConnectorFailure::LocalFailure;
+  if(!composed_success)return;
   outcome.connected=connection.is_connected();outcome.peer_verified=peer->peer_identity_verified();
   if(!outcome.connected||!outcome.peer_verified)return;
   outcome.query.emplace(connection.execute_query("SELECT current_database(), TRIM(current_user), CAST(1 AS INTEGER), CAST(NULL AS INTEGER)",request.deadline()));
   connection.disconnect();outcome.disconnected=!connection.is_connected()&&connection.session_state()==d::SessionState::Disconnected;
  }catch(...){outcome.unexpected_exception=true;}
- // No assertion, exception text or borrowed field can escape this callback.
+ // No assertion, exception text or borrowed field can escape this function.
 }
 }
 TEST(ProvisionedNativeAuth, GetClusterCredentialsThenVerifiedTlsLogin){
@@ -239,13 +244,11 @@ TEST(ProvisionedNativeAuth, GetClusterCredentialsThenVerifiedTlsLogin){
  EXPECT_TRUE(counts.request_exact);EXPECT_TRUE(counts.request_policy);EXPECT_TRUE(counts.model_success);EXPECT_TRUE(counts.model_user_matches);EXPECT_TRUE(counts.model_password_matches);
  EXPECT_EQ(counts.selected_sends,1U);EXPECT_EQ(counts.delegate_returns,1U);EXPECT_EQ(counts.delegate_destructions,1U);EXPECT_EQ(counts.active,0U);EXPECT_EQ(counts.wrappers,counts.destroyed_wrappers);
  EXPECT_EQ(counts.named_provider_loads,1U);EXPECT_GT(counts.frozen_provider_reads,0U);EXPECT_EQ(counts.shutdowns,1U);EXPECT_TRUE(counts.cleanup_before_c);EXPECT_EQ(counts.c_samples,1U);EXPECT_EQ(counts.n_samples,0U);EXPECT_TRUE(counts.unknown_only);
- LoginOutcome login;bool raw_expiry_positive=false;
- const bool borrow_passed=acquired.observation->with_fields([&](const a::ExtractedDbFields& fields){
-  raw_expiry_positive=fields.expiry.microseconds_since_epoch>0;
-  login_observation(fields,*spec,expected_wire_user,login_request,login);
- });
+ LoginOutcome login;
+ login_observation(*acquired.observation,*spec,expected_wire_user,login_request,login);
+ const bool borrow_passed=login.borrow_passed;const bool raw_expiry_positive=login.raw_expiry_positive;
  EXPECT_TRUE(borrow_passed);EXPECT_TRUE(raw_expiry_positive);EXPECT_TRUE(login.entered);EXPECT_FALSE(login.unexpected_exception);EXPECT_TRUE(login.wire_identity);EXPECT_TRUE(login.password_present);EXPECT_TRUE(login.connected);EXPECT_TRUE(login.peer_verified);EXPECT_TRUE(login.disconnected);
- const bool observation_closed=acquired.observation->close();EXPECT_TRUE(observation_closed);EXPECT_EQ(acquired.observation->counts().n_samples,1U);EXPECT_TRUE(created.owner->close());
+ const bool observation_closed=login.observation_closed;EXPECT_TRUE(observation_closed);EXPECT_EQ(login.observation_counts.n_samples,1U);EXPECT_TRUE(created.owner->close());
  ASSERT_TRUE(login.connection.has_value());ASSERT_TRUE(login.connection->has_value());EXPECT_TRUE((login.connection->session_snapshot()==d::SessionSnapshot{d::SessionState::Idle,d::SessionDisposition::Reusable}));
  ASSERT_TRUE(login.query.has_value());ASSERT_TRUE(login.query->has_value());EXPECT_TRUE((login.query->session_snapshot()==d::SessionSnapshot{d::SessionState::Idle,d::SessionDisposition::Reusable}));
  const auto& result=login.query->value();EXPECT_FALSE(result.error.has_value());EXPECT_TRUE(result.additional_results.empty());EXPECT_TRUE(result.cell_errors.empty());ASSERT_EQ(result.columns.size(),4U);ASSERT_EQ(result.rows.size(),1U);ASSERT_EQ(result.rows[0].size(),4U);

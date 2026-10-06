@@ -68,6 +68,9 @@ class Observation final {
   Observation(const Observation&)=delete;Observation& operator=(const Observation&)=delete;
   Observation(Observation&&);Observation& operator=(Observation&&)=delete;
   ~Observation();
+  // Immutable original request while this creator-thread observation is active.
+  // Consistency only; no issuer/expiry authority. Null after move or close.
+  const Request* bound_request() const noexcept;
   bool with_fields(const std::function<void(const ExtractedDbFields&)>&) const;
   bool close() noexcept;Counts counts() const noexcept;
  private:
@@ -104,6 +107,10 @@ struct FixedFixture final {
   static Context context();static Request request(const Context&);
   static CreateOutcome create_named(ProtectedNamedSourceSpec,std::shared_ptr<ResponseObservationSource>,
       std::shared_ptr<ResponseSourceGeneration>,std::shared_ptr<WorkerCancellation>);
+  // Closed fake-only bridge tests: same fixed context/body/source, finite D.
+  static CreateOutcome create_for_connector(FixedCase,rs::util::Deadline,
+      std::shared_ptr<ResponseObservationSource>,std::shared_ptr<ResponseSourceGeneration>,
+      std::shared_ptr<WorkerCancellation>);
   static CreateOutcome create(FixedCase,std::shared_ptr<ResponseObservationSource>,
       std::shared_ptr<ResponseSourceGeneration>,std::shared_ptr<WorkerCancellation>);
 };
