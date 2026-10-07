@@ -48,6 +48,29 @@ actual blocker and its happy/edge/recovery tests. Keep acceptance per API/mode/
 platform explicit. This order changes priorities, not spending, IAM/network scope,
 resource authority, existing protected admissions or the eventual parity goal.
 
+## Trust configuration in packaged acceptance — 2026-10-07
+
+Human-approved priority addition: include trust-source usability in the current
+first packaged Excel-on-this-Mac checkpoint. Reuse verified TLS and the existing
+explicit CA bundle path; record the installed driver's actual crypto provider,
+default CA locations or chosen bundle, chain/hostname verification, custom-CA setup
+and certificate update ownership. Compare with the pinned official driver using
+equivalent verified TLS, while documenting any differing trust-source defaults.
+An explicit-CA pass does not establish macOS Keychain or Windows Certificate Store
+support. Keep the pending Excel Driver Manager/administrator prerequisite concrete.
+
+The shared SDK owns the planned
+[TLS trust-source extension](SDK_PRODUCT_PLAN.md#shared-tls-trust-source-extension--2026-10-07).
+Document and qualify the chosen packaged configuration at P0 for this application
+checkpoint; broader platform/default-store isolation, rotation and advertised
+native OS-store support are P1 before corresponding production packaging claims.
+Missing/invalid/untrusted CA, expired peer and wrong-host failures must remain safe,
+clear and recoverable through a newly valid configuration, without insecure fallback.
+Do not make native OS-store integration a prerequisite for ready finite native
+Redshift work that already uses a qualified explicit CA bundle. AUTH and MySQL
+remain parked; no new authentication method, cloud authority or budget/horizon
+extension follows from this planning addition.
+
 ## Scope, priorities and checkpoints
 
 The product goal is coverage of the official AWS ODBC driver's implemented

@@ -2,6 +2,35 @@
 
 Finite planning audit, 2026-10-03. No implementation, private reads, cloud/SQL/probes or live admission. Scope is **all top-level authentication/provider selectors in the current official native ODBC reference**, including source-only subflows; not every unrelated OAuth product. Every row remains an eventual parity obligation unless the user approves an exception. “Present” below means source/documented reference support, not qualification of our driver or every deployment/platform.
 
+## TLS trust dependency and parked AUTH roadmap — 2026-10-07
+
+Human-approved plan clarification: trust stores are a transport/security dependency,
+not an additional authentication method. All existing method and credential-source
+roadmap obligations remain intact. AUTH is parked at its independently accepted
+2026-10-06 two-acquisition/two-verified-login checkpoint until the human resumes it;
+this addition assigns no new AUTH implementation or checkpoint.
+
+For each resumed HTTPS-based AWS/STS, credential-source, issuer or IdP adapter,
+declare endpoint identity and trust-source selection, default/custom-CA precedence,
+secure proxy compatibility where supported, and update ownership. Certificate-chain
+and hostname verification must precede credential transmission; no automatic
+verification bypass or insecure retry is permitted. Database-channel requirements
+remain driver-owned and distinct from provider HTTPS verification. Browser-mediated
+flows must document the browser's trust boundary rather than claim SDK control of
+its certificate store.
+
+Reuse the shared SDK TLS trust-source extension in
+[SDK_PRODUCT_PLAN.md](SDK_PRODUCT_PLAN.md#shared-tls-trust-source-extension--2026-10-07)
+where compatible. Vendor HTTP stacks retain their optional adapter boundary and
+must prove equivalent policy translation; do not force AWS/vendor dependencies
+into mandatory SDK core or assume a database CA bundle also qualifies an IdP.
+When a method resumes, include trusted/custom-CA success, untrusted/expired peer,
+wrong hostname, invalid CA configuration, cancellation/deadline, safe diagnostics
+and connection/cache trust isolation in that method's finite acceptance package.
+Priority is a security prerequisite of each resumed provider, not a reason to
+resume parked AUTH ahead of Redshift/Excel. Existing native login evidence proves
+its selected explicit-CA database channel, not every provider trust store/platform.
+
 ## Mandatory parity target and phased delivery
 
 User clarification: all authentication methods in the supported native Redshift reference are mandatory eventual parity requirements. This is a planning and completion obligation, not an instruction to implement every method immediately. Implement each at its appropriate checkpoint based on architectural prerequisites, available qualified environments and product priority. Preserve platform/version-specific support explicitly; do not silently omit a method, treat unavailable fixtures as passed, or make every method a prerequisite for the next bounded catalog package. No deadline or immediate all-method delivery is implied.

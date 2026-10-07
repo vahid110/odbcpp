@@ -40,6 +40,45 @@ The shared layer is not an ODBC wrapper around a PostgreSQL implementation.
 ODBC handles and constants stay in the ODBC adapter; native packet formats,
 authentication exchanges, type identifiers and catalog SQL stay in backends.
 
+## Shared TLS trust-source extension — 2026-10-07
+
+Human-approved planning extension: treat certificate trust configuration as a
+shared transport/security capability, rather than an authentication method or a
+Redshift-owned trust-store implementation. Preserve provider-neutral SDK contracts,
+optional vendor dependencies and backend-owned wire/session boundaries. Reuse
+existing verified TLS and custom CA configuration before introducing new APIs.
+
+Current implementation supports explicit CA file/directory settings and OpenSSL
+default verification locations. This does not establish native macOS Keychain or
+Windows Certificate Store integration, nor identical default trust across packaged
+crypto providers. A successful explicit-CA live test qualifies that configuration
+only. Do not describe provider defaults as the operating system trust store without
+platform-specific evidence.
+
+| Priority | Bounded work | Acceptance |
+|---|---|---|
+| P0: current packaged Redshift/Excel checkpoint | Document and verify the installed driver's actual trust source, existing explicit CA options, secure default and update ownership. | A fresh installed driver verifies chain and hostname using its documented trust source; missing/invalid/untrusted CA and wrong-host failures are clear and never trigger an insecure retry. This overlaps current delivery and does not delay ready native tests using a qualified explicit CA. |
+| P1: before production packaging claims | Define deterministic trust-source selection and precedence, configuration lifetime and connection/pool isolation; qualify provider defaults and custom bundles on each advertised platform/crypto package. | Provider-neutral configuration, no cross-connection trust leakage, chain/hostname checks, expired-server-certificate and bundle-rotation tests, and reproducible install/relocation behavior. Preserve existing mutually exclusive file/directory behavior unless a separately reviewed API change is necessary. |
+| P1: platform convenience extension | Assess and implement native OS-store integration where it materially improves the supported installed workflow; otherwise document the supported provider store or explicit bundle. | Each advertised Keychain/Windows/Linux integration has actual platform evidence and clear administrator/custom-CA behavior. OS-store support is a separately estimated extension, not an inherited OpenSSL claim. |
+
+Trust policy remains explicit and immutable for a connection's use; define how a
+new connection adopts updated CA material and how incompatible pooled sessions
+are handled. Do not silently fetch or install CA certificates during a connection,
+trust an unverified endpoint, or disable hostname verification after failure.
+Certificate/bundle distribution, rotation, platform diagnostics and concise setup
+instructions belong to release ownership. Logs expose bounded failure categories,
+not credentials, connection strings or raw remote payloads.
+
+Credential-provider HTTPS adapters must meet the same verification policy. Reuse
+shared configuration and semantics where compatible; adapters using a vendor HTTP
+stack must translate and qualify the policy without leaking vendor types into core.
+Database TLS and issuer/IdP HTTPS have distinct endpoint and trust contexts; success
+on one does not qualify the other. AUTH implementation remains parked until the
+human resumes it. This planning extension adds no cloud authority, budget, resource,
+principal, network change, testing horizon or current milestone completion claim.
+Estimate each implementation slice separately rather than consuming old milestone
+contingency implicitly.
+
 ## MS1: SDK foundation and MySQL proof
 
 This is a bounded architecture-validation milestone, not a MySQL beta. It may
