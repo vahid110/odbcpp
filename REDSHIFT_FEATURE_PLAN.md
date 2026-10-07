@@ -280,3 +280,27 @@ and teardown. Verified infrastructure/cost controls and runner readiness replace
 account access as the M2 activation dependency. No paid test execution or
 provisioning occurred here; the runner is not implemented/qualified. The bounded
 MySQL SDK proof continues until that activation gate is ready.
+
+## Batch size and diagnostic execution — human agreed 2026-10-07
+
+Default to coherent workflow batches, normally three to five related scenarios
+when ready and compatible, rather than a separate integration cycle per case.
+Run focused checks while developing, then the required shared regression graph,
+independent integration review, push and exact-head CI once per coherent batch.
+Preserve each scenario's assertions and result; never add unrelated work merely
+to fill a batch or replay already qualified milestones.
+
+CI and real Redshift tests provide distinct evidence. A bounded diagnostic run
+may precede final CI when its exact candidate source, actual binary, relevant
+local checks and finite cloud controls have received independent review. Record
+it as diagnostic evidence; final acceptance still requires all applicable local
+gates, independent review, exact-head green CI and actual live proof. This does
+not bypass an existing launcher that requires CI: any diagnostic-specific control
+change must be independently reviewed before use. Finish the current Unicode
+alias batch under its already selected controls.
+
+Group ready, reviewed live scenarios into one finite cluster session with explicit
+per-case and aggregate statement/time bounds, durable one-use admission and
+verified exact-principal cleanup and pause. Keep the cluster paused during coding,
+builds, CI and longer gaps; do not keep it running to await speculative readiness.
+Spending, resource, principal, network and authorization horizons are unchanged.
