@@ -3093,14 +3093,14 @@ TEST_F(RedshiftUnicodeAliasMetadataRealTest, DirectAndPreparedUnicodeAliasNamesA
 // follows from this marker; the controller must separately own the exact objects.
 class RedshiftUnicodeCatalogRealTest : public RedshiftRealTest {
 protected:
-  const std::string schema_ = "odbcpp_u_\xc3\xa9\xe8\xa1\xa8\xf0\x9f\x98\x80";
-  const std::string table_ = "t\"\xc3\xa9%_\xe8\xa1\xa8\xf0\x9f\x98\x80";
-  const std::string id_ = "i\"\xc3\xa9\xe8\xa1\xa8\xf0\x9f\x98\x80";
-  const std::string value_ = "v%_\xc3\xa9\xe8\xa1\xa8\xf0\x9f\x98\x80";
+  const std::string schema_ = "odbcpp_u_\xc3\xa9\xe8\xa1\xa8";
+  const std::string table_ = "t\"\xc3\xa9%_\xe8\xa1\xa8";
+  const std::string id_ = "i\"\xc3\xa9\xe8\xa1\xa8";
+  const std::string value_ = "v%_\xc3\xa9\xe8\xa1\xa8";
   const std::string payload_ = "Gr\xc3\xbc\xc3\x9f" "e \xf0\x9f\x98\x80";
-  const std::string schema_pattern_ = "odbcpp\\_u\\_\xc3\xa9\xe8\xa1\xa8\xf0\x9f\x98\x80";
-  const std::string table_pattern_ = "t\"\xc3\xa9\\%\\_\xe8\xa1\xa8\xf0\x9f\x98\x80";
-  const std::string value_pattern_ = "v\\%\\_\xc3\xa9\xe8\xa1\xa8\xf0\x9f\x98\x80";
+  const std::string schema_pattern_ = "odbcpp\\_u\\_\xc3\xa9\xe8\xa1\xa8";
+  const std::string table_pattern_ = "t\"\xc3\xa9\\%\\_\xe8\xa1\xa8";
+  const std::string value_pattern_ = "v\\%\\_\xc3\xa9\xe8\xa1\xa8";
   // SQLBindParameter borrows these through statement release in TearDown, even
   // when recovery CLOSE fails before RESET_PARAMS.
   std::vector<SQLWCHAR> bound_input_;
@@ -3122,14 +3122,18 @@ protected:
       case Name::ValueWildcard: result={'v','%',0x00e9,0x8868}; break;
       case Name::Missing: return {'n','o','_','s','u','c','h','_','o','b','j','e','c','t'};
     }
-    if constexpr (sizeof(SQLWCHAR)==2) { result.push_back(0xd83d); result.push_back(0xde00); }
-    else { static_assert(sizeof(SQLWCHAR)==2 || sizeof(SQLWCHAR)==4); result.push_back(static_cast<SQLWCHAR>(0x1f600)); }
+    // Object-name expectations are BMP-only in this successor. Supplementary
+    // characters remain explicit value/parameter oracles, not object-name proof.
+    if(name==Name::Payload) {
+      if constexpr (sizeof(SQLWCHAR)==2) { result.push_back(0xd83d); result.push_back(0xde00); }
+      else { static_assert(sizeof(SQLWCHAR)==2 || sizeof(SQLWCHAR)==4); result.push_back(static_cast<SQLWCHAR>(0x1f600)); }
+    }
     return result;
   }
   void SetUp() override {
     const char* marker=std::getenv("ODBCPP_REDSHIFT_UNICODE_CATALOG_ADMISSION");
     if(marker==nullptr) { GTEST_SKIP() << "Unicode catalog fixture-reuse scope is not admitted"; }
-    ASSERT_TRUE(std::string_view(marker)=="unicode-catalog-fixture-reuse-v1") << "Invalid Unicode catalog scope marker";
+    ASSERT_TRUE(std::string_view(marker)=="unicode-catalog-bmp-fixture-reuse-v1") << "Invalid Unicode catalog scope marker";
     // FIRST gate, before endpoint/configuration/handles/connection work.
     RedshiftRealTest::SetUp();
     if(HasFatalFailure()) { return; }
@@ -3310,7 +3314,7 @@ TEST_F(RedshiftUnicodeCatalogRealTest, EscapedWildcardsAndNoMatchKeepUnicodeIden
   const auto trials=[&]() {
     struct TablePattern {bool use_wide;std::string pattern;Name literal;bool matches;};
     const TablePattern table_patterns[]{{false,table_pattern_,Name::TablePattern,true},
-      {true,"t\"\xc3\xa9%\xe8\xa1\xa8\xf0\x9f\x98\x80",Name::TableWildcard,true},
+      {true,"t\"\xc3\xa9%\xe8\xa1\xa8",Name::TableWildcard,true},
       {false,"no_such_object",Name::Missing,false}};
     for(const auto& pattern:table_patterns) {
       ASSERT_EQ(SQL_SUCCESS,tables(pattern.use_wide,pattern.pattern,pattern.literal));ASSERT_EQ(5u,descriptors(false).size());ASSERT_FALSE(HasFailure());
@@ -3318,7 +3322,7 @@ TEST_F(RedshiftUnicodeCatalogRealTest, EscapedWildcardsAndNoMatchKeepUnicodeIden
       ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));close_cursor();
     }
     const TablePattern column_patterns[]{{false,value_pattern_,Name::ValuePattern,true},
-      {true,"v%\xc3\xa9\xe8\xa1\xa8\xf0\x9f\x98\x80",Name::ValueWildcard,true},
+      {true,"v%\xc3\xa9\xe8\xa1\xa8",Name::ValueWildcard,true},
       {true,"no_such_object",Name::Missing,false}};
     for(const auto& pattern:column_patterns) {
       ASSERT_EQ(SQL_SUCCESS,columns(pattern.use_wide,pattern.pattern,pattern.literal));ASSERT_EQ(18u,descriptors(true).size());ASSERT_FALSE(HasFailure());

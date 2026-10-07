@@ -304,3 +304,25 @@ per-case and aggregate statement/time bounds, durable one-use admission and
 verified exact-principal cleanup and pause. Keep the cluster paused during coding,
 builds, CI and longer gaps; do not keep it running to await speculative readiness.
 Spending, resource, principal, network and authorization horizons are unchanged.
+
+## Observed Redshift limitations
+
+On 2026-10-07, the provisioned pilot rejected this fixture collision check
+through `psql` with `PGCLIENTENCODING=UTF8`:
+
+```sql
+SELECT COUNT(*) FROM pg_namespace WHERE nspname = 'odbcpp_u_é表😀';
+```
+
+The server returned `Unicode characters greater than or equal to 0x10000 are
+not supported`. This happened before fixture creation and before native ODBC
+tests. It establishes a restriction in this catalog lookup path, not a general
+ban on supplementary Unicode identifiers or values. The separate real ODBC
+result-alias test with `é表😀` passed. Continue catalog qualification with
+accented/CJK object names while retaining supplementary characters in values.
+
+Human direction on 2026-10-07: when this known server limitation recurs, record
+the exact operation, server error, affected scenario and qualification limit,
+then continue supported workflows without reopening the investigation. Keep
+the original evidence and cleanup obligations. An unsupported or unrun scenario
+remains unqualified; do not label it passed or weaken unrelated assertions.
