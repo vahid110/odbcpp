@@ -347,6 +347,7 @@ TEST(BackendErrorsTest, PostgresNormalizesNativeStatesWithoutIo) {
       Case{"22P02", ErrorContext::Unknown, "22018"},
       Case{"22012", ErrorContext::Unknown, "22012"},
       Case{"23505", ErrorContext::Unknown, "23000"},
+      Case{"25P02", ErrorContext::Unknown, "25P02"},
       Case{"3F000", ErrorContext::Unknown, "3F000"},
       Case{"42P07", ErrorContext::CreateTable, "42S01"},
       Case{"42P07", ErrorContext::CreateView, "42S01"},
@@ -365,7 +366,7 @@ TEST(BackendErrorsTest, PostgresNormalizesNativeStatesWithoutIo) {
 TEST(BackendErrorsTest, InvalidUnknownAndAmbiguousStatesKeepCallerFallback) {
   const auto& backend = configured_backend_provider();
   for (const auto state : {"", "22P0", "22P020", "22p02", "22!02", "XXXXX",
-                           "P0001", "42P07", "42704"}) {
+                           "P0001", "42P07", "42704", "25P03", "25p02", "25!02"}) {
     SCOPED_TRACE(state);
     EXPECT_FALSE(backend.normalize_error_sqlstate(state, ErrorContext::Unknown));
   }

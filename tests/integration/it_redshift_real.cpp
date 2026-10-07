@@ -3384,8 +3384,9 @@ protected:
   bool manual_mode_ = false;
   bool rollback_attempted_ = false, rollback_completed_ = false;
   struct IntCell { std::array<unsigned char,8> before; SQLINTEGER value; std::array<unsigned char,8> after; } ordinal_{};
+  struct BigIntCell { std::array<unsigned char,8> before; SQLBIGINT value; std::array<unsigned char,8> after; } total_{};
   struct TextCell { std::array<unsigned char,8> before; std::array<char,33> value; std::array<unsigned char,8> after; } text_{};
-  SQLLEN ordinal_length_ = 93, text_length_ = 93;
+  SQLLEN ordinal_length_ = 93, text_length_ = 93, total_length_ = 93;
   SQLULEN fetched_ = 99;
   SQLUSMALLINT row_status_ = SQL_ROW_NOROW;
 
@@ -3541,15 +3542,19 @@ TEST_F(RedshiftOperationalRealTest, BufferedThousandRowsEarlyCloseAndSameStateme
     "WITH digit AS (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 "
     "UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9), "
     "numbered AS (SELECT h.d*100+t.d*10+u.d+1 AS n FROM digit h CROSS JOIN digit t CROSS JOIN digit u) "
-    "SELECT CAST(n AS INTEGER) AS row_no, CAST(CASE WHEN n%5=0 THEN NULL ELSE 'bounded-row' END AS VARCHAR(32)) AS payload "
+    "SELECT CAST(n AS INTEGER) AS row_no, CAST(CASE WHEN n%5=0 THEN NULL ELSE 'bounded-row' END AS VARCHAR(32)) AS payload, "
+    "COUNT(*) OVER() AS total_rows "
     "FROM numbered ORDER BY n";
   ASSERT_TRUE(cap(window_end_,true));ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(hstmt_,query,SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
   std::fill(std::begin(query),std::end(query),'!');
-  SQLLEN count=-1;ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&count));EXPECT_EQ(1000,count);
-  SQLSMALLINT columns=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&columns));ASSERT_EQ(2,columns);
-  const char* names[]{"row_no","payload"};const SQLSMALLINT types[]{SQL_INTEGER,SQL_VARCHAR};const SQLULEN sizes[]{10,32};
-  std::array<std::string,2> owned_names;
-  for(SQLUSMALLINT column=1;column<=2;++column) {
+  // This driver's SQLRowCount was observed as zero for this SELECT; it does
+  // not measure result cardinality. The window count proves all 1,000 rows
+  // without another SQL statement or relying on a raw server completion tag.
+  SQLLEN count=-1;ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&count));EXPECT_EQ(0,count);
+  SQLSMALLINT columns=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&columns));ASSERT_EQ(3,columns);
+  const char* names[]{"row_no","payload","total_rows"};const SQLSMALLINT types[]{SQL_INTEGER,SQL_VARCHAR,SQL_BIGINT};const SQLULEN sizes[]{10,32,19};
+  std::array<std::string,3> owned_names;
+  for(SQLUSMALLINT column=1;column<=3;++column) {
     std::array<SQLCHAR,32> name;name.fill(0x5a);SQLSMALLINT length=-1,type=-1,scale=-1;SQLULEN size=99;
     ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,column,name.data(),static_cast<SQLSMALLINT>(name.size()),&length,&type,&size,&scale,nullptr));
     ASSERT_GE(length,0);ASSERT_LT(static_cast<std::size_t>(length)+1,name.size());
@@ -3563,19 +3568,23 @@ TEST_F(RedshiftOperationalRealTest, BufferedThousandRowsEarlyCloseAndSameStateme
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_STATUS_PTR,&row_status_,0));
   ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,1,SQL_C_SLONG,&ordinal_.value,sizeof(ordinal_.value),&ordinal_length_));
   ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,2,SQL_C_CHAR,text_.value.data(),static_cast<SQLLEN>(text_.value.size()),&text_length_));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,3,SQL_C_SBIGINT,&total_.value,sizeof(total_.value),&total_length_));
   const std::array<SQLINTEGER,17> literal_ids{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17};
   const std::array<bool,17> literal_nulls{false,false,false,false,true,false,false,false,false,true,false,false,false,false,true,false,false};
-  struct OwnedRow {SQLINTEGER id;std::optional<std::string> value;};std::array<OwnedRow,17> owned;
+  struct OwnedRow {SQLINTEGER id;std::optional<std::string> value;SQLBIGINT total;};std::array<OwnedRow,17> owned;
   for(std::size_t row=0;row<literal_ids.size();++row) {
     ordinal_.before.fill(0x5a);ordinal_.after.fill(0x5a);ordinal_.value=-99;ordinal_length_=93;
+    total_.before.fill(0x5a);total_.after.fill(0x5a);total_.value=-99;total_length_=93;
     text_.before.fill(0x5a);text_.after.fill(0x5a);text_.value.fill('\x5a');text_length_=93;fetched_=99;row_status_=SQL_ROW_NOROW;
     ASSERT_TRUE(cap(window_end_,true));ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
     EXPECT_EQ(1u,fetched_);EXPECT_EQ(SQL_ROW_SUCCESS,row_status_);EXPECT_EQ(literal_ids[row],ordinal_.value);
     EXPECT_EQ(static_cast<SQLLEN>(sizeof(ordinal_.value)),ordinal_length_);
-    for(const auto* guard:{&ordinal_.before,&ordinal_.after,&text_.before,&text_.after}) {
+    EXPECT_EQ(1000,total_.value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(total_.value)),total_length_);
+    for(const auto* guard:{&ordinal_.before,&ordinal_.after,&text_.before,&text_.after,&total_.before,&total_.after}) {
       EXPECT_TRUE(std::all_of(guard->begin(),guard->end(),[](unsigned char byte){return byte==0x5a;}));
     }
     owned[row].id=ordinal_.value;
+    owned[row].total=total_.value;
     if(literal_nulls[row]) {
       EXPECT_EQ(SQL_NULL_DATA,text_length_);EXPECT_TRUE(std::all_of(text_.value.begin(),text_.value.end(),[](char ch){return ch=='\x5a';}));
       owned[row].value.reset();
@@ -3585,16 +3594,17 @@ TEST_F(RedshiftOperationalRealTest, BufferedThousandRowsEarlyCloseAndSameStateme
     }
     ASSERT_FALSE(HasFailure());
   }
-  ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&count));EXPECT_EQ(1000,count);
+  ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&count));EXPECT_EQ(0,count);
   ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_UNBIND));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_RESET_PARAMS));
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROWS_FETCHED_PTR,nullptr,0));
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_STATUS_PTR,nullptr,0));
-  std::memset(&ordinal_,0x5a,sizeof(ordinal_));std::memset(&text_,0x5a,sizeof(text_));
+  std::memset(&ordinal_,0x5a,sizeof(ordinal_));std::memset(&text_,0x5a,sizeof(text_));std::memset(&total_,0x5a,sizeof(total_));
   scalar("SELECT CAST(1 AS INTEGER)",1);ASSERT_FALSE(HasFailure());
-  EXPECT_EQ("row_no",owned_names[0]);EXPECT_EQ("payload",owned_names[1]);
+  EXPECT_EQ("row_no",owned_names[0]);EXPECT_EQ("payload",owned_names[1]);EXPECT_EQ("total_rows",owned_names[2]);
   for(std::size_t row=0;row<owned.size();++row) {
     EXPECT_EQ(literal_ids[row],owned[row].id);EXPECT_EQ(literal_nulls[row],!owned[row].value.has_value());
+    EXPECT_EQ(1000,owned[row].total);
     if(!literal_nulls[row]) { ASSERT_TRUE(owned[row].value);EXPECT_EQ("bounded-row",*owned[row].value); }
   }
-  // Only17 fetched rows plus command row-count1000: no streaming/peak-memory proof.
+  // Only17 fetched rows plus server window-count1000: no streaming/peak-memory proof.
 }

@@ -15,6 +15,9 @@ std::optional<std::string> PgBackendProvider::normalize_error_sqlstate(
   if (server_state == "22P02") return std::string{"22018"};
   if (server_state.substr(0, 2) == "22") return std::string(server_state);
   if (server_state.substr(0, 2) == "23") return std::string{"23000"};
+  // Preserve the failed-transaction diagnostic so callers can identify the
+  // rollback requirement; unrelated vendor states still use caller fallback.
+  if (server_state == "25P02") return std::string{"25P02"};
   if (server_state == "3F000") return std::string{"3F000"};
   if (server_state == "42P07") {
     if (context == ErrorContext::CreateIndex) return std::string{"42S11"};
