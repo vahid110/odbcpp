@@ -2489,7 +2489,9 @@ TEST_F(RedshiftBooleanFloatingRealTest, PreparedBooleanRealDoubleAndNull) {
       EXPECT_EQ(names[column - 1], owned_name);
       EXPECT_EQ(types[column - 1], type);
       EXPECT_EQ(sizes[column - 1], size);
-      EXPECT_EQ(SQL_NULLABLE, nullable);
+      // Native type recognition is not expression nullability; RowDescription
+      // is published by column_info_for with SQL_NULLABLE_UNKNOWN.
+      EXPECT_EQ(SQL_NULLABLE_UNKNOWN, nullable);
       // Approximate decimal scale is not a normative floating-point oracle.
       SQLLEN concise = -1, bytes = -1;
       ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, column, SQL_DESC_CONCISE_TYPE,
