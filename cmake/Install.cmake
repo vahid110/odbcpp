@@ -10,6 +10,15 @@ install(TARGETS ${PROJECT_NAME}_core ${PROJECT_NAME}_driver odbcpp_auth_core
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
+# A private application prefix needs the loadable driver, not SDK archives or
+# headers. Keep this opt-in component out of the unchanged default SDK install.
+install(TARGETS ${PROJECT_NAME}_driver
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    COMPONENT ODBCPPDriverRuntime EXCLUDE_FROM_ALL
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    COMPONENT ODBCPPDriverRuntime EXCLUDE_FROM_ALL
+)
+
 # Preserve the exact historical header membership and destination spelling.
 # Python is a build preparation tool only; no installed target depends on it.
 find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
@@ -69,6 +78,10 @@ install(FILES
 
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-manifest.json"
   DESTINATION ${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME})
+
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/odbcpp-crypto-manifest.json"
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME}
+  COMPONENT ODBCPPDriverRuntime EXCLUDE_FROM_ALL)
 
 install(EXPORT ${PROJECT_NAME}Targets
   FILE ${PROJECT_NAME}Targets.cmake

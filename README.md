@@ -329,6 +329,25 @@ compile against the iODBC headers, set
 including a supplementary-plane character, and tests bound Unicode data on
 matching-width builds.
 
+### Private driver runtime installation
+
+Build `odbcpp_driver`, then install its runtime into a new application-owned
+prefix without installing SDK headers, archives or CMake exports:
+
+```bash
+cmake --build build-redshift --target odbcpp_driver
+cmake --install build-redshift --prefix /path/to/private-prefix \
+  --component ODBCPPDriverRuntime
+```
+
+This component installs the loadable driver (and its versioned symlinks where
+applicable) plus `share/odbcpp/odbcpp-crypto-manifest.json`, using the configured
+GNU installation directories. It does not register drivers or DSNs, install a
+Driver Manager, or bundle external crypto libraries or a CA trust store. Select
+the application's actual architecture and Unicode ABI before using the package;
+retain its verified TLS configuration and required runtime dependencies.
+The default full SDK installation remains available without `--component`.
+
 ### Build Scripts
 
 **build-database.sh** - Database-specific builds:
