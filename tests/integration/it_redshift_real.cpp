@@ -2956,3 +2956,134 @@ TEST_F(RedshiftMultirowFetchRealTest, OrderedRowsStatusNullAndRecovery) {
   EXPECT_EQ("row_no", descriptors[0].name); EXPECT_EQ("narrowed_value", descriptors[1].name);
   EXPECT_EQ("row_text", descriptors[2].name);
 }
+
+
+class RedshiftUnicodeAliasMetadataRealTest : public RedshiftRealTest {
+protected:
+  void SetUp() override {
+    const char* marker = std::getenv("ODBCPP_REDSHIFT_UNICODE_ALIAS_METADATA_ADMISSION");
+    if (marker == nullptr) {
+      GTEST_SKIP() << "Unicode alias metadata no-DDL scope is not admitted";
+    }
+    ASSERT_TRUE(std::string_view(marker) == "unicode-alias-metadata-v1")
+        << "Invalid Unicode alias metadata scope marker";
+    // FIRST gate, before configuration, handles or connection work.
+    RedshiftRealTest::SetUp();
+  }
+};
+
+TEST_F(RedshiftUnicodeAliasMetadataRealTest, DirectAndPreparedUnicodeAliasNamesAndRecovery) {
+  ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC, hdbc_);
+  // Independent UTF-8 bytes: U+00E9, U+8868 and U+1F600. These are SELECT
+  // result aliases, not catalog schema/table/column object-name evidence.
+  const std::string expected = "\xc3\xa9\xe8\xa1\xa8\xf0\x9f\x98\x80";
+  std::vector<SQLWCHAR> expected_wide{0x00e9, 0x8868};
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    expected_wide.push_back(0xd83d); expected_wide.push_back(0xde00);
+  } else {
+    static_assert(sizeof(SQLWCHAR) == 2 || sizeof(SQLWCHAR) == 4);
+    expected_wide.push_back(static_cast<SQLWCHAR>(0x1f600));
+  }
+  std::array<std::string, 2> owned_names;
+  std::array<std::vector<SQLWCHAR>, 2> owned_wide_names;
+  const auto trials = [&]() {
+    for (const bool prepared : {false, true}) {
+      SCOPED_TRACE(prepared);
+      std::string query = "SELECT CAST(7 AS INTEGER) AS \""
+          "\xc3\xa9\xe8\xa1\xa8\xf0\x9f\x98\x80"
+          "\", CAST('ok' AS VARCHAR(8)) AS neighbor";
+      if (prepared) {
+        ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt_, reinterpret_cast<SQLCHAR*>(query.data()), SQL_NTS))
+            << get_error(SQL_HANDLE_STMT, hstmt_);
+        SQLSMALLINT parameters = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLNumParams(hstmt_, &parameters)); EXPECT_EQ(0, parameters);
+        if (HasFailure()) { return; }
+        std::fill(query.begin(), query.end(), 'x');
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt_)) << get_error(SQL_HANDLE_STMT, hstmt_);
+      } else {
+        ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(query.data()), SQL_NTS))
+            << get_error(SQL_HANDLE_STMT, hstmt_);
+        std::fill(query.begin(), query.end(), 'x');
+      }
+      SQLSMALLINT count = -1;
+      ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt_, &count)); ASSERT_EQ(2, count);
+      std::array<SQLCHAR, 64> narrow; narrow.fill(0x5a);
+      std::array<SQLWCHAR, 32> wide; wide.fill(SQLWCHAR{0x5a});
+      SQLSMALLINT bytes = -1, units = -1, type = -1, wide_type = -1;
+      SQLSMALLINT scale = -1, wide_scale = -1, nullable = -1, wide_nullable = -1;
+      SQLULEN size = 99, wide_size = 99;
+      ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt_, 1, narrow.data(),
+          static_cast<SQLSMALLINT>(narrow.size()), &bytes, &type, &size, &scale, &nullable));
+      EXPECT_EQ(9, bytes); EXPECT_EQ(SQL_INTEGER, type); EXPECT_EQ(10u, size); EXPECT_EQ(0, scale);
+      EXPECT_EQ(0, std::memcmp(narrow.data(), expected.data(), expected.size()));
+      EXPECT_EQ(0, narrow[expected.size()]); EXPECT_EQ(0x5a, narrow[expected.size() + 1]);
+      ASSERT_EQ(SQL_SUCCESS, SQLDescribeColW(hstmt_, 1, wide.data(),
+          static_cast<SQLSMALLINT>(wide.size()), &units, &wide_type, &wide_size, &wide_scale, &wide_nullable));
+      EXPECT_EQ(static_cast<SQLSMALLINT>(expected_wide.size()), units);
+      EXPECT_TRUE(std::equal(expected_wide.begin(), expected_wide.end(), wide.begin()));
+      EXPECT_EQ(SQLWCHAR{0}, wide[expected_wide.size()]);
+      EXPECT_EQ(SQLWCHAR{0x5a}, wide[expected_wide.size() + 1]);
+      EXPECT_EQ(type, wide_type); EXPECT_EQ(size, wide_size);
+      EXPECT_EQ(scale, wide_scale); EXPECT_EQ(nullable, wide_nullable);
+      // DescribeColW counts units; ColAttributeW capacity and result count bytes.
+      narrow.fill(0x5a); bytes = -1;
+      ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, 1, SQL_DESC_NAME, narrow.data(),
+          static_cast<SQLSMALLINT>(narrow.size()), &bytes, nullptr));
+      EXPECT_EQ(9, bytes); EXPECT_EQ(0, std::memcmp(narrow.data(), expected.data(), expected.size()));
+      EXPECT_EQ(0, narrow[expected.size()]); EXPECT_EQ(0x5a, narrow[expected.size() + 1]);
+      wide.fill(SQLWCHAR{0x5a}); bytes = -1;
+      ASSERT_EQ(SQL_SUCCESS, SQLColAttributeW(hstmt_, 1, SQL_DESC_NAME, wide.data(),
+          static_cast<SQLSMALLINT>(sizeof(wide)), &bytes, nullptr));
+      EXPECT_EQ(static_cast<SQLSMALLINT>(expected_wide.size() * sizeof(SQLWCHAR)), bytes);
+      EXPECT_TRUE(std::equal(expected_wide.begin(), expected_wide.end(), wide.begin()));
+      EXPECT_EQ(SQLWCHAR{0}, wide[expected_wide.size()]);
+      EXPECT_EQ(SQLWCHAR{0x5a}, wide[expected_wide.size() + 1]);
+      wide.fill(SQLWCHAR{0x5a}); units = -1;
+      ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLDescribeColW(hstmt_, 1, wide.data(), 2,
+          &units, nullptr, nullptr, nullptr, nullptr));
+      EXPECT_EQ("01004", get_error(SQL_HANDLE_STMT, hstmt_));
+      EXPECT_EQ(static_cast<SQLSMALLINT>(expected_wide.size()), units);
+      EXPECT_EQ(SQLWCHAR{0x00e9}, wide[0]); EXPECT_EQ(SQLWCHAR{0}, wide[1]);
+      EXPECT_EQ(SQLWCHAR{0x5a}, wide[2]);
+      // Re-read the full name after truncation; copy only an asserted bounded buffer.
+      wide.fill(SQLWCHAR{0x5a});
+      ASSERT_EQ(SQL_SUCCESS, SQLDescribeColW(hstmt_, 1, wide.data(),
+          static_cast<SQLSMALLINT>(wide.size()), &units, nullptr, nullptr, nullptr, nullptr));
+      ASSERT_EQ(static_cast<SQLSMALLINT>(expected_wide.size()), units);
+      const auto trial = static_cast<std::size_t>(prepared ? 1 : 0);
+      owned_names[trial].assign(reinterpret_cast<const char*>(narrow.data()), expected.size());
+      owned_wide_names[trial].assign(wide.begin(), wide.begin() + units);
+      narrow.fill(0x5a); wide.fill(SQLWCHAR{0x5a});
+      std::array<SQLCHAR, 16> neighbor{};
+      ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt_, 2, neighbor.data(),
+          static_cast<SQLSMALLINT>(neighbor.size()), &bytes, &type, nullptr, nullptr, nullptr));
+      EXPECT_EQ(8, bytes); EXPECT_EQ(0, std::memcmp(neighbor.data(), "neighbor", 9));
+      EXPECT_EQ(SQL_VARCHAR, type);
+      if (HasFailure()) { return; }
+      ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+      SQLINTEGER value = -99; SQLLEN length = -1;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 1, SQL_C_SLONG, &value, sizeof(value), &length));
+      EXPECT_EQ(7, value); EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+      char text[8]; std::fill(std::begin(text), std::end(text), '\x5a'); length = -1;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 2, SQL_C_CHAR, text, sizeof(text), &length));
+      EXPECT_EQ(2, length); EXPECT_EQ(0, std::memcmp(text, "ok", 3)); EXPECT_EQ('\x5a', text[3]);
+      ASSERT_EQ(SQL_NO_DATA, SQLFetch(hstmt_)); ASSERT_EQ(SQL_NO_DATA, SQLMoreResults(hstmt_));
+      ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt_, SQL_CLOSE));
+    }
+  };
+  trials(); // Preserve failure and never replay a failed trial.
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt_, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt_, SQL_RESET_PARAMS));
+  SQLCHAR recovery[] = "SELECT 1";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, recovery, SQL_NTS)) << get_error(SQL_HANDLE_STMT, hstmt_);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  SQLINTEGER value = -99; SQLLEN length = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 1, SQL_C_SLONG, &value, sizeof(value), &length));
+  EXPECT_EQ(1, value); EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+  ASSERT_EQ(SQL_NO_DATA, SQLFetch(hstmt_)); ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+  if (!HasFailure()) {
+    for (std::size_t trial = 0; trial < owned_names.size(); ++trial) {
+      EXPECT_EQ(expected, owned_names[trial]); EXPECT_EQ(expected_wide, owned_wide_names[trial]);
+    }
+  }
+}
