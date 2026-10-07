@@ -30,6 +30,7 @@ struct Observations {
   bool catalog_executor{false}, catalog_builder{false};
   bool schema_executor{false};
   int catalog_calls{}, catalog_builds{}, catalog_error{};
+  std::optional<CatalogRequest> catalog_request;
   bool catalog_retire{}, catalog_throw{};
   int terminal_execution{}, connect_exception{};
   SQLULEN description_size{8};
@@ -128,7 +129,8 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
          std::get<TablesCatalogRequest>(request).mode == TablesCatalogRequest::Mode::Schemas);
   }
   const ICatalogQueries* catalog_queries() const noexcept override { return seen_->catalog_builder || seen_->catalog_executor ? this : nullptr; }
-  rs::util::Result<std::string> catalog_query(const CatalogRequest&) const override {
+  rs::util::Result<std::string> catalog_query(const CatalogRequest& request) const override {
+    seen_->catalog_request = request;
     ++seen_->catalog_builds;
     return std::string("SELECT legacy fixture");
   }
@@ -4609,4 +4611,218 @@ TEST_F(BackendContractTest, UnselectedSchemaRetainsGeneratedSqlAndSelectedErrorN
   ASSERT_EQ(SQL_SUCCESS, SQLTables(stmt, (SQLCHAR*)"", SQL_NTS, (SQLCHAR*)"%", SQL_NTS,
       (SQLCHAR*)"", SQL_NTS, nullptr, 0)) << schema_fixture_diagnostic(stmt);
   EXPECT_EQ(2, seen->catalog_calls); EXPECT_EQ(1, seen->catalog_builds);
+}
+
+
+namespace {
+// Independent Unicode oracle: no ODBC conversion helper computes expected units.
+std::vector<SQLWCHAR> unicode_metadata_units() {
+  if constexpr (sizeof(SQLWCHAR) == 2) {
+    return {0x00e9, 0x8868, 0xd83d, 0xde00, '\'', '"', '\\', '_', '%'};
+  } else {
+    return {0x00e9, 0x8868, static_cast<SQLWCHAR>(0x1f600), '\'', '"', '\\', '_', '%'};
+  }
+}
+void expect_unicode_metadata_cell(SQLHSTMT statement, SQLUSMALLINT column,
+    bool wide, const std::optional<std::string>& expected,
+    const std::vector<SQLWCHAR>& expected_units) {
+  SQLLEN indicator = 77;
+  if (wide) {
+    SQLWCHAR value[64];
+    std::fill(std::begin(value), std::end(value), SQLWCHAR{0x5a});
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(statement, column, SQL_C_WCHAR,
+        value, static_cast<SQLLEN>(sizeof(value)), &indicator));
+    if (!expected) {
+      EXPECT_EQ(SQL_NULL_DATA, indicator);
+      EXPECT_TRUE(std::all_of(std::begin(value), std::end(value),
+          [](SQLWCHAR ch) { return ch == SQLWCHAR{0x5a}; }));
+    } else {
+      ASSERT_LT(expected_units.size() + 1, std::size(value));
+      EXPECT_TRUE(std::equal(expected_units.begin(), expected_units.end(), value));
+      EXPECT_EQ(SQLWCHAR{0}, value[expected_units.size()]);
+      EXPECT_EQ(SQLWCHAR{0x5a}, value[expected_units.size() + 1]);
+      EXPECT_EQ(static_cast<SQLLEN>(expected_units.size() * sizeof(SQLWCHAR)), indicator);
+    }
+  } else {
+    char value[128];
+    std::fill(std::begin(value), std::end(value), '\x5a');
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(statement, column, SQL_C_CHAR,
+        value, static_cast<SQLLEN>(sizeof(value)), &indicator));
+    if (!expected) {
+      EXPECT_EQ(SQL_NULL_DATA, indicator);
+      EXPECT_TRUE(std::all_of(std::begin(value), std::end(value),
+          [](char ch) { return ch == '\x5a'; }));
+    } else {
+      ASSERT_LT(expected->size() + 1, std::size(value));
+      EXPECT_STREQ(expected->c_str(), value);
+      EXPECT_EQ('\x5a', value[expected->size() + 1]);
+      EXPECT_EQ(static_cast<SQLLEN>(expected->size()), indicator);
+    }
+  }
+}
+}
+
+TEST_F(BackendContractTest, UnicodeSchemaAndTableMetadataRowsOwnAnsiWideText) {
+  const std::string text = "é表😀'\"\\_%";
+  SQLCHAR empty[]{0}, percent[]{'%', 0};
+  SQLWCHAR wide_empty[]{0}, wide_percent[]{'%', 0};
+  const char* const names[]{"TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "TABLE_TYPE", "REMARKS"};
+  seen->catalog_builder = true; seen->catalog_executor = true;
+  // This covers the query-builder route. Selected SHOW execution has separate tests.
+  seen->schema_executor = false;
+  connect();
+  for (const bool schemas : {true, false}) {
+    for (const bool wide : {false, true}) {
+      SCOPED_TRACE(schemas);
+      SCOPED_TRACE(wide);
+      auto input_units = unicode_metadata_units(); input_units.push_back(0);
+      std::string argument_text = text;
+      QueryResult expected;
+      for (const auto* name : names) {
+        expected.columns.push_back({name, NativeTypeInfo{ScalarType::VarChar, 64, 0, true}});
+      }
+      expected.rows = schemas
+          ? decltype(expected.rows){{std::nullopt, text, std::nullopt, std::nullopt, std::nullopt}}
+          : decltype(expected.rows){{text, text, text, "TABLE", std::nullopt}};
+      expected.statement_kind = StatementKind::SelectCursor;
+      seen->date_result = expected;
+      const int queries = seen->queries, builds = seen->catalog_builds;
+      auto* narrow = reinterpret_cast<SQLCHAR*>(argument_text.data());
+      const SQLRETURN status = wide
+          ? SQLTablesW(stmt, schemas ? wide_empty : input_units.data(), SQL_NTS,
+                schemas ? wide_percent : input_units.data(), SQL_NTS,
+                schemas ? wide_empty : input_units.data(), SQL_NTS, nullptr, 0)
+          : SQLTables(stmt, schemas ? empty : narrow, SQL_NTS,
+                schemas ? percent : narrow, SQL_NTS,
+                schemas ? empty : narrow, SQL_NTS, nullptr, 0);
+      ASSERT_EQ(SQL_SUCCESS, status);
+      std::fill(argument_text.begin(), argument_text.end(), 'x');
+      std::fill(input_units.begin(), input_units.end(), SQLWCHAR{0x5a});
+      ASSERT_TRUE(seen->catalog_request);
+      const auto* request = std::get_if<TablesCatalogRequest>(&*seen->catalog_request);
+      ASSERT_NE(nullptr, request);
+      EXPECT_EQ(schemas ? TablesCatalogRequest::Mode::Schemas : TablesCatalogRequest::Mode::Tables, request->mode);
+      EXPECT_EQ(std::optional<std::string>(schemas ? "" : text), request->catalog);
+      EXPECT_EQ(std::optional<std::string>(schemas ? "%" : text), request->schema);
+      EXPECT_EQ(std::optional<std::string>(schemas ? "" : text), request->table);
+      EXPECT_FALSE(request->types);
+      EXPECT_EQ(queries + 1, seen->queries); EXPECT_EQ(builds + 1, seen->catalog_builds);
+      EXPECT_EQ(0, seen->catalog_calls);
+      SQLSMALLINT count = -1;
+      ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(stmt, &count)); ASSERT_EQ(5, count);
+      for (SQLUSMALLINT column = 1; column <= 5; ++column) {
+        SQLCHAR name[64]{}; SQLSMALLINT type{}, digits{}, nullable{}, length{}; SQLULEN size{};
+        ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, column, name,
+            static_cast<SQLSMALLINT>(sizeof(name)), &length, &type, &size, &digits, &nullable));
+        EXPECT_STREQ(names[column - 1], reinterpret_cast<char*>(name));
+        EXPECT_EQ(SQL_VARCHAR, type); EXPECT_EQ(64u, size); EXPECT_EQ(0, digits);
+        EXPECT_EQ(SQL_NULLABLE_UNKNOWN, nullable);
+      }
+      ASSERT_TRUE(seen->date_result);
+      ASSERT_EQ(1u, expected.rows.size()); ASSERT_EQ(5u, expected.rows[0].size());
+      seen->date_result->columns.clear(); seen->date_result->rows.clear(); seen->date_result.reset();
+      ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+      for (SQLUSMALLINT column = 1; column <= 5; ++column) {
+        const auto& cell = expected.rows[0][column - 1];
+        const auto units = column == 4 ? std::vector<SQLWCHAR>{'T','A','B','L','E'} : unicode_metadata_units();
+        expect_unicode_metadata_cell(stmt, column, wide, cell, units);
+      }
+      EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt)); ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+      ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+      ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+      EXPECT_EQ(queries + 2, seen->queries); EXPECT_EQ(0, seen->catalog_calls);
+      EXPECT_EQ(0, seen->disconnects);
+    }
+  }
+}
+
+TEST_F(BackendContractTest, UnicodeColumnsMetadataOwnsEighteenFieldsAndWideUnits) {
+  const std::string text = "é表😀'\"\\_%";
+  const char* const names[]{"table_cat", "table_schem", "table_name", "column_name", "data_type",
+      "type_name", "column_size", "buffer_length", "decimal_digits", "num_prec_radix", "nullable",
+      "remarks", "column_def", "sql_data_type", "sql_datetime_sub", "char_octet_length",
+      "ordinal_position", "is_nullable"};
+  const ScalarType families[]{ScalarType::VarChar, ScalarType::VarChar, ScalarType::VarChar,
+      ScalarType::VarChar, ScalarType::SmallInt, ScalarType::VarChar, ScalarType::Integer,
+      ScalarType::Integer, ScalarType::SmallInt, ScalarType::SmallInt, ScalarType::SmallInt,
+      ScalarType::VarChar, ScalarType::VarChar, ScalarType::SmallInt, ScalarType::SmallInt,
+      ScalarType::Integer, ScalarType::Integer, ScalarType::VarChar};
+  const SQLULEN sizes[]{64,64,64,64,5,64,10,10,5,5,5,64,64,5,5,10,10,3};
+  QueryResult expected;
+  for (std::size_t i = 0; i < 18; ++i) {
+    expected.columns.push_back({names[i], NativeTypeInfo{families[i], sizes[i], 0, true}});
+  }
+  expected.rows = {{text,text,text,text,"12","varchar","32","128",std::nullopt,std::nullopt,
+      "1",text,text,"12",std::nullopt,"128","1","YES"}};
+  expected.statement_kind = StatementKind::SelectCursor;
+  // Independent numeric oracle; no parsing of the fixture generates expected values.
+  const SQLINTEGER numeric[]{0,0,0,0,12,0,32,128,0,0,1,0,0,12,0,128,1,0};
+  seen->catalog_builder = true; seen->catalog_executor = true; connect();
+  for (const bool wide : {false, true}) {
+    SCOPED_TRACE(wide);
+    auto input_units = unicode_metadata_units(); input_units.push_back(0);
+    std::string argument_text = text;
+    seen->date_result = expected;
+    const int queries = seen->queries, builds = seen->catalog_builds;
+    auto* narrow = reinterpret_cast<SQLCHAR*>(argument_text.data());
+    const SQLRETURN status = wide
+        ? SQLColumnsW(stmt, input_units.data(), SQL_NTS, input_units.data(), SQL_NTS,
+              input_units.data(), SQL_NTS, input_units.data(), SQL_NTS)
+        : SQLColumns(stmt, narrow, SQL_NTS, narrow, SQL_NTS, narrow, SQL_NTS, narrow, SQL_NTS);
+    ASSERT_EQ(SQL_SUCCESS, status);
+    std::fill(argument_text.begin(), argument_text.end(), 'x');
+    std::fill(input_units.begin(), input_units.end(), SQLWCHAR{0x5a});
+    ASSERT_TRUE(seen->catalog_request);
+    const auto* request = std::get_if<ColumnsCatalogRequest>(&*seen->catalog_request);
+    ASSERT_NE(nullptr, request);
+    EXPECT_EQ(std::optional<std::string>(text), request->catalog);
+    EXPECT_EQ(std::optional<std::string>(text), request->schema);
+    EXPECT_EQ(std::optional<std::string>(text), request->table);
+    EXPECT_EQ(std::optional<std::string>(text), request->column);
+    EXPECT_EQ(queries + 1, seen->queries); EXPECT_EQ(builds + 1, seen->catalog_builds);
+    EXPECT_EQ(0, seen->catalog_calls);
+    SQLSMALLINT count = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(stmt, &count)); ASSERT_EQ(18, count);
+    for (SQLUSMALLINT column = 1; column <= 18; ++column) {
+      const auto i = static_cast<std::size_t>(column - 1);
+      SQLCHAR name[64]{}; SQLSMALLINT type{}, digits{}, nullable{}, length{}; SQLULEN size{};
+      ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, column, name,
+          static_cast<SQLSMALLINT>(sizeof(name)), &length, &type, &size, &digits, &nullable));
+      EXPECT_STREQ(names[i], reinterpret_cast<char*>(name)); EXPECT_EQ(sizes[i], size);
+      const auto expected_type = static_cast<SQLSMALLINT>(families[i] == ScalarType::VarChar
+          ? SQL_VARCHAR : families[i] == ScalarType::SmallInt ? SQL_SMALLINT : SQL_INTEGER);
+      EXPECT_EQ(expected_type, type); EXPECT_EQ(0, digits); EXPECT_EQ(SQL_NULLABLE_UNKNOWN, nullable);
+    }
+    ASSERT_TRUE(seen->date_result);
+    seen->date_result->columns.clear(); seen->date_result->rows.clear(); seen->date_result.reset();
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    ASSERT_EQ(1u, expected.rows.size()); ASSERT_EQ(18u, expected.rows[0].size());
+    for (SQLUSMALLINT column = 1; column <= 18; ++column) {
+      const auto i = static_cast<std::size_t>(column - 1);
+      const auto& cell = expected.rows[0][i];
+      if (families[i] == ScalarType::VarChar) {
+        const auto units = column == 6 ? std::vector<SQLWCHAR>{'v','a','r','c','h','a','r'}
+            : column == 18 ? std::vector<SQLWCHAR>{'Y','E','S'} : unicode_metadata_units();
+        expect_unicode_metadata_cell(stmt, column, wide, cell, units);
+      } else {
+        SQLLEN indicator = 77;
+        if (families[i] == ScalarType::SmallInt) {
+          SQLSMALLINT value = -123;
+          ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, column, SQL_C_SHORT, &value, sizeof(value), &indicator));
+          EXPECT_EQ(cell ? static_cast<SQLSMALLINT>(numeric[i]) : SQLSMALLINT{-123}, value);
+          EXPECT_EQ(cell ? static_cast<SQLLEN>(sizeof(value)) : SQL_NULL_DATA, indicator);
+        } else {
+          SQLINTEGER value = -456;
+          ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, column, SQL_C_LONG, &value, sizeof(value), &indicator));
+          EXPECT_EQ(cell ? numeric[i] : SQLINTEGER{-456}, value);
+          EXPECT_EQ(cell ? static_cast<SQLLEN>(sizeof(value)) : SQL_NULL_DATA, indicator);
+        }
+      }
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt)); ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    EXPECT_EQ(queries + 2, seen->queries); EXPECT_EQ(0, seen->catalog_calls);
+    EXPECT_EQ(0, seen->disconnects);
+  }
 }

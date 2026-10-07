@@ -862,3 +862,125 @@ void schema_real_wire_success() {
   session.disconnect(); EXPECT_EQ("a", result->rows[0][1]);
 }
 }  // namespace
+
+namespace {
+QueryResult schema_lookup_fixture() {
+  QueryResult value;
+  value.columns={{"database_name",NativeTypeInfo{ScalarType::VarChar,128,0,true}}};
+  value.rows={{"selected"}};value.affected_rows=1;return value;
+}
+template<class T> void expect_schema_reason(const BackendResult<T>& result,std::string_view reason) {
+  ASSERT_FALSE(result);
+  EXPECT_EQ(std::string("Invalid Redshift schema metadata: ")+std::string(reason),result.error_message());
+  EXPECT_EQ(BackendErrorClass::InvalidMetadata,result.backend_error().error_class);
+  EXPECT_EQ(BackendOperation::ExecuteCatalog,result.backend_error().operation);
+  EXPECT_EQ(SessionDisposition::Retire,result.session_snapshot().disposition);
+}
+}
+
+TEST(RedshiftShowSchemasDiagnostics, LookupReasonsPreserveFirstGuardAndCountOnePolicy) {
+  const std::array<std::string_view,8> expected{"lookup-structure","lookup-columns","lookup-name",
+      "lookup-type","lookup-rows","lookup-completion","lookup-identifier","lookup-snapshot"};
+  for(unsigned variant=0;variant<expected.size();++variant) {
+    auto value=schema_lookup_fixture();SessionSnapshot snapshot{SessionState::Idle,SessionDisposition::Reusable};
+    switch(variant) {
+      case 0:value.cell_errors.push_back({0,0});value.affected_rows=0;break;
+      case 1:value.columns.push_back(value.columns[0]);value.rows[0].push_back("extra");break;
+      case 2:value.columns[0].name="other";value.affected_rows=0;break;
+      case 3:value.columns[0].normalized_type->known=false;break;
+      case 4:value.rows.clear();break;
+      case 5:value.affected_rows=0;value.rows[0][0].reset();break;
+      case 6:value.rows[0][0].reset();break;
+      case 7:snapshot.disposition=SessionDisposition::Retire;break;
+    }
+    SCOPED_TRACE(variant);
+    expect_schema_reason(redshift_schema_database(BackendResult<QueryResult>{std::move(value),snapshot}),expected[variant]);
+  }
+  auto valid=redshift_schema_database(BackendResult<QueryResult>{schema_lookup_fixture(),
+      {SessionState::Idle,SessionDisposition::Reusable}});
+  ASSERT_TRUE(valid);EXPECT_EQ("selected",*valid);
+}
+
+TEST(RedshiftShowSchemasDiagnostics, ShowReasonsKeepOrderedShapeAndRowRejection) {
+  const std::array<std::string_view,11> expected{"show-database","show-structure","show-columns",
+      "show-rows","show-completion","show-layout","show-type","show-null-identity",
+      "show-foreign-database","show-identifier","show-duplicate"};
+  for(unsigned variant=0;variant<expected.size();++variant) {
+    auto value=schemas_response();std::string database="selected";
+    switch(variant) {
+      case 0:database.clear();value.columns.clear();break;
+      case 1:value.cell_errors.push_back({0,1});value.columns[1].name="wrong";break;
+      case 2:value.columns.pop_back();for(auto& row:value.rows)row.pop_back();break;
+      case 3:value.rows.resize(10001,value.rows[0]);value.affected_rows=8;break;
+      case 4:value.affected_rows=1;value.columns[1].name="wrong";break;
+      case 5:value.columns[1].name="wrong";break;
+      case 6:value.columns[1].normalized_type->type=ScalarType::Integer;break;
+      case 7:value.rows[0][1].reset();value.rows[0][0]="foreign";break;
+      case 8:value.rows[0][0]="foreign";value.rows[0][1]="";break;
+      case 9:value.rows[0][1]="";break;
+      case 10:value.rows[1][1]=value.rows[0][1];break;
+    }
+    SCOPED_TRACE(variant);
+    expect_schema_reason(normalize_redshift_schemas(database,BackendResult<QueryResult>{std::move(value),
+        {SessionState::Idle,SessionDisposition::Reusable}}),expected[variant]);
+  }
+  auto valid=normalize_redshift_schemas("selected",BackendResult<QueryResult>{schemas_response(),
+      {SessionState::Idle,SessionDisposition::Reusable}});
+  ASSERT_TRUE(valid);EXPECT_EQ(2u,valid->rows.size());
+}
+
+TEST(RedshiftShowSchemasDiagnostics, DeferredNativeErrorRemainsOwningWithoutLocalRelabeling) {
+  auto value=schema_lookup_fixture();QueryResult extra;
+  BackendError native{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),"synthetic"};
+  native.native_state="42501";native.session_state=SessionState::Idle;native.disposition=SessionDisposition::Reusable;
+  extra.error=native;value.additional_results.push_back(extra);
+  auto result=redshift_schema_database(BackendResult<QueryResult>{value,{SessionState::Idle,SessionDisposition::Reusable}});
+  ASSERT_FALSE(result);EXPECT_EQ(native.message,result.error_message());EXPECT_EQ("42501",result.backend_error().native_state);
+  EXPECT_EQ(SessionDisposition::Reusable,result.session_snapshot().disposition);
+}
+
+#include "core/database/postgres/pg_protocol_parser.h"
+TEST(RedshiftShowSchemasDiagnostics, LiteralCompletionTagsAndAlternateShapesStayRefused) {
+  PgProtocolParser parser;
+  Message no_count;no_count.tag='C';
+  no_count.payload={std::byte{'S'},std::byte{'E'},std::byte{'L'},std::byte{'E'},
+      std::byte{'C'},std::byte{'T'},std::byte{0}};
+  Message count_one;count_one.tag='C';
+  count_one.payload={std::byte{'S'},std::byte{'E'},std::byte{'L'},std::byte{'E'},
+      std::byte{'C'},std::byte{'T'},std::byte{' '},std::byte{'1'},std::byte{0}};
+  auto absent=schema_lookup_fixture();absent.affected_rows=parser.extract_query_result({no_count}).affected_rows;
+  EXPECT_EQ(0u,absent.affected_rows);
+  expect_schema_reason(redshift_schema_database(BackendResult<QueryResult>{absent,
+      {SessionState::Idle,SessionDisposition::Reusable}}),"lookup-completion");
+  auto counted=schema_lookup_fixture();counted.affected_rows=parser.extract_query_result({count_one}).affected_rows;
+  EXPECT_EQ(1u,counted.affected_rows);
+  EXPECT_TRUE(redshift_schema_database(BackendResult<QueryResult>{counted,
+      {SessionState::Idle,SessionDisposition::Reusable}}));
+  for(const unsigned count:{6u,8u}) {
+    auto value=schemas_response();
+    value.columns.resize(count,{"extra",NativeTypeInfo{ScalarType::VarChar,128,0,true}});
+    for(auto& row:value.rows)row.resize(count);
+    expect_schema_reason(normalize_redshift_schemas("selected",BackendResult<QueryResult>{value,
+        {SessionState::Idle,SessionDisposition::Reusable}}),"show-columns");
+  }
+}
+
+TEST(RedshiftShowSchemasDiagnostics, UnicodeSchemaIdentityOwnsAndSortsExactUtf8) {
+  const std::vector<std::string> names{"数据库_😀", "quote\"._%", "é_Σ_東京", "a"};
+  auto source=schemas_response();source.rows.clear();
+  for(const auto& name:names)
+    source.rows.push_back({"selected",name,"1","local",std::nullopt,std::nullopt,std::nullopt});
+  auto output=normalize_redshift_schemas("selected",BackendResult<QueryResult>{source,
+      {SessionState::Idle,SessionDisposition::Reusable}});
+  ASSERT_TRUE(output);source.rows.clear();
+  auto expected=names;std::sort(expected.begin(),expected.end());
+  ASSERT_EQ(expected.size(),output->rows.size());
+  for(std::size_t i=0;i<expected.size();++i) {
+    ASSERT_EQ(5u,output->rows[i].size());EXPECT_EQ(expected[i],output->rows[i][1]);
+    EXPECT_FALSE(output->rows[i][0]);EXPECT_FALSE(output->rows[i][2]);
+    EXPECT_FALSE(output->rows[i][3]);EXPECT_FALSE(output->rows[i][4]);
+  }
+  auto malformed=schemas_response();malformed.rows[0][1]=std::string("\xf0\x28\x8c\x28",4);
+  expect_schema_reason(normalize_redshift_schemas("selected",BackendResult<QueryResult>{malformed,
+      {SessionState::Idle,SessionDisposition::Reusable}}),"show-identifier");
+}

@@ -15,6 +15,49 @@
 #include <cstring>
 #include <span>
 
+namespace {
+// Closed local validation reasons only. Return static allowlist storage, never
+// the incoming native diagnostic or a substring of it.
+constexpr std::string_view safe_schema_refusal_label(std::string_view message) {
+  constexpr std::array<std::string_view, 19> allowed{
+      "Invalid Redshift schema metadata: lookup-structure",
+      "Invalid Redshift schema metadata: lookup-columns",
+      "Invalid Redshift schema metadata: lookup-name",
+      "Invalid Redshift schema metadata: lookup-type",
+      "Invalid Redshift schema metadata: lookup-rows",
+      "Invalid Redshift schema metadata: lookup-completion",
+      "Invalid Redshift schema metadata: lookup-identifier",
+      "Invalid Redshift schema metadata: lookup-snapshot",
+      "Invalid Redshift schema metadata: show-database",
+      "Invalid Redshift schema metadata: show-structure",
+      "Invalid Redshift schema metadata: show-columns",
+      "Invalid Redshift schema metadata: show-rows",
+      "Invalid Redshift schema metadata: show-completion",
+      "Invalid Redshift schema metadata: show-layout",
+      "Invalid Redshift schema metadata: show-type",
+      "Invalid Redshift schema metadata: show-null-identity",
+      "Invalid Redshift schema metadata: show-foreign-database",
+      "Invalid Redshift schema metadata: show-identifier",
+      "Invalid Redshift schema metadata: show-duplicate"};
+  constexpr std::string_view prefix = "Invalid Redshift schema metadata: ";
+  for (const auto candidate : allowed)
+    if (message == candidate) return candidate.substr(prefix.size());
+  return "unknown";
+}
+static_assert(safe_schema_refusal_label("Invalid Redshift schema metadata: lookup-completion")=="lookup-completion");
+static_assert(safe_schema_refusal_label("synthetic-secret-marker")=="unknown");
+static_assert(safe_schema_refusal_label("Invalid Redshift schema metadata: lookup-completion synthetic-secret-marker")=="unknown");
+constexpr char schema_diagnostic_embedded_nul[]="Invalid Redshift schema metadata: lookup-completion\0synthetic-secret-marker";
+static_assert(safe_schema_refusal_label(std::string_view(schema_diagnostic_embedded_nul,
+    sizeof(schema_diagnostic_embedded_nul)-1))=="unknown");
+constexpr auto schema_diagnostic_oversize=[] {
+  std::array<char,4096> bytes{};bytes.fill('x');return bytes;
+}();
+static_assert(safe_schema_refusal_label(std::string_view(schema_diagnostic_oversize.data(),
+    schema_diagnostic_oversize.size()))=="unknown");
+
+}  // namespace
+
 class RedshiftRealTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -86,6 +129,24 @@ protected:
     if (result == SQL_SUCCESS || result == SQL_SUCCESS_WITH_INFO)
       return std::string(reinterpret_cast<char*>(sqlstate));
     return "diagnostic unavailable";
+  }
+
+  std::string schema_catalog_diagnostic() {
+    std::array<SQLCHAR,6> state{};
+    std::array<SQLCHAR,256> message{};
+    SQLSMALLINT length=-1;
+    const auto result=SQLGetDiagRec(SQL_HANDLE_STMT,hstmt_,1,state.data(),nullptr,
+        message.data(),static_cast<SQLSMALLINT>(message.size()),&length);
+    std::string_view label="unknown";
+    if(result==SQL_SUCCESS&&length>=0&&static_cast<std::size_t>(length)<message.size())
+      label=safe_schema_refusal_label(std::string_view(
+          reinterpret_cast<const char*>(message.data()),static_cast<std::size_t>(length)));
+    const bool valid_state=(result==SQL_SUCCESS||result==SQL_SUCCESS_WITH_INFO)&&state[5]==0&&
+        std::all_of(state.begin(),state.begin()+5,[](unsigned char c){
+          return (c>='A'&&c<='Z')||(c>='0'&&c<='9');
+        });
+    return "schema_refusal="+std::string(label)+" state="+
+        (valid_state?std::string(reinterpret_cast<const char*>(state.data()),5):"unknown");
   }
 
   // Used only for the fixed pilot metadata query. The bounded pilot runner
@@ -1889,7 +1950,7 @@ protected:
     ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
     const CatalogField tables[]{{"table_cat",SQL_VARCHAR},{"table_schem",SQL_VARCHAR},{"table_name",SQL_VARCHAR},{"table_type",SQL_VARCHAR},{"remarks",SQL_VARCHAR}};
     SQLCHAR empty[]="";SQLCHAR all_schemas[]=SQL_ALL_SCHEMAS;
-    ASSERT_EQ(SQL_SUCCESS,SQLTables(hstmt_,empty,SQL_NTS,all_schemas,SQL_NTS,empty,SQL_NTS,nullptr,0)) << get_error(SQL_HANDLE_STMT,hstmt_);
+    ASSERT_EQ(SQL_SUCCESS,SQLTables(hstmt_,empty,SQL_NTS,all_schemas,SQL_NTS,empty,SQL_NTS,nullptr,0)) << schema_catalog_diagnostic();
     descriptors(tables,std::string_view(mode)=="SHOW" ? DescriptorScope::ShowSchemas : DescriptorScope::AllSchemas);ASSERT_FALSE(HasFailure());
     unsigned selected_schemas=0;bool exhausted=false;
     for(unsigned row=0;row<=64;++row) {

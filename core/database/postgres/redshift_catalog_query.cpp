@@ -18,9 +18,9 @@ std::string literal(const std::string& value) {
 }  // namespace
 
 namespace {
-BackendError invalid_schema_metadata() {
+BackendError invalid_schema_metadata(const char* fixed_reason) {
   BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
-      "Invalid Redshift schema metadata"};
+      std::string("Invalid Redshift schema metadata: ") + fixed_reason};
   error.error_class = BackendErrorClass::InvalidMetadata;
   error.operation = BackendOperation::ExecuteCatalog;
   return error;
@@ -47,12 +47,19 @@ BackendResult<std::string> redshift_schema_database(BackendResult<QueryResult> i
   if (source.error) return *source.error;
   for (const auto& extra : source.additional_results)
     if (extra.error) return *extra.error;
-  if (!clean_schema_result(source) || source.columns.size() != 1 ||
-      source.columns[0].name != "database_name" || !schema_text(source.columns[0]) ||
-      source.rows.size() != 1 || source.affected_rows != 1 || !source.rows[0][0] ||
-      !schema_identifier(*source.rows[0][0]) ||
-      input.session_snapshot().disposition == SessionDisposition::Retire)
-    return invalid_schema_metadata();
+  // Keep the original short-circuit order; diagnostics carry fixed local labels.
+  if (!clean_schema_result(source)) return invalid_schema_metadata("lookup-structure");
+  if (source.columns.size() != 1) return invalid_schema_metadata("lookup-columns");
+  if (source.columns[0].name != "database_name") return invalid_schema_metadata("lookup-name");
+  if (!schema_text(source.columns[0])) return invalid_schema_metadata("lookup-type");
+  if (source.rows.size() != 1) return invalid_schema_metadata("lookup-rows");
+  // Intentional parser contract: SELECT must report one completed row. Synthetic
+  // completion tests do not qualify the actual Redshift completion tag.
+  if (source.affected_rows != 1) return invalid_schema_metadata("lookup-completion");
+  if (!source.rows[0][0] || !schema_identifier(*source.rows[0][0]))
+    return invalid_schema_metadata("lookup-identifier");
+  if (input.session_snapshot().disposition == SessionDisposition::Retire)
+    return invalid_schema_metadata("lookup-snapshot");
   return BackendResult<std::string>{*source.rows[0][0], input.session_snapshot()};
 }
 
@@ -75,10 +82,14 @@ BackendResult<QueryResult> normalize_redshift_schemas(
   if (source.error) return *source.error;
   for (const auto& extra : source.additional_results)
     if (extra.error) return *extra.error;
-  if (!schema_identifier(database) || !clean_schema_result(source) ||
-      source.columns.size() != 7 || source.rows.size() > 10000 ||
-      (source.affected_rows != 0 && source.affected_rows != source.rows.size()))
-    return invalid_schema_metadata();
+  if (!schema_identifier(database)) return invalid_schema_metadata("show-database");
+  if (!clean_schema_result(source)) return invalid_schema_metadata("show-structure");
+  // Preserve the strict seven-field normalization contract. Actual server layout
+  // remains unqualified; these refusal labels measure it without accepting more.
+  if (source.columns.size() != 7) return invalid_schema_metadata("show-columns");
+  if (source.rows.size() > 10000) return invalid_schema_metadata("show-rows");
+  if (source.affected_rows != 0 && source.affected_rows != source.rows.size())
+    return invalid_schema_metadata("show-completion");
   constexpr std::array<std::string_view, 7> names{
       "database_name", "schema_name", "schema_owner", "schema_type",
       "schema_acl", "source_database", "schema_option"};
@@ -90,16 +101,18 @@ BackendResult<QueryResult> normalize_redshift_schemas(
         ++matches; indexes[expected] = actual;
       }
     }
-    if (matches != 1) return invalid_schema_metadata();
+    if (matches != 1) return invalid_schema_metadata("show-layout");
   }
   if (!schema_text(source.columns[indexes[0]]) ||
-      !schema_text(source.columns[indexes[1]])) return invalid_schema_metadata();
+      !schema_text(source.columns[indexes[1]])) return invalid_schema_metadata("show-type");
   std::set<std::string> schemas;
   for (const auto& row : source.rows) {
     const auto& db = row[indexes[0]];
     const auto& schema = row[indexes[1]];
-    if (!db || !schema || *db != database || !schema_identifier(*schema) ||
-        !schemas.insert(*schema).second) return invalid_schema_metadata();
+    if (!db || !schema) return invalid_schema_metadata("show-null-identity");
+    if (*db != database) return invalid_schema_metadata("show-foreign-database");
+    if (!schema_identifier(*schema)) return invalid_schema_metadata("show-identifier");
+    if (!schemas.insert(*schema).second) return invalid_schema_metadata("show-duplicate");
   }
   QueryResult output;
   for (const auto* name : {"TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "TABLE_TYPE", "REMARKS"})

@@ -475,3 +475,39 @@ TEST(CatalogQueryTest, ShowSchemaSelectionDoesNotAlterGeneratedLegacyQueryContra
   EXPECT_FALSE(redshift.selects_catalog_request(TablesCatalogRequest{}));
   EXPECT_FALSE(redshift.selects_catalog_request(ColumnsCatalogRequest{}));
 }
+
+
+TEST(CatalogQueryTest, RedshiftUnicodeMetadataPatternsPreserveUtf8AndEscapes) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  PgDatabaseConnection postgres;
+  ColumnsCatalogRequest request{"é表😀'\"\\_%", "é表😀'\"\\_%",
+      "é表😀'\"\\_%", "é表😀'\"\\_%"};
+  const auto query = redshift.catalog_query(request);
+  ASSERT_FALSE(query.has_error());
+  const std::string owned = *query;
+  EXPECT_NE(std::string::npos, owned.find("FROM svv_columns AS columns"));
+  EXPECT_NE(std::string::npos, owned.find(" AND table_cat = 'é表😀''\"\\\\_%'"));
+  EXPECT_NE(std::string::npos, owned.find(" AND table_schem LIKE 'é表😀''\"\\\\_%'"));
+  EXPECT_NE(std::string::npos, owned.find(" AND table_name LIKE 'é表😀''\"\\\\_%'"));
+  EXPECT_NE(std::string::npos, owned.find(" AND column_name LIKE 'é表😀''\"\\\\_%'"));
+  EXPECT_TRUE(owned.starts_with("SELECT table_cat, table_schem, table_name, column_name, data_type, "
+      "type_name, column_size, buffer_length, decimal_digits, num_prec_radix, "
+      "nullable, remarks, column_def, sql_data_type, sql_datetime_sub, "
+      "char_octet_length, ordinal_position, is_nullable FROM"));
+  EXPECT_TRUE(owned.ends_with("ORDER BY table_cat, table_schem, table_name, ordinal_position"));
+  const auto pg_query = postgres.catalog_query(request);
+  ASSERT_FALSE(pg_query.has_error());
+  EXPECT_EQ(std::string::npos, pg_query->find("FROM svv_columns"));
+  request.catalog = "poison"; request.schema.reset(); request.table.reset(); request.column.reset();
+  EXPECT_EQ(*query, owned);
+  TablesCatalogRequest schemas;
+  schemas.mode = TablesCatalogRequest::Mode::Schemas;
+  const auto unfiltered = redshift.catalog_query(schemas);
+  schemas.catalog = "é表😀'\"\\_%"; schemas.schema = "é表😀'\"\\_%";
+  schemas.table = "é表😀'\"\\_%";
+  const auto filtered = redshift.catalog_query(schemas);
+  ASSERT_FALSE(unfiltered.has_error()); ASSERT_FALSE(filtered.has_error());
+  EXPECT_EQ(*unfiltered, *filtered);
+  EXPECT_FALSE(redshift.is_connected()); EXPECT_FALSE(postgres.is_connected());
+}
