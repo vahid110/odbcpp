@@ -4826,3 +4826,33 @@ TEST_F(BackendContractTest, UnicodeColumnsMetadataOwnsEighteenFieldsAndWideUnits
     EXPECT_EQ(0, seen->disconnects);
   }
 }
+
+TEST_F(BackendContractTest, QueryDeadlineRetirementRequiresExplicitReconnectAndFreshPreparedCache) {
+  connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLSMALLINT type{}, scale{}, nullable{}; SQLULEN size{};
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &scale, &nullable));
+  const auto descriptions = seen->descriptions, created = seen->created;
+  SQLHSTMT failing{}; ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &failing));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(failing, SQL_ATTR_QUERY_TIMEOUT, reinterpret_cast<SQLPOINTER>(2), 0));
+  const auto before = rs::util::Clock::now();
+  EXPECT_EQ(SQL_ERROR, SQLExecDirect(failing, (SQLCHAR*)"timeout", SQL_NTS));
+  EXPECT_EQ("HYT00", state(SQL_HANDLE_STMT, failing));
+  EXPECT_GE(seen->deadline, before + std::chrono::seconds{2});
+  EXPECT_LE(seen->deadline, rs::util::Clock::now() + std::chrono::seconds{2});
+  const auto queries = seen->queries;
+  type = 77; size = 81;
+  EXPECT_EQ(SQL_ERROR, SQLDescribeParam(stmt, 1, &type, &size, &scale, &nullable));
+  EXPECT_EQ(77, type); EXPECT_EQ(81u, size); EXPECT_EQ(descriptions, seen->descriptions);
+  EXPECT_EQ(created, seen->created); EXPECT_EQ(queries, seen->queries);
+  seen->description_size = 32;
+  ASSERT_EQ(SQL_SUCCESS, SQLDriverConnect(dbc, nullptr, (SQLCHAR*)"SERVER=fake;SSL=0", SQL_NTS,
+      nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ(created + 1, seen->created);
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &scale, &nullable));
+  EXPECT_EQ(32u, size); EXPECT_EQ(descriptions + 1, seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &size, &scale, &nullable));
+  EXPECT_EQ(descriptions + 1, seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, failing));
+  ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+}

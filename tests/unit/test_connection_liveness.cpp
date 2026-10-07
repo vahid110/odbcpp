@@ -4444,3 +4444,256 @@ TEST(ConnectionOriginalDeadlineTest, InvalidInputsAndUnverifiedCleartextDoNotEmi
   const std::string_view secret=settings.password;
   EXPECT_EQ(std::search(peer->sent.begin(),peer->sent.end(),secret.begin(),secret.end(),[](std::byte b,char c){return std::to_integer<unsigned char>(b)==static_cast<unsigned char>(c);}),peer->sent.end());
 }
+
+namespace {
+// These independently authored server frames use the real PostgreSQL parser.
+// Deliberately late fake calls expose cooperative deadline boundaries only;
+// no socket, database or promise of interrupting a blocked OS call is involved.
+class QueryDeadlineWire final : public rs::core::transport::ITransport {
+ public:
+  enum class Late { None, Write, Header, Body, Ready, ErrorBoundary };
+  QueryDeadlineWire() { startup(); }
+  void startup() {
+    input_.clear(); offset_ = 0; armed_ = false;
+    frame('R', {0,0,0,0}); frame('Z', {'I'});
+  }
+  void arm(bool prepared, Late late = Late::None, bool error = false,
+           bool deferred = false) {
+    input_.clear(); offset_ = 0; reads.clear(); writes.clear(); sent.clear();
+    late_ = late; armed_ = true; error_end_ = 0; first_body_byte_ = prepared ? 16u : 6u;
+    if (prepared) { frame('1', {}); frame('2', {}); }
+    if (!error || deferred) {
+      // One text column v, OID25, unknown typmod, text format; one owning cell x.
+      frame('T', {0,1,'v',0, 0,0,0,0, 0,0, 0,0,0,25, 255,255,
+                  255,255,255,255, 0,0});
+      frame('D', {0,1, 0,0,0,1, 'x'});
+      frame('C', {'S','E','L','E','C','T',' ','1',0});
+    }
+    if (error) {
+      frame('E', {'S','E','R','R','O','R',0, 'C','2','2','0','1','2',0,
+                  'M','f','i','x','e','d',0,0});
+      error_end_ = input_.size();
+    }
+    frame('Z', {static_cast<unsigned char>(deferred ? 'E' : 'I')});
+  }
+  rs::util::Result<void> connect(std::string_view, uint16_t, rs::util::Deadline) override {
+    return {};
+  }
+  rs::util::Result<rs::core::transport::IOResult> send(
+      std::span<const std::byte> bytes, rs::util::Deadline deadline) override {
+    if (armed_) {
+      writes.push_back(deadline); sent.push_back(bytes.front());
+      if (late_ == Late::Write && writes.size() == 1) OriginalDeadlineWire::exhaust(deadline);
+    }
+    return rs::core::transport::IOResult{armed_ ? 1u : bytes.size(), false};
+  }
+  rs::util::Result<rs::core::transport::IOResult> recv(
+      std::span<std::byte> bytes, rs::util::Deadline deadline) override {
+    if (offset_ == input_.size()) return {rs::util::DbErrorCode::NetworkError, "literal fixture exhausted"};
+    bytes[0] = input_[offset_++];
+    if (armed_) {
+      reads.push_back(deadline);
+      if ((late_ == Late::Header && reads.size() == 1) ||
+          (late_ == Late::Body && offset_ == first_body_byte_) ||
+          (late_ == Late::Ready && offset_ == input_.size()) ||
+          (late_ == Late::ErrorBoundary && offset_ == error_end_)) {
+        OriginalDeadlineWire::exhaust(deadline);
+      }
+    }
+    return rs::core::transport::IOResult{1, false};
+  }
+  void close() noexcept override { ++closes; }
+  std::vector<rs::util::Deadline> reads, writes;
+  std::vector<std::byte> sent;
+  unsigned closes{};
+ private:
+  void frame(char tag, std::initializer_list<unsigned char> payload) {
+    input_.push_back(std::byte(static_cast<unsigned char>(tag)));
+    const auto length = static_cast<unsigned>(payload.size() + 4);
+    for (int shift : {24,16,8,0}) input_.push_back(std::byte((length >> shift) & 255u));
+    for (auto byte : payload) input_.push_back(std::byte(byte));
+  }
+  std::vector<std::byte> input_;
+  std::size_t offset_{}, error_end_{}, first_body_byte_{};
+  bool armed_{};
+  Late late_{Late::None};
+};
+class QueryDeadlineParser final : public rs::core::database::postgres::PgProtocolParser {
+ public:
+  std::optional<rs::util::Deadline> encoding_expiry;
+  std::vector<std::byte> create_simple_query(std::string_view sql, std::size_t limit) override {
+    auto result = PgProtocolParser::create_simple_query(sql, limit);
+    if (encoding_expiry) OriginalDeadlineWire::exhaust(*encoding_expiry);
+    return result;
+  }
+  std::vector<std::byte> create_prepared_query(std::string_view sql,
+      std::span<const rs::core::database::QueryParameter> parameters, std::size_t limit) override {
+    auto result = PgProtocolParser::create_prepared_query(sql, parameters, limit);
+    if (encoding_expiry) OriginalDeadlineWire::exhaust(*encoding_expiry);
+    return result;
+  }
+};
+class QueryDeadlineConnection final : public rs::core::database::GenericDatabaseConnection {
+ public:
+  using GenericDatabaseConnection::GenericDatabaseConnection;
+  std::optional<rs::util::Deadline> normalization_expiry;
+  rs::core::database::NativeTypeInfo describe_type(std::uint32_t id,
+      std::int16_t size, std::int32_t modifier) const override {
+    auto result = GenericDatabaseConnection::describe_type(id, size, modifier);
+    if (normalization_expiry) OriginalDeadlineWire::exhaust(*normalization_expiry);
+    return result;
+  }
+};
+auto execute_deadline_query(rs::core::database::GenericDatabaseConnection& connection,
+    bool prepared, rs::util::Deadline deadline) {
+  const rs::core::database::QueryParameter parameters[]{{"x", rs::core::database::QueryParameterType::Text}};
+  return prepared ? connection.execute_prepared("SELECT ?", parameters, deadline)
+                  : connection.execute_query("SELECT 'x'", deadline);
+}
+void expect_query_timeout(const rs::core::database::BackendResult<rs::core::database::QueryResult>& result,
+    bool prepared) {
+  using namespace rs::core::database;
+  ASSERT_FALSE(result);
+  EXPECT_EQ(BackendErrorClass::Timeout, result.backend_error().error_class);
+  EXPECT_EQ(prepared ? BackendOperation::ExecutePrepared : BackendOperation::ExecuteDirect,
+            result.backend_error().operation);
+  EXPECT_EQ((SessionSnapshot{SessionState::Disconnected, SessionDisposition::Retire}), result.session_snapshot());
+}
+void expect_query_deadline(const QueryDeadlineWire& wire, rs::util::Deadline deadline) {
+  for (auto value : wire.writes) EXPECT_EQ(deadline, value);
+  for (auto value : wire.reads) EXPECT_EQ(deadline, value);
+}
+}
+
+TEST(QueryOriginalDeadlineTest, ExpiredExecutionAndEncodingExpiryDispatchNothing) {
+  using namespace rs::core::database;
+  for (bool prepared : {false, true}) {
+    SCOPED_TRACE(prepared);
+    for (bool during_encoding : {false, true}) {
+      SCOPED_TRACE(during_encoding);
+      auto parser = std::make_unique<QueryDeadlineParser>(); auto* codec = parser.get();
+      auto transport = std::make_unique<QueryDeadlineWire>(); auto* wire = transport.get();
+      QueryDeadlineConnection connection(std::move(parser), std::move(transport));
+      auto settings = pg_fixture_settings(); settings.use_ssl = false;
+      ASSERT_TRUE(connection.connect(settings)); wire->arm(prepared);
+      const auto deadline = during_encoding ? rs::util::make_deadline(std::chrono::milliseconds{20})
+                                            : rs::util::Clock::now();
+      if (during_encoding) codec->encoding_expiry = deadline;
+      expect_query_timeout(execute_deadline_query(connection, prepared, deadline), prepared);
+      EXPECT_TRUE(wire->reads.empty()); EXPECT_TRUE(wire->writes.empty());
+      EXPECT_FALSE(connection.is_connected()); EXPECT_GT(wire->closes, 0u);
+    }
+  }
+}
+TEST(QueryOriginalDeadlineTest, InputAndDisconnectedPrecedenceRemainBeforeDeadline) {
+  using namespace rs::core::database;
+  auto transport = std::make_unique<QueryDeadlineWire>(); auto* wire = transport.get();
+  QueryDeadlineConnection connection(std::make_unique<QueryDeadlineParser>(), std::move(transport));
+  auto settings = pg_fixture_settings(); settings.use_ssl = false;
+  ASSERT_TRUE(connection.connect(settings)); wire->arm(false);
+  const auto expired = rs::util::Clock::now();
+  const auto invalid = connection.execute_query(std::string("a\0b", 3), expired);
+  ASSERT_FALSE(invalid); EXPECT_EQ(BackendErrorClass::InvalidInput, invalid.backend_error().error_class);
+  const QueryParameter parameters[]{{"x", QueryParameterType::Text}};
+  const auto invalid_prepared = connection.execute_prepared("SELECT ?,?", parameters, expired);
+  ASSERT_FALSE(invalid_prepared); EXPECT_EQ(BackendErrorClass::InvalidInput, invalid_prepared.backend_error().error_class);
+  EXPECT_TRUE(connection.is_connected()); EXPECT_TRUE(wire->writes.empty()); EXPECT_TRUE(wire->reads.empty());
+  connection.disconnect();
+  const auto disconnected = execute_deadline_query(connection, true, expired);
+  ASSERT_FALSE(disconnected); EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::NotConnected), disconnected.error());
+  EXPECT_TRUE(wire->writes.empty()); EXPECT_TRUE(wire->reads.empty());
+}
+TEST(QueryOriginalDeadlineTest, FragmentedSuccessKeepsOriginalDeadlineAndOwningRows) {
+  using namespace rs::core::database;
+  for (bool prepared : {false, true}) {
+    SCOPED_TRACE(prepared);
+    auto transport = std::make_unique<QueryDeadlineWire>(); auto* wire = transport.get();
+    postgres::PgDatabaseConnection connection(std::move(transport));
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
+    ASSERT_TRUE(connection.connect(settings)); wire->arm(prepared);
+    const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+    auto result = execute_deadline_query(connection, prepared, deadline); ASSERT_TRUE(result);
+    EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), result.session_snapshot());
+    ASSERT_EQ(1u, result->rows.size()); EXPECT_EQ(std::optional<std::string>{"x"}, result->rows[0][0]);
+    EXPECT_GT(wire->reads.size(), 10u); EXPECT_GT(wire->writes.size(), 5u); expect_query_deadline(*wire, deadline);
+    auto owned = std::move(*result); connection.disconnect(); wire->startup();
+    ASSERT_TRUE(connection.connect(settings)); connection.disconnect();
+    EXPECT_EQ(std::optional<std::string>{"x"}, owned.rows[0][0]);
+  }
+}
+TEST(QueryOriginalDeadlineTest, LateFragmentStopsBeforeAnyFurtherIoAndRetires) {
+  using namespace rs::core::database;
+  for (bool prepared : {false, true}) {
+    for (auto late : {QueryDeadlineWire::Late::Write, QueryDeadlineWire::Late::Header, QueryDeadlineWire::Late::Body}) {
+      SCOPED_TRACE(prepared);
+      SCOPED_TRACE(static_cast<int>(late));
+      auto transport = std::make_unique<QueryDeadlineWire>(); auto* wire = transport.get();
+      postgres::PgDatabaseConnection connection(std::move(transport));
+      auto settings = pg_fixture_settings(); settings.use_ssl = false;
+      ASSERT_TRUE(connection.connect(settings)); wire->arm(prepared, late);
+      const auto deadline = rs::util::make_deadline(std::chrono::milliseconds{20});
+      expect_query_timeout(execute_deadline_query(connection, prepared, deadline), prepared);
+      expect_query_deadline(*wire, deadline); EXPECT_FALSE(connection.is_connected());
+      if (late == QueryDeadlineWire::Late::Write) { EXPECT_EQ(1u, wire->writes.size()); EXPECT_TRUE(wire->reads.empty()); }
+      if (late == QueryDeadlineWire::Late::Header) EXPECT_EQ(1u, wire->reads.size());
+      if (late == QueryDeadlineWire::Late::Body) EXPECT_EQ(prepared ? 16u : 6u, wire->reads.size());
+      const auto sends = wire->writes.size(), reads = wire->reads.size();
+      EXPECT_FALSE(execute_deadline_query(connection, prepared, rs::util::make_deadline(std::chrono::seconds{2})));
+      EXPECT_EQ(sends, wire->writes.size()); EXPECT_EQ(reads, wire->reads.size());
+    }
+  }
+}
+TEST(QueryOriginalDeadlineTest, LateSuccessfulReadyAndNormalizationNeverPublishRows) {
+  using namespace rs::core::database;
+  for (bool prepared : {false, true}) {
+    for (bool normalize : {false, true}) {
+      SCOPED_TRACE(prepared);
+      SCOPED_TRACE(normalize);
+      auto transport = std::make_unique<QueryDeadlineWire>(); auto* wire = transport.get();
+      QueryDeadlineConnection connection(std::make_unique<QueryDeadlineParser>(), std::move(transport));
+      auto settings = pg_fixture_settings(); settings.use_ssl = false;
+      ASSERT_TRUE(connection.connect(settings));
+      wire->arm(prepared, normalize ? QueryDeadlineWire::Late::None : QueryDeadlineWire::Late::Ready);
+      const auto deadline = rs::util::make_deadline(std::chrono::milliseconds{20});
+      if (normalize) connection.normalization_expiry = deadline;
+      expect_query_timeout(execute_deadline_query(connection, prepared, deadline), prepared);
+      expect_query_deadline(*wire, deadline); EXPECT_FALSE(connection.is_connected()); EXPECT_GT(wire->closes, 0u);
+    }
+  }
+}
+TEST(QueryOriginalDeadlineTest, CompleteNativeErrorKeepsPrecedenceButExpiredDrainRetires) {
+  using namespace rs::core::database;
+  for (bool incomplete : {false, true}) {
+    SCOPED_TRACE(incomplete);
+    auto transport = std::make_unique<QueryDeadlineWire>(); auto* wire = transport.get();
+    postgres::PgDatabaseConnection connection(std::move(transport));
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
+    ASSERT_TRUE(connection.connect(settings));
+    wire->arm(false, incomplete ? QueryDeadlineWire::Late::ErrorBoundary : QueryDeadlineWire::Late::Ready, true);
+    const auto deadline = rs::util::make_deadline(std::chrono::milliseconds{20});
+    const auto result = execute_deadline_query(connection, false, deadline); ASSERT_FALSE(result);
+    if (incomplete) {
+      expect_query_timeout(result, false); EXPECT_FALSE(connection.is_connected());
+      EXPECT_FALSE(result.backend_error().native_state.has_value());
+    } else {
+      EXPECT_EQ(std::optional<std::string>{"22012"}, result.backend_error().native_state);
+      EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), result.session_snapshot());
+      EXPECT_TRUE(connection.is_connected());
+    }
+    expect_query_deadline(*wire, deadline);
+  }
+}
+TEST(QueryOriginalDeadlineTest, CompletedDeferredErrorKeepsRowsAndFailureOrder) {
+  using namespace rs::core::database;
+  auto transport = std::make_unique<QueryDeadlineWire>(); auto* wire = transport.get();
+  postgres::PgDatabaseConnection connection(std::move(transport));
+  auto settings = pg_fixture_settings(); settings.use_ssl = false;
+  ASSERT_TRUE(connection.connect(settings)); wire->arm(false, QueryDeadlineWire::Late::None, true, true);
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+  const auto result = execute_deadline_query(connection, false, deadline); ASSERT_TRUE(result);
+  ASSERT_EQ(1u, result->rows.size()); EXPECT_EQ(std::optional<std::string>{"x"}, result->rows[0][0]);
+  ASSERT_EQ(1u, result->additional_results.size()); ASSERT_TRUE(result->additional_results[0].error);
+  EXPECT_EQ(std::optional<std::string>{"22012"}, result->additional_results[0].error->native_state);
+  EXPECT_EQ((SessionSnapshot{SessionState::FailedTransaction, SessionDisposition::ResetRequired}), result.session_snapshot());
+  expect_query_deadline(*wire, deadline); EXPECT_TRUE(connection.is_connected());
+}

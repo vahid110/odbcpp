@@ -454,7 +454,7 @@ BackendResult<QueryResult> GenericDatabaseConnection::execute_query_impl(std::st
     return BackendResult<QueryResult>{
         rs::util::DbErrorCode::InvalidParameter, error.what()};
   }
-  auto write_result = write_all_result(query_msg, deadline);
+  auto write_result = write_all_result(query_msg, deadline, true);
   if (write_result.has_error()) {
     return BackendResult<QueryResult>{write_result.error(), write_result.error_message()};
   }
@@ -480,7 +480,7 @@ BackendResult<QueryResult> GenericDatabaseConnection::execute_prepared_impl(std:
     return BackendResult<QueryResult>{
         rs::util::DbErrorCode::InvalidParameter, error.what()};
   }
-  auto write_result = write_all_result(query_msg, deadline);
+  auto write_result = write_all_result(query_msg, deadline, true);
   if (write_result.has_error()) {
     return BackendResult<QueryResult>{write_result.error(), write_result.error_message()};
   }
@@ -603,7 +603,8 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
       mark_transport_failed();
       return {rs::util::DbErrorCode::ResourceLimit, "Database response message limit exceeded"};
     }
-    auto msg_result = read_message_result(deadline, settings_.response_limits.max_wire_bytes - wire_bytes);
+    auto msg_result = read_message_result(deadline, settings_.response_limits.max_wire_bytes - wire_bytes,
+        !description_response);
     if (msg_result.has_error()) {
       return BackendResult<QueryResult>{msg_result.error(), msg_result.error_message()};
     }
@@ -913,6 +914,13 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
           "Data source returned invalid execution sequence"};
       error.error_class = BackendErrorClass::InvalidMetadata;
       return error;
+    }
+    // A completed error keeps the earlier error/structure precedence above.
+    // Successful execution is published only within its original deadline;
+    // this refuses late buffered/normalized data, not a blocked OS call.
+    if (!description_response && rs::util::Clock::now() >= deadline) {
+      mark_transport_failed();
+      return {rs::util::DbErrorCode::Timeout, "Database query deadline expired"};
     }
     return normalized;
   } catch (const std::bad_alloc&) {
