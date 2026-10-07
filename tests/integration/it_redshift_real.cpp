@@ -1293,7 +1293,21 @@ TEST_F(RedshiftRealTest, PasswordRejectedThenFreshValidConnection) {
 
 // These finite type cases are not part of the admitted pilot inventory merely
 // because they compile. Live qualification requires a separately reviewed batch.
-TEST_F(RedshiftRealTest, IntegerBoundariesAndNarrowing) {
+class RedshiftNumericResultBoundaryRealTest : public RedshiftRealTest {
+protected:
+  void SetUp() override {
+    const char* marker = std::getenv("ODBCPP_REDSHIFT_NUMERIC_RESULT_ADMISSION");
+    if (marker == nullptr) {
+      GTEST_SKIP() << "Numeric result boundary scope is not admitted";
+    }
+    ASSERT_TRUE(std::string_view(marker) == "numeric-result-boundary-v1")
+        << "Invalid numeric result boundary scope marker";
+    // FIRST gate, before configuration, handles or connection work.
+    RedshiftRealTest::SetUp();
+  }
+};
+
+TEST_F(RedshiftNumericResultBoundaryRealTest, IntegerBoundariesAndNarrowing) {
   ASSERT_TRUE(connect());
   ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(
       const_cast<char*>("SELECT CAST('-9223372036854775808' AS BIGINT), "
@@ -1309,16 +1323,50 @@ TEST_F(RedshiftRealTest, IntegerBoundariesAndNarrowing) {
     EXPECT_EQ(expected[column - 1], value);
     EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
   }
+  if (HasFailure()) return;
   SQLSMALLINT sentinel = 17; SQLLEN length = 93;
   EXPECT_EQ(SQL_ERROR, SQLGetData(hstmt_, 3, SQL_C_SSHORT,
       &sentinel, sizeof(sentinel), &length));
   EXPECT_EQ("22003", get_error(SQL_HANDLE_STMT, hstmt_));
   EXPECT_EQ(17, sentinel);
   EXPECT_EQ(93, length);
+  if (HasFailure()) return;
+  // A failed narrowing conversion must not consume the current cell.
+  SQLINTEGER widened = -1;
+  SQLLEN widened_length = 93;
+  const auto retry = SQLGetData(hstmt_, 3, SQL_C_SLONG, &widened,
+                               sizeof(widened), &widened_length);
+  SCOPED_TRACE("column=3 target=C_SLONG SQLSTATE=" +
+               get_error(SQL_HANDLE_STMT, hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, retry);
+  EXPECT_EQ(32768, widened);
+  EXPECT_EQ(static_cast<SQLLEN>(sizeof(widened)), widened_length);
+  if (HasFailure()) return;
   EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  if (HasFailure()) return;
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_))
+      << get_error(SQL_HANDLE_STMT, hstmt_);
+
+  // The same connection and statement remain usable after local 22003.
+  SQLCHAR recovery_query[] = "SELECT 1";
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, recovery_query, SQL_NTS))
+      << get_error(SQL_HANDLE_STMT, hstmt_);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_))
+      << get_error(SQL_HANDLE_STMT, hstmt_);
+  SQLINTEGER recovered = -1;
+  SQLLEN recovered_length = 93;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 1, SQL_C_SLONG, &recovered,
+                                  sizeof(recovered), &recovered_length))
+      << get_error(SQL_HANDLE_STMT, hstmt_);
+  EXPECT_EQ(1, recovered);
+  EXPECT_EQ(static_cast<SQLLEN>(sizeof(recovered)), recovered_length);
+  if (HasFailure()) return;
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_))
+      << get_error(SQL_HANDLE_STMT, hstmt_);
 }
 
-TEST_F(RedshiftRealTest, ExactDecimalAndNull) {
+TEST_F(RedshiftNumericResultBoundaryRealTest, ExactDecimalAndNull) {
   ASSERT_TRUE(connect());
   ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(
       const_cast<char*>("SELECT CAST('123.45' AS DECIMAL(5,2)), "
