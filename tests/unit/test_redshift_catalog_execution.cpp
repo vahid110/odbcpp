@@ -574,6 +574,7 @@ TEST(RedshiftCatalogExecution, RealWireMalformedCatalogCompletionRetiresWithoutF
 
 #include "core/database/postgres/redshift_catalog_query.h"
 #include <functional>
+#include <limits>
 
 namespace {
 TablesCatalogRequest schemas_request() {
@@ -610,6 +611,7 @@ class SchemaSpy final : public SpySession {
       QueryResult identity;
       identity.columns = {{"database_name", NativeTypeInfo{ScalarType::VarChar, 128, 0, true}}};
       identity.rows = {{database}}; identity.affected_rows = 1;
+      identity.statement_kind = StatementKind::SelectCursor;
       return BackendResult<QueryResult>{identity_override.value_or(identity), snapshot};
     }
     return BackendResult<QueryResult>{show, snapshot};
@@ -688,6 +690,7 @@ TEST(RedshiftShowSchemas, ReturnedUnicodeIdentifierIsQuotedAndMalformedIdentityS
     SchemaSpy spy; QueryResult identity;
     identity.columns = {{"database_name", NativeTypeInfo{ScalarType::VarChar, 128, 0, true}}};
     identity.rows = {{"selected"}}; identity.affected_rows = 1;
+    identity.statement_kind = StatementKind::SelectCursor;
     if (variant == 0) identity.rows[0][0].reset();
     if (variant == 1) identity.rows.push_back({"selected"});
     if (variant == 2) identity.columns[0].normalized_type->known = false;
@@ -745,6 +748,7 @@ TEST(RedshiftShowSchemas, NativeFailureAndRetirementStayOwningWithoutReplayAndRe
   QueryResult identity;
   identity.columns = {{"database_name", NativeTypeInfo{ScalarType::VarChar, 128, 0, true}}};
   identity.rows = {{"selected"}}; identity.affected_rows = 1;
+    identity.statement_kind = StatementKind::SelectCursor;
   QueryResult extra; extra.error = failure; identity.additional_results.push_back(extra);
   deferred.identity_override = identity;
   auto deferred_error = deferred.execute_catalog(schemas_request(), rs::util::make_deadline(std::chrono::seconds{1}));
@@ -778,8 +782,8 @@ TEST(RedshiftShowSchemas, ExpiredAndLateIdentityNeverDispatchShow) {
 }
 
 namespace {
-// Real PgProtocolParser path: especially SELECT 1 completion row count, which
-// differs from the zero affected-row metadata of SHOW. No session overrides.
+// Real parser/Generic path: a completed SELECT can omit its affected count.
+// Identity cardinality and explicit completion remain separate. No overrides.
 class SchemaWireTransport final : public rs::core::transport::ITransport {
  public:
   unsigned queries{0};
@@ -819,7 +823,7 @@ class SchemaWireTransport final : public rs::core::transport::ITransport {
           for (char ch : *value) row.push_back(static_cast<std::byte>(ch)); }
       }
       frame('D', row); std::vector<std::byte> completion;
-      text(completion, queries == 1 ? "SELECT 1" : "SHOW"); frame('C', completion);
+      text(completion, queries == 1 ? "SELECT" : "SHOW"); frame('C', completion);
       frame('Z', {std::byte{'I'}});
     }
     return rs::core::transport::IOResult{bytes.size(), false};
@@ -867,7 +871,8 @@ namespace {
 QueryResult schema_lookup_fixture() {
   QueryResult value;
   value.columns={{"database_name",NativeTypeInfo{ScalarType::VarChar,128,0,true}}};
-  value.rows={{"selected"}};value.affected_rows=1;return value;
+  value.rows={{"selected"}};value.affected_rows=1;
+  value.statement_kind=StatementKind::SelectCursor;return value;
 }
 template<class T> void expect_schema_reason(const BackendResult<T>& result,std::string_view reason) {
   ASSERT_FALSE(result);
@@ -878,7 +883,7 @@ template<class T> void expect_schema_reason(const BackendResult<T>& result,std::
 }
 }
 
-TEST(RedshiftShowSchemasDiagnostics, LookupReasonsPreserveFirstGuardAndCountOnePolicy) {
+TEST(RedshiftShowSchemasDiagnostics, LookupReasonsPreserveFirstGuardAndCompletedSelectPolicy) {
   const std::array<std::string_view,8> expected{"lookup-structure","lookup-columns","lookup-name",
       "lookup-type","lookup-rows","lookup-completion","lookup-identifier","lookup-snapshot"};
   for(unsigned variant=0;variant<expected.size();++variant) {
@@ -889,7 +894,7 @@ TEST(RedshiftShowSchemasDiagnostics, LookupReasonsPreserveFirstGuardAndCountOneP
       case 2:value.columns[0].name="other";value.affected_rows=0;break;
       case 3:value.columns[0].normalized_type->known=false;break;
       case 4:value.rows.clear();break;
-      case 5:value.affected_rows=0;value.rows[0][0].reset();break;
+      case 5:value.affected_rows=2;value.rows[0][0].reset();break;
       case 6:value.rows[0][0].reset();break;
       case 7:snapshot.disposition=SessionDisposition::Retire;break;
     }
@@ -940,7 +945,7 @@ TEST(RedshiftShowSchemasDiagnostics, DeferredNativeErrorRemainsOwningWithoutLoca
 }
 
 #include "core/database/postgres/pg_protocol_parser.h"
-TEST(RedshiftShowSchemasDiagnostics, LiteralCompletionTagsAndAlternateShapesStayRefused) {
+TEST(RedshiftShowSchemasDiagnostics, LiteralCompletedSelectTagsAndInvalidCompletions) {
   PgProtocolParser parser;
   Message no_count;no_count.tag='C';
   no_count.payload={std::byte{'S'},std::byte{'E'},std::byte{'L'},std::byte{'E'},
@@ -948,14 +953,38 @@ TEST(RedshiftShowSchemasDiagnostics, LiteralCompletionTagsAndAlternateShapesStay
   Message count_one;count_one.tag='C';
   count_one.payload={std::byte{'S'},std::byte{'E'},std::byte{'L'},std::byte{'E'},
       std::byte{'C'},std::byte{'T'},std::byte{' '},std::byte{'1'},std::byte{0}};
-  auto absent=schema_lookup_fixture();absent.affected_rows=parser.extract_query_result({no_count}).affected_rows;
-  EXPECT_EQ(0u,absent.affected_rows);
-  expect_schema_reason(redshift_schema_database(BackendResult<QueryResult>{absent,
-      {SessionState::Idle,SessionDisposition::Reusable}}),"lookup-completion");
-  auto counted=schema_lookup_fixture();counted.affected_rows=parser.extract_query_result({count_one}).affected_rows;
+  const auto uncounted_completion=parser.extract_query_result({no_count});
+  auto uncounted=schema_lookup_fixture();
+  uncounted.affected_rows=uncounted_completion.affected_rows;
+  uncounted.statement_kind=uncounted_completion.statement_kind;
+  EXPECT_EQ(0u,uncounted.affected_rows);
+  EXPECT_EQ(StatementKind::SelectCursor,uncounted.statement_kind);
+  auto owning=redshift_schema_database(BackendResult<QueryResult>{uncounted,
+      {SessionState::Idle,SessionDisposition::Reusable}});
+  ASSERT_TRUE(owning);uncounted.rows[0][0]="poison";EXPECT_EQ("selected",*owning);
+  const auto counted_completion=parser.extract_query_result({count_one});
+  auto counted=schema_lookup_fixture();counted.affected_rows=counted_completion.affected_rows;
+  counted.statement_kind=counted_completion.statement_kind;
   EXPECT_EQ(1u,counted.affected_rows);
   EXPECT_TRUE(redshift_schema_database(BackendResult<QueryResult>{counted,
       {SessionState::Idle,SessionDisposition::Reusable}}));
+  for(unsigned variant=0;variant<5;++variant) {
+    auto refused=schema_lookup_fixture();refused.affected_rows=0;
+    if(variant==0)refused.statement_kind.reset();
+    if(variant==1)refused.statement_kind=StatementKind::Unknown;
+    if(variant==2)refused.statement_kind=StatementKind::UpdateWhere;
+    if(variant==3)refused.affected_rows=2;
+    if(variant==4)refused.affected_rows=std::numeric_limits<std::size_t>::max();
+    SCOPED_TRACE(variant);
+    expect_schema_reason(redshift_schema_database(BackendResult<QueryResult>{refused,
+        {SessionState::Idle,SessionDisposition::Reusable}}),"lookup-completion");
+  }
+  for(const unsigned count:{0u,2u}) {
+    auto refused=schema_lookup_fixture();refused.affected_rows=0;
+    refused.rows.resize(count,{"selected"});
+    expect_schema_reason(redshift_schema_database(BackendResult<QueryResult>{refused,
+        {SessionState::Idle,SessionDisposition::Reusable}}),"lookup-rows");
+  }
   for(const unsigned count:{6u,8u}) {
     auto value=schemas_response();
     value.columns.resize(count,{"extra",NativeTypeInfo{ScalarType::VarChar,128,0,true}});
@@ -983,4 +1012,36 @@ TEST(RedshiftShowSchemasDiagnostics, UnicodeSchemaIdentityOwnsAndSortsExactUtf8)
   auto malformed=schemas_response();malformed.rows[0][1]=std::string("\xf0\x28\x8c\x28",4);
   expect_schema_reason(normalize_redshift_schemas("selected",BackendResult<QueryResult>{malformed,
       {SessionState::Idle,SessionDisposition::Reusable}}),"show-identifier");
+}
+
+TEST(RedshiftShowSchemasDiagnostics, ActualParserRowsWithoutCompletionCannotSupplyIdentity) {
+  PgProtocolParser parser;
+  const auto integer=[](std::vector<std::byte>& out,std::uint32_t value,unsigned width) {
+    for(unsigned i=width;i>0;--i)out.push_back(static_cast<std::byte>((value>>((i-1)*8))&255u));
+  };
+  const auto text=[](std::vector<std::byte>& out,std::string_view value) {
+    for(char c:value)out.push_back(static_cast<std::byte>(c));
+    out.push_back(std::byte{0});
+  };
+  Message description;description.tag='T';integer(description.payload,1,2);
+  text(description.payload,"database_name");integer(description.payload,0,4);
+  integer(description.payload,0,2);integer(description.payload,1043,4);
+  integer(description.payload,65535,2);integer(description.payload,132,4);
+  integer(description.payload,0,2);
+  Message row;row.tag='D';integer(row.payload,1,2);integer(row.payload,8,4);
+  for(char c:std::string_view("selected"))row.payload.push_back(static_cast<std::byte>(c));
+  const auto parsed=parser.extract_query_result({description,row});
+  ASSERT_EQ(1u,parsed.rows.size());ASSERT_EQ(1u,parsed.columns.size());
+  EXPECT_EQ(0u,parsed.affected_rows);EXPECT_FALSE(parsed.statement_kind);
+  auto identity=schema_lookup_fixture();identity.rows=parsed.rows;
+  identity.affected_rows=parsed.affected_rows;identity.statement_kind=parsed.statement_kind;
+  expect_schema_reason(redshift_schema_database(BackendResult<QueryResult>{identity,
+      {SessionState::Idle,SessionDisposition::Reusable}}),"lookup-completion");
+  Message completion;completion.tag='C';text(completion.payload,"SELECT 2");
+  const auto contradictory=parser.extract_query_result({description,row,completion});
+  identity.rows=contradictory.rows;identity.affected_rows=contradictory.affected_rows;
+  identity.statement_kind=contradictory.statement_kind;
+  EXPECT_EQ(2u,identity.affected_rows);
+  expect_schema_reason(redshift_schema_database(BackendResult<QueryResult>{identity,
+      {SessionState::Idle,SessionDisposition::Reusable}}),"lookup-completion");
 }

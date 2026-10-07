@@ -53,9 +53,11 @@ BackendResult<std::string> redshift_schema_database(BackendResult<QueryResult> i
   if (source.columns[0].name != "database_name") return invalid_schema_metadata("lookup-name");
   if (!schema_text(source.columns[0])) return invalid_schema_metadata("lookup-type");
   if (source.rows.size() != 1) return invalid_schema_metadata("lookup-rows");
-  // Intentional parser contract: SELECT must report one completed row. Synthetic
-  // completion tests do not qualify the actual Redshift completion tag.
-  if (source.affected_rows != 1) return invalid_schema_metadata("lookup-completion");
+  // Returned cardinality is checked above; a SELECT completion can omit its
+  // affected count. Require explicit completed SELECT metadata so an unfinished
+  // result (also normalized to zero) cannot supply the database identity.
+  if (source.statement_kind != StatementKind::SelectCursor || source.affected_rows > 1)
+    return invalid_schema_metadata("lookup-completion");
   if (!source.rows[0][0] || !schema_identifier(*source.rows[0][0]))
     return invalid_schema_metadata("lookup-identifier");
   if (input.session_snapshot().disposition == SessionDisposition::Retire)
