@@ -4635,8 +4635,8 @@ TEST(QueryOriginalDeadlineTest, LateFragmentStopsBeforeAnyFurtherIoAndRetires) {
       expect_query_timeout(execute_deadline_query(connection, prepared, deadline), prepared);
       expect_query_deadline(*wire, deadline); EXPECT_FALSE(connection.is_connected());
       if (late == QueryDeadlineWire::Late::Write) { EXPECT_EQ(1u, wire->writes.size()); EXPECT_TRUE(wire->reads.empty()); }
-      if (late == QueryDeadlineWire::Late::Header) EXPECT_EQ(1u, wire->reads.size());
-      if (late == QueryDeadlineWire::Late::Body) EXPECT_EQ(prepared ? 16u : 6u, wire->reads.size());
+      if (late == QueryDeadlineWire::Late::Header) { EXPECT_EQ(1u, wire->reads.size()); }
+      if (late == QueryDeadlineWire::Late::Body) { EXPECT_EQ(prepared ? 16u : 6u, wire->reads.size()); }
       const auto sends = wire->writes.size(), reads = wire->reads.size();
       EXPECT_FALSE(execute_deadline_query(connection, prepared, rs::util::make_deadline(std::chrono::seconds{2})));
       EXPECT_EQ(sends, wire->writes.size()); EXPECT_EQ(reads, wire->reads.size());
