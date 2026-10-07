@@ -2415,3 +2415,238 @@ TEST_F(RedshiftUnicodeChunkRealTest, PreparedWideChunksBoundTruncationAndNull) {
     EXPECT_EQ("bound_text",owned_descriptors[0].name);EXPECT_EQ("chunk_text",owned_descriptors[1].name);
   }
 }
+
+
+class RedshiftBooleanFloatingRealTest : public RedshiftRealTest {
+protected:
+  // Members survive a fatal test-body return until base TearDown frees handles.
+  struct BitCell { std::array<unsigned char, 8> before; SQLCHAR value; std::array<unsigned char, 8> after; } bit_out_{};
+  struct RealCell { std::array<unsigned char, 8> before; SQLREAL value; std::array<unsigned char, 8> after; } real_out_{};
+  struct DoubleCell { std::array<unsigned char, 8> before; SQLDOUBLE value; std::array<unsigned char, 8> after; } double_out_{};
+  SQLCHAR bit_in_ = 0;
+  SQLREAL real_in_ = 0;
+  SQLDOUBLE double_in_ = 0;
+  SQLLEN bit_input_length_ = 0, real_input_length_ = 0, double_input_length_ = 0;
+  SQLLEN bit_length_ = 0, real_length_ = 0, double_length_ = 0;
+  SQLULEN processed_ = 99;
+  SQLUSMALLINT parameter_status_ = SQL_PARAM_UNUSED;
+
+  void SetUp() override {
+    const char* marker = std::getenv("ODBCPP_REDSHIFT_BOOLEAN_FLOATING_ADMISSION");
+    if (marker == nullptr) {
+      GTEST_SKIP() << "Boolean/floating scope is not admitted";
+    }
+    ASSERT_TRUE(std::string_view(marker) == "boolean-floating-parameter-v1")
+        << "Invalid boolean/floating scope marker";
+    // FIRST gate, before configuration, handles or connection work.
+    RedshiftRealTest::SetUp();
+  }
+};
+
+TEST_F(RedshiftBooleanFloatingRealTest, PreparedBooleanRealDoubleAndNull) {
+  ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC, hdbc_);
+  SQLCHAR query[] = "SELECT CAST(? AS BOOLEAN) AS flag_value, CAST(? AS REAL) AS real_value, CAST(? AS DOUBLE PRECISION) AS double_value";
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt_, query, SQL_NTS))
+      << get_error(SQL_HANDLE_STMT, hstmt_);
+  SQLSMALLINT parameter_count = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLNumParams(hstmt_, &parameter_count));
+  ASSERT_EQ(3, parameter_count);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed_, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_PARAM_STATUS_PTR, &parameter_status_, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_BIT, SQL_BIT,
+      1, 0, &bit_in_, sizeof(bit_in_), &bit_input_length_));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 2, SQL_PARAM_INPUT, SQL_C_FLOAT, SQL_REAL,
+      7, 0, &real_in_, sizeof(real_in_), &real_input_length_));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 3, SQL_PARAM_INPUT, SQL_C_DOUBLE, SQL_DOUBLE,
+      15, 0, &double_in_, sizeof(double_in_), &double_input_length_));
+
+  struct Descriptor {
+    std::string name;
+    SQLSMALLINT type = 0, nullable = 0;
+    SQLULEN size = 0;
+    SQLLEN octets = 0;
+  };
+  std::array<Descriptor, 3> owned_descriptors{};
+  bool have_descriptors = false;
+  const auto describe = [&] {
+    SQLSMALLINT count = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt_, &count));
+    ASSERT_EQ(3, count);
+    const char* names[]{"flag_value", "real_value", "double_value"};
+    const SQLSMALLINT types[]{SQL_BIT, SQL_REAL, SQL_DOUBLE};
+    const SQLULEN sizes[]{1, 7, 15};
+    const SQLLEN octets[]{1, 4, 8};
+    for (SQLUSMALLINT column = 1; column <= 3; ++column) {
+      SCOPED_TRACE("column=" + std::to_string(column));
+      SQLCHAR name[32]{};
+      SQLSMALLINT name_length = 0, type = 0, digits = 0, nullable = 0;
+      SQLULEN size = 0;
+      ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt_, column, name, sizeof(name),
+          &name_length, &type, &size, &digits, &nullable)) << get_error(SQL_HANDLE_STMT, hstmt_);
+      ASSERT_GE(name_length, 0);
+      ASSERT_LT(static_cast<std::size_t>(name_length), sizeof(name));
+      const std::string owned_name(reinterpret_cast<const char*>(name), static_cast<std::size_t>(name_length));
+      EXPECT_EQ(names[column - 1], owned_name);
+      EXPECT_EQ(types[column - 1], type);
+      EXPECT_EQ(sizes[column - 1], size);
+      EXPECT_EQ(SQL_NULLABLE, nullable);
+      // Approximate decimal scale is not a normative floating-point oracle.
+      SQLLEN concise = -1, bytes = -1;
+      ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, column, SQL_DESC_CONCISE_TYPE,
+          nullptr, 0, nullptr, &concise)) << get_error(SQL_HANDLE_STMT, hstmt_);
+      ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, column, SQL_DESC_OCTET_LENGTH,
+          nullptr, 0, nullptr, &bytes)) << get_error(SQL_HANDLE_STMT, hstmt_);
+      EXPECT_EQ(types[column - 1], concise);
+      EXPECT_EQ(octets[column - 1], bytes);
+      if (column > 1) {
+        SQLLEN radix = -1, precision = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, column, SQL_DESC_NUM_PREC_RADIX,
+            nullptr, 0, nullptr, &radix)) << get_error(SQL_HANDLE_STMT, hstmt_);
+        ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(hstmt_, column, SQL_DESC_PRECISION,
+            nullptr, 0, nullptr, &precision)) << get_error(SQL_HANDLE_STMT, hstmt_);
+        EXPECT_EQ(2, radix);
+        EXPECT_EQ(column == 2 ? 24 : 53, precision);
+      }
+      const Descriptor current{owned_name, type, nullable, size, bytes};
+      if (have_descriptors) {
+        const auto& previous = owned_descriptors[column - 1];
+        EXPECT_EQ(previous.name, current.name);
+        EXPECT_EQ(previous.type, current.type);
+        EXPECT_EQ(previous.nullable, current.nullable);
+        EXPECT_EQ(previous.size, current.size);
+        EXPECT_EQ(previous.octets, current.octets);
+      } else {
+        owned_descriptors[column - 1] = current;
+      }
+    }
+    have_descriptors = true;
+  };
+  const auto bind_outputs = [&] {
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt_, 1, SQL_C_BIT, &bit_out_.value,
+        sizeof(bit_out_.value), &bit_length_));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt_, 2, SQL_C_FLOAT, &real_out_.value,
+        sizeof(real_out_.value), &real_length_));
+    // Column3 remains unbound and is retrieved after bound columns1/2.
+  };
+  const auto poison_outputs = [&] {
+    std::memset(&bit_out_, 0x5a, sizeof(bit_out_));
+    std::memset(&real_out_, 0x5a, sizeof(real_out_));
+    std::memset(&double_out_, 0x5a, sizeof(double_out_));
+    bit_length_ = real_length_ = double_length_ = 93;
+  };
+  const auto poisoned = [](const void* value, std::size_t size) {
+    const auto* bytes = static_cast<const unsigned char*>(value);
+    return std::all_of(bytes, bytes + size, [](unsigned char byte) { return byte == 0x5a; });
+  };
+  struct Values { SQLCHAR bit; SQLREAL real; SQLDOUBLE number; };
+  std::array<Values, 2> owned_values{};
+  const auto fetch_row = [&](bool nulls, SQLCHAR bit, SQLREAL real, SQLDOUBLE number) {
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_)) << get_error(SQL_HANDLE_STMT, hstmt_);
+    if (nulls) {
+      EXPECT_EQ(SQL_NULL_DATA, bit_length_);
+      EXPECT_EQ(SQL_NULL_DATA, real_length_);
+      EXPECT_TRUE(poisoned(&bit_out_.value, sizeof(bit_out_.value)));
+      EXPECT_TRUE(poisoned(&real_out_.value, sizeof(real_out_.value)));
+    } else {
+      EXPECT_EQ(bit, bit_out_.value);
+      EXPECT_EQ(real, real_out_.value);
+      EXPECT_EQ(static_cast<SQLLEN>(sizeof(bit_out_.value)), bit_length_);
+      EXPECT_EQ(static_cast<SQLLEN>(sizeof(real_out_.value)), real_length_);
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt_, 3, SQL_C_DOUBLE, &double_out_.value,
+        sizeof(double_out_.value), &double_length_)) << get_error(SQL_HANDLE_STMT, hstmt_);
+    if (nulls) {
+      EXPECT_EQ(SQL_NULL_DATA, double_length_);
+      EXPECT_TRUE(poisoned(&double_out_.value, sizeof(double_out_.value)));
+    } else {
+      EXPECT_EQ(number, double_out_.value);
+      EXPECT_EQ(static_cast<SQLLEN>(sizeof(double_out_.value)), double_length_);
+    }
+    EXPECT_TRUE(poisoned(bit_out_.before.data(), bit_out_.before.size()));
+    EXPECT_TRUE(poisoned(bit_out_.after.data(), bit_out_.after.size()));
+    EXPECT_TRUE(poisoned(real_out_.before.data(), real_out_.before.size()));
+    EXPECT_TRUE(poisoned(real_out_.after.data(), real_out_.after.size()));
+    EXPECT_TRUE(poisoned(double_out_.before.data(), double_out_.before.size()));
+    EXPECT_TRUE(poisoned(double_out_.after.data(), double_out_.after.size()));
+    std::array<unsigned char, sizeof(double_out_)> previous{};
+    std::memcpy(previous.data(), &double_out_, sizeof(double_out_));
+    double_length_ = 93;
+    EXPECT_EQ(SQL_NO_DATA, SQLGetData(hstmt_, 3, SQL_C_DOUBLE, &double_out_.value,
+        sizeof(double_out_.value), &double_length_));
+    EXPECT_EQ(93, double_length_);
+    EXPECT_EQ(0, std::memcmp(previous.data(), &double_out_, sizeof(double_out_)));
+  };
+  unsigned application_attempts = 0;
+  bind_outputs();
+  if (HasFailure()) return;
+  for (unsigned trial = 0; trial != 3; ++trial) {
+    SCOPED_TRACE("trial=" + std::to_string(trial));
+    const bool nulls = trial == 2;
+    const SQLCHAR expected_bit = trial == 0 ? 1 : 0;
+    const SQLREAL expected_real = trial == 0 ? SQLREAL{1.25} : SQLREAL{-2.5};
+    const SQLDOUBLE expected_double = trial == 0 ? SQLDOUBLE{-2.5} : SQLDOUBLE{1.25};
+    bit_in_ = nulls ? 2 : expected_bit;
+    real_in_ = nulls ? SQLREAL{17} : expected_real;
+    double_in_ = nulls ? SQLDOUBLE{23} : expected_double;
+    bit_input_length_ = nulls ? SQL_NULL_DATA : static_cast<SQLLEN>(sizeof(bit_in_));
+    real_input_length_ = nulls ? SQL_NULL_DATA : static_cast<SQLLEN>(sizeof(real_in_));
+    double_input_length_ = nulls ? SQL_NULL_DATA : static_cast<SQLLEN>(sizeof(double_in_));
+    processed_ = 99; parameter_status_ = SQL_PARAM_UNUSED;
+    poison_outputs();
+    ++application_attempts;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt_)) << get_error(SQL_HANDLE_STMT, hstmt_);
+    EXPECT_EQ(1u, processed_); EXPECT_EQ(SQL_PARAM_SUCCESS, parameter_status_);
+    // Execution owns its values: caller storage/indicators may now change.
+    bit_in_ = 2; real_in_ = 17; double_in_ = 23;
+    bit_input_length_ = real_input_length_ = double_input_length_ = SQL_NULL_DATA;
+    describe();
+    if (HasFailure()) return;
+    fetch_row(nulls, expected_bit, expected_real, expected_double);
+    if (HasFailure()) return;
+    if (!nulls) owned_values[trial] = {bit_out_.value, real_out_.value, double_out_.value};
+    ASSERT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+  }
+  bit_in_ = 2; real_in_ = 1.25; double_in_ = -2.5;
+  bit_input_length_ = sizeof(bit_in_); real_input_length_ = sizeof(real_in_);
+  double_input_length_ = sizeof(double_in_);
+  processed_ = 99; parameter_status_ = SQL_PARAM_UNUSED;
+  ++application_attempts;
+  const auto refused = SQLExecute(hstmt_);
+  {
+    SCOPED_TRACE("parameter=1 SQLSTATE=" + get_error(SQL_HANDLE_STMT, hstmt_));
+    EXPECT_EQ(SQL_ERROR, refused);
+    EXPECT_EQ("22003", get_error(SQL_HANDLE_STMT, hstmt_));
+    EXPECT_EQ(SQL_PARAM_ERROR, parameter_status_); EXPECT_EQ(1u, processed_);
+    EXPECT_EQ(2, bit_in_); EXPECT_EQ(static_cast<SQLLEN>(sizeof(bit_in_)), bit_input_length_);
+    EXPECT_EQ(SQLREAL{1.25}, real_in_); EXPECT_EQ(SQLDOUBLE{-2.5}, double_in_);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(real_in_)), real_input_length_);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(double_in_)), double_input_length_);
+  }
+  if (HasFailure()) return;
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt_, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt_, SQL_RESET_PARAMS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt_, SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_PARAMS_PROCESSED_PTR, nullptr, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_PARAM_STATUS_PTR, nullptr, 0));
+  bind_outputs();
+  if (HasFailure()) return;
+  poison_outputs();
+  SQLCHAR recovery[] = "SELECT CAST(FALSE AS BOOLEAN) AS flag_value, CAST(1.25 AS REAL) AS real_value, CAST(-2.5 AS DOUBLE PRECISION) AS double_value";
+  ++application_attempts;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, recovery, SQL_NTS)) << get_error(SQL_HANDLE_STMT, hstmt_);
+  describe();
+  if (HasFailure()) return;
+  fetch_row(false, 0, 1.25, -2.5);
+  if (HasFailure()) return;
+  ASSERT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt_, SQL_UNBIND));
+  poison_outputs();
+  EXPECT_EQ(5u, application_attempts);
+  EXPECT_EQ(1, owned_values[0].bit); EXPECT_EQ(SQLREAL{1.25}, owned_values[0].real); EXPECT_EQ(SQLDOUBLE{-2.5}, owned_values[0].number);
+  EXPECT_EQ(0, owned_values[1].bit); EXPECT_EQ(SQLREAL{-2.5}, owned_values[1].real); EXPECT_EQ(SQLDOUBLE{1.25}, owned_values[1].number);
+  EXPECT_EQ("flag_value", owned_descriptors[0].name);
+  EXPECT_EQ("real_value", owned_descriptors[1].name);
+  EXPECT_EQ("double_value", owned_descriptors[2].name);
+}
