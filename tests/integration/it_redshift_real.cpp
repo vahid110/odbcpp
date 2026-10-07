@@ -2652,3 +2652,237 @@ TEST_F(RedshiftBooleanFloatingRealTest, PreparedBooleanRealDoubleAndNull) {
   EXPECT_EQ("real_value", owned_descriptors[1].name);
   EXPECT_EQ("double_value", owned_descriptors[2].name);
 }
+
+
+#include <optional>
+
+class RedshiftMultirowFetchRealTest : public RedshiftRealTest {
+protected:
+  // Bound members survive fatal body returns through inherited handle TearDown.
+  struct IntCell { std::array<unsigned char, 8> before; SQLINTEGER value; std::array<unsigned char, 8> after; } ordinal_{};
+  struct ShortCell { std::array<unsigned char, 8> before; SQLSMALLINT value; std::array<unsigned char, 8> after; } narrowed_{};
+  struct TextCell { std::array<unsigned char, 8> before; char value[8]; std::array<unsigned char, 8> after; } text_{};
+  SQLLEN ordinal_length_ = 93, narrowed_length_ = 93, text_length_ = 93;
+  SQLULEN fetched_ = 99;
+  SQLUSMALLINT row_status_ = SQL_ROW_NOROW;
+
+  void SetUp() override {
+    const char* marker = std::getenv("ODBCPP_REDSHIFT_MULTIROW_FETCH_ADMISSION");
+    if (marker == nullptr) {
+      GTEST_SKIP() << "Multirow fetch scope is not admitted";
+    }
+    ASSERT_TRUE(std::string_view(marker) == "multirow-fetch-v1")
+        << "Invalid multirow fetch scope marker";
+    // FIRST gate, before configuration, handles or connection work.
+    RedshiftRealTest::SetUp();
+  }
+};
+
+TEST_F(RedshiftMultirowFetchRealTest, OrderedRowsStatusNullAndRecovery) {
+  ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC, hdbc_);
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(hstmt_, SQL_ATTR_ROW_ARRAY_SIZE,
+      reinterpret_cast<SQLPOINTER>(std::uintptr_t{2}), 0));
+  EXPECT_EQ("HYC00", get_error(SQL_HANDLE_STMT, hstmt_));
+  SQLULEN array_size = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt_, SQL_ATTR_ROW_ARRAY_SIZE,
+      &array_size, sizeof(array_size), nullptr));
+  EXPECT_EQ(1u, array_size);
+  if (HasFailure()) return;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_ROW_ARRAY_SIZE,
+      reinterpret_cast<SQLPOINTER>(std::uintptr_t{1}), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_ROWS_FETCHED_PTR, &fetched_, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_ROW_STATUS_PTR, &row_status_, 0));
+
+  SQLCHAR query[] =
+      "SELECT CAST(row_no AS INTEGER) AS row_no, "
+      "CAST(narrowed_value AS INTEGER) AS narrowed_value, "
+      "CAST(row_text AS VARCHAR(8)) AS row_text FROM ("
+      "SELECT CAST(1 AS INTEGER) AS row_no, CAST(1 AS INTEGER) AS narrowed_value, "
+      "CAST('one' AS VARCHAR(8)) AS row_text "
+      "UNION ALL SELECT 2, 2, CAST(NULL AS VARCHAR(8)) "
+      "UNION ALL SELECT 3, 32768, CAST('err' AS VARCHAR(8)) "
+      "UNION ALL SELECT 4, 4, CAST(NULL AS VARCHAR(8)) "
+      "UNION ALL SELECT 5, 5, CAST('five' AS VARCHAR(8))"
+      ") AS fixed_rows ORDER BY row_no";
+  const auto bind_columns = [&] {
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt_, 1, SQL_C_SLONG, &ordinal_.value,
+        sizeof(ordinal_.value), &ordinal_length_));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt_, 2, SQL_C_SSHORT, &narrowed_.value,
+        sizeof(narrowed_.value), &narrowed_length_));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt_, 3, SQL_C_CHAR, text_.value,
+        sizeof(text_.value), &text_length_));
+  };
+  const auto poison = [&] {
+    std::memset(&ordinal_, 0x5a, sizeof(ordinal_));
+    std::memset(&narrowed_, 0x5a, sizeof(narrowed_));
+    std::memset(&text_, 0x5a, sizeof(text_));
+    ordinal_.value = -77; narrowed_.value = -77;
+    ordinal_length_ = narrowed_length_ = text_length_ = 93;
+    fetched_ = 99; row_status_ = SQL_ROW_NOROW;
+  };
+  const auto poisoned = [](const void* bytes, std::size_t size) {
+    const auto* begin = static_cast<const unsigned char*>(bytes);
+    return std::all_of(begin, begin + size, [](unsigned char byte) { return byte == 0x5a; });
+  };
+  const auto guards = [&] {
+    EXPECT_TRUE(poisoned(ordinal_.before.data(), ordinal_.before.size()));
+    EXPECT_TRUE(poisoned(ordinal_.after.data(), ordinal_.after.size()));
+    EXPECT_TRUE(poisoned(narrowed_.before.data(), narrowed_.before.size()));
+    EXPECT_TRUE(poisoned(narrowed_.after.data(), narrowed_.after.size()));
+    EXPECT_TRUE(poisoned(text_.before.data(), text_.before.size()));
+    EXPECT_TRUE(poisoned(text_.after.data(), text_.after.size()));
+  };
+  struct Descriptor { std::string name; SQLSMALLINT type; SQLULEN size; SQLSMALLINT nullable; };
+  std::array<Descriptor, 3> descriptors{};
+  bool have_descriptors = false;
+  const auto describe = [&] {
+    SQLSMALLINT count = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt_, &count)); ASSERT_EQ(3, count);
+    const char* names[]{"row_no", "narrowed_value", "row_text"};
+    const SQLSMALLINT types[]{SQL_INTEGER, SQL_INTEGER, SQL_VARCHAR};
+    const SQLULEN sizes[]{10, 10, 8};
+    for (SQLUSMALLINT column = 1; column <= 3; ++column) {
+      SCOPED_TRACE("column=" + std::to_string(column));
+      SQLCHAR name[32]{}; SQLSMALLINT length = 0, type = 0, digits = 0, nullable = 0;
+      SQLULEN size = 0;
+      ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt_, column, name, sizeof(name),
+          &length, &type, &size, &digits, &nullable)) << get_error(SQL_HANDLE_STMT, hstmt_);
+      ASSERT_GE(length, 0); ASSERT_LT(static_cast<std::size_t>(length), sizeof(name));
+      const std::string owned_name(reinterpret_cast<const char*>(name), static_cast<std::size_t>(length));
+      EXPECT_EQ(names[column - 1], owned_name); EXPECT_EQ(types[column - 1], type);
+      EXPECT_EQ(sizes[column - 1], size); EXPECT_EQ(0, digits);
+      EXPECT_EQ(SQL_NULLABLE_UNKNOWN, nullable); // Recognition is not nullability.
+      if (have_descriptors) {
+        const auto& previous = descriptors[column - 1];
+        EXPECT_EQ(previous.name, owned_name); EXPECT_EQ(previous.type, type);
+        EXPECT_EQ(previous.size, size); EXPECT_EQ(previous.nullable, nullable);
+      } else {
+        descriptors[column - 1] = {owned_name, type, size, nullable};
+      }
+    }
+    have_descriptors = true;
+  };
+  struct OwnedRow {
+    SQLINTEGER ordinal = 0;
+    SQLUSMALLINT status = SQL_ROW_NOROW;
+    std::optional<SQLSMALLINT> narrowed;
+    std::optional<std::string> text;
+  };
+  std::array<OwnedRow, 5> owned_rows{};
+  const auto fetch_row = [&](unsigned row, bool save) {
+    SCOPED_TRACE("row=" + std::to_string(row));
+    poison();
+    const auto result = row % 2 == 0 ? SQLFetchScroll(hstmt_, SQL_FETCH_NEXT, 0) : SQLFetch(hstmt_);
+    if (row == 3) {
+      SCOPED_TRACE("column=2 SQLSTATE=" + get_error(SQL_HANDLE_STMT, hstmt_));
+      EXPECT_EQ(SQL_ERROR, result); EXPECT_EQ("22003", get_error(SQL_HANDLE_STMT, hstmt_));
+      // Existing scalar policy consumes the failing row; it is not whole-row atomic.
+      EXPECT_EQ(1u, fetched_); EXPECT_EQ(SQL_ROW_ERROR, row_status_);
+      EXPECT_EQ(3, ordinal_.value); EXPECT_EQ(static_cast<SQLLEN>(sizeof(ordinal_.value)), ordinal_length_);
+      EXPECT_EQ(-77, narrowed_.value); EXPECT_EQ(93, narrowed_length_);
+      EXPECT_TRUE(poisoned(text_.value, sizeof(text_.value))); EXPECT_EQ(93, text_length_);
+      if (save) owned_rows[row - 1] = {ordinal_.value, row_status_, std::nullopt, std::nullopt};
+    } else {
+      ASSERT_EQ(SQL_SUCCESS, result) << get_error(SQL_HANDLE_STMT, hstmt_);
+      EXPECT_EQ(1u, fetched_); EXPECT_EQ(SQL_ROW_SUCCESS, row_status_);
+      EXPECT_EQ(static_cast<SQLINTEGER>(row), ordinal_.value);
+      EXPECT_EQ(static_cast<SQLSMALLINT>(row), narrowed_.value);
+      EXPECT_EQ(static_cast<SQLLEN>(sizeof(ordinal_.value)), ordinal_length_);
+      EXPECT_EQ(static_cast<SQLLEN>(sizeof(narrowed_.value)), narrowed_length_);
+      std::optional<std::string> text;
+      if (row == 2 || row == 4) {
+        EXPECT_EQ(SQL_NULL_DATA, text_length_);
+        EXPECT_TRUE(poisoned(text_.value, sizeof(text_.value)));
+      } else {
+        const std::string expected = row == 1 ? "one" : "five";
+        EXPECT_EQ(static_cast<SQLLEN>(expected.size()), text_length_);
+        ASSERT_GE(text_length_, 0); ASSERT_LT(static_cast<std::size_t>(text_length_), sizeof(text_.value));
+        EXPECT_EQ('\0', text_.value[static_cast<std::size_t>(text_length_)]);
+        text = std::string(text_.value, static_cast<std::size_t>(text_length_));
+        EXPECT_EQ(expected, *text);
+      }
+      if (save) owned_rows[row - 1] = {ordinal_.value, row_status_, narrowed_.value, std::move(text)};
+    }
+    guards();
+  };
+  const auto end = [&] {
+    std::array<unsigned char, sizeof(ordinal_)> old_ordinal{};
+    std::array<unsigned char, sizeof(narrowed_)> old_narrowed{};
+    std::array<unsigned char, sizeof(text_)> old_text{};
+    std::memcpy(old_ordinal.data(), &ordinal_, sizeof(ordinal_));
+    std::memcpy(old_narrowed.data(), &narrowed_, sizeof(narrowed_));
+    std::memcpy(old_text.data(), &text_, sizeof(text_));
+    const auto old_ordinal_length = ordinal_length_, old_narrowed_length = narrowed_length_, old_text_length = text_length_;
+    fetched_ = 99; row_status_ = SQL_ROW_SUCCESS;
+    ASSERT_EQ(SQL_NO_DATA, SQLFetch(hstmt_));
+    EXPECT_EQ(0u, fetched_); EXPECT_EQ(SQL_ROW_NOROW, row_status_);
+    EXPECT_EQ(0, std::memcmp(old_ordinal.data(), &ordinal_, sizeof(ordinal_)));
+    EXPECT_EQ(0, std::memcmp(old_narrowed.data(), &narrowed_, sizeof(narrowed_)));
+    EXPECT_EQ(0, std::memcmp(old_text.data(), &text_, sizeof(text_)));
+    EXPECT_EQ(old_ordinal_length, ordinal_length_); EXPECT_EQ(old_narrowed_length, narrowed_length_);
+    EXPECT_EQ(old_text_length, text_length_); guards();
+  };
+  bind_columns();
+  if (HasFailure()) return;
+  unsigned application_attempts = 0;
+  ++application_attempts;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, query, SQL_NTS)) << get_error(SQL_HANDLE_STMT, hstmt_);
+  describe();
+  if (HasFailure()) return;
+  for (unsigned row = 1; row <= 5; ++row) {
+    fetch_row(row, true);
+    if (HasFailure()) return;
+  }
+  end();
+  if (HasFailure()) return;
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+
+  ++application_attempts;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, query, SQL_NTS)) << get_error(SQL_HANDLE_STMT, hstmt_);
+  describe();
+  if (HasFailure()) return;
+  for (unsigned row = 1; row <= 2; ++row) {
+    fetch_row(row, false);
+    if (HasFailure()) return;
+  }
+  // This discards a buffered result, not remote cancellation.
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt_, SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt_, SQL_RESET_PARAMS));
+  poison();
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt_, 1, SQL_C_SLONG, &ordinal_.value,
+      sizeof(ordinal_.value), &ordinal_length_));
+  SQLCHAR recovery[] = "SELECT 1 AS row_no";
+  ++application_attempts;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt_, recovery, SQL_NTS)) << get_error(SQL_HANDLE_STMT, hstmt_);
+  SQLSMALLINT count = 0; ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt_, &count)); ASSERT_EQ(1, count);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt_));
+  EXPECT_EQ(1, ordinal_.value); EXPECT_EQ(static_cast<SQLLEN>(sizeof(ordinal_.value)), ordinal_length_);
+  EXPECT_EQ(1u, fetched_); EXPECT_EQ(SQL_ROW_SUCCESS, row_status_); guards();
+  if (HasFailure()) return;
+  end();
+  if (HasFailure()) return;
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt_, SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_ROWS_FETCHED_PTR, nullptr, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_ROW_STATUS_PTR, nullptr, 0));
+  poison();
+  EXPECT_EQ(3u, application_attempts);
+  for (unsigned row = 1; row <= 5; ++row) {
+    const auto& saved = owned_rows[row - 1];
+    EXPECT_EQ(static_cast<SQLINTEGER>(row), saved.ordinal);
+    EXPECT_EQ(row == 3 ? SQL_ROW_ERROR : SQL_ROW_SUCCESS, saved.status);
+    if (row == 3) {
+      EXPECT_FALSE(saved.narrowed); EXPECT_FALSE(saved.text);
+    } else {
+      ASSERT_TRUE(saved.narrowed); EXPECT_EQ(static_cast<SQLSMALLINT>(row), *saved.narrowed);
+      if (row == 2 || row == 4) {
+        EXPECT_FALSE(saved.text);
+      } else {
+        ASSERT_TRUE(saved.text); EXPECT_EQ(row == 1 ? "one" : "five", *saved.text);
+      }
+    }
+  }
+  EXPECT_EQ("row_no", descriptors[0].name); EXPECT_EQ("narrowed_value", descriptors[1].name);
+  EXPECT_EQ("row_text", descriptors[2].name);
+}
