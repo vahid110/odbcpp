@@ -4856,3 +4856,52 @@ TEST_F(BackendContractTest, QueryDeadlineRetirementRequiresExplicitReconnectAndF
   ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, failing));
   ASSERT_EQ(SQL_SUCCESS, execute("rows")); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
 }
+
+
+// Persistent application pointers also remain valid on fatal-assertion cleanup.
+class ResetParametersDispatchTest : public BackendContractTest {
+ protected:
+  char input_[8] = "before";
+  SQLLEN length_ = 6;
+  SQLULEN processed_ = 99;
+  SQLUSMALLINT status_ = SQL_PARAM_UNUSED;
+};
+
+TEST_F(ResetParametersDispatchTest, MissingBindingRefusesWithoutBackendTrafficAndRebindRecovers) {
+  connect(); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed_, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status_, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_VARCHAR, 16, 0, input_, sizeof(input_), &length_));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  const auto saved = seen->parameters[0];
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_RESET_PARAMS));
+  SQLSMALLINT count = -1; ASSERT_EQ(SQL_SUCCESS, SQLNumParams(stmt, &count));
+  EXPECT_EQ(1, count);
+  const auto queries = seen->queries;
+  const auto descriptions = seen->descriptions;
+  const auto deadline = seen->deadline;
+  const auto disconnects = seen->disconnects;
+  processed_ = 99; status_ = SQL_PARAM_UNUSED;
+  // The native refusal alone cannot prove zero dispatch; these backend counters do.
+  EXPECT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("07009", state());
+  EXPECT_EQ(queries, seen->queries); EXPECT_EQ(descriptions, seen->descriptions);
+  EXPECT_EQ(deadline, seen->deadline); EXPECT_EQ(disconnects, seen->disconnects);
+  EXPECT_EQ(1u, processed_); EXPECT_EQ(SQL_PARAM_ERROR, status_);
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(saved.value, seen->parameters[0].value);
+  EXPECT_EQ(saved.type, seen->parameters[0].type);
+  std::memcpy(input_, "after", 6); length_ = 5;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_VARCHAR, 16, 0, input_, sizeof(input_), &length_));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(queries + 1, seen->queries);
+  EXPECT_EQ(1u, processed_); EXPECT_EQ(SQL_PARAM_SUCCESS, status_);
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(std::optional<std::string>("after"), seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_RESET_PARAMS));
+}
