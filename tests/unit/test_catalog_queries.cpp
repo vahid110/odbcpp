@@ -458,3 +458,20 @@ TEST(CatalogQueryTest, SchemaEnumerationDoesNotDependOnPrimaryKeyCatalogMode) {
   EXPECT_NE(std::string::npos, a->find("FROM svv_redshift_schemas"));
   EXPECT_EQ(std::string::npos, a->find("SHOW"));
 }
+
+TEST(CatalogQueryTest, ShowSchemaSelectionDoesNotAlterGeneratedLegacyQueryContract) {
+  using namespace rs::core::database::postgres;
+  PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
+  PgDatabaseConnection postgres(nullptr, std::nullopt, PgCatalogProfile::PostgreSQL);
+  TablesCatalogRequest schemas; schemas.mode = TablesCatalogRequest::Mode::Schemas;
+  EXPECT_TRUE(redshift.selects_catalog_request(schemas));
+  EXPECT_FALSE(postgres.selects_catalog_request(schemas));
+  // The generator remains callable and byte-stable for LEGACY; SHOW execution
+  // selection belongs to the execution facet, not to this SQL builder.
+  const auto sql = redshift.catalog_query(schemas);
+  ASSERT_FALSE(sql.has_error());
+  EXPECT_NE(std::string::npos, sql->find("FROM svv_redshift_schemas"));
+  EXPECT_EQ(std::string::npos, sql->find("SHOW"));
+  EXPECT_FALSE(redshift.selects_catalog_request(TablesCatalogRequest{}));
+  EXPECT_FALSE(redshift.selects_catalog_request(ColumnsCatalogRequest{}));
+}

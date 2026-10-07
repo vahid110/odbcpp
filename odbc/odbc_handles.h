@@ -272,6 +272,8 @@ private:
 
   rs::core::database::BackendResult<rs::core::database::QueryResult> backend_execute_catalog(
       const rs::core::database::CatalogRequest&, rs::util::Deadline);
+  rs::core::database::BackendResult<bool> backend_selects_catalog_request(
+      const rs::core::database::CatalogRequest&);
   bool backend_connected();
   void invalidate_metadata_epoch() noexcept;
   rs::core::database::BackendResult<void> backend_health(rs::util::Deadline);

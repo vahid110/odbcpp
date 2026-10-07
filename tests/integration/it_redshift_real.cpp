@@ -1757,7 +1757,7 @@ protected:
     for(char c:identifier) { if(c=='\"') { output+='\"'; } output+=c; }
     return output+'\"';
   }
-  enum class DescriptorScope { Tables, AllSchemas, Columns };
+  enum class DescriptorScope { Tables, AllSchemas, ShowSchemas, Columns };
   struct DescriptorSnapshot {
     std::string name;
     SQLSMALLINT type,digits,nullable;
@@ -1776,13 +1776,22 @@ protected:
       ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,column,name.data(),name.size(),&length,&type,&size,&digits,&nullable));
       ASSERT_GE(length,0);ASSERT_LT(length,static_cast<SQLSMALLINT>(name.size()));
       std::string actual(reinterpret_cast<const char*>(name.data()),static_cast<std::size_t>(length));
+      if(scope==DescriptorScope::ShowSchemas) {
+        const std::array<std::string_view,5> names{"TABLE_CAT","TABLE_SCHEM","TABLE_NAME","TABLE_TYPE","REMARKS"};
+        ASSERT_LE(column,names.size());EXPECT_EQ(names[column-1],actual);
+      }
       std::transform(actual.begin(),actual.end(),actual.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
       EXPECT_TRUE(actual==fields[column-1].name);EXPECT_EQ(fields[column-1].type,type);
       EXPECT_EQ(0,digits);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
       if(type==SQL_SMALLINT) { EXPECT_EQ(5U,size); }
       else if(type==SQL_INTEGER) { EXPECT_EQ(10U,size); }
       else if(type==SQL_VARCHAR) {
-        if(scope==DescriptorScope::AllSchemas) {
+        if(scope==DescriptorScope::ShowSchemas) {
+          // Backend preserves SHOW's schema capacity; synthetic NULL fields
+          // have unknown capacity0. No legacy SVV typmod is inherited.
+          if(column==2) { EXPECT_LE(size,65535U); }
+          else { EXPECT_EQ(0U,size); }
+        } else if(scope==DescriptorScope::AllSchemas) {
           // Selected schema enumeration: SVV schema_name retains VARCHAR(128).
           const std::array<SQLULEN,5> widths{65535,128,65535,65535,65535};
           ASSERT_LE(column,widths.size());EXPECT_EQ(widths[column-1],size);
@@ -1881,7 +1890,7 @@ protected:
     const CatalogField tables[]{{"table_cat",SQL_VARCHAR},{"table_schem",SQL_VARCHAR},{"table_name",SQL_VARCHAR},{"table_type",SQL_VARCHAR},{"remarks",SQL_VARCHAR}};
     SQLCHAR empty[]="";SQLCHAR all_schemas[]=SQL_ALL_SCHEMAS;
     ASSERT_EQ(SQL_SUCCESS,SQLTables(hstmt_,empty,SQL_NTS,all_schemas,SQL_NTS,empty,SQL_NTS,nullptr,0)) << get_error(SQL_HANDLE_STMT,hstmt_);
-    descriptors(tables,DescriptorScope::AllSchemas);ASSERT_FALSE(HasFailure());
+    descriptors(tables,std::string_view(mode)=="SHOW" ? DescriptorScope::ShowSchemas : DescriptorScope::AllSchemas);ASSERT_FALSE(HasFailure());
     unsigned selected_schemas=0;bool exhausted=false;
     for(unsigned row=0;row<=64;++row) {
       const auto result=SQLFetch(hstmt_);if(result==SQL_NO_DATA) { exhausted=true;break; }

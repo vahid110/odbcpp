@@ -2,6 +2,7 @@
 #include "pg_backend_provider.h"
 #include "pg_protocol_parser.h"
 #include "redshift_primary_key_contract.h"
+#include "redshift_catalog_query.h"
 #include "odbcpp/auth/pg_credential_consumer.h"
 #include <new>
 
@@ -123,6 +124,14 @@ BackendResult<void> PgDatabaseConnection::check_health(rs::util::Deadline deadli
   return BackendResult<void>{snapshot};
 }
 
+bool PgDatabaseConnection::selects_catalog_request(const CatalogRequest& request) const noexcept {
+  if (catalog_profile_ != PgCatalogProfile::Redshift) return false;
+  if (std::holds_alternative<PrimaryKeysCatalogRequest>(request)) return true;
+  const auto* tables = std::get_if<TablesCatalogRequest>(&request);
+  return tables && tables->mode == TablesCatalogRequest::Mode::Schemas &&
+      catalog_mode() == RedshiftCatalogMode::Show;
+}
+
 BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
     const CatalogRequest& request, rs::util::Deadline deadline) {
   if (!is_connected()) {
@@ -138,6 +147,46 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
         "Exact modern Redshift primary-key discovery is unavailable",
         BackendOperation::ExecuteCatalog, session_state());
   };
+  const auto* tables = std::get_if<TablesCatalogRequest>(&request);
+  if (catalog_profile_ == PgCatalogProfile::Redshift && tables &&
+      tables->mode == TablesCatalogRequest::Mode::Schemas &&
+      catalog_mode() == RedshiftCatalogMode::Show) {
+    // Selection precedes capability: refusal must never choose generated SQL.
+    const auto schema_unsupported = [this] {
+      return local_backend_error(LocalFailure::Unsupported,
+          "Modern Redshift schema discovery is unavailable",
+          BackendOperation::ExecuteCatalog, session_state());
+    };
+    const auto capability = get_parameter("show_discovery");
+    std::uint32_t version = 0;
+    if (capability.empty() || capability.size() > 10 ||
+        capability.find_first_not_of("0123456789") != std::string::npos)
+      return schema_unsupported();
+    const auto parsed = std::from_chars(capability.data(),
+        capability.data() + capability.size(), version);
+    if (parsed.ec != std::errc{} || parsed.ptr != capability.data() + capability.size() ||
+        version < 4) return schema_unsupported();
+    const auto expired = [deadline] { return rs::util::Clock::now() >= deadline; };
+    const auto timeout = [] {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::Timeout),
+          "Schema discovery deadline expired"};
+      error.operation = BackendOperation::ExecuteCatalog;
+      return BackendResult<QueryResult>{std::move(error)};
+    };
+    if (expired()) return timeout();
+    auto identity = execute_query("SELECT current_database() AS database_name", deadline);
+    if (!identity) return identity.backend_error();
+    if (expired()) return timeout();
+    auto database = redshift_schema_database(std::move(identity));
+    if (expired()) return timeout();
+    if (!database) return database.backend_error();
+    auto response = execute_query(redshift_show_schemas_command(*database), deadline);
+    if (!response) return response.backend_error();
+    if (expired()) return timeout();
+    auto normalized = normalize_redshift_schemas(*database, std::move(response));
+    if (expired()) return timeout();
+    return normalized;
+  }
   const auto* keys = std::get_if<PrimaryKeysCatalogRequest>(&request);
   if (catalog_profile_ != PgCatalogProfile::Redshift || !keys) return unsupported();
   auto plan = redshift_primary_key_plan(keys->catalog, keys->schema, keys->table);

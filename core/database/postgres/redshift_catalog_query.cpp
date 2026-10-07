@@ -1,4 +1,8 @@
 #include "redshift_catalog_query.h"
+#include "core/database/result_validation.h"
+#include <algorithm>
+#include <array>
+#include <set>
 
 namespace rs::core::database::postgres {
 namespace {
@@ -12,6 +16,102 @@ std::string literal(const std::string& value) {
   return result;
 }
 }  // namespace
+
+namespace {
+BackendError invalid_schema_metadata() {
+  BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+      "Invalid Redshift schema metadata"};
+  error.error_class = BackendErrorClass::InvalidMetadata;
+  error.operation = BackendOperation::ExecuteCatalog;
+  return error;
+}
+bool schema_identifier(std::string_view value) {
+  return !value.empty() && value.find('\0') == std::string_view::npos &&
+      rs::util::utf8_code_point_count(value).has_value();
+}
+bool schema_text(const ResultColumnMetadata& column) {
+  if (!column.normalized_type || !column.normalized_type->known) return false;
+  const auto type = column.normalized_type->type;
+  return type == ScalarType::Char || type == ScalarType::VarChar ||
+      type == ScalarType::LongVarChar;
+}
+bool clean_schema_result(const QueryResult& source) {
+  return valid_result_structure(source) && source.additional_results.empty() &&
+      source.cell_errors.empty() && source.normalized_parameter_types.empty();
+}
+}  // namespace
+
+BackendResult<std::string> redshift_schema_database(BackendResult<QueryResult> input) {
+  if (!input) return input.backend_error();
+  const auto& source = *input;
+  if (source.error) return *source.error;
+  for (const auto& extra : source.additional_results)
+    if (extra.error) return *extra.error;
+  if (!clean_schema_result(source) || source.columns.size() != 1 ||
+      source.columns[0].name != "database_name" || !schema_text(source.columns[0]) ||
+      source.rows.size() != 1 || source.affected_rows != 1 || !source.rows[0][0] ||
+      !schema_identifier(*source.rows[0][0]) ||
+      input.session_snapshot().disposition == SessionDisposition::Retire)
+    return invalid_schema_metadata();
+  return BackendResult<std::string>{*source.rows[0][0], input.session_snapshot()};
+}
+
+std::string redshift_show_schemas_command(std::string_view validated_database) {
+  // Called only with an owning identifier from redshift_schema_database.
+  // Identifiers are quoted, not SQL literals or prepared value placeholders.
+  std::string command = "SHOW SCHEMAS FROM DATABASE \"";
+  for (const char ch : validated_database) {
+    if (ch == '\"') command.push_back('\"');
+    command.push_back(ch);
+  }
+  command += "\";";
+  return command;
+}
+
+BackendResult<QueryResult> normalize_redshift_schemas(
+    std::string_view database, BackendResult<QueryResult> input) {
+  if (!input) return input.backend_error();
+  const auto& source = *input;
+  if (source.error) return *source.error;
+  for (const auto& extra : source.additional_results)
+    if (extra.error) return *extra.error;
+  if (!schema_identifier(database) || !clean_schema_result(source) ||
+      source.columns.size() != 7 || source.rows.size() > 10000 ||
+      (source.affected_rows != 0 && source.affected_rows != source.rows.size()))
+    return invalid_schema_metadata();
+  constexpr std::array<std::string_view, 7> names{
+      "database_name", "schema_name", "schema_owner", "schema_type",
+      "schema_acl", "source_database", "schema_option"};
+  std::array<std::size_t, 7> indexes{};
+  for (std::size_t expected = 0; expected < names.size(); ++expected) {
+    unsigned matches = 0;
+    for (std::size_t actual = 0; actual < source.columns.size(); ++actual) {
+      if (source.columns[actual].name == names[expected]) {
+        ++matches; indexes[expected] = actual;
+      }
+    }
+    if (matches != 1) return invalid_schema_metadata();
+  }
+  if (!schema_text(source.columns[indexes[0]]) ||
+      !schema_text(source.columns[indexes[1]])) return invalid_schema_metadata();
+  std::set<std::string> schemas;
+  for (const auto& row : source.rows) {
+    const auto& db = row[indexes[0]];
+    const auto& schema = row[indexes[1]];
+    if (!db || !schema || *db != database || !schema_identifier(*schema) ||
+        !schemas.insert(*schema).second) return invalid_schema_metadata();
+  }
+  QueryResult output;
+  for (const auto* name : {"TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "TABLE_TYPE", "REMARKS"})
+    output.columns.push_back({name, NativeTypeInfo{ScalarType::VarChar, 0, 0, true}});
+  // Recognition is not a guessed capacity. Preserve the actual source's schema
+  // dimension (including unknown zero), but normalize its published text family.
+  output.columns[1].normalized_type->column_size =
+      source.columns[indexes[1]].normalized_type->column_size;
+  for (const auto& schema : schemas)
+    output.rows.push_back({std::nullopt, schema, std::nullopt, std::nullopt, std::nullopt});
+  return BackendResult<QueryResult>{std::move(output), input.session_snapshot()};
+}
 
 std::string redshift_schemas_query() {
   // SVV_REDSHIFT_SCHEMAS lists schemas accessible to the current user.

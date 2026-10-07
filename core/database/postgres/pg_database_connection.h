@@ -37,6 +37,7 @@ public:
   ICatalogExecution* catalog_execution() noexcept override {
     return catalog_profile_ == PgCatalogProfile::Redshift ? this : nullptr;
   }
+  bool selects_catalog_request(const CatalogRequest& request) const noexcept override;
   BackendResult<QueryResult> execute_catalog(
       const CatalogRequest& request, rs::util::Deadline deadline) override;
 

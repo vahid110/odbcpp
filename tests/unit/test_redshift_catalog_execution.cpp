@@ -571,3 +571,294 @@ TEST(RedshiftCatalogExecution, RealWireMalformedCatalogCompletionRetiresWithoutF
     }
   }
 }
+
+#include "core/database/postgres/redshift_catalog_query.h"
+#include <functional>
+
+namespace {
+TablesCatalogRequest schemas_request() {
+  TablesCatalogRequest value; value.mode = TablesCatalogRequest::Mode::Schemas;
+  return value;
+}
+QueryResult schemas_response(std::string database = "selected") {
+  QueryResult value;
+  for (const auto* name : {"database_name", "schema_name", "schema_owner", "schema_type",
+                          "schema_acl", "source_database", "schema_option"})
+    value.columns.push_back({name, NativeTypeInfo{
+        std::string_view(name) == "schema_owner" ? ScalarType::Integer : ScalarType::VarChar,
+        128, 0, true}});
+  value.rows = {{database, "z", "1", "local", std::nullopt, std::nullopt, std::nullopt},
+                {database, "a", "1", "local", std::nullopt, std::nullopt, std::nullopt}};
+  return value;
+}
+class SchemaSpy final : public SpySession {
+ public:
+  std::string database{"selected"};
+  QueryResult show{schemas_response()};
+  std::optional<QueryResult> identity_override;
+  std::optional<BackendError> direct_failure;
+  unsigned failing_call{2};
+  std::function<void(unsigned, rs::util::Deadline)> before_return;
+  std::vector<std::string> queries;
+  std::vector<rs::util::Deadline> deadlines;
+  BackendResult<QueryResult> execute_query(std::string_view query,
+      rs::util::Deadline deadline) override {
+    ++direct_calls; queries.emplace_back(query); deadlines.push_back(deadline);
+    if (before_return) before_return(direct_calls, deadline);
+    if (direct_failure && direct_calls == failing_call) return *direct_failure;
+    if (direct_calls % 2 == 1) {
+      QueryResult identity;
+      identity.columns = {{"database_name", NativeTypeInfo{ScalarType::VarChar, 128, 0, true}}};
+      identity.rows = {{database}}; identity.affected_rows = 1;
+      return BackendResult<QueryResult>{identity_override.value_or(identity), snapshot};
+    }
+    return BackendResult<QueryResult>{show, snapshot};
+  }
+};
+void schema_error(const BackendResult<QueryResult>& result) {
+  ASSERT_FALSE(result);
+  EXPECT_EQ(BackendErrorClass::InvalidMetadata, result.backend_error().error_class);
+  EXPECT_EQ(BackendOperation::ExecuteCatalog, result.backend_error().operation);
+  EXPECT_EQ(SessionDisposition::Retire, result.session_snapshot().disposition);
+}
+}  // namespace
+
+namespace { void schema_real_wire_success(); }
+
+TEST(RedshiftShowSchemas, SelectionIsRequestProfileAndModeSpecificNotCapability) {
+  SchemaSpy show; show.capability.clear();
+  EXPECT_TRUE(show.selects_catalog_request(schemas_request()));
+  EXPECT_TRUE(show.selects_catalog_request(request()));
+  EXPECT_FALSE(show.selects_catalog_request(TablesCatalogRequest{}));
+  EXPECT_FALSE(show.selects_catalog_request(ColumnsCatalogRequest{}));
+  show.mode = RedshiftCatalogMode::Legacy;
+  EXPECT_FALSE(show.selects_catalog_request(schemas_request()));
+  EXPECT_TRUE(show.selects_catalog_request(request()));
+  SpySession pg(PgCatalogProfile::PostgreSQL);
+  EXPECT_FALSE(pg.selects_catalog_request(schemas_request()));
+  EXPECT_FALSE(pg.selects_catalog_request(request()));
+}
+
+TEST(RedshiftShowSchemas, OwningSortedFiveFieldsAndOriginalDeadline) {
+  schema_real_wire_success(); ASSERT_FALSE(HasFailure());
+  SchemaSpy spy; const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+  spy.snapshot = {SessionState::Transaction, SessionDisposition::ResetRequired};
+  auto input = schemas_request(); input.catalog = "ignored"; input.schema = "ignored";
+  auto result = spy.execute_catalog(input, deadline);
+  ASSERT_TRUE(result); ASSERT_EQ(2u, spy.direct_calls); EXPECT_EQ(0u, spy.prepared_calls);
+  EXPECT_EQ(0u, spy.catalog_builds); ASSERT_EQ(2u, spy.queries.size());
+  EXPECT_EQ("SELECT current_database() AS database_name", spy.queries[0]);
+  EXPECT_EQ("SHOW SCHEMAS FROM DATABASE \"selected\";", spy.queries[1]);
+  EXPECT_EQ((std::vector<rs::util::Deadline>{deadline, deadline}), spy.deadlines);
+  EXPECT_EQ(spy.snapshot, result.session_snapshot());
+  ASSERT_EQ(5u, result->columns.size());
+  const std::array<const char*, 5> names{"TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "TABLE_TYPE", "REMARKS"};
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    EXPECT_EQ(names[i], result->columns[i].name);
+    ASSERT_TRUE(result->columns[i].normalized_type);
+    EXPECT_TRUE(result->columns[i].normalized_type->known);
+    EXPECT_EQ(ScalarType::VarChar, result->columns[i].normalized_type->type);
+    EXPECT_EQ(i == 1 ? 128u : 0u, result->columns[i].normalized_type->column_size);
+  }
+  EXPECT_EQ((ResultRows{{std::nullopt, "a", std::nullopt, std::nullopt, std::nullopt},
+                       {std::nullopt, "z", std::nullopt, std::nullopt, std::nullopt}}), result->rows);
+  spy.show.rows.clear(); spy.database.clear(); input.schema.reset(); spy.connected = false;
+  EXPECT_EQ("a", result->rows[0][1]); EXPECT_EQ("TABLE_SCHEM", result->columns[1].name);
+}
+
+TEST(RedshiftShowSchemas, EmptyResultPreservesUnknownSourceCapacityWithoutLimit) {
+  SchemaSpy spy; spy.show.rows.clear(); spy.show.columns[1].normalized_type->column_size = 0;
+  auto result = spy.execute_catalog(schemas_request(), rs::util::make_deadline(std::chrono::seconds{1}));
+  ASSERT_TRUE(result); EXPECT_TRUE(result->rows.empty()); ASSERT_EQ(5u, result->columns.size());
+  EXPECT_EQ(0u, result->columns[1].normalized_type->column_size);
+  EXPECT_EQ(std::string::npos, spy.queries[1].find("LIMIT"));
+}
+
+TEST(RedshiftShowSchemas, ReturnedUnicodeIdentifierIsQuotedAndMalformedIdentityStopsShow) {
+  SchemaSpy quoted; quoted.database = "quoted\"._%数据库"; quoted.show = schemas_response(quoted.database);
+  auto result = quoted.execute_catalog(schemas_request(), rs::util::make_deadline(std::chrono::seconds{1}));
+  ASSERT_TRUE(result);
+  EXPECT_EQ("SHOW SCHEMAS FROM DATABASE \"quoted\"\"._%数据库\";", quoted.queries[1]);
+  for (const auto& bad : {std::string{}, std::string("x\0y", 3), std::string("\xff", 1)}) {
+    SchemaSpy spy; spy.database = bad;
+    schema_error(spy.execute_catalog(schemas_request(), rs::util::make_deadline(std::chrono::seconds{1})));
+    EXPECT_EQ(1u, spy.direct_calls); EXPECT_EQ(0u, spy.prepared_calls);
+  }
+  for (unsigned variant = 0; variant < 4; ++variant) {
+    SchemaSpy spy; QueryResult identity;
+    identity.columns = {{"database_name", NativeTypeInfo{ScalarType::VarChar, 128, 0, true}}};
+    identity.rows = {{"selected"}}; identity.affected_rows = 1;
+    if (variant == 0) identity.rows[0][0].reset();
+    if (variant == 1) identity.rows.push_back({"selected"});
+    if (variant == 2) identity.columns[0].normalized_type->known = false;
+    if (variant == 3) identity.columns[0].name = "wrong";
+    spy.identity_override = identity;
+    schema_error(spy.execute_catalog(schemas_request(), rs::util::make_deadline(std::chrono::seconds{1})));
+    EXPECT_EQ(1u, spy.direct_calls);
+  }
+}
+
+TEST(RedshiftShowSchemas, MalformedCapabilitySelectsRefusalWithoutAnySql) {
+  for (const auto& capability : {std::string{}, std::string{"3"}, std::string{"+4"},
+      std::string{"4suffix"}, std::string{"4294967296"}, std::string("4\0x", 3)}) {
+    SchemaSpy spy; spy.capability = capability;
+    EXPECT_TRUE(spy.selects_catalog_request(schemas_request()));
+    auto result = spy.execute_catalog(schemas_request(), rs::util::make_deadline(std::chrono::seconds{1}));
+    ASSERT_FALSE(result); EXPECT_EQ(BackendErrorClass::Unsupported, result.backend_error().error_class);
+    EXPECT_EQ(SessionDisposition::Reusable, result.session_snapshot().disposition); no_execution(spy);
+  }
+}
+
+TEST(RedshiftShowSchemas, MalformedForeignDuplicateAndNullRowsAreNotPartialSuccess) {
+  for (unsigned variant = 0; variant < 12; ++variant) {
+    SchemaSpy spy;
+    switch (variant) {
+      case 0: spy.show.rows[0][0] = "foreign"; break;
+      case 1: spy.show.rows[0][0].reset(); break;
+      case 2: spy.show.rows[0][1].reset(); break;
+      case 3: spy.show.rows[0][1] = ""; break;
+      case 4: spy.show.rows[0][1] = std::string("x\0y", 3); break;
+      case 5: spy.show.rows[1][1] = spy.show.rows[0][1]; break;
+      case 6: spy.show.columns[1].name = "database_name"; break;
+      case 7: spy.show.columns[1].normalized_type->type = ScalarType::Integer; break;
+      case 8: spy.show.additional_results.push_back(QueryResult{}); break;
+      case 9: spy.show.cell_errors.push_back({0, 1}); break;
+      case 10: spy.show.rows[0].pop_back(); break;
+      case 11: spy.show.rows.resize(10001, spy.show.rows[0]); break;
+    }
+    SCOPED_TRACE(variant);
+    schema_error(spy.execute_catalog(schemas_request(), rs::util::make_deadline(std::chrono::seconds{1})));
+    EXPECT_EQ(2u, spy.direct_calls); EXPECT_EQ(0u, spy.prepared_calls); EXPECT_EQ(0u, spy.catalog_builds);
+  }
+}
+
+TEST(RedshiftShowSchemas, NativeFailureAndRetirementStayOwningWithoutReplayAndRecoveryIsExplicit) {
+  SchemaSpy spy;
+  BackendError failure{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "synthetic"};
+  failure.native_state = "42501"; failure.operation = BackendOperation::ExecuteDirect;
+  failure.session_state = SessionState::Idle; failure.disposition = SessionDisposition::Reusable;
+  spy.direct_failure = failure;
+  auto result = spy.execute_catalog(schemas_request(), rs::util::make_deadline(std::chrono::seconds{1}));
+  ASSERT_FALSE(result); EXPECT_EQ(failure.native_state, result.backend_error().native_state);
+  EXPECT_EQ(failure.operation, result.backend_error().operation); EXPECT_EQ(2u, spy.direct_calls);
+  SchemaSpy deferred;
+  QueryResult identity;
+  identity.columns = {{"database_name", NativeTypeInfo{ScalarType::VarChar, 128, 0, true}}};
+  identity.rows = {{"selected"}}; identity.affected_rows = 1;
+  QueryResult extra; extra.error = failure; identity.additional_results.push_back(extra);
+  deferred.identity_override = identity;
+  auto deferred_error = deferred.execute_catalog(schemas_request(), rs::util::make_deadline(std::chrono::seconds{1}));
+  ASSERT_FALSE(deferred_error); EXPECT_EQ("42501", deferred_error.backend_error().native_state);
+  EXPECT_EQ(1u, deferred.direct_calls);
+  spy.direct_failure.reset();
+  auto recovered = spy.execute_catalog(schemas_request(), rs::util::make_deadline(std::chrono::seconds{1}));
+  ASSERT_TRUE(recovered); EXPECT_EQ(4u, spy.direct_calls); EXPECT_EQ(0u, spy.catalog_builds);
+  SchemaSpy retired; retired.before_return = [&retired](unsigned call, rs::util::Deadline) {
+    if (call == 2) retired.snapshot = {SessionState::Disconnected, SessionDisposition::Retire};
+  };
+  auto final = retired.execute_catalog(schemas_request(), rs::util::make_deadline(std::chrono::seconds{1}));
+  ASSERT_TRUE(final); EXPECT_EQ(retired.snapshot, final.session_snapshot());
+}
+
+TEST(RedshiftShowSchemas, ExpiredAndLateIdentityNeverDispatchShow) {
+  SchemaSpy expired;
+  auto result = expired.execute_catalog(schemas_request(), rs::util::Clock::now());
+  ASSERT_FALSE(result); EXPECT_EQ(BackendErrorClass::Timeout, result.backend_error().error_class);
+  no_execution(expired); EXPECT_EQ(SessionDisposition::Retire, result.session_snapshot().disposition);
+  for (const bool malformed : {false, true}) {
+    SchemaSpy late;
+    if (malformed) late.database.clear();
+    late.before_return = [](unsigned, rs::util::Deadline deadline) {
+      while (rs::util::Clock::now() < deadline) {}
+    };
+    auto after = late.execute_catalog(schemas_request(), rs::util::make_deadline(std::chrono::milliseconds{10}));
+    ASSERT_FALSE(after); EXPECT_EQ(BackendErrorClass::Timeout, after.backend_error().error_class);
+    EXPECT_EQ(1u, late.direct_calls); EXPECT_EQ(0u, late.prepared_calls);
+  }
+}
+
+namespace {
+// Real PgProtocolParser path: especially SELECT 1 completion row count, which
+// differs from the zero affected-row metadata of SHOW. No session overrides.
+class SchemaWireTransport final : public rs::core::transport::ITransport {
+ public:
+  unsigned queries{0};
+  std::vector<rs::util::Deadline> query_deadlines;
+  rs::util::Result<void> connect(std::string_view, uint16_t, rs::util::Deadline) override {
+    frame('R', {std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}});
+    std::vector<std::byte> status; text(status, "show_discovery"); text(status, "4");
+    frame('S', status); frame('Z', {std::byte{'I'}}); return {};
+  }
+  rs::util::Result<rs::core::transport::IOResult> send(
+      std::span<const std::byte> bytes, rs::util::Deadline deadline) override {
+    if (!bytes.empty() && bytes[0] == std::byte{'Q'}) {
+      ++queries; query_deadlines.push_back(deadline);
+      if (queries > 2 || bytes.size() < 6 || bytes.back() != std::byte{0})
+        return {rs::util::DbErrorCode::ProtocolError, "Invalid synthetic schema request"};
+      std::string sql;
+      for (std::size_t i = 5; i + 1 < bytes.size(); ++i) sql.push_back(static_cast<char>(bytes[i]));
+      EXPECT_EQ(queries == 1 ? "SELECT current_database() AS database_name" :
+          "SHOW SCHEMAS FROM DATABASE \"selected\";", sql);
+      std::vector<std::byte> description; integer(description, queries == 1 ? 1 : 7, 2);
+      const std::vector<std::string_view> names = queries == 1 ?
+          std::vector<std::string_view>{"database_name"} :
+          std::vector<std::string_view>{"database_name", "schema_name", "schema_owner",
+              "schema_type", "schema_acl", "source_database", "schema_option"};
+      for (const auto name : names) {
+        text(description, name); integer(description, 0, 4); integer(description, 0, 2);
+        const bool owner = name == "schema_owner";
+        integer(description, owner ? 23 : 1043, 4); integer(description, owner ? 4 : 65535, 2);
+        integer(description, owner ? 0xffffffffu : 132, 4); integer(description, 0, 2);
+      }
+      frame('T', description);
+      std::vector<std::byte> row; integer(row, queries == 1 ? 1 : 7, 2);
+      for (const auto& value : queries == 1 ? std::vector<ResultCell>{"selected"} :
+          std::vector<ResultCell>{"selected", "a", "1", "local", std::nullopt, std::nullopt, std::nullopt}) {
+        if (!value) integer(row, 0xffffffffu, 4);
+        else { integer(row, static_cast<uint32_t>(value->size()), 4);
+          for (char ch : *value) row.push_back(static_cast<std::byte>(ch)); }
+      }
+      frame('D', row); std::vector<std::byte> completion;
+      text(completion, queries == 1 ? "SELECT 1" : "SHOW"); frame('C', completion);
+      frame('Z', {std::byte{'I'}});
+    }
+    return rs::core::transport::IOResult{bytes.size(), false};
+  }
+  rs::util::Result<rs::core::transport::IOResult> recv(
+      std::span<std::byte> bytes, rs::util::Deadline) override {
+    const auto count = std::min(bytes.size(), input.size() - offset);
+    std::copy_n(input.begin() + static_cast<std::ptrdiff_t>(offset), count, bytes.begin());
+    offset += count; return rs::core::transport::IOResult{count, count == 0};
+  }
+  void close() noexcept override {}
+ private:
+  static void integer(std::vector<std::byte>& out, uint32_t value, unsigned width) {
+    for (unsigned i = width; i > 0; --i)
+      out.push_back(static_cast<std::byte>((value >> ((i - 1) * 8)) & 255u));
+  }
+  static void text(std::vector<std::byte>& out, std::string_view value) {
+    for (char ch : value) out.push_back(static_cast<std::byte>(ch));
+    out.push_back(std::byte{0});
+  }
+  void frame(char tag, const std::vector<std::byte>& body) {
+    input.push_back(static_cast<std::byte>(tag)); integer(input, static_cast<uint32_t>(body.size() + 4), 4);
+    input.insert(input.end(), body.begin(), body.end());
+  }
+  std::vector<std::byte> input;
+  std::size_t offset{0};
+};
+void schema_real_wire_success() {
+  auto transport = std::make_unique<SchemaWireTransport>(); auto* wire = transport.get();
+  PgDatabaseConnection session(std::move(transport), std::nullopt, PgCatalogProfile::Redshift);
+  ConnectionSettings settings; settings.host = "in-memory.invalid"; settings.port = 5439;
+  settings.database = "selected"; settings.user = "synthetic"; settings.use_ssl = false;
+  ASSERT_TRUE(session.connect(settings));
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+  auto result = session.execute_catalog(schemas_request(), deadline);
+  ASSERT_TRUE(result); EXPECT_EQ(2u, wire->queries);
+  EXPECT_EQ((std::vector<rs::util::Deadline>{deadline, deadline}), wire->query_deadlines);
+  ASSERT_EQ(1u, result->rows.size()); EXPECT_EQ("a", result->rows[0][1]);
+  EXPECT_EQ((SessionSnapshot{SessionState::Idle, SessionDisposition::Reusable}), result.session_snapshot());
+  session.disconnect(); EXPECT_EQ("a", result->rows[0][1]);
+}
+}  // namespace

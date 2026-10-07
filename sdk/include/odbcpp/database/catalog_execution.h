@@ -17,6 +17,12 @@ namespace rs::core::database {
 class ICatalogExecution {
  public:
   virtual ~ICatalogExecution() = default;
+  // Passive backend-owned routing; selection is independent of whether the
+  // authenticated server can fulfill the request. Execution failures never
+  // switch to generated SQL. Existing facets retain primary-key selection.
+  virtual bool selects_catalog_request(const CatalogRequest& request) const noexcept {
+    return std::holds_alternative<PrimaryKeysCatalogRequest>(request);
+  }
   virtual BackendResult<QueryResult> execute_catalog(
       const CatalogRequest& request, rs::util::Deadline deadline) = 0;
 };

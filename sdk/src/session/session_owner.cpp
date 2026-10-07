@@ -290,6 +290,18 @@ BackendResult<std::string> SessionLease::catalog_query(const CatalogRequest& req
         return BackendResult<std::string>{std::move(*query), outcome};
       });
 }
+BackendResult<bool> SessionLease::selects_catalog_request(const CatalogRequest& request) {
+  return invoke_borrowed<bool>(*this, physical_session(), BackendOperation::InspectSession,
+      [&](IDatabaseConnection& physical) -> BackendResult<bool> {
+        const auto connected = physical.is_connected();
+        const auto state = physical.session_state();
+        if (connected == (state == SessionState::Disconnected))
+          return inconsistent_observation(BackendOperation::InspectSession);
+        auto* facet = physical.catalog_execution();
+        return BackendResult<bool>{facet && facet->selects_catalog_request(request),
+                                   passive_outcome(connected, state)};
+      });
+}
 BackendResult<QueryResult> SessionLease::execute_catalog(const CatalogRequest& request,
     rs::util::Deadline deadline) {
   invalidate_cache();

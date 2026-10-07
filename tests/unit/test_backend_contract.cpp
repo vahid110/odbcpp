@@ -28,6 +28,7 @@ struct Observations {
   int created{}, transports{}, disconnects{}, destructions{}, queries{}, descriptions{}, translations{};
   bool validate_redshift_mode{false};
   bool catalog_executor{false}, catalog_builder{false};
+  bool schema_executor{false};
   int catalog_calls{}, catalog_builds{}, catalog_error{};
   bool catalog_retire{}, catalog_throw{};
   int terminal_execution{}, connect_exception{};
@@ -121,6 +122,11 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
     return BackendResult<void>{{SessionState::Idle, SessionDisposition::Reusable}};
   }
   ICatalogExecution* catalog_execution() noexcept override { return seen_->catalog_executor ? this : nullptr; }
+  bool selects_catalog_request(const CatalogRequest& request) const noexcept override {
+    return ICatalogExecution::selects_catalog_request(request) ||
+        (seen_->schema_executor && std::get_if<TablesCatalogRequest>(&request) &&
+         std::get<TablesCatalogRequest>(request).mode == TablesCatalogRequest::Mode::Schemas);
+  }
   const ICatalogQueries* catalog_queries() const noexcept override { return seen_->catalog_builder || seen_->catalog_executor ? this : nullptr; }
   rs::util::Result<std::string> catalog_query(const CatalogRequest&) const override {
     ++seen_->catalog_builds;
@@ -129,7 +135,9 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
   BackendResult<QueryResult> execute_catalog(const CatalogRequest& request, Deadline deadline) override {
     ++seen_->catalog_calls; seen_->deadline = deadline;
     if (seen_->catalog_throw) throw 42;
-    EXPECT_TRUE(std::holds_alternative<PrimaryKeysCatalogRequest>(request));
+    EXPECT_TRUE(std::holds_alternative<PrimaryKeysCatalogRequest>(request) ||
+        (seen_->schema_executor && std::get_if<TablesCatalogRequest>(&request) &&
+         std::get<TablesCatalogRequest>(request).mode == TablesCatalogRequest::Mode::Schemas));
     if (seen_->catalog_error) {
       BackendError error{rs::util::make_error_code(seen_->catalog_error == 2 ? DbErrorCode::Timeout : seen_->catalog_error == 3 ? DbErrorCode::QueryFailed : DbErrorCode::UnsupportedFeature), "catalog fixture"};
       error.operation = BackendOperation::ExecuteCatalog;
@@ -138,7 +146,16 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
       error.disposition = seen_->catalog_error == 2 ? SessionDisposition::Retire : SessionDisposition::Reusable;
       return error;
     }
-    return BackendResult<QueryResult>{rows(), {SessionState::Idle, seen_->catalog_retire ? SessionDisposition::Retire : SessionDisposition::Reusable}};
+    auto result = rows();
+    if (const auto* tables = std::get_if<TablesCatalogRequest>(&request);
+        tables && tables->mode == TablesCatalogRequest::Mode::Schemas) {
+      result.columns = {{"TABLE_CAT", {}}, {"TABLE_SCHEM", {}}, {"TABLE_NAME", {}},
+                        {"TABLE_TYPE", {}}, {"REMARKS", {}}};
+      for (auto& column : result.columns)
+        column.normalized_type = NativeTypeInfo{ScalarType::VarChar, 0, 0, true};
+      result.rows = {{std::nullopt, "fixture_schema", std::nullopt, std::nullopt, std::nullopt}};
+    }
+    return BackendResult<QueryResult>{std::move(result), {SessionState::Idle, seen_->catalog_retire ? SessionDisposition::Retire : SessionDisposition::Reusable}};
   }
   ITransactionSession* transaction_session() noexcept override { return seen_->isolation_mode ? this : nullptr; }
   TransactionCapabilities transaction_capabilities() const override {
@@ -4541,4 +4558,55 @@ TEST_F(BackendContractTest, ColumnsBuilderRouteOwnsEighteenMetadataFieldsAcrossA
     EXPECT_EQ(0, seen->catalog_calls);
     EXPECT_EQ(0, seen->disconnects);
   }
+}
+
+namespace {
+std::string schema_fixture_diagnostic(SQLHSTMT statement) {
+  SQLCHAR state[6]{}, message[512]{}; SQLSMALLINT length = 0;
+  SQLGetDiagRec(SQL_HANDLE_STMT, statement, 1, state, nullptr, message, sizeof(message), &length);
+  return std::string(reinterpret_cast<char*>(state)) + ":" + std::string(reinterpret_cast<char*>(message));
+}
+}
+
+TEST_F(BackendContractTest, SchemaExecutionSelectionPublishesOwningResultAndRecovers) {
+  seen->catalog_executor = true; seen->schema_executor = true; connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLTables(stmt, (SQLCHAR*)"", SQL_NTS, (SQLCHAR*)"%", SQL_NTS,
+      (SQLCHAR*)"", SQL_NTS, nullptr, 0)) << schema_fixture_diagnostic(stmt);
+  EXPECT_EQ(1, seen->catalog_calls); EXPECT_EQ(0, seen->catalog_builds); EXPECT_EQ(0, seen->queries);
+  SQLSMALLINT count = 0; ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(stmt, &count)); EXPECT_EQ(5, count);
+  const char* names[]{"TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "TABLE_TYPE", "REMARKS"};
+  for (SQLUSMALLINT col = 1; col <= 5; ++col) {
+    SQLCHAR name[32]{}; SQLSMALLINT length = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, col, name, sizeof(name), &length,
+        nullptr, nullptr, nullptr, nullptr));
+    EXPECT_EQ(names[col - 1], std::string(reinterpret_cast<char*>(name), static_cast<std::size_t>(length)));
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  for (SQLUSMALLINT col = 1; col <= 5; ++col) {
+    char value[32]{}; SQLLEN length = 99;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, col, SQL_C_CHAR, value, sizeof(value), &length));
+    if (col == 2) EXPECT_STREQ("fixture_schema", value);
+    else EXPECT_EQ(SQL_NULL_DATA, length);
+  }
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT after schema discovery"));
+  EXPECT_EQ(1, seen->queries);
+}
+
+TEST_F(BackendContractTest, UnselectedSchemaRetainsGeneratedSqlAndSelectedErrorNeverFallsBack) {
+  seen->catalog_executor = true; connect();
+  ASSERT_EQ(SQL_SUCCESS, SQLTables(stmt, (SQLCHAR*)"", SQL_NTS, (SQLCHAR*)"%", SQL_NTS,
+      (SQLCHAR*)"", SQL_NTS, nullptr, 0)) << schema_fixture_diagnostic(stmt);
+  EXPECT_EQ(0, seen->catalog_calls); EXPECT_EQ(1, seen->catalog_builds); EXPECT_EQ(1, seen->queries);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  seen->schema_executor = true; seen->catalog_error = 3;
+  EXPECT_EQ(SQL_ERROR, SQLTables(stmt, (SQLCHAR*)"", SQL_NTS, (SQLCHAR*)"%", SQL_NTS,
+      (SQLCHAR*)"", SQL_NTS, nullptr, 0)) << schema_fixture_diagnostic(stmt);
+  EXPECT_EQ("42501", state()); EXPECT_EQ(1, seen->catalog_calls);
+  EXPECT_EQ(1, seen->catalog_builds); EXPECT_EQ(1, seen->queries);
+  seen->catalog_error = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLTables(stmt, (SQLCHAR*)"", SQL_NTS, (SQLCHAR*)"%", SQL_NTS,
+      (SQLCHAR*)"", SQL_NTS, nullptr, 0)) << schema_fixture_diagnostic(stmt);
+  EXPECT_EQ(2, seen->catalog_calls); EXPECT_EQ(1, seen->catalog_builds);
 }

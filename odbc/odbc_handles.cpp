@@ -1831,6 +1831,15 @@ rs::util::Result<std::string> ODBCConnection::backend_catalog(const rs::core::da
   return {rs::util::DbErrorCode::UnsupportedFeature, "Data source does not support catalog discovery"};
 }
 
+rs::core::database::BackendResult<bool> ODBCConnection::backend_selects_catalog_request(
+    const rs::core::database::CatalogRequest& request) {
+  if (backend_lease_) return backend_lease_->selects_catalog_request(request);
+  return rs::core::database::local_backend_error(
+      rs::core::database::LocalFailure::Unsupported,
+      "Catalog request selection is unavailable", rs::core::database::BackendOperation::InspectSession,
+      rs::core::database::SessionState::Disconnected);
+}
+
 rs::core::database::BackendResult<rs::core::database::QueryResult>
 ODBCConnection::backend_execute_catalog(
     const rs::core::database::CatalogRequest& request, rs::util::Deadline deadline) {
@@ -4977,10 +4986,16 @@ SQLRETURN ODBCStatement::execute_catalog(
     set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
     return SQL_ERROR;
   }
-  // Presence selects the exact execution contract; failures never fall back to
-  // generated PostgreSQL SQL. Other catalog APIs retain their existing path.
-  if (std::holds_alternative<rs::core::database::PrimaryKeysCatalogRequest>(request) &&
-      conn_->has_catalog_execution_facet()) {
+  // Backend-owned passive selection precedes SQL generation. Selected failures
+  // never fall back; unselected requests retain their existing SQL path.
+  auto selection = conn_->backend_selects_catalog_request(request);
+  if (selection.has_error() || selection.session_snapshot().disposition ==
+      rs::core::database::SessionDisposition::Retire) {
+    set_error(SQLSTATE_GENERAL_ERROR, "Catalog request selection failed");
+    conn_->close_connection();
+    return SQL_ERROR;
+  }
+  if (*selection) {
     const auto deadline = rs::util::make_deadline(timeout_duration(query_timeout_seconds_));
     if (executed_ && (!column_info_.empty() || !pending_results_.empty())) {
       set_error(SQLSTATE_INVALID_CURSOR_STATE, "Cannot execute while results are pending");
@@ -4990,7 +5005,7 @@ SQLRETURN ODBCStatement::execute_catalog(
     // before the backend validates exact identifiers and authenticated capability.
     if (conn_->autocommit_ != SQL_AUTOCOMMIT_ON || conn_->transaction_active_) {
       set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
-                "Primary-key discovery requires autocommit");
+                "Catalog discovery requires autocommit");
       return SQL_ERROR;
     }
     try {
@@ -4998,7 +5013,7 @@ SQLRETURN ODBCStatement::execute_catalog(
       if (!observation || !observation->connected ||
           observation->state != rs::core::database::SessionState::Idle) {
         set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
-                  "Primary-key discovery requires an idle connection");
+                  "Catalog discovery requires an idle connection");
         if (!observation || !observation->connected) conn_->close_connection();
         return SQL_ERROR;
       }
