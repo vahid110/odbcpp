@@ -471,13 +471,22 @@ if(UNIX OR WIN32)
     endif()
 
     if(ODBCPP_REDSHIFT_PACKAGE_IMPORT_LIVE_TESTS)
+      # Bound buffers require matching application and driver wide-code units.
+      # These explicit pairs are package candidates, not an Excel ABI observation.
+      set(_redshift_import_matched_pair FALSE)
+      if((ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "UNIXODBC" AND
+          ODBCPP_EXPECT_DM_SQLWCHAR_SIZE STREQUAL "2" AND
+          ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE STREQUAL "2") OR
+         (ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "IODBC" AND
+          ODBCPP_EXPECT_DM_SQLWCHAR_SIZE STREQUAL "4" AND
+          ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE STREQUAL "4"))
+        set(_redshift_import_matched_pair TRUE)
+      endif()
       if(NOT TARGET_DATABASE STREQUAL "REDSHIFT" OR
          NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
-         NOT ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "UNIXODBC" OR
-         NOT ODBCPP_EXPECT_DM_SQLWCHAR_SIZE STREQUAL "2" OR
-         NOT ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE STREQUAL "2")
+         NOT _redshift_import_matched_pair)
         message(FATAL_ERROR
-          "Installed Redshift import live tests require Darwin, UNIXODBC and explicit matched SQLWCHAR size 2")
+          "Installed Redshift import live tests require Darwin and explicit UNIXODBC 2/2 or IODBC 4/4")
       endif()
       add_executable(it_redshift_package_import_live
         tests/driver_manager/it_redshift_package_import_live.cpp)
@@ -486,8 +495,8 @@ if(UNIX OR WIN32)
       target_link_libraries(it_redshift_package_import_live PRIVATE
         GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY} ${CMAKE_DL_LIBS})
       target_compile_definitions(it_redshift_package_import_live PRIVATE
-        ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
-        ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2)
+        ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DM_SQLWCHAR_SIZE}
+        ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})
       apply_compiler_settings(it_redshift_package_import_live)
       add_test(NAME it_redshift_package_import_live COMMAND it_redshift_package_import_live)
       set_tests_properties(it_redshift_package_import_live PROPERTIES LABELS "integration;redshift;package")
