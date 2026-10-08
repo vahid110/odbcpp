@@ -47,6 +47,7 @@ function(add_test_executable test_name test_file)
   )
 endfunction()
 
+option(ODBCPP_REDSHIFT_PACKAGE_LIVE_TESTS "Build separately admitted installed Redshift Driver Manager tests" OFF)
 option(ODBCPP_CRYPTO_PROFILE_LIVE_TESTS "Build mandatory real-driver TLS profile tests" OFF)
 option(ODBCPP_CRYPTO_TLS_PROOF "Run the independent native TLS qualification peer" OFF)
 add_executable(crypto_identity_probe tests/security/crypto_identity_probe.cpp)
@@ -439,6 +440,33 @@ if(UNIX OR WIN32)
     if(ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE)
       target_compile_definitions(it_driver_manager PRIVATE
         ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=${ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE})
+    endif()
+
+    # This consumer exercises the installed driver through the actual manager.
+    # Default-off: it never joins the ordinary PostgreSQL integration graph.
+    if(ODBCPP_REDSHIFT_PACKAGE_LIVE_TESTS)
+      if(NOT TARGET_DATABASE STREQUAL "REDSHIFT" OR
+         NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
+         NOT ODBC_DRIVER_MANAGER_FLAVOR STREQUAL "UNIXODBC" OR
+         NOT ODBCPP_EXPECT_DM_SQLWCHAR_SIZE STREQUAL "2" OR
+         NOT ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE STREQUAL "2")
+        message(FATAL_ERROR
+          "Installed Redshift live tests require Darwin, UNIXODBC and explicit matched SQLWCHAR size 2")
+      endif()
+      add_executable(it_redshift_package_live
+        tests/driver_manager/it_redshift_package_live.cpp)
+      target_include_directories(it_redshift_package_live PRIVATE
+        ${ODBC_DRIVER_MANAGER_INCLUDE_DIR})
+      target_link_libraries(it_redshift_package_live PRIVATE
+        GTest::gtest_main ${ODBC_DRIVER_MANAGER_LIBRARY} ${CMAKE_DL_LIBS})
+      target_compile_definitions(it_redshift_package_live PRIVATE
+        ODBCPP_EXPECT_DM_SQLWCHAR_SIZE=2
+        ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2)
+      apply_compiler_settings(it_redshift_package_live)
+      add_test(NAME it_redshift_package_live COMMAND it_redshift_package_live)
+      set_tests_properties(it_redshift_package_live PROPERTIES LABELS "integration;redshift;package")
+      set_target_properties(it_redshift_package_live PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
     endif()
 
     if(ODBCPP_CRYPTO_PROFILE_LIVE_TESTS OR
