@@ -21,6 +21,13 @@
 #include <unistd.h>
 #endif
 
+#ifndef ODBCPP_OFFICIAL_REDSHIFT_PROFILE
+#define ODBCPP_OFFICIAL_REDSHIFT_PROFILE 0
+#endif
+static_assert(ODBCPP_OFFICIAL_REDSHIFT_PROFILE == 0 || ODBCPP_OFFICIAL_REDSHIFT_PROFILE == 1);
+#if ODBCPP_OFFICIAL_REDSHIFT_PROFILE
+static_assert(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE == 4 && ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE == 4);
+#endif
 namespace {
 static_assert(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE == 2 || ODBCPP_EXPECT_DM_SQLWCHAR_SIZE == 4);
 static_assert(ODBCPP_EXPECT_DM_SQLWCHAR_SIZE == ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE);
@@ -114,12 +121,22 @@ protected:
       if(!fields.emplace(key,std::move(value)).second) { return false; }
       if(cursor<bytes.size()) { ++cursor; }
     }
+#if ODBCPP_OFFICIAL_REDSHIFT_PROFILE
+    constexpr std::array<std::string_view,8> keys{"DRIVER","SERVER","PORT","DATABASE","UID","PWD","SSLMODE","TRUSTSTORE"};
+#else
     constexpr std::array<std::string_view,8> keys{"DRIVER","SERVER","PORT","DATABASE","UID","PWD","SSL","SSLCAFILE"};
+#endif
     if(fields.size()!=keys.size()) { return false; }
     for(const auto key:keys) { if(!fields.contains(std::string(key))||fields.at(std::string(key)).empty()) { return false; } }
     const auto host=setting("ODBCPP_REDSHIFT_PACKAGE_EXPECTED_HOST");const auto ca=setting("ODBCPP_REDSHIFT_PACKAGE_EXPECTED_CA_FILE");
+#if ODBCPP_OFFICIAL_REDSHIFT_PROFILE
+    // Require explicit TrustStore and verify-full for the selected official profile.
+    if(fields.at("DRIVER")!=driver_||fields.at("UID")!=principal_||fields.at("DATABASE")!=database_||
+        host.empty()||fields.at("SERVER")!=host||!canonical_file(ca)||fields.at("TRUSTSTORE")!=ca||fields.at("SSLMODE")!="verify-full"||fields.at("PORT")!="5439") { return false; }
+#else
     if(fields.at("DRIVER")!=driver_||fields.at("UID")!=principal_||fields.at("DATABASE")!=database_||
         host.empty()||fields.at("SERVER")!=host||!canonical_file(ca)||fields.at("SSLCAFILE")!=ca||fields.at("SSL")!="1"||fields.at("PORT")!="5439") { return false; }
+#endif
     connection_=std::move(bytes);return true;
 #else
     (void)path;return false;
@@ -143,9 +160,15 @@ protected:
     return true;
   }
   void SetUp() override {
+#if ODBCPP_OFFICIAL_REDSHIFT_PROFILE
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_OFFICIAL_PACKAGE_IMPORT_ADMISSION");
+    if(marker==nullptr) { GTEST_SKIP()<<"Official package scope not admitted"; }
+    ASSERT_TRUE(std::string_view(marker)=="official-driver-import-v1")<<"Wrong official package marker";
+#else
     const char* marker=std::getenv("ODBCPP_REDSHIFT_PACKAGE_IMPORT_ADMISSION");
     if(marker==nullptr) { GTEST_SKIP()<<"Package scope not admitted"; }
     ASSERT_TRUE(std::string_view(marker)=="installed-driver-import-v1")<<"Wrong package marker";
+#endif
     ASSERT_TRUE(sizeof(SQLWCHAR)==ODBCPP_EXPECT_DM_SQLWCHAR_SIZE &&
         sizeof(SQLWCHAR)==ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE)<<"Package requires its explicit matched SQLWCHAR pair";
 #if !defined(__APPLE__)
@@ -170,7 +193,7 @@ protected:
       const char* image=_dyld_get_image_name(index);if(!image) { continue; }
       const auto path=std::filesystem::path(image);
       const auto filename=path.filename().string();
-      if(filename.starts_with("libodbcpp")||filename.find("redshiftodbc")!=std::string::npos||filename.find("psqlodbc")!=std::string::npos) {
+      if(filename=="librsodbc64.dylib"||filename.starts_with("libodbcpp")||filename.find("redshiftodbc")!=std::string::npos||filename.find("psqlodbc")!=std::string::npos) {
         std::error_code error;const auto actual=std::filesystem::canonical(path,error);
         ASSERT_TRUE(!error&&actual==std::filesystem::path(driver_))<<"Mixed or unexpected driver image";
         ++matches;loaded_=actual.string();
