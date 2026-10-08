@@ -4905,3 +4905,43 @@ TEST_F(ResetParametersDispatchTest, MissingBindingRefusesWithoutBackendTrafficAn
   ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
   ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_RESET_PARAMS));
 }
+
+// Public-handle bridge for the native envelope's two local post-limit refusals.
+TEST_F(BackendContractTest, ResourceRetirementRefusesDispatchUntilExplicitReconnect) {
+  connect();
+  ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(1, seen->created);
+  ASSERT_EQ(0, seen->queries);
+  ASSERT_EQ(SQL_ERROR, execute("limit"));
+  ASSERT_EQ("HY000", state());
+  ASSERT_EQ(1, seen->queries);
+  SQLSMALLINT columns = -99;
+  ASSERT_EQ(SQL_ERROR, SQLNumResultCols(stmt, &columns));
+  EXPECT_EQ("HY010", state());
+  EXPECT_EQ(-99, columns);
+  ASSERT_EQ(SQL_ERROR, SQLFetch(stmt));
+  EXPECT_EQ("HY010", state());
+  EXPECT_EQ(1, seen->queries);
+  SQLUINTEGER dead = SQL_CD_FALSE;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, &dead, 0, nullptr));
+  ASSERT_EQ(SQL_CD_TRUE, dead);
+
+  const int created_before = seen->created;
+  const int queries_before = seen->queries;
+  ASSERT_EQ(SQL_ERROR, execute("SELECT 1"));
+  EXPECT_EQ("08S01", state());
+  EXPECT_EQ(created_before, seen->created);
+  EXPECT_EQ(queries_before, seen->queries);
+
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt));
+  stmt = SQL_NULL_HSTMT;
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  connect();
+  ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(created_before + 1, seen->created);
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT 1"));
+  EXPECT_EQ(queries_before + 1, seen->queries);
+  dead = SQL_CD_TRUE;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, &dead, 0, nullptr));
+  EXPECT_EQ(SQL_CD_FALSE, dead);
+}

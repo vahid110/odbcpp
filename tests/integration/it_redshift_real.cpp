@@ -4110,3 +4110,311 @@ TEST_F(RedshiftCommonTypeBoundariesRealTest, NumericRescaleOverflowTextRetryNull
   reset(hstmt_);clear_status();ASSERT_FALSE(HasFailure());direct(hstmt_,"SELECT 1 AS recovery");ASSERT_FALSE(HasFailure());scalar(hstmt_,1);reset(hstmt_);ASSERT_FALSE(HasFailure());
   EXPECT_EQ(5,owned.precision);EXPECT_EQ(2,owned.scale);EXPECT_EQ(0,std::memcmp(truncated.data(),owned.val,truncated.size()));
 }
+
+// Fixed materialized exchanges only: application chunking is not network streaming.
+class RedshiftMaterializedEnvelopeRealTest : public RedshiftRealTest {
+protected:
+  rs::util::Deadline window_end_{};
+  bool admitted_ = false;
+  std::string original_connection_, query_;
+  struct IntegerCell { std::array<unsigned char,8> before; SQLINTEGER value; std::array<unsigned char,8> after; } ordinal_{};
+  struct TotalCell { std::array<unsigned char,8> before; SQLBIGINT value; std::array<unsigned char,8> after; } total_{};
+  struct TextCell { std::array<unsigned char,8> before; std::array<char,4097> value; std::array<unsigned char,8> after; } text_{};
+  struct ChunkCell { std::array<unsigned char,8> before; std::array<char,1025> value; std::array<unsigned char,8> after; } chunk_{};
+  struct NameCell { std::array<unsigned char,8> before; std::array<SQLCHAR,64> value; std::array<unsigned char,8> after; } name_{};
+  std::array<char,17> parameter_{};
+  SQLLEN parameter_length_ = 16, ordinal_length_ = 97, total_length_ = 97, text_length_ = 97;
+  SQLULEN fetched_ = 99, processed_ = 99;
+  SQLUSMALLINT row_status_ = SQL_ROW_NOROW, parameter_status_ = SQL_PARAM_UNUSED;
+  std::size_t connections_ = 0, execution_attempts_ = 0, prepares_ = 0;
+  std::size_t successful_exchanges_ = 0, limit_refusals_ = 0, local_refusals_ = 0;
+  struct OwnedRow { SQLINTEGER ordinal; SQLBIGINT total; std::optional<std::string> payload; };
+
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_MATERIALIZED_ENVELOPE_ADMISSION");
+    if(marker==nullptr) { GTEST_SKIP() << "Materialized envelope scope is not admitted"; }
+    ASSERT_TRUE(std::string_view(marker)=="materialized-envelope-v1") << "Invalid materialized envelope scope marker";
+    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    RedshiftRealTest::SetUp();
+    if(HasFatalFailure()) { return; }
+    const auto settings=rs::odbc::ConnectionString::parse(connection_string_);
+    ASSERT_TRUE(settings.contains("DATABASE"));ASSERT_TRUE(settings.contains("UID"));
+    ASSERT_TRUE(settings.at("DATABASE")=="odbcpp_pilot");ASSERT_TRUE(settings.at("UID")=="odbcpp_pilot_test");ASSERT_FALSE(settings.contains("DSN"));
+    for(const char* key:{"MAXROWS","MAXCELLS","MAXRESPONSEBYTES","MAXRESPONSEMESSAGES"}) {
+      ASSERT_FALSE(settings.contains(key)) << "Conflicting materialized envelope resource option";
+    }
+    original_connection_=connection_string_;
+  }
+  bool within() {
+    if(rs::util::Clock::now()>=window_end_) { ADD_FAILURE() << "Materialized envelope original finite window expired";return false; }
+    return true;
+  }
+  bool cap(rs::util::Deadline cutoff,bool statement) {
+    const auto left=std::chrono::duration_cast<std::chrono::seconds>(cutoff-rs::util::Clock::now()).count();
+    if(left<=0) { ADD_FAILURE() << "Materialized envelope finite operation window expired";return false; }
+    const auto seconds=static_cast<std::uintptr_t>(std::min<std::int64_t>(left,5));
+    if(SQLSetConnectAttr(hdbc_,SQL_ATTR_CONNECTION_TIMEOUT,reinterpret_cast<SQLPOINTER>(seconds),0)!=SQL_SUCCESS) {
+      ADD_FAILURE() << get_error(SQL_HANDLE_DBC,hdbc_);return false;
+    }
+    if(statement&&SQLSetStmtAttr(hstmt_,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(seconds),0)!=SQL_SUCCESS) {
+      ADD_FAILURE() << get_error(SQL_HANDLE_STMT,hstmt_);return false;
+    }
+    return true;
+  }
+  void connect_limits(std::size_t rows,std::size_t bytes) {
+    ASSERT_TRUE(rows==999||rows==1000);ASSERT_TRUE(bytes==262144||bytes==16777216);
+    connection_string_=original_connection_;
+    if(connection_string_.back()!=';') { connection_string_+=';'; }
+    // Append only fixed nonsecret policy keys; preserve ordinary verified-TLS credentials.
+    connection_string_+="MAXROWS="+std::to_string(rows)+";MAXCELLS=3000;MAXRESPONSEBYTES="+
+        std::to_string(bytes)+";MAXRESPONSEMESSAGES=4096;";
+    ASSERT_TRUE(cap(window_end_,false));
+    const auto left=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(left,0);
+    ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(left,5))),0));
+    ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC,hdbc_);++connections_;
+    ASSERT_TRUE(cap(window_end_,true));ASSERT_TRUE(within());
+    SQLUINTEGER mode=99;ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttr(hdbc_,SQL_ATTR_AUTOCOMMIT,&mode,sizeof(mode),nullptr));ASSERT_EQ(SQL_AUTOCOMMIT_ON,mode);
+    SQLUINTEGER dead=SQL_CD_TRUE;ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttr(hdbc_,SQL_ATTR_CONNECTION_DEAD,&dead,0,nullptr));ASSERT_EQ(SQL_CD_FALSE,dead);
+  }
+  static std::string numbered_query(std::string_view payload) {
+    return std::string("WITH digit AS (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 "
+        "UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9), "
+        "numbered AS (SELECT h.d*100+t.d*10+u.d+1 AS n FROM digit h CROSS JOIN digit t CROSS JOIN digit u) "
+        "SELECT CAST(n AS INTEGER) AS row_no, ")+std::string(payload)+
+        " AS payload, COUNT(*) OVER() AS total_rows FROM numbered ORDER BY n";
+  }
+  static std::string four_kib_query() {
+    return numbered_query("CAST(CASE WHEN n%5=0 THEN NULL ELSE REPEAT('0123456789abcdef',256) END AS VARCHAR(4096))");
+  }
+  static std::string eight_kib_prepared_query() {
+    return numbered_query("CAST(CASE WHEN n%5=0 THEN NULL ELSE REPEAT(CAST(? AS VARCHAR(16)),512) END AS VARCHAR(8192))");
+  }
+  static std::string small_query() {
+    return numbered_query("CAST(CASE WHEN n%5=0 THEN NULL ELSE 'bounded-row' END AS VARCHAR(32))");
+  }
+  static std::string literal_payload(std::size_t bytes) {
+    // Independent expected bytes; no observed length or driver conversion feeds this oracle.
+    constexpr std::string_view pattern="0123456789abcdef";
+    std::string value;value.reserve(bytes);
+    for(std::size_t offset=0;offset<bytes;++offset) { value.push_back(pattern[offset%16]); }
+    return value;
+  }
+  template<class Cell> void poison(Cell& cell) {
+    cell.before.fill(0x5a);cell.after.fill(0x5a);
+  }
+  template<class Cell> void guards(const Cell& cell) {
+    EXPECT_TRUE(std::all_of(cell.before.begin(),cell.before.end(),[](unsigned char value){return value==0x5a;}));
+    EXPECT_TRUE(std::all_of(cell.after.begin(),cell.after.end(),[](unsigned char value){return value==0x5a;}));
+  }
+  void direct(const char* sql) {
+    ASSERT_TRUE(cap(window_end_,true));++execution_attempts_;
+    ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(hstmt_,reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql)),SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
+    ++successful_exchanges_;ASSERT_TRUE(within());
+  }
+  void execute() {
+    ASSERT_TRUE(cap(window_end_,true));++execution_attempts_;
+    ASSERT_EQ(SQL_SUCCESS,SQLExecute(hstmt_)) << get_error(SQL_HANDLE_STMT,hstmt_);
+    ++successful_exchanges_;ASSERT_TRUE(within());
+    EXPECT_EQ(static_cast<SQLULEN>(1),processed_);EXPECT_EQ(SQL_PARAM_SUCCESS,parameter_status_);
+  }
+  void row_status() {
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROWS_FETCHED_PTR,&fetched_,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_STATUS_PTR,&row_status_,0));
+  }
+  void metadata(SQLULEN payload_width,std::array<std::string,3>& owned) {
+    SQLSMALLINT columns=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&columns));ASSERT_EQ(3,columns);
+    const char* names[]{"row_no","payload","total_rows"};
+    const SQLSMALLINT types[]{SQL_INTEGER,SQL_VARCHAR,SQL_BIGINT};
+    const SQLULEN widths[]{static_cast<SQLULEN>(10),payload_width,static_cast<SQLULEN>(19)};
+    for(SQLUSMALLINT column=1;column<=3;++column) {
+      poison(name_);name_.value.fill(0x5a);
+      SQLSMALLINT length=-1,type=-1,scale=-1;SQLULEN width=99;
+      ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,column,name_.value.data(),static_cast<SQLSMALLINT>(name_.value.size()),&length,&type,&width,&scale,nullptr));
+      ASSERT_GE(length,0);ASSERT_LT(static_cast<std::size_t>(length)+1,name_.value.size());
+      owned[column-1].assign(reinterpret_cast<const char*>(name_.value.data()),static_cast<std::size_t>(length));
+      EXPECT_TRUE(owned[column-1]==names[column-1]);EXPECT_EQ(types[column-1],type);EXPECT_EQ(widths[column-1],width);EXPECT_EQ(0,scale);
+      EXPECT_EQ(0,name_.value[static_cast<std::size_t>(length)]);EXPECT_EQ(0x5a,name_.value[static_cast<std::size_t>(length)+1]);guards(name_);
+      ASSERT_FALSE(HasFailure());
+    }
+  }
+  void fetch_row(SQLINTEGER expected,OwnedRow& owned,const std::string& expected_payload,bool chunks) {
+    ASSERT_TRUE(within());fetched_=99;row_status_=SQL_ROW_NOROW;
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));EXPECT_EQ(static_cast<SQLULEN>(1),fetched_);EXPECT_EQ(SQL_ROW_SUCCESS,row_status_);
+    poison(ordinal_);ordinal_.value=-97;ordinal_length_=97;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,1,SQL_C_SLONG,&ordinal_.value,sizeof(ordinal_.value),&ordinal_length_));
+    EXPECT_EQ(expected,ordinal_.value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(ordinal_.value)),ordinal_length_);guards(ordinal_);ASSERT_FALSE(HasFailure());
+    owned.ordinal=ordinal_.value;
+    if(expected%5==0) {
+      poison(chunk_);chunk_.value.fill('\x5a');text_length_=97;
+      ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,2,SQL_C_CHAR,chunk_.value.data(),static_cast<SQLLEN>(chunk_.value.size()),&text_length_));
+      EXPECT_EQ(SQL_NULL_DATA,text_length_);EXPECT_TRUE(std::all_of(chunk_.value.begin(),chunk_.value.end(),[](char value){return value=='\x5a';}));guards(chunk_);
+      owned.payload.reset();
+    } else if(chunks) {
+      const std::array<SQLLEN,8> remaining{8192,7168,6144,5120,4096,3072,2048,1024};
+      std::string snapshot;snapshot.reserve(8192);
+      ASSERT_EQ(8192u,expected_payload.size());
+      for(std::size_t part=0;part<remaining.size();++part) {
+        ASSERT_TRUE(within());poison(chunk_);chunk_.value.fill('\x5a');text_length_=97;
+        const auto result=SQLGetData(hstmt_,2,SQL_C_CHAR,chunk_.value.data(),static_cast<SQLLEN>(chunk_.value.size()),&text_length_);
+        ASSERT_EQ(part+1==remaining.size()?SQL_SUCCESS:SQL_SUCCESS_WITH_INFO,result) << get_error(SQL_HANDLE_STMT,hstmt_);
+        if(part+1!=remaining.size()) { EXPECT_EQ("01004",get_error(SQL_HANDLE_STMT,hstmt_)); }
+        EXPECT_EQ(remaining[part],text_length_);EXPECT_EQ(0,chunk_.value[1024]);guards(chunk_);
+        EXPECT_TRUE(std::equal(chunk_.value.begin(),chunk_.value.begin()+1024,expected_payload.begin()+static_cast<std::ptrdiff_t>(part*1024)));
+        ASSERT_FALSE(HasFailure());snapshot.append(chunk_.value.data(),1024);
+      }
+      ASSERT_EQ(SQL_NO_DATA,SQLGetData(hstmt_,2,SQL_C_CHAR,chunk_.value.data(),static_cast<SQLLEN>(chunk_.value.size()),&text_length_));
+      owned.payload=std::move(snapshot);
+    } else {
+      ASSERT_EQ(4096u,expected_payload.size());poison(text_);text_.value.fill('\x5a');text_length_=97;
+      ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,2,SQL_C_CHAR,text_.value.data(),static_cast<SQLLEN>(text_.value.size()),&text_length_));
+      EXPECT_EQ(4096,text_length_);EXPECT_EQ(0,text_.value[4096]);guards(text_);
+      EXPECT_TRUE(std::equal(text_.value.begin(),text_.value.begin()+4096,expected_payload.begin()));ASSERT_FALSE(HasFailure());
+      owned.payload=std::string(text_.value.data(),4096);
+    }
+    ASSERT_FALSE(HasFailure());poison(total_);total_.value=-97;total_length_=97;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,3,SQL_C_SBIGINT,&total_.value,sizeof(total_.value),&total_length_));
+    EXPECT_EQ(SQLBIGINT{1000},total_.value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(total_.value)),total_length_);guards(total_);ASSERT_FALSE(HasFailure());
+    owned.total=total_.value;
+  }
+  void fetch_all(std::vector<OwnedRow>& owned,const std::string& expected_payload,bool chunks) {
+    row_status();ASSERT_FALSE(HasFailure());owned.reserve(1000);
+    for(SQLINTEGER row=1;row<=1000;++row) {
+      OwnedRow snapshot{};fetch_row(row,snapshot,expected_payload,chunks);ASSERT_FALSE(HasFailure());owned.push_back(std::move(snapshot));
+    }
+    ASSERT_TRUE(within());ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));EXPECT_EQ(static_cast<SQLULEN>(0),fetched_);EXPECT_EQ(SQL_ROW_NOROW,row_status_);
+    std::size_t nulls=0,bytes=0;
+    for(const auto& row:owned) { if(row.payload) { bytes+=row.payload->size(); } else { ++nulls; } }
+    EXPECT_EQ(1000u,owned.size());EXPECT_EQ(200u,nulls);EXPECT_EQ(800u*expected_payload.size(),bytes);
+  }
+  void reset(bool parameters) {
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_UNBIND));
+    if(parameters) { ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_RESET_PARAMS)); }
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROWS_FETCHED_PTR,nullptr,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_STATUS_PTR,nullptr,0));
+    if(parameters) {
+      ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAMS_PROCESSED_PTR,nullptr,0));
+      ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAM_STATUS_PTR,nullptr,0));
+    }
+  }
+  void scalar_recovery() {
+    direct("SELECT CAST(1 AS INTEGER)");ASSERT_FALSE(HasFailure());
+    SQLSMALLINT columns=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&columns));ASSERT_EQ(1,columns);
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));poison(ordinal_);ordinal_.value=-97;ordinal_length_=97;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,1,SQL_C_SLONG,&ordinal_.value,sizeof(ordinal_.value),&ordinal_length_));
+    EXPECT_EQ(1,ordinal_.value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(ordinal_.value)),ordinal_length_);guards(ordinal_);
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));reset(true);ASSERT_FALSE(HasFailure());
+  }
+  void recheck(const std::vector<OwnedRow>& owned,const std::string& expected_payload,const std::array<std::string,3>& names) {
+    ASSERT_EQ(1000u,owned.size());
+    EXPECT_TRUE(names[0]=="row_no");EXPECT_TRUE(names[1]=="payload");EXPECT_TRUE(names[2]=="total_rows");
+    for(std::size_t index=0;index<owned.size();++index) {
+      ASSERT_TRUE(within());EXPECT_EQ(static_cast<SQLINTEGER>(index+1),owned[index].ordinal);EXPECT_EQ(SQLBIGINT{1000},owned[index].total);
+      if((index+1)%5==0) { EXPECT_FALSE(owned[index].payload); }
+      else { ASSERT_TRUE(owned[index].payload);EXPECT_TRUE(*owned[index].payload==expected_payload); }
+      ASSERT_FALSE(HasFailure());
+    }
+  }
+  void refuse_and_reconnect(const std::string& sql) {
+    row_status();ASSERT_FALSE(HasFailure());
+    poison(ordinal_);ordinal_.value=-97;ordinal_length_=97;
+    ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,1,SQL_C_SLONG,&ordinal_.value,sizeof(ordinal_.value),&ordinal_length_));
+    ASSERT_TRUE(cap(window_end_,true));++execution_attempts_;
+    ASSERT_EQ(SQL_ERROR,SQLExecDirect(hstmt_,reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.c_str())),SQL_NTS));
+    ASSERT_EQ("HY000",get_error(SQL_HANDLE_STMT,hstmt_));++limit_refusals_;ASSERT_TRUE(within());
+    SQLUINTEGER dead=SQL_CD_FALSE;ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttr(hdbc_,SQL_ATTR_CONNECTION_DEAD,&dead,0,nullptr));ASSERT_EQ(SQL_CD_TRUE,dead);
+    // Failed unprepared execute never publishes a result. These API states are
+    // source-supported; the separately selected offline bridge must qualify them.
+    SQLSMALLINT columns=73;ASSERT_EQ(SQL_ERROR,SQLNumResultCols(hstmt_,&columns));EXPECT_EQ("HY010",get_error(SQL_HANDLE_STMT,hstmt_));EXPECT_EQ(73,columns);
+    ASSERT_EQ(SQL_ERROR,SQLFetch(hstmt_));EXPECT_EQ("HY010",get_error(SQL_HANDLE_STMT,hstmt_));
+    EXPECT_EQ(-97,ordinal_.value);EXPECT_EQ(97,ordinal_length_);EXPECT_EQ(static_cast<SQLULEN>(99),fetched_);EXPECT_EQ(SQL_ROW_NOROW,row_status_);guards(ordinal_);
+    ASSERT_FALSE(HasFailure());ASSERT_TRUE(within());++execution_attempts_;
+    SQLCHAR local[]="SELECT CAST(1 AS INTEGER)";
+    ASSERT_EQ(SQL_ERROR,SQLExecDirect(hstmt_,local,SQL_NTS));EXPECT_EQ("08S01",get_error(SQL_HANDLE_STMT,hstmt_));++local_refusals_;
+    // No automatic reconnect: zero wire dispatch is an independent offline oracle.
+    dead=SQL_CD_FALSE;ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttr(hdbc_,SQL_ATTR_CONNECTION_DEAD,&dead,0,nullptr));ASSERT_EQ(SQL_CD_TRUE,dead);
+    ASSERT_FALSE(HasFailure());reset(true);ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,hstmt_));hstmt_=nullptr;
+    ASSERT_TRUE(cap(window_end_,false));ASSERT_EQ(SQL_SUCCESS,SQLDisconnect(hdbc_));connected_=false;
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,hdbc_));hdbc_=nullptr;
+    ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_DBC,henv_,&hdbc_));
+    connect_limits(1000,16777216);ASSERT_FALSE(HasFailure());scalar_recovery();ASSERT_FALSE(HasFailure());
+  }
+  void TearDown() override {
+    const auto entry=rs::util::Clock::now();
+    if(admitted_) { EXPECT_TRUE(entry<window_end_) << "Materialized envelope case completed after original finite window"; }
+    const auto cleanup_end=std::min(window_end_,entry+std::chrono::seconds{5});
+    // Every bound value/indicator/status remains a member until handles are freed.
+    if(hstmt_) { EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,hstmt_));hstmt_=nullptr; }
+    if(hdbc_) {
+      if(connected_&&cap(cleanup_end,false)) {
+        const auto result=SQLDisconnect(hdbc_);
+        if(result==SQL_ERROR&&get_error(SQL_HANDLE_DBC,hdbc_)=="25000") {
+          ADD_FAILURE() << "Unexpected transaction at materialized envelope cleanup";
+          if(cap(cleanup_end,false)) {
+            const auto rollback=SQLEndTran(SQL_HANDLE_DBC,hdbc_,SQL_ROLLBACK);EXPECT_EQ(SQL_SUCCESS,rollback) << get_error(SQL_HANDLE_DBC,hdbc_);
+            if(rollback==SQL_SUCCESS&&cap(cleanup_end,false)) { EXPECT_EQ(SQL_SUCCESS,SQLDisconnect(hdbc_)); }
+          }
+        } else { EXPECT_EQ(SQL_SUCCESS,result) << get_error(SQL_HANDLE_DBC,hdbc_); }
+      }
+      EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,hdbc_));hdbc_=nullptr;
+    }
+    if(henv_) { EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_ENV,henv_));henv_=nullptr; }
+  }
+};
+
+TEST_F(RedshiftMaterializedEnvelopeRealTest, DirectThousandFourKiBExactCountsAndOwningRecovery) {
+  connect_limits(1000,16777216);ASSERT_FALSE(HasFailure());
+  query_=four_kib_query();direct(query_.c_str());ASSERT_FALSE(HasFailure());std::fill(query_.begin(),query_.end(),'!');
+  std::array<std::string,3> names;metadata(static_cast<SQLULEN>(4096),names);ASSERT_FALSE(HasFailure());
+  const auto expected=literal_payload(4096);std::vector<OwnedRow> owned;
+  fetch_all(owned,expected,false);ASSERT_FALSE(HasFailure());reset(true);ASSERT_FALSE(HasFailure());
+  text_.value.fill('!');name_.value.fill(0x5a);scalar_recovery();ASSERT_FALSE(HasFailure());
+  recheck(owned,expected,names);ASSERT_FALSE(HasFailure());
+  EXPECT_EQ(1u,connections_);EXPECT_EQ(2u,execution_attempts_);EXPECT_EQ(2u,successful_exchanges_);EXPECT_EQ(0u,prepares_);
+}
+
+TEST_F(RedshiftMaterializedEnvelopeRealTest, PreparedEightKiBChunksEarlyCloseAndOwningReuse) {
+  connect_limits(1000,16777216);ASSERT_FALSE(HasFailure());query_=eight_kib_prepared_query();
+  ASSERT_TRUE(cap(window_end_,true));++prepares_;
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(hstmt_,reinterpret_cast<SQLCHAR*>(query_.data()),SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
+  std::fill(query_.begin(),query_.end(),'!');std::memcpy(parameter_.data(),"0123456789abcdef",17);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAMS_PROCESSED_PTR,&processed_,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAM_STATUS_PTR,&parameter_status_,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,static_cast<SQLULEN>(16),0,
+      parameter_.data(),static_cast<SQLLEN>(parameter_.size()),&parameter_length_));
+  execute();ASSERT_FALSE(HasFailure());
+  std::array<std::string,3> names;metadata(static_cast<SQLULEN>(8192),names);ASSERT_FALSE(HasFailure());
+  const auto expected=literal_payload(8192);std::vector<OwnedRow> owned;
+  fetch_all(owned,expected,true);ASSERT_FALSE(HasFailure());reset(false);ASSERT_FALSE(HasFailure());
+  processed_=99;parameter_status_=SQL_PARAM_UNUSED;execute();ASSERT_FALSE(HasFailure());parameter_.fill('!');
+  row_status();ASSERT_FALSE(HasFailure());std::array<OwnedRow,17> early;
+  for(std::size_t index=0;index<early.size();++index) {
+    fetch_row(static_cast<SQLINTEGER>(index+1),early[index],expected,true);ASSERT_FALSE(HasFailure());
+  }
+  // CLOSE discards the remaining buffered rows; no server-cursor/streaming claim.
+  reset(true);ASSERT_FALSE(HasFailure());chunk_.value.fill('!');name_.value.fill(0x5a);
+  scalar_recovery();ASSERT_FALSE(HasFailure());recheck(owned,expected,names);ASSERT_FALSE(HasFailure());
+  for(std::size_t index=0;index<early.size();++index) {
+    EXPECT_EQ(static_cast<SQLINTEGER>(index+1),early[index].ordinal);EXPECT_EQ(SQLBIGINT{1000},early[index].total);
+    if((index+1)%5==0) { EXPECT_FALSE(early[index].payload); }
+    else { ASSERT_TRUE(early[index].payload);EXPECT_TRUE(*early[index].payload==expected); }
+  }
+  EXPECT_EQ(1u,connections_);EXPECT_EQ(3u,execution_attempts_);EXPECT_EQ(3u,successful_exchanges_);EXPECT_EQ(1u,prepares_);
+}
+
+TEST_F(RedshiftMaterializedEnvelopeRealTest, DecodedRowLimitRefusesWithoutPartialRowsThenFreshConnectRecovers) {
+  connect_limits(999,16777216);ASSERT_FALSE(HasFailure());
+  query_=small_query();refuse_and_reconnect(query_);ASSERT_FALSE(HasFailure());std::fill(query_.begin(),query_.end(),'!');
+  EXPECT_EQ(2u,connections_);EXPECT_EQ(3u,execution_attempts_);EXPECT_EQ(1u,successful_exchanges_);
+  EXPECT_EQ(1u,limit_refusals_);EXPECT_EQ(1u,local_refusals_);EXPECT_EQ(0u,prepares_);
+}
+
+TEST_F(RedshiftMaterializedEnvelopeRealTest, WireByteCapRefusesLargerMaterializationThenFreshConnectRecovers) {
+  connect_limits(1000,262144);ASSERT_FALSE(HasFailure());
+  query_=four_kib_query();refuse_and_reconnect(query_);ASSERT_FALSE(HasFailure());std::fill(query_.begin(),query_.end(),'!');
+  EXPECT_EQ(2u,connections_);EXPECT_EQ(3u,execution_attempts_);EXPECT_EQ(1u,successful_exchanges_);
+  EXPECT_EQ(1u,limit_refusals_);EXPECT_EQ(1u,local_refusals_);EXPECT_EQ(0u,prepares_);
+  // A byte cap retires an unread exchange. Remote terminal-work absence is an
+  // independent finite-controller cleanup obligation, not SQLCancel evidence.
+}
