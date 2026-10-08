@@ -4692,3 +4692,251 @@ TEST_F(RedshiftShowTablesRealTest, WideExactMetadataOwnsValuesAndRecovers) {
   recovery();ASSERT_FALSE(HasFailure());recheck(owned,descriptors,true);ASSERT_FALSE(HasFailure());
   EXPECT_TRUE(owned.wide_fields[4]==remarks);EXPECT_EQ(null_remarks,owned.wide_remarks_null);EXPECT_EQ(1u,catalog_calls_);EXPECT_EQ(1u,scalar_calls_);
 }
+
+// Reuse committed bounded ordinary-TLS helpers, not the old SHOW TABLES cases.
+class RedshiftShowColumnsRealTest : public RedshiftShowTablesRealTest {
+protected:
+  std::optional<std::string> column_input_;
+  std::vector<SQLWCHAR> wide_column_;
+  struct SmallCell {std::array<unsigned char,8> before;SQLSMALLINT value;std::array<unsigned char,8> after;} small_{};
+  std::size_t column_calls_ = 0;
+  struct ColumnDescriptor {std::string name;SQLSMALLINT type,scale,nullable;SQLULEN capacity;bool operator==(const ColumnDescriptor&)const=default;};
+  struct OwnedColumn {
+    std::array<std::optional<std::string>,18> text;
+    std::array<std::optional<SQLINTEGER>,18> number;
+    std::array<std::optional<std::vector<SQLWCHAR>>,18> wide_text;
+    bool operator==(const OwnedColumn&)const=default;
+  };
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_SHOW_COLUMNS_ADMISSION");
+    if(marker==nullptr) {GTEST_SKIP() << "SHOW columns scope is not admitted";}
+    ASSERT_TRUE(std::string_view(marker)=="show-columns-v1") << "Invalid SHOW columns scope marker";
+    ASSERT_EQ(2u,sizeof(SQLWCHAR)) << "SHOW columns native scope requires SQLWCHAR width2";
+    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    // Do not invoke the unrelated SHOW TABLES marker gate.
+    RedshiftRealTest::SetUp();if(HasFatalFailure()) {return;}
+    const auto settings=rs::odbc::ConnectionString::parse(connection_string_);
+    for(const char* key:{"SERVER","PORT","DATABASE","UID","PWD","SSLCAFILE"}) {ASSERT_TRUE(settings.contains(key));ASSERT_FALSE(settings.at(key).empty());}
+    ASSERT_TRUE(settings.at("DATABASE")=="odbcpp_pilot");ASSERT_TRUE(settings.at("UID")=="odbcpp_pilot_test");
+    ASSERT_TRUE(settings.at("PORT")=="5439");ASSERT_FALSE(settings.contains("DSN"));ASSERT_FALSE(settings.contains("REDSHIFTCATALOGMODE"));
+    const char* schema=std::getenv("ODBCPP_REDSHIFT_TEST_SCHEMA");const char* table=std::getenv("ODBCPP_REDSHIFT_TEST_TABLE");
+    ASSERT_NE(nullptr,schema);ASSERT_NE(nullptr,table);
+    for(const auto& pair:{std::pair{schema,&schema_},std::pair{table,&table_}}) {
+      std::size_t count=0;while(count<=128&&pair.first[count]!='\0') {++count;}
+      ASSERT_GT(count,0u);ASSERT_LE(count,128u);
+      for(std::size_t index=0;index<count;++index) {
+        const auto ch=static_cast<unsigned char>(pair.first[index]);ASSERT_TRUE((ch>='a'&&ch<='z')||(ch>='A'&&ch<='Z')||(ch>='0'&&ch<='9')||ch=='_');
+      }
+      pair.second->assign(pair.first,count);
+    }
+    ASSERT_TRUE(schema_=="odbcpp_fixture");ASSERT_TRUE(table_=="pilot_rows");
+    if(connection_string_.back()!=';') {connection_string_+=';';}connection_string_+="REDSHIFTCATALOGMODE=SHOW;";
+  }
+  void columns(std::optional<std::string> pattern,bool use_wide) {
+    // SQLColumns catalog is an exact literal, unlike SQLTables catalog LIKE.
+    catalog_input_="odbcpp_pilot";schema_input_=literal_pattern(schema_);table_input_=literal_pattern(table_);column_input_=std::move(pattern);
+    ASSERT_TRUE(cap(window_end_,true));++column_calls_;SQLRETURN result=SQL_ERROR;
+    if(use_wide) {
+      wide_catalog_=ascii_units(catalog_input_);wide_schema_=ascii_units(schema_input_);wide_table_=ascii_units(table_input_);
+      wide_column_=column_input_?ascii_units(*column_input_):std::vector<SQLWCHAR>{};
+      result=SQLColumnsW(hstmt_,wide_catalog_.data(),SQL_NTS,wide_schema_.data(),SQL_NTS,wide_table_.data(),SQL_NTS,
+          column_input_?wide_column_.data():nullptr,column_input_?SQL_NTS:0);
+      for(auto* input:{&wide_catalog_,&wide_schema_,&wide_table_,&wide_column_}) {std::fill(input->begin(),input->end(),SQLWCHAR{0x5a});}
+    } else {
+      result=SQLColumns(hstmt_,reinterpret_cast<SQLCHAR*>(catalog_input_.data()),SQL_NTS,
+          reinterpret_cast<SQLCHAR*>(schema_input_.data()),SQL_NTS,reinterpret_cast<SQLCHAR*>(table_input_.data()),SQL_NTS,
+          column_input_?reinterpret_cast<SQLCHAR*>(column_input_->data()):nullptr,column_input_?SQL_NTS:0);
+    }
+    for(auto* input:{&catalog_input_,&schema_input_,&table_input_}) {std::fill(input->begin(),input->end(),'!');}
+    if(column_input_) {std::fill(column_input_->begin(),column_input_->end(),'!');}
+    ASSERT_EQ(SQL_SUCCESS,result) << get_error(SQL_HANDLE_STMT,hstmt_);ASSERT_LT(rs::util::Clock::now(),window_end_);
+  }
+  static constexpr std::array<std::string_view,18> column_names{
+      "TABLE_CAT","TABLE_SCHEM","TABLE_NAME","COLUMN_NAME","DATA_TYPE","TYPE_NAME","COLUMN_SIZE","BUFFER_LENGTH",
+      "DECIMAL_DIGITS","NUM_PREC_RADIX","NULLABLE","REMARKS","COLUMN_DEF","SQL_DATA_TYPE","SQL_DATETIME_SUB",
+      "CHAR_OCTET_LENGTH","ORDINAL_POSITION","IS_NULLABLE"};
+  static SQLSMALLINT field_type(std::size_t column) {
+    switch(column) {
+      case 5:case 9:case 10:case 11:case 14:case 15:return SQL_SMALLINT;
+      case 7:case 8:case 16:case 17:return SQL_INTEGER;
+      default:return SQL_VARCHAR;
+    }
+  }
+  void column_metadata(std::array<ColumnDescriptor,18>& owned) {
+    SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&count));ASSERT_EQ(18,count);
+    for(SQLUSMALLINT column=1;column<=18;++column) {
+      poison(name_);name_.value.fill(0x5a);SQLSMALLINT length=-1,type=-1,scale=-1,nullable=-1;SQLULEN capacity=99;
+      ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,column,name_.value.data(),static_cast<SQLSMALLINT>(name_.value.size()),&length,&type,&capacity,&scale,&nullable));
+      ASSERT_GE(length,0);ASSERT_LT(static_cast<std::size_t>(length)+1,name_.value.size());
+      const std::string actual(reinterpret_cast<const char*>(name_.value.data()),static_cast<std::size_t>(length));
+      EXPECT_TRUE(actual==column_names[column-1]);EXPECT_EQ(field_type(column),type);EXPECT_EQ(0,scale);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
+      if(type==SQL_SMALLINT) {EXPECT_EQ(static_cast<SQLULEN>(5),capacity);}
+      else if(type==SQL_INTEGER) {EXPECT_EQ(static_cast<SQLULEN>(10),capacity);}
+      else {EXPECT_LE(capacity,static_cast<SQLULEN>(65535));} // Preserve actual source dimensions, including unknown0.
+      EXPECT_EQ(0,name_.value[static_cast<std::size_t>(length)]);EXPECT_EQ(0x5a,name_.value[static_cast<std::size_t>(length)+1]);guards(name_);ASSERT_FALSE(HasFailure());
+      owned[column-1]={actual,type,scale,nullable,capacity};
+    }
+  }
+  static std::optional<SQLINTEGER> literal_number(std::size_t column,bool value) {
+    switch(column) {
+      case 5:case 14:return value?SQL_VARCHAR:SQL_INTEGER;
+      case 7:return value?32:10;
+      case 8:return value?32:4;
+      case 9:return value?std::nullopt:std::optional<SQLINTEGER>{0};
+      case 10:return value?std::nullopt:std::optional<SQLINTEGER>{10};
+      case 11:return SQL_NULLABLE;
+      case 15:return std::nullopt;
+      case 16:return value?std::optional<SQLINTEGER>{32}:std::nullopt;
+      case 17:return value?2:1;
+      default:return std::nullopt;
+    }
+  }
+  static std::vector<SQLWCHAR> literal_column_text(std::size_t column,bool value) {
+    switch(column) {
+      case 1:return {'o','d','b','c','p','p','_','p','i','l','o','t'};
+      case 2:return {'o','d','b','c','p','p','_','f','i','x','t','u','r','e'};
+      case 3:return {'p','i','l','o','t','_','r','o','w','s'};
+      case 4:return value?std::vector<SQLWCHAR>{'v','a','l','u','e'}:std::vector<SQLWCHAR>{'i','d'};
+      case 6:return value?std::vector<SQLWCHAR>{'c','h','a','r','a','c','t','e','r',' ','v','a','r','y','i','n','g'}:std::vector<SQLWCHAR>{'i','n','t','e','g','e','r'};
+      case 18:return {'Y','E','S'};
+      default:return {};
+    }
+  }
+  static std::string_view literal_text(std::size_t column,bool value) {
+    switch(column) {
+      case 1:return "odbcpp_pilot";case 2:return "odbcpp_fixture";case 3:return "pilot_rows";
+      case 4:return value?"value":"id";case 6:return value?"character varying":"integer";case 18:return "YES";
+      default:return {};
+    }
+  }
+  void numeric_field(SQLUSMALLINT column,bool value,OwnedColumn& owned) {
+    const auto expected=literal_number(column,value);length_=97;SQLINTEGER actual=-99;
+    if(field_type(column)==SQL_SMALLINT) {
+      poison(small_);small_.value=-99;
+      ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,column,SQL_C_SSHORT,&small_.value,sizeof(small_.value),&length_));
+      if(!expected) {EXPECT_EQ(SQL_NULL_DATA,length_);EXPECT_EQ(-99,small_.value);}
+      else {EXPECT_EQ(static_cast<SQLLEN>(sizeof(small_.value)),length_);EXPECT_EQ(*expected,small_.value);actual=small_.value;}
+      guards(small_);
+    } else {
+      integer_={17,-99,83};
+      ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,column,SQL_C_SLONG,&integer_.value,sizeof(integer_.value),&length_));
+      if(!expected) {EXPECT_EQ(SQL_NULL_DATA,length_);EXPECT_EQ(-99,integer_.value);}
+      else {EXPECT_EQ(static_cast<SQLLEN>(sizeof(integer_.value)),length_);EXPECT_EQ(*expected,integer_.value);actual=integer_.value;}
+      EXPECT_EQ(17,integer_.before);EXPECT_EQ(83,integer_.after);
+    }
+    ASSERT_FALSE(HasFailure());owned.number[column-1]=length_==SQL_NULL_DATA?std::nullopt:std::optional<SQLINTEGER>{actual};
+  }
+  void text_field(SQLUSMALLINT column,bool value,bool use_wide,const ColumnDescriptor& descriptor,OwnedColumn& owned) {
+    length_=97;const bool opaque=column==12||column==13;
+    if(use_wide) {
+      poison(wide_);wide_.value.fill(SQLWCHAR{0x5a});
+      ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,column,SQL_C_WCHAR,wide_.value.data(),static_cast<SQLLEN>(sizeof(wide_.value)),&length_));
+      if(length_==SQL_NULL_DATA) {
+        ASSERT_TRUE(opaque);EXPECT_TRUE(std::all_of(wide_.value.begin(),wide_.value.end(),[](SQLWCHAR ch){return ch==SQLWCHAR{0x5a};}));
+        owned.wide_text[column-1].reset();
+      } else {
+        ASSERT_GE(length_,0);ASSERT_EQ(0,length_%static_cast<SQLLEN>(sizeof(SQLWCHAR)));
+        const auto units=static_cast<std::size_t>(length_)/sizeof(SQLWCHAR);ASSERT_LT(units+1,wide_.value.size());
+        EXPECT_EQ(SQLWCHAR{0},wide_.value[units]);EXPECT_EQ(SQLWCHAR{0x5a},wide_.value[units+1]);
+        owned.wide_text[column-1]=std::vector<SQLWCHAR>(wide_.value.begin(),wide_.value.begin()+static_cast<std::ptrdiff_t>(units));
+        if(!opaque) {
+          const auto literal=literal_column_text(column,value);ASSERT_EQ(literal.size(),units);EXPECT_TRUE(std::equal(literal.begin(),literal.end(),wide_.value.begin()));
+          if(descriptor.capacity!=0) {EXPECT_LE(static_cast<SQLULEN>(units),descriptor.capacity);}
+        }
+      }
+      guards(wide_);
+    } else {
+      poison(narrow_);narrow_.value.fill('\x5a');
+      ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,column,SQL_C_CHAR,narrow_.value.data(),static_cast<SQLLEN>(narrow_.value.size()),&length_));
+      if(length_==SQL_NULL_DATA) {
+        ASSERT_TRUE(opaque);EXPECT_TRUE(std::all_of(narrow_.value.begin(),narrow_.value.end(),[](char ch){return ch=='\x5a';}));owned.text[column-1].reset();
+      } else {
+        ASSERT_GE(length_,0);ASSERT_LE(length_,65535);const auto size=static_cast<std::size_t>(length_);
+        EXPECT_EQ(0,narrow_.value[size]);EXPECT_EQ('\x5a',narrow_.value[size+1]);owned.text[column-1]=std::string(narrow_.value.data(),size);
+        if(!opaque) {EXPECT_TRUE(*owned.text[column-1]==literal_text(column,value));if(descriptor.capacity!=0) {EXPECT_LE(static_cast<SQLULEN>(size),descriptor.capacity);}}
+      }
+      guards(narrow_);
+    }
+    ASSERT_FALSE(HasFailure());
+  }
+  void column_row(bool value,bool use_wide,const std::array<ColumnDescriptor,18>& descriptors,OwnedColumn& owned) {
+    ASSERT_LT(rs::util::Clock::now(),window_end_);
+    for(SQLUSMALLINT column=1;column<=18;++column) {
+      if(field_type(column)==SQL_VARCHAR) {text_field(column,value,use_wide,descriptors[column-1],owned);}
+      else {numeric_field(column,value,owned);}
+      ASSERT_FALSE(HasFailure());
+    }
+  }
+  void exact_rows(bool use_wide,std::array<ColumnDescriptor,18>& descriptors,std::array<OwnedColumn,2>& rows) {
+    column_metadata(descriptors);ASSERT_FALSE(HasFailure());
+    for(std::size_t index=0;index<2;++index) {
+      ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));column_row(index==1,use_wide,descriptors,rows[index]);ASSERT_FALSE(HasFailure());
+    }
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));close_cursor();ASSERT_FALSE(HasFailure());
+  }
+  void recheck_columns(const std::array<ColumnDescriptor,18>& descriptors,const std::array<OwnedColumn,2>& rows,bool use_wide) {
+    for(std::size_t index=0;index<2;++index) {
+      ASSERT_LT(rs::util::Clock::now(),window_end_);
+      for(std::size_t column=1;column<=18;++column) {
+        EXPECT_TRUE(descriptors[column-1].name==column_names[column-1]);EXPECT_EQ(field_type(column),descriptors[column-1].type);
+        if(field_type(column)!=SQL_VARCHAR) {EXPECT_TRUE(rows[index].number[column-1]==literal_number(column,index==1));}
+        else if(column!=12&&column!=13) {
+          if(use_wide) {ASSERT_TRUE(rows[index].wide_text[column-1]);EXPECT_TRUE(*rows[index].wide_text[column-1]==literal_column_text(column,index==1));}
+          else {ASSERT_TRUE(rows[index].text[column-1]);EXPECT_TRUE(*rows[index].text[column-1]==literal_text(column,index==1));}
+        }
+      }
+      ASSERT_FALSE(HasFailure());
+    }
+  }
+};
+
+TEST_F(RedshiftShowColumnsRealTest, ExactColumnsOwnEighteenFieldsAndRecover) {
+  connect_bounded();ASSERT_FALSE(HasFailure());columns(std::nullopt,false);ASSERT_FALSE(HasFailure());
+  std::array<ColumnDescriptor,18> descriptors;std::array<OwnedColumn,2> rows;exact_rows(false,descriptors,rows);ASSERT_FALSE(HasFailure());
+  const auto saved=rows;narrow_.value.fill('!');name_.value.fill(0x5a);recovery();ASSERT_FALSE(HasFailure());
+  recheck_columns(descriptors,rows,false);ASSERT_FALSE(HasFailure());EXPECT_TRUE(rows==saved);EXPECT_EQ(1u,column_calls_);EXPECT_EQ(1u,scalar_calls_);
+}
+
+TEST_F(RedshiftShowColumnsRealTest, ColumnLikeFilterPreservesTypeDimensions) {
+  connect_bounded();ASSERT_FALSE(HasFailure());columns(std::string("v_lue"),false);ASSERT_FALSE(HasFailure());
+  std::array<ColumnDescriptor,18> descriptors;column_metadata(descriptors);ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));OwnedColumn value;column_row(true,false,descriptors,value);ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));close_cursor();ASSERT_FALSE(HasFailure());
+  const auto saved=value;narrow_.value.fill('!');name_.value.fill(0x5a);recovery();ASSERT_FALSE(HasFailure());EXPECT_TRUE(value==saved);
+  ASSERT_TRUE(value.text[3]);EXPECT_TRUE(*value.text[3]=="value");EXPECT_TRUE(value.number[6]==std::optional<SQLINTEGER>{32});
+  EXPECT_TRUE(value.number[7]==std::optional<SQLINTEGER>{32});EXPECT_TRUE(value.number[15]==std::optional<SQLINTEGER>{32});
+  EXPECT_EQ(1u,column_calls_);EXPECT_EQ(1u,scalar_calls_);
+}
+
+TEST_F(RedshiftShowColumnsRealTest, NoMatchEmptyColumnFilterAndRecovery) {
+  connect_bounded();ASSERT_FALSE(HasFailure());columns(std::string{},false);ASSERT_FALSE(HasFailure());
+  std::array<ColumnDescriptor,18> descriptors;column_metadata(descriptors);ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));close_cursor();ASSERT_FALSE(HasFailure());
+  recovery();ASSERT_FALSE(HasFailure());EXPECT_EQ(1u,column_calls_);EXPECT_EQ(1u,scalar_calls_);
+}
+
+TEST_F(RedshiftShowColumnsRealTest, AnsiWideExactColumnsRemainEquivalentAndRecover) {
+  connect_bounded();ASSERT_FALSE(HasFailure());columns(std::nullopt,false);ASSERT_FALSE(HasFailure());
+  std::array<ColumnDescriptor,18> narrow_descriptors,wide_descriptors;std::array<OwnedColumn,2> narrow_rows,wide_rows;
+  exact_rows(false,narrow_descriptors,narrow_rows);ASSERT_FALSE(HasFailure());columns(std::nullopt,true);ASSERT_FALSE(HasFailure());
+  exact_rows(true,wide_descriptors,wide_rows);ASSERT_FALSE(HasFailure());EXPECT_TRUE(narrow_descriptors==wide_descriptors);
+  for(std::size_t index=0;index<2;++index) {
+    EXPECT_TRUE(narrow_rows[index].number==wide_rows[index].number);
+    for(const std::size_t column:{std::size_t{12},std::size_t{13}}) {
+      // Opaque source remarks/defaults are not guessed NULL/empty. Preserve their
+      // actual A/W NULLness; compare exact code units when the source is ASCII.
+      EXPECT_EQ(bool(narrow_rows[index].text[column-1]),bool(wide_rows[index].wide_text[column-1]));
+      if(narrow_rows[index].text[column-1]) {
+        ASSERT_TRUE(wide_rows[index].wide_text[column-1]);const auto& text=*narrow_rows[index].text[column-1];
+        if(std::all_of(text.begin(),text.end(),[](unsigned char ch){return ch<128;})) {
+          const auto units=ascii_units(text);ASSERT_EQ(text.size(),wide_rows[index].wide_text[column-1]->size());
+          EXPECT_TRUE(std::equal(units.begin(),units.end()-1,wide_rows[index].wide_text[column-1]->begin()));
+        }
+      }
+    }
+  }
+  const auto saved_narrow=narrow_rows,saved_wide=wide_rows;narrow_.value.fill('!');wide_.value.fill(SQLWCHAR{0x5a});name_.value.fill(0x5a);
+  recovery();ASSERT_FALSE(HasFailure());recheck_columns(narrow_descriptors,narrow_rows,false);ASSERT_FALSE(HasFailure());
+  recheck_columns(wide_descriptors,wide_rows,true);ASSERT_FALSE(HasFailure());EXPECT_TRUE(narrow_rows==saved_narrow);EXPECT_TRUE(wide_rows==saved_wide);
+  EXPECT_EQ(2u,column_calls_);EXPECT_EQ(1u,scalar_calls_);
+}

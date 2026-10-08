@@ -1152,3 +1152,88 @@ TEST(RedshiftShowTables, PreDispatchRefusalAndAbsoluteDeadline) {
     auto result=late.execute_catalog(table_request(),rs::util::make_deadline(std::chrono::milliseconds{5}));ASSERT_FALSE(result);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout),result.error());EXPECT_EQ(call,late.direct_calls);
   }
 }
+
+namespace {
+ColumnsCatalogRequest column_request() {return {std::nullopt,"fixture","rows",std::nullopt};}
+QueryResult columns_response(std::string database="selected",std::string schema="fixture",std::string table="rows") {
+  QueryResult result;
+  for(const auto* name:{"database_name","schema_name","table_name","column_name","ordinal_position","column_default",
+      "is_nullable","data_type","character_maximum_length","numeric_precision","numeric_scale","remarks"}) {
+    const std::string_view field=name;const bool integer=field=="ordinal_position" || field=="character_maximum_length" || field=="numeric_precision" || field=="numeric_scale";
+    result.columns.push_back({name,NativeTypeInfo{integer?ScalarType::Integer:ScalarType::VarChar,integer?10u:128u,0,true}});
+  }
+  result.rows={{database,schema,table,"value","2",std::nullopt,"YES","character varying","32",std::nullopt,std::nullopt,"owning remark"},
+      {database,schema,table,"id","1","1","NO","integer",std::nullopt,"32","0",std::nullopt}};
+  Message complete;complete.tag='C';complete.payload={std::byte{'S'},std::byte{'H'},std::byte{'O'},std::byte{'W'},std::byte{0}};
+  result.statement_kind=PgProtocolParser{}.extract_query_result({complete}).statement_kind;
+  return result;
+}
+}
+TEST(RedshiftShowColumns, ExactOwningEighteenFieldsAndOriginalDeadline) {
+  SchemaSpy spy;spy.show=columns_response();const auto deadline=rs::util::make_deadline(std::chrono::seconds{2});
+  auto result=spy.execute_catalog(column_request(),deadline);ASSERT_TRUE(result);ASSERT_EQ(2u,spy.queries.size());
+  EXPECT_EQ("SHOW COLUMNS FROM TABLE \"selected\".\"fixture\".\"rows\";",spy.queries[1]);
+  EXPECT_EQ((std::vector<rs::util::Deadline>{deadline,deadline}),spy.deadlines);EXPECT_EQ(0u,spy.prepared_calls);EXPECT_EQ(0u,spy.catalog_builds);
+  ASSERT_EQ(18u,result->columns.size());EXPECT_EQ("COLUMN_NAME",result->columns[3].name);EXPECT_EQ("IS_NULLABLE",result->columns[17].name);
+  EXPECT_EQ((ResultRows{{"selected","fixture","rows","id","4","integer","10","4","0","10","0",std::nullopt,"1","4",std::nullopt,std::nullopt,"1","NO"},
+      {"selected","fixture","rows","value","12","character varying","32","32",std::nullopt,std::nullopt,"1","owning remark",std::nullopt,"12",std::nullopt,"32","2","YES"}}),result->rows);
+  for(const auto i:{0u,1u,2u,3u,5u,11u,12u,17u}){ASSERT_TRUE(result->columns[i].normalized_type);EXPECT_EQ(ScalarType::VarChar,result->columns[i].normalized_type->type);EXPECT_EQ(128u,result->columns[i].normalized_type->column_size);}
+  spy.show.rows.clear();spy.connected=false;EXPECT_EQ("owning remark",result->rows[1][11]);EXPECT_EQ("1",result->rows[0][12]);
+  SchemaSpy empty;empty.show=columns_response();empty.show.rows.clear();auto zero=empty.execute_catalog(column_request(),deadline);ASSERT_TRUE(zero);EXPECT_TRUE(zero->rows.empty());EXPECT_EQ(18u,zero->columns.size());
+}
+TEST(RedshiftShowColumns, CommonDimensionsUnknownNullAndExplicitTemporalPrecision) {
+  auto source=columns_response();source.rows.clear();
+  source.rows={{"selected","fixture","rows","amount","1",std::nullopt,"YES","numeric",std::nullopt,"38","6",std::nullopt},
+      {"selected","fixture","rows","stamp","2",std::nullopt,"NO","timestamp without time zone (4)",std::nullopt,std::nullopt,std::nullopt,std::nullopt},
+      {"selected","fixture","rows","other","3",std::nullopt,std::nullopt,"SUPER",std::nullopt,std::nullopt,std::nullopt,std::nullopt}};
+  auto result=normalize_redshift_columns("selected","fixture","rows",column_request(),BackendResult<QueryResult>{source,{SessionState::Idle,SessionDisposition::Reusable}});ASSERT_TRUE(result);
+  EXPECT_EQ("38",result->rows[0][6]);EXPECT_EQ("40",result->rows[0][7]);EXPECT_EQ("6",result->rows[0][8]);EXPECT_EQ("10",result->rows[0][9]);
+  EXPECT_EQ("93",result->rows[1][4]);EXPECT_EQ("24",result->rows[1][6]);EXPECT_EQ("16",result->rows[1][7]);EXPECT_EQ("4",result->rows[1][8]);EXPECT_EQ("9",result->rows[1][13]);EXPECT_EQ("3",result->rows[1][14]);
+  EXPECT_EQ("SUPER",result->rows[2][5]);EXPECT_EQ("0",result->rows[2][4]);EXPECT_FALSE(result->rows[2][6]);EXPECT_FALSE(result->rows[2][7]);EXPECT_EQ("2",result->rows[2][10]);EXPECT_EQ("",result->rows[2][17]);
+  struct Sample {const char* type;const char* code;const char* size;const char* buffer;const char* scale;};
+  for(const auto& sample:std::array<Sample,10>{{{"boolean","-7","1","1",nullptr},{"smallint","5","5","2","0"},
+      {"bigint","-5","19","8","0"},{"real","7","7","4",nullptr},{"double precision","8","15","8",nullptr},
+      {"date","91","10","6",nullptr},{"time without time zone","92","15","6","6"},
+      {"time with time zone","92","21","6","6"},{"timestamp without time zone","93","26","16","6"},
+      {"timestamp with time zone","93","32","16","6"}}}) {
+    auto single=columns_response();single.rows.resize(1);single.rows[0][7]=sample.type;
+    auto mapped=normalize_redshift_columns("selected","fixture","rows",column_request(),BackendResult<QueryResult>{single,{SessionState::Idle,SessionDisposition::Reusable}});
+    ASSERT_TRUE(mapped);EXPECT_EQ(sample.code,mapped->rows[0][4]);EXPECT_EQ(sample.size,mapped->rows[0][6]);EXPECT_EQ(sample.buffer,mapped->rows[0][7]);
+    if(sample.scale)EXPECT_EQ(sample.scale,mapped->rows[0][8]);else EXPECT_FALSE(mapped->rows[0][8]);
+  }
+  for(const auto* name:{"sort_key_type","sort_key","dist_key","encoding","collation"}){source.columns.push_back({name,NativeTypeInfo{ScalarType::VarChar,0,0,true}});for(auto& row:source.rows)row.push_back(std::nullopt);}
+  std::reverse(source.columns.begin(),source.columns.end());for(auto& row:source.rows)std::reverse(row.begin(),row.end());
+  EXPECT_TRUE(normalize_redshift_columns("selected","fixture","rows",column_request(),BackendResult<QueryResult>{source,{SessionState::Transaction,SessionDisposition::ResetRequired}}));
+}
+TEST(RedshiftShowColumns, UnicodeQuotedIdentityColumnPatternAndLiteralCatalog) {
+  SchemaSpy spy;spy.database="db\"é";auto request=column_request();request.schema="s\\_表";request.table="t\\%\"表";
+  spy.show=columns_response(spy.database,"s_表","t%\"表");spy.show.rows[0][3]="é表😀";spy.show.rows[1][3]="i_%";
+  request.column="___";request.catalog=spy.database;
+  auto result=spy.execute_catalog(request,rs::util::make_deadline(std::chrono::seconds{1}));ASSERT_TRUE(result);EXPECT_EQ(2u,result->rows.size());
+  EXPECT_EQ("SHOW COLUMNS FROM TABLE \"db\"\"é\".\"s_表\".\"t%\"\"表\";",spy.queries[1]);
+  request.column="i\\_\\%";auto one=normalize_redshift_columns(spy.database,"s_表","t%\"表",request,BackendResult<QueryResult>{spy.show,spy.snapshot});ASSERT_TRUE(one);ASSERT_EQ(1u,one->rows.size());EXPECT_EQ("i_%",one->rows[0][3]);
+  request.catalog="db%";auto none=normalize_redshift_columns(spy.database,"s_表","t%\"表",request,BackendResult<QueryResult>{spy.show,spy.snapshot});ASSERT_TRUE(none);EXPECT_TRUE(none->rows.empty());
+  request.catalog=spy.database;request.column="";none=normalize_redshift_columns(spy.database,"s_表","t%\"表",request,BackendResult<QueryResult>{spy.show,spy.snapshot});ASSERT_TRUE(none);EXPECT_TRUE(none->rows.empty());
+}
+TEST(RedshiftShowColumns, MalformedHiddenRowsRefuseNativeFailureAndRecovery) {
+  for(unsigned variant=0;variant<15;++variant){auto value=columns_response();auto request=column_request();request.column="hidden";
+    switch(variant){case 0:value.columns[0].name="unknown";break;case 1:value.columns[1].name="database_name";break;
+      case 2:value.columns[4].normalized_type->type=ScalarType::VarChar;break;case 3:value.rows[0][0]="foreign";break;
+      case 4:value.rows[0][2]="foreign";break;case 5:value.rows[0][3].reset();break;case 6:value.rows[0][3]="id";break;
+      case 7:value.rows[0][4]="1";break;case 8:value.rows[0][4]="2147483648";break;case 9:value.rows[0][8]="-1";break;
+      case 10:value.rows[0][6]="maybe";break;case 11:value.rows[0][11]=std::string("\xff",1);break;
+      case 12:value.statement_kind.reset();break;case 13:value.affected_rows=3;break;case 14:value.rows.resize(10001,value.rows[0]);break;}
+    schema_error(normalize_redshift_columns("selected","fixture","rows",request,BackendResult<QueryResult>{value,{SessionState::Idle,SessionDisposition::Reusable}}));
+  }
+  auto bad=columns_response();bad.rows[0][7]="numeric";bad.rows[0][9]="5";bad.rows[0][10]="6";
+  schema_error(normalize_redshift_columns("selected","fixture","rows",column_request(),BackendResult<QueryResult>{bad,{SessionState::Idle,SessionDisposition::Reusable}}));
+  SchemaSpy denied;denied.show=columns_response();BackendError native{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),"synthetic"};native.native_state="42501";denied.direct_failure=native;
+  auto result=denied.execute_catalog(column_request(),rs::util::make_deadline(std::chrono::seconds{1}));ASSERT_FALSE(result);EXPECT_EQ("42501",result.backend_error().native_state);EXPECT_EQ(0u,denied.catalog_builds);
+  denied.direct_failure.reset();denied.direct_calls=0;EXPECT_TRUE(denied.execute_catalog(column_request(),rs::util::make_deadline(std::chrono::seconds{1})));
+}
+TEST(RedshiftShowColumns, NoIoInvalidPatternsCapabilityAndDeadline) {
+  for(const auto* capability:{"","3","-4","4x"}){SchemaSpy spy;spy.capability=capability;EXPECT_TRUE(spy.selects_catalog_request(column_request()));auto refused=spy.execute_catalog(column_request(),rs::util::make_deadline(std::chrono::seconds{1}));ASSERT_FALSE(refused);no_execution(spy);}
+  for(auto pattern:{std::string("dangling\\"),std::string("bad\0name",8),std::string("\xff",1)}){SchemaSpy spy;auto request=column_request();request.column=pattern;auto refused=spy.execute_catalog(request,rs::util::make_deadline(std::chrono::seconds{1}));ASSERT_FALSE(refused);no_execution(spy);}
+  SchemaSpy expired;auto refused=expired.execute_catalog(column_request(),rs::util::Clock::now());ASSERT_FALSE(refused);no_execution(expired);
+  for(unsigned call:{1u,2u}){SchemaSpy late;late.show=columns_response();late.before_return=[call](unsigned current,rs::util::Deadline d){if(current==call)while(rs::util::Clock::now()<d)std::this_thread::yield();};auto result=late.execute_catalog(column_request(),rs::util::make_deadline(std::chrono::milliseconds{5}));ASSERT_FALSE(result);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout),result.error());EXPECT_EQ(call,late.direct_calls);}
+}

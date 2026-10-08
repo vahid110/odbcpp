@@ -4,6 +4,9 @@
 #include <array>
 #include <set>
 #include <tuple>
+#include <charconv>
+#include <limits>
+#include "pg_protocol_parser.h"
 
 namespace rs::core::database::postgres {
 namespace {
@@ -275,6 +278,173 @@ BackendResult<QueryResult> normalize_redshift_tables(std::string_view database,
   std::sort(output.rows.begin(),output.rows.end(),[](const auto& a,const auto& b) {
     return std::tie(a[3],a[0],a[1],a[2]) < std::tie(b[3],b[0],b[1],b[2]);
   });
+  return BackendResult<QueryResult>{std::move(output),input.session_snapshot()};
+}
+
+
+namespace {
+bool column_literal_pattern(const std::optional<std::string>& pattern) noexcept {
+  if (!pattern || pattern->empty())return false;
+  bool escaped=false;
+  for (char ch:*pattern) {
+    if (escaped){escaped=false;continue;}
+    if (ch=='\\')escaped=true;else if (ch=='%' || ch=='_')return false;
+  }
+  return !escaped;
+}
+std::string column_literal_name(std::string_view pattern) {
+  std::string result;bool escaped=false;
+  for(char ch:pattern){if(!escaped && ch=='\\'){escaped=true;continue;}result.push_back(ch);escaped=false;}
+  return result;
+}
+BackendError invalid_column_metadata(const char* reason) {
+  BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+      std::string("Invalid Redshift column metadata: ")+reason};
+  error.error_class=BackendErrorClass::InvalidMetadata;error.operation=BackendOperation::ExecuteCatalog;return error;
+}
+}
+bool redshift_column_names_are_literal(const ColumnsCatalogRequest& request) noexcept {
+  return column_literal_pattern(request.schema) && column_literal_pattern(request.table);
+}
+std::optional<std::pair<std::string,std::string>> redshift_column_names(const ColumnsCatalogRequest& request) {
+  if (!redshift_column_names_are_literal(request) || !table_pattern_valid(request.column))return std::nullopt;
+  if (request.catalog && (request.catalog->find('\0')!=std::string::npos ||
+      !rs::util::utf8_code_point_count(*request.catalog)))return std::nullopt;
+  auto schema=column_literal_name(*request.schema),table=column_literal_name(*request.table);
+  if (!schema_identifier(schema) || !schema_identifier(table))return std::nullopt;
+  return std::pair{std::move(schema),std::move(table)};
+}
+std::string redshift_show_columns_command(std::string_view database,std::string_view schema,std::string_view table) {
+  const auto quote=[](std::string_view value){std::string result(1,'"');for(char ch:value){if(ch=='"')result.push_back('"');result.push_back(ch);}result.push_back('"');return result;};
+  // Pinned AWS helper184: V4 per-table command, no database-wide V5 discovery.
+  return "SHOW COLUMNS FROM TABLE "+quote(database)+"."+quote(schema)+"."+quote(table)+";";
+}
+
+
+namespace {
+bool column_number(const std::optional<std::string>& value,std::optional<std::int32_t>& result) {
+  result.reset();if(!value)return true;
+  std::int32_t number=0;const auto [end,error]=std::from_chars(value->data(),value->data()+value->size(),number);
+  if(value->empty() || error!=std::errc{} || end!=value->data()+value->size())return false;
+  result=number;return true;
+}
+using ColumnCell=std::optional<std::string>;
+struct ColumnDimensions {
+  int code{0},sql_type{0};ColumnCell size,buffer,scale,radix,sub,octets;
+};
+// Reuse the existing parser's scalar dimensions rather than a second temporal/
+// numeric size policy. The SQLColumns values follow the existing SVV projection;
+// they deliberately are not the official driver's internal-storage byte counts.
+std::optional<ColumnDimensions> column_dimensions(std::string_view type,
+    std::optional<std::int32_t> length,std::optional<std::int32_t> precision,std::optional<std::int32_t> scale) {
+  std::string normalized(type);for(char& ch:normalized)if(ch>='A' && ch<='Z')ch=static_cast<char>(ch-'A'+'a');
+  std::int32_t fraction=-1;
+  const auto suffix=normalized.rfind(" (");
+  const auto temporal_name=std::string_view(normalized).substr(0,suffix);
+  const bool temporal=temporal_name=="time without time zone" || temporal_name=="time with time zone" ||
+      temporal_name=="timestamp without time zone" || temporal_name=="timestamp with time zone";
+  if(suffix!=std::string::npos && temporal && normalized.back()==')') {
+    const auto digits=std::string_view(normalized).substr(suffix+2,normalized.size()-suffix-3);
+    const auto [end,error]=std::from_chars(digits.data(),digits.data()+digits.size(),fraction);
+    if(digits.empty() || error!=std::errc{} || end!=digits.data()+digits.size() || fraction<0 || fraction>6)return std::nullopt;
+    normalized.resize(suffix);
+  }
+  std::uint32_t oid=0;std::int32_t modifier=-1;int code=0,bytes=0;
+  if(normalized=="boolean"){oid=16;code=-7;bytes=1;}
+  else if(normalized=="smallint"){oid=21;code=5;bytes=2;}
+  else if(normalized=="integer"){oid=23;code=4;bytes=4;}
+  else if(normalized=="bigint"){oid=20;code=-5;bytes=8;}
+  else if(normalized=="real"){oid=700;code=7;bytes=4;}
+  else if(normalized=="double precision"){oid=701;code=8;bytes=8;}
+  else if(normalized=="numeric" || normalized=="decimal") {
+    if(!precision || !scale || *precision<1 || *precision>38 || *scale<0 || *scale>*precision)return std::nullopt;
+    oid=1700;code=normalized=="decimal"?3:2;modifier=4+(*precision<<16)+*scale;bytes=*precision+2;
+  } else if(normalized=="character" || normalized=="character varying") {
+    if(!length || *length<1 || *length>65535)return std::nullopt;
+    oid=normalized=="character"?1042:1043;code=normalized=="character"?1:12;modifier=*length+4;bytes=*length;
+  } else if(normalized=="date"){oid=1082;code=91;bytes=6;}
+  else if(normalized=="time without time zone"){oid=1083;code=92;bytes=6;modifier=fraction;}
+  else if(normalized=="time with time zone"){oid=1266;code=92;bytes=6;modifier=fraction;}
+  else if(normalized=="timestamp without time zone"){oid=1114;code=93;bytes=16;modifier=fraction;}
+  else if(normalized=="timestamp with time zone"){oid=1184;code=93;bytes=16;modifier=fraction;}
+  ColumnDimensions result;
+  if(!oid)return result; // Unsupported families retain TYPE_NAME, unknown code/NULL dimensions.
+  if(fraction!=-1 && code!=92 && code!=93)return std::nullopt;
+  const auto native=PgProtocolParser{}.describe_type(oid,-1,modifier);
+  result.code=code;result.sql_type=code>=91 && code<=93?9:code;
+  result.size=std::to_string(native.column_size);result.buffer=std::to_string(bytes);
+  if(code==2 || code==3 || code==92 || code==93)result.scale=std::to_string(native.decimal_digits);
+  else if(code==5 || code==4 || code==-5)result.scale="0";
+  if(code==2 || code==3 || code==5 || code==4 || code==-5)result.radix="10";
+  else if(code==7 || code==8)result.radix="2";
+  if(code>=91 && code<=93)result.sub=std::to_string(code-90);
+  if(code==1 || code==12)result.octets=std::to_string(*length);
+  return result;
+}
+}
+
+BackendResult<QueryResult> normalize_redshift_columns(std::string_view database,std::string_view schema,
+    std::string_view table,const ColumnsCatalogRequest& request,BackendResult<QueryResult> input) {
+  if(!input)return input.backend_error();const auto& source=*input;
+  if(source.error)return *source.error;for(const auto& extra:source.additional_results)if(extra.error)return *extra.error;
+  if(!schema_identifier(database) || !schema_identifier(schema) || !schema_identifier(table) || !redshift_column_names(request))return invalid_column_metadata("identity");
+  if(!clean_schema_result(source))return invalid_column_metadata("structure");
+  if(source.rows.size()>10000)return invalid_column_metadata("rows");
+  if(!source.statement_kind || (*source.statement_kind!=StatementKind::Unknown && *source.statement_kind!=StatementKind::SelectCursor) ||
+      (source.affected_rows!=0 && source.affected_rows!=source.rows.size()))return invalid_column_metadata("completion");
+  if(input.session_snapshot().disposition==SessionDisposition::Retire)return invalid_column_metadata("snapshot");
+  // The pinned helper and primary SHOW COLUMNS example identify these twelve
+  // semantic fields and five optional physical attributes; no version/count guess.
+  constexpr std::array<std::string_view,17> names{"database_name","schema_name","table_name","column_name",
+      "ordinal_position","column_default","is_nullable","data_type","character_maximum_length",
+      "numeric_precision","numeric_scale","remarks","sort_key_type","sort_key","dist_key","encoding","collation"};
+  if(source.columns.size()<12 || source.columns.size()>names.size())return invalid_column_metadata("columns");
+  std::array<std::size_t,12> index{};std::set<std::string_view> headers;
+  for(std::size_t i=0;i<source.columns.size();++i) {
+    const auto name=std::string_view(source.columns[i].name);const auto found=std::find(names.begin(),names.end(),name);
+    if(found==names.end() || !headers.insert(name).second)return invalid_column_metadata("layout");
+    const auto n=static_cast<std::size_t>(found-names.begin());if(n<index.size())index[n]=i;
+  }
+  for(std::size_t i=0;i<index.size();++i)if(!headers.contains(names[i]))return invalid_column_metadata("layout");
+  for(const auto i:{0u,1u,2u,3u,5u,6u,7u,11u})if(!schema_text(source.columns[index[i]]))return invalid_column_metadata("type");
+  for(const auto i:{4u,8u,9u,10u}) {
+    const auto& native=source.columns[index[i]].normalized_type;
+    if(!native || !native->known || (native->type!=ScalarType::SmallInt && native->type!=ScalarType::Integer && native->type!=ScalarType::BigInt))return invalid_column_metadata("type");
+  }
+  QueryResult output;
+  constexpr std::array<const char*,18> outnames{"TABLE_CAT","TABLE_SCHEM","TABLE_NAME","COLUMN_NAME","DATA_TYPE","TYPE_NAME",
+      "COLUMN_SIZE","BUFFER_LENGTH","DECIMAL_DIGITS","NUM_PREC_RADIX","NULLABLE","REMARKS","COLUMN_DEF","SQL_DATA_TYPE",
+      "SQL_DATETIME_SUB","CHAR_OCTET_LENGTH","ORDINAL_POSITION","IS_NULLABLE"};
+  const std::array<int,18> textsource{0,1,2,3,-1,7,-1,-1,-1,-1,-1,11,5,-1,-1,-1,-1,6};
+  for(std::size_t i=0;i<outnames.size();++i) {
+    NativeTypeInfo native;
+    if(textsource[i]>=0){native=*source.columns[index[static_cast<std::size_t>(textsource[i])]].normalized_type;native.type=ScalarType::VarChar;}
+    else {const bool integer=i==6 || i==7 || i==15 || i==16;native={integer?ScalarType::Integer:ScalarType::SmallInt,integer?10u:5u,0,true};}
+    output.columns.push_back({outnames[i],native});
+  }
+  std::set<std::string> identities;std::set<std::int32_t> ordinals;
+  std::vector<std::pair<std::int32_t,ResultRow>> ordered;
+  // Validation precedes filtering; foreign or malformed hidden rows cannot become
+  // empty success. Preserve defaults/remarks as owning nullable cells, never logs.
+  for(const auto& row:source.rows) {
+    for(const auto i:{0u,1u,2u,3u,7u})if(!row[index[i]] || !schema_identifier(*row[index[i]]))return invalid_column_metadata("row-identity");
+    if(*row[index[0]]!=database || *row[index[1]]!=schema || *row[index[2]]!=table)return invalid_column_metadata("foreign-identity");
+    for(const auto i:{5u,6u,11u})if(row[index[i]] && (row[index[i]]->find('\0')!=std::string::npos || !rs::util::utf8_code_point_count(*row[index[i]])))return invalid_column_metadata("row-text");
+    if(!identities.insert(*row[index[3]]).second)return invalid_column_metadata("duplicate");
+    std::optional<std::int32_t> ordinal,length,precision,scale;
+    if(!column_number(row[index[4]],ordinal) || !ordinal || *ordinal<1 || !ordinals.insert(*ordinal).second ||
+       !column_number(row[index[8]],length) || !column_number(row[index[9]],precision) || !column_number(row[index[10]],scale) ||
+       (length && *length<0) || (precision && *precision<0) || (scale && *scale<0))return invalid_column_metadata("dimensions");
+    const auto dims=column_dimensions(*row[index[7]],length,precision,scale);if(!dims)return invalid_column_metadata("dimensions");
+    const auto& nullable=row[index[6]];
+    if(nullable && !nullable->empty() && *nullable!="YES" && *nullable!="NO")return invalid_column_metadata("nullable");
+    if((request.catalog && *request.catalog!=database) || !table_like(*row[index[3]],request.column))continue;
+    ordered.emplace_back(*ordinal,ResultRow{row[index[0]],row[index[1]],row[index[2]],row[index[3]],std::to_string(dims->code),
+        row[index[7]],dims->size,dims->buffer,dims->scale,dims->radix,nullable && *nullable=="YES"?"1":nullable && *nullable=="NO"?"0":"2",
+        row[index[11]],row[index[5]],std::to_string(dims->sql_type),dims->sub,dims->octets,std::to_string(*ordinal),nullable.value_or("")});
+  }
+  std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){return a.first<b.first;});
+  for(auto& value:ordered)output.rows.push_back(std::move(value.second));
   return BackendResult<QueryResult>{std::move(output),input.session_snapshot()};
 }
 
