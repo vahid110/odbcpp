@@ -1045,3 +1045,110 @@ TEST(RedshiftShowSchemasDiagnostics, ActualParserRowsWithoutCompletionCannotSupp
   expect_schema_reason(redshift_schema_database(BackendResult<QueryResult>{identity,
       {SessionState::Idle,SessionDisposition::Reusable}}),"lookup-completion");
 }
+
+#include <thread>
+
+namespace {
+TablesCatalogRequest table_request() {
+  TablesCatalogRequest value; value.schema = "fixture"; return value;
+}
+QueryResult tables_response(std::string database="selected",std::string schema="fixture") {
+  QueryResult value;
+  for (const auto* name : {"database_name","schema_name","table_name","table_type","remarks","table_acl"})
+    value.columns.push_back({name,NativeTypeInfo{ScalarType::VarChar,128,0,true}});
+  value.rows={{database,schema,"z","VIEW",std::nullopt,std::nullopt},
+              {database,schema,"a","TABLE","owning remark",std::nullopt}};
+  value.statement_kind=StatementKind::Unknown; // Literal SHOW completion.
+  return value;
+}
+}
+
+TEST(RedshiftShowTables, ScopedSelectionOwningSortAndDeadlineWithoutLegacyFallback) {
+  SchemaSpy spy;spy.show=tables_response();auto input=table_request();
+  const auto deadline=rs::util::make_deadline(std::chrono::seconds{2});
+  EXPECT_TRUE(spy.selects_catalog_request(input));
+  auto result=spy.execute_catalog(input,deadline);ASSERT_TRUE(result);
+  EXPECT_EQ((std::vector<std::string>{"SELECT current_database() AS database_name",
+      "SHOW TABLES FROM SCHEMA \"selected\".\"fixture\";"}),spy.queries);
+  EXPECT_EQ((std::vector<rs::util::Deadline>{deadline,deadline}),spy.deadlines);
+  EXPECT_EQ(0u,spy.prepared_calls);EXPECT_EQ(0u,spy.catalog_builds);
+  ASSERT_EQ(5u,result->columns.size());
+  const std::array<const char*,5> names{"TABLE_CAT","TABLE_SCHEM","TABLE_NAME","TABLE_TYPE","REMARKS"};
+  for(std::size_t i=0;i<5;++i){EXPECT_EQ(names[i],result->columns[i].name);ASSERT_TRUE(result->columns[i].normalized_type);EXPECT_EQ(128u,result->columns[i].normalized_type->column_size);}
+  EXPECT_EQ((ResultRows{{"selected","fixture","a","TABLE","owning remark"},
+      {"selected","fixture","z","VIEW",std::nullopt}}),result->rows);
+  spy.show.rows.clear();input.schema.reset();spy.connected=false;
+  EXPECT_EQ("owning remark",result->rows[0][4]);EXPECT_EQ(SessionState::Idle,result.session_snapshot().state);
+  SchemaSpy empty;empty.show=tables_response();empty.show.rows.clear();
+  auto zero=empty.execute_catalog(table_request(),deadline);ASSERT_TRUE(zero);EXPECT_TRUE(zero->rows.empty());EXPECT_EQ(5u,zero->columns.size());
+}
+
+TEST(RedshiftShowTables, LiteralSchemaEscapesUnicodePatternsAndDetailedTypes) {
+  SchemaSpy spy;spy.database="db\"é";auto request=table_request();request.schema="s\\_\\%\"表";
+  spy.show=tables_response(spy.database,"s_%\"表");
+  spy.show.rows={{spy.database,"s_%\"表","é表😀","EXTERNAL TABLE","remark",std::nullopt},
+      {spy.database,"s_%\"表","é_%","SYSTEM VIEW",std::nullopt,std::nullopt}};
+  request.catalog="db\"_";request.table="___";request.types=std::vector<std::string>{"EXTERNAL TABLE"};
+  auto result=spy.execute_catalog(request,rs::util::make_deadline(std::chrono::seconds{1}));ASSERT_TRUE(result);
+  EXPECT_EQ("SHOW TABLES FROM SCHEMA \"db\"\"é\".\"s_%\"\"表\";",spy.queries[1]);
+  ASSERT_EQ(1u,result->rows.size());EXPECT_EQ("é表😀",result->rows[0][2]);
+  request.table="é\\_\\%";request.types.reset();
+  auto escaped=normalize_redshift_tables(spy.database,"s_%\"表",request,
+      BackendResult<QueryResult>{spy.show,spy.snapshot});ASSERT_TRUE(escaped);ASSERT_EQ(1u,escaped->rows.size());EXPECT_EQ("SYSTEM VIEW",escaped->rows[0][3]);
+  for(const auto& pattern:{std::string("no match"),std::string(""),std::string("é%z")}){
+    request.table=pattern;auto none=normalize_redshift_tables(spy.database,"s_%\"表",request,BackendResult<QueryResult>{spy.show,spy.snapshot});ASSERT_TRUE(none);EXPECT_TRUE(none->rows.empty());
+  }
+  request.table="%";request.types=std::vector<std::string>{};
+  auto none=normalize_redshift_tables(spy.database,"s_%\"表",request,BackendResult<QueryResult>{spy.show,spy.snapshot});ASSERT_TRUE(none);EXPECT_TRUE(none->rows.empty());
+  // Optional documented fields may be reordered; no field-count/version inference.
+  auto extended=tables_response();for(const auto* name:{"owner","last_altered_time","last_modified_time","dist_style","table_subtype"}){
+    extended.columns.push_back({name,NativeTypeInfo{ScalarType::VarChar,0,0,true}});for(auto& row:extended.rows)row.push_back(std::nullopt);
+  }
+  std::reverse(extended.columns.begin(),extended.columns.end());for(auto& row:extended.rows)std::reverse(row.begin(),row.end());
+  auto full=normalize_redshift_tables("selected","fixture",table_request(),BackendResult<QueryResult>{extended,spy.snapshot});ASSERT_TRUE(full);EXPECT_EQ(2u,full->rows.size());
+}
+
+TEST(RedshiftShowTables, InvalidMetadataBeforeFilteringAndOwningNativeFailureRecover) {
+  for(unsigned variant=0;variant<14;++variant){
+    auto source=tables_response();auto input=table_request();input.table="never-match";
+    switch(variant){
+      case 0:source.columns[0].name="unknown";break;
+      case 1:source.columns[1].name="database_name";break;
+      case 2:source.columns[2].normalized_type.reset();break;
+      case 3:source.rows[0][0]="foreign";break;
+      case 4:source.rows[0][1]="foreign";break;
+      case 5:source.rows[0][2].reset();break;
+      case 6:source.rows[1][2]=source.rows[0][2];break;
+      case 7:source.rows[0][3]="invented type";break;
+      case 8:source.rows[0][4]=std::string("\xf0\x28\x8c\x28",4);break;
+      case 9:source.affected_rows=3;break;
+      case 10:source.rows.resize(10001,source.rows[0]);break;
+      case 11:source.rows[0].pop_back();break;
+      case 12:source.statement_kind.reset();break;
+      case 13:source.statement_kind=StatementKind::UpdateWhere;break;
+    }
+    auto result=normalize_redshift_tables("selected","fixture",input,BackendResult<QueryResult>{source,{SessionState::Idle,SessionDisposition::Reusable}});schema_error(result);
+  }
+  SchemaSpy failed;failed.show=tables_response();BackendError native{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),"synthetic"};native.native_state="42501";
+  failed.direct_failure=native;auto error=failed.execute_catalog(table_request(),rs::util::make_deadline(std::chrono::seconds{1}));ASSERT_FALSE(error);EXPECT_EQ("42501",error.backend_error().native_state);EXPECT_EQ(0u,failed.catalog_builds);
+  failed.direct_failure.reset();failed.direct_calls=0;
+  auto recovered=failed.execute_catalog(table_request(),rs::util::make_deadline(std::chrono::seconds{1}));EXPECT_TRUE(recovered);
+  auto deferred=tables_response();QueryResult extra;extra.error=native;deferred.additional_results.push_back(extra);
+  auto owning=normalize_redshift_tables("selected","fixture",table_request(),BackendResult<QueryResult>{deferred,failed.snapshot});ASSERT_FALSE(owning);EXPECT_EQ("42501",owning.backend_error().native_state);
+}
+
+TEST(RedshiftShowTables, PreDispatchRefusalAndAbsoluteDeadline) {
+  for(const auto& capability:{"","3","-4","4x","4294967296"}){
+    SchemaSpy spy;spy.capability=capability;EXPECT_TRUE(spy.selects_catalog_request(table_request()));
+    auto result=spy.execute_catalog(table_request(),rs::util::make_deadline(std::chrono::seconds{1}));ASSERT_FALSE(result);no_execution(spy);
+  }
+  for(const auto& pattern:{std::string("bad\\"),std::string("bad\0name",8),std::string("\xff",1)}){
+    SchemaSpy spy;auto input=table_request();input.table=pattern;
+    auto refused=spy.execute_catalog(input,rs::util::make_deadline(std::chrono::seconds{1}));ASSERT_FALSE(refused);no_execution(spy);
+  }
+  SchemaSpy expired;auto refused=expired.execute_catalog(table_request(),rs::util::Clock::now());ASSERT_FALSE(refused);no_execution(expired);
+  for(unsigned call:{1u,2u}){
+    SchemaSpy late;late.show=tables_response();late.before_return=[call](unsigned current,rs::util::Deadline d){if(current==call)while(rs::util::Clock::now()<d)std::this_thread::yield();};
+    auto result=late.execute_catalog(table_request(),rs::util::make_deadline(std::chrono::milliseconds{5}));ASSERT_FALSE(result);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout),result.error());EXPECT_EQ(call,late.direct_calls);
+  }
+}

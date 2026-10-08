@@ -13,6 +13,12 @@ BackendResult<std::string> redshift_schema_database(BackendResult<QueryResult> i
 std::string redshift_show_schemas_command(std::string_view validated_database);
 BackendResult<QueryResult> normalize_redshift_schemas(
     std::string_view database, BackendResult<QueryResult> input);
+// Narrow SHOW TABLES eligibility: schema LIKE pattern denotes one literal.
+bool redshift_table_schema_is_literal(const TablesCatalogRequest& request) noexcept;
+std::optional<std::string> redshift_table_schema(const TablesCatalogRequest& request);
+std::string redshift_show_tables_command(std::string_view database, std::string_view schema);
+BackendResult<QueryResult> normalize_redshift_tables(std::string_view database,
+    std::string_view schema, const TablesCatalogRequest& request, BackendResult<QueryResult> input);
 std::string redshift_statistics_query(const StatisticsCatalogRequest& request);
 std::string redshift_row_version_query();
 std::string redshift_columns_query(const ColumnsCatalogRequest& request);

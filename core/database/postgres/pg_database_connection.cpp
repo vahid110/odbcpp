@@ -128,8 +128,8 @@ bool PgDatabaseConnection::selects_catalog_request(const CatalogRequest& request
   if (catalog_profile_ != PgCatalogProfile::Redshift) return false;
   if (std::holds_alternative<PrimaryKeysCatalogRequest>(request)) return true;
   const auto* tables = std::get_if<TablesCatalogRequest>(&request);
-  return tables && tables->mode == TablesCatalogRequest::Mode::Schemas &&
-      catalog_mode() == RedshiftCatalogMode::Show;
+  return tables && catalog_mode() == RedshiftCatalogMode::Show &&
+      (tables->mode == TablesCatalogRequest::Mode::Schemas || redshift_table_schema_is_literal(*tables));
 }
 
 BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
@@ -184,6 +184,38 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
     if (!response) return response.backend_error();
     if (expired()) return timeout();
     auto normalized = normalize_redshift_schemas(*database, std::move(response));
+    if (expired()) return timeout();
+    return normalized;
+  }
+  if (catalog_profile_ == PgCatalogProfile::Redshift && tables &&
+      catalog_mode() == RedshiftCatalogMode::Show && redshift_table_schema_is_literal(*tables)) {
+    const auto schema = redshift_table_schema(*tables);
+    if (!schema) return local_backend_error(LocalFailure::InvalidInput,
+        "Invalid Redshift table schema pattern", BackendOperation::ExecuteCatalog, session_state());
+    const auto capability = get_parameter("show_discovery");
+    std::uint32_t version = 0;
+    const auto parsed = std::from_chars(capability.data(), capability.data()+capability.size(), version);
+    if (capability.empty() || capability.size()>10 || parsed.ec!=std::errc{} ||
+        parsed.ptr!=capability.data()+capability.size() || version<4)
+      return local_backend_error(LocalFailure::Unsupported,
+          "Modern Redshift table discovery is unavailable", BackendOperation::ExecuteCatalog, session_state());
+    const auto expired = [deadline] { return rs::util::Clock::now() >= deadline; };
+    const auto timeout = [] {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::Timeout), "Table discovery deadline expired"};
+      error.operation = BackendOperation::ExecuteCatalog;
+      return BackendResult<QueryResult>{std::move(error)};
+    };
+    if (expired()) return timeout();
+    auto identity = execute_query("SELECT current_database() AS database_name", deadline);
+    if (!identity) return identity.backend_error();
+    if (expired()) return timeout();
+    auto database = redshift_schema_database(std::move(identity));
+    if (expired()) return timeout();
+    if (!database) return database.backend_error();
+    auto response = execute_query(redshift_show_tables_command(*database,*schema),deadline);
+    if (!response) return response.backend_error();
+    if (expired()) return timeout();
+    auto normalized = normalize_redshift_tables(*database,*schema,*tables,std::move(response));
     if (expired()) return timeout();
     return normalized;
   }

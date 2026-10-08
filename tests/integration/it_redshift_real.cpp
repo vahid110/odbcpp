@@ -4419,3 +4419,276 @@ TEST_F(RedshiftMaterializedEnvelopeRealTest, WireByteCapRefusesLargerMaterializa
   // A byte cap retires an unread exchange. Remote terminal-work absence is an
   // independent finite-controller cleanup obligation, not SQLCancel evidence.
 }
+
+// Modern per-schema SHOW route only. Existing objects are reused, never created.
+class RedshiftShowTablesRealTest : public RedshiftRealTest {
+protected:
+  rs::util::Deadline window_end_{};
+  bool admitted_ = false;
+  std::string schema_,table_,catalog_input_,schema_input_,table_input_,types_input_;
+  std::vector<SQLWCHAR> wide_catalog_,wide_schema_,wide_table_,wide_types_;
+  struct NarrowCell {std::array<unsigned char,8> before;std::array<char,65537> value;std::array<unsigned char,8> after;} narrow_{};
+  struct WideCell {std::array<unsigned char,8> before;std::array<SQLWCHAR,65537> value;std::array<unsigned char,8> after;} wide_{};
+  struct NameCell {std::array<unsigned char,8> before;std::array<SQLCHAR,64> value;std::array<unsigned char,8> after;} name_{};
+  struct IntegerCell {SQLINTEGER before{17},value{-99},after{83};} integer_{};
+  SQLLEN length_ = 97;
+  std::size_t catalog_calls_ = 0, scalar_calls_ = 0;
+  struct Descriptor {std::string name;SQLSMALLINT type,scale,nullable;SQLULEN capacity;bool operator==(const Descriptor&)const=default;};
+  struct OwnedRow {std::array<std::optional<std::string>,5> fields;std::array<std::vector<SQLWCHAR>,5> wide_fields;bool wide_remarks_null=true;};
+
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_SHOW_TABLES_ADMISSION");
+    if(marker==nullptr) { GTEST_SKIP() << "SHOW tables scope is not admitted"; }
+    ASSERT_TRUE(std::string_view(marker)=="show-tables-v1") << "Invalid SHOW tables scope marker";
+    ASSERT_EQ(2u,sizeof(SQLWCHAR)) << "SHOW tables native scope requires SQLWCHAR width2";
+    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    RedshiftRealTest::SetUp();if(HasFatalFailure()) { return; }
+    const auto settings=rs::odbc::ConnectionString::parse(connection_string_);
+    for(const char* key:{"SERVER","PORT","DATABASE","UID","PWD","SSLCAFILE"}) {
+      ASSERT_TRUE(settings.contains(key));ASSERT_FALSE(settings.at(key).empty());
+    }
+    ASSERT_TRUE(settings.at("DATABASE")=="odbcpp_pilot");ASSERT_TRUE(settings.at("UID")=="odbcpp_pilot_test");
+    ASSERT_TRUE(settings.at("PORT")=="5439");ASSERT_FALSE(settings.contains("DSN"));ASSERT_FALSE(settings.contains("REDSHIFTCATALOGMODE"));
+    const char* schema=std::getenv("ODBCPP_REDSHIFT_TEST_SCHEMA");const char* table=std::getenv("ODBCPP_REDSHIFT_TEST_TABLE");
+    ASSERT_NE(nullptr,schema);ASSERT_NE(nullptr,table);
+    for(const auto& pair:{std::pair{schema,&schema_},std::pair{table,&table_}}) {
+      std::size_t count=0;while(count<=128&&pair.first[count]!='\0') { ++count; }
+      ASSERT_GT(count,0u);ASSERT_LE(count,128u);
+      for(std::size_t index=0;index<count;++index) {
+        const auto ch=static_cast<unsigned char>(pair.first[index]);
+        ASSERT_TRUE((ch>='a'&&ch<='z')||(ch>='A'&&ch<='Z')||(ch>='0'&&ch<='9')||ch=='_');
+      }
+      pair.second->assign(pair.first,count);
+    }
+    ASSERT_TRUE(schema_=="odbcpp_fixture");ASSERT_TRUE(table_=="pilot_rows");
+    if(connection_string_.back()!=';') { connection_string_+=';'; }
+    connection_string_+="REDSHIFTCATALOGMODE=SHOW;";
+  }
+  static std::string literal_pattern(std::string_view identifier) {
+    std::string pattern;
+    for(const char ch:identifier) { if(ch=='%'||ch=='_'||ch=='\\') { pattern+='\\'; }pattern+=ch; }
+    return pattern;
+  }
+  // The selected existing fixture names are ASCII. These literal code units
+  // cover A/W conversion without pretending this is Unicode-object admission.
+  static std::vector<SQLWCHAR> ascii_units(std::string_view input) {
+    std::vector<SQLWCHAR> output;output.reserve(input.size()+1);
+    for(const unsigned char ch:input) { output.push_back(static_cast<SQLWCHAR>(ch)); }
+    output.push_back(0);return output;
+  }
+  bool cap(rs::util::Deadline cutoff,bool statement) {
+    const auto left=std::chrono::duration_cast<std::chrono::seconds>(cutoff-rs::util::Clock::now()).count();
+    if(left<=0) { ADD_FAILURE() << "SHOW tables original finite window expired";return false; }
+    const auto seconds=static_cast<std::uintptr_t>(std::min<std::int64_t>(left,5));
+    if(SQLSetConnectAttr(hdbc_,SQL_ATTR_CONNECTION_TIMEOUT,reinterpret_cast<SQLPOINTER>(seconds),0)!=SQL_SUCCESS) {
+      ADD_FAILURE() << get_error(SQL_HANDLE_DBC,hdbc_);return false;
+    }
+    if(statement&&SQLSetStmtAttr(hstmt_,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(seconds),0)!=SQL_SUCCESS) {
+      ADD_FAILURE() << get_error(SQL_HANDLE_STMT,hstmt_);return false;
+    }
+    return true;
+  }
+  void connect_bounded() {
+    ASSERT_TRUE(cap(window_end_,false));
+    const auto left=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(left,0);
+    ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(left,5))),0));
+    ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC,hdbc_);ASSERT_TRUE(cap(window_end_,true));
+    SQLUINTEGER mode=99;ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttr(hdbc_,SQL_ATTR_AUTOCOMMIT,&mode,sizeof(mode),nullptr));ASSERT_EQ(SQL_AUTOCOMMIT_ON,mode);
+  }
+  void tables(std::string pattern,std::string types,bool use_wide) {
+    catalog_input_=literal_pattern("odbcpp_pilot");schema_input_=literal_pattern(schema_);table_input_=std::move(pattern);types_input_=std::move(types);
+    ASSERT_TRUE(cap(window_end_,true));++catalog_calls_;
+    SQLRETURN result=SQL_ERROR;
+    if(use_wide) {
+      wide_catalog_=ascii_units(catalog_input_);wide_schema_=ascii_units(schema_input_);
+      wide_table_=ascii_units(table_input_);wide_types_=ascii_units(types_input_);
+      result=SQLTablesW(hstmt_,wide_catalog_.data(),SQL_NTS,wide_schema_.data(),SQL_NTS,
+          wide_table_.data(),SQL_NTS,wide_types_.data(),SQL_NTS);
+      for(auto* input:{&wide_catalog_,&wide_schema_,&wide_table_,&wide_types_}) { std::fill(input->begin(),input->end(),SQLWCHAR{0x5a}); }
+    } else {
+      result=SQLTables(hstmt_,reinterpret_cast<SQLCHAR*>(catalog_input_.data()),SQL_NTS,
+          reinterpret_cast<SQLCHAR*>(schema_input_.data()),SQL_NTS,reinterpret_cast<SQLCHAR*>(table_input_.data()),SQL_NTS,
+          reinterpret_cast<SQLCHAR*>(types_input_.data()),SQL_NTS);
+    }
+    // Synchronous catalog arguments must not be retained by the owning result.
+    for(auto* input:{&catalog_input_,&schema_input_,&table_input_,&types_input_}) { std::fill(input->begin(),input->end(),'!'); }
+    ASSERT_EQ(SQL_SUCCESS,result) << get_error(SQL_HANDLE_STMT,hstmt_);
+    ASSERT_LT(rs::util::Clock::now(),window_end_);
+  }
+  template<class Cell> void poison(Cell& cell) {cell.before.fill(0x5a);cell.after.fill(0x5a);}
+  template<class Cell> void guards(const Cell& cell) {
+    EXPECT_TRUE(std::all_of(cell.before.begin(),cell.before.end(),[](unsigned char ch){return ch==0x5a;}));
+    EXPECT_TRUE(std::all_of(cell.after.begin(),cell.after.end(),[](unsigned char ch){return ch==0x5a;}));
+  }
+  void metadata(std::array<Descriptor,5>& owned) {
+    SQLSMALLINT columns=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&columns));ASSERT_EQ(5,columns);
+    constexpr std::array<std::string_view,5> names{"TABLE_CAT","TABLE_SCHEM","TABLE_NAME","TABLE_TYPE","REMARKS"};
+    for(SQLUSMALLINT column=1;column<=5;++column) {
+      poison(name_);name_.value.fill(0x5a);SQLSMALLINT length=-1,type=-1,scale=-1,nullable=-1;SQLULEN capacity=99;
+      ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,column,name_.value.data(),static_cast<SQLSMALLINT>(name_.value.size()),
+          &length,&type,&capacity,&scale,&nullable));
+      ASSERT_GE(length,0);ASSERT_LT(static_cast<std::size_t>(length)+1,name_.value.size());
+      const std::string actual(reinterpret_cast<const char*>(name_.value.data()),static_cast<std::size_t>(length));
+      // Exact uppercase projection is part of the SHOW adapter; legacy names
+      // or success alone are insufficient. Source-bound no-fallback dispatch
+      // and authenticated show_discovery capability still require root binding.
+      EXPECT_TRUE(actual==names[column-1]);EXPECT_EQ(SQL_VARCHAR,type);EXPECT_EQ(0,scale);EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
+      EXPECT_LE(capacity,static_cast<SQLULEN>(65535));EXPECT_EQ(0,name_.value[static_cast<std::size_t>(length)]);
+      EXPECT_EQ(0x5a,name_.value[static_cast<std::size_t>(length)+1]);guards(name_);ASSERT_FALSE(HasFailure());
+      owned[column-1]={actual,type,scale,nullable,capacity};
+    }
+  }
+  void row(OwnedRow& owned,const std::array<Descriptor,5>& descriptors) {
+    for(SQLUSMALLINT column=1;column<=5;++column) {
+      poison(narrow_);narrow_.value.fill('\x5a');length_=97;
+      ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,column,SQL_C_CHAR,narrow_.value.data(),static_cast<SQLLEN>(narrow_.value.size()),&length_));
+      if(length_==SQL_NULL_DATA) {
+        ASSERT_EQ(5,column);EXPECT_TRUE(std::all_of(narrow_.value.begin(),narrow_.value.end(),[](char ch){return ch=='\x5a';}));
+        owned.fields[column-1].reset();
+      } else {
+        ASSERT_GE(length_,0);ASSERT_LE(length_,65535);
+        const auto size=static_cast<std::size_t>(length_);EXPECT_EQ(0,narrow_.value[size]);EXPECT_EQ('\x5a',narrow_.value[size+1]);
+        owned.fields[column-1]=std::string(narrow_.value.data(),size);
+        // For the controlled ASCII identity fields, byte and character counts agree.
+        if(column<=4&&descriptors[column-1].capacity!=0&&
+            std::all_of(narrow_.value.begin(),narrow_.value.begin()+static_cast<std::ptrdiff_t>(size),[](unsigned char ch){return ch<128;})) {
+          EXPECT_LE(static_cast<SQLULEN>(size),descriptors[column-1].capacity);
+        }
+      }
+      guards(narrow_);ASSERT_FALSE(HasFailure());
+    }
+    for(std::size_t index=0;index<4;++index) { ASSERT_TRUE(owned.fields[index]); }
+    EXPECT_TRUE(*owned.fields[0]=="odbcpp_pilot");EXPECT_TRUE(*owned.fields[1]==schema_);ASSERT_FALSE(HasFailure());
+  }
+  static std::vector<SQLWCHAR> literal_identity(std::size_t column) {
+    switch(column) {
+      case 1:return {'o','d','b','c','p','p','_','p','i','l','o','t'};
+      case 2:return {'o','d','b','c','p','p','_','f','i','x','t','u','r','e'};
+      case 3:return {'p','i','l','o','t','_','r','o','w','s'};
+      case 4:return {'T','A','B','L','E'};
+      default:return {};
+    }
+  }
+  void wide_row(OwnedRow& owned,const std::array<Descriptor,5>& descriptors) {
+    for(SQLUSMALLINT column=1;column<=5;++column) {
+      poison(wide_);wide_.value.fill(SQLWCHAR{0x5a});length_=97;
+      ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,column,SQL_C_WCHAR,wide_.value.data(),static_cast<SQLLEN>(sizeof(wide_.value)),&length_));
+      if(length_==SQL_NULL_DATA) {
+        ASSERT_EQ(5,column);EXPECT_TRUE(std::all_of(wide_.value.begin(),wide_.value.end(),[](SQLWCHAR ch){return ch==SQLWCHAR{0x5a};}));
+        owned.wide_remarks_null=true;
+      } else {
+        ASSERT_GE(length_,0);ASSERT_EQ(0,length_%static_cast<SQLLEN>(sizeof(SQLWCHAR)));
+        const auto units=static_cast<std::size_t>(length_)/sizeof(SQLWCHAR);ASSERT_LT(units+1,wide_.value.size());
+        EXPECT_EQ(SQLWCHAR{0},wide_.value[units]);EXPECT_EQ(SQLWCHAR{0x5a},wide_.value[units+1]);
+        owned.wide_fields[column-1].assign(wide_.value.begin(),wide_.value.begin()+static_cast<std::ptrdiff_t>(units));
+        if(column<=4) {
+          const auto literal=literal_identity(column);ASSERT_EQ(literal.size(),units);
+          EXPECT_TRUE(std::equal(literal.begin(),literal.end(),wide_.value.begin()));
+          if(descriptors[column-1].capacity!=0) { EXPECT_LE(static_cast<SQLULEN>(units),descriptors[column-1].capacity); }
+          std::string actual;actual.reserve(units);
+          for(std::size_t index=0;index<units;++index) {ASSERT_LE(wide_.value[index],static_cast<SQLWCHAR>(0x7f));actual+=static_cast<char>(wide_.value[index]);}
+          owned.fields[column-1]=std::move(actual);
+        } else {owned.wide_remarks_null=false;} // Actual nullable remarks retained as owning WCHAR units.
+      }
+      guards(wide_);ASSERT_FALSE(HasFailure());
+    }
+  }
+  void close_cursor() {ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE));}
+  void empty_result() {
+    std::array<Descriptor,5> descriptors;metadata(descriptors);ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));close_cursor();ASSERT_FALSE(HasFailure());
+  }
+  void recovery() {
+    close_cursor();ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_UNBIND));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_RESET_PARAMS));
+    ASSERT_TRUE(cap(window_end_,true));SQLCHAR sql[]="SELECT CAST(1 AS INTEGER)";++scalar_calls_;
+    ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(hstmt_,sql,SQL_NTS)) << get_error(SQL_HANDLE_STMT,hstmt_);
+    SQLSMALLINT columns=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&columns));ASSERT_EQ(1,columns);ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+    integer_={17,-99,83};length_=97;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,1,SQL_C_SLONG,&integer_.value,sizeof(integer_.value),&length_));
+    EXPECT_EQ(1,integer_.value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(integer_.value)),length_);EXPECT_EQ(17,integer_.before);EXPECT_EQ(83,integer_.after);
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));close_cursor();ASSERT_FALSE(HasFailure());
+  }
+  void recheck(const OwnedRow& owned,const std::array<Descriptor,5>& descriptors,bool use_wide) {
+    ASSERT_TRUE(owned.fields[0]);ASSERT_TRUE(owned.fields[1]);ASSERT_TRUE(owned.fields[2]);ASSERT_TRUE(owned.fields[3]);
+    EXPECT_TRUE(*owned.fields[0]=="odbcpp_pilot");EXPECT_TRUE(*owned.fields[1]==schema_);EXPECT_TRUE(*owned.fields[2]==table_);EXPECT_TRUE(*owned.fields[3]=="TABLE");
+    constexpr std::array<std::string_view,5> names{"TABLE_CAT","TABLE_SCHEM","TABLE_NAME","TABLE_TYPE","REMARKS"};
+    for(std::size_t index=0;index<descriptors.size();++index) { EXPECT_TRUE(descriptors[index].name==names[index]);EXPECT_EQ(SQL_VARCHAR,descriptors[index].type); }
+    if(use_wide) {
+      for(std::size_t index=0;index<4;++index) {
+        const auto literal=literal_identity(index+1);ASSERT_EQ(literal.size(),owned.wide_fields[index].size());
+        EXPECT_TRUE(std::equal(literal.begin(),literal.end(),owned.wide_fields[index].begin()));
+      }
+    }
+  }
+  void TearDown() override {
+    const auto entry=rs::util::Clock::now();
+    if(admitted_) { EXPECT_TRUE(entry<window_end_) << "SHOW tables case completed after original finite window"; }
+    const auto cleanup_end=std::min(window_end_,entry+std::chrono::seconds{5});
+    if(hstmt_) {EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,hstmt_));hstmt_=nullptr;}
+    if(hdbc_) {
+      if(connected_&&cap(cleanup_end,false)) {
+        const auto result=SQLDisconnect(hdbc_);
+        if(result==SQL_ERROR&&get_error(SQL_HANDLE_DBC,hdbc_)=="25000") {
+          ADD_FAILURE() << "Unexpected transaction at SHOW tables cleanup";
+          if(cap(cleanup_end,false)) {
+            const auto rollback=SQLEndTran(SQL_HANDLE_DBC,hdbc_,SQL_ROLLBACK);EXPECT_EQ(SQL_SUCCESS,rollback) << get_error(SQL_HANDLE_DBC,hdbc_);
+            if(rollback==SQL_SUCCESS&&cap(cleanup_end,false)) {EXPECT_EQ(SQL_SUCCESS,SQLDisconnect(hdbc_));}
+          }
+        } else {EXPECT_EQ(SQL_SUCCESS,result) << get_error(SQL_HANDLE_DBC,hdbc_);}
+      }
+      EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,hdbc_));hdbc_=nullptr;
+    }
+    if(henv_) {EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_ENV,henv_));henv_=nullptr;}
+  }
+};
+
+TEST_F(RedshiftShowTablesRealTest, ExactTableMetadataOwnsValuesAndRecovers) {
+  connect_bounded();ASSERT_FALSE(HasFailure());tables(literal_pattern(table_),"TABLE",false);ASSERT_FALSE(HasFailure());
+  std::array<Descriptor,5> descriptors;metadata(descriptors);ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+  OwnedRow owned;row(owned,descriptors);ASSERT_FALSE(HasFailure());ASSERT_TRUE(owned.fields[2]);ASSERT_TRUE(owned.fields[3]);
+  EXPECT_TRUE(*owned.fields[2]==table_);EXPECT_TRUE(*owned.fields[3]=="TABLE");ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));close_cursor();ASSERT_FALSE(HasFailure());
+  const auto remarks=owned.fields[4];narrow_.value.fill('!');name_.value.fill(0x5a);recovery();ASSERT_FALSE(HasFailure());
+  recheck(owned,descriptors,false);ASSERT_FALSE(HasFailure());EXPECT_TRUE(owned.fields[4]==remarks);EXPECT_EQ(1u,catalog_calls_);EXPECT_EQ(1u,scalar_calls_);
+}
+
+TEST_F(RedshiftShowTablesRealTest, TablePatternAndTypeFilterStayBounded) {
+  connect_bounded();ASSERT_FALSE(HasFailure());tables("%"+literal_pattern(table_),"'TABLE'",false);ASSERT_FALSE(HasFailure());
+  std::array<Descriptor,5> descriptors;metadata(descriptors);ASSERT_FALSE(HasFailure());
+  std::vector<OwnedRow> owned;std::size_t selected=0;bool exhausted=false;
+  for(std::size_t index=0;index<=64;++index) {
+    ASSERT_LT(rs::util::Clock::now(),window_end_);const auto result=SQLFetch(hstmt_);
+    if(result==SQL_NO_DATA) {exhausted=true;break;}
+    ASSERT_EQ(SQL_SUCCESS,result);ASSERT_LT(index,64u);OwnedRow value;row(value,descriptors);ASSERT_FALSE(HasFailure());
+    ASSERT_TRUE(value.fields[2]);ASSERT_TRUE(value.fields[3]);EXPECT_TRUE(value.fields[2]->ends_with(table_));EXPECT_TRUE(*value.fields[3]=="TABLE");
+    if(*value.fields[2]==table_) {++selected;}
+    if(!owned.empty()) {ASSERT_TRUE(owned.back().fields[2]);EXPECT_TRUE(*owned.back().fields[2]<*value.fields[2]);}
+    owned.push_back(std::move(value));
+  }
+  ASSERT_TRUE(exhausted);ASSERT_EQ(1u,selected);close_cursor();ASSERT_FALSE(HasFailure());
+  // The same exact ordinary TABLE cannot be returned by a VIEW-only filter.
+  tables(literal_pattern(table_),"'VIEW'",false);ASSERT_FALSE(HasFailure());empty_result();ASSERT_FALSE(HasFailure());
+  narrow_.value.fill('!');name_.value.fill(0x5a);recovery();ASSERT_FALSE(HasFailure());
+  std::size_t retained=0;
+  for(const auto& value:owned) {ASSERT_TRUE(value.fields[2]);ASSERT_TRUE(value.fields[3]);EXPECT_TRUE(*value.fields[3]=="TABLE");if(*value.fields[2]==table_) {++retained;}}
+  EXPECT_EQ(1u,retained);EXPECT_EQ(2u,catalog_calls_);EXPECT_EQ(1u,scalar_calls_);
+}
+
+TEST_F(RedshiftShowTablesRealTest, NoMatchEmptyTableFilterAndRecovery) {
+  connect_bounded();ASSERT_FALSE(HasFailure());
+  // Empty table LIKE is an exact no-match for validated nonempty identifiers.
+  // It still executes lookup+SHOW, with normal five-field metadata. Empty type
+  // vectors have independent unit coverage, not a second native SQLTables call.
+  tables("","TABLE",false);ASSERT_FALSE(HasFailure());empty_result();ASSERT_FALSE(HasFailure());
+  recovery();ASSERT_FALSE(HasFailure());EXPECT_EQ(1u,catalog_calls_);EXPECT_EQ(1u,scalar_calls_);
+}
+
+TEST_F(RedshiftShowTablesRealTest, WideExactMetadataOwnsValuesAndRecovers) {
+  connect_bounded();ASSERT_FALSE(HasFailure());tables(literal_pattern(table_),"TABLE",true);ASSERT_FALSE(HasFailure());
+  std::array<Descriptor,5> descriptors;metadata(descriptors);ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+  OwnedRow owned;wide_row(owned,descriptors);ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));close_cursor();ASSERT_FALSE(HasFailure());
+  const auto remarks=owned.wide_fields[4];const bool null_remarks=owned.wide_remarks_null;wide_.value.fill(SQLWCHAR{0x5a});name_.value.fill(0x5a);
+  recovery();ASSERT_FALSE(HasFailure());recheck(owned,descriptors,true);ASSERT_FALSE(HasFailure());
+  EXPECT_TRUE(owned.wide_fields[4]==remarks);EXPECT_EQ(null_remarks,owned.wide_remarks_null);EXPECT_EQ(1u,catalog_calls_);EXPECT_EQ(1u,scalar_calls_);
+}

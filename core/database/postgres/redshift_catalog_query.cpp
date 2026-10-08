@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <set>
+#include <tuple>
 
 namespace rs::core::database::postgres {
 namespace {
@@ -126,6 +127,155 @@ BackendResult<QueryResult> normalize_redshift_schemas(
   for (const auto& schema : schemas)
     output.rows.push_back({std::nullopt, schema, std::nullopt, std::nullopt, std::nullopt});
   return BackendResult<QueryResult>{std::move(output), input.session_snapshot()};
+}
+
+
+bool redshift_table_schema_is_literal(const TablesCatalogRequest& request) noexcept {
+  if (request.mode != TablesCatalogRequest::Mode::Tables || !request.schema ||
+      request.schema->empty()) return false;
+  bool escaped = false;
+  for (const char ch : *request.schema) {
+    if (escaped) { escaped = false; continue; }
+    if (ch == '\\') escaped = true;
+    else if (ch == '%' || ch == '_') return false;
+  }
+  return !escaped;
+}
+
+namespace { bool table_pattern_valid(const std::optional<std::string>& pattern); }
+
+std::optional<std::string> redshift_table_schema(const TablesCatalogRequest& request) {
+  if (!table_pattern_valid(request.catalog) || !table_pattern_valid(request.table)) return std::nullopt;
+  if (request.types) for (const auto& type : *request.types)
+    if (type.find('\0') != std::string::npos || !rs::util::utf8_code_point_count(type)) return std::nullopt;
+  if (!redshift_table_schema_is_literal(request)) return std::nullopt;
+  std::string result;
+  bool escaped = false;
+  for (const char ch : *request.schema) {
+    if (!escaped && ch == '\\') { escaped = true; continue; }
+    result.push_back(ch); escaped = false;
+  }
+  if (!schema_identifier(result)) return std::nullopt;
+  return result;
+}
+
+namespace {
+BackendError invalid_table_metadata(const char* reason) {
+  BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+      std::string("Invalid Redshift table metadata: ") + reason};
+  error.error_class = BackendErrorClass::InvalidMetadata;
+  error.operation = BackendOperation::ExecuteCatalog;
+  return error;
+}
+bool table_pattern_valid(const std::optional<std::string>& pattern) {
+  if (!pattern) return true;
+  if (pattern->find('\0') != std::string::npos ||
+      !rs::util::utf8_code_point_count(*pattern)) return false;
+  bool escaped = false;
+  for (char ch : *pattern) { if (escaped) escaped = false; else if (ch == '\\') escaped = true; }
+  return !escaped;
+}
+std::size_t codepoint_end(std::string_view text, std::size_t i) {
+  ++i;
+  while (i < text.size() && (static_cast<unsigned char>(text[i]) & 0xc0) == 0x80) ++i;
+  return i;
+}
+// Local LIKE filtering matches whole UTF8 code points for '_'. Both inputs are
+// validated first. Greedy '%' backtracking is bounded by the owning value length.
+bool table_like(std::string_view value, const std::optional<std::string>& pattern) {
+  if (!pattern) return true;
+  const std::string_view p = *pattern;
+  std::size_t v = 0, i = 0, star = std::string_view::npos, retry = 0;
+  while (v < value.size()) {
+    if (i < p.size() && p[i] == '%') { star = ++i; retry = v; continue; }
+    if (i < p.size() && p[i] == '_') { ++i; v = codepoint_end(value, v); continue; }
+    auto literal_start = i;
+    if (literal_start < p.size() && p[literal_start] == '\\') ++literal_start;
+    if (literal_start < p.size()) {
+      const auto end = codepoint_end(p, literal_start);
+      const auto vend = codepoint_end(value, v);
+      if (p.substr(literal_start, end-literal_start) == value.substr(v, vend-v)) {
+        i = end; v = vend; continue;
+      }
+    }
+    if (star == std::string_view::npos) return false;
+    retry = codepoint_end(value, retry); v = retry; i = star;
+  }
+  while (i < p.size() && p[i] == '%') ++i;
+  return i == p.size();
+}
+}
+
+std::string redshift_show_tables_command(std::string_view database, std::string_view schema) {
+  const auto quote = [](std::string_view name) {
+    std::string out{"\""};
+    for (char ch : name) { if (ch == '"') out.push_back('"'); out.push_back(ch); }
+    out.push_back('"'); return out;
+  };
+  // V4 per-schema grammar in pinned AWS helper182, not V5 database-wide grammar.
+  return "SHOW TABLES FROM SCHEMA " + quote(database) + "." + quote(schema) + ";";
+}
+
+BackendResult<QueryResult> normalize_redshift_tables(std::string_view database,
+    std::string_view schema, const TablesCatalogRequest& request, BackendResult<QueryResult> input) {
+  if (!input) return input.backend_error();
+  const auto& source = *input;
+  if (source.error) return *source.error;
+  for (const auto& extra : source.additional_results) if (extra.error) return *extra.error;
+  if (!schema_identifier(database) || !schema_identifier(schema)) return invalid_table_metadata("identity");
+  if (!table_pattern_valid(request.catalog) || !table_pattern_valid(request.table)) return invalid_table_metadata("pattern");
+  if (!clean_schema_result(source)) return invalid_table_metadata("structure");
+  if (source.rows.size() > 10000) return invalid_table_metadata("rows");
+  // CommandComplete is distinct from its optional row count. SHOW maps to
+  // Unknown; SELECT-form completion also occurs in metadata result protocols.
+  if (!source.statement_kind || (*source.statement_kind != StatementKind::Unknown &&
+      *source.statement_kind != StatementKind::SelectCursor) ||
+      (source.affected_rows != 0 && source.affected_rows != source.rows.size()))
+    return invalid_table_metadata("completion");
+  if (input.session_snapshot().disposition == SessionDisposition::Retire) return invalid_table_metadata("snapshot");
+  // Normalize the five named fields consumed by the pinned official SQLTables
+  // processor. Only documented/pinned optional fields are allowed; no assumed
+  // version-to-field-count mapping. Actual server layout still needs live proof.
+  constexpr std::array<std::string_view,11> names{"database_name","schema_name","table_name",
+      "table_type","remarks","table_acl","owner","last_altered_time","last_modified_time","dist_style","table_subtype"};
+  std::array<std::size_t,5> indexes{};
+  std::set<std::string_view> headers;
+  if (source.columns.size() < 5 || source.columns.size() > names.size()) return invalid_table_metadata("columns");
+  for (std::size_t i = 0; i < source.columns.size(); ++i) {
+    const auto name = std::string_view(source.columns[i].name);
+    const auto found = std::find(names.begin(), names.end(), name);
+    if (found == names.end() || !headers.insert(name).second) return invalid_table_metadata("layout");
+    const auto index = static_cast<std::size_t>(found-names.begin());
+    if (index < indexes.size()) indexes[index] = i;
+  }
+  for (std::size_t i = 0; i < indexes.size(); ++i)
+    if (!headers.contains(names[i]) || !schema_text(source.columns[indexes[i]])) return invalid_table_metadata("type");
+  constexpr std::array<std::string_view,6> types{"EXTERNAL TABLE","LOCAL TEMPORARY","SYSTEM TABLE","SYSTEM VIEW","TABLE","VIEW"};
+  std::set<std::string> identities;
+  QueryResult output;
+  constexpr std::array<const char*,5> outnames{"TABLE_CAT","TABLE_SCHEM","TABLE_NAME","TABLE_TYPE","REMARKS"};
+  for (std::size_t i = 0; i < indexes.size(); ++i) {
+    auto type = *source.columns[indexes[i]].normalized_type; type.type = ScalarType::VarChar;
+    output.columns.push_back({outnames[i], type});
+  }
+  // Validate every row before filtering: a nonmatching malformed row is still a
+  // protocol refusal, never fabricated empty success or silently dropped error.
+  for (const auto& row : source.rows) {
+    for (std::size_t i = 0; i < 4; ++i)
+      if (!row[indexes[i]] || !schema_identifier(*row[indexes[i]])) return invalid_table_metadata("row-identity");
+    if (*row[indexes[0]] != database || *row[indexes[1]] != schema) return invalid_table_metadata("foreign-identity");
+    if (!identities.insert(*row[indexes[2]]).second) return invalid_table_metadata("duplicate");
+    if (std::find(types.begin(),types.end(),*row[indexes[3]]) == types.end()) return invalid_table_metadata("table-type");
+    if (row[indexes[4]] && (row[indexes[4]]->find('\0') != std::string::npos ||
+        !rs::util::utf8_code_point_count(*row[indexes[4]]))) return invalid_table_metadata("remarks");
+    if (!table_like(database,request.catalog) || !table_like(*row[indexes[2]],request.table) ||
+        (request.types && std::find(request.types->begin(),request.types->end(),*row[indexes[3]])==request.types->end())) continue;
+    output.rows.push_back({row[indexes[0]],row[indexes[1]],row[indexes[2]],row[indexes[3]],row[indexes[4]]});
+  }
+  std::sort(output.rows.begin(),output.rows.end(),[](const auto& a,const auto& b) {
+    return std::tie(a[3],a[0],a[1],a[2]) < std::tie(b[3],b[0],b[1],b[2]);
+  });
+  return BackendResult<QueryResult>{std::move(output),input.session_snapshot()};
 }
 
 std::string redshift_schemas_query() {
