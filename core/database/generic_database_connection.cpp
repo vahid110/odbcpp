@@ -768,12 +768,15 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
       if (msg.tag == 'C' || msg.tag == 'E' || msg.tag == 'I') {
         saw_completion = true;
       }
-      messages.push_back(msg);
-      if (parser_->is_ready_for_query(msg)) {
-        session_state_ = msg.payload.size() != 1 ? SessionState::Unknown :
-            msg.payload[0] == std::byte{'I'} ? SessionState::Idle :
-            msg.payload[0] == std::byte{'T'} ? SessionState::Transaction :
-            SessionState::FailedTransaction;
+      // Capture every fact needed below before transferring payload ownership.
+      // Retaining the frame must not duplicate its already bounded byte buffer.
+      const bool ready = parser_->is_ready_for_query(msg);
+      const auto ready_state = !ready || msg.payload.size() != 1 ? SessionState::Unknown :
+          msg.payload[0] == std::byte{'I'} ? SessionState::Idle :
+          msg.payload[0] == std::byte{'T'} ? SessionState::Transaction : SessionState::FailedTransaction;
+      messages.push_back(std::move(msg));
+      if (ready) {
+        session_state_ = ready_state;
         if (!description_response && !saw_completion) {
           mark_transport_failed();
           return BackendResult<QueryResult>{
@@ -802,6 +805,9 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
 
   try {
     auto result = parser_->extract_query_result(messages);
+    // Extraction returns owning cells/metadata: wire payloads are no longer
+    // needed during normalization or resolver work. This is not streaming.
+    messages.clear();
     if (has_binary_columns(result)) {
       return BackendResult<QueryResult>{
           rs::util::DbErrorCode::UnsupportedFeature,

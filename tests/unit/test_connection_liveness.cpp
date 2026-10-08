@@ -4697,3 +4697,117 @@ TEST(QueryOriginalDeadlineTest, CompletedDeferredErrorKeepsRowsAndFailureOrder) 
   EXPECT_EQ((SessionSnapshot{SessionState::FailedTransaction, SessionDisposition::ResetRequired}), result.session_snapshot());
   expect_query_deadline(*wire, deadline); EXPECT_TRUE(connection.is_connected());
 }
+
+
+#include <cstdint>
+namespace {
+// Compare integer addresses only while the retained frames are alive. No
+// saved address is dereferenced, and these observations are not process RSS.
+class BufferedPayloadOwnershipParser final : public rs::core::database::postgres::PgProtocolParser {
+ public:
+  struct Payload { char tag; std::uintptr_t address; std::size_t bytes; };
+  bool observing{};
+  std::vector<Payload> parsed;
+  std::size_t extract_calls{}, same_owner_bytes{}, same_owner_payloads{};
+  rs::core::database::Message parse_message(const std::vector<std::byte>& bytes) override {
+    auto message=PgProtocolParser::parse_message(bytes);
+    if(observing) parsed.push_back({message.tag,reinterpret_cast<std::uintptr_t>(message.payload.data()),message.payload.size()});
+    return message;
+  }
+  rs::core::database::ParsedQueryResult extract_query_result(
+      const std::vector<rs::core::database::Message>& messages) override {
+    ++extract_calls;
+    EXPECT_EQ(parsed.size(),messages.size());
+    for(std::size_t i=0;i<std::min(parsed.size(),messages.size());++i) {
+      EXPECT_EQ(parsed[i].tag,messages[i].tag);EXPECT_EQ(parsed[i].bytes,messages[i].payload.size());
+      if(parsed[i].bytes!=0) {
+        const auto address=reinterpret_cast<std::uintptr_t>(messages[i].payload.data());
+        EXPECT_EQ(parsed[i].address,address);
+        if(parsed[i].address==address) { same_owner_bytes+=parsed[i].bytes;++same_owner_payloads; }
+      }
+    }
+    return PgProtocolParser::extract_query_result(messages);
+  }
+};
+void expect_literal_owning_cells(const rs::core::database::QueryResult& result) {
+  ASSERT_EQ(3u,result.rows.size());ASSERT_EQ(1u,result.columns.size());
+  ASSERT_EQ(1u,result.rows[0].size());ASSERT_EQ(1u,result.rows[1].size());ASSERT_EQ(1u,result.rows[2].size());
+  EXPECT_FALSE(result.rows[0][0]);EXPECT_EQ(std::optional<std::string>{""},result.rows[1][0]);
+  EXPECT_EQ(std::optional<std::string>{"abc"},result.rows[2][0]);EXPECT_EQ("value",result.columns[0].name);
+}
+}
+
+TEST(BufferedWireOwnershipTest, DirectCompoundResultsRetainCellsAfterFrameAndConnectionRelease) {
+  using namespace rs::core::database;
+  QueryResult owned;std::size_t observed_bytes=0;
+  {
+    auto parser=std::make_unique<BufferedPayloadOwnershipParser>();auto* observed=parser.get();
+    auto transport=std::make_unique<ScriptedBackendTransport>(ScriptedBackendTransport::ResponseMode::OwnedTwoResultSets);
+    GenericDatabaseConnection connection(std::move(parser),std::move(transport));
+    auto settings=pg_fixture_settings();settings.use_ssl=false;ASSERT_TRUE(connection.connect(settings));observed->observing=true;
+    auto result=connection.execute_query("SELECT value; SELECT value",rs::util::make_deadline(std::chrono::seconds{2}));ASSERT_TRUE(result);
+    EXPECT_EQ(1u,observed->extract_calls);EXPECT_GT(observed->same_owner_payloads,0u);
+    for(const auto& payload:observed->parsed)observed_bytes+=payload.bytes;
+    EXPECT_EQ(observed_bytes,observed->same_owner_bytes);
+    EXPECT_EQ((SessionSnapshot{SessionState::Idle,SessionDisposition::Reusable}),result.session_snapshot());
+    owned=std::move(*result);connection.disconnect();
+  }
+  expect_literal_owning_cells(owned);ASSERT_EQ(1u,owned.additional_results.size());
+  // Additional results have the same independent literal rows, not borrowed frames.
+  ASSERT_EQ(1u,owned.additional_results[0].columns.size());
+  EXPECT_EQ(owned.rows,owned.additional_results[0].rows);EXPECT_EQ("value",owned.additional_results[0].columns[0].name);
+  RecordProperty("observed_avoided_payload_copy_bytes",std::to_string(observed_bytes));
+}
+TEST(BufferedWireOwnershipTest, PreparedFragmentedResponseKeepsOriginalDeadlineAndOwningCell) {
+  using namespace rs::core::database;
+  QueryResult owned;
+  {
+    auto parser=std::make_unique<BufferedPayloadOwnershipParser>();auto* observed=parser.get();
+    auto transport=std::make_unique<QueryDeadlineWire>();auto* wire=transport.get();
+    GenericDatabaseConnection connection(std::move(parser),std::move(transport));
+    auto settings=pg_fixture_settings();settings.use_ssl=false;ASSERT_TRUE(connection.connect(settings));observed->observing=true;wire->arm(true);
+    const auto deadline=rs::util::make_deadline(std::chrono::seconds{2});auto result=execute_deadline_query(connection,true,deadline);ASSERT_TRUE(result);
+    EXPECT_EQ(1u,observed->extract_calls);std::size_t bytes=0;for(const auto& p:observed->parsed)bytes+=p.bytes;
+    EXPECT_EQ(bytes,observed->same_owner_bytes);EXPECT_GT(bytes,0u);expect_query_deadline(*wire,deadline);
+    owned=std::move(*result);connection.disconnect();
+    RecordProperty("observed_avoided_payload_copy_bytes",std::to_string(bytes));
+  }
+  ASSERT_EQ(1u,owned.rows.size());ASSERT_EQ(1u,owned.rows[0].size());EXPECT_EQ(std::optional<std::string>{"x"},owned.rows[0][0]);
+}
+TEST(BufferedWireOwnershipTest, DeferredErrorOrderAndTransactionSnapshotRemainOwning) {
+  using namespace rs::core::database;
+  QueryResult owned;
+  {
+    auto parser=std::make_unique<BufferedPayloadOwnershipParser>();auto* observed=parser.get();
+    auto transport=std::make_unique<ScriptedBackendTransport>(ScriptedBackendTransport::ResponseMode::OwnedResultCellsAborted);
+    GenericDatabaseConnection connection(std::move(parser),std::move(transport));
+    auto settings=pg_fixture_settings();settings.use_ssl=false;ASSERT_TRUE(connection.connect(settings));observed->observing=true;
+    auto result=connection.execute_query("SELECT value; SELECT failed",rs::util::make_deadline(std::chrono::seconds{2}));ASSERT_TRUE(result);
+    EXPECT_EQ((SessionSnapshot{SessionState::FailedTransaction,SessionDisposition::ResetRequired}),result.session_snapshot());
+    EXPECT_EQ(1u,observed->extract_calls);EXPECT_GT(observed->same_owner_bytes,0u);owned=std::move(*result);connection.disconnect();
+  }
+  expect_literal_owning_cells(owned);ASSERT_EQ(1u,owned.additional_results.size());ASSERT_TRUE(owned.additional_results[0].error);
+  EXPECT_EQ(std::optional<std::string>{"22012"},owned.additional_results[0].error->native_state);
+  EXPECT_EQ(BackendErrorClass::Server,owned.additional_results[0].error->error_class);
+  EXPECT_EQ(BackendOperation::ExecuteDirect,owned.additional_results[0].error->operation);
+}
+TEST(BufferedWireOwnershipTest, ResourceAndLateReadyRetireWithoutPartialPublication) {
+  using namespace rs::core::database;
+  for(bool resource:{false,true}) {
+    SCOPED_TRACE(resource);
+    auto parser=std::make_unique<BufferedPayloadOwnershipParser>();auto* observed=parser.get();
+    auto transport=std::make_unique<QueryDeadlineWire>();auto* wire=transport.get();
+    GenericDatabaseConnection connection(std::move(parser),std::move(transport));
+    auto settings=pg_fixture_settings();settings.use_ssl=false;if(resource)settings.response_limits.max_messages=3;
+    ASSERT_TRUE(connection.connect(settings));observed->observing=true;
+    wire->arm(false,resource?QueryDeadlineWire::Late::None:QueryDeadlineWire::Late::Ready);
+    const auto deadline=rs::util::make_deadline(std::chrono::milliseconds{20});auto result=execute_deadline_query(connection,false,deadline);ASSERT_FALSE(result);
+    EXPECT_EQ(resource?BackendErrorClass::ResourceLimit:BackendErrorClass::Timeout,result.backend_error().error_class);
+    EXPECT_EQ((SessionSnapshot{SessionState::Disconnected,SessionDisposition::Retire}),result.session_snapshot());
+    // The completed late response is owning-decoded before publication refusal;
+    // an exceeded message budget instead refuses before extraction.
+    EXPECT_EQ(resource?0u:1u,observed->extract_calls);EXPECT_GT(wire->closes,0u);expect_query_deadline(*wire,deadline);
+    const auto sends=wire->writes.size(),reads=wire->reads.size();
+    EXPECT_FALSE(execute_deadline_query(connection,false,deadline));EXPECT_EQ(sends,wire->writes.size());EXPECT_EQ(reads,wire->reads.size());
+  }
+}
