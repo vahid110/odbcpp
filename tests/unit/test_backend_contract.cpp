@@ -4945,3 +4945,170 @@ TEST_F(BackendContractTest, ResourceRetirementRefusesDispatchUntilExplicitReconn
   ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD, &dead, 0, nullptr));
   EXPECT_EQ(SQL_CD_FALSE, dead);
 }
+
+#include "core/database/generic_database_connection.h"
+#include "core/database/postgres/pg_protocol_parser.h"
+#include <thread>
+
+namespace {
+struct PreparedDeadlineFacts {
+  unsigned sends{}, reads{}, closes{}, creates{}, resolver_entries{};
+  bool late_send{}, late_read{}, late_resolver{};
+  std::size_t chunk{1};
+  std::vector<Deadline> deadlines;
+  std::vector<std::byte> outgoing;
+};
+class PreparedDeadlineWire final : public rs::core::transport::ITransport {
+ public:
+  explicit PreparedDeadlineWire(std::shared_ptr<PreparedDeadlineFacts> facts):facts_(std::move(facts)){}
+  Result<void> connect(std::string_view,std::uint16_t,Deadline) override {
+    input_={std::byte{'R'},std::byte{0},std::byte{0},std::byte{0},std::byte{8},
+        std::byte{0},std::byte{0},std::byte{0},std::byte{0},std::byte{'Z'},
+        std::byte{0},std::byte{0},std::byte{0},std::byte{5},std::byte{'I'}};
+    offset_=0;started_=false;return {};
+  }
+  Result<rs::core::transport::IOResult> send(std::span<const std::byte> bytes,Deadline deadline) override {
+    if (!started_) { return rs::core::transport::IOResult{bytes.size(),false}; }
+    ++facts_->sends;facts_->deadlines.push_back(deadline);
+    if (facts_->late_send && facts_->sends==1) { wait(deadline); }
+    if(offset_==input_.size()){input_=description();offset_=0;}
+    const auto n=std::min(bytes.size(),facts_->chunk);facts_->outgoing.insert(facts_->outgoing.end(),bytes.begin(),bytes.begin()+n);
+    return rs::core::transport::IOResult{n,false};
+  }
+  Result<rs::core::transport::IOResult> recv(std::span<std::byte> bytes,Deadline deadline) override {
+    if(started_){++facts_->reads;facts_->deadlines.push_back(deadline);if (facts_->late_read && facts_->reads==1) { wait(deadline); }}
+    const auto n=std::min({bytes.size(),input_.size()-offset_,started_?facts_->chunk:bytes.size()});
+    std::copy_n(input_.begin()+offset_,n,bytes.begin());offset_+=n;
+    if (!started_ && offset_==input_.size()) { started_=true; }
+    return rs::core::transport::IOResult{n,false};
+  }
+  void close() noexcept override {++facts_->closes;}
+  static void wait(Deadline deadline){while (rs::util::Clock::now()<deadline) { std::this_thread::yield(); }}
+ private:
+  static void u16(std::vector<std::byte>& v,std::uint16_t n){v.push_back(std::byte(n>>8));v.push_back(std::byte(n));}
+  static void u32(std::vector<std::byte>& v,std::uint32_t n){for(int shift=24;shift>=0;shift-=8)v.push_back(std::byte(n>>shift));}
+  static void text(std::vector<std::byte>& v,std::string_view value){for (char c:value) { v.push_back(std::byte(c)); }v.push_back(std::byte{0});}
+  static void frame(std::vector<std::byte>& v,char tag,const std::vector<std::byte>& payload){v.push_back(std::byte(tag));u32(v,static_cast<std::uint32_t>(payload.size()+4));v.insert(v.end(),payload.begin(),payload.end());}
+  static std::vector<std::byte> description(){
+    std::vector<std::byte> out;frame(out,'1',{});
+    std::vector<std::byte> params;u16(params,4);for (auto oid:{23u,1700u,1043u,1114u}) { u32(params,oid); }frame(out,'t',params);
+    std::vector<std::byte> columns;u16(columns,4);
+    struct Column{const char* name;std::uint32_t oid;std::uint16_t size;std::uint32_t modifier;};
+    // Independent RowDescription literals: NUMERIC(5,2), VARCHAR(32), TIMESTAMP(6).
+    for(const auto& c:std::array<Column,4>{{{"integer",23,4,0xffffffffu},{"decimal",1700,0xffffu,0x00050006u},
+        {"Grüße",1043,0xffffu,36},{"stamp",1114,8,6}}}){
+      text(columns,c.name);u32(columns,0);u16(columns,0);u32(columns,c.oid);u16(columns,c.size);u32(columns,c.modifier);u16(columns,0);
+    }
+    frame(out,'T',columns);frame(out,'Z',{std::byte{'I'}});return out;
+  }
+  std::shared_ptr<PreparedDeadlineFacts> facts_;std::vector<std::byte> input_;std::size_t offset_{};bool started_{};
+};
+class PreparedDeadlineSession final : public GenericDatabaseConnection {
+ public:
+  explicit PreparedDeadlineSession(std::shared_ptr<PreparedDeadlineFacts> facts)
+      :GenericDatabaseConnection(std::make_unique<rs::core::database::postgres::PgProtocolParser>(),
+          std::make_unique<PreparedDeadlineWire>(facts)),facts_(std::move(facts)){}
+  BackendResult<ResolvedTypeMap> resolve_types(std::span<const std::uint32_t> ids,Deadline deadline) override {
+    ++facts_->resolver_entries;
+    auto result=GenericDatabaseConnection::resolve_types(ids,deadline);
+    facts_->deadlines.push_back(deadline);
+    if (facts_->late_resolver) { PreparedDeadlineWire::wait(deadline); }
+    return result;
+  }
+ private:std::shared_ptr<PreparedDeadlineFacts> facts_;
+};
+const std::array<QueryParameterType,4>& prepared_description_types() {
+  static const std::array<QueryParameterType,4> types{QueryParameterType::Unspecified,QueryParameterType::Unspecified,
+      QueryParameterType::Unspecified,QueryParameterType::Unspecified};
+  return types;
+}
+ConnectionSettings prepared_deadline_settings(){ConnectionSettings s;s.host="synthetic.invalid";s.port=5439;s.use_ssl=false;s.database="synthetic";return s;}
+void prepared_timeout(const BackendResult<QueryResult>& result){
+  ASSERT_FALSE(result);EXPECT_EQ(rs::util::make_error_code(DbErrorCode::Timeout),result.error());
+  EXPECT_EQ(BackendOperation::Describe,result.backend_error().operation);EXPECT_EQ(SessionDisposition::Retire,result.session_snapshot().disposition);
+}
+class PreparedDeadlineProvider final : public IBackendProvider {
+ public:
+  explicit PreparedDeadlineProvider(std::shared_ptr<PreparedDeadlineFacts> facts):facts_(std::move(facts)),profile_(
+      BackendIdentity{"redshift","Amazon Redshift","Synthetic prepared metadata"},
+      BackendConnectionDefaults{"synthetic.invalid",5439,"synthetic",false},std::nullopt,
+      rs::core::database::postgres::PgCatalogProfile::Redshift){}
+  const BackendIdentity& identity()const noexcept override{return profile_.identity();}
+  const BackendConnectionDefaults& connection_defaults()const noexcept override{return profile_.connection_defaults();}
+  const ISqlDialect& sql_dialect()const noexcept override{return profile_.sql_dialect();}
+  BackendCapabilities capabilities()const noexcept override{return profile_.capabilities();}
+  std::span<const TypeDefinition> type_catalog(std::string_view v={})const noexcept override{return profile_.type_catalog(v);}
+  std::span<const TypeDefinition> result_type_catalog(std::string_view v={})const noexcept override{return profile_.result_type_catalog(v);}
+  TransactionCapabilities transaction_capabilities()const noexcept override{return profile_.transaction_capabilities();}
+  Result<ConnectionSettings> resolve_connection_options(ConnectionOptions options)const override{return profile_.resolve_connection_options(std::move(options));}
+  std::optional<std::string> normalize_error_sqlstate(std::string_view value,ErrorContext context)const override{return profile_.normalize_error_sqlstate(value,context);}
+  std::unique_ptr<IDatabaseConnection> create_session(std::unique_ptr<rs::core::transport::ITransport>)const override{
+    ++facts_->creates;return std::make_unique<PreparedDeadlineSession>(facts_);
+  }
+ private:std::shared_ptr<PreparedDeadlineFacts> facts_;rs::core::database::postgres::PgBackendProvider profile_;
+};
+}
+TEST(PreparedMetadataDeadlineTest, ExpiredBeforeDispatchHasNoIoAndRetires){
+  auto facts=std::make_shared<PreparedDeadlineFacts>();PreparedDeadlineSession session(facts);
+  ASSERT_TRUE(session.connect(prepared_deadline_settings()));
+  auto result=session.describe_statement("SELECT ?::integer,?::numeric(5,2),?::varchar(32),?::timestamp(6)",prepared_description_types(),rs::util::Clock::now());
+  prepared_timeout(result);EXPECT_EQ(0u,facts->sends);EXPECT_EQ(0u,facts->reads);EXPECT_FALSE(session.is_connected());
+}
+TEST(PreparedMetadataDeadlineTest, FragmentedMetadataUsesOnlyDescriptionAndOwningTypes){
+  auto facts=std::make_shared<PreparedDeadlineFacts>();PreparedDeadlineSession session(facts);
+  ASSERT_TRUE(session.connect(prepared_deadline_settings()));const auto deadline=rs::util::make_deadline(std::chrono::seconds{1});
+  auto result=session.describe_statement("SELECT ?::integer,?::numeric(5,2),?::varchar(32),?::timestamp(6)",prepared_description_types(),deadline);
+  ASSERT_TRUE(result);ASSERT_EQ(4u,result->columns.size());ASSERT_EQ(4u,result->normalized_parameter_types.size());EXPECT_TRUE(result->rows.empty());
+  EXPECT_EQ(10u,result->columns[0].normalized_type->column_size);EXPECT_EQ(5u,result->columns[1].normalized_type->column_size);EXPECT_EQ(2,result->columns[1].normalized_type->decimal_digits);
+  EXPECT_EQ(32u,result->columns[2].normalized_type->column_size);EXPECT_EQ(26u,result->columns[3].normalized_type->column_size);
+  // ParameterDescription has IDs, not NUMERIC typmod; do not invent cast precision.
+  EXPECT_EQ(0u,result->normalized_parameter_types[1].column_size);
+  for (auto d:facts->deadlines) { EXPECT_EQ(deadline,d); }
+  std::vector<char> tags;for(std::size_t offset=0;offset<facts->outgoing.size();){ASSERT_GE(facts->outgoing.size()-offset,5u);tags.push_back(static_cast<char>(facts->outgoing[offset]));std::uint32_t n=0;for (unsigned i=1;i<=4;++i) { n=(n<<8)|std::to_integer<unsigned char>(facts->outgoing[offset+i]); }ASSERT_GE(n,4u);offset+=n+1;}
+  EXPECT_EQ((std::vector<char>{'P','D','S'}),tags);session.disconnect();EXPECT_EQ("Grüße",result->columns[2].name);
+}
+TEST(PreparedMetadataDeadlineTest, LateFragmentsAndResolverRefusePublicationAtOriginalDeadline){
+  for(unsigned mode=0;mode<3;++mode){auto facts=std::make_shared<PreparedDeadlineFacts>();facts->late_send=mode==0;facts->late_read=mode==1;facts->late_resolver=mode==2;
+    PreparedDeadlineSession session(facts);ASSERT_TRUE(session.connect(prepared_deadline_settings()));
+    // Resolver mode needs enough time to finish one-byte protocol fragments.
+    const auto deadline=rs::util::make_deadline(std::chrono::milliseconds{mode==2?100:3});
+    const auto resolver_before=facts->resolver_entries;
+    auto result=session.describe_statement("SELECT ?::integer,?::numeric(5,2),?::varchar(32),?::timestamp(6)",prepared_description_types(),deadline);prepared_timeout(result);EXPECT_FALSE(session.is_connected());
+    for (auto d : facts->deadlines) { EXPECT_EQ(deadline, d); }
+    if (mode == 0) { EXPECT_EQ(1u, facts->sends); EXPECT_EQ(0u, facts->reads); }
+    if (mode == 1) { EXPECT_EQ(1u, facts->reads); }
+    if (mode == 2) { EXPECT_EQ(resolver_before+1, facts->resolver_entries); }
+  }
+}
+TEST(PreparedMetadataDeadlineTest, PublicTimeoutPreservesOutputsNoCacheAndFreshReconnectRecovers){
+  auto facts=std::make_shared<PreparedDeadlineFacts>();facts->late_resolver=true;
+  SQLHENV env{};SQLHDBC dbc{};SQLHSTMT stmt{};
+  struct Cleanup {
+    SQLHENV& env;
+    SQLHDBC& dbc;
+    SQLHSTMT& stmt;
+    ~Cleanup() {
+      if (stmt) { SQLFreeHandle(SQL_HANDLE_STMT, stmt); }
+      if (dbc) { SQLDisconnect(dbc); SQLFreeHandle(SQL_HANDLE_DBC, dbc); }
+      if (env) { SQLFreeHandle(SQL_HANDLE_ENV, env); }
+    }
+  } cleanup{env,dbc,stmt};
+  ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_ENV,nullptr,&env));ASSERT_EQ(SQL_SUCCESS,SQLSetEnvAttr(env,SQL_ATTR_ODBC_VERSION,reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3),0));
+  auto connection=std::make_unique<rs::odbc::ODBCConnection>(nullptr,std::make_shared<PreparedDeadlineProvider>(facts));dbc=reinterpret_cast<SQLHDBC>(connection.get());rs::odbc::HandleRegistry::instance().register_handle(dbc,std::move(connection),env);
+  auto connect=[&]{return SQLDriverConnect(dbc,nullptr,(SQLCHAR*)"SERVER=synthetic.invalid;PORT=5439;DATABASE=synthetic;SSL=0",SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT);};
+  ASSERT_EQ(SQL_SUCCESS,connect());ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&stmt));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(1),0));
+  auto prepare=[&]{return SQLPrepare(stmt,(SQLCHAR*)"SELECT ?::integer,?::numeric(5,2),?::varchar(32),?::timestamp(6)",SQL_NTS);};ASSERT_EQ(SQL_SUCCESS,prepare());
+  SQLSMALLINT type=71,scale=72,nullable=73;SQLULEN size=74;
+  const auto resolver_before=facts->resolver_entries;
+  ASSERT_EQ(SQL_ERROR,SQLDescribeParam(stmt,1,&type,&size,&scale,&nullable));
+  EXPECT_EQ(resolver_before+1, facts->resolver_entries);EXPECT_EQ(71,type);EXPECT_EQ(74u,size);EXPECT_EQ(72,scale);EXPECT_EQ(73,nullable);
+  SQLCHAR state[6]{};ASSERT_EQ(SQL_SUCCESS,SQLGetDiagRec(SQL_HANDLE_STMT,stmt,1,state,nullptr,nullptr,0,nullptr));EXPECT_STREQ("HYT00",reinterpret_cast<char*>(state));
+  SQLSMALLINT count=79;EXPECT_EQ(SQL_ERROR,SQLNumResultCols(stmt,&count));EXPECT_EQ(79,count);EXPECT_GT(facts->closes,0u);
+  facts->late_resolver=false;ASSERT_EQ(SQL_SUCCESS,connect());ASSERT_EQ(SQL_SUCCESS,prepare());ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(4,count);ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt,&count));EXPECT_EQ(4,count);
+  ASSERT_EQ(SQL_SUCCESS,SQLDescribeParam(stmt,1,&type,&size,&scale,&nullable));EXPECT_EQ(SQL_INTEGER,type);EXPECT_EQ(10u,size);
+  SQLCHAR name[32]{};SQLSMALLINT length{};ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(stmt,2,name,32,&length,&type,&size,&scale,&nullable));EXPECT_STREQ("decimal",reinterpret_cast<char*>(name));EXPECT_EQ(5u,size);EXPECT_EQ(2,scale);
+  SQLWCHAR wide[32]{};ASSERT_EQ(SQL_SUCCESS,SQLDescribeColW(stmt,3,wide,32,&length,&type,&size,&scale,&nullable));EXPECT_EQ(5,length);EXPECT_EQ(SQLWCHAR(0xfc),wide[2]);EXPECT_EQ(32u,size);
+  SQLLEN precision=-1;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(stmt,2,SQL_DESC_PRECISION,nullptr,0,nullptr,&precision));EXPECT_EQ(5,precision);
+  EXPECT_EQ(resolver_before+2, facts->resolver_entries); // Fresh metadata, not a late cached result.
+  EXPECT_EQ(2u,facts->creates); // Explicit reconnect, never automatic reacquisition/retry.
+}

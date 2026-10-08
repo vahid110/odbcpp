@@ -508,7 +508,7 @@ BackendResult<QueryResult> GenericDatabaseConnection::describe_statement_impl(
     return BackendResult<QueryResult>{
         rs::util::DbErrorCode::InvalidParameter, error.what()};
   }
-  auto write_result = write_all_result(request, deadline);
+  auto write_result = write_all_result(request, deadline, true);
   if (write_result.has_error()) {
     return BackendResult<QueryResult>{
         write_result.error(), write_result.error_message()};
@@ -604,7 +604,7 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
       return {rs::util::DbErrorCode::ResourceLimit, "Database response message limit exceeded"};
     }
     auto msg_result = read_message_result(deadline, settings_.response_limits.max_wire_bytes - wire_bytes,
-        !description_response);
+        !description_response || kind == ResponseKind::Description);
     if (msg_result.has_error()) {
       return BackendResult<QueryResult>{msg_result.error(), msg_result.error_message()};
     }
@@ -922,9 +922,12 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
       return error;
     }
     // A completed error keeps the earlier error/structure precedence above.
-    // Successful execution is published only within its original deadline;
-    // this refuses late buffered/normalized data, not a blocked OS call.
-    if (!description_response && rs::util::Clock::now() >= deadline) {
+    // Successful execution or ordinary prepared metadata is published only
+    // within its original deadline. Resolver/normalization work must not publish
+    // late metadata for an ODBC cache. This does not interrupt a blocked OS call.
+    // The isolated declined-description path retains its separate guard above.
+    if ((!description_response || kind == ResponseKind::Description) &&
+        rs::util::Clock::now() >= deadline) {
       mark_transport_failed();
       return {rs::util::DbErrorCode::Timeout, "Database query deadline expired"};
     }
