@@ -170,8 +170,8 @@ protected:
     EXPECT_EQ(0,text_.value[static_cast<std::size_t>(length_)]);
     return std::string(reinterpret_cast<const char*>(text_.value.data()),static_cast<std::size_t>(length_));
   }
-  void integer(SQLINTEGER expected) {
-    poison(integer_);length_=73;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt_,1,SQL_C_SLONG,&integer_.value,sizeof(integer_.value),&length_));
+  void integer(SQLINTEGER expected,SQLUSMALLINT column=1) {
+    poison(integer_);length_=73;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt_,column,SQL_C_SLONG,&integer_.value,sizeof(integer_.value),&length_))<<state(SQL_HANDLE_STMT,stmt_);
     EXPECT_EQ(expected,integer_.value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(integer_.value)),length_);guards(integer_);
   }
   void reset() {
@@ -247,7 +247,13 @@ TEST_F(RedshiftPackageLiveTest, BoundNarrowingErrorAndRecovery) {
   poison(short_);length_=73;ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt_,1,SQL_C_SSHORT,&short_.value,sizeof(short_.value),&length_));
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt_,SQL_ATTR_ROW_STATUS_PTR,&row_status_,0));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt_,SQL_ATTR_ROWS_FETCHED_PTR,&fetched_,0));
   ASSERT_EQ(SQL_ERROR,SQLFetch(stmt_));EXPECT_TRUE(state(SQL_HANDLE_STMT,stmt_)=="22003");EXPECT_EQ(SQL_ROW_ERROR,row_status_);EXPECT_EQ(static_cast<SQLULEN>(1),fetched_);EXPECT_EQ(static_cast<SQLLEN>(73),length_);EXPECT_EQ(static_cast<SQLSMALLINT>(0x5a5a),short_.value);guards(short_);
-  integer(32768);ASSERT_FALSE(HasFailure());const auto owned=integer_.value;ASSERT_EQ(SQL_NO_DATA,SQLFetch(stmt_));reset();ASSERT_FALSE(HasFailure());
-  direct("SELECT CAST(1 AS INTEGER) AS recovery");ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt_));integer(1);ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_NO_DATA,SQLFetch(stmt_));reset();disconnect();ASSERT_FALSE(HasFailure());EXPECT_EQ(32768,owned);publish();
+  ASSERT_FALSE(HasFailure());ASSERT_TRUE(cap(end_));reset();ASSERT_FALSE(HasFailure());
+  // SQL_GD_BOUND is not advertised: close the failed bound cursor before GetData.
+  direct("SELECT CAST(32768 AS INTEGER) AS recovered_value,CAST(1 AS INTEGER) AS recovery");ASSERT_FALSE(HasFailure());
+  columns=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt_,&columns));ASSERT_EQ(2,columns);
+  describe(1,"recovered_value",SQL_INTEGER,10);describe(2,"recovery",SQL_INTEGER,10);ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt_));integer(32768,1);ASSERT_FALSE(HasFailure());const auto owned=integer_.value;
+  integer(1,2);ASSERT_FALSE(HasFailure());const auto recovery=integer_.value;
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(stmt_));reset();disconnect();ASSERT_FALSE(HasFailure());EXPECT_EQ(32768,owned);EXPECT_EQ(1,recovery);publish();
 }
 } // namespace
