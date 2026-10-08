@@ -385,8 +385,11 @@ std::optional<ColumnDimensions> column_dimensions(std::string_view type,
 
 BackendResult<QueryResult> normalize_redshift_columns(std::string_view database,std::string_view schema,
     std::string_view table,const ColumnsCatalogRequest& request,BackendResult<QueryResult> input) {
-  if(!input)return input.backend_error();const auto& source=*input;
-  if(source.error)return *source.error;for(const auto& extra:source.additional_results)if(extra.error)return *extra.error;
+  if (!input) return input.backend_error();
+  const auto& source=*input;
+  if (source.error) return *source.error;
+  for (const auto& extra:source.additional_results)
+    if (extra.error) return *extra.error;
   if(!schema_identifier(database) || !schema_identifier(schema) || !schema_identifier(table) || !redshift_column_names(request))return invalid_column_metadata("identity");
   if(!clean_schema_result(source))return invalid_column_metadata("structure");
   if(source.rows.size()>10000)return invalid_column_metadata("rows");
