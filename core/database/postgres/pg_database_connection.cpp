@@ -240,13 +240,17 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
     };
     if (expired())return timeout();
     auto identity=execute_query("SELECT current_database() AS database_name",deadline);
-    if (!identity)return identity.backend_error();if (expired())return timeout();
+    if (!identity) return identity.backend_error();
+    if (expired()) return timeout();
     auto database=redshift_schema_database(std::move(identity));
-    if (expired())return timeout();if (!database)return database.backend_error();
+    if (expired()) return timeout();
+    if (!database) return database.backend_error();
     auto response=execute_query(redshift_show_columns_command(*database,names->first,names->second),deadline);
-    if (!response)return response.backend_error();if (expired())return timeout();
+    if (!response) return response.backend_error();
+    if (expired()) return timeout();
     auto normalized=normalize_redshift_columns(*database,names->first,names->second,*columns,std::move(response));
-    if (expired())return timeout();return normalized;
+    if (expired()) return timeout();
+    return normalized;
   }
   const auto* keys = std::get_if<PrimaryKeysCatalogRequest>(&request);
   if (catalog_profile_ != PgCatalogProfile::Redshift || !keys) return unsupported();
