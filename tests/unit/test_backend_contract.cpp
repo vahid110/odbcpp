@@ -7375,7 +7375,7 @@ class MetadataIdentifierTest : public BackendContractTest {
  protected:
   void mode(bool enabled) {
     ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_METADATA_ID,
-        reinterpret_cast<SQLPOINTER>(enabled ? SQL_TRUE : SQL_FALSE), 0));
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(enabled ? SQL_TRUE : SQL_FALSE)), 0));
   }
   void close() { ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE)); }
 };
@@ -7399,7 +7399,7 @@ TEST_F(MetadataIdentifierTest, LiteralNamesAreOwningAndNarrowWideFormsAgree) {
   // Literal scalar units, not expected output obtained through a converter.
   std::vector<SQLWCHAR> wide{SQLWCHAR(' '), SQLWCHAR('"'), SQLWCHAR(0x00e9), SQLWCHAR(0x8868)};
   if constexpr (sizeof(SQLWCHAR) == 2) { wide.push_back(SQLWCHAR(0xd83d)); wide.push_back(SQLWCHAR(0xde00)); }
-  else wide.push_back(SQLWCHAR(0x1f600));
+  else wide.push_back(static_cast<SQLWCHAR>(0x1f600));
   for (const auto unit : {'%', '_', '\\', '"', '"', 'X', '"', ' '}) wide.push_back(SQLWCHAR(unit));
   wide.push_back(0);
   SQLWCHAR db[]{'d','b',0}, schema[]{'s',0};
@@ -7484,7 +7484,7 @@ TEST_F(MetadataIdentifierTest, ConnectionDefaultOnlyAffectsFutureStatementsAndSe
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(stmt, SQL_ATTR_METADATA_ID, (SQLPOINTER)99, 0));
   EXPECT_EQ("HY024", state());
   for (const auto option : {SQL_CLOSE, SQL_UNBIND, SQL_RESET_PARAMS}) {
-    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, option));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, static_cast<SQLUSMALLINT>(option)));
     ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_METADATA_ID, &value, 0, nullptr));
     EXPECT_EQ(SQL_TRUE, value);
   }
