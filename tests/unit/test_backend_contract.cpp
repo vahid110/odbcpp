@@ -5278,3 +5278,204 @@ TEST_F(ExactNumericAliasParameterTest, NullLocalRefusalAndRebindRetainDeclaredCo
   input_.val[0]=0; EXPECT_EQ(std::optional<std::string>{"-123.45"},owned.value);
   EXPECT_EQ(SQL_PARAM_SUCCESS,status_); EXPECT_EQ(1u,processed_); EXPECT_EQ(0,seen->disconnects);
 }
+
+
+class BitExactNumericInputTest : public BackendContractTest {
+ protected:
+  SQLCHAR input_[3]{0x5a,0,0xa5};
+  SQLLEN indicator_{1};
+  SQLULEN processed_{99};
+  SQLUSMALLINT status_{SQL_PARAM_UNUSED};
+  SQLINTEGER signed_input_{1};
+  SQLUINTEGER unsigned_input_{1};
+  void start() {
+    connect(); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"rows ?",SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAMS_PROCESSED_PTR,&processed_,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_STATUS_PTR,&status_,0));
+  }
+  void bind(SQLSMALLINT type, SQLULEN precision, SQLSMALLINT scale) {
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_BIT,
+        type,precision,scale,&input_[1],1,&indicator_));
+  }
+  void expect_owned(const char* literal) {
+    ASSERT_EQ(1u,seen->parameters.size());
+    EXPECT_EQ(QueryParameterType::Numeric,seen->parameters[0].type);
+    EXPECT_EQ(std::optional<std::string>{literal},seen->parameters[0].value);
+    EXPECT_EQ(0x5a,input_[0]); EXPECT_EQ(0xa5,input_[2]);
+    EXPECT_EQ(SQL_PARAM_SUCCESS,status_); EXPECT_EQ(1u,processed_);
+  }
+};
+
+TEST_F(BitExactNumericInputTest, ZeroFitsFractionOnlyNumericAndOneFitsWholeDigitCapacity) {
+  start(); ASSERT_FALSE(HasFailure());
+  for(const SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC),SQLSMALLINT(SQL_DECIMAL)}) {
+    input_[1]=0; bind(type,2,2); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); expect_owned("0"); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+    input_[1]=1; bind(type,2,1); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); expect_owned("1"); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  }
+  // Equivalent integer material already enforces the declared fractional-only target.
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_SLONG,
+      SQL_NUMERIC,1,1,&signed_input_,sizeof(signed_input_),&indicator_));
+  const auto queries=seen->queries;
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt)); EXPECT_EQ("22003",state()); EXPECT_EQ(queries,seen->queries);
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_ULONG,
+      SQL_DECIMAL,2,2,&unsigned_input_,sizeof(unsigned_input_),&indicator_));
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt)); EXPECT_EQ("22003",state()); EXPECT_EQ(queries,seen->queries);
+}
+
+TEST_F(BitExactNumericInputTest, OneRefusesFractionOnlyTargetsBeforeDispatchWithoutChangingOwnership) {
+  start(); ASSERT_FALSE(HasFailure());
+  for(const SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC),SQLSMALLINT(SQL_DECIMAL)}) {
+    input_[1]=0; bind(type,1,1); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); expect_owned("0"); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+    const auto previous=seen->parameters[0];
+    input_[1]=1; bind(type,1,1); ASSERT_FALSE(HasFailure());
+    const auto queries=seen->queries; const auto descriptions=seen->descriptions; const auto deadline=seen->deadline;
+    EXPECT_EQ(SQL_ERROR,SQLExecute(stmt)); EXPECT_EQ("22003",state());
+    EXPECT_EQ(queries,seen->queries); EXPECT_EQ(descriptions,seen->descriptions); EXPECT_EQ(deadline,seen->deadline);
+    EXPECT_EQ(SQL_PARAM_ERROR,status_); EXPECT_EQ(1u,processed_);
+    EXPECT_EQ(1,input_[1]); EXPECT_EQ(1,indicator_); EXPECT_EQ(0x5a,input_[0]); EXPECT_EQ(0xa5,input_[2]);
+    ASSERT_EQ(1u,seen->parameters.size()); EXPECT_EQ(previous.value,seen->parameters[0].value);
+    EXPECT_EQ(previous.type,seen->parameters[0].type); EXPECT_EQ(0,seen->disconnects);
+    // Also close the baseline's wrongly successful cursor; do not heal its failure.
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  }
+}
+
+TEST_F(BitExactNumericInputTest, RefusalNullAndExplicitRebindRecoverWithCanonicalMaterialChecks) {
+  start(); ASSERT_FALSE(HasFailure());
+  input_[1]=1; bind(SQL_NUMERIC,1,1); ASSERT_FALSE(HasFailure());
+  const auto queries=seen->queries;
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt)); EXPECT_EQ("22003",state()); EXPECT_EQ(queries,seen->queries);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  input_[1]=2; bind(SQL_DECIMAL,2,2); ASSERT_FALSE(HasFailure());
+  const auto before_invalid=seen->queries;
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt)); EXPECT_EQ("22003",state()); EXPECT_EQ(before_invalid,seen->queries);
+  EXPECT_EQ(2,input_[1]); EXPECT_EQ(SQL_PARAM_ERROR,status_); EXPECT_EQ(1u,processed_);
+  input_[1]=255; indicator_=SQL_NULL_DATA; bind(SQL_DECIMAL,2,2); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); ASSERT_EQ(1u,seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Numeric,seen->parameters[0].type); EXPECT_FALSE(seen->parameters[0].value);
+  EXPECT_EQ(255,input_[1]); EXPECT_EQ(SQL_NULL_DATA,indicator_); EXPECT_EQ(SQL_PARAM_SUCCESS,status_);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  input_[1]=1; indicator_=1; bind(SQL_NUMERIC,1,0); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); expect_owned("1"); ASSERT_FALSE(HasFailure());
+  const auto snapshot=seen->parameters[0]; input_[1]=0;
+  EXPECT_EQ(std::optional<std::string>{"1"},snapshot.value); EXPECT_EQ(0,seen->disconnects);
+}
+
+
+class EndTransactionRecoveryTest : public BackendContractTest {
+ protected:
+  char output_[18]{};
+  SQLLEN length_{73};
+  void start() {
+    seen->advertised_transactions=true; seen->isolation_mode=1;
+    seen->begin_result=BackendResult<void>{{SessionState::Transaction,SessionDisposition::ResetRequired}};
+    QueryResult rows;
+    rows.columns={{"text",NativeTypeInfo{ScalarType::VarChar,16,0,true}}};
+    rows.rows={{"first"},{"second"}}; rows.statement_kind=StatementKind::SelectCursor;
+    seen->date_result=rows;
+    connect(); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,
+        reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF),0));
+    ASSERT_EQ(SQL_SUCCESS,execute("rows"));
+    ASSERT_EQ(1u,seen->transaction_calls.size()); EXPECT_EQ(TransactionAction::Begin,seen->transaction_calls[0]);
+  }
+  void fail_end(SessionSnapshot snapshot, DbErrorCode code=DbErrorCode::QueryFailed,
+                const char* native="40001") {
+    BackendError error{rs::util::make_error_code(code),"fixed transaction error"};
+    error.native_state=native; error.operation=BackendOperation::CommitTransaction;
+    error.session_state=snapshot.state; error.disposition=snapshot.disposition;
+    seen->end_result=BackendResult<void>{error};
+  }
+};
+
+TEST_F(EndTransactionRecoveryTest, IdleErrorPermitsFreshBeginAutocommitOnAndDisconnectWithoutEndReplay) {
+  start(); ASSERT_FALSE(HasFailure()); ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  fail_end({SessionState::Idle,SessionDisposition::Reusable});
+  ASSERT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_COMMIT)); EXPECT_EQ("HY000",state(SQL_HANDLE_DBC,dbc));
+  ASSERT_EQ(2u,seen->transaction_calls.size()); EXPECT_EQ(TransactionAction::Commit,seen->transaction_calls.back());
+  const auto before=seen->transaction_calls.size(); const auto queries=seen->queries;
+  ASSERT_EQ(SQL_SUCCESS,execute("rows"));
+  EXPECT_EQ(before+1,seen->transaction_calls.size()); EXPECT_EQ(TransactionAction::Begin,seen->transaction_calls.back());
+  EXPECT_EQ(queries+1,seen->queries); ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  // A second explicit failed END measures OFF->ON and disconnect independently.
+  fail_end({SessionState::Idle,SessionDisposition::Reusable});
+  ASSERT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_COMMIT)); EXPECT_EQ("HY000",state(SQL_HANDLE_DBC,dbc));
+  const auto ends=seen->transaction_calls.size();
+  EXPECT_EQ(SQL_SUCCESS,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,
+      reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_ON),0));
+  EXPECT_EQ(ends,seen->transaction_calls.size());
+  SQLUINTEGER mode=99; ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,&mode,0,nullptr));
+  EXPECT_EQ(SQL_AUTOCOMMIT_ON,mode);
+  EXPECT_EQ(SQL_SUCCESS,SQLDisconnect(dbc)); EXPECT_EQ(ends,seen->transaction_calls.size());
+}
+
+TEST_F(EndTransactionRecoveryTest, FailedTransactionRetainsRollbackDutyAndOwningBufferedCursor) {
+  start(); ASSERT_FALSE(HasFailure());
+  std::fill(std::begin(output_),std::end(output_),'!');
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_CHAR,output_,17,&length_));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); EXPECT_STREQ("first",output_); EXPECT_EQ(5,length_); EXPECT_EQ('!',output_[17]);
+  const std::string first=output_; seen->date_result->rows[1][0]="changed caller storage";
+  fail_end({SessionState::FailedTransaction,SessionDisposition::ResetRequired},DbErrorCode::QueryFailed,"25P02");
+  ASSERT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_COMMIT)); EXPECT_EQ("HY000",state(SQL_HANDLE_DBC,dbc));
+  const auto calls=seen->transaction_calls.size(); const auto queries=seen->queries;
+  EXPECT_EQ(SQL_ERROR,SQLDisconnect(dbc)); EXPECT_EQ("25000",state(SQL_HANDLE_DBC,dbc));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); EXPECT_STREQ("second",output_); EXPECT_EQ(6,length_); EXPECT_EQ('!',output_[17]);
+  EXPECT_EQ("first",first); EXPECT_EQ(queries,seen->queries); EXPECT_EQ(calls,seen->transaction_calls.size());
+  seen->end_result=BackendResult<void>{{SessionState::Idle,SessionDisposition::Reusable}};
+  ASSERT_EQ(SQL_SUCCESS,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_ROLLBACK));
+  EXPECT_EQ(calls+1,seen->transaction_calls.size()); EXPECT_EQ(TransactionAction::Rollback,seen->transaction_calls.back());
+  EXPECT_STREQ("second",output_); EXPECT_EQ('!',output_[17]);
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(stmt)); ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS,execute("rows")); EXPECT_EQ(calls+2,seen->transaction_calls.size());
+  EXPECT_EQ(TransactionAction::Begin,seen->transaction_calls.back()); EXPECT_EQ(queries+1,seen->queries);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  fail_end({SessionState::Transaction,SessionDisposition::ResetRequired});
+  ASSERT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_COMMIT));
+  EXPECT_EQ("HY000",state(SQL_HANDLE_DBC,dbc));
+  const auto active_calls=seen->transaction_calls.size();
+  EXPECT_EQ(SQL_ERROR,SQLDisconnect(dbc)); EXPECT_EQ("25000",state(SQL_HANDLE_DBC,dbc));
+  EXPECT_EQ(active_calls,seen->transaction_calls.size());
+  seen->end_result=BackendResult<void>{{SessionState::Idle,SessionDisposition::Reusable}};
+  ASSERT_EQ(SQL_SUCCESS,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_ROLLBACK));
+  EXPECT_EQ(active_calls+1,seen->transaction_calls.size());
+  ASSERT_EQ(SQL_SUCCESS,SQLDisconnect(dbc));
+}
+
+TEST_F(EndTransactionRecoveryTest, UnknownDisconnectedRetiredAndTimeoutErrorsRetireOnceWithoutFurtherDispatch) {
+  start(); ASSERT_FALSE(HasFailure());
+  const SessionSnapshot snapshots[]{
+      {SessionState::Unknown,SessionDisposition::Reusable},
+      {SessionState::Disconnected,SessionDisposition::Reusable},
+      {SessionState::Idle,SessionDisposition::Retire},
+      {SessionState::Idle,SessionDisposition::Reusable}};
+  for(std::size_t i=0;i<std::size(snapshots);++i) {
+    SCOPED_TRACE(i);
+    if(i!=0) {
+      seen->end_result.reset();
+      seen->transaction_state=SessionState::Idle; // A fresh physical fake starts Idle.
+      ASSERT_EQ(SQL_SUCCESS,SQLDriverConnect(dbc,nullptr,(SQLCHAR*)"SERVER=fake;SSL=0",SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT));
+      ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+      ASSERT_EQ(SQL_SUCCESS,execute("rows"));
+    }
+    const auto disconnects=seen->disconnects;
+    fail_end(snapshots[i],i==3?DbErrorCode::Timeout:DbErrorCode::QueryFailed,i==3?"":"40001");
+    ASSERT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_COMMIT));
+    EXPECT_EQ(i==3?"HYT00":"HY000",state(SQL_HANDLE_DBC,dbc));
+    EXPECT_EQ(disconnects+1,seen->disconnects);
+    SQLUINTEGER dead=99;
+    EXPECT_EQ(SQL_ERROR,SQLGetConnectAttr(dbc,SQL_ATTR_CONNECTION_DEAD,&dead,0,nullptr));
+    EXPECT_EQ("08003",state(SQL_HANDLE_DBC,dbc)); EXPECT_EQ(99u,dead);
+    const auto calls=seen->transaction_calls.size(); const auto queries=seen->queries;
+    EXPECT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_ROLLBACK));
+    EXPECT_EQ(SQL_ERROR,execute("must_not_dispatch"));
+    EXPECT_EQ(calls,seen->transaction_calls.size()); EXPECT_EQ(queries,seen->queries); EXPECT_EQ(disconnects+1,seen->disconnects);
+  }
+}

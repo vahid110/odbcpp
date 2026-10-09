@@ -1941,7 +1941,12 @@ SQLRETURN ODBCConnection::end_transaction(SQLSMALLINT completion_type) {
     const auto snapshot = result.session_snapshot();
     if (timeout || snapshot.disposition == rs::core::database::SessionDisposition::Retire ||
         snapshot.state == rs::core::database::SessionState::Unknown ||
-        snapshot.state == rs::core::database::SessionState::Disconnected) close_connection();
+        snapshot.state == rs::core::database::SessionState::Disconnected) {
+      close_connection();
+    } else {
+      transaction_active_ = snapshot.state == rs::core::database::SessionState::Transaction ||
+                            snapshot.state == rs::core::database::SessionState::FailedTransaction;
+    }
     return SQL_ERROR;
   }
   transaction_active_ = false;
@@ -4181,7 +4186,8 @@ SQLRETURN ODBCStatement::execute() {
                   "Integer parameter is outside SQL_BIT range");
         return complete_parameter_set(SQL_ERROR);
       }
-      if ((signed_integer_input || unsigned_integer_input) &&
+      if ((signed_integer_input || unsigned_integer_input ||
+           value_type == SQL_C_BIT) &&
           (declared_sql_type == SQL_DECIMAL ||
            declared_sql_type == SQL_NUMERIC) &&
           declared_sql_precision > 0 && declared_sql_scale >= 0) {
@@ -4193,7 +4199,9 @@ SQLRETURN ODBCStatement::execute() {
         if (!is_zero &&
             whole_digits > static_cast<std::size_t>(available_digits)) {
           set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                    "Integer parameter exceeds SQL numeric precision");
+                    value_type == SQL_C_BIT
+                        ? "BIT parameter exceeds SQL numeric precision"
+                        : "Integer parameter exceeds SQL numeric precision");
           return complete_parameter_set(SQL_ERROR);
         }
       }
