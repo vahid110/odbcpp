@@ -34,7 +34,9 @@ add_library(awslc_odbc_driver SHARED ${_driver_sources})
 target_include_directories(awslc_odbc_driver PRIVATE "${_proof_auth_include}")
 target_include_directories(awslc_odbc_driver PRIVATE "${ODBCPP_SOURCE}" "${ODBCPP_ADAPTER_INCLUDE}" "${PROOF_ODBC_INCLUDE}")
 target_include_directories(awslc_odbc_driver SYSTEM PRIVATE "${SPDLOG_INCLUDE_DIR}")
-target_compile_definitions(awslc_odbc_driver PRIVATE ODBCPP_ENABLE_POSTGRESQL=1 ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2)
+target_compile_definitions(awslc_odbc_driver PRIVATE
+  ODBCPP_ENABLE_POSTGRESQL=1 ODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=2
+  ODBCPP_DRIVER_FILENAME="$<TARGET_FILE_NAME:awslc_odbc_driver>")
 target_link_libraries(awslc_odbc_driver PRIVATE ssl crypto Threads::Threads)
 apply_compiler_settings(awslc_odbc_driver)
 set(_exports "${ODBCPP_SOURCE}/odbc/odbcpp.exports")
