@@ -4934,6 +4934,26 @@ SQLRETURN ODBCStatement::get_type_info(SQLSMALLINT data_type) {
   };
 
   const auto catalog = conn_->type_catalog();
+  // Metadata-driven consumers size bound buffers before fetching TypeInfo.
+  // Keep the schema stable across filters, including an empty result, using
+  // the complete owning backend catalog rather than zero/unknown widths.
+  constexpr std::array<std::size_t, 5> text_columns{0, 3, 4, 5, 12};
+  std::array<std::uint64_t, 5> text_sizes{1, 1, 1, 1, 1};
+  for (const auto& type : catalog) {
+    const std::array<std::optional<std::string_view>, 4> values{
+        type.name, type.literal_prefix, type.literal_suffix, type.create_params};
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      if (values[i]) {
+        text_sizes[i] = std::max(text_sizes[i],
+            static_cast<std::uint64_t>(values[i]->size()));
+      }
+    }
+  }
+  // LOCAL_TYPE_NAME is NULL in these rows; a minimum character capacity does
+  // not invent a value, and still gives an empty/all-NULL schema a usable size.
+  for (std::size_t i = 0; i < text_columns.size(); ++i) {
+    result.columns[text_columns[i]].normalized_type->column_size = text_sizes[i];
+  }
   std::vector<std::pair<SQLSMALLINT, const rs::core::database::TypeDefinition*>> types;
   for (const auto& type : catalog) {
     const auto sql_type = odbc_scalar_type(type.type);

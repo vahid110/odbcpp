@@ -5112,3 +5112,64 @@ TEST(PreparedMetadataDeadlineTest, PublicTimeoutPreservesOutputsNoCacheAndFreshR
   EXPECT_EQ(resolver_before+2, facts->resolver_entries); // Fresh metadata, not a late cached result.
   EXPECT_EQ(2u,facts->creates); // Explicit reconnect, never automatic reacquisition/retry.
 }
+
+class TypeInfoDiscoveryTest : public BackendContractTest {
+protected:
+  std::array<SQLCHAR,18> narrow_{};
+  std::array<SQLWCHAR,18> wide_{};
+  SQLLEN length_ = 97;
+  void open_profile(bool redshift) {
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,dbc));dbc=nullptr;
+    auto profile=std::make_shared<postgres::PgBackendProvider>(
+        BackendIdentity{redshift?"redshift":"postgresql",redshift?"Amazon Redshift":"PostgreSQL","ODBCPP"},
+        BackendConnectionDefaults{"localhost",5439,std::nullopt,true},std::nullopt,
+        redshift?postgres::PgCatalogProfile::Redshift:postgres::PgCatalogProfile::PostgreSQL);
+    auto connection=std::make_unique<rs::odbc::ODBCConnection>(nullptr,std::make_shared<FakeProvider>(seen,profile));
+    dbc=reinterpret_cast<SQLHDBC>(connection.get());rs::odbc::HandleRegistry::instance().register_handle(dbc,std::move(connection),env);connect();
+  }
+  void text_schema(bool wide) {
+    const SQLUSMALLINT fields[]{1,4,5,6,13};const SQLULEN widths[]{16,1,1,15,1};
+    SQLHDESC ird=SQL_NULL_HDESC;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_ROW_DESC,&ird,0,nullptr));
+    for(std::size_t i=0;i<std::size(fields);++i) {
+      SQLSMALLINT type=-1,digits=-1;SQLULEN size=99;
+      const auto result=wide?SQLDescribeColW(stmt,fields[i],nullptr,0,nullptr,&type,&size,&digits,nullptr):SQLDescribeCol(stmt,fields[i],nullptr,0,nullptr,&type,&size,&digits,nullptr);
+      ASSERT_EQ(SQL_SUCCESS,result);EXPECT_EQ(SQL_VARCHAR,type);EXPECT_EQ(widths[i],size);EXPECT_EQ(0,digits);
+      SQLULEN descriptor_length=99;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,static_cast<SQLSMALLINT>(fields[i]),SQL_DESC_LENGTH,&descriptor_length,0,nullptr));EXPECT_EQ(widths[i],descriptor_length);
+    }
+  }
+};
+
+TEST_F(TypeInfoDiscoveryTest, RedshiftTypeInfoMetadataSizedNarrowAndWideBuffersFetchCompleteValues) {
+  open_profile(true);ASSERT_FALSE(HasFailure());const auto queries=seen->queries,descriptions=seen->descriptions;
+  for(bool wide:{false,true}) for(SQLSMALLINT type:{SQLSMALLINT{SQL_DOUBLE},SQLSMALLINT{SQL_NUMERIC}}) {
+    ASSERT_EQ(SQL_SUCCESS,wide?SQLGetTypeInfoW(stmt,type):SQLGetTypeInfo(stmt,type));text_schema(wide);ASSERT_FALSE(HasFailure());
+    const SQLUSMALLINT column=type==SQL_DOUBLE?SQLUSMALLINT{1}:SQLUSMALLINT{6};const char* literal=type==SQL_DOUBLE?"double precision":"precision,scale";
+    SQLULEN size=99;ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(stmt,column,nullptr,0,nullptr,nullptr,&size,nullptr,nullptr));ASSERT_LT(size,narrow_.size());
+    narrow_.fill('x');wide_.fill(SQLWCHAR('x'));length_=97;
+    // The buffer is sized from the public metadata, including its terminator.
+    ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,column,wide?SQL_C_WCHAR:SQL_C_CHAR,wide?static_cast<void*>(wide_.data()):static_cast<void*>(narrow_.data()),static_cast<SQLLEN>((size+1)*(wide?sizeof(SQLWCHAR):1)),&length_));
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));EXPECT_EQ(static_cast<SQLLEN>(std::strlen(literal)*(wide?sizeof(SQLWCHAR):1)),length_);
+    for(std::size_t i=0;i<std::strlen(literal);++i) { if(wide) { EXPECT_EQ(static_cast<SQLWCHAR>(literal[i]),wide_[i]); }else { EXPECT_EQ(static_cast<SQLCHAR>(literal[i]),narrow_[i]); } }
+    if(wide) { EXPECT_EQ(0,wide_[std::strlen(literal)]);EXPECT_EQ(SQLWCHAR('x'),wide_[size+1]); }else { EXPECT_EQ(0,narrow_[std::strlen(literal)]);EXPECT_EQ('x',narrow_[size+1]); }
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  }
+  EXPECT_EQ(queries,seen->queries);EXPECT_EQ(descriptions,seen->descriptions);
+}
+
+TEST_F(TypeInfoDiscoveryTest, EmptyTypeInfoFiltersKeepUsableSchemaAndOpenCursorIsPreserved) {
+  open_profile(true);ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfoW(stmt,SQL_WVARCHAR));text_schema(true);ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(stmt,SQL_DOUBLE));
+  EXPECT_EQ(SQL_ERROR,SQLGetTypeInfoW(stmt,SQL_NUMERIC));EXPECT_EQ("24000",state());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));narrow_.fill('x');length_=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,narrow_.data(),narrow_.size(),&length_));EXPECT_EQ(16,length_);EXPECT_EQ(0,std::memcmp(narrow_.data(),"double precision",17));
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));EXPECT_EQ(0,seen->queries);
+}
+
+TEST_F(TypeInfoDiscoveryTest, PostgresTypeInfoRetainsDdlRowsAndGainsCompleteTextDescriptors) {
+  open_profile(false);ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfo(stmt,SQL_VARCHAR));text_schema(false);ASSERT_FALSE(HasFailure());ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  SQLINTEGER size=-1;length_=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,3,SQL_C_LONG,&size,sizeof(size),&length_));EXPECT_EQ(10485760,size);
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfoW(stmt,SQL_NUMERIC));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLSMALLINT scale=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,15,SQL_C_SHORT,&scale,sizeof(scale),&length_));EXPECT_EQ(1000,scale);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));EXPECT_EQ(0,seen->queries);
+}

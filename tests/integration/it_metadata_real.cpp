@@ -1403,7 +1403,10 @@ TEST_F(MetadataIntegrationTest, TypeInfoSchemaUsesNormalizedDescriptorMetadata) 
             ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(
                 hstmt, column, nullptr, 0, nullptr, &type, &size, &scale, nullptr));
             EXPECT_EQ(text ? SQL_VARCHAR : integer ? SQL_INTEGER : SQL_SMALLINT, type);
-            EXPECT_EQ(text ? 0u : integer ? 10u : 5u, size);
+            // Text capacities cover the complete TypeInfo catalog even when
+            // this requested filter has no rows.
+            const SQLULEN text_size = column == 1 ? 16u : column == 6 ? 15u : 1u;
+            EXPECT_EQ(text ? text_size : integer ? 10u : 5u, size);
             EXPECT_EQ(0, scale);
             char name[32]{};
             ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(
