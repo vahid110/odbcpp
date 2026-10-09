@@ -24,7 +24,15 @@
 # define ODBCPP_RESULT_RELEASE_ASAN 1
 #endif
 #if defined(ODBCPP_RESULT_RELEASE_ASAN)
-# include <sanitizer/allocator_interface.h>
+# if __has_include(<sanitizer/allocator_interface.h>)
+#  include <sanitizer/allocator_interface.h>
+# else
+// Some GCC installations export these sanitizer interfaces without installing
+// allocator_interface.h. Keep the same allocator-ownership checks active.
+#  include <cstddef>
+extern "C" int __sanitizer_get_ownership(const volatile void* pointer);
+extern "C" std::size_t __sanitizer_get_allocated_size(const volatile void* pointer);
+# endif
 #endif
 
 namespace {
@@ -6003,7 +6011,10 @@ TEST_F(ForwardRowsetTest, OwningColumnArraysReturnThreeThreeOneWithNullWideBinar
     SQLULEN row=0;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_ROW_NUMBER,&row,0,nullptr));EXPECT_EQ(static_cast<SQLULEN>(batch*3+1),row);
   }
   EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));EXPECT_EQ(0u,fetched);
-  for(int slot=0;slot<3;++slot)EXPECT_EQ(SQL_ROW_NOROW,status.value[slot]);guards();
+  for(int slot=0;slot<3;++slot) {
+    EXPECT_EQ(SQL_ROW_NOROW,status.value[slot]);
+  }
+  guards();
 }
 
 TEST_F(ForwardRowsetTest, ConversionErrorsDoNotSuppressNeighborsAndKeepAttributedBoundedDiagnostics) {
@@ -6205,7 +6216,9 @@ class MaxRowsStorageTest : public ResultStorageReleaseTest {
     ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROWS_FETCHED_PTR,&fetched_count,0));
     ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_STATUS_PTR,statuses,0));
     ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_SLONG,array.values,0,lengths));
-    if(with_text)ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,2,SQL_C_CHAR,text.values,sizeof(text.values[0]),text_lengths));
+    if(with_text) {
+      ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,2,SQL_C_CHAR,text.values,sizeof(text.values[0]),text_lengths));
+    }
   }
   void array_guards() { EXPECT_EQ(601,array.before);EXPECT_EQ(602,array.after);EXPECT_EQ('L',text.before);EXPECT_EQ('R',text.after); }
 };

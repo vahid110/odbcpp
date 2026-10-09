@@ -99,7 +99,7 @@ public:
             (std::numeric_limits<SQLSMALLINT>::max)())) return;
     diagnostic_records_.emplace_back(state, 0, message);
     diagnostic_records_.back().row_number = row;
-    diagnostic_records_.back().column_number = column;
+    diagnostic_records_.back().column_number = static_cast<SQLINTEGER>(column);
   }
 
   void set_error(const std::string& sqlstate, const std::string& message, SQLINTEGER native_error = 0) {
