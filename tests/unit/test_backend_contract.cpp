@@ -6110,8 +6110,8 @@ class ResultStorageReleaseTest : public BackendContractTest {
 #if defined(ODBCPP_RESULT_RELEASE_ASAN)
     EXPECT_TRUE(__sanitizer_get_ownership(storage.pointer));
     // Check measured allocation bytes only while ownership is still true.
-    if (__sanitizer_get_ownership(storage.pointer))
-      EXPECT_GE(__sanitizer_get_allocated_size(storage.pointer),storage.bytes);
+    if (__sanitizer_get_ownership(storage.pointer)) {
+      EXPECT_GE(__sanitizer_get_allocated_size(storage.pointer),storage.bytes); }
 #endif
     return storage;
   }
@@ -6243,9 +6243,9 @@ TEST_F(MaxRowsStorageTest, CappedLiveRowsetReleasesDiscardedStorageAndKeepsNullO
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_ARRAY_SIZE,reinterpret_cast<SQLPOINTER>(1),0));
   rows(16384);seen->date_result->columns[0].normalized_type=NativeTypeInfo{ScalarType::VarChar,32,0,true};
   seen->date_result->rows[0][0]="abcdef";ASSERT_EQ(SQL_SUCCESS,execute("chunk"));released(source_storage());
-  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));char chunk[4]{};SQLLEN length=0;
-  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLGetData(stmt,1,SQL_C_CHAR,chunk,sizeof(chunk),&length));EXPECT_STREQ("abc",chunk);EXPECT_EQ(6,length);
-  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,chunk,sizeof(chunk),&length));EXPECT_STREQ("def",chunk);EXPECT_EQ(3,length);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));char chunk[4]{};SQLLEN chunk_length=0;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLGetData(stmt,1,SQL_C_CHAR,chunk,sizeof(chunk),&chunk_length));EXPECT_STREQ("abc",chunk);EXPECT_EQ(6,chunk_length);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,chunk,sizeof(chunk),&chunk_length));EXPECT_STREQ("def",chunk);EXPECT_EQ(3,chunk_length);
 }
 
 TEST_F(MaxRowsStorageTest, OrderedActivationCompactsEachPrefixAndFiltersOnlyDiscardedErrors) {
