@@ -1,4 +1,5 @@
 #include "odbcpp/util/hex.h"
+#include "odbcpp/util/utf8.h"
 #include "core/database/result_validation.h"
 #include "odbc_handles.h"
 #include "transaction_metadata.h"
@@ -204,6 +205,30 @@ bool is_character_sql_type(SQLSMALLINT sql_type) {
       return true;
     default:
       return false;
+  }
+}
+
+// Column-wise array stride is the C representation, not caller BufferLength
+// for fixed C scalars/structs (whose BufferLength is ignored by conversion).
+std::optional<std::size_t> bound_column_stride(SQLSMALLINT type, SQLLEN length) {
+  switch (ResultTypes::canonical_c_type(type)) {
+    case SQL_C_CHAR: case SQL_C_WCHAR: case SQL_C_BINARY:
+      return length < 0 ? std::nullopt : std::optional<std::size_t>(static_cast<std::size_t>(length));
+    case SQL_C_STINYINT: return sizeof(SQLSCHAR);
+    case SQL_C_UTINYINT: case SQL_C_BIT: return sizeof(SQLCHAR);
+    case SQL_C_SSHORT: return sizeof(SQLSMALLINT);
+    case SQL_C_USHORT: return sizeof(SQLUSMALLINT);
+    case SQL_C_SLONG: return sizeof(SQLINTEGER);
+    case SQL_C_ULONG: return sizeof(SQLUINTEGER);
+    case SQL_C_SBIGINT: return sizeof(SQLBIGINT);
+    case SQL_C_UBIGINT: return sizeof(SQLUBIGINT);
+    case SQL_C_FLOAT: return sizeof(SQLREAL);
+    case SQL_C_DOUBLE: return sizeof(SQLDOUBLE);
+    case SQL_C_NUMERIC: return sizeof(SQL_NUMERIC_STRUCT);
+    case SQL_C_DATE: case SQL_C_TYPE_DATE: return sizeof(SQL_DATE_STRUCT);
+    case SQL_C_TIME: case SQL_C_TYPE_TIME: return sizeof(SQL_TIME_STRUCT);
+    case SQL_C_TIMESTAMP: case SQL_C_TYPE_TIMESTAMP: return sizeof(SQL_TIMESTAMP_STRUCT);
+    default: return std::nullopt;
   }
 }
 
@@ -622,15 +647,19 @@ std::chrono::milliseconds timeout_duration(SQLULEN seconds) {
 }
 
 void set_conversion_diagnostic(ODBCHandle& handle, SQLRETURN result,
-                               ConversionIssue issue) {
+                               ConversionIssue issue, SQLLEN row = 0, SQLLEN column = 0) {
+  const auto report = [&](const std::string& state, const std::string& message) {
+    if (row > 0) handle.add_attributed_diagnostic(state, message, row, column);
+    else handle.set_error(state, message);
+  };
   if (result == SQL_SUCCESS_WITH_INFO &&
       issue == ConversionIssue::FractionalTruncation) {
-    handle.set_error(SQLSTATE_FRACTIONAL_TRUNCATION,
+    report(SQLSTATE_FRACTIONAL_TRUNCATION,
                      "Fractional result digits were truncated");
     return;
   }
   if (result == SQL_SUCCESS_WITH_INFO) {
-    handle.set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+    report(SQLSTATE_STRING_DATA_TRUNCATED,
                      "Result value was truncated to fit the application buffer");
     return;
   }
@@ -638,17 +667,17 @@ void set_conversion_diagnostic(ODBCHandle& handle, SQLRETURN result,
 
   switch (issue) {
     case ConversionIssue::NumericValueOutOfRange:
-      handle.set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+      report(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
                        "Result value is outside the requested numeric range");
       break;
     case ConversionIssue::InvalidDatetimeFormat:
-      handle.set_error(SQLSTATE_INVALID_DATETIME_FORMAT,
+      report(SQLSTATE_INVALID_DATETIME_FORMAT,
                        "Result value is not a valid date or time");
       break;
     case ConversionIssue::None:
     case ConversionIssue::FractionalTruncation:
     case ConversionIssue::InvalidCharacterValue:
-      handle.set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+      report(SQLSTATE_INVALID_CHARACTER_VALUE,
                        "Result value could not be converted to the requested C type");
       break;
   }
@@ -2886,11 +2915,8 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
                   "Row array size must be positive");
         return SQL_ERROR;
       }
-      if (numeric == 1) {
-        return descriptor(app_row_descriptor_)->set_field(
-            0, SQL_DESC_ARRAY_SIZE, value, 0);
-      }
-      break;
+      return descriptor(app_row_descriptor_)->set_field(
+          0, SQL_DESC_ARRAY_SIZE, value, 0);
     case SQL_ATTR_ROW_BIND_TYPE:
       if (numeric == SQL_BIND_BY_COLUMN) {
         return descriptor(app_row_descriptor_)->set_field(
@@ -3155,52 +3181,107 @@ void ODBCStatement::reset_parameters() {
 
 SQLRETURN ODBCStatement::fetch() {
   if (!executed_) {
-    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,
-              "Statement has not been executed");
+    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "Statement has not been executed");
     return SQL_ERROR;
   }
   if (column_info_.empty()) {
-    set_error(SQLSTATE_INVALID_CURSOR_STATE,
-              "Executed statement did not produce a result set");
+    set_error(SQLSTATE_INVALID_CURSOR_STATE, "Executed statement did not produce a result set");
     return SQL_ERROR;
   }
-  const auto application_descriptor = descriptor(app_row_descriptor_);
-  if (application_descriptor->array_size() != 1 ||
-      application_descriptor->bind_type() != SQL_BIND_BY_COLUMN ||
-      application_descriptor->bind_offset_ptr()) {
+  const auto ard = descriptor(app_row_descriptor_);
+  if (ard->bind_type() != SQL_BIND_BY_COLUMN || ard->bind_offset_ptr()) {
     set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
-              "Only single-row column-wise descriptor binding is supported");
+              "Only column-wise descriptor binding without a bind offset is supported");
     return SQL_ERROR;
   }
-  const auto implementation_descriptor = descriptor(imp_row_descriptor_);
-  auto* rows_fetched = implementation_descriptor->rows_processed_ptr();
-  auto* row_status = implementation_descriptor->array_status_ptr();
-  if (current_row_ >= result_rows_.size()) {
+  const auto size = static_cast<std::size_t>(ard->array_size());
+  const auto ird = descriptor(imp_row_descriptor_);
+  auto* fetched = ird->rows_processed_ptr();
+  auto* status = ird->array_status_ptr();
+  // Verify every address span before cursor progress or any caller write.
+  const auto span_fits = [](const void* address, std::size_t count, std::size_t stride) {
+    if (!address || count == 0 || stride == 0) return true;
+    const auto base = reinterpret_cast<std::uintptr_t>(address);
+    const auto maximum = (std::numeric_limits<std::uintptr_t>::max)();
+    return count <= (maximum - base) / stride;
+  };
+  if (size == 0 || !span_fits(status, size, sizeof(SQLUSMALLINT)) ||
+      !span_fits(fetched, 1, sizeof(SQLULEN))) {
+    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Rowset application address span is out of range");
+    return SQL_ERROR;
+  }
+  for (std::size_t column = 0; column < ard->record_count() && column < column_info_.size(); ++column) {
+    const auto& binding = *ard->record(column);
+    if (!binding.data_ptr) continue;
+    const auto type = binding.concise_type == SQL_C_DEFAULT
+        ? ResultTypes::default_c_type(column_info_[column].sql_type) : binding.concise_type;
+    // A prohibited conversion never accesses that column's application span;
+    // retain its existing per-row 07006/status path instead of inventing HY024.
+    if (!ResultTypes::is_conversion_supported(column_info_[column].sql_type,
+                                              ResultTypes::canonical_c_type(type))) continue;
+    const auto stride = bound_column_stride(type, binding.octet_length);
+    if (!stride || !span_fits(binding.data_ptr, size, *stride) ||
+        !span_fits(binding.indicator_ptr, size, sizeof(SQLLEN)) ||
+        !span_fits(binding.octet_length_ptr, size, sizeof(SQLLEN))) {
+      set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Rowset column address span is out of range");
+      return SQL_ERROR;
+    }
+  }
+  std::size_t start = 0;
+  if (current_row_ != 0 && !rowset_exhausted_) {
+    const auto prior_start = current_row_ - 1;
+    // ODBC SQLFetch uses OLD size for the end check, NEW size for next start.
+    if (prior_start >= result_rows_.size() ||
+        fetched_rowset_size_ >= result_rows_.size() - prior_start ||
+        size > (std::numeric_limits<std::size_t>::max)() - prior_start)
+      rowset_exhausted_ = true;
+    else start = prior_start + size;
+  }
+  if (status) for (std::size_t slot = 0; slot < size; ++slot)
+    store_application_value(status + slot, static_cast<SQLUSMALLINT>(SQL_ROW_NOROW));
+  if (rowset_exhausted_ || start >= result_rows_.size()) {
+    rowset_exhausted_ = true;
     row_positioned_ = false;
-    if (rows_fetched) {
-      store_application_value(rows_fetched, static_cast<SQLULEN>(0));
-    }
-    if (row_status) {
-      store_application_value(
-          row_status, static_cast<SQLUSMALLINT>(SQL_ROW_NOROW));
-    }
+    if (fetched) store_application_value(fetched, static_cast<SQLULEN>(0));
     return SQL_NO_DATA;
   }
-  
-  current_row_++;
+  const auto count = std::min(size, result_rows_.size() - start);
+  current_row_ = start + 1; // Current row is the FIRST row of the rowset.
+  fetched_rowset_size_ = size;
   row_positioned_ = true;
-  if (rows_fetched) {
-    store_application_value(rows_fetched, static_cast<SQLULEN>(1));
-  }
   get_data_column_ = 0;
   get_data_offset_ = 0;
   get_data_target_type_ = 0;
+  wide_get_data_ = {};
+  if (fetched) store_application_value(fetched, static_cast<SQLULEN>(count));
+  std::size_t errors = 0;
+  bool warning = false;
+  for (std::size_t slot = 0; slot < count; ++slot) {
+    const auto rc = fetch_bound_row(start + slot, slot, size);
+    if (rc == SQL_ERROR) ++errors;
+    else if (rc == SQL_SUCCESS_WITH_INFO) warning = true;
+  }
+  return errors == count ? SQL_ERROR : errors != 0 || warning ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS;
+}
+
+SQLRETURN ODBCStatement::fetch_bound_row(std::size_t row_index, std::size_t slot,
+                                         std::size_t rowset_size) {
+  const auto application_descriptor = descriptor(app_row_descriptor_);
+  auto* status = descriptor(imp_row_descriptor_)->array_status_ptr();
+  auto* row_status = status ? status + slot : nullptr;
+  std::size_t diagnostic_column = 0;
+  const auto set_error = [&](const std::string& state, const std::string& message) {
+    if (rowset_size > 1) add_attributed_diagnostic(state, message,
+        static_cast<SQLLEN>(slot + 1), static_cast<SQLLEN>(diagnostic_column));
+    else this->set_error(state, message);
+  };
   SQLRETURN fetch_result = SQL_SUCCESS;
   
   // Auto-populate bound columns from ARD
-  const auto& row = result_rows_[current_row_ - 1];
+  const auto& row = result_rows_[row_index];
   for (size_t i = 0;
        i < application_descriptor->record_count() && i < row.size(); ++i) {
+    diagnostic_column = i + 1;
     const auto& binding = *application_descriptor->record(i);
     if (binding.data_ptr) {
       const auto& cell = row[i];
@@ -3219,8 +3300,12 @@ SQLRETURN ODBCStatement::fetch() {
         return SQL_ERROR;
       }
 
+      const auto stride = *bound_column_stride(target_type, binding.octet_length);
+      auto* data_ptr = static_cast<unsigned char*>(binding.data_ptr) + slot * stride;
+      auto* indicator_ptr = binding.indicator_ptr ? binding.indicator_ptr + slot : nullptr;
+      auto* octet_length_ptr = binding.octet_length_ptr ? binding.octet_length_ptr + slot : nullptr;
       if (!cell) {
-        if (!binding.indicator_ptr) {
+        if (!indicator_ptr) {
           set_error(SQLSTATE_INDICATOR_VARIABLE_REQUIRED,
                     "NULL column requires an indicator variable");
           if (row_status) {
@@ -3230,12 +3315,12 @@ SQLRETURN ODBCStatement::fetch() {
           return SQL_ERROR;
         }
         store_application_value(
-            binding.indicator_ptr, static_cast<SQLLEN>(SQL_NULL_DATA));
+            indicator_ptr, static_cast<SQLLEN>(SQL_NULL_DATA));
         continue;
       }
 
       if (std::binary_search(result_cell_errors_.begin(), result_cell_errors_.end(),
-              rs::core::database::CellEncodingError{current_row_ - 1, i})) {
+              rs::core::database::CellEncodingError{row_index, i})) {
         set_error(SQLSTATE_INVALID_CHARACTER_VALUE, "Invalid backend result encoding");
         if (row_status) store_application_value(row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
         return SQL_ERROR;
@@ -3301,38 +3386,40 @@ SQLRETURN ODBCStatement::fetch() {
         }
       }
       ConversionIssue conversion_issue = ConversionIssue::None;
-      auto* output_length = binding.octet_length_ptr
-          ? binding.octet_length_ptr : binding.indicator_ptr;
+      auto* output_length = octet_length_ptr
+          ? octet_length_ptr : indicator_ptr;
       SQLRETURN conv_result;
       if (sql_type == SQL_BIT && target_type == SQL_C_BINARY) {
         conv_result = convert_bit_result_to_binary(
-            value, binding.data_ptr, conversion_length, output_length,
+            value, data_ptr, conversion_length, output_length,
             &conversion_issue);
       } else if (is_character_sql_type(sql_type) &&
                  target_type == SQL_C_BINARY) {
         conv_result = convert_character_result_to_binary(
-            value, binding.data_ptr, conversion_length, output_length);
+            value, data_ptr, conversion_length, output_length);
       } else {
         conv_result = TextDataConverter::convert_data(
-            conversion_value, target_type, binding.data_ptr,
+            conversion_value, target_type, data_ptr,
             conversion_length, output_length, &conversion_issue,
             binding.precision, binding.scale);
       }
 
       if (conv_result == SQL_ERROR) {
-        set_conversion_diagnostic(*this, conv_result, conversion_issue);
+        set_conversion_diagnostic(*this, conv_result, conversion_issue,
+            rowset_size > 1 ? static_cast<SQLLEN>(slot + 1) : 0, static_cast<SQLLEN>(i + 1));
         if (row_status) {
           store_application_value(
               row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
         }
         return SQL_ERROR;
       }
-      if (binding.indicator_ptr &&
-          binding.indicator_ptr != binding.octet_length_ptr) {
-        store_application_value(binding.indicator_ptr, static_cast<SQLLEN>(0));
+      if (indicator_ptr &&
+          indicator_ptr != octet_length_ptr) {
+        store_application_value(indicator_ptr, static_cast<SQLLEN>(0));
       }
       if (conv_result == SQL_SUCCESS_WITH_INFO) {
-        set_conversion_diagnostic(*this, conv_result, conversion_issue);
+        set_conversion_diagnostic(*this, conv_result, conversion_issue,
+            rowset_size > 1 ? static_cast<SQLLEN>(slot + 1) : 0, static_cast<SQLLEN>(i + 1));
         fetch_result = SQL_SUCCESS_WITH_INFO;
       }
     }
@@ -3374,6 +3461,10 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     return SQL_ERROR;
   }
   
+  if (fetched_rowset_size_ > 1) {
+    set_error("HY109", "SQLGetData is not supported on a forward-only multirow rowset");
+    return SQL_ERROR;
+  }
   const auto& row = result_rows_[current_row_ - 1];
   if (col < 1 || col > row.size()) {
     set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid column number");
@@ -3526,6 +3617,79 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     }
     offset += copy_length;
     if (offset < character_cell.size() || buffer_length == 0) {
+      save_offset(offset);
+      set_error(SQLSTATE_STRING_DATA_TRUNCATED,
+                "Result value was truncated to fit the application buffer");
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    save_offset(complete);
+    return SQL_SUCCESS;
+  }
+
+  const bool ordinary_text = sql_type == SQL_CHAR || sql_type == SQL_VARCHAR ||
+      sql_type == SQL_LONGVARCHAR || sql_type == SQL_WCHAR ||
+      sql_type == SQL_WVARCHAR || sql_type == SQL_WLONGVARCHAR;
+  if (effective_target_type == SQL_C_WCHAR && ordinary_text && !formatted_text) {
+    if (!wide_get_data_.valid || get_data_column_ != col ||
+        get_data_target_type_ != effective_target_type) {
+      // Validate the complete cell before publishing any prefix, and count
+      // application units once. Continuations retain only byte position/count.
+      std::size_t scan = 0, units = 0;
+      while (scan < character_cell.size()) {
+        const auto point = rs::util::next_utf8_code_point(character_cell, scan);
+        if (!point) {
+          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                    "Result value is not valid UTF-8");
+          return SQL_ERROR;
+        }
+        const std::size_t width = sizeof(SQLWCHAR) == 2 && *point > 0xffff ? 2 : 1;
+        if (units > static_cast<std::size_t>((std::numeric_limits<SQLLEN>::max)()) /
+                        sizeof(SQLWCHAR) - width) {
+          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                    "Wide result length exceeds the application indicator range");
+          return SQL_ERROR;
+        }
+        units += width;
+      }
+      wide_get_data_ = {0, units, true};
+    }
+    const auto remaining = wide_get_data_.remaining_units;
+    if (indicator) store_application_value(
+        indicator, static_cast<SQLLEN>(remaining * sizeof(SQLWCHAR)));
+    const auto buffer_units = static_cast<std::size_t>(buffer_length) / sizeof(SQLWCHAR);
+    const auto capacity = buffer_units > 0 ? buffer_units - 1 : 0;
+    std::size_t copied_units = 0, byte_position = wide_get_data_.byte_position;
+    while (byte_position < character_cell.size() && copied_units < capacity) {
+      auto next_position = byte_position;
+      const auto point = rs::util::next_utf8_code_point(character_cell, next_position);
+      // The owning cell was fully validated and cannot mutate during retrieval.
+      if (!point) {
+        set_error(SQLSTATE_INVALID_CHARACTER_VALUE, "Result value is not valid UTF-8");
+        return SQL_ERROR;
+      }
+      const std::size_t width = sizeof(SQLWCHAR) == 2 && *point > 0xffff ? 2 : 1;
+      if (width > capacity - copied_units) break;
+      SQLWCHAR scalar[2]{};
+      if constexpr (sizeof(SQLWCHAR) == 2) {
+        if (width == 2) {
+          scalar[0] = static_cast<SQLWCHAR>(0xd800 + ((*point - 0x10000) >> 10));
+          scalar[1] = static_cast<SQLWCHAR>(0xdc00 + ((*point - 0x10000) & 0x3ff));
+        } else scalar[0] = static_cast<SQLWCHAR>(*point);
+      } else scalar[0] = static_cast<SQLWCHAR>(*point);
+      std::memcpy(static_cast<unsigned char*>(buffer) + copied_units * sizeof(SQLWCHAR),
+                  scalar, width * sizeof(SQLWCHAR));
+      copied_units += width;
+      byte_position = next_position;
+    }
+    if (buffer_units > 0) {
+      const SQLWCHAR terminator = 0;
+      std::memcpy(static_cast<unsigned char*>(buffer) + copied_units * sizeof(SQLWCHAR),
+                  &terminator, sizeof(terminator));
+    }
+    wide_get_data_.byte_position = byte_position;
+    wide_get_data_.remaining_units -= copied_units;
+    offset += copied_units;
+    if (wide_get_data_.remaining_units != 0 || buffer_units == 0) {
       save_offset(offset);
       set_error(SQLSTATE_STRING_DATA_TRUNCATED,
                 "Result value was truncated to fit the application buffer");
@@ -4784,6 +4948,20 @@ void ODBCStatement::apply_query_result(
   }
   require_normalized_columns(result);
   for (const auto& item : result.additional_results) require_normalized_columns(item);
+  if (max_rows_ > 0 && result.rows.size() > max_rows_) {
+    // Stage on the local owning result: reserve may throw, so it must precede
+    // publishing pending results or current statement state. MAX_ROWS is a
+    // postdecode visibility limit, not a wire/peak-memory bound.
+    // Keep only the accessible owning prefix instead of retaining the entire
+    // decoded outer allocation for the lifetime of this smaller live cursor.
+    rs::core::database::ResultRows retained;
+    const auto count = static_cast<std::size_t>(max_rows_);
+    retained.reserve(count);
+    for (std::size_t row = 0; row < count; ++row)
+      retained.push_back(std::move(result.rows[row]));
+    retained.swap(result.rows);
+    std::erase_if(result.cell_errors, [&](const auto& error) { return error.row >= result.rows.size(); });
+  }
   const auto statement_kind = result.statement_kind;
   if (!result.additional_results.empty()) {
     pending_results_.reserve(
@@ -4794,15 +4972,14 @@ void ODBCStatement::apply_query_result(
   }
   result_rows_ = std::move(result.rows);
   result_cell_errors_ = std::move(result.cell_errors);
-  if (max_rows_ > 0 && result_rows_.size() > max_rows_) {
-    result_rows_.resize(static_cast<std::size_t>(max_rows_));
-    std::erase_if(result_cell_errors_, [&](const auto& error) { return error.row >= result_rows_.size(); });
-  }
   current_row_ = 0;
+  fetched_rowset_size_ = 1;
+  rowset_exhausted_ = false;
   row_positioned_ = false;
   get_data_column_ = 0;
   get_data_offset_ = 0;
   get_data_target_type_ = 0;
+  wide_get_data_ = {};
   executed_ = true;
 
   const auto max_rows = static_cast<std::size_t>(
@@ -4885,14 +5062,20 @@ void ODBCStatement::apply_result_metadata(
 }
 
 void ODBCStatement::clear_current_result() {
-  result_rows_.clear();
+  // A closed cursor cannot reuse this allocation: refill moves a new owning
+  // row vector. Release the old outer row storage at invalidation, not on
+  // physical-session retirement (which can leave a usable buffered cursor).
+  rs::core::database::ResultRows{}.swap(result_rows_);
   result_cell_errors_.clear();
   column_info_.clear();
   descriptor(imp_row_descriptor_)->replace_records({});
   get_data_column_ = 0;
   get_data_offset_ = 0;
   get_data_target_type_ = 0;
+  wide_get_data_ = {};
   current_row_ = 0;
+  fetched_rowset_size_ = 1;
+  rowset_exhausted_ = false;
   row_positioned_ = false;
   affected_rows_ = 0;
   executed_ = false;

@@ -6,6 +6,8 @@ description: Prepare, qualify, review and integrate a bounded ODBCPP implementat
 # ODBCPP development batch
 
 Use `AGENTS.md` for repository rules and the active handoff for current facts.
+Apply its build storage and periodic cleanup policy before resource admission and
+at batch closure; root owns cleanup while the API lane continues product work.
 Do not turn this workflow into new product scope or execution permission.
 
 ## Select and isolate

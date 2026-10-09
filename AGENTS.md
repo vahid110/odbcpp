@@ -71,6 +71,42 @@ It defines the repeatable workflow; this file defines durable repository rules.
   before final acceptance. Integrate reviewed exact bytes, then follow one
   exact-head CI run to completion. No status-only pushes or duplicate watchers.
 
+## Build storage and periodic cleanup
+
+Root owns cleanup; the API worker keeps its product assignment. Use the existing
+continuation timer, with no separate cleanup agent or timer.
+
+- Check actual free space at each continuation. Inventory obsolete project build
+  artifacts once daily, at qualification batch closure, and before a build when
+  free space is below 5 GiB. Avoid a full disk scan on every wake.
+- Target at least 5 GiB free. Before a new full build graph, require a measured
+  additional peak estimate plus a 2 GiB reserve. Existing admitted continuations
+  retain their recorded guards; no passed gate is invalidated or replayed.
+- Keep a compact private artifact register in the continuation state: canonical
+  path, owner, source/config identity, role, last use, allocated size, retention
+  reason and exact retirement disposition. APFS logical sizes do not establish
+  how much space deletion will recover.
+- Reuse one current working build per required configuration where applicable.
+  Retain required accepted evidence/reference images without copying an entire
+  historical graph for each focused change. Record a retention reason and an
+  eventual retirement condition whenever creating a build.
+- At batch closure, retire independently reviewed obsolete loose objects and
+  redundant recreatable build outputs under existing cleanup authorization.
+  Required original failures, immutable candidates, reference images/archives,
+  native inputs, private PostgreSQL data, source and dirty worktrees remain
+  protected while their retention reason or dependency is unresolved. Age or a
+  directory name alone never establishes that an artifact is obsolete.
+- Before deletion, verify processes, open files and candidate/control references.
+  Use exact reviewed inventories, held file/parent identities and a durable
+  deletion ledger. Record measured free space afterward. Never blanket-delete
+  /private/tmp or repeatedly ask for already authorized cleanup.
+- If eligible cleanup cannot restore the reserve, record the concrete retained
+  dependency and next action once. Continue ready source implementation without
+  launching builds that predictably exhaust disk space. Review finite retirement
+  of redundant retained outputs rather than keeping every build forever or
+  repeatedly freeing only enough for the next command. Do not create a cleanup
+  goal or divert the API worker to housekeeping.
+
 ## Continuity and authority
 
 On the authorized development host, read

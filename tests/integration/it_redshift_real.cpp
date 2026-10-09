@@ -2750,13 +2750,12 @@ protected:
 
 TEST_F(RedshiftMultirowFetchRealTest, OrderedRowsStatusNullAndRecovery) {
   ASSERT_TRUE(connect()) << get_error(SQL_HANDLE_DBC, hdbc_);
-  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(hstmt_, SQL_ATTR_ROW_ARRAY_SIZE,
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_ROW_ARRAY_SIZE,
       reinterpret_cast<SQLPOINTER>(std::uintptr_t{2}), 0));
-  EXPECT_EQ("HYC00", get_error(SQL_HANDLE_STMT, hstmt_));
   SQLULEN array_size = 0;
   ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt_, SQL_ATTR_ROW_ARRAY_SIZE,
       &array_size, sizeof(array_size), nullptr));
-  EXPECT_EQ(1u, array_size);
+  EXPECT_EQ(2u, array_size);
   if (HasFailure()) return;
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_ROW_ARRAY_SIZE,
       reinterpret_cast<SQLPOINTER>(std::uintptr_t{1}), 0));
@@ -3762,8 +3761,10 @@ TEST_F(RedshiftBufferedLifecycleRealTest, MaxRowsAndForwardOnlyRefusalsPreserveP
         EXPECT_EQ(SQL_ERROR,SQLFetchScroll(hstmt_,static_cast<SQLSMALLINT>(orientation),1));EXPECT_TRUE(get_error(SQL_HANDLE_STMT,hstmt_)=="HYC00");
       }
       EXPECT_EQ(SQL_ERROR,SQLFetchScroll(hstmt_,static_cast<SQLSMALLINT>(999),0));EXPECT_TRUE(get_error(SQL_HANDLE_STMT,hstmt_)=="HY106");
-      EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_ARRAY_SIZE,reinterpret_cast<SQLPOINTER>(std::uintptr_t{2}),0));EXPECT_TRUE(get_error(SQL_HANDLE_STMT,hstmt_)=="HYC00");
-      setting=99;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_ROW_ARRAY_SIZE,&setting,sizeof(setting),nullptr));EXPECT_EQ(1u,setting);
+      ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_ARRAY_SIZE,reinterpret_cast<SQLPOINTER>(std::uintptr_t{2}),0));
+      setting=99;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_ROW_ARRAY_SIZE,&setting,sizeof(setting),nullptr));EXPECT_EQ(2u,setting);
+      // Restore the existing scalar buffers and next-row advancement contract.
+      ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_ARRAY_SIZE,reinterpret_cast<SQLPOINTER>(std::uintptr_t{1}),0));
     }
   }
   rows_fetched_=99;row_status_=SQL_ROW_SUCCESS;ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(hstmt_,SQL_FETCH_NEXT,0));EXPECT_EQ(0u,rows_fetched_);EXPECT_EQ(SQL_ROW_NOROW,row_status_);

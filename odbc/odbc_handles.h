@@ -90,6 +90,18 @@ public:
     diagnostic_records_.emplace_back(sqlstate, native_error, message);
   }
   
+  // Rowset diagnostics are ODBC records, not a source-sized scratch array.
+  // SQLGetDiagRec's SQLSMALLINT index bounds the addressable record inventory.
+  void add_attributed_diagnostic(const std::string& state, const std::string& message,
+                                SQLLEN row, SQLLEN column) {
+    std::lock_guard lock(diagnostics_mutex_);
+    if (diagnostic_records_.size() >= static_cast<std::size_t>(
+            (std::numeric_limits<SQLSMALLINT>::max)())) return;
+    diagnostic_records_.emplace_back(state, 0, message);
+    diagnostic_records_.back().row_number = row;
+    diagnostic_records_.back().column_number = column;
+  }
+
   void set_error(const std::string& sqlstate, const std::string& message, SQLINTEGER native_error = 0) {
     std::lock_guard lock(diagnostics_mutex_);
     diagnostic_records_.clear();
@@ -532,6 +544,8 @@ public:
   size_t get_column_count() const { return result_rows_.empty() ? 0 : result_rows_[0].size(); }
 
 private:
+  SQLRETURN fetch_bound_row(std::size_t row_index, std::size_t slot,
+                            std::size_t rowset_size);
   struct CancellationLedger;
   class ExecutionCancellation;
   std::mutex cancellation_mutex_;
@@ -542,6 +556,15 @@ private:
   std::vector<rs::core::database::CellEncodingError> result_cell_errors_;
   std::vector<ColumnInfo> column_info_;        // IRD storage
   std::vector<ParameterMetadata> param_metadata_; // IPD storage
+  // Offsets/counts only: the owning buffered row remains the source. No wide
+  // cell cache or borrowed view survives a call.
+  struct WideGetDataState {
+    std::size_t byte_position{0};
+    std::size_t remaining_units{0};
+    bool valid{false};
+  } wide_get_data_;
+  std::size_t fetched_rowset_size_ = 1;
+  bool rowset_exhausted_ = false;
   std::size_t get_data_offset_ = 0;
   SQLUSMALLINT get_data_column_ = 0;
   SQLSMALLINT get_data_target_type_ = 0;

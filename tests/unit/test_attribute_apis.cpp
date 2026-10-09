@@ -959,9 +959,12 @@ TEST_F(AttributeApisTest, ReportsForwardOnlyStatementDefaults) {
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_CURSOR_SENSITIVITY, integer_value(99), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
-  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
       statement_, SQL_ATTR_ROW_ARRAY_SIZE, integer_value(2), 0));
-  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  SQLULEN selected_row_array_size = 0;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(statement_, SQL_ATTR_ROW_ARRAY_SIZE,
+      &selected_row_array_size, 0, nullptr));
+  EXPECT_EQ(2u, selected_row_array_size);
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_ROW_ARRAY_SIZE, integer_value(0), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));

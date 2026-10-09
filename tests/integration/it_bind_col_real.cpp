@@ -340,7 +340,7 @@ TEST_F(BindColIntegrationTest, FailedBoundConversionKeepsSeparateIndicator) {
 }
 
 TEST_F(BindColIntegrationTest,
-       RejectsUnsupportedAttachedRowArraysBeforeFetch) {
+       SupportsAttachedColumnRowArraysBeforeFetch) {
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(
         hstmt, (SQLCHAR*)"SELECT 1", SQL_NTS));
     SQLHDESC descriptor = SQL_NULL_HDESC;
@@ -351,11 +351,27 @@ TEST_F(BindColIntegrationTest,
         reinterpret_cast<SQLPOINTER>(std::uintptr_t{2}), 0));
     ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
         hstmt, SQL_ATTR_APP_ROW_DESC, descriptor, 0));
-    EXPECT_EQ(SQL_ERROR, SQLFetch(hstmt));
-    SQLCHAR state[6]{};
-    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
-        SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr));
-    EXPECT_STREQ("HYC00", reinterpret_cast<char*>(state));
+    SQLINTEGER values[2]{4242, 4343};
+    SQLLEN lengths[2]{91, 92};
+    SQLULEN fetched = 91;
+    SQLUSMALLINT statuses[2]{SQL_ROW_ERROR, SQL_ROW_ERROR};
+    ASSERT_EQ(SQL_SUCCESS, SQLBindCol(
+        hstmt, 1, SQL_C_LONG, values, sizeof(values[0]), lengths));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_ROWS_FETCHED_PTR, &fetched, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+        hstmt, SQL_ATTR_ROW_STATUS_PTR, statuses, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    EXPECT_EQ(1, values[0]);
+    EXPECT_EQ(4343, values[1]);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)), lengths[0]);
+    EXPECT_EQ(92, lengths[1]);
+    EXPECT_EQ(static_cast<SQLULEN>(1), fetched);
+    EXPECT_EQ(SQL_ROW_SUCCESS, statuses[0]);
+    EXPECT_EQ(SQL_ROW_NOROW, statuses[1]);
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+        descriptor, 0, SQL_DESC_ARRAY_SIZE,
+        reinterpret_cast<SQLPOINTER>(std::uintptr_t{1}), 0));
     ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
 }
 
