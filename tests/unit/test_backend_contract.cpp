@@ -41,6 +41,7 @@ struct Observations {
   Deadline deadline{};
   bool malformed_value{}, malformed_state{}, malformed_text{}, long_binary{};
   std::optional<QueryResult> date_result;
+  std::optional<std::vector<NativeTypeInfo>> parameter_description_types;
   std::string failure_message = "fake error";
   std::string server_version = "1.0";
   bool setup_allocation_failure{false};
@@ -317,6 +318,9 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
     QueryResult result = rows(); result.rows.clear();
     result.normalized_parameter_types.assign(types.size(),
         NativeTypeInfo{ScalarType::Binary, seen_->description_size, 0, true});
+    if (seen_->parameter_description_types) {
+      result.normalized_parameter_types = *seen_->parameter_description_types;
+    }
     switch (seen_->invalid_description_shape) {
       case 1: result.error.emplace(rs::util::make_error_code(DbErrorCode::QueryFailed), "invalid description"); break;
       case 2: result.additional_results.emplace_back(); break;
@@ -5172,4 +5176,105 @@ TEST_F(TypeInfoDiscoveryTest, PostgresTypeInfoRetainsDdlRowsAndGainsCompleteText
   ASSERT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
   ASSERT_EQ(SQL_SUCCESS,SQLGetTypeInfoW(stmt,SQL_NUMERIC));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLSMALLINT scale=-1;
   ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,15,SQL_C_SHORT,&scale,sizeof(scale),&length_));EXPECT_EQ(1000,scale);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));EXPECT_EQ(0,seen->queries);
+}
+
+
+class ExactNumericAliasParameterTest : public BackendContractTest {
+ protected:
+  SQL_NUMERIC_STRUCT input_{};
+  SQLLEN indicator_{sizeof(input_)};
+  SQLULEN processed_{99};
+  SQLUSMALLINT status_{SQL_PARAM_UNUSED};
+  SQLHDESC apd_{SQL_NULL_HDESC};
+  void start(NativeTypeInfo native) {
+    seen->parameter_description_types = std::vector<NativeTypeInfo>{native};
+    QueryResult rows;
+    rows.columns = {{"answer", NativeTypeInfo{ScalarType::Integer,10,0,true}}};
+    rows.rows = {{"42"}};
+    rows.normalized_parameter_types = {native};
+    seen->date_result = rows;
+    connect(); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed_, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status_, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_APP_PARAM_DESC, &apd_, 0, nullptr));
+    input_.precision=5; input_.scale=2; input_.sign=0;
+    input_.val[0]=0x39; input_.val[1]=0x30; // Literal magnitude12345, independent of formatting.
+  }
+  void bind(SQLSMALLINT type) {
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_NUMERIC,
+        type,5,2,&input_,sizeof(input_),&indicator_));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd_,1,SQL_DESC_PRECISION,
+        reinterpret_cast<SQLPOINTER>(std::intptr_t{5}),0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd_,1,SQL_DESC_SCALE,
+        reinterpret_cast<SQLPOINTER>(std::intptr_t{2}),0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd_,1,SQL_DESC_DATA_PTR,&input_,0));
+  }
+  void description(SQLSMALLINT expected_type, SQLULEN expected_size, SQLSMALLINT expected_scale) {
+    SQLSMALLINT type=71, scale=72, nullable=73; SQLULEN size=74;
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt,1,&type,&size,&scale,&nullable));
+    EXPECT_EQ(expected_type,type); EXPECT_EQ(expected_size,size); EXPECT_EQ(expected_scale,scale);
+    EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
+    SQLHDESC ipd=SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_PARAM_DESC,&ipd,0,nullptr));
+    SQLSMALLINT precision=-1;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,1,SQL_DESC_PRECISION,&precision,0,nullptr));
+    if(expected_type==SQL_NUMERIC || expected_type==SQL_DECIMAL) {
+      EXPECT_EQ(static_cast<SQLSMALLINT>(expected_size),precision);
+    }
+  }
+};
+
+TEST_F(ExactNumericAliasParameterTest, DecimalBindingKeepsDimensionsThroughNumericDescriptionAndExecution) {
+  start({ScalarType::Numeric,0,0,true}); ASSERT_FALSE(HasFailure());
+  bind(SQL_NUMERIC); ASSERT_FALSE(HasFailure()); // Same-spelling baseline control.
+  description(SQL_NUMERIC,5,2); ASSERT_FALSE(HasFailure());
+  bind(SQL_DECIMAL); ASSERT_FALSE(HasFailure());
+  description(SQL_NUMERIC,5,2); ASSERT_FALSE(HasFailure());
+  const auto descriptions=seen->descriptions;
+  description(SQL_NUMERIC,5,2); ASSERT_FALSE(HasFailure());
+  EXPECT_EQ(descriptions,seen->descriptions);
+  const auto original=input_;
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); ASSERT_EQ(1u,seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Numeric,seen->parameters[0].type);
+  EXPECT_EQ(std::optional<std::string>{"-123.45"},seen->parameters[0].value);
+  EXPECT_EQ(0,std::memcmp(&original,&input_,sizeof(input_)));
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  bind(SQL_NUMERIC); ASSERT_FALSE(HasFailure());
+  description(SQL_NUMERIC,5,2); ASSERT_FALSE(HasFailure());
+}
+
+TEST_F(ExactNumericAliasParameterTest, ReverseAliasDoesNotBroadenUnknownOrForeignFamilyDimensions) {
+  start({ScalarType::Decimal,0,0,true}); ASSERT_FALSE(HasFailure());
+  description(SQL_DECIMAL,0,0); ASSERT_FALSE(HasFailure()); // Unbound remains unknown.
+  bind(SQL_NUMERIC); ASSERT_FALSE(HasFailure());
+  description(SQL_DECIMAL,5,2); ASSERT_FALSE(HasFailure());
+  seen->parameter_description_types=std::vector<NativeTypeInfo>{{ScalarType::Integer,10,0,true}};
+  bind(SQL_NUMERIC); ASSERT_FALSE(HasFailure()); // Binding invalidates the cached description.
+  description(SQL_INTEGER,10,0); ASSERT_FALSE(HasFailure());
+  seen->parameter_description_types=std::vector<NativeTypeInfo>{{ScalarType::Binary,8,0,true}};
+  bind(SQL_DECIMAL); ASSERT_FALSE(HasFailure());
+  description(SQL_VARBINARY,8,0); ASSERT_FALSE(HasFailure());
+  EXPECT_EQ(0,seen->queries);
+}
+
+TEST_F(ExactNumericAliasParameterTest, NullLocalRefusalAndRebindRetainDeclaredConstraintsAndOwningValues) {
+  start({ScalarType::Numeric,0,0,true}); ASSERT_FALSE(HasFailure());
+  bind(SQL_DECIMAL); ASSERT_FALSE(HasFailure());
+  description(SQL_NUMERIC,5,2); ASSERT_FALSE(HasFailure());
+  input_.sign=2; indicator_=SQL_NULL_DATA; const auto poisoned=input_;
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); ASSERT_EQ(1u,seen->parameters.size());
+  EXPECT_FALSE(seen->parameters[0].value); EXPECT_EQ(SQL_PARAM_SUCCESS,status_);
+  EXPECT_EQ(0,std::memcmp(&poisoned,&input_,sizeof(input_)));
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  indicator_=sizeof(input_); const auto queries=seen->queries;
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt)); EXPECT_EQ("22003",state());
+  EXPECT_EQ(queries,seen->queries); EXPECT_EQ(SQL_PARAM_ERROR,status_); EXPECT_EQ(1u,processed_);
+  ASSERT_EQ(1u,seen->parameters.size()); EXPECT_FALSE(seen->parameters[0].value);
+  input_.sign=0; bind(SQL_NUMERIC); ASSERT_FALSE(HasFailure());
+  description(SQL_NUMERIC,5,2); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); ASSERT_EQ(1u,seen->parameters.size());
+  const auto owned=seen->parameters[0]; EXPECT_EQ(std::optional<std::string>{"-123.45"},owned.value);
+  input_.val[0]=0; EXPECT_EQ(std::optional<std::string>{"-123.45"},owned.value);
+  EXPECT_EQ(SQL_PARAM_SUCCESS,status_); EXPECT_EQ(1u,processed_); EXPECT_EQ(0,seen->disconnects);
 }

@@ -14,6 +14,11 @@ SDK feature work remain parked by the user's request.
 
 ## Human-approved delivery order — 2026-10-06
 
+The current executable queue and explicit readiness limits are maintained in
+[REDSHIFT_DELIVERY_QUEUE.md](REDSHIFT_DELIVERY_QUEUE.md). Its production and
+qualification lanes follow the order below; an application prerequisite does
+not silently replace ready API implementation with unrelated test work.
+
 Keep the existing backend/ODBC boundaries and reuse completed implementation and
 tests. Improve delivery by qualifying usable application workflows on real
 Redshift rather than extending narrow type refinements or orchestration chains.

@@ -15,6 +15,22 @@ It defines the repeatable workflow; this file defines durable repository rules.
 - Inspect actual agent state. A delivered package is not continuing work. Check
   SDK/core, Redshift catalog/types, MySQL and authentication at continuation
   checkpoints; distinguish active work from a named prerequisite or wait.
+- Before ending a development turn, reconcile every authorized worker's actual
+  state with the handoff. For a completed worker, dispatch the next ready bounded
+  package in that turn, or record why none is ready and the next action that can
+  unblock it. Do not leave an idle worker represented as active development.
+- Keep the current API worker's assignment, completion condition and next queued
+  product task in the handoff. Select the successor while the current package is
+  being reviewed or tested. Packaging, diagnosis and source selection must be
+  labeled as such; they do not count as API implementation. If selection finds
+  no defect, root must choose the next applicable planned task or explicitly
+  record an idle lane; do not manufacture tests or silently await another timer.
+- Keep the authorized Redshift API/feature lane and qualification lane separate
+  and concurrent when ready. Reserve the API worker for selecting and implementing
+  product work; do not reassign it to packaging, qualification, CI watching or
+  reviews. Root and existing reviewers own those tasks. Qualification continues
+  with required safeguards, but a qualification wait does not silently idle or
+  replace ready feature work. Record each lane's actual state independently.
 - Prefer attached managed Git worktrees for independent implementation. Reuse a
   suitable checkout only after checking its baseline and local changes. Preserve
   historical dirty worktrees; do not reset them to make room for a new task.

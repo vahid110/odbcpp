@@ -1114,7 +1114,15 @@ ParameterMetadata parameter_metadata_for(
   const auto type = odbc_type_info(native);
   ParameterMetadata metadata{type.sql_type, type.column_size,
                              type.decimal_digits, SQL_NULLABLE_UNKNOWN, {}};
-  if (!prior_record || prior_record->concise_type != metadata.sql_type) {
+  const auto exact_numeric = [](SQLSMALLINT type) {
+    return type == SQL_DECIMAL || type == SQL_NUMERIC;
+  };
+  // ParameterDescription cannot distinguish DECIMAL from NUMERIC spelling.
+  // Retain the existing caller-bound dimensions without changing native type.
+  if (!prior_record ||
+      (prior_record->concise_type != metadata.sql_type &&
+       !(exact_numeric(prior_record->concise_type) &&
+         exact_numeric(metadata.sql_type)))) {
     return metadata;
   }
   if ((metadata.sql_type == SQL_DECIMAL ||
