@@ -60,16 +60,20 @@ It defines the repeatable workflow; this file defines durable repository rules.
 - Configure the actual product with `TARGET_DATABASE=POSTGRESQL` or `REDSHIFT`;
   current CMake rejects a MySQL product build. Inspect real options and target
   inventories rather than assuming every historical preset is valid.
-- Use distinct owned build directories. Run relevant focused checks during
-  development, then required shared gates once per coherent source batch.
+- Use distinct owned build directories. For Redshift, follow [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md):
+  primary macOS/iODBC UCS4 development, risk-based immediate extra checks and
+  daily full qualification. Run focused checks during development and relevant
+  primary regression once per coherent batch. Keep full final acceptance gates.
   Inspect `.github/workflows/` and `cmake/Tests.cmake` for the current graph.
 - Preserve original failures. Separate source inspection, compile/link,
   synthetic runtime, native local proof and platform CI. Bind results to actual
   source, executable, configuration and inventory; never inherit qualification
   from an older binary or another candidate.
 - Reap gate processes and independently verify private PostgreSQL shutdown
-  before final acceptance. Integrate reviewed exact bytes, then follow one
-  exact-head CI run to completion. No status-only pushes or duplicate watchers.
+  before final acceptance. Integrate reviewed exact bytes. Primary-qualified intermediate Redshift commits
+  may precede daily full CI; label cross-platform acceptance pending. Follow one
+  immutable exact-head full run to completion before final goal/release acceptance.
+  No status-only pushes, automatic cancellation or duplicate watchers.
 
 ## Build storage and periodic cleanup
 
@@ -126,12 +130,22 @@ never infer budget, credentials, SQL coverage or a horizon extension from a
 timer, synthetic pass, goal or billing estimate. Actual AWS SDK acquisition and
 verified-TLS Redshift login remain separate completion requirements.
 
+## Current Redshift cadence — human approved 2026-10-09
+
+[DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md) supersedes the older per-batch
+full-graph/CI sequencing below. The existing continuation owns the 24-hour full
+run cadence and durable private ci-cadence.json; no new timer. API implementation
+continues while qualification runs. All final scope, review, live authority,
+security and cleanup requirements remain.
+
 ## Batch size and diagnostic execution — human agreed 2026-10-07
 
 Default to coherent workflow batches, normally three to five related scenarios
 when ready and compatible, rather than a separate integration cycle per case.
-Run focused checks while developing, then the required shared regression graph,
-independent integration review, push and exact-head CI once per coherent batch.
+Run focused checks while developing, then relevant coherent primary regression
+and independent integration review. Intermediate pushes may precede the daily
+full graph and full CI under DEVELOPMENT_WORKFLOW.md; full final acceptance stays
+mandatory.
 Preserve each scenario's assertions and result; never add unrelated work merely
 to fill a batch or replay already qualified milestones.
 

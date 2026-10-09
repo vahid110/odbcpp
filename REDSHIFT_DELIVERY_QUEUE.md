@@ -50,6 +50,13 @@ deliverables, not claims that implementation packages are ready or APIs absent.
 
 ## Scheduling and acceptance
 
+Use [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md), approved 2026-10-09.
+Primary-profile qualification permits coherent intermediate pushes; full matrix
+qualification runs every24h for changed heads and promptly for concrete sensitive
+changes. Root tracks exact heads and acceptance debt; only final full graph and
+green exact-head full CI close the goal/release. The dedicated API lane continues.
+This replaces historical per-feature-commit full-graph sequencing below.
+
 The API worker stays on product selection and implementation. Root and existing
 reviewers own packaging, qualification, integration and CI. A qualification wait
 does not replace ready API work. Every development turn must record actual lane
@@ -67,9 +74,9 @@ The handoff owns changing worker, gate and CI facts; this queue records the
 deliveries and their acceptance requirements. Following milestones remain
 separate work and do not become qualified when this batch closes.
 
-Tests accompany the product change. Run focused checks during development and
-the required shared graph once per coherent batch, with bounded repairs for
-actual failures. Independent cleanup review and exact-head CI remain mandatory.
+Tests accompany the product change. Run focused checks during development and relevant primary regression per
+coherent batch; use daily full qualification and immediate risk-based extra checks
+under DEVELOPMENT_WORKFLOW.md, with bounded repairs for actual failures. Independent cleanup review and exact-head CI remain mandatory.
 No passed gate is repeated without new source or a concrete execution gap.
 
 Report delivery as distinct stages: implemented, locally qualified, CI accepted,

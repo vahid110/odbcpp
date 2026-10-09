@@ -1,0 +1,138 @@
+name: primary
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: primary-${{ github.ref }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  macos-iodbc-ucs4:
+    runs-on: macos-latest
+
+    env:
+      PGPORT: 5432
+      ODBCINI: ${{ github.workspace }}/.ci-iodbc/odbc.ini
+      ODBCINSTINI: ${{ github.workspace }}/.ci-iodbc/odbcinst.ini
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install deps
+        run: brew install libiodbc unixodbc postgresql@17 python@3.12
+
+      - name: Start disposable PostgreSQL
+        run: |
+          pg_bin="$(brew --prefix postgresql@17)/bin"
+          pg_data="$RUNNER_TEMP/odbcpp-postgres"
+          pwfile="$RUNNER_TEMP/postgres-init-password"
+          (umask 077; printf '%s\n' postgres > "$pwfile")
+          "$pg_bin/initdb" -D "$pg_data" -U postgres -A scram-sha-256 \
+            --pwfile="$pwfile" --no-locale --encoding=UTF8
+          rm "$pwfile"
+          tls="$RUNNER_TEMP/postgres-macos-tls"
+          bash tools/ci/prepare-native-postgres-tls.sh "$pg_data" "$tls"
+          echo "ODBCPP_POSTGRES_TLS_DIR=$tls" >> "$GITHUB_ENV"
+          echo "ODBCPP_CRYPTO_PROFILE_WRONG_HOST=localhost" >> "$GITHUB_ENV"
+          "$pg_bin/pg_ctl" -D "$pg_data" \
+            -l "$RUNNER_TEMP/odbcpp-postgres.log" \
+            -o '-p 5432 -h 127.0.0.1' -w start
+          echo "ODBCPP_PG_BIN=$pg_bin" >> "$GITHUB_ENV"
+          echo "ODBCPP_PG_DATA=$pg_data" >> "$GITHUB_ENV"
+
+      - name: Configure iODBC test DSN
+        run: |
+          mkdir -p "$(dirname "$ODBCINI")"
+          cat > "$ODBCINI" <<'EOF'
+          [RedshiftProd]
+          Driver=ODBCPP PostgreSQL
+          Server=127.0.0.1
+          Port=5432
+          Database=postgres
+          UID=postgres
+          PWD=postgres
+          SSL=0
+          TransportMode=Sync
+          DeadlineModel=Strict
+          EOF
+          cat > "$ODBCINSTINI" <<'EOF'
+          [ODBCPP PostgreSQL]
+          Driver=${{ github.workspace }}/build-iodbc/libodbcpp.dylib
+          Setup=${{ github.workspace }}/build-iodbc/libodbcpp.dylib
+          DriverUnicodeType=UCS4
+          TransportMode=Auto
+          AsyncMaxInflight=64
+          AsyncQueueDepth=256
+          AsyncEngine=Auto
+          DeadlineModel=Strict
+          EOF
+
+      - name: Configure iODBC driver-manager test
+        run: |
+          cmake -S . -B build-iodbc \
+            -DCMAKE_OSX_ARCHITECTURES="$(uname -m)" \
+            -DBUILD_EXAMPLES=OFF \
+            -DBUILD_TESTING=ON \
+            -DTARGET_DATABASE=POSTGRESQL \
+            -DODBCPP_CRYPTO_PROVIDER=OPENSSL \
+            -DODBCPP_CRYPTO_LINKAGE=SYSTEM_SHARED \
+            -DODBCPP_CRYPTO_TLS_PROOF=ON \
+            -DPython3_EXECUTABLE="$(brew --prefix python@3.12)/bin/python3.12" \
+            -DODBC_INCLUDE_DIR="$(brew --prefix libiodbc)/include" \
+            -DODBC_DRIVER_MANAGER_FLAVOR=IODBC \
+            -DODBC_DRIVER_MANAGER_INCLUDE_DIR="$(brew --prefix libiodbc)/include" \
+            -DODBC_DRIVER_MANAGER_LIBRARY="$(brew --prefix libiodbc)/lib/libiodbc.dylib" \
+            -DODBCPP_EXPECT_DRIVER_SQLWCHAR_SIZE=4 \
+            -DODBCPP_EXPECT_DM_SQLWCHAR_SIZE=4 \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build-iodbc --parallel 2
+
+      - name: Run unit tests
+        run: ctest --test-dir build-iodbc -L unit --output-on-failure --output-junit macos-openssl-unit.xml
+
+      - name: Bind macOS unit qualification evidence
+        run: >-
+          "$(brew --prefix python@3.12)/bin/python3.12" tools/ci/record-crypto-qualification.py
+          --build build-iodbc --driver build-iodbc/libodbcpp.dylib
+          --probe build-iodbc/tests/crypto_identity_probe
+          --unit-report build-iodbc/macos-openssl-unit.xml --platform Darwin
+          --output build-iodbc/odbcpp-crypto-unit-qualification.json
+
+      - name: Run PostgreSQL integration tests
+        run: ctest --test-dir build-iodbc -L integration -E '^(it_crypto_profile_live|it_auth_pg_material_tls)$' --output-on-failure
+
+      - name: Run mandatory macOS TLS and SCRAM profile tests
+        run: tools/ci/run-crypto-profile-live.sh build-iodbc macos-openssl-live.xml
+
+      - name: Retain macOS TLS qualification inputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-openssl-UCS4-tls-proof
+          path: |
+            build-iodbc/macos-openssl-unit.xml
+            macos-openssl-live.xml
+            build-iodbc/tests/crypto_tls_probe
+            build-iodbc/tests/crypto_identity_probe
+            build-iodbc/odbcpp-crypto-identity-evidence.json
+            build-iodbc/odbcpp-crypto-unit-qualification.json
+            build-iodbc/libodbcpp.dylib
+            build-iodbc/odbcpp-crypto-manifest.json
+            build-iodbc/odbcpp-crypto-artifact-evidence.json
+          if-no-files-found: error
+
+      - name: Stop PostgreSQL
+        if: always()
+        run: |
+          if [[ -n "${ODBCPP_PG_DATA:-}" && -d "$ODBCPP_PG_DATA" ]]; then
+            "$ODBCPP_PG_BIN/pg_ctl" -D "$ODBCPP_PG_DATA" -m fast -w stop
+          fi

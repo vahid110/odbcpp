@@ -12,6 +12,16 @@ qualification and the first packaged Excel acceptance on this Mac. Independent
 review, security and regression/CI/cleanup gates remain active. MySQL and unrelated
 SDK feature work remain parked by the user's request.
 
+## Development cadence — human approved 2026-10-09
+
+Follow [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md): primary macOS/iODBC
+UCS4 development, immediate risk-based additional checks, coherent product batches
+and full qualification every24h through the existing continuation. Intermediate
+reviewed/primary-qualified pushes need not await full CI. Final goal/release
+acceptance still needs its required complete graph and exact-head green full CI.
+This supersedes historical per-batch full-graph sequencing; product priorities,
+independent review, live authority and security/cleanup requirements are unchanged.
+
 ## Human-approved delivery order — 2026-10-06
 
 The current executable queue and explicit readiness limits are maintained in
@@ -290,8 +300,10 @@ MySQL SDK proof continues until that activation gate is ready.
 
 Default to coherent workflow batches, normally three to five related scenarios
 when ready and compatible, rather than a separate integration cycle per case.
-Run focused checks while developing, then the required shared regression graph,
-independent integration review, push and exact-head CI once per coherent batch.
+Run focused checks while developing, then relevant coherent primary regression
+and independent integration review. Intermediate pushes may precede the daily
+full graph and full CI under DEVELOPMENT_WORKFLOW.md; full final acceptance stays
+mandatory.
 Preserve each scenario's assertions and result; never add unrelated work merely
 to fill a batch or replay already qualified milestones.
 

@@ -1,7 +1,6 @@
 name: ci
 
 on:
-  push:
   pull_request:
   workflow_dispatch:
     inputs:
@@ -16,7 +15,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
+  queue: max
 
 jobs:
   build-and-test:

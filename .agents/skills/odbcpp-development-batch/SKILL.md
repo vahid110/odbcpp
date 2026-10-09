@@ -54,19 +54,32 @@ Resolve concrete findings in a separate preserved successor; do not rerun an
 unchanged accepted package for reassurance. Before applying, verify current
 baseline, pins, exact selected diff, apply/reverse checks and unrelated changes.
 
-Run the full required shared graph for a coherent integrated source batch:
-PostgreSQL, both Unicode widths, verified TLS/integration, Redshift build,
-sanitizers, offline safety tests and applicable architecture/package checks.
-Windows/package, pinned MySQL and crypto profiles remain distinct required CI
-proofs. Derive commands/counts from the current build and workflow, not archived
-counts. Independently verify private PostgreSQL cleanup and reap all children.
+For Redshift, apply [DEVELOPMENT_WORKFLOW.md](../../../DEVELOPMENT_WORKFLOW.md).
+Use macOS/iODBC UCS4 as the primary development profile: focused checks, then
+relevant coherent regression/staging/architecture/package checks. Select immediate
+extra width/sanitizer/platform/provider/ABI checks from concrete changed-contract
+risk; do not claim unexecuted profiles would pass. Keep independent review,
+source/binary binding, bounded execution and PostgreSQL/process cleanup.
 
-Commit/push an unrelated feature batch when local requirements pass and the
-preceding exact-head CI is complete/green. A completed failed CI may instead be
-followed by a reviewed repair-only successor after its watcher is reaped, original
-evidence is preserved and applicable local checks pass. Do not mix a new feature
-into that repair. Follow one new exact-head CI watcher; no casual cancellation,
-duplicate watch or test weakening.
+Reviewed primary-qualified feature commits may be pushed before full qualification;
+report their cross-platform state as pending. Root uses the existing continuation
+and durable private ci-cadence.json for a full matrix every24h when changed heads
+need qualification, earlier for sensitive changes or release acceptance. Inspect
+actual runs before dispatch, record exact branch/head/run/start, and follow one
+immutable full-run watcher without cancellation or duplication. An old run does
+not qualify newer bytes. Continue the separate API lane during this wait.
+
+Group related actual failures into reviewed corrections and re-run affected gates;
+retain unchanged evidence only by actual source/input applicability. Do not replay
+native tests for compiler-only repairs. Live/native work still requires existing
+finite authority; this cadence grants none. Final goal/release acceptance still
+requires its full required graph (PostgreSQL/Unicode/TLS/Redshift/sanitizer/offline,
+SDK/architecture/package and platform/provider CI), exact-head green full CI,
+independent final audit and verified shutdown/reaps. A primary green is insufficient.
+
+A completed failed full CI may be followed by a bounded reviewed repair after its
+watcher is reaped and original evidence retained. Follow one successor full run;
+do not weaken tests or mix unrelated source into a claimed repair-only candidate.
 
 ## Close the finite package
 
@@ -81,12 +94,17 @@ continuation. Neither is test evidence or paid-action authority. Side chats are
 useful for user explanations; the main development chat retains integration
 ownership. Inline diff comments and independent review assess concrete changes.
 
-## Batch size and diagnostic execution — human agreed 2026-10-07
+## Batch size and diagnostic execution
+
+The human-approved 2026-10-09 cadence above supersedes the older per-batch full
+CI sequencing in this 2026-10-07 agreement; live controls are unchanged.
 
 Default to coherent workflow batches, normally three to five related scenarios
 when ready and compatible, rather than a separate integration cycle per case.
-Run focused checks while developing, then the required shared regression graph,
-independent integration review, push and exact-head CI once per coherent batch.
+Run focused checks while developing, then relevant coherent primary regression
+and independent integration review. Intermediate pushes may precede the daily
+full graph and full CI under DEVELOPMENT_WORKFLOW.md; full final acceptance stays
+mandatory.
 Preserve each scenario's assertions and result; never add unrelated work merely
 to fill a batch or replay already qualified milestones.
 
