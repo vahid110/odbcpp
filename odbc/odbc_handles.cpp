@@ -1665,9 +1665,10 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
                        timeout_duration(connection_timeout_seconds_)));
       if (result.has_error()) {
         const auto timeout = is_timeout_error(result.error());
-        set_error(request_sqlstate(result.error(), SQLSTATE_GENERAL_ERROR),
-                  result.error_message());
         if (timeout) close_connection();
+        set_error(query_failure_sqlstate(backend_provider(), result.backend_error(),
+                                         SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT),
+                  result.error_message());
         return SQL_ERROR;
       }
     }
@@ -1936,8 +1937,6 @@ SQLRETURN ODBCConnection::end_transaction(SQLSMALLINT completion_type) {
                    timeout_duration(connection_timeout_seconds_)));
   if (result.has_error()) {
     const auto timeout = is_timeout_error(result.error());
-    set_error(request_sqlstate(result.error(), SQLSTATE_GENERAL_ERROR),
-              result.error_message());
     const auto snapshot = result.session_snapshot();
     if (timeout || snapshot.disposition == rs::core::database::SessionDisposition::Retire ||
         snapshot.state == rs::core::database::SessionState::Unknown ||
@@ -1947,6 +1946,10 @@ SQLRETURN ODBCConnection::end_transaction(SQLSMALLINT completion_type) {
       transaction_active_ = snapshot.state == rs::core::database::SessionState::Transaction ||
                             snapshot.state == rs::core::database::SessionState::FailedTransaction;
     }
+    // Reconcile the owned completion before diagnostic policy can throw.
+    set_error(query_failure_sqlstate(backend_provider(), result.backend_error(),
+                                     SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT),
+              result.error_message());
     return SQL_ERROR;
   }
   transaction_active_ = false;
@@ -2629,13 +2632,15 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
     auto transaction = conn_->begin_transaction_if_needed(deadline);
     if (transaction.has_error()) {
       const auto timeout = is_timeout_error(transaction.error());
-      set_error(request_sqlstate(transaction.error(), SQLSTATE_GENERAL_ERROR),
+      if (timeout) conn_->disconnect();
+      set_error(query_failure_sqlstate(conn_->backend_provider(),
+                                       transaction.backend_error(), SQLSTATE_GENERAL_ERROR,
+                                       SQL_DIAG_UNKNOWN_STATEMENT),
                 transaction.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                  transaction.backend_error().safe_summary(),
                  {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "direct", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
-      if (timeout) conn_->disconnect();
       return SQL_ERROR;
     }
     auto result = conn_->backend_query(*native_sql,
@@ -4424,13 +4429,15 @@ SQLRETURN ODBCStatement::execute() {
     auto transaction = conn_->begin_transaction_if_needed(deadline);
     if (transaction.has_error()) {
       const auto timeout = is_timeout_error(transaction.error());
-      set_error(request_sqlstate(transaction.error(), SQLSTATE_GENERAL_ERROR),
+      if (timeout) conn_->disconnect();
+      set_error(query_failure_sqlstate(conn_->backend_provider(),
+                                       transaction.backend_error(), SQLSTATE_GENERAL_ERROR,
+                                       SQL_DIAG_UNKNOWN_STATEMENT),
                 transaction.error_message());
       conn_->log(rs::core::logging::LogLevel::Error, "query_failed",
                  transaction.backend_error().safe_summary(),
                  {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "prepared", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
-      if (timeout) conn_->disconnect();
       return complete_parameter_set(SQL_ERROR);
     }
     auto result = conn_->backend_prepared(prepared_sql_, param_values, deadline);

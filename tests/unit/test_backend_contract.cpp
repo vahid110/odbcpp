@@ -40,6 +40,8 @@ struct Observations {
   std::vector<QueryParameter> parameters;
   Deadline deadline{};
   bool malformed_value{}, malformed_state{}, malformed_text{}, long_binary{};
+  bool pg_end_error_policy{false};
+  int throwing_end_error_policy{};
   std::optional<QueryResult> date_result;
   std::optional<std::vector<NativeTypeInfo>> parameter_description_types;
   std::string failure_message = "fake error";
@@ -52,6 +54,8 @@ struct Observations {
   // Opt-in BEGIN control only: legacy fixtures retain their original behavior.
   std::optional<BackendResult<void>> begin_result;
   std::optional<BackendResult<void>> end_result;
+  std::optional<BackendResult<void>> isolation_result;
+  int isolation_calls{};
   std::optional<SessionState> transaction_state;
   std::vector<TransactionAction> transaction_calls;
   std::vector<Deadline> transaction_deadlines;
@@ -179,6 +183,7 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
     return BackendResult<void>{{SessionState::Idle, SessionDisposition::Reusable}};
   }
   BackendResult<void> set_transaction_isolation(TransactionIsolation, Deadline) override {
+    if (seen_->isolation_result) { ++seen_->isolation_calls; return *seen_->isolation_result; }
     if (seen_->isolation_mode == 2) return BackendResult<void>{};
     if (seen_->isolation_mode == 3) return BackendResult<void>{{SessionState::Idle, SessionDisposition::ResetRequired}};
     if (seen_->isolation_mode == 4) seen_->connect_exception = 6;
@@ -406,8 +411,17 @@ class FakeProvider final : public IBackendProvider {
       std::string_view version = {}) const noexcept override {
     return profile_ ? profile_->result_type_catalog(version) : type_catalog(version);
   }
-  std::optional<std::string> normalize_error_sqlstate(std::string_view state, ErrorContext) const override {
+  std::optional<std::string> normalize_error_sqlstate(std::string_view state, ErrorContext context) const override {
     if (seen_->malformed_state) return "bad";
+    if (seen_->throwing_end_error_policy == 1) throw std::runtime_error("fixed policy failure");
+    if (seen_->throwing_end_error_policy == 2) throw std::bad_alloc{};
+    if (seen_->pg_end_error_policy) {
+      rs::core::database::postgres::PgBackendProvider provider{
+          BackendIdentity{"redshift", "Amazon Redshift", "ODBCPP Redshift"},
+          BackendConnectionDefaults{"host", 5439, "db", true}, std::nullopt,
+          rs::core::database::postgres::PgCatalogProfile::Redshift};
+      return provider.normalize_error_sqlstate(state, context);
+    }
     if (state == "FAKE_ERROR") return "22018";
     if (state == "42501") return "42501";
     return std::nullopt;
@@ -5478,4 +5492,314 @@ TEST_F(EndTransactionRecoveryTest, UnknownDisconnectedRetiredAndTimeoutErrorsRet
     EXPECT_EQ(SQL_ERROR,execute("must_not_dispatch"));
     EXPECT_EQ(calls,seen->transaction_calls.size()); EXPECT_EQ(queries,seen->queries); EXPECT_EQ(disconnects+1,seen->disconnects);
   }
+}
+
+class EndTransactionDiagnosticsTest : public EndTransactionRecoveryTest {
+ protected:
+  void start_policy() {
+    seen->pg_end_error_policy=true;
+    start();
+  }
+  void fail_with(DbErrorCode code, std::string native, SessionSnapshot snapshot,
+                 BackendErrorClass error_class=BackendErrorClass::Server) {
+    BackendError error{rs::util::make_error_code(code),"fixed owning END error"};
+    error.native_state=std::move(native); error.operation=BackendOperation::CommitTransaction;
+    error.error_class=error_class; error.session_state=snapshot.state; error.disposition=snapshot.disposition;
+    seen->end_result=BackendResult<void>{error};
+  }
+};
+
+TEST_F(EndTransactionDiagnosticsTest, ApprovedRollbackDiagnosticKeepsOwningCursorAndExplicitRecovery) {
+  start_policy(); ASSERT_FALSE(HasFailure());
+  std::fill(std::begin(output_),std::end(output_),'!');
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_CHAR,output_,17,&length_));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); EXPECT_STREQ("first",output_); EXPECT_EQ(5,length_);
+  const std::string retained=output_;
+  seen->date_result->rows[1][0]="caller overwrote source";
+  std::string native="25P02";
+  fail_with(DbErrorCode::QueryFailed,native,{SessionState::FailedTransaction,SessionDisposition::ResetRequired});
+  native.assign("changed caller string");
+  const auto calls=seen->transaction_calls.size(); const auto queries=seen->queries;
+  ASSERT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_COMMIT));
+  const auto diagnostic=state(SQL_HANDLE_DBC,dbc); EXPECT_EQ("25P02",diagnostic);
+  EXPECT_EQ(calls+1,seen->transaction_calls.size()); EXPECT_EQ(TransactionAction::Commit,seen->transaction_calls.back());
+  EXPECT_EQ(queries,seen->queries); EXPECT_EQ(0,seen->disconnects);
+  EXPECT_EQ(SQL_ERROR,SQLDisconnect(dbc)); EXPECT_EQ("25000",state(SQL_HANDLE_DBC,dbc));
+  EXPECT_EQ(calls+1,seen->transaction_calls.size());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); EXPECT_STREQ("second",output_); EXPECT_EQ(6,length_); EXPECT_EQ('!',output_[17]);
+  EXPECT_EQ("first",retained); EXPECT_EQ("25P02",diagnostic);
+  seen->end_result=BackendResult<void>{{SessionState::Idle,SessionDisposition::Reusable}};
+  ASSERT_EQ(SQL_SUCCESS,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_ROLLBACK));
+  EXPECT_EQ(calls+2,seen->transaction_calls.size()); EXPECT_EQ(TransactionAction::Rollback,seen->transaction_calls.back());
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(stmt)); ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS,execute("rows")); EXPECT_EQ(calls+3,seen->transaction_calls.size());
+  EXPECT_EQ(TransactionAction::Begin,seen->transaction_calls.back()); EXPECT_EQ(queries+1,seen->queries);
+}
+
+TEST_F(EndTransactionDiagnosticsTest, ApprovedMappingsAndClosedFallbackApplyToCommitAndRollback) {
+  start_policy(); ASSERT_FALSE(HasFailure()); ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  struct Mapping {const char* native; const char* expected; bool malformed;};
+  const Mapping mappings[]{
+      {"22P02","22018",false},{"23505","23000",false},{"25P02","25P02",false},
+      {"40001","HY000",false},{"","HY000",false},{"25P0","HY000",false},
+      {"25P020","HY000",false},{"25p02","HY000",false},{"25P!2","HY000",false},
+      {"25P02","HY000",true}};
+  for(std::size_t i=0;i<std::size(mappings);++i) {
+    SCOPED_TRACE(i);
+    seen->malformed_state=mappings[i].malformed;
+    fail_with(DbErrorCode::QueryFailed,mappings[i].native,{SessionState::Transaction,SessionDisposition::ResetRequired});
+    const auto calls=seen->transaction_calls.size(); const auto queries=seen->queries;
+    const SQLSMALLINT completion=i%2==0?SQL_COMMIT:SQL_ROLLBACK;
+    ASSERT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_DBC,dbc,completion));
+    EXPECT_EQ(mappings[i].expected,state(SQL_HANDLE_DBC,dbc));
+    EXPECT_EQ(calls+1,seen->transaction_calls.size()); EXPECT_EQ(queries,seen->queries); EXPECT_EQ(0,seen->disconnects);
+    EXPECT_EQ(completion==SQL_COMMIT?TransactionAction::Commit:TransactionAction::Rollback,seen->transaction_calls.back());
+    EXPECT_EQ(SQL_ERROR,SQLDisconnect(dbc)); EXPECT_EQ("25000",state(SQL_HANDLE_DBC,dbc));
+  }
+  seen->malformed_state=false;
+  seen->end_result=BackendResult<void>{{SessionState::Idle,SessionDisposition::Reusable}};
+  ASSERT_EQ(SQL_SUCCESS,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_ROLLBACK));
+  const auto calls=seen->transaction_calls.size();
+  EXPECT_EQ(SQL_SUCCESS,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_COMMIT)); EXPECT_EQ(calls,seen->transaction_calls.size());
+  EXPECT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_DBC,dbc,99)); EXPECT_EQ("HY012",state(SQL_HANDLE_DBC,dbc));
+  EXPECT_EQ(calls,seen->transaction_calls.size());
+}
+
+TEST_F(EndTransactionDiagnosticsTest, LocalErrorPrecedenceAndTerminalSnapshotsNeverGainReuseFromNativeState) {
+  start_policy(); ASSERT_FALSE(HasFailure()); ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  struct Local {DbErrorCode code; BackendErrorClass kind; const char* expected;};
+  const Local locals[]{
+      {DbErrorCode::AllocationFailure,BackendErrorClass::AllocationFailure,"HY001"},
+      {DbErrorCode::QueryFailed,BackendErrorClass::InvalidMetadata,"HY000"}};
+  for(const auto& local:locals) {
+    fail_with(local.code,"25P02",{SessionState::Transaction,SessionDisposition::ResetRequired},local.kind);
+    const auto calls=seen->transaction_calls.size();
+    ASSERT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_COMMIT)); EXPECT_EQ(local.expected,state(SQL_HANDLE_DBC,dbc));
+    EXPECT_EQ(calls+1,seen->transaction_calls.size()); EXPECT_EQ(0,seen->disconnects);
+  }
+  const SessionSnapshot snapshots[]{
+      {SessionState::Idle,SessionDisposition::Reusable},
+      {SessionState::Disconnected,SessionDisposition::Retire},
+      {SessionState::Unknown,SessionDisposition::Reusable},
+      {SessionState::Idle,SessionDisposition::Retire}};
+  for(std::size_t i=0;i<std::size(snapshots);++i) {
+    SCOPED_TRACE(i);
+    if(i!=0) {
+      seen->end_result.reset(); seen->transaction_state=SessionState::Idle;
+      ASSERT_EQ(SQL_SUCCESS,SQLDriverConnect(dbc,nullptr,(SQLCHAR*)"SERVER=fake;SSL=0",SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT));
+      ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE)); ASSERT_EQ(SQL_SUCCESS,execute("rows"));
+      ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+    }
+    const auto code=i==0?DbErrorCode::Timeout:i==1?DbErrorCode::NetworkError:DbErrorCode::QueryFailed;
+    const auto kind=i==0?BackendErrorClass::Timeout:i==1?BackendErrorClass::Transport:BackendErrorClass::Server;
+    fail_with(code,"25P02",snapshots[i],kind);
+    const auto disconnects=seen->disconnects;
+    ASSERT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_COMMIT));
+    EXPECT_EQ(i==0?"HYT00":i==1?"08S01":"25P02",state(SQL_HANDLE_DBC,dbc));
+    EXPECT_EQ(disconnects+1,seen->disconnects);
+    const auto calls=seen->transaction_calls.size(); const auto queries=seen->queries;
+    SQLUINTEGER untouched=99;
+    EXPECT_EQ(SQL_ERROR,SQLGetConnectAttr(dbc,SQL_ATTR_CONNECTION_DEAD,&untouched,0,nullptr));
+    EXPECT_EQ("08003",state(SQL_HANDLE_DBC,dbc)); EXPECT_EQ(99u,untouched);
+    EXPECT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_ROLLBACK));
+    EXPECT_EQ(SQL_ERROR,execute("no dispatch"));
+    EXPECT_EQ(calls,seen->transaction_calls.size()); EXPECT_EQ(queries,seen->queries); EXPECT_EQ(disconnects+1,seen->disconnects);
+  }
+}
+
+class EndDiagnosticExceptionTest : public EndTransactionDiagnosticsTest {};
+
+TEST_F(EndDiagnosticExceptionTest, ThrowingPolicyCannotRetainIdleOwnershipOrReplayEnd) {
+  start_policy(); ASSERT_FALSE(HasFailure()); ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  for(int mode=1;mode<=2;++mode) {
+    SCOPED_TRACE(mode);
+    fail_with(DbErrorCode::QueryFailed,"25P02",{SessionState::Idle,SessionDisposition::Reusable});
+    seen->throwing_end_error_policy=mode;
+    const auto calls=seen->transaction_calls.size(); const auto queries=seen->queries;
+    ASSERT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_COMMIT));
+    EXPECT_EQ(mode==1?"HY000":"HY001",state(SQL_HANDLE_DBC,dbc));
+    EXPECT_EQ(calls+1,seen->transaction_calls.size()); EXPECT_EQ(0,seen->disconnects);
+    seen->throwing_end_error_policy=0; seen->end_result.reset();
+    ASSERT_EQ(SQL_SUCCESS,execute("rows"));
+    EXPECT_EQ(calls+2,seen->transaction_calls.size()); EXPECT_EQ(TransactionAction::Begin,seen->transaction_calls.back());
+    EXPECT_EQ(queries+1,seen->queries); ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+    if(mode==1) {
+      seen->end_result=BackendResult<void>{{SessionState::Idle,SessionDisposition::Reusable}};
+      ASSERT_EQ(SQL_SUCCESS,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_ROLLBACK));
+      ASSERT_EQ(SQL_SUCCESS,execute("rows")); ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+    }
+  }
+  seen->end_result=BackendResult<void>{{SessionState::Idle,SessionDisposition::Reusable}};
+  ASSERT_EQ(SQL_SUCCESS,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_ROLLBACK));
+  const auto calls=seen->transaction_calls.size();
+  EXPECT_EQ(SQL_SUCCESS,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_ON),0));
+  EXPECT_EQ(calls,seen->transaction_calls.size()); EXPECT_EQ(SQL_SUCCESS,SQLDisconnect(dbc));
+}
+
+TEST_F(EndDiagnosticExceptionTest, ThrowingPolicyCannotSkipUnknownOrRetiredConnectionClosure) {
+  start_policy(); ASSERT_FALSE(HasFailure()); ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  const SessionSnapshot snapshots[]{
+      {SessionState::Unknown,SessionDisposition::Reusable},
+      {SessionState::Idle,SessionDisposition::Retire},
+      {SessionState::Disconnected,SessionDisposition::Reusable}};
+  for(std::size_t i=0;i<std::size(snapshots);++i) {
+    SCOPED_TRACE(i);
+    if(i!=0) {
+      seen->throwing_end_error_policy=0; seen->end_result.reset(); seen->transaction_state=SessionState::Idle;
+      ASSERT_EQ(SQL_SUCCESS,SQLDriverConnect(dbc,nullptr,(SQLCHAR*)"SERVER=fake;SSL=0",SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT));
+      ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE)); ASSERT_EQ(SQL_SUCCESS,execute("rows"));
+      ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+    }
+    fail_with(DbErrorCode::QueryFailed,"25P02",snapshots[i]); seen->throwing_end_error_policy=i==1?2:1;
+    const auto disconnects=seen->disconnects;
+    ASSERT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_COMMIT));
+    EXPECT_EQ(i==1?"HY001":"HY000",state(SQL_HANDLE_DBC,dbc));
+    EXPECT_EQ(disconnects+1,seen->disconnects);
+    SQLUINTEGER untouched=99;
+    EXPECT_EQ(SQL_ERROR,SQLGetConnectAttr(dbc,SQL_ATTR_CONNECTION_DEAD,&untouched,0,nullptr));
+    EXPECT_EQ("08003",state(SQL_HANDLE_DBC,dbc)); EXPECT_EQ(99u,untouched);
+    const auto calls=seen->transaction_calls.size(); const auto queries=seen->queries;
+    EXPECT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_ROLLBACK));
+    EXPECT_EQ(SQL_ERROR,execute("must not dispatch"));
+    EXPECT_EQ(calls,seen->transaction_calls.size()); EXPECT_EQ(queries,seen->queries); EXPECT_EQ(disconnects+1,seen->disconnects);
+  }
+  seen->throwing_end_error_policy=0;
+}
+
+TEST_F(EndDiagnosticExceptionTest, ValidMappingRetainsOwningNativeAndMessageAfterTerminalClose) {
+  start_policy(); ASSERT_FALSE(HasFailure()); ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  BackendError original{rs::util::make_error_code(DbErrorCode::QueryFailed),"owning terminal transaction message"};
+  original.native_state="25P02"; original.operation=BackendOperation::CommitTransaction;
+  original.session_state=SessionState::Unknown; original.disposition=SessionDisposition::Reusable;
+  seen->end_result=BackendResult<void>{original};
+  original.message="caller mutation"; original.native_state="40001";
+  const auto disconnects=seen->disconnects;
+  ASSERT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_COMMIT));
+  EXPECT_EQ(disconnects+1,seen->disconnects);
+  SQLCHAR native_state[6]{}; SQLCHAR message[80]{}; SQLSMALLINT length=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDiagRec(SQL_HANDLE_DBC,dbc,1,native_state,nullptr,message,sizeof(message),&length));
+  EXPECT_STREQ("25P02",reinterpret_cast<char*>(native_state));
+  EXPECT_STREQ("owning terminal transaction message",reinterpret_cast<char*>(message));
+  EXPECT_EQ(35,length); const std::string retained=reinterpret_cast<char*>(message);
+  seen->end_result.reset();
+  EXPECT_EQ("owning terminal transaction message",retained);
+  const auto calls=seen->transaction_calls.size(); const auto queries=seen->queries;
+  EXPECT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_ROLLBACK)); EXPECT_EQ("08003",state(SQL_HANDLE_DBC,dbc));
+  EXPECT_EQ(calls,seen->transaction_calls.size()); EXPECT_EQ(queries,seen->queries); EXPECT_EQ(disconnects+1,seen->disconnects);
+}
+
+class TransactionStartDiagnosticsTest : public BackendContractTest {
+ protected:
+  SQLINTEGER input_{7}; SQLLEN input_length_{sizeof(input_)};
+  SQLUSMALLINT status_{SQL_PARAM_UNUSED}; SQLULEN processed_{};
+  void start_policy() {
+    seen->pg_end_error_policy=true; seen->advertised_transactions=true; seen->isolation_mode=1;
+    connect(); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF),0));
+  }
+  BackendResult<void> failure(DbErrorCode code,const char* native,SessionSnapshot snapshot,
+                              BackendOperation operation,BackendErrorClass kind=BackendErrorClass::Server) {
+    BackendError error{rs::util::make_error_code(code),"fixed owning setup error"};
+    error.native_state=native; error.operation=operation; error.error_class=kind;
+    error.session_state=snapshot.state; error.disposition=snapshot.disposition;
+    return BackendResult<void>{std::move(error)};
+  }
+  void successful_begin() {seen->begin_result=BackendResult<void>{{SessionState::Transaction,SessionDisposition::ResetRequired}};}
+  void prepare_input() {
+    SQLCHAR sql[]="SELECT ?";
+    ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,sql,SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_LONG,SQL_INTEGER,10,0,&input_,sizeof(input_),&input_length_));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_STATUS_PTR,&status_,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAMS_PROCESSED_PTR,&processed_,0));
+  }
+};
+
+TEST_F(TransactionStartDiagnosticsTest, DirectAndPreparedBeginFailuresKeepDiagnosticsAndExplicitRecovery) {
+  start_policy(); ASSERT_FALSE(HasFailure());
+  seen->begin_result=failure(DbErrorCode::QueryFailed,"22P02",{SessionState::Idle,SessionDisposition::Reusable},BackendOperation::BeginTransaction);
+  const auto queries=seen->queries;
+  ASSERT_EQ(SQL_ERROR,execute("rows")); EXPECT_EQ("22018",state()); EXPECT_EQ(queries,seen->queries);
+  ASSERT_EQ(1u,seen->transaction_calls.size()); EXPECT_EQ(TransactionAction::Begin,seen->transaction_calls.back());
+  EXPECT_EQ(0,seen->disconnects);
+  successful_begin(); ASSERT_EQ(SQL_SUCCESS,execute("rows")); EXPECT_EQ(queries+1,seen->queries);
+  ASSERT_EQ(2u,seen->transaction_calls.size()); ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_ROLLBACK));
+  prepare_input();
+  seen->begin_result=failure(DbErrorCode::QueryFailed,"25P02",{SessionState::FailedTransaction,SessionDisposition::ResetRequired},BackendOperation::BeginTransaction);
+  const auto before=seen->queries; const auto calls=seen->transaction_calls.size();
+  ASSERT_EQ(SQL_ERROR,SQLExecute(stmt)); EXPECT_EQ("25P02",state()); EXPECT_EQ(before,seen->queries);
+  EXPECT_EQ(SQL_PARAM_ERROR,status_); EXPECT_EQ(1u,processed_); EXPECT_EQ(7,input_); EXPECT_EQ(sizeof(input_),static_cast<std::size_t>(input_length_));
+  EXPECT_EQ(calls+1,seen->transaction_calls.size());
+  EXPECT_EQ(SQL_ERROR,SQLDisconnect(dbc)); EXPECT_EQ("25000",state(SQL_HANDLE_DBC,dbc)); EXPECT_EQ(calls+1,seen->transaction_calls.size());
+  ASSERT_EQ(SQL_SUCCESS,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_ROLLBACK));
+  successful_begin(); ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); EXPECT_EQ(before+1,seen->queries);
+  EXPECT_EQ(SQL_PARAM_SUCCESS,status_); EXPECT_EQ(1u,processed_);
+  ASSERT_EQ(1u,seen->parameters.size()); EXPECT_EQ(std::optional<std::string>{"7"},seen->parameters[0].value);
+  input_=9; EXPECT_EQ(std::optional<std::string>{"7"},seen->parameters[0].value);
+}
+
+TEST_F(TransactionStartDiagnosticsTest, IsolationDiagnosticsCannotPublishFailedAttributeAndExplicitRetrySucceeds) {
+  start_policy(); ASSERT_FALSE(HasFailure());
+  struct Mapping {const char* native; const char* state; bool malformed;};
+  const Mapping mappings[]{{"22P02","22018",false},{"23505","23000",false},{"40001","HY000",false},{"25p02","HY000",false},{"25P02","HY000",true}};
+  for(const auto& mapping:mappings) {
+    seen->malformed_state=mapping.malformed;
+    seen->isolation_result=failure(DbErrorCode::QueryFailed,mapping.native,{SessionState::Idle,SessionDisposition::Reusable},BackendOperation::SetTransactionIsolation);
+    const auto calls=seen->isolation_calls; const auto queries=seen->queries;
+    ASSERT_EQ(SQL_ERROR,SQLSetConnectAttr(dbc,SQL_ATTR_TXN_ISOLATION,reinterpret_cast<SQLPOINTER>(SQL_TXN_REPEATABLE_READ),0));
+    EXPECT_EQ(mapping.state,state(SQL_HANDLE_DBC,dbc)); EXPECT_EQ(calls+1,seen->isolation_calls); EXPECT_EQ(queries,seen->queries);
+    SQLUINTEGER unchanged=99; ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttr(dbc,SQL_ATTR_TXN_ISOLATION,&unchanged,0,nullptr));
+    EXPECT_EQ(SQL_TXN_READ_COMMITTED,unchanged); EXPECT_EQ(0,seen->disconnects);
+  }
+  seen->malformed_state=false; seen->isolation_result=BackendResult<void>{{SessionState::Idle,SessionDisposition::Reusable}};
+  ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(dbc,SQL_ATTR_TXN_ISOLATION,reinterpret_cast<SQLPOINTER>(SQL_TXN_REPEATABLE_READ),0));
+  SQLUINTEGER value=99; ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttr(dbc,SQL_ATTR_TXN_ISOLATION,&value,0,nullptr)); EXPECT_EQ(SQL_TXN_REPEATABLE_READ,value);
+  const auto calls=seen->isolation_calls;
+  EXPECT_EQ(SQL_ERROR,SQLSetConnectAttr(dbc,SQL_ATTR_TXN_ISOLATION,nullptr,0)); EXPECT_EQ("HY024",state(SQL_HANDLE_DBC,dbc));
+  seen->isolation_mode=0;
+  EXPECT_EQ(SQL_ERROR,SQLSetConnectAttr(dbc,SQL_ATTR_TXN_ISOLATION,reinterpret_cast<SQLPOINTER>(SQL_TXN_SERIALIZABLE),0)); EXPECT_EQ("HYC00",state(SQL_HANDLE_DBC,dbc));
+  seen->isolation_mode=1; successful_begin(); ASSERT_EQ(SQL_SUCCESS,execute("rows"));
+  EXPECT_EQ(SQL_ERROR,SQLSetConnectAttr(dbc,SQL_ATTR_TXN_ISOLATION,reinterpret_cast<SQLPOINTER>(SQL_TXN_SERIALIZABLE),0)); EXPECT_EQ("HY011",state(SQL_HANDLE_DBC,dbc));
+  EXPECT_EQ(calls,seen->isolation_calls);
+}
+
+TEST_F(TransactionStartDiagnosticsTest, ThrowingPolicyAndLocalErrorsPreserveOwnershipCleanupAndAttributeState) {
+  start_policy(); ASSERT_FALSE(HasFailure());
+  seen->begin_result=failure(DbErrorCode::QueryFailed,"25P02",{SessionState::Idle,SessionDisposition::Reusable},BackendOperation::BeginTransaction);
+  seen->throwing_end_error_policy=1;
+  ASSERT_EQ(SQL_ERROR,execute("rows")); EXPECT_EQ("HY000",state()); EXPECT_EQ(0,seen->queries); EXPECT_EQ(0,seen->disconnects);
+  seen->throwing_end_error_policy=0; successful_begin(); ASSERT_EQ(SQL_SUCCESS,execute("rows"));
+  ASSERT_EQ(2u,seen->transaction_calls.size()); ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_ROLLBACK));
+  // A throwing connected-isolation policy cannot publish the requested value.
+  seen->isolation_result=failure(DbErrorCode::QueryFailed,"25P02",{SessionState::Idle,SessionDisposition::Reusable},BackendOperation::SetTransactionIsolation);
+  seen->throwing_end_error_policy=2;
+  ASSERT_EQ(SQL_ERROR,SQLSetConnectAttr(dbc,SQL_ATTR_TXN_ISOLATION,reinterpret_cast<SQLPOINTER>(SQL_TXN_SERIALIZABLE),0)); EXPECT_EQ("HY001",state(SQL_HANDLE_DBC,dbc));
+  SQLUINTEGER unchanged=99; ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttr(dbc,SQL_ATTR_TXN_ISOLATION,&unchanged,0,nullptr)); EXPECT_EQ(SQL_TXN_READ_COMMITTED,unchanged);
+  seen->throwing_end_error_policy=0;
+  struct Local {DbErrorCode code; BackendErrorClass kind; const char* state;};
+  const Local locals[]{{DbErrorCode::AllocationFailure,BackendErrorClass::AllocationFailure,"HY001"},{DbErrorCode::QueryFailed,BackendErrorClass::InvalidMetadata,"HY000"},{DbErrorCode::NetworkError,BackendErrorClass::Transport,"08S01"}};
+  for(const auto& local:locals) {
+    seen->isolation_result=failure(local.code,"25P02",{SessionState::Idle,SessionDisposition::Reusable},BackendOperation::SetTransactionIsolation,local.kind);
+    ASSERT_EQ(SQL_ERROR,SQLSetConnectAttr(dbc,SQL_ATTR_TXN_ISOLATION,reinterpret_cast<SQLPOINTER>(SQL_TXN_SERIALIZABLE),0)); EXPECT_EQ(local.state,state(SQL_HANDLE_DBC,dbc));
+  }
+  prepare_input();
+  seen->begin_result=failure(DbErrorCode::QueryFailed,"25P02",{SessionState::Unknown,SessionDisposition::Reusable},BackendOperation::BeginTransaction);
+  seen->throwing_end_error_policy=1; const auto before=seen->queries; const auto disconnects=seen->disconnects;
+  ASSERT_EQ(SQL_ERROR,SQLExecute(stmt)); EXPECT_EQ("HY000",state()); EXPECT_EQ(SQL_PARAM_ERROR,status_); EXPECT_EQ(1u,processed_);
+  EXPECT_EQ(before,seen->queries); EXPECT_EQ(disconnects+1,seen->disconnects);
+  const auto calls=seen->transaction_calls.size(); SQLUINTEGER untouched=99;
+  EXPECT_EQ(SQL_ERROR,SQLGetConnectAttr(dbc,SQL_ATTR_CONNECTION_DEAD,&untouched,0,nullptr)); EXPECT_EQ("08003",state(SQL_HANDLE_DBC,dbc)); EXPECT_EQ(99u,untouched);
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt)); EXPECT_EQ(calls,seen->transaction_calls.size()); EXPECT_EQ(before,seen->queries);
+  seen->throwing_end_error_policy=0; seen->begin_result.reset(); seen->isolation_result.reset(); seen->transaction_state=SessionState::Idle;
+  ASSERT_EQ(SQL_SUCCESS,SQLDriverConnect(dbc,nullptr,(SQLCHAR*)"SERVER=fake;SSL=0",SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT));
+  // Local timeout wins without calling the throwing policy and closes once.
+  seen->throwing_end_error_policy=1;
+  seen->isolation_result=failure(DbErrorCode::Timeout,"25P02",{SessionState::Idle,SessionDisposition::Reusable},BackendOperation::SetTransactionIsolation,BackendErrorClass::Timeout);
+  const auto old_disconnects=seen->disconnects;
+  ASSERT_EQ(SQL_ERROR,SQLSetConnectAttr(dbc,SQL_ATTR_TXN_ISOLATION,reinterpret_cast<SQLPOINTER>(SQL_TXN_SERIALIZABLE),0)); EXPECT_EQ("HYT00",state(SQL_HANDLE_DBC,dbc));
+  EXPECT_EQ(old_disconnects+1,seen->disconnects);
+  EXPECT_EQ(SQL_ERROR,SQLGetConnectAttr(dbc,SQL_ATTR_CONNECTION_DEAD,&untouched,0,nullptr)); EXPECT_EQ("08003",state(SQL_HANDLE_DBC,dbc));
+  seen->throwing_end_error_policy=0;
 }
