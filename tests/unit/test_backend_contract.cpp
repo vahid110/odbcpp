@@ -6346,7 +6346,8 @@ TEST_F(IndicatorBindingTest, ScalarAndRowsetReturnLengthsNullAndWideByteUnitsWit
   EXPECT_EQ(10,narrow.value[0]);EXPECT_EQ((sizeof(SQLWCHAR)==2?6:5)*sizeof(SQLWCHAR),wide.value[0]);EXPECT_EQ(2,binary.value[0]);
   EXPECT_EQ(SQL_NULL_DATA,narrow.value[1]);EXPECT_EQ(SQL_NULL_DATA,wide.value[1]);EXPECT_EQ(SQL_NULL_DATA,binary.value[1]);
   EXPECT_EQ(0,narrow.value[2]);EXPECT_EQ(sizeof(SQLWCHAR),wide.value[2]);EXPECT_EQ(0,binary.value[2]);
-  for(int i=0;i<3;++i)EXPECT_EQ(SQL_ROW_SUCCESS,status[i]);EXPECT_EQ(64,status[3]);EXPECT_EQ(73,narrow.value[3]);
+  for(int i=0;i<3;++i){EXPECT_EQ(SQL_ROW_SUCCESS,status[i]);}
+  EXPECT_EQ(64,status[3]);EXPECT_EQ(73,narrow.value[3]);
   EXPECT_EQ('x',data.value[0]);EXPECT_EQ(7,bytes.value[0]);guards();
   EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));EXPECT_EQ(0u,fetched);guards();
 }
@@ -6455,7 +6456,7 @@ class RowWiseBindingTest : public BackendContractTest {
     SQLWCHAR wide[8]{0x7777,0x7777,0x7777,0x7777,0x7777,0x7777,0x7777,0x7777}; SQLLEN wide_length{73};
     SQL_DATE_STRUCT date{111,2,3}; SQLLEN date_length{73};
     SQL_NUMERIC_STRUCT numeric{}; SQLLEN numeric_length{73};
-    SQLSMALLINT small{123}; SQLLEN small_length{73};
+    SQLSMALLINT small_integer{123}; SQLLEN small_length{73};
     SQLLEN split_indicator{73}, split_length{73};
     SQLINTEGER after{702};
   } rows[4];
@@ -6541,13 +6542,13 @@ TEST_F(RowWiseBindingTest, ConversionNeighborsAndSplitIndicatorOnlyFieldsUseStru
   seen->date_result=result;
   ASSERT_NO_FATAL_FAILURE(connect());
   ASSERT_NO_FATAL_FAILURE(layout());
-  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_SSHORT,&rows[0].small,0,&rows[0].small_length));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_SSHORT,&rows[0].small_integer,0,&rows[0].small_length));
   ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,2,SQL_C_CHAR,rows[0].text,sizeof(rows[0].text),&rows[0].text_length));
   ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,3,SQL_C_WCHAR,nullptr,0,&rows[0].split_indicator));
   SQLHDESC ard{};ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_APP_ROW_DESC,&ard,0,nullptr));
   ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(ard,3,SQL_DESC_OCTET_LENGTH_PTR,&rows[0].split_length,0));
   ASSERT_EQ(SQL_SUCCESS,execute("struct conversions"));ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLFetch(stmt));EXPECT_EQ(3u,fetched);
-  EXPECT_EQ(7,rows[0].small);EXPECT_EQ(123,rows[1].small);EXPECT_EQ(9,rows[2].small);
+  EXPECT_EQ(7,rows[0].small_integer);EXPECT_EQ(123,rows[1].small_integer);EXPECT_EQ(9,rows[2].small_integer);
   EXPECT_EQ(0,std::memcmp(rows[0].text,"abcdefg\0",8));EXPECT_EQ(11,rows[0].text_length);EXPECT_EQ('x',rows[1].text[0]);EXPECT_EQ(0,std::memcmp(rows[2].text,"\xc3\xa9\0",3));
   EXPECT_EQ(SQL_ROW_SUCCESS_WITH_INFO,statuses[0]);EXPECT_EQ(SQL_ROW_ERROR,statuses[1]);EXPECT_EQ(SQL_ROW_SUCCESS,statuses[2]);
   EXPECT_EQ(0,rows[0].split_indicator);EXPECT_EQ((sizeof(SQLWCHAR)==2?2:1)*sizeof(SQLWCHAR),rows[0].split_length);
@@ -6698,19 +6699,19 @@ TEST_F(ForwardBindingOffsetTest, StructPagesShiftSplitIndicatorOnlyAndFixedField
   seen->date_result=result;ASSERT_NO_FATAL_FAILURE(connect());
   ASSERT_NO_FATAL_FAILURE(layout());
   binding_offset=sizeof(grid[0]);ASSERT_NO_FATAL_FAILURE(offset_pointer());
-  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_SSHORT,&grid[0][0].small,0,&grid[0][0].small_length));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_SSHORT,&grid[0][0].small_integer,0,&grid[0][0].small_length));
   ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,2,SQL_C_CHAR,grid[0][0].text,sizeof(grid[0][0].text),&grid[0][0].text_length));
   ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,3,SQL_C_WCHAR,nullptr,0,&grid[0][0].split_indicator));
   ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,4,SQL_C_TYPE_DATE,&grid[0][0].date,0,&grid[0][0].date_length));
   SQLHDESC ard{};ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_APP_ROW_DESC,&ard,0,nullptr));
   ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(ard,3,SQL_DESC_OCTET_LENGTH_PTR,&grid[0][0].split_length,0));
   ASSERT_EQ(SQL_SUCCESS,execute("offset structure"));ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLFetch(stmt));EXPECT_EQ(3u,fetched);
-  EXPECT_EQ(7,grid[1][0].small);EXPECT_EQ(123,grid[1][1].small);EXPECT_EQ(9,grid[1][2].small);
+  EXPECT_EQ(7,grid[1][0].small_integer);EXPECT_EQ(123,grid[1][1].small_integer);EXPECT_EQ(9,grid[1][2].small_integer);
   EXPECT_EQ(0,std::memcmp(grid[1][0].text,"abcdefg\0",8));EXPECT_EQ(11,grid[1][0].text_length);EXPECT_EQ('x',grid[1][1].text[0]);
   EXPECT_EQ(0,grid[1][0].split_indicator);EXPECT_EQ((sizeof(SQLWCHAR)==2?2:1)*sizeof(SQLWCHAR),grid[1][0].split_length);
   EXPECT_EQ(73,grid[1][1].split_indicator);EXPECT_EQ(73,grid[1][1].split_length);EXPECT_EQ(SQL_NULL_DATA,grid[1][2].split_indicator);EXPECT_EQ(73,grid[1][2].split_length);
   EXPECT_EQ(SQL_NULL_DATA,grid[1][0].date_length);EXPECT_EQ(111,grid[1][0].date.year);EXPECT_EQ(2050,grid[1][2].date.year);EXPECT_EQ(1,grid[1][2].date.month);EXPECT_EQ(2,grid[1][2].date.day);
-  for(const auto& row:grid[0]){EXPECT_EQ(123,row.small);EXPECT_EQ(73,row.small_length);EXPECT_EQ('x',row.text[0]);EXPECT_EQ(73,row.split_indicator);EXPECT_EQ(111,row.date.year);}
+  for(const auto& row:grid[0]){EXPECT_EQ(123,row.small_integer);EXPECT_EQ(73,row.small_length);EXPECT_EQ('x',row.text[0]);EXPECT_EQ(73,row.split_indicator);EXPECT_EQ(111,row.date.year);}
   EXPECT_EQ(SQL_ROW_SUCCESS_WITH_INFO,statuses[0]);EXPECT_EQ(SQL_ROW_ERROR,statuses[1]);EXPECT_EQ(SQL_ROW_SUCCESS,statuses[2]);
   SQLLEN row=0,column=0;ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,stmt,1,SQL_DIAG_ROW_NUMBER,&row,0,nullptr));EXPECT_EQ(1,row);
   ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,stmt,1,SQL_DIAG_COLUMN_NUMBER,&column,0,nullptr));EXPECT_EQ(2,column);page_guards();
@@ -6992,7 +6993,7 @@ TEST_F(ParameterBindingOffsetTest, ShiftedWideNumericSplitNullFieldsRetainPrecis
   pages[1].numeric.precision=5;pages[1].numeric.scale=2;pages[1].numeric.sign=1;pages[1].numeric.val[0]=0x39;pages[1].numeric.val[1]=0x30;
   pages[1].wide[0]=0x00e9;
   if(sizeof(SQLWCHAR)==2){pages[1].wide[1]=0xd83d;pages[1].wide[2]=0xde00;pages[1].wide_length=3*sizeof(SQLWCHAR);}
-  else{pages[1].wide[1]=0x1f600;pages[1].wide_length=2*sizeof(SQLWCHAR);}
+  else{pages[1].wide[1]=static_cast<SQLWCHAR>(0x1f600);pages[1].wide_length=2*sizeof(SQLWCHAR);}
   ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_NUMERIC,SQL_NUMERIC,5,2,&pages[0].numeric,0,&pages[0].numeric_length));
   // C numeric representation uses APD dimensions; bind arguments set SQL/IPD hints.
   ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,1,SQL_DESC_PRECISION,number(5),0));
