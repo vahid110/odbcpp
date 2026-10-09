@@ -255,6 +255,8 @@ public:
   rs::core::database::BackendCapabilities capabilities() const;
   rs::core::database::TransactionCapabilities transaction_capabilities() const;
   // Facet presence only; individual requests may still be unsupported.
+  bool cancellation_request_eligible(std::string_view sql) const noexcept { return backend_lease_ && backend_lease_->cancellation_request_eligible(sql); }
+  bool supports_server_cancellation() const noexcept { return backend_lease_ && backend_lease_->supports_server_cancellation(); }
   bool has_catalog_query_facet() const noexcept { return backend_lease_ && backend_observation_.has_catalog_query_facet; }
   bool has_catalog_execution_facet() const noexcept { return backend_lease_ && backend_observation_.has_catalog_execution_facet; }
   bool has_statement_description_facet() const noexcept { return backend_lease_ && backend_observation_.has_statement_description_facet; }
@@ -450,6 +452,7 @@ public:
   ~ODBCStatement() override;
   
   SQLRETURN execute_direct(const std::string& sql);
+  SQLRETURN cancel() noexcept;
   SQLRETURN fetch();
   SQLRETURN more_results();
   SQLRETURN get_data(SQLUSMALLINT col, SQLSMALLINT target_type, 
@@ -529,6 +532,11 @@ public:
   size_t get_column_count() const { return result_rows_.empty() ? 0 : result_rows_[0].size(); }
 
 private:
+  struct CancellationLedger;
+  class ExecutionCancellation;
+  std::mutex cancellation_mutex_;
+  std::shared_ptr<CancellationLedger> cancellation_;
+  std::uint64_t operation_generation_{0};
   std::shared_ptr<ODBCConnection> conn_;
   rs::core::database::ResultRows result_rows_;
   std::vector<rs::core::database::CellEncodingError> result_cell_errors_;

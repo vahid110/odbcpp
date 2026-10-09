@@ -9,7 +9,7 @@
 namespace rs::core::transport {
 
 class TLSTransport : public ITransport, public IStartTlsTransport,
-                     public ITlsConfigurableTransport {
+                     public ITlsConfigurableTransport, public IServerCancelTransport {
 public:
   explicit TLSTransport(DeadlineModel deadline_model = DeadlineModel::Strict);
   ~TLSTransport() override;
@@ -18,6 +18,10 @@ public:
   rs::util::Result<IOResult> send(std::span<const std::byte> buf, rs::util::Deadline) override;
   rs::util::Result<IOResult> recv(std::span<std::byte> buf, rs::util::Deadline) override;
   void close() noexcept override;
+  bool supports_server_cancel() const noexcept override { return tcp_.supports_server_cancel() && peer_identity_verified_ && verify_ && verify_host_; }
+  void cancellation_wait(std::shared_ptr<CancellationWait> control) noexcept override { cancellation_wait_ = control; tcp_.cancellation_wait(std::move(control)); }
+  std::unique_ptr<ITransport> cancellation_peer() const override;
+  rs::util::Result<void> connect_cancellation_peer(rs::util::Deadline) override;
 
   rs::util::Result<void> connect_plain(
       std::string_view host, uint16_t port,
@@ -62,6 +66,8 @@ private:
   bool peer_identity_verified_ {false};
   long min_version_ {0x0303};  // TLS 1.2 protocol version.
   std::string ca_file_, ca_dir_;
+  std::string verified_hostname_;
+  std::shared_ptr<CancellationWait> cancellation_wait_;
 
   void ensure_ctx();
   void upgrade_impl(std::string_view host, rs::util::Deadline deadline);

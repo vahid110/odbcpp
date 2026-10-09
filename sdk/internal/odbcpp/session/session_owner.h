@@ -1,5 +1,6 @@
 #pragma once
 #include "odbcpp/database/i_database_connection.h"
+#include "odbcpp/database/session_cancellation.h"
 #include <memory>
 #include <optional>
 
@@ -57,6 +58,11 @@ class SessionLease final {
   ~SessionLease();
 
   explicit operator bool() const noexcept { return physical_session() != nullptr; }
+  bool continue_cancellation(const std::shared_ptr<SessionCancellation>&) noexcept;
+  CancellationOutcome finish_cancellation(const std::shared_ptr<SessionCancellation>&) noexcept;
+  bool supports_server_cancellation() const noexcept;
+  bool cancellation_request_eligible(std::string_view sql) const noexcept;
+  std::shared_ptr<SessionCancellation> arm_cancellation(std::uint64_t generation, rs::util::Deadline original);
   // Bound authenticated Idle leases only, established by passive checks without
   // backend calls under ownership locks. Every execution/reset attempt invalidates
   // all copies before backend access; closure/retirement/credential staleness

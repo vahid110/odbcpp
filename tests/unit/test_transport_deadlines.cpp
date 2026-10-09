@@ -154,8 +154,8 @@ private:
 class TLSSleepingServer {
 public:
   explicit TLSSleepingServer(std::chrono::milliseconds sleep_for,
-                            bool send_close_notify = false)
-      : sleep_for_(sleep_for), send_close_notify_(send_close_notify),
+                            bool send_close_notify = false, bool send_prefix = false)
+      : sleep_for_(sleep_for), send_close_notify_(send_close_notify), send_prefix_(send_prefix),
         context_(SSL_CTX_new(TLS_server_method())) {
     if (!context_) throw std::runtime_error("failed to create TLS test context");
     configure_certificate();
@@ -211,6 +211,7 @@ public:
             handshake_complete_ = true;
           }
           handshake_ready_.notify_all();
+          if (send_prefix_) { const char prefix='a'; (void)SSL_write(ssl,&prefix,1); }
           std::this_thread::sleep_for(sleep_for_);
           if (send_close_notify_) SSL_shutdown(ssl);
         }
@@ -279,6 +280,7 @@ private:
   rs::platform::WSAInit wsa_{};
   std::chrono::milliseconds sleep_for_;
   bool send_close_notify_;
+  bool send_prefix_;
   SSL_CTX* context_{};
   test_socket_t listener_{invalid_test_socket};
   uint16_t port_{};
@@ -1260,3 +1262,157 @@ TEST(TLSTransportDeadlineTest, EmptyTlsIoChecksConnectionAndDeadline) {
 }
 
 } // namespace
+
+// Provider-level memory BIO handshake: no listener, DNS, credentials or server
+// process. The CA is a generated public certificate in an exclusively owned
+// temporary directory; the private key never leaves the server context.
+#include "odbcpp/security/tls_client.h"
+#include <openssl/pem.h>
+
+namespace {
+class CancellationMemoryPeer {
+ public:
+  CancellationMemoryPeer() : context_(SSL_CTX_new(TLS_server_method()),SSL_CTX_free) {
+    if(!context_)throw std::runtime_error("memory TLS context");
+    std::unique_ptr<EVP_PKEY_CTX,decltype(&EVP_PKEY_CTX_free)> key_context(EVP_PKEY_CTX_new_id(EVP_PKEY_RSA,nullptr),EVP_PKEY_CTX_free);
+    EVP_PKEY* raw_key=nullptr;
+    if(!key_context || EVP_PKEY_keygen_init(key_context.get())<=0 ||
+        EVP_PKEY_CTX_set_rsa_keygen_bits(key_context.get(),2048)<=0 || EVP_PKEY_keygen(key_context.get(),&raw_key)<=0)
+      throw std::runtime_error("memory TLS key");
+    std::unique_ptr<EVP_PKEY,decltype(&EVP_PKEY_free)> key(raw_key,EVP_PKEY_free);
+    std::unique_ptr<X509,decltype(&X509_free)> cert(X509_new(),X509_free);
+    if(!cert)throw std::runtime_error("memory TLS certificate");
+    X509_set_version(cert.get(),2);ASN1_INTEGER_set(X509_get_serialNumber(cert.get()),17);
+    X509_gmtime_adj(X509_get_notBefore(cert.get()),-60);X509_gmtime_adj(X509_get_notAfter(cert.get()),3600);
+    X509_set_pubkey(cert.get(),key.get());auto* name=X509_get_subject_name(cert.get());
+    X509_NAME_add_entry_by_txt(name,"CN",MBSTRING_ASC,reinterpret_cast<const unsigned char*>("localhost"),-1,-1,0);
+    X509_set_issuer_name(cert.get(),name);
+    if(X509_sign(cert.get(),key.get(),EVP_sha256())<=0 || SSL_CTX_use_certificate(context_.get(),cert.get())!=1 ||
+        SSL_CTX_use_PrivateKey(context_.get(),key.get())!=1)throw std::runtime_error("memory TLS certificate setup");
+    const auto nonce=std::chrono::steady_clock::now().time_since_epoch().count();
+    directory_=std::filesystem::temp_directory_path()/std::filesystem::path("odbcpp-cancel-public-ca-"+std::to_string(nonce));
+    if(!std::filesystem::create_directory(directory_))throw std::runtime_error("CA directory collision");
+    ca_=directory_/"ca.pem";
+    std::unique_ptr<BIO,decltype(&BIO_free)> output(BIO_new_file(ca_.string().c_str(),"w"),BIO_free);
+    if(!output || PEM_write_bio_X509(output.get(),cert.get())!=1)throw std::runtime_error("memory TLS CA write");
+  }
+  ~CancellationMemoryPeer() {
+    std::error_code error;std::filesystem::remove(ca_,error);std::filesystem::remove(directory_,error);
+  }
+  const std::filesystem::path& ca()const noexcept{return ca_;}
+  bool handshake(rs::core::security::TlsClient& client,std::string_view hostname) {
+    std::unique_ptr<SSL,decltype(&SSL_free)> server(SSL_new(context_.get()),SSL_free);
+    if(!server)return false;
+    BIO* input=BIO_new(BIO_s_mem());BIO* output=BIO_new(BIO_s_mem());
+    if(!input||!output){if(input)BIO_free(input);if(output)BIO_free(output);return false;}
+    SSL_set_bio(server.get(),input,output);SSL_set_accept_state(server.get());
+    if(client.begin_memory(hostname).state!=rs::core::security::TlsStepState::Complete)return false;
+    std::array<std::byte,32768> bytes{};
+    bool server_done=false;
+    for(int step=0;step<256;++step) {
+      const auto status=client.handshake();
+      if(status.state==rs::core::security::TlsStepState::TlsError || status.state==rs::core::security::TlsStepState::SystemError)return false;
+      while(client.ciphertext_pending()) {
+        const auto drained=client.drain_ciphertext(bytes);
+        if(!drained.processed || BIO_write(input,bytes.data(),static_cast<int>(drained.processed))!=static_cast<int>(drained.processed))return false;
+      }
+      if(!server_done) {
+        const int result=SSL_do_handshake(server.get());
+        if(result==1)server_done=true;
+        else {const int error=SSL_get_error(server.get(),result);if(error!=SSL_ERROR_WANT_READ&&error!=SSL_ERROR_WANT_WRITE)return false;}
+      }
+      while(BIO_ctrl_pending(output)) {
+        const int count=BIO_read(output,bytes.data(),static_cast<int>(bytes.size()));
+        if(count<=0 || client.provide_ciphertext(std::span<const std::byte>(bytes.data(),static_cast<std::size_t>(count))).state!=rs::core::security::TlsStepState::Complete)return false;
+      }
+      if(server_done&&status.state==rs::core::security::TlsStepState::Complete)return true;
+    }
+    return false;
+  }
+ private:
+  std::unique_ptr<SSL_CTX,decltype(&SSL_CTX_free)> context_;
+  std::filesystem::path directory_,ca_;
+};
+}
+
+TEST(CancellationTlsTrustTest, FrozenSiblingSurvivesParentAndDeletedTrustPathWithHostnameVerification) {
+  CancellationMemoryPeer peer;
+  auto parent=std::make_unique<rs::core::security::TlsClient>();
+  rs::core::security::TlsClientConfig config;config.ca_file=peer.ca().string();
+  parent->configure(config);EXPECT_FALSE(parent->verified_sibling());
+  ASSERT_TRUE(peer.handshake(*parent,"localhost"));
+  auto sibling=parent->verified_sibling();ASSERT_TRUE(sibling);EXPECT_TRUE(sibling->frozen_context());
+  // Configuration changes cannot mutate the independent child store/context.
+  config.verify_peer=false;parent->configure(config);parent.reset();
+  ASSERT_TRUE(std::filesystem::remove(peer.ca()));
+  EXPECT_THROW(sibling->configure(config),std::logic_error);
+  EXPECT_TRUE(peer.handshake(*sibling,"localhost"));
+  sibling->reset_session();
+  EXPECT_FALSE(peer.handshake(*sibling,"wrong.invalid"));
+}
+
+TEST(CancellationTlsTrustTest, UnverifiedContextCannotBecomeCancellationTrustSibling) {
+  CancellationMemoryPeer peer;rs::core::security::TlsClient client;
+  rs::core::security::TlsClientConfig config;config.verify_peer=false;config.verify_hostname=false;
+  client.configure(config);ASSERT_TRUE(peer.handshake(client,"localhost"));
+  EXPECT_FALSE(client.peer_identity_verified());
+  EXPECT_FALSE(client.verified_sibling());
+}
+
+TEST(CancellationSocketWaitTest, ArmedUnlimitedWaitObservesFrozenCutoffWithoutClosingMainSocket) {
+  SleepingServer server(5800ms);
+  SocketTransport transport(DeadlineModel::Strict);
+  ASSERT_TRUE(transport.connect("127.0.0.1",server.port(),rs::util::make_deadline(1s)).has_value());
+  auto control=std::make_shared<rs::core::transport::CancellationWait>();
+  transport.cancellation_wait(control);
+  std::promise<void> entered;auto ready=entered.get_future();
+  auto receive=std::async(std::launch::async,[&] {
+    std::array<std::byte,1> byte{};entered.set_value();
+    return transport.recv(byte,rs::util::Deadline::max());
+  });
+  ready.wait();
+  ASSERT_EQ(std::future_status::timeout,receive.wait_for(100ms));
+  const auto claim=rs::util::Clock::now();
+  ASSERT_TRUE(control->freeze(rs::util::Deadline::max(),claim));
+  const auto frozen=control->effective(rs::util::Deadline::max());
+  EXPECT_EQ(claim+5s,frozen);EXPECT_FALSE(control->freeze(rs::util::Deadline::max(),claim+1s));
+  auto result=receive.get();ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout),result.error());
+  EXPECT_GE(rs::util::Clock::now(),frozen);
+  EXPECT_LT(rs::util::Clock::now(),frozen+1s);
+  // Only the session owner retires after an uncertain drain. Tightening/polling
+  // itself cannot destroy the physical stream or prevent a sibling capture.
+  EXPECT_TRUE(transport.supports_server_cancel());EXPECT_TRUE(transport.cancellation_peer());
+  transport.cancellation_wait({});
+  const std::array<std::byte,1> byte{std::byte{'x'}};
+  EXPECT_TRUE(transport.send(byte,rs::util::make_deadline(100ms)).has_value());
+  transport.close();
+}
+
+TEST(CancellationTlsWaitTest, ArmedPartialPlaintextRetainsPrefixAndRetryStateUntilFrozenCutoff) {
+  TLSSleepingServer server(5800ms,false,true);
+  TLSTransport transport(DeadlineModel::Strict);
+  // This fixture isolates the encrypted wait/retry primitive. Verified trust
+  // snapshot and wrong-host refusal are separately exercised above; no verified
+  // remote/cancellation handshake is inferred from this local test certificate.
+  transport.set_verify(false);
+  ASSERT_TRUE(transport.connect("127.0.0.1",server.port(),rs::util::make_deadline(2s)).has_value());
+  ASSERT_TRUE(server.wait_for_handshake());
+  auto control=std::make_shared<rs::core::transport::CancellationWait>();transport.cancellation_wait(control);
+  std::array<std::byte,2> plaintext{std::byte{0x5a},std::byte{0x5a}};
+  auto prefix=transport.recv(std::span<std::byte>(plaintext.data(),1),rs::util::make_deadline(1s));
+  ASSERT_TRUE(prefix.has_value());ASSERT_EQ(1u,prefix->n);EXPECT_EQ(std::byte{'a'},plaintext[0]);
+  auto receive=std::async(std::launch::async,[&] {
+    return transport.recv(std::span<std::byte>(plaintext.data()+1,1),rs::util::Deadline::max());
+  });
+  ASSERT_EQ(std::future_status::timeout,receive.wait_for(100ms));
+  const auto claim=rs::util::Clock::now();ASSERT_TRUE(control->freeze(rs::util::Deadline::max(),claim));
+  auto result=receive.get();ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout),result.error());
+  EXPECT_EQ(std::byte{'a'},plaintext[0]);EXPECT_EQ(std::byte{0x5a},plaintext[1]);
+  EXPECT_GE(rs::util::Clock::now(),claim+5s);EXPECT_LT(rs::util::Clock::now(),claim+6s);
+  transport.cancellation_wait({});
+  const std::array<std::byte,1> output{std::byte{'x'}};
+  EXPECT_TRUE(transport.send(output,rs::util::make_deadline(100ms)).has_value());
+  transport.close();
+}

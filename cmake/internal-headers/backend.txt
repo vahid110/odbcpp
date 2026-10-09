@@ -77,3 +77,6 @@ core/database/mysql/authentication.h
 core/database/mysql/connection_security.h
 core/database/mysql/mysql_session.h
 core/database/mysql/tls_negotiation.h
+odbcpp/transport/cancellation_wait.h
+odbcpp/database/session_cancellation.h
+core/database/session_cancellation_wire.h

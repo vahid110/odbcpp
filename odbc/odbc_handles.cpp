@@ -2589,6 +2589,89 @@ SQLRETURN ODBCDescriptor::copy_from(const ODBCDescriptor& source) {
 }
 
 // Statement implementation
+// The cross-thread path owns only this ledger and the backend's independent
+// endpoint. It never acquires the executing handle/connection lock or writes
+// diagnostic records, headers, bindings or cursors.
+struct ODBCStatement::CancellationLedger {
+  std::mutex mutex;
+  std::shared_ptr<rs::core::database::SessionCancellation> endpoint;
+  bool active{true}, available{false}, preparing{true}, locally_claimed{false};
+};
+class ODBCStatement::ExecutionCancellation {
+ public:
+  explicit ExecutionCancellation(ODBCStatement& statement, bool eligible) : statement_(statement), ledger_(std::make_shared<CancellationLedger>()) {
+    ledger_->available = eligible && statement_.conn_->supports_server_cancellation();
+    std::lock_guard lock(statement_.cancellation_mutex_);
+    if (statement_.operation_generation_ == (std::numeric_limits<std::uint64_t>::max)())
+      ledger_->available = false;
+    else generation_ = ++statement_.operation_generation_;
+    statement_.cancellation_ = ledger_;
+  }
+  ~ExecutionCancellation() { finish(); }
+  bool before_transaction() noexcept {
+    std::lock_guard lock(ledger_->mutex);
+    ledger_->preparing = false;
+    return !ledger_->locally_claimed;
+  }
+  void arm(rs::util::Deadline deadline) {
+    std::lock_guard lock(ledger_->mutex);
+    if (ledger_->available && statement_.conn_->backend_lease_)
+      ledger_->endpoint = statement_.conn_->backend_lease_->arm_cancellation(generation_, deadline);
+  }
+  bool next_phase() noexcept {
+    std::lock_guard lock(ledger_->mutex);
+    return !ledger_->endpoint || (statement_.conn_->backend_lease_ &&
+        statement_.conn_->backend_lease_->continue_cancellation(ledger_->endpoint));
+  }
+  rs::core::database::CancellationOutcome finish() noexcept {
+    if (finished_) return outcome_;
+    finished_ = true;
+    std::shared_ptr<rs::core::database::SessionCancellation> endpoint;
+    {
+      std::lock_guard lock(ledger_->mutex);
+      ledger_->active = false;
+      endpoint = ledger_->endpoint;
+      outcome_.claimed = outcome_.confirmed = ledger_->locally_claimed;
+    }
+    if (endpoint) {
+      outcome_ = statement_.conn_->backend_lease_ ?
+          statement_.conn_->backend_lease_->finish_cancellation(endpoint) : endpoint->seal();
+    }
+    if (outcome_.claimed) {
+      statement_.clear_current_result();
+      statement_.pending_results_.clear();
+    }
+    if (outcome_.retire) { try { statement_.conn_->close_connection(); } catch (...) {} }
+    {
+      std::lock_guard lock(statement_.cancellation_mutex_);
+      if (statement_.cancellation_ == ledger_) statement_.cancellation_.reset();
+    }
+    return outcome_;
+  }
+ private:
+  ODBCStatement& statement_;
+  std::shared_ptr<CancellationLedger> ledger_;
+  std::uint64_t generation_{0};
+  bool finished_{false};
+  rs::core::database::CancellationOutcome outcome_{};
+};
+SQLRETURN ODBCStatement::cancel() noexcept {
+  try {
+    std::shared_ptr<CancellationLedger> ledger;
+    { std::lock_guard lock(cancellation_mutex_); ledger = cancellation_; }
+    if (!ledger) return SQL_SUCCESS;
+    std::shared_ptr<rs::core::database::SessionCancellation> endpoint;
+    {
+      std::lock_guard lock(ledger->mutex);
+      if (!ledger->active) return SQL_SUCCESS;
+      if (!ledger->available) return SQL_ERROR;
+      if (ledger->preparing) { ledger->locally_claimed = true; return SQL_SUCCESS; }
+      endpoint = ledger->endpoint;
+    }
+    return endpoint && endpoint->request() ? SQL_SUCCESS : SQL_ERROR;
+  } catch (...) { return SQL_ERROR; }
+}
+
 SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
   const auto started = std::chrono::steady_clock::now();
   const auto dynamic_function = classify_dynamic_function(sql);
@@ -2614,6 +2697,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
   const auto native_sql = statement_sql(
       *this, conn_->sql_dialect(), sql, no_scan_);
   if (!native_sql) return SQL_ERROR;
+  ExecutionCancellation cancellation(*this, conn_->cancellation_request_eligible(*native_sql));
   if (conn_->logs_queries()) {
     conn_->log(rs::core::logging::LogLevel::Debug, "query_text",
                "Executing direct SQL", {{"sql", *native_sql, rs::core::logging::FieldSensitivity::QueryText}});
@@ -2629,9 +2713,19 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
   try {
     auto deadline = rs::util::make_deadline(
         timeout_duration(query_timeout_seconds_));
+    if (!cancellation.before_transaction()) {
+      set_error("HY008", "Statement cancelled before dispatch");
+      return SQL_ERROR;
+    }
+    cancellation.arm(deadline);
     auto transaction = conn_->begin_transaction_if_needed(deadline);
     if (transaction.has_error()) {
+      const auto cancellation_outcome = cancellation.finish();
       const auto timeout = is_timeout_error(transaction.error());
+      if (cancellation_outcome.confirmed && transaction.backend_error().error_class == rs::core::database::BackendErrorClass::Server) {
+        set_error("HY008", "Statement cancelled");
+        return SQL_ERROR;
+      }
       if (timeout) conn_->disconnect();
       set_error(query_failure_sqlstate(conn_->backend_provider(),
                                        transaction.backend_error(), SQLSTATE_GENERAL_ERROR,
@@ -2643,8 +2737,19 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
       return SQL_ERROR;
     }
-    auto result = conn_->backend_query(*native_sql,
-                                                            deadline);
+    // Compound requests remain supported, but outside this first cancellation
+    // stage. Refuse targeting them rather than retargeting a later result.
+    if (!cancellation.next_phase()) {
+      const auto outcome = cancellation.finish();
+      set_error(outcome.confirmed ? "HY008" : SQLSTATE_GENERAL_ERROR, "Statement cancellation did not permit dispatch");
+      return SQL_ERROR;
+    }
+    auto result = conn_->backend_query(*native_sql, deadline);
+    const auto cancellation_outcome = cancellation.finish();
+    if (cancellation_outcome.confirmed && (!result.has_error() || result.backend_error().error_class == rs::core::database::BackendErrorClass::Server)) {
+      set_error("HY008", "Statement cancelled");
+      return SQL_ERROR;
+    }
     
     if (result.has_error()) {
       const auto timeout = is_timeout_error(result.error());
@@ -2662,7 +2767,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
 
     const auto row_count = result->rows.size();
     const auto affected_rows = result->affected_rows;
-    apply_query_result(std::move(*result), false);
+    if (!cancellation_outcome.claimed) apply_query_result(std::move(*result), false);
     conn_->log(rs::core::logging::LogLevel::Info, "query_completed",
                "Direct SQL execution completed",
                {{"kind", "direct", rs::core::logging::FieldSensitivity::Public},
@@ -3656,6 +3761,20 @@ SQLRETURN ODBCStatement::execute() {
               "Only one column-wise parameter set is supported");
     return SQL_ERROR;
   }
+  bool cancellable_inputs = true;
+  for (SQLSMALLINT index = 0; index < parameter_count_; ++index) {
+    const auto* record = application_descriptor->record(static_cast<std::size_t>(index));
+    if (!record) { cancellable_inputs = false; break; }
+    if (record->indicator_ptr && load_application_value<SQLLEN>(record->indicator_ptr) == SQL_NULL_DATA) continue;
+    const auto* length = record->octet_length_ptr ? record->octet_length_ptr : record->indicator_ptr;
+    if (length) {
+      const auto value = load_application_value<SQLLEN>(length);
+      if (value == SQL_DATA_AT_EXEC || value <= SQL_LEN_DATA_AT_EXEC_OFFSET) {
+        cancellable_inputs = false; break;
+      }
+    }
+  }
+  ExecutionCancellation cancellation(*this, cancellable_inputs && conn_->cancellation_request_eligible(prepared_sql_));
   if (parameter_count_ > 0) {
     const auto implementation_descriptor = descriptor(imp_param_descriptor_);
     if (auto* processed = implementation_descriptor->rows_processed_ptr()) {
@@ -4426,9 +4545,19 @@ SQLRETURN ODBCStatement::execute() {
     // Use PostgreSQL Parse/Bind/Execute protocol
     auto deadline = rs::util::make_deadline(
         timeout_duration(query_timeout_seconds_));
+    if (!cancellation.before_transaction()) {
+      set_error("HY008", "Statement cancelled before dispatch");
+      return complete_parameter_set(SQL_ERROR);
+    }
+    cancellation.arm(deadline);
     auto transaction = conn_->begin_transaction_if_needed(deadline);
     if (transaction.has_error()) {
+      const auto cancellation_outcome = cancellation.finish();
       const auto timeout = is_timeout_error(transaction.error());
+      if (cancellation_outcome.confirmed && transaction.backend_error().error_class == rs::core::database::BackendErrorClass::Server) {
+        set_error("HY008", "Statement cancelled");
+        return complete_parameter_set(SQL_ERROR);
+      }
       if (timeout) conn_->disconnect();
       set_error(query_failure_sqlstate(conn_->backend_provider(),
                                        transaction.backend_error(), SQLSTATE_GENERAL_ERROR,
@@ -4440,7 +4569,17 @@ SQLRETURN ODBCStatement::execute() {
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
       return complete_parameter_set(SQL_ERROR);
     }
+    if (!cancellation.next_phase()) {
+      const auto outcome = cancellation.finish();
+      set_error(outcome.confirmed ? "HY008" : SQLSTATE_GENERAL_ERROR, "Statement cancellation did not permit dispatch");
+      return complete_parameter_set(SQL_ERROR);
+    }
     auto result = conn_->backend_prepared(prepared_sql_, param_values, deadline);
+    const auto cancellation_outcome = cancellation.finish();
+    if (cancellation_outcome.confirmed && (!result.has_error() || result.backend_error().error_class == rs::core::database::BackendErrorClass::Server)) {
+      set_error("HY008", "Statement cancelled");
+      return complete_parameter_set(SQL_ERROR);
+    }
     
     if (result.has_error()) {
       const auto timeout = is_timeout_error(result.error());
@@ -4458,7 +4597,7 @@ SQLRETURN ODBCStatement::execute() {
 
     const auto row_count = result->rows.size();
     const auto affected_rows = result->affected_rows;
-    apply_query_result(std::move(*result), true);
+    if (!cancellation_outcome.claimed) apply_query_result(std::move(*result), true);
     conn_->log(rs::core::logging::LogLevel::Info, "query_completed",
                "Prepared SQL execution completed",
                {{"kind", "prepared", rs::core::logging::FieldSensitivity::Public},

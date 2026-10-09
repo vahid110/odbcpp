@@ -21,6 +21,13 @@ selected commit if no suitable checkout exists; use the returned directory, not
 the integration checkout. A read-only audit can use existing immutable evidence.
 Do not relocate a running build or silently replace an accepted scratch path.
 
+Before implementation, classify shared SDK foundations, backend-specific work
+and adapter-only behavior under `SDK_ARCHITECTURE.md` and the ownership checkpoint
+in `AGENTS.md`. Carry the component/file/rationale/dependency/proof table into the
+candidate handoff and require independent final review of actual placement.
+Reuse the existing architecture checks; do not create a standalone test batch
+for a prose-only policy update or defer common ownership without a disposition.
+
 Every delegated assignment states baseline, owned files, permitted actions,
 deliverable, required checks and stop condition. Root integrates shared files.
 Return an exact patch and evidence rather than restoring an old whole CMake,

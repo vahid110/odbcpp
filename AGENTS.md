@@ -9,6 +9,22 @@ It defines the repeatable workflow; this file defines durable repository rules.
 - Follow `SDK_ARCHITECTURE.md`, `SECURITY_MODEL.md`, `SDK_PRODUCT_PLAN.md` and the
   relevant backend/authentication plan. Concrete backend framing and native types
   stay backend-owned; ODBC adapts normalized, owning SDK contracts.
+- Every implementation batch must classify new or changed contracts, classes
+  and helpers by physical owner before coding: reusable provider-neutral
+  contracts, transport/security/deadline primitives and shared session lifecycle
+  belong in `sdk/`; native protocol/framing/key/state machinery remains backend
+  owned; ODBC handles, diagnostics and API adaptation remain adapter owned.
+  A feature starting in Redshift does not justify keeping its common foundation
+  in the driver or postponing SDK ownership to an unspecified later refactor.
+- Include a concise ownership table in each candidate report: component, exact
+  owner file, reuse rationale, allowed dependencies and relevant proof. Generic
+  functionality left outside the SDK requires an explicit reason and independent
+  reviewer disposition. Do not move protocol semantics into the SDK or invent a
+  generic framework/public API merely to satisfy the table.
+- Final integration review must inspect actual foundation placement and reuse,
+  not only filenames or passing tests. Verify header-owner/staging manifests and
+  applicable architecture/public-first-include checks. These mechanical checks
+  support, but do not replace, the semantic ownership review.
 - One integration owner controls shared SDK/CMake/CI/crypto/ODBC files, commits
   and pushes. Delegate finite nonoverlapping packages with an exact baseline,
   owned files, checks, deliverable and stopping condition.

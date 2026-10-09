@@ -26,3 +26,5 @@ odbcpp/transport/i_transport.h
 odbcpp/util/deadline.h
 odbcpp/util/result.h
 core/database/postgres/pg_catalog_profile.h
+odbcpp/transport/cancellation_wait.h
+odbcpp/database/session_cancellation.h

@@ -5,6 +5,7 @@
 #include <array>
 #include <cerrno>
 #include <limits>
+#include <stdexcept>
 #include <utility>
 
 #include <openssl/err.h>
@@ -105,6 +106,7 @@ public:
   }
 
   void configure(TlsClientConfig config) {
+    if (frozen_) throw std::logic_error("Frozen TLS context cannot be configured");
     config_ = std::move(config);
     reset_context_if_inactive();
   }
@@ -220,6 +222,40 @@ public:
     return write_bio_ && ::BIO_ctrl_pending(write_bio_) > 0;
   }
 
+  std::unique_ptr<Impl> verified_sibling() const {
+    if (!session_ || !peer_verified_ || !context_ || !config_.verify_peer || !config_.verify_hostname) return nullptr;
+    // Context configuration is captured when created, not from later setters.
+    auto sibling = std::make_unique<Impl>();
+    sibling->config_ = context_config_;
+    if (!sibling->config_.verify_peer || !sibling->config_.verify_hostname) return nullptr;
+    sibling->context_ = ::SSL_CTX_new(::TLS_client_method());
+    if (!sibling->context_) return nullptr;
+    if (::SSL_CTX_set_min_proto_version(sibling->context_, static_cast<int>(context_config_.minimum_version)) != 1) return nullptr;
+#ifdef TLS1_3_VERSION
+    if (::SSL_CTX_set_max_proto_version(sibling->context_, TLS1_3_VERSION) != 1) return nullptr;
+#endif
+    ::SSL_CTX_set_verify(sibling->context_, SSL_VERIFY_PEER, nullptr);
+    auto* source = ::SSL_CTX_get_cert_store(context_);
+    auto* target = ::SSL_CTX_get_cert_store(sibling->context_);
+    if (!source || !target || ::X509_VERIFY_PARAM_set1(::X509_STORE_get0_param(target), ::X509_STORE_get0_param(source)) != 1) return nullptr;
+    const auto* objects = ::X509_STORE_get0_objects(source);
+    for (int i = 0; objects && i < sk_X509_OBJECT_num(objects); ++i) {
+      auto* object = sk_X509_OBJECT_value(objects, i);
+      const auto type = ::X509_OBJECT_get_type(object);
+      if (type == X509_LU_X509) {
+        if (::X509_STORE_add_cert(target, ::X509_OBJECT_get0_X509(object)) != 1) return nullptr;
+      } else if (type == X509_LU_CRL) {
+        if (::X509_STORE_add_crl(target, ::X509_OBJECT_get0_X509_CRL(object)) != 1) return nullptr;
+      }
+    }
+    // No lookup methods/path names are copied: hashed CA directories cannot be
+    // reopened by this sibling after the original verification established trust.
+    sibling->config_.ca_file.clear(); sibling->config_.ca_directory.clear();
+    sibling->context_config_ = sibling->config_;
+    sibling->frozen_ = true;
+    return sibling;
+  }
+  bool frozen_context() const noexcept { return frozen_; }
   bool active() const noexcept { return session_ != nullptr; }
   bool peer_identity_verified() const noexcept { return peer_verified_; }
 
@@ -233,7 +269,7 @@ public:
   }
 
   void reset_context_if_inactive() noexcept {
-    if (session_ || !context_) return;
+    if (frozen_ || session_ || !context_) return;
     ::SSL_CTX_free(context_);
     context_ = nullptr;
   }
@@ -261,6 +297,7 @@ private:
 
   TlsStep ensure_context() {
     if (context_) return {};
+    context_config_ = config_;
     context_ = ::SSL_CTX_new(::TLS_client_method());
     if (!context_) return failure("SSL_CTX_new");
     const auto fail_context = [this](std::string operation) {
@@ -358,6 +395,8 @@ private:
   }
 
   TlsClientConfig config_;
+  TlsClientConfig context_config_;
+  bool frozen_{false};
   SSL_CTX* context_{nullptr};
   SSL* session_{nullptr};
   BIO* read_bio_{nullptr};
@@ -368,6 +407,14 @@ private:
 
 TlsClient::TlsClient() : impl_(std::make_unique<Impl>()) {}
 TlsClient::~TlsClient() = default;
+std::unique_ptr<TlsClient> TlsClient::verified_sibling() const {
+  auto copied = impl_->verified_sibling();
+  if (!copied) return nullptr;
+  auto sibling = std::make_unique<TlsClient>();
+  sibling->impl_ = std::move(copied);
+  return sibling;
+}
+bool TlsClient::frozen_context() const noexcept { return impl_->frozen_context(); }
 void TlsClient::configure(TlsClientConfig config) {
   impl_->configure(std::move(config));
 }

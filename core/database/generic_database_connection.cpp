@@ -66,6 +66,8 @@ GenericDatabaseConnection::GenericDatabaseConnection(
     std::unique_ptr<rs::core::transport::ITransport> transport)
   : parser_(std::move(parser)), transport_(std::move(transport)) {}
 
+GenericDatabaseConnection::~GenericDatabaseConnection() { invalidate_cancellation_owner(); }
+
 std::size_t GenericDatabaseConnection::count_parameter_markers(
     std::string_view sql) const {
   return parser_->count_parameter_markers(sql);
@@ -163,7 +165,9 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
     return {rs::util::DbErrorCode::InvalidParameter, error.what()};
   }
 
+  forget_backend_key();
   clear_authentication_state();
+  transport_closed_after_failure_ = false;
   settings_ = settings;
   server_params_.clear();
   peer_identity_verified_ = false;
@@ -293,9 +297,12 @@ void GenericDatabaseConnection::clear_authentication_state() noexcept {
 }
 
 void GenericDatabaseConnection::disconnect() {
+  forget_backend_key();
+  if (cancellation_operation_) finish_cancellation_operation(cancellation_operation_);
   clear_authentication_state();
-  if (transport_) {
+  if (transport_ && !transport_closed_after_failure_) {
     transport_->close();
+    transport_closed_after_failure_ = true;
   }
   connected_ = false;
   session_state_ = SessionState::Disconnected;
@@ -308,10 +315,12 @@ bool GenericDatabaseConnection::is_connected() const {
 }
 
 void GenericDatabaseConnection::mark_transport_failed() noexcept {
+  if (cancellation_operation_) cancellation_operation_->seal();
+  forget_backend_key();
   const bool was_connected = connected_;
   connected_ = false;
   session_state_ = SessionState::Disconnected;
-  if (was_connected && transport_) transport_->close();
+  if (was_connected && transport_) { transport_->close(); transport_closed_after_failure_ = true; }
 }
 
 BackendResult<QueryResult> GenericDatabaseConnection::finish_operation(
@@ -454,11 +463,15 @@ BackendResult<QueryResult> GenericDatabaseConnection::execute_query_impl(std::st
     return BackendResult<QueryResult>{
         rs::util::DbErrorCode::InvalidParameter, error.what()};
   }
+  if (cancellation_phase_active_ && cancellation_operation_ && !cancellation_operation_->before_wire()) {
+    return {rs::util::DbErrorCode::QueryFailed, "Statement cancelled before dispatch"};
+  }
   auto write_result = write_all_result(query_msg, deadline, true);
   if (write_result.has_error()) {
     return BackendResult<QueryResult>{write_result.error(), write_result.error_message()};
   }
 
+  if (cancellation_phase_active_ && cancellation_operation_) cancellation_operation_->sent();
   return read_query_result(deadline, ResponseKind::SimpleExecution, expected_completion);
 }
 
@@ -480,11 +493,15 @@ BackendResult<QueryResult> GenericDatabaseConnection::execute_prepared_impl(std:
     return BackendResult<QueryResult>{
         rs::util::DbErrorCode::InvalidParameter, error.what()};
   }
+  if (cancellation_phase_active_ && cancellation_operation_ && !cancellation_operation_->before_wire()) {
+    return {rs::util::DbErrorCode::QueryFailed, "Statement cancelled before dispatch"};
+  }
   auto write_result = write_all_result(query_msg, deadline, true);
   if (write_result.has_error()) {
     return BackendResult<QueryResult>{write_result.error(), write_result.error_message()};
   }
   
+  if (cancellation_phase_active_ && cancellation_operation_) cancellation_operation_->sent();
   return read_query_result(deadline, ResponseKind::PreparedExecution);
 }
 
@@ -612,6 +629,10 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
     wire_bytes += msg_result->size();
     ++message_count;
     try {
+      // Latch main-owner observation before parser/error-text allocation. A
+      // cancellation claimed later cannot replace an already observed error.
+      if (cancellation_phase_active_ && cancellation_operation_ && !msg_result->empty() &&
+          msg_result->front() == std::byte{'E'}) cancellation_operation_->error_observed({});
       auto msg = parser_->parse_message(*msg_result);
       if (query_error && msg.tag != 'N' && msg.tag != 'S' &&
           msg.tag != 'A' && msg.tag != 'Z') {
@@ -764,6 +785,7 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
       if (parser_->is_error_response(msg) && !query_error) {
         query_error = parser_->extract_error_message(msg);
         query_error_sqlstate = parser_->extract_error_sqlstate(msg);
+        if (cancellation_phase_active_ && cancellation_operation_) cancellation_operation_->error_observed(query_error_sqlstate);
       }
       if (msg.tag == 'C' || msg.tag == 'E' || msg.tag == 'I') {
         saw_completion = true;
@@ -803,6 +825,13 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
     }
   }
 
+  if (cancellation_phase_active_ && cancellation_operation_) {
+    const auto outcome = cancellation_operation_->drained(true);
+    cancellation_phase_active_ = false;
+    if (auto* carrier = dynamic_cast<rs::core::transport::IServerCancelTransport*>(transport_.get()))
+      carrier->cancellation_wait({});
+    if (outcome.retire) mark_transport_failed();
+  }
   try {
     auto result = parser_->extract_query_result(messages);
     // Extraction returns owning cells/metadata: wire payloads are no longer
@@ -1127,7 +1156,14 @@ BackendResult<void> GenericDatabaseConnection::perform_authentication_result(rs:
     
       wire_bytes += msg_result->size();
       ++message_count;
+      struct KeyWireCleanup {
+        std::vector<std::byte>& bytes;
+        bool key;
+        ~KeyWireCleanup() { if (key) rs::core::security::secure_cleanse({
+            reinterpret_cast<unsigned char*>(bytes.data()), bytes.size()}); }
+      } raw_key_cleanup{*msg_result, !msg_result->empty() && msg_result->front() == std::byte{'K'}};
       auto msg = parser_->parse_message(*msg_result);
+      KeyWireCleanup parsed_key_cleanup{msg.payload, msg.tag == 'K'};
     
       if (msg.tag == 'R') { // Authentication
         if (authenticated) {
@@ -1173,6 +1209,7 @@ BackendResult<void> GenericDatabaseConnection::perform_authentication_result(rs:
               rs::util::DbErrorCode::ProtocolError,
               "BackendKeyData arrived before AuthenticationOk");
         }
+        authenticated_backend_key(msg.payload);
       }
       else if (parser_->is_error_response(msg)) {
         const auto message = parser_->extract_error_message(msg);
@@ -1248,4 +1285,18 @@ rs::util::Result<void> GenericDatabaseConnection::record_parameter_status(
   return {};
 }
 
+} // namespace rs::core::database
+
+namespace rs::core::database {
+CancellationOutcome GenericDatabaseConnection::finish_cancellation_operation(
+    const std::shared_ptr<SessionCancellation>& endpoint) noexcept {
+  if (!endpoint || endpoint != cancellation_operation_) return {};
+  auto outcome = endpoint->seal();
+  if (auto* carrier = dynamic_cast<rs::core::transport::IServerCancelTransport*>(transport_.get()))
+    carrier->cancellation_wait({});
+  cancellation_operation_.reset();
+  cancellation_phase_active_ = false;
+  if (outcome.retire) mark_transport_failed();
+  return outcome;
+}
 } // namespace rs::core::database

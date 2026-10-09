@@ -464,6 +464,7 @@ namespace {
 
   bool is_supported_function(SQLUSMALLINT function_id) {
     switch (function_id) {
+      case SQL_API_SQLCANCEL:
       case SQL_API_SQLALLOCHANDLE:
       case SQL_API_SQLBINDCOL:
       case SQL_API_SQLBINDPARAMETER:
@@ -1869,6 +1870,7 @@ static SQLRETURN SQLGetFunctions_impl(SQLHDBC connection_handle, SQLUSMALLINT fu
   }
 
   const auto supports = [&](SQLUSMALLINT id) {
+    if (id == SQL_API_SQLCANCEL) return conn->supports_server_cancellation();
     switch (id) {
       case SQL_API_SQLTABLES:
       case SQL_API_SQLCOLUMNS:
@@ -3296,3 +3298,13 @@ ODBCPP_API_2_TWO_HANDLES(SQLCopyDesc, a2, SQLHDESC, SQLHDESC)
 #undef ODBCPP_API_13
 #undef ODBCPP_DIAG_API_7
 #undef ODBCPP_DIAG_API_8
+
+// Cancellation deliberately bypasses the ordinary handle operation lease.
+// The registry retains the statement while its independent endpoint is used;
+// this path never updates the active operation's diagnostics or return header.
+extern "C" SQLRETURN SQLCancel(SQLHSTMT statement_handle) {
+  try {
+    auto statement = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCStatement>(statement_handle);
+    return statement ? statement->cancel() : SQL_INVALID_HANDLE;
+  } catch (...) { return SQL_ERROR; }
+}

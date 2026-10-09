@@ -35,6 +35,7 @@ core/database/postgres/redshift_foreign_key_contract.h
 core/database/postgres/redshift_primary_key_contract.h
 core/database/postgres/scram_sha256.h
 core/database/result_validation.h
+core/database/session_cancellation_wire.h
 sdk/include/odbcpp/database/backend_capabilities.h
 sdk/include/odbcpp/database/backend_provider.h
 sdk/include/odbcpp/database/backend_result.h
@@ -75,12 +76,14 @@ sdk/internal/odbcpp/auth/redshift_serverless_response.h
 sdk/internal/odbcpp/auth/redshift_withiam_response.h
 sdk/internal/odbcpp/auth/response_operation.h
 sdk/internal/odbcpp/auth/temporary_db_validity.h
+sdk/internal/odbcpp/database/session_cancellation.h
 sdk/internal/odbcpp/security/crypto.h
 sdk/internal/odbcpp/security/tls_client.h
 sdk/internal/odbcpp/session/credential_context.h
 sdk/internal/odbcpp/session/session_owner.h
 sdk/internal/odbcpp/transport/async_tls_transport.h
 sdk/internal/odbcpp/transport/async_transport.h
+sdk/internal/odbcpp/transport/cancellation_wait.h
 sdk/internal/odbcpp/transport/deadline_model.h
 sdk/internal/odbcpp/transport/epoll_transport.h
 sdk/internal/odbcpp/transport/iocp_transport.h

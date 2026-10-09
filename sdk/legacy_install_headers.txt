@@ -45,6 +45,8 @@ core/database/postgres/scram_sha256.h
 core/database/query_parameter.h
 core/database/query_result.h
 core/database/result_validation.h
+core/database/session_cancellation.h
+core/database/session_cancellation_wire.h
 core/database/session_health.h
 core/database/session_reset.h
 core/database/sql_dialect.h
@@ -56,6 +58,7 @@ core/database/transaction_session.h
 core/database/type_definition.h
 core/transport/async_tls_transport.h
 core/transport/async_transport.h
+core/transport/cancellation_wait.h
 core/transport/deadline_model.h
 core/transport/epoll_transport.h
 core/transport/i_transport.h

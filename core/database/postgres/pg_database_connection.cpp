@@ -317,6 +317,20 @@ BackendResult<ResolvedTypeMap> PgDatabaseConnection::resolve_types(
     if (inserted && id != 0 && !type.known) unresolved.push_back(id);
   }
   if (unresolved.empty()) return resolved;
+  // Pure known-type lookup retains the post-READY publication claim above.
+  // Only catalog discovery suspends claims; this owner-only guard holds no
+  // endpoint mutex across query construction, transport, normalization or throws.
+  const auto cancellation = cancellation_resolver_endpoint();
+  if (cancellation && !cancellation->enter_resolver()) {
+    // Preserve the already owning unknown entries without fabricating type
+    // knowledge or sending discovery after a local claim. The adapter retains
+    // the original completion status and suppresses that claimed target cursor.
+    return resolved;
+  }
+  struct ResolverPhase {
+    std::shared_ptr<SessionCancellationWire> endpoint;
+    ~ResolverPhase() { if (endpoint) endpoint->leave_resolver(); }
+  } phase{cancellation};
   std::sort(unresolved.begin(), unresolved.end());
 
   std::string query =

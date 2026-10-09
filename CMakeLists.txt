@@ -131,9 +131,9 @@ foreach(_export IN LISTS _driver_exports)
   list(APPEND _validated_driver_exports "${_export}")
 endforeach()
 list(LENGTH _validated_driver_exports _driver_export_count)
-if(NOT _driver_export_count EQUAL 76)
+if(NOT _driver_export_count EQUAL 77)
   message(FATAL_ERROR
-    "ODBC driver export allowlist must contain 76 entries, found ${_driver_export_count}")
+    "ODBC driver export allowlist must contain 77 entries, found ${_driver_export_count}")
 endif()
 
 if(WIN32)

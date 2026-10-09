@@ -9,6 +9,7 @@ file(GLOB CORE_BASE_SOURCES
   "${_root}/sdk/src/session/*.cpp"
   "${_root}/sdk/internal/odbcpp/session/*.h"
   "${_root}/sdk/include/odbcpp/database/*.h"
+  "${_root}/sdk/internal/odbcpp/database/*.h"
   "${_root}/sdk/include/odbcpp/transport/*.h"
   "${_root}/sdk/include/odbcpp/util/*.h"
   "${_root}/sdk/src/transport/*.cpp"

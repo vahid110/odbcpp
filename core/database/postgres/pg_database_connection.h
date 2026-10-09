@@ -5,18 +5,21 @@
 #include "core/database/generic_database_connection.h"
 
 #include <string>
+#include <array>
 #include <utility>
 
 namespace rs::core::database::postgres {
 namespace detail { struct StagedPreparedRefusalTestAccess; }
 
 // PostgreSQL session with backend-specific metadata discovery.
-class PgDatabaseConnection : public GenericDatabaseConnection, public ITransactionSession, public ICatalogQueries, public ISessionHealth, public ISessionReset, public ICatalogExecution {
+class PgDatabaseConnection : public GenericDatabaseConnection, public ITransactionSession, public ICatalogQueries, public ISessionHealth, public ISessionReset, public ICatalogExecution, public IBackendCancellation {
 public:
   explicit PgDatabaseConnection(
       std::unique_ptr<rs::core::transport::ITransport> transport = nullptr,
       std::optional<SessionResetProfile> reset_profile = std::nullopt,
       PgCatalogProfile catalog_profile = PgCatalogProfile::PostgreSQL);
+
+  ~PgDatabaseConnection() override { invalidate_cancellation_owner(); forget_backend_key(); }
 
   BackendResult<void> connect(const ConnectionSettings& settings) override;
   BackendResult<void> connect_until(const ConnectionSettings& settings, rs::util::Deadline deadline);
@@ -56,11 +59,24 @@ public:
   BackendResult<ResolvedTypeMap> resolve_types(
       std::span<const std::uint32_t> ids, rs::util::Deadline deadline) override;
 
+  bool supports_server_cancellation() const noexcept override;
+  bool cancellation_request_eligible(std::string_view sql) const noexcept override;
+  std::shared_ptr<SessionCancellation> arm_cancellation(
+      std::uint64_t generation, rs::util::Deadline original) override;
+  bool continue_cancellation(const std::shared_ptr<SessionCancellation>& endpoint) noexcept override {
+    return continue_cancellation_operation(endpoint);
+  }
+  CancellationOutcome finish_cancellation(const std::shared_ptr<SessionCancellation>&) noexcept override;
+
 protected:
+  void authenticated_backend_key(std::span<const std::byte> payload) override;
+  void forget_backend_key() noexcept override;
   virtual RedshiftCatalogMode catalog_mode() const noexcept { return catalog_mode_; }
 
 private:
   friend struct detail::StagedPreparedRefusalTestAccess;
+  std::array<std::byte, 8> cancellation_key_{};
+  bool cancellation_key_present_{false};
   BackendResult<QueryResult> observe_and_decline_binary_prepared_for_test(
       std::string_view sql, std::span<const QueryParameter> params, rs::util::Deadline deadline);
   RedshiftCatalogMode catalog_mode_{RedshiftCatalogMode::Show};

@@ -297,7 +297,7 @@ its residual backlog with test references. It does not promote a row to Verified
 | ID | TODO / boundary | Revisit trigger |
 |---|---|---|
 | T1 | Arrays, row-wise binding, scroll/positioned updates, bookmarks, genuine async ODBC, optional pooling attributes | Named application requires it or a separately scheduled throughput milestone |
-| T2 | SQLCancel and data-at-execution APIs; currently not part of the exported surface | Application needs cancellation/streamed input. Verify bounded deadlines/cleanup now; if required, promote and estimate before beta |
+| T2 | Remaining cancellation breadth and data-at-execution APIs; the bounded Sync-first SQLCancel(STMT) delivery is promoted below | SQLCancelHandle, asynchronous carriers and streamed input remain separately scoped. Promote and estimate additional required application behavior before beta; no capability claim without implementation and evidence |
 | T3 | Exhaustive conversion cross-product, intervals and backend-specific types beyond frozen scalar list | Concrete required column/query, interoperability defect, or proven missing safety boundary |
 | T4 | Extra catalog precision/origin fields, statistics accuracy, restricted-user scenarios beyond the selected permission model | Promised catalog behavior or selected application fails; security/visibility defects in supported paths are immediate blockers |
 | T5 | SQLDriverConnect interactive login prompts, cosmetic installer polish and extra distribution-specific packages | Selected workflow needs them. Native Windows DSNs, minimal ODBC Administrator GUI and a usable x64 beta installer are required W1–W4/G11, not deferred |
@@ -315,6 +315,25 @@ its residual backlog with test references. It does not promote a row to Verified
 
 A deferred item records owner, rationale, known risk, revisit trigger and evidence
 when instantiated as work. It may not hide a serious supported-path defect.
+
+Selected cancellation delivery (2026-10-09): the integration owner promotes the
+first Sync-first `SQLCancel(STMT)` package under the authorized Redshift delivery
+plan. Scope is direct/prepared execution with one parameter set on the Strict
+Socket/TLS carrier, using backend-owned server cancellation and confirmed drain
+before safe session reuse. Unsupported carriers and phases must refuse honestly;
+`SQLCancelHandle` stays unexported and unadvertised in this first stage. The
+reviewed contract requires protected keys, an immutable verified trust-context
+sibling captured on the serialized main owner, operation-generation ownership,
+a frozen cancellation deadline no later than the original deadline or five
+seconds after acceptance, target-cursor race handling and uncertain-session
+retirement. Five related happy, boundary, race, security and recovery groups
+accompany the product. Estimate: 12–20 active engineering hours plus 3–5 review
+hours, with shared regression and CI elapsed time separate. Independent security
+and integration review, required regression and exact-head CI remain gates; this
+selection is neither completed implementation nor native/application acceptance.
+Real Redshift cancellation and vendor/application qualification require their
+separate valid authority and reviewed finite admission. No cloud, spending,
+credential, resource, principal or authorization-horizon extension is implied.
 
 ## Completion and scheduling
 

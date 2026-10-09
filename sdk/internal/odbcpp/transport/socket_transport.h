@@ -1,5 +1,7 @@
 #pragma once
 #include "odbcpp/transport/i_transport.h"
+#include "odbcpp/transport/cancellation_wait.h"
+#include <array>
 #include "odbcpp/transport/deadline_model.h"
 #include "odbcpp/util/errors.h"
 #include "odbcpp/util/platform.h"
@@ -7,7 +9,7 @@
 
 namespace rs::core::transport {
 
-class SocketTransport : public ITransport {
+class SocketTransport : public ITransport, public IServerCancelTransport {
 public:
   explicit SocketTransport(DeadlineModel deadline_model = DeadlineModel::Strict);
   ~SocketTransport() override;
@@ -16,6 +18,11 @@ public:
   rs::util::Result<IOResult> send(std::span<const std::byte> buf, rs::util::Deadline deadline) override;
   rs::util::Result<IOResult> recv(std::span<std::byte> buf, rs::util::Deadline deadline) override;
   void close() noexcept override;
+  bool supports_server_cancel() const noexcept override { return deadline_model_ == DeadlineModel::Strict && !is_invalid(sock_); }
+  void cancellation_wait(std::shared_ptr<CancellationWait> control) noexcept override { cancellation_wait_ = std::move(control); }
+  std::unique_ptr<ITransport> cancellation_peer() const override;
+  bool copy_cancellation_peer(const SocketTransport& peer) noexcept;
+  rs::util::Result<void> connect_cancellation_peer(rs::util::Deadline) override;
 
   // Access raw socket for TLS wrapper
 #ifdef _WIN32
@@ -36,6 +43,9 @@ public:
 
 private:
   socket_t sock_ { invalid_socket() };
+  std::array<std::byte, sizeof(sockaddr_storage)> peer_address_{};
+  int peer_address_size_{};
+  std::shared_ptr<CancellationWait> cancellation_wait_;
   platform::WSAInit wsa_init_{}; // ensures WSA on Windows
   DeadlineModel deadline_model_;
 

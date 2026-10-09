@@ -41,6 +41,10 @@ public:
   TlsClient& operator=(const TlsClient&) = delete;
 
   void configure(TlsClientConfig config);
+  // Snapshot the already loaded verified trust store. No paths are reread and
+  // no provider pointer escapes; the sibling owns a separate immutable context.
+  std::unique_ptr<TlsClient> verified_sibling() const;
+  bool frozen_context() const noexcept;
   TlsStep begin_socket(std::intptr_t socket, std::string_view host);
   TlsStep begin_memory(std::string_view host);
   TlsStep handshake();

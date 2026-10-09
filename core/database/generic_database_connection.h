@@ -4,12 +4,14 @@
 #include "native_type_resolution.h"
 #include "odbcpp/transport/i_transport.h"
 #include <memory>
+#include "session_cancellation_wire.h"
 
 namespace rs::core::database {
 namespace detail { struct ConnectionAuthenticationTestAccess; }
 
 class GenericDatabaseConnection : public IDatabaseConnection, public IStatementDescription {
 public:
+  ~GenericDatabaseConnection() override;
   GenericDatabaseConnection(
     std::unique_ptr<IProtocolParser> parser,
     std::unique_ptr<rs::core::transport::ITransport> transport = nullptr);
@@ -51,6 +53,35 @@ public:
   virtual std::string get_parameter(std::string_view key) const;
 
 protected:
+  virtual void authenticated_backend_key(std::span<const std::byte>) {}
+  virtual void forget_backend_key() noexcept {}
+  rs::core::transport::ITransport* cancellation_transport() noexcept { return transport_.get(); }
+  const rs::core::transport::ITransport* cancellation_transport() const noexcept { return transport_.get(); }
+  const ConnectionSettings& cancellation_settings() const noexcept { return settings_; }
+  void invalidate_cancellation_owner() noexcept {
+    if (cancellation_operation_) finish_cancellation_operation(cancellation_operation_);
+  }
+  // Retain the opaque backend endpoint through nested discovery/exception
+  // cleanup, even if a failed resolver retires and detaches the session owner.
+  std::shared_ptr<SessionCancellationWire> cancellation_resolver_endpoint() const noexcept {
+    return cancellation_operation_;
+  }
+  bool has_cancellation_operation() const noexcept { return static_cast<bool>(cancellation_operation_); }
+  void install_cancellation(std::shared_ptr<SessionCancellationWire> operation) {
+    cancellation_operation_ = std::move(operation);
+    cancellation_phase_active_ = true;
+  }
+  bool continue_cancellation_operation(const std::shared_ptr<SessionCancellation>& endpoint) noexcept {
+    if (endpoint != cancellation_operation_ || !endpoint) return false;
+    // A refused interphase transition must not permit a later caller to bypass
+    // its retained claim by dispatching a request without checking this result.
+    cancellation_phase_active_ = true;
+    if (!endpoint->next_phase()) return false;
+    if (auto* carrier = dynamic_cast<rs::core::transport::IServerCancelTransport*>(transport_.get()))
+      carrier->cancellation_wait(cancellation_operation_->wait_control());
+    return true;
+  }
+  CancellationOutcome finish_cancellation_operation(const std::shared_ptr<SessionCancellation>& endpoint) noexcept;
   // Isolated observation/refusal prototype; no public session admission.
   BackendResult<QueryResult> decline_prepared_description_candidate(
       std::string_view sql, std::span<const QueryParameter> params, rs::util::Deadline deadline);
@@ -74,11 +105,14 @@ private:
   BackendResult<QueryResult> describe_statement_impl(std::string_view sql,
       std::span<const QueryParameterType> types, rs::util::Deadline deadline);
   enum class ResponseKind { SimpleExecution, PreparedExecution, Description, DeclinedDescription };
+  bool cancellation_phase_active_{false};
+  std::shared_ptr<SessionCancellationWire> cancellation_operation_;
   std::unique_ptr<IProtocolParser> parser_;
   std::unique_ptr<rs::core::transport::ITransport> transport_;
   ConnectionSettings settings_;
   std::map<std::string, std::string> server_params_;
   bool connected_ = false;
+  bool transport_closed_after_failure_{false};
   bool peer_identity_verified_ = false;
   
   // Exception-based methods (for backward compatibility)

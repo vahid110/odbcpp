@@ -16,6 +16,7 @@ inline constexpr std::array advertised_functions{
     FunctionExport{"SQLAllocHandle", SQL_API_SQLALLOCHANDLE},
     FunctionExport{"SQLBindCol", SQL_API_SQLBINDCOL},
     FunctionExport{"SQLBindParameter", SQL_API_SQLBINDPARAMETER},
+    FunctionExport{"SQLCancel", SQL_API_SQLCANCEL},
     FunctionExport{"SQLColAttribute", SQL_API_SQLCOLATTRIBUTE},
     FunctionExport{"SQLCloseCursor", SQL_API_SQLCLOSECURSOR},
     FunctionExport{"SQLColumns", SQL_API_SQLCOLUMNS},

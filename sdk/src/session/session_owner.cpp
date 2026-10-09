@@ -127,6 +127,27 @@ IDatabaseConnection* SessionLease::physical_session() const noexcept {
   // destruction changes admission, not the active borrower's physical session.
   return state_ ? state_->session.get() : nullptr;
 }
+bool SessionLease::supports_server_cancellation() const noexcept {
+  const auto* facet = dynamic_cast<const IBackendCancellation*>(physical_session());
+  return facet && facet->supports_server_cancellation();
+}
+bool SessionLease::cancellation_request_eligible(std::string_view sql) const noexcept {
+  const auto* facet = dynamic_cast<const IBackendCancellation*>(physical_session());
+  return facet && facet->cancellation_request_eligible(sql);
+}
+std::shared_ptr<SessionCancellation> SessionLease::arm_cancellation(
+    std::uint64_t generation, rs::util::Deadline original) {
+  auto* facet = dynamic_cast<IBackendCancellation*>(physical_session());
+  return facet ? facet->arm_cancellation(generation, original) : nullptr;
+}
+bool SessionLease::continue_cancellation(const std::shared_ptr<SessionCancellation>& endpoint) noexcept {
+  auto* facet = dynamic_cast<IBackendCancellation*>(physical_session());
+  return facet && facet->continue_cancellation(endpoint);
+}
+CancellationOutcome SessionLease::finish_cancellation(const std::shared_ptr<SessionCancellation>& endpoint) noexcept {
+  auto* facet = dynamic_cast<IBackendCancellation*>(physical_session());
+  return facet ? facet->finish_cancellation(endpoint) : endpoint ? endpoint->seal() : CancellationOutcome{};
+}
 void SessionLease::retire() noexcept {
   auto state = std::move(state_);
   if (!state) return;

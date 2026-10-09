@@ -33,6 +33,8 @@ SQLRETURN SQLGetConnectAttrW(SQLHDBC connection_handle, SQLINTEGER attribute,
 SQLRETURN SQLEndTran(SQLSMALLINT handle_type, SQLHANDLE handle,
                      SQLSMALLINT completion_type);
 
+SQLRETURN SQLCancel(SQLHSTMT statement_handle);
+
 // Statement execution
 SQLRETURN SQLExecDirect(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length);
 SQLRETURN SQLFetch(SQLHSTMT statement_handle);

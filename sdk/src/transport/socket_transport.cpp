@@ -247,11 +247,14 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
 
 rs::util::Result<IOResult> SocketTransport::send(std::span<const std::byte> buf, Deadline deadline) {
   return rs::util::try_catch([&]() {
-    prepare_for_io(deadline);
+    prepare_for_io(cancellation_wait_ ? cancellation_wait_->effective(deadline) : deadline);
     if (buf.empty()) return IOResult{0, false};
     for (;;) {
       if (deadline_model_ == DeadlineModel::Strict) {
-        const auto wait = wait_for_socket(sock_, false, true, deadline);
+        const auto wait = wait_for_socket(sock_, false, true,
+            cancellation_wait_ ? cancellation_wait_->slice(deadline) : deadline);
+        if (wait == SocketWaitResult::Timeout && cancellation_wait_ &&
+            rs::util::Clock::now() < cancellation_wait_->effective(deadline)) continue;
         if (wait == SocketWaitResult::Timeout) throw TimeoutError("send timeout");
         if (wait == SocketWaitResult::Failed) {
           throw IOError(platform::last_error_text("poll(send)"));
@@ -271,7 +274,7 @@ rs::util::Result<IOResult> SocketTransport::send(std::span<const std::byte> buf,
 #endif
       const int error = last_socket_error();
       if (socket_error_interrupted(error)) {
-        prepare_for_io(deadline);
+        prepare_for_io(cancellation_wait_ ? cancellation_wait_->effective(deadline) : deadline);
         continue;
       }
       if (deadline_model_ == DeadlineModel::Strict && socket_error_would_block(error)) {
@@ -285,11 +288,14 @@ rs::util::Result<IOResult> SocketTransport::send(std::span<const std::byte> buf,
 
 rs::util::Result<IOResult> SocketTransport::recv(std::span<std::byte> buf, Deadline deadline) {
   return rs::util::try_catch([&]() {
-    prepare_for_io(deadline);
+    prepare_for_io(cancellation_wait_ ? cancellation_wait_->effective(deadline) : deadline);
     if (buf.empty()) return IOResult{0, false};
     for (;;) {
       if (deadline_model_ == DeadlineModel::Strict) {
-        const auto wait = wait_for_socket(sock_, true, false, deadline);
+        const auto wait = wait_for_socket(sock_, true, false,
+            cancellation_wait_ ? cancellation_wait_->slice(deadline) : deadline);
+        if (wait == SocketWaitResult::Timeout && cancellation_wait_ &&
+            rs::util::Clock::now() < cancellation_wait_->effective(deadline)) continue;
         if (wait == SocketWaitResult::Timeout) throw TimeoutError("recv timeout");
         if (wait == SocketWaitResult::Failed) {
           throw IOError(platform::last_error_text("poll(recv)"));
@@ -307,7 +313,7 @@ rs::util::Result<IOResult> SocketTransport::recv(std::span<std::byte> buf, Deadl
 #endif
       const int error = last_socket_error();
       if (socket_error_interrupted(error)) {
-        prepare_for_io(deadline);
+        prepare_for_io(cancellation_wait_ ? cancellation_wait_->effective(deadline) : deadline);
         continue;
       }
       if (deadline_model_ == DeadlineModel::Strict && socket_error_would_block(error)) {
@@ -317,6 +323,68 @@ rs::util::Result<IOResult> SocketTransport::recv(std::span<std::byte> buf, Deadl
       throw IOError(platform::last_error_text("recv"));
     }
   });
+}
+
+std::unique_ptr<ITransport> SocketTransport::cancellation_peer() const {
+  if (!supports_server_cancel()) return nullptr;
+  auto peer = std::make_unique<SocketTransport>(DeadlineModel::Strict);
+  sockaddr_storage address{};
+#ifdef _WIN32
+  int size = static_cast<int>(sizeof(address));
+#else
+  socklen_t size = static_cast<socklen_t>(sizeof(address));
+#endif
+  if (::getpeername(sock_, reinterpret_cast<sockaddr*>(&address), &size) != 0 ||
+      (address.ss_family != AF_INET && address.ss_family != AF_INET6) || size == 0 ||
+      static_cast<std::size_t>(size) > sizeof(address)) return nullptr;
+  std::memcpy(peer->peer_address_.data(), &address, static_cast<std::size_t>(size));
+  peer->peer_address_size_ = static_cast<int>(size);
+  return peer;
+}
+
+bool SocketTransport::copy_cancellation_peer(const SocketTransport& peer) noexcept {
+  if (!is_invalid(sock_) || peer.peer_address_size_ <= 0) return false;
+  peer_address_ = peer.peer_address_; peer_address_size_ = peer.peer_address_size_;
+  return true;
+}
+
+rs::util::Result<void> SocketTransport::connect_cancellation_peer(Deadline deadline) {
+  if (deadline_model_ != DeadlineModel::Strict || peer_address_size_ <= 0) {
+    return {rs::util::DbErrorCode::InvalidParameter, "Cancellation peer unavailable"};
+  }
+  auto result = rs::util::try_catch([&] {
+    close();
+    if (remaining(deadline) <= std::chrono::milliseconds::zero()) throw TimeoutError("cancel connection timeout");
+    sockaddr_storage address{};
+    std::memcpy(&address, peer_address_.data(), static_cast<std::size_t>(peer_address_size_));
+    sock_ = ::socket(address.ss_family, SOCK_STREAM, IPPROTO_TCP);
+    if (is_invalid(sock_)) throw IOError("cancel socket creation failed");
+    suppress_sigpipe(sock_); set_nonblocking(sock_, true);
+#ifdef _WIN32
+    const int address_size = peer_address_size_;
+#else
+    const auto address_size = static_cast<socklen_t>(peer_address_size_);
+#endif
+    const int connected = ::connect(sock_, reinterpret_cast<const sockaddr*>(&address), address_size);
+    if (connected != 0) {
+      const auto error = last_socket_error();
+      if (!socket_error_would_block(error)) throw IOError("cancel connection failed");
+      const auto waited = wait_for_socket(sock_, false, true, deadline);
+      if (waited == SocketWaitResult::Timeout) throw TimeoutError("cancel connection timeout");
+      if (waited != SocketWaitResult::Ready) throw IOError("cancel connection wait failed");
+      int error_code = 0;
+#ifdef _WIN32
+      int size = static_cast<int>(sizeof(error_code));
+      if (::getsockopt(sock_, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&error_code), &size) != 0 || error_code != 0) throw IOError("cancel connection refused");
+#else
+      socklen_t size = static_cast<socklen_t>(sizeof(error_code));
+      if (::getsockopt(sock_, SOL_SOCKET, SO_ERROR, &error_code, &size) != 0 || error_code != 0) throw IOError("cancel connection refused");
+#endif
+    }
+    prepare_for_io(deadline);
+  });
+  if (result.has_error()) close();
+  return result;
 }
 
 void SocketTransport::close() noexcept {

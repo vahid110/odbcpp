@@ -18,7 +18,7 @@ namespace rs::core::transport {
 
 class TLSTransport::ProviderState {
 public:
-  rs::core::security::TlsClient client;
+  std::unique_ptr<rs::core::security::TlsClient> client = std::make_unique<rs::core::security::TlsClient>();
 };
 
 namespace {
@@ -31,15 +31,20 @@ bool deadline_expired(Deadline deadline) {
 }
 
 void wait_for_tls(SocketTransport::socket_t socket, TlsStepState state,
-                  Deadline deadline, std::string_view operation) {
+                  Deadline deadline, std::string_view operation,
+                  const std::shared_ptr<CancellationWait>& control = {}) {
+  for (;;) {
   const auto waited = wait_for_socket(
       socket, state == TlsStepState::WantRead,
-      state == TlsStepState::WantWrite, deadline);
+      state == TlsStepState::WantWrite, control ? control->slice(deadline) : deadline);
+  if (waited == SocketWaitResult::Timeout && control && rs::util::Clock::now() < control->effective(deadline)) continue;
   if (waited == SocketWaitResult::Timeout) {
     throw TimeoutError("TLS " + std::string(operation) + " timeout");
   }
   if (waited == SocketWaitResult::Failed) {
     throw IOError("TLS " + std::string(operation) + " socket wait failed");
+  }
+  return;
   }
 }
 
@@ -109,13 +114,16 @@ void TLSTransport::upgrade_impl(std::string_view host, Deadline deadline) {
   if (host.find('\0') != std::string_view::npos) {
     throw TLSError("TLS host contains an embedded NUL byte");
   }
-  if (provider_->client.active()) {
+  if (provider_->client->active()) {
     throw TLSError("TLS session is already active");
   }
   tcp_.prepare_for_io(deadline);
-  provider_->client.configure({
-      min_version_, verify_, verify_host_, ca_file_, ca_dir_});
-  const auto started = provider_->client.begin_socket(
+  if (!provider_->client->frozen_context()) {
+    provider_->client->configure({min_version_, verify_, verify_host_, ca_file_, ca_dir_});
+  } else if (host != verified_hostname_) {
+    throw TLSError("Cancellation TLS identity mismatch");
+  }
+  const auto started = provider_->client->begin_socket(
       static_cast<std::intptr_t>(tcp_.native()), host);
   if (started.state != TlsStepState::Complete) {
     throw_tls_step(started, "setup");
@@ -125,7 +133,7 @@ void TLSTransport::upgrade_impl(std::string_view host, Deadline deadline) {
     if (deadline_expired(deadline)) {
       throw TimeoutError("TLS handshake timeout");
     }
-    const auto step = provider_->client.handshake();
+    const auto step = provider_->client->handshake();
     if (step.state == TlsStepState::Complete) break;
     if (step.state == TlsStepState::WantRead ||
         step.state == TlsStepState::WantWrite) {
@@ -134,26 +142,47 @@ void TLSTransport::upgrade_impl(std::string_view host, Deadline deadline) {
     }
     throw_tls_step(step, "handshake");
   }
-  peer_identity_verified_ = provider_->client.peer_identity_verified();
+  peer_identity_verified_ = provider_->client->peer_identity_verified();
+  if (peer_identity_verified_) verified_hostname_ = std::string(host);
+}
+
+std::unique_ptr<ITransport> TLSTransport::cancellation_peer() const {
+  if (!supports_server_cancel()) return nullptr;
+  auto destination = tcp_.cancellation_peer();
+  const auto* plain = dynamic_cast<SocketTransport*>(destination.get());
+  auto trust = provider_->client->verified_sibling();
+  if (!plain || !trust) return nullptr;
+  auto peer = std::make_unique<TLSTransport>(DeadlineModel::Strict);
+  if (!peer->tcp_.copy_cancellation_peer(*plain)) return nullptr;
+  peer->provider_->client = std::move(trust);
+  peer->verified_hostname_ = verified_hostname_;
+  return peer;
+}
+
+rs::util::Result<void> TLSTransport::connect_cancellation_peer(Deadline deadline) {
+  if (!provider_->client->frozen_context() || verified_hostname_.empty()) {
+    return {rs::util::DbErrorCode::InvalidParameter, "Cancellation TLS trust unavailable"};
+  }
+  return tcp_.connect_cancellation_peer(deadline);
 }
 
 void TLSTransport::close() noexcept {
   peer_identity_verified_ = false;
-  provider_->client.reset_session();
+  provider_->client->reset_session();
   tcp_.close();
 }
 
 rs::util::Result<IOResult> TLSTransport::send(
     std::span<const std::byte> buffer, Deadline deadline) {
-  if (!provider_->client.active()) return tcp_.send(buffer, deadline);
+  if (!provider_->client->active()) return tcp_.send(buffer, deadline);
   return rs::util::try_catch([&]() {
-    tcp_.prepare_for_io(deadline);
+    tcp_.prepare_for_io(cancellation_wait_ ? cancellation_wait_->effective(deadline) : deadline);
     if (buffer.empty()) return IOResult{0, false};
 
     std::size_t written = 0;
     while (written < buffer.size()) {
-      if (deadline_expired(deadline)) throw TimeoutError("TLS send timeout");
-      const auto step = provider_->client.write(buffer.subspan(written));
+      if (deadline_expired(cancellation_wait_ ? cancellation_wait_->effective(deadline) : deadline)) throw TimeoutError("TLS send timeout");
+      const auto step = provider_->client->write(buffer.subspan(written));
       written += step.processed;
       if (step.state == TlsStepState::Complete) {
         if (step.processed == 0 && written < buffer.size()) {
@@ -163,7 +192,7 @@ rs::util::Result<IOResult> TLSTransport::send(
       }
       if (step.state == TlsStepState::WantRead ||
           step.state == TlsStepState::WantWrite) {
-        wait_for_tls(tcp_.native(), step.state, deadline, "send");
+        wait_for_tls(tcp_.native(), step.state, deadline, "send", cancellation_wait_);
         continue;
       }
       throw_tls_step(step, "send");
@@ -174,21 +203,21 @@ rs::util::Result<IOResult> TLSTransport::send(
 
 rs::util::Result<IOResult> TLSTransport::recv(
     std::span<std::byte> buffer, Deadline deadline) {
-  if (!provider_->client.active()) return tcp_.recv(buffer, deadline);
+  if (!provider_->client->active()) return tcp_.recv(buffer, deadline);
   return rs::util::try_catch([&]() {
-    tcp_.prepare_for_io(deadline);
+    tcp_.prepare_for_io(cancellation_wait_ ? cancellation_wait_->effective(deadline) : deadline);
     if (buffer.empty()) return IOResult{0, false};
 
     for (;;) {
-      if (deadline_expired(deadline)) throw TimeoutError("TLS recv timeout");
-      const auto step = provider_->client.read(buffer);
+      if (deadline_expired(cancellation_wait_ ? cancellation_wait_->effective(deadline) : deadline)) throw TimeoutError("TLS recv timeout");
+      const auto step = provider_->client->read(buffer);
       if (step.state == TlsStepState::Complete) {
         return IOResult{step.processed, false};
       }
       if (step.state == TlsStepState::Closed) return IOResult{0, true};
       if (step.state == TlsStepState::WantRead ||
           step.state == TlsStepState::WantWrite) {
-        wait_for_tls(tcp_.native(), step.state, deadline, "recv");
+        wait_for_tls(tcp_.native(), step.state, deadline, "recv", cancellation_wait_);
         continue;
       }
       throw_tls_step(step, "recv");
@@ -198,7 +227,7 @@ rs::util::Result<IOResult> TLSTransport::recv(
 
 void TLSTransport::set_min_tls_version(long version) {
   min_version_ = version;
-  provider_->client.reset_context_if_inactive();
+  provider_->client->reset_context_if_inactive();
 }
 
 }  // namespace rs::core::transport
