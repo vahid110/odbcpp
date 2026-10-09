@@ -5757,9 +5757,11 @@ bool ODBCStatement::normalize_catalog_names(rs::core::database::CatalogRequest& 
       if constexpr (std::is_same_v<T, ProceduresCatalogRequest> || std::is_same_v<T, ProcedureColumnsCatalogRequest>) {
         if (!name(names.procedure,m.object)) return false;
       } else if (!name(names.table,m.object)) return false;
-      if constexpr (std::is_same_v<T, ColumnsCatalogRequest> || std::is_same_v<T, ProcedureColumnsCatalogRequest>)
+      if constexpr (std::is_same_v<T, ColumnsCatalogRequest> || std::is_same_v<T, ProcedureColumnsCatalogRequest>) {
         return name(names.column,m.member);
-      return true;
+      } else {
+        return true;
+      }
     }
   }, request);
 }

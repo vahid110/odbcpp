@@ -168,9 +168,11 @@ std::optional<CatalogRequest> native_catalog_request(const CatalogRequest& input
       if constexpr (std::is_same_v<T, ProceduresCatalogRequest> || std::is_same_v<T, ProcedureColumnsCatalogRequest>) {
         if (!normalize(names.procedure,m.object)) return false;
       } else if (!normalize(names.table,m.object)) return false;
-      if constexpr (std::is_same_v<T, ColumnsCatalogRequest> || std::is_same_v<T, ProcedureColumnsCatalogRequest>)
+      if constexpr (std::is_same_v<T, ColumnsCatalogRequest> || std::is_same_v<T, ProcedureColumnsCatalogRequest>) {
         return normalize(names.column,m.member);
-      return m.member == CatalogNameMatch::Existing;
+      } else {
+        return m.member == CatalogNameMatch::Existing;
+      }
     }
   }, output);
   if (!valid) return std::nullopt;
