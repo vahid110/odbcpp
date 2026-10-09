@@ -231,6 +231,7 @@ public:
       const std::optional<std::string>& password = std::nullopt);
   SQLRETURN disconnect();
   bool is_connected() const { return connected_; }
+  bool metadata_identifiers_default() const noexcept { return metadata_id_default_; }
   std::size_t sql_input_limit() const noexcept { return input_limits_.max_sql_bytes; }
   const rs::core::database::InputLimits& input_limits() const noexcept { return input_limits_; }
   SQLRETURN set_attribute(SQLINTEGER attribute, SQLULEN value);
@@ -275,6 +276,7 @@ public:
 
 private:
   friend class ODBCStatement;
+  bool supports_auto_ipd() const;
   friend struct detail::ODBCBackendTestAccess;
   rs::core::database::BackendResult<rs::core::database::QueryResult> backend_query(
       std::string_view, rs::util::Deadline);
@@ -308,6 +310,7 @@ private:
   // Private logical-session metadata epoch; no reusable-session/cache authority.
   std::shared_ptr<const detail::MetadataEpochIdentity> metadata_epoch_;
   bool connected_ = false;
+  bool metadata_id_default_ = false;
   SQLUINTEGER login_timeout_seconds_ = 30;
   SQLUINTEGER connection_timeout_seconds_ = 0;
   SQLUINTEGER autocommit_ = SQL_AUTOCOMMIT_ON;
@@ -439,7 +442,7 @@ public:
 
 private:
   friend class ODBCStatement;
-  void replace_records(std::vector<DescriptorRecord> records) {
+  void replace_records(std::vector<DescriptorRecord> records) noexcept {
     records_ = std::move(records);
     ++revision_;
   }
@@ -463,7 +466,8 @@ public:
   explicit ODBCStatement(std::shared_ptr<ODBCConnection> conn);
   ~ODBCStatement() override;
   
-  SQLRETURN execute_direct(const std::string& sql);
+  SQLRETURN execute_direct(const std::string& sql,
+      std::optional<rs::util::Deadline> original_deadline = std::nullopt);
   SQLRETURN cancel() noexcept;
   SQLRETURN fetch();
   SQLRETURN more_results();
@@ -591,6 +595,9 @@ private:
   SQLHDESC imp_row_descriptor_{SQL_NULL_HDESC};
   SQLHDESC imp_param_descriptor_{SQL_NULL_HDESC};
   bool retrieve_data_ = true; // Fetch transfer policy; explicit GetData is independent.
+  bool enable_auto_ipd_ = false;
+  bool metadata_id_ = false;
+  bool normalize_catalog_names(rs::core::database::CatalogRequest& request);
 
   void apply_query_result(rs::core::database::QueryResult result,
                           bool include_parameter_metadata);
@@ -598,7 +605,9 @@ private:
       const rs::core::database::QueryResult& result,
       bool include_parameter_metadata);
   SQLRETURN ensure_result_metadata();
-  SQLRETURN describe_prepared_metadata();
+  SQLRETURN describe_prepared_metadata(
+      std::optional<rs::util::Deadline> original_deadline = std::nullopt);
+  void invalidate_eager_prepare() noexcept;
   SQLRETURN execute_catalog(const rs::core::database::CatalogRequest& request);
   void clear_current_result();
   SQLRETURN complete_parameter_set(SQLRETURN result);

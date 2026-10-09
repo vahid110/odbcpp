@@ -7,6 +7,9 @@
 
 namespace rs::core::database::postgres {
 
+// UTF8 native-profile matching: ASCII native fold for unquoted identifiers,
+// exact quoted bytes, and checked request-specific semantic slots.
+std::optional<CatalogRequest> native_catalog_request(const CatalogRequest& request);
 // Explicit Redshift catalog queries; broader parity remains separate work.
 std::string redshift_schemas_query();
 // Fixed current-database discovery and owning SHOW normalization. No SQL fallback.

@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <type_traits>
 #include "core/database/database_factory.h"
 #include "core/database/generic_database_connection.h"
 #include "core/database/postgres/pg_database_connection.h"
@@ -534,4 +535,55 @@ TEST(CatalogQueryTest, ShowColumnsLiteralSchemaAndTableKeepOtherGeneratedQueries
   auto generated=redshift.catalog_query(input);ASSERT_FALSE(generated.has_error());EXPECT_NE(std::string::npos,generated->find("FROM svv_columns AS columns"));EXPECT_EQ(std::string::npos,generated->find("SHOW"));
   for(const auto* pattern:{"wild%","wild_","dangling\\",""}){auto other=input;other.schema=pattern;EXPECT_FALSE(redshift.selects_catalog_request(other));other=input;other.table=pattern;EXPECT_FALSE(redshift.selects_catalog_request(other));}
   input.schema.reset();EXPECT_FALSE(redshift.selects_catalog_request(input));input.schema="literal";input.table.reset();EXPECT_FALSE(redshift.selects_catalog_request(input));
+}
+
+
+TEST(CatalogQueryTest, IdentifierNativeFoldExactWildcardsAndQuotedUtf8StayDistinct) {
+  rs::core::database::postgres::PgDatabaseConnection pg;
+  TablesCatalogRequest names{TablesCatalogRequest::Mode::Tables, "DB", "S", "É表%_\\'X", std::vector<std::string>{"TABLE"}};
+  names.name_matches.catalog = names.name_matches.schema = CatalogNameMatch::IdentifierUnquoted;
+  names.name_matches.object = CatalogNameMatch::IdentifierQuoted;
+  auto query = pg.catalog_query(names); ASSERT_FALSE(query.has_error());
+  EXPECT_NE(std::string::npos, query->find(" AND table_cat = 'db'"));
+  EXPECT_NE(std::string::npos, query->find(" AND table_schem = 's'"));
+  EXPECT_NE(std::string::npos, query->find(" AND table_name = 'É表%_\\''X'"));
+  EXPECT_EQ(std::string::npos, query->find(" LIKE "));
+  EXPECT_NE(std::string::npos, query->find("table_type IN ('TABLE')"));
+  EXPECT_EQ(std::optional<std::string>{"DB"}, names.catalog);
+  auto ordinary = names; ordinary.name_matches = {};
+  query = pg.catalog_query(ordinary); ASSERT_FALSE(query.has_error());
+  EXPECT_NE(std::string::npos, query->find("table_name LIKE 'É表%_\\''X'"));
+}
+
+TEST(CatalogQueryTest, IdentifierAllEightCarriersUseNativeNamesAndRejectIrrelevantSlots) {
+  rs::core::database::postgres::PgDatabaseConnection pg;
+  std::vector<CatalogRequest> requests{TablesCatalogRequest{TablesCatalogRequest::Mode::Tables, "DB","S","T",std::nullopt},
+      ColumnsCatalogRequest{"DB","S","T","C"}, PrimaryKeysCatalogRequest{"DB","S","T"},
+      ForeignKeysCatalogRequest{"DB","S","T","DB","S","F"}, StatisticsCatalogRequest{"DB","S","T",false},
+      ProceduresCatalogRequest{"DB","S","P"}, ProcedureColumnsCatalogRequest{"DB","S","P","C"},
+      SpecialColumnsCatalogRequest{SpecialColumnsCatalogRequest::Identifier::RowIdentity,
+          SpecialColumnsCatalogRequest::Scope::CurrentRow,"DB","S","T",false}};
+  for (auto request : requests) {
+    std::visit([](auto& x) {
+      x.name_matches.catalog = x.name_matches.schema = x.name_matches.object = CatalogNameMatch::IdentifierUnquoted;
+      using T = std::decay_t<decltype(x)>;
+      if constexpr (std::is_same_v<T, ColumnsCatalogRequest> || std::is_same_v<T, ProcedureColumnsCatalogRequest>)
+        x.name_matches.member = CatalogNameMatch::IdentifierUnquoted;
+      if constexpr (std::is_same_v<T, ForeignKeysCatalogRequest>)
+        x.name_matches.foreign_catalog = x.name_matches.foreign_schema = x.name_matches.foreign_object = CatalogNameMatch::IdentifierUnquoted;
+    }, request);
+    auto query = pg.catalog_query(request); ASSERT_FALSE(query.has_error());
+    EXPECT_NE(std::string::npos, query->find("'db'"));
+    EXPECT_EQ(std::string::npos, query->find("'DB'"));
+    EXPECT_EQ(std::string::npos, query->find(" LIKE "));
+  }
+  ColumnsCatalogRequest bad{"db","s","t","c"};
+  bad.name_matches.foreign_object = CatalogNameMatch::IdentifierQuoted;
+  EXPECT_TRUE(pg.catalog_query(bad).has_error());
+  bad.name_matches = {}; bad.name_matches.object = static_cast<CatalogNameMatch>(99);
+  EXPECT_TRUE(pg.catalog_query(bad).has_error());
+  bad.name_matches = {}; bad.name_matches.member = CatalogNameMatch::IdentifierQuoted; bad.column.reset();
+  EXPECT_TRUE(pg.catalog_query(bad).has_error());
+  bad.column = "c";
+  EXPECT_FALSE(pg.catalog_query(bad).has_error());
 }

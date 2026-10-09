@@ -4,6 +4,8 @@
 #include <array>
 #include <set>
 #include <tuple>
+#include <type_traits>
+#include <stdexcept>
 #include <charconv>
 #include <limits>
 #include "pg_protocol_parser.h"
@@ -132,6 +134,48 @@ BackendResult<QueryResult> normalize_redshift_schemas(
   return BackendResult<QueryResult>{std::move(output), input.session_snapshot()};
 }
 
+
+std::optional<CatalogRequest> native_catalog_request(const CatalogRequest& input) {
+  auto output = input;
+  const auto normalize = [](auto& value, CatalogNameMatch match) {
+    if (match != CatalogNameMatch::Existing && match != CatalogNameMatch::IdentifierUnquoted &&
+        match != CatalogNameMatch::IdentifierQuoted) return false;
+    if (match == CatalogNameMatch::Existing) return true;
+    std::string* text = nullptr;
+    if constexpr (std::is_same_v<std::decay_t<decltype(value)>, std::optional<std::string>>) {
+      if (!value) return false;
+      text = &*value;
+    } else text = &value;
+    if (text->find('\0') != std::string::npos || !rs::util::utf8_code_point_count(*text)) return false;
+    if (match == CatalogNameMatch::IdentifierUnquoted)
+      for (char& ch : *text) if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
+    return true;
+  };
+  const bool valid = std::visit([&](auto& names) {
+    using T = std::decay_t<decltype(names)>;
+    const auto& m = names.name_matches;
+    if constexpr (std::is_same_v<T, ForeignKeysCatalogRequest>) {
+      return m.member == CatalogNameMatch::Existing &&
+          normalize(names.primary_catalog,m.catalog) && normalize(names.primary_schema,m.schema) &&
+          normalize(names.primary_table,m.object) && normalize(names.foreign_catalog,m.foreign_catalog) &&
+          normalize(names.foreign_schema,m.foreign_schema) && normalize(names.foreign_table,m.foreign_object);
+    } else {
+      if (m.foreign_catalog != CatalogNameMatch::Existing || m.foreign_schema != CatalogNameMatch::Existing ||
+          m.foreign_object != CatalogNameMatch::Existing) return false;
+      if constexpr (std::is_same_v<T, TablesCatalogRequest>)
+        if (names.mode != TablesCatalogRequest::Mode::Tables) return m.existing();
+      if (!normalize(names.catalog,m.catalog) || !normalize(names.schema,m.schema)) return false;
+      if constexpr (std::is_same_v<T, ProceduresCatalogRequest> || std::is_same_v<T, ProcedureColumnsCatalogRequest>) {
+        if (!normalize(names.procedure,m.object)) return false;
+      } else if (!normalize(names.table,m.object)) return false;
+      if constexpr (std::is_same_v<T, ColumnsCatalogRequest> || std::is_same_v<T, ProcedureColumnsCatalogRequest>)
+        return normalize(names.column,m.member);
+      return m.member == CatalogNameMatch::Existing;
+    }
+  }, output);
+  if (!valid) return std::nullopt;
+  return output;
+}
 
 bool redshift_table_schema_is_literal(const TablesCatalogRequest& request) noexcept {
   if (request.mode != TablesCatalogRequest::Mode::Tables || !request.schema ||
@@ -461,7 +505,11 @@ std::string redshift_schemas_query() {
       "ORDER BY table_schem";
 }
 
-std::string redshift_columns_query(const ColumnsCatalogRequest& request) {
+std::string redshift_columns_query(const ColumnsCatalogRequest& input) {
+  auto normalized = native_catalog_request(CatalogRequest{input});
+  if (!normalized) throw std::invalid_argument("Invalid catalog name semantics");
+  const auto& request = std::get<ColumnsCatalogRequest>(*normalized);
+
   // SVV_COLUMNS exposes Redshift's own dimensions without PostgreSQL domain,
   // LATERAL, OID or server-encoding helpers. Unsupported types remain unknown.
   // Every CASE qualifies the source type: Redshift permits lateral alias reuse.
@@ -524,9 +572,9 @@ std::string redshift_columns_query(const ColumnsCatalogRequest& request) {
       "columns.ordinal_position::integer AS ordinal_position, columns.is_nullable::text AS is_nullable "
       "FROM svv_columns AS columns) AS odbcpp_columns WHERE 1=1";
   if (request.catalog) query += " AND table_cat = " + literal(*request.catalog);
-  if (request.schema) query += " AND table_schem LIKE " + literal(*request.schema);
-  if (request.table) query += " AND table_name LIKE " + literal(*request.table);
-  if (request.column) query += " AND column_name LIKE " + literal(*request.column);
+  if (request.schema) query += " AND table_schem" + std::string(request.name_matches.schema == CatalogNameMatch::Existing ? " LIKE " : " = ") + literal(*request.schema);
+  if (request.table) query += " AND table_name" + std::string(request.name_matches.object == CatalogNameMatch::Existing ? " LIKE " : " = ") + literal(*request.table);
+  if (request.column) query += " AND column_name" + std::string(request.name_matches.member == CatalogNameMatch::Existing ? " LIKE " : " = ") + literal(*request.column);
   query += " ORDER BY table_cat, table_schem, table_name, ordinal_position";
   return query;
 }

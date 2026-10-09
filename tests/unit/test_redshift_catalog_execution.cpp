@@ -1237,3 +1237,44 @@ TEST(RedshiftShowColumns, NoIoInvalidPatternsCapabilityAndDeadline) {
   SchemaSpy expired;auto refused=expired.execute_catalog(column_request(),rs::util::Clock::now());ASSERT_FALSE(refused);no_execution(expired);
   for(unsigned call:{1u,2u}){SchemaSpy late;late.show=columns_response();late.before_return=[call](unsigned current,rs::util::Deadline d){if(current==call)while(rs::util::Clock::now()<d)std::this_thread::yield();};auto result=late.execute_catalog(column_request(),rs::util::make_deadline(std::chrono::milliseconds{5}));ASSERT_FALSE(result);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout),result.error());EXPECT_EQ(call,late.direct_calls);}
 }
+
+
+TEST(RedshiftCatalogExecutionTest, IdentifierGeneratedAlternativesNeverRetargetPrimaryKeys) {
+  SpySession session;
+  TablesCatalogRequest tables{TablesCatalogRequest::Mode::Tables, "db","s","t",std::nullopt};
+  ColumnsCatalogRequest columns{"db","s","t","c"};
+  tables.name_matches.object = CatalogNameMatch::IdentifierQuoted;
+  columns.name_matches.object = CatalogNameMatch::IdentifierQuoted;
+  EXPECT_FALSE(session.selects_catalog_request(tables));
+  EXPECT_FALSE(session.selects_catalog_request(columns));
+  auto refused = session.execute_catalog(tables, rs::util::Deadline::max());
+  EXPECT_TRUE(refused.has_error()); EXPECT_EQ(0u, session.direct_calls); EXPECT_EQ(0u, session.prepared_calls);
+  auto keys = request(); keys.table = "TABLE'._%";
+  keys.name_matches.object = CatalogNameMatch::IdentifierUnquoted;
+  EXPECT_TRUE(session.selects_catalog_request(keys));
+  session.capability = "3";
+  refused = session.execute_catalog(keys, rs::util::Deadline::max());
+  EXPECT_TRUE(refused.has_error()); EXPECT_EQ(0u, session.direct_calls); EXPECT_EQ(0u, session.prepared_calls);
+  session.capability = "4";
+  const auto deadline = rs::util::Clock::now() + std::chrono::seconds(3);
+  auto success = session.execute_catalog(keys, deadline);
+  ASSERT_FALSE(success.has_error()); ASSERT_EQ(1u, session.prepared_calls);
+  EXPECT_EQ("SHOW CONSTRAINTS PRIMARY KEYS FROM TABLE ?.?.?;", session.sql);
+  ASSERT_EQ(3u, session.parameters.size()); EXPECT_EQ("table'._%", session.parameters[2].value);
+  EXPECT_EQ(deadline, session.received_deadline); EXPECT_EQ(0u, session.direct_calls); EXPECT_EQ(0u, session.catalog_builds);
+}
+
+TEST(RedshiftCatalogExecutionTest, IdentifierScopedLegacyAndDefaultShowEnumerationKeepExistingGuards) {
+  SpySession session;
+  auto keys = request(); keys.name_matches.object = CatalogNameMatch::IdentifierQuoted;
+  session.mode = RedshiftCatalogMode::Legacy;
+  auto result = session.execute_catalog(keys, rs::util::Deadline::max());
+  ASSERT_FALSE(result.has_error()); EXPECT_EQ(0u, session.capability_reads);
+  EXPECT_EQ(1u, session.prepared_calls); EXPECT_EQ(0u, session.direct_calls);
+  EXPECT_NE(std::string::npos, session.sql.find("FROM pg_catalog.pg_namespace"));
+  session.mode = RedshiftCatalogMode::Show;
+  EXPECT_TRUE(session.selects_catalog_request(schemas_request()));
+  keys.name_matches.foreign_catalog = CatalogNameMatch::IdentifierQuoted;
+  auto bad = session.execute_catalog(keys, rs::util::Deadline::max());
+  EXPECT_TRUE(bad.has_error()); EXPECT_EQ(1u, session.prepared_calls); EXPECT_EQ(0u, session.direct_calls);
+}

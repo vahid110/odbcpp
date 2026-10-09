@@ -20,6 +20,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 #include <cstdio>
 #include <ctime>
 #include <cstring>
@@ -1399,6 +1400,12 @@ rs::core::database::BackendCapabilities ODBCConnection::capabilities() const {
   return result;
 }
 
+bool ODBCConnection::supports_auto_ipd() const {
+  return connected_ && backend_lease_ && *backend_lease_ &&
+      backend_observation_.has_statement_description_facet &&
+      capabilities().describe_parameters;
+}
+
 rs::core::database::TransactionCapabilities ODBCConnection::transaction_capabilities() const {
   if (!backend_lease_) return backend_provider_->transaction_capabilities();
   return backend_observation_.transactions;
@@ -1422,6 +1429,7 @@ bool ODBCConnection::logging_enabled(
 
 ODBCStatement::ODBCStatement(std::shared_ptr<ODBCConnection> conn)
     : ODBCHandle(HandleType::Statement), conn_(std::move(conn)) {
+  metadata_id_ = conn_->metadata_identifiers_default();
   try {
     automatic_app_row_descriptor_ = create_implicit_descriptor(
         DescriptorKind::Application);
@@ -1695,14 +1703,11 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
     return SQL_ERROR;
   }
   if (attribute == SQL_ATTR_METADATA_ID) {
-    if (value == SQL_FALSE) return SQL_SUCCESS;
-    if (value == SQL_TRUE) {
-      set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
-                "Metadata identifier semantics are not implemented");
-      return SQL_ERROR;
+    if (value == SQL_FALSE || value == SQL_TRUE) {
+      metadata_id_default_ = value == SQL_TRUE;
+      return SQL_SUCCESS;
     }
-    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
-              "Invalid metadata identifier mode");
+    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Invalid metadata identifier mode");
     return SQL_ERROR;
   }
 #ifdef SQL_ATTR_ASYNC_DBC_FUNCTIONS_ENABLE
@@ -1830,7 +1835,8 @@ SQLRETURN ODBCConnection::get_attribute(SQLINTEGER attribute,
       return SQL_SUCCESS;
 #endif
     case SQL_ATTR_AUTO_IPD:
-      write_uinteger(SQL_FALSE);
+      // Session-scoped conservative support, without probing remote health.
+      write_uinteger(supports_auto_ipd() ? SQL_TRUE : SQL_FALSE);
       return SQL_SUCCESS;
     case SQL_ATTR_CONNECTION_DEAD:
       if (!connected_) {
@@ -1841,7 +1847,7 @@ SQLRETURN ODBCConnection::get_attribute(SQLINTEGER attribute,
                          ? SQL_CD_FALSE : SQL_CD_TRUE);
       return SQL_SUCCESS;
     case SQL_ATTR_METADATA_ID:
-      write_uinteger(SQL_FALSE);
+      write_uinteger(metadata_id_default_ ? SQL_TRUE : SQL_FALSE);
       return SQL_SUCCESS;
     case SQL_ATTR_AUTOCOMMIT:
       write_uinteger(autocommit_);
@@ -2753,7 +2759,8 @@ SQLRETURN ODBCStatement::cancel() noexcept {
   } catch (...) { return SQL_ERROR; }
 }
 
-SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
+SQLRETURN ODBCStatement::execute_direct(const std::string& sql,
+    std::optional<rs::util::Deadline> original_deadline) {
   const auto started = std::chrono::steady_clock::now();
   const auto dynamic_function = classify_dynamic_function(sql);
   set_statement_diagnostic_header(
@@ -2792,8 +2799,8 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql) {
   param_metadata_.clear();
   descriptor(imp_param_descriptor_)->replace_records({});
   try {
-    auto deadline = rs::util::make_deadline(
-        timeout_duration(query_timeout_seconds_));
+    const auto deadline = original_deadline ? *original_deadline :
+        rs::util::make_deadline(timeout_duration(query_timeout_seconds_));
     if (!cancellation.before_transaction()) {
       set_error("HY008", "Statement cancelled before dispatch");
       return SQL_ERROR;
@@ -2945,13 +2952,19 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
       }
       break;
     case SQL_ATTR_ENABLE_AUTO_IPD:
-      if (numeric == SQL_FALSE) return SQL_SUCCESS;
-      if (numeric != SQL_TRUE) {
+      if (numeric != SQL_FALSE && numeric != SQL_TRUE) {
         set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
                   "Invalid automatic IPD value");
         return SQL_ERROR;
       }
-      break;
+      if (numeric == SQL_TRUE &&
+          !conn_->supports_auto_ipd()) {
+        set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                  "Data source does not support automatic parameter descriptions");
+        return SQL_ERROR;
+      }
+      enable_auto_ipd_ = numeric == SQL_TRUE;
+      return SQL_SUCCESS;
     case SQL_ATTR_FETCH_BOOKMARK_PTR:
       fetch_bookmark_ptr_ = static_cast<SQLLEN*>(value);
       return SQL_SUCCESS;
@@ -3026,13 +3039,12 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
       return descriptor(app_param_descriptor_)->set_field(
           0, SQL_DESC_ARRAY_STATUS_PTR, value, 0);
     case SQL_ATTR_METADATA_ID:
-      if (numeric == SQL_FALSE) return SQL_SUCCESS;
-      if (numeric != SQL_TRUE) {
-        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
-                  "Invalid metadata identifier value");
-        return SQL_ERROR;
+      if (numeric == SQL_FALSE || numeric == SQL_TRUE) {
+        metadata_id_ = numeric == SQL_TRUE;
+        return SQL_SUCCESS;
       }
-      break;
+      set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Invalid metadata identifier value");
+      return SQL_ERROR;
     case SQL_ATTR_ROW_NUMBER:
       set_error(SQLSTATE_INVALID_ATTRIBUTE,
                 "Current row number is read-only");
@@ -3150,7 +3162,7 @@ SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
     case SQL_ATTR_CURSOR_SENSITIVITY:
       write_ulen(SQL_UNSPECIFIED); break;
     case SQL_ATTR_ENABLE_AUTO_IPD:
-      write_ulen(SQL_FALSE); break;
+      write_ulen(enable_auto_ipd_ ? SQL_TRUE : SQL_FALSE); break;
     case SQL_ATTR_FETCH_BOOKMARK_PTR:
       write_pointer(fetch_bookmark_ptr_); break;
     case SQL_ATTR_KEYSET_SIZE:
@@ -3177,7 +3189,7 @@ SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
     case SQL_ATTR_PARAM_OPERATION_PTR:
       write_pointer(descriptor(app_param_descriptor_)->array_status_ptr()); break;
     case SQL_ATTR_METADATA_ID:
-      write_ulen(SQL_FALSE); break;
+      write_ulen(metadata_id_ ? SQL_TRUE : SQL_FALSE); break;
     case SQL_ATTR_ROW_NUMBER:
       if (!executed_ || column_info_.empty() || !row_positioned_) {
         set_error(SQLSTATE_INVALID_CURSOR_STATE,
@@ -3938,6 +3950,8 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
 
 // Prepared statement implementation
 SQLRETURN ODBCStatement::prepare(const std::string& sql) {
+  const auto original_deadline = rs::util::make_deadline(
+      timeout_duration(query_timeout_seconds_));
   if (executed_ && (!column_info_.empty() || !pending_results_.empty())) {
     set_error(SQLSTATE_INVALID_CURSOR_STATE,
               "Cannot prepare while results are pending");
@@ -3947,6 +3961,15 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
     set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
     return SQL_ERROR;
   }
+  // Guard the entire opted-in attempt, including translation/counting and
+  // throwing provider callbacks. Failure never advertises prepared success.
+  struct EagerPrepareGuard {
+    ODBCStatement& statement;
+    bool armed;
+    ~EagerPrepareGuard() noexcept {
+      if (armed) statement.invalidate_eager_prepare();
+    }
+  } guard{*this, enable_auto_ipd_};
   if (sql.find('\0') != std::string::npos) {
     set_error(SQLSTATE_SYNTAX_ERROR,
               "SQL text contains an embedded NUL byte");
@@ -3969,6 +3992,16 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
   param_metadata_.clear();
   clear_current_result();
   pending_results_.clear();
+  prepared_ = false;
+  if (enable_auto_ipd_ && parameter_count_ != 0) {
+    if (!conn_->supports_auto_ipd()) {
+      set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                "Data source does not support automatic parameter descriptions");
+      return SQL_ERROR;
+    }
+    const auto result = describe_prepared_metadata(original_deadline);
+    if (result != SQL_SUCCESS) return result;
+  }
   prepared_ = true;
   if (conn_->logs_queries()) {
     conn_->log(rs::core::logging::LogLevel::Debug, "query_prepared",
@@ -3977,6 +4010,7 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
                 {"parameters", std::to_string(marker_count), rs::core::logging::FieldSensitivity::Public}});
   }
   
+  guard.armed = false;
   return SQL_SUCCESS;
 }
 
@@ -4048,21 +4082,69 @@ SQLRETURN ODBCStatement::execute() {
   }
   const auto application_descriptor = descriptor(app_param_descriptor_);
   if (application_descriptor->array_size() != 1 ||
-      application_descriptor->bind_type() != SQL_PARAM_BIND_BY_COLUMN ||
-      application_descriptor->array_status_ptr()) {
+      application_descriptor->bind_type() != SQL_PARAM_BIND_BY_COLUMN) {
     set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
               "Only one column-wise parameter set is supported");
     return SQL_ERROR;
+  }
+  const auto address_fits = [](const void* pointer, std::size_t extent) {
+    return !pointer || extent <= (std::numeric_limits<std::uintptr_t>::max)() -
+        reinterpret_cast<std::uintptr_t>(pointer);
+  };
+  // The operation mask is an APD header, not an offset input field. Freeze
+  // one applicable entry before reading any parameter/offset or arming cancel.
+  // An unused mask (no bound parameters) is never dereferenced.
+  const bool applicable_mask = parameter_count_ > 0 &&
+      application_descriptor->record_count() != 0;
+  SQLUSMALLINT operation = SQL_PARAM_PROCEED;
+  if (applicable_mask) {
+    if (const auto* mask = application_descriptor->array_status_ptr()) {
+      if (!address_fits(mask, sizeof(SQLUSMALLINT))) {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                  "Parameter operation address span is out of range");
+        return SQL_ERROR;
+      }
+      operation = load_application_value<SQLUSMALLINT>(mask);
+    }
+  }
+  // Row-status aliases support using fetched rows as input. Boolean tests
+  // intentionally tolerate constants with the same numeric representation.
+  const bool proceed = operation == SQL_PARAM_PROCEED ||
+      operation == SQL_ROW_SUCCESS || operation == SQL_ROW_SUCCESS_WITH_INFO ||
+      operation == SQL_ROW_ADDED;
+  const bool ignore = operation == SQL_PARAM_IGNORE ||
+      operation == SQL_ROW_DELETED || operation == SQL_ROW_UPDATED ||
+      operation == SQL_ROW_ERROR;
+  if (!proceed && !ignore) {
+    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Invalid parameter operation value");
+    return SQL_ERROR;
+  }
+  const auto parameter_ird = descriptor(imp_param_descriptor_);
+  auto* mask_processed = parameter_ird->rows_processed_ptr();
+  auto* mask_status = parameter_ird->array_status_ptr();
+  if (parameter_count_ > 0 &&
+      (!address_fits(mask_processed, sizeof(SQLULEN)) ||
+       !address_fits(mask_status, sizeof(SQLUSMALLINT)))) {
+    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+              "Parameter output address span is out of range");
+    return SQL_ERROR;
+  }
+  if (ignore) {
+    // Explicit executed-set policy: skipped is UNUSED/processed0, not a
+    // fabricated successful backend execution. Keep bindings/preparation.
+    clear_current_result();
+    pending_results_.clear();
+    executed_ = true; // Local completion exposes row count0, never a result cursor.
+    if (mask_processed) store_application_value(mask_processed, static_cast<SQLULEN>(0));
+    if (mask_status) store_application_value(mask_status,
+        static_cast<SQLUSMALLINT>(SQL_PARAM_UNUSED));
+    return SQL_SUCCESS;
   }
   // Freeze one APD offset before eligibility reads any deferred input. The
   // descriptor bases remain unchanged; IPD status/processed pointers do not move.
   static_assert(sizeof(SQLULEN) == sizeof(SQLLEN));
   const auto* offset_pointer = application_descriptor->bind_offset_ptr();
   std::uintptr_t input_offset = 0;
-  const auto address_fits = [](const void* pointer, std::size_t extent) {
-    return !pointer || extent <= (std::numeric_limits<std::uintptr_t>::max)() -
-        reinterpret_cast<std::uintptr_t>(pointer);
-  };
   const auto address_error = [&]() -> SQLRETURN {
     set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
               "Parameter binding address span is out of range");
@@ -5239,57 +5321,89 @@ void ODBCStatement::apply_result_metadata(
     bool include_parameter_metadata) {
 
   require_normalized_columns(result);
-  column_info_.clear();
-  column_info_.reserve(result.columns.size());
+  std::vector<ColumnInfo> staged_columns;
+  staged_columns.reserve(result.columns.size());
   for (const auto& column : result.columns) {
-    column_info_.push_back(column_info_for(column));
+    staged_columns.push_back(column_info_for(column));
   }
-  if (column_info_.empty() && !result_rows_.empty()) {
-    column_info_.reserve(result_rows_.front().size());
+  if (staged_columns.empty() && !result_rows_.empty()) {
+    staged_columns.reserve(result_rows_.front().size());
     for (std::size_t i = 0; i < result_rows_.front().size(); ++i) {
-      column_info_.push_back(ColumnInfo{
+      staged_columns.push_back(ColumnInfo{
           "column" + std::to_string(i + 1), SQL_VARCHAR, 255, 0,
           SQL_NULLABLE_UNKNOWN});
     }
   }
   std::vector<DescriptorRecord> row_descriptor_records;
-  row_descriptor_records.reserve(column_info_.size());
-  for (const auto& column : column_info_) {
+  row_descriptor_records.reserve(staged_columns.size());
+  for (const auto& column : staged_columns) {
     row_descriptor_records.push_back(descriptor_record_for(column, conn_->result_type_catalog()));
   }
-  descriptor(imp_row_descriptor_)->replace_records(
-      std::move(row_descriptor_records));
 
   const auto implementation_descriptor = descriptor(imp_param_descriptor_);
-  if (!include_parameter_metadata) {
-    param_metadata_.clear();
-    implementation_descriptor->replace_records({});
-    return;
-  }
-
-  param_metadata_.clear();
-  param_metadata_.reserve(result.normalized_parameter_types.size());
-  for (std::size_t index = 0;
-       index < result.normalized_parameter_types.size(); ++index) {
-    const auto* prior_record = index < implementation_descriptor->record_count()
-        ? implementation_descriptor->record(index) : nullptr;
-    param_metadata_.push_back(parameter_metadata_for(
-        result.normalized_parameter_types[index], prior_record));
-  }
+  const auto row_descriptor = descriptor(imp_row_descriptor_);
+  std::vector<ParameterMetadata> staged_parameters;
   std::vector<DescriptorRecord> parameter_descriptor_records;
-  parameter_descriptor_records.reserve(param_metadata_.size());
-  for (std::size_t index = 0; index < param_metadata_.size(); ++index) {
-    auto record = descriptor_record_for(param_metadata_[index], conn_->result_type_catalog());
-    if (const auto* prior = implementation_descriptor->record(index)) {
-      record.bound_sql_type = prior->bound_sql_type;
-      record.bound_sql_length = prior->bound_sql_length;
-      record.bound_sql_precision = prior->bound_sql_precision;
-      record.bound_sql_scale = prior->bound_sql_scale;
+  if (include_parameter_metadata) {
+    staged_parameters.reserve(result.normalized_parameter_types.size());
+    for (std::size_t index = 0;
+         index < result.normalized_parameter_types.size(); ++index) {
+      const auto* prior_record = index < implementation_descriptor->record_count()
+          ? implementation_descriptor->record(index) : nullptr;
+      staged_parameters.push_back(parameter_metadata_for(
+          result.normalized_parameter_types[index], prior_record));
     }
-    parameter_descriptor_records.push_back(std::move(record));
+    parameter_descriptor_records.reserve(staged_parameters.size());
+    for (std::size_t index = 0; index < staged_parameters.size(); ++index) {
+      auto record = descriptor_record_for(staged_parameters[index], conn_->result_type_catalog());
+      if (const auto* prior = implementation_descriptor->record(index)) {
+        record.bound_sql_type = prior->bound_sql_type;
+        record.bound_sql_length = prior->bound_sql_length;
+        record.bound_sql_precision = prior->bound_sql_precision;
+        record.bound_sql_scale = prior->bound_sql_scale;
+      }
+      parameter_descriptor_records.push_back(std::move(record));
+    }
   }
-  implementation_descriptor->replace_records(
-      std::move(parameter_descriptor_records));
+  // No allocating/provider work remains after the first publication.
+  staged_columns.swap(column_info_);
+  staged_parameters.swap(param_metadata_);
+  row_descriptor->replace_records(std::move(row_descriptor_records));
+  implementation_descriptor->replace_records(std::move(parameter_descriptor_records));
+}
+
+void ODBCStatement::invalidate_eager_prepare() noexcept {
+  prepared_ = false;
+  clear_current_result();
+  pending_results_.clear();
+  param_metadata_.clear();
+  const auto ipd = descriptor(imp_param_descriptor_);
+  std::size_t retained = 0;
+  for (std::size_t index = 0; index < ipd->records_.size(); ++index) {
+    auto& prior = ipd->records_[index];
+    DescriptorRecord bound;
+    bound.bound_sql_type = prior.bound_sql_type;
+    bound.bound_sql_length = prior.bound_sql_length;
+    bound.bound_sql_precision = prior.bound_sql_precision;
+    bound.bound_sql_scale = prior.bound_sql_scale;
+    bound.parameter_type = prior.parameter_type;
+    if (bound.bound_sql_type != 0 || bound.bound_sql_length != 0 ||
+        bound.bound_sql_precision != 0 || bound.bound_sql_scale) {
+      bound.concise_type = bound.bound_sql_type;
+      bound.type = descriptor_type_for(bound.concise_type);
+      bound.datetime_interval_code = descriptor_subtype_for(bound.concise_type);
+      bound.length = bound.bound_sql_length;
+      bound.precision = bound.bound_sql_precision;
+      bound.scale = bound.bound_sql_scale.value_or(0);
+      bound.name.swap(prior.name);
+      retained = index + 1;
+    }
+    // Default construction and move assignment allocate no metadata strings.
+    static_assert(std::is_nothrow_move_assignable_v<DescriptorRecord>);
+    prior = std::move(bound);
+  }
+  ipd->records_.resize(retained); // Shrink only; keep intended bound hints.
+  ++ipd->revision_;
 }
 
 void ODBCStatement::clear_current_result() {
@@ -5364,7 +5478,8 @@ SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target
 }
 
 // Metadata functions implementation
-SQLRETURN ODBCStatement::describe_prepared_metadata() {
+SQLRETURN ODBCStatement::describe_prepared_metadata(
+    std::optional<rs::util::Deadline> original_deadline) {
   const auto implementation_descriptor = descriptor(imp_param_descriptor_);
   if (prepared_metadata_available_ && conn_->backend_lease_ && *conn_->backend_lease_ &&
       conn_->metadata_epoch_ && prepared_metadata_epoch_.lock() == conn_->metadata_epoch_ &&
@@ -5396,8 +5511,8 @@ SQLRETURN ODBCStatement::describe_prepared_metadata() {
     }
   }
 
-  auto deadline = rs::util::make_deadline(
-      timeout_duration(query_timeout_seconds_));
+  const auto deadline = original_deadline ? *original_deadline
+      : rs::util::make_deadline(timeout_duration(query_timeout_seconds_));
   auto result = conn_->backend_description(
       prepared_sql_, parameter_types, deadline);
   if (result.has_error()) {
@@ -5576,12 +5691,90 @@ SQLRETURN ODBCStatement::get_type_info(SQLSMALLINT data_type) {
   return SQL_SUCCESS;
 }
 
+// ODBC delimiter/NULL policy is adapter-owned. The carrier keeps native
+// matching separate from pattern syntax and does not borrow caller storage.
+bool ODBCStatement::normalize_catalog_names(rs::core::database::CatalogRequest& request) {
+  if (!metadata_id_) return true;
+  using namespace rs::core::database;
+  if (const auto* tables = std::get_if<TablesCatalogRequest>(&request);
+      tables && tables->mode != TablesCatalogRequest::Mode::Tables) return true;
+  const auto name = [this](auto& value, CatalogNameMatch& match, bool catalog = false) {
+    if constexpr (std::is_same_v<std::decay_t<decltype(value)>, std::optional<std::string>>) {
+      if (!value) {
+        if (catalog && !conn_->capabilities().catalog_names) return true;
+        set_error(SQLSTATE_INVALID_NULL_POINTER, "Metadata identifier argument is required");
+        return false;
+      }
+    }
+    std::string& text = [&]() -> std::string& {
+      if constexpr (std::is_same_v<std::decay_t<decltype(value)>, std::optional<std::string>>) return *value;
+      else return value;
+    }();
+    if (text.find('\0') != std::string::npos || !rs::util::utf8_code_point_count(text)) {
+      set_error(SQLSTATE_GENERAL_ERROR, "Invalid metadata identifier argument"); return false;
+    }
+    auto end = text.size();
+    while (end && text[end - 1] == ' ') --end;
+    std::size_t begin = 0;
+    while (begin < end && text[begin] == ' ') ++begin;
+    if (begin < end && text[begin] == '"') {
+      if (end - begin < 2 || text[end - 1] != '"') {
+        set_error(SQLSTATE_GENERAL_ERROR, "Invalid metadata identifier argument"); return false;
+      }
+      std::string owned;
+      owned.reserve(end - begin - 2);
+      for (std::size_t i = begin + 1; i < end - 1; ++i) {
+        if (text[i] == '"') {
+          if (i + 1 >= end - 1 || text[i + 1] != '"') {
+            set_error(SQLSTATE_GENERAL_ERROR, "Invalid metadata identifier argument"); return false;
+          }
+          ++i;
+        }
+        owned.push_back(text[i]);
+      }
+      text = std::move(owned);
+      match = CatalogNameMatch::IdentifierQuoted;
+    } else {
+      // Do not locale-fold multibyte characters or normalize Unicode spelling.
+      if (text.find('"') != std::string::npos) {
+        set_error(SQLSTATE_GENERAL_ERROR, "Invalid metadata identifier argument"); return false;
+      }
+      text.resize(end);
+      for (char& ch : text) if (ch >= 'a' && ch <= 'z') ch += 'A' - 'a';
+      match = CatalogNameMatch::IdentifierUnquoted;
+    }
+    return true;
+  };
+  return std::visit([&](auto& names) {
+    using T = std::decay_t<decltype(names)>;
+    auto& m = names.name_matches;
+    if constexpr (std::is_same_v<T, ForeignKeysCatalogRequest>) {
+      return name(names.primary_catalog,m.catalog,true) && name(names.primary_schema,m.schema) &&
+          name(names.primary_table,m.object) && name(names.foreign_catalog,m.foreign_catalog,true) &&
+          name(names.foreign_schema,m.foreign_schema) && name(names.foreign_table,m.foreign_object);
+    } else {
+      if (!name(names.catalog,m.catalog,true) || !name(names.schema,m.schema)) return false;
+      if constexpr (std::is_same_v<T, ProceduresCatalogRequest> || std::is_same_v<T, ProcedureColumnsCatalogRequest>) {
+        if (!name(names.procedure,m.object)) return false;
+      } else if (!name(names.table,m.object)) return false;
+      if constexpr (std::is_same_v<T, ColumnsCatalogRequest> || std::is_same_v<T, ProcedureColumnsCatalogRequest>)
+        return name(names.column,m.member);
+      return true;
+    }
+  }, request);
+}
+
 SQLRETURN ODBCStatement::execute_catalog(
-    const rs::core::database::CatalogRequest& request) {
+    const rs::core::database::CatalogRequest& input) {
+  // New identifier classification/generation consumes the same absolute budget.
+  const auto original_deadline = metadata_id_ ?
+      std::optional<rs::util::Deadline>{rs::util::make_deadline(timeout_duration(query_timeout_seconds_))} : std::nullopt;
   if (!conn_->is_connected()) {
     set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
     return SQL_ERROR;
   }
+  auto request = input;
+  if (!normalize_catalog_names(request)) return SQL_ERROR;
   // Backend-owned passive selection precedes SQL generation. Selected failures
   // never fall back; unselected requests retain their existing SQL path.
   auto selection = conn_->backend_selects_catalog_request(request);
@@ -5592,7 +5785,8 @@ SQLRETURN ODBCStatement::execute_catalog(
     return SQL_ERROR;
   }
   if (*selection) {
-    const auto deadline = rs::util::make_deadline(timeout_duration(query_timeout_seconds_));
+    const auto deadline = original_deadline ? *original_deadline :
+        rs::util::make_deadline(timeout_duration(query_timeout_seconds_));
     if (executed_ && (!column_info_.empty() || !pending_results_.empty())) {
       set_error(SQLSTATE_INVALID_CURSOR_STATE, "Cannot execute while results are pending");
       return SQL_ERROR;
@@ -5648,7 +5842,7 @@ SQLRETURN ODBCStatement::execute_catalog(
               query.error_message());
     return SQL_ERROR;
   }
-  return execute_direct(*query);
+  return execute_direct(*query, original_deadline);
 }
 
 SQLRETURN ODBCStatement::tables(

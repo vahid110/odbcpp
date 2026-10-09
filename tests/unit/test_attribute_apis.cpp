@@ -370,10 +370,11 @@ TEST_F(AttributeApisTest, ReportsCommonConnectionAttributeDefaults) {
   EXPECT_EQ(SQL_SUCCESS,
             SQLSetConnectAttr(connection_, SQL_ATTR_METADATA_ID,
                               integer_value(SQL_FALSE), 0));
-  EXPECT_EQ(SQL_ERROR,
+  EXPECT_EQ(SQL_SUCCESS,
             SQLSetConnectAttr(connection_, SQL_ATTR_METADATA_ID,
                               integer_value(SQL_TRUE), 0));
-  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_SUCCESS, SQLSetConnectAttr(connection_, SQL_ATTR_METADATA_ID,
+                                         integer_value(SQL_FALSE), 0));
   EXPECT_EQ(SQL_ERROR,
             SQLSetConnectAttr(connection_, SQL_ATTR_CONNECTION_DEAD,
                               integer_value(SQL_CD_FALSE), 0));
@@ -982,9 +983,10 @@ TEST_F(AttributeApisTest, ReportsForwardOnlyStatementDefaults) {
       statement_, SQL_ATTR_PARAMSET_SIZE,
       reinterpret_cast<SQLPOINTER>(std::intptr_t{-1}), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
-  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
       statement_, SQL_ATTR_METADATA_ID, integer_value(SQL_TRUE), 0));
-  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
+      statement_, SQL_ATTR_METADATA_ID, integer_value(SQL_FALSE), 0));
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_RETRIEVE_DATA, integer_value(99), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));

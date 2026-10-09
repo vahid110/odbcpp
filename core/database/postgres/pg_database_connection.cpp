@@ -127,6 +127,11 @@ BackendResult<void> PgDatabaseConnection::check_health(rs::util::Deadline deadli
 bool PgDatabaseConnection::selects_catalog_request(const CatalogRequest& request) const noexcept {
   if (catalog_profile_ != PgCatalogProfile::Redshift) return false;
   if (std::holds_alternative<PrimaryKeysCatalogRequest>(request)) return true;
+  // Identifier-mode requests use generated alternatives only for Tables/Columns.
+  if (const auto* tables = std::get_if<TablesCatalogRequest>(&request);
+      tables && !tables->name_matches.existing()) return false;
+  if (const auto* columns = std::get_if<ColumnsCatalogRequest>(&request);
+      columns && !columns->name_matches.existing()) return false;
   if (const auto* columns=std::get_if<ColumnsCatalogRequest>(&request))
     return catalog_mode()==RedshiftCatalogMode::Show && redshift_column_names_are_literal(*columns);
   const auto* tables = std::get_if<TablesCatalogRequest>(&request);
@@ -149,6 +154,14 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
         "Exact modern Redshift primary-key discovery is unavailable",
         BackendOperation::ExecuteCatalog, session_state());
   };
+  auto native = native_catalog_request(request);
+  if (!native) return local_backend_error(LocalFailure::InvalidInput,
+      "Invalid catalog name semantics", BackendOperation::ExecuteCatalog, session_state());
+  if ((std::holds_alternative<TablesCatalogRequest>(*native) ||
+       std::holds_alternative<ColumnsCatalogRequest>(*native)) &&
+      !std::visit([](const auto& value) { return value.name_matches.existing(); }, *native))
+    return local_backend_error(LocalFailure::Unsupported,
+        "Identifier matching uses generated catalog queries", BackendOperation::ExecuteCatalog, session_state());
   const auto* tables = std::get_if<TablesCatalogRequest>(&request);
   if (catalog_profile_ == PgCatalogProfile::Redshift && tables &&
       tables->mode == TablesCatalogRequest::Mode::Schemas &&
@@ -252,7 +265,7 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
     if (expired()) return timeout();
     return normalized;
   }
-  const auto* keys = std::get_if<PrimaryKeysCatalogRequest>(&request);
+  const auto* keys = std::get_if<PrimaryKeysCatalogRequest>(&*native);
   if (catalog_profile_ != PgCatalogProfile::Redshift || !keys) return unsupported();
   auto plan = redshift_primary_key_plan(keys->catalog, keys->schema, keys->table);
   if (!plan) {
