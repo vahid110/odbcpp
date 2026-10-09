@@ -6297,7 +6297,7 @@ TEST_F(MaxRowsStorageTest, PreparedLimitChangesPreserveZeroCompactionPathsAndLiv
   ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));released(exact);
   ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));released(source_storage());
   ASSERT_NO_FATAL_FAILURE(fetched(43));EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));
-  live(sibling_storage.pointer);ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));SQLINTEGER old=0;SQLLEN length=0;
-  ASSERT_EQ(SQL_SUCCESS,SQLGetData(sibling,1,SQL_C_SLONG,&old,0,&length));EXPECT_EQ(31,old);EXPECT_EQ(sizeof(old),length);
+  live(sibling_storage.pointer);ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));SQLINTEGER old=0;SQLLEN sibling_length=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(sibling,1,SQL_C_SLONG,&old,0,&sibling_length));EXPECT_EQ(31,old);EXPECT_EQ(sizeof(old),sibling_length);
   EXPECT_EQ(701,output.before);EXPECT_EQ(702,output.after);
 }
