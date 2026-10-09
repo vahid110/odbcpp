@@ -191,6 +191,11 @@ set_target_properties(${PROJECT_NAME}_driver PROPERTIES
   VERSION ${PROJECT_VERSION}
   SOVERSION 1
 )
+# SQL_DRIVER_NAME is the configured driver filename, not a display label.
+foreach(_odbc_object IN ITEMS ${PROJECT_NAME}_core_odbc ${PROJECT_NAME}_driver_odbc)
+  target_compile_definitions(${_odbc_object} PRIVATE
+    ODBCPP_DRIVER_FILENAME="$<TARGET_FILE_NAME:${PROJECT_NAME}_driver>")
+endforeach()
 # Configure static library
 target_include_directories(${PROJECT_NAME}_core
   PUBLIC
@@ -293,6 +298,12 @@ endif()
 if(BUILD_TESTING)
   include(CTest)
   include(cmake/Tests.cmake)
+  foreach(_info_test IN ITEMS test_attribute_apis it_get_info it_driver_manager)
+    if(TARGET ${_info_test})
+      target_compile_definitions(${_info_test} PRIVATE
+        ODBCPP_EXPECT_DRIVER_FILENAME="$<TARGET_FILE_NAME:${PROJECT_NAME}_driver>")
+    endif()
+  endforeach()
 endif()
 
 odbcpp_check_prototype_target(${PROJECT_NAME}_core)

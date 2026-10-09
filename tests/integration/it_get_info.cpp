@@ -77,7 +77,7 @@ class GetInfoIntegrationTest : public ::testing::Test {
 TEST_F(GetInfoIntegrationTest, ReportsStaticStringCapabilities) {
   constexpr std::array<std::pair<SQLUSMALLINT, std::string_view>, 33>
       expected_values{{
-          {SQL_DRIVER_NAME, "ODBCPP Driver"},
+          {SQL_DRIVER_NAME, ODBCPP_EXPECT_DRIVER_FILENAME},
           {SQL_DRIVER_VER, "01.00.0000"},
           {SQL_DRIVER_ODBC_VER, "03.80"},
           {SQL_ODBC_VER, "03.80"},
@@ -417,8 +417,9 @@ TEST_F(GetInfoIntegrationTest, ReportsErrorsAndTruncationPrecisely) {
   EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
             SQLGetInfo(connection_, SQL_DRIVER_NAME, driver_name,
                        sizeof(driver_name), &required));
-  EXPECT_STREQ("ODBC", reinterpret_cast<const char*>(driver_name));
-  EXPECT_EQ(13, required);
+  EXPECT_EQ(0, std::memcmp(driver_name, ODBCPP_EXPECT_DRIVER_FILENAME, 4));
+  EXPECT_EQ(0, driver_name[4]);
+  EXPECT_EQ(sizeof(ODBCPP_EXPECT_DRIVER_FILENAME)-1, static_cast<std::size_t>(required));
   EXPECT_EQ("01004", diagnostic_state(connection_));
 
   SQLWCHAR wide_driver_name[5]{};
@@ -426,21 +427,21 @@ TEST_F(GetInfoIntegrationTest, ReportsErrorsAndTruncationPrecisely) {
   EXPECT_EQ(SQL_SUCCESS_WITH_INFO,
             SQLGetInfoW(connection_, SQL_DRIVER_NAME, wide_driver_name,
                         sizeof(wide_driver_name), &wide_required));
-  EXPECT_EQ(static_cast<SQLWCHAR>('O'), wide_driver_name[0]);
-  EXPECT_EQ(static_cast<SQLWCHAR>('C'), wide_driver_name[3]);
+  EXPECT_EQ(static_cast<SQLWCHAR>(ODBCPP_EXPECT_DRIVER_FILENAME[0]), wide_driver_name[0]);
+  EXPECT_EQ(static_cast<SQLWCHAR>(ODBCPP_EXPECT_DRIVER_FILENAME[3]), wide_driver_name[3]);
   EXPECT_EQ(static_cast<SQLWCHAR>(0), wide_driver_name[4]);
-  EXPECT_EQ(static_cast<SQLSMALLINT>(13 * sizeof(SQLWCHAR)), wide_required);
+  EXPECT_EQ(static_cast<SQLSMALLINT>((sizeof(ODBCPP_EXPECT_DRIVER_FILENAME)-1) * sizeof(SQLWCHAR)), wide_required);
   EXPECT_EQ("01004", diagnostic_state(connection_));
 
   required = -1;
   EXPECT_EQ(SQL_SUCCESS,
             SQLGetInfo(connection_, SQL_DRIVER_NAME, nullptr, 0, &required));
-  EXPECT_EQ(13, required);
+  EXPECT_EQ(sizeof(ODBCPP_EXPECT_DRIVER_FILENAME)-1, static_cast<std::size_t>(required));
   wide_required = -1;
   EXPECT_EQ(SQL_SUCCESS,
             SQLGetInfoW(connection_, SQL_DRIVER_NAME, nullptr, 0,
                         &wide_required));
-  EXPECT_EQ(static_cast<SQLSMALLINT>(13 * sizeof(SQLWCHAR)), wide_required);
+  EXPECT_EQ(static_cast<SQLSMALLINT>((sizeof(ODBCPP_EXPECT_DRIVER_FILENAME)-1) * sizeof(SQLWCHAR)), wide_required);
 
   SQLSMALLINT untouched_length = 41;
   EXPECT_EQ(SQL_ERROR,

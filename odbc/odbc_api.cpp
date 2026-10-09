@@ -335,7 +335,7 @@ namespace {
       SQLUSMALLINT info_type,
       const rs::core::database::BackendCapabilities& backend) {
     switch (info_type) {
-      case SQL_DRIVER_NAME: return "ODBCPP Driver";
+      case SQL_DRIVER_NAME: return ODBCPP_DRIVER_FILENAME;
       case SQL_DRIVER_VER: return "01.00.0000";
       case SQL_DRIVER_ODBC_VER:
       case SQL_ODBC_VER: return "03.80";

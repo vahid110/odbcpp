@@ -363,14 +363,16 @@ int main() {
     SQLFreeHandle(SQL_HANDLE_ENV, environment);
     return 1;
   }
-  SQLWCHAR wide_driver_name[32]{};
+  const auto expected_driver_name = wide_ascii(ODBCPP_EXPECT_DRIVER_FILENAME);
+  std::vector<SQLWCHAR> wide_driver_name(expected_driver_name.size());
   SQLSMALLINT wide_driver_name_bytes = 0;
   if (!succeeded(SQLGetInfoW(
-          connection, SQL_DRIVER_NAME, wide_driver_name,
-          sizeof(wide_driver_name), &wide_driver_name_bytes)) ||
-      wide_driver_name_bytes !=
-          static_cast<SQLSMALLINT>(13 * sizeof(SQLWCHAR)) ||
-      wide_driver_name[0] != static_cast<SQLWCHAR>('O')) {
+          connection, SQL_DRIVER_NAME, wide_driver_name.data(),
+          static_cast<SQLSMALLINT>(wide_driver_name.size() * sizeof(SQLWCHAR)),
+          &wide_driver_name_bytes)) ||
+      wide_driver_name_bytes != static_cast<SQLSMALLINT>(
+          (expected_driver_name.size() - 1) * sizeof(SQLWCHAR)) ||
+      wide_driver_name != expected_driver_name) {
     print_diagnostic(SQL_HANDLE_DBC, connection);
     SQLDisconnect(connection);
     SQLFreeHandle(SQL_HANDLE_DBC, connection);

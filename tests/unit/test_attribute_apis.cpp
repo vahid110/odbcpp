@@ -4,6 +4,7 @@
 #include "odbc/odbc_types.h"
 #include "odbcpp/util/deadline.h"
 #include "tests/test_handle_helpers.h"
+#include "core/database/postgres/pg_backend_provider.h"
 
 #include <array>
 #include <cstddef>
@@ -13,6 +14,41 @@
 #include <string>
 
 namespace {
+// A fixed no-I/O connection supplies only metadata for these public API tests.
+class DriverNameMetadataSession final : public rs::core::database::IDatabaseConnection {
+public:
+  explicit DriverNameMetadataSession(std::size_t& queries) : queries_(queries) {}
+  rs::core::database::BackendResult<void> connect(const rs::core::database::ConnectionSettings&) override { connected_=true;return rs::core::database::BackendResult<void>{{rs::core::database::SessionState::Idle,rs::core::database::SessionDisposition::Reusable}}; }
+  void disconnect() override { connected_=false; }
+  bool is_connected() const override { return connected_; }
+  rs::core::database::SessionState session_state() const override { return connected_?rs::core::database::SessionState::Idle:rs::core::database::SessionState::Disconnected; }
+  rs::core::database::BackendResult<rs::core::database::QueryResult> execute_query(std::string_view,rs::util::Deadline) override {
+    ++queries_;return {rs::util::DbErrorCode::UnsupportedFeature};
+  }
+  rs::core::database::BackendResult<rs::core::database::QueryResult> execute_prepared(std::string_view,std::span<const rs::core::database::QueryParameter>,rs::util::Deadline) override {
+    ++queries_;return {rs::util::DbErrorCode::UnsupportedFeature};
+  }
+  std::string server_version() const override { return "8.0.2"; }
+private:
+  std::size_t& queries_;
+  bool connected_=false;
+};
+class DriverNameMetadataProvider final : public rs::core::database::IBackendProvider {
+public:
+  explicit DriverNameMetadataProvider(std::size_t& queries) : queries_(queries),profile_({"metadata","MetadataDB","ODBCPP"},{"fixture",5439,std::nullopt,false}) {}
+  const rs::core::database::BackendIdentity& identity() const noexcept override { return profile_.identity(); }
+  const rs::core::database::BackendConnectionDefaults& connection_defaults() const noexcept override { return profile_.connection_defaults(); }
+  const rs::core::database::ISqlDialect& sql_dialect() const noexcept override { return profile_.sql_dialect(); }
+  rs::core::database::BackendCapabilities capabilities() const noexcept override { return profile_.capabilities(); }
+  std::span<const rs::core::database::TypeDefinition> type_catalog(std::string_view version) const noexcept override { return profile_.type_catalog(version); }
+  rs::core::database::TransactionCapabilities transaction_capabilities() const noexcept override { return {}; }
+  rs::util::Result<rs::core::database::ConnectionSettings> resolve_connection_options(rs::core::database::ConnectionOptions options) const override { return profile_.resolve_connection_options(std::move(options)); }
+  std::unique_ptr<rs::core::database::IDatabaseConnection> create_session(std::unique_ptr<rs::core::transport::ITransport>) const override { return std::make_unique<DriverNameMetadataSession>(queries_); }
+private:
+  std::size_t& queries_;
+  rs::core::database::postgres::PgBackendProvider profile_;
+};
+
 
 class AttributeApisTest : public ::testing::Test {
 protected:
@@ -46,6 +82,17 @@ protected:
     return reinterpret_cast<const char*>(state);
   }
 
+  void connect_metadata_only() {
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,statement_));statement_=nullptr;
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,connection_));connection_=nullptr;
+    auto provider=std::make_shared<DriverNameMetadataProvider>(metadata_queries_);
+    auto connection=std::make_unique<rs::odbc::ODBCConnection>(nullptr,provider);
+    connection_=reinterpret_cast<SQLHDBC>(connection.get());
+    rs::odbc::HandleRegistry::instance().register_handle(connection_,std::move(connection),environment_);
+    SQLCHAR input[]="SERVER=fixture;DATABASE=fixture;UID=fixture;SSL=0";
+    ASSERT_EQ(SQL_SUCCESS,SQLDriverConnect(connection_,nullptr,input,SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT));
+  }
+  std::size_t metadata_queries_=0;
   SQLHENV environment_{nullptr};
   SQLHDBC connection_{nullptr};
   SQLHSTMT statement_{nullptr};
@@ -1425,4 +1472,57 @@ TEST_F(AttributeApisTest, DriverVersionProbePreservesBufferValidation) {
   EXPECT_EQ(SQL_ERROR, SQLGetInfoW(connection_, SQL_DRIVER_ODBC_VER,
       nullptr, -1, &length));
   EXPECT_EQ("HY090", diagnostic_state(SQL_HANDLE_DBC, connection_));
+}
+
+TEST_F(AttributeApisTest, DriverFilenameReportsExactConfiguredBasenameThroughBothApis) {
+  connect_metadata_only();ASSERT_FALSE(HasFatalFailure());
+  constexpr std::string_view expected=ODBCPP_EXPECT_DRIVER_FILENAME;
+  static_assert(expected.size()>4 && expected.size()<128);
+  EXPECT_EQ(std::string_view::npos,expected.find('/'));EXPECT_EQ(std::string_view::npos,expected.find('\\'));
+  std::array<SQLCHAR,130> narrow;std::array<SQLWCHAR,130> wide;
+  narrow.fill('x');wide.fill(SQLWCHAR('x'));SQLSMALLINT length=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_DRIVER_NAME,narrow.data(),static_cast<SQLSMALLINT>(expected.size()+1),&length));
+  EXPECT_EQ(expected.size(),static_cast<std::size_t>(length));EXPECT_EQ(0,std::memcmp(narrow.data(),expected.data(),expected.size()));EXPECT_EQ(0,narrow[expected.size()]);EXPECT_EQ('x',narrow[expected.size()+1]);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfoW(connection_,SQL_DRIVER_NAME,wide.data(),static_cast<SQLSMALLINT>((expected.size()+1)*sizeof(SQLWCHAR)),&length));
+  EXPECT_EQ(expected.size()*sizeof(SQLWCHAR),static_cast<std::size_t>(length));
+  for(std::size_t i=0;i<expected.size();++i) { EXPECT_EQ(static_cast<SQLWCHAR>(expected[i]),wide[i]); }
+  EXPECT_EQ(0,wide[expected.size()]);EXPECT_EQ(SQLWCHAR('x'),wide[expected.size()+1]);EXPECT_EQ(0u,metadata_queries_);
+}
+
+TEST_F(AttributeApisTest, DriverFilenamePreservesNarrowWideTruncationAndLengthQueries) {
+  connect_metadata_only();ASSERT_FALSE(HasFatalFailure());constexpr std::string_view expected=ODBCPP_EXPECT_DRIVER_FILENAME;
+  SQLSMALLINT length=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_DRIVER_NAME,nullptr,0,&length));EXPECT_EQ(expected.size(),static_cast<std::size_t>(length));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfoW(connection_,SQL_DRIVER_NAME,nullptr,0,&length));EXPECT_EQ(expected.size()*sizeof(SQLWCHAR),static_cast<std::size_t>(length));
+  for(const std::size_t capacity:{std::size_t{0},std::size_t{1},expected.size()}) {
+    std::array<SQLCHAR,130> narrow;std::array<SQLWCHAR,130> wide;narrow.fill('x');wide.fill(SQLWCHAR('x'));
+    // Zero capacity is an existing length-only success; positive short buffers truncate.
+    const SQLRETURN expected_result=capacity?SQL_SUCCESS_WITH_INFO:SQL_SUCCESS;
+    ASSERT_EQ(expected_result,SQLGetInfo(connection_,SQL_DRIVER_NAME,narrow.data(),static_cast<SQLSMALLINT>(capacity),&length));
+    if(capacity) { EXPECT_EQ("01004",diagnostic_state(SQL_HANDLE_DBC,connection_)); }
+    else { SQLCHAR state[6]{};EXPECT_EQ(SQL_NO_DATA,SQLGetDiagRec(SQL_HANDLE_DBC,connection_,1,state,nullptr,nullptr,0,nullptr)); }
+    EXPECT_EQ(expected.size(),static_cast<std::size_t>(length));
+    ASSERT_EQ(expected_result,SQLGetInfoW(connection_,SQL_DRIVER_NAME,wide.data(),static_cast<SQLSMALLINT>(capacity*sizeof(SQLWCHAR)),&length));
+    if(capacity) { EXPECT_EQ("01004",diagnostic_state(SQL_HANDLE_DBC,connection_)); }
+    else { SQLCHAR state[6]{};EXPECT_EQ(SQL_NO_DATA,SQLGetDiagRec(SQL_HANDLE_DBC,connection_,1,state,nullptr,nullptr,0,nullptr)); }
+    EXPECT_EQ(expected.size()*sizeof(SQLWCHAR),static_cast<std::size_t>(length));
+    if(capacity) {
+      for(std::size_t i=0;i+1<capacity;++i) { EXPECT_EQ(static_cast<SQLCHAR>(expected[i]),narrow[i]);EXPECT_EQ(static_cast<SQLWCHAR>(expected[i]),wide[i]); }
+      EXPECT_EQ(0,narrow[capacity-1]);EXPECT_EQ(0,wide[capacity-1]);
+    }
+    EXPECT_EQ('x',narrow[capacity]);EXPECT_EQ(SQLWCHAR('x'),wide[capacity]);
+  }
+  EXPECT_EQ(0u,metadata_queries_);
+}
+
+TEST_F(AttributeApisTest, DriverFilenameErrorsPreserveOutputsAndOtherIdentityFields) {
+  connect_metadata_only();ASSERT_FALSE(HasFatalFailure());SQLCHAR narrow[128];std::fill(std::begin(narrow),std::end(narrow),SQLCHAR('x'));
+  SQLWCHAR wide[128];std::fill(std::begin(wide),std::end(wide),SQLWCHAR('x'));SQLSMALLINT length=37;
+  EXPECT_EQ(SQL_ERROR,SQLGetInfo(connection_,SQL_DRIVER_NAME,narrow,-1,&length));EXPECT_EQ("HY090",diagnostic_state(SQL_HANDLE_DBC,connection_));EXPECT_EQ(37,length);EXPECT_EQ('x',narrow[0]);
+  EXPECT_EQ(SQL_ERROR,SQLGetInfoW(connection_,SQL_DRIVER_NAME,wide,static_cast<SQLSMALLINT>(sizeof(SQLWCHAR)+1),&length));EXPECT_EQ("HY090",diagnostic_state(SQL_HANDLE_DBC,connection_));EXPECT_EQ(37,length);EXPECT_EQ(SQLWCHAR('x'),wide[0]);
+  // A successful filename read after both refusals proves the same handle recovers.
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_DRIVER_NAME,narrow,sizeof(narrow),&length));EXPECT_STREQ(ODBCPP_EXPECT_DRIVER_FILENAME,reinterpret_cast<char*>(narrow));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_DBMS_NAME,narrow,sizeof(narrow),&length));EXPECT_STREQ("MetadataDB",reinterpret_cast<char*>(narrow));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_DBMS_VER,narrow,sizeof(narrow),&length));EXPECT_STREQ("08.00.0002",reinterpret_cast<char*>(narrow));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_DRIVER_VER,narrow,sizeof(narrow),&length));EXPECT_STREQ("01.00.0000",reinterpret_cast<char*>(narrow));EXPECT_EQ(0u,metadata_queries_);
 }
