@@ -326,6 +326,58 @@ SQLRETURN convert_bit_result_to_binary(std::string_view value, void* buffer,
   return SQL_SUCCESS;
 }
 
+// ODBC indicator-only bindings request a converted byte length, not a data
+// allocation or truncation test. Variable output is counted with SDK decoding;
+// fixed C conversion uses bounded aligned scratch to retain validation/warnings.
+SQLRETURN indicator_only_result_length(SQLSMALLINT sql_type,
+                                       SQLSMALLINT target_type,
+                                       const std::string& value,
+                                       SQLSMALLINT precision, SQLSMALLINT scale,
+                                       SQLLEN& length, ConversionIssue& issue) {
+  const auto maximum = static_cast<std::size_t>((std::numeric_limits<SQLLEN>::max)());
+  const auto bytes = [&](std::size_t units, std::size_t unit_size) -> SQLRETURN {
+    if (units > maximum / unit_size) {
+      issue = ConversionIssue::NumericValueOutOfRange;
+      return SQL_ERROR;
+    }
+    length = static_cast<SQLLEN>(units * unit_size);
+    return SQL_SUCCESS;
+  };
+  if (sql_type == SQL_BIT && value != "0" && value != "1") {
+    issue = ConversionIssue::InvalidCharacterValue;
+    return SQL_ERROR;
+  }
+  if (target_type == SQL_C_CHAR || target_type == SQL_C_WCHAR) {
+    const auto unit_size = target_type == SQL_C_WCHAR ? sizeof(SQLWCHAR) : 1;
+    if (sql_type == SQL_BINARY || sql_type == SQL_VARBINARY || sql_type == SQL_LONGVARBINARY)
+      return bytes(value.size(), 2 * unit_size); // Existing binary-to-text hex length, no hex allocation.
+    if (target_type == SQL_C_CHAR) return bytes(value.size(), 1);
+    std::size_t units = 0, offset = 0;
+    while (offset < value.size()) {
+      const auto point = rs::util::next_utf8_code_point(value, offset);
+      if (!point) { issue = ConversionIssue::InvalidCharacterValue; return SQL_ERROR; }
+      const std::size_t increment = sizeof(SQLWCHAR) == 2 && *point > 0xffff ? 2 : 1;
+      if (units > maximum / unit_size - increment) {
+        issue = ConversionIssue::NumericValueOutOfRange;
+        return SQL_ERROR;
+      }
+      units += increment;
+    }
+    return bytes(units, unit_size);
+  }
+  if (target_type == SQL_C_BINARY)
+    return bytes(sql_type == SQL_BIT ? 1 : value.size(), 1); // Character-to-binary is raw bytes.
+  alignas(std::max_align_t) unsigned char scratch[
+      sizeof(SQL_NUMERIC_STRUCT) + sizeof(SQL_TIMESTAMP_STRUCT)]{};
+  const auto extent = bound_column_stride(target_type, 0);
+  if (!extent || *extent > sizeof(scratch)) {
+    issue = ConversionIssue::InvalidCharacterValue;
+    return SQL_ERROR;
+  }
+  return TextDataConverter::convert_data(value, target_type, scratch,
+      sizeof(scratch), &length, &issue, precision, scale);
+}
+
 std::string elapsed_milliseconds(std::chrono::steady_clock::time_point start) {
   return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - start).count());
@@ -2918,22 +2970,21 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
       return descriptor(app_row_descriptor_)->set_field(
           0, SQL_DESC_ARRAY_SIZE, value, 0);
     case SQL_ATTR_ROW_BIND_TYPE:
-      if (numeric == SQL_BIND_BY_COLUMN) {
-        return descriptor(app_row_descriptor_)->set_field(
-            0, SQL_DESC_BIND_TYPE, value, 0);
-      }
-      break;
+      // Zero selects column arrays; a positive value is the application row
+      // structure's byte stride. Both aliases use the same ARD header field.
+      return descriptor(app_row_descriptor_)->set_field(
+          0, SQL_DESC_BIND_TYPE, value, 0);
     case SQL_ATTR_ROW_BIND_OFFSET_PTR:
       return descriptor(app_row_descriptor_)->set_field(
           0, SQL_DESC_BIND_OFFSET_PTR, value, 0);
     case SQL_ATTR_RETRIEVE_DATA:
-      if (numeric == SQL_RD_ON) return SQL_SUCCESS;
-      if (numeric != SQL_RD_OFF) {
+      if (numeric != SQL_RD_ON && numeric != SQL_RD_OFF) {
         set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
                   "Invalid retrieve-data value");
         return SQL_ERROR;
       }
-      break;
+      retrieve_data_ = numeric == SQL_RD_ON;
+      return SQL_SUCCESS;
     case SQL_ATTR_USE_BOOKMARKS:
       if (!cursor_attribute_settable()) return SQL_ERROR;
       if (numeric == SQL_UB_OFF) return SQL_SUCCESS;
@@ -3112,7 +3163,7 @@ SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
     case SQL_ATTR_ROW_BIND_OFFSET_PTR:
       write_pointer(descriptor(app_row_descriptor_)->bind_offset_ptr()); break;
     case SQL_ATTR_RETRIEVE_DATA:
-      write_ulen(SQL_RD_ON); break;
+      write_ulen(retrieve_data_ ? SQL_RD_ON : SQL_RD_OFF); break;
     case SQL_ATTR_USE_BOOKMARKS:
       write_ulen(SQL_UB_OFF); break;
     case SQL_ATTR_ASYNC_ENABLE:
@@ -3189,12 +3240,39 @@ SQLRETURN ODBCStatement::fetch() {
     return SQL_ERROR;
   }
   const auto ard = descriptor(app_row_descriptor_);
-  if (ard->bind_type() != SQL_BIND_BY_COLUMN || ard->bind_offset_ptr()) {
-    set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
-              "Only column-wise descriptor binding without a bind offset is supported");
-    return SQL_ERROR;
+  // The statement attribute documents SQLULEN*, while the same ARD header
+  // documents SQLLEN*. Support their common nonnegative range only, and read
+  // the deferred bits once without assuming alignment or mutating the pointer.
+  static_assert(sizeof(SQLULEN) == sizeof(SQLLEN));
+  std::uintptr_t binding_offset = 0;
+  if (const auto* offset_pointer = retrieve_data_ ? ard->bind_offset_ptr() : nullptr) {
+    const auto address = reinterpret_cast<std::uintptr_t>(offset_pointer);
+    const auto maximum = (std::numeric_limits<std::uintptr_t>::max)();
+    if (sizeof(SQLULEN) > maximum - address) {
+      set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Binding offset address span is out of range");
+      return SQL_ERROR;
+    }
+    SQLULEN encoded_offset = 0;
+    std::memcpy(&encoded_offset, offset_pointer, sizeof(encoded_offset));
+    if (encoded_offset > static_cast<SQLULEN>((std::numeric_limits<SQLLEN>::max)())) {
+      set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                "Binding offset outside the common nonnegative range is not supported");
+      return SQL_ERROR;
+    }
+    binding_offset = static_cast<std::uintptr_t>(encoded_offset);
+    if (static_cast<SQLULEN>(binding_offset) != encoded_offset) {
+      set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Binding offset value is out of range");
+      return SQL_ERROR;
+    }
   }
   const auto size = static_cast<std::size_t>(ard->array_size());
+  const auto row_stride = retrieve_data_
+      ? static_cast<std::size_t>(ard->bind_type()) : std::size_t{SQL_BIND_BY_COLUMN};
+  if (static_cast<SQLULEN>(size) != ard->array_size() ||
+      (retrieve_data_ && static_cast<SQLULEN>(row_stride) != ard->bind_type())) {
+    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Rowset application layout is out of range");
+    return SQL_ERROR;
+  }
   const auto ird = descriptor(imp_row_descriptor_);
   auto* fetched = ird->rows_processed_ptr();
   auto* status = ird->array_status_ptr();
@@ -3205,24 +3283,46 @@ SQLRETURN ODBCStatement::fetch() {
     const auto maximum = (std::numeric_limits<std::uintptr_t>::max)();
     return count <= (maximum - base) / stride;
   };
+  // Struct fields have their own extent, independent of the row stride. This
+  // checks integer address range, not whether caller storage is allocated.
+  const auto row_span_fits = [size, row_stride](const void* address,
+                                               std::size_t extent) {
+    if (!address || size == 0) return true;
+    const auto base = reinterpret_cast<std::uintptr_t>(address);
+    const auto maximum = (std::numeric_limits<std::uintptr_t>::max)();
+    if (extent > maximum - base) return false;
+    return size - 1 <= (maximum - base - extent) / row_stride;
+  };
   if (size == 0 || !span_fits(status, size, sizeof(SQLUSMALLINT)) ||
       !span_fits(fetched, 1, sizeof(SQLULEN))) {
     set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Rowset application address span is out of range");
     return SQL_ERROR;
   }
-  for (std::size_t column = 0; column < ard->record_count() && column < column_info_.size(); ++column) {
+  for (std::size_t column = 0; retrieve_data_ && column < ard->record_count() &&
+       column < column_info_.size(); ++column) {
     const auto& binding = *ard->record(column);
-    if (!binding.data_ptr) continue;
+    if (!binding.data_ptr && !binding.indicator_ptr && !binding.octet_length_ptr) continue;
     const auto type = binding.concise_type == SQL_C_DEFAULT
         ? ResultTypes::default_c_type(column_info_[column].sql_type) : binding.concise_type;
     // A prohibited conversion never accesses that column's application span;
     // retain its existing per-row 07006/status path instead of inventing HY024.
     if (!ResultTypes::is_conversion_supported(column_info_[column].sql_type,
                                               ResultTypes::canonical_c_type(type))) continue;
-    const auto stride = bound_column_stride(type, binding.octet_length);
-    if (!stride || !span_fits(binding.data_ptr, size, *stride) ||
-        !span_fits(binding.indicator_ptr, size, sizeof(SQLLEN)) ||
-        !span_fits(binding.octet_length_ptr, size, sizeof(SQLLEN))) {
+    const auto stride = binding.data_ptr
+        ? bound_column_stride(type, binding.octet_length)
+        : std::optional<std::size_t>{0};
+    const auto field_span_fits = [&](const void* address, std::size_t extent) {
+      if (!address) return true;
+      const auto base = reinterpret_cast<std::uintptr_t>(address);
+      if (binding_offset > (std::numeric_limits<std::uintptr_t>::max)() - base)
+        return false;
+      const auto* shifted = reinterpret_cast<const void*>(base + binding_offset);
+      return row_stride == SQL_BIND_BY_COLUMN
+          ? span_fits(shifted, size, extent) : row_span_fits(shifted, extent);
+    };
+    if (!stride || !field_span_fits(binding.data_ptr, *stride) ||
+        !field_span_fits(binding.indicator_ptr, sizeof(SQLLEN)) ||
+        !field_span_fits(binding.octet_length_ptr, sizeof(SQLLEN))) {
       set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Rowset column address span is out of range");
       return SQL_ERROR;
     }
@@ -3254,10 +3354,17 @@ SQLRETURN ODBCStatement::fetch() {
   get_data_target_type_ = 0;
   wide_get_data_ = {};
   if (fetched) store_application_value(fetched, static_cast<SQLULEN>(count));
+  // OFF positions the same owning rowset but consumes no application fields,
+  // including the deferred ARD offset. IRD counts/status remain observable.
+  if (!retrieve_data_) {
+    if (status) for (std::size_t slot = 0; slot < count; ++slot)
+      store_application_value(status + slot, static_cast<SQLUSMALLINT>(SQL_ROW_SUCCESS));
+    return SQL_SUCCESS;
+  }
   std::size_t errors = 0;
   bool warning = false;
   for (std::size_t slot = 0; slot < count; ++slot) {
-    const auto rc = fetch_bound_row(start + slot, slot, size);
+    const auto rc = fetch_bound_row(start + slot, slot, size, row_stride, binding_offset);
     if (rc == SQL_ERROR) ++errors;
     else if (rc == SQL_SUCCESS_WITH_INFO) warning = true;
   }
@@ -3265,7 +3372,9 @@ SQLRETURN ODBCStatement::fetch() {
 }
 
 SQLRETURN ODBCStatement::fetch_bound_row(std::size_t row_index, std::size_t slot,
-                                         std::size_t rowset_size) {
+                                         std::size_t rowset_size,
+                                         std::size_t row_stride,
+                                         std::uintptr_t binding_offset) {
   const auto application_descriptor = descriptor(app_row_descriptor_);
   auto* status = descriptor(imp_row_descriptor_)->array_status_ptr();
   auto* row_status = status ? status + slot : nullptr;
@@ -3283,7 +3392,7 @@ SQLRETURN ODBCStatement::fetch_bound_row(std::size_t row_index, std::size_t slot
        i < application_descriptor->record_count() && i < row.size(); ++i) {
     diagnostic_column = i + 1;
     const auto& binding = *application_descriptor->record(i);
-    if (binding.data_ptr) {
+    if (binding.data_ptr || binding.indicator_ptr || binding.octet_length_ptr) {
       const auto& cell = row[i];
       const SQLSMALLINT sql_type = i < column_info_.size()
           ? column_info_[i].sql_type : static_cast<SQLSMALLINT>(SQL_VARCHAR);
@@ -3300,10 +3409,23 @@ SQLRETURN ODBCStatement::fetch_bound_row(std::size_t row_index, std::size_t slot
         return SQL_ERROR;
       }
 
-      const auto stride = *bound_column_stride(target_type, binding.octet_length);
-      auto* data_ptr = static_cast<unsigned char*>(binding.data_ptr) + slot * stride;
-      auto* indicator_ptr = binding.indicator_ptr ? binding.indicator_ptr + slot : nullptr;
-      auto* octet_length_ptr = binding.octet_length_ptr ? binding.octet_length_ptr + slot : nullptr;
+      // Captured offset/layout match preflight. Always shift the original
+      // non-null field base, never descriptor records or the previous result.
+      const auto field_address = [slot, row_stride, binding_offset](void* base,
+                                                    std::size_t column_stride) {
+        if (!base) return static_cast<unsigned char*>(nullptr);
+        const auto stride = row_stride == SQL_BIND_BY_COLUMN
+            ? column_stride : row_stride;
+        return reinterpret_cast<unsigned char*>(
+            reinterpret_cast<std::uintptr_t>(base) + binding_offset + slot * stride);
+      };
+      auto* data_ptr = binding.data_ptr
+          ? field_address(binding.data_ptr,
+              *bound_column_stride(target_type, binding.octet_length)) : nullptr;
+      auto* indicator_ptr = reinterpret_cast<SQLLEN*>(
+          field_address(binding.indicator_ptr, sizeof(SQLLEN)));
+      auto* octet_length_ptr = reinterpret_cast<SQLLEN*>(
+          field_address(binding.octet_length_ptr, sizeof(SQLLEN)));
       if (!cell) {
         if (!indicator_ptr) {
           set_error(SQLSTATE_INDICATOR_VARIABLE_REQUIRED,
@@ -3327,81 +3449,89 @@ SQLRETURN ODBCStatement::fetch_bound_row(std::size_t row_index, std::size_t slot
       }
       const auto& value = *cell;
 
-      const bool binary_as_text =
-          (sql_type == SQL_BINARY || sql_type == SQL_VARBINARY ||
-           sql_type == SQL_LONGVARBINARY) &&
-          (target_type == SQL_C_CHAR || target_type == SQL_C_WCHAR);
-      const bool bit_as_text = sql_type == SQL_BIT &&
-          bit_uses_decimal_representation(target_type);
-      std::optional<std::string> formatted_text;
-      if (binary_as_text) {
-        formatted_text = rs::util::encode_hex(value);
-      } else if (bit_as_text) {
-        formatted_text = bit_result_as_text(value);
-        if (!formatted_text) {
-          set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
-                    "Invalid normalized boolean result");
+      ConversionIssue conversion_issue = ConversionIssue::None;
+      auto* output_length = octet_length_ptr ? octet_length_ptr : indicator_ptr;
+      SQLRETURN conv_result;
+      if (!data_ptr) {
+        SQLLEN required = 0;
+        conv_result = indicator_only_result_length(sql_type, target_type, value,
+            binding.precision, binding.scale, required, conversion_issue);
+        if (conv_result != SQL_ERROR && output_length)
+          store_application_value(output_length, required);
+      } else {
+        const bool binary_as_text =
+            (sql_type == SQL_BINARY || sql_type == SQL_VARBINARY ||
+             sql_type == SQL_LONGVARBINARY) &&
+            (target_type == SQL_C_CHAR || target_type == SQL_C_WCHAR);
+        const bool bit_as_text = sql_type == SQL_BIT &&
+            bit_uses_decimal_representation(target_type);
+        std::optional<std::string> formatted_text;
+        if (binary_as_text) {
+          formatted_text = rs::util::encode_hex(value);
+        } else if (bit_as_text) {
+          formatted_text = bit_result_as_text(value);
+          if (!formatted_text) {
+            set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
+                      "Invalid normalized boolean result");
+            if (row_status) {
+              store_application_value(
+                  row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
+            }
+            return SQL_ERROR;
+          }
+        }
+        const auto& conversion_value = formatted_text ? *formatted_text : value;
+        SQLLEN conversion_length = binding.octet_length;
+        if (!value_preserving_character_buffer_fits(
+                sql_type, target_type, conversion_value, conversion_length)) {
+          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                    "Result value does not fit in the character buffer");
           if (row_status) {
             store_application_value(
                 row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
           }
           return SQL_ERROR;
         }
-      }
-      const auto& conversion_value = formatted_text ? *formatted_text : value;
-      SQLLEN conversion_length = binding.octet_length;
-      if (!value_preserving_character_buffer_fits(
-              sql_type, target_type, conversion_value, conversion_length)) {
-        set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                  "Result value does not fit in the character buffer");
-        if (row_status) {
-          store_application_value(
-              row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
+        const auto unit_size = target_type == SQL_C_WCHAR
+            ? sizeof(SQLWCHAR) : 1;
+        if (bit_as_text &&
+            (target_type == SQL_C_CHAR || target_type == SQL_C_WCHAR) &&
+            conversion_length <
+                static_cast<SQLLEN>(2 * unit_size)) {
+          set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                    "Bit character result does not fit in the application buffer");
+          if (row_status) {
+            store_application_value(
+                row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
+          }
+          return SQL_ERROR;
         }
-        return SQL_ERROR;
-      }
-      const auto unit_size = target_type == SQL_C_WCHAR
-          ? sizeof(SQLWCHAR) : 1;
-      if (bit_as_text &&
-          (target_type == SQL_C_CHAR || target_type == SQL_C_WCHAR) &&
-          conversion_length <
-              static_cast<SQLLEN>(2 * unit_size)) {
-        set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
-                  "Bit character result does not fit in the application buffer");
-        if (row_status) {
-          store_application_value(
-              row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
-        }
-        return SQL_ERROR;
-      }
-      if (binary_as_text && conversion_length > 0) {
-        const auto units = static_cast<std::size_t>(conversion_length) /
-            unit_size;
-        if (units > 1) {
-          const auto capacity = units - 1;
-          if (capacity < conversion_value.size() && capacity % 2 != 0) {
-            conversion_length = static_cast<SQLLEN>(
-                (units - 1) * unit_size);
+        if (binary_as_text && conversion_length > 0) {
+          const auto units = static_cast<std::size_t>(conversion_length) /
+              unit_size;
+          if (units > 1) {
+            const auto capacity = units - 1;
+            if (capacity < conversion_value.size() && capacity % 2 != 0) {
+              conversion_length = static_cast<SQLLEN>(
+                  (units - 1) * unit_size);
+            }
           }
         }
-      }
-      ConversionIssue conversion_issue = ConversionIssue::None;
-      auto* output_length = octet_length_ptr
-          ? octet_length_ptr : indicator_ptr;
-      SQLRETURN conv_result;
-      if (sql_type == SQL_BIT && target_type == SQL_C_BINARY) {
-        conv_result = convert_bit_result_to_binary(
-            value, data_ptr, conversion_length, output_length,
-            &conversion_issue);
-      } else if (is_character_sql_type(sql_type) &&
-                 target_type == SQL_C_BINARY) {
-        conv_result = convert_character_result_to_binary(
-            value, data_ptr, conversion_length, output_length);
-      } else {
-        conv_result = TextDataConverter::convert_data(
-            conversion_value, target_type, data_ptr,
-            conversion_length, output_length, &conversion_issue,
-            binding.precision, binding.scale);
+        if (sql_type == SQL_BIT && target_type == SQL_C_BINARY) {
+          conv_result = convert_bit_result_to_binary(
+              value, data_ptr, conversion_length, output_length,
+              &conversion_issue);
+        } else if (is_character_sql_type(sql_type) &&
+                   target_type == SQL_C_BINARY) {
+          conv_result = convert_character_result_to_binary(
+              value, data_ptr, conversion_length, output_length);
+        } else {
+          conv_result = TextDataConverter::convert_data(
+              conversion_value, target_type, data_ptr,
+              conversion_length, output_length, &conversion_issue,
+              binding.precision, binding.scale);
+        }
+
       }
 
       if (conv_result == SQL_ERROR) {
@@ -3919,18 +4049,117 @@ SQLRETURN ODBCStatement::execute() {
   const auto application_descriptor = descriptor(app_param_descriptor_);
   if (application_descriptor->array_size() != 1 ||
       application_descriptor->bind_type() != SQL_PARAM_BIND_BY_COLUMN ||
-      application_descriptor->bind_offset_ptr() ||
       application_descriptor->array_status_ptr()) {
     set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
               "Only one column-wise parameter set is supported");
     return SQL_ERROR;
   }
+  // Freeze one APD offset before eligibility reads any deferred input. The
+  // descriptor bases remain unchanged; IPD status/processed pointers do not move.
+  static_assert(sizeof(SQLULEN) == sizeof(SQLLEN));
+  const auto* offset_pointer = application_descriptor->bind_offset_ptr();
+  std::uintptr_t input_offset = 0;
+  const auto address_fits = [](const void* pointer, std::size_t extent) {
+    return !pointer || extent <= (std::numeric_limits<std::uintptr_t>::max)() -
+        reinterpret_cast<std::uintptr_t>(pointer);
+  };
+  const auto address_error = [&]() -> SQLRETURN {
+    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+              "Parameter binding address span is out of range");
+    return SQL_ERROR;
+  };
+  if (offset_pointer) {
+    if (!address_fits(offset_pointer, sizeof(SQLULEN))) return address_error();
+    SQLULEN encoded = 0;
+    std::memcpy(&encoded, offset_pointer, sizeof(encoded));
+    if (encoded > static_cast<SQLULEN>((std::numeric_limits<SQLLEN>::max)())) {
+      set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
+                "Parameter offset outside the common nonnegative range is not supported");
+      return SQL_ERROR;
+    }
+    input_offset = static_cast<std::uintptr_t>(encoded);
+    if (static_cast<SQLULEN>(input_offset) != encoded) return address_error();
+  }
+  struct InputFields {
+    void* data{}; SQLLEN* indicator{}; SQLLEN* length{};
+  };
+  const auto fields_for = [&](const DescriptorRecord& record, InputFields& fields) {
+    const auto shift = [&](const void* base, std::size_t extent, void*& output) {
+      if (!base) { output = nullptr; return true; }
+      const auto address = reinterpret_cast<std::uintptr_t>(base);
+      if (input_offset > (std::numeric_limits<std::uintptr_t>::max)() - address)
+        return false;
+      output = reinterpret_cast<void*>(address + input_offset);
+      return address_fits(output, extent);
+    };
+    if (!offset_pointer) {
+      fields = {record.data_ptr, record.indicator_ptr, record.octet_length_ptr};
+      return true; // Preserve the ordinary no-offset input path.
+    }
+    void* indicator = nullptr;
+    if (!shift(record.indicator_ptr, sizeof(SQLLEN), indicator)) return false;
+    fields.indicator = static_cast<SQLLEN*>(indicator);
+    if (fields.indicator && load_application_value<SQLLEN>(fields.indicator) == SQL_NULL_DATA) {
+      fields.data = nullptr; fields.length = nullptr;
+      return true; // NULL consumes neither data nor a separate length field.
+    }
+    void* length = nullptr;
+    if (!shift(record.octet_length_ptr, sizeof(SQLLEN), length)) return false;
+    fields.length = static_cast<SQLLEN*>(length);
+    return shift(record.data_ptr, 0, fields.data);
+  };
+  // Check every consumed input span before resetting cursor/status or issuing
+  // BEGIN/query I/O. Allocation validity remains the application's obligation.
+  for (SQLSMALLINT index = 0; offset_pointer && index < parameter_count_; ++index) {
+    const auto* record = application_descriptor->record(static_cast<std::size_t>(index));
+    const auto* implementation = descriptor(imp_param_descriptor_)->record(static_cast<std::size_t>(index));
+    if (!record || !implementation) break; // Existing missing-binding diagnostic.
+    InputFields fields;
+    if (!fields_for(*record, fields)) return address_error();
+    if (!fields.data) continue;
+    auto type = record->concise_type == SQL_C_DEFAULT
+        ? ResultTypes::default_c_type(implementation->bound_sql_type != 0
+            ? implementation->bound_sql_type : implementation->concise_type)
+        : record->concise_type;
+    type = ResultTypes::canonical_c_type(type);
+    if (type != SQL_C_CHAR && type != SQL_C_WCHAR && type != SQL_C_BINARY) {
+      const auto extent = bound_column_stride(type, 0);
+      if (extent && !address_fits(fields.data, *extent)) return address_error();
+      continue;
+    }
+    const auto* length_pointer = fields.length ? fields.length : fields.indicator;
+    const auto length = length_pointer ? load_application_value<SQLLEN>(length_pointer)
+                                      : record->octet_length;
+    if (length >= 0 && (length != 0 || length_pointer || type == SQL_C_BINARY)) {
+      if (!address_fits(fields.data, static_cast<std::size_t>(length))) return address_error();
+    } else if (length == SQL_NTS || (length == 0 && !length_pointer)) {
+      if (type == SQL_C_BINARY) continue; // Existing unsupported-length handling.
+      const auto unit = type == SQL_C_WCHAR ? sizeof(SQLWCHAR) : std::size_t{1};
+      const auto limit = std::min(conn_->input_limits().max_parameter_bytes,
+                                  conn_->input_limits().max_parameter_total_bytes);
+      std::size_t position = 0;
+      for (;;) {
+        const auto base = reinterpret_cast<std::uintptr_t>(fields.data);
+        if (position > ((std::numeric_limits<std::uintptr_t>::max)() - base) / unit)
+          return address_error();
+        const auto* next = reinterpret_cast<const void*>(base + position * unit);
+        if (!address_fits(next, unit)) return address_error();
+        const bool end = type == SQL_C_WCHAR
+            ? load_application_value<SQLWCHAR>(next) == 0
+            : load_application_value<SQLCHAR>(next) == 0;
+        if (end || position == limit) break;
+        ++position;
+      }
+    }
+  }
   bool cancellable_inputs = true;
   for (SQLSMALLINT index = 0; index < parameter_count_; ++index) {
     const auto* record = application_descriptor->record(static_cast<std::size_t>(index));
     if (!record) { cancellable_inputs = false; break; }
-    if (record->indicator_ptr && load_application_value<SQLLEN>(record->indicator_ptr) == SQL_NULL_DATA) continue;
-    const auto* length = record->octet_length_ptr ? record->octet_length_ptr : record->indicator_ptr;
+    InputFields fields;
+    if (!fields_for(*record, fields)) return address_error();
+    if (fields.indicator && load_application_value<SQLLEN>(fields.indicator) == SQL_NULL_DATA) continue;
+    const auto* length = fields.length ? fields.length : fields.indicator;
     if (length) {
       const auto value = load_application_value<SQLLEN>(length);
       if (value == SQL_DATA_AT_EXEC || value <= SQL_LEN_DATA_AT_EXEC_OFFSET) {
@@ -3986,12 +4215,14 @@ SQLRETURN ODBCStatement::execute() {
           static_cast<std::size_t>(index));
       const auto& implementation = *implementation_descriptor->record(
           static_cast<std::size_t>(index));
-      const auto* length_or_indicator = application.octet_length_ptr
-          ? application.octet_length_ptr : application.indicator_ptr;
-      const bool is_null = application.indicator_ptr &&
-          load_application_value<SQLLEN>(application.indicator_ptr) ==
+      InputFields fields;
+      if (!fields_for(application, fields)) return address_error();
+      const auto* length_or_indicator = fields.length
+          ? fields.length : fields.indicator;
+      const bool is_null = fields.indicator &&
+          load_application_value<SQLLEN>(fields.indicator) ==
               SQL_NULL_DATA;
-      if (!application.data_ptr && !is_null) {
+      if (!fields.data && !is_null) {
         set_error(SQLSTATE_INVALID_PARAMETER_NUMBER,
                   "Not all statement parameters are bound");
         return complete_parameter_set(SQL_ERROR);
@@ -4031,7 +4262,7 @@ SQLRETURN ODBCStatement::execute() {
       std::optional<SQLBIGINT> signed_number;
       std::optional<SQLUBIGINT> unsigned_number;
       if (value_type == SQL_C_CHAR) {
-        const auto* text = static_cast<const char*>(application.data_ptr);
+        const auto* text = static_cast<const char*>(fields.data);
         SQLLEN length = application.octet_length;
         if (length_or_indicator) {
           length = load_application_value<SQLLEN>(length_or_indicator);
@@ -4072,7 +4303,7 @@ SQLRETURN ODBCStatement::execute() {
         }
         bool exceeded = false;
         auto converted = sqlwchar_to_utf8_bounded(
-            application.data_ptr, units, parameter_limit, exceeded);
+            fields.data, units, parameter_limit, exceeded);
         if (exceeded) return reject_parameter_limit();
         if (!converted) {
           set_error(SQLSTATE_INVALID_CHARACTER_VALUE,
@@ -4081,39 +4312,39 @@ SQLRETURN ODBCStatement::execute() {
         }
         value = std::move(*converted);
       } else if (value_type == SQL_C_STINYINT) {
-        signed_number = load_application_value<SQLSCHAR>(application.data_ptr);
+        signed_number = load_application_value<SQLSCHAR>(fields.data);
         value = std::to_string(*signed_number);
       } else if (value_type == SQL_C_SSHORT) {
         signed_number = load_application_value<SQLSMALLINT>(
-            application.data_ptr);
+            fields.data);
         value = std::to_string(*signed_number);
       } else if (value_type == SQL_C_SLONG) {
         signed_number = load_application_value<SQLINTEGER>(
-            application.data_ptr);
+            fields.data);
         value = std::to_string(*signed_number);
       } else if (value_type == SQL_C_SBIGINT) {
         signed_number = load_application_value<SQLBIGINT>(
-            application.data_ptr);
+            fields.data);
         value = std::to_string(*signed_number);
       } else if (value_type == SQL_C_UTINYINT) {
         unsigned_number = load_application_value<SQLCHAR>(
-            application.data_ptr);
+            fields.data);
         value = std::to_string(*unsigned_number);
       } else if (value_type == SQL_C_USHORT) {
         unsigned_number = load_application_value<SQLUSMALLINT>(
-            application.data_ptr);
+            fields.data);
         value = std::to_string(*unsigned_number);
       } else if (value_type == SQL_C_ULONG) {
         unsigned_number = load_application_value<SQLUINTEGER>(
-            application.data_ptr);
+            fields.data);
         value = std::to_string(*unsigned_number);
       } else if (value_type == SQL_C_UBIGINT) {
         unsigned_number = load_application_value<SQLUBIGINT>(
-            application.data_ptr);
+            fields.data);
         value = std::to_string(*unsigned_number);
       } else if (value_type == SQL_C_NUMERIC) {
         const auto formatted = TextDataConverter::format_numeric(
-            load_application_value<SQL_NUMERIC_STRUCT>(application.data_ptr),
+            load_application_value<SQL_NUMERIC_STRUCT>(fields.data),
             application.precision, application.scale);
         if (!formatted) {
           set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
@@ -4134,9 +4365,9 @@ SQLRETURN ODBCStatement::execute() {
         }
       } else if (value_type == SQL_C_FLOAT) {
         value = format_floating_parameter(
-            load_application_value<SQLREAL>(application.data_ptr));
+            load_application_value<SQLREAL>(fields.data));
       } else if (value_type == SQL_C_DOUBLE) {
-        const auto number = load_application_value<SQLDOUBLE>(application.data_ptr);
+        const auto number = load_application_value<SQLDOUBLE>(fields.data);
         if (declared_sql_type == SQL_REAL) {
           const auto narrowed = narrow_real_parameter(number);
           if (!narrowed) {
@@ -4149,7 +4380,7 @@ SQLRETURN ODBCStatement::execute() {
           value = format_floating_parameter(number);
         }
       } else if (value_type == SQL_C_BIT) {
-        const auto bit = load_application_value<SQLCHAR>(application.data_ptr);
+        const auto bit = load_application_value<SQLCHAR>(fields.data);
         if (bit > 1) {
           set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
                     "BIT parameter must be zero or one");
@@ -4159,7 +4390,7 @@ SQLRETURN ODBCStatement::execute() {
       } else if (value_type == SQL_C_DATE ||
                  value_type == SQL_C_TYPE_DATE) {
         const auto formatted = format_date_parameter(
-            load_application_value<SQL_DATE_STRUCT>(application.data_ptr));
+            load_application_value<SQL_DATE_STRUCT>(fields.data));
         if (!formatted) {
           set_error(invalid_temporal_parameter_state(query_param.type),
                     "Invalid date parameter value");
@@ -4179,7 +4410,7 @@ SQLRETURN ODBCStatement::execute() {
       } else if (value_type == SQL_C_TIME ||
                  value_type == SQL_C_TYPE_TIME) {
         const auto formatted = format_time_parameter(
-            load_application_value<SQL_TIME_STRUCT>(application.data_ptr));
+            load_application_value<SQL_TIME_STRUCT>(fields.data));
         if (!formatted) {
           set_error(invalid_temporal_parameter_state(query_param.type),
                     "Invalid time parameter value");
@@ -4207,7 +4438,7 @@ SQLRETURN ODBCStatement::execute() {
       } else if (value_type == SQL_C_TIMESTAMP ||
                  value_type == SQL_C_TYPE_TIMESTAMP) {
         const auto timestamp = load_application_value<SQL_TIMESTAMP_STRUCT>(
-            application.data_ptr);
+            fields.data);
         const auto date = format_date_parameter(SQL_DATE_STRUCT{
             timestamp.year, timestamp.month, timestamp.day});
         const auto time = format_time_parameter(SQL_TIME_STRUCT{
@@ -4299,7 +4530,7 @@ SQLRETURN ODBCStatement::execute() {
                     "Binary parameter exceeds SQL binary length");
           return complete_parameter_set(SQL_ERROR);
         }
-        value.assign(static_cast<const char*>(application.data_ptr),
+        value.assign(static_cast<const char*>(fields.data),
                      static_cast<std::size_t>(length));
         query_param.binary_input = true;
       } else {
@@ -4322,8 +4553,8 @@ SQLRETURN ODBCStatement::execute() {
            declared_sql_type == SQL_NUMERIC)) {
         const double number = value_type == SQL_C_FLOAT
             ? static_cast<double>(load_application_value<SQLREAL>(
-                  application.data_ptr))
-            : load_application_value<SQLDOUBLE>(application.data_ptr);
+                  fields.data))
+            : load_application_value<SQLDOUBLE>(fields.data);
         if (!std::isfinite(number)) {
           set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
                     "Nonfinite floating parameter cannot bind to SQL numeric");
@@ -4424,8 +4655,8 @@ SQLRETURN ODBCStatement::execute() {
           (integer_limits || implementation.concise_type == SQL_BIT)) {
         const double number = value_type == SQL_C_FLOAT
             ? static_cast<double>(load_application_value<SQLREAL>(
-                  application.data_ptr))
-            : load_application_value<SQLDOUBLE>(application.data_ptr);
+                  fields.data))
+            : load_application_value<SQLDOUBLE>(fields.data);
         if (implementation.concise_type == SQL_BIT) {
           if (!std::isfinite(number) || number < 0 || number >= 2) {
             set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,

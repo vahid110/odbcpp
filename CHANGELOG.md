@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Indicator-only and row-wise result bindings, checked row and single-set parameter-binding offsets, and SQL_ATTR_RETRIEVE_DATA suppression with reset/rebind recovery
 - Expanded SQLGetInfo/SQLGetInfoW identity, naming, catalog, schema, cursor, and SQLGetData capability reporting
 - Explicit descriptor-handle allocation, SQLGetDescField/SQLSetDescField storage, and SQLCopyDesc cloning
 - SQLConnectW, SQLDriverConnectW, SQLExecDirectW, SQLPrepareW, SQLGetDiagRecW, and SQLNativeSqlW Unicode entry points

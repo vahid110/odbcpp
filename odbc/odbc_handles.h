@@ -545,7 +545,8 @@ public:
 
 private:
   SQLRETURN fetch_bound_row(std::size_t row_index, std::size_t slot,
-                            std::size_t rowset_size);
+                            std::size_t rowset_size, std::size_t row_stride,
+                            std::uintptr_t binding_offset);
   struct CancellationLedger;
   class ExecutionCancellation;
   std::mutex cancellation_mutex_;
@@ -589,6 +590,7 @@ private:
   SQLHDESC app_param_descriptor_{SQL_NULL_HDESC};
   SQLHDESC imp_row_descriptor_{SQL_NULL_HDESC};
   SQLHDESC imp_param_descriptor_{SQL_NULL_HDESC};
+  bool retrieve_data_ = true; // Fetch transfer policy; explicit GetData is independent.
 
   void apply_query_result(rs::core::database::QueryResult result,
                           bool include_parameter_metadata);
