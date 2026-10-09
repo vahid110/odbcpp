@@ -490,7 +490,7 @@ TEST(SessionCancellationTest, SecondaryTlsRefusalOrUnverifiedPeerNeverReceivesPr
     auto execution=std::async(std::launch::async,[&]{return connection.execute_query("SELECT 0",deadline);});
     ASSERT_TRUE(wait_query(script));EXPECT_FALSE(operation->request());
     EXPECT_EQ(literal({0,0,0,8,4,210,22,47}),script->ssl_request);EXPECT_TRUE(script->packet.empty());
-    if(!refused)EXPECT_EQ("synthetic.invalid",script->peer_hostname);
+    if(!refused) { EXPECT_EQ("synthetic.invalid",script->peer_hostname); }
     {std::lock_guard lock(script->mutex);script->release=true;script->changed.notify_all();}
     EXPECT_TRUE(execution.get().has_error());
     const auto outcome=connection.finish_cancellation(operation);
@@ -681,7 +681,7 @@ TEST(SessionCancellationTest, UnsolicitedCancelStateNeverConfirmsAndMalformedRea
     auto connected=connection.connect(settings());ASSERT_TRUE(connected) << connected.error_message();
     auto operation=connection.arm_cancellation(59,Deadline::max());ASSERT_TRUE(operation);
     auto result=connection.execute_query("SELECT 0",Deadline::max());ASSERT_TRUE(result.has_error());
-    if(!malformed)EXPECT_EQ("57014",result.backend_error().native_state);
+    if(!malformed) { EXPECT_EQ("57014",result.backend_error().native_state); }
     const auto outcome=connection.finish_cancellation(operation);
     EXPECT_FALSE(outcome.confirmed);EXPECT_FALSE(outcome.claimed);EXPECT_EQ(0,script->secondary_connects);
     if(malformed){EXPECT_FALSE(connection.is_connected());EXPECT_EQ(1,script->closes);}

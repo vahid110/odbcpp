@@ -239,7 +239,7 @@ public:
     auto* target = ::SSL_CTX_get_cert_store(sibling->context_);
     if (!source || !target || ::X509_VERIFY_PARAM_set1(::X509_STORE_get0_param(target), ::X509_STORE_get0_param(source)) != 1) return nullptr;
     const auto* objects = ::X509_STORE_get0_objects(source);
-    for (int i = 0; objects && i < sk_X509_OBJECT_num(objects); ++i) {
+    for (decltype(sk_X509_OBJECT_num(objects)) i = 0; objects && i < sk_X509_OBJECT_num(objects); ++i) {
       auto* object = sk_X509_OBJECT_value(objects, i);
       const auto type = ::X509_OBJECT_get_type(object);
       if (type == X509_LU_X509) {
