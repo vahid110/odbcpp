@@ -6,8 +6,10 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -25,6 +27,27 @@ std::string diagnostic_state(SQLHDBC connection) {
 class GetInfoIntegrationTest : public ::testing::Test {
  protected:
   void SetUp() override {
+    // Independent fixture expectation: exports do not imply that this carrier
+    // supports server cancellation. Refuse malformed controls before connection.
+#ifdef _WIN32
+    char* raw_value = nullptr;
+    std::size_t value_size = 0;
+    const auto read_status = _dupenv_s(
+        &raw_value, &value_size, "ODBCPP_TEST_EXPECT_SQLCANCEL");
+    const std::unique_ptr<char, decltype(&std::free)> owned_value(
+        raw_value, &std::free);
+    ASSERT_EQ(0, read_status)
+        << "Could not read fixture cancellation expectation";
+    const char* value = owned_value.get();
+#else
+    const char* value = std::getenv("ODBCPP_TEST_EXPECT_SQLCANCEL");
+#endif
+    if (value) {
+      const std::string_view expected(value);
+      ASSERT_TRUE(expected == "0" || expected == "1")
+          << "ODBCPP_TEST_EXPECT_SQLCANCEL must be 0 or 1";
+      expect_sqlcancel_ = expected == "1";
+    }
     ASSERT_EQ(SQL_SUCCESS,
               SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment_));
     ASSERT_EQ(SQL_SUCCESS,
@@ -70,6 +93,12 @@ class GetInfoIntegrationTest : public ::testing::Test {
     EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement));
   }
 
+  bool expected_support(SQLUSMALLINT id) const {
+    return id == SQL_API_SQLCANCEL ? expect_sqlcancel_
+                                   : odbcpp::test::expected_support(id);
+  }
+
+  bool expect_sqlcancel_{true};
   SQLHENV environment_{SQL_NULL_HENV};
   SQLHDBC connection_{SQL_NULL_HDBC};
 };
@@ -480,7 +509,7 @@ TEST_F(GetInfoIntegrationTest, FunctionSupportMatchesDriverExports) {
   ASSERT_EQ(SQL_SUCCESS,
             SQLGetFunctions(connection_, SQL_API_ODBC3_ALL_FUNCTIONS, odbc3));
   for (SQLUSMALLINT id = 0; id < 4000; ++id) {
-    EXPECT_EQ(odbcpp::test::expected_support(id),
+    EXPECT_EQ(expected_support(id),
               SQL_FUNC_EXISTS(odbc3, id) != 0)
         << id;
   }
@@ -489,16 +518,19 @@ TEST_F(GetInfoIntegrationTest, FunctionSupportMatchesDriverExports) {
   ASSERT_EQ(SQL_SUCCESS,
             SQLGetFunctions(connection_, SQL_API_ALL_FUNCTIONS, odbc2));
   for (SQLUSMALLINT id = 0; id < 100; ++id) {
-    EXPECT_EQ(odbcpp::test::expected_support(id), odbc2[id] == SQL_TRUE)
+    EXPECT_EQ(expected_support(id) ? SQL_TRUE : SQL_FALSE, odbc2[id])
         << id;
   }
 
   for (const auto& function : odbcpp::test::advertised_functions) {
-    SQLUSMALLINT supported = SQL_FALSE;
+    const bool expected = expected_support(function.id);
+    // Poison with the opposite value so the unsupported single-call result
+    // must actually write SQL_FALSE, rather than inherit a zero initialization.
+    SQLUSMALLINT supported = expected ? SQL_FALSE : SQL_TRUE;
     ASSERT_EQ(SQL_SUCCESS,
               SQLGetFunctions(connection_, function.id, &supported))
         << function.name;
-    EXPECT_EQ(SQL_TRUE, supported) << function.name;
+    EXPECT_EQ(expected ? SQL_TRUE : SQL_FALSE, supported) << function.name;
   }
 
   SQLUSMALLINT supported = SQL_TRUE;

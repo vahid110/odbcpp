@@ -160,18 +160,18 @@ jobs:
           --output build/odbcpp-crypto-unit-qualification.json
 
       - name: Run integration tests
-        run: ctest --test-dir build -L integration -E '^(it_crypto_profile_live|it_auth_pg_material_tls)$' --output-on-failure
+        run: ODBCPP_TEST_EXPECT_SQLCANCEL=1 ctest --test-dir build -L integration -E '^(it_crypto_profile_live|it_auth_pg_material_tls)$' --output-on-failure
 
       - name: Run integration tests with Linux epoll transport
         run: |
           sed -i '/^TransportMode=Sync$/c\TransportMode=Async\nAsyncEngine=Epoll' "$ODBCINI"
-          ctest --test-dir build -L integration -E '^(it_crypto_profile_live|it_auth_pg_material_tls)$' --output-on-failure
+          ODBCPP_TEST_EXPECT_SQLCANCEL=0 ctest --test-dir build -L integration -E '^(it_crypto_profile_live|it_auth_pg_material_tls)$' --output-on-failure
 
       - name: Run integration tests with Auto-selected transport
         run: |
           sed -i 's/^TransportMode=Async$/TransportMode=Auto/' "$ODBCINI"
           sed -i 's/^AsyncEngine=Epoll$/AsyncEngine=Auto/' "$ODBCINI"
-          ctest --test-dir build -L integration -E '^(it_crypto_profile_live|it_auth_pg_material_tls)$' --output-on-failure
+          ODBCPP_TEST_EXPECT_SQLCANCEL=0 ctest --test-dir build -L integration -E '^(it_crypto_profile_live|it_auth_pg_material_tls)$' --output-on-failure
 
       - name: Prepare mandatory TLS qualification fixture
         run: |
