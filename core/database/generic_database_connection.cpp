@@ -610,6 +610,7 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
   bool saw_completion = false;
   bool saw_expected_completion = false;
   auto description_phase = DescriptionPhase::Parse;
+  std::optional<DescribedResultShape> description_shape;
 
   std::size_t wire_bytes = 0;
   std::size_t message_count = 0;
@@ -672,6 +673,7 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
               throw std::runtime_error(
                   "PostgreSQL statement description out of sequence");
             }
+            description_shape = msg.tag == 'n' ? DescribedResultShape::NoResultSet : DescribedResultShape::ResultSet;
             description_phase = DescriptionPhase::Complete;
             break;
           case 'E':
@@ -943,6 +945,8 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
       normalize_cells(*item);
       normalized->additional_results.push_back(std::move(*item));
     }
+    if (kind == ResponseKind::Description && !query_error)
+      normalized->described_result_shape = description_shape;
     if (!valid_execution_structure(*normalized) ||
         (kind == ResponseKind::Description && !valid_description_structure(*normalized))) {
       BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),

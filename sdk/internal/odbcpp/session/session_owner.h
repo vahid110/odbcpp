@@ -10,6 +10,7 @@ class CredentialToken;
 class CredentialContext;
 namespace detail {
 struct SessionOwnershipState;
+struct SessionBorrowIdentity;
 struct SessionCacheGeneration;
 struct SessionOwnershipTestAccess;
 }
@@ -40,10 +41,54 @@ struct SessionObservation {
   TransactionCapabilities transactions;
   // Presence only: an individual request may still be unsupported.
   bool has_statement_description_facet{false};
+  bool has_single_statement_result_shape{false};
   bool has_catalog_query_facet{false};
   bool has_catalog_execution_facet{false};
   bool has_health_facet{false};
   bool has_reset_facet{false};
+};
+
+// Fixed synchronous prepared-command batch data. No C pointers, ODBC statuses,
+// native protocol identifiers, callbacks or automatic transaction policy.
+struct PreparedCommandSet {
+  std::vector<QueryParameter> values;
+  bool ignored{false};
+};
+struct PreparedCommandOutcome {
+  enum class State { NotAttempted, Skipped, Succeeded, Failed };
+  State state{State::NotAttempted};
+  std::optional<QueryResult> result;
+  std::optional<BackendError> error;
+  SessionSnapshot snapshot;
+};
+struct PreparedCommandBatchResult {
+  std::vector<PreparedCommandOutcome> outcomes;
+  std::size_t examined{0};
+};
+class PreparedCommandPlan final {
+ public:
+  PreparedCommandPlan(PreparedCommandPlan&&) noexcept;
+  PreparedCommandPlan& operator=(PreparedCommandPlan&&) noexcept;
+  PreparedCommandPlan(const PreparedCommandPlan&) = delete;
+  PreparedCommandPlan& operator=(const PreparedCommandPlan&) = delete;
+  const QueryResult& description() const noexcept { return description_; }
+ private:
+  friend class SessionLease;
+  PreparedCommandPlan(std::string sql, std::vector<PreparedCommandSet> sets,
+      QueryResult description, std::weak_ptr<detail::SessionOwnershipState> owner,
+      std::weak_ptr<const detail::SessionBorrowIdentity> borrow,
+      rs::util::Deadline deadline, ResultLimits limits)
+      : sql_(std::move(sql)), sets_(std::move(sets)), description_(std::move(description)),
+        owner_(std::move(owner)), borrow_(std::move(borrow)), deadline_(deadline), limits_(limits), outcomes_(sets_.size()) {}
+  std::string sql_;
+  std::vector<PreparedCommandSet> sets_;
+  QueryResult description_;
+  std::weak_ptr<detail::SessionOwnershipState> owner_;
+  std::weak_ptr<const detail::SessionBorrowIdentity> borrow_;
+  rs::util::Deadline deadline_;
+  ResultLimits limits_;
+  std::vector<PreparedCommandOutcome> outcomes_;
+  bool consumed_{false};
 };
 
 // Internal ownership primitive, not an installed SDK or pool API. A borrowed
@@ -77,6 +122,10 @@ class SessionLease final {
   // Optional facets are invoked within this exclusive borrow, never returned.
   // Every attempt invalidates cache scopes. Missing facets preserve passive
   // state with an owning Unsupported error; Retire outcomes/exceptions are terminal.
+  BackendResult<PreparedCommandPlan> prepare_command_batch(std::string_view sql,
+      std::vector<PreparedCommandSet> sets, const InputLimits&, const ResultLimits&,
+      rs::util::Deadline original_deadline);
+  BackendResult<PreparedCommandBatchResult> execute_command_batch(PreparedCommandPlan&&);
   BackendResult<void> transaction(TransactionAction, rs::util::Deadline);
   BackendResult<void> set_transaction_isolation(TransactionIsolation, rs::util::Deadline);
   BackendResult<QueryResult> describe_statement(std::string_view,
@@ -111,8 +160,12 @@ class SessionLease final {
   friend class SessionOwner;
   IDatabaseConnection* physical_session() const noexcept;
   void invalidate_cache() noexcept;
-  explicit SessionLease(std::shared_ptr<detail::SessionOwnershipState>) noexcept;
+  explicit SessionLease(std::shared_ptr<detail::SessionOwnershipState>,
+      std::shared_ptr<const detail::SessionBorrowIdentity>) noexcept;
   std::shared_ptr<detail::SessionOwnershipState> state_;
+  // One opaque identity per exclusive acquisition; stable across lease moves
+  // and BEGIN/cache invalidation, destroyed on return/retirement.
+  std::shared_ptr<const detail::SessionBorrowIdentity> borrow_;
 };
 
 // At most one borrower for a uniquely adopted session. Concurrent checkout is

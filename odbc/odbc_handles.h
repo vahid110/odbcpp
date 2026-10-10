@@ -272,6 +272,10 @@ public:
   bool supports_server_cancellation() const noexcept { return backend_lease_ && backend_lease_->supports_server_cancellation(); }
   bool has_catalog_query_facet() const noexcept { return backend_lease_ && backend_observation_.has_catalog_query_facet; }
   bool has_catalog_execution_facet() const noexcept { return backend_lease_ && backend_observation_.has_catalog_execution_facet; }
+  bool supports_parameter_arrays() const noexcept {
+    return connected_ && backend_lease_ &&
+        backend_observation_.has_single_statement_result_shape;
+  }
   bool has_statement_description_facet() const noexcept { return backend_lease_ && backend_observation_.has_statement_description_facet; }
 
 private:
@@ -284,6 +288,10 @@ private:
       std::string_view, std::span<const rs::core::database::QueryParameter>, rs::util::Deadline);
   rs::core::database::BackendResult<rs::core::database::QueryResult> backend_description(
       std::string_view, std::span<const rs::core::database::QueryParameterType>, rs::util::Deadline);
+  rs::core::database::BackendResult<rs::core::database::PreparedCommandPlan> backend_prepare_command_batch(
+      std::string_view, std::vector<rs::core::database::PreparedCommandSet>, rs::util::Deadline);
+  rs::core::database::BackendResult<rs::core::database::PreparedCommandBatchResult> backend_execute_command_batch(
+      rs::core::database::PreparedCommandPlan&&);
   rs::util::Result<std::string> backend_catalog(const rs::core::database::CatalogRequest&);
 
   rs::core::database::BackendResult<rs::core::database::QueryResult> backend_execute_catalog(
@@ -300,6 +308,7 @@ private:
   rs::core::database::BackendResult<void> backend_isolation(
       rs::core::database::TransactionIsolation level, rs::util::Deadline deadline);
   rs::core::database::InputLimits input_limits_;
+  rs::core::database::ResultLimits result_limits_;
 
   std::shared_ptr<const rs::core::database::IBackendProvider> backend_provider_;
   // One unbound exclusive borrow, terminal at disconnect; no return/reissue.
@@ -573,7 +582,18 @@ private:
   std::size_t get_data_offset_ = 0;
   SQLUSMALLINT get_data_column_ = 0;
   SQLSMALLINT get_data_target_type_ = 0;
-  std::vector<rs::core::database::QueryResult> pending_results_;
+  // Adapter diagnostic context travels with its owning deferred array error;
+  // scalar/backend compound results retain their existing mapping policy.
+  struct DeferredParameterDiagnostic {
+    std::string sqlstate;
+    SQLLEN ordinal;
+  };
+  struct PendingResult {
+    rs::core::database::QueryResult value;
+    std::optional<DeferredParameterDiagnostic> parameter_diagnostic;
+    std::optional<DiagnosticHeader> parameter_array_header;
+  };
+  std::vector<PendingResult> pending_results_;
   std::string prepared_sql_;
   size_t current_row_ = 0;
   bool row_positioned_ = false;
@@ -599,6 +619,7 @@ private:
   bool metadata_id_ = false;
   bool normalize_catalog_names(rs::core::database::CatalogRequest& request);
 
+  void apply_parameter_array_count(DiagnosticHeader header);
   void apply_query_result(rs::core::database::QueryResult result,
                           bool include_parameter_metadata);
   void apply_result_metadata(
@@ -611,6 +632,16 @@ private:
   SQLRETURN execute_catalog(const rs::core::database::CatalogRequest& request);
   void clear_current_result();
   SQLRETURN complete_parameter_set(SQLRETURN result);
+  struct ParameterInputBase {
+    void* data{};
+    SQLLEN* indicator{};
+    SQLLEN* octet_length{};
+  };
+  std::optional<std::vector<rs::core::database::QueryParameter>> materialize_parameter_set(
+      std::uintptr_t input_offset, SQLULEN set_index, bool array,
+      SQLULEN bind_stride, std::span<const ParameterInputBase> bases,
+      std::size_t& aggregate_bytes);
+  SQLRETURN execute_parameter_array(rs::util::Deadline original_deadline);
   SQLHDESC create_implicit_descriptor(DescriptorKind kind);
   SQLRETURN set_application_descriptor(SQLINTEGER attribute,
                                        SQLHDESC descriptor);

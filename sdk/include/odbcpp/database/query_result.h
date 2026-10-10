@@ -46,6 +46,9 @@ struct CellEncodingError {
   auto operator<=>(const CellEncodingError&) const = default;
 };
 
+// Authoritative description shape, never inferred from a zero-column vector.
+enum class DescribedResultShape { NoResultSet, ResultSet };
+
 struct QueryResult {
   ResultRows rows;
   std::vector<ResultColumnMetadata> columns;
@@ -58,6 +61,8 @@ struct QueryResult {
   // Owning, ordered parameter descriptions supplied by the backend.
   std::vector<NativeTypeInfo> normalized_parameter_types;
   std::vector<CellEncodingError> cell_errors;
+  // Present only on a successful statement description. Missing is unknown.
+  std::optional<DescribedResultShape> described_result_shape;
 
 };
 

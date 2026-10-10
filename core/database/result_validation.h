@@ -28,7 +28,7 @@ inline bool valid_execution_structure(const QueryResult& result) {
     if (!item.additional_results.empty()) return false;
     if (item.error && (!item.rows.empty() || !item.columns.empty() ||
         !item.cell_errors.empty() || !item.normalized_parameter_types.empty() ||
-        item.affected_rows != 0 || item.statement_kind)) return false;
+        item.affected_rows != 0 || item.statement_kind || item.described_result_shape)) return false;
   }
   return true;
 }
@@ -36,7 +36,10 @@ inline bool valid_execution_structure(const QueryResult& result) {
 // Description publishes metadata only, never execution rows or queued items.
 inline bool valid_description_structure(const QueryResult& result) {
   return valid_execution_structure(result) && result.additional_results.empty() &&
-      result.rows.empty() && result.cell_errors.empty();
+      result.rows.empty() && result.cell_errors.empty() &&
+      (!result.described_result_shape ||
+       *result.described_result_shape == DescribedResultShape::ResultSet ||
+       (*result.described_result_shape == DescribedResultShape::NoResultSet && result.columns.empty()));
 }
 
 } // namespace rs::core::database

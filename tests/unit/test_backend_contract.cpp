@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <functional>
 #include <atomic>
 
 #if defined(__has_feature)
@@ -45,6 +46,12 @@ template<class T> concept ExposesRawPhysicalSession = requires(T& connection) { 
 static_assert(!ExposesRawPhysicalSession<rs::odbc::ODBCConnection>);
 
 struct Observations {
+  bool command_array_authority{};
+  int command_array_shape{1}; // 1=NoData; 2=T-zero; 3=T-fields.
+  std::vector<BackendResult<QueryResult>> command_outcomes;
+  std::vector<std::vector<QueryParameter>> command_inputs;
+  std::vector<Deadline> command_deadlines;
+  std::function<void()> during_command;
   int created{}, transports{}, disconnects{}, destructions{}, queries{}, descriptions{}, translations{};
   bool validate_redshift_mode{false};
   bool catalog_executor{false}, catalog_builder{false};
@@ -349,7 +356,25 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
   BackendResult<QueryResult> execute_prepared(std::string_view sql, std::span<const QueryParameter> params,
                                       Deadline deadline) override {
     seen_->parameters.assign(params.begin(), params.end());
+    if (seen_->command_array_authority) {
+      ++seen_->queries;
+      seen_->command_inputs.emplace_back(params.begin(), params.end());
+      seen_->command_deadlines.push_back(deadline);
+      if (seen_->during_command) seen_->during_command();
+      const auto slot = seen_->command_inputs.size() - 1;
+      if (slot < seen_->command_outcomes.size()) {
+        auto result = seen_->command_outcomes[slot];
+        seen_->transaction_state = result.session_snapshot().state;
+        return result;
+      }
+      QueryResult result; result.affected_rows = slot + 1;
+      result.statement_kind = StatementKind::UpdateWhere;
+      return BackendResult<QueryResult>{std::move(result), {SessionState::Idle, SessionDisposition::Reusable}};
+    }
     return execute_query(sql, deadline);
+  }
+  bool supports_single_statement_result_shape() const noexcept override {
+    return seen_->command_array_authority;
   }
   IStatementDescription* statement_description() noexcept override {
     return absent_description_ ? nullptr : this;
@@ -378,6 +403,17 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
       case 3: result.additional_results.emplace_back(); result.additional_results.back().additional_results.emplace_back(); break;
       case 4: result.rows = {{"a", "1", "b"}}; break;
       case 5: result.cell_errors = {{0, 0}}; break;
+    }
+    if (seen_->command_array_authority) {
+      result.statement_kind.reset();
+      result.described_result_shape = seen_->command_array_shape == 1
+          ? DescribedResultShape::NoResultSet : DescribedResultShape::ResultSet;
+      if (seen_->command_array_shape != 3) result.columns.clear();
+      for (std::size_t i = 0; i < types.size(); ++i) {
+        if (types[i] == QueryParameterType::Int32) result.normalized_parameter_types[i] = NativeTypeInfo{ScalarType::Integer, 0, 0, true};
+        else if (types[i] == QueryParameterType::Numeric) result.normalized_parameter_types[i] = NativeTypeInfo{ScalarType::Numeric, 5, 2, true};
+        else if (types[i] == QueryParameterType::Text) result.normalized_parameter_types[i] = NativeTypeInfo{ScalarType::VarChar, 32, 0, true};
+      }
     }
     if (seen_->missing_parameter_metadata) result.normalized_parameter_types.clear();
     if (seen_->parameter_metadata_error) {
@@ -7530,4 +7566,445 @@ TEST_F(MetadataIdentifierTest, ClosedEnumerationTuplesPrecedeTrueIdentifierNorma
               request.name_matches.object);
     ASSERT_NO_FATAL_FAILURE(close());
   }
+}
+
+// First command-array stage: fixed column layout, no SELECT/async/OUT support.
+class PreparedCommandArrayTest : public BackendContractTest {
+ protected:
+  SQLINTEGER input[3]{11, 22, 33};
+  SQLLEN indicators[3]{0, 0, 0};
+  SQLUSMALLINT status[3]{71, 72, 73};
+  SQLUSMALLINT operations[3]{SQL_PARAM_PROCEED, SQL_PARAM_PROCEED, SQL_PARAM_PROCEED};
+  SQLULEN processed{91};
+  void ready(std::size_t size = 3) {
+    seen->command_array_authority = true;
+    ASSERT_NO_FATAL_FAILURE(connect());
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"UPDATE fixture SET v=?", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+        SQL_INTEGER, 10, 0, input, 0, indicators)); // Fixed C stride ignores BufferLength0.
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMSET_SIZE,
+        reinterpret_cast<SQLPOINTER>(size), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, status, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_OPERATION_PTR, operations, 0));
+  }
+  static BackendResult<QueryResult> command(std::size_t count, SessionSnapshot snapshot =
+      {SessionState::Idle, SessionDisposition::Reusable}) {
+    QueryResult result; result.statement_kind = StatementKind::UpdateWhere;
+    result.affected_rows = count;
+    return BackendResult<QueryResult>{std::move(result), snapshot};
+  }
+};
+TEST_F(PreparedCommandArrayTest, OwningCanonicalInputOrderedCountsAndCloseRefill) {
+  ASSERT_NO_FATAL_FAILURE(ready());
+  indicators[1] = SQL_NULL_DATA;
+  auto long_function_count=command(2);
+  long_function_count->statement_kind=StatementKind::CreateCharacterSet;
+  seen->command_outcomes={command(1),std::move(long_function_count),command(3)};
+  seen->during_command = [&] { input[2] = 999; }; // All inputs already own their bytes.
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(3u, seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"11"}, seen->command_inputs[0][0].value);
+  EXPECT_FALSE(seen->command_inputs[1][0].value);
+  EXPECT_EQ(std::optional<std::string>{"33"}, seen->command_inputs[2][0].value);
+  EXPECT_EQ(3u, processed);
+  for (auto value : status) EXPECT_EQ(SQL_PARAM_SUCCESS, value);
+  SQLLEN count = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLRowCount(stmt, &count)); EXPECT_EQ(1, count);
+  ASSERT_EQ(SQL_SUCCESS, SQLMoreResults(stmt));
+  SQLCHAR function_name[32]{}; SQLSMALLINT function_length=0; SQLINTEGER function_code=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,stmt,0,SQL_DIAG_DYNAMIC_FUNCTION,function_name,sizeof(function_name),&function_length));
+  EXPECT_STREQ("CREATE CHARACTER SET",reinterpret_cast<char*>(function_name)); EXPECT_EQ(20,function_length);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,stmt,0,SQL_DIAG_DYNAMIC_FUNCTION_CODE,&function_code,0,nullptr)); EXPECT_EQ(SQL_DIAG_CREATE_CHARACTER_SET,function_code);
+  ASSERT_EQ(SQL_SUCCESS, SQLRowCount(stmt, &count)); EXPECT_EQ(2, count);
+  ASSERT_EQ(SQL_SUCCESS, SQLMoreResults(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLRowCount(stmt, &count)); EXPECT_EQ(3, count);
+  // While the last count is active, DescribeParam only reads retained metadata.
+  SQLSMALLINT described_type=0,described_scale=99,described_nullable=99; SQLULEN described_size=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLDescribeParam(stmt,1,&described_type,&described_size,&described_scale,&described_nullable));
+  EXPECT_EQ(SQL_INTEGER,described_type); EXPECT_EQ(10u,described_size); EXPECT_EQ(0,described_scale);
+  ASSERT_EQ(SQL_NO_DATA, SQLMoreResults(stmt));
+  // Only nonmutating descriptor reads precede the original immediate refill.
+  SQLHDESC retained_ipd{}; ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_PARAM_DESC,&retained_ipd,0,nullptr));
+  SQLSMALLINT retained_count=0; ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(retained_ipd,0,SQL_DESC_COUNT,&retained_count,0,nullptr)); EXPECT_EQ(1,retained_count);
+  seen->during_command = {}; input[2] = 33;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(6u, seen->command_inputs.size());
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  EXPECT_EQ(0, seen->destructions); // Same live lease, no reconnect.
+}
+TEST_F(PreparedCommandArrayTest, IgnoreAliasesAllIgnoredAndPreflightRefusalRepair) {
+  ASSERT_NO_FATAL_FAILURE(ready());
+  operations[1] = SQL_ROW_ERROR;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(3u, processed); EXPECT_EQ(SQL_PARAM_UNUSED, status[1]);
+  ASSERT_EQ(2u, seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"33"}, seen->command_inputs[1][0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  for (auto& operation : operations) operation = SQL_PARAM_IGNORE;
+  SQLULEN invalid_offset = (std::numeric_limits<SQLULEN>::max)();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_BIND_OFFSET_PTR, &invalid_offset, 0));
+  const auto descriptions = seen->descriptions, queries = seen->queries;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(3u, processed); EXPECT_EQ(descriptions, seen->descriptions); EXPECT_EQ(queries, seen->queries);
+  for (auto value : status) EXPECT_EQ(SQL_PARAM_UNUSED, value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  operations[0] = 99; processed = 91; status[0] = 71;
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HY024", state());
+  EXPECT_EQ(91u, processed); EXPECT_EQ(71, status[0]); EXPECT_EQ(queries, seen->queries);
+  operations[0] = SQL_ROW_ADDED;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_BIND_OFFSET_PTR, nullptr, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_EQ(queries + 1, seen->queries);
+}
+TEST_F(PreparedCommandArrayTest, DescriptionResultSetIncludingZeroFieldsRefusesWithoutExecution) {
+  ASSERT_NO_FATAL_FAILURE(ready(2));
+  for (int shape : {2, 3}) {
+    seen->command_array_shape = shape;
+    ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HYC00", state());
+    EXPECT_EQ(0, seen->queries); EXPECT_TRUE(seen->transaction_calls.empty());
+  }
+  seen->command_array_shape = 1;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_EQ(2, seen->queries);
+}
+TEST_F(PreparedCommandArrayTest, RecoverablePrefixDeferredErrorOrdinalAndExplicitRefill) {
+  ASSERT_NO_FATAL_FAILURE(ready());
+  BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), "owning second-set error"};
+  error.operation = BackendOperation::ExecutePrepared;
+  error.native_state = "22003"; error.session_state = SessionState::Idle;
+  error.disposition = SessionDisposition::Reusable;
+  seen->command_outcomes = {command(7), BackendResult<QueryResult>{error}, command(9)};
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLExecute(stmt));
+  EXPECT_EQ(2u, processed); EXPECT_EQ(SQL_PARAM_SUCCESS, status[0]);
+  EXPECT_EQ(SQL_PARAM_ERROR, status[1]); EXPECT_EQ(SQL_PARAM_UNUSED, status[2]);
+  EXPECT_EQ(2, seen->queries); // No third set or implicit retry.
+  SQLLEN count = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLRowCount(stmt, &count)); EXPECT_EQ(7, count);
+  seen->failure_message = "overwritten";
+  seen->throwing_end_error_policy=1; // Deferred delivery must not invoke normalization again.
+  ASSERT_EQ(SQL_ERROR, SQLMoreResults(stmt)); EXPECT_EQ("HY000", state());
+  seen->throwing_end_error_policy=0;
+  SQLLEN diagnostic_row=99; SQLINTEGER diagnostic_column=99;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,stmt,1,SQL_DIAG_ROW_NUMBER,&diagnostic_row,0,nullptr)); EXPECT_EQ(2,diagnostic_row);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,stmt,1,SQL_DIAG_COLUMN_NUMBER,&diagnostic_column,0,nullptr)); EXPECT_EQ(SQL_NO_COLUMN_NUMBER,diagnostic_column);
+  SQLCHAR diagnostic_state[6]{},message[128]{}; SQLSMALLINT message_length=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDiagRec(SQL_HANDLE_STMT,stmt,1,diagnostic_state,nullptr,message,sizeof(message),&message_length));
+  EXPECT_STREQ("owning second-set error",reinterpret_cast<char*>(message));
+  ASSERT_EQ(SQL_NO_DATA, SQLMoreResults(stmt));
+  seen->command_outcomes.clear();
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_EQ(5, seen->queries);
+}
+TEST_F(PreparedCommandArrayTest, TransactionDutyTerminalNoQueueAndCancellationNeverIdleSuccess) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1;
+  ASSERT_NO_FATAL_FAILURE(ready());
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT,
+      reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0));
+  seen->begin_result = BackendResult<void>{{SessionState::Transaction, SessionDisposition::ResetRequired}};
+  BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), "failed set"};
+  error.operation = BackendOperation::ExecutePrepared; error.native_state = "22003";
+  error.session_state = SessionState::FailedTransaction; error.disposition = SessionDisposition::ResetRequired;
+  seen->command_outcomes = {command(1, {SessionState::Transaction, SessionDisposition::ResetRequired}), error};
+  seen->during_command = [&] { EXPECT_EQ(SQL_ERROR, SQLCancel(stmt)); };
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->transaction_calls.size()); EXPECT_EQ(TransactionAction::Begin, seen->transaction_calls[0]);
+  EXPECT_EQ(SQL_ERROR, SQLDisconnect(dbc)); EXPECT_EQ("25000", state(SQL_HANDLE_DBC, dbc));
+  ASSERT_EQ(SQL_SUCCESS, SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  seen->command_inputs.clear(); seen->command_outcomes = {command(1),
+      command(2, {SessionState::Unknown, SessionDisposition::Retire})};
+  seen->during_command = {};
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(stmt));
+  EXPECT_EQ(2u, seen->command_inputs.size()); EXPECT_EQ(1, seen->disconnects);
+}
+TEST_F(PreparedCommandArrayTest, AggregateValueRefusalAndSingleAbsoluteDeadline) {
+  seen->command_array_authority = true;
+  ASSERT_NO_FATAL_FAILURE(connect_with("SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=0;MAXPARAMETERTOTALBYTES=2"));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"UPDATE fixture SET v=?", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+      SQL_INTEGER, 10, 0, input, 0, indicators));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMSET_SIZE, reinterpret_cast<SQLPOINTER>(3), 0));
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HY000", state());
+  EXPECT_EQ(0, seen->queries); EXPECT_EQ(0, seen->descriptions);
+}
+TEST_F(PreparedCommandArrayTest, CommonOffsetUnicodeDecimalNullSlotsAndUnshiftedOutputs) {
+  seen->command_array_authority = true;
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"UPDATE fixture SET text_value=?,amount=?", SQL_NTS));
+  constexpr std::size_t prefix = 8;
+  unsigned char text_page[prefix + 3 * 8]{};
+  unsigned char numeric_page[prefix + 3 * sizeof(SQL_NUMERIC_STRUCT)]{};
+  unsigned char text_lengths[prefix + 3 * sizeof(SQLLEN)]{};
+  unsigned char numeric_lengths[prefix + 3 * sizeof(SQLLEN)]{};
+  const char* literals[]{"caf\xc3\xa9", "x", "last"};
+  for (std::size_t slot = 0; slot < 3; ++slot) {
+    std::memcpy(text_page + prefix + slot * 8, literals[slot], std::strlen(literals[slot]) + 1);
+    const SQLLEN text_length = slot == 1 ? SQL_NULL_DATA : SQL_NTS;
+    std::memcpy(text_lengths + prefix + slot * sizeof(SQLLEN), &text_length, sizeof(text_length));
+    SQL_NUMERIC_STRUCT number{}; number.precision = 5; number.scale = 2; number.sign = slot == 2 ? 0 : 1;
+    number.val[0] = 0x39; number.val[1] = 0x30; // Independent integer magnitude12345.
+    std::memcpy(numeric_page + prefix + slot * sizeof(number), &number, sizeof(number));
+    const SQLLEN numeric_length = 0;
+    std::memcpy(numeric_lengths + prefix + slot * sizeof(SQLLEN), &numeric_length, sizeof(numeric_length));
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+      32, 0, text_page, 8, reinterpret_cast<SQLLEN*>(text_lengths)));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 2, SQL_PARAM_INPUT, SQL_C_NUMERIC, SQL_NUMERIC,
+      5, 2, numeric_page, 0, reinterpret_cast<SQLLEN*>(numeric_lengths)));
+  SQLHDESC apd{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_APP_PARAM_DESC, &apd, 0, nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 2, SQL_DESC_PRECISION, reinterpret_cast<SQLPOINTER>(5), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 2, SQL_DESC_SCALE, reinterpret_cast<SQLPOINTER>(2), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 2, SQL_DESC_DATA_PTR, numeric_page, 0));
+  SQLULEN offset = prefix;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMSET_SIZE, reinterpret_cast<SQLPOINTER>(3), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_BIND_OFFSET_PTR, &offset, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(3u, seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"caf\xc3\xa9"}, seen->command_inputs[0][0].value);
+  EXPECT_FALSE(seen->command_inputs[1][0].value);
+  EXPECT_EQ(std::optional<std::string>{"123.45"}, seen->command_inputs[0][1].value);
+  EXPECT_EQ(std::optional<std::string>{"-123.45"}, seen->command_inputs[2][1].value);
+  EXPECT_EQ(3u, processed); for (auto value : status) EXPECT_EQ(SQL_PARAM_SUCCESS, value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+}
+TEST_F(PreparedCommandArrayTest, AddressOutputAndVariableSlotRefusalsPreserveStateThenRepair) {
+  ASSERT_NO_FATAL_FAILURE(ready());
+  const auto maximum = (std::numeric_limits<std::uintptr_t>::max)();
+  auto* invalid_status = reinterpret_cast<SQLUSMALLINT*>(maximum - 1);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, invalid_status, 0));
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HY024", state());
+  EXPECT_EQ(91u, processed); EXPECT_EQ(0, seen->queries); EXPECT_EQ(0, seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, status, 0));
+  auto* invalid_data = reinterpret_cast<void*>(maximum - 2);
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+      SQL_INTEGER, 10, 0, invalid_data, 0, indicators));
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HY024", state());
+  EXPECT_EQ(91u, processed); EXPECT_EQ(71, status[0]); EXPECT_EQ(0, seen->queries);
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+      SQL_INTEGER, 10, 0, input, 0, indicators));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_EQ(3, seen->queries);
+}
+TEST_F(PreparedCommandArrayTest, WideLiteralSlotsNullAndSingleDeadlineRemainOwning) {
+  seen->command_array_authority = true;
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"UPDATE fixture SET v=?", SQL_NTS));
+  SQLWCHAR values[3][4]{};
+  values[0][0] = 0x00e9;
+  if constexpr (sizeof(SQLWCHAR) == 2) { values[2][0] = 0xd83d; values[2][1] = 0xde00; }
+  else values[2][0] = static_cast<SQLWCHAR>(0x1f600);
+  SQLLEN lengths[3]{SQL_NTS, SQL_NULL_DATA, SQL_NTS};
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_WCHAR,
+      SQL_WVARCHAR, 32, 0, values, sizeof(values[0]), lengths));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMSET_SIZE, reinterpret_cast<SQLPOINTER>(3), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_QUERY_TIMEOUT, reinterpret_cast<SQLPOINTER>(3), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(3u, seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"\xc3\xa9"}, seen->command_inputs[0][0].value);
+  EXPECT_FALSE(seen->command_inputs[1][0].value);
+  EXPECT_EQ(std::optional<std::string>{"\xf0\x9f\x98\x80"}, seen->command_inputs[2][0].value);
+  ASSERT_EQ(3u, seen->command_deadlines.size());
+  for (auto deadline : seen->command_deadlines) EXPECT_EQ(seen->description_deadline, deadline);
+  EXPECT_NE(Deadline::max(), seen->description_deadline);
+}
+
+class RowWiseCommandArrayTest : public PreparedCommandArrayTest {
+ protected:
+  struct Row {
+    unsigned char before[3]{};
+    SQLINTEGER id{};
+    char text[12]{};
+    SQLWCHAR wide[4]{};
+    SQL_NUMERIC_STRUCT numeric{};
+    SQLLEN id_indicator{};
+    SQLLEN text_indicator{};
+    SQLLEN numeric_indicator{};
+    unsigned char after[5]{};
+  };
+  Row pages[2][3]{};
+  unsigned char unaligned[sizeof(Row) * 3 + 1]{};
+  SQLULEN page_offset{};
+  SQLHSTMT sibling{};
+  char sibling_text[16]{};
+  SQLLEN sibling_length{73};
+  void TearDown() override {
+    if (sibling) SQLFreeHandle(SQL_HANDLE_STMT, sibling);
+    BackendContractTest::TearDown();
+  }
+  void initialize() {
+    for (std::size_t page = 0; page < 2; ++page) {
+      for (std::size_t row = 0; row < 3; ++row) {
+        auto& value = pages[page][row];
+        std::fill(std::begin(value.before), std::end(value.before), 0xa7);
+        std::fill(std::begin(value.after), std::end(value.after), 0xb8);
+        value.id = static_cast<SQLINTEGER>(11 + row + page * 10);
+        const char* text = row == 0 ? "caf\xc3\xa9" : row == 1 ? "ignored" : "last";
+        std::memcpy(value.text, text, std::strlen(text) + 1);
+        value.text_indicator = SQL_NTS;
+        value.wide[0] = row == 0 ? static_cast<SQLWCHAR>(0x00e9) : static_cast<SQLWCHAR>('x');
+        if (row == 2) {
+          if constexpr (sizeof(SQLWCHAR) == 2) {
+            value.wide[0] = static_cast<SQLWCHAR>(0xd83d); value.wide[1] = static_cast<SQLWCHAR>(0xde00);
+          } else {
+            value.wide[0] = static_cast<SQLWCHAR>(0x1f600);
+          }
+        }
+        value.numeric.precision = 5; value.numeric.scale = 2;
+        value.numeric.sign = row == 2 ? 0 : 1;
+        value.numeric.val[0] = 0x39; value.numeric.val[1] = 0x30;
+      }
+    }
+  }
+  void bind_page(unsigned char* base) {
+    const auto pointer = [&](std::size_t offset) { return base + offset; };
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
+        10, 0, pointer(offsetof(Row, id)), 0,
+        reinterpret_cast<SQLLEN*>(pointer(offsetof(Row, id_indicator)))));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 2, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR,
+        32, 0, pointer(offsetof(Row, text)), sizeof(Row::text),
+        reinterpret_cast<SQLLEN*>(pointer(offsetof(Row, text_indicator)))));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 3, SQL_PARAM_INPUT, SQL_C_NUMERIC, SQL_NUMERIC,
+        5, 2, pointer(offsetof(Row, numeric)), 0,
+        reinterpret_cast<SQLLEN*>(pointer(offsetof(Row, numeric_indicator)))));
+    SQLHDESC apd{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_APP_PARAM_DESC, &apd, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 3, SQL_DESC_PRECISION, reinterpret_cast<SQLPOINTER>(5), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 3, SQL_DESC_SCALE, reinterpret_cast<SQLPOINTER>(2), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 3, SQL_DESC_DATA_PTR, pointer(offsetof(Row, numeric)), 0));
+  }
+  void ready_rows() {
+    initialize(); seen->command_array_authority = true;
+    ASSERT_NO_FATAL_FAILURE(connect());
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"UPDATE fixture SET id=?,text_value=?,amount=?", SQL_NTS));
+    ASSERT_NO_FATAL_FAILURE(bind_page(reinterpret_cast<unsigned char*>(&pages[0][0])));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMSET_SIZE, reinterpret_cast<SQLPOINTER>(3), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_BIND_TYPE, reinterpret_cast<SQLPOINTER>(sizeof(Row)), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, status, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_OPERATION_PTR, operations, 0));
+  }
+  void guards() {
+    for (const auto& page : pages) {
+      for (const auto& row : page) {
+        for (auto value : row.before) { EXPECT_EQ(0xa7, value); }
+        for (auto value : row.after) { EXPECT_EQ(0xb8, value); }
+      }
+    }
+  }
+};
+TEST_F(RowWiseCommandArrayTest, PaddedRowsUnicodeExactNumericNullAndIgnoredInputsRemainOwning) {
+  ASSERT_NO_FATAL_FAILURE(ready_rows());
+  operations[1] = SQL_ROW_ERROR;
+  pages[0][1].text[0] = static_cast<char>(0xc0); // Ignored malformed value is unread.
+  pages[0][2].text_indicator = SQL_NULL_DATA;
+  seen->during_command = [&] { pages[0][2].id = 999; };
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(2u, seen->command_inputs.size());
+  ASSERT_EQ(3u, seen->command_inputs[0].size());
+  EXPECT_EQ(std::optional<std::string>{"11"}, seen->command_inputs[0][0].value);
+  EXPECT_EQ(std::optional<std::string>{"caf\xc3\xa9"}, seen->command_inputs[0][1].value);
+  EXPECT_EQ(std::optional<std::string>{"123.45"}, seen->command_inputs[0][2].value);
+  EXPECT_EQ(std::optional<std::string>{"13"}, seen->command_inputs[1][0].value);
+  EXPECT_FALSE(seen->command_inputs[1][1].value);
+  EXPECT_EQ(std::optional<std::string>{"-123.45"}, seen->command_inputs[1][2].value);
+  EXPECT_EQ(3u, processed); EXPECT_EQ(SQL_PARAM_UNUSED, status[1]);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  SQLHDESC apd{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_APP_PARAM_DESC, &apd, 0, nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 2, SQL_DESC_DATA_PTR,
+      reinterpret_cast<SQLPOINTER>((std::numeric_limits<std::uintptr_t>::max)()), 0));
+  pages[0][0].text_indicator = SQL_NULL_DATA;
+  seen->during_command = {};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); // NULL does not consume the invalid text base.
+  ASSERT_EQ(4u, seen->command_inputs.size());
+  EXPECT_FALSE(seen->command_inputs[2][1].value);
+  EXPECT_FALSE(seen->command_inputs[3][1].value);
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+TEST_F(RowWiseCommandArrayTest, CommonOffsetDescriptorAliasUnalignedFieldsAndRebindUseOriginalBases) {
+  ASSERT_NO_FATAL_FAILURE(ready_rows());
+  SQLHDESC apd{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_APP_PARAM_DESC, &apd, 0, nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 0, SQL_DESC_BIND_TYPE, reinterpret_cast<SQLPOINTER>(sizeof(Row)), 0));
+  page_offset = sizeof(pages[0]);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_BIND_OFFSET_PTR, &page_offset, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(3u, seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"21"}, seen->command_inputs[0][0].value);
+  EXPECT_EQ(std::optional<std::string>{"23"}, seen->command_inputs[2][0].value);
+  SQLPOINTER original{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(apd, 1, SQL_DESC_DATA_PTR, &original, 0, nullptr));
+  EXPECT_EQ(static_cast<void*>(&pages[0][0].id), original);
+  EXPECT_EQ(3u, processed);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  std::memcpy(unaligned + 1, pages[0], sizeof(pages[0]));
+  ASSERT_NO_FATAL_FAILURE(bind_page(unaligned + 1));
+  page_offset = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(6u, seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"11"}, seen->command_inputs[3][0].value);
+  EXPECT_EQ(std::optional<std::string>{"123.45"}, seen->command_inputs[3][2].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 2, SQL_PARAM_INPUT, SQL_C_WCHAR, SQL_WVARCHAR,
+      32, 0, pages[0][0].wide, sizeof(pages[0][0].wide), &pages[0][0].text_indicator));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(9u, seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"\xc3\xa9"}, seen->command_inputs[6][1].value);
+  EXPECT_EQ(std::optional<std::string>{"\xf0\x9f\x98\x80"}, seen->command_inputs[8][1].value);
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+TEST_F(RowWiseCommandArrayTest, OverflowMaskAndScalarLayoutRefusalsHaveZeroEffectsThenRepair) {
+  ASSERT_NO_FATAL_FAILURE(ready_rows());
+  const auto maximum = (std::numeric_limits<SQLULEN>::max)();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_BIND_TYPE,
+      reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(maximum)), 0));
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HY024", state());
+  EXPECT_EQ(0, seen->queries); EXPECT_EQ(0, seen->descriptions);
+  EXPECT_EQ(91u, processed); EXPECT_EQ(71, status[0]);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_BIND_TYPE, reinterpret_cast<SQLPOINTER>(sizeof(Row)), 0));
+  operations[0] = 99;
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HY024", state());
+  EXPECT_EQ(91u, processed); EXPECT_EQ(0, seen->queries);
+  operations[0] = SQL_PARAM_PROCEED;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMSET_SIZE, reinterpret_cast<SQLPOINTER>(1), 0));
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HYC00", state()); // Scalar endpoint policy unchanged.
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMSET_SIZE, reinterpret_cast<SQLPOINTER>(3), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_EQ(3, seen->queries);
+}
+TEST_F(RowWiseCommandArrayTest, PartialErrorCloseResetPreparedRefillAndUnavailableArrayCancel) {
+  ASSERT_NO_FATAL_FAILURE(ready_rows());
+  QueryResult sibling_rows;
+  sibling_rows.columns = {{"text", NativeTypeInfo{ScalarType::VarChar, 16, 0, true}}};
+  sibling_rows.rows = {{"sibling"}}; sibling_rows.statement_kind = StatementKind::SelectCursor;
+  seen->date_result = sibling_rows;
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &sibling));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(sibling, (SQLCHAR*)"SELECT literal sibling", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(sibling));
+  seen->date_result.reset();
+  BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), "row-wise set failure"};
+  error.operation = BackendOperation::ExecutePrepared;
+  error.session_state = SessionState::Idle; error.disposition = SessionDisposition::Reusable;
+  seen->command_outcomes = {command(7), error, command(9)};
+  seen->during_command = [&] { EXPECT_EQ(SQL_ERROR, SQLCancel(stmt)); };
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLExecute(stmt));
+  EXPECT_EQ(2u, processed); EXPECT_EQ(SQL_PARAM_SUCCESS, status[0]);
+  EXPECT_EQ(SQL_PARAM_ERROR, status[1]); EXPECT_EQ(SQL_PARAM_UNUSED, status[2]);
+  SQLLEN count = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLRowCount(stmt, &count)); EXPECT_EQ(7, count);
+  ASSERT_EQ(SQL_ERROR, SQLMoreResults(stmt)); EXPECT_EQ("HY000", state());
+  SQLLEN diagnostic_row=99; ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,stmt,1,SQL_DIAG_ROW_NUMBER,&diagnostic_row,0,nullptr)); EXPECT_EQ(2,diagnostic_row);
+  EXPECT_EQ(2u,processed); EXPECT_EQ(SQL_PARAM_ERROR,status[1]); EXPECT_EQ(SQL_PARAM_UNUSED,status[2]);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_RESET_PARAMS));
+  seen->command_inputs.clear(); seen->command_outcomes.clear(); seen->during_command = {};
+  ASSERT_NO_FATAL_FAILURE(bind_page(reinterpret_cast<unsigned char*>(&pages[1][0])));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(3u, seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"21"}, seen->command_inputs[0][0].value);
+  EXPECT_EQ(3u, processed); EXPECT_EQ(0, seen->disconnects);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(sibling, 1, SQL_C_CHAR, sibling_text,
+      sizeof(sibling_text), &sibling_length));
+  EXPECT_STREQ("sibling", sibling_text); EXPECT_EQ(7, sibling_length);
+  ASSERT_NO_FATAL_FAILURE(guards());
 }

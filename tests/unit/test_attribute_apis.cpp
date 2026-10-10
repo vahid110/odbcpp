@@ -1531,3 +1531,32 @@ TEST_F(AttributeApisTest, DriverFilenameErrorsPreserveOutputsAndOtherIdentityFie
   ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_DBMS_VER,narrow,sizeof(narrow),&length));EXPECT_STREQ("08.00.0002",reinterpret_cast<char*>(narrow));
   ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_DRIVER_VER,narrow,sizeof(narrow),&length));EXPECT_STREQ("01.00.0000",reinterpret_cast<char*>(narrow));EXPECT_EQ(0u,metadata_queries_);
 }
+
+// A provider without stable shape authority must retain the scalar contract.
+TEST_F(AttributeApisTest, CommandArraysRequireConnectedAuthoritativeDescriptionFacet) {
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(statement_, SQL_ATTR_PARAMSET_SIZE, integer_value(3), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  SQLULEN size = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(statement_, SQL_ATTR_PARAMSET_SIZE, &size, 0, nullptr));
+  EXPECT_EQ(1u, size);
+  ASSERT_NO_FATAL_FAILURE(connect_metadata_only());
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement_));
+  SQLUINTEGER counts = 99, selects = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, SQL_PARAM_ARRAY_ROW_COUNTS, &counts, sizeof(counts), nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(connection_, SQL_PARAM_ARRAY_SELECTS, &selects, sizeof(selects), nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_PARC_NO_BATCH), counts);
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_PAS_NO_SELECT), selects);
+  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(statement_, SQL_ATTR_PARAMSET_SIZE, integer_value(3), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ATTR_PARAMSET_SIZE, integer_value(1), 0));
+  EXPECT_EQ(0u, metadata_queries_);
+}
+
+TEST_F(AttributeApisTest, PositiveParameterStructStrideRemainsUnavailableWithoutArrayAuthority) {
+  ASSERT_EQ(SQL_ERROR, SQLSetStmtAttr(statement_, SQL_ATTR_PARAM_BIND_TYPE, integer_value(96), 0));
+  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
+  SQLULEN stride = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(statement_, SQL_ATTR_PARAM_BIND_TYPE, &stride, 0, nullptr));
+  EXPECT_EQ(static_cast<SQLULEN>(SQL_PARAM_BIND_BY_COLUMN), stride);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ATTR_PARAM_BIND_TYPE, integer_value(SQL_PARAM_BIND_BY_COLUMN), 0));
+}

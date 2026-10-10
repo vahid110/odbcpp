@@ -24,6 +24,8 @@ public:
   BackendResult<void> connect(const ConnectionSettings& settings) override;
   BackendResult<void> connect_until(const ConnectionSettings& settings, rs::util::Deadline deadline);
 
+  bool supports_single_statement_result_shape() const noexcept override { return true; }
+
   ISessionReset* session_reset() noexcept override { return reset_profile_ ? this : nullptr; }
   SessionResetProfile reset_profile() const noexcept override {
     return SessionResetProfile::SameAuthenticatedServerSession;

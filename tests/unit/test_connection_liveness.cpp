@@ -188,7 +188,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     UnsolicitedCopyData, UnsolicitedCopyDone,
     OversizedUnsolicitedCopyData, BinaryResultRow,
     BinaryAdditionalResultRow, ReadyOnlyQuery, RowsWithoutCompletion,
-    EmptyQueryResponse, DescriptionNoData, DescriptionOneParameter, DescriptionRepeatedParameter, DescriptionOneColumn,
+    EmptyQueryResponse, DescriptionZeroColumns, DescriptionNoData, DescriptionOneParameter, DescriptionRepeatedParameter, DescriptionOneColumn,
     DescriptionMissingParse, DescriptionMissingParameters,
     DescriptionMissingResult, DescriptionOutOfOrder,
     DescriptionServerError, Utf8ColumnNames, MalformedColumnName, MalformedAdditionalColumnName, Utf8TextCells, NativeCells, MalformedNativeCells, RedshiftVarbyteCells, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
@@ -490,6 +490,11 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('2', "", 0);
       append_message('n', "", 0);
       append_message('C', "UPDATE 1", sizeof("UPDATE 1"));
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::DescriptionZeroColumns) {
+      append_message('1', "", 0);
+      append_message('t', "\0\0", 2);
+      append_message('T', "\0\0", 2); // Real T with zero fields, not NoData.
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::DescriptionNoData) {
       append_message('1', "", 0);
@@ -4810,4 +4815,53 @@ TEST(BufferedWireOwnershipTest, ResourceAndLateReadyRetireWithoutPartialPublicat
     const auto sends=wire->writes.size(),reads=wire->reads.size();
     EXPECT_FALSE(execute_deadline_query(connection,false,deadline));EXPECT_EQ(sends,wire->writes.size());EXPECT_EQ(reads,wire->reads.size());
   }
+}
+
+TEST(PreparedDescriptionShapeTest, LiteralNoDataAndZeroColumnRowDescriptionRemainDistinct) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (auto mode : {Mode::DescriptionNoData, Mode::DescriptionZeroColumns, Mode::DescriptionOneColumn}) {
+    auto transport = std::make_unique<ScriptedBackendTransport>(mode);
+    postgres::PgDatabaseConnection connection(std::move(transport));
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
+    ASSERT_TRUE(connection.connect(settings));
+    ASSERT_TRUE(connection.statement_description());
+    EXPECT_TRUE(connection.statement_description()->supports_single_statement_result_shape());
+    auto description = connection.describe_statement("fixed single statement", {}, rs::util::Deadline::max());
+    ASSERT_TRUE(description); ASSERT_TRUE(description->described_result_shape);
+    EXPECT_EQ(mode == Mode::DescriptionNoData ? DescribedResultShape::NoResultSet : DescribedResultShape::ResultSet,
+              *description->described_result_shape);
+    EXPECT_EQ(mode == Mode::DescriptionOneColumn ? 1u : 0u, description->columns.size());
+    EXPECT_TRUE(description->rows.empty()); EXPECT_TRUE(description->additional_results.empty());
+    EXPECT_EQ(SessionSnapshot({SessionState::Idle, SessionDisposition::Reusable}), description.session_snapshot());
+    connection.disconnect();
+    EXPECT_TRUE(description->described_result_shape); // Owning carrier survives owner retirement.
+  }
+}
+TEST(PreparedDescriptionShapeTest, MissingOutOfOrderAndNativeErrorNeverPublishAuthority) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (auto mode : {Mode::DescriptionMissingParse, Mode::DescriptionMissingParameters,
+      Mode::DescriptionMissingResult, Mode::DescriptionOutOfOrder, Mode::DescriptionServerError}) {
+    auto transport = std::make_unique<ScriptedBackendTransport>(mode);
+    postgres::PgDatabaseConnection connection(std::move(transport));
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
+    ASSERT_TRUE(connection.connect(settings));
+    auto result = connection.describe_statement("fixed single statement", {}, rs::util::Deadline::max());
+    ASSERT_FALSE(result); // No success alternative can authorize a batch.
+    EXPECT_EQ(BackendOperation::Describe, result.backend_error().operation);
+    EXPECT_EQ(mode == Mode::DescriptionServerError ? BackendErrorClass::Server : BackendErrorClass::Protocol,
+              result.backend_error().error_class);
+  }
+}
+TEST(PreparedDescriptionShapeTest, ParserAloneDoesNotAdvertiseStableCommandAuthority) {
+  using namespace rs::core::database;
+  auto transport = std::make_unique<ScriptedBackendTransport>(ScriptedBackendTransport::ResponseMode::DescriptionNoData);
+  GenericDatabaseConnection generic(std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
+  auto settings = pg_fixture_settings(); settings.use_ssl = false;
+  ASSERT_TRUE(generic.connect(settings));
+  ASSERT_TRUE(generic.statement_description());
+  EXPECT_FALSE(generic.statement_description()->supports_single_statement_result_shape());
+  auto result = generic.describe_statement("fixed single statement", {}, rs::util::Deadline::max());
+  ASSERT_TRUE(result); EXPECT_EQ(DescribedResultShape::NoResultSet, result->described_result_shape);
 }

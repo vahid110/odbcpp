@@ -1764,7 +1764,8 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_LOCK_TYPES:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_LCK_NO_CHANGE));
     case SQL_PARAM_ARRAY_ROW_COUNTS:
-      return write_uinteger(static_cast<SQLUINTEGER>(SQL_PARC_NO_BATCH));
+      return write_uinteger(static_cast<SQLUINTEGER>(conn->supports_parameter_arrays()
+          ? SQL_PARC_BATCH : SQL_PARC_NO_BATCH));
     case SQL_PARAM_ARRAY_SELECTS:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_PAS_NO_SELECT));
     case SQL_SCROLL_CONCURRENCY:

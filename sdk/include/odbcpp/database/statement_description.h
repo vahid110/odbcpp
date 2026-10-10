@@ -17,6 +17,9 @@ namespace rs::core::database {
 class IStatementDescription {
  public:
   virtual ~IStatementDescription() = default;
+  // Stable support declaration, not a probe. True promises a single prepared
+  // statement and explicit ResultSet/NoResultSet authority even with zero fields.
+  virtual bool supports_single_statement_result_shape() const noexcept { return false; }
   virtual BackendResult<QueryResult> describe_statement(std::string_view sql,
       std::span<const QueryParameterType> parameter_types,
       rs::util::Deadline deadline) = 0;
