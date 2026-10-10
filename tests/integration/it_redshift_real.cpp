@@ -5195,3 +5195,234 @@ TEST_F(RedshiftRecentFeaturesRealTest, VariableBookmarkMetadataLiteralOffsetsChu
   ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(second_,SQL_FETCH_NEXT,0)); integer(second_,1,2); ASSERT_FALSE(HasFailure());
   EXPECT_EQ(2,saved_[23]); EXPECT_EQ(1,sibling_token_[23]);
 }
+
+// Native proof for the already committed binding policies only. The independent
+// root runner must bind this exact filter, source/binary, time and SQL allowance.
+class RedshiftExpandedBindingRealTest : public RedshiftBufferedLifecycleRealTest {
+protected:
+  static constexpr const char* narrowing_sql_=
+      "SELECT CAST(1 AS INTEGER) AS ordinal,CAST(1 AS INTEGER) AS n,CAST(NULL AS VARCHAR(16)) AS label "
+      "UNION ALL SELECT CAST(2 AS INTEGER),CAST(32768 AS INTEGER),CAST('two' AS VARCHAR(16)) "
+      "UNION ALL SELECT CAST(3 AS INTEGER),CAST(3 AS INTEGER),CAST('three' AS VARCHAR(16)) ORDER BY ordinal";
+  static constexpr const char* rows_sql_=
+      "SELECT CAST(1 AS INTEGER) AS id,CAST('one' AS VARCHAR(16)) AS label "
+      "UNION ALL SELECT CAST(2 AS INTEGER),CAST(NULL AS VARCHAR(16)) "
+      "UNION ALL SELECT CAST(3 AS INTEGER),CAST('three' AS VARCHAR(16)) ORDER BY id";
+  static constexpr const char* parameter_sql_="SELECT CAST(? AS INTEGER) AS n";
+  unsigned charges_{0};
+  struct ColumnBuffers {
+    unsigned char before{0xa1}; SQLSMALLINT narrow[2]{-91,-92};
+    SQLINTEGER wide[2]{-91,-92}; SQLLEN lengths[2]{73,74};
+    char text[2][16]{}; SQLLEN text_lengths[2]{75,76}; unsigned char after{0xb2};
+  } columns_;
+  struct StatusBuffers { unsigned char before{0xc3}; SQLUSMALLINT rows[2]{71,72}; unsigned char after{0xd4}; } statuses_;
+  struct OutputRow {
+    unsigned char before[3]{0xa1,0xa2,0xa3}; SQLINTEGER value{-91}; SQLLEN length{73};
+    SQLLEN indicator{74},octets{75}; unsigned char after[3]{0xb1,0xb2,0xb3};
+  } pages_[2][2];
+  struct InputPage {
+    unsigned char before[3]{0xe1,0xe2,0xe3}; SQLINTEGER value{7}; SQLLEN length{0};
+    unsigned char after[3]{0xf1,0xf2,0xf3};
+  } inputs_[2];
+  SQLULEN fetched_{91},offset_{0},processed_{91};
+  SQLUSMALLINT operation_{SQL_PARAM_PROCEED},parameter_status_{71};
+  SQLWCHAR chunk_[4]{0x7777,0x7777,0x7777,0x7777}; SQLLEN chunk_length_{73};
+
+  static SQLPOINTER number(std::uintptr_t value) { return reinterpret_cast<SQLPOINTER>(value); }
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_EXPANDED_BINDING_ADMISSION");
+    if(marker==nullptr) { GTEST_SKIP() << "Expanded binding scope is not admitted"; }
+    ASSERT_TRUE(std::string_view(marker)=="recent-expanded-bindings-v1");
+    window_end_=rs::util::Clock::now()+std::chrono::seconds{60}; admitted_=true;
+    RedshiftRealTest::SetUp(); if(HasFatalFailure()) { return; }
+    const auto settings=rs::odbc::ConnectionString::parse(connection_string_);
+    ASSERT_TRUE(settings.contains("DATABASE")); ASSERT_TRUE(settings.contains("UID"));
+    ASSERT_TRUE(settings.at("DATABASE")=="odbcpp_pilot");
+    ASSERT_TRUE(settings.at("UID")=="odbcpp_pilot_test"); ASSERT_FALSE(settings.contains("DSN"));
+  }
+  bool charge(unsigned count=1) {
+    if(count>24||charges_>24-count) { ADD_FAILURE() << "Expanded binding SQL bound exceeded"; return false; }
+    charges_+=count; return true;
+  }
+  void ready() {
+    connect_bounded(); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,hdbc_,&second_));
+    ASSERT_TRUE(cap(window_end_,second_));
+  }
+  void native_direct(SQLHSTMT statement,const char* sql) {
+    ASSERT_TRUE(charge()); direct(statement,sql);
+  }
+  void native_prepare() {
+    // Opt-in Prepare performs one bounded description exchange.
+    ASSERT_TRUE(charge()); prepare(hstmt_,parameter_sql_);
+  }
+  void native_execute() {
+    // Conservative one description plus one scalar execution, even if cached
+    // or refused locally. The guard is not an assertion of zero backend traffic.
+    ASSERT_TRUE(charge(2)); execute(hstmt_);
+  }
+  void rowset(SQLULEN count) {
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_ARRAY_SIZE,number(count),0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROWS_FETCHED_PTR,&fetched_,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_STATUS_PTR,statuses_.rows,0));
+  }
+  void guards() {
+    EXPECT_EQ(0xa1,columns_.before); EXPECT_EQ(0xb2,columns_.after);
+    EXPECT_EQ(0xc3,statuses_.before); EXPECT_EQ(0xd4,statuses_.after);
+    for(const auto& page:pages_) for(const auto& row:page) {
+      EXPECT_EQ(0xa1,row.before[0]); EXPECT_EQ(0xa2,row.before[1]); EXPECT_EQ(0xa3,row.before[2]);
+      EXPECT_EQ(0xb1,row.after[0]); EXPECT_EQ(0xb2,row.after[1]); EXPECT_EQ(0xb3,row.after[2]);
+    }
+    for(const auto& input:inputs_) {
+      EXPECT_EQ(0xe1,input.before[0]); EXPECT_EQ(0xe2,input.before[1]); EXPECT_EQ(0xe3,input.before[2]);
+      EXPECT_EQ(0xf1,input.after[0]); EXPECT_EQ(0xf2,input.after[1]); EXPECT_EQ(0xf3,input.after[2]);
+    }
+  }
+};
+
+TEST_F(RedshiftExpandedBindingRealTest, ActualForwardTwoRowsNarrowingNullPartialAndRebindRecovery) {
+  ready(); ASSERT_FALSE(HasFailure());
+  rowset(2); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,2,SQL_C_SSHORT,columns_.narrow,0,columns_.lengths));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,3,SQL_C_CHAR,columns_.text,sizeof(columns_.text[0]),columns_.text_lengths));
+  std::memset(columns_.text,'x',sizeof(columns_.text));
+  native_direct(hstmt_,narrowing_sql_); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLFetch(hstmt_));
+  EXPECT_EQ("22003",get_error(SQL_HANDLE_STMT,hstmt_));
+  EXPECT_EQ(2u,fetched_); EXPECT_EQ(SQL_ROW_SUCCESS,statuses_.rows[0]); EXPECT_EQ(SQL_ROW_ERROR,statuses_.rows[1]);
+  EXPECT_EQ(1,columns_.narrow[0]); EXPECT_EQ(-92,columns_.narrow[1]);
+  EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLSMALLINT)),columns_.lengths[0]); EXPECT_EQ(74,columns_.lengths[1]);
+  EXPECT_EQ(SQL_NULL_DATA,columns_.text_lengths[0]); EXPECT_EQ(76,columns_.text_lengths[1]);
+  EXPECT_EQ('x',columns_.text[0][0]); EXPECT_EQ('x',columns_.text[1][0]);
+  SQLLEN row=-1; SQLINTEGER column=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,hstmt_,1,SQL_DIAG_ROW_NUMBER,&row,0,nullptr)); EXPECT_EQ(2,row);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,hstmt_,1,SQL_DIAG_COLUMN_NUMBER,&column,0,nullptr)); EXPECT_EQ(2,column);
+  guards(); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_)); EXPECT_EQ(1u,fetched_);
+  EXPECT_EQ(SQL_ROW_SUCCESS,statuses_.rows[0]); EXPECT_EQ(SQL_ROW_NOROW,statuses_.rows[1]);
+  EXPECT_EQ(3,columns_.narrow[0]); EXPECT_EQ(-92,columns_.narrow[1]);
+  EXPECT_EQ(5,columns_.text_lengths[0]); EXPECT_EQ(0,std::memcmp("three\0",columns_.text[0],6));
+  EXPECT_EQ(76,columns_.text_lengths[1]); EXPECT_EQ('x',columns_.text[1][0]);
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_)); EXPECT_EQ(0u,fetched_);
+  EXPECT_EQ(SQL_ROW_NOROW,statuses_.rows[0]); EXPECT_EQ(SQL_ROW_NOROW,statuses_.rows[1]);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_)); ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,2,SQL_C_SLONG,columns_.wide,0,columns_.lengths));
+  native_direct(hstmt_,narrowing_sql_); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_)); EXPECT_EQ(2u,fetched_);
+  EXPECT_EQ(1,columns_.wide[0]); EXPECT_EQ(32768,columns_.wide[1]);
+  EXPECT_EQ(SQL_ROW_SUCCESS,statuses_.rows[0]); EXPECT_EQ(SQL_ROW_SUCCESS,statuses_.rows[1]);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_)); EXPECT_EQ(3,columns_.wide[0]); EXPECT_EQ(SQL_ROW_NOROW,statuses_.rows[1]);
+  guards();
+}
+
+TEST_F(RedshiftExpandedBindingRealTest, RowWiseOffsetIndicatorOnlySuppressionOnAndScalarGetDataRecovery) {
+  ready(); ASSERT_FALSE(HasFailure());
+  rowset(2); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_BIND_TYPE,number(sizeof(OutputRow)),0));
+  offset_=sizeof(pages_[0]);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_BIND_OFFSET_PTR,&offset_,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,1,SQL_C_SLONG,&pages_[0][0].value,0,&pages_[0][0].length));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,2,SQL_C_WCHAR,nullptr,0,&pages_[0][0].indicator));
+  SQLHDESC ard{}; SQLPOINTER base{};
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_APP_ROW_DESC,&ard,0,nullptr));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(ard,2,SQL_DESC_OCTET_LENGTH_PTR,&pages_[0][0].octets,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ard,1,SQL_DESC_DATA_PTR,&base,0,nullptr)); EXPECT_EQ(&pages_[0][0].value,base);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_RETRIEVE_DATA,number(SQL_RD_OFF),0));
+  native_direct(hstmt_,rows_sql_); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_)); EXPECT_EQ(2u,fetched_);
+  EXPECT_EQ(SQL_ROW_SUCCESS,statuses_.rows[0]); EXPECT_EQ(SQL_ROW_SUCCESS,statuses_.rows[1]);
+  for(const auto& page:pages_) for(const auto& row:page) {
+    EXPECT_EQ(-91,row.value); EXPECT_EQ(73,row.length); EXPECT_EQ(74,row.indicator); EXPECT_EQ(75,row.octets);
+  }
+  EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(hstmt_,SQL_ATTR_RETRIEVE_DATA,number(99),0));
+  EXPECT_EQ("HY024",get_error(SQL_HANDLE_STMT,hstmt_));
+  SQLULEN mode=99; ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_RETRIEVE_DATA,&mode,0,nullptr)); EXPECT_EQ(SQL_RD_OFF,mode);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_RETRIEVE_DATA,number(SQL_RD_ON),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_)); EXPECT_EQ(1u,fetched_); EXPECT_EQ(3,pages_[1][0].value);
+  EXPECT_EQ(0,pages_[1][0].indicator); EXPECT_EQ(static_cast<SQLLEN>(5*sizeof(SQLWCHAR)),pages_[1][0].octets);
+  EXPECT_EQ(SQL_ROW_NOROW,statuses_.rows[1]); EXPECT_EQ(-91,pages_[1][1].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  native_direct(hstmt_,rows_sql_); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_)); EXPECT_EQ(1,pages_[1][0].value); EXPECT_EQ(2,pages_[1][1].value);
+  EXPECT_EQ(0,pages_[1][0].indicator); EXPECT_EQ(static_cast<SQLLEN>(3*sizeof(SQLWCHAR)),pages_[1][0].octets);
+  EXPECT_EQ(SQL_NULL_DATA,pages_[1][1].indicator); EXPECT_EQ(75,pages_[1][1].octets);
+  for(const auto& row:pages_[0]) { EXPECT_EQ(-91,row.value); EXPECT_EQ(73,row.length); EXPECT_EQ(74,row.indicator); EXPECT_EQ(75,row.octets); }
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ard,1,SQL_DESC_DATA_PTR,&base,0,nullptr)); EXPECT_EQ(&pages_[0][0].value,base);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_ROW_BIND_OFFSET_PTR,&base,0,nullptr)); EXPECT_EQ(&offset_,base);
+  guards(); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_)); ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_BIND_OFFSET_PTR,nullptr,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_BIND_TYPE,number(SQL_BIND_BY_COLUMN),0));
+  rowset(1); ASSERT_FALSE(HasFailure());
+  native_direct(hstmt_,rows_sql_); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLGetData(hstmt_,2,SQL_C_WCHAR,chunk_,2*sizeof(SQLWCHAR),&chunk_length_));
+  EXPECT_EQ("01004",get_error(SQL_HANDLE_STMT,hstmt_));
+  EXPECT_EQ(static_cast<SQLLEN>(3*sizeof(SQLWCHAR)),chunk_length_); EXPECT_EQ('o',chunk_[0]); EXPECT_EQ(0,chunk_[1]); EXPECT_EQ(0x7777,chunk_[3]);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,2,SQL_C_WCHAR,chunk_,3*sizeof(SQLWCHAR),&chunk_length_));
+  EXPECT_EQ(static_cast<SQLLEN>(2*sizeof(SQLWCHAR)),chunk_length_); EXPECT_EQ('n',chunk_[0]); EXPECT_EQ('e',chunk_[1]); EXPECT_EQ(0,chunk_[2]); EXPECT_EQ(0x7777,chunk_[3]);
+  ASSERT_EQ(SQL_NO_DATA,SQLGetData(hstmt_,2,SQL_C_WCHAR,chunk_,3*sizeof(SQLWCHAR),&chunk_length_));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_)); chunk_length_=73;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,2,SQL_C_WCHAR,chunk_,3*sizeof(SQLWCHAR),&chunk_length_)); EXPECT_EQ(SQL_NULL_DATA,chunk_length_);
+  guards();
+}
+
+TEST_F(RedshiftExpandedBindingRealTest, ScalarOffsetProceedIgnoreEagerIpdNullRefusalAndRebindRecovery) {
+  ready(); ASSERT_FALSE(HasFailure());
+  SQLUINTEGER supported=99;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttr(hdbc_,SQL_ATTR_AUTO_IPD,&supported,0,nullptr)); ASSERT_EQ(SQL_TRUE,supported);
+  SQLULEN enabled=99; ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_ENABLE_AUTO_IPD,&enabled,0,nullptr)); EXPECT_EQ(SQL_FALSE,enabled);
+  EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(hstmt_,SQL_ATTR_ENABLE_AUTO_IPD,number(99),0));
+  EXPECT_EQ("HY024",get_error(SQL_HANDLE_STMT,hstmt_));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_ENABLE_AUTO_IPD,&enabled,0,nullptr)); EXPECT_EQ(SQL_FALSE,enabled);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ENABLE_AUTO_IPD,number(SQL_TRUE),0));
+  native_prepare(); ASSERT_FALSE(HasFailure());
+  SQLHDESC apd{},ipd{}; SQLSMALLINT count=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_IMP_PARAM_DESC,&ipd,0,nullptr));
+  // This nonmutating read precedes DescribeParam: lazy discovery cannot repair the eager-IPD oracle.
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,0,SQL_DESC_COUNT,&count,0,nullptr)); EXPECT_EQ(1,count);
+  SQLSMALLINT type=-1,scale=-1,nullable=-1; SQLULEN length=99;
+  ASSERT_TRUE(charge()); ASSERT_TRUE(cap(window_end_,hstmt_));
+  ASSERT_EQ(SQL_SUCCESS,SQLDescribeParam(hstmt_,1,&type,&length,&scale,&nullable));
+  EXPECT_EQ(SQL_INTEGER,type); EXPECT_EQ(10u,length); EXPECT_EQ(0,scale); EXPECT_EQ(SQL_NULLABLE_UNKNOWN,nullable);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_APP_PARAM_DESC,&apd,0,nullptr));
+  inputs_[1].value=42; offset_=sizeof(InputPage);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAMSET_SIZE,number(1),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAM_BIND_TYPE,number(SQL_PARAM_BIND_BY_COLUMN),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAM_BIND_OFFSET_PTR,&offset_,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAM_OPERATION_PTR,&operation_,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAMS_PROCESSED_PTR,&processed_,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAM_STATUS_PTR,&parameter_status_,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,1,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,10,0,&inputs_[0].value,0,&inputs_[0].length));
+  native_execute(); ASSERT_FALSE(HasFailure()); inputs_[1].value=99;
+  EXPECT_EQ(1u,processed_); EXPECT_EQ(SQL_PARAM_SUCCESS,parameter_status_);
+  scalar(hstmt_,42); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  operation_=SQL_PARAM_IGNORE; offset_=static_cast<SQLULEN>((std::numeric_limits<SQLLEN>::max)())+1;
+  processed_=91; parameter_status_=71;
+  native_execute(); ASSERT_FALSE(HasFailure());
+  EXPECT_EQ(0u,processed_); EXPECT_EQ(SQL_PARAM_UNUSED,parameter_status_);
+  SQLLEN affected=-1; ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&affected)); EXPECT_EQ(0,affected);
+  EXPECT_EQ(SQL_ERROR,SQLFetch(hstmt_)); EXPECT_EQ("24000",get_error(SQL_HANDLE_STMT,hstmt_));
+  operation_=SQL_PARAM_PROCEED; processed_=91; parameter_status_=71;
+  ASSERT_TRUE(charge(2)); ASSERT_TRUE(cap(window_end_,hstmt_));
+  EXPECT_EQ(SQL_ERROR,SQLExecute(hstmt_)); EXPECT_EQ("HYC00",get_error(SQL_HANDLE_STMT,hstmt_));
+  EXPECT_EQ(91u,processed_); EXPECT_EQ(71,parameter_status_);
+  offset_=sizeof(InputPage); inputs_[1].length=SQL_NULL_DATA;
+  native_execute(); ASSERT_FALSE(HasFailure()); EXPECT_EQ(1u,processed_); EXPECT_EQ(SQL_PARAM_SUCCESS,parameter_status_);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_)); output_length_=73;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,1,SQL_C_SLONG,&integer_.value,sizeof(integer_.value),&output_length_)); EXPECT_EQ(SQL_NULL_DATA,output_length_);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  inputs_[1].length=0; inputs_[1].value=17;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,1,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,10,0,&inputs_[0].value,0,&inputs_[0].length));
+  native_execute(); ASSERT_FALSE(HasFailure()); scalar(hstmt_,17); ASSERT_FALSE(HasFailure());
+  SQLPOINTER base{}; ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(apd,1,SQL_DESC_DATA_PTR,&base,0,nullptr)); EXPECT_EQ(&inputs_[0].value,base);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_)); ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_RESET_PARAMS));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_ENABLE_AUTO_IPD,&enabled,0,nullptr)); EXPECT_EQ(SQL_TRUE,enabled);
+  inputs_[1].value=18;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,1,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,10,0,&inputs_[0].value,0,&inputs_[0].length));
+  native_execute(); ASSERT_FALSE(HasFailure());
+  native_direct(second_,"SELECT CAST(9 AS INTEGER)"); ASSERT_FALSE(HasFailure());
+  scalar(hstmt_,18); ASSERT_FALSE(HasFailure()); scalar(second_,9); ASSERT_FALSE(HasFailure());
+  guards();
+}
