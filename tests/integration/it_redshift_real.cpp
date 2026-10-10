@@ -5426,3 +5426,380 @@ TEST_F(RedshiftExpandedBindingRealTest, ScalarOffsetProceedIgnoreEagerIpdNullRef
   scalar(hstmt_,18); ASSERT_FALSE(HasFailure()); scalar(second_,9); ASSERT_FALSE(HasFailure());
   guards();
 }
+
+// Existing-object read-only catalog/bit scope. These markers never establish
+// fixture visibility, binary identity, accounting or native launch authority.
+class RedshiftCatalogBitBoundedRealTest : public RedshiftBufferedLifecycleRealTest {
+protected:
+  unsigned charges_{0};
+  struct NameOutput { unsigned char before{0xa1}; SQLCHAR value[128]{}; unsigned char after{0xb2}; } name_output_;
+  struct TextOutput { unsigned char before{0xc3}; char value[256]{}; unsigned char after{0xd4}; } text_output_;
+  struct WideOutput { unsigned char before{0xe1}; SQLWCHAR value[128]{}; unsigned char after{0xf2}; } wide_output_;
+  SQLLEN length_{73}; std::string last_text_; std::vector<SQLWCHAR> last_wide_;
+  struct Descriptor { std::string name; SQLSMALLINT type; SQLULEN size; SQLSMALLINT scale; bool operator==(const Descriptor&)const=default; };
+  bool charge(unsigned count=1) {
+    if(count>24||charges_>24-count) { ADD_FAILURE() << "Catalog/bit finite SQL charge exceeded"; return false; }
+    charges_+=count; return true;
+  }
+  void setup_handles() {
+    window_end_=rs::util::Clock::now()+std::chrono::seconds{60}; admitted_=true;
+    RedshiftRealTest::SetUp(); if(HasFatalFailure()) { return; }
+    const auto settings=rs::odbc::ConnectionString::parse(connection_string_);
+    ASSERT_TRUE(settings.contains("DATABASE")); ASSERT_TRUE(settings.contains("UID"));
+    ASSERT_TRUE(settings.at("DATABASE")=="odbcpp_pilot"); ASSERT_TRUE(settings.at("UID")=="odbcpp_pilot_test");
+    ASSERT_FALSE(settings.contains("DSN"));
+  }
+  void ready() {
+    connect_bounded(); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,hdbc_,&second_));
+    ASSERT_TRUE(cap(window_end_,second_));
+  }
+  void native_direct(SQLHSTMT statement,const char* sql) {
+    ASSERT_TRUE(charge()); direct(statement,sql);
+  }
+  void recovery() {
+    reset(hstmt_); ASSERT_FALSE(HasFailure());
+    native_direct(hstmt_,"SELECT CAST(1 AS INTEGER)"); ASSERT_FALSE(HasFailure());
+    scalar(hstmt_,1); ASSERT_FALSE(HasFailure());
+  }
+  void metadata(std::span<const CatalogField> fields,std::vector<Descriptor>& owned) {
+    SQLSMALLINT count=-1; ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&count));
+    ASSERT_EQ(fields.size(),static_cast<std::size_t>(count)); owned.clear();
+    for(std::size_t i=0;i<fields.size();++i) {
+      std::fill(std::begin(name_output_.value),std::end(name_output_.value),SQLCHAR{0x5a});
+      SQLSMALLINT size=-1,type=-1,scale=-1; SQLULEN width=99;
+      ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,static_cast<SQLUSMALLINT>(i+1),name_output_.value,
+          static_cast<SQLSMALLINT>(sizeof(name_output_.value)),&size,&type,&width,&scale,nullptr));
+      ASSERT_GE(size,0); ASSERT_LT(static_cast<std::size_t>(size)+1,sizeof(name_output_.value));
+      std::string actual(reinterpret_cast<char*>(name_output_.value),static_cast<std::size_t>(size));
+      std::transform(actual.begin(),actual.end(),actual.begin(),[](unsigned char ch){return static_cast<char>(std::tolower(ch));});
+      EXPECT_EQ(fields[i].name,actual); if(fields[i].type!=0) { EXPECT_EQ(fields[i].type,type); }
+      EXPECT_EQ(0,name_output_.value[static_cast<std::size_t>(size)]);
+      EXPECT_EQ(0x5a,name_output_.value[static_cast<std::size_t>(size)+1]);
+      EXPECT_EQ(0xa1,name_output_.before); EXPECT_EQ(0xb2,name_output_.after);
+      owned.push_back({std::move(actual),type,width,scale});
+    }
+  }
+  void number(SQLUSMALLINT column,SQLINTEGER expected) {
+    integer(hstmt_,column,expected); ASSERT_FALSE(HasFailure());
+  }
+  void value(SQLUSMALLINT column,std::string_view expected,const std::vector<SQLWCHAR>& literal,bool wide) {
+    length_=73;
+    if(wide) {
+      std::fill(std::begin(wide_output_.value),std::end(wide_output_.value),SQLWCHAR{0x5a});
+      ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,column,SQL_C_WCHAR,wide_output_.value,sizeof(wide_output_.value),&length_));
+      ASSERT_EQ(static_cast<SQLLEN>(literal.size()*sizeof(SQLWCHAR)),length_);
+      ASSERT_LT(literal.size()+1,std::size(wide_output_.value));
+      EXPECT_TRUE(std::equal(literal.begin(),literal.end(),std::begin(wide_output_.value)));
+      EXPECT_EQ(0,wide_output_.value[literal.size()]); EXPECT_EQ(0x5a,wide_output_.value[literal.size()+1]);
+      EXPECT_EQ(0xe1,wide_output_.before); EXPECT_EQ(0xf2,wide_output_.after);
+      last_wide_.assign(wide_output_.value,wide_output_.value+literal.size());
+    } else {
+      std::fill(std::begin(text_output_.value),std::end(text_output_.value),'!');
+      ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,column,SQL_C_CHAR,text_output_.value,sizeof(text_output_.value),&length_));
+      ASSERT_EQ(static_cast<SQLLEN>(expected.size()),length_); ASSERT_LT(expected.size()+1,sizeof(text_output_.value));
+      EXPECT_EQ(expected,std::string_view(text_output_.value,expected.size()));
+      EXPECT_EQ(0,text_output_.value[expected.size()]); EXPECT_EQ('!',text_output_.value[expected.size()+1]);
+      EXPECT_EQ(0xc3,text_output_.before); EXPECT_EQ(0xd4,text_output_.after);
+      last_text_.assign(text_output_.value,expected.size());
+    }
+  }
+  void null_value(SQLUSMALLINT column) {
+    std::fill(std::begin(text_output_.value),std::end(text_output_.value),'!'); length_=73;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,column,SQL_C_CHAR,text_output_.value,sizeof(text_output_.value),&length_));
+    EXPECT_EQ(SQL_NULL_DATA,length_); EXPECT_TRUE(std::all_of(std::begin(text_output_.value),std::end(text_output_.value),[](char ch){return ch=='!';}));
+    EXPECT_EQ(0xc3,text_output_.before); EXPECT_EQ(0xd4,text_output_.after);
+  }
+  void constraint(SQLUSMALLINT column,std::string& owned) {
+    std::fill(std::begin(text_output_.value),std::end(text_output_.value),'!'); length_=73;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,column,SQL_C_CHAR,text_output_.value,sizeof(text_output_.value),&length_));
+    ASSERT_GT(length_,0); ASSERT_LT(static_cast<std::size_t>(length_),sizeof(text_output_.value));
+    EXPECT_EQ(0,text_output_.value[static_cast<std::size_t>(length_)]);
+    EXPECT_EQ(0xc3,text_output_.before); EXPECT_EQ(0xd4,text_output_.after);
+    const std::string actual(text_output_.value,static_cast<std::size_t>(length_));
+    if(owned.empty()) { owned=actual; } else { EXPECT_EQ(owned,actual); }
+  }
+};
+
+class RedshiftMetadataIdentifierNativeRealTest : public RedshiftCatalogBitBoundedRealTest {
+protected:
+  enum class Route { Tables,Columns,PrimaryKeys,ForeignKeys,Statistics,Procedures,ProcedureColumns,SpecialColumns };
+  std::string catalog_{"odbcpp_pilot"},schema_,object_,member_,foreign_;
+  std::vector<SQLWCHAR> wcatalog_,wschema_,wobject_,wmember_,wforeign_;
+  std::vector<Descriptor> owned_descriptors_,comparison_descriptors_;
+  std::string pk_name_,fk_name_,owned_table_; std::vector<SQLWCHAR> owned_wide_table_;
+  static std::vector<SQLWCHAR> ascii(std::string_view value) {
+    std::vector<SQLWCHAR> result; for(unsigned char ch:value) { result.push_back(static_cast<SQLWCHAR>(ch)); } result.push_back(0); return result;
+  }
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_METADATA_ID_NATIVE_ADMISSION");
+    if(marker==nullptr) { GTEST_SKIP() << "Identifier metadata native scope is not admitted"; }
+    ASSERT_TRUE(std::string_view(marker)=="metadata-id-existing-read-only-v1");
+    const char* fixture=std::getenv("ODBCPP_REDSHIFT_METADATA_FIXTURE_REUSE_ADMISSION");
+    ASSERT_NE(nullptr,fixture); ASSERT_TRUE(std::string_view(fixture)=="existing-quoted-key-and-absent-procedure-v1");
+    setup_handles();
+  }
+  void mode(bool enabled) {
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_METADATA_ID,reinterpret_cast<SQLPOINTER>(std::uintptr_t(enabled?SQL_TRUE:SQL_FALSE)),0));
+    SQLULEN actual=99; ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_METADATA_ID,&actual,0,nullptr)); EXPECT_EQ(enabled?SQL_TRUE:SQL_FALSE,actual);
+  }
+  void ascii_names(std::string schema,std::string object,std::string member="p_input",std::string foreign="m2_catalog_child_20261003_c01") {
+    schema_=std::move(schema); object_=std::move(object); member_=std::move(member); foreign_=std::move(foreign);
+    wcatalog_=ascii(catalog_); wschema_=ascii(schema_); wobject_=ascii(object_); wmember_=ascii(member_); wforeign_=ascii(foreign_);
+  }
+  void unicode_names(bool identifier,bool missing=false) {
+    schema_=identifier?"odbcpp_u_\xc3\xa9\xe8\xa1\xa8":"odbcpp\\_u\\_\xc3\xa9\xe8\xa1\xa8";
+    object_=identifier?"\"t\"\"\xc3\xa9%_\xe8\xa1\xa8\"":"t\"\xc3\xa9\\%\\_\xe8\xa1\xa8";
+    member_=identifier?"\"v%_\xc3\xa9\xe8\xa1\xa8\"":"v\\%\\_\xc3\xa9\xe8\xa1\xa8";
+    wcatalog_=ascii(catalog_);
+    wschema_=identifier?std::vector<SQLWCHAR>{'o','d','b','c','p','p','_','u','_',0x00e9,0x8868,0}
+        :std::vector<SQLWCHAR>{'o','d','b','c','p','p','\\','_','u','\\','_',0x00e9,0x8868,0};
+    wobject_=identifier?std::vector<SQLWCHAR>{'"','t','"','"',0x00e9,'%','_',0x8868,'"',0}
+        :std::vector<SQLWCHAR>{'t','"',0x00e9,'\\','%','\\','_',0x8868,0};
+    wmember_=identifier?std::vector<SQLWCHAR>{'"','v','%','_',0x00e9,0x8868,'"',0}
+        :std::vector<SQLWCHAR>{'v','\\','%','\\','_',0x00e9,0x8868,0};
+    if(missing) { object_="odbcppabsentmetadataid20261010"; wobject_=ascii(object_); }
+  }
+  SQLRETURN request(Route route,bool wide,bool null_catalog=false,unsigned allowance=2) {
+    if(!charge(allowance)||!cap(window_end_,hstmt_)) { return SQL_ERROR; }
+    auto* c=null_catalog?nullptr:reinterpret_cast<SQLCHAR*>(catalog_.data());
+    auto* s=reinterpret_cast<SQLCHAR*>(schema_.data()); auto* t=reinterpret_cast<SQLCHAR*>(object_.data());
+    auto* m=reinterpret_cast<SQLCHAR*>(member_.data()); auto* f=reinterpret_cast<SQLCHAR*>(foreign_.data());
+    auto* wc=null_catalog?nullptr:wcatalog_.data(); auto* ws=wschema_.data(); auto* wt=wobject_.data(); auto* wm=wmember_.data(); auto* wf=wforeign_.data();
+    SQLCHAR types[]{'T','A','B','L','E',0}; SQLWCHAR wtypes[]{'T','A','B','L','E',0};
+    switch(route) {
+      case Route::Tables:return wide?SQLTablesW(hstmt_,wc,SQL_NTS,ws,SQL_NTS,wt,SQL_NTS,wtypes,SQL_NTS):SQLTables(hstmt_,c,SQL_NTS,s,SQL_NTS,t,SQL_NTS,types,SQL_NTS);
+      case Route::Columns:return wide?SQLColumnsW(hstmt_,wc,SQL_NTS,ws,SQL_NTS,wt,SQL_NTS,wm,SQL_NTS):SQLColumns(hstmt_,c,SQL_NTS,s,SQL_NTS,t,SQL_NTS,m,SQL_NTS);
+      case Route::PrimaryKeys:return wide?SQLPrimaryKeysW(hstmt_,wc,SQL_NTS,ws,SQL_NTS,wt,SQL_NTS):SQLPrimaryKeys(hstmt_,c,SQL_NTS,s,SQL_NTS,t,SQL_NTS);
+      case Route::ForeignKeys:return wide?SQLForeignKeysW(hstmt_,wc,SQL_NTS,ws,SQL_NTS,wt,SQL_NTS,wcatalog_.data(),SQL_NTS,ws,SQL_NTS,wf,SQL_NTS):SQLForeignKeys(hstmt_,c,SQL_NTS,s,SQL_NTS,t,SQL_NTS,reinterpret_cast<SQLCHAR*>(catalog_.data()),SQL_NTS,s,SQL_NTS,f,SQL_NTS);
+      case Route::Statistics:return wide?SQLStatisticsW(hstmt_,wc,SQL_NTS,ws,SQL_NTS,wt,SQL_NTS,SQL_INDEX_ALL,SQL_QUICK):SQLStatistics(hstmt_,c,SQL_NTS,s,SQL_NTS,t,SQL_NTS,SQL_INDEX_ALL,SQL_QUICK);
+      case Route::Procedures:return wide?SQLProceduresW(hstmt_,wc,SQL_NTS,ws,SQL_NTS,wt,SQL_NTS):SQLProcedures(hstmt_,c,SQL_NTS,s,SQL_NTS,t,SQL_NTS);
+      case Route::ProcedureColumns:return wide?SQLProcedureColumnsW(hstmt_,wc,SQL_NTS,ws,SQL_NTS,wt,SQL_NTS,wm,SQL_NTS):SQLProcedureColumns(hstmt_,c,SQL_NTS,s,SQL_NTS,t,SQL_NTS,m,SQL_NTS);
+      case Route::SpecialColumns:return wide?SQLSpecialColumnsW(hstmt_,SQL_ROWVER,wc,SQL_NTS,ws,SQL_NTS,wt,SQL_NTS,SQL_SCOPE_CURROW,SQL_NULLABLE):SQLSpecialColumns(hstmt_,SQL_ROWVER,c,SQL_NTS,s,SQL_NTS,t,SQL_NTS,SQL_SCOPE_CURROW,SQL_NULLABLE);
+    }
+    ADD_FAILURE() << "Unknown fixed catalog route"; return SQL_ERROR;
+  }
+  static std::span<const CatalogField> fields(Route route) {
+    static constexpr CatalogField tables[]{{"table_cat",SQL_VARCHAR},{"table_schem",SQL_VARCHAR},{"table_name",SQL_VARCHAR},{"table_type",SQL_VARCHAR},{"remarks",SQL_VARCHAR}};
+    static constexpr CatalogField columns[]{{"table_cat",SQL_VARCHAR},{"table_schem",SQL_VARCHAR},{"table_name",SQL_VARCHAR},{"column_name",SQL_VARCHAR},{"data_type",SQL_SMALLINT},{"type_name",SQL_VARCHAR},{"column_size",SQL_INTEGER},{"buffer_length",SQL_INTEGER},{"decimal_digits",SQL_SMALLINT},{"num_prec_radix",SQL_SMALLINT},{"nullable",SQL_SMALLINT},{"remarks",SQL_VARCHAR},{"column_def",SQL_VARCHAR},{"sql_data_type",SQL_SMALLINT},{"sql_datetime_sub",SQL_SMALLINT},{"char_octet_length",SQL_INTEGER},{"ordinal_position",SQL_INTEGER},{"is_nullable",SQL_VARCHAR}};
+    static constexpr CatalogField pk[]{{"table_cat",SQL_VARCHAR},{"table_schem",SQL_VARCHAR},{"table_name",SQL_VARCHAR},{"column_name",SQL_VARCHAR},{"key_seq",SQL_SMALLINT},{"pk_name",SQL_VARCHAR}};
+    static constexpr CatalogField fk[]{{"pktable_cat",SQL_VARCHAR},{"pktable_schem",SQL_VARCHAR},{"pktable_name",SQL_VARCHAR},{"pkcolumn_name",SQL_VARCHAR},{"fktable_cat",SQL_VARCHAR},{"fktable_schem",SQL_VARCHAR},{"fktable_name",SQL_VARCHAR},{"fkcolumn_name",SQL_VARCHAR},{"key_seq",SQL_SMALLINT},{"update_rule",SQL_SMALLINT},{"delete_rule",SQL_SMALLINT},{"fk_name",SQL_VARCHAR},{"pk_name",SQL_VARCHAR},{"deferrability",SQL_SMALLINT}};
+    static constexpr CatalogField statistics[]{{"table_cat",SQL_VARCHAR},{"table_schem",SQL_VARCHAR},{"table_name",SQL_VARCHAR},{"non_unique",SQL_SMALLINT},{"index_qualifier",SQL_VARCHAR},{"index_name",SQL_VARCHAR},{"type",SQL_SMALLINT},{"ordinal_position",SQL_SMALLINT},{"column_name",SQL_VARCHAR},{"asc_or_desc",SQL_VARCHAR},{"cardinality",SQL_INTEGER},{"pages",SQL_INTEGER},{"filter_condition",SQL_VARCHAR}};
+    static constexpr CatalogField special[]{{"scope",SQL_SMALLINT},{"column_name",SQL_VARCHAR},{"data_type",SQL_SMALLINT},{"type_name",SQL_VARCHAR},{"column_size",SQL_INTEGER},{"buffer_length",SQL_INTEGER},{"decimal_digits",SQL_SMALLINT},{"pseudo_column",SQL_SMALLINT}};
+    // Reserved procedure fields4-6 deliberately carry no invented type/value oracle.
+    static constexpr CatalogField procedures[]{{"procedure_cat",SQL_VARCHAR},{"procedure_schem",SQL_VARCHAR},{"procedure_name",SQL_VARCHAR},{"num_input_params",0},{"num_output_params",0},{"num_result_sets",0},{"remarks",SQL_VARCHAR},{"procedure_type",SQL_SMALLINT}};
+    static constexpr CatalogField procedure_columns[]{{"procedure_cat",SQL_VARCHAR},{"procedure_schem",SQL_VARCHAR},{"procedure_name",SQL_VARCHAR},{"column_name",SQL_VARCHAR},{"column_type",SQL_SMALLINT},{"data_type",SQL_SMALLINT},{"type_name",SQL_VARCHAR},{"column_size",SQL_INTEGER},{"buffer_length",SQL_INTEGER},{"decimal_digits",SQL_SMALLINT},{"num_prec_radix",SQL_SMALLINT},{"nullable",SQL_SMALLINT},{"remarks",SQL_VARCHAR},{"column_def",SQL_VARCHAR},{"sql_data_type",SQL_SMALLINT},{"sql_datetime_sub",SQL_SMALLINT},{"char_octet_length",SQL_INTEGER},{"ordinal_position",SQL_INTEGER},{"is_nullable",SQL_VARCHAR}};
+    switch(route) {
+      case Route::Tables:return tables;case Route::Columns:return columns;case Route::PrimaryKeys:return pk;case Route::ForeignKeys:return fk;
+      case Route::Statistics:return statistics;case Route::SpecialColumns:return special;case Route::Procedures:return procedures;case Route::ProcedureColumns:return procedure_columns;
+    }
+    return {};
+  }
+  void close() { ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE)); }
+  void expect_table(bool wide) {
+    value(1,"odbcpp_pilot",{'o','d','b','c','p','p','_','p','i','l','o','t'},wide); ASSERT_FALSE(HasFailure());
+    value(2,"odbcpp_u_\xc3\xa9\xe8\xa1\xa8",{'o','d','b','c','p','p','_','u','_',0x00e9,0x8868},wide); ASSERT_FALSE(HasFailure());
+    value(3,"t\"\xc3\xa9%_\xe8\xa1\xa8",{'t','"',0x00e9,'%','_',0x8868},wide); ASSERT_FALSE(HasFailure());
+    if(wide) { owned_wide_table_=last_wide_; } else { owned_table_=last_text_; }
+    value(4,"TABLE",{'T','A','B','L','E'},wide); ASSERT_FALSE(HasFailure());
+  }
+  void expect_column(bool wide) {
+    value(1,"odbcpp_pilot",{'o','d','b','c','p','p','_','p','i','l','o','t'},wide); ASSERT_FALSE(HasFailure());
+    value(2,"odbcpp_u_\xc3\xa9\xe8\xa1\xa8",{'o','d','b','c','p','p','_','u','_',0x00e9,0x8868},wide); ASSERT_FALSE(HasFailure());
+    value(3,"t\"\xc3\xa9%_\xe8\xa1\xa8",{'t','"',0x00e9,'%','_',0x8868},wide); ASSERT_FALSE(HasFailure());
+    value(4,"v%_\xc3\xa9\xe8\xa1\xa8",{'v','%','_',0x00e9,0x8868},wide); ASSERT_FALSE(HasFailure());
+    number(5,SQL_VARCHAR); number(7,32); number(8,32); null_value(9); null_value(10);
+    number(11,SQL_NULLABLE); null_value(12); null_value(13); number(14,SQL_VARCHAR); null_value(15); number(16,32); number(17,2);
+    value(18,"YES",{'Y','E','S'},wide);
+  }
+  void procedure_trial(Route route,bool wide,bool identifier) {
+    ready(); ASSERT_FALSE(HasFailure()); ascii_names("odbcpp_fixture","odbcppabsentmetadataid20261010");
+    mode(identifier); ASSERT_FALSE(HasFailure());
+    // An actual server/query failure is a failure of this independent trial;
+    // never substitute HYC00, fallback, a skip or future routine implementation.
+    ASSERT_EQ(SQL_SUCCESS,request(route,wide)) << get_error(SQL_HANDLE_STMT,hstmt_);
+    metadata(fields(route),owned_descriptors_); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_)); close(); ASSERT_FALSE(HasFailure());
+    const auto retained=owned_descriptors_; recovery(); ASSERT_FALSE(HasFailure()); EXPECT_EQ(retained,owned_descriptors_);
+  }
+};
+
+TEST_F(RedshiftMetadataIdentifierNativeRealTest, QuotedExactVersusEscapedPatternTablesColumnsAndNoMatch) {
+  ready(); ASSERT_FALSE(HasFailure());
+  SQLULEN flag=99; ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_METADATA_ID,&flag,0,nullptr)); EXPECT_EQ(SQL_FALSE,flag);
+  mode(false); ASSERT_FALSE(HasFailure()); unicode_names(false);
+  ASSERT_EQ(SQL_SUCCESS,request(Route::Tables,false)) << get_error(SQL_HANDLE_STMT,hstmt_);
+  metadata(fields(Route::Tables),owned_descriptors_); ASSERT_FALSE(HasFailure()); const auto tables_owned=owned_descriptors_;
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_)); expect_table(false); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_)); close(); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,request(Route::Columns,false)) << get_error(SQL_HANDLE_STMT,hstmt_);
+  metadata(fields(Route::Columns),owned_descriptors_); ASSERT_FALSE(HasFailure()); const auto columns_owned=owned_descriptors_;
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_)); expect_column(false); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_)); close(); ASSERT_FALSE(HasFailure());
+  mode(true); ASSERT_FALSE(HasFailure()); unicode_names(true);
+  for(bool wide:{false,true}) {
+    ASSERT_EQ(SQL_SUCCESS,request(Route::Tables,wide)) << get_error(SQL_HANDLE_STMT,hstmt_);
+    metadata(fields(Route::Tables),owned_descriptors_); ASSERT_FALSE(HasFailure()); EXPECT_EQ(tables_owned,owned_descriptors_);
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_)); expect_table(wide); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_)); close(); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,request(Route::Columns,wide)) << get_error(SQL_HANDLE_STMT,hstmt_);
+    metadata(fields(Route::Columns),owned_descriptors_); ASSERT_FALSE(HasFailure()); EXPECT_EQ(columns_owned,owned_descriptors_);
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_)); expect_column(wide); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_)); close(); ASSERT_FALSE(HasFailure());
+  }
+  unicode_names(true,true);
+  for(bool wide:{false,true}) {
+    ASSERT_EQ(SQL_SUCCESS,request(Route::Tables,wide)) << get_error(SQL_HANDLE_STMT,hstmt_);
+    metadata(fields(Route::Tables),owned_descriptors_); ASSERT_FALSE(HasFailure()); EXPECT_EQ(tables_owned,owned_descriptors_);
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_)); close(); ASSERT_FALSE(HasFailure());
+  }
+  recovery(); ASSERT_FALSE(HasFailure());
+  EXPECT_EQ("t\"\xc3\xa9%_\xe8\xa1\xa8",owned_table_);
+  EXPECT_EQ((std::vector<SQLWCHAR>{'t','"',0x00e9,'%','_',0x8868}),owned_wide_table_);
+  EXPECT_EQ(5u,tables_owned.size()); EXPECT_EQ(18u,columns_owned.size());
+}
+
+TEST_F(RedshiftMetadataIdentifierNativeRealTest, AllEightRequiredNullAndMalformedQuoteKeepFlagsAndSibling) {
+  ready(); ASSERT_FALSE(HasFailure()); mode(true); ASSERT_FALSE(HasFailure());
+  native_direct(second_,"SELECT CAST(9 AS INTEGER)"); ASSERT_FALSE(HasFailure());
+  constexpr Route routes[]{Route::Tables,Route::Columns,Route::PrimaryKeys,Route::ForeignKeys,
+      Route::Statistics,Route::Procedures,Route::ProcedureColumns,Route::SpecialColumns};
+  for(const auto route:routes) {
+    SCOPED_TRACE(static_cast<int>(route)); ascii_names("odbcpp_fixture","m2_catalog_parent_20261003_c01");
+    EXPECT_EQ(SQL_ERROR,request(route,false,true,1)); EXPECT_EQ("HY009",get_error(SQL_HANDLE_STMT,hstmt_));
+    SQLULEN flag=99; ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_METADATA_ID,&flag,0,nullptr)); EXPECT_EQ(SQL_TRUE,flag);
+    ascii_names("odbcpp_fixture","\"unfinished");
+    EXPECT_EQ(SQL_ERROR,request(route,false,false,1)); EXPECT_EQ("HY000",get_error(SQL_HANDLE_STMT,hstmt_));
+    ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_METADATA_ID,&flag,0,nullptr)); EXPECT_EQ(SQL_TRUE,flag);
+    ASSERT_FALSE(HasFailure());
+  }
+  EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(hstmt_,SQL_ATTR_METADATA_ID,reinterpret_cast<SQLPOINTER>(std::uintptr_t{99}),0));
+  EXPECT_EQ("HY024",get_error(SQL_HANDLE_STMT,hstmt_));
+  SQLULEN flag=99; ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_METADATA_ID,&flag,0,nullptr)); EXPECT_EQ(SQL_TRUE,flag);
+  scalar(second_,9); ASSERT_FALSE(HasFailure()); recovery();
+}
+
+TEST_F(RedshiftMetadataIdentifierNativeRealTest, ExactCompositeKeysAndDeclaredEmptyStatisticsRowVersion) {
+  ready(); ASSERT_FALSE(HasFailure()); mode(true); ASSERT_FALSE(HasFailure());
+  ascii_names("ODBCPP_FIXTURE","M2_CATALOG_PARENT_20261003_C01","key_b","M2_CATALOG_CHILD_20261003_C01");
+  const auto literal=[](std::string_view text) { auto result=ascii(text); result.pop_back(); return result; };
+  for(bool wide:{false,true}) {
+    ASSERT_EQ(SQL_SUCCESS,request(Route::PrimaryKeys,wide)) << get_error(SQL_HANDLE_STMT,hstmt_);
+    metadata(fields(Route::PrimaryKeys),owned_descriptors_); ASSERT_FALSE(HasFailure());
+    if(wide) { EXPECT_EQ(comparison_descriptors_,owned_descriptors_); } else { comparison_descriptors_=owned_descriptors_; }
+    for(SQLINTEGER sequence=1;sequence<=2;++sequence) {
+      ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+      value(1,"odbcpp_pilot",literal("odbcpp_pilot"),wide); ASSERT_FALSE(HasFailure());
+      value(2,"odbcpp_fixture",literal("odbcpp_fixture"),wide); ASSERT_FALSE(HasFailure());
+      value(3,"m2_catalog_parent_20261003_c01",literal("m2_catalog_parent_20261003_c01"),wide); ASSERT_FALSE(HasFailure());
+      const char* key=sequence==1?"key_b":"key_a";
+      value(4,key,literal(key),wide); ASSERT_FALSE(HasFailure()); number(5,sequence); constraint(6,pk_name_); ASSERT_FALSE(HasFailure());
+    }
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_)); close(); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,request(Route::ForeignKeys,wide)) << get_error(SQL_HANDLE_STMT,hstmt_);
+    metadata(fields(Route::ForeignKeys),owned_descriptors_); ASSERT_FALSE(HasFailure());
+    for(SQLINTEGER sequence=1;sequence<=2;++sequence) {
+      ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+      value(1,"odbcpp_pilot",literal("odbcpp_pilot"),wide); ASSERT_FALSE(HasFailure());
+      value(2,"odbcpp_fixture",literal("odbcpp_fixture"),wide); ASSERT_FALSE(HasFailure());
+      value(3,"m2_catalog_parent_20261003_c01",literal("m2_catalog_parent_20261003_c01"),wide); ASSERT_FALSE(HasFailure());
+      const char* key=sequence==1?"key_b":"key_a"; const char* ref=sequence==1?"ref_b":"ref_a";
+      value(4,key,literal(key),wide); ASSERT_FALSE(HasFailure());
+      value(5,"odbcpp_pilot",literal("odbcpp_pilot"),wide); ASSERT_FALSE(HasFailure());
+      value(6,"odbcpp_fixture",literal("odbcpp_fixture"),wide); ASSERT_FALSE(HasFailure());
+      value(7,"m2_catalog_child_20261003_c01",literal("m2_catalog_child_20261003_c01"),wide); ASSERT_FALSE(HasFailure());
+      value(8,ref,literal(ref),wide); ASSERT_FALSE(HasFailure()); number(9,sequence);
+      constraint(12,fk_name_); constraint(13,pk_name_); ASSERT_FALSE(HasFailure());
+    }
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_)); close(); ASSERT_FALSE(HasFailure());
+    for(const auto route:{Route::Statistics,Route::SpecialColumns}) {
+      ASSERT_EQ(SQL_SUCCESS,request(route,wide)) << get_error(SQL_HANDLE_STMT,hstmt_);
+      metadata(fields(route),owned_descriptors_); ASSERT_FALSE(HasFailure());
+      ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_)); close(); ASSERT_FALSE(HasFailure());
+    }
+  }
+  const auto owning_pk=pk_name_,owning_fk=fk_name_; recovery(); ASSERT_FALSE(HasFailure());
+  EXPECT_FALSE(owning_pk.empty()); EXPECT_FALSE(owning_fk.empty()); EXPECT_EQ(owning_pk,pk_name_); EXPECT_EQ(owning_fk,fk_name_);
+}
+
+// Each procedure API/mode/encoding trial is its own observable test. A failure
+// cannot be reclassified as an execution of any other trial or a native pass.
+TEST_F(RedshiftMetadataIdentifierNativeRealTest, AbsentProceduresAnsiIdentifierStandardEmptyMetadata) {
+  procedure_trial(Route::Procedures,false,true);
+}
+TEST_F(RedshiftMetadataIdentifierNativeRealTest, AbsentProceduresWideIdentifierStandardEmptyMetadata) {
+  procedure_trial(Route::Procedures,true,true);
+}
+TEST_F(RedshiftMetadataIdentifierNativeRealTest, AbsentProceduresAnsiPatternStandardEmptyMetadata) {
+  procedure_trial(Route::Procedures,false,false);
+}
+TEST_F(RedshiftMetadataIdentifierNativeRealTest, AbsentProcedureColumnsAnsiIdentifierStandardEmptyMetadata) {
+  procedure_trial(Route::ProcedureColumns,false,true);
+}
+TEST_F(RedshiftMetadataIdentifierNativeRealTest, AbsentProcedureColumnsWideIdentifierStandardEmptyMetadata) {
+  procedure_trial(Route::ProcedureColumns,true,true);
+}
+TEST_F(RedshiftMetadataIdentifierNativeRealTest, AbsentProcedureColumnsAnsiPatternStandardEmptyMetadata) {
+  procedure_trial(Route::ProcedureColumns,false,false);
+}
+
+class RedshiftBitPrecisionNativeRealTest : public RedshiftCatalogBitBoundedRealTest {
+protected:
+  SQLCHAR input_[3]{0x5a,0,0xa5}; SQLLEN indicator_{1};
+  struct Status { unsigned char before{0xa1}; SQLUSMALLINT value{71}; unsigned char after{0xb2}; } status_;
+  struct Processed { unsigned char before{0xc3}; SQLULEN value{91}; unsigned char after{0xd4}; } processed_;
+  struct Output { unsigned char before{0xe1}; SQLINTEGER value{-91}; unsigned char after{0xf2}; } output_;
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_BIT_PRECISION_NATIVE_ADMISSION");
+    if(marker==nullptr) { GTEST_SKIP() << "BIT numeric precision native scope is not admitted"; }
+    ASSERT_TRUE(std::string_view(marker)=="bit-numeric-precision-v1"); setup_handles();
+  }
+  void prepared(const char* sql) { ASSERT_TRUE(charge()); prepare(hstmt_,sql); }
+  void bind(SQLSMALLINT type,SQLULEN precision,SQLSMALLINT scale) {
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,1,SQL_PARAM_INPUT,SQL_C_BIT,type,precision,scale,&input_[1],1,&indicator_));
+  }
+  void guards() {
+    EXPECT_EQ(0x5a,input_[0]); EXPECT_EQ(0xa5,input_[2]);
+    EXPECT_EQ(0xa1,status_.before); EXPECT_EQ(0xb2,status_.after);
+    EXPECT_EQ(0xc3,processed_.before); EXPECT_EQ(0xd4,processed_.after);
+    EXPECT_EQ(0xe1,output_.before); EXPECT_EQ(0xf2,output_.after);
+  }
+  void attempt(bool success,SQLINTEGER expected=0,bool nulls=false) {
+    ASSERT_TRUE(charge(2)); ASSERT_TRUE(cap(window_end_,hstmt_));
+    processed_.value=91; status_.value=71;
+    const auto result=SQLExecute(hstmt_);
+    if(!success) {
+      ASSERT_EQ(SQL_ERROR,result); EXPECT_EQ("22003",get_error(SQL_HANDLE_STMT,hstmt_));
+      EXPECT_EQ(1u,processed_.value); EXPECT_EQ(SQL_PARAM_ERROR,status_.value); guards();
+      ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE)); return;
+    }
+    ASSERT_EQ(SQL_SUCCESS,result) << get_error(SQL_HANDLE_STMT,hstmt_);
+    EXPECT_EQ(1u,processed_.value); EXPECT_EQ(SQL_PARAM_SUCCESS,status_.value);
+    // Installed input storage remains alive; change it before reading the owning result.
+    input_[1]=static_cast<SQLCHAR>(input_[1]^1); output_.value=-91; length_=73;
+    SQLSMALLINT count=-1; ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&count)); EXPECT_EQ(1,count);
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,1,SQL_C_SLONG,&output_.value,sizeof(output_.value),&length_));
+    if(nulls) { EXPECT_EQ(SQL_NULL_DATA,length_); EXPECT_EQ(-91,output_.value); }
+    else { EXPECT_EQ(expected,output_.value); EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),length_); }
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_)); guards(); ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  }
+};
+
+TEST_F(RedshiftBitPrecisionNativeRealTest, FractionOnlyZeroNumericDecimalNullAndWholeDigitRebindRecovery) {
+  ready(); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAMS_PROCESSED_PTR,&processed_.value,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAM_STATUS_PTR,&status_.value,0));
+  prepared("SELECT CAST(CAST(? AS DECIMAL(2,2)) AS INTEGER) AS n"); ASSERT_FALSE(HasFailure());
+  input_[1]=0; bind(SQL_NUMERIC,2,2); ASSERT_FALSE(HasFailure()); attempt(true,0); ASSERT_FALSE(HasFailure());
+  input_[1]=1; bind(SQL_NUMERIC,2,2); ASSERT_FALSE(HasFailure()); attempt(false); ASSERT_FALSE(HasFailure());
+  input_[1]=0; bind(SQL_DECIMAL,2,2); ASSERT_FALSE(HasFailure()); attempt(true,0); ASSERT_FALSE(HasFailure());
+  input_[1]=1; bind(SQL_DECIMAL,2,2); ASSERT_FALSE(HasFailure()); attempt(false); ASSERT_FALSE(HasFailure());
+  input_[1]=255; indicator_=SQL_NULL_DATA; bind(SQL_DECIMAL,2,2); ASSERT_FALSE(HasFailure()); attempt(true,0,true); ASSERT_FALSE(HasFailure());
+  prepared("SELECT CAST(CAST(? AS DECIMAL(2,1)) AS INTEGER) AS n"); ASSERT_FALSE(HasFailure()); indicator_=1;
+  input_[1]=1; bind(SQL_NUMERIC,2,1); ASSERT_FALSE(HasFailure()); attempt(true,1); ASSERT_FALSE(HasFailure());
+  input_[1]=1; bind(SQL_DECIMAL,2,1); ASSERT_FALSE(HasFailure()); attempt(true,1); ASSERT_FALSE(HasFailure());
+  input_[1]=2; bind(SQL_NUMERIC,2,1); ASSERT_FALSE(HasFailure()); attempt(false); ASSERT_FALSE(HasFailure());
+  input_[1]=0; bind(SQL_NUMERIC,2,1); ASSERT_FALSE(HasFailure()); attempt(true,0); ASSERT_FALSE(HasFailure());
+  recovery(); guards();
+}
