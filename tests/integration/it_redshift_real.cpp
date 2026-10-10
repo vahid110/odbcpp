@@ -4941,3 +4941,257 @@ TEST_F(RedshiftShowColumnsRealTest, AnsiWideExactColumnsRemainEquivalentAndRecov
   recheck_columns(wide_descriptors,wide_rows,true);ASSERT_FALSE(HasFailure());EXPECT_TRUE(narrow_rows==saved_narrow);EXPECT_TRUE(wide_rows==saved_wide);
   EXPECT_EQ(2u,column_calls_);EXPECT_EQ(1u,scalar_calls_);
 }
+
+// Selected committed arrays/STATIC/bookmarks only; an independently admitted
+// native runner owns credentials, binary identity, aggregate time and pause.
+class RedshiftRecentFeaturesRealTest : public RedshiftBufferedLifecycleRealTest {
+protected:
+  static constexpr const char* rows_sql_ =
+      "SELECT CAST(1 AS INTEGER) AS id,CAST('one' AS VARCHAR(16)) AS label "
+      "UNION ALL SELECT CAST(2 AS INTEGER),CAST(NULL AS VARCHAR(16)) "
+      "UNION ALL SELECT CAST(3 AS INTEGER),CAST('three' AS VARCHAR(16)) ORDER BY id";
+  static constexpr const char* insert_sql_ =
+      "INSERT INTO odbcpp_recent_array_native (ordinal,value) VALUES (?,?)";
+  static constexpr const char* summary_sql_ =
+      "SELECT CAST(COUNT(*) AS INTEGER),CAST(SUM(ordinal) AS INTEGER),"
+      "CAST(COUNT(value) AS INTEGER),CAST(SUM(value) AS INTEGER) "
+      "FROM odbcpp_recent_array_native";
+  unsigned statements_{0}; bool temp_scope_started_{false};
+  SQLINTEGER ids_[3]{1,2,3}, values_[3]{11,22,33}, bound_ids_[3]{-91,-91,-91};
+  SQLLEN id_lengths_[3]{0,0,0}, value_lengths_[3]{0,0,SQL_NULL_DATA}, bound_lengths_[3]{73,73,73};
+  SQLUSMALLINT operations_[3]{SQL_PARAM_PROCEED,SQL_PARAM_IGNORE,SQL_PARAM_PROCEED};
+  struct ParameterStatus { unsigned char before{0xa1}; SQLUSMALLINT slots[3]{71,72,73}; unsigned char after{0xb2}; } parameter_statuses_;
+  struct RowStatus { unsigned char before{0xc3}; SQLUSMALLINT slots[3]{71,72,73}; unsigned char after{0xd4}; } row_statuses_;
+  SQLULEN processed_{91}, fetched_{91}, offset_{0};
+  struct ParameterRow {
+    unsigned char before[3]{0xa1,0xa2,0xa3};
+    SQLINTEGER id{111},value{222}; SQLLEN id_length{0},value_length{0};
+    unsigned char after[3]{0xb1,0xb2,0xb3};
+  } parameter_pages_[2][3];
+  unsigned char tokens_[3][24]{}, saved_[24]{}, pieces_[24]{}, invalid_[24]{}, sibling_token_[24]{};
+  SQLLEN token_lengths_[3]{73,73,73}, piece_length_{73};
+
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_RECENT_FEATURES_ADMISSION");
+    if(marker==nullptr) { GTEST_SKIP() << "Recent committed feature scope is not admitted"; }
+    ASSERT_TRUE(std::string_view(marker)=="recent-committed-features-v1");
+    // The complete selected inventory includes only this fixed session TEMP DDL.
+    const char* temp=std::getenv("ODBCPP_REDSHIFT_RECENT_TEMP_TABLE_ADMISSION");
+    ASSERT_NE(temp,nullptr); ASSERT_TRUE(std::string_view(temp)=="session-temp-insert-v1");
+    window_end_=rs::util::Clock::now()+std::chrono::seconds{60}; admitted_=true;
+    RedshiftRealTest::SetUp(); if(HasFatalFailure()) { return; }
+    const auto settings=rs::odbc::ConnectionString::parse(connection_string_);
+    ASSERT_TRUE(settings.contains("DATABASE")); ASSERT_TRUE(settings.contains("UID"));
+    ASSERT_TRUE(settings.at("DATABASE")=="odbcpp_pilot");
+    ASSERT_TRUE(settings.at("UID")=="odbcpp_pilot_test"); ASSERT_FALSE(settings.contains("DSN"));
+  }
+  bool budget(unsigned count=1) {
+    if(count>24||statements_>24-count) { ADD_FAILURE() << "Recent-feature SQL bound exceeded"; return false; }
+    statements_+=count; return true;
+  }
+  void ready() {
+    connect_bounded(); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,hdbc_,&second_));
+    ASSERT_TRUE(cap(window_end_,second_));
+  }
+  void native_direct(SQLHSTMT statement,const char* sql) {
+    ASSERT_TRUE(budget()); direct(statement,sql);
+  }
+  void native_execute(unsigned maximum_proceeding) {
+    // One original description plus at most N executions; no retry or fallback.
+    ASSERT_TRUE(budget(maximum_proceeding+1)); execute(hstmt_);
+  }
+  void create_temp() {
+    native_direct(second_,"CREATE TEMP TABLE odbcpp_recent_array_native (ordinal INTEGER,value INTEGER)");
+    ASSERT_FALSE(HasFailure());
+    temp_scope_started_=true; // Confirmed session TEMP ownership only; failed CREATE never authorizes DROP.
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(second_,SQL_CLOSE));
+  }
+  void drop_temp() {
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(second_,SQL_CLOSE));
+    native_direct(second_,"DROP TABLE IF EXISTS odbcpp_recent_array_native"); ASSERT_FALSE(HasFailure());
+    temp_scope_started_=false; ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(second_,SQL_CLOSE));
+  }
+  void array_attributes(SQLULEN stride) {
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAMSET_SIZE,reinterpret_cast<SQLPOINTER>(std::uintptr_t{3}),0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAM_BIND_TYPE,reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(stride)),0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAM_OPERATION_PTR,operations_,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAM_STATUS_PTR,parameter_statuses_.slots,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAMS_PROCESSED_PTR,&processed_,0));
+  }
+  void two_counts() {
+    EXPECT_EQ(3u,processed_); EXPECT_EQ(SQL_PARAM_SUCCESS,parameter_statuses_.slots[0]);
+    EXPECT_EQ(SQL_PARAM_UNUSED,parameter_statuses_.slots[1]); EXPECT_EQ(SQL_PARAM_SUCCESS,parameter_statuses_.slots[2]);
+    SQLLEN count=-1; SQLSMALLINT columns=-1;
+    ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&columns)); EXPECT_EQ(0,columns);
+    ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&count)); EXPECT_EQ(1,count);
+    ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(hstmt_));
+    ASSERT_EQ(SQL_SUCCESS,SQLRowCount(hstmt_,&count)); EXPECT_EQ(1,count);
+    ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(hstmt_));
+    EXPECT_EQ(0xa1,parameter_statuses_.before); EXPECT_EQ(0xb2,parameter_statuses_.after);
+  }
+  void summary(SQLINTEGER count,SQLINTEGER ordinal_sum,SQLINTEGER nonnull,SQLINTEGER value_sum) {
+    native_direct(second_,summary_sql_); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(second_));
+    integer(second_,1,count); ASSERT_FALSE(HasFailure());
+    integer(second_,2,ordinal_sum); ASSERT_FALSE(HasFailure());
+    integer(second_,3,nonnull); ASSERT_FALSE(HasFailure());
+    integer(second_,4,value_sum); ASSERT_FALSE(HasFailure());
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(second_)); ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(second_,SQL_CLOSE));
+  }
+  void static_setting(SQLHSTMT statement,bool bookmarks=false) {
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement,SQL_ATTR_CURSOR_TYPE,reinterpret_cast<SQLPOINTER>(SQL_CURSOR_STATIC),0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement,SQL_ATTR_CONCURRENCY,reinterpret_cast<SQLPOINTER>(SQL_CONCUR_READ_ONLY),0));
+    if(bookmarks) { ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement,SQL_ATTR_USE_BOOKMARKS,reinterpret_cast<SQLPOINTER>(SQL_UB_VARIABLE),0)); }
+  }
+  void row_outputs(SQLULEN count) {
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_ARRAY_SIZE,reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(count)),0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROWS_FETCHED_PTR,&fetched_,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ROW_STATUS_PTR,row_statuses_.slots,0));
+  }
+  void row_number(SQLHSTMT statement,SQLULEN expected) {
+    SQLULEN row=99; ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(statement,SQL_ATTR_ROW_NUMBER,&row,0,nullptr)); EXPECT_EQ(expected,row);
+  }
+  void saved_fetch(SQLLEN delta=0) {
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_FETCH_BOOKMARK_PTR,saved_,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(hstmt_,SQL_FETCH_BOOKMARK,delta));
+  }
+  void TearDown() override {
+    // Every borrowed member stays alive until both statements are freed below.
+    if(temp_scope_started_&&connected_&&second_&&rs::util::Clock::now()<window_end_) {
+      if(hstmt_) { EXPECT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE)); }
+      EXPECT_EQ(SQL_SUCCESS,SQLFreeStmt(second_,SQL_CLOSE));
+      const auto cutoff=std::min(window_end_,rs::util::Clock::now()+std::chrono::seconds{5});
+      if(budget()&&cap(cutoff,second_)) {
+        const auto result=SQLExecDirect(second_,reinterpret_cast<SQLCHAR*>(const_cast<char*>("DROP TABLE IF EXISTS odbcpp_recent_array_native")),SQL_NTS);
+        EXPECT_EQ(SQL_SUCCESS,result) << get_error(SQL_HANDLE_STMT,second_);
+      }
+    }
+    // Disconnect destroys session-local TEMP state even after a fatal assertion;
+    // existing bounded cleanup records an unexpected transaction rather than hiding it.
+    RedshiftBufferedLifecycleRealTest::TearDown();
+  }
+};
+
+TEST_F(RedshiftRecentFeaturesRealTest, ColumnCommandArraysIgnoreNullCountsAndImmediateRefill) {
+  ready(); ASSERT_FALSE(HasFailure()); create_temp(); ASSERT_FALSE(HasFailure());
+  prepare(hstmt_,insert_sql_); ASSERT_FALSE(HasFailure()); array_attributes(SQL_PARAM_BIND_BY_COLUMN); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,1,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,10,0,ids_,0,id_lengths_));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,2,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,10,0,values_,0,value_lengths_));
+  native_execute(2); ASSERT_FALSE(HasFailure());
+  for(auto& value:ids_) { value=-99; } for(auto& value:values_) { value=-99; }
+  two_counts(); ASSERT_FALSE(HasFailure()); summary(2,4,1,11); ASSERT_FALSE(HasFailure());
+  // Nonmutating retained IPD count, then immediate Execute without reprepare.
+  SQLHDESC ipd{}; SQLSMALLINT count=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_IMP_PARAM_DESC,&ipd,0,nullptr));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,0,SQL_DESC_COUNT,&count,0,nullptr)); EXPECT_EQ(2,count);
+  ids_[0]=4; ids_[1]=5; ids_[2]=6; values_[0]=44; values_[1]=55; values_[2]=66;
+  value_lengths_[2]=0; processed_=91;
+  native_execute(2); ASSERT_FALSE(HasFailure()); two_counts(); ASSERT_FALSE(HasFailure());
+  summary(4,14,3,121); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_RESET_PARAMS)); drop_temp(); ASSERT_FALSE(HasFailure());
+  native_direct(second_,"SELECT CAST(1 AS INTEGER)"); ASSERT_FALSE(HasFailure()); scalar(second_,1); ASSERT_FALSE(HasFailure());
+}
+
+TEST_F(RedshiftRecentFeaturesRealTest, RowWiseCommandArraysOffsetIgnoreRefusalAndRecovery) {
+  ready(); ASSERT_FALSE(HasFailure()); create_temp(); ASSERT_FALSE(HasFailure());
+  for(std::size_t slot=0;slot<3;++slot) {
+    parameter_pages_[1][slot].id=static_cast<SQLINTEGER>(7+slot);
+    parameter_pages_[1][slot].value=static_cast<SQLINTEGER>(70+slot*10);
+  }
+  parameter_pages_[1][1].id_length=-91; // IGNORE must not consume an invalid unused indicator.
+  parameter_pages_[1][2].value_length=SQL_NULL_DATA;
+  prepare(hstmt_,insert_sql_); ASSERT_FALSE(HasFailure()); array_attributes(sizeof(ParameterRow)); ASSERT_FALSE(HasFailure());
+  offset_=sizeof(parameter_pages_[0]);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_PARAM_BIND_OFFSET_PTR,&offset_,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,1,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,10,0,&parameter_pages_[0][0].id,0,&parameter_pages_[0][0].id_length));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,2,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,10,0,&parameter_pages_[0][0].value,0,&parameter_pages_[0][0].value_length));
+  native_execute(2); ASSERT_FALSE(HasFailure()); two_counts(); ASSERT_FALSE(HasFailure()); summary(2,16,1,70); ASSERT_FALSE(HasFailure());
+  operations_[0]=99; processed_=91; parameter_statuses_.slots[0]=71;
+  ASSERT_TRUE(cap(window_end_,hstmt_)); ASSERT_TRUE(budget(1));
+  ASSERT_EQ(SQL_ERROR,SQLExecute(hstmt_)); EXPECT_EQ("HY024",get_error(SQL_HANDLE_STMT,hstmt_));
+  EXPECT_EQ(91u,processed_); EXPECT_EQ(71,parameter_statuses_.slots[0]);
+  summary(2,16,1,70); ASSERT_FALSE(HasFailure());
+  operations_[0]=SQL_PARAM_PROCEED;
+  parameter_pages_[1][0].id=10; parameter_pages_[1][2].id=12;
+  parameter_pages_[1][0].value=100; parameter_pages_[1][2].value=120; parameter_pages_[1][2].value_length=0;
+  native_execute(2); ASSERT_FALSE(HasFailure()); two_counts(); ASSERT_FALSE(HasFailure()); summary(4,38,3,290); ASSERT_FALSE(HasFailure());
+  for(const auto& page:parameter_pages_) { for(const auto& row:page) {
+    EXPECT_EQ(0xa1,row.before[0]); EXPECT_EQ(0xa3,row.before[2]); EXPECT_EQ(0xb1,row.after[0]); EXPECT_EQ(0xb3,row.after[2]);
+  } }
+  EXPECT_EQ(111,parameter_pages_[0][0].id); EXPECT_EQ(222,parameter_pages_[0][0].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_RESET_PARAMS)); drop_temp(); ASSERT_FALSE(HasFailure());
+}
+
+TEST_F(RedshiftRecentFeaturesRealTest, StaticRowsetsPositionNullOldSizeAndSiblingOwnership) {
+  ready(); ASSERT_FALSE(HasFailure()); static_setting(hstmt_); ASSERT_FALSE(HasFailure()); row_outputs(2); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,1,SQL_C_SLONG,bound_ids_,0,bound_lengths_));
+  native_direct(hstmt_,rows_sql_); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(hstmt_,SQL_FETCH_FIRST,0)); EXPECT_EQ(2u,fetched_);
+  EXPECT_EQ(1,bound_ids_[0]); EXPECT_EQ(2,bound_ids_[1]); EXPECT_EQ(SQL_ROW_SUCCESS,row_statuses_.slots[0]); EXPECT_EQ(SQL_ROW_SUCCESS,row_statuses_.slots[1]);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetPos(hstmt_,2,SQL_POSITION,SQL_LOCK_NO_CHANGE));
+  text_.value.fill('\x5a'); output_length_=73;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,2,SQL_C_CHAR,text_.value.data(),static_cast<SQLLEN>(text_.value.size()),&output_length_));
+  EXPECT_EQ(SQL_NULL_DATA,output_length_); EXPECT_EQ('\x5a',text_.value[0]);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_UNBIND)); integer(hstmt_,1,2); ASSERT_FALSE(HasFailure());
+  row_outputs(1); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(hstmt_,SQL_FETCH_NEXT,0)); row_number(hstmt_,3); ASSERT_FALSE(HasFailure()); integer(hstmt_,1,3); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(hstmt_,SQL_FETCH_PRIOR,0)); row_number(hstmt_,2); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(hstmt_,SQL_FETCH_ABSOLUTE,-1)); row_number(hstmt_,3); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(hstmt_,SQL_FETCH_NEXT,0)); EXPECT_EQ(0u,fetched_); EXPECT_EQ(SQL_ROW_NOROW,row_statuses_.slots[0]); row_number(hstmt_,0); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(hstmt_,SQL_FETCH_FIRST,0));
+  native_direct(second_,"SELECT CAST(9 AS INTEGER)"); ASSERT_FALSE(HasFailure()); scalar(second_,9); ASSERT_FALSE(HasFailure());
+  integer(hstmt_,1,1); ASSERT_FALSE(HasFailure()); EXPECT_EQ(0xc3,row_statuses_.before); EXPECT_EQ(0xd4,row_statuses_.after);
+}
+
+TEST_F(RedshiftRecentFeaturesRealTest, VariableBookmarkMetadataLiteralOffsetsChunksStaleAndForeignRecovery) {
+  ready(); ASSERT_FALSE(HasFailure()); static_setting(hstmt_,true); ASSERT_FALSE(HasFailure()); row_outputs(3); ASSERT_FALSE(HasFailure());
+  native_direct(hstmt_,rows_sql_); ASSERT_FALSE(HasFailure());
+  SQLUINTEGER mask=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(hdbc_,SQL_BOOKMARK_PERSISTENCE,&mask,sizeof(mask),nullptr)); EXPECT_EQ(SQL_BP_TRANSACTION,mask);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(hdbc_,SQL_STATIC_CURSOR_ATTRIBUTES1,&mask,sizeof(mask),nullptr)); EXPECT_NE(0u,mask&SQL_CA1_BOOKMARK);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(hdbc_,SQL_FETCH_DIRECTION,&mask,sizeof(mask),nullptr)); EXPECT_NE(0u,mask&SQL_FD_FETCH_BOOKMARK);
+  SQLCHAR name[2]{0x5a,0x5a}; SQLWCHAR wide_name[2]{0x5a,0x5a};
+  SQLSMALLINT length=-1,type=-1,scale=-1,nullable=-1; SQLULEN size=0; SQLLEN display=-1,unsigned_value=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,0,name,2,&length,&type,&size,&scale,&nullable));
+  EXPECT_EQ(0,length); EXPECT_EQ(0,name[0]); EXPECT_EQ(0x5a,name[1]); EXPECT_EQ(SQL_BINARY,type); EXPECT_EQ(24u,size); EXPECT_EQ(0,scale); EXPECT_EQ(SQL_NO_NULLS,nullable);
+  ASSERT_EQ(SQL_SUCCESS,SQLDescribeColW(hstmt_,0,wide_name,2,&length,&type,&size,&scale,&nullable)); EXPECT_EQ(0,length); EXPECT_EQ(0,wide_name[0]); EXPECT_EQ(0x5a,wide_name[1]);
+  ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(hstmt_,0,SQL_DESC_DISPLAY_SIZE,nullptr,0,nullptr,&display)); EXPECT_EQ(48,display);
+  ASSERT_EQ(SQL_SUCCESS,SQLColAttributeW(hstmt_,0,SQL_DESC_UNSIGNED,nullptr,0,nullptr,&unsigned_value)); EXPECT_EQ(SQL_TRUE,unsigned_value);
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(hstmt_,0,SQL_C_VARBOOKMARK,tokens_,24,token_lengths_));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(hstmt_,SQL_FETCH_FIRST,0)); EXPECT_EQ(3u,fetched_);
+  for(std::size_t row=0;row<3;++row) {
+    EXPECT_EQ(24,token_lengths_[row]); EXPECT_EQ(0,std::memcmp(tokens_[0],tokens_[row],16));
+    for(std::size_t byte=16;byte<23;++byte) { EXPECT_EQ(0,tokens_[row][byte]); }
+    EXPECT_EQ(row+1,tokens_[row][23]);
+  }
+  EXPECT_TRUE(std::any_of(tokens_[0],tokens_[0]+8,[](unsigned char b){return b!=0;}));
+  EXPECT_TRUE(std::any_of(tokens_[0]+8,tokens_[0]+16,[](unsigned char b){return b!=0;}));
+  std::memcpy(saved_,tokens_[1],24); ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_UNBIND)); row_outputs(1); ASSERT_FALSE(HasFailure());
+  saved_fetch(); ASSERT_FALSE(HasFailure()); row_number(hstmt_,2); ASSERT_FALSE(HasFailure()); integer(hstmt_,1,2); ASSERT_FALSE(HasFailure());
+  saved_fetch(-1); ASSERT_FALSE(HasFailure()); row_number(hstmt_,1); ASSERT_FALSE(HasFailure());
+  saved_fetch(1); ASSERT_FALSE(HasFailure()); row_number(hstmt_,3); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(hstmt_,SQL_FETCH_BOOKMARK,2)); EXPECT_EQ(0u,fetched_);
+  saved_fetch(); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLGetData(hstmt_,0,SQL_C_VARBOOKMARK,pieces_,7,&piece_length_)); EXPECT_EQ("01004",get_error(SQL_HANDLE_STMT,hstmt_)); EXPECT_EQ(24,piece_length_);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,0,SQL_C_VARBOOKMARK,pieces_+7,17,&piece_length_)); EXPECT_EQ(17,piece_length_); EXPECT_EQ(0,std::memcmp(saved_,pieces_,24));
+  ASSERT_EQ(SQL_NO_DATA,SQLGetData(hstmt_,0,SQL_C_VARBOOKMARK,pieces_,24,&piece_length_));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetPos(hstmt_,1,SQL_POSITION,SQL_LOCK_NO_CHANGE));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLGetData(hstmt_,0,SQL_C_VARBOOKMARK,pieces_,0,&piece_length_)); EXPECT_EQ(24,piece_length_);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,0,SQL_C_VARBOOKMARK,pieces_,24,&piece_length_)); EXPECT_EQ(0,std::memcmp(saved_,pieces_,24));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_FETCH_BOOKMARK_PTR,invalid_,0)); fetched_=91; row_statuses_.slots[0]=71;
+  ASSERT_EQ(SQL_ERROR,SQLFetchScroll(hstmt_,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY111",get_error(SQL_HANDLE_STMT,hstmt_)); EXPECT_EQ(91u,fetched_); EXPECT_EQ(71,row_statuses_.slots[0]); row_number(hstmt_,2); ASSERT_FALSE(HasFailure());
+  saved_fetch(); ASSERT_FALSE(HasFailure());
+  static_setting(second_,true); ASSERT_FALSE(HasFailure()); native_direct(second_,rows_sql_); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(second_,SQL_ATTR_FETCH_BOOKMARK_PTR,saved_,0));
+  ASSERT_EQ(SQL_ERROR,SQLFetchScroll(second_,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY111",get_error(SQL_HANDLE_STMT,second_));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(second_,SQL_FETCH_FIRST,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(second_,0,SQL_C_VARBOOKMARK,sibling_token_,24,&piece_length_));
+  EXPECT_NE(0,std::memcmp(saved_,sibling_token_,8));
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(hstmt_,SQL_CLOSE)); native_direct(hstmt_,rows_sql_); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_FETCH_BOOKMARK_PTR,saved_,0));
+  ASSERT_EQ(SQL_ERROR,SQLFetchScroll(hstmt_,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY111",get_error(SQL_HANDLE_STMT,hstmt_)); row_number(hstmt_,0); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(hstmt_,SQL_FETCH_FIRST,0)); integer(hstmt_,1,1); ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(second_,SQL_FETCH_NEXT,0)); integer(second_,1,2); ASSERT_FALSE(HasFailure());
+  EXPECT_EQ(2,saved_[23]); EXPECT_EQ(1,sibling_token_[23]);
+}
