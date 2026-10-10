@@ -8383,3 +8383,180 @@ TEST_F(RowsetPositionTest, StructOffsetsMoreResultsPreparedRefillAndForwardSibli
   ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(row_number(1));
   EXPECT_EQ(1,pages[1][0].value); ASSERT_NO_FATAL_FAILURE(guards());
 }
+
+// Opaque adapter bookmarks address only this immutable STATIC owning result.
+class StaticBookmarkTest : public StaticBufferedScrollTest {
+ protected:
+  struct Token { unsigned char before{0xa1}; unsigned char bytes[24]{}; unsigned char after{0xb2}; } tokens[3];
+  SQLLEN token_lengths[3]{73,73,73};
+  unsigned char saved[24]{}, pieces[24]{}; SQLLEN piece_length{73};
+  unsigned char flat[3][24]{}, invalid[24]{};
+  struct Padded { unsigned char pre[3]{1,2,3}; unsigned char token[24]{}; SQLLEN indicator{73},octets{74}; unsigned char post[3]{4,5,6}; } page[2][3];
+  std::string token_state(SQLHSTMT handle) {
+    SQLCHAR value[6]{}; EXPECT_EQ(SQL_SUCCESS,SQLGetDiagRec(SQL_HANDLE_STMT,handle,1,value,nullptr,nullptr,0,nullptr));
+    return reinterpret_cast<char*>(value);
+  }
+  void begin(SQLULEN size = 1, bool manual_transaction = false) {
+    seen->date_result=snapshot(); connect();
+    if (manual_transaction) {
+      ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF),0));
+    }
+    ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_CURSOR_TYPE,SQL_CURSOR_STATIC));
+    ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_USE_BOOKMARKS,SQL_UB_VARIABLE));
+    ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_ROW_ARRAY_SIZE,size));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROWS_FETCHED_PTR,&fetched,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_STATUS_PTR,statuses,0));
+    ASSERT_EQ(SQL_SUCCESS,execute("owning bookmark snapshot"));
+  }
+  void save_selected() {
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,0,SQL_C_VARBOOKMARK,saved,sizeof(saved),&piece_length));
+    EXPECT_EQ(24,piece_length);
+  }
+  void fetch_saved(SQLLEN delta = 0) {
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_FETCH_BOOKMARK_PTR,saved,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,delta));
+  }
+};
+
+TEST_F(StaticBookmarkTest, MetadataRowsetIdentityAndLiteralOffsetsRemainOwning) {
+  ASSERT_NO_FATAL_FAILURE(begin(3));
+  SQLSMALLINT type=0,digits=-1,nullable=-1,names=-1; SQLULEN width=0;
+  SQLWCHAR name[2]{0x7777,0x7777};
+  ASSERT_EQ(SQL_SUCCESS,SQLDescribeColW(stmt,0,name,2,&names,&type,&width,&digits,&nullable));
+  EXPECT_EQ(0,names); EXPECT_EQ(0,name[0]); EXPECT_EQ(0x7777,name[1]);
+  EXPECT_EQ(SQL_BINARY,type); EXPECT_EQ(24u,width); EXPECT_EQ(0,digits); EXPECT_EQ(SQL_NO_NULLS,nullable);
+  SQLLEN display=-1,unsigned_value=-1; SQLSMALLINT cols=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(stmt,0,SQL_DESC_DISPLAY_SIZE,nullptr,0,nullptr,&display)); EXPECT_EQ(48,display);
+  ASSERT_EQ(SQL_SUCCESS,SQLColAttributeW(stmt,0,SQL_DESC_UNSIGNED,nullptr,0,nullptr,&unsigned_value)); EXPECT_EQ(SQL_TRUE,unsigned_value);
+  ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt,&cols)); EXPECT_EQ(2,cols);
+  // Fixture-owned token buffers remain alive through fatal TearDown.
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,0,SQL_C_VARBOOKMARK,flat,24,token_lengths));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); EXPECT_EQ(3u,fetched);
+  for (std::size_t row=0;row<3;++row) {
+    EXPECT_EQ(24,token_lengths[row]);
+    for (std::size_t byte=16;byte<23;++byte) { EXPECT_EQ(0,flat[row][byte]); }
+    EXPECT_EQ(row+1,flat[row][23]);
+    EXPECT_EQ(0,std::memcmp(flat[0],flat[row],16));
+  }
+  std::memcpy(saved,flat[1],24);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  ASSERT_NO_FATAL_FAILURE(fetch_saved());
+  ASSERT_NO_FATAL_FAILURE(row_number(2));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&output.values[0],0,&lengths.values[0])); EXPECT_EQ(2,output.values[0]);
+  ASSERT_NO_FATAL_FAILURE(fetch_saved(-1));
+  ASSERT_NO_FATAL_FAILURE(row_number(1));
+  ASSERT_NO_FATAL_FAILURE(fetch_saved(1));
+  ASSERT_NO_FATAL_FAILURE(row_number(3));
+  ASSERT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,-2)); ASSERT_NO_FATAL_FAILURE(row_number(0));
+  EXPECT_EQ(0u,fetched); EXPECT_EQ(SQL_ROW_NOROW,statuses[0]);
+  ASSERT_NO_FATAL_FAILURE(fetch_saved());
+  ASSERT_NO_FATAL_FAILURE(row_number(2));
+}
+
+TEST_F(StaticBookmarkTest, PositionChunksRowWiseOffsetsAndSuppressionKeepLiteralBuffers) {
+  ASSERT_NO_FATAL_FAILURE(begin(3));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetPos(stmt,2,SQL_POSITION,SQL_LOCK_NO_CHANGE));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_WCHAR,chunk,sizeof(chunk),&chunk_length));
+  EXPECT_EQ(SQL_NULL_DATA,chunk_length); EXPECT_EQ(0x7777,chunk[0]);
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLGetData(stmt,0,SQL_C_VARBOOKMARK,pieces,7,&piece_length));
+  EXPECT_EQ("01004",state()); EXPECT_EQ(24,piece_length);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,0,SQL_C_VARBOOKMARK,pieces+7,17,&piece_length)); EXPECT_EQ(17,piece_length);
+  EXPECT_EQ(2,pieces[23]); ASSERT_EQ(SQL_NO_DATA,SQLGetData(stmt,0,SQL_C_VARBOOKMARK,pieces,24,&piece_length));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetPos(stmt,2,SQL_POSITION,SQL_LOCK_NO_CHANGE)); ASSERT_NO_FATAL_FAILURE(save_selected());
+  SQLHDESC ard{}; ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_APP_ROW_DESC,&ard,0,nullptr));
+  ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_ROW_BIND_TYPE,sizeof(Padded)));
+  offset=sizeof(page[0]); ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_BIND_OFFSET_PTR,&offset,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescRec(ard,0,SQL_C_VARBOOKMARK,0,24,0,0,page[0][0].token,&page[0][0].octets,&page[0][0].indicator));
+  ASSERT_NO_FATAL_FAILURE(fetch_saved());
+  EXPECT_EQ(2,page[1][0].token[23]); EXPECT_EQ(0,page[1][0].indicator); EXPECT_EQ(24,page[1][0].octets);
+  EXPECT_EQ(0,page[0][0].token[23]); EXPECT_EQ(73,page[0][0].indicator); EXPECT_EQ(1,page[1][0].pre[0]); EXPECT_EQ(6,page[1][0].post[2]);
+  ASSERT_EQ(SQL_ERROR,SQLGetData(stmt,0,SQL_C_VARBOOKMARK,pieces,24,&piece_length)); EXPECT_EQ("07009",state());
+  ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_RETRIEVE_DATA,SQL_RD_OFF));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(ard,0,SQL_DESC_DATA_PTR,reinterpret_cast<SQLPOINTER>((std::numeric_limits<std::uintptr_t>::max)()),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_BIND_OFFSET_PTR,reinterpret_cast<SQLPOINTER>((std::numeric_limits<std::uintptr_t>::max)()),0));
+  ASSERT_NO_FATAL_FAILURE(fetch_saved()); // OFF must not touch unused ARD fields/offset.
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND)); ASSERT_NO_FATAL_FAILURE(save_selected());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_BIND_OFFSET_PTR,nullptr,0));
+  ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_RETRIEVE_DATA,SQL_RD_ON));
+  ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_ROW_BIND_TYPE,SQL_BIND_BY_COLUMN));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,0,SQL_C_VARBOOKMARK,nullptr,0,token_lengths));
+  ASSERT_NO_FATAL_FAILURE(fetch_saved()); EXPECT_EQ(24,token_lengths[0]);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  seen->date_result=snapshot(); seen->date_result->rows[0][0]="32768";
+  ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_ROW_ARRAY_SIZE,1));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,0,SQL_C_VARBOOKMARK,tokens[0].bytes,24,token_lengths));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_SSHORT,small_values,0,lengths.values));
+  ASSERT_EQ(SQL_SUCCESS,execute("error row bookmark"));
+  ASSERT_EQ(SQL_ERROR,SQLFetch(stmt)); EXPECT_EQ("22003",state()); EXPECT_EQ(1u,fetched);
+  EXPECT_EQ(SQL_ROW_ERROR,statuses[0]); EXPECT_EQ(1,tokens[0].bytes[23]); EXPECT_EQ(77,small_values[0]);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetPos(stmt,1,SQL_POSITION,SQL_LOCK_NO_CHANGE)); ASSERT_NO_FATAL_FAILURE(save_selected());
+  EXPECT_EQ(1,saved[23]);
+}
+
+TEST_F(StaticBookmarkTest, InvalidTokensAndSpansRefuseWithoutPositionOrOutputThenRepair) {
+  ASSERT_NO_FATAL_FAILURE(begin()); ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  ASSERT_NO_FATAL_FAILURE(save_selected());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_FETCH_BOOKMARK_PTR,nullptr,0));
+  ASSERT_EQ(SQL_ERROR,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY111",state()); ASSERT_NO_FATAL_FAILURE(row_number(1));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_FETCH_BOOKMARK_PTR,reinterpret_cast<SQLPOINTER>((std::numeric_limits<std::uintptr_t>::max)()-8),0));
+  ASSERT_EQ(SQL_ERROR,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY024",state());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_FETCH_BOOKMARK_PTR,invalid,0));
+  ASSERT_EQ(SQL_ERROR,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY111",state());
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,0,SQL_C_VARBOOKMARK,tokens[0].bytes,23,&token_lengths[0]));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_FETCH_BOOKMARK_PTR,saved,0));
+  const auto old_fetched=fetched;
+  ASSERT_EQ(SQL_ERROR,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY090",state());
+  EXPECT_EQ(old_fetched,fetched); EXPECT_EQ(73,token_lengths[0]); EXPECT_EQ(0xa1,tokens[0].before); EXPECT_EQ(0xb2,tokens[0].after); ASSERT_NO_FATAL_FAILURE(row_number(1));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,0,SQL_C_VARBOOKMARK,tokens[0].bytes,24,&token_lengths[0]));
+  ASSERT_NO_FATAL_FAILURE(fetch_saved()); EXPECT_EQ(1,tokens[0].bytes[23]);
+  ASSERT_EQ(SQL_ERROR,SQLBindCol(stmt,0,SQL_C_BOOKMARK,tokens[0].bytes,24,&token_lengths[0])); EXPECT_EQ("07006",state());
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  ASSERT_EQ(SQL_ERROR,SQLGetData(stmt,0,SQL_C_BOOKMARK,pieces,24,&piece_length)); EXPECT_EQ("HY003",state());
+  ASSERT_EQ(SQL_ERROR,SQLGetData(stmt,0,SQL_C_VARBOOKMARK,nullptr,24,&piece_length)); EXPECT_EQ("HY009",state());
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLGetData(stmt,0,SQL_C_VARBOOKMARK,pieces,0,&piece_length)); EXPECT_EQ(24,piece_length);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,0,SQL_C_VARBOOKMARK,pieces,24,&piece_length)); EXPECT_EQ(1,pieces[23]);
+}
+
+TEST_F(StaticBookmarkTest, CloseMoreResultsPreparedRefillTransactionAndSiblingKeepIdentity) {
+  seen->advertised_transactions=true; seen->isolation_mode=1;
+  seen->begin_result=BackendResult<void>{{SessionState::Transaction,SessionDisposition::ResetRequired}};
+  seen->end_result=BackendResult<void>{{SessionState::Idle,SessionDisposition::Reusable}};
+  ASSERT_NO_FATAL_FAILURE(begin(1,true)); ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  ASSERT_NO_FATAL_FAILURE(save_selected());
+  ASSERT_EQ(1u,seen->transaction_calls.size()); EXPECT_EQ(TransactionAction::Begin,seen->transaction_calls[0]);
+  ASSERT_EQ(SQL_SUCCESS,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_COMMIT));
+  ASSERT_EQ(2u,seen->transaction_calls.size()); EXPECT_EQ(TransactionAction::Commit,seen->transaction_calls[1]);
+  ASSERT_NO_FATAL_FAILURE(fetch_saved());
+  ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(sibling,SQL_ATTR_CURSOR_TYPE,reinterpret_cast<SQLPOINTER>(SQL_CURSOR_STATIC),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(sibling,SQL_ATTR_USE_BOOKMARKS,reinterpret_cast<SQLPOINTER>(SQL_UB_VARIABLE),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,(SQLCHAR*)"sibling snapshot",SQL_NTS));
+  ASSERT_EQ(3u,seen->transaction_calls.size()); EXPECT_EQ(TransactionAction::Begin,seen->transaction_calls[2]);
+  ASSERT_EQ(SQL_SUCCESS,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_ROLLBACK));
+  ASSERT_EQ(4u,seen->transaction_calls.size()); EXPECT_EQ(TransactionAction::Rollback,seen->transaction_calls[3]);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(sibling,SQL_ATTR_FETCH_BOOKMARK_PTR,saved,0));
+  ASSERT_EQ(SQL_ERROR,SQLFetchScroll(sibling,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY111",token_state(sibling));
+  ASSERT_NO_FATAL_FAILURE(fetch_saved());
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  seen->date_result=snapshot(); seen->date_result->additional_results.push_back(snapshot());
+  ASSERT_EQ(SQL_SUCCESS,execute("two owning bookmark snapshots"));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(save_selected());
+  ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(stmt));
+  ASSERT_EQ(SQL_ERROR,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY111",state());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(save_selected());
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE)); seen->date_result=snapshot();
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"refill snapshot",SQL_NTS)); ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));
+  ASSERT_EQ(SQL_ERROR,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY111",state());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(save_selected());
+  ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); ASSERT_EQ(SQL_ERROR,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY111",state());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); ASSERT_NO_FATAL_FAILURE(save_selected());
+  auto connection=rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc);
+  // The prepared refill owns an OFF transaction: end it before physical retirement.
+  ASSERT_EQ(SQL_SUCCESS,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_COMMIT));
+  ASSERT_EQ(SQL_SUCCESS,connection->disconnect()); // Registry and owning snapshots survive.
+  ASSERT_NO_FATAL_FAILURE(fetch_saved()); ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));
+}

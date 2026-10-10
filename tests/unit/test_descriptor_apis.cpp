@@ -523,7 +523,7 @@ TEST(ExplicitDescriptorApiTest, GetAndSetRecordRoundTripAndValidate) {
     EXPECT_STREQ("HY021", reinterpret_cast<char*>(state));
 
     EXPECT_EQ(SQL_ERROR, SQLGetDescRec(
-        descriptor, 0, nullptr, 0, nullptr, nullptr, nullptr, nullptr,
+        descriptor, -1, nullptr, 0, nullptr, nullptr, nullptr, nullptr,
         nullptr, nullptr, nullptr));
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(
         SQL_HANDLE_DESC, descriptor, 1, state, nullptr, nullptr, 0,
@@ -623,11 +623,11 @@ TEST(ExplicitDescriptorApiTest, GetOutputsHandleUnalignedBuffers) {
 
     const auto record_output = record;
     EXPECT_EQ(SQL_ERROR, SQLGetDescRec(
-        descriptor, 0, nullptr, 0, name_length, type, subtype, length,
+        descriptor, -1, nullptr, 0, name_length, type, subtype, length,
         precision, scale, nullable));
     EXPECT_EQ(record_output, record);
     EXPECT_EQ(SQL_ERROR, SQLGetDescRecW(
-        descriptor, 0, nullptr, 0, name_length, type, subtype, length,
+        descriptor, -1, nullptr, 0, name_length, type, subtype, length,
         precision, scale, nullable));
     EXPECT_EQ(record_output, record);
 
@@ -891,4 +891,59 @@ TEST_F(DescriptorAPITest, LegacyIntegerBindingsPreserveDescriptorTypes) {
             EXPECT_EQ(type, actual);
         }
     }
+}
+
+class BookmarkDescriptorTest : public DescriptorAPITest {
+protected:
+    std::array<unsigned char,24> token{};
+    SQLLEN length{73}; SQLHDESC copy{};
+    void TearDown() override {
+        stmt->unbind_columns();
+        if (copy) { SQLFreeHandle(SQL_HANDLE_DESC,copy); copy=nullptr; }
+        DescriptorAPITest::TearDown();
+    }
+};
+TEST_F(BookmarkDescriptorTest, BookmarkRecordZeroIsSeparateCopiedAndExplicitCountZeroPreservesBinding) {
+    ASSERT_EQ(SQL_SUCCESS,stmt->set_attribute(SQL_ATTR_CURSOR_TYPE,reinterpret_cast<SQLPOINTER>(SQL_CURSOR_STATIC)));
+    ASSERT_EQ(SQL_SUCCESS,stmt->set_attribute(SQL_ATTR_USE_BOOKMARKS,reinterpret_cast<SQLPOINTER>(SQL_UB_VARIABLE)));
+    SQLHDESC ard{}; ASSERT_EQ(SQL_SUCCESS,stmt->get_attribute(SQL_ATTR_APP_ROW_DESC,&ard));
+    ASSERT_EQ(SQL_SUCCESS,stmt->bind_col(0,SQL_C_VARBOOKMARK,token.data(),24,&length));
+    SQLSMALLINT count=-1; ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ard,0,SQL_DESC_COUNT,&count,0,nullptr)); EXPECT_EQ(0,count);
+    SQLLEN octets=-1; ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ard,0,SQL_DESC_OCTET_LENGTH,&octets,0,nullptr)); EXPECT_EQ(24,octets);
+    SQLPOINTER data{}; ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ard,0,SQL_DESC_DATA_PTR,&data,0,nullptr)); EXPECT_EQ(token.data(),data);
+    ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(ard,0,SQL_DESC_COUNT,nullptr,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ard,0,SQL_DESC_DATA_PTR,&data,0,nullptr)); EXPECT_EQ(token.data(),data);
+    ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(ard,0,SQL_DESC_OCTET_LENGTH,reinterpret_cast<SQLPOINTER>(24),0));
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ard,0,SQL_DESC_DATA_PTR,&data,0,nullptr)); EXPECT_EQ(nullptr,data);
+    ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(ard,0,SQL_DESC_DATA_PTR,token.data(),0));
+    // Use the existing direct descriptor object seam; no backend connection or I/O.
+    auto target=std::make_unique<ODBCDescriptor>(conn.get());
+    copy=reinterpret_cast<SQLHDESC>(target.get());
+    HandleRegistry::instance().register_handle(copy,std::move(target));
+    ASSERT_EQ(SQL_SUCCESS,SQLCopyDesc(ard,copy));
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(copy,0,SQL_DESC_DATA_PTR,&data,0,nullptr)); EXPECT_EQ(token.data(),data);
+    SQLSMALLINT type=-1,precision=-1,scale=-1,nullable=-1,name_length=-1; SQLLEN size=-1;
+    SQLWCHAR name[2]{0x7777,0x7777};
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDescRecW(copy,0,name,2,&name_length,&type,nullptr,&size,&precision,&scale,&nullable));
+    EXPECT_EQ(0,name_length); EXPECT_EQ(0,name[0]); EXPECT_EQ(SQL_C_VARBOOKMARK,type); EXPECT_EQ(24,size);
+    stmt->unbind_columns();
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ard,0,SQL_DESC_DATA_PTR,&data,0,nullptr)); EXPECT_EQ(nullptr,data);
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(copy,0,SQL_DESC_DATA_PTR,&data,0,nullptr)); EXPECT_EQ(token.data(),data);
+    for (const auto attribute : {SQL_ATTR_IMP_PARAM_DESC, SQL_ATTR_IMP_ROW_DESC}) {
+        SQLHDESC empty_source{};
+        ASSERT_EQ(SQL_SUCCESS,stmt->get_attribute(attribute,&empty_source));
+        ASSERT_EQ(SQL_SUCCESS,SQLCopyDesc(empty_source,copy));
+        SQLSMALLINT empty_count=-1;
+        ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(copy,0,SQL_DESC_COUNT,&empty_count,0,nullptr)); EXPECT_EQ(0,empty_count);
+        ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(copy,0,SQL_DESC_DATA_PTR,&data,0,nullptr)); EXPECT_EQ(nullptr,data);
+        ASSERT_EQ(SQL_SUCCESS,SQLSetDescRec(copy,0,SQL_C_VARBOOKMARK,0,24,0,0,token.data(),&length,&length));
+        ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(copy,0,SQL_DESC_DATA_PTR,&data,0,nullptr)); EXPECT_EQ(token.data(),data);
+        ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(copy,0,SQL_DESC_OCTET_LENGTH,&octets,0,nullptr)); EXPECT_EQ(24,octets);
+        // The enabled statement ARD also recovers BindCol0 from an absent source0.
+        ASSERT_EQ(SQL_SUCCESS,SQLCopyDesc(empty_source,ard));
+        ASSERT_EQ(SQL_SUCCESS,stmt->bind_col(0,SQL_C_VARBOOKMARK,token.data(),24,&length));
+        ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ard,0,SQL_DESC_DATA_PTR,&data,0,nullptr)); EXPECT_EQ(token.data(),data);
+        stmt->unbind_columns();
+    }
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DESC,copy)); copy=nullptr;
 }

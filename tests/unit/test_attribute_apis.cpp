@@ -1609,3 +1609,27 @@ TEST_F(AttributeApisTest, StaticPositionExportInventoriesAndMasksRemainReadOnly)
   EXPECT_EQ(SQL_INVALID_HANDLE,SQLSetPos(connection_,1,SQL_POSITION,SQL_LOCK_NO_CHANGE));
   EXPECT_EQ(SQL_ERROR,SQLSetPos(statement_,1,SQL_POSITION,SQL_LOCK_NO_CHANGE)); EXPECT_EQ("HY010",diagnostic_state(SQL_HANDLE_STMT,statement_));
 }
+
+TEST_F(AttributeApisTest, VariableBookmarksRequireStaticAndPreserveClosedSettingPolicy) {
+  ASSERT_NO_FATAL_FAILURE(connect_metadata_only());
+  ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,connection_,&statement_));
+  SQLULEN mode=99;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(statement_,SQL_ATTR_USE_BOOKMARKS,&mode,0,nullptr)); EXPECT_EQ(SQL_UB_OFF,mode);
+  EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(statement_,SQL_ATTR_USE_BOOKMARKS,integer_value(SQL_UB_VARIABLE),0));
+  EXPECT_EQ("HYC00",diagnostic_state(SQL_HANDLE_STMT,statement_));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_TYPE,integer_value(SQL_CURSOR_STATIC),0));
+  EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(statement_,SQL_ATTR_USE_BOOKMARKS,integer_value(SQL_UB_FIXED),0));
+  EXPECT_EQ("HYC00",diagnostic_state(SQL_HANDLE_STMT,statement_));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_USE_BOOKMARKS,integer_value(SQL_UB_VARIABLE),0));
+  EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_SCROLLABLE,integer_value(SQL_NONSCROLLABLE),0));
+  EXPECT_EQ("HYC00",diagnostic_state(SQL_HANDLE_STMT,statement_));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(statement_,SQL_ATTR_USE_BOOKMARKS,&mode,0,nullptr)); EXPECT_EQ(SQL_UB_VARIABLE,mode);
+  SQLUINTEGER mask=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_STATIC_CURSOR_ATTRIBUTES1,&mask,sizeof(mask),nullptr)); EXPECT_NE(0u,mask&SQL_CA1_BOOKMARK);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES1,&mask,sizeof(mask),nullptr)); EXPECT_EQ(0u,mask&SQL_CA1_BOOKMARK);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_BOOKMARK_PERSISTENCE,&mask,sizeof(mask),nullptr)); EXPECT_EQ(SQL_BP_TRANSACTION,mask);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_BATCH_SUPPORT,&mask,sizeof(mask),nullptr)); EXPECT_EQ(0u,mask);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_FETCH_DIRECTION,&mask,sizeof(mask),nullptr)); EXPECT_NE(0u,mask&SQL_FD_FETCH_BOOKMARK);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_USE_BOOKMARKS,integer_value(SQL_UB_OFF),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_TYPE,integer_value(SQL_CURSOR_FORWARD_ONLY),0));
+}

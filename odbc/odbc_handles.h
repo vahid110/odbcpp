@@ -410,7 +410,7 @@ public:
                           bool automatically_allocated = false,
                           DescriptorKind kind = DescriptorKind::Application)
       : ODBCHandle(HandleType::Descriptor),
-        owner_(owner), automatically_allocated_(automatically_allocated), kind_(kind) {}
+        owner_(owner), automatically_allocated_(automatically_allocated), kind_(kind) { if (kind == DescriptorKind::Application) bookmark_record_.emplace(); }
 
   bool is_automatically_allocated() const {
     return automatically_allocated_;
@@ -459,6 +459,13 @@ private:
   ODBCConnection* owner_;
   bool automatically_allocated_{false};
   DescriptorKind kind_{DescriptorKind::Application};
+  // Record0 is the ODBC bookmark pseudo-column, outside DESC_COUNT/APD inputs.
+  std::optional<DescriptorRecord> bookmark_record_;
+  DescriptorRecord* numbered_record(SQLSMALLINT number) noexcept {
+    return number == 0 ? (bookmark_record_ ? &*bookmark_record_ : nullptr)
+        : number > 0 && static_cast<std::size_t>(number) <= records_.size()
+            ? &records_[static_cast<std::size_t>(number - 1)] : nullptr;
+  }
   std::vector<DescriptorRecord> records_;
   SQLULEN array_size_{1};
   SQLUSMALLINT* array_status_ptr_{nullptr};
@@ -616,6 +623,12 @@ private:
   SQLULEN max_rows_ = 0;
   bool no_scan_ = false;
   SQLLEN* fetch_bookmark_ptr_ = nullptr;
+  bool use_variable_bookmarks_{false};
+  std::uint64_t bookmark_statement_id_{0}, bookmark_generation_{0};
+  std::uint64_t active_bookmark_generation_{0};
+  static constexpr std::size_t bookmark_bytes = 24;
+  std::array<unsigned char, bookmark_bytes> bookmark_for(std::size_t row) const noexcept;
+  SQLRETURN get_bookmark_data(SQLSMALLINT type, void* buffer, SQLLEN length, SQLLEN* indicator);
   SQLHDESC automatic_app_row_descriptor_{SQL_NULL_HDESC};
   SQLHDESC automatic_app_param_descriptor_{SQL_NULL_HDESC};
   SQLHDESC app_row_descriptor_{SQL_NULL_HDESC};

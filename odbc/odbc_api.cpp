@@ -1652,9 +1652,10 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_UNSPECIFIED));
     case SQL_ASYNC_MODE:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_AM_NONE));
+    case SQL_BOOKMARK_PERSISTENCE:
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_BP_TRANSACTION));
     case SQL_BATCH_ROW_COUNT:
     case SQL_BATCH_SUPPORT:
-    case SQL_BOOKMARK_PERSISTENCE:
     case SQL_AGGREGATE_FUNCTIONS:
     case SQL_ALTER_DOMAIN:
     case SQL_ALTER_TABLE:
@@ -1744,12 +1745,12 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_POS_OPERATIONS:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_POS_POSITION));
     case SQL_STATIC_CURSOR_ATTRIBUTES1:
-      return write_uinteger(static_cast<SQLUINTEGER>(SQL_CA1_NEXT | SQL_CA1_ABSOLUTE | SQL_CA1_RELATIVE | SQL_CA1_POS_POSITION));
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_CA1_NEXT | SQL_CA1_ABSOLUTE | SQL_CA1_RELATIVE | SQL_CA1_POS_POSITION | SQL_CA1_BOOKMARK));
     case SQL_STATIC_CURSOR_ATTRIBUTES2:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_CA2_READ_ONLY_CONCURRENCY));
     case SQL_FETCH_DIRECTION:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_FD_FETCH_NEXT | SQL_FD_FETCH_FIRST |
-          SQL_FD_FETCH_LAST | SQL_FD_FETCH_PREV | SQL_FD_FETCH_ABSOLUTE | SQL_FD_FETCH_RELATIVE));
+          SQL_FD_FETCH_LAST | SQL_FD_FETCH_PREV | SQL_FD_FETCH_ABSOLUTE | SQL_FD_FETCH_RELATIVE | SQL_FD_FETCH_BOOKMARK));
     case SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES1:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_CA1_NEXT));
     case SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES2:
