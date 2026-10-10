@@ -2935,41 +2935,45 @@ SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
                 "Invalid escape-scanning mode");
       return SQL_ERROR;
     case SQL_ATTR_CURSOR_TYPE:
-      if (!cursor_attribute_settable()) return SQL_ERROR;
-      if (numeric == SQL_CURSOR_FORWARD_ONLY) return SQL_SUCCESS;
-      if (numeric != SQL_CURSOR_KEYSET_DRIVEN &&
-          numeric != SQL_CURSOR_DYNAMIC && numeric != SQL_CURSOR_STATIC) {
-        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
-                  "Invalid cursor type");
-        return SQL_ERROR;
-      }
-      break;
     case SQL_ATTR_CONCURRENCY:
-      if (!cursor_attribute_settable()) return SQL_ERROR;
-      if (numeric == SQL_CONCUR_READ_ONLY) return SQL_SUCCESS;
-      if (numeric != SQL_CONCUR_LOCK && numeric != SQL_CONCUR_ROWVER &&
-          numeric != SQL_CONCUR_VALUES) {
-        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
-                  "Invalid cursor concurrency");
-        return SQL_ERROR;
-      }
-      break;
     case SQL_ATTR_CURSOR_SCROLLABLE:
-      if (numeric == SQL_NONSCROLLABLE) return SQL_SUCCESS;
-      if (numeric != SQL_SCROLLABLE) {
-        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
-                  "Invalid cursor scrollability");
+    case SQL_ATTR_CURSOR_SENSITIVITY: {
+      if (!cursor_attribute_settable()) return SQL_ERROR;
+      bool supported = false;
+      bool known = false;
+      SQLULEN next_type = cursor_type_;
+      switch (attribute) {
+        case SQL_ATTR_CURSOR_TYPE:
+          supported = numeric == SQL_CURSOR_FORWARD_ONLY || numeric == SQL_CURSOR_STATIC;
+          known = supported || numeric == SQL_CURSOR_KEYSET_DRIVEN || numeric == SQL_CURSOR_DYNAMIC;
+          next_type = numeric;
+          break;
+        case SQL_ATTR_CONCURRENCY:
+          supported = numeric == SQL_CONCUR_READ_ONLY;
+          known = supported || numeric == SQL_CONCUR_LOCK || numeric == SQL_CONCUR_ROWVER || numeric == SQL_CONCUR_VALUES;
+          // Explicit read-only selects the documented insensitive/static tuple;
+          // untouched read-only defaults remain forward-only/unspecified.
+          next_type = SQL_CURSOR_STATIC;
+          break;
+        case SQL_ATTR_CURSOR_SCROLLABLE:
+          supported = numeric == SQL_NONSCROLLABLE || numeric == SQL_SCROLLABLE;
+          known = supported;
+          next_type = numeric == SQL_SCROLLABLE ? SQL_CURSOR_STATIC : SQL_CURSOR_FORWARD_ONLY;
+          break;
+        default:
+          supported = numeric == SQL_UNSPECIFIED || numeric == SQL_INSENSITIVE;
+          known = supported || numeric == SQL_SENSITIVE;
+          next_type = numeric == SQL_INSENSITIVE ? SQL_CURSOR_STATIC : SQL_CURSOR_FORWARD_ONLY;
+          break;
+      }
+      if (!supported) {
+        set_error(known ? SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED : SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                  "Requested cursor policy is not supported");
         return SQL_ERROR;
       }
-      break;
-    case SQL_ATTR_CURSOR_SENSITIVITY:
-      if (numeric == SQL_UNSPECIFIED) return SQL_SUCCESS;
-      if (numeric != SQL_INSENSITIVE && numeric != SQL_SENSITIVE) {
-        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
-                  "Invalid cursor sensitivity");
-        return SQL_ERROR;
-      }
-      break;
+      cursor_type_ = next_type; // All coupled readbacks derive from this closed tuple.
+      return SQL_SUCCESS;
+    }
     case SQL_ATTR_ENABLE_AUTO_IPD:
       if (numeric != SQL_FALSE && numeric != SQL_TRUE) {
         set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
@@ -3173,13 +3177,13 @@ SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
     case SQL_ATTR_NOSCAN:
       write_ulen(no_scan_ ? SQL_NOSCAN_ON : SQL_NOSCAN_OFF); break;
     case SQL_ATTR_CURSOR_TYPE:
-      write_ulen(SQL_CURSOR_FORWARD_ONLY); break;
+      write_ulen(cursor_type_); break;
     case SQL_ATTR_CONCURRENCY:
       write_ulen(SQL_CONCUR_READ_ONLY); break;
     case SQL_ATTR_CURSOR_SCROLLABLE:
-      write_ulen(SQL_NONSCROLLABLE); break;
+      write_ulen(cursor_type_ == SQL_CURSOR_STATIC ? SQL_SCROLLABLE : SQL_NONSCROLLABLE); break;
     case SQL_ATTR_CURSOR_SENSITIVITY:
-      write_ulen(SQL_UNSPECIFIED); break;
+      write_ulen(cursor_type_ == SQL_CURSOR_STATIC ? SQL_INSENSITIVE : SQL_UNSPECIFIED); break;
     case SQL_ATTR_ENABLE_AUTO_IPD:
       write_ulen(enable_auto_ipd_ ? SQL_TRUE : SQL_FALSE); break;
     case SQL_ATTR_FETCH_BOOKMARK_PTR:
@@ -3210,12 +3214,16 @@ SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
     case SQL_ATTR_METADATA_ID:
       write_ulen(metadata_id_ ? SQL_TRUE : SQL_FALSE); break;
     case SQL_ATTR_ROW_NUMBER:
+      if (cursor_type_ == SQL_CURSOR_STATIC && !row_positioned_) {
+        write_ulen(0);
+        break;
+      }
       if (!executed_ || column_info_.empty() || !row_positioned_) {
         set_error(SQLSTATE_INVALID_CURSOR_STATE,
                   "Cursor is not positioned on a row");
         return SQL_ERROR;
       }
-      write_ulen(static_cast<SQLULEN>(current_row_));
+      write_ulen(static_cast<SQLULEN>(current_row_ + selected_row_slot_));
       break;
     case SQL_ATTR_ROW_OPERATION_PTR:
       write_pointer(descriptor(app_row_descriptor_)->array_status_ptr()); break;
@@ -3262,6 +3270,29 @@ void ODBCStatement::reset_parameters() {
 }
 
 SQLRETURN ODBCStatement::fetch() {
+  return fetch_impl(SQL_FETCH_NEXT, 0);
+}
+
+SQLRETURN ODBCStatement::fetch_scroll(SQLSMALLINT orientation, SQLLEN offset) {
+  switch (orientation) {
+    case SQL_FETCH_NEXT: case SQL_FETCH_FIRST: case SQL_FETCH_LAST:
+    case SQL_FETCH_PRIOR: case SQL_FETCH_ABSOLUTE: case SQL_FETCH_RELATIVE:
+      if (orientation != SQL_FETCH_NEXT && cursor_type_ != SQL_CURSOR_STATIC) {
+        // Retain the existing forward-only HYC00 compatibility policy.
+        set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED, "Scrollable fetch orientation is not supported");
+        return SQL_ERROR;
+      }
+      return fetch_impl(orientation, offset);
+    case SQL_FETCH_BOOKMARK:
+      set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED, "Bookmark fetch is not supported");
+      return SQL_ERROR;
+    default:
+      set_error(SQLSTATE_FETCH_TYPE_OUT_OF_RANGE, "Invalid fetch orientation");
+      return SQL_ERROR;
+  }
+}
+
+SQLRETURN ODBCStatement::fetch_impl(SQLSMALLINT orientation, SQLLEN offset) {
   if (!executed_) {
     set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "Statement has not been executed");
     return SQL_ERROR;
@@ -3359,24 +3390,98 @@ SQLRETURN ODBCStatement::fetch() {
     }
   }
   std::size_t start = 0;
-  if (current_row_ != 0 && !rowset_exhausted_) {
+  bool exhausted = rowset_exhausted_;
+  bool overlap = false;
+  StaticPosition target = static_position_;
+  if (cursor_type_ == SQL_CURSOR_STATIC) {
+    const auto total = result_rows_.size();
+    const auto prior = current_row_ == 0 ? std::size_t{0} : current_row_ - 1;
+    const auto magnitude = offset < 0
+        ? static_cast<std::uintmax_t>(-(offset + 1)) + 1
+        : static_cast<std::uintmax_t>(offset);
+    const auto absolute = [&] {
+      if (offset == 0) target = StaticPosition::BeforeStart;
+      else if (offset > 0) {
+        if (magnitude > total) target = StaticPosition::AfterEnd;
+        else { target = StaticPosition::OnRowset; start = static_cast<std::size_t>(magnitude - 1); }
+      } else if (magnitude <= total) {
+        target = StaticPosition::OnRowset; start = total - static_cast<std::size_t>(magnitude);
+      } else if (magnitude <= size && total != 0) {
+        target = StaticPosition::OnRowset; start = 0; overlap = true;
+      } else target = StaticPosition::BeforeStart;
+    };
+    switch (orientation) {
+      case SQL_FETCH_FIRST:
+        target = StaticPosition::OnRowset; start = 0; break;
+      case SQL_FETCH_LAST:
+        target = StaticPosition::OnRowset; start = total > size ? total - size : 0; break;
+      case SQL_FETCH_ABSOLUTE: absolute(); break;
+      case SQL_FETCH_RELATIVE:
+        if ((target == StaticPosition::BeforeStart && offset > 0) ||
+            (target == StaticPosition::AfterEnd && offset < 0)) absolute();
+        else if (target == StaticPosition::OnRowset) {
+          if (offset >= 0) {
+            if (prior >= total || magnitude >= total - prior) target = StaticPosition::AfterEnd;
+            else start = prior + static_cast<std::size_t>(magnitude);
+          } else if (magnitude <= prior) start = prior - static_cast<std::size_t>(magnitude);
+          else if (prior != 0 && magnitude <= size) { start = 0; overlap = true; }
+          else target = StaticPosition::BeforeStart;
+        }
+        break;
+      case SQL_FETCH_PRIOR:
+        if (target == StaticPosition::AfterEnd) {
+          target = StaticPosition::OnRowset; start = total >= size ? total - size : 0;
+          overlap = total < size && total != 0;
+        } else if (target == StaticPosition::OnRowset) {
+          if (prior == 0) target = StaticPosition::BeforeStart;
+          else if (prior < size) { start = 0; overlap = true; }
+          else start = prior - size;
+        }
+        break;
+      default: // Both public NEXT paths share OLD-size static advancement.
+        if (target == StaticPosition::BeforeStart) { target = StaticPosition::OnRowset; start = 0; }
+        else if (target == StaticPosition::OnRowset) {
+          if (prior >= total || fetched_rowset_size_ >= total - prior) target = StaticPosition::AfterEnd;
+          else start = prior + fetched_rowset_size_;
+        }
+        break;
+    }
+    if (target == StaticPosition::OnRowset && total == 0) target = StaticPosition::AfterEnd;
+    exhausted = target != StaticPosition::OnRowset;
+  } else if (current_row_ != 0 && !exhausted) {
     const auto prior_start = current_row_ - 1;
-    // ODBC SQLFetch uses OLD size for the end check, NEW size for next start.
+    // Preserve default forward OLD end check / NEW increment.
     if (prior_start >= result_rows_.size() ||
         fetched_rowset_size_ >= result_rows_.size() - prior_start ||
         size > (std::numeric_limits<std::size_t>::max)() - prior_start)
-      rowset_exhausted_ = true;
+      exhausted = true;
     else start = prior_start + size;
+  }
+  if (cursor_type_ == SQL_CURSOR_STATIC && target == StaticPosition::OnRowset &&
+      static_cast<std::size_t>(static_cast<SQLULEN>(start + 1)) != start + 1) {
+    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Static cursor row number is out of range");
+    return SQL_ERROR;
   }
   if (status) for (std::size_t slot = 0; slot < size; ++slot)
     store_application_value(status + slot, static_cast<SQLUSMALLINT>(SQL_ROW_NOROW));
-  if (rowset_exhausted_ || start >= result_rows_.size()) {
+  // All consumed spans passed before any position/chunk/output mutation.
+  static_position_ = target;
+  actual_fetched_rows_ = 0;
+  selected_row_slot_ = 0;
+  get_data_column_ = 0;
+  get_data_offset_ = 0;
+  get_data_target_type_ = 0;
+  wide_get_data_ = {};
+  if (exhausted || start >= result_rows_.size()) {
     rowset_exhausted_ = true;
+    if (cursor_type_ == SQL_CURSOR_STATIC) current_row_ = 0;
     row_positioned_ = false;
     if (fetched) store_application_value(fetched, static_cast<SQLULEN>(0));
     return SQL_NO_DATA;
   }
   const auto count = std::min(size, result_rows_.size() - start);
+  actual_fetched_rows_ = count;
+  rowset_exhausted_ = false;
   current_row_ = start + 1; // Current row is the FIRST row of the rowset.
   fetched_rowset_size_ = size;
   row_positioned_ = true;
@@ -3390,15 +3495,19 @@ SQLRETURN ODBCStatement::fetch() {
   if (!retrieve_data_) {
     if (status) for (std::size_t slot = 0; slot < count; ++slot)
       store_application_value(status + slot, static_cast<SQLUSMALLINT>(SQL_ROW_SUCCESS));
-    return SQL_SUCCESS;
+    if (overlap) add_attributed_diagnostic("01S06",
+        "Requested rowset overlapped the beginning of the result set", 0, 0);
+    return overlap ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS;
   }
   std::size_t errors = 0;
-  bool warning = false;
+  bool warning = overlap;
   for (std::size_t slot = 0; slot < count; ++slot) {
     const auto rc = fetch_bound_row(start + slot, slot, size, row_stride, binding_offset);
     if (rc == SQL_ERROR) ++errors;
     else if (rc == SQL_SUCCESS_WITH_INFO) warning = true;
   }
+  if (overlap) add_attributed_diagnostic("01S06",
+      "Requested rowset overlapped the beginning of the result set", 0, 0);
   return errors == count ? SQL_ERROR : errors != 0 || warning ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS;
 }
 
@@ -3595,6 +3704,53 @@ SQLRETURN ODBCStatement::fetch_bound_row(std::size_t row_index, std::size_t slot
   return fetch_result;
 }
 
+SQLRETURN ODBCStatement::set_pos(SQLSETPOSIROW row, SQLUSMALLINT operation,
+                                 SQLUSMALLINT lock) {
+  const bool known_operation = operation == SQL_POSITION || operation == SQL_REFRESH ||
+      operation == SQL_UPDATE || operation == SQL_DELETE || operation == SQL_ADD;
+  const bool known_lock = lock == SQL_LOCK_NO_CHANGE || lock == SQL_LOCK_EXCLUSIVE || lock == SQL_LOCK_UNLOCK;
+  if (!known_operation || !known_lock || operation == SQL_UPDATE || operation == SQL_DELETE) {
+    set_error("HY092", "Invalid operation or lock for a read-only cursor");
+    return SQL_ERROR;
+  }
+  if (operation != SQL_POSITION || lock != SQL_LOCK_NO_CHANGE) {
+    set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED, "Requested rowset operation or lock is not supported");
+    return SQL_ERROR;
+  }
+  if (!executed_) {
+    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "Statement has not been executed");
+    return SQL_ERROR;
+  }
+  if (column_info_.empty() || !row_positioned_ || current_row_ == 0 || actual_fetched_rows_ == 0) {
+    set_error(SQLSTATE_INVALID_CURSOR_STATE, "No fetched rowset is available");
+    return SQL_ERROR;
+  }
+  if (cursor_type_ != SQL_CURSOR_STATIC || row == 0) {
+    set_error("HY109", "A static cursor and a nonzero row are required");
+    return SQL_ERROR;
+  }
+  const auto ordinal = static_cast<std::uintmax_t>(row);
+  if (ordinal > actual_fetched_rows_) {
+    set_error("HY107", "Row is outside the actual fetched rowset");
+    return SQL_ERROR;
+  }
+  const auto slot = static_cast<std::size_t>(ordinal - 1);
+  const auto start = current_row_ - 1;
+  if (start >= result_rows_.size() || slot >= result_rows_.size() - start ||
+      static_cast<std::size_t>(static_cast<SQLULEN>(start + slot + 1)) != start + slot + 1) {
+    set_error(SQLSTATE_GENERAL_ERROR, "Invalid owning rowset position");
+    return SQL_ERROR;
+  }
+  // Only driver-owned count/index authorizes selection. No deferred ARD/IRD
+  // pointer, operation/status array or caller data is read or written here.
+  selected_row_slot_ = slot;
+  get_data_column_ = 0;
+  get_data_offset_ = 0;
+  get_data_target_type_ = 0;
+  wide_get_data_ = {};
+  return SQL_SUCCESS;
+}
+
 SQLRETURN ODBCStatement::more_results() {
   clear_current_result();
   if (pending_results_.empty()) return SQL_NO_DATA;
@@ -3646,14 +3802,32 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     return SQL_ERROR;
   }
   
-  if (fetched_rowset_size_ > 1) {
+  if (fetched_rowset_size_ > 1 && cursor_type_ != SQL_CURSOR_STATIC) {
     set_error("HY109", "SQLGetData is not supported on a forward-only multirow rowset");
     return SQL_ERROR;
   }
-  const auto& row = result_rows_[current_row_ - 1];
+  const auto rowset_start = current_row_ - 1;
+  if (selected_row_slot_ >= result_rows_.size() - rowset_start ||
+      selected_row_slot_ >= actual_fetched_rows_) {
+    set_error(SQLSTATE_INVALID_CURSOR_STATE, "No selected owning row is available");
+    return SQL_ERROR;
+  }
+  const auto row_index = rowset_start + selected_row_slot_;
+  const auto& row = result_rows_[row_index];
   if (col < 1 || col > row.size()) {
     set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid column number");
     return SQL_ERROR;
+  }
+
+  if (cursor_type_ == SQL_CURSOR_STATIC && fetched_rowset_size_ > 1) {
+    const auto application = descriptor(app_row_descriptor_);
+    const auto* binding = application->record(col - 1);
+    // The requested output record only: type/precision metadata alone does not
+    // bind a column, and ANY_COLUMN/ANY_ORDER never imply GD_BOUND.
+    if (binding && (binding->data_ptr || binding->indicator_ptr || binding->octet_length_ptr)) {
+      set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Block SQLGetData requires an unbound column");
+      return SQL_ERROR;
+    }
   }
 
   if (target_type != SQL_ARD_TYPE &&
@@ -3727,7 +3901,7 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
   }
   
   if (std::binary_search(result_cell_errors_.begin(), result_cell_errors_.end(),
-          rs::core::database::CellEncodingError{current_row_ - 1, static_cast<std::size_t>(col - 1)})) {
+          rs::core::database::CellEncodingError{row_index, static_cast<std::size_t>(col - 1)})) {
     set_error(SQLSTATE_INVALID_CHARACTER_VALUE, "Invalid backend result encoding");
     return SQL_ERROR;
   }
@@ -5673,7 +5847,10 @@ void ODBCStatement::apply_query_result(
   result_rows_ = std::move(result.rows);
   result_cell_errors_ = std::move(result.cell_errors);
   current_row_ = 0;
+  static_position_ = StaticPosition::BeforeStart;
   fetched_rowset_size_ = 1;
+  actual_fetched_rows_ = 0;
+  selected_row_slot_ = 0;
   rowset_exhausted_ = false;
   row_positioned_ = false;
   get_data_column_ = 0;
@@ -5806,7 +5983,10 @@ void ODBCStatement::clear_current_result() {
   get_data_target_type_ = 0;
   wide_get_data_ = {};
   current_row_ = 0;
+  static_position_ = StaticPosition::BeforeStart;
   fetched_rowset_size_ = 1;
+  actual_fetched_rows_ = 0;
+  selected_row_slot_ = 0;
   rowset_exhausted_ = false;
   row_positioned_ = false;
   affected_rows_ = 0;

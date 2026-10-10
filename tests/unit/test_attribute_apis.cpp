@@ -927,15 +927,17 @@ TEST_F(AttributeApisTest, ReportsForwardOnlyStatementDefaults) {
     EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
         statement_, expectation.attribute, &value, sizeof(value), nullptr));
     EXPECT_EQ(expectation.value, value);
+  }
+  // Verify all untouched defaults before explicit setters couple the cursor tuple.
+  for (const auto& expectation : expectations) {
     EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
         statement_, expectation.attribute,
         integer_value(expectation.value), 0));
   }
 
-  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
       statement_, SQL_ATTR_CURSOR_TYPE,
       integer_value(SQL_CURSOR_STATIC), 0));
-  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_CURSOR_TYPE, integer_value(99), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
@@ -946,17 +948,15 @@ TEST_F(AttributeApisTest, ReportsForwardOnlyStatementDefaults) {
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_CONCURRENCY, integer_value(99), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
-  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
       statement_, SQL_ATTR_CURSOR_SCROLLABLE,
       integer_value(SQL_SCROLLABLE), 0));
-  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_CURSOR_SCROLLABLE, integer_value(99), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
-  EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
+  EXPECT_EQ(SQL_SUCCESS, SQLSetStmtAttr(
       statement_, SQL_ATTR_CURSOR_SENSITIVITY,
       integer_value(SQL_INSENSITIVE), 0));
-  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_STMT, statement_));
   EXPECT_EQ(SQL_ERROR, SQLSetStmtAttr(
       statement_, SQL_ATTR_CURSOR_SENSITIVITY, integer_value(99), 0));
   EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_STMT, statement_));
@@ -1559,4 +1559,53 @@ TEST_F(AttributeApisTest, PositiveParameterStructStrideRemainsUnavailableWithout
   ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(statement_, SQL_ATTR_PARAM_BIND_TYPE, &stride, 0, nullptr));
   EXPECT_EQ(static_cast<SQLULEN>(SQL_PARAM_BIND_BY_COLUMN), stride);
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ATTR_PARAM_BIND_TYPE, integer_value(SQL_PARAM_BIND_BY_COLUMN), 0));
+}
+
+TEST_F(AttributeApisTest, StaticCursorExplicitCouplingAndRefusalsPreserveClosedTuple) {
+  const auto expect_tuple = [&](SQLULEN type) {
+    SQLULEN value = 99;
+    EXPECT_EQ(SQL_SUCCESS,SQLGetStmtAttr(statement_,SQL_ATTR_CURSOR_TYPE,&value,0,nullptr)); EXPECT_EQ(type,value);
+    EXPECT_EQ(SQL_SUCCESS,SQLGetStmtAttr(statement_,SQL_ATTR_CURSOR_SCROLLABLE,&value,0,nullptr));
+    EXPECT_EQ(type==SQL_CURSOR_STATIC?static_cast<SQLULEN>(SQL_SCROLLABLE):static_cast<SQLULEN>(SQL_NONSCROLLABLE),value);
+    EXPECT_EQ(SQL_SUCCESS,SQLGetStmtAttr(statement_,SQL_ATTR_CURSOR_SENSITIVITY,&value,0,nullptr));
+    EXPECT_EQ(type==SQL_CURSOR_STATIC?static_cast<SQLULEN>(SQL_INSENSITIVE):static_cast<SQLULEN>(SQL_UNSPECIFIED),value);
+    EXPECT_EQ(SQL_SUCCESS,SQLGetStmtAttr(statement_,SQL_ATTR_CONCURRENCY,&value,0,nullptr)); EXPECT_EQ(static_cast<SQLULEN>(SQL_CONCUR_READ_ONLY),value);
+  };
+  expect_tuple(SQL_CURSOR_FORWARD_ONLY); // Untouched defaults are not an explicit setter call.
+  const std::pair<SQLINTEGER,SQLULEN> static_choices[]{
+      {SQL_ATTR_CURSOR_TYPE,SQL_CURSOR_STATIC},{SQL_ATTR_CURSOR_SCROLLABLE,SQL_SCROLLABLE},
+      {SQL_ATTR_CURSOR_SENSITIVITY,SQL_INSENSITIVE},{SQL_ATTR_CONCURRENCY,SQL_CONCUR_READ_ONLY}};
+  for (const auto& choice : static_choices) {
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,choice.first,integer_value(choice.second),0));
+    expect_tuple(SQL_CURSOR_STATIC);
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_SENSITIVITY,integer_value(SQL_UNSPECIFIED),0));
+    expect_tuple(SQL_CURSOR_FORWARD_ONLY);
+  }
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_TYPE,integer_value(SQL_CURSOR_STATIC),0));
+  for (SQLULEN type : {static_cast<SQLULEN>(SQL_CURSOR_DYNAMIC),static_cast<SQLULEN>(SQL_CURSOR_KEYSET_DRIVEN)}) {
+    EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_TYPE,integer_value(type),0));
+    EXPECT_EQ("HYC00",diagnostic_state(SQL_HANDLE_STMT,statement_)); expect_tuple(SQL_CURSOR_STATIC);
+  }
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_SCROLLABLE,integer_value(SQL_NONSCROLLABLE),0));
+  expect_tuple(SQL_CURSOR_FORWARD_ONLY);
+}
+
+TEST_F(AttributeApisTest, StaticPositionExportInventoriesAndMasksRemainReadOnly) {
+  ASSERT_NO_FATAL_FAILURE(connect_metadata_only());
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, connection_, &statement_));
+  SQLUSMALLINT supported=SQL_FALSE;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(connection_,SQL_API_SQLSETPOS,&supported)); EXPECT_EQ(SQL_TRUE,supported);
+  SQLUSMALLINT odbc2[100]{};
+  ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(connection_,SQL_API_ALL_FUNCTIONS,odbc2)); EXPECT_EQ(SQL_TRUE,odbc2[SQL_API_SQLSETPOS]);
+  SQLUSMALLINT odbc3[SQL_API_ODBC3_ALL_FUNCTIONS_SIZE]{};
+  ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(connection_,SQL_API_ODBC3_ALL_FUNCTIONS,odbc3)); EXPECT_TRUE(SQL_FUNC_EXISTS(odbc3,SQL_API_SQLSETPOS));
+  SQLUINTEGER value=99;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_GETDATA_EXTENSIONS,&value,sizeof(value),nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_GD_ANY_COLUMN|SQL_GD_ANY_ORDER|SQL_GD_BLOCK),value); EXPECT_EQ(0u,value&SQL_GD_BOUND);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_POS_OPERATIONS,&value,sizeof(value),nullptr)); EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_POS_POSITION),value);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_STATIC_CURSOR_ATTRIBUTES1,&value,sizeof(value),nullptr)); EXPECT_NE(0u,value&SQL_CA1_POS_POSITION);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES1,&value,sizeof(value),nullptr)); EXPECT_EQ(0u,value&SQL_CA1_POS_POSITION);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_POSITIONED_STATEMENTS,&value,sizeof(value),nullptr)); EXPECT_EQ(0u,value);
+  EXPECT_EQ(SQL_INVALID_HANDLE,SQLSetPos(connection_,1,SQL_POSITION,SQL_LOCK_NO_CHANGE));
+  EXPECT_EQ(SQL_ERROR,SQLSetPos(statement_,1,SQL_POSITION,SQL_LOCK_NO_CHANGE)); EXPECT_EQ("HY010",diagnostic_state(SQL_HANDLE_STMT,statement_));
 }

@@ -66,6 +66,7 @@ SQLSetDescField
 SQLSetDescFieldW
 SQLSetDescRec
 SQLSetEnvAttr
+SQLSetPos
 SQLSetStmtAttr
 SQLSetStmtAttrW
 SQLSpecialColumns

@@ -511,6 +511,7 @@ namespace {
       case SQL_API_SQLSETDESCREC:
       case SQL_API_SQLSETENVATTR:
       case SQL_API_SQLSETSTMTATTR:
+      case SQL_API_SQLSETPOS:
       case SQL_API_SQLSPECIALCOLUMNS:
       case SQL_API_SQLSTATISTICS:
       case SQL_API_SQLTABLES:
@@ -548,7 +549,6 @@ namespace {
       case SQL_API_SQLSETCONNECTOPTION:
       case SQL_API_SQLSETCURSORNAME:
       case SQL_API_SQLSETPARAM:
-      case SQL_API_SQLSETPOS:
       case SQL_API_SQLSETSTMTOPTION:
       case SQL_API_SQLTABLEPRIVILEGES:
       case SQL_API_SQLTRANSACT:
@@ -1126,27 +1126,17 @@ static SQLRETURN SQLFetch_impl(SQLHSTMT statement_handle) {
 }
 
 static SQLRETURN SQLFetchScroll_impl(SQLHSTMT statement_handle,
-                         SQLSMALLINT fetch_orientation, SQLLEN) {
+                         SQLSMALLINT fetch_orientation, SQLLEN offset) {
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
-  if (fetch_orientation == SQL_FETCH_NEXT) return stmt->fetch();
+  return stmt->fetch_scroll(fetch_orientation, offset);
+}
 
-  switch (fetch_orientation) {
-    case SQL_FETCH_PRIOR:
-    case SQL_FETCH_FIRST:
-    case SQL_FETCH_LAST:
-    case SQL_FETCH_ABSOLUTE:
-    case SQL_FETCH_RELATIVE:
-    case SQL_FETCH_BOOKMARK:
-      stmt->set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
-                      "Scrollable fetch orientation is not supported");
-      break;
-    default:
-      stmt->set_error(SQLSTATE_FETCH_TYPE_OUT_OF_RANGE,
-                      "Invalid fetch orientation");
-      break;
-  }
-  return SQL_ERROR;
+static SQLRETURN SQLSetPos_impl(SQLHSTMT statement_handle, SQLSETPOSIROW row,
+                               SQLUSMALLINT operation, SQLUSMALLINT lock) {
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  return stmt->set_pos(row, operation, lock);
 }
 
 static SQLRETURN SQLMoreResults_impl(SQLHSTMT statement_handle) {
@@ -1654,10 +1644,10 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_ODBC_SQL_CONFORMANCE:
       return write_usmallint(static_cast<SQLUSMALLINT>(backend.sql92_entry ? SQL_OSC_CORE : SQL_OSC_MINIMUM));
     case SQL_SCROLL_OPTIONS:
-      return write_uinteger(static_cast<SQLUINTEGER>(SQL_SO_FORWARD_ONLY));
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_SO_FORWARD_ONLY | SQL_SO_STATIC));
     case SQL_GETDATA_EXTENSIONS:
       return write_uinteger(static_cast<SQLUINTEGER>(
-          SQL_GD_ANY_COLUMN | SQL_GD_ANY_ORDER));
+          SQL_GD_ANY_COLUMN | SQL_GD_ANY_ORDER | SQL_GD_BLOCK));
     case SQL_CURSOR_SENSITIVITY:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_UNSPECIFIED));
     case SQL_ASYNC_MODE:
@@ -1727,7 +1717,6 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_MAX_ASYNC_CONCURRENT_STATEMENTS:
     case SQL_NUMERIC_FUNCTIONS:
     case SQL_OJ_CAPABILITIES:
-    case SQL_POS_OPERATIONS:
     case SQL_POSITIONED_STATEMENTS:
     case SQL_SQL92_DATETIME_FUNCTIONS:
     case SQL_SQL92_FOREIGN_KEY_DELETE_RULE:
@@ -1740,8 +1729,6 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_SQL92_ROW_VALUE_CONSTRUCTOR:
     case SQL_SQL92_STRING_FUNCTIONS:
     case SQL_SQL92_VALUE_EXPRESSIONS:
-    case SQL_STATIC_CURSOR_ATTRIBUTES1:
-    case SQL_STATIC_CURSOR_ATTRIBUTES2:
     case SQL_STATIC_SENSITIVITY:
     case SQL_STRING_FUNCTIONS:
     case SQL_SUBQUERIES:
@@ -1754,8 +1741,15 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
       return write_uinteger(static_cast<SQLUINTEGER>(
           (backend.create_index ? SQL_DI_CREATE_INDEX : 0) |
           (backend.drop_index ? SQL_DI_DROP_INDEX : 0)));
+    case SQL_POS_OPERATIONS:
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_POS_POSITION));
+    case SQL_STATIC_CURSOR_ATTRIBUTES1:
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_CA1_NEXT | SQL_CA1_ABSOLUTE | SQL_CA1_RELATIVE | SQL_CA1_POS_POSITION));
+    case SQL_STATIC_CURSOR_ATTRIBUTES2:
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_CA2_READ_ONLY_CONCURRENCY));
     case SQL_FETCH_DIRECTION:
-      return write_uinteger(static_cast<SQLUINTEGER>(SQL_FD_FETCH_NEXT));
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_FD_FETCH_NEXT | SQL_FD_FETCH_FIRST |
+          SQL_FD_FETCH_LAST | SQL_FD_FETCH_PREV | SQL_FD_FETCH_ABSOLUTE | SQL_FD_FETCH_RELATIVE));
     case SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES1:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_CA1_NEXT));
     case SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES2:
@@ -3161,6 +3155,7 @@ ODBCPP_API_3(SQLExecDirect, a1, SQLHSTMT, SQLCHAR*, SQLINTEGER)
 ODBCPP_API_3(SQLExecDirectW, a1, SQLHSTMT, SQLWCHAR*, SQLINTEGER)
 ODBCPP_API_1(SQLFetch, a1, SQLHSTMT)
 ODBCPP_API_3(SQLFetchScroll, a1, SQLHSTMT, SQLSMALLINT, SQLLEN)
+ODBCPP_API_4(SQLSetPos, a1, SQLHSTMT, SQLSETPOSIROW, SQLUSMALLINT, SQLUSMALLINT)
 ODBCPP_API_1(SQLMoreResults, a1, SQLHSTMT)
 ODBCPP_API_6(SQLGetData, a1, SQLHSTMT, SQLUSMALLINT, SQLSMALLINT, void*,
              SQLLEN, SQLLEN*)

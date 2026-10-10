@@ -59,6 +59,7 @@ inline constexpr std::array advertised_functions{
     FunctionExport{"SQLSetDescField", SQL_API_SQLSETDESCFIELD},
     FunctionExport{"SQLSetDescRec", SQL_API_SQLSETDESCREC},
     FunctionExport{"SQLSetEnvAttr", SQL_API_SQLSETENVATTR},
+    FunctionExport{"SQLSetPos", SQL_API_SQLSETPOS},
     FunctionExport{"SQLSetStmtAttr", SQL_API_SQLSETSTMTATTR},
     FunctionExport{"SQLSpecialColumns", SQL_API_SQLSPECIALCOLUMNS},
     FunctionExport{"SQLStatistics", SQL_API_SQLSTATISTICS},

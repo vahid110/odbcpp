@@ -479,6 +479,8 @@ public:
       std::optional<rs::util::Deadline> original_deadline = std::nullopt);
   SQLRETURN cancel() noexcept;
   SQLRETURN fetch();
+  SQLRETURN fetch_scroll(SQLSMALLINT orientation, SQLLEN offset);
+  SQLRETURN set_pos(SQLSETPOSIROW row, SQLUSMALLINT operation, SQLUSMALLINT lock);
   SQLRETURN more_results();
   SQLRETURN get_data(SQLUSMALLINT col, SQLSMALLINT target_type, 
                      void* buffer, SQLLEN buffer_length, SQLLEN* indicator);
@@ -557,6 +559,10 @@ public:
   size_t get_column_count() const { return result_rows_.empty() ? 0 : result_rows_[0].size(); }
 
 private:
+  SQLRETURN fetch_impl(SQLSMALLINT orientation, SQLLEN offset);
+  enum class StaticPosition { BeforeStart, OnRowset, AfterEnd };
+  StaticPosition static_position_ = StaticPosition::BeforeStart;
+  SQLULEN cursor_type_ = SQL_CURSOR_FORWARD_ONLY;
   SQLRETURN fetch_bound_row(std::size_t row_index, std::size_t slot,
                             std::size_t rowset_size, std::size_t row_stride,
                             std::uintptr_t binding_offset);
@@ -578,6 +584,8 @@ private:
     bool valid{false};
   } wide_get_data_;
   std::size_t fetched_rowset_size_ = 1;
+  std::size_t actual_fetched_rows_ = 0;
+  std::size_t selected_row_slot_ = 0;
   bool rowset_exhausted_ = false;
   std::size_t get_data_offset_ = 0;
   SQLUSMALLINT get_data_column_ = 0;
