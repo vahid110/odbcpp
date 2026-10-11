@@ -187,6 +187,80 @@ static SQLRETURN observe_recovery_execute(SQLHSTMT statement) {
 #endif
 }
 
+// Fixed test-only snapshots. No reference is retained across an original call.
+#if defined(_WIN32) && defined(_MSC_VER)
+struct RegistryVptrProbe {
+  void* vtable{};
+  rs::odbc::HandleType type{};
+};
+// Exactly one opaque vptr word and the existing nonvirtual stored type accessor.
+// No destructible automatic C++ object in this narrow MSVC SEH probe.
+static bool read_registry_vptr(rs::odbc::ODBCHandle* object,RegistryVptrProbe* probe) {
+  __try {
+    std::memcpy(&probe->vtable,static_cast<const void*>(object),sizeof(probe->vtable));
+    probe->type=object->get_type();
+    return true;
+  } __except(GetExceptionCode()==EXCEPTION_ACCESS_VIOLATION ?
+             EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+    return false;
+  }
+}
+static const char* registry_type_label(rs::odbc::HandleType type) noexcept {
+  switch(type) {
+    case rs::odbc::HandleType::Environment:return "Environment";
+    case rs::odbc::HandleType::Connection:return "Connection";
+    case rs::odbc::HandleType::Statement:return "Statement";
+    case rs::odbc::HandleType::Descriptor:return "Descriptor";
+    default:return "unknown";
+  }
+}
+static void emit_registry_snapshot(const char* stage,SQLHSTMT original) noexcept {
+  const DWORD entry_last_error=GetLastError();
+  try {
+    // Registry owns the original object; this temporary copy ends in this scope.
+    const auto object=rs::odbc::HandleRegistry::instance().get_handle(original);
+    if (!object) {
+      std::fprintf(stderr,"[registry-vptr-snapshot] %s present=0 same=0 type=unknown vtable=unknown\n",stage);
+    } else {
+      RegistryVptrProbe probe{};
+      const bool same=static_cast<const void*>(object.get())==static_cast<const void*>(original);
+      if (!read_registry_vptr(object.get(),&probe)) {
+        std::fprintf(stderr,"[registry-vptr-snapshot] %s present=1 same=%u type=unreadable vtable=unreadable\n",stage,same?1u:0u);
+      } else {
+        HMODULE module{};bool allowed=false;
+        if (probe.vtable && GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                             reinterpret_cast<LPCWSTR>(probe.vtable),&module)) {
+          for (unsigned i=0;i<7;++i) {
+            const HMODULE known=GetModuleHandleW(recovery_execute_fault::module_names[i]);
+            if (known && known==module) {
+              const auto offset=reinterpret_cast<std::uintptr_t>(probe.vtable)-
+                                reinterpret_cast<std::uintptr_t>(module);
+              std::fprintf(stderr,"[registry-vptr-snapshot] %s present=1 same=%u type=%s vtable=%s+0x%llx\n",
+                           stage,same?1u:0u,registry_type_label(probe.type),
+                           recovery_execute_fault::module_labels[i],static_cast<unsigned long long>(offset));
+              allowed=true;break;
+            }
+          }
+        }
+        if (!allowed) {
+          std::fprintf(stderr,"[registry-vptr-snapshot] %s present=1 same=%u type=%s vtable=unknown\n",
+                       stage,same?1u:0u,registry_type_label(probe.type));
+        }
+      }
+    }
+    // The registry temporary is destroyed before exiting the try scope below.
+  } catch (...) {
+    std::fprintf(stderr,"[registry-vptr-snapshot] %s registry=unreadable type=unknown vtable=unknown\n",stage);
+  }
+  std::fflush(stderr);
+  // Includes registry temporary release, probe, module lookup and logging.
+  SetLastError(entry_last_error);
+}
+#else
+static void emit_registry_snapshot(const char*,SQLHSTMT) noexcept {}
+#endif
+
 template<class T> concept ExposesRawPhysicalSession = requires(T& connection) { connection.get_db_connection(); };
 static_assert(!ExposesRawPhysicalSession<rs::odbc::ODBCConnection>);
 
@@ -7232,12 +7306,14 @@ TEST_F(RetrieveDataTest, PreparedMoreResultsPersistenceStructuralFailureAndSibli
   const auto valid_prepared_result=*seen->date_result;
   checkpoint("after baseline line 7026");
   // Owning date_result bypasses the generic rows() corruption switches.
+  emit_registry_snapshot("before-malformed-row",stmt);
   checkpoint("before baseline line 7028");
   seen->date_result->rows[0].clear();
   checkpoint("after baseline line 7028");
   checkpoint("before baseline line 7029");
   EXPECT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ("HY000",state());
   checkpoint("after baseline line 7029");
+  emit_registry_snapshot("after-malformed-row-error",stmt);
   checkpoint("before baseline line 7030");
   EXPECT_EQ(SQL_ERROR,SQLFetch(stmt));EXPECT_EQ("HY010",state());
   checkpoint("after baseline line 7030");
@@ -7251,11 +7327,14 @@ TEST_F(RetrieveDataTest, PreparedMoreResultsPersistenceStructuralFailureAndSibli
   checkpoint("before baseline line 7034");
   EXPECT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ("HY000",state());
   checkpoint("after baseline line 7034");
+  emit_registry_snapshot("after-invalid-metadata-execute",stmt);
   checkpoint("before baseline line 7035");
   SQLSMALLINT count=99;EXPECT_EQ(SQL_ERROR,SQLNumResultCols(stmt,&count));EXPECT_EQ(99,count);
   checkpoint("after baseline line 7035");
+  emit_registry_snapshot("after-failed-lazy-numcols",stmt);
+  emit_registry_snapshot("before-valid-result-restore",stmt);
   checkpoint("before baseline line 7036");
-  checkpoint("before recovery: restore valid owning result");*seen->date_result=valid_prepared_result;checkpoint("after recovery: restore valid owning result");checkpoint("before recovery: execute restored result");ASSERT_EQ(SQL_SUCCESS,observe_recovery_execute(stmt));checkpoint("after recovery: execute restored result");checkpoint("before recovery: fetch restored result");ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));checkpoint("after recovery: fetch restored result");checkpoint("before recovery: check restored output");EXPECT_EQ(9,rows[0].integer);checkpoint("after recovery: check restored output");
+  checkpoint("before recovery: restore valid owning result");*seen->date_result=valid_prepared_result;checkpoint("after recovery: restore valid owning result");emit_registry_snapshot("after-restore-before-recovery-execute",stmt);checkpoint("before recovery: execute restored result");ASSERT_EQ(SQL_SUCCESS,observe_recovery_execute(stmt));checkpoint("after recovery: execute restored result");checkpoint("before recovery: fetch restored result");ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));checkpoint("after recovery: fetch restored result");checkpoint("before recovery: check restored output");EXPECT_EQ(9,rows[0].integer);checkpoint("after recovery: check restored output");
   checkpoint("after baseline line 7036");
   checkpoint("before baseline line 7037");
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));EXPECT_EQ(1,sibling_output);EXPECT_EQ(sizeof(SQLINTEGER),sibling_length);
