@@ -191,3 +191,86 @@ TEST(CApiGuardTest, AllocationFailureReportsMemoryStateAndReleasesHandleLock) {
     throw std::bad_alloc{};
   }));
 }
+
+
+TEST(CApiGuardTest, NestedMetadataExceptionPreservesLiveStatementAndOuterCallRecovery) {
+  using rs::odbc::detail::ApiCallScope;
+  using rs::odbc::detail::invoke_c_api;
+  SQLHENV environment = SQL_NULL_HENV;
+  SQLHDBC connection = SQL_NULL_HDBC;
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetEnvAttr(environment, SQL_ATTR_ODBC_VERSION,
+                                      reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_DBC, environment, &connection));
+  const auto statement = odbcpp::test::make_statement(connection);
+  ASSERT_NE(nullptr, statement);
+  const auto expect_outermost = [] {
+    ApiCallScope scope;
+    EXPECT_TRUE(scope.outermost());
+  };
+  const auto metadata_failure = [&]() -> SQLRETURN {
+    // Keep a real cast return and owning local live across the thrown failure.
+    const auto owning = rs::odbc::HandleRegistry::instance()
+        .get_handle_as<rs::odbc::ODBCStatement>(statement);
+    EXPECT_NE(nullptr, owning);
+    ApiCallScope nested_scope;
+    EXPECT_FALSE(nested_scope.outermost());
+    throw std::invalid_argument("fixed malformed metadata fixture");
+  };
+  expect_outermost();
+  EXPECT_EQ(SQL_SUCCESS, invoke_c_api(statement, [&]() -> SQLRETURN {
+    EXPECT_EQ(SQL_ERROR, invoke_c_api(statement, metadata_failure));
+    ApiCallScope still_nested;
+    EXPECT_FALSE(still_nested.outermost());
+    return SQL_SUCCESS;
+  }));
+  expect_outermost();
+  // Exercise the outer caught-error continuation too, then use the same handle
+  // through an ordinary public API that performs its own RTTI handle lookup.
+  EXPECT_EQ(SQL_ERROR, invoke_c_api(statement, metadata_failure));
+  expect_outermost();
+  SQLCHAR state[6]{};
+  SQLCHAR message[128]{};
+  EXPECT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, statement, 1, state,
+                                      nullptr, message, sizeof(message), nullptr));
+  EXPECT_STREQ("HY000", reinterpret_cast<const char*>(state));
+  SQLULEN retrieve_data = 99;
+  EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(statement, SQL_ATTR_RETRIEVE_DATA,
+                                       &retrieve_data, 0, nullptr));
+  EXPECT_EQ(static_cast<SQLULEN>(SQL_RD_ON), retrieve_data);
+  EXPECT_EQ(SQL_SUCCESS, invoke_c_api(statement, [] { return SQL_SUCCESS; }));
+  expect_outermost();
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DBC, connection));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}
+
+TEST(CApiGuardTest, NestedAllocationErrorUnwindsBeforeIndependentOuterRecovery) {
+  using rs::odbc::detail::ApiCallScope;
+  using rs::odbc::detail::invoke_c_api;
+  SQLHENV environment = SQL_NULL_HENV;
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment));
+  EXPECT_EQ(SQL_ERROR, invoke_c_api(environment, [&]() -> SQLRETURN {
+    EXPECT_EQ(SQL_ERROR, invoke_c_api(environment, []() -> SQLRETURN {
+      throw std::bad_alloc{};
+    }));
+    ApiCallScope nested_scope;
+    EXPECT_FALSE(nested_scope.outermost());
+    throw std::bad_alloc{};
+  }));
+  {
+    ApiCallScope recovered_scope;
+    EXPECT_TRUE(recovered_scope.outermost());
+  }
+  SQLCHAR state[6]{};
+  SQLCHAR message[128]{};
+  EXPECT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_ENV, environment, 1, state,
+                                      nullptr, message, sizeof(message), nullptr));
+  EXPECT_STREQ("HY001", reinterpret_cast<const char*>(state));
+  EXPECT_EQ(SQL_SUCCESS, invoke_c_api(environment, [] { return SQL_SUCCESS; }));
+  {
+    ApiCallScope recovered_scope;
+    EXPECT_TRUE(recovered_scope.outermost());
+  }
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_ENV, environment));
+}

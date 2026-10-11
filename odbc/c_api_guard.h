@@ -16,6 +16,10 @@ inline thread_local unsigned int api_call_depth = 0;
 class ApiCallScope {
 public:
   ApiCallScope() noexcept : outermost_(api_call_depth++ == 0) {}
+  // Resolve the TLS decrement in its own body on MSVC caught-error paths.
+#if defined(_MSC_VER)
+  __declspec(noinline)
+#endif
   ~ApiCallScope() { --api_call_depth; }
 
   bool outermost() const noexcept { return outermost_; }
