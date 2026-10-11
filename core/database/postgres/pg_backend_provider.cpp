@@ -82,6 +82,9 @@ PgBackendProvider::resolve_connection_options(ConnectionOptions options) const {
   if (catalog_profile_ == PgCatalogProfile::Redshift)
     settings.character_metadata = {options.varchar_threshold.value_or(255),
                                    options.long_varchar_size.value_or(65535)};
+  if (options.boolean_as_character && catalog_profile_ != PgCatalogProfile::Redshift)
+    return {rs::util::DbErrorCode::UnsupportedFeature, "BoolsAsChar requires Redshift"};
+  settings.character_metadata.boolean_as_character = options.boolean_as_character;
   if (options.read_only && catalog_profile_ != PgCatalogProfile::Redshift)
     return {rs::util::DbErrorCode::UnsupportedFeature, "ReadOnly requires Redshift"};
   if (options.redshift_catalog_mode && catalog_profile_ != PgCatalogProfile::Redshift)

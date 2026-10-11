@@ -8045,3 +8045,134 @@ TEST_F(RedshiftVarcharSizingRealTest, ReportedMetadataPreservesValuesParametersN
   EXPECT_EQ(value, owning_snapshot);
   ASSERT_NO_FATAL_FAILURE(release_keepalive());
 }
+
+class RedshiftBooleanCharacterRealTest : public RedshiftKeepaliveOptionsRealTest {
+ protected:
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_BOOLEAN_CHARACTER_ADMISSION", "boolean_character_happy_v1");
+  }
+  std::string boolean_input(bool enabled, bool invalid = false) {
+    auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    for (const char* key : {"BOOLSASCHAR", "MAXVARCHARSIZE", "MAXLONGVARCHARSIZE", "LT", "LOGINTIMEOUT"}) options.erase(key);
+    options["BOOLSASCHAR"] = invalid ? "invalid-secret" : enabled ? "TRUE" : "FALSE";
+    options["MAXVARCHARSIZE"] = "1"; options["MAXLONGVARCHARSIZE"] = "17";
+    options["LOGINTIMEOUT"] = "5";
+    std::string text;
+    for (const auto& [key, item] : options) {
+      text += key; text += "={";
+      for (char ch : item) { text.push_back(ch); if (ch == '}') text.push_back('}'); }
+      text += "};";
+    }
+    EXPECT_TRUE(options == rs::odbc::ConnectionString::parse(text)) << "Boolean input preservation failed";
+    return text;
+  }
+  void refuse_boolean() {
+    ASSERT_TRUE(cap(window_end_, false));
+    auto input = rs::odbc::utf8_to_wide(boolean_input(true, true)); ASSERT_TRUE(input); input->push_back(0);
+    SQLWCHAR output[3]{static_cast<SQLWCHAR>('x'), 0, static_cast<SQLWCHAR>('y')}; SQLSMALLINT length = 66;
+    const auto rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, output, 3, &length, SQL_DRIVER_NOPROMPT);
+    connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO;
+    if (rc != SQL_ERROR) unknown_completion_ = true;
+    ASSERT_EQ(SQL_ERROR, rc); EXPECT_EQ(66, length);
+    EXPECT_EQ(static_cast<SQLWCHAR>('x'), output[0]); EXPECT_EQ(static_cast<SQLWCHAR>('y'), output[2]);
+    SQLCHAR state[6]{}, message[128]{};
+    ASSERT_TRUE(observed(SQLGetDiagRec(SQL_HANDLE_DBC, hdbc_, 1, state, nullptr, message, sizeof(message), nullptr)));
+    if (std::string_view(reinterpret_cast<char*>(state)) != "HY000" ||
+        std::string_view(reinterpret_cast<char*>(message)) != "Invalid BoolsAsChar value") unknown_completion_ = true;
+    ASSERT_STREQ("HY000", reinterpret_cast<char*>(state));
+    ASSERT_STREQ("Invalid BoolsAsChar value", reinterpret_cast<char*>(message));
+  }
+  void open_boolean(bool enabled, bool wide) {
+    ASSERT_TRUE(cap(window_end_, false));
+    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(window_end_ - rs::util::Clock::now()).count(), 5);
+    auto text = boolean_input(enabled); SQLRETURN rc;
+    if (wide) {
+      auto input = rs::odbc::utf8_to_wide(text); ASSERT_TRUE(input); input->push_back(0);
+      rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    } else rc = SQLDriverConnect(hdbc_, nullptr, reinterpret_cast<SQLCHAR*>(text.data()), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO; ASSERT_TRUE(observed(rc));
+    ASSERT_TRUE(observed(SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt_)));
+    ASSERT_TRUE(cap(window_end_, true));
+  }
+  void boolean_descriptor(SQLHSTMT statement, SQLSMALLINT expected) {
+    for (const bool wide : {false, true}) {
+      ASSERT_TRUE(cap(window_end_, true));
+      SQLSMALLINT type = 99; struct { SQLULEN size = 99; SQLULEN guard = 77; } dimension;
+      const auto rc = wide ? SQLDescribeColW(statement, 1, nullptr, 0, nullptr, &type, &dimension.size, nullptr, nullptr)
+          : SQLDescribeCol(statement, 1, nullptr, 0, nullptr, &type, &dimension.size, nullptr, nullptr);
+      ASSERT_TRUE(observed(rc)); EXPECT_EQ(expected, type); EXPECT_EQ(1u, dimension.size); EXPECT_EQ(77u, dimension.guard);
+    }
+    ASSERT_TRUE(cap(window_end_, true));
+    SQLCHAR name[32]{};
+    ASSERT_TRUE(observed(SQLColAttribute(statement, 1, SQL_DESC_TYPE_NAME, name, sizeof(name), nullptr, nullptr)));
+    EXPECT_STREQ("boolean", reinterpret_cast<char*>(name));
+  }
+  void boolean_row(SQLHSTMT statement, int expected, bool character_default) {
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(statement)));
+    SQLCHAR text[3]{'x', 'y', 'z'}; SQLLEN length = 66;
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLGetData(statement, 1, SQL_C_DEFAULT, text, sizeof(text) - 1, &length)));
+    if (expected < 0) { EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ('x', text[0]); }
+    else if (character_default) { EXPECT_EQ(static_cast<SQLCHAR>('0' + expected), text[0]); EXPECT_EQ(0, text[1]); EXPECT_EQ(1, length); }
+    else { EXPECT_EQ(static_cast<SQLCHAR>(expected), text[0]); EXPECT_EQ(1, length); }
+    EXPECT_EQ('z', text[2]);
+    SQLCHAR bit = 88;
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLGetData(statement, 2, SQL_C_BIT, &bit, sizeof(bit), &length)));
+    if (expected < 0) { EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(88, bit); }
+    else { EXPECT_EQ(static_cast<SQLCHAR>(expected), bit); EXPECT_EQ(1, length); }
+    SQLWCHAR output[3]{static_cast<SQLWCHAR>('x'), static_cast<SQLWCHAR>('y'), static_cast<SQLWCHAR>('z')};
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLGetData(statement, 3, SQL_C_WCHAR, output, sizeof(output) - sizeof(SQLWCHAR), &length)));
+    if (expected < 0) { EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(static_cast<SQLWCHAR>('x'), output[0]); }
+    else { EXPECT_EQ(static_cast<SQLWCHAR>('0' + expected), output[0]); EXPECT_EQ(0, output[1]); EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLWCHAR)), length); }
+    EXPECT_EQ(static_cast<SQLWCHAR>('z'), output[2]);
+  }
+};
+
+// Future admission upper bound: two verified TLS logins, seven SQL exchanges
+// (one Prepare, one DescribeParam, five executions), 40s aggregate/per-op5.
+// No fixture, DDL, observer query, delay, fault or cleanup SQL is authorized here.
+TEST_F(RedshiftBooleanCharacterRealTest, CanonicalValuesNativeParametersNullRefillSiblingAndDisabledReconnect) {
+  ASSERT_NO_FATAL_FAILURE(refuse_boolean());
+  ASSERT_NO_FATAL_FAILURE(open_boolean(true, false));
+  ASSERT_TRUE(observed(SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &sibling_)));
+  SQLCHAR direct[] = "SELECT flag, flag, flag FROM (SELECT TRUE AS flag, 1 AS ordinal UNION ALL SELECT FALSE, 2 UNION ALL SELECT CAST(NULL AS BOOLEAN), 3) AS flags ORDER BY ordinal";
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  ASSERT_TRUE(known_sql(SQLExecDirect(sibling_, direct, SQL_NTS)));
+  ASSERT_NO_FATAL_FAILURE(boolean_descriptor(sibling_, SQL_VARCHAR));
+  auto query = rs::odbc::utf8_to_wide("SELECT flag, flag, flag FROM (SELECT CAST(? AS BOOLEAN) AS flag) AS flags"); ASSERT_TRUE(query); query->push_back(0);
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, query->data(), SQL_NTS)));
+  SQLCHAR bit = 1; SQLLEN indicator = 1;
+  ASSERT_TRUE(observed(SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_BIT, SQL_BIT, 1, 0, &bit, sizeof(bit), &indicator)));
+  SQLSMALLINT parameter_type = 99; struct { SQLULEN size = 99; SQLULEN guard = 37; } dimensions;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(known_sql(SQLDescribeParam(hstmt_, 1, &parameter_type, &dimensions.size, nullptr, nullptr)));
+  EXPECT_EQ(SQL_BIT, parameter_type); EXPECT_EQ(1u, dimensions.size); EXPECT_EQ(37u, dimensions.guard);
+  for (int expected : {1, 0, -1}) {
+    bit = expected == 1 ? 1 : 0; indicator = expected < 0 ? SQL_NULL_DATA : 1;
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLExecute(hstmt_)));
+    ASSERT_NO_FATAL_FAILURE(boolean_descriptor(hstmt_, SQL_VARCHAR));
+    ASSERT_NO_FATAL_FAILURE(boolean_row(hstmt_, expected, true));
+    if (expected >= 0) { ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_NO_DATA)); }
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLCloseCursor(hstmt_)));
+  }
+  for (int expected : {1, 0, -1}) {
+    ASSERT_NO_FATAL_FAILURE(cap_sibling());
+    ASSERT_NO_FATAL_FAILURE(boolean_row(sibling_, expected, true));
+  }
+  ASSERT_NO_FATAL_FAILURE(cap_sibling()); ASSERT_TRUE(observed(SQLFetch(sibling_), SQL_NO_DATA));
+  ASSERT_NO_FATAL_FAILURE(cap_sibling()); ASSERT_TRUE(observed(SQLCloseCursor(sibling_)));
+  ASSERT_NO_FATAL_FAILURE(release_keepalive());
+  ASSERT_NO_FATAL_FAILURE(open_boolean(false, true));
+  auto wide = rs::odbc::utf8_to_wide("SELECT TRUE AS flag, FALSE AS other_flag, CAST(NULL AS BOOLEAN) AS null_flag"); ASSERT_TRUE(wide); wide->push_back(0);
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLExecDirectW(hstmt_, wide->data(), SQL_NTS)));
+  ASSERT_NO_FATAL_FAILURE(boolean_descriptor(hstmt_, SQL_BIT));
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_)));
+  SQLCHAR value = 88; SQLLEN length = 66;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 1, SQL_C_DEFAULT, &value, sizeof(value), &length)));
+  EXPECT_EQ(1, value); EXPECT_EQ(1, length);
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLCloseCursor(hstmt_)));
+  ASSERT_NO_FATAL_FAILURE(release_keepalive());
+}

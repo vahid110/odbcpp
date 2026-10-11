@@ -937,7 +937,10 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
         for (std::size_t column = 0; column < item.rows[row].size() && column < item.columns.size(); ++column) {
           auto& cell = item.rows[row][column];
           if (!cell) continue;
-          const auto type = item.columns[column].normalized_type->type;
+          // Presentation retains logical identity: Boolean cells still pass
+          // through the backend codec even when their reported family is text.
+          const auto& metadata = *item.columns[column].normalized_type;
+          const auto type = metadata.declared_type.value_or(metadata.type);
           if (type == ScalarType::Char || type == ScalarType::VarChar ||
               type == ScalarType::LongVarChar) {
             // Validate in place: valid text keeps its exact bytes, including NULs.

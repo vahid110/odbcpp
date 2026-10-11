@@ -269,6 +269,18 @@ TEST_F(UnixIniDiscoveryTest, ResourceLimitsFollowDriverDsnAndConnectionPrecedenc
   EXPECT_EQ(options.result_limits.max_cells, 90u);
   EXPECT_EQ(options.input_limits.max_sql_bytes, 512u);
 }
+TEST_F(UnixIniDiscoveryTest, BooleanCharacterDriverDsnStringPrecedenceRetainsExplicitFalseAndEmpty) {
+  write(root_ / "drivers.ini", "[Boolean Driver]\nBoolsAsChar=invalid\n");
+  write(root_ / "data.ini", "[BooleanFixture]\nDriver=Boolean Driver\nBoolsAsChar=1\n");
+  ASSERT_EQ(0, setenv("ODBCSYSINI", root_.c_str(), 1));
+  ASSERT_EQ(0, setenv("ODBCINSTINI", "drivers.ini", 1));
+  ASSERT_EQ(0, setenv("ODBCINI", (root_ / "data.ini").c_str(), 1));
+  EXPECT_EQ("invalid", ConnectionString::resolve("DRIVER=Boolean Driver", "").effective_parameters.at("BOOLSASCHAR"));
+  EXPECT_EQ("1", ConnectionString::resolve("DSN=BooleanFixture", "").effective_parameters.at("BOOLSASCHAR"));
+  EXPECT_EQ("FALSE", ConnectionString::resolve("DSN=BooleanFixture;BoolsAsChar=FALSE", "").effective_parameters.at("BOOLSASCHAR"));
+  EXPECT_EQ("", ConnectionString::resolve("DSN=BooleanFixture;BoolsAsChar={}", "").effective_parameters.at("BOOLSASCHAR"));
+}
+
 TEST_F(UnixIniDiscoveryTest, VarcharSizesRespectDriverDsnAndExplicitZeroEmptyOverrides) {
   write(root_ / "drivers.ini", "[Sizing Driver]\nMaxVarcharSize=invalid\nMaxLongVarcharSize=65535\n");
   write(root_ / "data.ini", "[SizingFixture]\nDriver=Sizing Driver\nMaxVarcharSize=8\nMaxLongVarcharSize=17\n");
@@ -343,6 +355,18 @@ TEST_F(NativeDsnTest, QueryTimeoutNativeLayersAndAliasEmptyRemainLiteral) {
   EXPECT_EQ("3", ConnectionString::resolve("DSN=QueryFixture;QT=3", "Query Driver").effective_parameters.at("QUERYTIMEOUT"));
   EXPECT_EQ("7", ConnectionString::resolve("DSN=QueryFixture;QT=invalid;QueryTimeout=7", "Query Driver").effective_parameters.at("QUERYTIMEOUT"));
   EXPECT_EQ("", ConnectionString::resolve("DSN=QueryFixture;QT={}", "Query Driver").effective_parameters.at("QUERYTIMEOUT"));
+}
+
+TEST_F(NativeDsnTest, BooleanCharacterNativeRegistryDsnStringPrecedenceRetainsFalseAndEmpty) {
+  constexpr auto path = L"SOFTWARE\\ODBC\\ODBC.INI\\BooleanFixture";
+  value(HKEY_CURRENT_USER, path, L"Driver", L"Boolean Driver");
+  value(HKEY_CURRENT_USER, path, L"BoolsAsChar", L"1");
+  value(HKEY_CURRENT_USER, L"SOFTWARE\\ODBC\\ODBC.INI\\ODBC Data Sources", L"BooleanFixture", L"Boolean Driver");
+  value(HKEY_LOCAL_MACHINE, L"SOFTWARE\\ODBC\\ODBCINST.INI\\Boolean Driver", L"BoolsAsChar", L"invalid");
+  EXPECT_EQ("invalid", ConnectionString::resolve("DRIVER=Boolean Driver", "").effective_parameters.at("BOOLSASCHAR"));
+  EXPECT_EQ("1", ConnectionString::resolve("DSN=BooleanFixture", "").effective_parameters.at("BOOLSASCHAR"));
+  EXPECT_EQ("FALSE", ConnectionString::resolve("DSN=BooleanFixture;BoolsAsChar=FALSE", "").effective_parameters.at("BOOLSASCHAR"));
+  EXPECT_EQ("", ConnectionString::resolve("DSN=BooleanFixture;BoolsAsChar={}", "").effective_parameters.at("BOOLSASCHAR"));
 }
 
 TEST_F(NativeDsnTest, VarcharSizesRespectNativeRegistryDriverDsnAndExplicitZeroEmptyOverrides) {

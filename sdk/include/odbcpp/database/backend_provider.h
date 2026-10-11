@@ -55,6 +55,7 @@ struct ConnectionOptions {
   // Optional provider-neutral text presentation choices, not payload limits.
   std::optional<std::uint32_t> varchar_threshold;
   std::optional<std::uint32_t> long_varchar_size;
+  bool boolean_as_character = false;
 };
 
 // Immutable product definition. A provider owns identity and static behavior;

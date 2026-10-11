@@ -12674,3 +12674,156 @@ TEST_F(ApplicationNameOptionsTest, InvalidPresentationIdentityAndNarrowWidthSize
     EXPECT_EQ(SQL_ERROR, execute("SELECT bad"));
   }
 }
+
+TEST_F(ApplicationNameOptionsTest, BooleanCharacterClosedOptionsCaptureSuccessOnlyAndRecoverAcrossAnsiWide) {
+  for (const bool wide : {false, true}) for (const char* invalid : {"", "yes", "on", "-1", "2", "secret-token"}) {
+    SCOPED_TRACE(invalid);
+    ASSERT_EQ(SQL_ERROR, login_name("SERVER=fake;SSL=0;BoolsAsChar={" + std::string(invalid) + "}", wide));
+    SQLCHAR sqlstate[6]{}, message[128]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, sqlstate, nullptr, message, sizeof(message), nullptr));
+    EXPECT_STREQ("HY000", reinterpret_cast<char*>(sqlstate));
+    EXPECT_STREQ("Invalid BoolsAsChar value", reinterpret_cast<char*>(message));
+    EXPECT_EQ(0, seen->created); EXPECT_EQ(0, seen->transports); EXPECT_EQ(0, seen->queries);
+    EXPECT_FALSE(reinterpret_cast<rs::odbc::ODBCConnection*>(dbc)->character_metadata_policy().boolean_as_character);
+  }
+  for (const bool wide : {false, true}) {
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;BoolsAsChar={ true }", wide));
+    EXPECT_TRUE(seen->settings.character_metadata.boolean_as_character);
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+    EXPECT_FALSE(reinterpret_cast<rs::odbc::ODBCConnection*>(dbc)->character_metadata_policy().boolean_as_character);
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;BoolsAsChar=0", wide));
+    EXPECT_FALSE(seen->settings.character_metadata.boolean_as_character);
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  }
+}
+
+TEST_F(ApplicationNameOptionsTest, BooleanCharacterValuesNullDefaultBitWideAndMetadataKeepNativeIdentity) {
+  using namespace rs::core::database;
+  const auto reported = apply_character_metadata_policy({ScalarType::Boolean, 1, 0, true}, {0, 17, true});
+  QueryResult result; result.columns = {{"default", reported}, {"bit", reported}, {"wide", reported}};
+  result.rows = {{"1", "1", "1"}, {"0", "0", "0"}, {std::nullopt, std::nullopt, std::nullopt}};
+  seen->date_result = result;
+  ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;BoolsAsChar=1;MaxVarcharSize=0"));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT flags"));
+  for (const bool wide : {false, true}) {
+    SQLSMALLINT type = 99; struct { SQLULEN size = 99; SQLULEN canary = 73; } output;
+    if (wide) ASSERT_EQ(SQL_SUCCESS, SQLDescribeColW(stmt, 1, nullptr, 0, nullptr, &type, &output.size, nullptr, nullptr));
+    else ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, 1, nullptr, 0, nullptr, &type, &output.size, nullptr, nullptr));
+    EXPECT_EQ(SQL_VARCHAR, type); EXPECT_EQ(1u, output.size); EXPECT_EQ(73u, output.canary);
+  }
+  SQLCHAR name[32]{}; SQLLEN sensitive = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 1, SQL_DESC_TYPE_NAME, name, sizeof(name), nullptr, nullptr));
+  EXPECT_STREQ("truth", reinterpret_cast<char*>(name));
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 1, SQL_DESC_CASE_SENSITIVE, nullptr, 0, nullptr, &sensitive));
+  EXPECT_EQ(SQL_FALSE, sensitive);
+  for (const char* expected : {"1", "0"}) {
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    struct { SQLCHAR text[3]{9, 9, 9}; SQLCHAR canary = 66; } output;
+    SQLLEN length = 99;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_DEFAULT, output.text, sizeof(output.text), &length));
+    EXPECT_STREQ(expected, reinterpret_cast<char*>(output.text)); EXPECT_EQ(1, length); EXPECT_EQ(66, output.canary);
+    SQLCHAR bit = 9; ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 2, SQL_C_BIT, &bit, sizeof(bit), &length));
+    EXPECT_EQ(static_cast<SQLCHAR>(*expected - '0'), bit); EXPECT_EQ(1, length);
+    struct { SQLWCHAR text[3]{}; SQLWCHAR canary = 77; } w;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 3, SQL_C_WCHAR, w.text, sizeof(w.text), &length));
+    EXPECT_EQ(static_cast<SQLWCHAR>(*expected), w.text[0]); EXPECT_EQ(0, w.text[1]);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLWCHAR)), length); EXPECT_EQ(77, w.canary);
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  SQLCHAR untouched = 88; SQLLEN length = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_CHAR, &untouched, sizeof(untouched), &length));
+  EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(88, untouched);
+  ASSERT_EQ(SQL_NO_DATA, SQLFetch(stmt)); ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  seen->date_result->columns = {{"flag", NativeTypeInfo{ScalarType::Boolean, 1, 0, true}}};
+  seen->date_result->rows = {{"1"}};
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;BoolsAsChar=FALSE", true));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT flag")); SQLSMALLINT type = 99; SQLULEN size = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, 1, nullptr, 0, nullptr, &type, &size, nullptr, nullptr));
+  EXPECT_EQ(SQL_BIT, type); EXPECT_EQ(1u, size);
+}
+
+TEST_F(ApplicationNameOptionsTest, BooleanCharacterCatalogsAndTypeInfoPreserveNamesAndNumericNulls) {
+  for (int kind = 0; kind < 3; ++kind) for (const bool wide : {false, true}) {
+    SCOPED_TRACE(kind);
+    SCOPED_TRACE(wide);
+    const auto layout = character_layout(kind);
+    seen->catalog_executor = kind != 2; seen->catalog_route_executor = kind == 0;
+    seen->routine_executor = kind == 1; seen->catalog_builder = true;
+    auto result = character_catalog_fixture(kind, "1");
+    result.rows[0][layout.code] = std::to_string(SQL_BIT); result.rows[0][layout.name] = "native_bool";
+    if (kind != 2) for (auto index : {kind == 0 ? 8u : 9u, kind == 0 ? 9u : 10u}) {
+      result.columns[index].normalized_type = rs::core::database::NativeTypeInfo{rs::core::database::ScalarType::Integer, 10, 0, true};
+      result.rows[0][index] = "0";
+    }
+    seen->date_result = result;
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;BoolsAsChar=1;MaxVarcharSize=0", wide));
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+    ASSERT_EQ(SQL_SUCCESS, sizing_catalog_call(stmt, kind, wide)); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    SQLINTEGER code = 99, size = 99; SQLLEN length = 99;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, static_cast<SQLUSMALLINT>(layout.code + 1), SQL_C_SLONG, &code, sizeof(code), &length));
+    EXPECT_EQ(SQL_VARCHAR, code);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, static_cast<SQLUSMALLINT>(layout.size + 1), SQL_C_SLONG, &size, sizeof(size), &length));
+    EXPECT_EQ(1, size);
+    if (kind != 2) {
+      SQLINTEGER scale = 99; ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, static_cast<SQLUSMALLINT>(kind == 0 ? 9 : 10), SQL_C_SLONG, &scale, sizeof(scale), &length));
+      EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(99, scale);
+      SQLINTEGER radix = 99;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, static_cast<SQLUSMALLINT>(kind == 0 ? 10 : 11), SQL_C_SLONG, &radix, sizeof(radix), &length));
+      EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(99, radix);
+      SQLCHAR ordinal[16]{};
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, static_cast<SQLUSMALLINT>(kind == 0 ? 17 : 18), SQL_C_CHAR, ordinal, sizeof(ordinal), &length));
+      EXPECT_STREQ("fixture", reinterpret_cast<char*>(ordinal));
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfo(stmt, SQL_BIT)); EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfo(stmt, SQL_VARCHAR));
+    bool found = false;
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+      SQLCHAR name[32]{}; ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_CHAR, name, sizeof(name), &length));
+      if (std::string(reinterpret_cast<char*>(name)) != "truth") continue;
+      found = true;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 3, SQL_C_SLONG, &size, sizeof(size), &length)); EXPECT_EQ(1, size);
+      SQLCHAR literal[4]{}; ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 4, SQL_C_CHAR, literal, sizeof(literal), &length)); EXPECT_STREQ("'", reinterpret_cast<char*>(literal));
+      SQLINTEGER radix = 99; ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 18, SQL_C_SLONG, &radix, sizeof(radix), &length));
+      EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(99, radix);
+    }
+    EXPECT_TRUE(found); ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  }
+}
+
+TEST_F(ApplicationNameOptionsTest, BooleanCharacterParameterDimensionsStayNativeAndMalformedCatalogRetiresWithRecovery) {
+  using namespace rs::core::database;
+  seen->parameter_description_types = std::vector<NativeTypeInfo>{{ScalarType::Boolean, 1, 0, true}};
+  ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;BoolsAsChar=1;MaxVarcharSize=0"));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT ?")), SQL_NTS));
+  SQLCHAR value = 1; SQLLEN indicator = 1;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BIT, SQL_BIT, 1, 0, &value, sizeof(value), &indicator));
+  SQLSMALLINT type = 99; struct { SQLULEN size = 99; SQLULEN canary = 37; } dimensions;
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &dimensions.size, nullptr, nullptr));
+  EXPECT_EQ(SQL_BIT, type); EXPECT_EQ(1u, dimensions.size); EXPECT_EQ(37u, dimensions.canary);
+  const auto descriptions = seen->descriptions;
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &dimensions.size, nullptr, nullptr));
+  EXPECT_EQ(descriptions, seen->descriptions); EXPECT_EQ(SQL_BIT, type);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+  seen->catalog_executor = true; seen->catalog_route_executor = true;
+  auto malformed = character_catalog_fixture(0, "1"); malformed.rows[0][4] = std::to_string(SQL_BIT);
+  // Scale/radix header families are deliberately not numeric in this fixture.
+  seen->date_result = malformed;
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_ERROR, sizing_catalog_call(stmt, 0, false));
+  EXPECT_EQ("HY000", state(SQL_HANDLE_STMT, stmt));
+  EXPECT_FALSE(reinterpret_cast<rs::odbc::ODBCConnection*>(dbc)->is_connected());
+  EXPECT_FALSE(reinterpret_cast<rs::odbc::ODBCConnection*>(dbc)->character_metadata_policy().boolean_as_character);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;BoolsAsChar=FALSE", true));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfo(stmt, SQL_BIT)); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+}

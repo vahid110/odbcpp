@@ -650,3 +650,17 @@ metadata; the Redshift provider supplies the configured defaults. Ordinary
 PostgreSQL defaults remain unchanged and its provider rejects these selected
 settings. Other profiles and real Redshift acceptance are tracked separately
 under [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md).
+
+Redshift `BoolsAsChar` defaults to `0`/`FALSE`. `1`/`TRUE` reports Boolean results
+as `SQL_VARCHAR` of size 1 and returns the canonical character values `0` and `1`.
+NULL remains NULL. Native Boolean identity and type names are retained; input
+parameters remain `SQL_BIT`, and explicit bit retrieval still works. Other values
+are rejected before connection I/O with a fixed diagnostic. Settings follow
+owning driver/DSN/connection-string precedence and successful-session capture.
+Applicable column catalog rows and Boolean type-info rows follow this presentation;
+when enabled, `SQLGetTypeInfo(SQL_BIT)` is empty and the Boolean advertisement is
+included in `SQL_VARCHAR`/all-types results. The current backend's native name
+`boolean` is retained (the pinned AWS catalog uses `bool`). This does not implement
+`UseUnicode` or change wire types, payload limits, or server behavior. Windows,
+other widths/profiles and actual Redshift execution require the periodic CI/live
+checkpoint; authored tests alone do not establish those passes.

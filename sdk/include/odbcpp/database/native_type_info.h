@@ -17,6 +17,7 @@ enum class ScalarType {
 struct CharacterMetadataPolicy {
   std::uint32_t varchar_threshold{0};
   std::uint32_t long_varchar_size{0};
+  bool boolean_as_character{false};
   friend bool operator==(const CharacterMetadataPolicy&,
                          const CharacterMetadataPolicy&) = default;
 };
@@ -40,6 +41,13 @@ struct NativeTypeInfo {
 
 inline NativeTypeInfo apply_character_metadata_policy(
     NativeTypeInfo native, const CharacterMetadataPolicy& policy) noexcept {
+  if (native.known && native.type == ScalarType::Boolean && policy.boolean_as_character) {
+    native.declared_type = ScalarType::Boolean;
+    native.declared_column_size = native.column_size;
+    native.type = ScalarType::VarChar;
+    native.column_size = 1;
+    return native;
+  }
   if (!native.known || policy.varchar_threshold == 0 ||
       native.column_size <= policy.varchar_threshold ||
       (native.type != ScalarType::Char && native.type != ScalarType::VarChar))

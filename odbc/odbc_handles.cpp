@@ -1010,10 +1010,12 @@ void require_normalized_columns(const rs::core::database::QueryResult& result) {
     if (native.column_size > static_cast<std::uint64_t>(std::numeric_limits<SQLULEN>::max()) ||
         native.declared_type.has_value() != native.declared_column_size.has_value() ||
         (native.declared_type && (!native.known ||
-         *native.declared_column_size == 0 ||
-         native.type != rs::core::database::ScalarType::LongVarChar ||
-         (*native.declared_type != rs::core::database::ScalarType::Char &&
-          *native.declared_type != rs::core::database::ScalarType::VarChar))))
+         (*native.declared_column_size == 0 && *native.declared_type != rs::core::database::ScalarType::Boolean) ||
+         !((native.type == rs::core::database::ScalarType::LongVarChar &&
+            (*native.declared_type == rs::core::database::ScalarType::Char ||
+             *native.declared_type == rs::core::database::ScalarType::VarChar)) ||
+           (native.type == rs::core::database::ScalarType::VarChar && native.column_size == 1 &&
+            *native.declared_type == rs::core::database::ScalarType::Boolean)))))
       throw std::invalid_argument("Data source returned invalid character metadata");
   }
 }
@@ -1034,7 +1036,7 @@ void present_catalog_character_metadata(rs::core::database::QueryResult& result,
   require_normalized_columns(result);
   for (auto& column : result.columns)
     column.normalized_type = declared_character_metadata(*column.normalized_type);
-  if (policy.varchar_threshold == 0) return;
+  if (policy.varchar_threshold == 0 && !policy.boolean_as_character) return;
   std::size_t count = 0, code = 0, size = 0, buffer = 0;
   std::optional<std::size_t> sql_type, octets;
   if (std::holds_alternative<ColumnsCatalogRequest>(request)) {
@@ -1064,6 +1066,23 @@ void present_catalog_character_metadata(rs::core::database::QueryResult& result,
     const auto parsed = std::from_chars(text.data(), text.data() + text.size(), selected);
     if (text.empty() || parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
       throw std::invalid_argument("Invalid character catalog metadata");
+    if (selected == SQL_BIT && policy.boolean_as_character) {
+      row[code] = std::to_string(SQL_VARCHAR);
+      row[size] = "1";
+      row[buffer] = "1";
+      if (sql_type) row[*sql_type] = row[code];
+      if (octets) row[*octets] = "1";
+      if (count == 18 || count == 19) {
+        const std::size_t scale = count == 18 ? 8 : 9;
+        const std::size_t radix = count == 18 ? 9 : 10;
+        if (!integer(*result.columns[scale].normalized_type) ||
+            !integer(*result.columns[radix].normalized_type))
+          throw std::invalid_argument("Invalid character catalog metadata");
+        row[scale].reset();
+        row[radix].reset();
+      }
+      continue;
+    }
     if (selected != SQL_CHAR && selected != SQL_VARCHAR) continue;
     if (!row[size]) continue; // Unknown declared size must not be inferred.
     std::uint64_t length = 0;
@@ -1659,6 +1678,11 @@ SQLRETURN ODBCConnection::connect(
     rs::core::database::ConnectionOptions options;
     if (params.count("APPLICATIONNAME")) options.application_name = params.at("APPLICATIONNAME");
     if (params.count("READONLY")) options.read_only = parse_read_only(params.at("READONLY"));
+    if (params.count("BOOLSASCHAR")) {
+      const auto value = ConnectionString::to_upper(ConnectionString::trim(params.at("BOOLSASCHAR")));
+      if (value == "1" || value == "TRUE") options.boolean_as_character = true;
+      else if (value != "0" && value != "FALSE") throw std::invalid_argument("Invalid BoolsAsChar value");
+    }
     const auto text_size = [](std::string_view raw, std::uint32_t maximum, const char* name) {
       const auto text = ConnectionString::trim(std::string(raw));
       std::uint32_t value = 0;
@@ -7438,6 +7462,8 @@ bool ODBCStatement::apply_result_metadata(
           odbc_scalar_type(*result.columns[index].normalized_type->declared_type));
       record.type_name = declared ? declared->name : "";
       record.local_type_name = record.type_name;
+      if (*result.columns[index].normalized_type->declared_type == rs::core::database::ScalarType::Boolean)
+        record.case_sensitive = SQL_FALSE;
     }
     row_descriptor_records.push_back(std::move(record));
   }
@@ -7810,7 +7836,8 @@ SQLRETURN ODBCStatement::get_type_info(SQLSMALLINT data_type) {
   }
   std::vector<std::pair<SQLSMALLINT, const rs::core::database::TypeDefinition*>> types;
   for (const auto& type : catalog) {
-    const auto sql_type = odbc_scalar_type(type.type);
+    const auto sql_type = type.type == ScalarType::Boolean && conn_->character_metadata_policy().boolean_as_character
+        ? SQL_VARCHAR : odbc_scalar_type(type.type);
     types.emplace_back(sql_type, &type);
     if (sql_type == SQL_TYPE_DATE) types.emplace_back(SQL_DATE, &type);
     if (sql_type == SQL_TYPE_TIME) types.emplace_back(SQL_TIME, &type);
@@ -7823,28 +7850,31 @@ SQLRETURN ODBCStatement::get_type_info(SQLSMALLINT data_type) {
     const auto& type = *definition;
     const bool character_type = sql_type == SQL_CHAR || sql_type == SQL_VARCHAR ||
         sql_type == SQL_LONGVARCHAR;
+    const bool boolean_character = type.type == ScalarType::Boolean &&
+        conn_->character_metadata_policy().boolean_as_character;
     const auto modern_type = modern_temporal_type(sql_type);
     const auto datetime_sub = descriptor_subtype_for(modern_type);
     result.rows.push_back({
         type_info_text(type.name), type_info_number(sql_type),
-        type_info_number(type.column_size), type_info_text(type.literal_prefix),
-        type_info_text(type.literal_suffix), type_info_text(type.create_params),
-        type_info_number(SQL_NULLABLE), type_info_number(type.case_sensitive),
+        type_info_number(boolean_character ? 1 : type.column_size),
+        boolean_character ? type_info_text("'") : type_info_text(type.literal_prefix),
+        boolean_character ? type_info_text("'") : type_info_text(type.literal_suffix), type_info_text(type.create_params),
+        type_info_number(SQL_NULLABLE), type_info_number(boolean_character ? SQL_FALSE : type.case_sensitive),
         type_info_number(character_type ? SQL_SEARCHABLE : SQL_PRED_BASIC),
-        type.unsigned_attribute ? type_info_number(*type.unsigned_attribute)
+        !boolean_character && type.unsigned_attribute ? type_info_number(*type.unsigned_attribute)
                                 : rs::core::database::ResultCell{},
         type_info_number(SQL_FALSE),
-        type.unsigned_attribute ? type_info_number(SQL_FALSE)
+        !boolean_character && type.unsigned_attribute ? type_info_number(SQL_FALSE)
                                 : rs::core::database::ResultCell{},
-        rs::core::database::ResultCell{},
-        type.minimum_scale ? type_info_number(*type.minimum_scale)
+        boolean_character ? type_info_text(type.name) : rs::core::database::ResultCell{},
+        !boolean_character && type.minimum_scale ? type_info_number(*type.minimum_scale)
                            : rs::core::database::ResultCell{},
-        type.maximum_scale ? type_info_number(*type.maximum_scale)
+        !boolean_character && type.maximum_scale ? type_info_number(*type.maximum_scale)
                            : rs::core::database::ResultCell{},
         type_info_number(datetime_sub != 0 ? SQL_DATETIME : sql_type),
         datetime_sub == 0 ? rs::core::database::ResultCell{}
                           : type_info_number(datetime_sub),
-        type.numeric_radix == 0 ? rs::core::database::ResultCell{}
+        boolean_character || type.numeric_radix == 0 ? rs::core::database::ResultCell{}
                                 : type_info_number(type.numeric_radix),
         rs::core::database::ResultCell{},
     });

@@ -417,3 +417,39 @@ TEST(BackendProviderTest, VarcharSizingDefaultsSelectedZeroBoundsAndProviderIsol
   auto fresh = redshift.resolve_connection_options({}); ASSERT_TRUE(fresh);
   EXPECT_EQ(defaults->character_metadata, fresh->character_metadata);
 }
+
+TEST(BooleanCharacterPresentation, SdkPreservesLogicalFamilyAndParametersWithoutLongTextPromotion) {
+  using namespace rs::core::database;
+  const CharacterMetadataPolicy policy{1, 65535, true};
+  const NativeTypeInfo native{ScalarType::Boolean, 1, 0, true};
+  const auto text = apply_character_metadata_policy(native, policy);
+  EXPECT_EQ(ScalarType::VarChar, text.type); EXPECT_EQ(1u, text.column_size);
+  EXPECT_EQ(ScalarType::Boolean, text.declared_type); EXPECT_EQ(1u, text.declared_column_size);
+  const auto again = apply_character_metadata_policy(text, policy);
+  EXPECT_EQ(text.type, again.type); EXPECT_EQ(text.declared_type, again.declared_type);
+  const auto restored = declared_character_metadata(text);
+  EXPECT_EQ(native.type, restored.type); EXPECT_EQ(native.column_size, restored.column_size);
+  EXPECT_FALSE(restored.declared_type);
+  EXPECT_EQ(ScalarType::Boolean, apply_character_metadata_policy(native, {}).type);
+  EXPECT_EQ(ScalarType::Boolean, apply_character_metadata_policy({ScalarType::Boolean, 0, 0, false}, policy).type);
+  EXPECT_EQ(ScalarType::LongVarChar, apply_character_metadata_policy({ScalarType::VarChar, 2, 0, true}, policy).type);
+  EXPECT_EQ(ScalarType::Integer, apply_character_metadata_policy({ScalarType::Integer, 10, 0, true}, policy).type);
+}
+
+TEST(BooleanCharacterPresentation, ProviderDefaultsOwnExplicitPolicyAndRefuseOtherBackendBeforeIo) {
+  using namespace rs::core::database;
+  postgres::PgBackendProvider rs{BackendIdentity{"redshift", "Amazon Redshift", "ODBCPP Redshift"},
+      BackendConnectionDefaults{"rs", 5439, std::nullopt, false}, std::nullopt, postgres::PgCatalogProfile::Redshift};
+  postgres::PgBackendProvider pg{BackendIdentity{"postgresql", "PostgreSQL", "ODBCPP PostgreSQL"},
+      BackendConnectionDefaults{"pg", 5432, "postgres", false}};
+  auto defaults = rs.resolve_connection_options({}); ASSERT_TRUE(defaults);
+  EXPECT_FALSE(defaults->character_metadata.boolean_as_character);
+  ConnectionOptions options; options.boolean_as_character = true;
+  auto enabled = rs.resolve_connection_options(options); ASSERT_TRUE(enabled);
+  const auto owned = enabled->character_metadata;
+  options.boolean_as_character = false; EXPECT_TRUE(owned.boolean_as_character);
+  EXPECT_FALSE(rs.resolve_connection_options(options)->character_metadata.boolean_as_character);
+  options.boolean_as_character = true; auto refused = pg.resolve_connection_options(options);
+  ASSERT_FALSE(refused); EXPECT_EQ("BoolsAsChar requires Redshift", refused.error_message());
+  options.boolean_as_character = false; ASSERT_TRUE(pg.resolve_connection_options(options));
+}

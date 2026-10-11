@@ -99,6 +99,9 @@ BackendResult<void> PgDatabaseConnection::connect_until(
        settings.character_metadata.long_varchar_size > 65535))
     return local_backend_error(LocalFailure::InvalidInput,
         "Invalid character metadata sizing", BackendOperation::Connect, session_state());
+  if (settings.character_metadata.boolean_as_character && catalog_profile_ != PgCatalogProfile::Redshift)
+    return local_backend_error(LocalFailure::Unsupported,
+        "BoolsAsChar requires Redshift", BackendOperation::Connect, session_state());
   if (settings.read_only && catalog_profile_ != PgCatalogProfile::Redshift)
     return local_backend_error(LocalFailure::Unsupported,
         "ReadOnly requires Redshift", BackendOperation::Connect, session_state());

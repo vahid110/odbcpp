@@ -74,6 +74,8 @@ class CatalogWireTransport final : public rs::core::transport::ITransport {
   unsigned connects{0}, closes{0};
   bool foreign_keys{false};
   bool sized_character_metadata{false};
+  bool boolean_cells{false};
+  bool malformed_boolean_cell{false};
   rs::util::Result<void> connect(std::string_view, uint16_t,
       rs::util::Deadline) override {
     ++connects; input_.clear(); offset_ = 0;
@@ -83,9 +85,9 @@ class CatalogWireTransport final : public rs::core::transport::ITransport {
     frame('Z', {std::byte{'I'}});
     frame('1', {});
     std::vector<std::byte> parameters; integer(parameters, 3, 2);
-    for (unsigned i = 0; i < 3; ++i) integer(parameters, 25, 4);
+    for (unsigned i = 0; i < 3; ++i) integer(parameters, boolean_cells ? 16 : 25, 4);
     frame('t', parameters); frame('2', {});
-    const std::vector<const char*> fields = foreign_keys ? std::vector<const char*>{
+    const std::vector<const char*> fields = boolean_cells ? std::vector<const char*>{"flag"} : foreign_keys ? std::vector<const char*>{
         "deferrability", "pk_name", "fk_name", "delete_rule", "update_rule", "key_seq",
         "fk_column_name", "fk_table_name", "fk_schema_name", "fk_database_name",
         "pk_column_name", "pk_table_name", "pk_schema_name", "pk_database_name"} :
@@ -96,13 +98,25 @@ class CatalogWireTransport final : public rs::core::transport::ITransport {
       const bool sequence = std::string_view(name) == "key_seq" ||
           (foreign_keys && (std::string_view(name) == "deferrability" ||
            std::string_view(name) == "delete_rule" || std::string_view(name) == "update_rule"));
-      integer(description, sequence ? 21 : 1043, 4);
-      integer(description, sequence ? 2 : 65535, 2);
+      integer(description, boolean_cells ? 16 : sequence ? 21 : 1043, 4);
+      integer(description, boolean_cells ? 1 : sequence ? 2 : 65535, 2);
       integer(description, !sequence && sized_character_metadata ? 260u : 0xffffffffu, 4);
       integer(description, 0, 2);
     }
     frame('T', description);
-    std::vector<std::byte> completion; text(completion, "SELECT 0"); frame('C', completion);
+    if (boolean_cells) {
+      for (const char* value : {"t", "f", static_cast<const char*>(nullptr)}) {
+        std::vector<std::byte> row; integer(row, 1, 2);
+        integer(row, value ? 1u : 0xffffffffu, 4);
+        if (value) row.push_back(static_cast<std::byte>(*value));
+        frame('D', row);
+      }
+      if (malformed_boolean_cell) {
+        std::vector<std::byte> row; integer(row, 1, 2); integer(row, 1, 4);
+        row.push_back(std::byte{'x'}); frame('D', row);
+      }
+    }
+    std::vector<std::byte> completion; text(completion, boolean_cells ? (malformed_boolean_cell ? "SELECT 4" : "SELECT 3") : "SELECT 0"); frame('C', completion);
     frame('Z', {std::byte{'I'}});
     return {};
   }
@@ -1719,4 +1733,47 @@ TEST(RedshiftCharacterMetadata, InvalidDisabledSizingRefusesBeforeActualTranspor
   EXPECT_EQ(0u, wire->connects); EXPECT_TRUE(wire->writes.empty()); EXPECT_FALSE(session.is_connected());
   settings.character_metadata = {255, 65535}; ASSERT_TRUE(session.connect(settings));
   EXPECT_EQ(1u, wire->connects); session.disconnect(); EXPECT_FALSE(session.is_connected());
+}
+
+TEST(RedshiftBooleanCharacter, RealCodecKeepsCanonicalValuesNativeParametersOwnedReconnectAndCellErrors) {
+  auto transport = std::make_unique<CatalogWireTransport>(); auto* wire = transport.get();
+  wire->boolean_cells = true; wire->malformed_boolean_cell = true;
+  PgDatabaseConnection session(std::move(transport), std::nullopt, PgCatalogProfile::Redshift);
+  ConnectionSettings settings; settings.host = "in-memory.invalid"; settings.port = 5439;
+  settings.database = "fixture"; settings.user = "fixture"; settings.use_ssl = false;
+  settings.character_metadata = {0, 17, true};
+  ASSERT_TRUE(session.connect(settings)); settings.character_metadata = {};
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{3});
+  const std::vector<QueryParameter> parameters{{"1", QueryParameterType::Boolean},
+      {"0", QueryParameterType::Boolean}, {std::nullopt, QueryParameterType::Boolean}};
+  auto result = session.execute_prepared("SELECT ?, ?, ?", parameters, deadline);
+  ASSERT_TRUE(result); ASSERT_EQ(1u, result->columns.size()); ASSERT_EQ(4u, result->rows.size());
+  ASSERT_EQ(1u, result->cell_errors.size()); EXPECT_EQ(3u, result->cell_errors[0].row);
+  EXPECT_EQ(ScalarType::VarChar, result->columns[0].normalized_type->type);
+  EXPECT_EQ(ScalarType::Boolean, result->columns[0].normalized_type->declared_type);
+  EXPECT_EQ(1u, result->columns[0].normalized_type->column_size);
+  EXPECT_EQ("1", result->rows[0][0]); EXPECT_EQ("0", result->rows[1][0]); EXPECT_FALSE(result->rows[2][0]);
+  ASSERT_EQ(3u, result->normalized_parameter_types.size());
+  for (const auto& type : result->normalized_parameter_types) { EXPECT_EQ(ScalarType::Boolean, type.type); EXPECT_FALSE(type.declared_type); }
+  const auto retained = *result->columns[0].normalized_type;
+  session.disconnect(); wire->malformed_boolean_cell = true; ASSERT_TRUE(session.connect(settings));
+  auto disabled = session.execute_prepared("SELECT ?, ?, ?", parameters, deadline); ASSERT_TRUE(disabled);
+  EXPECT_EQ(ScalarType::Boolean, disabled->columns[0].normalized_type->type);
+  EXPECT_EQ("1", disabled->rows[0][0]); EXPECT_EQ("0", disabled->rows[1][0]);
+  ASSERT_EQ(1u, disabled->cell_errors.size()); EXPECT_EQ(3u, disabled->cell_errors[0].row);
+  EXPECT_EQ(0u, disabled->cell_errors[0].column); EXPECT_EQ(ScalarType::VarChar, retained.type);
+  session.disconnect(); EXPECT_EQ(2u, wire->connects); EXPECT_FALSE(session.is_connected());
+}
+
+TEST(RedshiftBooleanCharacter, DirectOrdinarySettingsRefuseBeforeTransportCreationOrWrites) {
+  auto transport = std::make_unique<CatalogWireTransport>(); auto* wire = transport.get();
+  PgDatabaseConnection session(std::move(transport));
+  ConnectionSettings settings; settings.host = "in-memory.invalid"; settings.port = 5432;
+  settings.user = "fixture"; settings.database = "fixture"; settings.use_ssl = false;
+  settings.character_metadata.boolean_as_character = true;
+  auto refused = session.connect(settings); ASSERT_FALSE(refused);
+  EXPECT_EQ(0u, wire->connects); EXPECT_TRUE(wire->writes.empty());
+  EXPECT_EQ("BoolsAsChar requires Redshift", refused.error_message());
+  settings.character_metadata.boolean_as_character = false; ASSERT_TRUE(session.connect(settings));
+  session.disconnect(); EXPECT_EQ(1u, wire->connects);
 }
