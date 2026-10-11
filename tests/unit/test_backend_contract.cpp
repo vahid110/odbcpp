@@ -21,6 +21,7 @@
 #if defined(_WIN32) && defined(_MSC_VER)
 #include <cstdint>
 #include <cstdlib>
+#include <eh.h>
 #ifndef NOMINMAX
 #define NOMINMAX
 #define ODBCPP_RECOVERY_UNDEFINE_NOMINMAX
@@ -73,6 +74,8 @@ struct State {
   HMODULE modules[7]{};
   bool inside_logger{};
   bool seh_reported{};
+  bool terminate_reported{};
+  terminate_function previous{};
 };
 static thread_local State state;
 static const wchar_t* const module_names[7] = {
@@ -123,6 +126,37 @@ static int seh_filter(EXCEPTION_POINTERS* fault) noexcept {
   }
   return EXCEPTION_CONTINUE_SEARCH;
 }
+[[noreturn]] static void termination_observer() noexcept {
+  const DWORD entry_last_error=GetLastError();
+  const terminate_function previous=state.previous;
+  // Restore the exact nullable CRT setting before logging or forwarding.
+  ::set_terminate(previous);
+  if (!state.inside_logger && !state.terminate_reported) {
+    state.inside_logger=true;state.terminate_reported=true;
+    std::fprintf(stderr,"[recovery-execute-fault] CRT terminate\n");
+    emit_stack("terminate-current-stack");state.inside_logger=false;
+  }
+  if (previous && previous!=termination_observer) {
+    SetLastError(entry_last_error);previous();
+    SetLastError(entry_last_error);std::abort(); // A returning saved handler must not continue or be called twice.
+  }
+  // Null restores the CRT default; delegate to the restored CRT implementation.
+  SetLastError(entry_last_error);::terminate();
+}
+struct TerminateScope {
+  terminate_function previous{};
+  TerminateScope() noexcept {
+    const DWORD last_error=GetLastError();
+    previous=::set_terminate(termination_observer);state.previous=previous;
+    SetLastError(last_error);
+  }
+  ~TerminateScope() noexcept {
+    const DWORD last_error=GetLastError();
+    ::set_terminate(previous);state.previous=nullptr;SetLastError(last_error);
+  }
+  TerminateScope(const TerminateScope&)=delete;
+  TerminateScope& operator=(const TerminateScope&)=delete;
+};
 // No destructible automatic C++ objects in the MSVC SEH wrapper.
 static SQLRETURN execute_seh(SQLHSTMT statement) {
   __try { return SQLExecute(statement); }
@@ -141,11 +175,12 @@ static SQLRETURN observe_recovery_execute(SQLHSTMT statement) {
     recovery_execute_fault::state.modules[i]=GetModuleHandleW(recovery_execute_fault::module_names[i]);
   }
   SetLastError(entry_last_error);
+  recovery_execute_fault::TerminateScope termination;
   const SQLRETURN result=recovery_execute_fault::execute_seh(statement);
   const DWORD last_error=GetLastError();
   std::fprintf(stderr,"[recovery-execute-fault] SQLRETURN=%d\n",static_cast<int>(result));
   std::fflush(stderr);
-  recovery_execute_fault::state=recovery_execute_fault::State{};SetLastError(last_error);
+  SetLastError(last_error);
   return result;
 #else
   return SQLExecute(statement);

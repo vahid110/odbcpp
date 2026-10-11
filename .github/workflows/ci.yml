@@ -302,10 +302,16 @@ jobs:
         run: cmake --build build-windows --config Release --parallel
 
       - name: Run unit tests
+        id: windows_unit
         shell: pwsh
         run: >-
           ctest --test-dir build-windows -C Release -L unit
           --timeout 30 --output-on-failure --output-junit windows-openssl-unit.xml
+
+      - name: Observe backend child exit after original unit failure
+        if: ${{ failure() && steps.windows_unit.outcome == 'failure' }}
+        shell: pwsh
+        run: ./tools/ci/windows-backend-direct-exit009.ps1 -ExpectedHead '${{ github.sha }}'
 
       - name: Bind Windows unit qualification evidence
         shell: pwsh
@@ -402,6 +408,7 @@ jobs:
             build-windows/windows-openssl-unit.xml
             build-windows/tests/Release/test_backend_contract.exe
             build-windows/tests/Release/test_backend_contract.map
+            build-windows/windows-backend-direct-exit009
             build-windows/odbcpp-crypto-unit-qualification.json
             build-windows/tests/Release/crypto_tls_probe.exe
             build-windows/tests/Release/crypto_identity_probe.exe
