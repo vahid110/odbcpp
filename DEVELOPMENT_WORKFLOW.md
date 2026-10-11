@@ -31,6 +31,33 @@ Product scope, independent review, live-test authority and final acceptance rema
   acceptance explicitly pending. A pending qualification goal does not prevent
   implementation of the next authorized coherent product package.
 
+## Goals and pending acceptance
+
+Human-approved clarification on 2026-10-11: scheduled acceptance must not block
+ready product development. Future implementation goals cover one coherent product
+package: implementation and owning SDK/backend/adapter placement, meaningful
+checked-in unit/live scenarios, independent review, primary-profile qualification,
+commit/push, and a durable entry for all pending full-CI/live acceptance. These
+implementation goals can close when those requirements are proved; their closure
+is not full platform, live or production acceptance.
+
+The 12-hour checkpoint owns accumulated qualification debt across completed
+implementation goals. Each entry binds its feature, exact source/head, authored
+cases, accepted evidence, missing gates and final disposition. Debt is cleared only
+by actual applicable results and independent final review. Release/product readiness
+still requires the complete graph, exact-head green full CI, actual applicable live
+coverage, PostgreSQL shutdown and owned-process reaps.
+
+Existing goals retain their original acceptance requirements; do not falsely close
+or replace them merely to adopt this distinction. Their pending scheduled gates
+must not prevent ready authorized product implementation. A scheduled due time is
+pending acceptance, not a reason to mark a new implementation goal blocked. Report
+actual no-progress honestly without inventing work or a live process wait. Respect
+human pauses, genuine blockers, budgets and approval dependencies. The human has
+explicitly authorized continued timer development and due-checkpoint qualification
+for the current ACCESS_MODE goal despite its earlier cadence-only blocked label;
+this does not remove its original final acceptance or require an early test run.
+
 ## Combined 12-hour qualification checkpoint
 
 - The existing 15-minute continuation checks the durable 12-hour due time in
@@ -66,7 +93,7 @@ Product scope, independent review, live-test authority and final acceptance rema
   the checkpoint. Only an explicit human request or concrete immediate safety
   diagnosis justifies an earlier full check; earlier paid live execution requires
   explicit human scheduling direction and the same finite admission.
-- Final goal/release acceptance still requires the original product scope, complete
+- Existing full-acceptance goals and final release acceptance still require their original product scope, complete
   required graph, exact-head green full CI, applicable actual live evidence,
   independent final review, PostgreSQL shutdown and owned-process reaps. Pending
   evidence remains pending; the cadence does not reduce quality requirements.

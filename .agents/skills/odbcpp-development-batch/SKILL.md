@@ -74,17 +74,19 @@ push, restore exact-head green full CI before corrected live execution and rerun
 only affected cases under fresh admission. Reuse validated runners and accepted
 unchanged evidence; use one combined admission review and one result/final review.
 Do not duplicate watchers, repeatedly rebuild admission scaffolding or stop ready
-product implementation for pending periodic acceptance. A goal remains unfinished
-until its original acceptance is actually proved; pending acceptance is not an
+product implementation for pending periodic acceptance. Existing goals remain unfinished until their original acceptance is actually
+proved. Future implementation goals use the measurable implementation/primary/
+review/commit-push/debt-recording scope in DEVELOPMENT_WORKFLOW.md; their closure
+does not close pending platform/live qualification. Scheduled acceptance is not an
 implementation blocker for the next authorized product package.
 
 Group related actual failures into reviewed corrections and re-run affected gates;
 retain unchanged evidence only by actual source/input applicability. Do not replay
 native tests for compiler-only repairs. Live/native work still requires existing
-finite authority; this cadence grants none. Final goal/release acceptance still
-requires its full required graph (PostgreSQL/Unicode/TLS/Redshift/sanitizer/offline,
+finite authority; this cadence grants none. Existing full-acceptance goals and final release acceptance still
+require the full required graph (PostgreSQL/Unicode/TLS/Redshift/sanitizer/offline,
 SDK/architecture/package and platform/provider CI), exact-head green full CI,
-independent final audit and verified shutdown/reaps. A primary green is insufficient.
+independent final audit and verified shutdown/reaps. A primary green is insufficient for full acceptance.
 
 A completed failed full CI may be followed by a bounded reviewed repair after its
 watcher is reaped and original evidence retained. Follow one successor full run;

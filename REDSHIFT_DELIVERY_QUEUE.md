@@ -59,8 +59,9 @@ admission/execution to that checkpoint and keep pending acceptance explicit.
 Collect CI/live failures into reviewed corrections; restore green CI on the
 corrected tested head before rerunning affected live cases. Extra
 profiles run early only for actual failure, immediate safety/ABI diagnosis, an
-explicit human request. Root tracks exact heads and acceptance debt; only final full graph and
-green exact-head full CI close the goal/release. Root continues product development within the consolidated workflow.
+explicit human request. Root tracks exact heads and acceptance debt; the final full graph and
+green exact-head full CI remain required for existing full-acceptance goals and
+final release acceptance. Root continues product development within the consolidated workflow.
 This replaces historical per-feature-commit full-graph sequencing below.
 
 Root owns product implementation, qualification and integration as one continuous
@@ -88,3 +89,11 @@ No passed gate is repeated without new source or a concrete execution gap.
 Report delivery as distinct stages: implemented, locally qualified, CI accepted,
 native qualified and application accepted. Commit count, test count and worker
 activity alone do not establish usable feature delivery.
+
+## Goal closure and acceptance debt
+
+Apply DEVELOPMENT_WORKFLOW.md goal semantics. Future implementation packages close
+after reviewed primary qualification, commit/push and recorded full-CI/live debt.
+The 12-hour checkpoint clears that debt with actual evidence; complete production
+acceptance remains separate. Existing ACCESS_MODE original final scope is retained,
+and its earlier cadence-only blocked label must not stop authorized product work.

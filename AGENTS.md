@@ -36,6 +36,11 @@ It defines the repeatable workflow; this file defines durable repository rules.
   integration; independent review remains separate. Do not require a dedicated
   API worker or create repeated handoffs for small coherent changes. Reuse an
   existing worker only for a substantial nonoverlapping package that saves time.
+- Follow the goal distinction in `DEVELOPMENT_WORKFLOW.md`: future product
+  implementation goals close after reviewed primary-qualified commit/push and
+  recorded acceptance debt. The periodic checkpoint and final release still own
+  all full-CI/live/final gates. Existing full-acceptance goals retain their scope;
+  scheduled acceptance must not stop ready authorized implementation.
 - Before ending a development turn, reconcile actual workers and the next
   product task with the handoff. Completed, selection-only or idle workers are
   not active implementation. Do not invent work to fill a lane or let routine
@@ -65,7 +70,7 @@ It defines the repeatable workflow; this file defines durable repository rules.
 - Reap gate processes and independently verify private PostgreSQL shutdown
   before final acceptance. Integrate reviewed exact bytes. Primary-qualified intermediate Redshift commits
   may precede periodic full CI; label cross-platform and live acceptance pending. Follow one
-  immutable exact-head full run to completion before final goal/release acceptance.
+  immutable exact-head full run to completion before closure of existing full-acceptance goals or final release acceptance.
   No status-only pushes, automatic cancellation or duplicate watchers.
 
 ## Build storage and periodic cleanup
