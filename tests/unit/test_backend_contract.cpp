@@ -11598,7 +11598,7 @@ class LogarithmEscapeApiTest : public TemporalEscapeApiTest {
 TEST_F(LogarithmEscapeApiTest, ConnectedAnsiWideTranslationLengthsOwningTruncationAndDisconnectedGuard) {
   ASSERT_NO_FATAL_FAILURE(native_sql_requires_connection());
   std::string text="SELECT {fn LOG(?)},{fn LOG10(?)}";std::array<SQLCHAR,64> output{};SQLINTEGER length=97;
-  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS,output.data(),output.size(),&length));
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS,output.data(),static_cast<SQLINTEGER>(output.size()),&length));
   EXPECT_STREQ("SELECT LN(?),LOG(?)",reinterpret_cast<char*>(output.data()));EXPECT_EQ(19,length);
   text="mutated";EXPECT_STREQ("SELECT LN(?),LOG(?)",reinterpret_cast<char*>(output.data()));
   std::vector<SQLWCHAR> input,answer;
@@ -11661,7 +11661,7 @@ TEST_F(LogarithmEscapeApiTest, LocalRefusalKeepsOwningSiblingAndNumericCapabilit
   ASSERT_NO_FATAL_FAILURE(connect());ASSERT_EQ(SQL_SUCCESS,execute("owning row"));const auto calls=seen->queries;
   SQLHSTMT sibling{};ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));
   std::string text="SELECT {fn LOG10(?,?)}";std::array<SQLCHAR,16> output;output.fill(0x5a);const auto prior=output;SQLINTEGER length=97;
-  EXPECT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS,output.data(),output.size(),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,output);EXPECT_EQ(97,length);
+  EXPECT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS,output.data(),static_cast<SQLINTEGER>(output.size()),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,output);EXPECT_EQ(97,length);
   EXPECT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS));EXPECT_EQ(calls,seen->queries);
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));char owned[16]{};SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,owned,sizeof(owned),&bytes));EXPECT_STREQ("owning",owned);
   SQLUINTEGER mask=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_NUMERIC_FUNCTIONS,&mask,sizeof(mask),nullptr));EXPECT_EQ(0u,mask);
