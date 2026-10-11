@@ -7112,7 +7112,7 @@ TEST_F(RetrieveDataTest, PreparedMoreResultsPersistenceStructuralFailureAndSibli
   SQLSMALLINT count=99;EXPECT_EQ(SQL_ERROR,SQLNumResultCols(stmt,&count));EXPECT_EQ(99,count);
   checkpoint("after baseline line 7035");
   checkpoint("before baseline line 7036");
-  *seen->date_result=valid_prepared_result;ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));EXPECT_EQ(9,rows[0].integer);
+  checkpoint("before recovery: restore valid owning result");*seen->date_result=valid_prepared_result;checkpoint("after recovery: restore valid owning result");checkpoint("before recovery: execute restored result");ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));checkpoint("after recovery: execute restored result");checkpoint("before recovery: fetch restored result");ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));checkpoint("after recovery: fetch restored result");checkpoint("before recovery: check restored output");EXPECT_EQ(9,rows[0].integer);checkpoint("after recovery: check restored output");
   checkpoint("after baseline line 7036");
   checkpoint("before baseline line 7037");
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));EXPECT_EQ(1,sibling_output);EXPECT_EQ(sizeof(SQLINTEGER),sibling_length);
