@@ -1,51 +1,78 @@
 # Redshift development and qualification cadence
 
-Human approved on 2026-10-09. This changes execution cadence, not product scope,
-release quality, native-test authority or the rules for parked lanes. It supersedes
-older instructions to run the entire local graph and full CI for every feature
-commit. Existing goal deliverables and final acceptance gates remain intact.
+Human approved trial on 2026-10-11. This supersedes the 2026-10-09 24-hour
+cadence, the earlier 48-hour trial, per-feature live execution, routine extra-profile
+checks and mandatory separate API worker.
+Product scope, independent review, live-test authority and final acceptance remain.
 
-- Develop coherent workflow batches on macOS/iODBC UCS4. Run meaningful focused
-  tests while coding, then the relevant primary-profile regression, staging,
-  architecture and package checks. Keep independent consequential source and
-  integration review, exact source/binary evidence and owned-process cleanup.
-- Before choosing extra checks, record the affected contracts and concrete risk.
-  Unicode representation or pointer/layout changes need affected width and
-  sanitizer checks; platform code needs its platform; crypto/provider, public ABI,
-  build and package changes need affected configurations. Run these promptly,
-  rather than deferring a known risk to tomorrow. A filename alone is not a reason
-  to repeat every profile. Review cannot prove an unexecuted platform passed.
-- Reviewed, primary-qualified intermediate commits may be pushed while full
-  cross-platform acceptance is pending. `.github/workflows/primary.yml` runs the
-  existing UCS4 unit, ordinary PostgreSQL and verified-TLS job on pushes. That
-  PostgreSQL product profile is primary regression, not native Redshift proof.
-- The full `.github/workflows/ci.yml` retains every existing job and runs on pull
-  requests or explicit dispatch. Root uses the existing 15-minute continuation
-  to dispatch it on the exact pushed branch at the first eligible wake when
-  24 hours since the previous full start is due and changed commits need
-  qualification; record host/active-run delays as overdue debt. Dispatch sooner for
-  a concrete cross-platform risk or release acceptance. Do not replay an already
-  accepted unchanged head. There is no new timer or default-branch-only cron.
-- Record the exact workflow, branch, head, run ID and UTC start durably in private
-  `continuation/ci-cadence.json`. Check actual active runs before dispatch; adopt
-  an existing matching run. Distinct primary/full concurrency groups explicitly
-  use noncancelling queue:max (GitHub limit100 pending); do not dispatch when a
-  queue is full, and report that concrete capacity wait. One root-owned full-CI
-  watcher follows one immutable
-  commit. Do not cancel it on a newer push or start a duplicate. Later work may
-  proceed; its bytes are not qualified by the earlier run. Overdue work stays
-  explicitly overdue while a full run is active, then tests the latest ready head.
-- Collect actual failures and make one coherent reviewed correction batch where
-  related. Re-run affected checks; retain unrelated accepted evidence only when
-  source and executed inputs prove applicability. Repeat native tests only for
-  changed native behavior or a concrete execution gap, under existing authority.
-- A feature is implemented/primary-qualified before it is cross-platform
-  accepted. Full goal/release acceptance still needs its required complete graph,
-  exact-head green full CI, independent final audit, reaps and PostgreSQL shutdown.
-  A primary green, an ancestor green or elapsed 24 hours cannot establish this.
+## Development loop
 
-Keep the dedicated API worker implementing the next ready product package while
-root and reviewers qualify and integrate. Native Redshift and application proof
-remain distinct. This cadence creates no cloud, credential, principal, resource,
-network, spending or authorization-horizon extension. Both existing timers and
-periodic/ad hoc reviewed build cleanup remain active.
+- Use one incremental macOS/iODBC UCS4 working build for each typical coherent
+  candidate. Run focused tests, relevant primary regression and applicable
+  architecture, staging and packaging checks. Reuse its graph. Do not routinely
+  build UCS2, sanitizer, alternative providers, Windows or Linux per candidate.
+- Inspect portability and affected contracts during source review; record other
+  profiles as pending rather than claiming they passed. Collect their checks in
+  the periodic sweep. Run an extra check early only for an actual failure, a
+  concrete safety/ABI defect needing immediate diagnosis, an explicit human
+  request; record the reason. Pointer/layout/Unicode
+  changes alone do not automatically trigger every profile.
+- Root owns implementation, qualification, integration, Git and CI as one
+  continuous workflow. Independent consequential source/result/final review
+  remains independent. No mandatory dedicated API worker or repeated author/
+  qualification handoff. Reuse an existing worker only for a substantial,
+  nonoverlapping package when it demonstrably saves time; do not create agents.
+- Keep reviewed primary-qualified pushes moving. The existing primary workflow
+  on pushes remains primary regression; it does not prove native Redshift.
+- Author meaningful happy, boundary and recovery GoogleTests with each product
+  change. Queue new and affected live cases for the next 12-hour checkpoint;
+  do not execute a separate live batch or prepare paid admission per feature.
+  Continue reviewed primary-qualified commits and pushes with full-CI and live
+  acceptance explicitly pending. A pending qualification goal does not prevent
+  implementation of the next authorized coherent product package.
+
+## Combined 12-hour qualification checkpoint
+
+- The existing 15-minute continuation checks the durable 12-hour due time in
+  `continuation/ci-cadence.json`; no additional timer or watcher. When changed
+  source has accumulated, freeze a ready pushed head and the applicable pending
+  test inventory. Reuse a matching completed green or active full GitHub CI run;
+  otherwise dispatch one full platform/profile run on that exact head.
+- First make full GitHub CI green. Collect failures, make coherent independently
+  reviewed corrections, run affected local checks, push and qualify the corrected
+  head. Follow one immutable run at a time; preserve original failures and avoid
+  duplicate runs, automatic cancellation and unchanged accepted-gate replay.
+- Only after that exact tested source head has green full CI, bind its current
+  primary native binary and run one reviewed finite Redshift batch containing
+  accumulated new/affected cases and applicable authorized regression. Author
+  tests during development; batch their execution and admission at this checkpoint.
+  Record the selected inventory, exact source/binary/head, evidence applicability,
+  pending cases and admission dependencies. Parked AUTH/Excel/MySQL and tests
+  outside current authority are excluded, not silently counted as passed.
+- Collect live failures into coherent fixes in the same checkpoint. Review and
+  test affected changes, push, restore green full CI for the corrected tested head,
+  then rerun affected live cases with fresh finite admission. Retain unchanged
+  evidence only where source/input applicability actually holds. Never blindly
+  replay a consumed approval, force an unsafe follow-up, or loop without a finite
+  execution/accounting horizon; record concrete unresolved failures for continuation.
+- Keep one bounded reviewed test-heavy cluster window for genuinely ready tests
+  and admitted corrections when authorized. Pause during longer development/build/
+  CI gaps, at window end or spending guards. Paid execution still requires fresh
+  reviewed accounting/controls, canonical lock, one-use consumption, exact source/
+  binary binding, bounded execution and exact-principal cleanup. Scheduling grants
+  no new authority, resource, network, spending or authorization-horizon extension.
+- Do not advance full/live qualification merely to close an individual feature
+  goal. Ordinary product pushes stay primary-qualified with acceptance debt until
+  the checkpoint. Only an explicit human request or concrete immediate safety
+  diagnosis justifies an earlier full check; earlier paid live execution requires
+  explicit human scheduling direction and the same finite admission.
+- Final goal/release acceptance still requires the original product scope, complete
+  required graph, exact-head green full CI, applicable actual live evidence,
+  independent final review, PostgreSQL shutdown and owned-process reaps. Pending
+  evidence remains pending; the cadence does not reduce quality requirements.
+- Preserve noncancelling CI queue groups and inspect GitHub's pending-run capacity
+  before dispatch. Record a real queue wait instead of duplicating watchers.
+
+Keep the continuation, cost monitor and periodic/ad hoc cleanup active. The
+trial is reversible; change it only on further human instruction. Preserve old
+results, immutable candidates, original failures and unrelated dirty worktrees.

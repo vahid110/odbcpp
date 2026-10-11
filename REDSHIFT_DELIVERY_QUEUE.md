@@ -26,9 +26,9 @@ authority, change acceptance gates or resume AUTH/MySQL.
 | A16 | Single-set parameter operation masks | Separate sealed source; independent source review accepted, uncompiled | PROCEED/IGNORE selection remains outside A11–A15; joined compilation, runtime, integration and CI are still required. |
 | A17 | Opt-in automatic parameter descriptions | Separate sealed source; independent source review accepted, uncompiled | SQL_ATTR_ENABLE_AUTO_IPD remains opt-in and uses existing description/capability/session policy; outside A11–A15. |
 | A18 | Catalog metadata identifiers | Separate sealed source002; independent source review accepted, uncompiled | SQL_ATTR_METADATA_ID semantics cover all eight catalog APIs, preserving special SQLTables enumeration and guarded primary-key routing; outside A11–A15. |
-| A19 | Column-wise prepared command parameter arrays | Dedicated API worker implementing reviewed contract | SDK owns normalized description authority and same-lease owning sequencing; adapter owns pointer/status policy. No SELECT arrays, native batching or active-array cancellation support is promised. Independent source review, fresh consumer rebuild and qualification remain required. |
+| A19 | Column-wise prepared command parameter arrays | Historical candidate; current status in handoff | SDK owns normalized description authority and same-lease owning sequencing; adapter owns pointer/status policy. No SELECT arrays, native batching or active-array cancellation support is promised. Independent source review, fresh consumer rebuild and qualification remain required. |
 | P1 | Current private UCS4 packaged runtime | Root / qualification; preparation complete | Runtime files, relative links, external dependencies and relocated loader resolution independently accepted. This does not qualify Driver Manager or Excel execution. |
-| P2 | Current packaged native discovery, typed import and prepared refresh | Root / qualification; live execution blocked | Reuse the three checked-in package-import cases and prior native evidence; bind current source/binary to a fresh finite admission. Exact-decimal/NULL, metadata, parameter rebinding and early-close ownership must work on real Redshift. Human testing horizon expired; no live run or resume until renewed authorization and reviewed controls. |
+| P2 | Current packaged native discovery, typed import and prepared refresh | Historical qualification snapshot; current status in handoff | Reuse the three checked-in package-import cases and prior native evidence; bind current source/binary to a fresh finite admission. Exact-decimal/NULL, metadata, parameter rebinding and early-close ownership must work on real Redshift. The 2026-10-09 snapshot had an expired testing horizon; current authority and fresh admission are governed by the protected handoff and 12-hour checkpoint. |
 | P3 | First Excel acceptance on this Mac | Root / qualification; application prerequisite blocked | Installed driver connects with verified TLS, browses metadata, imports representative typed rows and refreshes using application-generated queries. Record trust-source configuration and exact application/Driver Manager/runtime. Requires administrator installation of the missing iODBC frameworks; no SecurityAgent bypass. |
 | P4 | Pinned official-driver comparison of that same workflow | Root / qualification; not admitted | Same fixture and equivalent verified TLS with pinned AWS 2.2.2.0 binary. Record type/metadata/query/refresh differences. Reference execution bounds and application prerequisites must be closed first; source research alone is not a binary comparison. |
 
@@ -50,32 +50,38 @@ deliverables, not claims that implementation packages are ready or APIs absent.
 
 ## Scheduling and acceptance
 
-Use [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md), approved 2026-10-09.
+Use [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md), trial approved 2026-10-11.
 Primary-profile qualification permits coherent intermediate pushes; full matrix
-qualification runs every24h for changed heads and promptly for concrete sensitive
-changes. Root tracks exact heads and acceptance debt; only final full graph and
-green exact-head full CI close the goal/release. The dedicated API lane continues.
+qualification runs every12h for changed heads. First make exact-head full GitHub
+CI green, then execute accumulated new/affected and applicable authorized live
+cases in one finite batch. Author live tests alongside features, defer their
+admission/execution to that checkpoint and keep pending acceptance explicit.
+Collect CI/live failures into reviewed corrections; restore green CI on the
+corrected tested head before rerunning affected live cases. Extra
+profiles run early only for actual failure, immediate safety/ABI diagnosis, an
+explicit human request. Root tracks exact heads and acceptance debt; only final full graph and
+green exact-head full CI close the goal/release. Root continues product development within the consolidated workflow.
 This replaces historical per-feature-commit full-graph sequencing below.
 
-The API worker stays on product selection and implementation. Root and existing
-reviewers own packaging, qualification, integration and CI. A qualification wait
-does not replace ready API work. Every development turn must record actual lane
-states and either dispatch the ready successor or state its concrete dependency.
+Root owns product implementation, qualification and integration as one continuous
+workflow, with independent review. A dedicated API worker is optional only for a
+substantial nonoverlapping package that saves time. Record actual worker state
+and the next product task; do not manufacture lane-filling work or repeated handoffs.
 
 Before starting a production package, name the observable behavior, source-backed
 gap, selected APIs/files, related scenarios and completion condition. Select the
 successor during current review/builds; do not turn a list of possible tests into
 an unbounded queue. A1–A10 and their required repairs are implementation/local/CI accepted. The
 current integration batch is A11–A15, the binding and transfer-settings workflow.
-A16–A18 remain separate source-reviewed successors. The dedicated API worker
-implements A19 while root owns current qualification and integration. Native
-qualification remains distinct and requires renewed authority.
+A16–A19 entries retain their historical candidate evidence; current assignments
+and acceptance are owned by the handoff. Root now uses the consolidated workflow.
+Native qualification remains distinct and requires current finite admission.
 The handoff owns changing worker, gate and CI facts; this queue records the
 deliveries and their acceptance requirements. Following milestones remain
 separate work and do not become qualified when this batch closes.
 
 Tests accompany the product change. Run focused checks during development and relevant primary regression per
-coherent batch; use daily full qualification and immediate risk-based extra checks
+coherent batch; use 12-hour full qualification and only concrete early exceptions
 under DEVELOPMENT_WORKFLOW.md, with bounded repairs for actual failures. Independent cleanup review and exact-head CI remain mandatory.
 No passed gate is repeated without new source or a concrete execution gap.
 

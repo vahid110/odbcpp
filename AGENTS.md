@@ -31,22 +31,15 @@ It defines the repeatable workflow; this file defines durable repository rules.
 - Inspect actual agent state. A delivered package is not continuing work. Check
   SDK/core, Redshift catalog/types, MySQL and authentication at continuation
   checkpoints; distinguish active work from a named prerequisite or wait.
-- Before ending a development turn, reconcile every authorized worker's actual
-  state with the handoff. For a completed worker, dispatch the next ready bounded
-  package in that turn, or record why none is ready and the next action that can
-  unblock it. Do not leave an idle worker represented as active development.
-- Keep the current API worker's assignment, completion condition and next queued
-  product task in the handoff. Select the successor while the current package is
-  being reviewed or tested. Packaging, diagnosis and source selection must be
-  labeled as such; they do not count as API implementation. If selection finds
-  no defect, root must choose the next applicable planned task or explicitly
-  record an idle lane; do not manufacture tests or silently await another timer.
-- Keep the authorized Redshift API/feature lane and qualification lane separate
-  and concurrent when ready. Reserve the API worker for selecting and implementing
-  product work; do not reassign it to packaging, qualification, CI watching or
-  reviews. Root and existing reviewers own those tasks. Qualification continues
-  with required safeguards, but a qualification wait does not silently idle or
-  replace ready feature work. Record each lane's actual state independently.
+- Apply the human-approved consolidated Redshift workflow in
+  `DEVELOPMENT_WORKFLOW.md`: root owns implementation through qualification and
+  integration; independent review remains separate. Do not require a dedicated
+  API worker or create repeated handoffs for small coherent changes. Reuse an
+  existing worker only for a substantial nonoverlapping package that saves time.
+- Before ending a development turn, reconcile actual workers and the next
+  product task with the handoff. Completed, selection-only or idle workers are
+  not active implementation. Do not invent work to fill a lane or let routine
+  qualification prevent ready product progress.
 - Prefer attached managed Git worktrees for independent implementation. Reuse a
   suitable checkout only after checking its baseline and local changes. Preserve
   historical dirty worktrees; do not reset them to make room for a new task.
@@ -61,8 +54,8 @@ It defines the repeatable workflow; this file defines durable repository rules.
   current CMake rejects a MySQL product build. Inspect real options and target
   inventories rather than assuming every historical preset is valid.
 - Use distinct owned build directories. For Redshift, follow [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md):
-  primary macOS/iODBC UCS4 development, risk-based immediate extra checks and
-  daily full qualification. Run focused checks during development and relevant
+  one incremental macOS/iODBC UCS4 development build and 12-hour full
+  qualification. Run focused checks during development and relevant
   primary regression once per coherent batch. Keep full final acceptance gates.
   Inspect `.github/workflows/` and `cmake/Tests.cmake` for the current graph.
 - Preserve original failures. Separate source inspection, compile/link,
@@ -71,13 +64,13 @@ It defines the repeatable workflow; this file defines durable repository rules.
   from an older binary or another candidate.
 - Reap gate processes and independently verify private PostgreSQL shutdown
   before final acceptance. Integrate reviewed exact bytes. Primary-qualified intermediate Redshift commits
-  may precede daily full CI; label cross-platform acceptance pending. Follow one
+  may precede periodic full CI; label cross-platform and live acceptance pending. Follow one
   immutable exact-head full run to completion before final goal/release acceptance.
   No status-only pushes, automatic cancellation or duplicate watchers.
 
 ## Build storage and periodic cleanup
 
-Root owns cleanup; the API worker keeps its product assignment. Use the existing
+Root owns cleanup within the consolidated workflow. Use the existing
 continuation timer, with no separate cleanup agent or timer.
 
 - Check actual free space at each continuation. Inventory obsolete project build
@@ -109,7 +102,7 @@ continuation timer, with no separate cleanup agent or timer.
   launching builds that predictably exhaust disk space. Review finite retirement
   of redundant retained outputs rather than keeping every build forever or
   repeatedly freeing only enough for the next command. Do not create a cleanup
-  goal or divert the API worker to housekeeping.
+  goal or create a separate housekeeping worker.
 
 ## Continuity and authority
 
@@ -130,11 +123,13 @@ never infer budget, credentials, SQL coverage or a horizon extension from a
 timer, synthetic pass, goal or billing estimate. Actual AWS SDK acquisition and
 verified-TLS Redshift login remain separate completion requirements.
 
-## Current Redshift cadence — human approved 2026-10-09
+## Current Redshift cadence — human approved 12-hour batching 2026-10-11
 
 [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md) supersedes the older per-batch
-full-graph/CI sequencing below. The existing continuation owns the 24-hour full
-run cadence and durable private ci-cadence.json; no new timer. API implementation
+full-graph/CI sequencing below. The existing continuation owns the 12-hour full
+CI-first/live-batch cadence and durable private ci-cadence.json; no new timer.
+Author live tests during development, defer per-feature execution/admission to the
+checkpoint and collect failures into coherent reviewed fixes. Product implementation
 continues while qualification runs. All final scope, review, live authority,
 security and cleanup requirements remain.
 
@@ -143,20 +138,18 @@ security and cleanup requirements remain.
 Default to coherent workflow batches, normally three to five related scenarios
 when ready and compatible, rather than a separate integration cycle per case.
 Run focused checks while developing, then relevant coherent primary regression
-and independent integration review. Intermediate pushes may precede the daily
+and independent integration review. Intermediate pushes may precede the periodic
 full graph and full CI under DEVELOPMENT_WORKFLOW.md; full final acceptance stays
 mandatory.
 Preserve each scenario's assertions and result; never add unrelated work merely
 to fill a batch or replay already qualified milestones.
 
-CI and real Redshift tests provide distinct evidence. A bounded diagnostic run
-may precede final CI when its exact candidate source, actual binary, relevant
-local checks and finite cloud controls have received independent review. Record
-it as diagnostic evidence; final acceptance still requires all applicable local
-gates, independent review, exact-head green CI and actual live proof. This does
-not bypass an existing launcher that requires CI: any diagnostic-specific control
-change must be independently reviewed before use. Finish the current Unicode
-alias batch under its already selected controls.
+CI and real Redshift tests provide distinct evidence. Under the human-approved
+12-hour policy, first make full GitHub CI green on the exact tested head, then
+execute the accumulated live batch. Earlier diagnostic live execution requires
+explicit human scheduling direction and unchanged finite authority/admission;
+ordinary feature completion is not an exception. Preserve original failures,
+source/binary binding, independent review and exact-principal cleanup.
 
 Group ready, reviewed live scenarios into one finite cluster session with explicit
 per-case and aggregate statement/time bounds, durable one-use admission and

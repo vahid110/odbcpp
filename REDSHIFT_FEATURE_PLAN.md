@@ -12,11 +12,17 @@ qualification and the first packaged Excel acceptance on this Mac. Independent
 review, security and regression/CI/cleanup gates remain active. MySQL and unrelated
 SDK feature work remain parked by the user's request.
 
-## Development cadence — human approved 2026-10-09
+## Development cadence — human approved trial 2026-10-11
 
 Follow [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md): primary macOS/iODBC
-UCS4 development, immediate risk-based additional checks, coherent product batches
-and full qualification every24h through the existing continuation. Intermediate
+UCS4 incremental development only, coherent product batches and full profile/
+platform qualification every12h through the existing continuation. At that checkpoint, first make exact-head full GitHub CI green, then run
+accumulated new/affected and applicable authorized Redshift live cases together.
+Author live tests with each feature, defer execution/admission to that checkpoint
+and fix actual CI/live failures in coherent batches; restore green CI before
+corrected live execution. Intermediate pushes retain explicit live acceptance debt. Root consolidates implementation, qualification and
+integration with independent review. Other profiles run early only for actual
+failure, immediate safety/ABI diagnosis, explicit human request. Intermediate
 reviewed/primary-qualified pushes need not await full CI. Final goal/release
 acceptance still needs its required complete graph and exact-head green full CI.
 This supersedes historical per-batch full-graph sequencing; product priorities,
@@ -51,8 +57,8 @@ Cross-platform packaging/regression remains a gate throughout. Move the selected
 live workflow to one CI platform early, then expand supported OS/Driver Manager/
 Unicode/crypto coverage. Local native evidence does not certify other platforms.
 Use checked-in GoogleTests for feature assertions, with Python only for bounded
-setup, selection, credentials, accounting and cleanup. Run native checkpoints
-promptly when their actual source/binary/control prerequisites are ready; do not
+setup, selection, credentials, accounting and cleanup. Run accumulated native checkpoints at the 12-hour CI-first checkpoint when
+their source/binary/control prerequisites are ready; do not
 introduce generic proof frameworks or rerun unchanged matrices between them.
 Independent review remains focused on consequential changes and final integration.
 
@@ -301,20 +307,18 @@ MySQL SDK proof continues until that activation gate is ready.
 Default to coherent workflow batches, normally three to five related scenarios
 when ready and compatible, rather than a separate integration cycle per case.
 Run focused checks while developing, then relevant coherent primary regression
-and independent integration review. Intermediate pushes may precede the daily
+and independent integration review. Intermediate pushes may precede the periodic
 full graph and full CI under DEVELOPMENT_WORKFLOW.md; full final acceptance stays
 mandatory.
 Preserve each scenario's assertions and result; never add unrelated work merely
 to fill a batch or replay already qualified milestones.
 
-CI and real Redshift tests provide distinct evidence. A bounded diagnostic run
-may precede final CI when its exact candidate source, actual binary, relevant
-local checks and finite cloud controls have received independent review. Record
-it as diagnostic evidence; final acceptance still requires all applicable local
-gates, independent review, exact-head green CI and actual live proof. This does
-not bypass an existing launcher that requires CI: any diagnostic-specific control
-change must be independently reviewed before use. Finish the current Unicode
-alias batch under its already selected controls.
+CI and real Redshift tests provide distinct evidence. Under the human-approved
+12-hour policy, first make full GitHub CI green on the exact tested head, then
+execute the accumulated live batch. Earlier diagnostic live execution requires
+explicit human scheduling direction and unchanged finite authority/admission;
+ordinary feature completion is not an exception. Preserve original failures,
+source/binary binding, independent review and exact-principal cleanup.
 
 Group ready, reviewed live scenarios into one finite cluster session with explicit
 per-case and aggregate statement/time bounds, durable one-use admission and

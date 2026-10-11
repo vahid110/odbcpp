@@ -7,15 +7,16 @@ description: Prepare, qualify, review and integrate a bounded ODBCPP implementat
 
 Use `AGENTS.md` for repository rules and the active handoff for current facts.
 Apply its build storage and periodic cleanup policy before resource admission and
-at batch closure; root owns cleanup while the API lane continues product work.
+at batch closure; root owns the consolidated implementation/qualification/integration loop.
 Do not turn this workflow into new product scope or execution permission.
 
 ## Select and isolate
 
 Read the actual Git state, applicable plans and current task evidence. Name the
 contract gap and observable completion condition before selecting files. Check
-all four product lanes and actual agents; promptly reuse an available worker for
-a useful finite nonoverlapping package when its prerequisites permit work.
+the current Redshift product task and actual agents. Root implements and qualifies
+coherent batches directly; reuse an existing worker only for a substantial
+nonoverlapping package that saves time. Independent review stays separate.
 
 For independent implementation, inspect attached managed worktrees first.
 Preserve dirty historical checkouts. Create a new managed worktree at the exact
@@ -56,18 +57,26 @@ baseline, pins, exact selected diff, apply/reverse checks and unrelated changes.
 
 For Redshift, apply [DEVELOPMENT_WORKFLOW.md](../../../DEVELOPMENT_WORKFLOW.md).
 Use macOS/iODBC UCS4 as the primary development profile: focused checks, then
-relevant coherent regression/staging/architecture/package checks. Select immediate
-extra width/sanitizer/platform/provider/ABI checks from concrete changed-contract
-risk; do not claim unexecuted profiles would pass. Keep independent review,
+relevant coherent regression/staging/architecture/package checks. Collect additional width/sanitizer/platform/provider
+checks into the 12-hour sweep; run one early only for actual failure, immediate
+safety/ABI diagnosis, or explicit human request, with a
+recorded reason. Do not claim unexecuted profiles passed. Keep independent review,
 source/binary binding, bounded execution and PostgreSQL/process cleanup.
 
-Reviewed primary-qualified feature commits may be pushed before full qualification;
-report their cross-platform state as pending. Root uses the existing continuation
-and durable private ci-cadence.json for a full matrix every24h when changed heads
-need qualification, earlier for sensitive changes or release acceptance. Inspect
-actual runs before dispatch, record exact branch/head/run/start, and follow one
-immutable full-run watcher without cancellation or duplication. An old run does
-not qualify newer bytes. Continue the separate API lane during this wait.
+Reviewed primary-qualified commits and pushes continue with full-CI/live
+acceptance pending. Author live GoogleTests with the feature and queue their
+execution; do not create per-feature paid admission. Root uses the existing
+continuation and private ci-cadence.json for a combined checkpoint every12h:
+first make full GitHub CI green on the exact ready pushed head, then run the
+accumulated new/affected and applicable authorized Redshift regression cases in
+one reviewed finite live batch. Group failures into coherent reviewed fixes,
+push, restore exact-head green full CI before corrected live execution and rerun
+only affected cases under fresh admission. Reuse validated runners and accepted
+unchanged evidence; use one combined admission review and one result/final review.
+Do not duplicate watchers, repeatedly rebuild admission scaffolding or stop ready
+product implementation for pending periodic acceptance. A goal remains unfinished
+until its original acceptance is actually proved; pending acceptance is not an
+implementation blocker for the next authorized product package.
 
 Group related actual failures into reviewed corrections and re-run affected gates;
 retain unchanged evidence only by actual source/input applicability. Do not replay
@@ -85,8 +94,8 @@ do not weaken tests or mix unrelated source into a claimed repair-only candidate
 
 Report what changed, why, actual checks and remaining limits. Mark only the
 finite package complete; synthetic milestones do not close native acquisition
-and verified login. Update current handoff facts in place and assign the next
-ready bounded lane package. Preserve archived failures and protected cloud
+and verified login. Update current handoff facts in place and select or continue the next
+ready product task. Preserve archived failures and protected cloud
 admission. Keep secrets and credential/accounting artifacts outside the repo.
 
 The app's goal tracks the intended outcome; the existing timer schedules
@@ -96,26 +105,24 @@ ownership. Inline diff comments and independent review assess concrete changes.
 
 ## Batch size and diagnostic execution
 
-The human-approved 2026-10-09 cadence above supersedes the older per-batch full
+The human-approved 2026-10-11 trial above supersedes the older per-batch full
 CI sequencing in this 2026-10-07 agreement; live controls are unchanged.
 
 Default to coherent workflow batches, normally three to five related scenarios
 when ready and compatible, rather than a separate integration cycle per case.
 Run focused checks while developing, then relevant coherent primary regression
-and independent integration review. Intermediate pushes may precede the daily
+and independent integration review. Intermediate pushes may precede the periodic
 full graph and full CI under DEVELOPMENT_WORKFLOW.md; full final acceptance stays
 mandatory.
 Preserve each scenario's assertions and result; never add unrelated work merely
 to fill a batch or replay already qualified milestones.
 
-CI and real Redshift tests provide distinct evidence. A bounded diagnostic run
-may precede final CI when its exact candidate source, actual binary, relevant
-local checks and finite cloud controls have received independent review. Record
-it as diagnostic evidence; final acceptance still requires all applicable local
-gates, independent review, exact-head green CI and actual live proof. This does
-not bypass an existing launcher that requires CI: any diagnostic-specific control
-change must be independently reviewed before use. Finish the current Unicode
-alias batch under its already selected controls.
+CI and real Redshift tests provide distinct evidence. Under the human-approved
+12-hour policy, first make full GitHub CI green on the exact tested head, then
+execute the accumulated live batch. Earlier diagnostic live execution requires
+explicit human scheduling direction and unchanged finite authority/admission;
+ordinary feature completion is not an exception. Preserve original failures,
+source/binary binding, independent review and exact-principal cleanup.
 
 Group ready, reviewed live scenarios into one finite cluster session with explicit
 per-case and aggregate statement/time bounds, durable one-use admission and

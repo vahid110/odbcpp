@@ -5,7 +5,25 @@ paused other implementation and assigned environment completion to this chat.
 Provisioning and admission now share this integration owner and the existing
 canonical state; do not create duplicate infrastructure in another chat.
 
-## Current execution order — human approved 2026-10-06
+## Current scheduling — human approved 2026-10-11
+
+[DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md) governs execution: author
+live GoogleTests with product changes, accumulate new/affected and applicable
+authorized regression cases, and execute them together every12h. First make
+full GitHub CI green on the exact tested head. Collect CI/live failures into
+coherent reviewed fixes and restore green CI before corrected live execution.
+Continue primary-qualified development and pushes with live acceptance pending;
+individual feature closure does not trigger an extra paid batch. Use the existing
+continuation and durable cadence state, not another timer or watcher.
+
+The protected current handoff owns actual authority, liabilities, resources,
+parked lanes and test results. The dated snapshots below retain their original
+scope/horizons and do not authorize replay or revive AUTH/application work.
+Every periodic batch still requires fresh reviewed finite admission, exact source/
+binary/control binding, one-use consumption, bounded execution and independent
+exact-principal cleanup. No budget or authorization-horizon extension follows.
+
+## Historical execution order — human approved 2026-10-06
 
 Follow the current [delivery order](REDSHIFT_FEATURE_PLAN.md#human-approved-delivery-order--2026-10-06):
 finish the prepared hex-text-to-VARBYTE checkpoint, then qualify the representative
@@ -28,7 +46,7 @@ execution, as recorded in the protected handoff. Reuse existing scripts; preserv
 original failures and verify independent cleanup. This plan creates no new
 cloud resource, IAM/network, budget or accounting-horizon authority.
 
-## Current bounded evidence and next qualification package
+## Historical bounded evidence and next qualification package
 
 At105cc87, CI37047693730 passed all required gates. Catalog window005 passed
 identity and the configured fixture metadata case, including legacy SQL_C_LONG
