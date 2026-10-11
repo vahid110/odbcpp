@@ -9342,8 +9342,8 @@ TEST_F(BulkBookmarkTest, PaddedOffsetBoundedPreflightRefusalAndRepairPreserveBas
   SQLPOINTER original{};
   ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ard,1,SQL_DESC_DATA_PTR,&original,0,nullptr));
   EXPECT_EQ(static_cast<SQLPOINTER>(&bulk_pages[0][0].value),original);
-  for (const auto& page : bulk_pages) {
-    for (const auto& row : page) { EXPECT_EQ(0xa1,row.before[0]); EXPECT_EQ(0xa3,row.before[2]); EXPECT_EQ(0xb1,row.after[0]); EXPECT_EQ(0xb3,row.after[2]); }
+  for (const auto& bulk_page : bulk_pages) {
+    for (const auto& row : bulk_page) { EXPECT_EQ(0xa1,row.before[0]); EXPECT_EQ(0xa3,row.before[2]); EXPECT_EQ(0xb1,row.after[0]); EXPECT_EQ(0xb3,row.after[2]); }
   }
   EXPECT_EQ(calls,seen->queries); EXPECT_TRUE(seen->transaction_calls.empty());
   EXPECT_EQ(SQL_ERROR,SQLBulkOperations(stmt,SQL_UPDATE_BY_BOOKMARK)); EXPECT_EQ("HY092",state());
@@ -9598,9 +9598,9 @@ TEST_F(RowWiseCommandArrayTest, SelectSequenceOwnsPaddedUnicodeNumericNullOffset
   ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_CHAR,untouched,sizeof(untouched),&null_length));
   EXPECT_EQ(SQL_NULL_DATA,null_length); EXPECT_EQ('x',untouched[0]);
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));
-  unsigned char sibling_value[4]{7,7,7,7}; SQLLEN sibling_length=0;
-  ASSERT_EQ(SQL_SUCCESS,SQLGetData(sibling,1,SQL_C_BINARY,sibling_value,sizeof(sibling_value),&sibling_length));
-  EXPECT_EQ(3,sibling_length); EXPECT_EQ(0,sibling_value[0]);
+  unsigned char sibling_value[4]{7,7,7,7}; SQLLEN sibling_binary_length=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(sibling,1,SQL_C_BINARY,sibling_value,sizeof(sibling_value),&sibling_binary_length));
+  EXPECT_EQ(3,sibling_binary_length); EXPECT_EQ(0,sibling_value[0]);
   EXPECT_EQ(0xff,sibling_value[1]); EXPECT_EQ(0x5c,sibling_value[2]); EXPECT_EQ(7,sibling_value[3]);
   ASSERT_NO_FATAL_FAILURE(guards());
   ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
@@ -10590,21 +10590,21 @@ TEST_F(TemporalEscapeApiTest, NativeSqlAnsiWideOwnsExactOutputAndPreservesTrunca
   SQLINTEGER length=-1;
   std::array<SQLCHAR,96> output{};
   ASSERT_NO_FATAL_FAILURE(native_sql_requires_connection());
-  ASSERT_EQ(SQL_SUCCESS, SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(input.data()),SQL_NTS,output.data(),output.size(),&length));
+  ASSERT_EQ(SQL_SUCCESS, SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(input.data()),SQL_NTS,output.data(),static_cast<SQLINTEGER>(output.size()),&length));
   EXPECT_EQ(expected,reinterpret_cast<const char*>(output.data())); EXPECT_EQ(static_cast<SQLINTEGER>(expected.size()),length);
   auto w=wide(input); std::array<SQLWCHAR,96> wo{};
-  ASSERT_EQ(SQL_SUCCESS,SQLNativeSqlW(dbc,w.data(),SQL_NTS,wo.data(),wo.size(),&length));
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSqlW(dbc,w.data(),SQL_NTS,wo.data(),static_cast<SQLINTEGER>(wo.size()),&length));
   const auto ew=wide(expected); EXPECT_EQ(0,std::memcmp(wo.data(),ew.data(),ew.size()*sizeof(SQLWCHAR)));
   struct { SQLCHAR before{17}; SQLCHAR value[4]{}; SQLCHAR after{83}; } short_output;
   ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(input.data()),SQL_NTS,short_output.value,4,&length));
   EXPECT_EQ("01004",state(SQL_HANDLE_DBC,dbc)); EXPECT_EQ(static_cast<SQLINTEGER>(expected.size()),length);
   EXPECT_STREQ("SEL",reinterpret_cast<const char*>(short_output.value)); EXPECT_EQ(17,short_output.before); EXPECT_EQ(83,short_output.after);
   std::string unicode="SELECT '\xC3\xA9', {fn NOW()}";
-  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(unicode.data()),SQL_NTS,output.data(),output.size(),&length));
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(unicode.data()),SQL_NTS,output.data(),static_cast<SQLINTEGER>(output.size()),&length));
   EXPECT_STREQ("SELECT '\xC3\xA9', GETDATE()",reinterpret_cast<const char*>(output.data()));
   std::vector<SQLWCHAR> uw;
   for(const auto ch : u"SELECT '\u00e9', {fn NOW()}") { uw.push_back(static_cast<SQLWCHAR>(ch)); }
-  ASSERT_EQ(SQL_SUCCESS,SQLNativeSqlW(dbc,uw.data(),SQL_NTS,wo.data(),wo.size(),&length));
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSqlW(dbc,uw.data(),SQL_NTS,wo.data(),static_cast<SQLINTEGER>(wo.size()),&length));
   std::vector<SQLWCHAR> ue;
   for(const auto ch : u"SELECT '\u00e9', GETDATE()") { ue.push_back(static_cast<SQLWCHAR>(ch)); }
   EXPECT_EQ(0,std::memcmp(wo.data(),ue.data(),ue.size()*sizeof(SQLWCHAR)));
@@ -10655,7 +10655,7 @@ TEST_F(TemporalEscapeApiTest, TranslationRefusalPreservesSiblingSnapshotAndRequi
   struct SiblingOwner { SQLHSTMT h; ~SiblingOwner() { if(h) SQLFreeHandle(SQL_HANDLE_STMT,h); } } owner{sibling};
   std::string invalid="SELECT {fn NOW(1)}"; std::array<SQLCHAR,8> guarded; guarded.fill(0x5a); const auto before=guarded;
   SQLINTEGER size=97;
-  ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(invalid.data()),SQL_NTS,guarded.data(),guarded.size(),&size));
+  ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(invalid.data()),SQL_NTS,guarded.data(),static_cast<SQLINTEGER>(guarded.size()),&size));
   EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc)); EXPECT_EQ(before,guarded); EXPECT_EQ(97,size);
   ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(invalid.data()),SQL_NTS));
   EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));
@@ -10683,14 +10683,14 @@ TEST_F(LocateEscapeApiTest, NativeSqlAnsiWideLengthsUnicodeAndShortOutputStayOwn
   const std::string expected="SELECT POSITION('fish' IN '\xC3\xA9\xE8\xA1\xA8" "fish')";
   std::array<SQLCHAR,128> out{};SQLINTEGER n=97;
   ASSERT_NO_FATAL_FAILURE(native_sql_requires_connection());
-  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS,out.data(),out.size(),&n));
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS,out.data(),static_cast<SQLINTEGER>(out.size()),&n));
   EXPECT_EQ(expected,reinterpret_cast<const char*>(out.data()));EXPECT_EQ(static_cast<SQLINTEGER>(expected.size()),n);
   std::vector<SQLWCHAR> input;
   for(const auto ch:u"SELECT {fn LOCATE('fish','\u00e9\u8868fish')}") { input.push_back(static_cast<SQLWCHAR>(ch)); }
   std::vector<SQLWCHAR> native;
   for(const auto ch:u"SELECT POSITION('fish' IN '\u00e9\u8868fish')") { native.push_back(static_cast<SQLWCHAR>(ch)); }
   std::array<SQLWCHAR,128> output{};
-  ASSERT_EQ(SQL_SUCCESS,SQLNativeSqlW(dbc,input.data(),SQL_NTS,output.data(),output.size(),&n));
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSqlW(dbc,input.data(),SQL_NTS,output.data(),static_cast<SQLINTEGER>(output.size()),&n));
   EXPECT_EQ(static_cast<SQLINTEGER>(native.size()-1),n);EXPECT_EQ(0,std::memcmp(output.data(),native.data(),native.size()*sizeof(SQLWCHAR)));
   struct {SQLWCHAR before{17};SQLWCHAR value[4]{};SQLWCHAR after{83};} short_value;
   ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLNativeSqlW(dbc,input.data(),SQL_NTS,short_value.value,4,&n));
@@ -10741,7 +10741,7 @@ TEST_F(LocateEscapeApiTest, LocalRefusalKeepsRequiredOutputsSiblingSnapshotAndCa
   SQLHSTMT sibling{};ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));
   struct Owner {SQLHSTMT h;~Owner(){if(h)SQLFreeHandle(SQL_HANDLE_STMT,h);}} owner{sibling};
   std::string bad="SELECT {fn LOCATE(a,b,c,d)}";std::array<SQLCHAR,8> buffer;buffer.fill(0x5a);const auto before=buffer;SQLINTEGER n=97;
-  ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),buffer.size(),&n));
+  ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),static_cast<SQLINTEGER>(buffer.size()),&n));
   EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(before,buffer);EXPECT_EQ(97,n);
   ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));struct{SQLINTEGER before{17},value{-9},after{83};} output;SQLLEN length=-1;
@@ -10759,7 +10759,7 @@ class LengthEscapeApiTest : public LocateEscapeApiTest {};
 TEST_F(LengthEscapeApiTest, NativeSqlAnsiWideUnicodeLengthsAndTruncationKeepGuards) {
   std::string text="SELECT {fn LENGTH('cat   ')}";std::array<SQLCHAR,128> out{};SQLINTEGER n=97;
   ASSERT_NO_FATAL_FAILURE(native_sql_requires_connection());
-  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS,out.data(),out.size(),&n));
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS,out.data(),static_cast<SQLINTEGER>(out.size()),&n));
   EXPECT_STREQ("SELECT LENGTH(RTRIM('cat   ', ' '))",reinterpret_cast<const char*>(out.data()));EXPECT_EQ(35,n);
   std::vector<SQLWCHAR> input,expected;
   for(const auto ch:u"SELECT {fn LENGTH('\u00e9\u8868   ')}") { input.push_back(static_cast<SQLWCHAR>(ch)); }
@@ -10798,7 +10798,7 @@ TEST_F(LengthEscapeApiTest, LocalErrorPreservesRequiredOutputsSiblingAndConserva
   ASSERT_NO_FATAL_FAILURE(connect());ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn LENGTH('cat   ')}"));
   SQLHSTMT sibling{};ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));struct Owner {SQLHSTMT h;~Owner(){if(h)SQLFreeHandle(SQL_HANDLE_STMT,h);}} owner{sibling};
   std::string bad="SELECT {fn LENGTH()}";std::array<SQLCHAR,8> buffer;buffer.fill(0x5a);const auto prior=buffer;SQLINTEGER n=97;
-  ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),buffer.size(),&n));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,buffer);EXPECT_EQ(97,n);
+  ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),static_cast<SQLINTEGER>(buffer.size()),&n));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,buffer);EXPECT_EQ(97,n);
   ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLINTEGER result=-91;SQLLEN length=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&result,sizeof(result),&length));EXPECT_EQ(3,result);
   SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_STRING_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions);
@@ -10822,7 +10822,7 @@ TEST_F(CalendarEscapeApiTest, NativeSqlAnsiWideLengthsUnicodeCommentsAndShortOut
   const std::string expected="SELECT CAST(DATE_PART(year, DATE '2024-02-29') AS INTEGER)";
   std::array<SQLCHAR,128> output{};SQLINTEGER length=97;
   ASSERT_NO_FATAL_FAILURE(native_sql_requires_connection());
-  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(input.data()),SQL_NTS,output.data(),output.size(),&length));
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(input.data()),SQL_NTS,output.data(),static_cast<SQLINTEGER>(output.size()),&length));
   EXPECT_EQ(expected,reinterpret_cast<const char*>(output.data()));EXPECT_EQ(static_cast<SQLINTEGER>(expected.size()),length);
   std::vector<SQLWCHAR> wide_input,wide_expected;
   for(const auto ch:u"SELECT {fn MONTH(/*\u00e9\u8868*/{d '2023-12-31'})}") { wide_input.push_back(static_cast<SQLWCHAR>(ch)); }
@@ -10871,7 +10871,7 @@ TEST_F(CalendarEscapeApiTest, RequiredOutputsSiblingSnapshotAndDiscoveryClaimsSu
   ASSERT_NO_FATAL_FAILURE(connect());ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn YEAR({d '2024-02-29'})}"));
   SQLHSTMT sibling{};ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));struct Owner{SQLHSTMT h;~Owner(){if(h)SQLFreeHandle(SQL_HANDLE_STMT,h);}} owner{sibling};
   std::string bad="SELECT {fn MONTH()}";std::array<SQLCHAR,8> buffer;buffer.fill(0x5a);const auto before=buffer;SQLINTEGER length=97;
-  ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),buffer.size(),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(before,buffer);EXPECT_EQ(97,length);
+  ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),static_cast<SQLINTEGER>(buffer.size()),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(before,buffer);EXPECT_EQ(97,length);
   ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLINTEGER year=-91;SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&year,sizeof(year),&bytes));EXPECT_EQ(2024,year);
   SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions);
@@ -10895,7 +10895,7 @@ TEST_F(ClockEscapeApiTest, NativeSqlAnsiWideLengthsUnicodeAndShortOutputKeepGuar
   const std::string expected="SELECT CAST(FLOOR(EXTRACT(second FROM TIMESTAMP '2024-02-29 23:59:59.999999')) AS INTEGER)";
   std::array<SQLCHAR,128> output{};SQLINTEGER length=97;
   ASSERT_NO_FATAL_FAILURE(native_sql_requires_connection());
-  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(input.data()),SQL_NTS,output.data(),output.size(),&length));
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(input.data()),SQL_NTS,output.data(),static_cast<SQLINTEGER>(output.size()),&length));
   EXPECT_EQ(expected,reinterpret_cast<const char*>(output.data()));EXPECT_EQ(static_cast<SQLINTEGER>(expected.size()),length);
   std::vector<SQLWCHAR> input_w,expected_w;
   for(const auto ch:u"SELECT {fn MINUTE(/*\u00e9\u8868*/{t '12:08:43'})}") { input_w.push_back(static_cast<SQLWCHAR>(ch)); }
@@ -10945,7 +10945,7 @@ TEST_F(ClockEscapeApiTest, LocalErrorPreservesOutputsSiblingSnapshotAndDiscovery
   ASSERT_NO_FATAL_FAILURE(connect());ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn SECOND({ts '2024-02-29 23:59:59.999999'})}"));
   SQLHSTMT sibling{};ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));struct Owner{SQLHSTMT h;~Owner(){if(h)SQLFreeHandle(SQL_HANDLE_STMT,h);}} owner{sibling};
   std::string bad="SELECT {fn MINUTE()}";std::array<SQLCHAR,8> buffer;buffer.fill(0x5a);const auto prior=buffer;SQLINTEGER length=97;
-  ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),buffer.size(),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,buffer);EXPECT_EQ(97,length);
+  ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),static_cast<SQLINTEGER>(buffer.size()),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,buffer);EXPECT_EQ(97,length);
   ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
   SQLINTEGER second=-91;SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,3,SQL_C_SLONG,&second,sizeof(second),&bytes));EXPECT_EQ(59,second);
   SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions);
@@ -10962,8 +10962,8 @@ class CatalogRouteApiTest : public BackendContractTest {
         "FKTABLE_CAT","FKTABLE_SCHEM","FKTABLE_NAME","FKCOLUMN_NAME","KEY_SEQ","UPDATE_RULE","DELETE_RULE",
         "FK_NAME","PK_NAME","DEFERRABILITY"};
     for(std::size_t i=0;i<names.size();++i){
-      const bool small=i==8 || i==9 || i==10 || i==13;
-      r.columns.push_back({names[i],NativeTypeInfo{small?ScalarType::SmallInt:ScalarType::VarChar,small?5u:0u,0,true}});
+      const bool is_small_integer=i==8 || i==9 || i==10 || i==13;
+      r.columns.push_back({names[i],NativeTypeInfo{is_small_integer?ScalarType::SmallInt:ScalarType::VarChar,is_small_integer?5u:0u,0,true}});
     }
     r.rows={{"db","s","parent","a","db","s","child","ra","1","3","3","fk",std::nullopt,"7"},
         {"db","s","parent","b","db","s","child","rb","2","3","3","fk",std::nullopt,"7"}};
@@ -11037,7 +11037,7 @@ TEST_F(CatalogRouteApiTest, IdentifierQuotedUnicodeRequestsKeepAllNamesAndDescri
   }
   tables.rows={{"db","s","é表%_\\X","TABLE",std::nullopt}};seen->date_result=tables;
   for(bool identifier:{false,true}){
-    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_METADATA_ID,reinterpret_cast<SQLPOINTER>(identifier?SQL_TRUE:SQL_FALSE),0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_METADATA_ID,reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(identifier?SQL_TRUE:SQL_FALSE)),0));
     std::string name=identifier?"\"é表%_\\X\"":"é表\\%\\_\\\\X";
     ASSERT_EQ(SQL_SUCCESS,SQLTables(stmt,reinterpret_cast<SQLCHAR*>(const_cast<char*>("db")),SQL_NTS,
         reinterpret_cast<SQLCHAR*>(const_cast<char*>("s")),SQL_NTS,reinterpret_cast<SQLCHAR*>(name.data()),SQL_NTS,nullptr,0));

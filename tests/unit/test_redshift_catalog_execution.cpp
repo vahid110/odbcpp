@@ -1615,8 +1615,10 @@ TEST(RedshiftIdentifierShow, UnsupportedIdentityModesAndNonmatchingFiltersNeverF
   TablesCatalogRequest input{TablesCatalogRequest::Mode::Tables,"selected","fixture","absent",std::nullopt};
   input.name_matches.object=CatalogNameMatch::IdentifierQuoted;
   for(unsigned variant=0;variant<5;++variant){SchemaSpy spy;auto names=input;
-    if(variant==0)spy.mode=RedshiftCatalogMode::Legacy;if(variant==1)spy.capability="3";
-    if(variant==2)names.schema.reset();if(variant==3)names.schema="";
+    if (variant == 0) { spy.mode = RedshiftCatalogMode::Legacy; }
+    if (variant == 1) { spy.capability = "3"; }
+    if (variant == 2) { names.schema.reset(); }
+    if (variant == 3) { names.schema = ""; }
     if(variant==4)spy.snapshot={SessionState::Transaction,SessionDisposition::ResetRequired};
     EXPECT_TRUE(spy.selects_catalog_request(names));auto result=spy.execute_catalog(names,rs::util::Deadline::max());ASSERT_FALSE(result);no_execution(spy);
   }

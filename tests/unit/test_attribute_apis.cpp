@@ -1636,7 +1636,7 @@ TEST_F(AttributeApisTest, VariableBookmarksRequireStaticAndPreserveClosedSetting
 
 
 TEST_F(AttributeApisTest, DeferredInputExportsAndLocalCancelKeepDisconnectedAndConnectedPolicies) {
-  for (const auto id : {SQL_API_SQLPARAMDATA,SQL_API_SQLPUTDATA,SQL_API_SQLCANCEL}) {
+  for (const auto id : std::array<SQLUSMALLINT,3>{SQL_API_SQLPARAMDATA,SQL_API_SQLPUTDATA,SQL_API_SQLCANCEL}) {
     SQLUSMALLINT flag=73;
     EXPECT_EQ(SQL_ERROR,SQLGetFunctions(connection_,id,&flag));
     EXPECT_EQ("HY010",diagnostic_state(SQL_HANDLE_DBC,connection_)); EXPECT_EQ(73,flag);
@@ -1645,7 +1645,7 @@ TEST_F(AttributeApisTest, DeferredInputExportsAndLocalCancelKeepDisconnectedAndC
   SQLUSMALLINT all[100]{}, bitmap[SQL_API_ODBC3_ALL_FUNCTIONS_SIZE]{};
   ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(connection_,SQL_API_ALL_FUNCTIONS,all));
   ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(connection_,SQL_API_ODBC3_ALL_FUNCTIONS,bitmap));
-  for (const auto id : {SQL_API_SQLPARAMDATA,SQL_API_SQLPUTDATA,SQL_API_SQLCANCEL}) {
+  for (const auto id : std::array<SQLUSMALLINT,3>{SQL_API_SQLPARAMDATA,SQL_API_SQLPUTDATA,SQL_API_SQLCANCEL}) {
     SQLUSMALLINT flag=SQL_FALSE;
     ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(connection_,id,&flag)); EXPECT_EQ(SQL_TRUE,flag);
     EXPECT_EQ(SQL_TRUE,all[id]); EXPECT_TRUE(SQL_FUNC_EXISTS(bitmap,id));
