@@ -62,7 +62,8 @@ PgBackendProvider::resolve_connection_options(ConnectionOptions options) const {
   };
   if (!no_nul(options.host) || !no_nul(options.database) ||
       !no_nul(options.user) || !no_nul(options.password) ||
-      !no_nul(options.ssl_ca_file) || !no_nul(options.ssl_ca_dir)) {
+      !no_nul(options.ssl_ca_file) || !no_nul(options.ssl_ca_dir) ||
+      !no_nul(options.application_name)) {
     return {rs::util::DbErrorCode::InvalidParameter,
             "Connection option contains an embedded NUL byte"};
   }
@@ -97,8 +98,14 @@ PgBackendProvider::resolve_connection_options(ConnectionOptions options) const {
   settings.startup_response_limits = options.startup_response_limits;
   settings.result_limits = options.result_limits;
   settings.input_limits = options.input_limits;
+  settings.application_name = std::move(options.application_name);
   if (!valid_resource_limits(settings)) {
     return {rs::util::DbErrorCode::InvalidParameter, "Resource limits are outside supported bounds"};
+  }
+
+  if (settings.application_name &&
+      settings.application_name->size() > settings.input_limits.max_connection_field_bytes) {
+    return {rs::util::DbErrorCode::ResourceLimit, "Database connection input limit exceeded"};
   }
 
   if (!settings.ssl_ca_file.empty() && !settings.ssl_ca_dir.empty()) {

@@ -265,3 +265,48 @@ TEST(BackendProviderTest, RedshiftCatalogModeDefaultExplicitInvalidAndProviderIs
   auto again = redshift.resolve_connection_options({});
   ASSERT_TRUE(again); EXPECT_EQ(RedshiftCatalogMode::Show, again->redshift_catalog_mode);
 }
+
+TEST(BackendProviderTest, ApplicationNameOwnsAbsentEmptyAndUnicodePerResolution) {
+  for (const bool redshift : {false, true}) {
+    postgres::PgBackendProvider provider{
+        BackendIdentity{redshift ? "redshift" : "postgresql", "test", "test"},
+        BackendConnectionDefaults{"host", 5439, "db", false}, std::nullopt,
+        redshift ? postgres::PgCatalogProfile::Redshift : postgres::PgCatalogProfile::PostgreSQL};
+    auto defaults = provider.resolve_connection_options({});
+    ASSERT_TRUE(defaults); EXPECT_FALSE(defaults->application_name);
+    ConnectionOptions options;
+    std::string input = "analytics-é表😀};literal";
+    options.application_name = input;
+    auto named = provider.resolve_connection_options(std::move(options));
+    ASSERT_TRUE(named); ASSERT_TRUE(named->application_name);
+    input.assign("changed");
+    EXPECT_EQ("analytics-é表😀};literal", *named->application_name);
+    options = {}; options.application_name = "";
+    auto empty = provider.resolve_connection_options(std::move(options));
+    ASSERT_TRUE(empty); ASSERT_TRUE(empty->application_name);
+    EXPECT_TRUE(empty->application_name->empty());
+    auto again = provider.resolve_connection_options({});
+    ASSERT_TRUE(again); EXPECT_FALSE(again->application_name);
+    EXPECT_EQ("analytics-é表😀};literal", *named->application_name);
+  }
+}
+
+TEST(BackendProviderTest, ApplicationNameRejectsNulAndOversizeWithoutLeakingAndRecovers) {
+  const auto& provider = configured_backend_provider();
+  ConnectionOptions options;
+  options.application_name = std::string("secret\0tail", 11);
+  auto invalid = provider.resolve_connection_options(options);
+  ASSERT_FALSE(invalid); EXPECT_EQ(rs::util::DbErrorCode::InvalidParameter, invalid.error());
+  EXPECT_EQ(std::string::npos, invalid.error_message().find("secret"));
+  options.application_name = "secret";
+  options.input_limits.max_connection_field_bytes = 5;
+  invalid = provider.resolve_connection_options(options);
+  ASSERT_FALSE(invalid); EXPECT_EQ(rs::util::DbErrorCode::ResourceLimit, invalid.error());
+  EXPECT_EQ(std::string::npos, invalid.error_message().find("secret"));
+  options.input_limits.max_connection_field_bytes = 6;
+  auto exact = provider.resolve_connection_options(options);
+  ASSERT_TRUE(exact); EXPECT_EQ("secret", *exact->application_name);
+  options.application_name = ""; options.input_limits.max_connection_field_bytes = 0;
+  auto empty = provider.resolve_connection_options(options);
+  ASSERT_TRUE(empty); EXPECT_TRUE(empty->application_name->empty());
+}

@@ -135,6 +135,15 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
       return {rs::util::DbErrorCode::ResourceLimit, "Database connection input limit exceeded"};
     }
   }
+  if (settings.application_name) {
+    if (settings.application_name->size() > input.max_connection_field_bytes) {
+      return {rs::util::DbErrorCode::ResourceLimit, "Database connection input limit exceeded"};
+    }
+    if (settings.application_name->find('\0') != std::string::npos) {
+      return {rs::util::DbErrorCode::InvalidParameter,
+              "Application name contains an embedded NUL byte"};
+    }
+  }
   if (settings.password.find('\0') != std::string::npos) {
     return {rs::util::DbErrorCode::InvalidParameter,
             "PostgreSQL authentication credential contains an "
@@ -150,7 +159,7 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
             "TLS CA settings require TLS"};
   }
   std::map<std::string, std::string> params;
-  params["application_name"] = "odbcpp";
+  params["application_name"] = settings.application_name.value_or("odbcpp");
   params["client_encoding"] = "UTF8";
   params["DateStyle"] = "ISO, YMD";
   std::vector<std::byte> startup;

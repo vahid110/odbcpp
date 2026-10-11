@@ -812,6 +812,7 @@ class FakeProvider final : public IBackendProvider {
     settings.startup_response_limits = options.startup_response_limits;
     settings.result_limits = options.result_limits;
     settings.input_limits = options.input_limits;
+    settings.application_name = std::move(options.application_name);
     if (!valid_resource_limits(settings)) return {DbErrorCode::InvalidParameter, "Invalid resource limits"};
     return settings;
   }
@@ -12134,3 +12135,71 @@ TEST_F(AccessModeHintTest, NeedDataRefusesModeChangeAndRecoveryDoesNotIssueContr
   ASSERT_EQ(1u, seen->parameters.size());
   EXPECT_EQ(std::optional<std::string>{"abc"}, seen->parameters[0].value);
 }
+
+namespace {
+class ApplicationNameOptionsTest : public BackendContractTest {
+ protected:
+  void SetUp() override {
+    BackendContractTest::SetUp(); seen->validate_redshift_mode = true;
+  }
+  SQLRETURN login_name(std::string input, bool wide = false) {
+    if (wide) {
+      auto text = rs::odbc::utf8_to_wide(input);
+      if (!text) {ADD_FAILURE() << "Test input is not UTF-8"; return SQL_ERROR;}
+      text->push_back(0);
+      return SQLDriverConnectW(dbc, nullptr, text->data(), SQL_NTS,
+          nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    }
+    return SQLDriverConnect(dbc, nullptr, reinterpret_cast<SQLCHAR*>(input.data()),
+        SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+  }
+};
+
+TEST_F(ApplicationNameOptionsTest, AnsiWideLiteralNamesEmptyAndOmissionReachOwningSettings) {
+  for (const bool wide : {false, true}) {
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;ApplicationName={analytics-é表😀;literal}}value}", wide));
+    ASSERT_TRUE(seen->settings.application_name);
+    EXPECT_EQ("analytics-é表😀;literal}value", *seen->settings.application_name);
+    EXPECT_EQ(0, seen->queries);
+    const auto owned = seen->settings.application_name;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;ApplicationName={}", wide));
+    ASSERT_TRUE(seen->settings.application_name); EXPECT_TRUE(seen->settings.application_name->empty());
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0", wide));
+    EXPECT_FALSE(seen->settings.application_name);
+    EXPECT_EQ("analytics-é表😀;literal}value", *owned);
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  }
+}
+
+TEST_F(ApplicationNameOptionsTest, InvalidRefusalIsRedactedAndFailedLoginDoesNotLeakIntoReconnect) {
+  for (const bool wide : {false, true}) {
+    EXPECT_EQ(SQL_ERROR, login_name("SERVER=fake;SSL=0;MaxConnectionFieldBytes=4;ApplicationName=secret", wide));
+    EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(0, seen->created); EXPECT_EQ(0, seen->queries);
+    SQLCHAR sqlstate[6]{}, message[128]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1,
+        sqlstate, nullptr, message, static_cast<SQLSMALLINT>(sizeof(message)), nullptr));
+    EXPECT_EQ(std::string::npos, std::string(reinterpret_cast<char*>(message)).find("secret"));
+  }
+  seen->connect_exception = 1;
+  EXPECT_EQ(SQL_ERROR, login_name("SERVER=fake;SSL=0;ApplicationName=failed"));
+  seen->connect_exception = 0;
+  ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;ApplicationName=repaired", true));
+  ASSERT_TRUE(seen->settings.application_name); EXPECT_EQ("repaired", *seen->settings.application_name);
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0"));
+  EXPECT_FALSE(seen->settings.application_name);
+}
+
+TEST_F(ApplicationNameOptionsTest, RecognitionDoesNotConsumeAuthenticationAliasOrHideUnknownWarning) {
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, login_name("SERVER=fake;SSL=0;ApplicationName=known;UnrelatedUnknown=1"));
+  EXPECT_EQ("01S00", state(SQL_HANDLE_DBC, dbc));
+  EXPECT_EQ("known", *seen->settings.application_name);
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, login_name("SERVER=fake;SSL=0;app_name=auth-only", true));
+  EXPECT_EQ("01S00", state(SQL_HANDLE_DBC, dbc));
+  EXPECT_FALSE(seen->settings.application_name);
+}
+}  // namespace

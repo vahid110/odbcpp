@@ -48,6 +48,8 @@ struct ConnectionOptions {
   ResultLimits result_limits;
   InputLimits input_limits;
   std::optional<std::string> redshift_catalog_mode;
+  // Owning client identity. Absent preserves the backend default; empty is explicit.
+  std::optional<std::string> application_name;
 };
 
 // Immutable product definition. A provider owns identity and static behavior;

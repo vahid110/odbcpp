@@ -70,7 +70,8 @@ BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& sett
         .ssl_ca_file = settings.ssl_ca_file, .ssl_ca_dir = settings.ssl_ca_dir,
         .response_limits = settings.response_limits, .result_limits = settings.result_limits,
         .input_limits = settings.input_limits, .startup_response_limits = settings.startup_response_limits,
-        .redshift_catalog_mode = settings.redshift_catalog_mode};
+        .redshift_catalog_mode = settings.redshift_catalog_mode,
+        .application_name = settings.application_name};
     // Local binding consistency is not issuer proof, expiry, or pooling authority.
     return auth::connect_bound_ordinary_password_until(*this, selected, request.value(), material.value());
   } catch (const std::bad_alloc&) {

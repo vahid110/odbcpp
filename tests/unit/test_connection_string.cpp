@@ -197,6 +197,20 @@ TEST_F(UnixIniDiscoveryTest, RedshiftCatalogModeFollowsDriverDsnAndConnectionPre
   EXPECT_EQ("", ConnectionString::resolve("DSN=ModeFixture;RedshiftCatalogMode={}", "ModeDriver").effective_parameters.at("REDSHIFTCATALOGMODE"));
 }
 
+TEST_F(UnixIniDiscoveryTest, ApplicationNameRespectsDriverDsnExplicitEmptyAndLiteralLayers) {
+  const auto dsn_path = root_ / "trusted-dsn.ini";
+  write(dsn_path, "[AppFixture]\nDRIVER=AppDriver\nApplicationName=dsn-name\n");
+  write(root_ / "drivers.ini", "[AppDriver]\nApplicationName=driver-name\n");
+  ASSERT_EQ(0, setenv("ODBCINI", dsn_path.c_str(), 1));
+  ASSERT_EQ(0, setenv("ODBCSYSINI", root_.c_str(), 1));
+  ASSERT_EQ(0, setenv("ODBCINSTINI", "drivers.ini", 1));
+  EXPECT_EQ("driver-name", ConnectionString::resolve("DRIVER=AppDriver", "AppDriver").effective_parameters.at("APPLICATIONNAME"));
+  EXPECT_EQ("dsn-name", ConnectionString::resolve("DSN=AppFixture", "AppDriver").effective_parameters.at("APPLICATIONNAME"));
+  EXPECT_EQ("unicode-é表😀;literal}name", ConnectionString::resolve("DSN=AppFixture;ApplicationName={unicode-é表😀;literal}}name}", "AppDriver").effective_parameters.at("APPLICATIONNAME"));
+  EXPECT_EQ("", ConnectionString::resolve("DSN=AppFixture;ApplicationName={}", "AppDriver").effective_parameters.at("APPLICATIONNAME"));
+  EXPECT_EQ("dsn-name", ConnectionString::resolve("DSN=AppFixture", "AppDriver").effective_parameters.at("APPLICATIONNAME"));
+}
+
 TEST_F(UnixIniDiscoveryTest, LoginTimeoutAliasesRespectDriverDsnAndExplicitLayers) {
   const auto dsn_path = root_ / "trusted-dsn.ini";
   write(dsn_path, "[LoginFixture]\nDRIVER=LoginDriver\nLT=2\n");

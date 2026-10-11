@@ -701,6 +701,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
   rs::util::Result<rs::core::transport::IOResult> send(
       std::span<const std::byte> buffer, rs::util::Deadline) override {
     ++send_count_;
+    if (capture_writes_) captured_writes_.emplace_back(buffer.begin(), buffer.end());
     if (mode_ == ResponseMode::PartialQueryWrite && send_count_ > 1) {
       if (send_count_ == 2) return rs::core::transport::IOResult{1, false};
       return {rs::util::DbErrorCode::NetworkError, "injected partial query write"};
@@ -711,6 +712,8 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     return rs::core::transport::IOResult{buffer.size(), false};
   }
 
+  void capture_writes() noexcept { capture_writes_ = true; }
+  const auto& captured_writes() const noexcept { return captured_writes_; }
   std::size_t send_count() const noexcept { return send_count_; }
   std::size_t connect_count() const noexcept { return connect_count_; }
   std::size_t close_count() const noexcept { return close_count_; }
@@ -763,6 +766,8 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     input_.insert(input_.end(), bytes, bytes + size);
   }
 
+  bool capture_writes_{false};
+  std::vector<std::vector<std::byte>> captured_writes_;
   std::vector<std::byte> input_;
   ResponseMode mode_;
   std::size_t offset_{0};
@@ -4960,4 +4965,92 @@ TEST(PreparedExecutionAuthorityTest, StaleBoundPortalThenNewStatementDescription
   auto result = connection.execute_prepared("fixed select", std::span<const QueryParameter>{}, rs::util::Deadline::max());
   EXPECT_FALSE(result); EXPECT_EQ(BackendErrorClass::Protocol, result.backend_error().error_class);
   EXPECT_FALSE(connection.is_connected());
+}
+
+TEST(ConnectionLivenessTest, ApplicationNameStartupBytesPreserveDefaultEmptyAndLiteralUnicode) {
+  const std::array<std::optional<std::string>, 4> names{
+      std::nullopt, "", "analytics-é表😀", "quoted'};SELECT 1"};
+  for (const auto& name : names) {
+    auto transport = std::make_unique<ScriptedBackendTransport>();
+    auto* observed = transport.get(); observed->capture_writes();
+    rs::core::database::GenericDatabaseConnection backend(
+        std::make_unique<rs::core::database::postgres::PgProtocolParser>(), std::move(transport));
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
+    settings.application_name = name;
+    ASSERT_TRUE(backend.connect(settings));
+    ASSERT_EQ(1u, observed->captured_writes().size());
+    const auto& bytes = observed->captured_writes().front();
+    const std::string wire(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    std::string expected("application_name\0", sizeof("application_name\0") - 1);
+    expected += name.value_or("odbcpp"); expected.push_back('\0');
+    EXPECT_NE(std::string::npos, wire.find(expected));
+    EXPECT_EQ(1u, observed->connect_count()); EXPECT_EQ(1u, observed->send_count());
+    settings.application_name = "mutated caller";
+    EXPECT_NE(std::string::npos, wire.find(expected));
+    backend.disconnect();
+  }
+}
+
+TEST(ConnectionLivenessTest, ApplicationNameInvalidInputAndStartupBudgetHaveNoWireEffect) {
+  using namespace rs::core::database;
+  auto transport = std::make_unique<ScriptedBackendTransport>();
+  auto* observed = transport.get(); observed->capture_writes();
+  GenericDatabaseConnection backend(std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
+  auto settings = pg_fixture_settings(); settings.use_ssl = false;
+  settings.application_name = "sixsix"; settings.input_limits.max_connection_field_bytes = 6;
+  // Other fixture fields fit the original input budget; only the name is varied.
+  settings.host = "host"; settings.user = "user"; settings.password = ""; settings.database = "db";
+  ASSERT_TRUE(backend.connect(settings));
+  const auto wire_size = observed->captured_writes().front().size();
+  for (const bool nul : {false, true}) {
+    auto invalid = settings;
+    invalid.application_name = nul ? std::string("s\0cret", 6) : "seven77";
+    const auto result = backend.connect(invalid);
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(nul ? BackendErrorClass::InvalidInput : BackendErrorClass::ResourceLimit,
+              result.backend_error().error_class);
+    EXPECT_EQ(1u, observed->connect_count()); EXPECT_EQ(1u, observed->send_count());
+    EXPECT_TRUE(backend.is_connected()); EXPECT_EQ(0u, observed->close_count());
+  }
+  backend.disconnect();
+  for (const bool exact : {false, true}) {
+    auto next = std::make_unique<ScriptedBackendTransport>(); auto* writes = next.get();
+    writes->capture_writes();
+    GenericDatabaseConnection fresh(std::make_unique<postgres::PgProtocolParser>(), std::move(next));
+    settings.input_limits.max_startup_wire_bytes = wire_size - (exact ? 0u : 1u);
+    const auto result = fresh.connect(settings);
+    EXPECT_EQ(exact, result.has_value());
+    EXPECT_EQ(exact ? 1u : 0u, writes->connect_count());
+    EXPECT_EQ(exact ? 1u : 0u, writes->send_count());
+    if (!exact) {ASSERT_TRUE(result.has_error()); EXPECT_EQ(BackendErrorClass::ResourceLimit, result.backend_error().error_class);}
+  }
+}
+
+TEST(ConnectionLivenessTest, ApplicationNameExplicitCaPasswordCompositionPreservesReconnectValues) {
+  using namespace rs::core::database;
+  auto transport = std::make_unique<OriginalDeadlineWire>(
+      true, OriginalDeadlineWire::Reply::Cleartext);
+  auto* wire = transport.get();
+  postgres::PgDatabaseConnection connection(std::move(transport),
+      SessionResetProfile::SameAuthenticatedServerSession, postgres::PgCatalogProfile::Redshift);
+  auto settings = pg_fixture_settings();
+  settings.host = "fixture-host"; settings.user = "fixture-user"; settings.database = "fixture-db";
+  settings.use_ssl = true; settings.ssl_ca_file = "synthetic-ca";
+  settings.password = "synthetic-only";
+  for (const auto& name : std::array<std::optional<std::string>, 3>{
+           "analytics-é表😀", "", std::nullopt}) {
+    settings.application_name = name;
+    wire->reset(OriginalDeadlineWire::Reply::Cleartext);
+    ASSERT_TRUE(connection.connect(settings));
+    std::string expected("application_name\0", sizeof("application_name\0") - 1);
+    expected += name.value_or("odbcpp"); expected.push_back('\0');
+    const std::string sent(reinterpret_cast<const char*>(wire->sent.data()), wire->sent.size());
+    EXPECT_NE(std::string::npos, sent.find(expected));
+    EXPECT_EQ(wire->calls.front().first, "plain");
+    EXPECT_EQ(std::count_if(wire->calls.begin(), wire->calls.end(),
+        [](const auto& call) { return call.first == "upgrade"; }), 1);
+    EXPECT_TRUE(detail::ConnectionAuthenticationTestAccess::password(connection).empty());
+    connection.disconnect();
+  }
+  EXPECT_EQ(wire->configurations, 3u);
 }

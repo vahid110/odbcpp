@@ -1565,6 +1565,7 @@ SQLRETURN ODBCConnection::connect(
     }
 
     rs::core::database::ConnectionOptions options;
+    if (params.count("APPLICATIONNAME")) options.application_name = params.at("APPLICATIONNAME");
     if (params.count("SERVER")) options.host = params.at("SERVER");
     else if (params.count("HOST")) options.host = params.at("HOST");
     if (params.count("PORT")) options.port = parse_port(params.at("PORT"));

@@ -73,6 +73,8 @@ struct ConnectionSettings {
   InputLimits input_limits;
   ResponseLimits startup_response_limits{1024 * 1024, 10000};
   std::optional<RedshiftCatalogMode> redshift_catalog_mode;
+  // Provider-neutral client identity; native startup spelling stays backend-owned.
+  std::optional<std::string> application_name;
 };
 
 // Shared validation for SDK callers and product option resolution.

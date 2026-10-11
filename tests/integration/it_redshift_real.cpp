@@ -7507,3 +7507,36 @@ TEST_F(RedshiftAccessModeHintRealTest, AdvisoryModePersistsThroughTypedNullRefil
   ASSERT_NO_FATAL_FAILURE(release_connection());
   ASSERT_NO_FATAL_FAILURE(mode_readback(SQL_MODE_READ_ONLY));
 }
+
+// Real workflow qualification only: audit-table attribution requires a separately
+// authorized observer and remains acceptance debt. No server echo is invented.
+class RedshiftApplicationNameRealTest : public RedshiftLoginTimeoutOptionsRealTest {
+ protected:
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_APPLICATION_NAME_ADMISSION", "application_name_happy_v1");
+  }
+};
+
+TEST_F(RedshiftApplicationNameRealTest, AnsiWideNamesAndEmptyReconnectKeepTypedNullRefillsOwning) {
+  const auto base = connection_string_;
+  const std::array<std::string, 3> names{"odbcpp-appname-a", "odbcpp-é表😀", ""};
+  SQLINTEGER previous_snapshot = 43;
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    connection_string_ = base;
+    connection_string_ = keyword_input("APPLICATIONNAME", names[i].c_str());
+    ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT", "5", 5, i != 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_MAX_ROWS, nullptr, 0));
+    auto text = rs::odbc::utf8_to_wide(typed_sql()); ASSERT_TRUE(text); text->push_back(0);
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, text->data(), SQL_NTS)));
+    input_ = 41; input_length_ = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+        SQL_INTEGER, 10, 0, &input_, 0, &input_length_));
+    ASSERT_NO_FATAL_FAILURE(typed_row(false));
+    input_length_ = SQL_NULL_DATA; ASSERT_NO_FATAL_FAILURE(typed_row(true));
+    input_ = 43; input_length_ = 0; ASSERT_NO_FATAL_FAILURE(typed_row(false, true));
+    EXPECT_EQ(43, previous_snapshot); previous_snapshot = output_.value;
+    ASSERT_NO_FATAL_FAILURE(release_connection());
+    EXPECT_EQ(43, previous_snapshot);
+  }
+  connection_string_ = base;
+}
