@@ -165,13 +165,13 @@ jobs:
       - name: Run integration tests with Linux epoll transport
         run: |
           sed -i '/^TransportMode=Sync$/c\TransportMode=Async\nAsyncEngine=Epoll' "$ODBCINI"
-          ODBCPP_TEST_EXPECT_SQLCANCEL=0 ctest --test-dir build -L integration -E '^(it_crypto_profile_live|it_auth_pg_material_tls)$' --output-on-failure
+          ODBCPP_TEST_EXPECT_SQLCANCEL=1 ctest --test-dir build -L integration -E '^(it_crypto_profile_live|it_auth_pg_material_tls)$' --output-on-failure
 
       - name: Run integration tests with Auto-selected transport
         run: |
           sed -i 's/^TransportMode=Async$/TransportMode=Auto/' "$ODBCINI"
           sed -i 's/^AsyncEngine=Epoll$/AsyncEngine=Auto/' "$ODBCINI"
-          ODBCPP_TEST_EXPECT_SQLCANCEL=0 ctest --test-dir build -L integration -E '^(it_crypto_profile_live|it_auth_pg_material_tls)$' --output-on-failure
+          ODBCPP_TEST_EXPECT_SQLCANCEL=1 ctest --test-dir build -L integration -E '^(it_crypto_profile_live|it_auth_pg_material_tls)$' --output-on-failure
 
       - name: Prepare mandatory TLS qualification fixture
         run: |

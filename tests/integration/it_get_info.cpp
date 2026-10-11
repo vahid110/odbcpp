@@ -27,8 +27,9 @@ std::string diagnostic_state(SQLHDBC connection) {
 class GetInfoIntegrationTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    // Independent fixture expectation: exports do not imply that this carrier
-    // supports server cancellation. Refuse malformed controls before connection.
+    // Independent API expectation includes local Need Data cancellation on every
+    // carrier; this does not claim server cancellation for Async/Auto transports.
+    // Refuse malformed controls before connection.
 #ifdef _WIN32
     char* raw_value = nullptr;
     std::size_t value_size = 0;

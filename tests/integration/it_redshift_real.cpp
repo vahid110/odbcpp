@@ -6739,7 +6739,7 @@ TEST_F(RedshiftForeignKeyObservationNativeRealTest, PreparedShowOwnsRawMetadataB
     const auto key = "fc"+std::to_string(i);
     ASSERT_TRUE(bytes(key+"_n", raw->columns[i].name));
     ASSERT_TRUE(property(key+"_p", raw->columns[i].normalized_type ? "1" : "0"));
-    if (raw->columns[i].normalized_type) ASSERT_TRUE(type(key, *raw->columns[i].normalized_type));
+    if (raw->columns[i].normalized_type) { ASSERT_TRUE(type(key, *raw->columns[i].normalized_type)); }
   }
   for (std::size_t row=0; row<raw->rows.size(); ++row) {
     ASSERT_EQ(14u, raw->rows[row].size());
@@ -6760,7 +6760,7 @@ TEST_F(RedshiftForeignKeyObservationNativeRealTest, PreparedShowOwnsRawMetadataB
   ASSERT_TRUE(plan);
   auto normalized = normalize_redshift_foreign_keys(*plan, std::move(raw));
   ASSERT_TRUE(property("fk_normalized", normalized ? "1" : "0"));
-  if (!normalized) ASSERT_TRUE(property("fk_normalize_class", std::to_string(static_cast<int>(normalized.backend_error().error_class))));
+  if (!normalized) { ASSERT_TRUE(property("fk_normalize_class", std::to_string(static_cast<int>(normalized.backend_error().error_class)))); }
   EXPECT_TRUE(normalized) << "Strict FK normalizer rejected the captured owning response";
-  if (normalized) EXPECT_EQ(2u, normalized->rows.size());
+  if (normalized) { EXPECT_EQ(2u, normalized->rows.size()); }
 }

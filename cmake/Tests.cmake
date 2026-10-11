@@ -168,6 +168,10 @@ foreach(test_file ${UNIT_TEST_SOURCES})
   add_test_executable(${test_name} ${test_file})
   set_tests_properties(${test_name} PROPERTIES LABELS "unit")
 endforeach()
+# The backend contract suite exceeds the standard COFF section limit on MSVC.
+if(MSVC)
+  target_compile_options(test_backend_contract PRIVATE /bigobj)
+endif()
 set_tests_properties(test_pg_credential_consumer test_auth_core test_temporary_db_validity test_issuer_timestamp test_aws_db_response_fields test_bounded_response_stream test_aws_db_json_response test_aws_db_xml_response test_redshift_serverless_response test_redshift_provisioned_response test_redshift_withiam_response test_auth_raw_response_projection test_checked_response_boundary test_checked_response_stream test_checked_aws_db_json_response test_response_operation test_checked_aws_db_xml_response
   PROPERTIES LABELS "unit;security" TIMEOUT 30)
 set_tests_properties(test_mysql_handshake_wire test_mysql_connection_security test_mysql_tls_negotiation test_mysql_authentication test_mysql_session test_mysql_query_wire test_mysql_prepared_wire test_mysql_connect_until test_mysql_datetime_q6_preflight_deadlines test_mysql_q6_preflight_phase_binding
