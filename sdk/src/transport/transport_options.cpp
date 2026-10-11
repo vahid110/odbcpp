@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <limits>
 #include <stdexcept>
 
 namespace rs::core::transport {
@@ -14,6 +15,29 @@ std::string uppercase(std::string_view value) {
     return static_cast<char>(std::toupper(ch));
   });
   return result;
+}
+
+std::string_view trim_ascii(std::string_view value) {
+  const auto blank = [](char ch) {
+    return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' ||
+        ch == '\f' || ch == '\v';
+  };
+  while (!value.empty() && blank(value.front())) value.remove_prefix(1);
+  while (!value.empty() && blank(value.back())) value.remove_suffix(1);
+  return value;
+}
+
+int parse_keepalive_number(std::string_view name, std::string_view raw, int maximum) {
+  const auto value = trim_ascii(raw);
+  int parsed = 0;
+  const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+  if (value.empty() || std::any_of(value.begin(), value.end(), [](char ch) {
+        return ch < '0' || ch > '9';
+      }) || error != std::errc{} || end != value.data() + value.size() ||
+      parsed < 0 || parsed > maximum) {
+    throw std::invalid_argument("Invalid " + std::string(name) + " value");
+  }
+  return parsed;
 }
 
 std::size_t parse_positive_size(std::string_view name, std::string_view value) {
@@ -36,7 +60,20 @@ void apply_parameters(TransportOptions& options,
   for (const auto& [key, raw_value] : parameters) {
     const auto value = uppercase(raw_value);
 
-    if (key == "TRANSPORTMODE") {
+    if (key == "KEEPALIVE") {
+      const auto selected = uppercase(trim_ascii(raw_value));
+      if (selected == "1" || selected == "TRUE") options.tcp_keepalive.enabled = true;
+      else if (selected == "0" || selected == "FALSE") options.tcp_keepalive.enabled = false;
+      else throw std::invalid_argument("Invalid KeepAlive value");
+    } else if (key == "KEEPALIVEIDLE") {
+      options.tcp_keepalive.idle_seconds = parse_keepalive_number(
+          "KeepAliveIdle", raw_value, std::numeric_limits<int>::max());
+    } else if (key == "KEEPALIVEINTERVAL") {
+      options.tcp_keepalive.interval_seconds = parse_keepalive_number(
+          "KeepAliveInterval", raw_value, std::numeric_limits<int>::max());
+    } else if (key == "KEEPALIVECOUNT") {
+      options.tcp_keepalive.probe_count = parse_keepalive_number("KeepAliveCount", raw_value, 255);
+    } else if (key == "TRANSPORTMODE") {
       if (value == "AUTO") options.mode = TransportMode::Auto;
       else if (value == "ASYNC") options.mode = TransportMode::Async;
       else if (value == "SYNC") options.mode = TransportMode::Sync;
@@ -74,7 +111,9 @@ TransportOptions TransportOptions::resolve(
       const auto normalized = uppercase(key);
       if (normalized == "TRANSPORTMODE" || normalized == "ASYNCMAXINFLIGHT" ||
           normalized == "ASYNCQUEUEDEPTH" || normalized == "ASYNCENGINE" ||
-          normalized == "DEADLINEMODEL") {
+          normalized == "DEADLINEMODEL" || normalized == "KEEPALIVE" ||
+          normalized == "KEEPALIVEIDLE" || normalized == "KEEPALIVEINTERVAL" ||
+          normalized == "KEEPALIVECOUNT") {
         effective[normalized] = value;
       }
     }

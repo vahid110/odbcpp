@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "odbcpp/transport/socket_transport.h"
+#include "odbcpp/transport/transport_factory.h"
 #include "odbcpp/transport/socket_wait.h"
 #include "odbcpp/transport/thread_pool_transport.h"
 #include "odbcpp/transport/tls_transport.h"
@@ -32,6 +33,7 @@
 #include <vector>
 
 #ifndef _WIN32
+#include <netinet/tcp.h>
 #include <csignal>
 #include <pthread.h>
 #endif
@@ -1416,3 +1418,169 @@ TEST(CancellationTlsWaitTest, ArmedPartialPlaintextRetainsPrefixAndRetryStateUnt
   EXPECT_TRUE(transport.send(output,rs::util::make_deadline(100ms)).has_value());
   transport.close();
 }
+
+namespace {
+// The kernel completes bounded loopback handshakes without a server worker.
+// The owned listener backlog admits the original and two frozen peers.
+class KeepaliveListener {
+ public:
+  KeepaliveListener() {
+    const auto socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (socket == invalid_test_socket) throw std::runtime_error("keepalive listener creation failed");
+    owner_.adopt(socket);
+    sockaddr_in address{}; address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (::bind(socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 ||
+        ::listen(socket, 4) != 0) throw std::runtime_error("keepalive listener bind failed");
+#ifdef _WIN32
+    int size = static_cast<int>(sizeof(address));
+#else
+    socklen_t size = static_cast<socklen_t>(sizeof(address));
+#endif
+    if (::getsockname(socket, reinterpret_cast<sockaddr*>(&address), &size) != 0)
+      throw std::runtime_error("keepalive listener inspection failed");
+    port_ = ntohs(address.sin_port);
+  }
+  uint16_t port() const { return port_; }
+ private:
+  SocketTransport owner_;
+  uint16_t port_{};
+};
+
+int socket_option(test_socket_t socket, int level, int key) {
+#ifdef _WIN32
+  DWORD value{}; int size = static_cast<int>(sizeof(value));
+  const int rc = ::getsockopt(socket, level, key, reinterpret_cast<char*>(&value), &size);
+#else
+  int value{}; socklen_t size = static_cast<socklen_t>(sizeof(value));
+  const int rc = ::getsockopt(socket, level, key, &value, &size);
+#endif
+  EXPECT_EQ(0, rc); EXPECT_EQ(sizeof(value), static_cast<std::size_t>(size));
+  return static_cast<int>(value);
+}
+
+void tuned_socket(test_socket_t socket) {
+  EXPECT_NE(0, socket_option(socket, SOL_SOCKET, SO_KEEPALIVE));
+#if defined(__APPLE__) && defined(TCP_KEEPALIVE)
+  EXPECT_EQ(7, socket_option(socket, IPPROTO_TCP, TCP_KEEPALIVE));
+#elif defined(TCP_KEEPIDLE)
+  EXPECT_EQ(7, socket_option(socket, IPPROTO_TCP, TCP_KEEPIDLE));
+#endif
+#ifdef TCP_KEEPINTVL
+  EXPECT_EQ(3, socket_option(socket, IPPROTO_TCP, TCP_KEEPINTVL));
+#endif
+#ifdef TCP_KEEPCNT
+  EXPECT_EQ(4, socket_option(socket, IPPROTO_TCP, TCP_KEEPCNT));
+#endif
+}
+
+TEST(TcpKeepaliveSocketTest, ConfiguredAndNeutralDefaultsReachActualSockets) {
+  KeepaliveListener listener;
+  rs::core::transport::TransportOptions options; options.mode = rs::core::transport::TransportMode::Sync;
+  auto factory = rs::core::transport::TransportFactory::create(options, false);
+  ASSERT_TRUE(factory->connect("127.0.0.1", listener.port(), rs::util::make_deadline(1s)));
+  auto* configured = dynamic_cast<SocketTransport*>(factory.get()); ASSERT_NE(nullptr, configured);
+  EXPECT_NE(0, socket_option(configured->native(), SOL_SOCKET, SO_KEEPALIVE));
+  SocketTransport neutral;
+  ASSERT_TRUE(neutral.connect("127.0.0.1", listener.port(), rs::util::make_deadline(1s)));
+  EXPECT_EQ(0, socket_option(neutral.native(), SOL_SOCKET, SO_KEEPALIVE));
+  options.tcp_keepalive = {false, 7, 3, 4};
+  auto disabled = rs::core::transport::TransportFactory::create(options, false);
+  ASSERT_TRUE(disabled->connect("127.0.0.1", listener.port(), rs::util::make_deadline(1s)));
+  auto* plain = dynamic_cast<SocketTransport*>(disabled.get()); ASSERT_NE(nullptr, plain);
+  EXPECT_EQ(0, socket_option(plain->native(), SOL_SOCKET, SO_KEEPALIVE));
+}
+
+TEST(TcpKeepaliveSocketTest, ZeroAndDisabledTuningPreserveKernelDefaultsAndInvalidTuningHasNoEffects) {
+  SocketTransport socket;
+  const auto raw = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  ASSERT_NE(invalid_test_socket, raw); socket.adopt(raw);
+  std::vector<std::pair<int, int>> before;
+#if defined(__APPLE__) && defined(TCP_KEEPALIVE)
+  before.emplace_back(TCP_KEEPALIVE, socket_option(raw, IPPROTO_TCP, TCP_KEEPALIVE));
+#elif defined(TCP_KEEPIDLE)
+  before.emplace_back(TCP_KEEPIDLE, socket_option(raw, IPPROTO_TCP, TCP_KEEPIDLE));
+#endif
+#ifdef TCP_KEEPINTVL
+  before.emplace_back(TCP_KEEPINTVL, socket_option(raw, IPPROTO_TCP, TCP_KEEPINTVL));
+#endif
+#ifdef TCP_KEEPCNT
+  before.emplace_back(TCP_KEEPCNT, socket_option(raw, IPPROTO_TCP, TCP_KEEPCNT));
+#endif
+  ASSERT_TRUE(rs::core::transport::apply_tcp_keepalive(raw, {true, 0, 0, 0}));
+  for (const auto& [key, value] : before) EXPECT_EQ(value, socket_option(raw, IPPROTO_TCP, key));
+  ASSERT_TRUE(rs::core::transport::apply_tcp_keepalive(raw, {false, 7, 3, 4}));
+  EXPECT_EQ(0, socket_option(raw, SOL_SOCKET, SO_KEEPALIVE));
+  for (const auto& [key, value] : before) EXPECT_EQ(value, socket_option(raw, IPPROTO_TCP, key));
+  const auto invalid = rs::core::transport::apply_tcp_keepalive(raw, {true, 0, 0, 256});
+  ASSERT_TRUE(invalid.has_error()); EXPECT_EQ("Invalid TCP keepalive tuning", invalid.error_message());
+  EXPECT_EQ(0, socket_option(raw, SOL_SOCKET, SO_KEEPALIVE));
+  for (const auto& [key, value] : before) EXPECT_EQ(value, socket_option(raw, IPPROTO_TCP, key));
+}
+
+TEST(TcpKeepaliveSocketTest, CapturedTuningAndFrozenPeersKeepOwningValues) {
+  KeepaliveListener listener;
+  rs::core::transport::TcpKeepaliveOptions selected{true, 7, 3, 4};
+  SocketTransport transport(DeadlineModel::Strict, selected); selected = {};
+  auto opened = transport.connect("127.0.0.1", listener.port(), rs::util::make_deadline(1s));
+#if !defined(TCP_KEEPINTVL) || !defined(TCP_KEEPCNT) || (!defined(TCP_KEEPIDLE) && !defined(TCP_KEEPALIVE))
+  EXPECT_TRUE(opened.has_error()); EXPECT_EQ(invalid_test_socket, transport.native());
+#else
+  ASSERT_TRUE(opened) << opened.error_message(); ASSERT_NO_FATAL_FAILURE(tuned_socket(transport.native()));
+  auto peer = transport.cancellation_peer(); ASSERT_TRUE(peer);
+  auto* frozen = dynamic_cast<SocketTransport*>(peer.get()); ASSERT_NE(nullptr, frozen);
+  ASSERT_TRUE(frozen->connect_cancellation_peer(rs::util::make_deadline(1s)));
+  ASSERT_NO_FATAL_FAILURE(tuned_socket(frozen->native()));
+  SocketTransport copied;
+  ASSERT_TRUE(copied.copy_cancellation_peer(*frozen));
+  ASSERT_TRUE(copied.connect_cancellation_peer(rs::util::make_deadline(1s)));
+  ASSERT_NO_FATAL_FAILURE(tuned_socket(copied.native()));
+#endif
+}
+
+TEST(TcpKeepaliveSocketTest, FailedSetupClosesSocketAndFreshConnectionAndExpiredDeadlineStayBounded) {
+  KeepaliveListener listener;
+  SocketTransport invalid(DeadlineModel::Strict, {true, 0, 0, 256});
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    const auto result = invalid.connect("localhost", listener.port(), rs::util::make_deadline(1s));
+    ASSERT_TRUE(result.has_error()); EXPECT_EQ("Invalid TCP keepalive tuning", result.error_message());
+    EXPECT_EQ(invalid_test_socket, invalid.native());
+  }
+  SocketTransport fresh(DeadlineModel::Strict, {true, 0, 0, 0});
+  ASSERT_TRUE(fresh.connect("127.0.0.1", listener.port(), rs::util::make_deadline(1s)));
+  EXPECT_NE(0, socket_option(fresh.native(), SOL_SOCKET, SO_KEEPALIVE));
+  fresh.close();
+  const auto expired = fresh.connect("127.0.0.1", listener.port(), rs::util::Clock::now() - 1ms);
+  ASSERT_TRUE(expired.has_error()); EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout), expired.error());
+  EXPECT_EQ(invalid_test_socket, fresh.native());
+}
+} // namespace
+
+namespace {
+TEST(TcpKeepaliveSocketTest, ActualUnsupportedSocketTuningIsNotSilentlyIgnored) {
+  SocketTransport owner;
+  const auto udp = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  ASSERT_NE(invalid_test_socket, udp); owner.adopt(udp);
+  const auto configured = rs::core::transport::apply_tcp_keepalive(udp, {true, 7, 3, 4});
+  ASSERT_TRUE(configured.has_error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::NetworkError), configured.error());
+  EXPECT_FALSE(configured.error_message().empty());
+  EXPECT_EQ(udp, owner.native()); // Application does not steal caller ownership.
+}
+
+TEST(TcpKeepaliveSocketTest, TlsFactoryCapturesOptionsBeforeAnyHandshakeAndFailureCannotPublishTcp) {
+  KeepaliveListener listener;
+  rs::core::transport::TransportOptions options; options.mode = rs::core::transport::TransportMode::Sync;
+  options.tcp_keepalive = {false, 0, 0, 256};
+  auto invalid = rs::core::transport::TransportFactory::create(options, true);
+  const auto refused = invalid->connect("127.0.0.1", listener.port(), rs::util::make_deadline(1s));
+  ASSERT_TRUE(refused.has_error()); EXPECT_EQ("Invalid TCP keepalive tuning", refused.error_message());
+  auto* refused_tls = dynamic_cast<TLSTransport*>(invalid.get()); ASSERT_NE(nullptr, refused_tls);
+  EXPECT_FALSE(refused_tls->supports_server_cancel());
+  invalid->close(); options.tcp_keepalive = {true, 0, 0, 0};
+  auto valid = rs::core::transport::TransportFactory::create(options, true);
+  auto* connected_tls = dynamic_cast<TLSTransport*>(valid.get()); ASSERT_NE(nullptr, connected_tls);
+  ASSERT_TRUE(connected_tls->connect_plain("127.0.0.1", listener.port(), rs::util::make_deadline(1s)));
+  EXPECT_FALSE(connected_tls->supports_server_cancel()); // No verified TLS identity here.
+}
+} // namespace

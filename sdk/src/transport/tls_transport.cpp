@@ -67,8 +67,8 @@ void wait_for_tls(SocketTransport::socket_t socket, TlsStepState state,
 
 }  // namespace
 
-TLSTransport::TLSTransport(DeadlineModel deadline_model)
-    : tcp_(deadline_model), provider_(std::make_unique<ProviderState>()) {}
+TLSTransport::TLSTransport(DeadlineModel deadline_model, TcpKeepaliveOptions keepalive)
+    : tcp_(deadline_model, keepalive), provider_(std::make_unique<ProviderState>()) {}
 
 TLSTransport::~TLSTransport() { close(); }
 

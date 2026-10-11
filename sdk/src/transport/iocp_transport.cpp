@@ -1,4 +1,5 @@
 #include "odbcpp/transport/iocp_transport.h"
+#include "odbcpp/transport/socket_transport.h"
 
 #ifdef _WIN32
 
@@ -146,8 +147,8 @@ public:
     bool closing{false};
   };
 
-  Core(std::size_t max_inflight, std::size_t queue_depth)
-      : max_inflight_(max_inflight), queue_depth_(queue_depth) {
+  Core(std::size_t max_inflight, std::size_t queue_depth, TcpKeepaliveOptions keepalive)
+      : max_inflight_(max_inflight), queue_depth_(queue_depth), keepalive_(keepalive) {
     if (max_inflight_ == 0) {
       throw std::invalid_argument("max_inflight must be greater than zero");
     }
@@ -538,6 +539,14 @@ private:
           active_connect_->endpoints[active_connect_->next_endpoint++];
       if (!prepare_socket_locked(endpoint)) continue;
 
+      auto configured = apply_tcp_keepalive(socket_, keepalive_);
+      if (configured.has_error()) {
+        close_socket_locked();
+        complete_connect_locked(active_connect_, std::move(configured), completions);
+        active_connect_.reset();
+        return;
+      }
+
       auto connect_ex = load_connect_ex_locked();
       if (connect_ex == nullptr) {
         close_socket_locked();
@@ -769,6 +778,7 @@ private:
   static constexpr ULONG_PTR socket_key_ = 2;
   const std::size_t max_inflight_;
   const std::size_t queue_depth_;
+  const TcpKeepaliveOptions keepalive_;
   rs::platform::WSAInit winsock_{};
   HANDLE completion_port_{nullptr};
   SOCKET socket_{INVALID_SOCKET};
@@ -785,8 +795,8 @@ private:
 };
 
 IocpTransport::IocpTransport(std::size_t max_inflight,
-                             std::size_t queue_depth)
-    : core_(std::make_shared<Core>(max_inflight, queue_depth)) {
+                             std::size_t queue_depth, TcpKeepaliveOptions keepalive)
+    : core_(std::make_shared<Core>(max_inflight, queue_depth, keepalive)) {
   core_->start();
 }
 

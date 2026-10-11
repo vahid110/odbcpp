@@ -1,4 +1,5 @@
 #include "odbcpp/transport/epoll_transport.h"
+#include "odbcpp/transport/socket_transport.h"
 
 #ifdef __linux__
 
@@ -139,8 +140,8 @@ public:
     std::size_t next_endpoint{};
   };
 
-  Core(std::size_t max_inflight, std::size_t queue_depth)
-      : max_inflight_(max_inflight), queue_depth_(queue_depth) {
+  Core(std::size_t max_inflight, std::size_t queue_depth, TcpKeepaliveOptions keepalive)
+      : max_inflight_(max_inflight), queue_depth_(queue_depth), keepalive_(keepalive) {
     if (max_inflight_ == 0) {
       throw std::invalid_argument("max_inflight must be greater than zero");
     }
@@ -464,6 +465,14 @@ private:
                                   endpoint.protocol);
       if (socket < 0) continue;
 
+      auto configured = apply_tcp_keepalive(socket, keepalive_);
+      if (configured.has_error()) {
+        ::close(socket);
+        complete_connect_locked(active_connect_, std::move(configured), completions);
+        active_connect_.reset();
+        return;
+      }
+
       const int flags = ::fcntl(socket, F_GETFL, 0);
       if (flags < 0 || ::fcntl(socket, F_SETFL, flags | O_NONBLOCK) < 0) {
         ::close(socket);
@@ -686,6 +695,7 @@ private:
 
   const std::size_t max_inflight_;
   const std::size_t queue_depth_;
+  const TcpKeepaliveOptions keepalive_;
   int epoll_fd_{-1};
   int wake_fd_{-1};
   int socket_fd_{-1};
@@ -699,8 +709,8 @@ private:
 };
 
 EpollTransport::EpollTransport(std::size_t max_inflight,
-                               std::size_t queue_depth)
-    : core_(std::make_shared<Core>(max_inflight, queue_depth)) {
+                               std::size_t queue_depth, TcpKeepaliveOptions keepalive)
+    : core_(std::make_shared<Core>(max_inflight, queue_depth, keepalive)) {
   core_->start();
 }
 

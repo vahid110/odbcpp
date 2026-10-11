@@ -4,6 +4,8 @@
 
 #include "odbcpp/transport/iocp_transport.h"
 #include "odbcpp/util/deadline.h"
+#include "odbcpp/transport/socket_transport.h"
+#include "odbcpp/transport/transport_factory.h"
 #include "odbcpp/util/platform.h"
 
 #include <array>
@@ -351,6 +353,35 @@ TEST(IocpTransportTest, RejectsWorkBeyondConfiguredQueueDepth) {
 
   first->cancel();
   second->cancel();
+}
+
+TEST(IocpTransportKeepaliveTest, InvalidCapturedTuningFailsBoundedlyAndFreshFactoryRecovers) {
+  rs::core::transport::SocketTransport listener;
+  const auto socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  ASSERT_NE(INVALID_SOCKET, socket); listener.adopt(socket);
+  sockaddr_in address{}; address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  ASSERT_EQ(0, ::bind(socket, reinterpret_cast<sockaddr*>(&address), static_cast<int>(sizeof(address))));
+  ASSERT_EQ(0, ::listen(socket, 4));
+  int bytes = static_cast<int>(sizeof(address));
+  ASSERT_EQ(0, ::getsockname(socket, reinterpret_cast<sockaddr*>(&address), &bytes));
+  const auto port = ntohs(address.sin_port);
+  rs::core::transport::TcpKeepaliveOptions settings{true, 0, 0, 256};
+  IocpTransport invalid(2, 4, settings); settings = {};
+  auto failure = invalid.connect_future("localhost", port, rs::util::make_deadline(1s));
+  ASSERT_EQ(std::future_status::ready, failure.wait_for(2s));
+  const auto result = failure.get(); ASSERT_TRUE(result.has_error());
+  EXPECT_EQ("Invalid TCP keepalive tuning", result.error_message()); invalid.close();
+  rs::core::transport::TransportOptions options;
+  options.mode = rs::core::transport::TransportMode::Async;
+  options.async_engine = rs::core::transport::AsyncEngine::IOCP;
+  options.async_max_inflight = 2; options.async_queue_depth = 4;
+  options.tcp_keepalive = {true, 0, 0, 0};
+  auto valid = rs::core::transport::TransportFactory::create(options, false);
+  auto opened = dynamic_cast<IocpTransport*>(valid.get()); ASSERT_NE(nullptr, opened);
+  auto recovery = opened->connect_future("127.0.0.1", port, rs::util::make_deadline(1s));
+  ASSERT_EQ(std::future_status::ready, recovery.wait_for(2s));
+  ASSERT_TRUE(recovery.get()); valid->close();
 }
 
 } // namespace

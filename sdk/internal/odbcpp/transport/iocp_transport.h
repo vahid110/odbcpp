@@ -1,6 +1,7 @@
 #pragma once
 
 #include "odbcpp/transport/async_transport.h"
+#include "odbcpp/transport/transport_options.h"
 
 #ifdef _WIN32
 
@@ -14,7 +15,8 @@ namespace rs::core::transport {
 class IocpTransport : public IAsyncTransport {
 public:
   explicit IocpTransport(std::size_t max_inflight = 64,
-                         std::size_t queue_depth = 256);
+                         std::size_t queue_depth = 256,
+                         TcpKeepaliveOptions keepalive = {});
   ~IocpTransport() override;
 
   IocpTransport(const IocpTransport&) = delete;

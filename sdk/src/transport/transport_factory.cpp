@@ -41,7 +41,7 @@ std::unique_ptr<ITransport> TransportFactory::create(
           "AsyncEngine=Epoll requires DeadlineModel=Strict");
     }
     auto native = std::make_unique<EpollTransport>(
-        options.async_max_inflight, options.async_queue_depth);
+        options.async_max_inflight, options.async_queue_depth, options.tcp_keepalive);
     if (use_tls) {
       return std::make_unique<AsyncTlsTransport>(
           std::move(native), options.async_max_inflight,
@@ -58,7 +58,7 @@ std::unique_ptr<ITransport> TransportFactory::create(
           "AsyncEngine=IOCP requires DeadlineModel=Strict");
     }
     auto native = std::make_unique<IocpTransport>(
-        options.async_max_inflight, options.async_queue_depth);
+        options.async_max_inflight, options.async_queue_depth, options.tcp_keepalive);
     if (use_tls) {
       return std::make_unique<AsyncTlsTransport>(
           std::move(native), options.async_max_inflight,
@@ -73,9 +73,9 @@ std::unique_ptr<ITransport> TransportFactory::create(
   }
 
   if (use_tls) {
-    return std::make_unique<TLSTransport>(options.deadline_model);
+    return std::make_unique<TLSTransport>(options.deadline_model, options.tcp_keepalive);
   }
-  return std::make_unique<SocketTransport>(options.deadline_model);
+  return std::make_unique<SocketTransport>(options.deadline_model, options.tcp_keepalive);
 }
 
 } // namespace rs::core::transport

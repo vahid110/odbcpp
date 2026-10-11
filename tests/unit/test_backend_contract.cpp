@@ -12401,3 +12401,34 @@ TEST_F(AutoIpdTest, ConfiguredQueryTimeoutReachesOriginalDescriptionDeadlineAndC
   EXPECT_GE(seen->description_deadline, shorter + std::chrono::seconds{1});
   EXPECT_LE(seen->description_deadline, rs::util::Clock::now() + std::chrono::seconds{1});
 }
+
+TEST_F(ApplicationNameOptionsTest, KeepaliveKeywordsAnsiWideDefaultsTuningAndUnknownWarningStayLiteral) {
+  for (bool wide : {false, true}) {
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;KeepAlive={ true };KeepAliveIdle=7;KeepAliveInterval=3;KeepAliveCount=4", wide));
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;KeepAlive=false;KeepAliveIdle=0;KeepAliveInterval=0;KeepAliveCount=255", wide));
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  }
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, login_name("SERVER=fake;SSL=0;KeepAlive=1;UnrelatedSetting=1", true));
+  EXPECT_EQ("01S00", state(SQL_HANDLE_DBC, dbc));
+}
+
+TEST_F(ApplicationNameOptionsTest, KeepaliveInvalidSelectedValuesRefuseRedactedBeforeFactoryAndSameDbcRecovers) {
+  const std::pair<const char*, const char*> invalid[] = {{"KeepAlive", "yes"}, {"KeepAlive", ""},
+      {"KeepAliveIdle", "-1"}, {"KeepAliveInterval", "+1"}, {"KeepAliveCount", "256"},
+      {"KeepAliveIdle", "secret-placeholder"}, {"KeepAliveInterval", "999999999999999999999"}};
+  for (bool wide : {false, true}) for (const auto& [key, value] : invalid) {
+    EXPECT_EQ(SQL_ERROR, login_name("SERVER=fake;SSL=0;" + std::string(key) + "={" + value + "}", wide));
+    SQLCHAR sqlstate[6]{}, message[128]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, sqlstate, nullptr,
+        message, static_cast<SQLSMALLINT>(sizeof(message)), nullptr));
+    EXPECT_STREQ("HY000", reinterpret_cast<char*>(sqlstate));
+    EXPECT_EQ("Invalid " + std::string(key) + " value", reinterpret_cast<char*>(message));
+    EXPECT_EQ(0, seen->created); EXPECT_EQ(0, seen->transports); EXPECT_EQ(0, seen->queries);
+  }
+  EXPECT_EQ(SQL_ERROR, login_name("SERVER=fake;SSL=0;KeepAlive=0;KeepAliveCount=-1"));
+  EXPECT_EQ(0, seen->created);
+  ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;KeepAlive=0;KeepAliveCount=0", true));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT 1"));
+}

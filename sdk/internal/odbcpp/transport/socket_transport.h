@@ -3,6 +3,7 @@
 #include "odbcpp/transport/cancellation_wait.h"
 #include <array>
 #include "odbcpp/transport/deadline_model.h"
+#include "odbcpp/transport/transport_options.h"
 #include "odbcpp/util/errors.h"
 #include "odbcpp/util/platform.h"
 #include <optional>
@@ -11,7 +12,8 @@ namespace rs::core::transport {
 
 class SocketTransport : public ITransport, public IServerCancelTransport {
 public:
-  explicit SocketTransport(DeadlineModel deadline_model = DeadlineModel::Strict);
+  explicit SocketTransport(DeadlineModel deadline_model = DeadlineModel::Strict,
+                           TcpKeepaliveOptions keepalive = {});
   ~SocketTransport() override;
 
   rs::util::Result<void> connect(std::string_view host, uint16_t port, rs::util::Deadline deadline) override;
@@ -48,6 +50,7 @@ private:
   std::shared_ptr<CancellationWait> cancellation_wait_;
   platform::WSAInit wsa_init_{}; // ensures WSA on Windows
   DeadlineModel deadline_model_;
+  TcpKeepaliveOptions keepalive_;
 
   static socket_t invalid_socket();
   static bool is_invalid(socket_t s);
@@ -56,5 +59,10 @@ private:
   static void set_timeouts(socket_t s, std::chrono::milliseconds rw);
   static void do_close(socket_t s) noexcept;
 };
+
+// Internal shared application for SDK-owned TCP sockets, before connect.
+// Zero tuning retains OS defaults; failure is terminal for that attempt.
+rs::util::Result<void> apply_tcp_keepalive(
+    SocketTransport::socket_t socket, const TcpKeepaliveOptions& options);
 
 } // namespace rs::core::transport

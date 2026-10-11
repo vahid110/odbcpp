@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <limits>
 #include <string>
 
 namespace {
@@ -352,4 +353,51 @@ TEST_F(ConnectionResolutionTest, DriverDefaultsAndAliasesRespectLayerPrecedence)
   EXPECT_EQ("primary", same_layer.effective_parameters.at("UID"));
 }
 
+} // namespace
+
+namespace {
+TEST(TcpKeepaliveOptionsTest, NeutralAndConfiguredDefaultsAndDisabledTuningStayOwning) {
+  const rs::core::transport::TcpKeepaliveOptions neutral;
+  EXPECT_FALSE(neutral.enabled);
+  const auto configured = TransportOptions::resolve({}, {}, {});
+  EXPECT_TRUE(configured.tcp_keepalive.enabled);
+  EXPECT_EQ(0, configured.tcp_keepalive.idle_seconds);
+  EXPECT_EQ(0, configured.tcp_keepalive.interval_seconds);
+  EXPECT_EQ(0, configured.tcp_keepalive.probe_count);
+  const auto disabled = TransportOptions::resolve({}, {}, {{"KeepAlive", " false "},
+      {"KeepAliveIdle", " 0007 "}, {"KeepAliveInterval", "0"}, {"KeepAliveCount", "255"}});
+  EXPECT_FALSE(disabled.tcp_keepalive.enabled);
+  EXPECT_EQ(7, disabled.tcp_keepalive.idle_seconds);
+  EXPECT_EQ(0, disabled.tcp_keepalive.interval_seconds);
+  EXPECT_EQ(255, disabled.tcp_keepalive.probe_count);
+}
+
+TEST(TcpKeepaliveOptionsTest, EachEffectiveLayerOverridesWithoutEvaluatingShadowedInvalidValues) {
+  const auto options = TransportOptions::resolve(
+      {{"KeepAlive", "invalid"}, {"KeepAliveIdle", "invalid"}, {"KeepAliveCount", "invalid"}},
+      {{"KEEPALIVE", "TRUE"}, {"KEEPALIVEIDLE", "2"}, {"KEEPALIVECOUNT", "3"}},
+      {{"keepalive", "0"}, {"keepaliveidle", "0"}});
+  EXPECT_FALSE(options.tcp_keepalive.enabled);
+  EXPECT_EQ(0, options.tcp_keepalive.idle_seconds);
+  EXPECT_EQ(3, options.tcp_keepalive.probe_count);
+  EXPECT_THROW(TransportOptions::resolve({}, {{"KeepAliveCount", "2"}}, {{"KeepAliveCount", ""}}), std::invalid_argument);
+}
+
+TEST(TcpKeepaliveOptionsTest, ClosedBooleansAndNumericRangesRefuseEvenWhenDisabledWithoutValueLeaks) {
+  for (const char* value : {"", "yes", "on", "+1", "2", "secret-placeholder"}) {
+    EXPECT_THROW(TransportOptions::resolve({}, {}, {{"KeepAlive", value}}), std::invalid_argument);
+  }
+  for (const char* key : {"KeepAliveIdle", "KeepAliveInterval", "KeepAliveCount"}) {
+    for (const char* value : {"", "-1", "+1", "1.5", "1s", "999999999999999999999", "secret-placeholder"}) {
+      try {
+        (void)TransportOptions::resolve({}, {}, {{"KeepAlive", "false"}, {key, value}});
+        FAIL() << "Malformed keepalive option accepted";
+      } catch (const std::invalid_argument& error) {
+        EXPECT_EQ("Invalid " + std::string(key) + " value", std::string(error.what()));
+      }
+    }
+  }
+  EXPECT_THROW(TransportOptions::resolve({}, {}, {{"KeepAliveCount", "256"}}), std::invalid_argument);
+  EXPECT_THROW(TransportOptions::resolve({}, {}, {{"KeepAliveIdle", std::to_string(static_cast<unsigned long long>(std::numeric_limits<int>::max()) + 1)}}), std::invalid_argument);
+}
 } // namespace

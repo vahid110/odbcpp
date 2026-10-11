@@ -11,7 +11,8 @@ namespace rs::core::transport {
 class TLSTransport : public ITransport, public IStartTlsTransport,
                      public ITlsConfigurableTransport, public IServerCancelTransport {
 public:
-  explicit TLSTransport(DeadlineModel deadline_model = DeadlineModel::Strict);
+  explicit TLSTransport(DeadlineModel deadline_model = DeadlineModel::Strict,
+                        TcpKeepaliveOptions keepalive = {});
   ~TLSTransport() override;
 
   rs::util::Result<void> connect(std::string_view host, uint16_t port, rs::util::Deadline deadline) override;

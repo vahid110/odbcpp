@@ -21,12 +21,24 @@ enum class AsyncEngine {
   Epoll,
 };
 
+// Owning TCP socket policy. Direct transport construction retains disabled
+// keepalive; configuration-based factories default to enabled OS tuning.
+struct TcpKeepaliveOptions {
+  bool enabled{false};
+  int idle_seconds{0};
+  int interval_seconds{0};
+  int probe_count{0};
+
+  friend bool operator==(const TcpKeepaliveOptions&, const TcpKeepaliveOptions&) = default;
+};
+
 struct TransportOptions {
   TransportMode mode{TransportMode::Auto};
   std::size_t async_max_inflight{64};
   std::size_t async_queue_depth{256};
   AsyncEngine async_engine{AsyncEngine::Auto};
   DeadlineModel deadline_model{DeadlineModel::Strict};
+  TcpKeepaliveOptions tcp_keepalive{true, 0, 0, 0};
 
   // Applies maps from lowest to highest precedence. Keys and enum values are
   // case-insensitive. Unknown keys are ignored; invalid known values fail.

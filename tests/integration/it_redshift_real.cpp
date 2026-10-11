@@ -7820,3 +7820,102 @@ TEST_F(RedshiftQueryTimeoutDefaultRealTest, AnsiWideDefaultsOverridesTypedNullRe
   ASSERT_NO_FATAL_FAILURE(seconds(hstmt_, 3));
   ASSERT_NO_FATAL_FAILURE(release_default());
 }
+
+class RedshiftKeepaliveOptionsRealTest : public RedshiftLoginTimeoutOptionsRealTest {
+ protected:
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_KEEPALIVE_ADMISSION", "keepalive_options_happy_v1");
+  }
+  bool observed(SQLRETURN result, SQLRETURN expected = SQL_SUCCESS) {
+    if (result != expected) { unknown_completion_ = true; return false; }
+    return true;
+  }
+  std::string keepalive_input(bool enabled, bool invalid = false) {
+    auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    for (const char* key : {"KEEPALIVE", "KEEPALIVEIDLE", "KEEPALIVEINTERVAL", "KEEPALIVECOUNT", "LT", "LOGINTIMEOUT"}) options.erase(key);
+    options["KEEPALIVE"] = enabled ? "true" : "false";
+    options["KEEPALIVEIDLE"] = "7"; options["KEEPALIVEINTERVAL"] = "3";
+    options["KEEPALIVECOUNT"] = invalid ? "-1" : "4";
+    options["LOGINTIMEOUT"] = "5";
+    std::string text;
+    for (const auto& [key, value] : options) {
+      text += key; text += "={";
+      for (char ch : value) { text.push_back(ch); if (ch == '}') text.push_back('}'); }
+      text += "};";
+    }
+    EXPECT_TRUE(options == rs::odbc::ConnectionString::parse(text))
+        << "Keepalive login input preservation failed";
+    return text;
+  }
+  void local_refusal() {
+    ASSERT_TRUE(cap(window_end_, false));
+    auto text = rs::odbc::utf8_to_wide(keepalive_input(false, true)); ASSERT_TRUE(text); text->push_back(0);
+    SQLWCHAR output[4]{static_cast<SQLWCHAR>('x'), 0, static_cast<SQLWCHAR>('y'), 0}; SQLSMALLINT length = 66;
+    const auto rc = SQLDriverConnectW(hdbc_, nullptr, text->data(), SQL_NTS, output, 4, &length, SQL_DRIVER_NOPROMPT);
+    connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO;
+    if (rc != SQL_ERROR) unknown_completion_ = true;
+    ASSERT_EQ(SQL_ERROR, rc); EXPECT_EQ(66, length);
+    EXPECT_EQ(static_cast<SQLWCHAR>('x'), output[0]); EXPECT_EQ(static_cast<SQLWCHAR>('y'), output[2]);
+    SQLCHAR state[6]{}, message[128]{};
+    ASSERT_TRUE(observed(SQLGetDiagRec(SQL_HANDLE_DBC, hdbc_, 1, state, nullptr, message,
+        static_cast<SQLSMALLINT>(sizeof(message)), nullptr)));
+    if (std::string_view(reinterpret_cast<char*>(state)) != "HY000" ||
+        std::string_view(reinterpret_cast<char*>(message)) != "Invalid KeepAliveCount value") unknown_completion_ = true;
+    ASSERT_STREQ("HY000", reinterpret_cast<char*>(state));
+    ASSERT_STREQ("Invalid KeepAliveCount value", reinterpret_cast<char*>(message));
+  }
+  void open_keepalive(bool enabled, bool wide) {
+    ASSERT_TRUE(cap(window_end_, false));
+    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(window_end_ - rs::util::Clock::now()).count(), 5);
+    auto text = keepalive_input(enabled); SQLRETURN rc;
+    if (wide) {
+      auto input = rs::odbc::utf8_to_wide(text); ASSERT_TRUE(input); input->push_back(0);
+      rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    } else {
+      rc = SQLDriverConnect(hdbc_, nullptr, reinterpret_cast<SQLCHAR*>(text.data()), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    }
+    connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO; ASSERT_TRUE(observed(rc));
+    ASSERT_TRUE(observed(SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt_)));
+    ASSERT_TRUE(cap(window_end_, true));
+  }
+  void release_keepalive() {
+    ASSERT_TRUE(cap(window_end_, hstmt_ != nullptr));
+    if (sibling_) { ASSERT_TRUE(observed(SQLFreeHandle(SQL_HANDLE_STMT, sibling_))); sibling_ = nullptr; }
+    if (hstmt_) { ASSERT_TRUE(observed(SQLFreeHandle(SQL_HANDLE_STMT, hstmt_))); hstmt_ = nullptr; }
+    ASSERT_TRUE(observed(SQLDisconnect(hdbc_))); connected_ = false;
+  }
+};
+
+TEST_F(RedshiftKeepaliveOptionsRealTest, ConfiguredTuningLocalRefusalTypedNullSiblingAndDisabledReconnectStayOwning) {
+  ASSERT_NO_FATAL_FAILURE(local_refusal());
+  ASSERT_NO_FATAL_FAILURE(open_keepalive(true, false));
+  ASSERT_TRUE(observed(SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &sibling_)));
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  ASSERT_TRUE(known_sql(SQLExecDirect(sibling_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 1")), SQL_NTS)));
+  auto text = rs::odbc::utf8_to_wide(typed_sql()); ASSERT_TRUE(text); text->push_back(0);
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, text->data(), SQL_NTS)));
+  ASSERT_TRUE(observed(SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+      SQL_INTEGER, 10, 0, &input_, 0, &input_length_)));
+  ASSERT_NO_FATAL_FAILURE(typed_row(false)); input_length_ = SQL_NULL_DATA;
+  ASSERT_NO_FATAL_FAILURE(typed_row(true)); input_ = 43; input_length_ = 0;
+  ASSERT_NO_FATAL_FAILURE(typed_row(false, true));
+  ASSERT_NO_FATAL_FAILURE(cap_sibling()); ASSERT_TRUE(observed(SQLFetch(sibling_)));
+  SQLINTEGER sibling_value = -1; SQLLEN sibling_length = -1;
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  ASSERT_TRUE(observed(SQLGetData(sibling_, 1, SQL_C_SLONG, &sibling_value, sizeof(sibling_value), &sibling_length)));
+  EXPECT_EQ(1, sibling_value); EXPECT_EQ(static_cast<SQLLEN>(sizeof(sibling_value)), sibling_length);
+  ASSERT_NO_FATAL_FAILURE(cap_sibling()); ASSERT_TRUE(observed(SQLFetch(sibling_), SQL_NO_DATA));
+  ASSERT_NO_FATAL_FAILURE(cap_sibling()); ASSERT_TRUE(observed(SQLCloseCursor(sibling_)));
+  const auto snapshot = output_.value; ASSERT_NO_FATAL_FAILURE(release_keepalive());
+  ASSERT_NO_FATAL_FAILURE(open_keepalive(false, true));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(known_sql(SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 1")), SQL_NTS)));
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_)));
+  SQLINTEGER value = -1; SQLLEN length = -1;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 1, SQL_C_SLONG, &value, sizeof(value), &length)));
+  EXPECT_EQ(1, value); EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length); EXPECT_EQ(43, snapshot);
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_NO_DATA));
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLCloseCursor(hstmt_)));
+  ASSERT_NO_FATAL_FAILURE(release_keepalive());
+}

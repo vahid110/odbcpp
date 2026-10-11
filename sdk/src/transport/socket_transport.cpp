@@ -7,6 +7,9 @@
 #include <cstring>
 #include <limits>
 #include <string>
+#ifndef _WIN32
+#include <netinet/tcp.h>
+#endif
 
 using rs::util::Deadline;
 using rs::util::remaining;
@@ -14,6 +17,62 @@ using rs::util::IOError;
 using rs::util::TimeoutError;
 
 namespace rs::core::transport {
+
+rs::util::Result<void> apply_tcp_keepalive(
+    SocketTransport::socket_t socket, const TcpKeepaliveOptions& options) {
+  using rs::util::DbErrorCode;
+  if (options.idle_seconds < 0 || options.interval_seconds < 0 ||
+      options.probe_count < 0 || options.probe_count > 255) {
+    return {DbErrorCode::NetworkError, "Invalid TCP keepalive tuning"};
+  }
+  const auto set = [socket](int level, int key, int value, const char* message)
+      -> rs::util::Result<void> {
+#ifdef _WIN32
+    const auto selected = static_cast<DWORD>(value);
+    const int rc = ::setsockopt(socket, level, key,
+        reinterpret_cast<const char*>(&selected), static_cast<int>(sizeof(selected)));
+#else
+    const int rc = ::setsockopt(socket, level, key, &value,
+        static_cast<socklen_t>(sizeof(value)));
+#endif
+    if (rc != 0) return {DbErrorCode::NetworkError, message};
+    return {};
+  };
+  auto result = set(SOL_SOCKET, SO_KEEPALIVE, options.enabled ? 1 : 0,
+                    "KeepAlive socket option rejected");
+  if (result.has_error() || !options.enabled) return result;
+  if (options.idle_seconds != 0) {
+#if defined(__APPLE__) && defined(TCP_KEEPALIVE)
+    result = set(IPPROTO_TCP, TCP_KEEPALIVE, options.idle_seconds,
+                 "KeepAliveIdle socket option rejected");
+#elif defined(TCP_KEEPIDLE)
+    result = set(IPPROTO_TCP, TCP_KEEPIDLE, options.idle_seconds,
+                 "KeepAliveIdle socket option rejected");
+#else
+    return {DbErrorCode::NetworkError, "KeepAliveIdle socket option unavailable"};
+#endif
+    if (result.has_error()) return result;
+  }
+  if (options.interval_seconds != 0) {
+#ifdef TCP_KEEPINTVL
+    result = set(IPPROTO_TCP, TCP_KEEPINTVL, options.interval_seconds,
+                 "KeepAliveInterval socket option rejected");
+#else
+    return {DbErrorCode::NetworkError, "KeepAliveInterval socket option unavailable"};
+#endif
+    if (result.has_error()) return result;
+  }
+  if (options.probe_count != 0) {
+#ifdef TCP_KEEPCNT
+    result = set(IPPROTO_TCP, TCP_KEEPCNT, options.probe_count,
+                 "KeepAliveCount socket option rejected");
+#else
+    return {DbErrorCode::NetworkError, "KeepAliveCount socket option unavailable"};
+#endif
+    if (result.has_error()) return result;
+  }
+  return {};
+}
 
 SocketTransport::socket_t SocketTransport::invalid_socket() {
 #ifdef _WIN32
@@ -87,8 +146,8 @@ void SocketTransport::set_timeouts(socket_t s, std::chrono::milliseconds rw) {
 #endif
 }
 
-SocketTransport::SocketTransport(DeadlineModel deadline_model)
-    : deadline_model_(deadline_model) {}
+SocketTransport::SocketTransport(DeadlineModel deadline_model, TcpKeepaliveOptions keepalive)
+    : deadline_model_(deadline_model), keepalive_(keepalive) {}
 SocketTransport::~SocketTransport() { close(); }
 
 void SocketTransport::adopt(socket_t socket) {
@@ -162,6 +221,8 @@ rs::util::Result<void> SocketTransport::connect(std::string_view host, uint16_t 
     sock_ = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
 #endif
     if (is_invalid(sock_)) continue;
+
+    rs::util::unwrap_or_throw(apply_tcp_keepalive(sock_, keepalive_));
 
     suppress_sigpipe(sock_);
     set_nonblocking(sock_, true);
@@ -327,7 +388,7 @@ rs::util::Result<IOResult> SocketTransport::recv(std::span<std::byte> buf, Deadl
 
 std::unique_ptr<ITransport> SocketTransport::cancellation_peer() const {
   if (!supports_server_cancel()) return nullptr;
-  auto peer = std::make_unique<SocketTransport>(DeadlineModel::Strict);
+  auto peer = std::make_unique<SocketTransport>(DeadlineModel::Strict, keepalive_);
   sockaddr_storage address{};
 #ifdef _WIN32
   int size = static_cast<int>(sizeof(address));
@@ -345,6 +406,7 @@ std::unique_ptr<ITransport> SocketTransport::cancellation_peer() const {
 bool SocketTransport::copy_cancellation_peer(const SocketTransport& peer) noexcept {
   if (!is_invalid(sock_) || peer.peer_address_size_ <= 0) return false;
   peer_address_ = peer.peer_address_; peer_address_size_ = peer.peer_address_size_;
+  keepalive_ = peer.keepalive_;
   return true;
 }
 
@@ -359,6 +421,7 @@ rs::util::Result<void> SocketTransport::connect_cancellation_peer(Deadline deadl
     std::memcpy(&address, peer_address_.data(), static_cast<std::size_t>(peer_address_size_));
     sock_ = ::socket(address.ss_family, SOCK_STREAM, IPPROTO_TCP);
     if (is_invalid(sock_)) throw IOError("cancel socket creation failed");
+    rs::util::unwrap_or_throw(apply_tcp_keepalive(sock_, keepalive_));
     suppress_sigpipe(sock_); set_nonblocking(sock_, true);
 #ifdef _WIN32
     const int address_size = peer_address_size_;

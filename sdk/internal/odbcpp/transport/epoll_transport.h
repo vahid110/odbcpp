@@ -1,6 +1,7 @@
 #pragma once
 
 #include "odbcpp/transport/async_transport.h"
+#include "odbcpp/transport/transport_options.h"
 
 #ifdef __linux__
 
@@ -15,7 +16,8 @@ namespace rs::core::transport {
 class EpollTransport : public IAsyncTransport {
 public:
   explicit EpollTransport(std::size_t max_inflight = 64,
-                          std::size_t queue_depth = 256);
+                          std::size_t queue_depth = 256,
+                          TcpKeepaliveOptions keepalive = {});
   ~EpollTransport() override;
 
   EpollTransport(const EpollTransport&) = delete;
