@@ -11583,3 +11583,88 @@ TEST_F(ParameterMarkerCountTest, ExplicitAutoIpdPrepareStillDescribesAndFailedPr
   ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(1,count);EXPECT_EQ(3,seen->descriptions);EXPECT_EQ(0,seen->queries);
 }
 } // namespace
+
+namespace {
+class LogarithmEscapeApiTest : public TemporalEscapeApiTest {
+ protected:
+  void float_result(std::optional<std::string> natural,std::optional<std::string> base10) {
+    QueryResult result;result.columns={{"natural",NativeTypeInfo{ScalarType::Double,15,0,true}},
+        {"base10",NativeTypeInfo{ScalarType::Double,15,0,true}}};
+    result.rows={{std::move(natural),std::move(base10)}};
+    result.normalized_parameter_types={{ScalarType::Double,15,0,true},{ScalarType::Double,15,0,true}};
+    result.statement_kind=StatementKind::SelectCursor;seen->date_result=std::move(result);
+  }
+};
+TEST_F(LogarithmEscapeApiTest, ConnectedAnsiWideTranslationLengthsOwningTruncationAndDisconnectedGuard) {
+  ASSERT_NO_FATAL_FAILURE(native_sql_requires_connection());
+  std::string text="SELECT {fn LOG(?)},{fn LOG10(?)}";std::array<SQLCHAR,64> output{};SQLINTEGER length=97;
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS,output.data(),output.size(),&length));
+  EXPECT_STREQ("SELECT LN(?),LOG(?)",reinterpret_cast<char*>(output.data()));EXPECT_EQ(19,length);
+  text="mutated";EXPECT_STREQ("SELECT LN(?),LOG(?)",reinterpret_cast<char*>(output.data()));
+  std::vector<SQLWCHAR> input,answer;
+  for(const auto ch:u"SELECT {fn LOG(/*\u00e9\u8868*/?)}"){input.push_back(static_cast<SQLWCHAR>(ch));}
+  for(const auto ch:u"SELECT LN(/*\u00e9\u8868*/?)"){answer.push_back(static_cast<SQLWCHAR>(ch));}
+  struct {SQLWCHAR before{17},value[96]{},after{83};} out;
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSqlW(dbc,input.data(),SQL_NTS,out.value,96,&length));
+  EXPECT_EQ(static_cast<SQLINTEGER>(answer.size()-1),length);EXPECT_EQ(0,std::memcmp(answer.data(),out.value,answer.size()*sizeof(SQLWCHAR)));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLNativeSqlW(dbc,input.data(),SQL_NTS,out.value,4,&length));EXPECT_EQ("01004",state(SQL_HANDLE_DBC,dbc));
+  EXPECT_EQ(0,out.value[3]);EXPECT_EQ(17,out.before);EXPECT_EQ(83,out.after);EXPECT_EQ(0,seen->queries);
+}
+TEST_F(LogarithmEscapeApiTest, PreparedFiniteFloat8LiteralOwningNullSmallAndEarlyCloseRefill) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_NO_FATAL_FAILURE(float_result("4.605170185988091","2"));
+  auto sql=wide("SELECT {fn LOG(?)},{fn LOG10(?)}");ASSERT_EQ(SQL_SUCCESS,SQLPrepareW(stmt,sql.data(),SQL_NTS));
+  SQLDOUBLE input=100;SQLLEN input_length=0;
+  for(SQLUSMALLINT p=1;p<=2;++p){ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,p,SQL_PARAM_INPUT,SQL_C_DOUBLE,SQL_DOUBLE,15,0,&input,sizeof(input),&input_length));}
+  struct {std::array<unsigned char,8> before;SQLDOUBLE value;std::array<unsigned char,8> after;} out;
+  out.before.fill(0x5a);out.after.fill(0x5a);SQLLEN bytes=97;
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt))<<diagnostic();ASSERT_EQ(2u,seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Float64,seen->parameters[0].type);EXPECT_EQ(std::optional<std::string>{"100"},seen->parameters[0].value);
+  input=1;ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_DOUBLE,&out.value,sizeof(out.value),&bytes));EXPECT_NEAR(4.605170185988091,out.value,1e-12);EXPECT_TRUE(std::isfinite(out.value));EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLDOUBLE)),bytes);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_DOUBLE,&out.value,sizeof(out.value),&bytes));EXPECT_NEAR(2.0,out.value,1e-12);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  ASSERT_NO_FATAL_FAILURE(float_result("0","0"));ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt))<<diagnostic();ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_DOUBLE,&out.value,sizeof(out.value),&bytes));EXPECT_NEAR(0.0,out.value,1e-12);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));input=0.1;
+  ASSERT_NO_FATAL_FAILURE(float_result("-2.302585092994046","-1"));ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt))<<diagnostic();ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_DOUBLE,&out.value,sizeof(out.value),&bytes));EXPECT_NEAR(-2.302585092994046,out.value,1e-12);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_DOUBLE,&out.value,sizeof(out.value),&bytes));EXPECT_NEAR(-1.0,out.value,1e-12);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));input=2.718281828;
+  ASSERT_NO_FATAL_FAILURE(float_result("0.9999999998311267","0.434294481829911"));ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt))<<diagnostic();ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_DOUBLE,&out.value,sizeof(out.value),&bytes));EXPECT_NEAR(0.9999999998311267,out.value,1e-12);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));input_length=SQL_NULL_DATA;
+  ASSERT_NO_FATAL_FAILURE(float_result(std::nullopt,std::nullopt));ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt))<<diagnostic();for(const auto& p:seen->parameters){EXPECT_FALSE(p.value);}
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));std::memset(&out.value,0x5a,sizeof(out.value));std::array<unsigned char,sizeof(SQLDOUBLE)> poisoned{};std::memcpy(poisoned.data(),&out.value,sizeof(out.value));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_DOUBLE,&out.value,sizeof(out.value),&bytes));EXPECT_EQ(SQL_NULL_DATA,bytes);EXPECT_EQ(0,std::memcmp(poisoned.data(),&out.value,sizeof(out.value)));
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));input_length=0;input=1e-6;
+  ASSERT_NO_FATAL_FAILURE(float_result("-13.815510557964274","-6"));ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt))<<diagnostic();ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_DOUBLE,&out.value,sizeof(out.value),&bytes));EXPECT_NEAR(-13.815510557964274,out.value,1e-12);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_DOUBLE,&out.value,sizeof(out.value),&bytes));EXPECT_NEAR(-6.0,out.value,1e-12);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));input=1;
+  ASSERT_NO_FATAL_FAILURE(float_result("0","0"));ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt))<<diagnostic();ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  for(auto byte:out.before){EXPECT_EQ(0x5a,byte);}for(auto byte:out.after){EXPECT_EQ(0x5a,byte);}
+}
+TEST_F(LogarithmEscapeApiTest, MalformedUnaryNoEffectsThenRepairAndNoScanPreservesNativeBaseSyntax) {
+  ASSERT_NO_FATAL_FAILURE(connect());const auto descriptions=seen->descriptions,queries=seen->queries;
+  for(const auto* text:{"SELECT {fn LOG()}","SELECT {fn LOG(2,100)}","SELECT {fn LOG10(?) extra}"}){
+    EXPECT_EQ(SQL_ERROR,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(const_cast<char*>(text)),SQL_NTS));EXPECT_EQ("42000",state());
+    EXPECT_EQ(descriptions,seen->descriptions);EXPECT_EQ(queries,seen->queries);EXPECT_TRUE(seen->transaction_calls.empty());
+  }
+  std::string text="SELECT {fn LOG(100)},{fn LOG10(100)}";
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_NOSCAN,reinterpret_cast<SQLPOINTER>(SQL_NOSCAN_ON),0));
+  ASSERT_EQ(SQL_SUCCESS,execute(text.c_str()));EXPECT_EQ(text,seen->sql);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_NOSCAN,reinterpret_cast<SQLPOINTER>(SQL_NOSCAN_OFF),0));
+  ASSERT_EQ(SQL_SUCCESS,execute(text.c_str()));EXPECT_EQ("SELECT LN(100),LOG(100)",seen->sql);
+}
+TEST_F(LogarithmEscapeApiTest, LocalRefusalKeepsOwningSiblingAndNumericCapabilityMasks) {
+  ASSERT_NO_FATAL_FAILURE(connect());ASSERT_EQ(SQL_SUCCESS,execute("owning row"));const auto calls=seen->queries;
+  SQLHSTMT sibling{};ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));
+  std::string text="SELECT {fn LOG10(?,?)}";std::array<SQLCHAR,16> output;output.fill(0x5a);const auto prior=output;SQLINTEGER length=97;
+  EXPECT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS,output.data(),output.size(),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,output);EXPECT_EQ(97,length);
+  EXPECT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS));EXPECT_EQ(calls,seen->queries);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));char owned[16]{};SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,owned,sizeof(owned),&bytes));EXPECT_STREQ("owning",owned);
+  SQLUINTEGER mask=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_NUMERIC_FUNCTIONS,&mask,sizeof(mask),nullptr));EXPECT_EQ(0u,mask);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,sibling));
+}
+} // namespace

@@ -6951,3 +6951,190 @@ TEST_F(RedshiftDayOrdinalEscapeRealTest, PreparedDateTimestampOrdinalsNullRebind
   ASSERT_NO_FATAL_FAILURE(owning_sibling_recovery());
   EXPECT_EQ(snapshot,snapshot_);
 }
+
+#include <cmath>
+
+class RedshiftLogFloat8EscapeRealTest : public RedshiftLocateEscapeRealTest {
+ protected:
+  SQLDOUBLE input_{1};SQLLEN input_length_{};
+  struct DoubleCell{std::array<unsigned char,8> before;SQLDOUBLE value;std::array<unsigned char,8> after;} escaped_double_{},native_double_{};
+  SQLLEN escaped_double_length_{97},native_double_length_{97};
+  SQLHSTMT sibling_{};IntegerCell sibling_value_{};SQLLEN sibling_length_{97};
+  std::array<SQLDOUBLE,2> snapshot_{};
+  static constexpr double tolerance_=1e-12;
+  static constexpr const char* owned_table_="odbcpp_log_float8_escape_scope";
+  static std::string create_sql(){return "CREATE TEMP TABLE odbcpp_log_float8_escape_scope (id INTEGER,x DOUBLE PRECISION)";}
+  static std::string insert_sql(){return "INSERT INTO odbcpp_log_float8_escape_scope VALUES (1,1),(2,100),(3,0.1),(4,2.718281828),(5,NULL)";}
+  static std::string projection(bool prepared){
+    return prepared?"SELECT {fn LOG(?)},LN(?),{fn LOG10(?)},LOG(?) FROM odbcpp_log_float8_escape_scope WHERE id=1":
+        "SELECT id,{fn LOG(x)},LN(x),{fn LOG10(x)},LOG(x) FROM odbcpp_log_float8_escape_scope ORDER BY id";
+  }
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_LOG_FLOAT8_ESCAPE_ADMISSION");
+    if(marker==nullptr) { GTEST_SKIP()<<"FLOAT8 logarithm escape scope is not admitted"; }
+    const std::string_view expected=std::string_view(::testing::UnitTest::GetInstance()->current_test_info()->name())=="DirectFloat8NaturalBaseTenAnsiWideNullAndRecovery"?"log_float8_direct_v1":"log_float8_prepared_v1";
+    ASSERT_TRUE(std::string_view(marker)==expected);
+    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    RedshiftRealTest::SetUp();if(HasFatalFailure()) { return; }
+    const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    ASSERT_TRUE(options.contains("DATABASE"));ASSERT_TRUE(options.contains("UID"));
+    ASSERT_EQ("odbcpp_pilot",options.at("DATABASE"));ASSERT_EQ("odbcpp_pilot_test",options.at("UID"));ASSERT_FALSE(options.contains("DSN"));
+    const auto limit=[&](const char* key,std::size_t fallback)->std::optional<std::size_t>{
+      const auto found=options.find(key);if(found==options.end()) { return fallback; }
+      std::size_t value{};const auto& text=found->second;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),value);
+      if(parsed.ec!=std::errc{}||parsed.ptr!=text.data()+text.size()) { return std::nullopt; }
+      return value;
+    };
+    const rs::core::database::ResultLimits result_defaults{};const rs::core::database::InputLimits input_defaults{};
+    const auto columns=limit("MAXCOLUMNS",result_defaults.max_columns_per_description);
+    const auto rows=limit("MAXROWS",result_defaults.max_rows),cells=limit("MAXCELLS",result_defaults.max_cells);
+    const auto metadata=limit("MAXMETADATAENTRIES",result_defaults.max_metadata_entries);
+    const auto parameters=limit("MAXPARAMETERS",input_defaults.max_parameters);
+    const auto value=limit("MAXPARAMETERBYTES",input_defaults.max_parameter_bytes);
+    const auto total=limit("MAXPARAMETERTOTALBYTES",input_defaults.max_parameter_total_bytes);
+    const auto sql=limit("MAXSQLBYTES",input_defaults.max_sql_bytes);
+    ASSERT_TRUE(columns);ASSERT_TRUE(rows);ASSERT_TRUE(cells);ASSERT_TRUE(metadata);
+    ASSERT_TRUE(parameters);ASSERT_TRUE(value);ASSERT_TRUE(total);ASSERT_TRUE(sql);
+    constexpr std::size_t column_count=5,row_count=5,cell_count=25;static_assert(column_count*row_count==cell_count);
+    ASSERT_GE(*columns,column_count);ASSERT_GE(*rows,row_count);ASSERT_GE(*cells,cell_count);
+    ASSERT_GE(*metadata,12u); // statement T4 + parameters4 + portal T4.
+    ASSERT_GE(*parameters,4u);ASSERT_GE(*value,128u);ASSERT_GE(*total,512u);
+    ASSERT_GE(*sql,std::max({projection(false).size(),projection(true).size(),insert_sql().size(),create_sql().size()}));
+  }
+
+
+  void cap_sibling(){
+    ASSERT_TRUE(cap(window_end_,false));
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(remaining,0);
+    const auto rc=SQLSetStmtAttr(sibling_,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining,5))),0);
+    if(rc!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,rc);
+  }
+  void fixture_log(){
+    ASSERT_NO_FATAL_FAILURE(connect_bounded());
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_MAX_ROWS,nullptr,0));
+    SQLULEN visible=97;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_MAX_ROWS,&visible,0,nullptr));ASSERT_EQ(static_cast<SQLULEN>(0),visible);
+    ASSERT_NO_FATAL_FAILURE(direct(create_sql()));table_owned_=true;
+    ASSERT_NO_FATAL_FAILURE(direct(insert_sql()));
+    ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,hdbc_,&sibling_));
+    ASSERT_NO_FATAL_FAILURE(cap_sibling());
+    std::string sql="SELECT 1";ASSERT_TRUE(known_sql(SQLExecDirect(sibling_,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS)));
+  }
+  void log_fetch(SQLRETURN expected){
+    ASSERT_TRUE(cap(window_end_,true));const auto rc=SQLFetch(hstmt_);if(rc!=expected){unknown_completion_=true;}ASSERT_EQ(expected,rc);
+  }
+  void log_close(){ASSERT_TRUE(cap(window_end_,true));ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));}
+  void log_metadata(SQLSMALLINT count){
+    ASSERT_TRUE(cap(window_end_,true));SQLSMALLINT actual=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&actual));ASSERT_EQ(count,actual);
+    for(SQLUSMALLINT c=1;c<=static_cast<SQLUSMALLINT>(count);++c){
+      SQLSMALLINT type=-1;ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,c,nullptr,0,nullptr,&type,nullptr,nullptr,nullptr));EXPECT_EQ(count==5&&c==1?SQL_INTEGER:SQL_DOUBLE,type);
+    }
+    for(SQLUSMALLINT c=count==5?2:1;c<static_cast<SQLUSMALLINT>(count);c+=2){
+      SQLULEN a=97,b=99;SQLSMALLINT sa=-1,sb=-1;
+      ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,c,nullptr,0,nullptr,nullptr,&a,&sa,nullptr));ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,c+1,nullptr,0,nullptr,nullptr,&b,&sb,nullptr));EXPECT_EQ(a,b);EXPECT_EQ(sa,sb);
+    }
+  }
+  void double_value(SQLUSMALLINT c,DoubleCell& output,SQLLEN& length,bool expected_null=false){
+    poison(output);std::array<unsigned char,sizeof(SQLDOUBLE)> poisoned{};std::memcpy(poisoned.data(),&output.value,sizeof(output.value));length=97;
+    ASSERT_TRUE(cap(window_end_,true));const auto rc=SQLGetData(hstmt_,c,SQL_C_DOUBLE,&output.value,sizeof(output.value),&length);
+    if(rc!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,rc);
+    if(expected_null){ASSERT_EQ(SQL_NULL_DATA,length);}
+    else{ASSERT_EQ(static_cast<SQLLEN>(sizeof(SQLDOUBLE)),length);}
+    if(length==SQL_NULL_DATA){EXPECT_EQ(0,std::memcmp(poisoned.data(),&output.value,sizeof(output.value)));}
+    else{EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLDOUBLE)),length);EXPECT_TRUE(std::isfinite(output.value));}
+    ASSERT_NO_FATAL_FAILURE(guards(output));
+  }
+  void log_pair(SQLUSMALLINT escaped_column,std::optional<SQLDOUBLE> literal={},bool expected_null=false){
+    ASSERT_NO_FATAL_FAILURE(double_value(escaped_column+1,native_double_,native_double_length_,expected_null));
+    ASSERT_NO_FATAL_FAILURE(double_value(escaped_column,escaped_double_,escaped_double_length_,expected_null));
+    EXPECT_EQ(native_double_length_,escaped_double_length_);
+    if(native_double_length_!=SQL_NULL_DATA){EXPECT_NEAR(native_double_.value,escaped_double_.value,tolerance_);}
+    if(literal){EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLDOUBLE)),native_double_length_);EXPECT_NEAR(*literal,native_double_.value,tolerance_);EXPECT_NEAR(*literal,escaped_double_.value,tolerance_);}
+  }
+  void log_rows(){
+    ASSERT_NO_FATAL_FAILURE(log_metadata(5));
+    const std::array<SQLDOUBLE,4> natural{0,4.605170185988091,-2.302585092994046,0.9999999998311267};
+    const std::array<SQLDOUBLE,3> base10{0,2,-1};
+    for(SQLINTEGER id=1;id<=5;++id){
+      ASSERT_NO_FATAL_FAILURE(log_fetch(SQL_SUCCESS));
+      ASSERT_TRUE(cap(window_end_,true));
+      ASSERT_NO_FATAL_FAILURE(integer(1,ordinal_,ordinal_length_));EXPECT_EQ(id,ordinal_.value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),ordinal_length_);
+      ASSERT_NO_FATAL_FAILURE(log_pair(2,id<=4?std::optional<SQLDOUBLE>{natural[static_cast<std::size_t>(id-1)]}:std::nullopt,id==5));
+      ASSERT_NO_FATAL_FAILURE(log_pair(4,id<=3?std::optional<SQLDOUBLE>{base10[static_cast<std::size_t>(id-1)]}:std::nullopt,id==5));
+    }
+    ASSERT_NO_FATAL_FAILURE(log_fetch(SQL_NO_DATA));
+    ASSERT_NO_FATAL_FAILURE(log_close());
+  }
+  void prepare_log(){
+    const auto sql=projection(true);std::vector<SQLWCHAR> wide;for(const auto ch:sql){wide.push_back(static_cast<SQLWCHAR>(ch));}wide.push_back(0);
+    ASSERT_TRUE(cap(window_end_,true));ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_,wide.data(),SQL_NTS)));
+    SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumParams(hstmt_,&count));ASSERT_EQ(4,count);
+    for(SQLUSMALLINT p=1;p<=4;++p){ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,p,SQL_PARAM_INPUT,SQL_C_DOUBLE,SQL_DOUBLE,15,0,&input_,sizeof(input_),&input_length_));}
+  }
+  void log_execution(std::optional<SQLDOUBLE> natural,std::optional<SQLDOUBLE> base10,bool early=false){
+    const auto owning_input=input_;const auto length=input_length_;
+    ASSERT_NO_FATAL_FAILURE(prepared_execute());
+    ASSERT_NO_FATAL_FAILURE(log_metadata(4));
+    ASSERT_NO_FATAL_FAILURE(log_fetch(SQL_SUCCESS));
+    ASSERT_NO_FATAL_FAILURE(log_pair(1,natural,length==SQL_NULL_DATA));if(native_double_length_!=SQL_NULL_DATA){snapshot_[0]=native_double_.value;}
+    ASSERT_NO_FATAL_FAILURE(log_pair(3,base10,length==SQL_NULL_DATA));if(native_double_length_!=SQL_NULL_DATA){snapshot_[1]=native_double_.value;}
+    EXPECT_EQ(owning_input,input_);EXPECT_EQ(length,input_length_);
+    if(!early){ASSERT_NO_FATAL_FAILURE(log_fetch(SQL_NO_DATA));}
+    ASSERT_NO_FATAL_FAILURE(log_close());
+  }
+  void owning_sibling_recovery(){
+    ASSERT_FALSE(unknown_completion_);
+    ASSERT_NO_FATAL_FAILURE(cap_sibling());
+    auto rc=SQLFetch(sibling_);if(rc!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,rc);
+    poison(sibling_value_);sibling_length_=97;
+    ASSERT_NO_FATAL_FAILURE(cap_sibling());
+    rc=SQLGetData(sibling_,1,SQL_C_SLONG,&sibling_value_.value,sizeof(sibling_value_.value),&sibling_length_);if(rc!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,rc);
+    EXPECT_EQ(1,sibling_value_.value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),sibling_length_);
+    ASSERT_NO_FATAL_FAILURE(guards(sibling_value_));
+    ASSERT_NO_FATAL_FAILURE(cap_sibling());
+    rc=SQLFetch(sibling_);if(rc!=SQL_NO_DATA){unknown_completion_=true;}ASSERT_EQ(SQL_NO_DATA,rc);
+    ASSERT_NO_FATAL_FAILURE(cap_sibling());
+    ASSERT_TRUE(known_sql(SQLCloseCursor(sibling_)));
+  }
+  void TearDown() override {
+    const auto entry=rs::util::Clock::now();if(admitted_){EXPECT_TRUE(entry<window_end_);}
+    const auto cleanup_end=std::min(window_end_,entry+std::chrono::seconds{5});
+    if(table_owned_&&!unknown_completion_&&connected_&&!drop_attempted_){
+      if(!cap(cleanup_end,true)){unknown_completion_=true;}
+      if(!unknown_completion_&&SQLFreeStmt(hstmt_,SQL_CLOSE)!=SQL_SUCCESS){unknown_completion_=true;}
+      if(!unknown_completion_&&cap(cleanup_end,true)){
+        drop_attempted_=true;std::string sql="DROP TABLE ";sql+=owned_table_;
+        if(known_sql(SQLExecDirect(hstmt_,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS))){table_owned_=false;}
+      }
+    }
+    if(sibling_){EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,sibling_));sibling_=nullptr;}
+    if(hstmt_){EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,hstmt_));hstmt_=nullptr;}
+    if(hdbc_){if(connected_){EXPECT_EQ(SQL_SUCCESS,SQLDisconnect(hdbc_));}EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,hdbc_));hdbc_=nullptr;}
+    if(henv_){EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_ENV,henv_));henv_=nullptr;}
+    if(table_owned_||unknown_completion_){ADD_FAILURE()<<"FLOAT8 logarithm exact-session cleanup verification required";}
+  }
+};
+TEST_F(RedshiftLogFloat8EscapeRealTest, DirectFloat8NaturalBaseTenAnsiWideNullAndRecovery){
+  ASSERT_NO_FATAL_FAILURE(fixture_log());
+  ASSERT_NO_FATAL_FAILURE(direct(projection(false)));
+  ASSERT_NO_FATAL_FAILURE(log_rows());
+  ASSERT_NO_FATAL_FAILURE(direct(projection(false),true));
+  ASSERT_NO_FATAL_FAILURE(log_rows());
+  const auto escaped_length=escaped_double_length_,native_length=native_double_length_;
+  ASSERT_NO_FATAL_FAILURE(owning_sibling_recovery());
+  EXPECT_EQ(escaped_length,escaped_double_length_);EXPECT_EQ(native_length,native_double_length_);
+}
+TEST_F(RedshiftLogFloat8EscapeRealTest, PreparedFloat8NaturalBaseTenNullSmallRebindEarlyCloseAndRecovery){
+  ASSERT_NO_FATAL_FAILURE(fixture_log());
+  ASSERT_NO_FATAL_FAILURE(prepare_log());
+  ASSERT_NO_FATAL_FAILURE(log_execution(0,0));
+  input_=100;ASSERT_NO_FATAL_FAILURE(log_execution(4.605170185988091,2));
+  input_=0.1;ASSERT_NO_FATAL_FAILURE(log_execution(-2.302585092994046,-1));
+  input_=2.718281828;ASSERT_NO_FATAL_FAILURE(log_execution(0.9999999998311267,std::nullopt));
+  input_length_=SQL_NULL_DATA;ASSERT_NO_FATAL_FAILURE(log_execution(std::nullopt,std::nullopt));
+  input_length_=0;input_=1e-6;ASSERT_NO_FATAL_FAILURE(log_execution(-13.815510557964274,-6));
+  input_=1;ASSERT_NO_FATAL_FAILURE(log_execution(0,0,true));
+  const auto snapshot=snapshot_;
+  ASSERT_NO_FATAL_FAILURE(owning_sibling_recovery());
+  EXPECT_EQ(snapshot,snapshot_);
+}

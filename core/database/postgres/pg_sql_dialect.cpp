@@ -487,6 +487,56 @@ SqlTranslationResult translate_day_ordinal_component(std::string_view function, 
   return failure(SqlTranslationError::InvalidSyntax, "Unclosed day ordinal component call");
 }
 
+SqlTranslationResult translate_logarithm(std::string_view function, std::size_t name_end,
+                                                   std::string_view native_function) {
+  const auto open = skip_trivia(function, name_end);
+  if (!open || *open == function.size() || function[*open] != '(')
+    return failure(SqlTranslationError::InvalidSyntax, "ODBC logarithm requires an argument list");
+  std::array<std::string_view,1> arguments{};
+  std::size_t count = 0;
+  std::size_t begin = *open + 1;
+  std::size_t depth = 1;
+  for (std::size_t i = begin; i < function.size();) {
+    std::optional<std::size_t> skipped;
+    if (function[i] == '\'' || function[i] == '"') {
+      skipped = quoted_end(function, i);
+      if (!skipped) return failure(SqlTranslationError::InvalidSyntax, "Unclosed logarithm quoted argument");
+    } else if (function.substr(i,2) == "--" || function.substr(i,2) == "/*") {
+      skipped = comment_end(function,i);
+      if (!skipped) return failure(SqlTranslationError::InvalidSyntax, "Unclosed logarithm comment");
+    } else if (function[i] == '$' && dollar_tag_at(function,i)) {
+      skipped = dollar_end(function,i);
+      if (!skipped) return failure(SqlTranslationError::InvalidSyntax, "Unclosed logarithm dollar argument");
+    }
+    if (skipped) { i = *skipped; continue; }
+    if (function[i] == '(') { ++depth; ++i; continue; }
+    const bool close = function[i] == ')' && depth == 1;
+    if ((function[i] == ',' && depth == 1) || close) {
+      const auto argument = function.substr(begin,i-begin);
+      const auto first = skip_trivia(argument,0);
+      if (!first || *first == argument.size() || count == arguments.size())
+        return failure(SqlTranslationError::InvalidSyntax, "Invalid logarithm argument count or empty argument");
+      arguments[count++] = argument;
+      if (close) {
+        const auto end = skip_trivia(function,i+1);
+        if (!end || *end != function.size() || count != 1)
+          return failure(SqlTranslationError::InvalidSyntax, "Invalid logarithm call structure");
+        // Preserve the argument tail newline: a line comment must end before
+        // the generated closer. The native expression occurs exactly once.
+        // Only names change: FLOAT8 conversion and positive-domain behavior
+        // remain native. No cast or duplicate evaluation of the raw input.
+        std::string result{native_function}; result += '(';
+        result.append(arguments[0]); result += ')';
+        return {std::move(result),SqlTranslationError::None,{}};
+      }
+      begin = ++i; continue;
+    }
+    if (function[i] == ')') --depth;
+    ++i;
+  }
+  return failure(SqlTranslationError::InvalidSyntax, "Unclosed logarithm call");
+}
+
 SqlTranslationResult translate_fragment(std::string_view sql, SqlDialectProfile profile);
 
 SqlTranslationResult translate_datetime(std::string_view body,
@@ -539,6 +589,8 @@ SqlTranslationResult translate_escape(std::string_view body, SqlDialectProfile p
         if (ascii_word_equal(name, "YEAR")) return translate_calendar_component(function,name_end,"year");
         if (ascii_word_equal(name, "MONTH")) return translate_calendar_component(function,name_end,"month");
         if (ascii_word_equal(name, "DAYOFMONTH")) return translate_calendar_component(function,name_end,"day");
+        if (ascii_word_equal(name, "LOG")) return translate_logarithm(function,name_end,"LN");
+        if (ascii_word_equal(name, "LOG10")) return translate_logarithm(function,name_end,"LOG");
         if (ascii_word_equal(name, "DAYOFWEEK")) {
           auto ordinal = translate_day_ordinal_component(function,name_end,"dow");
           if (!ordinal) return ordinal;

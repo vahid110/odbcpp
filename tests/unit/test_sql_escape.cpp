@@ -362,3 +362,35 @@ TEST(RedshiftDayOrdinalEscapeTest, PostgresUnknownPrefixesAndNativeSqlAreUnchang
   const auto prior=rs::core::database::postgres::translate_odbc_sql("{fn SECOND(?)}",SqlDialectProfile::Redshift);
   ASSERT_TRUE(prior);EXPECT_EQ("CAST(FLOOR(EXTRACT(second FROM ?)) AS INTEGER)",prior.sql);
 }
+
+TEST(RedshiftLogarithmEscapeTest, NaturalAndBaseTenMapOnceWithoutCastOrBaseArithmetic) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  const auto result=translate_odbc_sql("SELECT {fn LOG(?)},{fn LOG10(?)}",SqlDialectProfile::Redshift);
+  ASSERT_TRUE(result);EXPECT_EQ("SELECT LN(?),LOG(?)",result.sql);EXPECT_EQ(2,std::count(result.sql.begin(),result.sql.end(),'?'));
+  EXPECT_EQ("LN(COALESCE(?,100))",translate_odbc_sql("{fn lOg({fn IFNULL(?,100)})}",SqlDialectProfile::Redshift).sql);
+  EXPECT_EQ("LOG(100)",translate_odbc_sql("{fn log10(100)}",SqlDialectProfile::Redshift).sql);
+}
+TEST(RedshiftLogarithmEscapeTest, RawLineCommentsQuotesNestedCommentsAndDollarBodiesAreRetained) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  for(const auto& item:std::array<std::pair<const char*,const char*>,4>{{
+      {"{fn LOG(? -- end\n)}","LN(? -- end\n)"},
+      {"{fn LOG10(/* a /* b */ c */?)}","LOG(/* a /* b */ c */?)"},
+      {"{fn LOG(COALESCE($q$a,b$q$,?))}","LN(COALESCE($q$a,b$q$,?))"},
+      {"{fn LOG10(COALESCE('a,b',?))}","LOG(COALESCE('a,b',?))"}}}){
+    const auto result=translate_odbc_sql(item.first,SqlDialectProfile::Redshift);ASSERT_TRUE(result);EXPECT_EQ(item.second,result.sql);
+  }
+}
+TEST(RedshiftLogarithmEscapeTest, MalformedUnaryCallsRefuseAndPositiveSmallRecoveryRemainsNative) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  for(const auto* sql:{"{fn LOG}","{fn LOG()}","{fn LOG(?,?)}","{fn LOG10(,?)}","{fn LOG10(?) extra}","{fn LOG(/*empty*/)}","{fn LOG('unclosed)}"}){
+    const auto result=translate_odbc_sql(sql,SqlDialectProfile::Redshift);EXPECT_EQ(SqlTranslationError::InvalidSyntax,result.error);EXPECT_TRUE(result.sql.empty());
+  }
+  EXPECT_EQ("LN(1e-6)",translate_odbc_sql("{fn LOG(1e-6)}",SqlDialectProfile::Redshift).sql);
+  EXPECT_EQ("LOG(NULL)",translate_odbc_sql("{fn LOG10(NULL)}",SqlDialectProfile::Redshift).sql);
+}
+TEST(RedshiftLogarithmEscapeTest, PostgresNativeLogAndUnknownPrefixesAndPriorFamiliesAreUnchanged) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  EXPECT_EQ("SELECT LOG(?),LOG10(?)",translate_odbc_sql("SELECT {fn LOG(?)},{fn LOG10(?)}").sql);
+  EXPECT_EQ("SELECT LOG(2,100),LN(x),LOG_EXTRA(?),'LOG10(?)'",translate_odbc_sql("SELECT LOG(2,100),LN(x),{fn LOG_EXTRA(?)},'LOG10(?)'",SqlDialectProfile::Redshift).sql);
+  EXPECT_EQ("(EXTRACT(dow FROM ?)+1),EXTRACT(doy FROM ?),CAST(FLOOR(EXTRACT(second FROM ?)) AS INTEGER)",translate_odbc_sql("{fn DAYOFWEEK(?)},{fn DAYOFYEAR(?)},{fn SECOND(?)}",SqlDialectProfile::Redshift).sql);
+}
