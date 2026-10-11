@@ -41,15 +41,27 @@ commit/push, and a durable entry for all pending full-CI/live acceptance. These
 implementation goals can close when those requirements are proved; their closure
 is not full platform, live or production acceptance.
 
-The 12-hour checkpoint owns accumulated qualification debt across completed
-implementation goals. Each entry binds its feature, exact source/head, authored
+The human explicitly requests a continuous goal chain, not timer-only development.
+After proving an implementation goal complete, immediately create and start the
+next concrete ready authorized implementation goal in the same development flow;
+do not wait for the next timer wake or periodic qualification. Keep one active
+goal at a time. The existing continuation is a complementary recovery/checkpoint
+trigger, not the normal handoff mechanism. If no planned package is ready, record
+the actual source dependency rather than manufacturing work.
+
+The private `continuation/acceptance-backlog.json` retains accumulated qualification
+debt across completed implementation goals. Each entry binds its feature, exact source/head, authored
 cases, accepted evidence, missing gates and final disposition. Debt is cleared only
 by actual applicable results and independent final review. Release/product readiness
 still requires the complete graph, exact-head green full CI, actual applicable live
 coverage, PostgreSQL shutdown and owned-process reaps.
 
-Existing goals retain their original acceptance requirements; do not falsely close
-or replace them merely to adopt this distinction. Their pending scheduled gates
+For the human-requested split of an existing goal, preserve its full requirements
+in the acceptance backlog and distinguish the proved implementation phase from
+unfinished acceptance. Use supported goal controls to redefine the implementation
+objective before closing it. If those controls cannot edit or replace an unfinished
+goal, report that concrete tool limitation; do not silently reinterpret an app
+objective or mark the old full-acceptance goal complete. Their pending scheduled gates
 must not prevent ready authorized product implementation. A scheduled due time is
 pending acceptance, not a reason to mark a new implementation goal blocked. Report
 actual no-progress honestly without inventing work or a live process wait. Respect

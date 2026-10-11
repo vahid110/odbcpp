@@ -41,6 +41,9 @@ It defines the repeatable workflow; this file defines durable repository rules.
   recorded acceptance debt. The periodic checkpoint and final release still own
   all full-CI/live/final gates. Existing full-acceptance goals retain their scope;
   scheduled acceptance must not stop ready authorized implementation.
+  Immediately start the next ready implementation goal after verified closure;
+  do not wait for a timer tick. Preserve all accumulated gates in the private
+  acceptance backlog, with truthful supported app-goal transitions.
 - Before ending a development turn, reconcile actual workers and the next
   product task with the handoff. Completed, selection-only or idle workers are
   not active implementation. Do not invent work to fill a lane or let routine

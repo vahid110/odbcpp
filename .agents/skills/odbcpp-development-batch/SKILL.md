@@ -100,8 +100,12 @@ and verified login. Update current handoff facts in place and select or continue
 ready product task. Preserve archived failures and protected cloud
 admission. Keep secrets and credential/accounting artifacts outside the repo.
 
-The app's goal tracks the intended outcome; the existing timer schedules
-continuation. Neither is test evidence or paid-action authority. Side chats are
+The app's implementation goals chain immediately after verified phase closure;
+the existing timer complements the chain and runs accumulated acceptance.
+Preserve full-CI/live/final debt in continuation/acceptance-backlog.json before
+closing any implementation goal. Existing full-acceptance app objectives require
+supported redefinition or actual full closure; never mark them complete by prose
+reinterpretation. Neither is test evidence or paid-action authority. Side chats are
 useful for user explanations; the main development chat retains integration
 ownership. Inline diff comments and independent review assess concrete changes.
 
