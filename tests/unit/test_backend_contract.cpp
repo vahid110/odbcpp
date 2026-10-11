@@ -18,6 +18,28 @@
 #include <atomic>
 #include <future>
 
+#if defined(_WIN32) && defined(_MSC_VER)
+#include <cstdint>
+#include <cstdlib>
+#ifndef NOMINMAX
+#define NOMINMAX
+#define ODBCPP_RECOVERY_UNDEFINE_NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#define ODBCPP_RECOVERY_UNDEFINE_LEAN
+#endif
+#include <windows.h>
+#ifdef ODBCPP_RECOVERY_UNDEFINE_LEAN
+#undef WIN32_LEAN_AND_MEAN
+#undef ODBCPP_RECOVERY_UNDEFINE_LEAN
+#endif
+#ifdef ODBCPP_RECOVERY_UNDEFINE_NOMINMAX
+#undef NOMINMAX
+#undef ODBCPP_RECOVERY_UNDEFINE_NOMINMAX
+#endif
+#endif
+
 #if defined(__has_feature)
 # if __has_feature(address_sanitizer)
 #  define ODBCPP_RESULT_RELEASE_ASAN 1
@@ -43,6 +65,92 @@ using namespace rs::core::database;
 using rs::util::Result;
 using rs::util::DbErrorCode;
 using rs::util::Deadline;
+
+// Test-only diagnostics for one restored-result SQLExecute. Never handle a fault.
+#if defined(_WIN32) && defined(_MSC_VER)
+namespace recovery_execute_fault {
+struct State {
+  HMODULE modules[7]{};
+  bool inside_logger{};
+  bool seh_reported{};
+};
+static thread_local State state;
+static const wchar_t* const module_names[7] = {
+  nullptr,L"kernel32.dll",L"kernelbase.dll",L"ntdll.dll",L"ucrtbase.dll",
+  L"vcruntime140.dll",L"vcruntime140_1.dll"
+};
+static const char* const module_labels[7] = {
+  "test_backend_contract","kernel32","kernelbase","ntdll","ucrtbase",
+  "vcruntime140","vcruntime140_1"
+};
+static void emit_location(const char* label,unsigned index,void* address) noexcept {
+  HMODULE module{};
+  if (address && GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCWSTR>(address),&module)) {
+    for (unsigned i=0;i<7;++i) {
+      if (state.modules[i] && module==state.modules[i]) {
+        const auto offset=reinterpret_cast<std::uintptr_t>(address)-
+                          reinterpret_cast<std::uintptr_t>(module);
+        std::fprintf(stderr,"[recovery-execute-fault] %s %u %s+0x%llx\n",
+                     label,index,module_labels[i],static_cast<unsigned long long>(offset));
+        return;
+      }
+    }
+  }
+  std::fprintf(stderr,"[recovery-execute-fault] %s %u unknown\n",label,index);
+}
+static void emit_stack(const char* label) noexcept {
+  void* frames[16]{};
+  const USHORT count=CaptureStackBackTrace(0,16,frames,nullptr);
+  for (USHORT i=0;i<count;++i) emit_location(label,i,frames[i]);
+  std::fflush(stderr);
+}
+static int seh_filter(EXCEPTION_POINTERS* fault) noexcept {
+  if (!state.inside_logger && !state.seh_reported) {
+    const DWORD last_error=GetLastError();
+    state.inside_logger=true;state.seh_reported=true;
+    if (fault && fault->ExceptionRecord) {
+      std::fprintf(stderr,"[recovery-execute-fault] SEH code=0x%08lx flags=0x%08lx\n",
+                   static_cast<unsigned long>(fault->ExceptionRecord->ExceptionCode),
+                   static_cast<unsigned long>(fault->ExceptionRecord->ExceptionFlags));
+      emit_location("fault-instruction",0,fault->ExceptionRecord->ExceptionAddress);
+    } else {
+      std::fprintf(stderr,"[recovery-execute-fault] SEH unavailable\n");
+    }
+    emit_stack("filter-current-stack");
+    state.inside_logger=false;SetLastError(last_error);
+  }
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+// No destructible automatic C++ objects in the MSVC SEH wrapper.
+static SQLRETURN execute_seh(SQLHSTMT statement) {
+  __try { return SQLExecute(statement); }
+  __except(seh_filter(GetExceptionInformation())) {
+    // The filter unconditionally continues search; this body is never selected.
+    std::abort();
+  }
+}
+} // namespace recovery_execute_fault
+#endif
+static SQLRETURN observe_recovery_execute(SQLHSTMT statement) {
+#if defined(_WIN32) && defined(_MSC_VER)
+  const DWORD entry_last_error=GetLastError();
+  recovery_execute_fault::state=recovery_execute_fault::State{};
+  for (unsigned i=0;i<7;++i) {
+    recovery_execute_fault::state.modules[i]=GetModuleHandleW(recovery_execute_fault::module_names[i]);
+  }
+  SetLastError(entry_last_error);
+  const SQLRETURN result=recovery_execute_fault::execute_seh(statement);
+  const DWORD last_error=GetLastError();
+  std::fprintf(stderr,"[recovery-execute-fault] SQLRETURN=%d\n",static_cast<int>(result));
+  std::fflush(stderr);
+  recovery_execute_fault::state=recovery_execute_fault::State{};SetLastError(last_error);
+  return result;
+#else
+  return SQLExecute(statement);
+#endif
+}
 
 template<class T> concept ExposesRawPhysicalSession = requires(T& connection) { connection.get_db_connection(); };
 static_assert(!ExposesRawPhysicalSession<rs::odbc::ODBCConnection>);
@@ -7112,7 +7220,7 @@ TEST_F(RetrieveDataTest, PreparedMoreResultsPersistenceStructuralFailureAndSibli
   SQLSMALLINT count=99;EXPECT_EQ(SQL_ERROR,SQLNumResultCols(stmt,&count));EXPECT_EQ(99,count);
   checkpoint("after baseline line 7035");
   checkpoint("before baseline line 7036");
-  checkpoint("before recovery: restore valid owning result");*seen->date_result=valid_prepared_result;checkpoint("after recovery: restore valid owning result");checkpoint("before recovery: execute restored result");ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));checkpoint("after recovery: execute restored result");checkpoint("before recovery: fetch restored result");ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));checkpoint("after recovery: fetch restored result");checkpoint("before recovery: check restored output");EXPECT_EQ(9,rows[0].integer);checkpoint("after recovery: check restored output");
+  checkpoint("before recovery: restore valid owning result");*seen->date_result=valid_prepared_result;checkpoint("after recovery: restore valid owning result");checkpoint("before recovery: execute restored result");ASSERT_EQ(SQL_SUCCESS,observe_recovery_execute(stmt));checkpoint("after recovery: execute restored result");checkpoint("before recovery: fetch restored result");ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));checkpoint("after recovery: fetch restored result");checkpoint("before recovery: check restored output");EXPECT_EQ(9,rows[0].integer);checkpoint("after recovery: check restored output");
   checkpoint("after baseline line 7036");
   checkpoint("before baseline line 7037");
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));EXPECT_EQ(1,sibling_output);EXPECT_EQ(sizeof(SQLINTEGER),sibling_length);

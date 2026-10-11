@@ -171,6 +171,9 @@ endforeach()
 # The backend contract suite exceeds the standard COFF section limit on MSVC.
 if(MSVC)
   target_compile_options(test_backend_contract PRIVATE /bigobj)
+  # Preserve module-relative fault locations without changing optimization.
+  target_link_options(test_backend_contract PRIVATE
+    "/MAP:$<TARGET_FILE_DIR:test_backend_contract>/test_backend_contract.map")
 endif()
 set_tests_properties(test_pg_credential_consumer test_auth_core test_temporary_db_validity test_issuer_timestamp test_aws_db_response_fields test_bounded_response_stream test_aws_db_json_response test_aws_db_xml_response test_redshift_serverless_response test_redshift_provisioned_response test_redshift_withiam_response test_auth_raw_response_projection test_checked_response_boundary test_checked_response_stream test_checked_aws_db_json_response test_response_operation test_checked_aws_db_xml_response
   PROPERTIES LABELS "unit;security" TIMEOUT 30)
