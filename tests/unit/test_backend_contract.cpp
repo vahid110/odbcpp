@@ -282,6 +282,7 @@ struct Observations {
   bool routine_executor{false};
   bool catalog_route_executor{false}; // Opt-in owning FK/Tables/Columns facet only.
   bool advertised_catalog_names{false};
+  bool read_only_capability{true}; // Preserve the existing neutral default.
   int catalog_calls{}, catalog_builds{}, catalog_error{};
   std::optional<CatalogRequest> catalog_request;
   bool catalog_retire{}, catalog_throw{};
@@ -743,6 +744,7 @@ class FakeProvider final : public IBackendProvider {
     if (profile_) return profile_->capabilities();
     BackendCapabilities result;
     result.dbms_name = "ContractDB";
+    result.read_only = seen_->read_only_capability;
     result.describe_parameters = true;
     result.catalog_names = seen_->advertised_catalog_names;
     result.max_identifier_length = 117;
@@ -12022,4 +12024,113 @@ TEST_F(LoginTimeoutOptionsTest, ConnectAAndWShareResolvedTimeoutWithoutKeywordWa
   ASSERT_EQ(SQL_SUCCESS, SQLConnectW(dbc, wide.data(), SQL_NTS, nullptr, 0, nullptr, 0));
   EXPECT_EQ(std::chrono::milliseconds::max(), seen->settings.timeout);
   ASSERT_NO_FATAL_FAILURE(readback(0));
+}
+
+class AccessModeHintTest : public BackendContractTest {
+ protected:
+  SQLRETURN mode(SQLULEN value, bool wide = false) {
+    auto pointer = reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(value));
+    return wide ? SQLSetConnectAttrW(dbc, SQL_ATTR_ACCESS_MODE, pointer, 0)
+                : SQLSetConnectAttr(dbc, SQL_ATTR_ACCESS_MODE, pointer, 0);
+  }
+  void expect_mode(SQLUINTEGER expected) {
+    struct { SQLUINTEGER value; SQLUINTEGER guard; } output{99, 0xa5a5a5a5u};
+    SQLINTEGER length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(dbc, SQL_ATTR_ACCESS_MODE,
+        &output.value, sizeof(output.value), &length));
+    EXPECT_EQ(expected, output.value);
+    EXPECT_EQ(0xa5a5a5a5u, output.guard);
+    EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(output.value)), length);
+  }
+  auto io_counts() {
+    return std::array<std::size_t, 8>{static_cast<std::size_t>(seen->created),
+        static_cast<std::size_t>(seen->transports), static_cast<std::size_t>(seen->queries),
+        static_cast<std::size_t>(seen->descriptions), static_cast<std::size_t>(seen->translations),
+        seen->transaction_calls.size(), static_cast<std::size_t>(seen->isolation_calls),
+        static_cast<std::size_t>(seen->login_option_resolutions)};
+  }
+};
+
+TEST_F(AccessModeHintTest, ConnectedChangesAreLocalAndDoNotPromoteBackendCapability) {
+  ASSERT_NO_FATAL_FAILURE(expect_mode(SQL_MODE_READ_WRITE));
+  ASSERT_EQ(SQL_SUCCESS, mode(SQL_MODE_READ_ONLY));
+  ASSERT_NO_FATAL_FAILURE(connect());
+  const auto before = io_counts();
+  for (auto selected : {SQL_MODE_READ_WRITE, SQL_MODE_READ_ONLY}) {
+    ASSERT_EQ(SQL_SUCCESS, mode(selected, true));
+    ASSERT_NO_FATAL_FAILURE(expect_mode(selected));
+    for (bool backend_read_only : {false, true}) {
+      seen->read_only_capability = backend_read_only;
+      SQLCHAR capability[2]{}; SQLSMALLINT length = -1;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DATA_SOURCE_READ_ONLY,
+          capability, sizeof(capability), &length));
+      EXPECT_STREQ(backend_read_only ? "Y" : "N",
+          reinterpret_cast<const char*>(capability));
+      EXPECT_EQ(1, length);
+    }
+    EXPECT_EQ(before, io_counts());
+  }
+  EXPECT_EQ(SQL_ERROR, mode(std::numeric_limits<SQLULEN>::max()));
+  EXPECT_EQ("HY024", state(SQL_HANDLE_DBC, dbc));
+  ASSERT_NO_FATAL_FAILURE(expect_mode(SQL_MODE_READ_ONLY));
+  EXPECT_EQ(before, io_counts());
+}
+
+TEST_F(AccessModeHintTest, FailedLoginRetirementAndReconnectPreserveApplicationHint) {
+  ASSERT_EQ(SQL_SUCCESS, mode(SQL_MODE_READ_ONLY, true));
+  for (int failure : {1, 2, 3, 4, 5, 8, 9}) {
+    seen->connect_exception = failure;
+    seen->setup_allocation_failure = failure == 3;
+    EXPECT_EQ(SQL_ERROR, SQLDriverConnect(dbc, nullptr,
+        (SQLCHAR*)"SERVER=fake;SSL=0", SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+    ASSERT_NO_FATAL_FAILURE(expect_mode(SQL_MODE_READ_ONLY));
+  }
+  seen->connect_exception = 0; seen->setup_allocation_failure = false;
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_NO_FATAL_FAILURE(expect_mode(SQL_MODE_READ_ONLY));
+  seen->terminal_execution = 2;
+  EXPECT_EQ(SQL_ERROR, execute("rows"));
+  const auto connection = rs::odbc::HandleRegistry::instance()
+      .get_handle_as<rs::odbc::ODBCConnection>(dbc);
+  ASSERT_TRUE(connection);
+  // Physical retirement is distinct from the still-open logical ODBC handle.
+  SQLUINTEGER dead = SQL_CD_FALSE;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_DEAD,
+      &dead, sizeof(dead), nullptr));
+  EXPECT_EQ(SQL_CD_TRUE, dead);
+  ASSERT_NO_FATAL_FAILURE(expect_mode(SQL_MODE_READ_ONLY));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  seen->terminal_execution = 0;
+  ASSERT_NO_FATAL_FAILURE(connect_with("SERVER=another;SSL=0;LT=2"));
+  ASSERT_NO_FATAL_FAILURE(expect_mode(SQL_MODE_READ_ONLY));
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  ASSERT_NO_FATAL_FAILURE(expect_mode(SQL_MODE_READ_ONLY));
+  ASSERT_EQ(SQL_SUCCESS, mode(SQL_MODE_READ_WRITE));
+  ASSERT_NO_FATAL_FAILURE(connect_with("SERVER=fake;SSL=0"));
+  ASSERT_NO_FATAL_FAILURE(expect_mode(SQL_MODE_READ_WRITE));
+}
+
+TEST_F(AccessModeHintTest, NeedDataRefusesModeChangeAndRecoveryDoesNotIssueControlSql) {
+  ASSERT_EQ(SQL_SUCCESS, mode(SQL_MODE_READ_ONLY));
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  char token[8]{}; SQLLEN indicator = SQL_DATA_AT_EXEC;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_VARCHAR, 8, 0, token, sizeof(token), &indicator));
+  ASSERT_EQ(SQL_NEED_DATA, SQLExecute(stmt));
+  const auto before = io_counts();
+  EXPECT_EQ(SQL_ERROR, mode(SQL_MODE_READ_WRITE, true));
+  EXPECT_EQ("HY010", state(SQL_HANDLE_DBC, dbc));
+  ASSERT_NO_FATAL_FAILURE(expect_mode(SQL_MODE_READ_ONLY));
+  EXPECT_EQ(before, io_counts());
+  ASSERT_EQ(SQL_SUCCESS, SQLCancel(stmt));
+  const auto after_cancel = io_counts();
+  ASSERT_EQ(SQL_SUCCESS, mode(SQL_MODE_READ_WRITE));
+  ASSERT_NO_FATAL_FAILURE(expect_mode(SQL_MODE_READ_WRITE));
+  EXPECT_EQ(after_cancel, io_counts());
+  indicator = 3; std::memcpy(token, "abc", 4);
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"abc"}, seen->parameters[0].value);
 }

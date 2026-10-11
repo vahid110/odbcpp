@@ -356,10 +356,10 @@ TEST_F(AttributeApisTest, ReportsCommonConnectionAttributeDefaults) {
   EXPECT_EQ(SQL_SUCCESS,
             SQLSetConnectAttr(connection_, SQL_ATTR_ACCESS_MODE,
                               integer_value(SQL_MODE_READ_WRITE), 0));
-  EXPECT_EQ(SQL_ERROR,
+  EXPECT_EQ(SQL_SUCCESS,
             SQLSetConnectAttr(connection_, SQL_ATTR_ACCESS_MODE,
                               integer_value(SQL_MODE_READ_ONLY), 0));
-  EXPECT_EQ("HYC00", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  expect_attribute(SQL_ATTR_ACCESS_MODE, SQL_MODE_READ_ONLY);
   EXPECT_EQ(SQL_SUCCESS,
             SQLSetConnectAttr(connection_, SQL_ATTR_ASYNC_ENABLE,
                               integer_value(SQL_ASYNC_ENABLE_OFF), 0));
@@ -1735,4 +1735,35 @@ TEST_F(AttributeApisTest, LoginTimeoutZeroRangeAndWideReadbackPreserveExplicitCh
   ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(connection_, SQL_ATTR_LOGIN_TIMEOUT, integer_value(7), 0));
   ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(connection_, SQL_ATTR_LOGIN_TIMEOUT, &value, sizeof(value), nullptr));
   EXPECT_EQ(7u, value);
+}
+
+// ACCESS_MODE is an advisory application hint, not a write-prevention contract.
+TEST_F(AttributeApisTest, AccessModeAAndWReadbackRejectsInvalidWithoutMutation) {
+  const SQLULEN invalid[] = {2, std::numeric_limits<SQLULEN>::max()};
+  for (const auto mode : {SQL_MODE_READ_ONLY, SQL_MODE_READ_WRITE}) {
+    ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttrW(connection_, SQL_ATTR_ACCESS_MODE,
+        integer_value(mode), 0));
+    for (const auto bad : invalid) {
+      EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(connection_, SQL_ATTR_ACCESS_MODE,
+          integer_value(bad), 0));
+      EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_DBC, connection_));
+      for (bool wide : {false, true}) {
+        std::array<unsigned char, sizeof(SQLUINTEGER) + 2> output{};
+        output.fill(0xa5);
+        SQLINTEGER length = -1;
+        const auto rc = wide
+            ? SQLGetConnectAttrW(connection_, SQL_ATTR_ACCESS_MODE,
+                output.data() + 1, sizeof(SQLUINTEGER), &length)
+            : SQLGetConnectAttr(connection_, SQL_ATTR_ACCESS_MODE,
+                output.data() + 1, sizeof(SQLUINTEGER), &length);
+        ASSERT_EQ(SQL_SUCCESS, rc);
+        SQLUINTEGER captured{};
+        std::memcpy(&captured, output.data() + 1, sizeof(captured));
+        EXPECT_EQ(static_cast<SQLUINTEGER>(mode), captured);
+        EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(captured)), length);
+        EXPECT_EQ(0xa5, output.front());
+        EXPECT_EQ(0xa5, output.back());
+      }
+    }
+  }
 }

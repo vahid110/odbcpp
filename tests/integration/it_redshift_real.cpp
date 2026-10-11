@@ -7278,9 +7278,13 @@ class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTes
   SQLINTEGER sibling_snapshot_{-1};
   static std::string typed_sql(){return "SELECT CAST(? AS INTEGER)";}
   void SetUp() override {
-    const char* marker=std::getenv("ODBCPP_REDSHIFT_LOGIN_TIMEOUT_ADMISSION");
-    if(marker==nullptr){GTEST_SKIP()<<"LoginTimeout happy scope not admitted";}
-    ASSERT_EQ(std::string_view("login_timeout_options_happy_v1"),std::string_view(marker));
+    setup_admitted("ODBCPP_REDSHIFT_LOGIN_TIMEOUT_ADMISSION",
+                   "login_timeout_options_happy_v1");
+  }
+  void setup_admitted(const char* environment, const char* expected_marker) {
+    const char* marker=std::getenv(environment);
+    if(marker==nullptr){GTEST_SKIP()<<"Selected happy scope not admitted";}
+    ASSERT_EQ(std::string_view(expected_marker),std::string_view(marker));
     window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
     RedshiftRealTest::SetUp();if(HasFatalFailure()){return;}
     const auto options=rs::odbc::ConnectionString::parse(connection_string_);
@@ -7439,4 +7443,67 @@ TEST_F(RedshiftLoginTimeoutOptionsRealTest, ExplicitLifetimeTypedNullOwningRefil
   ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttrW(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,reinterpret_cast<SQLPOINTER>(std::uintptr_t{3}),0));
   ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT","2",3,false));
   EXPECT_EQ(43,owned_value);EXPECT_EQ(1,sibling_snapshot_);
+}
+
+// Advisory ACCESS_MODE qualification shares the owning typed-row/deadline and
+// cleanup fixture. Its separate admission marker never admits LoginTimeout cases.
+class RedshiftAccessModeHintRealTest : public RedshiftLoginTimeoutOptionsRealTest {
+ protected:
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_ACCESS_MODE_ADMISSION", "access_mode_hint_happy_v1");
+  }
+  void mode_readback(SQLUINTEGER expected) {
+    struct { SQLUINTEGER value; SQLUINTEGER guard; } output{97, 0x12345678u};
+    SQLINTEGER length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(hdbc_, SQL_ATTR_ACCESS_MODE,
+        &output.value, sizeof(output.value), &length));
+    EXPECT_EQ(expected, output.value);
+    EXPECT_EQ(0x12345678u, output.guard);
+    EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(output.value)), length);
+    output.value = 97;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(hdbc_, SQL_ATTR_ACCESS_MODE,
+        &output.value, sizeof(output.value), &length));
+    EXPECT_EQ(expected, output.value);
+    EXPECT_EQ(0x12345678u, output.guard);
+  }
+};
+
+TEST_F(RedshiftAccessModeHintRealTest, AdvisoryModePersistsThroughTypedNullRefillAndSibling) {
+  ASSERT_NO_FATAL_FAILURE(mode_readback(SQL_MODE_READ_WRITE));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttrW(hdbc_, SQL_ATTR_ACCESS_MODE,
+      reinterpret_cast<SQLPOINTER>(std::uintptr_t{SQL_MODE_READ_ONLY}), 0));
+  ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT", "5", 5, true));
+  ASSERT_NO_FATAL_FAILURE(mode_readback(SQL_MODE_READ_ONLY));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_MAX_ROWS, nullptr, 0));
+  auto sql = typed_sql(); auto wide = rs::odbc::utf8_to_wide(sql);
+  ASSERT_TRUE(wide); wide->push_back(0);
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, wide->data(), SQL_NTS)));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+      SQL_INTEGER, 10, 0, &input_, 0, &input_length_));
+  ASSERT_NO_FATAL_FAILURE(typed_row(false));
+  input_length_ = SQL_NULL_DATA; ASSERT_NO_FATAL_FAILURE(typed_row(true));
+  input_ = 43; input_length_ = 0; ASSERT_NO_FATAL_FAILURE(typed_row(false, true));
+  const auto owned_value = output_.value;
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &sibling_));
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  ASSERT_TRUE(known_sql(SQLExecDirect(sibling_, (SQLCHAR*)"SELECT 1", SQL_NTS)));
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  auto result = SQLFetch(sibling_); if (result != SQL_SUCCESS) unknown_completion_ = true;
+  ASSERT_EQ(SQL_SUCCESS, result);
+  SQLLEN length = -1;
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  result = SQLGetData(sibling_, 1, SQL_C_SLONG, &sibling_snapshot_, sizeof(sibling_snapshot_), &length);
+  if (result != SQL_SUCCESS) unknown_completion_ = true;
+  ASSERT_EQ(SQL_SUCCESS, result); EXPECT_EQ(1, sibling_snapshot_);
+  EXPECT_EQ(static_cast<SQLLEN>(sizeof(sibling_snapshot_)), length);
+  for (auto selected : {SQL_MODE_READ_WRITE, SQL_MODE_READ_ONLY}) {
+    ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(hdbc_, SQL_ATTR_ACCESS_MODE,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(selected)), 0));
+    ASSERT_NO_FATAL_FAILURE(mode_readback(selected));
+    EXPECT_EQ(43, owned_value); EXPECT_EQ(1, sibling_snapshot_);
+  }
+  ASSERT_NO_FATAL_FAILURE(cap_sibling()); ASSERT_TRUE(known_sql(SQLCloseCursor(sibling_)));
+  ASSERT_NO_FATAL_FAILURE(release_connection());
+  ASSERT_NO_FATAL_FAILURE(mode_readback(SQL_MODE_READ_ONLY));
 }

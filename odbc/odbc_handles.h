@@ -333,6 +333,8 @@ private:
   // Application choice persists; keyword readback is not an implicit override.
   std::optional<SQLUINTEGER> explicit_login_timeout_seconds_;
   SQLUINTEGER connection_timeout_seconds_ = 0;
+  // ODBC advisory hint only; not a backend write restriction.
+  SQLUINTEGER access_mode_ = SQL_MODE_READ_WRITE;
   SQLUINTEGER autocommit_ = SQL_AUTOCOMMIT_ON;
   SQLUINTEGER transaction_isolation_ = SQL_TXN_READ_COMMITTED;
   SQLHWND quiet_mode_ = nullptr;

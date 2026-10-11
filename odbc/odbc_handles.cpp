@@ -1766,15 +1766,15 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
     return SQL_SUCCESS;
   }
   if (attribute == SQL_ATTR_ACCESS_MODE) {
-    if (value == SQL_MODE_READ_WRITE) return SQL_SUCCESS;
-    if (value == SQL_MODE_READ_ONLY) {
-      set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
-                "Read-only connection mode is not implemented");
+    if (value != SQL_MODE_READ_WRITE && value != SQL_MODE_READ_ONLY) {
+      set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
+                "Invalid connection access mode");
       return SQL_ERROR;
     }
-    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
-              "Invalid connection access mode");
-    return SQL_ERROR;
+    // The ODBC optimization indicator persists for this logical handle. It
+    // neither changes backend capabilities nor performs session/transaction I/O.
+    access_mode_ = static_cast<SQLUINTEGER>(value);
+    return SQL_SUCCESS;
   }
   if (attribute == SQL_ATTR_ASYNC_ENABLE) {
     if (value == SQL_ASYNC_ENABLE_OFF) return SQL_SUCCESS;
@@ -1910,7 +1910,7 @@ SQLRETURN ODBCConnection::get_attribute(SQLINTEGER attribute,
                 "PostgreSQL network packet sizing is not configurable");
       return SQL_ERROR;
     case SQL_ATTR_ACCESS_MODE:
-      write_uinteger(SQL_MODE_READ_WRITE);
+      write_uinteger(access_mode_);
       return SQL_SUCCESS;
     case SQL_ATTR_ASYNC_ENABLE:
       write_uinteger(SQL_ASYNC_ENABLE_OFF);
