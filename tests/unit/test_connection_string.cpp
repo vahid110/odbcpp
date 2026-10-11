@@ -211,6 +211,19 @@ TEST_F(UnixIniDiscoveryTest, ApplicationNameRespectsDriverDsnExplicitEmptyAndLit
   EXPECT_EQ("dsn-name", ConnectionString::resolve("DSN=AppFixture", "AppDriver").effective_parameters.at("APPLICATIONNAME"));
 }
 
+TEST_F(UnixIniDiscoveryTest, ReadOnlyLayersPreserveExplicitFalseAndEmptyForValidation) {
+  const auto dsn_path = root_ / "readonly-dsn.ini";
+  write(dsn_path, "[ReadOnlyFixture]\nDRIVER=ReadOnlyDriver\nReadOnly=true\n");
+  write(root_ / "drivers.ini", "[ReadOnlyDriver]\nReadOnly=false\n");
+  ASSERT_EQ(0, setenv("ODBCINI", dsn_path.c_str(), 1));
+  ASSERT_EQ(0, setenv("ODBCSYSINI", root_.c_str(), 1));
+  ASSERT_EQ(0, setenv("ODBCINSTINI", "drivers.ini", 1));
+  EXPECT_EQ("false", ConnectionString::resolve("DRIVER=ReadOnlyDriver", "").effective_parameters.at("READONLY"));
+  EXPECT_EQ("true", ConnectionString::resolve("DSN=ReadOnlyFixture", "").effective_parameters.at("READONLY"));
+  EXPECT_EQ("false", ConnectionString::resolve("DSN=ReadOnlyFixture;ReadOnly=false", "").effective_parameters.at("READONLY"));
+  EXPECT_EQ("", ConnectionString::resolve("DSN=ReadOnlyFixture;ReadOnly={}", "").effective_parameters.at("READONLY"));
+}
+
 TEST_F(UnixIniDiscoveryTest, LoginTimeoutAliasesRespectDriverDsnAndExplicitLayers) {
   const auto dsn_path = root_ / "trusted-dsn.ini";
   write(dsn_path, "[LoginFixture]\nDRIVER=LoginDriver\nLT=2\n");
@@ -295,6 +308,18 @@ TEST_F(NativeDsnTest, LoginTimeoutAliasesRespectNativeDriverDsnAndExplicitLayers
   EXPECT_EQ("2", ConnectionString::resolve("LoginFixture", "Login Driver").effective_parameters.at("LOGINTIMEOUT"));
   EXPECT_EQ("3", ConnectionString::resolve("DSN=LoginFixture;LT=3", "Login Driver").effective_parameters.at("LOGINTIMEOUT"));
   EXPECT_EQ("7", ConnectionString::resolve("DSN=LoginFixture;LT=invalid;LoginTimeout=7", "Login Driver").effective_parameters.at("LOGINTIMEOUT"));
+}
+
+TEST_F(NativeDsnTest, ReadOnlyNativeDriverDsnAndExplicitFalseOrEmptyLayers) {
+  constexpr auto path = L"SOFTWARE\\ODBC\\ODBC.INI\\ReadOnlyFixture";
+  value(HKEY_CURRENT_USER, path, L"Driver", L"ReadOnly Driver");
+  value(HKEY_CURRENT_USER, path, L"ReadOnly", L"true");
+  value(HKEY_CURRENT_USER, L"SOFTWARE\\ODBC\\ODBC.INI\\ODBC Data Sources", L"ReadOnlyFixture", L"ReadOnly Driver");
+  value(HKEY_LOCAL_MACHINE, L"SOFTWARE\\ODBC\\ODBCINST.INI\\ReadOnly Driver", L"ReadOnly", L"false");
+  EXPECT_EQ("false", ConnectionString::resolve("DRIVER=ReadOnly Driver", "ReadOnly Driver").effective_parameters.at("READONLY"));
+  EXPECT_EQ("true", ConnectionString::resolve("ReadOnlyFixture", "ReadOnly Driver").effective_parameters.at("READONLY"));
+  EXPECT_EQ("false", ConnectionString::resolve("DSN=ReadOnlyFixture;ReadOnly=false", "ReadOnly Driver").effective_parameters.at("READONLY"));
+  EXPECT_EQ("", ConnectionString::resolve("DSN=ReadOnlyFixture;ReadOnly={}", "ReadOnly Driver").effective_parameters.at("READONLY"));
 }
 
 TEST_F(NativeDsnTest, UserShadowsSystemWithoutMergingAndExplicitAliasesOverride) {

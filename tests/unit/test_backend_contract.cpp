@@ -813,6 +813,7 @@ class FakeProvider final : public IBackendProvider {
     settings.result_limits = options.result_limits;
     settings.input_limits = options.input_limits;
     settings.application_name = std::move(options.application_name);
+    settings.read_only = options.read_only;
     if (!valid_resource_limits(settings)) return {DbErrorCode::InvalidParameter, "Invalid resource limits"};
     return settings;
   }
@@ -12201,5 +12202,72 @@ TEST_F(ApplicationNameOptionsTest, RecognitionDoesNotConsumeAuthenticationAliasO
   ASSERT_EQ(SQL_SUCCESS_WITH_INFO, login_name("SERVER=fake;SSL=0;app_name=auth-only", true));
   EXPECT_EQ("01S00", state(SQL_HANDLE_DBC, dbc));
   EXPECT_FALSE(seen->settings.application_name);
+}
+
+class ReadOnlyOptionsTest : public ApplicationNameOptionsTest {
+ protected:
+  void SetUp() override {
+    ApplicationNameOptionsTest::SetUp();
+    // This setting changes a writable provider's confirmed session mode. Keep
+    // the neutral fixture's conservative static-readonly default unchanged.
+    seen->read_only_capability = false;
+  }
+};
+
+TEST_F(ReadOnlyOptionsTest, ReadOnlyAnsiWideClosedValuesReadbackAndAdvisoryIndependence) {
+  for (const bool wide : {false, true}) {
+    for (const auto& [value, expected] : std::array<std::pair<const char*, bool>, 4>{
+             {{"1", true}, {" TrUe ", true}, {"0", false}, {" FaLsE ", false}}}) {
+      ASSERT_EQ(SQL_SUCCESS, login_name(std::string("SERVER=fake;SSL=0;ApplicationName=ro-é表😀;ReadOnly={") + value + "}", wide));
+      EXPECT_EQ(expected, seen->settings.read_only);
+      SQLCHAR info[4]{}; SQLSMALLINT length = -1;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DATA_SOURCE_READ_ONLY, info,
+          static_cast<SQLSMALLINT>(sizeof(info)), &length));
+      EXPECT_EQ(expected ? "Y" : "N", std::string(reinterpret_cast<char*>(info)));
+      ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_ACCESS_MODE,
+          reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_MODE_READ_ONLY)), 0));
+      ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_ACCESS_MODE,
+          reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_MODE_READ_WRITE)), 0));
+      EXPECT_EQ(0, seen->queries);
+      ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+      EXPECT_EQ(SQL_ERROR, SQLGetInfo(dbc, SQL_DATA_SOURCE_READ_ONLY, info,
+          static_cast<SQLSMALLINT>(sizeof(info)), &length));
+    }
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0", wide));
+    EXPECT_FALSE(seen->settings.read_only); ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  }
+}
+
+TEST_F(ReadOnlyOptionsTest, ReadOnlyMalformedRefusesBeforeFactoryAndFailedAttemptRecovers) {
+  for (const bool wide : {false, true}) {
+    for (const char* value : {"", "YES", "ON", "-1", "2", "secret", "true;injection"}) {
+      EXPECT_EQ(SQL_ERROR, login_name(std::string("SERVER=fake;SSL=0;ApplicationName=ro-é表😀;ReadOnly={") + value + "}", wide));
+      EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc));
+      EXPECT_EQ(0, seen->created); EXPECT_EQ(0, seen->queries);
+      SQLCHAR sqlstate[6]{}, message[128]{};
+      ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, sqlstate, nullptr,
+          message, static_cast<SQLSMALLINT>(sizeof(message)), nullptr));
+      EXPECT_EQ("Invalid ReadOnly value", std::string(reinterpret_cast<char*>(message)));
+    }
+  }
+  seen->connect_exception = 1;
+  EXPECT_EQ(SQL_ERROR, login_name("SERVER=fake;SSL=0;ReadOnly=true"));
+  seen->connect_exception = 0;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, login_name("SERVER=fake;SSL=0;ReadOnly=false;UnrelatedUnknown=1", true));
+  EXPECT_EQ("01S00", state(SQL_HANDLE_DBC, dbc)); EXPECT_FALSE(seen->settings.read_only);
+  SQLWCHAR info[4]{}; SQLSMALLINT length = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfoW(dbc, SQL_DATA_SOURCE_READ_ONLY, info,
+      static_cast<SQLSMALLINT>(sizeof(info)), &length));
+  EXPECT_EQ(static_cast<SQLWCHAR>('N'), info[0]); EXPECT_EQ(0, info[1]);
+}
+
+TEST_F(ReadOnlyOptionsTest, StaticReadOnlyCapabilityStillReportsYesForFalseSetting) {
+  seen->read_only_capability = true;
+  ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;ReadOnly=false"));
+  EXPECT_FALSE(seen->settings.read_only);
+  SQLCHAR info[4]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetInfo(dbc, SQL_DATA_SOURCE_READ_ONLY, info,
+      static_cast<SQLSMALLINT>(sizeof(info)), nullptr));
+  EXPECT_EQ("Y", std::string(reinterpret_cast<char*>(info)));
 }
 }  // namespace

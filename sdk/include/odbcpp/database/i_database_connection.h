@@ -75,6 +75,8 @@ struct ConnectionSettings {
   std::optional<RedshiftCatalogMode> redshift_catalog_mode;
   // Provider-neutral client identity; native startup spelling stays backend-owned.
   std::optional<std::string> application_name;
+  // Confirm before successful connection publication, or refuse locally.
+  bool read_only = false;
 };
 
 // Shared validation for SDK callers and product option resolution.

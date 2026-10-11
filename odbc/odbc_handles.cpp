@@ -490,6 +490,13 @@ bool parse_ssl(const std::string& value) {
       "SSL must be true or false (1/0, yes/no, on/off)");
 }
 
+bool parse_read_only(const std::string& value) {
+  const auto normalized = ConnectionString::to_upper(ConnectionString::trim(value));
+  if (normalized == "1" || normalized == "TRUE") return true;
+  if (normalized == "0" || normalized == "FALSE") return false;
+  throw std::invalid_argument("Invalid ReadOnly value");
+}
+
 void require_no_nul(std::string_view value, std::string_view name) {
   if (value.find('\0') != std::string_view::npos) {
     throw std::invalid_argument(std::string(name) +
@@ -1566,6 +1573,7 @@ SQLRETURN ODBCConnection::connect(
 
     rs::core::database::ConnectionOptions options;
     if (params.count("APPLICATIONNAME")) options.application_name = params.at("APPLICATIONNAME");
+    if (params.count("READONLY")) options.read_only = parse_read_only(params.at("READONLY"));
     if (params.count("SERVER")) options.host = params.at("SERVER");
     else if (params.count("HOST")) options.host = params.at("HOST");
     if (params.count("PORT")) options.port = parse_port(params.at("PORT"));
@@ -1630,6 +1638,7 @@ SQLRETURN ODBCConnection::connect(
         connection.backend_lease_.reset(); connection.backend_owner_.reset();
         connection.backend_observation_ = {};
         connection.connected_ = false; connection.transaction_active_ = false;
+        connection.confirmed_read_only_ = false;
       }
     } attempt{*this, backend_provider_->create_session(std::move(transport))};
     if (!attempt.physical) throw std::runtime_error("Backend provider returned no session");
@@ -1713,6 +1722,7 @@ SQLRETURN ODBCConnection::connect(
         {{"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
     // All fallible setup, owning strings and log arguments precede readback.
     login_timeout_seconds_ = selected_login_timeout;
+    confirmed_read_only_ = settings.read_only;
     attempt.completed = true;
     return SQL_SUCCESS;
 
@@ -2204,6 +2214,7 @@ void ODBCConnection::close_connection() {
   invalidate_metadata_epoch();
   backend_lease_.reset(); backend_owner_.reset(); backend_observation_ = {};
   connected_ = false; transaction_active_ = false;
+  confirmed_read_only_ = false;
   log(rs::core::logging::LogLevel::Info, "connection_closed",
       "Database connection closed");
   if (logger_) logger_->flush();

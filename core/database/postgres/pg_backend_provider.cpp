@@ -69,6 +69,8 @@ PgBackendProvider::resolve_connection_options(ConnectionOptions options) const {
   }
 
   ConnectionSettings settings;
+  if (options.read_only && catalog_profile_ != PgCatalogProfile::Redshift)
+    return {rs::util::DbErrorCode::UnsupportedFeature, "ReadOnly requires Redshift"};
   if (options.redshift_catalog_mode && catalog_profile_ != PgCatalogProfile::Redshift)
     return {rs::util::DbErrorCode::InvalidParameter, "RedshiftCatalogMode requires Redshift"};
   if (catalog_profile_ == PgCatalogProfile::Redshift) {
@@ -99,6 +101,7 @@ PgBackendProvider::resolve_connection_options(ConnectionOptions options) const {
   settings.result_limits = options.result_limits;
   settings.input_limits = options.input_limits;
   settings.application_name = std::move(options.application_name);
+  settings.read_only = options.read_only;
   if (!valid_resource_limits(settings)) {
     return {rs::util::DbErrorCode::InvalidParameter, "Resource limits are outside supported bounds"};
   }

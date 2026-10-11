@@ -7540,3 +7540,171 @@ TEST_F(RedshiftApplicationNameRealTest, AnsiWideNamesAndEmptyReconnectKeepTypedN
   }
   connection_string_ = base;
 }
+
+// Source-authored only. A fresh finite admission must name the exact ordinary
+// table, DML/DDL scope and cleanup owner; the marker alone grants no authority.
+class RedshiftReadOnlySettingRealTest : public RedshiftLoginTimeoutOptionsRealTest {
+ protected:
+  SQLHDBC writer_{}; SQLHSTMT writer_stmt_{};
+  bool writer_connected_{}, table_owned_{}, drop_attempted_{};
+  std::string table_;
+  bool observed(SQLRETURN result, SQLRETURN expected = SQL_SUCCESS) {
+    if (result != expected) { unknown_completion_ = true; return false; }
+    return true;
+  }
+  void release_connection() {
+    ASSERT_FALSE(unknown_completion_);
+    ASSERT_TRUE(cap(window_end_, hstmt_ != nullptr));
+    if (sibling_) { ASSERT_TRUE(observed(SQLFreeHandle(SQL_HANDLE_STMT, sibling_))); sibling_ = nullptr; }
+    if (hstmt_) { ASSERT_TRUE(observed(SQLFreeHandle(SQL_HANDLE_STMT, hstmt_))); hstmt_ = nullptr; }
+    ASSERT_TRUE(observed(SQLDisconnect(hdbc_))); connected_ = false;
+  }
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_READ_ONLY_ADMISSION", "readonly_owned_fixture_v1");
+    if (IsSkipped() || HasFatalFailure()) return;
+    const char* name = std::getenv("ODBCPP_REDSHIFT_READ_ONLY_TABLE");
+    ASSERT_NE(nullptr, name);
+    const std::string_view selected(name);
+    constexpr std::string_view prefix = "odbcpp_readonly_";
+    ASSERT_EQ(prefix.size() + 16, selected.size());
+    ASSERT_TRUE(selected.starts_with(prefix));
+    ASSERT_TRUE(std::all_of(selected.begin() + static_cast<std::ptrdiff_t>(prefix.size()), selected.end(),
+        [](char ch) { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); }));
+    table_ = "public.\"" + std::string(selected) + "\"";
+    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    if (const auto limit = options.find("MAXSQLBYTES"); limit != options.end()) {
+      std::size_t bytes{};
+      const auto parsed = std::from_chars(limit->second.data(), limit->second.data() + limit->second.size(), bytes);
+      ASSERT_EQ(std::errc{}, parsed.ec); ASSERT_EQ(limit->second.data() + limit->second.size(), parsed.ptr);
+      ASSERT_GE(bytes, 256u);
+    }
+  }
+  bool writer_cap() {
+    if (unknown_completion_) return false;
+    const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(window_end_ - rs::util::Clock::now()).count();
+    if (remaining <= 0) { ADD_FAILURE() << "ReadOnly fixture window expired"; return false; }
+    const auto seconds = reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining, 5)));
+    return observed(SQLSetConnectAttr(writer_, SQL_ATTR_CONNECTION_TIMEOUT, seconds, 0)) &&
+        (!writer_stmt_ || observed(SQLSetStmtAttr(writer_stmt_, SQL_ATTR_QUERY_TIMEOUT, seconds, 0)));
+  }
+  bool writer_sql(std::string text) {
+    if (!writer_cap()) return false;
+    const auto rc = SQLExecDirect(writer_stmt_, reinterpret_cast<SQLCHAR*>(text.data()), SQL_NTS);
+    if (rc != SQL_SUCCESS) { unknown_completion_ = true; ADD_FAILURE() << "ReadOnly fixture writer failed"; return false; }
+    return true;
+  }
+  void writer_count(SQLINTEGER expected) {
+    ASSERT_TRUE(writer_sql("SELECT CAST(COUNT(*) AS INTEGER) FROM " + table_));
+    ASSERT_TRUE(writer_cap()); ASSERT_TRUE(observed(SQLFetch(writer_stmt_)));
+    SQLINTEGER count = -1; SQLLEN length = -1;
+    ASSERT_TRUE(writer_cap());
+    ASSERT_TRUE(observed(SQLGetData(writer_stmt_, 1, SQL_C_SLONG, &count, sizeof(count), &length)));
+    ASSERT_EQ(static_cast<SQLLEN>(sizeof(count)), length); EXPECT_EQ(expected, count);
+    ASSERT_TRUE(writer_cap()); ASSERT_TRUE(observed(SQLFetch(writer_stmt_), SQL_NO_DATA));
+    ASSERT_TRUE(writer_cap()); ASSERT_TRUE(observed(SQLCloseCursor(writer_stmt_)));
+  }
+  void readonly_write(bool prepared) {
+    const std::string sql = "INSERT INTO " + table_ + " VALUES (2)";
+    ASSERT_TRUE(cap(window_end_, true)); SQLRETURN rc;
+    if (prepared) {
+      auto wide = rs::odbc::utf8_to_wide(sql); ASSERT_TRUE(wide); wide->push_back(0);
+      ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, wide->data(), SQL_NTS)));
+      ASSERT_TRUE(cap(window_end_, true)); rc = SQLExecute(hstmt_);
+    } else {
+      rc = SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.c_str())), SQL_NTS);
+    }
+    if (rc != SQL_ERROR) { unknown_completion_ = true; FAIL() << "ReadOnly write was not refused"; }
+    SQLCHAR state[6]{}; SQLINTEGER native{};
+    ASSERT_TRUE(observed(SQLGetDiagRec(SQL_HANDLE_STMT, hstmt_, 1, state, &native, nullptr, 0, nullptr)));
+    const std::string observed_state(reinterpret_cast<char*>(state));
+    // Paired same-principal RW success and post-reconnect identical write success
+    // prove the boundary; permission/syntax/transport failures cannot substitute.
+    if (observed_state.starts_with("08") || observed_state.starts_with("HYT")) {
+      unknown_completion_ = true; FAIL() << "ReadOnly refusal was not a usable mode result";
+    }
+    RecordProperty(prepared ? "readonly_prepared_odbc_state" : "readonly_direct_odbc_state", observed_state);
+    SQLUINTEGER dead = SQL_CD_TRUE;
+    ASSERT_TRUE(observed(SQLGetConnectAttr(hdbc_, SQL_ATTR_CONNECTION_DEAD, &dead, sizeof(dead), nullptr)));
+    if (dead != SQL_CD_FALSE) { unknown_completion_ = true; FAIL() << "ReadOnly refusal retired the connection"; }
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFreeStmt(hstmt_, SQL_CLOSE)));
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFreeStmt(hstmt_, SQL_RESET_PARAMS)));
+  }
+  void TearDown() override {
+    // Release the target first. No cleanup SQL after uncertain completion or
+    // expired original window; the external exact-principal cleanup retains debt.
+    if (sibling_) { EXPECT_TRUE(observed(SQLFreeHandle(SQL_HANDLE_STMT, sibling_))); sibling_ = nullptr; }
+    if (hstmt_) { EXPECT_TRUE(observed(SQLFreeHandle(SQL_HANDLE_STMT, hstmt_))); hstmt_ = nullptr; }
+    if (hdbc_) {
+      if (connected_) {
+        const auto rc = SQLDisconnect(hdbc_);
+        if (rc != SQL_SUCCESS) unknown_completion_ = true;
+        EXPECT_EQ(SQL_SUCCESS, rc); connected_ = false;
+      }
+      EXPECT_TRUE(observed(SQLFreeHandle(SQL_HANDLE_DBC, hdbc_))); hdbc_ = nullptr;
+    }
+    if (table_owned_ && !unknown_completion_ && writer_connected_ && !drop_attempted_) {
+      drop_attempted_ = true;
+      if (writer_sql("DROP TABLE " + table_)) table_owned_ = false;
+    }
+    if (table_owned_) ADD_FAILURE() << "ReadOnly exact fixture cleanup remains pending";
+    if (writer_stmt_) { EXPECT_TRUE(observed(SQLFreeHandle(SQL_HANDLE_STMT, writer_stmt_))); writer_stmt_ = nullptr; }
+    if (writer_) {
+      if (writer_connected_) EXPECT_TRUE(observed(SQLDisconnect(writer_)));
+      EXPECT_TRUE(observed(SQLFreeHandle(SQL_HANDLE_DBC, writer_))); writer_ = nullptr;
+    }
+    RedshiftLoginTimeoutOptionsRealTest::TearDown();
+  }
+};
+
+TEST_F(RedshiftReadOnlySettingRealTest, OwnedWriterAndReadOnlyTargetRefuseWritesAndReconnectRecovers) {
+  const auto base = connection_string_;
+  connection_string_ = keyword_input("READONLY", "false");
+  auto writer_input = keyword_input("LOGINTIMEOUT", "5");
+  ASSERT_TRUE(observed(SQLAllocHandle(SQL_HANDLE_DBC, henv_, &writer_)));
+  ASSERT_TRUE(writer_cap());
+  const auto opened = SQLDriverConnect(writer_, nullptr, reinterpret_cast<SQLCHAR*>(writer_input.data()),
+      SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+  writer_connected_ = opened == SQL_SUCCESS || opened == SQL_SUCCESS_WITH_INFO;
+  if (opened != SQL_SUCCESS) { unknown_completion_ = true; FAIL() << "ReadOnly fixture writer login failed"; }
+  ASSERT_TRUE(observed(SQLAllocHandle(SQL_HANDLE_STMT, writer_, &writer_stmt_)));
+  ASSERT_TRUE(writer_sql("CREATE TABLE " + table_ + " (id INTEGER)")); table_owned_ = true;
+  ASSERT_TRUE(writer_sql("INSERT INTO " + table_ + " VALUES (1)"));
+  ASSERT_NO_FATAL_FAILURE(writer_count(1));
+  connection_string_ = base; connection_string_ = keyword_input("READONLY", "true");
+  ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT", "5", 5, true));
+  SQLCHAR info[4]{};
+  ASSERT_TRUE(observed(SQLGetInfo(hdbc_, SQL_DATA_SOURCE_READ_ONLY, info,
+      static_cast<SQLSMALLINT>(sizeof(info)), nullptr))); ASSERT_EQ('Y', info[0]);
+  ASSERT_TRUE(observed(SQLSetConnectAttr(hdbc_, SQL_ATTR_ACCESS_MODE,
+      reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(SQL_MODE_READ_WRITE)), 0)));
+  for (const bool prepared : {false, true}) {
+    ASSERT_NO_FATAL_FAILURE(readonly_write(prepared));
+    ASSERT_NO_FATAL_FAILURE(writer_count(1));
+  }
+  ASSERT_TRUE(cap(window_end_, true));
+  std::string select = "SELECT id FROM " + table_;
+  ASSERT_TRUE(known_sql(SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(select.data()), SQL_NTS)));
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_))); SQLINTEGER id = -1; SQLLEN length = -1;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 1, SQL_C_SLONG, &id, sizeof(id), &length))); EXPECT_EQ(1, id);
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
+  auto typed = rs::odbc::utf8_to_wide(typed_sql()); ASSERT_TRUE(typed); typed->push_back(0);
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, typed->data(), SQL_NTS)));
+  ASSERT_TRUE(observed(SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+      SQL_INTEGER, 10, 0, &input_, 0, &input_length_)));
+  ASSERT_NO_FATAL_FAILURE(typed_row(false)); input_length_ = SQL_NULL_DATA;
+  ASSERT_NO_FATAL_FAILURE(typed_row(true)); input_ = 43; input_length_ = 0;
+  ASSERT_NO_FATAL_FAILURE(typed_row(false, true)); const auto snapshot = output_.value;
+  ASSERT_NO_FATAL_FAILURE(release_connection());
+  connection_string_ = base; connection_string_ = keyword_input("READONLY", "false");
+  ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT", "5", 5, false));
+  ASSERT_TRUE(observed(SQLGetInfo(hdbc_, SQL_DATA_SOURCE_READ_ONLY, info,
+      static_cast<SQLSMALLINT>(sizeof(info)), nullptr))); ASSERT_EQ('N', info[0]);
+  std::string insert = "INSERT INTO " + table_ + " VALUES (2)";
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(insert.data()), SQL_NTS)));
+  auto write = rs::odbc::utf8_to_wide(insert); ASSERT_TRUE(write); write->push_back(0);
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, write->data(), SQL_NTS)));
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLExecute(hstmt_)));
+  ASSERT_NO_FATAL_FAILURE(writer_count(3)); EXPECT_EQ(43, snapshot);
+  ASSERT_NO_FATAL_FAILURE(release_connection()); connection_string_ = base;
+}

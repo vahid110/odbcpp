@@ -71,7 +71,8 @@ BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& sett
         .response_limits = settings.response_limits, .result_limits = settings.result_limits,
         .input_limits = settings.input_limits, .startup_response_limits = settings.startup_response_limits,
         .redshift_catalog_mode = settings.redshift_catalog_mode,
-        .application_name = settings.application_name};
+        .application_name = settings.application_name,
+        .read_only = settings.read_only};
     // Local binding consistency is not issuer proof, expiry, or pooling authority.
     return auth::connect_bound_ordinary_password_until(*this, selected, request.value(), material.value());
   } catch (const std::bad_alloc&) {
@@ -90,6 +91,9 @@ BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& sett
 
 BackendResult<void> PgDatabaseConnection::connect_until(
     const ConnectionSettings& settings, rs::util::Deadline deadline) {
+  if (settings.read_only && catalog_profile_ != PgCatalogProfile::Redshift)
+    return local_backend_error(LocalFailure::Unsupported,
+        "ReadOnly requires Redshift", BackendOperation::Connect, session_state());
   if (catalog_profile_ == PgCatalogProfile::Redshift && is_connected()) return local_backend_error(LocalFailure::InvalidInput,
       "Database connection is already open", BackendOperation::Connect, session_state());
   if (settings.redshift_catalog_mode &&
@@ -99,6 +103,36 @@ BackendResult<void> PgDatabaseConnection::connect_until(
     return local_backend_error(LocalFailure::InvalidInput,
         "Invalid Redshift catalog mode for this provider", BackendOperation::Connect, session_state());
   auto result = GenericDatabaseConnection::connect_until(settings, deadline);
+  if (result && settings.read_only) {
+    // Native setup belongs to this backend and shares the original login budget.
+    // A failed or unexpected completion must never publish an unrestricted session.
+    const auto retire = [this](BackendError error) -> BackendResult<void> {
+      disconnect();
+      error.operation = BackendOperation::Connect;
+      error.session_state = SessionState::Disconnected;
+      error.disposition = SessionDisposition::Retire;
+      return error;
+    };
+    try {
+      auto setup = execute_query("SET READONLY=1", deadline);
+      if (setup.has_error()) return retire(std::move(setup.backend_error()));
+      if (setup->error) return retire(std::move(*setup->error));
+      if (setup->execution_result_shape != ExecutionResultShape::NoResultSet ||
+          !setup->columns.empty() || !setup->rows.empty() ||
+          !setup->cell_errors.empty() || !setup->additional_results.empty() ||
+          setup.session_snapshot() != SessionSnapshot{
+              SessionState::Idle, SessionDisposition::Reusable})
+        return retire(BackendError{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+                                  "Unexpected ReadOnly setup response"});
+      result = BackendResult<void>{setup.session_snapshot()};
+    } catch (const std::bad_alloc&) {
+      return retire(BackendError{rs::util::make_error_code(rs::util::DbErrorCode::AllocationFailure),
+                                "ReadOnly setup memory allocation failed"});
+    } catch (...) {
+      return retire(BackendError{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+                                "ReadOnly setup failed"});
+    }
+  }
   if (result) catalog_mode_ = settings.redshift_catalog_mode.value_or(RedshiftCatalogMode::Show);
   return result;
 }

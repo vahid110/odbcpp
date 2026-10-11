@@ -310,3 +310,29 @@ TEST(BackendProviderTest, ApplicationNameRejectsNulAndOversizeWithoutLeakingAndR
   auto empty = provider.resolve_connection_options(options);
   ASSERT_TRUE(empty); EXPECT_TRUE(empty->application_name->empty());
 }
+
+TEST(BackendProviderTest, ReadOnlyIntentIsPerAttemptAndRefusesUnsupportedPostgres) {
+  for (const bool redshift : {false, true}) {
+    postgres::PgBackendProvider provider{
+        BackendIdentity{redshift ? "redshift" : "postgresql", "test", "test"},
+        BackendConnectionDefaults{"host", 5439, "db", false}, std::nullopt,
+        redshift ? postgres::PgCatalogProfile::Redshift : postgres::PgCatalogProfile::PostgreSQL};
+    auto defaults = provider.resolve_connection_options({});
+    ASSERT_TRUE(defaults); EXPECT_FALSE(defaults->read_only);
+    ConnectionOptions options; options.read_only = true;
+    options.application_name = "owning-client";
+    auto selected = provider.resolve_connection_options(options);
+    if (redshift) {
+      ASSERT_TRUE(selected); EXPECT_TRUE(selected->read_only);
+      EXPECT_EQ("owning-client", *selected->application_name);
+    } else {
+      ASSERT_FALSE(selected); EXPECT_EQ(rs::util::DbErrorCode::UnsupportedFeature, selected.error());
+    }
+    options.read_only = false;
+    auto repaired = provider.resolve_connection_options(options);
+    ASSERT_TRUE(repaired); EXPECT_FALSE(repaired->read_only);
+    auto again = provider.resolve_connection_options({});
+    ASSERT_TRUE(again); EXPECT_FALSE(again->read_only);
+    if (redshift) EXPECT_TRUE(selected->read_only);
+  }
+}

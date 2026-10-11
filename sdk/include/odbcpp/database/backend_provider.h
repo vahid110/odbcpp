@@ -50,6 +50,8 @@ struct ConnectionOptions {
   std::optional<std::string> redshift_catalog_mode;
   // Owning client identity. Absent preserves the backend default; empty is explicit.
   std::optional<std::string> application_name;
+  // Per-session read-only intent; supporting backends own its native enforcement.
+  bool read_only = false;
 };
 
 // Immutable product definition. A provider owns identity and static behavior;

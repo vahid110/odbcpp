@@ -4291,7 +4291,7 @@ class OriginalDeadlineWire final : public rs::core::transport::ITransport,
   enum class Reply { Md5, Rejected, Cleartext };
   explicit OriginalDeadlineWire(bool tls = false, Reply reply = Reply::Md5) : tls_(tls) { reset(reply); }
   void reset(Reply reply = Reply::Md5) {
-    input_.clear(); offset_=0; ssl_reply_=tls_; sent.clear(); calls.clear();
+    input_.clear(); offset_=0; ssl_reply_=tls_; sent.clear(); calls.clear(); query_dispatched=false;
     if(reply==Reply::Rejected) {
       static constexpr char error[]="SFATAL\0C28P01\0Mfixed authentication rejection\0";
       frame('E',std::string_view(error,sizeof(error)));
@@ -4314,10 +4314,16 @@ class OriginalDeadlineWire final : public rs::core::transport::ITransport,
     return {};
   }
   bool peer_identity_verified() noexcept override { return verified; }
+  void append_response(char type, std::string_view payload) { frame(type, payload); }
   void set_ca_locations(const std::string&,const std::string&) override {
     ++configurations;if(configuration_expiry) { exhaust(*configuration_expiry); }
   }
   rs::util::Result<rs::core::transport::IOResult> send(std::span<const std::byte> bytes,rs::util::Deadline deadline) override {
+    if (!bytes.empty() && bytes.front() == std::byte{'Q'}) {
+      query_dispatched = true;
+      if (query_throw == 1) throw std::bad_alloc{};
+      if (query_throw == 2) throw std::runtime_error("fixed setup exception");
+    }
     calls.emplace_back("write",deadline);const auto n=std::min<std::size_t>(3,bytes.size());
     sent.insert(sent.end(),bytes.begin(),bytes.begin()+static_cast<std::ptrdiff_t>(n));
     if(late_write) { exhaust(deadline); }
@@ -4329,7 +4335,7 @@ class OriginalDeadlineWire final : public rs::core::transport::ITransport,
     if(offset_==input_.size()) { return {rs::util::DbErrorCode::NetworkError,"fixture exhausted"}; }
     bytes[0]=input_[offset_++];
     if(late_final && offset_==input_.size()) { final_auth_delivered=true; }
-    if(late_read || final_auth_delivered) { exhaust(deadline); }
+    if(late_read || final_auth_delivered || (query_dispatched && expire_query_read)) { exhaust(deadline); }
     return rs::core::transport::IOResult{1,false};
   }
   void close() noexcept override { ++closes; }
@@ -4337,6 +4343,8 @@ class OriginalDeadlineWire final : public rs::core::transport::ITransport,
   std::vector<std::byte> sent;
   unsigned closes{},configurations{};
   bool tls_error{},verified{true},late_final{},late_write{},late_read{},final_auth_delivered{};
+  bool query_dispatched{},expire_query_read{};
+  unsigned query_throw{};
   std::optional<rs::util::Deadline> configuration_expiry;
  private:
   void frame(char type,std::string_view payload) {
@@ -5053,4 +5061,86 @@ TEST(ConnectionLivenessTest, ApplicationNameExplicitCaPasswordCompositionPreserv
     connection.disconnect();
   }
   EXPECT_EQ(wire->configurations, 3u);
+}
+
+TEST(ConnectionLivenessTest, ReadOnlyFixedSetupUsesOriginalLoginDeadlineAndExplicitCaRoute) {
+  using namespace rs::core::database;
+  for (const bool tls : {false, true}) {
+    auto transport = std::make_unique<OriginalDeadlineWire>(tls,
+        tls ? OriginalDeadlineWire::Reply::Cleartext : OriginalDeadlineWire::Reply::Md5);
+    auto* wire = transport.get();
+    wire->append_response('C', std::string_view("SET\0", 4)); wire->append_response('Z', "I");
+    postgres::PgDatabaseConnection backend(std::move(transport),
+        SessionResetProfile::SameAuthenticatedServerSession, postgres::PgCatalogProfile::Redshift);
+    auto settings = pg_fixture_settings(); settings.host = "host"; settings.user = "user"; settings.database = "db";
+    settings.password = "synthetic-only"; settings.use_ssl = tls;
+    if (tls) settings.ssl_ca_file = "synthetic-ca";
+    settings.read_only = true; settings.application_name = "readonly-é表😀";
+    ASSERT_TRUE(backend.connect(settings));
+    const auto deadline = wire->calls.front().second;
+    expect_original_deadline(*wire, deadline);
+    const std::string bytes(reinterpret_cast<const char*>(wire->sent.data()), wire->sent.size());
+    EXPECT_NE(std::string::npos, bytes.find(std::string("SET READONLY=1\0", 15)));
+    EXPECT_EQ(std::string::npos, bytes.find("SET READONLY=0"));
+    EXPECT_NE(std::string::npos, bytes.find("readonly-é表😀"));
+    const auto retained = backend.session_state(); backend.disconnect();
+    EXPECT_EQ(SessionState::Idle, retained);
+    wire->reset(tls ? OriginalDeadlineWire::Reply::Cleartext : OriginalDeadlineWire::Reply::Md5);
+    settings.read_only = false; ASSERT_TRUE(backend.connect(settings));
+    const std::string again(reinterpret_cast<const char*>(wire->sent.data()), wire->sent.size());
+    EXPECT_EQ(std::string::npos, again.find("SET READONLY=")); backend.disconnect();
+  }
+}
+
+TEST(ConnectionLivenessTest, ReadOnlySetupRefusalUnexpectedCompletionAndRecoveryRetire) {
+  using namespace rs::core::database;
+  for (unsigned variant = 0; variant < 6; ++variant) {
+    auto transport = std::make_unique<OriginalDeadlineWire>(); auto* wire = transport.get();
+    if (variant == 0) {
+      static constexpr char error[] = "SERROR\0C42501\0Mfixed setup refusal\0";
+      wire->append_response('E', std::string_view(error, sizeof(error)));
+    } else if (variant != 1) {
+      if (variant == 5) wire->append_response('T', std::string_view("\0\0", 2));
+      wire->append_response('C', std::string_view("SET\0", 4));
+      if (variant == 3) wire->append_response('C', std::string_view("SET\0", 4));
+    }
+    wire->append_response('Z', variant == 2 ? "T" : variant == 4 ? "E" : "I");
+    postgres::PgDatabaseConnection backend(std::move(transport), std::nullopt, postgres::PgCatalogProfile::Redshift);
+    auto settings = pg_fixture_settings(); settings.use_ssl = false; settings.password = "synthetic-only"; settings.read_only = true;
+    const auto failed = backend.connect(settings);
+    ASSERT_FALSE(failed); EXPECT_FALSE(backend.is_connected()); EXPECT_GT(wire->closes, 0u);
+    EXPECT_EQ(SessionDisposition::Retire, failed.session_snapshot().disposition);
+    if (variant == 0) EXPECT_EQ(std::optional<std::string>{"42501"}, failed.backend_error().native_state);
+    wire->reset(); wire->append_response('C', std::string_view("SET\0", 4)); wire->append_response('Z', "I");
+    ASSERT_TRUE(backend.connect(settings)); EXPECT_TRUE(backend.is_connected()); backend.disconnect();
+  }
+}
+
+TEST(ConnectionLivenessTest, ReadOnlyUnsupportedPostgresRefusesWithoutIo) {
+  auto transport = std::make_unique<OriginalDeadlineWire>(); auto* wire = transport.get();
+  rs::core::database::postgres::PgDatabaseConnection backend(std::move(transport));
+  auto settings = pg_fixture_settings(); settings.use_ssl = false; settings.read_only = true;
+  const auto result = backend.connect(settings); ASSERT_FALSE(result);
+  EXPECT_EQ(rs::core::database::BackendErrorClass::Unsupported, result.backend_error().error_class);
+  EXPECT_TRUE(wire->sent.empty()); EXPECT_TRUE(wire->calls.empty()); EXPECT_FALSE(backend.is_connected());
+}
+
+TEST(ConnectionLivenessTest, ReadOnlySetupLateResponseAndThrowsRetireBeforePublication) {
+  using namespace rs::core::database;
+  for (unsigned variant = 0; variant < 3; ++variant) {
+    auto transport = std::make_unique<OriginalDeadlineWire>(); auto* wire = transport.get();
+    wire->append_response('C', std::string_view("SET\0", 4)); wire->append_response('Z', "I");
+    wire->expire_query_read = variant == 0; wire->query_throw = variant;
+    postgres::PgDatabaseConnection backend(std::move(transport), std::nullopt, postgres::PgCatalogProfile::Redshift);
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
+    settings.password = "synthetic-only"; settings.read_only = true;
+    const auto deadline = rs::util::make_deadline(std::chrono::milliseconds{50});
+    const auto failed = backend.connect_until(settings, deadline); ASSERT_FALSE(failed);
+    if (variant == 0) EXPECT_EQ(BackendErrorClass::Timeout, failed.backend_error().error_class);
+    EXPECT_TRUE(wire->query_dispatched); EXPECT_FALSE(backend.is_connected());
+    EXPECT_EQ(SessionDisposition::Retire, failed.session_snapshot().disposition);
+    expect_original_deadline(*wire, deadline);
+    wire->reset(); wire->expire_query_read = false; wire->query_throw = 0;
+    settings.read_only = false; ASSERT_TRUE(backend.connect(settings)); backend.disconnect();
+  }
 }

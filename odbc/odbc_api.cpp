@@ -90,14 +90,14 @@ namespace {
 
   std::optional<std::string> first_unknown_connection_keyword(
       const std::string& connection_string) {
-    static constexpr std::array<std::string_view, 52> supported{{
+    static constexpr std::array<std::string_view, 53> supported{{
         "DSN", "DRIVER", "SERVER", "HOST", "PORT", "DATABASE", "DB",
         "MAXRESPONSEBYTES", "MAXRESPONSEMESSAGES", "MAXSTARTUPRESPONSEBYTES", "MAXSTARTUPRESPONSEMESSAGES",
         "MAXROWS", "MAXCELLS", "MAXCOLUMNS", "MAXRESULTS", "MAXMETADATAENTRIES", "MAXCOLUMNNAMEBYTES",
         "MAXMETADATANAMEBYTES", "MAXDIAGNOSTICBYTES", "MAXSQLBYTES", "MAXPARAMETERS", "MAXPARAMETERBYTES",
         "MAXPARAMETERTOTALBYTES", "MAXCONNECTIONFIELDBYTES", "MAXREQUESTWIREBYTES", "MAXSTARTUPWIREBYTES", "MAXAUTHWIREBYTES",
         "UID", "USER", "PWD", "PASSWORD", "SSL", "SSLCAFILE", "SSLCADIR", "REDSHIFTCATALOGMODE",
-        "DESCRIPTION", "LOGINTIMEOUT", "LT", "APPLICATIONNAME",
+        "DESCRIPTION", "LOGINTIMEOUT", "LT", "APPLICATIONNAME", "READONLY",
         "TRANSPORTMODE", "ASYNCMAXINFLIGHT", "ASYNCQUEUEDEPTH",
         "ASYNCENGINE", "DEADLINEMODEL", "LOGLEVEL", "LOGFORMAT",
         "LOGSINK", "LOGFILE", "LOGMAXSIZE", "LOGMAXFILES", "LOGASYNC",
@@ -333,7 +333,8 @@ namespace {
 
   std::optional<std::string_view> string_info_value(
       SQLUSMALLINT info_type,
-      const rs::core::database::BackendCapabilities& backend) {
+      const rs::core::database::BackendCapabilities& backend,
+      bool read_only_session) {
     switch (info_type) {
       case SQL_DRIVER_NAME: return ODBCPP_DRIVER_FILENAME;
       case SQL_DRIVER_VER: return "01.00.0000";
@@ -360,7 +361,7 @@ namespace {
       case SQL_OUTER_JOINS: return backend.outer_joins ? "Y" : "N";
       case SQL_PROCEDURES: return backend.procedures ? "Y" : "N";
       case SQL_MULT_RESULT_SETS: return "Y";
-      case SQL_DATA_SOURCE_READ_ONLY: return backend.read_only ? "Y" : "N";
+      case SQL_DATA_SOURCE_READ_ONLY: return backend.read_only || read_only_session ? "Y" : "N";
       case SQL_ORDER_BY_COLUMNS_IN_SELECT: return backend.order_by_requires_select ? "Y" : "N";
       case SQL_ACCESSIBLE_TABLES:
       case SQL_ACCESSIBLE_PROCEDURES:
@@ -1555,7 +1556,7 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
         "Driver information was truncated");
   }
 
-  if (const auto value = string_info_value(info_type, conn->capabilities())) {
+  if (const auto value = string_info_value(info_type, conn->capabilities(), conn->read_only_session())) {
     return write_narrow_output(
         conn, *value, static_cast<SQLCHAR*>(info_value), buffer_length,
         string_length, "Driver information was truncated");
@@ -1853,7 +1854,7 @@ static SQLRETURN SQLGetInfoW_impl(SQLHDBC connection_handle, SQLUSMALLINT info_t
         static_cast<SQLWCHAR*>(info_value), buffer_length, string_length,
         "Driver information was truncated");
   }
-  if (const auto value = string_info_value(info_type, conn->capabilities())) {
+  if (const auto value = string_info_value(info_type, conn->capabilities(), conn->read_only_session())) {
     return write_wide_bytes_output(
         conn, *value, static_cast<SQLWCHAR*>(info_value),
         buffer_length, string_length, "Driver information was truncated");
