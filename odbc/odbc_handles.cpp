@@ -5008,8 +5008,6 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
 // Prepared statement implementation
 SQLRETURN ODBCStatement::prepare(const std::string& sql) {
   if (needs_data()) { set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,"Statement needs parameter data"); return SQL_ERROR; }
-  const auto original_deadline = rs::util::make_deadline(
-      timeout_duration(query_timeout_seconds_));
   if (executed_ && (parameter_result_cursor_ || !column_info_.empty() || !pending_results_.empty())) {
     set_error(SQLSTATE_INVALID_CURSOR_STATE,
               "Cannot prepare while results are pending");
@@ -5019,6 +5017,7 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
     set_error(SQLSTATE_CONNECTION_FAILURE, "Connection not established");
     return SQL_ERROR;
   }
+  const auto original_budget = metadata_request_budget(rs::util::Clock::now());
   // Guard the entire opted-in attempt, including translation/counting and
   // throwing provider callbacks. Failure never advertises prepared success.
   struct EagerPrepareGuard {
@@ -5057,7 +5056,7 @@ SQLRETURN ODBCStatement::prepare(const std::string& sql) {
                 "Data source does not support automatic parameter descriptions");
       return SQL_ERROR;
     }
-    const auto result = describe_prepared_metadata(original_deadline);
+    const auto result = describe_prepared_metadata(original_budget);
     if (result != SQL_SUCCESS) return result;
   }
   prepared_ = true;
@@ -7251,9 +7250,10 @@ void ODBCStatement::apply_query_result(
   if (staged_bookmark_generation) bookmark_generation_ = staged_bookmark_generation;
 }
 
-void ODBCStatement::apply_result_metadata(
+bool ODBCStatement::apply_result_metadata(
     const rs::core::database::QueryResult& result,
-    bool include_parameter_metadata, bool parameter_result_publication) {
+    bool include_parameter_metadata, bool parameter_result_publication,
+    const MetadataRequestBudget* metadata_budget) {
 
   require_normalized_columns(result);
   std::vector<ColumnInfo> staged_columns;
@@ -7308,6 +7308,10 @@ void ODBCStatement::apply_result_metadata(
   // Only SELECT-array result publication preserves the prepared input hints.
   // Ordinary false publication and description/true semantics remain unchanged.
   const bool preserve_parameters = parameter_result_publication && !include_parameter_metadata;
+  // Validate/stage first: malformed metadata and allocation failures keep their
+  // existing precedence. A late otherwise-valid metadata attempt publishes nothing.
+  if (metadata_budget && rs::util::Clock::now() >= metadata_budget->deadline)
+    return false;
   // No allocating/provider work remains after the first publication.
   staged_columns.swap(column_info_);
   if (!preserve_parameters) staged_parameters.swap(param_metadata_);
@@ -7315,6 +7319,7 @@ void ODBCStatement::apply_result_metadata(
   row_descriptor->bookmark_record_ = std::move(staged_bookmark);
   if (!preserve_parameters)
     implementation_descriptor->replace_records(std::move(parameter_descriptor_records));
+  return true;
 }
 
 void ODBCStatement::invalidate_eager_prepare() noexcept {
@@ -7438,8 +7443,31 @@ SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target
 }
 
 // Metadata functions implementation
+ODBCStatement::MetadataRequestBudget ODBCStatement::metadata_request_budget(
+    rs::util::Clock::time_point entry) const {
+  const auto at_entry = [entry](SQLULEN seconds) {
+    const auto duration = timeout_duration(seconds);
+    const auto maximum = std::chrono::duration_cast<std::chrono::milliseconds>(
+        rs::util::Deadline::max() - entry);
+    return duration >= maximum ? rs::util::Deadline::max() : entry + duration;
+  };
+  const auto query = at_entry(query_timeout_seconds_);
+  const auto connection = at_entry(conn_->connection_timeout_seconds_);
+  // Same entry instant makes equal durations genuine absolute ties; query wins.
+  return {std::min(query, connection), connection < query};
+}
+
+SQLRETURN ODBCStatement::expire_metadata_request(const MetadataRequestBudget& budget) {
+  // Physical retirement/epoch invalidation must survive diagnostic allocation.
+  conn_->close_connection();
+  set_error(budget.connection_origin ? SQLSTATE_CONNECTION_TIMEOUT : SQLSTATE_TIMEOUT,
+            "Prepared metadata request deadline expired");
+  return SQL_ERROR;
+}
+
 SQLRETURN ODBCStatement::describe_prepared_metadata(
-    std::optional<rs::util::Deadline> original_deadline) {
+    std::optional<MetadataRequestBudget> original_budget) {
+  const auto entry = rs::util::Clock::now();
   const auto implementation_descriptor = descriptor(imp_param_descriptor_);
   if (prepared_metadata_available_ && conn_->backend_lease_ && *conn_->backend_lease_ &&
       conn_->metadata_epoch_ && prepared_metadata_epoch_.lock() == conn_->metadata_epoch_ &&
@@ -7457,6 +7485,7 @@ SQLRETURN ODBCStatement::describe_prepared_metadata(
     set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED, "Data source does not support statement description");
     return SQL_ERROR;
   }
+  const auto budget = original_budget.value_or(metadata_request_budget(entry));
   std::vector<rs::core::database::QueryParameterType> parameter_types(
       static_cast<std::size_t>(parameter_count_),
       rs::core::database::QueryParameterType::Unspecified);
@@ -7471,17 +7500,22 @@ SQLRETURN ODBCStatement::describe_prepared_metadata(
     }
   }
 
-  const auto deadline = original_deadline ? *original_deadline
-      : rs::util::make_deadline(timeout_duration(query_timeout_seconds_));
+  if (rs::util::Clock::now() >= budget.deadline) return expire_metadata_request(budget);
   auto result = conn_->backend_description(
-      prepared_sql_, parameter_types, deadline);
+      prepared_sql_, parameter_types, budget.deadline);
   if (result.has_error()) {
     const auto timeout = is_timeout_error(result.error());
-    set_error(query_failure_sqlstate(conn_->backend_provider(),
-                                     result.backend_error(), SQLSTATE_SYNTAX_ERROR,
-                                     classify_dynamic_function(prepared_sql_).code),
-              result.error_message());
     if (timeout) conn_->close_connection();
+    if (timeout && result.backend_error().error_class !=
+        rs::core::database::BackendErrorClass::InvalidMetadata) {
+      set_error(budget.connection_origin ? SQLSTATE_CONNECTION_TIMEOUT : SQLSTATE_TIMEOUT,
+                result.error_message());
+    } else {
+      set_error(query_failure_sqlstate(conn_->backend_provider(),
+                                       result.backend_error(), SQLSTATE_SYNTAX_ERROR,
+                                       classify_dynamic_function(prepared_sql_).code),
+                result.error_message());
+    }
     return SQL_ERROR;
   }
   if (!rs::core::database::valid_description_structure(*result)) {
@@ -7498,7 +7532,8 @@ SQLRETURN ODBCStatement::describe_prepared_metadata(
   std::shared_ptr<const detail::MetadataEpochIdentity> epoch;
   if (conn_->backend_lease_ && *conn_->backend_lease_)
     epoch = std::make_shared<const detail::MetadataEpochIdentity>();
-  apply_result_metadata(*result, true);
+  if (!apply_result_metadata(*result, true, false, &budget))
+    return expire_metadata_request(budget);
   if (epoch) {
     conn_->metadata_epoch_ = std::move(epoch);
     conn_->log(rs::core::logging::LogLevel::Debug, "prepared_metadata_cache_publish",

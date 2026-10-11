@@ -695,12 +695,20 @@ private:
                           bool include_parameter_metadata,
                           std::optional<SQLULEN> captured_max_rows = std::nullopt,
                           bool parameter_result_publication = false);
-  void apply_result_metadata(
+  // ODBC connection versus statement timeout presentation, not SDK policy.
+  struct MetadataRequestBudget {
+    rs::util::Deadline deadline;
+    bool connection_origin{};
+  };
+  MetadataRequestBudget metadata_request_budget(rs::util::Clock::time_point entry) const;
+  SQLRETURN expire_metadata_request(const MetadataRequestBudget& budget);
+  bool apply_result_metadata(
       const rs::core::database::QueryResult& result,
-      bool include_parameter_metadata, bool parameter_result_publication = false);
+      bool include_parameter_metadata, bool parameter_result_publication = false,
+      const MetadataRequestBudget* metadata_budget = nullptr);
   SQLRETURN ensure_result_metadata();
   SQLRETURN describe_prepared_metadata(
-      std::optional<rs::util::Deadline> original_deadline = std::nullopt);
+      std::optional<MetadataRequestBudget> original_budget = std::nullopt);
   void invalidate_eager_prepare() noexcept;
   SQLRETURN execute_catalog(const rs::core::database::CatalogRequest& request);
   void clear_current_result();

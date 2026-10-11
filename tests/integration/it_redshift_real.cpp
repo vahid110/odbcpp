@@ -7138,3 +7138,128 @@ TEST_F(RedshiftLogFloat8EscapeRealTest, PreparedFloat8NaturalBaseTenNullSmallReb
   ASSERT_NO_FATAL_FAILURE(owning_sibling_recovery());
   EXPECT_EQ(snapshot,snapshot_);
 }
+
+// Source-only happy/configuration evidence. No safe native latency trigger is
+// authorized here; HYT01 expiry remains a separately admitted proof prerequisite.
+class RedshiftConnectedMetadataTimeoutRealTest : public RedshiftLocateEscapeRealTest {
+ protected:
+  SQLHSTMT sibling_{};
+  SQLINTEGER integer_{41};SQL_DATE_STRUCT date_{2024,2,29};
+  SQL_TIMESTAMP_STRUCT stamp_{2024,2,29,12,34,56,123456000};
+  std::array<SQLLEN,3> input_lengths_{};
+  IntegerCell output_{};SQLLEN output_length_{97};
+  StampCell output_stamp_{};SQLLEN stamp_output_length_{97};
+  struct DateCell {std::array<unsigned char,8> before;SQL_DATE_STRUCT value;std::array<unsigned char,8> after;} output_date_{};
+  SQLLEN date_output_length_{97};
+  static std::string metadata_sql(){return "SELECT CAST(? AS INTEGER),CAST(? AS DATE),CAST(? AS TIMESTAMP)";}
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_CONNECTION_METADATA_TIMEOUT_ADMISSION");
+    if(marker==nullptr){GTEST_SKIP()<<"Connected metadata timeout happy scope not admitted";}
+    ASSERT_EQ(std::string_view("connection_metadata_timeout_happy_v1"),std::string_view(marker));
+    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    RedshiftRealTest::SetUp();if(HasFatalFailure()){return;}
+    const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    ASSERT_TRUE(options.contains("DATABASE"));ASSERT_TRUE(options.contains("UID"));
+    ASSERT_EQ("odbcpp_pilot",options.at("DATABASE"));ASSERT_EQ("odbcpp_pilot_test",options.at("UID"));ASSERT_FALSE(options.contains("DSN"));
+    const auto limit=[&](const char* key,std::size_t fallback)->std::optional<std::size_t>{
+      const auto found=options.find(key);if(found==options.end()){return fallback;}
+      std::size_t value{};const auto& text=found->second;const auto parsed=std::from_chars(text.data(),text.data()+text.size(),value);
+      if(parsed.ec!=std::errc{}||parsed.ptr!=text.data()+text.size()){return std::nullopt;}return value;
+    };
+    const rs::core::database::InputLimits inputs{};const rs::core::database::ResultLimits results{};
+    const auto sql=limit("MAXSQLBYTES",inputs.max_sql_bytes),parameters=limit("MAXPARAMETERS",inputs.max_parameters);
+    const auto value=limit("MAXPARAMETERBYTES",inputs.max_parameter_bytes),total=limit("MAXPARAMETERTOTALBYTES",inputs.max_parameter_total_bytes);
+    const auto columns=limit("MAXCOLUMNS",results.max_columns_per_description),rows=limit("MAXROWS",results.max_rows),cells=limit("MAXCELLS",results.max_cells),metadata=limit("MAXMETADATAENTRIES",results.max_metadata_entries);
+    ASSERT_TRUE(sql);ASSERT_TRUE(parameters);ASSERT_TRUE(value);ASSERT_TRUE(total);ASSERT_TRUE(columns);ASSERT_TRUE(rows);ASSERT_TRUE(cells);ASSERT_TRUE(metadata);
+    ASSERT_GE(*sql,metadata_sql().size());ASSERT_GE(*parameters,3u);ASSERT_GE(*value,26u);ASSERT_GE(*total,38u);
+    ASSERT_GE(*columns,3u);ASSERT_GE(*rows,1u);ASSERT_GE(*cells,3u);ASSERT_GE(*metadata,9u);
+  }
+  void metadata_cap(){
+    ASSERT_FALSE(unknown_completion_);
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(remaining,0);
+    const auto seconds=static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining,2));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttrW(hdbc_,SQL_ATTR_CONNECTION_TIMEOUT,reinterpret_cast<SQLPOINTER>(seconds),0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_QUERY_TIMEOUT,nullptr,0));
+    SQLUINTEGER observed=97;ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttr(hdbc_,SQL_ATTR_CONNECTION_TIMEOUT,&observed,sizeof(observed),nullptr));EXPECT_EQ(seconds,observed);
+    SQLULEN query=97;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_QUERY_TIMEOUT,&query,0,nullptr));EXPECT_EQ(0u,query);
+  }
+  void cap_sibling(){
+    ASSERT_TRUE(cap(window_end_,false));
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(remaining,0);
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(sibling_,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining,5))),0));
+  }
+  void prepare_metadata(bool eager){
+    ASSERT_NO_FATAL_FAILURE(metadata_cap());
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_ENABLE_AUTO_IPD,reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(eager?SQL_TRUE:SQL_FALSE)),0));
+    auto sql=metadata_sql();std::vector<SQLWCHAR> wide;for(const auto ch:sql){wide.push_back(static_cast<SQLWCHAR>(ch));}wide.push_back(0);
+    const auto rc=eager?SQLPrepare(hstmt_,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS):SQLPrepareW(hstmt_,wide.data(),SQL_NTS);
+    if(rc!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,rc)<<get_error(SQL_HANDLE_STMT,hstmt_);
+    SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumParams(hstmt_,&count));ASSERT_EQ(3,count);
+    ASSERT_NO_FATAL_FAILURE(metadata_cap());
+    SQLSMALLINT columns=-1;const auto result=SQLNumResultCols(hstmt_,&columns);if(result!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,result);EXPECT_EQ(3,columns);
+    for(SQLUSMALLINT p=1;p<=3;++p){
+      ASSERT_NO_FATAL_FAILURE(metadata_cap());
+      SQLSMALLINT type=-1,scale=-1,nullable=-1;SQLULEN size=97;
+      const auto described=SQLDescribeParam(hstmt_,p,&type,&size,&scale,&nullable);if(described!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,described);
+      EXPECT_EQ(p==1?SQL_INTEGER:p==2?SQL_TYPE_DATE:SQL_TYPE_TIMESTAMP,type);EXPECT_GT(size,0u);
+    }
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,1,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,10,0,&integer_,0,&input_lengths_[0]));
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,2,SQL_PARAM_INPUT,SQL_C_TYPE_DATE,SQL_TYPE_DATE,10,0,&date_,sizeof(date_),&input_lengths_[1]));
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,3,SQL_PARAM_INPUT,SQL_C_TYPE_TIMESTAMP,SQL_TYPE_TIMESTAMP,26,6,&stamp_,sizeof(stamp_),&input_lengths_[2]));
+  }
+  void executed_row(bool nulls,bool early=false){
+    const auto expected_integer=integer_;const auto expected_date=date_;const auto expected_stamp=stamp_;
+    ASSERT_TRUE(cap(window_end_,true));ASSERT_TRUE(known_sql(SQLExecute(hstmt_)));
+    integer_=99;date_={2000,1,1};stamp_={2000,1,1,0,0,0,0};
+    ASSERT_TRUE(cap(window_end_,true));auto rc=SQLFetch(hstmt_);if(rc!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,rc);
+    poison(output_);poison(output_date_);poison(output_stamp_);
+    std::array<unsigned char,sizeof(SQLINTEGER)> integer_poison{};std::memcpy(integer_poison.data(),&output_.value,sizeof(output_.value));
+    std::array<unsigned char,sizeof(SQL_DATE_STRUCT)> date_poison{};std::memcpy(date_poison.data(),&output_date_.value,sizeof(output_date_.value));
+    std::array<unsigned char,sizeof(SQL_TIMESTAMP_STRUCT)> stamp_poison{};std::memcpy(stamp_poison.data(),&output_stamp_.value,sizeof(output_stamp_.value));
+    ASSERT_TRUE(cap(window_end_,true));rc=SQLGetData(hstmt_,1,SQL_C_SLONG,&output_.value,sizeof(output_.value),&output_length_);if(rc!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,rc);
+    ASSERT_TRUE(cap(window_end_,true));rc=SQLGetData(hstmt_,2,SQL_C_TYPE_DATE,&output_date_.value,sizeof(output_date_.value),&date_output_length_);if(rc!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,rc);
+    ASSERT_TRUE(cap(window_end_,true));rc=SQLGetData(hstmt_,3,SQL_C_TYPE_TIMESTAMP,&output_stamp_.value,sizeof(output_stamp_.value),&stamp_output_length_);if(rc!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,rc);
+    if(nulls){
+      EXPECT_EQ(SQL_NULL_DATA,output_length_);EXPECT_EQ(SQL_NULL_DATA,date_output_length_);EXPECT_EQ(SQL_NULL_DATA,stamp_output_length_);
+      EXPECT_EQ(0,std::memcmp(integer_poison.data(),&output_.value,sizeof(output_.value)));EXPECT_EQ(0,std::memcmp(date_poison.data(),&output_date_.value,sizeof(output_date_.value)));EXPECT_EQ(0,std::memcmp(stamp_poison.data(),&output_stamp_.value,sizeof(output_stamp_.value)));
+    }else{
+      ASSERT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),output_length_);ASSERT_EQ(static_cast<SQLLEN>(sizeof(SQL_DATE_STRUCT)),date_output_length_);ASSERT_EQ(static_cast<SQLLEN>(sizeof(SQL_TIMESTAMP_STRUCT)),stamp_output_length_);
+      EXPECT_EQ(expected_integer,output_.value);EXPECT_EQ(expected_date.year,output_date_.value.year);EXPECT_EQ(expected_date.month,output_date_.value.month);EXPECT_EQ(expected_date.day,output_date_.value.day);
+      EXPECT_EQ(expected_stamp.year,output_stamp_.value.year);EXPECT_EQ(expected_stamp.month,output_stamp_.value.month);EXPECT_EQ(expected_stamp.day,output_stamp_.value.day);EXPECT_EQ(expected_stamp.hour,output_stamp_.value.hour);EXPECT_EQ(expected_stamp.minute,output_stamp_.value.minute);EXPECT_EQ(expected_stamp.second,output_stamp_.value.second);EXPECT_EQ(expected_stamp.fraction,output_stamp_.value.fraction);
+    }
+    ASSERT_NO_FATAL_FAILURE(guards(output_));
+    ASSERT_NO_FATAL_FAILURE(guards(output_date_));
+    ASSERT_NO_FATAL_FAILURE(guards(output_stamp_));
+    if(!early){ASSERT_TRUE(cap(window_end_,true));rc=SQLFetch(hstmt_);if(rc!=SQL_NO_DATA){unknown_completion_=true;}ASSERT_EQ(SQL_NO_DATA,rc);}
+    ASSERT_TRUE(cap(window_end_,true));ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
+  }
+  void TearDown() override {
+    if(admitted_){EXPECT_TRUE(rs::util::Clock::now()<window_end_);}
+    // No fixture/DDL exists. Uncertain remote completion fences further SQL;
+    // release owning parameter storage only after these registered handles.
+    if(sibling_){EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,sibling_));sibling_=nullptr;}
+    if(hstmt_){EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,hstmt_));hstmt_=nullptr;}
+    if(hdbc_){if(connected_){EXPECT_EQ(SQL_SUCCESS,SQLDisconnect(hdbc_));}EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,hdbc_));hdbc_=nullptr;}
+    if(henv_){EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_ENV,henv_));henv_=nullptr;}
+    if(unknown_completion_){ADD_FAILURE()<<"Connected metadata happy scope uncertain completion";}
+  }
+};
+TEST_F(RedshiftConnectedMetadataTimeoutRealTest, EagerLazyTypedMetadataNullOwningRefillAndSiblingWithoutLatencyTrigger){
+  ASSERT_NO_FATAL_FAILURE(connect_bounded());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_MAX_ROWS,nullptr,0));
+  SQLULEN visible=97;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_MAX_ROWS,&visible,0,nullptr));ASSERT_EQ(0u,visible);
+  ASSERT_NO_FATAL_FAILURE(prepare_metadata(true));
+  ASSERT_NO_FATAL_FAILURE(executed_row(false));
+  integer_=42;date_={2024,2,29};stamp_={2024,2,29,12,34,56,123456000};
+  ASSERT_NO_FATAL_FAILURE(prepare_metadata(false));
+  ASSERT_NO_FATAL_FAILURE(executed_row(false));
+  input_lengths_.fill(SQL_NULL_DATA);
+  ASSERT_NO_FATAL_FAILURE(executed_row(true,true));
+  ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,hdbc_,&sibling_));
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  std::string sql="SELECT 1";ASSERT_TRUE(known_sql(SQLExecDirect(sibling_,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS)));
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());auto rc=SQLFetch(sibling_);if(rc!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,rc);
+  SQLINTEGER value=-1;SQLLEN bytes=-1;
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());rc=SQLGetData(sibling_,1,SQL_C_SLONG,&value,sizeof(value),&bytes);if(rc!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,rc);EXPECT_EQ(1,value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)),bytes);
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());ASSERT_TRUE(known_sql(SQLCloseCursor(sibling_)));
+}

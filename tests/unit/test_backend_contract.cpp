@@ -291,6 +291,9 @@ struct Observations {
   bool observation_exception{}, terminal_description{};
   bool description_timeout{}, description_native_policy_error{};
   Deadline description_deadline{}, marker_count_started{};
+  std::function<void(Deadline)> metadata_description_hook;
+  std::optional<BackendError> metadata_description_error;
+  std::function<void()> metadata_count_hook;
   ConnectionSettings settings;
   std::string sql;
   std::vector<QueryParameter> parameters;
@@ -637,6 +640,7 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
     ++seen_->descriptions;
     if (seen_->during_deferred_description) seen_->during_deferred_description();
     seen_->description_deadline = deadline;
+    if (seen_->metadata_description_hook) seen_->metadata_description_hook(deadline);
     if (seen_->description_timeout) {
       BackendError error{rs::util::make_error_code(DbErrorCode::Timeout), "fixed description timeout"};
       error.operation = BackendOperation::Describe;
@@ -644,6 +648,7 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
       error.disposition = SessionDisposition::Retire;
       return error;
     }
+    if (seen_->metadata_description_error) return *seen_->metadata_description_error;
     seen_->sql = sql;
     QueryResult result = rows(); result.rows.clear();
     result.normalized_parameter_types.assign(types.size(),
@@ -702,6 +707,7 @@ class FakeSqlDialect final : public ISqlDialect {
   explicit FakeSqlDialect(std::shared_ptr<Observations> seen) : seen_(std::move(seen)) {}
   std::size_t count_parameter_markers(std::string_view sql) const override {
     seen_->marker_count_started = std::chrono::steady_clock::now();
+    if (seen_->metadata_count_hook) seen_->metadata_count_hook();
     return std::count(sql.begin(), sql.end(), '?');
   }
   SqlTranslationResult translate_sql(std::string_view sql) const override {
@@ -11668,3 +11674,139 @@ TEST_F(LogarithmEscapeApiTest, LocalRefusalKeepsOwningSiblingAndNumericCapabilit
   ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,sibling));
 }
 } // namespace
+
+
+class ConnectedMetadataTimeoutTest : public AutoIpdTest {
+ protected:
+  void budgets(SQLULEN connection,SQLULEN query) {
+    ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(dbc,SQL_ATTR_CONNECTION_TIMEOUT,number(connection),0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,number(query),0));
+  }
+  void reconnect() {
+    ASSERT_EQ(SQL_SUCCESS,SQLDriverConnect(dbc,nullptr,reinterpret_cast<SQLCHAR*>(const_cast<char*>("SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=0")),SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT));
+  }
+  void describe(SQLRETURN expected) {
+    type=77;length=81;scale=79;nullable=80;
+    ASSERT_EQ(expected,SQLDescribeParam(stmt,1,&type,&length,&scale,&nullable));
+  }
+};
+TEST_F(ConnectedMetadataTimeoutTest, EagerAnsiWideAndLazyUseOneConnectionCeilingAndCacheStaysLocal) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_NO_FATAL_FAILURE(descriptors());
+  ASSERT_NO_FATAL_FAILURE(budgets(2,0));
+  ASSERT_NO_FATAL_FAILURE(enable(SQL_TRUE));
+  const auto before=rs::util::Clock::now();ASSERT_EQ(SQL_SUCCESS,prepare_sql());const auto after=rs::util::Clock::now();
+  EXPECT_GE(seen->description_deadline,before+std::chrono::seconds{2});EXPECT_LE(seen->description_deadline,after+std::chrono::seconds{2});
+  SQLWCHAR text[]{'e','a','g','e','r',' ','?',0};ASSERT_EQ(SQL_SUCCESS,SQLPrepareW(stmt,text,SQL_NTS));
+  const auto calls=seen->descriptions;
+  ASSERT_NO_FATAL_FAILURE(budgets(1,0));
+  ASSERT_NO_FATAL_FAILURE(describe(SQL_SUCCESS));EXPECT_EQ(calls,seen->descriptions);
+  SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(1,count);EXPECT_EQ(calls,seen->descriptions);
+  SQLSMALLINT stored=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,0,SQL_DESC_COUNT,&stored,0,nullptr));EXPECT_EQ(1,stored);EXPECT_EQ(calls,seen->descriptions);
+  ASSERT_NO_FATAL_FAILURE(enable(SQL_FALSE));
+  ASSERT_EQ(SQL_SUCCESS,prepare_sql());const auto lazy=rs::util::Clock::now();
+  ASSERT_NO_FATAL_FAILURE(describe(SQL_SUCCESS));
+  EXPECT_GE(seen->description_deadline,lazy+std::chrono::seconds{1});EXPECT_LE(seen->description_deadline,rs::util::Clock::now()+std::chrono::seconds{1});
+  for(unsigned operation=0;operation<5;++operation) {
+    SCOPED_TRACE(operation);ASSERT_EQ(SQL_SUCCESS,prepare_sql());const auto n=seen->descriptions;
+    SQLSMALLINT columns=-1,name_length=-1,column_type=-1;SQLULEN size=97;SQLLEN numeric=97;SQLCHAR name[16]{};SQLWCHAR wide_name[16]{};
+    if(operation==0){ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt,&columns));EXPECT_EQ(3,columns);}
+    if(operation==1){ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(stmt,1,name,sizeof(name),&name_length,&column_type,&size,nullptr,nullptr));}
+    if(operation==2){ASSERT_EQ(SQL_SUCCESS,SQLDescribeColW(stmt,1,wide_name,16,&name_length,&column_type,&size,nullptr,nullptr));}
+    if(operation==3){ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(stmt,1,SQL_DESC_TYPE,nullptr,0,nullptr,&numeric));}
+    if(operation==4){ASSERT_EQ(SQL_SUCCESS,SQLColAttributeW(stmt,1,SQL_DESC_TYPE,nullptr,0,nullptr,&numeric));}
+    EXPECT_EQ(n+1,seen->descriptions);EXPECT_NE(Deadline::max(),seen->description_deadline);
+    ASSERT_NO_FATAL_FAILURE(describe(SQL_SUCCESS));EXPECT_EQ(n+1,seen->descriptions);
+  }
+  EXPECT_EQ(0,seen->queries);EXPECT_TRUE(seen->transaction_calls.empty());
+}
+TEST_F(ConnectedMetadataTimeoutTest, ShorterQueryConnectionZeroUnlimitedAndGenuineTieKeepTheirStates) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  for(const auto pair:std::array<std::array<SQLULEN,2>,5>{{{1,0},{2,1},{0,1},{1,1},{0,0}}}) {
+    SCOPED_TRACE(pair[0]);
+    SCOPED_TRACE(pair[1]);
+  ASSERT_NO_FATAL_FAILURE(budgets(pair[0],pair[1]));ASSERT_EQ(SQL_SUCCESS,prepare_sql());
+    seen->description_timeout=true;
+    const auto before=rs::util::Clock::now();EXPECT_EQ(SQL_ERROR,SQLDescribeParam(stmt,1,&type,&length,&scale,&nullable));const auto after=rs::util::Clock::now();
+    EXPECT_EQ(pair[0]!=0&&(pair[1]==0||pair[0]<pair[1])?"HYT01":"HYT00",state());
+    EXPECT_EQ(77,type);EXPECT_EQ(81u,length);EXPECT_EQ(79,scale);EXPECT_EQ(80,nullable);
+    const auto seconds=pair[0]==0?pair[1]:pair[1]==0?pair[0]:std::min(pair[0],pair[1]);
+    if(seconds==0){EXPECT_EQ(Deadline::max(),seen->description_deadline);}
+    else{EXPECT_GE(seen->description_deadline,before+std::chrono::seconds{static_cast<std::chrono::seconds::rep>(seconds)});EXPECT_LE(seen->description_deadline,after+std::chrono::seconds{static_cast<std::chrono::seconds::rep>(seconds)});}
+    seen->description_timeout=false;
+  ASSERT_NO_FATAL_FAILURE(reconnect());
+    SQLUINTEGER persistent=97;ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttrW(dbc,SQL_ATTR_CONNECTION_TIMEOUT,&persistent,sizeof(persistent),nullptr));EXPECT_EQ(pair[0],persistent);
+  }
+  ASSERT_NO_FATAL_FAILURE(budgets(0,0));
+  ASSERT_NO_FATAL_FAILURE(describe(SQL_SUCCESS));EXPECT_EQ(Deadline::max(),seen->description_deadline);
+}
+TEST_F(ConnectedMetadataTimeoutTest, HeldCountingExpiresBeforeIoAndLateValidSuccessNeverPublishes) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_NO_FATAL_FAILURE(descriptors());
+  ASSERT_NO_FATAL_FAILURE(budgets(1,0));
+  ASSERT_NO_FATAL_FAILURE(enable(SQL_TRUE));
+  seen->metadata_count_hook=[&]{std::this_thread::sleep_until(seen->marker_count_started+std::chrono::milliseconds{1020});};
+  EXPECT_EQ(SQL_ERROR,prepare_sql());EXPECT_EQ("HYT01",state());EXPECT_EQ(0,seen->descriptions);EXPECT_EQ(0,seen->queries);
+  seen->metadata_count_hook={};
+  ASSERT_NO_FATAL_FAILURE(reconnect());
+  ASSERT_NO_FATAL_FAILURE(enable(SQL_FALSE));ASSERT_EQ(SQL_SUCCESS,prepare_sql());
+  SQLSMALLINT before=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,0,SQL_DESC_COUNT,&before,0,nullptr));
+  seen->metadata_description_hook=[](Deadline deadline){std::this_thread::sleep_until(deadline+std::chrono::milliseconds{20});};
+  EXPECT_EQ(SQL_ERROR,SQLDescribeParam(stmt,1,&type,&length,&scale,&nullable));EXPECT_EQ("HYT01",state());
+  EXPECT_EQ(77,type);EXPECT_EQ(81u,length);EXPECT_EQ(79,scale);EXPECT_EQ(80,nullable);
+  SQLSMALLINT after=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,0,SQL_DESC_COUNT,&after,0,nullptr));EXPECT_EQ(before,after);
+  seen->metadata_description_hook={};
+  ASSERT_NO_FATAL_FAILURE(reconnect());
+  ASSERT_NO_FATAL_FAILURE(describe(SQL_SUCCESS));
+  EXPECT_EQ(SQL_VARBINARY,type);EXPECT_EQ(8u,length);
+}
+TEST_F(ConnectedMetadataTimeoutTest, MalformedNativeAndThrowingErrorPolicyDoNotBecomeTimeoutSuccess) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_NO_FATAL_FAILURE(budgets(1,0));
+  for(int invalid:{1,2,3,4,5}) {
+    SCOPED_TRACE(invalid);ASSERT_EQ(SQL_SUCCESS,prepare_sql());seen->invalid_description_shape=invalid;
+    EXPECT_EQ(SQL_ERROR,SQLDescribeParam(stmt,1,&type,&length,&scale,&nullable));EXPECT_EQ("HY000",state());EXPECT_EQ(77,type);EXPECT_EQ(81u,length);
+    seen->invalid_description_shape=0;
+  }
+  ASSERT_EQ(SQL_SUCCESS,prepare_sql());seen->parameter_metadata_error=true;seen->description_native_policy_error=true;
+  EXPECT_EQ(SQL_ERROR,SQLDescribeParam(stmt,1,&type,&length,&scale,&nullable));EXPECT_EQ("22018",state());
+  for(int policy:{1,2}) {
+    seen->throwing_end_error_policy=policy;
+    EXPECT_EQ(SQL_ERROR,SQLDescribeParam(stmt,1,&type,&length,&scale,&nullable));EXPECT_EQ(policy==2?"HY001":"HY000",state());EXPECT_EQ(77,type);EXPECT_EQ(81u,length);
+  }
+  seen->throwing_end_error_policy=0;seen->parameter_metadata_error=false;
+  BackendError permission{rs::util::make_error_code(DbErrorCode::QueryFailed),"owning metadata permission refusal"};permission.operation=BackendOperation::Describe;permission.native_state="42501";permission.session_state=SessionState::Idle;permission.disposition=SessionDisposition::Reusable;
+  seen->metadata_description_error=permission;
+  seen->metadata_description_hook=[](Deadline deadline){std::this_thread::sleep_until(deadline+std::chrono::milliseconds{20});};
+  EXPECT_EQ(SQL_ERROR,SQLDescribeParam(stmt,1,&type,&length,&scale,&nullable));EXPECT_EQ("42501",state());EXPECT_EQ(77,type);EXPECT_EQ(81u,length);
+  seen->metadata_description_hook={};seen->metadata_description_error.reset();
+  ASSERT_NO_FATAL_FAILURE(describe(SQL_SUCCESS));
+}
+TEST_F(ConnectedMetadataTimeoutTest, BoundHintsSiblingSnapshotRetirementAndRefillStayOwning) {
+  seen->parameter_description_types=std::vector<NativeTypeInfo>{{ScalarType::Numeric,0,0,true}};
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_NO_FATAL_FAILURE(descriptors());ASSERT_EQ(SQL_SUCCESS,prepare_sql());
+  numeric.precision=5;numeric.scale=2;numeric.sign=1;numeric.val[0]=0x39;numeric.val[1]=0x30;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_NUMERIC,SQL_DECIMAL,5,2,&numeric,0,&numeric_length));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,1,SQL_DESC_PRECISION,number(5),0));ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,1,SQL_DESC_SCALE,number(2),0));ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,1,SQL_DESC_DATA_PTR,&numeric,0));
+  QueryResult owning;owning.columns={{"text",NativeTypeInfo{ScalarType::VarChar,32,0,true}}};owning.rows={{"alpha"}};seen->date_result=owning;
+  ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(const_cast<char*>("rows")),SQL_NTS));
+  ASSERT_NO_FATAL_FAILURE(budgets(1,0));seen->description_timeout=true;
+  EXPECT_EQ(SQL_ERROR,SQLDescribeParam(stmt,1,&type,&length,&scale,&nullable));EXPECT_EQ("HYT01",state());
+  SQLSMALLINT p=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,1,SQL_DESC_PRECISION,&p,0,nullptr));EXPECT_EQ(5,p);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,1,SQL_DESC_SCALE,&p,0,nullptr));EXPECT_EQ(2,p);
+  SQLPOINTER pointer=nullptr;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(apd,1,SQL_DESC_DATA_PTR,&pointer,0,nullptr));EXPECT_EQ(&numeric,pointer);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));char owned_text[32]{};SQLLEN bytes=-1;ASSERT_EQ(SQL_SUCCESS,SQLGetData(sibling,1,SQL_C_CHAR,owned_text,sizeof(owned_text),&bytes));EXPECT_STREQ("alpha",owned_text);
+  seen->description_timeout=false;
+  ASSERT_NO_FATAL_FAILURE(reconnect());
+  ASSERT_NO_FATAL_FAILURE(describe(SQL_SUCCESS));EXPECT_EQ(SQL_NUMERIC,type);EXPECT_EQ(5u,length);EXPECT_EQ(2,scale);
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));EXPECT_EQ(std::optional<std::string>{"123.45"},seen->parameters[0].value);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+}
+TEST_F(ConnectedMetadataTimeoutTest, NeedDataAdmissionAndCountOnlyDescriptorCallsRemainLocal) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_NO_FATAL_FAILURE(budgets(1,0));ASSERT_EQ(SQL_SUCCESS,prepare_sql());
+  SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(1,count);EXPECT_EQ(0,seen->descriptions);
+  char token[8]{};SQLLEN indicator=SQL_DATA_AT_EXEC;ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,8,0,token,sizeof(token),&indicator));ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt));
+  EXPECT_EQ(SQL_ERROR,SQLDescribeParam(stmt,1,&type,&length,&scale,&nullable));EXPECT_EQ("HY010",state());EXPECT_EQ(0,seen->descriptions);EXPECT_EQ(77,type);
+  ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt));indicator=3;std::memcpy(token,"abc",4);ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));EXPECT_EQ(std::optional<std::string>{"abc"},seen->parameters[0].value);
+}

@@ -1698,3 +1698,18 @@ TEST_F(AttributeApisTest, PreparedSelectArrayDiscoveryNoFacetAndDisconnectedOutp
 }
 }
 
+
+
+TEST_F(AttributeApisTest, ConnectionTimeoutAnsiWideRangeAndClosedHandleLifetimeRemainExplicit) {
+  SQLUINTEGER value=99;SQLINTEGER length=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttrW(connection_,SQL_ATTR_CONNECTION_TIMEOUT,&value,sizeof(value),&length));EXPECT_EQ(0u,value);EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(value)),length);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttrW(connection_,SQL_ATTR_CONNECTION_TIMEOUT,integer_value((std::numeric_limits<SQLUINTEGER>::max)()),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttr(connection_,SQL_ATTR_CONNECTION_TIMEOUT,&value,sizeof(value),nullptr));EXPECT_EQ((std::numeric_limits<SQLUINTEGER>::max)(),value);
+  if constexpr(sizeof(std::uintptr_t)>sizeof(SQLUINTEGER)) {
+    const auto out_of_range=static_cast<std::uintptr_t>((std::numeric_limits<SQLUINTEGER>::max)())+std::uintptr_t{1};
+    EXPECT_EQ(SQL_ERROR,SQLSetConnectAttr(connection_,SQL_ATTR_CONNECTION_TIMEOUT,reinterpret_cast<SQLPOINTER>(out_of_range),0));EXPECT_EQ("HY024",diagnostic_state(SQL_HANDLE_DBC,connection_));
+    ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttrW(connection_,SQL_ATTR_CONNECTION_TIMEOUT,&value,sizeof(value),nullptr));EXPECT_EQ((std::numeric_limits<SQLUINTEGER>::max)(),value);
+  }
+  ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(connection_,SQL_ATTR_CONNECTION_TIMEOUT,integer_value(0),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttrW(connection_,SQL_ATTR_CONNECTION_TIMEOUT,&value,sizeof(value),nullptr));EXPECT_EQ(0u,value);
+}
