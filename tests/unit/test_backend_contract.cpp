@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cstdio>
 #include <memory>
 #include <filesystem>
 #include <fstream>
@@ -6996,46 +6997,129 @@ TEST_F(RetrieveDataTest, ExplicitUnboundScalarGetDataKeepsUnicodeNullAndMultirow
 }
 
 TEST_F(RetrieveDataTest, PreparedMoreResultsPersistenceStructuralFailureAndSiblingIsolation) {
+  // Windows CI currently exits without a stack; fixed phase markers preserve the original oracles.
+  const auto checkpoint=[](const char* phase) {
+#if defined(_WIN32)
+    std::fprintf(stderr,"[retrieve-data-lifecycle] %s\n",phase);
+    std::fflush(stderr);
+#else
+    (void)phase;
+#endif
+  };
+  checkpoint("before baseline line 6999");
   auto first=integers(2);auto later=integers(1);later.rows={{"40"}};first.additional_results.push_back(later);seen->date_result=first;
+  checkpoint("after baseline line 6999");
+  checkpoint("before baseline line 7000");
   ASSERT_NO_FATAL_FAILURE(connect());
+  checkpoint("after baseline line 7000");
+  checkpoint("before baseline line 7001");
   ASSERT_NO_FATAL_FAILURE(layout(1));
+  checkpoint("after baseline line 7001");
+  checkpoint("before baseline line 7002");
   ASSERT_NO_FATAL_FAILURE(bind_integer());
+  checkpoint("after baseline line 7002");
+  checkpoint("before baseline line 7003");
   ASSERT_NO_FATAL_FAILURE(mode(SQL_RD_OFF));
+  checkpoint("after baseline line 7003");
+  checkpoint("before baseline line 7004");
   ASSERT_EQ(SQL_SUCCESS,execute("suppressed results"));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));EXPECT_EQ(777,rows[0].integer);
+  checkpoint("after baseline line 7004");
+  checkpoint("before baseline line 7005");
   ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));
+  checkpoint("after baseline line 7005");
+  checkpoint("before baseline line 7006");
   ASSERT_EQ(SQL_SUCCESS,SQLBindCol(sibling,1,SQL_C_SLONG,&sibling_output,0,&sibling_length));
+  checkpoint("after baseline line 7006");
   // The independently owning sibling has the one row asserted below.
+  checkpoint("before baseline line 7008");
   seen->date_result=integers(1);
+  checkpoint("after baseline line 7008");
+  checkpoint("before baseline line 7009");
   ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(const_cast<char*>("owning sibling")),SQL_NTS));
+  checkpoint("after baseline line 7009");
+  checkpoint("before baseline line 7010");
   seen->date_result=first;
+  checkpoint("after baseline line 7010");
+  checkpoint("before baseline line 7011");
   ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(stmt));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));EXPECT_EQ(777,rows[0].integer);
+  checkpoint("after baseline line 7011");
+  checkpoint("before baseline line 7012");
   ASSERT_NO_FATAL_FAILURE(mode(SQL_RD_ON));
+  checkpoint("after baseline line 7012");
+  checkpoint("before baseline line 7013");
   ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(stmt));
+  checkpoint("after baseline line 7013");
+  checkpoint("before baseline line 7014");
   ASSERT_NO_FATAL_FAILURE(mode(SQL_RD_OFF));
+  checkpoint("after baseline line 7014");
+  checkpoint("before baseline line 7015");
   ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_RESET_PARAMS));
+  checkpoint("after baseline line 7015");
+  checkpoint("before baseline line 7016");
   SQLULEN observed=99;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_RETRIEVE_DATA,&observed,0,nullptr));EXPECT_EQ(SQL_RD_OFF,observed);
+  checkpoint("after baseline line 7016");
+  checkpoint("before baseline line 7017");
   later.rows={{"9"}};later.normalized_parameter_types={{ScalarType::Integer,10,0,true}};
+  checkpoint("after baseline line 7017");
+  checkpoint("before baseline line 7018");
   seen->parameter_description_types=later.normalized_parameter_types;seen->date_result=later;
+  checkpoint("after baseline line 7018");
+  checkpoint("before baseline line 7019");
   ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(const_cast<char*>("prepared existence ?")),SQL_NTS));
+  checkpoint("after baseline line 7019");
+  checkpoint("before baseline line 7020");
   ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,10,0,&input,0,&input_length));
+  checkpoint("after baseline line 7020");
+  checkpoint("before baseline line 7021");
   ASSERT_NO_FATAL_FAILURE(bind_integer());
+  checkpoint("after baseline line 7021");
+  checkpoint("before baseline line 7022");
   ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));EXPECT_EQ(777,rows[0].integer);
+  checkpoint("after baseline line 7022");
+  checkpoint("before baseline line 7023");
   ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));ASSERT_NO_FATAL_FAILURE(mode(SQL_RD_ON));
+  checkpoint("after baseline line 7023");
+  checkpoint("before baseline line 7024");
   input=43;ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));EXPECT_EQ(9,rows[0].integer);
+  checkpoint("after baseline line 7024");
+  checkpoint("before baseline line 7025");
   ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));ASSERT_NO_FATAL_FAILURE(mode(SQL_RD_OFF));
+  checkpoint("after baseline line 7025");
+  checkpoint("before baseline line 7026");
   const auto valid_prepared_result=*seen->date_result;
+  checkpoint("after baseline line 7026");
   // Owning date_result bypasses the generic rows() corruption switches.
+  checkpoint("before baseline line 7028");
   seen->date_result->rows[0].clear();
+  checkpoint("after baseline line 7028");
+  checkpoint("before baseline line 7029");
   EXPECT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ("HY000",state());
+  checkpoint("after baseline line 7029");
+  checkpoint("before baseline line 7030");
   EXPECT_EQ(SQL_ERROR,SQLFetch(stmt));EXPECT_EQ("HY010",state());
+  checkpoint("after baseline line 7030");
   // Invalid owning metadata also prevents lazy prepared description publication.
+  checkpoint("before baseline line 7032");
   *seen->date_result=valid_prepared_result;
+  checkpoint("after baseline line 7032");
+  checkpoint("before baseline line 7033");
   seen->date_result->columns[0].name="\xc0\x80";
+  checkpoint("after baseline line 7033");
+  checkpoint("before baseline line 7034");
   EXPECT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ("HY000",state());
+  checkpoint("after baseline line 7034");
+  checkpoint("before baseline line 7035");
   SQLSMALLINT count=99;EXPECT_EQ(SQL_ERROR,SQLNumResultCols(stmt,&count));EXPECT_EQ(99,count);
+  checkpoint("after baseline line 7035");
+  checkpoint("before baseline line 7036");
   *seen->date_result=valid_prepared_result;ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));EXPECT_EQ(9,rows[0].integer);
+  checkpoint("after baseline line 7036");
+  checkpoint("before baseline line 7037");
   ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));EXPECT_EQ(1,sibling_output);EXPECT_EQ(sizeof(SQLINTEGER),sibling_length);
+  checkpoint("after baseline line 7037");
+  checkpoint("before baseline line 7038");
   ASSERT_EQ(SQL_NO_DATA,SQLFetch(sibling));EXPECT_EQ(1,sibling_output);guards();
+  checkpoint("after baseline line 7038");
 }
 
 class ParameterBindingOffsetTest : public BackendContractTest {
