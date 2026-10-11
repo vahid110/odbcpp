@@ -1633,3 +1633,68 @@ TEST_F(AttributeApisTest, VariableBookmarksRequireStaticAndPreserveClosedSetting
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_USE_BOOKMARKS,integer_value(SQL_UB_OFF),0));
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(statement_,SQL_ATTR_CURSOR_TYPE,integer_value(SQL_CURSOR_FORWARD_ONLY),0));
 }
+
+
+TEST_F(AttributeApisTest, DeferredInputExportsAndLocalCancelKeepDisconnectedAndConnectedPolicies) {
+  for (const auto id : {SQL_API_SQLPARAMDATA,SQL_API_SQLPUTDATA,SQL_API_SQLCANCEL}) {
+    SQLUSMALLINT flag=73;
+    EXPECT_EQ(SQL_ERROR,SQLGetFunctions(connection_,id,&flag));
+    EXPECT_EQ("HY010",diagnostic_state(SQL_HANDLE_DBC,connection_)); EXPECT_EQ(73,flag);
+  }
+  ASSERT_NO_FATAL_FAILURE(connect_metadata_only());
+  SQLUSMALLINT all[100]{}, bitmap[SQL_API_ODBC3_ALL_FUNCTIONS_SIZE]{};
+  ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(connection_,SQL_API_ALL_FUNCTIONS,all));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(connection_,SQL_API_ODBC3_ALL_FUNCTIONS,bitmap));
+  for (const auto id : {SQL_API_SQLPARAMDATA,SQL_API_SQLPUTDATA,SQL_API_SQLCANCEL}) {
+    SQLUSMALLINT flag=SQL_FALSE;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(connection_,id,&flag)); EXPECT_EQ(SQL_TRUE,flag);
+    EXPECT_EQ(SQL_TRUE,all[id]); EXPECT_TRUE(SQL_FUNC_EXISTS(bitmap,id));
+  }
+  EXPECT_EQ(0u,metadata_queries_);
+}
+
+TEST_F(AttributeApisTest, ReadOnlyBulkBookmarkExportViewsAndStaticOnlyMaskAreTruthful) {
+  SQLUSMALLINT flag=73;
+  EXPECT_EQ(SQL_ERROR,SQLGetFunctions(connection_,SQL_API_SQLBULKOPERATIONS,&flag));
+  EXPECT_EQ("HY010",diagnostic_state(SQL_HANDLE_DBC,connection_)); EXPECT_EQ(73,flag);
+  ASSERT_NO_FATAL_FAILURE(connect_metadata_only());
+  ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(connection_,SQL_API_SQLBULKOPERATIONS,&flag));
+  EXPECT_EQ(SQL_TRUE,flag);
+  SQLUSMALLINT all[100]{},bitmap[SQL_API_ODBC3_ALL_FUNCTIONS_SIZE]{};
+  ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(connection_,SQL_API_ALL_FUNCTIONS,all));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(connection_,SQL_API_ODBC3_ALL_FUNCTIONS,bitmap));
+  EXPECT_EQ(SQL_TRUE,all[SQL_API_SQLBULKOPERATIONS]); EXPECT_TRUE(SQL_FUNC_EXISTS(bitmap,SQL_API_SQLBULKOPERATIONS));
+  SQLUINTEGER mask=99;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_STATIC_CURSOR_ATTRIBUTES1,&mask,sizeof(mask),nullptr));
+  EXPECT_EQ(static_cast<SQLUINTEGER>(SQL_CA1_NEXT|SQL_CA1_ABSOLUTE|SQL_CA1_RELATIVE|SQL_CA1_POS_POSITION|
+      SQL_CA1_BOOKMARK|SQL_CA1_BULK_FETCH_BY_BOOKMARK),mask);
+  EXPECT_EQ(0u,mask&(SQL_CA1_BULK_ADD|SQL_CA1_BULK_UPDATE_BY_BOOKMARK|SQL_CA1_BULK_DELETE_BY_BOOKMARK));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES1,&mask,sizeof(mask),nullptr));
+  EXPECT_EQ(0u,mask&SQL_CA1_BULK_FETCH_BY_BOOKMARK);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_GETDATA_EXTENSIONS,&mask,sizeof(mask),nullptr));
+  EXPECT_EQ(0u,mask&SQL_GD_BOUND);
+  EXPECT_EQ(0u,metadata_queries_);
+  EXPECT_EQ(SQL_INVALID_HANDLE,SQLBulkOperations(connection_,SQL_FETCH_BY_BOOKMARK));
+  ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,connection_,&statement_));
+  EXPECT_EQ(SQL_ERROR,SQLBulkOperations(statement_,SQL_FETCH_BY_BOOKMARK));
+  EXPECT_EQ("HY010",diagnostic_state(SQL_HANDLE_STMT,statement_));
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,statement_));
+  statement_=nullptr;
+}
+
+
+namespace {
+TEST_F(AttributeApisTest, PreparedSelectArrayDiscoveryNoFacetAndDisconnectedOutputsAreConservative) {
+  SQLUINTEGER value=0x55aa; SQLSMALLINT length=71;
+  EXPECT_EQ(SQL_ERROR,SQLGetInfo(connection_,SQL_PARAM_ARRAY_SELECTS,&value,sizeof(value),&length));
+  EXPECT_EQ("08003",diagnostic_state(SQL_HANDLE_DBC,connection_));
+  EXPECT_EQ(0x55aau,value); EXPECT_EQ(71,length);
+  ASSERT_NO_FATAL_FAILURE(connect_metadata_only());
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(connection_,SQL_PARAM_ARRAY_SELECTS,&value,sizeof(value),&length));
+  EXPECT_EQ(SQL_PAS_NO_SELECT,value); EXPECT_EQ(0u,metadata_queries_);
+  value=0x55aa; length=71;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetInfoW(connection_,SQL_PARAM_ARRAY_SELECTS,&value,sizeof(value),&length));
+  EXPECT_EQ(SQL_PAS_NO_SELECT,value); EXPECT_EQ(0u,metadata_queries_);
+}
+}
+

@@ -4,6 +4,8 @@
 #include "odbcpp/database/backend_provider.h"
 #include "core/database/postgres/pg_database_connection.h"
 #include "core/database/postgres/redshift_primary_key_contract.h"
+#include "core/database/postgres/redshift_foreign_key_contract.h"
+#include "odbc/resource_limits.h"
 #include <charconv>
 #include <vector>
 #include <array>
@@ -5561,7 +5563,9 @@ protected:
     if(missing) { object_="odbcppabsentmetadataid20261010"; wobject_=ascii(object_); }
   }
   SQLRETURN request(Route route,bool wide,bool null_catalog=false,unsigned allowance=2) {
-    if(!charge(allowance)||!cap(window_end_,hstmt_)) { return SQL_ERROR; }
+    const unsigned exchanges = allowance==2 &&
+        (route==Route::Procedures || route==Route::ProcedureColumns) ? 3 : allowance;
+    if(!charge(exchanges)||!cap(window_end_,hstmt_)) { return SQL_ERROR; }
     auto* c=null_catalog?nullptr:reinterpret_cast<SQLCHAR*>(catalog_.data());
     auto* s=reinterpret_cast<SQLCHAR*>(schema_.data()); auto* t=reinterpret_cast<SQLCHAR*>(object_.data());
     auto* m=reinterpret_cast<SQLCHAR*>(member_.data()); auto* f=reinterpret_cast<SQLCHAR*>(foreign_.data());
@@ -5613,7 +5617,7 @@ protected:
     value(18,"YES",{'Y','E','S'},wide);
   }
   void procedure_trial(Route route,bool wide,bool identifier) {
-    ready(); ASSERT_FALSE(HasFailure()); ascii_names("odbcpp_fixture","odbcppabsentmetadataid20261010");
+    ready(); ASSERT_FALSE(HasFailure()); ascii_names(identifier?"odbcpp_fixture":"odbcpp\\_fixture","odbcppabsentmetadataid20261010");
     mode(identifier); ASSERT_FALSE(HasFailure());
     // An actual server/query failure is a failure of this independent trial;
     // never substitute HYC00, fallback, a skip or future routine implementation.
@@ -5802,4 +5806,961 @@ TEST_F(RedshiftBitPrecisionNativeRealTest, FractionOnlyZeroNumericDecimalNullAnd
   input_[1]=2; bind(SQL_NUMERIC,2,1); ASSERT_FALSE(HasFailure()); attempt(false); ASSERT_FALSE(HasFailure());
   input_[1]=0; bind(SQL_NUMERIC,2,1); ASSERT_FALSE(HasFailure()); attempt(true,0); ASSERT_FALSE(HasFailure());
   recovery(); guards();
+}
+
+
+// Selected temporal escapes must work against an ordinary table, rather than
+// accidentally succeeding as a leader-only no-table expression. Execution still
+// requires separate exact-session TEMP/setup/cleanup admission.
+class RedshiftTemporalEscapeRealTest : public RedshiftRealTest {
+ protected:
+  rs::util::Deadline window_end_{};
+  bool admitted_{};
+  bool table_owned_{};
+  bool unknown_completion_{};
+  bool drop_attempted_{};
+  SQLINTEGER id_{1};
+  SQLLEN id_length_{};
+  struct StampCell { std::array<unsigned char,8> before; SQL_TIMESTAMP_STRUCT value; std::array<unsigned char,8> after; } escaped_stamp_{},native_stamp_{};
+  struct TimeCell { std::array<unsigned char,8> before; SQL_TIME_STRUCT value; std::array<unsigned char,8> after; } escaped_time_{},native_time_{};
+  SQLLEN stamp_length_{97},native_stamp_length_{97},time_length_{97},native_time_length_{97};
+  static constexpr const char* table_name_="odbcpp_temporal_escape_scope";
+
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_TEMPORAL_ESCAPE_ADMISSION");
+    if(marker==nullptr) { GTEST_SKIP() << "Temporal escape scope is not admitted"; }
+    ASSERT_TRUE(std::string_view(marker)=="temporal-escapes-v1");
+    // FIRST gate, before clocks/settings/handle/provider actions.
+    window_end_=rs::util::Clock::now()+std::chrono::seconds{40}; admitted_=true;
+    RedshiftRealTest::SetUp();
+    if(HasFatalFailure()) { return; }
+    const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    ASSERT_TRUE(options.contains("DATABASE"));
+    ASSERT_TRUE(options.contains("UID"));
+    ASSERT_EQ("odbcpp_pilot",options.at("DATABASE"));
+    ASSERT_EQ("odbcpp_pilot_test",options.at("UID"));
+    ASSERT_FALSE(options.contains("DSN"));
+  }
+  bool cap(rs::util::Deadline end,bool statement) {
+    if(unknown_completion_) { return false; }
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(end-rs::util::Clock::now()).count();
+    if(remaining<=0) { ADD_FAILURE() << "Original temporal escape window expired"; return false; }
+    const auto seconds=static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining,5));
+    if(SQLSetConnectAttr(hdbc_,SQL_ATTR_CONNECTION_TIMEOUT,reinterpret_cast<SQLPOINTER>(seconds),0)!=SQL_SUCCESS) {
+      unknown_completion_=true; return false;
+    }
+    if(statement&&SQLSetStmtAttr(hstmt_,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(seconds),0)!=SQL_SUCCESS) {
+      unknown_completion_=true; return false;
+    }
+    return true;
+  }
+  void connect_bounded() {
+    ASSERT_TRUE(cap(window_end_,false));
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();
+    ASSERT_GT(remaining,0);
+    ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining,5))),0));
+    if(!connect()) { unknown_completion_=true; FAIL() << "Temporal escape connection failed"; }
+    ASSERT_TRUE(cap(window_end_,true));
+  }
+  bool known_sql(SQLRETURN result) {
+    if(result==SQL_SUCCESS) { return true; }
+    // Any non-successful SQL operation is conservatively uncertain here. Never
+    // repair it with another query, DROP by intent or cleanup retry.
+    unknown_completion_=true;
+    ADD_FAILURE() << "Temporal escape SQL failed state=" << get_error(SQL_HANDLE_STMT,hstmt_);
+    return false;
+  }
+  void direct(std::string_view text,bool wide=false) {
+    ASSERT_TRUE(cap(window_end_,true));
+    std::string sql{text}; SQLRETURN result;
+    if(wide) {
+      std::vector<SQLWCHAR> w; for(const char ch:sql) { w.push_back(static_cast<SQLWCHAR>(ch)); }
+      w.push_back(0); result=SQLExecDirectW(hstmt_,w.data(),SQL_NTS);
+    } else { result=SQLExecDirect(hstmt_,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS); }
+    ASSERT_TRUE(known_sql(result));
+  }
+  void fixture() {
+    ASSERT_NO_FATAL_FAILURE(connect_bounded());
+    ASSERT_NO_FATAL_FAILURE(direct("CREATE TEMP TABLE odbcpp_temporal_escape_scope (id INTEGER)"));
+    // Exact successful CREATE receipt on this connection, never name/intent.
+    table_owned_=true;
+    ASSERT_NO_FATAL_FAILURE(direct("INSERT INTO odbcpp_temporal_escape_scope VALUES (1)"));
+  }
+  static std::string projection(bool prepared) {
+    return std::string("SELECT id, {fn NOW()} AS escaped_stamp, {fn CURTIME()} AS escaped_time, "
+        "GETDATE() AS native_stamp, CAST(GETDATE() AS TIME) AS native_time FROM ")+table_name_+
+        (prepared?" WHERE id=?":" WHERE id=1");
+  }
+  template<class Cell> void poison(Cell& value) {
+    value.before.fill(0x5a);value.after.fill(0x5a);std::memset(&value.value,0x5a,sizeof(value.value));
+  }
+  template<class Cell> void guards(const Cell& value) {
+    for(const auto byte:value.before) { EXPECT_EQ(0x5a,byte); }
+    for(const auto byte:value.after) { EXPECT_EQ(0x5a,byte); }
+  }
+  void timestamp(SQLUSMALLINT column,StampCell& value,SQLLEN& length) {
+    poison(value);length=97;
+    const auto result=SQLGetData(hstmt_,column,SQL_C_TYPE_TIMESTAMP,&value.value,sizeof(value.value),&length);
+    if(result!=SQL_SUCCESS) { unknown_completion_=true; }
+    ASSERT_EQ(SQL_SUCCESS,result);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQL_TIMESTAMP_STRUCT)),length);
+    EXPECT_LT(value.value.fraction,1000000000u);
+    ASSERT_NO_FATAL_FAILURE(guards(value));
+  }
+  void time(SQLUSMALLINT column,TimeCell& value,SQLLEN& length) {
+    poison(value);length=97;
+    const auto expected=native_stamp_.value.fraction==0?SQL_SUCCESS:SQL_SUCCESS_WITH_INFO;
+    const auto result=SQLGetData(hstmt_,column,SQL_C_TYPE_TIME,&value.value,sizeof(value.value),&length);
+    if(result!=expected) { unknown_completion_=true; }
+    ASSERT_EQ(expected,result);
+    if(expected==SQL_SUCCESS_WITH_INFO) {
+      // Read this conversion's record before the next API clears diagnostics.
+      EXPECT_EQ("01S07",get_error(SQL_HANDLE_STMT,hstmt_));
+      SQLCHAR state[6]{};
+      EXPECT_EQ(SQL_NO_DATA,SQLGetDiagRec(SQL_HANDLE_STMT,hstmt_,2,state,nullptr,nullptr,0,nullptr));
+    }
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQL_TIME_STRUCT)),length);
+    EXPECT_EQ(native_stamp_.value.hour,value.value.hour);
+    EXPECT_EQ(native_stamp_.value.minute,value.value.minute);
+    EXPECT_EQ(native_stamp_.value.second,value.value.second);
+    ASSERT_NO_FATAL_FAILURE(guards(value));
+  }
+  void row() {
+    SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&count));ASSERT_EQ(5,count);
+    for(SQLUSMALLINT column=2;column<=5;++column) {
+      SQLSMALLINT type=-1;
+      ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,column,nullptr,0,nullptr,&type,nullptr,nullptr,nullptr));
+      EXPECT_EQ((column==2||column==4)?SQL_TYPE_TIMESTAMP:SQL_TYPE_TIME,type);
+    }
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+    SQLINTEGER id=-1;SQLLEN length=-1;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,1,SQL_C_SLONG,&id,sizeof(id),&length));
+    EXPECT_EQ(1,id);EXPECT_EQ(static_cast<SQLLEN>(sizeof(id)),length);
+    ASSERT_NO_FATAL_FAILURE(timestamp(2,escaped_stamp_,stamp_length_));
+    ASSERT_NO_FATAL_FAILURE(timestamp(4,native_stamp_,native_stamp_length_));
+    EXPECT_EQ(native_stamp_.value.year,escaped_stamp_.value.year);
+    EXPECT_EQ(native_stamp_.value.month,escaped_stamp_.value.month);
+    EXPECT_EQ(native_stamp_.value.day,escaped_stamp_.value.day);
+    EXPECT_EQ(native_stamp_.value.hour,escaped_stamp_.value.hour);
+    EXPECT_EQ(native_stamp_.value.minute,escaped_stamp_.value.minute);
+    EXPECT_EQ(native_stamp_.value.second,escaped_stamp_.value.second);
+    EXPECT_EQ(native_stamp_.value.fraction,escaped_stamp_.value.fraction);
+    EXPECT_GE(native_stamp_.value.month,1);EXPECT_LE(native_stamp_.value.month,12);
+    EXPECT_GE(native_stamp_.value.day,1);EXPECT_LE(native_stamp_.value.day,31);
+    EXPECT_LE(native_stamp_.value.hour,23);EXPECT_LE(native_stamp_.value.minute,59);EXPECT_LE(native_stamp_.value.second,59);
+    ASSERT_NO_FATAL_FAILURE(time(3,escaped_time_,time_length_));
+    ASSERT_NO_FATAL_FAILURE(time(5,native_time_,native_time_length_));
+    EXPECT_EQ(native_time_.value.hour,escaped_time_.value.hour);
+    EXPECT_EQ(native_time_.value.minute,escaped_time_.value.minute);
+    EXPECT_EQ(native_time_.value.second,escaped_time_.value.second);
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  }
+  void prepared_execute() {
+    ASSERT_TRUE(cap(window_end_,true));
+    ASSERT_TRUE(known_sql(SQLExecute(hstmt_)));
+  }
+  void recovery() {
+    ASSERT_NO_FATAL_FAILURE(direct("SELECT 1"));
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+    SQLINTEGER value=-1;SQLLEN length=-1;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(hstmt_,1,SQL_C_SLONG,&value,sizeof(value),&length));
+    EXPECT_EQ(1,value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)),length);
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  }
+  void TearDown() override {
+    const auto entry=rs::util::Clock::now();
+    if(admitted_) { EXPECT_TRUE(entry<window_end_); }
+    const auto end=std::min(window_end_,entry+std::chrono::seconds{5});
+    if(table_owned_&&!unknown_completion_&&connected_&&!drop_attempted_) {
+      if(SQLFreeStmt(hstmt_,SQL_CLOSE)!=SQL_SUCCESS) { unknown_completion_=true; }
+      if(!unknown_completion_&&cap(end,true)) {
+        drop_attempted_=true;
+        std::string sql="DROP TABLE odbcpp_temporal_escape_scope";
+        if(known_sql(SQLExecDirect(hstmt_,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS))) { table_owned_=false; }
+      }
+    }
+    // Unknown remote completion suppresses all later SQL, including DROP and
+    // rollback. Session/handle destruction is retained, never a SQL retry.
+    if(hstmt_) { EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,hstmt_));hstmt_=nullptr; }
+    if(hdbc_) {
+      if(connected_) { EXPECT_EQ(SQL_SUCCESS,SQLDisconnect(hdbc_)); }
+      EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,hdbc_));hdbc_=nullptr;
+    }
+    if(henv_) { EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_ENV,henv_));henv_=nullptr; }
+    if(table_owned_||unknown_completion_) {
+      ADD_FAILURE() << "Temporal escape cleanup requires exact-session parent verification";
+    }
+  }
+};
+
+TEST_F(RedshiftTemporalEscapeRealTest, DirectAnsiWideTableExpressionsMatchNativeTypedProjection) {
+  ASSERT_NO_FATAL_FAILURE(fixture());
+  ASSERT_NO_FATAL_FAILURE(direct(projection(false)));
+  ASSERT_NO_FATAL_FAILURE(row());
+  const auto owned=escaped_stamp_.value;
+  ASSERT_NO_FATAL_FAILURE(direct(projection(false),true));
+  ASSERT_NO_FATAL_FAILURE(row());
+  EXPECT_GE(owned.month,1);EXPECT_LE(owned.month,12);
+  ASSERT_NO_FATAL_FAILURE(recovery());
+}
+
+TEST_F(RedshiftTemporalEscapeRealTest, PreparedTableExpressionsNullRebindAndEarlyCloseRecover) {
+  ASSERT_NO_FATAL_FAILURE(fixture());
+  auto sql=projection(true);std::vector<SQLWCHAR> w;
+  for(const char ch:sql) { w.push_back(static_cast<SQLWCHAR>(ch)); }
+  w.push_back(0);
+  ASSERT_TRUE(cap(window_end_,true));
+  ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_,w.data(),SQL_NTS)));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,1,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,10,0,&id_,0,&id_length_));
+  ASSERT_NO_FATAL_FAILURE(prepared_execute());
+  ASSERT_NO_FATAL_FAILURE(row());
+  id_length_=SQL_NULL_DATA;
+  ASSERT_NO_FATAL_FAILURE(prepared_execute());
+  ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  id_length_=0;
+  ASSERT_NO_FATAL_FAILURE(prepared_execute());
+  // Close one owning result before fetching, then independently recover.
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  ASSERT_NO_FATAL_FAILURE(recovery());
+}
+
+
+#include <optional>
+
+// Ordinary table proof for the selected two-argument escape. Native NULL/empty
+// behavior is delegated, never fabricated by local translation/conversion.
+class RedshiftLocateEscapeRealTest : public RedshiftTemporalEscapeRealTest {
+ protected:
+  struct IntegerCell { std::array<unsigned char,8> before;SQLINTEGER value;std::array<unsigned char,8> after; } escaped_{},native_{},ordinal_{};
+  SQLLEN escaped_length_{97},native_length_{97},ordinal_length_{97};
+  std::array<char,16> needle_{};
+  std::array<char,32> hay_{};
+  SQLLEN needle_length_{SQL_NTS},hay_length_{SQL_NTS};
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_LOCATE_ESCAPE_ADMISSION");
+    if(marker==nullptr) { GTEST_SKIP() << "LOCATE escape scope is not admitted"; }
+    ASSERT_TRUE(std::string_view(marker)=="locate-escapes-v1");
+    // This suite has its own FIRST gate, not the temporal suite's admission.
+    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    RedshiftRealTest::SetUp();
+    if(HasFatalFailure()) { return; }
+    const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    ASSERT_TRUE(options.contains("DATABASE"));
+    ASSERT_TRUE(options.contains("UID"));
+    ASSERT_EQ("odbcpp_pilot",options.at("DATABASE"));
+    ASSERT_EQ("odbcpp_pilot_test",options.at("UID"));
+    ASSERT_FALSE(options.contains("DSN"));
+  }
+  void locate_fixture() {
+    ASSERT_NO_FATAL_FAILURE(connect_bounded());
+    ASSERT_NO_FATAL_FAILURE(direct("CREATE TEMP TABLE odbcpp_locate_escape_scope (id INTEGER, hay VARCHAR(32))"));
+    table_owned_=true; // Exact successful CREATE on this session, not intent/name.
+    ASSERT_NO_FATAL_FAILURE(direct("INSERT INTO odbcpp_locate_escape_scope VALUES "
+        "(1,'\xC3\xA9\xE8\xA1\xA8" "fish'),(2,'plain'),(3,NULL)"));
+  }
+  void metadata(SQLSMALLINT expected) {
+    SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(hstmt_,&count));ASSERT_EQ(expected,count);
+    for(SQLUSMALLINT column=1;column<=static_cast<SQLUSMALLINT>(expected);++column) {
+      SQLSMALLINT type=-1;
+      ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,column,nullptr,0,nullptr,&type,nullptr,nullptr,nullptr));
+      EXPECT_EQ(SQL_INTEGER,type);
+    }
+  }
+  void integer(SQLUSMALLINT column,IntegerCell& value,SQLLEN& length) {
+    poison(value);length=97;
+    const auto result=SQLGetData(hstmt_,column,SQL_C_SLONG,&value.value,sizeof(value.value),&length);
+    if(result!=SQL_SUCCESS) { unknown_completion_=true; }
+    ASSERT_EQ(SQL_SUCCESS,result);
+    if(length==SQL_NULL_DATA) {
+      const auto* bytes=reinterpret_cast<const unsigned char*>(&value.value);
+      EXPECT_TRUE(std::all_of(bytes,bytes+sizeof(value.value),[](unsigned char b){return b==0x5a;}));
+    } else { EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),length); }
+    ASSERT_NO_FATAL_FAILURE(guards(value));
+  }
+  void pair(SQLUSMALLINT escaped_column,SQLUSMALLINT native_column,std::optional<SQLINTEGER> literal) {
+    ASSERT_NO_FATAL_FAILURE(integer(native_column,native_,native_length_));
+    ASSERT_NO_FATAL_FAILURE(integer(escaped_column,escaped_,escaped_length_));
+    EXPECT_EQ(native_length_,escaped_length_);
+    if(native_length_!=SQL_NULL_DATA) { EXPECT_EQ(native_.value,escaped_.value); }
+    if(literal) {
+      EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),native_length_);
+      EXPECT_EQ(*literal,native_.value);EXPECT_EQ(*literal,escaped_.value);
+    }
+    // Native NULL/empty outcome is observed by equal indicators/value. No
+    // invented empty->1 or unconditional native NULL propagation assertion.
+  }
+  void direct_rows() {
+    ASSERT_NO_FATAL_FAILURE(metadata(3));
+    for(SQLINTEGER id=1;id<=3;++id) {
+      ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+      ASSERT_NO_FATAL_FAILURE(integer(1,ordinal_,ordinal_length_));
+      EXPECT_EQ(id,ordinal_.value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),ordinal_length_);
+      const auto expected=id==1?std::optional<SQLINTEGER>{3}:id==2?std::optional<SQLINTEGER>{0}:std::nullopt;
+      ASSERT_NO_FATAL_FAILURE(pair(2,3,expected));
+    }
+    ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_));
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  }
+  void prepare_pair() {
+    auto text=std::string("SELECT {fn LOCATE(?,?)}, POSITION(? IN ?) FROM odbcpp_locate_escape_scope WHERE id=1");
+    std::vector<SQLWCHAR> wide;
+    for(const auto ch:text) { wide.push_back(static_cast<SQLWCHAR>(ch)); }
+    wide.push_back(0);ASSERT_TRUE(cap(window_end_,true));
+    ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_,wide.data(),SQL_NTS)));
+    for(SQLUSMALLINT p=1;p<=4;++p) {
+      const bool needle=p==1||p==3;
+      ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,p,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,
+          needle?16:32,0,needle?needle_.data():hay_.data(),
+          static_cast<SQLLEN>(needle?needle_.size():hay_.size()),needle?&needle_length_:&hay_length_));
+    }
+  }
+  void prepared_pair(std::optional<SQLINTEGER> expected,bool early_close=false) {
+    ASSERT_NO_FATAL_FAILURE(prepared_execute());
+    ASSERT_NO_FATAL_FAILURE(metadata(2));
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(hstmt_));
+    ASSERT_NO_FATAL_FAILURE(pair(1,2,expected));
+    if(!early_close) { ASSERT_EQ(SQL_NO_DATA,SQLFetch(hstmt_)); }
+    ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(hstmt_));
+  }
+  void TearDown() override {
+    const auto entry=rs::util::Clock::now();if(admitted_) { EXPECT_TRUE(entry<window_end_); }
+    const auto cleanup_end=std::min(window_end_,entry+std::chrono::seconds{5});
+    if(table_owned_&&!unknown_completion_&&connected_&&!drop_attempted_) {
+      if(SQLFreeStmt(hstmt_,SQL_CLOSE)!=SQL_SUCCESS) { unknown_completion_=true; }
+      if(!unknown_completion_&&cap(cleanup_end,true)) {
+        drop_attempted_=true;
+        std::string text="DROP TABLE odbcpp_locate_escape_scope";
+        if(known_sql(SQLExecDirect(hstmt_,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS))) { table_owned_=false; }
+      }
+    }
+    // Not the temporal suite's fixed DROP: exact selected owned TEMP only.
+    // Unknown completion suppresses every SQL/retry; session release is retained.
+    if(hstmt_) { EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,hstmt_));hstmt_=nullptr; }
+    if(hdbc_) {
+      if(connected_) { EXPECT_EQ(SQL_SUCCESS,SQLDisconnect(hdbc_)); }
+      EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,hdbc_));hdbc_=nullptr;
+    }
+    if(henv_) { EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_ENV,henv_));henv_=nullptr; }
+    if(table_owned_||unknown_completion_) { ADD_FAILURE() << "LOCATE exact-session parent cleanup verification required"; }
+  }
+};
+TEST_F(RedshiftLocateEscapeRealTest, DirectAnsiWideTableSearchCharacterPositionsNullAndRecovery) {
+  ASSERT_NO_FATAL_FAILURE(locate_fixture());
+  const auto query="SELECT id,{fn LOCATE('fish',hay)},POSITION('fish' IN hay) FROM odbcpp_locate_escape_scope ORDER BY id";
+  ASSERT_NO_FATAL_FAILURE(direct(query));
+  ASSERT_NO_FATAL_FAILURE(direct_rows());
+  ASSERT_NO_FATAL_FAILURE(direct(query,true));
+  ASSERT_NO_FATAL_FAILURE(direct_rows());
+  ASSERT_NO_FATAL_FAILURE(recovery());
+}
+TEST_F(RedshiftLocateEscapeRealTest, PreparedOriginalParameterOrderEmptyNullRebindAndEarlyCloseRecover) {
+  ASSERT_NO_FATAL_FAILURE(locate_fixture());
+  std::memcpy(needle_.data(),"fish",5);std::memcpy(hay_.data(),"\xC3\xA9\xE8\xA1\xA8" "fish",10);
+  ASSERT_NO_FATAL_FAILURE(prepare_pair());
+  ASSERT_NO_FATAL_FAILURE(prepared_pair(SQLINTEGER{3}));
+  needle_.fill(0);std::memcpy(needle_.data(),"absent",7);
+  ASSERT_NO_FATAL_FAILURE(prepared_pair(SQLINTEGER{0}));
+  needle_length_=SQL_NULL_DATA;
+  ASSERT_NO_FATAL_FAILURE(prepared_pair(std::nullopt));
+  needle_.fill(0);needle_length_=0;
+  ASSERT_NO_FATAL_FAILURE(prepared_pair(std::nullopt,true));
+  const auto owning_native_length=native_length_;const auto owning_native_value=native_.value;
+  ASSERT_NO_FATAL_FAILURE(recovery());
+  EXPECT_EQ(owning_native_length,native_length_);EXPECT_EQ(owning_native_value,native_.value);
+  ASSERT_NO_FATAL_FAILURE(guards(native_));
+  ASSERT_NO_FATAL_FAILURE(guards(escaped_));
+}
+
+
+// Selected string LENGTH scope. NULL/empty/all-space compare native composition,
+// not invented result literals; no full coercion or native execution claim.
+class RedshiftLengthEscapeRealTest : public RedshiftLocateEscapeRealTest {
+ protected:
+  IntegerCell raw_{};SQLLEN raw_length_{97};
+  std::array<char,32> input_{};SQLLEN input_length_{SQL_NTS};
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_LENGTH_ESCAPE_ADMISSION");
+    if(marker==nullptr) { GTEST_SKIP() << "LENGTH escape scope is not admitted"; }
+    ASSERT_TRUE(std::string_view(marker)=="length-escapes-v1");
+    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    RedshiftRealTest::SetUp();
+    if(HasFatalFailure()) { return; }
+    const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    ASSERT_TRUE(options.contains("DATABASE"));ASSERT_TRUE(options.contains("UID"));
+    ASSERT_EQ("odbcpp_pilot",options.at("DATABASE"));ASSERT_EQ("odbcpp_pilot_test",options.at("UID"));ASSERT_FALSE(options.contains("DSN"));
+  }
+  void length_fixture() {
+    ASSERT_NO_FATAL_FAILURE(connect_bounded());
+    ASSERT_NO_FATAL_FAILURE(direct("CREATE TEMP TABLE odbcpp_length_escape_scope (id INTEGER,c CHAR(6),v VARCHAR(32))"));
+    table_owned_=true; // Exact confirmed SQL_SUCCESS CREATE on this session only.
+    ASSERT_NO_FATAL_FAILURE(direct("INSERT INTO odbcpp_length_escape_scope VALUES "
+        "(1,'cat','cat   '),(2,'cat',' \xC3\xA9\xE8\xA1\xA8  '),(3,'cat','a\t '),(4,'   ','   '),(5,'',''),(6,NULL,NULL)"));
+  }
+  void length_fetch(SQLRETURN expected) {
+    ASSERT_TRUE(cap(window_end_,true));
+    const auto result=SQLFetch(hstmt_);
+    if(result!=expected) { unknown_completion_=true; }
+    ASSERT_EQ(expected,result);
+  }
+  void length_close() {
+    ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
+  }
+  void length_rows() {
+    ASSERT_NO_FATAL_FAILURE(metadata(8));
+    for(SQLINTEGER id=1;id<=6;++id) {
+      ASSERT_NO_FATAL_FAILURE(length_fetch(SQL_SUCCESS));
+      ASSERT_NO_FATAL_FAILURE(integer(1,ordinal_,ordinal_length_));EXPECT_EQ(id,ordinal_.value);
+      const auto value=id==1||id==2?std::optional<SQLINTEGER>{3}:id==3?std::optional<SQLINTEGER>{2}:std::nullopt;
+      ASSERT_NO_FATAL_FAILURE(pair(2,3,value));
+      ASSERT_NO_FATAL_FAILURE(integer(4,raw_,raw_length_));
+      if(id<=3) { EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),raw_length_);EXPECT_EQ(id==1?6:id==2?5:3,raw_.value); }
+      ASSERT_NO_FATAL_FAILURE(pair(5,6,id<=3?std::optional<SQLINTEGER>{3}:std::nullopt));
+      ASSERT_NO_FATAL_FAILURE(integer(7,raw_,raw_length_));
+      if(id<=3) { EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),raw_length_);EXPECT_EQ(3,raw_.value); }
+      ASSERT_NO_FATAL_FAILURE(integer(8,raw_,raw_length_));
+      if(id==3) {
+        EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),raw_length_);
+        EXPECT_EQ(9,raw_.value); // Prove the stored second character is TAB.
+      }
+    }
+    ASSERT_NO_FATAL_FAILURE(length_fetch(SQL_NO_DATA));
+    ASSERT_NO_FATAL_FAILURE(length_close());
+  }
+  void prepare_length() {
+    std::string text="SELECT {fn LENGTH(?)},LENGTH(RTRIM(?, ' ')),LENGTH(?) FROM odbcpp_length_escape_scope WHERE id=1";
+    std::vector<SQLWCHAR> wide;
+    for(const auto ch:text) { wide.push_back(static_cast<SQLWCHAR>(ch)); }
+    wide.push_back(0);ASSERT_TRUE(cap(window_end_,true));ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_,wide.data(),SQL_NTS)));
+    for(SQLUSMALLINT p=1;p<=3;++p) {
+      ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,p,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,32,0,input_.data(),input_.size(),&input_length_));
+    }
+  }
+  void length_execution(std::optional<SQLINTEGER> expected,std::optional<SQLINTEGER> raw,bool early=false) {
+    const auto owning_input=input_;const auto owning_length=input_length_;
+    ASSERT_NO_FATAL_FAILURE(prepared_execute());
+    ASSERT_NO_FATAL_FAILURE(metadata(3));
+    ASSERT_NO_FATAL_FAILURE(length_fetch(SQL_SUCCESS));
+    ASSERT_NO_FATAL_FAILURE(pair(1,2,expected));
+    ASSERT_NO_FATAL_FAILURE(integer(3,raw_,raw_length_));
+    if(raw) { EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),raw_length_);EXPECT_EQ(*raw,raw_.value); }
+    EXPECT_EQ(owning_input,input_);EXPECT_EQ(owning_length,input_length_);
+    if(!early) { ASSERT_NO_FATAL_FAILURE(length_fetch(SQL_NO_DATA)); }
+    ASSERT_NO_FATAL_FAILURE(length_close());
+  }
+
+  void TearDown() override {
+    const auto entry=rs::util::Clock::now();if(admitted_) { EXPECT_TRUE(entry<window_end_); }
+    const auto cleanup_end=std::min(window_end_,entry+std::chrono::seconds{5});
+    if(table_owned_&&!unknown_completion_&&connected_&&!drop_attempted_) {
+      if(SQLFreeStmt(hstmt_,SQL_CLOSE)!=SQL_SUCCESS) { unknown_completion_=true; }
+      if(!unknown_completion_&&cap(cleanup_end,true)) {
+        drop_attempted_=true;
+        std::string text="DROP TABLE odbcpp_length_escape_scope";
+        if(known_sql(SQLExecDirect(hstmt_,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS))) { table_owned_=false; }
+      }
+    }
+    // Not the temporal suite's fixed DROP: exact selected owned TEMP only.
+    // Unknown completion suppresses every SQL/retry; session release is retained.
+    if(hstmt_) { EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,hstmt_));hstmt_=nullptr; }
+    if(hdbc_) {
+      if(connected_) { EXPECT_EQ(SQL_SUCCESS,SQLDisconnect(hdbc_)); }
+      EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,hdbc_));hdbc_=nullptr;
+    }
+    if(henv_) { EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_ENV,henv_));henv_=nullptr; }
+    if(table_owned_||unknown_completion_) { ADD_FAILURE() << "LENGTH exact-session parent cleanup verification required"; }
+  }
+};
+
+TEST_F(RedshiftLengthEscapeRealTest, DirectAnsiWidePaddedCharacterLengthsAndNativeEdgesRecover) {
+  ASSERT_NO_FATAL_FAILURE(length_fixture());
+  const auto query="SELECT id,{fn LENGTH(v)},LENGTH(RTRIM(v, ' ')),LENGTH(v),{fn LENGTH(c)},LENGTH(RTRIM(c, ' ')),LENGTH(c),ASCII(SUBSTRING(v,2,1)) FROM odbcpp_length_escape_scope ORDER BY id";
+  ASSERT_NO_FATAL_FAILURE(direct(query));
+  ASSERT_NO_FATAL_FAILURE(length_rows());
+  ASSERT_NO_FATAL_FAILURE(direct(query,true));
+  ASSERT_NO_FATAL_FAILURE(length_rows());
+  ASSERT_NO_FATAL_FAILURE(recovery());
+}
+TEST_F(RedshiftLengthEscapeRealTest, PreparedPaddedUnicodeNullEmptyRebindAndEarlyCloseRecover) {
+  ASSERT_NO_FATAL_FAILURE(length_fixture());
+  std::memcpy(input_.data(),"cat   ",7);
+  ASSERT_NO_FATAL_FAILURE(prepare_length());
+  ASSERT_NO_FATAL_FAILURE(length_execution(SQLINTEGER{3},SQLINTEGER{6}));
+  input_.fill(0);std::memcpy(input_.data()," \xC3\xA9\xE8\xA1\xA8  ",9);
+  ASSERT_NO_FATAL_FAILURE(length_execution(SQLINTEGER{3},SQLINTEGER{5}));
+  input_.fill(0);std::memcpy(input_.data(),"a\t ",4);
+  ASSERT_NO_FATAL_FAILURE(length_execution(SQLINTEGER{2},SQLINTEGER{3}));
+  input_length_=SQL_NULL_DATA;
+  ASSERT_NO_FATAL_FAILURE(length_execution(std::nullopt,std::nullopt));
+  input_.fill(0);input_length_=0;
+  ASSERT_NO_FATAL_FAILURE(length_execution(std::nullopt,std::nullopt));
+  std::memcpy(input_.data(),"   ",4);input_length_=SQL_NTS;
+  ASSERT_NO_FATAL_FAILURE(length_execution(std::nullopt,std::nullopt,true));
+  const auto snapshot=native_;const auto snapshot_length=native_length_;
+  ASSERT_NO_FATAL_FAILURE(recovery());
+  EXPECT_EQ(snapshot_length,native_length_);EXPECT_EQ(snapshot.value,native_.value);
+  ASSERT_NO_FATAL_FAILURE(guards(native_));
+  ASSERT_NO_FATAL_FAILURE(guards(escaped_));
+}
+
+
+class RedshiftCalendarEscapeRealTest : public RedshiftLocateEscapeRealTest {
+ protected:
+  SQL_DATE_STRUCT date_{2024,2,29};SQLLEN date_length_{};
+  std::array<SQLINTEGER,3> snapshot_{};
+  static constexpr std::size_t fixture_columns_=13,fixture_rows_=4,fixture_cells_=52;
+  static_assert(fixture_columns_*fixture_rows_==fixture_cells_);
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_CALENDAR_ESCAPE_ADMISSION");
+    if(marker==nullptr) { GTEST_SKIP() << "Calendar escape scope is not admitted"; }
+    ASSERT_TRUE(std::string_view(marker)=="calendar-escapes-v1");
+    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    RedshiftRealTest::SetUp();if(HasFatalFailure()) { return; }
+    const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    ASSERT_TRUE(options.contains("DATABASE"));ASSERT_TRUE(options.contains("UID"));
+    ASSERT_EQ("odbcpp_pilot",options.at("DATABASE"));ASSERT_EQ("odbcpp_pilot_test",options.at("UID"));ASSERT_FALSE(options.contains("DSN"));
+    // Reject a configured insufficient bound before connect; never silently
+    // clip the thirteen-column/four-row/fifty-two-cell direct projection.
+    const rs::core::database::ResultLimits defaults{};
+    const auto limit=[&](const char* key,std::size_t fallback)->std::optional<std::size_t> {
+      const auto found=options.find(key);if(found==options.end()) { return fallback; }
+      std::size_t value{};const auto& text=found->second;
+      const auto result=std::from_chars(text.data(),text.data()+text.size(),value);
+      if(result.ec!=std::errc{}||result.ptr!=text.data()+text.size()) { return std::nullopt; }
+      return value;
+    };
+    const auto columns=limit("MAXCOLUMNS",defaults.max_columns_per_description);
+    const auto rows=limit("MAXROWS",defaults.max_rows);
+    const auto cells=limit("MAXCELLS",defaults.max_cells);
+    ASSERT_TRUE(columns);ASSERT_TRUE(rows);ASSERT_TRUE(cells);
+    ASSERT_GE(*columns,fixture_columns_);ASSERT_GE(*rows,fixture_rows_);ASSERT_GE(*cells,fixture_cells_);
+  }
+  void calendar_fixture() {
+    ASSERT_NO_FATAL_FAILURE(connect_bounded());
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_MAX_ROWS,nullptr,0));
+    SQLULEN visible=97;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_MAX_ROWS,&visible,0,nullptr));ASSERT_EQ(static_cast<SQLULEN>(0),visible);
+    ASSERT_NO_FATAL_FAILURE(direct("CREATE TEMP TABLE odbcpp_calendar_escape_scope (id INTEGER,d DATE,t TIMESTAMP)"));
+    table_owned_=true; // Confirmed CREATE success on exact session only.
+    ASSERT_NO_FATAL_FAILURE(direct("INSERT INTO odbcpp_calendar_escape_scope VALUES "
+        "(1,DATE '2024-02-29',TIMESTAMP '2024-02-29 23:59:58.123456'),"
+        "(2,DATE '2023-12-31',TIMESTAMP '2023-12-31 00:00:01.000001'),"
+        "(3,DATE '2000-01-01',TIMESTAMP '2000-01-01 12:00:00.654321'),(4,NULL,NULL)"));
+  }
+  void calendar_fetch(SQLRETURN expected) {
+    ASSERT_TRUE(cap(window_end_,true));const auto result=SQLFetch(hstmt_);
+    if(result!=expected) { unknown_completion_=true; }
+    ASSERT_EQ(expected,result);
+  }
+  void calendar_close() { ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_))); }
+  void calendar_rows() {
+    ASSERT_NO_FATAL_FAILURE(metadata(13));
+    const std::array<std::array<SQLINTEGER,3>,3> literal{{{{2024,2,29}},{{2023,12,31}},{{2000,1,1}}}};
+    for(SQLINTEGER id=1;id<=4;++id) {
+      ASSERT_NO_FATAL_FAILURE(calendar_fetch(SQL_SUCCESS));
+      ASSERT_NO_FATAL_FAILURE(integer(1,ordinal_,ordinal_length_));EXPECT_EQ(id,ordinal_.value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),ordinal_length_);
+      for(SQLUSMALLINT group=0;group<2;++group) {
+        for(SQLUSMALLINT part=0;part<3;++part) {
+          const auto expected=id<=3?std::optional<SQLINTEGER>{literal[static_cast<std::size_t>(id-1)][part]}:std::nullopt;
+          const auto escaped=static_cast<SQLUSMALLINT>(2+group*6+part*2);
+          ASSERT_NO_FATAL_FAILURE(pair(escaped,static_cast<SQLUSMALLINT>(escaped+1),expected));
+        }
+      }
+    }
+    ASSERT_NO_FATAL_FAILURE(calendar_fetch(SQL_NO_DATA));
+    ASSERT_NO_FATAL_FAILURE(calendar_close());
+  }
+  void prepare_calendar() {
+    const std::string text="SELECT {fn YEAR(?)},{fn MONTH(?)},{fn DAYOFMONTH(?)},"
+        "CAST(DATE_PART(year,?) AS INTEGER),CAST(DATE_PART(month,?) AS INTEGER),CAST(DATE_PART(day,?) AS INTEGER) "
+        "FROM odbcpp_calendar_escape_scope WHERE id=1";
+    std::vector<SQLWCHAR> wide;
+    for(const auto ch:text) { wide.push_back(static_cast<SQLWCHAR>(ch)); }
+    wide.push_back(0);ASSERT_TRUE(cap(window_end_,true));ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_,wide.data(),SQL_NTS)));
+    for(SQLUSMALLINT p=1;p<=6;++p) {
+      ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,p,SQL_PARAM_INPUT,SQL_C_TYPE_DATE,SQL_TYPE_DATE,10,0,&date_,sizeof(date_),&date_length_));
+    }
+  }
+  void calendar_execution(std::optional<std::array<SQLINTEGER,3>> expected,bool early=false) {
+    const auto owning_date=date_;const auto owning_length=date_length_;
+    ASSERT_NO_FATAL_FAILURE(prepared_execute());
+    ASSERT_NO_FATAL_FAILURE(metadata(6));
+    ASSERT_NO_FATAL_FAILURE(calendar_fetch(SQL_SUCCESS));
+    for(SQLUSMALLINT part=0;part<3;++part) {
+      ASSERT_NO_FATAL_FAILURE(pair(static_cast<SQLUSMALLINT>(part+1),static_cast<SQLUSMALLINT>(part+4),
+          expected?std::optional<SQLINTEGER>{(*expected)[part]}:std::nullopt));
+      if(native_length_!=SQL_NULL_DATA) { snapshot_[part]=native_.value; }
+    }
+    EXPECT_EQ(owning_date.year,date_.year);EXPECT_EQ(owning_date.month,date_.month);EXPECT_EQ(owning_date.day,date_.day);EXPECT_EQ(owning_length,date_length_);
+    if(!early) {
+      ASSERT_NO_FATAL_FAILURE(calendar_fetch(SQL_NO_DATA));
+    }
+    ASSERT_NO_FATAL_FAILURE(calendar_close());
+  }
+
+  void TearDown() override {
+    const auto entry=rs::util::Clock::now();if(admitted_) { EXPECT_TRUE(entry<window_end_); }
+    const auto cleanup_end=std::min(window_end_,entry+std::chrono::seconds{5});
+    if(table_owned_&&!unknown_completion_&&connected_&&!drop_attempted_) {
+      if(SQLFreeStmt(hstmt_,SQL_CLOSE)!=SQL_SUCCESS) { unknown_completion_=true; }
+      if(!unknown_completion_&&cap(cleanup_end,true)) {
+        drop_attempted_=true;
+        std::string text="DROP TABLE odbcpp_calendar_escape_scope";
+        if(known_sql(SQLExecDirect(hstmt_,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS))) { table_owned_=false; }
+      }
+    }
+    // Not the temporal suite's fixed DROP: exact selected owned TEMP only.
+    // Unknown completion suppresses every SQL/retry; session release is retained.
+    if(hstmt_) { EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,hstmt_));hstmt_=nullptr; }
+    if(hdbc_) {
+      if(connected_) { EXPECT_EQ(SQL_SUCCESS,SQLDisconnect(hdbc_)); }
+      EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,hdbc_));hdbc_=nullptr;
+    }
+    if(henv_) { EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_ENV,henv_));henv_=nullptr; }
+    if(table_owned_||unknown_completion_) { ADD_FAILURE() << "Calendar exact-session parent cleanup verification required"; }
+  }
+};
+
+TEST_F(RedshiftCalendarEscapeRealTest, DirectAnsiWideDateTimestampCalendarFieldsAndNullRecover) {
+  ASSERT_NO_FATAL_FAILURE(calendar_fixture());
+  const auto query="SELECT id,"
+      "{fn YEAR(d)},CAST(DATE_PART(year,d) AS INTEGER),{fn MONTH(d)},CAST(DATE_PART(month,d) AS INTEGER),{fn DAYOFMONTH(d)},CAST(DATE_PART(day,d) AS INTEGER),"
+      "{fn YEAR(t)},CAST(DATE_PART(year,t) AS INTEGER),{fn MONTH(t)},CAST(DATE_PART(month,t) AS INTEGER),{fn DAYOFMONTH(t)},CAST(DATE_PART(day,t) AS INTEGER) "
+      "FROM odbcpp_calendar_escape_scope ORDER BY id";
+  ASSERT_NO_FATAL_FAILURE(direct(query));
+  ASSERT_NO_FATAL_FAILURE(calendar_rows());
+  ASSERT_NO_FATAL_FAILURE(direct(query,true));
+  ASSERT_NO_FATAL_FAILURE(calendar_rows());
+  ASSERT_NO_FATAL_FAILURE(recovery());
+}
+TEST_F(RedshiftCalendarEscapeRealTest, PreparedDateLeapBoundaryNullRebindAndEarlyCloseRecover) {
+  ASSERT_NO_FATAL_FAILURE(calendar_fixture());
+  ASSERT_NO_FATAL_FAILURE(prepare_calendar());
+  ASSERT_NO_FATAL_FAILURE((calendar_execution(std::array<SQLINTEGER,3>{2024,2,29})));
+  date_={2023,12,31};
+  ASSERT_NO_FATAL_FAILURE((calendar_execution(std::array<SQLINTEGER,3>{2023,12,31})));
+  date_length_=SQL_NULL_DATA;
+  ASSERT_NO_FATAL_FAILURE(calendar_execution(std::nullopt));
+  date_={2000,1,1};date_length_=0;
+  ASSERT_NO_FATAL_FAILURE((calendar_execution(std::array<SQLINTEGER,3>{2000,1,1})));
+  date_={2024,2,29};
+  ASSERT_NO_FATAL_FAILURE((calendar_execution(std::array<SQLINTEGER,3>{2024,2,29},true)));
+  const auto snapshot=snapshot_;const auto last=native_;const auto length=native_length_;
+  ASSERT_NO_FATAL_FAILURE(recovery());
+  EXPECT_EQ(snapshot,snapshot_);EXPECT_EQ(length,native_length_);EXPECT_EQ(last.value,native_.value);
+  ASSERT_NO_FATAL_FAILURE(guards(native_));
+  ASSERT_NO_FATAL_FAILURE(guards(escaped_));
+}
+
+class RedshiftClockEscapeRealTest : public RedshiftLocateEscapeRealTest {
+ protected:
+  SQL_TIMESTAMP_STRUCT stamp_{2024,2,29,23,59,59,999999000};SQLLEN stamp_length_{};
+  std::array<SQLINTEGER,3> snapshot_{};
+  static constexpr std::size_t fixture_columns_=13,fixture_rows_=4,fixture_cells_=52;
+  static_assert(fixture_columns_*fixture_rows_==fixture_cells_);
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_CLOCK_ESCAPE_ADMISSION");
+    if(marker==nullptr) { GTEST_SKIP() << "Clock escape scope is not admitted"; }
+    ASSERT_TRUE(std::string_view(marker)=="clock-escapes-v1");
+    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    RedshiftRealTest::SetUp();if(HasFatalFailure()) { return; }
+    const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    ASSERT_TRUE(options.contains("DATABASE"));ASSERT_TRUE(options.contains("UID"));
+    ASSERT_EQ("odbcpp_pilot",options.at("DATABASE"));ASSERT_EQ("odbcpp_pilot_test",options.at("UID"));ASSERT_FALSE(options.contains("DSN"));
+    // Reject a configured insufficient bound before connect; never silently
+    // clip the thirteen-column/four-row/fifty-two-cell direct projection.
+    const rs::core::database::ResultLimits defaults{};
+    const auto limit=[&](const char* key,std::size_t fallback)->std::optional<std::size_t> {
+      const auto found=options.find(key);if(found==options.end()) { return fallback; }
+      std::size_t value{};const auto& text=found->second;
+      const auto result=std::from_chars(text.data(),text.data()+text.size(),value);
+      if(result.ec!=std::errc{}||result.ptr!=text.data()+text.size()) { return std::nullopt; }
+      return value;
+    };
+    const auto columns=limit("MAXCOLUMNS",defaults.max_columns_per_description);
+    const auto rows=limit("MAXROWS",defaults.max_rows);
+    const auto cells=limit("MAXCELLS",defaults.max_cells);
+    ASSERT_TRUE(columns);ASSERT_TRUE(rows);ASSERT_TRUE(cells);
+    ASSERT_GE(*columns,fixture_columns_);ASSERT_GE(*rows,fixture_rows_);ASSERT_GE(*cells,fixture_cells_);
+  }
+  void clock_fixture() {
+    ASSERT_NO_FATAL_FAILURE(connect_bounded());
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_MAX_ROWS,nullptr,0));
+    SQLULEN visible=97;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_MAX_ROWS,&visible,0,nullptr));ASSERT_EQ(static_cast<SQLULEN>(0),visible);
+    ASSERT_NO_FATAL_FAILURE(direct("CREATE TEMP TABLE odbcpp_clock_escape_scope (id INTEGER,tm TIME,ts TIMESTAMP)"));
+    table_owned_=true; // Confirmed CREATE success on exact session only.
+    ASSERT_NO_FATAL_FAILURE(direct("INSERT INTO odbcpp_clock_escape_scope VALUES "
+        "(1,TIME '23:59:59.999999',TIMESTAMP '2024-02-29 23:59:59.999999'),"
+        "(2,TIME '00:00:00.999999',TIMESTAMP '2023-12-31 00:00:00.999999'),"
+        "(3,TIME '12:08:43.101000',TIMESTAMP '2000-01-01 12:08:43.101000'),(4,NULL,NULL)"));
+  }
+  void clock_fetch(SQLRETURN expected) {
+    ASSERT_TRUE(cap(window_end_,true));const auto result=SQLFetch(hstmt_);
+    if(result!=expected) { unknown_completion_=true; }
+    ASSERT_EQ(expected,result);
+  }
+  void clock_close() { ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_))); }
+  void clock_rows() {
+    ASSERT_NO_FATAL_FAILURE(metadata(13));
+    const std::array<std::array<SQLINTEGER,3>,3> literal{{{{23,59,59}},{{0,0,0}},{{12,8,43}}}};
+    for(SQLINTEGER id=1;id<=4;++id) {
+      ASSERT_NO_FATAL_FAILURE(clock_fetch(SQL_SUCCESS));
+      ASSERT_NO_FATAL_FAILURE(integer(1,ordinal_,ordinal_length_));EXPECT_EQ(id,ordinal_.value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),ordinal_length_);
+      for(SQLUSMALLINT group=0;group<2;++group) {
+        for(SQLUSMALLINT part=0;part<3;++part) {
+          const auto expected=id<=3?std::optional<SQLINTEGER>{literal[static_cast<std::size_t>(id-1)][part]}:std::nullopt;
+          const auto escaped=static_cast<SQLUSMALLINT>(2+group*6+part*2);
+          ASSERT_NO_FATAL_FAILURE(pair(escaped,static_cast<SQLUSMALLINT>(escaped+1),expected));
+        }
+      }
+    }
+    ASSERT_NO_FATAL_FAILURE(clock_fetch(SQL_NO_DATA));
+    ASSERT_NO_FATAL_FAILURE(clock_close());
+  }
+  void prepare_clock() {
+    const std::string text="SELECT {fn HOUR(?)},{fn MINUTE(?)},{fn SECOND(?)},"
+        "CAST(FLOOR(EXTRACT(hour FROM ?)) AS INTEGER),CAST(FLOOR(EXTRACT(minute FROM ?)) AS INTEGER),CAST(FLOOR(EXTRACT(second FROM ?)) AS INTEGER) "
+        "FROM odbcpp_clock_escape_scope WHERE id=1";
+    std::vector<SQLWCHAR> wide;
+    for(const auto ch:text) { wide.push_back(static_cast<SQLWCHAR>(ch)); }
+    wide.push_back(0);ASSERT_TRUE(cap(window_end_,true));ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_,wide.data(),SQL_NTS)));
+    for(SQLUSMALLINT p=1;p<=6;++p) {
+      ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,p,SQL_PARAM_INPUT,SQL_C_TYPE_TIMESTAMP,SQL_TYPE_TIMESTAMP,26,6,&stamp_,sizeof(stamp_),&stamp_length_));
+    }
+  }
+  void clock_execution(std::optional<std::array<SQLINTEGER,3>> expected,bool early=false) {
+    const auto owning_stamp=stamp_;const auto owning_length=stamp_length_;
+    ASSERT_NO_FATAL_FAILURE(prepared_execute());
+    ASSERT_NO_FATAL_FAILURE(metadata(6));
+    ASSERT_NO_FATAL_FAILURE(clock_fetch(SQL_SUCCESS));
+    for(SQLUSMALLINT part=0;part<3;++part) {
+      ASSERT_NO_FATAL_FAILURE(pair(static_cast<SQLUSMALLINT>(part+1),static_cast<SQLUSMALLINT>(part+4),
+          expected?std::optional<SQLINTEGER>{(*expected)[part]}:std::nullopt));
+      if(native_length_!=SQL_NULL_DATA) { snapshot_[part]=native_.value; }
+    }
+    EXPECT_EQ(owning_stamp.year,stamp_.year);EXPECT_EQ(owning_stamp.month,stamp_.month);EXPECT_EQ(owning_stamp.day,stamp_.day);
+    EXPECT_EQ(owning_stamp.hour,stamp_.hour);EXPECT_EQ(owning_stamp.minute,stamp_.minute);EXPECT_EQ(owning_stamp.second,stamp_.second);EXPECT_EQ(owning_stamp.fraction,stamp_.fraction);EXPECT_EQ(owning_length,stamp_length_);
+    if(!early) {
+      ASSERT_NO_FATAL_FAILURE(clock_fetch(SQL_NO_DATA));
+    }
+    ASSERT_NO_FATAL_FAILURE(clock_close());
+  }
+
+  void TearDown() override {
+    const auto entry=rs::util::Clock::now();if(admitted_) { EXPECT_TRUE(entry<window_end_); }
+    const auto cleanup_end=std::min(window_end_,entry+std::chrono::seconds{5});
+    if(table_owned_&&!unknown_completion_&&connected_&&!drop_attempted_) {
+      if(SQLFreeStmt(hstmt_,SQL_CLOSE)!=SQL_SUCCESS) { unknown_completion_=true; }
+      if(!unknown_completion_&&cap(cleanup_end,true)) {
+        drop_attempted_=true;
+        std::string text="DROP TABLE odbcpp_clock_escape_scope";
+        if(known_sql(SQLExecDirect(hstmt_,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS))) { table_owned_=false; }
+      }
+    }
+    // Not the temporal suite's fixed DROP: exact selected owned TEMP only.
+    // Unknown completion suppresses every SQL/retry; session release is retained.
+    if(hstmt_) { EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,hstmt_));hstmt_=nullptr; }
+    if(hdbc_) {
+      if(connected_) { EXPECT_EQ(SQL_SUCCESS,SQLDisconnect(hdbc_)); }
+      EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,hdbc_));hdbc_=nullptr;
+    }
+    if(henv_) { EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_ENV,henv_));henv_=nullptr; }
+    if(table_owned_||unknown_completion_) { ADD_FAILURE() << "Clock exact-session parent cleanup verification required"; }
+  }
+};
+
+TEST_F(RedshiftClockEscapeRealTest, DirectAnsiWideTimeTimestampClockFieldsAndNullRecover) {
+  ASSERT_NO_FATAL_FAILURE(clock_fixture());
+  const auto query="SELECT id,"
+      "{fn HOUR(tm)},CAST(FLOOR(EXTRACT(hour FROM tm)) AS INTEGER),{fn MINUTE(tm)},CAST(FLOOR(EXTRACT(minute FROM tm)) AS INTEGER),{fn SECOND(tm)},CAST(FLOOR(EXTRACT(second FROM tm)) AS INTEGER),"
+      "{fn HOUR(ts)},CAST(FLOOR(EXTRACT(hour FROM ts)) AS INTEGER),{fn MINUTE(ts)},CAST(FLOOR(EXTRACT(minute FROM ts)) AS INTEGER),{fn SECOND(ts)},CAST(FLOOR(EXTRACT(second FROM ts)) AS INTEGER) "
+      "FROM odbcpp_clock_escape_scope ORDER BY id";
+  ASSERT_NO_FATAL_FAILURE(direct(query));
+  ASSERT_NO_FATAL_FAILURE(clock_rows());
+  ASSERT_NO_FATAL_FAILURE(direct(query,true));
+  ASSERT_NO_FATAL_FAILURE(clock_rows());
+  ASSERT_NO_FATAL_FAILURE(recovery());
+}
+TEST_F(RedshiftClockEscapeRealTest, PreparedTimestampFractionBoundaryNullRebindAndEarlyCloseRecover) {
+  ASSERT_NO_FATAL_FAILURE(clock_fixture());
+  ASSERT_NO_FATAL_FAILURE(prepare_clock());
+  ASSERT_NO_FATAL_FAILURE((clock_execution(std::array<SQLINTEGER,3>{23,59,59})));
+  stamp_={2023,12,31,0,0,0,999999000};
+  ASSERT_NO_FATAL_FAILURE((clock_execution(std::array<SQLINTEGER,3>{0,0,0})));
+  stamp_length_=SQL_NULL_DATA;
+  ASSERT_NO_FATAL_FAILURE(clock_execution(std::nullopt));
+  stamp_={2000,1,1,12,8,43,101000000};stamp_length_=0;
+  ASSERT_NO_FATAL_FAILURE((clock_execution(std::array<SQLINTEGER,3>{12,8,43})));
+  stamp_={2024,2,29,23,59,59,999999000};
+  ASSERT_NO_FATAL_FAILURE((clock_execution(std::array<SQLINTEGER,3>{23,59,59},true)));
+  const auto snapshot=snapshot_;const auto last=native_;const auto length=native_length_;
+  ASSERT_NO_FATAL_FAILURE(recovery());
+  EXPECT_EQ(snapshot,snapshot_);EXPECT_EQ(length,native_length_);EXPECT_EQ(last.value,native_.value);
+  ASSERT_NO_FATAL_FAILURE(guards(native_));
+  ASSERT_NO_FATAL_FAILURE(guards(escaped_));
+}
+
+// One separately admitted, same-carrier observation. This is not an ODBC FK
+// success substitute, and never logs credentials or arbitrary backend messages.
+class RedshiftForeignKeyObservationNativeRealTest : public RedshiftRealTest {
+protected:
+  rs::util::Deadline window_end_{};
+  std::optional<rs::core::database::postgres::PgDatabaseConnection> raw_session_;
+  std::size_t property_bytes_{};
+
+  void SetUp() override {
+    const char* marker = std::getenv("ODBCPP_REDSHIFT_FK_OBSERVATION_ADMISSION");
+    if (marker == nullptr) { GTEST_SKIP() << "FK observation scope is not admitted"; }
+    ASSERT_TRUE(std::string_view(marker) == "fk-owning-observation-v1");
+    window_end_ = rs::util::Clock::now() + std::chrono::seconds{60};
+    RedshiftRealTest::SetUp();
+    if (HasFatalFailure()) return;
+    using namespace rs::core::database;
+    const auto fields = rs::odbc::ConnectionString::parse(connection_string_);
+    ASSERT_FALSE(fields.contains("DSN"));
+    for (const auto* key : {"SERVER", "PORT", "DATABASE", "UID", "PWD", "SSLCAFILE"}) {
+      ASSERT_TRUE(fields.contains(key));
+      ASSERT_TRUE(!fields.at(key).empty() && fields.at(key).find('\0') == std::string::npos);
+    }
+    ASSERT_TRUE(fields.at("DATABASE") == "odbcpp_pilot");
+    ASSERT_TRUE(fields.at("UID") == "odbcpp_pilot_test");
+    unsigned port = 0;
+    const auto& text = fields.at("PORT");
+    ASSERT_TRUE(text.size() <= 5 && !text.empty() &&
+                text.find_first_not_of("0123456789") == std::string::npos);
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), port);
+    ASSERT_TRUE(parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() && port > 0 && port <= 65535);
+    for (const auto* key : {"MAXRESPONSEBYTES", "MAXRESPONSEMESSAGES", "MAXSTARTUPRESPONSEBYTES",
+        "MAXSTARTUPRESPONSEMESSAGES", "MAXROWS", "MAXCELLS", "MAXCOLUMNS", "MAXRESULTS",
+        "MAXMETADATAENTRIES", "MAXCOLUMNNAMEBYTES", "MAXMETADATANAMEBYTES", "MAXDIAGNOSTICBYTES",
+        "MAXSQLBYTES", "MAXPARAMETERS", "MAXPARAMETERBYTES", "MAXPARAMETERTOTALBYTES",
+        "MAXCONNECTIONFIELDBYTES", "MAXREQUESTWIREBYTES", "MAXSTARTUPWIREBYTES", "MAXAUTHWIREBYTES"}) {
+      ASSERT_TRUE(fields.contains(key));
+    }
+    ConnectionOptions options;
+    options.host = fields.at("SERVER"); options.port = static_cast<std::uint16_t>(port);
+    options.database = fields.at("DATABASE"); options.user = fields.at("UID");
+    options.password = fields.at("PWD"); options.use_ssl = true;
+    options.ssl_ca_file = fields.at("SSLCAFILE"); options.redshift_catalog_mode = "show";
+    rs::odbc::parse_resource_limits(fields, options);
+    ASSERT_EQ(1u, options.result_limits.max_results);
+    const auto limits = [](const auto& value) {
+      return std::array<std::size_t,20>{value.response_limits.max_wire_bytes, value.response_limits.max_messages,
+        value.startup_response_limits.max_wire_bytes, value.startup_response_limits.max_messages,
+        value.result_limits.max_rows, value.result_limits.max_cells, value.result_limits.max_columns_per_description,
+        value.result_limits.max_results, value.result_limits.max_metadata_entries, value.result_limits.max_column_name_bytes,
+        value.result_limits.max_metadata_name_bytes, value.result_limits.max_diagnostic_bytes,
+        value.input_limits.max_sql_bytes, value.input_limits.max_parameters, value.input_limits.max_parameter_bytes,
+        value.input_limits.max_parameter_total_bytes, value.input_limits.max_connection_field_bytes,
+        value.input_limits.max_request_wire_bytes, value.input_limits.max_startup_wire_bytes, value.input_limits.max_auth_wire_bytes};
+    };
+    const auto intended_limits = limits(options);
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(window_end_ - rs::util::Clock::now());
+    ASSERT_GT(remaining.count(), 0);
+    options.timeout = std::min(remaining, std::chrono::milliseconds{5000});
+    auto settings = configured_backend_provider().resolve_connection_options(std::move(options));
+    ASSERT_TRUE(settings);
+    ASSERT_TRUE(limits(*settings) == intended_limits);
+    ASSERT_TRUE(settings->use_ssl && settings->ssl_ca_file == fields.at("SSLCAFILE") &&
+                settings->host == fields.at("SERVER") && settings->port == port &&
+                settings->database == fields.at("DATABASE") && settings->user == fields.at("UID"));
+    raw_session_.emplace(nullptr, std::nullopt, rs::core::database::postgres::PgCatalogProfile::Redshift);
+    const auto remaining_before_connect = std::chrono::duration_cast<std::chrono::milliseconds>(window_end_ - rs::util::Clock::now());
+    ASSERT_GT(remaining_before_connect.count(), 0);
+    settings->timeout = std::min(remaining_before_connect, std::chrono::milliseconds{5000});
+    const auto connected = raw_session_->connect(*settings);
+    ASSERT_TRUE(connected);
+    const auto capability = raw_session_->get_parameter("show_discovery");
+    std::uint32_t version = 0;
+    ASSERT_TRUE(!capability.empty() && capability.size() <= 10 &&
+                capability.find_first_not_of("0123456789") == std::string::npos);
+    const auto parsed_version = std::from_chars(capability.data(), capability.data() + capability.size(), version);
+    ASSERT_TRUE(parsed_version.ec == std::errc{} && parsed_version.ptr == capability.data() + capability.size() && version >= 4);
+  }
+  void TearDown() override {
+    if (raw_session_) raw_session_->disconnect();
+    RedshiftRealTest::TearDown();
+  }
+  bool property(std::string key, std::string value) {
+    const auto cost = key.size() + value.size() + 64;
+    if (cost > 16384 - property_bytes_) {
+      ADD_FAILURE() << "FK observation exceeded its metadata property budget"; return false;
+    }
+    property_bytes_ += cost; RecordProperty(key, value); return true;
+  }
+  bool bytes(std::string key, std::string_view value) {
+    if (value.size() > 128) { ADD_FAILURE() << "FK observation metadata field exceeded128 bytes"; return false; }
+    constexpr char digits[] = "0123456789abcdef";
+    std::string hex; hex.reserve(value.size()*2);
+    for (const unsigned char byte : value) { hex.push_back(digits[byte>>4]); hex.push_back(digits[byte&15]); }
+    return property(std::move(key), std::move(hex));
+  }
+  bool type(std::string key, const rs::core::database::NativeTypeInfo& value) {
+    return property(key+"_k", value.known ? "1" : "0") &&
+      property(key+"_t", std::to_string(static_cast<int>(value.type))) &&
+      property(key+"_w", std::to_string(value.column_size)) &&
+      property(key+"_s", std::to_string(value.decimal_digits));
+  }
+};
+
+TEST_F(RedshiftForeignKeyObservationNativeRealTest, PreparedShowOwnsRawMetadataBeforeNormalization) {
+  using namespace rs::core::database;
+  using namespace rs::core::database::postgres;
+  ASSERT_TRUE(raw_session_.has_value());
+  const auto now = rs::util::Clock::now(); ASSERT_LT(now, window_end_);
+  const std::vector<QueryParameter> parameters{{"odbcpp_pilot", QueryParameterType::Unspecified},
+      {"odbcpp_fixture", QueryParameterType::Unspecified},
+      {"m2_catalog_child_20261003_c01", QueryParameterType::Unspecified}};
+  auto raw = raw_session_->execute_prepared("SHOW CONSTRAINTS FOREIGN KEYS FROM TABLE ?.?.?;",
+      parameters, std::min(window_end_, now + std::chrono::seconds{5}));
+  ASSERT_TRUE(property("fk_raw_ok", raw ? "1" : "0"));
+  const auto snapshot = raw.session_snapshot();
+  ASSERT_TRUE(property("fk_state", std::to_string(static_cast<int>(snapshot.state))));
+  ASSERT_TRUE(property("fk_disposition", std::to_string(static_cast<int>(snapshot.disposition))));
+  if (!raw) {
+    ASSERT_TRUE(property("fk_error_class", std::to_string(static_cast<int>(raw.backend_error().error_class))));
+    ASSERT_TRUE(property("fk_error_operation", std::to_string(static_cast<int>(raw.backend_error().operation))));
+    FAIL() << "Fixed preparedSHOW failed before FK normalization; see bounded properties";
+  }
+  ASSERT_TRUE(property("fk_columns", std::to_string(raw->columns.size())));
+  ASSERT_TRUE(property("fk_rows", std::to_string(raw->rows.size())));
+  ASSERT_TRUE(property("fk_affected", std::to_string(raw->affected_rows)));
+  ASSERT_TRUE(property("fk_extra", std::to_string(raw->additional_results.size())));
+  ASSERT_TRUE(property("fk_cell_errors", std::to_string(raw->cell_errors.size())));
+  ASSERT_TRUE(property("fk_error_present", raw->error ? "1" : "0"));
+  ASSERT_TRUE(property("fk_params", std::to_string(raw->normalized_parameter_types.size())));
+  ASSERT_TRUE(property("fk_statement", raw->statement_kind ? std::to_string(static_cast<int>(*raw->statement_kind)) : "absent"));
+  ASSERT_TRUE(property("fk_execution", raw->execution_result_shape ? std::to_string(static_cast<int>(*raw->execution_result_shape)) : "absent"));
+  ASSERT_EQ(14u, raw->columns.size()); ASSERT_EQ(2u, raw->rows.size());
+  ASSERT_LE(raw->normalized_parameter_types.size(), 3u);
+  for (std::size_t i=0; i<raw->columns.size(); ++i) {
+    const auto key = "fc"+std::to_string(i);
+    ASSERT_TRUE(bytes(key+"_n", raw->columns[i].name));
+    ASSERT_TRUE(property(key+"_p", raw->columns[i].normalized_type ? "1" : "0"));
+    if (raw->columns[i].normalized_type) ASSERT_TRUE(type(key, *raw->columns[i].normalized_type));
+  }
+  for (std::size_t row=0; row<raw->rows.size(); ++row) {
+    ASSERT_EQ(14u, raw->rows[row].size());
+    for (std::size_t column=0; column<raw->rows[row].size(); ++column) {
+      const auto key = "fr"+std::to_string(row)+"c"+std::to_string(column);
+      const auto& cell = raw->rows[row][column];
+      ASSERT_TRUE(property(key+"_null", cell ? "0" : "1"));
+      if (cell) { ASSERT_TRUE(property(key+"_len", std::to_string(cell->size()))); ASSERT_TRUE(bytes(key+"_v", *cell)); }
+    }
+  }
+  for (std::size_t i=0; i<raw->normalized_parameter_types.size(); ++i)
+    ASSERT_TRUE(type("fp"+std::to_string(i), raw->normalized_parameter_types[i]));
+  const QueryResult owned = *raw;
+  raw_session_->disconnect();
+  EXPECT_EQ(2u, owned.rows.size());
+  auto plan = redshift_foreign_key_plan(RedshiftForeignKeyDirection::Imported, std::nullopt,
+      RedshiftForeignKeyTable{"odbcpp_pilot", "odbcpp_fixture", "m2_catalog_child_20261003_c01"});
+  ASSERT_TRUE(plan);
+  auto normalized = normalize_redshift_foreign_keys(*plan, std::move(raw));
+  ASSERT_TRUE(property("fk_normalized", normalized ? "1" : "0"));
+  if (!normalized) ASSERT_TRUE(property("fk_normalize_class", std::to_string(static_cast<int>(normalized.backend_error().error_class))));
+  EXPECT_TRUE(normalized) << "Strict FK normalizer rejected the captured owning response";
+  if (normalized) EXPECT_EQ(2u, normalized->rows.size());
 }

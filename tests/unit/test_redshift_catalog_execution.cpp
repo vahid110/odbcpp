@@ -2,6 +2,8 @@
 #include <gtest/gtest.h>
 #include <array>
 #include <algorithm>
+#include <functional>
+#include "core/database/postgres/redshift_catalog_query.h"
 
 using namespace rs::core::database;
 using namespace rs::core::database::postgres;
@@ -27,6 +29,7 @@ class SpySession : public PgDatabaseConnection {
   std::string capability{"4"};
   QueryResult response{primary_keys()};
   std::optional<BackendError> failure;
+  std::function<void()> prepared_before_return;
   mutable unsigned capability_reads{0};
   mutable unsigned catalog_builds{0};
   unsigned prepared_calls{0}, direct_calls{0};
@@ -44,6 +47,7 @@ class SpySession : public PgDatabaseConnection {
       std::span<const QueryParameter> values, rs::util::Deadline deadline) override {
     ++prepared_calls; sql = query; parameters.assign(values.begin(), values.end());
     received_deadline = deadline;
+    if (prepared_before_return) prepared_before_return();
     if (failure) return *failure;
     return BackendResult<QueryResult>{response, snapshot};
   }
@@ -68,6 +72,7 @@ class CatalogWireTransport final : public rs::core::transport::ITransport {
   std::vector<std::vector<std::byte>> writes;
   std::vector<rs::util::Deadline> write_deadlines, read_deadlines;
   unsigned connects{0}, closes{0};
+  bool foreign_keys{false};
   rs::util::Result<void> connect(std::string_view, uint16_t,
       rs::util::Deadline) override {
     ++connects; input_.clear(); offset_ = 0;
@@ -79,11 +84,17 @@ class CatalogWireTransport final : public rs::core::transport::ITransport {
     std::vector<std::byte> parameters; integer(parameters, 3, 2);
     for (unsigned i = 0; i < 3; ++i) integer(parameters, 25, 4);
     frame('t', parameters); frame('2', {});
-    std::vector<std::byte> description; integer(description, 6, 2);
-    for (const auto* name : {"database_name", "schema_name", "table_name",
-                            "pk_name", "column_name", "key_seq"}) {
+    const std::vector<const char*> fields = foreign_keys ? std::vector<const char*>{
+        "deferrability", "pk_name", "fk_name", "delete_rule", "update_rule", "key_seq",
+        "fk_column_name", "fk_table_name", "fk_schema_name", "fk_database_name",
+        "pk_column_name", "pk_table_name", "pk_schema_name", "pk_database_name"} :
+        std::vector<const char*>{"database_name", "schema_name", "table_name", "pk_name", "column_name", "key_seq"};
+    std::vector<std::byte> description; integer(description, static_cast<uint32_t>(fields.size()), 2);
+    for (const auto* name : fields) {
       text(description, name); integer(description, 0, 4); integer(description, 0, 2);
-      const bool sequence = std::string_view(name) == "key_seq";
+      const bool sequence = std::string_view(name) == "key_seq" ||
+          (foreign_keys && (std::string_view(name) == "deferrability" ||
+           std::string_view(name) == "delete_rule" || std::string_view(name) == "update_rule"));
       integer(description, sequence ? 21 : 1043, 4);
       integer(description, sequence ? 2 : 65535, 2);
       integer(description, 0xffffffffu, 4); integer(description, 0, 2);
@@ -1245,8 +1256,9 @@ TEST(RedshiftCatalogExecutionTest, IdentifierGeneratedAlternativesNeverRetargetP
   ColumnsCatalogRequest columns{"db","s","t","c"};
   tables.name_matches.object = CatalogNameMatch::IdentifierQuoted;
   columns.name_matches.object = CatalogNameMatch::IdentifierQuoted;
-  EXPECT_FALSE(session.selects_catalog_request(tables));
-  EXPECT_FALSE(session.selects_catalog_request(columns));
+  EXPECT_TRUE(session.selects_catalog_request(tables));
+  EXPECT_TRUE(session.selects_catalog_request(columns));
+  session.capability = "3"; // Selected unavailable identifiers refuse without fallback.
   auto refused = session.execute_catalog(tables, rs::util::Deadline::max());
   EXPECT_TRUE(refused.has_error()); EXPECT_EQ(0u, session.direct_calls); EXPECT_EQ(0u, session.prepared_calls);
   auto keys = request(); keys.table = "TABLE'._%";
@@ -1277,4 +1289,382 @@ TEST(RedshiftCatalogExecutionTest, IdentifierScopedLegacyAndDefaultShowEnumerati
   keys.name_matches.foreign_catalog = CatalogNameMatch::IdentifierQuoted;
   auto bad = session.execute_catalog(keys, rs::util::Deadline::max());
   EXPECT_TRUE(bad.has_error()); EXPECT_EQ(1u, session.prepared_calls); EXPECT_EQ(0u, session.direct_calls);
+}
+
+namespace {
+// Literal native-shaped payloads, independent of the normalizer's output.
+QueryResult routine_identity() {
+  QueryResult r;r.columns={{"database_name",NativeTypeInfo{ScalarType::VarChar,2,0,true}}};
+  r.rows={{"db"}};r.statement_kind=StatementKind::SelectCursor;return r;
+}
+QueryResult routine_discovery(bool function,ResultRows rows) {
+  QueryResult r;
+  for(const auto* name:{"database_name","schema_name",function?"function_name":"procedure_name",
+      "number_of_arguments","argument_list","return_type","remarks"}) {
+    r.columns.push_back({name,NativeTypeInfo{std::string_view(name)=="number_of_arguments"?ScalarType::Integer:ScalarType::VarChar,64,0,true}});
+  }
+  r.rows=std::move(rows);r.statement_kind=StatementKind::Unknown;return r;
+}
+QueryResult routine_parameters(bool function,ResultRows rows) {
+  QueryResult r;
+  for(const auto* name:{"database_name","schema_name",function?"function_name":"procedure_name","parameter_name",
+      "ordinal_position","parameter_type","data_type","character_maximum_length","numeric_precision","numeric_scale"}) {
+    const bool number=std::string_view(name)=="ordinal_position" || std::string_view(name)=="character_maximum_length" ||
+        std::string_view(name)=="numeric_precision" || std::string_view(name)=="numeric_scale";
+    r.columns.push_back({name,NativeTypeInfo{number?ScalarType::Integer:ScalarType::VarChar,64,0,true}});
+  }
+  r.rows=std::move(rows);r.statement_kind=StatementKind::Unknown;return r;
+}
+class RoutineExecutionSession : public PgDatabaseConnection {
+ public:
+  RoutineExecutionSession():PgDatabaseConnection(std::make_unique<CatalogWireTransport>(),std::nullopt,PgCatalogProfile::Redshift){}
+  bool connected{true};SessionSnapshot snapshot{SessionState::Idle,SessionDisposition::Reusable};
+  std::string capability{"4"};std::vector<BackendResult<QueryResult>> replies;
+  std::vector<std::string> commands;std::vector<rs::util::Deadline> deadlines;
+  std::optional<RedshiftCatalogMode> mode;
+  std::function<void()> callback;
+  bool is_connected() const override{return connected;}
+  SessionState session_state() const override{return snapshot.state;}
+  RedshiftCatalogMode catalog_mode() const noexcept override{return mode.value_or(RedshiftCatalogMode::Show);}
+  std::string get_parameter(std::string_view name) const override{return name=="show_discovery"?capability:std::string{};}
+  BackendResult<QueryResult> execute_query(std::string_view query,rs::util::Deadline deadline) override {
+    commands.emplace_back(query);deadlines.push_back(deadline);
+    if(callback)callback();
+    if(replies.empty())return {rs::util::DbErrorCode::QueryFailed,"Unexpected routine fixture dispatch"};
+    auto result=std::move(replies.front());replies.erase(replies.begin());return result;
+  }
+  BackendResult<void> budgets(ResultLimits limits,ResponseLimits response={}) {
+    ConnectionSettings settings;settings.host="in-memory";settings.port=5439;settings.database="db";settings.user="fixture";
+    settings.use_ssl=false;settings.result_limits=limits;settings.response_limits=response;
+    // Configure the real owning budgets through a genuine disconnected startup;
+    // do not bypass the production already-open guard or its limit validation.
+    struct RestoreFlag {bool& flag;bool prior;~RestoreFlag(){flag=prior;}} restore{connected,connected};
+    connected=false;
+    return PgDatabaseConnection::connect_until(settings,rs::util::Deadline::max());
+  }
+  void discovery(ResultRows procedures,ResultRows functions={}) {
+    replies.emplace_back(routine_identity(),snapshot);
+    replies.emplace_back(routine_discovery(false,std::move(procedures)),snapshot);
+    replies.emplace_back(routine_discovery(true,std::move(functions)),snapshot);
+  }
+};
+}
+
+TEST(RedshiftRoutineExecution, ExactSchemaTypedUnknownDimensionsRefcursorAndReturnFirst) {
+  RoutineExecutionSession s;
+  s.discovery({{"db","s","cursor_proc","2","integer, refcursor","refcursor","owning"}},
+      {{"db","s","f","4","numeric, numeric, numeric, numeric","character varying",std::nullopt}});
+  s.replies.emplace_back(routine_parameters(false,{
+      {"db","s","cursor_proc","id","1","IN","integer",std::nullopt,"32","0"},
+      {"db","s","cursor_proc","cursor","2","INOUT","refcursor",std::nullopt,std::nullopt,std::nullopt},
+      {"db","s","cursor_proc","out","3","OUT","character varying","50",std::nullopt,std::nullopt}}),s.snapshot);
+  s.replies.emplace_back(routine_parameters(true,{
+      {"db","s","f","partial","2","IN","numeric",std::nullopt,"18",std::nullopt},
+      {"db","s","f","unknown","1","IN","numeric",std::nullopt,std::nullopt,std::nullopt},
+      {"db","s","f","scale_only","3","IN","numeric",std::nullopt,std::nullopt,"4"},
+      {"db","s","f","exact","4","IN","numeric",std::nullopt,"18","0"},
+      {"db","s","f","","0","RETURN","character varying","-1",std::nullopt,std::nullopt}}),s.snapshot);
+  const auto d=rs::util::Deadline::max();
+  auto result=s.execute_catalog(ProcedureColumnsCatalogRequest{std::nullopt,"s",std::nullopt,std::nullopt},d);
+  ASSERT_TRUE(result);ASSERT_EQ(19u,result->columns.size());ASSERT_EQ(8u,result->rows.size());
+  const std::vector<std::string> expected{"SELECT current_database() AS database_name",
+      "SHOW PROCEDURES FROM SCHEMA \"db\".\"s\";","SHOW FUNCTIONS FROM SCHEMA \"db\".\"s\";",
+      "SHOW PARAMETERS OF PROCEDURE \"db\".\"s\".\"cursor_proc\"(integer, refcursor);",
+      "SHOW PARAMETERS OF FUNCTION \"db\".\"s\".\"f\"(numeric, numeric, numeric, numeric);"};
+  EXPECT_EQ(expected,s.commands);for(const auto deadline:s.deadlines){EXPECT_EQ(d,deadline);}
+  EXPECT_EQ(ResultCell{"10"},result->rows[0][7]);EXPECT_EQ(ResultCell{"4"},result->rows[0][8]);
+  EXPECT_EQ(ResultCell{"0"},result->rows[1][5]);EXPECT_EQ(ResultCell{"refcursor"},result->rows[1][6]);EXPECT_FALSE(result->rows[1][7]);
+  EXPECT_EQ(ResultCell{"4"},result->rows[2][4]);EXPECT_EQ(ResultCell{"50"},result->rows[2][7]);
+  EXPECT_EQ(ResultCell{"5"},result->rows[3][4]);EXPECT_EQ(ResultCell{"0"},result->rows[3][17]);EXPECT_FALSE(result->rows[3][7]);
+  EXPECT_EQ(ResultCell{"2"},result->rows[4][5]);EXPECT_EQ(ResultCell{"numeric"},result->rows[4][6]);
+  EXPECT_FALSE(result->rows[4][7]);EXPECT_FALSE(result->rows[4][8]);EXPECT_FALSE(result->rows[4][9]);EXPECT_EQ(ResultCell{"10"},result->rows[4][10]);
+  EXPECT_EQ(ResultCell{"18"},result->rows[5][7]);EXPECT_EQ(ResultCell{"20"},result->rows[5][8]);EXPECT_FALSE(result->rows[5][9]);
+  EXPECT_FALSE(result->rows[6][7]);EXPECT_FALSE(result->rows[6][8]);EXPECT_EQ(ResultCell{"4"},result->rows[6][9]);
+  EXPECT_EQ(ResultCell{"18"},result->rows[7][7]);EXPECT_EQ(ResultCell{"20"},result->rows[7][8]);EXPECT_EQ(ResultCell{"0"},result->rows[7][9]);
+  EXPECT_EQ(ResultCell{"10"},result->rows[7][10]);
+}
+
+TEST(RedshiftRoutineExecution, IdentifierPatternsOverloadsEmptyAndUnsupportedPaths) {
+  for(const auto& input:std::vector<CatalogRequest>{ProceduresCatalogRequest{std::nullopt,std::nullopt,std::nullopt},
+      ProceduresCatalogRequest{std::nullopt,"s%",std::nullopt}}) {
+    RoutineExecutionSession s;EXPECT_TRUE(s.selects_catalog_request(input));
+    const auto result=s.execute_catalog(input,rs::util::Deadline::max());ASSERT_FALSE(result);
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature),result.error());EXPECT_TRUE(s.commands.empty());
+  }
+  RoutineExecutionSession empty;auto result=empty.execute_catalog(ProceduresCatalogRequest{std::nullopt,"",std::nullopt},rs::util::Deadline::max());
+  ASSERT_TRUE(result);EXPECT_EQ(8u,result->columns.size());EXPECT_TRUE(result->rows.empty());EXPECT_TRUE(empty.commands.empty());
+  RoutineExecutionSession mismatch;mismatch.replies.emplace_back(routine_identity(),mismatch.snapshot);
+  result=mismatch.execute_catalog(ProceduresCatalogRequest{"elsewhere","s",std::nullopt},rs::util::Deadline::max());
+  ASSERT_TRUE(result);EXPECT_TRUE(result->rows.empty());EXPECT_EQ(1u,mismatch.commands.size());
+  RoutineExecutionSession s;s.discovery({{"db","s_%","p","1","integer",std::nullopt,"first"},
+      {"db","s_%","p","1","numeric",std::nullopt,"second"}});
+  result=s.execute_catalog(ProceduresCatalogRequest{std::nullopt,"s\\_\\%","p"},rs::util::Deadline::max());
+  ASSERT_TRUE(result);ASSERT_EQ(2u,result->rows.size());EXPECT_EQ(ResultCell{"first"},result->rows[0][6]);EXPECT_EQ(ResultCell{"second"},result->rows[1][6]);
+  EXPECT_EQ("SHOW PROCEDURES FROM SCHEMA \"db\".\"s_%\";",s.commands[1]);
+  for(int control=0;control<3;++control) {
+    RoutineExecutionSession refused;
+    if(control==0)refused.mode=RedshiftCatalogMode::Legacy;
+    if(control==1)refused.capability="3";
+    if(control==2)refused.snapshot.state=SessionState::Transaction;
+    EXPECT_FALSE(refused.execute_catalog(ProceduresCatalogRequest{std::nullopt,"s",std::nullopt},rs::util::Deadline::max()));
+    EXPECT_TRUE(refused.commands.empty());
+  }
+}
+
+TEST(RedshiftRoutineExecution, SignatureDuplicateForeignBudgetAndTimeoutFailUnpublished) {
+  for(int malformed=0;malformed<3;++malformed) {
+    RoutineExecutionSession s;
+    ResultRows rows{{"db","s","p","1","integer",std::nullopt,"same"}};
+    if(malformed==0)rows[0][4]="integer); SELECT secret";
+    if(malformed==1)rows.push_back({"db","s","p","1","integer",std::nullopt,"different"});
+    if(malformed==2)rows[0][0]="foreign";
+    s.discovery(std::move(rows));
+    const auto result=s.execute_catalog(ProcedureColumnsCatalogRequest{std::nullopt,"s",std::nullopt,std::nullopt},rs::util::Deadline::max());
+    ASSERT_FALSE(result);EXPECT_EQ(2u,s.commands.size());EXPECT_EQ(BackendErrorClass::InvalidMetadata,result.backend_error().error_class);
+  }
+  RoutineExecutionSession limited;ResultLimits limits;limits.max_results=2;ASSERT_TRUE(limited.budgets(limits));
+  EXPECT_FALSE(limited.execute_catalog(ProceduresCatalogRequest{std::nullopt,"s",std::nullopt},rs::util::Deadline::max()));EXPECT_TRUE(limited.commands.empty());
+  RoutineExecutionSession fanout;limits.max_results=3;ASSERT_TRUE(fanout.budgets(limits));
+  fanout.discovery({{"db","s","p","0","",std::nullopt,std::nullopt}});
+  const auto result=fanout.execute_catalog(ProcedureColumnsCatalogRequest{std::nullopt,"s",std::nullopt,std::nullopt},rs::util::Deadline::max());
+  ASSERT_FALSE(result);EXPECT_EQ(3u,fanout.commands.size());EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),result.error());
+  for(int bound=0;bound<3;++bound) {
+    RoutineExecutionSession capped;ResultLimits local;ResponseLimits response;
+    if(bound==0)local.max_rows=1;
+    if(bound==1)local.max_cells=7;
+    if(bound==2)response.max_wire_bytes=32;
+    ASSERT_TRUE(capped.budgets(local,response));
+    capped.discovery({{"db","s","p","0","",std::nullopt,"retained"}});
+    const auto refusal=capped.execute_catalog(ProceduresCatalogRequest{std::nullopt,"s",std::nullopt},rs::util::Deadline::max());
+    ASSERT_FALSE(refusal);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),refusal.error());
+    EXPECT_LE(capped.commands.size(),2u);
+  }
+  RoutineExecutionSession expired;const auto timeout=expired.execute_catalog(ProceduresCatalogRequest{std::nullopt,"s",std::nullopt},rs::util::Clock::now()-std::chrono::seconds{1});
+  ASSERT_FALSE(timeout);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout),timeout.error());EXPECT_TRUE(expired.commands.empty());
+}
+
+TEST(RedshiftRoutineExecution, OwningFailureCloseRefillAndParameterValidationPreserveOriginalDeadline) {
+  RoutineExecutionSession s;s.discovery({{"db","s","p","0","",std::nullopt,"original"}});
+  auto result=s.execute_catalog(ProceduresCatalogRequest{std::nullopt,"s",std::nullopt},rs::util::Deadline::max());
+  ASSERT_TRUE(result);ASSERT_EQ(1u,result->rows.size());const auto snapshot=*result;
+  BackendError denied{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),"owned native denial"};
+  denied.native_state="42501";denied.operation=BackendOperation::ExecuteCatalog;denied.session_state=SessionState::Idle;denied.disposition=SessionDisposition::Reusable;
+  s.replies.clear();s.replies.emplace_back(denied);
+  result=s.execute_catalog(ProceduresCatalogRequest{std::nullopt,"s",std::nullopt},rs::util::Deadline::max());
+  ASSERT_FALSE(result);EXPECT_EQ("42501",result.backend_error().native_state);EXPECT_EQ("owned native denial",result.error_message());
+  EXPECT_EQ(ResultCell{"original"},snapshot.rows[0][6]);
+  s.replies.clear();s.discovery({{"db","s","p","0","",std::nullopt,"refilled"}});
+  result=s.execute_catalog(ProceduresCatalogRequest{std::nullopt,"s",std::nullopt},rs::util::Deadline::max());ASSERT_TRUE(result);
+  EXPECT_EQ(ResultCell{"refilled"},result->rows[0][6]);EXPECT_EQ(ResultCell{"original"},snapshot.rows[0][6]);
+  RoutineExecutionSession dimensions;dimensions.discovery({},{{"db","s","f","1","numeric","numeric",std::nullopt}});
+  dimensions.replies.emplace_back(routine_parameters(true,{{"db","s","f","x","1","IN","numeric",std::nullopt,"2","3"}}),dimensions.snapshot);
+  const auto finite=rs::util::make_deadline(std::chrono::seconds{5});
+  const auto invalid=dimensions.execute_catalog(ProcedureColumnsCatalogRequest{std::nullopt,"s",std::nullopt,std::nullopt},finite);
+  for(const auto d:dimensions.deadlines){EXPECT_EQ(finite,d);}
+  ASSERT_FALSE(invalid);EXPECT_EQ(BackendErrorClass::InvalidMetadata,invalid.backend_error().error_class);
+  for(int malformed=0;malformed<4;++malformed) {
+    RoutineExecutionSession bad;bad.discovery({},{{"db","s","f","1","integer","integer",std::nullopt}});
+    auto parameters=routine_parameters(true,{{"db","s","f","x","1","IN","integer",std::nullopt,"32","0"}});
+    if(malformed==0)parameters.rows[0][4]="0";
+    if(malformed==1)parameters.rows[0][5]="INVALID";
+    if(malformed==2)parameters.columns[0].name="wrong_header";
+    if(malformed==3)parameters.rows[0][2]="foreign";
+    bad.replies.emplace_back(std::move(parameters),bad.snapshot);
+    const auto rejected=bad.execute_catalog(ProcedureColumnsCatalogRequest{std::nullopt,"s",std::nullopt,std::nullopt},finite);
+    ASSERT_FALSE(rejected);EXPECT_EQ(BackendErrorClass::InvalidMetadata,rejected.backend_error().error_class);EXPECT_EQ(4u,bad.commands.size());
+  }
+}
+
+
+namespace {
+ForeignKeysCatalogRequest imported_request() {
+  return {std::nullopt, std::nullopt, std::nullopt, "db", "s", "child"};
+}
+QueryResult foreign_key_response() {
+  QueryResult r;
+  const std::array<const char*,14> names{"pk_database_name","pk_schema_name","pk_table_name","pk_column_name",
+      "fk_database_name","fk_schema_name","fk_table_name","fk_column_name","key_seq","update_rule",
+      "delete_rule","fk_name","pk_name","deferrability"};
+  for (std::size_t i=0;i<names.size();++i) {
+    const bool small=i==8 || i==9 || i==10 || i==13;
+    r.columns.push_back({names[i],NativeTypeInfo{small?ScalarType::SmallInt:ScalarType::VarChar,0,0,true}});
+  }
+  r.normalized_parameter_types.assign(3,NativeTypeInfo{ScalarType::VarChar,0,0,true});
+  r.rows={{"db","s","z_parent","b","db","s","child","rb","2",std::nullopt,std::nullopt,"fk_z",std::nullopt,std::nullopt},
+      {"db","s","a_parent","a","db","s","child","ra","1",std::nullopt,std::nullopt,"fk_a","pk_a",std::nullopt},
+      {"db","s","z_parent","a","db","s","child","ra","1",std::nullopt,std::nullopt,"fk_z",std::nullopt,std::nullopt}};
+  std::reverse(r.columns.begin(),r.columns.end());
+  for (auto& row:r.rows) {std::reverse(row.begin(),row.end());}
+  return r;
+}
+}
+TEST(RedshiftForeignKeyExecution, ImportedExportedBothUseOneOwningPreparedShowAndOdbcOrder) {
+  const auto deadline=rs::util::make_deadline(std::chrono::seconds{2});
+  for (unsigned direction=0;direction<3;++direction) {
+    SpySession spy;spy.response=foreign_key_response();auto input=imported_request();
+    if (direction!=0) {input.primary_catalog="db";input.primary_schema="s";input.primary_table="z_parent";}
+    if (direction==1) {
+      input.foreign_catalog.reset();input.foreign_schema.reset();input.foreign_table.reset();
+      // Exported response is restricted to the selected primary, but spans foreign groups.
+      spy.response.rows[0][7]="z_child";spy.response.rows[2][7]="z_child";
+      spy.response.rows[1][7]="a_child";spy.response.rows[1][11]="z_parent";
+    }
+    ASSERT_TRUE(spy.selects_catalog_request(input));
+    auto result=spy.execute_catalog(input,deadline);ASSERT_TRUE(result);
+    ASSERT_EQ(1u,spy.prepared_calls);EXPECT_EQ(0u,spy.direct_calls);EXPECT_EQ(0u,spy.catalog_builds);
+    EXPECT_EQ(direction==1?"SHOW CONSTRAINTS FOREIGN KEYS EXPORTED FROM TABLE ?.?.?;":
+        "SHOW CONSTRAINTS FOREIGN KEYS FROM TABLE ?.?.?;",spy.sql);
+    ASSERT_EQ(3u,spy.parameters.size());EXPECT_EQ("db",spy.parameters[0].value);EXPECT_EQ("s",spy.parameters[1].value);
+    EXPECT_EQ(direction==1?"z_parent":"child",spy.parameters[2].value);
+    for (const auto& value:spy.parameters) {EXPECT_EQ(QueryParameterType::Unspecified,value.type);}
+    EXPECT_EQ(deadline,spy.received_deadline);ASSERT_EQ(14u,result->columns.size());
+    ASSERT_EQ(direction==2?2u:3u,result->rows.size());
+    EXPECT_EQ(direction==0?"a_parent":"z_parent",result->rows[0][2]);
+    EXPECT_EQ(direction==1?"a_child":"child",result->rows[0][6]);
+    EXPECT_EQ("1",result->rows[0][8]);EXPECT_EQ("3",result->rows[0][9]);EXPECT_EQ("7",result->rows[0][13]);
+    EXPECT_EQ("2",result->rows.back()[8]);EXPECT_TRUE(result->normalized_parameter_types.empty());
+    spy.response.rows.clear();spy.connected=false;EXPECT_EQ("ra",result->rows[0][7]);
+  }
+}
+TEST(RedshiftForeignKeyExecution, PassiveSelectionRefusesUnavailableExactInputsBeforeIoThenRecovers) {
+  for (unsigned variant=0;variant<11;++variant) {
+    SpySession spy;auto input=imported_request();spy.response=foreign_key_response();
+    if (variant==0) spy.mode=RedshiftCatalogMode::Legacy;
+    if (variant==1) spy.capability="3";
+    if (variant==2) spy.capability="+4";
+    if (variant==3) spy.capability.clear();
+    if (variant==4) spy.snapshot={SessionState::Transaction,SessionDisposition::ResetRequired};
+    if (variant==5) spy.snapshot={SessionState::Unknown,SessionDisposition::Retire};
+    if (variant==6) input.foreign_catalog.reset();
+    if (variant==7) input.foreign_schema="";
+    if (variant==8) input.foreign_table="";
+    if (variant==9) input.foreign_table=std::string("bad\0name",8);
+    if (variant==10) input.name_matches.member=CatalogNameMatch::IdentifierQuoted;
+    EXPECT_TRUE(spy.selects_catalog_request(input));auto refused=spy.execute_catalog(input,rs::util::Deadline::max());
+    ASSERT_FALSE(refused);no_execution(spy);
+    EXPECT_EQ(rs::util::make_error_code(variant>=9?rs::util::DbErrorCode::InvalidParameter:
+        rs::util::DbErrorCode::UnsupportedFeature),refused.error());
+    spy.mode=RedshiftCatalogMode::Show;spy.capability="4";spy.snapshot={SessionState::Idle,SessionDisposition::Reusable};
+    auto repaired=spy.execute_catalog(imported_request(),rs::util::Deadline::max());ASSERT_TRUE(repaired);EXPECT_EQ(1u,spy.prepared_calls);
+  }
+  SpySession pg(PgCatalogProfile::PostgreSQL);EXPECT_FALSE(pg.selects_catalog_request(imported_request()));
+  auto refused=pg.execute_catalog(imported_request(),rs::util::Deadline::max());ASSERT_FALSE(refused);no_execution(pg);
+}
+TEST(RedshiftForeignKeyExecution, AllGroupsValidateBeforeBothFilterAndNativeFailureRemainsOwning) {
+  SpySession spy;spy.response=foreign_key_response();auto input=imported_request();
+  input.primary_catalog="db";input.primary_schema="s";input.primary_table="never_match";
+  spy.response.rows[0][5]="0"; // Reversed native header: KEY_SEQ at index5.
+  auto malformed=spy.execute_catalog(input,rs::util::Deadline::max());ASSERT_FALSE(malformed);
+  EXPECT_EQ(BackendErrorClass::InvalidMetadata,malformed.backend_error().error_class);EXPECT_EQ(1u,spy.prepared_calls);
+  BackendError denied{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),"owning denied"};
+  denied.native_state="42501";denied.operation=BackendOperation::ExecuteCatalog;
+  denied.session_state=SessionState::Idle;denied.disposition=SessionDisposition::Reusable;spy.failure=denied;
+  auto failed=spy.execute_catalog(imported_request(),rs::util::Deadline::max());ASSERT_FALSE(failed);
+  spy.failure->message="mutated";EXPECT_EQ("owning denied",failed.error_message());EXPECT_EQ("42501",failed.backend_error().native_state);
+  spy.failure.reset();spy.response=foreign_key_response();auto recovered=spy.execute_catalog(imported_request(),rs::util::Deadline::max());ASSERT_TRUE(recovered);
+  SpySession expired;auto no_result=expired.execute_catalog(imported_request(),rs::util::Clock::now());ASSERT_FALSE(no_result);no_execution(expired);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout),no_result.error());
+}
+TEST(RedshiftForeignKeyExecution, RealPreparedWireCarriesThreeTextInputsAndReorderedFourteenColumns) {
+  for (bool exported:{false,true}) {
+    auto transport=std::make_unique<CatalogWireTransport>();auto* wire=transport.get();wire->foreign_keys=true;
+    PgDatabaseConnection session(std::move(transport),std::nullopt,PgCatalogProfile::Redshift);
+    ConnectionSettings settings;settings.host="in-memory.invalid";settings.port=5439;settings.database="db";
+    settings.user="fixture";settings.use_ssl=false;ASSERT_TRUE(session.connect(settings));
+    auto input=imported_request();
+    if (exported) {input={"db","s","parent",std::nullopt,std::nullopt,std::nullopt};}
+    const auto deadline=rs::util::make_deadline(std::chrono::seconds{2});const auto reads=wire->read_deadlines.size();
+    auto result=session.execute_catalog(input,deadline);ASSERT_TRUE(result);ASSERT_EQ(14u,result->columns.size());
+    EXPECT_TRUE(result->rows.empty());EXPECT_TRUE(result->normalized_parameter_types.empty());ASSERT_EQ(2u,wire->writes.size());
+    const auto& packet=wire->writes[1];ASSERT_GE(packet.size(),8u);ASSERT_EQ(std::byte{'P'},packet[0]);
+    const auto tags=catalog_packet_tags(packet);ASSERT_TRUE(tags);EXPECT_EQ("PDBDES",*tags);
+    const auto end=std::find(packet.begin()+6,packet.end(),std::byte{0});ASSERT_NE(packet.end(),end);
+    std::string sql;for(auto it=packet.begin()+6;it!=end;++it){sql.push_back(static_cast<char>(*it));}
+    EXPECT_EQ(exported?"SHOW CONSTRAINTS FOREIGN KEYS EXPORTED FROM TABLE $1.$2.$3;":
+        "SHOW CONSTRAINTS FOREIGN KEYS FROM TABLE $1.$2.$3;",sql);
+    EXPECT_EQ(deadline,wire->write_deadlines[1]);
+    for(std::size_t i=reads;i<wire->read_deadlines.size();++i){EXPECT_EQ(deadline,wire->read_deadlines[i]);}
+    session.disconnect();EXPECT_EQ(1u,wire->closes);EXPECT_EQ("PKTABLE_CAT",result->columns[0].name);
+  }
+}
+TEST(RedshiftIdentifierShow, TablesAndColumnsMatchEscapedLiteralRouteWithoutMutatingNamesOrDimensions) {
+  const auto deadline=rs::util::make_deadline(std::chrono::seconds{2});
+  const std::string schema="s_%\\表",table="t_%\\表",column="c_%\\表";
+  TablesCatalogRequest identifier{TablesCatalogRequest::Mode::Tables,"selected",schema,table,std::nullopt};
+  identifier.name_matches.schema=CatalogNameMatch::IdentifierQuoted;identifier.name_matches.object=CatalogNameMatch::IdentifierQuoted;
+  SchemaSpy exact,pattern;exact.show=tables_response("selected",schema);exact.show.rows.resize(1);exact.show.rows[0][2]=table;
+  pattern.show=exact.show;
+  for(auto& metadata:exact.show.columns){metadata.normalized_type->column_size=65535;}
+  pattern.show=exact.show;
+  auto lowered=redshift_identifier_show_request(CatalogRequest{identifier});ASSERT_TRUE(lowered);
+  auto left=exact.execute_catalog(identifier,deadline),right=pattern.execute_catalog(*lowered,deadline);
+  ASSERT_TRUE(left);ASSERT_TRUE(right);EXPECT_EQ(left->rows,right->rows);EXPECT_EQ(5u,left->columns.size());
+  for(std::size_t i=0;i<left->columns.size();++i){EXPECT_EQ(left->columns[i].normalized_type->column_size,right->columns[i].normalized_type->column_size);EXPECT_EQ(65535u,left->columns[i].normalized_type->column_size);}
+  EXPECT_EQ(exact.queries,pattern.queries);EXPECT_EQ(schema,identifier.schema);EXPECT_EQ(table,identifier.table);
+  EXPECT_EQ("SHOW TABLES FROM SCHEMA \"selected\".\"s_%\\表\";",exact.queries[1]);
+  ColumnsCatalogRequest cols{"selected",schema,table,column};cols.name_matches.schema=CatalogNameMatch::IdentifierQuoted;
+  cols.name_matches.object=CatalogNameMatch::IdentifierQuoted;cols.name_matches.member=CatalogNameMatch::IdentifierQuoted;
+  SchemaSpy cexact,cpattern;cexact.show=columns_response("selected",schema,table);cexact.show.rows.resize(1);cexact.show.rows[0][3]=column;cpattern.show=cexact.show;
+  auto clowered=redshift_identifier_show_request(CatalogRequest{cols});ASSERT_TRUE(clowered);
+  auto cleft=cexact.execute_catalog(cols,deadline),cright=cpattern.execute_catalog(*clowered,deadline);ASSERT_TRUE(cleft);ASSERT_TRUE(cright);
+  EXPECT_EQ(cleft->rows,cright->rows);ASSERT_EQ(18u,cleft->columns.size());
+  for(std::size_t i=0;i<cleft->columns.size();++i){EXPECT_EQ(cleft->columns[i].normalized_type->column_size,cright->columns[i].normalized_type->column_size);}
+  EXPECT_EQ(cexact.queries,cpattern.queries);EXPECT_EQ(column,cols.column);EXPECT_EQ(0u,cexact.catalog_builds);
+}
+TEST(RedshiftIdentifierShow, UnsupportedIdentityModesAndNonmatchingFiltersNeverFallback) {
+  TablesCatalogRequest input{TablesCatalogRequest::Mode::Tables,"selected","fixture","absent",std::nullopt};
+  input.name_matches.object=CatalogNameMatch::IdentifierQuoted;
+  for(unsigned variant=0;variant<5;++variant){SchemaSpy spy;auto names=input;
+    if(variant==0)spy.mode=RedshiftCatalogMode::Legacy;if(variant==1)spy.capability="3";
+    if(variant==2)names.schema.reset();if(variant==3)names.schema="";
+    if(variant==4)spy.snapshot={SessionState::Transaction,SessionDisposition::ResetRequired};
+    EXPECT_TRUE(spy.selects_catalog_request(names));auto result=spy.execute_catalog(names,rs::util::Deadline::max());ASSERT_FALSE(result);no_execution(spy);
+  }
+  SchemaSpy empty;empty.show=tables_response();auto result=empty.execute_catalog(input,rs::util::Deadline::max());ASSERT_TRUE(result);EXPECT_TRUE(result->rows.empty());EXPECT_EQ(5u,result->columns.size());
+}
+
+TEST(RedshiftForeignKeyExecution, OriginalDeadlineAlsoBoundsReturnedNormalizationWithoutRetry) {
+  SpySession late;late.response=foreign_key_response();
+  const auto deadline=rs::util::make_deadline(std::chrono::milliseconds{5});
+  late.prepared_before_return=[deadline]{while(rs::util::Clock::now()<deadline){std::this_thread::yield();}};
+  auto refused=late.execute_catalog(imported_request(),deadline);ASSERT_FALSE(refused);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout),refused.error());
+  EXPECT_EQ(1u,late.prepared_calls);EXPECT_EQ(deadline,late.received_deadline);EXPECT_EQ(0u,late.direct_calls);
+  SpySession native;native.response=foreign_key_response();
+  BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),"owning native first"};
+  error.native_state="42501";error.session_state=SessionState::Idle;error.disposition=SessionDisposition::Reusable;
+  native.failure=error;const auto original=rs::util::make_deadline(std::chrono::milliseconds{5});
+  native.prepared_before_return=[original]{while(rs::util::Clock::now()<original){std::this_thread::yield();}};
+  auto failed=native.execute_catalog(imported_request(),original);ASSERT_FALSE(failed);
+  EXPECT_EQ("42501",failed.backend_error().native_state);EXPECT_EQ("owning native first",failed.error_message());
+  EXPECT_EQ(1u,native.prepared_calls);EXPECT_EQ(0u,native.direct_calls);
+}
+
+TEST(RedshiftForeignKeyExecution, QuotedUnicodeLiteralNamesAndUnquotedAsciiFoldAreNeverPatterns) {
+  for (bool quoted:{false,true}) {
+    SpySession spy;spy.response=foreign_key_response();auto input=imported_request();
+    input.foreign_catalog="DB";input.foreign_schema="S_%\\表";
+    input.foreign_table=quoted?"Child_%\\表":"CHILD_%\\表";
+    const auto match=quoted?CatalogNameMatch::IdentifierQuoted:CatalogNameMatch::IdentifierUnquoted;
+    input.name_matches.foreign_catalog=match;input.name_matches.foreign_schema=match;input.name_matches.foreign_object=match;
+    const std::string database=quoted?"DB":"db",schema=quoted?"S_%\\表":"s_%\\表",table=quoted?"Child_%\\表":"child_%\\表";
+    for(auto& row:spy.response.rows){row[9]=database;row[8]=schema;row[7]=table;}
+    auto result=spy.execute_catalog(input,rs::util::Deadline::max());ASSERT_TRUE(result);
+    ASSERT_EQ(3u,spy.parameters.size());EXPECT_EQ(database,spy.parameters[0].value);EXPECT_EQ(schema,spy.parameters[1].value);EXPECT_EQ(table,spy.parameters[2].value);
+    EXPECT_EQ("DB",input.foreign_catalog);EXPECT_EQ("S_%\\表",input.foreign_schema);
+    ASSERT_EQ(3u,result->rows.size());EXPECT_EQ(table,result->rows[0][6]);
+  }
+}
+
+TEST(RedshiftForeignKeyExecution, NativeDescriptionLimitsRefuseBeforeAnyCatalogPublication) {
+  auto transport=std::make_unique<CatalogWireTransport>();auto* wire=transport.get();wire->foreign_keys=true;
+  PgDatabaseConnection session(std::move(transport),std::nullopt,PgCatalogProfile::Redshift);
+  ConnectionSettings settings;settings.host="in-memory.invalid";settings.port=5439;
+  settings.database="db";settings.user="fixture";settings.use_ssl=false;
+  settings.result_limits.max_columns_per_description=13;
+  ASSERT_TRUE(session.connect(settings));
+  auto result=session.execute_catalog(imported_request(),rs::util::make_deadline(std::chrono::seconds{2}));
+  ASSERT_FALSE(result);ASSERT_EQ(2u,wire->writes.size());
+  EXPECT_EQ(SessionDisposition::Retire,result.session_snapshot().disposition);
+  session.disconnect();EXPECT_FALSE(session.is_connected());
 }

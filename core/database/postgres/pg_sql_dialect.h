@@ -4,7 +4,10 @@
 
 namespace rs::core::database::postgres {
 
-// Translates ODBC escapes using PostgreSQL syntax and lexical rules.
-SqlTranslationResult translate_odbc_sql(std::string_view sql);
+enum class SqlDialectProfile { PostgreSql, Redshift };
+
+// Native spelling is backend-owned; default preserves PostgreSQL source callers.
+SqlTranslationResult translate_odbc_sql(std::string_view sql,
+    SqlDialectProfile profile = SqlDialectProfile::PostgreSql);
 
 } // namespace rs::core::database::postgres

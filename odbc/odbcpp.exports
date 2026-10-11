@@ -76,3 +76,6 @@ SQLStatisticsW
 SQLTables
 SQLTablesW
 SQLCancel
+SQLParamData
+SQLPutData
+SQLBulkOperations

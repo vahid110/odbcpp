@@ -796,10 +796,18 @@ ParsedQueryResult PgProtocolParser::extract_query_result(
   std::vector<ParsedQueryResult> completed;
   bool has_row_description = false;
   bool bind_complete_since_description = false;
+  bool extended_execution = false;
+  bool saw_bind_complete = false;
+  std::optional<ExecutionResultShape> phase_shape;
 
   for (const auto& message : messages) {
     const std::span<const std::byte> payload(message.payload);
-    if (message.tag == 'T') { // RowDescription
+    if (message.tag == '1') { // ParseComplete marks an extended response, not execution authority.
+      if (saw_bind_complete)
+        throw std::runtime_error("PostgreSQL ParseComplete after bound portal description");
+      if (!payload.empty()) throw std::runtime_error("invalid PostgreSQL ParseComplete");
+      extended_execution = true;
+    } else if (message.tag == 'T') { // RowDescription
       // Describing a prepared statement and then its bound portal can produce
       // two descriptions before execution; only the portal one describes rows.
       if (has_row_description &&
@@ -839,6 +847,7 @@ ParsedQueryResult PgProtocolParser::extract_query_result(
       }
       current.columns = std::move(columns);
       has_row_description = true;
+      phase_shape = ExecutionResultShape::ResultSet;
       bind_complete_since_description = false;
     } else if (message.tag == 'D') { // DataRow
       if (!has_row_description) {
@@ -851,9 +860,25 @@ ParsedQueryResult PgProtocolParser::extract_query_result(
             "PostgreSQL DataRow column count differs from RowDescription");
       }
       current.rows.emplace_back(std::move(row));
-    } else if (message.tag == '2') { // BindComplete
+    } else if (message.tag == 'n') { // NoData from a statement/portal description
+      if (!payload.empty() || !current.rows.empty() ||
+          (phase_shape && !bind_complete_since_description))
+        throw std::runtime_error("invalid PostgreSQL NoData description");
+      current.columns.clear();
+      has_row_description = false;
+      phase_shape = ExecutionResultShape::NoResultSet;
+      bind_complete_since_description = false;
+    } else if (message.tag == '2') { // BindComplete starts portal authority
+      if (!payload.empty()) throw std::runtime_error("invalid PostgreSQL BindComplete");
+      extended_execution = true;
+      saw_bind_complete = true;
+      phase_shape.reset();
       bind_complete_since_description = true;
     } else if (message.tag == 't') { // ParameterDescription
+      // A new statement description cannot reuse an earlier portal's bind.
+      if (saw_bind_complete)
+        throw std::runtime_error("PostgreSQL ParameterDescription after bound portal description");
+      extended_execution = true;
       std::size_t offset = 0;
       const auto count = read_u16(payload, offset);
       offset += 2;
@@ -875,10 +900,35 @@ ParsedQueryResult PgProtocolParser::extract_query_result(
         throw std::runtime_error("invalid PostgreSQL CommandComplete length");
       }
       current.affected_rows = command_affected_rows(command_tag);
+      // Simple commands have no portal NoData; extended execution must have a
+      // portal T/n after BindComplete. Description-only T/n never publishes.
+      current.prepared_execution_authority = saw_bind_complete && phase_shape.has_value();
+      current.execution_result_shape = extended_execution && !current.prepared_execution_authority
+          ? std::nullopt : phase_shape;
+      if (!extended_execution && !phase_shape)
+        current.execution_result_shape = ExecutionResultShape::NoResultSet;
       completed.push_back(std::move(current));
       current = ParsedQueryResult{};
       has_row_description = false;
       bind_complete_since_description = false;
+      saw_bind_complete = false;
+      phase_shape.reset();
+    } else if (message.tag == 'I') { // EmptyQueryResponse completes an empty portal.
+      if (!payload.empty()) throw std::runtime_error("invalid PostgreSQL EmptyQueryResponse");
+      // Preserve simple-query I behavior. Extended I must complete this bound
+      // portal's NoData, never a statement description or prior completion.
+      if (!extended_execution) continue;
+      if (!saw_bind_complete || phase_shape != ExecutionResultShape::NoResultSet ||
+          has_row_description || !current.columns.empty() || !current.rows.empty() || current.error)
+        throw std::runtime_error("PostgreSQL empty execution lacks bound NoData authority");
+      current.prepared_execution_authority = true;
+      current.execution_result_shape = ExecutionResultShape::NoResultSet;
+      completed.push_back(std::move(current));
+      current = ParsedQueryResult{};
+      has_row_description = false;
+      bind_complete_since_description = false;
+      saw_bind_complete = false;
+      phase_shape.reset();
     } else if (message.tag == 'E') { // ErrorResponse
       current = ParsedQueryResult{};
       const auto error = decode_error_fields(message.payload);
@@ -889,6 +939,8 @@ ParsedQueryResult PgProtocolParser::extract_query_result(
       current = ParsedQueryResult{};
       has_row_description = false;
       bind_complete_since_description = false;
+      saw_bind_complete = false;
+      phase_shape.reset();
     }
   }
   if (completed.empty()) return current;

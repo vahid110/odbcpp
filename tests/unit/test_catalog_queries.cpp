@@ -4,6 +4,7 @@
 #include "core/database/generic_database_connection.h"
 #include "core/database/postgres/pg_database_connection.h"
 #include "core/database/postgres/pg_backend_provider.h"
+#include "core/database/postgres/redshift_catalog_query.h"
 #include "tests/mock_protocol_parser.h"
 
 using namespace rs::core::database;
@@ -138,7 +139,8 @@ TEST(CatalogQueryTest, StatisticsKeepLiteralNamesAndUniqueFilter) {
 }
 
 TEST(CatalogQueryTest, ProceduresKeepOmittedEmptyAndEscapedPatterns) {
-  auto backend = DatabaseFactory::create_connection();
+  // Generated routine SQL is the PostgreSQL contract, independent of the compiled product profile.
+  auto backend = std::make_unique<postgres::PgDatabaseConnection>();
   const auto all = backend->catalog_queries()->catalog_query(ProceduresCatalogRequest{});
   ASSERT_FALSE(all.has_error());
   EXPECT_EQ(std::string::npos, all->find(" AND current_database() ="));
@@ -152,7 +154,8 @@ TEST(CatalogQueryTest, ProceduresKeepOmittedEmptyAndEscapedPatterns) {
 }
 
 TEST(CatalogQueryTest, ProcedureColumnsKeepLiteralCatalogAndColumnPatterns) {
-  auto backend = DatabaseFactory::create_connection();
+  // Generated routine SQL is the PostgreSQL contract, independent of the compiled product profile.
+  auto backend = std::make_unique<postgres::PgDatabaseConnection>();
   const auto all = backend->catalog_queries()->catalog_query(ProcedureColumnsCatalogRequest{});
   ASSERT_FALSE(all.has_error());
   EXPECT_EQ(std::string::npos, all->find(" AND columns.column_name LIKE"));
@@ -586,4 +589,42 @@ TEST(CatalogQueryTest, IdentifierAllEightCarriersUseNativeNamesAndRejectIrreleva
   EXPECT_TRUE(pg.catalog_query(bad).has_error());
   bad.column = "c";
   EXPECT_FALSE(pg.catalog_query(bad).has_error());
+}
+
+TEST(CatalogQueryTest, RedshiftRoutineRequestsAreSelectedEvenWhenUnsupportedAndNeverGeneratePgSql) {
+  postgres::PgDatabaseConnection redshift(nullptr,std::nullopt,postgres::PgCatalogProfile::Redshift);
+  postgres::PgDatabaseConnection postgres;
+  const std::vector<CatalogRequest> requests{ProceduresCatalogRequest{},
+      ProceduresCatalogRequest{std::nullopt,"s%","p%"},ProcedureColumnsCatalogRequest{"db","s","p","x%"}};
+  for(const auto& request:requests) {
+    EXPECT_TRUE(redshift.selects_catalog_request(request));
+    const auto rejected=redshift.catalog_query(request);ASSERT_TRUE(rejected.has_error());
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature),rejected.error());
+    const auto unchanged=postgres.catalog_query(request);ASSERT_FALSE(unchanged.has_error());
+    EXPECT_NE(std::string::npos,unchanged->find("pg_catalog.pg_proc"));
+  }
+}
+
+
+TEST(CatalogQueryTest, RedshiftIdentifierLoweringIsOwningLiteralAndLeavesPgAndEnumerationSemanticsIntact) {
+  using namespace rs::core::database::postgres;
+  ColumnsCatalogRequest input{"DB","S_%\\表","T_%\\表","C_%\\表"};
+  input.name_matches.catalog=CatalogNameMatch::IdentifierUnquoted;
+  input.name_matches.schema=CatalogNameMatch::IdentifierUnquoted;
+  input.name_matches.object=CatalogNameMatch::IdentifierQuoted;
+  input.name_matches.member=CatalogNameMatch::IdentifierQuoted;
+  auto native=native_catalog_request(input);ASSERT_TRUE(native);
+  auto lowered=redshift_identifier_show_request(*native);ASSERT_TRUE(lowered);
+  const auto& names=std::get<ColumnsCatalogRequest>(*lowered);
+  EXPECT_EQ("db",names.catalog);EXPECT_EQ("s\\_\\%\\\\表",names.schema);
+  EXPECT_EQ("T\\_\\%\\\\表",names.table);EXPECT_EQ("C\\_\\%\\\\表",names.column);EXPECT_TRUE(names.name_matches.existing());
+  auto literal=redshift_column_names(names);ASSERT_TRUE(literal);EXPECT_EQ("s_%\\表",literal->first);EXPECT_EQ("T_%\\表",literal->second);
+  EXPECT_EQ("DB",input.catalog);EXPECT_EQ("S_%\\表",input.schema);EXPECT_EQ(CatalogNameMatch::IdentifierQuoted,input.name_matches.object);
+  TablesCatalogRequest enumeration;enumeration.mode=TablesCatalogRequest::Mode::Schemas;
+  EXPECT_FALSE(redshift_identifier_show_request(enumeration));
+  ColumnsCatalogRequest mixed{"db","literal","t%","c_"};mixed.name_matches.member=CatalogNameMatch::IdentifierQuoted;
+  auto partial=redshift_identifier_show_request(mixed);ASSERT_TRUE(partial);
+  EXPECT_EQ("t%",std::get<ColumnsCatalogRequest>(*partial).table);EXPECT_EQ("c\\_",std::get<ColumnsCatalogRequest>(*partial).column);
+  auto pg=std::make_unique<PgDatabaseConnection>();auto generated=pg->catalog_queries()->catalog_query(input);ASSERT_TRUE(generated);
+  EXPECT_NE(std::string::npos,generated->find(" = "));EXPECT_EQ(std::string::npos,generated->find(" LIKE "));
 }

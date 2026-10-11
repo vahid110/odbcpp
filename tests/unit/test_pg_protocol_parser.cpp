@@ -1352,3 +1352,130 @@ TEST(PgParameterContractTest, PreparedTemporalTripletHasLiteralOwningOidsAndNull
     EXPECT_EQ(literal(parse_bytes),retained[0].payload);EXPECT_EQ(expected_bind,retained[2].payload);
   }
 }
+
+
+namespace {
+TEST(PgExecutionShapeTest, PortalZeroFieldsNoDataAndStatementDescriptionNeverInterchange) {
+  using rs::core::database::ExecutionResultShape;
+  PgProtocolParser parser;
+  const Message zero{'T', {std::byte{0}, std::byte{0}}};
+  const auto result = parser.extract_query_result({zero, {'2',{}}, zero, command_complete("SELECT 0")});
+  EXPECT_EQ(ExecutionResultShape::ResultSet, result.execution_result_shape); EXPECT_TRUE(result.columns.empty());
+  const auto command = parser.extract_query_result({zero, {'2',{}}, {'n',{}}, command_complete("UPDATE 0")});
+  EXPECT_EQ(ExecutionResultShape::NoResultSet, command.execution_result_shape); EXPECT_TRUE(command.columns.empty());
+  const auto missing = parser.extract_query_result({zero, {'2',{}}, command_complete("SELECT 0")});
+  EXPECT_FALSE(missing.execution_result_shape);
+  EXPECT_FALSE(parser.extract_query_result({zero}).execution_result_shape);
+  EXPECT_FALSE(parser.extract_query_result({{'n',{}}}).execution_result_shape);
+}
+TEST(PgExecutionShapeTest, MalformedNoDataErrorAndCompoundCannotBorrowPriorAuthority) {
+  using rs::core::database::ExecutionResultShape;
+  PgProtocolParser parser;
+  EXPECT_THROW(parser.extract_query_result({{'2',{}},{'n',{std::byte{0}}},command_complete("UPDATE 0")}),std::runtime_error);
+  EXPECT_THROW(parser.extract_query_result({{'2',{}},{'n',{}},{'n',{}},command_complete("UPDATE 0")}),std::runtime_error);
+  const Message zero{'T', {std::byte{0}, std::byte{0}}};
+  const auto compound=parser.extract_query_result({zero,command_complete("SELECT 0"),command_complete("UPDATE 1")});
+  EXPECT_EQ(ExecutionResultShape::ResultSet,compound.execution_result_shape);
+  ASSERT_EQ(1u,compound.additional_results.size());
+  EXPECT_EQ(ExecutionResultShape::NoResultSet,compound.additional_results[0].execution_result_shape);
+}
+}
+
+
+namespace {
+TEST(PgExecutionShapeTest, ParseAndStatementDescriptionCannotReplaceBindAndPortalAuthority) {
+  PgProtocolParser parser;
+  const Message zero{'T', {std::byte{0}, std::byte{0}}};
+  const Message parameters{'t', {std::byte{0}, std::byte{0}}};
+  const auto missing_bind = parser.extract_query_result({{'1',{}},parameters,zero,command_complete("SELECT 0")});
+  EXPECT_FALSE(missing_bind.execution_result_shape);
+  EXPECT_FALSE(missing_bind.prepared_execution_authority);
+  const auto missing_portal = parser.extract_query_result({{'1',{}},parameters,zero,{'2',{}},command_complete("SELECT 0")});
+  EXPECT_FALSE(missing_portal.execution_result_shape);
+  EXPECT_FALSE(missing_portal.prepared_execution_authority);
+  const auto complete = parser.extract_query_result({{'1',{}},parameters,zero,{'2',{}},zero,command_complete("SELECT 0")});
+  EXPECT_EQ(rs::core::database::ExecutionResultShape::ResultSet, complete.execution_result_shape);
+  EXPECT_TRUE(complete.prepared_execution_authority);
+  const auto cached = parser.extract_query_result({{'2',{}},{'n',{}},command_complete("UPDATE 0")});
+  EXPECT_EQ(rs::core::database::ExecutionResultShape::NoResultSet, cached.execution_result_shape);
+  EXPECT_TRUE(cached.prepared_execution_authority);
+  const auto simple = parser.extract_query_result({zero,command_complete("SELECT 0")});
+  EXPECT_EQ(rs::core::database::ExecutionResultShape::ResultSet, simple.execution_result_shape);
+  EXPECT_FALSE(simple.prepared_execution_authority);
+  const auto command = parser.extract_query_result({command_complete("UPDATE 0")});
+  EXPECT_EQ(rs::core::database::ExecutionResultShape::NoResultSet, command.execution_result_shape);
+  EXPECT_FALSE(command.prepared_execution_authority);
+}
+}
+
+namespace {
+TEST(PgExecutionShapeTest, NewStatementFramesCannotReuseEarlierBoundPortalAuthority) {
+  PgProtocolParser parser;
+  const Message zero{'T', {std::byte{0}, std::byte{0}}};
+  const Message parameters{'t', {std::byte{0}, std::byte{0}}};
+  EXPECT_THROW(parser.extract_query_result({{'1',{}},parameters,zero,{'2',{}},{'n',{}},
+      {'1',{}},parameters,zero,command_complete("SELECT 0")}), std::runtime_error);
+  EXPECT_THROW(parser.extract_query_result({{'1',{}},parameters,zero,{'2',{}},{'n',{}},
+      parameters,zero,command_complete("SELECT 0")}), std::runtime_error);
+  const auto valid = parser.extract_query_result({{'1',{}},parameters,zero,{'2',{}},zero,command_complete("SELECT 0")});
+  EXPECT_TRUE(valid.prepared_execution_authority);
+  EXPECT_EQ(rs::core::database::ExecutionResultShape::ResultSet, valid.execution_result_shape);
+  const auto description = parser.extract_query_result({{'1',{}},parameters,zero});
+  EXPECT_FALSE(description.prepared_execution_authority); EXPECT_FALSE(description.execution_result_shape);
+  const auto simple = parser.extract_query_result({zero,command_complete("SELECT 0")});
+  EXPECT_FALSE(simple.prepared_execution_authority);
+  EXPECT_EQ(rs::core::database::ExecutionResultShape::ResultSet, simple.execution_result_shape);
+}
+}
+
+namespace {
+TEST(PgEmptyPreparedAuthorityTest, FullAndCachedEmptyPortalCompleteWithOwningNoResult) {
+  PgProtocolParser parser;
+  const Message parameters{'t', {std::byte{0}, std::byte{0}}};
+  for (bool cached : {false, true}) {
+    SCOPED_TRACE(cached);
+    std::vector<Message> messages;
+    if (!cached) { messages.push_back({'1',{}}); messages.push_back(parameters); }
+    messages.push_back({'2',{}}); messages.push_back({'n',{}});
+    messages.push_back({'I',{}}); messages.push_back({'Z',{std::byte{'I'}}});
+    const auto result=parser.extract_query_result(messages);
+    EXPECT_TRUE(result.prepared_execution_authority);
+    EXPECT_EQ(rs::core::database::ExecutionResultShape::NoResultSet,result.execution_result_shape);
+    EXPECT_TRUE(result.columns.empty()); EXPECT_TRUE(result.rows.empty());
+    EXPECT_TRUE(result.parameter_type_ids.empty()); EXPECT_TRUE(result.additional_results.empty());
+    EXPECT_EQ(0u,result.affected_rows); EXPECT_FALSE(result.error); EXPECT_FALSE(result.statement_kind);
+  }
+}
+TEST(PgEmptyPreparedAuthorityTest, MissingStatementOnlyAndZeroColumnPortalCannotAuthorizeEmpty) {
+  PgProtocolParser parser;
+  const Message parameters{'t', {std::byte{0}, std::byte{0}}};
+  const Message zero{'T', {std::byte{0},std::byte{0}}};
+  EXPECT_THROW(parser.extract_query_result({{'1',{}},parameters,{'n',{}},{'I',{}}}),std::runtime_error);
+  EXPECT_THROW(parser.extract_query_result({{'1',{}},parameters,{'2',{}},{'I',{}}}),std::runtime_error);
+  EXPECT_THROW(parser.extract_query_result({{'1',{}},parameters,{'n',{}},{'2',{}},{'I',{}}}),std::runtime_error);
+  EXPECT_THROW(parser.extract_query_result({{'2',{}},zero,{'I',{}}}),std::runtime_error);
+  EXPECT_THROW(parser.extract_query_result({{'2',{}},{'n',{}},{'I',{std::byte{0}}}}),std::runtime_error);
+}
+TEST(PgEmptyPreparedAuthorityTest, CompletionAndNewDescriptionCannotReusePriorEmptyAuthority) {
+  PgProtocolParser parser;
+  const Message parameters{'t', {std::byte{0},std::byte{0}}};
+  EXPECT_THROW(parser.extract_query_result({{'2',{}},{'n',{}},{'I',{}},{'I',{}}}),std::runtime_error);
+  EXPECT_THROW(parser.extract_query_result({{'2',{}},{'n',{}},command_complete("UPDATE 0"),{'I',{}}}),std::runtime_error);
+  EXPECT_THROW(parser.extract_query_result({{'2',{}},{'n',{}},{'1',{}},parameters,{'I',{}}}),std::runtime_error);
+  EXPECT_THROW(parser.extract_query_result({{'2',{}},{'n',{}},parameters,{'I',{}}}),std::runtime_error);
+  const auto repeat=parser.extract_query_result({{'2',{}},{'n',{}},{'I',{}},{'2',{}},{'n',{}},{'I',{}}});
+  ASSERT_EQ(1u,repeat.additional_results.size());
+  EXPECT_TRUE(repeat.prepared_execution_authority);
+  EXPECT_TRUE(repeat.additional_results[0].prepared_execution_authority);
+  EXPECT_EQ(rs::core::database::ExecutionResultShape::NoResultSet,repeat.additional_results[0].execution_result_shape);
+}
+TEST(PgEmptyPreparedAuthorityTest, SimpleEmptyAndOrdinaryCommandSemanticsRemainSeparate) {
+  PgProtocolParser parser;
+  const auto simple=parser.extract_query_result({{'I',{}},{'Z',{std::byte{'I'}}}});
+  EXPECT_FALSE(simple.prepared_execution_authority); EXPECT_FALSE(simple.execution_result_shape);
+  EXPECT_TRUE(simple.rows.empty()); EXPECT_TRUE(simple.columns.empty()); EXPECT_EQ(0u,simple.affected_rows);
+  const auto command=parser.extract_query_result({{'2',{}},{'n',{}},command_complete("UPDATE 1")});
+  EXPECT_TRUE(command.prepared_execution_authority); EXPECT_EQ(1u,command.affected_rows);
+  EXPECT_EQ(rs::core::database::ExecutionResultShape::NoResultSet,command.execution_result_shape);
+}
+}

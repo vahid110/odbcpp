@@ -215,7 +215,231 @@ SqlTranslationResult failure(SqlTranslationError error, std::string message) {
   return {{}, error, std::move(message)};
 }
 
-SqlTranslationResult translate_fragment(std::string_view sql);
+bool ascii_word_equal(std::string_view value, std::string_view word) {
+  if (value.size() != word.size()) return false;
+  for (std::size_t i = 0; i < value.size(); ++i) {
+    const auto ch = value[i];
+    const auto folded = ch >= 'a' && ch <= 'z' ? static_cast<char>(ch - 'a' + 'A') : ch;
+    if (folded != word[i]) return false;
+  }
+  return true;
+}
+
+std::optional<std::size_t> skip_trivia(std::string_view value, std::size_t position) {
+  while (position < value.size()) {
+    const auto ch = value[position];
+    if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == '\f' || ch == '\v') {
+      ++position;
+    } else if (value.substr(position, 2) == "/*" || value.substr(position, 2) == "--") {
+      const auto end = comment_end(value, position);
+      if (!end) return std::nullopt;
+      position = *end;
+    } else {
+      break;
+    }
+  }
+  return position;
+}
+
+// Extract only the outer call's argument slices. Expressions remain native
+// authority; skipping lexical bodies and nested parentheses preserves commas
+// and parameter order without inventing an expression parser.
+SqlTranslationResult translate_locate(std::string_view function, std::size_t name_end) {
+  const auto open = skip_trivia(function, name_end);
+  if (!open || *open == function.size() || function[*open] != '(')
+    return failure(SqlTranslationError::InvalidSyntax, "ODBC LOCATE requires an argument list");
+  std::array<std::string_view,3> arguments{};
+  std::size_t count = 0;
+  std::size_t begin = *open + 1;
+  std::size_t depth = 1;
+  for (std::size_t i = begin; i < function.size();) {
+    std::optional<std::size_t> skipped;
+    if (function[i] == '\'' || function[i] == '"') {
+      skipped = quoted_end(function, i);
+      if (!skipped) return failure(SqlTranslationError::InvalidSyntax, "Unclosed LOCATE quoted argument");
+    } else if (function.substr(i,2) == "--" || function.substr(i,2) == "/*") {
+      skipped = comment_end(function,i);
+      if (!skipped) return failure(SqlTranslationError::InvalidSyntax, "Unclosed LOCATE comment");
+    } else if (function[i] == '$' && dollar_tag_at(function,i)) {
+      skipped = dollar_end(function,i);
+      if (!skipped) return failure(SqlTranslationError::InvalidSyntax, "Unclosed LOCATE dollar argument");
+    }
+    if (skipped) { i = *skipped; continue; }
+    if (function[i] == '(') { ++depth; ++i; continue; }
+    const bool close = function[i] == ')' && depth == 1;
+    if ((function[i] == ',' && depth == 1) || close) {
+      const auto argument = function.substr(begin,i-begin);
+      const auto first = skip_trivia(argument,0);
+      if (!first || *first == argument.size() || count == arguments.size())
+        return failure(SqlTranslationError::InvalidSyntax, "Invalid LOCATE argument count or empty argument");
+      arguments[count++] = argument;
+      if (close) {
+        const auto end = skip_trivia(function,i+1);
+        if (!end || *end != function.size() || count < 2)
+          return failure(SqlTranslationError::InvalidSyntax, "Invalid LOCATE call structure");
+        if (count == 3)
+          return failure(SqlTranslationError::Unsupported, "LOCATE start-position argument is not supported");
+        // Do not trim argument tails: the newline terminating a -- comment
+        // must remain before generated IN or ')'. Every expression occurs once.
+        std::string result{"POSITION("}; result.append(arguments[0]);
+        result += " IN "; result.append(arguments[1]); result += ')';
+        return {std::move(result),SqlTranslationError::None,{}};
+      }
+      begin = ++i; continue;
+    }
+    if (function[i] == ')') --depth;
+    ++i;
+  }
+  return failure(SqlTranslationError::InvalidSyntax, "Unclosed LOCATE call");
+}
+
+SqlTranslationResult translate_length(std::string_view function, std::size_t name_end) {
+  const auto open = skip_trivia(function, name_end);
+  if (!open || *open == function.size() || function[*open] != '(')
+    return failure(SqlTranslationError::InvalidSyntax, "ODBC LENGTH requires an argument list");
+  std::array<std::string_view,1> arguments{};
+  std::size_t count = 0;
+  std::size_t begin = *open + 1;
+  std::size_t depth = 1;
+  for (std::size_t i = begin; i < function.size();) {
+    std::optional<std::size_t> skipped;
+    if (function[i] == '\'' || function[i] == '"') {
+      skipped = quoted_end(function, i);
+      if (!skipped) return failure(SqlTranslationError::InvalidSyntax, "Unclosed LENGTH quoted argument");
+    } else if (function.substr(i,2) == "--" || function.substr(i,2) == "/*") {
+      skipped = comment_end(function,i);
+      if (!skipped) return failure(SqlTranslationError::InvalidSyntax, "Unclosed LENGTH comment");
+    } else if (function[i] == '$' && dollar_tag_at(function,i)) {
+      skipped = dollar_end(function,i);
+      if (!skipped) return failure(SqlTranslationError::InvalidSyntax, "Unclosed LENGTH dollar argument");
+    }
+    if (skipped) { i = *skipped; continue; }
+    if (function[i] == '(') { ++depth; ++i; continue; }
+    const bool close = function[i] == ')' && depth == 1;
+    if ((function[i] == ',' && depth == 1) || close) {
+      const auto argument = function.substr(begin,i-begin);
+      const auto first = skip_trivia(argument,0);
+      if (!first || *first == argument.size() || count == arguments.size())
+        return failure(SqlTranslationError::InvalidSyntax, "Invalid LENGTH argument count or empty argument");
+      arguments[count++] = argument;
+      if (close) {
+        const auto end = skip_trivia(function,i+1);
+        if (!end || *end != function.size() || count != 1)
+          return failure(SqlTranslationError::InvalidSyntax, "Invalid LENGTH call structure");
+        // Preserve the argument tail newline: a line comment must end before
+        // the trim literal and generated closers. The expression occurs exactly once.
+        std::string result{"LENGTH(RTRIM("}; result.append(arguments[0]);
+        // Specify U+0020 so native default trimming cannot discard a TAB.
+        result += ", ' '))";
+        return {std::move(result),SqlTranslationError::None,{}};
+      }
+      begin = ++i; continue;
+    }
+    if (function[i] == ')') --depth;
+    ++i;
+  }
+  return failure(SqlTranslationError::InvalidSyntax, "Unclosed LENGTH call");
+}
+
+SqlTranslationResult translate_calendar_component(std::string_view function, std::size_t name_end,
+                                                   std::string_view part) {
+  const auto open = skip_trivia(function, name_end);
+  if (!open || *open == function.size() || function[*open] != '(')
+    return failure(SqlTranslationError::InvalidSyntax, "ODBC calendar component requires an argument list");
+  std::array<std::string_view,1> arguments{};
+  std::size_t count = 0;
+  std::size_t begin = *open + 1;
+  std::size_t depth = 1;
+  for (std::size_t i = begin; i < function.size();) {
+    std::optional<std::size_t> skipped;
+    if (function[i] == '\'' || function[i] == '"') {
+      skipped = quoted_end(function, i);
+      if (!skipped) return failure(SqlTranslationError::InvalidSyntax, "Unclosed calendar component quoted argument");
+    } else if (function.substr(i,2) == "--" || function.substr(i,2) == "/*") {
+      skipped = comment_end(function,i);
+      if (!skipped) return failure(SqlTranslationError::InvalidSyntax, "Unclosed calendar component comment");
+    } else if (function[i] == '$' && dollar_tag_at(function,i)) {
+      skipped = dollar_end(function,i);
+      if (!skipped) return failure(SqlTranslationError::InvalidSyntax, "Unclosed calendar component dollar argument");
+    }
+    if (skipped) { i = *skipped; continue; }
+    if (function[i] == '(') { ++depth; ++i; continue; }
+    const bool close = function[i] == ')' && depth == 1;
+    if ((function[i] == ',' && depth == 1) || close) {
+      const auto argument = function.substr(begin,i-begin);
+      const auto first = skip_trivia(argument,0);
+      if (!first || *first == argument.size() || count == arguments.size())
+        return failure(SqlTranslationError::InvalidSyntax, "Invalid calendar component argument count or empty argument");
+      arguments[count++] = argument;
+      if (close) {
+        const auto end = skip_trivia(function,i+1);
+        if (!end || *end != function.size() || count != 1)
+          return failure(SqlTranslationError::InvalidSyntax, "Invalid calendar component call structure");
+        // Preserve the argument tail newline: a line comment must end before
+        // both generated closers. The native expression occurs exactly once.
+        std::string result{"CAST(DATE_PART("}; result.append(part);
+        result += ", "; result.append(arguments[0]); result += ") AS INTEGER)";
+        return {std::move(result),SqlTranslationError::None,{}};
+      }
+      begin = ++i; continue;
+    }
+    if (function[i] == ')') --depth;
+    ++i;
+  }
+  return failure(SqlTranslationError::InvalidSyntax, "Unclosed calendar component call");
+}
+
+SqlTranslationResult translate_clock_component(std::string_view function, std::size_t name_end,
+                                                   std::string_view part) {
+  const auto open = skip_trivia(function, name_end);
+  if (!open || *open == function.size() || function[*open] != '(')
+    return failure(SqlTranslationError::InvalidSyntax, "ODBC clock component requires an argument list");
+  std::array<std::string_view,1> arguments{};
+  std::size_t count = 0;
+  std::size_t begin = *open + 1;
+  std::size_t depth = 1;
+  for (std::size_t i = begin; i < function.size();) {
+    std::optional<std::size_t> skipped;
+    if (function[i] == '\'' || function[i] == '"') {
+      skipped = quoted_end(function, i);
+      if (!skipped) return failure(SqlTranslationError::InvalidSyntax, "Unclosed clock component quoted argument");
+    } else if (function.substr(i,2) == "--" || function.substr(i,2) == "/*") {
+      skipped = comment_end(function,i);
+      if (!skipped) return failure(SqlTranslationError::InvalidSyntax, "Unclosed clock component comment");
+    } else if (function[i] == '$' && dollar_tag_at(function,i)) {
+      skipped = dollar_end(function,i);
+      if (!skipped) return failure(SqlTranslationError::InvalidSyntax, "Unclosed clock component dollar argument");
+    }
+    if (skipped) { i = *skipped; continue; }
+    if (function[i] == '(') { ++depth; ++i; continue; }
+    const bool close = function[i] == ')' && depth == 1;
+    if ((function[i] == ',' && depth == 1) || close) {
+      const auto argument = function.substr(begin,i-begin);
+      const auto first = skip_trivia(argument,0);
+      if (!first || *first == argument.size() || count == arguments.size())
+        return failure(SqlTranslationError::InvalidSyntax, "Invalid clock component argument count or empty argument");
+      arguments[count++] = argument;
+      if (close) {
+        const auto end = skip_trivia(function,i+1);
+        if (!end || *end != function.size() || count != 1)
+          return failure(SqlTranslationError::InvalidSyntax, "Invalid clock component call structure");
+        // Preserve the argument tail newline: a line comment must end before
+        // all generated closers. The native expression occurs exactly once.
+        // ODBC clock fields are whole integers; truncate fractional seconds
+        // before casting so 59.999999 cannot round into the next minute.
+        std::string result{"CAST(FLOOR(EXTRACT("}; result.append(part);
+        result += " FROM "; result.append(arguments[0]); result += ")) AS INTEGER)";
+        return {std::move(result),SqlTranslationError::None,{}};
+      }
+      begin = ++i; continue;
+    }
+    if (function[i] == ')') --depth;
+    ++i;
+  }
+  return failure(SqlTranslationError::InvalidSyntax, "Unclosed clock component call");
+}
+
+SqlTranslationResult translate_fragment(std::string_view sql, SqlDialectProfile profile);
 
 SqlTranslationResult translate_datetime(std::string_view body,
                                    std::string_view keyword,
@@ -240,7 +464,7 @@ SqlTranslationResult translate_datetime(std::string_view body,
           SqlTranslationError::None, {}};
 }
 
-SqlTranslationResult translate_escape(std::string_view body) {
+SqlTranslationResult translate_escape(std::string_view body, SqlDialectProfile profile) {
   body = trim(body);
   if (starts_with_word(body, "ts")) {
     return translate_datetime(body, "ts", "TIMESTAMP");
@@ -252,9 +476,39 @@ SqlTranslationResult translate_escape(std::string_view body) {
     return translate_datetime(body, "t", "TIME");
   }
   if (starts_with_word(body, "fn")) {
-    auto translated = translate_fragment(trim(body.substr(2)));
+    auto translated = translate_fragment(trim(body.substr(2)), profile);
     if (!translated) return translated;
     auto function = trim(translated.sql);
+    if (profile == SqlDialectProfile::Redshift) {
+      const auto start = skip_trivia(function, 0);
+      if (start) {
+        auto name_end = *start;
+        while (name_end < function.size() && identifier_continue(
+            static_cast<unsigned char>(function[name_end]))) ++name_end;
+        const auto name = function.substr(*start, name_end - *start);
+        if (ascii_word_equal(name, "LOCATE")) return translate_locate(function,name_end);
+        if (ascii_word_equal(name, "LENGTH")) return translate_length(function,name_end);
+        if (ascii_word_equal(name, "YEAR")) return translate_calendar_component(function,name_end,"year");
+        if (ascii_word_equal(name, "MONTH")) return translate_calendar_component(function,name_end,"month");
+        if (ascii_word_equal(name, "DAYOFMONTH")) return translate_calendar_component(function,name_end,"day");
+        if (ascii_word_equal(name, "HOUR")) return translate_clock_component(function,name_end,"hour");
+        if (ascii_word_equal(name, "MINUTE")) return translate_clock_component(function,name_end,"minute");
+        if (ascii_word_equal(name, "SECOND")) return translate_clock_component(function,name_end,"second");
+        if (ascii_word_equal(name, "NOW") || ascii_word_equal(name, "CURTIME")) {
+          const auto open_at = skip_trivia(function, name_end);
+          const auto close_at = open_at && *open_at < function.size() && function[*open_at] == '('
+              ? skip_trivia(function, *open_at + 1) : std::nullopt;
+          const auto end_at = close_at && *close_at < function.size() && function[*close_at] == ')'
+              ? skip_trivia(function, *close_at + 1) : std::nullopt;
+          if (!end_at || *end_at != function.size()) {
+            return failure(SqlTranslationError::InvalidSyntax,
+                "ODBC current-time escape requires exactly zero arguments");
+          }
+          return {ascii_word_equal(name, "NOW") ? "GETDATE()" : "CAST(GETDATE() AS TIME)",
+              SqlTranslationError::None, {}};
+        }
+      }
+    }
     const auto open = function.find('(');
     if (open != std::string_view::npos) {
       const auto name = trim(function.substr(0, open));
@@ -281,7 +535,7 @@ SqlTranslationResult translate_escape(std::string_view body) {
     return translated;
   }
   if (starts_with_word(body, "oj")) {
-    return translate_fragment(trim(body.substr(2)));
+    return translate_fragment(trim(body.substr(2)), profile);
   }
   if (starts_with_word(body, "escape")) {
     const auto literal = quoted_value(body.substr(6));
@@ -294,7 +548,7 @@ SqlTranslationResult translate_escape(std::string_view body) {
             SqlTranslationError::None, {}};
   }
   if (starts_with_word(body, "call")) {
-    auto translated = translate_fragment(trim(body.substr(4)));
+    auto translated = translate_fragment(trim(body.substr(4)), profile);
     if (!translated) return translated;
     translated.sql.insert(0, "CALL ");
     return translated;
@@ -308,7 +562,7 @@ SqlTranslationResult translate_escape(std::string_view body) {
   return {"{" + std::string(body) + "}", SqlTranslationError::None, {}};
 }
 
-SqlTranslationResult translate_fragment(std::string_view sql) {
+SqlTranslationResult translate_fragment(std::string_view sql, SqlDialectProfile profile) {
   std::string output;
   output.reserve(sql.size());
   for (std::size_t i = 0; i < sql.size();) {
@@ -335,7 +589,7 @@ SqlTranslationResult translate_fragment(std::string_view sql) {
       return failure(SqlTranslationError::InvalidSyntax,
                      "ODBC escape clause has no closing brace");
     }
-    auto translated = translate_escape(sql.substr(i + 1, *end - i - 1));
+    auto translated = translate_escape(sql.substr(i + 1, *end - i - 1), profile);
     if (!translated) return translated;
     output += translated.sql;
     i = *end + 1;
@@ -345,8 +599,8 @@ SqlTranslationResult translate_fragment(std::string_view sql) {
 
 } // namespace
 
-SqlTranslationResult translate_odbc_sql(std::string_view sql) {
-  return translate_fragment(sql);
+SqlTranslationResult translate_odbc_sql(std::string_view sql, SqlDialectProfile profile) {
+  return translate_fragment(sql, profile);
 }
 
 } // namespace rs::core::database::postgres

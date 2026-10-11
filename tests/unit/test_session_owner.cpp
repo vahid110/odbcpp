@@ -50,6 +50,7 @@ struct Observed {
   int observation_exception{};
   bool operation_facets{false};
   bool command_array_authority{false};
+  bool select_array_authority{false};
   int facet_exception{};
   std::optional<BackendResult<void>> transaction_result;
   std::optional<BackendResult<QueryResult>> description_result;
@@ -181,6 +182,7 @@ class FakeSession final : public IDatabaseConnection, public ISessionHealth, pub
   }
   ITransactionSession* transaction_session() noexcept override { return observed_->operation_facets ? this : nullptr; }
   bool supports_single_statement_result_shape() const noexcept override { return observed_->command_array_authority; }
+  bool supports_prepared_result_sequence() const noexcept override { return observed_->select_array_authority; }
   IStatementDescription* statement_description() noexcept override { return observed_->operation_facets ? this : nullptr; }
   TransactionCapabilities transaction_capabilities() const override { throw_observation(); return observed_->transactions; }
   BackendResult<void> transaction(TransactionAction action, rs::util::Deadline deadline) override {
@@ -1762,6 +1764,361 @@ TEST(PreparedCommandBorrowTest, ValidNonemptyPlanAtTerminalStateHasBoundedOwning
     auto invalid_source = lease->execute_command_batch(std::move(*source)); ASSERT_FALSE(invalid_source);
     EXPECT_EQ(BackendErrorClass::InvalidInput, invalid_source.backend_error().error_class);
     EXPECT_EQ(1, observed->disconnects);
+  }
+}
+}
+
+
+namespace {
+QueryResult literal_sequence_value(std::string value = "11", bool fields = true) {
+  QueryResult result;
+  result.execution_result_shape = ExecutionResultShape::ResultSet;
+  result.statement_kind = StatementKind::SelectCursor;
+  if (fields) {
+    result.columns = {{"id", NativeTypeInfo{ScalarType::Integer, 10, 0, true}}};
+    result.rows = {{std::move(value)}};
+  }
+  return result;
+}
+void authoritative_select_description(const std::shared_ptr<Observed>& observed, bool fields = true) {
+  authoritative_command_description(observed, DescribedResultShape::ResultSet);
+  observed->select_array_authority = true;
+  if (fields) observed->description_result->operator->()->columns =
+      {{"id", NativeTypeInfo{ScalarType::Integer, 10, 0, true}}};
+  observed->execution_result = BackendResult<QueryResult>{literal_sequence_value("11", fields),
+      {SessionState::Idle, SessionDisposition::Reusable}};
+}
+TEST(PreparedResultSequenceTest, OneOwningResultPerAdvanceExactDeadlineAndOriginalSkippedOrdinal) {
+  auto observed = std::make_shared<Observed>(); authoritative_select_description(observed);
+  auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+  const auto deadline = rs::util::Clock::now() + std::chrono::seconds{3};
+  observed->on_execution = [&](auto, auto parameters, auto actual, auto prepared) {
+    EXPECT_TRUE(prepared); EXPECT_EQ(deadline, actual); ASSERT_EQ(1u, parameters.size());
+    observed->execution_result = BackendResult<QueryResult>{literal_sequence_value(*parameters[0].value),
+        {SessionState::Idle, SessionDisposition::Reusable}};
+  };
+  auto plan = lease->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, {}, deadline, true);
+  ASSERT_TRUE(plan); EXPECT_EQ(0, observed->queries);
+  auto sequence = lease->start_result_sequence(std::move(*plan), 16); ASSERT_TRUE(sequence);
+  auto first = lease->advance_result_sequence(*sequence); ASSERT_TRUE(first); ASSERT_TRUE(first->result);
+  EXPECT_EQ(1u, first->examined); EXPECT_EQ(1u, first->ordinal); EXPECT_EQ(1, observed->queries);
+  auto second = lease->advance_result_sequence(*sequence); ASSERT_TRUE(second); ASSERT_TRUE(second->result);
+  EXPECT_EQ(3u, second->examined); EXPECT_EQ(3u, second->ordinal); EXPECT_EQ(2, observed->queries);
+  EXPECT_EQ(std::optional<std::string>{"11"}, first->result->rows[0][0]);
+  EXPECT_EQ(std::optional<std::string>{"33"}, second->result->rows[0][0]);
+  auto end = lease->advance_result_sequence(*sequence); ASSERT_TRUE(end); EXPECT_FALSE(end->result);
+  EXPECT_EQ(3u, end->examined); EXPECT_FALSE(sequence->pending()); EXPECT_EQ(2, observed->queries);
+  EXPECT_FALSE(lease->advance_result_sequence(*sequence)); EXPECT_EQ(2, observed->queries);
+  lease->retire(); EXPECT_EQ(std::optional<std::string>{"11"}, first->result->rows[0][0]);
+}
+TEST(PreparedResultSequenceTest, MissingAuthorityAndZeroFieldResultVersusNoDataRemainDistinct) {
+  for (bool supported : {false, true}) {
+    auto observed = std::make_shared<Observed>(); authoritative_select_description(observed, false);
+    observed->select_array_authority = supported;
+    auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+    auto plan = lease->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, {}, rs::util::Deadline::max(), true);
+    if (!supported) { EXPECT_FALSE(plan); EXPECT_EQ(0, observed->queries); continue; }
+    ASSERT_TRUE(plan); auto sequence = lease->start_result_sequence(std::move(*plan), 0); ASSERT_TRUE(sequence);
+    auto zero = lease->advance_result_sequence(*sequence); ASSERT_TRUE(zero); ASSERT_TRUE(zero->result);
+    EXPECT_EQ(ExecutionResultShape::ResultSet, zero->result->execution_result_shape);
+    EXPECT_TRUE(zero->result->columns.empty()); EXPECT_TRUE(zero->result->rows.empty());
+    observed->execution_result->operator->()->execution_result_shape = ExecutionResultShape::NoResultSet;
+    auto rejected = lease->advance_result_sequence(*sequence); ASSERT_TRUE(rejected); ASSERT_TRUE(rejected->error);
+    EXPECT_EQ(BackendErrorClass::Protocol, rejected->error->error_class); EXPECT_FALSE(*lease);
+  }
+}
+TEST(PreparedResultSequenceTest, CumulativeDecodedRowsCellsAndMetadataBoundsBeforePublication) {
+  for (int boundary : {0, 1, 2, 3}) {
+    auto observed = std::make_shared<Observed>(); authoritative_select_description(observed);
+    auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+    ResultLimits limits;
+    if (boundary == 1) limits.max_rows = 1;
+    if (boundary == 2) limits.max_cells = 1;
+    if (boundary == 3) limits.max_metadata_entries = 3; // description2 + first result1
+    auto plan = lease->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, limits, rs::util::Deadline::max(), true);
+    ASSERT_TRUE(plan); auto sequence = lease->start_result_sequence(std::move(*plan), boundary == 0 ? 3 : 32); ASSERT_TRUE(sequence);
+    auto first = lease->advance_result_sequence(*sequence); ASSERT_TRUE(first); ASSERT_TRUE(first->result);
+    auto second = lease->advance_result_sequence(*sequence); ASSERT_TRUE(second); ASSERT_TRUE(second->error);
+    EXPECT_EQ(BackendErrorClass::ResourceLimit, second->error->error_class); EXPECT_FALSE(second->result);
+    EXPECT_EQ(3u, second->ordinal); EXPECT_EQ(2, observed->queries); EXPECT_FALSE(*lease);
+    EXPECT_EQ(std::optional<std::string>{"11"}, first->result->rows[0][0]);
+  }
+}
+TEST(PreparedResultSequenceTest, ThinkTimeExpiryOriginalMaxDeadlineAndOwningFailureStopWithoutReplay) {
+  auto observed = std::make_shared<Observed>(); authoritative_select_description(observed);
+  auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+  auto plan = lease->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, {}, rs::util::Deadline::max(), true);
+  ASSERT_TRUE(plan); auto sequence = lease->start_result_sequence(std::move(*plan), 32); ASSERT_TRUE(sequence);
+  auto first = lease->advance_result_sequence(*sequence); ASSERT_TRUE(first); ASSERT_TRUE(first->result);
+  BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "owning result failure"};
+  error.native_state = "22003"; error.native_code = 73; error.operation = BackendOperation::ExecutePrepared;
+  error.session_state = SessionState::FailedTransaction; error.disposition = SessionDisposition::ResetRequired;
+  observed->execution_result = error;
+  auto second = lease->advance_result_sequence(*sequence); ASSERT_TRUE(second); ASSERT_TRUE(second->error);
+  EXPECT_EQ(3u, second->ordinal); EXPECT_EQ(std::optional<std::int64_t>{73}, second->error->native_code);
+  EXPECT_EQ("owning result failure", second->error->message); EXPECT_FALSE(sequence->pending());
+  EXPECT_FALSE(lease->advance_result_sequence(*sequence)); EXPECT_EQ(2, observed->queries);
+  auto timed = std::make_shared<Observed>(); authoritative_select_description(timed);
+  auto timed_owner = owner_for(timed); auto timed_lease = timed_owner.try_acquire(); ASSERT_TRUE(timed_lease);
+  const auto deadline = rs::util::Clock::now() + std::chrono::milliseconds{50};
+  auto timed_plan = timed_lease->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, {}, deadline, true);
+  ASSERT_TRUE(timed_plan); auto timed_sequence = timed_lease->start_result_sequence(std::move(*timed_plan), 32); ASSERT_TRUE(timed_sequence);
+  ASSERT_TRUE(timed_lease->advance_result_sequence(*timed_sequence));
+  std::this_thread::sleep_until(deadline);
+  auto expired = timed_lease->advance_result_sequence(*timed_sequence); ASSERT_TRUE(expired); ASSERT_TRUE(expired->error);
+  EXPECT_EQ(BackendErrorClass::Timeout, expired->error->error_class); EXPECT_EQ(1, timed->queries); EXPECT_FALSE(*timed_lease);
+}
+TEST(PreparedResultSequenceTest, ExactBorrowReturnReacquireAndMoveInvalidateBeforeCallbacks) {
+  CredentialContext credentials; const auto token = credentials.publish_authenticated();
+  auto observed = std::make_shared<Observed>(); authoritative_select_description(observed);
+  SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+  auto first = owner.try_acquire(token); ASSERT_TRUE(first);
+  auto plan = first->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, {}, rs::util::Deadline::max(), true);
+  ASSERT_TRUE(plan); auto sequence = first->start_result_sequence(std::move(*plan), 32); ASSERT_TRUE(sequence);
+  PreparedResultSequence moved{std::move(*sequence)};
+  observed->on_passive = [] { ADD_FAILURE() << "Moved/stale sequence cannot observe"; };
+  EXPECT_FALSE(first->advance_result_sequence(*sequence)); EXPECT_EQ(0, observed->queries);
+  observed->on_passive = {};
+  ASSERT_TRUE(first->return_reusable(rs::util::Deadline::max()));
+  auto second = owner.try_acquire(token); ASSERT_TRUE(second);
+  observed->on_passive = [] { ADD_FAILURE() << "Old borrow cannot observe new session"; };
+  EXPECT_FALSE(second->advance_result_sequence(moved)); EXPECT_EQ(0, observed->queries); EXPECT_TRUE(*second);
+  observed->on_passive = {};
+  auto fresh = second->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, {}, rs::util::Deadline::max(), true);
+  ASSERT_TRUE(fresh); auto fresh_sequence = second->start_result_sequence(std::move(*fresh), 32); ASSERT_TRUE(fresh_sequence);
+  ASSERT_TRUE(second->advance_result_sequence(*fresh_sequence)); EXPECT_EQ(1, observed->queries);
+}
+TEST(PreparedResultSequenceTest, CompoundMalformedCellsAndThrowingBackendRetireNoPartialResult) {
+  for (int fault : {0, 1, 2, 3}) {
+    auto observed = std::make_shared<Observed>(); authoritative_select_description(observed);
+    auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+    auto plan = lease->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, {}, rs::util::Deadline::max(), true);
+    ASSERT_TRUE(plan); auto sequence = lease->start_result_sequence(std::move(*plan), 32); ASSERT_TRUE(sequence);
+    if (fault == 0) observed->execution_result->operator->()->additional_results.emplace_back();
+    if (fault == 1) observed->execution_result->operator->()->execution_result_shape.reset();
+    if (fault == 2) observed->execution_result->operator->()->rows[0].clear();
+    if (fault == 3) observed->on_execution = [](auto, auto, auto, auto) { throw std::bad_alloc{}; };
+    auto rejected = lease->advance_result_sequence(*sequence); ASSERT_TRUE(rejected); ASSERT_TRUE(rejected->error);
+    EXPECT_FALSE(rejected->result); EXPECT_FALSE(sequence->pending()); EXPECT_FALSE(*lease);
+    EXPECT_EQ(1, observed->queries);
+  }
+}
+}
+
+
+namespace {
+TEST(PreparedResultSequenceTest, AffinityCheckIsPassiveAndRejectsMovedAndReacquiredPlansWithoutRetirement) {
+  CredentialContext credentials; const auto token = credentials.publish_authenticated();
+  auto observed = std::make_shared<Observed>(); authoritative_select_description(observed);
+  SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+  auto first = owner.try_acquire(token); ASSERT_TRUE(first);
+  auto plan = first->prepare_parameter_batch("SELECT ?", fixed_command_sets(), {}, {}, rs::util::Deadline::max(), true);
+  ASSERT_TRUE(plan); auto sequence = first->start_result_sequence(std::move(*plan), 32); ASSERT_TRUE(sequence);
+  observed->on_passive = [] { ADD_FAILURE() << "Affinity must not invoke a provider"; };
+  EXPECT_TRUE(first->accepts_result_sequence(*sequence));
+  PreparedResultSequence moved{std::move(*sequence)};
+  EXPECT_FALSE(first->accepts_result_sequence(*sequence));
+  EXPECT_TRUE(first->accepts_result_sequence(moved));
+  observed->on_passive = {};
+  ASSERT_TRUE(first->return_reusable(rs::util::Deadline::max()));
+  auto second = owner.try_acquire(token); ASSERT_TRUE(second);
+  observed->on_passive = [] { ADD_FAILURE() << "Stale affinity cannot observe a new borrow"; };
+  EXPECT_FALSE(second->accepts_result_sequence(moved));
+  EXPECT_FALSE(second->advance_result_sequence(moved));
+  EXPECT_TRUE(*second); EXPECT_EQ(0, observed->queries); EXPECT_EQ(0, observed->disconnects);
+  observed->on_passive = {};
+}
+}
+
+namespace {
+static_assert(!std::is_copy_constructible_v<PreparedCommandDescription>);
+static_assert(std::is_nothrow_move_constructible_v<PreparedCommandDescription>);
+TEST(DeferredCommandAuthorityTest, RealTypesBeforeValuesOwnDescriptionAndFinalizeWithoutRedescribe) {
+  auto observed = std::make_shared<Observed>(); authoritative_command_description(observed);
+  QueryResult command; command.statement_kind = StatementKind::UpdateWhere; command.affected_rows = 4;
+  observed->execution_result = BackendResult<QueryResult>{command,{SessionState::Idle,SessionDisposition::Reusable}};
+  auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+  const auto deadline = rs::util::Clock::now()+std::chrono::seconds{3};
+  int descriptions = 0;
+  observed->on_description = [&](auto sql, auto types, auto actual) {
+    ++descriptions; EXPECT_EQ("UPDATE t SET v=?",sql); ASSERT_EQ(1u,types.size());
+    EXPECT_EQ(QueryParameterType::Int32,types[0]); EXPECT_EQ(deadline,actual);
+    EXPECT_EQ(0,observed->queries);
+  };
+  auto authority = lease->describe_command_batch("UPDATE t SET v=?",{QueryParameterType::Int32},3,{}, {},deadline);
+  ASSERT_TRUE(authority); EXPECT_EQ(1,descriptions); EXPECT_EQ(0,observed->queries);
+  auto moved = std::move(*authority);
+  EXPECT_FALSE(lease->accepts_command_description(*authority));
+  EXPECT_FALSE(lease->finalize_command_batch(std::move(*authority),fixed_command_sets()));
+  EXPECT_TRUE(lease->accepts_command_description(moved));
+  observed->description_result.reset();
+  observed->on_description = [](auto,auto,auto) { ADD_FAILURE()<<"Finalization must not redescribe"; };
+  auto plan = lease->finalize_command_batch(std::move(moved),fixed_command_sets()); ASSERT_TRUE(plan);
+  EXPECT_FALSE(lease->accepts_command_description(moved)); EXPECT_EQ(0,observed->queries);
+  std::vector<std::string> inputs;
+  observed->on_execution = [&](auto,auto values,auto actual,bool prepared) {
+    EXPECT_TRUE(prepared); EXPECT_EQ(deadline,actual); ASSERT_EQ(1u,values.size());
+    ASSERT_TRUE(values[0].value); inputs.push_back(*values[0].value);
+  };
+  auto batch = lease->execute_command_batch(std::move(*plan)); ASSERT_TRUE(batch);
+  EXPECT_EQ((std::vector<std::string>{"11","33"}),inputs); EXPECT_EQ(3u,batch->examined);
+  EXPECT_EQ(PreparedCommandOutcome::State::Skipped,batch->outcomes[1].state);
+}
+TEST(DeferredCommandAuthorityTest, ReturnedReacquiredAndWrongOwnerRefuseBeforeCallbacksWithoutRetiringFreshBorrow) {
+  CredentialContext credentials; const auto token = credentials.publish_authenticated();
+  auto observed = std::make_shared<Observed>(); authoritative_command_description(observed);
+  SessionOwner owner{std::make_unique<FakeSession>(observed),token};
+  auto first = owner.try_acquire(token); ASSERT_TRUE(first);
+  auto old = first->describe_command_batch("UPDATE t SET v=?",{QueryParameterType::Int32},3,{}, {},rs::util::Deadline::max()); ASSERT_TRUE(old);
+  ASSERT_TRUE(first->return_reusable(rs::util::Deadline::max()));
+  auto fresh = owner.try_acquire(token); ASSERT_TRUE(fresh);
+  observed->on_passive = [] { ADD_FAILURE()<<"Old authority cannot observe the fresh borrow"; };
+  observed->on_description = [](auto,auto,auto) { ADD_FAILURE()<<"Old authority cannot redescribe"; };
+  EXPECT_FALSE(fresh->accepts_command_description(*old));
+  EXPECT_FALSE(fresh->finalize_command_batch(std::move(*old),fixed_command_sets()));
+  EXPECT_EQ(0,observed->queries); EXPECT_EQ(0,observed->disconnects); EXPECT_TRUE(*fresh);
+  observed->on_passive = {}; observed->on_description = {};
+  auto current = fresh->describe_command_batch("UPDATE t SET v=?",{QueryParameterType::Int32},3,{}, {},rs::util::Deadline::max()); ASSERT_TRUE(current);
+  auto other_observed = std::make_shared<Observed>(); authoritative_command_description(other_observed);
+  auto other_owner = owner_for(other_observed); auto other = other_owner.try_acquire(); ASSERT_TRUE(other);
+  EXPECT_FALSE(other->finalize_command_batch(std::move(*current),fixed_command_sets()));
+  EXPECT_TRUE(fresh->accepts_command_description(*current));
+  auto plan = fresh->finalize_command_batch(std::move(*current),fixed_command_sets()); EXPECT_TRUE(plan);
+  EXPECT_EQ(1,observed->resets); EXPECT_EQ(0,other_observed->queries); EXPECT_EQ(0,other_observed->disconnects);
+}
+TEST(DeferredCommandAuthorityTest, ResultShapeTypeEntryAndValueLimitsRefuseWithoutDispatchThenRepair) {
+  auto observed = std::make_shared<Observed>(); authoritative_command_description(observed,DescribedResultShape::ResultSet);
+  auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+  EXPECT_FALSE(lease->describe_command_batch("SELECT ?",{QueryParameterType::Int32},3,{}, {},rs::util::Deadline::max()));
+  EXPECT_EQ(0,observed->queries);
+  authoritative_command_description(observed);
+  InputLimits limits; limits.max_parameter_total_bytes=3;
+  auto limited = lease->describe_command_batch("UPDATE t SET v=?",{QueryParameterType::Int32},3,limits,{},rs::util::Deadline::max()); ASSERT_TRUE(limited);
+  EXPECT_FALSE(lease->finalize_command_batch(std::move(*limited),fixed_command_sets())); EXPECT_TRUE(*lease);
+  auto typed = lease->describe_command_batch("UPDATE t SET v=?",{QueryParameterType::Int32},3,{}, {},rs::util::Deadline::max()); ASSERT_TRUE(typed);
+  auto mismatched = fixed_command_sets(); mismatched[2].values[0].type=QueryParameterType::Text;
+  EXPECT_FALSE(lease->finalize_command_batch(std::move(*typed),std::move(mismatched)));
+  auto repaired = lease->describe_command_batch("UPDATE t SET v=?",{QueryParameterType::Int32},3,{}, {},rs::util::Deadline::max()); ASSERT_TRUE(repaired);
+  auto plan = lease->finalize_command_batch(std::move(*repaired),fixed_command_sets()); EXPECT_TRUE(plan);
+  EXPECT_EQ(0,observed->queries); EXPECT_EQ(0,observed->disconnects);
+}
+TEST(DeferredCommandAuthorityTest, OriginalDeadlineIncludesCollectionAndTerminalDescriptionNeverAuthorizesValues) {
+  auto observed = std::make_shared<Observed>(); authoritative_command_description(observed);
+  auto owner = owner_for(observed); auto lease = owner.try_acquire(); ASSERT_TRUE(lease);
+  const auto deadline=rs::util::Clock::now()+std::chrono::milliseconds{30};
+  auto authority=lease->describe_command_batch("UPDATE t SET v=?",{QueryParameterType::Int32},3,{}, {},deadline); ASSERT_TRUE(authority);
+  std::this_thread::sleep_until(deadline);
+  auto expired=lease->finalize_command_batch(std::move(*authority),fixed_command_sets()); ASSERT_FALSE(expired);
+  EXPECT_EQ(BackendErrorClass::Timeout,expired.backend_error().error_class); EXPECT_EQ(0,observed->queries);
+  authoritative_command_description(observed);
+  observed->description_result=BackendResult<QueryResult>{**observed->description_result,
+      {SessionState::Unknown,SessionDisposition::Retire}};
+  EXPECT_FALSE(lease->describe_command_batch("UPDATE t SET v=?",{QueryParameterType::Int32},3,{}, {},rs::util::Deadline::max()));
+  EXPECT_FALSE(*lease); EXPECT_EQ(1,observed->disconnects); EXPECT_EQ(0,observed->queries);
+}
+}
+
+namespace {
+static_assert(std::is_same_v<PreparedCommandDescription,PreparedParameterDescription>);
+TEST(DeferredResultAuthorityTest, TypedOwningResultAuthorityKeepsCommandsStrictAndAdvancesWithoutRedescribeOrPrefetch) {
+  auto observed=std::make_shared<Observed>(); authoritative_select_description(observed);
+  auto owner=owner_for(observed); auto lease=owner.try_acquire(); ASSERT_TRUE(lease);
+  const auto deadline=rs::util::Clock::now()+std::chrono::seconds{3};
+  int descriptions=0;
+  observed->on_description=[&](auto sql,auto types,auto actual) {
+    ++descriptions; EXPECT_EQ("SELECT ?",sql); ASSERT_EQ(1u,types.size());
+    EXPECT_EQ(QueryParameterType::Int32,types[0]); EXPECT_EQ(deadline,actual); EXPECT_EQ(0,observed->queries);
+  };
+  auto authority=lease->describe_parameter_input("SELECT ?",{QueryParameterType::Int32},3,{}, {},deadline,true);
+  ASSERT_TRUE(authority); EXPECT_FALSE(lease->accepts_command_description(*authority));
+  EXPECT_FALSE(lease->finalize_command_batch(std::move(*authority),fixed_command_sets()));
+  EXPECT_TRUE(lease->accepts_parameter_description(*authority)); EXPECT_EQ(1,descriptions);
+  observed->on_description=[](auto,auto,auto) { ADD_FAILURE()<<"Collected values must not redescribe"; };
+  auto plan=lease->finalize_parameter_input(std::move(*authority),fixed_command_sets()); ASSERT_TRUE(plan);
+  EXPECT_EQ(0,observed->queries); EXPECT_FALSE(lease->accepts_parameter_description(*authority));
+  auto sequence=lease->start_result_sequence(std::move(*plan),8); ASSERT_TRUE(sequence);
+  observed->on_execution=[&](auto,auto values,auto actual,bool prepared) {
+    EXPECT_TRUE(prepared); EXPECT_EQ(deadline,actual); ASSERT_EQ(1u,values.size());
+    observed->execution_result=BackendResult<QueryResult>{literal_sequence_value(*values[0].value),
+        {SessionState::Idle,SessionDisposition::Reusable}};
+  };
+  auto first=lease->advance_result_sequence(*sequence); ASSERT_TRUE(first); ASSERT_TRUE(first->result);
+  EXPECT_EQ(1u,first->ordinal); EXPECT_EQ(1,observed->queries); EXPECT_EQ(std::optional<std::string>{"11"},first->result->rows[0][0]);
+  auto third=lease->advance_result_sequence(*sequence); ASSERT_TRUE(third); ASSERT_TRUE(third->result);
+  EXPECT_EQ(3u,third->ordinal); EXPECT_EQ(2,observed->queries); EXPECT_EQ(std::optional<std::string>{"33"},third->result->rows[0][0]);
+  auto end=lease->advance_result_sequence(*sequence); ASSERT_TRUE(end); EXPECT_FALSE(end->result); EXPECT_EQ(3u,end->examined);
+  EXPECT_EQ(1,descriptions); EXPECT_EQ(2,observed->queries);
+}
+TEST(DeferredResultAuthorityTest, T0RequiresActualSupportAndMetadataDecodedBoundsRefuseBeforePublication) {
+  for (bool supported : {false,true}) {
+    auto observed=std::make_shared<Observed>(); authoritative_select_description(observed,false);
+    observed->select_array_authority=supported;
+    auto owner=owner_for(observed); auto lease=owner.try_acquire(); ASSERT_TRUE(lease);
+    auto authority=lease->describe_parameter_input("SELECT ?",{QueryParameterType::Int32},3,{}, {},rs::util::Deadline::max(),true);
+    if (!supported) { EXPECT_FALSE(authority); EXPECT_EQ(0,observed->queries); continue; }
+    ASSERT_TRUE(authority); auto plan=lease->finalize_parameter_input(std::move(*authority),fixed_command_sets()); ASSERT_TRUE(plan);
+    auto sequence=lease->start_result_sequence(std::move(*plan),0); ASSERT_TRUE(sequence);
+    auto zero=lease->advance_result_sequence(*sequence); ASSERT_TRUE(zero); ASSERT_TRUE(zero->result);
+    EXPECT_EQ(ExecutionResultShape::ResultSet,zero->result->execution_result_shape);
+    EXPECT_TRUE(zero->result->columns.empty()); EXPECT_TRUE(zero->result->rows.empty());
+    observed->execution_result->operator->()->execution_result_shape.reset();
+    auto missing=lease->advance_result_sequence(*sequence); ASSERT_TRUE(missing); ASSERT_TRUE(missing->error);
+    EXPECT_FALSE(missing->result); EXPECT_EQ(BackendErrorClass::Protocol,missing->error->error_class); EXPECT_FALSE(*lease);
+  }
+  auto observed=std::make_shared<Observed>(); authoritative_select_description(observed);
+  auto owner=owner_for(observed); auto lease=owner.try_acquire(); ASSERT_TRUE(lease);
+  ResultLimits limits; limits.max_metadata_entries=1; // parameter + column cannot fit.
+  EXPECT_FALSE(lease->describe_parameter_input("SELECT ?",{QueryParameterType::Int32},3,{},limits,rs::util::Deadline::max(),true));
+  EXPECT_EQ(0,observed->queries);
+  auto bounded_observed=std::make_shared<Observed>(); authoritative_select_description(bounded_observed);
+  auto bounded_owner=owner_for(bounded_observed); auto bounded=bounded_owner.try_acquire(); ASSERT_TRUE(bounded);
+  auto authority=bounded->describe_parameter_input("SELECT ?",{QueryParameterType::Int32},3,{}, {},rs::util::Deadline::max(),true); ASSERT_TRUE(authority);
+  auto plan=bounded->finalize_parameter_input(std::move(*authority),fixed_command_sets()); ASSERT_TRUE(plan);
+  auto sequence=bounded->start_result_sequence(std::move(*plan),3); ASSERT_TRUE(sequence);
+  auto first=bounded->advance_result_sequence(*sequence); ASSERT_TRUE(first); ASSERT_TRUE(first->result);
+  auto next=bounded->advance_result_sequence(*sequence); ASSERT_TRUE(next); ASSERT_TRUE(next->error);
+  EXPECT_EQ(BackendErrorClass::ResourceLimit,next->error->error_class); EXPECT_FALSE(next->result);
+  EXPECT_EQ(std::optional<std::string>{"11"},first->result->rows[0][0]);
+}
+TEST(DeferredResultAuthorityTest, MovedReturnedAuthorityAndOriginalThinkTimeDeadlineNeverRetireNewBorrow) {
+  CredentialContext credentials; const auto token=credentials.publish_authenticated();
+  auto observed=std::make_shared<Observed>(); authoritative_select_description(observed);
+  SessionOwner owner{std::make_unique<FakeSession>(observed),token};
+  auto first=owner.try_acquire(token); ASSERT_TRUE(first);
+  auto authority=first->describe_parameter_input("SELECT ?",{QueryParameterType::Int32},3,{}, {},rs::util::Deadline::max(),true); ASSERT_TRUE(authority);
+  auto moved=std::move(*authority); EXPECT_FALSE(first->accepts_parameter_description(*authority));
+  ASSERT_TRUE(first->return_reusable(rs::util::Deadline::max()));
+  auto fresh=owner.try_acquire(token); ASSERT_TRUE(fresh);
+  observed->on_passive=[] { ADD_FAILURE()<<"Old result authority cannot inspect a fresh borrow"; };
+  EXPECT_FALSE(fresh->finalize_parameter_input(std::move(moved),fixed_command_sets()));
+  EXPECT_TRUE(*fresh); EXPECT_EQ(0,observed->disconnects); EXPECT_EQ(0,observed->queries);
+  observed->on_passive={};
+  const auto deadline=rs::util::Clock::now()+std::chrono::milliseconds{30};
+  auto timed=fresh->describe_parameter_input("SELECT ?",{QueryParameterType::Int32},3,{}, {},deadline,true); ASSERT_TRUE(timed);
+  std::this_thread::sleep_until(deadline);
+  auto expired=fresh->finalize_parameter_input(std::move(*timed),fixed_command_sets()); ASSERT_FALSE(expired);
+  EXPECT_EQ(BackendErrorClass::Timeout,expired.backend_error().error_class); EXPECT_EQ(0,observed->queries);
+}
+TEST(DeferredResultAuthorityTest, NativeErrorOrThrowStopsSequenceWithOwningOrdinalAndNoFutureExchange) {
+  for (bool throwing : {false,true}) {
+    auto observed=std::make_shared<Observed>(); authoritative_select_description(observed);
+    auto owner=owner_for(observed); auto lease=owner.try_acquire(); ASSERT_TRUE(lease);
+    auto authority=lease->describe_parameter_input("SELECT ?",{QueryParameterType::Int32},3,{}, {},rs::util::Deadline::max(),true); ASSERT_TRUE(authority);
+    auto plan=lease->finalize_parameter_input(std::move(*authority),fixed_command_sets()); ASSERT_TRUE(plan);
+    auto sequence=lease->start_result_sequence(std::move(*plan),32); ASSERT_TRUE(sequence);
+    auto first=lease->advance_result_sequence(*sequence); ASSERT_TRUE(first); ASSERT_TRUE(first->result);
+    if (throwing) observed->execution_exception=2;
+    else {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed),"owning ordinal-three"};
+      error.operation=BackendOperation::ExecutePrepared; error.native_state="22003";
+      error.session_state=SessionState::FailedTransaction; error.disposition=SessionDisposition::ResetRequired;
+      observed->execution_result=BackendResult<QueryResult>{error};
+    }
+    auto failed=lease->advance_result_sequence(*sequence); ASSERT_TRUE(failed); ASSERT_TRUE(failed->error);
+    EXPECT_EQ(3u,failed->ordinal); EXPECT_FALSE(sequence->pending()); EXPECT_FALSE(failed->result);
+    if (!throwing) { EXPECT_EQ("owning ordinal-three",failed->error->message); EXPECT_TRUE(*lease); }
+    EXPECT_FALSE(lease->advance_result_sequence(*sequence)); EXPECT_EQ(2,observed->queries);
+    EXPECT_EQ(std::optional<std::string>{"11"},first->result->rows[0][0]);
   }
 }
 }

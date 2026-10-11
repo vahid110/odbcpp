@@ -11,18 +11,22 @@ namespace rs::core::database::postgres {
 namespace {
 class PgSqlDialect final : public ISqlDialect {
  public:
+  explicit PgSqlDialect(SqlDialectProfile profile) : profile_(profile) {}
   std::size_t count_parameter_markers(std::string_view sql) const override {
     return PgProtocolParser::parameter_marker_count(sql);
   }
   SqlTranslationResult translate_sql(std::string_view sql) const override {
-    return translate_odbc_sql(sql);
+    return translate_odbc_sql(sql, profile_);
   }
+ private:
+  const SqlDialectProfile profile_;
 };
 } // namespace
 
 const ISqlDialect& PgBackendProvider::sql_dialect() const noexcept {
-  static const PgSqlDialect dialect;
-  return dialect;
+  static const PgSqlDialect postgres{SqlDialectProfile::PostgreSql};
+  static const PgSqlDialect redshift{SqlDialectProfile::Redshift};
+  return catalog_profile_ == PgCatalogProfile::Redshift ? redshift : postgres;
 }
 
 

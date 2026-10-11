@@ -25,6 +25,7 @@ odbcpp/database/type_definition.h
 odbcpp/transport/i_transport.h
 odbcpp/util/deadline.h
 odbcpp/util/result.h
+odbcpp/util/utf8.h
 core/database/postgres/pg_catalog_profile.h
 odbcpp/transport/cancellation_wait.h
 odbcpp/database/session_cancellation.h

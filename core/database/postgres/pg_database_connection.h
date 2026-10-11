@@ -25,6 +25,7 @@ public:
   BackendResult<void> connect_until(const ConnectionSettings& settings, rs::util::Deadline deadline);
 
   bool supports_single_statement_result_shape() const noexcept override { return true; }
+  bool supports_prepared_result_sequence() const noexcept override { return true; }
 
   ISessionReset* session_reset() noexcept override { return reset_profile_ ? this : nullptr; }
   SessionResetProfile reset_profile() const noexcept override {

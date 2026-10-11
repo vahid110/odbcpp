@@ -28,9 +28,10 @@
 #include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <exception>
 
 namespace rs::odbc {
-namespace detail { struct MetadataEpochIdentity {}; }
+namespace detail { struct MetadataEpochIdentity {}; struct PendingInputSessionIdentity {}; }
 using rs::core::database::SqlTranslationError;
 namespace {
 
@@ -1470,7 +1471,37 @@ ODBCStatement::ODBCStatement(std::shared_ptr<ODBCConnection> conn)
   }
 }
 
+struct ODBCStatement::PendingInput {
+  struct Value {
+    bool deferred{false}, supplied{false}, null{false};
+    SQLPOINTER token{};
+    SQLSMALLINT c_type{};
+    std::string bytes;
+    std::vector<SQLWCHAR> wide;
+  };
+  std::vector<ParameterConversionRecord> application, implementation;
+  std::vector<SQLLEN> indicators, lengths;
+  std::vector<Value> pieces;
+  std::vector<rs::core::database::QueryParameter> values;
+  // Array collection is compact over PROCEED sets; ignored fields are absent.
+  std::vector<std::size_t> array_slots;
+  std::vector<rs::core::database::PreparedCommandSet> array_sets;
+  std::optional<rs::core::database::PreparedParameterDescription> parameter_description;
+  SQLULEN result_max_rows{0};
+  std::size_t decoded_value_limit{0};
+  std::size_t parameter_width{0}, array_size{0};
+  std::shared_ptr<ExecutionCancellation> cancellation;
+  std::weak_ptr<const detail::PendingInputSessionIdentity> session;
+  rs::util::Deadline deadline;
+  SQLUSMALLINT* status{};
+  SQLULEN* processed{};
+  std::size_t ordinal{0}, bytes{0}, raw_bytes{0};
+  bool requested{false}, in_call{true}, collecting{true};
+  bool result_execution_phase{false};
+};
+
 ODBCStatement::~ODBCStatement() {
+  abandon_pending_input();
   for (const auto descriptor : {
            automatic_app_row_descriptor_, automatic_app_param_descriptor_,
            imp_row_descriptor_, imp_param_descriptor_}) {
@@ -1644,6 +1675,7 @@ SQLRETURN ODBCConnection::connect(
     if (!*backend_lease_) throw std::runtime_error("Backend retired during connection setup");
     input_limits_ = settings.input_limits;
     result_limits_ = settings.result_limits;
+    sequence_decoded_value_bytes_limit_ = settings.response_limits.max_wire_bytes;
     connected_ = true;
     transaction_active_ = false;
     current_catalog_ = settings.database;
@@ -1671,6 +1703,12 @@ SQLRETURN ODBCConnection::connect(
 }
 
 SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
+  if (has_pending_input()) { set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,"Statement needs parameter data"); return SQL_ERROR; }
+  if ((attribute == SQL_ATTR_AUTOCOMMIT || attribute == SQL_ATTR_TXN_ISOLATION) &&
+      has_pending_result_sequence()) {
+    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "Parameter result sequence is pending");
+    return SQL_ERROR;
+  }
   if (attribute == IODBC_ATTR_APP_WCHAR_TYPE) {
     if (value != NATIVE_SQLWCHAR_ENCODING) {
       set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
@@ -1943,8 +1981,8 @@ ODBCConnection::backend_prepare_command_batch(std::string_view sql,
     std::vector<rs::core::database::PreparedCommandSet> sets, rs::util::Deadline deadline) {
   using namespace rs::core::database;
   invalidate_metadata_epoch();
-  if (backend_lease_) return backend_lease_->prepare_command_batch(
-      sql, std::move(sets), input_limits_, result_limits_, deadline);
+  if (backend_lease_) return backend_lease_->prepare_parameter_batch(
+      sql, std::move(sets), input_limits_, result_limits_, deadline, supports_select_parameter_arrays());
   return local_backend_error(LocalFailure::Unsupported, "Statement arrays are unavailable",
       BackendOperation::Describe, SessionState::Disconnected);
 }
@@ -2042,6 +2080,10 @@ rs::core::database::BackendResult<void> ODBCConnection::begin_transaction_if_nee
 }
 
 SQLRETURN ODBCConnection::end_transaction(SQLSMALLINT completion_type) {
+  if (has_pending_result_sequence()) {
+    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "Parameter result sequence is pending"); return SQL_ERROR;
+  }
+  if (has_pending_input()) { set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,"Statement needs parameter data"); return SQL_ERROR; }
   if (completion_type != SQL_COMMIT && completion_type != SQL_ROLLBACK) {
     set_error(SQLSTATE_INVALID_TRANSACTION_OPERATION,
               "Completion type must be SQL_COMMIT or SQL_ROLLBACK");
@@ -2082,6 +2124,7 @@ SQLRETURN ODBCConnection::end_transaction(SQLSMALLINT completion_type) {
 }
 
 SQLRETURN ODBCConnection::disconnect() {
+  if (has_pending_input()) { set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,"Statement needs parameter data"); return SQL_ERROR; }
   if (!connected_) {
     set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
     return SQL_ERROR;
@@ -2128,6 +2171,7 @@ bool ODBCConnection::backend_connected() {
 }
 
 void ODBCConnection::close_connection() {
+  pending_input_identity_.reset();
   invalidate_metadata_epoch();
   backend_lease_.reset(); backend_owner_.reset(); backend_observation_ = {};
   connected_ = false; transaction_active_ = false;
@@ -2139,6 +2183,7 @@ void ODBCConnection::close_connection() {
 SQLRETURN ODBCDescriptor::get_field(
     SQLSMALLINT record_number, SQLSMALLINT field_identifier,
     SQLPOINTER value, SQLINTEGER buffer_length, SQLINTEGER* string_length) {
+  if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLGetDescField",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   const auto write_value = [value](auto field_value) {
     if (value) {
       store_application_value(
@@ -2299,6 +2344,7 @@ SQLRETURN ODBCDescriptor::get_field(
 SQLRETURN ODBCDescriptor::set_field(
     SQLSMALLINT record_number, SQLSMALLINT field_identifier,
     SQLPOINTER value, SQLINTEGER buffer_length) {
+  if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLSetDescField",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   if (kind_ == DescriptorKind::ImplementationRow &&
       field_identifier != SQL_DESC_ARRAY_STATUS_PTR &&
       field_identifier != SQL_DESC_ROWS_PROCESSED_PTR) {
@@ -2584,6 +2630,7 @@ SQLRETURN ODBCDescriptor::get_record(
     SQLSMALLINT* string_length, SQLSMALLINT* type, SQLSMALLINT* subtype,
     SQLLEN* length, SQLSMALLINT* precision, SQLSMALLINT* scale,
     SQLSMALLINT* nullable) {
+  if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLGetDescRec",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   if (buffer_length < 0) {
     set_error(SQLSTATE_INVALID_STRING_LENGTH,
               "Invalid descriptor name buffer length");
@@ -2631,6 +2678,7 @@ SQLRETURN ODBCDescriptor::set_record(
     SQLSMALLINT record_number, SQLSMALLINT type, SQLSMALLINT subtype,
     SQLLEN length, SQLSMALLINT precision, SQLSMALLINT scale,
     SQLPOINTER data, SQLLEN* string_length, SQLLEN* indicator) {
+  if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLSetDescRec",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   if (kind_ == DescriptorKind::ImplementationRow) {
     set_error(SQLSTATE_CANNOT_MODIFY_IRD,
               "Implementation row descriptor records are read-only");
@@ -2696,6 +2744,9 @@ SQLRETURN ODBCDescriptor::set_record(
 }
 
 SQLRETURN ODBCDescriptor::copy_from(const ODBCDescriptor& source) {
+  if (!HandleRegistry::instance().admit_need_data(
+      {reinterpret_cast<SQLHANDLE>(const_cast<ODBCDescriptor*>(&source)), reinterpret_cast<SQLHANDLE>(this)},
+      "SQLCopyDesc",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   if (kind_ == DescriptorKind::ImplementationRow) {
     set_error(SQLSTATE_CANNOT_MODIFY_IRD,
               "An implementation row descriptor cannot be a copy target");
@@ -2727,7 +2778,7 @@ SQLRETURN ODBCDescriptor::copy_from(const ODBCDescriptor& source) {
 struct ODBCStatement::CancellationLedger {
   std::mutex mutex;
   std::shared_ptr<rs::core::database::SessionCancellation> endpoint;
-  bool active{true}, available{false}, preparing{true}, locally_claimed{false};
+  bool active{true}, available{false}, preparing{true}, locally_claimed{false}, local_need_data{false};
 };
 class ODBCStatement::ExecutionCancellation {
  public:
@@ -2740,6 +2791,10 @@ class ODBCStatement::ExecutionCancellation {
     statement_.cancellation_ = ledger_;
   }
   ~ExecutionCancellation() { finish(); }
+  void enable(bool eligible) noexcept {
+    std::lock_guard lock(ledger_->mutex);
+    ledger_->available=generation_ && eligible && statement_.conn_->supports_server_cancellation();
+  }
   bool before_transaction() noexcept {
     std::lock_guard lock(ledger_->mutex);
     ledger_->preparing = false;
@@ -2781,36 +2836,465 @@ class ODBCStatement::ExecutionCancellation {
     return outcome_;
   }
  private:
+  friend class ODBCStatement;
+  friend class PendingInputCall;
   ODBCStatement& statement_;
   std::shared_ptr<CancellationLedger> ledger_;
   std::uint64_t generation_{0};
   bool finished_{false};
   rs::core::database::CancellationOutcome outcome_{};
 };
+class ODBCStatement::PendingInputCall {
+ public:
+  PendingInputCall(ODBCStatement& statement,std::shared_ptr<PendingInput> input)
+      : statement_(statement),input_(std::move(input)),exceptions_(std::uncaught_exceptions()) {}
+  ~PendingInputCall() {
+    if (std::uncaught_exceptions()>exceptions_) {
+      statement_.abandon_pending_input();
+      statement_.complete_parameter_set(SQL_ERROR,input_);
+    }
+    std::lock_guard lock(input_->cancellation->ledger_->mutex);
+    input_->in_call=false;
+  }
+ private:
+  ODBCStatement& statement_;
+  std::shared_ptr<PendingInput> input_;
+  int exceptions_;
+};
+
 SQLRETURN ODBCStatement::cancel() noexcept {
   try {
     std::shared_ptr<CancellationLedger> ledger;
-    { std::lock_guard lock(cancellation_mutex_); ledger = cancellation_; }
+    std::shared_ptr<PendingInput> input;
+    { std::lock_guard lock(cancellation_mutex_); ledger=cancellation_; input=pending_input_; }
     if (!ledger) return SQL_SUCCESS;
+    bool reset=false, claimed=false;
     std::shared_ptr<rs::core::database::SessionCancellation> endpoint;
     {
       std::lock_guard lock(ledger->mutex);
       if (!ledger->active) return SQL_SUCCESS;
-      if (!ledger->available) return SQL_ERROR;
-      if (ledger->preparing) { ledger->locally_claimed = true; return SQL_SUCCESS; }
-      endpoint = ledger->endpoint;
+      if (ledger->preparing && (ledger->available || ledger->local_need_data)) {
+        ledger->locally_claimed=true;
+        reset=input && !input->in_call; claimed=true;
+      } else {
+        if (!ledger->available) return SQL_ERROR;
+        endpoint=ledger->endpoint;
+      }
     }
-    return endpoint && endpoint->request() ? SQL_SUCCESS : SQL_ERROR;
+    if (endpoint) return endpoint->request() ? SQL_SUCCESS : SQL_ERROR;
+    if (reset) {
+      // Only an idle Need Data call may synchronize and reset diagnostics.
+      // Claim was made first, so a racing owner cannot BEGIN or dispatch.
+      auto operation=HandleRegistry::instance().lock_handles({reinterpret_cast<SQLHANDLE>(this)});
+      if (pending_input_==input) {
+        abandon_pending_input(); clear_diagnostics();
+        if (input->processed) store_application_value(input->processed,static_cast<SQLULEN>(0));
+        if (input->status) {
+          const auto count = input->array_size ? input->array_size : std::size_t{1};
+          for (std::size_t slot = 0; slot < count; ++slot) {
+            store_application_value(reinterpret_cast<SQLUSMALLINT*>(
+                reinterpret_cast<std::uintptr_t>(input->status) + slot * sizeof(SQLUSMALLINT)),
+                static_cast<SQLUSMALLINT>(SQL_PARAM_UNUSED));
+          }
+        }
+        set_last_return_code(SQL_SUCCESS);
+      }
+    }
+    return claimed ? SQL_SUCCESS : SQL_ERROR;
   } catch (...) { return SQL_ERROR; }
+}
+
+bool ODBCStatement::needs_data() const {
+  std::lock_guard lock(cancellation_mutex_);
+  return pending_input_ && pending_input_->collecting;
+}
+bool ODBCStatement::uses_descriptor(SQLHDESC handle) const noexcept {
+  return handle == app_row_descriptor_ || handle == app_param_descriptor_ ||
+      handle == imp_row_descriptor_ || handle == imp_param_descriptor_;
+}
+bool ODBCConnection::has_pending_result_sequence() const {
+  for (const auto handle : HandleRegistry::instance().child_handles(
+           reinterpret_cast<SQLHANDLE>(const_cast<ODBCConnection*>(this)), HandleType::Statement)) {
+    const auto statement = HandleRegistry::instance().get_handle_as<ODBCStatement>(handle);
+    if (statement && statement->has_pending_result_sequence()) return true;
+  }
+  return false;
+}
+bool ODBCConnection::has_pending_input() const {
+  for (const auto handle : HandleRegistry::instance().child_handles(
+           reinterpret_cast<SQLHANDLE>(const_cast<ODBCConnection*>(this)), HandleType::Statement)) {
+    const auto statement = HandleRegistry::instance().get_handle_as<ODBCStatement>(handle);
+    if (statement && statement->needs_data()) return true;
+  }
+  return false;
+}
+void ODBCStatement::abandon_pending_input() noexcept {
+  std::shared_ptr<PendingInput> input;
+  { std::lock_guard lock(cancellation_mutex_); input = std::move(pending_input_); }
+  if (input && input->cancellation) input->cancellation->finish();
+}
+bool ODBCStatement::pending_call_ready(const std::shared_ptr<PendingInput>& input) {
+  if (input->deadline != rs::util::Deadline::max() &&
+      std::chrono::steady_clock::now() >= input->deadline) {
+    abandon_pending_input();
+    set_error(SQLSTATE_TIMEOUT, "Data-at-execution deadline expired");
+    complete_parameter_set(SQL_ERROR, input);
+    return false;
+  }
+  if (input->parameter_description && (!conn_->backend_lease_ ||
+      !conn_->backend_lease_->accepts_parameter_description(*input->parameter_description))) {
+    abandon_pending_input();
+    set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Deferred command borrow is no longer owned");
+    complete_parameter_set(SQL_ERROR, input);
+    return false;
+  }
+  bool connected=false;
+  try { connected=!input->session.expired() && conn_->is_connected() && conn_->backend_connected(); }
+  catch (...) {
+    abandon_pending_input();
+    set_error(SQLSTATE_GENERAL_ERROR,"Unable to inspect data-at-execution session");
+    complete_parameter_set(SQL_ERROR,input);
+    return false;
+  }
+  if (!connected) {
+    abandon_pending_input();
+    set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Data-at-execution session is no longer owned");
+    complete_parameter_set(SQL_ERROR, input);
+    return false;
+  }
+  bool claimed;
+  { std::lock_guard lock(input->cancellation->ledger_->mutex);
+    input->in_call = true;
+    claimed = input->cancellation->ledger_->locally_claimed; }
+  if (claimed) {
+    abandon_pending_input();
+    set_error("HY008", "Data-at-execution input cancelled");
+    complete_parameter_set(SQL_ERROR, input);
+    return false;
+  }
+  return true;
+}
+
+std::optional<SQLRETURN> ODBCStatement::start_pending_input(
+    std::uintptr_t offset, rs::util::Deadline deadline,
+    const std::shared_ptr<ExecutionCancellation>& cancellation) {
+  const auto apd = descriptor(app_param_descriptor_);
+  const auto ipd = descriptor(imp_param_descriptor_);
+  const auto count = static_cast<std::size_t>(parameter_count_);
+  if (!count || apd->record_count() < count || ipd->record_count() < count) return std::nullopt;
+  if (count > conn_->input_limits().max_parameters) return std::nullopt;
+  auto input = std::make_shared<PendingInput>();
+  input->application.resize(count); input->implementation.resize(count);
+  input->indicators.resize(count); input->lengths.resize(count);
+  input->pieces.resize(count); input->values.resize(count);
+  bool deferred = false;
+  const auto shift = [&](const void* base, std::size_t extent) -> void* {
+    if (!base) return nullptr;
+    const auto address = reinterpret_cast<std::uintptr_t>(base);
+    const auto max = (std::numeric_limits<std::uintptr_t>::max)();
+    if (offset > max-address || extent > max-address-offset)
+      throw std::range_error("Parameter binding address span is out of range");
+    return reinterpret_cast<void*>(address+offset);
+  };
+  try {
+    // Copy only conversion-relevant scalar fields, never descriptor text metadata.
+    for (std::size_t i=0; i<count; ++i) {
+      const auto& a=*apd->record(i); const auto& d=*ipd->record(i);
+      auto& ca=input->application[i]; auto& cd=input->implementation[i];
+      ca.concise_type=a.concise_type; ca.octet_length=a.octet_length;
+      ca.precision=a.precision; ca.scale=a.scale;
+      cd.concise_type=d.concise_type; cd.parameter_type=d.parameter_type;
+      cd.bound_sql_type=d.bound_sql_type; cd.bound_sql_length=d.bound_sql_length;
+      cd.bound_sql_precision=d.bound_sql_precision; cd.bound_sql_scale=d.bound_sql_scale;
+      cd.length=d.length; cd.precision=d.precision; cd.scale=d.scale;
+      const auto* indicator=static_cast<SQLLEN*>(shift(a.indicator_ptr,sizeof(SQLLEN)));
+      input->indicators[i]=indicator ? load_application_value<SQLLEN>(indicator) : 0;
+      const bool null=indicator && input->indicators[i]==SQL_NULL_DATA;
+      const auto* length=null ? nullptr : static_cast<SQLLEN*>(shift(a.octet_length_ptr,sizeof(SQLLEN)));
+      input->lengths[i]=null ? SQL_NULL_DATA : length ? load_application_value<SQLLEN>(length)
+          : indicator ? input->indicators[i] : a.octet_length;
+      ca.indicator_ptr=indicator ? &input->indicators[i] : nullptr;
+      ca.octet_length_ptr=length ? &input->lengths[i] : nullptr;
+      const auto n=input->lengths[i];
+      auto& piece=input->pieces[i];
+      piece.deferred=!null && (n==SQL_DATA_AT_EXEC || n<=SQL_LEN_DATA_AT_EXEC_OFFSET);
+      deferred=deferred || piece.deferred;
+      piece.c_type=ResultTypes::canonical_c_type(a.concise_type==SQL_C_DEFAULT
+          ? ResultTypes::default_c_type(d.bound_sql_type ? d.bound_sql_type : d.concise_type) : a.concise_type);
+      if (piece.deferred) {
+        // Token bits are opaque: neither shifted nor tested as a data address.
+        piece.token=a.data_ptr; ca.data_ptr=nullptr;
+      } else ca.data_ptr=null ? nullptr : shift(a.data_ptr,0);
+    }
+    if (!deferred) return std::nullopt;
+    for (std::size_t i=0; i<count; ++i) {
+      const auto& piece=input->pieces[i]; const auto& d=input->implementation[i];
+      const auto sql=d.bound_sql_type ? d.bound_sql_type : d.concise_type;
+      if (piece.deferred && (d.parameter_type!=SQL_PARAM_INPUT ||
+          (piece.c_type!=SQL_C_CHAR && piece.c_type!=SQL_C_WCHAR && piece.c_type!=SQL_C_BINARY) ||
+          (!is_character_sql_type(sql) && sql!=SQL_BINARY && sql!=SQL_VARBINARY && sql!=SQL_LONGVARBINARY))) {
+        set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED, "Deferred parameter representation is not supported");
+        return SQL_ERROR;
+      }
+    }
+    if (!conn_->pending_input_identity_)
+      conn_->pending_input_identity_=std::make_shared<const detail::PendingInputSessionIdentity>();
+    input->session=conn_->pending_input_identity_; input->deadline=deadline;
+    input->status=ipd->array_status_ptr(); input->processed=ipd->rows_processed_ptr();
+    if (!cancellation->generation_) {
+      set_error(SQLSTATE_GENERAL_ERROR,"Statement operation generation exhausted"); return SQL_ERROR;
+    }
+    input->cancellation=cancellation;
+    cancellation->enable(conn_->cancellation_request_eligible(prepared_sql_));
+    { std::lock_guard lock(input->cancellation->ledger_->mutex);
+      input->cancellation->ledger_->local_need_data=true; }
+    { std::lock_guard lock(cancellation_mutex_); pending_input_=input; }
+    clear_current_result(); pending_results_.clear();
+    for (std::size_t i=0; i<count; ++i) {
+      if (input->pieces[i].deferred) continue;
+      const auto& a=input->application[i];
+      if (a.data_ptr && input->indicators[i]!=SQL_NULL_DATA) {
+        const auto type=input->pieces[i].c_type;
+        const bool variable=type==SQL_C_CHAR || type==SQL_C_WCHAR || type==SQL_C_BINARY;
+        const auto extent=variable ? (input->lengths[i]>=0 ? static_cast<std::size_t>(input->lengths[i]) : 0)
+            : bound_column_stride(type,0).value_or(0);
+        const auto address=reinterpret_cast<std::uintptr_t>(a.data_ptr);
+        if (variable && (input->lengths[i]==SQL_NTS ||
+            (input->lengths[i]==0 && !a.indicator_ptr && !a.octet_length_ptr)) && type!=SQL_C_BINARY) {
+          const auto unit=type==SQL_C_WCHAR ? sizeof(SQLWCHAR) : std::size_t{1};
+          const auto limit=std::min(conn_->input_limits().max_parameter_bytes,
+              conn_->input_limits().max_parameter_total_bytes-input->bytes);
+          for (std::size_t n=0;;n+=unit) {
+            if (n>(std::numeric_limits<std::uintptr_t>::max)()-address ||
+                unit>(std::numeric_limits<std::uintptr_t>::max)()-address-n)
+              throw std::range_error("Parameter binding address span is out of range");
+            const auto* next=reinterpret_cast<const void*>(address+n);
+            const bool end=unit==1 ? load_application_value<SQLCHAR>(next)==0 : load_application_value<SQLWCHAR>(next)==0;
+            if (end || n>=limit) break;
+          }
+        }
+        if (extent > (std::numeric_limits<std::uintptr_t>::max)()-address)
+          throw std::range_error("Parameter binding address span is out of range");
+      }
+      auto values=materialize_parameter_set(0,0,false,SQL_PARAM_BIND_BY_COLUMN,{},input->bytes,
+          input->application,input->implementation,i);
+      if (!values) { abandon_pending_input(); return complete_parameter_set(SQL_ERROR,input); }
+      input->values[i]=std::move(values->front());
+      input->application[i].data_ptr=nullptr; // No subsequent ordinary-buffer read.
+    }
+    if (!pending_call_ready(input)) return SQL_ERROR;
+    bool claimed;
+    { std::lock_guard lock(input->cancellation->ledger_->mutex);
+      claimed=input->cancellation->ledger_->locally_claimed;
+      if (!claimed) {
+        if (input->processed) store_application_value(input->processed,static_cast<SQLULEN>(0));
+        if (input->status) store_application_value(input->status,static_cast<SQLUSMALLINT>(SQL_PARAM_UNUSED));
+        input->in_call=false;
+      }
+    }
+    if (claimed) {
+      abandon_pending_input(); set_error("HY008","Data-at-execution input cancelled");
+      return complete_parameter_set(SQL_ERROR,input);
+    }
+    return SQL_NEED_DATA;
+  } catch (const std::range_error&) {
+    abandon_pending_input(); set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,"Parameter binding address span is out of range");
+    return SQL_ERROR;
+  } catch (const std::bad_alloc&) {
+    abandon_pending_input(); set_error(SQLSTATE_MEMORY_ALLOCATION_ERROR,"Unable to collect deferred input");
+    return complete_parameter_set(SQL_ERROR,input);
+  } catch (...) {
+    abandon_pending_input(); set_error(SQLSTATE_GENERAL_ERROR,"Unable to collect deferred input");
+    return complete_parameter_set(SQL_ERROR,input);
+  }
+}
+
+SQLRETURN ODBCStatement::put_data(SQLPOINTER data, SQLLEN length) {
+  auto input=pending_input_;
+  if (!input || !input->requested) {
+    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,"No deferred parameter has been requested"); return SQL_ERROR;
+  }
+  if (!pending_call_ready(input)) return SQL_ERROR;
+  PendingInputCall call(*this,input);
+  const auto fail=[&](const char* state,const char* message) {
+    abandon_pending_input(); set_error(state,message); return complete_parameter_set(SQL_ERROR,input);
+  };
+  auto& piece=input->pieces[input->ordinal];
+  if ((length==SQL_NULL_DATA && piece.supplied) || (piece.null && length!=SQL_NULL_DATA) ||
+      (piece.null && piece.supplied)) return fail("HY020","Cannot concatenate NULL parameter input");
+  if (length==SQL_NULL_DATA) { piece.null=true; piece.supplied=true; }
+  else {
+    if (length<0 && length!=SQL_NTS) return fail(SQLSTATE_INVALID_STRING_LENGTH,"Invalid deferred input length");
+    if (!data && length!=0) return fail(SQLSTATE_INVALID_NULL_POINTER,"Deferred input pointer is null");
+    const auto unit=piece.c_type==SQL_C_WCHAR ? sizeof(SQLWCHAR) : std::size_t{1};
+    if (length==SQL_NTS && piece.c_type==SQL_C_BINARY)
+      return fail(SQLSTATE_INVALID_STRING_LENGTH,"Binary input requires an explicit length");
+    const auto& limits=conn_->input_limits();
+    const auto used=piece.c_type==SQL_C_WCHAR ? piece.wide.size()*sizeof(SQLWCHAR) : piece.bytes.size();
+    if (used>limits.max_parameter_bytes || input->bytes>limits.max_parameter_total_bytes ||
+        input->raw_bytes>limits.max_parameter_total_bytes-input->bytes)
+      return fail(SQLSTATE_GENERAL_ERROR,"Deferred parameter bytes exceed configured limit");
+    const auto available=std::min(limits.max_parameter_bytes-used,
+        limits.max_parameter_total_bytes-input->bytes-input->raw_bytes);
+    std::size_t bytes=0;
+    const auto address=reinterpret_cast<std::uintptr_t>(data);
+    const auto maximum=(std::numeric_limits<std::uintptr_t>::max)();
+    if (length==SQL_NTS) {
+      for (;;) {
+        if (bytes>maximum-address || unit>maximum-address-bytes)
+          return fail(SQLSTATE_INVALID_ATTRIBUTE_VALUE,"Deferred input address span is out of range");
+        const auto* next=reinterpret_cast<const void*>(address+bytes);
+        const bool end=unit==1 ? load_application_value<SQLCHAR>(next)==0 : load_application_value<SQLWCHAR>(next)==0;
+        if (end) break;
+        if (bytes>available || unit>available-bytes)
+          return fail(SQLSTATE_GENERAL_ERROR,"Deferred parameter bytes exceed configured limit");
+        bytes+=unit;
+      }
+    } else {
+      bytes=static_cast<std::size_t>(length);
+      if (bytes%unit) return fail(SQLSTATE_INVALID_STRING_LENGTH,"Deferred wide input has an incomplete unit");
+      if (bytes>maximum-address) return fail(SQLSTATE_INVALID_ATTRIBUTE_VALUE,"Deferred input address span is out of range");
+      if (bytes>available) return fail(SQLSTATE_GENERAL_ERROR,"Deferred parameter bytes exceed configured limit");
+    }
+    try {
+      if (bytes && unit==1) piece.bytes.append(static_cast<const char*>(data),bytes);
+      else if (bytes) {
+        const auto old=piece.wide.size(); piece.wide.resize(old+bytes/unit);
+        std::memcpy(piece.wide.data()+old,data,bytes);
+      }
+      input->raw_bytes+=bytes; piece.supplied=true;
+    } catch (const std::bad_alloc&) { return fail(SQLSTATE_MEMORY_ALLOCATION_ERROR,"Unable to collect deferred input"); }
+  }
+  if (!pending_call_ready(input)) return SQL_ERROR;
+  bool claimed;
+  { std::lock_guard lock(input->cancellation->ledger_->mutex);
+    claimed=input->cancellation->ledger_->locally_claimed;
+    if (!claimed) input->in_call=false;
+  }
+  if (claimed) return fail("HY008","Data-at-execution input cancelled");
+  return SQL_SUCCESS;
+}
+
+SQLRETURN ODBCStatement::param_data(SQLPOINTER* token) {
+  auto input=pending_input_;
+  if (!input) { set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,"No deferred execution is pending"); return SQL_ERROR; }
+  if (!pending_call_ready(input)) return SQL_ERROR;
+  PendingInputCall call(*this,input);
+  const auto fail=[&](const char* state,const char* message) {
+    abandon_pending_input(); set_error(state,message); return complete_parameter_set(SQL_ERROR,input);
+  };
+  if (!token) return fail(SQLSTATE_INVALID_NULL_POINTER,"Deferred token output is null");
+  if (sizeof(SQLPOINTER)>(std::numeric_limits<std::uintptr_t>::max)()-reinterpret_cast<std::uintptr_t>(token))
+    return fail(SQLSTATE_INVALID_ATTRIBUTE_VALUE,"Deferred token output address span is out of range");
+  if (input->requested && !input->pieces[input->ordinal].supplied) {
+    { std::lock_guard lock(input->cancellation->ledger_->mutex); input->in_call=false; }
+    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,"No data was supplied for the requested parameter"); return SQL_ERROR;
+  }
+  try {
+    if (input->requested) {
+      auto& piece=input->pieces[input->ordinal]; auto& a=input->application[input->ordinal];
+      const auto raw=piece.c_type==SQL_C_WCHAR ? piece.wide.size()*sizeof(SQLWCHAR) : piece.bytes.size();
+      const bool array = input->array_size != 0;
+      if (!array) input->raw_bytes-=raw;
+      input->indicators[input->ordinal]=piece.null ? SQL_NULL_DATA : 0;
+      input->lengths[input->ordinal]=piece.null ? SQL_NULL_DATA : static_cast<SQLLEN>(raw);
+      a.indicator_ptr=&input->indicators[input->ordinal]; a.octet_length_ptr=&input->lengths[input->ordinal];
+      // Non-null empty values still have an owning non-null input address.
+      SQLWCHAR empty_wide=0; char empty_byte=0;
+      a.data_ptr=piece.c_type==SQL_C_WCHAR
+          ? static_cast<void*>(piece.wide.empty() ? &empty_wide : piece.wide.data())
+          : static_cast<void*>(piece.bytes.empty() ? &empty_byte : piece.bytes.data());
+      const auto width = array ? input->parameter_width : input->application.size();
+      const auto first = array ? (input->ordinal / width) * width : 0;
+      // Count raw + converted coexistence before conversion's bounded copy.
+      auto budget = input->bytes + (array ? input->raw_bytes : 0);
+      auto values=materialize_parameter_set(0,0,false,SQL_PARAM_BIND_BY_COLUMN,{},budget,
+          std::span<const ParameterConversionRecord>(input->application).subspan(first,width),
+          std::span<const ParameterConversionRecord>(input->implementation).subspan(first,width),
+          input->ordinal-first);
+      if (array) {
+        input->bytes = budget - input->raw_bytes;
+        input->raw_bytes -= raw;
+      } else input->bytes = budget;
+      a.data_ptr=nullptr;
+      if (!values) { abandon_pending_input(); return complete_parameter_set(SQL_ERROR,input); }
+      if (input->raw_bytes>conn_->input_limits().max_parameter_total_bytes-input->bytes)
+        return fail(SQLSTATE_GENERAL_ERROR,"Deferred parameter bytes exceed configured limit");
+      input->values[input->ordinal]=std::move(values->front());
+      std::string{}.swap(piece.bytes); std::vector<SQLWCHAR>{}.swap(piece.wide);
+      ++input->ordinal;
+    }
+    while (input->ordinal<input->pieces.size() && !input->pieces[input->ordinal].deferred) ++input->ordinal;
+    if (!pending_call_ready(input)) return SQL_ERROR;
+    if (input->ordinal<input->pieces.size()) {
+      bool claimed;
+      { std::lock_guard lock(input->cancellation->ledger_->mutex);
+        claimed=input->cancellation->ledger_->locally_claimed;
+        if (!claimed) {
+          input->requested=true;
+          store_application_value(token,input->pieces[input->ordinal].token);
+          if (input->array_size != 0 && input->processed) {
+            store_application_value(input->processed, static_cast<SQLULEN>(
+                input->array_slots[input->ordinal / input->parameter_width] + 1));
+          }
+          input->in_call=false;
+        }
+      }
+      if (claimed) return fail("HY008","Data-at-execution input cancelled");
+      return SQL_NEED_DATA;
+    }
+    if (input->array_size != 0) {
+      // Serialize the local claim with the irreversible phase transition. A
+      // winning claim suppresses every BEGIN/query; the native array phase
+      // remains honestly unavailable to cross-thread cancellation.
+      bool claimed;
+      { std::lock_guard lock(input->cancellation->ledger_->mutex);
+        claimed = input->cancellation->ledger_->locally_claimed;
+        if (!claimed) {
+          input->cancellation->ledger_->local_need_data = false;
+          input->cancellation->ledger_->available = false;
+          input->cancellation->ledger_->preparing = false;
+        }
+      }
+      if (claimed) return fail("HY008", "Data-at-execution input cancelled");
+      { std::lock_guard lock(cancellation_mutex_); input->collecting=false; }
+      for (std::size_t compact = 0; compact < input->array_slots.size(); ++compact) {
+        auto& set = input->array_sets[input->array_slots[compact]];
+        set.values.reserve(input->parameter_width);
+        for (std::size_t parameter = 0; parameter < input->parameter_width; ++parameter) {
+          set.values.push_back(std::move(input->values[compact * input->parameter_width + parameter]));
+        }
+      }
+      auto plan = conn_->backend_lease_->finalize_parameter_input(
+          std::move(*input->parameter_description), std::move(input->array_sets));
+      if (!plan) {
+        // Finalizer's passive invalid authority cannot retire a fresh session.
+        set_error(query_failure_sqlstate(conn_->backend_provider(), plan.backend_error(),
+            SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT), plan.error_message());
+        abandon_pending_input(); return complete_parameter_set(SQL_ERROR,input);
+      }
+      const auto result = plan->description().described_result_shape == rs::core::database::DescribedResultShape::ResultSet
+          ? publish_deferred_result(std::move(*plan),input)
+          : publish_command_batch(std::move(*plan), input->status, input->processed,
+              input->array_size, input->deadline, true);
+      abandon_pending_input(); return result;
+    }
+    { std::lock_guard lock(cancellation_mutex_); input->collecting=false; }
+    const auto result=dispatch_owning_parameters(std::move(input->values),input->deadline,*input->cancellation,input);
+    abandon_pending_input();
+    return result;
+  } catch (const std::bad_alloc&) { return fail(SQLSTATE_MEMORY_ALLOCATION_ERROR,"Unable to materialize deferred input"); }
+  catch (...) { return fail(SQLSTATE_GENERAL_ERROR,"Unable to materialize deferred input"); }
 }
 
 SQLRETURN ODBCStatement::execute_direct(const std::string& sql,
     std::optional<rs::util::Deadline> original_deadline) {
+  if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLExecDirect",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   const auto started = std::chrono::steady_clock::now();
   const auto dynamic_function = classify_dynamic_function(sql);
   set_statement_diagnostic_header(
       0, 0, dynamic_function.name, dynamic_function.code);
-  if (executed_ && (!column_info_.empty() || !pending_results_.empty())) {
+  if (executed_ && (parameter_result_cursor_ || !column_info_.empty() || !pending_results_.empty())) {
     set_error(SQLSTATE_INVALID_CURSOR_STATE,
               "Cannot execute while results are pending");
     return SQL_ERROR;
@@ -2859,7 +3343,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql,
         set_error("HY008", "Statement cancelled");
         return SQL_ERROR;
       }
-      if (timeout) conn_->disconnect();
+      if (timeout) conn_->close_connection();
       set_error(query_failure_sqlstate(conn_->backend_provider(),
                                        transaction.backend_error(), SQLSTATE_GENERAL_ERROR,
                                        SQL_DIAG_UNKNOWN_STATEMENT),
@@ -2894,7 +3378,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql,
                  result.backend_error().safe_summary(),
                  {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "direct", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
-      if (timeout) conn_->disconnect();
+      if (timeout) conn_->close_connection();
       return SQL_ERROR;
     }
 
@@ -2919,12 +3403,20 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql,
 }
 
 SQLRETURN ODBCStatement::set_attribute(SQLINTEGER attribute, SQLPOINTER value) {
+  if (needs_data()) {
+    const bool cursor=attribute==SQL_ATTR_CONCURRENCY || attribute==SQL_ATTR_CURSOR_TYPE ||
+        attribute==SQL_ATTR_SIMULATE_CURSOR || attribute==SQL_ATTR_USE_BOOKMARKS ||
+        attribute==SQL_ATTR_CURSOR_SCROLLABLE || attribute==SQL_ATTR_CURSOR_SENSITIVITY;
+    set_error(cursor ? SQLSTATE_ATTRIBUTE_CANNOT_BE_SET : SQLSTATE_FUNCTION_SEQUENCE_ERROR,
+              "Statement needs parameter data");
+    return SQL_ERROR;
+  }
   const auto numeric = static_cast<SQLULEN>(
       reinterpret_cast<std::uintptr_t>(value));
   const auto numeric_signed = static_cast<SQLLEN>(
       reinterpret_cast<std::intptr_t>(value));
   const auto cursor_attribute_settable = [this]() {
-    if (executed_ && !column_info_.empty()) {
+    if (executed_ && (parameter_result_cursor_ || !column_info_.empty())) {
       set_error(SQLSTATE_INVALID_CURSOR_STATE,
                 "Cursor attribute cannot be changed while the cursor is open");
       return false;
@@ -3198,6 +3690,7 @@ std::shared_ptr<ODBCDescriptor> ODBCStatement::descriptor(
 }
 
 SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
+  if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLGetStmtAttr",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   const auto write_ulen = [value](SQLULEN result) {
     std::memcpy(value, &result, sizeof(result));
   };
@@ -3296,29 +3789,208 @@ SQLRETURN ODBCStatement::get_attribute(SQLINTEGER attribute, SQLPOINTER value) {
 }
 
 SQLRETURN ODBCStatement::close_cursor(bool report_missing_cursor) {
-  const bool cursor_open = executed_ && !column_info_.empty();
+  if (needs_data()) { set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,"Statement needs parameter data"); return SQL_ERROR; }
+  const bool cursor_open = executed_ && (!column_info_.empty() || parameter_result_cursor_);
   if (!cursor_open && report_missing_cursor) {
     set_error(SQLSTATE_INVALID_CURSOR_STATE, "No cursor is open");
     return SQL_ERROR;
   }
+  result_sequence_.reset(); sequence_statuses_ = nullptr; sequence_processed_ = nullptr;
   clear_current_result();
   pending_results_.clear();
   return SQL_SUCCESS;
 }
 
 void ODBCStatement::unbind_columns() {
+  if (needs_data()) { set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,"Statement needs parameter data"); return; }
   descriptor(app_row_descriptor_)->bookmark_record_.emplace();
   descriptor(app_row_descriptor_)->set_field(
       0, SQL_DESC_COUNT, nullptr, 0);
 }
 
 void ODBCStatement::reset_parameters() {
+  if (needs_data()) { set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,"Statement needs parameter data"); return; }
   descriptor(app_param_descriptor_)->set_field(
       0, SQL_DESC_COUNT, nullptr, 0);
 }
 
 SQLRETURN ODBCStatement::fetch() {
   return fetch_impl(SQL_FETCH_NEXT, 0);
+}
+
+SQLRETURN ODBCStatement::bulk_operations(SQLSMALLINT operation) {
+  if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},
+          "SQLBulkOperations", reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
+  if (operation != SQL_FETCH_BY_BOOKMARK) {
+    // Every other defined bulk operation writes a READ_ONLY result; unknown
+    // operations share the primary HY092 classification, not optional success.
+    set_error("HY092", "Invalid bulk operation for a read-only cursor");
+    return SQL_ERROR;
+  }
+  if (!executed_) {
+    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "Statement has not been executed"); return SQL_ERROR;
+  }
+  if (column_info_.empty()) {
+    set_error(SQLSTATE_INVALID_CURSOR_STATE, "Executed statement did not produce a result set"); return SQL_ERROR;
+  }
+  if (cursor_type_ != SQL_CURSOR_STATIC) {
+    set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED, "Bulk bookmark fetch requires a static cursor"); return SQL_ERROR;
+  }
+  const auto ard = descriptor(app_row_descriptor_);
+  const auto* bookmark = ard->numbered_record(0);
+  if (!use_variable_bookmarks_ || !bookmark || !bookmark->data_ptr) {
+    set_error("HY092", "Bulk fetch requires a bound variable bookmark input"); return SQL_ERROR;
+  }
+  if (bookmark->concise_type != SQL_C_VARBOOKMARK) {
+    set_error(SQLSTATE_RESTRICTED_DATA_TYPE, "Invalid bookmark input binding type"); return SQL_ERROR;
+  }
+  if (bookmark->octet_length != static_cast<SQLLEN>(bookmark_bytes)) {
+    set_error(SQLSTATE_INVALID_STRING_LENGTH, "Bulk fetch requires complete bookmark inputs"); return SQL_ERROR;
+  }
+  const auto count = static_cast<std::size_t>(ard->array_size());
+  const auto row_stride = static_cast<std::size_t>(ard->bind_type());
+  const auto columns = std::min(ard->record_count(), column_info_.size());
+  if (!count || count > static_cast<std::size_t>((std::numeric_limits<SQLLEN>::max)()) ||
+      static_cast<SQLULEN>(count) != ard->array_size() ||
+      static_cast<SQLULEN>(row_stride) != ard->bind_type()) {
+    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Bulk application layout is out of range"); return SQL_ERROR;
+  }
+  const auto& limits = conn_->result_limits_;
+  // The configured owning-result ceilings also bound this local input plan.
+  // A token consumes one entry and each captured column mask one more entry.
+  // This is a request-plan bound, never a wire/heap/RSS claim.
+  const auto maximum = (std::numeric_limits<std::size_t>::max)();
+  if (columns == maximum || count > limits.max_rows ||
+      columns + 1 > limits.max_cells || count > limits.max_cells / (columns + 1) ||
+      count > maximum / sizeof(std::array<unsigned char, bookmark_bytes>) ||
+      columns > maximum / sizeof(BoundResultField) ||
+      (columns && count > maximum / columns)) {
+    set_error(SQLSTATE_GENERAL_ERROR, "Bulk bookmark input plan limit exceeded"); return SQL_ERROR;
+  }
+  std::uintptr_t binding_offset = 0;
+  const auto address_max = (std::numeric_limits<std::uintptr_t>::max)();
+  if (const auto* pointer = ard->bind_offset_ptr()) {
+    const auto address = reinterpret_cast<std::uintptr_t>(pointer);
+    if (sizeof(SQLULEN) > address_max - address) {
+      set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Bulk offset address span is out of range"); return SQL_ERROR;
+    }
+    static_assert(sizeof(SQLLEN) == sizeof(SQLULEN));
+    const SQLULEN encoded = load_application_value<SQLULEN>(pointer);
+    if (encoded > static_cast<SQLULEN>((std::numeric_limits<SQLLEN>::max)())) {
+      set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED, "Binding offset outside the common nonnegative range is not supported"); return SQL_ERROR;
+    }
+    binding_offset = static_cast<std::uintptr_t>(encoded);
+    if (static_cast<SQLULEN>(binding_offset) != encoded) {
+      set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Bulk offset value is out of range"); return SQL_ERROR;
+    }
+  }
+  const auto field = [binding_offset, row_stride](const void* base,
+                        std::size_t slot, std::size_t extent) -> std::optional<std::uintptr_t> {
+    if (!base) return std::uintptr_t{0};
+    auto address = reinterpret_cast<std::uintptr_t>(base);
+    if (binding_offset > address_max - address) return std::nullopt;
+    address += binding_offset;
+    const auto step = row_stride == SQL_BIND_BY_COLUMN ? extent : row_stride;
+    if (step && slot > (address_max - address) / step) return std::nullopt;
+    address += slot * step;
+    if (extent > address_max - address) return std::nullopt;
+    return address;
+  };
+  const auto span = [](const void* pointer, std::size_t elements, std::size_t width) {
+    return !pointer || elements <= (address_max - reinterpret_cast<std::uintptr_t>(pointer)) / width;
+  };
+  const auto ird = descriptor(imp_row_descriptor_);
+  auto* const status = ird->array_status_ptr();
+  auto* const fetched = ird->rows_processed_ptr();
+  if (!span(status, count, sizeof(SQLUSMALLINT)) || !span(fetched, 1, sizeof(SQLULEN)) ||
+      !field(bookmark->data_ptr, count - 1, bookmark_bytes)) {
+    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Bulk header or bookmark address span is out of range"); return SQL_ERROR;
+  }
+  std::vector<BoundResultField> fields;
+  fields.reserve(columns);
+  for (std::size_t column = 0; column < columns; ++column) {
+    fields.push_back(bound_result_field(*ard->record(column)));
+    const auto& binding = fields.back();
+    // Both split length fields are consumed inputs, even for a prohibited
+    // conversion. Check every consumed mask span before reading any mask.
+    if (!field(binding.indicator_ptr, count - 1, sizeof(SQLLEN)) ||
+        !field(binding.octet_length_ptr, count - 1, sizeof(SQLLEN))) {
+      set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Bulk ignore input span is out of range"); return SQL_ERROR;
+    }
+  }
+  std::vector<std::array<unsigned char, bookmark_bytes>> tokens(count);
+  std::vector<unsigned char> ignored(count * columns, 0);
+  for (std::size_t slot = 0; slot < count; ++slot) {
+    std::memcpy(tokens[slot].data(), reinterpret_cast<const void*>(
+        *field(bookmark->data_ptr, slot, bookmark_bytes)), bookmark_bytes);
+    for (std::size_t column = 0; column < columns; ++column) {
+      const auto& binding = fields[column];
+      const auto is_ignored = [&](const SQLLEN* base) {
+        if (!base) return false;
+        SQLLEN value{};
+        std::memcpy(&value, reinterpret_cast<const void*>(*field(base, slot, sizeof(SQLLEN))), sizeof(value));
+        return value == SQL_COLUMN_IGNORE;
+      };
+      // Never short-circuit capture of the second consumed split field.
+      const bool indicator_ignore = is_ignored(binding.indicator_ptr);
+      const bool octet_ignore = is_ignored(binding.octet_length_ptr);
+      ignored[slot * columns + column] = indicator_ignore || octet_ignore;
+    }
+  }
+  // Tokens and masks are now owning. Caller output may alias them without
+  // changing later requests; skipped data pointers are not even projected.
+  for (std::size_t slot = 0; slot < count; ++slot) {
+    for (std::size_t column = 0; column < columns; ++column) {
+      if (ignored[slot * columns + column]) continue;
+      const auto& binding = fields[column];
+      const auto type = binding.concise_type == SQL_C_DEFAULT
+          ? ResultTypes::default_c_type(column_info_[column].sql_type) : binding.concise_type;
+      if (!ResultTypes::is_conversion_supported(column_info_[column].sql_type,
+              ResultTypes::canonical_c_type(type))) continue;
+      const auto extent = binding.data_ptr ? bound_column_stride(type, binding.octet_length)
+                                           : std::optional<std::size_t>{0};
+      if (!extent || !field(binding.data_ptr, slot, *extent) ||
+          !field(binding.indicator_ptr, slot, sizeof(SQLLEN)) ||
+          !field(binding.octet_length_ptr, slot, sizeof(SQLLEN))) {
+        set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Bulk output address span is out of range"); return SQL_ERROR;
+      }
+    }
+  }
+  // Commit only after allocation, capture and complete address preflight.
+  // Bulk slots are not a contiguous rowset and cannot authorize GetData/SetPos.
+  bulk_unpositioned_ = true;
+  row_positioned_ = false; current_row_ = 0;
+  actual_fetched_rows_ = 0; selected_row_slot_ = 0;
+  get_data_column_ = 0; get_data_offset_ = 0; get_data_target_type_ = 0;
+  wide_get_data_ = {};
+  if (fetched) store_application_value(fetched, static_cast<SQLULEN>(count));
+  // Every request has a real status even if later conversion/diagnostic
+  // allocation throws. A completed slot replaces this conservative error.
+  if (status) {
+    for (std::size_t slot = 0; slot < count; ++slot)
+      store_application_value(status + slot, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
+  }
+  std::size_t errors = 0;
+  bool warning = false;
+  for (std::size_t slot = 0; slot < count; ++slot) {
+    const auto& token = tokens[slot];
+    const auto ordinal = bookmark_integer(token.data() + 16);
+    if (!active_bookmark_generation_ || bookmark_integer(token.data()) != bookmark_statement_id_ ||
+        bookmark_integer(token.data() + 8) != active_bookmark_generation_ ||
+        ordinal == 0 || ordinal > result_rows_.size()) {
+      if (status) store_application_value(status + slot, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
+      add_attributed_diagnostic("HY111", "Bookmark does not identify this owning result",
+          static_cast<SQLLEN>(slot + 1), 0);
+      ++errors; continue;
+    }
+    const auto masks = std::span<const unsigned char>(ignored).subspan(slot * columns, columns);
+    const BulkBindingView view{fields, masks, status};
+    const auto rc = fetch_bound_row(static_cast<std::size_t>(ordinal - 1), slot,
+        count, row_stride, binding_offset, &view);
+    if (rc == SQL_ERROR) ++errors;
+    else if (rc == SQL_SUCCESS_WITH_INFO) warning = true;
+  }
+  return errors == count ? SQL_ERROR : errors || warning ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS;
 }
 
 SQLRETURN ODBCStatement::fetch_scroll(SQLSMALLINT orientation, SQLLEN offset) {
@@ -3348,13 +4020,18 @@ SQLRETURN ODBCStatement::fetch_scroll(SQLSMALLINT orientation, SQLLEN offset) {
 }
 
 SQLRETURN ODBCStatement::fetch_impl(SQLSMALLINT orientation, SQLLEN offset) {
+  if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLFetch",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   if (!executed_) {
     set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "Statement has not been executed");
     return SQL_ERROR;
   }
-  if (column_info_.empty()) {
+  if (column_info_.empty() && !parameter_result_cursor_) {
     set_error(SQLSTATE_INVALID_CURSOR_STATE, "Executed statement did not produce a result set");
     return SQL_ERROR;
+  }
+  if (bulk_unpositioned_ && (orientation == SQL_FETCH_NEXT || orientation == SQL_FETCH_PRIOR ||
+                            orientation == SQL_FETCH_RELATIVE)) {
+    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "Bulk cursor requires explicit repositioning"); return SQL_ERROR;
   }
   if (use_variable_bookmarks_ && !active_bookmark_generation_) {
     set_error(SQLSTATE_GENERAL_ERROR, "Owning bookmark result is unavailable"); return SQL_ERROR;
@@ -3367,7 +4044,7 @@ SQLRETURN ODBCStatement::fetch_impl(SQLSMALLINT orientation, SQLLEN offset) {
       set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Bookmark input address span is out of range"); return SQL_ERROR;
     }
     std::array<unsigned char, bookmark_bytes> token{};
-    std::memcpy(token.data(), fetch_bookmark_ptr_, token.size());
+    std::memcpy(token.data(), static_cast<const void*>(fetch_bookmark_ptr_), token.size());
     const auto ordinal = bookmark_integer(token.data() + 16);
     if (!active_bookmark_generation_ || bookmark_integer(token.data()) != bookmark_statement_id_ ||
         bookmark_integer(token.data() + 8) != active_bookmark_generation_ || ordinal == 0 ||
@@ -3389,8 +4066,7 @@ SQLRETURN ODBCStatement::fetch_impl(SQLSMALLINT orientation, SQLLEN offset) {
       set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Binding offset address span is out of range");
       return SQL_ERROR;
     }
-    SQLULEN encoded_offset = 0;
-    std::memcpy(&encoded_offset, offset_pointer, sizeof(encoded_offset));
+    const SQLULEN encoded_offset = load_application_value<SQLULEN>(offset_pointer);
     if (encoded_offset > static_cast<SQLULEN>((std::numeric_limits<SQLLEN>::max)())) {
       set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
                 "Binding offset outside the common nonnegative range is not supported");
@@ -3569,6 +4245,7 @@ SQLRETURN ODBCStatement::fetch_impl(SQLSMALLINT orientation, SQLLEN offset) {
     store_application_value(status + slot, static_cast<SQLUSMALLINT>(SQL_ROW_NOROW));
   // All consumed spans passed before any position/chunk/output mutation.
   static_position_ = target;
+  bulk_unpositioned_ = false;
   actual_fetched_rows_ = 0;
   selected_row_slot_ = 0;
   get_data_column_ = 0;
@@ -3617,18 +4294,18 @@ SQLRETURN ODBCStatement::fetch_impl(SQLSMALLINT orientation, SQLLEN offset) {
 SQLRETURN ODBCStatement::fetch_bound_row(std::size_t row_index, std::size_t slot,
                                          std::size_t rowset_size,
                                          std::size_t row_stride,
-                                         std::uintptr_t binding_offset) {
+                                         std::uintptr_t binding_offset, const BulkBindingView* bulk) {
   const auto application_descriptor = descriptor(app_row_descriptor_);
-  auto* status = descriptor(imp_row_descriptor_)->array_status_ptr();
+  auto* status = bulk ? bulk->status : descriptor(imp_row_descriptor_)->array_status_ptr();
   auto* row_status = status ? status + slot : nullptr;
   std::size_t diagnostic_column = 0;
   const auto set_error = [&](const std::string& state, const std::string& message) {
-    if (rowset_size > 1) add_attributed_diagnostic(state, message,
+    if (bulk || rowset_size > 1) add_attributed_diagnostic(state, message,
         static_cast<SQLLEN>(slot + 1), static_cast<SQLLEN>(diagnostic_column));
     else this->set_error(state, message);
   };
   SQLRETURN fetch_result = SQL_SUCCESS;
-  if (use_variable_bookmarks_ && application_descriptor->bookmark_record_) {
+  if (!bulk && use_variable_bookmarks_ && application_descriptor->bookmark_record_) {
     const auto& binding = *application_descriptor->bookmark_record_;
     const auto address = [&](void* base, std::size_t width) -> unsigned char* {
       return base ? reinterpret_cast<unsigned char*>(reinterpret_cast<std::uintptr_t>(base) + binding_offset +
@@ -3644,10 +4321,12 @@ SQLRETURN ODBCStatement::fetch_bound_row(std::size_t row_index, std::size_t slot
   }
   // Auto-populate bound columns from ARD
   const auto& row = result_rows_[row_index];
-  for (size_t i = 0;
-       i < application_descriptor->record_count() && i < row.size(); ++i) {
+  const auto bound_columns = bulk ? bulk->fields.size() : application_descriptor->record_count();
+  for (size_t i = 0; i < bound_columns && i < row.size(); ++i) {
+    if (bulk && bulk->ignored[i]) continue;
     diagnostic_column = i + 1;
-    const auto& binding = *application_descriptor->record(i);
+    const auto binding = bulk ? bulk->fields[i]
+        : bound_result_field(*application_descriptor->record(i));
     if (binding.data_ptr || binding.indicator_ptr || binding.octet_length_ptr) {
       const auto& cell = row[i];
       const SQLSMALLINT sql_type = i < column_info_.size()
@@ -3792,7 +4471,7 @@ SQLRETURN ODBCStatement::fetch_bound_row(std::size_t row_index, std::size_t slot
 
       if (conv_result == SQL_ERROR) {
         set_conversion_diagnostic(*this, conv_result, conversion_issue,
-            rowset_size > 1 ? static_cast<SQLLEN>(slot + 1) : 0, static_cast<SQLLEN>(i + 1));
+            (bulk || rowset_size > 1) ? static_cast<SQLLEN>(slot + 1) : 0, static_cast<SQLLEN>(i + 1));
         if (row_status) {
           store_application_value(
               row_status, static_cast<SQLUSMALLINT>(SQL_ROW_ERROR));
@@ -3805,7 +4484,7 @@ SQLRETURN ODBCStatement::fetch_bound_row(std::size_t row_index, std::size_t slot
       }
       if (conv_result == SQL_SUCCESS_WITH_INFO) {
         set_conversion_diagnostic(*this, conv_result, conversion_issue,
-            rowset_size > 1 ? static_cast<SQLLEN>(slot + 1) : 0, static_cast<SQLLEN>(i + 1));
+            (bulk || rowset_size > 1) ? static_cast<SQLLEN>(slot + 1) : 0, static_cast<SQLLEN>(i + 1));
         fetch_result = SQL_SUCCESS_WITH_INFO;
       }
     }
@@ -3822,6 +4501,7 @@ SQLRETURN ODBCStatement::fetch_bound_row(std::size_t row_index, std::size_t slot
 
 SQLRETURN ODBCStatement::set_pos(SQLSETPOSIROW row, SQLUSMALLINT operation,
                                  SQLUSMALLINT lock) {
+  if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLSetPos",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   const bool known_operation = operation == SQL_POSITION || operation == SQL_REFRESH ||
       operation == SQL_UPDATE || operation == SQL_DELETE || operation == SQL_ADD;
   const bool known_lock = lock == SQL_LOCK_NO_CHANGE || lock == SQL_LOCK_EXCLUSIVE || lock == SQL_LOCK_UNLOCK;
@@ -3832,6 +4512,9 @@ SQLRETURN ODBCStatement::set_pos(SQLSETPOSIROW row, SQLUSMALLINT operation,
   if (operation != SQL_POSITION || lock != SQL_LOCK_NO_CHANGE) {
     set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED, "Requested rowset operation or lock is not supported");
     return SQL_ERROR;
+  }
+  if (bulk_unpositioned_) {
+    set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "Bulk cursor requires explicit repositioning"); return SQL_ERROR;
   }
   if (!executed_) {
     set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "Statement has not been executed");
@@ -3868,6 +4551,8 @@ SQLRETURN ODBCStatement::set_pos(SQLSETPOSIROW row, SQLUSMALLINT operation,
 }
 
 SQLRETURN ODBCStatement::more_results() {
+  if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLMoreResults",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
+  if (result_sequence_) return advance_parameter_result(false);
   clear_current_result();
   if (pending_results_.empty()) return SQL_NO_DATA;
 
@@ -3948,6 +4633,7 @@ SQLRETURN ODBCStatement::get_bookmark_data(SQLSMALLINT type, void* buffer, SQLLE
 SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
                                  void* buffer, SQLLEN buffer_length,
                                  SQLLEN* indicator) {
+  if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLGetData",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   if (col == 0 && !executed_) { set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "Statement has not been executed"); return SQL_ERROR; }
   if (!executed_ || !row_positioned_ || current_row_ == 0 ||
       current_row_ > result_rows_.size()) {
@@ -4321,9 +5007,10 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
 
 // Prepared statement implementation
 SQLRETURN ODBCStatement::prepare(const std::string& sql) {
+  if (needs_data()) { set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,"Statement needs parameter data"); return SQL_ERROR; }
   const auto original_deadline = rs::util::make_deadline(
       timeout_duration(query_timeout_seconds_));
-  if (executed_ && (!column_info_.empty() || !pending_results_.empty())) {
+  if (executed_ && (parameter_result_cursor_ || !column_info_.empty() || !pending_results_.empty())) {
     set_error(SQLSTATE_INVALID_CURSOR_STATE,
               "Cannot prepare while results are pending");
     return SQL_ERROR;
@@ -4406,17 +5093,32 @@ SQLRETURN ODBCStatement::num_params(SQLSMALLINT* parameter_count) {
   return SQL_SUCCESS;
 }
 
-SQLRETURN ODBCStatement::complete_parameter_set(SQLRETURN result) {
+SQLRETURN ODBCStatement::complete_parameter_set(SQLRETURN result,
+    const std::shared_ptr<PendingInput>& input) {
   if (parameter_count_ == 0) return result;
-  const auto implementation_descriptor = descriptor(imp_param_descriptor_);
-  auto* params_processed = implementation_descriptor->rows_processed_ptr();
-  auto* param_status = implementation_descriptor->array_status_ptr();
+  if (input && input->array_size != 0) {
+    // SELECT execution owns its actual examined ordinal/status; a final
+    // collection catch must not overwrite it with the last requested input.
+    if (input->result_execution_phase) return result;
+    if (result == SQL_ERROR && !input->array_slots.empty()) {
+      const auto compact = std::min(input->ordinal / input->parameter_width, input->array_slots.size() - 1);
+      const auto slot = input->array_slots[compact];
+      if (input->processed) store_application_value(input->processed, static_cast<SQLULEN>(slot + 1));
+      if (input->status) store_application_value(reinterpret_cast<SQLUSMALLINT*>(
+          reinterpret_cast<std::uintptr_t>(input->status) + slot * sizeof(SQLUSMALLINT)),
+          static_cast<SQLUSMALLINT>(SQL_PARAM_ERROR));
+    }
+    return result;
+  }
+  const auto implementation_descriptor = input ? std::shared_ptr<ODBCDescriptor>{} : descriptor(imp_param_descriptor_);
+  auto* params_processed = input ? input->processed : implementation_descriptor->rows_processed_ptr();
+  auto* param_status = input ? input->status : implementation_descriptor->array_status_ptr();
   if (params_processed) {
     store_application_value(params_processed, static_cast<SQLULEN>(1));
   }
   if (param_status) {
     SQLUSMALLINT status = SQL_PARAM_ERROR;
-    if (result == SQL_SUCCESS) {
+    if (result == SQL_SUCCESS || (input && result == SQL_NO_DATA)) {
       status = SQL_PARAM_SUCCESS;
     } else if (result == SQL_SUCCESS_WITH_INFO) {
       status = SQL_PARAM_SUCCESS_WITH_INFO;
@@ -4426,27 +5128,43 @@ SQLRETURN ODBCStatement::complete_parameter_set(SQLRETURN result) {
   return result;
 }
 
+ODBCStatement::ParameterConversionRecord ODBCStatement::conversion_record(const DescriptorRecord& r) noexcept {
+  ParameterConversionRecord out;
+  out.concise_type=r.concise_type; out.bound_sql_type=r.bound_sql_type;
+  out.bound_sql_precision=r.bound_sql_precision; out.precision=r.precision;
+  out.scale=r.scale; out.parameter_type=r.parameter_type;
+  out.bound_sql_length=r.bound_sql_length; out.length=r.length; out.bound_sql_scale=r.bound_sql_scale;
+  out.data_ptr=r.data_ptr; out.indicator_ptr=r.indicator_ptr;
+  out.octet_length_ptr=r.octet_length_ptr; out.octet_length=r.octet_length;
+  return out;
+}
+
 std::optional<std::vector<rs::core::database::QueryParameter>>
 ODBCStatement::materialize_parameter_set(std::uintptr_t input_offset,
                                          SQLULEN set_index, bool array,
                                          SQLULEN bind_stride, std::span<const ParameterInputBase> bases,
-                                         std::size_t& parameter_bytes) {
-  const auto application_descriptor = descriptor(app_param_descriptor_);
+                                         std::size_t& parameter_bytes,
+                                         std::span<const ParameterConversionRecord> captured_application,
+                                         std::span<const ParameterConversionRecord> captured_implementation,
+                                         std::optional<std::size_t> selected) {
+  const bool captured = !captured_application.empty();
+  const auto application_descriptor = captured ? std::shared_ptr<ODBCDescriptor>{} : descriptor(app_param_descriptor_);
   const auto span_error = [&]() -> std::optional<std::vector<rs::core::database::QueryParameter>> {
     set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Parameter binding address span is out of range");
     return std::nullopt;
   };
   struct InputFields { void* data{}; SQLLEN* indicator{}; SQLLEN* length{}; };
   bool diagnosed_field_error = false;
-  const auto fields_for = [&](const DescriptorRecord& record, std::size_t index, InputFields& fields) {
+  const auto fields_for = [&](const ParameterConversionRecord& record, std::size_t index, InputFields& fields) {
     const auto base = array ? bases[index]
         : ParameterInputBase{record.data_ptr, record.indicator_ptr, record.octet_length_ptr};
     if (!array && !input_offset) {
       fields = {base.data, base.indicator, base.octet_length};
       return true;
     }
-    const auto* implementation = descriptor(imp_param_descriptor_)->record(
-        index);
+    const auto normal_implementation=captured ? ParameterConversionRecord{} :
+        conversion_record(*descriptor(imp_param_descriptor_)->record(index));
+    const auto* implementation=captured ? &captured_implementation[index] : &normal_implementation;
     // Resolve only the native C representation; no descriptor base is rewritten.
     const auto type = ResultTypes::canonical_c_type(record.concise_type == SQL_C_DEFAULT
         ? ResultTypes::default_c_type(implementation && implementation->bound_sql_type
@@ -4521,11 +5239,11 @@ ODBCStatement::materialize_parameter_set(std::uintptr_t input_offset,
     }
     return true;
   };
-    const auto implementation_descriptor = descriptor(imp_param_descriptor_);
+    const auto implementation_descriptor = captured ? std::shared_ptr<ODBCDescriptor>{} : descriptor(imp_param_descriptor_);
     if ((array && bases.size() != static_cast<std::size_t>(parameter_count_)) ||
-        application_descriptor->record_count() <
+        (captured ? captured_application.size() : application_descriptor->record_count()) <
             static_cast<std::size_t>(parameter_count_) ||
-        implementation_descriptor->record_count() <
+        (captured ? captured_implementation.size() : implementation_descriptor->record_count()) <
             static_cast<std::size_t>(parameter_count_)) {
       set_error(SQLSTATE_INVALID_PARAMETER_NUMBER,
                 "Not all statement parameters are bound");
@@ -4541,13 +5259,14 @@ ODBCStatement::materialize_parameter_set(std::uintptr_t input_offset,
       return std::nullopt;
     };
     std::vector<rs::core::database::QueryParameter> param_values;
-    param_values.reserve(static_cast<std::size_t>(parameter_count_));
+    param_values.reserve(selected ? 1 : static_cast<std::size_t>(parameter_count_));
     
-    for (SQLSMALLINT index = 0; index < parameter_count_; ++index) {
-      const auto& application = *application_descriptor->record(
-          static_cast<std::size_t>(index));
-      const auto& implementation = *implementation_descriptor->record(
-          static_cast<std::size_t>(index));
+    for (SQLSMALLINT index = selected ? static_cast<SQLSMALLINT>(*selected) : 0;
+         index < (selected ? static_cast<SQLSMALLINT>(*selected+1) : parameter_count_); ++index) {
+      const auto application = captured ? captured_application[index]
+          : conversion_record(*application_descriptor->record(static_cast<std::size_t>(index)));
+      const auto implementation = captured ? captured_implementation[index]
+          : conversion_record(*implementation_descriptor->record(static_cast<std::size_t>(index)));
       InputFields fields;
       if (!fields_for(application, static_cast<std::size_t>(index), fields)) {
         if (diagnosed_field_error) return std::nullopt;
@@ -5276,11 +5995,497 @@ ODBCStatement::materialize_parameter_set(std::uintptr_t input_offset,
   return param_values;
 }
 
+bool ODBCStatement::has_pending_result_sequence() const noexcept {
+  // A plan from an expired borrow cannot constrain a fresh session.
+  return result_sequence_ && result_sequence_->pending() && conn_->backend_lease_ &&
+      conn_->backend_lease_->accepts_result_sequence(*result_sequence_);
+}
+
+SQLRETURN ODBCStatement::advance_parameter_result(bool initial) {
+  using namespace rs::core::database;
+  // Initial Execute already owns the unavailable outer ledger. Every later
+  // MoreResults covers local work and native exchange with its own unavailable ledger.
+  std::optional<ExecutionCancellation> cancellation;
+  try {
+    if (!initial) cancellation.emplace(*this, false);
+    clear_current_result();
+    if (!result_sequence_) return SQL_NO_DATA;
+    if (!conn_->backend_lease_) {
+      result_sequence_.reset(); sequence_statuses_ = nullptr; sequence_processed_ = nullptr;
+      set_error(SQLSTATE_CONNECTION_FAILURE, "Parameter result session is no longer available");
+      return SQL_ERROR;
+    }
+    if (!conn_->backend_lease_->accepts_result_sequence(*result_sequence_)) {
+      // Local authority refusal is not a native Unknown/Retire outcome. In
+      // particular, do not retire a fresh lease that replaced the old borrow.
+      result_sequence_.reset(); sequence_statuses_ = nullptr; sequence_processed_ = nullptr;
+      set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR, "Parameter result sequence belongs to an expired borrow");
+      return SQL_ERROR;
+    }
+    conn_->invalidate_metadata_epoch();
+    auto step = conn_->backend_lease_->advance_result_sequence(*result_sequence_);
+    const auto snapshot = step.session_snapshot();
+    const bool terminal = snapshot.disposition == SessionDisposition::Retire ||
+        snapshot.state == SessionState::Unknown || snapshot.state == SessionState::Disconnected;
+    // Reconcile before provider mapping or diagnostic allocation, even on throw.
+    if (terminal) conn_->close_connection();
+    else conn_->transaction_active_ = snapshot.state == SessionState::Transaction ||
+        snapshot.state == SessionState::FailedTransaction;
+    if (!step) {
+      result_sequence_.reset(); sequence_statuses_ = nullptr; sequence_processed_ = nullptr;
+      set_error(query_failure_sqlstate(conn_->backend_provider(), step.backend_error(),
+          SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT), step.error_message());
+      return SQL_ERROR;
+    }
+    if (sequence_processed_)
+      store_application_value(sequence_processed_, static_cast<SQLULEN>(step->examined));
+    if (step->error) {
+      if (sequence_statuses_ && step->ordinal)
+        store_application_value(reinterpret_cast<SQLUSMALLINT*>(reinterpret_cast<std::uintptr_t>(sequence_statuses_) +
+            (step->ordinal - 1) * sizeof(SQLUSMALLINT)), static_cast<SQLUSMALLINT>(SQL_PARAM_ERROR));
+      // Error owns native code/message. Map exactly once, then destroy pending
+      // authority before posting diagnostics; a mapper throw cannot permit replay.
+      auto error = std::move(*step->error);
+      const auto ordinal = static_cast<SQLLEN>(step->ordinal);
+      result_sequence_.reset(); sequence_statuses_ = nullptr; sequence_processed_ = nullptr;
+      const auto state = query_failure_sqlstate(conn_->backend_provider(), error,
+          SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT);
+      const auto native = error.native_code &&
+          *error.native_code >= (std::numeric_limits<SQLINTEGER>::min)() &&
+          *error.native_code <= (std::numeric_limits<SQLINTEGER>::max)()
+          ? static_cast<SQLINTEGER>(*error.native_code) : SQLINTEGER{0};
+      add_attributed_diagnostic(state, error.message, ordinal, SQL_NO_COLUMN_NUMBER, native);
+      return SQL_ERROR;
+    }
+    if (terminal) {
+      result_sequence_.reset(); sequence_statuses_ = nullptr; sequence_processed_ = nullptr;
+      set_error(SQLSTATE_GENERAL_ERROR, "Parameter result session was retired"); return SQL_ERROR;
+    }
+    if (!step->result) {
+      result_sequence_.reset(); sequence_statuses_ = nullptr; sequence_processed_ = nullptr;
+      return SQL_NO_DATA;
+    }
+    // SDK has validated full decoded budgets/shape before MAX_ROWS visibility.
+    // Any publication allocation/normalizer exception is caught below before a
+    // partially successful cursor or remaining sequence can escape.
+    apply_query_result(std::move(*step->result), false, sequence_max_rows_, true);
+    parameter_result_cursor_ = true;
+    if (sequence_statuses_ && step->ordinal)
+      store_application_value(reinterpret_cast<SQLUSMALLINT*>(reinterpret_cast<std::uintptr_t>(sequence_statuses_) +
+          (step->ordinal - 1) * sizeof(SQLUSMALLINT)), static_cast<SQLUSMALLINT>(SQL_PARAM_SUCCESS));
+    return SQL_SUCCESS;
+  } catch (...) {
+    result_sequence_.reset(); sequence_statuses_ = nullptr; sequence_processed_ = nullptr;
+    pending_results_.clear(); executed_ = false; parameter_result_cursor_ = false;
+    try { clear_current_result(); } catch (...) {}
+    try { conn_->close_connection(); } catch (...) {}
+    throw;
+  }
+}
+
+std::optional<SQLRETURN> ODBCStatement::start_pending_array(std::uintptr_t offset,
+    SQLULEN stride, std::span<const ParameterInputBase> bases,
+    std::vector<rs::core::database::PreparedCommandSet>& sets,
+    rs::util::Deadline deadline, const std::shared_ptr<ExecutionCancellation>& cancellation) {
+  using namespace rs::core::database;
+  const auto apd = descriptor(app_param_descriptor_);
+  const auto ipd = descriptor(imp_param_descriptor_);
+  const auto width = static_cast<std::size_t>(parameter_count_);
+  if (!width || apd->record_count() < width || ipd->record_count() < width) {
+    set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Not all statement parameters are bound");
+    return SQL_ERROR;
+  }
+  auto input = std::make_shared<PendingInput>();
+  input->parameter_width = width; input->array_size = sets.size();
+  input->result_max_rows = max_rows_;
+  input->decoded_value_limit = conn_->sequence_decoded_value_bytes_limit_;
+  for (std::size_t slot = 0; slot < sets.size(); ++slot) {
+    if (!sets[slot].ignored) input->array_slots.push_back(slot);
+  }
+  const auto entries = input->array_slots.size() * width; // Caller checked aggregate entries.
+  input->application.resize(entries); input->implementation.resize(entries);
+  input->indicators.resize(entries); input->lengths.resize(entries);
+  input->pieces.resize(entries); input->values.resize(entries);
+  bool deferred = false;
+  const auto shift = [&](const void* base, std::size_t slot, std::size_t step, std::size_t extent) -> void* {
+    if (!base) return nullptr;
+    const auto address = reinterpret_cast<std::uintptr_t>(base);
+    const auto maximum = (std::numeric_limits<std::uintptr_t>::max)();
+    if (offset > maximum - address) throw std::range_error("Parameter input span");
+    const auto first = address + offset;
+    const auto increment = stride == SQL_PARAM_BIND_BY_COLUMN ? static_cast<SQLULEN>(step) : stride;
+    if (slot && increment > (maximum - first) / slot) throw std::range_error("Parameter input span");
+    const auto target = first + static_cast<std::uintptr_t>(increment) * slot;
+    if (extent > maximum - target) throw std::range_error("Parameter input span");
+    return reinterpret_cast<void*>(target);
+  };
+  try {
+    // Capture each consumed indicator/length exactly once. Deferred DATA_PTR
+    // is always the original opaque token, never array-address arithmetic.
+    for (std::size_t compact = 0; compact < input->array_slots.size(); ++compact) {
+      const auto slot = input->array_slots[compact];
+      for (std::size_t parameter = 0; parameter < width; ++parameter) {
+        const auto index = compact * width + parameter;
+        const auto& a = *apd->record(parameter); const auto& d = *ipd->record(parameter);
+        auto& ca = input->application[index]; auto& cd = input->implementation[index];
+        ca = conversion_record(a); cd = conversion_record(d);
+        // These conversion-only records contain no descriptor strings.
+        cd.data_ptr = nullptr; cd.indicator_ptr = cd.octet_length_ptr = nullptr;
+        auto* indicator = static_cast<SQLLEN*>(shift(bases[parameter].indicator, slot, sizeof(SQLLEN), sizeof(SQLLEN)));
+        const auto marker = indicator ? load_application_value<SQLLEN>(indicator) : 0;
+        const bool null = indicator && marker == SQL_NULL_DATA;
+        auto* length = null ? nullptr : static_cast<SQLLEN*>(
+            shift(bases[parameter].octet_length, slot, sizeof(SQLLEN), sizeof(SQLLEN)));
+        input->indicators[index] = marker;
+        input->lengths[index] = null ? SQL_NULL_DATA : length ? load_application_value<SQLLEN>(length)
+            : indicator ? marker : a.octet_length;
+        ca.indicator_ptr = indicator ? &input->indicators[index] : nullptr;
+        ca.octet_length_ptr = length ? &input->lengths[index] : nullptr;
+        auto& piece = input->pieces[index];
+        piece.c_type = ResultTypes::canonical_c_type(a.concise_type == SQL_C_DEFAULT
+            ? ResultTypes::default_c_type(d.bound_sql_type ? d.bound_sql_type : d.concise_type) : a.concise_type);
+        const auto n = input->lengths[index];
+        piece.deferred = !null && (n == SQL_DATA_AT_EXEC || n <= SQL_LEN_DATA_AT_EXEC_OFFSET);
+        deferred = deferred || piece.deferred;
+        if (piece.deferred) {
+          const auto sql = d.bound_sql_type ? d.bound_sql_type : d.concise_type;
+          if (d.parameter_type != SQL_PARAM_INPUT ||
+              (piece.c_type != SQL_C_CHAR && piece.c_type != SQL_C_WCHAR && piece.c_type != SQL_C_BINARY) ||
+              (!is_character_sql_type(sql) && sql != SQL_BINARY && sql != SQL_VARBINARY && sql != SQL_LONGVARBINARY)) {
+            set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED, "Deferred parameter representation is not supported");
+            return SQL_ERROR;
+          }
+          piece.token = bases[parameter].data; ca.data_ptr = nullptr;
+          continue;
+        }
+        if (null) { ca.data_ptr = nullptr; continue; }
+        const bool variable = piece.c_type == SQL_C_CHAR || piece.c_type == SQL_C_WCHAR || piece.c_type == SQL_C_BINARY;
+        if (variable && a.octet_length <= 0) {
+          set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED, "Parameter arrays require a positive variable-width slot size");
+          return SQL_ERROR;
+        }
+        const auto extent = variable ? static_cast<std::size_t>(a.octet_length)
+            : bound_column_stride(piece.c_type,0).value_or(0);
+        ca.data_ptr = shift(bases[parameter].data, slot, extent, extent);
+        if (!variable || !ca.data_ptr) continue;
+        const bool pointer = indicator || length;
+        if (n >= 0 && (n != 0 || pointer || piece.c_type == SQL_C_BINARY)) {
+          if (static_cast<SQLULEN>(n) > extent) throw std::range_error("Parameter input span");
+        } else if (n == SQL_NTS || (n == 0 && !pointer)) {
+          if (piece.c_type == SQL_C_BINARY) continue;
+          const auto unit = piece.c_type == SQL_C_WCHAR ? sizeof(SQLWCHAR) : std::size_t{1};
+          bool ended = false;
+          for (std::size_t pos = 0; pos <= extent && unit <= extent - pos; pos += unit) {
+            const auto* next = static_cast<const unsigned char*>(ca.data_ptr) + pos;
+            if (unit == 1 ? load_application_value<SQLCHAR>(next) == 0 : load_application_value<SQLWCHAR>(next) == 0) {
+              ended = true; break;
+            }
+          }
+          if (!ended) {
+            set_error(SQLSTATE_INVALID_STRING_LENGTH, "Parameter string is not terminated within its array slot");
+            return SQL_ERROR;
+          }
+        }
+      }
+    }
+    // Convert ordinary neighbors only after every consumed address span is
+    // checked, still before output/cursor changes, BEGIN or user execution.
+    for (std::size_t index = 0; index < entries; ++index) {
+      if (rs::util::Clock::now() >= deadline) {
+        set_error(SQLSTATE_TIMEOUT,"Parameter array deadline expired before dispatch"); return SQL_ERROR;
+      }
+      if (input->pieces[index].deferred) continue;
+      const auto first = (index / width) * width;
+      auto values = materialize_parameter_set(0,0,false,SQL_PARAM_BIND_BY_COLUMN,{},input->bytes,
+          std::span<const ParameterConversionRecord>(input->application).subspan(first,width),
+          std::span<const ParameterConversionRecord>(input->implementation).subspan(first,width), index-first);
+      if (!values) {
+        const auto slot = input->array_slots[index / width];
+        if (get_sqlstate() != SQLSTATE_INVALID_ATTRIBUTE_VALUE) {
+          if (const auto output = ipd->array_status_ptr()) {
+            for (std::size_t i = 0; i < sets.size(); ++i) {
+              store_application_value(reinterpret_cast<SQLUSMALLINT*>(reinterpret_cast<std::uintptr_t>(output) + i*sizeof(SQLUSMALLINT)),
+                  static_cast<SQLUSMALLINT>(i == slot ? SQL_PARAM_ERROR : SQL_PARAM_UNUSED));
+            }
+          }
+          if (const auto output = ipd->rows_processed_ptr()) store_application_value(output,static_cast<SQLULEN>(slot+1));
+        }
+        return SQL_ERROR;
+      }
+      input->values[index] = std::move(values->front()); input->application[index].data_ptr = nullptr;
+    }
+    if (!deferred) {
+      for (std::size_t compact = 0; compact < input->array_slots.size(); ++compact) {
+        auto& values = sets[input->array_slots[compact]].values;
+        values.reserve(width);
+        for (std::size_t parameter = 0; parameter < width; ++parameter) {
+          values.push_back(std::move(input->values[compact*width+parameter]));
+        }
+      }
+      return std::nullopt;
+    }
+    std::vector<QueryParameterType> types;
+    types.reserve(width);
+    for (std::size_t parameter = 0; parameter < width; ++parameter) {
+      types.push_back(parameter_type_for(input->implementation[parameter].concise_type,
+          input->pieces[parameter].c_type));
+    }
+    if (!cancellation->generation_) {
+      set_error(SQLSTATE_GENERAL_ERROR,"Statement operation generation exhausted"); return SQL_ERROR;
+    }
+    conn_->invalidate_metadata_epoch();
+    auto authority = conn_->backend_lease_->describe_parameter_input(prepared_sql_,std::move(types),sets.size(),
+        conn_->input_limits_,conn_->result_limits_,deadline,conn_->supports_select_parameter_arrays());
+    if (!authority) {
+      const auto snapshot = authority.session_snapshot();
+      if (snapshot.disposition == SessionDisposition::Retire || snapshot.state == SessionState::Unknown ||
+          snapshot.state == SessionState::Disconnected) conn_->close_connection();
+      else conn_->transaction_active_ = snapshot.state == SessionState::Transaction || snapshot.state == SessionState::FailedTransaction;
+      set_error(query_failure_sqlstate(conn_->backend_provider(),authority.backend_error(),
+          SQLSTATE_GENERAL_ERROR,SQL_DIAG_UNKNOWN_STATEMENT),authority.error_message());
+      return SQL_ERROR;
+    }
+    input->parameter_description.emplace(std::move(*authority));
+    input->array_sets = std::move(sets); input->deadline = deadline;
+    input->status = ipd->array_status_ptr(); input->processed = ipd->rows_processed_ptr();
+    if (!conn_->pending_input_identity_) conn_->pending_input_identity_ = std::make_shared<const detail::PendingInputSessionIdentity>();
+    input->session = conn_->pending_input_identity_; input->cancellation = cancellation;
+    if (!cancellation->generation_) { set_error(SQLSTATE_GENERAL_ERROR,"Statement operation generation exhausted"); return SQL_ERROR; }
+    { std::lock_guard lock(cancellation->ledger_->mutex);
+      cancellation->ledger_->available = false; cancellation->ledger_->local_need_data = true;
+    }
+    { std::lock_guard lock(cancellation_mutex_); pending_input_ = input; }
+    clear_current_result(); pending_results_.clear();
+    if (!pending_call_ready(input)) return SQL_ERROR;
+    while (input->ordinal < input->pieces.size() && !input->pieces[input->ordinal].deferred) ++input->ordinal;
+    bool claimed;
+    { std::lock_guard lock(cancellation->ledger_->mutex);
+      claimed = cancellation->ledger_->locally_claimed;
+      if (!claimed) {
+        if (input->status) {
+          for (std::size_t slot = 0; slot < input->array_size; ++slot) {
+            store_application_value(reinterpret_cast<SQLUSMALLINT*>(reinterpret_cast<std::uintptr_t>(input->status) + slot*sizeof(SQLUSMALLINT)),
+                static_cast<SQLUSMALLINT>(SQL_PARAM_UNUSED));
+          }
+        }
+        if (input->processed) store_application_value(input->processed,static_cast<SQLULEN>(input->array_slots[input->ordinal/width]+1));
+        input->in_call = false;
+      }
+    }
+    if (claimed) {
+      abandon_pending_input(); set_error("HY008","Data-at-execution input cancelled");
+      return complete_parameter_set(SQL_ERROR,input);
+    }
+    return SQL_NEED_DATA;
+  } catch (const std::range_error&) {
+    set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,"Parameter binding address span is out of range");
+    return SQL_ERROR;
+  }
+}
+
+SQLRETURN ODBCStatement::publish_deferred_result(rs::core::database::PreparedCommandPlan plan,
+    const std::shared_ptr<PendingInput>& input) {
+  using namespace rs::core::database;
+  const auto discard = [&]() noexcept {
+    result_sequence_.reset(); sequence_statuses_ = nullptr; sequence_processed_ = nullptr;
+    pending_results_.clear(); executed_ = false; parameter_result_cursor_ = false;
+    try { clear_current_result(); } catch (...) {}
+  };
+  bool local_authority_refusal = false;
+  bool native_result_started = false;
+  try {
+    if (use_variable_bookmarks_ && input->array_size >=
+        (std::numeric_limits<std::uint64_t>::max)() - bookmark_generation_) {
+      discard(); set_error(SQLSTATE_GENERAL_ERROR,"Bookmark result identity exhausted");
+      return complete_parameter_set(SQL_ERROR,input);
+    }
+    auto sequence = conn_->backend_lease_->start_result_sequence(std::move(plan),input->decoded_value_limit);
+    if (!sequence) {
+      discard();
+      // Exact-borrow/representation rejection is local: it must not invoke a
+      // provider callback or close a fresh lease that replaced an old plan.
+      if (sequence.backend_error().error_class == BackendErrorClass::InvalidInput) {
+        local_authority_refusal = true;
+        set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,"Deferred result plan belongs to an expired borrow");
+      } else {
+        const auto snapshot = sequence.session_snapshot();
+        if (snapshot.disposition == SessionDisposition::Retire || snapshot.state == SessionState::Unknown ||
+            snapshot.state == SessionState::Disconnected) conn_->close_connection();
+        else conn_->transaction_active_ = snapshot.state == SessionState::Transaction || snapshot.state == SessionState::FailedTransaction;
+        set_error(query_failure_sqlstate(conn_->backend_provider(),sequence.backend_error(),
+            SQLSTATE_GENERAL_ERROR,SQL_DIAG_UNKNOWN_STATEMENT),sequence.error_message());
+      }
+      return complete_parameter_set(SQL_ERROR,input);
+    }
+    // A successful local plan construction is not proof of a reusable live
+    // session. Reconcile its passive terminal snapshot before any BEGIN.
+    const auto snapshot = sequence.session_snapshot();
+    if (snapshot.disposition == SessionDisposition::Retire || snapshot.state == SessionState::Unknown ||
+        snapshot.state == SessionState::Disconnected) {
+      discard(); conn_->close_connection();
+      set_error(SQLSTATE_CONNECTION_FAILURE,"Deferred result session is no longer available");
+      return complete_parameter_set(SQL_ERROR,input);
+    }
+    // The owning description is staged atomically before BEGIN, including T0
+    // bookmark0. Existing bound parameter hints survive later result commits.
+    apply_result_metadata(sequence->description(),true);
+    if (rs::util::Clock::now() >= input->deadline) {
+      discard(); set_error(SQLSTATE_TIMEOUT,"Deferred result deadline expired before dispatch");
+      return complete_parameter_set(SQL_ERROR,input);
+    }
+    if (input->status) {
+      for (std::size_t slot = 0; slot < input->array_size; ++slot) {
+        store_application_value(reinterpret_cast<SQLUSMALLINT*>(reinterpret_cast<std::uintptr_t>(input->status) + slot*sizeof(SQLUSMALLINT)),
+            static_cast<SQLUSMALLINT>(SQL_PARAM_UNUSED));
+      }
+    }
+    // Requested input ordinal is not executed ordinal. Reset once; first
+    // native step reports its actual original set, which can be numerically lower.
+    if (input->processed) store_application_value(input->processed,static_cast<SQLULEN>(0));
+    input->result_execution_phase = true;
+    auto transaction = conn_->begin_transaction_if_needed(input->deadline);
+    if (!transaction) {
+      // BEGIN helper reconciles the snapshot before normalization can throw.
+      discard();
+      set_error(query_failure_sqlstate(conn_->backend_provider(),transaction.backend_error(),
+          SQLSTATE_GENERAL_ERROR,SQL_DIAG_UNKNOWN_STATEMENT),transaction.error_message());
+      return complete_parameter_set(SQL_ERROR,input);
+    }
+    clear_current_result(); pending_results_.clear();
+    result_sequence_.emplace(std::move(*sequence));
+    sequence_statuses_ = input->status; sequence_processed_ = input->processed;
+    sequence_max_rows_ = input->result_max_rows;
+    // Keep the same unavailable outer generation until first publication.
+    // No nested ledger, prefetch, re-description or DAE DML-zero policy here.
+    native_result_started = true;
+    return advance_parameter_result(true);
+  } catch (...) {
+    discard();
+    if (native_result_started) {
+      // First advancement attempts the first captured PROCEED ordinal. Do
+      // not read caller headers as authority or fabricate the last collected set.
+      const auto slot = input->array_slots.front();
+      if (input->processed) store_application_value(input->processed,static_cast<SQLULEN>(slot+1));
+      if (input->status) store_application_value(reinterpret_cast<SQLUSMALLINT*>(
+          reinterpret_cast<std::uintptr_t>(input->status)+slot*sizeof(SQLUSMALLINT)),
+          static_cast<SQLUSMALLINT>(SQL_PARAM_ERROR));
+    }
+    if (!local_authority_refusal) { try { conn_->close_connection(); } catch (...) {} }
+    throw;
+  }
+}
+
+SQLRETURN ODBCStatement::publish_command_batch(rs::core::database::PreparedCommandPlan plan,
+    SQLUSMALLINT* statuses, SQLULEN* processed, std::size_t size,
+    rs::util::Deadline deadline, bool deferred, std::vector<PendingResult> staged_results) {
+  using namespace rs::core::database;
+  const auto output_status = [&](std::size_t slot, SQLUSMALLINT value) {
+    if (statuses) store_application_value(reinterpret_cast<SQLUSMALLINT*>(
+        reinterpret_cast<std::uintptr_t>(statuses) + slot * sizeof(SQLUSMALLINT)), value);
+  };
+  const auto output_processed = [&](std::size_t examined) {
+    if (processed) store_application_value(processed, static_cast<SQLULEN>(examined));
+  };
+  try {
+    staged_results.reserve(size);
+    if (deferred) {
+      apply_result_metadata(plan.description(), true);
+      for (std::size_t slot = 0; slot < size; ++slot) output_status(slot, SQL_PARAM_UNUSED);
+      output_processed(0);
+      auto transaction = conn_->begin_transaction_if_needed(deadline);
+      if (!transaction) {
+        set_error(query_failure_sqlstate(conn_->backend_provider(), transaction.backend_error(),
+            SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT), transaction.error_message());
+        return SQL_ERROR;
+      }
+    }
+    auto batch = conn_->backend_execute_command_batch(std::move(plan));
+    const auto snapshot = batch.session_snapshot();
+    const bool terminal = snapshot.disposition == SessionDisposition::Retire ||
+        snapshot.state == SessionState::Unknown || snapshot.state == SessionState::Disconnected;
+    // Reconcile before any provider mapper/diagnostic can throw. Error and
+    // completion records remain owned by batch even after closing the lease.
+    if (terminal) conn_->close_connection();
+    else conn_->transaction_active_ = snapshot.state == SessionState::Transaction ||
+        snapshot.state == SessionState::FailedTransaction;
+    if (batch.has_error()) {
+      clear_current_result(); pending_results_.clear();
+      set_error(query_failure_sqlstate(conn_->backend_provider(), batch.backend_error(),
+          SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT), batch.error_message());
+      return SQL_ERROR;
+    }
+    output_processed(batch->examined);
+    bool failed = false;
+    std::size_t successful = 0;
+    bool all_zero_searched = true;
+    for (std::size_t slot = 0; slot < batch->outcomes.size(); ++slot) {
+      auto& outcome = batch->outcomes[slot];
+      if (outcome.state == PreparedCommandOutcome::State::Succeeded) {
+        output_status(slot, SQL_PARAM_SUCCESS);
+        if (!outcome.result || outcome.result->affected_rows >
+            static_cast<std::size_t>((std::numeric_limits<SQLLEN>::max)()))
+          throw std::invalid_argument("Invalid command array completion");
+        ++successful;
+        all_zero_searched = all_zero_searched && outcome.result->affected_rows == 0 &&
+            (outcome.result->statement_kind == StatementKind::UpdateWhere ||
+             outcome.result->statement_kind == StatementKind::DeleteWhere);
+        // Complete every owning diagnostic header while still in the array
+        // staging/catch scope, before publishing any current or queued count.
+        auto header = get_diagnostic_header();
+        header.cursor_row_count = 0;
+        header.row_count = static_cast<SQLLEN>(outcome.result->affected_rows);
+        if (outcome.result->statement_kind) {
+          auto function = completed_dynamic_function(*outcome.result->statement_kind);
+          header.dynamic_function = std::move(function.name);
+          header.dynamic_function_code = function.code;
+        }
+        staged_results.push_back(PendingResult{std::move(*outcome.result),
+            std::nullopt, std::move(header)});
+      } else if (outcome.state == PreparedCommandOutcome::State::Failed) {
+        output_status(slot, SQL_PARAM_ERROR); failed = true;
+        if (!outcome.error) throw std::invalid_argument("Missing command array error");
+        const auto state = query_failure_sqlstate(conn_->backend_provider(), *outcome.error,
+            SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT);
+        add_attributed_diagnostic(state, outcome.error->message,
+            static_cast<SQLLEN>(slot + 1), SQL_NO_COLUMN_NUMBER);
+        QueryResult error;
+        error.error = std::move(outcome.error);
+        staged_results.push_back(PendingResult{std::move(error),
+            DeferredParameterDiagnostic{state, static_cast<SQLLEN>(slot + 1)}, std::nullopt});
+      }
+    }
+    if (terminal) {
+      clear_current_result(); pending_results_.clear();
+      if (!failed) set_error(SQLSTATE_GENERAL_ERROR, "Command array session was retired");
+      return SQL_ERROR;
+    }
+    clear_current_result(); pending_results_.clear();
+    if (!successful) return failed ? SQL_ERROR : SQL_SUCCESS;
+    // All owning storage is staged; publication moves without allocating.
+    auto first = std::move(staged_results.front());
+    staged_results.erase(staged_results.begin());
+    if (!first.parameter_array_header)
+      throw std::invalid_argument("Missing command array count header");
+    pending_results_.swap(staged_results);
+    apply_parameter_array_count(std::move(*first.parameter_array_header));
+    if (failed) return SQL_SUCCESS_WITH_INFO;
+    // Selected DAE array policy: every successful PROCEED count must prove
+    // searched zero-row DML. Keep all counts, including the first, published.
+    return deferred && all_zero_searched ? SQL_NO_DATA : SQL_SUCCESS;
+  } catch (const std::bad_alloc&) {
+    clear_current_result(); pending_results_.clear(); conn_->close_connection();
+    set_error(SQLSTATE_MEMORY_ALLOCATION_ERROR, "Unable to publish command array"); return SQL_ERROR;
+  } catch (...) {
+    clear_current_result(); pending_results_.clear(); conn_->close_connection();
+    set_error(SQLSTATE_GENERAL_ERROR, "Invalid command array outcome"); return SQL_ERROR;
+  }
+}
+
 SQLRETURN ODBCStatement::execute_parameter_array(rs::util::Deadline original_deadline) {
   using namespace rs::core::database;
   // This outer operation is active but deliberately not server-cancellable.
   // Never expose an idle gap, or retarget an individual command/description.
-  ExecutionCancellation cancellation(*this, false);
+  auto cancellation = std::make_shared<ExecutionCancellation>(*this, false);
   const auto apd = descriptor(app_param_descriptor_);
   const auto ipd = descriptor(imp_param_descriptor_);
   const auto count = apd->array_size();
@@ -5292,6 +6497,7 @@ SQLRETURN ODBCStatement::execute_parameter_array(rs::util::Deadline original_dea
     return SQL_ERROR;
   }
   if (count > conn_->result_limits_.max_results ||
+      count > static_cast<SQLULEN>((std::numeric_limits<SQLLEN>::max)()) ||
       count > static_cast<SQLULEN>((std::numeric_limits<std::size_t>::max)())) {
     set_error(SQLSTATE_GENERAL_ERROR, "Parameter array exceeds configured result limit");
     return SQL_ERROR;
@@ -5344,8 +6550,7 @@ SQLRETURN ODBCStatement::execute_parameter_array(rs::util::Deadline original_dea
         set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE, "Parameter offset span is out of range");
         return SQL_ERROR;
       }
-      SQLULEN encoded = 0;
-      std::memcpy(&encoded, offset_pointer, sizeof(encoded));
+      const SQLULEN encoded = load_application_value<SQLULEN>(offset_pointer);
       if (encoded > static_cast<SQLULEN>((std::numeric_limits<SQLLEN>::max)())) {
         set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
                   "Parameter offset outside the common nonnegative range is not supported");
@@ -5378,29 +6583,10 @@ SQLRETURN ODBCStatement::execute_parameter_array(rs::util::Deadline original_dea
       bases.push_back(record ? ParameterInputBase{record->data_ptr, record->indicator_ptr, record->octet_length_ptr}
                              : ParameterInputBase{});
     }
-    std::size_t aggregate_bytes = 0;
-    for (std::size_t slot = 0; slot < size; ++slot) {
-      if (sets[slot].ignored) continue;
-      if (original_deadline != rs::util::Deadline::max() &&
-          std::chrono::steady_clock::now() >= original_deadline) {
-        set_error(SQLSTATE_TIMEOUT, "Parameter array deadline expired before dispatch");
-        return SQL_ERROR;
-      }
-      auto values = materialize_parameter_set(offset, static_cast<SQLULEN>(slot), true, bind_stride, bases, aggregate_bytes);
-      if (!values) {
-        // Address refusals must precede every output/cursor write. Conversion
-        // failures are examined input outcomes, with no SQL/BEGIN dispatched.
-        if (get_sqlstate() != SQLSTATE_INVALID_ATTRIBUTE_VALUE) {
-          for (std::size_t i = 0; i < size; ++i) output_status(i, SQL_PARAM_UNUSED);
-          output_status(slot, SQL_PARAM_ERROR); output_processed(slot + 1);
-        }
-        return SQL_ERROR;
-      }
-      sets[slot].values = std::move(*values);
-    }
+    if (const auto deferred = start_pending_array(offset, bind_stride, bases, sets,
+            original_deadline, cancellation)) return *deferred;
     // Allocation and owning description happen before BEGIN/user execution.
     std::vector<PendingResult> staged_results;
-    staged_results.reserve(size);
     auto plan = conn_->backend_prepare_command_batch(prepared_sql_, std::move(sets), original_deadline);
     if (plan.has_error()) {
       const auto snapshot = plan.session_snapshot();
@@ -5413,7 +6599,33 @@ SQLRETURN ODBCStatement::execute_parameter_array(rs::util::Deadline original_dea
           SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT), plan.error_message());
       return SQL_ERROR;
     }
-    apply_result_metadata(plan->description(), true);
+    const bool select_sequence = plan->description().described_result_shape == DescribedResultShape::ResultSet;
+    if (select_sequence && use_variable_bookmarks_ &&
+        size >= (std::numeric_limits<std::uint64_t>::max)() - bookmark_generation_) {
+      set_error(SQLSTATE_GENERAL_ERROR, "Bookmark result identity exhausted"); return SQL_ERROR;
+    }
+    // Description is owning and fully staged before any native BEGIN/query.
+    std::optional<PreparedResultSequence> staged_sequence;
+    if (select_sequence) {
+      auto sequence = conn_->backend_lease_->start_result_sequence(std::move(*plan),
+          conn_->sequence_decoded_value_bytes_limit_);
+      if (!sequence) {
+        const auto snapshot = sequence.session_snapshot();
+        if (snapshot.disposition == SessionDisposition::Retire ||
+            snapshot.state == SessionState::Unknown || snapshot.state == SessionState::Disconnected)
+          conn_->close_connection();
+        else conn_->transaction_active_ = snapshot.state == SessionState::Transaction ||
+            snapshot.state == SessionState::FailedTransaction;
+        set_error(query_failure_sqlstate(conn_->backend_provider(), sequence.backend_error(),
+            SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT), sequence.error_message());
+        return SQL_ERROR;
+      }
+      staged_sequence.emplace(std::move(*sequence));
+      apply_result_metadata(staged_sequence->description(), true);
+    } else {
+      staged_results.reserve(size);
+      apply_result_metadata(plan->description(), true);
+    }
     for (std::size_t i = 0; i < size; ++i) output_status(i, SQL_PARAM_UNUSED);
     output_processed(0);
     auto transaction = conn_->begin_transaction_if_needed(original_deadline);
@@ -5422,72 +6634,14 @@ SQLRETURN ODBCStatement::execute_parameter_array(rs::util::Deadline original_dea
           SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT), transaction.error_message());
       return SQL_ERROR;
     }
-    auto batch = conn_->backend_execute_command_batch(std::move(*plan));
-    const auto snapshot = batch.session_snapshot();
-    const bool terminal = snapshot.disposition == SessionDisposition::Retire ||
-        snapshot.state == SessionState::Unknown || snapshot.state == SessionState::Disconnected;
-    // Reconcile before any provider mapper/diagnostic can throw. Error and
-    // completion records remain owned by batch even after closing the lease.
-    if (terminal) conn_->close_connection();
-    else conn_->transaction_active_ = snapshot.state == SessionState::Transaction ||
-        snapshot.state == SessionState::FailedTransaction;
-    if (batch.has_error()) {
+    if (select_sequence) {
       clear_current_result(); pending_results_.clear();
-      set_error(query_failure_sqlstate(conn_->backend_provider(), batch.backend_error(),
-          SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT), batch.error_message());
-      return SQL_ERROR;
+      result_sequence_ = std::move(staged_sequence);
+      sequence_statuses_ = statuses; sequence_processed_ = processed; sequence_max_rows_ = max_rows_;
+      return advance_parameter_result(true);
     }
-    output_processed(batch->examined);
-    bool failed = false;
-    std::size_t successful = 0;
-    for (std::size_t slot = 0; slot < batch->outcomes.size(); ++slot) {
-      auto& outcome = batch->outcomes[slot];
-      if (outcome.state == PreparedCommandOutcome::State::Succeeded) {
-        output_status(slot, SQL_PARAM_SUCCESS);
-        if (!outcome.result || outcome.result->affected_rows >
-            static_cast<std::size_t>((std::numeric_limits<SQLLEN>::max)()))
-          throw std::invalid_argument("Invalid command array completion");
-        ++successful;
-        // Complete every owning diagnostic header while still in the array
-        // staging/catch scope, before publishing any current or queued count.
-        auto header = get_diagnostic_header();
-        header.cursor_row_count = 0;
-        header.row_count = static_cast<SQLLEN>(outcome.result->affected_rows);
-        if (outcome.result->statement_kind) {
-          auto function = completed_dynamic_function(*outcome.result->statement_kind);
-          header.dynamic_function = std::move(function.name);
-          header.dynamic_function_code = function.code;
-        }
-        staged_results.push_back(PendingResult{std::move(*outcome.result),
-            std::nullopt, std::move(header)});
-      } else if (outcome.state == PreparedCommandOutcome::State::Failed) {
-        output_status(slot, SQL_PARAM_ERROR); failed = true;
-        if (!outcome.error) throw std::invalid_argument("Missing command array error");
-        const auto state = query_failure_sqlstate(conn_->backend_provider(), *outcome.error,
-            SQLSTATE_GENERAL_ERROR, SQL_DIAG_UNKNOWN_STATEMENT);
-        add_attributed_diagnostic(state, outcome.error->message,
-            static_cast<SQLLEN>(slot + 1), SQL_NO_COLUMN_NUMBER);
-        QueryResult error;
-        error.error = std::move(outcome.error);
-        staged_results.push_back(PendingResult{std::move(error),
-            DeferredParameterDiagnostic{state, static_cast<SQLLEN>(slot + 1)}, std::nullopt});
-      }
-    }
-    if (terminal) {
-      clear_current_result(); pending_results_.clear();
-      if (!failed) set_error(SQLSTATE_GENERAL_ERROR, "Command array session was retired");
-      return SQL_ERROR;
-    }
-    clear_current_result(); pending_results_.clear();
-    if (!successful) return failed ? SQL_ERROR : SQL_SUCCESS;
-    // All owning storage is staged; publication moves without allocating.
-    auto first = std::move(staged_results.front());
-    staged_results.erase(staged_results.begin());
-    if (!first.parameter_array_header)
-      throw std::invalid_argument("Missing command array count header");
-    pending_results_.swap(staged_results);
-    apply_parameter_array_count(std::move(*first.parameter_array_header));
-    return failed ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS;
+    return publish_command_batch(std::move(*plan), statuses, processed, size,
+        original_deadline, false, std::move(staged_results));
   } catch (const std::bad_alloc&) {
     clear_current_result(); pending_results_.clear(); conn_->close_connection();
     set_error(SQLSTATE_MEMORY_ALLOCATION_ERROR, "Unable to materialize command array");
@@ -5500,6 +6654,7 @@ SQLRETURN ODBCStatement::execute_parameter_array(rs::util::Deadline original_dea
 }
 
 SQLRETURN ODBCStatement::execute() {
+  if (needs_data()) { set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,"Statement needs parameter data"); return SQL_ERROR; }
   const auto array_deadline = rs::util::make_deadline(timeout_duration(query_timeout_seconds_));
   const auto started = std::chrono::steady_clock::now();
   const auto dynamic_function = classify_dynamic_function(prepared_sql_);
@@ -5512,7 +6667,7 @@ SQLRETURN ODBCStatement::execute() {
                                      {"kind", "prepared", rs::core::logging::FieldSensitivity::Public}});
     return SQL_ERROR;
   }
-  if (executed_ && (!column_info_.empty() || !pending_results_.empty())) {
+  if (executed_ && (parameter_result_cursor_ || !column_info_.empty() || !pending_results_.empty())) {
     set_error(SQLSTATE_INVALID_CURSOR_STATE,
               "Cannot re-execute while results are pending");
     return SQL_ERROR;
@@ -5529,12 +6684,18 @@ SQLRETURN ODBCStatement::execute() {
   if (application_descriptor->array_size() > 1) {
     return execute_parameter_array(array_deadline);
   }
+  const auto scalar_bind_type = application_descriptor->bind_type();
   if (application_descriptor->array_size() != 1 ||
-      application_descriptor->bind_type() != SQL_PARAM_BIND_BY_COLUMN) {
+      (scalar_bind_type != SQL_PARAM_BIND_BY_COLUMN && !conn_->supports_parameter_arrays())) {
     set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
-              "Only one column-wise parameter set is supported");
+              "Parameter layout is not supported by this session");
     return SQL_ERROR;
   }
+  // A scalar struct tail consumes row index0, hence no next-row stride. Keep
+  // the ordinary scalar endpoint (including owning bounded deferred input),
+  // not a one-element array plan or a BufferLength-versus-stride restriction.
+  // One unavailable generation covers classification; no active idle-success gap.
+  auto cancellation=std::make_shared<ExecutionCancellation>(*this,false);
   const auto address_fits = [](const void* pointer, std::size_t extent) {
     return !pointer || extent <= (std::numeric_limits<std::uintptr_t>::max)() -
         reinterpret_cast<std::uintptr_t>(pointer);
@@ -5592,6 +6753,7 @@ SQLRETURN ODBCStatement::execute() {
   // descriptor bases remain unchanged; IPD status/processed pointers do not move.
   static_assert(sizeof(SQLULEN) == sizeof(SQLLEN));
   const auto* offset_pointer = application_descriptor->bind_offset_ptr();
+  const bool checked_input_layout = offset_pointer || scalar_bind_type != SQL_PARAM_BIND_BY_COLUMN;
   std::uintptr_t input_offset = 0;
   const auto address_error = [&]() -> SQLRETURN {
     set_error(SQLSTATE_INVALID_ATTRIBUTE_VALUE,
@@ -5600,8 +6762,7 @@ SQLRETURN ODBCStatement::execute() {
   };
   if (offset_pointer) {
     if (!address_fits(offset_pointer, sizeof(SQLULEN))) return address_error();
-    SQLULEN encoded = 0;
-    std::memcpy(&encoded, offset_pointer, sizeof(encoded));
+    const SQLULEN encoded = load_application_value<SQLULEN>(offset_pointer);
     if (encoded > static_cast<SQLULEN>((std::numeric_limits<SQLLEN>::max)())) {
       set_error(SQLSTATE_OPTIONAL_FEATURE_NOT_IMPLEMENTED,
                 "Parameter offset outside the common nonnegative range is not supported");
@@ -5610,6 +6771,7 @@ SQLRETURN ODBCStatement::execute() {
     input_offset = static_cast<std::uintptr_t>(encoded);
     if (static_cast<SQLULEN>(input_offset) != encoded) return address_error();
   }
+  if (auto pending = start_pending_input(input_offset, array_deadline, cancellation)) return *pending;
   struct InputFields {
     void* data{}; SQLLEN* indicator{}; SQLLEN* length{};
   };
@@ -5622,7 +6784,7 @@ SQLRETURN ODBCStatement::execute() {
       output = reinterpret_cast<void*>(address + input_offset);
       return address_fits(output, extent);
     };
-    if (!offset_pointer) {
+    if (!checked_input_layout) {
       fields = {record.data_ptr, record.indicator_ptr, record.octet_length_ptr};
       return true; // Preserve the ordinary no-offset input path.
     }
@@ -5640,7 +6802,7 @@ SQLRETURN ODBCStatement::execute() {
   };
   // Check every consumed input span before resetting cursor/status or issuing
   // BEGIN/query I/O. Allocation validity remains the application's obligation.
-  for (SQLSMALLINT index = 0; offset_pointer && index < parameter_count_; ++index) {
+  for (SQLSMALLINT index = 0; checked_input_layout && index < parameter_count_; ++index) {
     const auto* record = application_descriptor->record(static_cast<std::size_t>(index));
     const auto* implementation = descriptor(imp_param_descriptor_)->record(static_cast<std::size_t>(index));
     if (!record || !implementation) break; // Existing missing-binding diagnostic.
@@ -5697,7 +6859,7 @@ SQLRETURN ODBCStatement::execute() {
       }
     }
   }
-  ExecutionCancellation cancellation(*this, cancellable_inputs && conn_->cancellation_request_eligible(prepared_sql_));
+  cancellation->enable(cancellable_inputs && conn_->cancellation_request_eligible(prepared_sql_));
   if (parameter_count_ > 0) {
     const auto implementation_descriptor = descriptor(imp_param_descriptor_);
     if (auto* processed = implementation_descriptor->rows_processed_ptr()) {
@@ -5723,12 +6885,29 @@ SQLRETURN ODBCStatement::execute() {
     if (!materialized) return complete_parameter_set(SQL_ERROR);
     auto param_values = std::move(*materialized);
 
+    return dispatch_owning_parameters(std::move(param_values),
+        rs::util::make_deadline(timeout_duration(query_timeout_seconds_)), *cancellation);
+
+  } catch (const std::exception& e) {
+    set_error(SQLSTATE_GENERAL_ERROR, e.what());
+    conn_->log(rs::core::logging::LogLevel::Error, "query_failed", "Database operation failed",
+               {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "prepared", rs::core::logging::FieldSensitivity::Public},
+                {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
+    return complete_parameter_set(SQL_ERROR);
+  }
+}
+
+SQLRETURN ODBCStatement::dispatch_owning_parameters(
+    std::vector<rs::core::database::QueryParameter> param_values, rs::util::Deadline deadline,
+    ExecutionCancellation& cancellation, const std::shared_ptr<PendingInput>& input) {
+  const auto started=std::chrono::steady_clock::now();
+  const auto dynamic_function=classify_dynamic_function(prepared_sql_);
+  set_statement_diagnostic_header(0,0,dynamic_function.name,dynamic_function.code);
+  try {
     // Use PostgreSQL Parse/Bind/Execute protocol
-    auto deadline = rs::util::make_deadline(
-        timeout_duration(query_timeout_seconds_));
     if (!cancellation.before_transaction()) {
       set_error("HY008", "Statement cancelled before dispatch");
-      return complete_parameter_set(SQL_ERROR);
+      return complete_parameter_set(SQL_ERROR,input);
     }
     cancellation.arm(deadline);
     auto transaction = conn_->begin_transaction_if_needed(deadline);
@@ -5737,9 +6916,9 @@ SQLRETURN ODBCStatement::execute() {
       const auto timeout = is_timeout_error(transaction.error());
       if (cancellation_outcome.confirmed && transaction.backend_error().error_class == rs::core::database::BackendErrorClass::Server) {
         set_error("HY008", "Statement cancelled");
-        return complete_parameter_set(SQL_ERROR);
+        return complete_parameter_set(SQL_ERROR,input);
       }
-      if (timeout) conn_->disconnect();
+      if (timeout) conn_->close_connection();
       set_error(query_failure_sqlstate(conn_->backend_provider(),
                                        transaction.backend_error(), SQLSTATE_GENERAL_ERROR,
                                        SQL_DIAG_UNKNOWN_STATEMENT),
@@ -5748,18 +6927,18 @@ SQLRETURN ODBCStatement::execute() {
                  transaction.backend_error().safe_summary(),
                  {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "prepared", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
-      return complete_parameter_set(SQL_ERROR);
+      return complete_parameter_set(SQL_ERROR,input);
     }
     if (!cancellation.next_phase()) {
       const auto outcome = cancellation.finish();
       set_error(outcome.confirmed ? "HY008" : SQLSTATE_GENERAL_ERROR, "Statement cancellation did not permit dispatch");
-      return complete_parameter_set(SQL_ERROR);
+      return complete_parameter_set(SQL_ERROR,input);
     }
     auto result = conn_->backend_prepared(prepared_sql_, param_values, deadline);
     const auto cancellation_outcome = cancellation.finish();
     if (cancellation_outcome.confirmed && (!result.has_error() || result.backend_error().error_class == rs::core::database::BackendErrorClass::Server)) {
       set_error("HY008", "Statement cancelled");
-      return complete_parameter_set(SQL_ERROR);
+      return complete_parameter_set(SQL_ERROR,input);
     }
     
     if (result.has_error()) {
@@ -5772,10 +6951,14 @@ SQLRETURN ODBCStatement::execute() {
                  result.backend_error().safe_summary(),
                  {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "prepared", rs::core::logging::FieldSensitivity::Public},
                   {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
-      if (timeout) conn_->disconnect();
-      return complete_parameter_set(SQL_ERROR);
+      if (timeout) conn_->close_connection();
+      return complete_parameter_set(SQL_ERROR,input);
     }
 
+    const bool no_data = input && result->statement_kind &&
+        (*result->statement_kind == rs::core::database::StatementKind::UpdateWhere ||
+         *result->statement_kind == rs::core::database::StatementKind::DeleteWhere) &&
+        result->columns.empty() && result->affected_rows == 0;
     const auto row_count = result->rows.size();
     const auto affected_rows = result->affected_rows;
     if (!cancellation_outcome.claimed) apply_query_result(std::move(*result), true);
@@ -5786,14 +6969,20 @@ SQLRETURN ODBCStatement::execute() {
                 {"rows", std::to_string(row_count), rs::core::logging::FieldSensitivity::Public},
                 {"affected_rows", std::to_string(affected_rows), rs::core::logging::FieldSensitivity::Public},
                 {"parameters", std::to_string(parameter_count_), rs::core::logging::FieldSensitivity::Public}});
-    return complete_parameter_set(SQL_SUCCESS);
+    return complete_parameter_set(no_data ? SQL_NO_DATA : SQL_SUCCESS,input);
     
+  } catch (const std::bad_alloc&) {
+    if (!input) throw;
+    clear_current_result(); pending_results_.clear();
+    set_error(SQLSTATE_MEMORY_ALLOCATION_ERROR,"Unable to publish deferred execution");
+    return complete_parameter_set(SQL_ERROR,input);
   } catch (const std::exception& e) {
-    set_error(SQLSTATE_GENERAL_ERROR, e.what());
-    conn_->log(rs::core::logging::LogLevel::Error, "query_failed", "Database operation failed",
-               {{"sqlstate", get_sqlstate(), rs::core::logging::FieldSensitivity::Public}, {"kind", "prepared", rs::core::logging::FieldSensitivity::Public},
-                {"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
-    return complete_parameter_set(SQL_ERROR);
+    set_error(SQLSTATE_GENERAL_ERROR,e.what());
+    conn_->log(rs::core::logging::LogLevel::Error,"query_failed","Database operation failed",
+        {{"sqlstate",get_sqlstate(),rs::core::logging::FieldSensitivity::Public},
+         {"kind","prepared",rs::core::logging::FieldSensitivity::Public},
+         {"duration_ms",elapsed_milliseconds(started),rs::core::logging::FieldSensitivity::Public}});
+    return complete_parameter_set(SQL_ERROR,input);
   }
 }
 
@@ -5801,6 +6990,7 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
                                        SQLSMALLINT value_type, SQLSMALLINT parameter_type, SQLULEN column_size,
                                        SQLSMALLINT decimal_digits, SQLPOINTER parameter_value, SQLLEN buffer_length,
                                        SQLLEN* strlen_or_indicator) {
+  if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLBindParameter",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   if (parameter_number < 1) {
     set_error(SQLSTATE_INVALID_PARAMETER_NUMBER, "Invalid parameter number");
     return SQL_ERROR;
@@ -5970,20 +7160,22 @@ void ODBCStatement::apply_parameter_array_count(DiagnosticHeader header) {
 
 void ODBCStatement::apply_query_result(
     rs::core::database::QueryResult result,
-    bool include_parameter_metadata) {
+    bool include_parameter_metadata, std::optional<SQLULEN> captured_max_rows,
+    bool parameter_result_publication) {
+  const auto visible_max_rows = captured_max_rows.value_or(max_rows_);
   if (!rs::core::database::valid_execution_structure(result)) {
     throw std::invalid_argument("Data source returned invalid execution sequence");
   }
   require_normalized_columns(result);
   for (const auto& item : result.additional_results) require_normalized_columns(item);
-  if (max_rows_ > 0 && result.rows.size() > max_rows_) {
+  if (visible_max_rows > 0 && result.rows.size() > visible_max_rows) {
     // Stage on the local owning result: reserve may throw, so it must precede
     // publishing pending results or current statement state. MAX_ROWS is a
     // postdecode visibility limit, not a wire/peak-memory bound.
     // Keep only the accessible owning prefix instead of retaining the entire
     // decoded outer allocation for the lifetime of this smaller live cursor.
     rs::core::database::ResultRows retained;
-    const auto count = static_cast<std::size_t>(max_rows_);
+    const auto count = static_cast<std::size_t>(visible_max_rows);
     retained.reserve(count);
     for (std::size_t row = 0; row < count; ++row)
       retained.push_back(std::move(result.rows[row]));
@@ -5991,7 +7183,8 @@ void ODBCStatement::apply_query_result(
     std::erase_if(result.cell_errors, [&](const auto& error) { return error.row >= result.rows.size(); });
   }
   std::uint64_t staged_bookmark_generation = 0;
-  if (use_variable_bookmarks_ && (!result.columns.empty() || !result.rows.empty())) {
+  if (use_variable_bookmarks_ && (!result.columns.empty() || !result.rows.empty() ||
+      (captured_max_rows && result.execution_result_shape == rs::core::database::ExecutionResultShape::ResultSet))) {
     if (bookmark_generation_ >= (std::numeric_limits<std::uint64_t>::max)() - 1)
       throw std::runtime_error("Bookmark result identity exhausted");
     staged_bookmark_generation = bookmark_generation_ + 1;
@@ -6008,6 +7201,7 @@ void ODBCStatement::apply_query_result(
   result_cell_errors_ = std::move(result.cell_errors);
   current_row_ = 0;
   static_position_ = StaticPosition::BeforeStart;
+  bulk_unpositioned_ = false;
   fetched_rowset_size_ = 1;
   actual_fetched_rows_ = 0;
   selected_row_slot_ = 0;
@@ -6037,14 +7231,14 @@ void ODBCStatement::apply_query_result(
       cursor_rows, affected_rows_, diagnostic_header.dynamic_function,
       diagnostic_header.dynamic_function_code);
 
-  apply_result_metadata(result, include_parameter_metadata);
+  apply_result_metadata(result, include_parameter_metadata, parameter_result_publication);
   active_bookmark_generation_ = staged_bookmark_generation;
   if (staged_bookmark_generation) bookmark_generation_ = staged_bookmark_generation;
 }
 
 void ODBCStatement::apply_result_metadata(
     const rs::core::database::QueryResult& result,
-    bool include_parameter_metadata) {
+    bool include_parameter_metadata, bool parameter_result_publication) {
 
   require_normalized_columns(result);
   std::vector<ColumnInfo> staged_columns;
@@ -6092,13 +7286,20 @@ void ODBCStatement::apply_result_metadata(
     }
   }
   std::optional<DescriptorRecord> staged_bookmark;
-  if (use_variable_bookmarks_ && !staged_columns.empty()) staged_bookmark = bookmark_metadata();
+  if (use_variable_bookmarks_ && (!staged_columns.empty() ||
+      (parameter_result_publication && result.execution_result_shape ==
+          rs::core::database::ExecutionResultShape::ResultSet)))
+    staged_bookmark = bookmark_metadata();
+  // Only SELECT-array result publication preserves the prepared input hints.
+  // Ordinary false publication and description/true semantics remain unchanged.
+  const bool preserve_parameters = parameter_result_publication && !include_parameter_metadata;
   // No allocating/provider work remains after the first publication.
   staged_columns.swap(column_info_);
-  staged_parameters.swap(param_metadata_);
+  if (!preserve_parameters) staged_parameters.swap(param_metadata_);
   row_descriptor->replace_records(std::move(row_descriptor_records));
   row_descriptor->bookmark_record_ = std::move(staged_bookmark);
-  implementation_descriptor->replace_records(std::move(parameter_descriptor_records));
+  if (!preserve_parameters)
+    implementation_descriptor->replace_records(std::move(parameter_descriptor_records));
 }
 
 void ODBCStatement::invalidate_eager_prepare() noexcept {
@@ -6136,6 +7337,7 @@ void ODBCStatement::invalidate_eager_prepare() noexcept {
 }
 
 void ODBCStatement::clear_current_result() {
+  parameter_result_cursor_ = false;
   active_bookmark_generation_ = 0;
   descriptor(imp_row_descriptor_)->bookmark_record_.reset();
   // A closed cursor cannot reuse this allocation: refill moves a new owning
@@ -6151,6 +7353,7 @@ void ODBCStatement::clear_current_result() {
   wide_get_data_ = {};
   current_row_ = 0;
   static_position_ = StaticPosition::BeforeStart;
+  bulk_unpositioned_ = false;
   fetched_rowset_size_ = 1;
   actual_fetched_rows_ = 0;
   selected_row_slot_ = 0;
@@ -6166,6 +7369,7 @@ void ODBCStatement::clear_current_result() {
 // Column binding implementation
 SQLRETURN ODBCStatement::bind_col(SQLUSMALLINT column_number, SQLSMALLINT target_type,
                                   SQLPOINTER target_value, SQLLEN buffer_length, SQLLEN* strlen_or_indicator) {
+  if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLBindCol",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   if (column_number == 0 && use_variable_bookmarks_) {
     if (target_type != SQL_C_VARBOOKMARK) { set_error(SQLSTATE_RESTRICTED_DATA_TYPE, "Invalid bookmark binding type"); return SQL_ERROR; }
     if (buffer_length < 0) { set_error(SQLSTATE_INVALID_STRING_LENGTH, "Invalid bookmark buffer length"); return SQL_ERROR; }
@@ -6262,7 +7466,7 @@ SQLRETURN ODBCStatement::describe_prepared_metadata(
                                      result.backend_error(), SQLSTATE_SYNTAX_ERROR,
                                      classify_dynamic_function(prepared_sql_).code),
               result.error_message());
-    if (timeout) conn_->disconnect();
+    if (timeout) conn_->close_connection();
     return SQL_ERROR;
   }
   if (!rs::core::database::valid_description_structure(*result)) {
@@ -6317,11 +7521,12 @@ SQLRETURN ODBCStatement::get_num_result_cols(SQLSMALLINT* column_count) {
 }
 
 SQLRETURN ODBCStatement::get_type_info(SQLSMALLINT data_type) {
+  if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLGetTypeInfo",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   if (!conn_->is_connected()) {
     set_error(SQLSTATE_CONNECTION_NOT_OPEN, "Connection is not open");
     return SQL_ERROR;
   }
-  if (executed_ && !column_info_.empty()) {
+  if (executed_ && (parameter_result_cursor_ || !column_info_.empty())) {
     set_error(SQLSTATE_INVALID_CURSOR_STATE,
               "A result cursor is already open");
     return SQL_ERROR;
@@ -6509,6 +7714,7 @@ bool ODBCStatement::normalize_catalog_names(rs::core::database::CatalogRequest& 
 
 SQLRETURN ODBCStatement::execute_catalog(
     const rs::core::database::CatalogRequest& input) {
+  if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLColumns",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   // New identifier classification/generation consumes the same absolute budget.
   const auto original_deadline = metadata_id_ ?
       std::optional<rs::util::Deadline>{rs::util::make_deadline(timeout_duration(query_timeout_seconds_))} : std::nullopt;
@@ -6530,7 +7736,7 @@ SQLRETURN ODBCStatement::execute_catalog(
   if (*selection) {
     const auto deadline = original_deadline ? *original_deadline :
         rs::util::make_deadline(timeout_duration(query_timeout_seconds_));
-    if (executed_ && (!column_info_.empty() || !pending_results_.empty())) {
+    if (executed_ && (parameter_result_cursor_ || !column_info_.empty() || !pending_results_.empty())) {
       set_error(SQLSTATE_INVALID_CURSOR_STATE, "Cannot execute while results are pending");
       return SQL_ERROR;
     }
@@ -6712,7 +7918,7 @@ SQLRETURN ODBCStatement::describe_col(SQLUSMALLINT column_number, SQLCHAR* colum
   }
   const auto metadata_result = ensure_result_metadata();
   if (metadata_result != SQL_SUCCESS) return metadata_result;
-  if (column_info_.empty()) {
+  if (column_info_.empty() && !(parameter_result_cursor_ && use_variable_bookmarks_ && column_number == 0)) {
     set_error(SQLSTATE_PREPARED_STATEMENT_NOT_CURSOR,
               "Statement does not produce a result set");
     return SQL_ERROR;
@@ -6787,7 +7993,7 @@ SQLRETURN ODBCStatement::col_attribute(SQLUSMALLINT column_number, SQLUSMALLINT 
     }
     return SQL_SUCCESS;
   }
-  if (column_info_.empty()) {
+  if (column_info_.empty() && !(parameter_result_cursor_ && use_variable_bookmarks_ && column_number == 0)) {
     set_error(SQLSTATE_PREPARED_STATEMENT_NOT_CURSOR,
               "Statement does not produce a result set");
     return SQL_ERROR;
@@ -7061,6 +8267,9 @@ void HandleRegistry::detach_descriptor_from_statements(SQLHDESC descriptor) {
 
 HandleOperationLease HandleRegistry::lock_handles(
     std::initializer_list<SQLHANDLE> handles) {
+  return lock_handles(std::span<const SQLHANDLE>(handles.begin(), handles.size()));
+}
+HandleOperationLease HandleRegistry::lock_handles(std::span<const SQLHANDLE> handles) {
   HandleOperationLease lease;
   std::map<SQLHANDLE, std::shared_ptr<ODBCHandle>> ordered_handles;
   {
@@ -7088,6 +8297,60 @@ HandleOperationLease HandleRegistry::lock_handles(
     lease.locks_.emplace_back(object->operation_mutex_);
   }
   return lease;
+}
+
+bool HandleRegistry::admit_need_data(std::initializer_list<SQLHANDLE> handles,
+                                    std::string_view name, SQLHANDLE diagnostic) {
+  // This is a closed ODBC sequence table, not generic middleware. Domain
+  // ownership locks are already held by public entry; no caller buffers read.
+  if (name.empty() || name.starts_with("SQLGetDiag") || name=="SQLError" || name=="SQLErrorW") return true;
+  const auto refuse=[&]() {
+    if (auto object=get_handle(diagnostic)) {
+      object->clear_diagnostics();
+      object->set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,"Statement needs parameter data");
+    }
+    return false;
+  };
+  static constexpr std::string_view statement_calls[]{
+      "SQLBulkOperations","SQLBindCol","SQLBindParameter","SQLColAttribute","SQLColAttributeW","SQLColAttributes",
+      "SQLColAttributesW","SQLCloseCursor","SQLColumns","SQLColumnsW","SQLDescribeCol",
+      "SQLDescribeColW","SQLDescribeParam","SQLExecDirect","SQLExecDirectW","SQLExecute",
+      "SQLFetch","SQLFetchScroll","SQLFreeStmt","SQLGetData","SQLGetStmtAttr","SQLGetStmtAttrW",
+      "SQLGetStmtOption","SQLGetTypeInfo","SQLMoreResults","SQLNumParams","SQLNumResultCols","SQLRowCount",
+      "SQLPrepare","SQLPrepareW","SQLPrimaryKeys","SQLPrimaryKeysW","SQLForeignKeys","SQLForeignKeysW","SQLProcedures",
+      "SQLProceduresW","SQLProcedureColumns","SQLProcedureColumnsW","SQLSetPos",
+      "SQLSpecialColumns","SQLSpecialColumnsW","SQLStatistics","SQLStatisticsW"};
+  for (const auto handle:handles) {
+    auto object=get_handle(handle); if (!object) continue; // Ordinary typed validation stays authoritative.
+    if (object->get_type()==HandleType::Statement) {
+      const auto statement=std::static_pointer_cast<ODBCStatement>(object);
+      if (statement->needs_data() && std::find(std::begin(statement_calls),std::end(statement_calls),name)!=std::end(statement_calls)) return refuse();
+      if (statement->has_parameter_result_cursor() &&
+          (name == "SQLPrepare" || name == "SQLPrepareW" || name == "SQLExecute" ||
+           name == "SQLExecDirect" || name == "SQLExecDirectW" || name == "SQLGetTypeInfo" ||
+           name == "SQLColumns" || name == "SQLColumnsW" || name == "SQLTables" || name == "SQLTablesW" ||
+           name == "SQLPrimaryKeys" || name == "SQLPrimaryKeysW" || name == "SQLForeignKeys" || name == "SQLForeignKeysW" ||
+           name == "SQLProcedures" || name == "SQLProceduresW" || name == "SQLProcedureColumns" || name == "SQLProcedureColumnsW" ||
+           name == "SQLSpecialColumns" || name == "SQLSpecialColumnsW" || name == "SQLStatistics" || name == "SQLStatisticsW")) {
+        if (auto target = get_handle(diagnostic))
+          target->set_error(SQLSTATE_INVALID_CURSOR_STATE, "Parameter result cursor is open");
+        return false;
+      }
+      // Attribute setters classify actual IDs in their typed setter BEFORE ValuePtr.
+    } else if (object->get_type()==HandleType::Descriptor &&
+               (name.starts_with("SQLGetDesc") || name.starts_with("SQLSetDesc") || name=="SQLCopyDesc")) {
+      const auto connection=get_connection_for_handle(handle);
+      if (!connection) continue;
+      for (const auto child:child_handles(reinterpret_cast<SQLHANDLE>(connection.get()),HandleType::Statement)) {
+        const auto statement=get_handle_as<ODBCStatement>(child);
+        if (statement && statement->needs_data() && statement->uses_descriptor(static_cast<SQLHDESC>(handle))) return refuse();
+      }
+    } else if (object->get_type()==HandleType::Connection &&
+               (name=="SQLDisconnect" || name=="SQLSetConnectAttr" || name=="SQLSetConnectAttrW" || name=="SQLSetConnectOption" || name=="SQLSetConnectOptionW")) {
+      if (std::static_pointer_cast<ODBCConnection>(object)->has_pending_input()) return refuse();
+    }
+  }
+  return true;
 }
 
 } // namespace rs::odbc

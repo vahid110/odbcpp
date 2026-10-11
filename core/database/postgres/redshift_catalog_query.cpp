@@ -135,6 +135,31 @@ BackendResult<QueryResult> normalize_redshift_schemas(
 }
 
 
+std::optional<CatalogRequest> redshift_identifier_show_request(const CatalogRequest& validated_native) {
+  CatalogRequest lowered = validated_native;
+  const auto escape = [](std::optional<std::string>& name, CatalogNameMatch match) {
+    if (match == CatalogNameMatch::Existing || !name) return;
+    std::string pattern;
+    for (const char ch : *name) {
+      if (ch == '\\' || ch == '%' || ch == '_') pattern.push_back('\\');
+      pattern.push_back(ch);
+    }
+    name = std::move(pattern);
+  };
+  if (auto* tables = std::get_if<TablesCatalogRequest>(&lowered)) {
+    if (tables->mode != TablesCatalogRequest::Mode::Tables) return std::nullopt;
+    escape(tables->schema, tables->name_matches.schema);
+    escape(tables->table, tables->name_matches.object);
+    tables->name_matches = {};
+  } else if (auto* columns = std::get_if<ColumnsCatalogRequest>(&lowered)) {
+    escape(columns->schema, columns->name_matches.schema);
+    escape(columns->table, columns->name_matches.object);
+    escape(columns->column, columns->name_matches.member);
+    columns->name_matches = {};
+  } else return std::nullopt;
+  return lowered;
+}
+
 std::optional<CatalogRequest> native_catalog_request(const CatalogRequest& input) {
   auto output = input;
   const auto normalize = [](auto& value, CatalogNameMatch match) {
@@ -495,6 +520,378 @@ BackendResult<QueryResult> normalize_redshift_columns(std::string_view database,
   std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){return a.first<b.first;});
   for(auto& value:ordered)output.rows.push_back(std::move(value.second));
   return BackendResult<QueryResult>{std::move(output),input.session_snapshot()};
+}
+
+
+namespace {
+BackendError routine_timeout() {
+  BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::Timeout),"Routine metadata normalization deadline expired"};
+  error.operation=BackendOperation::ExecuteCatalog;return error;
+}
+BackendError invalid_routine_metadata(const char* reason) {
+  BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),
+      std::string("Invalid Redshift routine metadata: ") + reason};
+  error.error_class=BackendErrorClass::InvalidMetadata;
+  error.operation=BackendOperation::ExecuteCatalog;
+  return error;
+}
+std::string routine_quote(std::string_view value) {
+  std::string output{"\""};
+  for (const char ch:value) { if(ch=='"') output.push_back('"'); output.push_back(ch); }
+  output.push_back('"'); return output;
+}
+bool routine_match(std::string_view value,const std::optional<std::string>& pattern,CatalogNameMatch match) {
+  return match==CatalogNameMatch::Existing ? table_like(value,pattern) : pattern && value==*pattern;
+}
+bool routine_number(const ResultCell& value,std::optional<std::int32_t>& number) {
+  return column_number(value,number);
+}
+bool routine_shape(const QueryResult& source,const SessionSnapshot& snapshot) {
+  return clean_schema_result(source) && !source.error && source.rows.size()<=10000 &&
+      source.statement_kind && (*source.statement_kind==StatementKind::Unknown ||
+      *source.statement_kind==StatementKind::SelectCursor) &&
+      (source.affected_rows==0 || source.affected_rows==source.rows.size()) &&
+      snapshot.state==SessionState::Idle && snapshot.disposition==SessionDisposition::Reusable;
+}
+bool routine_integer(const ResultColumnMetadata& column) {
+  return column.normalized_type && column.normalized_type->known &&
+      (column.normalized_type->type==ScalarType::SmallInt || column.normalized_type->type==ScalarType::Integer ||
+       column.normalized_type->type==ScalarType::BigInt);
+}
+std::optional<std::vector<std::string>> routine_arguments(std::string_view input) {
+  // Fixed native spellings only; no type modifiers, identifiers or SQL fragments.
+  constexpr std::string_view allowed[]{"smallint","int2","integer","int","int4","bigint","int8",
+      "decimal","numeric","real","float4","double precision","float8","float","char","\"char\"",
+      "character","nchar","bpchar","varchar","character varying","nvarchar","text","date","time",
+      "time without time zone","timetz","time with time zone","timestamp","timestamp without time zone",
+      "timestamptz","timestamp with time zone","interval","intervaly2m","interval year to month",
+      "intervald2s","interval day to second","boolean","bool","hllsketch","super","varbyte","varbinary",
+      "binary varying","geometry","geography","refcursor"};
+  std::vector<std::string> output;
+  if(input.empty()) return output;
+  std::size_t start=0;
+  while(start<input.size()) {
+    const auto comma=input.find(',',start);
+    auto token=input.substr(start,comma==std::string_view::npos?input.size()-start:comma-start);
+    while(!token.empty() && token.front()==' ') token.remove_prefix(1);
+    while(!token.empty() && token.back()==' ') token.remove_suffix(1);
+    if(token.empty() || token.size()>64) return std::nullopt;
+    std::string canonical;
+    bool space=false;
+    for(char ch:token) {
+      if(ch==' ') {space=true;continue;}
+      if(space && !canonical.empty()) canonical.push_back(' ');
+      space=false;
+      if(ch>='A' && ch<='Z') ch+= 'a'-'A';
+      canonical.push_back(ch);
+    }
+    if(std::find(std::begin(allowed),std::end(allowed),canonical)==std::end(allowed))return std::nullopt;
+    output.push_back(std::move(canonical));
+    if(comma==std::string_view::npos) break;
+    start=comma+1;
+    if(start==input.size()) return std::nullopt;
+  }
+  return output;
+}
+std::size_t routine_cell_bytes(const ResultRow& row) {
+  std::size_t bytes=0;
+  for(const auto& cell:row) if(cell) {
+    if(cell->size()>std::numeric_limits<std::size_t>::max()-bytes) return std::numeric_limits<std::size_t>::max();
+    bytes+=cell->size();
+  }
+  return bytes;
+}
+bool routine_headers(QueryResult& output,bool columns,RedshiftRoutineBudget& budget) {
+  constexpr std::string_view procedures[]{"PROCEDURE_CAT","PROCEDURE_SCHEM","PROCEDURE_NAME",
+      "NUM_INPUT_PARAMS","NUM_OUTPUT_PARAMS","NUM_RESULT_SETS","REMARKS","PROCEDURE_TYPE"};
+  constexpr std::string_view parameters[]{"PROCEDURE_CAT","PROCEDURE_SCHEM","PROCEDURE_NAME","COLUMN_NAME",
+      "COLUMN_TYPE","DATA_TYPE","TYPE_NAME","COLUMN_SIZE","BUFFER_LENGTH","DECIMAL_DIGITS","NUM_PREC_RADIX",
+      "NULLABLE","REMARKS","COLUMN_DEF","SQL_DATA_TYPE","SQL_DATETIME_SUB","CHAR_OCTET_LENGTH","ORDINAL_POSITION","IS_NULLABLE"};
+  const std::span<const std::string_view> names=columns ? std::span<const std::string_view>{parameters} :
+      std::span<const std::string_view>{procedures};
+  if(!budget.description(names.size()))return false;
+  for(std::size_t i=0;i<names.size();++i) {
+    if(!budget.name(names[i]) || !budget.retain({0,0,names[i].size(),1,names[i].size()}))return false;
+    const bool text=columns ? (i<4 || i==6 || i==12 || i==13 || i==18) : (i<3 || i==6);
+    const bool integer=columns && (i==7 || i==8 || i==16 || i==17);
+    output.columns.push_back({std::string(names[i]),NativeTypeInfo{text?ScalarType::VarChar:
+        integer?ScalarType::Integer:ScalarType::SmallInt,text?0u:integer?10u:5u,0,true}});
+  }
+  return true;
+}
+void routine_text_capacities(QueryResult& output) {
+  for(std::size_t c=0;c<output.columns.size();++c) {
+    auto& type=output.columns[c].normalized_type;
+    if(!type || type->type!=ScalarType::VarChar)continue;
+    for(const auto& row:output.rows) if(row[c]) {
+      const auto count=rs::util::utf8_code_point_count(*row[c]);
+      if(!count)throw std::runtime_error("Invalid Redshift routine output encoding");
+      type->column_size=std::max(type->column_size,static_cast<std::uint64_t>(*count));
+    }
+  }
+}
+std::optional<ColumnDimensions> routine_dimensions(std::string_view type,std::optional<std::int32_t> length,
+    std::optional<std::int32_t> precision,std::optional<std::int32_t> scale) {
+  std::string lower{type};
+  for(auto& ch:lower)if(ch>='A' && ch<='Z')ch+='a'-'A';
+  if(lower=="numeric" || lower=="decimal") {
+    if((precision && (*precision<1 || *precision>38)) || (scale && (*scale<0 || *scale>38)) ||
+        (precision && scale && *scale>*precision))return std::nullopt;
+    ColumnDimensions d;d.code=lower=="numeric"?2:3;d.sql_type=d.code;d.radix="10";
+    if(precision){d.size=std::to_string(*precision);d.buffer=std::to_string(*precision+2);}
+    if(scale)d.scale=std::to_string(*scale);
+    return d;
+  }
+  if(lower=="character" || lower=="character varying") {
+    if(length && (*length==0 || *length<-1 || *length>65535))return std::nullopt;
+    ColumnDimensions d;d.code=lower=="character"?1:12;d.sql_type=d.code;
+    if(length && *length>0){d.size=d.buffer=d.octets=std::to_string(*length);}
+    return d;
+  }
+  return column_dimensions(type,length,precision,scale);
+}
+} // namespace
+
+bool RedshiftRoutineBudget::retain(RedshiftRoutineUsage extra) noexcept {
+  const auto fits=[](std::size_t used,std::size_t add,std::size_t limit){return used<=limit && add<=limit-used;};
+  if(!fits(used_.rows,extra.rows,result_.max_rows) || !fits(used_.cells,extra.cells,result_.max_cells) ||
+      !fits(used_.bytes,extra.bytes,response_.max_wire_bytes) || !fits(used_.metadata,extra.metadata,result_.max_metadata_entries) ||
+      !fits(used_.name_bytes,extra.name_bytes,result_.max_metadata_name_bytes))return false;
+  used_.rows+=extra.rows;used_.cells+=extra.cells;used_.bytes+=extra.bytes;used_.metadata+=extra.metadata;used_.name_bytes+=extra.name_bytes;
+  return true;
+}
+void RedshiftRoutineBudget::release(RedshiftRoutineUsage used) noexcept {
+  used_.rows-=used.rows;used_.cells-=used.cells;used_.bytes-=used.bytes;used_.metadata-=used.metadata;used_.name_bytes-=used.name_bytes;
+}
+bool RedshiftRoutineBudget::exchanges_available(std::size_t count) const noexcept {
+  return exchanges_<=result_.max_results && count<=result_.max_results-exchanges_;
+}
+bool RedshiftRoutineBudget::exchange() noexcept {
+  if(!exchanges_available(1))return false;
+  ++exchanges_;return true;
+}
+bool RedshiftRoutineBudget::name(std::string_view value) const noexcept {
+  return value.size()<=result_.max_column_name_bytes;
+}
+bool RedshiftRoutineBudget::description(std::size_t count) const noexcept {
+  return count<=result_.max_columns_per_description;
+}
+bool RedshiftRoutineBudget::arguments(std::size_t count) const noexcept {
+  return count<=result_.max_metadata_entries;
+}
+RedshiftRoutineUsage redshift_routine_usage(const QueryResult& result) {
+  RedshiftRoutineUsage used{result.rows.size(),0,0,result.columns.size()};
+  const auto add=[](std::size_t& total,std::size_t n) {
+    total=n>std::numeric_limits<std::size_t>::max()-total?std::numeric_limits<std::size_t>::max():total+n;
+  };
+  for(const auto& col:result.columns){add(used.bytes,col.name.size());add(used.name_bytes,col.name.size());}
+  for(const auto& row:result.rows){add(used.cells,row.size());add(used.bytes,routine_cell_bytes(row));}
+  return used;
+}
+BackendError redshift_routine_limit() {
+  BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),"Redshift routine catalog budget exceeded"};
+  error.operation=BackendOperation::ExecuteCatalog;
+  // Used only in a passively verified Idle phase or after complete reusable
+  // native results. Framing/timeouts keep their original terminal outcome.
+  error.session_state=SessionState::Idle;error.disposition=SessionDisposition::Reusable;
+  return error;
+}
+std::optional<std::string> redshift_routine_schema(const CatalogRequest& request) {
+  return std::visit([](const auto& names)->std::optional<std::string> {
+    using T=std::decay_t<decltype(names)>;
+    if constexpr(std::is_same_v<T,ProceduresCatalogRequest> || std::is_same_v<T,ProcedureColumnsCatalogRequest>) {
+      if(!names.schema)return std::nullopt;
+      if(names.name_matches.schema!=CatalogNameMatch::Existing)return names.schema;
+      std::string decoded;bool escaped=false;
+      for(char ch:*names.schema) {
+        if(!escaped && ch=='\\'){escaped=true;continue;}
+        if(!escaped && (ch=='%' || ch=='_'))return std::nullopt;
+        decoded.push_back(ch);escaped=false;
+      }
+      if(escaped)return std::nullopt;
+      return decoded;
+    }
+    return std::nullopt;
+  },request);
+}
+std::string redshift_show_routines_command(std::string_view database,std::string_view schema,bool function) {
+  return std::string{"SHOW "}+(function?"FUNCTIONS":"PROCEDURES")+" FROM SCHEMA "+routine_quote(database)+"."+routine_quote(schema)+";";
+}
+std::string redshift_show_parameters_command(std::string_view database,std::string_view schema,const RedshiftRoutine& routine) {
+  // arguments/signature come only from the closed normalizer below.
+  return std::string{"SHOW PARAMETERS OF "}+(routine.function?"FUNCTION ":"PROCEDURE ")+
+      routine_quote(database)+"."+routine_quote(schema)+"."+routine_quote(routine.name)+"("+routine.signature+");";
+}
+BackendResult<std::vector<RedshiftRoutine>> normalize_redshift_routines(std::string_view database,std::string_view schema,
+    bool function,const CatalogRequest& request,BackendResult<QueryResult> input,RedshiftRoutineBudget& budget,rs::util::Deadline deadline) {
+  if(!input)return input.backend_error();
+  if(input->error)return *input->error;
+  if(!routine_shape(*input,input.session_snapshot()))return invalid_routine_metadata("discovery-structure");
+  const auto& source=*input;
+  const std::array<std::string_view,7> names{"database_name","schema_name",function?"function_name":"procedure_name",
+      "number_of_arguments","argument_list","return_type","remarks"};
+  if(source.columns.size()!=names.size())return invalid_routine_metadata("discovery-columns");
+  std::array<std::size_t,7> index{};
+  for(std::size_t n=0;n<names.size();++n) {
+    auto it=std::find_if(source.columns.begin(),source.columns.end(),[&](const auto& c){return c.name==names[n];});
+    if(it==source.columns.end() || std::count_if(source.columns.begin(),source.columns.end(),[&](const auto& c){return c.name==names[n];})!=1)
+      return invalid_routine_metadata("discovery-layout");
+    index[n]=static_cast<std::size_t>(it-source.columns.begin());
+    if(n==3?!routine_integer(*it):!schema_text(*it))return invalid_routine_metadata("discovery-type");
+  }
+  std::vector<RedshiftRoutine> output;
+  for(const auto& row:source.rows) {
+    if(rs::util::Clock::now()>=deadline)return routine_timeout();
+    for(const auto n:{0u,1u,2u})if(!row[index[n]] || !schema_identifier(*row[index[n]]) || !budget.name(*row[index[n]]))
+      return invalid_routine_metadata("discovery-identity");
+    if(*row[index[0]]!=database || *row[index[1]]!=schema)return invalid_routine_metadata("discovery-foreign");
+    for(const auto n:{4u,5u,6u})if(row[index[n]] && (row[index[n]]->find('\0')!=std::string::npos ||
+        !rs::util::utf8_code_point_count(*row[index[n]])))return invalid_routine_metadata("discovery-text");
+    std::optional<std::int32_t> count;
+    if(!routine_number(row[index[3]],count) || !count || *count<0 || !row[index[4]])return invalid_routine_metadata("discovery-count");
+    if(!budget.arguments(static_cast<std::size_t>(*count)))return redshift_routine_limit();
+    const auto signature_bytes=row[index[4]]->size();
+    const auto separators=static_cast<std::size_t>(std::count(row[index[4]]->begin(),row[index[4]]->end(),','));
+    const auto elements=signature_bytes==0?0u:separators+1;
+    if(elements!=static_cast<std::size_t>(*count))return invalid_routine_metadata("signature-count");
+    // Charge an upper bound before creating owning type tokens and signature.
+    // Canonical spelling removes space except at most one after each comma.
+    if(signature_bytes>(std::numeric_limits<std::size_t>::max()-elements)/2)return redshift_routine_limit();
+    const auto scratch_bound=signature_bytes*2+elements;
+    if(!budget.retain({0,0,scratch_bound,0,scratch_bound}))return redshift_routine_limit();
+    auto arguments=routine_arguments(*row[index[4]]);
+    if(!arguments || arguments->size()!=static_cast<std::size_t>(*count))return invalid_routine_metadata("signature");
+    std::string signature;
+    for(const auto& type:*arguments){if(!signature.empty())signature+=", ";signature+=type;}
+    std::size_t canonical_bytes=signature.size();
+    for(const auto& arg:*arguments)canonical_bytes+=arg.size();
+    budget.release({0,0,scratch_bound-canonical_bytes,0,scratch_bound-canonical_bytes});
+    const auto duplicate=std::find_if(output.begin(),output.end(),[&](const auto& r){return r.name==*row[index[2]] && r.signature==signature;});
+    if(duplicate!=output.end()) {
+      if(duplicate->return_type!=row[index[5]] || duplicate->remarks!=row[index[6]])return invalid_routine_metadata("discovery-duplicate");
+      budget.release({0,0,canonical_bytes,0,canonical_bytes});
+      continue;
+    }
+    std::size_t bytes=row[index[2]]->size();
+    if(row[index[5]])bytes+=row[index[5]]->size();
+    if(row[index[6]])bytes+=row[index[6]]->size();
+    if(!budget.retain({1,7+arguments->size(),bytes,0,row[index[2]]->size()}))return redshift_routine_limit();
+    output.push_back({*row[index[2]],function,std::move(*arguments),std::move(signature),row[index[5]],row[index[6]]});
+  }
+  std::erase_if(output,[&](const auto& r) {
+    const bool selected=std::visit([&](const auto& n) {
+      using T=std::decay_t<decltype(n)>;
+      if constexpr(std::is_same_v<T,ProceduresCatalogRequest> || std::is_same_v<T,ProcedureColumnsCatalogRequest>)
+        return routine_match(r.name,n.procedure,n.name_matches.object);
+      return false;
+    },request);
+    if(!selected) {
+      std::size_t bytes=r.name.size()+r.signature.size();
+      for(const auto& arg:r.arguments)bytes+=arg.size();
+      if(r.return_type)bytes+=r.return_type->size();
+      if(r.remarks)bytes+=r.remarks->size();
+      budget.release({1,7+r.arguments.size(),bytes,0,r.name.size()+r.signature.size()+[&] {std::size_t n=0;for(const auto& arg:r.arguments)n+=arg.size();return n;}()});
+    }
+    return !selected;
+  });
+  if(rs::util::Clock::now()>=deadline)return routine_timeout();
+  return BackendResult<std::vector<RedshiftRoutine>>{std::move(output),input.session_snapshot()};
+}
+BackendResult<QueryResult> redshift_routine_result(std::string_view database,std::string_view schema,
+    const std::vector<RedshiftRoutine>& routines,bool columns,RedshiftRoutineBudget& budget) {
+  QueryResult output;
+  if(!routine_headers(output,columns,budget))return redshift_routine_limit();
+  if(!columns) {
+    // Execution supplies deterministic name/kind/signature order. Never copy
+    // the whole owning discovery vector just to sort a second view.
+    for(const auto& r:routines) {
+      const auto bytes=database.size()+schema.size()+r.name.size()+1+(r.remarks?r.remarks->size():0);
+      if(!budget.retain({1,8,bytes,0,database.size()+schema.size()+r.name.size()}))return redshift_routine_limit();
+      output.rows.push_back({std::string(database),std::string(schema),r.name,
+          std::nullopt,std::nullopt,std::nullopt,r.remarks,r.function?"2":"1"});
+    }
+  }
+  routine_text_capacities(output);
+  return BackendResult<QueryResult>{std::move(output),{SessionState::Idle,SessionDisposition::Reusable}};
+}
+BackendResult<QueryResult> normalize_redshift_parameters(std::string_view database,std::string_view schema,
+    const RedshiftRoutine& routine,const ProcedureColumnsCatalogRequest& request,
+    BackendResult<QueryResult> input,RedshiftRoutineBudget& budget,rs::util::Deadline deadline) {
+  if(!input)return input.backend_error();
+  if(input->error)return *input->error;
+  if(!routine_shape(*input,input.session_snapshot()))return invalid_routine_metadata("parameter-structure");
+  const auto& source=*input;
+  const std::array<std::string_view,11> names{"database_name","schema_name",routine.function?"function_name":"procedure_name",
+      "parameter_name","ordinal_position","parameter_type","data_type","character_maximum_length","numeric_precision","numeric_scale","remarks"};
+  if(source.columns.size()<10 || source.columns.size()>11)return invalid_routine_metadata("parameter-columns");
+  std::array<std::size_t,11> index{};index.fill(source.columns.size());
+  for(std::size_t c=0;c<source.columns.size();++c) {
+    const auto it=std::find(names.begin(),names.end(),source.columns[c].name);
+    if(it==names.end())return invalid_routine_metadata("parameter-layout");
+    const auto n=static_cast<std::size_t>(it-names.begin());
+    if(index[n]!=source.columns.size())return invalid_routine_metadata("parameter-layout");
+    index[n]=c;
+    if((n==4 || n==7 || n==8 || n==9)?!routine_integer(source.columns[c]):!schema_text(source.columns[c]))
+      return invalid_routine_metadata("parameter-type");
+  }
+  for(std::size_t n=0;n<10;++n)if(index[n]==source.columns.size())return invalid_routine_metadata("parameter-layout");
+  QueryResult output;
+  if(!routine_headers(output,true,budget))return redshift_routine_limit();
+  std::set<std::int32_t> ordinals;
+  std::size_t inputs=0;
+  for(const auto& row:source.rows) {
+    if(rs::util::Clock::now()>=deadline)return routine_timeout();
+    for(const auto n:{0u,1u,2u,5u,6u})if(!row[index[n]] || !schema_identifier(*row[index[n]]) || !budget.name(*row[index[n]]))
+      return invalid_routine_metadata("parameter-identity");
+    if(*row[index[0]]!=database || *row[index[1]]!=schema || *row[index[2]]!=routine.name)return invalid_routine_metadata("parameter-foreign");
+    const auto& name=row[index[3]];
+    if(!name || name->find('\0')!=std::string::npos || !rs::util::utf8_code_point_count(*name) || !budget.name(*name))
+      return invalid_routine_metadata("parameter-name");
+    const auto& mode=*row[index[5]];
+    const int code=mode=="IN"?1:mode=="INOUT"?2:mode=="OUT"?4:mode=="RETURN"?5:0;
+    if(code==1 || code==2)++inputs;
+    std::optional<std::int32_t> ordinal,length,precision,scale;
+    if(!code || !routine_number(row[index[4]],ordinal) || !ordinal || *ordinal<0 || !ordinals.insert(*ordinal).second ||
+        (code==5?(!routine.function || *ordinal!=0):*ordinal==0) ||
+        !routine_number(row[index[7]],length) || !routine_number(row[index[8]],precision) || !routine_number(row[index[9]],scale))
+      return invalid_routine_metadata("parameter-dimensions");
+    if((length && *length<-1) || (precision && *precision<0) || (scale && *scale<0))
+      return invalid_routine_metadata("parameter-dimensions");
+    auto dimensions=routine_dimensions(*row[index[6]],length,precision,scale);
+    if(!dimensions)return invalid_routine_metadata("parameter-dimensions");
+    // View optional remarks until the output-copy budget has been admitted.
+    const ResultCell absent_remarks{};
+    const auto& remarks=index[10]==source.columns.size()?absent_remarks:row[index[10]];
+    if(remarks && (remarks->find('\0')!=std::string::npos || !rs::util::utf8_code_point_count(*remarks)))return invalid_routine_metadata("parameter-text");
+    if(!routine_match(*name,request.column,request.name_matches.member))continue;
+    const auto& d=*dimensions;
+    // Numeric rendering is bounded fixed scratch; charge all large borrowed
+    // text before copying it into the owning output row.
+    ResultCell mode_text=std::to_string(code),type_text=std::to_string(d.code),sql_text=std::to_string(d.sql_type),
+        ordinal_text=std::to_string(*ordinal);
+    const auto bytes=database.size()+schema.size()+routine.name.size()+name->size()+row[index[6]]->size()+1+
+        (remarks?remarks->size():0)+routine_cell_bytes({mode_text,type_text,sql_text,ordinal_text,d.size,d.buffer,d.scale,d.radix,d.sub,d.octets});
+    if(!budget.retain({1,19,bytes,0,database.size()+schema.size()+routine.name.size()+name->size()+row[index[6]]->size()}))return redshift_routine_limit();
+    output.rows.push_back({std::string(database),std::string(schema),routine.name,name,std::move(mode_text),
+        std::move(type_text),row[index[6]],d.size,d.buffer,d.scale,d.radix,"2",remarks,std::nullopt,
+        std::move(sql_text),d.sub,d.octets,std::move(ordinal_text),""});
+  }
+  // The signature includes IN/INOUT, not OUT/RETURN rows. Validation uses all
+  // native rows before the caller's column-name filter.
+  if(inputs!=routine.arguments.size())return invalid_routine_metadata("parameter-signature-count");
+  if(rs::util::Clock::now()>=deadline)return routine_timeout();
+  routine_text_capacities(output);
+  return BackendResult<QueryResult>{std::move(output),input.session_snapshot()};
+}
+void sort_redshift_parameters(QueryResult& result) {
+  std::stable_sort(result.rows.begin(),result.rows.end(),[](const auto& a,const auto& b) {
+    const auto rank=[](const auto& row){return row[4] && *row[4]=="5"?0:1;};
+    if(std::tie(a[0],a[1],a[2])!=std::tie(b[0],b[1],b[2]))return std::tie(a[0],a[1],a[2])<std::tie(b[0],b[1],b[2]);
+    if(rank(a)!=rank(b))return rank(a)<rank(b);
+    std::optional<std::int32_t> x,y;routine_number(a[17],x);routine_number(b[17],y);
+    return x.value_or(0)<y.value_or(0);
+  });
+  routine_text_capacities(result);
 }
 
 std::string redshift_schemas_query() {

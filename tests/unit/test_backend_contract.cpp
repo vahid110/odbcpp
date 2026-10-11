@@ -15,6 +15,7 @@
 #include <iterator>
 #include <functional>
 #include <atomic>
+#include <future>
 
 #if defined(__has_feature)
 # if __has_feature(address_sanitizer)
@@ -47,20 +48,27 @@ static_assert(!ExposesRawPhysicalSession<rs::odbc::ODBCConnection>);
 
 struct Observations {
   bool command_array_authority{};
+  bool select_array_authority{};
+  std::optional<QueryResult> select_description;
+  std::optional<std::vector<NativeTypeInfo>> prepared_execution_parameter_types;
   int command_array_shape{1}; // 1=NoData; 2=T-zero; 3=T-fields.
   std::vector<BackendResult<QueryResult>> command_outcomes;
   std::vector<std::vector<QueryParameter>> command_inputs;
   std::vector<Deadline> command_deadlines;
   std::function<void()> during_command;
+  std::function<void()> during_deferred_description;
   int created{}, transports{}, disconnects{}, destructions{}, queries{}, descriptions{}, translations{};
   bool validate_redshift_mode{false};
   bool catalog_executor{false}, catalog_builder{false};
   bool schema_executor{false};
+  bool routine_executor{false};
+  bool catalog_route_executor{false}; // Opt-in owning FK/Tables/Columns facet only.
   bool advertised_catalog_names{false};
   int catalog_calls{}, catalog_builds{}, catalog_error{};
   std::optional<CatalogRequest> catalog_request;
   bool catalog_retire{}, catalog_throw{};
   int terminal_execution{}, connect_exception{};
+  bool reusable_execution_error{}; // Explicit test-only Idle/Reusable error; default remains terminal.
   SQLULEN description_size{8};
   bool observation_exception{}, terminal_description{};
   bool description_timeout{}, description_native_policy_error{};
@@ -166,7 +174,11 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
   }
   ICatalogExecution* catalog_execution() noexcept override { return seen_->catalog_executor ? this : nullptr; }
   bool selects_catalog_request(const CatalogRequest& request) const noexcept override {
-    return ICatalogExecution::selects_catalog_request(request) ||
+    return (seen_->catalog_route_executor && (std::holds_alternative<ForeignKeysCatalogRequest>(request) ||
+        std::holds_alternative<TablesCatalogRequest>(request) || std::holds_alternative<ColumnsCatalogRequest>(request))) ||
+        (seen_->routine_executor && (std::holds_alternative<ProceduresCatalogRequest>(request) ||
+        std::holds_alternative<ProcedureColumnsCatalogRequest>(request))) ||
+        ICatalogExecution::selects_catalog_request(request) ||
         (seen_->schema_executor && std::get_if<TablesCatalogRequest>(&request) &&
          std::get<TablesCatalogRequest>(request).mode == TablesCatalogRequest::Mode::Schemas);
   }
@@ -180,7 +192,11 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
     seen_->catalog_request = request;
     ++seen_->catalog_calls; seen_->deadline = deadline;
     if (seen_->catalog_throw) throw 42;
-    EXPECT_TRUE(std::holds_alternative<PrimaryKeysCatalogRequest>(request) ||
+    EXPECT_TRUE((seen_->catalog_route_executor && (std::holds_alternative<ForeignKeysCatalogRequest>(request) ||
+        std::holds_alternative<TablesCatalogRequest>(request) || std::holds_alternative<ColumnsCatalogRequest>(request))) ||
+        (seen_->routine_executor && (std::holds_alternative<ProceduresCatalogRequest>(request) ||
+        std::holds_alternative<ProcedureColumnsCatalogRequest>(request))) ||
+        std::holds_alternative<PrimaryKeysCatalogRequest>(request) ||
         (seen_->schema_executor && std::get_if<TablesCatalogRequest>(&request) &&
          std::get<TablesCatalogRequest>(request).mode == TablesCatalogRequest::Mode::Schemas));
     if (seen_->catalog_error) {
@@ -191,7 +207,7 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
       error.disposition = seen_->catalog_error == 2 ? SessionDisposition::Retire : SessionDisposition::Reusable;
       return error;
     }
-    auto result = rows();
+    auto result = (seen_->routine_executor || seen_->catalog_route_executor) && seen_->date_result ? *seen_->date_result : rows();
     if (const auto* tables = std::get_if<TablesCatalogRequest>(&request);
         tables && tables->mode == TablesCatalogRequest::Mode::Schemas) {
       result.columns = {{"TABLE_CAT", {}}, {"TABLE_SCHEM", {}}, {"TABLE_NAME", {}},
@@ -284,6 +300,10 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
     if (seen_->terminal_execution == 2) {
       BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed), seen_->failure_message};
       error.native_state = "FAKE_ERROR"; error.operation = BackendOperation::ExecuteDirect;
+      if (seen_->reusable_execution_error) {
+        error.session_state = SessionState::Idle;
+        error.disposition = SessionDisposition::Reusable;
+      }
       return error;
     }
     if (seen_->terminal_execution == 3) throw std::runtime_error("fixture execution exception");
@@ -367,8 +387,22 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
         seen_->transaction_state = result.session_snapshot().state;
         return result;
       }
+      if (seen_->select_array_authority && seen_->select_description) {
+        QueryResult result; result.columns = seen_->select_description->columns;
+        if (seen_->prepared_execution_parameter_types)
+          result.normalized_parameter_types = *seen_->prepared_execution_parameter_types;
+        result.execution_result_shape = ExecutionResultShape::ResultSet;
+        result.statement_kind = StatementKind::SelectCursor;
+        if (!result.columns.empty()) {
+          ResultRow row; for (const auto& parameter : params) row.push_back(parameter.value);
+          result.rows.push_back(std::move(row));
+        }
+        return BackendResult<QueryResult>{std::move(result), {SessionState::Idle, SessionDisposition::Reusable}};
+      }
       QueryResult result; result.affected_rows = slot + 1;
       result.statement_kind = StatementKind::UpdateWhere;
+      if (seen_->prepared_execution_parameter_types)
+        result.normalized_parameter_types = *seen_->prepared_execution_parameter_types;
       return BackendResult<QueryResult>{std::move(result), {SessionState::Idle, SessionDisposition::Reusable}};
     }
     return execute_query(sql, deadline);
@@ -376,12 +410,14 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
   bool supports_single_statement_result_shape() const noexcept override {
     return seen_->command_array_authority;
   }
+  bool supports_prepared_result_sequence() const noexcept override { return seen_->select_array_authority; }
   IStatementDescription* statement_description() noexcept override {
     return absent_description_ ? nullptr : this;
   }
   BackendResult<QueryResult> describe_statement(std::string_view sql, std::span<const QueryParameterType> types,
                                         Deadline deadline) override {
     ++seen_->descriptions;
+    if (seen_->during_deferred_description) seen_->during_deferred_description();
     seen_->description_deadline = deadline;
     if (seen_->description_timeout) {
       BackendError error{rs::util::make_error_code(DbErrorCode::Timeout), "fixed description timeout"};
@@ -414,6 +450,12 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
         else if (types[i] == QueryParameterType::Numeric) result.normalized_parameter_types[i] = NativeTypeInfo{ScalarType::Numeric, 5, 2, true};
         else if (types[i] == QueryParameterType::Text) result.normalized_parameter_types[i] = NativeTypeInfo{ScalarType::VarChar, 32, 0, true};
       }
+    }
+    if (seen_->select_array_authority && seen_->select_description) {
+      result.columns = seen_->select_description->columns;
+      if (!seen_->select_description->normalized_parameter_types.empty())
+        result.normalized_parameter_types = seen_->select_description->normalized_parameter_types;
+      result.described_result_shape = DescribedResultShape::ResultSet;
     }
     if (seen_->missing_parameter_metadata) result.normalized_parameter_types.clear();
     if (seen_->parameter_metadata_error) {
@@ -586,6 +628,17 @@ class BackendContractTest : public ::testing::Test {
     SQLCHAR text[6]{};
     EXPECT_EQ(SQL_SUCCESS, SQLGetDiagRec(kind, handle ? handle : stmt, 1, text, nullptr, nullptr, 0, nullptr));
     return reinterpret_cast<char*>(text);
+  }
+  // Failure-only GTest streams preserve the API return oracle and expose the
+  // owning public diagnostic from the synthetic backend, without another call
+  // that clears the statement diagnostic header.
+  std::string diagnostic() {
+    SQLCHAR sqlstate[6]{}, message[512]{};
+    const auto rc = SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1, sqlstate,
+        nullptr, message, sizeof(message), nullptr);
+    if (rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO) return "no diagnostic record";
+    return std::string(reinterpret_cast<char*>(sqlstate)) + ": " +
+        reinterpret_cast<char*>(message);
   }
   void TearDown() override {
     if (stmt) SQLFreeHandle(SQL_HANDLE_STMT, stmt);
@@ -7138,7 +7191,8 @@ TEST_F(ParameterBindingOffsetTest, PreparedLifecycleSiblingAndUnsupportedLayouts
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_OPERATION_PTR,&status,0));EXPECT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ("HY024",state());
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_OPERATION_PTR,nullptr,0));
   ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,8,0,pages[0].text,sizeof(pages[0].text),&pages[0].text_length));
-  pages[1].text_length=SQL_DATA_AT_EXEC;EXPECT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ(queries,seen->queries);
+  pages[1].text_length=SQL_DATA_AT_EXEC;EXPECT_EQ(SQL_NEED_DATA,SQLExecute(stmt));EXPECT_EQ(queries,seen->queries);
+  ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt)); // Local Need Data reset before the original rebound input.
   pages[1].text_length=3;
   ASSERT_NO_FATAL_FAILURE(bind_integer());
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_BIND_OFFSET_PTR,nullptr,0));
@@ -7576,9 +7630,14 @@ class PreparedCommandArrayTest : public BackendContractTest {
   SQLUSMALLINT status[3]{71, 72, 73};
   SQLUSMALLINT operations[3]{SQL_PARAM_PROCEED, SQL_PARAM_PROCEED, SQL_PARAM_PROCEED};
   SQLULEN processed{91};
-  void ready(std::size_t size = 3) {
+  void ready(std::size_t size = 3, bool static_bookmarks = false) {
     seen->command_array_authority = true;
     ASSERT_NO_FATAL_FAILURE(connect());
+    if (static_bookmarks) {
+      // Cursor options must precede even the prerequisite helper's Prepare.
+      ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_CURSOR_TYPE,(SQLPOINTER)SQL_CURSOR_STATIC,0));
+      ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_USE_BOOKMARKS,(SQLPOINTER)SQL_UB_VARIABLE,0));
+    }
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"UPDATE fixture SET v=?", SQL_NTS));
     ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
         SQL_INTEGER, 10, 0, input, 0, indicators)); // Fixed C stride ignores BufferLength0.
@@ -7968,9 +8027,14 @@ TEST_F(RowWiseCommandArrayTest, OverflowMaskAndScalarLayoutRefusalsHaveZeroEffec
   EXPECT_EQ(91u, processed); EXPECT_EQ(0, seen->queries);
   operations[0] = SQL_PARAM_PROCEED;
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMSET_SIZE, reinterpret_cast<SQLPOINTER>(1), 0));
-  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HYC00", state()); // Scalar endpoint policy unchanged.
+  // Scalar prepared responses retain the native ParameterDescription; the
+  // array-only count mock did not previously exercise this endpoint.
+  seen->prepared_execution_parameter_types = std::vector<NativeTypeInfo>{
+      {ScalarType::Integer,0,0,true},{ScalarType::VarChar,32,0,true},{ScalarType::Numeric,5,2,true}};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_EQ(1, seen->queries); // Positive N1 struct tail is now supported.
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMSET_SIZE, reinterpret_cast<SQLPOINTER>(3), 0));
-  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_EQ(3, seen->queries);
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_EQ(4, seen->queries);
 }
 TEST_F(RowWiseCommandArrayTest, PartialErrorCloseResetPreparedRefillAndUnavailableArrayCancel) {
   ASSERT_NO_FATAL_FAILURE(ready_rows());
@@ -8560,3 +8624,2436 @@ TEST_F(StaticBookmarkTest, CloseMoreResultsPreparedRefillTransactionAndSiblingKe
   ASSERT_EQ(SQL_SUCCESS,connection->disconnect()); // Registry and owning snapshots survive.
   ASSERT_NO_FATAL_FAILURE(fetch_saved()); ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));
 }
+
+
+// Bounded scalar DAE is adapter-owned materialization, never wire streaming.
+// All borrowed buffers/indicators survive fatal fixture teardown.
+class DeferredInputTest : public BackendContractTest {
+ protected:
+  SQLLEN lengths[5]{SQL_DATA_AT_EXEC,SQL_DATA_AT_EXEC,SQL_DATA_AT_EXEC,0,0};
+  char ordinary_text[16]{'o','w','n','e','d',0};
+  unsigned char bytes[4]{'A',0,'B',0};
+  SQLWCHAR wide[3]{};
+  SQL_NUMERIC_STRUCT numeric{};
+  SQL_DATE_STRUCT date{2024,2,29};
+  SQLPOINTER token{};
+  SQLHDESC explicit_apd{}, ipd{}, mixed_apd{};
+  SQLLEN sibling_length{5};
+  SQLHSTMT sibling{};
+  struct Status { SQLUSMALLINT before{41},value{61},after{43}; } status;
+  struct Processed { SQLULEN before{47},value{91},after{53}; } processed;
+  char fetched[16]{}; SQLLEN fetched_length{73};
+  void TearDown() override {
+    if (stmt) {
+      SQLCancel(stmt);
+      SQLFreeStmt(stmt,SQL_UNBIND);
+      SQLFreeStmt(stmt,SQL_RESET_PARAMS);
+    }
+    if (explicit_apd) SQLFreeHandle(SQL_HANDLE_DESC,explicit_apd);
+    if (sibling) SQLFreeHandle(SQL_HANDLE_STMT,sibling);
+    BackendContractTest::TearDown();
+  }
+  void prepare_one(const char* sql="rows ?",SQLSMALLINT c=SQL_C_CHAR) {
+    ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql)),SQL_NTS));
+    lengths[0]=SQL_DATA_AT_EXEC;
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,c,
+        c==SQL_C_BINARY ? SQL_VARBINARY : c==SQL_C_WCHAR ? SQL_WVARCHAR : SQL_VARCHAR,
+        32,0,nullptr,0,&lengths[0]));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_STATUS_PTR,&status.value,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAMS_PROCESSED_PTR,&processed.value,0));
+    QueryResult result;
+    result.columns={{"literal",NativeTypeInfo{ScalarType::VarChar,8,0,true}}};
+    result.rows={{"owning"}}; result.statement_kind=StatementKind::SelectCursor;
+    result.normalized_parameter_types={{ScalarType::VarChar,32,0,true}};
+    seen->date_result=std::move(result);
+  }
+  void request() {
+    ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt)) << diagnostic();
+    EXPECT_EQ(SQL_PARAM_UNUSED,status.value); EXPECT_EQ(0u,processed.value);
+    token=reinterpret_cast<SQLPOINTER>(9);
+    ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token)); EXPECT_EQ(nullptr,token);
+  }
+  void guards() {
+    EXPECT_EQ(41,status.before); EXPECT_EQ(43,status.after);
+    EXPECT_EQ(47u,processed.before); EXPECT_EQ(53u,processed.after);
+  }
+};
+
+TEST_F(DeferredInputTest, MixedOwningPiecesOpaqueTokensAndOrdinaryNeighborsExecuteOnce) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(const_cast<char*>("rows ?,?,?,?,?")),SQL_NTS));
+  numeric.precision=5; numeric.scale=2; numeric.sign=1;
+  numeric.val[0]=0x39; numeric.val[1]=0x30; // independent little-endian12345 =>123.45
+  lengths[3]=sizeof(numeric); lengths[4]=sizeof(date);
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,32,0,reinterpret_cast<SQLPOINTER>(1),0,&lengths[0]));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,2,SQL_PARAM_INPUT,SQL_C_WCHAR,SQL_WVARCHAR,32,0,reinterpret_cast<SQLPOINTER>(1),0,&lengths[1]));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,3,SQL_PARAM_INPUT,SQL_C_BINARY,SQL_VARBINARY,4,0,nullptr,0,&lengths[2]));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,4,SQL_PARAM_INPUT,SQL_C_NUMERIC,SQL_DECIMAL,5,2,&numeric,sizeof(numeric),&lengths[3]));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,5,SQL_PARAM_INPUT,SQL_C_TYPE_DATE,SQL_TYPE_DATE,10,0,&date,sizeof(date),&lengths[4]));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_APP_PARAM_DESC,&mixed_apd,0,nullptr));
+  // C_NUMERIC conversion consumes APD dimensions, not just bound IPD hints.
+  // Descriptor dimension edits clear DATA_PTR; reinstall that address LAST.
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(mixed_apd,4,SQL_DESC_PRECISION,reinterpret_cast<SQLPOINTER>(5),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(mixed_apd,4,SQL_DESC_SCALE,reinterpret_cast<SQLPOINTER>(2),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(mixed_apd,4,SQL_DESC_DATA_PTR,&numeric,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_STATUS_PTR,&status.value,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAMS_PROCESSED_PTR,&processed.value,0));
+  QueryResult result; result.columns={{"literal",NativeTypeInfo{ScalarType::VarChar,8,0,true}}};
+  result.rows={{"owning"}}; result.statement_kind=StatementKind::SelectCursor;
+  result.normalized_parameter_types={{ScalarType::VarChar,32,0,true},{ScalarType::VarChar,32,0,true},
+      {ScalarType::Binary,4,0,true},{ScalarType::Numeric,5,2,true},{ScalarType::Date,10,0,true}};
+  seen->date_result=std::move(result);
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt)); EXPECT_EQ(0,seen->queries);
+  numeric.val[0]=0; numeric.val[1]=0; date={1999,1,1}; // Ordinary input already owned.
+  ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token)); EXPECT_EQ(reinterpret_cast<SQLPOINTER>(1),token);
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,bytes,3)); std::memset(bytes,0x55,sizeof(bytes));
+  ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token)); EXPECT_EQ(reinterpret_cast<SQLPOINTER>(1),token);
+  if constexpr (sizeof(SQLWCHAR)==2) {
+    wide[0]=static_cast<SQLWCHAR>(0xd83d);
+    ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,wide,sizeof(SQLWCHAR)));
+    wide[0]=static_cast<SQLWCHAR>(0xde42);
+    ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,wide,sizeof(SQLWCHAR)));
+  } else {
+    wide[0]=static_cast<SQLWCHAR>(0x1f642);
+    ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,wide,sizeof(SQLWCHAR)));
+  }
+  wide[0]=0; // Every piece was copied, including a split UTF16 pair.
+  ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token)); EXPECT_EQ(nullptr,token);
+  bytes[0]=0; bytes[1]=0xff;
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,bytes,2)); std::memset(bytes,0x66,sizeof(bytes));
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token)); EXPECT_EQ(1,seen->queries);
+  ASSERT_EQ(5u,seen->parameters.size());
+  EXPECT_EQ(std::optional<std::string>(std::string("A\0B",3)),seen->parameters[0].value);
+  EXPECT_EQ(std::optional<std::string>("\xf0\x9f\x99\x82"),seen->parameters[1].value);
+  EXPECT_EQ(std::optional<std::string>(std::string("\0\xff",2)),seen->parameters[2].value);
+  EXPECT_EQ(std::optional<std::string>("123.45"),seen->parameters[3].value);
+  EXPECT_EQ(std::optional<std::string>("2024-02-29"),seen->parameters[4].value);
+  EXPECT_EQ(SQL_PARAM_SUCCESS,status.value); EXPECT_EQ(1u,processed.value);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,fetched,sizeof(fetched),&fetched_length));
+  EXPECT_STREQ("owning",fetched);
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+
+TEST_F(DeferredInputTest, NullEmptyLengthHintsBoundsAndAddressRefusalPermitSamePreparedRepair) {
+  ASSERT_NO_FATAL_FAILURE(connect_with("SERVER=fake;DATABASE=contract;UID=test;SSL=0;MAXPARAMETERBYTES=8;MAXPARAMETERTOTALBYTES=16"));
+  ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&stmt));
+  ASSERT_NO_FATAL_FAILURE(prepare_one());
+  ASSERT_NO_FATAL_FAILURE(request());
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,nullptr,SQL_NULL_DATA));
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token)); ASSERT_EQ(1u,seen->parameters.size()); EXPECT_FALSE(seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  ASSERT_NO_FATAL_FAILURE(request());
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,nullptr,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token)); EXPECT_EQ(std::optional<std::string>(""),seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  auto failure=[&](SQLPOINTER data,SQLLEN length,const char* expected) {
+    ASSERT_NO_FATAL_FAILURE(request()); const auto queries=seen->queries;
+    ASSERT_EQ(SQL_ERROR,SQLPutData(stmt,data,length)); EXPECT_EQ(expected,state()); EXPECT_EQ(queries,seen->queries);
+    EXPECT_EQ(SQL_PARAM_ERROR,status.value); EXPECT_EQ(1u,processed.value);
+    EXPECT_EQ(SQL_ERROR,SQLParamData(stmt,&token)); EXPECT_EQ("HY010",state());
+  };
+  ASSERT_NO_FATAL_FAILURE(failure(nullptr,1,"HY009"));
+  ASSERT_NO_FATAL_FAILURE(failure(bytes,-9,"HY090"));
+  ASSERT_NO_FATAL_FAILURE(failure(reinterpret_cast<SQLPOINTER>((std::numeric_limits<std::uintptr_t>::max)()),SQL_NTS,"HY024"));
+  ASSERT_NO_FATAL_FAILURE(failure(reinterpret_cast<SQLPOINTER>((std::numeric_limits<std::uintptr_t>::max)()-1),2,"HY024"));
+  char oversized[9]{};
+  ASSERT_NO_FATAL_FAILURE(failure(oversized,sizeof(oversized),"HY000"));
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt));
+  ASSERT_EQ(SQL_ERROR,SQLPutData(stmt,bytes,1)); EXPECT_EQ("HY010",state());
+  ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token));
+  ASSERT_EQ(SQL_ERROR,SQLParamData(stmt,&token)); EXPECT_EQ("HY010",state());
+  ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt));
+  ASSERT_NO_FATAL_FAILURE(request()); const auto before=seen->queries;
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,nullptr,SQL_NULL_DATA));
+  ASSERT_EQ(SQL_ERROR,SQLPutData(stmt,bytes,1)); EXPECT_EQ("HY020",state()); EXPECT_EQ(before,seen->queries);
+  ASSERT_NO_FATAL_FAILURE(request());
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,bytes,1));
+  ASSERT_EQ(SQL_ERROR,SQLPutData(stmt,nullptr,SQL_NULL_DATA)); EXPECT_EQ("HY020",state()); EXPECT_EQ(before,seen->queries);
+  lengths[0]=SQL_LEN_DATA_AT_EXEC(1000000); // N: length is a hint, not a reserve/equality requirement.
+  ASSERT_NO_FATAL_FAILURE(request()); // Execute captures the hint without reserving from it.
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,const_cast<char*>("xy"),2));
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token)); EXPECT_EQ(std::optional<std::string>("xy"),seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  ASSERT_NO_FATAL_FAILURE(prepare_one("rows ?",SQL_C_WCHAR));
+  ASSERT_NO_FATAL_FAILURE(request());
+  ASSERT_EQ(SQL_ERROR,SQLPutData(stmt,wide,1)); EXPECT_EQ("HY090",state());
+  ASSERT_NO_FATAL_FAILURE(request());
+  wide[0]=static_cast<SQLWCHAR>('z');
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,wide,sizeof(SQLWCHAR)));
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token)); EXPECT_EQ(std::optional<std::string>("z"),seen->parameters[0].value);
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+
+TEST_F(DeferredInputTest, NeedDataMatrixDescriptorDetachAndSuccessfulZeroDmlAreExact) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_DESC,dbc,&explicit_apd));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_APP_PARAM_DESC,explicit_apd,0));
+  ASSERT_NO_FATAL_FAILURE(prepare_one());
+  ASSERT_NO_FATAL_FAILURE(request()); const auto queries=seen->queries, descriptions=seen->descriptions;
+  for (const auto attribute : {SQL_ATTR_CONCURRENCY,SQL_ATTR_CURSOR_TYPE,SQL_ATTR_SIMULATE_CURSOR,
+       SQL_ATTR_USE_BOOKMARKS,SQL_ATTR_CURSOR_SCROLLABLE,SQL_ATTR_CURSOR_SENSITIVITY}) {
+    EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(stmt,attribute,reinterpret_cast<SQLPOINTER>(1),0)); EXPECT_EQ("HY011",state());
+  }
+  EXPECT_EQ(SQL_ERROR,SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(1),0)); EXPECT_EQ("HY010",state());
+  EXPECT_EQ(SQL_ERROR,SQLFreeStmt(stmt,SQL_RESET_PARAMS)); EXPECT_EQ("HY010",state());
+  EXPECT_EQ(SQL_ERROR,SQLFreeHandle(SQL_HANDLE_STMT,stmt)); EXPECT_EQ("HY010",state());
+  // Both exports refuse BEFORE validating or reading application SQL storage.
+  // These constructed addresses are deliberately never dereferenced.
+  const auto translations=seen->translations;
+  EXPECT_EQ(SQL_ERROR,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(1),SQL_NTS)); EXPECT_EQ("HY010",state());
+  EXPECT_EQ(SQL_ERROR,SQLPrepareW(stmt,reinterpret_cast<SQLWCHAR*>(1),1)); EXPECT_EQ("HY010",state());
+  EXPECT_EQ(SQL_ERROR,SQLPrepare(stmt,nullptr,-2)); EXPECT_EQ("HY010",state());
+  EXPECT_EQ(SQL_ERROR,SQLPrepareW(stmt,nullptr,-2)); EXPECT_EQ("HY010",state());
+  EXPECT_EQ(SQL_INVALID_HANDLE,SQLPrepare(reinterpret_cast<SQLHSTMT>(dbc),reinterpret_cast<SQLCHAR*>(1),SQL_NTS));
+  EXPECT_EQ(translations,seen->translations); EXPECT_EQ(queries,seen->queries); EXPECT_EQ(descriptions,seen->descriptions);
+  SQLSMALLINT count=-7;
+  EXPECT_EQ(SQL_ERROR,SQLNumParams(stmt,&count)); EXPECT_EQ("HY010",state()); EXPECT_EQ(-7,count);
+  SQLPOINTER pointer=reinterpret_cast<SQLPOINTER>(11);
+  EXPECT_EQ(SQL_ERROR,SQLGetDescField(explicit_apd,1,SQL_DESC_DATA_PTR,&pointer,0,nullptr));
+  EXPECT_EQ("HY010",state(SQL_HANDLE_DESC,explicit_apd)); EXPECT_EQ(reinterpret_cast<SQLPOINTER>(11),pointer);
+  EXPECT_EQ(SQL_ERROR,SQLCopyDesc(explicit_apd,explicit_apd)); EXPECT_EQ("HY010",state(SQL_HANDLE_DESC,explicit_apd));
+  EXPECT_EQ(SQL_ERROR,SQLDisconnect(dbc)); EXPECT_EQ("HY010",state(SQL_HANDLE_DBC,dbc));
+  EXPECT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_COMMIT)); EXPECT_EQ("HY010",state(SQL_HANDLE_DBC,dbc));
+  EXPECT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_ENV,env,SQL_COMMIT)); EXPECT_EQ("HY010",state(SQL_HANDLE_ENV,env));
+  EXPECT_EQ(SQL_ERROR,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF),0));
+  EXPECT_EQ("HY010",state(SQL_HANDLE_DBC,dbc)); EXPECT_EQ(queries,seen->queries); EXPECT_EQ(descriptions,seen->descriptions);
+  // Explicit descriptor free detaches normally; the DAE snapshot must not reread it.
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DESC,explicit_apd)); const auto freed=explicit_apd; explicit_apd=nullptr;
+  EXPECT_EQ(SQL_INVALID_HANDLE,SQLGetDescField(freed,1,SQL_DESC_DATA_PTR,&pointer,0,nullptr));
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,ordinary_text,5));
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token)); EXPECT_EQ(std::optional<std::string>("owned"),seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_PARAM_DESC,&ipd,0,nullptr));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,32,0,nullptr,0,&lengths[0]));
+  ASSERT_NO_FATAL_FAILURE(request());
+  EXPECT_EQ(SQL_ERROR,SQLFreeHandle(SQL_HANDLE_DESC,ipd)); EXPECT_EQ("HY017",state(SQL_HANDLE_DESC,ipd));
+  ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt));
+  seen->command_array_authority=true; seen->command_inputs.clear(); seen->command_outcomes.clear();
+  for (const auto kind : {StatementKind::UpdateWhere,StatementKind::DeleteWhere}) {
+    QueryResult zero; zero.statement_kind=kind; zero.normalized_parameter_types={{ScalarType::VarChar,32,0,true}};
+    seen->command_outcomes.emplace_back(std::move(zero),SessionSnapshot{SessionState::Idle,SessionDisposition::Reusable});
+    ASSERT_NO_FATAL_FAILURE(request());
+    ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,ordinary_text,5));
+    ASSERT_EQ(SQL_NO_DATA,SQLParamData(stmt,&token));
+    EXPECT_EQ(SQL_PARAM_SUCCESS,status.value); EXPECT_EQ(1u,processed.value);
+    SQLLEN affected=-1; ASSERT_EQ(SQL_SUCCESS,SQLRowCount(stmt,&affected)); EXPECT_EQ(0,affected);
+  }
+  QueryResult empty; empty.statement_kind=StatementKind::SelectCursor;
+  empty.columns={{"literal",NativeTypeInfo{ScalarType::VarChar,8,0,true}}};
+  empty.normalized_parameter_types={{ScalarType::VarChar,32,0,true}};
+  seen->command_outcomes.emplace_back(std::move(empty),SessionSnapshot{SessionState::Idle,SessionDisposition::Reusable});
+  ASSERT_NO_FATAL_FAILURE(request());
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,ordinary_text,5));
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token)); ASSERT_EQ(SQL_NO_DATA,SQLFetch(stmt));
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+
+TEST_F(DeferredInputTest, OriginalDeadlineLocalCancelNoFacetAndSiblingRetirementPermitExplicitRecovery) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_NO_FATAL_FAILURE(prepare_one());
+  SQLUSMALLINT supported=SQL_FALSE, all[100]{}, bitmap[SQL_API_ODBC3_ALL_FUNCTIONS_SIZE]{};
+  ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(dbc,SQL_API_SQLCANCEL,&supported)); EXPECT_EQ(SQL_TRUE,supported);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(dbc,SQL_API_ALL_FUNCTIONS,all)); EXPECT_EQ(SQL_TRUE,all[SQL_API_SQLCANCEL]);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(dbc,SQL_API_ODBC3_ALL_FUNCTIONS,bitmap)); EXPECT_TRUE(SQL_FUNC_EXISTS(bitmap,SQL_API_SQLCANCEL));
+  ASSERT_NO_FATAL_FAILURE(request());
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,ordinary_text,5));
+  ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt)); EXPECT_EQ(0,seen->queries); EXPECT_EQ(SQL_PARAM_UNUSED,status.value); EXPECT_EQ(0u,processed.value);
+  EXPECT_EQ(SQL_ERROR,SQLParamData(stmt,&token)); EXPECT_EQ("HY010",state());
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_RESET_PARAMS));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,32,0,nullptr,0,&lengths[0]));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(1),0));
+  ASSERT_NO_FATAL_FAILURE(request());
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,ordinary_text,5));
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100)); // Fixed finite application gap counts against originalD.
+  ASSERT_EQ(SQL_ERROR,SQLParamData(stmt,&token)); EXPECT_EQ("HYT00",state()); EXPECT_EQ(0,seen->queries);
+  SQLUINTEGER dead=SQL_CD_TRUE;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttr(dbc,SQL_ATTR_CONNECTION_DEAD,&dead,0,nullptr)); EXPECT_EQ(SQL_CD_FALSE,dead);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,nullptr,0));
+  ASSERT_NO_FATAL_FAILURE(request());
+  ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(const_cast<char*>("rows")),SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(sibling,1,SQL_C_CHAR,fetched,sizeof(fetched),&fetched_length)); EXPECT_STREQ("owning",fetched);
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,ordinary_text,5));
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token)); EXPECT_EQ(Deadline::max(),seen->deadline);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  ASSERT_NO_FATAL_FAILURE(request());
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(sibling,SQL_CLOSE));
+  seen->terminal_execution=1;
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(const_cast<char*>("rows")),SQL_NTS));
+  const auto queries=seen->queries;
+  ASSERT_EQ(SQL_ERROR,SQLParamData(stmt,&token)); EXPECT_EQ("08003",state()); EXPECT_EQ(queries,seen->queries);
+  ASSERT_EQ(SQL_SUCCESS,SQLDisconnect(dbc)); stmt=nullptr; sibling=nullptr;
+  seen->terminal_execution=0;
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_NO_FATAL_FAILURE(prepare_one());
+  ASSERT_NO_FATAL_FAILURE(request()); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,ordinary_text,5));
+  // These are recoverable conversion errors, distinct from the earlier
+  // terminal sibling outcome and the default Unknown/Retire negative tests.
+  seen->reusable_execution_error=true;
+  const auto reusable_disconnects=seen->disconnects;
+  seen->terminal_execution=2; seen->failure_message="owning deferred error";
+  ASSERT_EQ(SQL_ERROR,SQLParamData(stmt,&token)); EXPECT_EQ("22018",state()); EXPECT_EQ(reusable_disconnects,seen->disconnects);
+  seen->terminal_execution=0; seen->throwing_end_error_policy=1;
+  ASSERT_NO_FATAL_FAILURE(request()); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,ordinary_text,5));
+  seen->terminal_execution=2;
+  ASSERT_EQ(SQL_ERROR,SQLParamData(stmt,&token)); EXPECT_EQ("HY000",state()); EXPECT_EQ(reusable_disconnects,seen->disconnects);
+  seen->terminal_execution=0; seen->throwing_end_error_policy=0;
+  ASSERT_NO_FATAL_FAILURE(request()); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,ordinary_text,5));
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token)); EXPECT_EQ(SQL_PARAM_SUCCESS,status.value); EXPECT_EQ(reusable_disconnects,seen->disconnects);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  seen->command_array_authority=true; seen->command_inputs.clear();
+  seen->command_outcomes.clear();
+  seen->during_command=[&] {
+    SQLINTEGER count=-1;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,stmt,0,SQL_DIAG_NUMBER,&count,0,nullptr)); EXPECT_EQ(0,count);
+    EXPECT_EQ(SQL_ERROR,SQLCancel(stmt)); // TRUE discovery does not promise a no-facet server carrier.
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,stmt,0,SQL_DIAG_NUMBER,&count,0,nullptr)); EXPECT_EQ(0,count);
+  };
+  ASSERT_NO_FATAL_FAILURE(request());
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,ordinary_text,5));
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token));
+  seen->during_command={};
+  EXPECT_EQ(SQL_PARAM_SUCCESS,status.value); EXPECT_EQ(1u,processed.value);
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+
+
+TEST_F(DeferredInputTest, SiblingTimeoutRetirementBypassesPublicNeedDataRefusal) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));
+  // Direct execution, prepared execution and prepared-description timeout owners
+  // must force physical retirement, even while another statement needs data.
+  for (const int path : {1,2,3}) {
+    ASSERT_NO_FATAL_FAILURE(prepare_one());
+    if (path!=1) {
+      ASSERT_EQ(SQL_SUCCESS,SQLPrepare(sibling,reinterpret_cast<SQLCHAR*>(const_cast<char*>(path==2 ? "rows ? timeout" : "rows ?")),SQL_NTS));
+      ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(sibling,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,32,0,ordinary_text,sizeof(ordinary_text),&sibling_length));
+    }
+    // An existing DBC diagnostic must not become the public disconnect HY010.
+    ASSERT_EQ(SQL_ERROR,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,reinterpret_cast<SQLPOINTER>(77),0));
+    ASSERT_EQ("HY024",state(SQL_HANDLE_DBC,dbc));
+    ASSERT_NO_FATAL_FAILURE(request());
+    const auto before=seen->queries, disconnects=seen->disconnects;
+    if (path==1) {
+      ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(const_cast<char*>("timeout")),SQL_NTS));
+    } else if (path==2) {
+      ASSERT_EQ(SQL_ERROR,SQLExecute(sibling));
+    } else {
+      seen->description_timeout=true;
+      SQLSMALLINT type=71,scale=73,nullable=79; SQLULEN size=83;
+      ASSERT_EQ(SQL_ERROR,SQLDescribeParam(sibling,1,&type,&size,&scale,&nullable));
+      EXPECT_EQ(71,type); EXPECT_EQ(73,scale); EXPECT_EQ(79,nullable); EXPECT_EQ(83u,size);
+      seen->description_timeout=false;
+    }
+    EXPECT_EQ("HYT00",state(SQL_HANDLE_STMT,sibling));
+    EXPECT_EQ("HY024",state(SQL_HANDLE_DBC,dbc));
+    EXPECT_EQ(disconnects+1,seen->disconnects); // SDK owns the one physical cleanup.
+    const auto after=seen->queries;
+    EXPECT_EQ(before+(path==3 ? 0 : 1),after);
+    EXPECT_EQ(SQL_ERROR,SQLParamData(stmt,&token)); EXPECT_EQ("08003",state());
+    EXPECT_EQ(after,seen->queries); EXPECT_EQ(SQL_PARAM_ERROR,status.value); EXPECT_EQ(1u,processed.value);
+    SQLUINTEGER dead=91;
+    EXPECT_EQ(SQL_ERROR,SQLGetConnectAttr(dbc,SQL_ATTR_CONNECTION_DEAD,&dead,0,nullptr));
+    EXPECT_EQ("08003",state(SQL_HANDLE_DBC,dbc)); EXPECT_EQ(91u,dead);
+    // Explicit new physical connection; registered statements remain valid,
+    // but the failed pending attempt cannot be replayed on the new borrow.
+    ASSERT_EQ(SQL_SUCCESS,SQLDriverConnect(dbc,nullptr,reinterpret_cast<SQLCHAR*>(const_cast<char*>("SERVER=fake;DATABASE=contract;UID=test;SSL=0")),SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT));
+    ASSERT_NO_FATAL_FAILURE(prepare_one());
+    ASSERT_NO_FATAL_FAILURE(request());
+    ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,ordinary_text,5));
+    ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token));
+    ASSERT_EQ(1u,seen->parameters.size()); EXPECT_EQ(std::optional<std::string>("owned"),seen->parameters[0].value);
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+    ASSERT_NO_FATAL_FAILURE(guards());
+  }
+}
+
+class RoutineMetadataApiTest : public BackendContractTest {
+ protected:
+  char parameter_token{'t'};
+  SQLLEN parameter_indicator{SQL_DATA_AT_EXEC};
+  void TearDown() override {
+    // Fixture-owned binding storage survives even a fatal NeedData assertion.
+    if(stmt)SQLCancel(stmt);
+    BackendContractTest::TearDown();
+  }
+  QueryResult typed() {
+    QueryResult r;
+    const char* names[]{"PROCEDURE_CAT","PROCEDURE_SCHEM","PROCEDURE_NAME","COLUMN_NAME","COLUMN_TYPE","DATA_TYPE",
+        "TYPE_NAME","COLUMN_SIZE","BUFFER_LENGTH","DECIMAL_DIGITS","NUM_PREC_RADIX","NULLABLE","REMARKS","COLUMN_DEF",
+        "SQL_DATA_TYPE","SQL_DATETIME_SUB","CHAR_OCTET_LENGTH","ORDINAL_POSITION","IS_NULLABLE"};
+    for(std::size_t i=0;i<19;++i) {
+      const bool text=i<4 || i==6 || i==12 || i==13 || i==18;
+      const bool integer=i==7 || i==8 || i==16 || i==17;
+      r.columns.push_back({names[i],NativeTypeInfo{text?ScalarType::VarChar:integer?ScalarType::Integer:ScalarType::SmallInt,
+          text?32u:integer?10u:5u,0,true}});
+    }
+    r.rows={{"db","s","f","","5","12","character varying",std::nullopt,std::nullopt,std::nullopt,std::nullopt,"2",std::nullopt,std::nullopt,"12",std::nullopt,std::nullopt,"0",""},
+        {"db","s","f","decimal","1","2","numeric","18","20","0","10","2","owned",std::nullopt,"2",std::nullopt,std::nullopt,"1",""}};
+    return r;
+  }
+  QueryResult procedure_rows() {
+    QueryResult r;
+    for(const auto* name:{"PROCEDURE_CAT","PROCEDURE_SCHEM","PROCEDURE_NAME","NUM_INPUT_PARAMS","NUM_OUTPUT_PARAMS","NUM_RESULT_SETS","REMARKS","PROCEDURE_TYPE"}) {
+      const bool text=std::string_view(name)=="PROCEDURE_CAT" || std::string_view(name)=="PROCEDURE_SCHEM" ||
+          std::string_view(name)=="PROCEDURE_NAME" || std::string_view(name)=="REMARKS";
+      r.columns.push_back({name,NativeTypeInfo{text?ScalarType::VarChar:ScalarType::SmallInt,text?32u:5u,0,true}});
+    }
+    r.rows={{"db","s","f",std::nullopt,std::nullopt,std::nullopt,"owning routine","2"}};return r;
+  }
+  void setup() {seen->catalog_executor=true;seen->routine_executor=true;seen->date_result=typed();connect();}
+  SQLRETURN columns(bool wide=false) {
+    SQLCHAR db[]{'d','b',0},schema[]{'s',0},name[]{'f',0};
+    SQLWCHAR wdb[]{'d','b',0},wschema[]{'s',0},wname[]{'f',0};
+    return wide?SQLProcedureColumnsW(stmt,wdb,SQL_NTS,wschema,SQL_NTS,wname,SQL_NTS,nullptr,0):
+        SQLProcedureColumns(stmt,db,SQL_NTS,schema,SQL_NTS,name,SQL_NTS,nullptr,0);
+  }
+};
+
+TEST_F(RoutineMetadataApiTest, NarrowWideTypedMetadataOwningNullAndDescriptorFamilies) {
+  ASSERT_NO_FATAL_FAILURE(setup());
+  for(bool wide:{false,true}) {
+    ASSERT_EQ(SQL_SUCCESS,columns(wide));SQLSMALLINT count=-1;
+    ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt,&count));EXPECT_EQ(19,count);
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+    SQLINTEGER size=77;SQLLEN indicator=91;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,8,SQL_C_LONG,&size,sizeof(size),&indicator));
+    EXPECT_EQ(SQL_NULL_DATA,indicator);EXPECT_EQ(77,size);
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+    ASSERT_TRUE(seen->date_result);seen->date_result->rows[1][12]="mutated";
+    char guarded[8]{'x','x','x','x','x','x','x','x'};
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,13,SQL_C_CHAR,guarded,7,&indicator));
+    EXPECT_EQ(5,indicator);EXPECT_EQ(0,std::memcmp(guarded,"owned",6));EXPECT_EQ('x',guarded[7]);
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,8,SQL_C_LONG,&size,sizeof(size),&indicator));EXPECT_EQ(18,size);
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,9,SQL_C_LONG,&size,sizeof(size),&indicator));EXPECT_EQ(20,size);
+    EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));seen->date_result=typed();
+  }
+  EXPECT_EQ(2,seen->catalog_calls);EXPECT_EQ(0,seen->queries);EXPECT_EQ(0,seen->catalog_builds);
+}
+
+TEST_F(RoutineMetadataApiTest, MetadataIdentifierNullRefusalPreservesOwningNamesAndRecovery) {
+  ASSERT_NO_FATAL_FAILURE(setup());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_METADATA_ID,reinterpret_cast<SQLPOINTER>(SQL_TRUE),0));
+  EXPECT_EQ(SQL_ERROR,columns());EXPECT_EQ("HY009",state());EXPECT_EQ(0,seen->catalog_calls);
+  SQLCHAR db[]{'d','b',0},schema[]{'"','s','"',0},name[]{'"','f','"',0},column[]{'"','d','e','c','i','m','a','l','"',0};
+  ASSERT_EQ(SQL_SUCCESS,SQLProcedureColumns(stmt,db,SQL_NTS,schema,SQL_NTS,name,SQL_NTS,column,SQL_NTS));
+  ASSERT_TRUE(seen->catalog_request);const auto request=std::get<ProcedureColumnsCatalogRequest>(*seen->catalog_request);
+  EXPECT_EQ(CatalogNameMatch::IdentifierQuoted,request.name_matches.schema);EXPECT_EQ(std::optional<std::string>{"decimal"},request.column);
+  schema[1]='x';EXPECT_EQ(std::optional<std::string>{"s"},request.schema);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_METADATA_ID,reinterpret_cast<SQLPOINTER>(SQL_FALSE),0));
+  ASSERT_EQ(SQL_SUCCESS,columns(true));EXPECT_EQ(2,seen->catalog_calls);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_METADATA_ID,reinterpret_cast<SQLPOINTER>(SQL_TRUE),0));
+  SQLCHAR utf8_name[]{'"',0xce,0xb2,0xf0,0x9f,0x98,0x80,'"',0};
+  SQLCHAR utf8_column[]{'"','d',0xc3,0xa9,'c','i','m','a','l','"',0};
+  schema[1]='s';
+  ASSERT_EQ(SQL_SUCCESS,SQLProcedureColumns(stmt,db,SQL_NTS,schema,SQL_NTS,utf8_name,SQL_NTS,utf8_column,SQL_NTS));
+  const auto narrow=std::get<ProcedureColumnsCatalogRequest>(*seen->catalog_request);
+  EXPECT_EQ(std::optional<std::string>{"\xCE\xB2\xF0\x9F\x98\x80"},narrow.procedure);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  SQLWCHAR wdb[]{'d','b',0},wschema[]{'"','s','"',0},wcolumn[]{'"','d',static_cast<SQLWCHAR>(0xe9),'c','i','m','a','l','"',0};
+  std::vector<SQLWCHAR> wname{'"',static_cast<SQLWCHAR>(0x3b2)};
+  if constexpr(sizeof(SQLWCHAR)==2) {wname.push_back(static_cast<SQLWCHAR>(0xd83d));wname.push_back(static_cast<SQLWCHAR>(0xde00));}
+  else {wname.push_back(static_cast<SQLWCHAR>(0x1f600));}
+  wname.push_back('"');wname.push_back(0);
+  ASSERT_EQ(SQL_SUCCESS,SQLProcedureColumnsW(stmt,wdb,SQL_NTS,wschema,SQL_NTS,wname.data(),SQL_NTS,wcolumn,SQL_NTS));
+  const auto wide=std::get<ProcedureColumnsCatalogRequest>(*seen->catalog_request);
+  EXPECT_EQ(narrow.procedure,wide.procedure);EXPECT_EQ(narrow.column,wide.column);
+  EXPECT_EQ(CatalogNameMatch::IdentifierQuoted,wide.name_matches.object);
+  EXPECT_EQ(4,seen->catalog_calls);
+}
+
+TEST_F(RoutineMetadataApiTest, NativeDeniedTimeoutAndThrowRecoveryNeverPublishPartialCatalog) {
+  ASSERT_NO_FATAL_FAILURE(setup());
+  seen->catalog_error=3;EXPECT_EQ(SQL_ERROR,columns());EXPECT_EQ("42501",state()); // Existing provider-approved permission state.
+  SQLSMALLINT count=73;EXPECT_EQ(SQL_ERROR,SQLNumResultCols(stmt,&count));EXPECT_EQ(73,count);
+  seen->catalog_error=0;ASSERT_EQ(SQL_SUCCESS,columns());ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  seen->catalog_error=2;const auto closes=seen->disconnects;EXPECT_EQ(SQL_ERROR,columns());EXPECT_EQ("HYT00",state());EXPECT_EQ(closes+1,seen->disconnects);
+  seen->catalog_error=0;
+  SQLCHAR connection[]="SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=0";
+  ASSERT_EQ(SQL_SUCCESS,SQLDriverConnect(dbc,nullptr,connection,SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT));
+  ASSERT_EQ(SQL_SUCCESS,columns());ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  seen->catalog_throw=true;EXPECT_EQ(SQL_ERROR,columns());EXPECT_EQ("HY000",state());seen->catalog_throw=false;
+  ASSERT_EQ(SQL_SUCCESS,SQLDriverConnect(dbc,nullptr,connection,SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT));
+  ASSERT_EQ(SQL_SUCCESS,columns());
+}
+
+TEST_F(RoutineMetadataApiTest, SiblingCursorCloseRefillAndNeedDataGuardPreserveOwningRows) {
+  ASSERT_NO_FATAL_FAILURE(setup());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_CURSOR_TYPE,reinterpret_cast<SQLPOINTER>(SQL_CURSOR_STATIC),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_USE_BOOKMARKS,reinterpret_cast<SQLPOINTER>(SQL_UB_VARIABLE),0));
+  ASSERT_EQ(SQL_SUCCESS,columns());
+  SQLHSTMT sibling=SQL_NULL_HSTMT;ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));
+  struct SiblingCleanup {SQLHSTMT handle;~SiblingCleanup(){if(handle)SQLFreeHandle(SQL_HANDLE_STMT,handle);}} cleanup{sibling};
+  seen->date_result=procedure_rows();
+  SQLCHAR schema[]{'s',0};ASSERT_EQ(SQL_SUCCESS,SQLProcedures(sibling,nullptr,0,schema,SQL_NTS,nullptr,0));
+  SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(sibling,&count));EXPECT_EQ(8,count);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));SQLINTEGER reserved=73;SQLLEN indicator=91;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(sibling,4,SQL_C_LONG,&reserved,sizeof(reserved),&indicator));EXPECT_EQ(SQL_NULL_DATA,indicator);EXPECT_EQ(73,reserved);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(sibling));seen->date_result=typed();
+  ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_LAST,0));
+  SQLWCHAR wide[5]{static_cast<SQLWCHAR>('x'),static_cast<SQLWCHAR>('x'),static_cast<SQLWCHAR>('x'),static_cast<SQLWCHAR>('x'),static_cast<SQLWCHAR>('x')};
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLGetData(stmt,7,SQL_C_WCHAR,wide,4*sizeof(SQLWCHAR),&indicator));
+  EXPECT_EQ(7*static_cast<SQLLEN>(sizeof(SQLWCHAR)),indicator);EXPECT_EQ(static_cast<SQLWCHAR>('n'),wide[0]);EXPECT_EQ(static_cast<SQLWCHAR>('x'),wide[4]);
+  EXPECT_EQ("01004",state());
+  EXPECT_EQ(SQL_ERROR,columns());EXPECT_EQ("24000",state());
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));ASSERT_EQ(SQL_SUCCESS,columns());ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT ?")),SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,8,0,&parameter_token,1,&parameter_indicator));
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt));const auto calls=seen->catalog_calls;
+  EXPECT_EQ(SQL_ERROR,columns());EXPECT_EQ("HY010",state());EXPECT_EQ(calls,seen->catalog_calls);
+  ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_RESET_PARAMS));
+  ASSERT_EQ(SQL_SUCCESS,columns());
+}
+
+// Bulk inputs and masks are persistent fixture fields, never callback views.
+class BulkBookmarkTest : public StaticBookmarkTest {
+ protected:
+  unsigned char cached[7][24]{}, requested[9][24]{};
+  SQLLEN id_indicator[9]{73,73,73,73,73,73,73,73,73};
+  SQLLEN id_octets[9]{74,74,74,74,74,74,74,74,74};
+  SQLWCHAR texts[9][16]{}, tiny[9][3]{};
+  char repaired_input[8]{'r','e','p','a','i','r',0}; SQLLEN repaired_length{SQL_NTS};
+  SQLLEN text_lengths[9]{73,73,73,73,73,73,73,73,73};
+  SQL_NUMERIC_STRUCT decimals[9]{};
+  SQLLEN decimal_lengths[9]{73,73,73,73,73,73,73,73,73};
+  struct BulkRow {
+    unsigned char before[3]{0xa1,0xa2,0xa3};
+    unsigned char token[24]{};
+    SQLINTEGER value{777}; SQLLEN indicator{73},octets{74};
+    unsigned char after[3]{0xb1,0xb2,0xb3};
+  } bulk_pages[2][4];
+  SQLHDESC ard{};
+  void TearDown() override {
+    if (stmt) {
+      SQLCancel(stmt);
+      SQLFreeStmt(stmt,SQL_UNBIND);
+      SQLFreeStmt(stmt,SQL_RESET_PARAMS);
+    }
+    StaticBookmarkTest::TearDown();
+  }
+  void setup_bulk(bool limited = false) {
+    seen->date_result = snapshot();
+    seen->date_result->columns.push_back({"decimal",NativeTypeInfo{ScalarType::Numeric,5,2,true}});
+    for (auto& row : seen->date_result->rows) { row.push_back("123.45"); }
+    if (limited) {
+      connect_with("SERVER=fake;DATABASE=contract;UID=test;SSL=0;MAXROWS=9;MAXCELLS=28");
+      ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&stmt));
+    } else { connect(); }
+    ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_CURSOR_TYPE,SQL_CURSOR_STATIC));
+    ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_USE_BOOKMARKS,SQL_UB_VARIABLE));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROWS_FETCHED_PTR,&fetched,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_STATUS_PTR,statuses,0));
+    ASSERT_EQ(SQL_SUCCESS,execute("bulk owning snapshot"));
+    ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_APP_ROW_DESC,&ard,0,nullptr));
+    for (SQLLEN ordinal = 1; ordinal <= 7; ++ordinal) {
+      ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_ABSOLUTE,ordinal));
+      ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,0,SQL_C_VARBOOKMARK,cached[ordinal-1],24,&piece_length));
+      EXPECT_EQ(24,piece_length);
+    }
+  }
+  void request(std::initializer_list<std::size_t> ordinals) {
+    std::size_t slot = 0;
+    for (const auto ordinal : ordinals) {
+      ASSERT_GE(ordinal,1u); ASSERT_LE(ordinal,7u);
+      std::memcpy(requested[slot++],cached[ordinal-1],24);
+    }
+    ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_ROW_ARRAY_SIZE,slot));
+    ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,0,SQL_C_VARBOOKMARK,requested,24,nullptr));
+  }
+  void bind_ids() {
+    ASSERT_EQ(SQL_SUCCESS,SQLSetDescRec(ard,1,SQL_C_SLONG,0,0,0,0,
+        output.values,id_octets,id_indicator));
+  }
+  void diagnose_slot(SQLSMALLINT record, const char* expected_state, SQLLEN expected_row, SQLINTEGER expected_column = 1) {
+    SQLCHAR sqlstate[6]{}; SQLLEN row=-99; SQLINTEGER column=-99;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDiagRec(SQL_HANDLE_STMT,
+        stmt,record,sqlstate,nullptr,nullptr,0,nullptr));
+    EXPECT_STREQ(expected_state,reinterpret_cast<char*>(sqlstate));
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,stmt,record,SQL_DIAG_ROW_NUMBER,&row,0,nullptr));
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,stmt,record,SQL_DIAG_COLUMN_NUMBER,&column,0,nullptr));
+    EXPECT_EQ(expected_row,row); EXPECT_EQ(expected_column,column);
+  }
+};
+
+TEST_F(BulkBookmarkTest, NoncontiguousDuplicatesUnicodeNumericNullAndInputAliasesAreOwning) {
+  ASSERT_NO_FATAL_FAILURE(setup_bulk());
+  ASSERT_NO_FATAL_FAILURE(request({5,1,2,3}));
+  ASSERT_NO_FATAL_FAILURE(bind_ids());
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,2,SQL_C_WCHAR,texts,sizeof(texts[0]),text_lengths));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescRec(ard,3,SQL_C_NUMERIC,0,sizeof(SQL_NUMERIC_STRUCT),5,2,
+      decimals,decimal_lengths,decimal_lengths));
+  seen->date_result->rows[0][1]="mutated source";
+  const auto calls=seen->queries;
+  ASSERT_EQ(SQL_SUCCESS,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK));
+  EXPECT_EQ(4u,fetched);
+  const SQLINTEGER expected[]{5,1,2,3};
+  for (std::size_t slot=0;slot<4;++slot) {
+    EXPECT_EQ(expected[slot],output.values[slot]); EXPECT_EQ(SQL_ROW_SUCCESS,statuses[slot]);
+    EXPECT_EQ(0,id_indicator[slot]); EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),id_octets[slot]);
+    EXPECT_EQ(5,decimals[slot].precision); EXPECT_EQ(2,decimals[slot].scale); EXPECT_EQ(1,decimals[slot].sign);
+    EXPECT_EQ(0x39,decimals[slot].val[0]); EXPECT_EQ(0x30,decimals[slot].val[1]);
+    for (std::size_t byte=2;byte<SQL_MAX_NUMERIC_LEN;++byte) { EXPECT_EQ(0,decimals[slot].val[byte]); }
+    EXPECT_EQ(expected[slot],requested[slot][23]);
+  }
+  EXPECT_EQ(SQL_NULL_DATA,text_lengths[2]); EXPECT_EQ(0,texts[2][0]);
+  EXPECT_EQ(static_cast<SQLWCHAR>('A'),texts[1][0]);
+  if constexpr(sizeof(SQLWCHAR)==2) {
+    EXPECT_EQ(static_cast<SQLWCHAR>(0xd83d),texts[1][1]); EXPECT_EQ(static_cast<SQLWCHAR>(0xde00),texts[1][2]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('Z'),texts[1][3]); EXPECT_EQ(0,texts[1][4]);
+  } else {
+    EXPECT_EQ(static_cast<SQLWCHAR>(0x1f600),texts[1][1]); EXPECT_EQ(static_cast<SQLWCHAR>('Z'),texts[1][2]);
+    EXPECT_EQ(0,texts[1][3]);
+  }
+  EXPECT_EQ(calls,seen->queries); EXPECT_TRUE(seen->transaction_calls.empty());
+  ASSERT_NO_FATAL_FAILURE(row_number(0));
+  ASSERT_NO_FATAL_FAILURE(guards());
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  ASSERT_NO_FATAL_FAILURE(request({3,3,1}));
+  // Column1 output spans overwrite bytes of the future token inputs. All
+  // three token values must already be owning before the first four-byte write.
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_SLONG,requested[1],0,id_octets));
+  ASSERT_EQ(SQL_SUCCESS,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK));
+  SQLINTEGER first=0,second=0,third=0;
+  std::memcpy(&first,requested[1],sizeof(first));
+  std::memcpy(&second,requested[1]+sizeof(first),sizeof(second));
+  std::memcpy(&third,requested[1]+2*sizeof(first),sizeof(third));
+  EXPECT_EQ(3,first); EXPECT_EQ(3,second); EXPECT_EQ(1,third);
+  EXPECT_EQ(3u,fetched); EXPECT_EQ(calls,seen->queries);
+}
+
+TEST_F(BulkBookmarkTest, ForeignStaleAndConversionErrorsKeepSlotsMasksAndNeighborStatus) {
+  ASSERT_NO_FATAL_FAILURE(setup_bulk());
+  ASSERT_NO_FATAL_FAILURE(request({1,2,3}));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_SSHORT,small_values,0,id_octets));
+  requested[1][0]^=1; // Foreign statement identity; neighbors still own literal rows.
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK));
+  ASSERT_NO_FATAL_FAILURE(diagnose_slot(1,"HY111",2,0));
+  EXPECT_EQ(3u,fetched); EXPECT_EQ(1,small_values[0]); EXPECT_EQ(77,small_values[1]); EXPECT_EQ(3,small_values[2]);
+  EXPECT_EQ(SQL_ROW_SUCCESS,statuses[0]); EXPECT_EQ(SQL_ROW_ERROR,statuses[1]); EXPECT_EQ(SQL_ROW_SUCCESS,statuses[2]);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  ASSERT_NO_FATAL_FAILURE(request({1,2,3}));
+  // Either split field suppresses just its slot; unrelated octets/indicator
+  // remain poison, and masks must be captured before status/data alias writes.
+  ASSERT_NO_FATAL_FAILURE(bind_ids());
+  for (std::size_t slot=0;slot<3;++slot) { id_indicator[slot]=73; id_octets[slot]=74; }
+  id_indicator[0]=SQL_COLUMN_IGNORE; id_octets[2]=SQL_COLUMN_IGNORE;
+  output.values[0]=output.values[2]=777;
+  ASSERT_EQ(SQL_SUCCESS,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK));
+  EXPECT_EQ(777,output.values[0]); EXPECT_EQ(2,output.values[1]); EXPECT_EQ(777,output.values[2]);
+  EXPECT_EQ(SQL_COLUMN_IGNORE,id_indicator[0]); EXPECT_EQ(74,id_octets[0]);
+  EXPECT_EQ(73,id_indicator[2]); EXPECT_EQ(SQL_COLUMN_IGNORE,id_octets[2]);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  ASSERT_NO_FATAL_FAILURE(request({1,2}));
+  ASSERT_NO_FATAL_FAILURE(bind_ids());
+  id_indicator[0]=73; id_indicator[1]=SQL_COLUMN_IGNORE;
+  output.values[1]=777;
+  // Slot0's caller status aliases slot1's ignore input. Captured masks keep
+  // slot1 ignored even after the first status write changes its original bits.
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_STATUS_PTR,&id_indicator[1],0));
+  ASSERT_EQ(SQL_SUCCESS,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK));
+  EXPECT_EQ(1,output.values[0]); EXPECT_EQ(777,output.values[1]);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_STATUS_PTR,statuses,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  ASSERT_NO_FATAL_FAILURE(request({1,3}));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,2,SQL_C_WCHAR,tiny,sizeof(tiny[0]),text_lengths));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK));
+  ASSERT_NO_FATAL_FAILURE(diagnose_slot(1,"01004",1,2));
+  EXPECT_EQ(static_cast<SQLLEN>((sizeof(SQLWCHAR)==2?4:3)*sizeof(SQLWCHAR)),text_lengths[0]);
+  EXPECT_EQ(static_cast<SQLWCHAR>('A'),tiny[0][0]);
+  if constexpr(sizeof(SQLWCHAR)==2) { EXPECT_EQ(0,tiny[0][1]); }
+  else { EXPECT_EQ(static_cast<SQLWCHAR>(0x1f600),tiny[0][1]); EXPECT_EQ(0,tiny[0][2]); }
+  EXPECT_EQ(SQL_ROW_SUCCESS_WITH_INFO,statuses[0]); EXPECT_EQ(SQL_ROW_SUCCESS_WITH_INFO,statuses[1]);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  ASSERT_NO_FATAL_FAILURE(request({1,2}));
+  // The ignored data address cannot be projected or dereferenced.
+  id_indicator[0]=id_indicator[1]=SQL_COLUMN_IGNORE;
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescRec(ard,1,SQL_C_SLONG,0,0,0,0,
+      reinterpret_cast<SQLPOINTER>((std::numeric_limits<std::uintptr_t>::max)()),nullptr,id_indicator));
+  ASSERT_EQ(SQL_SUCCESS,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK));
+  EXPECT_EQ(2u,fetched); EXPECT_EQ(SQL_ROW_SUCCESS,statuses[0]); EXPECT_EQ(SQL_ROW_SUCCESS,statuses[1]);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  seen->date_result=snapshot(); seen->date_result->rows[0][0]="32768";
+  ASSERT_EQ(SQL_SUCCESS,execute("overflow owning rows"));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_FIRST,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,0,SQL_C_VARBOOKMARK,cached[0],24,&piece_length));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_ABSOLUTE,2));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,0,SQL_C_VARBOOKMARK,cached[1],24,&piece_length));
+  ASSERT_NO_FATAL_FAILURE(request({1,2}));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,1,SQL_C_SSHORT,small_values,0,id_octets));
+  small_values[0]=77;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK));
+  ASSERT_NO_FATAL_FAILURE(diagnose_slot(1,"22003",1));
+  EXPECT_EQ(77,small_values[0]); EXPECT_EQ(2,small_values[1]); EXPECT_EQ(SQL_ROW_ERROR,statuses[0]);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  ASSERT_NO_FATAL_FAILURE(request({1}));
+  requested[0][23]=0;
+  ASSERT_EQ(SQL_ERROR,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK));
+  ASSERT_NO_FATAL_FAILURE(diagnose_slot(1,"HY111",1,0));
+  EXPECT_EQ(1u,fetched); EXPECT_EQ(SQL_ROW_ERROR,statuses[0]);
+  ASSERT_NO_FATAL_FAILURE(row_number(0));
+}
+
+TEST_F(BulkBookmarkTest, PaddedOffsetBoundedPreflightRefusalAndRepairPreserveBases) {
+  ASSERT_NO_FATAL_FAILURE(setup_bulk(true));
+  ASSERT_NO_FATAL_FAILURE(request({5,1,3}));
+  ASSERT_NO_FATAL_FAILURE(bind_ids());
+  // ARD row-operation status is not an input mask for SQLBulkOperations.
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(ard,0,SQL_DESC_ARRAY_STATUS_PTR,
+      reinterpret_cast<SQLPOINTER>((std::numeric_limits<std::uintptr_t>::max)()),0));
+  const auto calls=seen->queries;
+  fetched=99; statuses[0]=71;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,0,SQL_C_VARBOOKMARK,requested,23,nullptr));
+  ASSERT_EQ(SQL_ERROR,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK)); EXPECT_EQ("HY090",state());
+  EXPECT_EQ(99u,fetched); EXPECT_EQ(71,statuses[0]); EXPECT_EQ(77,output.values[0]);
+  ASSERT_NO_FATAL_FAILURE(row_number(7));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindCol(stmt,0,SQL_C_VARBOOKMARK,requested,24,nullptr));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_STATUS_PTR,
+      reinterpret_cast<SQLPOINTER>((std::numeric_limits<std::uintptr_t>::max)()),0));
+  ASSERT_EQ(SQL_ERROR,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK)); EXPECT_EQ("HY024",state());
+  EXPECT_EQ(99u,fetched); ASSERT_NO_FATAL_FAILURE(row_number(7));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_STATUS_PTR,statuses,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescRec(ard,3,SQL_C_NUMERIC,0,sizeof(SQL_NUMERIC_STRUCT),5,2,nullptr,nullptr,nullptr));
+  ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_ROW_ARRAY_SIZE,8)); //8*(three fields+token)>28cells.
+  ASSERT_EQ(SQL_ERROR,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK)); EXPECT_EQ("HY000",state());
+  EXPECT_EQ(99u,fetched); EXPECT_EQ(calls,seen->queries);
+  ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_ROW_ARRAY_SIZE,3));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_BIND_OFFSET_PTR,
+      reinterpret_cast<SQLPOINTER>((std::numeric_limits<std::uintptr_t>::max)()),0));
+  ASSERT_EQ(SQL_ERROR,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK)); EXPECT_EQ("HY024",state());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_BIND_OFFSET_PTR,&offset,0));
+  offset=(std::numeric_limits<SQLULEN>::max)();
+  ASSERT_EQ(SQL_ERROR,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK)); EXPECT_EQ("HYC00",state());
+  offset=sizeof(bulk_pages[0]);
+  ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_ROW_BIND_TYPE,sizeof(BulkRow)));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescRec(ard,0,SQL_C_VARBOOKMARK,0,24,0,0,
+      bulk_pages[0][0].token,nullptr,nullptr));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescRec(ard,1,SQL_C_SLONG,0,0,0,0,
+      &bulk_pages[0][0].value,&bulk_pages[0][0].octets,&bulk_pages[0][0].indicator));
+  const std::size_t ordinals[]{5,1,3};
+  for (std::size_t slot=0;slot<3;++slot) { std::memcpy(bulk_pages[1][slot].token,cached[ordinals[slot]-1],24); }
+  ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_RETRIEVE_DATA,SQL_RD_OFF)); // Explicit bulk transfer is independent.
+  ASSERT_EQ(SQL_SUCCESS,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK));
+  EXPECT_EQ(3u,fetched); EXPECT_EQ(5,bulk_pages[1][0].value); EXPECT_EQ(1,bulk_pages[1][1].value); EXPECT_EQ(3,bulk_pages[1][2].value);
+  EXPECT_EQ(777,bulk_pages[0][0].value); EXPECT_EQ(73,bulk_pages[0][0].indicator); EXPECT_EQ(74,bulk_pages[0][0].octets);
+  SQLPOINTER original{};
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ard,1,SQL_DESC_DATA_PTR,&original,0,nullptr));
+  EXPECT_EQ(static_cast<SQLPOINTER>(&bulk_pages[0][0].value),original);
+  for (const auto& page : bulk_pages) {
+    for (const auto& row : page) { EXPECT_EQ(0xa1,row.before[0]); EXPECT_EQ(0xa3,row.before[2]); EXPECT_EQ(0xb1,row.after[0]); EXPECT_EQ(0xb3,row.after[2]); }
+  }
+  EXPECT_EQ(calls,seen->queries); EXPECT_TRUE(seen->transaction_calls.empty());
+  EXPECT_EQ(SQL_ERROR,SQLBulkOperations(stmt,SQL_UPDATE_BY_BOOKMARK)); EXPECT_EQ("HY092",state());
+  EXPECT_EQ(SQL_ERROR,SQLBulkOperations(stmt,static_cast<SQLSMALLINT>(999))); EXPECT_EQ("HY092",state());
+  EXPECT_EQ(SQL_INVALID_HANDLE,SQLBulkOperations(dbc,SQL_FETCH_BY_BOOKMARK));
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ROW_BIND_OFFSET_PTR,nullptr,0));
+  ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_ROW_BIND_TYPE,SQL_BIND_BY_COLUMN));
+  ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_USE_BOOKMARKS,SQL_UB_OFF));
+  ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_CURSOR_TYPE,SQL_CURSOR_FORWARD_ONLY));
+  ASSERT_EQ(SQL_SUCCESS,execute("forward bulk refusal"));
+  EXPECT_EQ(SQL_ERROR,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK)); EXPECT_EQ("HYC00",state());
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_CURSOR_TYPE,SQL_CURSOR_STATIC));
+  ASSERT_EQ(SQL_SUCCESS,execute("off bookmark refusal"));
+  EXPECT_EQ(SQL_ERROR,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK)); EXPECT_EQ("HY092",state());
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_USE_BOOKMARKS,SQL_UB_VARIABLE));
+  ASSERT_EQ(SQL_SUCCESS,execute("unbound bookmark refusal"));
+  EXPECT_EQ(SQL_ERROR,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK)); EXPECT_EQ("HY092",state());
+}
+
+TEST_F(BulkBookmarkTest, UnpositionedRecoveryCloseRefillSiblingAndNeedDataRemainIsolated) {
+  ASSERT_NO_FATAL_FAILURE(setup_bulk());
+  ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(sibling,SQL_ATTR_CURSOR_TYPE,reinterpret_cast<SQLPOINTER>(SQL_CURSOR_STATIC),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(const_cast<char*>("sibling owning")),SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));
+  ASSERT_NO_FATAL_FAILURE(request({5,1,3}));
+  ASSERT_NO_FATAL_FAILURE(bind_ids());
+  ASSERT_EQ(SQL_SUCCESS,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK));
+  ASSERT_NO_FATAL_FAILURE(row_number(0));
+  EXPECT_EQ(SQL_ERROR,SQLFetch(stmt)); EXPECT_EQ("HY010",state());
+  EXPECT_EQ(SQL_ERROR,SQLFetchScroll(stmt,SQL_FETCH_PRIOR,0)); EXPECT_EQ("HY010",state());
+  EXPECT_EQ(SQL_ERROR,SQLFetchScroll(stmt,SQL_FETCH_RELATIVE,1)); EXPECT_EQ("HY010",state());
+  EXPECT_EQ(SQL_ERROR,SQLSetPos(stmt,1,SQL_POSITION,SQL_LOCK_NO_CHANGE)); EXPECT_EQ("HY010",state());
+  EXPECT_EQ(SQL_ERROR,SQLGetData(stmt,1,SQL_C_SLONG,&output.values[0],0,&piece_length)); EXPECT_EQ("24000",state());
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_ABSOLUTE,2));
+  ASSERT_NO_FATAL_FAILURE(row_number(2));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetPos(stmt,2,SQL_POSITION,SQL_LOCK_NO_CHANGE));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&output.values[0],0,&piece_length)); EXPECT_EQ(3,output.values[0]);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(sibling,1,SQL_C_SLONG,&output.values[1],0,&piece_length)); EXPECT_EQ(1,output.values[1]);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  seen->date_result->additional_results.push_back(*seen->date_result);
+  ASSERT_EQ(SQL_SUCCESS,execute("two bulk snapshots"));
+  ASSERT_NO_FATAL_FAILURE(request({5}));
+  ASSERT_EQ(SQL_ERROR,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK)); EXPECT_EQ("HY111",state());
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_FIRST,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,0,SQL_C_VARBOOKMARK,cached[0],24,&piece_length));
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  seen->date_result->additional_results.clear();
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT ?")),SQL_NTS));
+  input_length=SQL_DATA_AT_EXEC;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,8,0,&input,0,&input_length));
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt));
+  const auto calls=seen->queries;
+  EXPECT_EQ(SQL_ERROR,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK)); EXPECT_EQ("HY010",state());
+  EXPECT_EQ(calls,seen->queries);
+  ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_RESET_PARAMS));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,8,0,
+      repaired_input,sizeof(repaired_input),&repaired_length));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_FIRST,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,0,SQL_C_VARBOOKMARK,cached[0],24,&piece_length));
+  ASSERT_NO_FATAL_FAILURE(request({1}));
+  ASSERT_EQ(SQL_SUCCESS,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK)); EXPECT_EQ(1u,fetched);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_FETCH_BOOKMARK_PTR,cached[0],0));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,0));
+  ASSERT_NO_FATAL_FAILURE(row_number(1));
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_MAX_ROWS,2));
+  ASSERT_NO_FATAL_FAILURE(setting(SQL_ATTR_ROW_ARRAY_SIZE,1));
+  ASSERT_EQ(SQL_SUCCESS,execute("bounded owning refill"));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_FIRST,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,0,SQL_C_VARBOOKMARK,cached[0],24,&piece_length));
+  ASSERT_NO_FATAL_FAILURE(request({1}));
+  requested[0][23]=3; // Current identity but outside the compact MAX_ROWS snapshot.
+  EXPECT_EQ(SQL_ERROR,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK)); EXPECT_EQ("HY111",state());
+  ASSERT_NO_FATAL_FAILURE(request({1}));
+  ASSERT_EQ(SQL_SUCCESS,SQLBulkOperations(stmt,SQL_FETCH_BY_BOOKMARK));
+  EXPECT_TRUE(seen->transaction_calls.empty());
+}
+
+
+namespace {
+class PreparedSelectArrayTest : public PreparedCommandArrayTest {
+ protected:
+  SQLHDBC other_dbc{SQL_NULL_HDBC};
+  std::shared_ptr<Observations> other_seen;
+  SQLHSTMT recovery_sibling{SQL_NULL_HSTMT};
+  void TearDown() override {
+    if (recovery_sibling) SQLFreeHandle(SQL_HANDLE_STMT, recovery_sibling);
+    if (other_dbc) {
+      SQLEndTran(SQL_HANDLE_DBC,other_dbc,SQL_ROLLBACK);
+      SQLDisconnect(other_dbc); SQLFreeHandle(SQL_HANDLE_DBC,other_dbc);
+    }
+    PreparedCommandArrayTest::TearDown();
+  }
+  void select_ready(bool fields = true, bool bookmarks = false) {
+    seen->select_array_authority = true;
+    seen->select_description.emplace();
+    if (fields) seen->select_description->columns = {{"id", NativeTypeInfo{ScalarType::Integer, 10, 0, true}}};
+    seen->command_array_authority = true;
+    ASSERT_NO_FATAL_FAILURE(connect());
+    if (bookmarks) {
+      ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_CURSOR_TYPE, (SQLPOINTER)SQL_CURSOR_STATIC, 0));
+      ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_USE_BOOKMARKS, (SQLPOINTER)SQL_UB_VARIABLE, 0));
+    }
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT CAST(? AS INTEGER)", SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, 10, 0, input, 0, indicators));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)3, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, status, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_OPERATION_PTR, operations, 0));
+  }
+  void fetch_literal(SQLINTEGER expected) {
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    struct Guard { unsigned char before[4]{1,2,3,4}; SQLINTEGER value{-9}; unsigned char after[4]{5,6,7,8}; } output;
+    SQLLEN length = -8;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_SLONG, &output.value, 0, &length));
+    EXPECT_EQ(expected, output.value); EXPECT_EQ(SQLLEN{4}, length);
+    EXPECT_EQ(1, output.before[0]); EXPECT_EQ(8, output.after[3]);
+  }
+};
+TEST_F(PreparedSelectArrayTest, IncrementalOwningMaskedResultsIdleCancelAndDirectPreparedRefill) {
+  ASSERT_NO_FATAL_FAILURE(select_ready()); operations[1] = SQL_PARAM_IGNORE;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_EQ(1u, seen->command_inputs.size());
+  EXPECT_EQ(1u, processed); EXPECT_EQ(SQL_PARAM_SUCCESS, status[0]); EXPECT_EQ(SQL_PARAM_UNUSED, status[1]);
+  EXPECT_EQ(SQL_PARAM_UNUSED, status[2]); input[2] = 999;
+  ASSERT_NO_FATAL_FAILURE(fetch_literal(11));
+  ASSERT_EQ(SQL_SUCCESS, SQLCancel(stmt)); EXPECT_EQ(1u, seen->command_inputs.size()); EXPECT_EQ(1u, processed);
+  ASSERT_EQ(SQL_SUCCESS, SQLMoreResults(stmt)); EXPECT_EQ(2u, seen->command_inputs.size());
+  ASSERT_NO_FATAL_FAILURE(fetch_literal(33)); EXPECT_EQ(3u, processed); EXPECT_EQ(SQL_PARAM_SUCCESS, status[2]);
+  ASSERT_EQ(SQL_NO_DATA, SQLMoreResults(stmt));
+  input[2] = 44; ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); ASSERT_NO_FATAL_FAILURE(fetch_literal(11));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt)); EXPECT_EQ(3u, seen->command_inputs.size());
+  ASSERT_EQ(SQL_NO_DATA, SQLMoreResults(stmt)); EXPECT_EQ(3u, seen->command_inputs.size());
+}
+TEST_F(PreparedSelectArrayTest, ZeroFieldEmptyResultReplacementPrebufferAndAllIgnoredNoEffects) {
+  ASSERT_NO_FATAL_FAILURE(select_ready(false));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); SQLSMALLINT columns = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(stmt, &columns)); EXPECT_EQ(0, columns);
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt));
+  const auto invalid = reinterpret_cast<SQLCHAR*>((std::numeric_limits<std::uintptr_t>::max)());
+  EXPECT_EQ(SQL_ERROR, SQLPrepare(stmt, invalid, SQL_NTS)); EXPECT_EQ("24000", state());
+  const auto invalid_wide = reinterpret_cast<SQLWCHAR*>((std::numeric_limits<std::uintptr_t>::max)());
+  EXPECT_EQ(SQL_ERROR, SQLExecDirectW(stmt, invalid_wide, SQL_NTS)); EXPECT_EQ("24000", state());
+  EXPECT_EQ(1u, seen->command_inputs.size()); ASSERT_EQ(SQL_SUCCESS, SQLMoreResults(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  for (auto& operation : operations) { operation = SQL_PARAM_IGNORE; }
+  const auto queries = seen->queries, descriptions = seen->descriptions;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_EQ(3u, processed);
+  for (auto value : status) { EXPECT_EQ(SQL_PARAM_UNUSED, value); }
+  EXPECT_EQ(queries, seen->queries); EXPECT_EQ(descriptions, seen->descriptions);
+}
+TEST_F(PreparedSelectArrayTest, CapturedOutputPointersAndTransactionEnvironmentPreflightRecovery) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1;
+  ASSERT_NO_FATAL_FAILURE(select_ready());
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  SQLUSMALLINT next_status[3]{81,82,83}; SQLULEN next_processed = 84;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, next_status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &next_processed, 0));
+  EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)SQL_AUTOCOMMIT_ON, 0));
+  EXPECT_EQ("HY010", state(SQL_HANDLE_DBC, dbc));
+  other_seen=std::make_shared<Observations>(); other_seen->advertised_transactions=true; other_seen->isolation_mode=1;
+  other_seen->begin_result=BackendResult<void>{{SessionState::Transaction,SessionDisposition::ResetRequired}};
+  auto other_connection=std::make_unique<rs::odbc::ODBCConnection>(nullptr,std::make_shared<FakeProvider>(other_seen));
+  other_dbc=reinterpret_cast<SQLHDBC>(other_connection.get());
+  rs::odbc::HandleRegistry::instance().register_handle(other_dbc,std::move(other_connection),env);
+  ASSERT_EQ(SQL_SUCCESS,SQLDriverConnect(other_dbc,nullptr,(SQLCHAR*)"SERVER=fake;DATABASE=contract;UID=test;SSL=0",
+      SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(other_dbc,SQL_ATTR_AUTOCOMMIT,(SQLPOINTER)SQL_AUTOCOMMIT_OFF,0));
+  const auto other=rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(other_dbc);
+  ASSERT_TRUE(other); ASSERT_TRUE(other->begin_transaction_if_needed(rs::util::Deadline::max()));
+  ASSERT_EQ(1u,other_seen->transaction_calls.size());
+  EXPECT_EQ(SQL_ERROR, SQLEndTran(SQL_HANDLE_ENV, env, SQL_COMMIT));
+  EXPECT_EQ("HY010", state(SQL_HANDLE_ENV, env)); EXPECT_TRUE(seen->transaction_calls.empty());
+  EXPECT_EQ(1u,other_seen->transaction_calls.size()); // No other-DBC COMMIT before refused preflight.
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_RESET_PARAMS));
+  ASSERT_EQ(SQL_SUCCESS, SQLMoreResults(stmt)); ASSERT_NO_FATAL_FAILURE(fetch_literal(22));
+  EXPECT_EQ(2u, processed); EXPECT_EQ(84u, next_processed); EXPECT_EQ(82, next_status[1]);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)SQL_AUTOCOMMIT_ON, 0));
+}
+TEST_F(PreparedSelectArrayTest, OwningOriginalOrdinalNativeCodeFailureNoReplayAndExplicitRefill) {
+  ASSERT_NO_FATAL_FAILURE(select_ready()); operations[1] = SQL_PARAM_IGNORE;
+  QueryResult first; first.columns = seen->select_description->columns; first.rows = {{"11"}};
+  first.execution_result_shape = ExecutionResultShape::ResultSet;
+  BackendError failure{rs::util::make_error_code(DbErrorCode::QueryFailed), "owning SELECT-array failure"};
+  failure.native_state = "42501"; failure.native_code = 73;
+  failure.operation = BackendOperation::ExecutePrepared; failure.session_state = SessionState::Idle;
+  failure.disposition = SessionDisposition::Reusable;
+  seen->command_outcomes = {BackendResult<QueryResult>{first, {SessionState::Idle, SessionDisposition::Reusable}}, failure};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); ASSERT_NO_FATAL_FAILURE(fetch_literal(11));
+  ASSERT_EQ(SQL_ERROR, SQLMoreResults(stmt)); EXPECT_EQ("42501", state());
+  seen->command_outcomes[1].backend_error().message="overwritten backend source";
+  SQLCHAR text[96]{}; SQLINTEGER native = 0; SQLLEN ordinal = 0; SQLINTEGER column = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1,
+      nullptr, &native, text, sizeof(text), nullptr));
+  EXPECT_EQ("owning SELECT-array failure", std::string(reinterpret_cast<char*>(text))); EXPECT_EQ(73, native);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(SQL_HANDLE_STMT, stmt, 1, SQL_DIAG_ROW_NUMBER, &ordinal, 0, nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(SQL_HANDLE_STMT, stmt, 1, SQL_DIAG_COLUMN_NUMBER, &column, 0, nullptr));
+  EXPECT_EQ(3, ordinal); EXPECT_EQ(SQL_NO_COLUMN_NUMBER, column); EXPECT_EQ(3u, processed); EXPECT_EQ(SQL_PARAM_ERROR, status[2]);
+  EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(stmt)); EXPECT_EQ(2u, seen->command_inputs.size());
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE)); seen->command_outcomes.clear();
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); ASSERT_NO_FATAL_FAILURE(fetch_literal(11));
+}
+TEST_F(PreparedSelectArrayTest, FullDecodedBudgetBeforeMaxRowsAndActiveCancelRefusal) {
+  seen->select_array_authority = true; seen->command_array_authority = true;
+  seen->select_description.emplace(); seen->select_description->columns = {{"id", NativeTypeInfo{ScalarType::Integer,10,0,true}}};
+  ASSERT_NO_FATAL_FAILURE(connect_with("SERVER=fake;DATABASE=contract;UID=test;SSL=0;MAXROWS=1"));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,10,0,input,0,indicators));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt,SQL_ATTR_PARAMSET_SIZE,(SQLPOINTER)3,0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt,SQL_ATTR_MAX_ROWS,(SQLPOINTER)1,0));
+  QueryResult result; result.columns=seen->select_description->columns; result.rows={{"11"},{"12"}};
+  result.execution_result_shape=ExecutionResultShape::ResultSet;
+  seen->command_outcomes={BackendResult<QueryResult>{result,{SessionState::Idle,SessionDisposition::Reusable}}};
+  seen->during_command=[&] { EXPECT_EQ(SQL_ERROR,SQLCancel(stmt)); };
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt)); EXPECT_EQ("HY000",state()); EXPECT_EQ(1u,seen->command_inputs.size());
+  EXPECT_EQ(SQL_ERROR,SQLFetch(stmt)); EXPECT_EQ("HY010",state());
+}
+TEST_F(RowWiseCommandArrayTest, SelectSequenceOwnsPaddedUnicodeNumericNullOffsetInputsAndSiblingRows) {
+  seen->select_array_authority=true; seen->select_description.emplace();
+  seen->select_description->columns={{"id",NativeTypeInfo{ScalarType::Integer,10,0,true}},
+      {"text",NativeTypeInfo{ScalarType::VarChar,32,0,true}}, {"amount",NativeTypeInfo{ScalarType::Numeric,5,2,true}}};
+  ASSERT_NO_FATAL_FAILURE(ready_rows());
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"SELECT ?,?,?",SQL_NTS));
+  operations[1]=SQL_PARAM_IGNORE; pages[1][2].text_indicator=SQL_NULL_DATA;
+  page_offset=sizeof(pages[0]);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_BIND_OFFSET_PTR,&page_offset,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,(SQLCHAR*)"SELECT owning sibling",SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); EXPECT_EQ(1u,seen->command_inputs.size());
+  pages[1][2].id=999;
+  ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(stmt)); EXPECT_EQ(2u,seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"23"},seen->command_inputs[1][0].value);
+  EXPECT_FALSE(seen->command_inputs[1][1].value);
+  EXPECT_EQ(std::optional<std::string>{"-123.45"},seen->command_inputs[1][2].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  char numeric[16]{}; SQLLEN length=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,3,SQL_C_CHAR,numeric,sizeof(numeric),&length));
+  EXPECT_STREQ("-123.45",numeric); EXPECT_EQ(7,length);
+  char untouched[4]{'x','y','z',0}; SQLLEN null_length=9;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_CHAR,untouched,sizeof(untouched),&null_length));
+  EXPECT_EQ(SQL_NULL_DATA,null_length); EXPECT_EQ('x',untouched[0]);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));
+  unsigned char sibling_value[4]{7,7,7,7}; SQLLEN sibling_length=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(sibling,1,SQL_C_BINARY,sibling_value,sizeof(sibling_value),&sibling_length));
+  EXPECT_EQ(3,sibling_length); EXPECT_EQ(0,sibling_value[0]);
+  EXPECT_EQ(0xff,sibling_value[1]); EXPECT_EQ(0x5c,sibling_value[2]); EXPECT_EQ(7,sibling_value[3]);
+  ASSERT_NO_FATAL_FAILURE(guards());
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  page_offset=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,2,SQL_PARAM_INPUT,SQL_C_WCHAR,SQL_WVARCHAR,32,0,
+      pages[0][0].wide,sizeof(pages[0][0].wide),&pages[0][0].text_indicator));
+  pages[0][2].text_indicator=SQL_NTS;
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(stmt));
+  EXPECT_EQ(std::optional<std::string>{"\xf0\x9f\x98\x80"},seen->command_inputs[3][1].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  SQLWCHAR output[3]{static_cast<SQLWCHAR>('!'),static_cast<SQLWCHAR>('!'),static_cast<SQLWCHAR>('!')};
+  SQLLEN bytes=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_WCHAR,output,sizeof(output),&bytes));
+  if constexpr (sizeof(SQLWCHAR)==2) {
+    EXPECT_EQ(static_cast<SQLWCHAR>(0xd83d),output[0]); EXPECT_EQ(static_cast<SQLWCHAR>(0xde00),output[1]); EXPECT_EQ(4,bytes);
+  } else { EXPECT_EQ(static_cast<SQLWCHAR>(0x1f600),output[0]); EXPECT_EQ(4,bytes); }
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+}
+
+
+namespace {
+TEST_F(PreparedSelectArrayTest, StaticResultBookmarkIdentityAndCapturedMaxRowsArePerExecution) {
+  ASSERT_NO_FATAL_FAILURE(select_ready(true, true));
+  QueryResult first; first.columns=seen->select_description->columns; first.rows={{"11"}};
+  first.execution_result_shape=ExecutionResultShape::ResultSet;
+  QueryResult second=first; second.rows={{"22"},{"23"}};
+  seen->command_outcomes={BackendResult<QueryResult>{first,{SessionState::Idle,SessionDisposition::Reusable}},
+      BackendResult<QueryResult>{second,{SessionState::Idle,SessionDisposition::Reusable}}};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt,SQL_ATTR_MAX_ROWS,(SQLPOINTER)1,0));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0));
+  std::array<unsigned char, 24> token{}; SQLLEN length=0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 0, SQL_C_VARBOOKMARK, token.data(), token.size(), &length));
+  EXPECT_EQ(24,length);
+  ASSERT_EQ(SQL_SUCCESS, SQLMoreResults(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_FETCH_BOOKMARK_PTR, token.data(), 0));
+  EXPECT_EQ(SQL_ERROR, SQLFetchScroll(stmt, SQL_FETCH_BOOKMARK, 0)); EXPECT_EQ("HY111",state());
+  ASSERT_EQ(SQL_SUCCESS, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0));
+  SQLINTEGER value=-1; SQLLEN value_length=-1;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt,1,SQL_C_SLONG,&value,0,&value_length));
+  EXPECT_EQ(22,value); EXPECT_EQ(4,value_length);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetPos(stmt,1,SQL_POSITION,SQL_LOCK_NO_CHANGE));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetchScroll(stmt,SQL_FETCH_NEXT,0));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt,1,SQL_C_SLONG,&value,0,&value_length));
+  EXPECT_EQ(23,value); // The between-call MAX_ROWS setter cannot change captured0.
+  EXPECT_EQ(2u,seen->command_inputs.size());
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  EXPECT_EQ(SQL_NO_DATA, SQLMoreResults(stmt)); EXPECT_EQ(2u,seen->command_inputs.size());
+}
+TEST_F(PreparedSelectArrayTest, FailedTransactionRollbackDutyAndThrowingMapperRetireWithoutPendingReplay) {
+  seen->advertised_transactions=true; seen->isolation_mode=1;
+  seen->begin_result=BackendResult<void>{{SessionState::Transaction,SessionDisposition::ResetRequired}};
+  ASSERT_NO_FATAL_FAILURE(select_ready());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,(SQLPOINTER)SQL_AUTOCOMMIT_OFF,0));
+  QueryResult result; result.columns=seen->select_description->columns; result.rows={{"11"}};
+  result.execution_result_shape=ExecutionResultShape::ResultSet;
+  BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed),"owning transaction failure"};
+  error.operation=BackendOperation::ExecutePrepared; error.native_state="42501";
+  error.session_state=SessionState::FailedTransaction; error.disposition=SessionDisposition::ResetRequired;
+  seen->command_outcomes={BackendResult<QueryResult>{result,{SessionState::Transaction,SessionDisposition::ResetRequired}},error};
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));
+  ASSERT_EQ(SQL_ERROR,SQLMoreResults(stmt)); EXPECT_EQ("42501",state()); EXPECT_EQ(2u,processed);
+  EXPECT_EQ(SQL_ERROR,SQLDisconnect(dbc)); EXPECT_EQ("25000",state(SQL_HANDLE_DBC,dbc));
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_ROLLBACK));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,(SQLPOINTER)SQL_AUTOCOMMIT_ON,0));
+  seen->command_outcomes.clear(); ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));
+  const auto slot=seen->command_inputs.size();
+  seen->command_outcomes.resize(slot+1,BackendResult<QueryResult>{result,{SessionState::Idle,SessionDisposition::Reusable}});
+  error.session_state=SessionState::Idle; error.disposition=SessionDisposition::Reusable;
+  seen->command_outcomes[slot]=error; seen->throwing_end_error_policy=2;
+  EXPECT_EQ(SQL_ERROR,SQLMoreResults(stmt)); EXPECT_EQ("HY001",state());
+  const auto queried=seen->command_inputs.size();
+  seen->throwing_end_error_policy=0;
+  EXPECT_EQ(SQL_NO_DATA,SQLMoreResults(stmt)); EXPECT_EQ(queried,seen->command_inputs.size());
+  const auto connection=rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc);
+  ASSERT_TRUE(connection); EXPECT_FALSE(connection->is_connected());
+}
+}
+
+namespace {
+TEST_F(PreparedSelectArrayTest, ExpiredBorrowCannotBlockOrRetireFreshSessionAndSiblingSnapshot) {
+  seen->advertised_transactions = true; seen->isolation_mode = 1;
+  ASSERT_NO_FATAL_FAILURE(select_ready());
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &recovery_sibling));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(recovery_sibling, (SQLCHAR*)"owning sibling", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  const auto connection = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc);
+  ASSERT_TRUE(connection);
+  ASSERT_EQ(SQL_SUCCESS, connection->disconnect()); // Physical retirement retains registered statements.
+  ASSERT_NO_FATAL_FAILURE(connect_with("SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=0"));
+  const auto calls = seen->command_inputs.size(); const auto closed = seen->disconnects;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_TXN_ISOLATION, (SQLPOINTER)SQL_TXN_READ_COMMITTED, 0));
+  EXPECT_EQ(SQL_ERROR, SQLMoreResults(stmt)); EXPECT_EQ("HY010", state());
+  EXPECT_TRUE(connection->is_connected()); EXPECT_EQ(closed, seen->disconnects);
+  EXPECT_EQ(calls, seen->command_inputs.size());
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(recovery_sibling));
+  unsigned char bytes[4]{7,7,7,7}; SQLLEN length = -8;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(recovery_sibling, 1, SQL_C_BINARY, bytes, sizeof(bytes), &length));
+  EXPECT_EQ(3, length); EXPECT_EQ(0, bytes[0]); EXPECT_EQ(0xff, bytes[1]); EXPECT_EQ(0x5c, bytes[2]); EXPECT_EQ(7, bytes[3]);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, recovery_sibling)); recovery_sibling = SQL_NULL_HSTMT;
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT CAST(? AS INTEGER)", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_NO_FATAL_FAILURE(fetch_literal(11));
+  EXPECT_TRUE(connection->is_connected()); EXPECT_EQ(calls + 1, seen->command_inputs.size());
+}
+TEST_F(PreparedSelectArrayTest, ZeroFieldStaticResultOwnsBookmarkMetadataWithoutOrdinaryColumnFabrication) {
+  ASSERT_NO_FATAL_FAILURE(select_ready(false, true));
+  QueryResult zero; zero.execution_result_shape = ExecutionResultShape::ResultSet;
+  zero.statement_kind = StatementKind::SelectCursor; zero.rows = {{}};
+  seen->command_outcomes = {BackendResult<QueryResult>{zero, {SessionState::Idle, SessionDisposition::Reusable}}};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  SQLSMALLINT count = -9; ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(stmt, &count)); EXPECT_EQ(0, count);
+  SQLHDESC ird{}; ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_IMP_ROW_DESC, &ird, 0, nullptr));
+  SQLSMALLINT records = -9; ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ird, 0, SQL_DESC_COUNT, &records, 0, nullptr)); EXPECT_EQ(0, records);
+  SQLCHAR name[3]{'x','y','z'}; SQLWCHAR wide[3]{static_cast<SQLWCHAR>('x'),static_cast<SQLWCHAR>('y'),static_cast<SQLWCHAR>('z')};
+  SQLSMALLINT name_length = -8, type = -8, scale = -8, nullable = -8; SQLULEN size = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, 0, name, sizeof(name), &name_length, &type, &size, &scale, &nullable));
+  EXPECT_EQ(0, name_length); EXPECT_EQ(SQL_BINARY, type); EXPECT_EQ(24u, size); EXPECT_EQ(SQL_NO_NULLS, nullable);
+  EXPECT_EQ(0, name[0]); EXPECT_EQ('y', name[1]); EXPECT_EQ('z', name[2]);
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeColW(stmt, 0, wide, 3, &name_length, &type, &size, &scale, &nullable));
+  EXPECT_EQ(0, wide[0]); EXPECT_EQ(static_cast<SQLWCHAR>('y'), wide[1]); EXPECT_EQ(24u, size);
+  SQLLEN attribute = -8;
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 0, SQL_DESC_DISPLAY_SIZE, nullptr, 0, nullptr, &attribute)); EXPECT_EQ(48, attribute);
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttributeW(stmt, 0, SQL_DESC_UNSIGNED, nullptr, 0, nullptr, &attribute)); EXPECT_EQ(SQL_TRUE, attribute);
+  SQLSMALLINT descriptor_type = -8; SQLLEN octets = -8; SQLULEN descriptor_size = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ird, 0, SQL_DESC_CONCISE_TYPE, &descriptor_type, 0, nullptr)); EXPECT_EQ(SQL_BINARY, descriptor_type);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ird, 0, SQL_DESC_LENGTH, &descriptor_size, 0, nullptr)); EXPECT_EQ(24u, descriptor_size);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ird, 0, SQL_DESC_OCTET_LENGTH, &octets, 0, nullptr)); EXPECT_EQ(24, octets);
+  SQLSMALLINT subtype = -8, precision = -8; SQLLEN descriptor_length = -8;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescRec(ird, 0, name, sizeof(name), &name_length, &type, &subtype,
+      &descriptor_length, &precision, &scale, &nullable));
+  EXPECT_EQ(SQL_BINARY, type); EXPECT_EQ(24, descriptor_length); EXPECT_EQ(24, precision);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescRecW(ird, 0, wide, 3, &name_length, &type, &subtype,
+      &descriptor_length, &precision, &scale, &nullable));
+  EXPECT_EQ(SQL_BINARY, type); EXPECT_EQ(24, descriptor_length); EXPECT_EQ(SQL_NO_NULLS, nullable);
+  struct Guard { unsigned char before{0xa1}; unsigned char token[24]{}; unsigned char after{0xb2}; } output;
+  SQLLEN token_length = -8;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 0, SQL_C_VARBOOKMARK, output.token, sizeof(output.token), &token_length));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt)); EXPECT_EQ(24, token_length); EXPECT_EQ(0xa1, output.before); EXPECT_EQ(0xb2, output.after);
+  ASSERT_EQ(SQL_SUCCESS, SQLMoreResults(stmt)); // Another authoritative T0, now with no rows.
+  token_length = 73; const auto retained = output;
+  ASSERT_EQ(SQL_NO_DATA, SQLFetch(stmt)); EXPECT_EQ(73, token_length);
+  EXPECT_EQ(0, std::memcmp(retained.token, output.token, sizeof(output.token)));
+  EXPECT_EQ(0xa1, output.before); EXPECT_EQ(0xb2, output.after);
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 0, SQL_DESC_DISPLAY_SIZE, nullptr, 0, nullptr, &attribute)); EXPECT_EQ(48, attribute);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  EXPECT_EQ(SQL_ERROR, SQLGetDescField(ird, 0, SQL_DESC_CONCISE_TYPE, &descriptor_type, 0, nullptr)); EXPECT_EQ("07009", state(SQL_HANDLE_DESC, ird));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)1, 0));
+  seen->select_array_authority = false; seen->command_outcomes.clear();
+  seen->date_result.emplace(); seen->date_result->statement_kind = StatementKind::UpdateWhere;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"ordinary command", SQL_NTS));
+  EXPECT_EQ(SQL_ERROR, SQLDescribeCol(stmt, 0, name, sizeof(name), &name_length, &type, &size, &scale, &nullable));
+  EXPECT_EQ("07005", state());
+}
+TEST_F(PreparedSelectArrayTest, DecimalAndNumericInputHintsSurviveEveryResultEndAndImmediateRefill) {
+  ASSERT_NO_FATAL_FAILURE(select_ready());
+  seen->select_description->normalized_parameter_types = {{ScalarType::Numeric, 0, 0, true}};
+  char amounts[3][8]{"123.45", "-12.34", "0.01"};
+  SQLLEN lengths[3]{SQL_NTS, SQL_NTS, SQL_NULL_DATA};
+  SQLHDESC ipd{}; ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_IMP_PARAM_DESC, &ipd, 0, nullptr));
+  const auto readback = [&] {
+    SQLSMALLINT count = -8, type = -8, precision = -8, scale = -8; SQLULEN size = 99;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ipd, 0, SQL_DESC_COUNT, &count, 0, nullptr)); EXPECT_EQ(1, count);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ipd, 1, SQL_DESC_CONCISE_TYPE, &type, 0, nullptr)); EXPECT_EQ(SQL_NUMERIC, type);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ipd, 1, SQL_DESC_PRECISION, &precision, 0, nullptr)); EXPECT_EQ(5, precision);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ipd, 1, SQL_DESC_SCALE, &scale, 0, nullptr)); EXPECT_EQ(2, scale);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ipd, 1, SQL_DESC_LENGTH, &size, 0, nullptr)); EXPECT_EQ(5u, size);
+  };
+  for (const SQLSMALLINT sql_type : {SQLSMALLINT{SQL_DECIMAL}, SQLSMALLINT{SQL_NUMERIC}}) {
+    SCOPED_TRACE(sql_type);
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, sql_type, 5, 2, amounts, sizeof(amounts[0]), lengths));
+    SQLSMALLINT bound_count = -8, bound_type = -8, bound_precision = -8, bound_scale = -8;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ipd, 0, SQL_DESC_COUNT, &bound_count, 0, nullptr)); EXPECT_EQ(1, bound_count);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ipd, 1, SQL_DESC_CONCISE_TYPE, &bound_type, 0, nullptr)); EXPECT_EQ(sql_type, bound_type);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ipd, 1, SQL_DESC_PRECISION, &bound_precision, 0, nullptr)); EXPECT_EQ(5, bound_precision);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ipd, 1, SQL_DESC_SCALE, &bound_scale, 0, nullptr)); EXPECT_EQ(2, bound_scale);
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_EQ(1u, processed); EXPECT_EQ(SQL_PARAM_SUCCESS, status[0]);
+    ASSERT_NO_FATAL_FAILURE(readback());
+    ASSERT_EQ(SQL_SUCCESS, SQLMoreResults(stmt)); EXPECT_EQ(2u, processed); EXPECT_EQ(SQL_PARAM_SUCCESS, status[1]);
+    ASSERT_NO_FATAL_FAILURE(readback());
+    ASSERT_EQ(SQL_SUCCESS, SQLMoreResults(stmt)); EXPECT_EQ(3u, processed); EXPECT_EQ(SQL_PARAM_SUCCESS, status[2]);
+    ASSERT_NO_FATAL_FAILURE(readback());
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    char untouched[4]{'x','y','z',0}; SQLLEN null_length = 73;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_CHAR, untouched, sizeof(untouched), &null_length));
+    EXPECT_EQ(SQL_NULL_DATA, null_length); EXPECT_EQ('x', untouched[0]);
+    ASSERT_EQ(SQL_NO_DATA, SQLMoreResults(stmt));
+    ASSERT_NO_FATAL_FAILURE(readback()); // GetDescField does not refresh or describe parameters.
+    const auto before = seen->command_inputs.size();
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_EQ(before + 1, seen->command_inputs.size());
+    ASSERT_NO_FATAL_FAILURE(readback());
+    EXPECT_EQ(QueryParameterType::Numeric, seen->command_inputs.back()[0].type);
+    EXPECT_EQ(std::optional<std::string>{"123.45"}, seen->command_inputs.back()[0].value);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    std::memcpy(amounts[0], "1234.56", 8);
+    const auto refused = seen->command_inputs.size();
+    EXPECT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("22003", state()); EXPECT_EQ(refused, seen->command_inputs.size());
+    ASSERT_NO_FATAL_FAILURE(readback());
+    std::memcpy(amounts[0], "123.45", 7);
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    ASSERT_NO_FATAL_FAILURE(readback());
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+}
+}
+
+namespace {
+class ScalarRowWiseInputTest : public RowWiseCommandArrayTest {
+ protected:
+  unsigned char split_lengths[sizeof(pages)]{};
+  unsigned char pieces[4]{'A',0,'B',0};
+  SQLWCHAR wide_piece[2]{};
+  SQLPOINTER token{};
+  SQLHDESC apd{};
+  void native_types() {
+    seen->prepared_execution_parameter_types = std::vector<NativeTypeInfo>{
+        {ScalarType::Integer,0,0,true},{ScalarType::VarChar,32,0,true},{ScalarType::Numeric,5,2,true}};
+  }
+  void scalar() {
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)1, 0));
+  }
+  void close() { ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE)); }
+  void deferred_bindings() {
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,32,0,
+        pages[0][0].text,0,&pages[0][0].id_indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt,2,SQL_PARAM_INPUT,SQL_C_WCHAR,SQL_WVARCHAR,32,0,
+        pages[0][0].wide,0,&pages[0][0].text_indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt,3,SQL_PARAM_INPUT,SQL_C_BINARY,SQL_VARBINARY,4,0,
+        &pages[0][0].numeric,0,&pages[0][0].numeric_indicator));
+  }
+};
+TEST_F(ScalarRowWiseInputTest, SamePreparedStructCommandAndSelectBatchesReuseThreeOneThree) {
+  seen->select_array_authority=true; // Stable optional carrier policy is captured at connect.
+  ASSERT_NO_FATAL_FAILURE(ready_rows()); native_types();
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLMoreResults(stmt)); ASSERT_EQ(SQL_SUCCESS, SQLMoreResults(stmt));
+  ASSERT_EQ(SQL_NO_DATA, SQLMoreResults(stmt)); EXPECT_EQ(3u, seen->command_inputs.size());
+  const auto described = seen->descriptions;
+  ASSERT_NO_FATAL_FAILURE(scalar()); status[1]=72; status[2]=73;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_EQ(described, seen->descriptions);
+  EXPECT_EQ(4u, seen->command_inputs.size()); EXPECT_EQ(1u, processed); EXPECT_EQ(SQL_PARAM_SUCCESS,status[0]);
+  EXPECT_EQ(72,status[1]); EXPECT_EQ(73,status[2]);
+  EXPECT_EQ(std::optional<std::string>{"11"}, seen->command_inputs[3][0].value);
+  EXPECT_EQ(std::optional<std::string>{"caf\xc3\xa9"}, seen->command_inputs[3][1].value);
+  EXPECT_EQ(std::optional<std::string>{"123.45"}, seen->command_inputs[3][2].value);
+  ASSERT_NO_FATAL_FAILURE(close());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAMSET_SIZE,(SQLPOINTER)3,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); EXPECT_EQ(7u,seen->command_inputs.size()); EXPECT_EQ(3u,processed);
+  ASSERT_NO_FATAL_FAILURE(close());
+  seen->select_array_authority=true; seen->select_description.emplace();
+  seen->select_description->columns={{"id",NativeTypeInfo{ScalarType::Integer,10,0,true}},
+      {"text",NativeTypeInfo{ScalarType::VarChar,32,0,true}},{"amount",NativeTypeInfo{ScalarType::Numeric,5,2,true}}};
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"SELECT ?,?,?",SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(stmt)); ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(stmt));
+  ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(stmt)); EXPECT_EQ(10u,seen->command_inputs.size());
+  ASSERT_NO_FATAL_FAILURE(scalar()); const auto select_descriptions=seen->descriptions;
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); EXPECT_EQ(select_descriptions,seen->descriptions);
+  EXPECT_EQ(11u,seen->command_inputs.size()); EXPECT_EQ(1u,processed);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,3,SQL_C_CHAR,sibling_text,sizeof(sibling_text),&sibling_length));
+  EXPECT_STREQ("123.45",sibling_text); EXPECT_EQ(6,sibling_length);
+  ASSERT_NO_FATAL_FAILURE(close());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAMSET_SIZE,(SQLPOINTER)3,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(stmt)); ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(stmt));
+  ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(stmt)); EXPECT_EQ(14u,seen->command_inputs.size()); EXPECT_EQ(3u,processed);
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+TEST_F(ScalarRowWiseInputTest, FirstStructUnalignedOffsetSplitNullAndConsumedSpanRefusalRecover) {
+  ASSERT_NO_FATAL_FAILURE(ready_rows()); native_types();
+  ASSERT_NO_FATAL_FAILURE(scalar());
+  page_offset=1; std::memcpy(unaligned+1,&pages[1][0],sizeof(Row));
+  ASSERT_NO_FATAL_FAILURE(bind_page(unaligned));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_BIND_OFFSET_PTR,&page_offset,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_BIND_TYPE,
+      reinterpret_cast<SQLPOINTER>((std::numeric_limits<SQLULEN>::max)()),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_APP_PARAM_DESC,&apd,0,nullptr));
+  SQLULEN statement_stride=0,descriptor_stride=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_PARAM_BIND_TYPE,&statement_stride,0,nullptr));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(apd,0,SQL_DESC_BIND_TYPE,&descriptor_stride,0,nullptr));
+  EXPECT_EQ((std::numeric_limits<SQLULEN>::max)(),statement_stride); EXPECT_EQ(statement_stride,descriptor_stride);
+  SQLPOINTER original{};
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(apd,1,SQL_DESC_DATA_PTR,&original,0,nullptr));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); EXPECT_EQ(std::optional<std::string>{"21"},seen->command_inputs[0][0].value);
+  SQLPOINTER unchanged{}; ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(apd,1,SQL_DESC_DATA_PTR,&unchanged,0,nullptr)); EXPECT_EQ(original,unchanged);
+  ASSERT_NO_FATAL_FAILURE(close());
+  ASSERT_NO_FATAL_FAILURE(bind_page(reinterpret_cast<unsigned char*>(&pages[0][0])));
+  page_offset=sizeof(pages[0]);
+  const SQLLEN five=5;
+  std::memcpy(split_lengths+page_offset+offsetof(Row,text_indicator),&five,sizeof(five));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,2,SQL_DESC_OCTET_LENGTH_PTR,
+      split_lengths+offsetof(Row,text_indicator),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_BIND_TYPE,(SQLPOINTER)1,0)); // BufferLength12 need not fit stride1.
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); EXPECT_EQ(std::optional<std::string>{"caf\xc3\xa9"},seen->command_inputs[1][1].value);
+  ASSERT_NO_FATAL_FAILURE(close());
+  const auto maximum=(std::numeric_limits<std::uintptr_t>::max)();
+  pages[1][0].numeric_indicator=SQL_NULL_DATA;
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,3,SQL_DESC_DATA_PTR,reinterpret_cast<SQLPOINTER>(maximum-2),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,3,SQL_DESC_OCTET_LENGTH_PTR,reinterpret_cast<SQLPOINTER>(maximum-2),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); EXPECT_FALSE(seen->command_inputs[2][2].value);
+  ASSERT_NO_FATAL_FAILURE(close());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,1,SQL_DESC_DATA_PTR,reinterpret_cast<SQLPOINTER>(maximum-2),0));
+  status[0]=71; processed=91; const auto calls=seen->command_inputs.size();
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt)); EXPECT_EQ("HY024",state());
+  EXPECT_EQ(calls,seen->command_inputs.size()); EXPECT_EQ(71,status[0]); EXPECT_EQ(91u,processed);
+  page_offset=0; pages[1][0].numeric_indicator=0;
+  ASSERT_NO_FATAL_FAILURE(bind_page(reinterpret_cast<unsigned char*>(&pages[0][0])));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); EXPECT_EQ(calls+1,seen->command_inputs.size());
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+TEST_F(ScalarRowWiseInputTest, LiteralUnicodeNumericBinaryNullConversionAndIgnoredInvalidInputsRemainScalar) {
+  ASSERT_NO_FATAL_FAILURE(ready_rows()); native_types();
+  ASSERT_NO_FATAL_FAILURE(scalar());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_BIND_TYPE,(SQLPOINTER)1,0));
+  auto& row=pages[0][0]; row.numeric.sign=0;
+  if constexpr(sizeof(SQLWCHAR)==2) {
+    row.wide[0]=static_cast<SQLWCHAR>(0xd83d); row.wide[1]=static_cast<SQLWCHAR>(0xde00);
+  } else { row.wide[0]=static_cast<SQLWCHAR>(0x1f600); }
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,2,SQL_PARAM_INPUT,SQL_C_WCHAR,SQL_WVARCHAR,32,0,
+      row.wide,sizeof(row.wide),&row.text_indicator));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));
+  EXPECT_EQ(std::optional<std::string>{"\xf0\x9f\x98\x80"},seen->command_inputs[0][1].value);
+  EXPECT_EQ(std::optional<std::string>{"-123.45"},seen->command_inputs[0][2].value);
+  EXPECT_EQ(1u,processed); EXPECT_EQ(SQL_PARAM_SUCCESS,status[0]);
+  ASSERT_NO_FATAL_FAILURE(close());
+  row.wide[0]=static_cast<SQLWCHAR>(sizeof(SQLWCHAR)==2?0xd800:0x110000); row.wide[1]=0;
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt)); EXPECT_EQ("22018",state()); EXPECT_EQ(1u,seen->command_inputs.size());
+  row.text[0]=0; row.text[1]=static_cast<char>(0xff); row.text[2]='\\'; row.text_indicator=3;
+  (*seen->prepared_execution_parameter_types)[1]={ScalarType::Binary,32,0,true};
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,2,SQL_PARAM_INPUT,SQL_C_BINARY,SQL_VARBINARY,32,0,
+      row.text,sizeof(row.text),&row.text_indicator));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); EXPECT_EQ(std::optional<std::string>{std::string("\0\xff\\",3)},seen->command_inputs[1][1].value);
+  ASSERT_NO_FATAL_FAILURE(close()); row.numeric.val[2]=0x10;
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt)); EXPECT_EQ("22003",state()); EXPECT_EQ(2u,seen->command_inputs.size());
+  row.numeric.val[2]=0; row.text_indicator=SQL_NULL_DATA;
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); EXPECT_FALSE(seen->command_inputs[2][1].value);
+  ASSERT_NO_FATAL_FAILURE(close());
+  operations[0]=SQL_PARAM_IGNORE;
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_BIND_OFFSET_PTR,reinterpret_cast<SQLPOINTER>(1),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_APP_PARAM_DESC,&apd,0,nullptr));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,1,SQL_DESC_DATA_PTR,reinterpret_cast<SQLPOINTER>(1),0));
+  const auto calls=seen->command_inputs.size();
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); EXPECT_EQ(calls,seen->command_inputs.size());
+  EXPECT_EQ(0u,processed); EXPECT_EQ(SQL_PARAM_UNUSED,status[0]);
+  SQLLEN affected=99; ASSERT_EQ(SQL_SUCCESS,SQLRowCount(stmt,&affected)); EXPECT_EQ(0,affected);
+  ASSERT_NO_FATAL_FAILURE(close()); operations[0]=SQL_PARAM_PROCEED;
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_BIND_OFFSET_PTR,nullptr,0));
+  ASSERT_NO_FATAL_FAILURE(bind_page(reinterpret_cast<unsigned char*>(&pages[0][0])));
+  native_types(); ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); EXPECT_EQ(calls+1,seen->command_inputs.size());
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+TEST_F(ScalarRowWiseInputTest, PositiveScalarDeferredPiecesCancelResetRefillSiblingAndArrayRefusal) {
+  seen->select_array_authority=true; // Stable optional carrier policy is captured at connect.
+  ASSERT_NO_FATAL_FAILURE(ready_rows());
+  ASSERT_NO_FATAL_FAILURE(scalar());
+  seen->select_array_authority=true; seen->select_description.emplace();
+  seen->select_description->columns={{"text",NativeTypeInfo{ScalarType::VarChar,32,0,true}},
+      {"wide",NativeTypeInfo{ScalarType::VarChar,32,0,true}},{"binary",NativeTypeInfo{ScalarType::Binary,4,0,true}}};
+  seen->prepared_execution_parameter_types=std::vector<NativeTypeInfo>{
+      {ScalarType::VarChar,32,0,true},{ScalarType::VarChar,32,0,true},{ScalarType::Binary,4,0,true}};
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"SELECT ?,?,?",SQL_NTS));
+  pages[1][0].id_indicator=SQL_LEN_DATA_AT_EXEC(3);
+  pages[1][0].text_indicator=SQL_DATA_AT_EXEC;
+  pages[1][0].numeric_indicator=SQL_LEN_DATA_AT_EXEC(2);
+  page_offset=sizeof(pages[0]);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_BIND_OFFSET_PTR,&page_offset,0));
+  ASSERT_NO_FATAL_FAILURE(deferred_bindings());
+  QueryResult sibling_result; sibling_result.columns={{"text",NativeTypeInfo{ScalarType::VarChar,16,0,true}}};
+  sibling_result.rows={{"sibling"}}; sibling_result.statement_kind=StatementKind::SelectCursor;
+  seen->date_result=sibling_result;
+  ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,(SQLCHAR*)"owning sibling",SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling)); const auto first_queries=seen->queries;
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,(SQLPOINTER)3,0));
+  const auto started=rs::util::Clock::now();
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt)); const auto admitted=rs::util::Clock::now();
+  EXPECT_EQ(first_queries,seen->queries); EXPECT_EQ(0u,processed); EXPECT_EQ(SQL_PARAM_UNUSED,status[0]);
+  ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token)); EXPECT_EQ(pages[0][0].text,token);
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,pieces,1)); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,pieces+1,2));
+  ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token)); EXPECT_EQ(pages[0][0].wide,token);
+  if constexpr(sizeof(SQLWCHAR)==2) {
+    wide_piece[0]=static_cast<SQLWCHAR>(0xd83d); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,wide_piece,sizeof(SQLWCHAR)));
+    wide_piece[0]=static_cast<SQLWCHAR>(0xde00); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,wide_piece,sizeof(SQLWCHAR)));
+  } else {
+    wide_piece[0]=static_cast<SQLWCHAR>(0x1f600); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,wide_piece,sizeof(SQLWCHAR)));
+  }
+  ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token)); EXPECT_EQ(&pages[0][0].numeric,token);
+  pieces[0]=0; pieces[1]=0xff; ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,pieces,2)); std::memset(pieces,0x66,sizeof(pieces));
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token)); EXPECT_EQ(first_queries+1,seen->queries);
+  ASSERT_EQ(3u,seen->command_inputs.back().size());
+  EXPECT_EQ(std::optional<std::string>{std::string("A\0B",3)},seen->command_inputs.back()[0].value);
+  EXPECT_EQ(std::optional<std::string>{"\xf0\x9f\x98\x80"},seen->command_inputs.back()[1].value);
+  EXPECT_EQ(std::optional<std::string>{std::string("\0\xff",2)},seen->command_inputs.back()[2].value);
+  EXPECT_GE(seen->command_deadlines.back(),started+std::chrono::seconds{3});
+  EXPECT_LE(seen->command_deadlines.back(),admitted+std::chrono::seconds{3});
+  EXPECT_EQ(1u,processed); EXPECT_EQ(SQL_PARAM_SUCCESS,status[0]);
+  ASSERT_NO_FATAL_FAILURE(close());
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt)); ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token));
+  pieces[0]='x'; ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,pieces,1)); ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt));
+  EXPECT_EQ(first_queries+1,seen->queries); EXPECT_EQ(0u,processed); EXPECT_EQ(SQL_PARAM_UNUSED,status[0]);
+  EXPECT_EQ(SQL_ERROR,SQLParamData(stmt,&token)); EXPECT_EQ("HY010",state());
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_RESET_PARAMS)); ASSERT_NO_FATAL_FAILURE(deferred_bindings());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAMSET_SIZE,(SQLPOINTER)3,0));
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt)); EXPECT_EQ("HYC00",state()); EXPECT_EQ(first_queries+1,seen->queries);
+  ASSERT_NO_FATAL_FAILURE(scalar());
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt)); ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token));
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,nullptr,SQL_NULL_DATA));
+  ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token)); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,nullptr,0));
+  ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token)); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,nullptr,SQL_NULL_DATA));
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token)); EXPECT_EQ(first_queries+2,seen->queries);
+  EXPECT_FALSE(seen->command_inputs.back()[0].value); EXPECT_EQ(std::optional<std::string>{""},seen->command_inputs.back()[1].value);
+  EXPECT_FALSE(seen->command_inputs.back()[2].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(sibling,1,SQL_C_CHAR,sibling_text,sizeof(sibling_text),&sibling_length));
+  EXPECT_STREQ("sibling",sibling_text); EXPECT_EQ(7,sibling_length);
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+}
+
+namespace {
+class CommandArrayDeferredInputTest : public PreparedCommandArrayTest {
+ protected:
+  char token_bytes[8]{};
+  char chunks[8]{'A',0,'B'};
+  SQLPOINTER token{};
+  SQLLEN markers[3]{SQL_DATA_AT_EXEC,SQL_DATA_AT_EXEC,SQL_DATA_AT_EXEC};
+  SQLHSTMT sibling{}; SQLHDESC apd{};
+  struct Header { SQLUSMALLINT before{41},values[3]{71,72,73},after{43}; } output;
+  struct Progress { SQLULEN before{47},value{91},after{53}; } progress;
+  struct Row {
+    unsigned char before[3]{17,19,23}; SQLWCHAR wide[4]{};
+    SQL_NUMERIC_STRUCT numeric{}; unsigned char binary[4]{};
+    SQLLEN wide_length{SQL_DATA_AT_EXEC},number_length{},binary_length{SQL_DATA_AT_EXEC};
+    unsigned char after[3]{29,31,37};
+  } rows[3];
+  SQLULEN offset{};
+  void TearDown() override {
+    if (stmt) SQLCancel(stmt);
+    if (sibling) SQLFreeHandle(SQL_HANDLE_STMT,sibling);
+    BackendContractTest::TearDown();
+  }
+  void deferred(bool static_bookmarks = false) {
+    ASSERT_NO_FATAL_FAILURE(ready(3, static_bookmarks));
+    ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"UPDATE fixture SET v=?,text_value=?",SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,10,0,input,0,indicators));
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,2,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,32,0,token_bytes,0,markers));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_STATUS_PTR,output.values,0));
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAMS_PROCESSED_PTR,&progress.value,0));
+  }
+  void request(std::size_t ordinal) {
+    ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token)); EXPECT_EQ(token_bytes,token);
+    EXPECT_EQ(ordinal,progress.value);
+  }
+  void guards() {
+    EXPECT_EQ(41,output.before); EXPECT_EQ(43,output.after);
+    EXPECT_EQ(47u,progress.before); EXPECT_EQ(53u,progress.after);
+    for (const auto& row : rows) {
+      EXPECT_EQ(17,row.before[0]); EXPECT_EQ(23,row.before[2]);
+      EXPECT_EQ(29,row.after[0]); EXPECT_EQ(37,row.after[2]);
+    }
+  }
+};
+TEST_F(CommandArrayDeferredInputTest, OwningOriginalOrdinalsMixedCountsAllZeroAndAllIgnoredKeepOrderedResults) {
+  ASSERT_NO_FATAL_FAILURE(deferred()); operations[1]=SQL_PARAM_IGNORE;
+  markers[0]=SQL_LEN_DATA_AT_EXEC(99); markers[2]=SQL_LEN_DATA_AT_EXEC(1); // Optional hints, not exact lengths.
+  seen->during_deferred_description=[&] { EXPECT_EQ(SQL_ERROR,SQLCancel(stmt)); EXPECT_EQ(0,seen->queries); };
+  const auto descriptions=seen->descriptions;
+  seen->command_outcomes={command(0),command(2)};
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt)); EXPECT_EQ(descriptions+1,seen->descriptions);
+  EXPECT_EQ(1u,progress.value); EXPECT_EQ(0,seen->queries);
+  ASSERT_NO_FATAL_FAILURE(request(1));
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,chunks,3));
+  input[0]=99; input[2]=88; // Ordinary neighbors were owned before NEED_DATA.
+  ASSERT_NO_FATAL_FAILURE(request(3));
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,(SQLPOINTER)"third",5));
+  const auto described=seen->descriptions;
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token)); EXPECT_EQ(described,seen->descriptions);
+  ASSERT_EQ(2u,seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"11"},seen->command_inputs[0][0].value);
+  EXPECT_EQ(std::optional<std::string>{"33"},seen->command_inputs[1][0].value);
+  EXPECT_EQ(std::optional<std::string>{std::string("A\0B",3)},seen->command_inputs[0][1].value);
+  EXPECT_EQ(std::optional<std::string>{"third"},seen->command_inputs[1][1].value);
+  EXPECT_EQ(3u,progress.value); EXPECT_EQ(SQL_PARAM_SUCCESS,output.values[0]);
+  EXPECT_EQ(SQL_PARAM_UNUSED,output.values[1]); EXPECT_EQ(SQL_PARAM_SUCCESS,output.values[2]);
+  SQLLEN count=99; ASSERT_EQ(SQL_SUCCESS,SQLRowCount(stmt,&count)); EXPECT_EQ(0,count);
+  ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(stmt)); ASSERT_EQ(SQL_SUCCESS,SQLRowCount(stmt,&count)); EXPECT_EQ(2,count);
+  ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(stmt));
+  seen->command_inputs.clear(); seen->command_outcomes={command(0),command(0)};
+  seen->during_deferred_description={};
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt));
+  ASSERT_NO_FATAL_FAILURE(request(1)); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,nullptr,0));
+  ASSERT_NO_FATAL_FAILURE(request(3)); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,nullptr,SQL_NULL_DATA));
+  ASSERT_EQ(SQL_NO_DATA,SQLParamData(stmt,&token));
+  ASSERT_EQ(SQL_SUCCESS,SQLRowCount(stmt,&count)); EXPECT_EQ(0,count);
+  ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(stmt)); ASSERT_EQ(SQL_SUCCESS,SQLRowCount(stmt,&count)); EXPECT_EQ(0,count);
+  ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(stmt));
+  for (auto& operation : operations) { operation=SQL_PARAM_IGNORE; }
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_BIND_OFFSET_PTR,reinterpret_cast<SQLPOINTER>(1),0));
+  const auto calls=seen->queries,describes=seen->descriptions;
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)); EXPECT_EQ(calls,seen->queries); EXPECT_EQ(describes,seen->descriptions);
+  EXPECT_EQ(3u,progress.value);
+  for (auto value : output.values) { EXPECT_EQ(SQL_PARAM_UNUSED,value); }
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+TEST_F(CommandArrayDeferredInputTest, RowWiseWidePairsNumericBinaryNullSpansAndOriginalDescriptorBasesRecover) {
+  ASSERT_NO_FATAL_FAILURE(deferred()); operations[1]=SQL_PARAM_IGNORE;
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"UPDATE fixture SET a=?,b=?,c=?",SQL_NTS));
+  for (auto& row : rows) {
+    row.numeric.precision=5; row.numeric.scale=2; row.numeric.sign=1;
+    row.numeric.val[0]=0x39; row.numeric.val[1]=0x30;
+  }
+  rows[2].numeric.sign=0; rows[2].wide_length=SQL_NULL_DATA;
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_BIND_TYPE,reinterpret_cast<SQLPOINTER>(sizeof(Row)),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_WCHAR,SQL_WVARCHAR,32,0,rows[0].wide,sizeof(rows[0].wide),&rows[0].wide_length));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,2,SQL_PARAM_INPUT,SQL_C_NUMERIC,SQL_NUMERIC,5,2,&rows[0].numeric,0,&rows[0].number_length));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,3,SQL_PARAM_INPUT,SQL_C_BINARY,SQL_VARBINARY,4,0,rows[0].binary,sizeof(rows[0].binary),&rows[0].binary_length));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_APP_PARAM_DESC,&apd,0,nullptr));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,2,SQL_DESC_PRECISION,(SQLPOINTER)5,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,2,SQL_DESC_SCALE,(SQLPOINTER)2,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,2,SQL_DESC_DATA_PTR,&rows[0].numeric,0));
+  SQLPOINTER original{}; ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(apd,1,SQL_DESC_DATA_PTR,&original,0,nullptr));
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt));
+  ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token)); EXPECT_EQ(rows[0].wide,token); EXPECT_EQ(1u,progress.value);
+  SQLWCHAR units[2]{};
+  if constexpr(sizeof(SQLWCHAR)==2) {
+    units[0]=static_cast<SQLWCHAR>(0xd83d); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,units,sizeof(SQLWCHAR)));
+    units[0]=static_cast<SQLWCHAR>(0xde00); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,units,sizeof(SQLWCHAR)));
+  } else { units[0]=static_cast<SQLWCHAR>(0x1f600); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,units,sizeof(SQLWCHAR))); }
+  ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token)); EXPECT_EQ(rows[0].binary,token);
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,chunks,3));
+  ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token)); EXPECT_EQ(rows[0].binary,token); EXPECT_EQ(3u,progress.value);
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,nullptr,SQL_NULL_DATA));
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token));
+  ASSERT_EQ(2u,seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"\xf0\x9f\x98\x80"},seen->command_inputs[0][0].value);
+  EXPECT_EQ(std::optional<std::string>{"123.45"},seen->command_inputs[0][1].value);
+  EXPECT_EQ(std::optional<std::string>{std::string("A\0B",3)},seen->command_inputs[0][2].value);
+  EXPECT_FALSE(seen->command_inputs[1][0].value); EXPECT_EQ(std::optional<std::string>{"-123.45"},seen->command_inputs[1][1].value);
+  EXPECT_FALSE(seen->command_inputs[1][2].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  SQLPOINTER after{}; ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(apd,1,SQL_DESC_DATA_PTR,&after,0,nullptr)); EXPECT_EQ(original,after);
+  const auto maximum=(std::numeric_limits<std::uintptr_t>::max)();
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,2,SQL_DESC_DATA_PTR,reinterpret_cast<SQLPOINTER>(maximum-2),0));
+  output.values[0]=71; progress.value=91;
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt)); EXPECT_EQ("HY024",state());
+  EXPECT_EQ(71,output.values[0]); EXPECT_EQ(91u,progress.value); EXPECT_EQ(2u,seen->command_inputs.size());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,2,SQL_DESC_DATA_PTR,&rows[0].numeric,0));
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt)); ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt));
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt)); ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token));
+  EXPECT_EQ(SQL_ERROR,SQLPutData(stmt,units,1)); EXPECT_EQ("HY090",state());
+  EXPECT_EQ(2u,seen->command_inputs.size());
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt)); ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt));
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+TEST_F(CommandArrayDeferredInputTest, NeedDataAdmissionLocalCancelThinkTimeAndDescriptionRefusalPreserveRecovery) {
+  ASSERT_NO_FATAL_FAILURE(deferred());
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt)); ASSERT_NO_FATAL_FAILURE(request(1));
+  const auto maximum=(std::numeric_limits<std::uintptr_t>::max)();
+  EXPECT_EQ(SQL_ERROR,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(maximum-1),4)); EXPECT_EQ("HY010",state());
+  EXPECT_EQ(SQL_ERROR,SQLPrepareW(stmt,reinterpret_cast<SQLWCHAR*>(maximum-1),4)); EXPECT_EQ("HY010",state());
+  EXPECT_EQ(SQL_ERROR,SQLFreeStmt(stmt,SQL_CLOSE)); EXPECT_EQ("HY010",state());
+  SQLULEN unchanged=73;
+  EXPECT_EQ(SQL_ERROR,SQLGetStmtAttr(stmt,SQL_ATTR_PARAMSET_SIZE,&unchanged,0,nullptr));
+  EXPECT_EQ("HY010",state()); EXPECT_EQ(73u,unchanged);
+  EXPECT_EQ(SQL_ERROR,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,(SQLPOINTER)SQL_AUTOCOMMIT_OFF,0));
+  EXPECT_EQ("HY010",state(SQL_HANDLE_DBC,dbc)); EXPECT_TRUE(seen->transaction_calls.empty());
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,chunks,3)); ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt));
+  EXPECT_EQ(0u,progress.value); EXPECT_EQ(0,seen->queries);
+  for (auto value : output.values) { EXPECT_EQ(SQL_PARAM_UNUSED,value); }
+  EXPECT_EQ(SQL_ERROR,SQLParamData(stmt,&token)); EXPECT_EQ("HY010",state());
+  seen->command_array_shape=2;
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt)); EXPECT_EQ("HYC00",state()); EXPECT_EQ(0,seen->queries);
+  seen->command_array_shape=1;
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,(SQLPOINTER)1,0));
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt)); const auto frozen=seen->description_deadline;
+  std::this_thread::sleep_until(frozen);
+  EXPECT_EQ(SQL_ERROR,SQLParamData(stmt,&token)); EXPECT_EQ("HYT00",state()); EXPECT_EQ(0,seen->queries);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,nullptr,0));
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt)); ASSERT_NO_FATAL_FAILURE(request(1));
+  EXPECT_EQ(SQL_ERROR,SQLPutData(stmt,reinterpret_cast<SQLPOINTER>(1),static_cast<SQLLEN>(64*1024*1024+1)));
+  EXPECT_EQ("HY000",state()); EXPECT_EQ(0,seen->queries); // Bound refusal before any byte read.
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt));
+  for (std::size_t ordinal=1;ordinal<=3;++ordinal) {
+    ASSERT_NO_FATAL_FAILURE(request(ordinal)); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,(SQLPOINTER)"x",1));
+  }
+  seen->during_command=[&] { EXPECT_EQ(SQL_ERROR,SQLCancel(stmt)); };
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token)); EXPECT_EQ(3u,progress.value);
+  for (auto deadline : seen->command_deadlines) { EXPECT_EQ(seen->description_deadline,deadline); }
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+TEST_F(CommandArrayDeferredInputTest, RecoverableErrorOrdinalRollbackTerminalAndSiblingOwningCountsRemainExact) {
+  seen->advertised_transactions=true; seen->isolation_mode=1;
+  ASSERT_NO_FATAL_FAILURE(deferred());
+  QueryResult sibling_result;
+  sibling_result.columns={{"literal",NativeTypeInfo{ScalarType::VarChar,16,0,true}}};
+  sibling_result.rows={{"sibling"}}; sibling_result.statement_kind=StatementKind::SelectCursor;
+  seen->date_result=sibling_result;
+  ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,(SQLCHAR*)"rows",SQL_NTS)); ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,(SQLPOINTER)SQL_AUTOCOMMIT_OFF,0));
+  seen->begin_result=BackendResult<void>{{SessionState::Transaction,SessionDisposition::ResetRequired}};
+  BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed),"owning deferred set-two"};
+  error.operation=BackendOperation::ExecutePrepared; error.native_state="22003";
+  error.session_state=SessionState::FailedTransaction; error.disposition=SessionDisposition::ResetRequired;
+  seen->command_outcomes={command(7,{SessionState::Transaction,SessionDisposition::ResetRequired}),error};
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt)); EXPECT_TRUE(seen->transaction_calls.empty());
+  for (std::size_t ordinal=1;ordinal<=3;++ordinal) {
+    ASSERT_NO_FATAL_FAILURE(request(ordinal)); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,(SQLPOINTER)"x",1));
+  }
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLParamData(stmt,&token));
+  EXPECT_EQ(2u,progress.value); EXPECT_EQ(SQL_PARAM_SUCCESS,output.values[0]);
+  EXPECT_EQ(SQL_PARAM_ERROR,output.values[1]); EXPECT_EQ(SQL_PARAM_UNUSED,output.values[2]);
+  EXPECT_EQ(SQL_ERROR,SQLDisconnect(dbc)); EXPECT_EQ("25000",state(SQL_HANDLE_DBC,dbc));
+  ASSERT_EQ(SQL_SUCCESS,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_ROLLBACK));
+  seen->throwing_end_error_policy=1;
+  ASSERT_EQ(SQL_ERROR,SQLMoreResults(stmt)); EXPECT_EQ("HY000",state()); seen->throwing_end_error_policy=0;
+  SQLLEN ordinal=0; SQLINTEGER column=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,stmt,1,SQL_DIAG_ROW_NUMBER,&ordinal,0,nullptr)); EXPECT_EQ(2,ordinal);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,stmt,1,SQL_DIAG_COLUMN_NUMBER,&column,0,nullptr)); EXPECT_EQ(SQL_NO_COLUMN_NUMBER,column);
+  SQLCHAR message[128]{}, diagnostic_state[6]{}; ASSERT_EQ(SQL_SUCCESS,SQLGetDiagRec(SQL_HANDLE_STMT,stmt,1,diagnostic_state,nullptr,message,sizeof(message),nullptr));
+  EXPECT_STREQ("owning deferred set-two",reinterpret_cast<char*>(message));
+  ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,(SQLPOINTER)SQL_AUTOCOMMIT_ON,0));
+  seen->command_outcomes.clear(); seen->command_inputs.clear();
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt));
+  for (std::size_t slot=1;slot<=3;++slot) {
+    ASSERT_NO_FATAL_FAILURE(request(slot)); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,(SQLPOINTER)"r",1));
+  }
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token));
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  char sibling_text[8]{}; SQLLEN length=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(sibling,1,SQL_C_CHAR,sibling_text,sizeof(sibling_text),&length)); EXPECT_STREQ("sibling",sibling_text);
+  seen->command_inputs.clear(); seen->command_outcomes={command(1),command(2,{SessionState::Unknown,SessionDisposition::Retire})};
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt));
+  for (std::size_t slot=1;slot<=3;++slot) {
+    ASSERT_NO_FATAL_FAILURE(request(slot)); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,(SQLPOINTER)"t",1));
+  }
+  EXPECT_EQ(SQL_ERROR,SQLParamData(stmt,&token)); EXPECT_EQ(SQL_NO_DATA,SQLMoreResults(stmt));
+  EXPECT_EQ(2u,seen->command_inputs.size()); EXPECT_EQ(1,seen->disconnects);
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+}
+
+namespace {
+class SelectArrayDeferredInputTest : public CommandArrayDeferredInputTest {
+ protected:
+  SQL_NUMERIC_STRUCT numbers[3]{};
+  struct Page { unsigned char prefix[8]{}; Row values[3]; } page;
+  unsigned char split[8+3*sizeof(Row)+sizeof(SQLLEN)+1]{};
+  SQLHDESC ipd{},ird{};
+  struct Bookmark { unsigned char before[3]{7,11,13},bytes[24]{},after[3]{17,19,23}; } bookmark;
+  void selected(bool fields=true,bool bookmarks=false) {
+    seen->select_array_authority=true;
+    seen->select_description.emplace();
+    if (fields) seen->select_description->columns={
+        {"id",NativeTypeInfo{ScalarType::Integer,10,0,true}},
+        {"text",NativeTypeInfo{ScalarType::VarChar,32,0,true}}};
+    seen->select_description->normalized_parameter_types={
+        {ScalarType::Integer,10,0,true},{ScalarType::VarChar,32,0,true}};
+    seen->prepared_execution_parameter_types=seen->select_description->normalized_parameter_types;
+    ASSERT_NO_FATAL_FAILURE(deferred(bookmarks));
+    operations[1]=SQL_PARAM_IGNORE;
+    ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"SELECT ?,?",SQL_NTS));
+  }
+  void collect_two() {
+    ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt)); EXPECT_EQ(1u,progress.value);
+    ASSERT_NO_FATAL_FAILURE(request(1)); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,(SQLPOINTER)"first",5));
+    ASSERT_NO_FATAL_FAILURE(request(3)); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,(SQLPOINTER)"last",4));
+  }
+  void numeric_ipd() {
+    ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_PARAM_DESC,&ipd,0,nullptr));
+    SQLSMALLINT count=99,precision=99,scale=99;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,0,SQL_DESC_COUNT,&count,0,nullptr)); EXPECT_EQ(2,count);
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,1,SQL_DESC_PRECISION,&precision,0,nullptr)); EXPECT_EQ(5,precision);
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,1,SQL_DESC_SCALE,&scale,0,nullptr)); EXPECT_EQ(2,scale);
+  }
+  static BackendResult<QueryResult> select_result(const std::vector<ResultColumnMetadata>& columns,
+      ResultRows rows,SessionSnapshot snapshot={SessionState::Idle,SessionDisposition::Reusable}) {
+    QueryResult value; value.columns=columns; value.rows=std::move(rows);
+    value.statement_kind=StatementKind::SelectCursor; value.execution_result_shape=ExecutionResultShape::ResultSet;
+    return BackendResult<QueryResult>{std::move(value),snapshot};
+  }
+};
+TEST_F(SelectArrayDeferredInputTest, OwningMaskedResultsChunksBookmarksAndNumericHintsSurviveImmediateRefill) {
+  ASSERT_NO_FATAL_FAILURE(selected(true,true));
+  seen->select_description->columns[0]={"amount",NativeTypeInfo{ScalarType::Numeric,5,2,true}};
+  seen->select_description->normalized_parameter_types[0]={ScalarType::Numeric,5,2,true};
+  seen->prepared_execution_parameter_types=seen->select_description->normalized_parameter_types;
+  for (auto& number : numbers) {
+    number.precision=5; number.scale=2; number.sign=1; number.val[0]=0x39; number.val[1]=0x30;
+  }
+  numbers[2].sign=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_NUMERIC,SQL_DECIMAL,5,2,numbers,0,indicators));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_APP_PARAM_DESC,&apd,0,nullptr));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,1,SQL_DESC_PRECISION,(SQLPOINTER)5,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,1,SQL_DESC_SCALE,(SQLPOINTER)2,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,1,SQL_DESC_DATA_PTR,numbers,0));
+  seen->command_outcomes={select_result(seen->select_description->columns,{{"123.45","first"}}),
+      select_result(seen->select_description->columns,{{"-123.45","last"},{"99.99","hidden"}})};
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_MAX_ROWS,(SQLPOINTER)1,0));
+  const auto described=seen->descriptions;
+  ASSERT_NO_FATAL_FAILURE(collect_two()); EXPECT_EQ(0,seen->queries);
+  numbers[2].val[0]=0; numbers[2].val[1]=0; // Owning ordinary input already captured.
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token)); EXPECT_EQ(1u,progress.value);
+  EXPECT_EQ(described+1,seen->descriptions); EXPECT_EQ(1u,seen->command_inputs.size());
+  EXPECT_EQ(SQL_PARAM_SUCCESS,output.values[0]); EXPECT_EQ(SQL_PARAM_UNUSED,output.values[2]);
+  ASSERT_NO_FATAL_FAILURE(numeric_ipd());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  char amount[12]{}; SQLLEN length=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,amount,sizeof(amount),&length)); EXPECT_STREQ("123.45",amount);
+  char chunk[3]{'!','!','!'};
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLGetData(stmt,2,SQL_C_CHAR,chunk,sizeof(chunk),&length));
+  EXPECT_EQ("01004",state()); EXPECT_EQ(5,length); EXPECT_STREQ("fi",chunk);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,0,SQL_C_VARBOOKMARK,bookmark.bytes,24,&length)); EXPECT_EQ(24,length);
+  ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt)); EXPECT_EQ(1u,seen->command_inputs.size()); EXPECT_EQ(1u,progress.value);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_MAX_ROWS,nullptr,0)); // Next execution only; captured1 remains.
+  ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(stmt)); EXPECT_EQ(2u,seen->command_inputs.size()); EXPECT_EQ(3u,progress.value);
+  ASSERT_NO_FATAL_FAILURE(numeric_ipd());
+  ASSERT_EQ(2u,seen->command_inputs.size()); EXPECT_EQ(std::optional<std::string>{"-123.45"},seen->command_inputs[1][0].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_FETCH_BOOKMARK_PTR,bookmark.bytes,0));
+  EXPECT_EQ(SQL_ERROR,SQLFetchScroll(stmt,SQL_FETCH_BOOKMARK,0)); EXPECT_EQ("HY111",state());
+  ASSERT_EQ(SQL_SUCCESS,SQLFetchScroll(stmt,SQL_FETCH_FIRST,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,amount,sizeof(amount),&length)); EXPECT_STREQ("-123.45",amount);
+  char last[8]{}; ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_CHAR,last,sizeof(last),&length)); EXPECT_STREQ("last",last); EXPECT_EQ(4,length);
+  EXPECT_EQ(SQL_NO_DATA,SQLFetchScroll(stmt,SQL_FETCH_NEXT,0)); // Second native row was validated, but captured MAX_ROWS keeps it inaccessible.
+  ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(stmt)); ASSERT_NO_FATAL_FAILURE(numeric_ipd());
+  EXPECT_EQ(SQL_PARAM_UNUSED,output.values[1]); EXPECT_EQ(SQL_PARAM_SUCCESS,output.values[2]);
+  EXPECT_EQ(7,bookmark.before[0]); EXPECT_EQ(23,bookmark.after[2]);
+  const auto calls=seen->queries,descriptions=seen->descriptions;
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt)); // No DescribeParam/refill side effect hides lost IPD hints.
+  ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt)); EXPECT_EQ(calls,seen->queries); EXPECT_EQ(descriptions+1,seen->descriptions);
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+TEST_F(SelectArrayDeferredInputTest, StructOffsetSplitNullWideBinarySpansAndT0PseudoMetadataAreExact) {
+  ASSERT_NO_FATAL_FAILURE(selected(true,true));
+  static_assert(offsetof(Page,values)==8);
+  for (auto& byte : page.prefix) { byte=0x4f; }
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"SELECT ?,?,?",SQL_NTS));
+  seen->select_description->columns={
+      {"wide",NativeTypeInfo{ScalarType::VarChar,32,0,true}},
+      {"amount",NativeTypeInfo{ScalarType::Numeric,5,2,true}},
+      {"binary",NativeTypeInfo{ScalarType::Binary,4,0,true}}};
+  seen->select_description->normalized_parameter_types={
+      {ScalarType::VarChar,32,0,true},{ScalarType::Numeric,5,2,true},{ScalarType::Binary,4,0,true}};
+  seen->prepared_execution_parameter_types=seen->select_description->normalized_parameter_types;
+  for (auto& row : page.values) {
+    row.numeric.precision=5; row.numeric.scale=2; row.numeric.sign=1;
+    row.numeric.val[0]=0x39; row.numeric.val[1]=0x30;
+  }
+  page.values[2].numeric.sign=0; page.values[2].wide_length=SQL_NULL_DATA;
+  page.values[2].wide[0]=static_cast<SQLWCHAR>(sizeof(SQLWCHAR)==2 ? 0xd800 : 0x110000); // Never consumed under NULL.
+  auto* base=reinterpret_cast<unsigned char*>(&page);
+  offset=8;
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_BIND_TYPE,(SQLPOINTER)sizeof(Row),0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_BIND_OFFSET_PTR,&offset,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_WCHAR,SQL_WVARCHAR,32,0,
+      base+offsetof(Row,wide),sizeof(page.values[0].wide),reinterpret_cast<SQLLEN*>(base+offsetof(Row,wide_length))));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,2,SQL_PARAM_INPUT,SQL_C_NUMERIC,SQL_NUMERIC,5,2,
+      base+offsetof(Row,numeric),0,reinterpret_cast<SQLLEN*>(base+offsetof(Row,number_length))));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,3,SQL_PARAM_INPUT,SQL_C_BINARY,SQL_VARBINARY,4,0,
+      base+offsetof(Row,binary),sizeof(page.values[0].binary),reinterpret_cast<SQLLEN*>(base+offsetof(Row,binary_length))));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_APP_PARAM_DESC,&apd,0,nullptr));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,2,SQL_DESC_PRECISION,(SQLPOINTER)5,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,2,SQL_DESC_SCALE,(SQLPOINTER)2,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,2,SQL_DESC_DATA_PTR,base+offsetof(Row,numeric),0));
+  for (std::size_t slot=0;slot<3;++slot) {
+    const auto n=slot==2 ? (std::numeric_limits<SQLLEN>::max)() : static_cast<SQLLEN>(SQL_DATA_AT_EXEC);
+    std::memcpy(split+1+8+slot*sizeof(Row)+offsetof(Row,wide_length),&n,sizeof(n));
+  }
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,1,SQL_DESC_OCTET_LENGTH_PTR,split+1+offsetof(Row,wide_length),0));
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt));
+  ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token)); EXPECT_EQ(base+offsetof(Row,wide),token);
+  SQLWCHAR units[2]{};
+  if constexpr(sizeof(SQLWCHAR)==2) {
+    units[0]=static_cast<SQLWCHAR>(0xd83d); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,units,sizeof(SQLWCHAR)));
+    units[0]=static_cast<SQLWCHAR>(0xde00); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,units,sizeof(SQLWCHAR)));
+  } else { units[0]=static_cast<SQLWCHAR>(0x1f600); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,units,sizeof(SQLWCHAR))); }
+  ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token)); EXPECT_EQ(base+offsetof(Row,binary),token);
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,chunks,3));
+  ASSERT_EQ(SQL_NEED_DATA,SQLParamData(stmt,&token)); EXPECT_EQ(3u,progress.value);
+  ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,nullptr,SQL_NULL_DATA));
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token)); ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  SQLWCHAR wide[3]{}; SQLLEN length=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_WCHAR,wide,sizeof(wide),&length)); EXPECT_EQ(4,length);
+  if constexpr(sizeof(SQLWCHAR)==2) { EXPECT_EQ(static_cast<SQLWCHAR>(0xd83d),wide[0]); EXPECT_EQ(static_cast<SQLWCHAR>(0xde00),wide[1]); }
+  else { EXPECT_EQ(static_cast<SQLWCHAR>(0x1f600),wide[0]); }
+  unsigned char binary[4]{7,7,7,7};
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,3,SQL_C_BINARY,binary,sizeof(binary),&length));
+  EXPECT_EQ(3,length); EXPECT_EQ('A',binary[0]); EXPECT_EQ(0,binary[1]); EXPECT_EQ('B',binary[2]); EXPECT_EQ(7,binary[3]);
+  ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(stmt)); ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  char unchanged[4]{'x','y','z',0};
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,unchanged,sizeof(unchanged),&length)); EXPECT_EQ(SQL_NULL_DATA,length); EXPECT_EQ('x',unchanged[0]);
+  char negative[12]{}; ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_CHAR,negative,sizeof(negative),&length)); EXPECT_STREQ("-123.45",negative);
+  ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(stmt));
+  const auto maximum=(std::numeric_limits<std::uintptr_t>::max)();
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,2,SQL_DESC_DATA_PTR,reinterpret_cast<SQLPOINTER>(maximum-2),0));
+  progress.value=91; output.values[0]=71;
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt)); EXPECT_EQ("HY024",state()); EXPECT_EQ(91u,progress.value); EXPECT_EQ(71,output.values[0]);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetDescField(apd,2,SQL_DESC_DATA_PTR,base+offsetof(Row,numeric),0));
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt)); ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_RESET_PARAMS));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_BIND_TYPE,(SQLPOINTER)SQL_PARAM_BIND_BY_COLUMN,0));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_PARAM_BIND_OFFSET_PTR,nullptr,0));
+  seen->select_description->columns.clear(); seen->select_description->normalized_parameter_types={{ScalarType::VarChar,32,0,true}};
+  seen->prepared_execution_parameter_types=seen->select_description->normalized_parameter_types;
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,(SQLCHAR*)"SELECT ?",SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,32,0,token_bytes,0,markers));
+  ASSERT_NO_FATAL_FAILURE(collect_two()); ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token));
+  SQLSMALLINT columns=-1; ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt,&columns)); EXPECT_EQ(0,columns);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_ROW_DESC,&ird,0,nullptr));
+  SQLSMALLINT count=-1,type=-1; SQLULEN size=99;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,0,SQL_DESC_COUNT,&count,0,nullptr)); EXPECT_EQ(0,count);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDescFieldW(ird,0,SQL_DESC_CONCISE_TYPE,&type,0,nullptr)); EXPECT_EQ(SQL_BINARY,type);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,0,SQL_DESC_LENGTH,&size,0,nullptr)); EXPECT_EQ(24u,size);
+  SQLLEN display=-1,unsigned_value=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(stmt,0,SQL_DESC_DISPLAY_SIZE,nullptr,0,nullptr,&display)); EXPECT_EQ(48,display);
+  ASSERT_EQ(SQL_SUCCESS,SQLColAttributeW(stmt,0,SQL_DESC_UNSIGNED,nullptr,0,nullptr,&unsigned_value)); EXPECT_EQ(SQL_TRUE,unsigned_value);
+  SQLCHAR name_a[4]{}; SQLWCHAR name_w[4]{}; SQLSMALLINT name_length=-1,scale=-1,nullable=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(stmt,0,name_a,4,&name_length,&type,&size,&scale,&nullable)); EXPECT_EQ(SQL_BINARY,type); EXPECT_EQ(24u,size);
+  ASSERT_EQ(SQL_SUCCESS,SQLDescribeColW(stmt,0,name_w,4,&name_length,&type,&size,&scale,&nullable)); EXPECT_EQ(SQL_BINARY,type); EXPECT_EQ(24u,size);
+  EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt)); EXPECT_EQ(7,bookmark.before[0]); EXPECT_EQ(23,bookmark.after[2]);
+  ASSERT_EQ(SQL_SUCCESS,SQLMoreResults(stmt)); ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(stmt));
+  for (auto byte : page.prefix) { EXPECT_EQ(0x4f,byte); }
+  for (const auto& row : page.values) {
+    EXPECT_EQ(17,row.before[0]); EXPECT_EQ(23,row.before[2]);
+    EXPECT_EQ(29,row.after[0]); EXPECT_EQ(37,row.after[2]);
+  }
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+TEST_F(SelectArrayDeferredInputTest, RealThreadMetadataAndFinalHandoffBarriersIdleCancelCloseAndThinkTimeAreBounded) {
+  seen->advertised_transactions=true; seen->isolation_mode=1;
+  ASSERT_NO_FATAL_FAILURE(selected());
+  std::promise<void> metadata_entered,metadata_release;
+  auto entered=metadata_entered.get_future(); auto gate=metadata_release.get_future().share();
+  seen->during_deferred_description=[&] {
+    metadata_entered.set_value(); EXPECT_EQ(std::future_status::ready,gate.wait_for(std::chrono::seconds{5}));
+  };
+  SQLRETURN started=SQL_ERROR;
+  std::thread metadata_owner([&] { started=SQLExecute(stmt); });
+  const auto pending=entered.wait_for(std::chrono::seconds{5});
+  EXPECT_EQ(std::future_status::ready,pending);
+  if (pending==std::future_status::ready) { EXPECT_EQ(SQL_ERROR,SQLCancel(stmt)); }
+  metadata_release.set_value(); metadata_owner.join();
+  ASSERT_EQ(SQL_NEED_DATA,started); seen->during_deferred_description={}; EXPECT_EQ(0,seen->queries);
+  ASSERT_NO_FATAL_FAILURE(request(1)); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,(SQLPOINTER)"first",5));
+  ASSERT_NO_FATAL_FAILURE(request(3)); ASSERT_EQ(SQL_SUCCESS,SQLPutData(stmt,(SQLPOINTER)"last",4));
+  std::promise<void> native_entered,native_release;
+  auto native_seen=native_entered.get_future(); auto native_gate=native_release.get_future().share();
+  seen->during_command=[&] {
+    native_entered.set_value(); EXPECT_EQ(std::future_status::ready,native_gate.wait_for(std::chrono::seconds{5}));
+  };
+  SQLRETURN completed=SQL_ERROR;
+  std::thread native_owner([&] { completed=SQLParamData(stmt,&token); });
+  const auto active=native_seen.wait_for(std::chrono::seconds{5}); EXPECT_EQ(std::future_status::ready,active);
+  if (active==std::future_status::ready) { EXPECT_EQ(SQL_ERROR,SQLCancel(stmt)); }
+  native_release.set_value(); native_owner.join(); seen->during_command={};
+  ASSERT_EQ(SQL_SUCCESS,completed); EXPECT_EQ(1u,progress.value); EXPECT_EQ(1u,seen->command_inputs.size());
+  ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt)); EXPECT_EQ(1u,progress.value); EXPECT_EQ(1u,seen->command_inputs.size());
+  EXPECT_EQ(SQL_ERROR,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,(SQLPOINTER)SQL_AUTOCOMMIT_ON,0)); EXPECT_EQ("HY010",state(SQL_HANDLE_DBC,dbc));
+  EXPECT_EQ(SQL_ERROR,SQLEndTran(SQL_HANDLE_ENV,env,SQL_COMMIT)); EXPECT_EQ("HY010",state(SQL_HANDLE_ENV,env)); EXPECT_TRUE(seen->transaction_calls.empty());
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt)); EXPECT_EQ(1u,seen->command_inputs.size());
+  // Local claimant wins deterministically before finalization; no next query.
+  ASSERT_NO_FATAL_FAILURE(collect_two());
+  SQLRETURN cancelled=SQL_ERROR; std::thread local_claimant([&] { cancelled=SQLCancel(stmt); }); local_claimant.join();
+  ASSERT_EQ(SQL_SUCCESS,cancelled); EXPECT_EQ(0u,progress.value);
+  EXPECT_EQ(SQL_ERROR,SQLParamData(stmt,&token)); EXPECT_EQ("HY010",state()); EXPECT_EQ(1u,seen->command_inputs.size());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,(SQLPOINTER)1,0));
+  ASSERT_NO_FATAL_FAILURE(collect_two()); const auto original=seen->description_deadline;
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token)); EXPECT_EQ(original,seen->command_deadlines.back());
+  const auto calls=seen->queries;
+  std::this_thread::sleep_until(original);
+  EXPECT_EQ(SQL_ERROR,SQLMoreResults(stmt)); EXPECT_EQ("HYT00",state()); EXPECT_EQ(calls,seen->queries);
+  EXPECT_EQ(SQL_NO_DATA,SQLMoreResults(stmt)); EXPECT_EQ(1,seen->disconnects);
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+TEST_F(SelectArrayDeferredInputTest, FailureOrdinalRollbackMapperAllocationAndFreshLeaseKeepNoReplayOrPartialResult) {
+  seen->advertised_transactions=true; seen->isolation_mode=1;
+  ASSERT_NO_FATAL_FAILURE(selected());
+  QueryResult sibling_result; sibling_result.columns={{"literal",NativeTypeInfo{ScalarType::VarChar,16,0,true}}};
+  sibling_result.rows={{"sibling"}}; sibling_result.statement_kind=StatementKind::SelectCursor;
+  seen->date_result=sibling_result;
+  ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,(SQLCHAR*)"owning sibling",SQL_NTS)); ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,(SQLPOINTER)SQL_AUTOCOMMIT_OFF,0));
+  seen->begin_result=BackendResult<void>{{SessionState::Transaction,SessionDisposition::ResetRequired}};
+  BackendError error{rs::util::make_error_code(DbErrorCode::QueryFailed),"owning third-set permission failure"};
+  error.operation=BackendOperation::ExecutePrepared; error.native_state="42501";
+  error.session_state=SessionState::FailedTransaction; error.disposition=SessionDisposition::ResetRequired;
+  seen->command_outcomes={select_result(seen->select_description->columns,{{"11","first"}},
+      {SessionState::Transaction,SessionDisposition::ResetRequired}),error};
+  ASSERT_NO_FATAL_FAILURE(collect_two()); EXPECT_TRUE(seen->transaction_calls.empty());
+  ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token));
+  ASSERT_EQ(SQL_ERROR,SQLMoreResults(stmt)); EXPECT_EQ("42501",state()); EXPECT_EQ(3u,progress.value);
+  EXPECT_EQ(SQL_PARAM_SUCCESS,output.values[0]); EXPECT_EQ(SQL_PARAM_UNUSED,output.values[1]); EXPECT_EQ(SQL_PARAM_ERROR,output.values[2]);
+  SQLLEN ordinal=99; SQLINTEGER column=99;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,stmt,1,SQL_DIAG_ROW_NUMBER,&ordinal,0,nullptr)); EXPECT_EQ(3,ordinal);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDiagField(SQL_HANDLE_STMT,stmt,1,SQL_DIAG_COLUMN_NUMBER,&column,0,nullptr)); EXPECT_EQ(SQL_NO_COLUMN_NUMBER,column);
+  SQLCHAR state_bytes[6]{},message[128]{};
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDiagRec(SQL_HANDLE_STMT,stmt,1,state_bytes,nullptr,message,sizeof(message),nullptr)); EXPECT_STREQ("owning third-set permission failure",reinterpret_cast<char*>(message));
+  EXPECT_EQ(SQL_ERROR,SQLDisconnect(dbc)); EXPECT_EQ("25000",state(SQL_HANDLE_DBC,dbc));
+  ASSERT_EQ(SQL_SUCCESS,SQLEndTran(SQL_HANDLE_DBC,dbc,SQL_ROLLBACK)); ASSERT_EQ(SQL_NO_DATA,SQLMoreResults(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,(SQLPOINTER)SQL_AUTOCOMMIT_ON,0));
+  seen->command_inputs.clear(); error.session_state=SessionState::Idle; error.disposition=SessionDisposition::Reusable;
+  seen->command_outcomes={error}; seen->throwing_end_error_policy=2;
+  ASSERT_NO_FATAL_FAILURE(collect_two());
+  EXPECT_EQ(SQL_ERROR,SQLParamData(stmt,&token)); EXPECT_EQ("HY001",state());
+  EXPECT_EQ(1u,progress.value); EXPECT_EQ(SQL_PARAM_ERROR,output.values[0]); EXPECT_EQ(SQL_PARAM_UNUSED,output.values[2]);
+  EXPECT_EQ(SQL_NO_DATA,SQLMoreResults(stmt)); EXPECT_EQ(1u,seen->command_inputs.size()); EXPECT_EQ(1,seen->disconnects);
+  seen->throwing_end_error_policy=0; seen->command_outcomes.clear(); seen->command_inputs.clear();
+  ASSERT_EQ(SQL_SUCCESS,SQLDriverConnect(dbc,nullptr,(SQLCHAR*)"SERVER=fake;DATABASE=contract;UID=test;SSL=0",SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT));
+  ASSERT_NO_FATAL_FAILURE(collect_two()); ASSERT_EQ(SQL_SUCCESS,SQLParamData(stmt,&token));
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt)); EXPECT_EQ(1u,seen->command_inputs.size());
+  char sibling_text[8]{}; SQLLEN sibling_length=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(sibling,1,SQL_C_CHAR,sibling_text,sizeof(sibling_text),&sibling_length)); EXPECT_STREQ("sibling",sibling_text);
+  auto malformed=select_result(seen->select_description->columns,{{"11","bad"}});
+  malformed->execution_result_shape=ExecutionResultShape::NoResultSet;
+  seen->command_inputs.clear(); seen->command_outcomes={std::move(malformed)};
+  ASSERT_NO_FATAL_FAILURE(collect_two());
+  EXPECT_EQ(SQL_ERROR,SQLParamData(stmt,&token)); EXPECT_EQ("08S01",state()); EXPECT_EQ(1u,progress.value); // ProtocolError retires the lease.
+  EXPECT_EQ(SQL_NO_DATA,SQLMoreResults(stmt)); EXPECT_EQ(1u,seen->command_inputs.size()); EXPECT_EQ(2,seen->disconnects);
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+}
+
+
+namespace {
+class TemporalEscapeProvider final : public IBackendProvider {
+ public:
+  explicit TemporalEscapeProvider(std::shared_ptr<Observations> seen)
+      : fake_(std::move(seen)), profile_(BackendIdentity{"redshift", "PostgreSQL", "Synthetic temporal escape"},
+          BackendConnectionDefaults{"synthetic.invalid", 5439, "synthetic", false}, std::nullopt,
+          rs::core::database::postgres::PgCatalogProfile::Redshift) {}
+  const BackendIdentity& identity() const noexcept override { return profile_.identity(); }
+  const BackendConnectionDefaults& connection_defaults() const noexcept override { return fake_.connection_defaults(); }
+  const ISqlDialect& sql_dialect() const noexcept override { return profile_.sql_dialect(); }
+  BackendCapabilities capabilities() const noexcept override { return profile_.capabilities(); }
+  std::span<const TypeDefinition> type_catalog(std::string_view v = {}) const noexcept override { return profile_.type_catalog(v); }
+  std::span<const TypeDefinition> result_type_catalog(std::string_view v = {}) const noexcept override { return profile_.result_type_catalog(v); }
+  TransactionCapabilities transaction_capabilities() const noexcept override { return fake_.transaction_capabilities(); }
+  Result<ConnectionSettings> resolve_connection_options(ConnectionOptions o) const override { return fake_.resolve_connection_options(std::move(o)); }
+  std::optional<std::string> normalize_error_sqlstate(std::string_view s, ErrorContext c) const override { return profile_.normalize_error_sqlstate(s,c); }
+  std::unique_ptr<IDatabaseConnection> create_session(std::unique_ptr<rs::core::transport::ITransport> t) const override {
+    return fake_.create_session(std::move(t));
+  }
+ private:
+  FakeProvider fake_;
+  rs::core::database::postgres::PgBackendProvider profile_;
+};
+class TemporalEscapeApiTest : public BackendContractTest {
+ protected:
+  void SetUp() override {
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_ENV, nullptr, &env));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetEnvAttr(env, SQL_ATTR_ODBC_VERSION, reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0));
+    auto c = std::make_unique<rs::odbc::ODBCConnection>(nullptr,std::make_shared<TemporalEscapeProvider>(seen));
+    dbc = reinterpret_cast<SQLHDBC>(c.get());
+    rs::odbc::HandleRegistry::instance().register_handle(dbc,std::move(c),env);
+    QueryResult r; r.columns = {{"value",{}}}; r.columns[0].normalized_type = NativeTypeInfo{ScalarType::VarChar,32,0,true};
+    r.rows = {{"owning"}}; r.statement_kind = StatementKind::SelectCursor; seen->date_result = std::move(r);
+  }
+  void native_sql_requires_connection() {
+    SQLCHAR input[] = "SELECT 1";
+    SQLWCHAR wide_input[]{'S','E','L','E','C','T',' ','1',0};
+    SQLCHAR output[]{17,23,83}; SQLWCHAR wide_output[]{17,23,83};
+    SQLINTEGER length = 91;
+    ASSERT_EQ(SQL_ERROR, SQLNativeSql(dbc, input, SQL_NTS, output, 3, &length));
+    EXPECT_EQ("08003", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(91, length); EXPECT_EQ(17, output[0]); EXPECT_EQ(23, output[1]); EXPECT_EQ(83, output[2]);
+    ASSERT_EQ(SQL_ERROR, SQLNativeSqlW(dbc, wide_input, SQL_NTS, wide_output, 3, &length));
+    EXPECT_EQ("08003", state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(91, length); EXPECT_EQ(17, wide_output[0]); EXPECT_EQ(23, wide_output[1]); EXPECT_EQ(83, wide_output[2]);
+    EXPECT_EQ(0, seen->created); EXPECT_EQ(0, seen->queries);
+    ASSERT_NO_FATAL_FAILURE(connect());
+    EXPECT_EQ(1, seen->created); EXPECT_EQ(0, seen->queries);
+  }
+  static std::vector<SQLWCHAR> wide(std::string_view text) {
+    std::vector<SQLWCHAR> result; for (const auto ch : text) { result.push_back(static_cast<SQLWCHAR>(ch)); }
+    result.push_back(0); return result;
+  }
+};
+
+TEST_F(TemporalEscapeApiTest, NativeSqlAnsiWideOwnsExactOutputAndPreservesTruncationGuardsWithoutSession) {
+  std::string input="SELECT {fn NOW()}, {fn CURTIME()}";
+  const std::string expected="SELECT GETDATE(), CAST(GETDATE() AS TIME)";
+  SQLINTEGER length=-1;
+  std::array<SQLCHAR,96> output{};
+  ASSERT_NO_FATAL_FAILURE(native_sql_requires_connection());
+  ASSERT_EQ(SQL_SUCCESS, SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(input.data()),SQL_NTS,output.data(),output.size(),&length));
+  EXPECT_EQ(expected,reinterpret_cast<const char*>(output.data())); EXPECT_EQ(static_cast<SQLINTEGER>(expected.size()),length);
+  auto w=wide(input); std::array<SQLWCHAR,96> wo{};
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSqlW(dbc,w.data(),SQL_NTS,wo.data(),wo.size(),&length));
+  const auto ew=wide(expected); EXPECT_EQ(0,std::memcmp(wo.data(),ew.data(),ew.size()*sizeof(SQLWCHAR)));
+  struct { SQLCHAR before{17}; SQLCHAR value[4]{}; SQLCHAR after{83}; } short_output;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(input.data()),SQL_NTS,short_output.value,4,&length));
+  EXPECT_EQ("01004",state(SQL_HANDLE_DBC,dbc)); EXPECT_EQ(static_cast<SQLINTEGER>(expected.size()),length);
+  EXPECT_STREQ("SEL",reinterpret_cast<const char*>(short_output.value)); EXPECT_EQ(17,short_output.before); EXPECT_EQ(83,short_output.after);
+  std::string unicode="SELECT '\xC3\xA9', {fn NOW()}";
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(unicode.data()),SQL_NTS,output.data(),output.size(),&length));
+  EXPECT_STREQ("SELECT '\xC3\xA9', GETDATE()",reinterpret_cast<const char*>(output.data()));
+  std::vector<SQLWCHAR> uw;
+  for(const auto ch : u"SELECT '\u00e9', {fn NOW()}") { uw.push_back(static_cast<SQLWCHAR>(ch)); }
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSqlW(dbc,uw.data(),SQL_NTS,wo.data(),wo.size(),&length));
+  std::vector<SQLWCHAR> ue;
+  for(const auto ch : u"SELECT '\u00e9', GETDATE()") { ue.push_back(static_cast<SQLWCHAR>(ch)); }
+  EXPECT_EQ(0,std::memcmp(wo.data(),ue.data(),ue.size()*sizeof(SQLWCHAR)));
+  EXPECT_EQ(static_cast<SQLINTEGER>(ue.size()-1),length);
+  EXPECT_EQ(1,seen->created); EXPECT_EQ(0,seen->queries);
+}
+
+TEST_F(TemporalEscapeApiTest, DirectPreparedWideDispatchUsesOneNativeProfileAndLiteralOwningRefill) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn NOW()}, {fn CURTIME()} FROM ordinary_table"));
+  EXPECT_EQ("SELECT GETDATE(), CAST(GETDATE() AS TIME) FROM ordinary_table",seen->sql);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  std::array<char,16> value{}; SQLLEN n=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,value.data(),value.size(),&n));
+  EXPECT_STREQ("owning",value.data()); EXPECT_EQ(6,n);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  auto sql=wide("SELECT {fn NOW()} FROM ordinary_table WHERE id=?");
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepareW(stmt,sql.data(),SQL_NTS));
+  SQLINTEGER id=1; SQLLEN length=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,10,0,&id,0,&length));
+  // Real prepared execution returns normalized parameter type metadata.
+  // Literal native families with unknown integer/text dimensions retain bound hints.
+  seen->date_result->normalized_parameter_types={{ScalarType::Integer,0,0,true}};
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)) << diagnostic(); EXPECT_EQ("SELECT GETDATE() FROM ordinary_table WHERE id=?",seen->sql);
+  ASSERT_EQ(1u,seen->parameters.size()); EXPECT_EQ(std::optional<std::string>{"1"},seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt)); id=2;
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)) << diagnostic(); EXPECT_EQ(std::optional<std::string>{"2"},seen->parameters[0].value);
+  EXPECT_STREQ("owning",value.data());
+}
+
+TEST_F(TemporalEscapeApiTest, NonemptyArgumentsRefuseBeforeEffectsAndNoScanKeepsItsExistingBypass) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  const auto calls=seen->queries; auto bad=wide("SELECT {fn CURTIME(1)}");
+  ASSERT_EQ(SQL_ERROR,SQLExecDirectW(stmt,bad.data(),SQL_NTS)); EXPECT_EQ("42000",state()); EXPECT_EQ(calls,seen->queries);
+  ASSERT_EQ(SQL_ERROR,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT {fn NOW(NULL)}")),SQL_NTS));
+  EXPECT_EQ("42000",state()); EXPECT_EQ(calls,seen->queries);
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_NOSCAN,reinterpret_cast<SQLPOINTER>(SQL_NOSCAN_ON),0));
+  ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn NOW()}")); EXPECT_EQ("SELECT {fn NOW()}",seen->sql);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_NOSCAN,reinterpret_cast<SQLPOINTER>(SQL_NOSCAN_OFF),0));
+  ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn NOW()}")); EXPECT_EQ("SELECT GETDATE()",seen->sql);
+}
+
+TEST_F(TemporalEscapeApiTest, TranslationRefusalPreservesSiblingSnapshotAndRequiredOutputThenRecovers) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn CURTIME()}"));
+  SQLHSTMT sibling{}; ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));
+  struct SiblingOwner { SQLHSTMT h; ~SiblingOwner() { if(h) SQLFreeHandle(SQL_HANDLE_STMT,h); } } owner{sibling};
+  std::string invalid="SELECT {fn NOW(1)}"; std::array<SQLCHAR,8> guarded; guarded.fill(0x5a); const auto before=guarded;
+  SQLINTEGER size=97;
+  ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(invalid.data()),SQL_NTS,guarded.data(),guarded.size(),&size));
+  EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc)); EXPECT_EQ(before,guarded); EXPECT_EQ(97,size);
+  ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(invalid.data()),SQL_NTS));
+  EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt)); std::array<char,16> value{}; SQLLEN n=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,value.data(),value.size(),&n)); EXPECT_STREQ("owning",value.data());
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT {fn NOW()}")),SQL_NTS));
+  EXPECT_EQ("SELECT GETDATE()",seen->sql); EXPECT_STREQ("owning",value.data());
+}
+}
+
+
+namespace {
+class LocateEscapeApiTest : public TemporalEscapeApiTest {
+ protected:
+  void SetUp() override {
+    TemporalEscapeApiTest::SetUp();
+    if(HasFatalFailure()) { return; }
+    QueryResult result;result.columns={{"position",{}}};
+    result.columns[0].normalized_type=NativeTypeInfo{ScalarType::Integer,10,0,true};
+    result.rows={{"3"}};result.statement_kind=StatementKind::SelectCursor;seen->date_result=std::move(result);
+  }
+};
+TEST_F(LocateEscapeApiTest, NativeSqlAnsiWideLengthsUnicodeAndShortOutputStayOwningBeforeConnect) {
+  std::string sql="SELECT {fn LOCATE('fish','\xC3\xA9\xE8\xA1\xA8" "fish')}";
+  const std::string expected="SELECT POSITION('fish' IN '\xC3\xA9\xE8\xA1\xA8" "fish')";
+  std::array<SQLCHAR,128> out{};SQLINTEGER n=97;
+  ASSERT_NO_FATAL_FAILURE(native_sql_requires_connection());
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS,out.data(),out.size(),&n));
+  EXPECT_EQ(expected,reinterpret_cast<const char*>(out.data()));EXPECT_EQ(static_cast<SQLINTEGER>(expected.size()),n);
+  std::vector<SQLWCHAR> input;
+  for(const auto ch:u"SELECT {fn LOCATE('fish','\u00e9\u8868fish')}") { input.push_back(static_cast<SQLWCHAR>(ch)); }
+  std::vector<SQLWCHAR> native;
+  for(const auto ch:u"SELECT POSITION('fish' IN '\u00e9\u8868fish')") { native.push_back(static_cast<SQLWCHAR>(ch)); }
+  std::array<SQLWCHAR,128> output{};
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSqlW(dbc,input.data(),SQL_NTS,output.data(),output.size(),&n));
+  EXPECT_EQ(static_cast<SQLINTEGER>(native.size()-1),n);EXPECT_EQ(0,std::memcmp(output.data(),native.data(),native.size()*sizeof(SQLWCHAR)));
+  struct {SQLWCHAR before{17};SQLWCHAR value[4]{};SQLWCHAR after{83};} short_value;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLNativeSqlW(dbc,input.data(),SQL_NTS,short_value.value,4,&n));
+  EXPECT_EQ("01004",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(static_cast<SQLINTEGER>(native.size()-1),n);
+  EXPECT_EQ(static_cast<SQLWCHAR>('S'),short_value.value[0]);EXPECT_EQ(0,short_value.value[3]);
+  EXPECT_EQ(17,short_value.before);EXPECT_EQ(83,short_value.after);EXPECT_EQ(1,seen->created);EXPECT_EQ(0,seen->queries);
+}
+TEST_F(LocateEscapeApiTest, PreparedOriginalParameterOrdinalsNullAndRefillUseRealOwningInputs) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  auto sql=wide("SELECT {fn LOCATE(?,?)} FROM ordinary_table");
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepareW(stmt,sql.data(),SQL_NTS));
+  std::array<char,16> needle{};std::memcpy(needle.data(),"fish",5);
+  std::array<char,32> hay{};std::memcpy(hay.data(),"\xC3\xA9\xE8\xA1\xA8" "fish",10);
+  SQLLEN a=SQL_NTS,b=SQL_NTS;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,16,0,needle.data(),needle.size(),&a));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,2,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,32,0,hay.data(),hay.size(),&b));
+  // Real prepared execution returns normalized parameter type metadata.
+  // Literal native families with unknown integer/text dimensions retain bound hints.
+  seen->date_result->normalized_parameter_types={{ScalarType::VarChar,0,0,true},{ScalarType::VarChar,0,0,true}};
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)) << diagnostic();EXPECT_EQ("SELECT POSITION(? IN ?) FROM ordinary_table",seen->sql);
+  ASSERT_EQ(2u,seen->parameters.size());EXPECT_EQ(std::optional<std::string>{"fish"},seen->parameters[0].value);
+  EXPECT_EQ(std::optional<std::string>{"\xC3\xA9\xE8\xA1\xA8" "fish"},seen->parameters[1].value);
+  needle.fill('x');hay.fill('y');EXPECT_EQ(std::optional<std::string>{"fish"},seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLINTEGER value=-9;SQLLEN length=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&value,sizeof(value),&length));EXPECT_EQ(3,value);EXPECT_EQ(sizeof(value),static_cast<std::size_t>(length));
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));a=SQL_NULL_DATA;b=SQL_NULL_DATA;seen->date_result->rows={{std::nullopt}};
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)) << diagnostic();EXPECT_FALSE(seen->parameters[0].value);EXPECT_FALSE(seen->parameters[1].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));value=-91;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&value,sizeof(value),&length));EXPECT_EQ(SQL_NULL_DATA,length);EXPECT_EQ(-91,value);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));a=0;b=0;seen->date_result->rows={{"0"}};
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)) << diagnostic();EXPECT_EQ(std::optional<std::string>{""},seen->parameters[0].value);EXPECT_EQ(std::optional<std::string>{""},seen->parameters[1].value);
+}
+TEST_F(LocateEscapeApiTest, UnsupportedStartAndMalformedCallsHaveNoEffectsThenRepairNoScanAndProfileRecover) {
+  ASSERT_NO_FATAL_FAILURE(connect());const auto count=seen->queries;
+  ASSERT_EQ(SQL_ERROR,execute("SELECT {fn LOCATE('a','abc',2)}"));EXPECT_EQ("HYC00",state());EXPECT_EQ(count,seen->queries);
+  auto bad=wide("SELECT {fn LOCATE(,'abc')}");
+  ASSERT_EQ(SQL_ERROR,SQLPrepareW(stmt,bad.data(),SQL_NTS));EXPECT_EQ("42000",state());EXPECT_EQ(count,seen->queries);EXPECT_EQ(0,seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn LOCATE('fish','dogfish')}"));EXPECT_EQ("SELECT POSITION('fish' IN 'dogfish')",seen->sql);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_NOSCAN,reinterpret_cast<SQLPOINTER>(SQL_NOSCAN_ON),0));
+  ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn LOCATE('fish','dogfish')}"));EXPECT_EQ("SELECT {fn LOCATE('fish','dogfish')}",seen->sql);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_NOSCAN,reinterpret_cast<SQLPOINTER>(SQL_NOSCAN_OFF),0));
+  ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn NOW()}, {fn LOCATE('fish','dogfish')}"));EXPECT_EQ("SELECT GETDATE(), POSITION('fish' IN 'dogfish')",seen->sql);
+}
+TEST_F(LocateEscapeApiTest, LocalRefusalKeepsRequiredOutputsSiblingSnapshotAndCapabilityInventory) {
+  ASSERT_NO_FATAL_FAILURE(connect());ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn LOCATE('fish','dogfish')}"));
+  SQLHSTMT sibling{};ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));
+  struct Owner {SQLHSTMT h;~Owner(){if(h)SQLFreeHandle(SQL_HANDLE_STMT,h);}} owner{sibling};
+  std::string bad="SELECT {fn LOCATE(a,b,c,d)}";std::array<SQLCHAR,8> buffer;buffer.fill(0x5a);const auto before=buffer;SQLINTEGER n=97;
+  ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),buffer.size(),&n));
+  EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(before,buffer);EXPECT_EQ(97,n);
+  ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));struct{SQLINTEGER before{17},value{-9},after{83};} output;SQLLEN length=-1;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&output.value,sizeof(output.value),&length));
+  EXPECT_EQ(3,output.value);EXPECT_EQ(17,output.before);EXPECT_EQ(83,output.after);
+  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_STRING_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions);
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT {fn LOCATE('x','x')}")),SQL_NTS));
+  EXPECT_EQ("SELECT POSITION('x' IN 'x')",seen->sql);EXPECT_EQ(3,output.value);
+}
+}
+
+
+namespace {
+class LengthEscapeApiTest : public LocateEscapeApiTest {};
+TEST_F(LengthEscapeApiTest, NativeSqlAnsiWideUnicodeLengthsAndTruncationKeepGuards) {
+  std::string text="SELECT {fn LENGTH('cat   ')}";std::array<SQLCHAR,128> out{};SQLINTEGER n=97;
+  ASSERT_NO_FATAL_FAILURE(native_sql_requires_connection());
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS,out.data(),out.size(),&n));
+  EXPECT_STREQ("SELECT LENGTH(RTRIM('cat   ', ' '))",reinterpret_cast<const char*>(out.data()));EXPECT_EQ(35,n);
+  std::vector<SQLWCHAR> input,expected;
+  for(const auto ch:u"SELECT {fn LENGTH('\u00e9\u8868   ')}") { input.push_back(static_cast<SQLWCHAR>(ch)); }
+  for(const auto ch:u"SELECT LENGTH(RTRIM('\u00e9\u8868   ', ' '))") { expected.push_back(static_cast<SQLWCHAR>(ch)); }
+  struct { SQLWCHAR before{17};SQLWCHAR value[128]{};SQLWCHAR after{83}; } output;
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSqlW(dbc,input.data(),SQL_NTS,output.value,128,&n));
+  EXPECT_EQ(static_cast<SQLINTEGER>(expected.size()-1),n);EXPECT_EQ(0,std::memcmp(output.value,expected.data(),expected.size()*sizeof(SQLWCHAR)));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLNativeSqlW(dbc,input.data(),SQL_NTS,output.value,4,&n));
+  EXPECT_EQ("01004",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(0,output.value[3]);EXPECT_EQ(17,output.before);EXPECT_EQ(83,output.after);EXPECT_EQ(0,seen->queries);
+}
+TEST_F(LengthEscapeApiTest, PreparedPaddedInputStaysOwningNullRebindAndRefill) {
+  ASSERT_NO_FATAL_FAILURE(connect());auto text=wide("SELECT {fn LENGTH(?)} FROM ordinary_table");
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepareW(stmt,text.data(),SQL_NTS));std::array<char,16> input{};std::memcpy(input.data(),"cat   ",7);SQLLEN length=6;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,16,0,input.data(),input.size(),&length));
+  // Real prepared execution returns normalized parameter type metadata.
+  // Literal native families with unknown integer/text dimensions retain bound hints.
+  seen->date_result->normalized_parameter_types={{ScalarType::VarChar,0,0,true}};
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)) << diagnostic();EXPECT_EQ("SELECT LENGTH(RTRIM(?, ' ')) FROM ordinary_table",seen->sql);
+  ASSERT_EQ(1u,seen->parameters.size());EXPECT_EQ(std::optional<std::string>{"cat   "},seen->parameters[0].value);input.fill('x');EXPECT_EQ(std::optional<std::string>{"cat   "},seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));struct {SQLINTEGER before{17},value{-91},after{83};} cell;SQLLEN bytes=97;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&cell.value,sizeof(cell.value),&bytes));EXPECT_EQ(3,cell.value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),bytes);EXPECT_EQ(17,cell.before);EXPECT_EQ(83,cell.after);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));length=SQL_NULL_DATA;seen->date_result->rows={{std::nullopt}};
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)) << diagnostic();EXPECT_FALSE(seen->parameters[0].value);ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));cell.value=-91;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&cell.value,sizeof(cell.value),&bytes));EXPECT_EQ(SQL_NULL_DATA,bytes);EXPECT_EQ(-91,cell.value);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));length=0;seen->date_result->rows={{"0"}};ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)) << diagnostic();EXPECT_EQ(std::optional<std::string>{""},seen->parameters[0].value);
+}
+TEST_F(LengthEscapeApiTest, ArityRefusalHasNoEffectsNoScanAndValidRecovery) {
+  ASSERT_NO_FATAL_FAILURE(connect());const auto count=seen->queries;
+  ASSERT_EQ(SQL_ERROR,execute("SELECT {fn LENGTH(a,b)}"));EXPECT_EQ("42000",state());EXPECT_EQ(count,seen->queries);
+  auto bad=wide("SELECT {fn LENGTH(/*empty*/)}");ASSERT_EQ(SQL_ERROR,SQLPrepareW(stmt,bad.data(),SQL_NTS));EXPECT_EQ("42000",state());EXPECT_EQ(0,seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn LENGTH('cat   ')}"));EXPECT_EQ("SELECT LENGTH(RTRIM('cat   ', ' '))",seen->sql);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_NOSCAN,reinterpret_cast<SQLPOINTER>(SQL_NOSCAN_ON),0));ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn LENGTH(a,b)}"));EXPECT_EQ("SELECT {fn LENGTH(a,b)}",seen->sql);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_NOSCAN,reinterpret_cast<SQLPOINTER>(SQL_NOSCAN_OFF),0));ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn LENGTH('cat')}, {fn NOW()}"));EXPECT_EQ("SELECT LENGTH(RTRIM('cat', ' ')), GETDATE()",seen->sql);
+}
+TEST_F(LengthEscapeApiTest, LocalErrorPreservesRequiredOutputsSiblingAndConservativeCapabilities) {
+  ASSERT_NO_FATAL_FAILURE(connect());ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn LENGTH('cat   ')}"));
+  SQLHSTMT sibling{};ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));struct Owner {SQLHSTMT h;~Owner(){if(h)SQLFreeHandle(SQL_HANDLE_STMT,h);}} owner{sibling};
+  std::string bad="SELECT {fn LENGTH()}";std::array<SQLCHAR,8> buffer;buffer.fill(0x5a);const auto prior=buffer;SQLINTEGER n=97;
+  ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),buffer.size(),&n));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,buffer);EXPECT_EQ(97,n);
+  ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLINTEGER result=-91;SQLLEN length=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&result,sizeof(result),&length));EXPECT_EQ(3,result);
+  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_STRING_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions);
+  std::string good="SELECT {fn LENGTH('cat')}";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(good.data()),SQL_NTS));EXPECT_EQ(3,result);
+}
+}
+
+
+namespace {
+class CalendarEscapeApiTest : public TemporalEscapeApiTest {
+ protected:
+  void SetUp() override {
+    TemporalEscapeApiTest::SetUp();if(HasFatalFailure()) { return; }
+    QueryResult result;result.columns={{"year",{}},{"month",{}},{"day",{}}};
+    for(auto& column:result.columns) { column.normalized_type=NativeTypeInfo{ScalarType::Integer,10,0,true}; }
+    result.rows={{"2024","2","29"}};result.statement_kind=StatementKind::SelectCursor;seen->date_result=std::move(result);
+  }
+};
+TEST_F(CalendarEscapeApiTest, NativeSqlAnsiWideLengthsUnicodeCommentsAndShortOutputKeepGuards) {
+  std::string input="SELECT {fn YEAR({d '2024-02-29'})}";
+  const std::string expected="SELECT CAST(DATE_PART(year, DATE '2024-02-29') AS INTEGER)";
+  std::array<SQLCHAR,128> output{};SQLINTEGER length=97;
+  ASSERT_NO_FATAL_FAILURE(native_sql_requires_connection());
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(input.data()),SQL_NTS,output.data(),output.size(),&length));
+  EXPECT_EQ(expected,reinterpret_cast<const char*>(output.data()));EXPECT_EQ(static_cast<SQLINTEGER>(expected.size()),length);
+  std::vector<SQLWCHAR> wide_input,wide_expected;
+  for(const auto ch:u"SELECT {fn MONTH(/*\u00e9\u8868*/{d '2023-12-31'})}") { wide_input.push_back(static_cast<SQLWCHAR>(ch)); }
+  for(const auto ch:u"SELECT CAST(DATE_PART(month, /*\u00e9\u8868*/DATE '2023-12-31') AS INTEGER)") { wide_expected.push_back(static_cast<SQLWCHAR>(ch)); }
+  struct {SQLWCHAR before{17};SQLWCHAR value[128]{};SQLWCHAR after{83};} wide_output;
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSqlW(dbc,wide_input.data(),SQL_NTS,wide_output.value,128,&length));
+  EXPECT_EQ(static_cast<SQLINTEGER>(wide_expected.size()-1),length);EXPECT_EQ(0,std::memcmp(wide_output.value,wide_expected.data(),wide_expected.size()*sizeof(SQLWCHAR)));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLNativeSqlW(dbc,wide_input.data(),SQL_NTS,wide_output.value,4,&length));
+  EXPECT_EQ("01004",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(0,wide_output.value[3]);EXPECT_EQ(17,wide_output.before);EXPECT_EQ(83,wide_output.after);EXPECT_EQ(0,seen->queries);
+}
+TEST_F(CalendarEscapeApiTest, PreparedDateOrdinalsAreOwningNullIndicatorsAndCalendarRepairRefill) {
+  ASSERT_NO_FATAL_FAILURE(connect());auto sql=wide("SELECT {fn YEAR(?)},{fn MONTH(?)},{fn DAYOFMONTH(?)} FROM ordinary_table");
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepareW(stmt,sql.data(),SQL_NTS));
+  std::array<SQL_DATE_STRUCT,3> dates{{{2024,2,29},{2023,12,31},{2000,1,1}}};std::array<SQLLEN,3> indicators{};
+  for(SQLUSMALLINT p=1;p<=3;++p) {
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,p,SQL_PARAM_INPUT,SQL_C_TYPE_DATE,SQL_TYPE_DATE,10,0,&dates[p-1],sizeof(SQL_DATE_STRUCT),&indicators[p-1]));
+  }
+  // Real prepared execution returns normalized parameter type metadata.
+  // Literal native families with unknown integer/text dimensions retain bound hints.
+  seen->date_result->normalized_parameter_types={{ScalarType::Date,10,0,true},{ScalarType::Date,10,0,true},{ScalarType::Date,10,0,true}};
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)) << diagnostic();ASSERT_EQ(3u,seen->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"2024-02-29"},seen->parameters[0].value);EXPECT_EQ(std::optional<std::string>{"2023-12-31"},seen->parameters[1].value);EXPECT_EQ(std::optional<std::string>{"2000-01-01"},seen->parameters[2].value);
+  EXPECT_EQ("SELECT CAST(DATE_PART(year, ?) AS INTEGER),CAST(DATE_PART(month, ?) AS INTEGER),CAST(DATE_PART(day, ?) AS INTEGER) FROM ordinary_table",seen->sql);
+  dates[0]={2024,3,1};EXPECT_EQ(std::optional<std::string>{"2024-02-29"},seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLINTEGER day=-91;SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,3,SQL_C_SLONG,&day,sizeof(day),&bytes));EXPECT_EQ(29,day);EXPECT_EQ(static_cast<SQLLEN>(sizeof(day)),bytes);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));dates[0]={2023,2,29};const auto count=seen->queries;
+  ASSERT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ("22007",state()) << diagnostic();EXPECT_EQ(count,seen->queries);
+  dates[0]={2024,2,29};indicators.fill(SQL_NULL_DATA);seen->date_result->rows={{std::nullopt,std::nullopt,std::nullopt}};
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)) << diagnostic();ASSERT_EQ(3u,seen->parameters.size());
+  for(const auto& p:seen->parameters) { EXPECT_FALSE(p.value); }
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));struct{SQLINTEGER before{17},value{-91},after{83};} cell;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&cell.value,sizeof(cell.value),&bytes));EXPECT_EQ(SQL_NULL_DATA,bytes);EXPECT_EQ(-91,cell.value);EXPECT_EQ(17,cell.before);EXPECT_EQ(83,cell.after);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));indicators.fill(0);seen->date_result->rows={{"2024","2","29"}};ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)) << diagnostic();EXPECT_EQ(std::optional<std::string>{"2024-02-29"},seen->parameters[0].value);
+}
+TEST_F(CalendarEscapeApiTest, UnaryRefusalHasNoDescriptionOrQueryAndNoScanCanRecover) {
+  ASSERT_NO_FATAL_FAILURE(connect());const auto count=seen->queries;
+  ASSERT_EQ(SQL_ERROR,execute("SELECT {fn YEAR(a,b)}"));EXPECT_EQ("42000",state());EXPECT_EQ(count,seen->queries);
+  auto bad=wide("SELECT {fn DAYOFMONTH(/*empty*/)}");ASSERT_EQ(SQL_ERROR,SQLPrepareW(stmt,bad.data(),SQL_NTS));EXPECT_EQ("42000",state());EXPECT_EQ(0,seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn MONTH({d '2023-12-31'})}"));EXPECT_EQ("SELECT CAST(DATE_PART(month, DATE '2023-12-31') AS INTEGER)",seen->sql);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_NOSCAN,reinterpret_cast<SQLPOINTER>(SQL_NOSCAN_ON),0));
+  ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn YEAR(a,b)}"));EXPECT_EQ("SELECT {fn YEAR(a,b)}",seen->sql);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_NOSCAN,reinterpret_cast<SQLPOINTER>(SQL_NOSCAN_OFF),0));
+  ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn DAYOFMONTH({d '2024-02-29'})}"));EXPECT_EQ("SELECT CAST(DATE_PART(day, DATE '2024-02-29') AS INTEGER)",seen->sql);
+}
+TEST_F(CalendarEscapeApiTest, RequiredOutputsSiblingSnapshotAndDiscoveryClaimsSurviveLocalError) {
+  ASSERT_NO_FATAL_FAILURE(connect());ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn YEAR({d '2024-02-29'})}"));
+  SQLHSTMT sibling{};ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));struct Owner{SQLHSTMT h;~Owner(){if(h)SQLFreeHandle(SQL_HANDLE_STMT,h);}} owner{sibling};
+  std::string bad="SELECT {fn MONTH()}";std::array<SQLCHAR,8> buffer;buffer.fill(0x5a);const auto before=buffer;SQLINTEGER length=97;
+  ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),buffer.size(),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(before,buffer);EXPECT_EQ(97,length);
+  ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLINTEGER year=-91;SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&year,sizeof(year),&bytes));EXPECT_EQ(2024,year);
+  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions);
+  std::string good="SELECT {fn YEAR({d '2000-01-01'})}";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(good.data()),SQL_NTS));EXPECT_EQ(2024,year);
+}
+}
+
+
+namespace {
+class ClockEscapeApiTest : public TemporalEscapeApiTest {
+ protected:
+  void SetUp() override {
+    TemporalEscapeApiTest::SetUp();if(HasFatalFailure()) { return; }
+    QueryResult result;result.columns={{"hour",{}},{"minute",{}},{"second",{}}};
+    for(auto& column:result.columns) { column.normalized_type=NativeTypeInfo{ScalarType::Integer,10,0,true}; }
+    result.rows={{"23","59","59"}};result.statement_kind=StatementKind::SelectCursor;seen->date_result=std::move(result);
+  }
+};
+TEST_F(ClockEscapeApiTest, NativeSqlAnsiWideLengthsUnicodeAndShortOutputKeepGuards) {
+  std::string input="SELECT {fn SECOND({ts '2024-02-29 23:59:59.999999'})}";
+  const std::string expected="SELECT CAST(FLOOR(EXTRACT(second FROM TIMESTAMP '2024-02-29 23:59:59.999999')) AS INTEGER)";
+  std::array<SQLCHAR,128> output{};SQLINTEGER length=97;
+  ASSERT_NO_FATAL_FAILURE(native_sql_requires_connection());
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(input.data()),SQL_NTS,output.data(),output.size(),&length));
+  EXPECT_EQ(expected,reinterpret_cast<const char*>(output.data()));EXPECT_EQ(static_cast<SQLINTEGER>(expected.size()),length);
+  std::vector<SQLWCHAR> input_w,expected_w;
+  for(const auto ch:u"SELECT {fn MINUTE(/*\u00e9\u8868*/{t '12:08:43'})}") { input_w.push_back(static_cast<SQLWCHAR>(ch)); }
+  for(const auto ch:u"SELECT CAST(FLOOR(EXTRACT(minute FROM /*\u00e9\u8868*/TIME '12:08:43')) AS INTEGER)") { expected_w.push_back(static_cast<SQLWCHAR>(ch)); }
+  struct{SQLWCHAR before{17};SQLWCHAR value[128]{};SQLWCHAR after{83};} out;
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSqlW(dbc,input_w.data(),SQL_NTS,out.value,128,&length));
+  EXPECT_EQ(static_cast<SQLINTEGER>(expected_w.size()-1),length);EXPECT_EQ(0,std::memcmp(out.value,expected_w.data(),expected_w.size()*sizeof(SQLWCHAR)));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLNativeSqlW(dbc,input_w.data(),SQL_NTS,out.value,4,&length));EXPECT_EQ("01004",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(0,out.value[3]);EXPECT_EQ(17,out.before);EXPECT_EQ(83,out.after);EXPECT_EQ(0,seen->queries);
+}
+TEST_F(ClockEscapeApiTest, PreparedTimeTimestampAreOwningFractionPreservedNullAndInvalidHourRepair) {
+  ASSERT_NO_FATAL_FAILURE(connect());auto text=wide("SELECT {fn HOUR(?)},{fn MINUTE(?)},{fn SECOND(?)} FROM ordinary_table");ASSERT_EQ(SQL_SUCCESS,SQLPrepareW(stmt,text.data(),SQL_NTS));
+  SQL_TIME_STRUCT time{23,59,59};SQL_TIMESTAMP_STRUCT stamp{2024,2,29,23,59,59,999999000};std::array<SQLLEN,3> indicators{};
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_TYPE_TIME,SQL_TYPE_TIME,8,0,&time,sizeof(time),&indicators[0]));
+  for(SQLUSMALLINT p=2;p<=3;++p) {
+    ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,p,SQL_PARAM_INPUT,SQL_C_TYPE_TIMESTAMP,SQL_TYPE_TIMESTAMP,26,6,&stamp,sizeof(stamp),&indicators[p-1]));
+  }
+  // Real prepared execution returns normalized parameter type metadata.
+  // Literal native families with unknown integer/text dimensions retain bound hints.
+  seen->date_result->normalized_parameter_types={{ScalarType::Time,8,0,true},{ScalarType::Timestamp,26,6,true},{ScalarType::Timestamp,26,6,true}};
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)) << diagnostic();ASSERT_EQ(3u,seen->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"23:59:59"},seen->parameters[0].value);EXPECT_EQ(std::optional<std::string>{"2024-02-29 23:59:59.999999"},seen->parameters[1].value);EXPECT_EQ(seen->parameters[1].value,seen->parameters[2].value);
+  EXPECT_EQ("SELECT CAST(FLOOR(EXTRACT(hour FROM ?)) AS INTEGER),CAST(FLOOR(EXTRACT(minute FROM ?)) AS INTEGER),CAST(FLOOR(EXTRACT(second FROM ?)) AS INTEGER) FROM ordinary_table",seen->sql);
+  stamp.fraction=0;time.hour=0;EXPECT_EQ(std::optional<std::string>{"2024-02-29 23:59:59.999999"},seen->parameters[1].value);EXPECT_EQ(std::optional<std::string>{"23:59:59"},seen->parameters[0].value);
+  SQLSMALLINT columns=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt,&columns));EXPECT_EQ(3,columns);
+  for(SQLUSMALLINT p=1;p<=3;++p) {
+    SQLSMALLINT type=-1;ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(stmt,p,nullptr,0,nullptr,&type,nullptr,nullptr,nullptr));EXPECT_EQ(SQL_INTEGER,type);
+  }
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));struct{SQLINTEGER before{17},value{-91},after{83};} result;SQLLEN bytes=97;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,3,SQL_C_SLONG,&result.value,sizeof(result.value),&bytes));EXPECT_EQ(59,result.value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(result.value)),bytes);EXPECT_EQ(17,result.before);EXPECT_EQ(83,result.after);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));time.hour=24;const auto count=seen->queries;
+  ASSERT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ("22007",state()) << diagnostic();EXPECT_EQ(count,seen->queries);
+  time={23,59,59};stamp.fraction=999999000;indicators.fill(SQL_NULL_DATA);seen->date_result->rows={{std::nullopt,std::nullopt,std::nullopt}};
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)) << diagnostic();ASSERT_EQ(3u,seen->parameters.size());
+  for(const auto& p:seen->parameters) { EXPECT_FALSE(p.value); }
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));result.value=-91;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,3,SQL_C_SLONG,&result.value,sizeof(result.value),&bytes));EXPECT_EQ(SQL_NULL_DATA,bytes);EXPECT_EQ(-91,result.value);EXPECT_EQ(17,result.before);EXPECT_EQ(83,result.after);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));indicators.fill(0);seen->date_result->rows={{"23","59","59"}};ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt)) << diagnostic();EXPECT_EQ(std::optional<std::string>{"2024-02-29 23:59:59.999999"},seen->parameters[2].value);
+}
+TEST_F(ClockEscapeApiTest, UnaryRefusalHasNoDescriptionQueryAndNoScanThenRepair) {
+  ASSERT_NO_FATAL_FAILURE(connect());const auto count=seen->queries;
+  ASSERT_EQ(SQL_ERROR,execute("SELECT {fn SECOND(a,b)}"));EXPECT_EQ("42000",state());EXPECT_EQ(count,seen->queries);
+  auto bad=wide("SELECT {fn HOUR(/*empty*/)}");ASSERT_EQ(SQL_ERROR,SQLPrepareW(stmt,bad.data(),SQL_NTS));EXPECT_EQ("42000",state());EXPECT_EQ(0,seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn MINUTE({t '12:08:43'})}"));EXPECT_EQ("SELECT CAST(FLOOR(EXTRACT(minute FROM TIME '12:08:43')) AS INTEGER)",seen->sql);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_NOSCAN,reinterpret_cast<SQLPOINTER>(SQL_NOSCAN_ON),0));ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn SECOND(a,b)}"));EXPECT_EQ("SELECT {fn SECOND(a,b)}",seen->sql);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_NOSCAN,reinterpret_cast<SQLPOINTER>(SQL_NOSCAN_OFF),0));ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn SECOND({ts '2024-02-29 23:59:59.999999'})}"));EXPECT_EQ("SELECT CAST(FLOOR(EXTRACT(second FROM TIMESTAMP '2024-02-29 23:59:59.999999')) AS INTEGER)",seen->sql);
+}
+TEST_F(ClockEscapeApiTest, LocalErrorPreservesOutputsSiblingSnapshotAndDiscoveryClaims) {
+  ASSERT_NO_FATAL_FAILURE(connect());ASSERT_EQ(SQL_SUCCESS,execute("SELECT {fn SECOND({ts '2024-02-29 23:59:59.999999'})}"));
+  SQLHSTMT sibling{};ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));struct Owner{SQLHSTMT h;~Owner(){if(h)SQLFreeHandle(SQL_HANDLE_STMT,h);}} owner{sibling};
+  std::string bad="SELECT {fn MINUTE()}";std::array<SQLCHAR,8> buffer;buffer.fill(0x5a);const auto prior=buffer;SQLINTEGER length=97;
+  ASSERT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS,buffer.data(),buffer.size(),&length));EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,buffer);EXPECT_EQ(97,length);
+  ASSERT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(bad.data()),SQL_NTS));EXPECT_EQ("42000",state(SQL_HANDLE_STMT,sibling));ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  SQLINTEGER second=-91;SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,3,SQL_C_SLONG,&second,sizeof(second),&bytes));EXPECT_EQ(59,second);
+  SQLUINTEGER functions=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&functions,sizeof(functions),nullptr));EXPECT_EQ(0u,functions);
+  std::string good="SELECT {fn SECOND({ts '2000-01-01 12:08:43.101000'})}";ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(good.data()),SQL_NTS));EXPECT_EQ(59,second);
+}
+}
+
+namespace {
+class CatalogRouteApiTest : public BackendContractTest {
+ protected:
+  static QueryResult foreign_result() {
+    QueryResult r;
+    const std::array<const char*,14> names{"PKTABLE_CAT","PKTABLE_SCHEM","PKTABLE_NAME","PKCOLUMN_NAME",
+        "FKTABLE_CAT","FKTABLE_SCHEM","FKTABLE_NAME","FKCOLUMN_NAME","KEY_SEQ","UPDATE_RULE","DELETE_RULE",
+        "FK_NAME","PK_NAME","DEFERRABILITY"};
+    for(std::size_t i=0;i<names.size();++i){
+      const bool small=i==8 || i==9 || i==10 || i==13;
+      r.columns.push_back({names[i],NativeTypeInfo{small?ScalarType::SmallInt:ScalarType::VarChar,small?5u:0u,0,true}});
+    }
+    r.rows={{"db","s","parent","a","db","s","child","ra","1","3","3","fk",std::nullopt,"7"},
+        {"db","s","parent","b","db","s","child","rb","2","3","3","fk",std::nullopt,"7"}};
+    return r;
+  }
+  void setup() {seen->catalog_executor=true;seen->catalog_route_executor=true;seen->date_result=foreign_result();connect();}
+  SQLRETURN foreign(bool wide=false) {
+    SQLCHAR db[]{'d','b',0},s[]{'s',0},child[]{'c','h','i','l','d',0};
+    SQLWCHAR wdb[]{'d','b',0},ws[]{'s',0},wchild[]{'c','h','i','l','d',0};
+    return wide?SQLForeignKeysW(stmt,nullptr,0,nullptr,0,nullptr,0,wdb,SQL_NTS,ws,SQL_NTS,wchild,SQL_NTS):
+        SQLForeignKeys(stmt,nullptr,0,nullptr,0,nullptr,0,db,SQL_NTS,s,SQL_NTS,child,SQL_NTS);
+  }
+};
+TEST_F(CatalogRouteApiTest, ForeignKeysNarrowWideDescriptorsSmallIntsNullAndOwningRefill) {
+  ASSERT_NO_FATAL_FAILURE(setup());
+  for(bool wide:{false,true}){
+    ASSERT_EQ(SQL_SUCCESS,foreign(wide));EXPECT_EQ(0,seen->catalog_builds);EXPECT_EQ(0,seen->queries);
+    ASSERT_TRUE(seen->catalog_request);const auto names=std::get<ForeignKeysCatalogRequest>(*seen->catalog_request);
+    EXPECT_FALSE(names.primary_table);EXPECT_EQ("child",names.foreign_table);
+    SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt,&count));EXPECT_EQ(14,count);
+    SQLHDESC ird{};ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_ROW_DESC,&ird,0,nullptr));
+    SQLSMALLINT type=-1,scale=-1,nullable=-1;SQLULEN size=99;SQLSMALLINT length=-1;
+    char guarded[12];std::fill(std::begin(guarded),std::end(guarded),'!');
+    ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(stmt,9,reinterpret_cast<SQLCHAR*>(guarded),sizeof(guarded)-1,&length,&type,&size,&scale,&nullable));
+    EXPECT_STREQ("KEY_SEQ",guarded);EXPECT_EQ('!',guarded[11]);EXPECT_EQ(SQL_SMALLINT,type);EXPECT_EQ(5u,size);EXPECT_EQ(0,scale);
+    SQLSMALLINT descriptor_scale=77;SQLULEN descriptor_size=99;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,9,SQL_DESC_LENGTH,&descriptor_size,0,nullptr));
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ird,9,SQL_DESC_SCALE,&descriptor_scale,0,nullptr));
+    EXPECT_EQ(size,descriptor_size);EXPECT_EQ(scale,descriptor_scale);
+    SQLWCHAR wide_name[12];std::fill(std::begin(wide_name),std::end(wide_name),SQLWCHAR('!'));
+    ASSERT_EQ(SQL_SUCCESS,SQLDescribeColW(stmt,9,wide_name,11,&length,&type,&size,&scale,&nullable));
+    EXPECT_EQ(SQLWCHAR('K'),wide_name[0]);EXPECT_EQ(SQLWCHAR('Q'),wide_name[6]);EXPECT_EQ(SQLWCHAR('!'),wide_name[11]);
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+    struct Guarded {SQLSMALLINT before{71},value{-1},after{73};} seq;
+    SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,9,SQL_C_SSHORT,&seq.value,sizeof(seq.value),&bytes));
+    EXPECT_EQ(1,seq.value);EXPECT_EQ(71,seq.before);EXPECT_EQ(73,seq.after);EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLSMALLINT)),bytes);
+    char pk[8]{'x','x','x','x','x','x','x','x'};
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,13,SQL_C_CHAR,pk,7,&bytes));EXPECT_EQ(SQL_NULL_DATA,bytes);EXPECT_EQ('x',pk[0]);EXPECT_EQ('x',pk[7]);
+    seen->date_result->rows[0][7]="mutated";
+    char owned[8]{};ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,8,SQL_C_CHAR,owned,sizeof(owned),&bytes));EXPECT_STREQ("ra",owned);
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,9,SQL_C_SSHORT,&seq.value,sizeof(seq.value),&bytes));EXPECT_EQ(2,seq.value);
+    EXPECT_EQ(SQL_NO_DATA,SQLFetch(stmt));ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));seen->date_result=foreign_result();
+  }
+  EXPECT_EQ(2,seen->catalog_calls);EXPECT_TRUE(seen->transaction_calls.empty());
+}
+TEST_F(CatalogRouteApiTest, PermissionManualTimeoutAndThrowDoNotFallbackAndSiblingSnapshotSurvives) {
+  seen->advertised_transactions=true;seen->isolation_mode=1;ASSERT_NO_FATAL_FAILURE(setup());
+  SQLHSTMT sibling{};ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(const_cast<char*>("owning sibling")),SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF),0));
+  EXPECT_EQ(SQL_ERROR,foreign());EXPECT_EQ("HYC00",state());EXPECT_EQ(0,seen->catalog_calls);EXPECT_TRUE(seen->transaction_calls.empty());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_ON),0));
+  seen->catalog_error=3;EXPECT_EQ(SQL_ERROR,foreign());EXPECT_EQ("42501",state());EXPECT_EQ(0,seen->catalog_builds);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));char value[16]{};SQLLEN bytes=97;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(sibling,4,SQL_C_CHAR,value,sizeof(value),&bytes));EXPECT_STREQ("a",value);
+  seen->catalog_error=0;ASSERT_EQ(SQL_SUCCESS,foreign());ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  seen->catalog_throw=true;EXPECT_EQ(SQL_ERROR,foreign());EXPECT_EQ("HY000",state());
+  const auto connection=rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc);
+  EXPECT_FALSE(connection->is_connected());EXPECT_EQ(0,seen->catalog_builds);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(sibling));ASSERT_EQ(SQL_SUCCESS,SQLGetData(sibling,4,SQL_C_CHAR,value,sizeof(value),&bytes));EXPECT_STREQ("b",value);
+  seen->catalog_throw=false;
+  ASSERT_EQ(SQL_SUCCESS,SQLDriverConnect(dbc,nullptr,reinterpret_cast<SQLCHAR*>(const_cast<char*>("SERVER=fake;PORT=9999;DATABASE=contract;UID=test;SSL=0")),SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT));
+  ASSERT_EQ(SQL_SUCCESS,foreign());ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  seen->catalog_error=2;EXPECT_EQ(SQL_ERROR,foreign());EXPECT_EQ("HYT00",state());EXPECT_FALSE(connection->is_connected());
+  EXPECT_EQ(0,seen->catalog_builds);ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,sibling));
+}
+TEST_F(CatalogRouteApiTest, IdentifierQuotedUnicodeRequestsKeepAllNamesAndDescriptorDimensions) {
+  seen->advertised_catalog_names=true;ASSERT_NO_FATAL_FAILURE(setup());
+  QueryResult tables;for(const auto* name:{"TABLE_CAT","TABLE_SCHEM","TABLE_NAME","TABLE_TYPE","REMARKS"}){
+    tables.columns.push_back({name,NativeTypeInfo{ScalarType::VarChar,65535,0,true}});
+  }
+  tables.rows={{"db","s","é表%_\\X","TABLE",std::nullopt}};seen->date_result=tables;
+  for(bool identifier:{false,true}){
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_METADATA_ID,reinterpret_cast<SQLPOINTER>(identifier?SQL_TRUE:SQL_FALSE),0));
+    std::string name=identifier?"\"é表%_\\X\"":"é表\\%\\_\\\\X";
+    ASSERT_EQ(SQL_SUCCESS,SQLTables(stmt,reinterpret_cast<SQLCHAR*>(const_cast<char*>("db")),SQL_NTS,
+        reinterpret_cast<SQLCHAR*>(const_cast<char*>("s")),SQL_NTS,reinterpret_cast<SQLCHAR*>(name.data()),SQL_NTS,nullptr,0));
+    const auto owned=std::get<TablesCatalogRequest>(*seen->catalog_request);name="changed";
+    EXPECT_EQ(identifier?CatalogNameMatch::IdentifierQuoted:CatalogNameMatch::Existing,owned.name_matches.object);
+    for(SQLUSMALLINT column=1;column<=5;++column){
+      SQLSMALLINT type=-1,scale=-1;SQLULEN size=97;
+      ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(stmt,column,nullptr,0,nullptr,&type,&size,&scale,nullptr));
+      EXPECT_EQ(SQL_VARCHAR,type);EXPECT_EQ(65535u,size);EXPECT_EQ(0,scale);
+      SQLLEN attribute=97;ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(stmt,column,SQL_DESC_LENGTH,nullptr,0,nullptr,&attribute));EXPECT_EQ(65535,attribute);
+    }
+    ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));SQLWCHAR output[16]{};SQLLEN bytes=97;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,3,SQL_C_WCHAR,output,sizeof(output),&bytes));
+    EXPECT_EQ(SQLWCHAR(0x00e9),output[0]);EXPECT_EQ(SQLWCHAR(0x8868),output[1]);EXPECT_EQ(6*static_cast<SQLLEN>(sizeof(SQLWCHAR)),bytes);
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
+  }
+  EXPECT_EQ(2,seen->catalog_calls);EXPECT_EQ(0,seen->catalog_builds);
+}
+} // namespace

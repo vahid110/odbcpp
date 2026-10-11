@@ -34,6 +34,8 @@ SQLRETURN SQLEndTran(SQLSMALLINT handle_type, SQLHANDLE handle,
                      SQLSMALLINT completion_type);
 
 SQLRETURN SQLCancel(SQLHSTMT statement_handle);
+SQLRETURN SQLParamData(SQLHSTMT statement_handle, SQLPOINTER* token);
+SQLRETURN SQLPutData(SQLHSTMT statement_handle, SQLPOINTER data, SQLLEN length);
 
 // Statement execution
 SQLRETURN SQLExecDirect(SQLHSTMT statement_handle, SQLCHAR* statement_text, SQLINTEGER text_length);
@@ -41,6 +43,7 @@ SQLRETURN SQLFetch(SQLHSTMT statement_handle);
 SQLRETURN SQLFetchScroll(SQLHSTMT statement_handle,
                          SQLSMALLINT fetch_orientation,
                          SQLLEN fetch_offset);
+SQLRETURN SQLBulkOperations(SQLHSTMT statement_handle, SQLSMALLINT operation);
 SQLRETURN SQLSetPos(SQLHSTMT statement_handle, SQLSETPOSIROW row_number,
                     SQLUSMALLINT operation, SQLUSMALLINT lock_type);
 SQLRETURN SQLMoreResults(SQLHSTMT statement_handle);

@@ -163,6 +163,8 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
  public:
   enum class ResponseMode {
     ValidStartup, MalformedStartup, MalformedAuth, AuthRejected,
+    PreparedMissingBindAuthority, PreparedMissingPortalAuthority, PreparedZeroFieldPortalAuthority, PreparedBareCompletion,
+    PreparedStaleBindAuthority,
     CleartextAuthentication,
     AuthenticationTimeout,
     MalformedQuery, MalformedStartupReady, MalformedQueryReady,
@@ -194,7 +196,7 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     DescriptionServerError, Utf8ColumnNames, MalformedColumnName, MalformedAdditionalColumnName, Utf8TextCells, NativeCells, MalformedNativeCells, RedshiftVarbyteCells, OwnedResultCells, OwnedTwoResultSets, OwnedResultCellsTransaction, OwnedResultCellsAborted,
     OwnedErrorIdle, OwnedErrorTransaction, OwnedErrorAborted,
     UnterminatedColumnName, TruncatedColumnMetadata, TrailingColumnMetadata, EmptyColumnName,
-    QueryReadTimeout, PartialQueryWrite, PreparedCommand, PreparedVarbyteParameter, ResetCompletions, TransactionCompletions, BeginCompletesIdle, BeginCompletesAborted, CommitCompletesTransaction, CommitCompletesAborted, RollbackCompletesTransaction, RollbackCompletesAborted, QueryAllocationFailure, Md5Authentication
+    QueryReadTimeout, PartialQueryWrite, PreparedEmptyQuery, PreparedCommand, PreparedVarbyteParameter, ResetCompletions, TransactionCompletions, BeginCompletesIdle, BeginCompletesAborted, CommitCompletesTransaction, CommitCompletesAborted, RollbackCompletesTransaction, RollbackCompletesAborted, QueryAllocationFailure, Md5Authentication
   };
 
   explicit ScriptedBackendTransport(
@@ -322,7 +324,25 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
     append_message('K', backend_key,
                    mode == ResponseMode::MalformedBackendKey ? 7 : 8);
     append_message('Z', "I", 1);
-    if (mode == ResponseMode::MalformedQuery) {
+    if (mode == ResponseMode::PreparedStaleBindAuthority) {
+      append_message('1', "", 0); append_message('t', "\0\0", 2);
+      append_message('T', "\0\0", 2); append_message('2', "", 0); append_message('n', "", 0);
+      append_message('1', "", 0); append_message('t', "\0\0", 2); append_message('T', "\0\0", 2);
+      append_message('C', "SELECT 0\0", 9); append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::PreparedMissingBindAuthority ||
+        mode == ResponseMode::PreparedMissingPortalAuthority ||
+        mode == ResponseMode::PreparedZeroFieldPortalAuthority ||
+        mode == ResponseMode::PreparedBareCompletion) {
+      if (mode != ResponseMode::PreparedBareCompletion) {
+        append_message('1', "", 0);
+        append_message('t', "\0\0", 2);
+        append_message('T', "\0\0", 2); // Statement description is not portal authority.
+        if (mode != ResponseMode::PreparedMissingBindAuthority) append_message('2', "", 0);
+        if (mode == ResponseMode::PreparedZeroFieldPortalAuthority) append_message('T', "\0\0", 2);
+      }
+      append_message('C', "SELECT 0\0", 9);
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::MalformedQuery) {
       append_message('T', "\0\1", 2);
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::MalformedQueryReady) {
@@ -482,6 +502,13 @@ class ScriptedBackendTransport final : public rs::core::transport::ITransport {
       append_message('2', "", 0);
       append_message('n', "", 0);
       append_message('C', "UPDATE 1", sizeof("UPDATE 1"));
+      append_message('Z', "I", 1);
+    } else if (mode == ResponseMode::PreparedEmptyQuery) {
+      append_message('1', "", 0);
+      append_message('t', "\0\0", 2);
+      append_message('2', "", 0);
+      append_message('n', "", 0);
+      append_message('I', "", 0);
       append_message('Z', "I", 1);
     } else if (mode == ResponseMode::PreparedCommand) {
       append_message('1', "", 0);
@@ -2907,8 +2934,10 @@ TEST(InputBudgetTest, SqlLimitPreflightsEveryRequestAndAllowsRecovery) {
   using namespace rs::core::database;
   using Mode = ScriptedBackendTransport::ResponseMode;
   for (const auto operation : {BackendOperation::ExecuteDirect, BackendOperation::ExecutePrepared, BackendOperation::Describe}) {
+    SCOPED_TRACE(static_cast<int>(operation));
     const bool describe = operation == BackendOperation::Describe;
-    auto transport = std::make_unique<ScriptedBackendTransport>(describe ? Mode::DescriptionNoData : Mode::EmptyQueryResponse);
+    auto transport = std::make_unique<ScriptedBackendTransport>(describe ? Mode::DescriptionNoData :
+        operation == BackendOperation::ExecutePrepared ? Mode::PreparedEmptyQuery : Mode::EmptyQueryResponse);
     auto* observed = transport.get();
     postgres::PgDatabaseConnection backend(std::move(transport));
     auto settings = pg_fixture_settings();
@@ -3175,9 +3204,11 @@ TEST(AllocationBoundaryTest, EncodingFailuresPreserveSessionAndAllowRecovery) {
   using Stage = AllocationFaultParser::Stage;
   using Mode = ScriptedBackendTransport::ResponseMode;
   for (const auto stage : {Stage::Direct, Stage::Prepared, Stage::Describe}) {
+    SCOPED_TRACE(static_cast<int>(stage));
     auto parser = std::make_unique<AllocationFaultParser>();
     auto* fault = parser.get();
-    auto transport = std::make_unique<ScriptedBackendTransport>(stage == Stage::Describe ? Mode::DescriptionNoData : Mode::EmptyQueryResponse);
+    auto transport = std::make_unique<ScriptedBackendTransport>(stage == Stage::Describe ? Mode::DescriptionNoData :
+        stage == Stage::Prepared ? Mode::PreparedEmptyQuery : Mode::EmptyQueryResponse);
     auto* observed = transport.get();
     GenericDatabaseConnection backend(std::move(parser), std::move(transport));
     auto settings = pg_fixture_settings();
@@ -3287,8 +3318,11 @@ TEST(InputBudgetTest, EncodedWireLimitsPreflightAndPreserveSessionAcrossAllOpera
   using namespace rs::core::database;
   using Mode = ScriptedBackendTransport::ResponseMode;
   for (const auto operation : {BackendOperation::ExecuteDirect, BackendOperation::ExecutePrepared, BackendOperation::Describe}) {
+    SCOPED_TRACE(static_cast<int>(operation));
     for (const bool exact : {false, true}) {
-      auto transport = std::make_unique<ScriptedBackendTransport>(operation == BackendOperation::Describe ? Mode::DescriptionNoData : Mode::EmptyQueryResponse);
+      SCOPED_TRACE(exact);
+      auto transport = std::make_unique<ScriptedBackendTransport>(operation == BackendOperation::Describe ? Mode::DescriptionNoData :
+          operation == BackendOperation::ExecutePrepared ? Mode::PreparedEmptyQuery : Mode::EmptyQueryResponse);
       auto* observed = transport.get();
       GenericDatabaseConnection backend(std::make_unique<postgres::PgProtocolParser>(), std::move(transport));
       auto settings = pg_fixture_settings();
@@ -4864,4 +4898,66 @@ TEST(PreparedDescriptionShapeTest, ParserAloneDoesNotAdvertiseStableCommandAutho
   EXPECT_FALSE(generic.statement_description()->supports_single_statement_result_shape());
   auto result = generic.describe_statement("fixed single statement", {}, rs::util::Deadline::max());
   ASSERT_TRUE(result); EXPECT_EQ(DescribedResultShape::NoResultSet, result->described_result_shape);
+}
+
+
+TEST(PreparedExecutionAuthorityTest, NativeOwningExecutionShapeAndDescriptionAuthorityStaySeparate) {
+  using namespace rs::core::database;
+  using Mode=ScriptedBackendTransport::ResponseMode;
+  auto wire=std::make_unique<ScriptedBackendTransport>(Mode::OwnedResultCells);
+  postgres::PgDatabaseConnection connection(std::move(wire));
+  auto settings=pg_fixture_settings(); settings.use_ssl=false;
+  ASSERT_TRUE(connection.connect(settings));
+  ASSERT_TRUE(connection.statement_description());
+  EXPECT_TRUE(connection.statement_description()->supports_prepared_result_sequence());
+  auto result=connection.execute_query("fixed select",rs::util::Deadline::max());
+  ASSERT_TRUE(result); EXPECT_EQ(ExecutionResultShape::ResultSet,result->execution_result_shape);
+  EXPECT_FALSE(result->described_result_shape); ASSERT_EQ(3u,result->rows.size());
+  ASSERT_EQ(1u,result->additional_results.size()); ASSERT_TRUE(result->additional_results[0].error);
+  EXPECT_FALSE(result->additional_results[0].execution_result_shape);
+  connection.disconnect(); EXPECT_EQ(std::optional<std::string>{"abc"},result->rows[2][0]);
+}
+TEST(PreparedExecutionAuthorityTest, GenericDescriptionDoesNotAdvertiseResultSequenceOrExecution) {
+  using namespace rs::core::database;
+  auto wire=std::make_unique<ScriptedBackendTransport>(ScriptedBackendTransport::ResponseMode::DescriptionZeroColumns);
+  GenericDatabaseConnection connection(std::make_unique<postgres::PgProtocolParser>(),std::move(wire));
+  auto settings=pg_fixture_settings(); settings.use_ssl=false;
+  ASSERT_TRUE(connection.connect(settings)); ASSERT_TRUE(connection.statement_description());
+  EXPECT_FALSE(connection.statement_description()->supports_prepared_result_sequence());
+  auto result=connection.describe_statement("fixed statement",{},rs::util::Deadline::max());
+  ASSERT_TRUE(result); EXPECT_EQ(DescribedResultShape::ResultSet,result->described_result_shape);
+  EXPECT_FALSE(result->execution_result_shape);
+}
+
+
+TEST(PreparedExecutionAuthorityTest, RequestKindRefusesMissingBindPortalAndSimpleCompletionBeforePublication) {
+  using namespace rs::core::database;
+  using Mode = ScriptedBackendTransport::ResponseMode;
+  for (const auto mode : {Mode::PreparedMissingBindAuthority, Mode::PreparedMissingPortalAuthority,
+                         Mode::PreparedBareCompletion, Mode::PreparedZeroFieldPortalAuthority}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    postgres::PgDatabaseConnection connection(std::make_unique<ScriptedBackendTransport>(mode));
+    auto settings = pg_fixture_settings(); settings.use_ssl = false;
+    ASSERT_TRUE(connection.connect(settings));
+    auto result = connection.execute_prepared("fixed select", std::span<const QueryParameter>{}, rs::util::Deadline::max());
+    if (mode == Mode::PreparedZeroFieldPortalAuthority) {
+      ASSERT_TRUE(result); EXPECT_TRUE(result->columns.empty()); EXPECT_TRUE(result->rows.empty());
+      EXPECT_EQ(ExecutionResultShape::ResultSet, result->execution_result_shape);
+      EXPECT_TRUE(connection.is_connected());
+    } else {
+      EXPECT_FALSE(result); EXPECT_EQ(BackendErrorClass::Protocol, result.backend_error().error_class);
+      EXPECT_FALSE(connection.is_connected());
+    }
+  }
+}
+
+TEST(PreparedExecutionAuthorityTest, StaleBoundPortalThenNewStatementDescriptionRefusesWithoutPublication) {
+  using namespace rs::core::database;
+  postgres::PgDatabaseConnection connection(std::make_unique<ScriptedBackendTransport>(
+      ScriptedBackendTransport::ResponseMode::PreparedStaleBindAuthority));
+  auto settings = pg_fixture_settings(); settings.use_ssl = false;
+  ASSERT_TRUE(connection.connect(settings));
+  auto result = connection.execute_prepared("fixed select", std::span<const QueryParameter>{}, rs::util::Deadline::max());
+  EXPECT_FALSE(result); EXPECT_EQ(BackendErrorClass::Protocol, result.backend_error().error_class);
+  EXPECT_FALSE(connection.is_connected());
 }

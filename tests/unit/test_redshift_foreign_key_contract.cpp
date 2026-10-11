@@ -218,3 +218,128 @@ TEST(RedshiftForeignKeyContract, NativeAndDeferredFailuresPreserveAllOwningDetai
     error.message = "private server diagnostic";
   }
 }
+
+
+TEST(RedshiftForeignKeyContract, PreparedNameMetadataIsAbsentOrExactlyThreeKnownTextInputs) {
+  for (auto type : {ScalarType::Char, ScalarType::VarChar, ScalarType::LongVarChar}) {
+    auto source = show_keys();
+    source.normalized_parameter_types.assign(3, NativeTypeInfo{type, 0, 0, true});
+    auto result = normalize_redshift_foreign_keys(plan(), source);
+    ASSERT_TRUE(result);
+    EXPECT_TRUE(result->normalized_parameter_types.empty());
+    EXPECT_EQ("1", result->rows[0][8]); EXPECT_EQ("3", result->rows[0][9]);
+    source.normalized_parameter_types.clear(); source.rows.clear();
+    EXPECT_EQ("child_fk", result->rows[0][11]);
+  }
+  for (unsigned variant = 0; variant < 4; ++variant) {
+    auto source = show_keys();
+    source.normalized_parameter_types.assign(3, NativeTypeInfo{ScalarType::VarChar, 0, 0, true});
+    if (variant == 0) source.normalized_parameter_types.pop_back();
+    if (variant == 1) source.normalized_parameter_types.push_back(source.normalized_parameter_types[0]);
+    if (variant == 2) source.normalized_parameter_types[1].known = false;
+    if (variant == 3) source.normalized_parameter_types[1].type = ScalarType::Integer;
+    ASSERT_NO_FATAL_FAILURE(blocked(std::move(source)));
+  }
+}
+
+
+TEST(RedshiftForeignKeyContract, CapturedShowNullTextRulesNormalizeOwningCompositeMetadata) {
+  QueryResult source;
+  source.columns = {
+      {"pk_database_name", NativeTypeInfo{ScalarType::VarChar, 65535u, 0, true}},
+      {"pk_schema_name", NativeTypeInfo{ScalarType::VarChar, 65535u, 0, true}},
+      {"pk_table_name", NativeTypeInfo{ScalarType::VarChar, 65535u, 0, true}},
+      {"pk_column_name", NativeTypeInfo{ScalarType::VarChar, 65535u, 0, true}},
+      {"fk_database_name", NativeTypeInfo{ScalarType::VarChar, 65535u, 0, true}},
+      {"fk_schema_name", NativeTypeInfo{ScalarType::VarChar, 65535u, 0, true}},
+      {"fk_table_name", NativeTypeInfo{ScalarType::VarChar, 65535u, 0, true}},
+      {"fk_column_name", NativeTypeInfo{ScalarType::VarChar, 65535u, 0, true}},
+      {"key_seq", NativeTypeInfo{ScalarType::SmallInt, 5u, 0, true}},
+      {"fk_name", NativeTypeInfo{ScalarType::VarChar, 65535u, 0, true}},
+      {"pk_name", NativeTypeInfo{ScalarType::VarChar, 65535u, 0, true}},
+      {"update_rule", NativeTypeInfo{ScalarType::VarChar, 65535u, 0, true}},
+      {"delete_rule", NativeTypeInfo{ScalarType::VarChar, 65535u, 0, true}},
+      {"deferrability", NativeTypeInfo{ScalarType::VarChar, 65535u, 0, true}}};
+  source.rows = {
+      {"odbcpp_pilot", "odbcpp_fixture", "m2_catalog_parent_20261003_c01", "key_b", "odbcpp_pilot", "odbcpp_fixture", "m2_catalog_child_20261003_c01", "ref_b", "1", "m2_catalog_child_20261003_c01_ref_b_fkey", "m2_catalog_parent_20261003_c01_pkey", std::nullopt, std::nullopt, std::nullopt},
+      {"odbcpp_pilot", "odbcpp_fixture", "m2_catalog_parent_20261003_c01", "key_a", "odbcpp_pilot", "odbcpp_fixture", "m2_catalog_child_20261003_c01", "ref_a", "2", "m2_catalog_child_20261003_c01_ref_b_fkey", "m2_catalog_parent_20261003_c01_pkey", std::nullopt, std::nullopt, std::nullopt}};
+  source.normalized_parameter_types.assign(3, NativeTypeInfo{ScalarType::VarChar, 0, 0, true});
+  const RedshiftForeignKeyCommandPlan requested{Direction::Imported, std::nullopt,
+      RedshiftForeignKeyTable{"odbcpp_pilot", "odbcpp_fixture", "m2_catalog_child_20261003_c01"}};
+  const SessionSnapshot snapshot{SessionState::Transaction, SessionDisposition::ResetRequired};
+  auto result = normalize_redshift_foreign_keys(requested, BackendResult<QueryResult>{source, snapshot});
+  ASSERT_TRUE(result);
+  source.columns.clear(); source.rows.clear(); source.normalized_parameter_types.clear();
+  ASSERT_EQ(14u, result->columns.size()); ASSERT_EQ(2u, result->rows.size());
+  EXPECT_EQ(snapshot, result.session_snapshot());
+  EXPECT_TRUE(result->normalized_parameter_types.empty());
+  EXPECT_EQ("key_b", result->rows[0][3]); EXPECT_EQ("ref_b", result->rows[0][7]);
+  EXPECT_EQ("key_a", result->rows[1][3]); EXPECT_EQ("ref_a", result->rows[1][7]);
+  EXPECT_EQ("1", result->rows[0][8]); EXPECT_EQ("2", result->rows[1][8]);
+  for (std::size_t i = 0; i < output_names.size(); ++i) {
+    EXPECT_EQ(output_names[i], result->columns[i].name);
+    ASSERT_TRUE(result->columns[i].normalized_type);
+    EXPECT_TRUE(result->columns[i].normalized_type->known);
+    EXPECT_EQ(numeric(i) ? ScalarType::SmallInt : ScalarType::VarChar,
+        result->columns[i].normalized_type->type);
+  }
+  for (const auto& row : result->rows) {
+    EXPECT_EQ("3", row[9]); EXPECT_EQ("3", row[10]); EXPECT_EQ("7", row[13]);
+    EXPECT_EQ("m2_catalog_child_20261003_c01_ref_b_fkey", row[11]);
+    EXPECT_EQ("m2_catalog_parent_20261003_c01_pkey", row[12]);
+  }
+}
+
+TEST(RedshiftForeignKeyContract, NullTextRulesUseMatchedColumnsAndAdmitEmptyRows) {
+  for (auto type : {ScalarType::Char, ScalarType::VarChar, ScalarType::LongVarChar}) {
+    auto source = show_keys();
+    for (std::size_t i : {9u, 10u, 13u}) source.columns[i].normalized_type->type = type;
+    std::reverse(source.columns.begin(), source.columns.end());
+    for (auto& row : source.rows) std::reverse(row.begin(), row.end());
+    auto result = normalize_redshift_foreign_keys(plan(), source);
+    ASSERT_TRUE(result); ASSERT_EQ(2u, result->rows.size());
+    EXPECT_EQ("3", result->rows[0][9]); EXPECT_EQ("3", result->rows[1][10]);
+    EXPECT_EQ("7", result->rows[1][13]);
+    source.rows.clear();
+    auto empty = normalize_redshift_foreign_keys(plan(), source);
+    ASSERT_TRUE(empty); EXPECT_TRUE(empty->rows.empty()); EXPECT_EQ(14u, empty->columns.size());
+  }
+}
+
+TEST(RedshiftForeignKeyContract, NullTextRuleExceptionNeverAdmitsKeySequenceOrValues) {
+  auto source = show_keys(); source.columns[8].normalized_type->type = ScalarType::VarChar;
+  ASSERT_NO_FATAL_FAILURE(blocked(source));
+  source.rows.clear(); ASSERT_NO_FATAL_FAILURE(blocked(source));
+  for (std::size_t i : {9u, 10u, 13u}) {
+    for (auto type : {ScalarType::Char, ScalarType::VarChar, ScalarType::LongVarChar}) {
+      source = show_keys(); source.columns[i].normalized_type->type = type;
+      for (auto& row : source.rows) row[i] = i == 13 ? "7" : "3";
+      ASSERT_NO_FATAL_FAILURE(blocked(source)); // No numeric-string conversion.
+      source.rows[0][i] = std::nullopt;
+      ASSERT_NO_FATAL_FAILURE(blocked(source)); // One NULL does not license a mixed column.
+      source.rows[1][i] = std::nullopt;
+      EXPECT_TRUE(normalize_redshift_foreign_keys(plan(), source));
+      source.columns[i].normalized_type->known = false;
+      ASSERT_NO_FATAL_FAILURE(blocked(source));
+      source.columns[i].normalized_type->known = true;
+      source.columns[i].normalized_type->type = ScalarType::Binary;
+      ASSERT_NO_FATAL_FAILURE(blocked(source));
+    }
+  }
+}
+
+TEST(RedshiftForeignKeyContract, NullTextRulesStillRequireValidStructureAndRecover) {
+  auto source = show_keys();
+  for (std::size_t i : {9u, 10u, 13u}) source.columns[i].normalized_type->type = ScalarType::VarChar;
+  auto malformed = source; malformed.rows.back().pop_back();
+  ASSERT_NO_FATAL_FAILURE(blocked(malformed));
+  malformed = source; malformed.columns[9].name = malformed.columns[10].name;
+  ASSERT_NO_FATAL_FAILURE(blocked(malformed));
+  malformed = source; malformed.cell_errors.push_back({1, 9});
+  ASSERT_NO_FATAL_FAILURE(blocked(malformed));
+  auto recovered = normalize_redshift_foreign_keys(plan(), source);
+  ASSERT_TRUE(recovered); EXPECT_EQ("3", recovered->rows[0][9]); EXPECT_EQ("7", recovered->rows[1][13]);
+  source = show_keys(); source.rows[0][9] = "5";
+  ASSERT_NO_FATAL_FAILURE(blocked(source)); // Existing numeric enum bounds remain strict.
+  EXPECT_TRUE(normalize_redshift_foreign_keys(plan(), show_keys()));
+}

@@ -53,6 +53,9 @@ public:
   virtual std::string get_parameter(std::string_view key) const;
 
 protected:
+  // Native catalog fanout may read only budgets, never connection secrets.
+  const ResponseLimits& catalog_response_limits() const noexcept { return settings_.response_limits; }
+  const ResultLimits& catalog_result_limits() const noexcept { return settings_.result_limits; }
   virtual void authenticated_backend_key(std::span<const std::byte>) {}
   virtual void forget_backend_key() noexcept {}
   rs::core::transport::ITransport* cancellation_transport() noexcept { return transport_.get(); }

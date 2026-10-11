@@ -468,6 +468,7 @@ namespace {
       case SQL_API_SQLALLOCHANDLE:
       case SQL_API_SQLBINDCOL:
       case SQL_API_SQLBINDPARAMETER:
+      case SQL_API_SQLBULKOPERATIONS:
       case SQL_API_SQLCOLATTRIBUTE:
       case SQL_API_SQLCLOSECURSOR:
       case SQL_API_SQLCOLUMNS:
@@ -502,6 +503,8 @@ namespace {
       case SQL_API_SQLNATIVESQL:
       case SQL_API_SQLMORERESULTS:
       case SQL_API_SQLPREPARE:
+      case SQL_API_SQLPARAMDATA:
+      case SQL_API_SQLPUTDATA:
       case SQL_API_SQLPRIMARYKEYS:
       case SQL_API_SQLPROCEDURECOLUMNS:
       case SQL_API_SQLPROCEDURES:
@@ -529,7 +532,6 @@ namespace {
       case SQL_API_SQLALLOCSTMT:
       case SQL_API_SQLBINDPARAM:
       case SQL_API_SQLBROWSECONNECT:
-      case SQL_API_SQLBULKOPERATIONS:
       case SQL_API_SQLCANCEL:
 #ifdef SQL_API_SQLCANCELHANDLE
       case SQL_API_SQLCANCELHANDLE:
@@ -708,6 +710,10 @@ static SQLRETURN SQLFreeHandle_impl(SQLSMALLINT handle_type, SQLHANDLE handle) {
     return SQL_INVALID_HANDLE;
   }
   obj->clear_diagnostics();
+  if (handle_type==SQL_HANDLE_STMT &&
+      std::static_pointer_cast<ODBCStatement>(obj)->needs_data()) {
+    obj->set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,"Statement needs parameter data"); return SQL_ERROR;
+  }
   if (handle_type == SQL_HANDLE_DESC) {
     auto* descriptor = static_cast<ODBCDescriptor*>(obj.get());
     if (descriptor->is_automatically_allocated()) {
@@ -1044,6 +1050,16 @@ static SQLRETURN SQLEndTran_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
   if (handle_type == SQL_HANDLE_ENV) {
     auto environment = get_valid_handle<ODBCEnvironment>(handle);
     if (!environment) return SQL_INVALID_HANDLE;
+    // Pin and serialize exactly the same children across preflight and effects.
+    const auto children = HandleRegistry::instance().child_handles(handle, HandleType::Connection);
+    auto child_operations = HandleRegistry::instance().lock_handles(std::span<const SQLHANDLE>(children));
+    // Preflight the entire ENV before committing even the first connection.
+    for (const auto child : children) {
+      const auto connection=HandleRegistry::instance().get_handle_as<ODBCConnection>(child);
+      if (connection && (connection->has_pending_input() || connection->has_pending_result_sequence())) {
+        environment->set_error(SQLSTATE_FUNCTION_SEQUENCE_ERROR,"Statement needs parameter data"); return SQL_ERROR;
+      }
+    }
     if (completion_type != SQL_COMMIT && completion_type != SQL_ROLLBACK) {
       environment->set_error(
           SQLSTATE_INVALID_TRANSACTION_OPERATION,
@@ -1052,9 +1068,7 @@ static SQLRETURN SQLEndTran_impl(SQLSMALLINT handle_type, SQLHANDLE handle,
     }
 
     SQLRETURN aggregate = SQL_SUCCESS;
-    for (const auto connection_handle :
-         HandleRegistry::instance().child_handles(
-             handle, HandleType::Connection)) {
+    for (const auto connection_handle : children) {
       const auto connection = HandleRegistry::instance().get_handle_as<
           ODBCConnection>(connection_handle);
       if (!connection || !connection->is_connected()) continue;
@@ -1130,6 +1144,12 @@ static SQLRETURN SQLFetchScroll_impl(SQLHSTMT statement_handle,
   auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
   if (!stmt) return SQL_INVALID_HANDLE;
   return stmt->fetch_scroll(fetch_orientation, offset);
+}
+
+static SQLRETURN SQLBulkOperations_impl(SQLHSTMT statement_handle, SQLSMALLINT operation) {
+  auto stmt = get_valid_handle<ODBCStatement>(statement_handle);
+  if (!stmt) return SQL_INVALID_HANDLE;
+  return stmt->bulk_operations(operation);
 }
 
 static SQLRETURN SQLSetPos_impl(SQLHSTMT statement_handle, SQLSETPOSIROW row,
@@ -1745,7 +1765,7 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
     case SQL_POS_OPERATIONS:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_POS_POSITION));
     case SQL_STATIC_CURSOR_ATTRIBUTES1:
-      return write_uinteger(static_cast<SQLUINTEGER>(SQL_CA1_NEXT | SQL_CA1_ABSOLUTE | SQL_CA1_RELATIVE | SQL_CA1_POS_POSITION | SQL_CA1_BOOKMARK));
+      return write_uinteger(static_cast<SQLUINTEGER>(SQL_CA1_NEXT | SQL_CA1_ABSOLUTE | SQL_CA1_RELATIVE | SQL_CA1_POS_POSITION | SQL_CA1_BOOKMARK | SQL_CA1_BULK_FETCH_BY_BOOKMARK));
     case SQL_STATIC_CURSOR_ATTRIBUTES2:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_CA2_READ_ONLY_CONCURRENCY));
     case SQL_FETCH_DIRECTION:
@@ -1762,7 +1782,7 @@ static SQLRETURN SQLGetInfo_impl(SQLHDBC connection_handle, SQLUSMALLINT info_ty
       return write_uinteger(static_cast<SQLUINTEGER>(conn->supports_parameter_arrays()
           ? SQL_PARC_BATCH : SQL_PARC_NO_BATCH));
     case SQL_PARAM_ARRAY_SELECTS:
-      return write_uinteger(static_cast<SQLUINTEGER>(SQL_PAS_NO_SELECT));
+      return write_uinteger(static_cast<SQLUINTEGER>((conn->supports_select_parameter_arrays() ? SQL_PAS_BATCH : SQL_PAS_NO_SELECT)));
     case SQL_SCROLL_CONCURRENCY:
       return write_uinteger(static_cast<SQLUINTEGER>(SQL_SCCO_READ_ONLY));
     case SQL_INSERT_STATEMENT:
@@ -1866,7 +1886,7 @@ static SQLRETURN SQLGetFunctions_impl(SQLHDBC connection_handle, SQLUSMALLINT fu
   }
 
   const auto supports = [&](SQLUSMALLINT id) {
-    if (id == SQL_API_SQLCANCEL) return conn->supports_server_cancellation();
+    if (id == SQL_API_SQLCANCEL) return true; // Connected local Need Data carrier; server phases remain facet-bound.
     switch (id) {
       case SQL_API_SQLTABLES:
       case SQL_API_SQLCOLUMNS:
@@ -2813,6 +2833,15 @@ static SQLRETURN SQLNumParams_impl(SQLHSTMT statement_handle,
   return stmt->num_params(parameter_count);
 }
 
+static SQLRETURN SQLParamData_impl(SQLHSTMT handle, SQLPOINTER* token) {
+  auto statement=get_valid_handle<ODBCStatement>(handle);
+  return statement ? statement->param_data(token) : SQL_INVALID_HANDLE;
+}
+static SQLRETURN SQLPutData_impl(SQLHSTMT handle, SQLPOINTER data, SQLLEN length) {
+  auto statement=get_valid_handle<ODBCStatement>(handle);
+  return statement ? statement->put_data(data,length) : SQL_INVALID_HANDLE;
+}
+
 static SQLRETURN SQLBindParameter_impl(SQLHSTMT statement_handle, SQLUSMALLINT parameter_number, SQLSMALLINT input_output_type,
                           SQLSMALLINT value_type, SQLSMALLINT parameter_type, SQLULEN column_size,
                           SQLSMALLINT decimal_digits, SQLPOINTER parameter_value, SQLLEN buffer_length,
@@ -3156,6 +3185,7 @@ ODBCPP_API_3(SQLExecDirect, a1, SQLHSTMT, SQLCHAR*, SQLINTEGER)
 ODBCPP_API_3(SQLExecDirectW, a1, SQLHSTMT, SQLWCHAR*, SQLINTEGER)
 ODBCPP_API_1(SQLFetch, a1, SQLHSTMT)
 ODBCPP_API_3(SQLFetchScroll, a1, SQLHSTMT, SQLSMALLINT, SQLLEN)
+ODBCPP_API_2(SQLBulkOperations, a1, SQLHSTMT, SQLSMALLINT)
 ODBCPP_API_4(SQLSetPos, a1, SQLHSTMT, SQLSETPOSIROW, SQLUSMALLINT, SQLUSMALLINT)
 ODBCPP_API_1(SQLMoreResults, a1, SQLHSTMT)
 ODBCPP_API_6(SQLGetData, a1, SQLHSTMT, SQLUSMALLINT, SQLSMALLINT, void*,
@@ -3254,6 +3284,8 @@ ODBCPP_API_3(SQLPrepare, a1, SQLHSTMT, SQLCHAR*, SQLINTEGER)
 ODBCPP_API_3(SQLPrepareW, a1, SQLHSTMT, SQLWCHAR*, SQLINTEGER)
 ODBCPP_API_1(SQLExecute, a1, SQLHSTMT)
 ODBCPP_API_2(SQLNumParams, a1, SQLHSTMT, SQLSMALLINT*)
+ODBCPP_API_2(SQLParamData, a1, SQLHSTMT, SQLPOINTER*)
+ODBCPP_API_3(SQLPutData, a1, SQLHSTMT, SQLPOINTER, SQLLEN)
 ODBCPP_API_10(SQLBindParameter, a1, SQLHSTMT, SQLUSMALLINT, SQLSMALLINT,
               SQLSMALLINT, SQLSMALLINT, SQLULEN, SQLSMALLINT, SQLPOINTER,
               SQLLEN, SQLLEN*)
@@ -3298,7 +3330,9 @@ ODBCPP_API_2_TWO_HANDLES(SQLCopyDesc, a2, SQLHDESC, SQLHDESC)
 
 // Cancellation deliberately bypasses the ordinary handle operation lease.
 // The registry retains the statement while its independent endpoint is used;
-// this path never updates the active operation's diagnostics or return header.
+// Active cancellation never updates the executing operation's diagnostics or
+// header. Between Need Data calls, local reset takes the ordinary domain lease
+// after claiming the attempt; that idle reset clears its diagnostics normally.
 extern "C" SQLRETURN SQLCancel(SQLHSTMT statement_handle) {
   try {
     auto statement = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCStatement>(statement_handle);

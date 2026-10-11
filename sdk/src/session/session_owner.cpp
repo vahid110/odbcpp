@@ -4,6 +4,7 @@
 #include <new>
 #include <stdexcept>
 #include <utility>
+#include "odbcpp/util/utf8.h"
 
 namespace rs::core::database {
 namespace detail {
@@ -275,6 +276,8 @@ BackendResult<SessionObservation> SessionLease::inspect() {
         value.server_version = physical.server_version();
         if (auto* facet = physical.transaction_session()) value.transactions = facet->transaction_capabilities();
         value.has_statement_description_facet = physical.statement_description() != nullptr;
+        value.has_prepared_result_sequence = physical.statement_description() &&
+            physical.statement_description()->supports_prepared_result_sequence();
         value.has_single_statement_result_shape = physical.statement_description() &&
             physical.statement_description()->supports_single_statement_result_shape();
         value.has_catalog_query_facet = physical.catalog_queries() != nullptr;
@@ -358,6 +361,147 @@ BackendResult<void> SessionLease::set_transaction_isolation(TransactionIsolation
             BackendOperation::SetTransactionIsolation, physical.session_state());
       });
 }
+PreparedParameterDescription::PreparedParameterDescription(PreparedParameterDescription&& other) noexcept
+    : sql_(std::move(other.sql_)), types_(std::move(other.types_)),
+      description_(std::move(other.description_)), owner_(std::move(other.owner_)),
+      borrow_(std::move(other.borrow_)), deadline_(other.deadline_), input_(other.input_),
+      limits_(other.limits_), set_count_(other.set_count_), snapshot_(other.snapshot_),
+      consumed_(std::exchange(other.consumed_, true)) {}
+PreparedParameterDescription& PreparedParameterDescription::operator=(PreparedParameterDescription&& other) noexcept {
+  if (this != &other) {
+    sql_ = std::move(other.sql_); types_ = std::move(other.types_);
+    description_ = std::move(other.description_); owner_ = std::move(other.owner_);
+    borrow_ = std::move(other.borrow_); deadline_ = other.deadline_;
+    input_ = other.input_; limits_ = other.limits_; set_count_ = other.set_count_; snapshot_ = other.snapshot_;
+    consumed_ = std::exchange(other.consumed_, true);
+  }
+  return *this;
+}
+bool SessionLease::accepts_parameter_description(const PreparedParameterDescription& authority) const noexcept {
+  return !authority.consumed_ && borrow_ && authority.owner_.lock() == state_ &&
+      authority.borrow_.lock() == borrow_ && physical_session() &&
+      authority.set_count_ > 1 && !authority.types_.empty() &&
+      (authority.description_.described_result_shape == DescribedResultShape::NoResultSet ||
+       authority.description_.described_result_shape == DescribedResultShape::ResultSet);
+}
+BackendResult<PreparedParameterDescription> SessionLease::describe_parameter_input(std::string_view sql,
+    std::vector<QueryParameterType> types, std::size_t count, const InputLimits& input,
+    const ResultLimits& limits, rs::util::Deadline deadline, bool allow_results) {
+  invalidate_cache();
+  return invoke_borrowed<PreparedParameterDescription>(*this, physical_session(), BackendOperation::Describe,
+      [&](IDatabaseConnection& physical) -> BackendResult<PreparedParameterDescription> {
+        const auto reject = [&](LocalFailure failure, const char* text) -> BackendResult<PreparedParameterDescription> {
+          return local_backend_error(failure, text, BackendOperation::Describe, physical.session_state());
+        };
+        if (count <= 1 || count > limits.max_results || types.empty() ||
+            types.size() > input.max_parameters || sql.size() > input.max_sql_bytes)
+          return reject(LocalFailure::InvalidInput, "Deferred command description exceeds configured limit");
+        if (rs::util::Clock::now() >= deadline)
+          return BackendResult<PreparedParameterDescription>{rs::util::DbErrorCode::Timeout, {}};
+        auto* facet = physical.statement_description();
+        if (!facet || !facet->supports_single_statement_result_shape())
+          return reject(LocalFailure::Unsupported, "Authoritative deferred command description unavailable");
+        auto description = facet->describe_statement(sql, types, deadline);
+        if (!description) return std::move(description.backend_error());
+        const auto snapshot = description.session_snapshot();
+        const auto& value = *description;
+        if (!value.described_result_shape || value.execution_result_shape || value.error ||
+            value.statement_kind || value.affected_rows || !value.rows.empty() ||
+            !value.additional_results.empty() || !value.cell_errors.empty() ||
+            value.normalized_parameter_types.size() != types.size() ||
+            value.normalized_parameter_types.size() > limits.max_metadata_entries ||
+            snapshot.state == SessionState::Unknown || snapshot.state == SessionState::Disconnected ||
+            snapshot.disposition == SessionDisposition::Retire)
+          return BackendResult<PreparedParameterDescription>{rs::util::DbErrorCode::ProtocolError, {}};
+        if (*value.described_result_shape == DescribedResultShape::ResultSet &&
+            (!allow_results || !facet->supports_prepared_result_sequence()))
+          return reject(LocalFailure::Unsupported, "Deferred arrays do not return row results");
+        if ((*value.described_result_shape != DescribedResultShape::NoResultSet &&
+             *value.described_result_shape != DescribedResultShape::ResultSet) ||
+            (*value.described_result_shape == DescribedResultShape::NoResultSet && !value.columns.empty()))
+          return BackendResult<PreparedParameterDescription>{rs::util::DbErrorCode::ProtocolError, {}};
+        // Validate the whole owning description before NEED_DATA. Sequence
+        // start accounts it once; this preflight does not consume totals twice.
+        if (value.columns.size() > limits.max_columns_per_description ||
+            value.columns.size() > limits.max_metadata_entries ||
+            value.normalized_parameter_types.size() > limits.max_metadata_entries - value.columns.size())
+          return BackendResult<PreparedParameterDescription>{rs::util::DbErrorCode::ResourceLimit, {}};
+        std::size_t names = 0;
+        for (const auto& column : value.columns) {
+          if (!column.normalized_type || column.name.find('\0') != std::string::npos ||
+              !rs::util::utf8_code_point_count(column.name))
+            return BackendResult<PreparedParameterDescription>{rs::util::DbErrorCode::ProtocolError, {}};
+          if (column.name.size() > limits.max_column_name_bytes ||
+              column.name.size() > limits.max_metadata_name_bytes - names)
+            return BackendResult<PreparedParameterDescription>{rs::util::DbErrorCode::ResourceLimit, {}};
+          names += column.name.size();
+        }
+        if (rs::util::Clock::now() >= deadline)
+          return BackendResult<PreparedParameterDescription>{rs::util::DbErrorCode::Timeout, {}};
+        return BackendResult<PreparedParameterDescription>{PreparedParameterDescription{
+            std::string(sql), std::move(types), std::move(*description), state_, borrow_,
+            deadline, input, limits, count, snapshot}, snapshot};
+      });
+}
+BackendResult<PreparedCommandPlan> SessionLease::finalize_parameter_input(
+    PreparedParameterDescription&& authority, std::vector<PreparedCommandSet> sets) {
+  // Representation/borrow refusal is passive and cannot close a newer lease.
+  const auto reject = [&](const char* text) -> BackendResult<PreparedCommandPlan> {
+    return local_backend_error(LocalFailure::InvalidInput, text,
+        BackendOperation::ExecutePrepared, SessionState::Unknown);
+  };
+  if (!accepts_parameter_description(authority)) return reject("Deferred command authority is not valid for this borrow");
+  authority.consumed_ = true;
+  if (sets.size() != authority.set_count_) return reject("Deferred command set count changed");
+  std::size_t entries = 0, bytes = 0;
+  bool proceeding = false;
+  for (const auto& set : sets) {
+    if (set.ignored) {
+      if (!set.values.empty()) return reject("Ignored deferred set has values");
+      continue;
+    }
+    proceeding = true;
+    if (set.values.size() != authority.types_.size() ||
+        set.values.size() > authority.input_.max_parameters - entries)
+      return reject("Deferred command parameter count changed");
+    entries += set.values.size();
+    for (std::size_t i = 0; i < set.values.size(); ++i) {
+      const auto& value = set.values[i];
+      if (value.type != authority.types_[i]) return reject("Deferred command parameter type changed");
+      if (value.value) {
+        if (value.value->size() > authority.input_.max_parameter_bytes ||
+            value.value->size() > authority.input_.max_parameter_total_bytes - bytes)
+          return reject("Deferred command parameter bytes exceed limit");
+        bytes += value.value->size();
+      }
+    }
+  }
+  if (!proceeding) return reject("Deferred command authority has no real sets");
+  if (rs::util::Clock::now() >= authority.deadline_)
+    return BackendResult<PreparedCommandPlan>{rs::util::DbErrorCode::Timeout, {}};
+  // No describe/passive provider callback or transaction here. All storage is
+  // owning; construction precedes any adapter BEGIN or publication.
+  return BackendResult<PreparedCommandPlan>{PreparedCommandPlan{
+      std::move(authority.sql_), std::move(sets), std::move(authority.description_),
+      state_, borrow_, authority.deadline_, authority.limits_},
+      authority.snapshot_};
+}
+bool SessionLease::accepts_command_description(const PreparedCommandDescription& authority) const noexcept {
+  return accepts_parameter_description(authority) &&
+      authority.description_.described_result_shape == DescribedResultShape::NoResultSet;
+}
+BackendResult<PreparedCommandDescription> SessionLease::describe_command_batch(std::string_view sql,
+    std::vector<QueryParameterType> types, std::size_t count, const InputLimits& input,
+    const ResultLimits& limits, rs::util::Deadline deadline) {
+  return describe_parameter_input(sql, std::move(types), count, input, limits, deadline, false);
+}
+BackendResult<PreparedCommandPlan> SessionLease::finalize_command_batch(
+    PreparedCommandDescription&& authority, std::vector<PreparedCommandSet> sets) {
+  if (!accepts_command_description(authority))
+    return local_backend_error(LocalFailure::InvalidInput, "Deferred command authority is not valid for this borrow",
+        BackendOperation::ExecutePrepared, SessionState::Unknown);
+  return finalize_parameter_input(std::move(authority), std::move(sets));
+}
 PreparedCommandPlan::PreparedCommandPlan(PreparedCommandPlan&& other) noexcept
     : sql_(std::move(other.sql_)), sets_(std::move(other.sets_)),
       description_(std::move(other.description_)), owner_(std::move(other.owner_)),
@@ -375,6 +519,11 @@ PreparedCommandPlan& PreparedCommandPlan::operator=(PreparedCommandPlan&& other)
 BackendResult<PreparedCommandPlan> SessionLease::prepare_command_batch(std::string_view sql,
     std::vector<PreparedCommandSet> sets, const InputLimits& input,
     const ResultLimits& limits, rs::util::Deadline deadline) {
+  return prepare_parameter_batch(sql, std::move(sets), input, limits, deadline, false);
+}
+BackendResult<PreparedCommandPlan> SessionLease::prepare_parameter_batch(std::string_view sql,
+    std::vector<PreparedCommandSet> sets, const InputLimits& input,
+    const ResultLimits& limits, rs::util::Deadline deadline, bool allow_results) {
   invalidate_cache();
   return invoke_borrowed<PreparedCommandPlan>(*this, physical_session(), BackendOperation::Describe,
       [&](IDatabaseConnection& physical) -> BackendResult<PreparedCommandPlan> {
@@ -423,16 +572,19 @@ BackendResult<PreparedCommandPlan> SessionLease::prepare_command_batch(std::stri
         if (!description) return std::move(description.backend_error());
         const auto snapshot = description.session_snapshot();
         const auto& value = *description;
-        if (!value.described_result_shape || value.error || value.statement_kind || value.affected_rows != 0 || !value.rows.empty() ||
+        if (!value.described_result_shape || value.execution_result_shape || value.error || value.statement_kind || value.affected_rows != 0 || !value.rows.empty() ||
             !value.additional_results.empty() || !value.cell_errors.empty() ||
             value.normalized_parameter_types.size() != types.size() ||
             value.normalized_parameter_types.size() > limits.max_metadata_entries ||
             snapshot.state == SessionState::Unknown || snapshot.state == SessionState::Disconnected ||
             snapshot.disposition == SessionDisposition::Retire)
           return BackendResult<PreparedCommandPlan>{rs::util::DbErrorCode::ProtocolError, {}};
-        if (*value.described_result_shape == DescribedResultShape::ResultSet)
+        if (*value.described_result_shape == DescribedResultShape::ResultSet &&
+            (!allow_results || !facet->supports_prepared_result_sequence()))
           return reject(LocalFailure::Unsupported, "Parameter arrays do not return row results");
-        if (*value.described_result_shape != DescribedResultShape::NoResultSet || !value.columns.empty())
+        if ((*value.described_result_shape != DescribedResultShape::NoResultSet &&
+             *value.described_result_shape != DescribedResultShape::ResultSet) ||
+            (*value.described_result_shape == DescribedResultShape::NoResultSet && !value.columns.empty()))
           return BackendResult<PreparedCommandPlan>{rs::util::DbErrorCode::ProtocolError, {}};
         if (rs::util::Clock::now() >= deadline)
           return BackendResult<PreparedCommandPlan>{rs::util::DbErrorCode::Timeout, {}};
@@ -494,6 +646,7 @@ BackendResult<PreparedCommandBatchResult> SessionLease::execute_command_batch(Pr
       // NoData authority never permits hiding unexpected SELECT/compound output.
       if (!result->columns.empty() || !result->rows.empty() || result->error ||
           !result->additional_results.empty() || !result->cell_errors.empty() || result->described_result_shape ||
+          (result->execution_result_shape && result->execution_result_shape != ExecutionResultShape::NoResultSet) ||
           !result->statement_kind || *result->statement_kind == StatementKind::SelectCursor ||
           snapshot.state == SessionState::Unknown || snapshot.state == SessionState::Disconnected ||
           snapshot.disposition == SessionDisposition::Retire) {
@@ -512,6 +665,158 @@ BackendResult<PreparedCommandBatchResult> SessionLease::execute_command_batch(Pr
     fail(rs::util::DbErrorCode::ProtocolError);
   }
   return BackendResult<PreparedCommandBatchResult>{std::move(batch), snapshot};
+}
+
+PreparedResultSequence::PreparedResultSequence(PreparedResultSequence&& other) noexcept
+    : sql_(std::move(other.sql_)), sets_(std::move(other.sets_)), description_(std::move(other.description_)),
+      owner_(std::move(other.owner_)), borrow_(std::move(other.borrow_)), deadline_(other.deadline_),
+      limits_(other.limits_), decoded_value_bytes_limit_(other.decoded_value_bytes_limit_),
+      next_(other.next_), rows_(other.rows_), cells_(other.cells_), metadata_(other.metadata_),
+      names_(other.names_), decoded_value_bytes_(other.decoded_value_bytes_), closed_(std::exchange(other.closed_, true)) {}
+PreparedResultSequence& PreparedResultSequence::operator=(PreparedResultSequence&& other) noexcept {
+  if (this != &other) {
+    sql_ = std::move(other.sql_); sets_ = std::move(other.sets_); description_ = std::move(other.description_);
+    owner_ = std::move(other.owner_); borrow_ = std::move(other.borrow_); deadline_ = other.deadline_;
+    limits_ = other.limits_; decoded_value_bytes_limit_ = other.decoded_value_bytes_limit_;
+    next_ = other.next_; rows_ = other.rows_; cells_ = other.cells_; metadata_ = other.metadata_;
+    names_ = other.names_; decoded_value_bytes_ = other.decoded_value_bytes_;
+    closed_ = std::exchange(other.closed_, true);
+  }
+  return *this;
+}
+BackendResult<PreparedResultSequence> SessionLease::start_result_sequence(
+    PreparedCommandPlan&& plan, std::size_t decoded_limit) {
+  if (plan.consumed_ || !borrow_ || plan.owner_.lock() != state_ || plan.borrow_.lock() != borrow_ ||
+      !physical_session() || plan.sets_.empty() || plan.outcomes_.size() != plan.sets_.size() ||
+      plan.description_.described_result_shape != DescribedResultShape::ResultSet)
+    return local_backend_error(LocalFailure::InvalidInput, "Prepared result plan is not valid for this borrow",
+        BackendOperation::ExecutePrepared, SessionState::Unknown);
+  plan.consumed_ = true;
+  PreparedResultSequence sequence{std::move(plan.sql_), std::move(plan.sets_), std::move(plan.description_),
+      state_, borrow_, plan.deadline_, plan.limits_, decoded_limit};
+  const auto& description = sequence.description_;
+  if (description.columns.size() > sequence.limits_.max_columns_per_description ||
+      description.columns.size() > sequence.limits_.max_metadata_entries ||
+      description.normalized_parameter_types.size() > sequence.limits_.max_metadata_entries - description.columns.size())
+    return BackendResult<PreparedResultSequence>{rs::util::DbErrorCode::ResourceLimit, {}};
+  sequence.metadata_ = description.columns.size() + description.normalized_parameter_types.size();
+  for (const auto& column : description.columns) {
+    if (!column.normalized_type || column.name.find('\0') != std::string::npos ||
+        !rs::util::utf8_code_point_count(column.name))
+      return BackendResult<PreparedResultSequence>{rs::util::DbErrorCode::ProtocolError, {}};
+    if (column.name.size() > sequence.limits_.max_column_name_bytes ||
+        column.name.size() > sequence.limits_.max_metadata_name_bytes - sequence.names_)
+      return BackendResult<PreparedResultSequence>{rs::util::DbErrorCode::ResourceLimit, {}};
+    sequence.names_ += column.name.size();
+  }
+  return BackendResult<PreparedResultSequence>{std::move(sequence),
+      passive_outcome(physical_session()->is_connected(), physical_session()->session_state())};
+}
+bool SessionLease::accepts_result_sequence(const PreparedResultSequence& sequence) const noexcept {
+  return !sequence.closed_ && borrow_ && sequence.owner_.lock() == state_ &&
+      sequence.borrow_.lock() == borrow_ && physical_session() &&
+      !sequence.sets_.empty() && sequence.next_ <= sequence.sets_.size();
+}
+BackendResult<PreparedResultStep> SessionLease::advance_result_sequence(PreparedResultSequence& sequence) {
+  // Refuse stale/moved/terminal plans before callbacks or input indexing.
+  if (!accepts_result_sequence(sequence)) {
+    sequence.closed_ = true;
+    return local_backend_error(LocalFailure::InvalidInput, "Prepared result sequence is not valid for this borrow",
+        BackendOperation::ExecutePrepared, SessionState::Unknown);
+  }
+  PreparedResultStep step;
+  const auto fail = [&](rs::util::DbErrorCode code) {
+    sequence.closed_ = true;
+    step.error.emplace(rs::util::make_error_code(code), std::string{});
+    step.error->operation = BackendOperation::ExecutePrepared;
+    step.snapshot = {SessionState::Disconnected, SessionDisposition::Retire};
+    retire();
+  };
+  try {
+    step.snapshot = passive_outcome(physical_session()->is_connected(), physical_session()->session_state());
+    if (step.snapshot.state == SessionState::Unknown || step.snapshot.state == SessionState::Disconnected ||
+        step.snapshot.disposition == SessionDisposition::Retire) {
+      fail(rs::util::DbErrorCode::NotConnected);
+      return BackendResult<PreparedResultStep>{std::move(step), {SessionState::Disconnected, SessionDisposition::Retire}};
+    }
+    while (sequence.next_ < sequence.sets_.size() && sequence.sets_[sequence.next_].ignored)
+      ++sequence.next_;
+    step.examined = sequence.next_;
+    if (sequence.next_ == sequence.sets_.size()) {
+      sequence.closed_ = true;
+      const auto snapshot = step.snapshot;
+      return BackendResult<PreparedResultStep>{std::move(step), snapshot};
+    }
+    step.ordinal = sequence.next_ + 1;
+    step.examined = step.ordinal;
+    if (rs::util::Clock::now() >= sequence.deadline_) {
+      fail(rs::util::DbErrorCode::Timeout);
+      return BackendResult<PreparedResultStep>{std::move(step), {SessionState::Disconnected, SessionDisposition::Retire}};
+    }
+    const auto& set = sequence.sets_[sequence.next_++];
+    auto result = execute_prepared(sequence.sql_, set.values, sequence.deadline_);
+    step.snapshot = result.session_snapshot();
+    if (!result) {
+      sequence.closed_ = true;
+      step.error = std::move(result.backend_error());
+    } else {
+      const auto& value = *result;
+      if (rs::util::Clock::now() >= sequence.deadline_) fail(rs::util::DbErrorCode::Timeout);
+      else if (step.snapshot.state == SessionState::Unknown || step.snapshot.state == SessionState::Disconnected ||
+          step.snapshot.disposition == SessionDisposition::Retire || value.error || value.described_result_shape ||
+          value.execution_result_shape != ExecutionResultShape::ResultSet || !value.additional_results.empty() ||
+          value.columns.size() != sequence.description_.columns.size()) fail(rs::util::DbErrorCode::ProtocolError);
+      else {
+        const auto consume = [](std::size_t amount, std::size_t limit, std::size_t& used) {
+          if (used > limit || amount > limit - used) return false;
+          used += amount; return true;
+        };
+        bool valid = true, bounded = consume(value.rows.size(), sequence.limits_.max_rows, sequence.rows_);
+        bounded = consume(value.columns.size(), sequence.limits_.max_metadata_entries, sequence.metadata_) && bounded;
+        bounded = consume(value.normalized_parameter_types.size(), sequence.limits_.max_metadata_entries, sequence.metadata_) && bounded;
+        for (std::size_t index = 0; index < value.columns.size(); ++index) {
+          const auto& column = value.columns[index];
+          const auto& expected = sequence.description_.columns[index];
+          if (!column.normalized_type || column.name.find('\0') != std::string::npos ||
+              !rs::util::utf8_code_point_count(column.name) || !expected.normalized_type) { valid = false; continue; }
+          const auto& actual = *column.normalized_type; const auto& described = *expected.normalized_type;
+          if (actual.type != described.type || actual.column_size != described.column_size ||
+              actual.decimal_digits != described.decimal_digits || actual.known != described.known) valid = false;
+          if (column.name.size() > sequence.limits_.max_column_name_bytes) bounded = false;
+          bounded = consume(column.name.size(), sequence.limits_.max_metadata_name_bytes, sequence.names_) && bounded;
+        }
+        for (const auto& row : value.rows) {
+          if (row.size() != value.columns.size()) valid = false;
+          bounded = consume(row.size(), sequence.limits_.max_cells, sequence.cells_) && bounded;
+          // Every non-NULL normalized cell is an owning string, including numeric/date/binary.
+          for (const auto& cell : row) if (cell)
+            bounded = consume(cell->size(), sequence.decoded_value_bytes_limit_, sequence.decoded_value_bytes_) && bounded;
+        }
+        if (!value.normalized_parameter_types.empty()) {
+          if (value.normalized_parameter_types.size() != sequence.description_.normalized_parameter_types.size()) valid = false;
+          else for (std::size_t index = 0; index < value.normalized_parameter_types.size(); ++index) {
+            const auto& actual = value.normalized_parameter_types[index];
+            const auto& expected = sequence.description_.normalized_parameter_types[index];
+            if (actual.type != expected.type || actual.column_size != expected.column_size ||
+                actual.decimal_digits != expected.decimal_digits || actual.known != expected.known) valid = false;
+          }
+        }
+        std::optional<CellEncodingError> previous;
+        for (const auto& error : value.cell_errors) {
+          if (error.row >= value.rows.size() || error.column >= value.columns.size() || error.column >= value.rows[error.row].size() ||
+              !value.rows[error.row][error.column] || (previous && *previous >= error)) valid = false;
+          previous = error;
+        }
+        if (!valid) fail(rs::util::DbErrorCode::ProtocolError);
+        else if (!bounded) fail(rs::util::DbErrorCode::ResourceLimit);
+        else if (rs::util::Clock::now() >= sequence.deadline_) fail(rs::util::DbErrorCode::Timeout);
+        else step.result = std::move(*result);
+      }
+    }
+  } catch (const std::bad_alloc&) { fail(rs::util::DbErrorCode::AllocationFailure); }
+    catch (...) { fail(rs::util::DbErrorCode::ProtocolError); }
+  const auto snapshot = step.snapshot;
+  return BackendResult<PreparedResultStep>{std::move(step), snapshot};
 }
 
 BackendResult<QueryResult> SessionLease::describe_statement(std::string_view sql,

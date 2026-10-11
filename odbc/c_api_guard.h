@@ -102,6 +102,10 @@ SQLRETURN invoke_c_api_with_handles(
     auto operation =
         HandleRegistry::instance().lock_handles(operation_handles);
     try {
+      if (!HandleRegistry::instance().admit_need_data(operation_handles,operation_name,diagnostic_handle)) {
+        record_return_code(diagnostic_handle,SQL_ERROR);
+        return SQL_ERROR;
+      }
       const auto result = static_cast<SQLRETURN>(
           std::forward<Callback>(callback)());
       record_return_code(diagnostic_handle, result);

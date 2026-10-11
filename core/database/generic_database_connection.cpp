@@ -851,6 +851,13 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
       error.native_state = std::move(query_error_sqlstate);
       return error;
     }
+    if (kind == ResponseKind::PreparedExecution &&
+        ((!result.error && !result.prepared_execution_authority) ||
+         std::any_of(result.additional_results.begin(), result.additional_results.end(),
+             [](const auto& item) { return !item.error && !item.prepared_execution_authority; }))) {
+      mark_transport_failed();
+      return {rs::util::DbErrorCode::ProtocolError, "Prepared execution lacks bound portal authority"};
+    }
     if (!valid_result_structure(result) ||
         std::any_of(result.additional_results.begin(), result.additional_results.end(),
             [](const auto& item) { return !item.additional_results.empty() || !valid_result_structure(item); })) {
@@ -879,6 +886,8 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
       item.error = std::move(parsed.error);
       item.affected_rows = parsed.affected_rows;
       item.statement_kind = parsed.statement_kind;
+      if (kind != ResponseKind::Description)
+        item.execution_result_shape = parsed.execution_result_shape;
       item.columns.reserve(parsed.columns.size());
       for (auto& column : parsed.columns) {
         item.columns.push_back({std::move(column.name),

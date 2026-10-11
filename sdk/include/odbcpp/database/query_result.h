@@ -48,6 +48,8 @@ struct CellEncodingError {
 
 // Authoritative description shape, never inferred from a zero-column vector.
 enum class DescribedResultShape { NoResultSet, ResultSet };
+// Execution completion authority is independent of statement description.
+enum class ExecutionResultShape { NoResultSet, ResultSet };
 
 struct QueryResult {
   ResultRows rows;
@@ -63,6 +65,8 @@ struct QueryResult {
   std::vector<CellEncodingError> cell_errors;
   // Present only on a successful statement description. Missing is unknown.
   std::optional<DescribedResultShape> described_result_shape;
+  // Present only for completed execution; missing is not inferred from fields.
+  std::optional<ExecutionResultShape> execution_result_shape;
 
 };
 

@@ -1,6 +1,7 @@
 #include "redshift_foreign_key_contract.h"
 #include "core/database/result_validation.h"
 #include <array>
+#include <algorithm>
 #include <charconv>
 #include <map>
 #include <set>
@@ -70,7 +71,11 @@ BackendResult<QueryResult> normalize_redshift_foreign_keys(
   for (const auto& extra : source.additional_results) if (extra.error) return *extra.error;
   if (!valid(plan) || !valid_result_structure(source) || source.columns.size() != 14 ||
       !source.additional_results.empty() || !source.cell_errors.empty() ||
-      !source.normalized_parameter_types.empty() || source.affected_rows != 0) return malformed();
+      ( !source.normalized_parameter_types.empty() &&
+        (source.normalized_parameter_types.size() != 3 ||
+         !std::all_of(source.normalized_parameter_types.begin(), source.normalized_parameter_types.end(),
+             [](const NativeTypeInfo& type) { return type.known && text(type.type); }))) ||
+      source.affected_rows != 0) return malformed();
   constexpr std::array<const char*, 14> names{"pk_database_name", "pk_schema_name", "pk_table_name", "pk_column_name",
       "fk_database_name", "fk_schema_name", "fk_table_name", "fk_column_name", "key_seq", "update_rule",
       "delete_rule", "fk_name", "pk_name", "deferrability"};
@@ -83,7 +88,16 @@ BackendResult<QueryResult> normalize_redshift_foreign_keys(
       ++count; indexes[i] = j;
       if (!column.normalized_type || !column.normalized_type->known) return malformed();
       const auto type = column.normalized_type->type;
-      if (numeric(i) ? (type != ScalarType::SmallInt && type != ScalarType::Integer) : !text(type)) return malformed();
+      if (numeric(i)) {
+        if (type != ScalarType::SmallInt && type != ScalarType::Integer) {
+          // SHOW may describe its entirely NULL optional rules as known text.
+          // Required key_seq and every non-NULL rule keep the numeric contract.
+          const bool null_rule = (i == 9 || i == 10 || i == 13) && text(type) &&
+              std::all_of(source.rows.begin(), source.rows.end(),
+                  [j](const ResultRow& row) { return !row[j]; });
+          if (!null_rule) return malformed();
+        }
+      } else if (!text(type)) return malformed();
     }
     if (count != 1) return malformed();
   }

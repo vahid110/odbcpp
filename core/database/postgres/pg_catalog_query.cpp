@@ -748,6 +748,10 @@ rs::util::Result<std::string> PgDatabaseConnection::catalog_query(
       rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter), "Invalid catalog name semantics"};
   const auto& request = *normalized;
   if (catalog_profile_ == PgCatalogProfile::Redshift) {
+    if (std::holds_alternative<ProceduresCatalogRequest>(request) ||
+        std::holds_alternative<ProcedureColumnsCatalogRequest>(request))
+      return rs::util::Result<std::string>{rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature),
+          "Redshift routine catalogs require modern exact-schema execution"};
     if (const auto* tables = std::get_if<TablesCatalogRequest>(&request);
         tables && tables->mode == TablesCatalogRequest::Mode::Schemas)
       return redshift_schemas_query();

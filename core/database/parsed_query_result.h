@@ -24,6 +24,9 @@ struct ParsedQueryResult {
   std::size_t affected_rows{0};
   std::vector<ParsedQueryResult> additional_results;
   std::optional<StatementKind> statement_kind;
+  std::optional<ExecutionResultShape> execution_result_shape;
+  // Backend-private evidence: BindComplete followed by portal T/n and C.
+  bool prepared_execution_authority{false};
 };
 
 } // namespace rs::core::database

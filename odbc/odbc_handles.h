@@ -23,7 +23,7 @@
 namespace rs::odbc {
 
 class HandleRegistry;
-namespace detail { struct ODBCBackendTestAccess; struct MetadataEpochIdentity; }
+namespace detail { struct ODBCBackendTestAccess; struct MetadataEpochIdentity; struct PendingInputSessionIdentity; }
 
 // Diagnostic record for ODBC error handling
 struct DiagnosticRecord {
@@ -93,11 +93,11 @@ public:
   // Rowset diagnostics are ODBC records, not a source-sized scratch array.
   // SQLGetDiagRec's SQLSMALLINT index bounds the addressable record inventory.
   void add_attributed_diagnostic(const std::string& state, const std::string& message,
-                                SQLLEN row, SQLLEN column) {
+                                SQLLEN row, SQLLEN column, SQLINTEGER native_error = 0) {
     std::lock_guard lock(diagnostics_mutex_);
     if (diagnostic_records_.size() >= static_cast<std::size_t>(
             (std::numeric_limits<SQLSMALLINT>::max)())) return;
-    diagnostic_records_.emplace_back(state, 0, message);
+    diagnostic_records_.emplace_back(state, native_error, message);
     diagnostic_records_.back().row_number = row;
     diagnostic_records_.back().column_number = static_cast<SQLINTEGER>(column);
   }
@@ -231,6 +231,8 @@ public:
       const std::optional<std::string>& password = std::nullopt);
   SQLRETURN disconnect();
   bool is_connected() const { return connected_; }
+  bool has_pending_input() const;
+  bool has_pending_result_sequence() const;
   bool metadata_identifiers_default() const noexcept { return metadata_id_default_; }
   std::size_t sql_input_limit() const noexcept { return input_limits_.max_sql_bytes; }
   const rs::core::database::InputLimits& input_limits() const noexcept { return input_limits_; }
@@ -272,6 +274,9 @@ public:
   bool supports_server_cancellation() const noexcept { return backend_lease_ && backend_lease_->supports_server_cancellation(); }
   bool has_catalog_query_facet() const noexcept { return backend_lease_ && backend_observation_.has_catalog_query_facet; }
   bool has_catalog_execution_facet() const noexcept { return backend_lease_ && backend_observation_.has_catalog_execution_facet; }
+  bool supports_select_parameter_arrays() const noexcept {
+    return connected_ && backend_lease_ && backend_observation_.has_prepared_result_sequence;
+  }
   bool supports_parameter_arrays() const noexcept {
     return connected_ && backend_lease_ &&
         backend_observation_.has_single_statement_result_shape;
@@ -309,6 +314,8 @@ private:
       rs::core::database::TransactionIsolation level, rs::util::Deadline deadline);
   rs::core::database::InputLimits input_limits_;
   rs::core::database::ResultLimits result_limits_;
+  // Separate local decoded sequence policy; never aggregate wire/heap accounting.
+  std::size_t sequence_decoded_value_bytes_limit_{0};
 
   std::shared_ptr<const rs::core::database::IBackendProvider> backend_provider_;
   // One unbound exclusive borrow, terminal at disconnect; no return/reissue.
@@ -318,6 +325,8 @@ private:
   rs::core::database::SessionObservation backend_observation_;
   // Private logical-session metadata epoch; no reusable-session/cache authority.
   std::shared_ptr<const detail::MetadataEpochIdentity> metadata_epoch_;
+  // Logical DAE continuation identity, distinct from per-query metadata cache.
+  std::shared_ptr<const detail::PendingInputSessionIdentity> pending_input_identity_;
   bool connected_ = false;
   bool metadata_id_default_ = false;
   SQLUINTEGER login_timeout_seconds_ = 30;
@@ -488,6 +497,7 @@ public:
   SQLRETURN fetch();
   SQLRETURN fetch_scroll(SQLSMALLINT orientation, SQLLEN offset);
   SQLRETURN set_pos(SQLSETPOSIROW row, SQLUSMALLINT operation, SQLUSMALLINT lock);
+  SQLRETURN bulk_operations(SQLSMALLINT operation);
   SQLRETURN more_results();
   SQLRETURN get_data(SQLUSMALLINT col, SQLSMALLINT target_type, 
                      void* buffer, SQLLEN buffer_length, SQLLEN* indicator);
@@ -501,6 +511,12 @@ public:
   // Prepared statements
   SQLRETURN prepare(const std::string& sql);
   SQLRETURN execute();
+  SQLRETURN param_data(SQLPOINTER* token);
+  SQLRETURN put_data(SQLPOINTER data, SQLLEN length);
+  bool needs_data() const;
+  bool has_pending_result_sequence() const noexcept;
+  bool has_parameter_result_cursor() const noexcept { return parameter_result_cursor_; }
+  bool uses_descriptor(SQLHDESC handle) const noexcept;
   SQLRETURN num_params(SQLSMALLINT* parameter_count);
   SQLRETURN bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLINT input_output_type,
                           SQLSMALLINT value_type, SQLSMALLINT parameter_type, SQLULEN column_size,
@@ -570,12 +586,40 @@ private:
   enum class StaticPosition { BeforeStart, OnRowset, AfterEnd };
   StaticPosition static_position_ = StaticPosition::BeforeStart;
   SQLULEN cursor_type_ = SQL_CURSOR_FORWARD_ONLY;
+  // C-buffer projection only: no descriptor strings or SDK/native authority.
+  struct BoundResultField {
+    SQLSMALLINT concise_type, precision, scale;
+    SQLLEN octet_length;
+    SQLPOINTER data_ptr;
+    SQLLEN* indicator_ptr;
+    SQLLEN* octet_length_ptr;
+  };
+  static BoundResultField bound_result_field(const DescriptorRecord& record) noexcept {
+    return {record.concise_type, record.precision, record.scale, record.octet_length,
+        record.data_ptr, record.indicator_ptr, record.octet_length_ptr};
+  }
+  struct BulkBindingView {
+    std::span<const BoundResultField> fields;
+    std::span<const unsigned char> ignored;
+    SQLUSMALLINT* status;
+  };
+  bool bulk_unpositioned_ = false;
   SQLRETURN fetch_bound_row(std::size_t row_index, std::size_t slot,
                             std::size_t rowset_size, std::size_t row_stride,
-                            std::uintptr_t binding_offset);
-  struct CancellationLedger;
+                            std::uintptr_t binding_offset, const BulkBindingView* bulk = nullptr);
   class ExecutionCancellation;
-  std::mutex cancellation_mutex_;
+  class PendingInputCall;
+  struct PendingInput;
+  std::shared_ptr<PendingInput> pending_input_;
+  void abandon_pending_input() noexcept;
+  bool pending_call_ready(const std::shared_ptr<PendingInput>& input);
+  std::optional<SQLRETURN> start_pending_input(std::uintptr_t offset, rs::util::Deadline deadline,
+      const std::shared_ptr<ExecutionCancellation>& cancellation);
+  SQLRETURN dispatch_owning_parameters(
+      std::vector<rs::core::database::QueryParameter> values, rs::util::Deadline deadline,
+      ExecutionCancellation& cancellation, const std::shared_ptr<PendingInput>& input = {});
+  struct CancellationLedger;
+  mutable std::mutex cancellation_mutex_;
   std::shared_ptr<CancellationLedger> cancellation_;
   std::uint64_t operation_generation_{0};
   std::shared_ptr<ODBCConnection> conn_;
@@ -609,6 +653,12 @@ private:
     std::optional<DiagnosticHeader> parameter_array_header;
   };
   std::vector<PendingResult> pending_results_;
+  std::optional<rs::core::database::PreparedResultSequence> result_sequence_;
+  SQLUSMALLINT* sequence_statuses_{nullptr};
+  SQLULEN* sequence_processed_{nullptr};
+  SQLULEN sequence_max_rows_{0};
+  bool parameter_result_cursor_{false};
+  SQLRETURN advance_parameter_result(bool initial);
   std::string prepared_sql_;
   size_t current_row_ = 0;
   bool row_positioned_ = false;
@@ -642,17 +692,31 @@ private:
 
   void apply_parameter_array_count(DiagnosticHeader header);
   void apply_query_result(rs::core::database::QueryResult result,
-                          bool include_parameter_metadata);
+                          bool include_parameter_metadata,
+                          std::optional<SQLULEN> captured_max_rows = std::nullopt,
+                          bool parameter_result_publication = false);
   void apply_result_metadata(
       const rs::core::database::QueryResult& result,
-      bool include_parameter_metadata);
+      bool include_parameter_metadata, bool parameter_result_publication = false);
   SQLRETURN ensure_result_metadata();
   SQLRETURN describe_prepared_metadata(
       std::optional<rs::util::Deadline> original_deadline = std::nullopt);
   void invalidate_eager_prepare() noexcept;
   SQLRETURN execute_catalog(const rs::core::database::CatalogRequest& request);
   void clear_current_result();
-  SQLRETURN complete_parameter_set(SQLRETURN result);
+  SQLRETURN complete_parameter_set(SQLRETURN result,
+      const std::shared_ptr<PendingInput>& input = {});
+  // Only ODBC C representation/dimensions/pointers, no catalog text fields.
+  struct ParameterConversionRecord {
+    SQLSMALLINT concise_type{},bound_sql_type{},bound_sql_precision{},precision{},scale{},parameter_type{SQL_PARAM_INPUT};
+    SQLULEN bound_sql_length{},length{};
+    std::optional<SQLSMALLINT> bound_sql_scale;
+    SQLPOINTER data_ptr{};
+    SQLLEN* indicator_ptr{};
+    SQLLEN* octet_length_ptr{};
+    SQLLEN octet_length{};
+  };
+  static ParameterConversionRecord conversion_record(const DescriptorRecord& record) noexcept;
   struct ParameterInputBase {
     void* data{};
     SQLLEN* indicator{};
@@ -661,7 +725,20 @@ private:
   std::optional<std::vector<rs::core::database::QueryParameter>> materialize_parameter_set(
       std::uintptr_t input_offset, SQLULEN set_index, bool array,
       SQLULEN bind_stride, std::span<const ParameterInputBase> bases,
-      std::size_t& aggregate_bytes);
+      std::size_t& aggregate_bytes,
+      std::span<const ParameterConversionRecord> captured_application = {},
+      std::span<const ParameterConversionRecord> captured_implementation = {},
+      std::optional<std::size_t> selected = std::nullopt);
+  std::optional<SQLRETURN> start_pending_array(std::uintptr_t offset, SQLULEN stride,
+      std::span<const ParameterInputBase> bases,
+      std::vector<rs::core::database::PreparedCommandSet>& sets,
+      rs::util::Deadline deadline, const std::shared_ptr<ExecutionCancellation>& cancellation);
+  SQLRETURN publish_deferred_result(rs::core::database::PreparedCommandPlan plan,
+      const std::shared_ptr<PendingInput>& input);
+  SQLRETURN publish_command_batch(rs::core::database::PreparedCommandPlan plan,
+      SQLUSMALLINT* statuses, SQLULEN* processed, std::size_t size,
+      rs::util::Deadline deadline, bool deferred,
+      std::vector<PendingResult> staged_results = {});
   SQLRETURN execute_parameter_array(rs::util::Deadline original_deadline);
   SQLHDESC create_implicit_descriptor(DescriptorKind kind);
   SQLRETURN set_application_descriptor(SQLINTEGER attribute,
@@ -683,8 +760,11 @@ public:
   std::shared_ptr<ODBCHandle> get_handle(SQLHANDLE handle);
   std::shared_ptr<ODBCConnection> get_connection_for_handle(SQLHANDLE handle);
   void detach_descriptor_from_statements(SQLHDESC descriptor);
+  bool admit_need_data(std::initializer_list<SQLHANDLE> handles,
+                       std::string_view name, SQLHANDLE diagnostic);
   HandleOperationLease lock_handles(
       std::initializer_list<SQLHANDLE> handles);
+  HandleOperationLease lock_handles(std::span<const SQLHANDLE> handles);
   
   template<typename T>
   std::shared_ptr<T> get_handle_as(SQLHANDLE handle) {

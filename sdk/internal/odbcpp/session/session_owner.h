@@ -42,6 +42,7 @@ struct SessionObservation {
   // Presence only: an individual request may still be unsupported.
   bool has_statement_description_facet{false};
   bool has_single_statement_result_shape{false};
+  bool has_prepared_result_sequence{false};
   bool has_catalog_query_facet{false};
   bool has_catalog_execution_facet{false};
   bool has_health_facet{false};
@@ -65,6 +66,41 @@ struct PreparedCommandBatchResult {
   std::vector<PreparedCommandOutcome> outcomes;
   std::size_t examined{0};
 };
+// Owning typed description authority for deferred parameter input. No parameter
+// values are fabricated for description; only this exact exclusive borrow may
+// finalize real sets. Moving/consuming invalidates the source representation.
+class PreparedParameterDescription final {
+ public:
+  PreparedParameterDescription(PreparedParameterDescription&&) noexcept;
+  PreparedParameterDescription& operator=(PreparedParameterDescription&&) noexcept;
+  PreparedParameterDescription(const PreparedParameterDescription&) = delete;
+  PreparedParameterDescription& operator=(const PreparedParameterDescription&) = delete;
+ private:
+  friend class SessionLease;
+  PreparedParameterDescription(std::string sql, std::vector<QueryParameterType> types,
+      QueryResult description, std::weak_ptr<detail::SessionOwnershipState> owner,
+      std::weak_ptr<const detail::SessionBorrowIdentity> borrow,
+      rs::util::Deadline deadline, InputLimits input, ResultLimits limits,
+      std::size_t set_count, SessionSnapshot snapshot)
+      : sql_(std::move(sql)), types_(std::move(types)), description_(std::move(description)),
+        owner_(std::move(owner)), borrow_(std::move(borrow)), deadline_(deadline),
+        input_(input), limits_(limits), set_count_(set_count), snapshot_(snapshot) {}
+  std::string sql_;
+  std::vector<QueryParameterType> types_;
+  QueryResult description_;
+  std::weak_ptr<detail::SessionOwnershipState> owner_;
+  std::weak_ptr<const detail::SessionBorrowIdentity> borrow_;
+  rs::util::Deadline deadline_;
+  InputLimits input_;
+  ResultLimits limits_;
+  std::size_t set_count_;
+  SessionSnapshot snapshot_;
+  bool consumed_{false};
+};
+
+// Preserve private command-source callers; command operations still enforce NoResultSet.
+using PreparedCommandDescription = PreparedParameterDescription;
+
 class PreparedCommandPlan final {
  public:
   PreparedCommandPlan(PreparedCommandPlan&&) noexcept;
@@ -89,6 +125,43 @@ class PreparedCommandPlan final {
   ResultLimits limits_;
   std::vector<PreparedCommandOutcome> outcomes_;
   bool consumed_{false};
+};
+
+// One owning result per advance. No session pointer, callbacks or caller buffers.
+struct PreparedResultStep {
+  std::optional<QueryResult> result;
+  std::optional<BackendError> error;
+  SessionSnapshot snapshot;
+  std::size_t examined{0};
+  std::size_t ordinal{0}; // one-based attempted original ordinal, zero on exhaustion
+};
+class PreparedResultSequence final {
+ public:
+  PreparedResultSequence(PreparedResultSequence&&) noexcept;
+  PreparedResultSequence& operator=(PreparedResultSequence&&) noexcept;
+  PreparedResultSequence(const PreparedResultSequence&) = delete;
+  PreparedResultSequence& operator=(const PreparedResultSequence&) = delete;
+  bool pending() const noexcept { return !closed_ && next_ < sets_.size(); }
+  const QueryResult& description() const noexcept { return description_; }
+ private:
+  friend class SessionLease;
+  PreparedResultSequence(std::string sql, std::vector<PreparedCommandSet> sets,
+      QueryResult description, std::weak_ptr<detail::SessionOwnershipState> owner,
+      std::weak_ptr<const detail::SessionBorrowIdentity> borrow,
+      rs::util::Deadline deadline, ResultLimits limits, std::size_t decoded_limit)
+      : sql_(std::move(sql)), sets_(std::move(sets)), description_(std::move(description)),
+        owner_(std::move(owner)), borrow_(std::move(borrow)), deadline_(deadline), limits_(limits),
+        decoded_value_bytes_limit_(decoded_limit) {}
+  std::string sql_;
+  std::vector<PreparedCommandSet> sets_;
+  QueryResult description_;
+  std::weak_ptr<detail::SessionOwnershipState> owner_;
+  std::weak_ptr<const detail::SessionBorrowIdentity> borrow_;
+  rs::util::Deadline deadline_;
+  ResultLimits limits_;
+  std::size_t decoded_value_bytes_limit_;
+  std::size_t next_{0}, rows_{0}, cells_{0}, metadata_{0}, names_{0}, decoded_value_bytes_{0};
+  bool closed_{false};
 };
 
 // Internal ownership primitive, not an installed SDK or pool API. A borrowed
@@ -125,7 +198,28 @@ class SessionLease final {
   BackendResult<PreparedCommandPlan> prepare_command_batch(std::string_view sql,
       std::vector<PreparedCommandSet> sets, const InputLimits&, const ResultLimits&,
       rs::util::Deadline original_deadline);
+  BackendResult<PreparedCommandPlan> prepare_parameter_batch(std::string_view sql,
+      std::vector<PreparedCommandSet> sets, const InputLimits&, const ResultLimits&,
+      rs::util::Deadline original_deadline, bool allow_results);
+  BackendResult<PreparedParameterDescription> describe_parameter_input(std::string_view sql,
+      std::vector<QueryParameterType> types, std::size_t set_count,
+      const InputLimits&, const ResultLimits&, rs::util::Deadline original_deadline,
+      bool allow_results);
+  bool accepts_parameter_description(const PreparedParameterDescription&) const noexcept;
+  BackendResult<PreparedCommandPlan> finalize_parameter_input(PreparedParameterDescription&&,
+      std::vector<PreparedCommandSet> real_sets);
+  BackendResult<PreparedCommandDescription> describe_command_batch(std::string_view sql,
+      std::vector<QueryParameterType> types, std::size_t set_count,
+      const InputLimits&, const ResultLimits&, rs::util::Deadline original_deadline);
+  bool accepts_command_description(const PreparedCommandDescription&) const noexcept;
+  BackendResult<PreparedCommandPlan> finalize_command_batch(PreparedCommandDescription&&,
+      std::vector<PreparedCommandSet> real_sets);
   BackendResult<PreparedCommandBatchResult> execute_command_batch(PreparedCommandPlan&&);
+  BackendResult<PreparedResultSequence> start_result_sequence(PreparedCommandPlan&&,
+      std::size_t decoded_value_bytes_limit);
+  // Exact-borrow representation check only: no backend observation or I/O.
+  bool accepts_result_sequence(const PreparedResultSequence&) const noexcept;
+  BackendResult<PreparedResultStep> advance_result_sequence(PreparedResultSequence&);
   BackendResult<void> transaction(TransactionAction, rs::util::Deadline);
   BackendResult<void> set_transaction_isolation(TransactionIsolation, rs::util::Deadline);
   BackendResult<QueryResult> describe_statement(std::string_view,
