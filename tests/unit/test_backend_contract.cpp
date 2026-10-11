@@ -11709,12 +11709,12 @@ TEST_F(ConnectedMetadataTimeoutTest, EagerAnsiWideAndLazyUseOneConnectionCeiling
   EXPECT_GE(seen->description_deadline,lazy+std::chrono::seconds{1});EXPECT_LE(seen->description_deadline,rs::util::Clock::now()+std::chrono::seconds{1});
   for(unsigned operation=0;operation<5;++operation) {
     SCOPED_TRACE(operation);ASSERT_EQ(SQL_SUCCESS,prepare_sql());const auto n=seen->descriptions;
-    SQLSMALLINT columns=-1,name_length=-1,column_type=-1;SQLULEN size=97;SQLLEN numeric=97;SQLCHAR name[16]{};SQLWCHAR wide_name[16]{};
+    SQLSMALLINT columns=-1,name_length=-1,column_type=-1;SQLULEN size=97;SQLLEN numeric_attribute=97;SQLCHAR name[16]{};SQLWCHAR wide_name[16]{};
     if(operation==0){ASSERT_EQ(SQL_SUCCESS,SQLNumResultCols(stmt,&columns));EXPECT_EQ(3,columns);}
     if(operation==1){ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(stmt,1,name,sizeof(name),&name_length,&column_type,&size,nullptr,nullptr));}
     if(operation==2){ASSERT_EQ(SQL_SUCCESS,SQLDescribeColW(stmt,1,wide_name,16,&name_length,&column_type,&size,nullptr,nullptr));}
-    if(operation==3){ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(stmt,1,SQL_DESC_TYPE,nullptr,0,nullptr,&numeric));}
-    if(operation==4){ASSERT_EQ(SQL_SUCCESS,SQLColAttributeW(stmt,1,SQL_DESC_TYPE,nullptr,0,nullptr,&numeric));}
+    if(operation==3){ASSERT_EQ(SQL_SUCCESS,SQLColAttribute(stmt,1,SQL_DESC_TYPE,nullptr,0,nullptr,&numeric_attribute));}
+    if(operation==4){ASSERT_EQ(SQL_SUCCESS,SQLColAttributeW(stmt,1,SQL_DESC_TYPE,nullptr,0,nullptr,&numeric_attribute));}
     EXPECT_EQ(n+1,seen->descriptions);EXPECT_NE(Deadline::max(),seen->description_deadline);
     ASSERT_NO_FATAL_FAILURE(describe(SQL_SUCCESS));EXPECT_EQ(n+1,seen->descriptions);
   }
