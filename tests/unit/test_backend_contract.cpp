@@ -11363,3 +11363,84 @@ TEST_F(CatalogRouteApiTest, IdentifierQuotedUnicodeRequestsKeepAllNamesAndDescri
   EXPECT_EQ(2,seen->catalog_calls);EXPECT_EQ(0,seen->catalog_builds);
 }
 } // namespace
+
+namespace {
+class DayOrdinalEscapeApiTest : public TemporalEscapeApiTest {
+ protected:
+  void ordinal_result(bool null=false) {
+    QueryResult result;result.columns={{"weekday",NativeTypeInfo{ScalarType::Integer,10,0,true}},
+        {"ordinal",NativeTypeInfo{ScalarType::Integer,10,0,true}}};
+    result.rows=null?ResultRows{{std::nullopt,std::nullopt}}:ResultRows{{"1","7"}};
+    result.normalized_parameter_types={{ScalarType::Date,10,0,true},{ScalarType::Timestamp,26,6,true}};
+    result.statement_kind=StatementKind::SelectCursor;seen->date_result=std::move(result);
+  }
+};
+TEST_F(DayOrdinalEscapeApiTest, ConnectedAnsiWideOwningLengthTruncationAndDisconnectedGuard) {
+  ASSERT_NO_FATAL_FAILURE(native_sql_requires_connection());
+  std::string sql="SELECT {fn DAYOFWEEK({d '2024-01-07'})},{fn DAYOFYEAR({d '2024-02-29'})}";
+  const std::string expected="SELECT (EXTRACT(dow FROM DATE '2024-01-07')+1),EXTRACT(doy FROM DATE '2024-02-29')";
+  std::array<SQLCHAR,160> output{};SQLINTEGER length=97;
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS,output.data(),output.size(),&length));
+  EXPECT_EQ(expected,reinterpret_cast<char*>(output.data()));EXPECT_EQ(static_cast<SQLINTEGER>(expected.size()),length);
+  sql="mutated";EXPECT_EQ(expected,reinterpret_cast<char*>(output.data()));
+  std::vector<SQLWCHAR> input,answer;
+  for(const auto ch:u"SELECT {fn DAYOFYEAR(/*\u00e9\u8868*/?)}"){input.push_back(static_cast<SQLWCHAR>(ch));}
+  for(const auto ch:u"SELECT EXTRACT(doy FROM /*\u00e9\u8868*/?)"){answer.push_back(static_cast<SQLWCHAR>(ch));}
+  struct {SQLWCHAR before{17},value[96]{},after{83};} out;
+  ASSERT_EQ(SQL_SUCCESS,SQLNativeSqlW(dbc,input.data(),SQL_NTS,out.value,96,&length));
+  EXPECT_EQ(static_cast<SQLINTEGER>(answer.size()-1),length);EXPECT_EQ(0,std::memcmp(answer.data(),out.value,answer.size()*sizeof(SQLWCHAR)));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLNativeSqlW(dbc,input.data(),SQL_NTS,out.value,4,&length));
+  EXPECT_EQ("01004",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(0,out.value[3]);EXPECT_EQ(17,out.before);EXPECT_EQ(83,out.after);EXPECT_EQ(0,seen->queries);
+}
+TEST_F(DayOrdinalEscapeApiTest, PreparedDateTimestampNullInvalidCalendarAndOwningRefill) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_NO_FATAL_FAILURE(ordinal_result());
+  auto sql=wide("SELECT {fn DAYOFWEEK(?)},{fn DAYOFYEAR(?)}");ASSERT_EQ(SQL_SUCCESS,SQLPrepareW(stmt,sql.data(),SQL_NTS));
+  SQL_DATE_STRUCT date{2024,1,7};SQL_TIMESTAMP_STRUCT stamp{2024,1,7,12,34,56,123456000};SQLLEN date_length=0,stamp_length=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_TYPE_DATE,SQL_TYPE_DATE,10,0,&date,sizeof(date),&date_length));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,2,SQL_PARAM_INPUT,SQL_C_TYPE_TIMESTAMP,SQL_TYPE_TIMESTAMP,26,6,&stamp,sizeof(stamp),&stamp_length));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt))<<diagnostic();ASSERT_EQ(2u,seen->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"2024-01-07"},seen->parameters[0].value);EXPECT_EQ(std::optional<std::string>{"2024-01-07 12:34:56.123456"},seen->parameters[1].value);
+  date.month=13;stamp.fraction=0;ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  struct {SQLINTEGER before{71},value{0},after{73};} out;SQLLEN bytes=97;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&out.value,sizeof(out.value),&bytes));EXPECT_EQ(1,out.value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),bytes);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_SLONG,&out.value,sizeof(out.value),&bytes));EXPECT_EQ(7,out.value);EXPECT_EQ(71,out.before);EXPECT_EQ(73,out.after);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));const auto calls=seen->queries;
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ("22007",state());EXPECT_EQ(calls,seen->queries);EXPECT_TRUE(seen->transaction_calls.empty());
+  date={2024,2,29};stamp={2024,2,29,23,59,59,999999000};seen->date_result->rows={{"5","60"}};
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt))<<diagnostic();ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&out.value,sizeof(out.value),&bytes));EXPECT_EQ(5,out.value);
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,2,SQL_C_SLONG,&out.value,sizeof(out.value),&bytes));EXPECT_EQ(60,out.value);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));date_length=stamp_length=SQL_NULL_DATA;
+  ASSERT_NO_FATAL_FAILURE(ordinal_result(true));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt))<<diagnostic();for(const auto& parameter:seen->parameters){EXPECT_FALSE(parameter.value);}
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));out.value=0;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&out.value,sizeof(out.value),&bytes));EXPECT_EQ(SQL_NULL_DATA,bytes);EXPECT_EQ(0,out.value);EXPECT_EQ(71,out.before);EXPECT_EQ(73,out.after);
+  ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));date_length=stamp_length=0;
+  ASSERT_NO_FATAL_FAILURE(ordinal_result());
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt))<<diagnostic();EXPECT_EQ(std::optional<std::string>{"2024-02-29"},seen->parameters[0].value);
+}
+TEST_F(DayOrdinalEscapeApiTest, LocalGrammarRefusalNoEffectsRepairAndNoScan) {
+  ASSERT_NO_FATAL_FAILURE(connect());const auto descriptions=seen->descriptions,queries=seen->queries;
+  for(const auto* text:{"SELECT {fn DAYOFWEEK()}","SELECT {fn DAYOFYEAR(?,?)}","SELECT {fn DAYOFWEEK(?) extra}"}){
+    EXPECT_EQ(SQL_ERROR,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(const_cast<char*>(text)),SQL_NTS));EXPECT_EQ("42000",state());
+    EXPECT_EQ(descriptions,seen->descriptions);EXPECT_EQ(queries,seen->queries);EXPECT_TRUE(seen->transaction_calls.empty());
+  }
+  std::string text="SELECT {fn DAYOFWEEK({d '2024-01-07'})}";
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_NOSCAN,reinterpret_cast<SQLPOINTER>(SQL_NOSCAN_ON),0));
+  ASSERT_EQ(SQL_SUCCESS,execute(text.c_str()));EXPECT_EQ(text,seen->sql);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_NOSCAN,reinterpret_cast<SQLPOINTER>(SQL_NOSCAN_OFF),0));
+  ASSERT_EQ(SQL_SUCCESS,execute(text.c_str()));EXPECT_EQ("SELECT (EXTRACT(dow FROM DATE '2024-01-07')+1)",seen->sql);
+}
+TEST_F(DayOrdinalEscapeApiTest, SiblingSnapshotAndCapabilityMasksSurviveLocalRefusal) {
+  ASSERT_NO_FATAL_FAILURE(connect());ASSERT_EQ(SQL_SUCCESS,execute("owning row"));const auto calls=seen->queries;
+  SQLHSTMT sibling{};ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,dbc,&sibling));
+  std::string text="SELECT {fn DAYOFYEAR(?,?)}";std::array<SQLCHAR,16> output;output.fill(0x5a);const auto prior=output;SQLINTEGER length=97;
+  EXPECT_EQ(SQL_ERROR,SQLNativeSql(dbc,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS,output.data(),output.size(),&length));
+  EXPECT_EQ("42000",state(SQL_HANDLE_DBC,dbc));EXPECT_EQ(prior,output);EXPECT_EQ(97,length);
+  EXPECT_EQ(SQL_ERROR,SQLExecDirect(sibling,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS));EXPECT_EQ(calls,seen->queries);
+  ASSERT_EQ(SQL_SUCCESS,SQLFetch(stmt));char owned[16]{};SQLLEN bytes=97;ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_CHAR,owned,sizeof(owned),&bytes));EXPECT_STREQ("owning",owned);
+  SQLUINTEGER mask=97;ASSERT_EQ(SQL_SUCCESS,SQLGetInfo(dbc,SQL_TIMEDATE_FUNCTIONS,&mask,sizeof(mask),nullptr));EXPECT_EQ(0u,mask);
+  ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,sibling));
+}
+} // namespace

@@ -439,6 +439,54 @@ SqlTranslationResult translate_clock_component(std::string_view function, std::s
   return failure(SqlTranslationError::InvalidSyntax, "Unclosed clock component call");
 }
 
+SqlTranslationResult translate_day_ordinal_component(std::string_view function, std::size_t name_end,
+                                                   std::string_view part) {
+  const auto open = skip_trivia(function, name_end);
+  if (!open || *open == function.size() || function[*open] != '(')
+    return failure(SqlTranslationError::InvalidSyntax, "ODBC day ordinal component requires an argument list");
+  std::array<std::string_view,1> arguments{};
+  std::size_t count = 0;
+  std::size_t begin = *open + 1;
+  std::size_t depth = 1;
+  for (std::size_t i = begin; i < function.size();) {
+    std::optional<std::size_t> skipped;
+    if (function[i] == '\'' || function[i] == '"') {
+      skipped = quoted_end(function, i);
+      if (!skipped) return failure(SqlTranslationError::InvalidSyntax, "Unclosed day ordinal component quoted argument");
+    } else if (function.substr(i,2) == "--" || function.substr(i,2) == "/*") {
+      skipped = comment_end(function,i);
+      if (!skipped) return failure(SqlTranslationError::InvalidSyntax, "Unclosed day ordinal component comment");
+    } else if (function[i] == '$' && dollar_tag_at(function,i)) {
+      skipped = dollar_end(function,i);
+      if (!skipped) return failure(SqlTranslationError::InvalidSyntax, "Unclosed day ordinal component dollar argument");
+    }
+    if (skipped) { i = *skipped; continue; }
+    if (function[i] == '(') { ++depth; ++i; continue; }
+    const bool close = function[i] == ')' && depth == 1;
+    if ((function[i] == ',' && depth == 1) || close) {
+      const auto argument = function.substr(begin,i-begin);
+      const auto first = skip_trivia(argument,0);
+      if (!first || *first == argument.size() || count == arguments.size())
+        return failure(SqlTranslationError::InvalidSyntax, "Invalid day ordinal component argument count or empty argument");
+      arguments[count++] = argument;
+      if (close) {
+        const auto end = skip_trivia(function,i+1);
+        if (!end || *end != function.size() || count != 1)
+          return failure(SqlTranslationError::InvalidSyntax, "Invalid day ordinal component call structure");
+        // Ordinal fields already use the selected native INTEGER domain.
+        // Preserve the raw tail newline and evaluate the expression once.
+        std::string result{"EXTRACT("}; result.append(part);
+        result += " FROM "; result.append(arguments[0]); result += ")";
+        return {std::move(result),SqlTranslationError::None,{}};
+      }
+      begin = ++i; continue;
+    }
+    if (function[i] == ')') --depth;
+    ++i;
+  }
+  return failure(SqlTranslationError::InvalidSyntax, "Unclosed day ordinal component call");
+}
+
 SqlTranslationResult translate_fragment(std::string_view sql, SqlDialectProfile profile);
 
 SqlTranslationResult translate_datetime(std::string_view body,
@@ -491,6 +539,16 @@ SqlTranslationResult translate_escape(std::string_view body, SqlDialectProfile p
         if (ascii_word_equal(name, "YEAR")) return translate_calendar_component(function,name_end,"year");
         if (ascii_word_equal(name, "MONTH")) return translate_calendar_component(function,name_end,"month");
         if (ascii_word_equal(name, "DAYOFMONTH")) return translate_calendar_component(function,name_end,"day");
+        if (ascii_word_equal(name, "DAYOFWEEK")) {
+          auto ordinal = translate_day_ordinal_component(function,name_end,"dow");
+          if (!ordinal) return ordinal;
+          // Native dow is Sunday0; ODBC requires Sunday1. The raw expression
+          // remains once, including its line-comment terminating newline.
+          ordinal.sql.insert(0,"("); ordinal.sql += "+1)";
+          return ordinal;
+        }
+        if (ascii_word_equal(name, "DAYOFYEAR"))
+          return translate_day_ordinal_component(function,name_end,"doy");
         if (ascii_word_equal(name, "HOUR")) return translate_clock_component(function,name_end,"hour");
         if (ascii_word_equal(name, "MINUTE")) return translate_clock_component(function,name_end,"minute");
         if (ascii_word_equal(name, "SECOND")) return translate_clock_component(function,name_end,"second");

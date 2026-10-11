@@ -6764,3 +6764,189 @@ TEST_F(RedshiftForeignKeyObservationNativeRealTest, PreparedShowOwnsRawMetadataB
   EXPECT_TRUE(normalized) << "Strict FK normalizer rejected the captured owning response";
   if (normalized) { EXPECT_EQ(2u, normalized->rows.size()); }
 }
+
+class RedshiftDayOrdinalEscapeRealTest : public RedshiftLocateEscapeRealTest {
+ protected:
+  SQL_DATE_STRUCT date_{2024,1,7};SQL_TIMESTAMP_STRUCT stamp_{2024,1,7,12,34,56,123456000};
+  SQLLEN date_length_{},input_stamp_length_{};
+  SQLHSTMT sibling_{};IntegerCell sibling_value_{};SQLLEN sibling_length_{97};
+  std::array<SQLINTEGER,2> snapshot_{};
+  static constexpr const char* owned_table_="odbcpp_day_ordinal_escape_scope";
+  static std::string create_sql(){return "CREATE TEMP TABLE odbcpp_day_ordinal_escape_scope (id INTEGER,d DATE,ts TIMESTAMP)";}
+  static std::string insert_sql(){return "INSERT INTO odbcpp_day_ordinal_escape_scope VALUES "
+      "(1,DATE '2024-01-07',TIMESTAMP '2024-01-07 12:34:56.123456'),"
+      "(2,DATE '2024-01-06',TIMESTAMP '2024-01-06 23:59:59.999999'),"
+      "(3,DATE '2024-02-29',TIMESTAMP '2024-02-29 12:34:56.101000'),"
+      "(4,DATE '2024-12-31',TIMESTAMP '2024-12-31 00:00:00.123456'),(5,NULL,NULL)";}
+  static std::string projection(bool prepared){
+    std::string sql=prepared?"SELECT ":"SELECT id,";
+    for(std::size_t group=0;group<2;++group){
+      for(std::size_t part=0;part<2;++part){
+        if(group!=0||part!=0){sql+=',';}
+        const auto value=prepared?"?":group==0?"d":"ts";
+        sql+=part==0?"{fn DAYOFWEEK(":"{fn DAYOFYEAR(";sql+=value;sql+=")},";
+        sql+=part==0?"(EXTRACT(dow FROM ":"EXTRACT(doy FROM ";sql+=value;sql+=part==0?")+1)":")";
+      }
+    }
+    sql+=" FROM odbcpp_day_ordinal_escape_scope";sql+=prepared?" WHERE id=1":" ORDER BY id";return sql;
+  }
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_DAY_ORDINAL_ESCAPE_ADMISSION");
+    if(marker==nullptr) { GTEST_SKIP()<<"Day ordinal escape scope is not admitted"; }
+    const std::string_view expected=std::string_view(::testing::UnitTest::GetInstance()->current_test_info()->name())=="DirectDateTimestampOrdinalsAnsiWideNullAndRecovery"?"day_ordinal_date_ts_direct_v1":"day_ordinal_date_ts_prepared_v1";
+    ASSERT_TRUE(std::string_view(marker)==expected);
+    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    RedshiftRealTest::SetUp();if(HasFatalFailure()) { return; }
+    const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    ASSERT_TRUE(options.contains("DATABASE"));ASSERT_TRUE(options.contains("UID"));
+    ASSERT_EQ("odbcpp_pilot",options.at("DATABASE"));ASSERT_EQ("odbcpp_pilot_test",options.at("UID"));ASSERT_FALSE(options.contains("DSN"));
+    const auto limit=[&](const char* key,std::size_t fallback)->std::optional<std::size_t>{
+      const auto found=options.find(key);if(found==options.end()) { return fallback; }
+      std::size_t value{};const auto& text=found->second;
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),value);
+      if(parsed.ec!=std::errc{}||parsed.ptr!=text.data()+text.size()) { return std::nullopt; }
+      return value;
+    };
+    const rs::core::database::ResultLimits result_defaults{};const rs::core::database::InputLimits input_defaults{};
+    const auto columns=limit("MAXCOLUMNS",result_defaults.max_columns_per_description);
+    const auto rows=limit("MAXROWS",result_defaults.max_rows),cells=limit("MAXCELLS",result_defaults.max_cells);
+    const auto metadata=limit("MAXMETADATAENTRIES",result_defaults.max_metadata_entries);
+    const auto parameters=limit("MAXPARAMETERS",input_defaults.max_parameters);
+    const auto value=limit("MAXPARAMETERBYTES",input_defaults.max_parameter_bytes);
+    const auto total=limit("MAXPARAMETERTOTALBYTES",input_defaults.max_parameter_total_bytes);
+    const auto sql=limit("MAXSQLBYTES",input_defaults.max_sql_bytes);
+    ASSERT_TRUE(columns);ASSERT_TRUE(rows);ASSERT_TRUE(cells);ASSERT_TRUE(metadata);
+    ASSERT_TRUE(parameters);ASSERT_TRUE(value);ASSERT_TRUE(total);ASSERT_TRUE(sql);
+    constexpr std::size_t column_count=9,row_count=5,cell_count=45;static_assert(column_count*row_count==cell_count);
+    ASSERT_GE(*columns,column_count);ASSERT_GE(*rows,row_count);ASSERT_GE(*cells,cell_count);
+    ASSERT_GE(*metadata,24u); // statement T8 + parameters8 + portal T8.
+    ASSERT_GE(*parameters,8u);ASSERT_GE(*value,26u);ASSERT_GE(*total,4u*(10u+26u));
+    ASSERT_GE(*sql,std::max({projection(false).size(),projection(true).size(),insert_sql().size(),create_sql().size()}));
+  }
+
+  void fixture_ordinal(){
+    ASSERT_NO_FATAL_FAILURE(connect_bounded());
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_MAX_ROWS,nullptr,0));
+    SQLULEN visible=97;ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(hstmt_,SQL_ATTR_MAX_ROWS,&visible,0,nullptr));ASSERT_EQ(static_cast<SQLULEN>(0),visible);
+    ASSERT_NO_FATAL_FAILURE(direct(create_sql()));table_owned_=true;
+    ASSERT_NO_FATAL_FAILURE(direct(insert_sql()));
+    ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,hdbc_,&sibling_));
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(remaining,0);
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(sibling_,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining,5))),0));
+    std::string sql="SELECT 1";ASSERT_TRUE(known_sql(SQLExecDirect(sibling_,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS)));
+  }
+  void ordinal_fetch(SQLRETURN expected){
+    ASSERT_TRUE(cap(window_end_,true));const auto rc=SQLFetch(hstmt_);if(rc!=expected){unknown_completion_=true;}ASSERT_EQ(expected,rc);
+  }
+  void ordinal_close(){ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));}
+  void ordinal_metadata(SQLSMALLINT count){
+    ASSERT_NO_FATAL_FAILURE(metadata(count));
+    for(SQLUSMALLINT first=count==9?2:1;first<static_cast<SQLUSMALLINT>(count);first+=2){
+      SQLULEN a=97,b=99;SQLSMALLINT sa=-1,sb=-1;
+      ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,first,nullptr,0,nullptr,nullptr,&a,&sa,nullptr));
+      ASSERT_EQ(SQL_SUCCESS,SQLDescribeCol(hstmt_,first+1,nullptr,0,nullptr,nullptr,&b,&sb,nullptr));EXPECT_EQ(a,b);EXPECT_EQ(sa,sb);
+    }
+  }
+  void ordinal_rows(){
+    ASSERT_NO_FATAL_FAILURE(ordinal_metadata(9));
+    const std::array<std::array<SQLINTEGER,2>,4> expected{{{{1,7}},{{7,6}},{{5,60}},{{3,366}}}};
+    for(SQLINTEGER id=1;id<=5;++id){
+      ASSERT_NO_FATAL_FAILURE(ordinal_fetch(SQL_SUCCESS));
+      ASSERT_NO_FATAL_FAILURE(integer(1,ordinal_,ordinal_length_));EXPECT_EQ(id,ordinal_.value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),ordinal_length_);
+      for(SQLUSMALLINT group=0;group<2;++group){for(SQLUSMALLINT part=0;part<2;++part){
+        const auto literal=id<=4?std::optional<SQLINTEGER>{expected[static_cast<std::size_t>(id-1)][part]}:std::nullopt;
+        ASSERT_NO_FATAL_FAILURE(pair(static_cast<SQLUSMALLINT>(2+group*4+part*2),static_cast<SQLUSMALLINT>(3+group*4+part*2),literal));
+      }}
+    }
+    ASSERT_NO_FATAL_FAILURE(ordinal_fetch(SQL_NO_DATA));
+    ASSERT_NO_FATAL_FAILURE(ordinal_close());
+  }
+  void prepare_ordinal(){
+    const auto sql=projection(true);std::vector<SQLWCHAR> wide;
+    for(const auto ch:sql){wide.push_back(static_cast<SQLWCHAR>(ch));}wide.push_back(0);
+    ASSERT_TRUE(cap(window_end_,true));ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_,wide.data(),SQL_NTS)));
+    SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumParams(hstmt_,&count));ASSERT_EQ(8,count);
+    for(SQLUSMALLINT p=1;p<=8;++p){
+      if(p<=4){ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,p,SQL_PARAM_INPUT,SQL_C_TYPE_DATE,SQL_TYPE_DATE,10,0,&date_,sizeof(date_),&date_length_));}
+      else{ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,p,SQL_PARAM_INPUT,SQL_C_TYPE_TIMESTAMP,SQL_TYPE_TIMESTAMP,26,6,&stamp_,sizeof(stamp_),&input_stamp_length_));}
+    }
+  }
+  void ordinal_execution(std::optional<std::array<SQLINTEGER,2>> expected,bool early=false){
+    const auto owning_date=date_;const auto owning_stamp=stamp_;const auto dl=date_length_,sl=input_stamp_length_;
+    ASSERT_NO_FATAL_FAILURE(prepared_execute());
+    ASSERT_NO_FATAL_FAILURE(ordinal_metadata(8));
+    ASSERT_NO_FATAL_FAILURE(ordinal_fetch(SQL_SUCCESS));
+    for(SQLUSMALLINT group=0;group<2;++group){for(SQLUSMALLINT part=0;part<2;++part){
+      ASSERT_NO_FATAL_FAILURE(pair(static_cast<SQLUSMALLINT>(1+group*4+part*2),static_cast<SQLUSMALLINT>(2+group*4+part*2),expected?std::optional<SQLINTEGER>{(*expected)[part]}:std::nullopt));
+      if(native_length_!=SQL_NULL_DATA){snapshot_[part]=native_.value;}
+    }}
+    EXPECT_EQ(owning_date.year,date_.year);EXPECT_EQ(owning_date.month,date_.month);EXPECT_EQ(owning_date.day,date_.day);
+    EXPECT_EQ(owning_stamp.year,stamp_.year);EXPECT_EQ(owning_stamp.month,stamp_.month);EXPECT_EQ(owning_stamp.day,stamp_.day);
+    EXPECT_EQ(owning_stamp.hour,stamp_.hour);EXPECT_EQ(owning_stamp.minute,stamp_.minute);EXPECT_EQ(owning_stamp.second,stamp_.second);EXPECT_EQ(owning_stamp.fraction,stamp_.fraction);
+    EXPECT_EQ(dl,date_length_);EXPECT_EQ(sl,input_stamp_length_);
+    if(!early){ASSERT_NO_FATAL_FAILURE(ordinal_fetch(SQL_NO_DATA));}
+    ASSERT_NO_FATAL_FAILURE(ordinal_close());
+  }
+  void cap_sibling(){
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(remaining,0);
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(sibling_,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining,5))),0));
+  }
+  void owning_sibling_recovery(){
+    ASSERT_FALSE(unknown_completion_);ASSERT_TRUE(rs::util::Clock::now()<window_end_);
+    ASSERT_NO_FATAL_FAILURE(cap_sibling());
+    auto result=SQLFetch(sibling_);if(result!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,result);
+    poison(sibling_value_);sibling_length_=97;
+    ASSERT_NO_FATAL_FAILURE(cap_sibling());
+    result=SQLGetData(sibling_,1,SQL_C_SLONG,&sibling_value_.value,sizeof(sibling_value_.value),&sibling_length_);
+    if(result!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,result);EXPECT_EQ(1,sibling_value_.value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),sibling_length_);
+    ASSERT_NO_FATAL_FAILURE(guards(sibling_value_));
+    ASSERT_NO_FATAL_FAILURE(cap_sibling());
+    result=SQLFetch(sibling_);if(result!=SQL_NO_DATA){unknown_completion_=true;}ASSERT_EQ(SQL_NO_DATA,result);ASSERT_TRUE(known_sql(SQLCloseCursor(sibling_)));
+  }
+  void TearDown() override {
+    const auto entry=rs::util::Clock::now();if(admitted_){EXPECT_TRUE(entry<window_end_);}
+    const auto cleanup_end=std::min(window_end_,entry+std::chrono::seconds{5});
+    if(table_owned_&&!unknown_completion_&&connected_&&!drop_attempted_){
+      if(SQLFreeStmt(hstmt_,SQL_CLOSE)!=SQL_SUCCESS){unknown_completion_=true;}
+      if(!unknown_completion_&&cap(cleanup_end,true)){
+        drop_attempted_=true;std::string sql="DROP TABLE ";sql+=owned_table_;
+        if(known_sql(SQLExecDirect(hstmt_,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS))){table_owned_=false;}
+      }
+    }
+    if(sibling_){EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,sibling_));sibling_=nullptr;}
+    if(hstmt_){EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,hstmt_));hstmt_=nullptr;}
+    if(hdbc_){if(connected_){EXPECT_EQ(SQL_SUCCESS,SQLDisconnect(hdbc_));}EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,hdbc_));hdbc_=nullptr;}
+    if(henv_){EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_ENV,henv_));henv_=nullptr;}
+    if(table_owned_||unknown_completion_){ADD_FAILURE()<<"Day ordinal exact-session cleanup verification required";}
+  }
+};
+TEST_F(RedshiftDayOrdinalEscapeRealTest, DirectDateTimestampOrdinalsAnsiWideNullAndRecovery){
+  ASSERT_NO_FATAL_FAILURE(fixture_ordinal());
+  ASSERT_NO_FATAL_FAILURE(direct(projection(false)));
+  ASSERT_NO_FATAL_FAILURE(ordinal_rows());
+  ASSERT_NO_FATAL_FAILURE(direct(projection(false),true));
+  ASSERT_NO_FATAL_FAILURE(ordinal_rows());
+  const auto prior=native_;const auto length=native_length_;
+  ASSERT_NO_FATAL_FAILURE(owning_sibling_recovery());
+  EXPECT_EQ(prior.value,native_.value);EXPECT_EQ(length,native_length_);
+}
+TEST_F(RedshiftDayOrdinalEscapeRealTest, PreparedDateTimestampOrdinalsNullRebindEarlyCloseAndRecovery){
+  ASSERT_NO_FATAL_FAILURE(fixture_ordinal());
+  ASSERT_NO_FATAL_FAILURE(prepare_ordinal());
+  ASSERT_NO_FATAL_FAILURE((ordinal_execution(std::array<SQLINTEGER,2>{1,7})));
+  date_={2024,1,6};stamp_={2024,1,6,23,59,59,999999000};
+  ASSERT_NO_FATAL_FAILURE((ordinal_execution(std::array<SQLINTEGER,2>{7,6})));
+  date_={2024,2,29};stamp_={2024,2,29,12,34,56,101000000};
+  ASSERT_NO_FATAL_FAILURE((ordinal_execution(std::array<SQLINTEGER,2>{5,60})));
+  date_={2024,12,31};stamp_={2024,12,31,0,0,0,123456000};
+  ASSERT_NO_FATAL_FAILURE((ordinal_execution(std::array<SQLINTEGER,2>{3,366})));
+  date_={2024,1,1};stamp_={2024,1,1,23,59,59,999999000};
+  ASSERT_NO_FATAL_FAILURE((ordinal_execution(std::array<SQLINTEGER,2>{2,1})));
+  date_length_=input_stamp_length_=SQL_NULL_DATA;
+  ASSERT_NO_FATAL_FAILURE(ordinal_execution(std::nullopt));
+  date_length_=input_stamp_length_=0;date_={2024,1,7};stamp_={2024,1,7,12,34,56,123456000};
+  ASSERT_NO_FATAL_FAILURE((ordinal_execution(std::array<SQLINTEGER,2>{1,7},true)));
+  const auto snapshot=snapshot_;
+  ASSERT_NO_FATAL_FAILURE(owning_sibling_recovery());
+  EXPECT_EQ(snapshot,snapshot_);
+}

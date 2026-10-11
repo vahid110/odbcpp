@@ -320,3 +320,45 @@ TEST(RedshiftClockEscapeTest, ProfilesNativePrefixesAndPreviousPackagesRemainUnc
   EXPECT_EQ("SELECT HOUR(?), EXTRACT(second FROM ?), HOURX(?), MINUTES(?), SECONDLY(?)",translate_odbc_sql("SELECT HOUR(?), EXTRACT(second FROM ?), {fn HOURX(?)}, {fn MINUTES(?)}, {fn SECONDLY(?)}",SqlDialectProfile::Redshift).sql);
   EXPECT_EQ("SELECT '{fn SECOND(a,b)}', $$ {fn HOUR(a,b)} $$, CAST(DATE_PART(year, ?) AS INTEGER), GETDATE(), LENGTH(RTRIM(?, ' ')), POSITION(? IN ?)",translate_odbc_sql("SELECT '{fn SECOND(a,b)}', $$ {fn HOUR(a,b)} $$, {fn YEAR(?)}, {fn NOW()}, {fn LENGTH(?)}, {fn LOCATE(?,?)}",SqlDialectProfile::Redshift).sql);
 }
+
+TEST(RedshiftDayOrdinalEscapeTest, SundayBasedWeekdayAndYearOrdinalUseExpressionOnce) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  const auto weekday=rs::core::database::postgres::translate_odbc_sql("SELECT {fn DAYOFWEEK(?)}",SqlDialectProfile::Redshift);
+  ASSERT_TRUE(weekday);EXPECT_EQ("SELECT (EXTRACT(dow FROM ?)+1)",weekday.sql);
+  EXPECT_EQ(1,std::count(weekday.sql.begin(),weekday.sql.end(),'?'));
+  const auto ordinal=rs::core::database::postgres::translate_odbc_sql("{fn dayofyear({d '2024-02-29'})}",SqlDialectProfile::Redshift);
+  ASSERT_TRUE(ordinal);EXPECT_EQ("EXTRACT(doy FROM DATE '2024-02-29')",ordinal.sql);
+  const auto nested=rs::core::database::postgres::translate_odbc_sql("{fn DAYOFWEEK({fn IFNULL(?,{ts '2024-01-07 12:34:56.123456'})})}",SqlDialectProfile::Redshift);
+  ASSERT_TRUE(nested);EXPECT_EQ("(EXTRACT(dow FROM COALESCE(?,TIMESTAMP '2024-01-07 12:34:56.123456'))+1)",nested.sql);
+  EXPECT_EQ(1,std::count(nested.sql.begin(),nested.sql.end(),'?'));
+}
+TEST(RedshiftDayOrdinalEscapeTest, RawCommentNewlineQuotedCommaAndDollarBodiesRemainIntact) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  for(const auto& item:std::array<std::pair<const char*,const char*>,3>{{
+      {"{fn DAYOFWEEK(? -- end\n)}","(EXTRACT(dow FROM ? -- end\n)+1)"},
+      {"{fn DAYOFYEAR(/* outer /* nested */ end */ COALESCE(?,DATE '2024-01-01'))}","EXTRACT(doy FROM /* outer /* nested */ end */ COALESCE(?,DATE '2024-01-01'))"},
+      {"{fn DAYOFYEAR(COALESCE($q$a,b$q$,?))}","EXTRACT(doy FROM COALESCE($q$a,b$q$,?))"}}}){
+    const auto result=rs::core::database::postgres::translate_odbc_sql(item.first,SqlDialectProfile::Redshift);
+    ASSERT_TRUE(result);EXPECT_EQ(item.second,result.sql);
+  }
+}
+TEST(RedshiftDayOrdinalEscapeTest, ExactUnaryMalformedCallsRefuseThenValidRecovery) {
+  using rs::core::database::postgres::SqlDialectProfile;using rs::core::database::SqlTranslationError;
+  for(const auto* sql:{"{fn DAYOFWEEK}","{fn DAYOFWEEK()}","{fn DAYOFWEEK( ,?)}","{fn DAYOFYEAR(?,?)}",
+      "{fn DAYOFYEAR(?) trailing}","{fn DAYOFWEEK(/* comment */)}","{fn DAYOFYEAR('unclosed)}"}){
+    const auto result=rs::core::database::postgres::translate_odbc_sql(sql,SqlDialectProfile::Redshift);
+    EXPECT_FALSE(result);EXPECT_EQ(SqlTranslationError::InvalidSyntax,result.error);EXPECT_TRUE(result.sql.empty());
+  }
+  const auto result=rs::core::database::postgres::translate_odbc_sql("{fn DAYOFYEAR(NULL)}",SqlDialectProfile::Redshift);
+  ASSERT_TRUE(result);EXPECT_EQ("EXTRACT(doy FROM NULL)",result.sql);
+}
+TEST(RedshiftDayOrdinalEscapeTest, PostgresUnknownPrefixesAndNativeSqlAreUnchanged) {
+  using rs::core::database::postgres::SqlDialectProfile;
+  const auto pg=rs::core::database::postgres::translate_odbc_sql("{fn DAYOFWEEK(?)}");ASSERT_TRUE(pg);EXPECT_EQ("DAYOFWEEK(?)",pg.sql);
+  for(const auto* sql:{"SELECT EXTRACT(doy FROM d)","SELECT 'DAYOFWEEK(?)'","{fn DAYOFWEEK_EXTRA(?)}"}){
+    const auto result=rs::core::database::postgres::translate_odbc_sql(sql,SqlDialectProfile::Redshift);ASSERT_TRUE(result);
+    EXPECT_EQ(std::string(sql)=="{fn DAYOFWEEK_EXTRA(?)}"?"DAYOFWEEK_EXTRA(?)":sql,result.sql);
+  }
+  const auto prior=rs::core::database::postgres::translate_odbc_sql("{fn SECOND(?)}",SqlDialectProfile::Redshift);
+  ASSERT_TRUE(prior);EXPECT_EQ("CAST(FLOOR(EXTRACT(second FROM ?)) AS INTEGER)",prior.sql);
+}
