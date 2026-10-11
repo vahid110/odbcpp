@@ -371,7 +371,8 @@ TEST(MySqlQ6PreflightPhaseBindingTest, MetadataStructureEofAndCountFailuresKeepO
   // A complete final metadata reply or completed CLOSE send at D is not an owning success.
   for (bool late_close:{false,true}) {
     Fixture f;f.authenticate();
-    const auto origin=rs::util::Clock::now()-std::chrono::seconds(30)+std::chrono::milliseconds(20);
+    // Leave setup headroom; the late callbacks still expire the same frozen overall cutoff.
+    const auto origin=rs::util::Clock::now()-std::chrono::seconds(30)+std::chrono::seconds(1);
     Phase phases(PhasePolicy::Overall30Startup10Cleanup5,origin);
     ASSERT_TRUE(phases.begin_startup(rs::util::Clock::now()));
     const auto v=phases.view();ASSERT_TRUE(v.startup);ASSERT_TRUE(v.overall);EXPECT_EQ(v.startup,v.overall);

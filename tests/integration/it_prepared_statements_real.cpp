@@ -3357,16 +3357,43 @@ TEST_F(PreparedStatementIntegrationTest,
 
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
         hstmt, (SQLCHAR*)"SELECT ? FROM", SQL_NTS));
+    // Local marker counting is not server syntax/type validation. Its count
+    // agrees with the IPD without forcing inference before types are bound.
     parameter_count = 66;
-    EXPECT_EQ(SQL_ERROR, SQLNumParams(hstmt, &parameter_count));
+    ASSERT_EQ(SQL_SUCCESS, SQLNumParams(hstmt, &parameter_count));
+    EXPECT_EQ(1, parameter_count);
+    SQLHDESC count_implementation = SQL_NULL_HDESC;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(
+        hstmt, SQL_ATTR_IMP_PARAM_DESC, &count_implementation, 0, nullptr));
+    SQLSMALLINT count_in_ipd = 67;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        count_implementation, 0, SQL_DESC_COUNT, &count_in_ipd, 0, nullptr));
+    EXPECT_EQ(parameter_count, count_in_ipd);
+    SQLSMALLINT unresolved_type = 68;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        count_implementation, 1, SQL_DESC_CONCISE_TYPE, &unresolved_type, 0, nullptr));
+    EXPECT_EQ(SQL_UNKNOWN_TYPE, unresolved_type);
+    // Preserve the deferred server-validation error and untouched output on
+    // an explicit metadata request rather than on the count-only API.
+    SQLSMALLINT result_columns = 66;
+    EXPECT_EQ(SQL_ERROR, SQLNumResultCols(hstmt, &result_columns));
     expect_state("42000");
-    EXPECT_EQ(66, parameter_count);
+    EXPECT_EQ(66, result_columns);
     EXPECT_EQ(SQL_ERROR, SQLDescribeParam(
         hstmt, 1, &data_type, &parameter_size, &decimal_digits,
         &nullable));
     expect_state("42000");
     EXPECT_EQ(62, data_type);
     EXPECT_EQ(63u, parameter_size);
+    EXPECT_EQ(64, decimal_digits);
+    EXPECT_EQ(65, nullable);
+    parameter_count = 69;
+    ASSERT_EQ(SQL_SUCCESS, SQLNumParams(hstmt, &parameter_count));
+    EXPECT_EQ(1, parameter_count);
+    count_in_ipd = 70;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(
+        count_implementation, 0, SQL_DESC_COUNT, &count_in_ipd, 0, nullptr));
+    EXPECT_EQ(parameter_count, count_in_ipd);
 
     ASSERT_EQ(SQL_SUCCESS, SQLPrepare(
         hstmt, (SQLCHAR*)"SELECT ?::integer", SQL_NTS));
@@ -3396,6 +3423,14 @@ TEST_F(PreparedStatementIntegrationTest,
         0, 0, &input, 0, nullptr));
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    struct { SQLINTEGER before{71}; SQLINTEGER value{72}; SQLINTEGER after{73}; } owned;
+    SQLLEN value_bytes = 74;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(
+        hstmt, 1, SQL_C_SLONG, &owned.value, sizeof(owned.value), &value_bytes));
+    EXPECT_EQ(41, owned.value);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)), value_bytes);
+    EXPECT_EQ(71, owned.before);
+    EXPECT_EQ(73, owned.after);
     EXPECT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(
         hstmt, 1, &data_type, &parameter_size, &decimal_digits,
