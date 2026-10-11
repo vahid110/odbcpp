@@ -18,6 +18,7 @@
 #include <functional>
 #include <atomic>
 #include <future>
+#include <tuple>
 
 #if defined(_WIN32) && defined(_MSC_VER)
 #include <cstdint>
@@ -12431,4 +12432,245 @@ TEST_F(ApplicationNameOptionsTest, KeepaliveInvalidSelectedValuesRefuseRedactedB
   ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;KeepAlive=0;KeepAliveCount=0", true));
   ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
   ASSERT_EQ(SQL_SUCCESS, execute("SELECT 1"));
+}
+
+TEST_F(ApplicationNameOptionsTest, VarcharSizingAnsiWideZeroAndBoundsReachOwningSettings) {
+  for (const bool wide : {false, true}) {
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;MaxVarcharSize={ 8 };MaxLongVarcharSize=17", wide));
+    EXPECT_EQ((rs::core::database::CharacterMetadataPolicy{8, 17}), seen->settings.character_metadata);
+    const auto owned = seen->settings.character_metadata;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;MaxVarcharSize=0;MaxLongVarcharSize=0", wide));
+    EXPECT_EQ((rs::core::database::CharacterMetadataPolicy{}), seen->settings.character_metadata);
+    EXPECT_EQ((rs::core::database::CharacterMetadataPolicy{8, 17}), owned);
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0", wide));
+    EXPECT_EQ((rs::core::database::CharacterMetadataPolicy{255, 65535}), seen->settings.character_metadata);
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  }
+}
+
+TEST_F(ApplicationNameOptionsTest, VarcharSizingInvalidValuesAreRedactedEvenDisabledAndSameDbcRecovers) {
+  const std::pair<const char*, const char*> invalid[] = {{"MaxVarcharSize", ""},
+      {"MaxVarcharSize", "-1"}, {"MaxVarcharSize", "+1"}, {"MaxVarcharSize", "2147483648"},
+      {"MaxVarcharSize", "secret-placeholder"}, {"MaxLongVarcharSize", "65536"},
+      {"MaxLongVarcharSize", "1tail"}, {"MaxLongVarcharSize", "99999999999999999999"}};
+  for (const bool wide : {false, true}) for (const auto& [key, value] : invalid) {
+    const std::string disabled = std::string(key) == "MaxLongVarcharSize" ? "MaxVarcharSize=0;" : "";
+    EXPECT_EQ(SQL_ERROR, login_name("SERVER=fake;SSL=0;" + disabled + std::string(key) + "={" + value + "}", wide));
+    SQLCHAR sqlstate[6]{}, message[128]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, sqlstate, nullptr,
+        message, static_cast<SQLSMALLINT>(sizeof(message)), nullptr));
+    EXPECT_STREQ("HY000", reinterpret_cast<char*>(sqlstate));
+    EXPECT_EQ("Invalid " + std::string(key) + " value", reinterpret_cast<char*>(message));
+    EXPECT_EQ(0, seen->created); EXPECT_EQ(0, seen->transports); EXPECT_EQ(0, seen->queries);
+  }
+  ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;MaxVarcharSize=8;MaxLongVarcharSize=17", true));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT 1"));
+}
+
+TEST_F(ApplicationNameOptionsTest, ReportedLongTextRetainsDeclaredNameAndExactUnicodeNullChunkedValues) {
+  using namespace rs::core::database;
+  const auto reported = apply_character_metadata_policy({ScalarType::VarChar, 256, 0, true}, {8, 17});
+  QueryResult result; result.columns = {{"text_value", reported}};
+  const std::string value = "é表😀-value-longer-than-the-report";
+  result.rows = {{value}, {std::nullopt}, {value}};
+  seen->date_result = result;
+  ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;MaxVarcharSize=8;MaxLongVarcharSize=17"));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT text_value"));
+  for (const bool wide : {false, true}) {
+    SQLSMALLINT type = 99;
+    struct { SQLULEN size = 99; SQLULEN guard = 66; } sized;
+    if (wide) {
+      ASSERT_EQ(SQL_SUCCESS, SQLDescribeColW(stmt, 1, nullptr, 0, nullptr, &type, &sized.size, nullptr, nullptr));
+    } else {
+      ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, 1, nullptr, 0, nullptr, &type, &sized.size, nullptr, nullptr));
+    }
+    EXPECT_EQ(SQL_LONGVARCHAR, type); EXPECT_EQ(17u, sized.size); EXPECT_EQ(66u, sized.guard);
+  }
+  SQLCHAR name[16]{}; SQLSMALLINT name_length = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLColAttribute(stmt, 1, SQL_DESC_TYPE_NAME, name, sizeof(name), &name_length, nullptr));
+  EXPECT_STREQ("words", reinterpret_cast<char*>(name));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  std::string collected; SQLRETURN rc;
+  do {
+    SQLCHAR chunk[6]{}; SQLLEN length = -1;
+    rc = SQLGetData(stmt, 1, SQL_C_CHAR, chunk, sizeof(chunk), &length);
+    ASSERT_TRUE(rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO);
+    collected += reinterpret_cast<char*>(chunk);
+  } while (rc == SQL_SUCCESS_WITH_INFO);
+  EXPECT_EQ(value, collected);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  SQLCHAR guard[3]{'x', 'y', 0}; SQLLEN null_length = 66;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_CHAR, guard, sizeof(guard), &null_length));
+  EXPECT_EQ(SQL_NULL_DATA, null_length); EXPECT_EQ('x', guard[0]); EXPECT_EQ('y', guard[1]);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  const auto expected_wide = rs::odbc::utf8_to_wide(value); ASSERT_TRUE(expected_wide);
+  std::vector<SQLWCHAR> collected_wide;
+  for (int part = 0; part < 32; ++part) {
+    SQLWCHAR chunk[5]{}; chunk[4] = static_cast<SQLWCHAR>('z'); SQLLEN bytes = -1;
+    rc = SQLGetData(stmt, 1, SQL_C_WCHAR, chunk, sizeof(chunk) - sizeof(SQLWCHAR), &bytes);
+    ASSERT_TRUE(rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO);
+    if (part == 0) EXPECT_EQ(static_cast<SQLLEN>(expected_wide->size() * sizeof(SQLWCHAR)), bytes);
+    EXPECT_EQ(static_cast<SQLWCHAR>('z'), chunk[4]);
+    for (std::size_t i = 0; i < 4 && chunk[i] != 0; ++i) collected_wide.push_back(chunk[i]);
+    if (rc == SQL_SUCCESS) break;
+  }
+  EXPECT_EQ(SQL_SUCCESS, rc); EXPECT_EQ(*expected_wide, collected_wide);
+  ASSERT_EQ(SQL_NO_DATA, SQLFetch(stmt)); ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+}
+
+namespace {
+struct CharacterCatalogLayout { std::size_t count, code, name, size, buffer; std::optional<std::size_t> sql_type, octets; };
+CharacterCatalogLayout character_layout(int kind) {
+  if (kind == 0) return {18, 4, 5, 6, 7, 13, 15};
+  if (kind == 1) return {19, 5, 6, 7, 8, 14, 16};
+  return {8, 2, 3, 4, 5, {}, {}};
+}
+rs::core::database::QueryResult character_catalog_fixture(int kind, const char* size = "256") {
+  using namespace rs::core::database;
+  const auto layout = character_layout(kind);
+  QueryResult result; result.statement_kind = StatementKind::SelectCursor;
+  ResultRow row(layout.count, std::string{"fixture"});
+  for (std::size_t i = 0; i < layout.count; ++i)
+    result.columns.push_back({"catalog_field" + std::to_string(i), NativeTypeInfo{ScalarType::VarChar, 128, 0, true}});
+  for (const auto i : {layout.code, layout.size, layout.buffer})
+    result.columns[i].normalized_type = NativeTypeInfo{ScalarType::Integer, 10, 0, true};
+  row[layout.code] = "12"; row[layout.name] = "character varying"; row[layout.size] = size; row[layout.buffer] = size;
+  if (layout.sql_type) { row[*layout.sql_type] = "12"; result.columns[*layout.sql_type].normalized_type = NativeTypeInfo{ScalarType::Integer, 10, 0, true}; }
+  if (layout.octets) { row[*layout.octets] = size; result.columns[*layout.octets].normalized_type = NativeTypeInfo{ScalarType::Integer, 10, 0, true}; }
+  result.rows.push_back(std::move(row)); return result;
+}
+SQLRETURN sizing_catalog_call(SQLHSTMT statement, int kind, bool wide) {
+  if (kind == 0) return wide ? SQLColumnsW(statement, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0)
+                            : SQLColumns(statement, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0);
+  if (kind == 1) return wide ? SQLProcedureColumnsW(statement, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0)
+                            : SQLProcedureColumns(statement, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0);
+  SQLCHAR table_a[]{'t', 0}; SQLWCHAR table_w[]{static_cast<SQLWCHAR>('t'), 0};
+  return wide ? SQLSpecialColumnsW(statement, SQL_BEST_ROWID, nullptr, 0, nullptr, 0, table_w, SQL_NTS, SQL_SCOPE_SESSION, SQL_NULLABLE)
+              : SQLSpecialColumns(statement, SQL_BEST_ROWID, nullptr, 0, nullptr, 0, table_a, SQL_NTS, SQL_SCOPE_SESSION, SQL_NULLABLE);
+}
+}
+
+TEST_F(ApplicationNameOptionsTest, VarcharCatalogSchemasAgreeAcrossExecutorLegacyAndWideCallsWithoutChangingNames) {
+  for (int kind = 0; kind < 3; ++kind) for (bool wide : {false, true}) {
+    SCOPED_TRACE(kind);
+    SCOPED_TRACE(wide);
+    const auto layout = character_layout(kind);
+    seen->catalog_executor = kind != 2; seen->catalog_route_executor = kind == 0;
+    seen->routine_executor = kind == 1; seen->catalog_builder = true;
+    seen->date_result = character_catalog_fixture(kind);
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;MaxVarcharSize=8;MaxLongVarcharSize=17", wide));
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+    ASSERT_EQ(SQL_SUCCESS, sizing_catalog_call(stmt, kind, wide));
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    const auto number = [&](std::size_t index, SQLINTEGER expected) {
+      SQLINTEGER value = 99; SQLLEN length = 99;
+      EXPECT_EQ(SQL_SUCCESS, SQLGetData(stmt, static_cast<SQLUSMALLINT>(index + 1), SQL_C_SLONG, &value, sizeof(value), &length));
+      EXPECT_EQ(expected, value); EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+    };
+    number(layout.code, SQL_LONGVARCHAR);
+    SQLCHAR name[32]{}; SQLLEN name_length = 99;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, static_cast<SQLUSMALLINT>(layout.name + 1), SQL_C_CHAR, name, sizeof(name), &name_length));
+    EXPECT_STREQ("character varying", reinterpret_cast<char*>(name));
+    number(layout.size, 17); number(layout.buffer, 17);
+    if (layout.sql_type) number(*layout.sql_type, SQL_LONGVARCHAR);
+    if (layout.octets) number(*layout.octets, 17);
+    ASSERT_EQ(SQL_NO_DATA, SQLFetch(stmt)); ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  }
+}
+
+TEST_F(ApplicationNameOptionsTest, VarcharCatalogZeroReplacementBoundaryAndUnknownSizeStayExact) {
+  seen->catalog_executor = true; seen->catalog_route_executor = true;
+  for (const auto& [threshold, replacement, actual, expected_type, expected_size] :
+      {std::tuple{"8", "0", "256", SQL_LONGVARCHAR, 256},
+       std::tuple{"8", "17", "8", SQL_VARCHAR, 8},
+       std::tuple{"0", "17", "256", SQL_VARCHAR, 256}}) {
+    seen->date_result = character_catalog_fixture(0, actual);
+    ASSERT_EQ(SQL_SUCCESS, login_name(std::string("SERVER=fake;SSL=0;MaxVarcharSize=") + threshold + ";MaxLongVarcharSize=" + replacement));
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+    ASSERT_EQ(SQL_SUCCESS, sizing_catalog_call(stmt, 0, false)); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+    SQLINTEGER type = 99, size = 99;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 5, SQL_C_SLONG, &type, sizeof(type), nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 7, SQL_C_SLONG, &size, sizeof(size), nullptr));
+    EXPECT_EQ(expected_type, type); EXPECT_EQ(expected_size, size);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  }
+  auto unknown = character_catalog_fixture(0); unknown.rows[0][6].reset(); unknown.rows[0][7].reset(); unknown.rows[0][15].reset();
+  seen->date_result = unknown;
+  ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;MaxVarcharSize=8;MaxLongVarcharSize=17"));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, sizing_catalog_call(stmt, 0, true)); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  SQLINTEGER type = 99, size = 99; SQLLEN length = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 5, SQL_C_SLONG, &type, sizeof(type), nullptr)); EXPECT_EQ(SQL_VARCHAR, type);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 7, SQL_C_SLONG, &size, sizeof(size), &length));
+  EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(99, size);
+}
+
+TEST_F(ApplicationNameOptionsTest, MalformedCharacterCatalogRetiresBeforePublicationAndFreshLoginRecovers) {
+  for (int kind : {0, 2}) {
+  SCOPED_TRACE(kind);
+  seen->catalog_executor = kind == 0; seen->catalog_route_executor = kind == 0;
+  seen->catalog_builder = true;
+  seen->date_result = character_catalog_fixture(kind, "secret-invalid-size");
+  ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;MaxVarcharSize=8;MaxLongVarcharSize=17"));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  EXPECT_EQ(SQL_ERROR, sizing_catalog_call(stmt, kind, false));
+  EXPECT_FALSE(reinterpret_cast<rs::odbc::ODBCConnection*>(dbc)->is_connected());
+  EXPECT_EQ("HY000", state(SQL_HANDLE_STMT, stmt));
+  SQLCHAR sqlstate[6]{}, message[128]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1, sqlstate, nullptr, message,
+      static_cast<SQLSMALLINT>(sizeof(message)), nullptr));
+  EXPECT_EQ(std::string::npos, std::string(reinterpret_cast<char*>(message)).find("secret"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+  seen->date_result = character_catalog_fixture(kind);
+  ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;MaxVarcharSize=8;MaxLongVarcharSize=17"));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, sizing_catalog_call(stmt, kind, false)); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  }
+}
+
+TEST_F(ApplicationNameOptionsTest, VarcharResultPresentationDoesNotRewriteBoundParameterDimensionsOrCachedDescription) {
+  using namespace rs::core::database;
+  seen->parameter_description_types = std::vector<NativeTypeInfo>{{ScalarType::VarChar, 0, 0, true}};
+  ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;MaxVarcharSize=8;MaxLongVarcharSize=17"));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT ?")), SQL_NTS));
+  char input[8] = "text"; SQLLEN bytes = SQL_NTS;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR, 300, 0, input, sizeof(input), &bytes));
+  SQLSMALLINT type = 99; struct { SQLULEN size = 99; SQLULEN guard = 66; } output;
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &output.size, nullptr, nullptr));
+  EXPECT_EQ(SQL_VARCHAR, type); EXPECT_EQ(300u, output.size); EXPECT_EQ(66u, output.guard);
+  const auto descriptions = seen->descriptions;
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &output.size, nullptr, nullptr));
+  EXPECT_EQ(descriptions, seen->descriptions); EXPECT_EQ(300u, output.size);
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR, 400, 0, input, sizeof(input), &bytes));
+  ASSERT_EQ(SQL_SUCCESS, SQLDescribeParam(stmt, 1, &type, &output.size, nullptr, nullptr));
+  EXPECT_EQ(SQL_VARCHAR, type); EXPECT_EQ(400u, output.size); EXPECT_EQ(66u, output.guard);
+}
+
+TEST_F(ApplicationNameOptionsTest, InvalidPresentationIdentityAndNarrowWidthSizeRefuseBeforeResultPublication) {
+  using namespace rs::core::database;
+  auto bad = NativeTypeInfo{ScalarType::LongVarChar, 17, 0, true}; bad.declared_type = ScalarType::VarChar;
+  QueryResult result; result.columns = {{"bad", bad}}; result.rows = {{"value"}}; seen->date_result = result;
+  ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;MaxVarcharSize=8;MaxLongVarcharSize=17"));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  EXPECT_EQ(SQL_ERROR, execute("SELECT bad"));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  if constexpr (sizeof(SQLULEN) < sizeof(std::uint64_t)) {
+    result.columns[0].normalized_type = NativeTypeInfo{ScalarType::VarChar,
+        static_cast<std::uint64_t>(std::numeric_limits<SQLULEN>::max()) + 1, 0, true};
+    seen->date_result = result;
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0"));
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+    EXPECT_EQ(SQL_ERROR, execute("SELECT bad"));
+  }
 }

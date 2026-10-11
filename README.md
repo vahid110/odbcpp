@@ -630,3 +630,23 @@ allocations remain a separate boundary. Windows setup GUI fields for these advan
 are deferred; DSN/connection-string processing supports them.
 
 Example: `MaxResponseBytes=8388608;MaxRows=10000;MaxSqlBytes=262144`.
+
+`MaxVarcharSize` and `MaxLongVarcharSize` control Redshift result metadata,
+not values, network traffic or memory limits. The configured Redshift defaults
+are `255` and `65535`: known CHAR/VARCHAR columns strictly above the threshold
+are reported as `SQL_LONGVARCHAR`, retaining their native type name, with the
+reported size replaced by `MaxLongVarcharSize`. A threshold of `0` disables
+reclassification; a replacement size of `0` preserves the declared size.
+Parameter binding/description dimensions and DDL `SQLGetTypeInfo` advertisements
+remain independent. The existing ANSI SQL family is retained by wide APIs;
+this option does not implement `UseUnicode` or claim wide SQL-family parity.
+
+Both settings use driver < DSN < connection-string precedence. Values must be
+trimmed unsigned decimal integers: `MaxVarcharSize` accepts `0..2147483647` and
+`MaxLongVarcharSize` accepts `0..65535`, including when classification is disabled.
+Invalid values refuse the connection with a redacted diagnostic rather than
+being silently reset or clamped. Neutral direct SDK settings preserve native
+metadata; the Redshift provider supplies the configured defaults. Ordinary
+PostgreSQL defaults remain unchanged and its provider rejects these selected
+settings. Other profiles and real Redshift acceptance are tracked separately
+under [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md).

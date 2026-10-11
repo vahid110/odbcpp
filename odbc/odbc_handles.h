@@ -238,6 +238,9 @@ public:
   SQLULEN query_timeout_default() const noexcept {
     return query_timeout_default_seconds_;
   }
+  const rs::core::database::CharacterMetadataPolicy& character_metadata_policy() const noexcept {
+    return character_metadata_policy_;
+  }
   bool has_pending_input() const;
   bool has_pending_result_sequence() const;
   bool metadata_identifiers_default() const noexcept { return metadata_id_default_; }
@@ -337,6 +340,7 @@ private:
   bool connected_ = false;
   bool confirmed_read_only_ = false;
   SQLULEN query_timeout_default_seconds_ = 0;
+  rs::core::database::CharacterMetadataPolicy character_metadata_policy_;
   bool metadata_id_default_ = false;
   SQLUINTEGER login_timeout_seconds_ = 30;
   // Application choice persists; keyword readback is not an implicit override.
@@ -505,7 +509,8 @@ public:
   ~ODBCStatement() override;
   
   SQLRETURN execute_direct(const std::string& sql,
-      std::optional<rs::util::Deadline> original_deadline = std::nullopt);
+      std::optional<rs::util::Deadline> original_deadline = std::nullopt,
+      const rs::core::database::CatalogRequest* catalog_presentation = nullptr);
   SQLRETURN cancel() noexcept;
   SQLRETURN fetch();
   SQLRETURN fetch_scroll(SQLSMALLINT orientation, SQLLEN offset);

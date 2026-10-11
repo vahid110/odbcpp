@@ -73,6 +73,7 @@ class CatalogWireTransport final : public rs::core::transport::ITransport {
   std::vector<rs::util::Deadline> write_deadlines, read_deadlines;
   unsigned connects{0}, closes{0};
   bool foreign_keys{false};
+  bool sized_character_metadata{false};
   rs::util::Result<void> connect(std::string_view, uint16_t,
       rs::util::Deadline) override {
     ++connects; input_.clear(); offset_ = 0;
@@ -97,7 +98,8 @@ class CatalogWireTransport final : public rs::core::transport::ITransport {
            std::string_view(name) == "delete_rule" || std::string_view(name) == "update_rule"));
       integer(description, sequence ? 21 : 1043, 4);
       integer(description, sequence ? 2 : 65535, 2);
-      integer(description, 0xffffffffu, 4); integer(description, 0, 2);
+      integer(description, !sequence && sized_character_metadata ? 260u : 0xffffffffu, 4);
+      integer(description, 0, 2);
     }
     frame('T', description);
     std::vector<std::byte> completion; text(completion, "SELECT 0"); frame('C', completion);
@@ -1669,4 +1671,52 @@ TEST(RedshiftForeignKeyExecution, NativeDescriptionLimitsRefuseBeforeAnyCatalogP
   ASSERT_FALSE(result);ASSERT_EQ(2u,wire->writes.size());
   EXPECT_EQ(SessionDisposition::Retire,result.session_snapshot().disposition);
   session.disconnect();EXPECT_FALSE(session.is_connected());
+}
+
+TEST(RedshiftCharacterMetadata, RealParserPreparedResultsCapturePolicyButParameterDescriptionsStayNative) {
+  auto transport = std::make_unique<CatalogWireTransport>(); auto* wire = transport.get();
+  wire->sized_character_metadata = true;
+  PgDatabaseConnection session(std::move(transport), std::nullopt, PgCatalogProfile::Redshift);
+  ConnectionSettings settings; settings.host = "in-memory.invalid"; settings.port = 5439;
+  settings.database = "fixture"; settings.user = "fixture"; settings.use_ssl = false;
+  settings.character_metadata = {255, 17};
+  ASSERT_TRUE(session.connect(settings)); settings.character_metadata = {};
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{3});
+  const std::vector<QueryParameter> parameters{{"db", QueryParameterType::Text},
+      {"schema", QueryParameterType::Text}, {"table", QueryParameterType::Text}};
+  auto result = session.execute_prepared("SELECT ?, ?, ?", parameters, deadline);
+  ASSERT_TRUE(result); ASSERT_EQ(6u, result->columns.size());
+  for (std::size_t i = 0; i < 5; ++i) {
+    ASSERT_TRUE(result->columns[i].normalized_type);
+    const auto& native = *result->columns[i].normalized_type;
+    EXPECT_EQ(ScalarType::LongVarChar, native.type); EXPECT_EQ(17u, native.column_size);
+    EXPECT_EQ(ScalarType::VarChar, native.declared_type); EXPECT_EQ(256u, native.declared_column_size);
+  }
+  EXPECT_EQ(ScalarType::SmallInt, result->columns.back().normalized_type->type);
+  ASSERT_EQ(3u, result->normalized_parameter_types.size());
+  for (const auto& parameter : result->normalized_parameter_types) {
+    EXPECT_EQ(ScalarType::VarChar, parameter.type); EXPECT_EQ(0u, parameter.column_size);
+    EXPECT_FALSE(parameter.declared_type);
+  }
+  const auto snapshot = result->columns.front().normalized_type;
+  session.disconnect(); ASSERT_TRUE(session.connect(settings));
+  auto uncapped = session.execute_prepared("SELECT ?, ?, ?", parameters, deadline);
+  ASSERT_TRUE(uncapped);
+  EXPECT_EQ(ScalarType::VarChar, uncapped->columns.front().normalized_type->type);
+  EXPECT_EQ(256u, uncapped->columns.front().normalized_type->column_size);
+  EXPECT_FALSE(uncapped->columns.front().normalized_type->declared_type);
+  EXPECT_EQ(17u, snapshot->column_size); EXPECT_EQ(ScalarType::LongVarChar, snapshot->type);
+  session.disconnect(); EXPECT_FALSE(session.is_connected()); EXPECT_EQ(2u, wire->connects);
+}
+
+TEST(RedshiftCharacterMetadata, InvalidDisabledSizingRefusesBeforeActualTransportAndFreshSettingsRecover) {
+  auto transport = std::make_unique<CatalogWireTransport>(); auto* wire = transport.get();
+  PgDatabaseConnection session(std::move(transport), std::nullopt, PgCatalogProfile::Redshift);
+  ConnectionSettings settings; settings.host = "in-memory.invalid"; settings.port = 5439;
+  settings.database = "fixture"; settings.user = "fixture"; settings.use_ssl = false;
+  settings.character_metadata = {0, 65536};
+  auto refused = session.connect(settings); ASSERT_FALSE(refused);
+  EXPECT_EQ(0u, wire->connects); EXPECT_TRUE(wire->writes.empty()); EXPECT_FALSE(session.is_connected());
+  settings.character_metadata = {255, 65535}; ASSERT_TRUE(session.connect(settings));
+  EXPECT_EQ(1u, wire->connects); session.disconnect(); EXPECT_FALSE(session.is_connected());
 }

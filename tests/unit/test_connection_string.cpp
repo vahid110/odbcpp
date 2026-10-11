@@ -269,6 +269,23 @@ TEST_F(UnixIniDiscoveryTest, ResourceLimitsFollowDriverDsnAndConnectionPrecedenc
   EXPECT_EQ(options.result_limits.max_cells, 90u);
   EXPECT_EQ(options.input_limits.max_sql_bytes, 512u);
 }
+TEST_F(UnixIniDiscoveryTest, VarcharSizesRespectDriverDsnAndExplicitZeroEmptyOverrides) {
+  write(root_ / "drivers.ini", "[Sizing Driver]\nMaxVarcharSize=invalid\nMaxLongVarcharSize=65535\n");
+  write(root_ / "data.ini", "[SizingFixture]\nDriver=Sizing Driver\nMaxVarcharSize=8\nMaxLongVarcharSize=17\n");
+  ASSERT_EQ(0, setenv("ODBCSYSINI", root_.c_str(), 1));
+  ASSERT_EQ(0, setenv("ODBCINSTINI", "drivers.ini", 1));
+  ASSERT_EQ(0, setenv("ODBCINI", (root_ / "data.ini").c_str(), 1));
+  const auto driver = ConnectionString::resolve("DRIVER=Sizing Driver", "");
+  EXPECT_EQ("invalid", driver.effective_parameters.at("MAXVARCHARSIZE"));
+  const auto dsn = ConnectionString::resolve("DSN=SizingFixture", "");
+  EXPECT_EQ("8", dsn.effective_parameters.at("MAXVARCHARSIZE"));
+  EXPECT_EQ("17", dsn.effective_parameters.at("MAXLONGVARCHARSIZE"));
+  const auto zero = ConnectionString::resolve("DSN=SizingFixture;MaxVarcharSize=0;MaxLongVarcharSize=0", "");
+  EXPECT_EQ("0", zero.effective_parameters.at("MAXVARCHARSIZE"));
+  EXPECT_EQ("0", zero.effective_parameters.at("MAXLONGVARCHARSIZE"));
+  EXPECT_EQ("", ConnectionString::resolve("DSN=SizingFixture;MaxVarcharSize={}", "").effective_parameters.at("MAXVARCHARSIZE"));
+}
+
 #endif
 
 } // namespace
@@ -326,6 +343,24 @@ TEST_F(NativeDsnTest, QueryTimeoutNativeLayersAndAliasEmptyRemainLiteral) {
   EXPECT_EQ("3", ConnectionString::resolve("DSN=QueryFixture;QT=3", "Query Driver").effective_parameters.at("QUERYTIMEOUT"));
   EXPECT_EQ("7", ConnectionString::resolve("DSN=QueryFixture;QT=invalid;QueryTimeout=7", "Query Driver").effective_parameters.at("QUERYTIMEOUT"));
   EXPECT_EQ("", ConnectionString::resolve("DSN=QueryFixture;QT={}", "Query Driver").effective_parameters.at("QUERYTIMEOUT"));
+}
+
+TEST_F(NativeDsnTest, VarcharSizesRespectNativeRegistryDriverDsnAndExplicitZeroEmptyOverrides) {
+  constexpr auto path = L"SOFTWARE\\ODBC\\ODBC.INI\\SizingFixture";
+  value(HKEY_CURRENT_USER, path, L"Driver", L"Sizing Driver");
+  value(HKEY_CURRENT_USER, path, L"MaxVarcharSize", L"8");
+  value(HKEY_CURRENT_USER, path, L"MaxLongVarcharSize", L"17");
+  value(HKEY_CURRENT_USER, L"SOFTWARE\\ODBC\\ODBC.INI\\ODBC Data Sources", L"SizingFixture", L"Sizing Driver");
+  value(HKEY_LOCAL_MACHINE, L"SOFTWARE\\ODBC\\ODBCINST.INI\\Sizing Driver", L"MaxVarcharSize", L"invalid");
+  value(HKEY_LOCAL_MACHINE, L"SOFTWARE\\ODBC\\ODBCINST.INI\\Sizing Driver", L"MaxLongVarcharSize", L"65535");
+  EXPECT_EQ("invalid", ConnectionString::resolve("DRIVER=Sizing Driver", "").effective_parameters.at("MAXVARCHARSIZE"));
+  const auto dsn = ConnectionString::resolve("SizingFixture", "Sizing Driver");
+  EXPECT_EQ("8", dsn.effective_parameters.at("MAXVARCHARSIZE"));
+  EXPECT_EQ("17", dsn.effective_parameters.at("MAXLONGVARCHARSIZE"));
+  const auto zero = ConnectionString::resolve("DSN=SizingFixture;MaxVarcharSize=0;MaxLongVarcharSize=0", "");
+  EXPECT_EQ("0", zero.effective_parameters.at("MAXVARCHARSIZE"));
+  EXPECT_EQ("0", zero.effective_parameters.at("MAXLONGVARCHARSIZE"));
+  EXPECT_EQ("", ConnectionString::resolve("DSN=SizingFixture;MaxVarcharSize={}", "").effective_parameters.at("MAXVARCHARSIZE"));
 }
 
 TEST_F(NativeDsnTest, LoginTimeoutAliasesRespectNativeDriverDsnAndExplicitLayers) {

@@ -77,6 +77,7 @@ struct ConnectionSettings {
   std::optional<std::string> application_name;
   // Confirm before successful connection publication, or refuse locally.
   bool read_only = false;
+  CharacterMetadataPolicy character_metadata;
 };
 
 // Shared validation for SDK callers and product option resolution.

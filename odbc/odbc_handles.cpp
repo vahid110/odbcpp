@@ -1006,6 +1006,15 @@ void require_normalized_columns(const rs::core::database::QueryResult& result) {
     if (!column.normalized_type) {
       throw std::invalid_argument("Data source returned unnormalized column metadata");
     }
+    const auto& native = *column.normalized_type;
+    if (native.column_size > static_cast<std::uint64_t>(std::numeric_limits<SQLULEN>::max()) ||
+        native.declared_type.has_value() != native.declared_column_size.has_value() ||
+        (native.declared_type && (!native.known ||
+         *native.declared_column_size == 0 ||
+         native.type != rs::core::database::ScalarType::LongVarChar ||
+         (*native.declared_type != rs::core::database::ScalarType::Char &&
+          *native.declared_type != rs::core::database::ScalarType::VarChar))))
+      throw std::invalid_argument("Data source returned invalid character metadata");
   }
 }
 
@@ -1014,6 +1023,64 @@ ColumnInfo column_info_for(
   const auto type = odbc_type_info(*metadata.normalized_type);
   return ColumnInfo{metadata.name, type.sql_type, type.column_size,
                     type.decimal_digits, SQL_NULLABLE_UNKNOWN};
+}
+
+// Adapt the prescribed ODBC catalog row schemas, not database wire types.
+// Cells remain owning and unpublished until all presentation checks succeed.
+void present_catalog_character_metadata(rs::core::database::QueryResult& result,
+    const rs::core::database::CatalogRequest& request,
+    const rs::core::database::CharacterMetadataPolicy& policy) {
+  using namespace rs::core::database;
+  require_normalized_columns(result);
+  for (auto& column : result.columns)
+    column.normalized_type = declared_character_metadata(*column.normalized_type);
+  if (policy.varchar_threshold == 0) return;
+  std::size_t count = 0, code = 0, size = 0, buffer = 0;
+  std::optional<std::size_t> sql_type, octets;
+  if (std::holds_alternative<ColumnsCatalogRequest>(request)) {
+    count = 18; code = 4; size = 6; buffer = 7; sql_type = 13; octets = 15;
+  } else if (std::holds_alternative<ProcedureColumnsCatalogRequest>(request)) {
+    count = 19; code = 5; size = 7; buffer = 8; sql_type = 14; octets = 16;
+  } else if (std::holds_alternative<SpecialColumnsCatalogRequest>(request)) {
+    count = 8; code = 2; size = 4; buffer = 5;
+  } else return;
+  if (result.columns.size() != count || !result.additional_results.empty())
+    throw std::invalid_argument("Invalid character catalog metadata");
+  const auto integer = [](const NativeTypeInfo& native) {
+    return native.known && (native.type == ScalarType::SmallInt ||
+        native.type == ScalarType::Integer || native.type == ScalarType::BigInt);
+  };
+  for (const auto index : {code, size, buffer})
+    if (!integer(*result.columns[index].normalized_type))
+      throw std::invalid_argument("Invalid character catalog metadata");
+  if ((sql_type && !integer(*result.columns[*sql_type].normalized_type)) ||
+      (octets && !integer(*result.columns[*octets].normalized_type)))
+    throw std::invalid_argument("Invalid character catalog metadata");
+  for (auto& row : result.rows) {
+    if (row.size() != count || !row[code])
+      throw std::invalid_argument("Invalid character catalog metadata");
+    SQLSMALLINT selected = 0;
+    const auto& text = *row[code];
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), selected);
+    if (text.empty() || parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+      throw std::invalid_argument("Invalid character catalog metadata");
+    if (selected != SQL_CHAR && selected != SQL_VARCHAR) continue;
+    if (!row[size]) continue; // Unknown declared size must not be inferred.
+    std::uint64_t length = 0;
+    const auto& original = *row[size];
+    const auto dimension = std::from_chars(original.data(), original.data() + original.size(), length);
+    if (original.empty() || dimension.ec != std::errc{} ||
+        dimension.ptr != original.data() + original.size())
+      throw std::invalid_argument("Invalid character catalog metadata");
+    const auto native = apply_character_metadata_policy(
+        {selected == SQL_CHAR ? ScalarType::Char : ScalarType::VarChar, length, 0, true}, policy);
+    if (native.type != ScalarType::LongVarChar) continue;
+    row[code] = std::to_string(SQL_LONGVARCHAR);
+    row[size] = std::to_string(native.column_size);
+    row[buffer] = row[size];
+    if (sql_type) row[*sql_type] = row[code];
+    if (octets) row[*octets] = row[size];
+  }
 }
 
 SQLSMALLINT descriptor_type_for(SQLSMALLINT concise_type) {
@@ -1592,6 +1659,19 @@ SQLRETURN ODBCConnection::connect(
     rs::core::database::ConnectionOptions options;
     if (params.count("APPLICATIONNAME")) options.application_name = params.at("APPLICATIONNAME");
     if (params.count("READONLY")) options.read_only = parse_read_only(params.at("READONLY"));
+    const auto text_size = [](std::string_view raw, std::uint32_t maximum, const char* name) {
+      const auto text = ConnectionString::trim(std::string(raw));
+      std::uint32_t value = 0;
+      const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+      if (text.empty() || std::any_of(text.begin(), text.end(), [](char ch) { return ch < '0' || ch > '9'; }) ||
+          error != std::errc{} || end != text.data() + text.size() || value > maximum)
+        throw std::invalid_argument(std::string("Invalid ") + name + " value");
+      return value;
+    };
+    if (params.count("MAXVARCHARSIZE")) options.varchar_threshold = text_size(
+        params.at("MAXVARCHARSIZE"), static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()), "MaxVarcharSize");
+    if (params.count("MAXLONGVARCHARSIZE")) options.long_varchar_size = text_size(
+        params.at("MAXLONGVARCHARSIZE"), 65535, "MaxLongVarcharSize");
     const auto selected_query_timeout = params.count("QUERYTIMEOUT")
         ? parse_query_timeout_default(params.at("QUERYTIMEOUT")) : static_cast<SQLULEN>(0);
     if (params.count("SERVER")) options.host = params.at("SERVER");
@@ -1660,6 +1740,7 @@ SQLRETURN ODBCConnection::connect(
         connection.connected_ = false; connection.transaction_active_ = false;
         connection.confirmed_read_only_ = false;
         connection.query_timeout_default_seconds_ = 0;
+        connection.character_metadata_policy_ = {};
       }
     } attempt{*this, backend_provider_->create_session(std::move(transport))};
     if (!attempt.physical) throw std::runtime_error("Backend provider returned no session");
@@ -1745,6 +1826,7 @@ SQLRETURN ODBCConnection::connect(
     login_timeout_seconds_ = selected_login_timeout;
     confirmed_read_only_ = settings.read_only;
     query_timeout_default_seconds_ = selected_query_timeout;
+    character_metadata_policy_ = settings.character_metadata;
     attempt.completed = true;
     return SQL_SUCCESS;
 
@@ -2238,6 +2320,7 @@ void ODBCConnection::close_connection() {
   connected_ = false; transaction_active_ = false;
   confirmed_read_only_ = false;
   query_timeout_default_seconds_ = 0;
+  character_metadata_policy_ = {};
   log(rs::core::logging::LogLevel::Info, "connection_closed",
       "Database connection closed");
   if (logger_) logger_->flush();
@@ -3351,7 +3434,8 @@ SQLRETURN ODBCStatement::param_data(SQLPOINTER* token) {
 }
 
 SQLRETURN ODBCStatement::execute_direct(const std::string& sql,
-    std::optional<rs::util::Deadline> original_deadline) {
+    std::optional<rs::util::Deadline> original_deadline,
+    const rs::core::database::CatalogRequest* catalog_presentation) {
   if (!HandleRegistry::instance().admit_need_data({reinterpret_cast<SQLHANDLE>(this)},"SQLExecDirect",reinterpret_cast<SQLHANDLE>(this))) return SQL_ERROR;
   const auto started = std::chrono::steady_clock::now();
   const auto dynamic_function = classify_dynamic_function(sql);
@@ -3447,7 +3531,20 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql,
 
     const auto row_count = result->rows.size();
     const auto affected_rows = result->affected_rows;
-    if (!cancellation_outcome.claimed) apply_query_result(std::move(*result), false);
+    if (!cancellation_outcome.claimed) {
+      if (catalog_presentation) {
+        try {
+          present_catalog_character_metadata(*result, *catalog_presentation, conn_->character_metadata_policy());
+        } catch (...) {
+          clear_current_result();
+          pending_results_.clear();
+          conn_->close_connection();
+          set_error(SQLSTATE_GENERAL_ERROR, "Invalid catalog execution result");
+          return SQL_ERROR;
+        }
+      }
+      apply_query_result(std::move(*result), false);
+    }
     conn_->log(rs::core::logging::LogLevel::Info, "query_completed",
                "Direct SQL execution completed",
                {{"kind", "direct", rs::core::logging::FieldSensitivity::Public},
@@ -7334,8 +7431,15 @@ bool ODBCStatement::apply_result_metadata(
   }
   std::vector<DescriptorRecord> row_descriptor_records;
   row_descriptor_records.reserve(staged_columns.size());
-  for (const auto& column : staged_columns) {
-    row_descriptor_records.push_back(descriptor_record_for(column, conn_->result_type_catalog()));
+  for (std::size_t index = 0; index < staged_columns.size(); ++index) {
+    auto record = descriptor_record_for(staged_columns[index], conn_->result_type_catalog());
+    if (index < result.columns.size() && result.columns[index].normalized_type->declared_type) {
+      const auto* declared = find_type_info(conn_->result_type_catalog(),
+          odbc_scalar_type(*result.columns[index].normalized_type->declared_type));
+      record.type_name = declared ? declared->name : "";
+      record.local_type_name = record.type_name;
+    }
+    row_descriptor_records.push_back(std::move(record));
   }
 
   const auto implementation_descriptor = descriptor(imp_param_descriptor_);
@@ -7887,6 +7991,7 @@ SQLRETURN ODBCStatement::execute_catalog(
       }
       const bool retired = result.session_snapshot().disposition ==
           rs::core::database::SessionDisposition::Retire;
+      present_catalog_character_metadata(*result, request, conn_->character_metadata_policy());
       apply_query_result(std::move(*result), false);
       if (retired) conn_->close_connection();
       return SQL_SUCCESS;
@@ -7904,7 +8009,7 @@ SQLRETURN ODBCStatement::execute_catalog(
               query.error_message());
     return SQL_ERROR;
   }
-  return execute_direct(*query, original_deadline);
+  return execute_direct(*query, original_deadline, &request);
 }
 
 SQLRETURN ODBCStatement::tables(

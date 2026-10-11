@@ -5,6 +5,7 @@
 #include "pg_sql_dialect.h"
 
 #include <string_view>
+#include <limits>
 #include <utility>
 
 namespace rs::core::database::postgres {
@@ -69,6 +70,18 @@ PgBackendProvider::resolve_connection_options(ConnectionOptions options) const {
   }
 
   ConnectionSettings settings;
+  if ((options.varchar_threshold || options.long_varchar_size) &&
+      catalog_profile_ != PgCatalogProfile::Redshift)
+    return {rs::util::DbErrorCode::UnsupportedFeature,
+            "Character metadata sizing requires Redshift"};
+  if (options.varchar_threshold &&
+      *options.varchar_threshold > static_cast<std::uint32_t>(std::numeric_limits<int>::max()))
+    return {rs::util::DbErrorCode::InvalidParameter, "Invalid MaxVarcharSize value"};
+  if (options.long_varchar_size && *options.long_varchar_size > 65535)
+    return {rs::util::DbErrorCode::InvalidParameter, "Invalid MaxLongVarcharSize value"};
+  if (catalog_profile_ == PgCatalogProfile::Redshift)
+    settings.character_metadata = {options.varchar_threshold.value_or(255),
+                                   options.long_varchar_size.value_or(65535)};
   if (options.read_only && catalog_profile_ != PgCatalogProfile::Redshift)
     return {rs::util::DbErrorCode::UnsupportedFeature, "ReadOnly requires Redshift"};
   if (options.redshift_catalog_mode && catalog_profile_ != PgCatalogProfile::Redshift)

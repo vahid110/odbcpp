@@ -128,7 +128,7 @@ BackendResult<QueryResult> normalize_redshift_schemas(
   // Recognition is not a guessed capacity. Preserve the actual source's schema
   // dimension (including unknown zero), but normalize its published text family.
   output.columns[1].normalized_type->column_size =
-      source.columns[indexes[1]].normalized_type->column_size;
+      declared_character_metadata(*source.columns[indexes[1]].normalized_type).column_size;
   for (const auto& schema : schemas)
     output.rows.push_back({std::nullopt, schema, std::nullopt, std::nullopt, std::nullopt});
   return BackendResult<QueryResult>{std::move(output), input.session_snapshot()};
@@ -329,7 +329,8 @@ BackendResult<QueryResult> normalize_redshift_tables(std::string_view database,
   QueryResult output;
   constexpr std::array<const char*,5> outnames{"TABLE_CAT","TABLE_SCHEM","TABLE_NAME","TABLE_TYPE","REMARKS"};
   for (std::size_t i = 0; i < indexes.size(); ++i) {
-    auto type = *source.columns[indexes[i]].normalized_type; type.type = ScalarType::VarChar;
+    auto type = declared_character_metadata(*source.columns[indexes[i]].normalized_type);
+    type.type = ScalarType::VarChar;
     output.columns.push_back({outnames[i], type});
   }
   // Validate every row before filtering: a nonmatching malformed row is still a
@@ -492,7 +493,7 @@ BackendResult<QueryResult> normalize_redshift_columns(std::string_view database,
   const std::array<int,18> textsource{0,1,2,3,-1,7,-1,-1,-1,-1,-1,11,5,-1,-1,-1,-1,6};
   for(std::size_t i=0;i<outnames.size();++i) {
     NativeTypeInfo native;
-    if(textsource[i]>=0){native=*source.columns[index[static_cast<std::size_t>(textsource[i])]].normalized_type;native.type=ScalarType::VarChar;}
+    if(textsource[i]>=0){native=declared_character_metadata(*source.columns[index[static_cast<std::size_t>(textsource[i])]].normalized_type);native.type=ScalarType::VarChar;}
     else {const bool integer=i==6 || i==7 || i==15 || i==16;native={integer?ScalarType::Integer:ScalarType::SmallInt,integer?10u:5u,0,true};}
     output.columns.push_back({outnames[i],native});
   }

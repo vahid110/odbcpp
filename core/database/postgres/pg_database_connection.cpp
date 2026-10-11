@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <limits>
 #include <unordered_set>
 #include <tuple>
 #include <type_traits>
@@ -72,7 +73,8 @@ BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& sett
         .input_limits = settings.input_limits, .startup_response_limits = settings.startup_response_limits,
         .redshift_catalog_mode = settings.redshift_catalog_mode,
         .application_name = settings.application_name,
-        .read_only = settings.read_only};
+        .read_only = settings.read_only,
+        .character_metadata = settings.character_metadata};
     // Local binding consistency is not issuer proof, expiry, or pooling authority.
     return auth::connect_bound_ordinary_password_until(*this, selected, request.value(), material.value());
   } catch (const std::bad_alloc&) {
@@ -91,6 +93,12 @@ BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& sett
 
 BackendResult<void> PgDatabaseConnection::connect_until(
     const ConnectionSettings& settings, rs::util::Deadline deadline) {
+  if (settings.character_metadata.varchar_threshold >
+          static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
+      (catalog_profile_ == PgCatalogProfile::Redshift &&
+       settings.character_metadata.long_varchar_size > 65535))
+    return local_backend_error(LocalFailure::InvalidInput,
+        "Invalid character metadata sizing", BackendOperation::Connect, session_state());
   if (settings.read_only && catalog_profile_ != PgCatalogProfile::Redshift)
     return local_backend_error(LocalFailure::Unsupported,
         "ReadOnly requires Redshift", BackendOperation::Connect, session_state());

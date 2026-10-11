@@ -90,7 +90,7 @@ namespace {
 
   std::optional<std::string> first_unknown_connection_keyword(
       const std::string& connection_string) {
-    static constexpr std::array<std::string_view, 59> supported{{
+    static constexpr std::array<std::string_view, 61> supported{{
         "DSN", "DRIVER", "SERVER", "HOST", "PORT", "DATABASE", "DB",
         "MAXRESPONSEBYTES", "MAXRESPONSEMESSAGES", "MAXSTARTUPRESPONSEBYTES", "MAXSTARTUPRESPONSEMESSAGES",
         "MAXROWS", "MAXCELLS", "MAXCOLUMNS", "MAXRESULTS", "MAXMETADATAENTRIES", "MAXCOLUMNNAMEBYTES",
@@ -100,6 +100,7 @@ namespace {
         "DESCRIPTION", "LOGINTIMEOUT", "LT", "APPLICATIONNAME", "READONLY", "QUERYTIMEOUT", "QT",
         "TRANSPORTMODE", "ASYNCMAXINFLIGHT", "ASYNCQUEUEDEPTH",
         "KEEPALIVE", "KEEPALIVEIDLE", "KEEPALIVEINTERVAL", "KEEPALIVECOUNT",
+        "MAXVARCHARSIZE", "MAXLONGVARCHARSIZE",
         "ASYNCENGINE", "DEADLINEMODEL", "LOGLEVEL", "LOGFORMAT",
         "LOGSINK", "LOGFILE", "LOGMAXSIZE", "LOGMAXFILES", "LOGASYNC",
         "LOGQUERIES"}};

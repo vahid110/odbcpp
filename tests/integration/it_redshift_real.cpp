@@ -7919,3 +7919,129 @@ TEST_F(RedshiftKeepaliveOptionsRealTest, ConfiguredTuningLocalRefusalTypedNullSi
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLCloseCursor(hstmt_)));
   ASSERT_NO_FATAL_FAILURE(release_keepalive());
 }
+
+class RedshiftVarcharSizingRealTest : public RedshiftKeepaliveOptionsRealTest {
+ protected:
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_VARCHAR_SIZING_ADMISSION", "varchar_sizing_happy_v1");
+  }
+  static constexpr const char* value = "é表😀-value-longer-than-the-report";
+  std::string sizing_input(bool disabled, bool invalid = false) {
+    auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    for (const char* key : {"MAXVARCHARSIZE", "MAXLONGVARCHARSIZE", "LT", "LOGINTIMEOUT"}) options.erase(key);
+    options["MAXVARCHARSIZE"] = disabled ? "0" : "8";
+    options["MAXLONGVARCHARSIZE"] = invalid ? "65536" : disabled ? "0" : "17";
+    options["LOGINTIMEOUT"] = "5";
+    std::string text;
+    for (const auto& [key, item] : options) {
+      text += key; text += "={";
+      for (char ch : item) { text.push_back(ch); if (ch == '}') text.push_back('}'); }
+      text += "};";
+    }
+    EXPECT_TRUE(options == rs::odbc::ConnectionString::parse(text)) << "Sizing input preservation failed";
+    return text;
+  }
+  void refuse_sizing() {
+    ASSERT_TRUE(cap(window_end_, false));
+    auto text = rs::odbc::utf8_to_wide(sizing_input(true, true)); ASSERT_TRUE(text); text->push_back(0);
+    SQLWCHAR guard[3]{static_cast<SQLWCHAR>('x'), 0, static_cast<SQLWCHAR>('y')}; SQLSMALLINT length = 66;
+    const auto rc = SQLDriverConnectW(hdbc_, nullptr, text->data(), SQL_NTS, guard, 3, &length, SQL_DRIVER_NOPROMPT);
+    connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO;
+    if (rc != SQL_ERROR) unknown_completion_ = true;
+    ASSERT_EQ(SQL_ERROR, rc); EXPECT_EQ(66, length);
+    EXPECT_EQ(static_cast<SQLWCHAR>('x'), guard[0]); EXPECT_EQ(static_cast<SQLWCHAR>('y'), guard[2]);
+    SQLCHAR state[6]{}, message[128]{};
+    ASSERT_TRUE(observed(SQLGetDiagRec(SQL_HANDLE_DBC, hdbc_, 1, state, nullptr, message,
+        static_cast<SQLSMALLINT>(sizeof(message)), nullptr)));
+    if (std::string_view(reinterpret_cast<char*>(state)) != "HY000" ||
+        std::string_view(reinterpret_cast<char*>(message)) != "Invalid MaxLongVarcharSize value") unknown_completion_ = true;
+    ASSERT_STREQ("HY000", reinterpret_cast<char*>(state));
+    ASSERT_STREQ("Invalid MaxLongVarcharSize value", reinterpret_cast<char*>(message));
+  }
+  void open_sizing(bool disabled, bool wide) {
+    ASSERT_TRUE(cap(window_end_, false));
+    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(window_end_ - rs::util::Clock::now()).count(), 5);
+    auto text = sizing_input(disabled); SQLRETURN rc;
+    if (wide) {
+      auto input = rs::odbc::utf8_to_wide(text); ASSERT_TRUE(input); input->push_back(0);
+      rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    } else rc = SQLDriverConnect(hdbc_, nullptr, reinterpret_cast<SQLCHAR*>(text.data()), SQL_NTS,
+        nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO; ASSERT_TRUE(observed(rc));
+    ASSERT_TRUE(observed(SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt_)));
+    ASSERT_TRUE(cap(window_end_, true));
+  }
+  void sizing_descriptor(SQLHSTMT statement, SQLSMALLINT expected, SQLULEN size) {
+    ASSERT_TRUE(cap(window_end_, true));
+    SQLSMALLINT type = 99; SQLULEN length = 99;
+    ASSERT_TRUE(observed(SQLDescribeCol(statement, 1, nullptr, 0, nullptr, &type, &length, nullptr, nullptr)));
+    EXPECT_EQ(expected, type); EXPECT_EQ(size, length);
+    ASSERT_TRUE(cap(window_end_, true)); type = 99; length = 99;
+    ASSERT_TRUE(observed(SQLDescribeColW(statement, 1, nullptr, 0, nullptr, &type, &length, nullptr, nullptr)));
+    EXPECT_EQ(expected, type); EXPECT_EQ(size, length);
+    SQLCHAR name[32]{}; SQLSMALLINT name_length = 99;
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLColAttribute(statement, 1, SQL_DESC_TYPE_NAME, name, sizeof(name), &name_length, nullptr)));
+    EXPECT_STREQ("varchar", reinterpret_cast<char*>(name));
+  }
+  void sizing_row(SQLHSTMT statement, bool null, bool wide, bool early = false) {
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(statement)));
+    SQLLEN length = 66;
+    if (wide) {
+      SQLWCHAR output[128]{}; output[0] = static_cast<SQLWCHAR>('x'); output[127] = static_cast<SQLWCHAR>('y');
+      ASSERT_TRUE(cap(window_end_, true));
+      ASSERT_TRUE(observed(SQLGetData(statement, 1, SQL_C_WCHAR, output, sizeof(output) - sizeof(SQLWCHAR), &length)));
+      if (null) { EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(static_cast<SQLWCHAR>('x'), output[0]); }
+      else {
+        const auto expected = rs::odbc::utf8_to_wide(value); ASSERT_TRUE(expected);
+        EXPECT_EQ(static_cast<SQLLEN>(expected->size() * sizeof(SQLWCHAR)), length);
+        EXPECT_TRUE(std::equal(expected->begin(), expected->end(), output)); EXPECT_EQ(0, output[expected->size()]);
+      }
+      EXPECT_EQ(static_cast<SQLWCHAR>('y'), output[127]);
+    } else {
+      SQLCHAR output[128]{}; output[0] = 'x'; output[127] = 'y';
+      ASSERT_TRUE(cap(window_end_, true));
+      ASSERT_TRUE(observed(SQLGetData(statement, 1, SQL_C_CHAR, output, sizeof(output) - 1, &length)));
+      if (null) { EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ('x', output[0]); }
+      else { EXPECT_EQ(static_cast<SQLLEN>(std::strlen(value)), length); EXPECT_STREQ(value, reinterpret_cast<char*>(output)); }
+      EXPECT_EQ('y', output[127]);
+    }
+    if (!early) { ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(statement), SQL_NO_DATA)); }
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLCloseCursor(statement)));
+  }
+};
+
+TEST_F(RedshiftVarcharSizingRealTest, ReportedMetadataPreservesValuesParametersNullSiblingAndDisabledReconnect) {
+  ASSERT_NO_FATAL_FAILURE(refuse_sizing());
+  ASSERT_NO_FATAL_FAILURE(open_sizing(false, false));
+  ASSERT_TRUE(observed(SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &sibling_)));
+  const auto direct = std::string("SELECT CAST('") + value + "' AS VARCHAR(300)) AS sizing_value";
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  ASSERT_TRUE(known_sql(SQLExecDirect(sibling_, reinterpret_cast<SQLCHAR*>(const_cast<char*>(direct.c_str())), SQL_NTS)));
+  ASSERT_NO_FATAL_FAILURE(sizing_descriptor(sibling_, SQL_LONGVARCHAR, 17));
+  auto prepared = rs::odbc::utf8_to_wide("SELECT CAST(? AS VARCHAR(300)) AS sizing_value"); ASSERT_TRUE(prepared); prepared->push_back(0);
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, prepared->data(), SQL_NTS)));
+  SQLLEN indicator = SQL_NTS;
+  ASSERT_TRUE(observed(SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR, 300, 0,
+      const_cast<char*>(value), static_cast<SQLLEN>(std::strlen(value) + 1), &indicator)));
+  SQLSMALLINT parameter_type = 99; SQLULEN parameter_size = 99;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(known_sql(SQLDescribeParam(hstmt_, 1, &parameter_type, &parameter_size, nullptr, nullptr)));
+  EXPECT_EQ(SQL_VARCHAR, parameter_type); EXPECT_EQ(300u, parameter_size);
+  for (int row = 0; row < 3; ++row) {
+    indicator = row == 1 ? SQL_NULL_DATA : SQL_NTS;
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLExecute(hstmt_)));
+    ASSERT_NO_FATAL_FAILURE(sizing_descriptor(hstmt_, SQL_LONGVARCHAR, 17));
+    ASSERT_NO_FATAL_FAILURE(sizing_row(hstmt_, row == 1, row != 0, row == 2));
+  }
+  ASSERT_NO_FATAL_FAILURE(sizing_row(sibling_, false, false));
+  const std::string owning_snapshot(value);
+  ASSERT_NO_FATAL_FAILURE(release_keepalive());
+  ASSERT_NO_FATAL_FAILURE(open_sizing(true, true));
+  auto wide_direct = rs::odbc::utf8_to_wide(direct); ASSERT_TRUE(wide_direct); wide_direct->push_back(0);
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLExecDirectW(hstmt_, wide_direct->data(), SQL_NTS)));
+  ASSERT_NO_FATAL_FAILURE(sizing_descriptor(hstmt_, SQL_VARCHAR, 300));
+  ASSERT_NO_FATAL_FAILURE(sizing_row(hstmt_, false, true));
+  EXPECT_EQ(value, owning_snapshot);
+  ASSERT_NO_FATAL_FAILURE(release_keepalive());
+}

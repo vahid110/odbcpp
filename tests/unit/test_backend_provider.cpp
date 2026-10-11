@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <memory>
+#include <limits>
 
 namespace {
 using namespace rs::core::database;
@@ -335,4 +336,84 @@ TEST(BackendProviderTest, ReadOnlyIntentIsPerAttemptAndRefusesUnsupportedPostgre
     ASSERT_TRUE(again); EXPECT_FALSE(again->read_only);
     if (redshift) EXPECT_TRUE(selected->read_only);
   }
+}
+
+TEST(CharacterMetadataPolicyTest, StrictBoundaryReportedSizeAndNativeIdentityRemainOwning) {
+  const NativeTypeInfo native{ScalarType::VarChar, 256, 0, true};
+  const CharacterMetadataPolicy chosen{255, 65535};
+  const auto reported = apply_character_metadata_policy(native, chosen);
+  EXPECT_EQ(ScalarType::LongVarChar, reported.type);
+  EXPECT_EQ(65535u, reported.column_size);
+  EXPECT_EQ(ScalarType::VarChar, reported.declared_type);
+  EXPECT_EQ(256u, reported.declared_column_size);
+  EXPECT_EQ(ScalarType::VarChar, native.type);
+  EXPECT_EQ(256u, native.column_size);
+  const auto restored = declared_character_metadata(reported);
+  EXPECT_EQ(native.type, restored.type); EXPECT_EQ(native.column_size, restored.column_size);
+  EXPECT_FALSE(restored.declared_type); EXPECT_FALSE(restored.declared_column_size);
+  const auto again = apply_character_metadata_policy(reported, {1, 7});
+  EXPECT_EQ(reported.type, again.type); EXPECT_EQ(reported.column_size, again.column_size);
+  EXPECT_EQ(reported.declared_column_size, again.declared_column_size);
+  const auto boundary = apply_character_metadata_policy({ScalarType::Char, 255, 0, true}, chosen);
+  EXPECT_EQ(ScalarType::Char, boundary.type); EXPECT_EQ(255u, boundary.column_size);
+  const auto character = apply_character_metadata_policy({ScalarType::Char, 256, 0, true}, {255, 0});
+  EXPECT_EQ(ScalarType::LongVarChar, character.type); EXPECT_EQ(256u, character.column_size);
+  EXPECT_EQ(ScalarType::Char, character.declared_type);
+}
+
+TEST(CharacterMetadataPolicyTest, DisabledUnknownZeroAndOtherFamiliesPreserveActualMetadata) {
+  for (const auto type : {ScalarType::Char, ScalarType::VarChar, ScalarType::LongVarChar,
+                         ScalarType::Binary, ScalarType::LongVarBinary, ScalarType::Integer,
+                         ScalarType::Numeric, ScalarType::Timestamp}) {
+    const NativeTypeInfo native{type, 65535, 3, true};
+    const auto disabled = apply_character_metadata_policy(native, {0, 7});
+    EXPECT_EQ(type, disabled.type); EXPECT_EQ(65535u, disabled.column_size);
+    EXPECT_EQ(3, disabled.decimal_digits); EXPECT_TRUE(disabled.known);
+    EXPECT_FALSE(disabled.declared_type);
+    if (type != ScalarType::Char && type != ScalarType::VarChar) {
+      const auto selected = apply_character_metadata_policy(native, {1, 7});
+      EXPECT_EQ(type, selected.type); EXPECT_EQ(65535u, selected.column_size);
+    }
+  }
+  for (const auto native : {NativeTypeInfo{ScalarType::VarChar, 65535, 0, false},
+                            NativeTypeInfo{ScalarType::VarChar, 0, 0, true}}) {
+    const auto selected = apply_character_metadata_policy(native, {1, 7});
+    EXPECT_EQ(native.type, selected.type); EXPECT_EQ(native.column_size, selected.column_size);
+    EXPECT_EQ(native.known, selected.known); EXPECT_FALSE(selected.declared_type);
+  }
+  EXPECT_TRUE(valid_character_metadata_policy({0, 0}));
+  const auto maximum = static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max());
+  EXPECT_TRUE(valid_character_metadata_policy({maximum, maximum}));
+  EXPECT_FALSE(valid_character_metadata_policy({maximum + 1, 0}));
+  EXPECT_FALSE(valid_character_metadata_policy({0, maximum + 1}));
+}
+
+TEST(BackendProviderTest, VarcharSizingDefaultsSelectedZeroBoundsAndProviderIsolationAreIndependent) {
+  postgres::PgBackendProvider redshift{{"redshift", "test", "test"},
+      {"host", 5439, "db", false}, std::nullopt, postgres::PgCatalogProfile::Redshift};
+  postgres::PgBackendProvider pg{{"postgresql", "test", "test"}, {"host", 5432, "db", false}};
+  auto defaults = redshift.resolve_connection_options({}); ASSERT_TRUE(defaults);
+  EXPECT_EQ((CharacterMetadataPolicy{255, 65535}), defaults->character_metadata);
+  auto neutral = pg.resolve_connection_options({}); ASSERT_TRUE(neutral);
+  EXPECT_EQ((CharacterMetadataPolicy{}), neutral->character_metadata);
+  EXPECT_EQ((CharacterMetadataPolicy{}), ConnectionSettings{}.character_metadata);
+  ConnectionOptions options; options.varchar_threshold = 0; options.long_varchar_size = 0;
+  auto disabled = redshift.resolve_connection_options(options); ASSERT_TRUE(disabled);
+  EXPECT_EQ((CharacterMetadataPolicy{}), disabled->character_metadata);
+  EXPECT_FALSE(pg.resolve_connection_options(options));
+  options.varchar_threshold = static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max());
+  options.long_varchar_size = 65535;
+  auto maximum = redshift.resolve_connection_options(options); ASSERT_TRUE(maximum);
+  options.varchar_threshold = *options.varchar_threshold + 1;
+  auto overflow = redshift.resolve_connection_options(options); ASSERT_FALSE(overflow);
+  EXPECT_EQ("Invalid MaxVarcharSize value", overflow.error_message());
+  options.varchar_threshold = 0; options.long_varchar_size = 65536;
+  auto invalid_disabled = redshift.resolve_connection_options(options); ASSERT_FALSE(invalid_disabled);
+  EXPECT_EQ("Invalid MaxLongVarcharSize value", invalid_disabled.error_message());
+  options = {}; options.long_varchar_size = 17;
+  auto partial = redshift.resolve_connection_options(options); ASSERT_TRUE(partial);
+  EXPECT_EQ((CharacterMetadataPolicy{255, 17}), partial->character_metadata);
+  EXPECT_EQ((CharacterMetadataPolicy{255, 65535}), defaults->character_metadata);
+  auto fresh = redshift.resolve_connection_options({}); ASSERT_TRUE(fresh);
+  EXPECT_EQ(defaults->character_metadata, fresh->character_metadata);
 }

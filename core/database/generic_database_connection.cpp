@@ -125,6 +125,9 @@ BackendResult<void> GenericDatabaseConnection::connect_impl(const ConnectionSett
   if (settings.port == 0) {
     return {rs::util::DbErrorCode::InvalidParameter, "Database connection port is unresolved"};
   }
+  if (!valid_character_metadata_policy(settings.character_metadata)) {
+    return {rs::util::DbErrorCode::InvalidParameter, "Invalid character metadata sizing"};
+  }
   if (!valid_resource_limits(settings)) {
     return {rs::util::DbErrorCode::InvalidParameter, "Resource limits are outside supported bounds"};
   }
@@ -900,7 +903,9 @@ BackendResult<QueryResult> GenericDatabaseConnection::read_query_result(
       item.columns.reserve(parsed.columns.size());
       for (auto& column : parsed.columns) {
         item.columns.push_back({std::move(column.name),
-            describe_type(column.type_id, column.type_size, column.type_modifier)});
+            apply_character_metadata_policy(
+                describe_type(column.type_id, column.type_size, column.type_modifier),
+                settings_.character_metadata)});
       }
       if (kind != ResponseKind::SimpleExecution && !parsed.parameter_type_ids.empty()) {
         auto types = resolve_types(parsed.parameter_type_ids, deadline);

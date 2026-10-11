@@ -52,6 +52,9 @@ struct ConnectionOptions {
   std::optional<std::string> application_name;
   // Per-session read-only intent; supporting backends own its native enforcement.
   bool read_only = false;
+  // Optional provider-neutral text presentation choices, not payload limits.
+  std::optional<std::uint32_t> varchar_threshold;
+  std::optional<std::uint32_t> long_varchar_size;
 };
 
 // Immutable product definition. A provider owns identity and static behavior;
