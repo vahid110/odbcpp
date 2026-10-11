@@ -6865,7 +6865,8 @@ class RedshiftDayOrdinalEscapeRealTest : public RedshiftLocateEscapeRealTest {
     const auto sql=projection(true);std::vector<SQLWCHAR> wide;
     for(const auto ch:sql){wide.push_back(static_cast<SQLWCHAR>(ch));}wide.push_back(0);
     ASSERT_TRUE(cap(window_end_,true));ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_,wide.data(),SQL_NTS)));
-    SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumParams(hstmt_,&count));ASSERT_EQ(8,count);
+    SQLSMALLINT count=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumParams(hstmt_,&count))
+        << "SQLNumParams SQLSTATE: " << get_error(SQL_HANDLE_STMT,hstmt_);ASSERT_EQ(8,count);
     for(SQLUSMALLINT p=1;p<=8;++p){
       if(p<=4){ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,p,SQL_PARAM_INPUT,SQL_C_TYPE_DATE,SQL_TYPE_DATE,10,0,&date_,sizeof(date_),&date_length_));}
       else{ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,p,SQL_PARAM_INPUT,SQL_C_TYPE_TIMESTAMP,SQL_TYPE_TIMESTAMP,26,6,&stamp_,sizeof(stamp_),&input_stamp_length_));}

@@ -11444,3 +11444,142 @@ TEST_F(DayOrdinalEscapeApiTest, SiblingSnapshotAndCapabilityMasksSurviveLocalRef
   ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,sibling));
 }
 } // namespace
+
+namespace {
+class ParameterMarkerCountTest : public TemporalEscapeApiTest {
+ protected:
+  SQL_DATE_STRUCT date_{2024,1,7};
+  SQL_TIMESTAMP_STRUCT stamp_{2024,1,7,12,34,56,123456000};
+  SQLLEN date_length_{},stamp_length_{};
+  void ipd_count(SQLSMALLINT expected) {
+    SQLHDESC ipd{};ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_PARAM_DESC,&ipd,0,nullptr));
+    struct {SQLSMALLINT before{71},value{97},after{73};} out;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,0,SQL_DESC_COUNT,&out.value,0,nullptr));
+    EXPECT_EQ(expected,out.value);EXPECT_EQ(71,out.before);EXPECT_EQ(73,out.after);
+  }
+  void ipd_type(SQLSMALLINT parameter,SQLSMALLINT expected) {
+    SQLHDESC ipd{};ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_IMP_PARAM_DESC,&ipd,0,nullptr));
+    SQLSMALLINT type=97;ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(ipd,parameter,SQL_DESC_CONCISE_TYPE,&type,0,nullptr));
+    EXPECT_EQ(expected,type);
+  }
+  void typed_eight_result() {
+    QueryResult result;
+    result.columns={{"weekday",NativeTypeInfo{ScalarType::Integer,10,0,true}}};
+    result.rows={{"1"}};result.statement_kind=StatementKind::SelectCursor;
+    result.normalized_parameter_types.assign(4,NativeTypeInfo{ScalarType::Date,10,0,true});
+    result.normalized_parameter_types.insert(result.normalized_parameter_types.end(),4,
+        NativeTypeInfo{ScalarType::Timestamp,26,6,true});
+    seen->date_result=std::move(result);
+  }
+};
+TEST_F(ParameterMarkerCountTest, EightUntypedOrdinalsCountWithoutDescribeThenTypedExecuteRefillAndNull) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  seen->parameter_metadata_error=true;
+  const auto sql=wide("SELECT {fn DAYOFWEEK(?)},EXTRACT(dow FROM ?),{fn DAYOFYEAR(?)},EXTRACT(doy FROM ?),"
+      "{fn DAYOFWEEK(?)},EXTRACT(dow FROM ?),{fn DAYOFYEAR(?)},EXTRACT(doy FROM ?)");
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepareW(stmt,const_cast<SQLWCHAR*>(sql.data()),SQL_NTS));
+  ASSERT_NO_FATAL_FAILURE(ipd_count(0)); // Existing lazy default before count remains unchanged.
+  SQLSMALLINT count=97;ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(8,count);
+  ASSERT_NO_FATAL_FAILURE(ipd_count(8));
+  ASSERT_NO_FATAL_FAILURE(ipd_type(1,SQL_UNKNOWN_TYPE));
+  ASSERT_NO_FATAL_FAILURE(ipd_type(8,SQL_UNKNOWN_TYPE));
+  EXPECT_EQ(0,seen->descriptions);EXPECT_EQ(0,seen->queries);EXPECT_TRUE(seen->transaction_calls.empty());
+  // Explicit type description still calls the backend and retains its failure.
+  SQLSMALLINT type=71,scale=73,nullable=79;SQLULEN size=83;
+  EXPECT_EQ(SQL_ERROR,SQLDescribeParam(stmt,1,&type,&size,&scale,&nullable));
+  EXPECT_EQ("HY000",state());EXPECT_EQ(71,type);EXPECT_EQ(83u,size);EXPECT_EQ(73,scale);EXPECT_EQ(79,nullable);
+  const auto descriptions=seen->descriptions;EXPECT_EQ(1,descriptions);
+  ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(8,count);EXPECT_EQ(descriptions,seen->descriptions);
+  ASSERT_NO_FATAL_FAILURE(ipd_count(8));
+  ASSERT_NO_FATAL_FAILURE(ipd_type(1,SQL_UNKNOWN_TYPE));
+  ASSERT_NO_FATAL_FAILURE(typed_eight_result());
+  for(SQLUSMALLINT p=1;p<=8;++p){
+    if(p<=4){ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,p,SQL_PARAM_INPUT,SQL_C_TYPE_DATE,SQL_TYPE_DATE,10,0,&date_,sizeof(date_),&date_length_));}
+    else{ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,p,SQL_PARAM_INPUT,SQL_C_TYPE_TIMESTAMP,SQL_TYPE_TIMESTAMP,26,6,&stamp_,sizeof(stamp_),&stamp_length_));}
+  }
+  ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(8,count);
+  ASSERT_NO_FATAL_FAILURE(ipd_count(8));
+  ASSERT_NO_FATAL_FAILURE(ipd_type(1,SQL_TYPE_DATE));
+  ASSERT_NO_FATAL_FAILURE(ipd_type(8,SQL_TYPE_TIMESTAMP));
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt))<<diagnostic();ASSERT_EQ(8u,seen->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"2024-01-07"},seen->parameters[0].value);
+  EXPECT_EQ(std::optional<std::string>{"2024-01-07 12:34:56.123456"},seen->parameters[7].value);
+  EXPECT_EQ(descriptions,seen->descriptions);ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  const auto queries=seen->queries;date_.month=13;
+  EXPECT_EQ(SQL_ERROR,SQLExecute(stmt));EXPECT_EQ("22007",state());EXPECT_EQ(queries,seen->queries);EXPECT_TRUE(seen->transaction_calls.empty());
+  date_={2024,2,29};ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt))<<diagnostic();ASSERT_EQ(SQL_SUCCESS,SQLCloseCursor(stmt));
+  date_length_=stamp_length_=SQL_NULL_DATA;
+  ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt))<<diagnostic();
+  for(const auto& parameter:seen->parameters){EXPECT_FALSE(parameter.value);}
+  ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(8,count);EXPECT_EQ(descriptions,seen->descriptions);
+  ASSERT_NO_FATAL_FAILURE(ipd_count(8));
+}
+TEST_F(ParameterMarkerCountTest, FailedMetadataAndAbsentFacetDoNotBecomeCountAuthority) {
+  seen->absent_description=true;
+  ASSERT_NO_FATAL_FAILURE(connect());
+  std::string sql="SELECT {fn DAYOFWEEK(?)}, '?' /* ? */ -- ?\n";
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS));
+  SQLSMALLINT count=97;ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(1,count);EXPECT_EQ(0,seen->descriptions);
+  ASSERT_NO_FATAL_FAILURE(ipd_count(1));
+  ASSERT_NO_FATAL_FAILURE(ipd_type(1,SQL_UNKNOWN_TYPE));
+  SQLSMALLINT type=71,columns=73;
+  EXPECT_EQ(SQL_ERROR,SQLDescribeParam(stmt,1,&type,nullptr,nullptr,nullptr));EXPECT_EQ("HYC00",state());EXPECT_EQ(71,type);
+  EXPECT_EQ(SQL_ERROR,SQLNumResultCols(stmt,&columns));EXPECT_EQ("HYC00",state());EXPECT_EQ(73,columns);
+  ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(1,count);EXPECT_EQ(0,seen->queries);EXPECT_EQ(0,seen->descriptions);
+  sql="SELECT '?' /* ? */ -- ?\n";
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS));
+  count=97;ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(0,count);
+  ASSERT_NO_FATAL_FAILURE(ipd_count(0));
+  sql="SELECT {fn DAYOFWEEK(?)},{fn DAYOFYEAR(?)},{fn DAYOFYEAR(?)}";
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(3,count);
+  ASSERT_NO_FATAL_FAILURE(ipd_count(3));
+  ASSERT_NO_FATAL_FAILURE(ipd_type(3,SQL_UNKNOWN_TYPE));
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_TYPE_DATE,SQL_TYPE_DATE,10,0,&date_,sizeof(date_),&date_length_));
+  sql="SELECT {fn DAYOFWEEK(?)}";
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(1,count);
+  ASSERT_NO_FATAL_FAILURE(ipd_count(1));
+  ASSERT_NO_FATAL_FAILURE(ipd_type(1,SQL_TYPE_DATE));
+  SQLHDESC apd{};SQLPOINTER input=nullptr;
+  ASSERT_EQ(SQL_SUCCESS,SQLGetStmtAttr(stmt,SQL_ATTR_APP_PARAM_DESC,&apd,0,nullptr));
+  ASSERT_EQ(SQL_SUCCESS,SQLGetDescField(apd,1,SQL_DESC_DATA_PTR,&input,0,nullptr));EXPECT_EQ(&date_,input);
+  EXPECT_EQ(0,seen->descriptions);EXPECT_EQ(0,seen->queries);
+}
+TEST_F(ParameterMarkerCountTest, SequenceNullOutputAndNeedDataAdmissionRetainUntouchedCount) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  SQLSMALLINT count=97;
+  EXPECT_EQ(SQL_ERROR,SQLNumParams(stmt,&count));EXPECT_EQ("HY010",state());EXPECT_EQ(97,count);
+  EXPECT_EQ(SQL_ERROR,SQLNumParams(stmt,nullptr));EXPECT_EQ("HY009",state());
+  std::string sql="SELECT CAST(? AS VARCHAR(32))";
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(1,count);
+  SQLLEN length=SQL_DATA_AT_EXEC;SQLCHAR token=17;
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,32,0,&token,32,&length));
+  ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt));count=97;
+  EXPECT_EQ(SQL_ERROR,SQLNumParams(stmt,&count));EXPECT_EQ("HY010",state());EXPECT_EQ(97,count);
+  EXPECT_EQ(0,seen->queries);EXPECT_EQ(0,seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt));
+  ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(1,count);EXPECT_EQ(0,seen->queries);
+}
+TEST_F(ParameterMarkerCountTest, ExplicitAutoIpdPrepareStillDescribesAndFailedPrepareHasNoCount) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  seen->parameter_description_types=std::vector<NativeTypeInfo>{{ScalarType::Date,10,0,true}};
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_ENABLE_AUTO_IPD,reinterpret_cast<SQLPOINTER>(SQL_TRUE),0));
+  std::string sql="SELECT {fn DAYOFWEEK(?)}";
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS));EXPECT_EQ(1,seen->descriptions);
+  SQLSMALLINT count=97;ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(1,count);EXPECT_EQ(1,seen->descriptions);
+  ASSERT_NO_FATAL_FAILURE(ipd_count(1));
+  // Same count must not invalidate the successfully described epoch/revision.
+  seen->parameter_description_types->at(0)={ScalarType::VarChar,99,0,true};
+  ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(1,count);
+  SQLSMALLINT type=97;ASSERT_EQ(SQL_SUCCESS,SQLDescribeParam(stmt,1,&type,nullptr,nullptr,nullptr));
+  EXPECT_EQ(SQL_TYPE_DATE,type);EXPECT_EQ(1,seen->descriptions);
+  seen->parameter_metadata_error=true;
+  EXPECT_EQ(SQL_ERROR,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS));EXPECT_EQ("HY000",state());
+  count=97;EXPECT_EQ(SQL_ERROR,SQLNumParams(stmt,&count));EXPECT_EQ("HY010",state());EXPECT_EQ(97,count);EXPECT_EQ(2,seen->descriptions);
+  seen->parameter_metadata_error=false;
+  ASSERT_EQ(SQL_SUCCESS,SQLPrepare(stmt,reinterpret_cast<SQLCHAR*>(sql.data()),SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS,SQLNumParams(stmt,&count));EXPECT_EQ(1,count);EXPECT_EQ(3,seen->descriptions);EXPECT_EQ(0,seen->queries);
+}
+} // namespace

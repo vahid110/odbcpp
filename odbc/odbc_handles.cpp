@@ -5083,9 +5083,24 @@ SQLRETURN ODBCStatement::num_params(SQLSMALLINT* parameter_count) {
               "Statement has not been prepared or executed");
     return SQL_ERROR;
   }
-  if (prepared_ && !executed_) {
-    const auto metadata_result = describe_prepared_metadata();
-    if (metadata_result != SQL_SUCCESS) return metadata_result;
+  // Prepare already validated and saved the dialect's marker count. Counting
+  // must not force type inference before the application can bind its types.
+  // Explicit metadata APIs and opted-in automatic IPD retain their own policy.
+  if (prepared_) {
+    const auto ipd = descriptor(imp_param_descriptor_);
+    const auto count = static_cast<std::size_t>(parameter_count_);
+    if (ipd->record_count() != count) {
+      // Stage all allocation/copies before publishing either count. Existing
+      // active bound hints survive; no native type is inferred by new slots.
+      auto records = ipd->records_;
+      const auto previous_count = records.size();
+      records.resize(count);
+      for (auto index = previous_count; index < count; ++index) {
+        records[index].type = SQL_UNKNOWN_TYPE;
+        records[index].concise_type = SQL_UNKNOWN_TYPE;
+      }
+      ipd->replace_records(std::move(records));
+    }
   }
   store_application_value(
       parameter_count,
