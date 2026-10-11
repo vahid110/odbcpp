@@ -511,6 +511,23 @@ std::uint16_t parse_port(std::string_view value) {
   return static_cast<std::uint16_t>(parsed);
 }
 
+// Closed ODBC keyword policy; the neutral SDK timeout carrier is unchanged.
+SQLUINTEGER parse_login_timeout(const std::string& value) {
+  const auto text = ConnectionString::trim(value);
+  if (text.empty() || std::any_of(text.begin(), text.end(), [](char ch) {
+        return ch < '0' || ch > '9';
+      })) {
+    throw std::invalid_argument("Invalid LoginTimeout value");
+  }
+  SQLUINTEGER seconds = 0;
+  const auto [end, error] = std::from_chars(
+      text.data(), text.data() + text.size(), seconds);
+  if (error != std::errc{} || end != text.data() + text.size()) {
+    throw std::invalid_argument("Invalid LoginTimeout value");
+  }
+  return seconds;
+}
+
 enum class BitNumericLiteral { Zero, One, Fraction, OutOfRange, Invalid };
 
 BitNumericLiteral classify_bit_numeric_literal(std::string_view text) {
@@ -1565,7 +1582,15 @@ SQLRETURN ODBCConnection::connect(
     if (params.count("SSLCAFILE")) options.ssl_ca_file = params.at("SSLCAFILE");
     if (params.count("SSLCADIR")) options.ssl_ca_dir = params.at("SSLCADIR");
     if (params.count("REDSHIFTCATALOGMODE")) options.redshift_catalog_mode = params.at("REDSHIFTCATALOGMODE");
-    options.timeout = timeout_duration(login_timeout_seconds_);
+    // Parse only the effective choice; an explicit application value, including
+    // zero, must not evaluate a shadowed malformed keyword.
+    const auto selected_login_timeout = [&]() -> SQLUINTEGER {
+      if (explicit_login_timeout_seconds_) return *explicit_login_timeout_seconds_;
+      const auto keyword = params.find("LOGINTIMEOUT");
+      return keyword == params.end() ? SQLUINTEGER{30}
+                                    : parse_login_timeout(keyword->second);
+    }();
+    options.timeout = timeout_duration(selected_login_timeout);
     parse_resource_limits(params, options);
 
     auto resolved_settings =
@@ -1685,6 +1710,8 @@ SQLRETURN ODBCConnection::connect(
     log(rs::core::logging::LogLevel::Info, "connection_opened",
         "Database connection established",
         {{"duration_ms", elapsed_milliseconds(started), rs::core::logging::FieldSensitivity::Public}});
+    // All fallible setup, owning strings and log arguments precede readback.
+    login_timeout_seconds_ = selected_login_timeout;
     attempt.completed = true;
     return SQL_SUCCESS;
 
@@ -1859,6 +1886,7 @@ SQLRETURN ODBCConnection::set_attribute(SQLINTEGER attribute, SQLULEN value) {
     return SQL_ERROR;
   }
   login_timeout_seconds_ = static_cast<SQLUINTEGER>(value);
+  explicit_login_timeout_seconds_ = login_timeout_seconds_;
   return SQL_SUCCESS;
 }
 

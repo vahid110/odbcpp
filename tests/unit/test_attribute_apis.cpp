@@ -1713,3 +1713,26 @@ TEST_F(AttributeApisTest, ConnectionTimeoutAnsiWideRangeAndClosedHandleLifetimeR
   ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(connection_,SQL_ATTR_CONNECTION_TIMEOUT,integer_value(0),0));
   ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttrW(connection_,SQL_ATTR_CONNECTION_TIMEOUT,&value,sizeof(value),nullptr));EXPECT_EQ(0u,value);
 }
+
+TEST_F(AttributeApisTest, LoginTimeoutZeroRangeAndWideReadbackPreserveExplicitChoice) {
+  SQLUINTEGER value = 71;
+  SQLINTEGER length = -1;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttrW(connection_, SQL_ATTR_LOGIN_TIMEOUT, integer_value(0), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(connection_, SQL_ATTR_LOGIN_TIMEOUT, &value, sizeof(value), &length));
+  EXPECT_EQ(0u, value);
+  EXPECT_EQ(sizeof(value), static_cast<std::size_t>(length));
+  const auto maximum = (std::numeric_limits<SQLUINTEGER>::max)();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(connection_, SQL_ATTR_LOGIN_TIMEOUT, integer_value(maximum), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(connection_, SQL_ATTR_LOGIN_TIMEOUT, &value, sizeof(value), nullptr));
+  EXPECT_EQ(maximum, value);
+  if constexpr (sizeof(std::uintptr_t) > sizeof(SQLUINTEGER)) {
+    const auto overflow = static_cast<std::uintptr_t>(maximum) + std::uintptr_t{1};
+    EXPECT_EQ(SQL_ERROR, SQLSetConnectAttrW(connection_, SQL_ATTR_LOGIN_TIMEOUT, reinterpret_cast<SQLPOINTER>(overflow), 0));
+    EXPECT_EQ("HY024", diagnostic_state(SQL_HANDLE_DBC, connection_));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(connection_, SQL_ATTR_LOGIN_TIMEOUT, &value, sizeof(value), nullptr));
+    EXPECT_EQ(maximum, value);
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(connection_, SQL_ATTR_LOGIN_TIMEOUT, integer_value(7), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(connection_, SQL_ATTR_LOGIN_TIMEOUT, &value, sizeof(value), nullptr));
+  EXPECT_EQ(7u, value);
+}

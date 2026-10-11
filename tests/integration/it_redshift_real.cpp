@@ -7263,3 +7263,180 @@ TEST_F(RedshiftConnectedMetadataTimeoutRealTest, EagerLazyTypedMetadataNullOwnin
   ASSERT_NO_FATAL_FAILURE(cap_sibling());rc=SQLGetData(sibling_,1,SQL_C_SLONG,&value,sizeof(value),&bytes);if(rc!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,rc);EXPECT_EQ(1,value);EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)),bytes);
   ASSERT_NO_FATAL_FAILURE(cap_sibling());ASSERT_TRUE(known_sql(SQLCloseCursor(sibling_)));
 }
+
+#include "odbc/unicode.h"
+
+// Source-only no-fixture native proposal. Keyword plumbing and readback are
+// observed on successful login; no delay, bad credential or expiry is induced.
+class RedshiftLoginTimeoutOptionsRealTest : public RedshiftTemporalEscapeRealTest {
+ protected:
+  SQLHSTMT sibling_{};
+  SQLINTEGER input_{41};
+  SQLLEN input_length_{};
+  struct IntCell { std::array<unsigned char,8> before;SQLINTEGER value;std::array<unsigned char,8> after; } output_{};
+  SQLLEN output_length_{97};
+  SQLINTEGER sibling_snapshot_{-1};
+  static std::string typed_sql(){return "SELECT CAST(? AS INTEGER)";}
+  void SetUp() override {
+    const char* marker=std::getenv("ODBCPP_REDSHIFT_LOGIN_TIMEOUT_ADMISSION");
+    if(marker==nullptr){GTEST_SKIP()<<"LoginTimeout happy scope not admitted";}
+    ASSERT_EQ(std::string_view("login_timeout_options_happy_v1"),std::string_view(marker));
+    window_end_=rs::util::Clock::now()+std::chrono::seconds{40};admitted_=true;
+    RedshiftRealTest::SetUp();if(HasFatalFailure()){return;}
+    const auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    ASSERT_TRUE(options.contains("DATABASE"));ASSERT_TRUE(options.contains("UID"));
+    ASSERT_EQ("odbcpp_pilot",options.at("DATABASE"));ASSERT_EQ("odbcpp_pilot_test",options.at("UID"));ASSERT_FALSE(options.contains("DSN"));
+    const auto limit=[&](const char* key,std::size_t fallback)->std::optional<std::size_t>{
+      const auto found=options.find(key);if(found==options.end()){return fallback;}
+      const auto& text=found->second;std::size_t value{};
+      const auto parsed=std::from_chars(text.data(),text.data()+text.size(),value);
+      if(parsed.ec!=std::errc{}||parsed.ptr!=text.data()+text.size()){return std::nullopt;}return value;
+    };
+    const rs::core::database::InputLimits inputs{};const rs::core::database::ResultLimits results{};
+    const auto sql=limit("MAXSQLBYTES",inputs.max_sql_bytes),parameters=limit("MAXPARAMETERS",inputs.max_parameters);
+    const auto value=limit("MAXPARAMETERBYTES",inputs.max_parameter_bytes),total=limit("MAXPARAMETERTOTALBYTES",inputs.max_parameter_total_bytes);
+    const auto columns=limit("MAXCOLUMNS",results.max_columns_per_description),rows=limit("MAXROWS",results.max_rows),cells=limit("MAXCELLS",results.max_cells),metadata=limit("MAXMETADATAENTRIES",results.max_metadata_entries);
+    ASSERT_TRUE(sql);ASSERT_TRUE(parameters);ASSERT_TRUE(value);ASSERT_TRUE(total);ASSERT_TRUE(columns);ASSERT_TRUE(rows);ASSERT_TRUE(cells);ASSERT_TRUE(metadata);
+    ASSERT_GE(*sql,typed_sql().size());ASSERT_GE(*parameters,1u);ASSERT_GE(*value,11u);ASSERT_GE(*total,11u);
+    ASSERT_GE(*columns,1u);ASSERT_GE(*rows,1u);ASSERT_GE(*cells,1u);ASSERT_GE(*metadata,3u);
+    // Base fixture sets explicit15. A fresh unconnected handle is essential:
+    // keyword tests must not accidentally exercise that overriding application value.
+    ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,hdbc_));hdbc_=nullptr;
+    ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_DBC,henv_,&hdbc_));
+    ASSERT_NO_FATAL_FAILURE(readback(30));
+  }
+  std::string keyword_input(const char* key,const char* value){
+    auto options=rs::odbc::ConnectionString::parse(connection_string_);
+    options.erase("LOGINTIMEOUT");options.erase("LT");options[key]=value;
+    std::string result;
+    for(const auto& [name,text]:options){
+      result+=name;result+="={";
+      for(const auto ch:text){result.push_back(ch);if(ch=='}'){result.push_back('}');}}
+      result+="};";
+    }
+    // Test-side serialization preserves all endpoint/principal/TLS values and
+    // first-key policy. Never print the input or credentials in a failure.
+    EXPECT_TRUE(options==rs::odbc::ConnectionString::parse(result))<<"Login input preservation failed";
+    return result;
+  }
+  void readback(SQLUINTEGER expected){
+    struct {SQLUINTEGER value;SQLUINTEGER guard;} captured{97,0x12345678u};SQLINTEGER bytes=-1;
+    ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttrW(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,&captured.value,sizeof(captured.value),&bytes));
+    EXPECT_EQ(expected,captured.value);EXPECT_EQ(0x12345678u,captured.guard);EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(captured.value)),bytes);
+  }
+  void login(const char* key,const char* value,SQLUINTEGER expected,bool wide){
+    ASSERT_TRUE(cap(window_end_,false));
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GE(remaining,static_cast<std::int64_t>(expected));
+    auto text=keyword_input(key,value);SQLRETURN result;
+    if(wide){
+      auto input=rs::odbc::utf8_to_wide(text);ASSERT_TRUE(input);input->push_back(0);
+      result=SQLDriverConnectW(hdbc_,nullptr,input->data(),SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT);
+    }else{result=SQLDriverConnect(hdbc_,nullptr,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT);}
+    if(result==SQL_SUCCESS||result==SQL_SUCCESS_WITH_INFO){connected_=true;}
+    if(result!=SQL_SUCCESS){unknown_completion_=true;}
+    ASSERT_EQ(SQL_SUCCESS,result)<<get_error(SQL_HANDLE_DBC,hdbc_);
+    ASSERT_NO_FATAL_FAILURE(readback(expected));
+    ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,hdbc_,&hstmt_));
+    ASSERT_TRUE(cap(window_end_,true));
+  }
+  void invalid_selected(bool wide,SQLUINTEGER unchanged){
+    ASSERT_FALSE(unknown_completion_);ASSERT_TRUE(rs::util::Clock::now()<window_end_);
+    auto text=keyword_input("LOGINTIMEOUT","not-decimal");SQLSMALLINT bytes=66;SQLRETURN result;
+    if(wide){
+      auto input=rs::odbc::utf8_to_wide(text);ASSERT_TRUE(input);input->push_back(0);
+      SQLWCHAR output[4]{static_cast<SQLWCHAR>('x'),0,static_cast<SQLWCHAR>('y'),0};
+      result=SQLDriverConnectW(hdbc_,nullptr,input->data(),SQL_NTS,output,4,&bytes,SQL_DRIVER_NOPROMPT);
+      EXPECT_EQ(static_cast<SQLWCHAR>('x'),output[0]);EXPECT_EQ(static_cast<SQLWCHAR>('y'),output[2]);
+    }else{
+      SQLCHAR output[4]{'x',0,'y',0};
+      result=SQLDriverConnect(hdbc_,nullptr,reinterpret_cast<SQLCHAR*>(text.data()),SQL_NTS,output,4,&bytes,SQL_DRIVER_NOPROMPT);
+      EXPECT_EQ('x',output[0]);EXPECT_EQ('y',output[2]);
+    }
+    // This exact local invalid-option refusal is known, not an uncertain native
+    // operation. Any other return/state fences the subsequent recovery login.
+    if(result==SQL_SUCCESS||result==SQL_SUCCESS_WITH_INFO){connected_=true;}
+    if(result!=SQL_ERROR){unknown_completion_=true;}ASSERT_EQ(SQL_ERROR,result);EXPECT_EQ(66,bytes);
+    SQLCHAR state[6]{},message[128]{};
+    ASSERT_EQ(SQL_SUCCESS,SQLGetDiagRec(SQL_HANDLE_DBC,hdbc_,1,state,nullptr,message,sizeof(message),nullptr));
+    if(std::string_view(reinterpret_cast<const char*>(state))!="HY000"||std::string_view(reinterpret_cast<const char*>(message))!="Invalid LoginTimeout value"){unknown_completion_=true;}
+    ASSERT_STREQ("HY000",reinterpret_cast<const char*>(state));ASSERT_STREQ("Invalid LoginTimeout value",reinterpret_cast<const char*>(message));
+    ASSERT_FALSE(connected_);ASSERT_NO_FATAL_FAILURE(readback(unchanged));
+  }
+  void release_connection(){
+    ASSERT_FALSE(unknown_completion_);
+    if(sibling_){ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,sibling_));sibling_=nullptr;}
+    if(hstmt_){ASSERT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,hstmt_));hstmt_=nullptr;}
+    ASSERT_EQ(SQL_SUCCESS,SQLDisconnect(hdbc_));connected_=false;
+  }
+  void cap_sibling(){
+    ASSERT_TRUE(cap(window_end_,false));
+    const auto remaining=std::chrono::duration_cast<std::chrono::seconds>(window_end_-rs::util::Clock::now()).count();ASSERT_GT(remaining,0);
+    ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(sibling_,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(std::min<std::int64_t>(remaining,5))),0));
+  }
+  void typed_row(bool nulls,bool early=false){
+    const auto expected=input_;ASSERT_TRUE(cap(window_end_,true));ASSERT_TRUE(known_sql(SQLExecute(hstmt_)));
+    input_=99;ASSERT_TRUE(cap(window_end_,true));auto result=SQLFetch(hstmt_);if(result!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,result);
+    poison(output_);std::array<unsigned char,sizeof(SQLINTEGER)> poisoned{};std::memcpy(poisoned.data(),&output_.value,sizeof(output_.value));output_length_=97;
+    ASSERT_TRUE(cap(window_end_,true));result=SQLGetData(hstmt_,1,SQL_C_SLONG,&output_.value,sizeof(output_.value),&output_length_);if(result!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,result);
+    if(nulls){EXPECT_EQ(SQL_NULL_DATA,output_length_);EXPECT_EQ(0,std::memcmp(poisoned.data(),&output_.value,sizeof(output_.value)));}
+    else{ASSERT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)),output_length_);EXPECT_EQ(expected,output_.value);}
+    ASSERT_NO_FATAL_FAILURE(guards(output_));
+    if(!early){ASSERT_TRUE(cap(window_end_,true));result=SQLFetch(hstmt_);if(result!=SQL_NO_DATA){unknown_completion_=true;}ASSERT_EQ(SQL_NO_DATA,result);}
+    ASSERT_TRUE(cap(window_end_,true));ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
+  }
+  void TearDown() override {
+    if(admitted_){EXPECT_TRUE(rs::util::Clock::now()<window_end_);}
+    // No table, DDL, DROP, recovery query or latency trigger exists. Unknown
+    // remote completion suppresses further SQL; handle/session release remains.
+    if(sibling_){EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,sibling_));sibling_=nullptr;}
+    if(hstmt_){EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_STMT,hstmt_));hstmt_=nullptr;}
+    if(hdbc_){if(connected_){EXPECT_EQ(SQL_SUCCESS,SQLDisconnect(hdbc_));}EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_DBC,hdbc_));hdbc_=nullptr;}
+    if(henv_){EXPECT_EQ(SQL_SUCCESS,SQLFreeHandle(SQL_HANDLE_ENV,henv_));henv_=nullptr;}
+    if(unknown_completion_){ADD_FAILURE()<<"LoginTimeout happy scope uncertain completion";}
+  }
+};
+
+TEST_F(RedshiftLoginTimeoutOptionsRealTest, KeywordsAAndWLocalRefusalAndSameDbcHappyRecovery){
+  ASSERT_NO_FATAL_FAILURE(invalid_selected(false,30));
+  ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT","2",2,false));
+  EXPECT_EQ(SQL_ERROR,SQLSetConnectAttr(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,reinterpret_cast<SQLPOINTER>(std::uintptr_t{3}),0));
+  EXPECT_EQ("HY011",get_error(SQL_HANDLE_DBC,hdbc_));
+  ASSERT_NO_FATAL_FAILURE(readback(2));
+  ASSERT_NO_FATAL_FAILURE(release_connection());
+  ASSERT_NO_FATAL_FAILURE(readback(2));
+  ASSERT_NO_FATAL_FAILURE(invalid_selected(true,2));
+  ASSERT_NO_FATAL_FAILURE(login("LT","3",3,true));
+  ASSERT_NO_FATAL_FAILURE(readback(3));
+}
+
+TEST_F(RedshiftLoginTimeoutOptionsRealTest, ExplicitLifetimeTypedNullOwningRefillEarlyCloseAndSibling){
+  ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,reinterpret_cast<SQLPOINTER>(std::uintptr_t{2}),0));
+  ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT","not-decimal",2,false));
+  ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(hstmt_,SQL_ATTR_MAX_ROWS,nullptr,0));
+  auto sql=typed_sql();auto wide=rs::odbc::utf8_to_wide(sql);ASSERT_TRUE(wide);wide->push_back(0);
+  ASSERT_TRUE(cap(window_end_,true));ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_,wide->data(),SQL_NTS)));
+  SQLSMALLINT parameters=-1;ASSERT_EQ(SQL_SUCCESS,SQLNumParams(hstmt_,&parameters));ASSERT_EQ(1,parameters);
+  ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(hstmt_,1,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,10,0,&input_,0,&input_length_));
+  ASSERT_NO_FATAL_FAILURE(typed_row(false));
+  input_length_=SQL_NULL_DATA;ASSERT_NO_FATAL_FAILURE(typed_row(true));
+  input_=43;input_length_=0;ASSERT_NO_FATAL_FAILURE(typed_row(false,true));
+  const auto owned_value=output_.value;
+  ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_STMT,hdbc_,&sibling_));
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  std::string sibling_sql="SELECT 1";ASSERT_TRUE(known_sql(SQLExecDirect(sibling_,reinterpret_cast<SQLCHAR*>(sibling_sql.data()),SQL_NTS)));
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  auto result=SQLFetch(sibling_);if(result!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,result);
+  SQLLEN bytes=-1;
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  result=SQLGetData(sibling_,1,SQL_C_SLONG,&sibling_snapshot_,sizeof(sibling_snapshot_),&bytes);if(result!=SQL_SUCCESS){unknown_completion_=true;}ASSERT_EQ(SQL_SUCCESS,result);
+  EXPECT_EQ(1,sibling_snapshot_);EXPECT_EQ(static_cast<SQLLEN>(sizeof(sibling_snapshot_)),bytes);EXPECT_EQ(43,owned_value);
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  ASSERT_TRUE(known_sql(SQLCloseCursor(sibling_)));
+  ASSERT_NO_FATAL_FAILURE(release_connection());
+  ASSERT_NO_FATAL_FAILURE(readback(2));
+  ASSERT_NO_FATAL_FAILURE(login("LT","3",2,true));
+  ASSERT_NO_FATAL_FAILURE(release_connection());
+  ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttrW(hdbc_,SQL_ATTR_LOGIN_TIMEOUT,reinterpret_cast<SQLPOINTER>(std::uintptr_t{3}),0));
+  ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT","2",3,false));
+  EXPECT_EQ(43,owned_value);EXPECT_EQ(1,sibling_snapshot_);
+}

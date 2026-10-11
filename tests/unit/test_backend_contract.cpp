@@ -286,6 +286,7 @@ struct Observations {
   std::optional<CatalogRequest> catalog_request;
   bool catalog_retire{}, catalog_throw{};
   int terminal_execution{}, connect_exception{};
+  int login_option_resolutions{};
   bool reusable_execution_error{}; // Explicit test-only Idle/Reusable error; default remains terminal.
   SQLULEN description_size{8};
   bool observation_exception{}, terminal_description{};
@@ -388,6 +389,8 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
     if (seen_->connect_exception == 1) throw std::bad_alloc{};
     if (seen_->connect_exception == 2) throw std::runtime_error("fixture connect exception");
     if (seen_->setup_allocation_failure) return {DbErrorCode::AllocationFailure, {}};
+    if (seen_->connect_exception == 8) return {DbErrorCode::Timeout, "fixed login timeout"};
+    if (seen_->connect_exception == 9) return {DbErrorCode::AuthenticationFailed, "fixed login authentication"};
     seen_->settings = settings; connected_ = true;
     if (seen_->connect_exception == 4) return BackendResult<void>{};
     if (seen_->connect_exception == 5) return BackendResult<void>{{SessionState::Transaction, SessionDisposition::ResetRequired}};
@@ -784,6 +787,7 @@ class FakeProvider final : public IBackendProvider {
   }
   Result<ConnectionSettings> resolve_connection_options(
       ConnectionOptions options) const override {
+    ++seen_->login_option_resolutions;
     if (seen_->validate_redshift_mode) {
       rs::core::database::postgres::PgBackendProvider provider{
           BackendIdentity{"redshift", "Amazon Redshift", "ODBCPP Redshift"},
@@ -11809,4 +11813,213 @@ TEST_F(ConnectedMetadataTimeoutTest, NeedDataAdmissionAndCountOnlyDescriptorCall
   char token[8]{};SQLLEN indicator=SQL_DATA_AT_EXEC;ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_CHAR,SQL_VARCHAR,8,0,token,sizeof(token),&indicator));ASSERT_EQ(SQL_NEED_DATA,SQLExecute(stmt));
   EXPECT_EQ(SQL_ERROR,SQLDescribeParam(stmt,1,&type,&length,&scale,&nullable));EXPECT_EQ("HY010",state());EXPECT_EQ(0,seen->descriptions);EXPECT_EQ(77,type);
   ASSERT_EQ(SQL_SUCCESS,SQLCancel(stmt));indicator=3;std::memcpy(token,"abc",4);ASSERT_EQ(SQL_SUCCESS,SQLExecute(stmt));EXPECT_EQ(std::optional<std::string>{"abc"},seen->parameters[0].value);
+}
+
+// LoginTimeout is adapter option/readback policy; these sessions perform no I/O.
+class LoginTimeoutOptionsTest : public BackendContractTest {
+ protected:
+  static SQLPOINTER integer(SQLULEN value) {
+    return reinterpret_cast<SQLPOINTER>(static_cast<std::uintptr_t>(value));
+  }
+  SQLRETURN login(std::string text, bool wide = false, bool small_output = false) {
+    if (wide) {
+      std::vector<SQLWCHAR> input(text.begin(), text.end());
+      input.push_back(0);
+      SQLWCHAR output[512]{};
+      SQLSMALLINT length = -1;
+      return SQLDriverConnectW(dbc, nullptr, input.data(), SQL_NTS, output,
+          small_output ? 1 : 512, &length, SQL_DRIVER_NOPROMPT);
+    }
+    SQLCHAR output[512]{};
+    SQLSMALLINT length = -1;
+    return SQLDriverConnect(dbc, nullptr, reinterpret_cast<SQLCHAR*>(text.data()),
+        SQL_NTS, output, small_output ? 1 : 512, &length, SQL_DRIVER_NOPROMPT);
+  }
+  void readback(SQLUINTEGER expected) {
+    struct { SQLUINTEGER value; SQLUINTEGER guard; } output{73, 0x12345678u};
+    SQLINTEGER length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttrW(dbc, SQL_ATTR_LOGIN_TIMEOUT,
+        &output.value, sizeof(output.value), &length));
+    EXPECT_EQ(expected, output.value);
+    EXPECT_EQ(0x12345678u, output.guard);
+    EXPECT_EQ(sizeof(output.value), static_cast<std::size_t>(length));
+  }
+};
+
+TEST_F(LoginTimeoutOptionsTest, AAndWOptionEffectsDefaultsZeroAndMaximumAreLiteral) {
+  struct Case { const char* option; SQLUINTEGER seconds; };
+  const Case cases[] = {{"", 30}, {";LoginTimeout=2", 2}, {";LT=0", 0},
+      {";lt={ 0002 }", 2}, {";LT=invalid;LoginTimeout=7", 7}};
+  for (bool wide : {false, true}) {
+    for (const auto& item : cases) {
+      ASSERT_EQ(SQL_SUCCESS, login(std::string("SERVER=fake;SSL=0") + item.option, wide));
+      EXPECT_EQ(item.seconds == 0 ? std::chrono::milliseconds::max()
+          : std::chrono::milliseconds{static_cast<std::int64_t>(item.seconds) * 1000}, seen->settings.timeout);
+      ASSERT_NO_FATAL_FAILURE(readback(item.seconds));
+      EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(dbc, SQL_ATTR_LOGIN_TIMEOUT, integer(9), 0));
+      EXPECT_EQ("HY011", state(SQL_HANDLE_DBC, dbc));
+      ASSERT_NO_FATAL_FAILURE(readback(item.seconds));
+      ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+      ASSERT_NO_FATAL_FAILURE(readback(item.seconds));
+    }
+  }
+  const auto maximum = (std::numeric_limits<SQLUINTEGER>::max)();
+  ASSERT_EQ(SQL_SUCCESS, login("SERVER=fake;SSL=0;LoginTimeout=" + std::to_string(maximum)));
+  EXPECT_EQ(std::chrono::milliseconds{static_cast<std::int64_t>(maximum) * 1000}, seen->settings.timeout);
+  ASSERT_NO_FATAL_FAILURE(readback(maximum));
+}
+
+TEST_F(LoginTimeoutOptionsTest, ExplicitApplicationChoicePersistsAndSkipsShadowedMalformedValues) {
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttr(dbc, SQL_ATTR_LOGIN_TIMEOUT, integer(7), 0));
+  ASSERT_EQ(SQL_SUCCESS, login("SERVER=fake;SSL=0;LoginTimeout=secret-placeholder", true));
+  EXPECT_EQ(std::chrono::milliseconds{7000}, seen->settings.timeout);
+  ASSERT_NO_FATAL_FAILURE(readback(7));
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  if constexpr (sizeof(std::uintptr_t) > sizeof(SQLUINTEGER)) {
+    const auto invalid = static_cast<std::uintptr_t>((std::numeric_limits<SQLUINTEGER>::max)()) + std::uintptr_t{1};
+    EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(dbc, SQL_ATTR_LOGIN_TIMEOUT, reinterpret_cast<SQLPOINTER>(invalid), 0));
+    EXPECT_EQ("HY024", state(SQL_HANDLE_DBC, dbc));
+    ASSERT_NO_FATAL_FAILURE(readback(7));
+  }
+  ASSERT_EQ(SQL_SUCCESS, login("SERVER=fake;SSL=0;LT=2"));
+  EXPECT_EQ(std::chrono::milliseconds{7000}, seen->settings.timeout);
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetConnectAttrW(dbc, SQL_ATTR_LOGIN_TIMEOUT, integer(0), 0));
+  ASSERT_EQ(SQL_SUCCESS, login("SERVER=fake;SSL=0;LoginTimeout=2", true));
+  EXPECT_EQ(std::chrono::milliseconds::max(), seen->settings.timeout);
+  ASSERT_NO_FATAL_FAILURE(readback(0));
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  seen->connect_exception = 2;
+  EXPECT_EQ(SQL_ERROR, login("SERVER=fake;SSL=0;LT=invalid"));
+  EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc));
+  ASSERT_NO_FATAL_FAILURE(readback(0));
+  seen->connect_exception = 0;
+  ASSERT_EQ(SQL_SUCCESS, login("SERVER=fake;SSL=0"));
+  EXPECT_EQ(std::chrono::milliseconds::max(), seen->settings.timeout);
+}
+
+TEST_F(LoginTimeoutOptionsTest, SelectedInvalidValuesFailRedactedBeforeProviderAndRepairSameHandle) {
+  for (const auto value : {"", "+2", "-2", "2s", "1.5", "4294967296", "secret-placeholder"}) {
+    for (bool wide : {false, true}) {
+      const auto input = std::string("SERVER=fake;SSL=0;LT=2;LoginTimeout={") + value + "}";
+      SQLSMALLINT length = 66;
+      SQLRETURN rc;
+      if (wide) {
+        std::vector<SQLWCHAR> text(input.begin(), input.end()); text.push_back(0);
+        SQLWCHAR output[4]{static_cast<SQLWCHAR>('x'), 0, static_cast<SQLWCHAR>('y'), 0};
+        rc = SQLDriverConnectW(dbc, nullptr, text.data(), SQL_NTS, output, 4, &length, SQL_DRIVER_NOPROMPT);
+        EXPECT_EQ(static_cast<SQLWCHAR>('x'), output[0]);
+        EXPECT_EQ(static_cast<SQLWCHAR>('y'), output[2]);
+      } else {
+        SQLCHAR output[4]{'x', 0, 'y', 0};
+        rc = SQLDriverConnect(dbc, nullptr, reinterpret_cast<SQLCHAR*>(const_cast<char*>(input.data())), SQL_NTS, output, 4, &length, SQL_DRIVER_NOPROMPT);
+        EXPECT_EQ('x', output[0]);
+        EXPECT_EQ('y', output[2]);
+      }
+      ASSERT_EQ(SQL_ERROR, rc);
+      EXPECT_EQ(66, length);
+      SQLCHAR sqlstate[6]{}, message[128]{};
+      ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, sqlstate, nullptr, message, sizeof(message), nullptr));
+      EXPECT_STREQ("HY000", reinterpret_cast<char*>(sqlstate));
+      EXPECT_STREQ("Invalid LoginTimeout value", reinterpret_cast<char*>(message));
+      EXPECT_EQ(0, seen->login_option_resolutions);
+      EXPECT_EQ(0, seen->created);
+      EXPECT_EQ(0, seen->transports);
+      EXPECT_EQ(0, seen->queries);
+      EXPECT_EQ(0, seen->disconnects);
+      ASSERT_NO_FATAL_FAILURE(readback(30));
+    }
+  }
+  // Existing input capture rejects NUL before parsing or provider work.
+  std::string nul("SERVER=fake;LT=2\0secret", sizeof("SERVER=fake;LT=2\0secret") - 1);
+  EXPECT_EQ(SQL_ERROR, SQLDriverConnect(dbc, nullptr, reinterpret_cast<SQLCHAR*>(nul.data()), static_cast<SQLSMALLINT>(nul.size()), nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT));
+  EXPECT_EQ("HY000", state(SQL_HANDLE_DBC, dbc));
+  EXPECT_EQ(0, seen->created);
+  ASSERT_EQ(SQL_SUCCESS, login("SERVER=fake;SSL=0;LoginTimeout=2"));
+  ASSERT_NO_FATAL_FAILURE(readback(2));
+}
+
+TEST_F(LoginTimeoutOptionsTest, FailedConnectAndSetupNeverPublishAndExplicitRefillRemainsTyped) {
+  ASSERT_EQ(SQL_SUCCESS, login("SERVER=fake;SSL=0;LT=2"));
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  struct Failure { int mode; bool observation; const char* state; };
+  const Failure failures[] = {{1, false, "HY001"}, {2, false, "HY000"},
+      {3, false, "HY001"},
+      {4, false, "HY000"}, {5, false, "HY000"}, {8, false, "HYT00"},
+      {9, false, "28000"}, {0, true, "HY000"}};
+  for (const auto& failure : failures) {
+    seen->connect_exception = failure.mode;
+    seen->setup_allocation_failure = failure.mode == 3;
+    seen->observation_exception = failure.observation;
+    const auto disconnects = seen->disconnects;
+    const auto destroyed = seen->destructions;
+    EXPECT_EQ(SQL_ERROR, login("SERVER=fake;SSL=0;LoginTimeout=3"));
+    EXPECT_EQ(failure.state, state(SQL_HANDLE_DBC, dbc));
+    EXPECT_EQ(disconnects + 1, seen->disconnects);
+    EXPECT_EQ(destroyed + 1, seen->destructions);
+    ASSERT_NO_FATAL_FAILURE(readback(2));
+    const auto connection = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc);
+    ASSERT_TRUE(connection);
+    EXPECT_FALSE(connection->is_connected());
+  }
+  seen->connect_exception = 0;
+  seen->setup_allocation_failure = false;
+  seen->observation_exception = false;
+  ASSERT_EQ(SQL_SUCCESS, login("SERVER=fake;SSL=0"));
+  EXPECT_EQ(std::chrono::milliseconds{30000}, seen->settings.timeout);
+  ASSERT_NO_FATAL_FAILURE(readback(30));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  // This reusable synthetic result explicitly supplies the backend parameter
+  // metadata required by the existing scalar publication contract on refill.
+  QueryResult owned_result;
+  owned_result.columns = {{"binary", NativeTypeInfo{ScalarType::Binary, 3, 0, true}}};
+  owned_result.rows = {{std::string("\0\xff\\", 3)}};
+  owned_result.normalized_parameter_types = {{ScalarType::Binary, 3, 0, true}};
+  seen->date_result = std::move(owned_result);
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  unsigned char input[]{0, 255, '\\'};
+  SQLLEN bytes = 3;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BINARY, SQL_VARBINARY, 3, 0, input, sizeof(input), &bytes));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Binary, seen->parameters[0].type);
+  EXPECT_EQ(std::optional<std::string>{std::string("\0\xff\\", 3)}, seen->parameters[0].value);
+  SQLUINTEGER connection_budget = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetConnectAttr(dbc, SQL_ATTR_CONNECTION_TIMEOUT, &connection_budget, sizeof(connection_budget), nullptr));
+  EXPECT_EQ(0u, connection_budget);
+  SQLULEN query_budget = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_QUERY_TIMEOUT, &query_budget, sizeof(query_budget), nullptr));
+  EXPECT_EQ(0u, query_budget);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  input[0] = 1;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(std::optional<std::string>{std::string("\1\xff\\", 3)}, seen->parameters[0].value);
+}
+
+TEST_F(LoginTimeoutOptionsTest, RecognizedKeysKeepUnknownWarningAndTruncationAfterSuccessfulPublication) {
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, login("SERVER=fake;SSL=0;LT=2;UnrelatedUnknown=1"));
+  EXPECT_EQ("01S00", state(SQL_HANDLE_DBC, dbc));
+  ASSERT_NO_FATAL_FAILURE(readback(2));
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, login("SERVER=fake;SSL=0;LoginTimeout=3", true, true));
+  EXPECT_EQ("01004", state(SQL_HANDLE_DBC, dbc));
+  EXPECT_EQ(std::chrono::milliseconds{3000}, seen->settings.timeout);
+  ASSERT_NO_FATAL_FAILURE(readback(3));
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, login("SERVER=fake;SSL=0;LT=2;UnrelatedUnknown=1", true));
+  EXPECT_EQ("01S00", state(SQL_HANDLE_DBC, dbc));
+  ASSERT_NO_FATAL_FAILURE(readback(2));
+}
+
+TEST_F(LoginTimeoutOptionsTest, ConnectAAndWShareResolvedTimeoutWithoutKeywordWarnings) {
+  SQLCHAR input[] = "SERVER=fake;SSL=0;LT=2";
+  ASSERT_EQ(SQL_SUCCESS, SQLConnect(dbc, input, SQL_NTS, nullptr, 0, nullptr, 0));
+  EXPECT_EQ(std::chrono::milliseconds{2000}, seen->settings.timeout);
+  ASSERT_NO_FATAL_FAILURE(readback(2));
+  ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  const std::string text = "SERVER=fake;SSL=0;LoginTimeout=0";
+  std::vector<SQLWCHAR> wide(text.begin(), text.end()); wide.push_back(0);
+  ASSERT_EQ(SQL_SUCCESS, SQLConnectW(dbc, wide.data(), SQL_NTS, nullptr, 0, nullptr, 0));
+  EXPECT_EQ(std::chrono::milliseconds::max(), seen->settings.timeout);
+  ASSERT_NO_FATAL_FAILURE(readback(0));
 }

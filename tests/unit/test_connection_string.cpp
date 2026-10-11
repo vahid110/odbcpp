@@ -23,6 +23,13 @@ TEST(ConnectionStringTest, RedshiftCatalogModeKeyCasingBracesEmptyAndDuplicatePo
   EXPECT_EQ(" LEGACY ", ConnectionString::parse("RedshiftCatalogMode={ LEGACY }").at("REDSHIFTCATALOGMODE"));
 }
 
+TEST(ConnectionStringTest, LoginTimeoutPrimaryAliasAndDuplicatePolicyArePerLayer) {
+  EXPECT_EQ("7", ConnectionString::resolve("LT=invalid;LoginTimeout=7", "").effective_parameters.at("LOGINTIMEOUT"));
+  EXPECT_EQ("invalid", ConnectionString::resolve("LoginTimeout=invalid;LT=7", "").effective_parameters.at("LOGINTIMEOUT"));
+  EXPECT_EQ(" 0002 ", ConnectionString::resolve("lt={ 0002 }", "").effective_parameters.at("LOGINTIMEOUT"));
+  EXPECT_EQ("2", ConnectionString::resolve("LoginTimeout=2;logintimeout=3", "").effective_parameters.at("LOGINTIMEOUT"));
+}
+
 TEST(ConnectionStringTest, BracedSemicolonsCannotIntroduceNewOptions) {
   const auto parsed = ConnectionString::parse(
       "PWD={secret;SERVER=attacker.example;TransportMode=Sync};"
@@ -190,6 +197,21 @@ TEST_F(UnixIniDiscoveryTest, RedshiftCatalogModeFollowsDriverDsnAndConnectionPre
   EXPECT_EQ("", ConnectionString::resolve("DSN=ModeFixture;RedshiftCatalogMode={}", "ModeDriver").effective_parameters.at("REDSHIFTCATALOGMODE"));
 }
 
+TEST_F(UnixIniDiscoveryTest, LoginTimeoutAliasesRespectDriverDsnAndExplicitLayers) {
+  const auto dsn_path = root_ / "trusted-dsn.ini";
+  write(dsn_path, "[LoginFixture]\nDRIVER=LoginDriver\nLT=2\n");
+  write(root_ / "drivers.ini", "[LoginDriver]\nLoginTimeout=invalid\nLT=4\n");
+  ASSERT_EQ(0, setenv("ODBCINI", dsn_path.c_str(), 1));
+  ASSERT_EQ(0, setenv("ODBCSYSINI", root_.c_str(), 1));
+  ASSERT_EQ(0, setenv("ODBCINSTINI", "drivers.ini", 1));
+  EXPECT_EQ("2", ConnectionString::resolve("LoginFixture", "LoginDriver").effective_parameters.at("LOGINTIMEOUT"));
+  EXPECT_EQ("3", ConnectionString::resolve("DSN=LoginFixture;LT=3", "LoginDriver").effective_parameters.at("LOGINTIMEOUT"));
+  EXPECT_EQ("7", ConnectionString::resolve("DSN=LoginFixture;LT=invalid;LoginTimeout=7", "LoginDriver").effective_parameters.at("LOGINTIMEOUT"));
+  EXPECT_EQ("", ConnectionString::resolve("DSN=LoginFixture;LoginTimeout={}", "LoginDriver").effective_parameters.at("LOGINTIMEOUT"));
+  write(dsn_path, "[LoginFixture]\nDRIVER=LoginDriver\nLT=invalid\nLoginTimeout=5\n");
+  EXPECT_EQ("5", ConnectionString::resolve("LoginFixture", "LoginDriver").effective_parameters.at("LOGINTIMEOUT"));
+}
+
 TEST_F(UnixIniDiscoveryTest, ResourceLimitsFollowDriverDsnAndConnectionPrecedence) {
   const auto dsn_path = root_ / "trusted-dsn.ini";
   write(dsn_path, "[LimitFixture]\nDRIVER=LimitDriver\nMaxRows=20\nMaxSqlBytes=512\n");
@@ -249,6 +271,17 @@ class NativeDsnTest : public ::testing::Test {
     RegCloseKey(key); ASSERT_EQ(ERROR_SUCCESS, status);
   }
 };
+
+TEST_F(NativeDsnTest, LoginTimeoutAliasesRespectNativeDriverDsnAndExplicitLayers) {
+  constexpr auto path = L"SOFTWARE\\ODBC\\ODBC.INI\\LoginFixture";
+  value(HKEY_CURRENT_USER, path, L"Driver", L"Login Driver");
+  value(HKEY_CURRENT_USER, path, L"LT", L"2");
+  value(HKEY_CURRENT_USER, L"SOFTWARE\\ODBC\\ODBC.INI\\ODBC Data Sources", L"LoginFixture", L"Login Driver");
+  value(HKEY_LOCAL_MACHINE, L"SOFTWARE\\ODBC\\ODBCINST.INI\\Login Driver", L"LoginTimeout", L"invalid");
+  EXPECT_EQ("2", ConnectionString::resolve("LoginFixture", "Login Driver").effective_parameters.at("LOGINTIMEOUT"));
+  EXPECT_EQ("3", ConnectionString::resolve("DSN=LoginFixture;LT=3", "Login Driver").effective_parameters.at("LOGINTIMEOUT"));
+  EXPECT_EQ("7", ConnectionString::resolve("DSN=LoginFixture;LT=invalid;LoginTimeout=7", "Login Driver").effective_parameters.at("LOGINTIMEOUT"));
+}
 
 TEST_F(NativeDsnTest, UserShadowsSystemWithoutMergingAndExplicitAliasesOverride) {
   constexpr auto path = L"SOFTWARE\\ODBC\\ODBC.INI\\NativeTest";
