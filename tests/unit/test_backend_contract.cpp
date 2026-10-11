@@ -104,8 +104,8 @@ static void emit_location(const char* label,unsigned index,void* address) noexce
   std::fprintf(stderr,"[recovery-execute-fault] %s %u unknown\n",label,index);
 }
 static void emit_stack(const char* label) noexcept {
-  void* frames[16]{};
-  const USHORT count=CaptureStackBackTrace(0,16,frames,nullptr);
+  void* frames[64]{};
+  const USHORT count=CaptureStackBackTrace(0,64,frames,nullptr);
   for (USHORT i=0;i<count;++i) emit_location(label,i,frames[i]);
   std::fflush(stderr);
 }
