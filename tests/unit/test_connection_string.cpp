@@ -224,6 +224,22 @@ TEST_F(UnixIniDiscoveryTest, ReadOnlyLayersPreserveExplicitFalseAndEmptyForValid
   EXPECT_EQ("", ConnectionString::resolve("DSN=ReadOnlyFixture;ReadOnly={}", "").effective_parameters.at("READONLY"));
 }
 
+TEST_F(UnixIniDiscoveryTest, QueryTimeoutAliasesRespectEachLayerAndExplicitEmpty) {
+  const auto dsn_path = root_ / "dsn.ini";
+  write(dsn_path, "[QueryFixture]\nDRIVER=QueryDriver\nQT=2\n");
+  write(root_ / "drivers.ini", "[QueryDriver]\nQueryTimeout=invalid\nQT=4\n");
+  ASSERT_EQ(0, setenv("ODBCINI", dsn_path.c_str(), 1));
+  ASSERT_EQ(0, setenv("ODBCSYSINI", root_.c_str(), 1));
+  ASSERT_EQ(0, setenv("ODBCINSTINI", "drivers.ini", 1));
+  EXPECT_EQ("invalid", ConnectionString::resolve("DRIVER=QueryDriver", "").effective_parameters.at("QUERYTIMEOUT"));
+  EXPECT_EQ("2", ConnectionString::resolve("QueryFixture", "QueryDriver").effective_parameters.at("QUERYTIMEOUT"));
+  EXPECT_EQ("0", ConnectionString::resolve("DSN=QueryFixture;QT=0", "QueryDriver").effective_parameters.at("QUERYTIMEOUT"));
+  EXPECT_EQ("7", ConnectionString::resolve("DSN=QueryFixture;QT=invalid;QueryTimeout=7", "QueryDriver").effective_parameters.at("QUERYTIMEOUT"));
+  EXPECT_EQ("", ConnectionString::resolve("DSN=QueryFixture;QT={}", "QueryDriver").effective_parameters.at("QUERYTIMEOUT"));
+  write(dsn_path, "[QueryFixture]\nDRIVER=QueryDriver\nQT=invalid\nQueryTimeout=5\n");
+  EXPECT_EQ("5", ConnectionString::resolve("QueryFixture", "QueryDriver").effective_parameters.at("QUERYTIMEOUT"));
+}
+
 TEST_F(UnixIniDiscoveryTest, LoginTimeoutAliasesRespectDriverDsnAndExplicitLayers) {
   const auto dsn_path = root_ / "trusted-dsn.ini";
   write(dsn_path, "[LoginFixture]\nDRIVER=LoginDriver\nLT=2\n");
@@ -298,6 +314,19 @@ class NativeDsnTest : public ::testing::Test {
     RegCloseKey(key); ASSERT_EQ(ERROR_SUCCESS, status);
   }
 };
+
+TEST_F(NativeDsnTest, QueryTimeoutNativeLayersAndAliasEmptyRemainLiteral) {
+  constexpr auto path = L"SOFTWARE\\ODBC\\ODBC.INI\\QueryFixture";
+  value(HKEY_CURRENT_USER, path, L"Driver", L"Query Driver");
+  value(HKEY_CURRENT_USER, path, L"QT", L"2");
+  value(HKEY_CURRENT_USER, L"SOFTWARE\\ODBC\\ODBC.INI\\ODBC Data Sources", L"QueryFixture", L"Query Driver");
+  value(HKEY_LOCAL_MACHINE, L"SOFTWARE\\ODBC\\ODBCINST.INI\\Query Driver", L"QueryTimeout", L"invalid");
+  EXPECT_EQ("invalid", ConnectionString::resolve("DRIVER=Query Driver", "").effective_parameters.at("QUERYTIMEOUT"));
+  EXPECT_EQ("2", ConnectionString::resolve("QueryFixture", "Query Driver").effective_parameters.at("QUERYTIMEOUT"));
+  EXPECT_EQ("3", ConnectionString::resolve("DSN=QueryFixture;QT=3", "Query Driver").effective_parameters.at("QUERYTIMEOUT"));
+  EXPECT_EQ("7", ConnectionString::resolve("DSN=QueryFixture;QT=invalid;QueryTimeout=7", "Query Driver").effective_parameters.at("QUERYTIMEOUT"));
+  EXPECT_EQ("", ConnectionString::resolve("DSN=QueryFixture;QT={}", "Query Driver").effective_parameters.at("QUERYTIMEOUT"));
+}
 
 TEST_F(NativeDsnTest, LoginTimeoutAliasesRespectNativeDriverDsnAndExplicitLayers) {
   constexpr auto path = L"SOFTWARE\\ODBC\\ODBC.INI\\LoginFixture";

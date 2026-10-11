@@ -535,6 +535,23 @@ SQLUINTEGER parse_login_timeout(const std::string& value) {
   return seconds;
 }
 
+// ODBC statement seconds are SQLULEN, unlike the DBC login-timeout carrier.
+SQLULEN parse_query_timeout_default(const std::string& value) {
+  const auto text = ConnectionString::trim(value);
+  if (text.empty() || std::any_of(text.begin(), text.end(), [](char ch) {
+        return ch < '0' || ch > '9';
+      })) {
+    throw std::invalid_argument("Invalid QueryTimeout value");
+  }
+  SQLULEN seconds = 0;
+  const auto [end, error] = std::from_chars(
+      text.data(), text.data() + text.size(), seconds);
+  if (error != std::errc{} || end != text.data() + text.size()) {
+    throw std::invalid_argument("Invalid QueryTimeout value");
+  }
+  return seconds;
+}
+
 enum class BitNumericLiteral { Zero, One, Fraction, OutOfRange, Invalid };
 
 BitNumericLiteral classify_bit_numeric_literal(std::string_view text) {
@@ -1474,6 +1491,7 @@ bool ODBCConnection::logging_enabled(
 ODBCStatement::ODBCStatement(std::shared_ptr<ODBCConnection> conn)
     : ODBCHandle(HandleType::Statement), conn_(std::move(conn)) {
   metadata_id_ = conn_->metadata_identifiers_default();
+  query_timeout_seconds_ = conn_->query_timeout_default();
   try {
     automatic_app_row_descriptor_ = create_implicit_descriptor(
         DescriptorKind::Application);
@@ -1574,6 +1592,8 @@ SQLRETURN ODBCConnection::connect(
     rs::core::database::ConnectionOptions options;
     if (params.count("APPLICATIONNAME")) options.application_name = params.at("APPLICATIONNAME");
     if (params.count("READONLY")) options.read_only = parse_read_only(params.at("READONLY"));
+    const auto selected_query_timeout = params.count("QUERYTIMEOUT")
+        ? parse_query_timeout_default(params.at("QUERYTIMEOUT")) : static_cast<SQLULEN>(0);
     if (params.count("SERVER")) options.host = params.at("SERVER");
     else if (params.count("HOST")) options.host = params.at("HOST");
     if (params.count("PORT")) options.port = parse_port(params.at("PORT"));
@@ -1639,6 +1659,7 @@ SQLRETURN ODBCConnection::connect(
         connection.backend_observation_ = {};
         connection.connected_ = false; connection.transaction_active_ = false;
         connection.confirmed_read_only_ = false;
+        connection.query_timeout_default_seconds_ = 0;
       }
     } attempt{*this, backend_provider_->create_session(std::move(transport))};
     if (!attempt.physical) throw std::runtime_error("Backend provider returned no session");
@@ -1723,6 +1744,7 @@ SQLRETURN ODBCConnection::connect(
     // All fallible setup, owning strings and log arguments precede readback.
     login_timeout_seconds_ = selected_login_timeout;
     confirmed_read_only_ = settings.read_only;
+    query_timeout_default_seconds_ = selected_query_timeout;
     attempt.completed = true;
     return SQL_SUCCESS;
 
@@ -2215,6 +2237,7 @@ void ODBCConnection::close_connection() {
   backend_lease_.reset(); backend_owner_.reset(); backend_observation_ = {};
   connected_ = false; transaction_active_ = false;
   confirmed_read_only_ = false;
+  query_timeout_default_seconds_ = 0;
   log(rs::core::logging::LogLevel::Info, "connection_closed",
       "Database connection closed");
   if (logger_) logger_->flush();

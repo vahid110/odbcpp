@@ -235,6 +235,9 @@ public:
     return connected_ && confirmed_read_only_ && backend_lease_ &&
         static_cast<bool>(*backend_lease_);
   }
+  SQLULEN query_timeout_default() const noexcept {
+    return query_timeout_default_seconds_;
+  }
   bool has_pending_input() const;
   bool has_pending_result_sequence() const;
   bool metadata_identifiers_default() const noexcept { return metadata_id_default_; }
@@ -333,6 +336,7 @@ private:
   std::shared_ptr<const detail::PendingInputSessionIdentity> pending_input_identity_;
   bool connected_ = false;
   bool confirmed_read_only_ = false;
+  SQLULEN query_timeout_default_seconds_ = 0;
   bool metadata_id_default_ = false;
   SQLUINTEGER login_timeout_seconds_ = 30;
   // Application choice persists; keyword readback is not an implicit override.

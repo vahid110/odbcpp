@@ -17,7 +17,7 @@ void overlay(std::map<std::string, std::string>& target,
   // spelling wins; an explicit alias still overrides a lower-priority primary.
   for (const auto& [primary, alias] : {std::pair{"SERVER", "HOST"},
        {"DATABASE", "DB"}, {"UID", "USER"}, {"PWD", "PASSWORD"},
-       {"LOGINTIMEOUT", "LT"}}) {
+       {"LOGINTIMEOUT", "LT"}, {"QUERYTIMEOUT", "QT"}}) {
     const auto preferred = source.find(primary);
     const auto alternate = source.find(alias);
     if (preferred != source.end()) target[primary] = preferred->second;

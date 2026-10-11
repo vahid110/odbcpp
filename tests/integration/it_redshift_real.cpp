@@ -7708,3 +7708,115 @@ TEST_F(RedshiftReadOnlySettingRealTest, OwnedWriterAndReadOnlyTargetRefuseWrites
   ASSERT_NO_FATAL_FAILURE(writer_count(3)); EXPECT_EQ(43, snapshot);
   ASSERT_NO_FATAL_FAILURE(release_connection()); connection_string_ = base;
 }
+
+class RedshiftQueryTimeoutDefaultRealTest : public RedshiftLoginTimeoutOptionsRealTest {
+ protected:
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_QUERY_TIMEOUT_DEFAULT_ADMISSION", "query_timeout_default_happy_v1");
+  }
+  bool observed(SQLRETURN rc, SQLRETURN expected = SQL_SUCCESS) {
+    if (rc != expected) { unknown_completion_ = true; return false; }
+    return true;
+  }
+  // The connection ceiling clips every operation to the original window, while
+  // leaving the configured or explicitly chosen statement timeout untouched.
+  bool bounded() { return cap(window_end_, false); }
+  void seconds(SQLHSTMT statement, SQLULEN expected) {
+    std::array<unsigned char, sizeof(SQLULEN) + 2> output{}; output.fill(0xa5);
+    SQLINTEGER length = -1;
+    ASSERT_TRUE(observed(SQLGetStmtAttrW(statement, SQL_ATTR_QUERY_TIMEOUT,
+        output.data() + 1, static_cast<SQLINTEGER>(sizeof(SQLULEN)), &length)));
+    SQLULEN value{}; std::memcpy(&value, output.data() + 1, sizeof(value));
+    EXPECT_EQ(expected, value); EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(value)), length);
+    EXPECT_EQ(0xa5, output.front()); EXPECT_EQ(0xa5, output.back());
+  }
+  std::string query_input(const char* key, const char* value) {
+    auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    options.erase("QUERYTIMEOUT"); options.erase("QT");
+    options.erase("LOGINTIMEOUT"); options.erase("LT");
+    options[key] = value; options["LOGINTIMEOUT"] = "5";
+    std::string text;
+    for (const auto& [name, item] : options) {
+      text += name; text += "={";
+      for (char ch : item) { text.push_back(ch); if (ch == '}') text.push_back('}'); }
+      text += "};";
+    }
+    EXPECT_TRUE(options == rs::odbc::ConnectionString::parse(text))
+        << "QueryTimeout login input preservation failed";
+    return text;
+  }
+  void open_default(const char* key, const char* value, SQLULEN expected, bool wide) {
+    ASSERT_TRUE(bounded());
+    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(window_end_ - rs::util::Clock::now()).count(), 5);
+    auto text = query_input(key, value); SQLRETURN rc;
+    if (wide) {
+      auto input = rs::odbc::utf8_to_wide(text); ASSERT_TRUE(input); input->push_back(0);
+      rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    } else {
+      rc = SQLDriverConnect(hdbc_, nullptr, reinterpret_cast<SQLCHAR*>(text.data()), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    }
+    connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO;
+    ASSERT_TRUE(observed(rc));
+    ASSERT_TRUE(observed(SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt_)));
+    ASSERT_NO_FATAL_FAILURE(seconds(hstmt_, expected));
+  }
+  void typed_default_row(bool nulls, bool early = false) {
+    const auto expected = input_; ASSERT_TRUE(bounded()); ASSERT_TRUE(known_sql(SQLExecute(hstmt_)));
+    input_ = 99; ASSERT_TRUE(bounded()); ASSERT_TRUE(observed(SQLFetch(hstmt_)));
+    poison(output_); std::array<unsigned char, sizeof(SQLINTEGER)> saved{};
+    std::memcpy(saved.data(), &output_.value, sizeof(output_.value)); output_length_ = 97;
+    ASSERT_TRUE(bounded());
+    ASSERT_TRUE(observed(SQLGetData(hstmt_, 1, SQL_C_SLONG, &output_.value, sizeof(output_.value), &output_length_)));
+    if (nulls) {
+      EXPECT_EQ(SQL_NULL_DATA, output_length_);
+      EXPECT_EQ(0, std::memcmp(saved.data(), &output_.value, sizeof(output_.value)));
+    } else { EXPECT_EQ(static_cast<SQLLEN>(sizeof(SQLINTEGER)), output_length_); EXPECT_EQ(expected, output_.value); }
+    ASSERT_NO_FATAL_FAILURE(guards(output_));
+    if (!early) { ASSERT_TRUE(bounded()); ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_NO_DATA)); }
+    ASSERT_TRUE(bounded()); ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
+  }
+  void simple(SQLHSTMT statement) {
+    ASSERT_TRUE(bounded());
+    ASSERT_TRUE(observed(SQLExecDirect(statement, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 1")), SQL_NTS)));
+    ASSERT_TRUE(bounded()); ASSERT_TRUE(observed(SQLFetch(statement)));
+    SQLINTEGER value = -1; SQLLEN length = -1;
+    ASSERT_TRUE(bounded()); ASSERT_TRUE(observed(SQLGetData(statement, 1, SQL_C_SLONG, &value, sizeof(value), &length)));
+    EXPECT_EQ(1, value); EXPECT_EQ(static_cast<SQLLEN>(sizeof(value)), length);
+    ASSERT_TRUE(bounded()); ASSERT_TRUE(observed(SQLFetch(statement), SQL_NO_DATA));
+    ASSERT_TRUE(bounded()); ASSERT_TRUE(observed(SQLCloseCursor(statement)));
+  }
+  void release_default() {
+    ASSERT_TRUE(bounded());
+    if (sibling_) { ASSERT_TRUE(observed(SQLFreeHandle(SQL_HANDLE_STMT, sibling_))); sibling_ = nullptr; }
+    if (hstmt_) { ASSERT_TRUE(observed(SQLFreeHandle(SQL_HANDLE_STMT, hstmt_))); hstmt_ = nullptr; }
+    ASSERT_TRUE(observed(SQLDisconnect(hdbc_))); connected_ = false;
+  }
+};
+
+TEST_F(RedshiftQueryTimeoutDefaultRealTest, AnsiWideDefaultsOverridesTypedNullRefillAndReconnectStayOwning) {
+  ASSERT_NO_FATAL_FAILURE(open_default("QT", "2", 2, false));
+  ASSERT_TRUE(observed(SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &sibling_)));
+  ASSERT_NO_FATAL_FAILURE(seconds(sibling_, 2));
+  ASSERT_TRUE(observed(SQLSetStmtAttrW(hstmt_, SQL_ATTR_QUERY_TIMEOUT,
+      reinterpret_cast<SQLPOINTER>(std::uintptr_t{0}), 0)));
+  ASSERT_NO_FATAL_FAILURE(seconds(hstmt_, 0));
+  ASSERT_NO_FATAL_FAILURE(seconds(sibling_, 2));
+  // Unlimited is read back only; restore a finite statement budget before SQL.
+  ASSERT_TRUE(observed(SQLSetStmtAttr(hstmt_, SQL_ATTR_QUERY_TIMEOUT,
+      reinterpret_cast<SQLPOINTER>(std::uintptr_t{1}), 0)));
+  ASSERT_NO_FATAL_FAILURE(seconds(hstmt_, 1));
+  auto sql = rs::odbc::utf8_to_wide(typed_sql()); ASSERT_TRUE(sql); sql->push_back(0);
+  ASSERT_TRUE(bounded()); ASSERT_TRUE(known_sql(SQLPrepareW(hstmt_, sql->data(), SQL_NTS)));
+  ASSERT_TRUE(observed(SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+      SQL_INTEGER, 10, 0, &input_, 0, &input_length_)));
+  ASSERT_NO_FATAL_FAILURE(typed_default_row(false)); input_length_ = SQL_NULL_DATA;
+  ASSERT_NO_FATAL_FAILURE(typed_default_row(true)); input_ = 43; input_length_ = 0;
+  ASSERT_NO_FATAL_FAILURE(typed_default_row(false, true));
+  ASSERT_NO_FATAL_FAILURE(seconds(hstmt_, 1));
+  ASSERT_NO_FATAL_FAILURE(simple(sibling_));
+  const auto snapshot = output_.value; ASSERT_NO_FATAL_FAILURE(release_default());
+  ASSERT_NO_FATAL_FAILURE(open_default("QUERYTIMEOUT", "3", 3, true));
+  ASSERT_NO_FATAL_FAILURE(simple(hstmt_)); EXPECT_EQ(43, snapshot);
+  ASSERT_NO_FATAL_FAILURE(seconds(hstmt_, 3));
+  ASSERT_NO_FATAL_FAILURE(release_default());
+}

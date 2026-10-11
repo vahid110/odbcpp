@@ -8,6 +8,7 @@
 #include "odbc/unicode.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <cstdio>
 #include <memory>
@@ -12271,3 +12272,132 @@ TEST_F(ReadOnlyOptionsTest, StaticReadOnlyCapabilityStillReportsYesForFalseSetti
   EXPECT_EQ("Y", std::string(reinterpret_cast<char*>(info)));
 }
 }  // namespace
+
+
+// Configuration initializes the existing statement attribute; execution reuses
+// SDK deadlines rather than adding a DBC query-timeout attribute or new clock.
+class QueryTimeoutDefaultTest : public LoginTimeoutOptionsTest {
+ protected:
+  void statement_seconds(SQLHSTMT selected, SQLULEN expected) {
+    for (bool wide : {false, true}) {
+      std::array<unsigned char, sizeof(SQLULEN) + 2> bytes{}; bytes.fill(0xa5);
+      SQLINTEGER length = -1;
+      const auto rc = wide ? SQLGetStmtAttrW(selected, SQL_ATTR_QUERY_TIMEOUT,
+          bytes.data() + 1, static_cast<SQLINTEGER>(sizeof(SQLULEN)), &length)
+          : SQLGetStmtAttr(selected, SQL_ATTR_QUERY_TIMEOUT,
+              bytes.data() + 1, static_cast<SQLINTEGER>(sizeof(SQLULEN)), &length);
+      ASSERT_EQ(SQL_SUCCESS, rc);
+      SQLULEN value{}; std::memcpy(&value, bytes.data() + 1, sizeof(value));
+      EXPECT_EQ(expected, value); EXPECT_EQ(static_cast<SQLINTEGER>(sizeof(value)), length);
+      EXPECT_EQ(0xa5, bytes.front()); EXPECT_EQ(0xa5, bytes.back());
+    }
+  }
+};
+
+TEST_F(QueryTimeoutDefaultTest, AnsiWideDefaultZeroMaximumAndPerStatementOverridesPersist) {
+  const std::pair<std::string, SQLULEN> cases[] = {{"", 0}, {";QT=2", 2},
+      {";QueryTimeout={ 0003 }", 3}, {";QT=invalid;QueryTimeout=0", 0},
+      {";QueryTimeout=" + std::to_string(std::numeric_limits<SQLULEN>::max()), std::numeric_limits<SQLULEN>::max()}};
+  for (bool wide : {false, true}) for (const auto& [option, expected] : cases) {
+    ASSERT_EQ(SQL_SUCCESS, login("SERVER=fake;SSL=0" + option, wide));
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+    ASSERT_NO_FATAL_FAILURE(statement_seconds(stmt, expected));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttrW(stmt, SQL_ATTR_QUERY_TIMEOUT, integer(0), 0));
+    ASSERT_NO_FATAL_FAILURE(statement_seconds(stmt, 0));
+    SQLHSTMT sibling{}; ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &sibling));
+    ASSERT_NO_FATAL_FAILURE(statement_seconds(sibling, expected));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_QUERY_TIMEOUT, integer(7), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 1")), SQL_NTS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_RESET_PARAMS));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+    ASSERT_NO_FATAL_FAILURE(statement_seconds(stmt, 7));
+    ASSERT_NO_FATAL_FAILURE(statement_seconds(sibling, expected));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, sibling));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  }
+  ASSERT_EQ(SQL_SUCCESS, login("SERVER=fake;SSL=0"));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_NO_FATAL_FAILURE(statement_seconds(stmt, 0));
+}
+
+TEST_F(QueryTimeoutDefaultTest, InvalidEffectiveOptionsAreRedactedBeforeEffectsAndSameHandleRecovers) {
+  const std::string invalid[] = {"", "+2", "-2", "2s", "1.5", "secret-placeholder",
+      std::to_string(std::numeric_limits<SQLULEN>::max()) + "0"};
+  for (bool wide : {false, true}) for (const auto& value : invalid) {
+    EXPECT_EQ(SQL_ERROR, login("SERVER=fake;SSL=0;QT=2;QueryTimeout={" + value + "}", wide));
+    SQLCHAR sqlstate[6]{}, message[128]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, sqlstate,
+        nullptr, message, static_cast<SQLSMALLINT>(sizeof(message)), nullptr));
+    EXPECT_STREQ("HY000", reinterpret_cast<char*>(sqlstate));
+    EXPECT_STREQ("Invalid QueryTimeout value", reinterpret_cast<char*>(message));
+    EXPECT_EQ(0, seen->created); EXPECT_EQ(0, seen->transports); EXPECT_EQ(0, seen->queries);
+  }
+  ASSERT_EQ(SQL_SUCCESS, login("SERVER=fake;SSL=0;QT=3", true));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_NO_FATAL_FAILURE(statement_seconds(stmt, 3));
+  SQLULEN untouched = 81;
+  EXPECT_EQ(SQL_ERROR, SQLGetConnectAttr(dbc, SQL_ATTR_QUERY_TIMEOUT, &untouched, sizeof(untouched), nullptr));
+  EXPECT_EQ(81u, untouched);
+}
+
+TEST_F(QueryTimeoutDefaultTest, FailedSetupDoesNotPublishAndUnrelatedKeywordWarningSurvives) {
+  for (const auto failure : {1, 2, 3, 4, 5, 8, 9}) {
+    seen->connect_exception = failure; seen->setup_allocation_failure = failure == 3;
+    EXPECT_EQ(SQL_ERROR, login("SERVER=fake;SSL=0;QT=9"));
+    const auto connection = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCConnection>(dbc);
+    ASSERT_TRUE(connection); EXPECT_FALSE(connection->is_connected());
+    EXPECT_EQ(0u, connection->query_timeout_default());
+  }
+  seen->connect_exception = 0; seen->setup_allocation_failure = false;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, login("SERVER=fake;SSL=0;QT=2;QueryTimeout=3;UnrelatedSetting=1", true));
+  EXPECT_EQ("01S00", state(SQL_HANDLE_DBC, dbc));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_NO_FATAL_FAILURE(statement_seconds(stmt, 3));
+}
+
+TEST_F(QueryTimeoutDefaultTest, ConfiguredDefaultsReachDirectPreparedAndRetirementRecovery) {
+  ASSERT_EQ(SQL_SUCCESS, login("SERVER=fake;SSL=0;QT=2"));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  for (bool prepared : {false, true}) {
+    if (prepared) ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT 1")), SQL_NTS));
+    const auto before = rs::util::Clock::now();
+    ASSERT_EQ(SQL_SUCCESS, prepared ? SQLExecute(stmt) : execute("SELECT 1"));
+    const auto after = rs::util::Clock::now();
+    EXPECT_GE(seen->deadline, before + std::chrono::seconds{2});
+    EXPECT_LE(seen->deadline, after + std::chrono::seconds{2});
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_QUERY_TIMEOUT, integer(0), 0));
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT 1")); EXPECT_EQ(Deadline::max(), seen->deadline);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_QUERY_TIMEOUT, integer(1), 0));
+  EXPECT_EQ(SQL_ERROR, execute("timeout")); EXPECT_EQ("HYT00", state());
+  ASSERT_NO_FATAL_FAILURE(statement_seconds(stmt, 1));
+  ASSERT_EQ(SQL_SUCCESS, login("SERVER=fake;SSL=0;QueryTimeout=3", true));
+  SQLHSTMT fresh{}; ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &fresh));
+  ASSERT_NO_FATAL_FAILURE(statement_seconds(fresh, 3));
+  ASSERT_NO_FATAL_FAILURE(statement_seconds(stmt, 1));
+  ASSERT_EQ(SQL_SUCCESS, execute("SELECT 1"));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, fresh));
+}
+
+TEST_F(AutoIpdTest, ConfiguredQueryTimeoutReachesOriginalDescriptionDeadlineAndCacheIsLocal) {
+  ASSERT_NO_FATAL_FAILURE(connect_with("SERVER=fake;SSL=0;QT=2"));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_NO_FATAL_FAILURE(descriptors());
+  ASSERT_NO_FATAL_FAILURE(enable(SQL_TRUE));
+  const auto before = rs::util::Clock::now(); ASSERT_EQ(SQL_SUCCESS, prepare_sql());
+  const auto after = rs::util::Clock::now();
+  EXPECT_GE(seen->description_deadline, before + std::chrono::seconds{2});
+  EXPECT_LE(seen->description_deadline, after + std::chrono::seconds{2});
+  const auto original = seen->description_deadline; const auto calls = seen->descriptions;
+  SQLSMALLINT count = -1; ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(stmt, &count));
+  EXPECT_EQ(3, count); EXPECT_EQ(calls, seen->descriptions); EXPECT_EQ(original, seen->description_deadline);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_QUERY_TIMEOUT, number(1), 0));
+  const auto shorter = rs::util::Clock::now(); ASSERT_EQ(SQL_SUCCESS, prepare_sql());
+  EXPECT_GE(seen->description_deadline, shorter + std::chrono::seconds{1});
+  EXPECT_LE(seen->description_deadline, rs::util::Clock::now() + std::chrono::seconds{1});
+}

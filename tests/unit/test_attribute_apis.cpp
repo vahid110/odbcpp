@@ -1767,3 +1767,15 @@ TEST_F(AttributeApisTest, AccessModeAAndWReadbackRejectsInvalidWithoutMutation) 
     }
   }
 }
+
+TEST_F(AttributeApisTest, QueryTimeoutIsOnlyAStatementAttributeAndZeroOverrideStaysLocal) {
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttrW(statement_, SQL_ATTR_QUERY_TIMEOUT, integer_value(7), 0));
+  EXPECT_EQ(SQL_ERROR, SQLSetConnectAttr(connection_, SQL_ATTR_QUERY_TIMEOUT, integer_value(2), 0));
+  EXPECT_EQ("HY092", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  SQLULEN value = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(statement_, SQL_ATTR_QUERY_TIMEOUT, &value, sizeof(value), nullptr));
+  EXPECT_EQ(7u, value);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(statement_, SQL_ATTR_QUERY_TIMEOUT, integer_value(0), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttrW(statement_, SQL_ATTR_QUERY_TIMEOUT, &value, sizeof(value), nullptr));
+  EXPECT_EQ(0u, value);
+}
