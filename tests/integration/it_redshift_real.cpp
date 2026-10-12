@@ -7649,7 +7649,7 @@ class RedshiftReadOnlySettingRealTest : public RedshiftLoginTimeoutOptionsRealTe
     if (table_owned_) ADD_FAILURE() << "ReadOnly exact fixture cleanup remains pending";
     if (writer_stmt_) { EXPECT_TRUE(observed(SQLFreeHandle(SQL_HANDLE_STMT, writer_stmt_))); writer_stmt_ = nullptr; }
     if (writer_) {
-      if (writer_connected_) EXPECT_TRUE(observed(SQLDisconnect(writer_)));
+      if (writer_connected_) { EXPECT_TRUE(observed(SQLDisconnect(writer_))); }
       EXPECT_TRUE(observed(SQLFreeHandle(SQL_HANDLE_DBC, writer_))); writer_ = nullptr;
     }
     RedshiftLoginTimeoutOptionsRealTest::TearDown();

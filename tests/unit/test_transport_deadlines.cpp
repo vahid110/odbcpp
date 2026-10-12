@@ -1455,7 +1455,17 @@ int socket_option(test_socket_t socket, int level, int key) {
   int value{}; socklen_t size = static_cast<socklen_t>(sizeof(value));
   const int rc = ::getsockopt(socket, level, key, &value, &size);
 #endif
-  EXPECT_EQ(0, rc); EXPECT_EQ(sizeof(value), static_cast<std::size_t>(size));
+  EXPECT_EQ(0, rc);
+#ifdef _WIN32
+  // Winsock's boolean SO_KEEPALIVE readback can be a single byte. Integer
+  // TCP tuning options still require their complete DWORD representation.
+  if (level == SOL_SOCKET && key == SO_KEEPALIVE) {
+    EXPECT_TRUE(size == 1 || size == static_cast<int>(sizeof(value)));
+    if (size == 1) return *reinterpret_cast<const unsigned char*>(&value) != 0;
+    return value != 0;
+  }
+#endif
+  EXPECT_EQ(sizeof(value), static_cast<std::size_t>(size));
   return static_cast<int>(value);
 }
 

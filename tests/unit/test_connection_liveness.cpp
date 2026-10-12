@@ -5110,7 +5110,7 @@ TEST(ConnectionLivenessTest, ReadOnlySetupRefusalUnexpectedCompletionAndRecovery
     const auto failed = backend.connect(settings);
     ASSERT_FALSE(failed); EXPECT_FALSE(backend.is_connected()); EXPECT_GT(wire->closes, 0u);
     EXPECT_EQ(SessionDisposition::Retire, failed.session_snapshot().disposition);
-    if (variant == 0) EXPECT_EQ(std::optional<std::string>{"42501"}, failed.backend_error().native_state);
+    if (variant == 0) { EXPECT_EQ(std::optional<std::string>{"42501"}, failed.backend_error().native_state); }
     wire->reset(); wire->append_response('C', std::string_view("SET\0", 4)); wire->append_response('Z', "I");
     ASSERT_TRUE(backend.connect(settings)); EXPECT_TRUE(backend.is_connected()); backend.disconnect();
   }
@@ -5136,7 +5136,7 @@ TEST(ConnectionLivenessTest, ReadOnlySetupLateResponseAndThrowsRetireBeforePubli
     settings.password = "synthetic-only"; settings.read_only = true;
     const auto deadline = rs::util::make_deadline(std::chrono::milliseconds{50});
     const auto failed = backend.connect_until(settings, deadline); ASSERT_FALSE(failed);
-    if (variant == 0) EXPECT_EQ(BackendErrorClass::Timeout, failed.backend_error().error_class);
+    if (variant == 0) { EXPECT_EQ(BackendErrorClass::Timeout, failed.backend_error().error_class); }
     EXPECT_TRUE(wire->query_dispatched); EXPECT_FALSE(backend.is_connected());
     EXPECT_EQ(SessionDisposition::Retire, failed.session_snapshot().disposition);
     expect_original_deadline(*wire, deadline);
