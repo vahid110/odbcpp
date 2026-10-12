@@ -9072,3 +9072,122 @@ TEST_F(RedshiftFixedNumericCompletionRealTest, FractionWholeNullAndVariableSourc
   ASSERT_NO_FATAL_FAILURE(release_connection());
 }
 
+// Authoring only: one TLS login, one Prepare and at most seven Execute
+// attempts (five fits/NULL and two expected local22003 refusals). Conservatively
+// charge all eight operations; no DDL/DML/resources. Existing40s/per-op5s caps.
+class RedshiftCnumericApproximateRangeRealTest : public RedshiftNegativeNumericScaleRealTest {
+ protected:
+  static constexpr const char* echo_sql =
+      "SELECT CAST(? AS REAL), CAST(? AS DOUBLE PRECISION), "
+      "CAST(? AS DOUBLE PRECISION), CAST(42 AS INTEGER)";
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_CNUMERIC_APPROXIMATE_RANGE_ADMISSION",
+                   "cnumeric_approximate_range_v1");
+    if (IsSkipped() || HasFatalFailure()) return;
+    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const std::pair<const char*, std::size_t> minima[] = {
+        {"MAXSQLBYTES", std::string_view(echo_sql).size()},
+        {"MAXPARAMETERS", 3}, {"MAXPARAMETERBYTES", 102},
+        {"MAXPARAMETERTOTALBYTES", 306}, {"MAXCOLUMNS", 4},
+        {"MAXROWS", 1}, {"MAXCELLS", 4}, {"MAXMETADATAENTRIES", 12}};
+    for (const auto& [key, required] : minima) {
+      const auto found = options.find(key);
+      if (found == options.end()) continue;
+      std::size_t value{};
+      const auto& text = found->second;
+      const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+      ASSERT_EQ(std::errc{}, parsed.ec);
+      ASSERT_EQ(text.data() + text.size(), parsed.ptr);
+      ASSERT_GE(value, required);
+    }
+  }
+};
+
+TEST_F(RedshiftCnumericApproximateRangeRealTest, PreparedFitSubnormalWholeNullAndRecovery) {
+  ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT", "5", 5, false));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(known_sql(SQLPrepare(hstmt_, (SQLCHAR*)echo_sql, SQL_NTS)));
+  std::array<std::array<unsigned char, sizeof(SQL_NUMERIC_STRUCT) + 2>, 3> storage{};
+  std::array<SQLLEN, 3> indicators{73, 74, 75};
+  SQLUSMALLINT status = SQL_PARAM_UNUSED;
+  SQLULEN processed = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  const auto apd = descriptor(SQL_ATTR_APP_PARAM_DESC);
+  const auto bind = [&](std::size_t slot, SQLSMALLINT target,
+                        SQLSMALLINT precision, SQLSMALLINT scale,
+                        SQLCHAR coefficient, SQLCHAR sign) {
+    SQL_NUMERIC_STRUCT input{};
+    input.precision = 1; input.scale = 0; input.sign = sign; input.val[0] = coefficient;
+    storage[slot].fill(0x5a);
+    std::memcpy(storage[slot].data() + 1, &input, sizeof(input));
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, static_cast<SQLUSMALLINT>(slot + 1),
+        SQL_PARAM_INPUT, SQL_C_NUMERIC, target, 0, 0, storage[slot].data() + 1,
+        sizeof(input), &indicators[slot]));
+    ASSERT_NO_FATAL_FAILURE(dimensions(apd, static_cast<SQLSMALLINT>(slot + 1),
+        precision, scale, storage[slot].data() + 1));
+  };
+  ASSERT_NO_FATAL_FAILURE(bind(1, SQL_FLOAT, 1, -100, 1, 1));
+  ASSERT_NO_FATAL_FAILURE(bind(2, SQL_DOUBLE, 1, -100, 1, 0));
+  const auto echo = [&](SQLDOUBLE expected, bool subnormal, bool absent) {
+    const auto before = storage;
+    const auto before_indicators = indicators;
+    status = SQL_PARAM_UNUSED; processed = 99;
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLExecute(hstmt_)));
+    EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed);
+    EXPECT_EQ(before, storage); EXPECT_EQ(before_indicators, indicators);
+    // Input pointers are unaligned and may change after execution. Results own values.
+    std::fill(storage[0].begin() + 1, storage[0].end() - 1, 0);
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_)));
+    SQLDOUBLE real = 97; SQLLEN length = 73;
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLGetData(hstmt_, 1, SQL_C_DOUBLE, &real, 0, &length)));
+    if (absent) {
+      EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(97, real);
+    } else {
+      EXPECT_EQ(static_cast<SQLLEN>(sizeof(real)), length);
+      if (subnormal) {
+        EXPECT_GT(real, 9e-39); EXPECT_LT(real, 1.1e-38);
+      } else {
+        EXPECT_DOUBLE_EQ(expected, real);
+      }
+    }
+    for (SQLUSMALLINT col = 2; col <= 3; ++col) {
+      SQLDOUBLE large = 0; length = 73;
+      ASSERT_TRUE(cap(window_end_, true));
+      ASSERT_TRUE(observed(SQLGetData(hstmt_, col, SQL_C_DOUBLE, &large, 0, &length)));
+      EXPECT_DOUBLE_EQ(col == 2 ? 1e100 : -1e100, large);
+      EXPECT_EQ(static_cast<SQLLEN>(sizeof(large)), length);
+    }
+    SQLINTEGER neighbor = -1; length = 73;
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLGetData(hstmt_, 4, SQL_C_SLONG, &neighbor, 0, &length)));
+    EXPECT_EQ(42, neighbor); EXPECT_EQ(static_cast<SQLLEN>(sizeof(neighbor)), length);
+    for (const auto& cell : storage) { EXPECT_EQ(0x5a, cell.front()); EXPECT_EQ(0x5a, cell.back()); }
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_NO_DATA));
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
+  };
+  ASSERT_NO_FATAL_FAILURE(bind(0, SQL_REAL, 1, 0, 1, 1));
+  ASSERT_NO_FATAL_FAILURE(echo(1, false, false));
+  ASSERT_NO_FATAL_FAILURE(bind(0, SQL_REAL, 38, 38, 1, 1));
+  ASSERT_NO_FATAL_FAILURE(echo(0, true, false));
+  for (const SQLCHAR sign : {SQLCHAR{1}, SQLCHAR{0}}) {
+    ASSERT_NO_FATAL_FAILURE(bind(0, SQL_REAL, 1, -100, 1, sign));
+    const auto before = storage; const auto before_indicators = indicators;
+    status = SQL_PARAM_UNUSED; processed = 99;
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLExecute(hstmt_), SQL_ERROR, "22003"));
+    EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
+    EXPECT_EQ(before, storage); EXPECT_EQ(before_indicators, indicators);
+  }
+  ASSERT_NO_FATAL_FAILURE(bind(0, SQL_REAL, 2, 0, 42, 1));
+  ASSERT_NO_FATAL_FAILURE(echo(42, false, false));
+  indicators[0] = SQL_NULL_DATA;
+  std::fill(storage[0].begin() + 1, storage[0].end() - 1, 0xff);
+  ASSERT_NO_FATAL_FAILURE(echo(0, false, true));
+  indicators[0] = 73;
+  ASSERT_NO_FATAL_FAILURE(bind(0, SQL_REAL, 1, 0, 1, 0));
+  ASSERT_NO_FATAL_FAILURE(echo(-1, false, false));
+  ASSERT_NO_FATAL_FAILURE(release_connection());
+}
