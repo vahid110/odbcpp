@@ -388,3 +388,218 @@ TEST_F(NumericScaleApiTest, SiblingResultsOwnValuesAndRecoverIndependently) {
 }
 
 }  // namespace
+
+namespace {
+// Independent small base-256 inputs, without the production decimal parser.
+SQL_NUMERIC_STRUCT target_rescale_input(unsigned coefficient, SQLCHAR sign = 1) {
+  SQL_NUMERIC_STRUCT value{};
+  value.precision = 1; value.scale = 0; value.sign = sign;
+  value.val[0] = static_cast<SQLCHAR>(coefficient & 0xffu);
+  value.val[1] = static_cast<SQLCHAR>(coefficient >> 8);
+  return value;
+}
+
+TEST_F(NumericScaleApiTest, KnownNumericTargetsTruncateFractionTowardZeroAcrossAliases) {
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  struct Case {
+    unsigned coefficient; SQLCHAR sign;
+    SQLSMALLINT c_precision, c_scale, sql_precision, sql_scale;
+    const char* expected;
+  };
+  const Case cases[] = {
+      {12345, 1, 5, 3, 4, 2, "12.34"},
+      {12345, 0, 5, 3, 4, 2, "-12.34"},
+      {12300, 1, 5, 4, 3, 2, "1.2300"},
+      {1, 1, 3, 3, 1, 1, "0.0"},
+      {1, 0, 3, 3, 1, 1, "0.0"},
+      {0, 0, 3, 3, 1, 1, "0.000"},
+      {12, 1, 2, -3, 5, 0, "12000"},
+      {1230, 1, 4, 2, 5, 3, "12.30"},
+      {1230, 0, 4, 2, 5, 3, "-12.30"}};
+  SQLUSMALLINT status = SQL_PARAM_UNUSED;
+  SQLULEN processed = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  for (const SQLSMALLINT alias : {SQLSMALLINT{SQL_NUMERIC}, SQLSMALLINT{SQL_DECIMAL}}) {
+    for (const auto& item : cases) {
+      SCOPED_TRACE(alias);
+      SCOPED_TRACE(item.expected);
+      auto input = target_rescale_input(item.coefficient, item.sign);
+      const auto original = input;
+      SQLLEN length = sizeof(input);
+      ASSERT_NO_FATAL_FAILURE(bind_input(&input, &length, alias,
+          item.sql_precision, item.sql_scale, item.c_precision, item.c_scale));
+      const auto queries = facts->queries;
+      ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));  // Input fractional warning is optional; selected policy is success.
+      ASSERT_EQ(1u, facts->parameters.size());
+      EXPECT_EQ(QueryParameterType::Numeric, facts->parameters[0].type);
+      EXPECT_FALSE(facts->parameters[0].binary_input);
+      EXPECT_EQ(std::optional<std::string>{item.expected}, facts->parameters[0].value);
+      EXPECT_EQ(queries + 1, facts->queries);
+      EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed);
+      EXPECT_EQ(static_cast<SQLLEN>(sizeof(input)), length);
+      EXPECT_EQ(0, std::memcmp(&input, &original, sizeof(input)));
+      SQLCHAR diagnostic[6]{};
+      EXPECT_EQ(SQL_NO_DATA, SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1,
+          diagnostic, nullptr, nullptr, 0, nullptr));
+      ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    }
+  }
+  EXPECT_EQ(0u, facts->disconnects);
+}
+
+TEST_F(NumericScaleApiTest, TargetRescaleRetainsWholeAndCRepresentationRefusalsBeforeDispatch) {
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  auto input = target_rescale_input(12345);
+  SQLLEN length = sizeof(input);
+  SQLUSMALLINT status = SQL_PARAM_UNUSED;
+  SQLULEN processed = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  ASSERT_NO_FATAL_FAILURE(bind_input(&input, &length, SQL_NUMERIC, 4, 2, 5, 3));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, facts->parameters.size());
+  ASSERT_EQ(std::optional<std::string>{"12.34"}, facts->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  struct Case {
+    unsigned coefficient; SQLCHAR sign;
+    SQLSMALLINT c_precision, c_scale, sql_precision, sql_scale;
+  };
+  const Case refused[] = {
+      {12345, 1, 5, 2, 4, 2},  // Whole123 cannot fit two SQL whole digits.
+      {12, 1, 2, -3, 4, 0},    // Valid C12000 still exceeds SQL capacity.
+      {12345, 1, 0, 3, 4, 2},
+      {12345, 1, 39, 3, 4, 2},
+      {12345, 1, 2, 3, 4, 2},
+      {12345, 1, 5, -129, 4, 2},
+      {12345, 2, 5, 3, 4, 2},
+      {100, 1, 2, 0, 5, 0}};   // Coefficient violates C precision before target conversion.
+  for (const auto& item : refused) {
+    SCOPED_TRACE(item.coefficient);
+      SCOPED_TRACE(item.c_precision);
+      SCOPED_TRACE(item.c_scale);
+    input = target_rescale_input(item.coefficient, item.sign);
+    const auto original = input;
+    length = sizeof(input); status = SQL_PARAM_UNUSED; processed = 99;
+    ASSERT_NO_FATAL_FAILURE(bind_input(&input, &length, SQL_NUMERIC,
+        item.sql_precision, item.sql_scale, item.c_precision, item.c_scale));
+    const auto queries = facts->queries;
+    EXPECT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("22003", state());
+    EXPECT_EQ(queries, facts->queries);
+    ASSERT_EQ(1u, facts->parameters.size());
+    EXPECT_EQ(std::optional<std::string>{"12.34"}, facts->parameters[0].value);
+    EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
+    EXPECT_EQ(static_cast<SQLLEN>(sizeof(input)), length);
+    EXPECT_EQ(0, std::memcmp(&input, &original, sizeof(input)));
+  }
+  input = target_rescale_input(23456);
+  ASSERT_NO_FATAL_FAILURE(bind_input(&input, &length, SQL_DECIMAL, 4, 2, 5, 3));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, facts->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"23.45"}, facts->parameters[0].value);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed);
+  EXPECT_EQ(0u, facts->disconnects);
+}
+
+TEST_F(NumericScaleApiTest, RescalePreservesDescriptorAuthoritiesUnalignedOwnershipAndNullPoison) {
+  facts->result.normalized_parameter_types = {NativeTypeInfo{ScalarType::Decimal, 4, 2, true}};
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  auto input = target_rescale_input(12345);  // Structp1/s0 disagrees with captured APDp5/s3.
+  std::array<unsigned char, sizeof(input) + 2> storage{};
+  storage.fill(0x5a); std::memcpy(storage.data() + 1, &input, sizeof(input));
+  SQLLEN length = 99;  // Fixed C numeric indicator length is ignored, not rewritten.
+  ASSERT_NO_FATAL_FAILURE(bind_input(storage.data() + 1, &length, SQL_DECIMAL, 4, 2, 5, 3));
+  const auto apd = descriptor(SQL_ATTR_APP_PARAM_DESC);
+  const auto ipd = descriptor(SQL_ATTR_IMP_PARAM_DESC);
+  const auto dimensions_unchanged = [&] {
+    SQLSMALLINT precision = -1, scale = -1, type = -1;
+    SQLPOINTER data{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(apd, 1, SQL_DESC_PRECISION, &precision, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(apd, 1, SQL_DESC_SCALE, &scale, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(apd, 1, SQL_DESC_DATA_PTR, &data, 0, nullptr));
+    EXPECT_EQ(5, precision); EXPECT_EQ(3, scale); EXPECT_EQ(storage.data() + 1, data);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ipd, 1, SQL_DESC_CONCISE_TYPE, &type, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ipd, 1, SQL_DESC_PRECISION, &precision, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ipd, 1, SQL_DESC_SCALE, &scale, 0, nullptr));
+    EXPECT_EQ(SQL_DECIMAL, type); EXPECT_EQ(4, precision); EXPECT_EQ(2, scale);
+  };
+  ASSERT_NO_FATAL_FAILURE(dimensions_unchanged());
+  const auto before = storage;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, facts->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"12.34"}, facts->parameters[0].value);
+  EXPECT_EQ(before, storage); EXPECT_EQ(99, length);
+  ASSERT_NO_FATAL_FAILURE(dimensions_unchanged());
+  std::fill(storage.begin() + 1, storage.end() - 1, 0);
+  EXPECT_EQ(std::optional<std::string>{"12.34"}, facts->parameters[0].value);
+  EXPECT_EQ(0x5a, storage.front()); EXPECT_EQ(0x5a, storage.back());
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  storage.fill(0x5a);  // Invalid unused struct/sign must remain unread for NULL.
+  const auto null_poison = storage;
+  length = SQL_NULL_DATA;
+  ASSERT_NO_FATAL_FAILURE(bind_input(storage.data() + 1, &length, SQL_DECIMAL, 4, 2, 0, -129));
+  const auto queries = facts->queries;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(queries + 1, facts->queries);
+  ASSERT_EQ(1u, facts->parameters.size()); EXPECT_FALSE(facts->parameters[0].value);
+  EXPECT_EQ(null_poison, storage); EXPECT_EQ(SQL_NULL_DATA, length);
+  EXPECT_EQ(0u, facts->disconnects);
+}
+
+TEST_F(NumericScaleApiTest, RescaledPreparedRefillAndLocalFailurePreserveOwningSibling) {
+  facts->result.normalized_parameter_types = {NativeTypeInfo{ScalarType::Decimal, 4, 2, true}};
+  struct SiblingGuard {
+    SQLHSTMT handle{};
+    ~SiblingGuard() { if (handle) SQLFreeHandle(SQL_HANDLE_STMT, handle); }
+  } sibling;
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &sibling.handle));
+  facts->result.columns = {{"neighbor", NativeTypeInfo{ScalarType::Integer, 10, 0, true}}};
+  facts->result.rows = {{"41"}};
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  auto input = target_rescale_input(12345);
+  SQLLEN length = sizeof(input);
+  ASSERT_NO_FATAL_FAILURE(bind_input(&input, &length, SQL_NUMERIC, 4, 2, 5, 3));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, facts->parameters.size());
+  const auto first_owned_parameter = facts->parameters[0].value;
+  ASSERT_EQ(std::optional<std::string>{"12.34"}, first_owned_parameter);
+  input = {};
+  EXPECT_EQ(first_owned_parameter, facts->parameters[0].value);
+  SQLINTEGER first = -1, second = -1; SQLLEN output_length = 73;
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_SLONG, &first, 0, &output_length));
+  EXPECT_EQ(41, first);
+  facts->result.rows = {{"99"}};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(sibling.handle, (SQLCHAR*)"SELECT sibling", SQL_NTS));
+  facts->result.rows = {{"777"}};
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  input = target_rescale_input(12345);
+  ASSERT_NO_FATAL_FAILURE(bind_input(&input, &length, SQL_NUMERIC, 4, 2, 5, 2));
+  const auto queries = facts->queries;
+  EXPECT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("22003", state());
+  EXPECT_EQ(queries, facts->queries); EXPECT_EQ(first_owned_parameter, facts->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(sibling.handle));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(sibling.handle, 1, SQL_C_SLONG, &second, 0, &output_length));
+  EXPECT_EQ(99, second); EXPECT_EQ(41, first);
+  ASSERT_EQ(SQL_NO_DATA, SQLFetch(sibling.handle));
+  facts->result.rows = {{"43"}};
+  input = target_rescale_input(12345, 0);
+  ASSERT_NO_FATAL_FAILURE(bind_input(&input, &length, SQL_DECIMAL, 4, 2, 5, 3));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, facts->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"-12.34"}, facts->parameters[0].value);
+  input = {}; facts->result.rows = {{"888"}};
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_SLONG, &first, 0, &output_length));
+  EXPECT_EQ(43, first); EXPECT_EQ(99, second);
+  EXPECT_EQ(std::optional<std::string>{"-12.34"}, facts->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  length = SQL_NULL_DATA; facts->result.rows = {{"44"}};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, facts->parameters.size()); EXPECT_FALSE(facts->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_SLONG, &first, 0, &output_length));
+  EXPECT_EQ(44, first); EXPECT_EQ(99, second); EXPECT_EQ(SQL_NULL_DATA, length);
+  EXPECT_EQ(0u, facts->disconnects);
+}
+}  // namespace
