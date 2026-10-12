@@ -13122,7 +13122,7 @@ TEST_F(PreparedCommandArrayTest, CapturedApdRestrictedPairRefusesBeforeProviderA
   const auto descriptions = seen->descriptions, queries = seen->queries;
   const auto result = SQLExecute(stmt);
   EXPECT_EQ(SQL_ERROR, result);
-  if (result == SQL_ERROR) EXPECT_EQ("07006", state());
+  if (result == SQL_ERROR) { EXPECT_EQ("07006", state()); }
   EXPECT_EQ(descriptions, seen->descriptions); EXPECT_EQ(queries, seen->queries);
   EXPECT_TRUE(seen->transaction_calls.empty()); EXPECT_TRUE(seen->command_inputs.empty());
   EXPECT_EQ(2u, processed);

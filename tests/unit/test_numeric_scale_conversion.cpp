@@ -1572,7 +1572,7 @@ TEST_F(NumericScaleApiTest, ApdTemporalPairMutationRejectsBeforeDispatchAndRepai
     status = 71; processed = 91;
     const auto result = SQLExecute(stmt);
     EXPECT_EQ(SQL_ERROR, result);
-    if (result == SQL_ERROR) EXPECT_EQ("07006", state());
+    if (result == SQL_ERROR) { EXPECT_EQ("07006", state()); }
     EXPECT_EQ(before, facts->queries);
     EXPECT_EQ(retained, facts->parameters[0].value);
     EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
@@ -1626,7 +1626,7 @@ TEST_F(NumericScaleApiTest, ApdNumericPairMutationRejectsBeforeFormattingAndRepa
     const unsigned before = facts->queries;
     const auto result = SQLExecute(stmt);
     EXPECT_EQ(SQL_ERROR, result);
-    if (result == SQL_ERROR) EXPECT_EQ("07006", state());
+    if (result == SQL_ERROR) { EXPECT_EQ("07006", state()); }
     EXPECT_EQ(before, facts->queries); EXPECT_EQ(retained, facts->parameters[0].value);
     ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
     numeric.sign = 2; // Unsupported pair wins over malformed payload.
@@ -1635,7 +1635,7 @@ TEST_F(NumericScaleApiTest, ApdNumericPairMutationRejectsBeforeFormattingAndRepa
     dimensions(apd, 1, 1, 0, &numeric);
     const auto malformed = SQLExecute(stmt);
     EXPECT_EQ(SQL_ERROR, malformed);
-    if (malformed == SQL_ERROR) EXPECT_EQ("07006", state());
+    if (malformed == SQL_ERROR) { EXPECT_EQ("07006", state()); }
     EXPECT_EQ(before, facts->queries);
     ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
     numeric.sign = 1;
@@ -1680,7 +1680,7 @@ TEST_F(NumericScaleApiTest, ApdPairNullUnalignedAndSpanPrecedence) {
   const unsigned before = facts->queries;
   const auto result = SQLExecute(stmt);
   EXPECT_EQ(SQL_ERROR, result);
-  if (result == SQL_ERROR) EXPECT_EQ("07006", state());
+  if (result == SQL_ERROR) { EXPECT_EQ("07006", state()); }
   EXPECT_EQ(before, facts->queries);
   EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
   ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
