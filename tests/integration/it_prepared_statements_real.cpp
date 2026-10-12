@@ -4589,13 +4589,13 @@ TEST_F(PreparedStatementIntegrationTest,
     SQLCHAR state[6]{};
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
-    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
 
     assign_parameter_text(value, "-00100.0");
     ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
-    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
 
     assign_parameter_text(value, "  +00099.0  ");
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
@@ -4618,7 +4618,7 @@ TEST_F(PreparedStatementIntegrationTest,
     ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
-    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
 }
 
 TEST_F(PreparedStatementIntegrationTest,
@@ -4636,7 +4636,7 @@ TEST_F(PreparedStatementIntegrationTest,
     SQLCHAR state[6]{};
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
-    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
 
     value[0] = '0';
     value[1] = '9';
@@ -4664,19 +4664,19 @@ TEST_F(PreparedStatementIntegrationTest,
     SQLCHAR state[6]{};
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
-    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
 
     assign_parameter_text(value, "1E+2");
     ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
-    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
 
     assign_parameter_text(value, "1e99999999999999999999999999999");
     ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
-    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
 
     assign_parameter_text(value, "1e");
     ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
@@ -4697,7 +4697,7 @@ TEST_F(PreparedStatementIntegrationTest,
     ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
-    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
 
     assign_parameter_text(value, "1e-1");
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
@@ -4717,7 +4717,7 @@ TEST_F(PreparedStatementIntegrationTest,
     ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
-    EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+    EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
 }
 
 TEST_F(PreparedStatementIntegrationTest,
@@ -4737,7 +4737,7 @@ TEST_F(PreparedStatementIntegrationTest,
         SQLCHAR state[6]{};
         ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
             state, nullptr, nullptr, 0, nullptr));
-        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+        EXPECT_STREQ("22001", reinterpret_cast<char*>(state));
     };
     expect_loss();
 
