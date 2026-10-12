@@ -1,4 +1,5 @@
 #include "odbcpp/util/hex.h"
+#include "odbcpp/util/scaled_decimal.h"
 #include "odbcpp/util/utf8.h"
 #include "core/database/result_validation.h"
 #include "odbc_handles.h"
@@ -6086,12 +6087,35 @@ ODBCStatement::materialize_parameter_set(std::uintptr_t input_offset,
         const auto available_digits = std::max<int>(
             0, declared_sql_precision - declared_sql_scale);
         if (!digits ||
-            digits->whole > static_cast<std::size_t>(available_digits) ||
-            digits->fractional >
-                static_cast<std::size_t>(declared_sql_scale)) {
+            digits->whole > static_cast<std::size_t>(available_digits)) {
           set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
                     "Numeric parameter exceeds SQL precision or scale");
           return std::nullopt;
+        }
+        if (digits->fractional >
+            static_cast<std::size_t>(declared_sql_scale)) {
+          // Target policy stays in the adapter. Only known valid targets may
+          // discard fractional digits; whole capacity was checked above.
+          if (declared_sql_precision > 38 ||
+              declared_sql_scale > declared_sql_precision) {
+            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Numeric parameter exceeds SQL precision or scale");
+            return std::nullopt;
+          }
+          const auto decimal = rs::util::rescale_decimal(
+              value, static_cast<std::size_t>(declared_sql_precision),
+              declared_sql_scale);
+          const auto formatted = decimal
+              ? rs::util::format_scaled_decimal(*decimal, 41)
+              : std::nullopt;
+          if (!formatted) {
+            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Numeric parameter exceeds SQL precision or scale");
+            return std::nullopt;
+          }
+          // C-to-SQL fractional loss permits SQL_SUCCESS. Publish owning text
+          // only after the exact bounded conversion succeeds.
+          value = *formatted;
         }
       }
       if (numeric_input && declared_sql_length > 0 &&

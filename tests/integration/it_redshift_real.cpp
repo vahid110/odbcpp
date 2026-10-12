@@ -8738,3 +8738,88 @@ TEST_F(RedshiftNegativeNumericScaleRealTest, DescriptorLossNullOwnershipAndRecov
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
   ASSERT_NO_FATAL_FAILURE(release_connection());
 }
+
+class RedshiftNumericTargetRescaleRealTest : public RedshiftNegativeNumericScaleRealTest {
+ protected:
+  static constexpr const char* echo_sql =
+      "SELECT CAST(? AS DECIMAL(4,2)), CAST(42 AS INTEGER)";
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_NUMERIC_TARGET_RESCALE_ADMISSION",
+                   "numeric_target_rescale_v1");
+    if (IsSkipped() || HasFatalFailure()) return;
+    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const std::pair<const char*, std::size_t> minima[] = {
+        {"MAXSQLBYTES", std::string_view(echo_sql).size()},
+        {"MAXCOLUMNS", 2}, {"MAXCELLS", 2}};
+    for (const auto& [key, required] : minima) {
+      const auto found = options.find(key);
+      if (found == options.end()) continue;
+      std::size_t value{};
+      const auto& text = found->second;
+      const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+      ASSERT_EQ(std::errc{}, parsed.ec);
+      ASSERT_EQ(text.data() + text.size(), parsed.ptr);
+      ASSERT_GE(value, required);
+    }
+  }
+};
+
+TEST_F(RedshiftNumericTargetRescaleRealTest, PreparedFractionWholeNullAndOwningRefill) {
+  ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT", "5", 5, false));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(known_sql(SQLPrepare(hstmt_, (SQLCHAR*)echo_sql, SQL_NTS)));
+  SQL_NUMERIC_STRUCT input{};
+  input.precision = 1; input.scale = 0; input.sign = 1;
+  input.val[0] = 0x39; input.val[1] = 0x30;  // Independent coefficient12345.
+  std::array<unsigned char, sizeof(input) + 2> storage{};
+  SQLLEN input_length = sizeof(input);
+  const auto bind = [&](SQLSMALLINT scale) {
+    storage.fill(0x5a); std::memcpy(storage.data() + 1, &input, sizeof(input));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT,
+        SQL_C_NUMERIC, SQL_DECIMAL, 4, 2, storage.data() + 1,
+        sizeof(input), &input_length));
+    ASSERT_NO_FATAL_FAILURE(dimensions(descriptor(SQL_ATTR_APP_PARAM_DESC),
+        1, 5, scale, storage.data() + 1));
+  };
+  const auto echo = [&](const char* expected) {
+    const auto before = storage;
+    const auto before_length = input_length;
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLExecute(hstmt_)));
+    EXPECT_EQ(before, storage); EXPECT_EQ(before_length, input_length);
+    std::fill(storage.begin() + 1, storage.end() - 1, 0);
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_)));
+    std::array<unsigned char, 18> text{}; text.fill(0x5a); SQLLEN length = 73;
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLGetData(hstmt_, 1, SQL_C_CHAR, text.data() + 1, 16, &length)));
+    if (expected) {
+      EXPECT_EQ(static_cast<SQLLEN>(std::strlen(expected)), length);
+      EXPECT_EQ(std::string(expected), reinterpret_cast<const char*>(text.data() + 1));
+    } else {
+      EXPECT_EQ(SQL_NULL_DATA, length);
+      for (const auto byte : text) EXPECT_EQ(0x5a, byte);
+    }
+    EXPECT_EQ(0x5a, text.front()); EXPECT_EQ(0x5a, text.back());
+    SQLINTEGER neighbor = -1; SQLLEN neighbor_length = 73;
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLGetData(hstmt_, 2, SQL_C_SLONG, &neighbor, 0, &neighbor_length)));
+    EXPECT_EQ(42, neighbor); EXPECT_EQ(static_cast<SQLLEN>(sizeof(neighbor)), neighbor_length);
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_NO_DATA));
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
+  };
+  ASSERT_NO_FATAL_FAILURE(bind(3));
+  ASSERT_NO_FATAL_FAILURE(echo("12.34"));  // Server rounding unconverted12.345 would give12.35.
+  ASSERT_NO_FATAL_FAILURE(bind(2));
+  const auto overflow_input = storage;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLExecute(hstmt_), SQL_ERROR, "22003"));
+  EXPECT_EQ(overflow_input, storage);
+  input.sign = 0;
+  ASSERT_NO_FATAL_FAILURE(bind(3));
+  ASSERT_NO_FATAL_FAILURE(echo("-12.34"));
+  input_length = SQL_NULL_DATA;
+  ASSERT_NO_FATAL_FAILURE(bind(-129));  // Poison unused C dimensions; NULL bypasses conversion.
+  ASSERT_NO_FATAL_FAILURE(echo(nullptr));
+  EXPECT_EQ(SQL_NULL_DATA, input_length);
+  EXPECT_EQ(0x5a, storage.front()); EXPECT_EQ(0x5a, storage.back());
+  ASSERT_NO_FATAL_FAILURE(release_connection());
+}

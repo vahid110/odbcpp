@@ -99,3 +99,20 @@ MAXPARAMETERBYTES and MAXPARAMETERTOTALBYTES each at least11 (the inherited
 fixture floor, even though this case sends five bytes), MAXCOLUMNS at least6,
 MAXROWS at least5, MAXCELLS at least30 and MAXMETADATAENTRIES at least18.
 Other existing admission controls and unknown-completion fences remain required.
+
+## Numeric input target rescaling
+
+`RedshiftNumericTargetRescaleRealTest.PreparedFractionWholeNullAndOwningRefill`
+requires `ODBCPP_REDSHIFT_NUMERIC_TARGET_RESCALE_ADMISSION=numeric_target_rescale_v1`.
+One verified TLS login, one Prepare and three Execute operations (positive,
+negative recovery and NULL), 40 seconds aggregate, five seconds per operation.
+A whole-overflow Execute refuses locally with22003 and sends no SQL. No DDL/DML.
+Literal12.34/-12.34 echoes distinguish client truncation from server rounding
+of12.345/-12.345. Unaligned APD authority, input/result ownership, NULL poison
+output/canaries and neighboring integer42 are checked.
+
+Inherited controls require MAXPARAMETERBYTES/MAXPARAMETERTOTALBYTES each at
+least11, MAXPARAMETERS1, MAXSQLBYTES at least51, MAXCOLUMNS2, MAXROWS1, MAXCELLS2
+and MAXMETADATAENTRIES3 (two columns and one prepared parameter).
+Fresh reviewed exact green source/binary and finite admission are mandatory;
+authored/compiled/LIST evidence is not actual live acceptance.
