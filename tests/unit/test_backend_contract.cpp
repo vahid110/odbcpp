@@ -10126,7 +10126,7 @@ TEST_F(PreparedSelectArrayTest, DecimalAndNumericInputHintsSurviveEveryResultEnd
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
     std::memcpy(amounts[0], "1234.56", 8);
     const auto refused = seen->command_inputs.size();
-    EXPECT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("22003", state()); EXPECT_EQ(refused, seen->command_inputs.size());
+    EXPECT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("22001", state()); EXPECT_EQ(refused, seen->command_inputs.size());
     ASSERT_NO_FATAL_FAILURE(readback());
     std::memcpy(amounts[0], "123.45", 7);
     ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));

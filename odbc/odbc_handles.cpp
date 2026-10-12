@@ -6064,16 +6064,20 @@ ODBCStatement::materialize_parameter_set(std::uintptr_t input_offset,
           return std::nullopt;
         }
         if (declared_sql_precision > 0 && declared_sql_scale >= 0) {
+          const auto character_loss_state = declared_sql_precision <= 38 &&
+              declared_sql_scale <= declared_sql_precision
+              ? SQLSTATE_STRING_DATA_RIGHT_TRUNCATION
+              : SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE;
           const auto available_digits = std::max<int>(
               0, declared_sql_precision - declared_sql_scale);
           if (digits->whole > static_cast<std::size_t>(available_digits)) {
-            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+            set_error(character_loss_state,
                       "Character parameter exceeds SQL numeric precision");
             return std::nullopt;
           }
           if (digits->fractional >
               static_cast<std::size_t>(declared_sql_scale)) {
-            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+            set_error(character_loss_state,
                       "Character parameter exceeds SQL numeric scale");
             return std::nullopt;
           }
