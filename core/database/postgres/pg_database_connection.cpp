@@ -321,13 +321,13 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_database_discovery(
     for (const auto* name : {"TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "TABLE_TYPE", "REMARKS"})
       output.columns.push_back({name, NativeTypeInfo{ScalarType::VarChar, 0, 0, true}});
   } else {
-    constexpr std::array<const char*, 18> names{"TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "COLUMN_NAME", "DATA_TYPE",
+    constexpr std::array<const char*, 18> column_names{"TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "COLUMN_NAME", "DATA_TYPE",
         "TYPE_NAME", "COLUMN_SIZE", "BUFFER_LENGTH", "DECIMAL_DIGITS", "NUM_PREC_RADIX", "NULLABLE", "REMARKS",
         "COLUMN_DEF", "SQL_DATA_TYPE", "SQL_DATETIME_SUB", "CHAR_OCTET_LENGTH", "ORDINAL_POSITION", "IS_NULLABLE"};
-    for (std::size_t i = 0; i < names.size(); ++i) {
+    for (std::size_t i = 0; i < column_names.size(); ++i) {
       const bool text = i < 4 || i == 5 || i == 11 || i == 12 || i == 17;
       const bool integer = i == 6 || i == 7 || i == 15 || i == 16;
-      output.columns.push_back({names[i], NativeTypeInfo{text ? ScalarType::VarChar :
+      output.columns.push_back({column_names[i], NativeTypeInfo{text ? ScalarType::VarChar :
           integer ? ScalarType::Integer : ScalarType::SmallInt, text ? 0u : integer ? 10u : 5u, 0, true}});
     }
   }
