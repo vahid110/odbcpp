@@ -13,7 +13,11 @@
 #include <future>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
+
+static_assert(std::is_same_v<decltype(&SQLCancelHandle),
+    SQLRETURN (SQL_API *)(SQLSMALLINT, SQLHANDLE)>);
 
 namespace {
 
@@ -708,3 +712,24 @@ TEST_F(ApiValidationTest, UsesSpecificDiagnosticsForInvalidStatementInputs) {
 }
 
 } // namespace
+
+TEST_F(ApiValidationTest, CancelHandleValidatesTypeLifetimeAndRefusesConnectionCancellation) {
+  EXPECT_EQ(SQL_INVALID_HANDLE, SQLCancelHandle(SQL_HANDLE_STMT, nullptr));
+  EXPECT_EQ(SQL_INVALID_HANDLE, SQLCancelHandle(SQL_HANDLE_STMT, connection_));
+  EXPECT_EQ(SQL_INVALID_HANDLE, SQLCancelHandle(SQL_HANDLE_DBC, statement_));
+  EXPECT_EQ(SQL_SUCCESS, SQLCancelHandle(SQL_HANDLE_STMT, statement_));
+  EXPECT_EQ(SQL_ERROR, SQLCancelHandle(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ("IM001", diagnostic_state(SQL_HANDLE_DBC, connection_));
+  EXPECT_EQ(SQL_ERROR, SQLCancelHandle(SQL_HANDLE_ENV, environment_));
+  EXPECT_EQ("HY092", diagnostic_state(SQL_HANDLE_ENV, environment_));
+  const auto descriptor = odbcpp::test::make_descriptor(connection_);
+  ASSERT_NE(nullptr, descriptor);
+  EXPECT_EQ(SQL_ERROR, SQLCancelHandle(SQL_HANDLE_DESC, descriptor));
+  EXPECT_EQ("HY092", diagnostic_state(SQL_HANDLE_DESC, descriptor));
+  EXPECT_EQ(SQL_INVALID_HANDLE, SQLCancelHandle(SQL_HANDLE_ENV, descriptor));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_DESC, descriptor));
+  EXPECT_EQ(SQL_INVALID_HANDLE, SQLCancelHandle(SQL_HANDLE_DESC, descriptor));
+  const auto stale = statement_;
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement_)); statement_ = nullptr;
+  EXPECT_EQ(SQL_INVALID_HANDLE, SQLCancelHandle(SQL_HANDLE_STMT, stale));
+}

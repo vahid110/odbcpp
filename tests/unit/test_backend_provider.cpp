@@ -335,7 +335,7 @@ TEST(BackendProviderTest, ReadOnlyIntentIsPerAttemptAndRefusesUnsupportedPostgre
     ASSERT_TRUE(repaired); EXPECT_FALSE(repaired->read_only);
     auto again = provider.resolve_connection_options({});
     ASSERT_TRUE(again); EXPECT_FALSE(again->read_only);
-    if (redshift) EXPECT_TRUE(selected->read_only);
+    if (redshift) { EXPECT_TRUE(selected->read_only); }
   }
 }
 

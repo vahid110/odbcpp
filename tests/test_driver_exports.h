@@ -80,6 +80,9 @@ inline constexpr std::array wide_exports{
     "SQLSpecialColumnsW", "SQLStatisticsW", "SQLTablesW",
 };
 
+// Exported compatibility entry; full connection-level support is not advertised.
+inline constexpr std::array partial_exports{"SQLCancelHandle"};
+
 inline bool expected_support(SQLUSMALLINT id) {
   return std::ranges::any_of(
       advertised_functions,

@@ -79,3 +79,4 @@ SQLCancel
 SQLParamData
 SQLPutData
 SQLBulkOperations
+SQLCancelHandle

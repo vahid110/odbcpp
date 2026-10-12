@@ -16,6 +16,11 @@
 #include <sqlext.h>
 #endif
 
+// ODBC 3.8 identifier absent from older iODBC headers.
+#ifndef SQL_API_SQLCANCELHANDLE
+#define SQL_API_SQLCANCELHANDLE 1022
+#endif
+
 namespace rs::odbc {
 
 static_assert(sizeof(SQLWCHAR) == 2 || sizeof(SQLWCHAR) == 4,

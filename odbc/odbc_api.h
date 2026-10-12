@@ -34,6 +34,7 @@ SQLRETURN SQLEndTran(SQLSMALLINT handle_type, SQLHANDLE handle,
                      SQLSMALLINT completion_type);
 
 SQLRETURN SQLCancel(SQLHSTMT statement_handle);
+SQLRETURN SQL_API SQLCancelHandle(SQLSMALLINT handle_type, SQLHANDLE handle);
 SQLRETURN SQLParamData(SQLHSTMT statement_handle, SQLPOINTER* token);
 SQLRETURN SQLPutData(SQLHSTMT statement_handle, SQLPOINTER data, SQLLEN length);
 

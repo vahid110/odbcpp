@@ -22,3 +22,18 @@ A future setup requires existing schema USAGE for the diagnostic principal, veri
 The first consumed edge attempt stopped before creation because the native psql privilege output was `t`, while its reviewed helper expected `true`; preserve that failure and do not replay it. The next offline helper uses a standalone searched CASE with exact `schema_usage_allowed`/`schema_usage_blocked` markers, accepts only the trimmed positive marker, and rejects false/NULL/errors/late or ambiguous output. This keeps the same user/schema/USAGE predicate. Native CASE compatibility still needs separate finite admission because the function documentation describes a textual return type; a SQL error blocks before creation.
 
 The future `primary_key_missing_legacy` profile has an empty object inventory and exactly ConnectionTest plus OdbcPrimaryKeyMissingLegacyContract. It validates the existing fixture hash without parsing or dispatching DDL. The fixed absent name `m2_pk_absent_20261004_c01` is checked before and after tests and is never created, granted or dropped, even if it appears. Identity, canonical schema USAGE and activity checks precede tests within the execution deadline. Post-absence and independent activity checks retain a frozen cleanup cutoff and separate evidence. A concurrent transient appearance between checks remains a limitation; any observed appearance invalidates the scope. No live qualification or admission is implied.
+
+
+### SQLCancelHandle statement compatibility
+
+`RedshiftCancelHandleRealTest.IdleNeedDataRefillNullAndSiblingRemainOwning`
+requires `ODBCPP_REDSHIFT_CANCEL_HANDLE_ADMISSION=cancel_handle_happy_v1` plus
+fresh reviewed finite admission. One verified TLS login, at most five SQL
+exchanges (one prepare, two prepared executions, two fixed SELECTs), 40 seconds
+aggregate and five seconds per operation; no fixture objects, DDL or DML.
+NeedData cancellation is local before dispatch. The case checks owning sibling
+rows, NULL/refill recovery, idle cursor preservation and DBC IM001 refusal.
+It does not demonstrate active native server cancellation. That timing-dependent
+native scenario remains pending separate bounded qualification; deterministic
+unit cases exercise active cancellation/completion races through both APIs.
+Windows/other widths/platform execution remains pending the periodic matrix.

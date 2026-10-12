@@ -354,8 +354,12 @@ class WireProvider final : public IBackendProvider {
   std::shared_ptr<Script> script_;
   postgres::PgBackendProvider profile_;
 };
-class PublicCancellationTest : public ::testing::Test {
+class PublicCancellationTest : public ::testing::TestWithParam<bool> {
  protected:
+  bool handle_api_ = false;
+  SQLRETURN cancel_statement(SQLHSTMT statement) {
+    return handle_api_ ? SQLCancelHandle(SQL_HANDLE_STMT, statement) : SQLCancel(statement);
+  }
   std::shared_ptr<Script> script=std::make_shared<Script>();
   SQLHENV env{}; SQLHDBC dbc{}; SQLHSTMT stmt{}, sibling{};
   struct OutputGuard {std::uint32_t before{0x12345678};SQLINTEGER value{73};std::uint32_t after{0x87654321};} bound_output;
@@ -363,6 +367,7 @@ class PublicCancellationTest : public ::testing::Test {
   SQLINTEGER bound_input{7};SQLLEN bound_input_length{0};
   SQLUSMALLINT bound_parameter_status{SQL_PARAM_UNUSED};SQLULEN bound_processed{73};
   void SetUp() override {
+    handle_api_ = GetParam();
     ASSERT_EQ(SQL_SUCCESS,SQLAllocHandle(SQL_HANDLE_ENV,nullptr,&env));
     ASSERT_EQ(SQL_SUCCESS,SQLSetEnvAttr(env,SQL_ATTR_ODBC_VERSION,reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3),0));
     auto connection=std::make_unique<rs::odbc::ODBCConnection>(nullptr,std::make_shared<WireProvider>(script));
@@ -389,7 +394,7 @@ class PublicCancellationTest : public ::testing::Test {
 };
 }
 
-TEST_F(PublicCancellationTest, CancelBypassesExecutingLockPreservesDiagnosticsAndSiblingRows) {
+TEST_P(PublicCancellationTest, CancelBypassesExecutingLockPreservesDiagnosticsAndSiblingRows) {
   script->reply=integer_row;script->release=true;
   ASSERT_EQ(SQL_SUCCESS,execute(sibling));
   script->reply=cancelled_idle;script->release=false;script->query_sent=false;script->hold_eof=true;
@@ -398,10 +403,10 @@ TEST_F(PublicCancellationTest, CancelBypassesExecutingLockPreservesDiagnosticsAn
   target->set_error("22018","owning earlier diagnostic");
   auto execution=std::async(std::launch::async,[&]{return execute(stmt);});
   ASSERT_TRUE(wait_query(script));
-  EXPECT_EQ(SQL_SUCCESS,SQLCancel(sibling));EXPECT_EQ(0,script->secondary_connects);
+  EXPECT_EQ(SQL_SUCCESS,cancel_statement(sibling));EXPECT_EQ(0,script->secondary_connects);
   const auto before=target->get_diagnostic_count();
   const auto header=target->get_last_return_code();
-  auto cancel=std::async(std::launch::async,[&]{return SQLCancel(stmt);});
+  auto cancel=std::async(std::launch::async,[&]{return cancel_statement(stmt);});
   {
     std::unique_lock lock(script->mutex);
     ASSERT_TRUE(script->changed.wait_for(lock,2s,[&]{return script->peer_waiting;}));
@@ -423,16 +428,16 @@ TEST_F(PublicCancellationTest, CancelBypassesExecutingLockPreservesDiagnosticsAn
   EXPECT_EQ(1,script->secondary_connects);
   script->reply=integer_row;script->release=true;
   EXPECT_EQ(SQL_SUCCESS,execute(stmt));EXPECT_EQ(SQL_SUCCESS,SQLFetch(stmt));
-  EXPECT_EQ(SQL_SUCCESS,SQLCancel(stmt)); // idle cursor remains usable
+  EXPECT_EQ(SQL_SUCCESS,cancel_statement(stmt)); // idle cursor remains usable
   EXPECT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,SQL_C_SLONG,&value,sizeof(value),&indicator));EXPECT_EQ(7,value);
 }
 
-TEST_F(PublicCancellationTest, NormalCompletionRaceInvalidatesOnlyTargetAndRetiresPhysicalSession) {
+TEST_P(PublicCancellationTest, NormalCompletionRaceInvalidatesOnlyTargetAndRetiresPhysicalSession) {
   script->reply=integer_row;script->release=true;
   ASSERT_EQ(SQL_SUCCESS,execute(sibling));
   script->release=false;script->query_sent=false;
   auto execution=std::async(std::launch::async,[&]{return execute(stmt);});
-  ASSERT_TRUE(wait_query(script));EXPECT_EQ(SQL_SUCCESS,SQLCancel(stmt));
+  ASSERT_TRUE(wait_query(script));EXPECT_EQ(SQL_SUCCESS,cancel_statement(stmt));
   EXPECT_EQ(SQL_SUCCESS,execution.get());
   EXPECT_EQ(SQL_ERROR,SQLFetch(stmt));EXPECT_EQ("HY010",state());
   EXPECT_EQ(SQL_SUCCESS,SQLFetch(sibling));
@@ -441,36 +446,36 @@ TEST_F(PublicCancellationTest, NormalCompletionRaceInvalidatesOnlyTargetAndRetir
   EXPECT_EQ(SQL_ERROR,execute(stmt));EXPECT_EQ(2,script->queries);EXPECT_EQ(1,script->closes);
 }
 
-TEST_F(PublicCancellationTest, UnsupportedCompoundRefusesWithoutPacketAndSingleTrailingQuotedDelimiterWorks) {
+TEST_P(PublicCancellationTest, UnsupportedCompoundRefusesWithoutPacketAndSingleTrailingQuotedDelimiterWorks) {
   auto execution=std::async(std::launch::async,[&]{return execute(stmt,"SELECT 7; SELECT 7");});
-  ASSERT_TRUE(wait_query(script));EXPECT_EQ(SQL_ERROR,SQLCancel(stmt));EXPECT_TRUE(script->packet.empty());
+  ASSERT_TRUE(wait_query(script));EXPECT_EQ(SQL_ERROR,cancel_statement(stmt));EXPECT_TRUE(script->packet.empty());
   {std::lock_guard lock(script->mutex);script->reply=integer_row;script->release=true;script->changed.notify_all();}
   EXPECT_EQ(SQL_SUCCESS,execution.get());ASSERT_EQ(SQL_SUCCESS,SQLFreeStmt(stmt,SQL_CLOSE));
   script->reply=cancelled_idle;script->release=false;script->query_sent=false;
   auto single=std::async(std::launch::async,[&]{return execute(stmt,"SELECT ';' /* ; nested /* ; */ */; -- ;\n");});
-  ASSERT_TRUE(wait_query(script));EXPECT_EQ(SQL_SUCCESS,SQLCancel(stmt));
+  ASSERT_TRUE(wait_query(script));EXPECT_EQ(SQL_SUCCESS,cancel_statement(stmt));
   EXPECT_EQ(SQL_ERROR,single.get());EXPECT_EQ("HY008",state());EXPECT_EQ(1,script->secondary_connects);
 }
 
-TEST_F(PublicCancellationTest, PendingAutomaticBeginCancellationNeverDispatchesUserQuery) {
+TEST_P(PublicCancellationTest, PendingAutomaticBeginCancellationNeverDispatchesUserQuery) {
   ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF),0));
   auto execution=std::async(std::launch::async,[&]{return execute(stmt);});
-  ASSERT_TRUE(wait_query(script));EXPECT_EQ(SQL_SUCCESS,SQLCancel(stmt));
+  ASSERT_TRUE(wait_query(script));EXPECT_EQ(SQL_SUCCESS,cancel_statement(stmt));
   EXPECT_EQ(SQL_ERROR,execution.get());EXPECT_EQ("HY008",state());
   EXPECT_EQ(1,script->queries);EXPECT_EQ(1,script->secondary_connects);
   SQLUINTEGER dead=SQL_CD_TRUE;
   EXPECT_EQ(SQL_SUCCESS,SQLGetConnectAttr(dbc,SQL_ATTR_CONNECTION_DEAD,&dead,sizeof(dead),nullptr));EXPECT_EQ(SQL_CD_FALSE,dead);
 }
 
-TEST_F(PublicCancellationTest, AllFunctionInventoriesAgreeAndWrongHandleNeverTargetsStatement) {
+TEST_P(PublicCancellationTest, AllFunctionInventoriesAgreeAndWrongHandleNeverTargetsStatement) {
   SQLUSMALLINT scalar=SQL_FALSE;
   ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(dbc,SQL_API_SQLCANCEL,&scalar));EXPECT_EQ(SQL_TRUE,scalar);
   std::array<SQLUSMALLINT,100> legacy{};
   ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(dbc,SQL_API_ALL_FUNCTIONS,legacy.data()));EXPECT_EQ(SQL_TRUE,legacy[SQL_API_SQLCANCEL]);
   std::array<SQLUSMALLINT,SQL_API_ODBC3_ALL_FUNCTIONS_SIZE> all{};
   ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(dbc,SQL_API_ODBC3_ALL_FUNCTIONS,all.data()));EXPECT_TRUE(SQL_FUNC_EXISTS(all.data(),SQL_API_SQLCANCEL));
-  EXPECT_EQ(SQL_INVALID_HANDLE,SQLCancel(reinterpret_cast<SQLHSTMT>(dbc)));
-  EXPECT_EQ(SQL_INVALID_HANDLE,SQLCancel(nullptr));EXPECT_EQ(SQL_SUCCESS,SQLCancel(stmt));
+  EXPECT_EQ(SQL_INVALID_HANDLE,cancel_statement(reinterpret_cast<SQLHSTMT>(dbc)));
+  EXPECT_EQ(SQL_INVALID_HANDLE,cancel_statement(nullptr));EXPECT_EQ(SQL_SUCCESS,cancel_statement(stmt));
 #ifdef SQL_API_SQLCANCELHANDLE
   scalar=SQL_TRUE;
   ASSERT_EQ(SQL_SUCCESS,SQLGetFunctions(dbc,SQL_API_SQLCANCELHANDLE,&scalar));EXPECT_EQ(SQL_FALSE,scalar);
@@ -498,7 +503,7 @@ TEST(SessionCancellationTest, SecondaryTlsRefusalOrUnverifiedPeerNeverReceivesPr
   }
 }
 
-TEST_F(PublicCancellationTest, PreparedCancellationFailedTransactionRequiresExplicitRollbackThenSameStatementReuse) {
+TEST_P(PublicCancellationTest, PreparedCancellationFailedTransactionRequiresExplicitRollbackThenSameStatementReuse) {
   ASSERT_EQ(SQL_SUCCESS,SQLSetConnectAttr(dbc,SQL_ATTR_AUTOCOMMIT,reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF),0));
   const auto begin=literal({'C',0,0,0,10,'B','E','G','I','N',0,'Z',0,0,0,5,'T'});
   auto rows_in_transaction=integer_row;rows_in_transaction.back()=std::byte{'T'};
@@ -513,7 +518,7 @@ TEST_F(PublicCancellationTest, PreparedCancellationFailedTransactionRequiresExpl
   ASSERT_EQ(SQL_SUCCESS,SQLBindParameter(stmt,1,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,10,0,&input,sizeof(input),&input_length));
   script->reply=cancelled_idle;script->reply.back()=std::byte{'E'};
   auto execution=std::async(std::launch::async,[&]{return SQLExecute(stmt);});
-  ASSERT_TRUE(wait_query(script));EXPECT_EQ(SQL_SUCCESS,SQLCancel(stmt));
+  ASSERT_TRUE(wait_query(script));EXPECT_EQ(SQL_SUCCESS,cancel_statement(stmt));
   EXPECT_EQ(SQL_ERROR,execution.get());EXPECT_EQ("HY008",state());
   EXPECT_EQ(SQL_PARAM_ERROR,parameter_status);EXPECT_EQ(1u,processed);
   EXPECT_EQ(SQL_ERROR,SQLDisconnect(dbc));
@@ -529,13 +534,13 @@ TEST_F(PublicCancellationTest, PreparedCancellationFailedTransactionRequiresExpl
   EXPECT_EQ(1,script->secondary_connects);EXPECT_EQ(6,script->queries);
 }
 
-TEST_F(PublicCancellationTest, OriginalDeadlineWinsAndConfirmedDrainIsRequiredBeforeHy008) {
+TEST_P(PublicCancellationTest, OriginalDeadlineWinsAndConfirmedDrainIsRequiredBeforeHy008) {
   ASSERT_EQ(SQL_SUCCESS,SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,reinterpret_cast<SQLPOINTER>(1),0));
   // Secondary EOF does not acknowledge cancellation. A partial main error with
   // no READY must time out and retire, never publish a reusable HY008 outcome.
   script->reply=cancelled_idle;script->reply.resize(script->reply.size()-6);script->hold_main_eof=true;
   auto execution=std::async(std::launch::async,[&]{return execute(stmt);});
-  ASSERT_TRUE(wait_query(script));EXPECT_EQ(SQL_SUCCESS,SQLCancel(stmt));
+  ASSERT_TRUE(wait_query(script));EXPECT_EQ(SQL_SUCCESS,cancel_statement(stmt));
   EXPECT_EQ(SQL_ERROR,execution.get());EXPECT_EQ("HYT00",state());
   SQLUINTEGER dead=73;
   EXPECT_EQ(SQL_ERROR,SQLGetConnectAttr(dbc,SQL_ATTR_CONNECTION_DEAD,&dead,sizeof(dead),nullptr));EXPECT_EQ(73u,dead);
@@ -550,7 +555,7 @@ TEST_F(PublicCancellationTest, OriginalDeadlineWinsAndConfirmedDrainIsRequiredBe
   EXPECT_EQ(2,script->queries);EXPECT_EQ(1,script->secondary_connects);
 }
 
-TEST_F(PublicCancellationTest, NativeErrorObservedBeforeCancelRetainsOriginalDiagnosticWithoutPacket) {
+TEST_P(PublicCancellationTest, NativeErrorObservedBeforeCancelRetainsOriginalDiagnosticWithoutPacket) {
   script->reply=literal({'E',0,0,0,25,'S','E','R','R','O','R',0,'C','2','2','0','1','2',0,'M','s','t','o','p',0,0,'Z',0,0,0,5,'I'});
   script->release=true;script->hold_ready=true;
   auto execution=std::async(std::launch::async,[&]{return execute(stmt);});
@@ -558,17 +563,17 @@ TEST_F(PublicCancellationTest, NativeErrorObservedBeforeCancelRetainsOriginalDia
     std::unique_lock lock(script->mutex);
     ASSERT_TRUE(script->changed.wait_for(lock,2s,[&]{return script->before_ready_waiting;}));
   }
-  EXPECT_EQ(SQL_ERROR,SQLCancel(stmt));EXPECT_EQ(0,script->secondary_connects);
+  EXPECT_EQ(SQL_ERROR,cancel_statement(stmt));EXPECT_EQ(0,script->secondary_connects);
   {std::lock_guard lock(script->mutex);script->release_ready=true;script->changed.notify_all();}
   EXPECT_EQ(SQL_ERROR,execution.get());EXPECT_EQ("22012",state());EXPECT_TRUE(script->packet.empty());
   script->hold_ready=false;script->reply=integer_row;
   EXPECT_EQ(SQL_SUCCESS,execute(stmt));EXPECT_EQ(SQL_SUCCESS,SQLFetch(stmt));
 }
 
-TEST_F(PublicCancellationTest, EofBeforeReadyRetiresAndDoesNotBecomeConfirmedCancellation) {
+TEST_P(PublicCancellationTest, EofBeforeReadyRetiresAndDoesNotBecomeConfirmedCancellation) {
   script->reply=cancelled_idle;script->reply.resize(script->reply.size()-6);
   auto execution=std::async(std::launch::async,[&]{return execute(stmt);});
-  ASSERT_TRUE(wait_query(script));EXPECT_EQ(SQL_SUCCESS,SQLCancel(stmt));
+  ASSERT_TRUE(wait_query(script));EXPECT_EQ(SQL_SUCCESS,cancel_statement(stmt));
   EXPECT_EQ(SQL_ERROR,execution.get());EXPECT_NE("HY008",state());
   SQLUINTEGER dead=SQL_CD_FALSE;
   ASSERT_EQ(SQL_SUCCESS,SQLGetConnectAttr(dbc,SQL_ATTR_CONNECTION_DEAD,&dead,sizeof(dead),nullptr));EXPECT_EQ(SQL_CD_TRUE,dead);
@@ -609,7 +614,7 @@ TEST(SessionCancellationTest, DrainedBeginGapRetainsLocalClaimAndPreventsUserQue
   EXPECT_TRUE(connection.transaction(TransactionAction::Rollback,Deadline::max()).has_value());EXPECT_EQ(2,script->queries);
 }
 
-TEST_F(PublicCancellationTest, AfterReadyBeforePublicationLocalClaimInvalidatesTargetWithoutLatePacket) {
+TEST_P(PublicCancellationTest, AfterReadyBeforePublicationLocalClaimInvalidatesTargetWithoutLatePacket) {
   script->reply=integer_row;script->release=true;
   ASSERT_EQ(SQL_SUCCESS,execute(sibling));
   script->hold_normalization=true;
@@ -618,7 +623,7 @@ TEST_F(PublicCancellationTest, AfterReadyBeforePublicationLocalClaimInvalidatesT
     std::unique_lock lock(script->mutex);
     ASSERT_TRUE(script->changed.wait_for(lock,2s,[&]{return script->normalization_waiting;}));
   }
-  EXPECT_EQ(SQL_SUCCESS,SQLCancel(stmt));EXPECT_EQ(0,script->secondary_connects);EXPECT_TRUE(script->packet.empty());
+  EXPECT_EQ(SQL_SUCCESS,cancel_statement(stmt));EXPECT_EQ(0,script->secondary_connects);EXPECT_TRUE(script->packet.empty());
   {std::lock_guard lock(script->mutex);script->release_normalization=true;script->changed.notify_all();}
   EXPECT_EQ(SQL_SUCCESS,execution.get());
   EXPECT_EQ(SQL_ERROR,SQLFetch(stmt));EXPECT_EQ("HY010",state());
@@ -734,7 +739,7 @@ TEST(SessionCancellationTest, ActualUnknownTypeResolverRefusesBeforeClaimOrCutof
   ASSERT_TRUE(recovery); EXPECT_EQ(3, script->queries); EXPECT_EQ(0, script->closes);
 }
 
-TEST_F(PublicCancellationTest, ResolverTransportRefusalLeavesDiagnosticsAndOriginalCompletion) {
+TEST_P(PublicCancellationTest, ResolverTransportRefusalLeavesDiagnosticsAndOriginalCompletion) {
   ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT ?")), SQL_NTS));
   ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
       SQL_INTEGER, 10, 0, &bound_input, sizeof(bound_input), &bound_input_length));
@@ -748,7 +753,7 @@ TEST_F(PublicCancellationTest, ResolverTransportRefusalLeavesDiagnosticsAndOrigi
   const auto target = rs::odbc::HandleRegistry::instance().get_handle_as<rs::odbc::ODBCStatement>(stmt);
   const auto diagnostics = target->get_diagnostic_count();
   const auto return_code = target->get_last_return_code();
-  EXPECT_EQ(SQL_ERROR, SQLCancel(stmt));
+  EXPECT_EQ(SQL_ERROR, cancel_statement(stmt));
   EXPECT_EQ(diagnostics, target->get_diagnostic_count());
   EXPECT_EQ(return_code, target->get_last_return_code());
   EXPECT_TRUE(script->packet.empty()); EXPECT_EQ(0, script->secondary_connects);
@@ -762,7 +767,7 @@ TEST_F(PublicCancellationTest, ResolverTransportRefusalLeavesDiagnosticsAndOrigi
   EXPECT_EQ(SQL_SUCCESS, execute(stmt)); EXPECT_EQ(SQL_SUCCESS, SQLFetch(stmt)); EXPECT_EQ(0, script->closes);
 }
 
-TEST_F(PublicCancellationTest, EarlierLocalPublicationClaimPreventsResolverDispatchAndPreservesSibling) {
+TEST_P(PublicCancellationTest, EarlierLocalPublicationClaimPreventsResolverDispatchAndPreservesSibling) {
   script->reply = integer_row; script->release = true;
   ASSERT_EQ(SQL_SUCCESS, execute(sibling));
   ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>("SELECT ?")), SQL_NTS));
@@ -774,7 +779,7 @@ TEST_F(PublicCancellationTest, EarlierLocalPublicationClaimPreventsResolverDispa
   bool entered = false;
   { std::unique_lock lock(script->mutex);
     entered = script->changed.wait_for(lock, 2s, [&] { return script->normalization_waiting; }); }
-  EXPECT_TRUE(entered); EXPECT_EQ(SQL_SUCCESS, SQLCancel(stmt));
+  EXPECT_TRUE(entered); EXPECT_EQ(SQL_SUCCESS, cancel_statement(stmt));
   { std::lock_guard lock(script->mutex); script->release_normalization = true; script->changed.notify_all(); }
   EXPECT_EQ(SQL_SUCCESS, execution.get());
   EXPECT_EQ(2, script->queries); EXPECT_EQ(1u, script->queued_replies.size());
@@ -786,3 +791,6 @@ TEST_F(PublicCancellationTest, EarlierLocalPublicationClaimPreventsResolverDispa
   script->hold_normalization = false; script->queued_replies.clear(); script->reply = integer_row;
   EXPECT_EQ(SQL_SUCCESS, execute(stmt)); EXPECT_EQ(SQL_SUCCESS, SQLFetch(stmt)); EXPECT_EQ(3, script->queries); EXPECT_EQ(0, script->closes);
 }
+
+INSTANTIATE_TEST_SUITE_P(CancelEntryPoints, PublicCancellationTest,
+                        ::testing::Values(false, true));

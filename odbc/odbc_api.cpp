@@ -3342,3 +3342,26 @@ extern "C" SQLRETURN SQLCancel(SQLHSTMT statement_handle) {
     return statement ? statement->cancel() : SQL_INVALID_HANDLE;
   } catch (...) { return SQL_ERROR; }
 }
+
+// Statement cancellation must bypass the ordinary executing operation lease.
+extern "C" SQLRETURN SQL_API SQLCancelHandle(SQLSMALLINT handle_type, SQLHANDLE handle) {
+  if (handle_type == SQL_HANDLE_STMT) return SQLCancel(handle);
+  if (handle_type != SQL_HANDLE_DBC && handle_type != SQL_HANDLE_ENV &&
+      handle_type != SQL_HANDLE_DESC) return SQL_INVALID_HANDLE;
+  try {
+    auto retained = HandleRegistry::instance().get_handle(handle);
+    if (!retained || static_cast<SQLSMALLINT>(retained->get_type()) != handle_type)
+      return SQL_INVALID_HANDLE;
+    // Refusal changes only the specified handle's diagnostics. No cancellation
+    // endpoint is armed and no input/cursor/transaction state is changed.
+    auto operation = HandleRegistry::instance().lock_handles({handle});
+    if (HandleRegistry::instance().get_handle(handle) != retained)
+      return SQL_INVALID_HANDLE;
+    retained->clear_diagnostics();
+    retained->set_error(handle_type == SQL_HANDLE_DBC ? "IM001" : "HY092",
+        handle_type == SQL_HANDLE_DBC ? "Connection cancellation is not supported"
+                                    : "Invalid cancellation handle type");
+    retained->set_last_return_code(SQL_ERROR);
+    return SQL_ERROR;
+  } catch (...) { return SQL_ERROR; }
+}

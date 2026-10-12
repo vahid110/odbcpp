@@ -8303,3 +8303,59 @@ TEST_F(RedshiftTableTypesRealTest, GenericAndDetailedEnumerationNullsSiblingEmpt
   ASSERT_NO_FATAL_FAILURE(enumeration_rows(hstmt_, true, true));
   ASSERT_NO_FATAL_FAILURE(release_keepalive());
 }
+
+// Native happy/local-refusal proof only; active server-cancel timing remains
+// a separately admitted scenario, never inferred from idle success.
+class RedshiftCancelHandleRealTest : public RedshiftLoginTimeoutOptionsRealTest {
+ protected:
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_CANCEL_HANDLE_ADMISSION", "cancel_handle_happy_v1");
+  }
+};
+
+TEST_F(RedshiftCancelHandleRealTest, IdleNeedDataRefillNullAndSiblingRemainOwning) {
+  ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT", "5", 5, false));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &sibling_));
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  ASSERT_TRUE(known_sql(SQLExecDirect(sibling_, (SQLCHAR*)"SELECT 1", SQL_NTS)));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(known_sql(SQLPrepare(hstmt_, (SQLCHAR*)"SELECT CAST(? AS INTEGER)", SQL_NTS)));
+  input_length_ = SQL_DATA_AT_EXEC;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+      SQL_INTEGER, 10, 0, &input_, sizeof(input_), &input_length_));
+  ASSERT_TRUE(cap(window_end_, true));
+  auto result = SQLExecute(hstmt_);
+  if (result != SQL_NEED_DATA) unknown_completion_ = true;
+  ASSERT_EQ(SQL_NEED_DATA, result);
+  ASSERT_EQ(SQL_SUCCESS, SQLCancelHandle(SQL_HANDLE_STMT, hstmt_));
+  input_length_ = 0; input_ = 41;
+  ASSERT_NO_FATAL_FAILURE(typed_row(false));
+  input_length_ = SQL_NULL_DATA;
+  ASSERT_NO_FATAL_FAILURE(typed_row(true));
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  ASSERT_EQ(SQL_SUCCESS, SQLCancelHandle(SQL_HANDLE_STMT, sibling_));
+  ASSERT_EQ(SQL_ERROR, SQLCancelHandle(SQL_HANDLE_DBC, hdbc_));
+  EXPECT_EQ("IM001", get_error(SQL_HANDLE_DBC, hdbc_));
+  SQLUSMALLINT supported = SQL_TRUE;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(hdbc_, SQL_API_SQLCANCELHANDLE, &supported));
+  EXPECT_EQ(SQL_FALSE, supported);
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  result = SQLFetch(sibling_); if (result != SQL_SUCCESS) unknown_completion_ = true;
+  ASSERT_EQ(SQL_SUCCESS, result);
+  SQLINTEGER value = -1; SQLLEN length = 97;
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  result = SQLGetData(sibling_, 1, SQL_C_SLONG, &value, sizeof(value), &length);
+  if (result != SQL_SUCCESS) unknown_completion_ = true;
+  ASSERT_EQ(SQL_SUCCESS, result); EXPECT_EQ(1, value); EXPECT_EQ(sizeof(value), static_cast<std::size_t>(length));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(known_sql(SQLExecDirect(hstmt_, (SQLCHAR*)"SELECT 7", SQL_NTS)));
+  ASSERT_EQ(SQL_SUCCESS, SQLCancelHandle(SQL_HANDLE_STMT, hstmt_));
+  ASSERT_TRUE(cap(window_end_, true));
+  result = SQLFetch(hstmt_); if (result != SQL_SUCCESS) unknown_completion_ = true;
+  ASSERT_EQ(SQL_SUCCESS, result);
+  ASSERT_TRUE(cap(window_end_, true));
+  result = SQLGetData(hstmt_, 1, SQL_C_SLONG, &value, sizeof(value), &length);
+  if (result != SQL_SUCCESS) unknown_completion_ = true;
+  ASSERT_EQ(SQL_SUCCESS, result); EXPECT_EQ(7, value);
+  ASSERT_NO_FATAL_FAILURE(release_connection());
+}

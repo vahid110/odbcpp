@@ -65,6 +65,15 @@ TEST(DriverCapabilitiesTest, AdvertisesExactlyItsBaseExports) {
     EXPECT_NE(nullptr, driver.symbol(name)) << name;
   }
 
+  for (const auto* name : odbcpp::test::partial_exports) {
+    EXPECT_NE(nullptr, driver.symbol(name)) << name;
+  }
+
+  using CancelHandle = SQLRETURN(SQL_API*)(SQLSMALLINT, SQLHANDLE);
+  const auto cancel_handle = reinterpret_cast<CancelHandle>(driver.symbol("SQLCancelHandle"));
+  ASSERT_NE(nullptr, cancel_handle);
+  EXPECT_EQ(SQL_INVALID_HANDLE, cancel_handle(SQL_HANDLE_STMT, SQL_NULL_HANDLE));
+
   using GetFunctions = SQLRETURN(SQL_API*)(SQLHDBC, SQLUSMALLINT,
                                           SQLUSMALLINT*);
   const auto get_functions = reinterpret_cast<GetFunctions>(
