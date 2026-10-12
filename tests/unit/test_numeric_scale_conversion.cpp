@@ -1923,4 +1923,253 @@ TEST_F(NumericScaleApiTest, BinaryIntegerDeferredLayoutSiblingAndReuse) {
   EXPECT_EQ(0u, facts->disconnects);
 }
 
+
+// Literal public baseline proposal; append inside the existing anonymous namespace.
+// No execution or qualification is claimed. Root owns application and build.
+TEST_F(NumericScaleApiTest, NumericTemporalInputLeadRejectsBindAndEffectiveApdBeforeDispatch) {
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  SQLINTEGER number = 42;
+  SQLLEN length = 0;
+  const auto before_bind = facts->queries;
+  const auto bound = SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+      SQL_TYPE_DATE, 10, 0, &number, 0, &length);
+  EXPECT_EQ(SQL_ERROR, bound);
+  if (bound == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+  EXPECT_EQ(before_bind, facts->queries);
+
+  char date_text[] = "2026-10-12";
+  length = SQL_NTS;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_TYPE_DATE, 10, 0, date_text, sizeof(date_text), &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, facts->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"2026-10-12"}, facts->parameters[0].value);
+  const auto retained = facts->parameters[0].value;
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  // Successful recording-provider controls publish no parameter metadata;
+  // rebind the original SQL hint before making only an APD C-type edit.
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_TYPE_DATE, 10, 0, date_text, sizeof(date_text), &length));
+  auto apd = descriptor(SQL_ATTR_APP_PARAM_DESC);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
+      reinterpret_cast<SQLPOINTER>(SQL_C_SLONG), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, &number, 0));
+  SQLUSMALLINT status = 71;
+  SQLULEN processed = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  const auto before_execute = facts->queries;
+  const auto executed = SQLExecute(stmt);
+  EXPECT_EQ(SQL_ERROR, executed);
+  if (executed == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+  EXPECT_EQ(before_execute, facts->queries);
+  EXPECT_EQ(SQL_PARAM_ERROR, status);
+  EXPECT_EQ(1u, processed);
+  EXPECT_EQ(retained, facts->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_TYPE_DATE, 10, 0, date_text, sizeof(date_text), &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(retained, facts->parameters[0].value);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, status);
+  EXPECT_EQ(1u, processed);
+  EXPECT_EQ(0u, facts->disconnects);
+}
+
+// Unrun public test proposals for the frozen contract; no implementation change.
+// Append inside test_numeric_scale_conversion.cpp's existing anonymous namespace.
+TEST_F(NumericScaleApiTest, NumericTemporalInputAllOrdinaryFamiliesRejectAndLegalControlsRetainBindings) {
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  SQLSCHAR tiny = -7;
+  SQLCHAR utiny = 255;
+  SQLSMALLINT small = -32768;
+  SQLUSMALLINT usmall = 65535;
+  SQLINTEGER number = 42;
+  SQLUINTEGER unumber = 4294967295u;
+  SQLBIGINT big = -9223372036854775807LL;
+  SQLUBIGINT ubig = 18446744073709551615ULL;
+  SQLREAL real = 1.25f;
+  SQLDOUBLE wide = 2.5;
+  struct Input { SQLSMALLINT type; void* data; const char* text; };
+  const Input inputs[] = {
+      {SQL_C_STINYINT, &tiny, "-7"}, {SQL_C_TINYINT, &tiny, "-7"},
+      {SQL_C_UTINYINT, &utiny, "255"}, {SQL_C_SSHORT, &small, "-32768"},
+      {SQL_C_SHORT, &small, "-32768"}, {SQL_C_USHORT, &usmall, "65535"},
+      {SQL_C_SLONG, &number, "42"}, {SQL_C_LONG, &number, "42"},
+      {SQL_C_ULONG, &unumber, "4294967295"},
+      {SQL_C_SBIGINT, &big, "-9223372036854775807"},
+      {SQL_C_UBIGINT, &ubig, "18446744073709551615"},
+      {SQL_C_FLOAT, &real, "1.25"}, {SQL_C_DOUBLE, &wide, "2.5"}};
+  const SQLSMALLINT targets[] = {SQL_TYPE_DATE, SQL_TYPE_TIME, SQL_TYPE_TIMESTAMP};
+  SQLLEN length = 0;
+  auto apd = descriptor(SQL_ATTR_APP_PARAM_DESC);
+  SQLUSMALLINT status = 71;
+  SQLULEN processed = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  char previous[] = "keep";
+  for (const auto& input : inputs) {
+    SCOPED_TRACE(input.type);
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, input.type,
+        SQL_VARCHAR, 32, 0, input.data, 0, &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    ASSERT_EQ(1u, facts->parameters.size());
+    EXPECT_EQ(std::optional<std::string>{input.text}, facts->parameters[0].value);
+    EXPECT_EQ(QueryParameterType::Text, facts->parameters[0].type);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+    for (const auto target : targets) {
+      SCOPED_TRACE(target);
+      length = SQL_NTS;
+      ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+          SQL_VARCHAR, 32, 0, previous, sizeof(previous), &length));
+      const auto queries = facts->queries;
+      status = 71; processed = 91;
+      const auto result = SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, input.type,
+          target, 32, 0, input.data, 0, &length);
+      EXPECT_EQ(SQL_ERROR, result);
+      if (result == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+      EXPECT_EQ(queries, facts->queries);
+      EXPECT_EQ(71, status); EXPECT_EQ(91u, processed);
+      SQLSMALLINT c_type = 0;
+      SQLPOINTER pointer = nullptr;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
+          &c_type, 0, nullptr));
+      ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(apd, 1, SQL_DESC_DATA_PTR,
+          &pointer, 0, nullptr));
+      EXPECT_EQ(SQL_C_CHAR, c_type); EXPECT_EQ(previous, pointer);
+    }
+    length = 0;
+  }
+  // Pair eligibility is independent of nonfinite numeric payload validity.
+  real = (std::numeric_limits<SQLREAL>::infinity)();
+  wide = (std::numeric_limits<SQLDOUBLE>::quiet_NaN)();
+  for (const auto& input : {Input{SQL_C_FLOAT, &real, ""}, Input{SQL_C_DOUBLE, &wide, ""}}) {
+    for (const auto target : targets) {
+      const auto result = SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, input.type,
+          target, 32, 0, input.data, 0, &length);
+      EXPECT_EQ(SQL_ERROR, result);
+      if (result == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+    }
+  }
+  SQL_DATE_STRUCT date{2030, 1, 2};
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_DEFAULT,
+      SQL_TYPE_DATE, 10, 0, &date, 0, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(std::optional<std::string>{"2030-01-02"}, facts->parameters[0].value);
+  EXPECT_EQ(QueryParameterType::Date, facts->parameters[0].type);
+  EXPECT_EQ(0u, facts->disconnects);
+}
+
+TEST_F(NumericScaleApiTest, NumericTemporalInputEffectiveApdNullMasksFixedLengthsAndRecovery) {
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  struct Sibling {
+    SQLHSTMT handle{};
+    ~Sibling() { if (handle) SQLFreeHandle(SQL_HANDLE_STMT, handle); }
+  } sibling;
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &sibling.handle));
+  facts->result.columns = {{"saved", NativeTypeInfo{ScalarType::Integer, 10, 0, true}}};
+  facts->result.rows = {{"73"}};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(sibling.handle, (SQLCHAR*)"SELECT saved", SQL_NTS));
+  facts->result.rows = {{"99"}}; // The sibling must keep its earlier owning result.
+  auto apd = descriptor(SQL_ATTR_APP_PARAM_DESC);
+  SQLINTEGER number = 42;
+  SQLLEN length = 0;
+  std::array<unsigned char, sizeof(number) + 2> packed{};
+  packed.front() = 0xa5; packed.back() = 0x5a;
+  std::memcpy(packed.data() + 1, &number, sizeof(number));
+  const auto original = packed;
+  SQLUSMALLINT status = 71, operation = SQL_PARAM_PROCEED;
+  SQLULEN processed = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_OPERATION_PTR, &operation, 0));
+  for (const SQLLEN fixed_length : {SQLLEN(0), SQLLEN(1), SQLLEN(SQL_NTS), SQLLEN(-9)}) {
+    length = fixed_length;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+        SQL_INTEGER, 10, 0, packed.data() + 1, 0, &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    EXPECT_EQ(std::optional<std::string>{"42"}, facts->parameters[0].value);
+    EXPECT_EQ(QueryParameterType::Int32, facts->parameters[0].type);
+    EXPECT_EQ(original, packed);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  }
+  struct Target { SQLSMALLINT type; const char* text; };
+  const Target targets[] = {{SQL_TYPE_DATE, "2030-01-02"},
+      {SQL_TYPE_TIME, "03:04:05"}, {SQL_TYPE_TIMESTAMP, "2030-01-02 03:04:05"}};
+  SQLREAL real = 1.25f;
+  SQLDOUBLE wide = (std::numeric_limits<SQLDOUBLE>::quiet_NaN)();
+  struct Input { SQLSMALLINT type; void* data; };
+  const Input inputs[] = {{SQL_C_SLONG, packed.data() + 1},
+      {SQL_C_FLOAT, &real}, {SQL_C_DOUBLE, &wide}};
+  const auto retype = [&](const Target& target, const Input& input) {
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+        target.type, 32, 0, const_cast<char*>(target.text), 32, &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::intptr_t>(input.type)), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, input.data, 0));
+  };
+  for (const auto& target : targets) {
+    for (const auto& input : inputs) {
+      SCOPED_TRACE(target.type);
+      SCOPED_TRACE(input.type);
+      for (const SQLLEN marker : {SQLLEN(0), SQLLEN(SQL_NULL_DATA)}) {
+        length = marker;
+        const auto actual = marker == SQL_NULL_DATA ? Input{input.type,
+            reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)())} : input;
+        ASSERT_NO_FATAL_FAILURE(retype(target, actual));
+        const auto queries = facts->queries;
+        const auto retained = facts->parameters[0].value;
+        const auto retained_type = facts->parameters[0].type;
+        status = 71; processed = 91;
+        const auto result = SQLExecute(stmt);
+        EXPECT_EQ(SQL_ERROR, result);
+        if (result == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+        EXPECT_EQ(queries, facts->queries);
+        EXPECT_EQ(retained, facts->parameters[0].value);
+        EXPECT_EQ(retained_type, facts->parameters[0].type);
+        EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
+        EXPECT_EQ(original, packed);
+        ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+      }
+    }
+  }
+  length = 0;
+  ASSERT_NO_FATAL_FAILURE(retype(targets[0], inputs[0]));
+  operation = SQL_PARAM_IGNORE;
+  const auto queries = facts->queries;
+  status = 71; processed = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(queries, facts->queries); EXPECT_EQ(SQL_PARAM_UNUSED, status); EXPECT_EQ(0u, processed);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  operation = SQL_PARAM_PROCEED;
+  // Fixed numeric deferred admission precedes ordinary pair materialization.
+  length = SQL_DATA_AT_EXEC; status = 71; processed = 91;
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HYC00", state());
+  EXPECT_EQ(queries, facts->queries); EXPECT_EQ(71, status); EXPECT_EQ(91u, processed);
+  length = 0;
+  SQLULEN offset = (std::numeric_limits<SQLULEN>::max)();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_BIND_OFFSET_PTR, &offset, 0));
+  status = 71; processed = 91;
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HYC00", state());
+  EXPECT_EQ(queries, facts->queries); EXPECT_EQ(71, status); EXPECT_EQ(91u, processed);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_BIND_OFFSET_PTR, nullptr, 0));
+  SQL_DATE_STRUCT date{2030, 1, 2};
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_DEFAULT,
+      SQL_TYPE_DATE, 10, 0, &date, 0, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(std::optional<std::string>{"2030-01-02"}, facts->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  length = SQL_NULL_DATA;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_DEFAULT,
+      SQL_TYPE_DATE, 10, 0, reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)()), 0, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); EXPECT_FALSE(facts->parameters[0].value);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed); EXPECT_EQ(original, packed);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(sibling.handle));
+  SQLINTEGER saved = 0; SQLLEN saved_length = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(sibling.handle, 1, SQL_C_SLONG, &saved, 0, &saved_length));
+  EXPECT_EQ(73, saved); EXPECT_EQ(static_cast<SQLLEN>(sizeof(saved)), saved_length);
+  EXPECT_EQ(SQL_NO_DATA, SQLFetch(sibling.handle));
+  EXPECT_EQ(0u, facts->disconnects);
+}
+
 }  // namespace
