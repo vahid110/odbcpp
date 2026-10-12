@@ -24,3 +24,4 @@ odbcpp/util/platform.h
 odbcpp/util/result.h
 odbcpp/util/utf8.h
 odbcpp/transport/cancellation_wait.h
+odbcpp/util/scaled_decimal.h

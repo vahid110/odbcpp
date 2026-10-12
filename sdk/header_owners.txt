@@ -72,3 +72,4 @@ odbcpp/auth/provisioned_query_transport.h|sdk/internal/odbcpp/auth/provisioned_q
 odbcpp/auth/pg_credential_consumer.h|sdk/internal/odbcpp/auth/pg_credential_consumer.h
 odbcpp/transport/cancellation_wait.h|sdk/internal/odbcpp/transport/cancellation_wait.h
 odbcpp/database/session_cancellation.h|sdk/internal/odbcpp/database/session_cancellation.h
+odbcpp/util/scaled_decimal.h|sdk/internal/odbcpp/util/scaled_decimal.h

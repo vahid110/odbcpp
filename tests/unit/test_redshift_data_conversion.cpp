@@ -21,6 +21,112 @@ protected:
     SQLLEN indicator;
 };
 
+TEST_F(RedshiftDataConverterTest, NegativeNumericScaleUsesCoefficientPrecision) {
+    for (const auto* value : {"12000", "1.2e4", "-12000", "-1.2e4"}) {
+        SCOPED_TRACE(value);
+        SQL_NUMERIC_STRUCT numeric{};
+        SQLLEN length = -1;
+        rs::odbc::ConversionIssue issue{};
+        ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+            value, SQL_C_NUMERIC, &numeric, 0, &length, &issue, 2, -3));
+        EXPECT_EQ(2, numeric.precision);
+        EXPECT_EQ(-3, numeric.scale);
+        EXPECT_EQ(value[0] == '-' ? 0 : 1, numeric.sign);
+        EXPECT_EQ(12, numeric.val[0]);
+        EXPECT_TRUE(std::all_of(std::begin(numeric.val) + 1,
+            std::end(numeric.val), [](SQLCHAR byte) { return byte == 0; }));
+        EXPECT_EQ(static_cast<SQLLEN>(sizeof(numeric)), length);
+        EXPECT_EQ(rs::odbc::ConversionIssue::None, issue);
+        EXPECT_EQ(value[0] == '-' ? "-12000" : "12000",
+            RedshiftDataConverter::format_numeric(numeric, 2, -3));
+    }
+}
+
+TEST_F(RedshiftDataConverterTest, NegativeScaleSeparatesWholeAndFractionalLoss) {
+    for (const auto* text : {"120.45", "-120.45", "1.2045e2", "-1.2045e2"}) {
+        SCOPED_TRACE(text);
+        SQL_NUMERIC_STRUCT numeric{};
+        SQLLEN length = -1;
+        rs::odbc::ConversionIssue issue{};
+        ASSERT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+            text, SQL_C_NUMERIC, &numeric, 0, &length, &issue, 2, -1));
+        EXPECT_EQ(12, numeric.val[0]);
+        EXPECT_EQ(-1, numeric.scale);
+        EXPECT_EQ(text[0] == '-' ? 0 : 1, numeric.sign);
+        EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
+    }
+    for (const auto* text : {"123.45", "-123.45", "1.2345e2", "12300"}) {
+        SCOPED_TRACE(text);
+        SQL_NUMERIC_STRUCT numeric;
+        std::memset(&numeric, 0x5a, sizeof(numeric));
+        const auto before = numeric;
+        SQLLEN length = 71;
+        rs::odbc::ConversionIssue issue{};
+        EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+            text, SQL_C_NUMERIC, &numeric, 0, &length, &issue, 2, -3));
+        EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
+        EXPECT_EQ(0, std::memcmp(&numeric, &before, sizeof(numeric)));
+        EXPECT_EQ(71, length);
+    }
+}
+
+TEST_F(RedshiftDataConverterTest, SignedScaleExponentLimitsAreExactAndBounded) {
+    SQL_NUMERIC_STRUCT numeric{};
+    SQLLEN length = 0;
+    rs::odbc::ConversionIssue issue{};
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "1e128", SQL_C_NUMERIC, &numeric, 0, &length, &issue, 1, -128));
+    EXPECT_EQ(1, numeric.val[0]);
+    EXPECT_EQ(-128, numeric.scale);
+    EXPECT_EQ("1" + std::string(128, '0'),
+        RedshiftDataConverter::format_numeric(numeric, 1, -128));
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "1e165", SQL_C_NUMERIC, &numeric, 0, &length, &issue, 38, -128));
+    EXPECT_EQ("1" + std::string(165, '0'),
+        RedshiftDataConverter::format_numeric(numeric, 38, -128));
+    const auto original = numeric;
+    const auto original_length = length;
+    for (const auto* text : {"1e166", "1e999999999999999999999", "123.45"}) {
+        EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+            text, SQL_C_NUMERIC, &numeric, 0, &length, &issue, 38, -128));
+        EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
+        EXPECT_EQ(0, std::memcmp(&numeric, &original, sizeof(numeric)));
+        EXPECT_EQ(original_length, length);
+    }
+    ASSERT_EQ(SQL_SUCCESS_WITH_INFO, RedshiftDataConverter::convert_data(
+        "1e-999999999999999999999", SQL_C_NUMERIC, &numeric, 0,
+        &length, &issue, 1, -128));
+    EXPECT_EQ(0, numeric.val[0]);
+    EXPECT_EQ(1, numeric.sign);
+    EXPECT_EQ(rs::odbc::ConversionIssue::FractionalTruncation, issue);
+    ASSERT_EQ(SQL_SUCCESS, RedshiftDataConverter::convert_data(
+        "-0e999999999999999999999", SQL_C_NUMERIC, &numeric, 0,
+        &length, &issue, 1, -128));
+    EXPECT_EQ(1, numeric.sign);
+    EXPECT_EQ(rs::odbc::ConversionIssue::None, issue);
+}
+
+TEST_F(RedshiftDataConverterTest, SignedScaleBoundsRefuseBeforePublishing) {
+    SQL_NUMERIC_STRUCT numeric{};
+    numeric.sign = 1;
+    numeric.val[0] = 12;
+    SQLLEN length = 72;
+    rs::odbc::ConversionIssue issue{};
+    const auto original = numeric;
+    for (const auto scale : {SQLSMALLINT{-129}, SQLSMALLINT{-32768}}) {
+        EXPECT_EQ(SQL_ERROR, RedshiftDataConverter::convert_data(
+            "12000", SQL_C_NUMERIC, &numeric, 0, &length, &issue, 2, scale));
+        EXPECT_EQ(rs::odbc::ConversionIssue::NumericValueOutOfRange, issue);
+        EXPECT_EQ(0, std::memcmp(&numeric, &original, sizeof(numeric)));
+        EXPECT_EQ(72, length);
+        EXPECT_FALSE(RedshiftDataConverter::format_numeric(numeric, 2, scale));
+    }
+    // The old negative-scale input case remains a SQL target overflow, while
+    // interpretation of the C representation itself is now valid.
+    numeric.val[0] = 0x39; numeric.val[1] = 0x30;
+    EXPECT_EQ("123450", RedshiftDataConverter::format_numeric(numeric, 5, -1));
+}
+
 TEST_F(RedshiftDataConverterTest, NumericStructureIsExactAndLittleEndian) {
     SQL_NUMERIC_STRUCT numeric{};
     SQLLEN length = -1;

@@ -81,3 +81,21 @@ This authored case is UNRUN. A single available database, absent authenticated
 sharing/external capability, or lack of an existing common schema is a concrete
 coverage dependency. Do not skip it as passed, provision a fixture automatically,
 or substitute the legacy case's success for modern multi-database qualification.
+
+## Signed negative C numeric scale case
+
+`RedshiftNegativeNumericScaleRealTest.DescriptorLossNullOwnershipAndRecovery`
+uses `ODBCPP_REDSHIFT_NEGATIVE_NUMERIC_SCALE_ADMISSION=negative_numeric_scale_v1`.
+It covers descriptor-controlled bound/GetData conversion, whole-digit refusal
+(22003), fractional loss (01S07), NULL/output canaries, unaligned owning APD
+input and same-cursor recovery. SQL target scale support is unchanged.
+
+The authored case is not live acceptance. Fresh reviewed finite admission must
+bind its exact green source head and native binary. Its bounds are one verified
+TLS login, four SQL operations (one fixed SELECT, one Prepare, two Execute),
+40 seconds aggregate and at most five seconds per operation; no DDL or DML.
+Required controls include MAXSQLBYTES at least455, MAXPARAMETERS at least1,
+MAXPARAMETERBYTES and MAXPARAMETERTOTALBYTES each at least11 (the inherited
+fixture floor, even though this case sends five bytes), MAXCOLUMNS at least6,
+MAXROWS at least5, MAXCELLS at least30 and MAXMETADATAENTRIES at least18.
+Other existing admission controls and unknown-completion fences remain required.
