@@ -9191,3 +9191,129 @@ TEST_F(RedshiftCnumericApproximateRangeRealTest, PreparedFitSubnormalWholeNullAn
   ASSERT_NO_FATAL_FAILURE(echo(-1, false, false));
   ASSERT_NO_FATAL_FAILURE(release_connection());
 }
+
+// Authored only: 1 verified TLS login and 1 fixed SELECT, no Prepare/DDL/DML.
+// Existing 40-second aggregate and <=5-second operation caps remain mandatory.
+class RedshiftFixedTemporalCompletionRealTest : public RedshiftFixedNumericCompletionRealTest {
+ protected:
+  static constexpr const char* temporal_sql =
+      "SELECT CAST('12:34:56.789' AS TIME) AS t, "
+      "CAST('2026-10-12 12:34:56.789' AS TIMESTAMP) AS s, "
+      "CAST('12:34:56.789' AS VARCHAR(12)) AS text_value, "
+      "CAST(NULL AS TIME) AS absent, CAST(42 AS INTEGER) AS neighbor";
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_FIXED_TEMPORAL_COMPLETION_ADMISSION",
+                   "fixed_temporal_completion_v1");
+    if (IsSkipped() || HasFatalFailure()) return;
+    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const std::pair<const char*, std::size_t> minima[] = {
+        {"MAXSQLBYTES", std::string_view(temporal_sql).size()},
+        {"MAXCOLUMNS", 5}, {"MAXROWS", 1}, {"MAXCELLS", 5},
+        {"MAXMETADATAENTRIES", 5}};
+    for (const auto& [key, required] : minima) {
+      const auto found = options.find(key);
+      if (found == options.end()) continue;
+      std::size_t value{};
+      const auto& text = found->second;
+      const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+      ASSERT_EQ(std::errc{}, parsed.ec);
+      ASSERT_EQ(text.data() + text.size(), parsed.ptr);
+      ASSERT_GE(value, required);
+    }
+  }
+};
+
+TEST_F(RedshiftFixedTemporalCompletionRealTest, FractionWholeNullWideAndVariableRecovery) {
+  ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT", "5", 5, false));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(known_sql(SQLExecDirect(hstmt_, (SQLCHAR*)temporal_sql, SQL_NTS)));
+  SQLSMALLINT columns = -1;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(hstmt_, &columns)); ASSERT_EQ(5, columns);
+  for (const SQLUSMALLINT column : {SQLUSMALLINT{1}, SQLUSMALLINT{2}, SQLUSMALLINT{4}}) {
+    SQLCHAR name[16]{}; SQLSMALLINT name_length{}, type{}, scale{}, nullable{}; SQLULEN size{};
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(hstmt_, column, name, sizeof(name),
+        &name_length, &type, &size, &scale, &nullable));
+    EXPECT_EQ(column == 2 ? SQL_TYPE_TIMESTAMP : SQL_TYPE_TIME, type);
+  }
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_)));
+  std::array<unsigned char, 66> narrow{}; narrow.fill(0x5a);
+  const auto narrow_poison = narrow; SQLLEN length = 73;
+  for (const SQLLEN capacity : {SQLLEN{0}, SQLLEN{8}}) {
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLGetData(hstmt_, 1, SQL_C_CHAR,
+        narrow.data() + 1, capacity, &length), SQL_ERROR, "22003"));
+    EXPECT_EQ(narrow_poison, narrow); EXPECT_EQ(73, length);
+  }
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 1, SQL_C_CHAR,
+      narrow.data() + 1, 9, &length), SQL_SUCCESS_WITH_INFO, "01004"));
+  EXPECT_STREQ("12:34:56", reinterpret_cast<const char*>(narrow.data() + 1));
+  EXPECT_EQ(12, length); EXPECT_EQ(0x5a, narrow.front()); EXPECT_EQ(0x5a, narrow[10]);
+  ASSERT_NO_FATAL_FAILURE(completed(1));
+
+  ASSERT_TRUE(cap(window_end_, true)); const auto ard = descriptor(SQL_ATTR_APP_ROW_DESC);
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 2, SQL_DESC_CONCISE_TYPE,
+      reinterpret_cast<SQLPOINTER>(SQL_C_WCHAR), 0));
+  std::array<unsigned char, 25 * sizeof(SQLWCHAR) + 3> wide{}; wide.fill(0x5a);
+  const auto wide_poison = wide; length = 73;
+  for (const SQLLEN capacity : {SQLLEN{sizeof(SQLWCHAR) - 1}, SQLLEN{19 * sizeof(SQLWCHAR)}}) {
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLGetData(hstmt_, 2, SQL_ARD_TYPE,
+        wide.data() + 1, capacity, &length), SQL_ERROR, "22003"));
+    EXPECT_EQ(wide_poison, wide); EXPECT_EQ(73, length);
+  }
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 2, SQL_ARD_TYPE,
+      wide.data() + 1, 20 * sizeof(SQLWCHAR) + 1, &length), SQL_SUCCESS_WITH_INFO, "01004"));
+  std::array<SQLWCHAR, 24> expected{};
+  constexpr const char* timestamp = "2026-10-12 12:34:56.789";
+  for (std::size_t i = 0; i < 19; ++i) expected[i] = static_cast<SQLWCHAR>(timestamp[i]);
+  EXPECT_EQ(0, std::memcmp(wide.data() + 1, expected.data(), 20 * sizeof(SQLWCHAR)));
+  EXPECT_EQ(static_cast<SQLLEN>(23 * sizeof(SQLWCHAR)), length);
+  EXPECT_EQ(0x5a, wide.front()); EXPECT_EQ(0x5a, wide[20 * sizeof(SQLWCHAR) + 1]);
+  EXPECT_EQ(0x5a, wide.back()); ASSERT_NO_FATAL_FAILURE(completed(2, SQL_ARD_TYPE));
+  SQLSMALLINT concise{}; ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(ard, 2, SQL_DESC_CONCISE_TYPE, &concise, 0, nullptr));
+  EXPECT_EQ(SQL_C_WCHAR, concise);
+
+  narrow.fill(0x5a); length = 73;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 3, SQL_C_CHAR,
+      narrow.data() + 1, 9, &length), SQL_SUCCESS_WITH_INFO, "01004"));
+  EXPECT_STREQ("12:34:56", reinterpret_cast<const char*>(narrow.data() + 1)); EXPECT_EQ(12, length);
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 3, SQL_C_CHAR, narrow.data() + 1, 5, &length)));
+  EXPECT_STREQ(".789", reinterpret_cast<const char*>(narrow.data() + 1)); EXPECT_EQ(4, length);
+  ASSERT_NO_FATAL_FAILURE(completed(3));
+  narrow.fill(0x5a); ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 4, SQL_C_CHAR,
+      narrow.data() + 1, 0, nullptr), SQL_ERROR, "22002")); EXPECT_EQ(narrow_poison, narrow);
+  length = 73; ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 4, SQL_C_CHAR, narrow.data() + 1, 0, &length)));
+  EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(narrow_poison, narrow);
+  ASSERT_NO_FATAL_FAILURE(completed(4));
+  SQLINTEGER neighbor = -1; ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 5, SQL_C_SLONG, &neighbor, 0, &length)));
+  EXPECT_EQ(42, neighbor); EXPECT_EQ(static_cast<SQLLEN>(sizeof(neighbor)), length);
+
+  // A different column restarts the selected column; now return the full value.
+  wide.fill(0x5a); expected.fill(0);
+  for (std::size_t i = 0; i < 23; ++i) expected[i] = static_cast<SQLWCHAR>(timestamp[i]);
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 2, SQL_ARD_TYPE,
+      wide.data() + 1, 24 * sizeof(SQLWCHAR), &length)));
+  EXPECT_EQ(0, std::memcmp(wide.data() + 1, expected.data(), sizeof(expected)));
+  EXPECT_EQ(static_cast<SQLLEN>(23 * sizeof(SQLWCHAR)), length);
+  EXPECT_EQ(0x5a, wide.front()); EXPECT_EQ(0x5a, wide.back());
+  ASSERT_NO_FATAL_FAILURE(completed(2, SQL_ARD_TYPE));
+  narrow.fill(0x5a); ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 1, SQL_C_CHAR, narrow.data() + 1, 13, &length)));
+  EXPECT_STREQ("12:34:56.789", reinterpret_cast<const char*>(narrow.data() + 1)); EXPECT_EQ(12, length);
+  ASSERT_NO_FATAL_FAILURE(completed(1));
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_NO_DATA));
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
+  ASSERT_NO_FATAL_FAILURE(release_connection());
+}

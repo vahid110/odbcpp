@@ -4686,12 +4686,14 @@ TEST_F(BackendContractTest, OwningTimeMetadataFractionLossAndTextChunks) {
     if(target==SQL_C_CHAR) {
       char output[10];std::fill(std::begin(output),std::end(output),'!');
       ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLGetData(stmt,1,target,output,9,&length));EXPECT_EQ("01004",state());EXPECT_EQ(15,length);EXPECT_EQ(0,std::memcmp(output,"12:34:56\0",9));EXPECT_EQ('!',output[9]);
-      ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,target,output,9,&length));EXPECT_EQ(7,length);EXPECT_EQ(0,std::memcmp(output,".123456\0",8));EXPECT_EQ('!',output[9]);EXPECT_EQ(SQL_NO_DATA,SQLGetData(stmt,1,target,output,9,&length));
+      std::fill(std::begin(output),std::end(output),'!');length=73;
+      for(int repeat=0;repeat<2;++repeat) { ASSERT_EQ(SQL_NO_DATA,SQLGetData(stmt,1,target,output,9,&length));EXPECT_EQ(73,length);EXPECT_TRUE(std::all_of(std::begin(output),std::end(output),[](char c){return c=='!';})); }
     } else if(target==SQL_C_WCHAR) {
       SQLWCHAR output[10];std::fill(std::begin(output),std::end(output),SQLWCHAR(0x5a));
-      const SQLWCHAR prefix[]{'1','2',':','3','4',':','5','6',0};const SQLWCHAR suffix[]{'.','1','2','3','4','5','6',0};
+      const SQLWCHAR prefix[]{'1','2',':','3','4',':','5','6',0};
       ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLGetData(stmt,1,target,output,9*sizeof(SQLWCHAR),&length));EXPECT_EQ("01004",state());EXPECT_EQ(static_cast<SQLLEN>(15*sizeof(SQLWCHAR)),length);EXPECT_EQ(0,std::memcmp(output,prefix,sizeof(prefix)));EXPECT_EQ(0x5a,output[9]);
-      ASSERT_EQ(SQL_SUCCESS,SQLGetData(stmt,1,target,output,9*sizeof(SQLWCHAR),&length));EXPECT_EQ(static_cast<SQLLEN>(7*sizeof(SQLWCHAR)),length);EXPECT_EQ(0,std::memcmp(output,suffix,sizeof(suffix)));EXPECT_EQ(0x5a,output[9]);EXPECT_EQ(SQL_NO_DATA,SQLGetData(stmt,1,target,output,9*sizeof(SQLWCHAR),&length));
+      std::fill(std::begin(output),std::end(output),SQLWCHAR(0x5a));length=73;
+      for(int repeat=0;repeat<2;++repeat) { ASSERT_EQ(SQL_NO_DATA,SQLGetData(stmt,1,target,output,9*sizeof(SQLWCHAR),&length));EXPECT_EQ(73,length);EXPECT_TRUE(std::all_of(std::begin(output),std::end(output),[](SQLWCHAR c){return c==0x5a;})); }
     } else {
       SQL_TIME_STRUCT output{73,74,75};ASSERT_EQ(SQL_SUCCESS_WITH_INFO,SQLGetData(stmt,1,target,&output,sizeof(output),&length));EXPECT_EQ("01S07",state());EXPECT_EQ(12,output.hour);EXPECT_EQ(34,output.minute);EXPECT_EQ(56,output.second);EXPECT_EQ(static_cast<SQLLEN>(sizeof(output)),length);
     }

@@ -1054,9 +1054,7 @@ TEST_F(FixedNumericCompletionApiTest, VariableChunksAndOwningSiblingRefetchRefil
   EXPECT_EQ("01004", state());
   EXPECT_STREQ("12:34:56", narrow);
   EXPECT_EQ(12, length);
-  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 4, SQL_C_CHAR, narrow, 5, &length));
-  EXPECT_STREQ(".789", narrow);
-  EXPECT_EQ(4, length);
+  ASSERT_NO_FATAL_FAILURE(expect_completed(stmt, 4));
 
   ASSERT_EQ(SQL_SUCCESS, SQLFetch(sibling.handle));
   ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(sibling.handle, 1, SQL_C_CHAR, narrow, 5, &length));
@@ -1315,5 +1313,218 @@ TEST_F(CnumericApproximateRangeApiTest, RefusedSiblingAndPreparedRefillPreserveO
   ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_DOUBLE, &parent_value, 0, &bytes));
   EXPECT_DOUBLE_EQ(11, parent_value);
   EXPECT_EQ(0u, facts->disconnects);
+}
+}  // namespace
+
+namespace {
+class FixedTemporalCompletionApiTest : public FixedNumericCompletionApiTest {
+ protected:
+  void temporal_position(ScalarType type, const char* text) {
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+    facts->result.columns = {{"t", NativeTypeInfo{type, 35, 3, true}}};
+    facts->result.rows = {{text ? std::optional<std::string>{text} : std::nullopt}};
+    ASSERT_NO_FATAL_FAILURE(execute());
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  }
+};
+
+TEST_F(FixedTemporalCompletionApiTest, NarrowFirstPrefixesAndFullValuesComplete) {
+  struct Scenario {
+    ScalarType type; SQLSMALLINT sql; const char* text; SQLLEN capacity;
+    const char* expected; SQLRETURN result;
+  };
+  const Scenario scenarios[] = {
+      {ScalarType::Time, SQL_TYPE_TIME, "12:34:56.789", 9, "12:34:56", SQL_SUCCESS_WITH_INFO},
+      {ScalarType::Time, SQL_TYPE_TIME, "12:34:56.789", 11, "12:34:56.7", SQL_SUCCESS_WITH_INFO},
+      {ScalarType::Timestamp, SQL_TYPE_TIMESTAMP, "2026-10-12 12:34:56.123456", 20,
+       "2026-10-12 12:34:56", SQL_SUCCESS_WITH_INFO},
+      {ScalarType::Timestamp, SQL_TYPE_TIMESTAMP, "2026-10-12 12:34:56.123456", 23,
+       "2026-10-12 12:34:56.12", SQL_SUCCESS_WITH_INFO},
+      {ScalarType::Time, SQL_TYPE_TIME, "12:34:56.789", 13, "12:34:56.789", SQL_SUCCESS},
+      {ScalarType::Timestamp, SQL_TYPE_TIMESTAMP, "2026-10-12 12:34:56.123456", 27,
+       "2026-10-12 12:34:56.123456", SQL_SUCCESS},
+      {ScalarType::Time, SQL_TYPE_TIME, "12:34:56", 9, "12:34:56", SQL_SUCCESS},
+      {ScalarType::Timestamp, SQL_TYPE_TIMESTAMP, "2026-10-12 12:34:56", 20,
+       "2026-10-12 12:34:56", SQL_SUCCESS}};
+  for (const auto& test : scenarios) {
+    SCOPED_TRACE(test.text);
+    SCOPED_TRACE(test.capacity);
+    ASSERT_NO_FATAL_FAILURE(temporal_position(test.type, test.text));
+    EXPECT_EQ(test.sql, exposed_type());
+    std::array<unsigned char, 66> output{}; output.fill(0x5a);
+    SQLLEN length = 73;
+    ASSERT_EQ(test.result, SQLGetData(stmt, 1, SQL_C_CHAR, output.data() + 1,
+        test.capacity, &length));
+    EXPECT_STREQ(test.expected, reinterpret_cast<const char*>(output.data() + 1));
+    EXPECT_EQ(static_cast<SQLLEN>(std::strlen(test.text)), length);
+    EXPECT_EQ(0x5a, output.front());
+    EXPECT_EQ(0x5a, output[static_cast<std::size_t>(test.capacity) + 1]);
+    if (test.result == SQL_SUCCESS_WITH_INFO) {
+      EXPECT_EQ("01004", state());
+    }
+    ASSERT_NO_FATAL_FAILURE(expect_completed(stmt, 1));
+  }
+}
+
+TEST_F(FixedTemporalCompletionApiTest, ArdAndUnalignedWideUseByteLengthsAndComplete) {
+  struct Scenario { ScalarType type; const char* text; const char* prefix; std::size_t units; };
+  const Scenario scenarios[] = {
+      {ScalarType::Time, "12:34:56.789", "12:34:56", 9},
+      {ScalarType::Timestamp, "2026-10-12 12:34:56.789", "2026-10-12 12:34:56", 20}};
+  for (const auto& test : scenarios) {
+    for (const bool use_ard : {false, true}) {
+      for (const SQLSMALLINT type : {SQLSMALLINT{SQL_C_CHAR}, SQLSMALLINT{SQL_C_WCHAR}}) {
+        SCOPED_TRACE(test.text);
+        SCOPED_TRACE(use_ard);
+        SCOPED_TRACE(type);
+        ASSERT_NO_FATAL_FAILURE(temporal_position(test.type, test.text));
+        const auto unit = type == SQL_C_WCHAR ? sizeof(SQLWCHAR) : std::size_t{1};
+        if (use_ard) {
+          ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(
+            descriptor(SQL_ATTR_APP_ROW_DESC), 1, SQL_DESC_CONCISE_TYPE,
+            reinterpret_cast<SQLPOINTER>(static_cast<std::intptr_t>(type)), 0));
+        }
+        const SQLSMALLINT target = use_ard ? SQL_ARD_TYPE : type;
+        std::array<unsigned char, 64 * sizeof(SQLWCHAR) + 4> output{}; output.fill(0x5a);
+        std::array<unsigned char, sizeof(SQLLEN) + 2> indicator{}; indicator.fill(0x5a);
+        const SQLLEN poison_length = 73;
+        std::memcpy(indicator.data() + 1, &poison_length, sizeof(poison_length));
+        const auto capacity = test.units * unit + (type == SQL_C_WCHAR ? 1 : 0);
+        ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(stmt, 1, target,
+            output.data() + 1, static_cast<SQLLEN>(capacity),
+            reinterpret_cast<SQLLEN*>(indicator.data() + 1)));
+        EXPECT_EQ("01004", state());
+        SQLLEN length{}; std::memcpy(&length, indicator.data() + 1, sizeof(length));
+        EXPECT_EQ(static_cast<SQLLEN>(std::strlen(test.text) * unit), length);
+        if (type == SQL_C_WCHAR) {
+          std::array<SQLWCHAR, 64> expected{};
+          for (std::size_t i = 0; i < std::strlen(test.prefix); ++i)
+            expected[i] = static_cast<SQLWCHAR>(test.prefix[i]);
+          EXPECT_EQ(0, std::memcmp(output.data() + 1, expected.data(), test.units * unit));
+        } else {
+          EXPECT_STREQ(test.prefix, reinterpret_cast<const char*>(output.data() + 1));
+        }
+        EXPECT_EQ(0x5a, output.front()); EXPECT_EQ(0x5a, output[capacity + 1]);
+        if (type == SQL_C_WCHAR) {
+          EXPECT_EQ(0x5a, output[test.units * unit + 1]);
+        }
+        EXPECT_EQ(0x5a, indicator.front()); EXPECT_EQ(0x5a, indicator.back());
+        output.fill(0x5a); indicator.fill(0x5a);
+        std::memcpy(indicator.data() + 1, &poison_length, sizeof(poison_length));
+        const auto output_poison = output; const auto indicator_poison = indicator;
+        EXPECT_EQ(SQL_NO_DATA, SQLGetData(stmt, 1, target, output.data() + 1,
+            static_cast<SQLLEN>(capacity), reinterpret_cast<SQLLEN*>(indicator.data() + 1)));
+        EXPECT_EQ(output_poison, output); EXPECT_EQ(indicator_poison, indicator);
+      }
+    }
+  }
+}
+
+TEST_F(FixedTemporalCompletionApiTest, WholeCapacityAndNullErrorsRetryBeforeCompletion) {
+  struct Scenario { ScalarType type; const char* text; SQLLEN units; };
+  const Scenario scenarios[] = {
+      {ScalarType::Time, "12:34:56.789", 9},
+      {ScalarType::Timestamp, "2026-10-12 12:34:56.789", 20}};
+  for (const auto& test : scenarios) {
+    for (const SQLSMALLINT type : {SQLSMALLINT{SQL_C_CHAR}, SQLSMALLINT{SQL_C_WCHAR}}) {
+      const SQLLEN unit = type == SQL_C_WCHAR ? sizeof(SQLWCHAR) : 1;
+      for (const SQLLEN capacity : {SQLLEN{0}, unit - 1, (test.units - 1) * unit, SQLLEN{-1}}) {
+        SCOPED_TRACE(test.text);
+        SCOPED_TRACE(capacity);
+        ASSERT_NO_FATAL_FAILURE(temporal_position(test.type, test.text));
+        std::array<unsigned char, 128> output{}; output.fill(0x5a);
+        const auto poison = output; SQLLEN length = 73;
+        EXPECT_EQ(SQL_ERROR, SQLGetData(stmt, 1, type, output.data() + 1, capacity, &length));
+        EXPECT_EQ(capacity < 0 ? "HY090" : "22003", state());
+        EXPECT_EQ(poison, output); EXPECT_EQ(73, length);
+        EXPECT_EQ(SQL_ERROR, SQLGetData(stmt, 1, type, nullptr, test.units * unit, &length));
+        EXPECT_EQ("HY009", state()); EXPECT_EQ(73, length);
+        ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(stmt, 1, type,
+            output.data() + 1, test.units * unit, &length));
+        EXPECT_EQ("01004", state());
+        EXPECT_EQ(static_cast<SQLLEN>(std::strlen(test.text)) * unit, length);
+        ASSERT_NO_FATAL_FAILURE(expect_completed(stmt, 1, type));
+      }
+      ASSERT_NO_FATAL_FAILURE(temporal_position(test.type, nullptr));
+      std::array<unsigned char, 128> output{}; output.fill(0x5a);
+      const auto poison = output;
+      EXPECT_EQ(SQL_ERROR, SQLGetData(stmt, 1, type, output.data() + 1, 0, nullptr));
+      EXPECT_EQ("22002", state()); EXPECT_EQ(poison, output);
+      SQLLEN length = 73;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, type, output.data() + 1, 0, &length));
+      EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(poison, output);
+      ASSERT_NO_FATAL_FAILURE(expect_completed(stmt, 1, type));
+    }
+    const std::string zoned = std::string(test.text) + "+02";
+    ASSERT_NO_FATAL_FAILURE(temporal_position(test.type, zoned.c_str()));
+    std::array<char, 64> output{}; output.fill('Z'); const auto poison = output;
+    SQLLEN length = 73;
+    EXPECT_EQ(SQL_ERROR, SQLGetData(stmt, 1, SQL_C_CHAR, output.data(), test.units, &length));
+    EXPECT_EQ("22003", state()); EXPECT_EQ(poison, output); EXPECT_EQ(73, length);
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_CHAR, output.data(), output.size(), &length));
+    EXPECT_EQ(zoned, output.data()); EXPECT_EQ(static_cast<SQLLEN>(zoned.size()), length);
+    ASSERT_NO_FATAL_FAILURE(expect_completed(stmt, 1));
+  }
+}
+
+TEST_F(FixedTemporalCompletionApiTest, VariableChunksBindingAndOwningRefillStayIndependent) {
+  facts->result.columns = {
+      {"t", NativeTypeInfo{ScalarType::Time, 15, 3, true}},
+      {"s", NativeTypeInfo{ScalarType::Timestamp, 26, 3, true}},
+      {"v", NativeTypeInfo{ScalarType::VarChar, 26, 0, true}},
+      {"b", NativeTypeInfo{ScalarType::Binary, 6, 0, true}},
+      {"d", NativeTypeInfo{ScalarType::Date, 10, 0, true}}};
+  facts->result.rows = {{"12:34:56.789", "2026-10-12 12:34:56.789", "12:34:56.789", "abcdef", "2026-10-12"},
+                        {"23:45:56.123", "2026-10-13 23:45:56.123", "23:45:56.123", "ghijkl", "2026-10-13"}};
+  std::array<char, 9> bound{}; SQLLEN bound_length = 73;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_CHAR, bound.data(), bound.size(), &bound_length));
+  ASSERT_NO_FATAL_FAILURE(execute());
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLFetch(stmt));
+  EXPECT_STREQ("12:34:56", bound.data()); EXPECT_EQ(12, bound_length);
+  std::array<char, 64> output{}; SQLLEN length = 73;
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(stmt, 1, SQL_C_CHAR, output.data(), 9, &length));
+  EXPECT_STREQ("12:34:56", output.data()); EXPECT_EQ(12, length);
+  ASSERT_NO_FATAL_FAILURE(expect_completed(stmt, 1));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(stmt, 3, SQL_C_CHAR, output.data(), 9, &length));
+  EXPECT_STREQ("12:34:56", output.data()); EXPECT_EQ(12, length);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 3, SQL_C_CHAR, output.data(), 5, &length));
+  EXPECT_STREQ(".789", output.data()); EXPECT_EQ(4, length);
+  ASSERT_NO_FATAL_FAILURE(expect_completed(stmt, 3));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(stmt, 1, SQL_C_CHAR, output.data(), 9, &length));
+  EXPECT_STREQ("12:34:56", output.data());
+  ASSERT_NO_FATAL_FAILURE(expect_completed(stmt, 1));
+  std::array<char, 3> bytes{};
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(stmt, 4, SQL_C_BINARY, bytes.data(), bytes.size(), &length));
+  EXPECT_EQ((std::array<char, 3>{'a', 'b', 'c'}), bytes); EXPECT_EQ(6, length);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 4, SQL_C_BINARY, bytes.data(), bytes.size(), &length));
+  EXPECT_EQ((std::array<char, 3>{'d', 'e', 'f'}), bytes); EXPECT_EQ(3, length);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 5, SQL_C_CHAR, output.data(), output.size(), &length));
+  EXPECT_STREQ("2026-10-12", output.data()); ASSERT_NO_FATAL_FAILURE(expect_completed(stmt, 5));
+  struct Sibling { SQLHSTMT handle{}; ~Sibling() { if (handle) SQLFreeHandle(SQL_HANDLE_STMT, handle); } } sibling;
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &sibling.handle));
+  facts->result.columns = {{"s", NativeTypeInfo{ScalarType::Timestamp, 26, 3, true}}};
+  facts->result.rows = {{"2030-01-02 01:02:03.456"}};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(sibling.handle, (SQLCHAR*)"SELECT sibling", SQL_NTS));
+  facts->result.rows = {{"poison"}};
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(sibling.handle));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(sibling.handle, 1, SQL_C_CHAR, output.data(), 20, &length));
+  EXPECT_STREQ("2030-01-02 01:02:03", output.data());
+  ASSERT_NO_FATAL_FAILURE(expect_completed(sibling.handle, 1));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLFetch(stmt));
+  EXPECT_STREQ("23:45:56", bound.data()); EXPECT_EQ(12, bound_length);
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(stmt, 2, SQL_C_CHAR, output.data(), 20, &length));
+  EXPECT_STREQ("2026-10-13 23:45:56", output.data());
+  ASSERT_NO_FATAL_FAILURE(expect_completed(stmt, 2));
+  ASSERT_EQ(SQL_NO_DATA, SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt)); ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_UNBIND));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT refill", SQL_NTS));
+  facts->result.columns = {{"t", NativeTypeInfo{ScalarType::Time, 15, 3, true}}};
+  facts->result.rows = {{"02:03:04.567"}};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); facts->result.rows = {{"poison"}};
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(stmt, 1, SQL_C_CHAR, output.data(), 9, &length));
+  EXPECT_STREQ("02:03:04", output.data());
+  ASSERT_NO_FATAL_FAILURE(expect_completed(stmt, 1));
+  ASSERT_NO_FATAL_FAILURE(expect_completed(sibling.handle, 1)); EXPECT_EQ(0u, facts->disconnects);
 }
 }  // namespace

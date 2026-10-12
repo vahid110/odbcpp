@@ -224,7 +224,7 @@ TEST(MySqlConnectUntilTest, LateAuthenticationErrorsKeepNativeOrStructuralClassi
       Fixture f;
       if (mode) { append(*f.transport,{std::byte{1},static_cast<std::byte>(mode==1?3:4)},3); }
       append(*f.transport,error(malformed),static_cast<std::uint8_t>(mode==0?3:mode==1?4:5));
-      f.transport->expire_after_input=f.transport->input.size(); const auto d=rs::util::make_deadline(std::chrono::milliseconds(5));
+      f.transport->expire_after_input=f.transport->input.size(); const auto d=f.deadline();
       auto r=f.session.connect_until(settings(),d);
       rejected(f,r,malformed?DbErrorCode::ProtocolError:DbErrorCode::AuthenticationFailed,BackendOperation::Authenticate,1); same_deadline(*f.transport,d);
       EXPECT_EQ(f.transport->input.size(),f.transport->offset);
