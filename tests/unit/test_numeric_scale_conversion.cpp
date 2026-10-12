@@ -832,7 +832,9 @@ TEST_F(FixedNumericCompletionApiTest, NumericCharacterFirstResultsCompleteAcross
     EXPECT_EQ(0x5a, output[static_cast<std::size_t>(scenario.capacity) + 1]);
     EXPECT_EQ(SQL_ROW_SUCCESS, row_status);
     EXPECT_EQ(1u, fetched);
-    if (scenario.result == SQL_SUCCESS_WITH_INFO) EXPECT_EQ("01004", state());
+    if (scenario.result == SQL_SUCCESS_WITH_INFO) {
+      EXPECT_EQ("01004", state());
+    }
     ASSERT_NO_FATAL_FAILURE(expect_completed(stmt, 1));
     EXPECT_EQ(SQL_ROW_SUCCESS, row_status);
     EXPECT_EQ(1u, fetched);

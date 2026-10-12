@@ -2312,15 +2312,16 @@ TEST_F(BindColIntegrationTest, DecimalTextCanTruncateOnlyFractionalDigits) {
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("01004", reinterpret_cast<char*>(state));
-    char fractional[2]{};
-    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(hstmt, 1, SQL_C_CHAR,
+    char fractional[2]{'x', 'y'};
+    EXPECT_EQ(SQL_NO_DATA, SQLGetData(hstmt, 1, SQL_C_CHAR,
         fractional, sizeof(fractional), &length));
-    EXPECT_STREQ(".", fractional);
-    EXPECT_EQ(3, length);
-    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+    EXPECT_EQ('x', fractional[0]);
+    EXPECT_EQ('y', fractional[1]);
+    EXPECT_EQ(7, length);
+    EXPECT_EQ(SQL_NO_DATA, SQLGetData(hstmt, 1, SQL_C_CHAR,
         narrow, sizeof(narrow), &length));
-    EXPECT_STREQ("56", narrow);
-    EXPECT_EQ(2, length);
+    EXPECT_STREQ("1234", narrow);
+    EXPECT_EQ(7, length);
 
     SQLWCHAR wide_tiny[4]{'x', 'x', 'x', 'x'};
     length = 94;
@@ -2341,17 +2342,18 @@ TEST_F(BindColIntegrationTest, DecimalTextCanTruncateOnlyFractionalDigits) {
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("01004", reinterpret_cast<char*>(state));
-    SQLWCHAR fractional_wide[2]{};
-    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, SQLGetData(hstmt, 2, SQL_C_WCHAR,
+    SQLWCHAR fractional_wide[2]{'x', 'y'};
+    EXPECT_EQ(SQL_NO_DATA, SQLGetData(hstmt, 2, SQL_C_WCHAR,
         fractional_wide, sizeof(fractional_wide), &length));
-    EXPECT_EQ(static_cast<SQLWCHAR>('.'), fractional_wide[0]);
-    EXPECT_EQ(static_cast<SQLWCHAR>(0), fractional_wide[1]);
-    EXPECT_EQ(static_cast<SQLLEN>(3 * sizeof(SQLWCHAR)), length);
-    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 2, SQL_C_WCHAR,
+    EXPECT_EQ(static_cast<SQLWCHAR>('x'), fractional_wide[0]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('y'), fractional_wide[1]);
+    EXPECT_EQ(static_cast<SQLLEN>(7 * sizeof(SQLWCHAR)), length);
+    EXPECT_EQ(SQL_NO_DATA, SQLGetData(hstmt, 2, SQL_C_WCHAR,
         wide, sizeof(wide), &length));
-    EXPECT_EQ(static_cast<SQLWCHAR>('5'), wide[0]);
-    EXPECT_EQ(static_cast<SQLWCHAR>('6'), wide[1]);
-    EXPECT_EQ(static_cast<SQLLEN>(2 * sizeof(SQLWCHAR)), length);
+    EXPECT_EQ(static_cast<SQLWCHAR>('1'), wide[0]);
+    EXPECT_EQ(static_cast<SQLWCHAR>('4'), wide[3]);
+    EXPECT_EQ(static_cast<SQLWCHAR>(0), wide[4]);
+    EXPECT_EQ(static_cast<SQLLEN>(7 * sizeof(SQLWCHAR)), length);
 
     ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
     ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt,
@@ -2391,10 +2393,13 @@ TEST_F(BindColIntegrationTest, ApproximateNumericTextPreservesMagnitude) {
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("01004", reinterpret_cast<char*>(state));
-    char fraction[8]{};
-    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+    char fraction[8]{'x', 'y', 'z', 'x', 'y', 'z', 'x', 'y'};
+    const auto before_fraction = std::array<char, 8>{'x', 'y', 'z', 'x', 'y', 'z', 'x', 'y'};
+    const auto before_length = length;
+    EXPECT_EQ(SQL_NO_DATA, SQLGetData(hstmt, 1, SQL_C_CHAR,
         fraction, sizeof(fraction), &length));
-    EXPECT_STREQ(".56", fraction);
+    EXPECT_EQ(0, std::memcmp(fraction, before_fraction.data(), sizeof(fraction)));
+    EXPECT_EQ(before_length, length);
 
     char exponent_tiny[5]{'x', 'x', 'x', 'x', 'x'};
     length = 92;
