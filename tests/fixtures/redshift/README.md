@@ -131,3 +131,30 @@ MAXPARAMETERS1, MAXPARAMETERBYTES/MAXPARAMETERTOTALBYTES each11,
 MAXCOLUMNS2, MAXROWS1, MAXCELLS2 and MAXMETADATAENTRIES3. Exact source/binary,
 reviewed finite admission and cleanup are mandatory. Authored/compiled/LIST
 evidence is not actual native acceptance; execution belongs to the periodic batch.
+
+## Fixed numeric SQLGetData completion
+
+`RedshiftFixedNumericCompletionRealTest.FractionWholeNullAndVariableSourceCompletion`
+requires
+`ODBCPP_REDSHIFT_FIXED_NUMERIC_COMPLETION_ADMISSION=fixed_numeric_completion_v1`.
+One verified TLS login and one fixed SELECT; 40 seconds aggregate, at most five
+seconds per operation. No Prepare, DDL, DML, new table, recovery query or resource.
+The exact query returns five cells in one row: positive/negative DECIMAL(5,3),
+VARCHAR(6), NULL decimal and neighboring integer42.
+
+Numeric CHAR/WCHAR fractional prefixes retain01004 and original byte lengths;
+a repeated same-column call yieldsSQL_NO_DATA without altering sentinels.
+Zero/whole-capacity22003 and missing NULL indicator22002 remain retryable.
+Wide ARD authority, unaligned output canaries, source metadata, variable VARCHAR
+suffix continuation and neighboring value remain checked.
+
+Inherited minimum controls remain MAXPARAMETERS1,
+MAXPARAMETERBYTES/MAXPARAMETERTOTALBYTES each11, even though this SELECT sends
+no parameters. Additional controls: MAXSQLBYTES at least191, MAXCOLUMNS5,
+MAXROWS1, MAXCELLS5 and MAXMETADATAENTRIES5. Marker-first setup, original
+40-second window, known/unknown completion fences and same-principal handle/
+session cleanup remain inherited. Actual execution requires reviewed finite
+admission bound to exact green source and native binary; authoring, compilation
+and LIST do not constitute live acceptance. Execution belongs to the periodic
+combined batch.
+
