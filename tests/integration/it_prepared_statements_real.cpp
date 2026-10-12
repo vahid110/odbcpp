@@ -5499,3 +5499,64 @@ TEST_F(PreparedStatementIntegrationTest, LegacySignedIntegerParametersRoundTrip)
         ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_RESET_PARAMS));
     }
 }
+
+TEST_F(PreparedStatementIntegrationTest, BinaryIntegerHostBytesRejectLengthsNullAndRecover) {
+    static_assert(sizeof(SQLINTEGER) == 4);
+    ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt,
+        (SQLCHAR*)"SELECT CAST(? AS INTEGER), CAST(42 AS INTEGER)", SQL_NTS));
+    std::array<unsigned char, sizeof(SQLINTEGER) + 3> bytes{};
+    bytes.front() = 0xa5; bytes.back() = 0x5a;
+    SQLLEN input_length = sizeof(SQLINTEGER);
+    SQLUSMALLINT status = SQL_PARAM_UNUSED; SQLULEN processed = 99;
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+    const auto bind = [&](bool absent) {
+        auto* data = absent ? reinterpret_cast<SQLPOINTER>((std::numeric_limits<std::uintptr_t>::max)())
+                            : static_cast<SQLPOINTER>(bytes.data() + 1);
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_BINARY,
+            SQL_INTEGER, 10, 0, data, sizeof(SQLINTEGER) + 1, &input_length));
+    };
+    const auto echo = [&](SQLINTEGER expected, bool absent) {
+        input_length = absent ? SQL_NULL_DATA : static_cast<SQLLEN>(sizeof(SQLINTEGER));
+        std::memcpy(bytes.data() + 1, &expected, sizeof(expected));
+        ASSERT_NO_FATAL_FAILURE(bind(absent));
+        const auto before = bytes; status = SQL_PARAM_UNUSED; processed = 99;
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+        EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed); EXPECT_EQ(before, bytes);
+        EXPECT_EQ(absent ? SQL_NULL_DATA : static_cast<SQLLEN>(sizeof(SQLINTEGER)), input_length);
+        std::fill(bytes.begin() + 1, bytes.end() - 1, 0xee);
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+        SQLINTEGER output = 71; SQLLEN output_length = 73;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG, &output, 0, &output_length));
+        if (absent) {
+            EXPECT_EQ(SQL_NULL_DATA, output_length); EXPECT_EQ(71, output);
+        } else {
+            EXPECT_EQ(expected, output); EXPECT_EQ(static_cast<SQLLEN>(sizeof(output)), output_length);
+        }
+        output = 71; output_length = 73;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 2, SQL_C_SLONG, &output, 0, &output_length));
+        EXPECT_EQ(42, output); EXPECT_EQ(static_cast<SQLLEN>(sizeof(output)), output_length);
+        EXPECT_EQ(0xa5, bytes.front()); EXPECT_EQ(0x5a, bytes.back());
+        ASSERT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+        ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    };
+    const auto refuse = [&](SQLLEN invalid) {
+        input_length = invalid;
+        ASSERT_NO_FATAL_FAILURE(bind(false));
+        const auto before = bytes; status = SQL_PARAM_UNUSED; processed = 99;
+        ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+        SQLCHAR state[6]{};
+        ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+            state, nullptr, nullptr, 0, nullptr));
+        EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+        EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
+        EXPECT_EQ(invalid, input_length); EXPECT_EQ(before, bytes);
+    };
+    ASSERT_NO_FATAL_FAILURE(echo(42, false));
+    ASSERT_NO_FATAL_FAILURE(refuse(1));
+    ASSERT_NO_FATAL_FAILURE(echo(-42, false));
+    ASSERT_NO_FATAL_FAILURE(refuse(sizeof(SQLINTEGER) + 1));
+    ASSERT_NO_FATAL_FAILURE(echo((std::numeric_limits<SQLINTEGER>::min)(), false));
+    ASSERT_NO_FATAL_FAILURE(echo((std::numeric_limits<SQLINTEGER>::max)(), false));
+    ASSERT_NO_FATAL_FAILURE(echo(0, true));
+}

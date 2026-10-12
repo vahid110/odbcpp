@@ -235,3 +235,38 @@ prove live execution. Actual Redshift bodies wait for accumulated CI-first
 acceptance with exact green source/native binary and fresh reviewed finite
 accounting, canonical lock and durable one-use admission. No vendor binary
 parity or expanded conversion matrix is claimed.
+
+
+## Binary application INTEGER input
+
+For `SQL_C_BINARY` bound to `SQL_INTEGER`, this driver accepts exactly four
+bytes containing the host object representation of a signed `SQLINTEGER`.
+Construct those bytes with `memcpy` from a `SQLINTEGER`; they are not a portable
+serialized integer or PostgreSQL wire representation. Unaligned application
+buffers are supported. A different nonnegative byte count returns `22003`
+before dispatch; negative lengths retain `HY090`. NULL skips payload access.
+`SQL_C_DEFAULT` remains ordinary `SQL_C_SLONG` input. Deferred fixed-numeric
+input remains `HYC00`; raw SQL binary targets retain their existing byte values.
+
+The primary ODBC length contract requires equality. Pinned official AWS source
+uses a host-int copy and accepts at least four bytes, ignoring an oversized
+suffix. This driver follows exact equality; this documented source difference
+is not a claim of vendor binary parity or release correspondence.
+
+`RedshiftBinaryIntegerInputRealTest.HostIntegerLengthsNullAndOwningRecovery`
+requires `ODBCPP_REDSHIFT_BINARY_INTEGER_INPUT_ADMISSION=binary_integer_input_v1`
+and fresh independently reviewed finite admission. One TLS login, one prepare,
+seven conservative Execute attempts (five typed/NULL echoes, two `22003`
+refusals), at most eight SQL exchanges, aggregate40s and per-operation5s.
+The fixed SELECT uses one parameter and an INTEGER42 neighbor, with no fixture,
+DDL or DML. The case covers signed extrema, unaligned host bytes, canaries,
+NULL output preservation, status/processed accounting and same-session recovery.
+Normalized parameter floors are11 bytes per/aggregate, two columns, one row,
+two cells and six metadata entries. Actual Redshift execution remains queued
+for the combined CI-first checkpoint; compile/LIST do not establish a live pass.
+
+The separately authored
+`PreparedStatementIntegrationTest.BinaryIntegerHostBytesRejectLengthsNullAndRecover`
+uses the existing shared fixture and the same fixed SELECT/scenarios. Private
+PostgreSQL execution proves only the shared INTEGER conversion/wire behavior;
+it cannot substitute for actual Redshift acceptance.
