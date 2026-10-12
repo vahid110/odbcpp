@@ -13298,3 +13298,62 @@ TEST_F(CommandArrayDeferredInputTest, NumericTemporalInputOrdinaryNeighborRefuse
   EXPECT_EQ(SQL_PARAM_SUCCESS, output.values[1]); EXPECT_EQ(SQL_PARAM_SUCCESS, output.values[2]);
   ASSERT_NO_FATAL_FAILURE(guards());
 }
+
+TEST_F(PreparedCommandArrayTest, BinaryBigintCapturedArraysOwnValuesAndMaskInvalidSlots) {
+  ASSERT_NO_FATAL_FAILURE(ready());
+  static_assert(sizeof(SQLBIGINT) == 8);
+  const std::array<SQLBIGINT, 3> wide{{11, 22, 33}};
+  constexpr std::size_t slot_size = sizeof(SQLBIGINT) + 1;
+  std::array<std::array<unsigned char, slot_size>, 3> slots{};
+  for (std::size_t index = 0; index != slots.size(); ++index) {
+    std::memcpy(slots[index].data(), &wide[index], sizeof(wide[index]));
+    slots[index].back() = 0xa5;
+  }
+  indicators[0] = SQL_NTS; indicators[1] = 1; indicators[2] = sizeof(SQLBIGINT);
+  operations[0] = SQL_PARAM_IGNORE;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BINARY,
+      SQL_BIGINT, 19, 0, slots[0].data(), slot_size, indicators));
+  const auto original = slots;
+  const auto descriptions = seen->descriptions, queries = seen->queries;
+  const auto result = SQLExecute(stmt);
+  EXPECT_EQ(SQL_ERROR, result);
+  if (result == SQL_ERROR) { EXPECT_EQ("22003", state()); }
+  EXPECT_EQ(descriptions, seen->descriptions); EXPECT_EQ(queries, seen->queries);
+  EXPECT_TRUE(seen->transaction_calls.empty()); EXPECT_TRUE(seen->command_inputs.empty());
+  EXPECT_EQ(2u, processed);
+  EXPECT_EQ(SQL_PARAM_UNUSED, status[0]); EXPECT_EQ(SQL_PARAM_ERROR, status[1]);
+  EXPECT_EQ(SQL_PARAM_UNUSED, status[2]); EXPECT_EQ(original, slots);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  indicators[1] = slot_size + 1;
+  const auto before_span = seen->command_inputs.size();
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HY024", state());
+  EXPECT_EQ(before_span, seen->command_inputs.size()); EXPECT_EQ(original, slots);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  indicators[1] = sizeof(SQLBIGINT);
+  const SQLBIGINT changed = 44;
+  seen->during_command = [&] { std::memcpy(slots[2].data(), &changed, sizeof(changed)); };
+  const auto first = seen->command_inputs.size();
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(first + 2, seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"22"}, seen->command_inputs[first][0].value);
+  EXPECT_EQ(std::optional<std::string>{"33"}, seen->command_inputs[first + 1][0].value);
+  EXPECT_EQ(QueryParameterType::Int64, seen->command_inputs[first][0].type);
+  EXPECT_FALSE(seen->command_inputs[first][0].binary_input);
+  EXPECT_FALSE(seen->command_inputs[first + 1][0].binary_input);
+  EXPECT_EQ(3u, processed); EXPECT_EQ(SQL_PARAM_UNUSED, status[0]);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, status[1]); EXPECT_EQ(SQL_PARAM_SUCCESS, status[2]);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE)); seen->during_command = {};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(first + 4, seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"33"}, seen->command_inputs[first + 1][0].value);
+  EXPECT_EQ(std::optional<std::string>{"44"}, seen->command_inputs[first + 3][0].value);
+  EXPECT_EQ(0xa5, slots[0].back()); EXPECT_EQ(0xa5, slots[1].back()); EXPECT_EQ(0xa5, slots[2].back());
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  indicators[2] = SQL_NULL_DATA;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(first + 6, seen->command_inputs.size());
+  EXPECT_FALSE(seen->command_inputs[first + 5][0].value);
+  EXPECT_FALSE(seen->command_inputs[first + 5][0].binary_input);
+  EXPECT_EQ(SQL_PARAM_UNUSED, status[0]); EXPECT_EQ(SQL_PARAM_SUCCESS, status[2]);
+  EXPECT_EQ(SQL_NTS, indicators[0]); EXPECT_EQ(SQL_NULL_DATA, indicators[2]);
+}

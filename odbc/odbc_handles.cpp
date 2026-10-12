@@ -5949,6 +5949,16 @@ ODBCStatement::materialize_parameter_set(std::uintptr_t input_offset,
           }
           signed_number = load_application_value<SQLINTEGER>(fields.data);
           value = std::to_string(*signed_number);
+        } else if (declared_sql_type == SQL_BIGINT) {
+          static_assert(sizeof(SQLBIGINT) == 8 &&
+                        std::numeric_limits<SQLBIGINT>::is_signed);
+          if (length != static_cast<SQLLEN>(sizeof(SQLBIGINT))) {
+            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Binary BIGINT parameter requires exactly eight bytes");
+            return std::nullopt;
+          }
+          signed_number = load_application_value<SQLBIGINT>(fields.data);
+          value = std::to_string(*signed_number);
         } else {
           value.assign(static_cast<const char*>(fields.data),
                        static_cast<std::size_t>(length));
