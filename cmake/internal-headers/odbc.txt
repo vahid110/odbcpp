@@ -46,3 +46,4 @@ odbc/unicode.h
 odbc/windows_registry.h
 odbcpp/transport/cancellation_wait.h
 odbcpp/database/session_cancellation.h
+odbcpp/util/scaled_decimal.h

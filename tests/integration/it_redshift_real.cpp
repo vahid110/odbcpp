@@ -8544,3 +8544,197 @@ TEST_F(RedshiftMetadataScopeShowRealTest, TwoVisibleDatabasesKeepCommonSchemaIde
   ASSERT_NO_FATAL_FAILURE(release_keepalive());
   EXPECT_TRUE(identities.contains({second_database_, common_schema_}));
 }
+
+// Authoring only: one future selected admission, one TLS login and at most four
+// SQL operations (fixed SELECT, Prepare, value Execute, NULL Execute). Reuses
+// the existing 40s aggregate/per-operation5s/uncertain-completion lifecycle.
+class RedshiftNegativeNumericScaleRealTest : public RedshiftLoginTimeoutOptionsRealTest {
+ protected:
+  static std::string numeric_sql() {
+    return "WITH numbers AS ("
+        "SELECT 1 AS ordinal, CAST(12000 AS DECIMAL(10,2)) AS n "
+        "UNION ALL SELECT 2, CAST(-120.45 AS DECIMAL(10,2)) "
+        "UNION ALL SELECT 3, CAST(123.45 AS DECIMAL(10,2)) "
+        "UNION ALL SELECT 4, CAST(NULL AS DECIMAL(10,2)) "
+        "UNION ALL SELECT 5, CAST(120.00 AS DECIMAL(10,2))) "
+        "SELECT n, CAST(-120.45 AS DECIMAL(10,2)), "
+        "CAST(-123.45 AS DECIMAL(10,2)), CAST(NULL AS DECIMAL(10,2)), "
+        "CAST(42 AS INTEGER), CAST(123.45 AS DECIMAL(10,2)) "
+        "FROM numbers ORDER BY ordinal";
+  }
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_NEGATIVE_NUMERIC_SCALE_ADMISSION",
+                   "negative_numeric_scale_v1");
+    if (IsSkipped() || HasFatalFailure()) return;
+    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const auto minimum = [&](const char* key, std::size_t required) {
+      const auto found = options.find(key);
+      if (found == options.end()) return true;
+      std::size_t value{};
+      const auto& text = found->second;
+      const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+      return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() && value >= required;
+    };
+    ASSERT_TRUE(minimum("MAXSQLBYTES", numeric_sql().size()));
+    ASSERT_TRUE(minimum("MAXPARAMETERS", 1));
+    ASSERT_TRUE(minimum("MAXPARAMETERBYTES", 5));
+    ASSERT_TRUE(minimum("MAXPARAMETERTOTALBYTES", 5));
+    ASSERT_TRUE(minimum("MAXCOLUMNS", 6));
+    ASSERT_TRUE(minimum("MAXROWS", 5));
+    ASSERT_TRUE(minimum("MAXCELLS", 30));
+    ASSERT_TRUE(minimum("MAXMETADATAENTRIES", 18));
+  }
+  bool observed(SQLRETURN result, SQLRETURN expected = SQL_SUCCESS,
+                const char* expected_state = nullptr) {
+    if (result != expected) { unknown_completion_ = true; return false; }
+    if (expected_state) {
+      SQLCHAR state[6]{};
+      const auto diagnostic = SQLGetDiagRec(SQL_HANDLE_STMT, hstmt_, 1,
+          state, nullptr, nullptr, 0, nullptr);
+      if (diagnostic != SQL_SUCCESS ||
+          std::string_view(reinterpret_cast<char*>(state)) != expected_state) {
+        unknown_completion_ = true; return false;
+      }
+    }
+    return true;
+  }
+  SQLHDESC descriptor(SQLINTEGER attribute) {
+    SQLHDESC result{};
+    EXPECT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt_, attribute, &result, 0, nullptr));
+    return result;
+  }
+  void dimensions(SQLHDESC desc, SQLSMALLINT column, SQLSMALLINT precision,
+                  SQLSMALLINT scale, void* data = nullptr) {
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(desc, column, SQL_DESC_CONCISE_TYPE,
+        reinterpret_cast<SQLPOINTER>(SQL_C_NUMERIC), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(desc, column, SQL_DESC_PRECISION,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::intptr_t>(precision)), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(desc, column, SQL_DESC_SCALE,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::intptr_t>(scale)), 0));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(desc, column, SQL_DESC_DATA_PTR, data, 0));
+  }
+  void small(const SQL_NUMERIC_STRUCT& value, SQLSMALLINT precision,
+             SQLSMALLINT scale, unsigned coefficient, unsigned sign) {
+    EXPECT_EQ(precision, value.precision); EXPECT_EQ(scale, value.scale);
+    EXPECT_EQ(sign, value.sign); EXPECT_EQ(coefficient, value.val[0]);
+    for (std::size_t i = 1; i < sizeof(value.val); ++i) EXPECT_EQ(0, value.val[i]);
+  }
+};
+
+TEST_F(RedshiftNegativeNumericScaleRealTest, DescriptorLossNullOwnershipAndRecovery) {
+  ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT", "5", 5, false));
+  std::array<unsigned char, sizeof(SQL_NUMERIC_STRUCT) + 2> output{};
+  output.fill(0x5a);
+  void* numeric_buffer = output.data() + 1;
+  SQLLEN length = 73;
+  SQLUSMALLINT status = SQL_ROW_NOROW;
+  SQLULEN fetched = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_ROW_STATUS_PTR, &status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_ROWS_FETCHED_PTR, &fetched, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt_, 1, SQL_C_NUMERIC, numeric_buffer, 0, &length));
+  const auto ard = descriptor(SQL_ATTR_APP_ROW_DESC);
+  ASSERT_NO_FATAL_FAILURE(dimensions(ard, 1, 2, -3, numeric_buffer));
+  auto sql = numeric_sql();
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(known_sql(SQLExecDirect(hstmt_, reinterpret_cast<SQLCHAR*>(sql.data()), SQL_NTS)));
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_)));
+  SQL_NUMERIC_STRUCT numeric{};
+  std::memcpy(&numeric, numeric_buffer, sizeof(numeric));
+  ASSERT_NO_FATAL_FAILURE(small(numeric, 2, -3, 12, 1));
+  EXPECT_EQ(sizeof(numeric), static_cast<std::size_t>(length));
+  EXPECT_EQ(SQL_ROW_SUCCESS, status); EXPECT_EQ(1u, fetched);
+  ASSERT_NO_FATAL_FAILURE(dimensions(ard, 2, 2, -1));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 2, SQL_ARD_TYPE, &numeric, 0, &length),
+      SQL_SUCCESS_WITH_INFO, "01S07"));
+  ASSERT_NO_FATAL_FAILURE(small(numeric, 2, -1, 12, 0));
+  ASSERT_NO_FATAL_FAILURE(dimensions(ard, 3, 5, -1));
+  std::memset(&numeric, 0x5a, sizeof(numeric)); const auto poison = numeric; length = 73;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 3, SQL_ARD_TYPE, &numeric, 0, &length), SQL_ERROR, "22003"));
+  EXPECT_EQ(73, length); EXPECT_EQ(0, std::memcmp(&poison, &numeric, sizeof(numeric)));
+  ASSERT_NO_FATAL_FAILURE(dimensions(ard, 3, 5, 2));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 3, SQL_ARD_TYPE, &numeric, 0, &length)));
+  EXPECT_EQ(5, numeric.precision); EXPECT_EQ(2, numeric.scale); EXPECT_EQ(0, numeric.sign);
+  EXPECT_EQ(0x39, numeric.val[0]); EXPECT_EQ(0x30, numeric.val[1]);
+  std::memset(&numeric, 0x5a, sizeof(numeric));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 4, SQL_C_NUMERIC, &numeric, 0, &length)));
+  EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(0, std::memcmp(&poison, &numeric, sizeof(numeric)));
+  SQLINTEGER neighbor{}; SQLLEN neighbor_length{};
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 5, SQL_C_SLONG, &neighbor, 0, &neighbor_length)));
+  EXPECT_EQ(42, neighbor); EXPECT_EQ(sizeof(neighbor), static_cast<std::size_t>(neighbor_length));
+  ASSERT_NO_FATAL_FAILURE(dimensions(ard, 6, 2, -3));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 6, SQL_C_NUMERIC, &numeric, 0, &length),
+      SQL_SUCCESS_WITH_INFO, "01S07"));
+  ASSERT_NO_FATAL_FAILURE(small(numeric, 38, 0, 123, 1));
+
+  ASSERT_NO_FATAL_FAILURE(dimensions(ard, 1, 2, -1, numeric_buffer));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_SUCCESS_WITH_INFO, "01S07"));
+  std::memcpy(&numeric, numeric_buffer, sizeof(numeric));
+  ASSERT_NO_FATAL_FAILURE(small(numeric, 2, -1, 12, 0));
+  EXPECT_EQ(SQL_ROW_SUCCESS_WITH_INFO, status); EXPECT_EQ(1u, fetched);
+  output.fill(0x5a); length = 73;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_ERROR, "22003"));
+  EXPECT_EQ(SQL_ROW_ERROR, status); EXPECT_EQ(1u, fetched); EXPECT_EQ(73, length);
+  for (const auto byte : output) EXPECT_EQ(0x5a, byte);
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 5, SQL_C_SLONG, &neighbor, 0, &neighbor_length)));
+  EXPECT_EQ(42, neighbor);
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_)));
+  EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(SQL_ROW_SUCCESS, status);
+  for (const auto byte : output) EXPECT_EQ(0x5a, byte);
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_)));
+  std::memcpy(&numeric, numeric_buffer, sizeof(numeric));
+  ASSERT_NO_FATAL_FAILURE(small(numeric, 2, -1, 12, 1));
+  EXPECT_EQ(0x5a, output.front()); EXPECT_EQ(0x5a, output.back());
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_NO_DATA));
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt_, SQL_UNBIND));
+
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(known_sql(SQLPrepare(hstmt_, (SQLCHAR*)"SELECT CAST(? AS DECIMAL(5,0)), CAST(42 AS INTEGER)", SQL_NTS)));
+  SQL_NUMERIC_STRUCT input{};
+  input.precision = 1; input.scale = 0; input.sign = 1; input.val[0] = 12;
+  std::array<unsigned char, sizeof(input) + 2> input_storage{};
+  input_storage.fill(0x5a); std::memcpy(input_storage.data() + 1, &input, sizeof(input));
+  SQLLEN input_length = sizeof(input);
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_NUMERIC,
+      SQL_NUMERIC, 5, 0, input_storage.data() + 1, sizeof(input), &input_length));
+  const auto apd = descriptor(SQL_ATTR_APP_PARAM_DESC);
+  ASSERT_NO_FATAL_FAILURE(dimensions(apd, 1, 2, -3, input_storage.data() + 1));
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLExecute(hstmt_)));
+  std::fill(input_storage.begin() + 1, input_storage.end() - 1, 0);
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_)));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 1, SQL_C_NUMERIC, &numeric, 0, &length)));
+  EXPECT_EQ(38, numeric.precision); EXPECT_EQ(0, numeric.scale); EXPECT_EQ(1, numeric.sign);
+  EXPECT_EQ(0xe0, numeric.val[0]); EXPECT_EQ(0x2e, numeric.val[1]);
+  for (std::size_t i = 2; i < sizeof(numeric.val); ++i) EXPECT_EQ(0, numeric.val[i]);
+  EXPECT_EQ(sizeof(numeric), static_cast<std::size_t>(length));
+  EXPECT_EQ(0x5a, input_storage.front()); EXPECT_EQ(0x5a, input_storage.back());
+  EXPECT_EQ(sizeof(input), static_cast<std::size_t>(input_length));
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_NO_DATA));
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
+  input_length = SQL_NULL_DATA;
+  const auto untouched_input = input_storage;
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLExecute(hstmt_)));
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_)));
+  std::memset(&numeric, 0x5a, sizeof(numeric)); length = 73;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 1, SQL_C_NUMERIC, &numeric, 0, &length)));
+  EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(SQL_NULL_DATA, input_length);
+  EXPECT_EQ(0, std::memcmp(&poison, &numeric, sizeof(numeric))); EXPECT_EQ(untouched_input, input_storage);
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLGetData(hstmt_, 2, SQL_C_SLONG, &neighbor, 0, &neighbor_length)));
+  EXPECT_EQ(42, neighbor);
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_NO_DATA));
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
+  ASSERT_NO_FATAL_FAILURE(release_connection());
+}
