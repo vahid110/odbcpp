@@ -5929,9 +5929,21 @@ ODBCStatement::materialize_parameter_set(std::uintptr_t input_offset,
                     "Binary parameter exceeds SQL binary length");
           return std::nullopt;
         }
-        value.assign(static_cast<const char*>(fields.data),
-                     static_cast<std::size_t>(length));
-        query_param.binary_input = true;
+        if (declared_sql_type == SQL_INTEGER) {
+          static_assert(sizeof(SQLINTEGER) == 4 &&
+                        std::numeric_limits<SQLINTEGER>::is_signed);
+          if (length != static_cast<SQLLEN>(sizeof(SQLINTEGER))) {
+            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Binary INTEGER parameter requires exactly four bytes");
+            return std::nullopt;
+          }
+          signed_number = load_application_value<SQLINTEGER>(fields.data);
+          value = std::to_string(*signed_number);
+        } else {
+          value.assign(static_cast<const char*>(fields.data),
+                       static_cast<std::size_t>(length));
+          query_param.binary_input = true;
+        }
       } else {
         set_error(SQLSTATE_GENERAL_ERROR,
                   "Unsupported C parameter type");
