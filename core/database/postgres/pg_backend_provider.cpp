@@ -70,6 +70,15 @@ PgBackendProvider::resolve_connection_options(ConnectionOptions options) const {
   }
 
   ConnectionSettings settings;
+  if (options.catalog_database_scope) {
+    if (*options.catalog_database_scope != CatalogDatabaseScope::CurrentDatabase &&
+        *options.catalog_database_scope != CatalogDatabaseScope::VisibleDatabases)
+      return {rs::util::DbErrorCode::InvalidParameter, "Invalid metadata database scope"};
+    if (catalog_profile_ != PgCatalogProfile::Redshift)
+      return {rs::util::DbErrorCode::UnsupportedFeature,
+              "DatabaseMetadataCurrentDbOnly requires Redshift"};
+    settings.catalog_database_scope = *options.catalog_database_scope;
+  }
   if ((options.varchar_threshold || options.long_varchar_size) &&
       catalog_profile_ != PgCatalogProfile::Redshift)
     return {rs::util::DbErrorCode::UnsupportedFeature,

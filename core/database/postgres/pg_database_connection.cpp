@@ -75,7 +75,8 @@ BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& sett
         .application_name = settings.application_name,
         .read_only = settings.read_only,
         .character_metadata = settings.character_metadata,
-        .detailed_table_types = settings.detailed_table_types};
+        .detailed_table_types = settings.detailed_table_types,
+        .catalog_database_scope = settings.catalog_database_scope};
     // Local binding consistency is not issuer proof, expiry, or pooling authority.
     return auth::connect_bound_ordinary_password_until(*this, selected, request.value(), material.value());
   } catch (const std::bad_alloc&) {
@@ -94,6 +95,14 @@ BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& sett
 
 BackendResult<void> PgDatabaseConnection::connect_until(
     const ConnectionSettings& settings, rs::util::Deadline deadline) {
+  if (settings.catalog_database_scope != CatalogDatabaseScope::CurrentDatabase &&
+      settings.catalog_database_scope != CatalogDatabaseScope::VisibleDatabases)
+    return local_backend_error(LocalFailure::InvalidInput,
+        "Invalid metadata database scope", BackendOperation::Connect, session_state());
+  if (settings.catalog_database_scope == CatalogDatabaseScope::VisibleDatabases &&
+      catalog_profile_ != PgCatalogProfile::Redshift)
+    return local_backend_error(LocalFailure::Unsupported,
+        "Visible metadata databases require Redshift", BackendOperation::Connect, session_state());
   if (settings.character_metadata.varchar_threshold >
           static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
       (catalog_profile_ == PgCatalogProfile::Redshift &&
@@ -193,8 +202,388 @@ bool PgDatabaseConnection::selects_catalog_request(const CatalogRequest& request
   if (const auto* columns=std::get_if<ColumnsCatalogRequest>(&request))
     return catalog_mode()==RedshiftCatalogMode::Show && redshift_column_names_are_literal(*columns);
   const auto* tables = std::get_if<TablesCatalogRequest>(&request);
+  if (tables && catalog_mode() == RedshiftCatalogMode::Show &&
+      tables->mode == TablesCatalogRequest::Mode::Catalogs) {
+    // Preserve the existing generated current-database enumeration in manual
+    // transactions. Only effective visible scope requires dedicated discovery.
+    try {
+      const auto scope = redshift_catalog_database_scope(catalog_database_scope(),
+          get_parameter_status("datashare_enabled"), get_parameter_status("external_database"));
+      return !scope || *scope == CatalogDatabaseScope::VisibleDatabases;
+    } catch (...) {
+      // Select the guarded executor on observation failure; never silently
+      // downgrade to a current-only generated query.
+      return true;
+    }
+  }
   return tables && catalog_mode() == RedshiftCatalogMode::Show &&
       (tables->mode == TablesCatalogRequest::Mode::Schemas || redshift_table_schema_is_literal(*tables));
+}
+
+BackendResult<QueryResult> PgDatabaseConnection::execute_database_discovery(
+    const CatalogRequest& request, const CatalogRequest& semantic_request,
+    CatalogDatabaseScope scope, rs::util::Deadline deadline) {
+  const auto unavailable = [this] {
+    return local_backend_error(LocalFailure::Unsupported, "Modern Redshift database discovery is unavailable",
+        BackendOperation::ExecuteCatalog, session_state());
+  };
+  if (session_state() != SessionState::Idle) return unavailable();
+  const auto* enumeration = std::get_if<TablesCatalogRequest>(&request);
+  if (scope == CatalogDatabaseScope::VisibleDatabases ||
+      !enumeration || enumeration->mode != TablesCatalogRequest::Mode::Catalogs) {
+    const auto capability = get_parameter("show_discovery");
+    std::uint32_t version = 0;
+    const auto parsed = std::from_chars(capability.data(), capability.data() + capability.size(), version);
+    if (capability.empty() || capability.size() > 10 || parsed.ec != std::errc{} ||
+        parsed.ptr != capability.data() + capability.size() || version < 4) return unavailable();
+  }
+  const auto expired = [deadline] { return rs::util::Clock::now() >= deadline; };
+  const auto timeout = [] {
+    BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::Timeout), "Database discovery deadline expired"};
+    error.operation = BackendOperation::ExecuteCatalog;
+    return error;
+  };
+  const auto malformed = [] {
+    BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError), "Invalid database discovery context"};
+    error.operation = BackendOperation::ExecuteCatalog;
+    error.error_class = BackendErrorClass::InvalidMetadata;
+    error.disposition = SessionDisposition::Retire;
+    return error;
+  };
+  RedshiftRoutineBudget budget{catalog_response_limits(), catalog_result_limits()};
+  const auto exchange = [&](std::string_view sql) -> BackendResult<QueryResult> {
+    if (expired()) return timeout();
+    if (!budget.exchange()) return redshift_routine_limit();
+    auto result = execute_query(sql, deadline);
+    if (!result) return result.backend_error();
+    if (expired()) return timeout();
+    if (result.session_snapshot().state != SessionState::Idle ||
+        result.session_snapshot().disposition != SessionDisposition::Reusable) return malformed();
+    return result;
+  };
+  const auto* tables = std::get_if<TablesCatalogRequest>(&request);
+  const auto* columns = std::get_if<ColumnsCatalogRequest>(&request);
+  if (!tables && !columns) return unavailable();
+  std::optional<std::string> catalog;
+  bool pattern = false;
+  if (const auto* semantic = std::get_if<TablesCatalogRequest>(&semantic_request)) {
+    if (semantic->mode == TablesCatalogRequest::Mode::Tables) {
+      catalog = semantic->catalog;
+      pattern = semantic->name_matches.catalog == CatalogNameMatch::Existing;
+    }
+  } else catalog = std::get<ColumnsCatalogRequest>(semantic_request).catalog;
+  if (catalog && (!budget.name(*catalog) || !budget.retain({0, 0, catalog->size(), 0, catalog->size()})))
+    return redshift_routine_limit();
+  const auto schema = tables && tables->mode == TablesCatalogRequest::Mode::Tables ?
+      redshift_table_schema(*tables) : std::optional<std::string>{};
+  const auto names = columns ? redshift_column_names(*columns) :
+      std::optional<std::pair<std::string, std::string>>{};
+  if ((tables && tables->mode == TablesCatalogRequest::Mode::Tables && !schema) || (columns && !names))
+    return local_backend_error(LocalFailure::InvalidInput, "Invalid database discovery names",
+        BackendOperation::ExecuteCatalog, session_state());
+  auto valid_catalog = redshift_database_matches({}, catalog, pattern);
+  if (!valid_catalog) return local_backend_error(LocalFailure::InvalidInput, valid_catalog.error_message(),
+      BackendOperation::ExecuteCatalog, session_state());
+  if (schema && (!budget.name(*schema) || !budget.retain({0, 0, schema->size(), 0, schema->size()})))
+    return redshift_routine_limit();
+  if (names) {
+    for (const auto& name : {names->first, names->second})
+      if (!budget.name(name) || !budget.retain({0, 0, name.size(), 0, name.size()})) return redshift_routine_limit();
+  }
+  std::vector<std::string> databases;
+  std::uint64_t database_width = 0;
+  {
+    auto response = exchange(scope == CatalogDatabaseScope::CurrentDatabase ?
+        "SELECT current_database() AS database_name" : "SHOW DATABASES;");
+    if (!response) return response.backend_error();
+    const auto usage = redshift_routine_usage(*response);
+    if (!budget.retain(usage)) return redshift_routine_limit();
+    for (const auto& column : response->columns) {
+      if (column.name == "database_name" && column.normalized_type)
+        database_width = declared_character_metadata(*column.normalized_type).column_size;
+    }
+    if (scope == CatalogDatabaseScope::CurrentDatabase) {
+      auto database = redshift_schema_database(std::move(response));
+      if (!database) return database.backend_error();
+      databases.push_back(std::move(*database));
+    } else {
+      auto selected = normalize_redshift_databases(std::move(response));
+      if (!selected) return selected.backend_error();
+      databases = std::move(*selected);
+    }
+    for (const auto& database : databases)
+      if (!budget.name(database) || !budget.retain({0, 0, database.size(), 0, database.size()}))
+        return redshift_routine_limit();
+    budget.release(usage);
+  }
+  QueryResult output;
+  if (tables) {
+    for (const auto* name : {"TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "TABLE_TYPE", "REMARKS"})
+      output.columns.push_back({name, NativeTypeInfo{ScalarType::VarChar, 0, 0, true}});
+  } else {
+    constexpr std::array<const char*, 18> names{"TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "COLUMN_NAME", "DATA_TYPE",
+        "TYPE_NAME", "COLUMN_SIZE", "BUFFER_LENGTH", "DECIMAL_DIGITS", "NUM_PREC_RADIX", "NULLABLE", "REMARKS",
+        "COLUMN_DEF", "SQL_DATA_TYPE", "SQL_DATETIME_SUB", "CHAR_OCTET_LENGTH", "ORDINAL_POSITION", "IS_NULLABLE"};
+    for (std::size_t i = 0; i < names.size(); ++i) {
+      const bool text = i < 4 || i == 5 || i == 11 || i == 12 || i == 17;
+      const bool integer = i == 6 || i == 7 || i == 15 || i == 16;
+      output.columns.push_back({names[i], NativeTypeInfo{text ? ScalarType::VarChar :
+          integer ? ScalarType::Integer : ScalarType::SmallInt, text ? 0u : integer ? 10u : 5u, 0, true}});
+    }
+  }
+  if (!budget.description(output.columns.size()) || !budget.retain(redshift_routine_usage(output)))
+    return redshift_routine_limit();
+  if (tables && tables->mode == TablesCatalogRequest::Mode::Catalogs) {
+    output.columns[0].normalized_type->column_size = database_width;
+    for (const auto& database : databases) {
+      if (expired()) return timeout();
+      ResultRow row{database, std::nullopt, std::nullopt, std::nullopt, std::nullopt};
+      if (!budget.retain({1, 5, database.size(), 0, 0})) return redshift_routine_limit();
+      output.rows.push_back(std::move(row));
+    }
+  } else {
+    bool first = true;
+    for (const auto& database : databases) {
+      if (expired()) return timeout();
+      auto matches = redshift_database_matches(database, catalog, pattern);
+      if (!matches) return local_backend_error(LocalFailure::InvalidInput, matches.error_message(),
+          BackendOperation::ExecuteCatalog, session_state());
+      if (!*matches) continue;
+      auto response = exchange(tables ? (tables->mode == TablesCatalogRequest::Mode::Schemas ?
+          redshift_show_schemas_command(database) : redshift_show_tables_command(database, *schema)) :
+          redshift_show_columns_command(database, names->first, names->second));
+      if (!response) return response.backend_error();
+      const auto usage = redshift_routine_usage(*response);
+      if (!budget.retain(usage)) return redshift_routine_limit();
+      auto part = tables ? (tables->mode == TablesCatalogRequest::Mode::Schemas ?
+          normalize_redshift_schemas(database, std::move(response)) :
+          normalize_redshift_tables(database, *schema, *tables, std::move(response), catalog_detailed_table_types())) :
+          normalize_redshift_columns(database, names->first, names->second, *columns, std::move(response));
+      if (!part) return part.backend_error();
+      if (tables && tables->mode == TablesCatalogRequest::Mode::Schemas) {
+        part->columns[0].normalized_type->column_size = database_width;
+        for (auto& row : part->rows) row[0] = database;
+      }
+      if (!budget.retain(redshift_routine_usage(*part))) return redshift_routine_limit();
+      budget.release(usage);
+      if (first) {
+        QueryResult old_headers; old_headers.columns = std::move(output.columns);
+        output.columns = std::move(part->columns);
+        budget.release(redshift_routine_usage(old_headers));
+        first = false;
+      } else {
+        if (part->columns.size() != output.columns.size()) return malformed();
+        for (std::size_t i = 0; i < output.columns.size(); ++i) {
+          const auto& incoming = part->columns[i]; auto& retained = output.columns[i];
+          if (incoming.name != retained.name || !incoming.normalized_type || !retained.normalized_type) return malformed();
+          const auto& from = *incoming.normalized_type; auto& to = *retained.normalized_type;
+          if (from.type != to.type || from.known != to.known || from.decimal_digits != to.decimal_digits ||
+              from.declared_type != to.declared_type || from.declared_column_size != to.declared_column_size) return malformed();
+          to.column_size = from.column_size == 0 || to.column_size == 0 ? 0 : std::max(to.column_size, from.column_size);
+        }
+        QueryResult duplicate_headers; duplicate_headers.columns = std::move(part->columns);
+        budget.release(redshift_routine_usage(duplicate_headers));
+      }
+      for (auto& row : part->rows) output.rows.push_back(std::move(row));
+    }
+    std::stable_sort(output.rows.begin(), output.rows.end(), [tables](const ResultRow& a, const ResultRow& b) {
+      if (tables && tables->mode == TablesCatalogRequest::Mode::Tables)
+        return std::tie(a[3], a[0], a[1], a[2]) < std::tie(b[3], b[0], b[1], b[2]);
+      if (a[0] != b[0] || a[1] != b[1] || a[2] != b[2])
+        return std::tie(a[0], a[1], a[2]) < std::tie(b[0], b[1], b[2]);
+      if (!tables) {
+        std::int32_t left = 0, right = 0;
+        const auto& l = *a[16]; const auto& r = *b[16];
+        std::from_chars(l.data(), l.data() + l.size(), left);
+        std::from_chars(r.data(), r.data() + r.size(), right);
+        return left < right;
+      }
+      return a < b;
+    });
+  }
+  if (expired()) return timeout();
+  return BackendResult<QueryResult>{std::move(output), {SessionState::Idle, SessionDisposition::Reusable}};
+}
+
+BackendResult<QueryResult> PgDatabaseConnection::execute_routine_catalog(
+    const CatalogRequest& request, rs::util::Deadline deadline) {
+  const auto native = std::optional<CatalogRequest>{request};
+  // Always selected, including refusals: never fall through to PostgreSQL SQL.
+  const bool columns=std::holds_alternative<ProcedureColumnsCatalogRequest>(*native);
+  const auto schema=redshift_routine_schema(*native);
+  const auto unavailable=[this] {
+    return local_backend_error(LocalFailure::Unsupported,"Modern exact-schema routine discovery is unavailable",
+        BackendOperation::ExecuteCatalog,session_state());
+  };
+  if(catalog_mode()!=RedshiftCatalogMode::Show || !schema || session_state()!=SessionState::Idle)return unavailable();
+  const auto capability=get_parameter("show_discovery");std::uint32_t version=0;
+  const auto parsed=std::from_chars(capability.data(),capability.data()+capability.size(),version);
+  if(capability.empty() || capability.size()>10 || parsed.ec!=std::errc{} ||
+      parsed.ptr!=capability.data()+capability.size() || version<4)return unavailable();
+  const auto expired=[deadline]{return rs::util::Clock::now()>=deadline;};
+  const auto timeout=[] {
+    BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::Timeout),"Routine discovery deadline expired"};
+    error.operation=BackendOperation::ExecuteCatalog;return BackendResult<QueryResult>{std::move(error)};
+  };
+  if(expired())return timeout();
+  RedshiftRoutineBudget budget{catalog_response_limits(),catalog_result_limits()};
+  const auto valid_names=std::visit([](const auto& names) {
+    using T=std::decay_t<decltype(names)>;
+    if constexpr(std::is_same_v<T,ProceduresCatalogRequest> || std::is_same_v<T,ProcedureColumnsCatalogRequest>) {
+      const auto valid=[](const auto& value) {
+        if(!value)return true;
+        if(value->find('\0')!=std::string::npos || !rs::util::utf8_code_point_count(*value))return false;
+        return true;
+      };
+      if(!valid(names.catalog) || !valid(names.schema) || !valid(names.procedure))return false;
+      const auto pattern=[](const auto& value,CatalogNameMatch match) {
+        if(!value || match!=CatalogNameMatch::Existing)return true;
+        bool escape=false;
+        for(char ch:*value){if(escape)escape=false;else if(ch=='\\')escape=true;}
+        return !escape;
+      };
+      if(!pattern(names.procedure,names.name_matches.object))return false;
+      if constexpr(std::is_same_v<T,ProcedureColumnsCatalogRequest>)
+        return valid(names.column) && pattern(names.column,names.name_matches.member);
+      return true;
+    }
+    return false;
+  },*native);
+  if(!valid_names)return local_backend_error(LocalFailure::InvalidInput,"Invalid routine catalog arguments",
+      BackendOperation::ExecuteCatalog,session_state());
+  if(!budget.name(*schema) || !budget.retain({0,0,schema->size(),0,schema->size()}))return redshift_routine_limit();
+  // The empty-schema path is an explicit no-match, not a search-path default.
+  if(schema->empty())return redshift_routine_result("","",{},columns,budget);
+  const auto catalog=std::visit([](const auto& names)->std::optional<std::string> {
+    using T=std::decay_t<decltype(names)>;
+    if constexpr(std::is_same_v<T,ProceduresCatalogRequest> || std::is_same_v<T,ProcedureColumnsCatalogRequest>)return names.catalog;
+    return std::nullopt;
+  },*native);
+  if (catalog && catalog->empty()) return redshift_routine_result("", *schema, {}, columns, budget);
+  std::vector<std::string> databases;
+  if (catalog) {
+    if (!budget.name(*catalog) || !budget.retain({0, 0, catalog->size(), 0, catalog->size()})) return redshift_routine_limit();
+    databases.push_back(*catalog);
+  } else {
+    if (!budget.exchanges_available(3)) return redshift_routine_limit();
+    auto scope = redshift_catalog_database_scope(catalog_database_scope(),
+        get_parameter_status("datashare_enabled"), get_parameter_status("external_database"));
+    if (!scope) {
+      BackendError error{scope.error(), scope.error_message()};
+      error.error_class = BackendErrorClass::InvalidMetadata; error.operation = BackendOperation::ExecuteCatalog;
+      error.disposition = SessionDisposition::Retire; return error;
+    }
+    if (!budget.exchange()) return redshift_routine_limit();
+    auto identity = execute_query(*scope == CatalogDatabaseScope::CurrentDatabase ?
+        "SELECT current_database() AS database_name" : "SHOW DATABASES;", deadline);
+    if (!identity) return identity.backend_error();
+    if (expired()) return timeout();
+    if (identity.session_snapshot().state != SessionState::Idle ||
+        identity.session_snapshot().disposition != SessionDisposition::Reusable) {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError), "Invalid routine identity session state"};
+      error.error_class = BackendErrorClass::InvalidMetadata; error.operation = BackendOperation::ExecuteCatalog;
+      error.session_state = identity.session_snapshot().state; error.disposition = SessionDisposition::Retire; return error;
+    }
+    const auto usage = redshift_routine_usage(*identity);
+    if (!budget.retain(usage)) return redshift_routine_limit();
+    if (*scope == CatalogDatabaseScope::CurrentDatabase) {
+      auto database = redshift_schema_database(std::move(identity));
+      if (!database) return database.backend_error();
+      databases.push_back(std::move(*database));
+    } else {
+      auto selected = normalize_redshift_databases(std::move(identity));
+      if (!selected) return selected.backend_error();
+      databases = std::move(*selected);
+    }
+    for (const auto& database : databases)
+      if (!budget.name(database) || !budget.retain({0, 0, database.size(), 0, database.size()})) return redshift_routine_limit();
+    budget.release(usage);
+  }
+  auto combined = redshift_routine_result("", *schema, {}, columns, budget);
+  if (!combined) return combined.backend_error();
+  bool first = true;
+  for (const auto& database_name : databases) {
+    if (expired()) return timeout();
+    BackendResult<std::string> database{database_name, {SessionState::Idle, SessionDisposition::Reusable}};
+  if(!budget.exchanges_available(2))return redshift_routine_limit();
+  std::vector<RedshiftRoutine> routines;
+  for(bool function:{false,true}) {
+    if(expired())return timeout();
+    if(!budget.exchange())return redshift_routine_limit();
+    auto response=execute_query(redshift_show_routines_command(*database,*schema,function),deadline);
+    if(!response)return response.backend_error();
+    if(expired())return timeout();
+    if(response.session_snapshot().state!=SessionState::Idle ||
+        response.session_snapshot().disposition!=SessionDisposition::Reusable) {
+      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),"Invalid routine discovery session state"};
+      error.error_class=BackendErrorClass::InvalidMetadata;error.operation=BackendOperation::ExecuteCatalog;
+      error.session_state=response.session_snapshot().state;error.disposition=SessionDisposition::Retire;return error;
+    }
+    const auto usage=redshift_routine_usage(*response);
+    if(!budget.retain(usage))return redshift_routine_limit();
+    auto normalized=normalize_redshift_routines(*database,*schema,function,*native,std::move(response),budget,deadline);
+    budget.release(usage);
+    if(!normalized)return normalized.backend_error();
+    if(expired())return timeout();
+    for(auto& routine:*normalized)routines.push_back(std::move(routine));
+  }
+  std::sort(routines.begin(),routines.end(),[](const auto& a,const auto& b) {
+    return std::tie(a.name,a.function,a.signature)<std::tie(b.name,b.function,b.signature);
+  });
+  auto result=redshift_routine_result(*database,*schema,routines,columns,budget);
+  if(!result)return result.backend_error();
+  if(columns) {
+    if(!budget.exchanges_available(routines.size()))return redshift_routine_limit();
+    const auto& requested=std::get<ProcedureColumnsCatalogRequest>(*native);
+    for(const auto& routine:routines) {
+      if(expired())return timeout();
+      if(!budget.exchange())return redshift_routine_limit();
+      auto response=execute_query(redshift_show_parameters_command(*database,*schema,routine),deadline);
+      if(!response)return response.backend_error();
+      if(expired())return timeout();
+      if(response.session_snapshot().state!=SessionState::Idle ||
+          response.session_snapshot().disposition!=SessionDisposition::Reusable) {
+        BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),"Invalid routine parameter session state"};
+        error.error_class=BackendErrorClass::InvalidMetadata;error.operation=BackendOperation::ExecuteCatalog;
+        error.session_state=response.session_snapshot().state;error.disposition=SessionDisposition::Retire;return error;
+      }
+      const auto usage=redshift_routine_usage(*response);
+      if(!budget.retain(usage))return redshift_routine_limit();
+      auto parameters=normalize_redshift_parameters(*database,*schema,routine,requested,std::move(response),budget,deadline);
+      budget.release(usage);
+      if(!parameters)return parameters.backend_error();
+      if(expired())return timeout();
+      // Only the first described header set remains owning; all rows stay
+      // charged while moved into the single unpublished result.
+      QueryResult headers;headers.columns=std::move(parameters->columns);
+      budget.release(redshift_routine_usage(headers));
+      for(auto& row:parameters->rows)result->rows.push_back(std::move(row));
+    }
+    sort_redshift_parameters(*result);
+  }
+    if (first) {
+      QueryResult original_headers; original_headers.columns = std::move(combined->columns);
+      combined->columns = std::move(result->columns);
+      budget.release(redshift_routine_usage(original_headers));
+      first = false;
+    } else {
+      if (result->columns.size() != combined->columns.size()) return redshift_routine_limit();
+      for (std::size_t i = 0; i < combined->columns.size(); ++i) {
+        auto& to = *combined->columns[i].normalized_type;
+        const auto& from = *result->columns[i].normalized_type;
+        if (from.type != to.type || from.known != to.known || from.decimal_digits != to.decimal_digits)
+          return redshift_routine_limit();
+        to.column_size = std::max(to.column_size, from.column_size);
+      }
+      QueryResult duplicate_headers; duplicate_headers.columns = std::move(result->columns);
+      budget.release(redshift_routine_usage(duplicate_headers));
+    }
+    for (auto& row : result->rows) combined->rows.push_back(std::move(row));
+  }
+  if (columns) sort_redshift_parameters(*combined);
+  else std::stable_sort(combined->rows.begin(), combined->rows.end());
+  if (expired()) return timeout();
+  return combined;
 }
 
 BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
@@ -215,6 +604,7 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
   auto native = native_catalog_request(request);
   if (!native) return local_backend_error(LocalFailure::InvalidInput,
       "Invalid catalog name semantics", BackendOperation::ExecuteCatalog, session_state());
+  const auto semantic_request = *native;
   const bool identifier_show = catalog_profile_ == PgCatalogProfile::Redshift &&
       (std::holds_alternative<TablesCatalogRequest>(*native) ||
        std::holds_alternative<ColumnsCatalogRequest>(*native)) &&
@@ -233,143 +623,32 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
           "Modern exact Redshift catalog discovery is unavailable",
           BackendOperation::ExecuteCatalog, session_state());
   }
-  if (catalog_profile_==PgCatalogProfile::Redshift &&
-      (std::holds_alternative<ProceduresCatalogRequest>(*native) ||
-       std::holds_alternative<ProcedureColumnsCatalogRequest>(*native))) {
-    // Always selected, including refusals: never fall through to PostgreSQL SQL.
-    const bool columns=std::holds_alternative<ProcedureColumnsCatalogRequest>(*native);
-    const auto schema=redshift_routine_schema(*native);
-    const auto unavailable=[this] {
-      return local_backend_error(LocalFailure::Unsupported,"Modern exact-schema routine discovery is unavailable",
-          BackendOperation::ExecuteCatalog,session_state());
-    };
-    if(catalog_mode()!=RedshiftCatalogMode::Show || !schema || session_state()!=SessionState::Idle)return unavailable();
-    const auto capability=get_parameter("show_discovery");std::uint32_t version=0;
-    const auto parsed=std::from_chars(capability.data(),capability.data()+capability.size(),version);
-    if(capability.empty() || capability.size()>10 || parsed.ec!=std::errc{} ||
-        parsed.ptr!=capability.data()+capability.size() || version<4)return unavailable();
-    const auto expired=[deadline]{return rs::util::Clock::now()>=deadline;};
-    const auto timeout=[] {
-      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::Timeout),"Routine discovery deadline expired"};
-      error.operation=BackendOperation::ExecuteCatalog;return BackendResult<QueryResult>{std::move(error)};
-    };
-    if(expired())return timeout();
-    RedshiftRoutineBudget budget{catalog_response_limits(),catalog_result_limits()};
-    const auto valid_names=std::visit([](const auto& names) {
-      using T=std::decay_t<decltype(names)>;
-      if constexpr(std::is_same_v<T,ProceduresCatalogRequest> || std::is_same_v<T,ProcedureColumnsCatalogRequest>) {
-        const auto valid=[](const auto& value) {
-          if(!value)return true;
-          if(value->find('\0')!=std::string::npos || !rs::util::utf8_code_point_count(*value))return false;
-          return true;
-        };
-        if(!valid(names.catalog) || !valid(names.schema) || !valid(names.procedure))return false;
-        const auto pattern=[](const auto& value,CatalogNameMatch match) {
-          if(!value || match!=CatalogNameMatch::Existing)return true;
-          bool escape=false;
-          for(char ch:*value){if(escape)escape=false;else if(ch=='\\')escape=true;}
-          return !escape;
-        };
-        if(!pattern(names.procedure,names.name_matches.object))return false;
-        if constexpr(std::is_same_v<T,ProcedureColumnsCatalogRequest>)
-          return valid(names.column) && pattern(names.column,names.name_matches.member);
-        return true;
+  if (catalog_profile_ == PgCatalogProfile::Redshift) {
+    const auto* scoped_tables = std::get_if<TablesCatalogRequest>(&*native);
+    const auto* scoped_columns = std::get_if<ColumnsCatalogRequest>(&*native);
+    if ((scoped_tables && scoped_tables->mode != TablesCatalogRequest::Mode::TableTypes) || scoped_columns) {
+      auto scope = redshift_catalog_database_scope(catalog_database_scope(),
+          get_parameter_status("datashare_enabled"), get_parameter_status("external_database"));
+      if (!scope) {
+        BackendError error{scope.error(), scope.error_message()};
+        error.operation = BackendOperation::ExecuteCatalog;
+        error.error_class = BackendErrorClass::InvalidMetadata;
+        error.disposition = SessionDisposition::Retire;
+        return error;
       }
-      return false;
-    },*native);
-    if(!valid_names)return local_backend_error(LocalFailure::InvalidInput,"Invalid routine catalog arguments",
-        BackendOperation::ExecuteCatalog,session_state());
-    if(!budget.name(*schema) || !budget.retain({0,0,schema->size(),0,schema->size()}))return redshift_routine_limit();
-    // The empty-schema path is an explicit no-match, not a search-path default.
-    if(schema->empty())return redshift_routine_result("","",{},columns,budget);
-    const auto catalog=std::visit([](const auto& names)->std::optional<std::string> {
-      using T=std::decay_t<decltype(names)>;
-      if constexpr(std::is_same_v<T,ProceduresCatalogRequest> || std::is_same_v<T,ProcedureColumnsCatalogRequest>)return names.catalog;
-      return std::nullopt;
-    },*native);
-    // A mismatching catalog can terminate after one identity exchange. Three
-    // exchanges are required only once a matching nonempty catalog is known.
-    if(!catalog && !budget.exchanges_available(3))return redshift_routine_limit();
-    if(!budget.exchange())return redshift_routine_limit();
-    auto identity=execute_query("SELECT current_database() AS database_name",deadline);
-    if(!identity)return identity.backend_error();
-    if(expired())return timeout();
-    if(identity.session_snapshot().state!=SessionState::Idle ||
-        identity.session_snapshot().disposition!=SessionDisposition::Reusable)
-    {
-      BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),"Invalid routine identity session state"};
-      error.error_class=BackendErrorClass::InvalidMetadata;error.operation=BackendOperation::ExecuteCatalog;
-      error.session_state=identity.session_snapshot().state;error.disposition=SessionDisposition::Retire;return error;
+      if (catalog_mode() == RedshiftCatalogMode::Show &&
+          (*scope == CatalogDatabaseScope::VisibleDatabases &&
+            ((scoped_tables && (scoped_tables->mode == TablesCatalogRequest::Mode::Catalogs ||
+                                scoped_tables->mode == TablesCatalogRequest::Mode::Schemas ||
+                                redshift_table_schema_is_literal(*scoped_tables))) ||
+             (scoped_columns && redshift_column_names_are_literal(*scoped_columns)))))
+        return execute_database_discovery(*native, semantic_request, *scope, deadline);
     }
-    const auto identity_usage=redshift_routine_usage(*identity);
-    if(!budget.retain(identity_usage))return redshift_routine_limit();
-    if(identity->rows.size()==1 && identity->rows[0].size()==1 && identity->rows[0][0]) {
-      if(!budget.name(*identity->rows[0][0]) || !budget.retain({0,0,identity->rows[0][0]->size(),0,identity->rows[0][0]->size()}))return redshift_routine_limit();
-    }
-    auto database=redshift_schema_database(std::move(identity));
-    budget.release(identity_usage);
-    if(!database)return database.backend_error();
-    if(expired())return timeout();
-    if(catalog && *catalog!=*database)return redshift_routine_result(*database,*schema,{},columns,budget);
-    if(!budget.exchanges_available(2))return redshift_routine_limit();
-    std::vector<RedshiftRoutine> routines;
-    for(bool function:{false,true}) {
-      if(expired())return timeout();
-      if(!budget.exchange())return redshift_routine_limit();
-      auto response=execute_query(redshift_show_routines_command(*database,*schema,function),deadline);
-      if(!response)return response.backend_error();
-      if(expired())return timeout();
-      if(response.session_snapshot().state!=SessionState::Idle ||
-          response.session_snapshot().disposition!=SessionDisposition::Reusable) {
-        BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),"Invalid routine discovery session state"};
-        error.error_class=BackendErrorClass::InvalidMetadata;error.operation=BackendOperation::ExecuteCatalog;
-        error.session_state=response.session_snapshot().state;error.disposition=SessionDisposition::Retire;return error;
-      }
-      const auto usage=redshift_routine_usage(*response);
-      if(!budget.retain(usage))return redshift_routine_limit();
-      auto normalized=normalize_redshift_routines(*database,*schema,function,*native,std::move(response),budget,deadline);
-      budget.release(usage);
-      if(!normalized)return normalized.backend_error();
-      if(expired())return timeout();
-      for(auto& routine:*normalized)routines.push_back(std::move(routine));
-    }
-    std::sort(routines.begin(),routines.end(),[](const auto& a,const auto& b) {
-      return std::tie(a.name,a.function,a.signature)<std::tie(b.name,b.function,b.signature);
-    });
-    auto result=redshift_routine_result(*database,*schema,routines,columns,budget);
-    if(!result)return result.backend_error();
-    if(columns) {
-      if(!budget.exchanges_available(routines.size()))return redshift_routine_limit();
-      const auto& requested=std::get<ProcedureColumnsCatalogRequest>(*native);
-      for(const auto& routine:routines) {
-        if(expired())return timeout();
-        if(!budget.exchange())return redshift_routine_limit();
-        auto response=execute_query(redshift_show_parameters_command(*database,*schema,routine),deadline);
-        if(!response)return response.backend_error();
-        if(expired())return timeout();
-        if(response.session_snapshot().state!=SessionState::Idle ||
-            response.session_snapshot().disposition!=SessionDisposition::Reusable) {
-          BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),"Invalid routine parameter session state"};
-          error.error_class=BackendErrorClass::InvalidMetadata;error.operation=BackendOperation::ExecuteCatalog;
-          error.session_state=response.session_snapshot().state;error.disposition=SessionDisposition::Retire;return error;
-        }
-        const auto usage=redshift_routine_usage(*response);
-        if(!budget.retain(usage))return redshift_routine_limit();
-        auto parameters=normalize_redshift_parameters(*database,*schema,routine,requested,std::move(response),budget,deadline);
-        budget.release(usage);
-        if(!parameters)return parameters.backend_error();
-        if(expired())return timeout();
-        // Only the first described header set remains owning; all rows stay
-        // charged while moved into the single unpublished result.
-        QueryResult headers;headers.columns=std::move(parameters->columns);
-        budget.release(redshift_routine_usage(headers));
-        for(auto& row:parameters->rows)result->rows.push_back(std::move(row));
-      }
-      sort_redshift_parameters(*result);
-    }
-    if(expired())return timeout();
-    return result;
   }
+  if (catalog_profile_ == PgCatalogProfile::Redshift &&
+      (std::holds_alternative<ProceduresCatalogRequest>(*native) ||
+       std::holds_alternative<ProcedureColumnsCatalogRequest>(*native)))
+    return execute_routine_catalog(*native, deadline);
   const auto* tables = std::get_if<TablesCatalogRequest>(&*native);
   if (catalog_profile_ == PgCatalogProfile::Redshift && tables &&
       tables->mode == TablesCatalogRequest::Mode::Schemas &&

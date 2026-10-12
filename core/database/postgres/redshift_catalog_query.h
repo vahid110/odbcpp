@@ -8,6 +8,16 @@
 
 namespace rs::core::database::postgres {
 
+// Exact authenticated ParameterStatus policy. Missing flags mean off; invalid
+// values are refused, including flags whose value cannot change the outcome.
+rs::util::Result<CatalogDatabaseScope> redshift_catalog_database_scope(
+    CatalogDatabaseScope requested, const std::optional<std::string>& datashare_enabled,
+    const std::optional<std::string>& external_database);
+BackendResult<std::vector<std::string>> normalize_redshift_databases(
+    BackendResult<QueryResult> input);
+rs::util::Result<bool> redshift_database_matches(std::string_view database,
+    const std::optional<std::string>& requested, bool pattern);
+
 // UTF8 native-profile matching: ASCII native fold for unquoted identifiers,
 // exact quoted bytes, and checked request-specific semantic slots.
 std::optional<CatalogRequest> native_catalog_request(const CatalogRequest& request);
@@ -15,7 +25,7 @@ std::optional<CatalogRequest> native_catalog_request(const CatalogRequest& reque
 // Other request families and enumeration modes are not lowered.
 std::optional<CatalogRequest> redshift_identifier_show_request(const CatalogRequest& validated_native);
 // Explicit Redshift catalog queries; broader parity remains separate work.
-std::string redshift_schemas_query();
+std::string redshift_schemas_query(bool visible_databases = false);
 // Fixed current-database discovery and owning SHOW normalization. No SQL fallback.
 BackendResult<std::string> redshift_schema_database(BackendResult<QueryResult> input);
 std::string redshift_show_schemas_command(std::string_view validated_database);
@@ -79,6 +89,6 @@ BackendResult<QueryResult> normalize_redshift_parameters(std::string_view databa
 void sort_redshift_parameters(QueryResult& result);
 std::string redshift_statistics_query(const StatisticsCatalogRequest& request);
 std::string redshift_row_version_query();
-std::string redshift_columns_query(const ColumnsCatalogRequest& request);
+std::string redshift_columns_query(const ColumnsCatalogRequest& request, bool visible_databases = false);
 
 }  // namespace rs::core::database::postgres

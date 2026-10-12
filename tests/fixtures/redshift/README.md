@@ -37,3 +37,47 @@ It does not demonstrate active native server cancellation. That timing-dependent
 native scenario remains pending separate bounded qualification; deterministic
 unit cases exercise active cancellation/completion races through both APIs.
 Windows/other widths/platform execution remains pending the periodic matrix.
+
+
+### DatabaseMetadataCurrentDbOnly existing-principal scope
+
+`RedshiftMetadataScopeRealTest.DefaultVisibleAndCurrentReconnectKeepCatalogNullSiblingAndEmptySemantics`
+requires `ODBCPP_REDSHIFT_METADATA_SCOPE_ADMISSION=metadata_scope_existing_principal_v1`
+plus fresh independently reviewed finite admission at the combined checkpoint.
+Its source ledger allows three TLS logins and at most nine SQL exchanges:
+three SQLTables catalog enumerations, three fixed NULL SELECTs and three
+SQLColumns queries with an explicit empty catalog. Aggregate40s, each operation5s,
+maximum64 returned catalogs, no fixtures, DDL, DML, shares, grants or resources.
+Source/native binary/head and actual selected cases must be bound by admission;
+this marker alone grants no execution authority. Unknown completion fences SQL.
+
+The case tests default/TRUE equivalence, FALSE catalog inclusion under existing
+visibility, A/W login and catalog calls, typed NULL sibling ownership, explicit
+empty-catalog no-match and invalid-option recovery without echoed values. It
+uses LEGACY discovery to qualify actual SVV view grammar. Authenticated sharing
+flags can legitimately leave FALSE effective-current. This is not proof of
+two-database collisions, SHOW fanout, or privileged/denied visibility: actual
+cross-database and SHOW cases remain pending applicable existing-principal
+inputs and separate bounded case authoring/qualification. No database/share
+creation or privilege expansion is implied. Native execution remains pending.
+
+
+The conditional modern case
+`RedshiftMetadataScopeShowRealTest.TwoVisibleDatabasesKeepCommonSchemaIdentityThroughWideFanoutAndSibling`
+is separately selected by
+`ODBCPP_REDSHIFT_METADATA_SCOPE_SHOW_ADMISSION=metadata_scope_two_visible_contexts_v1`.
+Fresh admission must bind existing `ODBCPP_REDSHIFT_METADATA_SCOPE_SECOND_DATABASE`
+and `ODBCPP_REDSHIFT_METADATA_SCOPE_COMMON_SCHEMA` names, both visible to the same
+ordinary principal. It requires exactly two visible databases (including
+odbcpp_pilot) and a schema collision already present in them; unexpected
+visibility fails before schema fanout. No fixtures or grants are created.
+Explicit controls MAXRESULTS3/MAXROWS128/MAXCELLS4096/MAXCOLUMNS18 are checked,
+not enlarged by the case. Admission must also bind adequate finite SQL/name/
+metadata/byte budgets. Maximum one TLS login/six SQL exchanges,40s aggregate,
+five seconds per operation,64 returned schema rows. It checks owning catalog
+identity through actual SHOW discovery/fanout, A/W calls and NULL descriptors.
+
+This authored case is UNRUN. A single available database, absent authenticated
+sharing/external capability, or lack of an existing common schema is a concrete
+coverage dependency. Do not skip it as passed, provision a fixture automatically,
+or substitute the legacy case's success for modern multi-database qualification.

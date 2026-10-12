@@ -79,6 +79,7 @@ struct ConnectionSettings {
   bool read_only = false;
   CharacterMetadataPolicy character_metadata;
   bool detailed_table_types = true;
+  CatalogDatabaseScope catalog_database_scope{CatalogDatabaseScope::CurrentDatabase};
 };
 
 // Shared validation for SDK callers and product option resolution.

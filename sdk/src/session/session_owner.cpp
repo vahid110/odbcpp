@@ -316,6 +316,12 @@ BackendResult<std::string> SessionLease::catalog_query(const CatalogRequest& req
           BackendError error{query.error(), query.error_message()};
           error.operation = BackendOperation::BuildCatalogQuery;
           error.session_state = state; error.disposition = outcome.disposition;
+          // Protocol metadata cannot establish a reusable physical session.
+          // Ordinary local input/unsupported errors retain passive semantics.
+          if (query.error() == rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError)) {
+            error.error_class = BackendErrorClass::InvalidMetadata;
+            error.disposition = SessionDisposition::Retire;
+          }
           return error;
         }
         return BackendResult<std::string>{std::move(*query), outcome};

@@ -677,3 +677,22 @@ Unknown/malformed SHOW types are refused. Legacy discovery still depends on
 what the server exposes through `information_schema`; this option does not add
 missing external/system discovery or implement streaming/DeclareFetch. Authored
 Windows/width and native tests await the periodic CI-first/live checkpoint.
+
+
+Redshift `DatabaseMetadataCurrentDbOnly` defaults to `1`/`TRUE` and accepts only
+trimmed `TRUE`/`FALSE`/`1`/`0`. Driver, DSN and connection-string layers use the
+existing precedence; a successful connection captures its own scope. `0`/`FALSE`
+requests metadata across caller-visible databases when the server reports sharing
+support. Server-reported external-catalog support can expand effective scope even
+with `TRUE`, matching the native driver rule. The setting does not change the
+connected database or grant permissions.
+
+`SQLTables` catalog/schema/table discovery and `SQLColumns` retain complete
+database identities, including same-named schemas and objects in different
+databases. Modern exact-schema routine discovery applies this scope when catalog
+is omitted; an explicit catalog remains a direct context, and an explicit empty
+catalog is a no-match. Existing exact-context primary/foreign-key requirements
+remain. Visible-database current-row identity discovery is explicitly unsupported.
+Capability, malformed metadata, deadline or cumulative-limit failures return an
+error rather than publishing a partial discovery result. Full platform and live
+acceptance follow the periodic CI-first checkpoint.

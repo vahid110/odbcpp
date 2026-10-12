@@ -8359,3 +8359,188 @@ TEST_F(RedshiftCancelHandleRealTest, IdleNeedDataRefillNullAndSiblingRemainOwnin
   ASSERT_EQ(SQL_SUCCESS, result); EXPECT_EQ(7, value);
   ASSERT_NO_FATAL_FAILURE(release_connection());
 }
+
+class RedshiftMetadataScopeRealTest : public RedshiftKeepaliveOptionsRealTest {
+ protected:
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_METADATA_SCOPE_ADMISSION", "metadata_scope_existing_principal_v1");
+  }
+  std::string scope_input(const char* value, const char* mode = "LEGACY") {
+    auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    for (const char* key : {"DATABASEMETADATACURRENTDBONLY", "REDSHIFTCATALOGMODE", "LT", "LOGINTIMEOUT"}) options.erase(key);
+    if (value) options["DATABASEMETADATACURRENTDBONLY"] = value;
+    options["REDSHIFTCATALOGMODE"] = mode; options["LOGINTIMEOUT"] = "5";
+    std::string text;
+    for (const auto& [key, item] : options) {
+      text += key; text += "={";
+      for (char ch : item) { text.push_back(ch); if (ch == '}') text.push_back('}'); }
+      text += "};";
+    }
+    EXPECT_TRUE(options == rs::odbc::ConnectionString::parse(text)) << "Metadata scope input preservation failed";
+    return text;
+  }
+  void invalid_scope() {
+    ASSERT_TRUE(cap(window_end_, false));
+    auto input = rs::odbc::utf8_to_wide(scope_input("invalid-secret")); ASSERT_TRUE(input); input->push_back(0);
+    SQLWCHAR output[3]{'x', 0, 'y'}; SQLSMALLINT bytes = 66;
+    const auto rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, output, 3, &bytes, SQL_DRIVER_NOPROMPT);
+    connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO;
+    if (rc != SQL_ERROR) unknown_completion_ = true;
+    ASSERT_EQ(SQL_ERROR, rc); EXPECT_EQ(66, bytes); EXPECT_EQ('x', output[0]); EXPECT_EQ('y', output[2]);
+    SQLCHAR state[6]{}, message[128]{};
+    ASSERT_TRUE(observed(SQLGetDiagRec(SQL_HANDLE_DBC, hdbc_, 1, state, nullptr, message,
+        static_cast<SQLSMALLINT>(sizeof(message)), nullptr)));
+    if (std::string_view(reinterpret_cast<char*>(state)) != "HY000" ||
+        std::string_view(reinterpret_cast<char*>(message)) != "Invalid DatabaseMetadataCurrentDbOnly value") unknown_completion_ = true;
+    ASSERT_STREQ("HY000", reinterpret_cast<char*>(state));
+    ASSERT_STREQ("Invalid DatabaseMetadataCurrentDbOnly value", reinterpret_cast<char*>(message));
+  }
+  void open_scope(const char* value, bool wide, const char* mode = "LEGACY") {
+    ASSERT_TRUE(cap(window_end_, false));
+    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(window_end_ - rs::util::Clock::now()).count(), 5);
+    auto text = scope_input(value, mode); SQLRETURN rc;
+    if (wide) {
+      auto input = rs::odbc::utf8_to_wide(text); ASSERT_TRUE(input); input->push_back(0);
+      rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    } else rc = SQLDriverConnect(hdbc_, nullptr, reinterpret_cast<SQLCHAR*>(text.data()), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO; ASSERT_TRUE(observed(rc));
+    ASSERT_TRUE(observed(SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt_)));
+    ASSERT_TRUE(observed(SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &sibling_)));
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  }
+  void catalogs_with_sibling(bool wide, std::vector<std::string>& catalogs) {
+    ASSERT_TRUE(cap(window_end_, true));
+    if (wide) {
+      SQLWCHAR all[]{'%', 0}, empty[]{0};
+      ASSERT_TRUE(known_sql(SQLTablesW(hstmt_, all, SQL_NTS, empty, SQL_NTS, empty, SQL_NTS, nullptr, 0)));
+    } else ASSERT_TRUE(known_sql(SQLTables(hstmt_, (SQLCHAR*)SQL_ALL_CATALOGS, SQL_NTS,
+        (SQLCHAR*)"", SQL_NTS, (SQLCHAR*)"", SQL_NTS, nullptr, 0)));
+    ASSERT_NO_FATAL_FAILURE(cap_sibling());
+    ASSERT_TRUE(known_sql(SQLExecDirect(sibling_, (SQLCHAR*)"SELECT CAST(NULL AS INTEGER)", SQL_NTS)));
+    SQLSMALLINT count = -1; ASSERT_TRUE(observed(SQLNumResultCols(hstmt_, &count))); ASSERT_EQ(5, count);
+    for (;;) {
+      ASSERT_TRUE(cap(window_end_, true)); const auto rc = SQLFetch(hstmt_);
+      if (rc == SQL_NO_DATA) break;
+      ASSERT_TRUE(observed(rc));
+      if (catalogs.size() >= 64) { unknown_completion_ = true; FAIL() << "Catalog coverage exceeded admitted row bound"; }
+      struct { SQLCHAR value[512]{}; SQLCHAR guard = 77; } cell;
+      SQLLEN bytes = -1; ASSERT_TRUE(cap(window_end_, true));
+      ASSERT_TRUE(observed(SQLGetData(hstmt_, 1, SQL_C_CHAR, cell.value, sizeof(cell.value), &bytes)));
+      ASSERT_GT(bytes, 0); ASSERT_LT(bytes, static_cast<SQLLEN>(sizeof(cell.value)));
+      EXPECT_EQ(77, cell.guard); EXPECT_EQ(0, cell.value[static_cast<std::size_t>(bytes)]);
+      catalogs.emplace_back(reinterpret_cast<char*>(cell.value), static_cast<std::size_t>(bytes));
+      for (SQLUSMALLINT column : {2, 3, 4, 5}) {
+        SQLCHAR unchanged = 71; ASSERT_TRUE(cap(window_end_, true));
+        ASSERT_TRUE(observed(SQLGetData(hstmt_, column, SQL_C_CHAR, &unchanged, 1, &bytes)));
+        EXPECT_EQ(SQL_NULL_DATA, bytes); EXPECT_EQ(71, unchanged);
+      }
+    }
+    EXPECT_TRUE(std::is_sorted(catalogs.begin(), catalogs.end()));
+    EXPECT_EQ(catalogs.end(), std::adjacent_find(catalogs.begin(), catalogs.end()));
+    EXPECT_NE(catalogs.end(), std::find(catalogs.begin(), catalogs.end(), "odbcpp_pilot"));
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLCloseCursor(hstmt_)));
+    ASSERT_NO_FATAL_FAILURE(cap_sibling()); ASSERT_TRUE(observed(SQLFetch(sibling_)));
+    SQLINTEGER null_value = 71; SQLLEN bytes = 97; ASSERT_NO_FATAL_FAILURE(cap_sibling());
+    ASSERT_TRUE(observed(SQLGetData(sibling_, 1, SQL_C_SLONG, &null_value, sizeof(null_value), &bytes)));
+    EXPECT_EQ(SQL_NULL_DATA, bytes); EXPECT_EQ(71, null_value);
+    ASSERT_NO_FATAL_FAILURE(cap_sibling()); ASSERT_TRUE(observed(SQLFetch(sibling_), SQL_NO_DATA));
+    ASSERT_NO_FATAL_FAILURE(cap_sibling()); ASSERT_TRUE(observed(SQLCloseCursor(sibling_)));
+    // Empty explicit catalog is a no-match, never the connected database.
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(known_sql(SQLColumns(hstmt_, (SQLCHAR*)"", SQL_NTS, nullptr, 0, nullptr, 0, nullptr, 0)));
+    ASSERT_TRUE(observed(SQLNumResultCols(hstmt_, &count))); EXPECT_EQ(18, count);
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_NO_DATA));
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLCloseCursor(hstmt_)));
+  }
+};
+
+// Future finite admission: three verified TLS logins, at most nine SQL exchanges
+// (three catalog enumerations, three fixed NULL SELECTs, three empty-catalog
+// column queries), 40s aggregate/per-operation5s; no objects, DDL, DML or grants.
+// FALSE can equal TRUE when authenticated sharing/external flags are off. This
+// case proves native existing-principal grammar/lifecycle, not two-database
+// completeness or privileged/denied visibility; those remain explicit debt.
+TEST_F(RedshiftMetadataScopeRealTest, DefaultVisibleAndCurrentReconnectKeepCatalogNullSiblingAndEmptySemantics) {
+  ASSERT_NO_FATAL_FAILURE(invalid_scope());
+  std::vector<std::string> defaults, visible, current;
+  ASSERT_NO_FATAL_FAILURE(open_scope(nullptr, false));
+  ASSERT_NO_FATAL_FAILURE(catalogs_with_sibling(false, defaults));
+  ASSERT_NO_FATAL_FAILURE(release_keepalive());
+  ASSERT_NO_FATAL_FAILURE(open_scope("FALSE", true));
+  ASSERT_NO_FATAL_FAILURE(catalogs_with_sibling(true, visible));
+  EXPECT_TRUE(std::includes(visible.begin(), visible.end(), defaults.begin(), defaults.end()));
+  ASSERT_NO_FATAL_FAILURE(release_keepalive());
+  ASSERT_NO_FATAL_FAILURE(open_scope("TRUE", false));
+  ASSERT_NO_FATAL_FAILURE(catalogs_with_sibling(false, current)); EXPECT_EQ(defaults, current);
+  ASSERT_NO_FATAL_FAILURE(release_keepalive());
+}
+
+// This conditional existing-principal case must have its own frozen admission.
+// It never creates a second database/share/schema or expands privileges.
+class RedshiftMetadataScopeShowRealTest : public RedshiftMetadataScopeRealTest {
+ protected:
+  std::string second_database_, common_schema_;
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_METADATA_SCOPE_SHOW_ADMISSION", "metadata_scope_two_visible_contexts_v1");
+    if (IsSkipped() || HasFatalFailure()) return;
+    const auto existing_name = [](const char* value) {
+      return value && *value && std::strlen(value) <= 128 && rs::odbc::utf8_code_point_count(value).has_value();
+    };
+    const char* second = std::getenv("ODBCPP_REDSHIFT_METADATA_SCOPE_SECOND_DATABASE");
+    const char* schema = std::getenv("ODBCPP_REDSHIFT_METADATA_SCOPE_COMMON_SCHEMA");
+    ASSERT_TRUE(existing_name(second)); ASSERT_TRUE(existing_name(schema));
+    second_database_ = second; common_schema_ = schema; ASSERT_NE("odbcpp_pilot", second_database_);
+    // Explicit finite controls are prerequisites, not silently enlarged here.
+    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    for (const auto& required : {std::pair{"MAXRESULTS", "3"}, std::pair{"MAXROWS", "128"},
+                                std::pair{"MAXCELLS", "4096"}, std::pair{"MAXCOLUMNS", "18"}}) {
+      ASSERT_TRUE(options.contains(required.first)); ASSERT_EQ(required.second, options.at(required.first));
+    }
+  }
+};
+
+// Source ledger: one TLS login, at most six SQL exchanges: catalog discovery1,
+// fixed NULL SELECT1, empty-catalog columns1, database discovery1 and schemas2.
+// Full catalog enumeration must prove exactly the two admitted visible DBs
+// before schema fanout. Each result remains bounded; no source LIMIT/clipping.
+// Existing common-schema collision is mandatory; 40s aggregate/per-operation5s.
+TEST_F(RedshiftMetadataScopeShowRealTest, TwoVisibleDatabasesKeepCommonSchemaIdentityThroughWideFanoutAndSibling) {
+  ASSERT_NO_FATAL_FAILURE(open_scope("FALSE", true, "SHOW"));
+  std::vector<std::string> catalogs; ASSERT_NO_FATAL_FAILURE(catalogs_with_sibling(true, catalogs));
+  std::vector<std::string> expected_catalogs{"odbcpp_pilot", second_database_};
+  std::sort(expected_catalogs.begin(), expected_catalogs.end());
+  if (catalogs != expected_catalogs) unknown_completion_ = true;
+  ASSERT_TRUE(catalogs == expected_catalogs) << "Visible catalog prerequisite mismatch";
+  ASSERT_TRUE(cap(window_end_, true));
+  SQLWCHAR empty[]{0}, all[]{'%', 0};
+  ASSERT_TRUE(known_sql(SQLTablesW(hstmt_, empty, SQL_NTS, all, SQL_NTS, empty, SQL_NTS, nullptr, 0)));
+  std::set<std::pair<std::string, std::string>> identities;
+  unsigned rows = 0;
+  for (;;) {
+    ASSERT_TRUE(cap(window_end_, true)); const auto rc = SQLFetch(hstmt_);
+    if (rc == SQL_NO_DATA) break;
+    ASSERT_TRUE(observed(rc));
+    if (++rows > 64) { unknown_completion_ = true; FAIL() << "Schema coverage exceeded admitted row bound"; }
+    std::string catalog, schema;
+    for (SQLUSMALLINT column : {1, 2}) {
+      struct { SQLCHAR value[512]{}; SQLCHAR guard = 77; } cell; SQLLEN bytes = -1;
+      ASSERT_TRUE(cap(window_end_, true));
+      ASSERT_TRUE(observed(SQLGetData(hstmt_, column, SQL_C_CHAR, cell.value, sizeof(cell.value), &bytes)));
+      ASSERT_GT(bytes, 0); ASSERT_LT(bytes, static_cast<SQLLEN>(sizeof(cell.value))); EXPECT_EQ(77, cell.guard);
+      auto& name = column == 1 ? catalog : schema;
+      name.assign(reinterpret_cast<char*>(cell.value), static_cast<std::size_t>(bytes));
+    }
+    EXPECT_TRUE(catalog == "odbcpp_pilot" || catalog == second_database_);
+    EXPECT_TRUE(identities.emplace(catalog, schema).second);
+    for (SQLUSMALLINT column : {3, 4, 5}) {
+      SQLCHAR unchanged = 71; SQLLEN bytes = 97; ASSERT_TRUE(cap(window_end_, true));
+      ASSERT_TRUE(observed(SQLGetData(hstmt_, column, SQL_C_CHAR, &unchanged, 1, &bytes)));
+      EXPECT_EQ(SQL_NULL_DATA, bytes); EXPECT_EQ(71, unchanged);
+    }
+  }
+  EXPECT_TRUE(identities.contains({"odbcpp_pilot", common_schema_}));
+  EXPECT_TRUE(identities.contains({second_database_, common_schema_}));
+  ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLCloseCursor(hstmt_)));
+  ASSERT_NO_FATAL_FAILURE(release_keepalive());
+  EXPECT_TRUE(identities.contains({second_database_, common_schema_}));
+}

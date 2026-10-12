@@ -81,8 +81,13 @@ std::string catalog_numeric_scale_sql(const std::string& fallback) {
       signed_scale(fallback) + " END";
 }
 
-std::string build_query(const TablesCatalogRequest& request, bool detailed_types = true, bool redshift = false) {
+std::string build_query(const TablesCatalogRequest& request, bool detailed_types = true,
+    bool redshift = false, bool visible_databases = false) {
   if (request.mode == TablesCatalogRequest::Mode::Catalogs) {
+    if (redshift && visible_databases)
+      return "SELECT database_name::text AS table_cat, NULL::text AS table_schem, "
+          "NULL::text AS table_name, NULL::text AS table_type, NULL::text AS remarks "
+          "FROM svv_redshift_databases ORDER BY table_cat";
     return std::string(
         "SELECT current_database()::text AS table_cat, NULL::text AS "
         "table_schem, NULL::text AS table_name, NULL::text AS table_type, "
@@ -123,7 +128,7 @@ std::string build_query(const TablesCatalogRequest& request, bool detailed_types
       "table_type = 'FOREIGN' THEN 'FOREIGN TABLE' ELSE table_type END::text "
       "AS table_type FROM information_schema.tables) AS odbcpp_tables WHERE 1=1";
   if (redshift) {
-    const std::string native =
+    std::string native =
         "SELECT current_database()::text AS table_cat, table_schema::text AS table_schem, "
         "table_name::text AS table_name, CASE "
         "WHEN table_type = 'VIEW' AND table_schema IN ('pg_catalog', 'information_schema') THEN 'SYSTEM VIEW' "
@@ -134,13 +139,24 @@ std::string build_query(const TablesCatalogRequest& request, bool detailed_types
         "WHEN table_type = 'LOCAL TEMPORARY' THEN 'LOCAL TEMPORARY' "
         "WHEN table_type = 'FOREIGN' THEN 'EXTERNAL TABLE' ELSE table_type END::text AS table_type "
         "FROM information_schema.tables";
+    if (visible_databases) {
+      native = "SELECT database_name::text AS table_cat, schema_name::text AS table_schem, "
+          "table_name::text AS table_name, CASE "
+          "WHEN table_type = 'VIEW' AND schema_name IN ('pg_catalog', 'information_schema') THEN 'SYSTEM VIEW' "
+          "WHEN table_type = 'VIEW' THEN 'VIEW' "
+          "WHEN table_type IN ('TABLE', 'EXTERNAL TABLE', 'LOCAL TEMPORARY') AND "
+          "schema_name IN ('pg_catalog', 'information_schema') THEN 'SYSTEM TABLE' "
+          "ELSE table_type END::text AS table_type, remarks::text AS remarks FROM svv_all_tables";
+    }
     const std::string presentation = detailed_types ? "table_type" :
         "CASE WHEN table_type IN ('VIEW', 'SYSTEM VIEW') THEN 'VIEW' "
         "WHEN table_type IN ('TABLE', 'SYSTEM TABLE', 'EXTERNAL TABLE', 'LOCAL TEMPORARY') "
         "THEN 'TABLE' ELSE table_type END::text";
-    query = "SELECT table_cat, table_schem, table_name, table_type, NULL::text AS remarks FROM "
+    query = "SELECT table_cat, table_schem, table_name, table_type, " +
+        std::string(visible_databases ? "remarks" : "NULL::text AS remarks") + " FROM "
         "(SELECT table_cat, table_schem, table_name, " + presentation +
-        " AS table_type FROM (" + native + ") AS odbcpp_native_tables) AS odbcpp_tables WHERE 1=1";
+        " AS table_type" + (visible_databases ? ", remarks" : "") +
+        " FROM (" + native + ") AS odbcpp_native_tables) AS odbcpp_tables WHERE 1=1";
   }
   if (request.catalog) {
     query += " AND table_cat" + std::string(request.name_matches.catalog == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.catalog);
@@ -153,15 +169,22 @@ std::string build_query(const TablesCatalogRequest& request, bool detailed_types
   }
   if (request.types) {
     const auto& types = *request.types;
+    if (redshift && visible_databases) query += " AND (";
     if (types.empty()) {
-      query += " AND FALSE";
+      query += redshift && visible_databases ? "FALSE" : " AND FALSE";
     } else {
-      query += " AND table_type IN (";
+      query += redshift && visible_databases ? "table_type IN (" : " AND table_type IN (";
       for (std::size_t i = 0; i < types.size(); ++i) {
         if (i != 0) query += ',';
         query += quote_catalog_literal(types[i]);
       }
       query += ')';
+    }
+    if (redshift && visible_databases) {
+      // Keep malformed native labels in the scoped response so adapter closed
+      // taxonomy validation cannot be bypassed by a nonmatching kind filter.
+      query += " OR table_type IS NULL OR table_type NOT IN "
+          "('TABLE','VIEW','SYSTEM TABLE','SYSTEM VIEW','EXTERNAL TABLE','LOCAL TEMPORARY'))";
     }
   }
   query += " ORDER BY table_type, table_cat, table_schem, table_name";
@@ -778,16 +801,31 @@ rs::util::Result<std::string> PgDatabaseConnection::catalog_query(
       rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter), "Invalid catalog name semantics"};
   const auto& request = *normalized;
   if (catalog_profile_ == PgCatalogProfile::Redshift) {
+    bool visible_databases = false;
+    const auto* tables_scope = std::get_if<TablesCatalogRequest>(&request);
+    const auto* special_scope = std::get_if<SpecialColumnsCatalogRequest>(&request);
+    if ((tables_scope && tables_scope->mode != TablesCatalogRequest::Mode::TableTypes) ||
+        std::holds_alternative<ColumnsCatalogRequest>(request) ||
+        (special_scope && special_scope->identifier == SpecialColumnsCatalogRequest::Identifier::RowIdentity &&
+         special_scope->scope == SpecialColumnsCatalogRequest::Scope::CurrentRow)) {
+      auto scope = redshift_catalog_database_scope(catalog_database_scope(),
+          get_parameter_status("datashare_enabled"), get_parameter_status("external_database"));
+      if (!scope) return {scope.error(), scope.error_message()};
+      visible_databases = *scope == CatalogDatabaseScope::VisibleDatabases;
+    }
+    if (visible_databases && special_scope)
+      return {rs::util::DbErrorCode::UnsupportedFeature,
+          "Visible-database row identity discovery is unavailable"};
     if (std::holds_alternative<ProceduresCatalogRequest>(request) ||
         std::holds_alternative<ProcedureColumnsCatalogRequest>(request))
       return rs::util::Result<std::string>{rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature),
           "Redshift routine catalogs require modern exact-schema execution"};
     if (const auto* tables = std::get_if<TablesCatalogRequest>(&request)) {
-      if (tables->mode == TablesCatalogRequest::Mode::Schemas) return redshift_schemas_query();
-      return build_query(*tables, catalog_detailed_table_types(), true);
+      if (tables->mode == TablesCatalogRequest::Mode::Schemas) return redshift_schemas_query(visible_databases);
+      return build_query(*tables, catalog_detailed_table_types(), true, visible_databases);
     }
     if (const auto* columns = std::get_if<ColumnsCatalogRequest>(&request))
-      return redshift_columns_query(*columns);
+      return redshift_columns_query(*columns, visible_databases);
     if (const auto* statistics = std::get_if<StatisticsCatalogRequest>(&request))
       return redshift_statistics_query(*statistics);
     if (const auto* special = std::get_if<SpecialColumnsCatalogRequest>(&request);

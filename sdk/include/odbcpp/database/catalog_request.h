@@ -10,6 +10,10 @@
 
 namespace rs::core::database {
 
+// Requested discovery scope. Providers resolve defaults and authenticated
+// availability; a caller-provided catalog remains independent request intent.
+enum class CatalogDatabaseScope { CurrentDatabase, VisibleDatabases };
+
 // Normalized catalog matching intent; lexical API rules and native SQL stay
 // with their respective adapters/backends. Existing preserves old requests.
 enum class CatalogNameMatch { Existing, IdentifierUnquoted, IdentifierQuoted };

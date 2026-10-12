@@ -8,6 +8,39 @@
 using namespace rs::core::database;
 using namespace rs::core::database::postgres;
 
+TEST(RedshiftMetadataDatabaseScope, AuthenticatedFlagsFollowCompleteNativeTruthTable) {
+  for (const auto requested : {CatalogDatabaseScope::CurrentDatabase, CatalogDatabaseScope::VisibleDatabases}) {
+    for (const auto& share : std::vector<std::optional<std::string>>{std::nullopt, "off", "on"}) {
+      for (const auto& external : std::vector<std::optional<std::string>>{std::nullopt, "off", "on"}) {
+        auto selected = redshift_catalog_database_scope(requested, share, external);
+        ASSERT_TRUE(selected);
+        const auto expected = external == std::optional<std::string>{"on"} ||
+            (requested == CatalogDatabaseScope::VisibleDatabases && share == std::optional<std::string>{"on"})
+            ? CatalogDatabaseScope::VisibleDatabases : CatalogDatabaseScope::CurrentDatabase;
+        EXPECT_EQ(expected, *selected);
+      }
+    }
+  }
+}
+
+TEST(RedshiftMetadataDatabaseScope, InvalidFlagsAreRedactedEvenWhenOtherFlagDeterminesScopeAndRecoveryIsPure) {
+  for (const auto& invalid : std::vector<std::string>{"", "ON", "true", "1", " off", "secret", std::string("on\0", 3)}) {
+    auto share = redshift_catalog_database_scope(CatalogDatabaseScope::CurrentDatabase, invalid, "on");
+    auto external = redshift_catalog_database_scope(CatalogDatabaseScope::VisibleDatabases, "on", invalid);
+    ASSERT_FALSE(share); ASSERT_FALSE(external);
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError), share.error());
+    EXPECT_EQ("Invalid authenticated metadata scope parameter", share.error_message());
+    EXPECT_EQ(share.error_message(), external.error_message());
+  }
+  auto invalid_scope = redshift_catalog_database_scope(static_cast<CatalogDatabaseScope>(-1), "on", "on");
+  ASSERT_FALSE(invalid_scope);
+  auto restored = redshift_catalog_database_scope(CatalogDatabaseScope::VisibleDatabases, "on", "off");
+  ASSERT_TRUE(restored); EXPECT_EQ(CatalogDatabaseScope::VisibleDatabases, *restored);
+  auto sibling = redshift_catalog_database_scope(CatalogDatabaseScope::CurrentDatabase, "on", "off");
+  ASSERT_TRUE(sibling); EXPECT_EQ(CatalogDatabaseScope::CurrentDatabase, *sibling);
+  EXPECT_EQ(CatalogDatabaseScope::VisibleDatabases, *restored);
+}
+
 namespace {
 PrimaryKeysCatalogRequest request() { return {"db'._%", "schema'._%", "table'._%"}; }
 QueryResult primary_keys() {
@@ -72,6 +105,7 @@ class CatalogWireTransport final : public rs::core::transport::ITransport {
   std::vector<std::vector<std::byte>> writes;
   std::vector<rs::util::Deadline> write_deadlines, read_deadlines;
   unsigned connects{0}, closes{0};
+  std::optional<std::string> metadata_share, metadata_external;
   bool foreign_keys{false};
   bool sized_character_metadata{false};
   bool boolean_cells{false};
@@ -82,6 +116,12 @@ class CatalogWireTransport final : public rs::core::transport::ITransport {
     frame('R', {std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}});
     std::vector<std::byte> status;
     text(status, "show_discovery"); text(status, "4"); frame('S', status);
+    for (const auto& flag : {std::pair{"datashare_enabled", metadata_share},
+                             std::pair{"external_database", metadata_external}}) {
+      if (flag.second) {
+        status.clear(); text(status, flag.first); text(status, flag.second->c_str()); frame('S', status);
+      }
+    }
     frame('Z', {std::byte{'I'}});
     frame('1', {});
     std::vector<std::byte> parameters; integer(parameters, 3, 2);
@@ -1409,9 +1449,17 @@ TEST(RedshiftRoutineExecution, IdentifierPatternsOverloadsEmptyAndUnsupportedPat
   }
   RoutineExecutionSession empty;auto result=empty.execute_catalog(ProceduresCatalogRequest{std::nullopt,"",std::nullopt},rs::util::Deadline::max());
   ASSERT_TRUE(result);EXPECT_EQ(8u,result->columns.size());EXPECT_TRUE(result->rows.empty());EXPECT_TRUE(empty.commands.empty());
-  RoutineExecutionSession mismatch;mismatch.replies.emplace_back(routine_identity(),mismatch.snapshot);
-  result=mismatch.execute_catalog(ProceduresCatalogRequest{"elsewhere","s",std::nullopt},rs::util::Deadline::max());
-  ASSERT_TRUE(result);EXPECT_TRUE(result->rows.empty());EXPECT_EQ(1u,mismatch.commands.size());
+  // Explicit catalogs are direct context authority even with the default current-only setting.
+  RoutineExecutionSession elsewhere;
+  elsewhere.replies.emplace_back(routine_discovery(false, {}), elsewhere.snapshot);
+  elsewhere.replies.emplace_back(routine_discovery(true, {}), elsewhere.snapshot);
+  result=elsewhere.execute_catalog(ProceduresCatalogRequest{"elsewhere","s",std::nullopt},rs::util::Deadline::max());
+  ASSERT_TRUE(result);EXPECT_TRUE(result->rows.empty());
+  EXPECT_EQ((std::vector<std::string>{"SHOW PROCEDURES FROM SCHEMA \"elsewhere\".\"s\";",
+      "SHOW FUNCTIONS FROM SCHEMA \"elsewhere\".\"s\";"}), elsewhere.commands);
+  RoutineExecutionSession empty_catalog;
+  result=empty_catalog.execute_catalog(ProceduresCatalogRequest{"","s",std::nullopt},rs::util::Deadline::max());
+  ASSERT_TRUE(result);EXPECT_TRUE(result->rows.empty());EXPECT_TRUE(empty_catalog.commands.empty());
   RoutineExecutionSession s;s.discovery({{"db","s_%","p","1","integer",std::nullopt,"first"},
       {"db","s_%","p","1","numeric",std::nullopt,"second"}});
   result=s.execute_catalog(ProceduresCatalogRequest{std::nullopt,"s\\_\\%","p"},rs::util::Deadline::max());
@@ -1833,4 +1881,300 @@ TEST(RedshiftTableTypePresentation, RealSessionCapturesPolicyAndLegacyQueryClass
   for (const auto type : catalog_table_types()) EXPECT_NE(std::string::npos, full->find("CAST('" + std::string(type) + "' AS VARCHAR(15))"));
   EXPECT_EQ(std::string::npos, full->find("FOREIGN TABLE")); EXPECT_EQ(*generic, retained);
   session.disconnect(); EXPECT_EQ(2u, wire->connects);
+}
+
+namespace {
+class MetadataScopeQuerySession final : public PgDatabaseConnection {
+ public:
+  MetadataScopeQuerySession() : PgDatabaseConnection(nullptr, std::nullopt, PgCatalogProfile::Redshift) {}
+  std::optional<std::string> share, external;
+  std::optional<std::string> get_parameter_status(std::string_view key) const override {
+    if (key == "datashare_enabled") return share;
+    if (key == "external_database") return external;
+    ADD_FAILURE() << "Unexpected metadata scope parameter";
+    return std::nullopt;
+  }
+};
+QueryResult visible_databases() {
+  QueryResult result;
+  for (const auto* name : {"database_name", "database_owner", "database_type", "database_acl",
+                          "parameters", "database_isolation_level"})
+    result.columns.push_back({name, NativeTypeInfo{ScalarType::VarChar, 128, 0, true}});
+  result.rows = {{"z_db", "1", "local", std::nullopt, std::nullopt, "Snapshot Isolation"},
+                 {"a_雪", "2", "shared", std::nullopt, std::nullopt, std::nullopt}};
+  result.statement_kind = StatementKind::Unknown;
+  return result;
+}
+}
+
+TEST(RedshiftMetadataDatabaseScope, DatabaseDiscoveryValidatesWholeOwningNamedShapeAndKeepsNativeErrors) {
+  auto source = visible_databases();
+  std::swap(source.columns[0], source.columns[2]);
+  for (auto& row : source.rows) std::swap(row[0], row[2]);
+  auto names = normalize_redshift_databases({source, {SessionState::Idle, SessionDisposition::Reusable}});
+  ASSERT_TRUE(names); ASSERT_EQ(2u, names->size());
+  EXPECT_EQ("a_雪", (*names)[0]); EXPECT_EQ("z_db", (*names)[1]);
+  source.rows.clear(); EXPECT_EQ(2u, names->size());
+  const auto original = visible_databases();
+  for (int variant = 0; variant != 7; ++variant) {
+    auto bad = original;
+    if (variant == 0) bad.rows.push_back(bad.rows.front());
+    if (variant == 1) bad.rows.front()[0].reset();
+    if (variant == 2) bad.rows.front()[0] = "";
+    if (variant == 3) bad.columns[1].name = "database_name";
+    if (variant == 4) bad.rows.front()[0] = std::string("bad\0db", 6);
+    if (variant == 5) bad.rows.front()[0] = std::string("\xff", 1);
+    if (variant == 6) bad.affected_rows = 3;
+    auto refused = normalize_redshift_databases({bad, {SessionState::Idle, SessionDisposition::Reusable}});
+    ASSERT_FALSE(refused); EXPECT_EQ(BackendErrorClass::InvalidMetadata, refused.backend_error().error_class);
+  }
+  auto retired = normalize_redshift_databases({original, {SessionState::Idle, SessionDisposition::Retire}});
+  EXPECT_FALSE(retired);
+  BackendError denied{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "denied"};
+  denied.native_state = "42501";
+  auto failed = normalize_redshift_databases(BackendResult<QueryResult>{denied});
+  ASSERT_FALSE(failed); EXPECT_EQ("42501", failed.backend_error().native_state);
+  EXPECT_EQ("denied", failed.error_message());
+}
+
+TEST(RedshiftMetadataDatabaseScope, NativeViewsPreserveCrossDatabaseNamesDimensionsAndOwningSelection) {
+  MetadataScopeQuerySession session;
+  TablesCatalogRequest catalogs; catalogs.mode = TablesCatalogRequest::Mode::Catalogs;
+  auto current = session.catalog_query(catalogs); ASSERT_TRUE(current);
+  EXPECT_NE(std::string::npos, current->find("current_database()"));
+  session.external = "on";
+  auto visible = session.catalog_query(catalogs); ASSERT_TRUE(visible);
+  EXPECT_NE(std::string::npos, visible->find("svv_redshift_databases"));
+  EXPECT_EQ(std::string::npos, visible->find("current_database()"));
+  TablesCatalogRequest schemas; schemas.mode = TablesCatalogRequest::Mode::Schemas;
+  auto all_schemas = session.catalog_query(schemas); ASSERT_TRUE(all_schemas);
+  EXPECT_NE(std::string::npos, all_schemas->find("database_name::text AS table_cat"));
+  EXPECT_NE(std::string::npos, all_schemas->find("svv_all_schemas"));
+  auto tables = table_request(); tables.catalog = "db'_%";
+  auto all_tables = session.catalog_query(tables); ASSERT_TRUE(all_tables);
+  EXPECT_NE(std::string::npos, all_tables->find("svv_all_tables"));
+  EXPECT_NE(std::string::npos, all_tables->find("remarks::text AS remarks"));
+  EXPECT_NE(std::string::npos, all_tables->find("AND table_cat LIKE 'db''_%'"));
+  tables.types = std::vector<std::string>{"TABLE"};
+  auto filtered_tables = session.catalog_query(tables); ASSERT_TRUE(filtered_tables);
+  EXPECT_NE(std::string::npos, filtered_tables->find("AND (table_type IN ('TABLE') OR table_type IS NULL OR table_type NOT IN"));
+  tables.types = std::vector<std::string>{};
+  auto empty_filter = session.catalog_query(tables); ASSERT_TRUE(empty_filter);
+  EXPECT_NE(std::string::npos, empty_filter->find("AND (FALSE OR table_type IS NULL OR table_type NOT IN"));
+  ColumnsCatalogRequest columns; columns.catalog = "雪'_%"; columns.schema = "same"; columns.table = "table";
+  auto all_columns = session.catalog_query(columns); ASSERT_TRUE(all_columns);
+  EXPECT_NE(std::string::npos, all_columns->find("svv_all_columns"));
+  EXPECT_NE(std::string::npos, all_columns->find("database_name AS table_catalog"));
+  EXPECT_NE(std::string::npos, all_columns->find("numeric_precision, numeric_scale"));
+  EXPECT_NE(std::string::npos, all_columns->find("NULL::integer AS datetime_precision"));
+  EXPECT_NE(std::string::npos, all_columns->find("AND table_cat = '雪''_%'"));
+  session.external = "off";
+  auto restored = session.catalog_query(columns); ASSERT_TRUE(restored);
+  EXPECT_NE(std::string::npos, restored->find("FROM svv_columns AS columns"));
+  EXPECT_NE(std::string::npos, all_columns->find("svv_all_columns"));
+  session.external = "";
+  auto malformed = session.catalog_query(columns); ASSERT_FALSE(malformed);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError), malformed.error());
+  session.external.reset(); ASSERT_TRUE(session.catalog_query(columns));
+}
+
+TEST(RedshiftMetadataDatabaseScope, InvariantEmptyApisAndLocalRowIdentityHaveExplicitScopeDisposition) {
+  MetadataScopeQuerySession session; session.external = "on";
+  StatisticsCatalogRequest statistics; statistics.table = "table";
+  auto empty_statistics = session.catalog_query(statistics); ASSERT_TRUE(empty_statistics);
+  EXPECT_NE(std::string::npos, empty_statistics->find("WHERE 1=0"));
+  SpecialColumnsCatalogRequest special; special.table = "table";
+  special.identifier = SpecialColumnsCatalogRequest::Identifier::RowVersion;
+  auto row_version = session.catalog_query(special); ASSERT_TRUE(row_version);
+  EXPECT_NE(std::string::npos, row_version->find("WHERE 1=0"));
+  special.identifier = SpecialColumnsCatalogRequest::Identifier::RowIdentity;
+  auto partial = session.catalog_query(special); ASSERT_FALSE(partial);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature), partial.error());
+  session.external = "off";
+  auto current = session.catalog_query(special); ASSERT_TRUE(current);
+  EXPECT_NE(std::string::npos, current->find("pg_catalog"));
+}
+
+namespace {
+class MetadataDatabaseExecutionSession final : public RoutineExecutionSession {
+ public:
+  std::optional<std::string> external{"on"}, share;
+  std::optional<std::string> get_parameter_status(std::string_view key) const override {
+    return key == "external_database" ? external : share;
+  }
+  void schemas() {
+    replies.emplace_back(visible_databases(), snapshot);
+    replies.emplace_back(schemas_response("a_雪"), snapshot);
+    replies.emplace_back(schemas_response("z_db"), snapshot);
+  }
+};
+}
+
+TEST(RedshiftMetadataDatabaseFanout, CatalogsAndCollidingSchemasStayOwningAndUseOneDeadline) {
+  MetadataDatabaseExecutionSession session;
+  TablesCatalogRequest catalogs; catalogs.mode = TablesCatalogRequest::Mode::Catalogs;
+  session.replies.emplace_back(visible_databases(), session.snapshot);
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+  EXPECT_TRUE(session.selects_catalog_request(catalogs));
+  auto result = session.execute_catalog(catalogs, deadline); ASSERT_TRUE(result);
+  EXPECT_EQ((ResultRows{{"a_雪", std::nullopt, std::nullopt, std::nullopt, std::nullopt},
+                       {"z_db", std::nullopt, std::nullopt, std::nullopt, std::nullopt}}), result->rows);
+  EXPECT_EQ((std::vector<std::string>{"SHOW DATABASES;"}), session.commands);
+  session.commands.clear(); session.deadlines.clear(); session.schemas();
+  auto schemas = session.execute_catalog(schemas_request(), deadline); ASSERT_TRUE(schemas);
+  EXPECT_EQ((ResultRows{{"a_雪", "a", std::nullopt, std::nullopt, std::nullopt},
+                       {"a_雪", "z", std::nullopt, std::nullopt, std::nullopt},
+                       {"z_db", "a", std::nullopt, std::nullopt, std::nullopt},
+                       {"z_db", "z", std::nullopt, std::nullopt, std::nullopt}}), schemas->rows);
+  EXPECT_EQ((std::vector<std::string>{"SHOW DATABASES;", "SHOW SCHEMAS FROM DATABASE \"a_雪\";",
+                                    "SHOW SCHEMAS FROM DATABASE \"z_db\";"}), session.commands);
+  EXPECT_EQ((std::vector<rs::util::Deadline>{deadline, deadline, deadline}), session.deadlines);
+  session.replies.clear(); session.connected = false;
+  EXPECT_EQ("a_雪", result->rows[0][0]); EXPECT_EQ("z_db", schemas->rows[3][0]);
+}
+
+TEST(RedshiftMetadataDatabaseFanout, ExactIdentifierAndLiteralColumnCatalogSelectBeforeContextExchange) {
+  MetadataDatabaseExecutionSession session;
+  session.replies.emplace_back(visible_databases(), session.snapshot);
+  session.replies.emplace_back(tables_response("z_db"), session.snapshot);
+  auto tables = table_request(); tables.catalog = "z_db";
+  tables.name_matches.catalog = CatalogNameMatch::IdentifierQuoted;
+  tables.name_matches.schema = CatalogNameMatch::IdentifierQuoted;
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+  auto selected = session.execute_catalog(tables, deadline); ASSERT_TRUE(selected);
+  ASSERT_EQ(2u, selected->rows.size()); EXPECT_EQ("z_db", selected->rows[0][0]);
+  EXPECT_EQ((std::vector<std::string>{"SHOW DATABASES;", "SHOW TABLES FROM SCHEMA \"z_db\".\"fixture\";"}), session.commands);
+  session.commands.clear(); session.deadlines.clear();
+  session.replies.emplace_back(visible_databases(), session.snapshot);
+  session.replies.emplace_back(columns_response("a_雪"), session.snapshot);
+  auto columns = column_request(); columns.catalog = "a_雪";
+  auto described = session.execute_catalog(columns, deadline); ASSERT_TRUE(described);
+  EXPECT_EQ((std::vector<std::string>{"SHOW DATABASES;", "SHOW COLUMNS FROM TABLE \"a_雪\".\"fixture\".\"rows\";"}), session.commands);
+  ASSERT_EQ(2u, described->rows.size()); EXPECT_EQ("a_雪", described->rows[0][0]);
+  EXPECT_EQ("10", described->rows[0][6]); EXPECT_EQ("32", described->rows[1][6]);
+  EXPECT_EQ("owning remark", described->rows[1][11]);
+  EXPECT_EQ("z_db", selected->rows[0][0]);
+}
+
+TEST(RedshiftMetadataDatabaseFanout, CumulativeExchangeLimitRefusesUnpublishedPartialRowsAndRetainsDeadline) {
+  MetadataDatabaseExecutionSession session;
+  ResultLimits limits; limits.max_results = 2; ASSERT_TRUE(session.budgets(limits));
+  session.schemas();
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+  auto refused = session.execute_catalog(schemas_request(), deadline); ASSERT_FALSE(refused);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), refused.error());
+  ASSERT_EQ(2u, session.commands.size());
+  EXPECT_EQ((std::vector<rs::util::Deadline>{deadline, deadline}), session.deadlines);
+  EXPECT_EQ(1u, session.replies.size()); // The next context was never dispatched.
+}
+
+TEST(RedshiftMetadataDatabaseFanout, LaterNativeFailureHasNoFallbackOrPartialPublicationAndFreshRequestRecovers) {
+  MetadataDatabaseExecutionSession session;
+  session.replies.emplace_back(visible_databases(), session.snapshot);
+  session.replies.emplace_back(schemas_response("a_雪"), session.snapshot);
+  BackendError denied{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "owning later denial"};
+  denied.native_state = "42501";
+  session.replies.emplace_back(denied);
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+  auto failed = session.execute_catalog(schemas_request(), deadline); ASSERT_FALSE(failed);
+  EXPECT_EQ("42501", failed.backend_error().native_state);
+  EXPECT_EQ("owning later denial", failed.error_message());
+  EXPECT_EQ(3u, session.commands.size()); EXPECT_TRUE(session.replies.empty());
+  session.schemas();
+  auto recovered = session.execute_catalog(schemas_request(), deadline); ASSERT_TRUE(recovered);
+  EXPECT_EQ(4u, recovered->rows.size()); EXPECT_EQ(6u, session.commands.size());
+  EXPECT_EQ("owning later denial", failed.error_message());
+}
+
+TEST(RedshiftMetadataDatabaseFanout, ExpiredDeadlineAndMalformedAuthenticatedFlagDispatchNothing) {
+  MetadataDatabaseExecutionSession session;
+  auto expired = session.execute_catalog(schemas_request(), rs::util::Clock::now() - std::chrono::milliseconds{1});
+  ASSERT_FALSE(expired); EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout), expired.error());
+  EXPECT_TRUE(session.commands.empty());
+  session.external = "";
+  auto malformed = session.execute_catalog(schemas_request(), rs::util::make_deadline(std::chrono::seconds{2}));
+  ASSERT_FALSE(malformed); EXPECT_EQ(SessionDisposition::Retire, malformed.backend_error().disposition);
+  EXPECT_TRUE(session.commands.empty());
+}
+
+TEST(RedshiftMetadataDatabaseFanout, RoutineCollisionsAndParametersKeepTheirCatalogContext) {
+  MetadataDatabaseExecutionSession session;
+  session.replies.emplace_back(visible_databases(), session.snapshot);
+  for (const auto* database : {"a_雪", "z_db"}) {
+    session.replies.emplace_back(routine_discovery(false, {{database, "s", "same", "1", "integer", std::nullopt, "owning"}}), session.snapshot);
+    session.replies.emplace_back(routine_discovery(true, {}), session.snapshot);
+    session.replies.emplace_back(routine_parameters(false, {{database, "s", "same", "id", "1", "IN", "integer", std::nullopt, "32", "0"}}), session.snapshot);
+  }
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{2});
+  auto result = session.execute_catalog(ProcedureColumnsCatalogRequest{std::nullopt, "s", "same", std::nullopt}, deadline);
+  ASSERT_TRUE(result); ASSERT_EQ(2u, result->rows.size());
+  EXPECT_EQ("a_雪", result->rows[0][0]); EXPECT_EQ("z_db", result->rows[1][0]);
+  EXPECT_EQ("same", result->rows[0][2]); EXPECT_EQ("same", result->rows[1][2]);
+  EXPECT_EQ("10", result->rows[0][7]); EXPECT_EQ("integer", result->rows[1][6]);
+  ASSERT_EQ(7u, session.commands.size()); EXPECT_EQ("SHOW DATABASES;", session.commands[0]);
+  EXPECT_EQ("SHOW PARAMETERS OF PROCEDURE \"a_雪\".\"s\".\"same\"(integer);", session.commands[3]);
+  EXPECT_EQ("SHOW PARAMETERS OF PROCEDURE \"z_db\".\"s\".\"same\"(integer);", session.commands[6]);
+  for (const auto value : session.deadlines) EXPECT_EQ(deadline, value);
+  session.connected = false; EXPECT_EQ("a_雪", result->rows[0][0]);
+}
+
+TEST(RedshiftMetadataDatabaseFanout, LaterRoutineFailureSuppressesTheUnpublishedFirstCatalog) {
+  MetadataDatabaseExecutionSession session;
+  session.replies.emplace_back(visible_databases(), session.snapshot);
+  session.replies.emplace_back(routine_discovery(false, {{"a_雪", "s", "same", "0", "", std::nullopt, "owning"}}), session.snapshot);
+  session.replies.emplace_back(routine_discovery(true, {}), session.snapshot);
+  BackendError denied{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "second catalog denied"};
+  denied.native_state = "42501"; session.replies.emplace_back(denied);
+  auto result = session.execute_catalog(ProceduresCatalogRequest{std::nullopt, "s", std::nullopt}, rs::util::Deadline::max());
+  ASSERT_FALSE(result); EXPECT_EQ("42501", result.backend_error().native_state);
+  EXPECT_EQ("second catalog denied", result.error_message()); EXPECT_EQ(4u, session.commands.size());
+}
+
+TEST(RedshiftMetadataDatabaseScope, RealAuthenticatedParameterStoragePreservesAbsenceEmptyOwningSettingsAndReconnect) {
+  auto transport = std::make_unique<CatalogWireTransport>(); auto* wire = transport.get();
+  PgDatabaseConnection session(std::move(transport), std::nullopt, PgCatalogProfile::Redshift);
+  ConnectionSettings settings; settings.host = "in-memory.invalid"; settings.port = 5439;
+  settings.database = "fixture"; settings.user = "fixture"; settings.use_ssl = false;
+  settings.redshift_catalog_mode = RedshiftCatalogMode::Legacy;
+  settings.catalog_database_scope = CatalogDatabaseScope::VisibleDatabases;
+  TablesCatalogRequest input; input.mode = TablesCatalogRequest::Mode::Catalogs;
+  ASSERT_TRUE(session.connect(settings));
+  settings.catalog_database_scope = CatalogDatabaseScope::CurrentDatabase;
+  auto absent = session.catalog_query(input); ASSERT_TRUE(absent);
+  EXPECT_NE(std::string::npos, absent->find("current_database()"));
+  const std::string retained = *absent;
+  session.disconnect();
+  wire->metadata_share = "on"; wire->metadata_external = "off";
+  settings.catalog_database_scope = CatalogDatabaseScope::VisibleDatabases;
+  ASSERT_TRUE(session.connect(settings));
+  settings.catalog_database_scope = CatalogDatabaseScope::CurrentDatabase;
+  auto shared = session.catalog_query(input); ASSERT_TRUE(shared);
+  EXPECT_NE(std::string::npos, shared->find("svv_redshift_databases"));
+  EXPECT_EQ(retained, *absent); const auto startup_writes = wire->writes.size();
+  session.disconnect(); wire->metadata_share = ""; wire->metadata_external = "on";
+  ASSERT_TRUE(session.connect(settings));
+  auto empty = session.catalog_query(input); ASSERT_FALSE(empty);
+  EXPECT_EQ("Invalid authenticated metadata scope parameter", empty.error_message());
+  session.disconnect(); wire->metadata_share.reset(); wire->metadata_external = "on";
+  ASSERT_TRUE(session.connect(settings));
+  auto external = session.catalog_query(input); ASSERT_TRUE(external);
+  EXPECT_NE(std::string::npos, external->find("svv_redshift_databases"));
+  session.disconnect(); wire->metadata_external.reset();
+  ASSERT_TRUE(session.connect(settings));
+  auto restored = session.catalog_query(input); ASSERT_TRUE(restored); EXPECT_EQ(retained, *restored);
+  EXPECT_EQ(5u, wire->connects); EXPECT_GT(wire->writes.size(), startup_writes);
+  session.disconnect();
+}
+
+TEST(RedshiftMetadataDatabaseScope, CurrentCatalogEnumerationKeepsGeneratedTransactionRouteVisibleAndMalformedSelectGuardedRoute) {
+  MetadataScopeQuerySession session;
+  TablesCatalogRequest catalogs; catalogs.mode = TablesCatalogRequest::Mode::Catalogs;
+  EXPECT_FALSE(session.selects_catalog_request(catalogs));
+  auto current = session.catalog_query(catalogs); ASSERT_TRUE(current);
+  EXPECT_NE(std::string::npos, current->find("current_database()"));
+  session.external = "on"; EXPECT_TRUE(session.selects_catalog_request(catalogs));
+  session.external = "off"; EXPECT_FALSE(session.selects_catalog_request(catalogs));
+  session.external = ""; EXPECT_TRUE(session.selects_catalog_request(catalogs));
+  auto invalid = session.catalog_query(catalogs); EXPECT_FALSE(invalid);
+  session.external.reset(); EXPECT_FALSE(session.selects_catalog_request(catalogs));
 }

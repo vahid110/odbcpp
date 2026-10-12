@@ -2122,3 +2122,19 @@ TEST(DeferredResultAuthorityTest, NativeErrorOrThrowStopsSequenceWithOwningOrdin
   }
 }
 }
+
+TEST(SessionLeaseObservationTest, CatalogProtocolMetadataRetiresPhysicalSessionAndInvalidatesScopeWithoutRetry) {
+  auto observed = std::make_shared<Observed>(); observed->catalog_facet = true;
+  CredentialContext credentials; auto token = credentials.publish_authenticated();
+  SessionOwner owner{std::make_unique<FakeSession>(observed), token};
+  auto lease = owner.try_acquire(token); ASSERT_TRUE(lease);
+  auto scope = lease->cache_token(); ASSERT_TRUE(scope);
+  observed->catalog_result = rs::util::Result<std::string>{rs::util::DbErrorCode::ProtocolError, "fixed invalid metadata"};
+  auto result = lease->catalog_query(TablesCatalogRequest{}); ASSERT_FALSE(result);
+  EXPECT_EQ(BackendOperation::BuildCatalogQuery, result.backend_error().operation);
+  EXPECT_EQ(BackendErrorClass::InvalidMetadata, result.backend_error().error_class);
+  EXPECT_EQ(SessionDisposition::Retire, result.session_snapshot().disposition);
+  EXPECT_FALSE(*lease); EXPECT_FALSE(scope->is_current()); EXPECT_FALSE(owner.try_acquire(token));
+  observed->catalog_result.reset(); EXPECT_EQ("fixed invalid metadata", result.error_message());
+  retired_once(*observed);
+}

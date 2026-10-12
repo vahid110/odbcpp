@@ -11,6 +11,24 @@
 #include "pg_protocol_parser.h"
 
 namespace rs::core::database::postgres {
+
+rs::util::Result<CatalogDatabaseScope> redshift_catalog_database_scope(
+    CatalogDatabaseScope requested, const std::optional<std::string>& datashare_enabled,
+    const std::optional<std::string>& external_database) {
+  if (requested != CatalogDatabaseScope::CurrentDatabase &&
+      requested != CatalogDatabaseScope::VisibleDatabases)
+    return {rs::util::DbErrorCode::InvalidParameter, "Invalid metadata database scope"};
+  const auto valid = [](const std::optional<std::string>& value) {
+    return !value || *value == "on" || *value == "off";
+  };
+  if (!valid(datashare_enabled) || !valid(external_database))
+    return {rs::util::DbErrorCode::ProtocolError,
+            "Invalid authenticated metadata scope parameter"};
+  return (external_database && *external_database == "on") ||
+          (requested == CatalogDatabaseScope::VisibleDatabases && datashare_enabled && *datashare_enabled == "on")
+      ? CatalogDatabaseScope::VisibleDatabases : CatalogDatabaseScope::CurrentDatabase;
+}
+
 namespace {
 std::string literal(const std::string& value) {
   std::string result{"'"};
@@ -69,6 +87,48 @@ BackendResult<std::string> redshift_schema_database(BackendResult<QueryResult> i
   if (input.session_snapshot().disposition == SessionDisposition::Retire)
     return invalid_schema_metadata("lookup-snapshot");
   return BackendResult<std::string>{*source.rows[0][0], input.session_snapshot()};
+}
+
+BackendResult<std::vector<std::string>> normalize_redshift_databases(
+    BackendResult<QueryResult> input) {
+  if (!input) return input.backend_error();
+  const auto& source = *input;
+  if (source.error) return *source.error;
+  for (const auto& extra : source.additional_results)
+    if (extra.error) return *extra.error;
+  if (!clean_schema_result(source) || source.columns.size() != 6 ||
+      source.rows.size() > 10000 ||
+      !source.statement_kind || (*source.statement_kind != StatementKind::Unknown &&
+                                *source.statement_kind != StatementKind::SelectCursor) ||
+      (source.affected_rows != 0 && source.affected_rows != source.rows.size()))
+    return invalid_schema_metadata("databases-structure");
+  if (input.session_snapshot().state != SessionState::Idle ||
+      input.session_snapshot().disposition != SessionDisposition::Reusable)
+    return invalid_schema_metadata("databases-snapshot");
+  constexpr std::array<std::string_view, 6> names{
+      "database_name", "database_owner", "database_type", "database_acl",
+      "parameters", "database_isolation_level"};
+  std::size_t identity = 0;
+  for (const auto expected : names) {
+    unsigned matches = 0;
+    for (std::size_t index = 0; index < source.columns.size(); ++index) {
+      if (source.columns[index].name == expected) {
+        ++matches;
+        if (expected == "database_name") identity = index;
+      }
+    }
+    if (matches != 1) return invalid_schema_metadata("databases-layout");
+  }
+  if (!schema_text(source.columns[identity])) return invalid_schema_metadata("databases-type");
+  std::set<std::string> databases;
+  for (const auto& row : source.rows) {
+    if (!row[identity] || !schema_identifier(*row[identity]))
+      return invalid_schema_metadata("databases-identifier");
+    if (!databases.insert(*row[identity]).second)
+      return invalid_schema_metadata("databases-duplicate");
+  }
+  return BackendResult<std::vector<std::string>>{
+      std::vector<std::string>{databases.begin(), databases.end()}, input.session_snapshot()};
 }
 
 std::string redshift_show_schemas_command(std::string_view validated_database) {
@@ -148,6 +208,7 @@ std::optional<CatalogRequest> redshift_identifier_show_request(const CatalogRequ
   };
   if (auto* tables = std::get_if<TablesCatalogRequest>(&lowered)) {
     if (tables->mode != TablesCatalogRequest::Mode::Tables) return std::nullopt;
+    escape(tables->catalog, tables->name_matches.catalog);
     escape(tables->schema, tables->name_matches.schema);
     escape(tables->table, tables->name_matches.object);
     tables->name_matches = {};
@@ -278,6 +339,14 @@ bool table_like(std::string_view value, const std::optional<std::string>& patter
   while (i < p.size() && p[i] == '%') ++i;
   return i == p.size();
 }
+}
+
+rs::util::Result<bool> redshift_database_matches(std::string_view database,
+    const std::optional<std::string>& requested, bool pattern) {
+  if (requested && (requested->find('\0') != std::string::npos ||
+      !rs::util::utf8_code_point_count(*requested) || (pattern && !table_pattern_valid(requested))))
+    return {rs::util::DbErrorCode::InvalidParameter, "Invalid metadata catalog argument"};
+  return !requested || (pattern ? table_like(database, requested) : database == *requested);
 }
 
 std::string redshift_show_tables_command(std::string_view database, std::string_view schema) {
@@ -900,7 +969,11 @@ void sort_redshift_parameters(QueryResult& result) {
   routine_text_capacities(result);
 }
 
-std::string redshift_schemas_query() {
+std::string redshift_schemas_query(bool visible_databases) {
+  if (visible_databases)
+    return "SELECT database_name::text AS table_cat, schema_name::text AS table_schem, "
+        "NULL::text AS table_name, NULL::text AS table_type, NULL::text AS remarks "
+        "FROM svv_all_schemas ORDER BY table_cat, table_schem";
   // SVV_REDSHIFT_SCHEMAS lists schemas accessible to the current user.
   // Restrict this SQL_ALL_SCHEMAS enumeration to the connected database;
   // catalog/ordinary table filters do not apply to this enumeration mode.
@@ -910,7 +983,7 @@ std::string redshift_schemas_query() {
       "ORDER BY table_schem";
 }
 
-std::string redshift_columns_query(const ColumnsCatalogRequest& input) {
+std::string redshift_columns_query(const ColumnsCatalogRequest& input, bool visible_databases) {
   auto normalized = native_catalog_request(CatalogRequest{input});
   if (!normalized) throw std::invalid_argument("Invalid catalog name semantics");
   const auto& request = std::get<ColumnsCatalogRequest>(*normalized);
@@ -975,7 +1048,12 @@ std::string redshift_columns_query(const ColumnsCatalogRequest& input) {
       "CASE WHEN " + type + " IN ('character','character varying') "
       "THEN columns.character_maximum_length ELSE NULL END::integer AS char_octet_length, "
       "columns.ordinal_position::integer AS ordinal_position, columns.is_nullable::text AS is_nullable "
-      "FROM svv_columns AS columns) AS odbcpp_columns WHERE 1=1";
+      "FROM " + std::string(visible_databases ?
+          "(SELECT database_name AS table_catalog, schema_name AS table_schema, table_name, "
+          "column_name, ordinal_position, column_default, is_nullable, data_type, "
+          "character_maximum_length, numeric_precision, numeric_scale, remarks, "
+          "NULL::integer AS datetime_precision FROM svv_all_columns)" : "svv_columns") +
+      " AS columns) AS odbcpp_columns WHERE 1=1";
   if (request.catalog) query += " AND table_cat = " + literal(*request.catalog);
   if (request.schema) query += " AND table_schem" + std::string(request.name_matches.schema == CatalogNameMatch::Existing ? " LIKE " : " = ") + literal(*request.schema);
   if (request.table) query += " AND table_name" + std::string(request.name_matches.object == CatalogNameMatch::Existing ? " LIKE " : " = ") + literal(*request.table);

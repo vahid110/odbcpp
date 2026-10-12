@@ -286,6 +286,7 @@ struct Observations {
   bool advertised_catalog_names{false};
   bool read_only_capability{true}; // Preserve the existing neutral default.
   int catalog_calls{}, catalog_builds{}, catalog_error{};
+  bool catalog_protocol_failure{false};
   std::optional<CatalogRequest> catalog_request;
   bool catalog_retire{}, catalog_throw{};
   int terminal_execution{}, connect_exception{};
@@ -413,6 +414,8 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
   rs::util::Result<std::string> catalog_query(const CatalogRequest& request) const override {
     seen_->catalog_request = request;
     ++seen_->catalog_builds;
+    if (seen_->catalog_protocol_failure)
+      return {DbErrorCode::ProtocolError, "Invalid authenticated metadata scope parameter"};
     return std::string("SELECT legacy fixture");
   }
   BackendResult<QueryResult> execute_catalog(const CatalogRequest& request, Deadline deadline) override {
@@ -436,7 +439,8 @@ class FakeBackend final : public IDatabaseConnection, public IStatementDescripti
     }
     auto result = (seen_->routine_executor || seen_->catalog_route_executor) && seen_->date_result ? *seen_->date_result : rows();
     if (const auto* tables = std::get_if<TablesCatalogRequest>(&request);
-        tables && tables->mode == TablesCatalogRequest::Mode::Schemas) {
+        tables && tables->mode == TablesCatalogRequest::Mode::Schemas &&
+        !(seen_->catalog_route_executor && seen_->date_result)) {
       result.columns = {{"TABLE_CAT", {}}, {"TABLE_SCHEM", {}}, {"TABLE_NAME", {}},
                         {"TABLE_TYPE", {}}, {"REMARKS", {}}};
       for (auto& column : result.columns)
@@ -13010,4 +13014,96 @@ TEST_F(BackendContractTest, CancelHandleNeedDataResetKeepsOwningBindingsAndAllow
   EXPECT_EQ(std::optional<std::string>{"abc"}, seen->parameters[0].value);
   ASSERT_EQ(SQL_SUCCESS, SQLCancelHandle(SQL_HANDLE_STMT, stmt));
   EXPECT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+}
+
+TEST_F(ApplicationNameOptionsTest, MetadataScopeClosedAnsiWideOptionsDefaultsAndFailedPublicationRecover) {
+  using rs::core::database::CatalogDatabaseScope;
+  static_assert(sizeof(SQLULEN) == sizeof(void*));
+  static_assert(sizeof(SQLWCHAR) == 2 || sizeof(SQLWCHAR) == 4);
+  for (const bool wide : {false, true}) {
+    for (const char* invalid : {"", "yes", "on", "2", "secret-token"}) {
+      ASSERT_EQ(SQL_ERROR, login_name("SERVER=fake;SSL=0;DatabaseMetadataCurrentDbOnly={" + std::string(invalid) + "}", wide));
+      SQLCHAR state[6]{}, message[128]{};
+      ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, state, nullptr, message, sizeof(message), nullptr));
+      EXPECT_STREQ("Invalid DatabaseMetadataCurrentDbOnly value", reinterpret_cast<char*>(message));
+      EXPECT_EQ(0, seen->created); EXPECT_EQ(0, seen->transports); EXPECT_EQ(0, seen->queries);
+      EXPECT_FALSE(reinterpret_cast<rs::odbc::ODBCConnection*>(dbc)->is_connected());
+    }
+  }
+  for (const bool wide : {false, true}) {
+    for (const char* value : {"FALSE", "0", " true ", "1"}) {
+      ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;DatabaseMetadataCurrentDbOnly={" + std::string(value) + "}", wide));
+      EXPECT_EQ(std::string(value) == "FALSE" || std::string(value) == "0" ?
+          CatalogDatabaseScope::VisibleDatabases : CatalogDatabaseScope::CurrentDatabase, seen->settings.catalog_database_scope);
+      EXPECT_EQ(0, seen->queries);
+      ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+    }
+    seen->connect_exception = 1;
+    ASSERT_EQ(SQL_ERROR, login_name("SERVER=fake;SSL=0;DatabaseMetadataCurrentDbOnly=FALSE", wide));
+    EXPECT_FALSE(reinterpret_cast<rs::odbc::ODBCConnection*>(dbc)->is_connected());
+    seen->connect_exception = 0;
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0", wide));
+    EXPECT_EQ(CatalogDatabaseScope::CurrentDatabase, seen->settings.catalog_database_scope);
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  }
+}
+
+TEST_F(ApplicationNameOptionsTest, MetadataScopeCatalogSchemasAnsiWideRetainCollisionsNullsWidthsAndSiblingOwnership) {
+  using namespace rs::core::database;
+  for (const bool selected : {false, true}) {
+    for (const bool wide : {false, true}) {
+      seen->catalog_builder = true; seen->catalog_executor = selected; seen->catalog_route_executor = selected;
+      ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;DatabaseMetadataCurrentDbOnly=FALSE;MaxVarcharSize=0", wide));
+      EXPECT_EQ(CatalogDatabaseScope::VisibleDatabases, seen->settings.catalog_database_scope);
+      ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+      QueryResult source;
+      for (const char* name : {"TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "TABLE_TYPE", "REMARKS"})
+        source.columns.push_back({name, NativeTypeInfo{ScalarType::VarChar, 128, 0, true}});
+      source.rows = {{"a_雪", "same", std::nullopt, std::nullopt, std::nullopt},
+                     {"z_db", "same", std::nullopt, std::nullopt, std::nullopt}};
+      seen->date_result = source;
+      SQLWCHAR empty_w[]{0}, all_w[]{'%', 0}; SQLCHAR empty_a[]{0}, all_a[]{'%', 0};
+      ASSERT_EQ(SQL_SUCCESS, wide ? SQLTablesW(stmt, empty_w, SQL_NTS, all_w, SQL_NTS, empty_w, SQL_NTS, nullptr, 0) :
+          SQLTables(stmt, empty_a, SQL_NTS, all_a, SQL_NTS, empty_a, SQL_NTS, nullptr, 0));
+      SQLHSTMT sibling = nullptr; ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &sibling));
+      seen->date_result->rows.clear();
+      ASSERT_EQ(SQL_SUCCESS, SQLTables(sibling, all_a, SQL_NTS, empty_a, SQL_NTS, empty_a, SQL_NTS, nullptr, 0));
+      struct { SQLULEN size = 0; SQLULEN canary = 87; } width;
+      SQLSMALLINT type = 0;
+      ASSERT_EQ(SQL_SUCCESS, SQLDescribeCol(stmt, 1, nullptr, 0, nullptr, &type, &width.size, nullptr, nullptr));
+      EXPECT_EQ(128u, width.size); EXPECT_EQ(87u, width.canary);
+      for (const char* catalog : {"a_雪", "z_db"}) {
+        ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+        SQLCHAR value[32]{}; SQLLEN length = -1;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_CHAR, value, sizeof(value), &length));
+        EXPECT_STREQ(catalog, reinterpret_cast<char*>(value)); EXPECT_EQ(std::strlen(catalog), static_cast<std::size_t>(length));
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 2, SQL_C_CHAR, value, sizeof(value), &length)); EXPECT_STREQ("same", reinterpret_cast<char*>(value));
+        SQLCHAR untouched = 71;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 3, SQL_C_CHAR, &untouched, 1, &length));
+        EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(71, untouched);
+      }
+      EXPECT_EQ(SQL_NO_DATA, SQLFetch(stmt));
+      ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, sibling));
+      ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+      ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+    }
+  }
+}
+
+TEST_F(ApplicationNameOptionsTest, MetadataScopeGeneratedProtocolRefusalRetiresAndFencesStaleRowsThenReconnectRecovers) {
+  seen->catalog_builder = true;
+  ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;DatabaseMetadataCurrentDbOnly=FALSE"));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT fixture", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  seen->catalog_protocol_failure = true;
+  ASSERT_EQ(SQL_ERROR, SQLTables(stmt, (SQLCHAR*)"%", SQL_NTS, (SQLCHAR*)"", SQL_NTS, (SQLCHAR*)"", SQL_NTS, nullptr, 0));
+  EXPECT_FALSE(reinterpret_cast<rs::odbc::ODBCConnection*>(dbc)->is_connected());
+  EXPECT_EQ(SQL_ERROR, SQLFetch(stmt));
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+  seen->catalog_protocol_failure = false;
+  ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0"));
+  EXPECT_EQ(rs::core::database::CatalogDatabaseScope::CurrentDatabase, seen->settings.catalog_database_scope);
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+  EXPECT_EQ(SQL_SUCCESS, SQLTables(stmt, (SQLCHAR*)"%", SQL_NTS, (SQLCHAR*)"", SQL_NTS, (SQLCHAR*)"", SQL_NTS, nullptr, 0));
 }

@@ -309,7 +309,7 @@ private:
       std::string_view, std::vector<rs::core::database::PreparedCommandSet>, rs::util::Deadline);
   rs::core::database::BackendResult<rs::core::database::PreparedCommandBatchResult> backend_execute_command_batch(
       rs::core::database::PreparedCommandPlan&&);
-  rs::util::Result<std::string> backend_catalog(const rs::core::database::CatalogRequest&);
+  rs::core::database::BackendResult<std::string> backend_catalog(const rs::core::database::CatalogRequest&);
 
   rs::core::database::BackendResult<rs::core::database::QueryResult> backend_execute_catalog(
       const rs::core::database::CatalogRequest&, rs::util::Deadline);

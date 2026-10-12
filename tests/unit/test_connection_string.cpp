@@ -293,6 +293,18 @@ TEST_F(UnixIniDiscoveryTest, TableTypesDriverDsnStringPrecedenceRetainsExplicitF
   EXPECT_EQ("", ConnectionString::resolve("DSN=TableTypesFixture;EnableTableTypes={}", "").effective_parameters.at("ENABLETABLETYPES"));
 }
 
+TEST_F(UnixIniDiscoveryTest, MetadataScopeDriverDsnStringPrecedenceRetainsExplicitFalseAndEmpty) {
+  write(root_ / "drivers.ini", "[Metadata Scope Driver]\nDatabaseMetadataCurrentDbOnly=invalid\n");
+  write(root_ / "data.ini", "[MetadataScopeFixture]\nDriver=Metadata Scope Driver\nDatabaseMetadataCurrentDbOnly=1\n");
+  ASSERT_EQ(0, setenv("ODBCSYSINI", root_.c_str(), 1));
+  ASSERT_EQ(0, setenv("ODBCINSTINI", "drivers.ini", 1));
+  ASSERT_EQ(0, setenv("ODBCINI", (root_ / "data.ini").c_str(), 1));
+  EXPECT_EQ("invalid", ConnectionString::resolve("DRIVER=Metadata Scope Driver", "").effective_parameters.at("DATABASEMETADATACURRENTDBONLY"));
+  EXPECT_EQ("1", ConnectionString::resolve("DSN=MetadataScopeFixture", "").effective_parameters.at("DATABASEMETADATACURRENTDBONLY"));
+  EXPECT_EQ("FALSE", ConnectionString::resolve("DSN=MetadataScopeFixture;DatabaseMetadataCurrentDbOnly=FALSE", "").effective_parameters.at("DATABASEMETADATACURRENTDBONLY"));
+  EXPECT_EQ("", ConnectionString::resolve("DSN=MetadataScopeFixture;DatabaseMetadataCurrentDbOnly={}", "").effective_parameters.at("DATABASEMETADATACURRENTDBONLY"));
+}
+
 TEST_F(UnixIniDiscoveryTest, VarcharSizesRespectDriverDsnAndExplicitZeroEmptyOverrides) {
   write(root_ / "drivers.ini", "[Sizing Driver]\nMaxVarcharSize=invalid\nMaxLongVarcharSize=65535\n");
   write(root_ / "data.ini", "[SizingFixture]\nDriver=Sizing Driver\nMaxVarcharSize=8\nMaxLongVarcharSize=17\n");
@@ -391,6 +403,18 @@ TEST_F(NativeDsnTest, TableTypesNativeRegistryDsnStringPrecedenceRetainsFalseAnd
   EXPECT_EQ("1", ConnectionString::resolve("DSN=TableTypesFixture", "").effective_parameters.at("ENABLETABLETYPES"));
   EXPECT_EQ("FALSE", ConnectionString::resolve("DSN=TableTypesFixture;EnableTableTypes=FALSE", "").effective_parameters.at("ENABLETABLETYPES"));
   EXPECT_EQ("", ConnectionString::resolve("DSN=TableTypesFixture;EnableTableTypes={}", "").effective_parameters.at("ENABLETABLETYPES"));
+}
+
+TEST_F(NativeDsnTest, MetadataScopeNativeRegistryDsnStringPrecedenceRetainsFalseAndEmpty) {
+  constexpr auto path = L"SOFTWARE\\ODBC\\ODBC.INI\\MetadataScopeFixture";
+  value(HKEY_CURRENT_USER, path, L"Driver", L"Metadata Scope Driver");
+  value(HKEY_CURRENT_USER, path, L"DatabaseMetadataCurrentDbOnly", L"1");
+  value(HKEY_CURRENT_USER, L"SOFTWARE\\ODBC\\ODBC.INI\\ODBC Data Sources", L"MetadataScopeFixture", L"Metadata Scope Driver");
+  value(HKEY_LOCAL_MACHINE, L"SOFTWARE\\ODBC\\ODBCINST.INI\\Metadata Scope Driver", L"DatabaseMetadataCurrentDbOnly", L"invalid");
+  EXPECT_EQ("invalid", ConnectionString::resolve("DRIVER=Metadata Scope Driver", "").effective_parameters.at("DATABASEMETADATACURRENTDBONLY"));
+  EXPECT_EQ("1", ConnectionString::resolve("DSN=MetadataScopeFixture", "").effective_parameters.at("DATABASEMETADATACURRENTDBONLY"));
+  EXPECT_EQ("FALSE", ConnectionString::resolve("DSN=MetadataScopeFixture;DatabaseMetadataCurrentDbOnly=FALSE", "").effective_parameters.at("DATABASEMETADATACURRENTDBONLY"));
+  EXPECT_EQ("", ConnectionString::resolve("DSN=MetadataScopeFixture;DatabaseMetadataCurrentDbOnly={}", "").effective_parameters.at("DATABASEMETADATACURRENTDBONLY"));
 }
 
 TEST_F(NativeDsnTest, VarcharSizesRespectNativeRegistryDriverDsnAndExplicitZeroEmptyOverrides) {

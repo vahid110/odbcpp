@@ -77,6 +77,9 @@ protected:
   virtual RedshiftCatalogMode catalog_mode() const noexcept { return catalog_mode_; }
 
 private:
+  BackendResult<QueryResult> execute_database_discovery(const CatalogRequest& request,
+      const CatalogRequest& semantic_request, CatalogDatabaseScope scope, rs::util::Deadline deadline);
+  BackendResult<QueryResult> execute_routine_catalog(const CatalogRequest& request, rs::util::Deadline deadline);
   friend struct detail::StagedPreparedRefusalTestAccess;
   std::array<std::byte, 8> cancellation_key_{};
   bool cancellation_key_present_{false};

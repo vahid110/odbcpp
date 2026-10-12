@@ -486,3 +486,26 @@ TEST(TableTypePresentation, ProviderDefaultsExplicitFalseOwnershipAndOtherProvid
   EXPECT_EQ("EnableTableTypes requires Redshift", unsupported.error_message());
   options.detailed_table_types.reset(); ASSERT_TRUE(pg.resolve_connection_options(options));
 }
+
+TEST(MetadataDatabaseScope, ProviderDefaultsOwningSelectionIsolationAndInvalidIntent) {
+  using namespace rs::core::database;
+  postgres::PgBackendProvider rs{BackendIdentity{"redshift", "Amazon Redshift", "ODBCPP Redshift"},
+      BackendConnectionDefaults{"rs", 5439, std::nullopt, false}, std::nullopt, postgres::PgCatalogProfile::Redshift};
+  postgres::PgBackendProvider pg{BackendIdentity{"postgresql", "PostgreSQL", "ODBCPP PostgreSQL"},
+      BackendConnectionDefaults{"pg", 5432, "postgres", false}};
+  auto defaults = rs.resolve_connection_options({}); ASSERT_TRUE(defaults);
+  EXPECT_EQ(CatalogDatabaseScope::CurrentDatabase, defaults->catalog_database_scope);
+  ConnectionOptions options; options.catalog_database_scope = CatalogDatabaseScope::VisibleDatabases;
+  auto selected = rs.resolve_connection_options(options); ASSERT_TRUE(selected);
+  EXPECT_EQ(CatalogDatabaseScope::VisibleDatabases, selected->catalog_database_scope);
+  options.catalog_database_scope = CatalogDatabaseScope::CurrentDatabase;
+  EXPECT_EQ(CatalogDatabaseScope::VisibleDatabases, selected->catalog_database_scope);
+  auto current = rs.resolve_connection_options(options); ASSERT_TRUE(current);
+  EXPECT_EQ(CatalogDatabaseScope::CurrentDatabase, current->catalog_database_scope);
+  auto unsupported = pg.resolve_connection_options(options); ASSERT_FALSE(unsupported);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature), unsupported.error());
+  options.catalog_database_scope = static_cast<CatalogDatabaseScope>(-1);
+  auto invalid = rs.resolve_connection_options(options); ASSERT_FALSE(invalid);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter), invalid.error());
+  options.catalog_database_scope.reset(); ASSERT_TRUE(pg.resolve_connection_options(options));
+}

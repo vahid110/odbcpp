@@ -57,6 +57,7 @@ struct ConnectionOptions {
   std::optional<std::uint32_t> long_varchar_size;
   bool boolean_as_character = false;
   std::optional<bool> detailed_table_types;
+  std::optional<CatalogDatabaseScope> catalog_database_scope;
 };
 
 // Immutable product definition. A provider owns identity and static behavior;

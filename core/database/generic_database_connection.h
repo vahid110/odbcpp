@@ -51,6 +51,7 @@ public:
   std::string server_version() const override { return get_parameter("server_version"); }
   // Private PostgreSQL ParameterStatus storage; not a portable SDK service.
   virtual std::string get_parameter(std::string_view key) const;
+  virtual std::optional<std::string> get_parameter_status(std::string_view key) const;
 
 protected:
   // Native catalog fanout may read only budgets, never connection secrets.
@@ -58,6 +59,7 @@ protected:
   const ResultLimits& catalog_result_limits() const noexcept { return settings_.result_limits; }
   // Catalog presentation reads its owning policy without exposing credentials.
   bool catalog_detailed_table_types() const noexcept { return settings_.detailed_table_types; }
+  CatalogDatabaseScope catalog_database_scope() const noexcept { return settings_.catalog_database_scope; }
   virtual void authenticated_backend_key(std::span<const std::byte>) {}
   virtual void forget_backend_key() noexcept {}
   rs::core::transport::ITransport* cancellation_transport() noexcept { return transport_.get(); }

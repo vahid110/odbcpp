@@ -1006,6 +1006,12 @@ std::string GenericDatabaseConnection::get_parameter(std::string_view key) const
   return (it != server_params_.end()) ? it->second : std::string{};
 }
 
+std::optional<std::string> GenericDatabaseConnection::get_parameter_status(std::string_view key) const {
+  const auto it = server_params_.find(std::string(key));
+  if (it == server_params_.end()) return std::nullopt;
+  return it->second;
+}
+
 void GenericDatabaseConnection::write_all(const std::vector<std::byte>& data, rs::util::Deadline deadline) {
   auto result = write_all_result(data, deadline);
   if (result.has_error()) {

@@ -1751,6 +1751,13 @@ SQLRETURN ODBCConnection::connect(
       else if (value == "0" || value == "FALSE") options.detailed_table_types = false;
       else throw std::invalid_argument("Invalid EnableTableTypes value");
     }
+    if (params.count("DATABASEMETADATACURRENTDBONLY")) {
+      using rs::core::database::CatalogDatabaseScope;
+      const auto value = ConnectionString::to_upper(ConnectionString::trim(params.at("DATABASEMETADATACURRENTDBONLY")));
+      if (value == "1" || value == "TRUE") options.catalog_database_scope = CatalogDatabaseScope::CurrentDatabase;
+      else if (value == "0" || value == "FALSE") options.catalog_database_scope = CatalogDatabaseScope::VisibleDatabases;
+      else throw std::invalid_argument("Invalid DatabaseMetadataCurrentDbOnly value");
+    }
     const auto text_size = [](std::string_view raw, std::uint32_t maximum, const char* name) {
       const auto text = ConnectionString::trim(std::string(raw));
       std::uint32_t value = 0;
@@ -2231,13 +2238,11 @@ ODBCConnection::backend_execute_command_batch(rs::core::database::PreparedComman
   return local_backend_error(LocalFailure::Unsupported, "Statement arrays are unavailable",
       BackendOperation::ExecutePrepared, SessionState::Disconnected);
 }
-rs::util::Result<std::string> ODBCConnection::backend_catalog(const rs::core::database::CatalogRequest& request) {
-  if (backend_lease_) {
-    auto result = backend_lease_->catalog_query(request);
-    if (result) return std::move(*result);
-    return {result.error(), result.error_message()};
-  }
-  return {rs::util::DbErrorCode::UnsupportedFeature, "Data source does not support catalog discovery"};
+rs::core::database::BackendResult<std::string> ODBCConnection::backend_catalog(const rs::core::database::CatalogRequest& request) {
+  if (backend_lease_) return backend_lease_->catalog_query(request);
+  return rs::core::database::local_backend_error(rs::core::database::LocalFailure::Unsupported,
+      "Data source does not support catalog discovery", rs::core::database::BackendOperation::BuildCatalogQuery,
+      rs::core::database::SessionState::Disconnected);
 }
 
 rs::core::database::BackendResult<bool> ODBCConnection::backend_selects_catalog_request(
@@ -8106,8 +8111,11 @@ SQLRETURN ODBCStatement::execute_catalog(
   }
   auto query = conn_->backend_catalog(request);
   if (query.has_error()) {
-    set_error(request_sqlstate(query.error(), SQLSTATE_GENERAL_ERROR),
-              query.error_message());
+    set_error(request_sqlstate(query.error(), SQLSTATE_GENERAL_ERROR), query.error_message());
+    if (query.session_snapshot().disposition == rs::core::database::SessionDisposition::Retire) {
+      clear_current_result(); pending_results_.clear();
+      conn_->close_connection();
+    }
     return SQL_ERROR;
   }
   return execute_direct(*query, original_deadline, &request);
