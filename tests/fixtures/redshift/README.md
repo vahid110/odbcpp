@@ -206,3 +206,32 @@ cells and five metadata entries; inherited parameter floors remain required
 even though this SELECT binds no parameters. Native compilation/LIST is not a
 live result. Execute with the accumulated CI-first batch only after exact green
 head/native binary and fresh reviewed finite accounting/one-use admission.
+
+
+## APD restricted input pair revalidation — authored, execution pending
+
+`RedshiftApdRestrictedPairRealTest.PreparedDescriptorRefusalNullAndOwningRecovery`
+uses `ODBCPP_REDSHIFT_APD_RESTRICTED_PAIR_ADMISSION=apd_restricted_pair_v1`.
+The one fixed prepared SELECT echoes INTEGER, DATE and INTEGER42. Valid character
+inputs establish literal values; APD DATE-to-INTEGER and NUMERIC-to-DATE mutations
+must fail locally with07006 after restoring the descriptor-cleared DataPtr.
+Unsupported NUMERIC-to-DATE NULL still rejects, then legal DATE NULL preserves
+the output and final character refill recovers on the same statement/session.
+Parameter status/processed count, caller bytes/indicators and typed neighbor
+remain observable. This covers adapter/shared regression; PostgreSQL execution
+is separate evidence and never proves native Redshift behavior.
+
+Finite ledger: one ordinary verified TLS login, one Prepare and seven Execute
+attempts (four echoes and three local07006 refusals). Conservatively reserve all
+eight SQL operations, including refused attempts. No DDL/DML, objects, new
+principal, cancellation/observer or resource changes. Existing aggregate40-second
+and per-operation5-second caps, marker-first setup, sticky unknown-completion,
+release and exact-principal cleanup remain mandatory.
+
+Minimum authored floors: exact SQL byte length, two parameters,10 parameter
+bytes each/12 aggregate, three columns, one row, three cells/nine metadata
+entries; inherited setup floors remain. Authored source, compile and LIST do not
+prove live execution. Actual Redshift bodies wait for accumulated CI-first
+acceptance with exact green source/native binary and fresh reviewed finite
+accounting, canonical lock and durable one-use admission. No vendor binary
+parity or expanded conversion matrix is claimed.
