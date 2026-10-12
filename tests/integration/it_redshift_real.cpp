@@ -9644,4 +9644,3 @@ TEST_F(RedshiftNumericTemporalInputRealTest, PreparedRefusalDefaultNullAndRecove
   EXPECT_EQ(10, date.month); EXPECT_EQ(13, date.day);
   ASSERT_NO_FATAL_FAILURE(release_connection());
 }
-

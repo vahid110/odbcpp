@@ -291,4 +291,3 @@ The proposal marker does not grant paid admission or extend any spending,
 principal, credentials, network, resource or authorization horizon. Execution
 requires the integration owner's combined exact-head CI-first checkpoint and
 fresh independently reviewed finite admission.
-

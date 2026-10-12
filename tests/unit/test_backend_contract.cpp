@@ -13298,4 +13298,3 @@ TEST_F(CommandArrayDeferredInputTest, NumericTemporalInputOrdinaryNeighborRefuse
   EXPECT_EQ(SQL_PARAM_SUCCESS, output.values[1]); EXPECT_EQ(SQL_PARAM_SUCCESS, output.values[2]);
   ASSERT_NO_FATAL_FAILURE(guards());
 }
-

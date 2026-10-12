@@ -5581,13 +5581,13 @@ TEST_F(PreparedStatementIntegrationTest, NumericTemporalInputRefusalDefaultNullA
     return result;
   };
 
-  
+
   ASSERT_TRUE(known_sql(SQLPrepare(hstmt, (SQLCHAR*)echo_sql, SQL_NTS)));
   SQLUSMALLINT status = SQL_PARAM_UNUSED;
   SQLULEN processed = 99;
-  
+
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
-  
+
   ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
   char date_text[] = "2026-10-12";
   SQLLEN length = SQL_NTS;
@@ -5599,7 +5599,7 @@ TEST_F(PreparedStatementIntegrationTest, NumericTemporalInputRefusalDefaultNullA
     EXPECT_EQ(original_length, length);
      ASSERT_TRUE(observed(SQLFetch(hstmt)));
     SQL_DATE_STRUCT result{1, 2, 3}; SQLLEN result_length = 91;
-    
+
     ASSERT_TRUE(observed(SQLGetData(hstmt, 1, SQL_C_TYPE_DATE, &result, 0, &result_length)));
     if (absent) {
       EXPECT_EQ(SQL_NULL_DATA, result_length); EXPECT_EQ(1, result.year);
@@ -5609,59 +5609,59 @@ TEST_F(PreparedStatementIntegrationTest, NumericTemporalInputRefusalDefaultNullA
       EXPECT_EQ(2026, result.year); EXPECT_EQ(10, result.month); EXPECT_EQ(day, result.day);
     }
     SQLINTEGER neighbor = -1; result_length = 91;
-    
+
     ASSERT_TRUE(observed(SQLGetData(hstmt, 2, SQL_C_SLONG, &neighbor, 0, &result_length)));
     EXPECT_EQ(42, neighbor); EXPECT_EQ(static_cast<SQLLEN>(sizeof(neighbor)), result_length);
      ASSERT_TRUE(observed(SQLFetch(hstmt), SQL_NO_DATA));
      ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt)));
   };
-  
+
   ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
       SQL_TYPE_DATE, 10, 0, date_text, sizeof(date_text), &length));
   ASSERT_NO_FATAL_FAILURE(echo(12, false));
   // Bind-time refusal must retain the original legal CHAR-to-DATE binding.
   SQLINTEGER number = 42;
-  
+
   ASSERT_TRUE(observed(SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
       SQL_TYPE_DATE, 10, 0, &number, 0, &length), SQL_ERROR, "07006"));
    const auto apd = descriptor(SQL_ATTR_APP_PARAM_DESC);
   SQLPOINTER pointer = nullptr;
-  
+
   ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(apd, 1, SQL_DESC_DATA_PTR, &pointer, 0, nullptr));
   EXPECT_EQ(date_text, pointer);
-  
+
   ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
       reinterpret_cast<SQLPOINTER>(SQL_C_SLONG), 0));
-  
+
   ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, &number, 0));
   status = SQL_PARAM_UNUSED; processed = 99;
-  
+
   ASSERT_TRUE(observed(SQLExecute(hstmt), SQL_ERROR, "07006"));
   EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed); EXPECT_EQ(42, number);
 
   SQL_DATE_STRUCT date{2026, 10, 13}; length = 0;
-  
+
   ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_DEFAULT,
       SQL_TYPE_DATE, 10, 0, &date, 0, &length));
   ASSERT_NO_FATAL_FAILURE(echo(13, false));
   auto* poison = reinterpret_cast<SQLPOINTER>((std::numeric_limits<std::uintptr_t>::max)());
   length = SQL_NULL_DATA;
-  
+
   ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_DEFAULT,
       SQL_TYPE_DATE, 10, 0, poison, 0, &length));
   ASSERT_NO_FATAL_FAILURE(echo(0, true));
-  
+
   ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
       reinterpret_cast<SQLPOINTER>(SQL_C_SLONG), 0));
-  
+
   ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, poison, 0));
   status = SQL_PARAM_UNUSED; processed = 99;
-  
+
   ASSERT_TRUE(observed(SQLExecute(hstmt), SQL_ERROR, "07006"));
   EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed); EXPECT_EQ(SQL_NULL_DATA, length);
 
   std::memcpy(date_text, "2026-10-14", sizeof(date_text)); length = SQL_NTS;
-  
+
   ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
       SQL_TYPE_DATE, 10, 0, date_text, sizeof(date_text), &length));
   ASSERT_NO_FATAL_FAILURE(echo(14, false));
