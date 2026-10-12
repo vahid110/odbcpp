@@ -5704,6 +5704,26 @@ ODBCStatement::materialize_parameter_set(std::uintptr_t input_offset,
           }
           value = std::to_string(integer);
         }
+        // ODBC SQL target policy validates the owning exact APD text without
+        // replacing it with a rounded floating representation.
+        if (declared_sql_type == SQL_REAL) {
+          SQLREAL checked = 0;
+          if (TextDataConverter::convert_data(
+                  value, SQL_C_FLOAT, &checked, 0, nullptr) == SQL_ERROR) {
+            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Numeric parameter is outside SQL_REAL range");
+            return std::nullopt;
+          }
+        } else if (declared_sql_type == SQL_FLOAT ||
+                   declared_sql_type == SQL_DOUBLE) {
+          SQLDOUBLE checked = 0;
+          if (TextDataConverter::convert_data(
+                  value, SQL_C_DOUBLE, &checked, 0, nullptr) == SQL_ERROR) {
+            set_error(SQLSTATE_NUMERIC_VALUE_OUT_OF_RANGE,
+                      "Numeric parameter is outside SQL floating range");
+            return std::nullopt;
+          }
+        }
       } else if (value_type == SQL_C_FLOAT) {
         value = format_floating_parameter(
             load_application_value<SQLREAL>(fields.data));

@@ -1081,3 +1081,239 @@ TEST_F(FixedNumericCompletionApiTest, VariableChunksAndOwningSiblingRefetchRefil
 }
 }  // namespace
 
+namespace {
+// Test-side base256 input construction; expected decimal strings stay literal.
+SQL_NUMERIC_STRUCT approximate_numeric_input(std::uint64_t coefficient,
+                                             SQLCHAR sign = 1) {
+  SQL_NUMERIC_STRUCT input{};
+  input.precision = 1; input.scale = 0; input.sign = sign;
+  for (std::size_t i = 0; i < sizeof(coefficient); ++i) {
+    input.val[i] = static_cast<SQLCHAR>(coefficient & 0xffu);
+    coefficient >>= 8;
+  }
+  return input;
+}
+
+class CnumericApproximateRangeApiTest : public NumericScaleApiTest {
+ protected:
+  SQLHSTMT sibling{};
+  void TearDown() override {
+    if (sibling) SQLFreeHandle(SQL_HANDLE_STMT, sibling);
+    NumericScaleApiTest::TearDown();
+  }
+};
+
+TEST_F(CnumericApproximateRangeApiTest, RealOverflowRefusesBeforeDispatchAndRepairs) {
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  auto input = approximate_numeric_input(1);
+  SQLLEN length = 73;
+  SQLUSMALLINT status = SQL_PARAM_UNUSED;
+  SQLULEN processed = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  ASSERT_NO_FATAL_FAILURE(bind_input(&input, &length, SQL_REAL, 0, 0, 1, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, facts->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"1"}, facts->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  struct Refusal { std::uint64_t coefficient; SQLSMALLINT precision, scale; SQLCHAR sign; };
+  const Refusal refused[] = {
+      {1, 1, -100, 1}, {1, 1, -100, 0},
+      {35, 2, -37, 1}, {35, 2, -37, 0},
+      {34028236, 8, -31, 1}, {34028236, 8, -31, 0},
+      {1, 1, -128, 1}};
+  for (const auto& item : refused) {
+    SCOPED_TRACE(item.coefficient);
+    SCOPED_TRACE(item.scale);
+    SCOPED_TRACE(item.sign);
+    input = approximate_numeric_input(item.coefficient, item.sign);
+    const auto original = input;
+    length = 73; status = SQL_PARAM_UNUSED; processed = 99;
+    ASSERT_NO_FATAL_FAILURE(bind_input(&input, &length, SQL_REAL, 0, 0,
+        item.precision, item.scale));
+    const auto queries = facts->queries;
+    EXPECT_EQ(SQL_ERROR, SQLExecute(stmt));
+    EXPECT_EQ("22003", state());
+    EXPECT_EQ(queries, facts->queries);
+    ASSERT_EQ(1u, facts->parameters.size());
+    EXPECT_EQ(std::optional<std::string>{"1"}, facts->parameters[0].value);
+    EXPECT_EQ(QueryParameterType::Float32, facts->parameters[0].type);
+    EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
+    EXPECT_EQ(73, length);
+    EXPECT_EQ(0, std::memcmp(&input, &original, sizeof(input)));
+    // Also releases the unexpected result in the original failing baseline.
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  }
+  input = approximate_numeric_input(42);
+  ASSERT_NO_FATAL_FAILURE(bind_input(&input, &length, SQL_REAL, 0, 0, 2, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, facts->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"42"}, facts->parameters[0].value);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed);
+  SQLCHAR diagnostic[6]{};
+  EXPECT_EQ(SQL_NO_DATA, SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1,
+      diagnostic, nullptr, nullptr, 0, nullptr));
+  EXPECT_EQ(0u, facts->disconnects);
+}
+
+TEST_F(CnumericApproximateRangeApiTest, FittingRoundedSubnormalAndDoubleAliasesKeepExactText) {
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  struct Fit {
+    SQLSMALLINT target, precision, scale;
+    std::uint64_t coefficient; SQLCHAR sign;
+    std::string expected;
+  };
+  const std::string minimum = "0." + std::string(37, '0') + "1";
+  const Fit fits[] = {
+      {SQL_REAL, 1, 0, 1, 1, "1"}, {SQL_REAL, 1, 0, 1, 0, "-1"},
+      {SQL_REAL, 3, 3, 0, 0, "0.000"},
+      {SQL_REAL, 5, 3, 12345, 1, "12.345"},
+      {SQL_REAL, 5, 3, 12345, 0, "-12.345"},
+      {SQL_REAL, 38, 38, 1, 1, minimum},
+      {SQL_REAL, 38, 38, 1, 0, "-" + minimum},
+      {SQL_REAL, 2, -37, 34, 1, "34" + std::string(37, '0')},
+      // Above mathematical FLT_MAX, but rounds to a finite float by the frozen rule.
+      {SQL_REAL, 8, -31, 34028235, 1, "34028235" + std::string(31, '0')},
+      {SQL_REAL, 8, -31, 34028235, 0, "-34028235" + std::string(31, '0')},
+      {SQL_FLOAT, 1, -100, 1, 1, "1" + std::string(100, '0')},
+      {SQL_FLOAT, 1, -100, 1, 0, "-1" + std::string(100, '0')},
+      {SQL_DOUBLE, 1, -128, 1, 1, "1" + std::string(128, '0')},
+      {SQL_DOUBLE, 38, 38, 1, 1, minimum}};
+  for (const auto& item : fits) {
+    SCOPED_TRACE(item.target);
+    SCOPED_TRACE(item.expected);
+    auto input = approximate_numeric_input(item.coefficient, item.sign);
+    const auto original = input;
+    SQLLEN length = 1;  // Fixed-size numeric C input ignores this nonNULL length.
+    ASSERT_NO_FATAL_FAILURE(bind_input(&input, &length, item.target, 0, 0,
+        item.precision, item.scale));
+    const auto queries = facts->queries;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    ASSERT_EQ(1u, facts->parameters.size());
+    EXPECT_EQ(item.target == SQL_REAL ? QueryParameterType::Float32 : QueryParameterType::Float64,
+        facts->parameters[0].type);
+    EXPECT_EQ(std::optional<std::string>{item.expected}, facts->parameters[0].value);
+    EXPECT_FALSE(facts->parameters[0].binary_input);
+    EXPECT_EQ(queries + 1, facts->queries);
+    EXPECT_EQ(1, length); EXPECT_EQ(0, std::memcmp(&input, &original, sizeof(input)));
+    const auto owned = facts->parameters;
+    std::memset(&input, 0xff, sizeof(input));
+    EXPECT_EQ(std::optional<std::string>{item.expected}, owned[0].value);
+    SQLCHAR diagnostic[6]{};
+    EXPECT_EQ(SQL_NO_DATA, SQLGetDiagRec(SQL_HANDLE_STMT, stmt, 1,
+        diagnostic, nullptr, nullptr, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+  EXPECT_EQ(0u, facts->disconnects);
+}
+
+TEST_F(CnumericApproximateRangeApiTest, ApdUnalignedFixedLengthsNullPoisonAndInvalidRecovery) {
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  auto input = approximate_numeric_input(12345);
+  // Struct dimensions intentionally disagree with the authoritative APD.
+  input.precision = 1; input.scale = -100;
+  std::array<unsigned char, sizeof(input) + 2> storage{};
+  storage.fill(0x5a); std::memcpy(storage.data() + 1, &input, sizeof(input));
+  SQLLEN length = 0;
+  const auto apd = descriptor(SQL_ATTR_APP_PARAM_DESC);
+  for (const SQLLEN fixed_length : {SQLLEN{0}, SQLLEN{1}, SQLLEN{SQL_NTS}, SQLLEN{-9}}) {
+    length = fixed_length;
+    const auto before = storage;
+    ASSERT_NO_FATAL_FAILURE(bind_input(storage.data() + 1, &length, SQL_REAL, 0, 0, 5, 3));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    ASSERT_EQ(1u, facts->parameters.size());
+    EXPECT_EQ(std::optional<std::string>{"12.345"}, facts->parameters[0].value);
+    EXPECT_EQ(before, storage); EXPECT_EQ(fixed_length, length);
+    SQLSMALLINT precision = 0, scale = 0;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(apd, 1, SQL_DESC_PRECISION, &precision, 0, nullptr));
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(apd, 1, SQL_DESC_SCALE, &scale, 0, nullptr));
+    EXPECT_EQ(5, precision); EXPECT_EQ(3, scale);
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  }
+  std::fill(storage.begin() + 1, storage.end() - 1, 0xff);
+  length = SQL_NULL_DATA;
+  const auto poison = storage;
+  ASSERT_NO_FATAL_FAILURE(bind_input(storage.data() + 1, &length, SQL_REAL, 0, 0, 0, -129));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, facts->parameters.size());
+  EXPECT_FALSE(facts->parameters[0].value);
+  EXPECT_EQ(QueryParameterType::Float32, facts->parameters[0].type);
+  EXPECT_EQ(poison, storage); EXPECT_EQ(SQL_NULL_DATA, length);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  length = 0;
+  // Restore an explicitly valid binding after the poisoned NULL/invalid-APD
+  // control, so this step isolates malformed C fields instead of missing binding.
+  ASSERT_NO_FATAL_FAILURE(bind_input(storage.data() + 1, &length, SQL_REAL, 0, 0, 5, 3));
+  const auto queries = facts->queries;
+  EXPECT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("22003", state());
+  EXPECT_EQ(queries, facts->queries); EXPECT_EQ(poison, storage);
+  EXPECT_FALSE(facts->parameters[0].value);
+  input = approximate_numeric_input(12);
+  std::memcpy(storage.data() + 1, &input, sizeof(input));
+  ASSERT_NO_FATAL_FAILURE(bind_input(storage.data() + 1, &length, SQL_DOUBLE, 0, 0, 2, -3));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(std::optional<std::string>{"12000"}, facts->parameters[0].value);
+  EXPECT_EQ(0x5a, storage.front()); EXPECT_EQ(0x5a, storage.back());
+  EXPECT_EQ(0, length); EXPECT_EQ(0u, facts->disconnects);
+}
+
+TEST_F(CnumericApproximateRangeApiTest, RefusedSiblingAndPreparedRefillPreserveOwningSnapshots) {
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  auto input = approximate_numeric_input(12345);
+  SQLLEN length = sizeof(input);
+  ASSERT_NO_FATAL_FAILURE(bind_input(&input, &length, SQL_REAL, 0, 0, 5, 3));
+  facts->result.rows = {{"7.25"}};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  const auto parent_parameters = facts->parameters;
+  ASSERT_EQ(1u, parent_parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"12.345"}, parent_parameters[0].value);
+  std::memset(&input, 0xff, sizeof(input));
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &sibling));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(sibling, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  auto other = approximate_numeric_input(1);
+  SQLLEN other_length = 73;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(sibling, 1, SQL_PARAM_INPUT, SQL_C_NUMERIC,
+      SQL_REAL, 0, 0, &other, sizeof(other), &other_length));
+  SQLHDESC sibling_apd{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(sibling, SQL_ATTR_APP_PARAM_DESC, &sibling_apd, 0, nullptr));
+  ASSERT_NO_FATAL_FAILURE(dimensions(sibling_apd, 1, 1, -100, &other));
+  facts->result.rows = {{"99"}};
+  const auto queries = facts->queries;
+  EXPECT_EQ(SQL_ERROR, SQLExecute(sibling));
+  SQLCHAR state_value[6]{};
+  EXPECT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, sibling, 1,
+      state_value, nullptr, nullptr, 0, nullptr));
+  EXPECT_STREQ("22003", reinterpret_cast<char*>(state_value));
+  EXPECT_EQ(queries, facts->queries);
+  EXPECT_EQ(std::optional<std::string>{"12.345"}, parent_parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(sibling, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(sibling, 1, SQL_PARAM_INPUT, SQL_C_NUMERIC,
+      SQL_DOUBLE, 0, 0, &other, sizeof(other), &other_length));
+  ASSERT_NO_FATAL_FAILURE(dimensions(sibling_apd, 1, 1, -100, &other));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(sibling));
+  const auto sibling_parameters = facts->parameters;
+  ASSERT_EQ(1u, sibling_parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"1" + std::string(100, '0')}, sibling_parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(sibling));
+  SQLDOUBLE sibling_value = -1; SQLLEN bytes = 73;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(sibling, 1, SQL_C_DOUBLE, &sibling_value, 0, &bytes));
+  EXPECT_DOUBLE_EQ(99, sibling_value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  SQLDOUBLE parent_value = -1; bytes = 73;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_DOUBLE, &parent_value, 0, &bytes));
+  EXPECT_DOUBLE_EQ(7.25, parent_value);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  input = approximate_numeric_input(42);
+  ASSERT_NO_FATAL_FAILURE(bind_input(&input, &length, SQL_REAL, 0, 0, 2, 0));
+  facts->result.rows = {{"11"}};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(std::optional<std::string>{"42"}, facts->parameters[0].value);
+  EXPECT_EQ(std::optional<std::string>{"12.345"}, parent_parameters[0].value);
+  EXPECT_EQ(std::optional<std::string>{"1" + std::string(100, '0')}, sibling_parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
+  parent_value = -1; bytes = 73;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_DOUBLE, &parent_value, 0, &bytes));
+  EXPECT_DOUBLE_EQ(11, parent_value);
+  EXPECT_EQ(0u, facts->disconnects);
+}
+}  // namespace

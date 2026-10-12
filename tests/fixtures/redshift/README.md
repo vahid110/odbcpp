@@ -158,3 +158,28 @@ admission bound to exact green source and native binary; authoring, compilation
 and LIST do not constitute live acceptance. Execution belongs to the periodic
 combined batch.
 
+
+## C_NUMERIC approximate SQL target range — authored, execution pending
+
+`RedshiftCnumericApproximateRangeRealTest.PreparedFitSubnormalWholeNullAndRecovery`
+uses `ODBCPP_REDSHIFT_CNUMERIC_APPROXIMATE_RANGE_ADMISSION=cnumeric_approximate_range_v1`.
+It binds unaligned fixed numeric structs with captured APD dimensions to REAL,
+FLOAT and DOUBLE, checks fitting values, a positive REAL subnormal, large signed
+DOUBLE values, poisoned NULL bypass, positive/negative REAL overflow22003 and
+repaired execution on the same prepared statement. Caller bytes/indicators,
+parameter status/processed count and an INTEGER neighbor remain observable.
+
+Finite ledger: one ordinary verified TLS login; one fixed parameterized SELECT
+Prepare; seven Execute attempts (five successful value/NULL cases and two
+expected local refusals). Conservatively reserve eight SQL operations, including
+both refusal attempts. No DDL, DML, fixture/resource creation or new principal.
+The existing aggregate40-second window and per-operation5-second caps apply;
+expiry or unknown completion follows the existing cleanup fence.
+
+Minimum authored floors: SQL text covers the fixed echo statement; three
+parameters,102 bytes per parameter,306 aggregate parameter bytes; four columns,
+one row,four cells and12 metadata entries. Inherited setup floors remain required.
+Current authoring/compile/LIST is not paid admission or native execution. Actual
+server subnormal behavior and enforcement remain unproved until the accumulated
+CI-first live checkpoint binds this exact source/native image and fresh finite
+accounting/one-use controls. No vendor binary parity is claimed.
