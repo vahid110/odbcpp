@@ -13109,3 +13109,41 @@ TEST_F(ApplicationNameOptionsTest, MetadataScopeGeneratedProtocolRefusalRetiresA
   ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
   EXPECT_EQ(SQL_SUCCESS, SQLTables(stmt, (SQLCHAR*)"%", SQL_NTS, (SQLCHAR*)"", SQL_NTS, (SQLCHAR*)"", SQL_NTS, nullptr, 0));
 }
+
+TEST_F(PreparedCommandArrayTest, CapturedApdRestrictedPairRefusesBeforeProviderAndRepairs) {
+  ASSERT_NO_FATAL_FAILURE(ready());
+  SQLHDESC apd{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_APP_PARAM_DESC, &apd, 0, nullptr));
+  SQL_DATE_STRUCT dates[3]{{0, 99, 99}, {2026, 10, 12}, {2026, 10, 13}};
+  operations[0] = SQL_PARAM_IGNORE;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
+      reinterpret_cast<SQLPOINTER>(SQL_C_TYPE_DATE), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, dates, 0));
+  const auto descriptions = seen->descriptions, queries = seen->queries;
+  const auto result = SQLExecute(stmt);
+  EXPECT_EQ(SQL_ERROR, result);
+  if (result == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+  EXPECT_EQ(descriptions, seen->descriptions); EXPECT_EQ(queries, seen->queries);
+  EXPECT_TRUE(seen->transaction_calls.empty()); EXPECT_TRUE(seen->command_inputs.empty());
+  EXPECT_EQ(2u, processed);
+  EXPECT_EQ(SQL_PARAM_UNUSED, status[0]); EXPECT_EQ(SQL_PARAM_ERROR, status[1]);
+  EXPECT_EQ(SQL_PARAM_UNUSED, status[2]);
+  EXPECT_EQ(0, dates[0].year); EXPECT_EQ(99, dates[0].month);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
+      reinterpret_cast<SQLPOINTER>(SQL_C_SLONG), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, input, 0));
+  seen->during_command = [&] { input[2] = 999; };
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(2u, seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"22"}, seen->command_inputs[0][0].value);
+  EXPECT_EQ(std::optional<std::string>{"33"}, seen->command_inputs[1][0].value);
+  EXPECT_EQ(3u, processed); EXPECT_EQ(SQL_PARAM_UNUSED, status[0]);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, status[1]); EXPECT_EQ(SQL_PARAM_SUCCESS, status[2]);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  seen->during_command = {}; input[2] = 44;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(4u, seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"33"}, seen->command_inputs[1][0].value);
+  EXPECT_EQ(std::optional<std::string>{"44"}, seen->command_inputs[3][0].value);
+}

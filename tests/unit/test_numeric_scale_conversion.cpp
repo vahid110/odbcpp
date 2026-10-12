@@ -1527,4 +1527,192 @@ TEST_F(FixedTemporalCompletionApiTest, VariableChunksBindingAndOwningRefillStayI
   ASSERT_NO_FATAL_FAILURE(expect_completed(stmt, 1));
   ASSERT_NO_FATAL_FAILURE(expect_completed(sibling.handle, 1)); EXPECT_EQ(0u, facts->disconnects);
 }
+TEST_F(NumericScaleApiTest, ApdTemporalPairMutationRejectsBeforeDispatchAndRepairs) {
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  auto apd = descriptor(SQL_ATTR_APP_PARAM_DESC);
+  SQLLEN length = SQL_NTS;
+  SQLUSMALLINT status = 71;
+  SQLULEN processed = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  char text[] = "42";
+  SQLWCHAR wide[] = {'4', '3', 0};
+  SQL_DATE_STRUCT date{2026, 10, 12};
+  SQL_TIME_STRUCT time{12, 34, 56};
+  SQL_TIMESTAMP_STRUCT timestamp{2026, 10, 12, 12, 34, 56, 0};
+  struct Input { SQLSMALLINT type; void* data; };
+  const Input temporal[] = {{SQL_C_TYPE_DATE, &date}, {SQL_C_DATE, &date},
+      {SQL_C_TYPE_TIME, &time}, {SQL_C_TIME, &time},
+      {SQL_C_TYPE_TIMESTAMP, &timestamp}, {SQL_C_TIMESTAMP, &timestamp}};
+  for (const auto& input : temporal) {
+    SCOPED_TRACE(input.type);
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+        SQL_INTEGER, 10, 0, text, sizeof(text), &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    ASSERT_EQ(1u, facts->parameters.size());
+    EXPECT_EQ(std::optional<std::string>{"42"}, facts->parameters[0].value);
+    const auto retained = facts->parameters[0].value;
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+    // This scalar fixture publishes no parameter metadata; restore the SQL hint
+    // after its successful control before testing a descriptor-only C retype.
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+        SQL_INTEGER, 10, 0, text, sizeof(text), &length));
+    EXPECT_EQ(SQL_ERROR, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, input.type,
+        SQL_INTEGER, 10, 0, input.data, 0, &length));
+    EXPECT_EQ("07006", state());
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
+        reinterpret_cast<SQLPOINTER>(static_cast<std::intptr_t>(input.type)), 0));
+    SQLPOINTER pointer = text;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(apd, 1, SQL_DESC_DATA_PTR, &pointer, 0, nullptr));
+    EXPECT_EQ(nullptr, pointer);
+    ASSERT_EQ(SQL_ERROR, SQLExecute(stmt));
+    EXPECT_EQ("07009", state()); // Missing non-NULL binding precedes pair eligibility.
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, input.data, 0));
+    const unsigned before = facts->queries;
+    status = 71; processed = 91;
+    const auto result = SQLExecute(stmt);
+    EXPECT_EQ(SQL_ERROR, result);
+    if (result == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+    EXPECT_EQ(before, facts->queries);
+    EXPECT_EQ(retained, facts->parameters[0].value);
+    EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
+    EXPECT_EQ(2026, date.year); EXPECT_EQ(12, time.hour); EXPECT_EQ(0u, timestamp.fraction);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_WCHAR,
+        SQL_INTEGER, 10, 0, wide, sizeof(wide), &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    EXPECT_EQ(std::optional<std::string>{"43"}, facts->parameters[0].value);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  }
+  SQLINTEGER number = 42; length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_DEFAULT,
+      SQL_INTEGER, 10, 0, &number, 0, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(std::optional<std::string>{"42"}, facts->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  for (const SQLSMALLINT target : {SQLSMALLINT(SQL_CHAR), SQLSMALLINT(SQL_TYPE_DATE), SQLSMALLINT(SQL_TYPE_TIMESTAMP)}) {
+    SCOPED_TRACE(target);
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_TYPE_DATE,
+        target, 32, 0, &date, 0, &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    EXPECT_EQ(std::optional<std::string>{target == SQL_TYPE_TIMESTAMP
+        ? "2026-10-12 00:00:00" : "2026-10-12"}, facts->parameters[0].value);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  }
+}
+
+TEST_F(NumericScaleApiTest, ApdNumericPairMutationRejectsBeforeFormattingAndRepairs) {
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  auto apd = descriptor(SQL_ATTR_APP_PARAM_DESC);
+  char date_text[32] = "2026-10-12";
+  SQL_NUMERIC_STRUCT numeric{}; numeric.precision = 1; numeric.sign = 1; numeric.val[0] = 7;
+  SQLLEN length = SQL_NTS;
+  for (const SQLSMALLINT target : {SQLSMALLINT(SQL_TYPE_DATE), SQLSMALLINT(SQL_VARBINARY)}) {
+    SCOPED_TRACE(target);
+    char binary_text[32] = "37";
+    auto* text = target == SQL_TYPE_DATE ? date_text : binary_text;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+        target, 32, 0, text, 32, &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    ASSERT_EQ(1u, facts->parameters.size());
+    const auto retained = facts->parameters[0].value;
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+        target, 32, 0, text, 32, &length));
+    ASSERT_EQ(SQL_ERROR, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_NUMERIC,
+        target, 32, 0, &numeric, sizeof(numeric), &length));
+    EXPECT_EQ("07006", state());
+    dimensions(apd, 1, 1, 0, &numeric);
+    const unsigned before = facts->queries;
+    const auto result = SQLExecute(stmt);
+    EXPECT_EQ(SQL_ERROR, result);
+    if (result == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+    EXPECT_EQ(before, facts->queries); EXPECT_EQ(retained, facts->parameters[0].value);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+    numeric.sign = 2; // Unsupported pair wins over malformed payload.
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+        target, 32, 0, text, 32, &length));
+    dimensions(apd, 1, 1, 0, &numeric);
+    const auto malformed = SQLExecute(stmt);
+    EXPECT_EQ(SQL_ERROR, malformed);
+    if (malformed == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+    EXPECT_EQ(before, facts->queries);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+    numeric.sign = 1;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+        target, 32, 0, text, 32, &length));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    EXPECT_EQ(retained, facts->parameters[0].value);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  }
+  length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_NUMERIC,
+      SQL_INTEGER, 10, 0, &numeric, sizeof(numeric), &length));
+  dimensions(apd, 1, 1, 0, &numeric);
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(std::optional<std::string>{"7"}, facts->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  numeric.sign = 2;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_NUMERIC,
+      SQL_INTEGER, 10, 0, &numeric, sizeof(numeric), &length));
+  dimensions(apd, 1, 1, 0, &numeric);
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("22003", state());
+}
+
+TEST_F(NumericScaleApiTest, ApdPairNullUnalignedAndSpanPrecedence) {
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  auto apd = descriptor(SQL_ATTR_APP_PARAM_DESC);
+  SQL_DATE_STRUCT date{2026, 10, 12};
+  std::array<unsigned char, sizeof(date) + 2> unaligned{};
+  unaligned.front() = 0xa5; unaligned.back() = 0x5a;
+  std::memcpy(unaligned.data() + 1, &date, sizeof(date));
+  const auto original = unaligned;
+  char text[] = "42";
+  SQLLEN indicator = SQL_NULL_DATA;
+  SQLUSMALLINT status = 71; SQLULEN processed = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_INTEGER, 10, 0, text, sizeof(text), &indicator));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
+      reinterpret_cast<SQLPOINTER>(SQL_C_TYPE_DATE), 0));
+  // NULL may legitimately have no DataPtr. Illegal pair still must be diagnosed.
+  const unsigned before = facts->queries;
+  const auto result = SQLExecute(stmt);
+  EXPECT_EQ(SQL_ERROR, result);
+  if (result == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+  EXPECT_EQ(before, facts->queries);
+  EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  auto* poison = reinterpret_cast<SQLPOINTER>((std::numeric_limits<std::uintptr_t>::max)());
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_TYPE_DATE,
+      SQL_TYPE_DATE, 10, 0, poison, 0, &indicator));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, facts->parameters.size()); EXPECT_FALSE(facts->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  indicator = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, unaligned.data() + 1, 0));
+  for (const SQLLEN fixed_length : {SQLLEN(0), SQLLEN(1), SQLLEN(SQL_NTS), SQLLEN(-9)}) {
+    indicator = fixed_length;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_TYPE_DATE,
+        SQL_TYPE_DATE, 10, 0, unaligned.data() + 1, 0, &indicator));
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    EXPECT_EQ(std::optional<std::string>{"2026-10-12"}, facts->parameters[0].value);
+    EXPECT_EQ(original, unaligned);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  }
+  indicator = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_TYPE_DATE,
+      SQL_TYPE_DATE, 10, 0, unaligned.data() + 1, 0, &indicator));
+  SQLULEN offset = (std::numeric_limits<SQLULEN>::max)();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_BIND_OFFSET_PTR, &offset, 0));
+  const unsigned span_before = facts->queries; status = 71; processed = 91;
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HYC00", state());
+  EXPECT_EQ(span_before, facts->queries); EXPECT_EQ(71, status); EXPECT_EQ(91u, processed);
+  EXPECT_EQ(original, unaligned);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_BIND_OFFSET_PTR, nullptr, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(std::optional<std::string>{"2026-10-12"}, facts->parameters[0].value);
+}
+
 }  // namespace

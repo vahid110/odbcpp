@@ -956,6 +956,39 @@ rs::core::database::QueryParameterType parameter_type_for(
   }
 }
 
+
+// ODBC pair policy must be identical at bind time and when descriptor inputs
+// are materialized. This is adapter policy, not a native backend wire rule.
+const char* restricted_parameter_pair_error(SQLSMALLINT value_type,
+                                            SQLSMALLINT parameter_type) {
+  value_type = ResultTypes::canonical_c_type(value_type);
+  if (value_type == SQL_C_NUMERIC && parameter_type != SQL_DECIMAL &&
+      parameter_type != SQL_NUMERIC && parameter_type != SQL_TINYINT &&
+      parameter_type != SQL_SMALLINT && parameter_type != SQL_INTEGER &&
+      parameter_type != SQL_BIGINT && parameter_type != SQL_BIT &&
+      parameter_type != SQL_REAL && parameter_type != SQL_FLOAT &&
+      parameter_type != SQL_DOUBLE && !is_character_sql_type(parameter_type)) {
+    return "Numeric C parameter requires an exact numeric SQL type";
+  }
+  const bool date = value_type == SQL_C_DATE || value_type == SQL_C_TYPE_DATE;
+  const bool time = value_type == SQL_C_TIME || value_type == SQL_C_TYPE_TIME;
+  const bool timestamp = value_type == SQL_C_TIMESTAMP || value_type == SQL_C_TYPE_TIMESTAMP;
+  if (date || time || timestamp) {
+    using rs::core::database::QueryParameterType;
+    const auto target = parameter_type_for(parameter_type, value_type);
+    const bool convertible = target == QueryParameterType::Text ||
+        (date && (target == QueryParameterType::Date ||
+                  target == QueryParameterType::Timestamp)) ||
+        (time && (target == QueryParameterType::Time ||
+                  target == QueryParameterType::Timestamp)) ||
+        (timestamp && (target == QueryParameterType::Date ||
+                       target == QueryParameterType::Time ||
+                       target == QueryParameterType::Timestamp));
+    if (!convertible) return "Temporal C parameter cannot convert to the SQL data type";
+  }
+  return nullptr;
+}
+
 struct OdbcTypeInfo {
   SQLSMALLINT sql_type{SQL_VARCHAR};
   SQLULEN column_size{255};
@@ -5589,6 +5622,10 @@ ODBCStatement::materialize_parameter_set(std::uintptr_t input_offset,
         value_type = ResultTypes::default_c_type(declared_sql_type);
       }
       value_type = ResultTypes::canonical_c_type(value_type);
+      if (const auto* error = restricted_parameter_pair_error(value_type, declared_sql_type)) {
+        set_error(SQLSTATE_RESTRICTED_DATA_TYPE, error);
+        return std::nullopt;
+      }
       rs::core::database::QueryParameter query_param;
       query_param.type = parameter_type_for(
           implementation.concise_type, value_type);
@@ -7374,39 +7411,9 @@ SQLRETURN ODBCStatement::bind_parameter(SQLUSMALLINT parameter_number, SQLSMALLI
               "Parameter SQL data type is not supported");
     return SQL_ERROR;
   }
-  if (value_type == SQL_C_NUMERIC && parameter_type != SQL_DECIMAL &&
-      parameter_type != SQL_NUMERIC && parameter_type != SQL_TINYINT &&
-      parameter_type != SQL_SMALLINT &&
-      parameter_type != SQL_INTEGER && parameter_type != SQL_BIGINT &&
-      parameter_type != SQL_BIT && parameter_type != SQL_REAL &&
-      parameter_type != SQL_FLOAT && parameter_type != SQL_DOUBLE &&
-      !is_character_sql_type(parameter_type)) {
-    set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
-              "Numeric C parameter requires an exact numeric SQL type");
+  if (const auto* error = restricted_parameter_pair_error(value_type, parameter_type)) {
+    set_error(SQLSTATE_RESTRICTED_DATA_TYPE, error);
     return SQL_ERROR;
-  }
-  const bool date_c_type = value_type == SQL_C_DATE ||
-      value_type == SQL_C_TYPE_DATE;
-  const bool time_c_type = value_type == SQL_C_TIME ||
-      value_type == SQL_C_TYPE_TIME;
-  const bool timestamp_c_type = value_type == SQL_C_TIMESTAMP ||
-      value_type == SQL_C_TYPE_TIMESTAMP;
-  if (date_c_type || time_c_type || timestamp_c_type) {
-    const auto target = parameter_type_for(parameter_type, value_type);
-    using rs::core::database::QueryParameterType;
-    const bool convertible = target == QueryParameterType::Text ||
-        (date_c_type && (target == QueryParameterType::Date ||
-                         target == QueryParameterType::Timestamp)) ||
-        (time_c_type && (target == QueryParameterType::Time ||
-                         target == QueryParameterType::Timestamp)) ||
-        (timestamp_c_type && (target == QueryParameterType::Date ||
-                              target == QueryParameterType::Time ||
-                              target == QueryParameterType::Timestamp));
-    if (!convertible) {
-      set_error(SQLSTATE_RESTRICTED_DATA_TYPE,
-                "Temporal C parameter cannot convert to the SQL data type");
-      return SQL_ERROR;
-    }
   }
   if ((parameter_type == SQL_TYPE_TIME ||
        parameter_type == SQL_TYPE_TIMESTAMP) &&
