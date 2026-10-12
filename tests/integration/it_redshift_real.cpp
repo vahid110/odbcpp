@@ -9644,3 +9644,96 @@ TEST_F(RedshiftNumericTemporalInputRealTest, PreparedRefusalDefaultNullAndRecove
   EXPECT_EQ(10, date.month); EXPECT_EQ(13, date.day);
   ASSERT_NO_FATAL_FAILURE(release_connection());
 }
+
+class RedshiftBinaryBigintInputRealTest : public RedshiftNegativeNumericScaleRealTest {
+ protected:
+  static constexpr const char* echo_sql =
+      "SELECT CAST(? AS BIGINT), CAST(42 AS INTEGER)";
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_BINARY_BIGINT_INPUT_ADMISSION", "binary_bigint_input_v1");
+    if (IsSkipped() || HasFatalFailure()) return;
+    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const std::pair<const char*, std::size_t> minima[] = {
+        {"MAXSQLBYTES", std::string_view(echo_sql).size()}, {"MAXPARAMETERS", 1},
+        {"MAXPARAMETERBYTES", 20}, {"MAXPARAMETERTOTALBYTES", 20},
+        {"MAXCOLUMNS", 2}, {"MAXROWS", 1}, {"MAXCELLS", 2}, {"MAXMETADATAENTRIES", 6}};
+    for (const auto& [key, required] : minima) {
+      const auto found = options.find(key);
+      if (found == options.end()) continue;
+      std::size_t value{}; const auto& text = found->second;
+      const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+      ASSERT_EQ(std::errc{}, parsed.ec);
+      ASSERT_EQ(text.data() + text.size(), parsed.ptr);
+      ASSERT_GE(value, required);
+    }
+  }
+};
+
+TEST_F(RedshiftBinaryBigintInputRealTest, HostBigintLengthsNullAndOwningRecovery) {
+  static_assert(sizeof(SQLBIGINT) == 8);
+  ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT", "5", 5, false));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(known_sql(SQLPrepare(hstmt_, (SQLCHAR*)echo_sql, SQL_NTS)));
+  std::array<unsigned char, sizeof(SQLBIGINT) + 3> bytes{};
+  bytes.front() = 0xa5; bytes.back() = 0x5a;
+  SQLLEN input_length = sizeof(SQLBIGINT);
+  SQLUSMALLINT status = SQL_PARAM_UNUSED; SQLULEN processed = 99;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  const auto bind = [&](bool absent) {
+    ASSERT_TRUE(cap(window_end_, true));
+    auto* data = absent ? reinterpret_cast<SQLPOINTER>((std::numeric_limits<std::uintptr_t>::max)())
+                        : static_cast<SQLPOINTER>(bytes.data() + 1);
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_BINARY,
+        SQL_BIGINT, 19, 0, data, sizeof(SQLBIGINT) + 1, &input_length));
+  };
+  const auto echo = [&](SQLBIGINT expected, bool absent) {
+    input_length = absent ? SQL_NULL_DATA : static_cast<SQLLEN>(sizeof(SQLBIGINT));
+    std::memcpy(bytes.data() + 1, &expected, sizeof(expected));
+    ASSERT_NO_FATAL_FAILURE(bind(absent));
+    const auto before = bytes; status = SQL_PARAM_UNUSED; processed = 99;
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(known_sql(SQLExecute(hstmt_)));
+    EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed); EXPECT_EQ(before, bytes);
+    EXPECT_EQ(absent ? SQL_NULL_DATA : static_cast<SQLLEN>(sizeof(SQLBIGINT)), input_length);
+    std::fill(bytes.begin() + 1, bytes.end() - 1, 0xee); // Published result owns its value.
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLFetch(hstmt_)));
+    SQLBIGINT output = 71; SQLLEN output_length = 73;
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLGetData(hstmt_, 1, SQL_C_SBIGINT, &output, 0, &output_length)));
+    if (absent) {
+      EXPECT_EQ(SQL_NULL_DATA, output_length); EXPECT_EQ(71, output);
+    } else {
+      EXPECT_EQ(expected, output); EXPECT_EQ(static_cast<SQLLEN>(sizeof(output)), output_length);
+    }
+    output = 71; output_length = 73;
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLGetData(hstmt_, 2, SQL_C_SBIGINT, &output, 0, &output_length)));
+    EXPECT_EQ(42, output); EXPECT_EQ(static_cast<SQLLEN>(sizeof(output)), output_length);
+    EXPECT_EQ(0xa5, bytes.front()); EXPECT_EQ(0x5a, bytes.back());
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_NO_DATA));
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
+  };
+  const auto refuse = [&](SQLLEN invalid) {
+    input_length = invalid;
+    ASSERT_NO_FATAL_FAILURE(bind(false));
+    const auto before = bytes; status = SQL_PARAM_UNUSED; processed = 99;
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLExecute(hstmt_), SQL_ERROR, "22003"));
+    EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
+    EXPECT_EQ(invalid, input_length); EXPECT_EQ(before, bytes);
+  };
+  ASSERT_NO_FATAL_FAILURE(echo(42, false));
+  ASSERT_NO_FATAL_FAILURE(refuse(1));
+  ASSERT_NO_FATAL_FAILURE(echo(-42, false));
+  ASSERT_NO_FATAL_FAILURE(refuse(sizeof(SQLBIGINT) + 1));
+  ASSERT_NO_FATAL_FAILURE(echo((std::numeric_limits<SQLBIGINT>::min)(), false));
+  ASSERT_NO_FATAL_FAILURE(echo((std::numeric_limits<SQLBIGINT>::max)(), false));
+  ASSERT_NO_FATAL_FAILURE(echo(0, true));
+  ASSERT_NO_FATAL_FAILURE(release_connection());
+}

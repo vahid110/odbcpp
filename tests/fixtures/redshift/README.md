@@ -291,3 +291,6 @@ The proposal marker does not grant paid admission or extend any spending,
 principal, credentials, network, resource or authorization horizon. Execution
 requires the integration owner's combined exact-head CI-first checkpoint and
 fresh independently reviewed finite admission.
+
+
+Binary BIGINT input: `RedshiftBinaryBigintInputRealTest.HostBigintLengthsNullAndOwningRecovery`, marker `ODBCPP_REDSHIFT_BINARY_BIGINT_INPUT_ADMISSION=binary_bigint_input_v1`. One verified TLS login, one fixed Prepare and seven Execute attempts (five exact echoes/NULL, two local22003 refusals); conservative API SQL upper8, not wire capture. Fixed SELECT CAST(? AS BIGINT), CAST(42 AS INTEGER), no DDL/DML. 40s case/peroperation5s; max1parameter20 normalizedbytes,2columns/1row/2cells/6metadata entries. Signed64 limits, unaligned bytes/canaries, ownership after source mutation and recovery; actual Redshift execution pending combined admission.
