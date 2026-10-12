@@ -2520,10 +2520,13 @@ TEST_F(BindColIntegrationTest, TimeTextKeepsSecondsAndZone) {
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("01004", reinterpret_cast<char*>(state));
-    char fraction[4]{};
-    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+    char fraction[4]{'x', 'y', 'z', 'w'};
+    const auto fraction_poison = std::array<char, 4>{'x', 'y', 'z', 'w'};
+    length = 73;
+    EXPECT_EQ(SQL_NO_DATA, SQLGetData(hstmt, 1, SQL_C_CHAR,
         fraction, sizeof(fraction), &length));
-    EXPECT_STREQ(".78", fraction);
+    EXPECT_EQ(0, std::memcmp(fraction, fraction_poison.data(), sizeof(fraction)));
+    EXPECT_EQ(73, length);
 
     SQLWCHAR wide_tiny[8]{'x'};
     length = 92;
@@ -2596,10 +2599,13 @@ TEST_F(BindColIntegrationTest, TimestampTextKeepsSecondsAndZone) {
     ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
         state, nullptr, nullptr, 0, nullptr));
     EXPECT_STREQ("01004", reinterpret_cast<char*>(state));
-    char fraction[4]{};
-    EXPECT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_CHAR,
+    char fraction[4]{'x', 'y', 'z', 'w'};
+    const auto fraction_poison = std::array<char, 4>{'x', 'y', 'z', 'w'};
+    length = 73;
+    EXPECT_EQ(SQL_NO_DATA, SQLGetData(hstmt, 1, SQL_C_CHAR,
         fraction, sizeof(fraction), &length));
-    EXPECT_STREQ(".78", fraction);
+    EXPECT_EQ(0, std::memcmp(fraction, fraction_poison.data(), sizeof(fraction)));
+    EXPECT_EQ(73, length);
 
     SQLWCHAR wide_tiny[19]{'x'};
     length = 92;

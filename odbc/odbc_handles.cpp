@@ -4978,20 +4978,21 @@ SQLRETURN ODBCStatement::get_data(SQLUSMALLINT col, SQLSMALLINT target_type,
     set_error(SQLSTATE_INVALID_STRING_LENGTH, "Invalid result buffer length");
     return SQL_ERROR;
   }
-  // Fixed numeric SQL sources are returned once, even when character
-  // conversion can only return a fractional prefix. Errors above/below do
-  // not publish an offset; variable SQL sources retain their chunk state.
-  const bool fixed_numeric_character =
+  // Fixed numeric and TIME/TIMESTAMP SQL sources are returned once, even
+  // when character conversion can only return a fractional prefix. Errors
+  // above/below do not publish an offset; variable SQL sources retain their chunk state.
+  const bool fixed_character_source =
       (effective_target_type == SQL_C_CHAR ||
        effective_target_type == SQL_C_WCHAR) &&
       (sql_type == SQL_BIT || sql_type == SQL_TINYINT ||
        sql_type == SQL_SMALLINT || sql_type == SQL_INTEGER ||
        sql_type == SQL_BIGINT || sql_type == SQL_NUMERIC ||
        sql_type == SQL_DECIMAL || sql_type == SQL_REAL ||
-       sql_type == SQL_FLOAT || sql_type == SQL_DOUBLE);
+       sql_type == SQL_FLOAT || sql_type == SQL_DOUBLE ||
+       sql_type == SQL_TYPE_TIME || sql_type == SQL_TYPE_TIMESTAMP);
   const auto save_offset = [&](std::size_t value) {
     get_data_column_ = col;
-    get_data_offset_ = fixed_numeric_character ? complete : value;
+    get_data_offset_ = fixed_character_source ? complete : value;
     get_data_target_type_ = effective_target_type;
   };
 

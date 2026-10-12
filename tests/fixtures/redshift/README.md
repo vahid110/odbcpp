@@ -183,3 +183,26 @@ Current authoring/compile/LIST is not paid admission or native execution. Actual
 server subnormal behavior and enforcement remain unproved until the accumulated
 CI-first live checkpoint binds this exact source/native image and fresh finite
 accounting/one-use controls. No vendor binary parity is claimed.
+
+
+## Fixed TIME/TIMESTAMP SQLGetData completion — authored, execution pending
+
+`RedshiftFixedTemporalCompletionRealTest.FractionWholeNullWideAndVariableRecovery`
+uses `ODBCPP_REDSHIFT_FIXED_TEMPORAL_COMPLETION_ADMISSION=fixed_temporal_completion_v1`.
+The fixed echo SELECT returns TIME12:34:56.789, TIMESTAMP2026-10-12 12:34:56.789,
+a VARCHAR copy of the TIME text, NULL TIME and INTEGER42. It checks whole-buffer
+22003 refusal/retry, first fractional01004 and full byte indicators, repeated
+NO_DATA with untouched output/indicator, unaligned ARD WCHAR with width/odd-byte
+canaries, NULL22002 recovery, unchanged VARCHAR continuation and full-value
+column restart. The first fractional outputs remain exact; no temporal
+canonicalization or reference-binary parity is claimed.
+
+Finite ledger: one ordinary verified TLS login, one fixed direct SELECT; no
+Prepare, DDL, DML, extra recovery query, objects or new principal. Original40s
+aggregate and <=5s operation caps, marker-first setup, sticky unknown-completion
+fence, handle/session release and exact-principal cleanup remain inherited.
+Minimum controls cover the exact SQL byte length, five columns, one row, five
+cells and five metadata entries; inherited parameter floors remain required
+even though this SELECT binds no parameters. Native compilation/LIST is not a
+live result. Execute with the accumulated CI-first batch only after exact green
+head/native binary and fresh reviewed finite accounting/one-use admission.
