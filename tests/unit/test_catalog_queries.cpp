@@ -223,7 +223,19 @@ TEST(CatalogQueryTest, ExplicitRedshiftProfileIsolatesColumnsFromPostgresDomainS
   EXPECT_NE(std::string::npos, rs_query->find("WHEN 'NO' THEN 0 ELSE 2 END::smallint AS nullable"));
   EXPECT_NE(std::string::npos, rs_query->find("WHEN 'integer' THEN 4"));
   EXPECT_NE(std::string::npos, rs_query->find("THEN columns.character_maximum_length ELSE NULL END::integer AS char_octet_length"));
-  EXPECT_EQ(*pg.catalog_query(TablesCatalogRequest{}), *redshift.catalog_query(TablesCatalogRequest{}));
+  const auto pg_tables = pg.catalog_query(TablesCatalogRequest{});
+  const auto rs_tables = redshift.catalog_query(TablesCatalogRequest{});
+  ASSERT_FALSE(pg_tables.has_error());
+  ASSERT_FALSE(rs_tables.has_error());
+  // Redshift's detailed taxonomy is deliberately independent of PostgreSQL.
+  EXPECT_NE(std::string::npos, pg_tables->find("'FOREIGN TABLE'"));
+  EXPECT_EQ(std::string::npos, pg_tables->find("'SYSTEM VIEW'"));
+  EXPECT_NE(std::string::npos, rs_tables->find("'EXTERNAL TABLE'"));
+  EXPECT_NE(std::string::npos, rs_tables->find("'SYSTEM VIEW'"));
+  for (const auto* query : {&*pg_tables, &*rs_tables}) {
+    EXPECT_NE(std::string::npos, query->find("FROM information_schema.tables"));
+    EXPECT_TRUE(query->ends_with("ORDER BY table_type, table_cat, table_schem, table_name"));
+  }
   EXPECT_FALSE(pg.is_connected());
   EXPECT_FALSE(redshift.is_connected());
 }
@@ -412,7 +424,7 @@ TEST(CatalogQueryTest, RedshiftSchemasUseAccessibleCurrentDatabaseViewAndFiveFie
   EXPECT_FALSE(redshift.is_connected());
 }
 
-TEST(CatalogQueryTest, SchemaEnumerationPreservesPostgresSqlAndNonSchemaTableModes) {
+TEST(CatalogQueryTest, SchemaEnumerationPreservesPostgresSqlAndProfileSpecificTableModes) {
   using namespace rs::core::database::postgres;
   PgDatabaseConnection postgres(nullptr, std::nullopt, PgCatalogProfile::PostgreSQL);
   PgDatabaseConnection redshift(nullptr, std::nullopt, PgCatalogProfile::Redshift);
@@ -435,7 +447,25 @@ TEST(CatalogQueryTest, SchemaEnumerationPreservesPostgresSqlAndNonSchemaTableMod
     const auto rs = redshift.catalog_query(request);
     ASSERT_FALSE(pg.has_error());
     ASSERT_FALSE(rs.has_error());
-    EXPECT_EQ(*pg, *rs);
+    if (mode == TablesCatalogRequest::Mode::Catalogs) {
+      EXPECT_EQ(*pg, *rs);
+    } else {
+      EXPECT_NE(std::string::npos, pg->find("'FOREIGN TABLE'"));
+      EXPECT_EQ(std::string::npos, pg->find("'SYSTEM VIEW'"));
+      EXPECT_NE(std::string::npos, rs->find("'EXTERNAL TABLE'"));
+      EXPECT_NE(std::string::npos, rs->find("'SYSTEM VIEW'"));
+      if (mode == TablesCatalogRequest::Mode::Tables) {
+        for (const auto* query : {&*pg, &*rs}) {
+          for (const auto* filter : {"table_cat LIKE 'db'''", "table_schem LIKE 's'''",
+               "table_name LIKE 't'''", "table_type IN ('TABLE')"}) {
+            EXPECT_NE(std::string::npos, query->find(filter));
+          }
+        }
+      } else {
+        EXPECT_TRUE(pg->ends_with("ORDER BY table_type"));
+        EXPECT_TRUE(rs->ends_with("ORDER BY table_type"));
+      }
+    }
     EXPECT_EQ(std::string::npos, rs->find("svv_redshift_schemas"));
   }
 }
