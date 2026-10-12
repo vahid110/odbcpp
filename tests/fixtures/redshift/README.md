@@ -116,3 +116,18 @@ least11, MAXPARAMETERS1, MAXSQLBYTES at least51, MAXCOLUMNS2, MAXROWS1, MAXCELLS
 and MAXMETADATAENTRIES3 (two columns and one prepared parameter).
 Fresh reviewed exact green source/binary and finite admission are mandatory;
 authored/compiled/LIST evidence is not actual live acceptance.
+
+## Character input numeric loss diagnostics
+
+`RedshiftCharacterNumericLossRealTest.AnsiWideLossRefusalNullAndPreparedRecovery`
+uses `ODBCPP_REDSHIFT_CHARACTER_NUMERIC_LOSS_ADMISSION=character_numeric_loss_v1`.
+Known valid NUMERIC/DECIMAL target whole or fractional loss from ANSI/wide
+character inputs refuses locally with22001. Both paths repair/rebind and echo
+exact12.34/-12.34; NULL, statuses, caller/result ownership and canaries remain.
+One verified TLS login, one Prepare and three successful Execute operations,
+40 seconds aggregate and five seconds per operation; four local refusal calls
+add no SQL exchanges. No DDL/DML. Required controls: MAXSQLBYTES51,
+MAXPARAMETERS1, MAXPARAMETERBYTES/MAXPARAMETERTOTALBYTES each11,
+MAXCOLUMNS2, MAXROWS1, MAXCELLS2 and MAXMETADATAENTRIES3. Exact source/binary,
+reviewed finite admission and cleanup are mandatory. Authored/compiled/LIST
+evidence is not actual native acceptance; execution belongs to the periodic batch.
