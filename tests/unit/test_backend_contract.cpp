@@ -13205,3 +13205,97 @@ TEST_F(PreparedCommandArrayTest, BinaryIntegerCapturedArraysOwnValuesAndMaskInva
   EXPECT_EQ(SQL_PARAM_UNUSED, status[0]); EXPECT_EQ(SQL_PARAM_SUCCESS, status[2]);
   EXPECT_EQ(SQL_NTS, indicators[0]); EXPECT_EQ(SQL_NULL_DATA, indicators[2]);
 }
+
+// Unrun captured/deferred public test proposals; root owns application/build.
+TEST_F(PreparedCommandArrayTest, NumericTemporalInputCapturedMaskRefusalOwningRepairAndRefill) {
+  ASSERT_NO_FATAL_FAILURE(ready());
+  SQLHDESC apd{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_APP_PARAM_DESC, &apd, 0, nullptr));
+  char dates[3][11]{"2030-01-01", "2030-01-02", "2030-01-03"};
+  operations[0] = SQL_PARAM_IGNORE;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_TYPE_DATE, 10, 0, dates, 11, indicators));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
+      reinterpret_cast<SQLPOINTER>(SQL_C_SLONG), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, input, 0));
+  const auto descriptions = seen->descriptions, queries = seen->queries;
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("07006", state());
+  EXPECT_EQ(descriptions, seen->descriptions); EXPECT_EQ(queries, seen->queries);
+  EXPECT_TRUE(seen->transaction_calls.empty()); EXPECT_TRUE(seen->command_inputs.empty());
+  EXPECT_EQ(2u, processed); EXPECT_EQ(SQL_PARAM_UNUSED, status[0]);
+  EXPECT_EQ(SQL_PARAM_ERROR, status[1]); EXPECT_EQ(SQL_PARAM_UNUSED, status[2]);
+  EXPECT_EQ(11, input[0]); EXPECT_EQ(22, input[1]); EXPECT_EQ(33, input[2]);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  indicators[1] = SQL_NULL_DATA;
+  status[0] = 71; status[1] = 72; status[2] = 73; processed = 91;
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("07006", state());
+  EXPECT_EQ(descriptions, seen->descriptions); EXPECT_EQ(queries, seen->queries);
+  EXPECT_EQ(2u, processed); EXPECT_EQ(SQL_PARAM_UNUSED, status[0]);
+  EXPECT_EQ(SQL_PARAM_ERROR, status[1]); EXPECT_EQ(SQL_PARAM_UNUSED, status[2]);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  indicators[1] = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+      SQL_INTEGER, 10, 0, input, 0, indicators));
+  seen->during_command = [&] { input[2] = 999; };
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(2u, seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"22"}, seen->command_inputs[0][0].value);
+  EXPECT_EQ(std::optional<std::string>{"33"}, seen->command_inputs[1][0].value);
+  EXPECT_EQ(QueryParameterType::Int32, seen->command_inputs[0][0].type);
+  EXPECT_EQ(3u, processed); EXPECT_EQ(SQL_PARAM_UNUSED, status[0]);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, status[1]); EXPECT_EQ(SQL_PARAM_SUCCESS, status[2]);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  seen->during_command = {}; input[2] = 44;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(4u, seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"33"}, seen->command_inputs[1][0].value);
+  EXPECT_EQ(std::optional<std::string>{"44"}, seen->command_inputs[3][0].value);
+}
+
+TEST_F(CommandArrayDeferredInputTest, NumericTemporalInputOrdinaryNeighborRefusesBeforeNeedDataAndRepairs) {
+  ASSERT_NO_FATAL_FAILURE(deferred());
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_APP_PARAM_DESC, &apd, 0, nullptr));
+  operations[0] = SQL_PARAM_IGNORE;
+  char dates[3][11]{"2030-01-01", "2030-01-02", "2030-01-03"};
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_TYPE_DATE, 10, 0, dates, 11, indicators));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
+      reinterpret_cast<SQLPOINTER>(SQL_C_SLONG), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, input, 0));
+  const auto descriptions = seen->descriptions, queries = seen->queries;
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("07006", state());
+  EXPECT_EQ(descriptions, seen->descriptions); EXPECT_EQ(queries, seen->queries);
+  EXPECT_TRUE(seen->transaction_calls.empty()); EXPECT_TRUE(seen->command_inputs.empty());
+  EXPECT_EQ(2u, progress.value); EXPECT_EQ(SQL_PARAM_UNUSED, output.values[0]);
+  EXPECT_EQ(SQL_PARAM_ERROR, output.values[1]); EXPECT_EQ(SQL_PARAM_UNUSED, output.values[2]);
+  ASSERT_NO_FATAL_FAILURE(guards());
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  // Restore existing fixed-numeric DAE admission: no ordinary conversion yet.
+  indicators[1] = SQL_DATA_AT_EXEC;
+  output.values[0] = 71; output.values[1] = 72; output.values[2] = 73;
+  progress.value = 91;
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HYC00", state());
+  EXPECT_EQ(descriptions, seen->descriptions); EXPECT_EQ(queries, seen->queries);
+  EXPECT_EQ(91u, progress.value); EXPECT_EQ(71, output.values[0]);
+  EXPECT_EQ(72, output.values[1]); EXPECT_EQ(73, output.values[2]);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  indicators[1] = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+      SQL_INTEGER, 10, 0, input, 0, indicators));
+  ASSERT_EQ(SQL_NEED_DATA, SQLExecute(stmt));
+  input[2] = 999; // Captured ordinary inputs already own their original values.
+  ASSERT_NO_FATAL_FAILURE(request(2));
+  ASSERT_EQ(SQL_SUCCESS, SQLPutData(stmt, (SQLPOINTER)"first", 5));
+  ASSERT_NO_FATAL_FAILURE(request(3));
+  ASSERT_EQ(SQL_SUCCESS, SQLPutData(stmt, (SQLPOINTER)"last", 4));
+  ASSERT_EQ(SQL_SUCCESS, SQLParamData(stmt, &token));
+  ASSERT_EQ(2u, seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"22"}, seen->command_inputs[0][0].value);
+  EXPECT_EQ(std::optional<std::string>{"first"}, seen->command_inputs[0][1].value);
+  EXPECT_EQ(std::optional<std::string>{"33"}, seen->command_inputs[1][0].value);
+  EXPECT_EQ(std::optional<std::string>{"last"}, seen->command_inputs[1][1].value);
+  EXPECT_EQ(3u, progress.value); EXPECT_EQ(SQL_PARAM_UNUSED, output.values[0]);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, output.values[1]); EXPECT_EQ(SQL_PARAM_SUCCESS, output.values[2]);
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+

@@ -270,3 +270,25 @@ The separately authored
 uses the existing shared fixture and the same fixed SELECT/scenarios. Private
 PostgreSQL execution proves only the shared INTEGER conversion/wire behavior;
 it cannot substitute for actual Redshift acceptance.
+
+
+## Ordinary numeric C-to-temporal input refusal — authored proposal, execution pending
+
+`RedshiftNumericTemporalInputRealTest.PreparedRefusalDefaultNullAndRecovery`
+uses `ODBCPP_REDSHIFT_NUMERIC_TEMPORAL_INPUT_ADMISSION=numeric_temporal_input_v1`.
+It prepares a DATE echo with an INTEGER neighbor42. CHAR DATE, DEFAULT DATE,
+legal DEFAULT DATE NULL and repaired CHAR DATE have literal owning-result
+assertions; early SLONG-to-DATE bind and effective APD SLONG-to-DATE ordinary/
+NULL inputs must return07006 with exact status/progress and input canaries.
+
+The finite ledger is one TLS login, one Prepare, six Execute attempts (four
+echoes and two expected local refusals), conservative SQL upper7,40-second
+aggregate and5-second per-operation caps. No DDL/DML or resources. Effective
+minima: one parameter10bytes/10total, two columns, one row, two cells and six
+metadata entries; MAXSQLBYTES must fit the exact checked-in SELECT.
+Compilation/LIST and actual Redshift execution remain separate evidence.
+The proposal marker does not grant paid admission or extend any spending,
+principal, credentials, network, resource or authorization horizon. Execution
+requires the integration owner's combined exact-head CI-first checkpoint and
+fresh independently reviewed finite admission.
+

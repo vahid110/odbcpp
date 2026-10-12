@@ -962,6 +962,16 @@ rs::core::database::QueryParameterType parameter_type_for(
 const char* restricted_parameter_pair_error(SQLSMALLINT value_type,
                                             SQLSMALLINT parameter_type) {
   value_type = ResultTypes::canonical_c_type(value_type);
+  const bool ordinary_numeric = value_type == SQL_C_STINYINT ||
+      value_type == SQL_C_UTINYINT || value_type == SQL_C_SSHORT ||
+      value_type == SQL_C_USHORT || value_type == SQL_C_SLONG ||
+      value_type == SQL_C_ULONG || value_type == SQL_C_SBIGINT ||
+      value_type == SQL_C_UBIGINT || value_type == SQL_C_FLOAT ||
+      value_type == SQL_C_DOUBLE;
+  if (ordinary_numeric && (parameter_type == SQL_TYPE_DATE ||
+      parameter_type == SQL_TYPE_TIME || parameter_type == SQL_TYPE_TIMESTAMP)) {
+    return "Numeric C parameter cannot convert to a temporal SQL data type";
+  }
   if (value_type == SQL_C_NUMERIC && parameter_type != SQL_DECIMAL &&
       parameter_type != SQL_NUMERIC && parameter_type != SQL_TINYINT &&
       parameter_type != SQL_SMALLINT && parameter_type != SQL_INTEGER &&

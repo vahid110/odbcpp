@@ -9526,3 +9526,122 @@ TEST_F(RedshiftBinaryIntegerInputRealTest, HostIntegerLengthsNullAndOwningRecove
   ASSERT_NO_FATAL_FAILURE(echo(0, true));
   ASSERT_NO_FATAL_FAILURE(release_connection());
 }
+
+// Native assertion draft only: one TLS login, one Prepare, six Execute attempts
+// (four echoes/two expected local07006), conservative SQL upper7. No DDL/DML.
+class RedshiftNumericTemporalInputRealTest : public RedshiftNegativeNumericScaleRealTest {
+ protected:
+  static constexpr const char* echo_sql =
+      "SELECT CAST(? AS DATE), CAST(42 AS INTEGER)";
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_NUMERIC_TEMPORAL_INPUT_ADMISSION",
+                   "numeric_temporal_input_v1");
+    if (IsSkipped() || HasFatalFailure()) return;
+    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    const std::pair<const char*, std::size_t> minima[] = {
+        {"MAXSQLBYTES", std::string_view(echo_sql).size()}, {"MAXPARAMETERS", 1},
+        {"MAXPARAMETERBYTES", 10}, {"MAXPARAMETERTOTALBYTES", 10},
+        {"MAXCOLUMNS", 2}, {"MAXROWS", 1}, {"MAXCELLS", 2}, {"MAXMETADATAENTRIES", 6}};
+    for (const auto& [key, required] : minima) {
+      const auto found = options.find(key);
+      if (found == options.end()) continue;
+      std::size_t value{};
+      const auto& text = found->second;
+      const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+      ASSERT_EQ(std::errc{}, parsed.ec);
+      ASSERT_EQ(text.data() + text.size(), parsed.ptr); ASSERT_GE(value, required);
+    }
+  }
+};
+
+TEST_F(RedshiftNumericTemporalInputRealTest, PreparedRefusalDefaultNullAndRecovery) {
+  ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT", "5", 5, false));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(known_sql(SQLPrepare(hstmt_, (SQLCHAR*)echo_sql, SQL_NTS)));
+  SQLUSMALLINT status = SQL_PARAM_UNUSED;
+  SQLULEN processed = 99;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt_, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  char date_text[] = "2026-10-12";
+  SQLLEN length = SQL_NTS;
+  const auto echo = [&](SQLUSMALLINT day, bool absent) {
+    const auto original_length = length;
+    status = SQL_PARAM_UNUSED; processed = 99;
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLExecute(hstmt_)));
+    EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed);
+    EXPECT_EQ(original_length, length);
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_)));
+    SQL_DATE_STRUCT result{1, 2, 3}; SQLLEN result_length = 91;
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLGetData(hstmt_, 1, SQL_C_TYPE_DATE, &result, 0, &result_length)));
+    if (absent) {
+      EXPECT_EQ(SQL_NULL_DATA, result_length); EXPECT_EQ(1, result.year);
+      EXPECT_EQ(2, result.month); EXPECT_EQ(3, result.day);
+    } else {
+      EXPECT_EQ(static_cast<SQLLEN>(sizeof(result)), result_length);
+      EXPECT_EQ(2026, result.year); EXPECT_EQ(10, result.month); EXPECT_EQ(day, result.day);
+    }
+    SQLINTEGER neighbor = -1; result_length = 91;
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLGetData(hstmt_, 2, SQL_C_SLONG, &neighbor, 0, &result_length)));
+    EXPECT_EQ(42, neighbor); EXPECT_EQ(static_cast<SQLLEN>(sizeof(neighbor)), result_length);
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_NO_DATA));
+    ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
+  };
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_TYPE_DATE, 10, 0, date_text, sizeof(date_text), &length));
+  ASSERT_NO_FATAL_FAILURE(echo(12, false));
+  // Bind-time refusal must retain the original legal CHAR-to-DATE binding.
+  SQLINTEGER number = 42;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+      SQL_TYPE_DATE, 10, 0, &number, 0, &length), SQL_ERROR, "07006"));
+  ASSERT_TRUE(cap(window_end_, true)); const auto apd = descriptor(SQL_ATTR_APP_PARAM_DESC);
+  SQLPOINTER pointer = nullptr;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDescField(apd, 1, SQL_DESC_DATA_PTR, &pointer, 0, nullptr));
+  EXPECT_EQ(date_text, pointer);
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
+      reinterpret_cast<SQLPOINTER>(SQL_C_SLONG), 0));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, &number, 0));
+  status = SQL_PARAM_UNUSED; processed = 99;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLExecute(hstmt_), SQL_ERROR, "07006"));
+  EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed); EXPECT_EQ(42, number);
+
+  SQL_DATE_STRUCT date{2026, 10, 13}; length = 0;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_DEFAULT,
+      SQL_TYPE_DATE, 10, 0, &date, 0, &length));
+  ASSERT_NO_FATAL_FAILURE(echo(13, false));
+  auto* poison = reinterpret_cast<SQLPOINTER>((std::numeric_limits<std::uintptr_t>::max)());
+  length = SQL_NULL_DATA;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_DEFAULT,
+      SQL_TYPE_DATE, 10, 0, poison, 0, &length));
+  ASSERT_NO_FATAL_FAILURE(echo(0, true));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
+      reinterpret_cast<SQLPOINTER>(SQL_C_SLONG), 0));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, poison, 0));
+  status = SQL_PARAM_UNUSED; processed = 99;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLExecute(hstmt_), SQL_ERROR, "07006"));
+  EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed); EXPECT_EQ(SQL_NULL_DATA, length);
+
+  std::memcpy(date_text, "2026-10-14", sizeof(date_text)); length = SQL_NTS;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_TYPE_DATE, 10, 0, date_text, sizeof(date_text), &length));
+  ASSERT_NO_FATAL_FAILURE(echo(14, false));
+  EXPECT_EQ(42, number); EXPECT_EQ(2026, date.year);
+  EXPECT_EQ(10, date.month); EXPECT_EQ(13, date.day);
+  ASSERT_NO_FATAL_FAILURE(release_connection());
+}
+
