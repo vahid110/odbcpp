@@ -664,3 +664,16 @@ included in `SQL_VARCHAR`/all-types results. The current backend's native name
 `UseUnicode` or change wire types, payload limits, or server behavior. Windows,
 other widths/profiles and actual Redshift execution require the periodic CI/live
 checkpoint; authored tests alone do not establish those passes.
+
+Redshift `EnableTableTypes` defaults to `1`/`TRUE`. Enabled `SQLTables` reports
+`TABLE`, `VIEW`, `SYSTEM TABLE`, `SYSTEM VIEW`, `EXTERNAL TABLE` and
+`LOCAL TEMPORARY`. `0`/`FALSE` collapses these to `TABLE`/`VIEW` before type
+filtering, so a generic `TABLE` filter retains external, system and temporary
+tables. `SQL_ALL_TABLE_TYPES` enumerates six or two sorted labels with NULL
+identity/remarks fields. Result headers and object identities remain unchanged.
+Closed settings follow driver < DSN < connection-string precedence and are
+captured only after successful connection; other values receive a fixed diagnostic.
+Unknown/malformed SHOW types are refused. Legacy discovery still depends on
+what the server exposes through `information_schema`; this option does not add
+missing external/system discovery or implement streaming/DeclareFetch. Authored
+Windows/width and native tests await the periodic CI-first/live checkpoint.

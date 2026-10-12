@@ -5,6 +5,7 @@
 #include "core/database/postgres/pg_backend_provider.h"
 #include "core/database/postgres/pg_database_connection.h"
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <limits>
@@ -452,4 +453,36 @@ TEST(BooleanCharacterPresentation, ProviderDefaultsOwnExplicitPolicyAndRefuseOth
   options.boolean_as_character = true; auto refused = pg.resolve_connection_options(options);
   ASSERT_FALSE(refused); EXPECT_EQ("BoolsAsChar requires Redshift", refused.error_message());
   options.boolean_as_character = false; ASSERT_TRUE(pg.resolve_connection_options(options));
+}
+
+TEST(TableTypePresentation, SdkNormalizedTaxonomyGeneralizesKnownKindsAndRefusesUnknowns) {
+  using namespace rs::core::database;
+  const auto detailed = catalog_table_types(); ASSERT_EQ(6u, detailed.size());
+  EXPECT_TRUE(std::is_sorted(detailed.begin(), detailed.end()));
+  const auto generic = catalog_table_types(false); ASSERT_EQ(2u, generic.size());
+  EXPECT_EQ("TABLE", generic[0]); EXPECT_EQ("VIEW", generic[1]);
+  for (const auto type : detailed) {
+    ASSERT_TRUE(catalog_table_type(type)); EXPECT_EQ(type, *catalog_table_type(type));
+    ASSERT_TRUE(catalog_table_type(type, false));
+    EXPECT_EQ(type == "VIEW" || type == "SYSTEM VIEW" ? "VIEW" : "TABLE", *catalog_table_type(type, false));
+  }
+  for (const char* invalid : {"", "view", "UNKNOWN TABLE", "GLOBAL TEMPORARY", "secret"}) {
+    EXPECT_FALSE(catalog_table_type(invalid)); EXPECT_FALSE(catalog_table_type(invalid, false));
+  }
+}
+
+TEST(TableTypePresentation, ProviderDefaultsExplicitFalseOwnershipAndOtherProviderIsolation) {
+  using namespace rs::core::database;
+  postgres::PgBackendProvider rs{BackendIdentity{"redshift", "Amazon Redshift", "ODBCPP Redshift"},
+      BackendConnectionDefaults{"rs", 5439, std::nullopt, false}, std::nullopt, postgres::PgCatalogProfile::Redshift};
+  postgres::PgBackendProvider pg{BackendIdentity{"postgresql", "PostgreSQL", "ODBCPP PostgreSQL"},
+      BackendConnectionDefaults{"pg", 5432, "postgres", false}};
+  ASSERT_TRUE(rs.resolve_connection_options({})); EXPECT_TRUE(rs.resolve_connection_options({})->detailed_table_types);
+  ConnectionOptions options; options.detailed_table_types = false;
+  auto disabled = rs.resolve_connection_options(options); ASSERT_TRUE(disabled); EXPECT_FALSE(disabled->detailed_table_types);
+  const auto owned = *disabled; options.detailed_table_types = true;
+  EXPECT_FALSE(owned.detailed_table_types); EXPECT_TRUE(rs.resolve_connection_options(options)->detailed_table_types);
+  auto unsupported = pg.resolve_connection_options(options); ASSERT_FALSE(unsupported);
+  EXPECT_EQ("EnableTableTypes requires Redshift", unsupported.error_message());
+  options.detailed_table_types.reset(); ASSERT_TRUE(pg.resolve_connection_options(options));
 }

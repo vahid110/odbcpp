@@ -56,6 +56,7 @@ struct ConnectionOptions {
   std::optional<std::uint32_t> varchar_threshold;
   std::optional<std::uint32_t> long_varchar_size;
   bool boolean_as_character = false;
+  std::optional<bool> detailed_table_types;
 };
 
 // Immutable product definition. A provider owns identity and static behavior;

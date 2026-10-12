@@ -238,6 +238,8 @@ public:
   SQLULEN query_timeout_default() const noexcept {
     return query_timeout_default_seconds_;
   }
+  bool detailed_table_types() const noexcept { return detailed_table_types_.value_or(true); }
+  std::optional<bool> table_type_presentation_policy() const noexcept { return detailed_table_types_; }
   const rs::core::database::CharacterMetadataPolicy& character_metadata_policy() const noexcept {
     return character_metadata_policy_;
   }
@@ -341,6 +343,7 @@ private:
   bool confirmed_read_only_ = false;
   SQLULEN query_timeout_default_seconds_ = 0;
   rs::core::database::CharacterMetadataPolicy character_metadata_policy_;
+  std::optional<bool> detailed_table_types_;
   bool metadata_id_default_ = false;
   SQLUINTEGER login_timeout_seconds_ = 30;
   // Application choice persists; keyword readback is not an implicit override.

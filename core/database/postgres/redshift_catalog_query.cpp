@@ -291,7 +291,8 @@ std::string redshift_show_tables_command(std::string_view database, std::string_
 }
 
 BackendResult<QueryResult> normalize_redshift_tables(std::string_view database,
-    std::string_view schema, const TablesCatalogRequest& request, BackendResult<QueryResult> input) {
+    std::string_view schema, const TablesCatalogRequest& request, BackendResult<QueryResult> input,
+    bool detailed_types) {
   if (!input) return input.backend_error();
   const auto& source = *input;
   if (source.error) return *source.error;
@@ -324,7 +325,7 @@ BackendResult<QueryResult> normalize_redshift_tables(std::string_view database,
   }
   for (std::size_t i = 0; i < indexes.size(); ++i)
     if (!headers.contains(names[i]) || !schema_text(source.columns[indexes[i]])) return invalid_table_metadata("type");
-  constexpr std::array<std::string_view,6> types{"EXTERNAL TABLE","LOCAL TEMPORARY","SYSTEM TABLE","SYSTEM VIEW","TABLE","VIEW"};
+  const auto types = catalog_table_types();
   std::set<std::string> identities;
   QueryResult output;
   constexpr std::array<const char*,5> outnames{"TABLE_CAT","TABLE_SCHEM","TABLE_NAME","TABLE_TYPE","REMARKS"};
@@ -343,9 +344,13 @@ BackendResult<QueryResult> normalize_redshift_tables(std::string_view database,
     if (std::find(types.begin(),types.end(),*row[indexes[3]]) == types.end()) return invalid_table_metadata("table-type");
     if (row[indexes[4]] && (row[indexes[4]]->find('\0') != std::string::npos ||
         !rs::util::utf8_code_point_count(*row[indexes[4]]))) return invalid_table_metadata("remarks");
+    // Classify before filtering, so TABLE includes external/system/temp tables
+    // when detailed labels are disabled. Validate native rows before this step.
+    const auto presented = catalog_table_type(*row[indexes[3]], detailed_types);
+    if (!presented) return invalid_table_metadata("table-type");
     if (!table_like(database,request.catalog) || !table_like(*row[indexes[2]],request.table) ||
-        (request.types && std::find(request.types->begin(),request.types->end(),*row[indexes[3]])==request.types->end())) continue;
-    output.rows.push_back({row[indexes[0]],row[indexes[1]],row[indexes[2]],row[indexes[3]],row[indexes[4]]});
+        (request.types && std::find(request.types->begin(),request.types->end(),*presented)==request.types->end())) continue;
+    output.rows.push_back({row[indexes[0]],row[indexes[1]],row[indexes[2]],std::string(*presented),row[indexes[4]]});
   }
   std::sort(output.rows.begin(),output.rows.end(),[](const auto& a,const auto& b) {
     return std::tie(a[3],a[0],a[1],a[2]) < std::tie(b[3],b[0],b[1],b[2]);

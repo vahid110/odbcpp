@@ -281,6 +281,18 @@ TEST_F(UnixIniDiscoveryTest, BooleanCharacterDriverDsnStringPrecedenceRetainsExp
   EXPECT_EQ("", ConnectionString::resolve("DSN=BooleanFixture;BoolsAsChar={}", "").effective_parameters.at("BOOLSASCHAR"));
 }
 
+TEST_F(UnixIniDiscoveryTest, TableTypesDriverDsnStringPrecedenceRetainsExplicitFalseAndEmpty) {
+  write(root_ / "drivers.ini", "[Table Types Driver]\nEnableTableTypes=invalid\n");
+  write(root_ / "data.ini", "[TableTypesFixture]\nDriver=Table Types Driver\nEnableTableTypes=1\n");
+  ASSERT_EQ(0, setenv("ODBCSYSINI", root_.c_str(), 1));
+  ASSERT_EQ(0, setenv("ODBCINSTINI", "drivers.ini", 1));
+  ASSERT_EQ(0, setenv("ODBCINI", (root_ / "data.ini").c_str(), 1));
+  EXPECT_EQ("invalid", ConnectionString::resolve("DRIVER=Table Types Driver", "").effective_parameters.at("ENABLETABLETYPES"));
+  EXPECT_EQ("1", ConnectionString::resolve("DSN=TableTypesFixture", "").effective_parameters.at("ENABLETABLETYPES"));
+  EXPECT_EQ("FALSE", ConnectionString::resolve("DSN=TableTypesFixture;EnableTableTypes=FALSE", "").effective_parameters.at("ENABLETABLETYPES"));
+  EXPECT_EQ("", ConnectionString::resolve("DSN=TableTypesFixture;EnableTableTypes={}", "").effective_parameters.at("ENABLETABLETYPES"));
+}
+
 TEST_F(UnixIniDiscoveryTest, VarcharSizesRespectDriverDsnAndExplicitZeroEmptyOverrides) {
   write(root_ / "drivers.ini", "[Sizing Driver]\nMaxVarcharSize=invalid\nMaxLongVarcharSize=65535\n");
   write(root_ / "data.ini", "[SizingFixture]\nDriver=Sizing Driver\nMaxVarcharSize=8\nMaxLongVarcharSize=17\n");
@@ -367,6 +379,18 @@ TEST_F(NativeDsnTest, BooleanCharacterNativeRegistryDsnStringPrecedenceRetainsFa
   EXPECT_EQ("1", ConnectionString::resolve("DSN=BooleanFixture", "").effective_parameters.at("BOOLSASCHAR"));
   EXPECT_EQ("FALSE", ConnectionString::resolve("DSN=BooleanFixture;BoolsAsChar=FALSE", "").effective_parameters.at("BOOLSASCHAR"));
   EXPECT_EQ("", ConnectionString::resolve("DSN=BooleanFixture;BoolsAsChar={}", "").effective_parameters.at("BOOLSASCHAR"));
+}
+
+TEST_F(NativeDsnTest, TableTypesNativeRegistryDsnStringPrecedenceRetainsFalseAndEmpty) {
+  constexpr auto path = L"SOFTWARE\\ODBC\\ODBC.INI\\TableTypesFixture";
+  value(HKEY_CURRENT_USER, path, L"Driver", L"Table Types Driver");
+  value(HKEY_CURRENT_USER, path, L"EnableTableTypes", L"1");
+  value(HKEY_CURRENT_USER, L"SOFTWARE\\ODBC\\ODBC.INI\\ODBC Data Sources", L"TableTypesFixture", L"Table Types Driver");
+  value(HKEY_LOCAL_MACHINE, L"SOFTWARE\\ODBC\\ODBCINST.INI\\Table Types Driver", L"EnableTableTypes", L"invalid");
+  EXPECT_EQ("invalid", ConnectionString::resolve("DRIVER=Table Types Driver", "").effective_parameters.at("ENABLETABLETYPES"));
+  EXPECT_EQ("1", ConnectionString::resolve("DSN=TableTypesFixture", "").effective_parameters.at("ENABLETABLETYPES"));
+  EXPECT_EQ("FALSE", ConnectionString::resolve("DSN=TableTypesFixture;EnableTableTypes=FALSE", "").effective_parameters.at("ENABLETABLETYPES"));
+  EXPECT_EQ("", ConnectionString::resolve("DSN=TableTypesFixture;EnableTableTypes={}", "").effective_parameters.at("ENABLETABLETYPES"));
 }
 
 TEST_F(NativeDsnTest, VarcharSizesRespectNativeRegistryDriverDsnAndExplicitZeroEmptyOverrides) {

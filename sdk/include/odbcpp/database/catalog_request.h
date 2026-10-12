@@ -1,5 +1,8 @@
 #pragma once
 
+#include <array>
+#include <span>
+#include <string_view>
 #include <optional>
 #include <string>
 #include <variant>
@@ -26,6 +29,27 @@ struct CatalogNameMatches {
         foreign_object == CatalogNameMatch::Existing;
   }
 };
+
+// Normalized catalog labels, after a backend classifies native metadata.
+// Unknown labels are refused rather than guessed from substrings.
+inline std::span<const std::string_view> catalog_table_types(bool detailed = true) noexcept {
+  static constexpr std::array<std::string_view, 6> complete{
+      "EXTERNAL TABLE", "LOCAL TEMPORARY", "SYSTEM TABLE", "SYSTEM VIEW", "TABLE", "VIEW"};
+  static constexpr std::array<std::string_view, 2> generic{"TABLE", "VIEW"};
+  if (detailed) return complete;
+  return generic;
+}
+
+inline std::optional<std::string_view> catalog_table_type(
+    std::string_view normalized, bool detailed = true) noexcept {
+  for (const auto known : catalog_table_types()) {
+    if (normalized == known) {
+      if (detailed) return known;
+      return normalized == "VIEW" || normalized == "SYSTEM VIEW" ? "VIEW" : "TABLE";
+    }
+  }
+  return std::nullopt;
+}
 
 struct TablesCatalogRequest {
   enum class Mode { Tables, Catalogs, Schemas, TableTypes };

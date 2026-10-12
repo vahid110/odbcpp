@@ -8176,3 +8176,130 @@ TEST_F(RedshiftBooleanCharacterRealTest, CanonicalValuesNativeParametersNullRefi
   ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(observed(SQLCloseCursor(hstmt_)));
   ASSERT_NO_FATAL_FAILURE(release_keepalive());
 }
+
+class RedshiftTableTypesRealTest : public RedshiftKeepaliveOptionsRealTest {
+ protected:
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_TABLE_TYPES_ADMISSION", "table_types_happy_v1");
+  }
+  std::string table_types_input(bool enabled, bool invalid = false) {
+    auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    for (const char* key : {"ENABLETABLETYPES", "REDSHIFTCATALOGMODE", "LT", "LOGINTIMEOUT"}) options.erase(key);
+    options["ENABLETABLETYPES"] = invalid ? "invalid-secret" : enabled ? "TRUE" : "FALSE";
+    options["REDSHIFTCATALOGMODE"] = "LEGACY";
+    options["LOGINTIMEOUT"] = "5";
+    std::string text;
+    for (const auto& [key, item] : options) {
+      text += key; text += "={";
+      for (char ch : item) { text.push_back(ch); if (ch == '}') text.push_back('}'); }
+      text += "};";
+    }
+    EXPECT_TRUE(options == rs::odbc::ConnectionString::parse(text)) << "Table types input preservation failed";
+    return text;
+  }
+  void refuse_table_types() {
+    ASSERT_TRUE(cap(window_end_, false));
+    auto input = rs::odbc::utf8_to_wide(table_types_input(true, true)); ASSERT_TRUE(input); input->push_back(0);
+    SQLWCHAR output[3]{static_cast<SQLWCHAR>('x'), 0, static_cast<SQLWCHAR>('y')}; SQLSMALLINT length = 66;
+    const auto rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, output, 3, &length, SQL_DRIVER_NOPROMPT);
+    connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO;
+    if (rc != SQL_ERROR) unknown_completion_ = true;
+    ASSERT_EQ(SQL_ERROR, rc); EXPECT_EQ(66, length);
+    EXPECT_EQ(static_cast<SQLWCHAR>('x'), output[0]); EXPECT_EQ(static_cast<SQLWCHAR>('y'), output[2]);
+    SQLCHAR state[6]{}, message[128]{};
+    ASSERT_TRUE(observed(SQLGetDiagRec(SQL_HANDLE_DBC, hdbc_, 1, state, nullptr, message, sizeof(message), nullptr)));
+    if (std::string_view(reinterpret_cast<char*>(state)) != "HY000" ||
+        std::string_view(reinterpret_cast<char*>(message)) != "Invalid EnableTableTypes value") unknown_completion_ = true;
+    ASSERT_STREQ("HY000", reinterpret_cast<char*>(state));
+    ASSERT_STREQ("Invalid EnableTableTypes value", reinterpret_cast<char*>(message));
+  }
+  void open_table_types(bool enabled, bool wide) {
+    ASSERT_TRUE(cap(window_end_, false));
+    ASSERT_GE(std::chrono::duration_cast<std::chrono::seconds>(window_end_ - rs::util::Clock::now()).count(), 5);
+    auto text = table_types_input(enabled); SQLRETURN rc;
+    if (wide) {
+      auto input = rs::odbc::utf8_to_wide(text); ASSERT_TRUE(input); input->push_back(0);
+      rc = SQLDriverConnectW(hdbc_, nullptr, input->data(), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    } else rc = SQLDriverConnect(hdbc_, nullptr, reinterpret_cast<SQLCHAR*>(text.data()), SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    connected_ = rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO; ASSERT_TRUE(observed(rc));
+    ASSERT_TRUE(observed(SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt_)));
+    ASSERT_TRUE(cap(window_end_, true));
+  }
+
+  void enumeration(SQLHSTMT statement, bool wide) {
+    ASSERT_TRUE(cap(window_end_, true));
+    if (wide) {
+      SQLWCHAR empty[]{0}, all[]{'%',0};
+      ASSERT_TRUE(known_sql(SQLTablesW(statement, empty, SQL_NTS, empty, SQL_NTS, empty, SQL_NTS, all, SQL_NTS)));
+    } else {
+      ASSERT_TRUE(known_sql(SQLTables(statement, (SQLCHAR*)"", SQL_NTS, (SQLCHAR*)"", SQL_NTS,
+          (SQLCHAR*)"", SQL_NTS, (SQLCHAR*)SQL_ALL_TABLE_TYPES, SQL_NTS)));
+    }
+  }
+  void enumeration_rows(SQLHSTMT statement, bool detailed, bool wide) {
+    const std::vector<std::string> expected = detailed
+        ? std::vector<std::string>{"EXTERNAL TABLE", "LOCAL TEMPORARY", "SYSTEM TABLE", "SYSTEM VIEW", "TABLE", "VIEW"}
+        : std::vector<std::string>{"TABLE", "VIEW"};
+    for (const auto& kind : expected) {
+      ASSERT_TRUE(cap(window_end_, true));
+      ASSERT_TRUE(observed(SQLFetch(statement)));
+      SQLLEN bytes = 66;
+      for (SQLUSMALLINT column : {1, 2, 3}) {
+        SQLCHAR value = 71;
+        ASSERT_TRUE(cap(window_end_, true));
+        ASSERT_TRUE(observed(SQLGetData(statement, column, SQL_C_CHAR, &value, 1, &bytes)));
+        EXPECT_EQ(SQL_NULL_DATA, bytes); EXPECT_EQ(71, value);
+      }
+      ASSERT_TRUE(cap(window_end_, true));
+      if (wide) {
+        struct { SQLWCHAR value[32]{}; SQLWCHAR guard = 77; } output;
+        ASSERT_TRUE(observed(SQLGetData(statement, 4, SQL_C_WCHAR, output.value, sizeof(output.value), &bytes)));
+        EXPECT_EQ(static_cast<SQLLEN>(kind.size() * sizeof(SQLWCHAR)), bytes);
+        for (std::size_t i = 0; i < kind.size(); ++i) EXPECT_EQ(static_cast<SQLWCHAR>(kind[i]), output.value[i]);
+        EXPECT_EQ(0, output.value[kind.size()]); EXPECT_EQ(77, output.guard);
+      } else {
+        struct { SQLCHAR value[32]{}; SQLCHAR guard = 77; } output;
+        ASSERT_TRUE(observed(SQLGetData(statement, 4, SQL_C_CHAR, output.value, sizeof(output.value), &bytes)));
+        EXPECT_EQ(kind, reinterpret_cast<char*>(output.value)); EXPECT_EQ(static_cast<SQLLEN>(kind.size()), bytes); EXPECT_EQ(77, output.guard);
+      }
+      SQLCHAR remark = 71;
+      ASSERT_TRUE(cap(window_end_, true));
+      ASSERT_TRUE(observed(SQLGetData(statement, 5, SQL_C_CHAR, &remark, 1, &bytes)));
+      EXPECT_EQ(SQL_NULL_DATA, bytes); EXPECT_EQ(71, remark);
+    }
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLFetch(statement), SQL_NO_DATA));
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLCloseCursor(statement)));
+  }
+};
+
+// Future finite admission: two TLS logins and five catalog SQL executions;
+// 40s aggregate, per-operation5s. No DDL, fixture, observer, delay or cleanup SQL.
+// Empty ordinary discovery qualifies live query grammar/filtering, not native
+// system/external object coverage (six-kind source coverage is synthetic).
+TEST_F(RedshiftTableTypesRealTest, GenericAndDetailedEnumerationNullsSiblingEmptyFilterAndReconnect) {
+  ASSERT_NO_FATAL_FAILURE(refuse_table_types());
+  ASSERT_NO_FATAL_FAILURE(open_table_types(false, false));
+  ASSERT_TRUE(observed(SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &sibling_)));
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  ASSERT_NO_FATAL_FAILURE(enumeration(sibling_, false));
+  ASSERT_NO_FATAL_FAILURE(enumeration(hstmt_, true));
+  ASSERT_NO_FATAL_FAILURE(enumeration_rows(hstmt_, false, true));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(known_sql(SQLTables(hstmt_, (SQLCHAR*)"", SQL_NTS, (SQLCHAR*)"", SQL_NTS,
+      (SQLCHAR*)"", SQL_NTS, (SQLCHAR*)"EXTERNAL TABLE", SQL_NTS)));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_NO_DATA));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLCloseCursor(hstmt_)));
+  ASSERT_NO_FATAL_FAILURE(enumeration(hstmt_, false));
+  ASSERT_NO_FATAL_FAILURE(enumeration_rows(hstmt_, false, false));
+  ASSERT_NO_FATAL_FAILURE(cap_sibling());
+  ASSERT_NO_FATAL_FAILURE(enumeration_rows(sibling_, false, false));
+  ASSERT_NO_FATAL_FAILURE(release_keepalive());
+  ASSERT_NO_FATAL_FAILURE(open_table_types(true, true));
+  ASSERT_NO_FATAL_FAILURE(enumeration(hstmt_, false));
+  ASSERT_NO_FATAL_FAILURE(enumeration_rows(hstmt_, true, true));
+  ASSERT_NO_FATAL_FAILURE(release_keepalive());
+}

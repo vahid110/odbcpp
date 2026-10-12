@@ -1777,3 +1777,60 @@ TEST(RedshiftBooleanCharacter, DirectOrdinarySettingsRefuseBeforeTransportCreati
   settings.character_metadata.boolean_as_character = false; ASSERT_TRUE(session.connect(settings));
   session.disconnect(); EXPECT_EQ(1u, wire->connects);
 }
+
+TEST(RedshiftTableTypePresentation, GenericFiltersRetainExternalSystemTemporaryTablesAndStableIdentities) {
+  auto source = tables_response(); source.rows.clear();
+  unsigned index = 0;
+  for (const auto type : catalog_table_types())
+    source.rows.push_back({"selected", "fixture", "table_" + std::to_string(index++), std::string(type), std::nullopt, std::nullopt});
+  auto input = table_request(); input.types = std::vector<std::string>{"TABLE"};
+  auto generic = normalize_redshift_tables("selected", "fixture", input,
+      BackendResult<QueryResult>{source, {SessionState::Idle, SessionDisposition::Reusable}}, false);
+  ASSERT_TRUE(generic); ASSERT_EQ(4u, generic->rows.size()); ASSERT_EQ(5u, generic->columns.size());
+  for (const auto& row : generic->rows) {
+    EXPECT_EQ("selected", row[0]); EXPECT_EQ("fixture", row[1]); EXPECT_EQ("TABLE", row[3]); EXPECT_FALSE(row[4]);
+  }
+  EXPECT_EQ("table_0", generic->rows[0][2]); // external survives the TABLE filter.
+  auto detailed = normalize_redshift_tables("selected", "fixture", input,
+      BackendResult<QueryResult>{source, {SessionState::Idle, SessionDisposition::Reusable}}, true);
+  ASSERT_TRUE(detailed); ASSERT_EQ(1u, detailed->rows.size()); EXPECT_EQ("table_4", detailed->rows[0][2]);
+  input.types = std::vector<std::string>{"VIEW"};
+  auto views = normalize_redshift_tables("selected", "fixture", input,
+      BackendResult<QueryResult>{source, {SessionState::Idle, SessionDisposition::Reusable}}, false);
+  ASSERT_TRUE(views); ASSERT_EQ(2u, views->rows.size()); EXPECT_EQ("table_3", views->rows[0][2]);
+  input.types = std::vector<std::string>{"EXTERNAL TABLE"};
+  auto none = normalize_redshift_tables("selected", "fixture", input,
+      BackendResult<QueryResult>{source, {SessionState::Idle, SessionDisposition::Reusable}}, false);
+  ASSERT_TRUE(none); EXPECT_TRUE(none->rows.empty());
+  input.types = std::vector<std::string>{"TABLE"}; source.rows.back()[3] = "secret unknown";
+  auto malformed = normalize_redshift_tables("selected", "fixture", input,
+      BackendResult<QueryResult>{source, {SessionState::Idle, SessionDisposition::Reusable}}, false);
+  schema_error(malformed); // A nonmatching row is validated before filtering.
+}
+
+TEST(RedshiftTableTypePresentation, RealSessionCapturesPolicyAndLegacyQueryClassifiesBeforeFilterAndEnumeratesExactKinds) {
+  auto transport = std::make_unique<CatalogWireTransport>(); auto* wire = transport.get();
+  PgDatabaseConnection session(std::move(transport), std::nullopt, PgCatalogProfile::Redshift);
+  ConnectionSettings settings; settings.host = "in-memory.invalid"; settings.port = 5439;
+  settings.database = "fixture"; settings.user = "fixture"; settings.use_ssl = false;
+  settings.redshift_catalog_mode = RedshiftCatalogMode::Legacy; settings.detailed_table_types = false;
+  ASSERT_TRUE(session.connect(settings)); settings.detailed_table_types = true;
+  TablesCatalogRequest enumeration; enumeration.mode = TablesCatalogRequest::Mode::TableTypes;
+  auto generic = session.catalog_query(enumeration); ASSERT_TRUE(generic);
+  EXPECT_NE(std::string::npos, generic->find("CAST('TABLE' AS VARCHAR(15))"));
+  EXPECT_NE(std::string::npos, generic->find("CAST('VIEW' AS VARCHAR(15))"));
+  EXPECT_EQ(std::string::npos, generic->find("SYSTEM VIEW"));
+  auto input = table_request(); input.types = std::vector<std::string>{"TABLE"};
+  auto filter = session.catalog_query(input); ASSERT_TRUE(filter);
+  const auto classify = filter->find("CASE WHEN table_type IN ('VIEW', 'SYSTEM VIEW')");
+  const auto where = filter->find("WHERE 1=1");
+  EXPECT_NE(std::string::npos, classify); EXPECT_LT(classify, where);
+  EXPECT_NE(std::string::npos, filter->find("AND table_type IN ('TABLE')"));
+  EXPECT_NE(std::string::npos, filter->find("ELSE table_type END::text")); // Unknowns aren't silently classified.
+  const std::string retained = *generic;
+  session.disconnect(); ASSERT_TRUE(session.connect(settings));
+  auto full = session.catalog_query(enumeration); ASSERT_TRUE(full);
+  for (const auto type : catalog_table_types()) EXPECT_NE(std::string::npos, full->find("CAST('" + std::string(type) + "' AS VARCHAR(15))"));
+  EXPECT_EQ(std::string::npos, full->find("FOREIGN TABLE")); EXPECT_EQ(*generic, retained);
+  session.disconnect(); EXPECT_EQ(2u, wire->connects);
+}

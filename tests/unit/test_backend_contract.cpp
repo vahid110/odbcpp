@@ -12827,3 +12827,167 @@ TEST_F(ApplicationNameOptionsTest, BooleanCharacterParameterDimensionsStayNative
   ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
   ASSERT_EQ(SQL_SUCCESS, SQLGetTypeInfo(stmt, SQL_BIT)); ASSERT_EQ(SQL_SUCCESS, SQLFetch(stmt));
 }
+
+
+class TableTypesOptionsTest : public ApplicationNameOptionsTest {
+ protected:
+  static rs::core::database::QueryResult fixture(bool enumeration = false) {
+    using namespace rs::core::database;
+    QueryResult result;
+    for (const char* name : {"TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "TABLE_TYPE", "REMARKS"})
+      result.columns.push_back({name, NativeTypeInfo{ScalarType::VarChar, 128, 0, true}});
+    unsigned index = 0;
+    for (const auto kind : catalog_table_types()) {
+      if (enumeration) result.rows.push_back({std::nullopt, std::nullopt, std::nullopt, std::string(kind), std::nullopt});
+      else result.rows.push_back({"db", "s", "table_" + std::to_string(index++), std::string(kind), "remark-é表😀"});
+    }
+    return result;
+  }
+  SQLRETURN tables(SQLHSTMT handle, bool wide, std::string type, bool enumeration = false) {
+    if (wide) {
+      auto types = rs::odbc::utf8_to_wide(type); types->push_back(0);
+      SQLWCHAR empty[]{0}, db[]{'d','b',0}, schema[]{'s',0}, name[]{'%',0};
+      return SQLTablesW(handle, enumeration ? empty : db, SQL_NTS,
+          enumeration ? empty : schema, SQL_NTS, enumeration ? empty : name, SQL_NTS,
+          types->data(), SQL_NTS);
+    }
+    return SQLTables(handle, (SQLCHAR*)(enumeration ? "" : "db"), SQL_NTS,
+        (SQLCHAR*)(enumeration ? "" : "s"), SQL_NTS, (SQLCHAR*)(enumeration ? "" : "%"), SQL_NTS,
+        reinterpret_cast<SQLCHAR*>(type.data()), SQL_NTS);
+  }
+  void consume(SQLHSTMT handle, const std::vector<std::string>& expected, bool enumeration = false) {
+    SQLSMALLINT columns = -1; ASSERT_EQ(SQL_SUCCESS, SQLNumResultCols(handle, &columns)); EXPECT_EQ(5, columns);
+    for (bool wide : {false, true}) {
+      struct { SQLULEN size = 99; SQLULEN canary = 81; } output;
+      SQLSMALLINT type = -1;
+      ASSERT_EQ(SQL_SUCCESS, wide ? SQLDescribeColW(handle, 4, nullptr, 0, nullptr, &type, &output.size, nullptr, nullptr)
+          : SQLDescribeCol(handle, 4, nullptr, 0, nullptr, &type, &output.size, nullptr, nullptr));
+      EXPECT_EQ(SQL_VARCHAR, type); EXPECT_EQ(128u, output.size); EXPECT_EQ(81u, output.canary);
+    }
+    for (const auto& kind : expected) {
+      ASSERT_EQ(SQL_SUCCESS, SQLFetch(handle));
+      struct { SQLCHAR value[32]{}; SQLCHAR canary = 77; } output;
+      SQLLEN bytes = -1;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(handle, 4, SQL_C_CHAR, output.value, sizeof(output.value), &bytes));
+      EXPECT_EQ(kind, reinterpret_cast<char*>(output.value)); EXPECT_EQ(kind.size(), static_cast<std::size_t>(bytes)); EXPECT_EQ(77, output.canary);
+      if (enumeration) for (SQLUSMALLINT column : {1, 2, 3, 5}) {
+        SQLCHAR untouched = 71;
+        ASSERT_EQ(SQL_SUCCESS, SQLGetData(handle, column, SQL_C_CHAR, &untouched, 1, &bytes));
+        EXPECT_EQ(SQL_NULL_DATA, bytes); EXPECT_EQ(71, untouched);
+      }
+    }
+    EXPECT_EQ(SQL_NO_DATA, SQLFetch(handle));
+  }
+};
+
+TEST_F(TableTypesOptionsTest, ClosedAnsiWideSelectionResetAndFailurePublication) {
+  for (bool wide : {false, true}) for (const char* invalid : {"", "yes", "on", "2", "secret-token"}) {
+    ASSERT_EQ(SQL_ERROR, login_name("SERVER=fake;SSL=0;EnableTableTypes={" + std::string(invalid) + "}", wide));
+    SQLCHAR sqlstate[6]{}, message[128]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, sqlstate, nullptr, message, sizeof(message), nullptr));
+    EXPECT_STREQ("Invalid EnableTableTypes value", reinterpret_cast<char*>(message));
+    EXPECT_EQ(0, seen->created); EXPECT_EQ(0, seen->transports); EXPECT_EQ(0, seen->queries);
+    EXPECT_TRUE(reinterpret_cast<rs::odbc::ODBCConnection*>(dbc)->detailed_table_types());
+  }
+  for (const char* value : {"FALSE", "0", " true ", "1"}) {
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;EnableTableTypes={" + std::string(value) + "}", true));
+    EXPECT_EQ(std::string(value) == " true " || std::string(value) == "1", seen->settings.detailed_table_types);
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+    EXPECT_TRUE(reinterpret_cast<rs::odbc::ODBCConnection*>(dbc)->detailed_table_types());
+  }
+  for (const auto failure : {1, 2, 3, 4, 5, 8, 9}) {
+    seen->connect_exception = failure; seen->setup_allocation_failure = failure == 3;
+    EXPECT_EQ(SQL_ERROR, login_name("SERVER=fake;SSL=0;EnableTableTypes=FALSE"));
+    EXPECT_TRUE(reinterpret_cast<rs::odbc::ODBCConnection*>(dbc)->detailed_table_types());
+  }
+  seen->connect_exception = 0; seen->setup_allocation_failure = false;
+  ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0")); EXPECT_TRUE(seen->settings.detailed_table_types);
+}
+
+TEST_F(TableTypesOptionsTest, BothCatalogRoutesAnsiWideFilterAfterCollapseAndOwnSiblingEnumeration) {
+  for (bool selected : {false, true}) for (bool wide : {false, true}) {
+    seen->catalog_builder = true; seen->catalog_executor = selected; seen->catalog_route_executor = selected;
+    seen->date_result = fixture();
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;EnableTableTypes=FALSE;MaxVarcharSize=0", wide));
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+    for (const auto& [filter, expected] : std::vector<std::pair<std::string, std::vector<std::string>>>{
+        {"'TABLE'", {"TABLE", "TABLE", "TABLE", "TABLE"}}, {"VIEW", {"VIEW", "VIEW"}}, {"EXTERNAL TABLE", {}}}) {
+      ASSERT_EQ(SQL_SUCCESS, tables(stmt, wide, filter));
+      ASSERT_NO_FATAL_FAILURE(consume(stmt, expected));
+      ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+    }
+    seen->date_result = fixture(true);
+    SQLHSTMT sibling{}; ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &sibling));
+    ASSERT_EQ(SQL_SUCCESS, tables(sibling, wide, SQL_ALL_TABLE_TYPES, true));
+    ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_METADATA_ID, (SQLPOINTER)SQL_TRUE, 0));
+    ASSERT_EQ(SQL_SUCCESS, tables(stmt, !wide, SQL_ALL_TABLE_TYPES, true));
+    ASSERT_TRUE(seen->catalog_request);
+    EXPECT_EQ(rs::core::database::TablesCatalogRequest::Mode::TableTypes,
+        std::get<rs::core::database::TablesCatalogRequest>(*seen->catalog_request).mode);
+    ASSERT_NO_FATAL_FAILURE(consume(stmt, {"TABLE", "VIEW"}, true));
+    ASSERT_NO_FATAL_FAILURE(consume(sibling, {"TABLE", "VIEW"}, true));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, sibling));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0", !wide));
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+    ASSERT_EQ(SQL_SUCCESS, tables(stmt, wide, SQL_ALL_TABLE_TYPES, true));
+    ASSERT_NO_FATAL_FAILURE(consume(stmt, {"EXTERNAL TABLE", "LOCAL TEMPORARY", "SYSTEM TABLE", "SYSTEM VIEW", "TABLE", "VIEW"}, true));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  }
+}
+
+TEST_F(TableTypesOptionsTest, UnknownNonmatchingRowRetiresBeforeFilteringAndSameDbcRecovers) {
+  for (bool selected : {false, true}) {
+    seen->catalog_builder = true; seen->catalog_executor = selected; seen->catalog_route_executor = selected;
+    auto malformed = fixture(); malformed.rows.back()[3] = "SECRET UNKNOWN"; seen->date_result = malformed;
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;EnableTableTypes=0"));
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+    ASSERT_EQ(SQL_ERROR, tables(stmt, true, "TABLE")); EXPECT_EQ("HY000", state());
+    EXPECT_FALSE(reinterpret_cast<rs::odbc::ODBCConnection*>(dbc)->is_connected());
+    EXPECT_TRUE(reinterpret_cast<rs::odbc::ODBCConnection*>(dbc)->detailed_table_types());
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+    seen->date_result = fixture();
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;EnableTableTypes=0", true));
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+    ASSERT_EQ(SQL_SUCCESS, tables(stmt, false, "VIEW"));
+    ASSERT_NO_FATAL_FAILURE(consume(stmt, {"VIEW", "VIEW"}));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  }
+}
+
+
+TEST_F(TableTypesOptionsTest, DetailedAndGenericIncompleteEnumerationDuplicateIdentityAndMalformedRowsRefuseThenRecover) {
+  for (bool selected : {false, true}) for (bool detailed : {false, true}) for (int fault : {0, 1, 2, 3}) {
+    SCOPED_TRACE(selected);
+    SCOPED_TRACE(detailed);
+    SCOPED_TRACE(fault);
+    seen->catalog_builder = true; seen->catalog_executor = selected; seen->catalog_route_executor = selected;
+    auto bad = fixture(fault == 0);
+    if (fault == 0) bad.rows.resize(1); // Membership, not merely a valid label.
+    if (fault == 1) bad.rows.back()[2] = bad.rows.front()[2]; // Nonmatching duplicate still refuses.
+    if (fault == 2) bad.rows.back()[3] = "UNKNOWN TABLE";
+    if (fault == 3) bad.rows.back()[4] = std::string("bad\0remark", 10);
+    seen->date_result = bad;
+    const std::string option = detailed ? "TRUE" : "FALSE";
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;EnableTableTypes=" + option));
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+    ASSERT_EQ(SQL_ERROR, tables(stmt, true, fault == 0 ? SQL_ALL_TABLE_TYPES : "VIEW", fault == 0));
+    EXPECT_EQ("HY000", state());
+    EXPECT_FALSE(reinterpret_cast<rs::odbc::ODBCConnection*>(dbc)->is_connected());
+    EXPECT_TRUE(reinterpret_cast<rs::odbc::ODBCConnection*>(dbc)->detailed_table_types());
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+    seen->date_result = fixture(true);
+    ASSERT_EQ(SQL_SUCCESS, login_name("SERVER=fake;SSL=0;EnableTableTypes=" + option, true));
+    ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt));
+    ASSERT_EQ(SQL_SUCCESS, tables(stmt, false, SQL_ALL_TABLE_TYPES, true));
+    const std::vector<std::string> expected = detailed
+        ? std::vector<std::string>{"EXTERNAL TABLE", "LOCAL TEMPORARY", "SYSTEM TABLE", "SYSTEM VIEW", "TABLE", "VIEW"}
+        : std::vector<std::string>{"TABLE", "VIEW"};
+    ASSERT_NO_FATAL_FAILURE(consume(stmt, expected, true));
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, stmt)); stmt = nullptr;
+    ASSERT_EQ(SQL_SUCCESS, SQLDisconnect(dbc));
+  }
+}

@@ -78,6 +78,7 @@ struct ConnectionSettings {
   // Confirm before successful connection publication, or refuse locally.
   bool read_only = false;
   CharacterMetadataPolicy character_metadata;
+  bool detailed_table_types = true;
 };
 
 // Shared validation for SDK callers and product option resolution.

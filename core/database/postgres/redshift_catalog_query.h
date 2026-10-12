@@ -26,7 +26,8 @@ bool redshift_table_schema_is_literal(const TablesCatalogRequest& request) noexc
 std::optional<std::string> redshift_table_schema(const TablesCatalogRequest& request);
 std::string redshift_show_tables_command(std::string_view database, std::string_view schema);
 BackendResult<QueryResult> normalize_redshift_tables(std::string_view database,
-    std::string_view schema, const TablesCatalogRequest& request, BackendResult<QueryResult> input);
+    std::string_view schema, const TablesCatalogRequest& request, BackendResult<QueryResult> input,
+    bool detailed_types = true);
 // Scoped per-table SHOW COLUMNS; schema/table LIKE patterns must be literals.
 bool redshift_column_names_are_literal(const ColumnsCatalogRequest& request) noexcept;
 std::optional<std::pair<std::string,std::string>> redshift_column_names(const ColumnsCatalogRequest& request);

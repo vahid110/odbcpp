@@ -81,7 +81,7 @@ std::string catalog_numeric_scale_sql(const std::string& fallback) {
       signed_scale(fallback) + " END";
 }
 
-std::string build_query(const TablesCatalogRequest& request) {
+std::string build_query(const TablesCatalogRequest& request, bool detailed_types = true, bool redshift = false) {
   if (request.mode == TablesCatalogRequest::Mode::Catalogs) {
     return std::string(
         "SELECT current_database()::text AS table_cat, NULL::text AS "
@@ -95,6 +95,16 @@ std::string build_query(const TablesCatalogRequest& request) {
         "remarks FROM information_schema.schemata ORDER BY table_schem");
   }
   if (request.mode == TablesCatalogRequest::Mode::TableTypes) {
+    if (redshift) {
+      std::string query;
+      for (const auto type : catalog_table_types(detailed_types)) {
+        if (!query.empty()) query += " UNION ALL ";
+        query += "SELECT CAST(NULL AS VARCHAR(128)) AS table_cat, CAST(NULL AS VARCHAR(128)) AS table_schem, "
+            "CAST(NULL AS VARCHAR(128)) AS table_name, CAST(" + quote_catalog_literal(std::string(type)) +
+            " AS VARCHAR(15)) AS table_type, CAST(NULL AS VARCHAR(65535)) AS remarks";
+      }
+      return query + " ORDER BY table_type";
+    }
     return std::string(
         "SELECT NULL::text AS table_cat, NULL::text AS table_schem, "
         "NULL::text AS table_name, table_type, NULL::text AS remarks FROM "
@@ -112,6 +122,26 @@ std::string build_query(const TablesCatalogRequest& request) {
       "table_type = 'LOCAL TEMPORARY' THEN 'LOCAL TEMPORARY' WHEN "
       "table_type = 'FOREIGN' THEN 'FOREIGN TABLE' ELSE table_type END::text "
       "AS table_type FROM information_schema.tables) AS odbcpp_tables WHERE 1=1";
+  if (redshift) {
+    const std::string native =
+        "SELECT current_database()::text AS table_cat, table_schema::text AS table_schem, "
+        "table_name::text AS table_name, CASE "
+        "WHEN table_type = 'VIEW' AND table_schema IN ('pg_catalog', 'information_schema') THEN 'SYSTEM VIEW' "
+        "WHEN table_type = 'VIEW' THEN 'VIEW' "
+        "WHEN table_type IN ('BASE TABLE', 'LOCAL TEMPORARY', 'FOREIGN') AND "
+        "table_schema IN ('pg_catalog', 'information_schema') THEN 'SYSTEM TABLE' "
+        "WHEN table_type = 'BASE TABLE' THEN 'TABLE' "
+        "WHEN table_type = 'LOCAL TEMPORARY' THEN 'LOCAL TEMPORARY' "
+        "WHEN table_type = 'FOREIGN' THEN 'EXTERNAL TABLE' ELSE table_type END::text AS table_type "
+        "FROM information_schema.tables";
+    const std::string presentation = detailed_types ? "table_type" :
+        "CASE WHEN table_type IN ('VIEW', 'SYSTEM VIEW') THEN 'VIEW' "
+        "WHEN table_type IN ('TABLE', 'SYSTEM TABLE', 'EXTERNAL TABLE', 'LOCAL TEMPORARY') "
+        "THEN 'TABLE' ELSE table_type END::text";
+    query = "SELECT table_cat, table_schem, table_name, table_type, NULL::text AS remarks FROM "
+        "(SELECT table_cat, table_schem, table_name, " + presentation +
+        " AS table_type FROM (" + native + ") AS odbcpp_native_tables) AS odbcpp_tables WHERE 1=1";
+  }
   if (request.catalog) {
     query += " AND table_cat" + std::string(request.name_matches.catalog == CatalogNameMatch::Existing ? " LIKE " : " = ") + quote_catalog_literal(*request.catalog);
   }
@@ -752,9 +782,10 @@ rs::util::Result<std::string> PgDatabaseConnection::catalog_query(
         std::holds_alternative<ProcedureColumnsCatalogRequest>(request))
       return rs::util::Result<std::string>{rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature),
           "Redshift routine catalogs require modern exact-schema execution"};
-    if (const auto* tables = std::get_if<TablesCatalogRequest>(&request);
-        tables && tables->mode == TablesCatalogRequest::Mode::Schemas)
-      return redshift_schemas_query();
+    if (const auto* tables = std::get_if<TablesCatalogRequest>(&request)) {
+      if (tables->mode == TablesCatalogRequest::Mode::Schemas) return redshift_schemas_query();
+      return build_query(*tables, catalog_detailed_table_types(), true);
+    }
     if (const auto* columns = std::get_if<ColumnsCatalogRequest>(&request))
       return redshift_columns_query(*columns);
     if (const auto* statistics = std::get_if<StatisticsCatalogRequest>(&request))

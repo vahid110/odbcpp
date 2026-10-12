@@ -27,6 +27,8 @@
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <set>
+#include <tuple>
 #include <stdexcept>
 #include <exception>
 
@@ -1029,13 +1031,73 @@ ColumnInfo column_info_for(
 
 // Adapt the prescribed ODBC catalog row schemas, not database wire types.
 // Cells remain owning and unpublished until all presentation checks succeed.
+void present_catalog_table_types(rs::core::database::QueryResult& result,
+    const rs::core::database::TablesCatalogRequest& request, std::optional<bool> policy) {
+  using namespace rs::core::database;
+  if (!policy || (request.mode != TablesCatalogRequest::Mode::Tables &&
+                   request.mode != TablesCatalogRequest::Mode::TableTypes)) return;
+  if (result.columns.size() != 5 || !result.additional_results.empty() || !result.cell_errors.empty())
+    throw std::invalid_argument("Invalid table catalog metadata");
+  for (const auto& column : result.columns) {
+    const auto& type = *column.normalized_type;
+    if (!type.known || (type.type != ScalarType::Char && type.type != ScalarType::VarChar &&
+                        type.type != ScalarType::LongVarChar))
+      throw std::invalid_argument("Invalid table catalog metadata");
+  }
+  const bool detailed = *policy;
+  bool table_seen = false, view_seen = false;
+  std::set<std::string> source_types;
+  std::set<std::tuple<std::string, std::string, std::string>> identities;
+  std::size_t kept = 0;
+  for (std::size_t i = 0; i < result.rows.size(); ++i) {
+    auto& row = result.rows[i];
+    if (row.size() != 5 || !row[3]) throw std::invalid_argument("Invalid table catalog metadata");
+    for (const auto& cell : row)
+      if (cell && (cell->find('\0') != std::string::npos || !rs::util::utf8_code_point_count(*cell)))
+        throw std::invalid_argument("Invalid table catalog metadata");
+    const auto type = catalog_table_type(*row[3], detailed);
+    if (!type) throw std::invalid_argument("Invalid table catalog metadata");
+    if (request.mode == TablesCatalogRequest::Mode::TableTypes) {
+      if (row[0] || row[1] || row[2] || row[4]) throw std::invalid_argument("Invalid table catalog metadata");
+      if (!source_types.insert(*row[3]).second) throw std::invalid_argument("Invalid table catalog metadata");
+      bool& seen = *type == "TABLE" ? table_seen : view_seen;
+      if (!detailed && seen) continue;
+      seen = true;
+    } else {
+      if (!row[0] || !row[1] || !row[2] ||
+          !identities.emplace(*row[0], *row[1], *row[2]).second)
+        throw std::invalid_argument("Invalid table catalog metadata");
+      if (request.types && std::find(request.types->begin(), request.types->end(), *type) == request.types->end()) continue;
+    }
+    row[3] = std::string(*type);
+    if (kept != i) result.rows[kept] = std::move(row);
+    ++kept;
+  }
+  if (request.mode == TablesCatalogRequest::Mode::TableTypes) {
+    const auto complete = [&](bool detailed_source) {
+      const auto expected = catalog_table_types(detailed_source);
+      return source_types.size() == expected.size() &&
+          std::all_of(expected.begin(), expected.end(), [&](auto value) { return source_types.contains(std::string(value)); });
+    };
+    if (!complete(true) && (detailed || !complete(false)))
+      throw std::invalid_argument("Invalid table catalog metadata");
+  }
+  result.rows.resize(kept);
+  std::sort(result.rows.begin(), result.rows.end(), [](const auto& a, const auto& b) {
+    return std::tie(a[3], a[0], a[1], a[2]) < std::tie(b[3], b[0], b[1], b[2]);
+  });
+  result.affected_rows = kept;
+}
+
 void present_catalog_character_metadata(rs::core::database::QueryResult& result,
     const rs::core::database::CatalogRequest& request,
-    const rs::core::database::CharacterMetadataPolicy& policy) {
+    const rs::core::database::CharacterMetadataPolicy& policy, std::optional<bool> detailed_table_types) {
   using namespace rs::core::database;
   require_normalized_columns(result);
   for (auto& column : result.columns)
     column.normalized_type = declared_character_metadata(*column.normalized_type);
+  if (const auto* tables = std::get_if<TablesCatalogRequest>(&request))
+    present_catalog_table_types(result, *tables, detailed_table_types);
   if (policy.varchar_threshold == 0 && !policy.boolean_as_character) return;
   std::size_t count = 0, code = 0, size = 0, buffer = 0;
   std::optional<std::size_t> sql_type, octets;
@@ -1683,6 +1745,12 @@ SQLRETURN ODBCConnection::connect(
       if (value == "1" || value == "TRUE") options.boolean_as_character = true;
       else if (value != "0" && value != "FALSE") throw std::invalid_argument("Invalid BoolsAsChar value");
     }
+    if (params.count("ENABLETABLETYPES")) {
+      const auto value = ConnectionString::to_upper(ConnectionString::trim(params.at("ENABLETABLETYPES")));
+      if (value == "1" || value == "TRUE") options.detailed_table_types = true;
+      else if (value == "0" || value == "FALSE") options.detailed_table_types = false;
+      else throw std::invalid_argument("Invalid EnableTableTypes value");
+    }
     const auto text_size = [](std::string_view raw, std::uint32_t maximum, const char* name) {
       const auto text = ConnectionString::trim(std::string(raw));
       std::uint32_t value = 0;
@@ -1765,6 +1833,7 @@ SQLRETURN ODBCConnection::connect(
         connection.confirmed_read_only_ = false;
         connection.query_timeout_default_seconds_ = 0;
         connection.character_metadata_policy_ = {};
+        connection.detailed_table_types_.reset();
       }
     } attempt{*this, backend_provider_->create_session(std::move(transport))};
     if (!attempt.physical) throw std::runtime_error("Backend provider returned no session");
@@ -1851,6 +1920,7 @@ SQLRETURN ODBCConnection::connect(
     confirmed_read_only_ = settings.read_only;
     query_timeout_default_seconds_ = selected_query_timeout;
     character_metadata_policy_ = settings.character_metadata;
+    detailed_table_types_ = settings.redshift_catalog_mode ? std::optional<bool>{settings.detailed_table_types} : std::nullopt;
     attempt.completed = true;
     return SQL_SUCCESS;
 
@@ -2345,6 +2415,7 @@ void ODBCConnection::close_connection() {
   confirmed_read_only_ = false;
   query_timeout_default_seconds_ = 0;
   character_metadata_policy_ = {};
+  detailed_table_types_.reset();
   log(rs::core::logging::LogLevel::Info, "connection_closed",
       "Database connection closed");
   if (logger_) logger_->flush();
@@ -3558,7 +3629,7 @@ SQLRETURN ODBCStatement::execute_direct(const std::string& sql,
     if (!cancellation_outcome.claimed) {
       if (catalog_presentation) {
         try {
-          present_catalog_character_metadata(*result, *catalog_presentation, conn_->character_metadata_policy());
+          present_catalog_character_metadata(*result, *catalog_presentation, conn_->character_metadata_policy(), conn_->table_type_presentation_policy());
         } catch (...) {
           clear_current_result();
           pending_results_.clear();
@@ -8021,7 +8092,7 @@ SQLRETURN ODBCStatement::execute_catalog(
       }
       const bool retired = result.session_snapshot().disposition ==
           rs::core::database::SessionDisposition::Retire;
-      present_catalog_character_metadata(*result, request, conn_->character_metadata_policy());
+      present_catalog_character_metadata(*result, request, conn_->character_metadata_policy(), conn_->table_type_presentation_policy());
       apply_query_result(std::move(*result), false);
       if (retired) conn_->close_connection();
       return SQL_SUCCESS;

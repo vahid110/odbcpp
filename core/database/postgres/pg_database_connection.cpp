@@ -74,7 +74,8 @@ BackendResult<void> PgDatabaseConnection::connect(const ConnectionSettings& sett
         .redshift_catalog_mode = settings.redshift_catalog_mode,
         .application_name = settings.application_name,
         .read_only = settings.read_only,
-        .character_metadata = settings.character_metadata};
+        .character_metadata = settings.character_metadata,
+        .detailed_table_types = settings.detailed_table_types};
     // Local binding consistency is not issuer proof, expiry, or pooling authority.
     return auth::connect_bound_ordinary_password_until(*this, selected, request.value(), material.value());
   } catch (const std::bad_alloc&) {
@@ -102,6 +103,9 @@ BackendResult<void> PgDatabaseConnection::connect_until(
   if (settings.character_metadata.boolean_as_character && catalog_profile_ != PgCatalogProfile::Redshift)
     return local_backend_error(LocalFailure::Unsupported,
         "BoolsAsChar requires Redshift", BackendOperation::Connect, session_state());
+  if (!settings.detailed_table_types && catalog_profile_ != PgCatalogProfile::Redshift)
+    return local_backend_error(LocalFailure::Unsupported,
+        "EnableTableTypes requires Redshift", BackendOperation::Connect, session_state());
   if (settings.read_only && catalog_profile_ != PgCatalogProfile::Redshift)
     return local_backend_error(LocalFailure::Unsupported,
         "ReadOnly requires Redshift", BackendOperation::Connect, session_state());
@@ -434,7 +438,7 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_catalog(
     auto response = execute_query(redshift_show_tables_command(*database,*schema),deadline);
     if (!response) return response.backend_error();
     if (expired()) return timeout();
-    auto normalized = normalize_redshift_tables(*database,*schema,*tables,std::move(response));
+    auto normalized = normalize_redshift_tables(*database,*schema,*tables,std::move(response),catalog_detailed_table_types());
     if (expired()) return timeout();
     return normalized;
   }
