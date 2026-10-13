@@ -1015,6 +1015,10 @@ const char* restricted_parameter_pair_error(SQLSMALLINT value_type,
       parameter_type == SQL_TYPE_TIME || parameter_type == SQL_TYPE_TIMESTAMP)) {
     return "Numeric C parameter cannot convert to a temporal SQL data type";
   }
+  if (ordinary_numeric && (parameter_type == SQL_BINARY ||
+      parameter_type == SQL_VARBINARY || parameter_type == SQL_LONGVARBINARY)) {
+    return "Numeric C parameter cannot convert to a binary SQL data type";
+  }
   if (value_type == SQL_C_NUMERIC && parameter_type != SQL_DECIMAL &&
       parameter_type != SQL_NUMERIC && parameter_type != SQL_TINYINT &&
       parameter_type != SQL_SMALLINT && parameter_type != SQL_INTEGER &&
