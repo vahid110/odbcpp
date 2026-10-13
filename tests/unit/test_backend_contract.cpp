@@ -13390,3 +13390,252 @@ TEST_F(PreparedCommandArrayTest, BinaryBigintCapturedArraysOwnValuesAndMaskInval
   EXPECT_EQ(SQL_PARAM_UNUSED, status[0]); EXPECT_EQ(SQL_PARAM_SUCCESS, status[2]);
   EXPECT_EQ(SQL_NTS, indicators[0]); EXPECT_EQ(SQL_NULL_DATA, indicators[2]);
 }
+
+// BIT pair regressions retain the literal contract and owning recovery checks.
+TEST_F(BackendContractTest, BitInputPairLiteralDateBindPreservesIntegerBinding) {
+  // Scalar execution replaces IPD metadata with the provider's normalized
+  // parameter metadata. Keep the fake result faithful to a prepared integer.
+  QueryResult result;
+  result.columns = {{"bit", NativeTypeInfo{ScalarType::Integer, 10, 0, true}}};
+  result.rows = {{"1"}};
+  result.normalized_parameter_types = {{ScalarType::Integer, 10, 0, true}};
+  seen->date_result = std::move(result);
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLCHAR bytes[]{0x5a, 1, 0xa5}; SQLLEN length = 0;
+  SQLUSMALLINT status = 71; SQLULEN processed = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
+      SQL_INTEGER, 10, 0, bytes + 1, 0, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Int32, seen->parameters[0].type);
+  EXPECT_EQ(std::optional<std::string>{"1"}, seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  status = 71; processed = 91;
+  const auto queries = seen->queries, descriptions = seen->descriptions;
+  const auto refused = SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
+      SQL_TYPE_DATE, 10, 0, bytes + 1, 0, &length);
+  EXPECT_EQ(SQL_ERROR, refused);
+  if (refused == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+  EXPECT_EQ(queries, seen->queries); EXPECT_EQ(descriptions, seen->descriptions);
+  EXPECT_EQ(71, status); EXPECT_EQ(91u, processed);
+  EXPECT_EQ(0x5a, bytes[0]); EXPECT_EQ(1, bytes[1]); EXPECT_EQ(0xa5, bytes[2]); EXPECT_EQ(0, length);
+  // A rejected bind must retain the original legal descriptor and value.
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Int32, seen->parameters[0].type);
+  EXPECT_EQ(std::optional<std::string>{"1"}, seen->parameters[0].value);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed);
+  EXPECT_EQ(0, seen->disconnects);
+}
+
+TEST_F(BackendContractTest, BitInputPairAllSupportedForbiddenTargetsPreserveBindingAndNullPrecedence) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLCHAR bytes[]{0x5a, 1, 0xa5}; SQLLEN length = 1;
+  SQLUSMALLINT status = 71; SQLULEN processed = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  for (const SQLSMALLINT target : {SQLSMALLINT(SQL_TYPE_DATE), SQLSMALLINT(SQL_TYPE_TIME),
+       SQLSMALLINT(SQL_TYPE_TIMESTAMP), SQLSMALLINT(SQL_BINARY), SQLSMALLINT(SQL_VARBINARY),
+       SQLSMALLINT(SQL_LONGVARBINARY)}) {
+    SCOPED_TRACE(target);
+    for (const SQLLEN marker : {SQLLEN(1), SQLLEN(SQL_NULL_DATA)}) {
+      SCOPED_TRACE(marker); length = marker; bytes[1] = 1;
+      ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
+          SQL_INTEGER, 10, 0, bytes + 1, 0, &length));
+      status = 71; processed = 91;
+      const auto queries = seen->queries, descriptions = seen->descriptions;
+      const auto refused = SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
+          target, 16, 0, bytes + 1, 0, &length);
+      EXPECT_EQ(SQL_ERROR, refused);
+      if (refused == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+      EXPECT_EQ(queries, seen->queries); EXPECT_EQ(descriptions, seen->descriptions);
+      EXPECT_EQ(71, status); EXPECT_EQ(91u, processed);
+      ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+      ASSERT_EQ(1u, seen->parameters.size());
+      EXPECT_EQ(QueryParameterType::Int32, seen->parameters[0].type);
+      EXPECT_EQ(marker == SQL_NULL_DATA ? std::optional<std::string>{}
+          : std::optional<std::string>{"1"}, seen->parameters[0].value);
+      EXPECT_FALSE(seen->parameters[0].binary_input);
+      EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed);
+      EXPECT_EQ(0x5a, bytes[0]); EXPECT_EQ(1, bytes[1]); EXPECT_EQ(0xa5, bytes[2]); EXPECT_EQ(marker, length);
+      ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+    }
+  }
+  EXPECT_EQ(0, seen->disconnects);
+}
+
+TEST_F(BackendContractTest, BitInputPairSixteenLegalTargetsKeepOwningZeroOneAndInvalidBytePolicy) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  struct Target { SQLSMALLINT sql; QueryParameterType hint; };
+  const Target targets[] = {{SQL_CHAR, QueryParameterType::Text}, {SQL_VARCHAR, QueryParameterType::Text},
+      {SQL_LONGVARCHAR, QueryParameterType::Text}, {SQL_WCHAR, QueryParameterType::Text},
+      {SQL_WVARCHAR, QueryParameterType::Text}, {SQL_WLONGVARCHAR, QueryParameterType::Text},
+      {SQL_DECIMAL, QueryParameterType::Numeric}, {SQL_NUMERIC, QueryParameterType::Numeric},
+      {SQL_TINYINT, QueryParameterType::Int32}, {SQL_SMALLINT, QueryParameterType::Int16},
+      {SQL_INTEGER, QueryParameterType::Int32}, {SQL_BIGINT, QueryParameterType::Int64},
+      {SQL_REAL, QueryParameterType::Float32}, {SQL_FLOAT, QueryParameterType::Float64},
+      {SQL_DOUBLE, QueryParameterType::Float64}, {SQL_BIT, QueryParameterType::Boolean}};
+  SQLCHAR bytes[]{0x5a, 0, 0xa5}; SQLLEN length = 0;
+  for (const auto& target : targets) {
+    SCOPED_TRACE(target.sql);
+    for (const SQLCHAR bit : {SQLCHAR(0), SQLCHAR(1)}) {
+      for (const SQLLEN marker : {SQLLEN(0), SQLLEN(99), SQLLEN(SQL_NTS), SQLLEN(-9)}) {
+        SCOPED_TRACE(marker); bytes[1] = bit; length = marker;
+        ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
+            target.sql, 16, 0, bytes + 1, 0, &length));
+        ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+        ASSERT_EQ(1u, seen->parameters.size());
+        const auto owned = seen->parameters[0]; bytes[1] = bit ? 0 : 1;
+        EXPECT_EQ(target.hint, owned.type); EXPECT_FALSE(owned.binary_input);
+        EXPECT_EQ(std::optional<std::string>{bit ? "1" : "0"}, owned.value);
+        EXPECT_EQ(owned.value, seen->parameters[0].value); EXPECT_EQ(marker, length);
+        EXPECT_EQ(0x5a, bytes[0]); EXPECT_EQ(0xa5, bytes[2]);
+        ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+      }
+    }
+    for (const SQLCHAR invalid : {SQLCHAR(2), SQLCHAR(255)}) {
+      bytes[1] = invalid; length = 1;
+      ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
+          target.sql, 16, 0, bytes + 1, 0, &length));
+      const auto queries = seen->queries;
+      ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("22003", state());
+      EXPECT_EQ(queries, seen->queries); EXPECT_EQ(invalid, bytes[1]);
+      ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+    }
+    length = SQL_NULL_DATA;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+    ASSERT_EQ(1u, seen->parameters.size());
+    EXPECT_EQ(target.hint, seen->parameters[0].type); EXPECT_FALSE(seen->parameters[0].value);
+    EXPECT_EQ(255, bytes[1]); EXPECT_EQ(0x5a, bytes[0]); EXPECT_EQ(0xa5, bytes[2]);
+    ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  }
+  EXPECT_EQ(0, seen->disconnects);
+}
+
+TEST_F(PreparedCommandArrayTest, BitInputPairCapturedMaskRefusalOwningRepairAndRefill) {
+  ASSERT_NO_FATAL_FAILURE(ready());
+  SQLHDESC apd{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_APP_PARAM_DESC, &apd, 0, nullptr));
+  char dates[3][11]{"2030-01-01", "2030-01-02", "2030-01-03"};
+  SQLCHAR bits[3]{255, 1, 0}; operations[0] = SQL_PARAM_IGNORE;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_TYPE_DATE, 10, 0, dates, 11, indicators));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
+      reinterpret_cast<SQLPOINTER>(SQL_C_BIT), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, bits, 0));
+  const auto queries = seen->queries, descriptions = seen->descriptions;
+  const auto refused = SQLExecute(stmt);
+  EXPECT_EQ(SQL_ERROR, refused);
+  if (refused == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+  EXPECT_EQ(queries, seen->queries); EXPECT_EQ(descriptions, seen->descriptions);
+  EXPECT_TRUE(seen->transaction_calls.empty()); EXPECT_TRUE(seen->command_inputs.empty());
+  EXPECT_EQ(2u, processed); EXPECT_EQ(SQL_PARAM_UNUSED, status[0]);
+  EXPECT_EQ(SQL_PARAM_ERROR, status[1]); EXPECT_EQ(SQL_PARAM_UNUSED, status[2]);
+  EXPECT_EQ(255, bits[0]); EXPECT_EQ(1, bits[1]); EXPECT_EQ(0, bits[2]);
+  // Recovery assertions require the refusal to have occurred.
+  if (refused != SQL_ERROR) return;
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  indicators[1] = SQL_NULL_DATA;
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("07006", state());
+  EXPECT_EQ(queries, seen->queries); EXPECT_EQ(descriptions, seen->descriptions);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE)); indicators[1] = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
+      SQL_INTEGER, 10, 0, bits, 0, indicators));
+  seen->during_command = [&] { bits[2] = 1; };
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); ASSERT_EQ(2u, seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"1"}, seen->command_inputs[0][0].value);
+  EXPECT_EQ(std::optional<std::string>{"0"}, seen->command_inputs[1][0].value);
+  EXPECT_EQ(QueryParameterType::Int32, seen->command_inputs[1][0].type);
+  EXPECT_EQ(3u, processed); EXPECT_EQ(SQL_PARAM_UNUSED, status[0]);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, status[1]); EXPECT_EQ(SQL_PARAM_SUCCESS, status[2]);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE)); seen->during_command = {};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); ASSERT_EQ(4u, seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"0"}, seen->command_inputs[1][0].value);
+  EXPECT_EQ(std::optional<std::string>{"1"}, seen->command_inputs[3][0].value);
+  EXPECT_EQ(255, bits[0]); EXPECT_EQ(0, seen->disconnects);
+}
+
+TEST_F(CommandArrayDeferredInputTest, BitInputPairCapturedOrdinaryNeighborRefusesBeforeNeedData) {
+  ASSERT_NO_FATAL_FAILURE(deferred()); operations[0] = SQL_PARAM_IGNORE;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_APP_PARAM_DESC, &apd, 0, nullptr));
+  char dates[3][11]{"2030-01-01", "2030-01-02", "2030-01-03"};
+  SQLCHAR bits[3]{255, 1, 0};
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_TYPE_DATE, 10, 0, dates, 11, indicators));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
+      reinterpret_cast<SQLPOINTER>(SQL_C_BIT), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, bits, 0));
+  const auto queries = seen->queries, descriptions = seen->descriptions;
+  const auto refused = SQLExecute(stmt);
+  EXPECT_EQ(SQL_ERROR, refused);
+  if (refused == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+  EXPECT_EQ(queries, seen->queries); EXPECT_EQ(descriptions, seen->descriptions);
+  EXPECT_TRUE(seen->command_inputs.empty()); EXPECT_TRUE(seen->transaction_calls.empty());
+  EXPECT_EQ(2u, progress.value); EXPECT_EQ(SQL_PARAM_UNUSED, output.values[0]);
+  EXPECT_EQ(SQL_PARAM_ERROR, output.values[1]); EXPECT_EQ(SQL_PARAM_UNUSED, output.values[2]);
+  ASSERT_NO_FATAL_FAILURE(guards());
+  if (refused != SQL_ERROR) return;
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  indicators[1] = SQL_DATA_AT_EXEC;
+  progress.value = 91; output.values[0] = 71; output.values[1] = 72; output.values[2] = 73;
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HYC00", state());
+  EXPECT_EQ(queries, seen->queries); EXPECT_EQ(descriptions, seen->descriptions);
+  EXPECT_EQ(91u, progress.value); EXPECT_EQ(71, output.values[0]); EXPECT_EQ(72, output.values[1]);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE)); indicators[1] = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
+      SQL_INTEGER, 10, 0, bits, 0, indicators));
+  ASSERT_EQ(SQL_NEED_DATA, SQLExecute(stmt)); bits[2] = 1;
+  ASSERT_NO_FATAL_FAILURE(request(2)); ASSERT_EQ(SQL_SUCCESS, SQLPutData(stmt, (SQLPOINTER)"first", 5));
+  ASSERT_NO_FATAL_FAILURE(request(3)); ASSERT_EQ(SQL_SUCCESS, SQLPutData(stmt, (SQLPOINTER)"last", 4));
+  ASSERT_EQ(SQL_SUCCESS, SQLParamData(stmt, &token)); ASSERT_EQ(2u, seen->command_inputs.size());
+  EXPECT_EQ(std::optional<std::string>{"1"}, seen->command_inputs[0][0].value);
+  EXPECT_EQ(std::optional<std::string>{"0"}, seen->command_inputs[1][0].value);
+  EXPECT_EQ(std::optional<std::string>{"last"}, seen->command_inputs[1][1].value);
+  EXPECT_EQ(3u, progress.value); EXPECT_EQ(SQL_PARAM_SUCCESS, output.values[1]);
+  EXPECT_EQ(SQL_PARAM_SUCCESS, output.values[2]); EXPECT_EQ(255, bits[0]);
+  ASSERT_NO_FATAL_FAILURE(guards());
+}
+
+TEST_F(BackendContractTest, BitInputPairUnsupportedTypesAndBindValidationKeepExistingDiagnostics) {
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
+  SQLCHAR bytes[]{0x5a, 1, 0xa5}; SQLLEN length = 0;
+  SQLUSMALLINT status = 71; SQLULEN processed = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
+      SQL_INTEGER, 10, 0, bytes + 1, 0, &length));
+  const auto queries = seen->queries, descriptions = seen->descriptions;
+  std::vector<SQLSMALLINT> unsupported{SQL_DATE, SQL_TIME, SQL_TIMESTAMP,
+      SQL_INTERVAL_YEAR_TO_MONTH, SQL_INTERVAL_DAY_TO_SECOND};
+#ifdef SQL_GUID
+  unsupported.push_back(SQL_GUID);
+#endif
+  for (const auto target : unsupported) {
+    SCOPED_TRACE(target);
+    ASSERT_EQ(SQL_ERROR, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
+        target, 16, 0, bytes + 1, 0, &length));
+    EXPECT_EQ("HYC00", state());
+  }
+  ASSERT_EQ(SQL_ERROR, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
+      static_cast<SQLSMALLINT>(32767), 16, 0, bytes + 1, 0, &length));
+  EXPECT_EQ("HY004", state());
+  ASSERT_EQ(SQL_ERROR, SQLBindParameter(stmt, 1, SQL_PARAM_OUTPUT, SQL_C_BIT,
+      SQL_TYPE_DATE, 16, 0, bytes + 1, 0, &length));
+  EXPECT_EQ("HYC00", state());
+  ASSERT_EQ(SQL_ERROR, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
+      SQL_TYPE_DATE, 16, 0, bytes + 1, -1, &length));
+  EXPECT_EQ("HY090", state());
+  EXPECT_EQ(queries, seen->queries); EXPECT_EQ(descriptions, seen->descriptions);
+  EXPECT_EQ(71, status); EXPECT_EQ(91u, processed);
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt)); ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(QueryParameterType::Int32, seen->parameters[0].type);
+  EXPECT_EQ(std::optional<std::string>{"1"}, seen->parameters[0].value);
+  EXPECT_EQ(0x5a, bytes[0]); EXPECT_EQ(1, bytes[1]); EXPECT_EQ(0xa5, bytes[2]); EXPECT_EQ(0, length);
+  EXPECT_EQ(0, seen->disconnects);
+}

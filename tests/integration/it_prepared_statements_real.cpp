@@ -5729,3 +5729,73 @@ TEST_F(PreparedStatementIntegrationTest, BinaryBigintHostBytesRejectLengthsNullA
     ASSERT_NO_FATAL_FAILURE(echo((std::numeric_limits<SQLBIGINT>::max)(), false));
     ASSERT_NO_FATAL_FAILURE(echo(0, true));
 }
+
+TEST_F(PreparedStatementIntegrationTest, BitInputPairSixTargetsNullAndOwningRecovery) {
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT CAST(? AS INTEGER)", SQL_NTS));
+  SQLCHAR bytes[]{0xa5, 0, 0x5a}; SQLLEN length = 0;
+  SQLUSMALLINT status = 71; SQLULEN processed = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(hstmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  SQLHDESC apd{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(hstmt, SQL_ATTR_APP_PARAM_DESC, &apd, 0, nullptr));
+  const auto echo = [&](SQLCHAR bit, bool absent) {
+    bytes[1] = bit; length = absent ? SQL_NULL_DATA : SQL_NTS;
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
+        SQL_INTEGER, 10, 0, bytes + 1, 0, &length));
+    status = 71; processed = 91;
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed);
+    EXPECT_EQ(bit, bytes[1]); EXPECT_EQ(absent ? SQL_NULL_DATA : SQL_NTS, length);
+    bytes[1] = 255; // The published result must own its parameter value.
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    SQLINTEGER output = 71; SQLLEN output_length = 73;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, 1, SQL_C_SLONG, &output, 0, &output_length));
+    if (absent) { EXPECT_EQ(SQL_NULL_DATA, output_length); EXPECT_EQ(71, output); }
+    else { EXPECT_EQ(bit, output); EXPECT_EQ(sizeof(output), output_length); }
+    ASSERT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+    EXPECT_EQ(0xa5, bytes[0]); EXPECT_EQ(0x5a, bytes[2]);
+  };
+  const auto diagnostic = [&] {
+    SQLCHAR state[6]{};
+    ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+        state, nullptr, nullptr, 0, nullptr));
+    EXPECT_STREQ("07006", reinterpret_cast<char*>(state));
+  };
+  ASSERT_NO_FATAL_FAILURE(echo(0, false));
+  char text[] = "2030-01-02 03:04:05";
+  for (const SQLSMALLINT target : {SQLSMALLINT(SQL_TYPE_DATE), SQLSMALLINT(SQL_TYPE_TIME),
+       SQLSMALLINT(SQL_TYPE_TIMESTAMP), SQLSMALLINT(SQL_BINARY), SQLSMALLINT(SQL_VARBINARY),
+       SQLSMALLINT(SQL_LONGVARBINARY)}) {
+    SCOPED_TRACE(target);
+    for (bool absent : {false, true}) {
+      bytes[1] = 1; length = absent ? SQL_NULL_DATA : 0; status = 71; processed = 91;
+      ASSERT_EQ(SQL_ERROR, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
+          target, 32, 0, bytes + 1, 0, &length));
+      ASSERT_NO_FATAL_FAILURE(diagnostic());
+      EXPECT_EQ(71, status); EXPECT_EQ(91u, processed);
+      ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+          target, 32, 0, text, sizeof(text), &length));
+      ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
+          reinterpret_cast<SQLPOINTER>(SQL_C_BIT), 0));
+      ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, bytes + 1, 0));
+      ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+      ASSERT_NO_FATAL_FAILURE(diagnostic());
+      EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
+      EXPECT_EQ(1, bytes[1]); EXPECT_EQ(absent ? SQL_NULL_DATA : 0, length);
+      EXPECT_EQ(0xa5, bytes[0]); EXPECT_EQ(0x5a, bytes[2]);
+      ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(hstmt, SQL_CLOSE));
+    }
+    ASSERT_NO_FATAL_FAILURE(echo(1, false));
+  }
+  ASSERT_NO_FATAL_FAILURE(echo(255, true));
+  bytes[1] = 2; length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
+      SQL_INTEGER, 10, 0, bytes + 1, 0, &length));
+  ASSERT_EQ(SQL_ERROR, SQLExecute(hstmt));
+  SQLCHAR state[6]{};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1,
+      state, nullptr, nullptr, 0, nullptr));
+  EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+  ASSERT_NO_FATAL_FAILURE(echo(0, false));
+}
