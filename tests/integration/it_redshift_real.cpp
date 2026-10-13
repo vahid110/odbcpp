@@ -9086,8 +9086,9 @@ TEST_F(RedshiftFixedNumericCompletionRealTest, FractionWholeNullAndVariableSourc
 }
 
 // Authoring only: one TLS login, one Prepare and at most seven Execute
-// attempts (five fits/NULL and two expected local22003 refusals). Conservatively
-// charge all eight operations; no DDL/DML/resources. Existing40s/per-op5s caps.
+// attempts (four fits/NULL, one observed Redshift range refusal and two local
+// 22003 refusals). Charge all eight operations; no DDL/DML/resources.
+// Existing 40s/per-operation 5s caps.
 class RedshiftCnumericApproximateRangeRealTest : public RedshiftNegativeNumericScaleRealTest {
  protected:
   static constexpr const char* echo_sql =
@@ -9143,7 +9144,7 @@ TEST_F(RedshiftCnumericApproximateRangeRealTest, PreparedFitSubnormalWholeNullAn
   };
   ASSERT_NO_FATAL_FAILURE(bind(1, SQL_FLOAT, 1, -100, 1, 1));
   ASSERT_NO_FATAL_FAILURE(bind(2, SQL_DOUBLE, 1, -100, 1, 0));
-  const auto echo = [&](SQLDOUBLE expected, bool subnormal, bool absent) {
+  const auto echo = [&](SQLDOUBLE expected, bool absent) {
     const auto before = storage;
     const auto before_indicators = indicators;
     status = SQL_PARAM_UNUSED; processed = 99;
@@ -9160,11 +9161,7 @@ TEST_F(RedshiftCnumericApproximateRangeRealTest, PreparedFitSubnormalWholeNullAn
       EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(97, real);
     } else {
       EXPECT_EQ(static_cast<SQLLEN>(sizeof(real)), length);
-      if (subnormal) {
-        EXPECT_GT(real, 9e-39); EXPECT_LT(real, 1.1e-38);
-      } else {
-        EXPECT_DOUBLE_EQ(expected, real);
-      }
+      EXPECT_DOUBLE_EQ(expected, real);
     }
     for (SQLUSMALLINT col = 2; col <= 3; ++col) {
       SQLDOUBLE large = 0; length = 73;
@@ -9182,9 +9179,21 @@ TEST_F(RedshiftCnumericApproximateRangeRealTest, PreparedFitSubnormalWholeNullAn
     ASSERT_TRUE(cap(window_end_, true)); ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
   };
   ASSERT_NO_FATAL_FAILURE(bind(0, SQL_REAL, 1, 0, 1, 1));
-  ASSERT_NO_FATAL_FAILURE(echo(1, false, false));
+  ASSERT_NO_FATAL_FAILURE(echo(1, false));
   ASSERT_NO_FATAL_FAILURE(bind(0, SQL_REAL, 38, 38, 1, 1));
-  ASSERT_NO_FATAL_FAILURE(echo(0, true, false));
+  // The owning adapter conversion accepts this IEEE float32 subnormal. The
+  // Redshift text-parameter path rejects the exact decimal 1e-38 with 22003;
+  // preserve that provider boundary and require ordinary recovery below.
+  // AWS documents REAL's approximate range around 1E-37..1E+37:
+  // https://docs.aws.amazon.com/redshift/latest/dg/r_Numeric_types201.html
+  {
+    const auto before = storage; const auto before_indicators = indicators;
+    status = SQL_PARAM_UNUSED; processed = 99;
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLExecute(hstmt_), SQL_ERROR, "22003"));
+    EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
+    EXPECT_EQ(before, storage); EXPECT_EQ(before_indicators, indicators);
+  }
   for (const SQLCHAR sign : {SQLCHAR{1}, SQLCHAR{0}}) {
     ASSERT_NO_FATAL_FAILURE(bind(0, SQL_REAL, 1, -100, 1, sign));
     const auto before = storage; const auto before_indicators = indicators;
@@ -9195,13 +9204,13 @@ TEST_F(RedshiftCnumericApproximateRangeRealTest, PreparedFitSubnormalWholeNullAn
     EXPECT_EQ(before, storage); EXPECT_EQ(before_indicators, indicators);
   }
   ASSERT_NO_FATAL_FAILURE(bind(0, SQL_REAL, 2, 0, 42, 1));
-  ASSERT_NO_FATAL_FAILURE(echo(42, false, false));
+  ASSERT_NO_FATAL_FAILURE(echo(42, false));
   indicators[0] = SQL_NULL_DATA;
   std::fill(storage[0].begin() + 1, storage[0].end() - 1, 0xff);
-  ASSERT_NO_FATAL_FAILURE(echo(0, false, true));
+  ASSERT_NO_FATAL_FAILURE(echo(0, true));
   indicators[0] = 73;
   ASSERT_NO_FATAL_FAILURE(bind(0, SQL_REAL, 1, 0, 1, 0));
-  ASSERT_NO_FATAL_FAILURE(echo(-1, false, false));
+  ASSERT_NO_FATAL_FAILURE(echo(-1, false));
   ASSERT_NO_FATAL_FAILURE(release_connection());
 }
 

@@ -109,7 +109,7 @@ Other existing admission controls and unknown-completion fences remain required.
 requires `ODBCPP_REDSHIFT_NUMERIC_TARGET_RESCALE_ADMISSION=numeric_target_rescale_v1`.
 One verified TLS login, one Prepare and three Execute operations (positive,
 negative recovery and NULL), 40 seconds aggregate, five seconds per operation.
-A whole-overflow Execute refuses locally with22003 and sends no SQL. No DDL/DML.
+A whole-overflow Execute refuses locally with 22003 and sends no SQL. No DDL/DML.
 Literal12.34/-12.34 echoes distinguish client truncation from server rounding
 of12.345/-12.345. Unaligned APD authority, input/result ownership, NULL poison
 output/canaries and neighboring integer42 are checked.
@@ -167,25 +167,25 @@ combined batch.
 `RedshiftCnumericApproximateRangeRealTest.PreparedFitSubnormalWholeNullAndRecovery`
 uses `ODBCPP_REDSHIFT_CNUMERIC_APPROXIMATE_RANGE_ADMISSION=cnumeric_approximate_range_v1`.
 It binds unaligned fixed numeric structs with captured APD dimensions to REAL,
-FLOAT and DOUBLE, checks fitting values, a positive REAL subnormal, large signed
-DOUBLE values, poisoned NULL bypass, positive/negative REAL overflow22003 and
+FLOAT and DOUBLE, checks fitting values, the observed 22003 refusal for the
+exact decimal 1e-38 REAL parameter, large signed DOUBLE values, poisoned NULL
+bypass, positive/negative local REAL overflow 22003 and
 repaired execution on the same prepared statement. Caller bytes/indicators,
 parameter status/processed count and an INTEGER neighbor remain observable.
 
 Finite ledger: one ordinary verified TLS login; one fixed parameterized SELECT
-Prepare; seven Execute attempts (five successful value/NULL cases and two
-expected local refusals). Conservatively reserve eight SQL operations, including
-both refusal attempts. No DDL, DML, fixture/resource creation or new principal.
+Prepare; seven Execute attempts (four successful value/NULL cases and three
+expected refusals: one observed Redshift range refusal and two local overflows). Conservatively reserve eight SQL operations, including
+all three refusal attempts. No DDL, DML, fixture/resource creation or new principal.
 The existing aggregate40-second window and per-operation5-second caps apply;
 expiry or unknown completion follows the existing cleanup fence.
 
 Minimum authored floors: SQL text covers the fixed echo statement; three
 parameters,102 bytes per parameter,306 aggregate parameter bytes; four columns,
 one row,four cells and12 metadata entries. Inherited setup floors remain required.
-Current authoring/compile/LIST is not paid admission or native execution. Actual
-server subnormal behavior and enforcement remain unproved until the accumulated
-CI-first live checkpoint binds this exact source/native image and fresh finite
-accounting/one-use controls. No vendor binary parity is claimed.
+Current authoring/compile/LIST is not paid admission or native execution. The original sampled subnormal execution returned 22003. Corrected assertions
+and same-statement recovery remain unproved until the CI-first live checkpoint
+binds this exact source/native image and fresh finite accounting/one-use controls. No vendor binary parity is claimed.
 
 
 ## Fixed TIME/TIMESTAMP SQLGetData completion — authored, execution pending
@@ -297,3 +297,10 @@ fresh independently reviewed finite admission.
 
 
 Binary BIGINT input: `RedshiftBinaryBigintInputRealTest.HostBigintLengthsNullAndOwningRecovery`, marker `ODBCPP_REDSHIFT_BINARY_BIGINT_INPUT_ADMISSION=binary_bigint_input_v1`. One verified TLS login, one fixed Prepare and seven Execute attempts (five exact echoes/NULL, two local22003 refusals); conservative API SQL upper8, not wire capture. Fixed SELECT CAST(? AS BIGINT), CAST(42 AS INTEGER), no DDL/DML. 40s case/peroperation5s; max1parameter20 normalizedbytes,2columns/1row/2cells/6metadata entries. Signed64 limits, unaligned bytes/canaries, ownership after source mutation and recovery; actual Redshift execution pending combined admission.
+
+The Redshift C-numeric approximate-range scenario checks provider refusal of the
+exact decimal 1e-38 REAL text parameter with SQLSTATE22003, as observed live.
+The local adapter IEEE float32 subnormal conversion remains covered by the unit
+contract; native normal-value, overflow, NULL, canary, ownership and same-connection
+recovery assertions remain required. This sampled boundary does not establish
+the complete Redshift denormal range. See [AWS numeric types](https://docs.aws.amazon.com/redshift/latest/dg/r_Numeric_types201.html).
