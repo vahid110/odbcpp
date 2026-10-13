@@ -277,6 +277,11 @@ BackendResult<QueryResult> PgDatabaseConnection::execute_database_discovery(
     const auto schema_name=redshift_columns_schema(*columns);
     if (!schema_name) return local_backend_error(LocalFailure::InvalidInput,
         "Invalid schema-wide column names",BackendOperation::ExecuteCatalog,session_state());
+    // A valid literal may simply not match the empty preflight context; the
+    // Result's error state, not its contained match value, validates the text.
+    auto valid_catalog=redshift_database_matches({},original.catalog,false);
+    if (!valid_catalog) return local_backend_error(LocalFailure::InvalidInput,
+        valid_catalog.error_message(),BackendOperation::ExecuteCatalog,session_state());
     if (original.catalog && !budget.name(*original.catalog)) return redshift_routine_limit();
     const auto native_exchange=[&](std::string_view database,std::string_view schema,
         const std::string* table=nullptr) -> BackendResult<QueryResult> {

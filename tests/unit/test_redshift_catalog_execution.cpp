@@ -2933,3 +2933,41 @@ TEST(RedshiftSchemaWideColumns, VisibleDatabaseOpaqueAttributesDoNotBecomeIdenti
   auto result=session.execute_catalog(wide_columns(),rs::util::Deadline::max());ASSERT_TRUE(result)<<result.error_message();
   EXPECT_EQ(4u,result->rows.size());EXPECT_EQ(5u,session.commands.size());
 }
+
+namespace {
+void invalid_wide_catalog_has_no_io_and_recovers(const std::string& catalog,
+    const std::optional<std::string>& table) {
+  WideColumnsSession session;session.current({"fresh"});
+  auto request=wide_columns(table);request.catalog=catalog;
+  const auto deadline=rs::util::make_deadline(std::chrono::seconds{2});
+  EXPECT_TRUE(session.selects_catalog_request(request));
+  auto rejected=session.execute_catalog(request,deadline);ASSERT_FALSE(rejected);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter),rejected.error());
+  EXPECT_EQ(BackendErrorClass::InvalidInput,rejected.backend_error().error_class);
+  EXPECT_EQ(BackendOperation::ExecuteCatalog,rejected.backend_error().operation);
+  EXPECT_EQ(SessionState::Idle,rejected.session_snapshot().state);
+  EXPECT_EQ(SessionDisposition::Reusable,rejected.session_snapshot().disposition);
+  EXPECT_TRUE(session.commands.empty());EXPECT_TRUE(session.deadlines.empty());
+  ASSERT_EQ(3u,session.replies.size()); // No exchange, fallback or discarded queued response.
+  request.catalog="db"; // Nonempty valid literal makes the preflight match false, not an error.
+  auto recovered=session.execute_catalog(request,deadline);ASSERT_TRUE(recovered)<<recovered.error_message();
+  ASSERT_EQ(2u,recovered->rows.size());EXPECT_EQ("fresh",recovered->rows[0][2]);
+  EXPECT_EQ("id",recovered->rows[0][3]);EXPECT_EQ("owning remark",recovered->rows[1][11]);
+  EXPECT_EQ((std::vector<std::string>{"SELECT current_database() AS database_name",
+      "SHOW TABLES FROM SCHEMA \"db\".\"fixture\";",
+      "SHOW COLUMNS FROM TABLE \"db\".\"fixture\".\"fresh\";"}),session.commands);
+  EXPECT_EQ(std::vector<rs::util::Deadline>(3,deadline),session.deadlines);
+}
+}
+TEST(RedshiftSchemaWideColumns, MalformedCatalogEmbeddedNulWithNullTableRejectsBeforeIoAndRecovers) {
+  invalid_wide_catalog_has_no_io_and_recovers(std::string{"bad\0name",8},std::nullopt);
+}
+TEST(RedshiftSchemaWideColumns, MalformedCatalogEmbeddedNulWithUniversalTableRejectsBeforeIoAndRecovers) {
+  invalid_wide_catalog_has_no_io_and_recovers(std::string{"bad\0name",8},std::string{"%"});
+}
+TEST(RedshiftSchemaWideColumns, MalformedCatalogInvalidUtf8WithNullTableRejectsBeforeIoAndRecovers) {
+  invalid_wide_catalog_has_no_io_and_recovers(std::string{"\xff",1},std::nullopt);
+}
+TEST(RedshiftSchemaWideColumns, MalformedCatalogInvalidUtf8WithUniversalTableRejectsBeforeIoAndRecovers) {
+  invalid_wide_catalog_has_no_io_and_recovers(std::string{"\xff",1},std::string{"%"});
+}
