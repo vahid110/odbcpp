@@ -8,6 +8,21 @@ on:
       - codex/transport-foundation
   workflow_dispatch:
     inputs:
+      run_development_pilot:
+        description: Experimental Linux focused cold/warm pilot (NOT full acceptance)
+        required: false
+        type: boolean
+        default: false
+      pilot_expected_head:
+        description: Reviewed immutable 40-character HEAD (required only for pilot)
+        required: false
+        type: string
+        default: ""
+      pilot_submitted_at:
+        description: UTC ISO timestamp immediately before pilot dispatch (required only for pilot)
+        required: false
+        type: string
+        default: ""
       run_linked_server:
         description: Run the heavy SQL Server linked-server acceptance job
         required: false
@@ -18,12 +33,21 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.run_development_pilot && 'ubuntu-development-pilot' || format('ci-{0}', github.ref) }}
   cancel-in-progress: false
   queue: max
 
 jobs:
+  ubuntu-development-pilot:
+    name: Experimental Linux pilot - NOT full acceptance
+    if: github.event_name == 'workflow_dispatch' && inputs.run_development_pilot
+    uses: ./.github/workflows/ubuntu-development-pilot.yml
+    with:
+      expected_head: ${{ inputs.pilot_expected_head }}
+      submitted_at: ${{ inputs.pilot_submitted_at }}
+
   build-and-test:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_development_pilot) }}
     runs-on: ubuntu-latest
 
     services:
@@ -228,6 +252,7 @@ jobs:
           if-no-files-found: error
 
   redshift-build:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_development_pilot) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -267,6 +292,7 @@ jobs:
             "$RUNNER_TEMP/redshift-missing-endpoint.log"
 
   windows-live:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_development_pilot) }}
     runs-on: windows-2025
 
     env:
@@ -425,6 +451,7 @@ jobs:
           retention-days: 7
 
   windows-package:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_development_pilot) }}
     timeout-minutes: 15
     needs: windows-live
     runs-on: windows-2025
@@ -455,7 +482,7 @@ jobs:
             ${{ runner.temp }}/odbcpp-postgres.log
 
   windows-linked-server:
-    if: github.event_name == 'workflow_dispatch' && inputs.run_linked_server
+    if: github.event_name == 'workflow_dispatch' && inputs.run_linked_server && !inputs.run_development_pilot
     timeout-minutes: 45
     needs: windows-live
     runs-on: windows-2025
@@ -485,6 +512,7 @@ jobs:
           retention-days: 7
 
   linux-sanitizers:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_development_pilot) }}
     runs-on: ubuntu-latest
 
     env:
@@ -526,6 +554,7 @@ jobs:
           --timeout 60 --output-on-failure
 
   linux-openssl-static:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_development_pilot) }}
     runs-on: ubuntu-latest
 
     services:
@@ -843,6 +872,7 @@ jobs:
           if-no-files-found: error
 
   awslc-adapter-proof:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_development_pilot) }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -919,6 +949,7 @@ jobs:
           if-no-files-found: error
 
   iodbc-unicode:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_development_pilot) }}
     runs-on: macos-latest
 
     strategy:
