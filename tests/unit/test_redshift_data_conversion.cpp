@@ -1209,10 +1209,23 @@ TEST(ResultTypesTest, SignedIntegerBinaryResultPairsAreExplicitAndDefaultsStayNa
         EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
     }
     for (SQLSMALLINT type : {SQLSMALLINT(SQL_TINYINT), SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL),
-         SQLSMALLINT(SQL_REAL), SQLSMALLINT(SQL_DOUBLE), SQLSMALLINT(SQL_TYPE_DATE), SQLSMALLINT(SQL_TYPE_TIMESTAMP)}) {
+         SQLSMALLINT(SQL_TYPE_DATE), SQLSMALLINT(SQL_TYPE_TIMESTAMP)}) {
         EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
     }
     EXPECT_EQ(SQL_C_SSHORT, rs::odbc::ResultTypes::default_c_type(SQL_SMALLINT));
     EXPECT_EQ(SQL_C_SLONG, rs::odbc::ResultTypes::default_c_type(SQL_INTEGER));
     EXPECT_EQ(SQL_C_SBIGINT, rs::odbc::ResultTypes::default_c_type(SQL_BIGINT));
+}
+
+TEST(ResultTypesTest, FloatingBinaryResultPairsKeepNativeDefaultsAndOtherRefusals) {
+    for (SQLSMALLINT type : {SQLSMALLINT(SQL_REAL), SQLSMALLINT(SQL_FLOAT), SQLSMALLINT(SQL_DOUBLE)}) {
+        EXPECT_TRUE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
+    }
+    EXPECT_EQ(SQL_C_FLOAT, rs::odbc::ResultTypes::default_c_type(SQL_REAL));
+    EXPECT_EQ(SQL_C_DOUBLE, rs::odbc::ResultTypes::default_c_type(SQL_FLOAT));
+    EXPECT_EQ(SQL_C_DOUBLE, rs::odbc::ResultTypes::default_c_type(SQL_DOUBLE));
+    for (SQLSMALLINT type : {SQLSMALLINT(SQL_NUMERIC), SQLSMALLINT(SQL_DECIMAL),
+             SQLSMALLINT(SQL_TYPE_DATE), SQLSMALLINT(SQL_TYPE_TIME), SQLSMALLINT(SQL_TYPE_TIMESTAMP)}) {
+        EXPECT_FALSE(rs::odbc::ResultTypes::is_conversion_supported(type, SQL_C_BINARY));
+    }
 }
