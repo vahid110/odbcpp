@@ -78,6 +78,37 @@ class PilotEvidenceTests(unittest.TestCase):
                 self.assertEqual(record['gnu_time_max_child_rss_kib'], 123)
                 self.assertIn('original failure', (pilot.EVIDENCE / 'failed.log').read_text())
 
+    def test_dependency_install_and_identity_survive_both_write_orders(self):
+        # Exercise the real CLI phase; replace apt and GNU time with a finite local child.
+        for identity_first in (True, False):
+            for exit_code in (0, 7):
+                with self.subTest(identity_first=identity_first, exit_code=exit_code), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    fake_time = root / 'fake-time.py'
+                    fake_time.write_text('import pathlib, subprocess, sys\npathlib.Path(sys.argv[3]).write_text("Maximum resident set size (kbytes): 123\\n")\nsys.exit(subprocess.call(sys.argv[4:]))\n')
+                    real_popen = subprocess.Popen
+                    def launch(cmd, **kwargs):
+                        child = [sys.executable, '-c', f'print("dependency child log"); raise SystemExit({exit_code})']
+                        return real_popen([sys.executable, str(fake_time), *cmd[1:4], *child], **kwargs)
+                    identity = {'system_packages': 'preserved dependency identity', 'tools': {'cmake': 'test tool'}}
+                    with patch.object(pilot, 'EVIDENCE', root / 'evidence'), patch.object(pilot.subprocess, 'Popen', side_effect=launch), patch.object(sys, 'argv', ['pilot', 'dependencies']):
+                        if identity_first:
+                            pilot.write('dependencies.json', identity)
+                        if exit_code:
+                            with self.assertRaises(RuntimeError):
+                                pilot.main()
+                        else:
+                            pilot.main()
+                        if not identity_first:
+                            pilot.write('dependencies.json', identity)
+                        self.assertEqual(json.loads((pilot.EVIDENCE / 'dependencies.json').read_text()), identity)
+                        timing = json.loads((pilot.EVIDENCE / 'dependency-install.json').read_text())
+                        self.assertEqual(timing['exit'], exit_code)
+                        self.assertFalse(timing['timed_out'])
+                        self.assertEqual(timing['gnu_time_max_child_rss_kib'], 123)
+                        self.assertIn('Maximum resident set size', (pilot.EVIDENCE / 'dependency-install-time.txt').read_text())
+                        self.assertIn('dependency child log', (pilot.EVIDENCE / 'dependency-install.log').read_text())
+
     def test_timeout_kills_owned_process_group_and_records_failed_exit(self):
         with tempfile.TemporaryDirectory() as directory:
             process = unittest.mock.Mock(pid=12345)

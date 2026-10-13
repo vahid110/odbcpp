@@ -309,7 +309,7 @@ def main():
     if args.phase == 'init':
         init(os.environ['PILOT_EXPECTED_HEAD'], os.environ['PILOT_SUBMITTED_AT'], os.environ['PILOT_MODE'])
     elif args.phase == 'dependencies':
-        measure('dependencies', ['bash', '-euc',
+        measure('dependency-install', ['bash', '-euc',
             'sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources; '
             'sudo apt-get update; sudo apt-get install -y cmake build-essential libssl-dev unixodbc-dev ccache time'], 600)
     elif args.phase == 'configure':
