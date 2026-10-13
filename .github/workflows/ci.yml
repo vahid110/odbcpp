@@ -2,6 +2,10 @@ name: ci
 
 on:
   pull_request:
+    # Intermediate lane PRs use primary checks. The coordinator dispatches this
+    # full graph on the frozen integration head at the 12-hour checkpoint.
+    branches-ignore:
+      - codex/transport-foundation
   workflow_dispatch:
     inputs:
       run_linked_server:
