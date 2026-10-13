@@ -387,6 +387,48 @@ TEST_F(NumericScaleApiTest, SiblingResultsOwnValuesAndRecoverIndependently) {
   EXPECT_EQ(0u, facts->disconnects);
 }
 
+TEST_F(NumericScaleApiTest, BitInputPairRefusalKeepsSiblingSnapshotAndMaskCanaries) {
+  SQLHSTMT sibling{};
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &sibling));
+  struct Owner { SQLHSTMT handle; ~Owner() { SQLFreeHandle(SQL_HANDLE_STMT, handle); } } owner{sibling};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(sibling, (SQLCHAR*)"SELECT n", SQL_NTS));
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  SQLCHAR bytes[]{0xa5, 1, 0x5a}; SQLLEN length = 0;
+  char text[] = "2030-01-02";
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_TYPE_DATE, 10, 0, text, sizeof(text), &length));
+  auto apd = descriptor(SQL_ATTR_APP_PARAM_DESC);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
+      reinterpret_cast<SQLPOINTER>(SQL_C_BIT), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, bytes + 1, 0));
+  struct Status { SQLUSMALLINT before{81}, value{71}, after{82}; } status;
+  struct Progress { SQLULEN before{83}, value{91}, after{84}; } progress;
+  SQLUSMALLINT operation = 99;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status.value, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &progress.value, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_OPERATION_PTR, &operation, 0));
+  const auto queries = facts->queries;
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HY024", state());
+  EXPECT_EQ(71, status.value); EXPECT_EQ(91u, progress.value);
+  operation = SQL_PARAM_PROCEED;
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("07006", state());
+  EXPECT_EQ(SQL_PARAM_ERROR, status.value); EXPECT_EQ(1u, progress.value);
+  EXPECT_EQ(queries, facts->queries); EXPECT_EQ(0u, facts->disconnects);
+  EXPECT_EQ(81, status.before); EXPECT_EQ(82, status.after);
+  EXPECT_EQ(83u, progress.before); EXPECT_EQ(84u, progress.after);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
+      SQL_INTEGER, 10, 0, bytes + 1, 0, &length));
+  facts->result.rows = {{"poison"}};
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(std::optional<std::string>{"1"}, facts->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFetch(sibling));
+  SQLINTEGER output = 71; SQLLEN output_length = 73;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetData(sibling, 1, SQL_C_SLONG, &output, 0, &output_length));
+  EXPECT_EQ(1, output); EXPECT_EQ(sizeof(output), output_length);
+  EXPECT_EQ(0xa5, bytes[0]); EXPECT_EQ(1, bytes[1]); EXPECT_EQ(0x5a, bytes[2]);
+}
+
 }  // namespace
 
 namespace {
@@ -2457,5 +2499,114 @@ TEST_F(NumericScaleApiTest, BinaryBigintDeferredLayoutSiblingAndReuse) {
 }
 
 
+
+
+// Effective APD inputs must obey the same pair policy as SQLBindParameter.
+TEST_F(NumericScaleApiTest, BitInputPairEffectiveApdSixTargetsRejectBeforeMaterialAndNullDispatch) {
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  SQLCHAR bytes[]{0x5a, 1, 0xa5}; SQLLEN length = 0;
+  SQLUSMALLINT status = 71; SQLULEN processed = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
+      SQL_INTEGER, 10, 0, bytes + 1, 0, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, facts->parameters.size());
+  EXPECT_EQ(QueryParameterType::Int32, facts->parameters[0].type);
+  EXPECT_EQ(std::optional<std::string>{"1"}, facts->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  const auto retained = facts->parameters[0];
+  auto apd = descriptor(SQL_ATTR_APP_PARAM_DESC);
+  char text[] = "2030-01-02 03:04:05";
+  for (const SQLSMALLINT target : {SQLSMALLINT(SQL_TYPE_DATE), SQLSMALLINT(SQL_TYPE_TIME),
+       SQLSMALLINT(SQL_TYPE_TIMESTAMP), SQLSMALLINT(SQL_BINARY), SQLSMALLINT(SQL_VARBINARY),
+       SQLSMALLINT(SQL_LONGVARBINARY)}) {
+    SCOPED_TRACE(target);
+    for (const int scenario : {0, 1, 2}) {
+      SCOPED_TRACE(scenario); bytes[1] = scenario == 1 ? 255 : 1;
+      length = scenario == 2 ? SQL_NULL_DATA : 0;
+      // Keep the declared target legal at bind; only the effective APD C type changes.
+      ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+          target, 32, 0, text, sizeof(text), &length));
+      ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
+          reinterpret_cast<SQLPOINTER>(SQL_C_BIT), 0));
+      void* payload = scenario == 2
+          ? reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)())
+          : bytes + 1;
+      ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, payload, 0));
+      const auto queries = facts->queries;
+      status = 71; processed = 91;
+      const auto refused = SQLExecute(stmt);
+      EXPECT_EQ(SQL_ERROR, refused);
+      if (refused == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+      EXPECT_EQ(queries, facts->queries); EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
+      ASSERT_EQ(1u, facts->parameters.size());
+      EXPECT_EQ(retained.type, facts->parameters[0].type); EXPECT_EQ(retained.value, facts->parameters[0].value);
+      EXPECT_EQ(0x5a, bytes[0]); EXPECT_EQ(scenario == 1 ? 255 : 1, bytes[1]); EXPECT_EQ(0xa5, bytes[2]);
+      EXPECT_EQ(scenario == 2 ? SQL_NULL_DATA : 0, length);
+      ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+      // Refill the original legal binding even after an original baseline's success.
+      bytes[1] = 1; length = 0;
+      ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
+          SQL_INTEGER, 10, 0, bytes + 1, 0, &length));
+      ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+      EXPECT_EQ(retained.type, facts->parameters[0].type); EXPECT_EQ(retained.value, facts->parameters[0].value);
+      EXPECT_EQ(SQL_PARAM_SUCCESS, status); EXPECT_EQ(1u, processed);
+      ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+    }
+  }
+  EXPECT_EQ(0u, facts->disconnects);
+}
+
+TEST_F(NumericScaleApiTest, BitInputPairMaskBindingDeferredOffsetAndDefaultPrecedenceRemainDistinct) {
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"SELECT ?", SQL_NTS));
+  char date_text[] = "2030-01-02"; SQLLEN length = 0;
+  SQLCHAR bytes[]{0x5a, 1, 0xa5};
+  SQLUSMALLINT status = 71, operation = SQL_PARAM_IGNORE; SQLULEN processed = 91;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, &status, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_OPERATION_PTR, &operation, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_TYPE_DATE, 10, 0, date_text, sizeof(date_text), &length));
+  auto apd = descriptor(SQL_ATTR_APP_PARAM_DESC);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_CONCISE_TYPE,
+      reinterpret_cast<SQLPOINTER>(SQL_C_BIT), 0));
+  // Ignored inputs must not read even an invalid ordinary payload address.
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, reinterpret_cast<void*>(1), 0));
+  const auto queries = facts->queries;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(queries, facts->queries); EXPECT_EQ(SQL_PARAM_UNUSED, status); EXPECT_EQ(0u, processed);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, bytes + 1, 0));
+  operation = SQL_PARAM_PROCEED; length = SQL_DATA_AT_EXEC; status = 71; processed = 91;
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HYC00", state());
+  EXPECT_EQ(queries, facts->queries); EXPECT_EQ(71, status); EXPECT_EQ(91u, processed);
+  length = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, nullptr, 0));
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("07009", state());
+  EXPECT_EQ(queries, facts->queries);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(apd, 1, SQL_DESC_DATA_PTR, bytes + 1, 0));
+  SQLULEN offset = (std::numeric_limits<SQLULEN>::max)();
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_BIND_OFFSET_PTR, &offset, 0));
+  status = 71; processed = 91;
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt)); EXPECT_EQ("HYC00", state());
+  EXPECT_EQ(queries, facts->queries); EXPECT_EQ(71, status); EXPECT_EQ(91u, processed);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_BIND_OFFSET_PTR, nullptr, 0));
+  SQL_DATE_STRUCT date{2030, 1, 2};
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_DEFAULT,
+      SQL_TYPE_DATE, 10, 0, &date, 0, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, facts->parameters.size());
+  EXPECT_EQ(QueryParameterType::Date, facts->parameters[0].type);
+  EXPECT_EQ(std::optional<std::string>{"2030-01-02"}, facts->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLFreeStmt(stmt, SQL_CLOSE));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_DEFAULT,
+      SQL_BIT, 1, 0, bytes + 1, 0, &length));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  EXPECT_EQ(QueryParameterType::Boolean, facts->parameters[0].type);
+  EXPECT_EQ(std::optional<std::string>{"1"}, facts->parameters[0].value);
+  EXPECT_EQ(0x5a, bytes[0]); EXPECT_EQ(1, bytes[1]); EXPECT_EQ(0xa5, bytes[2]);
+  EXPECT_EQ(0u, facts->disconnects);
+}
 
 }  // namespace

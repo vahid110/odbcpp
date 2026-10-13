@@ -962,6 +962,12 @@ rs::core::database::QueryParameterType parameter_type_for(
 const char* restricted_parameter_pair_error(SQLSMALLINT value_type,
                                             SQLSMALLINT parameter_type) {
   value_type = ResultTypes::canonical_c_type(value_type);
+  if (value_type == SQL_C_BIT &&
+      (parameter_type == SQL_TYPE_DATE || parameter_type == SQL_TYPE_TIME ||
+       parameter_type == SQL_TYPE_TIMESTAMP || parameter_type == SQL_BINARY ||
+       parameter_type == SQL_VARBINARY || parameter_type == SQL_LONGVARBINARY)) {
+    return "BIT C parameter cannot convert to the SQL data type";
+  }
   const bool ordinary_numeric = value_type == SQL_C_STINYINT ||
       value_type == SQL_C_UTINYINT || value_type == SQL_C_SSHORT ||
       value_type == SQL_C_USHORT || value_type == SQL_C_SLONG ||
