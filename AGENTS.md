@@ -80,6 +80,17 @@ process cleanup, and keep all protected cloud/live/final acceptance requirements
 
 - Feature and live assertions belong in checked-in GoogleTests. Python supplies
   orchestration and offline safety tests, not substitute feature assertions.
+- Every new or changed `if`, `else`, `for` or `while` body containing GoogleTest
+  macros must have explicit braces, including an outer body containing a nested
+  assertion control. Keep control statements and assertion-containing bodies
+  on readable separate lines; never join sibling controls on one line. Before
+  expensive builds and during candidate review, run
+  `python3 -B tools/development/check_changed_gtest_control_flow.py --base <exact-batch-base> <changed-C++-paths>`;
+  reviewers can add `--head <exact-candidate-head>`. Run the checker’s focused
+  offline tests when changing it. This changed-diff lexical check preserves
+  whole-file context, ignores unrelated historical blocks, and flags unsupported
+  changed scopes for explicit manual review. It is not C++ or GCC qualification;
+  retain actual compiler checks and original failures.
 - Configure the actual product with `TARGET_DATABASE=POSTGRESQL` or `REDSHIFT`;
   current CMake rejects a MySQL product build. Inspect real options and target
   inventories rather than assuming every historical preset is valid.
