@@ -13418,7 +13418,9 @@ TEST_F(BackendContractTest, BitInputPairLiteralDateBindPreservesIntegerBinding) 
   const auto refused = SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
       SQL_TYPE_DATE, 10, 0, bytes + 1, 0, &length);
   EXPECT_EQ(SQL_ERROR, refused);
-  if (refused == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+  if (refused == SQL_ERROR) {
+    EXPECT_EQ("07006", state());
+  }
   EXPECT_EQ(queries, seen->queries); EXPECT_EQ(descriptions, seen->descriptions);
   EXPECT_EQ(71, status); EXPECT_EQ(91u, processed);
   EXPECT_EQ(0x5a, bytes[0]); EXPECT_EQ(1, bytes[1]); EXPECT_EQ(0xa5, bytes[2]); EXPECT_EQ(0, length);
@@ -13451,7 +13453,9 @@ TEST_F(BackendContractTest, BitInputPairAllSupportedForbiddenTargetsPreserveBind
       const auto refused = SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_BIT,
           target, 16, 0, bytes + 1, 0, &length);
       EXPECT_EQ(SQL_ERROR, refused);
-      if (refused == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+      if (refused == SQL_ERROR) {
+        EXPECT_EQ("07006", state());
+      }
       EXPECT_EQ(queries, seen->queries); EXPECT_EQ(descriptions, seen->descriptions);
       EXPECT_EQ(71, status); EXPECT_EQ(91u, processed);
       ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
@@ -13531,7 +13535,9 @@ TEST_F(PreparedCommandArrayTest, BitInputPairCapturedMaskRefusalOwningRepairAndR
   const auto queries = seen->queries, descriptions = seen->descriptions;
   const auto refused = SQLExecute(stmt);
   EXPECT_EQ(SQL_ERROR, refused);
-  if (refused == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+  if (refused == SQL_ERROR) {
+    EXPECT_EQ("07006", state());
+  }
   EXPECT_EQ(queries, seen->queries); EXPECT_EQ(descriptions, seen->descriptions);
   EXPECT_TRUE(seen->transaction_calls.empty()); EXPECT_TRUE(seen->command_inputs.empty());
   EXPECT_EQ(2u, processed); EXPECT_EQ(SQL_PARAM_UNUSED, status[0]);
@@ -13573,7 +13579,9 @@ TEST_F(CommandArrayDeferredInputTest, BitInputPairCapturedOrdinaryNeighborRefuse
   const auto queries = seen->queries, descriptions = seen->descriptions;
   const auto refused = SQLExecute(stmt);
   EXPECT_EQ(SQL_ERROR, refused);
-  if (refused == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+  if (refused == SQL_ERROR) {
+    EXPECT_EQ("07006", state());
+  }
   EXPECT_EQ(queries, seen->queries); EXPECT_EQ(descriptions, seen->descriptions);
   EXPECT_TRUE(seen->command_inputs.empty()); EXPECT_TRUE(seen->transaction_calls.empty());
   EXPECT_EQ(2u, progress.value); EXPECT_EQ(SQL_PARAM_UNUSED, output.values[0]);
@@ -13688,7 +13696,9 @@ TEST_F(BackendContractTest, SignedIntegerBinaryResultRowWiseOffsetsPreflightAndR
       EXPECT_EQ(0, std::memcmp(&integer, pages[1][row].integer, 4));
       EXPECT_EQ(0, std::memcmp(&big, pages[1][row].big, 8));
       EXPECT_EQ(2, pages[1][row].lengths[0]); EXPECT_EQ(4, pages[1][row].lengths[1]); EXPECT_EQ(8, pages[1][row].lengths[2]);
-      for (auto indicator : pages[1][row].indicators) EXPECT_EQ(0, indicator);
+      for (auto indicator : pages[1][row].indicators) {
+        EXPECT_EQ(0, indicator);
+      }
     }
   };
   ASSERT_NO_FATAL_FAILURE(verify_values());
@@ -13708,9 +13718,15 @@ TEST_F(BackendContractTest, SignedIntegerBinaryResultRowWiseOffsetsPreflightAndR
   ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(SQL_HANDLE_STMT, stmt, 1, SQL_DIAG_COLUMN_NUMBER, &diagnostic_column, 0, nullptr));
   EXPECT_EQ(1, diagnostic_row); EXPECT_EQ(1, diagnostic_column);
   for (auto& page : pages[1]) {
-    for (auto byte : page.small) EXPECT_EQ(0xee, byte);
-    for (auto byte : page.integer) EXPECT_EQ(0xee, byte);
-    for (auto byte : page.big) EXPECT_EQ(0xee, byte);
+    for (auto byte : page.small) {
+      EXPECT_EQ(0xee, byte);
+    }
+    for (auto byte : page.integer) {
+      EXPECT_EQ(0xee, byte);
+    }
+    for (auto byte : page.big) {
+      EXPECT_EQ(0xee, byte);
+    }
     EXPECT_EQ(91, page.lengths[0]); EXPECT_EQ(92, page.lengths[1]); EXPECT_EQ(93, page.lengths[2]);
     EXPECT_EQ(94, page.indicators[0]); EXPECT_EQ(95, page.indicators[1]); EXPECT_EQ(96, page.indicators[2]);
   }
@@ -13718,11 +13734,19 @@ TEST_F(BackendContractTest, SignedIntegerBinaryResultRowWiseOffsetsPreflightAndR
   ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_INDICATOR_PTR, &pages[0][0].indicators[0], 0));
   ASSERT_EQ(SQL_SUCCESS, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0)); ASSERT_NO_FATAL_FAILURE(verify_values());
   EXPECT_EQ(queries, seen->queries); EXPECT_EQ(0, seen->disconnects);
-  for (std::size_t page = 0; page < 2; ++page) for (std::size_t row = 0; row < 2; ++row) {
-    EXPECT_EQ(0xa1, pages[page][row].before[0]); EXPECT_EQ(0xa2, pages[page][row].before[1]); EXPECT_EQ(0xa3, pages[page][row].before[2]);
-    EXPECT_EQ(0xb1, pages[page][row].middle[0]); EXPECT_EQ(0xb2, pages[page][row].middle[1]); EXPECT_EQ(0xb3, pages[page][row].middle[2]);
-    EXPECT_EQ(0xc1, pages[page][row].after[0]); EXPECT_EQ(0xc2, pages[page][row].after[1]); EXPECT_EQ(0xc3, pages[page][row].after[2]);
-    if (page == 0) { for (auto byte : pages[page][row].big) EXPECT_EQ(0xee, byte); EXPECT_EQ(91, pages[page][row].lengths[0]); EXPECT_EQ(94, pages[page][row].indicators[0]); }
+  for (std::size_t page = 0; page < 2; ++page) {
+    for (std::size_t row = 0; row < 2; ++row) {
+      EXPECT_EQ(0xa1, pages[page][row].before[0]); EXPECT_EQ(0xa2, pages[page][row].before[1]); EXPECT_EQ(0xa3, pages[page][row].before[2]);
+      EXPECT_EQ(0xb1, pages[page][row].middle[0]); EXPECT_EQ(0xb2, pages[page][row].middle[1]); EXPECT_EQ(0xb3, pages[page][row].middle[2]);
+      EXPECT_EQ(0xc1, pages[page][row].after[0]); EXPECT_EQ(0xc2, pages[page][row].after[1]); EXPECT_EQ(0xc3, pages[page][row].after[2]);
+      if (page == 0) {
+        for (auto byte : pages[page][row].big) {
+          EXPECT_EQ(0xee, byte);
+        }
+        EXPECT_EQ(91, pages[page][row].lengths[0]);
+        EXPECT_EQ(94, pages[page][row].indicators[0]);
+      }
+    }
   }
   EXPECT_EQ(81, status.before); EXPECT_EQ(82, status.after); EXPECT_EQ(83u, count.before); EXPECT_EQ(84u, count.after);
 }

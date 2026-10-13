@@ -1192,7 +1192,9 @@ void check_legacy_integer(SQLSMALLINT legacy, SQLSMALLINT canonical) {
         if (ar == SQL_SUCCESS || ar == SQL_SUCCESS_WITH_INFO) {
             EXPECT_EQ(sizeof(T), static_cast<std::size_t>(al));
         } else {
-            for (auto byte : a) EXPECT_EQ(0xa5, byte);
+            for (auto byte : a) {
+                EXPECT_EQ(0xa5, byte);
+            }
             EXPECT_EQ(-1, al);
         }
     }

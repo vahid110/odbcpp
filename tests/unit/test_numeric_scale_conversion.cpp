@@ -2538,7 +2538,9 @@ TEST_F(NumericScaleApiTest, BitInputPairEffectiveApdSixTargetsRejectBeforeMateri
       status = 71; processed = 91;
       const auto refused = SQLExecute(stmt);
       EXPECT_EQ(SQL_ERROR, refused);
-      if (refused == SQL_ERROR) { EXPECT_EQ("07006", state()); }
+      if (refused == SQL_ERROR) {
+        EXPECT_EQ("07006", state());
+      }
       EXPECT_EQ(queries, facts->queries); EXPECT_EQ(SQL_PARAM_ERROR, status); EXPECT_EQ(1u, processed);
       ASSERT_EQ(1u, facts->parameters.size());
       EXPECT_EQ(retained.type, facts->parameters[0].type); EXPECT_EQ(retained.value, facts->parameters[0].value);
@@ -2634,16 +2636,23 @@ TEST_F(NumericScaleApiTest, SignedIntegerBinaryResultLiteralWidthsRetryCompletio
       ASSERT_EQ(SQL_SUCCESS, SQLGetData(stmt, 1, SQL_C_BINARY,
           row == 3 ? reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)()) : output.data() + 1,
           row == 3 ? 0 : c.width + 1, &length));
-      if (row == 3) { EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(before, output); }
+      if (row == 3) {
+        EXPECT_EQ(SQL_NULL_DATA, length);
+        EXPECT_EQ(before, output);
+      }
       else {
         std::array<unsigned char, 8> expected{};
         if (c.width == 2) { SQLSMALLINT value = row == 0 ? -32768 : row == 1 ? 0 : 32767; std::memcpy(expected.data(), &value, 2); }
         if (c.width == 4) { SQLINTEGER value = row == 0 ? (std::numeric_limits<SQLINTEGER>::min)() : row == 1 ? 0 : (std::numeric_limits<SQLINTEGER>::max)(); std::memcpy(expected.data(), &value, 4); }
         if (c.width == 8) { SQLBIGINT value = row == 0 ? (std::numeric_limits<SQLBIGINT>::min)() : row == 1 ? 0 : (std::numeric_limits<SQLBIGINT>::max)(); std::memcpy(expected.data(), &value, 8); }
         EXPECT_EQ(c.width, length);
-        for (SQLLEN byte = 0; byte < c.width; ++byte) EXPECT_EQ(expected[byte], output[byte + 1]);
+        for (SQLLEN byte = 0; byte < c.width; ++byte) {
+          EXPECT_EQ(expected[byte], output[byte + 1]);
+        }
         EXPECT_EQ(0xa5, output[0]);
-        for (std::size_t byte = c.width + 1; byte < output.size(); ++byte) EXPECT_EQ(0xa5, output[byte]);
+        for (std::size_t byte = c.width + 1; byte < output.size(); ++byte) {
+          EXPECT_EQ(0xa5, output[byte]);
+        }
       }
       const auto completed = output; length = 83;
       ASSERT_EQ(SQL_NO_DATA, SQLGetData(stmt, 1, SQL_C_BINARY, output.data() + 1, c.width, &length));
@@ -2686,19 +2695,27 @@ TEST_F(NumericScaleApiTest, SignedIntegerBinaryResultBoundAndIndicatorOnlyValida
         if (failure) {
           EXPECT_EQ(scenario == 4 ? "22018" : "22003", state());
           EXPECT_EQ(before, output); EXPECT_EQ(79, length);
-        } else if (scenario == 5) {
-          EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(before, output);
         } else {
-          EXPECT_EQ(c.width, length);
-          if (indicator_only) EXPECT_EQ(before, output);
-          else {
-            std::array<unsigned char, 8> expected{};
-            if (c.width == 2) { SQLSMALLINT v = -42; std::memcpy(expected.data(), &v, 2); }
-            if (c.width == 4) { SQLINTEGER v = -42; std::memcpy(expected.data(), &v, 4); }
-            if (c.width == 8) { SQLBIGINT v = -42; std::memcpy(expected.data(), &v, 8); }
-            for (SQLLEN byte = 0; byte < c.width; ++byte) EXPECT_EQ(expected[byte], output[byte + 1]);
-            EXPECT_EQ(0xa5, output[0]);
-            for (std::size_t byte = c.width + 1; byte < output.size(); ++byte) EXPECT_EQ(0xa5, output[byte]);
+          if (scenario == 5) {
+            EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(before, output);
+          } else {
+            EXPECT_EQ(c.width, length);
+            if (indicator_only) {
+              EXPECT_EQ(before, output);
+            }
+            else {
+              std::array<unsigned char, 8> expected{};
+              if (c.width == 2) { SQLSMALLINT v = -42; std::memcpy(expected.data(), &v, 2); }
+              if (c.width == 4) { SQLINTEGER v = -42; std::memcpy(expected.data(), &v, 4); }
+              if (c.width == 8) { SQLBIGINT v = -42; std::memcpy(expected.data(), &v, 8); }
+              for (SQLLEN byte = 0; byte < c.width; ++byte) {
+                EXPECT_EQ(expected[byte], output[byte + 1]);
+              }
+              EXPECT_EQ(0xa5, output[0]);
+              for (std::size_t byte = c.width + 1; byte < output.size(); ++byte) {
+                EXPECT_EQ(0xa5, output[byte]);
+              }
+            }
           }
         }
         EXPECT_EQ(81, status.before); EXPECT_EQ(82, status.after); EXPECT_EQ(83u, count.before); EXPECT_EQ(84u, count.after);
@@ -2783,7 +2800,9 @@ TEST_F(NumericScaleApiTest, SignedIntegerBinaryResultPreparedOwnsSnapshotSibling
       if (width == 2) { SQLSMALLINT v = -42; std::memcpy(expected.data(), &v, 2); }
       if (width == 4) { SQLINTEGER v = -42; std::memcpy(expected.data(), &v, 4); }
       if (width == 8) { SQLBIGINT v = -42; std::memcpy(expected.data(), &v, 8); }
-      for (SQLLEN byte = 0; byte < width; ++byte) EXPECT_EQ(expected[byte], output[byte + 1]);
+      for (SQLLEN byte = 0; byte < width; ++byte) {
+        EXPECT_EQ(expected[byte], output[byte + 1]);
+      }
       EXPECT_EQ(width, length);
     }
   }
