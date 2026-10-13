@@ -567,7 +567,7 @@ TEST(CatalogQueryTest, ShowColumnsLiteralSchemaAndTableKeepOtherGeneratedQueries
   EXPECT_TRUE(redshift.selects_catalog_request(input));EXPECT_FALSE(postgres.selects_catalog_request(input));
   auto generated=redshift.catalog_query(input);ASSERT_FALSE(generated.has_error());EXPECT_NE(std::string::npos,generated->find("FROM svv_columns AS columns"));EXPECT_EQ(std::string::npos,generated->find("SHOW"));
   for(const auto* pattern:{"wild%","wild_","dangling\\",""}){auto other=input;other.schema=pattern;EXPECT_FALSE(redshift.selects_catalog_request(other));other=input;other.table=pattern;EXPECT_FALSE(redshift.selects_catalog_request(other));}
-  input.schema.reset();EXPECT_FALSE(redshift.selects_catalog_request(input));input.schema="literal";input.table.reset();EXPECT_FALSE(redshift.selects_catalog_request(input));
+  input.schema.reset();EXPECT_FALSE(redshift.selects_catalog_request(input));input.schema="literal";input.table.reset();EXPECT_TRUE(redshift.selects_catalog_request(input));
 }
 
 

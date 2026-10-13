@@ -452,6 +452,15 @@ BackendError invalid_column_metadata(const char* reason) {
 bool redshift_column_names_are_literal(const ColumnsCatalogRequest& request) noexcept {
   return column_literal_pattern(request.schema) && column_literal_pattern(request.table);
 }
+bool redshift_columns_schema_wide(const ColumnsCatalogRequest& request) noexcept {
+  return request.name_matches.existing() && column_literal_pattern(request.schema) &&
+      (!request.table || *request.table == "%");
+}
+std::optional<std::string> redshift_columns_schema(const ColumnsCatalogRequest& request) {
+  if (!redshift_columns_schema_wide(request) || !table_pattern_valid(request.column)) return std::nullopt;
+  auto schema = column_literal_name(*request.schema);
+  return schema_identifier(schema) ? std::optional<std::string>{std::move(schema)} : std::nullopt;
+}
 std::optional<std::pair<std::string,std::string>> redshift_column_names(const ColumnsCatalogRequest& request) {
   if (!redshift_column_names_are_literal(request) || !table_pattern_valid(request.column))return std::nullopt;
   if (request.catalog && (request.catalog->find('\0')!=std::string::npos ||
@@ -826,6 +835,173 @@ RedshiftRoutineUsage redshift_routine_schema_usage(const QueryResult& source) {
   add_objects(source.rows.capacity(),sizeof(ResultRow));
   for(const auto& row:source.rows)add_objects(row.capacity(),sizeof(ResultCell));
   return usage;
+}
+
+namespace {
+BackendError invalid_wide_columns(const char* reason, SessionSnapshot snapshot = {}) {
+  auto error = invalid_column_metadata(reason);
+  error.session_state = snapshot.state;
+  error.disposition = SessionDisposition::Retire;
+  return error;
+}
+constexpr std::array<std::string_view,18> wide_column_headers{
+    "TABLE_CAT","TABLE_SCHEM","TABLE_NAME","COLUMN_NAME","DATA_TYPE","TYPE_NAME",
+    "COLUMN_SIZE","BUFFER_LENGTH","DECIMAL_DIGITS","NUM_PREC_RADIX","NULLABLE","REMARKS",
+    "COLUMN_DEF","SQL_DATA_TYPE","SQL_DATETIME_SUB","CHAR_OCTET_LENGTH","ORDINAL_POSITION","IS_NULLABLE"};
+// Component equation for the closed native SHOW admission model; no generic
+// allocator, accounting framework, or provider-neutral API is introduced.
+bool wide_storage_component(RedshiftRoutineUsage& model, std::size_t count,
+    std::size_t size = 1, bool name = false) {
+  auto& total = name ? model.name_bytes : model.bytes;
+  const auto max = std::numeric_limits<std::size_t>::max();
+  if (count > max / size || count * size > max - total) return false;
+  total += count * size; return true;
+}
+std::string wide_literal(std::string_view identifier) {
+  std::string out;
+  out.reserve(identifier.size()*2);
+  for (char ch : identifier) { if (ch == '\\' || ch == '%' || ch == '_') out.push_back('\\'); out.push_back(ch); }
+  return out;
+}
+}
+BackendResult<RedshiftColumnTables> redshift_column_tables(std::string_view database,
+    std::string_view schema, const BackendResult<QueryResult>& input,
+    RedshiftRoutineBudget& budget, rs::util::Deadline deadline) {
+  if (!input) return input.backend_error();
+  if (input->error) return *input->error;
+  for (const auto& extra : input->additional_results) if (extra.error) return *extra.error;
+  const auto bad = [&](const char* why) { return invalid_wide_columns(why, input.session_snapshot()); };
+  if (!routine_shape(*input, input.session_snapshot()) || !schema_identifier(database) || !schema_identifier(schema))
+    return bad("table-completion");
+  constexpr std::array<std::string_view,11> fields{"database_name","schema_name","table_name","table_type",
+      "remarks","table_acl","owner","last_altered_time","last_modified_time","dist_style","table_subtype"};
+  std::array<std::size_t,6> index{}; std::array<bool,11> seen{};
+  if (input->columns.size() < index.size() || input->columns.size() > fields.size()) return bad("table-layout");
+  for (std::size_t c=0;c<input->columns.size();++c) {
+    const auto field=std::find(fields.begin(),fields.end(),input->columns[c].name);
+    if (field==fields.end()) return bad("table-layout");
+    const auto n=static_cast<std::size_t>(field-fields.begin());
+    if (seen[n]) return bad("table-layout");
+    seen[n]=true; if (n<index.size()) index[n]=c;
+  }
+  for (std::size_t n=0;n<index.size();++n)
+    if (!seen[n] || !schema_text(input->columns[index[n]])) return bad("table-type");
+  // No allocations or budget classification until every identity is validated.
+  // The closed native row bound makes the borrowed duplicate check finite.
+  RedshiftRoutineUsage payload;
+  const auto types=catalog_table_types();
+  for (std::size_t r=0;r<input->rows.size();++r) {
+    if (rs::util::Clock::now()>=deadline) return routine_timeout();
+    const auto& row=input->rows[r];
+    for (const auto n:{0u,1u,2u,3u})
+      if (!row[index[n]] || !schema_identifier(*row[index[n]])) return bad("table-identity");
+    if (*row[index[0]]!=database || *row[index[1]]!=schema) return bad("table-foreign");
+    if (std::find(types.begin(),types.end(),*row[index[3]])==types.end()) return bad("table-kind");
+    for (const auto n:{4u,5u})
+      if (row[index[n]] && (row[index[n]]->find('\0')!=std::string::npos ||
+          !rs::util::utf8_code_point_count(*row[index[n]]))) return bad("table-text");
+    for (std::size_t prior=0;prior<r;++prior) {
+      if (rs::util::Clock::now()>=deadline) return routine_timeout();
+      if (input->rows[prior][index[2]]==row[index[2]]) return bad("table-duplicate");
+    }
+    if (!wide_storage_component(payload,row[index[2]]->size())) return redshift_routine_limit();
+  }
+  // Admission covers the simultaneous raw native response and owning selection.
+  RedshiftColumnTables selected;
+  selected.raw_retained=redshift_routine_schema_usage(*input);
+  selected.retained={input->rows.size(),input->rows.size(),payload.bytes,input->rows.size(),payload.bytes};
+  if (!wide_storage_component(selected.retained,input->rows.size(),sizeof(std::string)+1) ||
+      !budget.description(input->columns.size())) return redshift_routine_limit();
+  for (const auto& column:input->columns) if (!budget.name(column.name)) return redshift_routine_limit();
+  for (const auto& row:input->rows) if (!budget.name(*row[index[2]])) return redshift_routine_limit();
+  if (!budget.retain(selected.raw_retained) || !budget.retain(selected.retained)) return redshift_routine_limit();
+  if (rs::util::Clock::now()>=deadline) return routine_timeout();
+  selected.names.reserve(input->rows.size());
+  for (const auto& row:input->rows) {
+    if (rs::util::Clock::now()>=deadline) return routine_timeout();
+    selected.names.push_back(*row[index[2]]);
+  }
+  std::sort(selected.names.begin(),selected.names.end());
+  if (rs::util::Clock::now()>=deadline) return routine_timeout();
+  return BackendResult<RedshiftColumnTables>{std::move(selected),input.session_snapshot()};
+}
+RedshiftRoutineUsage redshift_columns_output_usage(const QueryResult& result) {
+  auto usage=redshift_routine_schema_usage(result);
+  for (const auto& row:result.rows) for (const auto n:{0u,1u,2u,3u})
+    if (row[n] && !wide_storage_component(usage,row[n]->size(),1,true)) usage.name_bytes=std::numeric_limits<std::size_t>::max();
+  return usage;
+}
+BackendResult<QueryResult> redshift_columns_headers(RedshiftRoutineBudget& budget) {
+  RedshiftRoutineUsage charge{0,0,18*sizeof(ResultColumnMetadata),18,0};
+  if (!budget.description(18)) return redshift_routine_limit();
+  for (const auto name:wide_column_headers) {
+    if (!budget.name(name) || !wide_storage_component(charge,name.size()) || !wide_storage_component(charge,name.size(),1,true))
+      return redshift_routine_limit();
+  }
+  if (!budget.retain(charge)) return redshift_routine_limit();
+  QueryResult output; output.columns.reserve(18);
+  for (std::size_t i=0;i<18;++i) {
+    const bool text=i<4 || i==5 || i==11 || i==12 || i==17;
+    const bool integer=i==6 || i==7 || i==15 || i==16;
+    output.columns.push_back({std::string(wide_column_headers[i]),NativeTypeInfo{text?ScalarType::VarChar:
+        integer?ScalarType::Integer:ScalarType::SmallInt,text?0u:integer?10u:5u,0,true}});
+  }
+  return BackendResult<QueryResult>{std::move(output),{SessionState::Idle,SessionDisposition::Reusable}};
+}
+BackendResult<QueryResult> redshift_columns_part(std::string_view database,std::string_view schema,
+    std::string_view table,const ColumnsCatalogRequest& request,BackendResult<QueryResult> input,
+    RedshiftRoutineBudget& budget,rs::util::Deadline deadline) {
+  if (!input) return input.backend_error();
+  if (input->error) return *input->error;
+  for (const auto& extra:input->additional_results) if (extra.error) return *extra.error;
+  if (!routine_shape(*input,input.session_snapshot())) return invalid_wide_columns("column-completion",input.session_snapshot());
+  if (rs::util::Clock::now()>=deadline) return routine_timeout();
+  const auto raw=redshift_routine_schema_usage(*input);
+  // Conservative pre-allocation peak for the existing closed projection: raw,
+  // two row-vector indexes, 18 owning cells/row, identity/ordinal tree nodes,
+  // numeric dimension scratch, header capacity (32), and exact LIKE carriers.
+  // This is a backend storage admission model, not an allocator/RSS measurement.
+  RedshiftRoutineUsage peak{input->rows.size(),input->rows.size()*18,0,input->rows.size()*2+input->columns.size()+18,0};
+  if (!wide_storage_component(peak,raw.bytes,4) ||
+      !wide_storage_component(peak,input->rows.size(),18*sizeof(ResultCell)+4*sizeof(ResultRow)+256) ||
+      !wide_storage_component(peak,32,sizeof(ResultColumnMetadata)) || !wide_storage_component(peak,1024) ||
+      !wide_storage_component(peak,database.size()+schema.size()+table.size(),8) ||
+      (request.catalog && !wide_storage_component(peak,request.catalog->size(),2)) ||
+      (request.column && !wide_storage_component(peak,request.column->size(),4))) return redshift_routine_limit();
+  // Identifier/name admission is separate from arbitrary defaults/remarks.
+  // Only the four identity fields are duplicated into output/identity indexes.
+  peak.name_bytes=raw.name_bytes;
+  for (std::size_t c=0;c<input->columns.size();++c) {
+    const auto& name=input->columns[c].name;
+    if (name!="database_name" && name!="schema_name" && name!="table_name" && name!="column_name") continue;
+    for (const auto& row:input->rows)
+      if (row[c] && !wide_storage_component(peak,row[c]->size(),2,true)) return redshift_routine_limit();
+  }
+  if (!wide_storage_component(peak,database.size()+schema.size()+table.size(),4,true) ||
+      !wide_storage_component(peak,512,1,true)) return redshift_routine_limit();
+  if (!budget.description(18) || !budget.retain(raw) || !budget.retain(peak)) return redshift_routine_limit();
+  for (const auto& column:input->columns) if (!budget.name(column.name)) return redshift_routine_limit();
+  for (std::size_t c=0;c<input->columns.size();++c) {
+    const auto& name=input->columns[c].name;
+    if (name!="database_name" && name!="schema_name" && name!="table_name" && name!="column_name") continue;
+    for (const auto& row:input->rows) if (row[c] && !budget.name(*row[c])) return redshift_routine_limit();
+  }
+  BackendResult<QueryResult> part=invalid_wide_columns("projection");
+  {
+    ColumnsCatalogRequest exact;
+    exact.catalog=request.catalog; exact.column=request.column;
+    exact.schema=wide_literal(schema); exact.table=wide_literal(table);
+    part=normalize_redshift_columns(database,schema,table,exact,std::move(input));
+  } // Private carrier and consumed raw storage have been destroyed.
+  budget.release(raw);
+  if (!part) return part.backend_error();
+  if (rs::util::Clock::now()>=deadline) return routine_timeout();
+  const auto retained=redshift_columns_output_usage(*part);
+  if (retained.rows>peak.rows || retained.cells>peak.cells || retained.bytes>peak.bytes ||
+      retained.metadata>peak.metadata || retained.name_bytes>peak.name_bytes) return redshift_routine_limit();
+  budget.release({peak.rows-retained.rows,peak.cells-retained.cells,peak.bytes-retained.bytes,
+      peak.metadata-retained.metadata,peak.name_bytes-retained.name_bytes});
+  return part;
 }
 
 BackendResult<RedshiftRoutineSchemas> normalize_redshift_routine_schemas(

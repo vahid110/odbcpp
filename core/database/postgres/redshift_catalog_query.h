@@ -44,6 +44,9 @@ std::optional<std::pair<std::string,std::string>> redshift_column_names(const Co
 std::string redshift_show_columns_command(std::string_view database,std::string_view schema,std::string_view table);
 BackendResult<QueryResult> normalize_redshift_columns(std::string_view database,std::string_view schema,
     std::string_view table,const ColumnsCatalogRequest& request,BackendResult<QueryResult> input);
+// Schema-wide selection is intentionally narrower than arbitrary table patterns.
+bool redshift_columns_schema_wide(const ColumnsCatalogRequest& request) noexcept;
+std::optional<std::string> redshift_columns_schema(const ColumnsCatalogRequest& request);
 // Backend-owned routine identities and budget accounting, not a new SDK facet.
 struct RedshiftRoutine {
   std::string name;
@@ -90,6 +93,20 @@ BackendResult<RedshiftRoutineSchemas> normalize_redshift_routine_schemas(
     std::string_view database, const CatalogRequest& request,
     const BackendResult<QueryResult>& input, RedshiftRoutineBudget& budget,
     rs::util::Deadline deadline);
+// Closed SHOW TABLES identity selection. Raw storage stays charged until the
+// caller destroys it; selected exact identifiers remain charged during fanout.
+struct RedshiftColumnTables {
+  std::vector<std::string> names;
+  RedshiftRoutineUsage retained, raw_retained;
+};
+BackendResult<RedshiftColumnTables> redshift_column_tables(std::string_view database,
+    std::string_view schema, const BackendResult<QueryResult>& input,
+    RedshiftRoutineBudget& budget, rs::util::Deadline deadline);
+BackendResult<QueryResult> redshift_columns_headers(RedshiftRoutineBudget& budget);
+BackendResult<QueryResult> redshift_columns_part(std::string_view database, std::string_view schema,
+    std::string_view table, const ColumnsCatalogRequest& request,
+    BackendResult<QueryResult> input, RedshiftRoutineBudget& budget, rs::util::Deadline deadline);
+RedshiftRoutineUsage redshift_columns_output_usage(const QueryResult& result);
 std::string redshift_show_routines_command(std::string_view database, std::string_view schema, bool function);
 std::string redshift_show_parameters_command(std::string_view database, std::string_view schema,
     const RedshiftRoutine& routine);
