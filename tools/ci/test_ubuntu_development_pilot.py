@@ -203,6 +203,36 @@ class PilotEvidenceTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     pilot.empty_cache()
 
+    def test_real_configure_separates_product_identity_from_seed_compatibility_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build, evidence = root / 'build', root / 'evidence'
+            compiler = root / 'compiler'
+            compiler.write_text('identical compiler bytes')
+            def configured_measure(name, command, timeout):
+                build.mkdir()
+                (build / 'CMakeCache.txt').write_text('profile fixture')
+                (build / 'compile_commands.json').write_text('[{"command":"g++ -O3 -c /product/input.cpp","directory":"/product/build","file":"/product/input.cpp"}]')
+                (build / 'odbcpp-crypto-manifest.json').write_text('{}')
+                for dependency in ('googletest', 'spdlog'):
+                    source = build / '_deps' / (dependency + '-src')
+                    source.mkdir(parents=True)
+                    (source / 'fixture.txt').write_text('identical dependency source')
+            env = {'GITHUB_OUTPUT': str(root / 'output'), 'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1', 'PILOT_WORKFLOW_ROOT': str(root / 'workflow'), 'CCACHE_COMPILERCHECK': 'content'}
+            records = []
+            with patch.object(pilot, 'BUILD', build), patch.object(pilot, 'EVIDENCE', evidence), patch.object(pilot, 'measure', side_effect=configured_measure), patch.object(pilot, 'output', return_value='identical actual tool/config/package fixture'), patch.object(pilot.shutil, 'which', return_value=str(compiler)), patch.dict(pilot.os.environ, env):
+                for role, head in (('seed-a', pilot.SEED_HEAD), ('cold-b', pilot.CHANGED_HEAD)):
+                    pilot.write('identity.json', {'head': head, 'tree': head, 'mode': role, 'workflow_source': {'head': 'a' * 40}})
+                    pilot.configure()
+                    records.append(json.loads((evidence / 'cache-key.json').read_text()))
+                    pilot.shutil.rmtree(build) # Only this temporary offline fixture.
+            self.assertNotEqual(records[0]['product_head'], records[1]['product_head'])
+            self.assertNotEqual(records[0]['profile_digest'], records[1]['profile_digest'])
+            self.assertEqual(records[0]['compatibility_digest'], records[1]['compatibility_digest'])
+            self.assertEqual(records[0]['key'], records[1]['key'])
+            self.assertEqual(records[1]['seed_head'], pilot.SEED_HEAD)
+            self.assertEqual(records[1]['workflow_head'], 'a' * 40)
+
     def test_cache_miss_and_zero_useful_hits_are_inconclusive(self):
         self.assertIn('inconclusive', pilot.cache_comparison('cached-b', '', 0))
         self.assertIn('zero useful', pilot.cache_comparison('cached-b', 'true', 0))
