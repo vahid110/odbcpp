@@ -362,9 +362,29 @@ option(ODBCPP_NATIVE_PROVISIONED_AUTH_TESTS "Build the separately admitted nativ
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/NativeProvisionedAuth.cmake")
 
 # ---- Integration Tests ----
+# Authored real Redshift routine A/W coverage is opt-in execution only. Keep a
+# separately buildable target for compile checks without placing it in ordinary
+# local regression or the PostgreSQL fixture graph.
+option(ODBCPP_REDSHIFT_ROUTINE_SCHEMA_LIVE_TESTS "Run separately admitted real Redshift routine schema tests" OFF)
+if(TARGET_DATABASE STREQUAL "REDSHIFT")
+  add_executable(it_redshift_routine_schema_patterns EXCLUDE_FROM_ALL
+    tests/integration/it_redshift_routine_schema_patterns.cpp)
+  target_link_libraries(it_redshift_routine_schema_patterns PRIVATE ${PROJECT_NAME}::core GTest::gtest_main)
+  apply_compiler_settings(it_redshift_routine_schema_patterns)
+  set_target_properties(it_redshift_routine_schema_patterns PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+  if(ODBCPP_REDSHIFT_ROUTINE_SCHEMA_LIVE_TESTS)
+    add_test(NAME it_redshift_routine_schema_patterns COMMAND it_redshift_routine_schema_patterns)
+    set_tests_properties(it_redshift_routine_schema_patterns PROPERTIES
+      LABELS "integration;redshift;routine" TIMEOUT 120)
+  endif()
+endif()
 file(GLOB INTEGRATION_TEST_SOURCES "tests/integration/*.cpp")
 foreach(test_file ${INTEGRATION_TEST_SOURCES})
   get_filename_component(test_name ${test_file} NAME_WE)
+  if(test_name STREQUAL "it_redshift_routine_schema_patterns")
+    continue() # Explicit opt-in native registration above.
+  endif()
   if(test_name STREQUAL "it_auth_pg_material_tls" OR test_name STREQUAL "it_redshift_native_auth" OR test_name STREQUAL "it_mysql_decimal_results" OR test_name STREQUAL "it_mysql_datetime_results" OR test_name STREQUAL "it_mysql_date_parameters" OR test_name STREQUAL "it_mysql_datetime_parameter_receipt" OR test_name STREQUAL "it_mysql_decimal_parameter_receipt")
     continue()
   endif()
