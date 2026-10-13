@@ -111,6 +111,14 @@ one immutable exact-head full run, original full-acceptance goal requirements an
 all final release gates. Additional lanes do not create additional live sessions,
 cloud admission, resources, principals, budget or authorization horizons.
 
+Worker PRs target `codex/transport-foundation` and receive the primary workflow.
+The full `ci.yml` graph excludes PRs targeting that intermediate branch; the
+coordinator dispatches it on the exact frozen integration head at the checkpoint.
+PRs targeting other branches retain automatic full CI. Keep every full job,
+manual-dispatch input and final acceptance requirement; primary-only PR status
+does not establish full/live/final qualification. Scheduling-tool offline tests
+run in the primary workflow as well as during changes to that tooling.
+
 ## Board, candidate handoff and integration
 
 Use Agent Orchestrator issues/workers as the package work board. Record the exact
