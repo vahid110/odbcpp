@@ -109,6 +109,58 @@ class PilotEvidenceTests(unittest.TestCase):
                         self.assertIn('Maximum resident set size', (pilot.EVIDENCE / 'dependency-install-time.txt').read_text())
                         self.assertIn('dependency child log', (pilot.EVIDENCE / 'dependency-install.log').read_text())
 
+    def test_configure_preserves_timing_and_finish_indexes_all_phase_records(self):
+        for configure_first in (True, False):
+            with self.subTest(configure_first=configure_first), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                build, evidence = root / 'build', root / 'evidence'
+                compiler = root / 'compiler'
+                compiler.write_text('offline compiler identity fixture')
+                identity = {'head': 'a' * 40, 'tree': 'b' * 40, 'mode': 'cold', 'submitted_at': '2026-01-01T00:00:00+00:00'}
+                timing = {'exit': 0, 'elapsed_seconds': 1.25, 'gnu_time_max_child_rss_kib': 123}
+                def record_phase(name):
+                    pilot.write(name + '.json', timing)
+                    (evidence / (name + '-time.txt')).write_text('raw exit0/time fixture')
+                    (evidence / (name + '.log')).write_text('raw command log fixture')
+                def configured_measure(name, command, timeout):
+                    # Only the external configure command is stubbed; configure's writers run.
+                    self.assertEqual(name, 'configure')
+                    build.mkdir()
+                    for filename in ('CMakeCache.txt', 'compile_commands.json', 'odbcpp-crypto-manifest.json'):
+                        (build / filename).write_text('{}')
+                    for dependency in ('googletest', 'spdlog'):
+                        source = build / '_deps' / (dependency + '-src')
+                        source.mkdir(parents=True)
+                        (source / 'fixture.txt').write_text('offline dependency source')
+                    record_phase(name)
+                    return timing
+                def tool_output(*command):
+                    if command == ('ccache', '--print-stats'):
+                        return 'cache_miss 0\ndirect_cache_hit 0'
+                    return 'offline tool output'
+                env = {'GITHUB_OUTPUT': str(root / 'output'), 'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1', 'CCACHE_DIR': str(root / 'cache')}
+                with patch.object(pilot, 'BUILD', build), patch.object(pilot, 'EVIDENCE', evidence), patch.object(pilot, 'measure', side_effect=configured_measure), patch.object(pilot, 'output', side_effect=tool_output), patch.object(pilot.shutil, 'which', return_value=str(compiler)), patch.object(pilot, 'source', return_value=identity), patch.object(pilot.subprocess, 'run'), patch.dict(pilot.os.environ, env):
+                    pilot.write('identity.json', identity)
+                    if not configure_first:
+                        record_phase('dependency-install')
+                    pilot.configure()
+                    if configure_first:
+                        record_phase('dependency-install')
+                    self.assertEqual(json.loads((evidence / 'dependency-install.json').read_text()), timing)
+                    self.assertIn('fetched_source_trees', json.loads((evidence / 'dependencies.json').read_text()))
+                    for name in ('build', 'tests'):
+                        record_phase(name)
+                    pilot.finish()
+                    index = json.loads((evidence / 'evidence-index.json').read_text())
+                    for name in ('dependency-install', 'configure', 'build', 'tests'):
+                        for suffix in ('.json', '-time.txt', '.log'):
+                            filename = name + suffix
+                            self.assertIn(filename, index)
+                            self.assertEqual(index[filename]['sha256'], pilot.sha(evidence / filename))
+                    self.assertIn('dependencies.json', index)
+                    self.assertIn('finish.json', index)
+                    self.assertEqual(json.loads((evidence / 'dependency-install.json').read_text()), timing)
+
     def test_timeout_kills_owned_process_group_and_records_failed_exit(self):
         with tempfile.TemporaryDirectory() as directory:
             process = unittest.mock.Mock(pid=12345)
