@@ -6,6 +6,15 @@ on:
       expected_head:
         required: true
         type: string
+      mode:
+        type: string
+        default: same_head
+      seed_head:
+        type: string
+        default: ""
+      changed_head:
+        type: string
+        default: ""
       submitted_at:
         required: true
         type: string
@@ -25,6 +34,7 @@ env:
 
 jobs:
   cold:
+    if: inputs.mode == 'same_head'
     name: Experimental Linux cold - NOT full acceptance
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -87,6 +97,7 @@ jobs:
           if-no-files-found: error
 
   warm:
+    if: inputs.mode == 'same_head'
     name: Experimental Linux warm - NOT full acceptance
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -164,3 +175,153 @@ jobs:
           compression-level: 9
           if-no-files-found: error
 
+  seed-a:
+    name: Experimental real-change seed A - NOT full acceptance
+    if: inputs.mode == 'real_change'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults: &real_defaults
+      run:
+        working-directory: product
+    outputs: &real_outputs
+      binary_digest: ${{ steps.inventory.outputs.binary_digest }}
+      cache_key: ${{ steps.configure.outputs.cache_key }}
+      compatibility_digest: ${{ steps.configure.outputs.compatibility_digest }}
+      inventory_json: ${{ steps.inventory.outputs.inventory_json }}
+      inventory_digest: ${{ steps.inventory.outputs.inventory_digest }}
+    env:
+      PILOT_MODE: seed-a
+      PILOT_EXPECTED_HEAD: ${{ inputs.seed_head }}
+      PILOT_WORKFLOW_HEAD: ${{ inputs.expected_head }}
+      PILOT_WORKFLOW_ROOT: ${{ github.workspace }}/pilot-workflow
+      PILOT_SEED_HEAD: ${{ inputs.seed_head }}
+      PILOT_CHANGED_HEAD: ${{ inputs.changed_head }}
+      PILOT_SEED_CACHE_KEY: ""
+      PILOT_SEED_COMPATIBILITY: ""
+      PILOT_SEED_INVENTORY: ""
+      PILOT_COLD_BINARY_DIGEST: ""
+      PILOT_COLD_INVENTORY_DIGEST: ""
+    steps: &real_steps
+      - name: Check out reviewed immutable workflow/helper separately
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: pilot-workflow
+          persist-credentials: false
+      - name: Check out immutable product at identical source path
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.PILOT_EXPECTED_HEAD }}
+          path: product
+          persist-credentials: false
+      - name: Select fresh owned compiler-cache path
+        run: echo "CCACHE_DIR=$RUNNER_TEMP/ubuntu-real-change-compiler-cache" >> "$GITHUB_ENV"
+      - name: Bind separate reviewed product and workflow sources
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" init
+      - name: Check helper offline (no substitute product assertions)
+        run: python3 -m unittest discover -s "$PILOT_WORKFLOW_ROOT/tools/ci" -p test_ubuntu_development_pilot.py -v
+      - name: Install existing Redshift dependencies
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" dependencies
+      - name: Every independent graph starts with an empty compiler cache
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" empty-cache
+      - name: Configure fresh identical Redshift Release graph
+        id: configure
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" configure
+      - name: Require selected A key and strict source-independent compatibility
+        if: env.PILOT_MODE != 'seed-a'
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" cache-check
+      - name: Record exact A cache restore start
+        if: env.PILOT_MODE == 'cached-b'
+        run: date -u +%Y-%m-%dT%H:%M:%S.%NZ > ubuntu-pilot-evidence/restore-start.txt
+      - name: Restore only selected A compiler objects (no fallback)
+        id: restore
+        if: env.PILOT_MODE == 'cached-b'
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ env.PILOT_SEED_CACHE_KEY }}
+          enableCrossOsArchive: false
+      - name: Retain actual restore outcome and end
+        if: always() && env.PILOT_MODE == 'cached-b' && steps.restore.outcome != 'skipped'
+        env:
+          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+          RESTORED_KEY: ${{ steps.restore.outputs.cache-matched-key }}
+        run: |
+          date -u +%Y-%m-%dT%H:%M:%S.%NZ > ubuntu-pilot-evidence/restore-end.txt
+          printf '%s\n' "$CACHE_HIT" > ubuntu-pilot-evidence/restore-hit.txt
+          printf '%s\n' "$RESTORED_KEY" > ubuntu-pilot-evidence/restore-key.txt
+      - name: Build actual four owning targets and SDK headers j2
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" build
+      - name: Inventory actual cases and bind seven new FLOAT cases
+        id: inventory
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" inventory
+      - name: Run actual four GoogleTest suites and six architecture checks
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" test
+      - name: Preserve statistics, phase exits and original logs
+        if: always() && steps.configure.outcome == 'success'
+        env:
+          PILOT_CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+          PILOT_RESTORED_KEY: ${{ steps.restore.outputs.cache-matched-key }}
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" finish
+      - name: Save only exact source A objects for this workflow/run/attempt
+        if: env.PILOT_MODE == 'seed-a'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.configure.outputs.cache_key }}
+      - name: Bound text evidence after success or original failure
+        id: package
+        if: always()
+        run: python3 "$PILOT_WORKFLOW_ROOT/tools/ci/ubuntu_development_pilot.py" package
+      - name: Retain bounded source-only evidence, no executables or graph
+        if: always() && steps.package.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ubuntu-real-change-${{ env.PILOT_MODE }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: product/ubuntu-pilot-evidence/
+          retention-days: 3
+          compression-level: 9
+          if-no-files-found: error
+
+  cold-b:
+    name: Experimental real-change cold B - NOT full acceptance
+    if: inputs.mode == 'real_change'
+    needs: seed-a
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults: *real_defaults
+    outputs: *real_outputs
+    env:
+      PILOT_MODE: cold-b
+      PILOT_EXPECTED_HEAD: ${{ inputs.changed_head }}
+      PILOT_WORKFLOW_HEAD: ${{ inputs.expected_head }}
+      PILOT_WORKFLOW_ROOT: ${{ github.workspace }}/pilot-workflow
+      PILOT_SEED_HEAD: ${{ inputs.seed_head }}
+      PILOT_CHANGED_HEAD: ${{ inputs.changed_head }}
+      PILOT_SEED_CACHE_KEY: ${{ needs.seed-a.outputs.cache_key }}
+      PILOT_SEED_COMPATIBILITY: ${{ needs.seed-a.outputs.compatibility_digest }}
+      PILOT_SEED_INVENTORY: ${{ needs.seed-a.outputs.inventory_json }}
+      PILOT_COLD_BINARY_DIGEST: ""
+      PILOT_COLD_INVENTORY_DIGEST: ""
+    steps: *real_steps
+
+  cached-b:
+    name: Experimental real-change cached B - NOT full acceptance
+    if: inputs.mode == 'real_change'
+    needs: [seed-a, cold-b]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults: *real_defaults
+    env:
+      PILOT_MODE: cached-b
+      PILOT_EXPECTED_HEAD: ${{ inputs.changed_head }}
+      PILOT_WORKFLOW_HEAD: ${{ inputs.expected_head }}
+      PILOT_WORKFLOW_ROOT: ${{ github.workspace }}/pilot-workflow
+      PILOT_SEED_HEAD: ${{ inputs.seed_head }}
+      PILOT_CHANGED_HEAD: ${{ inputs.changed_head }}
+      PILOT_SEED_CACHE_KEY: ${{ needs.seed-a.outputs.cache_key }}
+      PILOT_SEED_COMPATIBILITY: ${{ needs.seed-a.outputs.compatibility_digest }}
+      PILOT_SEED_INVENTORY: ${{ needs.seed-a.outputs.inventory_json }}
+      PILOT_COLD_BINARY_DIGEST: ${{ needs.cold-b.outputs.binary_digest }}
+      PILOT_COLD_INVENTORY_DIGEST: ${{ needs.cold-b.outputs.inventory_digest }}
+    steps: *real_steps
