@@ -73,6 +73,24 @@ Preserve behavior outside the selected contract. Keep existing test assertions;
 repair a faulty fixture only with a source-backed explanation and retained first
 failure. Choose checks that test observable behavior or a meaningful boundary.
 Low-impact prose changes need review, not a repeated full product build.
+Every new or changed `if`, `else`, `for` or `while` body containing GoogleTest
+macros must use explicit braces, including enclosing nested assertion controls.
+Keep control statements and assertion-containing bodies on readable separate
+lines. Before expensive builds and during candidate review, run the cheap
+changed-source check against the exact batch base:
+
+```sh
+python3 -B tools/development/check_changed_gtest_control_flow.py --base <exact-batch-base> <changed-C++-paths>
+# For an immutable candidate review, also pass --head <exact-candidate-head>.
+python3 -B tools/development/test_changed_gtest_control_flow.py
+```
+
+The checker uses full-file lexical context while selecting only changed code;
+it ignores unrelated historical blocks, comments and literal contents. An
+unsupported changed scope requires explicit manual review, never a guessed
+pass. This authoring/review check is not compiler or GCC proof, a new full-graph
+gate or permission to change compiler warnings. Preserve assertion conditions,
+macro arguments, test names and original diagnostics when repairing fixtures.
 Use `tools/development/with_build_slot.py` for one heavy configure/build/regression
 slot on this 8 GiB host. Keep an owned build directory and durable retention reason.
 Do not bypass the legacy resource-release fence, run duplicate heavy builds or replay a
