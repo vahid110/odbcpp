@@ -75,6 +75,18 @@ class RedshiftRoutineBudget {
 RedshiftRoutineUsage redshift_routine_usage(const QueryResult& result);
 BackendError redshift_routine_limit();
 std::optional<std::string> redshift_routine_schema(const CatalogRequest& request);
+// Backend-private SHOW schema selection. The caller keeps the raw response
+// charged until its owning storage is destroyed, and keeps selected identities
+// charged through routine/parameter fanout. Failure aborts the request budget.
+struct RedshiftRoutineSchemas {
+  std::vector<std::string> names;
+  RedshiftRoutineUsage retained;
+};
+RedshiftRoutineUsage redshift_routine_schema_usage(const QueryResult& source);
+BackendResult<RedshiftRoutineSchemas> normalize_redshift_routine_schemas(
+    std::string_view database, const CatalogRequest& request,
+    const BackendResult<QueryResult>& input, RedshiftRoutineBudget& budget,
+    rs::util::Deadline deadline);
 std::string redshift_show_routines_command(std::string_view database, std::string_view schema, bool function);
 std::string redshift_show_parameters_command(std::string_view database, std::string_view schema,
     const RedshiftRoutine& routine);

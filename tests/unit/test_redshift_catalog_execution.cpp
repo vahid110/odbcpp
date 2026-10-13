@@ -277,6 +277,11 @@ TEST(RedshiftCatalogExecution, OtherCatalogKindsAreUnsupportedWithoutIo) {
       ProcedureColumnsCatalogRequest{}, SpecialColumnsCatalogRequest{}};
   for (const auto& input : unsupported) {
     SpySession spy;
+    // Omitted-schema routine discovery is now supported in modern mode;
+    // retain the no-I/O refusal contract on its legacy path.
+    if (std::holds_alternative<ProceduresCatalogRequest>(input) ||
+        std::holds_alternative<ProcedureColumnsCatalogRequest>(input))
+      spy.mode = RedshiftCatalogMode::Legacy;
     auto result = spy.execute_catalog(input, rs::util::make_deadline(std::chrono::seconds{1}));
     ASSERT_FALSE(result);
     EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature), result.error());
@@ -1443,7 +1448,7 @@ TEST(RedshiftRoutineExecution, ExactSchemaTypedUnknownDimensionsRefcursorAndRetu
 TEST(RedshiftRoutineExecution, IdentifierPatternsOverloadsEmptyAndUnsupportedPaths) {
   for(const auto& input:std::vector<CatalogRequest>{ProceduresCatalogRequest{std::nullopt,std::nullopt,std::nullopt},
       ProceduresCatalogRequest{std::nullopt,"s%",std::nullopt}}) {
-    RoutineExecutionSession s;EXPECT_TRUE(s.selects_catalog_request(input));
+    RoutineExecutionSession s;s.mode=RedshiftCatalogMode::Legacy;EXPECT_TRUE(s.selects_catalog_request(input));
     const auto result=s.execute_catalog(input,rs::util::Deadline::max());ASSERT_FALSE(result);
     EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::UnsupportedFeature),result.error());EXPECT_TRUE(s.commands.empty());
   }
@@ -2177,4 +2182,440 @@ TEST(RedshiftMetadataDatabaseScope, CurrentCatalogEnumerationKeepsGeneratedTrans
   session.external = ""; EXPECT_TRUE(session.selects_catalog_request(catalogs));
   auto invalid = session.catalog_query(catalogs); EXPECT_FALSE(invalid);
   session.external.reset(); EXPECT_FALSE(session.selects_catalog_request(catalogs));
+}
+
+namespace {
+// Target-contract fixtures: native field names/cells are literal inputs, never
+// constructed by the production normalizers. These tests precede the repair.
+QueryResult routine_schema_rows(ResultRows rows) {
+  auto result = schemas_response("db");
+  result.rows = std::move(rows);
+  result.statement_kind = StatementKind::Unknown; // Completed SHOW, not guessed SELECT.
+  return result;
+}
+class RoutineSchemaSession final : public RoutineExecutionSession {
+ public:
+  unsigned prepared_fallbacks{0};
+  mutable unsigned catalog_fallbacks{0};
+  BackendResult<QueryResult> execute_prepared(std::string_view,
+      std::span<const QueryParameter>, rs::util::Deadline) override {
+    ++prepared_fallbacks;
+    return {rs::util::DbErrorCode::QueryFailed, "Unexpected prepared catalog fallback"};
+  }
+  rs::util::Result<std::string> catalog_query(const CatalogRequest&) const override {
+    ++catalog_fallbacks;
+    return {rs::util::DbErrorCode::UnsupportedFeature, "Unexpected generated catalog fallback"};
+  }
+};
+void routine_schema_no_fallback(const RoutineSchemaSession& session) {
+  EXPECT_EQ(0u, session.prepared_fallbacks);
+  EXPECT_EQ(0u, session.catalog_fallbacks);
+}
+}
+
+TEST(RedshiftRoutineSchemaPatterns, OmittedAndWildcardSchemasDiscoverOnlyMatchingIdentities) {
+  struct Selection {
+    std::optional<std::string> pattern;
+    std::vector<std::string> matches;
+  };
+  const std::vector<Selection> selections{
+      {std::nullopt, {"a", "s_%", "s_雪", "z"}},
+      {"s%", {"s_%", "s_雪"}}, {"s_雪", {"s_雪"}},
+      {"s\\_%", {"s_%", "s_雪"}}, {"missing%", {}}};
+  for (const auto& selection : selections) {
+    SCOPED_TRACE(selection.pattern.value_or("<omitted>"));
+    RoutineSchemaSession session;
+    session.replies.emplace_back(routine_identity(), session.snapshot);
+    session.replies.emplace_back(routine_schema_rows({
+        {"db", "z", "1", "local", std::nullopt, std::nullopt, std::nullopt},
+        {"db", "s_雪", "1", "local", std::nullopt, std::nullopt, std::nullopt},
+        {"db", "a", "1", "local", std::nullopt, std::nullopt, std::nullopt},
+        {"db", "s_%", "1", "local", std::nullopt, std::nullopt, std::nullopt}}), session.snapshot);
+    std::vector<std::string> expected{"SELECT current_database() AS database_name",
+        "SHOW SCHEMAS FROM DATABASE \"db\";"};
+    for (const auto& schema : selection.matches) {
+      session.replies.emplace_back(routine_discovery(false,
+          {{"db", schema, "p", "0", "", std::nullopt, "owned"}}), session.snapshot);
+      session.replies.emplace_back(routine_discovery(true, {}), session.snapshot);
+      expected.push_back("SHOW PROCEDURES FROM SCHEMA \"db\".\"" + schema + "\";");
+      expected.push_back("SHOW FUNCTIONS FROM SCHEMA \"db\".\"" + schema + "\";");
+    }
+    const auto deadline = rs::util::make_deadline(std::chrono::seconds{3});
+    auto result = session.execute_catalog(
+        ProceduresCatalogRequest{std::nullopt, selection.pattern, "p"}, deadline);
+    ASSERT_TRUE(result); // Literal baseline failure expected at c3 before repair.
+    ASSERT_EQ(8u, result->columns.size());
+    ASSERT_EQ(selection.matches.size(), result->rows.size());
+    EXPECT_EQ(expected, session.commands);
+    EXPECT_EQ(std::vector<rs::util::Deadline>(expected.size(), deadline), session.deadlines);
+    EXPECT_TRUE(session.replies.empty());
+    routine_schema_no_fallback(session);
+    for (std::size_t row = 0; row < selection.matches.size(); ++row) {
+      EXPECT_EQ(ResultCell{"db"}, result->rows[row][0]);
+      EXPECT_EQ(ResultCell{selection.matches[row]}, result->rows[row][1]);
+      EXPECT_EQ(ResultCell{"p"}, result->rows[row][2]);
+    }
+    session.connected = false; session.replies.clear();
+    if (!result->rows.empty()) EXPECT_EQ(ResultCell{"owned"}, result->rows[0][6]);
+  }
+}
+
+TEST(RedshiftRoutineSchemaPatterns, ProcedureColumnsKeepUnknownTypesAndPartialDimensionsAcrossSchemas) {
+  RoutineSchemaSession session;
+  // Explicit database intent skips current_database discovery.
+  session.replies.emplace_back(routine_schema_rows({
+      {"db", "z", "1", "local", std::nullopt, std::nullopt, std::nullopt},
+      {"db", "a", "1", "local", std::nullopt, std::nullopt, std::nullopt}}), session.snapshot);
+  for (const auto* schema : {"a", "z"}) {
+    session.replies.emplace_back(routine_discovery(false,
+        {{"db", schema, "same", "0", "", std::nullopt, std::nullopt}}), session.snapshot);
+    session.replies.emplace_back(routine_discovery(true, {}), session.snapshot);
+    session.replies.emplace_back(routine_parameters(false, {{"db", schema, "same", "out", "1", "OUT",
+        std::string_view(schema) == "a" ? "super" : "numeric", std::nullopt,
+        std::string_view(schema) == "a" ? ResultCell{} : ResultCell{"18"}, std::nullopt}}), session.snapshot);
+  }
+  auto result = session.execute_catalog(ProcedureColumnsCatalogRequest{"db", std::nullopt, "same", "o%"},
+      rs::util::Deadline::max());
+  ASSERT_TRUE(result); ASSERT_EQ(19u, result->columns.size()); ASSERT_EQ(2u, result->rows.size());
+  EXPECT_EQ((std::vector<std::string>{"SHOW SCHEMAS FROM DATABASE \"db\";",
+      "SHOW PROCEDURES FROM SCHEMA \"db\".\"a\";", "SHOW FUNCTIONS FROM SCHEMA \"db\".\"a\";",
+      "SHOW PARAMETERS OF PROCEDURE \"db\".\"a\".\"same\"();",
+      "SHOW PROCEDURES FROM SCHEMA \"db\".\"z\";", "SHOW FUNCTIONS FROM SCHEMA \"db\".\"z\";",
+      "SHOW PARAMETERS OF PROCEDURE \"db\".\"z\".\"same\"();"}), session.commands);
+  EXPECT_EQ(ResultCell{"a"}, result->rows[0][1]); EXPECT_EQ(ResultCell{"super"}, result->rows[0][6]);
+  EXPECT_EQ(ResultCell{"0"}, result->rows[0][5]); EXPECT_FALSE(result->rows[0][7]);
+  EXPECT_FALSE(result->rows[0][8]); EXPECT_FALSE(result->rows[0][9]);
+  EXPECT_EQ(ResultCell{"z"}, result->rows[1][1]); EXPECT_EQ(ResultCell{"2"}, result->rows[1][5]);
+  EXPECT_EQ(ResultCell{"18"}, result->rows[1][7]); EXPECT_EQ(ResultCell{"20"}, result->rows[1][8]);
+  EXPECT_FALSE(result->rows[1][9]); EXPECT_EQ(ResultCell{"1"}, result->rows[1][17]);
+  session.replies.clear(); session.connected = false;
+  EXPECT_EQ(ResultCell{"super"}, result->rows[0][6]);
+  routine_schema_no_fallback(session);
+}
+
+TEST(RedshiftRoutineSchemaPatterns, ExactEscapedAndMetadataIdentifiersKeepFastPathAndEmptyGuards) {
+  for (const auto match : {CatalogNameMatch::Existing, CatalogNameMatch::IdentifierQuoted,
+                          CatalogNameMatch::IdentifierUnquoted}) {
+    RoutineSchemaSession session;
+    ProceduresCatalogRequest input{"db", match == CatalogNameMatch::Existing ? "s\\_\\%" : "s_%", "p"};
+    input.name_matches.schema = match;
+    session.replies.emplace_back(routine_discovery(false, {{"db", "s_%", "p", "0", "", std::nullopt, "exact"}}), session.snapshot);
+    session.replies.emplace_back(routine_discovery(true, {}), session.snapshot);
+    auto result = session.execute_catalog(input, rs::util::Deadline::max());
+    ASSERT_TRUE(result); ASSERT_EQ(1u, result->rows.size());
+    EXPECT_EQ((std::vector<std::string>{"SHOW PROCEDURES FROM SCHEMA \"db\".\"s_%\";",
+        "SHOW FUNCTIONS FROM SCHEMA \"db\".\"s_%\";"}), session.commands);
+    routine_schema_no_fallback(session);
+  }
+  for (const auto& input : std::vector<CatalogRequest>{
+      ProceduresCatalogRequest{"db", "", std::nullopt},
+      ProcedureColumnsCatalogRequest{"db", "", std::nullopt, std::nullopt},
+      ProceduresCatalogRequest{"", "s", std::nullopt}}) {
+    RoutineSchemaSession session;
+    auto result = session.execute_catalog(input, rs::util::Deadline::max());
+    ASSERT_TRUE(result); EXPECT_TRUE(result->rows.empty()); EXPECT_TRUE(session.commands.empty());
+    routine_schema_no_fallback(session);
+  }
+  for (int guard = 0; guard < 4; ++guard) {
+    RoutineSchemaSession session;
+    if (guard == 0) session.mode = RedshiftCatalogMode::Legacy;
+    if (guard == 1) session.capability = "3";
+    if (guard == 2) session.snapshot.state = SessionState::Transaction;
+    if (guard == 3) session.connected = false;
+    auto result = session.execute_catalog(ProceduresCatalogRequest{"db", "s%", std::nullopt}, rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    EXPECT_EQ(rs::util::make_error_code(guard == 3 ? rs::util::DbErrorCode::NotConnected :
+        rs::util::DbErrorCode::UnsupportedFeature), result.error());
+    EXPECT_TRUE(session.commands.empty()); routine_schema_no_fallback(session);
+  }
+}
+
+TEST(RedshiftRoutineSchemaPatterns, MalformedSchemaAndLaterNativeErrorNeverPublishPartialRows) {
+  for (int malformed = 0; malformed < 3; ++malformed) {
+    RoutineSchemaSession session;
+    auto schemas = routine_schema_rows({{"db", "a", "1", "local", std::nullopt, std::nullopt, std::nullopt}});
+    if (malformed == 0) schemas.rows.push_back(schemas.rows.front());
+    if (malformed == 1) schemas.rows[0][0] = "foreign";
+    if (malformed == 2) schemas.rows[0][1].reset();
+    session.replies.emplace_back(std::move(schemas), session.snapshot);
+    auto result = session.execute_catalog(ProceduresCatalogRequest{"db", "%", std::nullopt}, rs::util::Deadline::max());
+    ASSERT_FALSE(result); EXPECT_EQ(BackendErrorClass::InvalidMetadata, result.backend_error().error_class);
+    EXPECT_EQ(SessionDisposition::Retire, result.session_snapshot().disposition);
+    EXPECT_EQ((std::vector<std::string>{"SHOW SCHEMAS FROM DATABASE \"db\";"}), session.commands);
+    routine_schema_no_fallback(session);
+  }
+  RoutineSchemaSession session;
+  session.replies.emplace_back(routine_schema_rows({
+      {"db", "a", "1", "local", std::nullopt, std::nullopt, std::nullopt},
+      {"db", "z", "1", "local", std::nullopt, std::nullopt, std::nullopt}}), session.snapshot);
+  session.replies.emplace_back(routine_discovery(false, {{"db", "a", "p", "0", "", std::nullopt, "unpublished"}}), session.snapshot);
+  session.replies.emplace_back(routine_discovery(true, {}), session.snapshot);
+  BackendError denied{rs::util::make_error_code(rs::util::DbErrorCode::QueryFailed), "owned schema denial"};
+  denied.native_state = "42501"; denied.operation = BackendOperation::ExecuteDirect;
+  denied.session_state = SessionState::Idle; denied.disposition = SessionDisposition::Reusable;
+  session.replies.emplace_back(denied);
+  auto failure = session.execute_catalog(ProceduresCatalogRequest{"db", "%", "p"}, rs::util::Deadline::max());
+  ASSERT_FALSE(failure); EXPECT_EQ("42501", failure.backend_error().native_state);
+  EXPECT_EQ(BackendOperation::ExecuteDirect, failure.backend_error().operation);
+  EXPECT_EQ(SessionDisposition::Reusable, failure.session_snapshot().disposition);
+  EXPECT_EQ(4u, session.commands.size()); routine_schema_no_fallback(session);
+  session.replies.emplace_back(routine_discovery(false, {{"db", "a", "p", "0", "", std::nullopt, "recovered"}}), session.snapshot);
+  session.replies.emplace_back(routine_discovery(true, {}), session.snapshot);
+  auto recovered = session.execute_catalog(ProceduresCatalogRequest{"db", "a", "p"}, rs::util::Deadline::max());
+  ASSERT_TRUE(recovered); ASSERT_EQ(1u, recovered->rows.size());
+  EXPECT_EQ(ResultCell{"recovered"}, recovered->rows[0][6]);
+  denied.native_state.reset(); denied.message.clear(); session.replies.clear();
+  EXPECT_EQ("owned schema denial", failure.error_message()); EXPECT_EQ("42501", failure.backend_error().native_state);
+}
+
+TEST(RedshiftRoutineSchemaPatterns, CumulativeExchangeAndSchemaCellLimitsRefuseBeforeRoutineFanout) {
+  for (const bool cells : {false, true}) {
+    RoutineSchemaSession session;
+    ResultLimits limits;
+    if (cells) limits.max_cells = 13; // Two literal native schema rows require 14.
+    else limits.max_results = 4; // One schema exchange plus four routine exchanges cannot fit.
+    ASSERT_TRUE(session.budgets(limits));
+    session.replies.emplace_back(routine_schema_rows({
+        {"db", "a", "1", "local", std::nullopt, std::nullopt, std::nullopt},
+        {"db", "z", "1", "local", std::nullopt, std::nullopt, std::nullopt}}), session.snapshot);
+    auto result = session.execute_catalog(ProceduresCatalogRequest{"db", "%", std::nullopt}, rs::util::Deadline::max());
+    ASSERT_FALSE(result); EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit), result.error());
+    EXPECT_EQ(SessionDisposition::Reusable, result.session_snapshot().disposition);
+    EXPECT_EQ((std::vector<std::string>{"SHOW SCHEMAS FROM DATABASE \"db\";"}), session.commands);
+    routine_schema_no_fallback(session);
+  }
+}
+
+TEST(RedshiftRoutineSchemaPatterns, ExpiredAndLateSchemaCompletionKeepOriginalDeadlineAndStopDispatch) {
+  RoutineSchemaSession expired;
+  auto result = expired.execute_catalog(ProceduresCatalogRequest{"db", "%", std::nullopt}, rs::util::Clock::now());
+  ASSERT_FALSE(result); EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout), result.error());
+  EXPECT_TRUE(expired.commands.empty()); routine_schema_no_fallback(expired);
+  RoutineSchemaSession late;
+  late.replies.emplace_back(routine_schema_rows({{"db", "a", "1", "local", std::nullopt, std::nullopt, std::nullopt}}), late.snapshot);
+  const auto deadline = rs::util::make_deadline(std::chrono::milliseconds{10});
+  late.callback = [deadline] { while (rs::util::Clock::now() < deadline) {} };
+  auto timed_out = late.execute_catalog(ProcedureColumnsCatalogRequest{"db", "%", std::nullopt, std::nullopt}, deadline);
+  ASSERT_FALSE(timed_out); EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout), timed_out.error());
+  EXPECT_EQ((std::vector<std::string>{"SHOW SCHEMAS FROM DATABASE \"db\";"}), late.commands);
+  EXPECT_EQ((std::vector<rs::util::Deadline>{deadline}), late.deadlines); routine_schema_no_fallback(late);
+}
+
+TEST(RedshiftRoutineSchemaPatterns, CompletedShowAndSelectSchemaShapesKeepUnknownClassificationExplicit) {
+  for (const auto kind : {StatementKind::Unknown, StatementKind::SelectCursor}) {
+    RoutineSchemaSession session;
+    auto schemas = routine_schema_rows({}); schemas.statement_kind = kind;
+    session.replies.emplace_back(std::move(schemas), session.snapshot);
+    auto result = session.execute_catalog(ProceduresCatalogRequest{"db", "%", std::nullopt}, rs::util::Deadline::max());
+    ASSERT_TRUE(result); EXPECT_TRUE(result->rows.empty()); EXPECT_EQ(8u, result->columns.size());
+    EXPECT_EQ((std::vector<std::string>{"SHOW SCHEMAS FROM DATABASE \"db\";"}), session.commands);
+    routine_schema_no_fallback(session);
+  }
+  for (int malformed = 0; malformed < 3; ++malformed) {
+    RoutineSchemaSession session;
+    auto schemas = routine_schema_rows({});
+    if (malformed == 0) schemas.statement_kind.reset();
+    if (malformed == 1) schemas.columns[1].normalized_type->known = false;
+    const auto snapshot = malformed == 2 ? SessionSnapshot{SessionState::Unknown, SessionDisposition::Retire} : session.snapshot;
+    session.replies.emplace_back(std::move(schemas), snapshot);
+    auto result = session.execute_catalog(ProceduresCatalogRequest{"db", "%", std::nullopt}, rs::util::Deadline::max());
+    ASSERT_FALSE(result); EXPECT_EQ(BackendErrorClass::InvalidMetadata, result.backend_error().error_class);
+    EXPECT_EQ(SessionDisposition::Retire, result.session_snapshot().disposition);
+    EXPECT_EQ(1u, session.commands.size()); routine_schema_no_fallback(session);
+  }
+}
+
+namespace {
+// ODBC ordinary-character escapes are literal: \a is two characters. Keep
+// schema inputs and command inventories literal to distinguish the inherited
+// decoder/matcher behavior that drops the backslash. Each API/path has its own
+// test, so an original-baseline fatal assertion cannot hide another path.
+void routine_ordinary_escape_contract(bool columns, bool wildcard) {
+  RoutineSchemaSession session;
+  const std::string schema = wildcard ? R"(\alpha)" : R"(\a)";
+  std::vector<std::string> expected;
+  if (wildcard) {
+    session.replies.emplace_back(routine_schema_rows({
+        {"db", "alpha", "1", "local", std::nullopt, std::nullopt, std::nullopt},
+        {"db", R"(\beta)", "1", "local", std::nullopt, std::nullopt, std::nullopt},
+        {"db", R"(\alpha)", "1", "local", std::nullopt, std::nullopt, std::nullopt},
+        {"db", "a", "1", "local", std::nullopt, std::nullopt, std::nullopt}}), session.snapshot);
+    expected = {R"(SHOW SCHEMAS FROM DATABASE "db";)",
+        R"(SHOW PROCEDURES FROM SCHEMA "db"."\alpha";)",
+        R"(SHOW FUNCTIONS FROM SCHEMA "db"."\alpha";)"};
+  } else {
+    expected = {R"(SHOW PROCEDURES FROM SCHEMA "db"."\a";)",
+        R"(SHOW FUNCTIONS FROM SCHEMA "db"."\a";)"};
+  }
+  session.replies.emplace_back(routine_discovery(false,
+      {{"db", schema, "p", "0", "", std::nullopt, "literal-backslash"}}), session.snapshot);
+  session.replies.emplace_back(routine_discovery(true, {}), session.snapshot);
+  if (columns) {
+    session.replies.emplace_back(routine_parameters(false,
+        {{"db", schema, "p", "out", "1", "OUT", "integer", std::nullopt, "32", "0"}}), session.snapshot);
+    expected.push_back(wildcard ? R"(SHOW PARAMETERS OF PROCEDURE "db"."\alpha"."p"();)" :
+        R"(SHOW PARAMETERS OF PROCEDURE "db"."\a"."p"();)");
+  }
+  const std::string pattern = wildcard ? R"(\a%)" : R"(\a)";
+  const CatalogRequest input = columns ? CatalogRequest{ProcedureColumnsCatalogRequest{"db", pattern, "p", "out"}} :
+      CatalogRequest{ProceduresCatalogRequest{"db", pattern, "p"}};
+  const auto deadline = rs::util::make_deadline(std::chrono::seconds{3});
+  const auto result = session.execute_catalog(input, deadline);
+  EXPECT_EQ(expected, session.commands); // Observe wrong/absent baseline dispatch before fatal check.
+  routine_schema_no_fallback(session);
+  ASSERT_TRUE(result);
+  ASSERT_EQ(1u, result->rows.size()); EXPECT_EQ(columns ? 19u : 8u, result->columns.size());
+  EXPECT_EQ(ResultCell{schema}, result->rows[0][1]); EXPECT_EQ(ResultCell{"p"}, result->rows[0][2]);
+  EXPECT_EQ(std::vector<rs::util::Deadline>(expected.size(), deadline), session.deadlines);
+  EXPECT_TRUE(session.replies.empty());
+}
+}
+
+TEST(RedshiftRoutineSchemaPatterns, OrdinaryEscapeWildcardProceduresRetainBackslash) {
+  routine_ordinary_escape_contract(false, true);
+}
+TEST(RedshiftRoutineSchemaPatterns, OrdinaryEscapeWildcardProcedureColumnsRetainBackslash) {
+  routine_ordinary_escape_contract(true, true);
+}
+TEST(RedshiftRoutineSchemaPatterns, OrdinaryEscapeLiteralProceduresRetainBackslash) {
+  routine_ordinary_escape_contract(false, false);
+}
+TEST(RedshiftRoutineSchemaPatterns, OrdinaryEscapeLiteralProcedureColumnsRetainBackslash) {
+  routine_ordinary_escape_contract(true, false);
+}
+
+TEST(RedshiftRoutineSchemaPatterns, MalformedUnmatchedSchemasAreRejectedBeforeFiltering) {
+  for (int malformed = 0; malformed < 3; ++malformed) {
+    RoutineSchemaSession session;
+    auto schemas = routine_schema_rows({
+        {"db", "keep", "1", "local", std::nullopt, std::nullopt, std::nullopt},
+        {"db", "drop", "1", "local", std::nullopt, std::nullopt, std::nullopt}});
+    if (malformed == 0) schemas.rows.push_back(schemas.rows.back());
+    if (malformed == 1) schemas.rows.back()[0] = "foreign";
+    if (malformed == 2) schemas.rows.back()[1].reset();
+    session.replies.emplace_back(std::move(schemas), session.snapshot);
+    const auto result = session.execute_catalog(ProceduresCatalogRequest{"db", "keep%", std::nullopt},
+        rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    EXPECT_EQ(BackendErrorClass::InvalidMetadata, result.backend_error().error_class);
+    EXPECT_EQ(SessionDisposition::Retire, result.session_snapshot().disposition);
+    EXPECT_EQ((std::vector<std::string>{R"(SHOW SCHEMAS FROM DATABASE "db";)"}), session.commands);
+    routine_schema_no_fallback(session);
+  }
+}
+
+TEST(RedshiftRoutineSchemaPatterns, InvalidIntentIsRefusedWithoutDiscovery) {
+  for(const auto& schema:std::vector<std::string>{"dangling\\",std::string("bad\0name",8),std::string("\xff",1)}) {
+    RoutineSchemaSession session;
+    const auto result=session.execute_catalog(ProceduresCatalogRequest{"db",schema,"p"},rs::util::Deadline::max());
+    ASSERT_FALSE(result);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::InvalidParameter),result.error());
+    EXPECT_TRUE(session.commands.empty());routine_schema_no_fallback(session);
+  }
+}
+
+TEST(RedshiftRoutineSchemaPatterns, UnmatchedMalformedShapesAndSnapshotsRetireBeforeFanout) {
+  for(unsigned malformed=0;malformed<9;++malformed) {
+    RoutineSchemaSession session;
+    auto source=routine_schema_rows({{"db","drop","1","local",std::nullopt,std::nullopt,std::nullopt}});
+    auto snapshot=session.snapshot;
+    if(malformed==0)source.columns[2].name="schema_name";
+    if(malformed==1)source.rows[0].pop_back();
+    if(malformed==2)source.rows[0][1]=std::string("bad\0name",8);
+    if(malformed==3)source.rows[0][1]=std::string("\xff",1);
+    if(malformed==4)source.statement_kind=StatementKind::UpdateWhere;
+    if(malformed==5)source.affected_rows=2;
+    if(malformed==6)snapshot.state=SessionState::Transaction;
+    if(malformed==7)snapshot.disposition=SessionDisposition::Retire;
+    if(malformed==8)source.additional_results.emplace_back();
+    session.replies.emplace_back(std::move(source),snapshot);
+    const auto result=session.execute_catalog(ProcedureColumnsCatalogRequest{"db","keep%","p",std::nullopt},rs::util::Deadline::max());
+    ASSERT_FALSE(result);EXPECT_EQ(BackendErrorClass::InvalidMetadata,result.backend_error().error_class);
+    EXPECT_EQ(SessionDisposition::Retire,result.session_snapshot().disposition);
+    EXPECT_EQ((std::vector<std::string>{R"(SHOW SCHEMAS FROM DATABASE "db";)"}),session.commands);
+    routine_schema_no_fallback(session);
+  }
+}
+
+TEST(RedshiftRoutineSchemaPatterns, NativeStorageAndOwningSelectionOverlapAreAdmittedBeforeCopy) {
+  const std::string name(900,'a');
+  BackendResult<QueryResult> source{routine_schema_rows({{"db",name,"1","local",std::nullopt,std::nullopt,std::nullopt}}),
+      {SessionState::Idle,SessionDisposition::Reusable}};
+  const auto raw=redshift_routine_schema_usage(*source);
+  ResponseLimits response;response.max_wire_bytes=raw.bytes+256;
+  RedshiftRoutineBudget tight{response,ResultLimits{}};
+  ASSERT_TRUE(tight.retain(raw)); // The raw result fits; its owning clone cannot coexist.
+  const auto refusal=normalize_redshift_routine_schemas("db",ProceduresCatalogRequest{"db","%",std::nullopt},
+      source,tight,rs::util::Deadline::max());
+  ASSERT_FALSE(refusal);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),refusal.error());
+  EXPECT_EQ(SessionDisposition::Reusable,refusal.session_snapshot().disposition);
+  RedshiftRoutineBudget room{ResponseLimits{},ResultLimits{}};ASSERT_TRUE(room.retain(raw));
+  const auto result=normalize_redshift_routine_schemas("db",ProceduresCatalogRequest{"db","%",std::nullopt},
+      source,room,rs::util::Deadline::max());
+  ASSERT_TRUE(result);ASSERT_EQ(1u,result->names.size());
+  source->rows.clear();EXPECT_EQ(name,result->names.front()); // No borrowed publication.
+}
+
+TEST(RedshiftRoutineSchemaPatterns, BorrowedAndSelectedIdentityRowMetadataNamePeaksAreCumulative) {
+  for(unsigned boundary=0;boundary<3;++boundary) {
+    BackendResult<QueryResult> source{routine_schema_rows({
+        {"db","a","1","local",std::nullopt,std::nullopt,std::nullopt},
+        {"db","z","1","local",std::nullopt,std::nullopt,std::nullopt}}),
+        {SessionState::Idle,SessionDisposition::Reusable}};
+    const auto raw=redshift_routine_schema_usage(*source);ResultLimits limits;
+    if(boundary==0)limits.max_rows=3; // Two native rows plus two owning identities.
+    if(boundary==1)limits.max_metadata_entries=10; // Seven fields, two views, two owned names.
+    if(boundary==2)limits.max_metadata_name_bytes=raw.name_bytes+3; // Carrier plus owned names.
+    RedshiftRoutineBudget budget{ResponseLimits{},limits};ASSERT_TRUE(budget.retain(raw));
+    const auto result=normalize_redshift_routine_schemas("db",ProceduresCatalogRequest{"db","%",std::nullopt},
+        source,budget,rs::util::Deadline::max());
+    ASSERT_FALSE(result);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),result.error());
+    EXPECT_EQ(SessionDisposition::Reusable,result.session_snapshot().disposition);
+  }
+}
+
+TEST(RedshiftRoutineSchemaPatterns, PermutedFieldsKeepSortedOwningIdentitiesDuringFanout) {
+  RoutineSchemaSession session;
+  auto source=routine_schema_rows({{"db","z","1","local",std::nullopt,std::nullopt,std::nullopt},
+      {"db","a","1","local",std::nullopt,std::nullopt,std::nullopt}});
+  std::swap(source.columns[0],source.columns[1]);
+  for(auto& row:source.rows)std::swap(row[0],row[1]);
+  session.replies.emplace_back(std::move(source),session.snapshot);
+  for(const char* schema:{"a","z"}) {
+    session.replies.emplace_back(routine_discovery(false,{{"db",schema,"p","0","",std::nullopt,std::nullopt}}),session.snapshot);
+    session.replies.emplace_back(routine_discovery(true,{}),session.snapshot);
+  }
+  const auto result=session.execute_catalog(ProceduresCatalogRequest{"db","%","p"},rs::util::Deadline::max());
+  ASSERT_TRUE(result);ASSERT_EQ(2u,result->rows.size());EXPECT_EQ(ResultCell{"a"},result->rows[0][1]);EXPECT_EQ(ResultCell{"z"},result->rows[1][1]);
+  routine_schema_no_fallback(session);
+}
+
+TEST(RedshiftRoutineSchemaPatterns, KnownLaterSchemaExchangesAreReservedBeforeParameterFanout) {
+  RoutineSchemaSession session;ResultLimits limits;limits.max_results=5;ASSERT_TRUE(session.budgets(limits));
+  session.replies.emplace_back(routine_schema_rows({{"db","a","1","local",std::nullopt,std::nullopt,std::nullopt},
+      {"db","z","1","local",std::nullopt,std::nullopt,std::nullopt}}),session.snapshot);
+  session.replies.emplace_back(routine_discovery(false,{{"db","a","p","0","",std::nullopt,std::nullopt}}),session.snapshot);
+  session.replies.emplace_back(routine_discovery(true,{}),session.snapshot);
+  const auto result=session.execute_catalog(ProcedureColumnsCatalogRequest{"db","%","p",std::nullopt},rs::util::Deadline::max());
+  ASSERT_FALSE(result);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),result.error());
+  EXPECT_EQ((std::vector<std::string>{R"(SHOW SCHEMAS FROM DATABASE "db";)",R"(SHOW PROCEDURES FROM SCHEMA "db"."a";)",
+      R"(SHOW FUNCTIONS FROM SCHEMA "db"."a";)"}),session.commands);routine_schema_no_fallback(session);
+}
+
+TEST(RedshiftRoutineSchemaPatterns, SelectedSchemaRowsRemainChargedWhileRoutineStorageIsAllocated) {
+  RoutineSchemaSession session;
+  ResultLimits limits; limits.max_rows=2; ASSERT_TRUE(session.budgets(limits));
+  session.replies.emplace_back(routine_schema_rows({
+      {"db","a","1","local",std::nullopt,std::nullopt,std::nullopt}}),session.snapshot);
+  session.replies.emplace_back(routine_discovery(false,
+      {{"db","a","p","0","",std::nullopt,std::nullopt}}),session.snapshot);
+  // Schema source + owned selection fits two rows. After source destruction,
+  // selected identity + native routine row fits; its owning routine copy does
+  // not. Releasing selected identities prematurely would let discovery pass.
+  const auto result=session.execute_catalog(ProceduresCatalogRequest{"db","%","p"},rs::util::Deadline::max());
+  ASSERT_FALSE(result);
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),result.error());
+  EXPECT_EQ(SessionDisposition::Reusable,result.session_snapshot().disposition);
+  EXPECT_EQ((std::vector<std::string>{R"(SHOW SCHEMAS FROM DATABASE "db";)",
+      R"(SHOW PROCEDURES FROM SCHEMA "db"."a";)"}),session.commands);
+  routine_schema_no_fallback(session);
 }
