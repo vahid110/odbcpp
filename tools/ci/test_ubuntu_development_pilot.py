@@ -168,12 +168,15 @@ class PilotEvidenceTests(unittest.TestCase):
         for role, seed, changed in (('cold', pilot.SEED_HEAD, pilot.CHANGED_HEAD), ('cached-b', 'a' * 40, pilot.CHANGED_HEAD), ('cold-b', pilot.SEED_HEAD, 'b' * 40)):
             with self.assertRaises(ValueError):
                 pilot.real_product_head(role, seed, changed)
-        old_seed = '9c0435d50bb02e0158c54d3abde9423f8d943541'
-        old_changed = '196f5b3facd565dfc9a2b767d9dda8107229f453'
+        old_pairs = (
+            ('9c0435d50bb02e0158c54d3abde9423f8d943541', '196f5b3facd565dfc9a2b767d9dda8107229f453'),
+            ('d424bc4a2f7a2b75a18ed3e8497c048ac483167b', '3c441223f1dfecf9a9872faa5ea2781f8f925f4f'),
+        )
         for role in pilot.REAL_ROLES:
-            for seed, changed in ((old_seed, old_changed), (old_seed, pilot.CHANGED_HEAD), (pilot.SEED_HEAD, old_changed)):
-                with self.subTest(role=role, seed=seed, changed=changed), self.assertRaises(ValueError):
-                    pilot.real_product_head(role, seed, changed)
+            for old_seed, old_changed in old_pairs:
+                for seed, changed in ((old_seed, old_changed), (old_seed, pilot.CHANGED_HEAD), (pilot.SEED_HEAD, old_changed)):
+                    with self.subTest(role=role, seed=seed, changed=changed), self.assertRaises(ValueError):
+                        pilot.real_product_head(role, seed, changed)
 
     def test_cache_compatibility_binds_actual_tools_flags_and_paths_separately(self):
         deps = {'compiler_hashes': {'g++': 'actual compiler bytes'}, 'fetched_source_trees': {'gtest': 'actual source digest'}, 'runner_image': 'ubuntu24'}
@@ -189,6 +192,8 @@ class PilotEvidenceTests(unittest.TestCase):
             pilot.real_cache_key(pilot.CHANGED_HEAD, 'a' * 40, original, '123', '1')
         with self.assertRaises(ValueError):
             pilot.real_cache_key('9c0435d50bb02e0158c54d3abde9423f8d943541', 'a' * 40, original, '123', '1')
+        with self.assertRaises(ValueError):
+            pilot.real_cache_key('d424bc4a2f7a2b75a18ed3e8497c048ac483167b', 'a' * 40, original, '123', '1')
 
     def test_selected_seed_key_rejects_compatibility_or_exact_identity_mismatch(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(pilot, 'EVIDENCE', Path(directory)):
