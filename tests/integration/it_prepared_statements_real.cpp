@@ -5799,3 +5799,72 @@ TEST_F(PreparedStatementIntegrationTest, BitInputPairSixTargetsNullAndOwningReco
   EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
   ASSERT_NO_FATAL_FAILURE(echo(0, false));
 }
+
+TEST_F(PreparedStatementIntegrationTest, SignedIntegerBinaryResultFixedWidthsNullAndOwningRefill) {
+  const char* integer_sql = "SELECT s, i, b FROM (SELECT 1 AS ordinal, CAST(-32768 AS SMALLINT) AS s, CAST(-2147483648 AS INTEGER) AS i, CAST(-9223372036854775808 AS BIGINT) AS b UNION ALL SELECT 2, CAST(0 AS SMALLINT), CAST(0 AS INTEGER), CAST(0 AS BIGINT) UNION ALL SELECT 3, CAST(32767 AS SMALLINT), CAST(2147483647 AS INTEGER), CAST(9223372036854775807 AS BIGINT) UNION ALL SELECT 4, CAST(NULL AS SMALLINT), CAST(NULL AS INTEGER), CAST(NULL AS BIGINT)) AS n ORDER BY ordinal";
+
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(hstmt, (SQLCHAR*)integer_sql, SQL_NTS));
+  for (int row = 0; row < 4; ++row) {
+
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    for (SQLUSMALLINT col = 1; col <= 3; ++col) {
+      SCOPED_TRACE(row);
+      SCOPED_TRACE(col);
+      const SQLLEN width = col == 1 ? 2 : col == 2 ? 4 : 8;
+      std::array<unsigned char, 12> output; output.fill(0xa5); const auto before = output; SQLLEN length = 79;
+      if (row < 3) {
+
+        ASSERT_EQ(SQL_ERROR, SQLGetData(hstmt, col, SQL_C_BINARY, output.data() + 1, width - 1, &length));
+        SQLCHAR state[6]{}; ASSERT_EQ(SQL_SUCCESS, SQLGetDiagRec(SQL_HANDLE_STMT, hstmt, 1, state, nullptr, nullptr, 0, nullptr)); EXPECT_STREQ("22003", reinterpret_cast<char*>(state));
+        EXPECT_EQ(before, output); EXPECT_EQ(79, length);
+      }
+
+      const auto data = row == 3 ? reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)()) : output.data() + 1;
+      ASSERT_EQ(SQL_SUCCESS, SQLGetData(hstmt, col, SQL_C_BINARY, data, row == 3 ? 0 : width + 1, &length));
+      if (row == 3) { EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(before, output); }
+      else {
+        std::array<unsigned char, 8> expected{};
+        if (col == 1) { SQLSMALLINT value = row == 0 ? -32768 : row == 1 ? 0 : 32767; std::memcpy(expected.data(), &value, 2); }
+        if (col == 2) { SQLINTEGER value = row == 0 ? (std::numeric_limits<SQLINTEGER>::min)() : row == 1 ? 0 : (std::numeric_limits<SQLINTEGER>::max)(); std::memcpy(expected.data(), &value, 4); }
+        if (col == 3) { SQLBIGINT value = row == 0 ? (std::numeric_limits<SQLBIGINT>::min)() : row == 1 ? 0 : (std::numeric_limits<SQLBIGINT>::max)(); std::memcpy(expected.data(), &value, 8); }
+        EXPECT_EQ(width, length);
+        for (SQLLEN byte = 0; byte < width; ++byte) EXPECT_EQ(expected[byte], output[byte + 1]);
+        EXPECT_EQ(0xa5, output[0]);
+        for (std::size_t byte = width + 1; byte < output.size(); ++byte) EXPECT_EQ(0xa5, output[byte]);
+      }
+      const auto completed = output; length = 83;
+
+      ASSERT_EQ(SQL_NO_DATA, SQLGetData(hstmt, col, SQL_C_BINARY, output.data() + 1, width, &length));
+      EXPECT_EQ(completed, output); EXPECT_EQ(83, length);
+    }
+  }
+
+  ASSERT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+
+  ASSERT_EQ(SQL_SUCCESS, SQLPrepare(hstmt, (SQLCHAR*)"SELECT CAST(? AS BIGINT)", SQL_NTS));
+  std::array<unsigned char, 12> output;
+  SQLLEN output_length = 79, input_length = 0; SQLBIGINT input = 42;
+
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt, 1, SQL_C_BINARY, output.data() + 1, 8, &output_length));
+  for (int scenario = 0; scenario < 3; ++scenario) {
+    const SQLBIGINT expected = scenario == 0 ? 42 : -42;
+    input = expected; input_length = scenario == 2 ? SQL_NULL_DATA : 0;
+    output.fill(0xa5); const auto before = output; output_length = 79;
+
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_SBIGINT, SQL_BIGINT, 19, 0, &input, 0, &input_length));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLExecute(hstmt));
+    input = 999; // Bound fetch consumes the owning execution snapshot.
+
+    ASSERT_EQ(SQL_SUCCESS, SQLFetch(hstmt));
+    if (scenario == 2) { EXPECT_EQ(SQL_NULL_DATA, output_length); EXPECT_EQ(before, output); }
+    else { EXPECT_EQ(8, output_length); EXPECT_EQ(0, std::memcmp(&expected, output.data() + 1, 8)); }
+    EXPECT_EQ(0xa5, output.front()); EXPECT_EQ(0xa5, output[9]); EXPECT_EQ(0xa5, output[10]); EXPECT_EQ(0xa5, output[11]);
+
+    ASSERT_EQ(SQL_NO_DATA, SQLFetch(hstmt));
+
+    ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(hstmt));
+  }
+}

@@ -13639,3 +13639,90 @@ TEST_F(BackendContractTest, BitInputPairUnsupportedTypesAndBindValidationKeepExi
   EXPECT_EQ(0x5a, bytes[0]); EXPECT_EQ(1, bytes[1]); EXPECT_EQ(0xa5, bytes[2]); EXPECT_EQ(0, length);
   EXPECT_EQ(0, seen->disconnects);
 }
+
+TEST_F(BackendContractTest, SignedIntegerBinaryResultRowWiseOffsetsPreflightAndRepairKeepCanaries) {
+  QueryResult result;
+  result.columns = {{"small", NativeTypeInfo{ScalarType::SmallInt, 5, 0, true}},
+      {"integer", NativeTypeInfo{ScalarType::Integer, 10, 0, true}},
+      {"big", NativeTypeInfo{ScalarType::BigInt, 19, 0, true}}};
+  result.rows = {{"11", "22", "33"}, {"44", "55", "66"}};
+  seen->date_result = result;
+  ASSERT_NO_FATAL_FAILURE(connect());
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_CURSOR_TYPE, (SQLPOINTER)SQL_CURSOR_STATIC, 0));
+  struct Page {
+    unsigned char before[3]{0xa1, 0xa2, 0xa3};
+    unsigned char small[2]{0xee, 0xee}; unsigned char middle[3]{0xb1, 0xb2, 0xb3};
+    unsigned char integer[4]{0xee, 0xee, 0xee, 0xee};
+    unsigned char big[8]{0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee};
+    SQLLEN lengths[3]{91, 92, 93}; SQLLEN indicators[3]{94, 95, 96};
+    unsigned char after[3]{0xc1, 0xc2, 0xc3};
+  } pages[2][2];
+  struct Status { SQLUSMALLINT before{81}, values[2]{71, 72}, after{82}; } status;
+  struct Count { SQLULEN before{83}, value{91}, after{84}; } count;
+  SQLULEN offset = sizeof(pages[0]);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)2, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_TYPE, (SQLPOINTER)sizeof(Page), 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_BIND_OFFSET_PTR, &offset, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROW_STATUS_PTR, status.values, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetStmtAttr(stmt, SQL_ATTR_ROWS_FETCHED_PTR, &count.value, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, pages[0][0].small, 2, &pages[0][0].lengths[0]));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 2, SQL_C_BINARY, pages[0][0].integer, 4, &pages[0][0].lengths[1]));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 3, SQL_C_BINARY, pages[0][0].big, 8, &pages[0][0].lengths[2]));
+  SQLHDESC ard{}; ASSERT_EQ(SQL_SUCCESS, SQLGetStmtAttr(stmt, SQL_ATTR_APP_ROW_DESC, &ard, 0, nullptr));
+  for (SQLSMALLINT col = 1; col <= 3; ++col) {
+    ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, col, SQL_DESC_INDICATOR_PTR, &pages[0][0].indicators[col - 1], 0));
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLExecDirect(stmt, (SQLCHAR*)"SELECT signed integers", SQL_NTS));
+  const auto queries = seen->queries;
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 3, SQL_DESC_DATA_PTR,
+      reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)() - 3), 0));
+  ASSERT_EQ(SQL_ERROR, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0)); EXPECT_EQ("HY024", state());
+  EXPECT_EQ(91u, count.value); EXPECT_EQ(71, status.values[0]); EXPECT_EQ(72, status.values[1]);
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 3, SQL_DESC_DATA_PTR, pages[0][0].big, 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0));
+  EXPECT_EQ(2u, count.value); EXPECT_EQ(SQL_ROW_SUCCESS, status.values[0]); EXPECT_EQ(SQL_ROW_SUCCESS, status.values[1]);
+  const auto verify_values = [&] {
+    for (std::size_t row = 0; row < 2; ++row) {
+      const SQLSMALLINT small = row ? 44 : 11; const SQLINTEGER integer = row ? 55 : 22; const SQLBIGINT big = row ? 66 : 33;
+      EXPECT_EQ(0, std::memcmp(&small, pages[1][row].small, 2));
+      EXPECT_EQ(0, std::memcmp(&integer, pages[1][row].integer, 4));
+      EXPECT_EQ(0, std::memcmp(&big, pages[1][row].big, 8));
+      EXPECT_EQ(2, pages[1][row].lengths[0]); EXPECT_EQ(4, pages[1][row].lengths[1]); EXPECT_EQ(8, pages[1][row].lengths[2]);
+      for (auto indicator : pages[1][row].indicators) EXPECT_EQ(0, indicator);
+    }
+  };
+  ASSERT_NO_FATAL_FAILURE(verify_values());
+  for (auto& page : pages[1]) {
+    std::fill(std::begin(page.small), std::end(page.small), 0xee);
+    std::fill(std::begin(page.integer), std::end(page.integer), 0xee);
+    std::fill(std::begin(page.big), std::end(page.big), 0xee);
+    page.lengths[0] = 91; page.lengths[1] = 92; page.lengths[2] = 93;
+    page.indicators[0] = 94; page.indicators[1] = 95; page.indicators[2] = 96;
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, pages[0][0].small, 1, &pages[0][0].lengths[0]));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_INDICATOR_PTR, &pages[0][0].indicators[0], 0));
+  ASSERT_EQ(SQL_ERROR, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0)); EXPECT_EQ("22003", state());
+  EXPECT_EQ(SQL_ROW_ERROR, status.values[0]); EXPECT_EQ(SQL_ROW_ERROR, status.values[1]); EXPECT_EQ(2u, count.value);
+  SQLLEN diagnostic_row = 0, diagnostic_column = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(SQL_HANDLE_STMT, stmt, 1, SQL_DIAG_ROW_NUMBER, &diagnostic_row, 0, nullptr));
+  ASSERT_EQ(SQL_SUCCESS, SQLGetDiagField(SQL_HANDLE_STMT, stmt, 1, SQL_DIAG_COLUMN_NUMBER, &diagnostic_column, 0, nullptr));
+  EXPECT_EQ(1, diagnostic_row); EXPECT_EQ(1, diagnostic_column);
+  for (auto& page : pages[1]) {
+    for (auto byte : page.small) EXPECT_EQ(0xee, byte);
+    for (auto byte : page.integer) EXPECT_EQ(0xee, byte);
+    for (auto byte : page.big) EXPECT_EQ(0xee, byte);
+    EXPECT_EQ(91, page.lengths[0]); EXPECT_EQ(92, page.lengths[1]); EXPECT_EQ(93, page.lengths[2]);
+    EXPECT_EQ(94, page.indicators[0]); EXPECT_EQ(95, page.indicators[1]); EXPECT_EQ(96, page.indicators[2]);
+  }
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(stmt, 1, SQL_C_BINARY, pages[0][0].small, 2, &pages[0][0].lengths[0]));
+  ASSERT_EQ(SQL_SUCCESS, SQLSetDescField(ard, 1, SQL_DESC_INDICATOR_PTR, &pages[0][0].indicators[0], 0));
+  ASSERT_EQ(SQL_SUCCESS, SQLFetchScroll(stmt, SQL_FETCH_FIRST, 0)); ASSERT_NO_FATAL_FAILURE(verify_values());
+  EXPECT_EQ(queries, seen->queries); EXPECT_EQ(0, seen->disconnects);
+  for (std::size_t page = 0; page < 2; ++page) for (std::size_t row = 0; row < 2; ++row) {
+    EXPECT_EQ(0xa1, pages[page][row].before[0]); EXPECT_EQ(0xa2, pages[page][row].before[1]); EXPECT_EQ(0xa3, pages[page][row].before[2]);
+    EXPECT_EQ(0xb1, pages[page][row].middle[0]); EXPECT_EQ(0xb2, pages[page][row].middle[1]); EXPECT_EQ(0xb3, pages[page][row].middle[2]);
+    EXPECT_EQ(0xc1, pages[page][row].after[0]); EXPECT_EQ(0xc2, pages[page][row].after[1]); EXPECT_EQ(0xc3, pages[page][row].after[2]);
+    if (page == 0) { for (auto byte : pages[page][row].big) EXPECT_EQ(0xee, byte); EXPECT_EQ(91, pages[page][row].lengths[0]); EXPECT_EQ(94, pages[page][row].indicators[0]); }
+  }
+  EXPECT_EQ(81, status.before); EXPECT_EQ(82, status.after); EXPECT_EQ(83u, count.before); EXPECT_EQ(84u, count.after);
+}
