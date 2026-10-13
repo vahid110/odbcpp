@@ -9951,3 +9951,119 @@ TEST_F(RedshiftSignedIntegerBinaryResultRealTest, FixedWidthsWholeBufferNullAndP
   }
   ASSERT_NO_FATAL_FAILURE(release_connection());
 }
+
+class RedshiftFloatingBinaryResultRealTest : public RedshiftNegativeNumericScaleRealTest {
+ protected:
+  void SetUp() override {
+    setup_admitted("ODBCPP_REDSHIFT_FLOATING_BINARY_RESULT_ADMISSION", "floating_binary_result_v1");
+    if (IsSkipped() || HasFatalFailure()) return;
+    const auto options = rs::odbc::ConnectionString::parse(connection_string_);
+    for (const auto& [key, required] : std::initializer_list<std::pair<const char*, std::size_t>>{
+         {"MAXSQLBYTES", 421}, {"MAXPARAMETERS", 2}, {"MAXPARAMETERBYTES", 32},
+         {"MAXPARAMETERTOTALBYTES", 64}, {"MAXCOLUMNS", 2}, {"MAXROWS", 5}, {"MAXCELLS", 10}, {"MAXMETADATAENTRIES", 6}}) {
+      const auto found = options.find(key); if (found == options.end()) continue;
+      std::size_t value{}; const auto& text = found->second;
+      const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+      ASSERT_EQ(std::errc{}, parsed.ec); ASSERT_EQ(text.data() + text.size(), parsed.ptr); ASSERT_GE(value, required);
+    }
+  }
+};
+TEST_F(RedshiftFloatingBinaryResultRealTest, FixedWidthsSpecialsNullAndPreparedOwningRefill) {
+  ASSERT_NO_FATAL_FAILURE(login("LOGINTIMEOUT", "5", 5, false));
+
+  const char* floating_sql = "SELECT r, d FROM (SELECT 1 AS ordinal, CAST(1.5 AS REAL) AS r, CAST(-42.5 AS DOUBLE PRECISION) AS d UNION ALL SELECT 2, CAST('-0' AS REAL), CAST('-0' AS DOUBLE PRECISION) UNION ALL SELECT 3, CAST('NaN' AS REAL), CAST('Infinity' AS DOUBLE PRECISION) UNION ALL SELECT 4, CAST('-Infinity' AS REAL), CAST('NaN' AS DOUBLE PRECISION) UNION ALL SELECT 5, CAST(NULL AS REAL), CAST(NULL AS DOUBLE PRECISION)) AS n ORDER BY ordinal";
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(known_sql(SQLExecDirect(hstmt_, (SQLCHAR*)floating_sql, SQL_NTS)));
+  for (int row = 0; row < 5; ++row) {
+    SCOPED_TRACE(row);
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLFetch(hstmt_)));
+    for (SQLUSMALLINT col = 1; col <= 2; ++col) {
+      SCOPED_TRACE(col);
+      const SQLLEN width = col == 1 ? 4 : 8;
+      std::array<unsigned char, 12> output; output.fill(0xa5); const auto before = output; SQLLEN length = 79;
+      if (row < 4) {
+        for (SQLLEN capacity = 0; capacity < width; ++capacity) {
+          SCOPED_TRACE(capacity);
+          ASSERT_TRUE(cap(window_end_, true));
+          ASSERT_TRUE(observed(SQLGetData(hstmt_, col, SQL_C_BINARY, output.data() + 1, capacity, &length), SQL_ERROR, "22003"));
+          EXPECT_EQ(before, output); EXPECT_EQ(79, length);
+        }
+      }
+      ASSERT_TRUE(cap(window_end_, true));
+      const auto data = row == 4 ? reinterpret_cast<void*>((std::numeric_limits<std::uintptr_t>::max)()) : output.data() + 1;
+      ASSERT_TRUE(observed(SQLGetData(hstmt_, col, SQL_C_BINARY, data, row == 4 ? 0 : width + 1, &length)));
+      if (row == 4) { EXPECT_EQ(SQL_NULL_DATA, length); EXPECT_EQ(before, output); }
+      else {
+        EXPECT_EQ(width, length);
+        if (col == 1) {
+          SQLREAL value{}; std::memcpy(&value, output.data() + 1, 4);
+          if (row == 2) EXPECT_TRUE(std::isnan(value));
+          else {
+            const SQLREAL expected = row == 0 ? 1.5f : row == 1 ? -0.0f : -std::numeric_limits<SQLREAL>::infinity();
+            EXPECT_EQ(0, std::memcmp(&expected, output.data() + 1, 4));
+          }
+        } else {
+          SQLDOUBLE value{}; std::memcpy(&value, output.data() + 1, 8);
+          if (row == 3) EXPECT_TRUE(std::isnan(value));
+          else {
+            const SQLDOUBLE expected = row == 0 ? -42.5 : row == 1 ? -0.0 : std::numeric_limits<SQLDOUBLE>::infinity();
+            EXPECT_EQ(0, std::memcmp(&expected, output.data() + 1, 8));
+          }
+        }
+        EXPECT_EQ(0xa5, output.front());
+        for (std::size_t byte = width + 1; byte < output.size(); ++byte) EXPECT_EQ(0xa5, output[byte]);
+      }
+      const auto completed = output; length = 83;
+      ASSERT_TRUE(cap(window_end_, true));
+      ASSERT_TRUE(observed(SQLGetData(hstmt_, col, SQL_C_BINARY, output.data() + 1, width, &length), SQL_NO_DATA));
+      EXPECT_EQ(completed, output); EXPECT_EQ(83, length);
+    }
+  }
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_NO_DATA));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_TRUE(known_sql(SQLPrepare(hstmt_, (SQLCHAR*)"SELECT CAST(? AS REAL), CAST(? AS DOUBLE PRECISION)", SQL_NTS)));
+  SQLREAL real_input = 1.5f; SQLDOUBLE double_input = -42.5;
+  SQLLEN real_indicator = 0, double_indicator = 0, real_length = 79, double_length = 81;
+  std::array<unsigned char, 6> real_output; std::array<unsigned char, 10> double_output;
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt_, 1, SQL_C_BINARY, real_output.data() + 1, 4, &real_length));
+  ASSERT_TRUE(cap(window_end_, true));
+  ASSERT_EQ(SQL_SUCCESS, SQLBindCol(hstmt_, 2, SQL_C_BINARY, double_output.data() + 1, 8, &double_length));
+  for (int scenario = 0; scenario < 3; ++scenario) {
+    SCOPED_TRACE(scenario);
+    const SQLREAL expected_real = scenario == 0 ? 1.5f : -0.0f;
+    const SQLDOUBLE expected_double = scenario == 0 ? -42.5 : -0.0;
+    real_input = expected_real; double_input = expected_double;
+    real_indicator = double_indicator = scenario == 2 ? SQL_NULL_DATA : 0;
+    real_output.fill(0xa5); double_output.fill(0xa5); const auto real_before = real_output; const auto double_before = double_output;
+    real_length = 79; double_length = 81;
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_FLOAT, SQL_REAL, 7, 0, &real_input, 0, &real_indicator));
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 2, SQL_PARAM_INPUT, SQL_C_DOUBLE, SQL_DOUBLE, 15, 0, &double_input, 0, &double_indicator));
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(known_sql(SQLExecute(hstmt_)));
+    real_input = 999; double_input = 999; // Fetch must use the owning execution result.
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLFetch(hstmt_)));
+    if (scenario == 2) {
+      EXPECT_EQ(SQL_NULL_DATA, real_length); EXPECT_EQ(SQL_NULL_DATA, double_length);
+      EXPECT_EQ(real_before, real_output); EXPECT_EQ(double_before, double_output);
+    } else {
+      EXPECT_EQ(4, real_length); EXPECT_EQ(8, double_length);
+      EXPECT_EQ(0, std::memcmp(&expected_real, real_output.data() + 1, 4));
+      EXPECT_EQ(0, std::memcmp(&expected_double, double_output.data() + 1, 8));
+    }
+    EXPECT_EQ(0xa5, real_output.front()); EXPECT_EQ(0xa5, real_output.back());
+    EXPECT_EQ(0xa5, double_output.front()); EXPECT_EQ(0xa5, double_output.back());
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(observed(SQLFetch(hstmt_), SQL_NO_DATA));
+    ASSERT_TRUE(cap(window_end_, true));
+    ASSERT_TRUE(known_sql(SQLCloseCursor(hstmt_)));
+  }
+  ASSERT_NO_FATAL_FAILURE(release_connection());
+}
