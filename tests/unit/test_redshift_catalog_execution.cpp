@@ -2256,7 +2256,9 @@ TEST(RedshiftRoutineSchemaPatterns, OmittedAndWildcardSchemasDiscoverOnlyMatchin
       EXPECT_EQ(ResultCell{"p"}, result->rows[row][2]);
     }
     session.connected = false; session.replies.clear();
-    if (!result->rows.empty()) EXPECT_EQ(ResultCell{"owned"}, result->rows[0][6]);
+    if (!result->rows.empty()) {
+      EXPECT_EQ(ResultCell{"owned"}, result->rows[0][6]);
+    }
   }
 }
 
