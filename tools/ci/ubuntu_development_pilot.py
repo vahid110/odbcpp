@@ -29,8 +29,8 @@ CHECKS = (
 )
 SELECTED = SUITES + CHECKS
 REGEX = '^(' + '|'.join(SELECTED) + ')$'
-SEED_HEAD = '9c0435d50bb02e0158c54d3abde9423f8d943541'
-CHANGED_HEAD = '196f5b3facd565dfc9a2b767d9dda8107229f453'
+SEED_HEAD = 'd424bc4a2f7a2b75a18ed3e8497c048ac483167b'
+CHANGED_HEAD = '3c441223f1dfecf9a9872faa5ea2781f8f925f4f'
 REAL_ROLES = ('seed-a', 'cold-b', 'cached-b')
 ADDED_CASES = (
     'BackendContractTest.FloatingBinaryResultRowWiseOffsetsPreflightCapacityAndRepair',
