@@ -5,11 +5,20 @@ cadence, the earlier 48-hour trial, per-feature live execution, routine extra-pr
 checks and mandatory separate API worker.
 Product scope, independent review, live-test authority and final acceptance remain.
 
+Human-approved parallel execution on 2026-10-13 supersedes the root-only
+implementation/qualification and no-new-agents restrictions of the 2026-10-11
+trial. [PARALLEL_WORKFLOW.md](PARALLEL_WORKFLOW.md) defines two package owners,
+automated qualification, shared independent review, coordinator integration and
+the separate source, resource and integration/live migration releases. The 12-hour cadence and all protected gates remain.
+
 ## Development loop
 
-- Use one incremental macOS/iODBC UCS4 working build for each typical coherent
-  candidate. Run focused tests, relevant primary regression and applicable
-  architecture, staging and packaging checks. Reuse its graph. Do not routinely
+- Use one owned incremental macOS/iODBC UCS4 working build for each active
+  coherent package where needed. Serialize heavy local configure/build/regression
+  work through `tools/development/with_build_slot.py` on this 8 GiB Mac; source
+  work and independent review can proceed concurrently. During migration, product
+  builds require the legacy owner's recorded resource release. Run focused tests, relevant
+  primary regression and applicable architecture, staging and packaging checks. Reuse its graph. Do not routinely
   build UCS2, sanitizer, alternative providers, Windows or Linux per candidate.
 - Inspect portability and affected contracts during source review; record other
   profiles as pending rather than claiming they passed. Collect their checks in
@@ -17,13 +26,18 @@ Product scope, independent review, live-test authority and final acceptance rema
   concrete safety/ABI defect needing immediate diagnosis, an explicit human
   request; record the reason. Pointer/layout/Unicode
   changes alone do not automatically trigger every profile.
-- Root owns implementation, qualification, integration, Git and CI as one
-  continuous workflow. Independent consequential source/result/final review
-  remains independent. No mandatory dedicated API worker or repeated author/
-  qualification handoff. Reuse an existing worker only for a substantial,
-  nonoverlapping package when it demonstrably saves time; do not create agents.
-- Keep reviewed primary-qualified pushes moving. The existing primary workflow
-  on pushes remains primary regression; it does not prove native Redshift.
+- Two package owners implement complete bounded deliverables, author tests,
+  investigate automated focused qualification and resolve independent review
+  findings. A shared reviewer pool reviews ready candidates independently.
+  The coordinator owns integration branch Git, combined/full CI, live admission,
+  accounting and cleanup. Workers can commit/push their leased worker branches
+  and open PRs; only the coordinator integrates. Shared-file authorship follows
+  exact package leases and interface plans rather than a blanket root-only rule.
+  Keep the handoff concise; do not add a dedicated API worker or permanent
+  qualifier/reviewer to each lane.
+- Keep reviewed primary-qualified integration pushes moving. A worker branch
+  push or PR alone does not establish accepted implementation delivery. The
+  existing primary workflow on pushes remains primary regression; it does not prove native Redshift.
 - Author meaningful happy, boundary and recovery GoogleTests with each product
   change. Queue new and affected live cases for the next 12-hour checkpoint;
   do not execute a separate live batch or prepare paid admission per feature.
@@ -42,12 +56,20 @@ implementation goals can close when those requirements are proved; their closure
 is not full platform, live or production acceptance.
 
 The human explicitly requests a continuous goal chain, not timer-only development.
-After proving an implementation goal complete, immediately create and start the
-next concrete ready authorized implementation goal in the same development flow;
-do not wait for the next timer wake or periodic qualification. Keep one active
-goal at a time. The existing continuation is a complementary recovery/checkpoint
-trigger, not the normal handoff mechanism. If no planned package is ready, record
+After proving an implementation goal complete, immediately select and dispatch
+ready authorized packages after recorded source-lane release in the same flow;
+do not wait for the next timer wake or periodic qualification. Keep at most one
+coordinator app goal, only within existing explicit goal authorization. Package
+entries on the work board track parallel work; do not create per-lane app goals
+or timers. Preserve the original scope of any existing app goal. The existing
+continuation is a complementary recovery/checkpoint trigger, not the normal handoff mechanism. If no planned package is ready, record
 the actual source dependency rather than manufacturing work.
+
+The coordinator records reviewed primary-qualified integration, not merely a
+worker's local completion, as accepted implementation throughput. The first six
+real dependency-compatible packages evaluate elapsed delivery time, review/build/
+coordinator waits, integration rework, later failures and acceptance-debt growth.
+Keep two lanes until those results support more concurrency.
 
 The private `continuation/acceptance-backlog.json` retains accumulated qualification
 debt across completed implementation goals. Each entry binds its feature, exact source/head, authored
@@ -96,7 +118,9 @@ this does not remove its original final acceptance or require an early test run.
   execution/accounting horizon; record concrete unresolved failures for continuation.
 - Keep one bounded reviewed test-heavy cluster window for genuinely ready tests
   and admitted corrections when authorized. Pause during longer development/build/
-  CI gaps, at window end or spending guards. Paid execution still requires fresh
+  CI gaps in that admitted test session, at window end or spending guards.
+  A genuinely executing bounded live batch may overlap acknowledged isolated
+  source lanes. Paid execution still requires fresh
   reviewed accounting/controls, canonical lock, one-use consumption, exact source/
   binary binding, bounded execution and exact-principal cleanup. Scheduling grants
   no new authority, resource, network, spending or authorization-horizon extension.
@@ -112,6 +136,13 @@ this does not remove its original final acceptance or require an early test run.
 - Preserve noncancelling CI queue groups and inspect GitHub's pending-run capacity
   before dispatch. Record a real queue wait instead of duplicating watchers.
 
-Keep the continuation, cost monitor and periodic/ad hoc cleanup active. The
-trial is reversible; change it only on further human instruction. Preserve old
+Keep the existing continuation and cost monitor at their actual authorized state;
+the migration does not restart a human-paused continuation. The human-approved
+isolated source lanes can overlap the immutable live checkpoint after its owner's
+scope/lease acknowledgment and `source_lanes_released=true`; heavy builds require
+resource release, and integration/live transfer requires terminal/cleanup/accounting
+release. Preserve the legacy warm-source/build pause and existing timer state;
+new lanes do not await full live acceptance. Keep
+periodic/ad hoc cleanup under coordinator ownership. The parallel trial is
+reversible; change it only on further human instruction. Preserve old
 results, immutable candidates, original failures and unrelated dirty worktrees.

@@ -7,20 +7,32 @@ description: Prepare, qualify, review and integrate a bounded ODBCPP implementat
 
 Use `AGENTS.md` for repository rules and the active handoff for current facts.
 Apply its build storage and periodic cleanup policy before resource admission and
-at batch closure; root owns the consolidated implementation/qualification/integration loop.
+at batch closure; the coordinator owns integration, shared resources and cleanup.
+Apply `PARALLEL_WORKFLOW.md` for the human-approved two-lane execution model and
+separate source, resource and integration/live migration releases. The 12-hour cadence and protected acceptance stay unchanged.
 Do not turn this workflow into new product scope or execution permission.
 
 ## Select and isolate
 
 Read the actual Git state, applicable plans and current task evidence. Name the
 contract gap and observable completion condition before selecting files. Check
-the current Redshift product task and actual agents. Root implements and qualifies
-coherent batches directly; reuse an existing worker only for a substantial
-nonoverlapping package that saves time. Independent review stays separate.
+the current Redshift product task, work board and actual agents. After the
+coordinator records `source_lanes_released=true` from the existing owner's scope/
+lease acknowledgment, dispatch up to two dependency-compatible complete packages. Package
+owners implement and investigate automated focused qualification; independent
+reviewers are drawn from a shared pool when candidates are ready. Do not create
+permanent three-agent sets, per-lane app goals or timers. Setup can proceed now,
+and released source lanes can implement in isolation while the existing immutable
+live checkpoint remains owned. Product builds require `heavy_builds_released=true`
+from resource release; integration/live transfer requires the owner's terminal,
+reaps, principal cleanup and accounting release (`integration_live_released=true`).
+Pending live acceptance is not a blanket blocker for isolated source packages.
 
 For independent implementation, inspect attached managed worktrees first.
 Preserve dirty historical checkouts. Create a new managed worktree at the exact
-selected commit if no suitable checkout exists; use the returned directory, not
+selected integration commit if no suitable checkout exists; explicitly select
+`codex/transport-foundation` and pin its exact head rather than using a tool's
+remote-default branch. Use the returned directory, not
 the integration checkout. A read-only audit can use existing immutable evidence.
 Do not relocate a running build or silently replace an accepted scratch path.
 
@@ -32,7 +44,11 @@ Reuse the existing architecture checks; do not create a standalone test batch
 for a prose-only policy update or defer common ownership without a disposition.
 
 Every delegated assignment states baseline, owned files, permitted actions,
-deliverable, required checks and stop condition. Root integrates shared files.
+deliverable, required checks and stop condition. Record leased contracts and
+interface dependencies before concurrent work. A bounded lease can include
+SDK/CMake/CI/crypto/ODBC files; serialize overlapping leases and prerequisite
+contract changes. Workers may commit/push their assigned branches and open PRs;
+the coordinator alone changes the integration branch and integrates reviewed bytes.
 Return an exact patch and evidence rather than restoring an old whole CMake,
 manifest or plan file over current work.
 
@@ -42,6 +58,10 @@ Preserve behavior outside the selected contract. Keep existing test assertions;
 repair a faulty fixture only with a source-backed explanation and retained first
 failure. Choose checks that test observable behavior or a meaningful boundary.
 Low-impact prose changes need review, not a repeated full product build.
+Use `tools/development/with_build_slot.py` for one heavy configure/build/regression
+slot on this 8 GiB host. Keep an owned build directory and durable retention reason.
+Do not bypass the legacy resource-release fence, run duplicate heavy builds or replay a
+passed gate just because another lane has completed.
 
 Record actual source/configuration/executable identity, selected test inventory,
 exit status and qualification limits. Source checks and mocked controls do not
@@ -65,8 +85,8 @@ source/binary binding, bounded execution and PostgreSQL/process cleanup.
 
 Reviewed primary-qualified commits and pushes continue with full-CI/live
 acceptance pending. Author live GoogleTests with the feature and queue their
-execution; do not create per-feature paid admission. Root uses the existing
-continuation and private ci-cadence.json for a combined checkpoint every12h:
+execution; do not create per-feature paid admission. The coordinator uses the
+existing continuation and private ci-cadence.json for a combined checkpoint every12h:
 first make full GitHub CI green on the exact ready pushed head, then run the
 accumulated new/affected and applicable authorized Redshift regression cases in
 one reviewed finite live batch. Group failures into coherent reviewed fixes,
@@ -96,12 +116,16 @@ do not weaken tests or mix unrelated source into a claimed repair-only candidate
 
 Report what changed, why, actual checks and remaining limits. Mark only the
 finite package complete; synthetic milestones do not close native acquisition
-and verified login. Update current handoff facts in place and select or continue the next
-ready product task. Preserve archived failures and protected cloud
-admission. Keep secrets and credential/accounting artifacts outside the repo.
+and verified login. Return the concise candidate handoff specified in
+`PARALLEL_WORKFLOW.md`; report worker completion separately from accepted integration. The coordinator updates
+current handoff/work-board facts in place and selects or continues the next
+ready authorized product package after applicable source-lane release. Preserve archived
+failures and protected cloud admission. Keep secrets and credential/accounting artifacts outside the repo.
 
-The app's implementation goals chain immediately after verified phase closure;
-the existing timer complements the chain and runs accumulated acceptance.
+The coordinator's existing authorized implementation goals chain immediately after
+verified integration closure; the existing timer complements execution and runs
+accumulated acceptance. Work-board entries track lanes without per-lane app goals
+or timers. Preserve actual human pauses during migration.
 Preserve full-CI/live/final debt in continuation/acceptance-backlog.json before
 closing any implementation goal. Existing full-acceptance app objectives require
 supported redefinition or actual full closure; never mark them complete by prose
@@ -132,6 +156,8 @@ source/binary binding, independent review and exact-principal cleanup.
 
 Group ready, reviewed live scenarios into one finite cluster session with explicit
 per-case and aggregate statement/time bounds, durable one-use admission and
-verified exact-principal cleanup and pause. Keep the cluster paused during coding,
-builds, CI and longer gaps; do not keep it running to await speculative readiness.
-Spending, resource, principal, network and authorization horizons are unchanged.
+verified exact-principal cleanup and pause. Keep the cluster paused during gaps
+in its admitted test session, including coding/builds/CI needed for that session;
+do not keep it running to await speculative readiness. A genuinely executing
+bounded live batch may overlap acknowledged isolated source lanes. Spending,
+resource, principal, network and authorization horizons are unchanged.

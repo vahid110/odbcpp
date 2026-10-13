@@ -3,6 +3,9 @@
 For implementation, qualification and integration batches, use the project skill
 at [.agents/skills/odbcpp-development-batch/SKILL.md](.agents/skills/odbcpp-development-batch/SKILL.md).
 It defines the repeatable workflow; this file defines durable repository rules.
+The human-approved 2026-10-13 parallel execution model is defined in
+[PARALLEL_WORKFLOW.md](PARALLEL_WORKFLOW.md). It supersedes root-only implementation
+and blanket shared-file author restrictions; architecture and acceptance remain.
 
 ## Architecture and ownership
 
@@ -25,25 +28,32 @@ It defines the repeatable workflow; this file defines durable repository rules.
   not only filenames or passing tests. Verify header-owner/staging manifests and
   applicable architecture/public-first-include checks. These mechanical checks
   support, but do not replace, the semantic ownership review.
-- One integration owner controls shared SDK/CMake/CI/crypto/ODBC files, commits
-  and pushes. Delegate finite nonoverlapping packages with an exact baseline,
-  owned files, checks, deliverable and stopping condition.
+- One coordinator owns the integration branch, integration commits/pushes,
+  combined qualification, live admission/accounting and cleanup. Two package
+  owners may implement, test, investigate failures and commit/push their assigned
+  worker branches and open candidate PRs. Finite assignments state exact baseline,
+  leased files/contracts, permitted actions, checks, deliverable and stop condition.
+  SDK/CMake/CI/crypto/ODBC authorship is allowed in a bounded package with an exact
+  lease and interface plan; overlapping edits require sequencing or reassignment.
+  Package owners do not merge into or push the integration branch.
 - Inspect actual agent state. A delivered package is not continuing work. Check
   SDK/core, Redshift catalog/types, MySQL and authentication at continuation
   checkpoints; distinguish active work from a named prerequisite or wait.
-- Apply the human-approved consolidated Redshift workflow in
-  `DEVELOPMENT_WORKFLOW.md`: root owns implementation through qualification and
-  integration; independent review remains separate. Do not require a dedicated
-  API worker or create repeated handoffs for small coherent changes. Reuse an
-  existing worker only for a substantial nonoverlapping package that saves time.
+- Apply `PARALLEL_WORKFLOW.md` and `DEVELOPMENT_WORKFLOW.md`: package owners
+  finish implementation and focused qualification; automated runners execute
+  checks; a shared independent reviewer pool reviews ready candidates. The
+  coordinator schedules dependencies/resources and integrates exact reviewed
+  bytes. Do not create a permanent developer/qualifier/reviewer trio per lane or
+  repeated handoffs for small coherent changes.
 - Follow the goal distinction in `DEVELOPMENT_WORKFLOW.md`: future product
   implementation goals close after reviewed primary-qualified commit/push and
   recorded acceptance debt. The periodic checkpoint and final release still own
   all full-CI/live/final gates. Existing full-acceptance goals retain their scope;
   scheduled acceptance must not stop ready authorized implementation.
-  Immediately start the next ready implementation goal after verified closure;
-  do not wait for a timer tick. Preserve all accumulated gates in the private
-  acceptance backlog, with truthful supported app-goal transitions.
+  Immediately dispatch the next ready authorized package after verified closure
+  and applicable source-lane release; do not wait for a timer tick. Keep package state on the
+  work board, without per-lane app goals or timers. Preserve all accumulated gates
+  in the private acceptance backlog, with truthful supported app-goal transitions.
 - Before ending a development turn, reconcile actual workers and the next
   product task with the handoff. Completed, selection-only or idle workers are
   not active implementation. Do not invent work to fill a lane or let routine
@@ -62,9 +72,11 @@ It defines the repeatable workflow; this file defines durable repository rules.
   current CMake rejects a MySQL product build. Inspect real options and target
   inventories rather than assuming every historical preset is valid.
 - Use distinct owned build directories. For Redshift, follow [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md):
-  one incremental macOS/iODBC UCS4 development build and 12-hour full
-  qualification. Run focused checks during development and relevant
-  primary regression once per coherent batch. Keep full final acceptance gates.
+  an owned incremental macOS/iODBC UCS4 development build per active package
+  where needed and 12-hour full qualification. This 8 GiB Mac has one heavy-build
+  slot, acquired through `tools/development/with_build_slot.py`; migration product
+  builds require the legacy owner's recorded resource release. Run focused checks during
+  development and relevant primary regression once per coherent batch. Keep full final acceptance gates.
   Inspect `.github/workflows/` and `cmake/Tests.cmake` for the current graph.
 - Preserve original failures. Separate source inspection, compile/link,
   synthetic runtime, native local proof and platform CI. Bind results to actual
@@ -78,7 +90,7 @@ It defines the repeatable workflow; this file defines durable repository rules.
 
 ## Build storage and periodic cleanup
 
-Root owns cleanup within the consolidated workflow. Use the existing
+The coordinator owns cleanup across the lanes. Use the existing
 continuation timer, with no separate cleanup agent or timer.
 
 - Check actual free space at each continuation. Inventory obsolete project build
@@ -118,7 +130,15 @@ On the authorized development host, read
 `~/.local/state/odbcpp/continuation/current-handoff.txt` for changing tasks,
 evidence and protected admission constraints. Replace current facts there;
 archive superseded evidence without copying full history into timer prompts.
-The handoff and a goal do not create new cloud authority.
+The handoff and a goal do not create new cloud authority. Read the work board for
+package leases and actual lane states. During migration, the existing live chat
+retains its immutable source/binary/control checkpoint and live authority. Setup
+can proceed now; bounded isolated source packages can start after its scope/lease
+acknowledgment and recorded `source_lanes_released=true`. Heavy product builds
+require recorded resource release (`heavy_builds_released=true`); integration/live
+cutover requires terminal/reaps/principal cleanup/accounting release
+(`integration_live_released=true`). Pending live acceptance alone does not block
+isolated source work. See `PARALLEL_WORKFLOW.md`.
 
 Keep the existing 15-minute continuation and separate cost monitor active until
 an explicit stop or their actual completion condition. No per-agent timers.
@@ -161,6 +181,8 @@ source/binary binding, independent review and exact-principal cleanup.
 
 Group ready, reviewed live scenarios into one finite cluster session with explicit
 per-case and aggregate statement/time bounds, durable one-use admission and
-verified exact-principal cleanup and pause. Keep the cluster paused during coding,
-builds, CI and longer gaps; do not keep it running to await speculative readiness.
-Spending, resource, principal, network and authorization horizons are unchanged.
+verified exact-principal cleanup and pause. Keep the cluster paused during gaps
+in its admitted test session, including coding/builds/CI needed for that session;
+do not keep it running to await speculative readiness. A genuinely executing
+bounded live batch may overlap acknowledged isolated source lanes. Spending,
+resource, principal, network and authorization horizons are unchanged.
