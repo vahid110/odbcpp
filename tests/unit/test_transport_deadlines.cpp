@@ -155,9 +155,13 @@ private:
 
 class TLSSleepingServer {
 public:
+  enum class PeerLifetime { Sleeping, UntilReleased };
+
   explicit TLSSleepingServer(std::chrono::milliseconds sleep_for,
-                            bool send_close_notify = false, bool send_prefix = false)
+                            bool send_close_notify = false, bool send_prefix = false,
+                            PeerLifetime lifetime = PeerLifetime::Sleeping)
       : sleep_for_(sleep_for), send_close_notify_(send_close_notify), send_prefix_(send_prefix),
+        lifetime_(lifetime),
         context_(SSL_CTX_new(TLS_server_method())) {
     if (!context_) throw std::runtime_error("failed to create TLS test context");
     configure_certificate();
@@ -214,7 +218,16 @@ public:
           }
           handshake_ready_.notify_all();
           if (send_prefix_) { const char prefix='a'; (void)SSL_write(ssl,&prefix,1); }
-          std::this_thread::sleep_for(sleep_for_);
+          if (lifetime_ == PeerLifetime::UntilReleased) {
+            std::unique_lock lock(peer_mutex_);
+            // A fixture safety bound, independent of the transport deadline.
+            // Expiry is reported as a fixture failure after the worker is joined.
+            peer_watchdog_expired_ = !peer_ready_.wait_for(lock, 15s, [this] {
+              return peer_released_;
+            });
+          } else {
+            std::this_thread::sleep_for(sleep_for_);
+          }
           if (send_close_notify_) SSL_shutdown(ssl);
         }
         SSL_free(ssl);
@@ -224,9 +237,22 @@ public:
   }
 
   ~TLSSleepingServer() {
+    if (lifetime_ == PeerLifetime::UntilReleased) release_peer();
     close_test_socket(listener_);
     if (worker_.joinable()) worker_.join();
     SSL_CTX_free(context_);
+    if (lifetime_ == PeerLifetime::UntilReleased) {
+      EXPECT_FALSE(peer_watchdog_expired_)
+          << "TLS fixture peer hold exceeded its 15s safety watchdog";
+    }
+  }
+
+  void release_peer() {
+    {
+      std::lock_guard lock(peer_mutex_);
+      peer_released_ = true;
+    }
+    peer_ready_.notify_all();
   }
 
   uint16_t port() const noexcept { return port_; }
@@ -283,6 +309,11 @@ private:
   std::chrono::milliseconds sleep_for_;
   bool send_close_notify_;
   bool send_prefix_;
+  PeerLifetime lifetime_;
+  std::mutex peer_mutex_;
+  std::condition_variable peer_ready_;
+  bool peer_released_{false};
+  bool peer_watchdog_expired_{false};
   SSL_CTX* context_{};
   test_socket_t listener_{invalid_test_socket};
   uint16_t port_{};
@@ -1392,7 +1423,10 @@ TEST(CancellationSocketWaitTest, ArmedUnlimitedWaitObservesFrozenCutoffWithoutCl
 }
 
 TEST(CancellationTlsWaitTest, ArmedPartialPlaintextRetainsPrefixAndRetryStateUntilFrozenCutoff) {
-  TLSSleepingServer server(5800ms,false,true);
+  // Keep the peer alive until the assertions finish: a server-relative sleep
+  // can otherwise expire before the later client-relative frozen cutoff.
+  TLSSleepingServer server(5800ms,false,true,
+      TLSSleepingServer::PeerLifetime::UntilReleased);
   TLSTransport transport(DeadlineModel::Strict);
   // This fixture isolates the encrypted wait/retry primitive. Verified trust
   // snapshot and wrong-host refusal are separately exercised above; no verified
@@ -1410,12 +1444,14 @@ TEST(CancellationTlsWaitTest, ArmedPartialPlaintextRetainsPrefixAndRetryStateUnt
   ASSERT_EQ(std::future_status::timeout,receive.wait_for(100ms));
   const auto claim=rs::util::Clock::now();ASSERT_TRUE(control->freeze(rs::util::Deadline::max(),claim));
   auto result=receive.get();ASSERT_TRUE(result.has_error());
-  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout),result.error());
+  EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::Timeout),result.error()) << result.error_message();
   EXPECT_EQ(std::byte{'a'},plaintext[0]);EXPECT_EQ(std::byte{0x5a},plaintext[1]);
   EXPECT_GE(rs::util::Clock::now(),claim+5s);EXPECT_LT(rs::util::Clock::now(),claim+6s);
   transport.cancellation_wait({});
   const std::array<std::byte,1> output{std::byte{'x'}};
-  EXPECT_TRUE(transport.send(output,rs::util::make_deadline(100ms)).has_value());
+  auto sent = transport.send(output,rs::util::make_deadline(100ms));
+  EXPECT_TRUE(sent.has_value()) << sent.error_message();
+  server.release_peer();
   transport.close();
 }
 
