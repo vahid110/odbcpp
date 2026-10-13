@@ -763,6 +763,23 @@ RedshiftRoutineUsage redshift_routine_usage(const QueryResult& result) {
   for(const auto& row:result.rows){add(used.cells,row.size());add(used.bytes,routine_cell_bytes(row));}
   return used;
 }
+RedshiftRoutineUsage redshift_routine_storage_usage(const std::vector<RedshiftRoutine>& routines) {
+  RedshiftRoutineUsage used{};
+  const auto add=[](std::size_t& total,std::size_t n) {
+    total=n>std::numeric_limits<std::size_t>::max()-total?std::numeric_limits<std::size_t>::max():total+n;
+  };
+  for(const auto& routine:routines) {
+    add(used.rows,1);add(used.cells,7);add(used.cells,routine.arguments.size());
+    add(used.bytes,routine.name.size());add(used.name_bytes,routine.name.size());
+    add(used.bytes,routine.signature.size());add(used.name_bytes,routine.signature.size());
+    for(const auto& argument:routine.arguments) {
+      add(used.bytes,argument.size());add(used.name_bytes,argument.size());
+    }
+    if(routine.return_type)add(used.bytes,routine.return_type->size());
+    if(routine.remarks)add(used.bytes,routine.remarks->size());
+  }
+  return used;
+}
 BackendError redshift_routine_limit() {
   BackendError error{rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),"Redshift routine catalog budget exceeded"};
   error.operation=BackendOperation::ExecuteCatalog;

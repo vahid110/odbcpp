@@ -2619,3 +2619,88 @@ TEST(RedshiftRoutineSchemaPatterns, SelectedSchemaRowsRemainChargedWhileRoutineS
       R"(SHOW PROCEDURES FROM SCHEMA "db"."a";)"}),session.commands);
   routine_schema_no_fallback(session);
 }
+
+TEST(RedshiftRoutineSchemaPatterns, InvalidSchemaSnapshotPrecedesRawStorageOverflow) {
+  for(const auto snapshot:std::array<SessionSnapshot,3>{{
+      {SessionState::Unknown,SessionDisposition::Retire},
+      {SessionState::Transaction,SessionDisposition::ResetRequired},
+      {SessionState::Idle,SessionDisposition::Retire}}}) {
+    SCOPED_TRACE(static_cast<int>(snapshot.state));
+    RoutineSchemaSession session;ResponseLimits response;response.max_wire_bytes=512;
+    ASSERT_TRUE(session.budgets(ResultLimits{},response));
+    auto schemas=routine_schema_rows({
+        {"db","a","1","local",std::nullopt,std::nullopt,std::nullopt}});
+    ASSERT_GT(redshift_routine_schema_usage(schemas).bytes,response.max_wire_bytes);
+    session.replies.emplace_back(std::move(schemas),snapshot);
+    const auto result=session.execute_catalog(ProceduresCatalogRequest{"db","%","p"},rs::util::Deadline::max());
+    ASSERT_FALSE(result);
+    EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ProtocolError),result.error());
+    EXPECT_EQ(BackendErrorClass::InvalidMetadata,result.backend_error().error_class);
+    EXPECT_EQ(snapshot.state,result.session_snapshot().state);
+    EXPECT_EQ(SessionDisposition::Retire,result.session_snapshot().disposition);
+    EXPECT_EQ((std::vector<std::string>{R"(SHOW SCHEMAS FROM DATABASE "db";)"}),session.commands);
+    routine_schema_no_fallback(session);
+  }
+}
+
+TEST(RedshiftRoutineSchemaPatterns, DestroyedRoutineStorageDoesNotConsumeLaterSchemaPeakBudget) {
+  for(const auto cap:{4u,5u}) {
+    SCOPED_TRACE(cap);
+    RoutineSchemaSession session;ResultLimits limits;limits.max_rows=cap;
+    ASSERT_TRUE(session.budgets(limits));
+    session.replies.emplace_back(routine_schema_rows({
+        {"db","a","1","local",std::nullopt,std::nullopt,std::nullopt},
+        {"db","z","1","local",std::nullopt,std::nullopt,std::nullopt}}),session.snapshot);
+    for(const char* schema:{"a","z"}) {
+      session.replies.emplace_back(routine_discovery(false,
+          {{"db",schema,"p","0","",std::nullopt,"owning"}}),session.snapshot);
+      session.replies.emplace_back(routine_discovery(true,{}),session.snapshot);
+    }
+    const auto deadline=rs::util::make_deadline(std::chrono::seconds{3});
+    const auto result=session.execute_catalog(ProceduresCatalogRequest{"db","%","p"},deadline);
+    const std::vector<std::string> commands{R"(SHOW SCHEMAS FROM DATABASE "db";)",
+        R"(SHOW PROCEDURES FROM SCHEMA "db"."a";)",R"(SHOW FUNCTIONS FROM SCHEMA "db"."a";)",
+        R"(SHOW PROCEDURES FROM SCHEMA "db"."z";)",R"(SHOW FUNCTIONS FROM SCHEMA "db"."z";)"};
+    if(cap==5) {
+      // True peak: two selected identities + first unpublished output +
+      // second raw routine row + its owning copy. First routine is destroyed.
+      ASSERT_TRUE(result);ASSERT_EQ(2u,result->rows.size());EXPECT_EQ(commands,session.commands);
+      EXPECT_EQ(ResultCell{"a"},result->rows[0][1]);EXPECT_EQ(ResultCell{"z"},result->rows[1][1]);
+      session.replies.clear();session.connected=false;
+      EXPECT_EQ(ResultCell{"owning"},result->rows[0][6]);EXPECT_EQ(ResultCell{"owning"},result->rows[1][6]);
+    } else {
+      // Four cannot fit the simultaneous second-schema copy: selected names
+      // and the already accumulated unpublished output must remain charged.
+      ASSERT_FALSE(result);EXPECT_EQ(rs::util::make_error_code(rs::util::DbErrorCode::ResourceLimit),result.error());
+      EXPECT_EQ(SessionDisposition::Reusable,result.session_snapshot().disposition);
+      EXPECT_EQ(std::vector<std::string>(commands.begin(),commands.end()-1),session.commands);
+      EXPECT_EQ(1u,session.replies.size());
+    }
+    EXPECT_EQ(std::vector<rs::util::Deadline>(session.commands.size(),deadline),session.deadlines);
+    routine_schema_no_fallback(session);
+  }
+}
+
+TEST(RedshiftRoutineSchemaPatterns, DestroyedRoutineSignatureAndTextStorageIsReleasedAcrossSchemas) {
+  RoutineSchemaSession session;ResponseLimits response;response.max_wire_bytes=3200;
+  ASSERT_TRUE(session.budgets(ResultLimits{},response));
+  session.replies.emplace_back(routine_schema_rows({
+      {"db","a","1","local",std::nullopt,std::nullopt,std::nullopt},
+      {"db","z","1","local",std::nullopt,std::nullopt,std::nullopt}}),session.snapshot);
+  const std::string remarks(900,'r');
+  for(const char* schema:{"a","z"}) {
+    session.replies.emplace_back(routine_discovery(false,
+        {{"db",schema,"p","2","integer,numeric","void",remarks}}),session.snapshot);
+    session.replies.emplace_back(routine_discovery(true,{}),session.snapshot);
+  }
+  // First-schema arguments, signature, return type and remarks are gone before
+  // the second schema. Both owning output remarks remain charged and retained.
+  const auto result=session.execute_catalog(ProceduresCatalogRequest{"db","%","p"},rs::util::Deadline::max());
+  ASSERT_TRUE(result);ASSERT_EQ(2u,result->rows.size());
+  EXPECT_EQ((std::vector<std::string>{R"(SHOW SCHEMAS FROM DATABASE "db";)",
+      R"(SHOW PROCEDURES FROM SCHEMA "db"."a";)",R"(SHOW FUNCTIONS FROM SCHEMA "db"."a";)",
+      R"(SHOW PROCEDURES FROM SCHEMA "db"."z";)",R"(SHOW FUNCTIONS FROM SCHEMA "db"."z";)"}),session.commands);
+  session.replies.clear();session.connected=false;
+  EXPECT_EQ(ResultCell{remarks},result->rows[0][6]);EXPECT_EQ(ResultCell{remarks},result->rows[1][6]);
+  routine_schema_no_fallback(session);
+}

@@ -73,6 +73,9 @@ class RedshiftRoutineBudget {
   std::size_t exchanges_{0};
 };
 RedshiftRoutineUsage redshift_routine_usage(const QueryResult& result);
+// Exact native identity/signature/token charges retained by the routine
+// normalizer. Release only after the owning routine vector is destroyed.
+RedshiftRoutineUsage redshift_routine_storage_usage(const std::vector<RedshiftRoutine>& routines);
 BackendError redshift_routine_limit();
 std::optional<std::string> redshift_routine_schema(const CatalogRequest& request);
 // Backend-private SHOW schema selection. The caller keeps the raw response
