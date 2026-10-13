@@ -28,9 +28,12 @@ The future `primary_key_missing_legacy` profile has an empty object inventory an
 
 `RedshiftCancelHandleRealTest.IdleNeedDataRefillNullAndSiblingRemainOwning`
 requires `ODBCPP_REDSHIFT_CANCEL_HANDLE_ADMISSION=cancel_handle_happy_v1` plus
-fresh reviewed finite admission. One verified TLS login, at most five SQL
-exchanges (one prepare, two prepared executions, two fixed SELECTs), 40 seconds
-aggregate and five seconds per operation; no fixture objects, DDL or DML.
+fresh reviewed finite admission. One verified TLS login, at most seven SQL
+command API attempts (one prepare, four Execute calls, two fixed SELECTs), 40
+seconds aggregate and five seconds per operation; no fixture objects, DDL or DML.
+Two Execute calls remain local: fixed numeric data-at-execution is refused with
+HYC00, then a supported text token enters NeedData for cancellation. The case
+explicitly restores the ordinary integer binding before value/NULL recovery.
 NeedData cancellation is local before dispatch. The case checks owning sibling
 rows, NULL/refill recovery, idle cursor preservation and DBC IM001 refusal.
 It does not demonstrate active native server cancellation. That timing-dependent

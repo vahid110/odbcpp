@@ -8325,10 +8325,23 @@ TEST_F(RedshiftCancelHandleRealTest, IdleNeedDataRefillNullAndSiblingRemainOwnin
       SQL_INTEGER, 10, 0, &input_, sizeof(input_), &input_length_));
   ASSERT_TRUE(cap(window_end_, true));
   auto result = SQLExecute(hstmt_);
+  if (result != SQL_ERROR) unknown_completion_ = true;
+  ASSERT_EQ(SQL_ERROR, result);
+  const auto deferred_state = get_error(SQL_HANDLE_STMT, hstmt_);
+  if (deferred_state != "HYC00") unknown_completion_ = true;
+  ASSERT_EQ("HYC00", deferred_state);
+  // Fixed numeric data-at-execution remains unsupported. Enter NEED_DATA with
+  // a supported text token, then restore the ordinary integer binding.
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+      SQL_VARCHAR, 2, 0, &input_, 0, &input_length_));
+  ASSERT_TRUE(cap(window_end_, true));
+  result = SQLExecute(hstmt_);
   if (result != SQL_NEED_DATA) unknown_completion_ = true;
   ASSERT_EQ(SQL_NEED_DATA, result);
   ASSERT_EQ(SQL_SUCCESS, SQLCancelHandle(SQL_HANDLE_STMT, hstmt_));
   input_length_ = 0; input_ = 41;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(hstmt_, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+      SQL_INTEGER, 10, 0, &input_, sizeof(input_), &input_length_));
   ASSERT_NO_FATAL_FAILURE(typed_row(false));
   input_length_ = SQL_NULL_DATA;
   ASSERT_NO_FATAL_FAILURE(typed_row(true));

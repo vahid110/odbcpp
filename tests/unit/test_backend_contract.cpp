@@ -13002,6 +13002,13 @@ TEST_F(BackendContractTest, CancelHandleNeedDataResetKeepsOwningBindingsAndAllow
   ASSERT_NO_FATAL_FAILURE(connect());
   ASSERT_EQ(SQL_SUCCESS, SQLPrepare(stmt, (SQLCHAR*)"rows ?", SQL_NTS));
   char token[8]{}; SQLLEN indicator = SQL_DATA_AT_EXEC;
+  SQLINTEGER number = 41;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+      SQL_INTEGER, 10, 0, &number, sizeof(number), &indicator));
+  const auto before_refusal = seen->queries;
+  ASSERT_EQ(SQL_ERROR, SQLExecute(stmt));
+  EXPECT_EQ("HYC00", state(SQL_HANDLE_STMT, stmt));
+  EXPECT_EQ(before_refusal, seen->queries);
   ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR,
       SQL_VARCHAR, 8, 0, token, sizeof(token), &indicator));
   ASSERT_EQ(SQL_NEED_DATA, SQLExecute(stmt));
@@ -13014,6 +13021,32 @@ TEST_F(BackendContractTest, CancelHandleNeedDataResetKeepsOwningBindingsAndAllow
   ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
   ASSERT_EQ(1u, seen->parameters.size());
   EXPECT_EQ(std::optional<std::string>{"abc"}, seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  // Model the integer parameter description and execution metadata explicitly;
+  // the generic fake otherwise describes Binary and returns no parameter types.
+  const NativeTypeInfo integer_type{ScalarType::Integer, 10, 0, true};
+  seen->parameter_description_types = std::vector<NativeTypeInfo>{integer_type};
+  QueryResult integer_rows;
+  integer_rows.columns = {{"answer", integer_type}};
+  integer_rows.rows = {{"41"}};
+  integer_rows.normalized_parameter_types = {integer_type};
+  seen->date_result = integer_rows;
+  indicator = 0;
+  ASSERT_EQ(SQL_SUCCESS, SQLBindParameter(stmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG,
+      SQL_INTEGER, 10, 0, &number, sizeof(number), &indicator));
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"41"}, seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  indicator = SQL_NULL_DATA;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_FALSE(seen->parameters[0].value);
+  ASSERT_EQ(SQL_SUCCESS, SQLCloseCursor(stmt));
+  indicator = 0; number = 43;
+  ASSERT_EQ(SQL_SUCCESS, SQLExecute(stmt));
+  ASSERT_EQ(1u, seen->parameters.size());
+  EXPECT_EQ(std::optional<std::string>{"43"}, seen->parameters[0].value);
   ASSERT_EQ(SQL_SUCCESS, SQLCancelHandle(SQL_HANDLE_STMT, stmt));
   EXPECT_EQ(SQL_SUCCESS, SQLFetch(stmt));
 }
