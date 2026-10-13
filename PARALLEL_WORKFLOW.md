@@ -6,6 +6,57 @@ This supersedes root-only implementation/qualification, blanket root authorship
 of shared files and the earlier prohibition on creating implementation agents.
 It does not supersede cloud authority, qualification cadence or retained evidence.
 
+## Local development reset — human directed 2026-10-13
+
+The human instruction “Stop everything. Fix it and resume the work” replaces the
+initial lane-specific baseline-controller/admission workflow for future ordinary
+local development. Preserve every historical attempt, STOP, failure and receipt;
+none is cleared, replayed or promoted to qualification. Fresh ordinary local
+commands use new owned development builds. This change grants no paid/cloud,
+SQL/live, private PostgreSQL or final release authority.
+
+- `odbcpp-1` is the sole operational coordinator. It alone sends package-owner
+  assignments, leases resources and owns integration. The user-facing chat may
+  inspect/report progress and perform an explicitly requested workflow reset;
+  after reset it routes steering through `odbcpp-1` rather than directing workers.
+  A workflow-maintenance handoff temporarily stops that coordinator before another
+  author changes policy or shared state; only one coordinator acts at a time.
+- Package owners resume their already reviewed feature contracts and exact file
+  leases. They implement and author GoogleTests now; a pristine pre-change
+  executable baseline is useful evidence, not a universal prerequisite to coding.
+  Where needed, demonstrate the regression on original source in the same owned
+  graph before applying the fix, or by a preserved test-only source comparison.
+  Record an unrun baseline honestly; candidate tests still must actually pass.
+- Use the existing common `tools/development/with_build_slot.py`, an owned
+  macOS/iODBC UCS4 CMake build, `--parallel 2`, actual command logs/exit codes and
+  CTest timeouts. The owner supervises the command with a recorded finite deadline,
+  stops an overrun and verifies its owned process tree before releasing resources.
+  Check measured free space before/after each heavy command, reserve at least
+  5 GiB free and measured peak plus 2 GiB reserve. Do not scan mutable CMake scratch
+  files as a continuously enforced admission gate. A real disk/process/tool error
+  remains a failed command to investigate; never relabel it as a pass.
+- Bind local evidence to repository HEAD plus exact working diff, explicit CMake
+  options/cache, toolchain and dependency versions/source overrides, test inventory,
+  executable hash and actual results. Capture each command's source identity before
+  launch and keep its source inputs unchanged until completion; concurrent coding
+  uses a separate source snapshot/worktree. Retain `compile_commands.json` and applicable
+  architecture/header-staging checks. Ordinary generated SDK include units, CMake
+  compiler-ID/ABI probes and platform shared-cache images do not require separate
+  source-category approval, full expanded traces or syscall/loader proof before
+  a local configure/build. This scope is ordinary local feature qualification;
+  explicit security tests and protected final/live requirements still apply.
+- Retire the bespoke BIT/routine baseline controllers and their forensic input
+  disposition pipeline from the active execution path. Preserve their artifacts
+  as historical evidence. Stop diagnostics-only successors, new guardians,
+  manifest-category reviews and synthetic proof work unless an actual product
+  failure specifically requires a bounded tooling repair.
+- Review a complete candidate with its focused qualification and ownership table
+  in one finite independent pass. Follow up only on concrete affected findings.
+  Do not invent separate reviews/admission documents for each routine local
+  command or generated-input category. The coordinator may approve a package's
+  bounded configure/build/focused-regression sequence as one resource assignment.
+  Full CI/live/final acceptance debt stays recorded under the existing cadence.
+
 ## Two lanes and one integration coordinator
 
 Start with two complete package owners, automated qualification and a shared

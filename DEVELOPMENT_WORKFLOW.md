@@ -11,6 +11,19 @@ trial. [PARALLEL_WORKFLOW.md](PARALLEL_WORKFLOW.md) defines two package owners,
 automated qualification, shared independent review, coordinator integration and
 the separate source, resource and integration/live migration releases. The 12-hour cadence and all protected gates remain.
 
+## Human-directed local workflow correction — 2026-10-13
+
+Apply the local development reset in `PARALLEL_WORKFLOW.md` to both existing
+packages and future ordinary local work. One operational coordinator (`odbcpp-1`)
+directs two implementation owners. Use ordinary owned CMake/CTest builds through
+the shared slot, measured resource reserve, finite supervised commands and actual
+source/configuration/binary/test evidence. Retained custom-controller failures do
+not block a fresh ordinary build. Do not require sequential generated-input or
+compiler-probe category approvals, full trace/loader/syscall closure, or a new
+controller proof before coding an already reviewed contract. One complete
+candidate/evidence review follows meaningful focused qualification. Original
+failures, architecture checks and every full/platform/live/final gate remain.
+
 ## Development loop
 
 - Use one owned incremental macOS/iODBC UCS4 working build for each active

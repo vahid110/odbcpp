@@ -7,6 +7,18 @@ The human-approved 2026-10-13 parallel execution model is defined in
 [PARALLEL_WORKFLOW.md](PARALLEL_WORKFLOW.md). It supersedes root-only implementation
 and blanket shared-file author restrictions; architecture and acceptance remain.
 
+## Active workflow correction — 2026-10-13
+
+The human-directed local development reset in `PARALLEL_WORKFLOW.md` supersedes
+historical lane briefs and bespoke local baseline-controller admissions for new
+ordinary local work. `odbcpp-1` is the sole operational coordinator; route worker
+steering through it. Owners may implement their reviewed leases while qualifying
+with ordinary CMake/CTest under the shared slot. Whole-toolchain forensic closure,
+per-category generated-input reviews and pristine pre-code execution are not local
+feature admission requirements. Preserve historical stopped attempts as failures,
+use fresh owned builds, retain source/configuration/binary/test binding and actual
+process cleanup, and keep all protected cloud/live/final acceptance requirements.
+
 ## Architecture and ownership
 
 - Follow `SDK_ARCHITECTURE.md`, `SECURITY_MODEL.md`, `SDK_PRODUCT_PLAN.md` and the

@@ -12,6 +12,21 @@ Apply `PARALLEL_WORKFLOW.md` for the human-approved two-lane execution model and
 separate source, resource and integration/live migration releases. The 12-hour cadence and protected acceptance stay unchanged.
 Do not turn this workflow into new product scope or execution permission.
 
+## Apply the 2026-10-13 local reset
+
+Use the current local development reset in `PARALLEL_WORKFLOW.md` ahead of old
+lane briefs/private controller admissions. `odbcpp-1` alone directs AO workers;
+a user-facing maintenance chat stops it before an authorized policy reset and
+hands back once. Resume reviewed feature implementation and ordinary owned
+CMake/CTest qualification under the existing common slot. Do not make pristine
+pre-code execution, generated-source category approval, full compiler/loader
+provenance or bespoke guardian/controller proof a routine local prerequisite.
+Record actual HEAD/diff/configuration/dependency/binary/tests/results and finite
+command supervision/cleanup; keep measured disk reserve and architecture checks.
+Preserve every historical STOP/failure, use fresh development graphs, and review
+one complete candidate/evidence package. The reset grants no cloud/live/private
+PostgreSQL authority or relaxation of protected final acceptance.
+
 ## Select and isolate
 
 Read the actual Git state, applicable plans and current task evidence. Name the
